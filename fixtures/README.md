@@ -13,7 +13,7 @@ JAR=$(find ~/.gradle/caches/modules-2/files-2.1/org.apache.lucene/lucene-core/10
   -name 'lucene-core-10.5.0.jar' ! -name '*sources*' ! -name '*javadoc*')
 mkdir -p classes data
 javac -nowarn -cp "$JAR" -d classes src/*.java
-for cls in GenPrimitives GenCodecUtil GenSegmentInfo GenSegmentInfos GenLiveDocs; do
+for cls in GenPrimitives GenCodecUtil GenSegmentInfo GenSegmentInfos GenLiveDocs GenFieldInfos; do
   java -cp "classes:$JAR" $cls data
 done
 ```
@@ -36,3 +36,11 @@ installed; regenerate and re-commit whenever the pinned Lucene version changes.
   deleted by term after the first commit (`live_docs_index/` subdirectory:
   `NoMergePolicy` keeps the segment from being merged away, so the fixture's `.liv`
   file is a real post-deletion commit, not hand-built bits).
+- `GenFieldInfos.java` — a real two-doc `IndexWriter` session (`field_infos_index/`
+  subdirectory) with fields of every notable shape (plain indexed, term vectors,
+  numeric/sorted doc values, a point field, a KNN vector field) plus a
+  soft-deletes field introduced via a genuine `updateDocValues` call after the
+  first commit — this is the mechanism that makes the field live in a
+  generation-suffixed `.fnm` file rather than the segment's original one, and
+  the fixture exercises reading that generation correctly
+  (`SegmentCommitInfo.getFieldInfosGen()` → base-36 suffix).

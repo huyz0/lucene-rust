@@ -33,6 +33,8 @@ Pinned Lucene version: **10.5.0** (matches OpenSearch `gradle/libs.versions.toml
 | `codecs/lucene90/Lucene90LiveDocsFormat` (`.liv` read) | `lucene-codecs/src/live_docs.rs` | ported (read-only), fixture-verified against a real IndexWriter deletion (2 of 5 docs deleted by term, `NoMergePolicy` to keep the segment intact) |
 | — `SparseFixedBitSet`/`SparseLiveDocs` in-memory choice | — | not applicable to this port: the on-disk bytes are identical dense bits regardless of Java's in-memory representation choice |
 | `codecs/lucene90/Lucene90LiveDocsFormat.writeLiveDocs` | — | deferred to Phase 5 (write path) |
+| `codecs/lucene94/Lucene94FieldInfosFormat` (`.fnm` read, incl. `FieldInfo.checkConsistency`) | `lucene-codecs/src/field_infos.rs` | ported (read-only), fixture-verified against a real IndexWriter (7 field shapes + a soft-deletes field introduced by a later DV-update generation) |
+| `codecs/lucene94/Lucene94FieldInfosFormat.write` | — | deferred to Phase 5 (write path) |
 
 ## lucene-index
 
