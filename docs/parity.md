@@ -19,6 +19,7 @@ Pinned Lucene version: **10.5.0** (matches OpenSearch `gradle/libs.versions.toml
 | `util/GroupVIntUtil` | `lucene-store/src/data_input.rs::read_group_vints` | ported, fixture-verified |
 | `store/DataInput.readString` | `lucene-store/src/data_input.rs::read_string` | ported |
 | `codecs/CodecUtil` (header/index-header/footer, CRC-32) | `lucene-store/src/codec_util.rs` | ported, fixture-verified (incl. corrupted-checksum case) |
+| `codecs/CodecUtil.retrieveChecksum` (structural-only footer check, no full-file CRC) | `lucene-store/src/codec_util.rs::retrieve_checksum` | ported, unit-tested |
 | `store/Directory`, `FSDirectory` (listing + whole-file read) | `lucene-store/src/directory.rs::{Directory, FsDirectory}` | ported (read-only), fixture-verified |
 | `store/MMapDirectory` | `lucene-store/src/directory.rs::MmapDirectory` | ported (read-only), fixture-verified; this crate's only `unsafe` |
 | `index/SegmentInfos.getLastCommitGeneration`, `generationFromSegmentsFileName`, `IndexFileNames.fileNameFromGeneration` | `lucene-store/src/directory.rs::{last_commit_generation, generation_from_segments_file_name, segments_file_name, read_latest_commit}` | ported, fixture-verified end-to-end (open dir → find latest commit → parse `segments_N`) |
@@ -35,6 +36,9 @@ Pinned Lucene version: **10.5.0** (matches OpenSearch `gradle/libs.versions.toml
 | `codecs/lucene90/Lucene90LiveDocsFormat.writeLiveDocs` | — | deferred to Phase 5 (write path) |
 | `codecs/lucene94/Lucene94FieldInfosFormat` (`.fnm` read, incl. `FieldInfo.checkConsistency`) | `lucene-codecs/src/field_infos.rs` | ported (read-only), fixture-verified against a real IndexWriter (7 field shapes + a soft-deletes field introduced by a later DV-update generation) |
 | `codecs/lucene94/Lucene94FieldInfosFormat.write` | — | deferred to Phase 5 (write path) |
+| `codecs/lucene90/Lucene90NormsFormat` (`.nvm`/`.nvd` read, dense fields) | `lucene-codecs/src/norms.rs` | ported (read-only, dense only), fixture-verified against real per-doc norm values from Lucene's own `NormsProducer` |
+| — sparse norms (`IndexedDISI` bitset + jump table) | — | metadata parses, but value lookup is unimplemented (`Error::UnsupportedSparse`); `IndexedDISI` is its own substantial format shared by sparse doc values too — port it once, not per-format |
+| `codecs/lucene90/Lucene90NormsConsumer` (write side) | — | deferred to Phase 5 (write path) |
 
 ## lucene-index
 

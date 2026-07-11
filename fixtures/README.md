@@ -13,7 +13,7 @@ JAR=$(find ~/.gradle/caches/modules-2/files-2.1/org.apache.lucene/lucene-core/10
   -name 'lucene-core-10.5.0.jar' ! -name '*sources*' ! -name '*javadoc*')
 mkdir -p classes data
 javac -nowarn -cp "$JAR" -d classes src/*.java
-for cls in GenPrimitives GenCodecUtil GenSegmentInfo GenSegmentInfos GenLiveDocs GenFieldInfos; do
+for cls in GenPrimitives GenCodecUtil GenSegmentInfo GenSegmentInfos GenLiveDocs GenFieldInfos GenNorms; do
   java -cp "classes:$JAR" $cls data
 done
 ```
@@ -44,3 +44,8 @@ installed; regenerate and re-commit whenever the pinned Lucene version changes.
   generation-suffixed `.fnm` file rather than the segment's original one, and
   the fixture exercises reading that generation correctly
   (`SegmentCommitInfo.getFieldInfosGen()` → base-36 suffix).
+- `GenNorms.java` — a real single-segment `IndexWriter` session (`norms_index/`
+  subdirectory) with 5 docs of deliberately varying token counts on one
+  indexed field, so the dense per-doc norm values aren't all identical; the
+  manifest's expected values come from reading them back through Lucene's own
+  `NormsProducer`, not from our own arithmetic on token counts.

@@ -155,6 +155,14 @@ pub trait DataInput {
         String::from_utf8(buf).map_err(|_| Error::Corrupted("invalid UTF-8 string".into()))
     }
 
+    /// Lucene `DataInput.readShort`: plain little-endian i16.
+    #[inline]
+    fn read_i16(&mut self) -> Result<i16> {
+        let mut b = [0u8; 2];
+        self.read_bytes(&mut b)?;
+        Ok(i16::from_le_bytes(b))
+    }
+
     /// Lucene `DataInput.readInt`: plain little-endian i32 (distinct from the
     /// header/footer's big-endian magics).
     #[inline]
@@ -561,6 +569,19 @@ mod tests {
             let mut input = SliceInput::new(&bytes);
             assert_eq!(input.read_set_of_strings().unwrap(), items);
         }
+    }
+
+    // --- i16 ---
+
+    #[test]
+    fn i16_little_endian_and_negative() {
+        let bytes = 0x0102i16.to_le_bytes();
+        let mut input = SliceInput::new(&bytes);
+        assert_eq!(input.read_i16().unwrap(), 0x0102);
+
+        let bytes = (-1i16).to_le_bytes();
+        let mut input = SliceInput::new(&bytes);
+        assert_eq!(input.read_i16().unwrap(), -1);
     }
 
     // --- i64 / i64s ---

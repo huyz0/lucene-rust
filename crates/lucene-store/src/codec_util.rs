@@ -200,6 +200,42 @@ pub fn check_whole_file_footer(buf: &[u8], payload_end: usize) -> Result<u64> {
     check_footer(&mut input, buf.len())
 }
 
+/// Port of `CodecUtil.retrieveChecksum(IndexInput)`: validates that the
+/// footer is *structurally* well-formed (magic, algorithm id, checksum field
+/// shape) and returns the stored checksum, without recomputing the CRC over
+/// the whole file. Cheap; used where a full-file checksum is too costly for
+/// a forward-only access pattern (e.g. norms data) but truncation/gross
+/// corruption should still be caught on open.
+pub fn retrieve_checksum(buf: &[u8]) -> Result<u64> {
+    if buf.len() < FOOTER_LENGTH {
+        return Err(corrupt(format!(
+            "misplaced codec footer (file truncated?): length={} but footerLength=={FOOTER_LENGTH}",
+            buf.len()
+        )));
+    }
+    let footer_start = buf.len() - FOOTER_LENGTH;
+    let mut input = SliceInput::new(buf);
+    input.seek(footer_start)?;
+
+    let magic = input.read_be_u32()?;
+    if magic != FOOTER_MAGIC {
+        return Err(corrupt(format!(
+            "codec footer mismatch (file truncated?): actual footer={magic:#x} vs expected footer={FOOTER_MAGIC:#x}"
+        )));
+    }
+    let algorithm_id = input.read_be_u32()?;
+    if algorithm_id != 0 {
+        return Err(corrupt(format!(
+            "codec footer mismatch: unknown algorithmID: {algorithm_id}"
+        )));
+    }
+    let checksum = input.read_be_u64()?;
+    if (checksum & 0xFFFF_FFFF_0000_0000) != 0 {
+        return Err(corrupt(format!("Illegal CRC-32 checksum: {checksum}")));
+    }
+    Ok(checksum)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -369,6 +405,39 @@ mod tests {
         assert_eq!(header.version, 2);
         let payload_end = buf.len() - FOOTER_LENGTH;
         check_whole_file_footer(&buf, payload_end).unwrap();
+    }
+
+    #[test]
+    fn retrieve_checksum_valid() {
+        let buf = valid_file("Test", 1, b"hello");
+        let checksum = retrieve_checksum(&buf).unwrap();
+        assert_eq!(checksum, crc32fast::hash(&buf[..buf.len() - 8]) as u64);
+    }
+
+    #[test]
+    fn retrieve_checksum_too_small() {
+        let buf = [0u8; 4];
+        assert!(matches!(retrieve_checksum(&buf), Err(Error::Corrupted(_))));
+    }
+
+    #[test]
+    fn retrieve_checksum_wrong_magic_rejected() {
+        let mut buf = valid_file("Test", 1, b"hello");
+        let footer_start = buf.len() - FOOTER_LENGTH;
+        buf[footer_start] ^= 0xFF;
+        assert!(matches!(retrieve_checksum(&buf), Err(Error::Corrupted(_))));
+    }
+
+    #[test]
+    fn retrieve_checksum_does_not_detect_payload_corruption() {
+        // By design: retrieve_checksum only validates footer *shape*, not the
+        // CRC against the payload — that's the whole point (cheap check for a
+        // forward-only read pattern). Corrupting the payload without touching
+        // the footer must NOT be caught here.
+        let mut buf = valid_file("Test", 1, b"hello");
+        let payload_byte = header_bytes("Test", 1).len();
+        buf[payload_byte] ^= 0xFF;
+        assert!(retrieve_checksum(&buf).is_ok());
     }
 
     #[test]

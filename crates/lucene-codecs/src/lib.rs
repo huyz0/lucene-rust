@@ -3,3 +3,4 @@
 
 pub mod field_infos;
 pub mod live_docs;
+pub mod norms;
