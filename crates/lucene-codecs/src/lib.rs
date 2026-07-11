@@ -11,3 +11,4 @@ pub mod live_docs;
 mod lz4;
 pub mod norms;
 pub mod stored_fields;
+pub mod terms_dict;

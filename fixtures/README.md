@@ -13,7 +13,7 @@ JAR=$(find ~/.gradle/caches/modules-2/files-2.1/org.apache.lucene/lucene-core/10
   -name 'lucene-core-10.5.0.jar' ! -name '*sources*' ! -name '*javadoc*')
 mkdir -p classes data
 javac -nowarn -cp "$JAR" -d classes src/*.java
-for cls in GenPrimitives GenCodecUtil GenSegmentInfo GenSegmentInfos GenLiveDocs GenFieldInfos GenNorms GenDocValues GenCompoundFormat GenStoredFields; do
+for cls in GenPrimitives GenCodecUtil GenSegmentInfo GenSegmentInfos GenLiveDocs GenFieldInfos GenNorms GenDocValues GenCompoundFormat GenStoredFields GenSortedDocValues; do
   java -cp "classes:$JAR" $cls data
 done
 ```
@@ -81,4 +81,13 @@ installed; regenerate and re-commit whenever the pinned Lucene version changes.
   multi-doc framing rather than the single-doc shortcut. Expected values
   come from a custom `StoredFieldVisitor` reading them back through
   Lucene's own `Lucene90CompressingStoredFieldsReader`, not our own
+  arithmetic.
+- `GenSortedDocValues.java` — a real single-segment `IndexWriter` session
+  (`sorted_dv_index/` subdirectory) with a single-valued SORTED field over
+  5 docs with repeated values ("banana", "apple", "cherry", "apple",
+  "banana"), so the terms dictionary has 3 unique alphabetically-ordered
+  terms and the ordinal array has repeats — exercising the terms
+  dictionary decode and the ordinal (NUMERIC-shaped) decode together.
+  Expected ordinals and terms come from reading them back through
+  Lucene's own `SortedDocValues.ordValue`/`lookupOrd`, not our own
   arithmetic.

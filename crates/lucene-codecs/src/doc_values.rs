@@ -1,18 +1,21 @@
 //! Port of `org.apache.lucene.codecs.lucene90.Lucene90DocValuesFormat`
-//! (`.dvm` metadata + `.dvd` data) — read-only, **NUMERIC and BINARY fields
-//! only**.
+//! (`.dvm` metadata + `.dvd` data) — read-only, **NUMERIC, BINARY, and
+//! single-valued SORTED fields only**.
 //!
 //! Scope: the `.dvm` metadata stream interleaves entries for every doc-values
 //! field in a segment regardless of type (numeric/binary/sorted/sorted-set/
 //! sorted-numeric), and correctly walking past a field this port doesn't
-//! decode requires knowing that type's own entry layout (sorted needs the
-//! whole LZ4 terms dictionary, etc). Rather than half-implement that just to
-//! skip over its bytes, [`parse_meta`] requires every doc-values field in the
-//! segment to be `NUMERIC` or `BINARY`, with no doc-values skip index
-//! configured, returning [`Error::UnsupportedFieldType`] /
-//! [`Error::UnsupportedSkipIndex`] otherwise. Sorted doc values (which reuse
-//! numeric encoding for ordinals, plus a terms dictionary) are a separate
+//! decode requires knowing that type's own entry layout. Rather than
+//! half-implement that just to skip over its bytes, [`parse_meta`] requires
+//! every doc-values field in the segment to be `NUMERIC`, `BINARY`, or
+//! `SORTED`, with no doc-values skip index configured, returning
+//! [`Error::UnsupportedFieldType`] / [`Error::UnsupportedSkipIndex`]
+//! otherwise. `SORTED_SET`/`SORTED_NUMERIC` (multi-valued) are a separate
 //! future port.
+//!
+//! `SORTED` fields store a per-doc ordinal (reusing the exact NUMERIC entry
+//! layout — see [`NumericEntry`]) into a terms dictionary
+//! ([`crate::terms_dict`]) mapping each ordinal to its term bytes.
 //!
 //! Also out of scope for now: "varying bits-per-value" blocks (Java splits
 //! a field's values into 16384-value blocks with independently chosen
@@ -43,6 +46,7 @@ use crate::direct_monotonic;
 use crate::direct_reader;
 use crate::field_infos::FieldInfos;
 use crate::indexed_disi;
+use crate::terms_dict::{self, TermsDictEntry};
 
 const META_CODEC: &str = "Lucene90DocValuesMetadata";
 const VERSION_START: i32 = 0;
@@ -51,6 +55,7 @@ const VERSION_CURRENT: i32 = VERSION_SKIPPER_MAX_VALUE_COUNT;
 
 const DOC_VALUES_TYPE_NUMERIC: u8 = 0;
 const DOC_VALUES_TYPE_BINARY: u8 = 1;
+const DOC_VALUES_TYPE_SORTED: u8 = 2;
 
 const DOCS_WITH_FIELD_EMPTY: i64 = -2;
 const DOCS_WITH_FIELD_DENSE: i64 = -1;
@@ -61,7 +66,9 @@ pub enum Error {
     Store(#[from] lucene_store::Error),
     #[error("unknown field number: {0}")]
     UnknownFieldNumber(i32),
-    #[error("field {0} has doc values type byte {1}, expected NUMERIC (0) or BINARY (1)")]
+    #[error(
+        "field {0} has doc values type byte {1}, expected NUMERIC (0), BINARY (1), or SORTED (2)"
+    )]
     UnsupportedFieldType(i32, u8),
     #[error("field {0} has a doc-values skip index, which this port doesn't parse")]
     UnsupportedSkipIndex(i32),
@@ -141,10 +148,20 @@ impl BinaryEntry {
     }
 }
 
+/// A single-valued SORTED field: a per-doc ordinal ([`NumericEntry`],
+/// exactly the same layout NUMERIC fields use) into a terms dictionary.
+#[derive(Debug, Clone)]
+pub struct SortedEntry {
+    pub field_number: i32,
+    pub ords: NumericEntry,
+    pub terms: TermsDictEntry,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct DocValuesMeta {
     pub numeric: Vec<NumericEntry>,
     pub binary: Vec<BinaryEntry>,
+    pub sorted: Vec<SortedEntry>,
 }
 
 impl DocValuesMeta {
@@ -154,6 +171,10 @@ impl DocValuesMeta {
 
     pub fn binary_entry(&self, field_number: i32) -> Option<&BinaryEntry> {
         self.binary.iter().find(|e| e.field_number == field_number)
+    }
+
+    pub fn sorted_entry(&self, field_number: i32) -> Option<&SortedEntry> {
+        self.sorted.iter().find(|e| e.field_number == field_number)
     }
 }
 
@@ -198,6 +219,10 @@ pub fn parse_meta(
             DOC_VALUES_TYPE_BINARY => {
                 meta.binary
                     .push(read_binary_entry(&mut input, field_number)?);
+            }
+            DOC_VALUES_TYPE_SORTED => {
+                meta.sorted
+                    .push(read_sorted_entry(&mut input, field_number)?);
             }
             other => return Err(Error::UnsupportedFieldType(field_number, other)),
         }
@@ -247,6 +272,16 @@ fn read_binary_entry(input: &mut SliceInput, field_number: i32) -> Result<Binary
         data_offset,
         data_length,
         addresses,
+    })
+}
+
+fn read_sorted_entry(input: &mut SliceInput, field_number: i32) -> Result<SortedEntry> {
+    let ords = read_numeric_entry(input, field_number)?;
+    let terms = terms_dict::read_term_dict_entry(input)?;
+    Ok(SortedEntry {
+        field_number,
+        ords,
+        terms,
     })
 }
 
@@ -433,6 +468,13 @@ pub fn binary_value<'d>(data: &'d [u8], entry: &BinaryEntry, doc: i32) -> Result
     Ok(Some(value))
 }
 
+/// Reads a SORTED field's ordinal for `doc` -- exactly [`numeric_value`]
+/// applied to the entry's `ords`, since Java's `readSorted` reuses the
+/// NUMERIC entry layout verbatim for ordinals.
+pub fn sorted_ord(data: &[u8], entry: &SortedEntry, doc: i32) -> Result<Option<i64>> {
+    numeric_value(data, &entry.ords, doc)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -493,6 +535,12 @@ mod tests {
         fn build(&self, out: &mut Vec<u8>) {
             out.extend_from_slice(&self.field_number.to_le_bytes());
             out.push(DOC_VALUES_TYPE_NUMERIC);
+            self.build_body(out);
+        }
+
+        /// Just the numeric-entry body (no field number / type byte) --
+        /// SORTED fields reuse this exact layout for their ordinals.
+        fn build_body(&self, out: &mut Vec<u8>) {
             out.extend_from_slice(&self.docs_with_field_offset.to_le_bytes());
             out.extend_from_slice(&self.docs_with_field_length.to_le_bytes());
             out.extend_from_slice(&0i16.to_le_bytes()); // jumpTableEntryCount
@@ -670,11 +718,11 @@ mod tests {
         buf.extend_from_slice(&id);
         buf.push(0);
         buf.extend_from_slice(&0i32.to_le_bytes());
-        buf.push(2); // SORTED -- not yet supported
+        buf.push(3); // SORTED_SET -- not yet supported
         let fis = field_infos_with(&[0]);
         assert!(matches!(
             parse_meta(&buf, &id, "", &fis),
-            Err(Error::UnsupportedFieldType(0, 2))
+            Err(Error::UnsupportedFieldType(0, 3))
         ));
     }
 
@@ -1028,5 +1076,100 @@ mod tests {
         assert_eq!(entry.data_offset, 100);
         assert_eq!(entry.data_length, 12);
         assert!(entry.addresses.is_none());
+    }
+
+    /// Writes a `DirectMonotonicReader.Meta` block array of all-zero,
+    /// bpv=0 blocks (a constant-zero sequence -- correct-shaped but unused
+    /// by the SORTED test below, which never touches the address arrays
+    /// since `decode_all_terms`/`sorted_ord` don't need them).
+    fn write_zero_direct_monotonic_blocks(out: &mut Vec<u8>, num_values: i64, block_shift: u32) {
+        let mut num_blocks = num_values >> block_shift;
+        if (num_blocks << block_shift) < num_values {
+            num_blocks += 1;
+        }
+        for _ in 0..num_blocks {
+            out.extend_from_slice(&0i64.to_le_bytes()); // min
+            out.extend_from_slice(&0i32.to_le_bytes()); // avg
+            out.extend_from_slice(&0i64.to_le_bytes()); // offset
+            out.push(0); // bpv
+        }
+    }
+
+    #[test]
+    fn sorted_field_parses_and_resolves_ordinal_to_term() {
+        use crate::terms_dict;
+
+        let id = [1u8; ID_LENGTH];
+        let dvd_header_len = nvd_header_len();
+
+        // .dvd layout: [ords packed bits][terms data: "apple" + prefix-compressed "berry"]
+        let ords_values_offset = dvd_header_len as i64;
+        let ords_values_length = 1i64; // 3 docs * 1 bit, fits in 1 byte
+        let terms_data_offset = ords_values_offset + ords_values_length;
+
+        // 2nd term: prefix 0 shared with "apple", suffix "berry" (5 bytes).
+        let mut block_body = Vec::new();
+        block_body.push(4u8 << 4); // suffixLen field=4 (len 5), prefixLen=0
+        block_body.extend_from_slice(b"berry");
+        let mut terms_data = Vec::new();
+        write_vint(&mut terms_data, 5);
+        terms_data.extend_from_slice(b"apple");
+        write_vint(&mut terms_data, block_body.len() as i32); // decompressed block length
+        terms_data.push((block_body.len() as u8) << 4); // literal-only LZ4 token
+        terms_data.extend_from_slice(&block_body);
+        let terms_data_length = terms_data.len() as i64;
+
+        // docs [0,1,2] -> ordinals [0,1,0], bpv=1: bit 1 set for doc 1 only.
+        let mut dvd_payload = vec![0b0000_0010u8];
+        dvd_payload.extend_from_slice(&terms_data);
+        let dvd = build_dvd(&id, &dvd_payload);
+
+        let mut ords = EntryBuilder::dense(0, 1, 3);
+        ords.values_offset = ords_values_offset;
+        ords.values_length = ords_values_length;
+
+        let mut dvm = Vec::new();
+        dvm.extend_from_slice(&codec_util::CODEC_MAGIC.to_be_bytes());
+        write_string(&mut dvm, META_CODEC);
+        dvm.extend_from_slice(&(VERSION_CURRENT as u32).to_be_bytes());
+        dvm.extend_from_slice(&id);
+        dvm.push(0);
+        dvm.extend_from_slice(&0i32.to_le_bytes()); // field number
+        dvm.push(DOC_VALUES_TYPE_SORTED);
+        ords.build_body(&mut dvm);
+
+        // TermsDictEntry (Lucene90DocValuesProducer.readTermDict).
+        write_vint(&mut dvm, 2); // termsDictSize
+        dvm.extend_from_slice(&2i32.to_le_bytes()); // blockShift (for the address arrays)
+        write_zero_direct_monotonic_blocks(&mut dvm, 1, 2); // addresses: ceil(2/64)=1 block
+        dvm.extend_from_slice(&5i32.to_le_bytes()); // maxTermLength
+        dvm.extend_from_slice(&8192i32.to_le_bytes()); // maxBlockLength (unused)
+        dvm.extend_from_slice(&terms_data_offset.to_le_bytes());
+        dvm.extend_from_slice(&terms_data_length.to_le_bytes());
+        dvm.extend_from_slice(&0i64.to_le_bytes()); // termsAddressesOffset (unused)
+        dvm.extend_from_slice(&0i64.to_le_bytes()); // termsAddressesLength (unused)
+        dvm.extend_from_slice(&4i32.to_le_bytes()); // termsDictIndexShift
+        write_zero_direct_monotonic_blocks(&mut dvm, 1 + 1, 2); // index: 1+ceil(2/16)=2 blocks
+        dvm.extend_from_slice(&0i64.to_le_bytes()); // termsIndexOffset (unused)
+        dvm.extend_from_slice(&0i64.to_le_bytes()); // termsIndexLength (unused)
+        dvm.extend_from_slice(&0i64.to_le_bytes()); // termsIndexAddressesOffset (unused)
+        dvm.extend_from_slice(&0i64.to_le_bytes()); // termsIndexAddressesLength (unused)
+
+        dvm.extend_from_slice(&(-1i32).to_le_bytes()); // field terminator
+        dvm.extend_from_slice(&codec_util::FOOTER_MAGIC.to_be_bytes());
+        dvm.extend_from_slice(&0u32.to_be_bytes());
+        let checksum = crc32fast::hash(&dvm) as u64;
+        dvm.extend_from_slice(&checksum.to_be_bytes());
+
+        let fis = field_infos_with(&[0]);
+        let (_, meta) = parse_meta(&dvm, &id, "", &fis).unwrap();
+        let entry = meta.sorted_entry(0).unwrap();
+
+        assert_eq!(sorted_ord(&dvd, entry, 0).unwrap(), Some(0));
+        assert_eq!(sorted_ord(&dvd, entry, 1).unwrap(), Some(1));
+        assert_eq!(sorted_ord(&dvd, entry, 2).unwrap(), Some(0));
+
+        let terms = terms_dict::decode_all_terms(&dvd, &entry.terms).unwrap();
+        assert_eq!(terms, vec![b"apple".to_vec(), b"berry".to_vec()]);
     }
 }
