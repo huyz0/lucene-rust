@@ -13,7 +13,7 @@ JAR=$(find ~/.gradle/caches/modules-2/files-2.1/org.apache.lucene/lucene-core/10
   -name 'lucene-core-10.5.0.jar' ! -name '*sources*' ! -name '*javadoc*')
 mkdir -p classes data
 javac -nowarn -cp "$JAR" -d classes src/*.java
-for cls in GenPrimitives GenCodecUtil GenSegmentInfo GenSegmentInfos GenLiveDocs GenFieldInfos GenNorms GenDocValues GenCompoundFormat GenStoredFields GenSortedDocValues; do
+for cls in GenPrimitives GenCodecUtil GenSegmentInfo GenSegmentInfos GenLiveDocs GenFieldInfos GenNorms GenDocValues GenCompoundFormat GenStoredFields GenSortedDocValues GenMultiValuedDocValues; do
   java -cp "classes:$JAR" $cls data
 done
 ```
@@ -91,3 +91,12 @@ installed; regenerate and re-commit whenever the pinned Lucene version changes.
   Expected ordinals and terms come from reading them back through
   Lucene's own `SortedDocValues.ordValue`/`lookupOrd`, not our own
   arithmetic.
+- `GenMultiValuedDocValues.java` — a real single-segment `IndexWriter`
+  session (`multi_valued_dv_index/` subdirectory) with a SORTED_NUMERIC
+  field ("nums", 0-3 values/doc) and a SORTED_SET field ("tags", 0-2
+  values/doc sharing a 3-term dictionary) across 5 docs, so some docs have
+  zero values (the `IndexedDISI`-sparse path, since not every doc has the
+  field at all) and others have more than one (the `DirectMonotonicReader`
+  address-range path) — both exercised together. Expected values/ordinals
+  come from reading them back through Lucene's own
+  `SortedNumericDocValues`/`SortedSetDocValues`, not our own arithmetic.

@@ -1,21 +1,20 @@
 //! Port of `org.apache.lucene.codecs.lucene90.Lucene90DocValuesFormat`
-//! (`.dvm` metadata + `.dvd` data) — read-only, **NUMERIC, BINARY, and
-//! single-valued SORTED fields only**.
-//!
-//! Scope: the `.dvm` metadata stream interleaves entries for every doc-values
-//! field in a segment regardless of type (numeric/binary/sorted/sorted-set/
-//! sorted-numeric), and correctly walking past a field this port doesn't
-//! decode requires knowing that type's own entry layout. Rather than
-//! half-implement that just to skip over its bytes, [`parse_meta`] requires
-//! every doc-values field in the segment to be `NUMERIC`, `BINARY`, or
-//! `SORTED`, with no doc-values skip index configured, returning
-//! [`Error::UnsupportedFieldType`] / [`Error::UnsupportedSkipIndex`]
-//! otherwise. `SORTED_SET`/`SORTED_NUMERIC` (multi-valued) are a separate
-//! future port.
+//! (`.dvm` metadata + `.dvd` data) — read-only. All five doc-values types
+//! are supported (NUMERIC, BINARY, SORTED, SORTED_SET, SORTED_NUMERIC);
+//! per-field doc-values skip indexes are not (see
+//! [`Error::UnsupportedSkipIndex`]).
 //!
 //! `SORTED` fields store a per-doc ordinal (reusing the exact NUMERIC entry
 //! layout — see [`NumericEntry`]) into a terms dictionary
 //! ([`crate::terms_dict`]) mapping each ordinal to its term bytes.
+//! `SORTED_NUMERIC`/`SORTED_SET` are the multi-valued forms: zero or more
+//! numbers/ordinals per doc, addressed through a [`crate::direct_monotonic`]
+//! array of `(start, end)` ranges into a flat values array — unless every
+//! doc-with-a-value happens to have exactly one, in which case Java (and
+//! this port) collapses back to the single-valued shape with no addresses
+//! array at all. A `SORTED_SET` field storing zero-or-one ordinal per doc
+//! is written as a plain `SORTED` field with a multi-valued flag byte
+//! (see [`SortedSetFieldEntry`]), not as a degenerate `SORTED_NUMERIC`.
 //!
 //! Also out of scope for now: "varying bits-per-value" blocks (Java splits
 //! a field's values into 16384-value blocks with independently chosen
@@ -56,6 +55,8 @@ const VERSION_CURRENT: i32 = VERSION_SKIPPER_MAX_VALUE_COUNT;
 const DOC_VALUES_TYPE_NUMERIC: u8 = 0;
 const DOC_VALUES_TYPE_BINARY: u8 = 1;
 const DOC_VALUES_TYPE_SORTED: u8 = 2;
+const DOC_VALUES_TYPE_SORTED_SET: u8 = 3;
+const DOC_VALUES_TYPE_SORTED_NUMERIC: u8 = 4;
 
 const DOCS_WITH_FIELD_EMPTY: i64 = -2;
 const DOCS_WITH_FIELD_DENSE: i64 = -1;
@@ -66,9 +67,7 @@ pub enum Error {
     Store(#[from] lucene_store::Error),
     #[error("unknown field number: {0}")]
     UnknownFieldNumber(i32),
-    #[error(
-        "field {0} has doc values type byte {1}, expected NUMERIC (0), BINARY (1), or SORTED (2)"
-    )]
+    #[error("field {0} has unknown doc values type byte {1}")]
     UnsupportedFieldType(i32, u8),
     #[error("field {0} has a doc-values skip index, which this port doesn't parse")]
     UnsupportedSkipIndex(i32),
@@ -80,6 +79,8 @@ pub enum Error {
     InvalidBitsPerValue(u8, i32),
     #[error("doc {0} is out of range (numValues={1})")]
     DocOutOfRange(i32, i64),
+    #[error("field {0} has invalid multiValued flag: {1}")]
+    InvalidMultiValuedFlag(i32, u8),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -157,11 +158,54 @@ pub struct SortedEntry {
     pub terms: TermsDictEntry,
 }
 
+/// A `(start, end)` address range array into a flat multi-valued array --
+/// present only when a doc-with-a-value can have more than one value; if
+/// every doc-with-a-value has exactly one, Java (and this port) collapses
+/// to the single-valued shape (`addresses: None`) with no address array at
+/// all, since each value's ordinal is then just its doc's rank.
+#[derive(Debug, Clone)]
+pub struct MultiValueAddresses {
+    pub offset: i64,
+    pub length: i64,
+    pub meta: direct_monotonic::Meta,
+}
+
+/// A multi-valued (zero or more per doc) numeric field, or the ordinal
+/// half of a multi-valued SORTED_SET field -- both share this exact entry
+/// shape (`Lucene90DocValuesProducer.readSortedNumeric`).
+#[derive(Debug, Clone)]
+pub struct SortedNumericEntry {
+    pub field_number: i32,
+    pub numeric: NumericEntry,
+    pub num_docs_with_field: i32,
+    pub addresses: Option<MultiValueAddresses>,
+}
+
+/// A SORTED_SET field: either written as a plain single-valued [`SortedEntry`]
+/// (every doc has zero or one ordinal) or a true multi-valued form (ordinals
+/// via [`SortedNumericEntry`], resolved against the same terms dictionary).
+#[derive(Debug, Clone)]
+pub enum SortedSetKind {
+    Single(SortedEntry),
+    Multi {
+        ords: SortedNumericEntry,
+        terms: TermsDictEntry,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct SortedSetEntry {
+    pub field_number: i32,
+    pub kind: SortedSetKind,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct DocValuesMeta {
     pub numeric: Vec<NumericEntry>,
     pub binary: Vec<BinaryEntry>,
     pub sorted: Vec<SortedEntry>,
+    pub sorted_numeric: Vec<SortedNumericEntry>,
+    pub sorted_set: Vec<SortedSetEntry>,
 }
 
 impl DocValuesMeta {
@@ -175,6 +219,18 @@ impl DocValuesMeta {
 
     pub fn sorted_entry(&self, field_number: i32) -> Option<&SortedEntry> {
         self.sorted.iter().find(|e| e.field_number == field_number)
+    }
+
+    pub fn sorted_numeric_entry(&self, field_number: i32) -> Option<&SortedNumericEntry> {
+        self.sorted_numeric
+            .iter()
+            .find(|e| e.field_number == field_number)
+    }
+
+    pub fn sorted_set_entry(&self, field_number: i32) -> Option<&SortedSetEntry> {
+        self.sorted_set
+            .iter()
+            .find(|e| e.field_number == field_number)
     }
 }
 
@@ -223,6 +279,14 @@ pub fn parse_meta(
             DOC_VALUES_TYPE_SORTED => {
                 meta.sorted
                     .push(read_sorted_entry(&mut input, field_number)?);
+            }
+            DOC_VALUES_TYPE_SORTED_NUMERIC => {
+                meta.sorted_numeric
+                    .push(read_sorted_numeric_entry(&mut input, field_number)?);
+            }
+            DOC_VALUES_TYPE_SORTED_SET => {
+                meta.sorted_set
+                    .push(read_sorted_set_entry(&mut input, field_number)?);
             }
             other => return Err(Error::UnsupportedFieldType(field_number, other)),
         }
@@ -283,6 +347,53 @@ fn read_sorted_entry(input: &mut SliceInput, field_number: i32) -> Result<Sorted
         ords,
         terms,
     })
+}
+
+/// Port of `Lucene90DocValuesProducer.readSortedNumeric`: a NUMERIC entry
+/// (`numValues` = total value count across all docs) plus, only when a
+/// doc-with-a-value can hold more than one value, an address array mapping
+/// each doc's rank to a `[start, end)` range in that flat value array.
+fn read_sorted_numeric_entry(
+    input: &mut SliceInput,
+    field_number: i32,
+) -> Result<SortedNumericEntry> {
+    let numeric = read_numeric_entry(input, field_number)?;
+    let num_docs_with_field = input.read_i32()?;
+    let addresses = if num_docs_with_field as i64 != numeric.num_values {
+        let addresses_offset = input.read_i64()?;
+        let block_shift = input.read_vint()?;
+        let meta =
+            direct_monotonic::load_meta(input, num_docs_with_field as i64 + 1, block_shift as u32)?;
+        let addresses_length = input.read_i64()?;
+        Some(MultiValueAddresses {
+            offset: addresses_offset,
+            length: addresses_length,
+            meta,
+        })
+    } else {
+        None
+    };
+    Ok(SortedNumericEntry {
+        field_number,
+        numeric,
+        num_docs_with_field,
+        addresses,
+    })
+}
+
+/// Port of `Lucene90DocValuesProducer.readSortedSet`.
+fn read_sorted_set_entry(input: &mut SliceInput, field_number: i32) -> Result<SortedSetEntry> {
+    let multi_valued = input.read_byte()?;
+    let kind = match multi_valued {
+        0 => SortedSetKind::Single(read_sorted_entry(input, field_number)?),
+        1 => {
+            let ords = read_sorted_numeric_entry(input, field_number)?;
+            let terms = terms_dict::read_term_dict_entry(input)?;
+            SortedSetKind::Multi { ords, terms }
+        }
+        other => return Err(Error::InvalidMultiValuedFlag(field_number, other)),
+    };
+    Ok(SortedSetEntry { field_number, kind })
 }
 
 fn read_numeric_entry(input: &mut SliceInput, field_number: i32) -> Result<NumericEntry> {
@@ -475,6 +586,57 @@ pub fn sorted_ord(data: &[u8], entry: &SortedEntry, doc: i32) -> Result<Option<i
     numeric_value(data, &entry.ords, doc)
 }
 
+/// Reads a SORTED_NUMERIC field's values for `doc` (zero or more numbers,
+/// in the order Lucene wrote them), or a SORTED_SET field's ordinals when
+/// applied to its `ords` entry -- both share this exact decode. Unlike
+/// [`numeric_value`], a doc's *ordinal into the flat values array* isn't
+/// simply its doc id/rank: that only holds when every doc-with-a-value has
+/// exactly one value (`entry.addresses.is_none()`); otherwise each doc's
+/// rank indexes an address range `[start, end)` covering its values.
+pub fn sorted_numeric_values(
+    data: &[u8],
+    entry: &SortedNumericEntry,
+    doc: i32,
+) -> Result<Vec<i64>> {
+    if doc < 0 {
+        return Err(Error::DocOutOfRange(doc, entry.numeric.num_values));
+    }
+    if entry.numeric.is_empty_field() {
+        return Ok(Vec::new());
+    }
+
+    let rank: i64 = if entry.numeric.is_dense() {
+        doc as i64
+    } else {
+        let region = data
+            .get(
+                entry.numeric.docs_with_field_offset as usize
+                    ..(entry.numeric.docs_with_field_offset + entry.numeric.docs_with_field_length)
+                        as usize,
+            )
+            .ok_or(lucene_store::Error::Eof { offset: 0 })?;
+        let doc_ids = indexed_disi::decode_doc_ids(region, entry.numeric.dense_rank_power)?;
+        match indexed_disi::rank_of(&doc_ids, doc) {
+            Some(r) => r as i64,
+            None => return Ok(Vec::new()),
+        }
+    };
+
+    match &entry.addresses {
+        None => Ok(vec![decode_value(data, &entry.numeric, rank)?]),
+        Some(addrs) => {
+            let addr_region = data
+                .get(addrs.offset as usize..(addrs.offset + addrs.length) as usize)
+                .ok_or(lucene_store::Error::Eof { offset: 0 })?;
+            let start = direct_monotonic::get(addr_region, &addrs.meta, rank)?;
+            let end = direct_monotonic::get(addr_region, &addrs.meta, rank + 1)?;
+            (start..end)
+                .map(|i| decode_value(data, &entry.numeric, i))
+                .collect()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -561,6 +723,16 @@ mod tests {
             out.extend_from_slice(&self.values_offset.to_le_bytes());
             out.extend_from_slice(&self.values_length.to_le_bytes());
             out.extend_from_slice(&0i64.to_le_bytes()); // valueJumpTableOffset
+        }
+
+        /// Round-trips through `build_body`/`read_numeric_entry` rather than
+        /// constructing a `NumericEntry` field-by-field, so this stays in
+        /// sync with the real parser automatically.
+        fn to_entry(&self) -> NumericEntry {
+            let mut bytes = Vec::new();
+            self.build_body(&mut bytes);
+            let mut input = SliceInput::new(&bytes);
+            read_numeric_entry(&mut input, self.field_number).unwrap()
         }
     }
 
@@ -718,11 +890,11 @@ mod tests {
         buf.extend_from_slice(&id);
         buf.push(0);
         buf.extend_from_slice(&0i32.to_le_bytes());
-        buf.push(3); // SORTED_SET -- not yet supported
+        buf.push(9); // not a valid doc values type byte
         let fis = field_infos_with(&[0]);
         assert!(matches!(
             parse_meta(&buf, &id, "", &fis),
-            Err(Error::UnsupportedFieldType(0, 3))
+            Err(Error::UnsupportedFieldType(0, 9))
         ));
     }
 
@@ -1171,5 +1343,218 @@ mod tests {
 
         let terms = terms_dict::decode_all_terms(&dvd, &entry.terms).unwrap();
         assert_eq!(terms, vec![b"apple".to_vec(), b"berry".to_vec()]);
+    }
+
+    fn sorted_numeric_entry_no_addresses(numeric: NumericEntry) -> SortedNumericEntry {
+        let num_docs_with_field = numeric.num_values as i32;
+        SortedNumericEntry {
+            field_number: numeric.field_number,
+            numeric,
+            num_docs_with_field,
+            addresses: None,
+        }
+    }
+
+    #[test]
+    fn sorted_numeric_collapses_to_single_value_when_one_per_doc() {
+        // 3 docs, dense, 1 value each (numValues == numDocsWithField) ->
+        // addresses is None, ordinal == doc id directly.
+        let mut e = EntryBuilder::dense(0, 8, 3);
+        e.values_offset = nvd_header_len() as i64;
+        e.values_length = 3;
+        let data = build_dvd(&[1u8; ID_LENGTH], &[10, 20, 30]);
+        let entry = sorted_numeric_entry_no_addresses(e.to_entry());
+
+        assert_eq!(sorted_numeric_values(&data, &entry, 0).unwrap(), vec![10]);
+        assert_eq!(sorted_numeric_values(&data, &entry, 1).unwrap(), vec![20]);
+        assert_eq!(sorted_numeric_values(&data, &entry, 2).unwrap(), vec![30]);
+    }
+
+    #[test]
+    fn sorted_numeric_dense_multi_value_uses_address_ranges() {
+        // 3 docs with value counts [2, 0, 1]: doc0->[10,11], doc1->[], doc2->[12].
+        // numValues (total)=3, numDocsWithField=3 (every doc has a value entry,
+        // even if empty) -- addresses = [0,2,2,3].
+        let header_len = nvd_header_len();
+        let mut e = EntryBuilder::dense(0, 8, 3); // numValues=3 (total value count)
+        e.values_offset = header_len as i64;
+        e.values_length = 3;
+
+        let addr_meta_bytes = {
+            let mut out = Vec::new();
+            out.extend_from_slice(&0i64.to_le_bytes()); // min
+            out.extend_from_slice(&0i32.to_le_bytes()); // avg
+            out.extend_from_slice(&0i64.to_le_bytes()); // offset
+            out.push(8); // bpv=8: raw byte values, since min=0,avg=0 -> delta==value
+            out
+        };
+        let mut addr_input = SliceInput::new(&addr_meta_bytes);
+        let addr_meta = direct_monotonic::load_meta(&mut addr_input, 4, 3).unwrap(); // blockShift=3 -> 1 block for 4 values
+
+        let values = [10u8, 11, 12];
+        let addresses_bytes = [0u8, 2, 2, 3]; // the actual address array data (bpv=8 raw bytes)
+        let mut data = values.to_vec();
+        data.extend_from_slice(&addresses_bytes);
+        let addresses_offset = header_len as i64 + values.len() as i64;
+
+        let entry = SortedNumericEntry {
+            field_number: 0,
+            numeric: e.to_entry(),
+            num_docs_with_field: 3,
+            addresses: Some(MultiValueAddresses {
+                offset: addresses_offset,
+                length: addresses_bytes.len() as i64,
+                meta: addr_meta,
+            }),
+        };
+        let dvd = build_dvd(&[1u8; ID_LENGTH], &data);
+
+        assert_eq!(
+            sorted_numeric_values(&dvd, &entry, 0).unwrap(),
+            vec![10, 11]
+        );
+        assert_eq!(
+            sorted_numeric_values(&dvd, &entry, 1).unwrap(),
+            Vec::<i64>::new()
+        );
+        assert_eq!(sorted_numeric_values(&dvd, &entry, 2).unwrap(), vec![12]);
+    }
+
+    #[test]
+    fn sorted_numeric_empty_field_has_no_values_anywhere() {
+        let mut e = EntryBuilder::dense(0, 8, 0);
+        e.docs_with_field_offset = DOCS_WITH_FIELD_EMPTY;
+        let entry = sorted_numeric_entry_no_addresses(e.to_entry());
+        assert_eq!(
+            sorted_numeric_values(&[], &entry, 0).unwrap(),
+            Vec::<i64>::new()
+        );
+    }
+
+    #[test]
+    fn sorted_numeric_negative_doc_rejected() {
+        let e = EntryBuilder::dense(0, 8, 3);
+        let entry = sorted_numeric_entry_no_addresses(e.to_entry());
+        assert!(matches!(
+            sorted_numeric_values(&[], &entry, -1),
+            Err(Error::DocOutOfRange(-1, 3))
+        ));
+    }
+
+    #[test]
+    fn parse_meta_sorted_numeric_and_sorted_set_multi_round_trip() {
+        let id = [1u8; ID_LENGTH];
+        let dvd_header_len = nvd_header_len();
+
+        // SORTED_NUMERIC field (number 0): 2 docs, dense, 1 value/doc ->
+        // collapses to no-addresses shape.
+        let mut sn_numeric = EntryBuilder::dense(0, 8, 2);
+        sn_numeric.values_offset = dvd_header_len as i64;
+        sn_numeric.values_length = 2;
+
+        // SORTED_SET field (number 1), multi-valued: reuse the same
+        // no-addresses shape for ords, plus the "apple"/"berry" terms dict
+        // from `sorted_field_parses_and_resolves_ordinal_to_term`.
+        let ss_ords_values_offset = dvd_header_len as i64 + 2;
+        let mut ss_ords = EntryBuilder::dense(1, 1, 3);
+        ss_ords.values_offset = ss_ords_values_offset;
+        ss_ords.values_length = 1;
+
+        let mut block_body = Vec::new();
+        block_body.push(4u8 << 4);
+        block_body.extend_from_slice(b"berry");
+        let mut terms_data = Vec::new();
+        write_vint(&mut terms_data, 5);
+        terms_data.extend_from_slice(b"apple");
+        write_vint(&mut terms_data, block_body.len() as i32);
+        terms_data.push((block_body.len() as u8) << 4);
+        terms_data.extend_from_slice(&block_body);
+        let terms_data_offset = ss_ords_values_offset + 1;
+
+        let mut dvd_payload = vec![10u8, 20]; // SORTED_NUMERIC values
+        dvd_payload.push(0b0000_0010); // SORTED_SET ords packed bits (doc1's bit set)
+        dvd_payload.extend_from_slice(&terms_data);
+        let dvd = build_dvd(&id, &dvd_payload);
+
+        let mut dvm = Vec::new();
+        dvm.extend_from_slice(&codec_util::CODEC_MAGIC.to_be_bytes());
+        write_string(&mut dvm, META_CODEC);
+        dvm.extend_from_slice(&(VERSION_CURRENT as u32).to_be_bytes());
+        dvm.extend_from_slice(&id);
+        dvm.push(0);
+
+        dvm.extend_from_slice(&0i32.to_le_bytes());
+        dvm.push(DOC_VALUES_TYPE_SORTED_NUMERIC);
+        sn_numeric.build_body(&mut dvm);
+        dvm.extend_from_slice(&2i32.to_le_bytes()); // numDocsWithField == numValues -> no addresses
+
+        dvm.extend_from_slice(&1i32.to_le_bytes());
+        dvm.push(DOC_VALUES_TYPE_SORTED_SET);
+        dvm.push(1); // multiValued=1
+        ss_ords.build_body(&mut dvm);
+        dvm.extend_from_slice(&3i32.to_le_bytes()); // numDocsWithField == numValues -> no addresses
+        write_vint(&mut dvm, 2); // termsDictSize
+        dvm.extend_from_slice(&2i32.to_le_bytes()); // blockShift
+        write_zero_direct_monotonic_blocks(&mut dvm, 1, 2);
+        dvm.extend_from_slice(&5i32.to_le_bytes()); // maxTermLength
+        dvm.extend_from_slice(&8192i32.to_le_bytes());
+        dvm.extend_from_slice(&terms_data_offset.to_le_bytes());
+        dvm.extend_from_slice(&(terms_data.len() as i64).to_le_bytes());
+        dvm.extend_from_slice(&0i64.to_le_bytes());
+        dvm.extend_from_slice(&0i64.to_le_bytes());
+        dvm.extend_from_slice(&4i32.to_le_bytes());
+        write_zero_direct_monotonic_blocks(&mut dvm, 2, 2);
+        dvm.extend_from_slice(&0i64.to_le_bytes());
+        dvm.extend_from_slice(&0i64.to_le_bytes());
+        dvm.extend_from_slice(&0i64.to_le_bytes());
+        dvm.extend_from_slice(&0i64.to_le_bytes());
+
+        dvm.extend_from_slice(&(-1i32).to_le_bytes());
+        dvm.extend_from_slice(&codec_util::FOOTER_MAGIC.to_be_bytes());
+        dvm.extend_from_slice(&0u32.to_be_bytes());
+        let checksum = crc32fast::hash(&dvm) as u64;
+        dvm.extend_from_slice(&checksum.to_be_bytes());
+
+        let fis = field_infos_with(&[0, 1]);
+        let (_, meta) = parse_meta(&dvm, &id, "", &fis).unwrap();
+
+        let sn_entry = meta.sorted_numeric_entry(0).unwrap();
+        assert_eq!(sorted_numeric_values(&dvd, sn_entry, 0).unwrap(), vec![10]);
+        assert_eq!(sorted_numeric_values(&dvd, sn_entry, 1).unwrap(), vec![20]);
+
+        let ss_entry = meta.sorted_set_entry(1).unwrap();
+        match &ss_entry.kind {
+            SortedSetKind::Multi { ords, terms } => {
+                // packed bits 0b0000_0010 -> doc0=ord 0 ("apple"), doc1=ord 1
+                // ("berry"), doc2=ord 0 ("apple") -- every doc is dense/1-valued
+                // here, so there's no "no value" case in this scenario.
+                assert_eq!(sorted_numeric_values(&dvd, ords, 0).unwrap(), vec![0]);
+                assert_eq!(sorted_numeric_values(&dvd, ords, 1).unwrap(), vec![1]);
+                assert_eq!(sorted_numeric_values(&dvd, ords, 2).unwrap(), vec![0]);
+                let terms = terms_dict::decode_all_terms(&dvd, terms).unwrap();
+                assert_eq!(terms, vec![b"apple".to_vec(), b"berry".to_vec()]);
+            }
+            SortedSetKind::Single(_) => panic!("expected Multi"),
+        }
+    }
+
+    #[test]
+    fn invalid_multi_valued_flag_rejected() {
+        let id = [1u8; ID_LENGTH];
+        let mut dvm = Vec::new();
+        dvm.extend_from_slice(&codec_util::CODEC_MAGIC.to_be_bytes());
+        write_string(&mut dvm, META_CODEC);
+        dvm.extend_from_slice(&(VERSION_CURRENT as u32).to_be_bytes());
+        dvm.extend_from_slice(&id);
+        dvm.push(0);
+        dvm.extend_from_slice(&0i32.to_le_bytes());
+        dvm.push(DOC_VALUES_TYPE_SORTED_SET);
+        dvm.push(2); // invalid multiValued flag
+
+        let fis = field_infos_with(&[0]);
+        assert!(matches!(
+            parse_meta(&dvm, &id, "", &fis),
+            Err(Error::InvalidMultiValuedFlag(0, 2))
+        ));
     }
 }
