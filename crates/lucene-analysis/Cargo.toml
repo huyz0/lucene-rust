@@ -1,0 +1,9 @@
+[package]
+name = "lucene-analysis"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+unicode-segmentation.workspace = true

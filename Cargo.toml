@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/lucene-util",
+    "crates/lucene-store",
+    "crates/lucene-codecs",
+    "crates/lucene-index",
+    "crates/lucene-analysis",
+    "crates/lucene-search",
+    "crates/lucene-core",
+    "crates/lucene-ffi",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/tuonghuy/lucene-rust"
+
+[workspace.dependencies]
+thiserror = "1"
+memmap2 = "0.9"
+crc32fast = "1"
+lz4_flex = "0.11"
+zstd = "0.13"
+unicode-segmentation = "1"
+rayon = "1"
+jni = "0.21"
+proptest = "1"

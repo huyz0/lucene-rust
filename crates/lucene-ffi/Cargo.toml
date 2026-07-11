@@ -1,0 +1,13 @@
+[package]
+name = "lucene-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+lucene-core = { path = "../lucene-core" }
+jni.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]

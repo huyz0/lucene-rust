@@ -1,0 +1,10 @@
+target/
+Cargo.lock
+
+# Java fixture generator build output (regenerated from fixtures/src/*.java)
+fixtures/classes/
+
+# Claude Code local settings (machine-specific). The skills symlink IS tracked.
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+.claude/worktrees/

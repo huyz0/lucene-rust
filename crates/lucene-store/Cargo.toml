@@ -1,0 +1,11 @@
+[package]
+name = "lucene-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+lucene-util = { path = "../lucene-util" }
+memmap2.workspace = true
+crc32fast.workspace = true

@@ -1,0 +1,12 @@
+[package]
+name = "lucene-util"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+crc32fast.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
