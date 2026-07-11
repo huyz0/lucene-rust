@@ -298,8 +298,9 @@ mostly reimplements these as aggs — likely never needed), index sorting, backw
 
 ## 3. Cross-cutting engineering rules
 
-- **Unsafe policy:** `unsafe` allowed only in `lucene-util` (SIMD, mmap access) and
-  `lucene-ffi`; `#![forbid(unsafe_code)]` in all other crates. Miri on util tests.
+- **Unsafe policy:** `unsafe` allowed only in `lucene-util` (SIMD), `lucene-store`
+  (mmap access), and `lucene-ffi` (C ABI); `#![forbid(unsafe_code)]` in all other
+  crates. Miri on util/store tests.
 - **Float discipline:** scoring must match Java: `f32` math in the same order; no FMA
   contraction in scoring paths (verify codegen); document every place we intentionally
   diverge.

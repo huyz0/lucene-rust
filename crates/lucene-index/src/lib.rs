@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! lucene-index: see /PLAN.md for scope.
 
 pub mod segment_info;

@@ -28,8 +28,8 @@ plan — phases, crate layout, verification strategy, effort estimates — is
 3. **A "faithful" port that's slower than Java is a bug.** Redesign the
    in-memory shape for Rust (ownership, monomorphization, zero-copy, SIMD) —
    don't transliterate. See **rust-performance**.
-4. **`unsafe` only in `lucene-util` and `lucene-ffi`.** Every other crate is
-   `#![forbid(unsafe_code)]`. See **ffi-safety**.
+4. **`unsafe` only in `lucene-util`, `lucene-store`, and `lucene-ffi`.** Every
+   other crate is `#![forbid(unsafe_code)]`. See **ffi-safety**.
 5. **A Rust panic must never cross the FFI boundary into the JVM.** Every
    exported `lucene-ffi` function wraps in `catch_unwind`. See **ffi-safety**.
 6. **No decoder ships without a Java-fixture differential test.** Byte-level

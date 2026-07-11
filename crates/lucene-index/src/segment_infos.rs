@@ -110,7 +110,7 @@ pub struct SegmentInfos {
 pub fn parse(buf: &[u8], generation: i64) -> Result<SegmentInfos> {
     let mut input = SliceInput::new(buf);
 
-    let suffix = to_base36(generation);
+    let suffix = lucene_util::base36::to_base36(generation);
     // We don't yet know `id` (it's inside the file), so check the header without
     // the id/suffix-bound convenience wrapper and validate the suffix by hand —
     // mirrors Java's `checkHeaderNoMagic` + manual `checkIndexHeaderSuffix` split.
@@ -219,28 +219,4 @@ fn read_vint_version(input: &mut SliceInput) -> Result<LuceneVersion> {
         minor,
         bugfix,
     })
-}
-
-/// Java's `Long.toString(generation, Character.MAX_RADIX)` (radix 36, lowercase digits).
-fn to_base36(n: i64) -> String {
-    if n == 0 {
-        return "0".to_string();
-    }
-    const DIGITS: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
-    let negative = n < 0;
-    let mut buf = Vec::new();
-    // Work in i128 so i64::MIN negation doesn't overflow.
-    let mut n = n as i128;
-    if negative {
-        n = -n;
-    }
-    while n > 0 {
-        buf.push(DIGITS[(n % 36) as usize]);
-        n /= 36;
-    }
-    if negative {
-        buf.push(b'-');
-    }
-    buf.reverse();
-    String::from_utf8(buf).unwrap()
 }

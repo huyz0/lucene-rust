@@ -18,8 +18,9 @@ never depend on each other.
 - **Port by format, not by class hierarchy.** A Java class name is not a
   license to create a matching Rust type — port the on-disk contract; design
   the in-memory shape for Rust (see the `rust-performance` skill).
-- **`unsafe` is scoped, not sprinkled.** Only `lucene-util` (SIMD, mmap) and
-  `lucene-ffi` (C ABI) may contain `unsafe`. Every other crate carries
+- **`unsafe` is scoped, not sprinkled.** Only `lucene-util` (SIMD),
+  `lucene-store` (mmap), and `lucene-ffi` (C ABI) may contain `unsafe`. Every
+  other crate carries
   `#![forbid(unsafe_code)]`. See the `ffi-safety` skill.
 - **No `util`/`misc`/`common` dumping ground inside a crate.** One module, one
   Java-format concept (e.g. `codec_util.rs`, `segment_info.rs`,
@@ -33,7 +34,7 @@ never depend on each other.
 - `cargo build --workspace` (a downward-only Cargo.toml graph fails loudly on
   an accidental sibling dependency).
 - `cargo clippy --workspace` — `forbid(unsafe_code)` turns stray `unsafe` into
-  a hard compile error outside `lucene-util`/`lucene-ffi`.
+  a hard compile error outside `lucene-util`/`lucene-store`/`lucene-ffi`.
 - Code review (no automated dep-direction linter yet — a good candidate for a
   future `xtask` if the workspace grows past ~10 crates).
 

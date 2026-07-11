@@ -16,8 +16,8 @@ ready.
   see the `differential-testing` skill). Float/scoring math matches Java's
   order of operations where applicable (see `rust-performance`).
 - **Structure**: dependency direction intact (see `architecture`); no `unsafe`
-  outside `lucene-util`/`lucene-ffi` (see `ffi-safety`); one Java
-  format/concept per module.
+  outside `lucene-util`/`lucene-store`/`lucene-ffi` (see `ffi-safety`); one
+  Java format/concept per module.
 - **Not a dumb port**: the in-memory design was considered on its own merits,
   not transliterated field-for-field from the Java class (see
   `rust-performance`).
