@@ -1,16 +1,18 @@
 //! Port of `org.apache.lucene.codecs.lucene90.Lucene90DocValuesFormat`
-//! (`.dvm` metadata + `.dvd` data) — read-only, **NUMERIC fields only**.
+//! (`.dvm` metadata + `.dvd` data) — read-only, **NUMERIC and BINARY fields
+//! only**.
 //!
 //! Scope: the `.dvm` metadata stream interleaves entries for every doc-values
 //! field in a segment regardless of type (numeric/binary/sorted/sorted-set/
 //! sorted-numeric), and correctly walking past a field this port doesn't
-//! decode requires knowing that type's own entry layout (binary needs monotonic
-//! address blocks, sorted needs the whole LZ4 terms dictionary, etc). Rather
-//! than half-implement those just to skip over their bytes, this module
-//! requires every doc-values field in the segment to be `NUMERIC` with no
-//! doc-values skip index configured — [`parse_meta`] returns
-//! [`Error::UnsupportedFieldType`] / [`Error::UnsupportedSkipIndex`]
-//! otherwise. Binary/sorted doc values are a separate future port.
+//! decode requires knowing that type's own entry layout (sorted needs the
+//! whole LZ4 terms dictionary, etc). Rather than half-implement that just to
+//! skip over its bytes, [`parse_meta`] requires every doc-values field in the
+//! segment to be `NUMERIC` or `BINARY`, with no doc-values skip index
+//! configured, returning [`Error::UnsupportedFieldType`] /
+//! [`Error::UnsupportedSkipIndex`] otherwise. Sorted doc values (which reuse
+//! numeric encoding for ordinals, plus a terms dictionary) are a separate
+//! future port.
 //!
 //! Also out of scope for now: "varying bits-per-value" blocks (Java splits
 //! a field's values into 16384-value blocks with independently chosen
@@ -18,7 +20,8 @@
 //! Small-to-medium fields Lucene doesn't bother splitting; reading one that
 //! was split returns [`Error::UnsupportedVaryingBpvBlocks`].
 //!
-//! Three encodings for a field's per-doc values (`bitsPerValue` in the meta):
+//! Three encodings for a NUMERIC field's per-doc values (`bitsPerValue` in
+//! the meta):
 //! - **constant** (`bitsPerValue == 0`): every doc with a value has the same
 //!   one, stored directly as `minValue`.
 //! - **table-compressed**: a small (`<= 256` entry) lookup table of distinct
@@ -26,17 +29,18 @@
 //! - **delta/GCD-compressed**: each doc stores a bit-packed `(value - min) /
 //!   gcd`; `gcd == 1 && min == 0` is the common case (e.g. plain ordinals).
 //!
+//! BINARY fields are simpler: a flat concatenated byte blob, addressed either
+//! directly (`doc * length`, fixed-width) or through a [`crate::direct_monotonic`]
+//! array of end offsets (variable-width).
+//!
 //! As with [`crate::norms`], docs-with-a-value is one of empty/dense/sparse
-//! (dense: implicit by doc id; sparse: via [`crate::indexed_disi`]), and
-//! bit-packed values are read with [`direct_reader_get`], a from-scratch
-//! generalization of Java's thirteen `DirectReader.DirectPackedReaderN`
-//! classes into one bit-position formula (justified: those exist in Java to
-//! give the JIT a monomorphic call site per width, a concern that doesn't
-//! apply here since this port doesn't yet have a hot per-doc value loop).
+//! (dense: implicit by doc id; sparse: via [`crate::indexed_disi`]).
 
 use lucene_store::codec_util::{self, ID_LENGTH};
 use lucene_store::data_input::{DataInput, SliceInput};
 
+use crate::direct_monotonic;
+use crate::direct_reader;
 use crate::field_infos::FieldInfos;
 use crate::indexed_disi;
 
@@ -46,6 +50,7 @@ const VERSION_SKIPPER_MAX_VALUE_COUNT: i32 = 2;
 const VERSION_CURRENT: i32 = VERSION_SKIPPER_MAX_VALUE_COUNT;
 
 const DOC_VALUES_TYPE_NUMERIC: u8 = 0;
+const DOC_VALUES_TYPE_BINARY: u8 = 1;
 
 const DOCS_WITH_FIELD_EMPTY: i64 = -2;
 const DOCS_WITH_FIELD_DENSE: i64 = -1;
@@ -56,7 +61,7 @@ pub enum Error {
     Store(#[from] lucene_store::Error),
     #[error("unknown field number: {0}")]
     UnknownFieldNumber(i32),
-    #[error("field {0} has doc values type byte {1}, expected NUMERIC (0)")]
+    #[error("field {0} has doc values type byte {1}, expected NUMERIC (0) or BINARY (1)")]
     UnsupportedFieldType(i32, u8),
     #[error("field {0} has a doc-values skip index, which this port doesn't parse")]
     UnsupportedSkipIndex(i32),
@@ -99,13 +104,56 @@ impl NumericEntry {
 }
 
 #[derive(Debug, Clone)]
-pub struct NumericDocValuesMeta {
-    pub entries: Vec<NumericEntry>,
+pub struct BinaryEntry {
+    pub field_number: i32,
+    pub docs_with_field_offset: i64,
+    pub docs_with_field_length: i64,
+    pub jump_table_entry_count: i16,
+    pub dense_rank_power: u8,
+    pub num_docs_with_field: i32,
+    pub min_length: i32,
+    pub max_length: i32,
+    pub data_offset: i64,
+    pub data_length: i64,
+    /// `None` for fixed-length fields (`min_length == max_length`), where an
+    /// entry's offset is computed directly as `ordinal * max_length`.
+    pub addresses: Option<BinaryAddresses>,
 }
 
-impl NumericDocValuesMeta {
-    pub fn entry(&self, field_number: i32) -> Option<&NumericEntry> {
-        self.entries.iter().find(|e| e.field_number == field_number)
+#[derive(Debug, Clone)]
+pub struct BinaryAddresses {
+    pub offset: i64,
+    pub length: i64,
+    pub meta: direct_monotonic::Meta,
+}
+
+impl BinaryEntry {
+    pub fn is_empty_field(&self) -> bool {
+        self.docs_with_field_offset == DOCS_WITH_FIELD_EMPTY
+    }
+
+    pub fn is_dense(&self) -> bool {
+        self.docs_with_field_offset == DOCS_WITH_FIELD_DENSE
+    }
+
+    pub fn is_fixed_length(&self) -> bool {
+        self.min_length == self.max_length
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DocValuesMeta {
+    pub numeric: Vec<NumericEntry>,
+    pub binary: Vec<BinaryEntry>,
+}
+
+impl DocValuesMeta {
+    pub fn numeric_entry(&self, field_number: i32) -> Option<&NumericEntry> {
+        self.numeric.iter().find(|e| e.field_number == field_number)
+    }
+
+    pub fn binary_entry(&self, field_number: i32) -> Option<&BinaryEntry> {
+        self.binary.iter().find(|e| e.field_number == field_number)
     }
 }
 
@@ -117,7 +165,7 @@ pub fn parse_meta(
     segment_id: &[u8; ID_LENGTH],
     segment_suffix: &str,
     field_infos: &FieldInfos,
-) -> Result<(i32, NumericDocValuesMeta)> {
+) -> Result<(i32, DocValuesMeta)> {
     let mut input = SliceInput::new(buf);
     let header = codec_util::check_index_header(
         &mut input,
@@ -128,7 +176,7 @@ pub fn parse_meta(
         segment_suffix,
     )?;
 
-    let mut entries = Vec::new();
+    let mut meta = DocValuesMeta::default();
     loop {
         let field_number = input.read_i32()?;
         if field_number == -1 {
@@ -142,16 +190,64 @@ pub fn parse_meta(
         if field.doc_values_skip_index_type != crate::field_infos::DocValuesSkipIndexType::None {
             return Err(Error::UnsupportedSkipIndex(field_number));
         }
-        if ty != DOC_VALUES_TYPE_NUMERIC {
-            return Err(Error::UnsupportedFieldType(field_number, ty));
+        match ty {
+            DOC_VALUES_TYPE_NUMERIC => {
+                meta.numeric
+                    .push(read_numeric_entry(&mut input, field_number)?);
+            }
+            DOC_VALUES_TYPE_BINARY => {
+                meta.binary
+                    .push(read_binary_entry(&mut input, field_number)?);
+            }
+            other => return Err(Error::UnsupportedFieldType(field_number, other)),
         }
-
-        entries.push(read_numeric_entry(&mut input, field_number)?);
     }
 
     codec_util::check_footer(&mut input, buf.len())?;
 
-    Ok((header.version, NumericDocValuesMeta { entries }))
+    Ok((header.version, meta))
+}
+
+fn read_binary_entry(input: &mut SliceInput, field_number: i32) -> Result<BinaryEntry> {
+    let data_offset = input.read_i64()?;
+    let data_length = input.read_i64()?;
+    let docs_with_field_offset = input.read_i64()?;
+    let docs_with_field_length = input.read_i64()?;
+    let jump_table_entry_count = input.read_i16()?;
+    let dense_rank_power = input.read_byte()?;
+    let num_docs_with_field = input.read_i32()?;
+    let min_length = input.read_i32()?;
+    let max_length = input.read_i32()?;
+
+    let addresses = if min_length < max_length {
+        let addresses_offset = input.read_i64()?;
+        let num_addresses = num_docs_with_field as i64 + 1;
+        let block_shift = input.read_vint()?;
+        let addr_meta = direct_monotonic::load_meta(input, num_addresses, block_shift as u32)?;
+        let addresses_length = input.read_i64()?;
+        Some(BinaryAddresses {
+            offset: addresses_offset,
+            length: addresses_length,
+            meta: addr_meta,
+        })
+    } else {
+        None
+    };
+
+    let _ = field_number;
+    Ok(BinaryEntry {
+        field_number,
+        docs_with_field_offset,
+        docs_with_field_length,
+        jump_table_entry_count,
+        dense_rank_power,
+        num_docs_with_field,
+        min_length,
+        max_length,
+        data_offset,
+        data_length,
+        addresses,
+    })
 }
 
 fn read_numeric_entry(input: &mut SliceInput, field_number: i32) -> Result<NumericEntry> {
@@ -271,7 +367,7 @@ fn decode_value(data: &[u8], entry: &NumericEntry, ordinal: i64) -> Result<i64> 
     let values = data
         .get(entry.values_offset as usize..(entry.values_offset + entry.values_length) as usize)
         .ok_or(lucene_store::Error::Eof { offset: 0 })?;
-    let raw = direct_reader_get(values, entry.bits_per_value, ordinal)?;
+    let raw = direct_reader::get(values, entry.bits_per_value, ordinal)?;
 
     if let Some(table) = &entry.table {
         let idx = usize::try_from(raw).map_err(|_| lucene_store::Error::Eof { offset: 0 })?;
@@ -284,34 +380,57 @@ fn decode_value(data: &[u8], entry: &NumericEntry, ordinal: i64) -> Result<i64> 
     }
 }
 
-/// Port of `org.apache.lucene.util.packed.DirectReader.getInstance(...).get(index)`,
-/// generalized into a single bit-position formula instead of Java's thirteen
-/// width-specialized classes (see module doc for why that's fine here).
-/// `bits_per_value` must be one of the widths `DirectWriter` supports (the
-/// caller validates this at parse time); `index` addresses the `index`-th
-/// `bits_per_value`-wide value packed little-endian (LSB-first within each
-/// byte) starting at byte 0 of `slice`.
-fn direct_reader_get(slice: &[u8], bits_per_value: u8, index: i64) -> Result<i64> {
-    let bit_pos = (index as u128) * (bits_per_value as u128);
-    let byte_pos =
-        usize::try_from(bit_pos >> 3).map_err(|_| lucene_store::Error::Eof { offset: 0 })?;
-    let shift = (bit_pos & 7) as u32;
-    let bytes_needed = (shift as usize + bits_per_value as usize).div_ceil(8);
-
-    let bytes = slice
-        .get(byte_pos..byte_pos + bytes_needed)
-        .ok_or(lucene_store::Error::Eof { offset: byte_pos })?;
-    let mut acc: u64 = 0;
-    for (i, &b) in bytes.iter().enumerate() {
-        acc |= (b as u64) << (8 * i);
+/// Reads the binary doc-values value for `doc`, handling all three
+/// docs-with-a-value shapes (empty/dense/sparse) and both length shapes
+/// (fixed/variable). `data` is the whole `.dvd` file's bytes. `Ok(None)`
+/// means `doc` legitimately has no value.
+pub fn binary_value<'d>(data: &'d [u8], entry: &BinaryEntry, doc: i32) -> Result<Option<&'d [u8]>> {
+    if doc < 0 {
+        return Err(Error::DocOutOfRange(doc, entry.num_docs_with_field as i64));
     }
-    acc >>= shift;
-    let mask: u64 = if bits_per_value == 64 {
-        u64::MAX
+    if entry.is_empty_field() {
+        return Ok(None);
+    }
+
+    let ordinal = if entry.is_dense() {
+        if doc >= entry.num_docs_with_field {
+            return Err(Error::DocOutOfRange(doc, entry.num_docs_with_field as i64));
+        }
+        doc as i64
     } else {
-        (1u64 << bits_per_value) - 1
+        let region = data
+            .get(
+                entry.docs_with_field_offset as usize
+                    ..(entry.docs_with_field_offset + entry.docs_with_field_length) as usize,
+            )
+            .ok_or(lucene_store::Error::Eof { offset: 0 })?;
+        let doc_ids = indexed_disi::decode_doc_ids(region, entry.dense_rank_power)?;
+        match indexed_disi::rank_of(&doc_ids, doc) {
+            Some(ordinal) => ordinal as i64,
+            None => return Ok(None),
+        }
     };
-    Ok((acc & mask) as i64)
+
+    let bytes_region = data
+        .get(entry.data_offset as usize..(entry.data_offset + entry.data_length) as usize)
+        .ok_or(lucene_store::Error::Eof { offset: 0 })?;
+
+    let (start, len) = if let Some(addrs) = &entry.addresses {
+        let addr_data = data
+            .get(addrs.offset as usize..(addrs.offset + addrs.length) as usize)
+            .ok_or(lucene_store::Error::Eof { offset: 0 })?;
+        let start = direct_monotonic::get(addr_data, &addrs.meta, ordinal)?;
+        let end = direct_monotonic::get(addr_data, &addrs.meta, ordinal + 1)?;
+        (start, end - start)
+    } else {
+        let length = entry.max_length as i64;
+        (ordinal * length, length)
+    };
+
+    let value = bytes_region
+        .get(start as usize..(start + len) as usize)
+        .ok_or(lucene_store::Error::Eof { offset: 0 })?;
+    Ok(Some(value))
 }
 
 #[cfg(test)]
@@ -462,7 +581,8 @@ mod tests {
         let fis = field_infos_with(&[]);
         let (version, meta) = parse_meta(&buf, &id, "", &fis).unwrap();
         assert_eq!(version, VERSION_CURRENT);
-        assert_eq!(meta.entries.len(), 0);
+        assert_eq!(meta.numeric.len(), 0);
+        assert_eq!(meta.binary.len(), 0);
     }
 
     #[test]
@@ -550,11 +670,11 @@ mod tests {
         buf.extend_from_slice(&id);
         buf.push(0);
         buf.extend_from_slice(&0i32.to_le_bytes());
-        buf.push(1); // BINARY
+        buf.push(2); // SORTED -- not yet supported
         let fis = field_infos_with(&[0]);
         assert!(matches!(
             parse_meta(&buf, &id, "", &fis),
-            Err(Error::UnsupportedFieldType(0, 1))
+            Err(Error::UnsupportedFieldType(0, 2))
         ));
     }
 
@@ -586,7 +706,7 @@ mod tests {
         let buf = build_dvm(&id, &[e]);
         let fis = field_infos_with(&[0]);
         let (_, meta) = parse_meta(&buf, &id, "", &fis).unwrap();
-        let entry = meta.entry(0).unwrap();
+        let entry = meta.numeric_entry(0).unwrap();
         assert!(entry.is_empty_field());
         assert_eq!(numeric_value(&[], entry, 0).unwrap(), None);
     }
@@ -598,7 +718,7 @@ mod tests {
         let buf = build_dvm(&id, &[e]);
         let fis = field_infos_with(&[0]);
         let (_, meta) = parse_meta(&buf, &id, "", &fis).unwrap();
-        let entry = meta.entry(0).unwrap();
+        let entry = meta.numeric_entry(0).unwrap();
         assert!(matches!(
             numeric_value(&[0, 0, 0], entry, 3),
             Err(Error::DocOutOfRange(3, 3))
@@ -617,7 +737,7 @@ mod tests {
         let buf = build_dvm(&id, &[e]);
         let fis = field_infos_with(&[0]);
         let (_, meta) = parse_meta(&buf, &id, "", &fis).unwrap();
-        let entry = meta.entry(0).unwrap();
+        let entry = meta.numeric_entry(0).unwrap();
         for doc in 0..5 {
             assert_eq!(numeric_value(&[], entry, doc).unwrap(), Some(42));
         }
@@ -636,7 +756,7 @@ mod tests {
         let buf = build_dvm(&id, &[e]);
         let fis = field_infos_with(&[0]);
         let (_, meta) = parse_meta(&buf, &id, "", &fis).unwrap();
-        let entry = meta.entry(0).unwrap();
+        let entry = meta.numeric_entry(0).unwrap();
 
         // ordinals for docs 0,1,2,3 = 0,1,2,0 packed 2 bits each into one byte,
         // LSB first: byte = 0 | (1<<2) | (2<<4) | (0<<6) = 0b00_10_01_00 = 0x24
@@ -660,7 +780,7 @@ mod tests {
         let buf = build_dvm(&id, &[e]);
         let fis = field_infos_with(&[0]);
         let (_, meta) = parse_meta(&buf, &id, "", &fis).unwrap();
-        let entry = meta.entry(0).unwrap();
+        let entry = meta.numeric_entry(0).unwrap();
 
         // ordinals 0,1,2 packed 2 bits each: 0 | (1<<2) | (2<<4) = 0b00_10_01_00
         let payload = [0b0010_0100u8];
@@ -679,51 +799,13 @@ mod tests {
         let buf = build_dvm(&id, &[e]);
         let fis = field_infos_with(&[0]);
         let (_, meta) = parse_meta(&buf, &id, "", &fis).unwrap();
-        let entry = meta.entry(0).unwrap();
+        let entry = meta.numeric_entry(0).unwrap();
 
         let payload = [5u8, 250, 0];
         let data = build_dvd(&id, &payload);
         assert_eq!(numeric_value(&data, entry, 0).unwrap(), Some(5));
         assert_eq!(numeric_value(&data, entry, 1).unwrap(), Some(250));
         assert_eq!(numeric_value(&data, entry, 2).unwrap(), Some(0));
-    }
-
-    #[test]
-    fn every_byte_aligned_width_round_trips() {
-        // bpv=16: value 0x1234 at index 0, then 0xABCD at index 1
-        let payload = [0x34, 0x12, 0xCD, 0xAB];
-        assert_eq!(direct_reader_get(&payload, 16, 0).unwrap(), 0x1234);
-        assert_eq!(direct_reader_get(&payload, 16, 1).unwrap(), 0xABCD);
-
-        // bpv=32
-        let payload = [0x01, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF];
-        assert_eq!(direct_reader_get(&payload, 32, 0).unwrap(), 1);
-        assert_eq!(direct_reader_get(&payload, 32, 1).unwrap(), 0xFFFFFFFF);
-
-        // bpv=64: two's complement -1
-        let payload = (-1i64).to_le_bytes();
-        assert_eq!(direct_reader_get(&payload, 64, 0).unwrap(), -1);
-    }
-
-    #[test]
-    fn sub_byte_widths_pack_multiple_values_per_byte() {
-        // bpv=4: nibbles 0xA, 0xB packed into one byte 0xBA (low nibble first)
-        let payload = [0xBA];
-        assert_eq!(direct_reader_get(&payload, 4, 0).unwrap(), 0xA);
-        assert_eq!(direct_reader_get(&payload, 4, 1).unwrap(), 0xB);
-
-        // bpv=1: bits 1,0,1,1 packed LSB-first -> byte 0b0000_1101
-        let payload = [0b0000_1101u8];
-        assert_eq!(direct_reader_get(&payload, 1, 0).unwrap(), 1);
-        assert_eq!(direct_reader_get(&payload, 1, 1).unwrap(), 0);
-        assert_eq!(direct_reader_get(&payload, 1, 2).unwrap(), 1);
-        assert_eq!(direct_reader_get(&payload, 1, 3).unwrap(), 1);
-    }
-
-    #[test]
-    fn direct_reader_get_out_of_range_is_error() {
-        let payload = [0u8; 1];
-        assert!(direct_reader_get(&payload, 16, 5).is_err());
     }
 
     #[test]
@@ -795,5 +877,156 @@ mod tests {
 
     fn nvd_header_len() -> usize {
         4 + 1 + "Lucene90DocValuesData".len() + 4 + ID_LENGTH + 1
+    }
+
+    fn binary_entry_fixed(
+        field_number: i32,
+        docs_with_field_offset: i64,
+        docs_with_field_length: i64,
+        num_docs_with_field: i32,
+        length: i32,
+        data_offset: i64,
+        data_length: i64,
+    ) -> BinaryEntry {
+        BinaryEntry {
+            field_number,
+            docs_with_field_offset,
+            docs_with_field_length,
+            jump_table_entry_count: 0,
+            dense_rank_power: 0,
+            num_docs_with_field,
+            min_length: length,
+            max_length: length,
+            data_offset,
+            data_length,
+            addresses: None,
+        }
+    }
+
+    #[test]
+    fn binary_empty_field_has_no_value_anywhere() {
+        let entry = binary_entry_fixed(0, DOCS_WITH_FIELD_EMPTY, 0, 0, 4, 0, 0);
+        assert_eq!(binary_value(&[], &entry, 0).unwrap(), None);
+    }
+
+    #[test]
+    fn binary_dense_fixed_length() {
+        let entry = binary_entry_fixed(0, DOCS_WITH_FIELD_DENSE, 0, 3, 4, 0, 12);
+        let data = b"aaaabbbbcccc";
+        assert_eq!(binary_value(data, &entry, 0).unwrap(), Some(&b"aaaa"[..]));
+        assert_eq!(binary_value(data, &entry, 1).unwrap(), Some(&b"bbbb"[..]));
+        assert_eq!(binary_value(data, &entry, 2).unwrap(), Some(&b"cccc"[..]));
+    }
+
+    #[test]
+    fn binary_dense_out_of_range_rejected() {
+        let entry = binary_entry_fixed(0, DOCS_WITH_FIELD_DENSE, 0, 3, 4, 0, 12);
+        assert!(matches!(
+            binary_value(b"aaaabbbbcccc", &entry, 3),
+            Err(Error::DocOutOfRange(3, 3))
+        ));
+        assert!(matches!(
+            binary_value(b"aaaabbbbcccc", &entry, -1),
+            Err(Error::DocOutOfRange(-1, 3))
+        ));
+    }
+
+    #[test]
+    fn binary_dense_variable_length() {
+        // 3 docs: "abc" (len 3), "defg" (len 4), "hi" (len 2) -> end offsets
+        // [0, 3, 7, 9], packed 4 bits each (min=0, avg=0.0 so delta==offset):
+        // byte0 = 0 | (3<<4) = 0x30, byte1 = 7 | (9<<4) = 0x97.
+        let addr_bytes = [0x30u8, 0x97];
+        let mut meta_bytes = Vec::new();
+        meta_bytes.extend_from_slice(&0i64.to_le_bytes()); // min
+        meta_bytes.extend_from_slice(&(0.0f32.to_bits() as i32).to_le_bytes()); // avg
+        meta_bytes.extend_from_slice(&0i64.to_le_bytes()); // offset (within addr_bytes)
+        meta_bytes.push(4); // bpv
+        let mut input = SliceInput::new(&meta_bytes);
+        let addr_meta = direct_monotonic::load_meta(&mut input, 4, 3).unwrap(); // blockShift=3 -> 1 block
+
+        let blob = b"abcdefghi";
+        let entry = BinaryEntry {
+            field_number: 0,
+            docs_with_field_offset: DOCS_WITH_FIELD_DENSE,
+            docs_with_field_length: 0,
+            jump_table_entry_count: 0,
+            dense_rank_power: 0,
+            num_docs_with_field: 3,
+            min_length: 2,
+            max_length: 4,
+            data_offset: addr_bytes.len() as i64,
+            data_length: blob.len() as i64,
+            addresses: Some(BinaryAddresses {
+                offset: 0,
+                length: addr_bytes.len() as i64,
+                meta: addr_meta,
+            }),
+        };
+        let mut data = addr_bytes.to_vec();
+        data.extend_from_slice(blob);
+
+        assert_eq!(binary_value(&data, &entry, 0).unwrap(), Some(&b"abc"[..]));
+        assert_eq!(binary_value(&data, &entry, 1).unwrap(), Some(&b"defg"[..]));
+        assert_eq!(binary_value(&data, &entry, 2).unwrap(), Some(&b"hi"[..]));
+    }
+
+    #[test]
+    fn binary_sparse_fixed_length() {
+        // Same IndexedDISI SPARSE-block shape as the numeric sparse test:
+        // docs 1 and 3 present out of a block covering [0, 65536).
+        let mut disi_bytes = Vec::new();
+        disi_bytes.extend_from_slice(&0u16.to_le_bytes());
+        disi_bytes.extend_from_slice(&1u16.to_le_bytes());
+        disi_bytes.extend_from_slice(&1u16.to_le_bytes());
+        disi_bytes.extend_from_slice(&3u16.to_le_bytes());
+        disi_bytes.extend_from_slice(&((i32::MAX >> 16) as u16).to_le_bytes());
+        disi_bytes.extend_from_slice(&0u16.to_le_bytes());
+        disi_bytes.extend_from_slice(&((i32::MAX & 0xFFFF) as u16).to_le_bytes());
+        let disi_length = disi_bytes.len() as i64;
+
+        let mut data = disi_bytes.clone();
+        data.extend_from_slice(b"AABB");
+
+        let entry = binary_entry_fixed(0, 0, disi_length, 2, 2, disi_length, 4);
+        assert_eq!(binary_value(&data, &entry, 1).unwrap(), Some(&b"AA"[..]));
+        assert_eq!(binary_value(&data, &entry, 3).unwrap(), Some(&b"BB"[..]));
+        assert_eq!(binary_value(&data, &entry, 2).unwrap(), None);
+    }
+
+    #[test]
+    fn read_binary_entry_fixed_length_via_full_dvm_parse() {
+        let id = [1u8; ID_LENGTH];
+        let mut out = Vec::new();
+        out.extend_from_slice(&codec_util::CODEC_MAGIC.to_be_bytes());
+        write_string(&mut out, META_CODEC);
+        out.extend_from_slice(&(VERSION_CURRENT as u32).to_be_bytes());
+        out.extend_from_slice(&id);
+        out.push(0);
+        out.extend_from_slice(&0i32.to_le_bytes()); // field number
+        out.push(DOC_VALUES_TYPE_BINARY);
+        out.extend_from_slice(&100i64.to_le_bytes()); // dataOffset
+        out.extend_from_slice(&12i64.to_le_bytes()); // dataLength
+        out.extend_from_slice(&DOCS_WITH_FIELD_DENSE.to_le_bytes());
+        out.extend_from_slice(&0i64.to_le_bytes());
+        out.extend_from_slice(&0i16.to_le_bytes());
+        out.push(0);
+        out.extend_from_slice(&3i32.to_le_bytes()); // numDocsWithField
+        out.extend_from_slice(&4i32.to_le_bytes()); // minLength
+        out.extend_from_slice(&4i32.to_le_bytes()); // maxLength (== minLength -> fixed)
+        out.extend_from_slice(&(-1i32).to_le_bytes()); // field terminator
+        out.extend_from_slice(&codec_util::FOOTER_MAGIC.to_be_bytes());
+        out.extend_from_slice(&0u32.to_be_bytes());
+        let checksum = crc32fast::hash(&out) as u64;
+        out.extend_from_slice(&checksum.to_be_bytes());
+
+        let fis = field_infos_with(&[0]);
+        let (_, meta) = parse_meta(&out, &id, "", &fis).unwrap();
+        let entry = meta.binary_entry(0).unwrap();
+        assert!(entry.is_fixed_length());
+        assert!(entry.is_dense());
+        assert_eq!(entry.data_offset, 100);
+        assert_eq!(entry.data_length, 12);
+        assert!(entry.addresses.is_none());
     }
 }

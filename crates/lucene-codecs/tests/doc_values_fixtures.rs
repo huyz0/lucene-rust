@@ -1,15 +1,16 @@
 //! Differential test against real `.dvm`/`.dvd` files written by an actual
-//! IndexWriter: a dense field with arbitrary signed values ("varying"), a
-//! dense field whose values share a large GCD ("gcd"), and a sparse field
-//! present on only some docs ("sparse"). Regenerate with
-//! fixtures/src/GenNumericDocValues.java.
+//! IndexWriter: numeric fields ("varying" dense/arbitrary, "gcd"
+//! dense/GCD-compressed, "sparse" via IndexedDISI) and binary fields
+//! ("bin_fixed" dense fixed-length, "bin_var" dense variable-length via
+//! DirectMonotonicReader, "bin_sparse" variable-length + IndexedDISI).
+//! Regenerate with fixtures/src/GenDocValues.java.
 
-use lucene_codecs::{field_infos, numeric_doc_values as ndv};
+use lucene_codecs::{doc_values as ndv, field_infos};
 
 fn dir() -> String {
     concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../fixtures/data/numeric_dv_index/"
+        "/../../fixtures/data/doc_values_index/"
     )
     .to_string()
 }
@@ -21,7 +22,7 @@ struct Manifest {
 impl Manifest {
     fn load() -> Self {
         let text = std::fs::read_to_string(format!("{}manifest.properties", dir()))
-            .expect("run fixtures generator first (GenNumericDocValues)");
+            .expect("run fixtures generator first (GenDocValues)");
         let kv = text
             .lines()
             .filter_map(|l| l.split_once('='))
@@ -86,7 +87,7 @@ fn check_field(
     let suffix = dv_suffix(manifest);
     let (_, parsed) =
         ndv::parse_meta(meta_buf, &id_from_hex(manifest.get("id_hex")), &suffix, fis).unwrap();
-    let entry = parsed.entry(field_number(manifest, field)).unwrap();
+    let entry = parsed.numeric_entry(field_number(manifest, field)).unwrap();
 
     let expected: Vec<Option<i64>> = manifest
         .get(&format!("field.{field}.values"))
@@ -122,7 +123,9 @@ fn parses_real_varying_numeric_dv_and_matches_lucene_values() {
     let data_version = ndv::check_data_header_footer(&data_buf, &id, &suffix).unwrap();
     assert_eq!(data_version, version);
 
-    let entry = parsed.entry(field_number(&manifest, "varying")).unwrap();
+    let entry = parsed
+        .numeric_entry(field_number(&manifest, "varying"))
+        .unwrap();
     assert!(entry.is_dense());
 
     check_field(&manifest, &meta_buf, &data_buf, &fis, "varying");
@@ -153,7 +156,9 @@ fn parses_real_sparse_numeric_dv_and_matches_lucene_values() {
 
     let suffix = dv_suffix(&manifest);
     let (_, parsed) = ndv::parse_meta(&meta_buf, &id, &suffix, &fis).unwrap();
-    let entry = parsed.entry(field_number(&manifest, "sparse")).unwrap();
+    let entry = parsed
+        .numeric_entry(field_number(&manifest, "sparse"))
+        .unwrap();
     assert!(!entry.is_dense());
     assert!(!entry.is_empty_field());
 
@@ -170,5 +175,108 @@ fn id_field_is_indexed_not_doc_values_and_is_absent_from_numeric_meta() {
 
     let suffix = dv_suffix(&manifest);
     let (_, parsed) = ndv::parse_meta(&meta_buf, &id, &suffix, &fis).unwrap();
-    assert!(parsed.entry(field_number(&manifest, "id")).is_none());
+    assert!(parsed
+        .numeric_entry(field_number(&manifest, "id"))
+        .is_none());
+}
+
+fn check_binary_field(
+    manifest: &Manifest,
+    meta_buf: &[u8],
+    data_buf: &[u8],
+    fis: &field_infos::FieldInfos,
+    field: &str,
+) {
+    let suffix = dv_suffix(manifest);
+    let (_, parsed) =
+        ndv::parse_meta(meta_buf, &id_from_hex(manifest.get("id_hex")), &suffix, fis).unwrap();
+    let entry = parsed.binary_entry(field_number(manifest, field)).unwrap();
+
+    let expected: Vec<Option<Vec<u8>>> = manifest
+        .get(&format!("field.{field}.values_hex"))
+        .split(',')
+        .map(|s| {
+            if s == "NONE" {
+                None
+            } else {
+                Some(
+                    (0..s.len())
+                        .step_by(2)
+                        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+                        .collect(),
+                )
+            }
+        })
+        .collect();
+
+    for (doc, want) in expected.iter().enumerate() {
+        let got = ndv::binary_value(data_buf, entry, doc as i32).unwrap();
+        assert_eq!(got, want.as_deref(), "field {field} doc {doc}");
+    }
+}
+
+#[test]
+fn parses_real_fixed_length_binary_dv_and_matches_lucene_values() {
+    let manifest = Manifest::load();
+    let id = id_from_hex(manifest.get("id_hex"));
+    let fis = load_field_infos(&manifest, &id);
+    let meta_buf =
+        std::fs::read(format!("{}{}.raw", dir(), manifest.get("dvm_file_name"))).unwrap();
+    let data_buf =
+        std::fs::read(format!("{}{}.raw", dir(), manifest.get("dvd_file_name"))).unwrap();
+
+    let suffix = dv_suffix(&manifest);
+    let (_, parsed) = ndv::parse_meta(&meta_buf, &id, &suffix, &fis).unwrap();
+    let entry = parsed
+        .binary_entry(field_number(&manifest, "bin_fixed"))
+        .unwrap();
+    assert!(entry.is_dense());
+    assert!(entry.is_fixed_length());
+    assert!(entry.addresses.is_none());
+
+    check_binary_field(&manifest, &meta_buf, &data_buf, &fis, "bin_fixed");
+}
+
+#[test]
+fn parses_real_variable_length_binary_dv_and_matches_lucene_values() {
+    let manifest = Manifest::load();
+    let id = id_from_hex(manifest.get("id_hex"));
+    let fis = load_field_infos(&manifest, &id);
+    let meta_buf =
+        std::fs::read(format!("{}{}.raw", dir(), manifest.get("dvm_file_name"))).unwrap();
+    let data_buf =
+        std::fs::read(format!("{}{}.raw", dir(), manifest.get("dvd_file_name"))).unwrap();
+
+    let suffix = dv_suffix(&manifest);
+    let (_, parsed) = ndv::parse_meta(&meta_buf, &id, &suffix, &fis).unwrap();
+    let entry = parsed
+        .binary_entry(field_number(&manifest, "bin_var"))
+        .unwrap();
+    assert!(entry.is_dense());
+    assert!(!entry.is_fixed_length());
+    assert!(entry.addresses.is_some());
+
+    check_binary_field(&manifest, &meta_buf, &data_buf, &fis, "bin_var");
+}
+
+#[test]
+fn parses_real_sparse_variable_length_binary_dv_and_matches_lucene_values() {
+    let manifest = Manifest::load();
+    let id = id_from_hex(manifest.get("id_hex"));
+    let fis = load_field_infos(&manifest, &id);
+    let meta_buf =
+        std::fs::read(format!("{}{}.raw", dir(), manifest.get("dvm_file_name"))).unwrap();
+    let data_buf =
+        std::fs::read(format!("{}{}.raw", dir(), manifest.get("dvd_file_name"))).unwrap();
+
+    let suffix = dv_suffix(&manifest);
+    let (_, parsed) = ndv::parse_meta(&meta_buf, &id, &suffix, &fis).unwrap();
+    let entry = parsed
+        .binary_entry(field_number(&manifest, "bin_sparse"))
+        .unwrap();
+    assert!(!entry.is_dense());
+    assert!(!entry.is_empty_field());
+    assert!(!entry.is_fixed_length());
+
+    check_binary_field(&manifest, &meta_buf, &data_buf, &fis, "bin_sparse");
 }

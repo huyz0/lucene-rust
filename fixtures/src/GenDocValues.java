@@ -1,7 +1,9 @@
+import org.apache.lucene.document.BinaryDocValuesField;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.NumericDocValuesField;
 import org.apache.lucene.document.StringField;
+import org.apache.lucene.index.BinaryDocValues;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.NoMergePolicy;
@@ -12,22 +14,36 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexInput;
+import org.apache.lucene.util.BytesRef;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.HexFormat;
 
 /**
  * Generates real `.dvm`/`.dvd` (Lucene90DocValuesFormat) fixtures for
- * NUMERIC-only fields in one unmerged segment: a dense field with varying,
- * non-GCD-friendly values (exercises the plain delta-compressed path with
- * negative deltas), a dense field whose values share a large GCD (exercises
- * the GCD-compressed path), and a sparse field present on only some docs
- * (exercises the IndexedDISI path, same as GenNorms.java).
+ * NUMERIC and BINARY fields in one unmerged segment:
+ *
+ * <ul>
+ *   <li>"varying": dense numeric, arbitrary signed values (plain
+ *       delta-compressed path with negative deltas).
+ *   <li>"gcd": dense numeric, values sharing a large GCD (GCD-compressed
+ *       path).
+ *   <li>"sparse": numeric present on only some docs (IndexedDISI path, same
+ *       as GenNorms.java).
+ *   <li>"bin_fixed": dense binary, every value the same length (direct
+ *       {@code doc * length} addressing, no monotonic address block).
+ *   <li>"bin_var": dense binary, varying lengths (DirectMonotonicReader
+ *       address block).
+ *   <li>"bin_sparse": variable-length binary present on only some docs
+ *       (IndexedDISI + DirectMonotonicReader together).
+ * </ul>
  */
-public class GenNumericDocValues {
+public class GenDocValues {
   public static void main(String[] args) throws IOException {
-    Path out = Path.of(args[0]).resolve("numeric_dv_index");
+    Path out = Path.of(args[0]).resolve("doc_values_index");
     if (Files.exists(out)) {
       deleteRecursive(out);
     }
@@ -38,13 +54,15 @@ public class GenNumericDocValues {
       cfg.setUseCompoundFile(false);
       cfg.setMergePolicy(NoMergePolicy.INSTANCE);
 
-      // "varying": arbitrary signed values, no common divisor beyond 1.
       long[] varying = {-100, 7, 42, 1000, -3};
-      // "gcd": all multiples of 25 offset from a shared base -> exercises gcd path.
       long[] gcdVals = {1000, 1025, 1075, 1200, 1050};
-      // "sparse": present on docs 0, 2, 4 only.
       boolean[] hasSparse = {true, false, true, false, true};
       long[] sparseVals = {5, 0, 15, 0, 25};
+
+      String[] binFixed = {"aaaa", "bbbb", "cccc", "dddd", "eeee"};
+      String[] binVar = {"a", "bb", "ccc", "dddd", "e"};
+      boolean[] hasBinSparse = {true, false, true, false, true};
+      String[] binSparse = {"x", "", "yyy", "", "z"};
 
       try (IndexWriter w = new IndexWriter(dir, cfg)) {
         for (int i = 0; i < varying.length; i++) {
@@ -54,6 +72,17 @@ public class GenNumericDocValues {
           doc.add(new NumericDocValuesField("gcd", gcdVals[i]));
           if (hasSparse[i]) {
             doc.add(new NumericDocValuesField("sparse", sparseVals[i]));
+          }
+          doc.add(
+              new BinaryDocValuesField(
+                  "bin_fixed", new BytesRef(binFixed[i].getBytes(StandardCharsets.UTF_8))));
+          doc.add(
+              new BinaryDocValuesField(
+                  "bin_var", new BytesRef(binVar[i].getBytes(StandardCharsets.UTF_8))));
+          if (hasBinSparse[i]) {
+            doc.add(
+                new BinaryDocValuesField(
+                    "bin_sparse", new BytesRef(binSparse[i].getBytes(StandardCharsets.UTF_8))));
           }
           w.addDocument(doc);
         }
@@ -93,9 +122,6 @@ public class GenNumericDocValues {
       m.append("id_hex=").append(hex(sci.info.getId())).append('\n');
       m.append("max_doc=").append(sci.info.maxDoc()).append('\n');
 
-      // Field infos manifest lines mirroring GenFieldInfos.java's shape, so
-      // the Rust fixture test can parse .fnm itself rather than trusting a
-      // separate "field number" line here.
       StringBuilder fieldNumbers = new StringBuilder();
       for (org.apache.lucene.index.FieldInfo fi : fis) {
         if (fieldNumbers.length() > 0) fieldNumbers.append(',');
@@ -127,12 +153,31 @@ public class GenNumericDocValues {
         }
         m.append(prefix).append("values=").append(vals).append('\n');
       }
+
+      for (String fieldName : new String[] {"bin_fixed", "bin_var", "bin_sparse"}) {
+        org.apache.lucene.index.FieldInfo field = fis.fieldInfo(fieldName);
+        BinaryDocValues values = dvProducer.getBinary(field);
+
+        String prefix = "field." + fieldName + ".";
+        StringBuilder vals = new StringBuilder();
+        for (int doc = 0; doc < sci.info.maxDoc(); doc++) {
+          if (doc > 0) vals.append(',');
+          if (values.advanceExact(doc)) {
+            vals.append(HexFormat.of().formatHex(values.binaryValue().bytes,
+                values.binaryValue().offset,
+                values.binaryValue().offset + values.binaryValue().length));
+          } else {
+            vals.append("NONE");
+          }
+        }
+        m.append(prefix).append("values_hex=").append(vals).append('\n');
+      }
       dvProducer.close();
 
       Files.writeString(out.resolve("manifest.properties"), m.toString());
     }
 
-    System.out.println("wrote numeric_dv_index/ fixture directory");
+    System.out.println("wrote doc_values_index/ fixture directory");
   }
 
   static void dump(Directory dir, String fileName, Path out) throws IOException {
