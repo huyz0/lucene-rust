@@ -16,15 +16,17 @@ leaves the tree green.
 - **End with the trailer** `Co-Authored-By: Claude <noreply@anthropic.com>`
   (adjust the name to whichever model authored the change).
 - **Gate before done.** `cargo fmt --all --check`, `cargo clippy --workspace
-  -- -D warnings`, and `cargo test --workspace` must all pass before a task is
-  considered complete. Commit/push only when the user asks.
+  -- -D warnings`, and `cargo llvm-cov --workspace --fail-under-lines 90` must
+  all pass before a task is considered complete (see `test-coverage`).
+  Commit/push only when the user asks.
 - **Update docs/skills in the same commit** as the code they describe — see
   the `parity-tracking` and `manage-skills` skills. Drift is a bug.
 
 ## Enforced by
 
 - `.githooks/commit-msg` — validates the subject format and trailer presence.
-- `.githooks/pre-commit` — runs fmt/clippy/test, blocks on failure.
+- `.githooks/pre-commit` — runs fmt/clippy/coverage-gated tests, blocks on
+  failure.
 - Install once: `git config core.hooksPath .githooks` (or run
   `scripts/setup-hooks.sh`).
 

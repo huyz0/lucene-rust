@@ -164,3 +164,96 @@ pub fn read_latest_commit(dir: &impl Directory) -> Result<(i64, Input)> {
     let bytes = dir.open(&name)?;
     Ok((generation, bytes))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generation_from_segments_file_name_valid_cases() {
+        assert_eq!(generation_from_segments_file_name("segments").unwrap(), 0);
+        assert_eq!(generation_from_segments_file_name("segments_1").unwrap(), 1);
+        assert_eq!(generation_from_segments_file_name("segments_2").unwrap(), 2);
+        // base-36: "segments_a" -> 10
+        assert_eq!(
+            generation_from_segments_file_name("segments_a").unwrap(),
+            10
+        );
+    }
+
+    #[test]
+    fn generation_from_segments_file_name_rejects_old_pointer_file() {
+        assert!(matches!(
+            generation_from_segments_file_name("segments.gen"),
+            Err(Error::Corrupted(_))
+        ));
+    }
+
+    #[test]
+    fn generation_from_segments_file_name_rejects_garbage() {
+        assert!(matches!(
+            generation_from_segments_file_name("not-a-segments-file"),
+            Err(Error::Corrupted(_))
+        ));
+        // Has the prefix but a non-base-36 suffix.
+        assert!(matches!(
+            generation_from_segments_file_name("segments_!!!"),
+            Err(Error::Corrupted(_))
+        ));
+    }
+
+    #[test]
+    fn last_commit_generation_ignores_old_pointer_and_non_segments_files() {
+        let files = vec![
+            "segments.gen".to_string(),
+            "_0.si".to_string(),
+            "segments_1".to_string(),
+            "segments_3".to_string(),
+            "segments_2".to_string(),
+        ];
+        assert_eq!(last_commit_generation(&files), 3);
+    }
+
+    #[test]
+    fn segments_file_name_all_branches() {
+        assert_eq!(segments_file_name(-1), None);
+        assert_eq!(segments_file_name(0), Some("segments".to_string()));
+        assert_eq!(segments_file_name(1), Some("segments_1".to_string()));
+        assert_eq!(segments_file_name(10), Some("segments_a".to_string()));
+    }
+
+    #[test]
+    fn fs_directory_open_nonexistent_file_is_io_error() {
+        let dir = FsDirectory::open("/nonexistent-lucene-rust-test-path");
+        assert!(matches!(dir.open("whatever"), Err(Error::Io(_))));
+    }
+
+    #[test]
+    fn fs_directory_list_all_nonexistent_dir_is_io_error() {
+        let dir = FsDirectory::open("/nonexistent-lucene-rust-test-path");
+        assert!(matches!(dir.list_all(), Err(Error::Io(_))));
+    }
+
+    #[test]
+    fn mmap_directory_open_nonexistent_file_is_io_error() {
+        let dir = MmapDirectory::open("/nonexistent-lucene-rust-test-path");
+        assert!(matches!(dir.open("whatever"), Err(Error::Io(_))));
+    }
+
+    #[test]
+    fn read_latest_commit_no_segments_file_is_corrupted_error() {
+        struct EmptyDir;
+        impl Directory for EmptyDir {
+            fn list_all(&self) -> Result<Vec<String>> {
+                Ok(vec!["_0.si".to_string()])
+            }
+            fn open(&self, _name: &str) -> Result<Input> {
+                unreachable!("no segments_N file should be found, so open() is never called")
+            }
+        }
+        assert!(matches!(
+            read_latest_commit(&EmptyDir),
+            Err(Error::Corrupted(_))
+        ));
+    }
+}

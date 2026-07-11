@@ -138,3 +138,157 @@ fn read_version(input: &mut SliceInput) -> Result<LuceneVersion> {
         bugfix,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test-only `.si` byte builder: independent of the Java fixtures under
+    /// `tests/segment_info_fixtures.rs` (which exercise real Lucene-written
+    /// bytes) — this covers the parser's own corruption/error handling, which
+    /// needs deliberately-invalid inputs a real Lucene codec would never write.
+    struct SiBuilder {
+        id: [u8; ID_LENGTH],
+        has_min_version: u8,
+        doc_count: i32,
+        is_compound_file: u8,
+        has_blocks: u8,
+        num_sort_fields: i32,
+    }
+
+    impl SiBuilder {
+        fn valid() -> Self {
+            Self {
+                id: [1u8; ID_LENGTH],
+                has_min_version: 0,
+                doc_count: 5,
+                is_compound_file: 1,
+                has_blocks: 0,
+                num_sort_fields: 0,
+            }
+        }
+
+        fn build(&self) -> Vec<u8> {
+            let mut out = Vec::new();
+            out.extend_from_slice(&codec_util::CODEC_MAGIC.to_be_bytes());
+            write_string(&mut out, CODEC_NAME);
+            out.extend_from_slice(&(VERSION_CURRENT as u32).to_be_bytes());
+            out.extend_from_slice(&self.id);
+            out.push(0); // empty suffix
+
+            out.extend_from_slice(&10i32.to_le_bytes()); // version major
+            out.extend_from_slice(&0i32.to_le_bytes()); // minor
+            out.extend_from_slice(&0i32.to_le_bytes()); // bugfix
+            out.push(self.has_min_version);
+            if self.has_min_version == 1 {
+                out.extend_from_slice(&9i32.to_le_bytes());
+                out.extend_from_slice(&0i32.to_le_bytes());
+                out.extend_from_slice(&0i32.to_le_bytes());
+            }
+            out.extend_from_slice(&self.doc_count.to_le_bytes());
+            out.push(self.is_compound_file);
+            out.push(self.has_blocks);
+            write_vint(&mut out, 0); // diagnostics: empty map
+            write_vint(&mut out, 0); // files: empty set
+            write_vint(&mut out, 0); // attributes: empty map
+            write_vint(&mut out, self.num_sort_fields);
+
+            out.extend_from_slice(&codec_util::FOOTER_MAGIC.to_be_bytes());
+            out.extend_from_slice(&0u32.to_be_bytes());
+            let checksum = crc32fast::hash(&out) as u64;
+            out.extend_from_slice(&checksum.to_be_bytes());
+            out
+        }
+    }
+
+    fn write_vint(out: &mut Vec<u8>, mut v: i32) {
+        loop {
+            let mut b = (v & 0x7f) as u8;
+            v = ((v as u32) >> 7) as i32;
+            if v != 0 {
+                b |= 0x80;
+                out.push(b);
+            } else {
+                out.push(b);
+                break;
+            }
+        }
+    }
+
+    fn write_string(out: &mut Vec<u8>, s: &str) {
+        write_vint(out, s.len() as i32);
+        out.extend_from_slice(s.as_bytes());
+    }
+
+    #[test]
+    fn valid_segment_info_parses() {
+        let b = SiBuilder::valid();
+        let si = parse(&b.build(), &b.id).unwrap();
+        assert_eq!(si.doc_count, 5);
+        assert!(si.is_compound_file);
+        assert!(!si.has_blocks);
+        assert!(si.min_version.is_none());
+    }
+
+    #[test]
+    fn min_version_present_is_parsed() {
+        let mut b = SiBuilder::valid();
+        b.has_min_version = 1;
+        let si = parse(&b.build(), &b.id).unwrap();
+        let mv = si.min_version.unwrap();
+        assert_eq!((mv.major, mv.minor, mv.bugfix), (9, 0, 0));
+    }
+
+    #[test]
+    fn illegal_has_min_version_byte_rejected() {
+        let b = SiBuilder::valid();
+        let mut bytes = b.build();
+        // has_min_version byte sits right after the 3 SegVersion i32s (12 bytes)
+        // in the payload, following the fixed-size index header.
+        let header_len =
+            codec_util::CODEC_MAGIC.to_be_bytes().len() + 1 + CODEC_NAME.len() + 4 + ID_LENGTH + 1;
+        let has_min_version_offset = header_len + 12;
+        bytes[has_min_version_offset] = 7; // neither 0 nor 1
+        assert!(matches!(
+            parse(&bytes, &b.id),
+            Err(Error::IllegalHasMinVersion(7))
+        ));
+    }
+
+    #[test]
+    fn negative_doc_count_rejected() {
+        let mut b = SiBuilder::valid();
+        b.doc_count = -1;
+        assert!(matches!(
+            parse(&b.build(), &b.id),
+            Err(Error::InvalidDocCount(-1))
+        ));
+    }
+
+    #[test]
+    fn positive_sort_field_count_is_unsupported() {
+        let mut b = SiBuilder::valid();
+        b.num_sort_fields = 1;
+        assert!(matches!(
+            parse(&b.build(), &b.id),
+            Err(Error::UnsupportedIndexSort(1))
+        ));
+    }
+
+    #[test]
+    fn negative_sort_field_count_rejected() {
+        let mut b = SiBuilder::valid();
+        b.num_sort_fields = -1;
+        assert!(matches!(
+            parse(&b.build(), &b.id),
+            Err(Error::InvalidSortFieldCount(-1))
+        ));
+    }
+
+    #[test]
+    fn wrong_id_rejected_with_store_error() {
+        let b = SiBuilder::valid();
+        let wrong_id = [9u8; ID_LENGTH];
+        assert!(matches!(parse(&b.build(), &wrong_id), Err(Error::Store(_))));
+    }
+}

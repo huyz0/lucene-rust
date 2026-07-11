@@ -10,3 +10,6 @@ lucene-util = { path = "../lucene-util" }
 lucene-store = { path = "../lucene-store" }
 lucene-codecs = { path = "../lucene-codecs" }
 rayon.workspace = true
+
+[dev-dependencies]
+crc32fast.workspace = true

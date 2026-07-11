@@ -287,3 +287,346 @@ impl DataInput for SliceInput<'_> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// Local test-only encoders mirroring Lucene's `DataOutput.writeVInt/VLong`
+    /// algorithm. These exist purely to generate inputs for round-tripping our
+    /// decoder's edge/error handling — differential correctness against *real*
+    /// Java-written bytes already lives in `tests/java_fixtures.rs`; this module
+    /// is about this decoder's own boundary and failure behavior.
+    fn encode_vint(mut v: i32) -> Vec<u8> {
+        let mut out = Vec::new();
+        loop {
+            let mut b = (v & 0x7f) as u8;
+            v = ((v as u32) >> 7) as i32;
+            if v != 0 {
+                b |= 0x80;
+                out.push(b);
+            } else {
+                out.push(b);
+                break;
+            }
+        }
+        out
+    }
+
+    fn encode_vlong(mut v: i64) -> Vec<u8> {
+        let mut out = Vec::new();
+        loop {
+            let mut b = (v & 0x7f) as u8;
+            v = ((v as u64) >> 7) as i64;
+            if v != 0 {
+                b |= 0x80;
+                out.push(b);
+            } else {
+                out.push(b);
+                break;
+            }
+        }
+        out
+    }
+
+    fn encode_zlong(v: i64) -> Vec<u8> {
+        encode_vlong(lucene_util::zigzag::encode(v) as i64)
+    }
+
+    // --- vint ---
+
+    #[test]
+    fn vint_known_boundary_values() {
+        for &(v, expected_len) in &[(0i32, 1), (127, 1), (128, 2), (16383, 2), (16384, 3)] {
+            let bytes = encode_vint(v);
+            assert_eq!(bytes.len(), expected_len, "encoding length for {v}");
+            let mut input = SliceInput::new(&bytes);
+            assert_eq!(input.read_vint().unwrap(), v);
+        }
+    }
+
+    #[test]
+    fn vint_negative_uses_five_bytes() {
+        let bytes = encode_vint(-1);
+        assert_eq!(bytes.len(), 5);
+        let mut input = SliceInput::new(&bytes);
+        assert_eq!(input.read_vint().unwrap(), -1);
+    }
+
+    #[test]
+    fn vint_extremes_roundtrip() {
+        for v in [i32::MIN, i32::MAX, -1, 0, 1] {
+            let bytes = encode_vint(v);
+            let mut input = SliceInput::new(&bytes);
+            assert_eq!(input.read_vint().unwrap(), v, "v={v}");
+        }
+    }
+
+    #[test]
+    fn vint_malformed_too_many_continuation_bytes() {
+        let bytes = [0xFFu8; 10];
+        let mut input = SliceInput::new(&bytes);
+        assert!(matches!(input.read_vint(), Err(Error::MalformedVarint)));
+    }
+
+    #[test]
+    fn vint_truncated_is_eof() {
+        let bytes = [0x80u8]; // continuation bit set, no next byte
+        let mut input = SliceInput::new(&bytes);
+        assert!(matches!(input.read_vint(), Err(Error::Eof { .. })));
+    }
+
+    proptest! {
+        #[test]
+        fn vint_roundtrips_any_i32(v: i32) {
+            let bytes = encode_vint(v);
+            let mut input = SliceInput::new(&bytes);
+            prop_assert_eq!(input.read_vint().unwrap(), v);
+        }
+    }
+
+    // --- vlong ---
+
+    #[test]
+    fn vlong_known_boundary_values() {
+        for &v in &[0i64, 127, 128, i64::MAX] {
+            let bytes = encode_vlong(v);
+            let mut input = SliceInput::new(&bytes);
+            assert_eq!(input.read_vlong().unwrap(), v);
+        }
+    }
+
+    #[test]
+    fn vlong_malformed_too_many_continuation_bytes() {
+        let bytes = [0xFFu8; 11];
+        let mut input = SliceInput::new(&bytes);
+        assert!(matches!(input.read_vlong(), Err(Error::MalformedVarint)));
+    }
+
+    proptest! {
+        #[test]
+        fn vlong_roundtrips_non_negative_i64(v in 0i64..=i64::MAX) {
+            let bytes = encode_vlong(v);
+            let mut input = SliceInput::new(&bytes);
+            prop_assert_eq!(input.read_vlong().unwrap(), v);
+        }
+    }
+
+    // --- zlong ---
+
+    #[test]
+    fn zlong_full_range_boundaries() {
+        for &v in &[0i64, -1, 1, i64::MIN, i64::MAX] {
+            let bytes = encode_zlong(v);
+            let mut input = SliceInput::new(&bytes);
+            assert_eq!(input.read_zlong().unwrap(), v, "v={v}");
+        }
+    }
+
+    #[test]
+    fn zlong_malformed_too_many_continuation_bytes() {
+        let bytes = [0xFFu8; 12];
+        let mut input = SliceInput::new(&bytes);
+        assert!(matches!(input.read_zlong(), Err(Error::MalformedVarint)));
+    }
+
+    proptest! {
+        #[test]
+        fn zlong_roundtrips_any_i64(v: i64) {
+            let bytes = encode_zlong(v);
+            let mut input = SliceInput::new(&bytes);
+            prop_assert_eq!(input.read_zlong().unwrap(), v);
+        }
+    }
+
+    // --- group varint ---
+
+    #[test]
+    fn group_vints_single_full_group_various_widths() {
+        // widths 1,2,3,4 bytes packed in one flag byte's four slots
+        let values: [u32; 4] = [0x00, 0xFF, 0xFFFF, 0xFF_FFFF];
+        let flag: u8 = (1 << 4) | (2 << 2) | 3; // lens-1 per value (slot 0 is width-1, so contributes 0)
+        let mut bytes = vec![flag];
+        bytes.extend_from_slice(&values[0].to_le_bytes()[..1]);
+        bytes.extend_from_slice(&values[1].to_le_bytes()[..2]);
+        bytes.extend_from_slice(&values[2].to_le_bytes()[..3]);
+        bytes.extend_from_slice(&values[3].to_le_bytes()[..4]);
+
+        let mut input = SliceInput::new(&bytes);
+        let mut dst = [0u64; 4];
+        input.read_group_vints(&mut dst).unwrap();
+        assert_eq!(dst, values.map(|v| v as u64));
+    }
+
+    #[test]
+    fn group_vints_non_multiple_of_four_uses_vint_tail() {
+        // 5 values: one full group (4) + a plain-vint tail (1)
+        let flag = 0u8; // all 4 values are 1-byte wide
+        let mut bytes = vec![flag, 1, 2, 3, 4];
+        bytes.extend(encode_vint(42));
+        let mut input = SliceInput::new(&bytes);
+        let mut dst = [0u64; 5];
+        input.read_group_vints(&mut dst).unwrap();
+        assert_eq!(dst, [1, 2, 3, 4, 42]);
+    }
+
+    #[test]
+    fn group_vints_slow_path_when_remaining_lt_4() {
+        // Force the `remaining() < 4` branch inside the group loop: the last
+        // slot of the group sits exactly at the buffer's tail with <4 bytes left.
+        let flag = 0u8; // all four 1-byte values
+        let bytes = vec![flag, 9, 8, 7, 6];
+        let mut input = SliceInput::new(&bytes);
+        let mut dst = [0u64; 4];
+        input.read_group_vints(&mut dst).unwrap();
+        assert_eq!(dst, [9, 8, 7, 6]);
+    }
+
+    // --- big-endian primitives ---
+
+    #[test]
+    fn be_u32_and_u64_assemble_most_significant_byte_first() {
+        let bytes = [0x12, 0x34, 0x56, 0x78];
+        let mut input = SliceInput::new(&bytes);
+        assert_eq!(input.read_be_u32().unwrap(), 0x1234_5678);
+
+        let bytes = [0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02];
+        let mut input = SliceInput::new(&bytes);
+        assert_eq!(input.read_be_u64().unwrap(), 0x0000_0001_0000_0002);
+    }
+
+    #[test]
+    fn be_i32_reinterprets_high_bit_as_sign() {
+        let bytes = [0xFF, 0xFF, 0xFF, 0xFF];
+        let mut input = SliceInput::new(&bytes);
+        assert_eq!(input.read_be_i32().unwrap(), -1);
+    }
+
+    // --- strings / collections ---
+
+    #[test]
+    fn string_roundtrip_and_empty() {
+        for s in ["", "hello", "héllo wörld", "segments_2"] {
+            let mut bytes = encode_vint(s.len() as i32);
+            bytes.extend_from_slice(s.as_bytes());
+            let mut input = SliceInput::new(&bytes);
+            assert_eq!(input.read_string().unwrap(), s);
+        }
+    }
+
+    #[test]
+    fn string_invalid_utf8_is_corrupted_error() {
+        let mut bytes = encode_vint(2);
+        bytes.extend_from_slice(&[0xFF, 0xFE]); // not valid UTF-8
+        let mut input = SliceInput::new(&bytes);
+        assert!(matches!(input.read_string(), Err(Error::Corrupted(_))));
+    }
+
+    #[test]
+    fn map_of_strings_zero_one_many() {
+        for pairs in [
+            vec![],
+            vec![("a".to_string(), "1".to_string())],
+            vec![
+                ("a".to_string(), "1".to_string()),
+                ("b".to_string(), "2".to_string()),
+                ("c".to_string(), "3".to_string()),
+            ],
+        ] {
+            let mut bytes = encode_vint(pairs.len() as i32);
+            for (k, v) in &pairs {
+                bytes.extend(encode_vint(k.len() as i32));
+                bytes.extend_from_slice(k.as_bytes());
+                bytes.extend(encode_vint(v.len() as i32));
+                bytes.extend_from_slice(v.as_bytes());
+            }
+            let mut input = SliceInput::new(&bytes);
+            assert_eq!(input.read_map_of_strings().unwrap(), pairs);
+        }
+    }
+
+    #[test]
+    fn set_of_strings_zero_one_many() {
+        for items in [
+            vec![],
+            vec!["x".to_string()],
+            vec!["x".to_string(), "y".to_string(), "z".to_string()],
+        ] {
+            let mut bytes = encode_vint(items.len() as i32);
+            for s in &items {
+                bytes.extend(encode_vint(s.len() as i32));
+                bytes.extend_from_slice(s.as_bytes());
+            }
+            let mut input = SliceInput::new(&bytes);
+            assert_eq!(input.read_set_of_strings().unwrap(), items);
+        }
+    }
+
+    // --- i64 / i64s ---
+
+    #[test]
+    fn i64_and_i64s_little_endian() {
+        let bytes = 0x0102_0304_0506_0708i64.to_le_bytes();
+        let mut input = SliceInput::new(&bytes);
+        assert_eq!(input.read_i64().unwrap(), 0x0102_0304_0506_0708);
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&1i64.to_le_bytes());
+        bytes.extend_from_slice(&(-2i64).to_le_bytes());
+        bytes.extend_from_slice(&3i64.to_le_bytes());
+        let mut input = SliceInput::new(&bytes);
+        let mut dst = [0i64; 3];
+        input.read_i64s(&mut dst).unwrap();
+        assert_eq!(dst, [1, -2, 3]);
+    }
+
+    // --- SliceInput cursor mechanics ---
+
+    #[test]
+    fn slice_input_len_position_is_empty() {
+        let bytes = [1, 2, 3];
+        let mut input = SliceInput::new(&bytes);
+        assert_eq!(input.len(), 3);
+        assert!(!input.is_empty());
+        assert_eq!(input.position(), 0);
+        input.read_byte().unwrap();
+        assert_eq!(input.position(), 1);
+
+        let empty: [u8; 0] = [];
+        assert!(SliceInput::new(&empty).is_empty());
+    }
+
+    #[test]
+    fn slice_input_seek_out_of_bounds_is_eof() {
+        let bytes = [1, 2, 3];
+        let mut input = SliceInput::new(&bytes);
+        assert!(input.seek(10).is_err());
+        assert!(input.seek(3).is_ok()); // exactly at end is valid (no more reads)
+    }
+
+    #[test]
+    fn slice_input_slice_out_of_bounds_is_eof() {
+        let bytes = [1, 2, 3];
+        let input = SliceInput::new(&bytes);
+        assert!(input.slice(0, 4).is_err());
+        assert_eq!(input.slice(1, 3).unwrap(), &[2, 3]);
+    }
+
+    #[test]
+    fn read_bytes_past_end_is_eof_and_does_not_partially_advance() {
+        let bytes = [1, 2, 3];
+        let mut input = SliceInput::new(&bytes);
+        let mut out = [0u8; 5];
+        assert!(matches!(input.read_bytes(&mut out), Err(Error::Eof { .. })));
+        // position must be unchanged after a failed read (no torn reads)
+        assert_eq!(input.position(), 0);
+    }
+
+    #[test]
+    fn peek_u32_le_past_end_is_eof() {
+        let bytes = [1, 2];
+        let mut input = SliceInput::new(&bytes);
+        assert!(matches!(input.peek_u32_le(), Err(Error::Eof { .. })));
+    }
+}

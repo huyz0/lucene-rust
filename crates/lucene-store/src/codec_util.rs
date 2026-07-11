@@ -199,3 +199,206 @@ pub fn check_whole_file_footer(buf: &[u8], payload_end: usize) -> Result<u64> {
     input.seek(payload_end)?;
     check_footer(&mut input, buf.len())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test-only header/footer builder, independent of the Java fixtures under
+    /// `tests/codec_util_fixtures.rs`: those exercise real Java-written bytes;
+    /// this module exercises this decoder's own boundary/corruption handling
+    /// with hand-built buffers, so we don't need a JVM round-trip for every
+    /// error path (a truncated/tampered footer, an illegal CRC, etc).
+    fn write_vint(out: &mut Vec<u8>, mut v: i32) {
+        loop {
+            let mut b = (v & 0x7f) as u8;
+            v = ((v as u32) >> 7) as i32;
+            if v != 0 {
+                b |= 0x80;
+                out.push(b);
+            } else {
+                out.push(b);
+                break;
+            }
+        }
+    }
+
+    fn write_string(out: &mut Vec<u8>, s: &str) {
+        write_vint(out, s.len() as i32);
+        out.extend_from_slice(s.as_bytes());
+    }
+
+    fn header_bytes(codec: &str, version: i32) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&CODEC_MAGIC.to_be_bytes());
+        write_string(&mut out, codec);
+        out.extend_from_slice(&version.to_be_bytes());
+        out
+    }
+
+    /// A complete, valid header + payload + footer, with a correct checksum.
+    fn valid_file(codec: &str, version: i32, payload: &[u8]) -> Vec<u8> {
+        let mut out = header_bytes(codec, version);
+        out.extend_from_slice(payload);
+        out.extend_from_slice(&FOOTER_MAGIC.to_be_bytes());
+        out.extend_from_slice(&0u32.to_be_bytes());
+        let checksum = crc32fast::hash(&out) as u64;
+        out.extend_from_slice(&checksum.to_be_bytes());
+        out
+    }
+
+    #[test]
+    fn check_header_valid_roundtrip() {
+        let buf = valid_file("Test", 3, b"payload");
+        let mut input = SliceInput::new(&buf);
+        let header = check_header(&mut input, "Test", 1, 3).unwrap();
+        assert_eq!(header.version, 3);
+    }
+
+    #[test]
+    fn check_header_wrong_magic_rejected() {
+        let mut buf = valid_file("Test", 1, b"x");
+        buf[0] ^= 0xFF; // corrupt the magic itself, not just the codec name
+        let mut input = SliceInput::new(&buf);
+        assert!(matches!(
+            check_header(&mut input, "Test", 1, 1),
+            Err(Error::Corrupted(_))
+        ));
+    }
+
+    #[test]
+    fn check_footer_valid() {
+        let buf = valid_file("Test", 1, b"hello");
+        let mut input = SliceInput::new(&buf);
+        check_header(&mut input, "Test", 1, 1).unwrap();
+        input.seek(buf.len() - FOOTER_LENGTH).unwrap();
+        let checksum = check_footer(&mut input, buf.len()).unwrap();
+        assert_eq!(checksum, crc32fast::hash(&buf[..buf.len() - 8]) as u64);
+    }
+
+    #[test]
+    fn check_footer_file_too_small() {
+        let buf = [0u8; 4]; // shorter than FOOTER_LENGTH
+        let mut input = SliceInput::new(&buf);
+        assert!(matches!(
+            check_footer(&mut input, buf.len()),
+            Err(Error::Corrupted(_))
+        ));
+    }
+
+    #[test]
+    fn check_footer_wrong_position_rejected() {
+        let buf = valid_file("Test", 1, b"hello");
+        let mut input = SliceInput::new(&buf);
+        // Positioned in the middle of the payload, not at the footer start.
+        input.seek(5).unwrap();
+        assert!(matches!(
+            check_footer(&mut input, buf.len()),
+            Err(Error::Corrupted(_))
+        ));
+    }
+
+    #[test]
+    fn check_footer_wrong_magic_rejected() {
+        let mut buf = valid_file("Test", 1, b"hello");
+        let footer_start = buf.len() - FOOTER_LENGTH;
+        buf[footer_start] ^= 0xFF; // corrupt footer magic
+        let mut input = SliceInput::new(&buf);
+        input.seek(footer_start).unwrap();
+        assert!(matches!(
+            check_footer(&mut input, buf.len()),
+            Err(Error::Corrupted(_))
+        ));
+    }
+
+    #[test]
+    fn check_footer_unknown_algorithm_id_rejected() {
+        let mut buf = valid_file("Test", 1, b"hello");
+        let footer_start = buf.len() - FOOTER_LENGTH;
+        buf[footer_start + 7] = 1; // algorithmID's low byte -> 1 (only 0 is defined)
+        let mut input = SliceInput::new(&buf);
+        input.seek(footer_start).unwrap();
+        assert!(matches!(
+            check_footer(&mut input, buf.len()),
+            Err(Error::Corrupted(_))
+        ));
+    }
+
+    #[test]
+    fn check_footer_illegal_crc_high_bits_rejected() {
+        let mut buf = valid_file("Test", 1, b"hello");
+        let footer_start = buf.len() - FOOTER_LENGTH;
+        // Set a high bit of the 64-bit checksum field, which a real CRC-32
+        // (32 bits wide) could never produce.
+        buf[footer_start + 8] = 0x01;
+        let mut input = SliceInput::new(&buf);
+        input.seek(footer_start).unwrap();
+        assert!(matches!(
+            check_footer(&mut input, buf.len()),
+            Err(Error::Corrupted(_))
+        ));
+    }
+
+    #[test]
+    fn check_footer_checksum_mismatch_rejected() {
+        let mut buf = valid_file("Test", 1, b"hello");
+        let last = buf.len() - 1;
+        buf[last] ^= 0xFF; // flip a byte inside the checksum field itself
+        let footer_start = buf.len() - FOOTER_LENGTH;
+        let mut input = SliceInput::new(&buf);
+        input.seek(footer_start).unwrap();
+        assert!(matches!(
+            check_footer(&mut input, buf.len()),
+            Err(Error::Corrupted(_))
+        ));
+    }
+
+    #[test]
+    fn check_whole_file_header_too_small() {
+        let buf = [0u8; 4];
+        assert!(matches!(
+            check_whole_file_header(&buf, "Test", 1, 1),
+            Err(Error::Corrupted(_))
+        ));
+    }
+
+    #[test]
+    fn check_whole_file_header_and_footer_valid() {
+        let buf = valid_file("Test", 2, b"body");
+        let header = check_whole_file_header(&buf, "Test", 1, 2).unwrap();
+        assert_eq!(header.version, 2);
+        let payload_end = buf.len() - FOOTER_LENGTH;
+        check_whole_file_footer(&buf, payload_end).unwrap();
+    }
+
+    #[test]
+    fn check_index_header_id_mismatch() {
+        let mut buf = header_bytes("Test", 1);
+        let id = [7u8; ID_LENGTH];
+        buf.extend_from_slice(&id);
+        buf.push(0); // empty suffix
+        let mut input = SliceInput::new(&buf);
+        check_header(&mut input, "Test", 1, 1).unwrap();
+        let wrong_id = [8u8; ID_LENGTH];
+        assert!(matches!(
+            check_index_header_id(&mut input, &wrong_id),
+            Err(Error::Corrupted(_))
+        ));
+    }
+
+    #[test]
+    fn check_index_header_suffix_mismatch() {
+        let mut buf = header_bytes("Test", 1);
+        let id = [1u8; ID_LENGTH];
+        buf.extend_from_slice(&id);
+        buf.push(1);
+        buf.push(b'a'); // suffix "a"
+        let mut input = SliceInput::new(&buf);
+        check_header(&mut input, "Test", 1, 1).unwrap();
+        check_index_header_id(&mut input, &id).unwrap();
+        assert!(matches!(
+            check_index_header_suffix(&mut input, "b"),
+            Err(Error::Corrupted(_))
+        ));
+    }
+}

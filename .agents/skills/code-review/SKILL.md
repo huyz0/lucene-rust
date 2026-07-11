@@ -22,9 +22,11 @@ ready.
   not transliterated field-for-field from the Java class (see
   `rust-performance`).
 - **Tests**: a new decoder ships with a fixture generator and a differential
-  test (see `differential-testing`); at least one negative/corruption case;
-  round-trip or cross-module consistency checks where two modules should
-  agree (e.g. `segments_N`'s doc count vs the segment's own `.si`).
+  test (see `differential-testing`) *and* unit tests for its own error/
+  boundary paths (see `test-coverage`); at least one negative/corruption
+  case; round-trip or cross-module consistency checks where two modules
+  should agree (e.g. `segments_N`'s doc count vs the segment's own `.si`);
+  per-file line coverage ≥90% (`cargo llvm-cov --summary-only`).
 - **Docs**: `docs/parity.md` updated in the same change (see
   `parity-tracking`); module-level doc comments describe the wire format,
   not "what the code does."
@@ -34,7 +36,8 @@ ready.
 ## Enforced by
 
 - `cargo fmt --all --check`, `cargo clippy --workspace -- -D warnings`,
-  `cargo test --workspace` (see `git-workflow`).
+  `cargo llvm-cov --workspace --fail-under-lines 90` (see `git-workflow`,
+  `test-coverage`).
 - Nothing mechanical yet checks "new decoder has a fixture" or "parity.md
   updated" — self-review + the `quality-reviewer` subagent (`/quality-review`)
   cover it until this repo has an `xtask`-style gate worth building.

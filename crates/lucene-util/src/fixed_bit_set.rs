@@ -87,6 +87,37 @@ mod tests {
     }
 
     #[test]
+    fn is_empty_and_len() {
+        assert!(FixedBitSet::new(0).is_empty());
+        assert_eq!(FixedBitSet::new(0).len(), 0);
+        let bs = FixedBitSet::new(5);
+        assert!(!bs.is_empty());
+        assert_eq!(bs.len(), 5);
+    }
+
+    #[test]
+    fn words_exposes_backing_storage() {
+        let mut bs = FixedBitSet::new(70); // 2 words
+        bs.set(0);
+        bs.set(64);
+        assert_eq!(bs.words().len(), 2);
+        assert_eq!(bs.words()[0], 1);
+        assert_eq!(bs.words()[1], 1);
+    }
+
+    #[test]
+    fn from_words_wraps_disk_bytes_directly() {
+        // Mirrors how `live_docs::parse` constructs a FixedBitSet from raw i64
+        // words read off disk, without going through set()/clear().
+        let bs = FixedBitSet::from_words(vec![0b1011], 4);
+        assert!(bs.get(0));
+        assert!(bs.get(1));
+        assert!(!bs.get(2));
+        assert!(bs.get(3));
+        assert_eq!(bs.cardinality(), 3);
+    }
+
+    #[test]
     fn set_get_clear_cardinality() {
         let mut bs = FixedBitSet::new(130);
         assert_eq!(bs.cardinality(), 0);
