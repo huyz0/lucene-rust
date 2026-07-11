@@ -9,6 +9,7 @@ Pinned Lucene version: **10.5.0** (matches OpenSearch `gradle/libs.versions.toml
 |---|---|---|
 | `util/BitUtil.zigZagEncode/Decode` | `lucene-util/src/zigzag.rs` | ported, fixture-verified |
 | `Long.toString/parseLong(_, 36)` (generation ↔ base-36 filename suffix) | `lucene-util/src/base36.rs` | ported, round-trip tested |
+| `util/FixedBitSet` (dense bitset: get/set/clear/cardinality) | `lucene-util/src/fixed_bit_set.rs` | ported (the subset `.liv` reading needs); no `SparseFixedBitSet` (in-memory-only optimization, not a format difference) |
 
 ## lucene-store
 
@@ -24,6 +25,14 @@ Pinned Lucene version: **10.5.0** (matches OpenSearch `gradle/libs.versions.toml
 | `store/IndexInput` slicing/cloning over real files | — | not started (`SliceInput` covers the in-memory case; `Directory::open` currently returns a whole-file buffer, not a lazily-sliced `IndexInput`) |
 | `store/Directory` write side (`createOutput`, locking) | — | deferred to Phase 5 (write path) |
 | `codecs/CodecUtil.writeHeader/writeFooter` (encode side) | — | deferred to Phase 5 (write path) |
+
+## lucene-codecs
+
+| Java | Rust | Status |
+|---|---|---|
+| `codecs/lucene90/Lucene90LiveDocsFormat` (`.liv` read) | `lucene-codecs/src/live_docs.rs` | ported (read-only), fixture-verified against a real IndexWriter deletion (2 of 5 docs deleted by term, `NoMergePolicy` to keep the segment intact) |
+| — `SparseFixedBitSet`/`SparseLiveDocs` in-memory choice | — | not applicable to this port: the on-disk bytes are identical dense bits regardless of Java's in-memory representation choice |
+| `codecs/lucene90/Lucene90LiveDocsFormat.writeLiveDocs` | — | deferred to Phase 5 (write path) |
 
 ## lucene-index
 

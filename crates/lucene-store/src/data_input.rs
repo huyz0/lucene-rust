@@ -162,6 +162,22 @@ pub trait DataInput {
         Ok(self.read_u32_le()? as i32)
     }
 
+    /// Lucene `DataInput.readLong`: plain little-endian i64.
+    #[inline]
+    fn read_i64(&mut self) -> Result<i64> {
+        let mut b = [0u8; 8];
+        self.read_bytes(&mut b)?;
+        Ok(i64::from_le_bytes(b))
+    }
+
+    /// Lucene `DataInput.readLongs`: `count` consecutive little-endian i64s.
+    fn read_i64s(&mut self, dst: &mut [i64]) -> Result<()> {
+        for slot in dst.iter_mut() {
+            *slot = self.read_i64()?;
+        }
+        Ok(())
+    }
+
     /// Lucene `DataInput.readMapOfStrings`: vint count, then `count` (key, value) string pairs.
     fn read_map_of_strings(&mut self) -> Result<Vec<(String, String)>> {
         let count = self.read_vint()? as usize;

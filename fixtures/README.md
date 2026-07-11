@@ -13,7 +13,7 @@ JAR=$(find ~/.gradle/caches/modules-2/files-2.1/org.apache.lucene/lucene-core/10
   -name 'lucene-core-10.5.0.jar' ! -name '*sources*' ! -name '*javadoc*')
 mkdir -p classes data
 javac -nowarn -cp "$JAR" -d classes src/*.java
-for cls in GenPrimitives GenCodecUtil GenSegmentInfo GenSegmentInfos; do
+for cls in GenPrimitives GenCodecUtil GenSegmentInfo GenSegmentInfos GenLiveDocs; do
   java -cp "classes:$JAR" $cls data
 done
 ```
@@ -32,3 +32,7 @@ installed; regenerate and re-commit whenever the pinned Lucene version changes.
 - `GenSegmentInfos.java` — a real two-commit `IndexWriter` session (`segments_index/`
   subdirectory: full index dir + `segments_2.raw` copy + manifest), exercising real
   segment names/generations/counters/user-data rather than hand-built bytes.
+- `GenLiveDocs.java` — a real single-segment `IndexWriter` session with 2 of 5 docs
+  deleted by term after the first commit (`live_docs_index/` subdirectory:
+  `NoMergePolicy` keeps the segment from being merged away, so the fixture's `.liv`
+  file is a real post-deletion commit, not hand-built bits).
