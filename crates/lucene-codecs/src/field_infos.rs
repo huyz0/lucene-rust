@@ -296,6 +296,12 @@ pub struct FieldInfos {
     pub fields: Vec<FieldInfo>,
 }
 
+impl FieldInfos {
+    pub fn field_by_number(&self, number: i32) -> Option<&FieldInfo> {
+        self.fields.iter().find(|f| f.number == number)
+    }
+}
+
 /// Parses a whole `.fnm` file already read into memory.
 pub fn parse(buf: &[u8], segment_id: &[u8; ID_LENGTH], segment_suffix: &str) -> Result<FieldInfos> {
     let mut input = SliceInput::new(buf);

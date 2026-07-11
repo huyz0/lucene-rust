@@ -5,3 +5,4 @@ pub mod field_infos;
 pub mod indexed_disi;
 pub mod live_docs;
 pub mod norms;
+pub mod numeric_doc_values;

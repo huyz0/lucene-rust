@@ -13,7 +13,7 @@ JAR=$(find ~/.gradle/caches/modules-2/files-2.1/org.apache.lucene/lucene-core/10
   -name 'lucene-core-10.5.0.jar' ! -name '*sources*' ! -name '*javadoc*')
 mkdir -p classes data
 javac -nowarn -cp "$JAR" -d classes src/*.java
-for cls in GenPrimitives GenCodecUtil GenSegmentInfo GenSegmentInfos GenLiveDocs GenFieldInfos GenNorms; do
+for cls in GenPrimitives GenCodecUtil GenSegmentInfo GenSegmentInfos GenLiveDocs GenFieldInfos GenNorms GenNumericDocValues; do
   java -cp "classes:$JAR" $cls data
 done
 ```
@@ -52,3 +52,13 @@ installed; regenerate and re-commit whenever the pinned Lucene version changes.
   entirely, so that's what actually triggers it). Expected values come from
   reading them back through Lucene's own `NormsProducer`, not our own
   arithmetic on token counts.
+- `GenNumericDocValues.java` — a real single-segment `IndexWriter` session
+  (`numeric_dv_index/` subdirectory) with three NUMERIC-only doc-values
+  fields: "varying" (arbitrary signed values, exercises plain delta
+  compression), "gcd" (values sharing a large common divisor, exercises
+  GCD compression), and "sparse" (present on only 3 of 5 docs, exercises
+  the `IndexedDISI` path — same mechanism as `GenNorms.java`'s sparse
+  field). Also dumps the segment's `.fnm` since parsing `.dvm` requires the
+  field infos to check each field's doc-values-skip-index configuration.
+  Expected values come from reading them back through Lucene's own
+  `Lucene90DocValuesProducer.getNumeric`, not our own arithmetic.
