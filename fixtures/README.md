@@ -13,7 +13,7 @@ JAR=$(find ~/.gradle/caches/modules-2/files-2.1/org.apache.lucene/lucene-core/10
   -name 'lucene-core-10.5.0.jar' ! -name '*sources*' ! -name '*javadoc*')
 mkdir -p classes data
 javac -nowarn -cp "$JAR" -d classes src/*.java
-for cls in GenPrimitives GenCodecUtil GenSegmentInfo GenSegmentInfos GenLiveDocs GenFieldInfos GenNorms GenDocValues GenCompoundFormat GenStoredFields GenSortedDocValues GenMultiValuedDocValues; do
+for cls in GenPrimitives GenCodecUtil GenSegmentInfo GenSegmentInfos GenLiveDocs GenFieldInfos GenNorms GenDocValues GenCompoundFormat GenStoredFields GenSortedDocValues GenMultiValuedDocValues GenTermVectors; do
   java -cp "classes:$JAR" $cls data
 done
 ```
@@ -100,3 +100,18 @@ installed; regenerate and re-commit whenever the pinned Lucene version changes.
   address-range path) — both exercised together. Expected values/ordinals
   come from reading them back through Lucene's own
   `SortedNumericDocValues`/`SortedSetDocValues`, not our own arithmetic.
+- `GenTermVectors.java` — a real single-segment `IndexWriter` session
+  (`term_vectors_index/` subdirectory) using a hand-built `TokenStream`
+  (not a real analyzer) so every term's position, offset, and payload is
+  known exactly: doc 0 has one field with a repeated term ("cat" twice,
+  "car" once) and payloads on some occurrences but not others, exercising
+  same-term multi-occurrence delta chains; doc 1 has two fields ("text",
+  "title"), exercising the distinct-field-numbers array and multi-field
+  bookkeeping; doc 2 has no term-vector field at all. Expected
+  positions/offsets/payloads come from reading the segment back through
+  Lucene's own `TermVectorsReader`/`TermsEnum`/`PostingsEnum`, not our own
+  arithmetic. This fixture is what caught a real decode bug in the first
+  version of the port: the LZ4 unit's term-suffix and payload bytes are
+  interleaved **per document**, not laid out as two global regions — a
+  hand-built single-doc unit test couldn't have caught it since a single
+  document's own bytes are contiguous either way.
