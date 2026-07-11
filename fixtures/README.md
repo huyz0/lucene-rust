@@ -13,7 +13,7 @@ JAR=$(find ~/.gradle/caches/modules-2/files-2.1/org.apache.lucene/lucene-core/10
   -name 'lucene-core-10.5.0.jar' ! -name '*sources*' ! -name '*javadoc*')
 mkdir -p classes data
 javac -nowarn -cp "$JAR" -d classes src/*.java
-for cls in GenPrimitives GenCodecUtil GenSegmentInfo GenSegmentInfos GenLiveDocs GenFieldInfos GenNorms GenDocValues; do
+for cls in GenPrimitives GenCodecUtil GenSegmentInfo GenSegmentInfos GenLiveDocs GenFieldInfos GenNorms GenDocValues GenCompoundFormat; do
   java -cp "classes:$JAR" $cls data
 done
 ```
@@ -65,3 +65,11 @@ installed; regenerate and re-commit whenever the pinned Lucene version changes.
   Expected values come from reading them back through Lucene's own
   `Lucene90DocValuesProducer.getNumeric`/`getBinary`, not our own
   arithmetic.
+- `GenCompoundFormat.java` — a real single-segment `IndexWriter` session
+  (`compound_index/` subdirectory) with `useCompoundFile=true` forced on the
+  writer config, so the segment's sub-files (`.fnm`, `.fdt`/`.fdx`/`.fdm`,
+  `.dvd`/`.dvm`/`.dvs`, term dictionary files) get packed into one `.cfs`/
+  `.cfe` pair instead of written loose. The manifest's sub-file list and
+  lengths come from reading the pair back through Lucene's own
+  `Lucene90CompoundFormat.getCompoundReader`, not re-derived from the raw
+  bytes.

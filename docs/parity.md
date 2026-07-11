@@ -43,6 +43,8 @@ Pinned Lucene version: **10.5.0** (matches OpenSearch `gradle/libs.versions.toml
 | `util/packed/DirectMonotonicReader` (monotonic sequence read, blocks of min/avg/bit-packed-delta) | `lucene-codecs/src/direct_monotonic.rs` | ported (read-only); used by BINARY doc values' variable-length address blocks |
 | `codecs/lucene90/Lucene90NormsConsumer` (write side), `IndexedDISI.writeBitSet`, `Lucene90DocValuesConsumer` (write side) | — | deferred to Phase 5 (write path) |
 | `codecs/lucene90/Lucene90DocValuesProducer` sorted/sorted-set/sorted-numeric doc values, terms-dict (LZ4) | — | not started — a separate future port (see `doc_values.rs` module doc for why it isn't just "skip past the bytes") |
+| `codecs/lucene90/Lucene90CompoundFormat`/`Lucene90CompoundReader` (`.cfs`/`.cfe` read) | `lucene-codecs/src/compound_format.rs` | ported (read-only), fixture-verified against a real `useCompoundFile=true` IndexWriter segment (12 packed sub-files); preserves Java's exact-version cross-check between `.cfs`/`.cfe` and the total-length-vs-entries-table sanity check |
+| `codecs/lucene90/Lucene90CompoundFormat.write` | — | deferred to Phase 5 (write path) |
 
 ## lucene-index
 
