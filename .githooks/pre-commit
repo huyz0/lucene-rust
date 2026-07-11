@@ -9,7 +9,7 @@ cargo fmt --all --check
 echo "pre-commit: cargo clippy -D warnings ..."
 cargo clippy --workspace --all-targets -- -D warnings
 
-echo "pre-commit: cargo llvm-cov (tests + >=90% line coverage) ..."
-cargo llvm-cov --workspace --fail-under-lines 90
+echo "pre-commit: cargo llvm-cov (tests + >=95% line coverage) ..."
+cargo llvm-cov --workspace --fail-under-lines 95
 
 echo "pre-commit: ok"

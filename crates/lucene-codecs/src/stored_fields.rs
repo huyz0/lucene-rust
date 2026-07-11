@@ -865,6 +865,30 @@ mod tests {
     }
 
     #[test]
+    fn read_bulk_ints_scalar_tail_for_every_nonzero_width() {
+        // count < 128 always takes the scalar tail loop (`read_scalar`),
+        // regardless of bpv -- exercise all three non-constant widths.
+        let mut out = vec![8u8, 10, 250];
+        let mut input = SliceInput::new(&out);
+        assert_eq!(read_bulk_ints(&mut input, 2).unwrap(), vec![10, 250]);
+
+        out = vec![16u8];
+        out.extend_from_slice(&300u16.to_le_bytes());
+        out.extend_from_slice(&40000u16.to_le_bytes());
+        input = SliceInput::new(&out);
+        assert_eq!(read_bulk_ints(&mut input, 2).unwrap(), vec![300, 40000]);
+
+        out = vec![32u8];
+        out.extend_from_slice(&70000i32.to_le_bytes());
+        out.extend_from_slice(&(-1i32).to_le_bytes());
+        input = SliceInput::new(&out);
+        assert_eq!(
+            read_bulk_ints(&mut input, 2).unwrap(),
+            vec![70000, 0xFFFFFFFF]
+        );
+    }
+
+    #[test]
     fn read_bulk_ints_transposed_block_matches_java_layout() {
         // 128 sequential values 0..128, bpv=8: verifies the word/lane
         // transposition (see `read_bulk_ints`'s doc comment) against a
@@ -991,6 +1015,150 @@ mod tests {
         assert_eq!(d0.fields[0].value, FieldValue::String("aa".to_string()));
         let d1 = reader.document(1).unwrap();
         assert_eq!(d1.fields[0].value, FieldValue::Int(5));
+    }
+
+    #[test]
+    fn sliced_chunk_end_to_end_through_document() {
+        // `sliced` only controls how many independent LZ4WithPresetDict units
+        // back the chunk, not their size -- so a small payload with the
+        // sliced bit set already exercises `document()`'s sliced branch
+        // (one loop iteration, since `remaining` < the 80KB unit size).
+        let doc_bytes = field_bytes(0, TYPE_STRING, &string_field_payload("sliced"));
+
+        let mut fdt = Vec::new();
+        fdt.extend_from_slice(&codec_util::CODEC_MAGIC.to_be_bytes());
+        write_string(&mut fdt, DATA_CODEC);
+        fdt.extend_from_slice(&(VERSION_CURRENT as u32).to_be_bytes());
+        fdt.extend_from_slice(&id());
+        fdt.push(0);
+        let chunk_start = fdt.len() as i64;
+
+        write_vint(&mut fdt, 0); // docBase
+        write_vint(&mut fdt, (1 << 2) | 1); // chunkDocs=1, sliced=1
+        write_vint(&mut fdt, 1); // numStoredFields
+        write_vint(&mut fdt, doc_bytes.len() as i32);
+        fdt.extend(encode_store_unit(&doc_bytes));
+        fdt.extend_from_slice(&codec_util::FOOTER_MAGIC.to_be_bytes());
+        fdt.extend_from_slice(&0u32.to_be_bytes());
+        let checksum = crc32fast::hash(&fdt) as u64;
+        fdt.extend_from_slice(&checksum.to_be_bytes());
+
+        let (fdx, fdm) = build_fdx_fdm_for_single_chunk(&fdt, 1, chunk_start);
+        let reader = open(&fdt, &fdx, &fdm, &id(), "").unwrap();
+        let doc = reader.document(0).unwrap();
+        assert_eq!(
+            doc.fields[0].value,
+            FieldValue::String("sliced".to_string())
+        );
+    }
+
+    #[test]
+    fn empty_document_has_no_fields() {
+        // A chunk with 2 docs, the first empty (numStoredFields=0, length=0)
+        // -- exercises `document()`'s `doc_length == 0` shortcut.
+        let doc1 = field_bytes(0, TYPE_STRING, &string_field_payload("x"));
+
+        let mut fdt = Vec::new();
+        fdt.extend_from_slice(&codec_util::CODEC_MAGIC.to_be_bytes());
+        write_string(&mut fdt, DATA_CODEC);
+        fdt.extend_from_slice(&(VERSION_CURRENT as u32).to_be_bytes());
+        fdt.extend_from_slice(&id());
+        fdt.push(0);
+        let chunk_start = fdt.len() as i64;
+
+        write_vint(&mut fdt, 0); // docBase
+        write_vint(&mut fdt, 2 << 2); // chunkDocs=2
+        fdt.push(8); // numStoredFields: bpv=8, [0, 1]
+        fdt.push(0);
+        fdt.push(1);
+        fdt.push(8); // lengths: bpv=8, [0, doc1.len()]
+        fdt.push(0);
+        fdt.push(doc1.len() as u8);
+        fdt.extend(encode_store_unit(&doc1));
+        fdt.extend_from_slice(&codec_util::FOOTER_MAGIC.to_be_bytes());
+        fdt.extend_from_slice(&0u32.to_be_bytes());
+        let checksum = crc32fast::hash(&fdt) as u64;
+        fdt.extend_from_slice(&checksum.to_be_bytes());
+
+        let (fdx, fdm) = build_fdx_fdm_for_single_chunk(&fdt, 2, chunk_start);
+        let reader = open(&fdt, &fdx, &fdm, &id(), "").unwrap();
+        let doc0 = reader.document(0).unwrap();
+        assert!(doc0.fields.is_empty());
+        let doc1_read = reader.document(1).unwrap();
+        assert_eq!(
+            doc1_read.fields[0].value,
+            FieldValue::String("x".to_string())
+        );
+    }
+
+    #[test]
+    fn corrupt_chunk_bounds_rejected() {
+        // A chunk header claiming chunkDocs=1 starting at docBase=0, but the
+        // .fdx points a doc id (1) at this same chunk -- out of its range.
+        let doc_bytes = field_bytes(0, TYPE_STRING, &string_field_payload("x"));
+        let (fdt, fdx, fdm) = build_single_chunk_index(&doc_bytes);
+        // Patch maxDoc in .fdm (see build_single_chunk_index: a fixed i32 at
+        // a known offset) up to 2 so `document(1)` is in-range per `open`'s
+        // own doc-count check, but still out of the single real chunk.
+        let mut fdm = fdm;
+        let max_doc_offset =
+            4 + 1 + META_CODEC.len() + 4 + ID_LENGTH + 1 + vint_len_test(80 * 1024);
+        fdm[max_doc_offset..max_doc_offset + 4].copy_from_slice(&2i32.to_le_bytes());
+        // Recompute the meta footer checksum after patching maxDoc: it
+        // covers everything up to (not including) the trailing 8-byte
+        // checksum field itself (footer magic + algorithm id are covered).
+        let checksum_at = fdm.len() - 8;
+        let checksum = crc32fast::hash(&fdm[..checksum_at]) as u64;
+        fdm[checksum_at..].copy_from_slice(&checksum.to_be_bytes());
+
+        let reader = open(&fdt, &fdx, &fdm, &id(), "").unwrap();
+        assert!(matches!(
+            reader.document(1),
+            Err(Error::CorruptChunkBounds { .. })
+        ));
+    }
+
+    fn vint_len_test(mut v: i32) -> usize {
+        let mut n = 1;
+        while (v as u32) >= 0x80 {
+            v = ((v as u32) >> 7) as i32;
+            n += 1;
+        }
+        n
+    }
+
+    #[test]
+    fn decompress_unit_zero_length_produces_empty_vec() {
+        let mut input = SliceInput::new(&[]);
+        assert_eq!(decompress_unit(&mut input, 0).unwrap(), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn long_binary_field_exercises_extended_literal_length_encoding() {
+        // >270 bytes forces `encode_literal_lz4`'s extended-length loop
+        // (literalLen encoded as 0x0F + continuation bytes).
+        let long_value = vec![b'q'; 300];
+        let mut payload = Vec::new();
+        write_vint(&mut payload, long_value.len() as i32);
+        payload.extend_from_slice(&long_value);
+        let doc_bytes = field_bytes(0, TYPE_BYTE_ARR, &payload);
+
+        let (fdt, fdx, fdm) = build_single_chunk_index(&doc_bytes);
+        let reader = open(&fdt, &fdx, &fdm, &id(), "").unwrap();
+        let doc = reader.document(0).unwrap();
+        assert_eq!(doc.fields[0].value, FieldValue::Binary(long_value));
+    }
+
+    #[test]
+    fn large_field_number_exercises_vlong_continuation_byte() {
+        // fieldNumber=20 -> infoAndBits = 20<<3 = 160, which needs a vlong
+        // continuation byte (>127).
+        let doc_bytes = field_bytes(20, TYPE_STRING, &string_field_payload("y"));
+        let (fdt, fdx, fdm) = build_single_chunk_index(&doc_bytes);
+        let reader = open(&fdt, &fdx, &fdm, &id(), "").unwrap();
+        let doc = reader.document(0).unwrap();
+        assert_eq!(doc.fields[0].field_number, 20);
+        assert_eq!(doc.fields[0].value, FieldValue::String("y".to_string()));
     }
 
     #[test]

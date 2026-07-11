@@ -343,4 +343,29 @@ mod tests {
             Err(Error::Store(_))
         ));
     }
+
+    #[test]
+    fn open_input_entry_offset_past_end_of_data_is_error() {
+        let id = [1u8; ID_LENGTH];
+        // Entry claims bytes far beyond what the (short) data buffer holds.
+        let cfe = build_cfe(&id, &[(".fnm", 1000, 5)]);
+        let entries = parse_entries(&cfe, &id).unwrap();
+        let cfs = build_cfs(&id, VERSION_CURRENT, b"short");
+        assert!(matches!(
+            open_input(&cfs, &entries, ".fnm"),
+            Err(Error::Store(_))
+        ));
+    }
+
+    #[test]
+    fn vint_len_multi_byte_codec_name() {
+        // Widths for a few known vint boundaries: 127 fits in 1 byte, 128
+        // needs 2, 16384 needs 3 -- exercises `vint_len`'s continuation loop,
+        // which real codec names (all short ASCII constants) never trigger.
+        assert_eq!(vint_len(0), 1);
+        assert_eq!(vint_len(127), 1);
+        assert_eq!(vint_len(128), 2);
+        assert_eq!(vint_len(16_383), 2);
+        assert_eq!(vint_len(16_384), 3);
+    }
 }

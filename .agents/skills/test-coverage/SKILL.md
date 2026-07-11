@@ -1,9 +1,9 @@
 ---
 name: test-coverage
-description: "WHAT: The ≥90%-per-file line coverage bar and how tests are layered (differential + unit). USE WHEN: writing or changing any parser/decoder, adding a module, or before declaring a change done."
+description: "WHAT: The ≥95%-per-file line coverage bar and how tests are layered (differential + unit). USE WHEN: writing or changing any parser/decoder, adding a module, or before declaring a change done."
 ---
 
-# Test coverage: two layers, ≥90% per file
+# Test coverage: two layers, ≥95% per file
 
 Coverage is a floor, not the goal — but the floor is real and enforced from
 day one, not bolted on later. Every ported module carries **two distinct test
@@ -37,7 +37,7 @@ layers**, and both are required, not either/or:
   builder/encoder in the test module (see `codec_util.rs`, `segment_info.rs`,
   `segment_infos.rs` for the pattern) — this is different from *dumbly*
   porting Java's writer; keep it minimal and test-only (`#[cfg(test)]`).
-- **≥90% line coverage per file**, not just workspace-average — a 100%-file
+- **≥95% line coverage per file**, not just workspace-average — a 100%-file
   hiding a 40%-file is a gap. Check `cargo llvm-cov --workspace
   --summary-only` per-file, not just the `TOTAL` row.
 - **Property tests for anything with a decode/encode symmetry** (vint/vlong/
@@ -48,7 +48,7 @@ layers**, and both are required, not either/or:
 
 ## Enforced by
 
-- `cargo llvm-cov --workspace --fail-under-lines 90` — part of
+- `cargo llvm-cov --workspace --fail-under-lines 95` — part of
   `.githooks/pre-commit`, blocks the commit below threshold.
 - `cargo llvm-cov --workspace --summary-only` — per-file breakdown; read it,
   don't just check the aggregate passed.

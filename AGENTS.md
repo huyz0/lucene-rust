@@ -39,12 +39,12 @@ plan — phases, crate layout, verification strategy, effort estimates — is
 7. **`docs/parity.md` updates in the same commit** as any format that gets
    ported, partially ported, or deliberately deferred. See
    **parity-tracking**.
-8. **≥90% line coverage, per file, from day one.** Differential fixture tests
+8. **≥95% line coverage, per file, from day one.** Differential fixture tests
    prove format fidelity; unit tests (inspired by Lucene's own JUnit tests,
    not transliterated from them) prove the decoder's own boundary/error
    handling. See **test-coverage**.
 9. **Keep the gates green** — `cargo fmt --check`, `cargo clippy -- -D
-   warnings`, `cargo llvm-cov --fail-under-lines 90` must pass before a task
+   warnings`, `cargo llvm-cov --fail-under-lines 95` must pass before a task
    is done.
 
 ## Commands
@@ -56,7 +56,7 @@ and blocks on failure. Run it before calling a task done:
 |------|---------|
 | Format | `cargo fmt --all --check` |
 | Lint | `cargo clippy --workspace --all-targets -- -D warnings` |
-| Tests + coverage gate | `cargo llvm-cov --workspace --fail-under-lines 90` |
+| Tests + coverage gate | `cargo llvm-cov --workspace --fail-under-lines 95` |
 | Coverage report, per file | `cargo llvm-cov --workspace --summary-only` |
 | Regenerate Java fixtures | see [fixtures/README.md](fixtures/README.md) |
 

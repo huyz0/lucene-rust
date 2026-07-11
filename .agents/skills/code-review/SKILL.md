@@ -26,7 +26,7 @@ ready.
   boundary paths (see `test-coverage`); at least one negative/corruption
   case; round-trip or cross-module consistency checks where two modules
   should agree (e.g. `segments_N`'s doc count vs the segment's own `.si`);
-  per-file line coverage ≥90% (`cargo llvm-cov --summary-only`).
+  per-file line coverage ≥95% (`cargo llvm-cov --summary-only`).
 - **Docs**: `docs/parity.md` updated in the same change (see
   `parity-tracking`); module-level doc comments describe the wire format,
   not "what the code does."
@@ -36,7 +36,7 @@ ready.
 ## Enforced by
 
 - `cargo fmt --all --check`, `cargo clippy --workspace -- -D warnings`,
-  `cargo llvm-cov --workspace --fail-under-lines 90` (see `git-workflow`,
+  `cargo llvm-cov --workspace --fail-under-lines 95` (see `git-workflow`,
   `test-coverage`).
 - Nothing mechanical yet checks "new decoder has a fixture" or "parity.md
   updated" — self-review + the `quality-reviewer` subagent (`/quality-review`)

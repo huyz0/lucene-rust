@@ -16,7 +16,7 @@ leaves the tree green.
 - **End with the trailer** `Co-Authored-By: Claude <noreply@anthropic.com>`
   (adjust the name to whichever model authored the change).
 - **Gate before done.** `cargo fmt --all --check`, `cargo clippy --workspace
-  -- -D warnings`, and `cargo llvm-cov --workspace --fail-under-lines 90` must
+  -- -D warnings`, and `cargo llvm-cov --workspace --fail-under-lines 95` must
   all pass before a task is considered complete (see `test-coverage`).
   Commit/push only when the user asks.
 - **Update docs/skills in the same commit** as the code they describe — see
