@@ -36,9 +36,9 @@ Pinned Lucene version: **10.5.0** (matches OpenSearch `gradle/libs.versions.toml
 | `codecs/lucene90/Lucene90LiveDocsFormat.writeLiveDocs` | — | deferred to Phase 5 (write path) |
 | `codecs/lucene94/Lucene94FieldInfosFormat` (`.fnm` read, incl. `FieldInfo.checkConsistency`) | `lucene-codecs/src/field_infos.rs` | ported (read-only), fixture-verified against a real IndexWriter (7 field shapes + a soft-deletes field introduced by a later DV-update generation) |
 | `codecs/lucene94/Lucene94FieldInfosFormat.write` | — | deferred to Phase 5 (write path) |
-| `codecs/lucene90/Lucene90NormsFormat` (`.nvm`/`.nvd` read, dense fields) | `lucene-codecs/src/norms.rs` | ported (read-only, dense only), fixture-verified against real per-doc norm values from Lucene's own `NormsProducer` |
-| — sparse norms (`IndexedDISI` bitset + jump table) | — | metadata parses, but value lookup is unimplemented (`Error::UnsupportedSparse`); `IndexedDISI` is its own substantial format shared by sparse doc values too — port it once, not per-format |
-| `codecs/lucene90/Lucene90NormsConsumer` (write side) | — | deferred to Phase 5 (write path) |
+| `codecs/lucene90/Lucene90NormsFormat` (`.nvm`/`.nvd` read: empty/dense/sparse) | `lucene-codecs/src/norms.rs` | ported (read-only), fixture-verified against real per-doc norm values from Lucene's own `NormsProducer`, including a real sparse field (some docs missing it entirely) |
+| `codecs/lucene90/IndexedDISI` (sparse doc-id-set: SPARSE/DENSE/ALL blocks) | `lucene-codecs/src/indexed_disi.rs` | ported as a **one-shot decode to `Vec<i32>`**, not Java's lazy seekable iterator — see the module doc for why (this port isn't in the hot-path-perf phase yet); jump table and DENSE rank bytes are parsed past but never used, since a full sequential decode doesn't need to skip ahead |
+| `codecs/lucene90/Lucene90NormsConsumer` (write side), `IndexedDISI.writeBitSet` | — | deferred to Phase 5 (write path) |
 
 ## lucene-index
 

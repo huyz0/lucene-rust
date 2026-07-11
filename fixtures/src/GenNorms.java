@@ -16,10 +16,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 /**
- * Generates real `.nvm`/`.nvd` (Lucene90NormsFormat) fixtures: a single
- * dense-norms field ("body", a TextField indexed with norms on, varying doc
- * lengths so bytesPerNorm ends up > 0) across several documents, all in one
- * unmerged segment.
+ * Generates real `.nvm`/`.nvd` (Lucene90NormsFormat) fixtures: a dense-norms
+ * field ("body", every doc, varying lengths so bytesPerNorm > 0) and a
+ * sparse-norms field ("sparse_body", only some docs) in one unmerged
+ * segment -- Lucene picks dense vs sparse purely based on whether every doc
+ * has the field (see Lucene90NormsConsumer.addNormsField), so omitting the
+ * field from some documents is what actually triggers the IndexedDISI path.
  */
 public class GenNorms {
   public static void main(String[] args) throws IOException {
@@ -45,11 +47,16 @@ public class GenNorms {
         "a b c d e f g h i j k l m n o p q r s t",
         "a b c"
       };
+      // "sparse_body" only on docs 0, 2, 4 -- docs 1 and 3 omit it entirely.
+      boolean[] hasSparse = {true, false, true, false, true};
 
       try (IndexWriter w = new IndexWriter(dir, cfg)) {
-        for (String body : bodies) {
+        for (int i = 0; i < bodies.length; i++) {
           Document doc = new Document();
-          doc.add(new TextField("body", body, Field.Store.NO));
+          doc.add(new TextField("body", bodies[i], Field.Store.NO));
+          if (hasSparse[i]) {
+            doc.add(new TextField("sparse_body", bodies[i] + " extra", Field.Store.NO));
+          }
           w.addDocument(doc);
         }
         w.commit();
@@ -76,41 +83,45 @@ public class GenNorms {
 
       org.apache.lucene.index.FieldInfos fis =
           sci.info.getCodec().fieldInfosFormat().read(dir, sci.info, "", IOContext.READONCE);
-      org.apache.lucene.index.FieldInfo bodyField = fis.fieldInfo("body");
-
-      // Read norms directly through the codec's NormsProducer, so the
-      // manifest's expected values come from Lucene itself rather than our
-      // own arithmetic on token counts.
-      org.apache.lucene.codecs.NormsProducer normsProducer =
-          sci.info
-              .getCodec()
-              .normsFormat()
-              .normsProducer(
-                  new org.apache.lucene.index.SegmentReadState(
-                      dir, sci.info, fis, IOContext.READONCE));
-      org.apache.lucene.index.NumericDocValues norms = normsProducer.getNorms(bodyField);
 
       StringBuilder m = new StringBuilder();
       m.append("nvm_file_name=").append(nvmFileName).append('\n');
       m.append("nvd_file_name=").append(nvdFileName).append('\n');
       m.append("segment_name=").append(sci.info.name).append('\n');
       m.append("id_hex=").append(hex(sci.info.getId())).append('\n');
-      m.append("field_number=").append(bodyField.number).append('\n');
       m.append("max_doc=").append(sci.info.maxDoc()).append('\n');
 
-      StringBuilder normValues = new StringBuilder();
-      for (int doc = 0; doc < sci.info.maxDoc(); doc++) {
-        if (doc > 0) normValues.append(',');
-        if (norms.advanceExact(doc)) {
-          normValues.append(norms.longValue());
-        } else {
-          normValues.append("NONE");
-        }
-      }
-      m.append("norm_values=").append(normValues).append('\n');
-      Files.writeString(out.resolve("manifest.properties"), m.toString());
+      for (String fieldName : new String[] {"body", "sparse_body"}) {
+        org.apache.lucene.index.FieldInfo field = fis.fieldInfo(fieldName);
 
-      normsProducer.close();
+        // Read norms directly through the codec's NormsProducer, so the
+        // manifest's expected values come from Lucene itself rather than our
+        // own arithmetic on token counts.
+        org.apache.lucene.codecs.NormsProducer normsProducer =
+            sci.info
+                .getCodec()
+                .normsFormat()
+                .normsProducer(
+                    new org.apache.lucene.index.SegmentReadState(
+                        dir, sci.info, fis, IOContext.READONCE));
+        org.apache.lucene.index.NumericDocValues norms = normsProducer.getNorms(field);
+
+        String prefix = "field." + fieldName + ".";
+        m.append(prefix).append("number=").append(field.number).append('\n');
+
+        StringBuilder normValues = new StringBuilder();
+        for (int doc = 0; doc < sci.info.maxDoc(); doc++) {
+          if (doc > 0) normValues.append(',');
+          if (norms.advanceExact(doc)) {
+            normValues.append(norms.longValue());
+          } else {
+            normValues.append("NONE");
+          }
+        }
+        m.append(prefix).append("norm_values=").append(normValues).append('\n');
+        normsProducer.close();
+      }
+      Files.writeString(out.resolve("manifest.properties"), m.toString());
     }
 
     System.out.println("wrote norms_index/ fixture directory");

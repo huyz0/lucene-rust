@@ -163,6 +163,16 @@ pub trait DataInput {
         Ok(i16::from_le_bytes(b))
     }
 
+    /// `Short.toUnsignedInt(readShort())`: the same little-endian 2 bytes,
+    /// widened as unsigned (used by block/doc-count headers, which are never
+    /// negative even though Java stores them as `short`).
+    #[inline]
+    fn read_u16(&mut self) -> Result<u16> {
+        let mut b = [0u8; 2];
+        self.read_bytes(&mut b)?;
+        Ok(u16::from_le_bytes(b))
+    }
+
     /// Lucene `DataInput.readInt`: plain little-endian i32 (distinct from the
     /// header/footer's big-endian magics).
     #[inline]
@@ -582,6 +592,14 @@ mod tests {
         let bytes = (-1i16).to_le_bytes();
         let mut input = SliceInput::new(&bytes);
         assert_eq!(input.read_i16().unwrap(), -1);
+    }
+
+    #[test]
+    fn u16_little_endian_widens_unsigned() {
+        // The bit pattern of -1i16 (0xFFFF) read as u16 is 65535, not -1.
+        let bytes = (-1i16).to_le_bytes();
+        let mut input = SliceInput::new(&bytes);
+        assert_eq!(input.read_u16().unwrap(), 0xFFFF);
     }
 
     // --- i64 / i64s ---

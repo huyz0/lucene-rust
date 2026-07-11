@@ -45,7 +45,10 @@ installed; regenerate and re-commit whenever the pinned Lucene version changes.
   the fixture exercises reading that generation correctly
   (`SegmentCommitInfo.getFieldInfosGen()` → base-36 suffix).
 - `GenNorms.java` — a real single-segment `IndexWriter` session (`norms_index/`
-  subdirectory) with 5 docs of deliberately varying token counts on one
-  indexed field, so the dense per-doc norm values aren't all identical; the
-  manifest's expected values come from reading them back through Lucene's own
-  `NormsProducer`, not from our own arithmetic on token counts.
+  subdirectory) with a dense norms field ("body", every doc, deliberately
+  varying token counts so values aren't all identical) and a sparse one
+  ("sparse_body", present on only 3 of 5 docs — Lucene only picks the
+  `IndexedDISI`-backed sparse encoding when a field is missing from some docs
+  entirely, so that's what actually triggers it). Expected values come from
+  reading them back through Lucene's own `NormsProducer`, not our own
+  arithmetic on token counts.

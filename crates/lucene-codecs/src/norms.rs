@@ -1,5 +1,5 @@
 //! Port of `org.apache.lucene.codecs.lucene90.Lucene90NormsFormat` (`.nvm`
-//! metadata + `.nvd` data) — read-only, **dense fields only** for now.
+//! metadata + `.nvd` data) — read-only.
 //!
 //! Norms are a per-field, per-doc score-normalization value (one integer of
 //! 0/1/2/4/8 bytes, depending on the range needed). Three shapes exist,
@@ -7,12 +7,8 @@
 //! - **empty** (`-2`): no document has this field indexed at all.
 //! - **dense** (`-1`): every doc up to `maxDoc` has a value — a flat array.
 //! - **sparse** (`>= 0`): only some docs have a value, addressed through an
-//!   `IndexedDISI` bitset + jump table.
-//!
-//! This port implements metadata parsing for all three shapes (so field
-//! enumeration and consistency checks work universally) but value *lookup*
-//! only for dense fields — `IndexedDISI` (the sparse doc-id-set format) is
-//! its own substantial format, deferred (see `docs/parity.md`).
+//!   `IndexedDISI` bitset (see [`crate::indexed_disi`]) giving each present
+//!   doc's ordinal, which indexes the same flat value array dense fields use.
 //!
 //! Wire format, `.nvm` (little-endian throughout — no vints, unlike most
 //! other formats; header/footer per `codec_util`):
@@ -38,6 +34,8 @@
 use lucene_store::codec_util::{self, ID_LENGTH};
 use lucene_store::data_input::{DataInput, SliceInput};
 
+use crate::indexed_disi;
+
 const DATA_CODEC: &str = "Lucene90NormsData";
 const METADATA_CODEC: &str = "Lucene90NormsMetadata";
 const VERSION_START: i32 = 0;
@@ -52,10 +50,6 @@ pub enum Error {
     Store(#[from] lucene_store::Error),
     #[error("invalid bytesPerValue: {0}, field number {1}")]
     InvalidBytesPerNorm(u8, i32),
-    #[error("field number {0} has no norms (docsWithFieldOffset=-2)")]
-    EmptyField(i32),
-    #[error("field number {0} uses sparse norms (IndexedDISI), which this port doesn't read yet")]
-    UnsupportedSparse(i32),
     #[error("doc {0} is out of range (numDocsWithField={1})")]
     DocOutOfRange(i32, i32),
 }
@@ -175,26 +169,50 @@ pub fn check_data_header_footer(
     Ok(header.version)
 }
 
-/// Reads the norm value for `doc` in a **dense** field (see module docs for
-/// what "dense" means). `data` is the whole `.nvd` file's bytes.
-pub fn dense_norm_value(data: &[u8], entry: &NormsEntry, doc: i32) -> Result<i64> {
-    if entry.is_empty_field() {
-        return Err(Error::EmptyField(entry.field_number));
-    }
-    if !entry.is_dense() {
-        return Err(Error::UnsupportedSparse(entry.field_number));
-    }
-    if doc < 0 || doc >= entry.num_docs_with_field {
+/// Reads the norm value for `doc`, handling all three shapes (empty, dense,
+/// sparse). `data` is the whole `.nvd` file's bytes. Returns `Ok(None)` when
+/// `doc` legitimately has no norm (an empty field, or a doc a sparse field
+/// skips) — that is normal, not an error; only a truly out-of-range `doc` or
+/// a decode failure is `Err`.
+pub fn norm_value(data: &[u8], entry: &NormsEntry, doc: i32) -> Result<Option<i64>> {
+    if doc < 0 {
         return Err(Error::DocOutOfRange(doc, entry.num_docs_with_field));
     }
+    if entry.is_empty_field() {
+        return Ok(None);
+    }
+    if entry.is_dense() {
+        if doc >= entry.num_docs_with_field {
+            return Err(Error::DocOutOfRange(doc, entry.num_docs_with_field));
+        }
+        return Ok(Some(read_value_at_ordinal(data, entry, doc as i64)?));
+    }
 
+    // Sparse: docs_with_field_offset/length address an IndexedDISI region.
+    let region = data
+        .get(
+            entry.docs_with_field_offset as usize
+                ..(entry.docs_with_field_offset + entry.docs_with_field_length) as usize,
+        )
+        .ok_or(lucene_store::Error::Eof { offset: 0 })?;
+    let doc_ids = indexed_disi::decode_doc_ids(region, entry.dense_rank_power)?;
+    match indexed_disi::rank_of(&doc_ids, doc) {
+        Some(ordinal) => Ok(Some(read_value_at_ordinal(data, entry, ordinal as i64)?)),
+        None => Ok(None),
+    }
+}
+
+/// Reads the norm value at `ordinal` (either the doc id itself for a dense
+/// field, or the doc's rank among docs-with-a-value for a sparse one) — both
+/// index the same flat `NormsOffset + ordinal * BytesPerNorm` array shape.
+fn read_value_at_ordinal(data: &[u8], entry: &NormsEntry, ordinal: i64) -> Result<i64> {
     if entry.bytes_per_norm == 0 {
         // A single constant value for every doc, encoded directly in the
         // offset field rather than a separate array.
         return Ok(entry.norms_offset);
     }
 
-    let offset = entry.norms_offset + (doc as i64) * (entry.bytes_per_norm as i64);
+    let offset = entry.norms_offset + ordinal * (entry.bytes_per_norm as i64);
     let mut input = SliceInput::new(data);
     input.seek(offset as usize)?;
     let value = match entry.bytes_per_norm {
@@ -335,7 +353,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_field_rejected_on_value_lookup() {
+    fn empty_field_has_no_value_anywhere() {
         let id = [1u8; ID_LENGTH];
         let mut e = EntryBuilder::dense(0, 1, 0, 0);
         e.docs_with_field_offset = DOCS_WITH_FIELD_EMPTY;
@@ -343,25 +361,7 @@ mod tests {
         let (_, norms) = parse_meta(&buf, &id, "").unwrap();
         let entry = norms.entry(0).unwrap();
         assert!(entry.is_empty_field());
-        assert!(matches!(
-            dense_norm_value(&[], entry, 0),
-            Err(Error::EmptyField(0))
-        ));
-    }
-
-    #[test]
-    fn sparse_field_rejected_on_value_lookup() {
-        let id = [1u8; ID_LENGTH];
-        let mut e = EntryBuilder::dense(0, 1, 5, 0);
-        e.docs_with_field_offset = 0; // sparse: a real offset, not -1/-2
-        let buf = build_nvm(&id, &[e]);
-        let (_, norms) = parse_meta(&buf, &id, "").unwrap();
-        let entry = norms.entry(0).unwrap();
-        assert!(!entry.is_dense());
-        assert!(matches!(
-            dense_norm_value(&[], entry, 0),
-            Err(Error::UnsupportedSparse(0))
-        ));
+        assert_eq!(norm_value(&[], entry, 0).unwrap(), None);
     }
 
     #[test]
@@ -372,11 +372,11 @@ mod tests {
         let (_, norms) = parse_meta(&buf, &id, "").unwrap();
         let entry = norms.entry(0).unwrap();
         assert!(matches!(
-            dense_norm_value(&[0, 0, 0], entry, 3),
+            norm_value(&[0, 0, 0], entry, 3),
             Err(Error::DocOutOfRange(3, 3))
         ));
         assert!(matches!(
-            dense_norm_value(&[0, 0, 0], entry, -1),
+            norm_value(&[0, 0, 0], entry, -1),
             Err(Error::DocOutOfRange(-1, 3))
         ));
     }
@@ -389,7 +389,7 @@ mod tests {
         let (_, norms) = parse_meta(&buf, &id, "").unwrap();
         let entry = norms.entry(0).unwrap();
         for doc in 0..5 {
-            assert_eq!(dense_norm_value(&[], entry, doc).unwrap(), 7);
+            assert_eq!(norm_value(&[], entry, doc).unwrap(), Some(7));
         }
     }
 
@@ -403,8 +403,8 @@ mod tests {
         let header_len = nvm_header_len(DATA_CODEC);
         let e = EntryBuilder::dense(0, 1, 1, header_len as i64);
         assert_eq!(
-            dense_norm_value(&data, &to_entry(&e), 0).unwrap(),
-            -5,
+            norm_value(&data, &to_entry(&e), 0).unwrap(),
+            Some(-5),
             "width 1"
         );
 
@@ -414,8 +414,8 @@ mod tests {
         let data = build_nvd(&id, &payload2);
         let e = EntryBuilder::dense(0, 2, 1, header_len as i64);
         assert_eq!(
-            dense_norm_value(&data, &to_entry(&e), 0).unwrap(),
-            -300,
+            norm_value(&data, &to_entry(&e), 0).unwrap(),
+            Some(-300),
             "width 2"
         );
 
@@ -425,8 +425,8 @@ mod tests {
         let data = build_nvd(&id, &payload4);
         let e = EntryBuilder::dense(0, 4, 1, header_len as i64);
         assert_eq!(
-            dense_norm_value(&data, &to_entry(&e), 0).unwrap(),
-            -70000,
+            norm_value(&data, &to_entry(&e), 0).unwrap(),
+            Some(-70000),
             "width 4"
         );
 
@@ -436,10 +436,40 @@ mod tests {
         let data = build_nvd(&id, &payload8);
         let e = EntryBuilder::dense(0, 8, 1, header_len as i64);
         assert_eq!(
-            dense_norm_value(&data, &to_entry(&e), 0).unwrap(),
-            i64::MIN,
+            norm_value(&data, &to_entry(&e), 0).unwrap(),
+            Some(i64::MIN),
             "width 8"
         );
+    }
+
+    #[test]
+    fn sparse_field_returns_value_for_present_doc_and_none_for_absent() {
+        // IndexedDISI region: a single SPARSE block covering docs [0,65536)
+        // with docs 1 and 3 present, then the mandatory sentinel block.
+        let mut disi_bytes = Vec::new();
+        disi_bytes.extend_from_slice(&0u16.to_le_bytes()); // block 0
+        disi_bytes.extend_from_slice(&1u16.to_le_bytes()); // numValues-1 = 1 (2 values)
+        disi_bytes.extend_from_slice(&1u16.to_le_bytes()); // doc 1
+        disi_bytes.extend_from_slice(&3u16.to_le_bytes()); // doc 3
+        disi_bytes.extend_from_slice(&((i32::MAX >> 16) as u16).to_le_bytes());
+        disi_bytes.extend_from_slice(&0u16.to_le_bytes()); // numValues-1 = 0 (1 value)
+        disi_bytes.extend_from_slice(&((i32::MAX & 0xFFFF) as u16).to_le_bytes());
+
+        // .nvd layout: [ disi_bytes ][ values: byte per present doc, in doc order ]
+        let disi_offset = 0i64;
+        let disi_length = disi_bytes.len() as i64;
+        let mut data = disi_bytes.clone();
+        data.push(11); // value for doc 1 (ordinal 0)
+        data.push(33); // value for doc 3 (ordinal 1)
+
+        let mut e = EntryBuilder::dense(0, 1, 2, disi_length); // norms right after the DISI region
+        e.docs_with_field_offset = disi_offset;
+        e.docs_with_field_length = disi_length;
+        let entry = to_entry(&e);
+
+        assert_eq!(norm_value(&data, &entry, 1).unwrap(), Some(11));
+        assert_eq!(norm_value(&data, &entry, 3).unwrap(), Some(33));
+        assert_eq!(norm_value(&data, &entry, 2).unwrap(), None);
     }
 
     fn to_entry(e: &EntryBuilder) -> NormsEntry {
