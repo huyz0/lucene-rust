@@ -8,8 +8,12 @@
 //! pack when the sequence is close to linear — the common case for
 //! monotonically increasing offsets.
 //!
-//! Binary search ([`binary_search`]) mirrors Java's optimization of checking
-//! cheap per-block bounds before touching the bit-packed reader.
+//! [`floor_index`] finds the rightmost index whose value is `<=` a key
+//! (used by stored fields to find which chunk contains a given doc id) —
+//! a direct binary search via repeated [`get`] calls, not a port of Java's
+//! generic `DirectMonotonicReader.binarySearch` (which pre-checks cheap
+//! per-block bounds before touching the bit-packed reader to dodge page
+//! faults; not a concern for an in-memory decode).
 
 use lucene_store::data_input::DataInput;
 use lucene_store::Result;
@@ -69,6 +73,24 @@ pub fn get(data: &[u8], meta: &Meta, index: i64) -> Result<i64> {
         direct_reader::get(slice, meta.bpvs[block], block_index)?
     };
     Ok(meta.mins[block] + (meta.avgs[block] * block_index as f32) as i64 + delta)
+}
+
+/// Returns the largest `i` in `[from, to)` with `get(data, meta, i) <= key`.
+/// Callers must ensure `get(data, meta, from) <= key` (true whenever `key` is
+/// a valid doc id and index 0's value is the first chunk's doc base, 0).
+pub fn floor_index(data: &[u8], meta: &Meta, from: i64, to: i64, key: i64) -> Result<i64> {
+    let (mut lo, mut hi) = (from, to - 1);
+    let mut result = from;
+    while lo <= hi {
+        let mid = lo + (hi - lo) / 2;
+        if get(data, meta, mid)? <= key {
+            result = mid;
+            lo = mid + 1;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -135,5 +157,28 @@ mod tests {
         let mut input = SliceInput::new(&meta_bytes);
         let meta = load_meta(&mut input, 4, 2).unwrap();
         assert!(get(&[], &meta, 0).is_err());
+    }
+
+    #[test]
+    fn floor_index_finds_rightmost_le_key() {
+        // 3 chunks with doc bases 0, 5, 12 (blockShift=0 -> 1 value/block, 3 blocks)
+        let meta_bytes = build_meta_bytes(&[(0, 0.0, 0, 0), (5, 0.0, 0, 0), (12, 0.0, 0, 0)]);
+        let mut input = SliceInput::new(&meta_bytes);
+        let meta = load_meta(&mut input, 3, 0).unwrap();
+        assert_eq!(floor_index(&[], &meta, 0, 3, 0).unwrap(), 0);
+        assert_eq!(floor_index(&[], &meta, 0, 3, 4).unwrap(), 0);
+        assert_eq!(floor_index(&[], &meta, 0, 3, 5).unwrap(), 1);
+        assert_eq!(floor_index(&[], &meta, 0, 3, 11).unwrap(), 1);
+        assert_eq!(floor_index(&[], &meta, 0, 3, 12).unwrap(), 2);
+        assert_eq!(floor_index(&[], &meta, 0, 3, 999).unwrap(), 2);
+    }
+
+    #[test]
+    fn floor_index_single_chunk_covers_whole_range() {
+        let meta_bytes = build_meta_bytes(&[(0, 0.0, 0, 0)]);
+        let mut input = SliceInput::new(&meta_bytes);
+        let meta = load_meta(&mut input, 1, 10).unwrap();
+        assert_eq!(floor_index(&[], &meta, 0, 1, 0).unwrap(), 0);
+        assert_eq!(floor_index(&[], &meta, 0, 1, 500).unwrap(), 0);
     }
 }

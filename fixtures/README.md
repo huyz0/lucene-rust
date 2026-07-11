@@ -13,7 +13,7 @@ JAR=$(find ~/.gradle/caches/modules-2/files-2.1/org.apache.lucene/lucene-core/10
   -name 'lucene-core-10.5.0.jar' ! -name '*sources*' ! -name '*javadoc*')
 mkdir -p classes data
 javac -nowarn -cp "$JAR" -d classes src/*.java
-for cls in GenPrimitives GenCodecUtil GenSegmentInfo GenSegmentInfos GenLiveDocs GenFieldInfos GenNorms GenDocValues GenCompoundFormat; do
+for cls in GenPrimitives GenCodecUtil GenSegmentInfo GenSegmentInfos GenLiveDocs GenFieldInfos GenNorms GenDocValues GenCompoundFormat GenStoredFields; do
   java -cp "classes:$JAR" $cls data
 done
 ```
@@ -73,3 +73,12 @@ installed; regenerate and re-commit whenever the pinned Lucene version changes.
   lengths come from reading the pair back through Lucene's own
   `Lucene90CompoundFormat.getCompoundReader`, not re-derived from the raw
   bytes.
+- `GenStoredFields.java` — a real single-segment `IndexWriter` session
+  (`stored_fields_index/` subdirectory), `Mode.BEST_SPEED` (the default),
+  with 6 documents each carrying one field of every stored-field type
+  (string, binary, int, long, float, double) and a string field whose
+  length grows per doc, so the chunk uses the bulk (`StoredFieldsInts`)
+  multi-doc framing rather than the single-doc shortcut. Expected values
+  come from a custom `StoredFieldVisitor` reading them back through
+  Lucene's own `Lucene90CompressingStoredFieldsReader`, not our own
+  arithmetic.
