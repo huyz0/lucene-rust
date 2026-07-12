@@ -212,4 +212,12 @@ fields needs none of those files to exist. See `docs/parity.md`'s
   manifest's per-term lookups (including deliberately-absent terms) are
   read back through real Lucene's own `TermsEnum.seekExact`/`docFreq`/
   `totalTermFreq`, not hand-computed, so the differential test checks
-  against ground truth.
+  against ground truth. Later slices added more fields to the same
+  generator: "big" ("everywhere" in 300 docs, multi-block `.doc`), "pos"
+  (positions/offsets/payloads), "many" (400 terms, multi-block/floor-split
+  trie), and "l1" ("l1term" in 8250 docs, past `LEVEL1_NUM_DOCS` = 8192 so
+  the `.doc` stream carries one inline level-1 skip entry + a span of 32
+  full blocks + a remainder, exercising the level-1 decode/skip path). The
+  manifest also dumps real `PostingsEnum.advance(target)` ground truth
+  (including at the exact level-1 span boundary for "l1") and
+  `TermsEnum.next()`/`seekCeil()` output.

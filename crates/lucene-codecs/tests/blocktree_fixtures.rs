@@ -677,6 +677,137 @@ fn big_field_lazy_next_doc_matches_eager_read_postings() {
     assert_eq!(lazy_freqs, eager.freqs);
 }
 
+/// `l1` (`IndexOptions.DOCS_AND_FREQS`, `docFreq == 8250 > LEVEL1_NUM_DOCS`):
+/// the level-1 skip path. Full eager `read_postings` iteration over all 8250
+/// docs (one inline level-1 skip entry + a 32-block span + a ~58-doc
+/// remainder) must match real `PostingsEnum.nextDoc()`/`freq()` exactly.
+#[test]
+fn l1_field_level1_postings_match_real_lucene_postings_enum() {
+    let (fields, m) = open_fixture();
+    let (doc, id, suffix) = open_doc_input(&m);
+    let doc_in = postings::DocInput::open(&doc, &id, &suffix).expect("open .doc");
+    let l1 = fields.field("l1").unwrap();
+
+    let expected_docs: Vec<i32> = m
+        .get("field.l1.term.l1term.postingsDocs")
+        .split(',')
+        .map(|s| s.parse().unwrap())
+        .collect();
+    let expected_freqs: Vec<i32> = m
+        .get("field.l1.term.l1term.postingsFreqs")
+        .split(',')
+        .map(|s| s.parse().unwrap())
+        .collect();
+    assert_eq!(
+        expected_docs.len(),
+        8250,
+        "fixture sanity: expected docFreq 8250 (> LEVEL1_NUM_DOCS)"
+    );
+
+    let postings = l1
+        .postings(b"l1term", Some(&doc_in))
+        .unwrap_or_else(|e| panic!("postings(\"l1term\") failed: {e}"))
+        .expect("expected term \"l1term\" to be found");
+    assert_eq!(postings.docs, expected_docs);
+    assert_eq!(postings.freqs, expected_freqs);
+}
+
+/// `l1` eager + lazy `advance()` against real `PostingsEnum.advance(target)`
+/// for the auto-picked first/mid/last targets, which cross the level-1 span
+/// boundary (mid is deep inside the 8192-doc span, last is in the remainder
+/// past it).
+#[test]
+fn l1_field_advance_matches_real_lucene_postings_enum_advance() {
+    let (fields, m) = open_fixture();
+    let (doc, id, suffix) = open_doc_input(&m);
+    let doc_in = postings::DocInput::open(&doc, &id, &suffix).expect("open .doc");
+    let l1 = fields.field("l1").unwrap();
+
+    let postings = l1
+        .postings(b"l1term", Some(&doc_in))
+        .unwrap()
+        .expect("term found");
+    assert_advance_matches_real_lucene(&m, "l1", "l1term", &postings);
+    assert_lazy_advance_matches_real_lucene(&m, "l1", "l1term", &doc_in, l1);
+}
+
+/// `l1` lazy `advance()` at the exact level-1 structure boundaries (occurrence
+/// 8191 = span's last doc, occurrence 8192 = first remainder doc reached only
+/// by jumping the whole span), against real `PostingsEnum.advance()` ground
+/// truth dumped by `appendLevel1AdvanceManifest`. Runs both the eager
+/// (`PostingsCursor`) and lazy (`LazyDocsCursor`) cursors against the same
+/// targets so the level-1 whole-span skip is checked end-to-end on real bytes.
+#[test]
+fn l1_field_level1_boundary_advance_matches_real_lucene() {
+    let (fields, m) = open_fixture();
+    let (doc, id, suffix) = open_doc_input(&m);
+    let doc_in = postings::DocInput::open(&doc, &id, &suffix).expect("open .doc");
+    let l1 = fields.field("l1").unwrap();
+
+    let eager = l1
+        .postings(b"l1term", Some(&doc_in))
+        .unwrap()
+        .expect("term found");
+
+    let raw = m.get("field.l1.term.l1term.advanceLevel1.results");
+    for entry in raw.split(';') {
+        let (target_str, outcome) = entry.split_once(':').unwrap();
+        let target: i32 = target_str.parse().unwrap();
+        let (expected_doc_str, expected_freq_str) = outcome.split_once(',').unwrap();
+        let expected_doc: i32 = expected_doc_str.parse().unwrap();
+        let expected_freq: i32 = expected_freq_str.parse().unwrap();
+
+        // Eager binary-search cursor.
+        let mut ec = postings::PostingsCursor::new(&eager);
+        assert_eq!(ec.advance(target), expected_doc, "eager target={target}");
+        assert_eq!(ec.freq(), Some(expected_freq), "eager target={target}");
+
+        // Lazy decode-on-demand cursor (the one that actually jumps the span).
+        let mut lc = l1
+            .lazy_postings(b"l1term", &doc_in)
+            .unwrap()
+            .expect("term found");
+        assert_eq!(
+            lc.advance(target).unwrap(),
+            expected_doc,
+            "lazy target={target}"
+        );
+        assert_eq!(lc.freq(), Some(expected_freq), "lazy target={target}");
+    }
+}
+
+/// `l1` lazy `next_doc()` full walk matches the eager `read_postings` result
+/// byte-for-byte across the level-1 span boundary and into the remainder.
+#[test]
+fn l1_field_lazy_next_doc_matches_eager_read_postings() {
+    let (fields, m) = open_fixture();
+    let (doc, id, suffix) = open_doc_input(&m);
+    let doc_in = postings::DocInput::open(&doc, &id, &suffix).expect("open .doc");
+    let l1 = fields.field("l1").unwrap();
+
+    let eager = l1
+        .postings(b"l1term", Some(&doc_in))
+        .unwrap()
+        .expect("term found");
+
+    let mut cursor = l1
+        .lazy_postings(b"l1term", &doc_in)
+        .unwrap()
+        .expect("found");
+    let mut lazy_docs = Vec::new();
+    let mut lazy_freqs = Vec::new();
+    loop {
+        let d = cursor.next_doc().unwrap();
+        if d == postings::NO_MORE_DOCS {
+            break;
+        }
+        lazy_docs.push(d);
+        lazy_freqs.push(cursor.freq().unwrap());
+    }
+    assert_eq!(lazy_docs, eager.docs);
+    assert_eq!(lazy_freqs, eager.freqs);
+}
+
 #[test]
 fn postings_missing_term_returns_none() {
     let (fields, m) = open_fixture();

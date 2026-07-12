@@ -1,9 +1,11 @@
 //! Port of `org.apache.lucene.codecs.lucene104.Lucene104PostingsReader`'s
 //! `.doc`/`.pos`/`.pay` file decode — read-only, scoped to
 //! **`IndexOptions.DOCS`/`DOCS_AND_FREQS`/`DOCS_AND_FREQS_AND_POSITIONS`/
-//! `DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS`** (incl. payloads) for any
-//! `docFreq < LEVEL1_NUM_DOCS` (32 * `BLOCK_SIZE` = 8192 — see "Deferred"
-//! below). Two decode strategies are available: a full forward scan (a
+//! `DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS`** (incl. payloads) at any
+//! `docFreq`, including `docFreq >= LEVEL1_NUM_DOCS` (32 * `BLOCK_SIZE` =
+//! 8192), whose interleaved level-1 skip entries both paths now handle (see
+//! "`docFreq >= LEVEL1_NUM_DOCS`" below). Two decode strategies are
+//! available: a full forward scan (a
 //! sequential `nextDoc()`/`nextPosition()`-equivalent, or the whole-term
 //! eager [`DocInput::read_postings`]) and a genuinely lazy decode-on-demand
 //! `advance()` ([`LazyDocsCursor`]) — see "`advance()`: two APIs, two decode
@@ -129,9 +131,10 @@
 //! the header proves the block's entire doc range is behind the target. See
 //! [`LazyDocsCursor`]'s own doc comment for the precise, load-bearing
 //! boundary of what that does and does not skip (short version: full blocks
-//! are skippable at any `docFreq >= BLOCK_SIZE`, the tail block never is,
-//! and `docFreq >= LEVEL1_NUM_DOCS` is still out of scope for either
-//! cursor). Pick [`PostingsCursor`] when the term's postings are small
+//! are skippable at any `docFreq >= BLOCK_SIZE`, whole 32-block spans are
+//! skippable via level-1 entries at `docFreq >= LEVEL1_NUM_DOCS`, and the
+//! tail block never is). Pick [`PostingsCursor`] when the term's postings
+//! are small
 //! enough that eager decode is cheap or a caller already has a
 //! fully-materialized [`Postings`] on hand; pick [`LazyDocsCursor`] when a
 //! caller wants real skip-past-undecoded-blocks behavior (e.g. a
@@ -139,16 +142,21 @@
 //! smaller one) or wants to stop decoding early without paying for the rest
 //! of the term up front.
 //!
+//! ## `docFreq >= LEVEL1_NUM_DOCS` (level-1 skip entries)
+//!
+//! Above `LEVEL1_NUM_DOCS` (8192) the `.doc` stream interleaves a level-1
+//! skip entry ([`read_level1_entry`]) before every span of [`LEVEL1_FACTOR`]
+//! (32) full level-0 blocks, for as long as at least `LEVEL1_NUM_DOCS` docs
+//! remain. Both paths handle this now: `read_postings` consumes each entry's
+//! bytes and decodes its 32 blocks (materializing everything, no jumping),
+//! and [`LazyDocsCursor`] uses the entry's `doc_delta`/`doc_end_fp` to jump
+//! straight past a whole 32-block span whose last doc is behind the caller's
+//! `advance()` target — the coarser level-1 counterpart to the level-0
+//! skip-past-one-block described above. Positions inherit this via the same
+//! `docFreq` gate through `postings()`.
+//!
 //! ## Deferred (all rejected with [`Error::Unsupported`])
 //!
-//! - **`docFreq >= LEVEL1_NUM_DOCS`** (8192): level-1 skip entries start
-//!   appearing inline in the `.doc` stream every 32 full blocks, which
-//!   neither `read_postings` nor [`DocInput::lazy_cursor`] parses (this also
-//!   blocks positions, since `positions()` goes through the same `docFreq`
-//!   gate via `postings()`). Level-0 skip-past-one-block (see above) already
-//!   works below this threshold and does not itself require it; level-1
-//!   would only add the coarser "skip past 32 blocks without reading their
-//!   headers" optimization on top, tracked in `docs/parity.md`.
 //! - `IndexOptions::DocsAndCustomFreqs` — real Lucene never writes this for
 //!   an ordinary indexed text field, so it's out of scope here.
 //! - Impacts (`ImpactsEnum`, `CompetitiveImpactAccumulator`, competitive-scoring
@@ -170,6 +178,10 @@ pub const BLOCK_SIZE: i32 = 256;
 /// below this many docs, a term's `.doc` bytes contain only level-0 skip
 /// headers (no level-1 entries) — see the module doc's "Deferred" section.
 const LEVEL1_NUM_DOCS: i32 = 32 * BLOCK_SIZE;
+/// `Lucene104PostingsFormat.LEVEL1_FACTOR`: one level-1 skip entry precedes a
+/// span of exactly this many consecutive full level-0 blocks
+/// (`32 * BLOCK_SIZE == LEVEL1_NUM_DOCS` docs).
+const LEVEL1_FACTOR: usize = 32;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -377,22 +389,42 @@ impl<'a> DocInput<'a> {
         let mut docs = Vec::with_capacity(n);
         let mut freqs = Vec::with_capacity(n);
 
-        // This slice only supports `docFreq < LEVEL1_NUM_DOCS`
-        // (`Lucene104PostingsFormat.LEVEL1_NUM_DOCS` = 32 * BLOCK_SIZE =
-        // 8192): the reader only ever seeks straight to `docStartFP` and
-        // walks level-0 blocks sequentially (no level-1 skip entries appear
-        // on the wire below that threshold, see the module doc's "Deferred"
-        // section) — this covers every term this port's fixtures or a
-        // realistic single-segment merge would produce short of an
-        // enormous posting list.
-        if doc_freq >= LEVEL1_NUM_DOCS {
-            return Err(Error::Unsupported(
-                "docFreq >= LEVEL1_NUM_DOCS: level-1 skip data not supported in this slice",
-            ));
-        }
-
         let mut prev_doc_id: i32 = -1;
         let mut doc_count_left = doc_freq;
+
+        // `docFreq >= LEVEL1_NUM_DOCS` (8192): the `.doc` stream interleaves a
+        // level-1 skip entry before every span of `LEVEL1_FACTOR` (32) full
+        // level-0 blocks, for as long as at least `LEVEL1_NUM_DOCS` docs
+        // remain (`Lucene104PostingsReader.skipLevel1To`'s
+        // `docCountLeft < LEVEL1_NUM_DOCS` stop condition). This eager path
+        // materializes every doc regardless, so it consumes each level-1
+        // entry's bytes (via [`read_level1_entry`], shared with the lazy
+        // cursor) purely to stay aligned, then decodes the 32 blocks that
+        // follow. Once fewer than `LEVEL1_NUM_DOCS` docs remain, no more
+        // level-1 entries appear and the remaining full blocks + tail decode
+        // exactly like a sub-8192 term.
+        while doc_count_left >= LEVEL1_NUM_DOCS {
+            read_level1_entry(
+                &mut r,
+                index_has_freq,
+                index_has_pos,
+                index_has_offsets_or_payloads,
+            )?;
+            for _ in 0..LEVEL1_FACTOR {
+                let (block_docs, block_freqs) = read_full_block(
+                    &mut r,
+                    prev_doc_id,
+                    index_has_freq,
+                    index_has_pos,
+                    index_has_offsets_or_payloads,
+                )?;
+                prev_doc_id = block_docs[block_docs.len() - 1];
+                docs.extend_from_slice(&block_docs);
+                freqs.extend_from_slice(&block_freqs);
+                doc_count_left -= BLOCK_SIZE;
+            }
+        }
+
         while doc_count_left >= BLOCK_SIZE {
             let (block_docs, block_freqs) = read_full_block(
                 &mut r,
@@ -425,9 +457,11 @@ impl<'a> DocInput<'a> {
     /// is behind the caller's `advance()` target is skipped without ever
     /// running `ForUtil`/`PForUtil` decode on it (see [`LazyDocsCursor`]'s
     /// own doc comment for exactly what "skipped" means here). Validation
-    /// (`doc_freq <= 1`, `IndexOptions::DocsAndCustomFreqs`,
-    /// `doc_freq >= LEVEL1_NUM_DOCS`) mirrors [`Self::read_postings`] exactly
-    /// — same scope, different decode strategy.
+    /// (`doc_freq <= 1`, `IndexOptions::DocsAndCustomFreqs`) mirrors
+    /// [`Self::read_postings`] exactly — same scope, different decode
+    /// strategy. `docFreq >= LEVEL1_NUM_DOCS` is supported by both: this
+    /// cursor additionally jumps whole 32-block level-1 spans (see
+    /// [`Self::skip_level1_to`]).
     pub fn lazy_cursor(
         &self,
         meta: TermMetadata,
@@ -451,22 +485,33 @@ impl<'a> DocInput<'a> {
                 "IndexOptions::DocsAndCustomFreqs is not supported in this slice",
             ));
         }
-        if doc_freq >= LEVEL1_NUM_DOCS {
-            return Err(Error::Unsupported(
-                "docFreq >= LEVEL1_NUM_DOCS: level-1 skip data not supported in this slice",
-            ));
-        }
-
         let mut r = SliceInput::new(self.buf);
         r.seek(meta.doc_start_fp as usize)?;
+
+        // Mirror `Lucene104PostingsReader.BlockPostingsEnum.reset`'s level-1
+        // setup (`Lucene104PostingsReader.java:559-568`): below
+        // `LEVEL1_NUM_DOCS` there are no level-1 entries on the wire, so pin
+        // `level1_last_doc_id` at NO_MORE_DOCS to disable the level-1 skip
+        // path entirely (`target > NO_MORE_DOCS` is never true). At or above
+        // it, start the running last-doc at `-1` with `level1_doc_end_fp`
+        // pointing at the first level-1 entry (which sits at `docStartFP`).
+        let level1_last_doc_id = if doc_freq < LEVEL1_NUM_DOCS {
+            NO_MORE_DOCS
+        } else {
+            -1
+        };
 
         Ok(LazyDocsCursor {
             r,
             index_has_freq: index_options != IndexOptions::Docs,
             index_has_pos: index_options.subsumes_positions(),
             index_has_offsets_or_payloads: index_options.subsumes_offsets() || has_payloads,
+            doc_freq,
             prev_doc_id: -1,
             doc_count_left: doc_freq,
+            level1_last_doc_id,
+            level1_doc_end_fp: meta.doc_start_fp as usize,
+            level1_doc_count_upto: 0,
             block_docs: [0; BLOCK_SIZE as usize],
             block_freqs: [0; BLOCK_SIZE as usize],
             block_len: 0,
@@ -775,6 +820,72 @@ fn read_vlong15(r: &mut SliceInput) -> Result<i64> {
     } else {
         Ok((s as i64 & 0x7FFF) | (r.read_vlong()? << 15))
     }
+}
+
+/// One level-1 skip entry, decoded from the `.doc` stream (present before
+/// every span of [`LEVEL1_FACTOR`] full level-0 blocks while at least
+/// `LEVEL1_NUM_DOCS` docs remain). Mirrors the fields
+/// `Lucene104PostingsReader.skipLevel1To` reads
+/// (`Lucene104PostingsReader.java:691-713`).
+struct Level1Entry {
+    /// vInt delta added to the running `level1LastDocID` (starts at `-1`),
+    /// giving this span's last (max) doc ID across its 32 blocks.
+    doc_delta: i32,
+    /// `level1DocEndFP`: absolute byte offset (into the whole `.doc` buffer)
+    /// of the START of the *next* level-1 entry, i.e. one past this span's own
+    /// 32 level-0 blocks. Seeking straight here skips the whole span.
+    doc_end_fp: usize,
+}
+
+/// Reads one level-1 skip entry at `r`'s current position (which must be a
+/// level-1 entry boundary — `docStartFP` for span 0, or the previous span's
+/// `doc_end_fp` afterward), leaving `r` positioned at the first level-0 block
+/// header of the span. Shared by [`DocInput::read_postings`] (eager, discards
+/// the return) and [`LazyDocsCursor::skip_level1_to`] (lazy, uses `doc_delta`
+/// and `doc_end_fp` to decide whether to jump the whole span).
+///
+/// The impacts bytes (competitive-scoring metadata for the whole span) are
+/// always skipped, never decoded — this port doesn't do impacts yet, same as
+/// the level-0 header path in [`read_full_block_header`]. The pos/pay
+/// sub-fields are parsed for wire-order correctness even though this reader
+/// never uses them to seek `.pos`/`.pay`.
+fn read_level1_entry(
+    r: &mut SliceInput,
+    index_has_freq: bool,
+    index_has_pos: bool,
+    index_has_offsets_or_payloads: bool,
+) -> Result<Level1Entry> {
+    // Steps 1-2 are always present, even for `IndexOptions::Docs` (no freqs):
+    // `skipLevel1To` calls `readVInt`/`readVLong` unconditionally before the
+    // `indexHasFreq` gate — plain vint/vlong, NOT `readVInt15`/`readVLong15`.
+    let doc_delta = r.read_vint()?;
+    let delta = r.read_vlong()? as usize;
+    let doc_end_fp = delta.wrapping_add(r.position());
+
+    if index_has_freq {
+        // `skip1EndFP` (step 3a): a plain 2-byte `readShort`, the byte length
+        // from right here to the end of this entry's metadata. Only used as a
+        // consistency check (Java asserts `getFilePointer() == skip1EndFP`).
+        let skip1_end_fp = (r.read_i16()? as i64 + r.position() as i64) as usize;
+        // `numImpactBytes` (step 3b): another plain `readShort`, non-negative
+        // (a length). Then skip that many raw impact bytes (step 3c).
+        let num_impact_bytes = r.read_i16()? as usize;
+        r.skip(num_impact_bytes)?;
+        if index_has_pos {
+            let _pos_end_fp_delta = r.read_vlong()?;
+            let _pos_buffer_upto = r.read_byte()?;
+            if index_has_offsets_or_payloads {
+                let _pay_end_fp_delta = r.read_vlong()?;
+                let _pay_buffer_upto = r.read_vint()?;
+            }
+        }
+        debug_assert_eq!(r.position(), skip1_end_fp);
+    }
+
+    Ok(Level1Entry {
+        doc_delta,
+        doc_end_fp,
+    })
 }
 
 /// A full block's level-0 skip header, decoded up to (but not including) the
@@ -1175,17 +1286,15 @@ impl<'p> PostingsCursor<'p> {
 ///   decoding it in full (`read_tail_block`), lazy or not. This matches real
 ///   `Lucene104PostingsReader.refillRemainder`, which has no skip variant
 ///   either.
-/// - **`docFreq >= LEVEL1_NUM_DOCS` (8192) is still out of scope** (rejected
-///   by [`DocInput::lazy_cursor`], same as [`DocInput::read_postings`]):
-///   above that threshold, level-1 skip entries appear inline in the `.doc`
-///   stream and would need to be parsed to skip past *groups* of 32 full
-///   blocks without even reading their level-0 headers one at a time. Below
-///   the threshold, this cursor already reads every full block's level-0
-///   header one at a time (cheap: a handful of small ints per skipped
-///   block, not a decode) — so the *decode* skip this cursor provides is
-///   real for any `docFreq`, just not maximally efficient in header-reading
-///   for a hypothetical enormous posting list (a concern level-1 exists to
-///   address, and which this port's fixtures don't reach).
+/// - **`docFreq >= LEVEL1_NUM_DOCS` (8192): whole 32-block spans are
+///   skippable via the level-1 entry.** Above that threshold the `.doc`
+///   stream interleaves a level-1 skip entry before each span of 32 full
+///   level-0 blocks. [`Self::skip_level1_to`] reads that entry and, when the
+///   span's last doc (`level1_last_doc_id`) is still behind the target,
+///   `seek()`s straight to the next entry — jumping all 32 blocks without
+///   reading even their individual level-0 headers, the coarser counterpart
+///   to the per-block skip above. Only once fewer than `LEVEL1_NUM_DOCS`
+///   docs remain does it fall back to the one-header-at-a-time level-0 path.
 /// - **Early exit still pays off even without any skip**: unlike
 ///   [`DocInput::read_postings`], which always decodes the *entire* term
 ///   up front, this cursor decodes blocks one at a time, so a caller that
@@ -1203,12 +1312,29 @@ pub struct LazyDocsCursor<'a> {
     index_has_freq: bool,
     index_has_pos: bool,
     index_has_offsets_or_payloads: bool,
+    /// This term's total `docFreq` — needed to recompute `doc_count_left` at
+    /// each level-1 span boundary (`docFreq - level1_doc_count_upto`), exactly
+    /// like `Lucene104PostingsReader.skipLevel1To`.
+    doc_freq: i32,
     /// Last doc ID that is either fully decoded-and-consumed-past or
     /// skipped-past — the delta base for the next block's doc IDs.
     prev_doc_id: i32,
     /// Docs not yet decoded or skipped (full blocks + the trailing tail, if
     /// any).
     doc_count_left: i32,
+    /// `level1LastDocID`: the highest doc ID covered by the current level-1
+    /// span, or [`NO_MORE_DOCS`] once past the last level-1 entry (or always,
+    /// for a `docFreq < LEVEL1_NUM_DOCS` term with no level-1 entries). An
+    /// `advance(target)` with `target > level1_last_doc_id` triggers
+    /// [`Self::skip_level1_to`] to jump whole 32-block spans.
+    level1_last_doc_id: i32,
+    /// `level1DocEndFP`: absolute byte offset of the next level-1 entry (one
+    /// past the current span's 32 level-0 blocks). Where
+    /// [`Self::skip_level1_to`] seeks to skip a whole span.
+    level1_doc_end_fp: usize,
+    /// `level1DocCountUpto`: how many docs precede the current level-1 span
+    /// (always a multiple of `LEVEL1_NUM_DOCS`).
+    level1_doc_count_upto: i32,
     block_docs: [i32; BLOCK_SIZE as usize],
     block_freqs: [i32; BLOCK_SIZE as usize],
     /// Number of valid entries in `block_docs`/`block_freqs` (`BLOCK_SIZE`
@@ -1281,6 +1407,16 @@ impl<'a> LazyDocsCursor<'a> {
         }
 
         loop {
+            // Level-1 skip: before touching any level-0 block, jump past whole
+            // 32-block spans that are entirely behind `target`
+            // (`Lucene104PostingsReader.moveToNextLevel0Block`/`doAdvanceShallow`
+            // both call `skipLevel1To(target)` first). For a
+            // `docFreq < LEVEL1_NUM_DOCS` term `level1_last_doc_id` is pinned
+            // at NO_MORE_DOCS, so this never fires.
+            if target > self.level1_last_doc_id {
+                self.skip_level1_to(target)?;
+            }
+
             if self.doc_count_left == 0 {
                 self.block_len = 0;
                 self.block_pos = 0;
@@ -1350,6 +1486,57 @@ impl<'a> LazyDocsCursor<'a> {
             };
             return Ok(self.doc_id);
         }
+    }
+
+    /// Port of `Lucene104PostingsReader.skipLevel1To`
+    /// (`Lucene104PostingsReader.java:674-719`): consume level-1 skip entries,
+    /// jumping straight past whole 32-block spans whose last doc is still
+    /// behind `target`, until either a span that contains `target` is reached
+    /// (leaving `r` at that span's first level-0 block header, with
+    /// `level1_last_doc_id >= target`) or fewer than `LEVEL1_NUM_DOCS` docs
+    /// remain (leaving `r` at the trailing sub-8192 region of full blocks +
+    /// tail, with `level1_last_doc_id == NO_MORE_DOCS`). The subsequent
+    /// level-0 loop in [`Self::advance`] then takes over exactly as it does
+    /// for a sub-8192 term.
+    ///
+    /// Each iteration re-seeks to `level1_doc_end_fp` (the known span
+    /// boundary) and recomputes `doc_count_left` from `level1_doc_count_upto`,
+    /// so the caller's running `doc_count_left`/`r` position before the call
+    /// don't matter — this is what lets a whole span be skipped even from the
+    /// middle of the previous one.
+    fn skip_level1_to(&mut self, target: i32) -> Result<()> {
+        loop {
+            self.prev_doc_id = self.level1_last_doc_id;
+            self.r.seek(self.level1_doc_end_fp)?;
+            self.doc_count_left = self.doc_freq - self.level1_doc_count_upto;
+            self.level1_doc_count_upto += LEVEL1_NUM_DOCS;
+
+            if self.doc_count_left < LEVEL1_NUM_DOCS {
+                // Fewer than a full span remains: no level-1 entry precedes it.
+                // `r` is now at the first of the trailing level-0 blocks.
+                self.level1_last_doc_id = NO_MORE_DOCS;
+                break;
+            }
+
+            let entry = read_level1_entry(
+                &mut self.r,
+                self.index_has_freq,
+                self.index_has_pos,
+                self.index_has_offsets_or_payloads,
+            )?;
+            self.level1_last_doc_id += entry.doc_delta;
+            self.level1_doc_end_fp = entry.doc_end_fp;
+
+            if self.level1_last_doc_id >= target {
+                // `target` is within this span: `r` is positioned at the
+                // span's first level-0 block header.
+                break;
+            }
+            // The whole span is behind `target`: loop again, which re-seeks to
+            // `level1_doc_end_fp` (past this span's 32 blocks) without touching
+            // any of their level-0 headers.
+        }
+        Ok(())
     }
 }
 
@@ -1531,22 +1718,94 @@ mod tests {
         assert!(matches!(err, Error::Unsupported(_)));
     }
 
+    /// Writes a level-1 skip entry for `IndexOptions::Docs` (no freqs): just
+    /// the vInt doc-delta and the vLong `doc_end_fp` delta, which (measured
+    /// from right after the vLong) must equal `span.len()` so the entry points
+    /// exactly past its own span. See [`read_level1_entry`].
+    fn write_level1_entry_docs(doc: &mut Vec<u8>, doc_delta: i32, span: &[u8]) {
+        doc.write_vint(doc_delta);
+        doc.write_vlong(span.len() as i64);
+    }
+
     #[test]
-    fn read_postings_rejects_level1_doc_freq() {
-        // docFreq >= LEVEL1_NUM_DOCS (8192): out of scope, see the module doc.
+    fn read_postings_level1_span_plus_tail() {
+        // docFreq == LEVEL1_NUM_DOCS + 8 (8200): one level-1 entry, then a
+        // span of 32 all-consecutive full blocks (docs 0..8191), then an
+        // 8-doc group-varint tail (docs 8192..8199) with no more level-1
+        // entries.
         let id = [5u8; ID_LENGTH];
         let (mut doc, footer) = header_and_footer(DOC_CODEC, &id);
+        let doc_start_fp = doc.len() as u64;
+
+        let mut span = Vec::new();
+        for _ in 0..LEVEL1_FACTOR {
+            write_full_block(&mut span, false, 0);
+        }
+        // doc_delta 8192 -> the span's last doc is -1 + 8192 = 8191.
+        write_level1_entry_docs(&mut doc, LEVEL1_NUM_DOCS, &span);
+        doc.extend_from_slice(&span);
+        // Tail: 8 consecutive docs (deltas all 1) from prevDocID 8191.
+        write_group_vints(&mut doc, &[1; 8]);
         doc.extend_from_slice(&footer);
+
         let input = DocInput::open(&doc, &id, "").unwrap();
         let meta = TermMetadata {
-            doc_start_fp: 0,
+            doc_start_fp,
             singleton_doc_id: -1,
             ..TermMetadata::EMPTY
         };
-        let err = input
-            .read_postings(meta, LEVEL1_NUM_DOCS, IndexOptions::DocsAndFreqs, false)
-            .unwrap_err();
-        assert!(matches!(err, Error::Unsupported(_)));
+        let postings = input
+            .read_postings(meta, LEVEL1_NUM_DOCS + 8, IndexOptions::Docs, false)
+            .unwrap();
+        assert_eq!(postings.docs, (0..LEVEL1_NUM_DOCS + 8).collect::<Vec<_>>());
+        assert!(postings.freqs.iter().all(|&f| f == 1));
+    }
+
+    #[test]
+    fn read_level1_entry_decodes_all_fields() {
+        // A DocsAndFreqsAndPositions(+payloads) level-1 entry, hand-built, to
+        // confirm every field is read in the right order and doc_delta/
+        // doc_end_fp come out exactly right (and the internal skip1EndFP
+        // consistency check holds -- it's a debug_assert that fires in tests).
+        let mut bytes = Vec::new();
+        bytes.write_vint(8191); // doc_delta
+        bytes.write_vlong(100); // doc_end_fp delta
+        let pos_after_vlong = bytes.len();
+        // freq metadata: skip1EndFP short, then numImpactBytes short, impacts,
+        // then pos (vlong+byte) and pay (vlong+vint) sub-fields.
+        // metadata after short1 = short2 (2) + 3 impact bytes + pos(vlong 1 +
+        // byte 1) + pay(vlong 1 + vint 1) = 2 + 3 + 4 = 9.
+        bytes.write_i16(9); // skip1EndFP offset
+        bytes.write_i16(3); // numImpactBytes
+        bytes.write_bytes(&[0xDE, 0xAD, 0xBE]); // 3 impact bytes (skipped)
+        bytes.write_vlong(50); // posEndFP delta (discarded)
+        bytes.write_byte(7); // posBufferUpto (discarded)
+        bytes.write_vlong(60); // payEndFP delta (discarded)
+        bytes.write_vint(9); // payBufferUpto (discarded)
+        let metadata_end = bytes.len();
+
+        let mut r = SliceInput::new(&bytes);
+        let entry = read_level1_entry(&mut r, true, true, true).unwrap();
+        assert_eq!(entry.doc_delta, 8191);
+        assert_eq!(entry.doc_end_fp, 100 + pos_after_vlong);
+        // r is left at the start of the span's first level-0 block header.
+        assert_eq!(r.position(), metadata_end);
+    }
+
+    #[test]
+    fn read_level1_entry_docs_only_reads_just_delta_fields() {
+        // IndexOptions::Docs: no freq gate, so only the vInt doc-delta and
+        // vLong doc_end_fp delta are present -- no impacts/pos/pay.
+        let mut bytes = Vec::new();
+        bytes.write_vint(500);
+        bytes.write_vlong(40);
+        let pos_after_vlong = bytes.len();
+        bytes.write_bytes(&[0x11, 0x22]); // "span" bytes that must NOT be read
+        let mut r = SliceInput::new(&bytes);
+        let entry = read_level1_entry(&mut r, false, false, false).unwrap();
+        assert_eq!(entry.doc_delta, 500);
+        assert_eq!(entry.doc_end_fp, 40 + pos_after_vlong);
+        assert_eq!(r.position(), pos_after_vlong);
     }
 
     /// Test-only encoder for a full 256-doc block's level-0 header +
@@ -1932,20 +2191,112 @@ mod tests {
     }
 
     #[test]
-    fn lazy_cursor_rejects_level1_doc_freq() {
+    fn lazy_cursor_level1_sequential_next_doc_matches_read_postings() {
+        // docFreq == LEVEL1_NUM_DOCS + 8 (8200): one level-1 span (32 blocks)
+        // + an 8-doc tail. A full `next_doc()` walk through the lazy cursor
+        // (which reads the level-1 entry, decodes each of the span's 32
+        // blocks on demand, then the tail) must match the eager
+        // `read_postings` result byte-for-byte across the span boundary.
         let id = [21u8; ID_LENGTH];
         let (mut doc, footer) = header_and_footer(DOC_CODEC, &id);
+        let doc_start_fp = doc.len() as u64;
+
+        let mut span = Vec::new();
+        for _ in 0..LEVEL1_FACTOR {
+            write_full_block(&mut span, false, 0);
+        }
+        write_level1_entry_docs(&mut doc, LEVEL1_NUM_DOCS, &span);
+        doc.extend_from_slice(&span);
+        write_group_vints(&mut doc, &[1; 8]);
         doc.extend_from_slice(&footer);
+
         let input = DocInput::open(&doc, &id, "").unwrap();
         let meta = TermMetadata {
-            doc_start_fp: 0,
+            doc_start_fp,
             singleton_doc_id: -1,
             ..TermMetadata::EMPTY
         };
-        let err = input
-            .lazy_cursor(meta, LEVEL1_NUM_DOCS, IndexOptions::DocsAndFreqs, false)
-            .unwrap_err();
-        assert!(matches!(err, Error::Unsupported(_)));
+        let doc_freq = LEVEL1_NUM_DOCS + 8;
+        let eager = input
+            .read_postings(meta, doc_freq, IndexOptions::Docs, false)
+            .unwrap();
+
+        let mut cursor = input
+            .lazy_cursor(meta, doc_freq, IndexOptions::Docs, false)
+            .unwrap();
+        let mut lazy_docs = Vec::new();
+        loop {
+            let d = cursor.next_doc().unwrap();
+            if d == NO_MORE_DOCS {
+                break;
+            }
+            lazy_docs.push(d);
+        }
+        assert_eq!(lazy_docs, eager.docs);
+    }
+
+    #[test]
+    fn lazy_cursor_advance_skips_whole_corrupted_level1_span_without_decoding_it() {
+        // The level-1 analogue of
+        // `lazy_cursor_advance_skips_corrupted_earlier_block_without_decoding_it`:
+        // an entire 32-block level-1 span is corrupt (its first block has a
+        // valid level-0 frame but a zero-bit bit-set body, the rest is
+        // garbage). `advance(target)` to a doc in the *tail* past the whole
+        // span must succeed -- proving `skip_level1_to` jumps straight to the
+        // level-1 entry's `doc_end_fp` without ever reading a single level-0
+        // block header in the span. A control `advance()` into the span still
+        // surfaces the corruption, confirming the skip wasn't luck.
+        let id = [22u8; ID_LENGTH];
+        let (mut doc, footer) = header_and_footer(DOC_CODEC, &id);
+        let doc_start_fp = doc.len() as u64;
+
+        // The span: block 0 has a valid frame (docDelta=256 -> last doc 255)
+        // but a corrupt zero-bit bit-set body; blocks 1..31 are pure garbage
+        // neither tested path ever reads (the skip jumps over them via
+        // doc_end_fp; the control errors on block 0 before reaching them).
+        let mut span = Vec::new();
+        let mut body0 = Vec::new();
+        body0.write_byte((-4i8) as u8); // 4 longs = 256 bits, none set -> corrupt
+        body0.extend_from_slice(&[0u8; 32]);
+        span.write_vlong(body0.len() as i64); // level0NumBytes
+        span.write_i16(BLOCK_SIZE as i16); // docDelta = 256
+        span.write_i16(body0.len() as i16); // blockLength
+        span.write_bytes(&body0);
+        span.extend_from_slice(&[0xFFu8; 64]); // garbage stand-in for blocks 1..31
+
+        // Level-1 entry: doc_delta 8192 -> span last doc 8191; doc_end_fp
+        // lands exactly at the tail (span.len() bytes past the vLong).
+        write_level1_entry_docs(&mut doc, LEVEL1_NUM_DOCS, &span);
+        doc.extend_from_slice(&span);
+        // Valid 8-doc tail (docs 8192..8199), chained from prevDocID 8191.
+        write_group_vints(&mut doc, &[1; 8]);
+        doc.extend_from_slice(&footer);
+
+        let input = DocInput::open(&doc, &id, "").unwrap();
+        let meta = TermMetadata {
+            doc_start_fp,
+            singleton_doc_id: -1,
+            ..TermMetadata::EMPTY
+        };
+        let doc_freq = LEVEL1_NUM_DOCS + 8;
+
+        let mut cursor = input
+            .lazy_cursor(meta, doc_freq, IndexOptions::Docs, false)
+            .unwrap();
+        // Target 8195 is in the tail, past the whole corrupt span.
+        assert_eq!(cursor.advance(8195).unwrap(), 8195);
+        assert_eq!(cursor.freq(), Some(1));
+
+        // Control: a target inside the span forces decoding block 0's corrupt
+        // body, which must surface the corruption error.
+        let mut cursor2 = input
+            .lazy_cursor(meta, doc_freq, IndexOptions::Docs, false)
+            .unwrap();
+        let err = cursor2.advance(100).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::Store(lucene_store::Error::Corrupted(_))
+        ));
     }
 
     #[test]

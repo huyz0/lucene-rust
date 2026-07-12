@@ -187,6 +187,25 @@ public class GenBlockTree {
           w.addDocument(doc);
         }
 
+        // "l1": a single term ("l1term") appearing in LEVEL1_DOC_FREQ (8250)
+        // separate documents -- comfortably past LEVEL1_NUM_DOCS (32 *
+        // BLOCK_SIZE = 8192), so real Lucene104PostingsWriter emits exactly
+        // one inline level-1 skip entry (before the first span of 32 full
+        // 256-doc blocks) followed by a ~58-doc remainder, forcing the
+        // level-1 decode/skip path in crates/lucene-codecs/src/postings.rs.
+        // Kept as small as correctness allows (8250, not higher) -- indexing
+        // 8000+ hand-built single-token docs is the slow part of this fixture.
+        // Freq alternates 1/2 so the full blocks aren't trivially all-freq-1.
+        final int level1DocFreq = 8250;
+        for (int i = 0; i < level1DocFreq; i++) {
+          Document doc = new Document();
+          int freq = 1 + (i % 2);
+          String[] toks = new String[freq];
+          java.util.Arrays.fill(toks, "l1term");
+          doc.add(new Field("l1", new CannedTokenStream(List.of(toks)), bigType));
+          w.addDocument(doc);
+        }
+
         // "pos": positions/offsets/payloads on real postings (not term
         // vectors -- exercises Lucene104PostingsWriter's .pos/.pay path,
         // reusing GenTermVectors.java's hand-built-TokenStream technique so
@@ -369,6 +388,16 @@ public class GenBlockTree {
         // small single-block postings list.
         appendAdvanceManifest(m, leaf, "big", "everywhere");
         appendAdvanceManifest(m, leaf, "body", "cat");
+
+        // "l1"/"l1term" (docFreq=8250 > LEVEL1_NUM_DOCS=8192): full nextDoc()
+        // iteration (postingsDocs/Freqs) plus advance() ground truth whose
+        // auto-picked targets (first, mid deep inside the 8192-doc level-1
+        // span requiring level-0 skips within it, last in the ~58-doc
+        // remainder past the span, and past-the-end) exercise both the
+        // level-1 whole-span skip and the level-0 skip within a span.
+        appendFieldManifest(m, leaf, "l1", new String[] {"l1term", "zzz-missing"});
+        appendAdvanceManifest(m, leaf, "l1", "l1term");
+        appendLevel1AdvanceManifest(m, leaf, "l1", "l1term");
       }
 
       Files.writeString(out.resolve("manifest.properties"), m.toString());
@@ -597,6 +626,66 @@ public class GenBlockTree {
       }
     }
     String key = "field." + field + ".term." + term + ".advance";
+    m.append(key).append(".results=").append(sb).append('\n');
+  }
+
+  /**
+   * Like {@link #appendAdvanceManifest} but with targets chosen by *occurrence
+   * index* to land exactly on the level-1 structure boundaries a term with
+   * {@code docFreq > LEVEL1_NUM_DOCS} (8192) produces: a doc in the first few
+   * level-0 blocks of the span, a doc deep inside the span (forcing level-0
+   * skipping within it), the span's very last doc (occurrence 8191), the first
+   * remainder doc right after the span (occurrence 8192, reached only by
+   * jumping the whole level-1 span), and a doc further into the remainder.
+   * Dumped under a distinct {@code .advanceLevel1.results} key so the Rust
+   * test can assert the exact boundary behavior, not just the auto-picked
+   * first/mid/last targets. Written as {@code target:doc,freq} pairs, same
+   * format as {@link #appendAdvanceManifest}.
+   */
+  static void appendLevel1AdvanceManifest(
+      StringBuilder m, LeafReader leaf, String field, String term) throws IOException {
+    final int LEVEL1_NUM_DOCS = 32 * 256;
+    Terms terms = leaf.terms(field);
+    TermsEnum probe = terms.iterator();
+    if (!probe.seekExact(new BytesRef(term))) {
+      throw new AssertionError("expected term " + term + " in field " + field);
+    }
+    List<Integer> allDocs = new java.util.ArrayList<>();
+    PostingsEnum p0 = probe.postings(null, PostingsEnum.FREQS);
+    int d;
+    while ((d = p0.nextDoc()) != PostingsEnum.NO_MORE_DOCS) {
+      allDocs.add(d);
+    }
+    if (allDocs.size() <= LEVEL1_NUM_DOCS) {
+      throw new AssertionError(
+          "appendLevel1AdvanceManifest needs docFreq > " + LEVEL1_NUM_DOCS + ", got " + allDocs.size());
+    }
+
+    // Occurrence indices at the meaningful level-1 boundaries.
+    int[] targets = {
+      allDocs.get(5), // early: within the first level-0 block of the span
+      allDocs.get(4000), // deep inside the span: level-0 skipping within it
+      allDocs.get(LEVEL1_NUM_DOCS - 1), // the span's last doc (occurrence 8191)
+      allDocs.get(LEVEL1_NUM_DOCS), // first remainder doc, just past the span
+      allDocs.get(LEVEL1_NUM_DOCS + 20), // further into the remainder
+    };
+
+    StringBuilder sb = new StringBuilder();
+    for (int target : targets) {
+      TermsEnum te = terms.iterator();
+      te.seekExact(new BytesRef(term));
+      PostingsEnum p = te.postings(null, PostingsEnum.FREQS);
+      int result = p.advance(target);
+      if (sb.length() > 0) {
+        sb.append(';');
+      }
+      if (result == PostingsEnum.NO_MORE_DOCS) {
+        sb.append(target).append(":NO_MORE_DOCS");
+      } else {
+        sb.append(target).append(':').append(result).append(',').append(p.freq());
+      }
+    }
+    String key = "field." + field + ".term." + term + ".advanceLevel1";
     m.append(key).append(".results=").append(sb).append('\n');
   }
 
