@@ -26,8 +26,8 @@ installed; regenerate and re-commit whenever the pinned Lucene version changes.
 Every generator above is Java-writes-Rust-reads. The write path (PLAN.md Phase 5)
 needs the opposite: Rust writes real bytes, and a Java program confirms real Lucene
 can open and read them back. `VerifyStoredFields.java`, `VerifyFieldInfos.java`,
-`VerifySegmentInfo.java`, `VerifySegmentInfos.java`, and `VerifyPoints.java` are
-these verifiers so far:
+`VerifySegmentInfo.java`, `VerifySegmentInfos.java`, `VerifyPoints.java`, and
+`VerifyTermVectors.java` are these verifiers so far:
 
 ```sh
 cargo run -p lucene-codecs --example write_stored_fields_fixture -- /tmp/rust-stored-fields
@@ -35,14 +35,16 @@ cargo run -p lucene-codecs --example write_field_infos_fixture -- /tmp/rust-fiel
 cargo run -p lucene-index --example write_segment_info_fixture -- /tmp/rust-segment-info
 cargo run -p lucene-index --example write_segment_infos_fixture -- /tmp/rust-segment-infos
 cargo run -p lucene-codecs --example write_points_fixture -- /tmp/rust-points
+cargo run -p lucene-codecs --example write_term_vectors_fixture -- /tmp/rust-term-vectors
 JAR=$(find ~/.gradle/caches/modules-2/files-2.1/org.apache.lucene/lucene-core/10.5.0 \
   -name 'lucene-core-10.5.0.jar' ! -name '*sources*' ! -name '*javadoc*')
-javac -nowarn -cp "$JAR" -d classes src/VerifyStoredFields.java src/VerifyFieldInfos.java src/VerifySegmentInfo.java src/VerifySegmentInfos.java src/VerifyPoints.java
+javac -nowarn -cp "$JAR" -d classes src/VerifyStoredFields.java src/VerifyFieldInfos.java src/VerifySegmentInfo.java src/VerifySegmentInfos.java src/VerifyPoints.java src/VerifyTermVectors.java
 java -cp "classes:$JAR" VerifyStoredFields /tmp/rust-stored-fields
 java -cp "classes:$JAR" VerifyFieldInfos /tmp/rust-field-infos
 java -cp "classes:$JAR" VerifySegmentInfo /tmp/rust-segment-info
 java -cp "classes:$JAR" VerifySegmentInfos /tmp/rust-segment-infos
 java -cp "classes:$JAR" VerifyPoints /tmp/rust-points
+java -cp "classes:$JAR" VerifyTermVectors /tmp/rust-term-vectors
 ```
 
 `VerifyStoredFields.java` opens the `.fdt`/`.fdx`/`.fdm` triple directly through
@@ -89,6 +91,29 @@ technique `GenPoints.java` uses on the read side) to force a full decode of ever
 point and diff `(docID, value)` pairs against `manifest.properties`. Multi-leaf
 trees and multi-dimension points are out of scope for this writer -- see
 `docs/parity.md`'s points/BKD-tree row.
+
+`VerifyTermVectors.java` verifies `term_vectors::write_best_speed`
+(`crates/lucene-codecs/src/term_vectors.rs`), scoped to positions only (no
+offsets/payloads/prefix-sharing, single chunk): it opens the `.tvd`/`.tvx`/
+`.tvm` triple directly through `Lucene90TermVectorsFormat.vectorsReader` with a
+hand-built `SegmentInfo`/`FieldInfos`, then checks every doc's term
+text/freq/positions via real `Terms`/`TermsEnum`/`PostingsEnum` against
+`manifest.properties` (same technique `GenTermVectors.java` uses on the read
+side). The Rust example writes **two** segments, `_0` and `_1`: `_0` is the
+primary multi-field-number fixture, and `_1` is a regression case where every
+field across every doc has `field_number == 0` -- a review pass before this
+writer's commit caught that a chunk shaped that way previously encoded
+`bits_per_field_num` as 0, which this port's own (more permissive) reader
+tolerates but real Lucene's reader does not (it unconditionally indexes
+`packedBulkOps[bitsPerValue - 1]`, throwing `ArrayIndexOutOfBoundsException`
+on a 0-bit width) -- `_0` alone can never exercise this since it always mixes
+field numbers 0 and 1. Also worth naming since it's easy to miss: the `.tvm`
+meta stream's `packedIntsVersion` field must be written as `2`
+(`PackedInts.VERSION_CURRENT`/`VERSION_MONOTONIC_WITHOUT_ZIGZAG`) -- this
+port's own reader never validates that field, but real Lucene's
+`BlockPackedReaderIterator` does, so a wrong or placeholder value there would
+pass every purely-Rust round-trip test while still failing to open in real
+Lucene.
 
 ## Generators
 

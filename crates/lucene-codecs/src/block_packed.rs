@@ -60,6 +60,37 @@ pub(crate) fn decode_all(input: &mut impl DataInput, total_value_count: i64) -> 
     Ok(out)
 }
 
+/// Encode side of [`decode_all`] (`BlockPackedWriter`'s write path) --
+/// **always writes `minValue = 0`** rather than Java's per-block min-value
+/// optimization: correct (a decoder never needs the min-value shortcut),
+/// just not minimal, matching this port's "worst-case width over minimal
+/// width" stance for the write path generally. Each 64-value block's
+/// `bitsPerValue` is the exact width needed for that block's max value (not
+/// rounded to a fixed set of widths -- `packed_ints`, unlike
+/// `direct_reader`, allows any width 0..=64). Writes nothing for an empty
+/// slice, matching the decoder reading nothing for `total_value_count == 0`.
+pub(crate) fn encode_all(values: &[i64]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < values.len() {
+        let end = (i + BLOCK_SIZE as usize).min(values.len());
+        let block = &values[i..end];
+        let max = *block.iter().max().unwrap();
+        let bits: u32 = if max <= 0 {
+            0
+        } else {
+            64 - (max as u64).leading_zeros()
+        };
+        let token = (bits << 1) | MIN_VALUE_EQUALS_0;
+        out.push(token as u8);
+        if bits > 0 {
+            out.extend_from_slice(&packed_ints::encode(block, bits));
+        }
+        i = end;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,5 +186,33 @@ mod tests {
         let bytes = [0xFEu8]; // 0xFE >> 1 = 127
         let mut input = SliceInput::new(&bytes);
         assert!(decode_all(&mut input, 1).is_err());
+    }
+
+    #[test]
+    fn encode_all_empty_writes_nothing() {
+        assert_eq!(encode_all(&[]), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn encode_all_round_trips_through_decode_all_single_block() {
+        let values = vec![0i64, 2, 1, 0, 3, 100];
+        let encoded = encode_all(&values);
+        let mut input = SliceInput::new(&encoded);
+        assert_eq!(decode_all(&mut input, values.len() as i64).unwrap(), values);
+    }
+
+    #[test]
+    fn encode_all_round_trips_across_multiple_blocks() {
+        let values: Vec<i64> = (0..130).map(|i| (i * 37) % 1000).collect();
+        let encoded = encode_all(&values);
+        let mut input = SliceInput::new(&encoded);
+        assert_eq!(decode_all(&mut input, values.len() as i64).unwrap(), values);
+    }
+
+    #[test]
+    fn encode_all_all_zero_block_uses_zero_bits() {
+        let values = vec![0i64; 64];
+        let encoded = encode_all(&values);
+        assert_eq!(encoded, vec![1u8]); // token: bits=0, min_equals_0=1
     }
 }

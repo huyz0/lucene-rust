@@ -47,6 +47,37 @@ pub(crate) fn byte_count(count: i64, bits_per_value: u32) -> usize {
     ((count as i128 * bits_per_value as i128 + 7) / 8) as usize
 }
 
+/// Encode side of [`get`]: packs `values` MSB-first as one contiguous
+/// bitstream, the exact inverse of `get`'s formula. `bits_per_value` may be
+/// any width `0..=64` (unlike [`crate::direct_reader`], this convention has
+/// no whitelist of supported widths) -- `bits_per_value == 0` writes nothing
+/// (every value is assumed to be 0, matching `get`'s masked-to-zero read).
+pub(crate) fn encode(values: &[i64], bits_per_value: u32) -> Vec<u8> {
+    let n_bytes = byte_count(values.len() as i64, bits_per_value);
+    let mut out = vec![0u8; n_bytes];
+    let mut bit_pos: u64 = 0;
+    for &v in values {
+        let mut remaining = bits_per_value;
+        while remaining > 0 {
+            let byte_idx = (bit_pos >> 3) as usize;
+            let bit_off = (bit_pos & 7) as u32;
+            let free = 8 - bit_off;
+            let take = remaining.min(free);
+            let shift_in_value = remaining - take;
+            let mask: u64 = if take == 64 {
+                u64::MAX
+            } else {
+                (1u64 << take) - 1
+            };
+            let bits_val = ((v as u64) >> shift_in_value) & mask;
+            out[byte_idx] |= (bits_val as u8) << (free - take);
+            bit_pos += take as u64;
+            remaining -= take;
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -93,5 +124,35 @@ mod tests {
     fn out_of_range_is_error() {
         let data = [0u8; 1];
         assert!(get(&data, 16, 5).is_err());
+    }
+
+    #[test]
+    fn encode_round_trips_through_get_for_various_widths() {
+        for bits in [1u32, 3, 4, 5, 8, 12, 16, 20, 31] {
+            let max = if bits >= 63 {
+                i64::MAX
+            } else {
+                (1i64 << bits) - 1
+            };
+            let values: Vec<i64> = (0..17).map(|i| (i as i64 * 7) % (max.max(1) + 1)).collect();
+            let encoded = encode(&values, bits);
+            assert_eq!(encoded.len(), byte_count(values.len() as i64, bits));
+            for (i, &v) in values.iter().enumerate() {
+                assert_eq!(
+                    get(&encoded, bits, i as i64).unwrap(),
+                    v,
+                    "bits={bits} i={i}"
+                );
+            }
+        }
+        // bits=0: every value is assumed/decoded as 0, regardless of input.
+        let encoded = encode(&[5, 9, 0], 0);
+        assert_eq!(encoded, Vec::<u8>::new());
+        assert_eq!(get(&encoded, 0, 0).unwrap(), 0);
+    }
+
+    #[test]
+    fn encode_empty_values_produces_empty_output() {
+        assert_eq!(encode(&[], 5), Vec::<u8>::new());
     }
 }
