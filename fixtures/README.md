@@ -13,7 +13,7 @@ JAR=$(find ~/.gradle/caches/modules-2/files-2.1/org.apache.lucene/lucene-core/10
   -name 'lucene-core-10.5.0.jar' ! -name '*sources*' ! -name '*javadoc*')
 mkdir -p classes data
 javac -nowarn -cp "$JAR" -d classes src/*.java
-for cls in GenPrimitives GenCodecUtil GenSegmentInfo GenSegmentInfos GenLiveDocs GenFieldInfos GenNorms GenDocValues GenCompoundFormat GenStoredFields GenStoredFieldsBestCompression GenSortedDocValues GenMultiValuedDocValues GenTermVectors; do
+for cls in GenPrimitives GenCodecUtil GenSegmentInfo GenSegmentInfos GenLiveDocs GenFieldInfos GenNorms GenDocValues GenCompoundFormat GenStoredFields GenStoredFieldsBestCompression GenSortedDocValues GenMultiValuedDocValues GenTermVectors GenPoints; do
   java -cp "classes:$JAR" $cls data
 done
 ```
@@ -126,3 +126,13 @@ installed; regenerate and re-commit whenever the pinned Lucene version changes.
   interleaved **per document**, not laid out as two global regions — a
   hand-built single-doc unit test couldn't have caught it since a single
   document's own bytes are contiguous either way.
+- `GenPoints.java` — a real single-segment `IndexWriter` session
+  (`points_index/` subdirectory) with 2000 docs, a single-dimension
+  `LongPoint` field ("val") on two-thirds of them (every third doc skips
+  it), spread across a wide positive/negative range — enough points to
+  force several leaves past the default 512-point-per-leaf threshold, and
+  gaps so a leaf's doc ids aren't trivially continuous. Expected
+  (docID, value) pairs come from `PointValues.intersect` with a visitor
+  whose `compare` always returns `CELL_CROSSES_QUERY`, forcing Lucene's
+  own reader to fully decode every point rather than taking a
+  bounding-box shortcut, not our own arithmetic.
