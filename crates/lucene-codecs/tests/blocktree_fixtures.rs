@@ -311,6 +311,67 @@ fn many_field_seek_ceil_matches_real_lucene() {
     }
 }
 
+/// `FieldTerms::intersect` against real `WildcardQuery`/
+/// `CompiledAutomaton.getTermsEnum` ground truth
+/// (`GenBlockTree.appendWildcardIntersectManifest`) over the "many" field
+/// (400 terms, multi-block/floor-split): an exact prefix run (`term037*`),
+/// a `*`-suffix pattern equivalent to a `PrefixQuery` (`term039*`), a `?`
+/// single-char wildcard (`term010?`), a pattern matching zero terms
+/// (`zzz*`), and a pattern with no literal prefix at all (`*037*`) --
+/// the one path where `intersect`'s literal-prefix binary-search range never
+/// narrows anything and it falls back to a full unfiltered field scan,
+/// otherwise untested against real Lucene since every other case above
+/// starts with a literal run.
+#[test]
+fn many_field_wildcard_intersect_matches_real_lucene_wildcard_query() {
+    let (fields, m) = open_fixture();
+    let many = fields.field("many").unwrap();
+
+    for label in [
+        "prefixLike",
+        "suffixStar",
+        "questionMark",
+        "noMatches",
+        "noLiteralPrefix",
+    ] {
+        let key = format!("field.many.wildcard.{label}");
+        let pattern_str = m.get(&format!("{key}.pattern"));
+        let expected_count: usize = m.get(&format!("{key}.count")).parse().unwrap();
+        let expected_results = m.get(&format!("{key}.results"));
+
+        let pattern = lucene_codecs::wildcard::WildcardPattern::new(pattern_str.as_bytes());
+        let got: Vec<(String, i32, i64)> = many
+            .intersect(&pattern)
+            .map(|(t, s)| {
+                (
+                    String::from_utf8(t.to_vec()).unwrap(),
+                    s.doc_freq,
+                    s.total_term_freq,
+                )
+            })
+            .collect();
+
+        assert_eq!(got.len(), expected_count, "pattern={pattern_str:?}");
+
+        let expected: Vec<(String, i32, i64)> = if expected_results.is_empty() {
+            Vec::new()
+        } else {
+            expected_results
+                .split(';')
+                .map(|entry| {
+                    let mut parts = entry.splitn(3, ':');
+                    let term = parts.next().unwrap().to_string();
+                    let doc_freq: i32 = parts.next().unwrap().parse().unwrap();
+                    let total_term_freq: i64 = parts.next().unwrap().parse().unwrap();
+                    (term, doc_freq, total_term_freq)
+                })
+                .collect()
+        };
+
+        assert_eq!(got, expected, "pattern={pattern_str:?}");
+    }
+}
+
 #[test]
 fn missing_field_returns_none() {
     let (fields, _m) = open_fixture();

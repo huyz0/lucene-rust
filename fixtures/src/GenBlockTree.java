@@ -17,11 +17,13 @@ import org.apache.lucene.index.SegmentCommitInfo;
 import org.apache.lucene.index.SegmentInfos;
 import org.apache.lucene.index.Terms;
 import org.apache.lucene.index.TermsEnum;
+import org.apache.lucene.search.WildcardQuery;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.util.BytesRef;
+import org.apache.lucene.util.automaton.CompiledAutomaton;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -381,6 +383,22 @@ public class GenBlockTree {
         appendSeekCeilManifest(m, leaf, "many", "", "beforeFirst");
         appendSeekCeilManifest(m, leaf, "many", "zzzz", "afterLast");
 
+        // Wildcard/prefix intersection ground truth against "many"
+        // (400 terms "term0000".."term0399"): an exact prefix ("term037*"
+        // -- exactly term0370..term0379), a "*" suffix wildcard equivalent
+        // to a PrefixQuery ("term039*" -- term0390..term0399), a "?"
+        // single-char wildcard ("term010?" -- exactly term0100..term0109),
+        // and a pattern matching zero terms ("zzz*").
+        appendWildcardIntersectManifest(m, leaf, "many", "term037*", "prefixLike");
+        appendWildcardIntersectManifest(m, leaf, "many", "term039*", "suffixStar");
+        appendWildcardIntersectManifest(m, leaf, "many", "term010?", "questionMark");
+        appendWildcardIntersectManifest(m, leaf, "many", "zzz*", "noMatches");
+        // No literal prefix at all -- forces intersect() to fall back to a
+        // full unfiltered field scan (prefix_upper_bound's narrowing never
+        // kicks in), the one path the other cases above never exercise
+        // since they all start with a literal run.
+        appendWildcardIntersectManifest(m, leaf, "many", "*037*", "noLiteralPrefix");
+
         // Real PostingsEnum.advance(target) ground truth: "big"/"everywhere"
         // (docFreq=300, multi-block .doc) exercises advancing across a full
         // 256-doc block boundary into the group-varint tail; "body"/"cat"
@@ -600,6 +618,44 @@ public class GenBlockTree {
       m.append(key).append(".docFreq=").append(te.docFreq()).append('\n');
       m.append(key).append(".totalTermFreq=").append(te.totalTermFreq()).append('\n');
     }
+  }
+
+  /**
+   * Dumps real {@code WildcardQuery}/{@code CompiledAutomaton.getTermsEnum}
+   * ground truth: every term in {@code field} that the compiled automaton
+   * for {@code globPattern} (Lucene's own {@code *}/{@code ?} wildcard
+   * syntax -- the same semantics this port's {@code WildcardPattern}
+   * implements) matches, in sorted order, one {@code term:docFreq:totalTermFreq}
+   * entry per match, joined with {@code ;}. Written under a
+   * {@code .wildcard.<label>} key so a pattern matching zero terms still
+   * writes an (empty) results value rather than being indistinguishable from
+   * "not generated."
+   */
+  static void appendWildcardIntersectManifest(
+      StringBuilder m, LeafReader leaf, String field, String globPattern, String label)
+      throws IOException {
+    Terms terms = leaf.terms(field);
+    if (terms == null) {
+      throw new AssertionError("expected terms for field " + field);
+    }
+    WildcardQuery query = new WildcardQuery(new org.apache.lucene.index.Term(field, globPattern));
+    CompiledAutomaton compiled = query.getCompiled();
+    TermsEnum te = compiled.getTermsEnum(terms);
+
+    StringBuilder sb = new StringBuilder();
+    BytesRef term;
+    int count = 0;
+    while ((term = te.next()) != null) {
+      if (sb.length() > 0) {
+        sb.append(';');
+      }
+      sb.append(term.utf8ToString()).append(':').append(te.docFreq()).append(':').append(te.totalTermFreq());
+      count++;
+    }
+    String key = "field." + field + ".wildcard." + label;
+    m.append(key).append(".pattern=").append(globPattern).append('\n');
+    m.append(key).append(".count=").append(count).append('\n');
+    m.append(key).append(".results=").append(sb).append('\n');
   }
 
   /**

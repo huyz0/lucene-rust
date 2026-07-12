@@ -21,3 +21,4 @@ pub mod postings;
 pub mod stored_fields;
 pub mod term_vectors;
 pub mod terms_dict;
+pub mod wildcard;

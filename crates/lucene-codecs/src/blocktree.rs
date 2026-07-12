@@ -110,6 +110,7 @@ use lucene_store::data_input::{DataInput, SliceInput};
 
 use crate::field_infos::{FieldInfos, IndexOptions};
 use crate::postings::{self, DocInput, Postings, TermMetadata};
+use crate::wildcard::WildcardPattern;
 
 const TERMS_CODEC_NAME: &str = "BlockTreeTermsDict";
 const TERMS_INDEX_CODEC_NAME: &str = "BlockTreeTermsIndex";
@@ -339,6 +340,53 @@ impl FieldTerms {
         TermsEnum::new(&self.entries)
     }
 
+    /// `Terms.intersect(CompiledAutomaton, BytesRef)`-equivalent: every term
+    /// (in sorted order) that matches `pattern`, paired with its stats.
+    ///
+    /// **Design** (see `crate::wildcard`'s module doc for the full
+    /// tradeoff): real Lucene's `IntersectTermsEnum` walks only the trie
+    /// nodes/blocks a compiled automaton's reachable states can lead to,
+    /// potentially touching a small fraction of a huge dictionary. This
+    /// method instead narrows the already-sorted `entries` `Vec` to the
+    /// contiguous range starting with the pattern's literal prefix (a plain
+    /// binary search — free, since `entries` is already sorted for
+    /// `seek_exact`) and then tests every term in that range against the
+    /// pattern with a linear scan. For a pattern with no literal prefix
+    /// (e.g. `*foo`) the "range" is the entire field, so this degrades to a
+    /// full `O(n)` scan — correct, but not sub-linear the way a real
+    /// automaton intersection would be. This is an honest, explicitly scoped
+    /// first cut: no `CompiledAutomaton`/`ByteRunAutomaton`/`IntersectTermsEnum`
+    /// block-skipping is implemented, matching this port's "correctness
+    /// first, real optimization later, be honest about what's optimized"
+    /// stance from the postings work (see `docs/parity.md`).
+    pub fn intersect<'a>(
+        &'a self,
+        pattern: &'a WildcardPattern,
+    ) -> impl Iterator<Item = (&'a [u8], TermStats)> + 'a {
+        let prefix = pattern.literal_prefix();
+        // The range of the sorted `Vec` whose *own* leading bytes could
+        // possibly equal `prefix`: the first index at which `term >=
+        // prefix` through the first index at which `term` no longer starts
+        // with `prefix` (found by bumping `prefix`'s last byte, the
+        // standard "prefix range via two binary searches" trick — matches
+        // what real Lucene's own prefix-seek does one level below the
+        // automaton, just expressed here as two `partition_point`s over
+        // the materialized `Vec` instead of a trie walk).
+        let start = self
+            .entries
+            .partition_point(|(t, _, _)| t.as_slice() < prefix.as_slice());
+        let end = match prefix_upper_bound(&prefix) {
+            Some(upper) => self
+                .entries
+                .partition_point(|(t, _, _)| t.as_slice() < upper.as_slice()),
+            None => self.entries.len(),
+        };
+        self.entries[start..end]
+            .iter()
+            .filter(move |(t, _, _)| pattern.matches(t))
+            .map(|(t, s, _)| (t.as_slice(), *s))
+    }
+
     /// `seekExact(term)` followed by `PostingsEnum` iteration
     /// (`postingsReader.postings(...)`, `DOCS_AND_FREQS` mode) — decodes the
     /// term's actual `(docID, freq)` pairs, scoped to a single postings block
@@ -446,6 +494,25 @@ impl BlockTreeFields {
     pub fn field(&self, name: &str) -> Option<&FieldTerms> {
         self.fields.iter().find(|(n, _)| n == name).map(|(_, f)| f)
     }
+}
+
+/// The exclusive upper bound of the sorted range whose bytes all start with
+/// `prefix`: `prefix` with its last byte incremented (dropping any trailing
+/// `0xFF` bytes first, since those can't be incremented in place — e.g.
+/// `[0x61, 0xFF]` -> `[0x62]`). `None` when `prefix` is empty (no useful
+/// bound — the whole `Vec` is the range) or entirely `0xFF` bytes (no finite
+/// byte string is an upper bound; every real term is such a bound already).
+fn prefix_upper_bound(prefix: &[u8]) -> Option<Vec<u8>> {
+    let mut upper = prefix.to_vec();
+    while let Some(&last) = upper.last() {
+        if last == 0xFF {
+            upper.pop();
+        } else {
+            *upper.last_mut().unwrap() += 1;
+            return Some(upper);
+        }
+    }
+    None
 }
 
 fn read_bytes_ref(input: &mut SliceInput) -> Result<Vec<u8>> {
@@ -1407,6 +1474,76 @@ mod tests {
         assert_eq!(field.seek_exact(b"missing"), None);
         assert_eq!(field.seek_exact(b""), None);
         assert!(fields.field("nope").is_none());
+    }
+
+    #[test]
+    fn intersect_prefix_and_wildcard_over_materialized_field() {
+        let b = Builder::new();
+        let (tim, tip, tmd) = b.build(
+            IndexOptions::DocsAndFreqs,
+            &[
+                ("apple", 1, 1),
+                ("application", 1, 1),
+                ("apply", 1, 1),
+                ("banana", 1, 1),
+                ("band", 1, 1),
+            ],
+        );
+        let fis = FieldInfos {
+            fields: vec![field_info(0, "text", IndexOptions::DocsAndFreqs)],
+        };
+        let fields = open(&tim, &tip, &tmd, &fis, &b.id, &b.suffix, 5).unwrap();
+        let field = fields.field("text").unwrap();
+
+        // Prefix: "app*" -> apple, application, apply (in sorted order).
+        let pattern = WildcardPattern::new(b"app*");
+        let got: Vec<&[u8]> = field.intersect(&pattern).map(|(t, _)| t).collect();
+        assert_eq!(got, vec![b"apple".as_slice(), b"application", b"apply"]);
+
+        // "?" wildcard: "ban?" matches nothing here ("band" is 4 bytes so
+        // "ban?" matches "band" exactly -- exercise it precisely).
+        let pattern = WildcardPattern::new(b"ban?");
+        let got: Vec<&[u8]> = field.intersect(&pattern).map(|(t, _)| t).collect();
+        assert_eq!(got, vec![b"band".as_slice()]);
+
+        // No literal prefix ("*" in the middle only): "*ana*" -> banana.
+        let pattern = WildcardPattern::new(b"*ana*");
+        let got: Vec<&[u8]> = field.intersect(&pattern).map(|(t, _)| t).collect();
+        assert_eq!(got, vec![b"banana".as_slice()]);
+
+        // Matches everything.
+        let pattern = WildcardPattern::new(b"*");
+        assert_eq!(field.intersect(&pattern).count(), 5);
+
+        // Matches nothing: valid prefix range, no candidate satisfies the
+        // rest of the pattern.
+        let pattern = WildcardPattern::new(b"app??????");
+        assert_eq!(field.intersect(&pattern).count(), 0);
+
+        // Matches nothing: prefix outside the field's term range entirely.
+        let pattern = WildcardPattern::new(b"zzz*");
+        assert_eq!(field.intersect(&pattern).count(), 0);
+
+        // Exact-match pattern (no wildcard bytes at all) behaves like
+        // seek_exact.
+        let pattern = WildcardPattern::new(b"banana");
+        let got: Vec<&[u8]> = field.intersect(&pattern).map(|(t, _)| t).collect();
+        assert_eq!(got, vec![b"banana".as_slice()]);
+
+        // PrefixQuery-shaped constructor.
+        let pattern = WildcardPattern::prefix(b"ban");
+        let got: Vec<&[u8]> = field.intersect(&pattern).map(|(t, _)| t).collect();
+        assert_eq!(got, vec![b"banana".as_slice(), b"band"]);
+    }
+
+    #[test]
+    fn prefix_upper_bound_handles_ff_bytes_and_empty() {
+        assert_eq!(prefix_upper_bound(b""), None);
+        assert_eq!(prefix_upper_bound(&[0xFF]), None);
+        assert_eq!(prefix_upper_bound(&[0xFF, 0xFF]), None);
+        assert_eq!(prefix_upper_bound(b"a"), Some(b"b".to_vec()));
+        assert_eq!(prefix_upper_bound(&[b'a', 0xFF]), Some(vec![b'b']));
+        assert_eq!(prefix_upper_bound(b"app"), Some(b"apq".to_vec()));
     }
 
     #[test]
