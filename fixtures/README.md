@@ -13,7 +13,7 @@ JAR=$(find ~/.gradle/caches/modules-2/files-2.1/org.apache.lucene/lucene-core/10
   -name 'lucene-core-10.5.0.jar' ! -name '*sources*' ! -name '*javadoc*')
 mkdir -p classes data
 javac -nowarn -cp "$JAR" -d classes src/*.java
-for cls in GenPrimitives GenCodecUtil GenSegmentInfo GenSegmentInfos GenLiveDocs GenFieldInfos GenNorms GenDocValues GenCompoundFormat GenStoredFields GenSortedDocValues GenMultiValuedDocValues GenTermVectors; do
+for cls in GenPrimitives GenCodecUtil GenSegmentInfo GenSegmentInfos GenLiveDocs GenFieldInfos GenNorms GenDocValues GenCompoundFormat GenStoredFields GenStoredFieldsBestCompression GenSortedDocValues GenMultiValuedDocValues GenTermVectors; do
   java -cp "classes:$JAR" $cls data
 done
 ```
@@ -82,6 +82,17 @@ installed; regenerate and re-commit whenever the pinned Lucene version changes.
   come from a custom `StoredFieldVisitor` reading them back through
   Lucene's own `Lucene90CompressingStoredFieldsReader`, not our own
   arithmetic.
+- `GenStoredFieldsBestCompression.java` — the same document shape as
+  `GenStoredFields.java`, but forced onto `Lucene104Codec.Mode.
+  BEST_COMPRESSION` (DEFLATE with a preset dictionary, `.fdt` data codec
+  `Lucene90StoredFieldsHighData`) with one field repeating a long sentence
+  so the DEFLATE dictionary + multi-sub-block decode path actually gets
+  exercised, not just a trivial single unit. This fixture caught a real
+  bug: DEFLATE's per-unit compressed-length vint sits immediately before
+  its own compressed bytes, unlike LZ4's, which are all batched up front --
+  getting that backwards (by over-generalizing from the already-working
+  LZ4 code) produced a `MalformedVarint` against these real bytes, caught
+  and fixed before commit.
 - `GenSortedDocValues.java` — a real single-segment `IndexWriter` session
   (`sorted_dv_index/` subdirectory) with a single-valued SORTED field over
   5 docs with repeated values ("banana", "apple", "cherry", "apple",

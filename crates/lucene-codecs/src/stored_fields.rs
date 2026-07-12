@@ -1,22 +1,24 @@
 //! Port of `org.apache.lucene.codecs.lucene90.Lucene90StoredFieldsFormat`
-//! (`.fdt` data + `.fdx` index + `.fdm` meta) — read-only, **`Mode.BEST_SPEED`
-//! only** (the default; `Mode.BEST_COMPRESSION` uses DEFLATE with 48KB
-//! blocks instead of LZ4 with 80KB blocks, a separate future port — since
-//! the mode is baked into the `.fdt` codec name itself, opening a
-//! `BEST_COMPRESSION` segment with this module fails the header check
-//! cleanly rather than needing separate plumbing to detect it upfront).
+//! (`.fdt` data + `.fdx` index + `.fdm` meta) — read-only. Both compression
+//! modes are supported: `Mode.BEST_SPEED` (the default; LZ4, ~80KB chunks)
+//! and `Mode.BEST_COMPRESSION` (DEFLATE, ~480KB chunks). The mode is baked
+//! into the `.fdt` data codec name itself (`...FastData` vs `...HighData`),
+//! so `open` detects it there rather than needing the caller to specify it;
+//! see [`Mode`] and [`decompress_unit`].
 //!
 //! Stored fields (the original field values, as opposed to their indexed or
-//! doc-values forms) are grouped into **chunks** of up to ~1024 documents
-//! each, concatenated and LZ4-compressed together (better ratio than
-//! per-document compression). Three files:
+//! doc-values forms) are grouped into **chunks** of up to ~1024 (BEST_SPEED)
+//! or ~4096 (BEST_COMPRESSION) documents each, concatenated and compressed
+//! together (better ratio than per-document compression). Three files:
 //! - `.fdt`: `IndexHeader, <chunk>*, Footer`. Each chunk: `docBase` (vint),
 //!   a `token` (vint: `chunkDocs = token >> 2`, `sliced = token & 1`,
 //!   `dirty = token & 2` -- the last only matters to a writer's merge
 //!   heuristics, ignored here), each doc's field count and length (via
-//!   [`read_bulk_ints`]), then the LZ4-compressed payload -- one
-//!   [`decompress_unit`] if `!sliced`, or several 80KB-decompressed units
-//!   back to back if `sliced` (only large chunks get split this way).
+//!   [`read_bulk_ints`]), then the compressed payload -- one
+//!   [`decompress_unit`] if `!sliced`, or several `chunk_size`-decompressed
+//!   units back to back if `sliced` (only large chunks get split this way;
+//!   `chunk_size` is read from `.fdm`, not hardcoded, since it differs
+//!   between the two modes).
 //! - `.fdx`: `IndexHeader, <two DirectMonotonicReader-encoded arrays>, Footer`
 //!   -- chunk doc-bases and chunk file-offsets, giving O(log chunks) lookup
 //!   from a doc id to its chunk's `.fdt` offset.
@@ -31,10 +33,12 @@
 use lucene_store::codec_util::{self, ID_LENGTH};
 use lucene_store::data_input::{DataInput, SliceInput};
 
+use crate::deflate;
 use crate::direct_monotonic;
 use crate::lz4;
 
-const DATA_CODEC: &str = "Lucene90StoredFieldsFastData";
+const DATA_CODEC_BEST_SPEED: &str = "Lucene90StoredFieldsFastData";
+const DATA_CODEC_BEST_COMPRESSION: &str = "Lucene90StoredFieldsHighData";
 const META_CODEC: &str = "Lucene90FieldsIndexMeta";
 const INDEX_CODEC: &str = "Lucene90FieldsIndexIdx";
 const VERSION_START: i32 = 1;
@@ -115,11 +119,22 @@ pub struct Document {
     pub fields: Vec<StoredField>,
 }
 
+/// Which per-unit compressor was used to write this segment's `.fdt` --
+/// baked into the data codec name itself, so `open` detects it from the
+/// header rather than needing the caller to specify it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    BestSpeed,
+    BestCompression,
+}
+
 /// Parsed `.fdm` metadata plus the `.fdx`-relative pointers/arrays it
 /// describes; `document()` also needs the whole `.fdt` file's bytes.
 pub struct StoredFieldsReader<'d> {
     fdt: &'d [u8],
     fdx: &'d [u8],
+    mode: Mode,
+    chunk_size: i32,
     max_doc: i32,
     num_chunks: i64,
     docs_start_pointer: i64,
@@ -131,8 +146,10 @@ pub struct StoredFieldsReader<'d> {
 }
 
 /// Parses `.fdt`+`.fdm`+`.fdx` (already read into memory) and returns a
-/// reader over `fdt`/`fdx`'s bytes. Only `Mode.BEST_SPEED`-written segments
-/// are accepted (see module doc).
+/// reader over `fdt`/`fdx`'s bytes. Both `Mode.BEST_SPEED` (LZ4, the
+/// default) and `Mode.BEST_COMPRESSION` (DEFLATE) are supported -- the mode
+/// is detected from the `.fdt` data codec name itself, which differs per
+/// mode (`Lucene90StoredFieldsFastData` vs `...HighData`).
 pub fn open<'d>(
     fdt: &'d [u8],
     fdx: &'d [u8],
@@ -141,9 +158,35 @@ pub fn open<'d>(
     segment_suffix: &str,
 ) -> Result<StoredFieldsReader<'d>> {
     let mut fdt_input = SliceInput::new(fdt);
+    // The data codec name is mode-specific (`...FastData` for BEST_SPEED,
+    // `...HighData` for BEST_COMPRESSION); peek it before the real header
+    // check so we know which one to expect (and which compressor to use
+    // later), then rewind -- `check_index_header` re-reads it from scratch.
+    let header_start = fdt_input.position();
+    let peek_magic = fdt_input.read_be_u32()?;
+    if peek_magic != codec_util::CODEC_MAGIC {
+        return Err(lucene_store::Error::Corrupted(format!(
+            "codec header mismatch: actual header={peek_magic:#x} vs expected header={:#x}",
+            codec_util::CODEC_MAGIC
+        ))
+        .into());
+    }
+    let data_codec = fdt_input.read_string()?;
+    let mode = match data_codec.as_str() {
+        DATA_CODEC_BEST_SPEED => Mode::BestSpeed,
+        DATA_CODEC_BEST_COMPRESSION => Mode::BestCompression,
+        other => {
+            return Err(lucene_store::Error::Corrupted(format!(
+                "unknown stored fields data codec: {other}"
+            ))
+            .into())
+        }
+    };
+    fdt_input.seek(header_start)?;
+
     let fdt_header = codec_util::check_index_header(
         &mut fdt_input,
-        DATA_CODEC,
+        &data_codec,
         VERSION_START,
         VERSION_CURRENT,
         segment_id,
@@ -160,7 +203,7 @@ pub fn open<'d>(
         segment_id,
         segment_suffix,
     )?;
-    let _chunk_size = meta_input.read_vint()?;
+    let chunk_size = meta_input.read_vint()?;
 
     let max_doc = meta_input.read_i32()?;
     let block_shift = meta_input.read_i32()? as u32;
@@ -233,6 +276,8 @@ pub fn open<'d>(
     Ok(StoredFieldsReader {
         fdt,
         fdx,
+        mode,
+        chunk_size,
         max_doc,
         num_chunks,
         docs_start_pointer,
@@ -339,18 +384,22 @@ impl<'d> StoredFieldsReader<'d> {
             return Ok(Document::default());
         }
 
-        let chunk_size = 10 * 8 * 1024; // BEST_SPEED's 80KB outer block size
+        let chunk_size = self.chunk_size as i64;
         let decompressed = if sliced {
             let mut out = Vec::with_capacity(total_length as usize);
             let mut remaining = total_length;
             while remaining > 0 {
                 let to_decompress = remaining.min(chunk_size);
-                out.extend(decompress_unit(&mut input, to_decompress as usize)?);
+                out.extend(decompress_unit(
+                    self.mode,
+                    &mut input,
+                    to_decompress as usize,
+                )?);
                 remaining -= to_decompress;
             }
             out
         } else {
-            decompress_unit(&mut input, total_length as usize)?
+            decompress_unit(self.mode, &mut input, total_length as usize)?
         };
 
         let doc_bytes = decompressed
@@ -515,44 +564,89 @@ fn read_scalar(input: &mut SliceInput, bpv: u8) -> Result<i64> {
     })
 }
 
-/// Decompresses one `LZ4WithPresetDictCompressionMode` unit: a dictionary
-/// prefix (whose *compressed* bytes come first) followed by fixed-size
-/// sub-blocks, each able to reference back into the dictionary. Unlike
-/// Java's reader, this always decompresses the whole unit -- there's no
-/// lazy/partial-read path to preserve since this port hands back a fully
-/// materialized `Document` rather than a streaming `DataInput`.
+/// Decompresses one preset-dictionary compression unit (`LZ4WithPresetDict
+/// CompressionMode` for `Mode.BEST_SPEED`, `DeflateWithPresetDictCompression
+/// Mode` for `Mode.BEST_COMPRESSION`): a dictionary prefix (whose
+/// *compressed* bytes come first) followed by fixed-size sub-blocks, each
+/// able to reference back into the dictionary. Unlike Java's reader, this
+/// always decompresses the whole unit -- there's no lazy/partial-read path
+/// to preserve since this port hands back a fully materialized `Document`
+/// rather than a streaming `DataInput`.
 ///
-/// The interleaved per-block *compressed*-length vints exist in Java only to
-/// support skipping straight to a wanted byte offset without decompressing
-/// everything before it; a full sequential decode doesn't need them, so
-/// they're read (to keep the cursor aligned) and discarded.
-fn decompress_unit(input: &mut SliceInput, original_length: usize) -> Result<Vec<u8>> {
+/// Both formats share `dictLength`/`blockLength` framing up front, but
+/// differ in where each unit's *compressed*-length vint sits relative to
+/// its own compressed bytes -- easy to get backwards, so this is worth
+/// spelling out precisely:
+/// - LZ4 (`LZ4WithPresetDictCompressionMode.readCompressedLengths`) batches
+///   **every** unit's compressed length (the dictionary's, then each
+///   block's) together up front, before any of the actual compressed
+///   bytes. LZ4 is self-terminating from the output length alone, so this
+///   port reads those vints here and discards them (Java's reader only
+///   needs them to support seeking without decompressing everything before
+///   a wanted offset, which a full sequential decode doesn't need).
+/// - DEFLATE (`DeflateWithPresetDictCompressionMode.decompress`/
+///   `doDecompress`) interleaves each unit's compressed-length vint
+///   immediately before that same unit's compressed bytes -- not batched at
+///   all. DEFLATE isn't self-terminating, so [`deflate::decompress`] needs
+///   that length passed in explicitly, read at the point of use.
+fn decompress_unit(mode: Mode, input: &mut SliceInput, original_length: usize) -> Result<Vec<u8>> {
     if original_length == 0 {
         return Ok(Vec::new());
     }
     let dict_length = input.read_vint()? as usize;
     let block_length = input.read_vint()? as usize;
-    input.read_vint()?; // dictionary's compressed length, unused
-    let mut total = dict_length;
-    let mut num_blocks = 0usize;
-    while total < original_length {
-        input.read_vint()?; // block's compressed length, unused
-        total += block_length;
-        num_blocks += 1;
-    }
+    let num_blocks = {
+        let mut total = dict_length;
+        let mut num_blocks = 0usize;
+        while total < original_length {
+            total += block_length;
+            num_blocks += 1;
+        }
+        num_blocks
+    };
 
     let mut buffer = vec![0u8; dict_length + block_length];
-    lz4::decompress(input, dict_length, &mut buffer, 0)?;
     let mut out = vec![0u8; original_length];
-    out[..dict_length].copy_from_slice(&buffer[..dict_length]);
 
-    let mut produced = 0usize;
-    for _ in 0..num_blocks {
-        let to_decompress = block_length.min(original_length - dict_length - produced);
-        lz4::decompress(input, to_decompress, &mut buffer, dict_length)?;
-        out[dict_length + produced..dict_length + produced + to_decompress]
-            .copy_from_slice(&buffer[dict_length..dict_length + to_decompress]);
-        produced += to_decompress;
+    match mode {
+        Mode::BestSpeed => {
+            input.read_vint()?; // dictionary's compressed length, unused
+            for _ in 0..num_blocks {
+                input.read_vint()?; // block's compressed length, unused
+            }
+            lz4::decompress(input, dict_length, &mut buffer, 0)?;
+            out[..dict_length].copy_from_slice(&buffer[..dict_length]);
+
+            let mut produced = 0usize;
+            for _ in 0..num_blocks {
+                let to_decompress = block_length.min(original_length - dict_length - produced);
+                lz4::decompress(input, to_decompress, &mut buffer, dict_length)?;
+                out[dict_length + produced..dict_length + produced + to_decompress]
+                    .copy_from_slice(&buffer[dict_length..dict_length + to_decompress]);
+                produced += to_decompress;
+            }
+        }
+        Mode::BestCompression => {
+            let dict_compressed_length = input.read_vint()? as usize;
+            deflate::decompress(input, dict_compressed_length, dict_length, &mut buffer, 0)?;
+            out[..dict_length].copy_from_slice(&buffer[..dict_length]);
+
+            let mut produced = 0usize;
+            for _ in 0..num_blocks {
+                let to_decompress = block_length.min(original_length - dict_length - produced);
+                let block_compressed_length = input.read_vint()? as usize;
+                deflate::decompress(
+                    input,
+                    block_compressed_length,
+                    to_decompress,
+                    &mut buffer,
+                    dict_length,
+                )?;
+                out[dict_length + produced..dict_length + produced + to_decompress]
+                    .copy_from_slice(&buffer[dict_length..dict_length + to_decompress]);
+                produced += to_decompress;
+            }
+        }
     }
     Ok(out)
 }
@@ -635,7 +729,7 @@ mod tests {
         // .fdt
         let mut fdt = Vec::new();
         fdt.extend_from_slice(&codec_util::CODEC_MAGIC.to_be_bytes());
-        write_string(&mut fdt, DATA_CODEC);
+        write_string(&mut fdt, DATA_CODEC_BEST_SPEED);
         fdt.extend_from_slice(&(VERSION_CURRENT as u32).to_be_bytes());
         fdt.extend_from_slice(&id());
         fdt.push(0); // empty suffix
@@ -987,7 +1081,7 @@ mod tests {
         // shapes in one chunk.
         let mut fdt = Vec::new();
         fdt.extend_from_slice(&codec_util::CODEC_MAGIC.to_be_bytes());
-        write_string(&mut fdt, DATA_CODEC);
+        write_string(&mut fdt, DATA_CODEC_BEST_SPEED);
         fdt.extend_from_slice(&(VERSION_CURRENT as u32).to_be_bytes());
         fdt.extend_from_slice(&id());
         fdt.push(0);
@@ -1027,7 +1121,7 @@ mod tests {
 
         let mut fdt = Vec::new();
         fdt.extend_from_slice(&codec_util::CODEC_MAGIC.to_be_bytes());
-        write_string(&mut fdt, DATA_CODEC);
+        write_string(&mut fdt, DATA_CODEC_BEST_SPEED);
         fdt.extend_from_slice(&(VERSION_CURRENT as u32).to_be_bytes());
         fdt.extend_from_slice(&id());
         fdt.push(0);
@@ -1060,7 +1154,7 @@ mod tests {
 
         let mut fdt = Vec::new();
         fdt.extend_from_slice(&codec_util::CODEC_MAGIC.to_be_bytes());
-        write_string(&mut fdt, DATA_CODEC);
+        write_string(&mut fdt, DATA_CODEC_BEST_SPEED);
         fdt.extend_from_slice(&(VERSION_CURRENT as u32).to_be_bytes());
         fdt.extend_from_slice(&id());
         fdt.push(0);
@@ -1130,7 +1224,10 @@ mod tests {
     #[test]
     fn decompress_unit_zero_length_produces_empty_vec() {
         let mut input = SliceInput::new(&[]);
-        assert_eq!(decompress_unit(&mut input, 0).unwrap(), Vec::<u8>::new());
+        assert_eq!(
+            decompress_unit(Mode::BestSpeed, &mut input, 0).unwrap(),
+            Vec::<u8>::new()
+        );
     }
 
     #[test]
@@ -1178,8 +1275,8 @@ mod tests {
         let mut input = SliceInput::new(&compressed);
 
         let mut out = Vec::new();
-        out.extend(decompress_unit(&mut input, part_a.len()).unwrap());
-        out.extend(decompress_unit(&mut input, part_b.len()).unwrap());
+        out.extend(decompress_unit(Mode::BestSpeed, &mut input, part_a.len()).unwrap());
+        out.extend(decompress_unit(Mode::BestSpeed, &mut input, part_b.len()).unwrap());
 
         let mut expected = part_a;
         expected.extend(part_b);

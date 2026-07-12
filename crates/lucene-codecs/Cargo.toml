@@ -10,6 +10,7 @@ lucene-util = { path = "../lucene-util" }
 lucene-store = { path = "../lucene-store" }
 lz4_flex.workspace = true
 zstd.workspace = true
+miniz_oxide.workspace = true
 
 [dev-dependencies]
 crc32fast.workspace = true

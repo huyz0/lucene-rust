@@ -3,6 +3,7 @@
 
 mod block_packed;
 pub mod compound_format;
+mod deflate;
 pub mod direct_monotonic;
 pub mod direct_reader;
 pub mod doc_values;
