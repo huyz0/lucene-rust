@@ -144,6 +144,22 @@ deletes and DV updates; full-corpus dump diff is empty on a real dataset
 
 ### Phase 3 — Search: queries, scoring, collectors (est. 8–10 weeks)
 
+**Progress so far:** a first, deliberately narrow slice landed in
+`lucene-search` — single-segment `TermQuery` **matching** (no scoring):
+`query::TermQuery` (field + exact term) executed by `search_term_query`
+against an already-opened `blocktree::BlockTreeFields` (+ optional `.doc`
+`DocInput`, optional `.liv`-derived `FixedBitSet`), feeding matching live doc
+IDs to a `Collector` (`VecCollector`/`CountCollector`). Differential-tested
+against the real `IndexWriter`-produced fixture in
+`fixtures/data/blocktree_index/` (`crates/lucene-search/tests/term_query_fixtures.rs`).
+Deliberately does **not** yet cover: relevance scoring/`Similarity` (item 2
+below), `BooleanQuery` (item 3), dynamic pruning/`TopScoreDocCollector` (items
+4–5), or multi-segment `IndexSearcher`/`IndexReader` federation (item 6) — see
+`docs/parity.md`'s `lucene-search` section for the exact scope line and the
+design rationale (no `Weight`/`Scorer` trait hierarchy yet either — a single
+query type and a single segment gave it no second implementation to justify
+the abstraction). The items below remain as originally scoped.
+
 1. Traits: `Query → Weight → Scorer/ScorerSupplier`, `DocIdSetIterator`,
    `TwoPhaseIterator`, `BulkScorer`. Use enums where the closed set allows
    (DISI is called per-doc — keep it monomorphizable; `Box<dyn>` only at Weight level).

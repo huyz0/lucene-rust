@@ -7,5 +7,6 @@ license.workspace = true
 [dependencies]
 thiserror.workspace = true
 lucene-util = { path = "../lucene-util" }
+lucene-codecs = { path = "../lucene-codecs" }
 lucene-index = { path = "../lucene-index" }
 rayon.workspace = true
