@@ -33,41 +33,73 @@
 //!   region spans `[indexStart, indexEnd)` from its `.tmd` record), `Footer`.
 //!   A trie node's header byte packs a 2-bit `sign` selecting one of three
 //!   encodings (`SIGN_NO_CHILDREN`/`SIGN_SINGLE_CHILD_*`/`SIGN_MULTI_CHILDREN`);
-//!   see `TrieReader.java` for the full byte-packing scheme.
+//!   see `TrieReader.java`/`TrieBuilder.java` for the full byte-packing scheme
+//!   ([`load_node`] is a direct transliteration of `TrieReader.load`/
+//!   `loadLeafNode`/`loadSingleChildNode`/`loadMultiChildrenNode`, and
+//!   [`multi_children_labels_and_fps`] of `lookupChild`'s three `ChildSaveStrategy`
+//!   decodings, generalized to enumerate *every* child rather than looking up
+//!   one label at a time — see below for why).
 //! - `.tim` (`TERMS_EXTENSION`): `IndexHeader(codec="BlockTreeTermsDict")`, then
 //!   every field's blocks packed back to back (see [`decode_block`]), `Footer`.
 //!
 //! ## Scope of this slice
 //!
-//! Ported: opening a `.tim`/`.tip`/`.tmd` triple, per-field metadata
-//! (`numTerms`/`sumTotalTermFreq`/`sumDocFreq`/`docCount`/`minTerm`/`maxTerm`),
-//! and `seekExact`-equivalent term lookup with `docFreq`/`totalTermFreq`
-//! readback — **for fields small enough that the writer placed every term in
-//! a single, non-floor, leaf `.tim` block** (real Lucene only splits a
-//! prefix into multiple blocks, or a block into floor sub-blocks, once it
-//! exceeds `minItemsInBlock`/`maxItemsInBlock`, default 25/48 — this port's
-//! test fixtures stay under that). Concretely: the field's trie root node
-//! must be `SIGN_NO_CHILDREN` (no child nodes — the whole field is one
-//! block) with no floor data, and that block's `isLastInFloor`/`isLeafBlock`
-//! bits must both be set. Suffix compression (`CompressionAlgorithm::LZ4`/
-//! `LowercaseAscii`) never triggers for a block whose shared prefix length is
-//! 0 (see `Lucene103BlockTreeTermsWriter`'s `prefixLength > 2` gate), which a
-//! single root-only block always has, so only `NO_COMPRESSION` is
-//! implemented.
+//! Ported: opening a `.tim`/`.tip`/`.tmd` triple, per-field metadata, and
+//! `seekExact`-equivalent term lookup with `docFreq`/`totalTermFreq`
+//! readback, now covering **multi-child trie nodes and floor blocks** — i.e.
+//! a field whose term dictionary spans more than one `.tim` block, whether
+//! because a prefix's terms were split into floor sub-blocks (too many items
+//! sharing one prefix, `LEAF_NODE_HAS_FLOOR`/`NON_LEAF_NODE_HAS_FLOOR`) or
+//! because the trie root has children (`SIGN_SINGLE_CHILD_WITH_OUTPUT`/
+//! `SIGN_SINGLE_CHILD_WITHOUT_OUTPUT`/`SIGN_MULTI_CHILDREN`, all three
+//! `ChildSaveStrategy` encodings — `BITS`/`ARRAY`/`REVERSE_ARRAY`).
 //!
-//! Deferred (all return [`Error::Unsupported`], same stance as `fst.rs`'s
-//! rejected array-node encodings): floor blocks (a prefix's terms split
-//! across multiple `.tim` blocks under one trie node), multi-block fields
-//! (trie nodes with children — `SIGN_SINGLE_CHILD_*`/`SIGN_MULTI_CHILDREN`,
-//! needed once a field has more terms than fit one block), `next()`
-//! (full enumeration) and `seekCeil` (nearest-match seeking), automaton
-//! intersection (`IntersectTermsEnum`), and actual postings decode
-//! (`PostingsEnum`/`ImpactsEnum` — a separate, still-unstarted piece per
-//! `docs/parity.md`). Because this slice never decodes postings, the
+//! **Design choice: eager whole-field materialization, not a single
+//! root-to-leaf trie walk.** Real `SegmentTermsEnum.seekExact` walks the trie
+//! one label at a time along the target term's own bytes, touching only the
+//! one leaf block (and, within it, the one floor sub-block) that can contain
+//! the term. This module instead recursively visits **every** reachable trie
+//! node ([`collect_leaf_blocks`]), resolves every floor sub-block
+//! ([`expand_floor`]) at every node that has output, decodes every resulting
+//! `.tim` block, and merges all of a field's entries into one sorted `Vec` —
+//! the same shape the prior (single-block) slice already used, just now fed
+//! by a full trie traversal instead of one root-node read. This keeps
+//! [`FieldTerms`] and its `seek_exact`/`postings`/`positions` API completely
+//! unchanged (no caller-visible difference between a one-block and a
+//! thousand-block field) and sidesteps a subtlety this port doesn't need to
+//! solve yet: an internal trie node's *own* output block and its children's
+//! blocks are **not** necessarily contiguous in sort order purely from
+//! traversal order (a node's own block can hold terms interleaved in depth
+//! with what its children cover), so collect-then-sort is simpler and
+//! provably correct where a hand-rolled single-path merge would need much
+//! more care to get right. The tradeoff is real: this eagerly decodes blocks
+//! a real `seekExact` for one term would never touch. That's an acceptable
+//! cost for this slice (no enumeration/streaming consumer exists yet to
+//! notice; `rust-performance`'s "correctness first, profile before the next
+//! phase" stance applies) and is flagged here rather than silently accepted.
+//!
+//! **Still out of scope, and now the load-bearing restriction going
+//! forward**: a `.tim` block that is itself **non-leaf** (`isLeafBlock`
+//! false — some of its entries are pointers to further nested sub-blocks
+//! addressed by an in-block delta-fp, rather than raw term suffixes) is
+//! rejected with [`Error::Unsupported`], for every block this slice's trie
+//! traversal reaches, not just the field's single block as before. Every
+//! fixture this port generates only produces leaf blocks (real Lucene seems
+//! to prefer trie-indexed floor/child splits, at least for the term counts
+//! this port's fixtures reach — see `fixtures/src/GenBlockTree.java`'s
+//! "many" field), but a large enough/adversarial field could in principle
+//! still hit a non-leaf block; that remains deferred, same as `next()`/
+//! `seekCeil` (enumeration/nearest-match seeking) and automaton intersection
+//! (`IntersectTermsEnum`). Suffix compression (`CompressionAlgorithm::LZ4`/
+//! `LowercaseAscii`) also remains unimplemented (`Error::Unsupported`) —
+//! every block this port's fixtures produce still uses `NO_COMPRESSION`.
+//!
+//! Because this slice never decodes postings inline with block loading, the
 //! per-term metadata bytes written by the postings writer (doc/pos/pay file
-//! pointer deltas) are read past (to keep the `.tim` block cursor aligned)
-//! but never parsed — `docFreq`/`totalTermFreq` come entirely from the
-//! block's separate stats bytes, which is why that skip is safe.
+//! pointer deltas) are decoded per block via `crate::postings::decode_term_metadata`
+//! (threaded across each individual block's own entries, `absolute` true only
+//! for each block's first entry — blocks never share metadata state, matching
+//! `SegmentTermsEnumFrame`'s per-frame `metaDataUpto`/`absolute` reset).
 
 use lucene_store::codec_util::{self, ID_LENGTH};
 use lucene_store::data_input::{DataInput, SliceInput};
@@ -90,12 +122,31 @@ const POSTINGS_VERSION_CURRENT: i32 = 0;
 /// block size the `.tmd` stream's `indexBlockSize` field must match.
 const POSTINGS_BLOCK_SIZE: i32 = 256;
 
-/// `TrieBuilder.SIGN_NO_CHILDREN` — the only trie node shape this slice reads.
+/// `TrieBuilder.SIGN_NO_CHILDREN` — a leaf trie node (no children).
 const SIGN_NO_CHILDREN: u32 = 0x00;
+/// `TrieBuilder.SIGN_SINGLE_CHILD_WITH_OUTPUT`.
+const SIGN_SINGLE_CHILD_WITH_OUTPUT: u32 = 0x01;
+/// `TrieBuilder.SIGN_SINGLE_CHILD_WITHOUT_OUTPUT`.
+const SIGN_SINGLE_CHILD_WITHOUT_OUTPUT: u32 = 0x02;
+/// `TrieBuilder.SIGN_MULTI_CHILDREN`.
+const SIGN_MULTI_CHILDREN: u32 = 0x03;
 /// `TrieBuilder.LEAF_NODE_HAS_TERMS` (`1 << 5`).
 const LEAF_NODE_HAS_TERMS: u32 = 1 << 5;
 /// `TrieBuilder.LEAF_NODE_HAS_FLOOR` (`1 << 6`).
 const LEAF_NODE_HAS_FLOOR: u32 = 1 << 6;
+/// `TrieBuilder.NON_LEAF_NODE_HAS_TERMS` (`1L << 1`) — the equivalent flag
+/// packed into a non-leaf node's *encoded output fp* (`encodeFP`), not its
+/// header byte, since non-leaf nodes' header bits are all spoken for by
+/// child-pointer bookkeeping.
+const NON_LEAF_NODE_HAS_TERMS: u64 = 1 << 1;
+/// `TrieBuilder.NON_LEAF_NODE_HAS_FLOOR` (`1L << 0`).
+const NON_LEAF_NODE_HAS_FLOOR: u64 = 1;
+/// `TrieBuilder.ChildSaveStrategy.REVERSE_ARRAY.code`.
+const CHILD_STRATEGY_REVERSE_ARRAY: u32 = 0;
+/// `TrieBuilder.ChildSaveStrategy.ARRAY.code`.
+const CHILD_STRATEGY_ARRAY: u32 = 1;
+/// `TrieBuilder.ChildSaveStrategy.BITS.code`.
+const CHILD_STRATEGY_BITS: u32 = 2;
 
 const BYTES_MINUS_1_MASK: [u64; 8] = [
     0xFF,
@@ -284,54 +335,421 @@ fn read_freq_pair(input: &mut SliceInput, index_options: IndexOptions) -> Result
     }
 }
 
-/// Reads one trie node at `fp` within `slice` (the field's `[indexStart,
-/// indexEnd)` region of `.tip`), returning its `(outputFp, hasTerms)` —
-/// i.e. `TrieReader.load` + `loadLeafNode`, restricted to
-/// `SIGN_NO_CHILDREN` (see the module doc for why that's the only shape
-/// this slice's fixtures ever produce).
-fn read_root_node(slice: &[u8], fp: usize) -> Result<(u64, bool)> {
+/// One decoded trie node (`TrieReader.Node`), covering all three shapes
+/// (`SIGN_NO_CHILDREN`/`SIGN_SINGLE_CHILD_*`/`SIGN_MULTI_CHILDREN`) in a
+/// single struct rather than Java's shape-specific fields left unset —
+/// simpler than a Rust enum-per-shape here since [`load_node`] always fills
+/// every field it needs for that shape and callers only ever read the
+/// fields relevant to `node.sign`, mirroring how `TrieReader.Node` itself
+/// mixes single-child/multi-child fields in one class.
+#[derive(Debug, Clone, Copy)]
+struct TrieNode {
+    sign: u32,
+    /// This node's own file pointer within the field's `.tip` index slice.
+    fp: usize,
+    /// `Node.outputFp`/`Node.hasOutput()` — `None` when this node has no
+    /// terms/sub-block of its own (an internal node that exists purely to
+    /// route to deeper children).
+    output_fp: Option<u64>,
+    has_terms: bool,
+    /// `Node.floorDataFp`/`Node.isFloor()`.
+    floor_data_fp: Option<usize>,
+    /// Single-child only: `Node.childDeltaFp`/`Node.minChildrenLabel`.
+    child_delta_fp: u64,
+    min_children_label: u8,
+    /// Multi-children only: `Node.strategyFp`/`childSaveStrategy`/
+    /// `strategyBytes`/`childrenDeltaFpBytes` (`minChildrenLabel` above is
+    /// shared with the single-child case; multi packs it in the same role).
+    strategy_fp: usize,
+    child_save_strategy: u32,
+    strategy_bytes: usize,
+    children_delta_fp_bytes: usize,
+}
+
+fn read_u64_at(slice: &[u8], fp: usize) -> Result<u64> {
     if fp + 8 > slice.len() {
         return Err(Error::Store(lucene_store::Error::Corrupted(
             "trie node read past end of index slice".into(),
         )));
     }
-    let word = u64::from_le_bytes(slice[fp..fp + 8].try_into().unwrap());
-    let term_flags = word as u32;
-    let sign = term_flags & 0x03;
-    if sign != SIGN_NO_CHILDREN {
-        return Err(Error::Unsupported(
-            "multi-block field (trie node has children) not supported in this slice",
-        ));
-    }
-
-    let fp_bytes_minus1 = (term_flags >> 2) & 0x07;
-    let output_fp = if fp_bytes_minus1 <= 6 {
-        (word >> 8) & BYTES_MINUS_1_MASK[fp_bytes_minus1 as usize]
-    } else {
-        if fp + 9 > slice.len() {
-            return Err(Error::Store(lucene_store::Error::Corrupted(
-                "trie node output fp read past end of index slice".into(),
-            )));
-        }
-        u64::from_le_bytes(slice[fp + 1..fp + 9].try_into().unwrap())
-    };
-
-    let has_terms = (term_flags & LEAF_NODE_HAS_TERMS) != 0;
-    let has_floor = (term_flags & LEAF_NODE_HAS_FLOOR) != 0;
-    if has_floor {
-        return Err(Error::Unsupported(
-            "floor blocks not supported in this slice",
-        ));
-    }
-    Ok((output_fp, has_terms))
+    Ok(u64::from_le_bytes(slice[fp..fp + 8].try_into().unwrap()))
 }
 
-/// Decodes the single `.tim` block at `fp`, materializing every (term,
-/// stats) entry — `SegmentTermsEnumFrame.loadBlock` plus a full
-/// `decodeMetaData` pass over every entry, restricted to a non-floor leaf
-/// block (see the module doc). Per-term postings metadata bytes are read
-/// past (to stay aligned) but never decoded, since stats alone determine
-/// `docFreq`/`totalTermFreq`.
+fn read_u8_at(slice: &[u8], fp: usize) -> Result<u8> {
+    slice.get(fp).copied().ok_or_else(|| {
+        Error::Store(lucene_store::Error::Corrupted(
+            "trie node read past end of index slice".into(),
+        ))
+    })
+}
+
+/// Reads `n_bytes` (1..=8) little-endian bytes starting at `fp` into a
+/// `u64` — `TrieBuilder.writeLongNBytes`'s read-side inverse, used for the
+/// multi-children children-fp array (`TrieReader.lookupChild`'s
+/// `BYTES_MINUS_1_MASK`-free array-read, since here `n_bytes` is already a
+/// byte count rather than a "minus 1" nibble).
+fn read_u64_n_bytes(slice: &[u8], fp: usize, n_bytes: usize) -> Result<u64> {
+    if fp + n_bytes > slice.len() {
+        return Err(Error::Store(lucene_store::Error::Corrupted(
+            "trie children-fp array read past end of index slice".into(),
+        )));
+    }
+    let mut v = 0u64;
+    for i in 0..n_bytes {
+        v |= (slice[fp + i] as u64) << (8 * i);
+    }
+    Ok(v)
+}
+
+/// Reads one trie node at `fp` within `slice` (the field's `[indexStart,
+/// indexEnd)` region of `.tip`) — `TrieReader.load`, dispatching on `sign`
+/// to `loadLeafNode`/`loadSingleChildNode`/`loadMultiChildrenNode`.
+fn load_node(slice: &[u8], fp: usize) -> Result<TrieNode> {
+    let word = read_u64_at(slice, fp)?;
+    let term = word as u32;
+    let sign = term & 0x03;
+
+    match sign {
+        SIGN_NO_CHILDREN => {
+            // loadLeafNode: [floor data][output fp][1x|floor|terms|3b fpBytes|2b sign]
+            let fp_bytes_minus1 = (term >> 2) & 0x07;
+            let output_fp = if fp_bytes_minus1 <= 6 {
+                (word >> 8) & BYTES_MINUS_1_MASK[fp_bytes_minus1 as usize]
+            } else {
+                read_u64_at(slice, fp + 1)?
+            };
+            let has_terms = (term & LEAF_NODE_HAS_TERMS) != 0;
+            let floor_data_fp = if (term & LEAF_NODE_HAS_FLOOR) != 0 {
+                Some(fp + 2 + fp_bytes_minus1 as usize)
+            } else {
+                None
+            };
+            Ok(TrieNode {
+                sign,
+                fp,
+                output_fp: Some(output_fp),
+                has_terms,
+                floor_data_fp,
+                child_delta_fp: 0,
+                min_children_label: 0,
+                strategy_fp: 0,
+                child_save_strategy: 0,
+                strategy_bytes: 0,
+                children_delta_fp_bytes: 0,
+            })
+        }
+        SIGN_SINGLE_CHILD_WITH_OUTPUT | SIGN_SINGLE_CHILD_WITHOUT_OUTPUT => {
+            // loadSingleChildNode: [floor][encoded output fp][child fp][label]
+            // [3b encoded output fp bytes|3b child fp bytes|2b sign]
+            let child_delta_bytes_minus1 = (term >> 2) & 0x07;
+            let l = if child_delta_bytes_minus1 <= 5 {
+                word >> 16
+            } else {
+                read_u64_at(slice, fp + 2)?
+            };
+            let child_delta_fp = l & BYTES_MINUS_1_MASK[child_delta_bytes_minus1 as usize];
+            let min_children_label = ((term >> 8) & 0xFF) as u8;
+
+            if sign == SIGN_SINGLE_CHILD_WITHOUT_OUTPUT {
+                Ok(TrieNode {
+                    sign,
+                    fp,
+                    output_fp: None,
+                    has_terms: false,
+                    floor_data_fp: None,
+                    child_delta_fp,
+                    min_children_label,
+                    strategy_fp: 0,
+                    child_save_strategy: 0,
+                    strategy_bytes: 0,
+                    children_delta_fp_bytes: 0,
+                })
+            } else {
+                let encoded_bytes_minus1 = (term >> 5) & 0x07;
+                let offset = fp + child_delta_bytes_minus1 as usize + 3;
+                let encoded_fp =
+                    read_u64_at(slice, offset)? & BYTES_MINUS_1_MASK[encoded_bytes_minus1 as usize];
+                let output_fp = encoded_fp >> 2;
+                let has_terms = (encoded_fp & NON_LEAF_NODE_HAS_TERMS) != 0;
+                let floor_data_fp = if (encoded_fp & NON_LEAF_NODE_HAS_FLOOR) != 0 {
+                    Some(offset + encoded_bytes_minus1 as usize + 1)
+                } else {
+                    None
+                };
+                Ok(TrieNode {
+                    sign,
+                    fp,
+                    output_fp: Some(output_fp),
+                    has_terms,
+                    floor_data_fp,
+                    child_delta_fp,
+                    min_children_label,
+                    strategy_fp: 0,
+                    child_save_strategy: 0,
+                    strategy_bytes: 0,
+                    children_delta_fp_bytes: 0,
+                })
+            }
+        }
+        SIGN_MULTI_CHILDREN => {
+            // loadMultiChildrenNode: [floor][children fps][strategy data]
+            // [children count if floor][encoded output fp][label]
+            // [5b strategy bytes|2b strategy|3b encoded fp bytes|1b has
+            //  output|3b children fp bytes|2b sign]
+            let children_delta_fp_bytes = (((term >> 2) & 0x07) + 1) as usize;
+            let child_save_strategy = (term >> 9) & 0x03;
+            let strategy_bytes = (((term >> 11) & 0x1F) + 1) as usize;
+            let min_children_label = ((term >> 16) & 0xFF) as u8;
+
+            if (term & 0x20) != 0 {
+                let encoded_bytes_minus1 = (term >> 6) & 0x07;
+                let l = if encoded_bytes_minus1 <= 4 {
+                    word >> 24
+                } else {
+                    read_u64_at(slice, fp + 3)?
+                };
+                let encoded_fp = l & BYTES_MINUS_1_MASK[encoded_bytes_minus1 as usize];
+                let output_fp = encoded_fp >> 2;
+                let has_terms = (encoded_fp & NON_LEAF_NODE_HAS_TERMS) != 0;
+                let (strategy_fp, floor_data_fp) = if (encoded_fp & NON_LEAF_NODE_HAS_FLOOR) != 0 {
+                    let offset = fp + 4 + encoded_bytes_minus1 as usize;
+                    let children_num = (read_u8_at(slice, offset)? as u64) + 1;
+                    let sfp = offset + 1;
+                    (
+                        sfp,
+                        Some(
+                            sfp + strategy_bytes
+                                + (children_num as usize) * children_delta_fp_bytes,
+                        ),
+                    )
+                } else {
+                    (fp + 4 + encoded_bytes_minus1 as usize, None)
+                };
+                Ok(TrieNode {
+                    sign,
+                    fp,
+                    output_fp: Some(output_fp),
+                    has_terms,
+                    floor_data_fp,
+                    child_delta_fp: 0,
+                    min_children_label,
+                    strategy_fp,
+                    child_save_strategy,
+                    strategy_bytes,
+                    children_delta_fp_bytes,
+                })
+            } else {
+                Ok(TrieNode {
+                    sign,
+                    fp,
+                    output_fp: None,
+                    has_terms: false,
+                    floor_data_fp: None,
+                    child_delta_fp: 0,
+                    min_children_label,
+                    strategy_fp: fp + 3,
+                    child_save_strategy,
+                    strategy_bytes,
+                    children_delta_fp_bytes,
+                })
+            }
+        }
+        _ => unreachable!("sign is masked to 2 bits"),
+    }
+}
+
+/// Enumerates a `SIGN_MULTI_CHILDREN` node's children's labels and file pointers —
+/// generalizes `TrieReader.lookupChild`'s per-strategy label decoding
+/// (`ChildSaveStrategy.BITS`/`ARRAY`/`REVERSE_ARRAY`) from "find one label"
+/// to "list every label", since this module materializes a field's entire
+/// term dictionary up front rather than walking toward one target term (see
+/// the module doc). Order is irrelevant to callers ([`collect_leaf_blocks`]
+/// sorts all decoded entries at the end), so labels are produced in
+/// ascending order purely because that's the natural decode order for all
+/// three strategies, not because it's required.
+fn multi_children_labels_and_fps(slice: &[u8], node: &TrieNode) -> Result<Vec<(u8, usize)>> {
+    let strategy_fp = node.strategy_fp;
+    let strategy_bytes = node.strategy_bytes;
+    let min_label = node.min_children_label;
+
+    let mut labels: Vec<u8> = Vec::new();
+    match node.child_save_strategy {
+        CHILD_STRATEGY_REVERSE_ARRAY => {
+            let max_label = read_u8_at(slice, strategy_fp)?;
+            let mut missing = Vec::with_capacity(strategy_bytes.saturating_sub(1));
+            for i in 0..strategy_bytes.saturating_sub(1) {
+                missing.push(read_u8_at(slice, strategy_fp + 1 + i)?);
+            }
+            let mut mi = 0;
+            let mut lbl = min_label;
+            loop {
+                if mi < missing.len() && missing[mi] == lbl {
+                    mi += 1;
+                } else {
+                    labels.push(lbl);
+                }
+                if lbl == max_label {
+                    break;
+                }
+                lbl = lbl.wrapping_add(1);
+            }
+        }
+        CHILD_STRATEGY_ARRAY => {
+            labels.push(min_label);
+            for i in 0..strategy_bytes {
+                labels.push(read_u8_at(slice, strategy_fp + i)?);
+            }
+        }
+        CHILD_STRATEGY_BITS => {
+            for i in 0..strategy_bytes {
+                let byte = read_u8_at(slice, strategy_fp + i)?;
+                for bit in 0..8u32 {
+                    if byte & (1 << bit) != 0 {
+                        let pos = (i as u32) * 8 + bit;
+                        labels.push((min_label as u32 + pos) as u8);
+                    }
+                }
+            }
+        }
+        other => {
+            return Err(Error::Store(lucene_store::Error::Corrupted(format!(
+                "invalid child save strategy code: {other}"
+            ))))
+        }
+    }
+
+    let mut result = Vec::with_capacity(labels.len());
+    for (i, label) in labels.iter().enumerate() {
+        let off = strategy_fp + strategy_bytes + i * node.children_delta_fp_bytes;
+        let delta = read_u64_n_bytes(slice, off, node.children_delta_fp_bytes)?;
+        if (delta as usize) > node.fp {
+            return Err(Error::Store(lucene_store::Error::Corrupted(
+                "trie child delta fp exceeds parent fp".into(),
+            )));
+        }
+        result.push((*label, node.fp - delta as usize));
+    }
+    Ok(result)
+}
+
+/// Resolves one trie node's own `(fp, hasTerms)` output into every physical
+/// `.tim` block it addresses — just the one block if not a floor node, or
+/// the base block plus every follow-on floor sub-block otherwise
+/// (`SegmentTermsEnumFrame.setFloorData`/`scanToFloorFrame`'s byte layout:
+/// `numFollowFloorBlocks: vint`, then that many `(floorLeadByte: byte,
+/// code: vlong)` pairs where `code = (subFp - baseFp) << 1 | hasTerms`).
+/// Labels are read past but not returned — picking a single floor sub-block
+/// by label is what real Lucene's `scanToFloorFrame` does for one target
+/// term; this module instead decodes every floor sub-block unconditionally
+/// (see the module doc's eager-materialization tradeoff).
+fn expand_floor(
+    slice: &[u8],
+    base_fp: u64,
+    base_has_terms: bool,
+    floor_data_fp: Option<usize>,
+) -> Result<Vec<(u64, bool)>> {
+    let mut blocks = vec![(base_fp, base_has_terms)];
+    let Some(ffp) = floor_data_fp else {
+        return Ok(blocks);
+    };
+    let mut r = SliceInput::new(slice);
+    r.seek(ffp)?;
+    let num_follow = r.read_vint()?;
+    if num_follow < 0 {
+        return Err(Error::Store(lucene_store::Error::Corrupted(format!(
+            "invalid numFollowFloorBlocks: {num_follow}"
+        ))));
+    }
+    for _ in 0..num_follow {
+        let _label = r.read_byte()?;
+        let code = r.read_vlong()? as u64;
+        let fp = base_fp.wrapping_add(code >> 1);
+        let has_terms = (code & 1) != 0;
+        blocks.push((fp, has_terms));
+    }
+    Ok(blocks)
+}
+
+/// Recursively visits every trie node reachable from `node`, expanding
+/// every node-with-output into its (possibly floor-split) physical block
+/// list and appending them to `out` — the traversal side of the module
+/// doc's "eager whole-field materialization" design. `depth` is a sanity
+/// bound against a corrupted/cyclic trie, not a real limit (trie depth is
+/// bounded by term length in any real index).
+/// Every reachable physical `.tim` block, paired with the trie label path
+/// (i.e. the block's own key prefix) that led to it -- needed because
+/// `decode_block` only ever sees a block's *suffix* bytes (the writer never
+/// repeats a shared prefix inside the block itself; see
+/// `Lucene103BlockTreeTermsWriter`'s prefix-stripping), so a multi-level
+/// trie's blocks must have that prefix re-applied by the caller to recover
+/// full term bytes (the previous single-block-only slice never needed this,
+/// since its one block always sat at the trie root with an empty prefix).
+fn collect_leaf_blocks(
+    slice: &[u8],
+    node: &TrieNode,
+    depth: u32,
+    prefix: &mut Vec<u8>,
+    out: &mut Vec<(u64, Vec<u8>)>,
+) -> Result<()> {
+    if depth > 10_000 {
+        return Err(Error::Unsupported("trie nesting too deep (possible cycle)"));
+    }
+    if let Some(fp) = node.output_fp {
+        for (block_fp, has_terms) in expand_floor(slice, fp, node.has_terms, node.floor_data_fp)? {
+            // `hasTerms == false` means this specific physical `.tim` block
+            // holds nothing but pointers to its own further-nested
+            // sub-blocks (`Lucene103BlockTreeTermsWriter.writeBlocks`
+            // recursing to a deeper prefix rather than floor-splitting).
+            // Real Lucene can fall back to reading those pointers
+            // in-block (`SegmentTermsEnumFrame.nextNonLeaf`/`subCode`), but
+            // this port doesn't need to: `PendingBlock.compileIndex`
+            // unconditionally merges every deeper recursion's own trie
+            // (`subIndices`) into the very same trie this function is
+            // already walking, so every term this pointer-only block would
+            // have routed to is independently reachable as a *separate*,
+            // deeper trie node/child -- this block itself is redundant for
+            // indexed lookup and is simply skipped, not decoded.
+            if has_terms {
+                out.push((block_fp, prefix.clone()));
+            }
+        }
+    }
+    match node.sign {
+        SIGN_NO_CHILDREN => {}
+        SIGN_SINGLE_CHILD_WITH_OUTPUT | SIGN_SINGLE_CHILD_WITHOUT_OUTPUT => {
+            if (node.child_delta_fp as usize) > node.fp {
+                return Err(Error::Store(lucene_store::Error::Corrupted(
+                    "trie child delta fp exceeds parent fp".into(),
+                )));
+            }
+            let child_fp = node.fp - node.child_delta_fp as usize;
+            let child = load_node(slice, child_fp)?;
+            prefix.push(node.min_children_label);
+            let r = collect_leaf_blocks(slice, &child, depth + 1, prefix, out);
+            prefix.pop();
+            r?;
+        }
+        SIGN_MULTI_CHILDREN => {
+            for (label, child_fp) in multi_children_labels_and_fps(slice, node)? {
+                let child = load_node(slice, child_fp)?;
+                prefix.push(label);
+                let r = collect_leaf_blocks(slice, &child, depth + 1, prefix, out);
+                prefix.pop();
+                r?;
+            }
+        }
+        _ => unreachable!("sign is masked to 2 bits"),
+    }
+    Ok(())
+}
+
+/// Decodes a single physical `.tim` block at `fp`, materializing every
+/// (term, stats, metadata) entry — `SegmentTermsEnumFrame.loadBlock` plus a
+/// full `decodeMetaData` pass over every entry, restricted to a **leaf**
+/// block (`isLeafBlock`; see the module doc for why non-leaf blocks stay
+/// unsupported). Floor sub-blocks are just more calls to this same function
+/// at different `fp`s — floor selection happens one level up, in
+/// [`expand_floor`]/[`collect_leaf_blocks`], not here.
 fn decode_block(
     tim: &[u8],
     fp: usize,
@@ -348,12 +766,12 @@ fn decode_block(
             "empty terms block".into(),
         )));
     }
-    let is_last_in_floor = (code & 1) != 0;
-    if !is_last_in_floor {
-        return Err(Error::Unsupported(
-            "floor blocks not supported in this slice",
-        ));
-    }
+    // isLastInFloor (`code & 1`): whether this is the last physical block in
+    // its floor set. Not needed here — [`expand_floor`]/[`collect_leaf_blocks`]
+    // already resolved every floor sub-block's own fp up front, so this
+    // decode doesn't need to chain to a "next" block by inspecting this bit;
+    // it's read past purely to keep the cursor aligned with `entCount`.
+    let _is_last_in_floor = (code & 1) != 0;
 
     let code_l = r.read_vlong()? as u64;
     let is_leaf_block = (code_l & 0x04) != 0;
@@ -561,19 +979,38 @@ pub fn open(
             )));
         }
         let index_slice = &tip[index_start..index_end];
-        let (output_fp, has_terms) = read_root_node(index_slice, root_fp)?;
-        if !has_terms {
+        let root = load_node(index_slice, root_fp)?;
+        let mut blocks = Vec::new();
+        let mut prefix = Vec::new();
+        collect_leaf_blocks(index_slice, &root, 0, &mut prefix, &mut blocks)?;
+        if blocks.is_empty() {
             return Err(Error::Unsupported(
                 "root block with no terms (all sub-blocks) not supported in this slice",
             ));
         }
 
-        let entries = decode_block(
-            tim,
-            output_fp as usize,
-            field_info.index_options,
-            field_info.store_payloads,
-        )?;
+        let mut entries = Vec::with_capacity(num_terms as usize);
+        for (block_fp, block_prefix) in blocks {
+            for (suffix, stats, meta) in decode_block(
+                tim,
+                block_fp as usize,
+                field_info.index_options,
+                field_info.store_payloads,
+            )? {
+                // `decode_block` only ever sees a block's suffix bytes (the
+                // writer strips the shared trie-path prefix); re-attach it
+                // here to recover the full term (see `collect_leaf_blocks`'s
+                // doc comment).
+                let mut term = block_prefix.clone();
+                term.extend_from_slice(&suffix);
+                entries.push((term, stats, meta));
+            }
+        }
+        // Blocks are decoded in trie-traversal order, not necessarily sorted
+        // term order (see the module doc) -- re-sort once, here, so
+        // `FieldTerms::seek_exact`'s binary search stays correct regardless
+        // of how many blocks a field spans.
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
         if entries.len() as i64 != num_terms {
             return Err(Error::Store(lucene_store::Error::Corrupted(format!(
                 "decoded {} terms but field metadata says numTerms={num_terms}",
@@ -918,53 +1355,342 @@ mod tests {
     }
 
     #[test]
-    fn multi_child_trie_node_rejected() {
-        // sign bits = SIGN_MULTI_CHILDREN (0x03) at the root -> Unsupported.
-        let b = Builder::new();
-        let (tim, mut tip, tmd) = b.build(IndexOptions::Docs, &[("a", 1, 1)]);
-        // Overwrite the root node's header byte (right after the .tip index
-        // header) with SIGN_MULTI_CHILDREN.
-        let mut probe = SliceInput::new(&tip);
-        codec_util::check_index_header(
-            &mut probe,
-            TERMS_INDEX_CODEC_NAME,
-            VERSION_CURRENT,
-            VERSION_CURRENT,
-            &b.id,
-            &b.suffix,
-        )
-        .unwrap();
-        let header_pos = probe.position();
-        tip[header_pos] = (tip[header_pos] & !0x03) | 0x03;
-        let fis = FieldInfos {
-            fields: vec![field_info(0, "f", IndexOptions::Docs)],
-        };
-        let err = open(&tim, &tip, &tmd, &fis, &b.id, &b.suffix, 5).unwrap_err();
-        assert!(matches!(err, Error::Unsupported(_)));
+    fn multi_children_node_with_invalid_strategy_code_rejected() {
+        // childSaveStrategy code 3 doesn't exist (only 0/1/2 are defined) ->
+        // a structural Corrupted error, not silently misdecoded.
+        let mut slice = vec![0u8; 24];
+        let term: u32 = SIGN_MULTI_CHILDREN | (3 << 9); // invalid strategy code
+        slice[0..3].copy_from_slice(&term.to_le_bytes()[0..3]);
+        let err = load_node(&slice, 0)
+            .and_then(|node| multi_children_labels_and_fps(&slice, &node))
+            .unwrap_err();
+        assert!(matches!(err, Error::Store(_)));
     }
 
     #[test]
-    fn floor_block_rejected() {
-        let b = Builder::new();
-        let (mut tim, tip, tmd) = b.build(IndexOptions::Docs, &[("a", 1, 1)]);
-        // Overwrite the block's leading vint (isLastInFloor bit) to false.
-        let mut probe = SliceInput::new(&tim);
-        codec_util::check_index_header(
-            &mut probe,
-            TERMS_CODEC_NAME,
+    fn single_child_trie_node_with_output_and_floor_round_trips() {
+        // Build a leaf child at fp=0, then a SIGN_SINGLE_CHILD_WITH_OUTPUT
+        // parent at fp=16 with its own output+floor data, pointing at the
+        // child via a 1-byte delta -- exercises loadSingleChildNode's
+        // "has output" branch end to end (TrieReader.loadSingleChildNode).
+        let mut slice = vec![0u8; 40];
+        // Child: SIGN_NO_CHILDREN, 1-byte output fp = 42, hasTerms.
+        slice[0] = LEAF_NODE_HAS_TERMS as u8;
+        slice[1] = 42;
+
+        let parent_fp = 16usize;
+        let child_delta_fp: u8 = parent_fp as u8; // 16
+        let label: u8 = b'x';
+        // encodeFP: (floor?1:0) | (hasTerms?2:0) | (fp << 2); output fp = 20.
+        let encoded_fp: u64 = NON_LEAF_NODE_HAS_FLOOR | NON_LEAF_NODE_HAS_TERMS | (20 << 2);
+        assert!(encoded_fp <= 0xFF, "fits in 1 byte for this test");
+
+        // childDeltaFpBytesMinus1 = 0 (1 byte), encodedOutputFpBytesMinus1 = 0 (1 byte)
+        let term: u32 = SIGN_SINGLE_CHILD_WITH_OUTPUT;
+        slice[parent_fp..parent_fp + 4].copy_from_slice(&term.to_le_bytes());
+        slice[parent_fp + 1] = label;
+        slice[parent_fp + 2] = child_delta_fp;
+        slice[parent_fp + 3] = encoded_fp as u8;
+        // Floor data right after the 1-byte encoded output fp: one follow
+        // block, floorLeadByte='y', code = (5 << 1) | 1 (hasTerms).
+        let floor_fp = parent_fp + 4;
+        slice[floor_fp] = 1; // numFollowFloorBlocks vint
+        slice[floor_fp + 1] = b'y';
+        slice[floor_fp + 2] = (5 << 1) | 1; // code vlong
+
+        let node = load_node(&slice, parent_fp).unwrap();
+        assert_eq!(node.sign, SIGN_SINGLE_CHILD_WITH_OUTPUT);
+        assert_eq!(node.output_fp, Some(20));
+        assert!(node.has_terms);
+        assert_eq!(node.floor_data_fp, Some(floor_fp));
+        assert_eq!(node.min_children_label, label);
+
+        let blocks = expand_floor(&slice, 20, true, node.floor_data_fp).unwrap();
+        assert_eq!(blocks, vec![(20, true), (25, true)]);
+
+        let child_fp = parent_fp - node.child_delta_fp as usize;
+        assert_eq!(child_fp, 0);
+        let child = load_node(&slice, child_fp).unwrap();
+        assert_eq!(child.output_fp, Some(42));
+        assert!(child.has_terms);
+    }
+
+    #[test]
+    fn single_child_without_output_has_no_own_block() {
+        let mut slice = vec![0u8; 24];
+        let parent_fp = 8usize;
+        // childDeltaFpBytesMinus1 = 0 (1 byte)
+        let term: u32 = SIGN_SINGLE_CHILD_WITHOUT_OUTPUT;
+        slice[parent_fp..parent_fp + 4].copy_from_slice(&term.to_le_bytes());
+        slice[parent_fp + 1] = b'q';
+        slice[parent_fp + 2] = 8; // child delta fp -> child at fp 0
+
+        let node = load_node(&slice, parent_fp).unwrap();
+        assert_eq!(node.output_fp, None);
+        assert!(!node.has_terms);
+        assert_eq!(node.min_children_label, b'q');
+    }
+
+    /// Builds a `SIGN_MULTI_CHILDREN` node (no output of its own) with two
+    /// children under the given `strategy`, and asserts `multi_children_fps`
+    /// recovers exactly the two child fps regardless of which
+    /// `ChildSaveStrategy` encoded them -- `TrieReader.lookupChild`'s three
+    /// strategies (`BITS`/`ARRAY`/`REVERSE_ARRAY`), generalized to "list all"
+    /// (see [`multi_children_labels_and_fps`]'s doc comment for why).
+    fn build_and_check_multi_children(strategy: u32, strategy_bytes_region: &[u8]) {
+        let mut slice = vec![0u8; 32];
+        // Child A: leaf, output fp = 10, hasTerms, at fp 0.
+        slice[0] = LEAF_NODE_HAS_TERMS as u8;
+        slice[1] = 10;
+        // Child B: leaf, output fp = 20, hasTerms, at fp 2.
+        slice[2] = LEAF_NODE_HAS_TERMS as u8;
+        slice[3] = 20;
+
+        let parent_fp = 8usize;
+        let min_label = b'a';
+        let strategy_bytes = strategy_bytes_region.len();
+        // childrenDeltaFpBytesMinus1 = 0 (1 byte), no output
+        let term: u32 = SIGN_MULTI_CHILDREN
+            | (strategy << 9)
+            | (((strategy_bytes - 1) as u32) << 11)
+            | ((min_label as u32) << 16);
+        slice[parent_fp..parent_fp + 4].copy_from_slice(&term.to_le_bytes());
+
+        let strategy_fp = parent_fp + 3;
+        slice[strategy_fp..strategy_fp + strategy_bytes].copy_from_slice(strategy_bytes_region);
+        let fps_fp = strategy_fp + strategy_bytes;
+        slice[fps_fp] = parent_fp as u8; // delta to child A
+        slice[fps_fp + 1] = (parent_fp - 2) as u8; // delta to child B
+
+        let node = load_node(&slice, parent_fp).unwrap();
+        assert_eq!(node.output_fp, None);
+        assert_eq!(node.child_save_strategy, strategy);
+        assert_eq!(node.strategy_bytes, strategy_bytes);
+
+        let mut child_fps: Vec<usize> = multi_children_labels_and_fps(&slice, &node)
+            .unwrap()
+            .into_iter()
+            .map(|(_, fp)| fp)
+            .collect();
+        child_fps.sort_unstable();
+        assert_eq!(child_fps, vec![0, 2]);
+
+        let mut collected = Vec::new();
+        let mut prefix = Vec::new();
+        collect_leaf_blocks(&slice, &node, 0, &mut prefix, &mut collected).unwrap();
+        let mut fps: Vec<u64> = collected.iter().map(|(fp, _)| *fp).collect();
+        fps.sort_unstable();
+        assert_eq!(fps, vec![10, 20]);
+    }
+
+    #[test]
+    fn multi_children_array_strategy() {
+        // ARRAY: labels[1..] stored explicitly ('b' = 0x62), minLabel='a'
+        // implicit.
+        build_and_check_multi_children(CHILD_STRATEGY_ARRAY, b"b");
+    }
+
+    #[test]
+    fn multi_children_bits_strategy() {
+        // BITS: byteDistance = 'b'-'a'+1 = 2 -> 1 byte; bit0 (label 'a')
+        // and bit1 (label 'b') both set -> 0b011 = 3.
+        build_and_check_multi_children(CHILD_STRATEGY_BITS, &[0b011]);
+    }
+
+    #[test]
+    fn multi_children_reverse_array_strategy() {
+        // REVERSE_ARRAY: byte0 = maxLabel ('b'), no missing labels between
+        // 'a' and 'b' (they're consecutive) -> exactly 1 byte.
+        build_and_check_multi_children(CHILD_STRATEGY_REVERSE_ARRAY, b"b");
+    }
+
+    #[test]
+    fn multi_children_reverse_array_strategy_with_gap() {
+        // Labels 'a' and 'd' (a gap of 'b','c' in between): byteDistance=4,
+        // labelCnt=2 -> strategyBytes = 4-2+1 = 3: [maxLabel='d', 'b', 'c'].
+        let mut slice = vec![0u8; 32];
+        slice[0] = LEAF_NODE_HAS_TERMS as u8;
+        slice[1] = 10;
+        slice[2] = LEAF_NODE_HAS_TERMS as u8;
+        slice[3] = 20;
+
+        let parent_fp = 8usize;
+        let min_label = b'a';
+        let strategy_bytes_region = [b'd', b'b', b'c'];
+        let strategy_bytes = strategy_bytes_region.len();
+        let term: u32 = SIGN_MULTI_CHILDREN
+            | (CHILD_STRATEGY_REVERSE_ARRAY << 9)
+            | (((strategy_bytes - 1) as u32) << 11)
+            | ((min_label as u32) << 16);
+        slice[parent_fp..parent_fp + 4].copy_from_slice(&term.to_le_bytes());
+        let strategy_fp = parent_fp + 3;
+        slice[strategy_fp..strategy_fp + strategy_bytes].copy_from_slice(&strategy_bytes_region);
+        let fps_fp = strategy_fp + strategy_bytes;
+        slice[fps_fp] = parent_fp as u8; // delta to child A (fp 0)
+        slice[fps_fp + 1] = (parent_fp - 2) as u8; // delta to child B (fp 2)
+
+        let node = load_node(&slice, parent_fp).unwrap();
+        let mut child_fps: Vec<usize> = multi_children_labels_and_fps(&slice, &node)
+            .unwrap()
+            .into_iter()
+            .map(|(_, fp)| fp)
+            .collect();
+        child_fps.sort_unstable();
+        assert_eq!(child_fps, vec![0, 2]);
+    }
+
+    #[test]
+    fn collect_leaf_blocks_skips_output_with_no_terms() {
+        // A node whose own output has hasTerms=false (a pointer-only block,
+        // e.g. a coarser prefix the writer recursed past rather than
+        // floor-split) contributes no block of its own -- it's skipped, not
+        // an error, since any real terms under that prefix are reachable
+        // through this node's own children instead (see
+        // `collect_leaf_blocks`'s doc comment). Here the node has
+        // `SIGN_NO_CHILDREN`, so skipping it means zero blocks collected.
+        let mut slice = vec![0u8; 16];
+        slice[0] = 0; // sign=0, fpBytesMinus1=0, no LEAF_NODE_HAS_TERMS bit
+        slice[1] = 5;
+        let node = load_node(&slice, 0).unwrap();
+        let mut out = Vec::new();
+        let mut prefix = Vec::new();
+        collect_leaf_blocks(&slice, &node, 0, &mut prefix, &mut out).unwrap();
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn expand_floor_rejects_negative_num_follow() {
+        let mut buf = Vec::new();
+        buf.write_vint(-1);
+        let err = expand_floor(&buf, 0, true, Some(0)).unwrap_err();
+        assert!(matches!(err, Error::Store(_)));
+    }
+
+    #[test]
+    fn expand_floor_no_floor_data_returns_just_the_base_block() {
+        let blocks = expand_floor(&[], 7, true, None).unwrap();
+        assert_eq!(blocks, vec![(7, true)]);
+    }
+
+    /// End-to-end: a field whose terms span two floor sub-blocks under one
+    /// leaf trie node (`LEAF_NODE_HAS_FLOOR`), exercising `open()`'s full
+    /// multi-block merge-and-sort path (not just the trie-decode unit
+    /// pieces above) with a hand-built `.tim`/`.tip`/`.tmd` triple no real
+    /// (small) fixture reaches.
+    #[test]
+    fn open_floor_field_merges_two_blocks_in_sorted_order() {
+        let id = [9u8; ID_LENGTH];
+        let suffix = String::new();
+
+        fn write_leaf_block(tim: &mut Vec<u8>, terms: &[(&str, u32, u64)]) -> usize {
+            let block_fp = tim.len();
+            let ent_count = terms.len() as u32;
+            tim.write_vint(((ent_count << 1) | 1) as i32); // isLastInFloor (unused by decode now)
+
+            let mut suffix_bytes = Vec::new();
+            let mut suffix_lengths = Vec::new();
+            let mut stats = Vec::new();
+            for (term, doc_freq, total_term_freq) in terms {
+                suffix_bytes.extend_from_slice(term.as_bytes());
+                suffix_lengths.write_vint(term.len() as i32);
+                stats.write_vint((*doc_freq as i32) << 1);
+                stats.write_vlong((*total_term_freq as i64) - (*doc_freq as i64));
+            }
+            let code_l = ((suffix_bytes.len() as u64) << 3) | 0x04;
+            tim.write_vlong(code_l as i64);
+            tim.write_bytes(&suffix_bytes);
+            tim.write_vint((suffix_lengths.len() as i32) << 1);
+            tim.write_bytes(&suffix_lengths);
+            tim.write_vint(stats.len() as i32);
+            tim.write_bytes(&stats);
+
+            let mut meta = Vec::new();
+            for (_, doc_freq, _) in terms {
+                meta.write_vlong(10 << 1);
+                if *doc_freq == 1 {
+                    meta.write_vint(0);
+                }
+            }
+            tim.write_vint(meta.len() as i32);
+            tim.write_bytes(&meta);
+            block_fp
+        }
+
+        let mut tim = Vec::new();
+        codec_util::write_index_header(&mut tim, TERMS_CODEC_NAME, VERSION_CURRENT, &id, &suffix);
+        let block0_fp = write_leaf_block(&mut tim, &[("b", 1, 1), ("a", 1, 1)]);
+        let block1_fp = write_leaf_block(&mut tim, &[("z", 2, 5), ("m", 1, 1)]);
+        codec_util::write_footer(&mut tim);
+
+        let mut tip = Vec::new();
+        codec_util::write_index_header(
+            &mut tip,
+            TERMS_INDEX_CODEC_NAME,
             VERSION_CURRENT,
+            &id,
+            &suffix,
+        );
+        let index_start = tip.len();
+        // Leaf root, floor: header | outputFp(block0_fp, 8 bytes to keep it
+        // simple) | floor data.
+        let header = LEAF_NODE_HAS_TERMS as u8 | LEAF_NODE_HAS_FLOOR as u8 | (7 << 2);
+        tip.push(header);
+        tip.extend_from_slice(&(block0_fp as u64).to_le_bytes());
+        tip.write_vint(1); // numFollowFloorBlocks
+        tip.write_byte(b'm'); // floorLeadByte for block1
+        tip.write_vlong((((block1_fp - block0_fp) as i64) << 1) | 1); // code, hasTerms
+        tip.extend_from_slice(&0u64.to_le_bytes()); // over-read pad
+        let index_end = tip.len();
+        codec_util::write_footer(&mut tip);
+
+        let mut tmd = Vec::new();
+        codec_util::write_index_header(
+            &mut tmd,
+            TERMS_META_CODEC_NAME,
             VERSION_CURRENT,
-            &b.id,
-            &b.suffix,
-        )
-        .unwrap();
-        let pos = probe.position();
-        tim[pos] &= !0x01; // clear isLastInFloor
+            &id,
+            &suffix,
+        );
+        codec_util::write_index_header(
+            &mut tmd,
+            POSTINGS_TERMS_CODEC,
+            VERSION_CURRENT,
+            &id,
+            &suffix,
+        );
+        tmd.write_vint(POSTINGS_BLOCK_SIZE);
+        tmd.write_vint(1); // numFields
+        tmd.write_vint(0); // field number
+        tmd.write_vlong(4); // numTerms
+        tmd.write_vlong(8); // sumTotalTermFreq = 1+1+1+5
+        tmd.write_vlong(5); // sumDocFreq = 1+1+1+2
+        tmd.write_vint(1); // docCount
+        tmd.write_vint(1);
+        tmd.write_bytes(b"a");
+        tmd.write_vint(1);
+        tmd.write_bytes(b"z");
+        tmd.write_vlong(index_start as i64);
+        tmd.write_vlong(0); // root fp within index slice
+        tmd.write_vlong(index_end as i64);
+        tmd.write_i64(index_end as i64);
+        tmd.write_i64(tim.len() as i64);
+        codec_util::write_footer(&mut tmd);
+
         let fis = FieldInfos {
-            fields: vec![field_info(0, "f", IndexOptions::Docs)],
+            fields: vec![field_info(0, "f", IndexOptions::DocsAndFreqs)],
         };
-        let err = open(&tim, &tip, &tmd, &fis, &b.id, &b.suffix, 5).unwrap_err();
-        assert!(matches!(err, Error::Unsupported(_)));
+        let fields = open(&tim, &tip, &tmd, &fis, &id, &suffix, 5).unwrap();
+        let field = fields.field("f").unwrap();
+        assert_eq!(field.num_terms, 4);
+
+        // Entries must come back sorted even though block1 (containing "m"
+        // and "z") is decoded after block0 (containing "b" and "a").
+        for (term, expected) in [("a", (1, 1)), ("b", (1, 1)), ("m", (1, 1)), ("z", (2, 5))] {
+            let stats = field.seek_exact(term.as_bytes()).unwrap();
+            assert_eq!(stats.doc_freq, expected.0, "term={term}");
+            assert_eq!(stats.total_term_freq, expected.1, "term={term}");
+        }
+        assert!(field.seek_exact(b"missing").is_none());
     }
 
     #[test]
@@ -1023,7 +1749,7 @@ mod tests {
     }
 
     #[test]
-    fn read_root_node_eight_byte_output_fp() {
+    fn load_node_leaf_eight_byte_output_fp() {
         // fpBytesMinus1 == 7 forces a fresh 8-byte read at fp+1.
         let mut slice = Vec::new();
         let header: u8 = LEAF_NODE_HAS_TERMS as u8 | (7 << 2); // sign=0, fpBytesMinus1=7
@@ -1032,15 +1758,139 @@ mod tests {
         slice.extend_from_slice(&big_fp.to_le_bytes()); // read fresh at fp+1
         slice.extend_from_slice(&0u64.to_le_bytes()); // over-read padding
 
-        let (output_fp, has_terms) = read_root_node(&slice, 0).unwrap();
-        assert_eq!(output_fp, big_fp);
-        assert!(has_terms);
+        let node = load_node(&slice, 0).unwrap();
+        assert_eq!(node.output_fp, Some(big_fp));
+        assert!(node.has_terms);
     }
 
     #[test]
-    fn read_root_node_rejects_truncated_slice() {
+    fn load_node_rejects_truncated_slice() {
         let slice = [0u8; 4];
-        let err = read_root_node(&slice, 0).unwrap_err();
+        let err = load_node(&slice, 0).unwrap_err();
+        assert!(matches!(err, Error::Store(_)));
+    }
+
+    #[test]
+    fn decode_block_rejects_non_leaf_block() {
+        let mut tim = Vec::new();
+        tim.write_vint((1 << 1) | 1); // entCount=1, isLastInFloor
+        tim.write_vlong(0); // codeL: isLeafBlock bit (0x04) unset -> non-leaf
+        let err = decode_block(&tim, 0, IndexOptions::Docs, false).unwrap_err();
+        assert!(matches!(err, Error::Unsupported(_)));
+    }
+
+    #[test]
+    fn decode_block_rejects_suffix_compression() {
+        let mut tim = Vec::new();
+        tim.write_vint((1 << 1) | 1); // entCount=1, isLastInFloor
+        tim.write_vlong(0x04 | 0x01); // isLeafBlock, compressionAlg=1 (LZ4)
+        let err = decode_block(&tim, 0, IndexOptions::Docs, false).unwrap_err();
+        assert!(matches!(err, Error::Unsupported(_)));
+    }
+
+    #[test]
+    fn load_node_multi_children_with_output_and_floor() {
+        // SIGN_MULTI_CHILDREN with its own output+floor data (the
+        // `hasOutput`/`NON_LEAF_NODE_HAS_FLOOR` branch of
+        // `loadMultiChildrenNode`, not yet exercised by the no-output
+        // multi-children tests above).
+        let mut slice = vec![0u8; 48];
+        let parent_fp = 16usize;
+        let min_label = b'a';
+        let strategy_bytes_region = [b'b']; // ARRAY: one extra label 'b'.
+        let strategy_bytes = strategy_bytes_region.len();
+        let encoded_bytes_minus1 = 0u32; // 1-byte encoded output fp.
+                                         // childrenDeltaFpBytesMinus1 = 0 (1 byte)
+        let term: u32 = SIGN_MULTI_CHILDREN
+            | (1 << 5) // has output
+            | (encoded_bytes_minus1 << 6)
+            | (CHILD_STRATEGY_ARRAY << 9)
+            | (((strategy_bytes - 1) as u32) << 11)
+            | ((min_label as u32) << 16);
+        slice[parent_fp..parent_fp + 4].copy_from_slice(&term.to_le_bytes());
+
+        // encodeFP: (floor?1:0) | (hasTerms?2:0) | (fp << 2); output fp = 9.
+        let encoded_fp: u64 = NON_LEAF_NODE_HAS_FLOOR | NON_LEAF_NODE_HAS_TERMS | (9 << 2);
+        assert!(encoded_fp <= 0xFF);
+        // The 3-byte header only fills the low 24 bits of `term`, so byte
+        // offset +3 (the word's 4th byte) is already the start of the
+        // encoded-output-fp region, not part of the header -- matches
+        // `loadMultiChildrenNode`'s `termLong >>> 24` inline read.
+        let encoded_fp_off = parent_fp + 3;
+        slice[encoded_fp_off] = encoded_fp as u8;
+
+        // "has floor" branch: one byte childrenNum-1, then strategy bytes,
+        // then children fps, then floor data.
+        let children_num_off = encoded_fp_off + 1;
+        slice[children_num_off] = 1; // childrenNum - 1 = 1 -> 2 children
+        let strategy_fp = children_num_off + 1;
+        slice[strategy_fp..strategy_fp + strategy_bytes].copy_from_slice(&strategy_bytes_region);
+        let fps_fp = strategy_fp + strategy_bytes;
+        // Two children, both leaf nodes at fp 0 and fp 2.
+        slice[0] = LEAF_NODE_HAS_TERMS as u8;
+        slice[1] = 30;
+        slice[2] = LEAF_NODE_HAS_TERMS as u8;
+        slice[3] = 40;
+        slice[fps_fp] = parent_fp as u8; // delta to child A (fp 0)
+        slice[fps_fp + 1] = (parent_fp - 2) as u8; // delta to child B (fp 2)
+        let floor_fp = fps_fp + 2;
+        slice[floor_fp] = 1; // numFollowFloorBlocks
+        slice[floor_fp + 1] = b'z';
+        slice[floor_fp + 2] = (3 << 1) | 1; // code
+
+        let node = load_node(&slice, parent_fp).unwrap();
+        assert_eq!(node.output_fp, Some(9));
+        assert!(node.has_terms);
+        assert_eq!(node.floor_data_fp, Some(floor_fp));
+        assert_eq!(node.strategy_fp, strategy_fp);
+
+        let mut out = Vec::new();
+        let mut prefix = Vec::new();
+        collect_leaf_blocks(&slice, &node, 0, &mut prefix, &mut out).unwrap();
+        let mut fps: Vec<u64> = out.iter().map(|(fp, _)| *fp).collect();
+        fps.sort_unstable();
+        // Own output expands to blocks at fp 9 and fp 9+3=12, plus children
+        // at fp 30 and fp 40.
+        assert_eq!(fps, vec![9, 12, 30, 40]);
+    }
+
+    #[test]
+    fn collect_leaf_blocks_rejects_trie_nesting_too_deep() {
+        let mut slice = vec![0u8; 16];
+        slice[0] = LEAF_NODE_HAS_TERMS as u8;
+        slice[1] = 5;
+        let node = load_node(&slice, 0).unwrap();
+        let mut out = Vec::new();
+        let mut prefix = Vec::new();
+        let err = collect_leaf_blocks(&slice, &node, 10_001, &mut prefix, &mut out).unwrap_err();
+        assert!(matches!(err, Error::Unsupported(_)));
+    }
+
+    #[test]
+    fn collect_leaf_blocks_rejects_single_child_delta_exceeding_parent_fp() {
+        let mut slice = vec![0u8; 16];
+        let term: u32 = SIGN_SINGLE_CHILD_WITHOUT_OUTPUT;
+        slice[0..4].copy_from_slice(&term.to_le_bytes());
+        slice[1] = b'x';
+        slice[2] = 100; // child delta fp (100) > parent fp (0)
+        let node = load_node(&slice, 0).unwrap();
+        let mut out = Vec::new();
+        let mut prefix = Vec::new();
+        let err = collect_leaf_blocks(&slice, &node, 0, &mut prefix, &mut out).unwrap_err();
+        assert!(matches!(err, Error::Store(_)));
+    }
+
+    #[test]
+    fn multi_children_fps_rejects_delta_exceeding_parent_fp() {
+        let mut slice = vec![0u8; 24];
+        let parent_fp = 8usize;
+        let term: u32 = SIGN_MULTI_CHILDREN | (CHILD_STRATEGY_ARRAY << 9);
+        slice[parent_fp..parent_fp + 4].copy_from_slice(&term.to_le_bytes());
+        let strategy_fp = parent_fp + 3;
+        slice[strategy_fp] = b'b'; // ARRAY strategy, one extra label
+        slice[strategy_fp + 1] = 100; // delta (100) > parent fp (8)
+        let node = load_node(&slice, parent_fp).unwrap();
+        let err = multi_children_labels_and_fps(&slice, &node).unwrap_err();
         assert!(matches!(err, Error::Store(_)));
     }
 

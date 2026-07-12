@@ -157,6 +157,61 @@ fn id_field_docs_only_term_lookups_match_real_lucene() {
     assert!(id_field.seek_exact(b"id5-missing").is_none());
 }
 
+/// `many` (`IndexOptions.DOCS`, 400 distinct terms `"term0000".."term0399"`):
+/// forces real `Lucene103BlockTreeTermsWriter` past the default
+/// `minItemsInBlock=25`/`maxItemsInBlock=48` thresholds, producing both a
+/// multi-child `.tip` trie and at least one floor-split `.tim` block --
+/// exercises `blocktree.rs`'s multi-child-trie-traversal + floor-block
+/// support end to end against real Lucene bytes (not just this port's own
+/// hand-built encoders, see the module's unit tests for those).
+#[test]
+fn many_field_multi_block_floor_term_lookups_match_real_lucene() {
+    let (fields, m) = open_fixture();
+    let many = fields.field("many").unwrap();
+
+    let num_terms: i64 = m.get("field.many.numTerms").parse().unwrap();
+    assert_eq!(num_terms, 400);
+
+    let present = [
+        "term0000", "term0001", "term0037", "term0038", "term0099", "term0100", "term0150",
+        "term0199", "term0200", "term0250", "term0299", "term0300", "term0350", "term0398",
+        "term0399",
+    ];
+    for term in present {
+        let stats = many
+            .seek_exact(term.as_bytes())
+            .unwrap_or_else(|| panic!("expected term {term:?} to be found"));
+        let expected_doc_freq: i32 = m
+            .get(&format!("field.many.term.{term}.docFreq"))
+            .parse()
+            .unwrap();
+        let expected_total_term_freq: i64 = m
+            .get(&format!("field.many.term.{term}.totalTermFreq"))
+            .parse()
+            .unwrap();
+        assert_eq!(stats.doc_freq, expected_doc_freq, "term={term}");
+        assert_eq!(
+            stats.total_term_freq, expected_total_term_freq,
+            "term={term}"
+        );
+    }
+
+    assert!(many.seek_exact(b"term0400-missing").is_none());
+    assert!(many.seek_exact(b"term9999-missing").is_none());
+
+    // Every one of the 400 terms is independently reachable (not just the
+    // sampled subset above) -- a stronger check that the multi-block merge
+    // didn't drop or misplace any entries.
+    for i in 0..400 {
+        let term = format!("term{i:04}");
+        let stats = many
+            .seek_exact(term.as_bytes())
+            .unwrap_or_else(|| panic!("expected term {term:?} to be found"));
+        assert_eq!(stats.doc_freq, 1, "term={term}");
+        assert_eq!(stats.total_term_freq, 1, "term={term}");
+    }
+}
+
 #[test]
 fn missing_field_returns_none() {
     let (fields, _m) = open_fixture();

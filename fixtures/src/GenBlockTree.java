@@ -222,6 +222,28 @@ public class GenBlockTree {
                 posType));
         w.addDocument(doc6);
 
+        // "many": 400 distinct terms ("term0000".."term0399"), one per doc,
+        // deliberately past the default minItemsInBlock=25/maxItemsInBlock=48
+        // thresholds -- forces Lucene103BlockTreeTermsWriter to both split
+        // the field's term dictionary across multiple `.tim` blocks (a
+        // multi-child `.tip` trie, since a 4-digit zero-padded numeric suffix
+        // spreads across many distinct leading bytes) *and* to floor-split
+        // at least one of those prefix groups (some leading-byte groups have
+        // 40 terms sharing that prefix, past maxItemsInBlock=48 once you
+        // include the shared "term0" prefix's own bookkeeping) -- exercising
+        // both new decode paths blocktree.rs added this slice, against real
+        // Lucene bytes rather than only this port's own hand-built encoders.
+        int manyCount = 400;
+        String[] manyLookups = new String[manyCount];
+        for (int i = 0; i < manyCount; i++) {
+            manyLookups[i] = String.format("term%04d", i);
+        }
+        for (String term : manyLookups) {
+            Document doc = new Document();
+            doc.add(new Field("many", new CannedTokenStream(List.of(term)), idType));
+            w.addDocument(doc);
+        }
+
         w.commit();
       }
 
@@ -309,6 +331,22 @@ public class GenBlockTree {
             leaf,
             "pos",
             new String[] {"alpha", "beta"});
+
+        // Sample across the "many" field's range: first/last, several mid
+        // values spanning different leading digits/bytes (so different trie
+        // branches and, where the writer floor-split a prefix, different
+        // floor sub-blocks get exercised), plus two absent lookups (one
+        // between real terms, one past the end).
+        appendFieldManifest(
+            m,
+            leaf,
+            "many",
+            new String[] {
+              "term0000", "term0001", "term0037", "term0038", "term0099",
+              "term0100", "term0150", "term0199", "term0200", "term0250",
+              "term0299", "term0300", "term0350", "term0398", "term0399",
+              "term0400-missing", "term9999-missing"
+            });
       }
 
       Files.writeString(out.resolve("manifest.properties"), m.toString());
