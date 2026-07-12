@@ -170,15 +170,38 @@ semantics (a pure-`MUST_NOT` query matches nothing; `SHOULD` is non-filtering
 once `MUST` exists) were verified against real `BooleanQuery.rewrite()` source
 rather than assumed. Differential-tested in
 `crates/lucene-search/tests/boolean_query_fixtures.rs` against the same
-fixture segment. Still deferred: nested `BooleanQuery` clauses,
-`minimumNumberShouldMatch`, and relevance scoring. The items below remain as
-originally scoped.
+fixture segment. Still deferred at that point: nested `BooleanQuery` clauses,
+`minimumNumberShouldMatch`, and relevance scoring.
+
+A third slice (task #13) landed **BM25 relevance scoring**: `similarity.rs`
+ports the pure `BM25Similarity` formula (`idf`/`tfNorm`/`score`, defaults
+`k1 = 1.2`/`b = 0.75`, verified against `BM25Similarity.java` and independently
+hand-computed in its unit tests), `search_term_query_scored`/
+`search_boolean_query_scored` wire it into a new `ScoringCollector` trait
+(deliberately *not* a breaking change to the existing `Collector` trait — see
+`collector.rs`'s module doc), and `TopDocsCollector` is the ported
+`TopScoreDocCollector`-equivalent (tie-break verified against real
+`HitQueue.lessThan`: lower doc ID wins a score tie). **Important caveat, item
+2 below is only partially closed**: this port has no norms *reader* yet (only
+the `.nvd`/`.nvm` write side exists, see that format's `docs/parity.md` row),
+so every score currently uses a constant field-length substitution
+(`fieldLength == avgFieldLength == 1.0`) instead of this segment's real
+per-document lengths — scores are internally consistent and correctly ordered
+but **not** expected to numerically match real Lucene's BM25 output for the
+same query. Closing that gap (a norms reader + a Java-side BM25-score fixture
+generator for true cross-engine verification) remains future work. Verified
+in `crates/lucene-search/tests/scoring_fixtures.rs`. The items below remain as
+originally scoped except where superseded above.
 
 1. Traits: `Query → Weight → Scorer/ScorerSupplier`, `DocIdSetIterator`,
    `TwoPhaseIterator`, `BulkScorer`. Use enums where the closed set allows
    (DISI is called per-doc — keep it monomorphizable; `Box<dyn>` only at Weight level).
 2. Similarity: BM25 (exact same float math as Java — same order of operations, `f32`
-   where Java uses float, precomputed norm cache tables) + constant score.
+   where Java uses float, precomputed norm cache tables) + constant score. **Formula
+   ported** (`lucene-search/src/similarity.rs`, task #13) — **norms reading/precomputed
+   per-doc norm cache tables still not ported**, so the formula currently runs on a
+   constant field-length substitution rather than real per-document norms; see the
+   note above and `docs/parity.md`'s BM25Similarity/norms rows.
 3. Queries, in order: `MatchAllDocs`, `TermQuery`, `BooleanQuery` (conjunction DISI,
    disjunction heap, minimum-should-match), `PointRangeQuery` (BKD intersect),
    `PhraseQuery` (exact + sloppy), `TermInSetQuery`, `PrefixQuery`/`WildcardQuery`
@@ -189,7 +212,10 @@ originally scoped.
    where Lucene's search performance comes from; without it the port is not competitive.
 5. Collectors: `TopScoreDocCollector` (with after/searchAfter), `TotalHitCountCollector`,
    early termination, `CollectorManager` + intra-query concurrency via rayon over leaves
-   (mirror Lucene's leaf-slice model).
+   (mirror Lucene's leaf-slice model). **`TopScoreDocCollector`'s core (fixed `top_n`,
+   no `searchAfter`) ported** as `collector::TopDocsCollector` (task #13, sorted-`Vec`
+   first cut, not a binary heap — see `docs/parity.md`) — `searchAfter`, early
+   termination, and `CollectorManager`/rayon concurrency remain unported.
 6. `IndexSearcher` facade + query cache (LRU on filter bitsets, like `LRUQueryCache`) —
    cache can be a later sub-milestone.
 

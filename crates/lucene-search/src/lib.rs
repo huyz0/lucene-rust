@@ -104,13 +104,45 @@
 //! Deferred, tracked in `docs/parity.md`: nested `BooleanQuery` clauses (every clause
 //! here is a flat `TermQuery`), `minimumNumberShouldMatch`, and — same as
 //! `search_term_query` — relevance scoring (a separate task, #13).
+//!
+//! ## Relevance scoring (task #13's addition)
+//!
+//! [`search_term_query_scored`]/[`search_boolean_query_scored`] add BM25 relevance
+//! scoring (see [`similarity`] for the formula and, critically, the norms/
+//! avg-field-length approximation this port currently makes — no norms *reader*
+//! exists in this port's search path yet, only the writer, so every score computed
+//! here uses a constant field-length substitution and is **internally consistent
+//! but not expected to numerically match real Lucene's BM25 scores** — see that
+//! module's doc comment for the honest accounting). [`collector::ScoringCollector`]
+//! is the scored sibling of [`collector::Collector`] (a new trait, not a breaking
+//! change — see `collector.rs`'s module doc for why), and
+//! [`collector::TopDocsCollector`] is the `TopScoreDocCollector`-equivalent that
+//! consumes it.
+//!
+//! `search_term_query_scored` mirrors `search_term_query`'s field/term lookup
+//! exactly, additionally reading each matched doc's `freq` (already decoded by
+//! `blocktree::FieldTerms::postings`, just previously discarded by
+//! `term_doc_ids`) and computing `similarity::score(docFreq, docCount, freq,
+//! UNNORMED_FIELD_LENGTH, UNNORMED_FIELD_LENGTH)` per doc.
+//!
+//! `search_boolean_query_scored` computes the same matched-doc set as
+//! `search_boolean_query` (reusing `term_doc_ids` for the pure set algebra), then
+//! sums each matching doc's per-clause BM25 scores across every `must`/`should`
+//! clause that doc satisfies — mirroring real Lucene's additive `BooleanScorer`
+//! (`must_not` clauses never contribute a score, matching real
+//! `Occur.MUST_NOT`'s "filters, never scores" contract).
 
 pub mod collector;
 pub mod docid_set;
 pub mod query;
+pub mod similarity;
 
-pub use collector::{Collector, CountCollector, VecCollector};
+pub use collector::{
+    Collector, CountCollector, ScoreDoc, ScoringCollector, TopDocsCollector, VecCollector,
+};
 pub use query::{BooleanQuery, TermQuery};
+
+use std::collections::HashMap;
 
 use docid_set::{BoxDocIter, Conjunction, Disjunction, Excluding};
 
@@ -237,6 +269,141 @@ pub fn search_boolean_query<C: Collector>(
 
     for doc_id in matched {
         collector.collect(doc_id);
+    }
+    Ok(())
+}
+
+/// Shared per-clause lookup, scored sibling of [`term_doc_ids`]: same field/term/
+/// `live_docs` handling, but returns `(doc_id, freq)` pairs (ascending by
+/// `doc_id`) instead of discarding `freq`, so callers can compute a BM25 score
+/// per doc. Returns an empty `Vec` for a missing field/term, same as
+/// [`term_doc_ids`].
+fn term_doc_freqs(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    query: &TermQuery,
+) -> Result<Vec<(i32, i32)>> {
+    let Some(field_terms) = fields.field(&query.field) else {
+        return Ok(Vec::new());
+    };
+    let Some(postings) = field_terms.postings(&query.term, doc_in)? else {
+        return Ok(Vec::new());
+    };
+    Ok(postings
+        .docs
+        .iter()
+        .copied()
+        .zip(postings.freqs.iter().copied())
+        .filter(|&(doc_id, _)| live_docs.is_none_or(|bits| bits.get(doc_id as usize)))
+        .collect())
+}
+
+/// One clause's BM25 score per matching, live doc (ascending by `doc_id`) — see
+/// [`similarity`]'s module doc for the exact formula and the norms/
+/// avg-field-length approximation every score here uses. Returns an empty `Vec`
+/// for a missing field/term (no score to compute), same as [`term_doc_ids`].
+fn term_doc_scores(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    query: &TermQuery,
+) -> Result<Vec<(i32, f32)>> {
+    let Some(field_terms) = fields.field(&query.field) else {
+        return Ok(Vec::new());
+    };
+    let Some(stats) = field_terms.seek_exact(&query.term) else {
+        return Ok(Vec::new());
+    };
+    let doc_freqs = term_doc_freqs(fields, doc_in, live_docs, query)?;
+    let doc_count = field_terms.doc_count as i64;
+    Ok(doc_freqs
+        .into_iter()
+        .map(|(doc_id, freq)| {
+            let score = similarity::score(
+                stats.doc_freq as i64,
+                doc_count,
+                freq as f32,
+                similarity::UNNORMED_FIELD_LENGTH,
+                similarity::UNNORMED_FIELD_LENGTH,
+            );
+            (doc_id, score)
+        })
+        .collect())
+}
+
+/// Scored sibling of [`search_term_query`]: same matching semantics, but feeds
+/// each matched, live doc's BM25 score (see [`similarity`]) to a
+/// [`ScoringCollector`] instead of a plain [`Collector`].
+pub fn search_term_query_scored<C: ScoringCollector>(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    query: &TermQuery,
+    collector: &mut C,
+) -> Result<()> {
+    for (doc_id, score) in term_doc_scores(fields, doc_in, live_docs, query)? {
+        collector.collect(doc_id, score);
+    }
+    Ok(())
+}
+
+/// Scored sibling of [`search_boolean_query`]: computes the same matched-doc set
+/// (`must`'s conjunction, else `should`'s disjunction, minus `must_not`'s
+/// disjunction — identical rules to [`search_boolean_query`], see this module's
+/// doc comment), but reports each matched doc's score as the **sum of its BM25
+/// score across every `must`/`should` clause it satisfies** (mirroring real
+/// Lucene's additive `BooleanScorer`; `must_not` clauses never contribute to the
+/// score, matching `Occur.MUST_NOT`'s filter-only contract).
+pub fn search_boolean_query_scored<C: ScoringCollector>(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    query: &BooleanQuery,
+    collector: &mut C,
+) -> Result<()> {
+    if query.must.is_empty() && query.should.is_empty() {
+        return Ok(());
+    }
+
+    let clause_docs = |clauses: &[TermQuery]| -> Result<Vec<Vec<i32>>> {
+        clauses
+            .iter()
+            .map(|q| term_doc_ids(fields, doc_in, live_docs, q))
+            .collect()
+    };
+
+    let to_iters = |docs: Vec<Vec<i32>>| -> Vec<BoxDocIter<'static>> {
+        docs.into_iter()
+            .map(|v| Box::new(v.into_iter()) as BoxDocIter<'static>)
+            .collect()
+    };
+
+    let base: BoxDocIter<'static> = if !query.must.is_empty() {
+        Box::new(Conjunction::new(to_iters(clause_docs(&query.must)?)))
+    } else {
+        Box::new(Disjunction::new(to_iters(clause_docs(&query.should)?)))
+    };
+
+    let matched: BoxDocIter<'static> = if query.must_not.is_empty() {
+        base
+    } else {
+        let excluded: BoxDocIter<'static> =
+            Box::new(Disjunction::new(to_iters(clause_docs(&query.must_not)?)));
+        Box::new(Excluding::new(base, excluded))
+    };
+
+    // Sum each scoring clause's (doc_id -> score) contributions across `must`
+    // and `should` (never `must_not`, which only filters -- see doc comment).
+    let mut scores: HashMap<i32, f32> = HashMap::new();
+    for clause in query.must.iter().chain(query.should.iter()) {
+        for (doc_id, score) in term_doc_scores(fields, doc_in, live_docs, clause)? {
+            *scores.entry(doc_id).or_insert(0.0) += score;
+        }
+    }
+
+    for doc_id in matched {
+        collector.collect(doc_id, scores.get(&doc_id).copied().unwrap_or(0.0));
     }
     Ok(())
 }
