@@ -27,8 +27,8 @@ Every generator above is Java-writes-Rust-reads. The write path (PLAN.md Phase 5
 needs the opposite: Rust writes real bytes, and a Java program confirms real Lucene
 can open and read them back. `VerifyStoredFields.java`, `VerifyFieldInfos.java`,
 `VerifySegmentInfo.java`, `VerifySegmentInfos.java`, `VerifyPoints.java`,
-`VerifyTermVectors.java`, `VerifyDocValues.java`, and `VerifyNorms.java` are these
-verifiers so far:
+`VerifyTermVectors.java`, `VerifyDocValues.java`, `VerifyNorms.java`, and
+`VerifyLiveDocs.java` are these verifiers so far:
 
 ```sh
 cargo run -p lucene-codecs --example write_stored_fields_fixture -- /tmp/rust-stored-fields
@@ -39,9 +39,10 @@ cargo run -p lucene-codecs --example write_points_fixture -- /tmp/rust-points
 cargo run -p lucene-codecs --example write_term_vectors_fixture -- /tmp/rust-term-vectors
 cargo run -p lucene-codecs --example write_doc_values_fixture -- /tmp/rust-doc-values
 cargo run -p lucene-codecs --example write_norms_fixture -- /tmp/rust-norms
+cargo run -p lucene-codecs --example write_live_docs_fixture -- /tmp/rust-live-docs
 JAR=$(find ~/.gradle/caches/modules-2/files-2.1/org.apache.lucene/lucene-core/10.5.0 \
   -name 'lucene-core-10.5.0.jar' ! -name '*sources*' ! -name '*javadoc*')
-javac -nowarn -cp "$JAR" -d classes src/VerifyStoredFields.java src/VerifyFieldInfos.java src/VerifySegmentInfo.java src/VerifySegmentInfos.java src/VerifyPoints.java src/VerifyTermVectors.java src/VerifyDocValues.java src/VerifyNorms.java
+javac -nowarn -cp "$JAR" -d classes src/VerifyStoredFields.java src/VerifyFieldInfos.java src/VerifySegmentInfo.java src/VerifySegmentInfos.java src/VerifyPoints.java src/VerifyTermVectors.java src/VerifyDocValues.java src/VerifyNorms.java src/VerifyLiveDocs.java
 java -cp "classes:$JAR" VerifyStoredFields /tmp/rust-stored-fields
 java -cp "classes:$JAR" VerifyFieldInfos /tmp/rust-field-infos
 java -cp "classes:$JAR" VerifySegmentInfo /tmp/rust-segment-info
@@ -50,6 +51,7 @@ java -cp "classes:$JAR" VerifyPoints /tmp/rust-points
 java -cp "classes:$JAR" VerifyTermVectors /tmp/rust-term-vectors
 java -cp "classes:$JAR" VerifyDocValues /tmp/rust-doc-values
 java -cp "classes:$JAR" VerifyNorms /tmp/rust-norms
+java -cp "classes:$JAR" VerifyLiveDocs /tmp/rust-live-docs
 ```
 
 `VerifyStoredFields.java` opens the `.fdt`/`.fdx`/`.fdm` triple directly through
