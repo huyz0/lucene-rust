@@ -26,20 +26,23 @@ installed; regenerate and re-commit whenever the pinned Lucene version changes.
 Every generator above is Java-writes-Rust-reads. The write path (PLAN.md Phase 5)
 needs the opposite: Rust writes real bytes, and a Java program confirms real Lucene
 can open and read them back. `VerifyStoredFields.java`, `VerifyFieldInfos.java`,
-`VerifySegmentInfo.java`, and `VerifySegmentInfos.java` are these verifiers so far:
+`VerifySegmentInfo.java`, `VerifySegmentInfos.java`, and `VerifyPoints.java` are
+these verifiers so far:
 
 ```sh
 cargo run -p lucene-codecs --example write_stored_fields_fixture -- /tmp/rust-stored-fields
 cargo run -p lucene-codecs --example write_field_infos_fixture -- /tmp/rust-field-infos
 cargo run -p lucene-index --example write_segment_info_fixture -- /tmp/rust-segment-info
 cargo run -p lucene-index --example write_segment_infos_fixture -- /tmp/rust-segment-infos
+cargo run -p lucene-codecs --example write_points_fixture -- /tmp/rust-points
 JAR=$(find ~/.gradle/caches/modules-2/files-2.1/org.apache.lucene/lucene-core/10.5.0 \
   -name 'lucene-core-10.5.0.jar' ! -name '*sources*' ! -name '*javadoc*')
-javac -nowarn -cp "$JAR" -d classes src/VerifyStoredFields.java src/VerifyFieldInfos.java src/VerifySegmentInfo.java src/VerifySegmentInfos.java
+javac -nowarn -cp "$JAR" -d classes src/VerifyStoredFields.java src/VerifyFieldInfos.java src/VerifySegmentInfo.java src/VerifySegmentInfos.java src/VerifyPoints.java
 java -cp "classes:$JAR" VerifyStoredFields /tmp/rust-stored-fields
 java -cp "classes:$JAR" VerifyFieldInfos /tmp/rust-field-infos
 java -cp "classes:$JAR" VerifySegmentInfo /tmp/rust-segment-info
 java -cp "classes:$JAR" VerifySegmentInfos /tmp/rust-segment-infos
+java -cp "classes:$JAR" VerifyPoints /tmp/rust-points
 ```
 
 `VerifyStoredFields.java` opens the `.fdt`/`.fdx`/`.fdm` triple directly through
@@ -75,6 +78,17 @@ those formats -- `SegmentCoreReaders` only opens a postings `FieldsProducer`
 when `FieldInfos.hasPostings()` is true, so a segment with zero indexed
 fields needs none of those files to exist. See `docs/parity.md`'s
 `SegmentInfos.write` row for what a fully-indexed segment would still need.
+
+`VerifyPoints.java` verifies `points::write` (`crates/lucene-codecs/src/points.rs`),
+scoped to exactly one BKD leaf and one dimension (`LongPoint`-style): it opens the
+`.kdm`/`.kdi`/`.kdd` triple directly through `Lucene90PointsFormat.fieldsReader`
+with a hand-built `SegmentInfo`/`FieldInfos` (no `.si`/`.fnm` writer needed, same
+division of labor as `VerifyStoredFields.java`), then uses real
+`PointValues.intersect` with an always-`CELL_CROSSES_QUERY` visitor (the same
+technique `GenPoints.java` uses on the read side) to force a full decode of every
+point and diff `(docID, value)` pairs against `manifest.properties`. Multi-leaf
+trees and multi-dimension points are out of scope for this writer -- see
+`docs/parity.md`'s points/BKD-tree row.
 
 ## Generators
 

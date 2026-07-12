@@ -38,6 +38,12 @@
 
 use lucene_store::codec_util;
 use lucene_store::data_input::{DataInput, SliceInput};
+use lucene_store::data_output::DataOutput;
+
+/// Default `BKDConfig`/`Lucene90PointsWriter` leaf size -- the only leaf size
+/// this port's write side has been verified against (see [`write`]'s module
+/// doc for the single-leaf scope).
+pub const DEFAULT_MAX_POINTS_IN_LEAF_NODE: i32 = 512;
 
 const DATA_CODEC_NAME: &str = "Lucene90PointsFormatData";
 const INDEX_CODEC_NAME: &str = "Lucene90PointsFormatIndex";
@@ -62,6 +68,23 @@ pub enum Error {
     UnsupportedCompressedDim(i8),
     #[error("sub-blocks do not add up to the expected count: {expected} != {actual}")]
     SubBlockCountMismatch { expected: usize, actual: usize },
+    #[error(
+        "field {field_number}: {count} points exceeds the single-leaf write path's limit of {max}"
+    )]
+    TooManyPointsForSingleLeaf {
+        field_number: i32,
+        count: usize,
+        max: i32,
+    },
+    #[error("field {field_number}: write() requires at least one point (empty fields aren't supported by this write path)")]
+    EmptyField { field_number: i32 },
+    #[error("field {field_number}: point {index} has packed_value.len() == {actual}, expected bytes_per_dim == {expected}")]
+    WrongPackedValueLength {
+        field_number: i32,
+        index: usize,
+        expected: i32,
+        actual: usize,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -542,6 +565,238 @@ fn read_bpv24(input: &mut SliceInput, count: usize) -> Result<Vec<i32>> {
         i += 1;
     }
     Ok(out)
+}
+
+/// One field's input to [`write`]: a single-dimension (`numDims ==
+/// numIndexDims == 1`) point field's `(docID, packedValue)` pairs, e.g. what
+/// `LongPoint`/`IntPoint` produce (`packedValue` is the sortable big-endian
+/// byte encoding `NumericUtils.longToSortableBytes`/`intToSortableBytes`
+/// already produce -- this module doesn't do that conversion itself, same
+/// division of labor as the read side, which also just hands back raw
+/// packed bytes).
+#[derive(Debug, Clone)]
+pub struct WritePointsField {
+    pub field_number: i32,
+    pub bytes_per_dim: i32,
+    /// `(docID, packedValue)`, in any order -- unlike a multi-leaf/N-dim
+    /// BKD tree, a single leaf has no ordering requirement for correctness
+    /// (see [`write`]'s doc comment for why).
+    pub points: Vec<(i32, Vec<u8>)>,
+}
+
+/// Port of `Lucene90PointsWriter`/`BKDWriter` (`OneDimensionBKDWriter`),
+/// scoped to exactly the case this port's read side already fully
+/// understands and this slice's own fixture proves out: **one BKD leaf, one
+/// dimension, one or more fields**. Produces `(.kdm, .kdi, .kdd)` bytes.
+///
+/// **Why single-leaf needs no packed-index tree structure at all**: real
+/// `BKDWriter.OneDimensionBKDWriter.finish()` only calls `writeIndex` (which
+/// calls `packIndex`) when at least one leaf was written; `packIndex`'s
+/// `recursePackIndex` base case (`numLeaves == 1`) writes *nothing but the
+/// root leaf's own file-pointer delta* (`writeBuffer.writeVLong(delta)`,
+/// `delta = leafLP(0) - minBlockFP(0) = leafLP(0)` since `minBlockFP` starts
+/// at 0) -- there is no split-dimension descriptor, no left/right children,
+/// no `leftNumBytes` skip hint, because a single-leaf tree has no internal
+/// nodes to describe. This mirrors this port's own read-side
+/// `decode_leaf_pointers`, whose `numLeaves == 1` case already only reads
+/// that one root vlong (see `single_leaf_decode_leaf_pointers` in the test
+/// module below, which predates this write-side slice and pins the exact
+/// same fact from the read direction).
+///
+/// **Leaf encoding choices made freely** (this port writes the bytes, it
+/// doesn't need to match what real `BKDWriter` would have chosen for the
+/// same input, only produce bytes real `Lucene90PointsReader` can decode):
+/// common-prefix length is always written as 0 (no prefix compression --
+/// correct for any input, just not maximally compact), the compressed-
+/// dimension marker is always `-2` (the "sparse/low-cardinality" run
+/// encoding) with **every run forced to length 1**, which degrades
+/// gracefully to "every point stores its full value," and doc ids use
+/// `CONTINUOUS_IDS` when the points are already exactly a consecutive run
+/// (cheap to detect, and exactly what this slice's fixture produces) or
+/// plain 4-byte-per-doc `BPV_32` otherwise (always correct, regardless of
+/// sort order or duplicates) -- deliberately not replicating
+/// `DocIdsWriter.writeDocIds`'s bitset/delta-packed heuristics, which exist
+/// purely for on-disk size, not correctness.
+///
+/// **Deferred / not handled by this function** (see `docs/parity.md`):
+/// multi-leaf trees (`points.len() > max_points_in_leaf_node`, which
+/// returns [`Error::TooManyPointsForSingleLeaf`] rather than silently
+/// building a wrong single leaf), multi-dimension points
+/// (`num_dims`/`num_index_dims` > 1 -- this function hardcodes both to 1),
+/// and empty fields (`points.is_empty()` returns
+/// [`Error::EmptyField`] -- real Lucene's `finish()` returns `null` and the
+/// field is omitted from `.kdm` entirely in that case; this port's callers
+/// are expected to simply not pass an empty field rather than replicate
+/// that omission path for a case this slice's scope doesn't need).
+pub fn write(
+    fields: &[WritePointsField],
+    max_points_in_leaf_node: i32,
+    segment_id: &[u8; codec_util::ID_LENGTH],
+    segment_suffix: &str,
+) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    let mut data_out: Vec<u8> = Vec::new();
+    codec_util::write_index_header(
+        &mut data_out,
+        DATA_CODEC_NAME,
+        VERSION_CURRENT,
+        segment_id,
+        segment_suffix,
+    );
+    let mut meta_out: Vec<u8> = Vec::new();
+    codec_util::write_index_header(
+        &mut meta_out,
+        META_CODEC_NAME,
+        VERSION_CURRENT,
+        segment_id,
+        segment_suffix,
+    );
+    let mut index_out: Vec<u8> = Vec::new();
+    codec_util::write_index_header(
+        &mut index_out,
+        INDEX_CODEC_NAME,
+        VERSION_CURRENT,
+        segment_id,
+        segment_suffix,
+    );
+
+    for field in fields {
+        write_single_leaf_field(
+            field,
+            max_points_in_leaf_node,
+            &mut data_out,
+            &mut index_out,
+            &mut meta_out,
+        )?;
+    }
+
+    // Field-loop terminator, then the two file-length fields real
+    // `Lucene90PointsWriter.finish()` writes right after the footers of
+    // `.kdi`/`.kdd` (so they capture each file's *total* length including
+    // its own footer).
+    meta_out.write_i32(-1);
+    codec_util::write_footer(&mut index_out);
+    codec_util::write_footer(&mut data_out);
+    meta_out.write_i64(index_out.len() as i64);
+    meta_out.write_i64(data_out.len() as i64);
+    codec_util::write_footer(&mut meta_out);
+
+    Ok((meta_out, index_out, data_out))
+}
+
+fn write_single_leaf_field(
+    field: &WritePointsField,
+    max_points_in_leaf_node: i32,
+    data_out: &mut Vec<u8>,
+    index_out: &mut Vec<u8>,
+    meta_out: &mut Vec<u8>,
+) -> Result<()> {
+    let count = field.points.len();
+    if count == 0 {
+        return Err(Error::EmptyField {
+            field_number: field.field_number,
+        });
+    }
+    if count > max_points_in_leaf_node as usize {
+        return Err(Error::TooManyPointsForSingleLeaf {
+            field_number: field.field_number,
+            count,
+            max: max_points_in_leaf_node,
+        });
+    }
+    let bytes_per_dim = field.bytes_per_dim as usize;
+    for (i, (_, value)) in field.points.iter().enumerate() {
+        if value.len() != bytes_per_dim {
+            return Err(Error::WrongPackedValueLength {
+                field_number: field.field_number,
+                index: i,
+                expected: field.bytes_per_dim,
+                actual: value.len(),
+            });
+        }
+    }
+
+    // `OneDimensionBKDWriter`'s constructor captures `dataStartFP` before
+    // any leaf bytes are written; with exactly one leaf, the leaf's own file
+    // pointer (`leafBlockFPs.add(dataOut.getFilePointer())`, itself captured
+    // *before* that leaf's bytes) is this same value.
+    let data_start_fp = data_out.len() as i64;
+
+    // -- leaf block (data_out) --
+    data_out.write_vint(count as i32);
+    write_leaf_doc_ids(data_out, field);
+    // Common prefixes: one entry (numDims == 1), always length 0 -- see the
+    // module doc for why this is correct-but-not-maximally-compact. No
+    // actual-bounds box follows since numIndexDims == 1.
+    data_out.write_vint(0);
+    // compressedDim = -2 (sparse/low-cardinality run encoding), every run
+    // forced to length 1.
+    data_out.write_byte((-2i8) as u8);
+    for (_, value) in &field.points {
+        data_out.write_vint(1);
+        data_out.write_bytes(value);
+    }
+
+    // -- min/max packed value (unsigned byte-wise compare, numIndexDims==1
+    // so this is just the one dimension's bytes) --
+    let mut min_packed_value = field.points[0].1.clone();
+    let mut max_packed_value = field.points[0].1.clone();
+    for (_, value) in &field.points[1..] {
+        if value.as_slice() < min_packed_value.as_slice() {
+            min_packed_value = value.clone();
+        }
+        if value.as_slice() > max_packed_value.as_slice() {
+            max_packed_value = value.clone();
+        }
+    }
+
+    // -- packed index (index_out): single leaf => just the root's FP delta
+    // from a baseline of 0, i.e. `data_start_fp` itself (see module doc).
+    let index_start_pointer = index_out.len() as i64;
+    index_out.write_vlong(data_start_fp);
+    let num_index_bytes = (index_out.len() as i64 - index_start_pointer) as i32;
+
+    // -- per-field meta (meta_out) --
+    meta_out.write_i32(field.field_number);
+    codec_util::write_header(meta_out, BKD_CODEC_NAME, BKD_VERSION_CURRENT);
+    meta_out.write_vint(1); // numDims
+    meta_out.write_vint(1); // numIndexDims
+    meta_out.write_vint(max_points_in_leaf_node);
+    meta_out.write_vint(field.bytes_per_dim);
+    meta_out.write_vint(1); // numLeaves
+    meta_out.write_bytes(&min_packed_value);
+    meta_out.write_bytes(&max_packed_value);
+    meta_out.write_vlong(count as i64); // pointCount
+    let doc_count = {
+        let mut docs: Vec<i32> = field.points.iter().map(|(d, _)| *d).collect();
+        docs.sort_unstable();
+        docs.dedup();
+        docs.len() as i32
+    };
+    meta_out.write_vint(doc_count);
+    meta_out.write_vint(num_index_bytes);
+    meta_out.write_i64(data_start_fp); // minLeafBlockFP == the only leaf's FP
+    meta_out.write_i64(index_start_pointer);
+
+    Ok(())
+}
+
+/// Writes this leaf's doc ids: `CONTINUOUS_IDS` when they're already an
+/// exact consecutive run (cheap, common case for this slice's fixture),
+/// `BPV_32` (plain 4-byte little-endian per doc) otherwise -- always
+/// correct regardless of order or duplicates, unlike the bitset/delta-
+/// packed encodings this port doesn't bother choosing between on write.
+fn write_leaf_doc_ids(data_out: &mut Vec<u8>, field: &WritePointsField) {
+    let ids: Vec<i32> = field.points.iter().map(|(d, _)| *d).collect();
+    let is_continuous = ids.windows(2).all(|w| w[1] == w[0] + 1);
+    if is_continuous {
+        data_out.write_byte(CONTINUOUS_IDS as u8);
+        data_out.write_vint(ids[0]);
+    } else {
+        data_out.write_byte(BPV_32 as u8);
+        for &id in &ids {
+            data_out.write_i32(id);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1113,5 +1368,217 @@ mod tests {
             open(&patched, &kdi, &kdd, &id(), ""),
             Err(Error::IllegalFieldNumber(-5))
         ));
+    }
+
+    fn long_sortable_bytes(v: i64) -> Vec<u8> {
+        // NumericUtils.longToSortableBytes: flip the sign bit, then big-endian.
+        ((v ^ i64::MIN) as u64).to_be_bytes().to_vec()
+    }
+
+    #[test]
+    fn write_then_read_single_leaf_continuous_ids_round_trips() {
+        let points: Vec<(i32, Vec<u8>)> = (0..10)
+            .map(|i| (i, long_sortable_bytes((i as i64) * 100 - 500)))
+            .collect();
+        let field = WritePointsField {
+            field_number: 3,
+            bytes_per_dim: 8,
+            points: points.clone(),
+        };
+        let (kdm, kdi, kdd) = write(&[field], 512, &id(), "").unwrap();
+
+        let reader = open(&kdm, &kdi, &kdd, &id(), "").unwrap();
+        let meta = reader.field(3).unwrap();
+        assert_eq!(meta.num_dims, 1);
+        assert_eq!(meta.num_index_dims, 1);
+        assert_eq!(meta.bytes_per_dim, 8);
+        assert_eq!(meta.num_leaves, 1);
+        assert_eq!(meta.point_count, 10);
+        assert_eq!(meta.doc_count, 10);
+        assert_eq!(meta.max_points_in_leaf_node, 512);
+
+        let mut decoded = reader.decode_all_points(3).unwrap();
+        decoded.sort_by_key(|p| p.doc_id);
+        let mut expected: Vec<Point> = points
+            .into_iter()
+            .map(|(doc_id, packed_value)| Point {
+                doc_id,
+                packed_value,
+            })
+            .collect();
+        expected.sort_by_key(|p| p.doc_id);
+        assert_eq!(decoded, expected);
+    }
+
+    #[test]
+    fn write_then_read_single_leaf_non_continuous_ids_round_trips() {
+        // Every third doc skips the field, like GenPoints.java's real fixture
+        // -- forces the BPV_32 doc-id path instead of CONTINUOUS_IDS.
+        let points: Vec<(i32, Vec<u8>)> = (0..30)
+            .filter(|i| i % 3 != 0)
+            .map(|i| (i, long_sortable_bytes((i as i64) * 7919 - 1_000_000)))
+            .collect();
+        let field = WritePointsField {
+            field_number: 0,
+            bytes_per_dim: 8,
+            points: points.clone(),
+        };
+        let (kdm, kdi, kdd) = write(&[field], 512, &id(), "").unwrap();
+
+        let reader = open(&kdm, &kdi, &kdd, &id(), "").unwrap();
+        let meta = reader.field(0).unwrap();
+        assert_eq!(meta.point_count, points.len() as i64);
+        assert_eq!(meta.doc_count, points.len() as i32);
+
+        let mut decoded = reader.decode_all_points(0).unwrap();
+        decoded.sort_by_key(|p| p.doc_id);
+        let mut expected: Vec<Point> = points
+            .into_iter()
+            .map(|(doc_id, packed_value)| Point {
+                doc_id,
+                packed_value,
+            })
+            .collect();
+        expected.sort_by_key(|p| p.doc_id);
+        assert_eq!(decoded, expected);
+    }
+
+    #[test]
+    fn write_multiple_fields_round_trips() {
+        let field_a = WritePointsField {
+            field_number: 0,
+            bytes_per_dim: 4,
+            points: vec![
+                (0, vec![0, 0, 0, 1]),
+                (1, vec![0, 0, 0, 2]),
+                (2, vec![0, 0, 0, 3]),
+            ],
+        };
+        let field_b = WritePointsField {
+            field_number: 1,
+            bytes_per_dim: 8,
+            points: vec![(5, long_sortable_bytes(42)), (7, long_sortable_bytes(-1))],
+        };
+        let (kdm, kdi, kdd) = write(&[field_a.clone(), field_b.clone()], 512, &id(), "").unwrap();
+
+        let reader = open(&kdm, &kdi, &kdd, &id(), "").unwrap();
+        assert!(reader.field(0).is_some());
+        assert!(reader.field(1).is_some());
+
+        let mut got_a = reader.decode_all_points(0).unwrap();
+        got_a.sort_by_key(|p| p.doc_id);
+        assert_eq!(
+            got_a,
+            vec![
+                Point {
+                    doc_id: 0,
+                    packed_value: vec![0, 0, 0, 1]
+                },
+                Point {
+                    doc_id: 1,
+                    packed_value: vec![0, 0, 0, 2]
+                },
+                Point {
+                    doc_id: 2,
+                    packed_value: vec![0, 0, 0, 3]
+                },
+            ]
+        );
+
+        let mut got_b = reader.decode_all_points(1).unwrap();
+        got_b.sort_by_key(|p| p.doc_id);
+        assert_eq!(
+            got_b,
+            vec![
+                Point {
+                    doc_id: 5,
+                    packed_value: long_sortable_bytes(42)
+                },
+                Point {
+                    doc_id: 7,
+                    packed_value: long_sortable_bytes(-1)
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn write_single_point_round_trips() {
+        let field = WritePointsField {
+            field_number: 0,
+            bytes_per_dim: 8,
+            points: vec![(9, long_sortable_bytes(123_456_789))],
+        };
+        let (kdm, kdi, kdd) = write(&[field], 512, &id(), "").unwrap();
+        let reader = open(&kdm, &kdi, &kdd, &id(), "").unwrap();
+        let decoded = reader.decode_all_points(0).unwrap();
+        assert_eq!(
+            decoded,
+            vec![Point {
+                doc_id: 9,
+                packed_value: long_sortable_bytes(123_456_789)
+            }]
+        );
+    }
+
+    #[test]
+    fn write_rejects_too_many_points_for_single_leaf() {
+        let points: Vec<(i32, Vec<u8>)> = (0..5).map(|i| (i, vec![0u8; 4])).collect();
+        let field = WritePointsField {
+            field_number: 0,
+            bytes_per_dim: 4,
+            points,
+        };
+        assert!(matches!(
+            write(&[field], 4, &id(), ""),
+            Err(Error::TooManyPointsForSingleLeaf {
+                field_number: 0,
+                count: 5,
+                max: 4
+            })
+        ));
+    }
+
+    #[test]
+    fn write_rejects_empty_field() {
+        let field = WritePointsField {
+            field_number: 0,
+            bytes_per_dim: 4,
+            points: vec![],
+        };
+        assert!(matches!(
+            write(&[field], 512, &id(), ""),
+            Err(Error::EmptyField { field_number: 0 })
+        ));
+    }
+
+    #[test]
+    fn write_rejects_wrong_packed_value_length() {
+        let field = WritePointsField {
+            field_number: 0,
+            bytes_per_dim: 8,
+            points: vec![(0, vec![1, 2, 3])],
+        };
+        assert!(matches!(
+            write(&[field], 512, &id(), ""),
+            Err(Error::WrongPackedValueLength {
+                field_number: 0,
+                index: 0,
+                expected: 8,
+                actual: 3,
+            })
+        ));
+    }
+
+    #[test]
+    fn write_then_read_rejects_wrong_segment_id() {
+        let field = WritePointsField {
+            field_number: 0,
+            bytes_per_dim: 4,
+            points: vec![(0, vec![0, 0, 0, 1])],
+        };
+        let (kdm, kdi, kdd) = write(&[field], 512, &id(), "").unwrap();
+        let wrong_id = [9u8; codec_util::ID_LENGTH];
+        assert!(open(&kdm, &kdi, &kdd, &wrong_id, "").is_err());
     }
 }
