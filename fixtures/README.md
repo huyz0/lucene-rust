@@ -13,7 +13,7 @@ JAR=$(find ~/.gradle/caches/modules-2/files-2.1/org.apache.lucene/lucene-core/10
   -name 'lucene-core-10.5.0.jar' ! -name '*sources*' ! -name '*javadoc*')
 mkdir -p classes data
 javac -nowarn -cp "$JAR" -d classes src/*.java
-for cls in GenPrimitives GenCodecUtil GenSegmentInfo GenSegmentInfos GenLiveDocs GenFieldInfos GenNorms GenDocValues GenCompoundFormat GenStoredFields GenStoredFieldsBestCompression GenSortedDocValues GenMultiValuedDocValues GenTermVectors GenPoints GenFst; do
+for cls in GenPrimitives GenCodecUtil GenSegmentInfo GenSegmentInfos GenLiveDocs GenFieldInfos GenNorms GenDocValues GenCompoundFormat GenStoredFields GenStoredFieldsBestCompression GenSortedDocValues GenMultiValuedDocValues GenTermVectors GenPoints GenFst GenBlockTree; do
   java -cp "classes:$JAR" $cls data
 done
 ```
@@ -201,3 +201,15 @@ fields needs none of those files to exist. See `docs/parity.md`'s
   from the FST (proper prefixes, over-extensions past an accepting node,
   a disjoint key, the empty string) so the differential test checks
   correct rejection, not just correct acceptance.
+- `GenBlockTree.java` — a real `IndexWriter` session (`blocktree_index/`
+  subdirectory) producing `.tim`/`.tip`/`.tmd` (`Lucene103BlockTreeTermsWriter`,
+  via `Lucene104PostingsFormat`), plus the `.fnm`/`.si` this port's readers
+  need to open them. Two fields, both small enough to stay a single
+  non-floor leaf block: "body" (`IndexOptions.DOCS_AND_FREQS`, five docs
+  with repeated terms of known per-term frequencies, one doc missing the
+  field) and "id" (`IndexOptions.DOCS`, one distinct token per doc,
+  exercising the DOCS-only sumDocFreq/sumTotalTermFreq aliasing path). The
+  manifest's per-term lookups (including deliberately-absent terms) are
+  read back through real Lucene's own `TermsEnum.seekExact`/`docFreq`/
+  `totalTermFreq`, not hand-computed, so the differential test checks
+  against ground truth.

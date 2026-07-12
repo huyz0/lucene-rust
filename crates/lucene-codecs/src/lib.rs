@@ -2,6 +2,7 @@
 //! lucene-codecs: see /PLAN.md for scope.
 
 mod block_packed;
+pub mod blocktree;
 pub mod compound_format;
 mod deflate;
 pub mod direct_monotonic;

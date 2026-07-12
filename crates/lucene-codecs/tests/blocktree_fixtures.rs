@@ -1,0 +1,163 @@
+//! Differential test against a real `.tim`/`.tip`/`.tmd` triple written by an
+//! actual `IndexWriter` (`Lucene104PostingsFormat` -> `Lucene103BlockTreeTermsWriter`):
+//! two fields, "body" (`IndexOptions.DOCS_AND_FREQS`, repeated terms across
+//! five docs with known per-term frequencies, one doc missing the field
+//! entirely) and "id" (`IndexOptions.DOCS`, one distinct token per doc,
+//! exercising the DOCS-only sumDocFreq/sumTotalTermFreq aliasing path).
+//! Both fields fit in a single non-floor leaf `.tim` block (well under the
+//! default 25/48 min/maxItemsInBlock thresholds), which is this slice's
+//! scope -- see `crates/lucene-codecs/src/blocktree.rs`'s module doc.
+//! Regenerate with `fixtures/src/GenBlockTree.java`.
+
+use lucene_codecs::blocktree;
+use lucene_codecs::field_infos;
+
+fn dir() -> String {
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/data/blocktree_index/"
+    )
+    .to_string()
+}
+
+struct Manifest {
+    kv: Vec<(String, String)>,
+}
+
+impl Manifest {
+    fn load() -> Self {
+        let text = std::fs::read_to_string(format!("{}manifest.properties", dir()))
+            .expect("run fixtures generator first (GenBlockTree)");
+        let kv = text
+            .lines()
+            .filter_map(|l| l.split_once('='))
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        Manifest { kv }
+    }
+
+    fn get(&self, key: &str) -> &str {
+        self.kv
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+            .unwrap_or_else(|| panic!("manifest key {key} missing"))
+    }
+}
+
+fn id_from_hex(hex: &str) -> [u8; 16] {
+    let mut id = [0u8; 16];
+    for (i, slot) in id.iter_mut().enumerate() {
+        *slot = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap();
+    }
+    id
+}
+
+fn read_raw(name: &str) -> Vec<u8> {
+    std::fs::read(format!("{}{}.raw", dir(), name)).unwrap_or_else(|_| panic!("missing {name}.raw"))
+}
+
+fn open_fixture() -> (blocktree::BlockTreeFields, Manifest) {
+    let m = Manifest::load();
+    let id = id_from_hex(m.get("id_hex"));
+    let suffix = m.get("segment_suffix").to_string();
+    let max_doc: i32 = m.get("max_doc").parse().unwrap();
+
+    let fnm = read_raw(m.get("fnm_file_name"));
+    let field_infos = field_infos::parse(&fnm, &id, "").expect("parse .fnm");
+
+    let tim = read_raw(m.get("tim_file_name"));
+    let tip = read_raw(m.get("tip_file_name"));
+    let tmd = read_raw(m.get("tmd_file_name"));
+
+    let fields = blocktree::open(&tim, &tip, &tmd, &field_infos, &id, &suffix, max_doc)
+        .expect("open blocktree");
+    (fields, m)
+}
+
+#[test]
+fn field_level_stats_match_real_lucene() {
+    let (fields, m) = open_fixture();
+
+    for field_name in ["body", "id"] {
+        let field = fields.field(field_name).unwrap_or_else(|| {
+            panic!("expected field {field_name} to be present");
+        });
+        let num_terms: i64 = m
+            .get(&format!("field.{field_name}.numTerms"))
+            .parse()
+            .unwrap();
+        let sum_doc_freq: i64 = m
+            .get(&format!("field.{field_name}.sumDocFreq"))
+            .parse()
+            .unwrap();
+        let sum_total_term_freq: i64 = m
+            .get(&format!("field.{field_name}.sumTotalTermFreq"))
+            .parse()
+            .unwrap();
+        let doc_count: i32 = m
+            .get(&format!("field.{field_name}.docCount"))
+            .parse()
+            .unwrap();
+        let min_term = m.get(&format!("field.{field_name}.minTerm"));
+        let max_term = m.get(&format!("field.{field_name}.maxTerm"));
+
+        assert_eq!(field.num_terms, num_terms, "field={field_name}");
+        assert_eq!(field.sum_doc_freq, sum_doc_freq, "field={field_name}");
+        assert_eq!(
+            field.sum_total_term_freq, sum_total_term_freq,
+            "field={field_name}"
+        );
+        assert_eq!(field.doc_count, doc_count, "field={field_name}");
+        assert_eq!(field.min_term, min_term.as_bytes(), "field={field_name}");
+        assert_eq!(field.max_term, max_term.as_bytes(), "field={field_name}");
+    }
+}
+
+#[test]
+fn body_field_term_lookups_match_real_lucene() {
+    let (fields, _m) = open_fixture();
+    let body = fields.field("body").unwrap();
+
+    let cases: &[(&str, Option<(i32, i64)>)] = &[
+        ("cat", Some((2, 3))),
+        ("dog", Some((2, 2))),
+        ("bird", Some((2, 4))),
+        ("zzz-missing", None),
+        ("", None),
+        ("ca", None),
+    ];
+    for (term, expected) in cases {
+        let got = body.seek_exact(term.as_bytes());
+        match expected {
+            Some((doc_freq, total_term_freq)) => {
+                let stats = got.unwrap_or_else(|| panic!("expected term {term:?} to be found"));
+                assert_eq!(stats.doc_freq, *doc_freq, "term={term:?}");
+                assert_eq!(stats.total_term_freq, *total_term_freq, "term={term:?}");
+            }
+            None => assert!(got.is_none(), "expected term {term:?} to be absent"),
+        }
+    }
+}
+
+#[test]
+fn id_field_docs_only_term_lookups_match_real_lucene() {
+    let (fields, _m) = open_fixture();
+    let id_field = fields.field("id").unwrap();
+
+    for i in 0..5 {
+        let term = format!("id{i}");
+        let stats = id_field
+            .seek_exact(term.as_bytes())
+            .unwrap_or_else(|| panic!("expected term {term:?} to be found"));
+        assert_eq!(stats.doc_freq, 1);
+        assert_eq!(stats.total_term_freq, 1);
+    }
+    assert!(id_field.seek_exact(b"id5-missing").is_none());
+}
+
+#[test]
+fn missing_field_returns_none() {
+    let (fields, _m) = open_fixture();
+    assert!(fields.field("nonexistent").is_none());
+}
