@@ -140,20 +140,27 @@ pub mod similarity;
 pub use collector::{
     Collector, CountCollector, ScoreDoc, ScoringCollector, TopDocsCollector, VecCollector,
 };
-pub use query::{BooleanQuery, TermQuery};
+pub use query::{BooleanQuery, PhraseQuery, TermQuery};
 
 use std::collections::HashMap;
 
 use docid_set::{BoxDocIter, Conjunction, Disjunction, Excluding};
 
 use lucene_codecs::blocktree::{self, BlockTreeFields};
-use lucene_codecs::postings::DocInput;
+use lucene_codecs::postings::{DocInput, PayInput, PosInput};
 use lucene_util::fixed_bit_set::FixedBitSet;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]
     BlockTree(#[from] blocktree::Error),
+    /// A multi-term [`PhraseQuery`] needs an opened `.pos` file to check
+    /// position alignment -- the single-term degenerate case (see
+    /// [`search_phrase_query`]'s doc comment) never reaches this, since it
+    /// delegates straight to [`search_term_query`] without touching
+    /// positions at all.
+    #[error("phrase query needs an opened .pos file for a multi-term phrase")]
+    MissingPosInput,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -408,6 +415,191 @@ pub fn search_boolean_query_scored<C: ScoringCollector>(
     Ok(())
 }
 
+/// Checks whether `term_positions` (one sorted, ascending position list per phrase
+/// term, in phrase order, all for the *same* doc) has some base position `p` such
+/// that `term_positions[i]` contains `p + i` for every `i` -- `ExactPhraseScorer`'s
+/// core test (`org.apache.lucene.search.ExactPhraseScorer`, slop == 0 case), done
+/// here as a straightforward candidate-and-check rather than Java's stateful
+/// per-postings merge: every position in `term_positions[0]` is a candidate base
+/// `p`, and each candidate is checked against every other term's position list via
+/// binary search (each list is already sorted, since positions are decoded and
+/// grouped in increasing order by [`lucene_codecs::postings::read_positions`]).
+///
+/// **Edge cases, verified by this function's own unit tests below**: an empty
+/// `term_positions` (no terms at all) or any single empty position list (a term
+/// with zero occurrences in this doc, which callers should never actually pass in
+/// practice -- doc-level conjunction already guarantees every term occurs at least
+/// once) both yield `false` rather than panicking. A single-term phrase
+/// (`term_positions.len() == 1`) degenerates to "does this term occur at all in
+/// this doc": the inner loop over `1..len` is empty, so the first candidate
+/// position always succeeds. A repeated term (e.g. "the the") works unmodified --
+/// the two position lists happen to be identical, but the check only ever compares
+/// `p + i` against list `i`, never compares lists against each other by identity.
+pub(crate) fn phrase_matches_in_doc(term_positions: &[Vec<i32>]) -> bool {
+    let Some((first, rest)) = term_positions.split_first() else {
+        return false;
+    };
+    if rest.iter().any(|positions| positions.is_empty()) {
+        return false;
+    }
+    'candidate: for &p0 in first {
+        for (i, positions) in rest.iter().enumerate() {
+            let target = p0 + (i as i32 + 1);
+            if positions.binary_search(&target).is_err() {
+                continue 'candidate;
+            }
+        }
+        return true;
+    }
+    false
+}
+
+/// One phrase-query term's live-filtered doc-ID list plus a `doc_id -> sorted
+/// position list` map for that same term, or `None` when the field/term doesn't
+/// exist (mirrors [`term_doc_ids`]'s "missing is not an error" convention). The map
+/// (rather than a `Vec` aligned to the doc list) is what [`search_phrase_query`]
+/// needs: after computing the doc-level conjunction across every term, it looks up
+/// each candidate doc's position list per term by doc ID, not by index.
+type TermDocPositions = (Vec<i32>, HashMap<i32, Vec<i32>>);
+
+fn term_doc_positions(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    pos_in: &PosInput<'_>,
+    pay_in: Option<&PayInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    field: &str,
+    term: &[u8],
+) -> Result<Option<TermDocPositions>> {
+    let Some(field_terms) = fields.field(field) else {
+        return Ok(None);
+    };
+    let Some(postings) = field_terms.postings(term, doc_in)? else {
+        return Ok(None);
+    };
+    let Some(positions) = field_terms.positions(term, doc_in, pos_in, pay_in)? else {
+        return Ok(None);
+    };
+
+    let mut docs = Vec::with_capacity(postings.docs.len());
+    let mut map = HashMap::with_capacity(postings.docs.len());
+    for (doc_id, doc_positions) in postings.docs.into_iter().zip(positions) {
+        if !live_docs.is_none_or(|bits| bits.get(doc_id as usize)) {
+            continue;
+        }
+        docs.push(doc_id);
+        map.insert(
+            doc_id,
+            doc_positions.into_iter().map(|p| p.position).collect(),
+        );
+    }
+    Ok(Some((docs, map)))
+}
+
+/// Executes `query` (see [`query::PhraseQuery`] for the exact exact-adjacent-
+/// position, `slop == 0` semantics) against one already-opened segment, feeding
+/// every matching **live** doc ID to `collector` in ascending order -- same
+/// parameter contract as [`search_term_query`], plus the segment's opened `.pos`/
+/// `.pay` files (needed to check position alignment for a real, multi-term
+/// phrase). Note `live_docs` sits *after* `pos_in`/`pay_in` here, unlike
+/// [`search_term_query`]/[`search_boolean_query`]'s "`live_docs` right after
+/// `doc_in`" ordering -- deliberate, to keep the two positions-file parameters
+/// adjacent to each other and to `doc_in`.
+///
+/// - `pos_in`: the segment's opened `.pos` file. Required (an `Err(Error::
+///   MissingPosInput)` otherwise) for any phrase with **more than one term** --
+///   never touched for a single-term phrase, which degenerates to a plain
+///   [`search_term_query`] call (see below). `None` is fine for that case.
+/// - `pay_in`: the segment's opened `.pay` file, or `None` when the field has
+///   neither offsets nor payloads, or its total occurrence count never spans a
+///   full postings block -- same optionality contract as
+///   [`lucene_codecs::blocktree::FieldTerms::positions`].
+///
+/// **Matching semantics**: a doc matches iff it contains every phrase term (a
+/// pure doc-ID conjunction, computed first as a cheap pre-filter -- phrase match
+/// implies term match, so this never does position work for a doc that couldn't
+/// possibly qualify) *and* [`phrase_matches_in_doc`] finds a valid alignment for
+/// that doc's per-term position lists.
+///
+/// **Edge cases** (see `query::PhraseQuery`'s doc comment and this port's
+/// `docs/parity.md` for the full accounting):
+/// - **Empty `terms`**: matches nothing, mirroring real
+///   `PhraseQuery.Builder.build()`'s `MatchNoDocsQuery` result for zero added
+///   terms. Not an error.
+/// - **Single term**: degenerates to [`search_term_query`] on a `TermQuery` for
+///   that one term -- a length-1 phrase trivially "aligns" wherever the term
+///   occurs, so there's no position work to do (also means a caller running only
+///   single-term "phrase" queries never needs an opened `.pos` file at all).
+/// - **A term missing from the field**: matches nothing, not an error -- same
+///   convention as [`search_term_query`]/[`search_boolean_query`].
+/// - **Duplicate terms** (e.g. "the the"): handled correctly by
+///   [`phrase_matches_in_doc`] without special-casing -- see that function's doc
+///   comment.
+pub fn search_phrase_query<C: Collector>(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    pos_in: Option<&PosInput<'_>>,
+    pay_in: Option<&PayInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    query: &PhraseQuery,
+    collector: &mut C,
+) -> Result<()> {
+    if query.terms.is_empty() {
+        return Ok(());
+    }
+    if query.terms.len() == 1 {
+        let term_query = TermQuery::new(query.field.clone(), query.terms[0].clone());
+        return search_term_query(fields, doc_in, live_docs, &term_query, collector);
+    }
+    let Some(pos_in) = pos_in else {
+        return Err(Error::MissingPosInput);
+    };
+
+    let mut per_term_docs: Vec<Vec<i32>> = Vec::with_capacity(query.terms.len());
+    let mut per_term_maps: Vec<HashMap<i32, Vec<i32>>> = Vec::with_capacity(query.terms.len());
+    for term in &query.terms {
+        let Some((docs, map)) = term_doc_positions(
+            fields,
+            doc_in,
+            pos_in,
+            pay_in,
+            live_docs,
+            &query.field,
+            term,
+        )?
+        else {
+            // A missing term means the phrase can never match -- same convention
+            // as `term_doc_ids`/`search_term_query`.
+            return Ok(());
+        };
+        per_term_docs.push(docs);
+        per_term_maps.push(map);
+    }
+
+    let candidate_docs: Vec<i32> = Conjunction::new(
+        per_term_docs
+            .into_iter()
+            .map(|v| Box::new(v.into_iter()) as BoxDocIter<'static>)
+            .collect(),
+    )
+    .collect();
+
+    for doc_id in candidate_docs {
+        let term_positions: Vec<Vec<i32>> = per_term_maps
+            .iter()
+            .map(|m| {
+                m.get(&doc_id)
+                    .cloned()
+                    .expect("doc_id came from the conjunction of every term's own doc list")
+            })
+            .collect();
+        if phrase_matches_in_doc(&term_positions) {
+            collector.collect(doc_id);
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -454,14 +646,27 @@ mod tests {
         let fields = blocktree::open(&tim, &tip, &tmd, &field_infos, &id, &suffix, max_doc)
             .expect("open blocktree");
         let doc = read_raw(&get("doc_file_name"));
-        (fields, Some(DocInputOwned { doc, id, suffix }))
+        let pos = read_raw(&get("pos_file_name"));
+        let pay = read_raw(&get("pay_file_name"));
+        (
+            fields,
+            Some(DocInputOwned {
+                doc,
+                pos,
+                pay,
+                id,
+                suffix,
+            }),
+        )
     }
 
-    // Owns the `.doc` bytes + segment id/suffix so a `DocInput<'_>` can be
-    // constructed with a lifetime tied to a local variable in each test
-    // (`DocInput` borrows its buffer).
+    // Owns the `.doc`/`.pos`/`.pay` bytes + segment id/suffix so `DocInput`/
+    // `PosInput`/`PayInput` can be constructed with a lifetime tied to a local
+    // variable in each test (each of these borrows its buffer).
     struct DocInputOwned {
         doc: Vec<u8>,
+        pos: Vec<u8>,
+        pay: Vec<u8>,
         id: [u8; 16],
         suffix: String,
     }
@@ -469,6 +674,14 @@ mod tests {
     impl DocInputOwned {
         fn open(&self) -> DocInput<'_> {
             DocInput::open(&self.doc, &self.id, &self.suffix).expect("open .doc")
+        }
+
+        fn open_pos(&self) -> PosInput<'_> {
+            PosInput::open(&self.pos, &self.id, &self.suffix).expect("open .pos")
+        }
+
+        fn open_pay(&self) -> PayInput<'_> {
+            PayInput::open(&self.pay, &self.id, &self.suffix).expect("open .pay")
         }
     }
 
@@ -701,5 +914,259 @@ mod tests {
         )
         .unwrap();
         assert_eq!(count.count as usize, docs.docs.len());
+    }
+
+    // `phrase_matches_in_doc` unit tests: synthetic per-term position lists, no
+    // fixture needed -- this is the pure alignment-checking function in isolation.
+
+    #[test]
+    fn phrase_matches_exact_alignment_at_position_zero() {
+        assert!(phrase_matches_in_doc(&[vec![0], vec![1], vec![2]]));
+    }
+
+    #[test]
+    fn phrase_matches_exact_alignment_at_a_later_position() {
+        assert!(phrase_matches_in_doc(&[vec![0, 5], vec![1, 6], vec![2, 7]]));
+    }
+
+    #[test]
+    fn phrase_no_match_despite_every_term_present() {
+        // "cat" at 0 and 10, "sat" at 1, "mat" at 5: no base position aligns all three
+        // (0 -> needs 1 at "sat" (ok) and 2 at "mat" (missing); 10 -> needs 11 (missing)).
+        assert!(!phrase_matches_in_doc(&[vec![0, 10], vec![1], vec![5]]));
+    }
+
+    #[test]
+    fn phrase_multiple_candidates_only_one_aligns() {
+        // Base 0 fails (needs 2 at term index 2, only 5/7 present); base 3 succeeds
+        // (needs 4 at term index 1 -- present -- and 5 at term index 2 -- present).
+        assert!(phrase_matches_in_doc(&[vec![0, 3], vec![1, 4], vec![5, 7]]));
+    }
+
+    #[test]
+    fn phrase_single_term_degenerates_to_any_occurrence() {
+        assert!(phrase_matches_in_doc(&[vec![2, 9]]));
+    }
+
+    #[test]
+    fn phrase_single_term_with_no_occurrences_is_false() {
+        assert!(!phrase_matches_in_doc(&[vec![]]));
+    }
+
+    #[test]
+    fn phrase_no_terms_at_all_is_false() {
+        assert!(!phrase_matches_in_doc(&[]));
+    }
+
+    #[test]
+    fn phrase_a_term_with_no_occurrences_in_this_doc_is_false() {
+        assert!(!phrase_matches_in_doc(&[vec![0], vec![]]));
+    }
+
+    #[test]
+    fn phrase_repeated_term_with_consecutive_occurrences_matches() {
+        // "the the": both occurrence lists are the term "the"'s own positions --
+        // 0 and 1 are consecutive, so "the" at 0 followed by "the" at 1 is a match.
+        assert!(phrase_matches_in_doc(&[vec![0, 1, 2], vec![0, 1, 2]]));
+    }
+
+    #[test]
+    fn phrase_repeated_term_without_consecutive_occurrences_does_not_match() {
+        // "the" only occurs at 0, 2, 4 -- no two consecutive occurrences exist.
+        assert!(!phrase_matches_in_doc(&[vec![0, 2, 4], vec![0, 2, 4]]));
+    }
+
+    // Fixture-backed `search_phrase_query` tests: reuse the real-Lucene "pos" field
+    // (`IndexOptions.DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS`) already checked into
+    // `fixtures/data/blocktree_index/` for `crates/lucene-codecs/tests/
+    // blocktree_fixtures.rs`'s `pos_field_positions_match_real_lucene_postings_enum`
+    // test -- per the manifest, doc 8555 has "alpha" at position 0 and "beta" at
+    // position 1 (adjacent), while doc 8556 has "alpha" at positions 0 and 1 but no
+    // "beta" at all. That's exactly the shape a real "alpha beta" phrase query
+    // differential test needs, already present without extending the fixture
+    // generator (see this module's `Testing` section in the task write-up: prefer
+    // reusing existing fixtures over adding new ones when the data already fits).
+
+    #[test]
+    fn phrase_query_two_terms_matches_only_the_adjacent_doc() {
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+        let pos_in = doc.open_pos();
+        let pay_in = doc.open_pay();
+        let mut c = VecCollector::default();
+        search_phrase_query(
+            &fields,
+            Some(&doc_in),
+            Some(&pos_in),
+            Some(&pay_in),
+            None,
+            &PhraseQuery::new("pos", ["alpha", "beta"]),
+            &mut c,
+        )
+        .unwrap();
+        assert_eq!(c.docs, vec![8555]);
+    }
+
+    #[test]
+    fn phrase_query_single_term_degenerates_to_term_query() {
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+        let mut c = VecCollector::default();
+        // No .pos/.pay opened at all -- the single-term case must not need them.
+        search_phrase_query(
+            &fields,
+            Some(&doc_in),
+            None,
+            None,
+            None,
+            &PhraseQuery::new("pos", ["alpha"]),
+            &mut c,
+        )
+        .unwrap();
+        assert_eq!(c.docs, vec![8555, 8556]);
+    }
+
+    #[test]
+    fn phrase_query_empty_terms_matches_nothing() {
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let mut c = VecCollector::default();
+        search_phrase_query(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            None,
+            None,
+            &PhraseQuery::new("pos", Vec::<&str>::new()),
+            &mut c,
+        )
+        .unwrap();
+        assert!(c.docs.is_empty());
+    }
+
+    #[test]
+    fn phrase_query_missing_field_matches_nothing() {
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+        let pos_in = doc.open_pos();
+        let mut c = VecCollector::default();
+        search_phrase_query(
+            &fields,
+            Some(&doc_in),
+            Some(&pos_in),
+            None,
+            None,
+            &PhraseQuery::new("nonexistent", ["a", "b"]),
+            &mut c,
+        )
+        .unwrap();
+        assert!(c.docs.is_empty());
+    }
+
+    #[test]
+    fn phrase_query_missing_term_matches_nothing() {
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+        let pos_in = doc.open_pos();
+        let pay_in = doc.open_pay();
+        let mut c = VecCollector::default();
+        search_phrase_query(
+            &fields,
+            Some(&doc_in),
+            Some(&pos_in),
+            Some(&pay_in),
+            None,
+            &PhraseQuery::new("pos", ["alpha", "zzz-missing"]),
+            &mut c,
+        )
+        .unwrap();
+        assert!(c.docs.is_empty());
+    }
+
+    #[test]
+    fn phrase_query_duplicate_term_matches_consecutive_occurrences() {
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+        let pos_in = doc.open_pos();
+        let pay_in = doc.open_pay();
+        let mut c = VecCollector::default();
+        // doc 8555 has "alpha" only at position 0 (no consecutive pair); doc 8556
+        // has "alpha" at 0 and 1, a real consecutive-repeated-term match.
+        search_phrase_query(
+            &fields,
+            Some(&doc_in),
+            Some(&pos_in),
+            Some(&pay_in),
+            None,
+            &PhraseQuery::new("pos", ["alpha", "alpha"]),
+            &mut c,
+        )
+        .unwrap();
+        assert_eq!(c.docs, vec![8556]);
+    }
+
+    #[test]
+    fn phrase_query_multi_term_without_pos_input_is_an_error() {
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let mut c = VecCollector::default();
+        let err = search_phrase_query(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            None,
+            None,
+            &PhraseQuery::new("pos", ["alpha", "beta"]),
+            &mut c,
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::MissingPosInput));
+    }
+
+    #[test]
+    fn phrase_query_live_docs_filters_before_alignment_check() {
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+        let pos_in = doc.open_pos();
+        let pay_in = doc.open_pay();
+        let max_doc: i32 = {
+            let dir = concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../fixtures/data/blocktree_index/"
+            );
+            let manifest = std::fs::read_to_string(format!("{dir}manifest.properties")).unwrap();
+            manifest
+                .lines()
+                .find_map(|l| l.strip_prefix("max_doc="))
+                .unwrap()
+                .parse()
+                .unwrap()
+        };
+        let mut live_docs = FixedBitSet::new(max_doc as usize);
+        for i in 0..max_doc {
+            live_docs.set(i as usize);
+        }
+        // "alpha beta" only ever matches doc 8555 -- marking it dead removes the
+        // only match.
+        live_docs.clear(8555);
+
+        let mut c = VecCollector::default();
+        search_phrase_query(
+            &fields,
+            Some(&doc_in),
+            Some(&pos_in),
+            Some(&pay_in),
+            Some(&live_docs),
+            &PhraseQuery::new("pos", ["alpha", "beta"]),
+            &mut c,
+        )
+        .unwrap();
+        assert!(c.docs.is_empty());
     }
 }

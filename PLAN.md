@@ -210,6 +210,32 @@ generator for true cross-engine verification) remains future work. Verified
 in `crates/lucene-search/tests/scoring_fixtures.rs`. The items below remain as
 originally scoped except where superseded above.
 
+A fourth slice (task #19) landed **`PhraseQuery` matching**, exact adjacent
+positions only (`slop == 0`): `query::PhraseQuery { field, terms: Vec<Vec<u8>> }`
+implicitly places each term at consecutive positions `0..terms.len()`, no
+`PhraseQuery.Builder.add(Term, int position)`-style arbitrary/sloppy positions.
+`search_phrase_query` computes the doc-level conjunction across every term first
+(reusing `docid_set::Conjunction`, since phrase match implies term match), then
+checks position alignment per candidate doc via a new `phrase_matches_in_doc`
+function — every position in the first term's list is a candidate base `p`,
+checked against every other term's sorted position list via binary search for
+`p+i` (a straightforward candidate-and-check, not real `ExactPhraseScorer`'s
+stateful per-postings merge — this port's positions are already fully
+materialized per doc by the existing `postings::read_positions`/
+`FieldTerms::positions`, so there's no lazy iterator state to replicate). A
+single-term "phrase" degenerates to a plain `search_term_query` call (never
+needs an opened `.pos` file); an empty `terms` list matches nothing (mirrors
+real `PhraseQuery.Builder.build()`'s `MatchNoDocsQuery` for zero terms); a
+missing term matches nothing, not an error; a repeated term ("the the") needs
+no special-casing. **No relevance scoring for phrase queries yet** — BM25
+phrase scoring needs a per-doc "phrase freq" concept from the same alignment
+walk, deferred alongside a `ScoringCollector` sibling for `search_phrase_query`.
+Differential-tested in `crates/lucene-search/tests/phrase_query_fixtures.rs`,
+reusing the existing `pos` field already in `fixtures/data/blocktree_index/`
+(no fixture generator changes needed — its real occurrences already have an
+adjacent pair in one doc and a non-adjacent/absent pair in another). See
+`docs/parity.md`'s new `PhraseQuery`/`ExactPhraseScorer` row for full detail.
+
 1. Traits: `Query → Weight → Scorer/ScorerSupplier`, `DocIdSetIterator`,
    `TwoPhaseIterator`, `BulkScorer`. Use enums where the closed set allows
    (DISI is called per-doc — keep it monomorphizable; `Box<dyn>` only at Weight level).
