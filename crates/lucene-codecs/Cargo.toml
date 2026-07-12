@@ -14,3 +14,8 @@ miniz_oxide.workspace = true
 
 [dev-dependencies]
 crc32fast.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "hot_paths"
+harness = false

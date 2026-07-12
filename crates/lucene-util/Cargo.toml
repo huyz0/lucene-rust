@@ -10,3 +10,8 @@ crc32fast.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "util_ops"
+harness = false
