@@ -27,8 +27,8 @@ Every generator above is Java-writes-Rust-reads. The write path (PLAN.md Phase 5
 needs the opposite: Rust writes real bytes, and a Java program confirms real Lucene
 can open and read them back. `VerifyStoredFields.java`, `VerifyFieldInfos.java`,
 `VerifySegmentInfo.java`, `VerifySegmentInfos.java`, `VerifyPoints.java`,
-`VerifyTermVectors.java`, `VerifyDocValues.java`, `VerifyNorms.java`, and
-`VerifyLiveDocs.java` are these verifiers so far:
+`VerifyTermVectors.java`, `VerifyDocValues.java`, `VerifyNorms.java`,
+`VerifyLiveDocs.java`, and `VerifyCompoundFormat.java` are these verifiers so far:
 
 ```sh
 cargo run -p lucene-codecs --example write_stored_fields_fixture -- /tmp/rust-stored-fields
@@ -40,9 +40,10 @@ cargo run -p lucene-codecs --example write_term_vectors_fixture -- /tmp/rust-ter
 cargo run -p lucene-codecs --example write_doc_values_fixture -- /tmp/rust-doc-values
 cargo run -p lucene-codecs --example write_norms_fixture -- /tmp/rust-norms
 cargo run -p lucene-codecs --example write_live_docs_fixture -- /tmp/rust-live-docs
+cargo run -p lucene-codecs --example write_compound_format_fixture -- /tmp/rust-compound-format
 JAR=$(find ~/.gradle/caches/modules-2/files-2.1/org.apache.lucene/lucene-core/10.5.0 \
   -name 'lucene-core-10.5.0.jar' ! -name '*sources*' ! -name '*javadoc*')
-javac -nowarn -cp "$JAR" -d classes src/VerifyStoredFields.java src/VerifyFieldInfos.java src/VerifySegmentInfo.java src/VerifySegmentInfos.java src/VerifyPoints.java src/VerifyTermVectors.java src/VerifyDocValues.java src/VerifyNorms.java src/VerifyLiveDocs.java
+javac -nowarn -cp "$JAR" -d classes src/VerifyStoredFields.java src/VerifyFieldInfos.java src/VerifySegmentInfo.java src/VerifySegmentInfos.java src/VerifyPoints.java src/VerifyTermVectors.java src/VerifyDocValues.java src/VerifyNorms.java src/VerifyLiveDocs.java src/VerifyCompoundFormat.java
 java -cp "classes:$JAR" VerifyStoredFields /tmp/rust-stored-fields
 java -cp "classes:$JAR" VerifyFieldInfos /tmp/rust-field-infos
 java -cp "classes:$JAR" VerifySegmentInfo /tmp/rust-segment-info
@@ -52,6 +53,7 @@ java -cp "classes:$JAR" VerifyTermVectors /tmp/rust-term-vectors
 java -cp "classes:$JAR" VerifyDocValues /tmp/rust-doc-values
 java -cp "classes:$JAR" VerifyNorms /tmp/rust-norms
 java -cp "classes:$JAR" VerifyLiveDocs /tmp/rust-live-docs
+java -cp "classes:$JAR" VerifyCompoundFormat /tmp/rust-compound-format
 ```
 
 `VerifyStoredFields.java` opens the `.fdt`/`.fdx`/`.fdm` triple directly through
@@ -168,6 +170,27 @@ example writes two segments: `_0` (varying small signed values, the real
 constant path) -- following the doc-values write-side review's finding directly,
 both branches are verified against real Lucene from the start rather than only
 this port's own reader.
+
+`VerifyCompoundFormat.java` verifies `compound_format::write`
+(`crates/lucene-codecs/src/compound_format.rs`), which packs already-written
+sub-files (each a complete standalone codec file: its own header/footer)
+into a `.cfs`/`.cfe` pair. The Rust example packs four distinct sub-files --
+a `.fnm` (`field_infos::write`) and a `.fdt`/`.fdx`/`.fdm` triple
+(`stored_fields::write_best_speed`) -- so the entries table's offset/length
+bookkeeping and the smallest-first packing order both get exercised, not
+just a single-file passthrough. The Java verifier opens the pair through
+real `Lucene90CompoundFormat.getCompoundReader` with a hand-built
+`SegmentInfo`, confirms the sub-file list and lengths match, then goes a
+step further than the other write-path verifiers: it re-decodes the packed
+`.fnm` through real `Lucene94FieldInfosFormat` and the packed
+`.fdt`/`.fdx`/`.fdm` through real `Lucene90StoredFieldsFormat`, both reading
+*through* the compound reader rather than the raw sub-file bytes directly --
+this is what would catch a byte-offset bug that still left the entries
+table looking correct. See `docs/parity.md`'s compound-format row for what
+Java's writer does beyond a bare concatenation (smallest-first ordering,
+64-byte alignment, per-sub-file header/footer verification) and why this
+port's simpler "validate then copy verbatim" approach is byte-identical to
+it.
 
 ## Generators
 

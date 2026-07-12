@@ -27,6 +27,14 @@
 
 use lucene_store::codec_util::{self, ID_LENGTH};
 use lucene_store::data_input::{DataInput, SliceInput};
+use lucene_store::data_output::DataOutput;
+
+/// Sub-files are aligned to a 64-byte boundary within `.cfs` (the LCM of every
+/// individual format's own alignment, so this guarantees each of those holds
+/// too) -- purely a placement nicety for mmap access patterns, invisible to
+/// [`open_input`], which slices by the recorded `(offset, length)` regardless
+/// of any padding gaps.
+const ALIGNMENT_BYTES: usize = 64;
 
 const DATA_CODEC: &str = "Lucene90CompoundData";
 const ENTRY_CODEC: &str = "Lucene90CompoundEntries";
@@ -43,6 +51,8 @@ pub enum Error {
     WrongLength { expected: usize, actual: usize },
     #[error("no sub-file with id {0} found in compound file (files: {1:?})")]
     FileNotFound(String, Vec<String>),
+    #[error("sub-file {0} is not a valid codec file (bad magic)")]
+    BadSubFileMagic(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -164,6 +174,96 @@ pub fn open_input<'d>(data: &'d [u8], entries: &CompoundEntries, id: &str) -> Re
             }
             .into()
         })
+}
+
+/// Packs already-written sub-files (each a *complete* standalone codec file:
+/// its own `IndexHeader` sharing `segment_id`, a body, and its own `Footer`)
+/// into a `.cfs`/`.cfe` pair, returning `(cfs_bytes, cfe_bytes)`.
+///
+/// `sub_files` pairs each entry's stripped id (e.g. `.fnm`, the name recorded
+/// in `.cfe` -- without the segment-name prefix, matching what
+/// [`parse_entries`]/[`open_input`] expect) with that sub-file's complete
+/// bytes. Mirrors Java's `Lucene90CompoundFormat.writeCompoundFile`:
+///
+/// - Sub-files are packed smallest-first (`Comparator.comparingLong(length)`)
+///   so small files are more likely to land within one page.
+/// - Each sub-file's start offset in `.cfs` is padded up to a 64-byte
+///   boundary ([`ALIGNMENT_BYTES`]).
+/// - Java "verifies and copies" each sub-file's header (checking its object
+///   id matches `segment_id`) and re-derives its footer from the verified
+///   checksum rather than copying the footer bytes directly -- but since that
+///   checksum is exactly the value already stored in the sub-file's own
+///   footer, the net effect is byte-identical to copying the whole sub-file
+///   verbatim, which is what this port does after validating the header id
+///   and footer checksum up front.
+///
+/// Returns [`Error::BadSubFileMagic`] or a wrapped [`lucene_store::Error`] if
+/// a sub-file's header id doesn't match `segment_id` or its footer checksum
+/// doesn't verify -- both real corruption checks Java performs before trusting
+/// the bytes it's about to pack.
+pub fn write(
+    segment_id: &[u8; ID_LENGTH],
+    sub_files: &[(String, Vec<u8>)],
+) -> Result<(Vec<u8>, Vec<u8>)> {
+    let mut ordered: Vec<&(String, Vec<u8>)> = sub_files.iter().collect();
+    ordered.sort_by_key(|(_, bytes)| bytes.len());
+
+    let mut cfs: Vec<u8> = Vec::new();
+    codec_util::write_index_header(&mut cfs, DATA_CODEC, VERSION_CURRENT, segment_id, "");
+
+    let mut cfe: Vec<u8> = Vec::new();
+    codec_util::write_index_header(&mut cfe, ENTRY_CODEC, VERSION_CURRENT, segment_id, "");
+    cfe.write_vint(ordered.len() as i32);
+
+    for (name, bytes) in ordered {
+        verify_sub_file(name, bytes, segment_id)?;
+
+        while !cfs.len().is_multiple_of(ALIGNMENT_BYTES) {
+            cfs.push(0);
+        }
+        let start_offset = cfs.len() as i64;
+        cfs.extend_from_slice(bytes);
+        let length = cfs.len() as i64 - start_offset;
+
+        cfe.write_string(name);
+        cfe.write_i64(start_offset);
+        cfe.write_i64(length);
+    }
+
+    codec_util::write_footer(&mut cfs);
+    codec_util::write_footer(&mut cfe);
+
+    Ok((cfs, cfe))
+}
+
+/// Validates a sub-file's `IndexHeader` object id (must match `segment_id`,
+/// though the codec name/version/suffix are whatever that sub-file's own
+/// format uses and aren't constrained here) and its `Footer` checksum, port
+/// of the checks `CodecUtil.verifyAndCopyIndexHeader`/`CodecUtil.checkFooter`
+/// perform in Java's `writeCompoundFile` before trusting a sub-file's bytes.
+fn verify_sub_file(name: &str, bytes: &[u8], segment_id: &[u8; ID_LENGTH]) -> Result<()> {
+    let mut input = SliceInput::new(bytes);
+    let magic = input.read_be_u32()?;
+    if magic != codec_util::CODEC_MAGIC {
+        return Err(Error::BadSubFileMagic(name.to_string()));
+    }
+    let _codec_name = input.read_string()?;
+    let _version = input.read_be_u32()?;
+    codec_util::check_index_header_id(&mut input, segment_id)?;
+    let suffix_len = input.read_byte()? as usize;
+    input.skip(suffix_len)?;
+
+    let footer_start =
+        bytes
+            .len()
+            .checked_sub(codec_util::FOOTER_LENGTH)
+            .ok_or(lucene_store::Error::Eof {
+                offset: bytes.len(),
+            })?;
+    input.seek(footer_start)?;
+    codec_util::check_footer(&mut input, bytes.len())?;
+
+    Ok(())
 }
 
 /// `header_length(codec) + ID_LENGTH + 1` (the vint-encoded empty-suffix
@@ -367,5 +467,106 @@ mod tests {
         assert_eq!(vint_len(128), 2);
         assert_eq!(vint_len(16_383), 2);
         assert_eq!(vint_len(16_384), 3);
+    }
+
+    /// Builds a standalone codec file (header + body + footer) as a real
+    /// sub-file `write()` would consume -- the same shape produced by e.g.
+    /// `field_infos::write`/`stored_fields::write_best_speed`.
+    fn build_sub_file(codec: &str, version: i32, id: &[u8; ID_LENGTH], body: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        codec_util::write_index_header(&mut out, codec, version, id, "");
+        out.extend_from_slice(body);
+        codec_util::write_footer(&mut out);
+        out
+    }
+
+    #[test]
+    fn write_round_trips_through_reader_with_multiple_sub_files() {
+        let id = [42u8; ID_LENGTH];
+        // Three distinct sub-files of different sizes/codecs so both the
+        // ascending-size ordering and the alignment/offset math are actually
+        // exercised (a single sub-file would leave that logic unchecked).
+        let fnm = build_sub_file("FieldInfos", 1, &id, b"field infos body bytes");
+        let fdt = build_sub_file("StoredFields", 3, &id, &[7u8; 200]);
+        let dvd = build_sub_file("DocValues", 0, &id, b"dv");
+
+        let sub_files = vec![
+            (".fnm".to_string(), fnm.clone()),
+            (".fdt".to_string(), fdt.clone()),
+            (".dvd".to_string(), dvd.clone()),
+        ];
+
+        let (cfs, cfe) = write(&id, &sub_files).unwrap();
+
+        let entries = parse_entries(&cfe, &id).unwrap();
+        assert_eq!(entries.entries.len(), 3);
+        check_data_header_footer(&cfs, &id, &entries).unwrap();
+
+        // Every sub-file must come back byte-for-byte identical, including
+        // its own header and footer -- a corrupted offset could otherwise
+        // still leave the entries table "looking right" while shifting bytes.
+        assert_eq!(open_input(&cfs, &entries, ".fnm").unwrap(), fnm.as_slice());
+        assert_eq!(open_input(&cfs, &entries, ".fdt").unwrap(), fdt.as_slice());
+        assert_eq!(open_input(&cfs, &entries, ".dvd").unwrap(), dvd.as_slice());
+
+        // Ascending-size packing: .dvd (smallest) should be placed before
+        // .fnm, which should be placed before .fdt (largest).
+        let dvd_offset = entries.get(".dvd").unwrap().offset;
+        let fnm_offset = entries.get(".fnm").unwrap().offset;
+        let fdt_offset = entries.get(".fdt").unwrap().offset;
+        assert!(dvd_offset < fnm_offset);
+        assert!(fnm_offset < fdt_offset);
+
+        // Every sub-file start offset is 64-byte aligned.
+        for (_, entry) in &entries.entries {
+            assert_eq!(entry.offset % ALIGNMENT_BYTES as i64, 0);
+        }
+    }
+
+    #[test]
+    fn write_empty_sub_files_round_trips() {
+        let id = [9u8; ID_LENGTH];
+        let (cfs, cfe) = write(&id, &[]).unwrap();
+        let entries = parse_entries(&cfe, &id).unwrap();
+        assert_eq!(entries.entries.len(), 0);
+        check_data_header_footer(&cfs, &id, &entries).unwrap();
+    }
+
+    #[test]
+    fn write_rejects_sub_file_with_wrong_segment_id() {
+        let id = [1u8; ID_LENGTH];
+        let wrong_id = [2u8; ID_LENGTH];
+        let sub_file = build_sub_file("FieldInfos", 1, &wrong_id, b"body");
+        let err = write(&id, &[(".fnm".to_string(), sub_file)]).unwrap_err();
+        assert!(matches!(err, Error::Store(_)));
+    }
+
+    #[test]
+    fn write_rejects_sub_file_with_bad_magic() {
+        let id = [1u8; ID_LENGTH];
+        let mut sub_file = build_sub_file("FieldInfos", 1, &id, b"body");
+        sub_file[0] ^= 0xFF; // corrupt the magic
+        let err = write(&id, &[(".fnm".to_string(), sub_file)]).unwrap_err();
+        assert!(matches!(err, Error::BadSubFileMagic(name) if name == ".fnm"));
+    }
+
+    #[test]
+    fn write_rejects_sub_file_with_corrupt_footer_checksum() {
+        let id = [1u8; ID_LENGTH];
+        let mut sub_file = build_sub_file("FieldInfos", 1, &id, b"body");
+        let last = sub_file.len() - 1;
+        sub_file[last] ^= 0xFF; // corrupt checksum field
+        let err = write(&id, &[(".fnm".to_string(), sub_file)]).unwrap_err();
+        assert!(matches!(err, Error::Store(_)));
+    }
+
+    #[test]
+    fn write_rejects_sub_file_too_short_for_footer() {
+        let id = [1u8; ID_LENGTH];
+        // Valid header but no room left for a footer afterwards.
+        let mut sub_file = Vec::new();
+        codec_util::write_index_header(&mut sub_file, "FieldInfos", 1, &id, "");
+        let err = write(&id, &[(".fnm".to_string(), sub_file)]).unwrap_err();
+        assert!(matches!(err, Error::Store(_)));
     }
 }
