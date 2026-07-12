@@ -138,7 +138,11 @@ The heart of the port. For the pinned codec (e.g. `Lucene103Codec`), implement r
    mode — check pinned version) block decompression, prefetch-friendly random access.
 6. **Norms** (`.nvd/.nvm`).
 7. **Points / BKD** (`.kdd/.kdi/.kdm`): BKD tree reader + `intersect` visitor. Hard;
-   needed for numeric/date range queries which OpenSearch uses constantly.
+   needed for numeric/date range queries which OpenSearch uses constantly. Read
+   side and a write side supporting one dimension (any number of leaves,
+   multi-leaf packed-index tree construction included) are done -- see
+   `docs/parity.md`'s points row. Multi-dimension write (`LatLonPoint`-style)
+   remains a future slice.
 8. **Live docs** (`.liv`) and per-commit deletes/DV-updates generations.
 9. **KNN vectors** (`.vec/.vex/.vem`, HNSW): schedule **last within the phase** and be
    willing to punt to Phase 8 — big, self-contained, and OpenSearch's k-NN often uses

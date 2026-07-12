@@ -68,14 +68,6 @@ pub enum Error {
     UnsupportedCompressedDim(i8),
     #[error("sub-blocks do not add up to the expected count: {expected} != {actual}")]
     SubBlockCountMismatch { expected: usize, actual: usize },
-    #[error(
-        "field {field_number}: {count} points exceeds the single-leaf write path's limit of {max}"
-    )]
-    TooManyPointsForSingleLeaf {
-        field_number: i32,
-        count: usize,
-        max: i32,
-    },
     #[error("field {field_number}: write() requires at least one point (empty fields aren't supported by this write path)")]
     EmptyField { field_number: i32 },
     #[error("field {field_number}: point {index} has packed_value.len() == {actual}, expected bytes_per_dim == {expected}")]
@@ -574,56 +566,83 @@ fn read_bpv24(input: &mut SliceInput, count: usize) -> Result<Vec<i32>> {
 /// already produce -- this module doesn't do that conversion itself, same
 /// division of labor as the read side, which also just hands back raw
 /// packed bytes).
+///
+/// **Multi-dimension (`numDims > 1`) is still out of scope** -- see
+/// `docs/parity.md`'s points/BKD row. Multi-*leaf* trees (`points.len() >
+/// maxPointsInLeafNode`) are fully supported (see [`write`]'s doc comment).
 #[derive(Debug, Clone)]
 pub struct WritePointsField {
     pub field_number: i32,
     pub bytes_per_dim: i32,
-    /// `(docID, packedValue)`, in any order -- unlike a multi-leaf/N-dim
-    /// BKD tree, a single leaf has no ordering requirement for correctness
-    /// (see [`write`]'s doc comment for why).
+    /// `(docID, packedValue)`, in any order -- [`write`] sorts a local copy
+    /// by value before splitting into leaves, so caller order never affects
+    /// correctness.
     pub points: Vec<(i32, Vec<u8>)>,
 }
 
-/// Port of `Lucene90PointsWriter`/`BKDWriter` (`OneDimensionBKDWriter`),
-/// scoped to exactly the case this port's read side already fully
-/// understands and this slice's own fixture proves out: **one BKD leaf, one
-/// dimension, one or more fields**. Produces `(.kdm, .kdi, .kdd)` bytes.
+/// Port of `Lucene90PointsWriter`/`BKDWriter`, scoped to **one dimension,
+/// any number of leaves** (multi-leaf trees are now supported; multi-
+/// dimension points, e.g. `LatLonPoint`, are not -- see `docs/parity.md`).
+/// Produces `(.kdm, .kdi, .kdd)` bytes.
 ///
-/// **Why single-leaf needs no packed-index tree structure at all**: real
-/// `BKDWriter.OneDimensionBKDWriter.finish()` only calls `writeIndex` (which
-/// calls `packIndex`) when at least one leaf was written; `packIndex`'s
-/// `recursePackIndex` base case (`numLeaves == 1`) writes *nothing but the
-/// root leaf's own file-pointer delta* (`writeBuffer.writeVLong(delta)`,
-/// `delta = leafLP(0) - minBlockFP(0) = leafLP(0)` since `minBlockFP` starts
-/// at 0) -- there is no split-dimension descriptor, no left/right children,
-/// no `leftNumBytes` skip hint, because a single-leaf tree has no internal
-/// nodes to describe. This mirrors this port's own read-side
-/// `decode_leaf_pointers`, whose `numLeaves == 1` case already only reads
-/// that one root vlong (see `single_leaf_decode_leaf_pointers` in the test
-/// module below, which predates this write-side slice and pins the exact
-/// same fact from the read direction).
+/// **Split algorithm** (single dimension, so the split *dimension* is
+/// always 0 -- only the split *point* needs choosing): points are sorted by
+/// their packed value (unsigned byte-wise, i.e. numeric order for the
+/// sortable big-endian encoding `LongPoint`/`IntPoint` produce), then
+/// recursively partitioned exactly the way real `BKDWriter.build()` sizes
+/// its two halves -- `numLeaves = ceil(count / maxPointsInLeafNode)`,
+/// `numLeftLeafNodes = getNumLeftLeafNodes(numLeaves)` (fill the deepest
+/// full level, then push any remainder left -- see [`get_num_left_leaf_nodes`]),
+/// `mid = from + numLeftLeafNodes * maxPointsInLeafNode`. Recursing on
+/// `[from, mid)` and `[mid, count)` with `numLeftLeafNodes`/
+/// `numLeaves - numLeftLeafNodes` leaves respectively reproduces the same
+/// nearly-balanced binary tree real Lucene's writer builds (verified: this
+/// is the exact formula in `BKDWriter.getNumLeftLeafNodes`/`build`, not a
+/// simplification of it), so no follow-up rebalancing is needed. Because the
+/// points are globally sorted first, each leaf ends up being one contiguous
+/// slice of the sorted array -- there's no need for per-node partitioning
+/// (`radix select`) the way real Lucene's multi-pass/on-disk sort does; a
+/// single up-front `sort_by` is enough at the sizes this port's fixtures and
+/// tests exercise, and is stated as a deliberate simplification (see
+/// `docs/parity.md`), not an attempt to replicate `BKDRadixSelector`.
 ///
-/// **Leaf encoding choices made freely** (this port writes the bytes, it
-/// doesn't need to match what real `BKDWriter` would have chosen for the
-/// same input, only produce bytes real `Lucene90PointsReader` can decode):
-/// common-prefix length is always written as 0 (no prefix compression --
-/// correct for any input, just not maximally compact), the compressed-
-/// dimension marker is always `-2` (the "sparse/low-cardinality" run
-/// encoding) with **every run forced to length 1**, which degrades
-/// gracefully to "every point stores its full value," and doc ids use
-/// `CONTINUOUS_IDS` when the points are already exactly a consecutive run
-/// (cheap to detect, and exactly what this slice's fixture produces) or
-/// plain 4-byte-per-doc `BPV_32` otherwise (always correct, regardless of
-/// sort order or duplicates) -- deliberately not replicating
-/// `DocIdsWriter.writeDocIds`'s bitset/delta-packed heuristics, which exist
-/// purely for on-disk size, not correctness.
+/// **Packed index (`.kdi`) construction**: leaves are written to `.kdd` in
+/// left-to-right (in-order) order, recording each leaf's file pointer; a
+/// second pass ([`pack_index`]) walks the same recursive split plan to
+/// build the `.kdi` bytes, matching real `BKDWriter.recursePackIndex`'s
+/// node layout exactly: `numLeaves == 1` writes nothing (left child) or one
+/// FP-delta vlong (right child, relative to the caller's `minBlockFP`);
+/// otherwise it writes (if not the tree's top call) the left subtree's FP
+/// delta, then a split descriptor vint (`splitDim=0`, since
+/// `numIndexDims == 1`), then the left subtree's own packed bytes (prefixed
+/// by a `leftNumBytes` skip-ahead vint whenever the left subtree itself has
+/// more than one leaf, matching real Lucene's reader-side skip
+/// optimization), then the right subtree's bytes. **Split-value delta
+/// encoding now matches real `BKDWriter` exactly**: each split's value is
+/// prefix-coded against the previous split's value in the same dimension
+/// via a running `last_split_value`/`negative_delta` pair (this write path
+/// is scoped to one dimension, so these track exactly what real Lucene's
+/// per-dimension `lastSplitValues`/`negativeDeltas` arrays track for
+/// `splitDim == 0`), saved and restored around each child call the same way
+/// `pack_index`'s own doc comment describes -- see that function for the
+/// exact algorithm. This makes the packed index byte-for-byte
+/// reconstructible by real `Lucene90PointsReader`'s pruning path
+/// (`BKDReader.readNodeData`), which really does use the reconstructed split
+/// value to decide whether to descend into a subtree at all -- see
+/// `fixtures/src/VerifyPoints.java`'s bounding-box query, which forces
+/// exactly that path and fails if this encoding were wrong.
+///
+/// **Leaf encoding choices made freely** (unchanged from the single-leaf
+/// slice -- this port writes bytes real `Lucene90PointsReader` can decode,
+/// not necessarily what real `BKDWriter` would have chosen): common-prefix
+/// length is always written as 0, the compressed-dimension marker is always
+/// `-2` with every run forced to length 1, and doc ids use `CONTINUOUS_IDS`
+/// when a leaf's own ids are already an exact consecutive run or plain
+/// `BPV_32` otherwise.
 ///
 /// **Deferred / not handled by this function** (see `docs/parity.md`):
-/// multi-leaf trees (`points.len() > max_points_in_leaf_node`, which
-/// returns [`Error::TooManyPointsForSingleLeaf`] rather than silently
-/// building a wrong single leaf), multi-dimension points
-/// (`num_dims`/`num_index_dims` > 1 -- this function hardcodes both to 1),
-/// and empty fields (`points.is_empty()` returns
+/// multi-dimension points (`num_dims`/`num_index_dims` > 1 -- this function
+/// hardcodes both to 1), and empty fields (`points.is_empty()` returns
 /// [`Error::EmptyField`] -- real Lucene's `finish()` returns `null` and the
 /// field is omitted from `.kdm` entirely in that case; this port's callers
 /// are expected to simply not pass an empty field rather than replicate
@@ -660,7 +679,7 @@ pub fn write(
     );
 
     for field in fields {
-        write_single_leaf_field(
+        write_field(
             field,
             max_points_in_leaf_node,
             &mut data_out,
@@ -683,7 +702,196 @@ pub fn write(
     Ok((meta_out, index_out, data_out))
 }
 
-fn write_single_leaf_field(
+/// Real `BKDWriter.getNumLeftLeafNodes`: fill the deepest full level of a
+/// perfect binary tree with `numLeaves` leaves, put half of that level on
+/// the left, then push any leftover (unbalanced) leaves left too.
+fn get_num_left_leaf_nodes(num_leaves: usize) -> usize {
+    debug_assert!(num_leaves > 1);
+    let last_full_level = usize::BITS - 1 - num_leaves.leading_zeros();
+    let leaves_full_level = 1usize << last_full_level;
+    let mut num_left = leaves_full_level / 2;
+    let unbalanced = num_leaves - leaves_full_level;
+    num_left += unbalanced.min(num_left);
+    num_left
+}
+
+/// Recursively computes this field's leaf boundaries (contiguous
+/// `[start, end)` ranges into `sorted`, left-to-right) and, for every split
+/// point, the packed value that becomes the first point of the split's
+/// right half (indexed the same way real `BKDWriter` indexes
+/// `splitDimensionValues`/`splitValues`: at `rightOffset - 1`, where
+/// `rightOffset = leavesOffset + numLeftLeafNodes`). Mirrors real
+/// `BKDWriter.build`'s `mid = from + numLeftLeafNodes * maxPointsInLeafNode`
+/// exactly -- see [`write`]'s doc comment.
+#[allow(clippy::too_many_arguments)]
+fn compute_leaf_plan(
+    from: usize,
+    to: usize,
+    leaves_offset: usize,
+    num_leaves: usize,
+    max_points_in_leaf_node: usize,
+    sorted: &[(i32, Vec<u8>)],
+    leaf_ranges: &mut Vec<(usize, usize)>,
+    split_values: &mut [Vec<u8>],
+) {
+    if num_leaves == 1 {
+        leaf_ranges.push((from, to));
+        return;
+    }
+    let num_left = get_num_left_leaf_nodes(num_leaves);
+    let mid = from + num_left * max_points_in_leaf_node;
+    let right_offset = leaves_offset + num_left;
+    split_values[right_offset - 1] = sorted[mid].1.clone();
+    compute_leaf_plan(
+        from,
+        mid,
+        leaves_offset,
+        num_left,
+        max_points_in_leaf_node,
+        sorted,
+        leaf_ranges,
+        split_values,
+    );
+    compute_leaf_plan(
+        mid,
+        to,
+        right_offset,
+        num_leaves - num_left,
+        max_points_in_leaf_node,
+        sorted,
+        leaf_ranges,
+        split_values,
+    );
+}
+
+/// Port of `BKDWriter.recursePackIndex`, matching real Lucene's split-value
+/// prefix-coding exactly: `last_split_value` is this port's `lastSplitValues`
+/// (scoped to the one dimension this write path supports, so no
+/// `splitDim * bytesPerDim` indexing is needed) and `negative_delta` is
+/// `negativeDeltas[splitDim]`. Both are threaded through the recursion by
+/// mutable reference and saved/restored around each child call exactly the
+/// way `recursePackIndex` does (see real Lucene's own comment: "lastSplitValues
+/// is per-dimension split value previously seen; we use this to prefix-code
+/// the split byte\[\] on each inner node") -- a left child always sees
+/// `negativeDeltas[splitDim] = true` while a right child sees `false`, and
+/// `last_split_value`'s `[prefix..]` tail is temporarily overwritten with
+/// this node's own split value for both children, then restored to the
+/// caller's original bytes before returning (siblings must see the *parent*'s
+/// state, not each other's post-recursion state).
+///
+/// Returns this subtree's own packed-index bytes -- the caller prefixes them
+/// with a `leftNumBytes` vint when appending as a left child with more than
+/// one leaf, matching real Lucene's `IndexTree` skip-ahead hint.
+#[allow(clippy::too_many_arguments)]
+fn pack_index(
+    leaves_offset: usize,
+    num_leaves: usize,
+    min_block_fp: i64,
+    is_left: bool,
+    leaf_fps: &[i64],
+    split_values: &[Vec<u8>],
+    bytes_per_dim: usize,
+    last_split_value: &mut Vec<u8>,
+    negative_delta: &mut bool,
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    if num_leaves == 1 {
+        if !is_left {
+            let delta = leaf_fps[leaves_offset] - min_block_fp;
+            out.write_vlong(delta);
+        }
+        return out;
+    }
+
+    let left_block_fp = if is_left {
+        min_block_fp
+    } else {
+        let left_fp = leaf_fps[leaves_offset];
+        out.write_vlong(left_fp - min_block_fp);
+        left_fp
+    };
+
+    let num_left = get_num_left_leaf_nodes(num_leaves);
+    let right_offset = leaves_offset + num_left;
+    let split_value = &split_values[right_offset - 1];
+
+    // Find the common prefix length with the last split value seen in this
+    // dimension (real Lucene's `commonPrefixComparator.compare`, a byte-wise
+    // mismatch scan capped at `bytesPerDim`).
+    let mut prefix = 0usize;
+    while prefix < bytes_per_dim && split_value[prefix] == last_split_value[prefix] {
+        prefix += 1;
+    }
+
+    let first_diff_byte_delta = if prefix < bytes_per_dim {
+        let mut delta = split_value[prefix] as i32 - last_split_value[prefix] as i32;
+        if *negative_delta {
+            delta = -delta;
+        }
+        delta
+    } else {
+        0
+    };
+
+    // Pack the prefix and delta first-diff byte into a single vInt --
+    // splitDim is always 0 (single dimension, numIndexDims == 1) so it
+    // contributes nothing to the code (real Lucene's `... * numIndexDims +
+    // splitDim` collapses to `... * 1 + 0`).
+    let code = first_diff_byte_delta * (1 + bytes_per_dim as i32) + prefix as i32;
+    out.write_vint(code);
+
+    // Write the split value's suffix, prefix-coded vs. the parent's split
+    // value: the first differing byte itself is never written raw (it's
+    // recovered from `firstDiffByteDelta`), only the bytes after it.
+    let suffix = bytes_per_dim - prefix;
+    if suffix > 1 {
+        out.write_bytes(&split_value[prefix + 1..bytes_per_dim]);
+    }
+
+    // Save the parent's tail before overwriting it so it can be restored
+    // once both children have been packed.
+    let saved_tail = last_split_value[prefix..].to_vec();
+    last_split_value[prefix..].copy_from_slice(&split_value[prefix..]);
+
+    let saved_negative_delta = *negative_delta;
+    *negative_delta = true;
+    let left_bytes = pack_index(
+        leaves_offset,
+        num_left,
+        left_block_fp,
+        true,
+        leaf_fps,
+        split_values,
+        bytes_per_dim,
+        last_split_value,
+        negative_delta,
+    );
+    if num_left != 1 {
+        out.write_vint(left_bytes.len() as i32);
+    }
+    out.extend_from_slice(&left_bytes);
+
+    *negative_delta = false;
+    let right_bytes = pack_index(
+        right_offset,
+        num_leaves - num_left,
+        left_block_fp,
+        false,
+        leaf_fps,
+        split_values,
+        bytes_per_dim,
+        last_split_value,
+        negative_delta,
+    );
+    out.extend_from_slice(&right_bytes);
+
+    *negative_delta = saved_negative_delta;
+    last_split_value[prefix..].copy_from_slice(&saved_tail);
+
+    out
+}
+
+fn write_field(
     field: &WritePointsField,
     max_points_in_leaf_node: i32,
     data_out: &mut Vec<u8>,
@@ -694,13 +902,6 @@ fn write_single_leaf_field(
     if count == 0 {
         return Err(Error::EmptyField {
             field_number: field.field_number,
-        });
-    }
-    if count > max_points_in_leaf_node as usize {
-        return Err(Error::TooManyPointsForSingleLeaf {
-            field_number: field.field_number,
-            count,
-            max: max_points_in_leaf_node,
         });
     }
     let bytes_per_dim = field.bytes_per_dim as usize;
@@ -715,29 +916,9 @@ fn write_single_leaf_field(
         }
     }
 
-    // `OneDimensionBKDWriter`'s constructor captures `dataStartFP` before
-    // any leaf bytes are written; with exactly one leaf, the leaf's own file
-    // pointer (`leafBlockFPs.add(dataOut.getFilePointer())`, itself captured
-    // *before* that leaf's bytes) is this same value.
-    let data_start_fp = data_out.len() as i64;
-
-    // -- leaf block (data_out) --
-    data_out.write_vint(count as i32);
-    write_leaf_doc_ids(data_out, field);
-    // Common prefixes: one entry (numDims == 1), always length 0 -- see the
-    // module doc for why this is correct-but-not-maximally-compact. No
-    // actual-bounds box follows since numIndexDims == 1.
-    data_out.write_vint(0);
-    // compressedDim = -2 (sparse/low-cardinality run encoding), every run
-    // forced to length 1.
-    data_out.write_byte((-2i8) as u8);
-    for (_, value) in &field.points {
-        data_out.write_vint(1);
-        data_out.write_bytes(value);
-    }
-
     // -- min/max packed value (unsigned byte-wise compare, numIndexDims==1
-    // so this is just the one dimension's bytes) --
+    // so this is just the one dimension's bytes) -- computed over caller
+    // order, independent of the sort below.
     let mut min_packed_value = field.points[0].1.clone();
     let mut max_packed_value = field.points[0].1.clone();
     for (_, value) in &field.points[1..] {
@@ -748,11 +929,59 @@ fn write_single_leaf_field(
             max_packed_value = value.clone();
         }
     }
+    let doc_count = {
+        let mut docs: Vec<i32> = field.points.iter().map(|(d, _)| *d).collect();
+        docs.sort_unstable();
+        docs.dedup();
+        docs.len() as i32
+    };
 
-    // -- packed index (index_out): single leaf => just the root's FP delta
-    // from a baseline of 0, i.e. `data_start_fp` itself (see module doc).
+    // Sort by packed value (unsigned byte-wise == numeric for the sortable
+    // big-endian encoding) so each leaf becomes a contiguous slice -- see
+    // the module doc.
+    let mut sorted = field.points.clone();
+    sorted.sort_by(|a, b| a.1.cmp(&b.1));
+
+    let max = max_points_in_leaf_node as usize;
+    let num_leaves = count.div_ceil(max);
+
+    let mut leaf_ranges: Vec<(usize, usize)> = Vec::with_capacity(num_leaves);
+    let mut split_values: Vec<Vec<u8>> = vec![Vec::new(); num_leaves];
+    compute_leaf_plan(
+        0,
+        count,
+        0,
+        num_leaves,
+        max,
+        &sorted,
+        &mut leaf_ranges,
+        &mut split_values,
+    );
+    debug_assert_eq!(leaf_ranges.len(), num_leaves);
+
+    let mut leaf_fps: Vec<i64> = Vec::with_capacity(num_leaves);
+    for &(start, end) in &leaf_ranges {
+        leaf_fps.push(data_out.len() as i64);
+        write_leaf(data_out, &sorted[start..end]);
+    }
+    let min_leaf_block_fp = leaf_fps[0];
+
+    // -- packed index (index_out) --
     let index_start_pointer = index_out.len() as i64;
-    index_out.write_vlong(data_start_fp);
+    let mut last_split_value = vec![0u8; bytes_per_dim];
+    let mut negative_delta = false;
+    let packed = pack_index(
+        0,
+        num_leaves,
+        0,
+        false,
+        &leaf_fps,
+        &split_values,
+        bytes_per_dim,
+        &mut last_split_value,
+        &mut negative_delta,
+    );
+    index_out.write_bytes(&packed);
     let num_index_bytes = (index_out.len() as i64 - index_start_pointer) as i32;
 
     // -- per-field meta (meta_out) --
@@ -762,22 +991,34 @@ fn write_single_leaf_field(
     meta_out.write_vint(1); // numIndexDims
     meta_out.write_vint(max_points_in_leaf_node);
     meta_out.write_vint(field.bytes_per_dim);
-    meta_out.write_vint(1); // numLeaves
+    meta_out.write_vint(num_leaves as i32);
     meta_out.write_bytes(&min_packed_value);
     meta_out.write_bytes(&max_packed_value);
     meta_out.write_vlong(count as i64); // pointCount
-    let doc_count = {
-        let mut docs: Vec<i32> = field.points.iter().map(|(d, _)| *d).collect();
-        docs.sort_unstable();
-        docs.dedup();
-        docs.len() as i32
-    };
     meta_out.write_vint(doc_count);
     meta_out.write_vint(num_index_bytes);
-    meta_out.write_i64(data_start_fp); // minLeafBlockFP == the only leaf's FP
+    meta_out.write_i64(min_leaf_block_fp);
     meta_out.write_i64(index_start_pointer);
 
     Ok(())
+}
+
+/// Writes one leaf block (doc ids + packed values) for `points` (already a
+/// contiguous, value-sorted slice) to `data_out`.
+fn write_leaf(data_out: &mut Vec<u8>, points: &[(i32, Vec<u8>)]) {
+    data_out.write_vint(points.len() as i32);
+    write_leaf_doc_ids(data_out, points);
+    // Common prefixes: one entry (numDims == 1), always length 0 -- see the
+    // module doc for why this is correct-but-not-maximally-compact. No
+    // actual-bounds box follows since numIndexDims == 1.
+    data_out.write_vint(0);
+    // compressedDim = -2 (sparse/low-cardinality run encoding), every run
+    // forced to length 1.
+    data_out.write_byte((-2i8) as u8);
+    for (_, value) in points {
+        data_out.write_vint(1);
+        data_out.write_bytes(value);
+    }
 }
 
 /// Writes this leaf's doc ids: `CONTINUOUS_IDS` when they're already an
@@ -785,8 +1026,8 @@ fn write_single_leaf_field(
 /// `BPV_32` (plain 4-byte little-endian per doc) otherwise -- always
 /// correct regardless of order or duplicates, unlike the bitset/delta-
 /// packed encodings this port doesn't bother choosing between on write.
-fn write_leaf_doc_ids(data_out: &mut Vec<u8>, field: &WritePointsField) {
-    let ids: Vec<i32> = field.points.iter().map(|(d, _)| *d).collect();
+fn write_leaf_doc_ids(data_out: &mut Vec<u8>, points: &[(i32, Vec<u8>)]) {
+    let ids: Vec<i32> = points.iter().map(|(d, _)| *d).collect();
     let is_continuous = ids.windows(2).all(|w| w[1] == w[0] + 1);
     if is_continuous {
         data_out.write_byte(CONTINUOUS_IDS as u8);
@@ -1522,21 +1763,153 @@ mod tests {
     }
 
     #[test]
-    fn write_rejects_too_many_points_for_single_leaf() {
-        let points: Vec<(i32, Vec<u8>)> = (0..5).map(|i| (i, vec![0u8; 4])).collect();
+    fn get_num_left_leaf_nodes_matches_bkdwriter_formula() {
+        // Hand-verified against `BKDWriter.getNumLeftLeafNodes`'s own
+        // worked examples (see the module doc): 3 leaves splits 2/1 (the
+        // deepest full level for 3 has 2 leaves, half go left, then the one
+        // unbalanced leaf also goes left).
+        assert_eq!(get_num_left_leaf_nodes(2), 1);
+        assert_eq!(get_num_left_leaf_nodes(3), 2);
+        assert_eq!(get_num_left_leaf_nodes(4), 2);
+        assert_eq!(get_num_left_leaf_nodes(5), 3);
+        assert_eq!(get_num_left_leaf_nodes(7), 4);
+        assert_eq!(get_num_left_leaf_nodes(8), 4);
+        assert_eq!(get_num_left_leaf_nodes(9), 5);
+    }
+
+    #[test]
+    fn compute_leaf_plan_distributes_all_points_and_stays_balanced() {
+        // 17 points, max 4 per leaf => ceil(17/4) = 5 leaves. Every leaf
+        // must respect the max, boundaries must be contiguous and cover
+        // every point exactly once, and no leaf may be empty.
+        let sorted: Vec<(i32, Vec<u8>)> = (0..17).map(|i| (i, vec![i as u8])).collect();
+        let num_leaves = 5usize;
+        let mut leaf_ranges = Vec::new();
+        let mut split_values = vec![Vec::new(); num_leaves];
+        compute_leaf_plan(
+            0,
+            17,
+            0,
+            num_leaves,
+            4,
+            &sorted,
+            &mut leaf_ranges,
+            &mut split_values,
+        );
+        assert_eq!(leaf_ranges.len(), num_leaves);
+        assert_eq!(leaf_ranges[0].0, 0);
+        assert_eq!(leaf_ranges[num_leaves - 1].1, 17);
+        let mut covered = 0usize;
+        for &(start, end) in &leaf_ranges {
+            assert!(start < end, "leaf must be non-empty");
+            assert!(end - start <= 4, "leaf exceeds max_points_in_leaf_node");
+            assert_eq!(start, covered, "leaves must be contiguous");
+            covered = end;
+        }
+        assert_eq!(covered, 17);
+    }
+
+    #[test]
+    fn write_then_read_two_leaves_round_trips() {
+        // 8 points, max 4 => exactly 2 leaves (numLeftLeafNodes(2) == 1).
+        let points: Vec<(i32, Vec<u8>)> = (0..8)
+            .map(|i| (i, long_sortable_bytes((i as i64) * 1000)))
+            .collect();
         let field = WritePointsField {
             field_number: 0,
-            bytes_per_dim: 4,
-            points,
+            bytes_per_dim: 8,
+            points: points.clone(),
         };
-        assert!(matches!(
-            write(&[field], 4, &id(), ""),
-            Err(Error::TooManyPointsForSingleLeaf {
-                field_number: 0,
-                count: 5,
-                max: 4
+        let (kdm, kdi, kdd) = write(&[field], 4, &id(), "").unwrap();
+
+        let reader = open(&kdm, &kdi, &kdd, &id(), "").unwrap();
+        let meta = reader.field(0).unwrap();
+        assert_eq!(meta.num_leaves, 2);
+        assert_eq!(meta.point_count, 8);
+
+        let mut decoded = reader.decode_all_points(0).unwrap();
+        decoded.sort_by_key(|p| p.doc_id);
+        let mut expected: Vec<Point> = points
+            .into_iter()
+            .map(|(doc_id, packed_value)| Point {
+                doc_id,
+                packed_value,
             })
-        ));
+            .collect();
+        expected.sort_by_key(|p| p.doc_id);
+        assert_eq!(decoded, expected);
+    }
+
+    #[test]
+    fn write_then_read_many_leaves_round_trips() {
+        // 173 points (deliberately not a multiple of the leaf size,
+        // deliberately not a power of two leaf count), max 4/leaf => 44
+        // leaves, forcing several levels of recursion, an unbalanced final
+        // level, and both the `numLeftLeafNodes == 1` and `> 1` branches of
+        // `pack_index`. Every third doc skips the field (like
+        // `GenPoints.java`) so doc ids aren't a trivial consecutive run
+        // within every leaf.
+        let points: Vec<(i32, Vec<u8>)> = (0..300)
+            .filter(|i| i % 3 != 0)
+            .map(|i| (i, long_sortable_bytes((i as i64) * 7919 - 1_000_000)))
+            .collect();
+        let expected_leaves = points.len().div_ceil(4) as i32;
+        let field = WritePointsField {
+            field_number: 0,
+            bytes_per_dim: 8,
+            points: points.clone(),
+        };
+        let (kdm, kdi, kdd) = write(&[field], 4, &id(), "").unwrap();
+
+        let reader = open(&kdm, &kdi, &kdd, &id(), "").unwrap();
+        let meta = reader.field(0).unwrap();
+        assert_eq!(meta.num_leaves, expected_leaves);
+        assert_eq!(meta.point_count, points.len() as i64);
+        assert_eq!(meta.doc_count, points.len() as i32);
+
+        let mut decoded = reader.decode_all_points(0).unwrap();
+        decoded.sort_by_key(|p| p.doc_id);
+        let mut expected: Vec<Point> = points
+            .into_iter()
+            .map(|(doc_id, packed_value)| Point {
+                doc_id,
+                packed_value,
+            })
+            .collect();
+        expected.sort_by_key(|p| p.doc_id);
+        assert_eq!(decoded, expected);
+    }
+
+    #[test]
+    fn write_then_read_three_leaves_unbalanced_round_trips() {
+        // 9 points, max 4 => ceil(9/4) = 3 leaves (numLeftLeafNodes(3) ==
+        // 2), exercising the same 2-leaves-left/1-leaf-right shape as the
+        // hand-built `three_leaf_decode_leaf_pointers` unit test above, but
+        // now produced by the writer instead of hand-encoded.
+        let points: Vec<(i32, Vec<u8>)> =
+            (0..9).map(|i| (100 + i, vec![(255 - i) as u8])).collect();
+        let field = WritePointsField {
+            field_number: 7,
+            bytes_per_dim: 1,
+            points: points.clone(),
+        };
+        let (kdm, kdi, kdd) = write(&[field], 4, &id(), "").unwrap();
+
+        let reader = open(&kdm, &kdi, &kdd, &id(), "").unwrap();
+        let meta = reader.field(7).unwrap();
+        assert_eq!(meta.num_leaves, 3);
+
+        let mut decoded = reader.decode_all_points(7).unwrap();
+        decoded.sort_by_key(|p| p.doc_id);
+        let mut expected: Vec<Point> = points
+            .into_iter()
+            .map(|(doc_id, packed_value)| Point {
+                doc_id,
+                packed_value,
+            })
+            .collect();
+        expected.sort_by_key(|p| p.doc_id);
+        assert_eq!(decoded, expected);
     }
 
     #[test]
@@ -1580,5 +1953,177 @@ mod tests {
         let (kdm, kdi, kdd) = write(&[field], 512, &id(), "").unwrap();
         let wrong_id = [9u8; codec_util::ID_LENGTH];
         assert!(open(&kdm, &kdi, &kdd, &wrong_id, "").is_err());
+    }
+
+    /// Mirrors real `BKDReader.readNodeData`'s split-value reconstruction
+    /// (single dimension, so `splitDim` is always 0) closely enough to prove
+    /// [`pack_index`]'s delta-coding round-trips: walks the packed index the
+    /// same way [`walk_node`] does, but also decodes each inner node's
+    /// `code` into `prefix`/`firstDiffByteDelta` and reconstructs the split
+    /// value against a running `last_split_value`/`negative_delta` pair,
+    /// exactly like the real reader's `splitValuesStack`/`negativeDeltas`.
+    #[allow(clippy::too_many_arguments)]
+    fn reconstruct_split_values(
+        input: &mut SliceInput,
+        node_id: usize,
+        num_leaves: usize,
+        bytes_per_dim: usize,
+        last_split_value: &mut Vec<u8>,
+        negative_delta: &mut bool,
+        out: &mut Vec<(usize, Vec<u8>)>,
+    ) {
+        if node_id >= num_leaves {
+            return;
+        }
+
+        let code = input.read_vint().unwrap();
+        // numIndexDims == 1, so splitDim is always 0 and doesn't consume any
+        // of the code.
+        let prefix = (code % (1 + bytes_per_dim as i32)) as usize;
+        let suffix = bytes_per_dim - prefix;
+
+        let mut value = last_split_value.clone();
+        if suffix > 0 {
+            let mut first_diff_byte_delta = code / (1 + bytes_per_dim as i32);
+            if *negative_delta {
+                first_diff_byte_delta = -first_diff_byte_delta;
+            }
+            value[prefix] = (value[prefix] as i32 + first_diff_byte_delta) as u8;
+            if suffix > 1 {
+                input
+                    .read_bytes(&mut value[prefix + 1..bytes_per_dim])
+                    .unwrap();
+            }
+        }
+        out.push((node_id, value.clone()));
+
+        let left_child = node_id * 2;
+        if left_child < num_leaves {
+            input.read_vint().unwrap(); // leftNumBytes: skip-ahead hint, unused here too
+        }
+
+        let saved_tail = last_split_value[prefix..].to_vec();
+        last_split_value[prefix..].copy_from_slice(&value[prefix..]);
+
+        let saved_negative_delta = *negative_delta;
+        *negative_delta = true;
+        reconstruct_split_values(
+            input,
+            left_child,
+            num_leaves,
+            bytes_per_dim,
+            last_split_value,
+            negative_delta,
+            out,
+        );
+
+        let _right_fp_delta = input.read_vlong().unwrap();
+
+        *negative_delta = false;
+        reconstruct_split_values(
+            input,
+            node_id * 2 + 1,
+            num_leaves,
+            bytes_per_dim,
+            last_split_value,
+            negative_delta,
+            out,
+        );
+
+        *negative_delta = saved_negative_delta;
+        last_split_value[prefix..].copy_from_slice(&saved_tail);
+    }
+
+    /// Builds a 5-leaf packed index (3 levels deep -- see the worked-out
+    /// tree shape in this test's body) directly via [`compute_leaf_plan`] +
+    /// [`pack_index`], then walks it with [`reconstruct_split_values`] (a
+    /// close mirror of real `BKDReader.readNodeData`'s reconstruction) and
+    /// asserts every inner node's reconstructed split value equals the
+    /// original, at every depth -- not just the root. This is the case the
+    /// bug this test guards against would have broken: with the old
+    /// `prefix=0`, `firstDiffByteDelta=splitValue[0]` simplification, only
+    /// the very first split (whichever inner node happens to be visited
+    /// first with `last_split_value` still all zero) reconstructs correctly;
+    /// every subsequent one silently reconstructs garbage once
+    /// `last_split_value` has diverged from zero.
+    #[test]
+    fn pack_index_split_values_reconstruct_exactly_at_every_depth() {
+        let bytes_per_dim = 2usize;
+        // 5 leaves, distinct 2-byte big-endian values so every split value
+        // differs from every other in more than trivial ways.
+        let sorted: Vec<(i32, Vec<u8>)> = (0..40)
+            .map(|i| (i, ((i as u16) * 137 + 11).to_be_bytes().to_vec()))
+            .collect();
+        let num_leaves = 5usize;
+        let max_points_in_leaf_node = 8usize;
+        let mut leaf_ranges = Vec::new();
+        let mut split_values = vec![Vec::new(); num_leaves];
+        compute_leaf_plan(
+            0,
+            sorted.len(),
+            0,
+            num_leaves,
+            max_points_in_leaf_node,
+            &sorted,
+            &mut leaf_ranges,
+            &mut split_values,
+        );
+        assert_eq!(leaf_ranges.len(), num_leaves);
+
+        // Arbitrary but strictly increasing leaf file pointers -- pack_index
+        // only cares about their deltas, and this test only checks split
+        // values, not the pointers.
+        let leaf_fps: Vec<i64> = (0..num_leaves as i64).map(|i| i * 1000 + 1).collect();
+
+        let mut last_split_value = vec![0u8; bytes_per_dim];
+        let mut negative_delta = false;
+        let packed = pack_index(
+            0,
+            num_leaves,
+            0,
+            false,
+            &leaf_fps,
+            &split_values,
+            bytes_per_dim,
+            &mut last_split_value,
+            &mut negative_delta,
+        );
+
+        // Mirror decode_leaf_pointers: the top-level `is_left=false` call
+        // always writes one leading root FP-delta vlong before any split
+        // descriptor.
+        let mut input = SliceInput::new(&packed);
+        let _root_fp_delta = input.read_vlong().unwrap();
+
+        let mut reader_last_split_value = vec![0u8; bytes_per_dim];
+        let mut reader_negative_delta = false;
+        let mut reconstructed = Vec::new();
+        reconstruct_split_values(
+            &mut input,
+            1,
+            num_leaves,
+            bytes_per_dim,
+            &mut reader_last_split_value,
+            &mut reader_negative_delta,
+            &mut reconstructed,
+        );
+
+        // Expected split value per node id, worked out from
+        // get_num_left_leaf_nodes's formula for this exact 5-leaf shape:
+        // node1 (depth 0, root) splits at split_values[2];
+        // node2 (depth 1, root's left child) splits at split_values[1];
+        // node4 (depth 2, node2's left child) splits at split_values[0];
+        // node3 (depth 1, root's right child) splits at split_values[3].
+        // (node5/6/7/8/9 -- everything else -- are leaves, no split value.)
+        let expected: Vec<(usize, Vec<u8>)> = vec![
+            (1, split_values[2].clone()),
+            (2, split_values[1].clone()),
+            (4, split_values[0].clone()),
+            (3, split_values[3].clone()),
+        ];
+        assert_eq!(reconstructed.len(), expected.len());
+        for (got, want) in reconstructed.iter().zip(expected.iter()) {
+            assert_eq!(got, want, "node {} split value mismatch", got.0);
+        }
     }
 }

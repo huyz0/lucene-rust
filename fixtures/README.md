@@ -110,15 +110,17 @@ fields needs none of those files to exist. See `docs/parity.md`'s
 `SegmentInfos.write` row for what a fully-indexed segment would still need.
 
 `VerifyPoints.java` verifies `points::write` (`crates/lucene-codecs/src/points.rs`),
-scoped to exactly one BKD leaf and one dimension (`LongPoint`-style): it opens the
-`.kdm`/`.kdi`/`.kdd` triple directly through `Lucene90PointsFormat.fieldsReader`
-with a hand-built `SegmentInfo`/`FieldInfos` (no `.si`/`.fnm` writer needed, same
-division of labor as `VerifyStoredFields.java`), then uses real
-`PointValues.intersect` with an always-`CELL_CROSSES_QUERY` visitor (the same
-technique `GenPoints.java` uses on the read side) to force a full decode of every
-point and diff `(docID, value)` pairs against `manifest.properties`. Multi-leaf
-trees and multi-dimension points are out of scope for this writer -- see
-`docs/parity.md`'s points/BKD-tree row.
+one dimension (`LongPoint`-style), any number of leaves: it opens **two**
+`.kdm`/`.kdi`/`.kdd` triples (`_0`, single-leaf; `_1`, `maxPointsInLeafNode = 8`
+forcing a multi-level packed-index tree) directly through
+`Lucene90PointsFormat.fieldsReader` with a hand-built `SegmentInfo`/`FieldInfos`
+(no `.si`/`.fnm` writer needed, same division of labor as
+`VerifyStoredFields.java`), then uses real `PointValues.intersect` with an
+always-`CELL_CROSSES_QUERY` visitor (the same technique `GenPoints.java` uses
+on the read side) to force a full decode of every point and diff `(docID,
+value)` pairs against `manifest.properties` for both segments. Multi-dimension
+points are out of scope for this writer -- see `docs/parity.md`'s
+points/BKD-tree row.
 
 `VerifyTermVectors.java` verifies `term_vectors::write_best_speed`
 (`crates/lucene-codecs/src/term_vectors.rs`), scoped to positions only (no
