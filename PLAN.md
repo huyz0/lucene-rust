@@ -311,6 +311,23 @@ merging, no deletes/updates during indexing, no NRT, no concurrency, and no unif
 multi-segment read path on this port's own side (real Lucene's reader federates the
 Rust-written segments fine; this port's own `SegmentReader`/`IndexSearcher` does not yet).
 
+**Progress (task #15):** `lucene-index/src/merge.rs::merge_stored_only_segments` merges N
+already-flushed, stored-fields-only segments into one new stored-fields-only segment: reads
+each source's `FieldInfos` + `Document`s back out (via `stored_fields::open`/`.document()`,
+already read-only ported in Phase 2), drops non-live docs per an optional per-source
+`FixedBitSet` (via `live_docs::parse`), reconciles field numbering across sources by field
+name (`reconcile_field_numbers`, the merge-time slice of `FieldInfos.FieldNumbers` — a
+segment's own field number is local to that segment, so two sources naming the same field
+differently is a real case, not a hypothetical one), renumbers surviving docs contiguously by
+concatenating sources in order, and hands the result to the existing
+`flush_stored_only_segment` to write the merged `.fdt`/`.fdx`/`.fdm`/`.fnm`/`.si`. No new
+read-side decoders were needed — `stored_fields`'s reader and `live_docs::parse` already
+existed from Phase 2. Still missing, and still item 6 below: `TieredMergePolicy`-style
+merge *selection* (this is caller-picks-the-sources merge *execution* only), background/
+concurrent merging, merge-time codec upgrades, and merging anything beyond stored fields
+(doc values/points/norms/term vectors/postings) — none of those have a write-side caller
+producing a full segment yet in this port, so there's nothing there to merge.
+
 1. `lucene-analysis`: `TokenStream` as an iterator-of-token-structs (skip Java's
    AttributeSource reflection design entirely — a plain
    `Token { bytes, position_increment, offset, ... }` struct), StandardTokenizer via
