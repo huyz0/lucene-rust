@@ -32,6 +32,7 @@
 
 use lucene_store::codec_util::{self, ID_LENGTH};
 use lucene_store::data_input::{DataInput, SliceInput};
+use lucene_store::data_output::DataOutput;
 
 use crate::deflate;
 use crate::direct_monotonic;
@@ -423,6 +424,247 @@ impl<'d> StoredFieldsReader<'d> {
     }
 }
 
+/// Port of `Lucene90CompressingStoredFieldsWriter` -- the write-side
+/// counterpart of [`open`]/[`StoredFieldsReader::document`], `Mode.BEST_SPEED`
+/// only. First slice of this port's write path (PLAN.md Phase 5): every
+/// document goes into a **single chunk** and a **single, un-sliced,
+/// zero-dictionary LZ4 unit encoded as one literal-only block** (no real
+/// LZ4 back-reference compression, no dictionary/sub-block splitting, no
+/// multi-chunk flushing by doc count or byte size) -- correctness and wire
+/// compatibility first, matching this port's decode-fully stance on the
+/// read side: a real writer's chunking/compression heuristics are a later
+/// concern, not a correctness one. `.fdt`/`.fdx`/`.fdm` produced this way
+/// are valid, checksummed, Java-Lucene-openable files; only their
+/// compression ratio and the ceiling on `chunk_docs` (kept under the bulk
+/// `read_bulk_ints`' 128-value transposed-block threshold, see
+/// [`write_bulk_ints`]) differ from what a real flush would produce.
+pub fn write_best_speed(
+    docs: &[Document],
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    assert!(
+        docs.len() < 128,
+        "write_best_speed's bulk per-doc arrays only implement the scalar-tail \
+         encoding (see write_bulk_ints); the 128-value transposed-block path \
+         isn't written yet, so chunks must stay under 128 docs"
+    );
+
+    let payloads: Vec<Vec<u8>> = docs.iter().map(serialize_doc).collect();
+    let num_stored_fields: Vec<i64> = docs.iter().map(|d| d.fields.len() as i64).collect();
+    let lengths: Vec<i64> = payloads.iter().map(|p| p.len() as i64).collect();
+    let total_length: i64 = lengths.iter().sum();
+    let chunk_docs = docs.len() as i32;
+    let max_doc = chunk_docs;
+
+    let mut fdt = Vec::new();
+    codec_util::write_index_header(
+        &mut fdt,
+        DATA_CODEC_BEST_SPEED,
+        VERSION_CURRENT,
+        segment_id,
+        segment_suffix,
+    );
+    let chunk_start = fdt.len() as i64;
+
+    fdt.write_vint(0); // docBase
+    fdt.write_vint(chunk_docs << 2); // token: sliced=0, dirty=0
+
+    if chunk_docs == 1 {
+        fdt.write_vint(num_stored_fields[0] as i32);
+        fdt.write_vint(lengths[0] as i32);
+    } else if chunk_docs > 0 {
+        write_bulk_ints(&mut fdt, &num_stored_fields);
+        write_bulk_ints(&mut fdt, &lengths);
+    }
+
+    if total_length > 0 {
+        let payload: Vec<u8> = payloads.concat();
+        // One zero-length "dictionary" unit (a single LZ4 token byte, see
+        // `lz4::decompress`'s zero-length handling) followed by one
+        // literal-only block holding every doc's bytes verbatim.
+        let dict_unit = encode_literal_lz4(&[]);
+        let block_unit = encode_literal_lz4(&payload);
+        fdt.write_vint(0); // dictLength
+        fdt.write_vint(payload.len() as i32); // blockLength (one block covers everything)
+        fdt.write_vint(dict_unit.len() as i32); // dict's compressed length
+        fdt.write_vint(block_unit.len() as i32); // this one block's compressed length
+        fdt.write_bytes(&dict_unit);
+        fdt.write_bytes(&block_unit);
+    }
+
+    let max_pointer = fdt.len() as i64;
+    codec_util::write_footer(&mut fdt);
+
+    let block_shift = 0u32;
+    let docs_values = [0i64, max_doc as i64];
+    let start_pointers_values = [chunk_start, max_pointer];
+
+    let mut fdx = Vec::new();
+    codec_util::write_index_header(
+        &mut fdx,
+        INDEX_CODEC,
+        INDEX_VERSION_CURRENT,
+        segment_id,
+        segment_suffix,
+    );
+    let docs_start_pointer = fdx.len() as i64;
+    let (docs_meta_bytes, docs_data_bytes) = direct_monotonic::write(&docs_values, block_shift);
+    fdx.write_bytes(&docs_data_bytes);
+    let docs_end_pointer = fdx.len() as i64;
+    let (start_pointers_meta_bytes, start_pointers_data_bytes) =
+        direct_monotonic::write(&start_pointers_values, block_shift);
+    fdx.write_bytes(&start_pointers_data_bytes);
+    let start_pointers_end_pointer = fdx.len() as i64;
+    codec_util::write_footer(&mut fdx);
+
+    let mut fdm = Vec::new();
+    codec_util::write_index_header(
+        &mut fdm,
+        META_CODEC,
+        VERSION_CURRENT,
+        segment_id,
+        segment_suffix,
+    );
+    fdm.write_vint(80 * 1024); // chunkSize (unused when nothing is sliced)
+    fdm.write_i32(max_doc);
+    fdm.write_i32(block_shift as i32);
+    fdm.write_i32(2); // index_num_chunks = 1 real chunk + 1 sentinel
+    fdm.write_i64(docs_start_pointer);
+    fdm.write_bytes(&docs_meta_bytes);
+    fdm.write_i64(docs_end_pointer);
+    fdm.write_bytes(&start_pointers_meta_bytes);
+    fdm.write_i64(start_pointers_end_pointer);
+    fdm.write_i64(max_pointer);
+    fdm.write_vlong(1); // numChunks (outer)
+    fdm.write_vlong(0); // numDirtyChunks
+    fdm.write_vlong(0); // numDirtyDocs
+    codec_util::write_footer(&mut fdm);
+
+    (fdt, fdx, fdm)
+}
+
+/// Port of `StoredFieldsInts`'s bulk per-doc array encode -- **scalar-tail
+/// path only** (see [`write_best_speed`]'s doc comment): correct only for
+/// `values.len() < 128`, since `read_bulk_ints`'s 128-value transposed-block
+/// decode path is unimplemented on the write side so far.
+fn write_bulk_ints(out: &mut Vec<u8>, values: &[i64]) {
+    debug_assert!(values.len() < 128);
+    if values.iter().all(|&v| v == values[0]) {
+        out.push(0);
+        out.write_vint(values[0] as i32);
+        return;
+    }
+    let max = *values.iter().max().unwrap();
+    let bpv: u8 = if max <= 0xFF {
+        8
+    } else if max <= 0xFFFF {
+        16
+    } else {
+        32
+    };
+    out.push(bpv);
+    for &v in values {
+        match bpv {
+            8 => out.push(v as u8),
+            16 => out.extend_from_slice(&(v as u16).to_le_bytes()),
+            32 => out.extend_from_slice(&(v as u32).to_le_bytes()),
+            _ => unreachable!("bpv is always 8, 16, or 32"),
+        }
+    }
+}
+
+fn serialize_doc(doc: &Document) -> Vec<u8> {
+    let mut out = Vec::new();
+    for field in &doc.fields {
+        let bits = match &field.value {
+            FieldValue::String(_) => TYPE_STRING,
+            FieldValue::Binary(_) => TYPE_BYTE_ARR,
+            FieldValue::Int(_) => TYPE_NUMERIC_INT,
+            FieldValue::Float(_) => TYPE_NUMERIC_FLOAT,
+            FieldValue::Long(_) => TYPE_NUMERIC_LONG,
+            FieldValue::Double(_) => TYPE_NUMERIC_DOUBLE,
+        };
+        let info_and_bits = ((field.field_number as i64) << TYPE_BITS) | bits;
+        out.write_vlong(info_and_bits);
+        write_field(&mut out, &field.value);
+    }
+    out
+}
+
+/// Port of `Lucene90CompressingStoredFieldsWriter.writeField` (encode side
+/// of [`read_field`]). Unlike Java's `writeTLong`/`writeZFloat`/
+/// `writeZDouble`, which pick the shortest of several encodings for a given
+/// value, this always emits the full/worst-case encoding: correct for every
+/// value, just not minimal -- a later optimization, not a correctness
+/// concern (matches this module's stance on the write path generally).
+fn write_field(out: &mut Vec<u8>, value: &FieldValue) {
+    match value {
+        FieldValue::Binary(b) => {
+            out.write_vint(b.len() as i32);
+            out.write_bytes(b);
+        }
+        FieldValue::String(s) => out.write_string(s),
+        FieldValue::Int(v) => write_zint(out, *v),
+        FieldValue::Float(v) => write_zfloat_full(out, *v),
+        FieldValue::Long(v) => write_tlong_full(out, *v),
+        FieldValue::Double(v) => write_zdouble_full(out, *v),
+    }
+}
+
+/// Port of `DataOutput.writeZInt` (32-bit zigzag, distinct from the 64-bit
+/// `writeZLong` [`DataOutput::write_zlong`] provided elsewhere in this port).
+fn write_zint(out: &mut Vec<u8>, v: i32) {
+    let zigzag = ((v << 1) ^ (v >> 31)) as u32;
+    out.write_vint(zigzag as i32);
+}
+
+/// Always the full 5-byte encoding: marker `0xFF` + 4 raw bytes of `v`'s
+/// IEEE-754 bit pattern.
+fn write_zfloat_full(out: &mut Vec<u8>, v: f32) {
+    out.push(0xFF);
+    out.write_i32(v.to_bits() as i32);
+}
+
+/// Always the full 9-byte encoding: marker `0xFF` + 8 raw bytes of `v`'s
+/// IEEE-754 bit pattern.
+fn write_zdouble_full(out: &mut Vec<u8>, v: f64) {
+    out.push(0xFF);
+    out.write_i64(v.to_bits() as i64);
+}
+
+/// Always sets the `0x20` "more bits follow" flag and no time-unit
+/// multiplier (`header & 0xC0 == 0`), so the low 5 bits plus a trailing
+/// vlong reconstruct the full zigzag-encoded value regardless of magnitude.
+fn write_tlong_full(out: &mut Vec<u8>, v: i64) {
+    let zigzag = lucene_util::zigzag::encode(v);
+    let header = 0x20u8 | (zigzag & 0x1F) as u8;
+    out.push(header);
+    out.write_vlong((zigzag >> 5) as i64);
+}
+
+/// A single, self-contained LZ4 "literal run" block wrapping `bytes`
+/// verbatim -- no back-reference matches, valid per the LZ4 block spec
+/// (a token's high nibble is the literal length, extended past 15 via
+/// 0xFF continuation bytes; omitting the final match entirely is legal
+/// when the literal run consumes the whole block).
+fn encode_literal_lz4(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let len = bytes.len();
+    let nibble = len.min(0x0F);
+    out.push((nibble as u8) << 4);
+    if len >= 0x0F {
+        let mut rem = len - 0x0F;
+        while rem >= 0xFF {
+            out.push(0xFF);
+            rem -= 0xFF;
+        }
+        out.push(rem as u8);
+    }
+    out.extend_from_slice(bytes);
+    out
+}
+
 /// Port of `Lucene90CompressingStoredFieldsReader.readField` (the decode
 /// side of `StoredFieldsInts`'s sibling per-field value encoding).
 fn read_field(input: &mut SliceInput, bits: i64) -> Result<FieldValue> {
@@ -672,24 +914,6 @@ mod tests {
     fn write_string(out: &mut Vec<u8>, s: &str) {
         write_vint(out, s.len() as i32);
         out.extend_from_slice(s.as_bytes());
-    }
-
-    /// A "stored, not compressed" literal-only LZ4 encoding of `bytes`.
-    fn encode_literal_lz4(bytes: &[u8]) -> Vec<u8> {
-        let mut out = Vec::new();
-        let len = bytes.len();
-        let nibble = len.min(0x0F);
-        out.push((nibble as u8) << 4);
-        if len >= 0x0F {
-            let mut rem = len - 0x0F;
-            while rem >= 0xFF {
-                out.push(0xFF);
-                rem -= 0xFF;
-            }
-            out.push(rem as u8);
-        }
-        out.extend_from_slice(bytes);
-        out
     }
 
     /// A single-block, zero-dictionary `LZ4WithPresetDictCompressionMode`
@@ -1401,5 +1625,172 @@ mod tests {
             read_field(&mut input, 6),
             Err(Error::UnknownTypeTag(6))
         ));
+    }
+
+    fn id_write() -> [u8; ID_LENGTH] {
+        [4u8; ID_LENGTH]
+    }
+
+    #[test]
+    fn write_best_speed_single_doc_round_trips_through_own_reader() {
+        let docs = vec![Document {
+            fields: vec![
+                StoredField {
+                    field_number: 0,
+                    value: FieldValue::String("hello world".to_string()),
+                },
+                StoredField {
+                    field_number: 1,
+                    value: FieldValue::Int(-42),
+                },
+                StoredField {
+                    field_number: 2,
+                    value: FieldValue::Long(1_234_567_890_123),
+                },
+                StoredField {
+                    field_number: 3,
+                    value: FieldValue::Float(1.5),
+                },
+                StoredField {
+                    field_number: 4,
+                    value: FieldValue::Double(2.25),
+                },
+                StoredField {
+                    field_number: 5,
+                    value: FieldValue::Binary(vec![1, 2, 3, 4, 5]),
+                },
+            ],
+        }];
+
+        let (fdt, fdx, fdm) = write_best_speed(&docs, &id_write(), "");
+        let reader = open(&fdt, &fdx, &fdm, &id_write(), "").unwrap();
+        assert_eq!(reader.max_doc(), 1);
+        let got = reader.document(0).unwrap();
+        assert_eq!(got.fields.len(), docs[0].fields.len());
+        for (got_field, want_field) in got.fields.iter().zip(&docs[0].fields) {
+            assert_eq!(got_field.field_number, want_field.field_number);
+            assert_eq!(got_field.value, want_field.value);
+        }
+    }
+
+    #[test]
+    fn write_best_speed_multi_doc_round_trips_with_varying_field_counts() {
+        let docs = vec![
+            Document {
+                fields: vec![StoredField {
+                    field_number: 0,
+                    value: FieldValue::String("doc0".to_string()),
+                }],
+            },
+            Document {
+                fields: vec![
+                    StoredField {
+                        field_number: 0,
+                        value: FieldValue::String("doc1-a".to_string()),
+                    },
+                    StoredField {
+                        field_number: 1,
+                        value: FieldValue::Long(-7),
+                    },
+                ],
+            },
+            Document { fields: vec![] },
+        ];
+
+        let (fdt, fdx, fdm) = write_best_speed(&docs, &id_write(), "seg");
+        let reader = open(&fdt, &fdx, &fdm, &id_write(), "seg").unwrap();
+        assert_eq!(reader.max_doc(), 3);
+
+        let doc0 = reader.document(0).unwrap();
+        assert_eq!(doc0.fields.len(), 1);
+        assert_eq!(doc0.fields[0].value, FieldValue::String("doc0".to_string()));
+
+        let doc1 = reader.document(1).unwrap();
+        assert_eq!(doc1.fields.len(), 2);
+        assert_eq!(
+            doc1.fields[0].value,
+            FieldValue::String("doc1-a".to_string())
+        );
+        assert_eq!(doc1.fields[1].value, FieldValue::Long(-7));
+
+        let doc2 = reader.document(2).unwrap();
+        assert_eq!(doc2.fields.len(), 0);
+    }
+
+    #[test]
+    fn write_best_speed_empty_doc_set_produces_zero_max_doc() {
+        let (fdt, fdx, fdm) = write_best_speed(&[], &id_write(), "");
+        let reader = open(&fdt, &fdx, &fdm, &id_write(), "").unwrap();
+        assert_eq!(reader.max_doc(), 0);
+    }
+
+    #[test]
+    fn write_zint_round_trips_through_read_zint() {
+        for v in [0i32, 1, -1, i32::MIN, i32::MAX] {
+            let mut out = Vec::new();
+            write_zint(&mut out, v);
+            let mut input = SliceInput::new(&out);
+            assert_eq!(read_zint(&mut input).unwrap(), v, "value {v}");
+        }
+    }
+
+    #[test]
+    fn write_tlong_full_round_trips_through_read_tlong() {
+        for v in [0i64, 1, -1, i64::MIN, i64::MAX, 1_000_000_000_000] {
+            let mut out = Vec::new();
+            write_tlong_full(&mut out, v);
+            let mut input = SliceInput::new(&out);
+            assert_eq!(read_tlong(&mut input).unwrap(), v, "value {v}");
+        }
+    }
+
+    #[test]
+    fn write_zfloat_full_round_trips_through_read_zfloat() {
+        for v in [0.0f32, 1.5, -1.5, f32::MIN, f32::MAX] {
+            let mut out = Vec::new();
+            write_zfloat_full(&mut out, v);
+            let mut input = SliceInput::new(&out);
+            assert_eq!(read_zfloat(&mut input).unwrap(), v, "value {v}");
+        }
+    }
+
+    #[test]
+    fn write_zdouble_full_round_trips_through_read_zdouble() {
+        for v in [0.0f64, 1.5, -1.5, f64::MIN, f64::MAX] {
+            let mut out = Vec::new();
+            write_zdouble_full(&mut out, v);
+            let mut input = SliceInput::new(&out);
+            assert_eq!(read_zdouble(&mut input).unwrap(), v, "value {v}");
+        }
+    }
+
+    #[test]
+    fn write_bulk_ints_all_equal_and_varying_widths_round_trip() {
+        for values in [
+            vec![5i64, 5, 5, 5],
+            vec![1i64, 200, 3, 4],
+            vec![1i64, 70000, 3, 4],
+            vec![1i64, 4_000_000_000, 3, 4],
+        ] {
+            let mut out = Vec::new();
+            write_bulk_ints(&mut out, &values);
+            let mut input = SliceInput::new(&out);
+            assert_eq!(read_bulk_ints(&mut input, values.len()).unwrap(), values);
+        }
+    }
+
+    #[test]
+    fn encode_literal_lz4_round_trips_through_lz4_decompress() {
+        for payload in [
+            Vec::new(),
+            b"short".to_vec(),
+            vec![0x42; 5000], // forces the 0xFF-continuation length encoding
+        ] {
+            let encoded = encode_literal_lz4(&payload);
+            let mut input = SliceInput::new(&encoded);
+            let mut dest = vec![0u8; payload.len()];
+            lz4::decompress(&mut input, payload.len(), &mut dest, 0).unwrap();
+            assert_eq!(dest, payload);
+        }
     }
 }

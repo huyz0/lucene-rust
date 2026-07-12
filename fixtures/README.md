@@ -21,6 +21,27 @@ done
 `data/` is checked in (small, deterministic) so `cargo test` works without Java
 installed; regenerate and re-commit whenever the pinned Lucene version changes.
 
+## Verifying the write path (reverse direction)
+
+Every generator above is Java-writes-Rust-reads. The write path (PLAN.md Phase 5)
+needs the opposite: Rust writes real bytes, and a Java program confirms real Lucene
+can open and read them back. `VerifyStoredFields.java` is the first one of these:
+
+```sh
+cargo run -p lucene-codecs --example write_stored_fields_fixture -- /tmp/rust-stored-fields
+JAR=$(find ~/.gradle/caches/modules-2/files-2.1/org.apache.lucene/lucene-core/10.5.0 \
+  -name 'lucene-core-10.5.0.jar' ! -name '*sources*' ! -name '*javadoc*')
+javac -nowarn -cp "$JAR" -d classes src/VerifyStoredFields.java
+java -cp "classes:$JAR" VerifyStoredFields /tmp/rust-stored-fields
+```
+
+`VerifyStoredFields.java` opens the `.fdt`/`.fdx`/`.fdm` triple directly through
+`Lucene90StoredFieldsFormat.fieldsReader`, using a hand-built `SegmentInfo`/
+`FieldInfos` rather than also requiring Rust to write `.si`/`.fnm` -- this keeps
+each write-path slice scoped to exactly the one format it's verifying, the same
+way the read-path fixtures below call one codec-level `open`/`document` directly
+rather than going through a full `IndexReader`.
+
 ## Generators
 
 - `GenPrimitives.java` — vint/vlong/zlong/group-varint wire encodings.

@@ -36,6 +36,75 @@ pub(crate) fn get(slice: &[u8], bits_per_value: u8, index: i64) -> Result<i64> {
     Ok((acc & mask) as i64)
 }
 
+/// Port of `DirectWriter.add`/`flush`'s bit-packing (encode side of [`get`]):
+/// packs `values` (each assumed to fit in `bits_per_value` unsigned bits) as
+/// one little-endian, LSB-first-within-byte bitstream -- the exact inverse
+/// of `get`'s formula, so this port doesn't need Java's thirteen
+/// width-specialized encoders either.
+pub(crate) fn encode(values: &[i64], bits_per_value: u8) -> Vec<u8> {
+    let total_bits = values.len() as u128 * bits_per_value as u128;
+    let n_bytes = total_bits.div_ceil(8) as usize;
+    let mut out = vec![0u8; n_bytes];
+    for (i, &v) in values.iter().enumerate() {
+        let mut bit_pos = i as u128 * bits_per_value as u128;
+        let mut remaining = bits_per_value as u32;
+        let mut val = v as u64;
+        while remaining > 0 {
+            let byte_idx = (bit_pos >> 3) as usize;
+            let bit_off = (bit_pos & 7) as u32;
+            let can_write = 8 - bit_off;
+            let take = remaining.min(can_write);
+            let mask = if take == 64 {
+                u64::MAX
+            } else {
+                (1u64 << take) - 1
+            };
+            out[byte_idx] |= (((val & mask) << bit_off) & 0xFF) as u8;
+            val >>= take;
+            bit_pos += take as u128;
+            remaining -= take;
+        }
+    }
+    out
+}
+
+/// `DirectWriter`'s supported bit widths -- `bitsRequired`/`unsignedBitsRequired`
+/// always round up to one of these (`DirectWriter.roundBits`).
+const SUPPORTED_BITS: [u32; 14] = [1, 2, 4, 8, 12, 16, 20, 24, 28, 32, 40, 48, 56, 64];
+
+/// Port of `DirectWriter.unsignedBitsRequired`: the minimum bit width (among
+/// [`SUPPORTED_BITS`]) that can hold `max_value` interpreted as unsigned.
+pub(crate) fn unsigned_bits_required(max_value: i64) -> u8 {
+    let bits = if max_value == 0 {
+        1
+    } else {
+        64 - (max_value as u64).leading_zeros()
+    };
+    SUPPORTED_BITS
+        .into_iter()
+        .find(|&w| w >= bits)
+        .unwrap_or(64) as u8
+}
+
+/// Port of `DirectWriter.paddingBytesNeeded`: extra zero bytes appended after
+/// a block's packed data so a reader could always do one fixed-width
+/// (u8/u16/u32/u64) read without touching the next block's bytes. This
+/// port's own [`get`] is bounds-checked and never needs this, but the
+/// padding is part of the on-disk byte layout (it shifts every subsequent
+/// block's offset), so a writer must still emit it for wire compatibility.
+pub(crate) fn padding_bytes_needed(bits_per_value: u8) -> usize {
+    let padding_bits = if bits_per_value > 32 {
+        64 - bits_per_value as u32
+    } else if bits_per_value > 16 {
+        32 - bits_per_value as u32
+    } else if bits_per_value > 8 {
+        16 - bits_per_value as u32
+    } else {
+        0
+    };
+    (padding_bits as usize).div_ceil(8)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,5 +150,48 @@ mod tests {
     fn out_of_range_is_error() {
         let payload = [0u8; 1];
         assert!(get(&payload, 16, 5).is_err());
+    }
+
+    #[test]
+    fn encode_round_trips_through_get_for_every_supported_width() {
+        for &bits in &[1u8, 2, 4, 8, 12, 16, 20, 24, 28, 32, 40, 48, 56, 64] {
+            let values: Vec<i64> = (0..17)
+                .map(|i| {
+                    let raw = i as u64 * 7;
+                    if bits == 64 {
+                        raw as i64
+                    } else {
+                        (raw % (1u64 << bits)) as i64
+                    }
+                })
+                .collect();
+            let packed = encode(&values, bits);
+            for (i, &want) in values.iter().enumerate() {
+                assert_eq!(
+                    get(&packed, bits, i as i64).unwrap(),
+                    want,
+                    "bits={bits} i={i}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn encode_sub_byte_width_matches_hand_derived_bytes() {
+        // Same case as `sub_byte_widths_pack_multiple_values_per_byte`, in reverse.
+        let packed = encode(&[0xA, 0xB], 4);
+        assert_eq!(packed, vec![0xBA]);
+    }
+
+    #[test]
+    fn padding_bytes_needed_matches_java_thresholds() {
+        assert_eq!(padding_bytes_needed(1), 0);
+        assert_eq!(padding_bytes_needed(8), 0);
+        assert_eq!(padding_bytes_needed(12), 1); // 16-12=4 bits -> 1 byte
+        assert_eq!(padding_bytes_needed(16), 0);
+        assert_eq!(padding_bytes_needed(20), 2); // 32-20=12 bits -> 2 bytes
+        assert_eq!(padding_bytes_needed(32), 0);
+        assert_eq!(padding_bytes_needed(40), 3); // 64-40=24 bits -> 3 bytes
+        assert_eq!(padding_bytes_needed(64), 0);
     }
 }

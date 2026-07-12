@@ -13,6 +13,7 @@
 //! the footer's own magic+algorithmID, i.e. `crc32(file[..len-8])`.
 
 use crate::data_input::{DataInput, SliceInput};
+use crate::data_output::DataOutput;
 use crate::error::{Error, Result};
 
 pub const CODEC_MAGIC: u32 = 0x3fd7_6c17;
@@ -125,6 +126,45 @@ pub fn check_index_header_suffix(input: &mut SliceInput, expected_suffix: &str) 
         )));
     }
     Ok(suffix)
+}
+
+/// Port of `CodecUtil.writeHeader`: `Magic(BEi32), CodecName(String), Version(BEi32)`.
+pub fn write_header(out: &mut impl DataOutput, codec: &str, version: i32) {
+    out.write_be_u32(CODEC_MAGIC);
+    out.write_string(codec);
+    out.write_be_u32(version as u32);
+}
+
+/// Port of `CodecUtil.writeIndexHeader`: a [`write_header`] plus the object
+/// id and segment suffix. `suffix` must be ASCII and at most 255 bytes
+/// (mirrors Java's own `checkIndexHeaderSuffix`/`writeIndexHeader`
+/// constraint, since the length is written as a single byte).
+pub fn write_index_header(
+    out: &mut impl DataOutput,
+    codec: &str,
+    version: i32,
+    id: &[u8; ID_LENGTH],
+    suffix: &str,
+) {
+    write_header(out, codec, version);
+    out.write_bytes(id);
+    out.write_byte(suffix.len() as u8);
+    out.write_bytes(suffix.as_bytes());
+}
+
+/// Port of `CodecUtil.writeFooter`: `Magic(BEi32=~CODEC_MAGIC), AlgorithmID(BEi32=0),
+/// Checksum(BEu64=CRC32)`. Operates directly on the accumulated output buffer
+/// (rather than being generic over [`DataOutput`]) since the checksum must
+/// cover every byte written so far, including the footer's own magic and
+/// algorithm id -- there's no `DataOutput` method to read back what's
+/// already been written, so this takes the buffer as `&mut Vec<u8>` and
+/// hashes it directly, matching every hand-built test fixture elsewhere in
+/// this port.
+pub fn write_footer(buf: &mut Vec<u8>) {
+    buf.write_be_u32(FOOTER_MAGIC);
+    buf.write_be_u32(0); // algorithm id
+    let checksum = crc32fast::hash(buf) as u64;
+    buf.write_be_u64(checksum);
 }
 
 /// Port of `CodecUtil.checkFooter`: `input` must be positioned at the start of the
@@ -469,5 +509,73 @@ mod tests {
             check_index_header_suffix(&mut input, "b"),
             Err(Error::Corrupted(_))
         ));
+    }
+
+    #[test]
+    fn write_header_round_trips_through_check_header() {
+        let mut buf = Vec::new();
+        write_header(&mut buf, "Test", 3);
+        let mut input = SliceInput::new(&buf);
+        let header = check_header(&mut input, "Test", 1, 3).unwrap();
+        assert_eq!(header.version, 3);
+    }
+
+    #[test]
+    fn write_index_header_round_trips_through_check_index_header() {
+        let id = [5u8; ID_LENGTH];
+        let mut buf = Vec::new();
+        write_index_header(&mut buf, "Test", 2, &id, "seg1");
+        let mut input = SliceInput::new(&buf);
+        let header = check_index_header(&mut input, "Test", 1, 2, &id, "seg1").unwrap();
+        assert_eq!(header.version, 2);
+        assert_eq!(header.id, id);
+        assert_eq!(header.suffix, "seg1");
+    }
+
+    #[test]
+    fn write_index_header_empty_suffix_round_trips() {
+        let id = [9u8; ID_LENGTH];
+        let mut buf = Vec::new();
+        write_index_header(&mut buf, "Test", 1, &id, "");
+        let mut input = SliceInput::new(&buf);
+        check_index_header(&mut input, "Test", 1, 1, &id, "").unwrap();
+    }
+
+    #[test]
+    fn write_footer_round_trips_through_check_footer() {
+        let id = [3u8; ID_LENGTH];
+        let mut buf = Vec::new();
+        write_index_header(&mut buf, "Test", 1, &id, "");
+        buf.extend_from_slice(b"payload bytes");
+        write_footer(&mut buf);
+
+        let mut input = SliceInput::new(&buf);
+        check_index_header(&mut input, "Test", 1, 1, &id, "").unwrap();
+        input.skip(b"payload bytes".len()).unwrap();
+        let checksum = check_footer(&mut input, buf.len()).unwrap();
+        assert_eq!(checksum, crc32fast::hash(&buf[..buf.len() - 8]) as u64);
+    }
+
+    #[test]
+    fn write_footer_round_trips_through_retrieve_checksum() {
+        let mut buf = Vec::new();
+        write_header(&mut buf, "Test", 1);
+        buf.extend_from_slice(b"x");
+        write_footer(&mut buf);
+        retrieve_checksum(&buf).unwrap();
+    }
+
+    #[test]
+    fn full_written_file_passes_check_whole_file_header_and_footer() {
+        let id = [11u8; ID_LENGTH];
+        let mut buf = Vec::new();
+        write_index_header(&mut buf, "Test", 1, &id, "sfx");
+        buf.extend_from_slice(b"body");
+        write_footer(&mut buf);
+
+        let header = check_whole_file_header(&buf, "Test", 1, 1).unwrap();
+        assert_eq!(header.version, 1);
+        let payload_end = buf.len() - FOOTER_LENGTH;
+        check_whole_file_footer(&buf, payload_end).unwrap();
     }
 }

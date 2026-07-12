@@ -16,6 +16,7 @@
 //! faults; not a concern for an in-memory decode).
 
 use lucene_store::data_input::DataInput;
+use lucene_store::data_output::DataOutput;
 use lucene_store::Result;
 
 use crate::direct_reader;
@@ -91,6 +92,67 @@ pub fn floor_index(data: &[u8], meta: &Meta, from: i64, to: i64, key: i64) -> Re
         }
     }
     Ok(result)
+}
+
+/// Port of `DirectMonotonicWriter`: encodes a monotonically non-decreasing
+/// `i64` sequence into `(meta_bytes, data_bytes)` -- the write-side
+/// counterpart of [`load_meta`]/[`get`]. `values` must already be sorted
+/// non-decreasing (mirrors Java's `add`, which throws on out-of-order
+/// input); this port just asserts it via `debug_assert`, since every caller
+/// so far builds `values` from an already-sorted source (chunk boundaries,
+/// offsets).
+///
+/// Unlike the real `DirectMonotonicWriter`, this returns two full buffers
+/// rather than streaming to an `IndexOutput` -- there's no incremental
+/// `IndexOutput` in this port yet (see `lucene_store::data_output`'s module
+/// doc), and every value set built so far comfortably fits in memory.
+pub fn write(values: &[i64], block_shift: u32) -> (Vec<u8>, Vec<u8>) {
+    let block_size = 1usize << block_shift;
+    let mut meta = Vec::new();
+    let mut data = Vec::new();
+
+    for chunk in values.chunks(block_size) {
+        debug_assert!(chunk.windows(2).all(|w| w[0] <= w[1]));
+
+        let avg_inc = if chunk.len() <= 1 {
+            0.0f64
+        } else {
+            (chunk[chunk.len() - 1] - chunk[0]) as f64 / (chunk.len() - 1) as f64
+        } as f32;
+
+        let mut deltas: Vec<i64> = chunk
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| v - (avg_inc as f64 * i as f64) as i64)
+            .collect();
+        let min = *deltas.iter().min().unwrap();
+        for d in &mut deltas {
+            *d -= min;
+        }
+        // Matches Java's `maxDelta |= buffer[i]` -- an OR-based upper bound
+        // rather than a real max, but equivalent for bit-width purposes and
+        // robust to the (unreachable here, since deltas are all >= 0 after
+        // the subtraction above) negative-overflow case Java's comment
+        // mentions.
+        let max_delta = deltas.iter().fold(0i64, |acc, &d| acc | d);
+
+        meta.write_i64(min);
+        meta.write_i32(avg_inc.to_bits() as i32);
+        meta.write_i64(data.len() as i64);
+        if max_delta == 0 {
+            meta.push(0);
+        } else {
+            let bits_per_value = direct_reader::unsigned_bits_required(max_delta);
+            data.extend_from_slice(&direct_reader::encode(&deltas, bits_per_value));
+            data.extend(std::iter::repeat_n(
+                0u8,
+                direct_reader::padding_bytes_needed(bits_per_value),
+            ));
+            meta.push(bits_per_value);
+        }
+    }
+
+    (meta, data)
 }
 
 #[cfg(test)]
@@ -180,5 +242,60 @@ mod tests {
         let meta = load_meta(&mut input, 1, 10).unwrap();
         assert_eq!(floor_index(&[], &meta, 0, 1, 0).unwrap(), 0);
         assert_eq!(floor_index(&[], &meta, 0, 1, 500).unwrap(), 0);
+    }
+
+    fn round_trip(values: &[i64], block_shift: u32) {
+        let (meta_bytes, data) = write(values, block_shift);
+        let mut input = SliceInput::new(&meta_bytes);
+        let meta = load_meta(&mut input, values.len() as i64, block_shift).unwrap();
+        for (i, &want) in values.iter().enumerate() {
+            assert_eq!(
+                get(&data, &meta, i as i64).unwrap(),
+                want,
+                "index {i} (values={values:?}, block_shift={block_shift})"
+            );
+        }
+    }
+
+    #[test]
+    fn write_round_trips_linear_sequence_across_multiple_blocks() {
+        // Perfectly linear -> every block's maxDelta is 0 (bpv=0 path).
+        let values: Vec<i64> = (0..37).map(|i| i * 3).collect();
+        round_trip(&values, 2); // block size 4
+    }
+
+    #[test]
+    fn write_round_trips_irregular_sequence_needing_bit_packed_deltas() {
+        let values = vec![0i64, 1, 5, 6, 6, 100, 1000, 1000, 1001, 5000, 5000, 5001];
+        round_trip(&values, 2);
+    }
+
+    #[test]
+    fn write_round_trips_single_value_block() {
+        round_trip(&[42], 4);
+    }
+
+    #[test]
+    fn write_round_trips_empty_sequence() {
+        round_trip(&[], 4);
+    }
+
+    #[test]
+    fn write_round_trips_single_full_block_no_remainder() {
+        // Exactly one block (block size 4), so there's no partial final chunk.
+        round_trip(&[0, 2, 9, 1000], 2);
+    }
+
+    #[test]
+    fn write_matches_java_flush_algorithm_by_hand() {
+        // 4 values [0, 3, 6, 9] in one block of size 4: perfectly linear,
+        // avgInc=(9-0)/3=3.0, deltas all 0 -> min=0, maxDelta=0, bpv=0.
+        let (meta, data) = write(&[0, 3, 6, 9], 2);
+        assert!(data.is_empty());
+        let mut input = SliceInput::new(&meta);
+        assert_eq!(input.read_i64().unwrap(), 0); // min
+        assert_eq!(f32::from_bits(input.read_i32().unwrap() as u32), 3.0); // avgInc
+        assert_eq!(input.read_i64().unwrap(), 0); // offset
+        assert_eq!(input.read_byte().unwrap(), 0); // bpv
     }
 }
