@@ -107,11 +107,17 @@ impl IndexOptions {
     /// this option indexes positions (and therefore may store payloads).
     /// `DocsAndCustomFreqs` is special-cased in Java to subsume as if it were
     /// `DocsAndFreqs` — i.e. it does NOT subsume positions.
-    fn subsumes_positions(self) -> bool {
+    pub(crate) fn subsumes_positions(self) -> bool {
         matches!(
             self,
             Self::DocsAndFreqsAndPositions | Self::DocsAndFreqsAndPositionsAndOffsets
         )
+    }
+
+    /// Port of `IndexOptions.subsumes(DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS)`:
+    /// whether this option indexes character offsets.
+    pub(crate) fn subsumes_offsets(self) -> bool {
+        matches!(self, Self::DocsAndFreqsAndPositionsAndOffsets)
     }
 
     fn to_byte(self) -> u8 {

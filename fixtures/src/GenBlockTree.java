@@ -1,5 +1,8 @@
 import org.apache.lucene.analysis.TokenStream;
 import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
+import org.apache.lucene.analysis.tokenattributes.OffsetAttribute;
+import org.apache.lucene.analysis.tokenattributes.PayloadAttribute;
+import org.apache.lucene.analysis.tokenattributes.PositionIncrementAttribute;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.FieldType;
@@ -71,6 +74,43 @@ public class GenBlockTree {
     }
   }
 
+  /** One token with an explicit position increment, offsets, and optional payload. */
+  record PosTok(String term, int posInc, int startOffset, int endOffset, byte[] payload) {}
+
+  static final class CannedPosTokenStream extends TokenStream {
+    private final List<PosTok> tokens;
+    private int index = 0;
+    private final CharTermAttribute termAtt = addAttribute(CharTermAttribute.class);
+    private final PositionIncrementAttribute posIncAtt =
+        addAttribute(PositionIncrementAttribute.class);
+    private final OffsetAttribute offsetAtt = addAttribute(OffsetAttribute.class);
+    private final PayloadAttribute payloadAtt = addAttribute(PayloadAttribute.class);
+
+    CannedPosTokenStream(List<PosTok> tokens) {
+      this.tokens = tokens;
+    }
+
+    @Override
+    public boolean incrementToken() {
+      if (index >= tokens.size()) {
+        return false;
+      }
+      clearAttributes();
+      PosTok t = tokens.get(index++);
+      termAtt.append(t.term());
+      posIncAtt.setPositionIncrement(t.posInc());
+      offsetAtt.setOffset(t.startOffset(), t.endOffset());
+      payloadAtt.setPayload(t.payload() == null ? null : new BytesRef(t.payload()));
+      return true;
+    }
+
+    @Override
+    public void reset() throws IOException {
+      super.reset();
+      index = 0;
+    }
+  }
+
   public static void main(String[] args) throws IOException {
     Path out = Path.of(args[0]).resolve("blocktree_index");
     if (Files.exists(out)) {
@@ -87,6 +127,26 @@ public class GenBlockTree {
     idType.setIndexOptions(IndexOptions.DOCS);
     idType.setTokenized(true);
     idType.freeze();
+
+    FieldType bigType = new FieldType();
+    bigType.setIndexOptions(IndexOptions.DOCS_AND_FREQS);
+    bigType.setTokenized(true);
+    bigType.freeze();
+
+    FieldType posType = new FieldType();
+    posType.setIndexOptions(IndexOptions.DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS);
+    posType.setTokenized(true);
+    posType.freeze();
+
+    // "big": a single term ("everywhere") appearing in BIG_DOC_FREQ (300)
+    // separate documents with a varying (1..4) per-doc frequency -- forces
+    // Lucene104PostingsWriter past ForUtil.BLOCK_SIZE (256), producing one
+    // full PFOR-encoded block plus a group-varint tail block on the wire
+    // (see crates/lucene-codecs/src/postings.rs's module doc). These
+    // documents deliberately carry no "id"/"body" field, so the existing
+    // single-leaf-block assumption for those two fields' term dictionaries
+    // (see blocktree.rs's module doc) is untouched.
+    final int bigDocFreq = 300;
 
     // doc0: body "cat cat dog" -> cat freq=2, dog freq=1
     // doc1: body "dog bird"    -> dog freq=1, bird freq=1
@@ -118,6 +178,50 @@ public class GenBlockTree {
           }
           w.addDocument(doc);
         }
+        for (int i = 0; i < bigDocFreq; i++) {
+          Document doc = new Document();
+          int freq = 1 + (i % 4);
+          String[] toks = new String[freq];
+          java.util.Arrays.fill(toks, "everywhere");
+          doc.add(new Field("big", new CannedTokenStream(List.of(toks)), bigType));
+          w.addDocument(doc);
+        }
+
+        // "pos": positions/offsets/payloads on real postings (not term
+        // vectors -- exercises Lucene104PostingsWriter's .pos/.pay path,
+        // reusing GenTermVectors.java's hand-built-TokenStream technique so
+        // every occurrence's exact position/offset/payload is known.
+        // doc5: "alpha" (pos 0, offset [0,5), payload 0xAA), "beta" (pos 1,
+        //       offset [6,10), no payload) -- alpha docFreq contribution 1,
+        //       beta docFreq contribution 1.
+        // doc6: "alpha" (pos 0, offset [0,5), no payload), "alpha" (pos 1,
+        //       offset [6,11), payload 0xBB,0xCC) -- same term repeated in
+        //       one doc with a payload on only the second occurrence,
+        //       exercising the vint tail's payload-length-change bit.
+        // "alpha": docFreq=2, totalTermFreq=3 (1 + 2). "beta": docFreq=1,
+        // totalTermFreq=1.
+        Document doc5 = new Document();
+        doc5.add(
+            new Field(
+                "pos",
+                new CannedPosTokenStream(
+                    List.of(
+                        new PosTok("alpha", 1, 0, 5, new byte[] {(byte) 0xAA}),
+                        new PosTok("beta", 1, 6, 10, null))),
+                posType));
+        w.addDocument(doc5);
+
+        Document doc6 = new Document();
+        doc6.add(
+            new Field(
+                "pos",
+                new CannedPosTokenStream(
+                    List.of(
+                        new PosTok("alpha", 1, 0, 5, null),
+                        new PosTok("alpha", 1, 6, 11, new byte[] {(byte) 0xBB, (byte) 0xCC}))),
+                posType));
+        w.addDocument(doc6);
+
         w.commit();
       }
 
@@ -129,6 +233,7 @@ public class GenBlockTree {
 
       String timFileName = null, tipFileName = null, tmdFileName = null;
       String fnmFileName = null, siFileName = null, docFileName = null;
+      String posFileName = null, payFileName = null;
       for (String f : sci.info.files()) {
         if (f.endsWith(".tim")) timFileName = f;
         if (f.endsWith(".tip")) tipFileName = f;
@@ -136,6 +241,8 @@ public class GenBlockTree {
         if (f.endsWith(".fnm")) fnmFileName = f;
         if (f.endsWith(".si")) siFileName = f;
         if (f.endsWith(".doc")) docFileName = f;
+        if (f.endsWith(".pos")) posFileName = f;
+        if (f.endsWith(".pay")) payFileName = f;
       }
       if (timFileName == null || tipFileName == null || tmdFileName == null) {
         throw new AssertionError("expected .tim/.tip/.tmd files, files=" + sci.info.files());
@@ -146,6 +253,9 @@ public class GenBlockTree {
       if (docFileName == null) {
         throw new AssertionError("expected .doc file, files=" + sci.info.files());
       }
+      if (posFileName == null || payFileName == null) {
+        throw new AssertionError("expected .pos/.pay files, files=" + sci.info.files());
+      }
 
       dump(dir, timFileName, out);
       dump(dir, tipFileName, out);
@@ -153,6 +263,8 @@ public class GenBlockTree {
       dump(dir, fnmFileName, out);
       dump(dir, siFileName, out);
       dump(dir, docFileName, out);
+      dump(dir, posFileName, out);
+      dump(dir, payFileName, out);
 
       StringBuilder m = new StringBuilder();
       m.append("tim_file_name=").append(timFileName).append('\n');
@@ -161,6 +273,8 @@ public class GenBlockTree {
       m.append("fnm_file_name=").append(fnmFileName).append('\n');
       m.append("si_file_name=").append(siFileName).append('\n');
       m.append("doc_file_name=").append(docFileName).append('\n');
+      m.append("pos_file_name=").append(posFileName).append('\n');
+      m.append("pay_file_name=").append(payFileName).append('\n');
       // PerFieldPostingsFormat assigns a per-format segment suffix (e.g.
       // "Lucene104_0"), embedded in the .tim/.tip/.tmd file names as
       // "<segmentName>_<suffix>.<ext>" -- recover it from the .tim name
@@ -185,6 +299,16 @@ public class GenBlockTree {
             leaf,
             "id",
             new String[] {"id0", "id1", "id2", "id3", "id4", "id5-missing"});
+        appendFieldManifest(
+            m,
+            leaf,
+            "big",
+            new String[] {"everywhere", "zzz-missing"});
+        appendPositionFieldManifest(
+            m,
+            leaf,
+            "pos",
+            new String[] {"alpha", "beta"});
       }
 
       Files.writeString(out.resolve("manifest.properties"), m.toString());
@@ -246,6 +370,69 @@ public class GenBlockTree {
     }
   }
 
+  /**
+   * Like {@link #appendFieldManifest} but for a field with positions/offsets/
+   * payloads: dumps real {@code PostingsEnum.nextPosition()}/{@code
+   * startOffset()}/{@code endOffset()}/{@code getPayload()} ground truth for
+   * every occurrence, in doc order, alongside the same docFreq/totalTermFreq/
+   * postingsDocs/postingsFreqs manifest keys {@link #appendFieldManifest}
+   * writes.
+   */
+  static void appendPositionFieldManifest(
+      StringBuilder m, LeafReader leaf, String field, String[] lookups) throws IOException {
+    Terms terms = leaf.terms(field);
+    if (terms == null) {
+      throw new AssertionError("expected terms for field " + field);
+    }
+    m.append("field.").append(field).append(".numTerms=").append(terms.size()).append('\n');
+
+    TermsEnum te = terms.iterator();
+    for (String lookup : lookups) {
+      boolean found = te.seekExact(new BytesRef(lookup));
+      String key = "field." + field + ".term." + lookup;
+      if (!found) {
+        m.append(key).append(".found=false\n");
+        continue;
+      }
+      m.append(key).append(".found=true\n");
+      m.append(key).append(".docFreq=").append(te.docFreq()).append('\n');
+      m.append(key).append(".totalTermFreq=").append(te.totalTermFreq()).append('\n');
+
+      PostingsEnum postings = te.postings(null, PostingsEnum.ALL);
+      StringBuilder docs = new StringBuilder();
+      StringBuilder freqs = new StringBuilder();
+      StringBuilder occurrences = new StringBuilder();
+      int doc;
+      while ((doc = postings.nextDoc()) != PostingsEnum.NO_MORE_DOCS) {
+        if (docs.length() > 0) {
+          docs.append(',');
+          freqs.append(',');
+        }
+        docs.append(doc);
+        int freq = postings.freq();
+        freqs.append(freq);
+        for (int k = 0; k < freq; k++) {
+          int pos = postings.nextPosition();
+          if (occurrences.length() > 0) {
+            occurrences.append(';');
+          }
+          BytesRef payload = postings.getPayload();
+          occurrences
+              .append(pos)
+              .append(',')
+              .append(postings.startOffset())
+              .append(',')
+              .append(postings.endOffset())
+              .append(',')
+              .append(payload == null ? "NONE" : hex(payload.bytes, payload.offset, payload.length));
+        }
+      }
+      m.append(key).append(".postingsDocs=").append(docs).append('\n');
+      m.append(key).append(".postingsFreqs=").append(freqs).append('\n');
+      m.append(key).append(".occurrences=").append(occurrences).append('\n');
+    }
+  }
+
   static void dump(Directory dir, String fileName, Path out) throws IOException {
     try (IndexInput in = dir.openInput(fileName, IOContext.READONCE)) {
       byte[] bytes = new byte[(int) in.length()];
@@ -266,8 +453,12 @@ public class GenBlockTree {
   }
 
   static String hex(byte[] b) {
+    return hex(b, 0, b.length);
+  }
+
+  static String hex(byte[] b, int offset, int length) {
     StringBuilder sb = new StringBuilder();
-    for (byte value : b) sb.append(String.format("%02x", value));
+    for (int i = 0; i < length; i++) sb.append(String.format("%02x", b[offset + i]));
     return sb.toString();
   }
 }

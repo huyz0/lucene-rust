@@ -163,6 +163,7 @@ pub struct FieldTerms {
     pub min_term: Vec<u8>,
     pub max_term: Vec<u8>,
     index_options: IndexOptions,
+    has_payloads: bool,
     entries: Vec<(Vec<u8>, TermStats, TermMetadata)>,
 }
 
@@ -207,6 +208,40 @@ impl FieldTerms {
             *meta,
             stats.doc_freq,
             self.index_options,
+            self.has_payloads,
+        )?))
+    }
+
+    /// `postings(term, doc_in)` followed by `PostingsEnum.nextPosition()`/
+    /// `startOffset()`/`endOffset()`/`getPayload()` for every occurrence in
+    /// every doc — needs a field with `IndexOptions::DocsAndFreqsAndPositions`
+    /// or higher (see `crate::postings::read_positions`'s doc comment for the
+    /// exact scope). `pay_in` is only needed for a field with offsets or
+    /// payloads whose `total_term_freq` spans at least one full 256-position
+    /// block; `None` is otherwise fine even for such a field.
+    pub fn positions(
+        &self,
+        term: &[u8],
+        doc_in: Option<&DocInput<'_>>,
+        pos_in: &postings::PosInput<'_>,
+        pay_in: Option<&postings::PayInput<'_>>,
+    ) -> Result<Option<Vec<Vec<postings::Position>>>> {
+        let Some(doc_postings) = self.postings(term, doc_in)? else {
+            return Ok(None);
+        };
+        let idx = self
+            .entries
+            .binary_search_by(|(t, _, _)| t.as_slice().cmp(term))
+            .expect("found by self.postings() above, so seek_exact must succeed here too");
+        let (_, stats, meta) = &self.entries[idx];
+        Ok(Some(postings::read_positions(
+            pos_in,
+            pay_in,
+            *meta,
+            &doc_postings.freqs,
+            stats.total_term_freq,
+            self.index_options,
+            self.has_payloads,
         )?))
     }
 }
@@ -301,6 +336,7 @@ fn decode_block(
     tim: &[u8],
     fp: usize,
     index_options: IndexOptions,
+    has_payloads: bool,
 ) -> Result<Vec<(Vec<u8>, TermStats, TermMetadata)>> {
     let mut r = SliceInput::new(tim);
     r.seek(fp)?;
@@ -391,7 +427,15 @@ fn decode_block(
             }
         };
 
-        let meta = postings::decode_term_metadata(&mut meta_reader, doc_freq, i == 0, prev_meta)?;
+        let meta = postings::decode_term_metadata(
+            &mut meta_reader,
+            doc_freq,
+            i == 0,
+            prev_meta,
+            index_options,
+            has_payloads,
+            total_term_freq,
+        )?;
         prev_meta = meta;
 
         entries.push((
@@ -524,7 +568,12 @@ pub fn open(
             ));
         }
 
-        let entries = decode_block(tim, output_fp as usize, field_info.index_options)?;
+        let entries = decode_block(
+            tim,
+            output_fp as usize,
+            field_info.index_options,
+            field_info.store_payloads,
+        )?;
         if entries.len() as i64 != num_terms {
             return Err(Error::Store(lucene_store::Error::Corrupted(format!(
                 "decoded {} terms but field metadata says numTerms={num_terms}",
@@ -548,6 +597,7 @@ pub fn open(
                 min_term,
                 max_term,
                 index_options: field_info.index_options,
+                has_payloads: field_info.store_payloads,
                 entries,
             },
         ));
@@ -1034,7 +1084,7 @@ mod tests {
         tim.write_vint(meta.len() as i32);
         tim.write_bytes(&meta);
 
-        let entries = decode_block(&tim, 0, IndexOptions::DocsAndFreqs).unwrap();
+        let entries = decode_block(&tim, 0, IndexOptions::DocsAndFreqs, false).unwrap();
         assert_eq!(entries.len(), 3);
         for (term, stats, _meta) in &entries {
             assert_eq!(term.len(), 2);

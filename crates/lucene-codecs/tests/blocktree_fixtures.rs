@@ -232,6 +232,105 @@ fn id_field_postings_match_real_lucene_postings_enum() {
     }
 }
 
+/// `big` (`IndexOptions.DOCS_AND_FREQS`, `docFreq == 300`): exercises the
+/// multi-block `.doc` decode path added on top of the single-block
+/// group-varint path above -- one full 256-doc `ForUtil`/`PForUtil`-encoded
+/// block followed by a 44-doc group-varint tail block, against real
+/// `PostingsEnum.nextDoc()`/`freq()` output end to end.
+#[test]
+fn big_field_multi_block_postings_match_real_lucene_postings_enum() {
+    let (fields, m) = open_fixture();
+    let (doc, id, suffix) = open_doc_input(&m);
+    let doc_in = postings::DocInput::open(&doc, &id, &suffix).expect("open .doc");
+    let big = fields.field("big").unwrap();
+
+    let expected_docs: Vec<i32> = m
+        .get("field.big.term.everywhere.postingsDocs")
+        .split(',')
+        .map(|s| s.parse().unwrap())
+        .collect();
+    let expected_freqs: Vec<i32> = m
+        .get("field.big.term.everywhere.postingsFreqs")
+        .split(',')
+        .map(|s| s.parse().unwrap())
+        .collect();
+    assert_eq!(
+        expected_docs.len(),
+        300,
+        "fixture sanity: expected docFreq 300"
+    );
+
+    let postings = big
+        .postings(b"everywhere", Some(&doc_in))
+        .unwrap_or_else(|e| panic!("postings(\"everywhere\") failed: {e}"))
+        .unwrap_or_else(|| panic!("expected term \"everywhere\" to be found"));
+    assert_eq!(postings.docs, expected_docs);
+    assert_eq!(postings.freqs, expected_freqs);
+}
+
+/// `pos` (`IndexOptions.DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS`,
+/// `hasPayloads` on some occurrences but not others): exercises
+/// `postings::read_positions`/`FieldTerms::positions` against real
+/// `PostingsEnum.nextPosition()`/`startOffset()`/`endOffset()`/`getPayload()`
+/// output. Both terms fit entirely in the vint tail (`totalTermFreq <
+/// BLOCK_SIZE`), so this doesn't exercise the full-`ForUtil`/`PForUtil`-block
+/// path -- that's covered by `postings.rs`'s own hand-built unit test
+/// (`read_positions_exactly_one_full_block_boundary`), since reaching it
+/// with a real fixture would need 256+ real token occurrences.
+#[test]
+fn pos_field_positions_match_real_lucene_postings_enum() {
+    let (fields, m) = open_fixture();
+    let id = id_from_hex(m.get("id_hex"));
+    let suffix = m.get("segment_suffix").to_string();
+    let doc = read_raw(m.get("doc_file_name"));
+    let pos = read_raw(m.get("pos_file_name"));
+    let pay = read_raw(m.get("pay_file_name"));
+    let doc_in = lucene_codecs::postings::DocInput::open(&doc, &id, &suffix).expect("open .doc");
+    let pos_in = lucene_codecs::postings::PosInput::open(&pos, &id, &suffix).expect("open .pos");
+    let pay_in = lucene_codecs::postings::PayInput::open(&pay, &id, &suffix).expect("open .pay");
+    let field = fields.field("pos").unwrap();
+
+    for term in ["alpha", "beta"] {
+        let expected_docs: Vec<i32> = m
+            .get(&format!("field.pos.term.{term}.postingsDocs"))
+            .split(',')
+            .map(|s| s.parse().unwrap())
+            .collect();
+        let expected_occurrences: Vec<(i32, i32, i32, String)> = m
+            .get(&format!("field.pos.term.{term}.occurrences"))
+            .split(';')
+            .map(|occ| {
+                let parts: Vec<&str> = occ.split(',').collect();
+                (
+                    parts[0].parse().unwrap(),
+                    parts[1].parse().unwrap(),
+                    parts[2].parse().unwrap(),
+                    parts[3].to_string(),
+                )
+            })
+            .collect();
+
+        let positions = field
+            .positions(term.as_bytes(), Some(&doc_in), &pos_in, Some(&pay_in))
+            .unwrap_or_else(|e| panic!("positions({term:?}) failed: {e}"))
+            .unwrap_or_else(|| panic!("expected term {term:?} to be found"));
+        assert_eq!(positions.len(), expected_docs.len(), "term={term:?}");
+
+        let mut flat = Vec::new();
+        for doc_positions in &positions {
+            for p in doc_positions {
+                let payload_hex = if p.payload.is_empty() {
+                    "NONE".to_string()
+                } else {
+                    p.payload.iter().map(|b| format!("{b:02x}")).collect()
+                };
+                flat.push((p.position, p.start_offset, p.end_offset, payload_hex));
+            }
+        }
+        assert_eq!(flat, expected_occurrences, "term={term:?}");
+    }
+}
+
 #[test]
 fn postings_missing_term_returns_none() {
     let (fields, m) = open_fixture();
