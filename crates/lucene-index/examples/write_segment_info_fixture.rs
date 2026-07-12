@@ -15,6 +15,7 @@
 //! Run: `cargo run -p lucene-index --example write_segment_info_fixture -- <dir>`
 
 use lucene_index::segment_info::{self, LuceneVersion, SegmentInfo};
+use lucene_store::{DataOutput, Directory, FsDirectory};
 use std::io::Write;
 
 fn main() {
@@ -86,7 +87,12 @@ fn main() {
 
 fn gen(out_dir: &str, segment_name: &str, si: SegmentInfo) {
     let bytes = segment_info::write(&si, "");
-    std::fs::write(format!("{out_dir}/{segment_name}.si"), &bytes).unwrap();
+    let file_name = format!("{segment_name}.si");
+    let dir = FsDirectory::open(out_dir);
+    let mut out = dir.create_output(&file_name).unwrap();
+    out.write_bytes(&bytes);
+    out.close().unwrap();
+    dir.sync(&[file_name]).unwrap();
 
     let mut manifest =
         std::fs::File::create(format!("{out_dir}/{segment_name}.manifest.properties")).unwrap();

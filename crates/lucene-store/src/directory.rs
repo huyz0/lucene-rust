@@ -19,6 +19,7 @@ use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
+use crate::index_output::{self, FsIndexOutput};
 
 /// The `segments` file-name prefix (`IndexFileNames.SEGMENTS`). Excludes the
 /// pre-4.0 `segments.gen` pointer file, which is not a valid commit file name.
@@ -42,14 +43,29 @@ impl Deref for Input {
     }
 }
 
-/// Minimal read-only directory abstraction. Write support (`createOutput`,
-/// locking) is deferred to the write-path phase (see PLAN.md Phase 5).
+/// Directory abstraction covering both Lucene's read path (`listAll`, `open`
+/// a whole file's bytes) and the write-path primitives this crate now
+/// supports: `createOutput` (a real on-disk [`FsIndexOutput`]) and `sync`
+/// (the fsync-before-durable contract). Locking (`NativeFSLockFactory`) and
+/// the `segments_N` commit lifecycle (rename/generation bookkeeping) are
+/// still deferred — see `docs/parity.md`.
 pub trait Directory {
     /// Port of `Directory.listAll()`: every file name in the directory, sorted.
     fn list_all(&self) -> Result<Vec<String>>;
 
     /// Reads a whole file's bytes.
     fn open(&self, name: &str) -> Result<Input>;
+
+    /// Port of `Directory.createOutput(name, context)`: creates (truncating
+    /// any existing file of the same name) a new file for sequential
+    /// writing, backed by a real `std::fs::File`.
+    fn create_output(&self, name: &str) -> Result<FsIndexOutput>;
+
+    /// Port of `Directory.sync(Collection<String>)`: fsyncs every named
+    /// file's contents (and, best-effort, the directory entry) to disk.
+    /// Callers must sync a new segment's files before referencing them from
+    /// a commit file — that's Lucene's actual durability contract.
+    fn sync(&self, names: &[String]) -> Result<()>;
 }
 
 /// Safe, copying backend (`std::fs::read`). No `unsafe` anywhere in this crate
@@ -71,6 +87,14 @@ impl Directory for FsDirectory {
 
     fn open(&self, name: &str) -> Result<Input> {
         Ok(Input::Owned(fs::read(self.root.join(name))?))
+    }
+
+    fn create_output(&self, name: &str) -> Result<FsIndexOutput> {
+        index_output::create_output(&self.root, name)
+    }
+
+    fn sync(&self, names: &[String]) -> Result<()> {
+        index_output::sync(&self.root, names)
     }
 }
 
@@ -99,6 +123,14 @@ impl Directory for MmapDirectory {
         // the read-only phase this crate currently implements (PLAN.md Phase 2).
         let mmap = unsafe { memmap2::Mmap::map(&file)? };
         Ok(Input::Mapped(mmap))
+    }
+
+    fn create_output(&self, name: &str) -> Result<FsIndexOutput> {
+        index_output::create_output(&self.root, name)
+    }
+
+    fn sync(&self, names: &[String]) -> Result<()> {
+        index_output::sync(&self.root, names)
     }
 }
 
@@ -168,6 +200,7 @@ pub fn read_latest_commit(dir: &impl Directory) -> Result<(i64, Input)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data_output::DataOutput;
 
     #[test]
     fn generation_from_segments_file_name_valid_cases() {
@@ -222,6 +255,54 @@ mod tests {
         assert_eq!(segments_file_name(10), Some("segments_a".to_string()));
     }
 
+    fn tempdir() -> PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!(
+            "lucene-rust-directory-write-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    #[test]
+    fn fs_directory_create_output_round_trips_through_open_and_list_all() {
+        let root = tempdir();
+        let dir = FsDirectory::open(&root);
+
+        let mut out = dir.create_output("_0.si").unwrap();
+        out.write_bytes(b"hello lucene-rust");
+        let checksum = out.close().unwrap();
+        assert_eq!(checksum, crc32fast::hash(b"hello lucene-rust") as u64);
+
+        dir.sync(&["_0.si".to_string()]).unwrap();
+
+        assert_eq!(dir.list_all().unwrap(), vec!["_0.si".to_string()]);
+        let bytes = dir.open("_0.si").unwrap();
+        assert_eq!(&*bytes, b"hello lucene-rust");
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn mmap_directory_create_output_round_trips_through_open() {
+        let root = tempdir();
+        let dir = MmapDirectory::open(&root);
+
+        let mut out = dir.create_output("_0.si").unwrap();
+        out.write_bytes(b"mmap round trip");
+        out.close().unwrap();
+
+        let bytes = dir.open("_0.si").unwrap();
+        assert_eq!(&*bytes, b"mmap round trip");
+
+        fs::remove_dir_all(&root).ok();
+    }
+
     #[test]
     fn fs_directory_open_nonexistent_file_is_io_error() {
         let dir = FsDirectory::open("/nonexistent-lucene-rust-test-path");
@@ -249,6 +330,12 @@ mod tests {
             }
             fn open(&self, _name: &str) -> Result<Input> {
                 unreachable!("no segments_N file should be found, so open() is never called")
+            }
+            fn create_output(&self, _name: &str) -> Result<FsIndexOutput> {
+                unreachable!("not used by this test")
+            }
+            fn sync(&self, _names: &[String]) -> Result<()> {
+                unreachable!("not used by this test")
             }
         }
         assert!(matches!(

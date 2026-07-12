@@ -12,6 +12,7 @@
 //! Run: `cargo run -p lucene-codecs --example write_stored_fields_fixture -- <dir>`
 
 use lucene_codecs::stored_fields::{self, Document, FieldValue, StoredField};
+use lucene_store::{DataOutput, Directory, FsDirectory};
 use std::io::Write;
 
 const SEGMENT_ID: [u8; 16] = *b"rustwrittenseg01";
@@ -68,9 +69,22 @@ fn main() {
 
     let (fdt, fdx, fdm) = stored_fields::write_best_speed(&docs, &SEGMENT_ID, "");
 
-    std::fs::write(format!("{out_dir}/_0.fdt"), &fdt).unwrap();
-    std::fs::write(format!("{out_dir}/_0.fdx"), &fdx).unwrap();
-    std::fs::write(format!("{out_dir}/_0.fdm"), &fdm).unwrap();
+    // Route the encoded bytes through the real on-disk Directory/IndexOutput
+    // primitive (rather than a hand-rolled `std::fs::write`), then fsync
+    // them -- exercising the same write→sync contract a real IndexWriter
+    // uses before referencing a segment's files from a commit.
+    let dir = FsDirectory::open(&out_dir);
+    for (name, bytes) in [("_0.fdt", &fdt), ("_0.fdx", &fdx), ("_0.fdm", &fdm)] {
+        let mut out = dir.create_output(name).unwrap();
+        out.write_bytes(bytes);
+        out.close().unwrap();
+    }
+    dir.sync(&[
+        "_0.fdt".to_string(),
+        "_0.fdx".to_string(),
+        "_0.fdm".to_string(),
+    ])
+    .unwrap();
 
     let mut manifest = std::fs::File::create(format!("{out_dir}/manifest.properties")).unwrap();
     writeln!(manifest, "max_doc={}", docs.len()).unwrap();

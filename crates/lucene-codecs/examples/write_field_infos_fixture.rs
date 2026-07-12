@@ -15,6 +15,7 @@ use lucene_codecs::field_infos::{
     self, DocValuesSkipIndexType, DocValuesType, FieldInfo, IndexOptions, VectorEncoding,
     VectorSimilarityFunction,
 };
+use lucene_store::{DataOutput, Directory, FsDirectory};
 use std::io::Write;
 
 const SEGMENT_ID: [u8; 16] = *b"rustwrittenfnm01";
@@ -189,7 +190,11 @@ fn main() {
     ];
 
     let bytes = field_infos::write(&fields, &SEGMENT_ID, "");
-    std::fs::write(format!("{out_dir}/_0.fnm"), &bytes).unwrap();
+    let dir = FsDirectory::open(&out_dir);
+    let mut out = dir.create_output("_0.fnm").unwrap();
+    out.write_bytes(&bytes);
+    out.close().unwrap();
+    dir.sync(&["_0.fnm".to_string()]).unwrap();
 
     let mut manifest = std::fs::File::create(format!("{out_dir}/manifest.properties")).unwrap();
     writeln!(manifest, "id_hex={}", hex(&SEGMENT_ID)).unwrap();
