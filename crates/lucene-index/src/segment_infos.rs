@@ -39,6 +39,8 @@
 
 use lucene_store::codec_util::{self, ID_LENGTH};
 use lucene_store::data_input::{DataInput, SliceInput};
+use lucene_store::data_output::DataOutput;
+use lucene_store::directory::Directory;
 
 const CODEC_NAME: &str = "segments";
 pub const VERSION_74: i32 = 9;
@@ -208,6 +210,114 @@ pub fn parse(buf: &[u8], generation: i64) -> Result<SegmentInfos> {
         segments,
         user_data,
     })
+}
+
+/// Port of `SegmentInfos.write(Directory)`: the exact byte-level inverse of
+/// [`parse`], plus the durability half of a real commit (`Directory.sync`
+/// before the file is considered "there").
+///
+/// Design choice: unlike [`crate::segment_info::write`] and
+/// `lucene_codecs::field_infos::write` (which return `Vec<u8>` and let the
+/// caller route bytes through a `Directory` itself), this function takes a
+/// `&dyn Directory` and writes+syncs the `segments_N` file directly. A
+/// `segments_N` commit isn't just a byte format — its correctness as a
+/// *commit* depends on being fsynced before anything can be considered
+/// durably published (real `IndexWriter.commit()` calls `Directory.sync` on
+/// this exact file right after writing it, before deleting the previous
+/// generation). Returning bytes and leaving sync to the caller would make it
+/// easy for a caller to "write" a commit that a crash could still lose;
+/// baking the sync into `write` mirrors Java's own
+/// `SegmentInfos.write`/`finishCommit` split, which never lets a caller skip
+/// it.
+///
+/// `format_version` is not read from `segment_infos` -- this always writes
+/// [`VERSION_CURRENT`], matching [`crate::segment_info::write`]'s stance that
+/// this port only ever writes fresh segments, never round-trips an older
+/// format version. The file name is derived from `segment_infos.generation`
+/// via [`lucene_store::directory::segments_file_name`] (reused, not
+/// reimplemented) so the base-36 suffix in the index header and the file's
+/// own name can never drift apart.
+///
+/// Returns the written file's name (`segments_N`) on success.
+pub fn write(segment_infos: &SegmentInfos, dir: &dyn Directory) -> Result<String> {
+    let file_name = lucene_store::directory::segments_file_name(segment_infos.generation)
+        .ok_or_else(|| {
+            Error::Store(lucene_store::Error::Corrupted(format!(
+                "invalid generation for a segments_N file name: {}",
+                segment_infos.generation
+            )))
+        })?;
+
+    let mut out: Vec<u8> = Vec::new();
+    let suffix = lucene_util::base36::to_base36(segment_infos.generation);
+    codec_util::write_index_header(
+        &mut out,
+        CODEC_NAME,
+        VERSION_CURRENT,
+        &segment_infos.id,
+        &suffix,
+    );
+
+    write_vint_version(&mut out, segment_infos.lucene_version);
+    out.write_vint(segment_infos.index_created_version_major);
+
+    out.write_be_u64(segment_infos.version as u64);
+    out.write_vlong(segment_infos.counter);
+    out.write_be_u32(segment_infos.segments.len() as u32);
+
+    if !segment_infos.segments.is_empty() {
+        let min_version = segment_infos
+            .min_segment_lucene_version
+            .unwrap_or(segment_infos.lucene_version);
+        write_vint_version(&mut out, min_version);
+    }
+
+    for seg in &segment_infos.segments {
+        out.write_string(&seg.segment_name);
+        out.write_bytes(&seg.segment_id);
+        out.write_string(&seg.codec_name);
+        out.write_be_u64(seg.del_gen as u64);
+        out.write_be_u32(seg.del_count as u32);
+        out.write_be_u64(seg.field_infos_gen as u64);
+        out.write_be_u64(seg.doc_values_gen as u64);
+        out.write_be_u32(seg.soft_del_count as u32);
+
+        // Always emitting VERSION_CURRENT (> VERSION_74), so the SciId marker
+        // is always present, matching `parse`'s expectation for this format.
+        match seg.sci_id {
+            Some(sci_id) => {
+                out.write_byte(1);
+                out.write_bytes(&sci_id);
+            }
+            None => out.write_byte(0),
+        }
+
+        out.write_set_of_strings(&seg.field_infos_files);
+        out.write_be_u32(seg.dv_update_files.len() as u32);
+        for (field_number, files) in &seg.dv_update_files {
+            out.write_be_u32(*field_number as u32);
+            out.write_vint(files.len() as i32);
+            for f in files {
+                out.write_string(f);
+            }
+        }
+    }
+
+    out.write_map_of_strings(&segment_infos.user_data);
+    codec_util::write_footer(&mut out);
+
+    let mut output = dir.create_output(&file_name)?;
+    output.write_bytes(&out);
+    output.close()?;
+    dir.sync(std::slice::from_ref(&file_name))?;
+
+    Ok(file_name)
+}
+
+fn write_vint_version(out: &mut Vec<u8>, v: LuceneVersion) {
+    out.write_vint(v.major);
+    out.write_vint(v.minor);
+    out.write_vint(v.bugfix);
 }
 
 fn read_vint_version(input: &mut SliceInput) -> Result<LuceneVersion> {
@@ -505,5 +615,194 @@ mod tests {
     fn wrong_generation_suffix_rejected() {
         let b = SisBuilder::valid(1);
         assert!(matches!(parse(&b.build(), 2), Err(Error::Store(_))));
+    }
+
+    // --- write() round-trips through parse(), via a real on-disk Directory ---
+
+    fn tempdir() -> std::path::PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!(
+            "lucene-rust-segment-infos-write-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn sample_sis(generation: i64) -> SegmentInfos {
+        SegmentInfos {
+            id: [5u8; ID_LENGTH],
+            generation,
+            format_version: VERSION_CURRENT,
+            lucene_version: LuceneVersion {
+                major: 10,
+                minor: 0,
+                bugfix: 0,
+            },
+            index_created_version_major: 10,
+            version: 7,
+            counter: 3,
+            min_segment_lucene_version: None,
+            segments: vec![],
+            user_data: vec![],
+        }
+    }
+
+    fn sample_segment(name: &str) -> SegmentCommitInfo {
+        SegmentCommitInfo {
+            segment_name: name.to_string(),
+            segment_id: [6u8; ID_LENGTH],
+            codec_name: "Lucene104".to_string(),
+            del_gen: -1,
+            del_count: 0,
+            field_infos_gen: -1,
+            doc_values_gen: -1,
+            soft_del_count: 0,
+            sci_id: None,
+            field_infos_files: vec![],
+            dv_update_files: vec![],
+        }
+    }
+
+    #[test]
+    fn write_empty_commit_round_trips() {
+        let dir_path = tempdir();
+        let dir = lucene_store::FsDirectory::open(&dir_path);
+        let sis = sample_sis(1);
+
+        let file_name = write(&sis, &dir).unwrap();
+        assert_eq!(file_name, "segments_1");
+
+        let bytes = std::fs::read(dir_path.join(&file_name)).unwrap();
+        let parsed = parse(&bytes, 1).unwrap();
+        assert_eq!(parsed.id, sis.id);
+        assert_eq!(parsed.version, sis.version);
+        assert_eq!(parsed.counter, sis.counter);
+        assert_eq!(
+            parsed.index_created_version_major,
+            sis.index_created_version_major
+        );
+        assert!(parsed.segments.is_empty());
+        assert!(parsed.min_segment_lucene_version.is_none());
+
+        std::fs::remove_dir_all(&dir_path).ok();
+    }
+
+    #[test]
+    fn write_single_segment_round_trips() {
+        let dir_path = tempdir();
+        let dir = lucene_store::FsDirectory::open(&dir_path);
+        let mut sis = sample_sis(2);
+        sis.min_segment_lucene_version = Some(sis.lucene_version);
+        sis.segments.push(sample_segment("_0"));
+
+        let file_name = write(&sis, &dir).unwrap();
+        assert_eq!(file_name, "segments_2");
+
+        let bytes = std::fs::read(dir_path.join(&file_name)).unwrap();
+        let parsed = parse(&bytes, 2).unwrap();
+        assert_eq!(parsed.segments.len(), 1);
+        assert_eq!(parsed.segments[0].segment_name, "_0");
+        assert_eq!(parsed.segments[0].segment_id, [6u8; ID_LENGTH]);
+        assert_eq!(parsed.segments[0].codec_name, "Lucene104");
+        assert!(parsed.segments[0].sci_id.is_none());
+        assert_eq!(parsed.min_segment_lucene_version, Some(sis.lucene_version));
+
+        std::fs::remove_dir_all(&dir_path).ok();
+    }
+
+    #[test]
+    fn write_multi_segment_with_sci_id_del_and_dv_updates_round_trips() {
+        let dir_path = tempdir();
+        let dir = lucene_store::FsDirectory::open(&dir_path);
+        let mut sis = sample_sis(3);
+
+        let mut seg0 = sample_segment("_0");
+        seg0.del_gen = 1;
+        seg0.del_count = 2;
+        seg0.field_infos_gen = 4;
+        seg0.doc_values_gen = 5;
+        seg0.soft_del_count = 1;
+        seg0.sci_id = Some([9u8; ID_LENGTH]);
+        seg0.field_infos_files = vec!["_0_4.fnm".to_string()];
+        seg0.dv_update_files = vec![
+            (0, vec!["_0_1.dvd".to_string()]),
+            (2, vec!["_0_2.dvd".to_string(), "_0_2b.dvd".to_string()]),
+        ];
+
+        let seg1 = sample_segment("_1");
+
+        sis.segments.push(seg0);
+        sis.segments.push(seg1);
+        sis.user_data.push(("k".to_string(), "v".to_string()));
+
+        let file_name = write(&sis, &dir).unwrap();
+        let bytes = std::fs::read(dir_path.join(&file_name)).unwrap();
+        let parsed = parse(&bytes, 3).unwrap();
+
+        assert_eq!(parsed.segments.len(), 2);
+        let s0 = &parsed.segments[0];
+        assert_eq!(s0.del_gen, 1);
+        assert_eq!(s0.del_count, 2);
+        assert_eq!(s0.field_infos_gen, 4);
+        assert_eq!(s0.doc_values_gen, 5);
+        assert_eq!(s0.soft_del_count, 1);
+        assert_eq!(s0.sci_id, Some([9u8; ID_LENGTH]));
+        assert_eq!(s0.field_infos_files, vec!["_0_4.fnm".to_string()]);
+        assert_eq!(
+            s0.dv_update_files,
+            vec![
+                (0, vec!["_0_1.dvd".to_string()]),
+                (2, vec!["_0_2.dvd".to_string(), "_0_2b.dvd".to_string()]),
+            ]
+        );
+        assert_eq!(parsed.user_data, vec![("k".to_string(), "v".to_string())]);
+
+        std::fs::remove_dir_all(&dir_path).ok();
+    }
+
+    #[test]
+    fn write_uses_lucene_version_as_min_segment_version_when_unset() {
+        let dir_path = tempdir();
+        let dir = lucene_store::FsDirectory::open(&dir_path);
+        let mut sis = sample_sis(1);
+        sis.min_segment_lucene_version = None; // deliberately unset
+        sis.segments.push(sample_segment("_0"));
+
+        let file_name = write(&sis, &dir).unwrap();
+        let bytes = std::fs::read(dir_path.join(&file_name)).unwrap();
+        let parsed = parse(&bytes, 1).unwrap();
+        assert_eq!(parsed.min_segment_lucene_version, Some(sis.lucene_version));
+
+        std::fs::remove_dir_all(&dir_path).ok();
+    }
+
+    #[test]
+    fn write_generation_zero_uses_plain_segments_file_name() {
+        let dir_path = tempdir();
+        let dir = lucene_store::FsDirectory::open(&dir_path);
+        let sis = sample_sis(0);
+
+        let file_name = write(&sis, &dir).unwrap();
+        assert_eq!(file_name, "segments");
+
+        let bytes = std::fs::read(dir_path.join(&file_name)).unwrap();
+        let parsed = parse(&bytes, 0).unwrap();
+        assert_eq!(parsed.generation, 0);
+
+        std::fs::remove_dir_all(&dir_path).ok();
+    }
+
+    #[test]
+    fn write_negative_generation_is_rejected() {
+        let dir_path = tempdir();
+        let dir = lucene_store::FsDirectory::open(&dir_path);
+        let sis = sample_sis(-1);
+        assert!(matches!(write(&sis, &dir), Err(Error::Store(_))));
+        std::fs::remove_dir_all(&dir_path).ok();
     }
 }
