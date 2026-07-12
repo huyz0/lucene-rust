@@ -26,8 +26,8 @@ installed; regenerate and re-commit whenever the pinned Lucene version changes.
 Every generator above is Java-writes-Rust-reads. The write path (PLAN.md Phase 5)
 needs the opposite: Rust writes real bytes, and a Java program confirms real Lucene
 can open and read them back. `VerifyStoredFields.java`, `VerifyFieldInfos.java`,
-`VerifySegmentInfo.java`, `VerifySegmentInfos.java`, `VerifyPoints.java`, and
-`VerifyTermVectors.java` are these verifiers so far:
+`VerifySegmentInfo.java`, `VerifySegmentInfos.java`, `VerifyPoints.java`,
+`VerifyTermVectors.java`, and `VerifyDocValues.java` are these verifiers so far:
 
 ```sh
 cargo run -p lucene-codecs --example write_stored_fields_fixture -- /tmp/rust-stored-fields
@@ -36,15 +36,17 @@ cargo run -p lucene-index --example write_segment_info_fixture -- /tmp/rust-segm
 cargo run -p lucene-index --example write_segment_infos_fixture -- /tmp/rust-segment-infos
 cargo run -p lucene-codecs --example write_points_fixture -- /tmp/rust-points
 cargo run -p lucene-codecs --example write_term_vectors_fixture -- /tmp/rust-term-vectors
+cargo run -p lucene-codecs --example write_doc_values_fixture -- /tmp/rust-doc-values
 JAR=$(find ~/.gradle/caches/modules-2/files-2.1/org.apache.lucene/lucene-core/10.5.0 \
   -name 'lucene-core-10.5.0.jar' ! -name '*sources*' ! -name '*javadoc*')
-javac -nowarn -cp "$JAR" -d classes src/VerifyStoredFields.java src/VerifyFieldInfos.java src/VerifySegmentInfo.java src/VerifySegmentInfos.java src/VerifyPoints.java src/VerifyTermVectors.java
+javac -nowarn -cp "$JAR" -d classes src/VerifyStoredFields.java src/VerifyFieldInfos.java src/VerifySegmentInfo.java src/VerifySegmentInfos.java src/VerifyPoints.java src/VerifyTermVectors.java src/VerifyDocValues.java
 java -cp "classes:$JAR" VerifyStoredFields /tmp/rust-stored-fields
 java -cp "classes:$JAR" VerifyFieldInfos /tmp/rust-field-infos
 java -cp "classes:$JAR" VerifySegmentInfo /tmp/rust-segment-info
 java -cp "classes:$JAR" VerifySegmentInfos /tmp/rust-segment-infos
 java -cp "classes:$JAR" VerifyPoints /tmp/rust-points
 java -cp "classes:$JAR" VerifyTermVectors /tmp/rust-term-vectors
+java -cp "classes:$JAR" VerifyDocValues /tmp/rust-doc-values
 ```
 
 `VerifyStoredFields.java` opens the `.fdt`/`.fdx`/`.fdm` triple directly through
@@ -114,6 +116,37 @@ port's own reader never validates that field, but real Lucene's
 `BlockPackedReaderIterator` does, so a wrong or placeholder value there would
 pass every purely-Rust round-trip test while still failing to open in real
 Lucene.
+
+`VerifyDocValues.java` verifies
+`doc_values::write_single_dense_numeric_field`
+(`crates/lucene-codecs/src/doc_values.rs`), scoped to exactly one shape: a
+single NUMERIC field, dense (every doc has a value), plain delta-compressed
+encoding (no table/GCD compression, no sparse `IndexedDISI`, no varying-bpv
+blocks). It opens the `.dvm`/`.dvd`/`.dvs` triple directly through real
+`Lucene90DocValuesFormat.fieldsProducer` with a hand-built
+`SegmentInfo`/`FieldInfos` (same division of labor as `VerifyPoints.java`),
+then iterates the field via real `NumericDocValues.nextDoc`/`longValue` (the
+production-facing API, not a codec-internal decode) and diffs every doc's
+value against `manifest.properties`. `.dvs` (the per-field doc-values skip
+index file) is always header+footer only in this slice's scope, but still
+must exist and pass its own header/footer check:
+`Lucene90DocValuesProducer`'s constructor unconditionally opens `.dvs` once
+the format version is `>= VERSION_SKIPPER_SEPARATE_FILE`, which this port's
+`VERSION_CURRENT` always is, regardless of whether any field actually has a
+skip index. Sparse fields, BINARY/SORTED/SORTED_NUMERIC/SORTED_SET field
+types, GCD/table compression, the varying-bits-per-value block split,
+per-field doc-values skip indexes, and multiple fields in one triple are all
+out of scope for this writer -- see `docs/parity.md`'s doc-values row.
+
+The Rust example writes **three** segments: `_0` (mixed small/large/negative
+values, `min <= 0` throughout), `_1`, and `_2`. `_1` and `_2` were added after
+a review pass found two encoding branches with zero coverage against real
+Lucene despite passing this port's own round-trip tests: `_1` gives every
+value a `min > 0` where `unsignedBitsRequired(max) ==
+unsignedBitsRequired(max-min)`, forcing the min-shift-drop optimization
+(`_0` never has `min > 0`, so it can't reach this branch); `_2` is all-equal
+values, forcing the `bitsPerValue == 0` constant encoding. All three now
+verify against real Lucene.
 
 ## Generators
 

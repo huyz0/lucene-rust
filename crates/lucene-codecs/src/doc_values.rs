@@ -40,12 +40,16 @@
 
 use lucene_store::codec_util::{self, ID_LENGTH};
 use lucene_store::data_input::{DataInput, SliceInput};
+use lucene_store::DataOutput;
 
 use crate::direct_monotonic;
 use crate::direct_reader;
 use crate::field_infos::FieldInfos;
 use crate::indexed_disi;
 use crate::terms_dict::{self, TermsDictEntry};
+
+const SKIP_INDEX_META_CODEC: &str = "Lucene90DocValuesSkipIndex";
+const DATA_META_CODEC: &str = "Lucene90DocValuesData";
 
 const META_CODEC: &str = "Lucene90DocValuesMetadata";
 const VERSION_START: i32 = 0;
@@ -635,6 +639,144 @@ pub fn sorted_numeric_values(
                 .collect()
         }
     }
+}
+
+/// Write-side error, kept separate from the read-side [`Error`] since none
+/// of its variants are decode failures.
+#[derive(Debug, thiserror::Error)]
+pub enum WriteError {
+    #[error("write_single_dense_numeric_field requires values.len() == max_doc (every doc must have a value); got {values} values for max_doc={max_doc}")]
+    NotDense { values: usize, max_doc: i32 },
+}
+
+pub type WriteResult<T> = std::result::Result<T, WriteError>;
+
+/// Port of `Lucene90DocValuesConsumer`, scoped to exactly one shape: **a
+/// single NUMERIC field, DENSE (every doc from `0` to `max_doc - 1` has a
+/// value), plain delta-compressed** (`bitsPerValue = unsignedBitsRequired(max
+/// - min)`, `gcd = 1`) -- the `numDocsWithValue == maxDoc` branch of
+/// `writeValues` followed by its `uniqueValues == null` (no table
+/// compression attempted) and `doBlocks == false` (no varying-bits-per-value
+/// blocks) branches, feeding `writeValuesSingleBlock`.
+///
+/// Deliberately not attempted here, all deferred to future slices (see
+/// `docs/parity.md`): sparse fields (`IndexedDISI`), BINARY/SORTED/
+/// SORTED_NUMERIC/SORTED_SET field types, GCD compression, table
+/// compression, the varying-bits-per-value block split, per-field
+/// doc-values skip indexes, and multiple fields in one `.dvm`/`.dvd`/`.dvs`
+/// triple.
+///
+/// Returns `(meta_bytes, data_bytes, skip_index_bytes)` -- three separate
+/// buffers matching the real writer's three `IndexOutput`s (`.dvm`, `.dvd`,
+/// `.dvs`); `.dvs` is always just a header+footer here since no field in
+/// this slice's scope ever has a skip index (`Lucene90DocValuesProducer`
+/// unconditionally opens `.dvs` once `VERSION_CURRENT >=
+/// VERSION_SKIPPER_SEPARATE_FILE`, which this port's `VERSION_CURRENT`
+/// always is, so it must exist and pass header/footer checks even when
+/// empty).
+pub fn write_single_dense_numeric_field(
+    field_number: i32,
+    values: &[i64],
+    max_doc: i32,
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+) -> WriteResult<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    if values.len() != max_doc as usize {
+        return Err(WriteError::NotDense {
+            values: values.len(),
+            max_doc,
+        });
+    }
+
+    let mut meta: Vec<u8> = Vec::new();
+    codec_util::write_index_header(
+        &mut meta,
+        META_CODEC,
+        VERSION_CURRENT,
+        segment_id,
+        segment_suffix,
+    );
+
+    let mut data: Vec<u8> = Vec::new();
+    codec_util::write_index_header(
+        &mut data,
+        DATA_META_CODEC,
+        VERSION_CURRENT,
+        segment_id,
+        segment_suffix,
+    );
+
+    // Per-field meta entry (`addNumericField` -> `writeValues`).
+    meta.write_i32(field_number);
+    meta.push(DOC_VALUES_TYPE_NUMERIC);
+
+    // numDocsWithValue == maxDoc: meta[-1, 0], no IndexedDISI structure.
+    meta.write_i64(DOCS_WITH_FIELD_DENSE);
+    meta.write_i64(0);
+    meta.write_i16(-1); // jumpTableEntryCount
+    meta.push(0xFF); // denseRankPower (-1 as u8)
+
+    let num_values = values.len() as i64;
+    meta.write_i64(num_values);
+
+    let min = values.iter().copied().min().unwrap_or(0);
+    let max = values.iter().copied().max().unwrap_or(0);
+
+    let (bits_per_value, min) = if min >= max {
+        // All values equal (including the empty-values case, which can't
+        // actually happen here since `values.len() == max_doc` and `max_doc`
+        // is a real field count -- but Java's `min >= max` check covers
+        // both "all equal" and "no values" the same way).
+        (0u8, min)
+    } else {
+        let mut bpv = direct_reader::unsigned_bits_required(max - min);
+        let mut min = min;
+        // Java: if gcd==1 && min>0 && bits(max) == bits(max-min), drop the
+        // min-shift (store raw values instead) since it doesn't save space.
+        if min > 0 && direct_reader::unsigned_bits_required(max) == bpv {
+            min = 0;
+            bpv = direct_reader::unsigned_bits_required(max);
+        }
+        (bpv, min)
+    };
+
+    meta.write_i32(-1); // tableSize: no table compression in this slice
+    meta.push(bits_per_value);
+    meta.write_i64(min);
+    meta.write_i64(1); // gcd: always 1, no GCD compression in this slice
+
+    let start_offset = data.len() as i64;
+    meta.write_i64(start_offset);
+
+    if bits_per_value != 0 {
+        let gcd = 1i64;
+        let raw: Vec<i64> = values.iter().map(|&v| (v - min) / gcd).collect();
+        let mut packed = direct_reader::encode(&raw, bits_per_value);
+        packed.extend(std::iter::repeat_n(
+            0u8,
+            direct_reader::padding_bytes_needed(bits_per_value),
+        ));
+        data.extend_from_slice(&packed);
+    }
+
+    meta.write_i64(data.len() as i64 - start_offset); // valuesLength
+    meta.write_i64(-1); // valueJumpTableOffset: no varying-bpv blocks
+
+    meta.write_i32(-1); // field list terminator
+    codec_util::write_footer(&mut meta);
+    codec_util::write_footer(&mut data);
+
+    let mut skip_index: Vec<u8> = Vec::new();
+    codec_util::write_index_header(
+        &mut skip_index,
+        SKIP_INDEX_META_CODEC,
+        VERSION_CURRENT,
+        segment_id,
+        segment_suffix,
+    );
+    codec_util::write_footer(&mut skip_index);
+
+    Ok((meta, data, skip_index))
 }
 
 #[cfg(test)]
@@ -1536,6 +1678,104 @@ mod tests {
             }
             SortedSetKind::Single(_) => panic!("expected Multi"),
         }
+    }
+
+    #[test]
+    fn write_single_dense_numeric_field_round_trips_through_own_reader() {
+        let id = [7u8; ID_LENGTH];
+        let values = vec![5i64, 250, 0, 100];
+        let (meta_bytes, data_bytes, skip_bytes) =
+            write_single_dense_numeric_field(0, &values, values.len() as i32, &id, "").unwrap();
+
+        // .dvs is header+footer only in this slice's scope.
+        assert_eq!(
+            check_data_header_footer_generic(&skip_bytes, "Lucene90DocValuesSkipIndex", &id)
+                .unwrap(),
+            VERSION_CURRENT
+        );
+
+        let version = check_data_header_footer(&data_bytes, &id, "").unwrap();
+        assert_eq!(version, VERSION_CURRENT);
+
+        let fis = field_infos_with(&[0]);
+        let (meta_version, meta) = parse_meta(&meta_bytes, &id, "", &fis).unwrap();
+        assert_eq!(meta_version, VERSION_CURRENT);
+        let entry = meta.numeric_entry(0).unwrap();
+        assert!(entry.is_dense());
+        for (doc, &want) in values.iter().enumerate() {
+            assert_eq!(
+                numeric_value(&data_bytes, entry, doc as i32).unwrap(),
+                Some(want)
+            );
+        }
+    }
+
+    #[test]
+    fn write_single_dense_numeric_field_all_equal_values_uses_constant_encoding() {
+        let id = [8u8; ID_LENGTH];
+        let values = vec![42i64; 6];
+        let (meta_bytes, data_bytes, _skip_bytes) =
+            write_single_dense_numeric_field(0, &values, values.len() as i32, &id, "").unwrap();
+
+        let fis = field_infos_with(&[0]);
+        let (_, meta) = parse_meta(&meta_bytes, &id, "", &fis).unwrap();
+        let entry = meta.numeric_entry(0).unwrap();
+        assert_eq!(entry.bits_per_value, 0);
+        for doc in 0..values.len() as i32 {
+            assert_eq!(numeric_value(&data_bytes, entry, doc).unwrap(), Some(42));
+        }
+    }
+
+    #[test]
+    fn write_single_dense_numeric_field_negative_and_large_values() {
+        let id = [9u8; ID_LENGTH];
+        let values = vec![-1_000_000i64, 0, 1_000_000, 500_000];
+        let (meta_bytes, data_bytes, _) =
+            write_single_dense_numeric_field(0, &values, values.len() as i32, &id, "").unwrap();
+
+        let fis = field_infos_with(&[0]);
+        let (_, meta) = parse_meta(&meta_bytes, &id, "", &fis).unwrap();
+        let entry = meta.numeric_entry(0).unwrap();
+        for (doc, &want) in values.iter().enumerate() {
+            assert_eq!(
+                numeric_value(&data_bytes, entry, doc as i32).unwrap(),
+                Some(want)
+            );
+        }
+    }
+
+    #[test]
+    fn write_single_dense_numeric_field_rejects_non_dense_value_count() {
+        let id = [1u8; ID_LENGTH];
+        let err = write_single_dense_numeric_field(0, &[1, 2, 3], 5, &id, "").unwrap_err();
+        assert!(matches!(
+            err,
+            WriteError::NotDense {
+                values: 3,
+                max_doc: 5
+            }
+        ));
+    }
+
+    /// Same shape as [`check_data_header_footer`] but parameterized over the
+    /// expected codec name, for verifying the `.dvs` skip-index file's
+    /// header/footer (which uses a different codec string than `.dvd`).
+    fn check_data_header_footer_generic(
+        buf: &[u8],
+        codec: &str,
+        segment_id: &[u8; ID_LENGTH],
+    ) -> Result<i32> {
+        let mut input = SliceInput::new(buf);
+        let header = codec_util::check_index_header(
+            &mut input,
+            codec,
+            VERSION_START,
+            VERSION_CURRENT,
+            segment_id,
+            "",
+        )?;
+        codec_util::retrieve_checksum(buf)?;
+        Ok(header.version)
     }
 
     #[test]
