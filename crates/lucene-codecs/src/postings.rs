@@ -316,6 +316,74 @@ pub struct Postings {
     pub freqs: Vec<i32>,
 }
 
+/// A single competitive `(freq, norm)` pair, port of `Impact`
+/// (`org.apache.lucene.codecs.Impact`): "per-document scoring factors" used by
+/// `ImpactsEnum`/`CompetitiveImpactAccumulator` for WAND/MAXSCORE query-time
+/// pruning. `norm` is whatever `NumericDocValues.longValue()` the field's
+/// `.nvd` produces at write time — for the default similarity this is a
+/// single signed byte widened to `long` (`Similarity.computeNorm`'s common
+/// case), but the encoding here (see [`decode_impacts`]) is norm-width-
+/// agnostic, so this type stores the full `i64` rather than assuming a byte.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Impact {
+    /// Term frequency of the term in the document (or the max across a block/
+    /// span of documents, for the level-0/level-1 skip metadata this is
+    /// decoded from).
+    pub freq: i32,
+    /// Norm factor of the document (or the min-competitive norm across a
+    /// block/span, paired with `freq` the same way).
+    pub norm: i64,
+}
+
+/// A block's or span's list of competitive `(freq, norm)` pairs, ordered by
+/// strictly increasing `freq` and strictly increasing (unsigned) `norm` —
+/// the same invariant `CompetitiveImpactAccumulator.getCompetitiveFreqNormPairs`
+/// guarantees on the write side (`CompetitiveImpactAccumulator.java:100-119`):
+/// each successive entry has both a higher freq *and* a higher norm than the
+/// previous one, so a scorer can stop scanning the list as soon as it finds
+/// an entry whose norm is competitive enough, using that entry's freq as an
+/// upper bound.
+pub type Impacts = Vec<Impact>;
+
+/// Decodes one level-0 or level-1 impacts byte run (`Lucene104PostingsReader
+/// .readImpacts`, `Lucene104PostingsReader.java:1447-1467`): a flat sequence
+/// of `(freqDelta, normDelta?)` pairs with no length prefix of their own — the
+/// caller already knows the byte run's length (from the level-0/level-1
+/// header's own length-prefixed impacts field) and passes exactly that slice.
+///
+/// Each entry is a vint `freqDelta` whose low bit selects the norm-delta
+/// encoding: bit clear means "norm increased by exactly 1 from the previous
+/// entry" (the common case — most Lucene norms are monotonically increasing
+/// small integers), encoded in zero extra bytes; bit set means an explicit
+/// zigzag-encoded `normDelta` vlong follows (`writeImpacts`,
+/// `Lucene104PostingsWriter.java:540-556`: `out.writeVInt((freqDelta << 1) |
+/// 1); out.writeZLong(normDelta)`). `freq`/`norm` both accumulate from a
+/// `(0, 0)` starting point and both deltas are stored as "one less than the
+/// true delta" (`impact.freq - previous.freq - 1`), so decode always adds
+/// back that `+ 1`. An empty byte slice decodes to an empty list (this can't
+/// currently happen on the write side for a full block/span — `writeImpacts`
+/// is only called once `docBufferUpto == BLOCK_SIZE` docs have been
+/// accumulated, and `CompetitiveImpactAccumulator` always has ≥1 entry once
+/// any doc has been added — but the decoder doesn't assume it, matching
+/// Java's loop which is driven purely by `in.getPosition() < in.length()`).
+pub fn decode_impacts(bytes: &[u8]) -> Result<Impacts> {
+    let mut r = SliceInput::new(bytes);
+    let mut freq: i32 = 0;
+    let mut norm: i64 = 0;
+    let mut impacts = Vec::new();
+    while r.position() < bytes.len() {
+        let freq_delta = r.read_vint()?;
+        freq = freq.wrapping_add(1 + ((freq_delta as u32) >> 1) as i32);
+        if freq_delta & 1 != 0 {
+            norm = norm.wrapping_add(1i64.wrapping_add(r.read_zlong()?));
+        } else {
+            norm = norm.wrapping_add(1);
+        }
+        impacts.push(Impact { freq, norm });
+    }
+    Ok(impacts)
+}
+
 /// An opened `.doc` file (header/footer validated once), ready for
 /// per-term seeks. Mirrors `Lucene104PostingsReader`'s `docIn`, minus
 /// everything this slice doesn't support (positions, skip data, impacts).
@@ -517,6 +585,8 @@ impl<'a> DocInput<'a> {
             block_len: 0,
             block_pos: 0,
             doc_id: -1,
+            level0_impacts: Impacts::new(),
+            level1_impacts: Impacts::new(),
         })
     }
 }
@@ -835,6 +905,16 @@ struct Level1Entry {
     /// of the START of the *next* level-1 entry, i.e. one past this span's own
     /// 32 level-0 blocks. Seeking straight here skips the whole span.
     doc_end_fp: usize,
+    /// The competitive `(freq, norm)` pairs covering the *whole* 32-block
+    /// span (`level1CompetitiveFreqNormAccumulator`,
+    /// `Lucene104PostingsWriter.java:481-489`: every level-0 block's own
+    /// accumulator is merged into this one via `addAll` as each block is
+    /// flushed, and it's only cleared once this level-1 entry has been
+    /// written) — a strict superset/merge of any one level-0 block's impacts
+    /// within the span, not just the first or last block's. Empty when the
+    /// field has no freqs (`index_has_freq == false`, in which case no
+    /// impacts field exists on the wire at all).
+    impacts: Impacts,
 }
 
 /// Reads one level-1 skip entry at `r`'s current position (which must be a
@@ -845,8 +925,7 @@ struct Level1Entry {
 /// and `doc_end_fp` to decide whether to jump the whole span).
 ///
 /// The impacts bytes (competitive-scoring metadata for the whole span) are
-/// always skipped, never decoded — this port doesn't do impacts yet, same as
-/// the level-0 header path in [`read_full_block_header`]. The pos/pay
+/// decoded into [`Level1Entry::impacts`] via [`decode_impacts`]. The pos/pay
 /// sub-fields are parsed for wire-order correctness even though this reader
 /// never uses them to seek `.pos`/`.pay`.
 fn read_level1_entry(
@@ -862,15 +941,19 @@ fn read_level1_entry(
     let delta = r.read_vlong()? as usize;
     let doc_end_fp = delta.wrapping_add(r.position());
 
+    let mut impacts = Impacts::new();
     if index_has_freq {
         // `skip1EndFP` (step 3a): a plain 2-byte `readShort`, the byte length
         // from right here to the end of this entry's metadata. Only used as a
         // consistency check (Java asserts `getFilePointer() == skip1EndFP`).
         let skip1_end_fp = (r.read_i16()? as i64 + r.position() as i64) as usize;
         // `numImpactBytes` (step 3b): another plain `readShort`, non-negative
-        // (a length). Then skip that many raw impact bytes (step 3c).
+        // (a length). Then decode that many raw impact bytes (step 3c).
         let num_impact_bytes = r.read_i16()? as usize;
+        let impact_start = r.position();
+        let impact_bytes = r.slice(impact_start, impact_start + num_impact_bytes)?;
         r.skip(num_impact_bytes)?;
+        impacts = decode_impacts(impact_bytes)?;
         if index_has_pos {
             let _pos_end_fp_delta = r.read_vlong()?;
             let _pos_buffer_upto = r.read_byte()?;
@@ -885,6 +968,7 @@ fn read_level1_entry(
     Ok(Level1Entry {
         doc_delta,
         doc_end_fp,
+        impacts,
     })
 }
 
@@ -897,13 +981,14 @@ fn read_level1_entry(
 /// whether to decode the body or `docIn.seek()` straight past it.
 ///
 /// **What is genuinely skippable vs. what must still be touched**: every
-/// field here is a small fixed-width or vint/vlong-prefixed value (including
-/// the impacts byte run, whose *length* is read but whose *bytes* are
-/// skipped via [`DataInput::skip`] rather than decoded) — so determining
-/// `last_doc_id` and `body_start`/`body_len` never runs `ForUtil`/`PForUtil`
-/// decode, which is the expensive part of a block (bit-unpacking 256 values).
-/// That decode work is exactly what [`LazyDocsCursor`] avoids for a block
-/// this header proves is entirely before the caller's target.
+/// field here is a small fixed-width or vint/vlong-prefixed value, including
+/// the impacts byte run (decoded into [`FullBlockHeader::impacts`] via
+/// [`decode_impacts`] — cheap relative to the body, just a handful of vints)
+/// — so determining `last_doc_id` and `body_start`/`body_len` never runs
+/// `ForUtil`/`PForUtil` decode, which is the expensive part of a block
+/// (bit-unpacking 256 values). That decode work is exactly what
+/// [`LazyDocsCursor`] avoids for a block this header proves is entirely
+/// before the caller's target.
 struct FullBlockHeader {
     /// This block's last (highest) doc ID — `prev_doc_id + docDelta`, proven
     /// consistent with the body's own delta-decoded last entry by every
@@ -915,6 +1000,12 @@ struct FullBlockHeader {
     /// Byte offset where the block's body ends, i.e. where the next block's
     /// own level-0 header (or the tail block, or the term's end) begins.
     body_end: usize,
+    /// The competitive `(freq, norm)` pairs for *this one* level-0 block
+    /// (`level0FreqNormAccumulator.getCompetitiveFreqNormPairs()`,
+    /// `Lucene104PostingsWriter.java:397-402`) — reset to empty after every
+    /// block is flushed, unlike the level-1 span's merged accumulator. Empty
+    /// when the field has no freqs.
+    impacts: Impacts,
 }
 
 /// Reads one full block's level-0 header (see [`FullBlockHeader`]) without
@@ -938,13 +1029,17 @@ fn read_full_block_header(
     // includes the impacts-length-prefixed bytes and pos/pay skip fields,
     // not just the `bitsPerValue`-onward body.
     let body_end = r.position() + block_length as usize;
+    let mut impacts = Impacts::new();
     if index_has_freq {
         // Impacts byte-length is a plain vint here (`doMoveToNextLevel0Block`,
         // `Lucene104PostingsReader.java:746`), unlike level-1's vlong-prefixed
         // `numSkipBytes` -- confirmed against the reader source rather than
         // assumed from the tail-block/level-1 shape.
         let impacts_len = r.read_vint()? as usize;
+        let impacts_start = r.position();
+        let impact_bytes = r.slice(impacts_start, impacts_start + impacts_len)?;
         r.skip(impacts_len)?;
+        impacts = decode_impacts(impact_bytes)?;
 
         // Level-0 pos/pay skip data (`Lucene104PostingsReader.java:754-761`):
         // parsed for wire-order correctness (this reader never skips ahead
@@ -965,6 +1060,7 @@ fn read_full_block_header(
         last_doc_id,
         body_start,
         body_end,
+        impacts,
     })
 }
 
@@ -1346,6 +1442,16 @@ pub struct LazyDocsCursor<'a> {
     /// `-1` before the first `next_doc()`/`advance()` call,
     /// [`NO_MORE_DOCS`] once exhausted, otherwise the current doc ID.
     doc_id: i32,
+    /// The most recently decoded level-0 block's competitive impacts
+    /// (`ImpactsEnum.getImpacts()` level `0`, conceptually) — empty for the
+    /// tail block (no impacts on the wire there at all) or a field with no
+    /// freqs. Valid for whichever block `block_docs`/`block_freqs` currently
+    /// hold, i.e. the block containing `doc_id`.
+    level0_impacts: Impacts,
+    /// The current level-1 span's merged competitive impacts (`getImpacts()`
+    /// level `1`, conceptually) — empty below `LEVEL1_NUM_DOCS` docs (no
+    /// level-1 entries on the wire) or for a field with no freqs.
+    level1_impacts: Impacts,
 }
 
 impl<'a> LazyDocsCursor<'a> {
@@ -1363,6 +1469,25 @@ impl<'a> LazyDocsCursor<'a> {
         } else {
             None
         }
+    }
+
+    /// `ImpactsEnum.getImpacts()`'s level-0 result, conceptually: the
+    /// competitive `(freq, norm)` pairs for the level-0 block the cursor is
+    /// currently positioned in (i.e. covering `doc_id`). Empty before the
+    /// first `next_doc()`/`advance()` call, once exhausted, for the trailing
+    /// tail block (no level-0 impacts exist on the wire for it), or for a
+    /// field with no freqs.
+    pub fn level0_impacts(&self) -> &[Impact] {
+        &self.level0_impacts
+    }
+
+    /// `ImpactsEnum.getImpacts()`'s level-1 result, conceptually: the
+    /// competitive `(freq, norm)` pairs merged across the *whole* 32-block
+    /// level-1 span currently covering `doc_id`. Empty below
+    /// `LEVEL1_NUM_DOCS` docs (no level-1 entries on the wire at that point)
+    /// or for a field with no freqs.
+    pub fn level1_impacts(&self) -> &[Impact] {
+        &self.level1_impacts
     }
 
     /// `PostingsEnum.nextDoc()`: moves to the next doc, returning its ID (or
@@ -1453,6 +1578,7 @@ impl<'a> LazyDocsCursor<'a> {
                 self.block_len = BLOCK_SIZE as usize;
                 self.prev_doc_id = header.last_doc_id;
                 self.doc_count_left -= BLOCK_SIZE;
+                self.level0_impacts = header.impacts;
 
                 let offset = self.block_docs.partition_point(|&d| d < target);
                 self.block_pos = offset;
@@ -1476,6 +1602,12 @@ impl<'a> LazyDocsCursor<'a> {
             self.block_freqs[..count].copy_from_slice(&freqs);
             self.block_len = count;
             self.doc_count_left = 0;
+            // The tail block has no level-0 skip header (and hence no
+            // impacts) on the wire at all (`Lucene104PostingsReader
+            // .refillRemainder`'s non-singleton branch never touches
+            // `level0SerializedImpacts`) — matches the real reader returning
+            // whatever `level0LastDocID == NO_MORE_DOCS` state implies.
+            self.level0_impacts = Impacts::new();
 
             let offset = self.block_docs[..count].partition_point(|&d| d < target);
             self.block_pos = offset;
@@ -1515,6 +1647,7 @@ impl<'a> LazyDocsCursor<'a> {
                 // Fewer than a full span remains: no level-1 entry precedes it.
                 // `r` is now at the first of the trailing level-0 blocks.
                 self.level1_last_doc_id = NO_MORE_DOCS;
+                self.level1_impacts = Impacts::new();
                 break;
             }
 
@@ -1526,6 +1659,7 @@ impl<'a> LazyDocsCursor<'a> {
             )?;
             self.level1_last_doc_id += entry.doc_delta;
             self.level1_doc_end_fp = entry.doc_end_fp;
+            self.level1_impacts = entry.impacts;
 
             if self.level1_last_doc_id >= target {
                 // `target` is within this span: `r` is positioned at the
@@ -1544,6 +1678,83 @@ impl<'a> LazyDocsCursor<'a> {
 mod tests {
     use super::*;
     use lucene_store::data_output::DataOutput;
+
+    /// Test-only encoder mirroring `Lucene104PostingsWriter.writeImpacts`
+    /// (`Lucene104PostingsWriter.java:540-556`) exactly, so
+    /// `decode_impacts`'s own tests can round-trip through the real writer
+    /// logic rather than hand-picked bytes only.
+    fn write_impacts(out: &mut Vec<u8>, impacts: &[Impact]) {
+        let mut prev_freq = 0i32;
+        let mut prev_norm = 0i64;
+        for impact in impacts {
+            let freq_delta = impact.freq - prev_freq - 1;
+            let norm_delta = impact.norm - prev_norm - 1;
+            if norm_delta == 0 {
+                out.write_vint(freq_delta << 1);
+            } else {
+                out.write_vint((freq_delta << 1) | 1);
+                out.write_zlong(norm_delta);
+            }
+            prev_freq = impact.freq;
+            prev_norm = impact.norm;
+        }
+    }
+
+    #[test]
+    fn decode_impacts_empty_bytes_is_empty_list() {
+        assert_eq!(decode_impacts(&[]).unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn decode_impacts_single_entry_implicit_norm_delta() {
+        // freq=5, norm=1 (the common "norm only ever increases by 1" case,
+        // encoded with the low bit clear and no zlong at all).
+        let impacts = vec![Impact { freq: 5, norm: 1 }];
+        let mut bytes = Vec::new();
+        write_impacts(&mut bytes, &impacts);
+        assert_eq!(bytes.len(), 1); // single vint, no zlong byte
+        assert_eq!(decode_impacts(&bytes).unwrap(), impacts);
+    }
+
+    #[test]
+    fn decode_impacts_multiple_entries_with_explicit_norm_deltas() {
+        // Strictly increasing freq and (unsigned) norm, some entries with a
+        // norm jump bigger than 1 (forces the zlong branch), including a
+        // negative-looking (but unsigned-larger) norm value to exercise
+        // zigzag encoding of a negative delta relative to the accumulated
+        // norm (Lucene norms are `long`, not necessarily positive bytes).
+        let impacts = vec![
+            Impact { freq: 1, norm: 1 },
+            Impact { freq: 3, norm: 2 },   // normDelta 0 -> implicit
+            Impact { freq: 10, norm: 50 }, // normDelta 47 -> explicit zlong
+            Impact {
+                freq: 20,
+                norm: i64::MAX,
+            }, // huge normDelta -> explicit zlong, multi-byte
+        ];
+        let mut bytes = Vec::new();
+        write_impacts(&mut bytes, &impacts);
+        assert_eq!(decode_impacts(&bytes).unwrap(), impacts);
+    }
+
+    #[test]
+    fn decode_impacts_rejects_truncated_final_vint() {
+        // A freqDelta vint whose continuation bit is set but with no
+        // following byte in the slice -- decode_impacts must surface this as
+        // an EOF error, not silently stop or panic.
+        let bytes = [0x80u8]; // continuation bit set, no next byte
+        assert!(decode_impacts(&bytes).is_err());
+    }
+
+    #[test]
+    fn decode_impacts_rejects_truncated_zlong_after_explicit_flag() {
+        // freqDelta with the low bit set (an explicit normDelta follows) but
+        // the zlong bytes are missing entirely.
+        let mut bytes = Vec::new();
+        bytes.write_vint(1); // freqDelta << 1 | 1, i.e. freqDelta=0, explicit flag
+                             // no zlong bytes follow
+        assert!(decode_impacts(&bytes).is_err());
+    }
 
     /// Test-only encoder for `GroupVIntUtil.writeGroupVInts`'s wire format
     /// (groups of 4 values, 1 flag byte packing each value's byte-length minus
@@ -1777,7 +1988,9 @@ mod tests {
         // byte 1) + pay(vlong 1 + vint 1) = 2 + 3 + 4 = 9.
         bytes.write_i16(9); // skip1EndFP offset
         bytes.write_i16(3); // numImpactBytes
-        bytes.write_bytes(&[0xDE, 0xAD, 0xBE]); // 3 impact bytes (skipped)
+                            // 3 valid impact bytes: freqDelta=0, normDelta=0 (implicit +1 each)
+                            // three times over, decoding to (freq=1,norm=1), (2,2), (3,3).
+        bytes.write_bytes(&[0x00, 0x00, 0x00]);
         bytes.write_vlong(50); // posEndFP delta (discarded)
         bytes.write_byte(7); // posBufferUpto (discarded)
         bytes.write_vlong(60); // payEndFP delta (discarded)
@@ -1790,6 +2003,14 @@ mod tests {
         assert_eq!(entry.doc_end_fp, 100 + pos_after_vlong);
         // r is left at the start of the span's first level-0 block header.
         assert_eq!(r.position(), metadata_end);
+        assert_eq!(
+            entry.impacts,
+            vec![
+                Impact { freq: 1, norm: 1 },
+                Impact { freq: 2, norm: 2 },
+                Impact { freq: 3, norm: 3 },
+            ]
+        );
     }
 
     #[test]

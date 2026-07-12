@@ -808,6 +808,108 @@ fn l1_field_lazy_next_doc_matches_eager_read_postings() {
     assert_eq!(lazy_freqs, eager.freqs);
 }
 
+/// Parses one `level0=(f,n|f,n|...)` or `level1=(...)` segment (see
+/// `GenBlockTree.appendImpactsManifest`'s doc comment for the exact format)
+/// into a `Vec<(freq, norm)>` for comparison against
+/// `postings::Impact { freq, norm }`.
+fn parse_impacts_segment(segment: &str) -> Vec<(i32, i64)> {
+    let inner = segment
+        .split_once('(')
+        .and_then(|(_, rest)| rest.strip_suffix(')'))
+        .unwrap_or_else(|| panic!("malformed impacts segment: {segment}"));
+    if inner.is_empty() {
+        return Vec::new();
+    }
+    inner
+        .split('|')
+        .map(|pair| {
+            let (f, n) = pair.split_once(',').unwrap();
+            (f.parse().unwrap(), n.parse().unwrap())
+        })
+        .collect()
+}
+
+/// `postings::LazyDocsCursor::level0_impacts`/`level1_impacts` against real
+/// `ImpactsEnum`/`Impacts` ground truth dumped by
+/// `GenBlockTree.appendImpactsManifest`: for each sampled occurrence, advance
+/// a fresh lazy cursor to that doc and compare the decoded competitive
+/// `(freq, norm)` pairs at whichever levels the manifest recorded (level-1
+/// only present when the doc is still within a level-1 span).
+fn assert_impacts_match_real_lucene(
+    m: &Manifest,
+    field: &str,
+    term: &str,
+    doc_in: &postings::DocInput,
+    entry: &blocktree::FieldTerms,
+) {
+    let raw = m.get(&format!("field.{field}.term.{term}.impacts.results"));
+    for occurrence in raw.split("##") {
+        let (doc_str, rest) = occurrence.split_once(':').unwrap();
+        let doc_id: i32 = doc_str.parse().unwrap();
+
+        let mut expected_level0: Option<Vec<(i32, i64)>> = None;
+        let mut expected_level1: Option<Vec<(i32, i64)>> = None;
+        for segment in rest.split(';') {
+            if let Some(s) = segment.strip_prefix("level0=") {
+                expected_level0 = Some(parse_impacts_segment(&format!("level0={s}")));
+            } else if let Some(s) = segment.strip_prefix("level1=") {
+                expected_level1 = Some(parse_impacts_segment(&format!("level1={s}")));
+            }
+        }
+
+        let mut cursor = entry
+            .lazy_postings(term.as_bytes(), doc_in)
+            .unwrap()
+            .expect("term found");
+        assert_eq!(
+            cursor.advance(doc_id).unwrap(),
+            doc_id,
+            "field={field} term={term} doc_id={doc_id}"
+        );
+
+        if let Some(expected) = expected_level0 {
+            let actual: Vec<(i32, i64)> = cursor
+                .level0_impacts()
+                .iter()
+                .map(|i| (i.freq, i.norm))
+                .collect();
+            assert_eq!(
+                actual, expected,
+                "field={field} term={term} doc_id={doc_id} level0"
+            );
+        }
+        if let Some(expected) = expected_level1 {
+            let actual: Vec<(i32, i64)> = cursor
+                .level1_impacts()
+                .iter()
+                .map(|i| (i.freq, i.norm))
+                .collect();
+            assert_eq!(
+                actual, expected,
+                "field={field} term={term} doc_id={doc_id} level1"
+            );
+        }
+    }
+}
+
+#[test]
+fn big_field_impacts_match_real_lucene_impacts_enum() {
+    let (fields, m) = open_fixture();
+    let (doc, id, suffix) = open_doc_input(&m);
+    let doc_in = postings::DocInput::open(&doc, &id, &suffix).expect("open .doc");
+    let big = fields.field("big").unwrap();
+    assert_impacts_match_real_lucene(&m, "big", "everywhere", &doc_in, big);
+}
+
+#[test]
+fn l1_field_impacts_match_real_lucene_impacts_enum() {
+    let (fields, m) = open_fixture();
+    let (doc, id, suffix) = open_doc_input(&m);
+    let doc_in = postings::DocInput::open(&doc, &id, &suffix).expect("open .doc");
+    let l1 = fields.field("l1").unwrap();
+    assert_impacts_match_real_lucene(&m, "l1", "l1term", &doc_in, l1);
+}
+
 #[test]
 fn postings_missing_term_returns_none() {
     let (fields, m) = open_fixture();

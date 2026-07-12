@@ -389,6 +389,19 @@ public class GenBlockTree {
         appendAdvanceManifest(m, leaf, "big", "everywhere");
         appendAdvanceManifest(m, leaf, "body", "cat");
 
+        // Impacts ground truth: "big"/"everywhere" has varying (1..4) per-doc
+        // freq (and therefore varying norm, since these fields aren't
+        // omitting norms). docFreq=300 = one full 256-doc block + a 44-doc
+        // group-varint tail, so every occurrence sampled here is kept inside
+        // the one full block (occurrences past 255 land in the tail, where
+        // the real reader's `level0LastDocID == NO_MORE_DOCS` makes
+        // `getImpacts(0)` return a synthetic "everything is competitive"
+        // sentinel instead of decoded block impacts -- a different, already
+        // Rust-idiomatic empty-list case this port models directly rather
+        // than replicating Java's sentinel, so it's deliberately not dumped
+        // here).
+        appendImpactsManifest(m, leaf, "big", "everywhere", new int[] {0, 100, 255});
+
         // "l1"/"l1term" (docFreq=8250 > LEVEL1_NUM_DOCS=8192): full nextDoc()
         // iteration (postingsDocs/Freqs) plus advance() ground truth whose
         // auto-picked targets (first, mid deep inside the 8192-doc level-1
@@ -398,6 +411,16 @@ public class GenBlockTree {
         appendFieldManifest(m, leaf, "l1", new String[] {"l1term", "zzz-missing"});
         appendAdvanceManifest(m, leaf, "l1", "l1term");
         appendLevel1AdvanceManifest(m, leaf, "l1", "l1term");
+
+        // Impacts ground truth exercising level-1: occurrences 5 (first
+        // level-0 block of the span), 4000 (deep in the span, a different
+        // level-0 block), and 8191 (the span's last doc) are all still
+        // inside the first (and only, docFreq=8250 < 2*LEVEL1_NUM_DOCS)
+        // level-1 span, so level0 impacts vary block-to-block while level1
+        // impacts should be the same merged-across-the-whole-span value for
+        // all three (`level1CompetitiveFreqNormAccumulator` isn't cleared
+        // until the whole span is written).
+        appendImpactsManifest(m, leaf, "l1", "l1term", new int[] {5, 4000, 8191});
       }
 
       Files.writeString(out.resolve("manifest.properties"), m.toString());
@@ -687,6 +710,73 @@ public class GenBlockTree {
     }
     String key = "field." + field + ".term." + term + ".advanceLevel1";
     m.append(key).append(".results=").append(sb).append('\n');
+  }
+
+  /**
+   * Dumps real {@code ImpactsEnum}/{@code Impacts} ground truth (competitive
+   * `(freq, norm)` pairs) for a handful of occurrences of one term, sampled to
+   * exercise both level-0 (one 256-doc block) and, when the term has enough
+   * docs, level-1 (32-block span) impacts. For each sampled occurrence the
+   * postings are freshly re-walked with {@code nextDoc()} up to that
+   * occurrence, then {@code advanceShallow(docID())} is called (the standard
+   * "I'm positioned here, tell me what's coming" contract from
+   * {@link org.apache.lucene.search.ImpactsDISI}) followed by
+   * {@code getImpacts(level)} for every level {@code numLevels()} reports.
+   * Written as {@code docId:level0=(freq,norm|freq,norm|...);level1=(...)}
+   * per occurrence, occurrences joined with {@code ##} (distinct from the
+   * {@code ;} used between {@code level0=}/{@code level1=} within one
+   * occurrence); a term whose current state only has 1 level (below
+   * {@code LEVEL1_NUM_DOCS} docs, or past the last level-1 span) omits the
+   * {@code level1=} segment entirely.
+   */
+  static void appendImpactsManifest(
+      StringBuilder m, LeafReader leaf, String field, String term, int[] occurrenceIndices)
+      throws IOException {
+    Terms terms = leaf.terms(field);
+    if (terms == null) {
+      throw new AssertionError("expected terms for field " + field);
+    }
+    TermsEnum probe = terms.iterator();
+    if (!probe.seekExact(new BytesRef(term))) {
+      throw new AssertionError("expected term " + term + " in field " + field);
+    }
+
+    StringBuilder sb = new StringBuilder();
+    for (int occ : occurrenceIndices) {
+      TermsEnum te = terms.iterator();
+      te.seekExact(new BytesRef(term));
+      org.apache.lucene.index.ImpactsEnum ie = te.impacts(PostingsEnum.FREQS);
+      int docId = -1;
+      for (int i = 0; i <= occ; i++) {
+        docId = ie.nextDoc();
+        if (docId == PostingsEnum.NO_MORE_DOCS) {
+          throw new AssertionError("occurrence " + occ + " past end of postings for " + term);
+        }
+      }
+      ie.advanceShallow(docId);
+      org.apache.lucene.index.Impacts impacts = ie.getImpacts();
+      if (sb.length() > 0) {
+        sb.append("##");
+      }
+      sb.append(docId).append(":level0=(").append(formatImpacts(impacts.getImpacts(0)))
+          .append(')');
+      if (impacts.numLevels() > 1) {
+        sb.append(";level1=(").append(formatImpacts(impacts.getImpacts(1))).append(')');
+      }
+    }
+    String key = "field." + field + ".term." + term + ".impacts";
+    m.append(key).append(".results=").append(sb).append('\n');
+  }
+
+  private static String formatImpacts(org.apache.lucene.index.FreqAndNormBuffer buf) {
+    StringBuilder sb = new StringBuilder();
+    for (int i = 0; i < buf.size; i++) {
+      if (i > 0) {
+        sb.append('|');
+      }
+      sb.append(buf.freqs[i]).append(',').append(buf.norms[i]);
+    }
+    return sb.toString();
   }
 
   static void dump(Directory dir, String fileName, Path out) throws IOException {
