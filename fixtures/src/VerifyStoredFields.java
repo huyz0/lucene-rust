@@ -24,29 +24,46 @@ import java.util.HexFormat;
 import java.util.Map;
 
 /**
- * Reverse-direction verifier (Rust writes, Java reads): opens a
+ * Reverse-direction verifier (Rust writes, Java reads): opens each
  * `.fdt`/`.fdx`/`.fdm` triple written by this port's
- * `stored_fields::write_best_speed` (see
+ * `stored_fields::write_best_speed`/`write_best_compression` (see
  * `crates/lucene-codecs/examples/write_stored_fields_fixture.rs`) directly
  * through real Lucene's {@code Lucene90StoredFieldsFormat}, using a
  * hand-built {@link SegmentInfo}/{@link FieldInfos} rather than also
- * requiring Rust to write {@code .si}/{@code .fnm} -- this keeps the first
- * write-path slice scoped to exactly the stored-fields format itself.
+ * requiring Rust to write {@code .si}/{@code .fnm} -- this keeps the write-
+ * path slice scoped to exactly the stored-fields format itself.
  *
  * <p>Usage: {@code java VerifyStoredFields <fixture-dir>}, where
- * {@code <fixture-dir>} contains {@code _0.fdt}/{@code _0.fdx}/
- * {@code _0.fdm} and a {@code manifest.properties} (see the Rust example
- * above for the exact format) describing the expected per-doc field values.
- * Exits nonzero and prints a diff on any mismatch.
+ * {@code <fixture-dir>} contains one {@code <seg>.fdt}/{@code <seg>.fdx}/
+ * {@code <seg>.fdm} triple per segment named in the manifest's
+ * {@code segments} key, plus a {@code manifest.properties} (see the Rust
+ * example above for the exact format) describing each segment's mode and
+ * expected per-doc field values. Exits nonzero and prints a diff on any
+ * mismatch, in any segment.
  */
 public class VerifyStoredFields {
   public static void main(String[] args) throws IOException {
     Path dir = Path.of(args[0]);
     Map<String, String> manifest = readManifest(dir.resolve("manifest.properties"));
 
-    int maxDoc = Integer.parseInt(manifest.get("max_doc"));
-    byte[] id = HexFormat.of().parseHex(manifest.get("id_hex"));
-    int numFields = Integer.parseInt(manifest.get("num_fields"));
+    int totalFailures = 0;
+    for (String seg : manifest.get("segments").split(",")) {
+      totalFailures += verifySegment(dir, manifest, seg);
+    }
+
+    if (totalFailures > 0) {
+      System.out.println(totalFailures + " total document(s) mismatched across all segments");
+      System.exit(1);
+    }
+    System.out.println("All segments verified against real Lucene. PASS");
+  }
+
+  private static int verifySegment(Path dir, Map<String, String> manifest, String seg)
+      throws IOException {
+    String mode = manifest.get(seg + ".mode");
+    int maxDoc = Integer.parseInt(manifest.get(seg + ".max_doc"));
+    byte[] id = HexFormat.of().parseHex(manifest.get(seg + ".id_hex"));
+    int numFields = Integer.parseInt(manifest.get(seg + ".num_fields"));
 
     FieldInfo[] fieldInfos = new FieldInfo[numFields];
     for (int i = 0; i < numFields; i++) {
@@ -79,14 +96,14 @@ public class VerifyStoredFields {
       // BEST_SPEED vs BEST_COMPRESSION -- it's not derived from the .fdt
       // codec name by this wrapper class (unlike this port's own reader,
       // which peeks the codec name directly).
-      attributes.put(Lucene90StoredFieldsFormat.MODE_KEY, "BEST_SPEED");
+      attributes.put(Lucene90StoredFieldsFormat.MODE_KEY, mode);
 
       SegmentInfo si =
           new SegmentInfo(
               directory,
               Version.LATEST,
               Version.LATEST,
-              "_0",
+              seg,
               maxDoc,
               false,
               false,
@@ -102,27 +119,29 @@ public class VerifyStoredFields {
 
       int failures = 0;
       for (int doc = 0; doc < maxDoc; doc++) {
-        String expectedLine = manifest.getOrDefault("doc." + doc + ".fields", "");
+        String expectedLine = manifest.getOrDefault(seg + ".doc." + doc + ".fields", "");
         DumpVisitor visitor = new DumpVisitor();
         reader.document(doc, visitor);
         String got = visitor.render();
         if (!got.equals(expectedLine)) {
-          System.out.println("MISMATCH doc " + doc + ": expected=[" + expectedLine + "] got=[" + got + "]");
+          System.out.println(
+              "MISMATCH " + seg + " doc " + doc + ": expected=[" + expectedLine + "] got=[" + got + "]");
           failures++;
         } else {
-          System.out.println("doc " + doc + " OK: " + got);
+          System.out.println(seg + " doc " + doc + " OK: " + got);
         }
       }
       reader.close();
 
       if (failures > 0) {
-        System.out.println(failures + " document(s) mismatched");
-        System.exit(1);
+        System.out.println(seg + ": " + failures + " document(s) mismatched");
+      } else {
+        System.out.println(seg + ": all " + maxDoc + " documents verified. PASS");
       }
-      System.out.println("All " + maxDoc + " documents verified against real Lucene. PASS");
+      return failures;
     } catch (CorruptIndexException e) {
-      System.out.println("FAILED TO OPEN: " + e);
-      System.exit(1);
+      System.out.println(seg + ": FAILED TO OPEN: " + e);
+      return 1;
     }
   }
 

@@ -58,12 +58,18 @@ java -cp "classes:$JAR" VerifyLiveDocs /tmp/rust-live-docs
 java -cp "classes:$JAR" VerifyCompoundFormat /tmp/rust-compound-format
 ```
 
-`VerifyStoredFields.java` opens the `.fdt`/`.fdx`/`.fdm` triple directly through
+`VerifyStoredFields.java` opens each `.fdt`/`.fdx`/`.fdm` triple directly through
 `Lucene90StoredFieldsFormat.fieldsReader`, using a hand-built `SegmentInfo`/
 `FieldInfos` rather than also requiring Rust to write `.si`/`.fnm` -- this keeps
 each write-path slice scoped to exactly the one format it's verifying, the same
 way the read-path fixtures below call one codec-level `open`/`document` directly
-rather than going through a full `IndexReader`. `VerifyFieldInfos.java` follows
+rather than going through a full `IndexReader`. The Rust example writes **two**
+segments: `_0` via `stored_fields::write_best_speed` (LZ4, `Mode.BEST_SPEED`)
+and `_1` via `stored_fields::write_best_compression` (DEFLATE,
+`Mode.BEST_COMPRESSION`, with one field repeating a phrase ~2000 times so the
+dictionary + multi-sub-block DEFLATE framing is actually exercised, not just a
+single trivial unit) -- the manifest's `segments=_0,_1` key and per-segment
+`<seg>.mode` attribute let one verifier loop over both. `VerifyFieldInfos.java` follows
 the same pattern for `.fnm`: it opens the file directly through
 `Lucene94FieldInfosFormat.read` with a hand-built `SegmentInfo` (no `.si` writer
 needed), then checks every field's properties against `manifest.properties`.

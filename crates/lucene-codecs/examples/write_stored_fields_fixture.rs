@@ -1,13 +1,15 @@
-//! Writes a `write_best_speed`-produced `.fdt`/`.fdx`/`.fdm` triple plus a
-//! manifest to the directory given as the first CLI argument.
+//! Writes two `.fdt`/`.fdx`/`.fdm` triples plus a manifest to the directory
+//! given as the first CLI argument: segment `_0` via `write_best_speed`
+//! (LZ4, `Mode.BEST_SPEED`) and segment `_1` via `write_best_compression`
+//! (DEFLATE, `Mode.BEST_COMPRESSION`).
 //!
 //! This is the reverse of this repo's usual differential-testing direction
 //! (Java writes, Rust reads): here Rust writes, and
-//! `fixtures/src/VerifyStoredFields.java` reads the result back through
+//! `fixtures/src/VerifyStoredFields.java` reads each segment back through
 //! real Lucene's own `Lucene90StoredFieldsFormat.fieldsReader`, constructing
 //! a matching `SegmentInfo`/`FieldInfos` directly in Java code rather than
-//! also requiring Rust to write `.si`/`.fnm` -- this keeps the first
-//! write-path slice scoped to exactly the stored-fields format itself.
+//! also requiring Rust to write `.si`/`.fnm` -- this keeps the write-path
+//! slice scoped to exactly the stored-fields format itself.
 //!
 //! Run: `cargo run -p lucene-codecs --example write_stored_fields_fixture -- <dir>`
 
@@ -15,7 +17,8 @@ use lucene_codecs::stored_fields::{self, Document, FieldValue, StoredField};
 use lucene_store::{DataOutput, Directory, FsDirectory};
 use std::io::Write;
 
-const SEGMENT_ID: [u8; 16] = *b"rustwrittenseg01";
+const SEGMENT_ID_0: [u8; 16] = *b"rustwrittenseg01";
+const SEGMENT_ID_1: [u8; 16] = *b"rustwrittenseg02";
 
 fn main() {
     let out_dir = std::env::args()
@@ -23,7 +26,7 @@ fn main() {
         .expect("usage: write_stored_fields_fixture <output-dir>");
     std::fs::create_dir_all(&out_dir).unwrap();
 
-    let docs = vec![
+    let docs_best_speed = vec![
         Document {
             fields: vec![
                 StoredField {
@@ -78,14 +81,73 @@ fn main() {
         Document { fields: vec![] },
     ];
 
-    let (fdt, fdx, fdm) = stored_fields::write_best_speed(&docs, &SEGMENT_ID, "");
+    let docs_best_compression = vec![
+        Document {
+            fields: vec![
+                StoredField {
+                    field_number: 0,
+                    value: FieldValue::String("hello compression".to_string()),
+                },
+                StoredField {
+                    field_number: 1,
+                    value: FieldValue::Int(1_000_000),
+                },
+                StoredField {
+                    field_number: 2,
+                    value: FieldValue::Long(-1_234_567_890_123),
+                },
+                StoredField {
+                    field_number: 3,
+                    value: FieldValue::Float(-3.5),
+                },
+                StoredField {
+                    field_number: 4,
+                    value: FieldValue::Double(-2.25),
+                },
+                StoredField {
+                    field_number: 5,
+                    value: FieldValue::Binary(vec![9, 8, 7, 6, 5, 4, 3, 2, 1, 0]),
+                },
+                StoredField {
+                    field_number: 6,
+                    // Large enough (~90KB) that write_best_compression's
+                    // dictLength = len/60, blockLength = ceil((len-dict)/10)
+                    // framing produces a real dictionary unit AND several
+                    // sub-blocks -- not just a single trivial DEFLATE unit --
+                    // so real Lucene's reader must walk the whole
+                    // dictionary + multi-sub-block decode path.
+                    value: FieldValue::String(
+                        "the quick brown fox jumps over the lazy dog ".repeat(2000),
+                    ),
+                },
+            ],
+        },
+        Document {
+            fields: vec![StoredField {
+                field_number: 0,
+                value: FieldValue::String("second compressed document".to_string()),
+            }],
+        },
+        Document { fields: vec![] },
+    ];
+
+    let (fdt0, fdx0, fdm0) = stored_fields::write_best_speed(&docs_best_speed, &SEGMENT_ID_0, "");
+    let (fdt1, fdx1, fdm1) =
+        stored_fields::write_best_compression(&docs_best_compression, &SEGMENT_ID_1, "");
 
     // Route the encoded bytes through the real on-disk Directory/IndexOutput
     // primitive (rather than a hand-rolled `std::fs::write`), then fsync
     // them -- exercising the same write→sync contract a real IndexWriter
     // uses before referencing a segment's files from a commit.
     let dir = FsDirectory::open(&out_dir);
-    for (name, bytes) in [("_0.fdt", &fdt), ("_0.fdx", &fdx), ("_0.fdm", &fdm)] {
+    for (name, bytes) in [
+        ("_0.fdt", &fdt0),
+        ("_0.fdx", &fdx0),
+        ("_0.fdm", &fdm0),
+        ("_1.fdt", &fdt1),
+        ("_1.fdx", &fdx1),
+        ("_1.fdm", &fdm1),
+    ] {
         let mut out = dir.create_output(name).unwrap();
         out.write_bytes(bytes);
         out.close().unwrap();
@@ -94,13 +156,43 @@ fn main() {
         "_0.fdt".to_string(),
         "_0.fdx".to_string(),
         "_0.fdm".to_string(),
+        "_1.fdt".to_string(),
+        "_1.fdx".to_string(),
+        "_1.fdm".to_string(),
     ])
     .unwrap();
 
     let mut manifest = std::fs::File::create(format!("{out_dir}/manifest.properties")).unwrap();
-    writeln!(manifest, "max_doc={}", docs.len()).unwrap();
-    writeln!(manifest, "id_hex={}", hex(&SEGMENT_ID)).unwrap();
-    writeln!(manifest, "num_fields=7").unwrap();
+    writeln!(manifest, "segments=_0,_1").unwrap();
+    write_segment_manifest(
+        &mut manifest,
+        "_0",
+        "BEST_SPEED",
+        &SEGMENT_ID_0,
+        &docs_best_speed,
+    );
+    write_segment_manifest(
+        &mut manifest,
+        "_1",
+        "BEST_COMPRESSION",
+        &SEGMENT_ID_1,
+        &docs_best_compression,
+    );
+
+    println!("wrote stored-fields fixture to {out_dir}");
+}
+
+fn write_segment_manifest(
+    manifest: &mut std::fs::File,
+    seg: &str,
+    mode: &str,
+    id: &[u8; 16],
+    docs: &[Document],
+) {
+    writeln!(manifest, "{seg}.mode={mode}").unwrap();
+    writeln!(manifest, "{seg}.max_doc={}", docs.len()).unwrap();
+    writeln!(manifest, "{seg}.id_hex={}", hex(id)).unwrap();
+    writeln!(manifest, "{seg}.num_fields=7").unwrap();
     for (doc_id, doc) in docs.iter().enumerate() {
         let rendered: Vec<String> = doc
             .fields
@@ -117,10 +209,8 @@ fn main() {
                 format!("{}:{ty}:{val}", f.field_number)
             })
             .collect();
-        writeln!(manifest, "doc.{doc_id}.fields={}", rendered.join(";")).unwrap();
+        writeln!(manifest, "{seg}.doc.{doc_id}.fields={}", rendered.join(";")).unwrap();
     }
-
-    println!("wrote stored-fields fixture to {out_dir}");
 }
 
 fn hex(bytes: &[u8]) -> String {

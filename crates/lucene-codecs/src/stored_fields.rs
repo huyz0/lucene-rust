@@ -506,6 +506,33 @@ pub fn write_best_speed(
     let max_pointer = fdt.len() as i64;
     codec_util::write_footer(&mut fdt);
 
+    let (fdx, fdm) = write_index_and_meta(
+        segment_id,
+        segment_suffix,
+        max_doc,
+        chunk_start,
+        max_pointer,
+        80 * 1024,
+    );
+
+    (fdt, fdx, fdm)
+}
+
+/// Shared `.fdx`/`.fdm` assembly for both [`write_best_speed`] and
+/// [`write_best_compression`]: both modes produce exactly the same
+/// single-chunk index/meta shape (one real chunk from doc 0 to `max_doc`,
+/// one sentinel), differing only in the `chunkSize` value recorded in
+/// `.fdm` (unused by this port's own reader when nothing is sliced, but
+/// still part of the on-disk contract real Lucene expects to be able to
+/// parse consistently).
+fn write_index_and_meta(
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+    max_doc: i32,
+    chunk_start: i64,
+    max_pointer: i64,
+    chunk_size: i32,
+) -> (Vec<u8>, Vec<u8>) {
     let block_shift = 0u32;
     let docs_values = [0i64, max_doc as i64];
     let start_pointers_values = [chunk_start, max_pointer];
@@ -536,7 +563,7 @@ pub fn write_best_speed(
         segment_id,
         segment_suffix,
     );
-    fdm.write_vint(80 * 1024); // chunkSize (unused when nothing is sliced)
+    fdm.write_vint(chunk_size); // chunkSize (unused when nothing is sliced)
     fdm.write_i32(max_doc);
     fdm.write_i32(block_shift as i32);
     fdm.write_i32(2); // index_num_chunks = 1 real chunk + 1 sentinel
@@ -550,6 +577,116 @@ pub fn write_best_speed(
     fdm.write_vlong(0); // numDirtyChunks
     fdm.write_vlong(0); // numDirtyDocs
     codec_util::write_footer(&mut fdm);
+
+    (fdx, fdm)
+}
+
+/// Port of `Lucene90CompressingStoredFieldsWriter` for `Mode.BEST_COMPRESSION`
+/// -- the DEFLATE counterpart of [`write_best_speed`]. Shares that function's
+/// scope-limiting stance (single chunk, `docs.len() < 128`) and its
+/// `.fdx`/`.fdm` assembly (via [`write_index_and_meta`]), but the payload
+/// framing differs enough from LZ4's that duplicating just the `.fdt`
+/// payload section -- rather than trying to force one shared function with
+/// a mode-branch threaded through the middle -- was the more readable
+/// tradeoff: BEST_SPEED emits a single zero-dictionary LZ4 unit, while
+/// BEST_COMPRESSION *always* splits into a dictionary prefix plus several
+/// fixed-size sub-blocks per `DeflateWithPresetDictCompressionMode`'s own
+/// `dictLength = len / (NUM_SUB_BLOCKS * DICT_SIZE_FACTOR)`,
+/// `blockLength = ceil((len - dictLength) / NUM_SUB_BLOCKS)` formulas
+/// (`NUM_SUB_BLOCKS = 10`, `DICT_SIZE_FACTOR = 6`, ported as constants
+/// below) -- real Lucene reuses this sizing regardless of a chunk's actual
+/// size, so this port does too rather than inventing a different threshold.
+///
+/// Each sub-block (and the dictionary prefix) is compressed independently
+/// via [`deflate::compress`] with **no** preset-dictionary back-referencing
+/// into the previous sub-block's plaintext: `miniz_oxide`'s `compress_to_vec`
+/// has no preset-dictionary API (see `deflate.rs`'s module doc comment), so
+/// each unit is a fully self-contained DEFLATE stream. This is still valid
+/// per the wire format [`decompress_unit`] reads -- a sub-block's compressed
+/// bytes decompress into `buffer[dict_length..]`, and the dictionary bytes
+/// sitting in `buffer[..dict_length]` are available for a *decoder's*
+/// back-references to reach into, but nothing requires the *encoder* to
+/// have actually produced any cross-unit back-references. The cost is a
+/// smaller compression ratio than real Lucene's writer (which does use the
+/// dictionary to compress each block), not a correctness gap.
+pub fn write_best_compression(
+    docs: &[Document],
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    const NUM_SUB_BLOCKS: usize = 10;
+    const DICT_SIZE_FACTOR: usize = 6;
+    const BEST_COMPRESSION_BLOCK_LENGTH: i32 = 10 * 48 * 1024;
+
+    assert!(
+        docs.len() < 128,
+        "write_best_compression's bulk per-doc arrays only implement the scalar-tail \
+         encoding (see write_bulk_ints); the 128-value transposed-block path \
+         isn't written yet, so chunks must stay under 128 docs"
+    );
+
+    let payloads: Vec<Vec<u8>> = docs.iter().map(serialize_doc).collect();
+    let num_stored_fields: Vec<i64> = docs.iter().map(|d| d.fields.len() as i64).collect();
+    let lengths: Vec<i64> = payloads.iter().map(|p| p.len() as i64).collect();
+    let total_length: i64 = lengths.iter().sum();
+    let chunk_docs = docs.len() as i32;
+    let max_doc = chunk_docs;
+
+    let mut fdt = Vec::new();
+    codec_util::write_index_header(
+        &mut fdt,
+        DATA_CODEC_BEST_COMPRESSION,
+        VERSION_CURRENT,
+        segment_id,
+        segment_suffix,
+    );
+    let chunk_start = fdt.len() as i64;
+
+    fdt.write_vint(0); // docBase
+    fdt.write_vint(chunk_docs << 2); // token: sliced=0, dirty=0
+
+    if chunk_docs == 1 {
+        fdt.write_vint(num_stored_fields[0] as i32);
+        fdt.write_vint(lengths[0] as i32);
+    } else if chunk_docs > 0 {
+        write_bulk_ints(&mut fdt, &num_stored_fields);
+        write_bulk_ints(&mut fdt, &lengths);
+    }
+
+    if total_length > 0 {
+        let payload: Vec<u8> = payloads.concat();
+        let len = payload.len();
+        let dict_length = len / (NUM_SUB_BLOCKS * DICT_SIZE_FACTOR);
+        let block_length = (len - dict_length).div_ceil(NUM_SUB_BLOCKS);
+
+        fdt.write_vint(dict_length as i32); // dictLength
+        fdt.write_vint(block_length as i32); // blockLength
+
+        let dict_compressed = deflate::compress(&payload[..dict_length]);
+        fdt.write_vint(dict_compressed.len() as i32); // dictionary's compressed length
+        fdt.write_bytes(&dict_compressed);
+
+        let mut start = dict_length;
+        while start < len {
+            let this_block = block_length.min(len - start);
+            let block_compressed = deflate::compress(&payload[start..start + this_block]);
+            fdt.write_vint(block_compressed.len() as i32); // this block's compressed length
+            fdt.write_bytes(&block_compressed);
+            start += this_block;
+        }
+    }
+
+    let max_pointer = fdt.len() as i64;
+    codec_util::write_footer(&mut fdt);
+
+    let (fdx, fdm) = write_index_and_meta(
+        segment_id,
+        segment_suffix,
+        max_doc,
+        chunk_start,
+        max_pointer,
+        BEST_COMPRESSION_BLOCK_LENGTH,
+    );
 
     (fdt, fdx, fdm)
 }
@@ -1732,6 +1869,142 @@ mod tests {
         let (fdt, fdx, fdm) = write_best_speed(&[], &id_write(), "");
         let reader = open(&fdt, &fdx, &fdm, &id_write(), "").unwrap();
         assert_eq!(reader.max_doc(), 0);
+    }
+
+    #[test]
+    fn write_best_compression_single_doc_round_trips_through_own_reader() {
+        let docs = vec![Document {
+            fields: vec![
+                StoredField {
+                    field_number: 0,
+                    value: FieldValue::String("hello world".to_string()),
+                },
+                StoredField {
+                    field_number: 1,
+                    value: FieldValue::Int(-42),
+                },
+                StoredField {
+                    field_number: 2,
+                    value: FieldValue::Long(1_234_567_890_123),
+                },
+                StoredField {
+                    field_number: 3,
+                    value: FieldValue::Float(1.5),
+                },
+                StoredField {
+                    field_number: 4,
+                    value: FieldValue::Double(2.25),
+                },
+                StoredField {
+                    field_number: 5,
+                    value: FieldValue::Binary(vec![1, 2, 3, 4, 5]),
+                },
+            ],
+        }];
+
+        let (fdt, fdx, fdm) = write_best_compression(&docs, &id_write(), "");
+        let reader = open(&fdt, &fdx, &fdm, &id_write(), "").unwrap();
+        assert_eq!(reader.max_doc(), 1);
+        let got = reader.document(0).unwrap();
+        assert_eq!(got.fields.len(), docs[0].fields.len());
+        for (got_field, want_field) in got.fields.iter().zip(&docs[0].fields) {
+            assert_eq!(got_field.field_number, want_field.field_number);
+            assert_eq!(got_field.value, want_field.value);
+        }
+    }
+
+    #[test]
+    fn write_best_compression_multi_doc_round_trips_with_varying_field_counts() {
+        let docs = vec![
+            Document {
+                fields: vec![StoredField {
+                    field_number: 0,
+                    value: FieldValue::String("doc0".to_string()),
+                }],
+            },
+            Document {
+                fields: vec![
+                    StoredField {
+                        field_number: 0,
+                        value: FieldValue::String("doc1-a".to_string()),
+                    },
+                    StoredField {
+                        field_number: 1,
+                        value: FieldValue::Long(-7),
+                    },
+                ],
+            },
+            Document { fields: vec![] },
+        ];
+
+        let (fdt, fdx, fdm) = write_best_compression(&docs, &id_write(), "seg");
+        let reader = open(&fdt, &fdx, &fdm, &id_write(), "seg").unwrap();
+        assert_eq!(reader.max_doc(), 3);
+
+        let doc0 = reader.document(0).unwrap();
+        assert_eq!(doc0.fields.len(), 1);
+        assert_eq!(doc0.fields[0].value, FieldValue::String("doc0".to_string()));
+
+        let doc1 = reader.document(1).unwrap();
+        assert_eq!(doc1.fields.len(), 2);
+        assert_eq!(
+            doc1.fields[0].value,
+            FieldValue::String("doc1-a".to_string())
+        );
+        assert_eq!(doc1.fields[1].value, FieldValue::Long(-7));
+
+        let doc2 = reader.document(2).unwrap();
+        assert_eq!(doc2.fields.len(), 0);
+    }
+
+    #[test]
+    fn write_best_compression_empty_doc_set_produces_zero_max_doc() {
+        let (fdt, fdx, fdm) = write_best_compression(&[], &id_write(), "");
+        let reader = open(&fdt, &fdx, &fdm, &id_write(), "").unwrap();
+        assert_eq!(reader.max_doc(), 0);
+    }
+
+    #[test]
+    fn write_best_compression_large_payload_forces_multiple_sub_blocks() {
+        // `dictLength = len / 60`, `blockLength = ceil((len - dictLength) / 10)`
+        // (see write_best_compression's doc comment) -- a payload well past a
+        // few KB guarantees `blockLength < len`, so `decompress_unit` must
+        // walk more than one sub-block to reconstruct the chunk.
+        let big_field = "the quick brown fox jumps over the lazy dog ".repeat(2000);
+        let docs = vec![
+            Document {
+                fields: vec![
+                    StoredField {
+                        field_number: 0,
+                        value: FieldValue::String(big_field.clone()),
+                    },
+                    StoredField {
+                        field_number: 1,
+                        value: FieldValue::Int(7),
+                    },
+                ],
+            },
+            Document {
+                fields: vec![StoredField {
+                    field_number: 0,
+                    value: FieldValue::String("second doc".to_string()),
+                }],
+            },
+        ];
+
+        let (fdt, fdx, fdm) = write_best_compression(&docs, &id_write(), "");
+        let reader = open(&fdt, &fdx, &fdm, &id_write(), "").unwrap();
+        assert_eq!(reader.max_doc(), 2);
+
+        let doc0 = reader.document(0).unwrap();
+        assert_eq!(doc0.fields[0].value, FieldValue::String(big_field));
+        assert_eq!(doc0.fields[1].value, FieldValue::Int(7));
+
+        let doc1 = reader.document(1).unwrap();
+        assert_eq!(
+            doc1.fields[0].value,
+            FieldValue::String("second doc".to_string())
+        );
     }
 
     #[test]
