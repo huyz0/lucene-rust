@@ -347,6 +347,20 @@ public class GenBlockTree {
               "term0299", "term0300", "term0350", "term0398", "term0399",
               "term0400-missing", "term9999-missing"
             });
+
+        // Ordered enumeration ground truth: walk the whole "many" field via
+        // real TermsEnum.next() (not seekExact) and dump the full sequence
+        // of (term, docFreq, totalTermFreq) -- the hardest target for this
+        // because it's multi-block/floor-split, so a correct dump proves
+        // enumeration walks block/floor boundaries in the right order, not
+        // just within one block. Also seekCeil ground truth: an exact match,
+        // a between-terms ceiling match, before-the-first-term, and
+        // after-the-last-term (END).
+        appendEnumerationManifest(m, leaf, "many", out);
+        appendSeekCeilManifest(m, leaf, "many", "term0037", "exact");
+        appendSeekCeilManifest(m, leaf, "many", "term0037a", "ceiling");
+        appendSeekCeilManifest(m, leaf, "many", "", "beforeFirst");
+        appendSeekCeilManifest(m, leaf, "many", "zzzz", "afterLast");
       }
 
       Files.writeString(out.resolve("manifest.properties"), m.toString());
@@ -468,6 +482,63 @@ public class GenBlockTree {
       m.append(key).append(".postingsDocs=").append(docs).append('\n');
       m.append(key).append(".postingsFreqs=").append(freqs).append('\n');
       m.append(key).append(".occurrences=").append(occurrences).append('\n');
+    }
+  }
+
+  /**
+   * Walks {@code field}'s entire term dictionary via real {@code
+   * TermsEnum.next()} (never {@code seekExact}) and writes the ordered
+   * sequence of {@code term\tdocFreq\ttotalTermFreq} lines to a sibling file
+   * ({@code <field>.enumeration.tsv}) rather than inline as a manifest
+   * property -- a 400-term field's dump doesn't fit comfortably as a single
+   * properties-file value (embedded newlines break line-based parsing).
+   */
+  static void appendEnumerationManifest(StringBuilder m, LeafReader leaf, String field, Path out)
+      throws IOException {
+    Terms terms = leaf.terms(field);
+    if (terms == null) {
+      throw new AssertionError("expected terms for field " + field);
+    }
+    TermsEnum te = terms.iterator();
+    StringBuilder enumeration = new StringBuilder();
+    BytesRef term;
+    int count = 0;
+    while ((term = te.next()) != null) {
+      enumeration
+          .append(term.utf8ToString())
+          .append('\t')
+          .append(te.docFreq())
+          .append('\t')
+          .append(te.totalTermFreq())
+          .append('\n');
+      count++;
+    }
+    String fileName = field + ".enumeration.tsv";
+    Files.writeString(out.resolve(fileName), enumeration.toString());
+    m.append("field.").append(field).append(".enumeration.count=").append(count).append('\n');
+    m.append("field.").append(field).append(".enumeration.file=").append(fileName).append('\n');
+  }
+
+  /**
+   * Dumps real {@code TermsEnum.seekCeil()} ground truth for one target:
+   * whether it found/status ({@code FOUND}/{@code NOT_FOUND}/{@code END}),
+   * and if not {@code END}, the term/docFreq/totalTermFreq it landed on.
+   */
+  static void appendSeekCeilManifest(
+      StringBuilder m, LeafReader leaf, String field, String target, String label)
+      throws IOException {
+    Terms terms = leaf.terms(field);
+    if (terms == null) {
+      throw new AssertionError("expected terms for field " + field);
+    }
+    TermsEnum te = terms.iterator();
+    TermsEnum.SeekStatus status = te.seekCeil(new BytesRef(target));
+    String key = "field." + field + ".seekCeil." + label;
+    m.append(key).append(".status=").append(status).append('\n');
+    if (status != TermsEnum.SeekStatus.END) {
+      m.append(key).append(".term=").append(te.term().utf8ToString()).append('\n');
+      m.append(key).append(".docFreq=").append(te.docFreq()).append('\n');
+      m.append(key).append(".totalTermFreq=").append(te.totalTermFreq()).append('\n');
     }
   }
 

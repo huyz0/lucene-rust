@@ -7,6 +7,9 @@
 //! Both fields fit in a single non-floor leaf `.tim` block (well under the
 //! default 25/48 min/maxItemsInBlock thresholds), which is this slice's
 //! scope -- see `crates/lucene-codecs/src/blocktree.rs`'s module doc.
+//! Also covers ordered enumeration (`TermsEnum::next()`) and `seek_ceil()`
+//! against the `many` field (400 terms, multi-block/floor-split) via real
+//! `TermsEnum.next()`/`seekCeil()` ground truth.
 //! Regenerate with `fixtures/src/GenBlockTree.java`.
 
 use lucene_codecs::blocktree;
@@ -209,6 +212,102 @@ fn many_field_multi_block_floor_term_lookups_match_real_lucene() {
             .unwrap_or_else(|| panic!("expected term {term:?} to be found"));
         assert_eq!(stats.doc_freq, 1, "term={term}");
         assert_eq!(stats.total_term_freq, 1, "term={term}");
+    }
+}
+
+/// Walks the whole `many` field (400 terms, multi-block/floor-split -- the
+/// hardest enumeration target this fixture has) via `TermsEnum::next()` and
+/// compares the full ordered sequence against real Lucene's own
+/// `TermsEnum.next()` output (`fixtures/data/blocktree_index/many.enumeration.tsv`,
+/// written by `GenBlockTree.appendEnumerationManifest`). A correct match here
+/// proves enumeration walks block/floor boundaries in the right order, not
+/// just within one block -- the multi-block merge in `open()` sorts once
+/// after collecting every block, so a wrong sort or a dropped/duplicated
+/// block would show up as an out-of-order or incomplete sequence here.
+#[test]
+fn many_field_enumeration_matches_real_lucene_terms_enum_next() {
+    let (fields, m) = open_fixture();
+    let many = fields.field("many").unwrap();
+
+    let expected_count: usize = m.get("field.many.enumeration.count").parse().unwrap();
+    let enumeration_file = m.get("field.many.enumeration.file");
+    let tsv = std::fs::read_to_string(format!("{}{}", dir(), enumeration_file))
+        .expect("read many.enumeration.tsv");
+    let expected: Vec<(String, i32, i64)> = tsv
+        .lines()
+        .map(|line| {
+            let mut parts = line.split('\t');
+            let term = parts.next().unwrap().to_string();
+            let doc_freq: i32 = parts.next().unwrap().parse().unwrap();
+            let total_term_freq: i64 = parts.next().unwrap().parse().unwrap();
+            (term, doc_freq, total_term_freq)
+        })
+        .collect();
+    assert_eq!(expected.len(), expected_count);
+    assert_eq!(expected.len(), 400);
+
+    let mut it = many.iter();
+    let mut got = Vec::new();
+    while let Some((term, stats)) = it.next() {
+        got.push((
+            String::from_utf8(term.to_vec()).unwrap(),
+            stats.doc_freq,
+            stats.total_term_freq,
+        ));
+    }
+    assert_eq!(got, expected);
+    // Exhausted: further next() calls keep returning None.
+    assert_eq!(it.next(), None);
+    assert_eq!(it.next(), None);
+}
+
+/// `TermsEnum::seek_ceil` against real `TermsEnum.seekCeil()` ground truth
+/// (`GenBlockTree.appendSeekCeilManifest`), covering all four cases: an
+/// exact match, a between-terms ceiling match, before-the-first-term, and
+/// after-the-last-term (`END`).
+#[test]
+fn many_field_seek_ceil_matches_real_lucene() {
+    let (fields, m) = open_fixture();
+    let many = fields.field("many").unwrap();
+
+    let cases: &[(&str, &str)] = &[
+        ("term0037", "exact"),
+        ("term0037a", "ceiling"),
+        ("", "beforeFirst"),
+        ("zzzz", "afterLast"),
+    ];
+    for (target, label) in cases {
+        let key = format!("field.many.seekCeil.{label}");
+        let expected_status = m.get(&format!("{key}.status"));
+
+        let mut it = many.iter();
+        let status = it.seek_ceil(target.as_bytes());
+        match expected_status {
+            "FOUND" => assert_eq!(status, blocktree::SeekStatus::Found, "target={target:?}"),
+            "NOT_FOUND" => assert_eq!(status, blocktree::SeekStatus::NotFound, "target={target:?}"),
+            "END" => assert_eq!(status, blocktree::SeekStatus::End, "target={target:?}"),
+            other => panic!("unexpected SeekStatus in manifest: {other}"),
+        }
+
+        if expected_status != "END" {
+            let expected_term = m.get(&format!("{key}.term"));
+            let expected_doc_freq: i32 = m.get(&format!("{key}.docFreq")).parse().unwrap();
+            let expected_total_term_freq: i64 =
+                m.get(&format!("{key}.totalTermFreq")).parse().unwrap();
+
+            let (term, stats) = it.current().unwrap_or_else(|| {
+                panic!("expected seek_ceil({target:?}) to land on a term, got none")
+            });
+            assert_eq!(term, expected_term.as_bytes(), "target={target:?}");
+            assert_eq!(stats.doc_freq, expected_doc_freq, "target={target:?}");
+            assert_eq!(
+                stats.total_term_freq, expected_total_term_freq,
+                "target={target:?}"
+            );
+        } else {
+            assert_eq!(it.current(), None, "target={target:?}");
+            assert_eq!(it.next(), None, "target={target:?}");
+        }
     }
 }
 

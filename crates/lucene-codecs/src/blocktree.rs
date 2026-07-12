@@ -88,9 +88,13 @@
 //! to prefer trie-indexed floor/child splits, at least for the term counts
 //! this port's fixtures reach — see `fixtures/src/GenBlockTree.java`'s
 //! "many" field), but a large enough/adversarial field could in principle
-//! still hit a non-leaf block; that remains deferred, same as `next()`/
-//! `seekCeil` (enumeration/nearest-match seeking) and automaton intersection
-//! (`IntersectTermsEnum`). Suffix compression (`CompressionAlgorithm::LZ4`/
+//! still hit a non-leaf block; that remains deferred, same as automaton
+//! intersection (`IntersectTermsEnum`). **Ordered enumeration (`next()`) and
+//! nearest-match seeking (`seekCeil()`) are now ported** — see
+//! [`TermsEnum`]/[`FieldTerms::iter`] — as a thin cursor over the
+//! already-sorted `entries` `Vec` rather than a reimplementation of
+//! `SegmentTermsEnum`'s lazy block-walking machinery (see `TermsEnum`'s own
+//! doc comment for the full rationale). Suffix compression (`CompressionAlgorithm::LZ4`/
 //! `LowercaseAscii`) also remains unimplemented (`Error::Unsupported`) —
 //! every block this port's fixtures produce still uses `NO_COMPRESSION`.
 //!
@@ -202,6 +206,106 @@ pub struct TermStats {
     pub total_term_freq: i64,
 }
 
+/// `TermsEnum.SeekStatus`-equivalent: the outcome of [`TermsEnum::seek_ceil`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeekStatus {
+    /// The target term itself was present.
+    Found,
+    /// The target term was absent; the enum is positioned on the smallest
+    /// term greater than the target.
+    NotFound,
+    /// No term in the field is >= the target; the enum is positioned past
+    /// the last term (a following [`TermsEnum::next`] returns `None`).
+    End,
+}
+
+/// `TermsEnum`-equivalent: ordered iteration (`next()`) and nearest-match
+/// seeking (`seekCeil()`) over one field's already-sorted term dictionary.
+///
+/// **Design choice**: this is a thin cursor over [`FieldTerms`]'s existing
+/// sorted `entries` `Vec`, not a reimplementation of real Lucene's
+/// `SegmentTermsEnum`/`SegmentTermsEnumFrame` stack-based lazy block walk.
+/// The prior slice already made the eager-whole-field-materialization
+/// tradeoff (see the module doc) — every term is already decoded into one
+/// sorted `Vec` before any lookup happens, so `next()` is an index bump and
+/// `seekCeil()` is a binary search, both O(log n) or O(1), with none of
+/// Java's per-frame `FST`/trie-path push/pop state to reconstruct. Building
+/// the Java-shaped stack machinery on top of an already-fully-materialized
+/// Vec would only reintroduce complexity this port deliberately avoided
+/// (see the `rust-performance` skill: "not a dumb port" — a redesign around
+/// what's actually needed beats transliterating `SegmentTermsEnumFrame`'s
+/// internals when the underlying representation no longer matches Java's).
+#[derive(Debug, Clone)]
+pub struct TermsEnum<'a> {
+    entries: &'a [(Vec<u8>, TermStats, TermMetadata)],
+    /// Index of the last term returned by `next()`/positioned by
+    /// `seek_ceil()`, or `None` before the first `next()` call. Once
+    /// exhausted this holds `Some(entries.len())` (or higher), so repeated
+    /// `next()` calls after the end keep returning `None` without special
+    /// casing.
+    pos: Option<usize>,
+}
+
+impl<'a> TermsEnum<'a> {
+    fn new(entries: &'a [(Vec<u8>, TermStats, TermMetadata)]) -> Self {
+        Self { entries, pos: None }
+    }
+
+    /// `TermsEnum.next()`-equivalent: advance to (and return) the next term
+    /// in sorted order, or `None` at end-of-terms (matching `BytesRef
+    /// next()` returning `null`). Idempotent past the end.
+    ///
+    /// Named to mirror Java's `TermsEnum.next()` rather than `std::iter::Iterator::next`
+    /// on purpose: a real `std::iter::Iterator` impl would need `Item` to
+    /// borrow from `self` (a `(term, stats)` pair tied to `'a`, not to each
+    /// `next()` call), which isn't expressible through that trait — this is
+    /// deliberately its own cursor API, same shape as Java's, not an
+    /// `Iterator`.
+    #[allow(clippy::should_implement_trait)]
+    pub fn next(&mut self) -> Option<(&'a [u8], TermStats)> {
+        let next_idx = self.pos.map_or(0, |p| p + 1);
+        if next_idx >= self.entries.len() {
+            self.pos = Some(self.entries.len());
+            return None;
+        }
+        self.pos = Some(next_idx);
+        let (term, stats, _) = &self.entries[next_idx];
+        Some((term.as_slice(), *stats))
+    }
+
+    /// `TermsEnum.seekCeil(BytesRef)`-equivalent: binary-search for the
+    /// smallest term >= `target`, position the cursor there (so a following
+    /// `next()` continues from that point), and report whether it was an
+    /// exact match, a ceiling match, or that no such term exists.
+    pub fn seek_ceil(&mut self, target: &[u8]) -> SeekStatus {
+        match self
+            .entries
+            .binary_search_by(|(t, _, _)| t.as_slice().cmp(target))
+        {
+            Ok(idx) => {
+                self.pos = Some(idx);
+                SeekStatus::Found
+            }
+            Err(idx) if idx >= self.entries.len() => {
+                self.pos = Some(self.entries.len());
+                SeekStatus::End
+            }
+            Err(idx) => {
+                self.pos = Some(idx);
+                SeekStatus::NotFound
+            }
+        }
+    }
+
+    /// The term/stats the cursor is currently positioned on (the last term
+    /// returned by `next()`, or the term `seek_ceil()` landed on) — `None`
+    /// before the first `next()`/`seek_ceil()` call or past the end.
+    pub fn current(&self) -> Option<(&'a [u8], TermStats)> {
+        let idx = self.pos?;
+        self.entries.get(idx).map(|(t, s, _)| (t.as_slice(), *s))
+    }
+}
+
 /// One field's decoded term dictionary: every (term, stats) pair in the
 /// field's single `.tim` block, sorted (as the writer emits them), plus the
 /// field-level aggregate stats from `.tmd`.
@@ -227,6 +331,12 @@ impl FieldTerms {
             .binary_search_by(|(t, _, _)| t.as_slice().cmp(term))
             .ok()
             .map(|idx| self.entries[idx].1)
+    }
+
+    /// `Terms.iterator()`-equivalent: a cursor positioned before the first
+    /// term, ready for `TermsEnum::next()`/`seek_ceil()`.
+    pub fn iter(&self) -> TermsEnum<'_> {
+        TermsEnum::new(&self.entries)
     }
 
     /// `seekExact(term)` followed by `PostingsEnum` iteration
@@ -1288,6 +1398,192 @@ mod tests {
             })
         );
         assert_eq!(field.seek_exact(b"other"), None);
+    }
+
+    #[test]
+    fn terms_enum_next_walks_all_terms_in_order() {
+        let b = Builder::new();
+        let (tim, tip, tmd) = b.build(
+            IndexOptions::DocsAndFreqs,
+            &[("a", 1, 1), ("ab", 2, 3), ("b", 1, 1)],
+        );
+        let fis = FieldInfos {
+            fields: vec![field_info(0, "text", IndexOptions::DocsAndFreqs)],
+        };
+        let fields = open(&tim, &tip, &tmd, &fis, &b.id, &b.suffix, 5).unwrap();
+        let field = fields.field("text").unwrap();
+        let mut it = field.iter();
+        assert_eq!(it.current(), None);
+        assert_eq!(
+            it.next(),
+            Some((
+                b"a".as_slice(),
+                TermStats {
+                    doc_freq: 1,
+                    total_term_freq: 1
+                }
+            ))
+        );
+        assert_eq!(
+            it.current(),
+            Some((
+                b"a".as_slice(),
+                TermStats {
+                    doc_freq: 1,
+                    total_term_freq: 1
+                }
+            ))
+        );
+        assert_eq!(
+            it.next(),
+            Some((
+                b"ab".as_slice(),
+                TermStats {
+                    doc_freq: 2,
+                    total_term_freq: 3
+                }
+            ))
+        );
+        assert_eq!(
+            it.next(),
+            Some((
+                b"b".as_slice(),
+                TermStats {
+                    doc_freq: 1,
+                    total_term_freq: 1
+                }
+            ))
+        );
+        assert_eq!(it.next(), None);
+        // Idempotent past the end.
+        assert_eq!(it.next(), None);
+        assert_eq!(it.current(), None);
+    }
+
+    #[test]
+    fn terms_enum_seek_ceil_found_notfound_end_and_continues() {
+        let b = Builder::new();
+        let (tim, tip, tmd) = b.build(
+            IndexOptions::DocsAndFreqs,
+            &[("a", 1, 1), ("ab", 2, 3), ("b", 1, 1)],
+        );
+        let fis = FieldInfos {
+            fields: vec![field_info(0, "text", IndexOptions::DocsAndFreqs)],
+        };
+        let fields = open(&tim, &tip, &tmd, &fis, &b.id, &b.suffix, 5).unwrap();
+        let field = fields.field("text").unwrap();
+
+        // Exact match.
+        let mut it = field.iter();
+        assert_eq!(it.seek_ceil(b"ab"), SeekStatus::Found);
+        assert_eq!(
+            it.current(),
+            Some((
+                b"ab".as_slice(),
+                TermStats {
+                    doc_freq: 2,
+                    total_term_freq: 3
+                }
+            ))
+        );
+        // next() after seekCeil continues past the found term.
+        assert_eq!(
+            it.next(),
+            Some((
+                b"b".as_slice(),
+                TermStats {
+                    doc_freq: 1,
+                    total_term_freq: 1
+                }
+            ))
+        );
+
+        // Ceiling match: falls strictly between "a" and "ab".
+        let mut it = field.iter();
+        assert_eq!(it.seek_ceil(b"aa"), SeekStatus::NotFound);
+        assert_eq!(
+            it.current(),
+            Some((
+                b"ab".as_slice(),
+                TermStats {
+                    doc_freq: 2,
+                    total_term_freq: 3
+                }
+            ))
+        );
+
+        // Before the first term: ceiling is the first term.
+        let mut it = field.iter();
+        assert_eq!(it.seek_ceil(b""), SeekStatus::NotFound);
+        assert_eq!(
+            it.current(),
+            Some((
+                b"a".as_slice(),
+                TermStats {
+                    doc_freq: 1,
+                    total_term_freq: 1
+                }
+            ))
+        );
+
+        // After the last term: no ceiling exists.
+        let mut it = field.iter();
+        assert_eq!(it.seek_ceil(b"z"), SeekStatus::End);
+        assert_eq!(it.current(), None);
+        assert_eq!(it.next(), None);
+    }
+
+    #[test]
+    fn terms_enum_empty_field() {
+        // A real writer never emits a zero-term field (`open()` itself
+        // rejects `numTerms <= 0`), but `TermsEnum` over an empty `entries`
+        // Vec is a valid state to reach in-memory (e.g. a field with no
+        // terms in some hypothetical caller-constructed scenario) and its
+        // cursor edge cases are worth covering directly.
+        let field = FieldTerms {
+            num_terms: 0,
+            sum_total_term_freq: 0,
+            sum_doc_freq: 0,
+            doc_count: 0,
+            min_term: Vec::new(),
+            max_term: Vec::new(),
+            index_options: IndexOptions::Docs,
+            has_payloads: false,
+            entries: Vec::new(),
+        };
+        let mut it = field.iter();
+        assert_eq!(it.next(), None);
+        assert_eq!(it.next(), None);
+        assert_eq!(it.current(), None);
+        assert_eq!(it.seek_ceil(b"anything"), SeekStatus::End);
+        assert_eq!(it.current(), None);
+    }
+
+    #[test]
+    fn terms_enum_single_term_field() {
+        let b = Builder::new();
+        let (tim, tip, tmd) = b.build(IndexOptions::Docs, &[("only", 1, 1)]);
+        let fis = FieldInfos {
+            fields: vec![field_info(0, "f", IndexOptions::Docs)],
+        };
+        let fields = open(&tim, &tip, &tmd, &fis, &b.id, &b.suffix, 5).unwrap();
+        let field = fields.field("f").unwrap();
+        let mut it = field.iter();
+        assert_eq!(
+            it.next(),
+            Some((
+                b"only".as_slice(),
+                TermStats {
+                    doc_freq: 1,
+                    total_term_freq: 1
+                }
+            ))
+        );
+        assert_eq!(it.next(), None);
+
+        let mut it2 = field.iter();
+        assert_eq!(it2.seek_ceil(b"only"), SeekStatus::Found);
+        assert_eq!(it2.next(), None);
     }
 
     #[test]
