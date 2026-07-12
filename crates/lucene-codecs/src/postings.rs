@@ -1,10 +1,13 @@
 //! Port of `org.apache.lucene.codecs.lucene104.Lucene104PostingsReader`'s
-//! `.doc`/`.pos`/`.pay` file decode — read-only, scoped to **sequential
-//! decode** (a full forward scan, i.e. `nextDoc()`/`nextPosition()`-equivalent;
-//! no skip-ahead/`advance()`) of **`IndexOptions.DOCS`/`DOCS_AND_FREQS`/
-//! `DOCS_AND_FREQS_AND_POSITIONS`/`DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS`**
-//! (incl. payloads) for any `docFreq < LEVEL1_NUM_DOCS` (32 * `BLOCK_SIZE` =
-//! 8192 — see "Deferred" below). See "Positions/offsets/payloads
+//! `.doc`/`.pos`/`.pay` file decode — read-only, scoped to
+//! **`IndexOptions.DOCS`/`DOCS_AND_FREQS`/`DOCS_AND_FREQS_AND_POSITIONS`/
+//! `DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS`** (incl. payloads) for any
+//! `docFreq < LEVEL1_NUM_DOCS` (32 * `BLOCK_SIZE` = 8192 — see "Deferred"
+//! below). Two decode strategies are available: a full forward scan (a
+//! sequential `nextDoc()`/`nextPosition()`-equivalent, or the whole-term
+//! eager [`DocInput::read_postings`]) and a genuinely lazy decode-on-demand
+//! `advance()` ([`LazyDocsCursor`]) — see "`advance()`: two APIs, two decode
+//! strategies" below for which to use when. See "Positions/offsets/payloads
 //! (`.pos`/`.pay`)" below for that half of the decode; everything above it in
 //! this doc comment covers `.doc` alone, same as before that was added.
 //!
@@ -49,12 +52,18 @@
 //!
 //! Per full block, in order (`BlockPostingsEnum.refillFullBlock` plus the
 //! level-0 header that precedes it): `level0NumBytes` (vlong, skip-pointer —
-//! parsed but unused, see "Deferred"), `docDelta` (`writeVInt15`-encoded,
-//! skip-pointer — parsed but unused), `blockLength` (`writeVLong15`-encoded,
-//! skip-pointer — parsed but unused); then, only when the field has freqs, an
-//! impacts byte-length (vlong) and that many impact bytes (competitive-scoring
-//! metadata — parsed-and-discarded, see "Deferred"); then a 1-byte
-//! `bitsPerValue` token selecting how the block's 256 doc deltas are packed
+//! parsed but unused by this reader, see [`LazyDocsCursor`]'s doc comment for
+//! why), `docDelta` (`writeVInt15`-encoded — this block's last doc ID minus
+//! the previous block's, used by [`LazyDocsCursor`]/[`read_full_block_header`]
+//! to decide whether to skip the block without decoding it, discarded by the
+//! eager [`read_full_block`]), `blockLength` (`writeVLong15`-encoded — the
+//! byte length, from right after this field, of everything through the end
+//! of the block, i.e. impacts/pos-pay fields plus the body; used the same
+//! way as `docDelta` to compute where the block ends without decoding it);
+//! then, only when the field has freqs, an impacts byte-length (vlong) and
+//! that many impact bytes (competitive-scoring metadata — parsed-and-discarded,
+//! see "Deferred"); then a 1-byte `bitsPerValue` token selecting how the
+//! block's 256 doc deltas are packed
 //! (`> 0`: `ForUtil`-bit-packed body, `numBytes(bitsPerValue)` bytes; `== 0`:
 //! no bytes, every delta is 1 — "all 256 docs in the block are consecutive";
 //! `< 0`: a `-bitsPerValue`-long bit-set encoding — the 256 doc IDs are the
@@ -106,35 +115,40 @@
 //! previous occurrence's (reused otherwise) — then re-chops the flat sequence
 //! into per-doc groups using the term's already-decoded `Postings::freqs`.
 //!
-//! ## `advance()` (real skip-ahead: still deferred; a shim exists)
+//! ## `advance()`: two APIs, two decode strategies
 //!
 //! [`PostingsCursor`] gives `advance(target)`/`next_doc()` **interface**
-//! parity with `PostingsEnum`, but it is a binary search over
-//! [`DocInput::read_postings`]'s already-fully-decoded `Vec<i32>` — not real
-//! lazy wire-level skip-ahead. See [`PostingsCursor`]'s own doc comment for
-//! the honest tradeoff writeup; do not read its existence as proof that this
-//! module skips undecoded blocks.
+//! parity with `PostingsEnum` as a binary search over
+//! [`DocInput::read_postings`]'s already-fully-decoded `Vec<i32>` — simple,
+//! correct, but not lazy: every block is decoded up front regardless of what
+//! the caller ends up needing. [`LazyDocsCursor`] (opened via
+//! [`DocInput::lazy_cursor`]) is the genuinely lazy sibling: it decodes one
+//! `.doc` block at a time, and `advance()` uses each full block's own
+//! level-0 header (`docDelta`/`blockLength`) to jump straight past a whole
+//! block's body — never running `ForUtil`/`PForUtil` decode on it — whenever
+//! the header proves the block's entire doc range is behind the target. See
+//! [`LazyDocsCursor`]'s own doc comment for the precise, load-bearing
+//! boundary of what that does and does not skip (short version: full blocks
+//! are skippable at any `docFreq >= BLOCK_SIZE`, the tail block never is,
+//! and `docFreq >= LEVEL1_NUM_DOCS` is still out of scope for either
+//! cursor). Pick [`PostingsCursor`] when the term's postings are small
+//! enough that eager decode is cheap or a caller already has a
+//! fully-materialized [`Postings`] on hand; pick [`LazyDocsCursor`] when a
+//! caller wants real skip-past-undecoded-blocks behavior (e.g. a
+//! conjunction query intersecting a large postings list against a much
+//! smaller one) or wants to stop decoding early without paying for the rest
+//! of the term up front.
 //!
 //! ## Deferred (all rejected with [`Error::Unsupported`])
 //!
-//! - **Real skip-ahead**: the level-0/level-1 skip pointers
-//!   (`level0NumBytes`/`blockLength`/level-1 headers) are parsed for wire-order
-//!   correctness but never used to jump forward or avoid decoding a block;
-//!   every block between the start and wherever the caller wants is decoded
-//!   in full by `read_postings`, and [`PostingsCursor`] only adds a
-//!   post-hoc binary-search cursor on top of that fully-decoded result (see
-//!   above). Correct but not fast for a searcher that only wants a
-//!   subrange — fine for a full-scan merge/`nextDoc()` consumer, or for a
-//!   conjunction/phrase query whose two posting lists are both small enough
-//!   that eager decode is cheap. A real lazy skip-ahead — a stateful
-//!   `DocInput`-like type that tracks on-wire position and decodes blocks
-//!   on demand, using the level-0 skip pointers to jump past whole blocks
-//!   without decoding them — is follow-up work, tracked in
-//!   `docs/parity.md`.
 //! - **`docFreq >= LEVEL1_NUM_DOCS`** (8192): level-1 skip entries start
-//!   appearing inline in the `.doc` stream every 32 full blocks, which this
-//!   reader does not parse (this also blocks positions, since `positions()`
-//!   goes through the same `docFreq` gate via `postings()`).
+//!   appearing inline in the `.doc` stream every 32 full blocks, which
+//!   neither `read_postings` nor [`DocInput::lazy_cursor`] parses (this also
+//!   blocks positions, since `positions()` goes through the same `docFreq`
+//!   gate via `postings()`). Level-0 skip-past-one-block (see above) already
+//!   works below this threshold and does not itself require it; level-1
+//!   would only add the coarser "skip past 32 blocks without reading their
+//!   headers" optimization on top, tracked in `docs/parity.md`.
 //! - `IndexOptions::DocsAndCustomFreqs` — real Lucene never writes this for
 //!   an ordinary indexed text field, so it's out of scope here.
 //! - Impacts (`ImpactsEnum`, `CompetitiveImpactAccumulator`, competitive-scoring
@@ -404,6 +418,61 @@ impl<'a> DocInput<'a> {
         }
 
         Ok(Postings { docs, freqs })
+    }
+
+    /// Opens a [`LazyDocsCursor`] over this term's `(docID, freq)` pairs:
+    /// blocks are decoded on demand, and a full block whose entire doc range
+    /// is behind the caller's `advance()` target is skipped without ever
+    /// running `ForUtil`/`PForUtil` decode on it (see [`LazyDocsCursor`]'s
+    /// own doc comment for exactly what "skipped" means here). Validation
+    /// (`doc_freq <= 1`, `IndexOptions::DocsAndCustomFreqs`,
+    /// `doc_freq >= LEVEL1_NUM_DOCS`) mirrors [`Self::read_postings`] exactly
+    /// — same scope, different decode strategy.
+    pub fn lazy_cursor(
+        &self,
+        meta: TermMetadata,
+        doc_freq: i32,
+        index_options: IndexOptions,
+        has_payloads: bool,
+    ) -> Result<LazyDocsCursor<'a>> {
+        if doc_freq <= 1 {
+            return Err(Error::Unsupported(
+                "docFreq <= 1: use singleton_postings instead (no .doc bytes are written)",
+            ));
+        }
+        if !matches!(
+            index_options,
+            IndexOptions::Docs
+                | IndexOptions::DocsAndFreqs
+                | IndexOptions::DocsAndFreqsAndPositions
+                | IndexOptions::DocsAndFreqsAndPositionsAndOffsets
+        ) {
+            return Err(Error::Unsupported(
+                "IndexOptions::DocsAndCustomFreqs is not supported in this slice",
+            ));
+        }
+        if doc_freq >= LEVEL1_NUM_DOCS {
+            return Err(Error::Unsupported(
+                "docFreq >= LEVEL1_NUM_DOCS: level-1 skip data not supported in this slice",
+            ));
+        }
+
+        let mut r = SliceInput::new(self.buf);
+        r.seek(meta.doc_start_fp as usize)?;
+
+        Ok(LazyDocsCursor {
+            r,
+            index_has_freq: index_options != IndexOptions::Docs,
+            index_has_pos: index_options.subsumes_positions(),
+            index_has_offsets_or_payloads: index_options.subsumes_offsets() || has_payloads,
+            prev_doc_id: -1,
+            doc_count_left: doc_freq,
+            block_docs: [0; BLOCK_SIZE as usize],
+            block_freqs: [0; BLOCK_SIZE as usize],
+            block_len: 0,
+            block_pos: 0,
+            doc_id: -1,
+        })
     }
 }
 
@@ -708,28 +777,56 @@ fn read_vlong15(r: &mut SliceInput) -> Result<i64> {
     }
 }
 
-/// One full 256-doc block (`BlockPostingsEnum.refillFullBlock` plus the
-/// level-0 skip header that precedes every full block on the wire,
-/// `Lucene104PostingsWriter.flushDocBlock`'s `else` branch —
-/// `docBufferUpto == BLOCK_SIZE`).
+/// A full block's level-0 skip header, decoded up to (but not including) the
+/// block body (the `bitsPerValue` token and everything after it). This is the
+/// part of `doMoveToNextLevel0Block`/`skipLevel0To`
+/// (`Lucene104PostingsReader.java:739-762`, `818-871`) both code paths always
+/// read — real Lucene's `advance()` uses exactly this much information (a
+/// block's last doc ID, plus where its body starts and ends) to decide
+/// whether to decode the body or `docIn.seek()` straight past it.
 ///
-/// Scoped to **sequential decode only**: the level-0 header's
-/// `level0NumBytes`/`docDelta`/`blockLength`/impacts fields exist so
-/// `advance()` can skip whole blocks without decoding them; this reader
-/// parses every field in wire order instead of seeking with them (no bytes
-/// are skipped blindly), which is sufficient for a full forward scan
-/// (`nextDoc()`-equivalent) but not for skip-ahead — see the module doc's
-/// "Deferred" section and `docs/parity.md`.
-fn read_full_block(
+/// **What is genuinely skippable vs. what must still be touched**: every
+/// field here is a small fixed-width or vint/vlong-prefixed value (including
+/// the impacts byte run, whose *length* is read but whose *bytes* are
+/// skipped via [`DataInput::skip`] rather than decoded) — so determining
+/// `last_doc_id` and `body_start`/`body_len` never runs `ForUtil`/`PForUtil`
+/// decode, which is the expensive part of a block (bit-unpacking 256 values).
+/// That decode work is exactly what [`LazyDocsCursor`] avoids for a block
+/// this header proves is entirely before the caller's target.
+struct FullBlockHeader {
+    /// This block's last (highest) doc ID — `prev_doc_id + docDelta`, proven
+    /// consistent with the body's own delta-decoded last entry by every
+    /// existing fixture/unit test that decodes both (see `read_full_block`).
+    last_doc_id: i32,
+    /// Byte offset (into the same buffer `r` reads from) where the block's
+    /// body (`bitsPerValue` token onward) begins.
+    body_start: usize,
+    /// Byte offset where the block's body ends, i.e. where the next block's
+    /// own level-0 header (or the tail block, or the term's end) begins.
+    body_end: usize,
+}
+
+/// Reads one full block's level-0 header (see [`FullBlockHeader`]) without
+/// touching the body. `r` is left positioned at `body_start` on return.
+fn read_full_block_header(
     r: &mut SliceInput,
     prev_doc_id: i32,
     index_has_freq: bool,
     index_has_pos: bool,
     index_has_offsets_or_payloads: bool,
-) -> Result<([i32; BLOCK_SIZE as usize], [i32; BLOCK_SIZE as usize])> {
+) -> Result<FullBlockHeader> {
     let _level0_num_bytes = r.read_vlong()?;
-    let _doc_delta = read_vint15(r)?;
-    let _block_length = read_vlong15(r)?;
+    let doc_delta = read_vint15(r)?;
+    let last_doc_id = prev_doc_id + doc_delta;
+    let block_length = read_vlong15(r)?;
+    // `level0DocEndFP` in `Lucene104PostingsReader.doMoveToNextLevel0Block`
+    // (`Lucene104PostingsReader.java:743-744`) is computed *immediately*
+    // after reading `blockLength`, i.e. before the impacts/pos/pay fields
+    // are read -- `blockLength` therefore measures from here (not from
+    // `body_start` below) through the end of the whole block, so it
+    // includes the impacts-length-prefixed bytes and pos/pay skip fields,
+    // not just the `bitsPerValue`-onward body.
+    let body_end = r.position() + block_length as usize;
     if index_has_freq {
         // Impacts byte-length is a plain vint here (`doMoveToNextLevel0Block`,
         // `Lucene104PostingsReader.java:746`), unlike level-1's vlong-prefixed
@@ -740,8 +837,8 @@ fn read_full_block(
 
         // Level-0 pos/pay skip data (`Lucene104PostingsReader.java:754-761`):
         // parsed for wire-order correctness (this reader never skips ahead
-        // with it, see the module doc) only when the field indexes
-        // positions.
+        // with it for `.pos`/`.pay` themselves, only for `.doc`) only when
+        // the field indexes positions.
         if index_has_pos {
             let _pos_end_fp_delta = r.read_vlong()?;
             let _pos_buffer_upto = r.read_byte()?;
@@ -752,6 +849,24 @@ fn read_full_block(
         }
     }
 
+    let body_start = r.position();
+    Ok(FullBlockHeader {
+        last_doc_id,
+        body_start,
+        body_end,
+    })
+}
+
+/// Decodes a full block's body (the `bitsPerValue` token onward) — `r` must
+/// already be positioned at [`FullBlockHeader::body_start`]. Shared by
+/// [`read_full_block`] (eager path) and [`LazyDocsCursor`] (lazy path) so
+/// there is exactly one body decoder to keep in sync with `ForUtil`/
+/// `PForUtil`.
+fn decode_full_block_body(
+    r: &mut SliceInput,
+    prev_doc_id: i32,
+    index_has_freq: bool,
+) -> Result<([i32; BLOCK_SIZE as usize], [i32; BLOCK_SIZE as usize])> {
     let bits_per_value_byte = r.read_byte()? as i8;
     let mut docs = [0i32; BLOCK_SIZE as usize];
     if bits_per_value_byte > 0 {
@@ -817,6 +932,35 @@ fn read_full_block(
     }
 
     Ok((docs, freqs))
+}
+
+/// One full 256-doc block (`BlockPostingsEnum.refillFullBlock` plus the
+/// level-0 skip header that precedes every full block on the wire,
+/// `Lucene104PostingsWriter.flushDocBlock`'s `else` branch —
+/// `docBufferUpto == BLOCK_SIZE`). Thin wrapper over
+/// [`read_full_block_header`] + [`decode_full_block_body`]: this always
+/// decodes the body, since the eager [`DocInput::read_postings`] caller
+/// wants every doc regardless of what the header says — see
+/// [`LazyDocsCursor`] for the decode-on-demand path that actually uses the
+/// header to skip a block's body.
+fn read_full_block(
+    r: &mut SliceInput,
+    prev_doc_id: i32,
+    index_has_freq: bool,
+    index_has_pos: bool,
+    index_has_offsets_or_payloads: bool,
+) -> Result<([i32; BLOCK_SIZE as usize], [i32; BLOCK_SIZE as usize])> {
+    let header = read_full_block_header(
+        r,
+        prev_doc_id,
+        index_has_freq,
+        index_has_pos,
+        index_has_offsets_or_payloads,
+    )?;
+    debug_assert_eq!(r.position(), header.body_start);
+    let result = decode_full_block_body(r, prev_doc_id, index_has_freq)?;
+    debug_assert_eq!(r.position(), header.body_end);
+    Ok(result)
 }
 
 /// The `docFreq % BLOCK_SIZE` remainder after zero or more full blocks
@@ -994,6 +1138,218 @@ impl<'p> PostingsCursor<'p> {
         let offset = self.postings.docs[start..].partition_point(|&d| d < target);
         self.idx = start + offset;
         self.doc_id()
+    }
+}
+
+/// A genuinely lazy `(docID, freq)` iterator: decodes one block at a time
+/// on demand, and — for `advance()` targets beyond a not-yet-decoded full
+/// block's entire doc range — skips that block's body without ever running
+/// `ForUtil`/`PForUtil` decode on it, using the level-0 header's own
+/// `docDelta`/`blockLength` fields (see [`FullBlockHeader`]).
+///
+/// ## What is actually skipped, and under what conditions
+///
+/// This is the honest boundary the module doc's "Deferred" section asks for:
+///
+/// - **Full blocks (`BLOCK_SIZE` = 256 docs each) are skippable at zero
+///   decode cost.** A full block's level-0 header (`level0NumBytes`,
+///   `docDelta`, `blockLength`, plus impacts/pos/pay skip fields when the
+///   field has freqs/positions) is *always* read to reach the next block —
+///   there is no way to avoid touching those handful of vint/vlong/byte
+///   fields — but reading them never invokes `ForUtil`/`PForUtil` (the
+///   bit-unpacking of 256 packed values, the actual expensive part of a
+///   block). If `advance(target)` finds `target > header.last_doc_id`, it
+///   jumps straight to `header.body_end` and moves to the next block without
+///   decoding this one's body at all. This works for **every** full block a
+///   term has, regardless of `docFreq` — it does not require
+///   `docFreq >= LEVEL1_NUM_DOCS` (8192). The 8192 threshold is what real
+///   Lucene's **level-1** skip list needs (skipping *32 full blocks at once*
+///   without reading even their level-0 headers); level-0 skip-past-one-block
+///   is available and used here for any term with at least one full block
+///   (`docFreq >= BLOCK_SIZE` = 256), which this port's fixtures already
+///   exercise (see `blocktree_fixtures.rs`'s "big"/"everywhere" field).
+/// - **The tail block (`docFreq % BLOCK_SIZE` remainder, or the entire term
+///   when `docFreq < BLOCK_SIZE`) carries no skip data at all** — real
+///   Lucene's own `PostingsUtil.writeVIntBlock` format has no level-0 header,
+///   no length prefix, nothing to jump past. Reaching the tail always means
+///   decoding it in full (`read_tail_block`), lazy or not. This matches real
+///   `Lucene104PostingsReader.refillRemainder`, which has no skip variant
+///   either.
+/// - **`docFreq >= LEVEL1_NUM_DOCS` (8192) is still out of scope** (rejected
+///   by [`DocInput::lazy_cursor`], same as [`DocInput::read_postings`]):
+///   above that threshold, level-1 skip entries appear inline in the `.doc`
+///   stream and would need to be parsed to skip past *groups* of 32 full
+///   blocks without even reading their level-0 headers one at a time. Below
+///   the threshold, this cursor already reads every full block's level-0
+///   header one at a time (cheap: a handful of small ints per skipped
+///   block, not a decode) — so the *decode* skip this cursor provides is
+///   real for any `docFreq`, just not maximally efficient in header-reading
+///   for a hypothetical enormous posting list (a concern level-1 exists to
+///   address, and which this port's fixtures don't reach).
+/// - **Early exit still pays off even without any skip**: unlike
+///   [`DocInput::read_postings`], which always decodes the *entire* term
+///   up front, this cursor decodes blocks one at a time, so a caller that
+///   stops early (e.g. a conjunction query whose other clause is exhausted
+///   first) never decodes the remaining blocks regardless of whether they
+///   were skippable via header comparison.
+///
+/// `.pos`/`.pay` are untouched by this cursor (same scope as `DocInput`
+/// itself) — a caller needing positions still goes through
+/// [`crate::postings::read_positions`] separately, sequentially, once it
+/// knows which docs it wants.
+#[derive(Debug)]
+pub struct LazyDocsCursor<'a> {
+    r: SliceInput<'a>,
+    index_has_freq: bool,
+    index_has_pos: bool,
+    index_has_offsets_or_payloads: bool,
+    /// Last doc ID that is either fully decoded-and-consumed-past or
+    /// skipped-past — the delta base for the next block's doc IDs.
+    prev_doc_id: i32,
+    /// Docs not yet decoded or skipped (full blocks + the trailing tail, if
+    /// any).
+    doc_count_left: i32,
+    block_docs: [i32; BLOCK_SIZE as usize],
+    block_freqs: [i32; BLOCK_SIZE as usize],
+    /// Number of valid entries in `block_docs`/`block_freqs` (`BLOCK_SIZE`
+    /// for a full block, `docFreq % BLOCK_SIZE` for the tail, `0` when no
+    /// block is currently loaded).
+    block_len: usize,
+    /// Index into `block_docs`/`block_freqs` of the current position.
+    block_pos: usize,
+    /// `-1` before the first `next_doc()`/`advance()` call,
+    /// [`NO_MORE_DOCS`] once exhausted, otherwise the current doc ID.
+    doc_id: i32,
+}
+
+impl<'a> LazyDocsCursor<'a> {
+    /// The current doc ID (see the `doc_id` field's doc comment for the
+    /// three-state contract).
+    pub fn doc_id(&self) -> i32 {
+        self.doc_id
+    }
+
+    /// The current doc's frequency, or `None` before the first
+    /// `next_doc()`/`advance()` call or once exhausted.
+    pub fn freq(&self) -> Option<i32> {
+        if self.doc_id != -1 && self.doc_id != NO_MORE_DOCS {
+            Some(self.block_freqs[self.block_pos])
+        } else {
+            None
+        }
+    }
+
+    /// `PostingsEnum.nextDoc()`: moves to the next doc, returning its ID (or
+    /// [`NO_MORE_DOCS`] if there isn't one). Implemented as `advance(doc_id +
+    /// 1)`, saturating rather than overflowing once already at
+    /// [`NO_MORE_DOCS`].
+    pub fn next_doc(&mut self) -> Result<i32> {
+        let target = if self.doc_id == NO_MORE_DOCS {
+            return Ok(NO_MORE_DOCS);
+        } else {
+            self.doc_id.saturating_add(1)
+        };
+        self.advance(target)
+    }
+
+    /// `PostingsEnum.advance(target)`: moves forward to the first doc ID
+    /// `>= target`, returning it (or [`NO_MORE_DOCS`] if none remains).
+    /// Advancing to a target at or before the current doc ID is a documented
+    /// no-op (same contract as [`PostingsCursor::advance`]).
+    pub fn advance(&mut self, target: i32) -> Result<i32> {
+        if self.doc_id == NO_MORE_DOCS {
+            return Ok(NO_MORE_DOCS);
+        }
+        if target <= self.doc_id {
+            return Ok(self.doc_id);
+        }
+
+        // First, try the already-decoded current block (covers the common
+        // "advance a little" and "nextDoc" cases without touching the wire
+        // at all).
+        if self.block_pos < self.block_len {
+            let offset =
+                self.block_docs[self.block_pos..self.block_len].partition_point(|&d| d < target);
+            if self.block_pos + offset < self.block_len {
+                self.block_pos += offset;
+                self.doc_id = self.block_docs[self.block_pos];
+                return Ok(self.doc_id);
+            }
+            // Target is beyond every doc left in this block: fall through
+            // to load the next one.
+            self.block_pos = self.block_len;
+        }
+
+        loop {
+            if self.doc_count_left == 0 {
+                self.block_len = 0;
+                self.block_pos = 0;
+                self.doc_id = NO_MORE_DOCS;
+                return Ok(NO_MORE_DOCS);
+            }
+
+            if self.doc_count_left >= BLOCK_SIZE {
+                let header = read_full_block_header(
+                    &mut self.r,
+                    self.prev_doc_id,
+                    self.index_has_freq,
+                    self.index_has_pos,
+                    self.index_has_offsets_or_payloads,
+                )?;
+
+                if header.last_doc_id < target {
+                    // The whole block is behind `target`: jump straight to
+                    // its end, never decoding the body (the actual `ForUtil`/
+                    // `PForUtil` bit-unpack this cursor avoids).
+                    self.r.seek(header.body_end)?;
+                    self.prev_doc_id = header.last_doc_id;
+                    self.doc_count_left -= BLOCK_SIZE;
+                    continue;
+                }
+
+                // Target lands inside this block (or the block's last doc
+                // is still < target is false, i.e. >= target): decode it.
+                debug_assert_eq!(self.r.position(), header.body_start);
+                let (docs, freqs) =
+                    decode_full_block_body(&mut self.r, self.prev_doc_id, self.index_has_freq)?;
+                self.block_docs = docs;
+                self.block_freqs = freqs;
+                self.block_len = BLOCK_SIZE as usize;
+                self.prev_doc_id = header.last_doc_id;
+                self.doc_count_left -= BLOCK_SIZE;
+
+                let offset = self.block_docs.partition_point(|&d| d < target);
+                self.block_pos = offset;
+                self.doc_id = self.block_docs[offset];
+                return Ok(self.doc_id);
+            }
+
+            // The tail block: no skip data on the wire at all, must decode.
+            let count = self.doc_count_left as usize;
+            let mut docs = Vec::with_capacity(count);
+            let mut freqs = Vec::with_capacity(count);
+            read_tail_block(
+                &mut self.r,
+                self.prev_doc_id,
+                count,
+                self.index_has_freq,
+                &mut docs,
+                &mut freqs,
+            )?;
+            self.block_docs[..count].copy_from_slice(&docs);
+            self.block_freqs[..count].copy_from_slice(&freqs);
+            self.block_len = count;
+            self.doc_count_left = 0;
+
+            let offset = self.block_docs[..count].partition_point(|&d| d < target);
+            self.block_pos = offset;
+            self.doc_id = if offset < count {
+                self.block_docs[offset]
+            } else {
+                NO_MORE_DOCS
+            };
+            return Ok(self.doc_id);
+        }
     }
 }
 
@@ -1202,6 +1558,13 @@ mod tests {
     /// lane-interleaved bit-packed paths are exercised by the
     /// `for_util` module's own tests and by the `GenBlockTree.java`
     /// differential fixture (real `IndexWriter` bytes).
+    ///
+    /// `docDelta` and `blockLength` are real, consistent header fields here
+    /// (not filler) — [`LazyDocsCursor`]'s skip-ahead relies on them being
+    /// accurate, unlike the pre-lazy-cursor version of this helper, which
+    /// only needed `read_full_block`'s wire-order-only decode to work.
+    /// `docDelta` is always `BLOCK_SIZE` (256), matching the "all 256 deltas
+    /// are 1" body this helper always writes.
     fn write_full_block(out: &mut Vec<u8>, index_has_freq: bool, freq_value: i32) {
         let mut body = Vec::new();
         if index_has_freq {
@@ -1215,9 +1578,15 @@ mod tests {
             body.write_vint(freq_value);
         }
 
-        out.write_vlong(body.len() as i64); // level0NumBytes (unused by the reader)
-        out.write_i16(1); // docDelta via writeVInt15 (unused by the reader)
-        out.write_i16(body.len() as i16); // blockLength via writeVLong15 (unused)
+        // `blockLength` is measured from right after this field (i.e. from
+        // right here) through the end of the whole block -- see
+        // `read_full_block_header`'s doc comment -- so it equals `body.len()`
+        // exactly, since this helper writes no impacts/pos/pay bytes before
+        // `body` starts recording (`index_has_freq`'s impacts-length vlong
+        // above is itself part of `body`).
+        out.write_vlong(body.len() as i64); // level0NumBytes (not used to skip in these tests)
+        out.write_i16(BLOCK_SIZE as i16); // docDelta via writeVInt15
+        out.write_i16(body.len() as i16); // blockLength via writeVLong15
         out.write_bytes(&body);
     }
 
@@ -1543,6 +1912,214 @@ mod tests {
         let p = postings(&[2, 5], &[1, 1]);
         let mut cursor = PostingsCursor::new(&p);
         assert_eq!(cursor.advance(NO_MORE_DOCS), NO_MORE_DOCS);
+    }
+
+    #[test]
+    fn lazy_cursor_rejects_singleton_doc_freq() {
+        let id = [20u8; ID_LENGTH];
+        let (mut doc, footer) = header_and_footer(DOC_CODEC, &id);
+        doc.extend_from_slice(&footer);
+        let input = DocInput::open(&doc, &id, "").unwrap();
+        let meta = TermMetadata {
+            doc_start_fp: 0,
+            singleton_doc_id: 7,
+            ..TermMetadata::EMPTY
+        };
+        let err = input
+            .lazy_cursor(meta, 1, IndexOptions::Docs, false)
+            .unwrap_err();
+        assert!(matches!(err, Error::Unsupported(_)));
+    }
+
+    #[test]
+    fn lazy_cursor_rejects_level1_doc_freq() {
+        let id = [21u8; ID_LENGTH];
+        let (mut doc, footer) = header_and_footer(DOC_CODEC, &id);
+        doc.extend_from_slice(&footer);
+        let input = DocInput::open(&doc, &id, "").unwrap();
+        let meta = TermMetadata {
+            doc_start_fp: 0,
+            singleton_doc_id: -1,
+            ..TermMetadata::EMPTY
+        };
+        let err = input
+            .lazy_cursor(meta, LEVEL1_NUM_DOCS, IndexOptions::DocsAndFreqs, false)
+            .unwrap_err();
+        assert!(matches!(err, Error::Unsupported(_)));
+    }
+
+    #[test]
+    fn lazy_cursor_sequential_next_doc_matches_read_postings() {
+        // Two full blocks (docs 0..256, 256..512) plus a 3-doc tail: proves
+        // the lazy per-block decode-on-demand path produces byte-identical
+        // results to the eager whole-term `read_postings` across both the
+        // full-block/full-block and full-block/tail-block boundaries.
+        let id = [22u8; ID_LENGTH];
+        let (mut doc, footer) = header_and_footer(DOC_CODEC, &id);
+        let doc_start_fp = doc.len() as u64;
+        write_full_block(&mut doc, true, 3);
+        write_full_block(&mut doc, true, 4);
+        write_group_vints(&mut doc, &[5 << 1, 1 << 1, 2 << 1]);
+        doc.extend_from_slice(&footer);
+
+        let input = DocInput::open(&doc, &id, "").unwrap();
+        let meta = TermMetadata {
+            doc_start_fp,
+            singleton_doc_id: -1,
+            ..TermMetadata::EMPTY
+        };
+        let doc_freq = 2 * BLOCK_SIZE + 3;
+        let eager = input
+            .read_postings(meta, doc_freq, IndexOptions::DocsAndFreqs, false)
+            .unwrap();
+
+        let mut cursor = input
+            .lazy_cursor(meta, doc_freq, IndexOptions::DocsAndFreqs, false)
+            .unwrap();
+        let mut lazy_docs = Vec::new();
+        let mut lazy_freqs = Vec::new();
+        loop {
+            let d = cursor.next_doc().unwrap();
+            if d == NO_MORE_DOCS {
+                break;
+            }
+            lazy_docs.push(d);
+            lazy_freqs.push(cursor.freq().unwrap());
+        }
+        assert_eq!(lazy_docs, eager.docs);
+        assert_eq!(lazy_freqs, eager.freqs);
+    }
+
+    #[test]
+    fn lazy_cursor_advance_skips_corrupted_earlier_block_without_decoding_it() {
+        // Block 0 (docs 0..256) is deliberately corrupt: a dense bit-set
+        // encoding (`bitsPerValue == -4`) with zero bits actually set, which
+        // `decode_full_block_body` rejects with `Error::Store(Corrupted)` --
+        // see `read_full_block_bitset_encoding_rejects_too_few_set_bits`.
+        // Block 1 (docs 256..511) is a normal, valid all-consecutive block.
+        // `advance(300)` lands in block 1: if the cursor decoded block 0's
+        // body along the way (as the eager `read_postings` path always
+        // does), this test would fail with a decode error instead of
+        // returning doc 300 -- proving the skip genuinely bypasses
+        // `ForUtil`/`PForUtil` decode for a block it can prove is entirely
+        // behind the target, not just "returns the right answer by luck".
+        let id = [23u8; ID_LENGTH];
+        let (mut doc, footer) = header_and_footer(DOC_CODEC, &id);
+        let doc_start_fp = doc.len() as u64;
+
+        // Corrupt block 0: IndexOptions::Docs (no freq field), docDelta=256
+        // (claims last doc 255, consistent with a real all-256-bit block),
+        // but the body's bit-set has no bits set at all.
+        let mut corrupt_body = Vec::new();
+        corrupt_body.write_byte((-4i8) as u8); // 4 longs = 256 bits
+        corrupt_body.extend_from_slice(&[0u8; 32]); // none set -- corrupt
+        doc.write_vlong(corrupt_body.len() as i64); // level0NumBytes (unused)
+        doc.write_i16(BLOCK_SIZE as i16); // docDelta = 256
+        doc.write_i16(corrupt_body.len() as i16); // blockLength
+        doc.write_bytes(&corrupt_body);
+
+        // Block 1: valid, all-consecutive, no freq field (Docs mode).
+        write_full_block(&mut doc, false, 0);
+
+        doc.extend_from_slice(&footer);
+
+        let input = DocInput::open(&doc, &id, "").unwrap();
+        let meta = TermMetadata {
+            doc_start_fp,
+            singleton_doc_id: -1,
+            ..TermMetadata::EMPTY
+        };
+        let mut cursor = input
+            .lazy_cursor(meta, 2 * BLOCK_SIZE, IndexOptions::Docs, false)
+            .unwrap();
+
+        let result = cursor.advance(300).unwrap();
+        assert_eq!(result, 300);
+        assert_eq!(cursor.freq(), Some(1));
+
+        // Sanity check the other direction: actually decoding block 0 (a
+        // target inside it) must surface the corruption error, confirming
+        // the earlier success was really a skip and not an accidental pass.
+        let mut cursor2 = input
+            .lazy_cursor(meta, 2 * BLOCK_SIZE, IndexOptions::Docs, false)
+            .unwrap();
+        let err = cursor2.advance(10).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::Store(lucene_store::Error::Corrupted(_))
+        ));
+    }
+
+    #[test]
+    fn lazy_cursor_advance_to_doc_before_current_is_a_no_op() {
+        let id = [24u8; ID_LENGTH];
+        let (mut doc, footer) = header_and_footer(DOC_CODEC, &id);
+        let doc_start_fp = doc.len() as u64;
+        write_group_vints(&mut doc, &[(3 << 1) | 1, (3 << 1) | 1]); // docs 2, 5 (deltas 3,3 from prev=-1), freq=1 each
+        doc.extend_from_slice(&footer);
+
+        let input = DocInput::open(&doc, &id, "").unwrap();
+        let meta = TermMetadata {
+            doc_start_fp,
+            singleton_doc_id: -1,
+            ..TermMetadata::EMPTY
+        };
+        let mut cursor = input
+            .lazy_cursor(meta, 2, IndexOptions::DocsAndFreqs, false)
+            .unwrap();
+        assert_eq!(cursor.advance(5).unwrap(), 5);
+        // Advancing "backward" to a target at/before the current doc is a
+        // documented no-op, matching `PostingsCursor::advance`'s contract.
+        assert_eq!(cursor.advance(3).unwrap(), 5);
+        assert_eq!(cursor.advance(5).unwrap(), 5);
+    }
+
+    #[test]
+    fn lazy_cursor_advance_past_last_doc_returns_no_more_docs() {
+        let id = [25u8; ID_LENGTH];
+        let (mut doc, footer) = header_and_footer(DOC_CODEC, &id);
+        let doc_start_fp = doc.len() as u64;
+        write_group_vints(&mut doc, &[(3 << 1) | 1, (3 << 1) | 1]); // docs 2, 5 (deltas 3,3 from prev=-1)
+        doc.extend_from_slice(&footer);
+
+        let input = DocInput::open(&doc, &id, "").unwrap();
+        let meta = TermMetadata {
+            doc_start_fp,
+            singleton_doc_id: -1,
+            ..TermMetadata::EMPTY
+        };
+        let mut cursor = input
+            .lazy_cursor(meta, 2, IndexOptions::DocsAndFreqs, false)
+            .unwrap();
+        assert_eq!(cursor.advance(100).unwrap(), NO_MORE_DOCS);
+        assert_eq!(cursor.freq(), None);
+        // Once exhausted, further `next_doc()`/`advance()` calls stay
+        // `NO_MORE_DOCS` rather than erroring or wrapping around.
+        assert_eq!(cursor.next_doc().unwrap(), NO_MORE_DOCS);
+        assert_eq!(cursor.advance(1).unwrap(), NO_MORE_DOCS);
+    }
+
+    #[test]
+    fn lazy_cursor_next_doc_from_start_walks_in_order() {
+        let id = [26u8; ID_LENGTH];
+        let (mut doc, footer) = header_and_footer(DOC_CODEC, &id);
+        let doc_start_fp = doc.len() as u64;
+        write_group_vints(&mut doc, &[(3 << 1) | 1, (3 << 1) | 1]); // docs 2, 5 (deltas 3,3 from prev=-1)
+        doc.extend_from_slice(&footer);
+
+        let input = DocInput::open(&doc, &id, "").unwrap();
+        let meta = TermMetadata {
+            doc_start_fp,
+            singleton_doc_id: -1,
+            ..TermMetadata::EMPTY
+        };
+        let mut cursor = input
+            .lazy_cursor(meta, 2, IndexOptions::DocsAndFreqs, false)
+            .unwrap();
+        assert_eq!(cursor.doc_id(), -1);
+        assert_eq!(cursor.next_doc().unwrap(), 2);
+        assert_eq!(cursor.next_doc().unwrap(), 5);
+        assert_eq!(cursor.next_doc().unwrap(), NO_MORE_DOCS);
     }
 
     #[test]

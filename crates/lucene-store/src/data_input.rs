@@ -221,7 +221,7 @@ pub trait DataInput {
 
 /// Zero-copy cursor over a byte slice (e.g. an mmap'd file region).
 /// `Copy`-cheap: cloning is how Lucene's `IndexInput.clone()` maps to Rust.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SliceInput<'a> {
     buf: &'a [u8],
     pos: usize,

@@ -567,6 +567,116 @@ fn body_field_advance_matches_real_lucene_postings_enum_advance() {
     assert_advance_matches_real_lucene(&m, "body", "cat", &postings);
 }
 
+/// `postings::LazyDocsCursor` (the genuinely lazy decode-on-demand
+/// `advance()`, as opposed to `PostingsCursor`'s binary search over an
+/// already-fully-materialized `Postings`) against the same real
+/// `PostingsEnum.advance(target)` ground truth as
+/// `assert_advance_matches_real_lucene` above -- proving the lazy cursor's
+/// output is identical to the eager path's, not just that it compiles.
+/// Covers both "big"/"everywhere" (`docFreq == 300`: one full block get
+/// skipped-past-undecoded for large-enough targets, the other decoded) and
+/// "body"/"cat" (`docFreq == 2`, tail-block only, no skippable full block at
+/// all -- proving the lazy cursor still works correctly when there is
+/// nothing to skip).
+fn assert_lazy_advance_matches_real_lucene(
+    m: &Manifest,
+    field: &str,
+    term: &str,
+    doc_in: &postings::DocInput<'_>,
+    fields: &blocktree::FieldTerms,
+) {
+    let raw = m.get(&format!("field.{field}.term.{term}.advance.results"));
+    for entry in raw.split(';') {
+        let (target_str, outcome) = entry.split_once(':').unwrap();
+        let target: i32 = target_str.parse().unwrap();
+
+        let mut cursor = fields
+            .lazy_postings(term.as_bytes(), doc_in)
+            .unwrap()
+            .expect("term found");
+        let doc = cursor.advance(target).unwrap();
+
+        if outcome == "NO_MORE_DOCS" {
+            assert_eq!(
+                doc,
+                postings::NO_MORE_DOCS,
+                "field={field} term={term} target={target}"
+            );
+            assert_eq!(
+                cursor.freq(),
+                None,
+                "field={field} term={term} target={target}"
+            );
+        } else {
+            let (expected_doc_str, expected_freq_str) = outcome.split_once(',').unwrap();
+            let expected_doc: i32 = expected_doc_str.parse().unwrap();
+            let expected_freq: i32 = expected_freq_str.parse().unwrap();
+            assert_eq!(
+                doc, expected_doc,
+                "field={field} term={term} target={target}"
+            );
+            assert_eq!(
+                cursor.freq(),
+                Some(expected_freq),
+                "field={field} term={term} target={target}"
+            );
+        }
+    }
+}
+
+#[test]
+fn big_field_lazy_advance_matches_real_lucene_postings_enum_advance() {
+    let (fields, m) = open_fixture();
+    let (doc, id, suffix) = open_doc_input(&m);
+    let doc_in = postings::DocInput::open(&doc, &id, &suffix).expect("open .doc");
+    let big = fields.field("big").unwrap();
+    assert_lazy_advance_matches_real_lucene(&m, "big", "everywhere", &doc_in, big);
+}
+
+#[test]
+fn body_field_lazy_advance_matches_real_lucene_postings_enum_advance() {
+    let (fields, m) = open_fixture();
+    let (doc, id, suffix) = open_doc_input(&m);
+    let doc_in = postings::DocInput::open(&doc, &id, &suffix).expect("open .doc");
+    let body = fields.field("body").unwrap();
+    assert_lazy_advance_matches_real_lucene(&m, "body", "cat", &doc_in, body);
+}
+
+/// `postings::LazyDocsCursor::next_doc()` (sequential, no skipping) against
+/// the same full doc list `read_postings` already validated against real
+/// Lucene -- proves the lazy per-block decode produces byte-identical
+/// results to the eager whole-term decode across the full-block + tail
+/// boundary, not just at the handful of `advance()` targets above.
+#[test]
+fn big_field_lazy_next_doc_matches_eager_read_postings() {
+    let (fields, m) = open_fixture();
+    let (doc, id, suffix) = open_doc_input(&m);
+    let doc_in = postings::DocInput::open(&doc, &id, &suffix).expect("open .doc");
+    let big = fields.field("big").unwrap();
+
+    let eager = big
+        .postings(b"everywhere", Some(&doc_in))
+        .unwrap()
+        .expect("expected term \"everywhere\" to be found");
+
+    let mut cursor = big
+        .lazy_postings(b"everywhere", &doc_in)
+        .unwrap()
+        .expect("term found");
+    let mut lazy_docs = Vec::new();
+    let mut lazy_freqs = Vec::new();
+    loop {
+        let d = cursor.next_doc().unwrap();
+        if d == postings::NO_MORE_DOCS {
+            break;
+        }
+        lazy_docs.push(d);
+        lazy_freqs.push(cursor.freq().unwrap());
+    }
+    assert_eq!(lazy_docs, eager.docs);
+    assert_eq!(lazy_freqs, eager.freqs);
+}
+
 #[test]
 fn postings_missing_term_returns_none() {
     let (fields, m) = open_fixture();

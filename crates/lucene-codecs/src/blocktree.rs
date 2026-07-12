@@ -373,6 +373,35 @@ impl FieldTerms {
         )?))
     }
 
+    /// `seekExact(term)` followed by opening a [`postings::LazyDocsCursor`]:
+    /// the decode-on-demand sibling of [`Self::postings`] (see that method
+    /// and `crate::postings`'s module doc for the shared scope/validation —
+    /// `docFreq <= 1`, `DocsAndCustomFreqs`, `docFreq >= LEVEL1_NUM_DOCS` are
+    /// all rejected identically). Unlike `postings()`, this never decodes any
+    /// `.doc` bytes until the cursor's `next_doc()`/`advance()` is actually
+    /// called, and `advance()` can skip whole undecoded blocks — see
+    /// `LazyDocsCursor`'s own doc comment.
+    pub fn lazy_postings<'d>(
+        &self,
+        term: &[u8],
+        doc_in: &DocInput<'d>,
+    ) -> Result<Option<postings::LazyDocsCursor<'d>>> {
+        let Some(idx) = self
+            .entries
+            .binary_search_by(|(t, _, _)| t.as_slice().cmp(term))
+            .ok()
+        else {
+            return Ok(None);
+        };
+        let (_, stats, meta) = &self.entries[idx];
+        Ok(Some(doc_in.lazy_cursor(
+            *meta,
+            stats.doc_freq,
+            self.index_options,
+            self.has_payloads,
+        )?))
+    }
+
     /// `postings(term, doc_in)` followed by `PostingsEnum.nextPosition()`/
     /// `startOffset()`/`endOffset()`/`getPayload()` for every occurrence in
     /// every doc — needs a field with `IndexOptions::DocsAndFreqsAndPositions`
