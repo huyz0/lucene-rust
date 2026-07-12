@@ -25,17 +25,19 @@ installed; regenerate and re-commit whenever the pinned Lucene version changes.
 
 Every generator above is Java-writes-Rust-reads. The write path (PLAN.md Phase 5)
 needs the opposite: Rust writes real bytes, and a Java program confirms real Lucene
-can open and read them back. `VerifyStoredFields.java` and `VerifyFieldInfos.java`
-are these verifiers so far:
+can open and read them back. `VerifyStoredFields.java`, `VerifyFieldInfos.java`, and
+`VerifySegmentInfo.java` are these verifiers so far:
 
 ```sh
 cargo run -p lucene-codecs --example write_stored_fields_fixture -- /tmp/rust-stored-fields
 cargo run -p lucene-codecs --example write_field_infos_fixture -- /tmp/rust-field-infos
+cargo run -p lucene-index --example write_segment_info_fixture -- /tmp/rust-segment-info
 JAR=$(find ~/.gradle/caches/modules-2/files-2.1/org.apache.lucene/lucene-core/10.5.0 \
   -name 'lucene-core-10.5.0.jar' ! -name '*sources*' ! -name '*javadoc*')
-javac -nowarn -cp "$JAR" -d classes src/VerifyStoredFields.java src/VerifyFieldInfos.java
+javac -nowarn -cp "$JAR" -d classes src/VerifyStoredFields.java src/VerifyFieldInfos.java src/VerifySegmentInfo.java
 java -cp "classes:$JAR" VerifyStoredFields /tmp/rust-stored-fields
 java -cp "classes:$JAR" VerifyFieldInfos /tmp/rust-field-infos
+java -cp "classes:$JAR" VerifySegmentInfo /tmp/rust-segment-info
 ```
 
 `VerifyStoredFields.java` opens the `.fdt`/`.fdx`/`.fdm` triple directly through
@@ -47,6 +49,13 @@ rather than going through a full `IndexReader`. `VerifyFieldInfos.java` follows
 the same pattern for `.fnm`: it opens the file directly through
 `Lucene94FieldInfosFormat.read` with a hand-built `SegmentInfo` (no `.si` writer
 needed), then checks every field's properties against `manifest.properties`.
+`VerifySegmentInfo.java` verifies the `.si` format itself: since `.si` *is* the
+`SegmentInfo` serialization, no hand-built `SegmentInfo` is needed -- it opens
+each `<name>.si` written by
+`crates/lucene-index/examples/write_segment_info_fixture.rs` directly through
+`Lucene99SegmentInfoFormat.read` and checks version, minVersion, doc count,
+compound-file flag, diagnostics, files, and attributes against that segment's
+`<name>.manifest.properties`.
 
 ## Generators
 

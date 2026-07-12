@@ -62,8 +62,8 @@ Pinned Lucene version: **10.5.0** (matches OpenSearch `gradle/libs.versions.toml
 
 | Java | Rust | Status |
 |---|---|---|
-| `codecs/lucene99/Lucene99SegmentInfoFormat` (`.si` read) | `lucene-index/src/segment_info.rs` | ported (read-only), fixture-verified |
-| — index-sorted segments (`numSortFields > 0`, `SortFieldProvider`) | — | unsupported by design, returns `Error::UnsupportedIndexSort` (needs a Java-plugin-class registry decision) |
+| `codecs/lucene99/Lucene99SegmentInfoFormat` (`.si` read + write) | `lucene-index/src/segment_info.rs::{parse, write}` | **both directions ported.** `write` is the exact byte-level inverse of `parse`, always emits `numSortFields = 0` (index sort stays out of scope, see below) and does not re-validate that `files` entries are segment-name-prefixed (callers are trusted, matching the parser's own stance) -- exercised via own-reader round-trip unit tests. **Verified against real Lucene in the write→read direction**: `crates/lucene-index/examples/write_segment_info_fixture.rs` writes two `.si` files (`_0`: compound file, with minVersion, with diagnostics/files/attributes; `_1`: non-compound, with `hasBlocks`, no minVersion, everything else empty) and `fixtures/src/VerifySegmentInfo.java` opens them directly through `Lucene99SegmentInfoFormat.read` and confirms every property matches each segment's manifest -- passed on the first real-Lucene run |
+| — index-sorted segments (`numSortFields > 0`, `SortFieldProvider`) | — | unsupported by design on both read and write, returns `Error::UnsupportedIndexSort` on read; `write` always emits `numSortFields = 0` (needs a Java-plugin-class registry decision) |
 | `index/SegmentInfos` (`segments_N` read: header/footer, per-segment commit metadata, user data) | `lucene-index/src/segment_infos.rs` | ported (read-only), fixture-verified against a real 2-commit `IndexWriter` output |
-| `codecs/lucene99/Lucene99SegmentInfoFormat.write`, `SegmentInfos.write` | — | deferred to Phase 5 (write path) |
+| `index/SegmentInfos.write` | — | deferred to Phase 5 (write path); needs a real `.si` writer per segment plus generation/commit bookkeeping, now unblocked by `Lucene99SegmentInfoFormat.write` above |
 

@@ -1,7 +1,8 @@
 //! Port of `org.apache.lucene.codecs.lucene99.Lucene99SegmentInfoFormat` (`.si` files).
 //!
-//! Read-only: this crate is on the read path (see PLAN.md Phase 2); `.si` writing is
-//! deferred to the write-path phase.
+//! Both directions ported: [`parse`] (read path, PLAN.md Phase 2) and
+//! [`write`] (write path, PLAN.md Phase 5) are exact byte-level inverses of
+//! each other.
 //!
 //! Wire format (all ints little-endian; header/footer per `codec_util`):
 //! ```text
@@ -26,6 +27,7 @@
 
 use lucene_store::codec_util::{self, ID_LENGTH};
 use lucene_store::data_input::{DataInput, SliceInput};
+use lucene_store::data_output::DataOutput;
 
 const CODEC_NAME: &str = "Lucene90SegmentInfo";
 const VERSION_START: i32 = 0;
@@ -126,6 +128,54 @@ pub fn parse(buf: &[u8], segment_id: &[u8; ID_LENGTH]) -> Result<SegmentInfo> {
         files,
         attributes,
     })
+}
+
+/// Port of `Lucene99SegmentInfoFormat.write`: the exact byte-level inverse of
+/// [`parse`]. Always emits `numSortFields = 0` (index sort is out of scope in
+/// v1, mirrored by `parse`'s own `UnsupportedIndexSort` rejection of a
+/// nonzero count) -- this port never needs to write an index-sorted segment,
+/// only fresh unsorted ones. Callers are responsible for `files` containing
+/// only names prefixed by the segment's own name (the real writer enforces
+/// this via `IndexFileNames.parseSegmentName`; this function does not
+/// re-validate it, matching the parser's stance that a hand-built writer is
+/// trusted).
+pub fn write(si: &SegmentInfo, segment_suffix: &str) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::new();
+
+    codec_util::write_index_header(
+        &mut out,
+        CODEC_NAME,
+        VERSION_CURRENT,
+        &si.id,
+        segment_suffix,
+    );
+
+    write_version(&mut out, si.version);
+
+    match si.min_version {
+        Some(mv) => {
+            out.write_byte(1);
+            write_version(&mut out, mv);
+        }
+        None => out.write_byte(0),
+    }
+
+    out.write_i32(si.doc_count);
+    out.write_byte(if si.is_compound_file { 1 } else { 0 });
+    out.write_byte(if si.has_blocks { 1 } else { 0 });
+    out.write_map_of_strings(&si.diagnostics);
+    out.write_set_of_strings(&si.files);
+    out.write_map_of_strings(&si.attributes);
+    out.write_vint(0); // numSortFields: index sort unsupported in v1
+
+    codec_util::write_footer(&mut out);
+    out
+}
+
+fn write_version(out: &mut Vec<u8>, v: LuceneVersion) {
+    out.write_i32(v.major);
+    out.write_i32(v.minor);
+    out.write_i32(v.bugfix);
 }
 
 fn read_version(input: &mut SliceInput) -> Result<LuceneVersion> {
@@ -290,5 +340,114 @@ mod tests {
         let b = SiBuilder::valid();
         let wrong_id = [9u8; ID_LENGTH];
         assert!(matches!(parse(&b.build(), &wrong_id), Err(Error::Store(_))));
+    }
+
+    // --- write() round-trips through parse() ---
+
+    fn sample_si() -> SegmentInfo {
+        SegmentInfo {
+            id: [3u8; ID_LENGTH],
+            version: LuceneVersion {
+                major: 10,
+                minor: 0,
+                bugfix: 0,
+            },
+            min_version: None,
+            doc_count: 42,
+            is_compound_file: false,
+            has_blocks: false,
+            diagnostics: vec![],
+            files: vec![],
+            attributes: vec![],
+        }
+    }
+
+    #[test]
+    fn write_minimal_round_trips() {
+        let si = sample_si();
+        let bytes = write(&si, "");
+        let parsed = parse(&bytes, &si.id).unwrap();
+        assert_eq!(parsed.doc_count, 42);
+        assert!(!parsed.is_compound_file);
+        assert!(!parsed.has_blocks);
+        assert!(parsed.min_version.is_none());
+        assert_eq!(parsed.version, si.version);
+        assert!(parsed.diagnostics.is_empty());
+        assert!(parsed.files.is_empty());
+        assert!(parsed.attributes.is_empty());
+    }
+
+    #[test]
+    fn write_compound_file_round_trips() {
+        let mut si = sample_si();
+        si.is_compound_file = true;
+        si.has_blocks = true;
+        let bytes = write(&si, "");
+        let parsed = parse(&bytes, &si.id).unwrap();
+        assert!(parsed.is_compound_file);
+        assert!(parsed.has_blocks);
+    }
+
+    #[test]
+    fn write_min_version_round_trips() {
+        let mut si = sample_si();
+        si.min_version = Some(LuceneVersion {
+            major: 9,
+            minor: 12,
+            bugfix: 0,
+        });
+        let bytes = write(&si, "");
+        let parsed = parse(&bytes, &si.id).unwrap();
+        let mv = parsed.min_version.unwrap();
+        assert_eq!((mv.major, mv.minor, mv.bugfix), (9, 12, 0));
+    }
+
+    #[test]
+    fn write_diagnostics_files_attributes_round_trip() {
+        let mut si = sample_si();
+        si.diagnostics = vec![
+            ("source".to_string(), "flush".to_string()),
+            ("os".to_string(), "Linux".to_string()),
+        ];
+        si.files = vec!["_0.fdt".to_string(), "_0.fdx".to_string()];
+        si.attributes = vec![(
+            "Lucene90StoredFieldsFormat.mode".to_string(),
+            "BEST_SPEED".to_string(),
+        )];
+        let bytes = write(&si, "");
+        let parsed = parse(&bytes, &si.id).unwrap();
+        assert_eq!(parsed.diagnostics, si.diagnostics);
+        assert_eq!(parsed.files, si.files);
+        assert_eq!(parsed.attributes, si.attributes);
+    }
+
+    #[test]
+    fn write_with_segment_suffix_round_trips() {
+        let si = sample_si();
+        let bytes = write(&si, "suffix1");
+        let parsed = parse(&bytes, &si.id);
+        // parse() with the wrong (empty) suffix must fail; the exact suffix must match.
+        assert!(parsed.is_err());
+        let parsed_ok = {
+            let mut input = SliceInput::new(&bytes);
+            codec_util::check_index_header(
+                &mut input,
+                CODEC_NAME,
+                VERSION_START,
+                VERSION_CURRENT,
+                &si.id,
+                "suffix1",
+            )
+        };
+        assert!(parsed_ok.is_ok());
+    }
+
+    #[test]
+    fn write_zero_doc_count_round_trips() {
+        let mut si = sample_si();
+        si.doc_count = 0;
+        let bytes = write(&si, "");
+        let parsed = parse(&bytes, &si.id).unwrap();
+        assert_eq!(parsed.doc_count, 0);
     }
 }
