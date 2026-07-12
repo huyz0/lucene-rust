@@ -328,6 +328,33 @@ concurrent merging, merge-time codec upgrades, and merging anything beyond store
 (doc values/points/norms/term vectors/postings) — none of those have a write-side caller
 producing a full segment yet in this port, so there's nothing there to merge.
 
+**Progress (task #16):** `lucene-index/src/deletes.rs` adds the doc-ID-level delete
+mechanics real Lucene's `ReadersAndUpdates.writeLiveDocs` performs: `mark_deleted` clears
+given doc IDs out of a segment's live-docs bitset (from "all live" when `del_gen == -1`, or
+from an existing bitset otherwise), idempotently (re-deleting an already-deleted doc doesn't
+double-count) and with a hard `Err` on an out-of-range doc ID; `apply_deletes` wraps that
+around a `SegmentCommitInfo`, writes the resulting bitset as that segment's next-generation
+`.liv` file via the existing `live_docs::write`, and returns an updated `SegmentCommitInfo`
+with `del_gen` incremented (`-1` -> `1` first time, else `+1`) and `del_count` bumped by the
+newly-deleted count. This task also **establishes the `.liv` filename convention** this port
+was missing: `deletes::liv_file_name` produces `_<segment>_<delGen in base36>.liv`, matching real
+Lucene's `IndexFileNames.fileNameFromGeneration` (base-36-encoded generation, same convention
+`live_docs.rs`'s own index-header suffix already uses) — `del_gen` was previously tracked in
+`segment_infos.rs` purely as an opaque integer, with no filename derived from it anywhere.
+**Explicitly deferred, and why:** delete-by-term/delete-by-query resolution (real
+`BufferedUpdates`/`ReaderPool` — which doc IDs a `Term`/`Query` names, resolved by running
+it against each segment's live postings/doc-values reader) is a genuinely separate, larger
+feature this task does not attempt: this port's write path has no live per-segment reader
+wired to a query executor across segments yet (search and index/write are still unconnected
+halves), so there's nothing correct to resolve against, and a fake in-memory-scan version
+wouldn't match real generation-ordered `BufferedUpdates` semantics. `updateDocument` is
+deferred for the same reason: it's defined in real Lucene as delete-by-term + `addDocument`,
+so without delete-by-term a faithful version doesn't exist — a doc-ID-keyed "replace" helper
+would silently diverge from real `Term`-keyed semantics, so none was added; a caller needing
+that shape today composes `apply_deletes` with a separate `flush_stored_only_segment`/merge
+call by hand. See `docs/parity.md`'s new row for full detail, including test coverage
+(99.5% lines).
+
 1. `lucene-analysis`: `TokenStream` as an iterator-of-token-structs (skip Java's
    AttributeSource reflection design entirely — a plain
    `Token { bytes, position_increment, offset, ... }` struct), StandardTokenizer via
