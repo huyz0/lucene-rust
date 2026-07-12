@@ -30,10 +30,6 @@
 //!   plan lists Similarity/BM25 as a separate line item — this slice proves
 //!   the matching/collection plumbing first, without inventing scoring math
 //!   ahead of schedule.
-//! - **`BooleanQuery`/conjunction/disjunction.** Not attempted here: it's a
-//!   real, separate `DocIdSetIterator`-combination problem (conjunction
-//!   advance-to-max-of-all, disjunction min-heap), not a trivial layer on
-//!   top of a single `TermQuery`'s doc list.
 //! - **Multi-segment search / `IndexSearcher`/`IndexReader` federation.**
 //!   This module runs against one already-opened segment's term dictionary
 //!   and postings file — there is no `SegmentReader`/`DirectoryReader`/
@@ -70,23 +66,53 @@
 //! (`rust-performance`'s "enums where the closed set allows" guidance)
 //! earns its keep.
 //!
-//! Two concrete pieces of rework this design note defers, named explicitly
-//! so the next contributor isn't surprised by their size: (1) **[`collector::Collector`]
-//! itself will need a breaking signature change for relevance scoring** --
+//! One concrete piece of rework this design note still defers, named explicitly
+//! so the next contributor isn't surprised by its size: **[`collector::Collector`]
+//! will need a breaking signature change for relevance scoring** --
 //! `collect(&mut self, doc_id: i32)` has no way to receive a score the way
 //! real Lucene's `LeafCollector` does via `setScorer`/`Scorer.score()`; this
 //! isn't a small addition, every existing `Collector` impl's signature
-//! changes. (2) **`BooleanQuery` can't reuse `search_term_query`'s loop
-//! body** -- postings are eagerly materialized into a `Vec` and filtered
-//! inline rather than behind any `DocIdSetIterator`-shaped abstraction, so
-//! conjunction/disjunction needs a rewrite from that shape, not an extension
-//! of this one.
+//! changes.
+//!
+//! ## `BooleanQuery` (this slice's addition)
+//!
+//! [`query::BooleanQuery`]/[`search_boolean_query`] add `MUST`/`SHOULD`/`MUST_NOT`
+//! conjunction, disjunction, and exclusion over `TermQuery` clauses, built on the new
+//! [`docid_set`] module's [`docid_set::Conjunction`]/[`docid_set::Disjunction`]/
+//! [`docid_set::Excluding`] merge combinators (see that module's doc comment for why
+//! they're plain `Iterator<Item = i32>` adapters rather than a bespoke
+//! `next_doc`/`advance` trait). `search_term_query` itself is refactored to share the
+//! same `term_doc_ids` helper `search_boolean_query`'s per-clause lookups use, rather
+//! than duplicating the field-lookup/`postings`/`live_docs`-filter sequence — a clean
+//! simplification since both now want exactly "one clause's ascending, live-filtered
+//! doc-ID sequence", with no behavior change to `search_term_query`'s own contract.
+//!
+//! Matching semantics follow real `BooleanQuery.rewrite()`
+//! (`org.apache.lucene.search.BooleanQuery`, verified against that source rather than
+//! guessed): a query with **no `must` and no `should` clauses matches nothing**,
+//! regardless of `must_not` — real Lucene rewrites both "no clauses at all" (`clauses
+//! .isEmpty()`) and "only `MUST_NOT` clauses" (`clauses.size() ==
+//! clauseSets.get(MUST_NOT).size()`) to a `MatchNoDocsQuery`, i.e. a **pure negative
+//! query does not mean "match every doc except the excluded ones"** — it means match
+//! nothing. When `must` is non-empty, `should` clauses do **not** narrow the matched
+//! set at all (they're scoring-only once a `MUST`/`FILTER` clause exists, absent
+//! `minimumNumberShouldMatch` — unimplemented here, see `query::BooleanQuery`'s doc
+//! comment); the matched set is `must`'s conjunction alone, then `must_not`'s
+//! disjunction is subtracted. When `must` is empty but `should` is not, the matched
+//! set is `should`'s disjunction, then `must_not` is subtracted the same way.
+//!
+//! Deferred, tracked in `docs/parity.md`: nested `BooleanQuery` clauses (every clause
+//! here is a flat `TermQuery`), `minimumNumberShouldMatch`, and — same as
+//! `search_term_query` — relevance scoring (a separate task, #13).
 
 pub mod collector;
+pub mod docid_set;
 pub mod query;
 
 pub use collector::{Collector, CountCollector, VecCollector};
-pub use query::TermQuery;
+pub use query::{BooleanQuery, TermQuery};
+
+use docid_set::{BoxDocIter, Conjunction, Disjunction, Excluding};
 
 use lucene_codecs::blocktree::{self, BlockTreeFields};
 use lucene_codecs::postings::DocInput;
@@ -129,17 +155,88 @@ pub fn search_term_query<C: Collector>(
     query: &TermQuery,
     collector: &mut C,
 ) -> Result<()> {
+    for doc_id in term_doc_ids(fields, doc_in, live_docs, query)? {
+        collector.collect(doc_id);
+    }
+    Ok(())
+}
+
+/// Shared per-clause lookup: `seekExact`s `query`'s term via
+/// `blocktree::FieldTerms::postings`, then returns every matching doc ID (ascending,
+/// per `Postings`' own contract), filtered by `live_docs` the same way
+/// `search_term_query` always has. Returns an empty `Vec` — not an error — when the
+/// query's field doesn't exist in this segment or the term isn't in that field's
+/// dictionary, matching `TermQuery.createWeight`'s `null`-`Scorer` "no matches"
+/// outcome. Used by both `search_term_query` and `search_boolean_query` so the
+/// field-lookup/`postings`/`live_docs`-filter sequence lives in exactly one place.
+fn term_doc_ids(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    query: &TermQuery,
+) -> Result<Vec<i32>> {
     let Some(field_terms) = fields.field(&query.field) else {
-        return Ok(());
+        return Ok(Vec::new());
     };
     let Some(postings) = field_terms.postings(&query.term, doc_in)? else {
-        return Ok(());
+        return Ok(Vec::new());
     };
-    for &doc_id in &postings.docs {
-        let is_live = live_docs.is_none_or(|bits| bits.get(doc_id as usize));
-        if is_live {
-            collector.collect(doc_id);
-        }
+    Ok(postings
+        .docs
+        .iter()
+        .copied()
+        .filter(|&doc_id| live_docs.is_none_or(|bits| bits.get(doc_id as usize)))
+        .collect())
+}
+
+/// Executes `query` (see [`query::BooleanQuery`] and this module's doc comment for
+/// the exact matching semantics) against one already-opened segment, feeding every
+/// matching **live** doc ID to `collector` in ascending order — same parameter
+/// contract as [`search_term_query`], generalized to a `must`/`should`/`must_not`
+/// clause list of `TermQuery`s instead of exactly one.
+pub fn search_boolean_query<C: Collector>(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    query: &BooleanQuery,
+    collector: &mut C,
+) -> Result<()> {
+    if query.must.is_empty() && query.should.is_empty() {
+        // Real `BooleanQuery.rewrite()` turns both "no clauses at all" and "only
+        // MUST_NOT clauses" into a `MatchNoDocsQuery` -- see this module's doc
+        // comment. Neither case reaches the merge machinery below.
+        return Ok(());
+    }
+
+    let clause_docs = |clauses: &[TermQuery]| -> Result<Vec<Vec<i32>>> {
+        clauses
+            .iter()
+            .map(|q| term_doc_ids(fields, doc_in, live_docs, q))
+            .collect()
+    };
+
+    let to_iters = |docs: Vec<Vec<i32>>| -> Vec<BoxDocIter<'static>> {
+        docs.into_iter()
+            .map(|v| Box::new(v.into_iter()) as BoxDocIter<'static>)
+            .collect()
+    };
+
+    let base: BoxDocIter<'static> = if !query.must.is_empty() {
+        Box::new(Conjunction::new(to_iters(clause_docs(&query.must)?)))
+    } else {
+        Box::new(Disjunction::new(to_iters(clause_docs(&query.should)?)))
+    };
+
+    let matched: BoxDocIter<'static> = if query.must_not.is_empty() {
+        base
+    } else {
+        let excluded: BoxDocIter<'static> =
+            Box::new(Disjunction::new(to_iters(clause_docs(&query.must_not)?)));
+        Box::new(Excluding::new(base, excluded))
+    };
+
+    for doc_id in matched {
+        collector.collect(doc_id);
     }
     Ok(())
 }
@@ -307,6 +404,111 @@ mod tests {
         )
         .unwrap();
         assert_eq!(c.docs, vec![2]);
+    }
+
+    // Boolean-query tests all reuse `body`'s known real-Lucene doc sets from
+    // `manifest.properties` (see `term_query_fixtures.rs`'s module doc for how these
+    // were captured): cat={0,2}, dog={0,1}, bird={1,4}.
+
+    #[test]
+    fn boolean_must_conjunction_matches_only_docs_in_every_clause() {
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let mut c = VecCollector::default();
+        let q = BooleanQuery::new()
+            .with_must([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")]);
+        search_boolean_query(&fields, doc_in.as_ref(), None, &q, &mut c).unwrap();
+        assert_eq!(c.docs, vec![0]);
+    }
+
+    #[test]
+    fn boolean_should_disjunction_matches_union_of_clauses() {
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let mut c = VecCollector::default();
+        let q = BooleanQuery::new().with_should([
+            TermQuery::new("body", "cat"),
+            TermQuery::new("body", "bird"),
+        ]);
+        search_boolean_query(&fields, doc_in.as_ref(), None, &q, &mut c).unwrap();
+        assert_eq!(c.docs, vec![0, 1, 2, 4]);
+    }
+
+    #[test]
+    fn boolean_must_not_excludes_matching_docs() {
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let mut c = VecCollector::default();
+        let q = BooleanQuery::new()
+            .with_must([TermQuery::new("body", "cat")])
+            .with_must_not([TermQuery::new("body", "dog")]);
+        search_boolean_query(&fields, doc_in.as_ref(), None, &q, &mut c).unwrap();
+        assert_eq!(c.docs, vec![2]);
+    }
+
+    #[test]
+    fn boolean_pure_must_not_matches_nothing() {
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let mut c = VecCollector::default();
+        let q = BooleanQuery::new().with_must_not([TermQuery::new("body", "dog")]);
+        search_boolean_query(&fields, doc_in.as_ref(), None, &q, &mut c).unwrap();
+        assert!(c.docs.is_empty());
+    }
+
+    #[test]
+    fn boolean_empty_query_matches_nothing() {
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let mut c = VecCollector::default();
+        let q = BooleanQuery::new();
+        search_boolean_query(&fields, doc_in.as_ref(), None, &q, &mut c).unwrap();
+        assert!(c.docs.is_empty());
+    }
+
+    #[test]
+    fn boolean_must_with_missing_term_matches_nothing() {
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let mut c = VecCollector::default();
+        let q = BooleanQuery::new().with_must([
+            TermQuery::new("body", "cat"),
+            TermQuery::new("body", "zzz-missing"),
+        ]);
+        search_boolean_query(&fields, doc_in.as_ref(), None, &q, &mut c).unwrap();
+        assert!(c.docs.is_empty());
+    }
+
+    #[test]
+    fn boolean_live_docs_filters_before_conjunction() {
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let max_doc: i32 = {
+            let dir = concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../fixtures/data/blocktree_index/"
+            );
+            let manifest = std::fs::read_to_string(format!("{dir}manifest.properties")).unwrap();
+            manifest
+                .lines()
+                .find_map(|l| l.strip_prefix("max_doc="))
+                .unwrap()
+                .parse()
+                .unwrap()
+        };
+        let mut live_docs = FixedBitSet::new(max_doc as usize);
+        for i in 0..max_doc {
+            live_docs.set(i as usize);
+        }
+        // cat={0,2}, dog={0,1}; conjunction is {0}. Marking doc 0 dead removes the
+        // only shared doc, so the conjunction (computed post-filter) is empty.
+        live_docs.clear(0);
+
+        let mut c = VecCollector::default();
+        let q = BooleanQuery::new()
+            .with_must([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")]);
+        search_boolean_query(&fields, doc_in.as_ref(), Some(&live_docs), &q, &mut c).unwrap();
+        assert!(c.docs.is_empty());
     }
 
     #[test]

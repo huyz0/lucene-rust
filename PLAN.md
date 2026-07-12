@@ -153,12 +153,26 @@ IDs to a `Collector` (`VecCollector`/`CountCollector`). Differential-tested
 against the real `IndexWriter`-produced fixture in
 `fixtures/data/blocktree_index/` (`crates/lucene-search/tests/term_query_fixtures.rs`).
 Deliberately does **not** yet cover: relevance scoring/`Similarity` (item 2
-below), `BooleanQuery` (item 3), dynamic pruning/`TopScoreDocCollector` (items
-4–5), or multi-segment `IndexSearcher`/`IndexReader` federation (item 6) — see
-`docs/parity.md`'s `lucene-search` section for the exact scope line and the
-design rationale (no `Weight`/`Scorer` trait hierarchy yet either — a single
-query type and a single segment gave it no second implementation to justify
-the abstraction). The items below remain as originally scoped.
+below), dynamic pruning/`TopScoreDocCollector` (items 4–5), or multi-segment
+`IndexSearcher`/`IndexReader` federation (item 6) — see `docs/parity.md`'s
+`lucene-search` section for the exact scope line and the design rationale (no
+`Weight`/`Scorer` trait hierarchy yet either — a single query type and a
+single segment gave it no second implementation to justify the abstraction).
+
+A second slice landed `BooleanQuery` **matching** (still no scoring): flat
+`must`/`should`/`must_not: Vec<TermQuery>` clauses
+(`query::BooleanQuery`/`search_boolean_query`), built on new
+`docid_set::{Conjunction, Disjunction, Excluding}` merge combinators — plain
+`Iterator<Item = i32>` adapters over each clause's doc-ID list (leapfrog
+conjunction, min-scan disjunction, AND-NOT exclusion), not a bespoke
+`DocIdSetIterator` trait (see that module's doc comment for why). Matching
+semantics (a pure-`MUST_NOT` query matches nothing; `SHOULD` is non-filtering
+once `MUST` exists) were verified against real `BooleanQuery.rewrite()` source
+rather than assumed. Differential-tested in
+`crates/lucene-search/tests/boolean_query_fixtures.rs` against the same
+fixture segment. Still deferred: nested `BooleanQuery` clauses,
+`minimumNumberShouldMatch`, and relevance scoring. The items below remain as
+originally scoped.
 
 1. Traits: `Query → Weight → Scorer/ScorerSupplier`, `DocIdSetIterator`,
    `TwoPhaseIterator`, `BulkScorer`. Use enums where the closed set allows
