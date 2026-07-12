@@ -8,6 +8,7 @@ pub mod direct_monotonic;
 pub mod direct_reader;
 pub mod doc_values;
 pub mod field_infos;
+pub mod fst;
 pub mod indexed_disi;
 pub mod live_docs;
 mod lz4;

@@ -13,7 +13,7 @@ JAR=$(find ~/.gradle/caches/modules-2/files-2.1/org.apache.lucene/lucene-core/10
   -name 'lucene-core-10.5.0.jar' ! -name '*sources*' ! -name '*javadoc*')
 mkdir -p classes data
 javac -nowarn -cp "$JAR" -d classes src/*.java
-for cls in GenPrimitives GenCodecUtil GenSegmentInfo GenSegmentInfos GenLiveDocs GenFieldInfos GenNorms GenDocValues GenCompoundFormat GenStoredFields GenStoredFieldsBestCompression GenSortedDocValues GenMultiValuedDocValues GenTermVectors GenPoints; do
+for cls in GenPrimitives GenCodecUtil GenSegmentInfo GenSegmentInfos GenLiveDocs GenFieldInfos GenNorms GenDocValues GenCompoundFormat GenStoredFields GenStoredFieldsBestCompression GenSortedDocValues GenMultiValuedDocValues GenTermVectors GenPoints GenFst; do
   java -cp "classes:$JAR" $cls data
 done
 ```
@@ -191,3 +191,13 @@ fields needs none of those files to exist. See `docs/parity.md`'s
   whose `compare` always returns `CELL_CROSSES_QUERY`, forcing Lucene's
   own reader to fully decode every point rather than taking a
   bounding-box shortcut, not our own arithmetic.
+- `GenFst.java` — a real `FST<BytesRef>` (`fst/` subdirectory) built via
+  real `FSTCompiler` with `ByteSequenceOutputs` (the output type real
+  Lucene's term index FST uses) and `allowFixedLengthArcs(false)` (so it
+  never emits the fixed-length-arc node encodings this port's reader
+  doesn't support yet). 7 keys sharing prefixes/suffixes
+  (`app`/`apple`/`application`, `banana`/`band`/`bandana`, `z`) exercise
+  real arc sharing; the manifest also lists 8 keys deliberately absent
+  from the FST (proper prefixes, over-extensions past an accepting node,
+  a disjoint key, the empty string) so the differential test checks
+  correct rejection, not just correct acceptance.
