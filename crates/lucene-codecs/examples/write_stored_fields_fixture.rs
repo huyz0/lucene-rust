@@ -50,6 +50,17 @@ fn main() {
                     field_number: 5,
                     value: FieldValue::Binary(vec![1, 2, 3, 4, 5]),
                 },
+                StoredField {
+                    field_number: 6,
+                    // Genuine repetition, to prove `write_best_speed` now
+                    // produces real LZ4 back-reference compression (via
+                    // `lz4::compress`), not just a literal-wrapped block --
+                    // real Lucene must decode the actually-compressed bytes
+                    // here, not merely a valid-but-uncompressed unit.
+                    value: FieldValue::String(
+                        "the quick brown fox jumps over the lazy dog ".repeat(50),
+                    ),
+                },
             ],
         },
         Document {
@@ -89,7 +100,7 @@ fn main() {
     let mut manifest = std::fs::File::create(format!("{out_dir}/manifest.properties")).unwrap();
     writeln!(manifest, "max_doc={}", docs.len()).unwrap();
     writeln!(manifest, "id_hex={}", hex(&SEGMENT_ID)).unwrap();
-    writeln!(manifest, "num_fields=6").unwrap();
+    writeln!(manifest, "num_fields=7").unwrap();
     for (doc_id, doc) in docs.iter().enumerate() {
         let rendered: Vec<String> = doc
             .fields

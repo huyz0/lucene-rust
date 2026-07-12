@@ -428,16 +428,26 @@ impl<'d> StoredFieldsReader<'d> {
 /// counterpart of [`open`]/[`StoredFieldsReader::document`], `Mode.BEST_SPEED`
 /// only. First slice of this port's write path (PLAN.md Phase 5): every
 /// document goes into a **single chunk** and a **single, un-sliced,
-/// zero-dictionary LZ4 unit encoded as one literal-only block** (no real
-/// LZ4 back-reference compression, no dictionary/sub-block splitting, no
+/// zero-dictionary LZ4 unit** (no dictionary/sub-block splitting, no
 /// multi-chunk flushing by doc count or byte size) -- correctness and wire
 /// compatibility first, matching this port's decode-fully stance on the
-/// read side: a real writer's chunking/compression heuristics are a later
-/// concern, not a correctness one. `.fdt`/`.fdx`/`.fdm` produced this way
-/// are valid, checksummed, Java-Lucene-openable files; only their
-/// compression ratio and the ceiling on `chunk_docs` (kept under the bulk
-/// `read_bulk_ints`' 128-value transposed-block threshold, see
-/// [`write_bulk_ints`]) differ from what a real flush would produce.
+/// read side: a real writer's chunking heuristics are a later concern, not
+/// a correctness one. `.fdt`/`.fdx`/`.fdm` produced this way are valid,
+/// checksummed, Java-Lucene-openable files; only the ceiling on
+/// `chunk_docs` (kept under the bulk `read_bulk_ints`' 128-value
+/// transposed-block threshold, see [`write_bulk_ints`]) differs from what a
+/// real flush would produce.
+///
+/// The one payload-covering block is now compressed with a **real**
+/// back-reference LZ4 compressor ([`crate::lz4::compress`], a scoped-down
+/// port of `LZ4.compressWithDictionary` -- see its doc comment for exactly
+/// what's scoped out: no preset dictionary, and the simpler
+/// `FastCompressionHashTable` match-finding strategy rather than
+/// `HighCompressionHashTable`'s hash-chain search). The zero-length
+/// "dictionary" unit that precedes it is still emitted via
+/// [`encode_literal_lz4`] (a real compressor on an empty input degenerates
+/// to the same single zero token anyway, so there's no reason to route it
+/// through the real match-finder).
 pub fn write_best_speed(
     docs: &[Document],
     segment_id: &[u8; ID_LENGTH],
@@ -484,7 +494,7 @@ pub fn write_best_speed(
         // `lz4::decompress`'s zero-length handling) followed by one
         // literal-only block holding every doc's bytes verbatim.
         let dict_unit = encode_literal_lz4(&[]);
-        let block_unit = encode_literal_lz4(&payload);
+        let block_unit = lz4::compress(&payload);
         fdt.write_vint(0); // dictLength
         fdt.write_vint(payload.len() as i32); // blockLength (one block covers everything)
         fdt.write_vint(dict_unit.len() as i32); // dict's compressed length
