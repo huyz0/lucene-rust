@@ -25,14 +25,17 @@ installed; regenerate and re-commit whenever the pinned Lucene version changes.
 
 Every generator above is Java-writes-Rust-reads. The write path (PLAN.md Phase 5)
 needs the opposite: Rust writes real bytes, and a Java program confirms real Lucene
-can open and read them back. `VerifyStoredFields.java` is the first one of these:
+can open and read them back. `VerifyStoredFields.java` and `VerifyFieldInfos.java`
+are these verifiers so far:
 
 ```sh
 cargo run -p lucene-codecs --example write_stored_fields_fixture -- /tmp/rust-stored-fields
+cargo run -p lucene-codecs --example write_field_infos_fixture -- /tmp/rust-field-infos
 JAR=$(find ~/.gradle/caches/modules-2/files-2.1/org.apache.lucene/lucene-core/10.5.0 \
   -name 'lucene-core-10.5.0.jar' ! -name '*sources*' ! -name '*javadoc*')
-javac -nowarn -cp "$JAR" -d classes src/VerifyStoredFields.java
+javac -nowarn -cp "$JAR" -d classes src/VerifyStoredFields.java src/VerifyFieldInfos.java
 java -cp "classes:$JAR" VerifyStoredFields /tmp/rust-stored-fields
+java -cp "classes:$JAR" VerifyFieldInfos /tmp/rust-field-infos
 ```
 
 `VerifyStoredFields.java` opens the `.fdt`/`.fdx`/`.fdm` triple directly through
@@ -40,7 +43,10 @@ java -cp "classes:$JAR" VerifyStoredFields /tmp/rust-stored-fields
 `FieldInfos` rather than also requiring Rust to write `.si`/`.fnm` -- this keeps
 each write-path slice scoped to exactly the one format it's verifying, the same
 way the read-path fixtures below call one codec-level `open`/`document` directly
-rather than going through a full `IndexReader`.
+rather than going through a full `IndexReader`. `VerifyFieldInfos.java` follows
+the same pattern for `.fnm`: it opens the file directly through
+`Lucene94FieldInfosFormat.read` with a hand-built `SegmentInfo` (no `.si` writer
+needed), then checks every field's properties against `manifest.properties`.
 
 ## Generators
 

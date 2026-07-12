@@ -34,6 +34,7 @@
 
 use lucene_store::codec_util::{self, ID_LENGTH};
 use lucene_store::data_input::{DataInput, SliceInput};
+use lucene_store::data_output::DataOutput;
 
 const CODEC_NAME: &str = "Lucene94FieldInfos";
 const FORMAT_START: i32 = 0;
@@ -112,6 +113,17 @@ impl IndexOptions {
             Self::DocsAndFreqsAndPositions | Self::DocsAndFreqsAndPositionsAndOffsets
         )
     }
+
+    fn to_byte(self) -> u8 {
+        match self {
+            Self::None => 0,
+            Self::Docs => 1,
+            Self::DocsAndFreqs => 2,
+            Self::DocsAndFreqsAndPositions => 3,
+            Self::DocsAndFreqsAndPositionsAndOffsets => 4,
+            Self::DocsAndCustomFreqs => 5,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,6 +146,17 @@ impl DocValuesType {
             4 => Ok(Self::SortedSet),
             5 => Ok(Self::SortedNumeric),
             other => Err(Error::InvalidDocValuesType(other)),
+        }
+    }
+
+    fn to_byte(self) -> u8 {
+        match self {
+            Self::None => 0,
+            Self::Numeric => 1,
+            Self::Binary => 2,
+            Self::Sorted => 3,
+            Self::SortedSet => 4,
+            Self::SortedNumeric => 5,
         }
     }
 }
@@ -166,6 +189,13 @@ impl DocValuesSkipIndexType {
             ),
         }
     }
+
+    fn to_byte(self) -> u8 {
+        match self {
+            Self::None => 0,
+            Self::Range => 1,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -180,6 +210,13 @@ impl VectorEncoding {
             0 => Ok(Self::Byte),
             1 => Ok(Self::Float32),
             other => Err(Error::InvalidVectorEncoding(other)),
+        }
+    }
+
+    fn to_byte(self) -> u8 {
+        match self {
+            Self::Byte => 0,
+            Self::Float32 => 1,
         }
     }
 }
@@ -200,6 +237,15 @@ impl VectorSimilarityFunction {
             2 => Ok(Self::Cosine),
             3 => Ok(Self::MaximumInnerProduct),
             other => Err(Error::InvalidVectorSimilarityFunction(other)),
+        }
+    }
+
+    fn to_byte(self) -> u8 {
+        match self {
+            Self::Euclidean => 0,
+            Self::DotProduct => 1,
+            Self::Cosine => 2,
+            Self::MaximumInnerProduct => 3,
         }
     }
 }
@@ -391,6 +437,73 @@ pub fn parse(buf: &[u8], segment_id: &[u8; ID_LENGTH], segment_suffix: &str) -> 
     codec_util::check_footer(&mut input, buf.len())?;
 
     Ok(FieldInfos { fields })
+}
+
+/// Port of `Lucene94FieldInfosFormat.write`: the exact byte-level inverse of
+/// [`parse`], always writing the current format version
+/// (`FORMAT_DOCVALUE_SKIPPER`) -- this port never needs to emit an older-
+/// version `.fnm` file, since it only ever writes fresh segments, never
+/// upgrades in place. Fields are written in the order given by `fields`;
+/// callers are responsible for field-number uniqueness and `check_consistency`
+/// invariants (this function does not re-validate them, matching the parser's
+/// stance that a hand-built writer is trusted -- the round-trip tests below
+/// exercise this via [`parse`] itself, which does validate).
+pub fn write(fields: &[FieldInfo], segment_id: &[u8; ID_LENGTH], segment_suffix: &str) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::new();
+
+    codec_util::write_index_header(
+        &mut out,
+        CODEC_NAME,
+        FORMAT_CURRENT,
+        segment_id,
+        segment_suffix,
+    );
+
+    out.write_vint(fields.len() as i32);
+    for f in fields {
+        out.write_string(&f.name);
+        out.write_vint(f.number);
+
+        let mut bits = 0u8;
+        if f.store_term_vectors {
+            bits |= STORE_TERMVECTOR;
+        }
+        if f.omit_norms {
+            bits |= OMIT_NORMS;
+        }
+        if f.store_payloads {
+            bits |= STORE_PAYLOADS;
+        }
+        if f.soft_deletes_field {
+            bits |= SOFT_DELETES_FIELD;
+        }
+        if f.parent_field {
+            bits |= PARENT_FIELD_FIELD;
+        }
+        if f.doc_values_skip_index_type != DocValuesSkipIndexType::None {
+            bits |= DOCVALUES_SKIPPER;
+        }
+        out.write_byte(bits);
+
+        out.write_byte(f.index_options.to_byte());
+        out.write_byte(f.doc_values_type.to_byte());
+        out.write_byte(f.doc_values_skip_index_type.to_byte());
+        out.write_i64(f.doc_values_gen);
+        out.write_map_of_strings(&f.attributes);
+
+        out.write_vint(f.point_dimension_count);
+        if f.point_dimension_count != 0 {
+            out.write_vint(f.point_index_dimension_count);
+            out.write_vint(f.point_num_bytes);
+        }
+
+        out.write_vint(f.vector_dimension);
+        out.write_byte(f.vector_encoding.to_byte());
+        out.write_byte(f.vector_similarity_function.to_byte());
+    }
+
+    codec_util::write_footer(&mut out);
+    out
 }
 
 #[cfg(test)]
@@ -814,6 +927,146 @@ mod tests {
             parse(&out, &b.id, &b.suffix),
             Err(Error::Inconsistent(_, _))
         ));
+    }
+
+    // --- write() round-trips through parse() ---
+
+    fn sample_field(name: &str, number: i32) -> FieldInfo {
+        FieldInfo {
+            name: name.to_string(),
+            number,
+            store_term_vectors: false,
+            omit_norms: false,
+            store_payloads: false,
+            soft_deletes_field: false,
+            parent_field: false,
+            index_options: IndexOptions::Docs,
+            doc_values_type: DocValuesType::None,
+            doc_values_skip_index_type: DocValuesSkipIndexType::None,
+            doc_values_gen: -1,
+            attributes: vec![],
+            point_dimension_count: 0,
+            point_index_dimension_count: 0,
+            point_num_bytes: 0,
+            vector_dimension: 0,
+            vector_encoding: VectorEncoding::Float32,
+            vector_similarity_function: VectorSimilarityFunction::Euclidean,
+        }
+    }
+
+    #[test]
+    fn write_empty_round_trips() {
+        let id = [7u8; ID_LENGTH];
+        let bytes = write(&[], &id, "");
+        let fis = parse(&bytes, &id, "").unwrap();
+        assert_eq!(fis.fields.len(), 0);
+    }
+
+    #[test]
+    fn write_plain_field_round_trips() {
+        let id = [7u8; ID_LENGTH];
+        let field = sample_field("id", 0);
+        let bytes = write(&[field], &id, "");
+        let fis = parse(&bytes, &id, "").unwrap();
+        assert_eq!(fis.fields.len(), 1);
+        assert_eq!(fis.fields[0].name, "id");
+        assert_eq!(fis.fields[0].number, 0);
+        assert_eq!(fis.fields[0].index_options, IndexOptions::Docs);
+    }
+
+    #[test]
+    fn write_term_vectors_and_payloads_round_trip() {
+        let id = [7u8; ID_LENGTH];
+        let mut field = sample_field("with_tv", 1);
+        field.store_term_vectors = true;
+        field.store_payloads = true;
+        field.index_options = IndexOptions::DocsAndFreqsAndPositions;
+        let bytes = write(&[field], &id, "sfx");
+        let fis = parse(&bytes, &id, "sfx").unwrap();
+        assert!(fis.fields[0].store_term_vectors);
+        assert!(fis.fields[0].store_payloads);
+    }
+
+    #[test]
+    fn write_soft_deletes_and_parent_field_round_trip() {
+        let id = [7u8; ID_LENGTH];
+        let mut soft = sample_field("__soft_deletes", 2);
+        soft.soft_deletes_field = true;
+        let mut parent = sample_field("__parent", 3);
+        parent.parent_field = true;
+        let bytes = write(&[soft, parent], &id, "");
+        let fis = parse(&bytes, &id, "").unwrap();
+        assert!(fis.fields[0].soft_deletes_field);
+        assert!(fis.fields[1].parent_field);
+    }
+
+    #[test]
+    fn write_doc_values_and_skip_index_round_trip() {
+        let id = [7u8; ID_LENGTH];
+        let mut field = sample_field("num_dv", 0);
+        field.doc_values_type = DocValuesType::Numeric;
+        field.doc_values_skip_index_type = DocValuesSkipIndexType::Range;
+        field.doc_values_gen = 42;
+        field.attributes = vec![("k1".to_string(), "v1".to_string())];
+        let bytes = write(&[field], &id, "");
+        let fis = parse(&bytes, &id, "").unwrap();
+        assert_eq!(fis.fields[0].doc_values_type, DocValuesType::Numeric);
+        assert_eq!(
+            fis.fields[0].doc_values_skip_index_type,
+            DocValuesSkipIndexType::Range
+        );
+        assert_eq!(fis.fields[0].doc_values_gen, 42);
+        assert_eq!(
+            fis.fields[0].attributes,
+            vec![("k1".to_string(), "v1".to_string())]
+        );
+    }
+
+    #[test]
+    fn write_points_field_round_trips() {
+        let id = [7u8; ID_LENGTH];
+        let mut field = sample_field("point_field", 0);
+        field.point_dimension_count = 1;
+        field.point_index_dimension_count = 1;
+        field.point_num_bytes = 8;
+        let bytes = write(&[field], &id, "");
+        let fis = parse(&bytes, &id, "").unwrap();
+        assert_eq!(fis.fields[0].point_dimension_count, 1);
+        assert_eq!(fis.fields[0].point_index_dimension_count, 1);
+        assert_eq!(fis.fields[0].point_num_bytes, 8);
+    }
+
+    #[test]
+    fn write_vector_field_round_trips() {
+        let id = [7u8; ID_LENGTH];
+        let mut field = sample_field("vector_field", 0);
+        field.vector_dimension = 3;
+        field.vector_encoding = VectorEncoding::Byte;
+        field.vector_similarity_function = VectorSimilarityFunction::Cosine;
+        let bytes = write(&[field], &id, "");
+        let fis = parse(&bytes, &id, "").unwrap();
+        assert_eq!(fis.fields[0].vector_dimension, 3);
+        assert_eq!(fis.fields[0].vector_encoding, VectorEncoding::Byte);
+        assert_eq!(
+            fis.fields[0].vector_similarity_function,
+            VectorSimilarityFunction::Cosine
+        );
+    }
+
+    #[test]
+    fn write_multiple_fields_preserve_order() {
+        let id = [7u8; ID_LENGTH];
+        let fields = vec![
+            sample_field("a", 0),
+            sample_field("b", 1),
+            sample_field("c", 2),
+        ];
+        let bytes = write(&fields, &id, "");
+        let fis = parse(&bytes, &id, "").unwrap();
+        assert_eq!(fis.fields.len(), 3);
+        assert_eq!(fis.fields[0].name, "a");
+        assert_eq!(fis.fields[1].name, "b");
+        assert_eq!(fis.fields[2].name, "c");
     }
 
     #[test]
