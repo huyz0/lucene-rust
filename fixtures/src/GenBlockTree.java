@@ -9,6 +9,7 @@ import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.NoMergePolicy;
+import org.apache.lucene.index.PostingsEnum;
 import org.apache.lucene.index.SegmentCommitInfo;
 import org.apache.lucene.index.SegmentInfos;
 import org.apache.lucene.index.Terms;
@@ -127,13 +128,14 @@ public class GenBlockTree {
       SegmentCommitInfo sci = sis.info(0);
 
       String timFileName = null, tipFileName = null, tmdFileName = null;
-      String fnmFileName = null, siFileName = null;
+      String fnmFileName = null, siFileName = null, docFileName = null;
       for (String f : sci.info.files()) {
         if (f.endsWith(".tim")) timFileName = f;
         if (f.endsWith(".tip")) tipFileName = f;
         if (f.endsWith(".tmd")) tmdFileName = f;
         if (f.endsWith(".fnm")) fnmFileName = f;
         if (f.endsWith(".si")) siFileName = f;
+        if (f.endsWith(".doc")) docFileName = f;
       }
       if (timFileName == null || tipFileName == null || tmdFileName == null) {
         throw new AssertionError("expected .tim/.tip/.tmd files, files=" + sci.info.files());
@@ -141,12 +143,16 @@ public class GenBlockTree {
       if (fnmFileName == null || siFileName == null) {
         throw new AssertionError("expected .fnm/.si files, files=" + sci.info.files());
       }
+      if (docFileName == null) {
+        throw new AssertionError("expected .doc file, files=" + sci.info.files());
+      }
 
       dump(dir, timFileName, out);
       dump(dir, tipFileName, out);
       dump(dir, tmdFileName, out);
       dump(dir, fnmFileName, out);
       dump(dir, siFileName, out);
+      dump(dir, docFileName, out);
 
       StringBuilder m = new StringBuilder();
       m.append("tim_file_name=").append(timFileName).append('\n');
@@ -154,6 +160,7 @@ public class GenBlockTree {
       m.append("tmd_file_name=").append(tmdFileName).append('\n');
       m.append("fnm_file_name=").append(fnmFileName).append('\n');
       m.append("si_file_name=").append(siFileName).append('\n');
+      m.append("doc_file_name=").append(docFileName).append('\n');
       // PerFieldPostingsFormat assigns a per-format segment suffix (e.g.
       // "Lucene104_0"), embedded in the .tim/.tip/.tmd file names as
       // "<segmentName>_<suffix>.<ext>" -- recover it from the .tim name
@@ -215,6 +222,24 @@ public class GenBlockTree {
         m.append(key).append(".found=true\n");
         m.append(key).append(".docFreq=").append(te.docFreq()).append('\n');
         m.append(key).append(".totalTermFreq=").append(te.totalTermFreq()).append('\n');
+
+        // Real PostingsEnum.nextDoc()/freq() ground truth for the postings
+        // decode this fixture also verifies (DOCS_AND_FREQS mode) -- not just
+        // the aggregate docFreq/totalTermFreq stats above.
+        PostingsEnum postings = te.postings(null, PostingsEnum.FREQS);
+        StringBuilder docs = new StringBuilder();
+        StringBuilder freqs = new StringBuilder();
+        int doc;
+        while ((doc = postings.nextDoc()) != PostingsEnum.NO_MORE_DOCS) {
+          if (docs.length() > 0) {
+            docs.append(',');
+            freqs.append(',');
+          }
+          docs.append(doc);
+          freqs.append(postings.freq());
+        }
+        m.append(key).append(".postingsDocs=").append(docs).append('\n');
+        m.append(key).append(".postingsFreqs=").append(freqs).append('\n');
       } else {
         m.append(key).append(".found=false\n");
       }

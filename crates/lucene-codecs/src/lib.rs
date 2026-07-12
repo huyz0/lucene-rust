@@ -16,6 +16,7 @@ mod lz4;
 pub mod norms;
 mod packed_ints;
 pub mod points;
+pub mod postings;
 pub mod stored_fields;
 pub mod term_vectors;
 pub mod terms_dict;

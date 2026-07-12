@@ -73,6 +73,7 @@ use lucene_store::codec_util::{self, ID_LENGTH};
 use lucene_store::data_input::{DataInput, SliceInput};
 
 use crate::field_infos::{FieldInfos, IndexOptions};
+use crate::postings::{self, DocInput, Postings, TermMetadata};
 
 const TERMS_CODEC_NAME: &str = "BlockTreeTermsDict";
 const TERMS_INDEX_CODEC_NAME: &str = "BlockTreeTermsIndex";
@@ -134,6 +135,8 @@ pub enum Error {
         "index-time postings BLOCK_SIZE ({found}) != read-time BLOCK_SIZE ({POSTINGS_BLOCK_SIZE})"
     )]
     UnexpectedBlockSize { found: i32 },
+    #[error(transparent)]
+    Postings(#[from] postings::Error),
     #[error("unsupported: {0}")]
     Unsupported(&'static str),
 }
@@ -159,7 +162,8 @@ pub struct FieldTerms {
     pub doc_count: i32,
     pub min_term: Vec<u8>,
     pub max_term: Vec<u8>,
-    entries: Vec<(Vec<u8>, TermStats)>,
+    index_options: IndexOptions,
+    entries: Vec<(Vec<u8>, TermStats, TermMetadata)>,
 }
 
 impl FieldTerms {
@@ -168,9 +172,42 @@ impl FieldTerms {
     /// binary search over the materialized block.
     pub fn seek_exact(&self, term: &[u8]) -> Option<TermStats> {
         self.entries
-            .binary_search_by(|(t, _)| t.as_slice().cmp(term))
+            .binary_search_by(|(t, _, _)| t.as_slice().cmp(term))
             .ok()
             .map(|idx| self.entries[idx].1)
+    }
+
+    /// `seekExact(term)` followed by `PostingsEnum` iteration
+    /// (`postingsReader.postings(...)`, `DOCS_AND_FREQS` mode) — decodes the
+    /// term's actual `(docID, freq)` pairs, scoped to a single postings block
+    /// (see `crate::postings`'s module doc for exactly what that covers).
+    /// `doc_in` is `None` for fields where a `.doc` file was never opened
+    /// (e.g. no indexed field in the segment needs it) — passing `None` for a
+    /// found term whose `docFreq > 1` is an error, since that path needs
+    /// `.doc` file bytes.
+    pub fn postings(&self, term: &[u8], doc_in: Option<&DocInput<'_>>) -> Result<Option<Postings>> {
+        let Some(idx) = self
+            .entries
+            .binary_search_by(|(t, _, _)| t.as_slice().cmp(term))
+            .ok()
+        else {
+            return Ok(None);
+        };
+        let (_, stats, meta) = &self.entries[idx];
+        if stats.doc_freq == 1 {
+            return Ok(Some(postings::singleton_postings(
+                *meta,
+                stats.total_term_freq,
+            )?));
+        }
+        let doc_in = doc_in.ok_or(Error::Unsupported(
+            "postings() needs an opened .doc file for docFreq > 1 terms",
+        ))?;
+        Ok(Some(doc_in.read_postings(
+            *meta,
+            stats.doc_freq,
+            self.index_options,
+        )?))
     }
 }
 
@@ -264,7 +301,7 @@ fn decode_block(
     tim: &[u8],
     fp: usize,
     index_options: IndexOptions,
-) -> Result<Vec<(Vec<u8>, TermStats)>> {
+) -> Result<Vec<(Vec<u8>, TermStats, TermMetadata)>> {
     let mut r = SliceInput::new(tim);
     r.seek(fp)?;
 
@@ -314,18 +351,23 @@ fn decode_block(
     let mut stat_bytes = vec![0u8; num_stat_bytes];
     r.read_bytes(&mut stat_bytes)?;
 
-    // Per-term postings metadata: read past to stay aligned, never decoded
-    // (see module doc).
+    // Per-term postings metadata (`Lucene104PostingsReader.decodeTerm`, see
+    // `crate::postings`'s module doc): decoded below, threaded across entries
+    // exactly like `SegmentTermsEnumFrame` threads `IntBlockTermState`
+    // (`absolute` true only for this block's first term).
     let num_meta_bytes = r.read_vint()? as usize;
-    r.skip(num_meta_bytes)?;
+    let mut meta_bytes = vec![0u8; num_meta_bytes];
+    r.read_bytes(&mut meta_bytes)?;
 
     let mut suffix_lengths_reader = SliceInput::new(&suffix_length_bytes);
     let mut suffixes_reader = SliceInput::new(&suffix_bytes);
     let mut stats_reader = SliceInput::new(&stat_bytes);
+    let mut meta_reader = SliceInput::new(&meta_bytes);
 
     let mut singleton_run_length: u32 = 0;
+    let mut prev_meta = TermMetadata::EMPTY;
     let mut entries = Vec::with_capacity(ent_count as usize);
-    for _ in 0..ent_count {
+    for i in 0..ent_count {
         let suffix_len = suffix_lengths_reader.read_vint()? as usize;
         let mut term = vec![0u8; suffix_len];
         suffixes_reader.read_bytes(&mut term)?;
@@ -349,12 +391,16 @@ fn decode_block(
             }
         };
 
+        let meta = postings::decode_term_metadata(&mut meta_reader, doc_freq, i == 0, prev_meta)?;
+        prev_meta = meta;
+
         entries.push((
             term,
             TermStats {
                 doc_freq,
                 total_term_freq,
             },
+            meta,
         ));
     }
 
@@ -501,6 +547,7 @@ pub fn open(
                 doc_count,
                 min_term,
                 max_term,
+                index_options: field_info.index_options,
                 entries,
             },
         ));
@@ -611,7 +658,19 @@ mod tests {
             tim.write_vint(stats.len() as i32);
             tim.write_bytes(&stats);
 
-            tim.write_vint(0); // metadata bytes (none — postings not exercised)
+            // Postings metadata: one entry per term via the bit=0
+            // (docStartFP-delta) branch, legal regardless of `absolute` --
+            // these seek_exact-only tests don't exercise postings decode, so
+            // the fake docStartFP/singletonDocID values are never read back.
+            let mut meta = Vec::new();
+            for (_, doc_freq, _) in terms {
+                meta.write_vlong(10 << 1);
+                if *doc_freq == 1 {
+                    meta.write_vint(0);
+                }
+            }
+            tim.write_vint(meta.len() as i32);
+            tim.write_bytes(&meta);
 
             codec_util::write_footer(&mut tim);
 
@@ -964,11 +1023,20 @@ mod tests {
         tim.write_vint(stats.len() as i32);
         tim.write_bytes(&stats);
 
-        tim.write_vint(0); // no postings metadata
+        // Postings metadata: three singleton entries, each via the bit=0
+        // (docStartFP-delta) branch of `decode_term_metadata` -- legal
+        // whether or not `absolute` is set, unlike the zigzag-delta branch.
+        let mut meta = Vec::new();
+        for singleton_doc_id in [0i32, 1, 2] {
+            meta.write_vlong(0); // docStartFP delta = 0
+            meta.write_vint(singleton_doc_id);
+        }
+        tim.write_vint(meta.len() as i32);
+        tim.write_bytes(&meta);
 
         let entries = decode_block(&tim, 0, IndexOptions::DocsAndFreqs).unwrap();
         assert_eq!(entries.len(), 3);
-        for (term, stats) in &entries {
+        for (term, stats, _meta) in &entries {
             assert_eq!(term.len(), 2);
             assert_eq!(stats.doc_freq, 1);
             assert_eq!(stats.total_term_freq, 1);
@@ -1025,7 +1093,11 @@ mod tests {
         stats.write_vint(1 << 1); // docFreq=1, non-singleton token
         tim.write_vint(stats.len() as i32);
         tim.write_bytes(&stats);
-        tim.write_vint(0);
+        let mut meta = Vec::new();
+        meta.write_vlong(0); // docStartFP delta = 0
+        meta.write_vint(0); // singletonDocID (docFreq == 1)
+        tim.write_vint(meta.len() as i32);
+        tim.write_bytes(&meta);
         codec_util::write_footer(&mut tim);
 
         let mut tip = Vec::new();

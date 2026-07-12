@@ -11,6 +11,7 @@
 
 use lucene_codecs::blocktree;
 use lucene_codecs::field_infos;
+use lucene_codecs::postings;
 
 fn dir() -> String {
     concat!(
@@ -160,4 +161,85 @@ fn id_field_docs_only_term_lookups_match_real_lucene() {
 fn missing_field_returns_none() {
     let (fields, _m) = open_fixture();
     assert!(fields.field("nonexistent").is_none());
+}
+
+fn open_doc_input(m: &Manifest) -> (Vec<u8>, [u8; 16], String) {
+    let id = id_from_hex(m.get("id_hex"));
+    let suffix = m.get("segment_suffix").to_string();
+    let doc = read_raw(m.get("doc_file_name"));
+    (doc, id, suffix)
+}
+
+/// `body` (`IndexOptions.DOCS_AND_FREQS`, `docFreq == 2` for every term):
+/// exercises the multi-doc (`.doc` group-varint) postings decode path against
+/// real `PostingsEnum.nextDoc()`/`freq()` output.
+#[test]
+fn body_field_postings_match_real_lucene_postings_enum() {
+    let (fields, m) = open_fixture();
+    let (doc, id, suffix) = open_doc_input(&m);
+    let doc_in = postings::DocInput::open(&doc, &id, &suffix).expect("open .doc");
+    let body = fields.field("body").unwrap();
+
+    for term in ["cat", "dog", "bird"] {
+        let expected_docs: Vec<i32> = m
+            .get(&format!("field.body.term.{term}.postingsDocs"))
+            .split(',')
+            .map(|s| s.parse().unwrap())
+            .collect();
+        let expected_freqs: Vec<i32> = m
+            .get(&format!("field.body.term.{term}.postingsFreqs"))
+            .split(',')
+            .map(|s| s.parse().unwrap())
+            .collect();
+
+        let postings = body
+            .postings(term.as_bytes(), Some(&doc_in))
+            .unwrap_or_else(|e| panic!("postings({term:?}) failed: {e}"))
+            .unwrap_or_else(|| panic!("expected term {term:?} to be found"));
+        assert_eq!(postings.docs, expected_docs, "term={term:?}");
+        assert_eq!(postings.freqs, expected_freqs, "term={term:?}");
+    }
+}
+
+/// `id` (`IndexOptions.DOCS`, `docFreq == 1` for every term): exercises the
+/// singleton path, which never touches the `.doc` file at all.
+#[test]
+fn id_field_postings_match_real_lucene_postings_enum() {
+    let (fields, m) = open_fixture();
+    let id_field = fields.field("id").unwrap();
+
+    for i in 0..5 {
+        let term = format!("id{i}");
+        let expected_docs: Vec<i32> = m
+            .get(&format!("field.id.term.{term}.postingsDocs"))
+            .split(',')
+            .map(|s| s.parse().unwrap())
+            .collect();
+        let expected_freqs: Vec<i32> = m
+            .get(&format!("field.id.term.{term}.postingsFreqs"))
+            .split(',')
+            .map(|s| s.parse().unwrap())
+            .collect();
+
+        // No .doc file needed: docFreq == 1 is reconstructed purely from
+        // term-dictionary metadata (see postings::singleton_postings).
+        let postings = id_field
+            .postings(term.as_bytes(), None)
+            .unwrap_or_else(|e| panic!("postings({term:?}) failed: {e}"))
+            .unwrap_or_else(|| panic!("expected term {term:?} to be found"));
+        assert_eq!(postings.docs, expected_docs, "term={term:?}");
+        assert_eq!(postings.freqs, expected_freqs, "term={term:?}");
+    }
+}
+
+#[test]
+fn postings_missing_term_returns_none() {
+    let (fields, m) = open_fixture();
+    let (doc, id, suffix) = open_doc_input(&m);
+    let doc_in = postings::DocInput::open(&doc, &id, &suffix).expect("open .doc");
+    let body = fields.field("body").unwrap();
+    assert!(body
+        .postings(b"zzz-missing", Some(&doc_in))
+        .unwrap()
+        .is_none());
 }
