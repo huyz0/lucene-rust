@@ -98,6 +98,19 @@ Port order within phase:
    This is one of the two hardest data structures in the port (the other is BKD).
 7. Locking: `NativeFSLockFactory` semantics via `flock`/`OpenOptions`.
 
+**Progress (task #14):** item 3's `IndexInput` slicing/cloning landed —
+`SliceInput::slice_input(description, offset, length)` in `lucene-store/src/data_input.rs`
+returns a new, independent-file-pointer `SliceInput` over `[offset, offset+length)` of the
+callee's own addressing (slice-of-a-slice supported, offsets always relative to the
+callee); `Clone` (already derived, since `SliceInput` is just `(&[u8], usize)`) gives the
+same independent-pointer duplicate as Java's `clone()`. This was deferred once already
+(originally task #9, "no real caller exists yet") — the caller motivating it now is
+segment merging (task #15, not yet started), which will need its own cursor per
+source-segment sub-range read out of a shared file. `compound_format.rs::open_input` was
+refactored onto this primitive (previously a hand-rolled `data.get(offset..offset+len)`
+byte-range) since it's the same shape and gets a real cursor instead of a raw slice for
+free. See `docs/parity.md`'s `IndexInput.slice`/`.clone()` row.
+
 **Test harness (build in this phase, use forever):** a Java "fixture generator" module in
 this repo (`fixtures/`, Gradle, depends on the pinned Lucene) that writes: raw
 packed-ints blobs, FSTs, and small single-segment indexes with known content. Rust tests

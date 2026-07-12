@@ -220,7 +220,8 @@ pub trait DataInput {
 }
 
 /// Zero-copy cursor over a byte slice (e.g. an mmap'd file region).
-/// `Copy`-cheap: cloning is how Lucene's `IndexInput.clone()` maps to Rust.
+/// Cheap to `Clone` (a slice ref + a `usize`): cloning is how Lucene's
+/// `IndexInput.clone()` maps to Rust.
 #[derive(Clone, Debug)]
 pub struct SliceInput<'a> {
     buf: &'a [u8],
@@ -257,6 +258,46 @@ impl<'a> SliceInput<'a> {
     /// the exact byte range Lucene checksummed.
     pub fn slice(&self, from: usize, to: usize) -> Result<&'a [u8]> {
         self.buf.get(from..to).ok_or_else(|| self.eof())
+    }
+
+    /// Port of `IndexInput.slice(sliceDescription, offset, length)`: returns a
+    /// new, independent-file-pointer cursor over `[offset, offset+length)` of
+    /// this input's own buffer, addressed from 0 as if it were its own file —
+    /// exactly what a merge reading one source segment's sub-range (a stored
+    /// field/doc-values/points block inside a shared `.cfs`, say) needs: a
+    /// reader it can seek/advance freely without disturbing the parent or any
+    /// other slice/clone of it.
+    ///
+    /// `description` mirrors Lucene's signature (useful context for future
+    /// error messages) but isn't otherwise interpreted.
+    ///
+    /// Slicing a slice is supported: the result is itself a `SliceInput`, so
+    /// calling `.slice_input(..)` again narrows further, offsets always being
+    /// relative to *this* input's own `[0, len())`, not the original root
+    /// buffer's addressing.
+    ///
+    /// Bounds are enforced up front: an out-of-range `offset`/`length` is
+    /// rejected here rather than silently granting access to bytes outside
+    /// the intended range (e.g. a neighboring sub-file's data).
+    pub fn slice_input(
+        &self,
+        description: &str,
+        offset: u64,
+        length: u64,
+    ) -> Result<SliceInput<'a>> {
+        let _ = description;
+        let start = usize::try_from(offset).map_err(|_| self.eof())?;
+        let len = usize::try_from(length).map_err(|_| self.eof())?;
+        let end = start.checked_add(len).ok_or_else(|| self.eof())?;
+        let buf = self.buf.get(start..end).ok_or_else(|| self.eof())?;
+        Ok(SliceInput { buf, pos: 0 })
+    }
+
+    /// Remaining unread bytes `[pos, len())`, independent of `pos`'s effect on
+    /// `read_bytes`/etc. Mostly a test/debug convenience (e.g. asserting a
+    /// slice's full contents at once).
+    pub fn as_slice(&self) -> &'a [u8] {
+        &self.buf[self.pos..]
     }
 
     #[cold]
@@ -667,5 +708,97 @@ mod tests {
         let bytes = [1, 2];
         let mut input = SliceInput::new(&bytes);
         assert!(matches!(input.peek_u32_le(), Err(Error::Eof { .. })));
+    }
+
+    // --- slice_input / clone: IndexInput.slice()/clone() semantics ---
+
+    #[test]
+    fn slice_input_reads_the_addressed_range_zero_based() {
+        let bytes = b"0123456789";
+        let root = SliceInput::new(bytes);
+        let mid = root.slice_input("mid", 3, 4).unwrap();
+        assert_eq!(mid.as_slice(), b"3456");
+        assert_eq!(mid.position(), 0, "slice starts its own cursor at 0");
+    }
+
+    #[test]
+    fn slice_input_bounds_respected_reading_past_end_is_error_not_parent_leak() {
+        let bytes = b"0123456789";
+        let root = SliceInput::new(bytes);
+        let mut mid = root.slice_input("mid", 3, 4).unwrap(); // addresses "3456"
+        let mut buf = [0u8; 4];
+        mid.read_bytes(&mut buf).unwrap();
+        assert_eq!(&buf, b"3456");
+        // A 5th byte would be '7' in the parent buffer, but the slice's own
+        // extent ends here -- must be Eof, not silently returning '7'.
+        assert!(matches!(mid.read_byte(), Err(Error::Eof { .. })));
+    }
+
+    #[test]
+    fn slice_input_offset_or_length_out_of_range_is_error() {
+        let bytes = b"01234";
+        let root = SliceInput::new(bytes);
+        assert!(root.slice_input("d", 3, 10).is_err()); // extends past end
+        assert!(root.slice_input("d", 10, 1).is_err()); // offset past end
+        assert!(root.slice_input("d", u64::MAX, 1).is_err()); // doesn't fit usize on any sane target
+    }
+
+    #[test]
+    fn slice_input_zero_length_is_empty_and_immediately_eof() {
+        let bytes = b"01234";
+        let root = SliceInput::new(bytes);
+        let mut empty = root.slice_input("empty", 2, 0).unwrap();
+        assert!(empty.is_empty());
+        assert_eq!(empty.as_slice(), b"");
+        assert!(matches!(empty.read_byte(), Err(Error::Eof { .. })));
+    }
+
+    #[test]
+    fn slice_of_a_slice_is_supported_offsets_relative_to_the_slice() {
+        let bytes = b"0123456789";
+        let root = SliceInput::new(bytes);
+        let mid = root.slice_input("mid", 2, 6).unwrap(); // "234567"
+        assert_eq!(mid.as_slice(), b"234567");
+        let inner = mid.slice_input("inner", 1, 3).unwrap(); // relative to mid -> "345"
+        assert_eq!(inner.as_slice(), b"345");
+        assert_eq!(inner.position(), 0);
+    }
+
+    #[test]
+    fn slice_input_has_independent_file_pointer_from_parent_and_siblings() {
+        let bytes = b"abcdefghij";
+        let mut root = SliceInput::new(bytes);
+        root.read_byte().unwrap(); // advance parent's own cursor to 1 ('b')
+
+        let mut slice_a = root.slice_input("a", 0, 5).unwrap(); // "abcde"
+        let mut slice_b = root.slice_input("b", 5, 5).unwrap(); // "fghij"
+
+        // Interleave reads through both slices and the still-live parent;
+        // each must track its own position independently.
+        assert_eq!(slice_a.read_byte().unwrap(), b'a');
+        assert_eq!(slice_b.read_byte().unwrap(), b'f');
+        assert_eq!(root.read_byte().unwrap(), b'b'); // parent continues from where it left off (pos 1)
+        assert_eq!(slice_a.read_byte().unwrap(), b'b');
+        assert_eq!(slice_b.read_byte().unwrap(), b'g');
+        assert_eq!(slice_a.position(), 2);
+        assert_eq!(slice_b.position(), 2);
+        assert_eq!(root.position(), 2);
+    }
+
+    #[test]
+    fn clone_has_independent_file_pointer() {
+        let bytes = b"clone-me!!";
+        let mut original = SliceInput::new(bytes);
+        original.read_byte().unwrap(); // advance to 1, matching Lucene's clone() copying the position too
+
+        let mut cloned = original.clone();
+        assert_eq!(cloned.position(), original.position());
+
+        // Reading through the clone must not move the original's pointer, and
+        // vice versa.
+        assert_eq!(cloned.read_byte().unwrap(), b'l');
+        assert_eq!(original.position(), 1, "original untouched by clone's read");
+        assert_eq!(original.read_byte().unwrap(), b'l'); // original independently re-reads the same byte at pos 1
+        assert_eq!(cloned.position(), 2, "clone untouched by original's read");
     }
 }

@@ -300,6 +300,54 @@ mod tests {
         let bytes = dir.open("_0.si").unwrap();
         assert_eq!(&*bytes, b"mmap round trip");
 
+        assert_eq!(dir.list_all().unwrap(), vec!["_0.si".to_string()]);
+        dir.sync(&["_0.si".to_string()]).unwrap();
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn slice_input_over_a_real_file_has_independent_file_pointers() {
+        // Writes a real file to a temp dir via FsDirectory/FsIndexOutput, then
+        // slices it via SliceInput::slice_input the way a merge would slice a
+        // sub-range of a real on-disk `.cfs`. Guards against any real
+        // OS-file-handle-sharing bug that an in-memory-only test can't catch
+        // (e.g. accidentally sharing one file's read position across slices).
+        use crate::data_input::{DataInput, SliceInput};
+
+        let root = tempdir();
+        let dir = FsDirectory::open(&root);
+        let mut out = dir.create_output("_0.cfs").unwrap();
+        out.write_bytes(b"HEADER|firstpart|secondpart|FOOTER");
+        out.close().unwrap();
+
+        let bytes = dir.open("_0.cfs").unwrap();
+        let root_input = SliceInput::new(&bytes);
+
+        // "firstpart" starts at offset 7, "secondpart" at offset 17.
+        let mut first = root_input.slice_input("first", 7, 9).unwrap();
+        let mut second = root_input.slice_input("second", 17, 10).unwrap();
+
+        // Interleave reads through both real-file-backed slices.
+        let mut buf1 = [0u8; 4];
+        let mut buf2 = [0u8; 4];
+        first.read_bytes(&mut buf1).unwrap();
+        second.read_bytes(&mut buf2).unwrap();
+        assert_eq!(&buf1, b"firs");
+        assert_eq!(&buf2, b"seco");
+
+        let mut buf1b = [0u8; 5];
+        let mut buf2b = [0u8; 6];
+        first.read_bytes(&mut buf1b).unwrap();
+        second.read_bytes(&mut buf2b).unwrap();
+        assert_eq!(&buf1b, b"tpart");
+        assert_eq!(&buf2b, b"ndpart");
+
+        // Both slices are now fully consumed; further reads are Eof, not a
+        // leak into the other slice's or the footer's bytes.
+        assert!(first.read_byte().is_err());
+        assert!(second.read_byte().is_err());
+
         fs::remove_dir_all(&root).ok();
     }
 
@@ -319,6 +367,20 @@ mod tests {
     fn mmap_directory_open_nonexistent_file_is_io_error() {
         let dir = MmapDirectory::open("/nonexistent-lucene-rust-test-path");
         assert!(matches!(dir.open("whatever"), Err(Error::Io(_))));
+    }
+
+    #[test]
+    fn read_latest_commit_finds_highest_generation_segments_file() {
+        let root = tempdir();
+        let dir = FsDirectory::open(&root);
+        index_output::write_all_bytes(&root, "segments_1", b"old").unwrap();
+        index_output::write_all_bytes(&root, "segments_2", b"newest").unwrap();
+
+        let (generation, bytes) = read_latest_commit(&dir).unwrap();
+        assert_eq!(generation, 2);
+        assert_eq!(&*bytes, b"newest");
+
+        fs::remove_dir_all(&root).ok();
     }
 
     #[test]

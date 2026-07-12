@@ -157,23 +157,31 @@ pub fn check_data_header_footer(
     Ok(())
 }
 
-/// Slices out a sub-file's bytes from the whole `.cfs` file's bytes. `id` is
-/// the sub-file name without the segment-name prefix (Java's
-/// `IndexFileNames.stripSegmentName`), e.g. `.fnm` rather than `_0.fnm`.
-pub fn open_input<'d>(data: &'d [u8], entries: &CompoundEntries, id: &str) -> Result<&'d [u8]> {
+/// Opens a sub-file as its own independent-file-pointer [`SliceInput`],
+/// addressed from 0 like a standalone file. `id` is the sub-file name without
+/// the segment-name prefix (Java's `IndexFileNames.stripSegmentName`), e.g.
+/// `.fnm` rather than `_0.fnm`.
+///
+/// This is `IndexInput.slice(sliceDescription, offset, length)` (see
+/// `lucene_store::data_input::SliceInput::slice_input`) rather than
+/// hand-rolled offset math: the real caller this generalizes for is segment
+/// merging (task #15), which needs to read a sub-range of a shared `.cfs`
+/// with its own cursor per source segment, independent of any other open
+/// sub-file reader over the same bytes.
+pub fn open_input<'d>(
+    data: &'d [u8],
+    entries: &CompoundEntries,
+    id: &str,
+) -> Result<SliceInput<'d>> {
     let entry = entries.get(id).ok_or_else(|| {
         Error::FileNotFound(
             id.to_string(),
             entries.names().map(str::to_string).collect(),
         )
     })?;
-    data.get(entry.offset as usize..(entry.offset + entry.length) as usize)
-        .ok_or_else(|| {
-            lucene_store::Error::Eof {
-                offset: entry.offset as usize,
-            }
-            .into()
-        })
+    SliceInput::new(data)
+        .slice_input(id, entry.offset as u64, entry.length as u64)
+        .map_err(Into::into)
 }
 
 /// Packs already-written sub-files (each a *complete* standalone codec file:
@@ -385,8 +393,14 @@ mod tests {
         let entries = parse_entries(&cfe, &id).unwrap();
         let cfs = build_cfs(&id, VERSION_CURRENT, payload);
 
-        assert_eq!(open_input(&cfs, &entries, ".fnm").unwrap(), b"hello");
-        assert_eq!(open_input(&cfs, &entries, ".si").unwrap(), b" world!");
+        assert_eq!(
+            open_input(&cfs, &entries, ".fnm").unwrap().as_slice(),
+            b"hello"
+        );
+        assert_eq!(
+            open_input(&cfs, &entries, ".si").unwrap().as_slice(),
+            b" world!"
+        );
     }
 
     #[test]
@@ -505,9 +519,18 @@ mod tests {
         // Every sub-file must come back byte-for-byte identical, including
         // its own header and footer -- a corrupted offset could otherwise
         // still leave the entries table "looking right" while shifting bytes.
-        assert_eq!(open_input(&cfs, &entries, ".fnm").unwrap(), fnm.as_slice());
-        assert_eq!(open_input(&cfs, &entries, ".fdt").unwrap(), fdt.as_slice());
-        assert_eq!(open_input(&cfs, &entries, ".dvd").unwrap(), dvd.as_slice());
+        assert_eq!(
+            open_input(&cfs, &entries, ".fnm").unwrap().as_slice(),
+            fnm.as_slice()
+        );
+        assert_eq!(
+            open_input(&cfs, &entries, ".fdt").unwrap().as_slice(),
+            fdt.as_slice()
+        );
+        assert_eq!(
+            open_input(&cfs, &entries, ".dvd").unwrap().as_slice(),
+            dvd.as_slice()
+        );
 
         // Ascending-size packing: .dvd (smallest) should be placed before
         // .fnm, which should be placed before .fdt (largest).
