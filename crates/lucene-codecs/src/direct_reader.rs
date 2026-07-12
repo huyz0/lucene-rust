@@ -14,7 +14,12 @@ use lucene_store::Result;
 /// `bits_per_value`-wide value packed little-endian (LSB-first within each
 /// byte) starting at byte 0 of `slice`.
 pub(crate) fn get(slice: &[u8], bits_per_value: u8, index: i64) -> Result<i64> {
-    let bit_pos = (index as u128) * (bits_per_value as u128);
+    // `index * bits_per_value` fits comfortably in u64: `index` addresses an
+    // element of an in-memory-decoded array, itself bounded by `slice.len() *
+    // 8` bits (a real allocated buffer, far under u64::MAX). A wide u128
+    // multiply here is unnecessary overhead on a hot per-value decode path
+    // (called once per doc-values lookup / monotonic-sequence element).
+    let bit_pos = (index as u64).wrapping_mul(bits_per_value as u64);
     let byte_pos =
         usize::try_from(bit_pos >> 3).map_err(|_| lucene_store::Error::Eof { offset: 0 })?;
     let shift = (bit_pos & 7) as u32;
