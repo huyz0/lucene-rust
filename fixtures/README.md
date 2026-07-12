@@ -27,7 +27,8 @@ Every generator above is Java-writes-Rust-reads. The write path (PLAN.md Phase 5
 needs the opposite: Rust writes real bytes, and a Java program confirms real Lucene
 can open and read them back. `VerifyStoredFields.java`, `VerifyFieldInfos.java`,
 `VerifySegmentInfo.java`, `VerifySegmentInfos.java`, `VerifyPoints.java`,
-`VerifyTermVectors.java`, and `VerifyDocValues.java` are these verifiers so far:
+`VerifyTermVectors.java`, `VerifyDocValues.java`, and `VerifyNorms.java` are these
+verifiers so far:
 
 ```sh
 cargo run -p lucene-codecs --example write_stored_fields_fixture -- /tmp/rust-stored-fields
@@ -37,9 +38,10 @@ cargo run -p lucene-index --example write_segment_infos_fixture -- /tmp/rust-seg
 cargo run -p lucene-codecs --example write_points_fixture -- /tmp/rust-points
 cargo run -p lucene-codecs --example write_term_vectors_fixture -- /tmp/rust-term-vectors
 cargo run -p lucene-codecs --example write_doc_values_fixture -- /tmp/rust-doc-values
+cargo run -p lucene-codecs --example write_norms_fixture -- /tmp/rust-norms
 JAR=$(find ~/.gradle/caches/modules-2/files-2.1/org.apache.lucene/lucene-core/10.5.0 \
   -name 'lucene-core-10.5.0.jar' ! -name '*sources*' ! -name '*javadoc*')
-javac -nowarn -cp "$JAR" -d classes src/VerifyStoredFields.java src/VerifyFieldInfos.java src/VerifySegmentInfo.java src/VerifySegmentInfos.java src/VerifyPoints.java src/VerifyTermVectors.java src/VerifyDocValues.java
+javac -nowarn -cp "$JAR" -d classes src/VerifyStoredFields.java src/VerifyFieldInfos.java src/VerifySegmentInfo.java src/VerifySegmentInfos.java src/VerifyPoints.java src/VerifyTermVectors.java src/VerifyDocValues.java src/VerifyNorms.java
 java -cp "classes:$JAR" VerifyStoredFields /tmp/rust-stored-fields
 java -cp "classes:$JAR" VerifyFieldInfos /tmp/rust-field-infos
 java -cp "classes:$JAR" VerifySegmentInfo /tmp/rust-segment-info
@@ -47,6 +49,7 @@ java -cp "classes:$JAR" VerifySegmentInfos /tmp/rust-segment-infos
 java -cp "classes:$JAR" VerifyPoints /tmp/rust-points
 java -cp "classes:$JAR" VerifyTermVectors /tmp/rust-term-vectors
 java -cp "classes:$JAR" VerifyDocValues /tmp/rust-doc-values
+java -cp "classes:$JAR" VerifyNorms /tmp/rust-norms
 ```
 
 `VerifyStoredFields.java` opens the `.fdt`/`.fdx`/`.fdm` triple directly through
@@ -147,6 +150,22 @@ unsignedBitsRequired(max-min)`, forcing the min-shift-drop optimization
 (`_0` never has `min > 0`, so it can't reach this branch); `_2` is all-equal
 values, forcing the `bitsPerValue == 0` constant encoding. All three now
 verify against real Lucene.
+
+`VerifyNorms.java` verifies `norms::write_single_dense_field`
+(`crates/lucene-codecs/src/norms.rs`), scoped to exactly one shape: a single
+norms field, dense (every doc has a value), at most 1 byte per doc (`bytesPerNorm
+0` for the all-equal constant case, or `1` otherwise -- 2/4/8-byte widths, sparse
+`IndexedDISI` fields, and multiple fields in one `.nvm`/`.nvd` pair are all out of
+scope, see `docs/parity.md`'s norms row). It opens the pair directly through real
+`Lucene90NormsFormat.normsProducer` with a hand-built `SegmentInfo`/`FieldInfos`
+(same division of labor as `VerifyDocValues.java`), then iterates the field via
+real `NumericDocValues.nextDoc`/`longValue` (the same API `NormsProducer.getNorms`
+returns) and diffs every doc's value against `manifest.properties`. The Rust
+example writes two segments: `_0` (varying small signed values, the real
+`bytesPerNorm == 1` path) and `_1` (all-equal values, the `bytesPerNorm == 0`
+constant path) -- following the doc-values write-side review's finding directly,
+both branches are verified against real Lucene from the start rather than only
+this port's own reader.
 
 ## Generators
 

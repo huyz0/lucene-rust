@@ -33,6 +33,7 @@
 
 use lucene_store::codec_util::{self, ID_LENGTH};
 use lucene_store::data_input::{DataInput, SliceInput};
+use lucene_store::data_output::DataOutput;
 
 use crate::indexed_disi;
 
@@ -55,6 +56,24 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[derive(Debug, thiserror::Error)]
+pub enum WriteError {
+    #[error(
+        "write_single_dense_field requires values.len() == max_doc (every doc must have a value); got {values} values for max_doc={max_doc}"
+    )]
+    NotDense { values: usize, max_doc: i32 },
+    #[error(
+        "value range [{min}, {max}] for field {field_number} needs more than 1 byte per norm; only the constant (0-byte) and 1-byte-per-doc cases are supported by this writer"
+    )]
+    RangeTooWide {
+        field_number: i32,
+        min: i64,
+        max: i64,
+    },
+}
+
+pub type WriteResult<T> = std::result::Result<T, WriteError>;
 
 #[derive(Debug, Clone, Copy)]
 pub struct NormsEntry {
@@ -224,6 +243,99 @@ fn read_value_at_ordinal(data: &[u8], entry: &NormsEntry, ordinal: i64) -> Resul
         _ => unreachable!("bytesPerNorm validated to be one of 0,1,2,4,8"),
     };
     Ok(value)
+}
+
+/// Port of `Lucene90NormsConsumer.addNormsField`, scoped to exactly one
+/// shape: **a single norms field, DENSE (every doc from `0` to `max_doc - 1`
+/// has a value), encoded in at most 1 byte per doc** -- the
+/// `numDocsWithValue == maxDoc` branch of `addNormsField` (so no
+/// `IndexedDISI` bitset is ever written) feeding `numBytesPerValue`'s `0`
+/// (all values equal, `min >= max`) or `1` (`Byte.MIN_VALUE..=Byte.MAX_VALUE`)
+/// cases only.
+///
+/// Deliberately not attempted here, all deferred to future slices (see
+/// `docs/parity.md`): sparse fields (`IndexedDISI`, the `numDocsWithValue !=
+/// maxDoc` branch), 2/4/8-byte-per-doc widths (returned as
+/// [`WriteError::RangeTooWide`] instead of silently truncating), and multiple
+/// fields in one `.nvm`/`.nvd` pair.
+///
+/// Returns `(meta_bytes, data_bytes)` matching the real writer's two
+/// `IndexOutput`s (`.nvm`, `.nvd`); unlike doc values, norms have no third
+/// (`.dvs`-style) file.
+pub fn write_single_dense_field(
+    field_number: i32,
+    values: &[i64],
+    max_doc: i32,
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+) -> WriteResult<(Vec<u8>, Vec<u8>)> {
+    if values.len() != max_doc as usize {
+        return Err(WriteError::NotDense {
+            values: values.len(),
+            max_doc,
+        });
+    }
+
+    let mut meta: Vec<u8> = Vec::new();
+    codec_util::write_index_header(
+        &mut meta,
+        METADATA_CODEC,
+        VERSION_CURRENT,
+        segment_id,
+        segment_suffix,
+    );
+
+    let mut data: Vec<u8> = Vec::new();
+    codec_util::write_index_header(
+        &mut data,
+        DATA_CODEC,
+        VERSION_CURRENT,
+        segment_id,
+        segment_suffix,
+    );
+
+    meta.write_i32(field_number);
+
+    // `numDocsWithValue == maxDoc`: the dense case, meta[-1, 0], no
+    // IndexedDISI structure (see `addNormsField`'s middle branch).
+    meta.write_i64(DOCS_WITH_FIELD_DENSE);
+    meta.write_i64(0);
+    meta.write_i16(-1); // jumpTableEntryCount
+    meta.push(0xFF); // denseRankPower (-1 as u8)
+
+    let num_docs_with_value = values.len() as i32;
+    meta.write_i32(num_docs_with_value);
+
+    let min = values.iter().copied().min().unwrap_or(i64::MAX);
+    let max = values.iter().copied().max().unwrap_or(i64::MIN);
+
+    let num_bytes_per_value: u8 = if min >= max {
+        0
+    } else if min >= i8::MIN as i64 && max <= i8::MAX as i64 {
+        1
+    } else {
+        return Err(WriteError::RangeTooWide {
+            field_number,
+            min,
+            max,
+        });
+    };
+
+    meta.push(num_bytes_per_value);
+    if num_bytes_per_value == 0 {
+        meta.write_i64(min);
+    } else {
+        meta.write_i64(data.len() as i64); // normsOffset
+        for &v in values {
+            data.push(v as i8 as u8);
+        }
+    }
+
+    meta.write_i32(-1); // field list terminator
+    codec_util::write_footer(&mut meta);
+    codec_util::write_footer(&mut data);
+
+    Ok((meta, data))
 }
 
 #[cfg(test)]
@@ -509,6 +621,73 @@ mod tests {
         assert!(matches!(
             parse_meta(&buf, &wrong_id, ""),
             Err(Error::Store(_))
+        ));
+    }
+
+    #[test]
+    fn write_single_dense_field_round_trips_through_own_reader() {
+        let id = [7u8; ID_LENGTH];
+        let values = vec![5i64, -100, 0, 127, -128];
+        let (meta_bytes, data_bytes) =
+            write_single_dense_field(0, &values, values.len() as i32, &id, "").unwrap();
+
+        let version = check_data_header_footer(&data_bytes, &id, "").unwrap();
+        assert_eq!(version, VERSION_CURRENT);
+
+        let (meta_version, norms) = parse_meta(&meta_bytes, &id, "").unwrap();
+        assert_eq!(meta_version, VERSION_CURRENT);
+        let entry = norms.entry(0).unwrap();
+        assert!(entry.is_dense());
+        assert_eq!(entry.bytes_per_norm, 1);
+        for (doc, &want) in values.iter().enumerate() {
+            assert_eq!(
+                norm_value(&data_bytes, entry, doc as i32).unwrap(),
+                Some(want)
+            );
+        }
+    }
+
+    #[test]
+    fn write_single_dense_field_constant_values_uses_zero_byte_encoding() {
+        let id = [8u8; ID_LENGTH];
+        let values = vec![3i64; 4];
+        let (meta_bytes, data_bytes) =
+            write_single_dense_field(1, &values, values.len() as i32, &id, "").unwrap();
+
+        let (_, norms) = parse_meta(&meta_bytes, &id, "").unwrap();
+        let entry = norms.entry(1).unwrap();
+        assert_eq!(entry.bytes_per_norm, 0);
+        for doc in 0..values.len() as i32 {
+            assert_eq!(norm_value(&data_bytes, entry, doc).unwrap(), Some(3));
+        }
+        // No per-doc array is written for the constant case.
+        assert!(data_bytes.len() < nvm_header_len(DATA_CODEC) + values.len() + 16);
+    }
+
+    #[test]
+    fn write_single_dense_field_rejects_non_dense_input() {
+        let id = [9u8; ID_LENGTH];
+        let values = vec![1i64, 2];
+        assert!(matches!(
+            write_single_dense_field(0, &values, 3, &id, ""),
+            Err(WriteError::NotDense {
+                values: 2,
+                max_doc: 3
+            })
+        ));
+    }
+
+    #[test]
+    fn write_single_dense_field_rejects_range_too_wide() {
+        let id = [10u8; ID_LENGTH];
+        let values = vec![0i64, 300];
+        assert!(matches!(
+            write_single_dense_field(0, &values, 2, &id, ""),
+            Err(WriteError::RangeTooWide {
+                field_number: 0,
+                min: 0,
+                max: 300,
+            })
         ));
     }
 }
