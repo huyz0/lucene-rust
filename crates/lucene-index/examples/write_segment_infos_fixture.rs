@@ -25,15 +25,14 @@
 //! Run: `cargo run -p lucene-index --example write_segment_infos_fixture -- <dir>`
 
 use lucene_codecs::field_infos::{
-    self, DocValuesSkipIndexType, DocValuesType, FieldInfo, IndexOptions, VectorEncoding,
+    DocValuesSkipIndexType, DocValuesType, FieldInfo, IndexOptions, VectorEncoding,
     VectorSimilarityFunction,
 };
-use lucene_codecs::stored_fields::{self, Document, FieldValue, StoredField};
-use lucene_index::segment_info::{self, LuceneVersion, SegmentInfo};
-use lucene_index::segment_infos::{
-    self, LuceneVersion as SisLuceneVersion, SegmentCommitInfo, SegmentInfos,
-};
-use lucene_store::{DataOutput, Directory, FsDirectory};
+use lucene_codecs::stored_fields::{Document, FieldValue, StoredField};
+use lucene_index::segment_info::LuceneVersion;
+use lucene_index::segment_infos::{self, LuceneVersion as SisLuceneVersion, SegmentInfos};
+use lucene_index::segment_writer::flush_stored_only_segment;
+use lucene_store::FsDirectory;
 use std::io::Write;
 
 const SEGMENT_ID: [u8; 16] = *b"rustwrittensis00";
@@ -142,64 +141,18 @@ fn main() {
     ];
     let max_doc = docs.len() as i32;
 
-    // .fdt/.fdx/.fdm -- reuses the already-verified stored-fields writer.
-    let (fdt, fdx, fdm) = stored_fields::write_best_speed(&docs, &SEGMENT_ID, "");
-    for (name, bytes) in [
-        (format!("{SEGMENT_NAME}.fdt"), &fdt),
-        (format!("{SEGMENT_NAME}.fdx"), &fdx),
-        (format!("{SEGMENT_NAME}.fdm"), &fdm),
-    ] {
-        let mut out = dir.create_output(&name).unwrap();
-        out.write_bytes(bytes);
-        out.close().unwrap();
-    }
-
-    // .fnm -- reuses the already-verified field-infos writer.
-    let fnm = field_infos::write(&fields, &SEGMENT_ID, "");
-    {
-        let mut out = dir.create_output(&format!("{SEGMENT_NAME}.fnm")).unwrap();
-        out.write_bytes(&fnm);
-        out.close().unwrap();
-    }
-
-    // .si -- reuses the already-verified segment-info writer.
-    let files = vec![
-        format!("{SEGMENT_NAME}.fdt"),
-        format!("{SEGMENT_NAME}.fdx"),
-        format!("{SEGMENT_NAME}.fdm"),
-        format!("{SEGMENT_NAME}.fnm"),
-    ];
-    let si = SegmentInfo {
-        id: SEGMENT_ID,
-        version: lucene_version(),
-        min_version: Some(lucene_version()),
-        doc_count: max_doc,
-        is_compound_file: false,
-        has_blocks: false,
-        diagnostics: vec![
-            ("source".to_string(), "flush".to_string()),
-            ("lucene.version".to_string(), "10.0.0".to_string()),
-        ],
-        files: files.clone(),
-        attributes: vec![(
-            "Lucene90StoredFieldsFormat.mode".to_string(),
-            "BEST_SPEED".to_string(),
-        )],
-    };
-    let si_bytes = segment_info::write(&si, "");
-    {
-        let mut out = dir.create_output(&format!("{SEGMENT_NAME}.si")).unwrap();
-        out.write_bytes(&si_bytes);
-        out.close().unwrap();
-    }
-
-    dir.sync(&[
-        format!("{SEGMENT_NAME}.fdt"),
-        format!("{SEGMENT_NAME}.fdx"),
-        format!("{SEGMENT_NAME}.fdm"),
-        format!("{SEGMENT_NAME}.fnm"),
-        format!("{SEGMENT_NAME}.si"),
-    ])
+    // .fdt/.fdx/.fdm + .fnm + .si -- one "flush" via the shared
+    // single-segment builder (see `lucene_index::segment_writer`, also
+    // exercised twice per commit by `write_multi_segment_commit_fixture.rs`).
+    let sci = flush_stored_only_segment(
+        &dir,
+        SEGMENT_NAME,
+        SEGMENT_ID,
+        CODEC_NAME,
+        lucene_version(),
+        &fields,
+        &docs,
+    )
     .unwrap();
 
     // segments_N -- the piece this slice ports.
@@ -212,19 +165,7 @@ fn main() {
         version: 2,
         counter: 1,
         min_segment_lucene_version: Some(sis_lucene_version()),
-        segments: vec![SegmentCommitInfo {
-            segment_name: SEGMENT_NAME.to_string(),
-            segment_id: SEGMENT_ID,
-            codec_name: CODEC_NAME.to_string(),
-            del_gen: -1,
-            del_count: 0,
-            field_infos_gen: -1,
-            doc_values_gen: -1,
-            soft_del_count: 0,
-            sci_id: None,
-            field_infos_files: vec![],
-            dv_update_files: vec![],
-        }],
+        segments: vec![sci],
         user_data: vec![("lucene-rust-test".to_string(), "true".to_string())],
     };
     let segments_file_name = segment_infos::write(&sis, &dir).unwrap();

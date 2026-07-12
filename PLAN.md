@@ -234,6 +234,30 @@ and a benchmark report.
 
 ### Phase 5 — Write path: analysis chain + indexing (est. 12–16 weeks)
 
+**Progress so far:** every single-segment write primitive (stored fields, `FieldInfos`,
+`SegmentInfo`, points, term vectors, doc values, norms, live docs, compound format, real
+LZ4 compression, and the `segments_N` commit file) lands one complete, real-Lucene-openable
+segment — verified end-to-end by
+`crates/lucene-index/examples/write_segment_infos_fixture.rs` +
+`fixtures/src/VerifySegmentInfos.java` (`DirectoryReader.open`). On top of that,
+`lucene-index/src/segment_writer.rs::flush_stored_only_segment` is a small, deliberately
+minimal "flush an in-memory batch of documents to one new segment" building block: call it
+more than once against the same `Directory` with distinct segment names, collect the
+resulting `SegmentCommitInfo`s, and pass all of them to one `segment_infos::write` call —
+that's a real multi-segment commit. Proven by
+`crates/lucene-index/examples/write_multi_segment_commit_fixture.rs` (two independent
+flushes, `_0`/`_1`, one `segments_N`) opened successfully by real Lucene's
+`DirectoryReader.open` via `fixtures/src/VerifySegmentInfos.java` (unchanged — it was
+already segment-count-agnostic). This did **not** require any change to
+`segment_infos::write`/`parse`: `SegmentInfos::segments` was already `Vec<SegmentCommitInfo>`
+with a plain loop on both the encode and decode side, so describing N segments in one
+commit was already mechanical before this slice — the actual gap closed here was the
+reusable per-segment flush helper, not the commit format. Still stored-fields-only (no
+indexed fields), and still missing everything below: no RAM accounting/flush-triggering, no
+merging, no deletes/updates during indexing, no NRT, no concurrency, and no unified
+multi-segment read path on this port's own side (real Lucene's reader federates the
+Rust-written segments fine; this port's own `SegmentReader`/`IndexSearcher` does not yet).
+
 1. `lucene-analysis`: `TokenStream` as an iterator-of-token-structs (skip Java's
    AttributeSource reflection design entirely — a plain
    `Token { bytes, position_increment, offset, ... }` struct), StandardTokenizer via

@@ -35,6 +35,7 @@ cargo run -p lucene-codecs --example write_stored_fields_fixture -- /tmp/rust-st
 cargo run -p lucene-codecs --example write_field_infos_fixture -- /tmp/rust-field-infos
 cargo run -p lucene-index --example write_segment_info_fixture -- /tmp/rust-segment-info
 cargo run -p lucene-index --example write_segment_infos_fixture -- /tmp/rust-segment-infos
+cargo run -p lucene-index --example write_multi_segment_commit_fixture -- /tmp/rust-multi-segment
 cargo run -p lucene-codecs --example write_points_fixture -- /tmp/rust-points
 cargo run -p lucene-codecs --example write_term_vectors_fixture -- /tmp/rust-term-vectors
 cargo run -p lucene-codecs --example write_doc_values_fixture -- /tmp/rust-doc-values
@@ -48,6 +49,7 @@ java -cp "classes:$JAR" VerifyStoredFields /tmp/rust-stored-fields
 java -cp "classes:$JAR" VerifyFieldInfos /tmp/rust-field-infos
 java -cp "classes:$JAR" VerifySegmentInfo /tmp/rust-segment-info
 java -cp "classes:$JAR" VerifySegmentInfos /tmp/rust-segment-infos
+java -cp "classes:$JAR" VerifySegmentInfos /tmp/rust-multi-segment
 java -cp "classes:$JAR" VerifyPoints /tmp/rust-points
 java -cp "classes:$JAR" VerifyTermVectors /tmp/rust-term-vectors
 java -cp "classes:$JAR" VerifyDocValues /tmp/rust-doc-values
@@ -85,6 +87,17 @@ toward: proof that a Rust-written index is openable by unmodified Lucene
 application code, not just by hand-built codec-level access. The fixture's
 fields are deliberately stored-only (no postings/doc values/term
 vectors/points/vectors), since this port has no write path yet for any of
+the other per-field formats. The same verifier, unmodified, also checks
+`crates/lucene-index/examples/write_multi_segment_commit_fixture.rs`'s
+output -- a *real* multi-segment commit (two independently-flushed segments,
+`_0` and `_1`, described by one `segments_N`, built via
+`lucene_index::segment_writer::flush_stored_only_segment` called twice) --
+because `VerifySegmentInfos.java` only ever reads `manifest.properties` and
+calls `DirectoryReader.open` + `StoredFields.document(docId)` across the
+whole reader, with no assumption about how many segments back it. Passing
+here is proof that real Lucene's `DirectoryReader` federates two
+Rust-written segments into one coherent 5-doc space.
+
 those formats -- `SegmentCoreReaders` only opens a postings `FieldsProducer`
 when `FieldInfos.hasPostings()` is true, so a segment with zero indexed
 fields needs none of those files to exist. See `docs/parity.md`'s
