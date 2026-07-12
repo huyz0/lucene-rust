@@ -361,6 +361,14 @@ public class GenBlockTree {
         appendSeekCeilManifest(m, leaf, "many", "term0037a", "ceiling");
         appendSeekCeilManifest(m, leaf, "many", "", "beforeFirst");
         appendSeekCeilManifest(m, leaf, "many", "zzzz", "afterLast");
+
+        // Real PostingsEnum.advance(target) ground truth: "big"/"everywhere"
+        // (docFreq=300, multi-block .doc) exercises advancing across a full
+        // 256-doc block boundary into the group-varint tail; "body"/"cat"
+        // (docFreq=2, single tail block) exercises the same targets on a
+        // small single-block postings list.
+        appendAdvanceManifest(m, leaf, "big", "everywhere");
+        appendAdvanceManifest(m, leaf, "body", "cat");
       }
 
       Files.writeString(out.resolve("manifest.properties"), m.toString());
@@ -540,6 +548,56 @@ public class GenBlockTree {
       m.append(key).append(".docFreq=").append(te.docFreq()).append('\n');
       m.append(key).append(".totalTermFreq=").append(te.totalTermFreq()).append('\n');
     }
+  }
+
+  /**
+   * Dumps real {@code PostingsEnum.advance(target)} ground truth for a
+   * variety of targets against one term: before the first doc, an exact
+   * match, a target strictly between two docs, a target exactly on the
+   * doc right after a match, the last doc, and a target past the last doc
+   * (must return {@code NO_MORE_DOCS}). Each target gets a *fresh*
+   * {@code PostingsEnum} (advance() only moves forward, so reusing one
+   * enum across targets would make later targets depend on earlier ones).
+   */
+  static void appendAdvanceManifest(StringBuilder m, LeafReader leaf, String field, String term)
+      throws IOException {
+    Terms terms = leaf.terms(field);
+    if (terms == null) {
+      throw new AssertionError("expected terms for field " + field);
+    }
+    TermsEnum probe = terms.iterator();
+    if (!probe.seekExact(new BytesRef(term))) {
+      throw new AssertionError("expected term " + term + " in field " + field);
+    }
+    List<Integer> allDocs = new java.util.ArrayList<>();
+    PostingsEnum p0 = probe.postings(null, PostingsEnum.FREQS);
+    int d;
+    while ((d = p0.nextDoc()) != PostingsEnum.NO_MORE_DOCS) {
+      allDocs.add(d);
+    }
+
+    int first = allDocs.get(0);
+    int mid = allDocs.get(allDocs.size() / 2);
+    int last = allDocs.get(allDocs.size() - 1);
+    int[] targets = {0, first, first + 1, mid, mid + 1, last, last + 1, last + 100000};
+
+    StringBuilder sb = new StringBuilder();
+    for (int target : targets) {
+      TermsEnum te = terms.iterator();
+      te.seekExact(new BytesRef(term));
+      PostingsEnum p = te.postings(null, PostingsEnum.FREQS);
+      int result = p.advance(target);
+      if (sb.length() > 0) {
+        sb.append(';');
+      }
+      if (result == PostingsEnum.NO_MORE_DOCS) {
+        sb.append(target).append(":NO_MORE_DOCS");
+      } else {
+        sb.append(target).append(':').append(result).append(',').append(p.freq());
+      }
+    }
+    String key = "field." + field + ".term." + term + ".advance";
+    m.append(key).append(".results=").append(sb).append('\n');
   }
 
   static void dump(Directory dir, String fileName, Path out) throws IOException {

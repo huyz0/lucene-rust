@@ -485,6 +485,88 @@ fn pos_field_positions_match_real_lucene_postings_enum() {
     }
 }
 
+/// `postings::PostingsCursor::advance()` (the binary-search "advance()-shaped
+/// API, not real skip-ahead" documented in `postings.rs`'s module doc)
+/// against real `PostingsEnum.advance(target)` output for a variety of
+/// targets: before the first doc, an exact match, a target strictly between
+/// two docs, the doc right after a match, the last doc, and a target past
+/// the last doc. Covers both "big"/"everywhere" (`docFreq == 300`, so some
+/// targets land across the full-block/tail-block boundary the multi-block
+/// `.doc` decode produces) and "body"/"cat" (`docFreq == 2`, single tail
+/// block). Each target uses a *fresh* cursor (mirroring the fixture
+/// generator's fresh `PostingsEnum` per target, since `advance()` only moves
+/// forward), the same way a real caller would re-seek a term and get a new
+/// `PostingsEnum` rather than reuse one across unrelated targets.
+fn assert_advance_matches_real_lucene(
+    m: &Manifest,
+    field: &str,
+    term: &str,
+    postings: &postings::Postings,
+) {
+    let raw = m.get(&format!("field.{field}.term.{term}.advance.results"));
+    for entry in raw.split(';') {
+        let (target_str, outcome) = entry.split_once(':').unwrap();
+        let target: i32 = target_str.parse().unwrap();
+
+        let mut cursor = postings::PostingsCursor::new(postings);
+        let doc = cursor.advance(target);
+
+        if outcome == "NO_MORE_DOCS" {
+            assert_eq!(
+                doc,
+                postings::NO_MORE_DOCS,
+                "field={field} term={term} target={target}"
+            );
+            assert_eq!(
+                cursor.freq(),
+                None,
+                "field={field} term={term} target={target}"
+            );
+        } else {
+            let (expected_doc_str, expected_freq_str) = outcome.split_once(',').unwrap();
+            let expected_doc: i32 = expected_doc_str.parse().unwrap();
+            let expected_freq: i32 = expected_freq_str.parse().unwrap();
+            assert_eq!(
+                doc, expected_doc,
+                "field={field} term={term} target={target}"
+            );
+            assert_eq!(
+                cursor.freq(),
+                Some(expected_freq),
+                "field={field} term={term} target={target}"
+            );
+        }
+    }
+}
+
+#[test]
+fn big_field_advance_matches_real_lucene_postings_enum_advance() {
+    let (fields, m) = open_fixture();
+    let (doc, id, suffix) = open_doc_input(&m);
+    let doc_in = postings::DocInput::open(&doc, &id, &suffix).expect("open .doc");
+    let big = fields.field("big").unwrap();
+
+    let postings = big
+        .postings(b"everywhere", Some(&doc_in))
+        .unwrap()
+        .expect("expected term \"everywhere\" to be found");
+    assert_advance_matches_real_lucene(&m, "big", "everywhere", &postings);
+}
+
+#[test]
+fn body_field_advance_matches_real_lucene_postings_enum_advance() {
+    let (fields, m) = open_fixture();
+    let (doc, id, suffix) = open_doc_input(&m);
+    let doc_in = postings::DocInput::open(&doc, &id, &suffix).expect("open .doc");
+    let body = fields.field("body").unwrap();
+
+    let postings = body
+        .postings(b"cat", Some(&doc_in))
+        .unwrap()
+        .expect("expected term \"cat\" to be found");
+    assert_advance_matches_real_lucene(&m, "body", "cat", &postings);
+}
+
 #[test]
 fn postings_missing_term_returns_none() {
     let (fields, m) = open_fixture();

@@ -106,13 +106,31 @@
 //! previous occurrence's (reused otherwise) — then re-chops the flat sequence
 //! into per-doc groups using the term's already-decoded `Postings::freqs`.
 //!
+//! ## `advance()` (real skip-ahead: still deferred; a shim exists)
+//!
+//! [`PostingsCursor`] gives `advance(target)`/`next_doc()` **interface**
+//! parity with `PostingsEnum`, but it is a binary search over
+//! [`DocInput::read_postings`]'s already-fully-decoded `Vec<i32>` — not real
+//! lazy wire-level skip-ahead. See [`PostingsCursor`]'s own doc comment for
+//! the honest tradeoff writeup; do not read its existence as proof that this
+//! module skips undecoded blocks.
+//!
 //! ## Deferred (all rejected with [`Error::Unsupported`])
 //!
-//! - **Skip-ahead (`advance()`)**: the level-0/level-1 skip pointers
+//! - **Real skip-ahead**: the level-0/level-1 skip pointers
 //!   (`level0NumBytes`/`blockLength`/level-1 headers) are parsed for wire-order
-//!   correctness but never used to jump forward; every block is decoded in
-//!   full. Correct but not fast for a searcher that only wants a subrange —
-//!   fine for a full-scan merge/`nextDoc()` consumer. Follow-up work.
+//!   correctness but never used to jump forward or avoid decoding a block;
+//!   every block between the start and wherever the caller wants is decoded
+//!   in full by `read_postings`, and [`PostingsCursor`] only adds a
+//!   post-hoc binary-search cursor on top of that fully-decoded result (see
+//!   above). Correct but not fast for a searcher that only wants a
+//!   subrange — fine for a full-scan merge/`nextDoc()` consumer, or for a
+//!   conjunction/phrase query whose two posting lists are both small enough
+//!   that eager decode is cheap. A real lazy skip-ahead — a stateful
+//!   `DocInput`-like type that tracks on-wire position and decodes blocks
+//!   on demand, using the level-0 skip pointers to jump past whole blocks
+//!   without decoding them — is follow-up work, tracked in
+//!   `docs/parity.md`.
 //! - **`docFreq >= LEVEL1_NUM_DOCS`** (8192): level-1 skip entries start
 //!   appearing inline in the `.doc` stream every 32 full blocks, which this
 //!   reader does not parse (this also blocks positions, since `positions()`
@@ -865,6 +883,120 @@ pub fn singleton_postings(meta: TermMetadata, total_term_freq: i64) -> Result<Po
     })
 }
 
+/// `PostingsEnum.NO_MORE_DOCS` (`DocIdSetIterator.NO_MORE_DOCS`).
+pub const NO_MORE_DOCS: i32 = i32::MAX;
+
+/// An `advance()`-shaped cursor over an **already fully-materialized**
+/// [`Postings`] — **not** real skip-ahead.
+///
+/// This is deliberately *not* Lucene's `Lucene104PostingsReader.
+/// BlockPostingsEnum.advance()`: that method jumps between undecoded `.doc`
+/// blocks using the level-0/level-1 skip pointers this module's decode
+/// functions already parse-and-discard (see the module doc's "Deferred:
+/// skip-ahead" section) — it can skip an entire 256-doc block's bytes
+/// without ever decoding them. `DocInput::read_postings` above still fully
+/// decodes every block up front into one `Vec<i32>` per term (the
+/// eager-materialization design this whole file already commits to, same
+/// tradeoff as `BlockTree`'s `TermsEnum`/`IndexedDISI`/the terms
+/// dictionary/`BlockPackedReaderIterator` — see those modules' doc
+/// comments). Given that, `advance()` here is simply a binary search over
+/// the already-decoded `docs` array: it has `advance()`'s *interface*
+/// (`PostingsEnum.advance(target)`'s doc-jump semantics, useful for a
+/// conjunction/phrase-query caller that wants to intersect two postings
+/// lists without linearly walking both) but none of the "skip bytes we
+/// never decode" *performance* benefit real Lucene's skip data exists for —
+/// every byte of the term's postings is decoded by `read_postings` before
+/// this cursor ever runs. A real lazy skip-ahead (extending `DocInput` with
+/// a stateful decode-on-demand iterator that uses the level-0 skip pointers
+/// to jump between undecoded blocks) is tracked as future work in
+/// `docs/parity.md` — do not read this type as proof that lazy wire-level
+/// skipping exists.
+///
+/// Mirrors `DocIdSetIterator`'s contract: a cursor starts positioned before
+/// the first doc (`doc_id() == -1`), `next_doc()`/`advance()` move strictly
+/// forward, and both return [`NO_MORE_DOCS`] once exhausted. Advancing to a
+/// target at or before the current doc ID is a documented **no-op** (returns
+/// the current doc ID unchanged) rather than an error or a rewind — real
+/// Lucene's contract technically forbids calling `advance()` with a target
+/// `<= docID()` (`PostingsEnum`'s Javadoc), but callers here get a safe,
+/// well-defined no-op instead of undefined behavior, since binary-searching
+/// backward would be either wrong (if implemented as "search from the
+/// start") or silently a no-op anyway (if implemented as "search from
+/// current" like this one is) — better to name the guaranteed behavior than
+/// leave it to accident.
+pub struct PostingsCursor<'p> {
+    postings: &'p Postings,
+    /// Index into `postings.docs`/`postings.freqs` of the current position.
+    /// `postings.docs.len()` once exhausted.
+    idx: usize,
+    /// Whether `next_doc()`/`advance()` has been called at least once
+    /// (`doc_id()` reports `-1` until then, matching `DocIdSetIterator`'s
+    /// "positioned before the first doc" starting state).
+    started: bool,
+}
+
+impl<'p> PostingsCursor<'p> {
+    /// A fresh cursor, positioned before the first doc.
+    pub fn new(postings: &'p Postings) -> Self {
+        PostingsCursor {
+            postings,
+            idx: 0,
+            started: false,
+        }
+    }
+
+    /// The current doc ID: `-1` before the first `next_doc()`/`advance()`
+    /// call, [`NO_MORE_DOCS`] once exhausted, otherwise the doc ID at the
+    /// cursor's position.
+    pub fn doc_id(&self) -> i32 {
+        if !self.started {
+            -1
+        } else if self.idx >= self.postings.docs.len() {
+            NO_MORE_DOCS
+        } else {
+            self.postings.docs[self.idx]
+        }
+    }
+
+    /// The current doc's frequency, or `None` before the first
+    /// `next_doc()`/`advance()` call or once exhausted (mirrors `doc_id()`'s
+    /// three-state contract; there is no freq to report in either edge
+    /// case).
+    pub fn freq(&self) -> Option<i32> {
+        if self.started && self.idx < self.postings.docs.len() {
+            Some(self.postings.freqs[self.idx])
+        } else {
+            None
+        }
+    }
+
+    /// `PostingsEnum.nextDoc()`: moves to the next doc, returning its ID (or
+    /// [`NO_MORE_DOCS`] if there isn't one).
+    pub fn next_doc(&mut self) -> i32 {
+        if !self.started {
+            self.started = true;
+            // idx is already 0 (the first doc, if any).
+        } else if self.idx < self.postings.docs.len() {
+            self.idx += 1;
+        }
+        self.doc_id()
+    }
+
+    /// `PostingsEnum.advance(target)`: moves forward to the first doc ID
+    /// `>= target`, returning it (or [`NO_MORE_DOCS`] if none remains).
+    /// Binary searches the already-decoded `docs` array from the current
+    /// position onward (never backward — see this type's doc comment for
+    /// why a `target <= doc_id()` is a documented no-op rather than an
+    /// error).
+    pub fn advance(&mut self, target: i32) -> i32 {
+        self.started = true;
+        let start = self.idx.min(self.postings.docs.len());
+        let offset = self.postings.docs[start..].partition_point(|&d| d < target);
+        self.idx = start + offset;
+        self.doc_id()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1305,6 +1437,112 @@ mod tests {
             ..TermMetadata::EMPTY
         };
         assert!(singleton_postings(meta, 1).is_err());
+    }
+
+    fn postings(docs: &[i32], freqs: &[i32]) -> Postings {
+        Postings {
+            docs: docs.to_vec(),
+            freqs: freqs.to_vec(),
+        }
+    }
+
+    #[test]
+    fn cursor_starts_before_first_doc() {
+        let p = postings(&[2, 5, 9], &[1, 1, 1]);
+        let cursor = PostingsCursor::new(&p);
+        assert_eq!(cursor.doc_id(), -1);
+        assert_eq!(cursor.freq(), None);
+    }
+
+    #[test]
+    fn cursor_next_doc_walks_in_order() {
+        let p = postings(&[2, 5, 9], &[3, 4, 5]);
+        let mut cursor = PostingsCursor::new(&p);
+        assert_eq!(cursor.next_doc(), 2);
+        assert_eq!(cursor.freq(), Some(3));
+        assert_eq!(cursor.next_doc(), 5);
+        assert_eq!(cursor.freq(), Some(4));
+        assert_eq!(cursor.next_doc(), 9);
+        assert_eq!(cursor.freq(), Some(5));
+        assert_eq!(cursor.next_doc(), NO_MORE_DOCS);
+        assert_eq!(cursor.freq(), None);
+        // Calling next_doc() again once exhausted stays exhausted (idempotent).
+        assert_eq!(cursor.next_doc(), NO_MORE_DOCS);
+    }
+
+    #[test]
+    fn cursor_advance_before_first_doc_lands_on_first() {
+        let p = postings(&[2, 5, 9], &[1, 1, 1]);
+        let mut cursor = PostingsCursor::new(&p);
+        // target 0 is before the first doc (2): should land on 2.
+        assert_eq!(cursor.advance(0), 2);
+        assert_eq!(cursor.freq(), Some(1));
+    }
+
+    #[test]
+    fn cursor_advance_exact_match() {
+        let p = postings(&[2, 5, 9], &[1, 2, 3]);
+        let mut cursor = PostingsCursor::new(&p);
+        assert_eq!(cursor.advance(5), 5);
+        assert_eq!(cursor.freq(), Some(2));
+    }
+
+    #[test]
+    fn cursor_advance_between_docs_lands_on_next_higher() {
+        let p = postings(&[2, 5, 9], &[1, 1, 1]);
+        let mut cursor = PostingsCursor::new(&p);
+        // target 6 is between 5 and 9: should land on 9.
+        assert_eq!(cursor.advance(6), 9);
+    }
+
+    #[test]
+    fn cursor_advance_past_last_doc_exhausts() {
+        let p = postings(&[2, 5, 9], &[1, 1, 1]);
+        let mut cursor = PostingsCursor::new(&p);
+        assert_eq!(cursor.advance(100), NO_MORE_DOCS);
+        assert_eq!(cursor.freq(), None);
+        // Once exhausted, further advances stay exhausted.
+        assert_eq!(cursor.advance(200), NO_MORE_DOCS);
+    }
+
+    #[test]
+    fn cursor_advance_on_empty_postings() {
+        let p = postings(&[], &[]);
+        let mut cursor = PostingsCursor::new(&p);
+        assert_eq!(cursor.doc_id(), -1);
+        assert_eq!(cursor.advance(0), NO_MORE_DOCS);
+        assert_eq!(cursor.freq(), None);
+    }
+
+    #[test]
+    fn cursor_advance_to_doc_before_current_is_a_documented_no_op() {
+        // advance() to a target <= the current doc ID does not rewind: it
+        // is a documented no-op (binary search never looks backward from
+        // the cursor's current index) rather than an error.
+        let p = postings(&[2, 5, 9, 20], &[1, 1, 1, 1]);
+        let mut cursor = PostingsCursor::new(&p);
+        assert_eq!(cursor.advance(9), 9);
+        assert_eq!(cursor.advance(5), 9, "no-op: target is behind current doc");
+        assert_eq!(cursor.advance(9), 9, "no-op: target equals current doc");
+        // Cursor can still move forward normally afterward.
+        assert_eq!(cursor.advance(20), 20);
+    }
+
+    #[test]
+    fn cursor_advance_then_next_doc_continues_from_landed_position() {
+        let p = postings(&[2, 5, 9, 20], &[1, 2, 3, 4]);
+        let mut cursor = PostingsCursor::new(&p);
+        assert_eq!(cursor.advance(6), 9);
+        assert_eq!(cursor.next_doc(), 20);
+        assert_eq!(cursor.freq(), Some(4));
+        assert_eq!(cursor.next_doc(), NO_MORE_DOCS);
+    }
+
+    #[test]
+    fn cursor_advance_to_no_more_docs_target_exhausts() {
+        let p = postings(&[2, 5], &[1, 1]);
+        let mut cursor = PostingsCursor::new(&p);
+        assert_eq!(cursor.advance(NO_MORE_DOCS), NO_MORE_DOCS);
     }
 
     #[test]
