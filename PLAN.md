@@ -274,6 +274,28 @@ Rust ≥ Java on p50 and p99 for the ported query types.
 
 ### Phase 4 — FFI layer + read-only OpenSearch integration (est. 6–8 weeks, overlaps P3)
 
+**Progress (task #20):** the first real FFI surface now exists in `lucene-ffi`,
+wrapping `lucene-search`'s existing `search_term_query`/`search_boolean_query`/
+`search_phrase_query` (unscored matching only, no BM25 scoring yet) behind opaque
+`u64` handles: `ffi_open_directory`/`ffi_close_directory` (a real `FsDirectory`),
+`ffi_open_segment`/`ffi_close_segment` (one segment's term dictionary plus
+optional `.doc`/`.pos` postings files, from already-known file names/segment
+ID/suffix/`maxDoc` — no `.si`/`segments_N` parsing on the Rust side yet),
+`ffi_search_term_query`/`ffi_search_boolean_query`/`ffi_search_phrase_query`
+(each collecting matches into a results handle via a plain
+`lucene_search::VecCollector`, entirely Rust-side), and
+`ffi_results_len`/`ffi_results_copy`/`ffi_close_results` to read them back out.
+Every exported function is `catch_unwind`-guarded (`error::guard`) and returns
+an `FfiStatus` code; `ffi_get_last_error_message` reads the thread-local
+last-error string. See `docs/parity.md`'s new `## lucene-ffi` section for the
+exact surface and what's deferred (scored queries, `.liv`/`.pay`, the unified
+`.si`-driven segment-open entry point, the JNI wrapper class itself, and the
+query-tree serialization / OpenSearch plugin work below, all still not
+started). `crates/lucene-ffi/src/*.rs` is unit-tested (≥95% line coverage per
+file) calling the exact exported `extern "C" fn` entry points against the real
+`fixtures/data/blocktree_index/` fixture, including stale/closed-handle
+rejection and a genuine caught-panic-surfaces-as-a-status-code test.
+
 **C ABI design (`lucene-ffi`):**
 
 - Opaque `u64` handles (generation-tagged slotmap) for: `Directory`, `IndexReader`,

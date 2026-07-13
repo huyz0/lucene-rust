@@ -7,6 +7,9 @@ license.workspace = true
 [dependencies]
 thiserror.workspace = true
 lucene-core = { path = "../lucene-core" }
+lucene-store = { path = "../lucene-store" }
+lucene-codecs = { path = "../lucene-codecs" }
+lucene-search = { path = "../lucene-search" }
 jni.workspace = true
 
 [lib]
