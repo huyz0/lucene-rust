@@ -185,6 +185,7 @@ pub mod collector;
 pub mod doc_value_query;
 pub mod docid_set;
 pub mod field_norms;
+pub mod multi_segment;
 pub mod query;
 pub mod similarity;
 pub mod term_vectors_query;
@@ -196,6 +197,10 @@ pub use doc_value_query::{
     search_numeric_range, search_sorted_ord_range, sort_by_numeric_doc_value, MissingValue,
 };
 pub use field_norms::FieldNorms;
+pub use multi_segment::{
+    merge_multi_segment_scored, search_boolean_query_multi_segment,
+    search_term_query_multi_segment, OpenSegment,
+};
 pub use query::{
     BooleanQuery, BoostQuery, Clause, ConstantScoreQuery, DisjunctionMaxQuery, PhraseQuery,
     PrefixQuery, TermQuery, WildcardQuery,

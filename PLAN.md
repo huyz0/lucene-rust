@@ -842,6 +842,41 @@ scoped panic-injection switch (not task #20's process-wide `AtomicBool`, for the
 same cross-test-flakiness reason task #30 already documented). See `docs/parity.md`'s
 `## lucene-ffi` section for the exact surface and what's still deferred.
 
+**Progress (task #41, final task in this batch):** multi-segment search —
+`lucene-search/src/multi_segment.rs` ports real `IndexSearcher.search`'s top-level
+fan-out (score/collect each segment locally, translate local doc IDs to global via
+`doc_base`, merge into one globally-ranked `TopDocs`-equivalent). One generic
+`merge_multi_segment_scored` core (not one copy per query type) drives thin wrappers
+`search_term_query_multi_segment`/`search_boolean_query_multi_segment`, since every
+scored query function already reduces to the same `Vec<ScoreDoc>` shape via
+`TopDocsCollector` — the merge step needs nothing query-type-specific. Each segment
+is bounded to its own local top-`top_n` before the cross-segment merge (matching real
+per-leaf `TopFieldCollector` behavior, provably lossless), and the merge itself reuses
+`TopDocsCollector`'s own score-desc/doc-id-asc tie-break comparator a second time
+rather than reimplementing it. **Explicit scope decision on idf**: real `BM25Similarity`
+computes `idf` from index-wide `CollectionStatistics`/`TermStatistics` aggregated across
+every segment; this port's existing scored query functions (unchanged by this task)
+compute `idf` from each segment's own `docFreq`/`docCount` only — there is no
+index-wide aggregation anywhere in this port, and this task does not add one (that's a
+`DirectoryReader`-level concept out of scope here). This task therefore claims "correct
+matching + correct per-segment-relative scoring + correct global merge order," **not**
+byte-for-byte parity with real multi-segment Lucene's BM25 scores whenever a term's
+`docFreq`/`docCount` genuinely differ across segments. **Verification**: unit tests in
+`multi_segment.rs` isolate the merge core (interleaved scores across 2-3 synthetic
+segments, truncation, a zero-match segment, cross-segment tie-break, `top_n == 0`, a
+single segment with nonzero `doc_base`) plus end-to-end real-fixture calls through both
+public wrappers. Cross-engine verification (`tests/multi_segment_fixtures.rs`): no
+genuine 2+-segment Java fixture exists yet in this repo, so — the documented
+next-best alternative — the real `fixtures/data/blocktree_index/` segment is opened
+twice as two segments of one index, and this test independently concatenates/sorts each
+"segment"'s own real, already fixture-proven BM25 scores (translated by `doc_base`) to
+confirm `search_term_query_multi_segment`'s actual output matches, doc-for-doc and
+score-for-score — proving the merge/doc-base-translation/tie-break logic against real
+recorded scores. See `docs/parity.md`'s new row for the full scoping detail, what's
+still deferred (real index-wide idf, a genuine multi-segment fixture, multi-segment
+wrappers for the other query types, an `IndexReader`/`DirectoryReader` object model,
+FFI exposure), and the exact test list.
+
 1. `lucene-analysis`: `TokenStream` as an iterator-of-token-structs (skip Java's
    AttributeSource reflection design entirely — a plain
    `Token { bytes, position_increment, offset, ... }` struct), StandardTokenizer via
