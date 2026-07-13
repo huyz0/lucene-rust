@@ -503,6 +503,44 @@ prefix, and a prefix containing literal `*`/`?` bytes — asserting doc-for-doc
 agreement with this port's own `Clause::Prefix` matching for every recorded
 case. See `docs/parity.md`'s updated row for the full accounting.
 
+**Progress (task #36):** delete-by-BKD-point-range is ported —
+`crates/lucene-index/src/points_delete.rs`'s `resolve_points_range_doc_ids`
+(field number + inclusive `[min_packed, max_packed]` byte range →
+matching live doc IDs, per-dimension unsigned-byte-wise comparison,
+de-duplicated/ascending) and `resolve_and_apply_points_range_delete` (same
+resolve-then-`deletes::apply_deletes` shape as task #27's
+`term_delete::resolve_and_apply_term_delete`), the BKD-range analog of that
+task's delete-by-term flow. **Design decision / honest gap**: no BKD
+range-query matcher existed anywhere in the workspace to reuse — unlike
+task #27, where `lucene-search::term_doc_ids` already existed and
+`term_delete.rs` just reimplemented its handful of lines locally to avoid an
+upward `lucene-index → lucene-search` dependency (verified again here:
+`crates/lucene-search/Cargo.toml` depends on `lucene-index`, not the other
+way around) — `lucene-search`'s only range-shaped queries
+(`search_numeric_range`/`search_sorted_ord_range`/`search_multi_valued_range`
+in `doc_value_query.rs`) walk doc-values, not the BKD tree, and
+`lucene_codecs::points` itself has no intersection/pruning logic, only
+`PointsReader::decode_all_points` (decodes every point in a field
+unconditionally). `points_delete.rs` therefore decodes every point via that
+existing primitive and filters in memory rather than porting
+`BKDReader.intersect`'s tree-pruning traversal — correct, not sublinear; a
+real perf gap against `BKDReader.intersect`, tracked in `docs/parity.md`, not
+hidden. Verified with new hand-built in-memory fixtures (via the existing
+`points::write`, mirroring how `term_delete.rs`'s own tests build a segment
+in-memory) rather than a new checked-in real-Lucene fixture: the existing
+`fixtures/data/points_index/` fixture (task #18/#22, `GenPoints.java`) is
+single-dimension, and `points_delete.rs`'s unit tests already need a
+hand-built 2D fixture to cover the multi-dimension per-dimension-AND
+semantics that fixture can't exercise anyway, so extending it with a new
+`Append*Manifest.java` would have added Java-side machinery without covering
+anything the in-memory fixture doesn't already cover byte-for-byte (same
+`points::write`/`points::open` round-trip task #18/#22's own tests already
+verify against real Lucene). Unit tests cover: exact range match, inclusive
+boundaries on both ends, zero-match range (no-op), all-docs range,
+unknown-field-number no-op, live-docs filtering, and 2D multi-dimension
+"every dimension must independently be in range" semantics. See
+`docs/parity.md`'s updated row for the full accounting.
+
 1. Traits: `Query → Weight → Scorer/ScorerSupplier`, `DocIdSetIterator`,
    `TwoPhaseIterator`, `BulkScorer`. Use enums where the closed set allows
    (DISI is called per-doc — keep it monomorphizable; `Box<dyn>` only at Weight level).
