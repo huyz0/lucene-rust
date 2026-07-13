@@ -21,16 +21,52 @@
 //! is a real wire-format design question of its own -- deferred here as a
 //! documented decision, not an oversight, since this task's scope is
 //! `lucene-search`'s own nested-clause support, not a new FFI capability.
+//!
+//! ## Scored variants (task #30) -- `ffi_search_term_query_scored`/
+//! `ffi_search_boolean_query_scored`/`ffi_search_phrase_query_scored`
+//!
+//! Same matching semantics as their unscored siblings above, but each feeds
+//! the matched, live docs' real BM25 score (`lucene_search::similarity`) to a
+//! [`lucene_search::TopDocsCollector`] (keeping only the best `top_n` hits,
+//! see that type's doc comment for tie-breaking) instead of collecting every
+//! match into a flat `Vec<i32>`. The resulting `(doc_id, score)` hits are
+//! collected into a new [`crate::registry::ScoredResultsHandle`] -- a
+//! separate registry/handle type from the unscored path's `ResultsHandle`,
+//! see that struct's doc comment in `registry.rs` for why.
+//!
+//! **Norms**: [`open_field_norms`] looks a field's [`lucene_search::FieldNorms`]
+//! up from the segment handle's `norms`/`norms_data` (populated by
+//! [`crate::segment::ffi_open_segment`]'s optional `nvm_name`/`nvd_name`
+//! parameters, also task #30) via `field_infos` name->number lookup, falling
+//! back to `None` (real Lucene's `UNNORMED_FIELD_LENGTH` approximation) when
+//! the segment was opened without norms, or the field itself has none --
+//! exactly the same fallback `lucene_search`'s own scored functions already
+//! document for a bare `norms: None`.
+//!
+//! **`ffi_search_boolean_query_scored`'s clause list** is the same flat,
+//! `Clause::Term`-only four-parallel-array wire format as the unscored
+//! `ffi_search_boolean_query` above (see that section's doc comment for why
+//! nested/phrase clause construction isn't exposed over this C ABI yet) --
+//! its norms map is built from every distinct field name appearing in
+//! `must`/`should`/`must_not`'s flat term clauses.
 
+use std::collections::HashMap;
 use std::os::raw::c_char;
 
 use lucene_codecs::postings::{DocInput, PosInput};
-use lucene_search::{search_boolean_query, search_phrase_query, search_term_query};
-use lucene_search::{BooleanQuery, PhraseQuery, TermQuery, VecCollector};
+use lucene_search::field_norms::FieldNorms;
+use lucene_search::{
+    search_boolean_query, search_boolean_query_scored, search_phrase_query,
+    search_phrase_query_scored, search_term_query, search_term_query_scored,
+};
+use lucene_search::{BooleanQuery, Clause, PhraseQuery, TermQuery, TopDocsCollector, VecCollector};
 
 use crate::error::{guard, set_last_error, FfiStatus};
 use crate::raw::{bytes_from_raw, str_from_raw};
-use crate::registry::{lock_recovering, results, segments, ResultsHandle};
+use crate::registry::{
+    lock_recovering, results, scored_results, segments, ResultsHandle, ScoredResultsHandle,
+    SegmentHandle,
+};
 
 fn map_search_error(e: lucene_search::Error) -> FfiStatus {
     set_last_error(format!("search failed: {e}"));
@@ -56,6 +92,34 @@ static PANIC_ON_NEXT_TERM_QUERY: std::sync::atomic::AtomicBool =
 #[cfg(test)]
 pub(crate) fn arm_panic_on_next_term_query() {
     PANIC_ON_NEXT_TERM_QUERY.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+// Test-only panic-injection switch for
+// `registry_mutex_recovers_from_poisoning_after_a_panic_mid_scored_query`
+// below -- same purpose as `PANIC_ON_NEXT_TERM_QUERY` (see its doc comment
+// for what it fabricates and why), but **thread-local rather than a
+// process-wide `static`**. `cargo test` runs a crate's tests in parallel on a
+// thread pool by default, so a process-wide `AtomicBool` armed by one test
+// can fire inside a *different*, unrelated test's call to
+// `ffi_search_term_query_scored` if the two happen to run concurrently on
+// separate threads -- a real, if narrow, source of test flakiness a global
+// flag like `PANIC_ON_NEXT_TERM_QUERY` is exposed to (that one has stayed
+// safe in practice only because its own test is the sole caller of
+// `ffi_search_term_query` that ever arms it, and no other currently-running
+// test happens to call that same function while it's armed -- not because
+// the mechanism itself is race-free). Rather than reuse that same
+// process-wide shape for a second, newly-added test, this flag is scoped
+// `thread_local!` instead: arming it and firing it both happen on the same
+// test's own thread, so no other test's thread can ever observe or trigger
+// it, regardless of scheduling.
+#[cfg(test)]
+thread_local! {
+    static PANIC_ON_NEXT_SCORED_TERM_QUERY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(crate) fn arm_panic_on_next_scored_term_query() {
+    PANIC_ON_NEXT_SCORED_TERM_QUERY.with(|c| c.set(true));
 }
 
 /// Runs `search_term_query` for `(field, term)` against `segment_handle`,
@@ -364,6 +428,357 @@ pub unsafe extern "C" fn ffi_search_phrase_query(
     })
 }
 
+/// Opens `field`'s [`FieldNorms`] against `segment`'s norms data, or `None`
+/// when the segment was opened without a `.nvm`/`.nvd` pair
+/// ([`crate::segment::ffi_open_segment`]'s `nvm_name`/`nvd_name`), or when
+/// `field` itself has no norms entry (e.g. norms disabled for that field) --
+/// both cases are the documented "fall back to
+/// `lucene_search::similarity::UNNORMED_FIELD_LENGTH`" behavior, same as
+/// passing `norms: None` directly to a `search_*_query_scored` function, not
+/// an error.
+///
+/// **Recomputed on every call, not cached on `SegmentHandle`**:
+/// `FieldNorms::open` scans every live doc in the field once to compute
+/// `avgFieldLength` (see `field_norms.rs`'s doc comment) -- cheap relative to
+/// a real query's own per-doc scoring work, and caching it would mean
+/// threading a live-docs-aware invalidation story into `SegmentHandle` for a
+/// shortcut this task's scope doesn't need; a future perf pass can revisit if
+/// this ever shows up as measurably hot.
+fn open_field_norms<'seg>(
+    segment: &'seg SegmentHandle,
+    field: &str,
+) -> Result<Option<FieldNorms<'seg>>, FfiStatus> {
+    let (Some(norms), Some(data)) = (segment.norms.as_ref(), segment.norms_data.as_deref()) else {
+        return Ok(None);
+    };
+    let Some(field_info) = segment.field_infos.fields.iter().find(|f| f.name == field) else {
+        return Ok(None);
+    };
+    let Some(entry) = norms.entry(field_info.number) else {
+        return Ok(None);
+    };
+    let opened = FieldNorms::open(data, *entry, segment.max_doc, None).map_err(|e| {
+        set_last_error(format!("opening norms for field {field}: {e}"));
+        FfiStatus::Decode
+    })?;
+    Ok(Some(opened))
+}
+
+/// Scored sibling of [`ffi_search_term_query`]: runs `search_term_query_scored`
+/// for `(field, term)`, keeping the best `top_n` `(doc_id, score)` hits (see
+/// [`lucene_search::TopDocsCollector`]) in a new
+/// [`crate::registry::ScoredResultsHandle`] written to
+/// `*out_scored_results_handle` on success.
+///
+/// # Safety
+/// `field` must be valid for `field_len` bytes, `term` for `term_len` bytes,
+/// `out_scored_results_handle` valid for one `u64` write.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn ffi_search_term_query_scored(
+    segment_handle: u64,
+    field: *const c_char,
+    field_len: usize,
+    term: *const u8,
+    term_len: usize,
+    top_n: usize,
+    out_scored_results_handle: *mut u64,
+) -> i32 {
+    guard(|| {
+        if out_scored_results_handle.is_null() {
+            return Err(FfiStatus::NullPointer);
+        }
+        // SAFETY: caller contract guarantees `field`/`term` are valid for their
+        // paired lengths.
+        let (field, term) = unsafe {
+            (
+                str_from_raw(field as *const u8, field_len)?,
+                bytes_from_raw(term, term_len)?,
+            )
+        };
+        let query = TermQuery::new(field, term.to_vec());
+
+        let segments = lock_recovering(segments());
+        let segment = segments.get(segment_handle).ok_or_else(|| {
+            set_last_error(
+                "ffi_search_term_query_scored: unknown or already-closed segment handle",
+            );
+            FfiStatus::InvalidHandle
+        })?;
+
+        // Test-only: see `arm_panic_on_next_scored_term_query`'s doc comment.
+        // Fires while `segments` (the `MutexGuard` above) is still held, exactly
+        // like a real decode panic reached through `search_term_query_scored`
+        // below would.
+        #[cfg(test)]
+        if PANIC_ON_NEXT_SCORED_TERM_QUERY.with(|c| c.replace(false)) {
+            panic!(
+                "test-only simulated panic while the segments registry lock is held (scored path)"
+            );
+        }
+
+        let doc_in = segment
+            .doc_bytes
+            .as_deref()
+            .map(|b| DocInput::open(b, &segment.segment_id, &segment.segment_suffix))
+            .transpose()
+            .map_err(|e| {
+                set_last_error(format!("reopening .doc: {e}"));
+                FfiStatus::Decode
+            })?;
+        let norms = open_field_norms(segment, &query.field)?;
+
+        let mut collector = TopDocsCollector::new(top_n);
+        search_term_query_scored(
+            &segment.fields,
+            doc_in.as_ref(),
+            None,
+            &query,
+            norms.as_ref(),
+            &mut collector,
+        )
+        .map_err(map_search_error)?;
+
+        let handle = lock_recovering(scored_results()).insert(ScoredResultsHandle {
+            hits: collector.top_docs().to_vec(),
+        });
+        // SAFETY: caller contract guarantees `out_scored_results_handle` is valid
+        // for one write.
+        unsafe {
+            *out_scored_results_handle = handle;
+        }
+        Ok(())
+    })
+}
+
+/// Scored sibling of [`ffi_search_boolean_query`]: same flat, `Clause::Term`-only
+/// four-parallel-array clause wire format (see this module's doc comment), but
+/// keeps the best `top_n` `(doc_id, score)` hits (each matched doc's score is the
+/// sum of its BM25 score across every satisfied `must`/`should` clause, see
+/// [`lucene_search::search_boolean_query_scored`]'s doc comment) in a new
+/// [`crate::registry::ScoredResultsHandle`].
+///
+/// # Safety
+/// Same contract as [`ffi_search_boolean_query`]'s, plus `out_scored_results_handle`
+/// must be valid for one `u64` write.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn ffi_search_boolean_query_scored(
+    segment_handle: u64,
+    must_fields: *const *const c_char,
+    must_field_lens: *const usize,
+    must_terms: *const *const u8,
+    must_term_lens: *const usize,
+    must_count: usize,
+    should_fields: *const *const c_char,
+    should_field_lens: *const usize,
+    should_terms: *const *const u8,
+    should_term_lens: *const usize,
+    should_count: usize,
+    must_not_fields: *const *const c_char,
+    must_not_field_lens: *const usize,
+    must_not_terms: *const *const u8,
+    must_not_term_lens: *const usize,
+    must_not_count: usize,
+    top_n: usize,
+    out_scored_results_handle: *mut u64,
+) -> i32 {
+    guard(|| {
+        if out_scored_results_handle.is_null() {
+            return Err(FfiStatus::NullPointer);
+        }
+        // SAFETY: see `read_term_clauses`'s contract; every array/count pair here
+        // matches it exactly.
+        let query = unsafe {
+            BooleanQuery::new()
+                .with_must(read_term_clauses(
+                    must_fields,
+                    must_field_lens,
+                    must_terms,
+                    must_term_lens,
+                    must_count,
+                )?)
+                .with_should(read_term_clauses(
+                    should_fields,
+                    should_field_lens,
+                    should_terms,
+                    should_term_lens,
+                    should_count,
+                )?)
+                .with_must_not(read_term_clauses(
+                    must_not_fields,
+                    must_not_field_lens,
+                    must_not_terms,
+                    must_not_term_lens,
+                    must_not_count,
+                )?)
+        };
+
+        let segments = lock_recovering(segments());
+        let segment = segments.get(segment_handle).ok_or_else(|| {
+            set_last_error(
+                "ffi_search_boolean_query_scored: unknown or already-closed segment handle",
+            );
+            FfiStatus::InvalidHandle
+        })?;
+        let doc_in = segment
+            .doc_bytes
+            .as_deref()
+            .map(|b| DocInput::open(b, &segment.segment_id, &segment.segment_suffix))
+            .transpose()
+            .map_err(|e| {
+                set_last_error(format!("reopening .doc: {e}"));
+                FfiStatus::Decode
+            })?;
+
+        // Norms map keyed by every distinct field name across `must`/`should`
+        // (see this module's doc comment) -- a field with no norms entry (or no
+        // opened norms at all) is simply absent from the map, which
+        // `search_boolean_query_scored` treats as "fall back to
+        // `UNNORMED_FIELD_LENGTH` for that field", same as `open_field_norms`'s
+        // own `None` fallback.
+        let mut field_names: Vec<&str> = query
+            .must
+            .iter()
+            .chain(query.should.iter())
+            .chain(query.must_not.iter())
+            .filter_map(|c| match c {
+                Clause::Term(t) => Some(t.field.as_str()),
+                Clause::Phrase(_) | Clause::Boolean(_) => None,
+            })
+            .collect();
+        field_names.sort_unstable();
+        field_names.dedup();
+        let mut norms_map: HashMap<String, FieldNorms<'_>> = HashMap::new();
+        for name in field_names {
+            if let Some(field_norms) = open_field_norms(segment, name)? {
+                norms_map.insert(name.to_string(), field_norms);
+            }
+        }
+        let norms_arg = (!norms_map.is_empty()).then_some(&norms_map);
+
+        let mut collector = TopDocsCollector::new(top_n);
+        search_boolean_query_scored(
+            &segment.fields,
+            doc_in.as_ref(),
+            None,
+            None,
+            None,
+            &query,
+            norms_arg,
+            &mut collector,
+        )
+        .map_err(map_search_error)?;
+
+        let handle = lock_recovering(scored_results()).insert(ScoredResultsHandle {
+            hits: collector.top_docs().to_vec(),
+        });
+        // SAFETY: caller contract guarantees `out_scored_results_handle` is valid
+        // for one write.
+        unsafe {
+            *out_scored_results_handle = handle;
+        }
+        Ok(())
+    })
+}
+
+/// Scored sibling of [`ffi_search_phrase_query`]: same single-field, in-phrase-order
+/// term list wire format, but keeps the best `top_n` `(doc_id, score)` hits (via
+/// [`lucene_search::search_phrase_query_scored`]) in a new
+/// [`crate::registry::ScoredResultsHandle`]. Same `.pos`-file requirement for a
+/// multi-term phrase as the unscored sibling -- see that function's doc comment.
+///
+/// # Safety
+/// Same contract as [`ffi_search_phrase_query`]'s, plus `out_scored_results_handle`
+/// must be valid for one `u64` write.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn ffi_search_phrase_query_scored(
+    segment_handle: u64,
+    field: *const c_char,
+    field_len: usize,
+    terms: *const *const u8,
+    term_lens: *const usize,
+    term_count: usize,
+    top_n: usize,
+    out_scored_results_handle: *mut u64,
+) -> i32 {
+    guard(|| {
+        if out_scored_results_handle.is_null() {
+            return Err(FfiStatus::NullPointer);
+        }
+        // SAFETY: caller contract guarantees `field` is valid for `field_len`
+        // bytes, and (when `term_count > 0`) `terms`/`term_lens` are valid for
+        // `term_count` elements with each element pair valid for its length.
+        let (field, term_list) = unsafe {
+            let field = str_from_raw(field as *const u8, field_len)?;
+            let mut term_list = Vec::with_capacity(term_count);
+            if term_count > 0 {
+                if terms.is_null() || term_lens.is_null() {
+                    return Err(FfiStatus::NullPointer);
+                }
+                for i in 0..term_count {
+                    let term_ptr = *terms.add(i);
+                    let term_len = *term_lens.add(i);
+                    term_list.push(bytes_from_raw(term_ptr, term_len)?.to_vec());
+                }
+            }
+            (field, term_list)
+        };
+        let query = PhraseQuery::new(field, term_list);
+
+        let segments = lock_recovering(segments());
+        let segment = segments.get(segment_handle).ok_or_else(|| {
+            set_last_error(
+                "ffi_search_phrase_query_scored: unknown or already-closed segment handle",
+            );
+            FfiStatus::InvalidHandle
+        })?;
+        let doc_in = segment
+            .doc_bytes
+            .as_deref()
+            .map(|b| DocInput::open(b, &segment.segment_id, &segment.segment_suffix))
+            .transpose()
+            .map_err(|e| {
+                set_last_error(format!("reopening .doc: {e}"));
+                FfiStatus::Decode
+            })?;
+        let pos_in = segment
+            .pos_bytes
+            .as_deref()
+            .map(|b| PosInput::open(b, &segment.segment_id, &segment.segment_suffix))
+            .transpose()
+            .map_err(|e| {
+                set_last_error(format!("reopening .pos: {e}"));
+                FfiStatus::Decode
+            })?;
+        let norms = open_field_norms(segment, &query.field)?;
+
+        let mut collector = TopDocsCollector::new(top_n);
+        search_phrase_query_scored(
+            &segment.fields,
+            doc_in.as_ref(),
+            pos_in.as_ref(),
+            None,
+            None,
+            &query,
+            norms.as_ref(),
+            &mut collector,
+        )
+        .map_err(map_search_error)?;
+
+        let handle = lock_recovering(scored_results()).insert(ScoredResultsHandle {
+            hits: collector.top_docs().to_vec(),
+        });
+        // SAFETY: caller contract guarantees `out_scored_results_handle` is valid
+        // for one write.
+        unsafe {
+            *out_scored_results_handle = handle;
+        }
+        Ok(())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -402,12 +817,21 @@ mod tests {
     }
 
     fn open_segment(dir_handle: u64, with_pos: bool) -> u64 {
+        open_segment_with_norms(dir_handle, with_pos, false)
+    }
+
+    /// Same as [`open_segment`], optionally also opening this fixture's real
+    /// `_0.nvm`/`_0.nvd` (task #30) so scored-query tests can exercise the
+    /// real-norms path.
+    fn open_segment_with_norms(dir_handle: u64, with_pos: bool, with_norms: bool) -> u64 {
         let fnm = "_0.fnm";
         let tim = "_0_Lucene104_0.tim";
         let tip = "_0_Lucene104_0.tip";
         let tmd = "_0_Lucene104_0.tmd";
         let doc = "_0_Lucene104_0.doc";
         let pos = "_0_Lucene104_0.pos";
+        let nvm = "_0.nvm";
+        let nvd = "_0.nvd";
         let suffix = "Lucene104_0";
         let id = segment_id_bytes();
         let mut handle: u64 = 0;
@@ -430,6 +854,18 @@ mod tests {
                     std::ptr::null()
                 },
                 if with_pos { pos.len() } else { 0 },
+                if with_norms {
+                    nvm.as_ptr() as *const c_char
+                } else {
+                    std::ptr::null()
+                },
+                if with_norms { nvm.len() } else { 0 },
+                if with_norms {
+                    nvd.as_ptr() as *const c_char
+                } else {
+                    std::ptr::null()
+                },
+                if with_norms { nvd.len() } else { 0 },
                 id.as_ptr(),
                 suffix.as_ptr() as *const c_char,
                 suffix.len(),
@@ -1190,6 +1626,755 @@ mod tests {
         assert_eq!(rc, FfiStatus::Ok.code());
         assert_eq!(read_results(results_handle), vec![0, 2]);
 
+        ffi_close_results(results_handle);
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    // ---- Scored query tests (task #30) ----
+
+    use crate::results_scored::{ffi_close_scored_results, ffi_scored_results_copy};
+
+    fn read_scored_results(scored_results_handle: u64) -> Vec<(i32, f32)> {
+        let mut len: usize = 0;
+        assert_eq!(
+            unsafe {
+                crate::results_scored::ffi_scored_results_len(
+                    scored_results_handle,
+                    &mut len as *mut _,
+                )
+            },
+            FfiStatus::Ok.code()
+        );
+        let mut doc_ids = vec![0i32; len];
+        let mut scores = vec![0.0f32; len];
+        assert_eq!(
+            unsafe {
+                ffi_scored_results_copy(
+                    scored_results_handle,
+                    doc_ids.as_mut_ptr(),
+                    scores.as_mut_ptr(),
+                    len,
+                )
+            },
+            FfiStatus::Ok.code()
+        );
+        doc_ids.into_iter().zip(scores).collect()
+    }
+
+    /// Reimplements the expected unnormed (`norms: None`-fallback) BM25 score
+    /// independently of `similarity::score` -- same "recompute the expected
+    /// value, don't just call the function under test and trust it" approach
+    /// `lucene-search`'s own `scoring_fixtures.rs` uses -- from this fixture's
+    /// known real postings stats (`manifest.properties`: `body`'s `docFreq`/
+    /// `docCount`/per-doc `freq`, e.g. `cat`'s `docFreq=2`, `body.docCount=4`,
+    /// `postingsDocs=0,2`/`postingsFreqs=2,1`).
+    fn expected_unnormed_bm25(doc_freq: i64, doc_count: i64, freq: f32) -> f32 {
+        lucene_search::similarity::idf(doc_freq, doc_count)
+            * lucene_search::similarity::tf_norm(
+                freq,
+                lucene_search::similarity::UNNORMED_FIELD_LENGTH,
+                lucene_search::similarity::UNNORMED_FIELD_LENGTH,
+                lucene_search::similarity::DEFAULT_K1,
+                lucene_search::similarity::DEFAULT_B,
+            )
+    }
+
+    #[test]
+    fn term_query_scored_body_cat_returns_expected_docs_and_scores() {
+        let dir_handle = open_dir();
+        let seg_handle = open_segment(dir_handle, false);
+
+        let field = "body";
+        let term = b"cat";
+        let mut scored_handle: u64 = 0;
+        let rc = unsafe {
+            ffi_search_term_query_scored(
+                seg_handle,
+                field.as_ptr() as *const c_char,
+                field.len(),
+                term.as_ptr(),
+                term.len(),
+                10,
+                &mut scored_handle as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::Ok.code());
+
+        let hits = read_scored_results(scored_handle);
+        // cat: docFreq=2, body.docCount=4; doc 0 has freq 2, doc 2 has freq 1
+        // (manifest.properties) -- with no norms opened, both fall back to
+        // `UNNORMED_FIELD_LENGTH`, so only `freq` differs between the two hits.
+        let expected_doc0 = expected_unnormed_bm25(2, 4, 2.0);
+        let expected_doc2 = expected_unnormed_bm25(2, 4, 1.0);
+        // Higher freq (doc 0) scores strictly higher, so best-first order puts
+        // doc 0 ahead of doc 2.
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].0, 0);
+        assert!((hits[0].1 - expected_doc0).abs() < 1e-4);
+        assert_eq!(hits[1].0, 2);
+        assert!((hits[1].1 - expected_doc2).abs() < 1e-4);
+
+        ffi_close_scored_results(scored_handle);
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    #[test]
+    fn term_query_scored_top_n_keeps_only_the_best_hit() {
+        let dir_handle = open_dir();
+        let seg_handle = open_segment(dir_handle, false);
+
+        let field = "body";
+        let term = b"cat";
+        let mut scored_handle: u64 = 0;
+        let rc = unsafe {
+            ffi_search_term_query_scored(
+                seg_handle,
+                field.as_ptr() as *const c_char,
+                field.len(),
+                term.as_ptr(),
+                term.len(),
+                1, // top_n
+                &mut scored_handle as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::Ok.code());
+        let hits = read_scored_results(scored_handle);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].0, 0); // doc 0 (freq 2) outscores doc 2 (freq 1).
+
+        ffi_close_scored_results(scored_handle);
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    #[test]
+    fn term_query_scored_missing_term_returns_empty_results_not_an_error() {
+        let dir_handle = open_dir();
+        let seg_handle = open_segment(dir_handle, false);
+
+        let field = "body";
+        let term = b"zzz-missing";
+        let mut scored_handle: u64 = 0;
+        let rc = unsafe {
+            ffi_search_term_query_scored(
+                seg_handle,
+                field.as_ptr() as *const c_char,
+                field.len(),
+                term.as_ptr(),
+                term.len(),
+                10,
+                &mut scored_handle as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::Ok.code());
+        assert!(read_scored_results(scored_handle).is_empty());
+
+        ffi_close_scored_results(scored_handle);
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    /// Scoring a second, non-`body` field (`id`) against a segment opened with
+    /// real norms must also succeed -- `open_field_norms`'s field lookup is
+    /// keyed by field name/number per call, not hardcoded to `body`.
+    #[test]
+    fn term_query_scored_non_body_field_with_real_norms_succeeds() {
+        let dir_handle = open_dir();
+        let seg_handle = open_segment_with_norms(dir_handle, false, true);
+
+        let field = "id";
+        let term = b"id2";
+        let mut scored_handle: u64 = 0;
+        let rc = unsafe {
+            ffi_search_term_query_scored(
+                seg_handle,
+                field.as_ptr() as *const c_char,
+                field.len(),
+                term.as_ptr(),
+                term.len(),
+                10,
+                &mut scored_handle as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::Ok.code());
+        let hits = read_scored_results(scored_handle);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].0, 2);
+
+        ffi_close_scored_results(scored_handle);
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    /// `open_field_norms`'s "field not present in `field_infos` at all" branch:
+    /// a field name this segment's `.fnm` never declared must still be a
+    /// well-formed (empty-results) scored query, not an error, whether or not
+    /// the segment has norms opened.
+    #[test]
+    fn term_query_scored_field_not_in_field_infos_falls_back_to_unnormed() {
+        let dir_handle = open_dir();
+        let seg_handle = open_segment_with_norms(dir_handle, false, true);
+
+        let field = "no-such-field";
+        let term = b"whatever";
+        let mut scored_handle: u64 = 0;
+        let rc = unsafe {
+            ffi_search_term_query_scored(
+                seg_handle,
+                field.as_ptr() as *const c_char,
+                field.len(),
+                term.as_ptr(),
+                term.len(),
+                10,
+                &mut scored_handle as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::Ok.code());
+        assert!(read_scored_results(scored_handle).is_empty());
+
+        ffi_close_scored_results(scored_handle);
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    /// Differential proof that `ffi_open_segment`'s `nvm_name`/`nvd_name`
+    /// parameters actually reach `search_term_query_scored`'s `norms` argument:
+    /// real per-doc field lengths (doc 0 length 3, doc 2 length 1, avg 2.25 --
+    /// same fixture values `crates/lucene-search/tests/scoring_fixtures.rs`
+    /// independently verifies against real Lucene-written norm bytes) must
+    /// yield different scores than the `None`-fallback constant-length path
+    /// exercised by `term_query_scored_body_cat_returns_expected_docs_and_scores`
+    /// above.
+    #[test]
+    fn term_query_scored_with_real_norms_differs_from_unnormed_fallback() {
+        let dir_handle = open_dir();
+        let seg_handle = open_segment_with_norms(dir_handle, false, true);
+
+        let field = "body";
+        let term = b"cat";
+        let mut scored_handle: u64 = 0;
+        let rc = unsafe {
+            ffi_search_term_query_scored(
+                seg_handle,
+                field.as_ptr() as *const c_char,
+                field.len(),
+                term.as_ptr(),
+                term.len(),
+                10,
+                &mut scored_handle as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::Ok.code());
+        let hits = read_scored_results(scored_handle);
+        assert_eq!(hits.len(), 2);
+
+        let avg = 2.25f32; // (3 + 2 + 1 + 3) / 4, see this test's doc comment.
+        let expected_doc0 = lucene_search::similarity::idf(2, 4)
+            * lucene_search::similarity::tf_norm(
+                2.0,
+                3.0,
+                avg,
+                lucene_search::similarity::DEFAULT_K1,
+                lucene_search::similarity::DEFAULT_B,
+            );
+        let expected_doc2 = lucene_search::similarity::idf(2, 4)
+            * lucene_search::similarity::tf_norm(
+                1.0,
+                1.0,
+                avg,
+                lucene_search::similarity::DEFAULT_K1,
+                lucene_search::similarity::DEFAULT_B,
+            );
+        let by_doc = |doc_id: i32| hits.iter().find(|h| h.0 == doc_id).unwrap().1;
+        assert!((by_doc(0) - expected_doc0).abs() < 1e-4);
+        assert!((by_doc(2) - expected_doc2).abs() < 1e-4);
+
+        // And it must genuinely differ from the unnormed fallback -- otherwise
+        // this test wouldn't be distinguishing "norms wired through" from
+        // "norms silently ignored".
+        let unnormed_doc0 = expected_unnormed_bm25(2, 4, 2.0);
+        assert!((by_doc(0) - unnormed_doc0).abs() > 1e-4);
+
+        ffi_close_scored_results(scored_handle);
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    #[test]
+    fn term_query_scored_unknown_segment_handle_is_invalid_handle() {
+        let field = "body";
+        let term = b"cat";
+        let mut scored_handle: u64 = 0;
+        let rc = unsafe {
+            ffi_search_term_query_scored(
+                0xFFFF,
+                field.as_ptr() as *const c_char,
+                field.len(),
+                term.as_ptr(),
+                term.len(),
+                10,
+                &mut scored_handle as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::InvalidHandle.code());
+    }
+
+    /// A directory handle passed where a segment handle is expected must be
+    /// rejected by the registry-tag check, same as the unscored sibling's
+    /// equivalent test above.
+    #[test]
+    fn term_query_scored_directory_handle_passed_as_segment_handle_is_invalid_handle() {
+        let dir_handle = open_dir();
+        let field = "body";
+        let term = b"cat";
+        let mut scored_handle: u64 = 0;
+        let rc = unsafe {
+            ffi_search_term_query_scored(
+                dir_handle,
+                field.as_ptr() as *const c_char,
+                field.len(),
+                term.as_ptr(),
+                term.len(),
+                10,
+                &mut scored_handle as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::InvalidHandle.code());
+        ffi_close_directory(dir_handle);
+    }
+
+    #[test]
+    fn term_query_scored_null_out_handle_is_null_pointer_error() {
+        let dir_handle = open_dir();
+        let seg_handle = open_segment(dir_handle, false);
+        let field = "body";
+        let term = b"cat";
+        let rc = unsafe {
+            ffi_search_term_query_scored(
+                seg_handle,
+                field.as_ptr() as *const c_char,
+                field.len(),
+                term.as_ptr(),
+                term.len(),
+                10,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(rc, FfiStatus::NullPointer.code());
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    #[test]
+    fn boolean_query_scored_must_cat_must_not_bird_matches_expected_doc() {
+        let dir_handle = open_dir();
+        let seg_handle = open_segment(dir_handle, false);
+
+        let must_field = "body";
+        let must_term = b"cat";
+        let must_not_field = "body";
+        let must_not_term = b"bird";
+
+        let must_fields = [must_field.as_ptr() as *const c_char];
+        let must_field_lens = [must_field.len()];
+        let must_terms = [must_term.as_ptr()];
+        let must_term_lens = [must_term.len()];
+
+        let must_not_fields = [must_not_field.as_ptr() as *const c_char];
+        let must_not_field_lens = [must_not_field.len()];
+        let must_not_terms = [must_not_term.as_ptr()];
+        let must_not_term_lens = [must_not_term.len()];
+
+        let mut scored_handle: u64 = 0;
+        let rc = unsafe {
+            ffi_search_boolean_query_scored(
+                seg_handle,
+                must_fields.as_ptr(),
+                must_field_lens.as_ptr(),
+                must_terms.as_ptr(),
+                must_term_lens.as_ptr(),
+                1,
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                must_not_fields.as_ptr(),
+                must_not_field_lens.as_ptr(),
+                must_not_terms.as_ptr(),
+                must_not_term_lens.as_ptr(),
+                1,
+                10,
+                &mut scored_handle as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::Ok.code());
+        let hits = read_scored_results(scored_handle);
+        // Same matched set as the unscored sibling test: body/cat -> [0, 2];
+        // must_not (bird -> [1, 4]) removes neither. Score is `cat`'s own BM25
+        // (the only scoring clause), same values as the plain term-scored test.
+        assert_eq!(hits.len(), 2);
+        let expected_doc0 = expected_unnormed_bm25(2, 4, 2.0);
+        let expected_doc2 = expected_unnormed_bm25(2, 4, 1.0);
+        let by_doc = |doc_id: i32| hits.iter().find(|h| h.0 == doc_id).unwrap().1;
+        assert!((by_doc(0) - expected_doc0).abs() < 1e-4);
+        assert!((by_doc(2) - expected_doc2).abs() < 1e-4);
+
+        ffi_close_scored_results(scored_handle);
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    #[test]
+    fn boolean_query_scored_no_clauses_matches_nothing() {
+        let dir_handle = open_dir();
+        let seg_handle = open_segment(dir_handle, false);
+
+        let mut scored_handle: u64 = 0;
+        let rc = unsafe {
+            ffi_search_boolean_query_scored(
+                seg_handle,
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                10,
+                &mut scored_handle as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::Ok.code());
+        assert!(read_scored_results(scored_handle).is_empty());
+        ffi_close_scored_results(scored_handle);
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    #[test]
+    fn boolean_query_scored_unknown_segment_handle_is_invalid_handle() {
+        let mut scored_handle: u64 = 0;
+        let rc = unsafe {
+            ffi_search_boolean_query_scored(
+                0xFFFF,
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                10,
+                &mut scored_handle as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::InvalidHandle.code());
+    }
+
+    #[test]
+    fn boolean_query_scored_null_out_handle_is_null_pointer_error() {
+        let dir_handle = open_dir();
+        let seg_handle = open_segment(dir_handle, false);
+        let rc = unsafe {
+            ffi_search_boolean_query_scored(
+                seg_handle,
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                10,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(rc, FfiStatus::NullPointer.code());
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    #[test]
+    fn phrase_query_scored_single_term_delegates_to_term_query() {
+        let dir_handle = open_dir();
+        let seg_handle = open_segment(dir_handle, false);
+
+        let field = "body";
+        let term = b"cat".as_slice();
+        let terms = [term.as_ptr()];
+        let term_lens = [term.len()];
+
+        let mut scored_handle: u64 = 0;
+        let rc = unsafe {
+            ffi_search_phrase_query_scored(
+                seg_handle,
+                field.as_ptr() as *const c_char,
+                field.len(),
+                terms.as_ptr(),
+                term_lens.as_ptr(),
+                1,
+                10,
+                &mut scored_handle as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::Ok.code());
+        let hits = read_scored_results(scored_handle);
+        assert_eq!(hits.len(), 2);
+        let expected_doc0 = expected_unnormed_bm25(2, 4, 2.0);
+        let expected_doc2 = expected_unnormed_bm25(2, 4, 1.0);
+        let by_doc = |doc_id: i32| hits.iter().find(|h| h.0 == doc_id).unwrap().1;
+        assert!((by_doc(0) - expected_doc0).abs() < 1e-4);
+        assert!((by_doc(2) - expected_doc2).abs() < 1e-4);
+
+        ffi_close_scored_results(scored_handle);
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    #[test]
+    fn phrase_query_scored_multi_term_without_pos_file_is_search_error() {
+        let dir_handle = open_dir();
+        let seg_handle = open_segment(dir_handle, false); // no .pos opened
+
+        let field = "body";
+        let t1 = b"cat".as_slice();
+        let t2 = b"dog".as_slice();
+        let terms = [t1.as_ptr(), t2.as_ptr()];
+        let term_lens = [t1.len(), t2.len()];
+
+        let mut scored_handle: u64 = 0;
+        let rc = unsafe {
+            ffi_search_phrase_query_scored(
+                seg_handle,
+                field.as_ptr() as *const c_char,
+                field.len(),
+                terms.as_ptr(),
+                term_lens.as_ptr(),
+                2,
+                10,
+                &mut scored_handle as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::Search.code());
+
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    #[test]
+    fn phrase_query_scored_empty_terms_matches_nothing() {
+        let dir_handle = open_dir();
+        let seg_handle = open_segment(dir_handle, false);
+
+        let field = "body";
+        let mut scored_handle: u64 = 0;
+        let rc = unsafe {
+            ffi_search_phrase_query_scored(
+                seg_handle,
+                field.as_ptr() as *const c_char,
+                field.len(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                10,
+                &mut scored_handle as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::Ok.code());
+        assert!(read_scored_results(scored_handle).is_empty());
+        ffi_close_scored_results(scored_handle);
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    #[test]
+    fn phrase_query_scored_unknown_segment_handle_is_invalid_handle() {
+        let field = "body";
+        let mut scored_handle: u64 = 0;
+        let rc = unsafe {
+            ffi_search_phrase_query_scored(
+                0xFFFF,
+                field.as_ptr() as *const c_char,
+                field.len(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                10,
+                &mut scored_handle as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::InvalidHandle.code());
+    }
+
+    #[test]
+    fn phrase_query_scored_null_out_handle_is_null_pointer_error() {
+        let dir_handle = open_dir();
+        let seg_handle = open_segment(dir_handle, false);
+        let field = "body";
+        let rc = unsafe {
+            ffi_search_phrase_query_scored(
+                seg_handle,
+                field.as_ptr() as *const c_char,
+                field.len(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                10,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(rc, FfiStatus::NullPointer.code());
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    /// Regression test for the mutex-poisoning fix, exercised for the scored
+    /// query path (task #30): mirrors
+    /// `registry_mutex_recovers_from_poisoning_after_a_panic_mid_query` above,
+    /// but for `ffi_search_term_query_scored` and using the thread-local (not
+    /// process-global) panic-injection switch -- see
+    /// `arm_panic_on_next_scored_term_query`'s doc comment for why.
+    #[test]
+    fn registry_mutex_recovers_from_poisoning_after_a_panic_mid_scored_query() {
+        let dir_handle = open_dir();
+        let seg_handle = open_segment(dir_handle, false);
+
+        let field = "body";
+        let term = b"cat";
+
+        arm_panic_on_next_scored_term_query();
+        let mut scored_handle: u64 = 0;
+        let rc = unsafe {
+            ffi_search_term_query_scored(
+                seg_handle,
+                field.as_ptr() as *const c_char,
+                field.len(),
+                term.as_ptr(),
+                term.len(),
+                10,
+                &mut scored_handle as *mut _,
+            )
+        };
+        assert_eq!(
+            rc,
+            FfiStatus::Panic.code(),
+            "the injected panic must be caught by `guard`, not crash the process"
+        );
+        assert!(segments().is_poisoned(), "the panic must poison the mutex");
+
+        // A subsequent, unrelated, well-formed call against the *same*
+        // registry (and the same still-live segment handle) must succeed --
+        // proving `lock_recovering` recovered the poisoned mutex rather than
+        // leaving every future call on this registry permanently broken.
+        let rc = unsafe {
+            ffi_search_term_query_scored(
+                seg_handle,
+                field.as_ptr() as *const c_char,
+                field.len(),
+                term.as_ptr(),
+                term.len(),
+                10,
+                &mut scored_handle as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::Ok.code());
+        let hits = read_scored_results(scored_handle);
+        assert_eq!(hits.len(), 2);
+
+        ffi_close_scored_results(scored_handle);
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    /// A scored-results handle must be rejected by the unscored
+    /// `ffi_results_len`/`ffi_results_copy`/`ffi_close_results` path, and vice
+    /// versa -- the two registries' `RegistryTag`s (`Results` vs
+    /// `ScoredResults`) must keep them from aliasing each other, same as any
+    /// other cross-registry handle-tag test in this crate.
+    #[test]
+    fn scored_results_handle_rejected_by_unscored_results_accessors() {
+        let dir_handle = open_dir();
+        let seg_handle = open_segment(dir_handle, false);
+        let field = "body";
+        let term = b"cat";
+
+        let mut scored_handle: u64 = 0;
+        let rc = unsafe {
+            ffi_search_term_query_scored(
+                seg_handle,
+                field.as_ptr() as *const c_char,
+                field.len(),
+                term.as_ptr(),
+                term.len(),
+                10,
+                &mut scored_handle as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::Ok.code());
+
+        let mut len: usize = 0;
+        assert_eq!(
+            unsafe { ffi_results_len(scored_handle, &mut len as *mut _) },
+            FfiStatus::InvalidHandle.code()
+        );
+        assert_eq!(
+            ffi_close_results(scored_handle),
+            FfiStatus::InvalidHandle.code()
+        );
+
+        // And the reverse: an unscored results handle rejected by the scored
+        // accessors.
+        let mut results_handle: u64 = 0;
+        let rc = unsafe {
+            ffi_search_term_query(
+                seg_handle,
+                field.as_ptr() as *const c_char,
+                field.len(),
+                term.as_ptr(),
+                term.len(),
+                &mut results_handle as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::Ok.code());
+        assert_eq!(
+            unsafe {
+                crate::results_scored::ffi_scored_results_len(results_handle, &mut len as *mut _)
+            },
+            FfiStatus::InvalidHandle.code()
+        );
+        assert_eq!(
+            ffi_close_scored_results(results_handle),
+            FfiStatus::InvalidHandle.code()
+        );
+
+        ffi_close_scored_results(scored_handle);
         ffi_close_results(results_handle);
         ffi_close_segment(seg_handle);
         ffi_close_directory(dir_handle);

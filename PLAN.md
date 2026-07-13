@@ -366,10 +366,11 @@ values, unit tests for `Clause::Phrase` matching/scoring inside a
 `BooleanQuery` (including one clause nested inside a `Clause::Boolean`), and a
 `scoring_fixtures.rs` differential test proving a `Clause::Phrase`'s score sums
 correctly alongside a sibling `Clause::Term`'s. **Deliberately not touched**:
-`lucene-ffi`'s `ffi_search_boolean_query` still only constructs flat
-`Clause::Term` clauses from its C-ABI wire format — exposing `Clause::Phrase`/
-`Clause::Boolean` construction over FFI remains deferred, alongside the
-already-deferred `_scored` FFI wrappers (see `docs/parity.md`).
+`lucene-ffi`'s `ffi_search_boolean_query`/`ffi_search_boolean_query_scored`
+(the latter added by task #30) still only construct flat `Clause::Term`
+clauses from their C-ABI wire format — exposing `Clause::Phrase`/
+`Clause::Boolean` construction over FFI remains deferred (see
+`docs/parity.md`).
 
 **Progress (task #21):** doc-values-driven range query and single-key sort now
 exist in `lucene-search/src/doc_value_query.rs`, built directly on
@@ -444,14 +445,40 @@ ID/suffix/`maxDoc` — no `.si`/`segments_N` parsing on the Rust side yet),
 `ffi_results_len`/`ffi_results_copy`/`ffi_close_results` to read them back out.
 Every exported function is `catch_unwind`-guarded (`error::guard`) and returns
 an `FfiStatus` code; `ffi_get_last_error_message` reads the thread-local
-last-error string. See `docs/parity.md`'s new `## lucene-ffi` section for the
-exact surface and what's deferred (scored queries, `.liv`/`.pay`, the unified
-`.si`-driven segment-open entry point, the JNI wrapper class itself, and the
-query-tree serialization / OpenSearch plugin work below, all still not
-started). `crates/lucene-ffi/src/*.rs` is unit-tested (≥95% line coverage per
-file) calling the exact exported `extern "C" fn` entry points against the real
-`fixtures/data/blocktree_index/` fixture, including stale/closed-handle
-rejection and a genuine caught-panic-surfaces-as-a-status-code test.
+last-error string. `crates/lucene-ffi/src/*.rs` is unit-tested (≥95% line
+coverage per file) calling the exact exported `extern "C" fn` entry points
+against the real `fixtures/data/blocktree_index/` fixture, including
+stale/closed-handle rejection and a genuine caught-panic-surfaces-as-a-status-
+code test.
+
+**Progress (task #30):** relevance-scored query execution now has a C-ABI
+surface too, closing the gap task #20 deferred: `ffi_search_term_query_scored`/
+`ffi_search_boolean_query_scored`/`ffi_search_phrase_query_scored` mirror their
+unscored siblings' parameter shapes plus a `top_n` (feeding a
+`lucene_search::TopDocsCollector`), storing `(doc_id, score)` hits in a new
+`ScoredResultsHandle`/`RegistryTag::ScoredResults` registry (kept separate from
+the unscored `ResultsHandle` so a handle from the wrong search flavor is
+rejected by the handle-tag check, not misread) — read back via
+`ffi_scored_results_len`/`ffi_scored_results_copy` (two parallel caller-
+allocated buffers, doc IDs and scores, not one interleaved buffer) and released
+via `ffi_close_scored_results`. `ffi_open_segment` grew optional `nvm_name`/
+`nvd_name` parameters so a caller can open the segment's real `.nvm`/`.nvd`
+norms pair, giving the scored functions real per-doc/avg field lengths instead
+of always falling back to the unnormed constant approximation; `SegmentHandle`
+now also carries the parsed `field_infos` needed to map a scored query's field
+name to the field number norms are keyed by. Same test rigor as task #20:
+real fixture round-trips (including a differential real-norms-vs-unnormed-
+fallback test), stale/wrong-registry-tag handle rejection, and a
+mutex-poisoning regression test for the scored path — using a `thread_local!`-
+scoped panic-injection switch rather than reusing task #20's process-wide
+`AtomicBool` one, since the latter is exposed to a cross-test race under
+`cargo test`'s default parallel execution (flagged by task #29's review;
+fixing the pre-existing one is tracked as a separate follow-up, not touched by
+this task). See `docs/parity.md`'s `## lucene-ffi` section for the exact
+surface and what's still deferred (`.liv`/`.pay`, the unified `.si`-driven
+segment-open entry point, the JNI wrapper class itself, nested/phrase
+`BooleanQuery` clause construction over the C ABI, and the query-tree
+serialization / OpenSearch plugin work below, all still not started).
 
 **C ABI design (`lucene-ffi`):**
 

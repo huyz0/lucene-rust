@@ -18,6 +18,7 @@ use std::os::raw::c_char;
 
 use lucene_codecs::blocktree::{self, BlockTreeFields};
 use lucene_codecs::field_infos;
+use lucene_codecs::norms;
 use lucene_codecs::postings::{DocInput, PosInput};
 
 use crate::directory::read_whole_file;
@@ -34,6 +35,18 @@ use crate::registry::{lock_recovering, segments, SegmentHandle};
 ///   null pointer (any `len`) to open none (matches `search_term_query`'s
 ///   own `doc_in: Option<&DocInput>` contract — some fields never need a
 ///   `.doc` file, see that function's doc comment).
+/// - `nvm_name`/`nvd_name` (task #30): the segment's `.nvm`/`.nvd` (norms
+///   metadata/data) file names, or a null pointer (any `len`) to open
+///   neither -- required for a scored query (`ffi_search_*_query_scored`) to
+///   use real per-doc/avg field lengths rather than falling back to
+///   `lucene_search::similarity::UNNORMED_FIELD_LENGTH`; a scored query
+///   against a segment opened without norms still succeeds, just with that
+///   constant-length approximation, same as passing `norms: None` directly
+///   to `lucene_search`'s scored functions. Unlike `.doc`/`.pos`/`.tim`/etc,
+///   real Lucene's norms files are named from the segment name alone (no
+///   codec-suffix component), so `nvm_name`/`nvd_name` are ordinary caller-
+///   supplied names like every other file name here, not derived from
+///   `segment_suffix`.
 /// - `segment_id`: the segment's 16-byte ID (`SegmentInfo.getId()`).
 /// - `segment_suffix`: the codec suffix string used in every file's index
 ///   header (often empty).
@@ -61,6 +74,10 @@ pub unsafe extern "C" fn ffi_open_segment(
     doc_name_len: usize,
     pos_name: *const c_char,
     pos_name_len: usize,
+    nvm_name: *const c_char,
+    nvm_name_len: usize,
+    nvd_name: *const c_char,
+    nvd_name_len: usize,
     segment_id: *const u8,
     segment_suffix: *const c_char,
     segment_suffix_len: usize,
@@ -129,6 +146,45 @@ pub unsafe extern "C" fn ffi_open_segment(
             Some(bytes)
         };
 
+        // Task #30: `.nvm`/`.nvd` are opened together or not at all -- a
+        // caller that passes one but not the other gets the same "null means
+        // none" behavior as `doc_name`/`pos_name` for whichever one is null,
+        // but `norms`/`norms_data` are only ever both `Some` or both `None`
+        // (see `registry.rs`'s `SegmentHandle` doc comment), so a lone
+        // `nvm_name` with a null `nvd_name` (or vice versa) parses/validates
+        // only its own file and leaves norms unavailable for this segment,
+        // same as passing neither.
+        let (norms, norms_data) = if nvm_name.is_null() || nvd_name.is_null() {
+            (None, None)
+        } else {
+            // SAFETY: caller contract guarantees `nvm_name`/`nvd_name` are valid
+            // for their paired lengths.
+            let (nvm, nvd) = unsafe {
+                (
+                    str_from_raw(nvm_name as *const u8, nvm_name_len)?,
+                    str_from_raw(nvd_name as *const u8, nvd_name_len)?,
+                )
+            };
+            // Real Lucene's norms format (`Lucene90NormsFormat`) has no
+            // per-field codec-suffix component in its index header, unlike
+            // `.tim`/`.doc`/etc -- always validate against the empty suffix,
+            // not this segment's postings `suffix` (see
+            // `ffi_open_segment`'s doc comment and
+            // `lucene-search/tests/scoring_fixtures.rs`'s `open_body_norms`,
+            // which does the same `""` for its differential norms test).
+            let meta_bytes = read_whole_file(dir_handle, nvm)?;
+            let (_version, parsed) = norms::parse_meta(&meta_bytes, &id, "").map_err(|e| {
+                set_last_error(format!("parsing .nvm: {e}"));
+                FfiStatus::Decode
+            })?;
+            let data_bytes = read_whole_file(dir_handle, nvd)?;
+            norms::check_data_header_footer(&data_bytes, &id, "").map_err(|e| {
+                set_last_error(format!("opening .nvd: {e}"));
+                FfiStatus::Decode
+            })?;
+            (Some(parsed), Some(data_bytes))
+        };
+
         let handle = lock_recovering(segments()).insert(SegmentHandle {
             fields,
             doc_bytes,
@@ -136,6 +192,9 @@ pub unsafe extern "C" fn ffi_open_segment(
             segment_id: id,
             segment_suffix: suffix.to_string(),
             max_doc,
+            field_infos,
+            norms_data,
+            norms,
         });
         // SAFETY: caller contract guarantees `out_handle` is valid for one write.
         unsafe {
@@ -202,6 +261,19 @@ mod tests {
         doc_name: Option<&str>,
         pos_name: Option<&str>,
     ) -> (i32, u64) {
+        open_segment_with_norms(dir_handle, doc_name, pos_name, None, None)
+    }
+
+    /// Same as [`open_segment_with`], plus optional `.nvm`/`.nvd` names
+    /// (task #30) for tests that need a segment opened with real norms.
+    #[allow(clippy::too_many_arguments)]
+    fn open_segment_with_norms(
+        dir_handle: u64,
+        doc_name: Option<&str>,
+        pos_name: Option<&str>,
+        nvm_name: Option<&str>,
+        nvd_name: Option<&str>,
+    ) -> (i32, u64) {
         let fnm = "_0.fnm";
         let tim = "_0_Lucene104_0.tim";
         let tip = "_0_Lucene104_0.tip";
@@ -224,6 +296,10 @@ mod tests {
                 doc_name.map_or(0, |s| s.len()),
                 pos_name.map_or(std::ptr::null(), |s| s.as_ptr()) as *const c_char,
                 pos_name.map_or(0, |s| s.len()),
+                nvm_name.map_or(std::ptr::null(), |s| s.as_ptr()) as *const c_char,
+                nvm_name.map_or(0, |s| s.len()),
+                nvd_name.map_or(std::ptr::null(), |s| s.as_ptr()) as *const c_char,
+                nvd_name.map_or(0, |s| s.len()),
                 id.as_ptr(),
                 suffix.as_ptr() as *const c_char,
                 suffix.len(),
@@ -321,6 +397,10 @@ mod tests {
                 0,
                 std::ptr::null(),
                 0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
                 segment_id_bytes().as_ptr(),
                 std::ptr::null(),
                 0,
@@ -341,6 +421,10 @@ mod tests {
                 dir_handle,
                 fnm.as_ptr() as *const c_char,
                 fnm.len(),
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
                 std::ptr::null(),
                 0,
                 std::ptr::null(),
@@ -383,6 +467,10 @@ mod tests {
                 std::ptr::null(),
                 0,
                 std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
                 std::ptr::null(),
                 0,
                 8958,
@@ -410,6 +498,8 @@ mod tests {
             "_0_Lucene104_0.tim",
             "_0_Lucene104_0.tip",
             "_0_Lucene104_0.tmd",
+            "_0.nvm",
+            "_0.nvd",
         ] {
             std::fs::copy(format!("{src}{name}"), dst.join(name)).unwrap();
         }
@@ -458,6 +548,10 @@ mod tests {
                 0,
                 std::ptr::null(),
                 0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
                 id.as_ptr(),
                 suffix.as_ptr() as *const c_char,
                 suffix.len(),
@@ -494,6 +588,10 @@ mod tests {
                 tip.len(),
                 tmd.as_ptr() as *const c_char,
                 tmd.len(),
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
                 std::ptr::null(),
                 0,
                 std::ptr::null(),
@@ -539,6 +637,10 @@ mod tests {
                 doc.len(),
                 std::ptr::null(),
                 0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
                 id.as_ptr(),
                 suffix.as_ptr() as *const c_char,
                 suffix.len(),
@@ -580,6 +682,10 @@ mod tests {
                 0,
                 pos.as_ptr() as *const c_char,
                 pos.len(),
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
                 id.as_ptr(),
                 suffix.as_ptr() as *const c_char,
                 suffix.len(),
@@ -590,5 +696,127 @@ mod tests {
         assert_eq!(rc, FfiStatus::Decode.code());
         ffi_close_directory(dir_handle);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Task #30: a garbage `.nvm` (norms metadata) file must surface as
+    /// [`FfiStatus::Decode`], same as every other garbage-bytes test above.
+    #[test]
+    fn open_segment_garbage_nvm_bytes_is_decode_error() {
+        let dir = scratch_dir_with_fixture_copies();
+        std::fs::write(dir.join("garbage.nvm"), [0u8; 8]).unwrap();
+        let dir_handle = open_dir_at(&dir);
+
+        let fnm = "_0.fnm";
+        let tim = "_0_Lucene104_0.tim";
+        let tip = "_0_Lucene104_0.tip";
+        let tmd = "_0_Lucene104_0.tmd";
+        let nvm = "garbage.nvm";
+        let nvd = "_0.nvd";
+        let suffix = "Lucene104_0";
+        let id = segment_id_bytes();
+        let mut handle: u64 = 0;
+        let rc = unsafe {
+            ffi_open_segment(
+                dir_handle,
+                fnm.as_ptr() as *const c_char,
+                fnm.len(),
+                tim.as_ptr() as *const c_char,
+                tim.len(),
+                tip.as_ptr() as *const c_char,
+                tip.len(),
+                tmd.as_ptr() as *const c_char,
+                tmd.len(),
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                nvm.as_ptr() as *const c_char,
+                nvm.len(),
+                nvd.as_ptr() as *const c_char,
+                nvd.len(),
+                id.as_ptr(),
+                suffix.as_ptr() as *const c_char,
+                suffix.len(),
+                8958,
+                &mut handle as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::Decode.code());
+        ffi_close_directory(dir_handle);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Task #30: a garbage `.nvd` (norms data) file must surface as
+    /// [`FfiStatus::Decode`] -- the `.nvm` parses fine, but `.nvd`'s own
+    /// header/footer check fails.
+    #[test]
+    fn open_segment_garbage_nvd_bytes_is_decode_error() {
+        let dir = scratch_dir_with_fixture_copies();
+        std::fs::write(dir.join("garbage.nvd"), [0u8; 8]).unwrap();
+        let dir_handle = open_dir_at(&dir);
+
+        let fnm = "_0.fnm";
+        let tim = "_0_Lucene104_0.tim";
+        let tip = "_0_Lucene104_0.tip";
+        let tmd = "_0_Lucene104_0.tmd";
+        let nvm = "_0.nvm";
+        let nvd = "garbage.nvd";
+        let suffix = "Lucene104_0";
+        let id = segment_id_bytes();
+        let mut handle: u64 = 0;
+        let rc = unsafe {
+            ffi_open_segment(
+                dir_handle,
+                fnm.as_ptr() as *const c_char,
+                fnm.len(),
+                tim.as_ptr() as *const c_char,
+                tim.len(),
+                tip.as_ptr() as *const c_char,
+                tip.len(),
+                tmd.as_ptr() as *const c_char,
+                tmd.len(),
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                nvm.as_ptr() as *const c_char,
+                nvm.len(),
+                nvd.as_ptr() as *const c_char,
+                nvd.len(),
+                id.as_ptr(),
+                suffix.as_ptr() as *const c_char,
+                suffix.len(),
+                8958,
+                &mut handle as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::Decode.code());
+        ffi_close_directory(dir_handle);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Opening a segment with real `.nvm`/`.nvd` names succeeds and the
+    /// resulting handle carries `Some` norms data -- the "happy path" for
+    /// task #30's `nvm_name`/`nvd_name` parameters (the norms-aware scored-query
+    /// tests in `query.rs` exercise the rest of this path end-to-end).
+    #[test]
+    fn open_segment_with_norms_files_succeeds() {
+        let dir_handle = open_dir();
+        let (rc, seg_handle) = open_segment_with_norms(
+            dir_handle,
+            Some("_0_Lucene104_0.doc"),
+            None,
+            Some("_0.nvm"),
+            Some("_0.nvd"),
+        );
+        assert_eq!(rc, FfiStatus::Ok.code());
+        {
+            let segments = lock_recovering(segments());
+            let segment = segments.get(seg_handle).expect("segment handle");
+            assert!(segment.norms.is_some());
+            assert!(segment.norms_data.is_some());
+        }
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
     }
 }

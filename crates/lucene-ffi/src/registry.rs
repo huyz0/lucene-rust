@@ -7,6 +7,9 @@
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
 use lucene_codecs::blocktree::BlockTreeFields;
+use lucene_codecs::field_infos::FieldInfos;
+use lucene_codecs::norms::Norms;
+use lucene_search::ScoreDoc;
 use lucene_store::directory::FsDirectory;
 
 use crate::handle::{RegistryTag, SlotMap};
@@ -51,15 +54,56 @@ pub struct SegmentHandle {
     // called with `pay_in: None` in `query.rs`.
     pub segment_id: [u8; 16],
     pub segment_suffix: String,
-    #[allow(dead_code)] // carried for parity with a real segment's contract; not yet read.
     pub max_doc: i32,
+    /// This segment's parsed `.fnm` (task #30) -- kept around (rather than
+    /// dropped once `blocktree::open` has consumed it) so a scored query can
+    /// map a field *name* (the only thing a caller passes over the C ABI) to
+    /// the field *number* `norms`/`NormsEntry` are keyed by. `BlockTreeFields`
+    /// has no such name->number mapping of its own (see `blocktree.rs`), so
+    /// this is the only place left to look it up from.
+    pub field_infos: FieldInfos,
+    /// This segment's whole `.nvd` (norms data) file, opened by
+    /// `ffi_open_segment`'s optional `nvd_name`/`nvm_name` parameters (task
+    /// #30) -- `None` when the caller opened the segment without norms
+    /// (every scored query then falls back to
+    /// `lucene_search::similarity::UNNORMED_FIELD_LENGTH`, the same
+    /// documented approximation `FieldNorms`'s absence already means
+    /// elsewhere in this port).
+    pub norms_data: Option<Vec<u8>>,
+    /// This segment's parsed `.nvm` (norms metadata) -- one [`Norms`] entry
+    /// per field that has norms, looked up by field number via
+    /// `field_infos` above. `Some` iff `norms_data` is `Some` (both come from
+    /// the same `nvd_name`/`nvm_name is-null` check in `ffi_open_segment`).
+    pub norms: Option<Norms>,
 }
 
-/// A completed query's collected, ascending, live doc IDs -- read back via
-/// `ffi_results_len`/`ffi_results_copy`, then released via
+/// A completed unscored query's collected, ascending, live doc IDs -- read
+/// back via `ffi_results_len`/`ffi_results_copy`, then released via
 /// `ffi_close_results`.
 pub struct ResultsHandle {
     pub docs: Vec<i32>,
+}
+
+/// A completed *scored* query's `(doc_id, score)` hits, kept in `TopDocsCollector`
+/// order (best-first, ties broken by lower doc ID -- see `collector.rs`'s
+/// `rank_order`) -- read back via `ffi_scored_results_len`/`ffi_scored_results_copy`,
+/// then released via `ffi_close_scored_results`.
+///
+/// **Why a new registry/handle type instead of widening `ResultsHandle` with an
+/// optional `Vec<f32>`**: `ResultsHandle` is a public, already-shipped shape read by
+/// `ffi_results_len`/`ffi_results_copy`'s existing (unscored) contract -- adding an
+/// optional scores field there would force every existing caller of the unscored
+/// path to reason about a field that's always `None` for them, and would let a
+/// caller accidentally call `ffi_results_copy` against a handle that was actually
+/// populated by a scored query (or vice versa) since both would share one handle
+/// type and one registry tag. A separate `ScoredResultsHandle`/`RegistryTag::
+/// ScoredResults` keeps the two result shapes as distinct as the two collector
+/// traits they come from (`Collector` vs `ScoringCollector`, see `collector.rs`'s
+/// module doc for that same non-breaking-addition reasoning) -- a results handle
+/// from the wrong search flavor is rejected by the registry-tag check before it
+/// can be misread, exactly like a directory handle passed to a segment call is.
+pub struct ScoredResultsHandle {
+    pub hits: Vec<ScoreDoc>,
 }
 
 pub fn directories() -> &'static Mutex<SlotMap<FsDirectory>> {
@@ -75,4 +119,9 @@ pub fn segments() -> &'static Mutex<SlotMap<SegmentHandle>> {
 pub fn results() -> &'static Mutex<SlotMap<ResultsHandle>> {
     static REGISTRY: OnceLock<Mutex<SlotMap<ResultsHandle>>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(SlotMap::new(RegistryTag::Results)))
+}
+
+pub fn scored_results() -> &'static Mutex<SlotMap<ScoredResultsHandle>> {
+    static REGISTRY: OnceLock<Mutex<SlotMap<ScoredResultsHandle>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(SlotMap::new(RegistryTag::ScoredResults)))
 }

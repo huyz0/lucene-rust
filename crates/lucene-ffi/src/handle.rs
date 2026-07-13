@@ -47,6 +47,11 @@ pub enum RegistryTag {
     Directory = 1,
     Segment = 2,
     Results = 3,
+    /// `(doc_id, score)` pairs from a scored query (task #30), kept in a
+    /// registry separate from the unscored [`RegistryTag::Results`] rather
+    /// than widening `ResultsHandle` itself — see `registry.rs`'s
+    /// `ScoredResultsHandle` doc comment for why.
+    ScoredResults = 4,
 }
 
 fn pack(tag: RegistryTag, index: u32, generation: u32) -> u64 {

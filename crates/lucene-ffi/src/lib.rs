@@ -28,17 +28,23 @@
 //!   [`results::ffi_close_results`]: reads a results handle's doc IDs back
 //!   out via a caller-allocated buffer (bulk copy, not a per-index
 //!   accessor — see `results.rs`'s module doc for why), then releases it.
+//! - [`query::ffi_search_term_query_scored`]/[`query::ffi_search_boolean_query_scored`]/
+//!   [`query::ffi_search_phrase_query_scored`] (task #30): scored siblings of the
+//!   three query functions above, keeping the best `top_n` `(doc_id, score)` BM25
+//!   hits (via `lucene_search::TopDocsCollector`) in a new
+//!   [`registry::ScoredResultsHandle`] — see `query.rs`'s module doc for the norms
+//!   plumbing and [`segment::ffi_open_segment`]'s `nvm_name`/`nvd_name` parameters
+//!   for how a segment's real per-doc/avg field lengths reach these functions.
+//! - [`results_scored::ffi_scored_results_len`]/[`results_scored::ffi_scored_results_copy`]/
+//!   [`results_scored::ffi_close_scored_results`]: reads a scored results handle's
+//!   `(doc_id, score)` hits back out via two caller-allocated parallel buffers (see
+//!   `results_scored.rs`'s module doc for why parallel buffers, not one interleaved
+//!   one), then releases it.
 //! - [`error::guard`]/[`ffi_get_last_error_message`]: every exported
 //!   function's panic-safety wrapper and the thread-local last-error
 //!   message accessor.
 //!
 //! **Deliberately deferred, tracked in `docs/parity.md`:**
-//! - **Relevance scoring** (`search_*_query_scored`/`ScoringCollector`/
-//!   `TopDocsCollector`, task #13's addition to `lucene-search`) — this
-//!   slice only wraps the unscored matching path. A scored variant would
-//!   need an `ffi_search_*_query_scored` sibling returning `(doc_id,
-//!   score)` pairs and a results-handle shape carrying both; same wrapping
-//!   pattern, just not done in this task's time budget.
 //! - **`.liv` (live docs / deletions) support** — every query call here
 //!   passes `live_docs: None` to `lucene_search`'s functions (this port's
 //!   fixture segment has no deletions, and `lucene_search`'s own contract
@@ -90,12 +96,19 @@ mod query;
 mod raw;
 mod registry;
 mod results;
+mod results_scored;
 mod segment;
 
 pub use directory::{ffi_close_directory, ffi_open_directory};
 pub use error::FfiStatus;
-pub use query::{ffi_search_boolean_query, ffi_search_phrase_query, ffi_search_term_query};
+pub use query::{
+    ffi_search_boolean_query, ffi_search_boolean_query_scored, ffi_search_phrase_query,
+    ffi_search_phrase_query_scored, ffi_search_term_query, ffi_search_term_query_scored,
+};
 pub use results::{ffi_close_results, ffi_results_copy, ffi_results_len};
+pub use results_scored::{
+    ffi_close_scored_results, ffi_scored_results_copy, ffi_scored_results_len,
+};
 pub use segment::{ffi_close_segment, ffi_open_segment};
 
 use std::os::raw::c_char;
