@@ -1508,6 +1508,57 @@ Coverage: `lucene-index/src/check_index.rs` 96.97% lines (workspace total
 97.25% lines, `cargo llvm-cov --fail-under-lines 95` passing). See
 `docs/parity.md` for the full row.
 
+**Progress (task #59):** query `explain()` — `lucene-search/src/explain.rs`,
+a new `Explanation`/`explain_clause` pair mirroring real
+`IndexSearcher.explain(query, doc)` / `org.apache.lucene.search.Explanation`
+exactly: `{ matched: bool, value: f32, description: String, details:
+Vec<Explanation> }`, with `Explanation::match_(value, description)` /
+`.with_details(vec)` / `Explanation::no_match(description)` matching real
+Lucene's own `Explanation.match(...)`/`Explanation.noMatch(...)` factory
+split (`matched` is this port's stand-in for real Lucene's `isMatch()`).
+
+**This task changes no scoring behavior** — it is purely introspection over
+the already-verified BM25/boolean/dismax math from tasks #13/#22/#23/#29/#32.
+`explain_clause` recomputes each node's `value` by calling the *exact same*
+`similarity::idf`/`similarity::tf_norm` functions (and the same
+`term_doc_freqs`/`term_doc_positions`/`phrase_freq_exact`/
+`matched_boolean_docs`/`resolve_clause_docs` helpers) `lib.rs`'s
+`search_term_query_scored`/`search_boolean_query_scored`/
+`search_phrase_query_scored`/`search_disjunction_max_query_scored` already
+call, in the same argument order — so its reported top-level `value` is
+bit-for-bit identical to those functions' own output for the same doc, not a
+second, independently-computed approximation. Verified directly: this
+module's own unit tests build a query, run it through the real scored
+search function to get ground-truth `(doc, score)` pairs, then call
+`explain_clause` for that exact doc and `assert_eq!` (not an epsilon
+compare) the two values — for `Clause::Term` (with its nested `idf`/
+`tfNorm` sub-explanations further asserted to multiply back to the same
+top-level value), `Clause::Phrase` (multi-term, using the real
+`"alpha beta"`-in-doc-8555 fixture match `lib.rs`'s own phrase tests
+already established), `Clause::Boolean` (must+should, sub-clause values
+summing to the top-level value), `Clause::DisjunctionMax` (max +
+tie-breaker*sum(rest)), `Clause::ConstantScore`, and `Clause::Boost`.
+
+**Which `Clause` variants get a real vs flat explanation** (see
+`explain.rs`'s own module doc comment): `Term`/`Boolean`/`Phrase`/
+`DisjunctionMax`/`ConstantScore`/`Boost` get a full breakdown (weight →
+score → idf/tfNorm sub-trees for `Term`/`Phrase`; sum-of-clauses for
+`Boolean`; max-plus-tie-breaker for `DisjunctionMax`; wrap-and-relabel for
+`ConstantScore`/`Boost`). `Wildcard`/`Prefix`/`Fuzzy`/`Regexp`/`Span` get a
+flat one-level "matches, constant score 1.0" or "no match" explanation —
+these have no single term's frequency/idf to break down further (same
+"unscored, flat 1.0" rationale each query type's own `query.rs` doc comment
+already states for scoring).
+
+No new Java fixture generator was needed (per the `differential-testing`
+skill's precedent for presentation-layer logic over already-differentially-
+verified scoring: there is no "real Lucene bytes" to check a description
+string against, only the numeric equality this task's tests already assert
+directly against this crate's own ground truth). Coverage:
+`lucene-search/src/explain.rs` 97.82% lines (workspace total 97.28% lines,
+`cargo llvm-cov --fail-under-lines 95` passing). See `docs/parity.md` for
+the full row.
+
 1. `lucene-analysis`: `TokenStream` as an iterator-of-token-structs (skip Java's
    AttributeSource reflection design entirely — a plain
    `Token { bytes, position_increment, offset, ... }` struct), StandardTokenizer via

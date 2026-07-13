@@ -185,6 +185,7 @@ pub mod collector;
 pub mod directory_reader;
 pub mod doc_value_query;
 pub mod docid_set;
+pub mod explain;
 pub mod facets;
 pub mod field_norms;
 pub mod highlighter;
@@ -201,6 +202,7 @@ pub use collector::{
 pub use doc_value_query::{
     search_numeric_range, search_sorted_ord_range, sort_by_numeric_doc_value, MissingValue,
 };
+pub use explain::{explain_clause, Explanation};
 pub use field_norms::FieldNorms;
 pub use multi_segment::{
     merge_multi_segment_scored, search_boolean_query_multi_segment,
