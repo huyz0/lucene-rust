@@ -12,9 +12,24 @@
 //! port's invention).
 //!
 //! `tfNorm(freq, fieldLength, avgFieldLength, k1, b) =`
-//! `  freq * (k1 + 1) / (freq + k1 * (1 - b + b * fieldLength / avgFieldLength))`
-//! (`BM25Scorer.score`, ignoring the `boost` multiplier real Lucene folds in at the
-//! `Weight` level — no query-time boosting exists in this port yet).
+//! `  freq / (freq + k1 * (1 - b + b * fieldLength / avgFieldLength))`
+//! (`BM25Scorer.doScore`, ignoring the `boost` multiplier real Lucene folds in at
+//! the `Weight` level — no query-time boosting exists in this port yet).
+//!
+//! **No `(k1 + 1)` numerator factor** — this differs from the textbook
+//! Robertson/Sparck-Jones BM25 TF term (`freq * (k1 + 1) / (...)`) that an
+//! earlier version of this module's formula mistakenly carried over; verified
+//! against Lucene 10.5.0's actual `BM25Scorer.doScore` source (`return weight -
+//! weight / (1f + freq * normInverse)`, which algebraically expands to `weight *
+//! freq / (freq + k1 * (1 - b + b * fieldLength / avgFieldLength))` — no `(k1 +
+//! 1)` anywhere) and cross-checked against real `IndexSearcher.explain()` output
+//! against a real fixture segment (`dismax_query_fixtures.rs`'s
+//! `dismax_scored_matches_real_lucenes_own_disjunctionmaxquery_output`, task
+//! #32), which is what caught this discrepancy — every earlier self-consistency
+//! test in this crate reimplemented the *same* (wrong) formula independently, so
+//! none of them could have caught it; this is the first test in this port that
+//! compares an absolute BM25 score against real Lucene's own recorded output
+//! rather than a hand-rederivation of this module's own formula.
 //!
 //! `score = idf * tfNorm`.
 //!
@@ -95,10 +110,12 @@ pub fn idf(doc_freq: i64, doc_count: i64) -> f32 {
     (1.0 + (doc_count as f64 - doc_freq as f64 + 0.5) / (doc_freq as f64 + 0.5)).ln() as f32
 }
 
-/// `BM25Scorer.score(int doc, float freq)`-equivalent tf-normalization term
-/// (everything except the `idf` multiplier and the (unsupported) query boost).
+/// `BM25Scorer.doScore(float freq, float normInverse)`-equivalent tf-normalization
+/// term (everything except the `idf` multiplier and the (unsupported) query
+/// boost) — see this module's doc comment for why there is **no** `(k1 + 1)`
+/// numerator factor (real Lucene 10.5.0's actual formula, not the textbook one).
 pub fn tf_norm(freq: f32, field_length: f32, avg_field_length: f32, k1: f32, b: f32) -> f32 {
-    freq * (k1 + 1.0) / (freq + k1 * (1.0 - b + b * field_length / avg_field_length))
+    freq / (freq + k1 * (1.0 - b + b * field_length / avg_field_length))
 }
 
 /// The full per-document BM25 score: `idf * tf_norm`, using the default `k1`/`b`
@@ -161,10 +178,10 @@ mod tests {
     fn tf_norm_matches_hand_computed_value() {
         // freq=3, fieldLength=avgFieldLength=1.0 (this port's constant
         // substitution), k1=1.2, b=0.75:
-        // tfNorm = 3*(1.2+1) / (3 + 1.2*(1-0.75+0.75*1/1)) = 6.6 / (3 + 1.2*1.0)
-        // = 6.6 / 4.2 = 1.571428...
+        // tfNorm = 3 / (3 + 1.2*(1-0.75+0.75*1/1)) = 3 / (3 + 1.2*1.0)
+        // = 3 / 4.2 = 0.714285...
         let got = tf_norm(3.0, 1.0, 1.0, DEFAULT_K1, DEFAULT_B);
-        assert!((got - 1.571_428_6).abs() < 1e-5, "got {got}");
+        assert!((got - 0.714_285_7).abs() < 1e-5, "got {got}");
     }
 
     #[test]
@@ -182,17 +199,17 @@ mod tests {
         // docFreq=2, docCount=10, freq=4, unnormed field length.
         // idf(2,10) = ln(1 + (10-2+0.5)/(2+0.5)) = ln(1 + 8.5/2.5) = ln(4.4)
         //           = 1.481_604...
-        // tfNorm(4, 1, 1, 1.2, 0.75) = 4*2.2 / (4 + 1.2*1.0) = 8.8/5.2 = 1.692_307...
-        // score = 1.481604 * 1.692307... = 2.507197...
+        // tfNorm(4, 1, 1, 1.2, 0.75) = 4 / (4 + 1.2*1.0) = 4/5.2 = 0.769_230...
+        // score = 1.481604 * 0.769230... = 1.139696...
         let got = score(2, 10, 4.0, UNNORMED_FIELD_LENGTH, UNNORMED_FIELD_LENGTH);
         let expected_idf = 4.4f64.ln() as f32;
-        let expected_tf_norm = 8.8f32 / 5.2f32;
+        let expected_tf_norm = 4.0f32 / 5.2f32;
         let expected = expected_idf * expected_tf_norm;
         assert!(
             (got - expected).abs() < 1e-4,
             "got {got}, expected {expected}"
         );
-        assert!((got - 2.507_197).abs() < 1e-3, "got {got}");
+        assert!((got - 1.139_696).abs() < 1e-3, "got {got}");
     }
 
     #[test]

@@ -195,7 +195,7 @@ pub use doc_value_query::{
     search_numeric_range, search_sorted_ord_range, sort_by_numeric_doc_value, MissingValue,
 };
 pub use field_norms::FieldNorms;
-pub use query::{BooleanQuery, Clause, PhraseQuery, TermQuery};
+pub use query::{BooleanQuery, Clause, DisjunctionMaxQuery, PhraseQuery, TermQuery};
 
 use std::collections::HashMap;
 
@@ -393,7 +393,44 @@ fn resolve_clause_docs(
         )?
         .map(Iterator::collect)
         .unwrap_or_default()),
+        Clause::DisjunctionMax(nested) => {
+            resolve_dismax_docs(fields, doc_in, pos_in, pay_in, live_docs, nested)
+        }
     }
+}
+
+/// Resolves a [`DisjunctionMaxQuery`]'s matched doc-ID list -- a doc matches
+/// iff **any** disjunct matches (real `DisjunctionMaxQuery`'s matching
+/// contract: it's a pure union, unlike `BooleanQuery.should`'s
+/// `minimum_should_match`-gated disjunction). Each disjunct is resolved via
+/// [`resolve_clause_docs`], same recursive treatment `Clause::Boolean` gets,
+/// then merged through the same [`Disjunction`] iterator `matched_boolean_docs`
+/// uses for its own `should`-only case, deduplicated and sorted ascending by
+/// construction.
+fn resolve_dismax_docs(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    pos_in: Option<&PosInput<'_>>,
+    pay_in: Option<&PayInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    query: &DisjunctionMaxQuery,
+) -> Result<Vec<i32>> {
+    if query.disjuncts.is_empty() {
+        // Real `DisjunctionMaxQuery` with no disjuncts matches nothing --
+        // mirrors `BooleanQuery`'s own "no must/should clauses" -> matches
+        // nothing rule (see `matched_boolean_docs`'s doc comment).
+        return Ok(Vec::new());
+    }
+    let doc_lists: Vec<Vec<i32>> = query
+        .disjuncts
+        .iter()
+        .map(|clause| resolve_clause_docs(fields, doc_in, pos_in, pay_in, live_docs, clause))
+        .collect::<Result<_>>()?;
+    let iters: Vec<BoxDocIter<'static>> = doc_lists
+        .into_iter()
+        .map(|v| Box::new(v.into_iter()) as BoxDocIter<'static>)
+        .collect();
+    Ok(Disjunction::new(iters).collect())
 }
 
 /// Shared matched-doc-set computation for [`search_boolean_query`] and
@@ -660,7 +697,60 @@ fn clause_scores(
             }
             Ok(scores)
         }
+        Clause::DisjunctionMax(nested) => {
+            dismax_scores(fields, doc_in, pos_in, pay_in, live_docs, nested, norms)
+        }
     }
+}
+
+/// Real `DisjunctionMaxQuery.DisjunctionMaxWeight`/`DisjunctionMaxScorer`'s
+/// scoring formula: for each doc matching at least one disjunct, its score is
+/// `max(disjunct_scores) + tie_breaker * sum(every other matching disjunct's
+/// score)` -- exactly Lucene's own formula (**not** an approximation; see this
+/// function's doc comment on `DisjunctionMaxQuery` in `query.rs` for the
+/// citation), computed per-disjunct via [`clause_scores`] (the same recursive
+/// per-clause scorer `Clause::Boolean` already uses, so a `Clause::Boolean` or
+/// nested `Clause::DisjunctionMax` disjunct scores correctly to arbitrary
+/// depth). A doc appearing in zero disjuncts' score maps never appears in the
+/// result at all (matching [`resolve_dismax_docs`]'s "union" matching
+/// contract -- scoring and matching agree on which docs are present).
+fn dismax_scores(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    pos_in: Option<&PosInput<'_>>,
+    pay_in: Option<&PayInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    query: &DisjunctionMaxQuery,
+    norms: Option<&HashMap<String, FieldNorms<'_>>>,
+) -> Result<HashMap<i32, f32>> {
+    let per_disjunct: Vec<HashMap<i32, f32>> = query
+        .disjuncts
+        .iter()
+        .map(|clause| clause_scores(fields, doc_in, pos_in, pay_in, live_docs, clause, norms))
+        .collect::<Result<_>>()?;
+
+    // Every doc appearing in at least one disjunct's score map.
+    let mut all_docs: std::collections::HashSet<i32> = std::collections::HashSet::new();
+    for scores in &per_disjunct {
+        all_docs.extend(scores.keys().copied());
+    }
+
+    let mut result = HashMap::new();
+    for doc_id in all_docs {
+        let mut max_score = f32::NEG_INFINITY;
+        let mut sum_score = 0.0f32;
+        for scores in &per_disjunct {
+            if let Some(&score) = scores.get(&doc_id) {
+                sum_score += score;
+                if score > max_score {
+                    max_score = score;
+                }
+            }
+        }
+        let other_sum = sum_score - max_score;
+        result.insert(doc_id, max_score + query.tie_breaker * other_sum);
+    }
+    Ok(result)
 }
 
 /// Scored sibling of [`search_boolean_query`]: computes the same matched-doc set
@@ -714,6 +804,57 @@ pub fn search_boolean_query_scored<C: ScoringCollector>(
 
     for doc_id in matched {
         collector.collect(doc_id, scores.get(&doc_id).copied().unwrap_or(0.0));
+    }
+    Ok(())
+}
+
+/// `DisjunctionMaxQuery`-equivalent (task #32): reports every doc matching at
+/// least one of `query.disjuncts` (a pure union -- see [`resolve_dismax_docs`]'s
+/// doc comment) to `collector`, in ascending doc-ID order. Same
+/// `pos_in`/`pay_in` contract as [`search_boolean_query`]: `None` is fine
+/// unless a disjunct contains a multi-term `Clause::Phrase` at any nesting
+/// depth, surfacing `Error::MissingPosInput` only then.
+#[allow(clippy::too_many_arguments)]
+pub fn search_disjunction_max_query<C: Collector>(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    pos_in: Option<&PosInput<'_>>,
+    pay_in: Option<&PayInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    query: &DisjunctionMaxQuery,
+    collector: &mut C,
+) -> Result<()> {
+    let matched = resolve_dismax_docs(fields, doc_in, pos_in, pay_in, live_docs, query)?;
+    for doc_id in matched {
+        collector.collect(doc_id);
+    }
+    Ok(())
+}
+
+/// Scored sibling of [`search_disjunction_max_query`]: computes the identical
+/// matched-doc set, reporting each doc's score via real Lucene's exact dismax
+/// formula (see [`dismax_scores`]'s doc comment) -- `max(disjunct scores) +
+/// tie_breaker * sum(every other matching disjunct's score)`. `norms`: same
+/// contract as [`search_boolean_query_scored`]'s -- per-field real norms,
+/// keyed by field name, for every disjunct's field at any nesting depth;
+/// falls back to [`similarity::UNNORMED_FIELD_LENGTH`] for an unlisted field
+/// or when `norms` itself is `None`.
+#[allow(clippy::too_many_arguments)]
+pub fn search_disjunction_max_query_scored<C: ScoringCollector>(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    pos_in: Option<&PosInput<'_>>,
+    pay_in: Option<&PayInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    query: &DisjunctionMaxQuery,
+    norms: Option<&HashMap<String, FieldNorms<'_>>>,
+    collector: &mut C,
+) -> Result<()> {
+    let scores = dismax_scores(fields, doc_in, pos_in, pay_in, live_docs, query, norms)?;
+    let mut docs: Vec<i32> = scores.keys().copied().collect();
+    docs.sort_unstable();
+    for doc_id in docs {
+        collector.collect(doc_id, scores[&doc_id]);
     }
     Ok(())
 }
@@ -2701,6 +2842,328 @@ mod tests {
         let mut c = VecCollector::default();
         let err =
             search_boolean_query(&fields, Some(&doc_in), None, None, None, &q, &mut c).unwrap_err();
+        assert!(matches!(err, Error::MissingPosInput));
+    }
+
+    // `DisjunctionMaxQuery` (task #32): matching is a pure union, scoring is
+    // `max(disjunct scores) + tie_breaker * sum(rest)`. `body`'s known postings
+    // (see the `Clause::Boolean`/BM25 tests above and `scoring_fixtures.rs`):
+    // cat={0,2}, dog={0,1}, bird={1,4}.
+
+    #[test]
+    fn dismax_matches_the_union_of_every_disjunct() {
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+
+        let q = DisjunctionMaxQuery::new(
+            [
+                Clause::Term(TermQuery::new("body", "cat")),
+                Clause::Term(TermQuery::new("body", "bird")),
+            ],
+            0.0,
+        );
+        let mut c = VecCollector::default();
+        search_disjunction_max_query(&fields, Some(&doc_in), None, None, None, &q, &mut c).unwrap();
+        // cat={0,2} union bird={1,4} = {0,1,2,4}, ascending.
+        assert_eq!(c.docs, vec![0, 1, 2, 4]);
+    }
+
+    #[test]
+    fn dismax_with_no_disjuncts_matches_nothing() {
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+
+        let q = DisjunctionMaxQuery::new(Vec::<Clause>::new(), 0.0);
+        let mut c = VecCollector::default();
+        search_disjunction_max_query(&fields, Some(&doc_in), None, None, None, &q, &mut c).unwrap();
+        assert!(c.docs.is_empty());
+    }
+
+    #[test]
+    fn dismax_missing_term_disjunct_contributes_nothing_to_the_union() {
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+
+        let q = DisjunctionMaxQuery::new(
+            [
+                Clause::Term(TermQuery::new("body", "cat")),
+                Clause::Term(TermQuery::new("body", "zzz-missing")),
+            ],
+            0.0,
+        );
+        let mut c = VecCollector::default();
+        search_disjunction_max_query(&fields, Some(&doc_in), None, None, None, &q, &mut c).unwrap();
+        assert_eq!(c.docs, vec![0, 2]);
+    }
+
+    #[test]
+    fn dismax_scored_with_zero_tie_breaker_is_pure_max_of_disjunct_scores() {
+        // doc 0 matches both cat and dog -- with tie_breaker == 0.0 its score
+        // must be exactly max(cat_score(0), dog_score(0)), not their sum.
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+
+        let mut cat = TopDocsCollector::new(10);
+        search_term_query_scored(
+            &fields,
+            Some(&doc_in),
+            None,
+            &TermQuery::new("body", "cat"),
+            None,
+            &mut cat,
+        )
+        .unwrap();
+        let mut dog = TopDocsCollector::new(10);
+        search_term_query_scored(
+            &fields,
+            Some(&doc_in),
+            None,
+            &TermQuery::new("body", "dog"),
+            None,
+            &mut dog,
+        )
+        .unwrap();
+        let score_of = |top: &TopDocsCollector, doc_id: i32| -> f32 {
+            top.top_docs()
+                .iter()
+                .find(|h| h.doc_id == doc_id)
+                .map(|h| h.score)
+                .unwrap()
+        };
+        let cat0 = score_of(&cat, 0);
+        let dog0 = score_of(&dog, 0);
+        assert_ne!(
+            cat0, dog0,
+            "test needs distinct scores to prove max, not sum"
+        );
+        let expected_max = cat0.max(dog0);
+
+        let q = DisjunctionMaxQuery::new(
+            [
+                Clause::Term(TermQuery::new("body", "cat")),
+                Clause::Term(TermQuery::new("body", "dog")),
+            ],
+            0.0,
+        );
+        let mut top = TopDocsCollector::new(10);
+        search_disjunction_max_query_scored(
+            &fields,
+            Some(&doc_in),
+            None,
+            None,
+            None,
+            &q,
+            None,
+            &mut top,
+        )
+        .unwrap();
+        assert!((score_of(&top, 0) - expected_max).abs() < 1e-4);
+    }
+
+    #[test]
+    fn dismax_scored_tie_breaker_arithmetic_matches_the_exact_formula() {
+        // Exact arithmetic proof of `max + tie_breaker * sum(rest)`, computed
+        // both ways from independently-derived single-clause scores -- doc 0
+        // matches both cat and dog.
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+
+        let mut cat = TopDocsCollector::new(10);
+        search_term_query_scored(
+            &fields,
+            Some(&doc_in),
+            None,
+            &TermQuery::new("body", "cat"),
+            None,
+            &mut cat,
+        )
+        .unwrap();
+        let mut dog = TopDocsCollector::new(10);
+        search_term_query_scored(
+            &fields,
+            Some(&doc_in),
+            None,
+            &TermQuery::new("body", "dog"),
+            None,
+            &mut dog,
+        )
+        .unwrap();
+        let score_of = |top: &TopDocsCollector, doc_id: i32| -> f32 {
+            top.top_docs()
+                .iter()
+                .find(|h| h.doc_id == doc_id)
+                .map(|h| h.score)
+                .unwrap()
+        };
+        let cat0 = score_of(&cat, 0);
+        let dog0 = score_of(&dog, 0);
+        let tie_breaker = 0.3f32;
+        let expected = cat0.max(dog0) + tie_breaker * cat0.min(dog0);
+
+        let q = DisjunctionMaxQuery::new(
+            [
+                Clause::Term(TermQuery::new("body", "cat")),
+                Clause::Term(TermQuery::new("body", "dog")),
+            ],
+            tie_breaker,
+        );
+        let mut top = TopDocsCollector::new(10);
+        search_disjunction_max_query_scored(
+            &fields,
+            Some(&doc_in),
+            None,
+            None,
+            None,
+            &q,
+            None,
+            &mut top,
+        )
+        .unwrap();
+        assert!((score_of(&top, 0) - expected).abs() < 1e-5);
+    }
+
+    #[test]
+    fn dismax_scored_doc_matching_only_one_disjunct_gets_exactly_that_score() {
+        // doc 2 matches only cat (not dog): the tie_breaker term is multiplied
+        // by zero "other" contributions, so the score is exactly cat's own
+        // score regardless of tie_breaker.
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+
+        let mut cat = TopDocsCollector::new(10);
+        search_term_query_scored(
+            &fields,
+            Some(&doc_in),
+            None,
+            &TermQuery::new("body", "cat"),
+            None,
+            &mut cat,
+        )
+        .unwrap();
+        let score_of = |top: &TopDocsCollector, doc_id: i32| -> f32 {
+            top.top_docs()
+                .iter()
+                .find(|h| h.doc_id == doc_id)
+                .map(|h| h.score)
+                .unwrap()
+        };
+        let cat2 = score_of(&cat, 2);
+
+        let q = DisjunctionMaxQuery::new(
+            [
+                Clause::Term(TermQuery::new("body", "cat")),
+                Clause::Term(TermQuery::new("body", "dog")),
+            ],
+            0.5,
+        );
+        let mut top = TopDocsCollector::new(10);
+        search_disjunction_max_query_scored(
+            &fields,
+            Some(&doc_in),
+            None,
+            None,
+            None,
+            &q,
+            None,
+            &mut top,
+        )
+        .unwrap();
+        assert!((score_of(&top, 2) - cat2).abs() < 1e-4);
+    }
+
+    #[test]
+    fn dismax_nested_inside_a_boolean_clause_matches_and_scores_correctly() {
+        // top.must = [term(dog), dismax([cat, bird])]: dog={0,1}, dismax union
+        // cat∪bird = {0,1,2,4}, conjunction = {0,1}.
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+
+        let dismax = DisjunctionMaxQuery::new(
+            [
+                Clause::Term(TermQuery::new("body", "cat")),
+                Clause::Term(TermQuery::new("body", "bird")),
+            ],
+            0.0,
+        );
+        let q = BooleanQuery::new().with_must([
+            Clause::Term(TermQuery::new("body", "dog")),
+            Clause::DisjunctionMax(Box::new(dismax)),
+        ]);
+        let mut c = VecCollector::default();
+        search_boolean_query(&fields, Some(&doc_in), None, None, None, &q, &mut c).unwrap();
+        assert_eq!(c.docs, vec![0, 1]);
+    }
+
+    #[test]
+    fn boolean_clause_nested_inside_a_dismax_disjunct_matches_and_scores_correctly() {
+        // dismax([term(bird), boolean.must=[cat, dog]]): boolean's own
+        // conjunction cat∩dog = {0}; bird = {1,4}. Union = {0,1,4}.
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+
+        let nested_bool = BooleanQuery::new()
+            .with_must([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")]);
+        let q = DisjunctionMaxQuery::new(
+            [
+                Clause::Term(TermQuery::new("body", "bird")),
+                Clause::Boolean(Box::new(nested_bool)),
+            ],
+            0.0,
+        );
+        let mut c = VecCollector::default();
+        search_disjunction_max_query(&fields, Some(&doc_in), None, None, None, &q, &mut c).unwrap();
+        assert_eq!(c.docs, vec![0, 1, 4]);
+    }
+
+    #[test]
+    fn dismax_nested_inside_another_dismax_recurses_to_multiple_levels() {
+        // outer dismax([term(bird), inner dismax([cat, dog])]): inner union
+        // cat∪dog = {0,1,2}; outer union with bird{1,4} = {0,1,2,4}.
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+
+        let inner = DisjunctionMaxQuery::new(
+            [
+                Clause::Term(TermQuery::new("body", "cat")),
+                Clause::Term(TermQuery::new("body", "dog")),
+            ],
+            0.0,
+        );
+        let outer = DisjunctionMaxQuery::new(
+            [
+                Clause::Term(TermQuery::new("body", "bird")),
+                Clause::DisjunctionMax(Box::new(inner)),
+            ],
+            0.0,
+        );
+        let mut c = VecCollector::default();
+        search_disjunction_max_query(&fields, Some(&doc_in), None, None, None, &outer, &mut c)
+            .unwrap();
+        assert_eq!(c.docs, vec![0, 1, 2, 4]);
+    }
+
+    #[test]
+    fn dismax_phrase_clause_without_pos_input_is_an_error() {
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+        let q = DisjunctionMaxQuery::new(
+            [Clause::Phrase(PhraseQuery::new("pos", ["alpha", "beta"]))],
+            0.0,
+        );
+        let mut c = VecCollector::default();
+        let err =
+            search_disjunction_max_query(&fields, Some(&doc_in), None, None, None, &q, &mut c)
+                .unwrap_err();
         assert!(matches!(err, Error::MissingPosInput));
     }
 }

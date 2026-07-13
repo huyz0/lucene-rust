@@ -267,7 +267,8 @@ fn two_term_phrase_scored_matches_hand_computed_bm25_score() {
     // fallback (no norms opened for `pos` in this test): k1=1.2, b=0.75.
     let k1 = 1.2_f64;
     let b = 0.75_f64;
-    let tf_norm = 1.0 * (k1 + 1.0) / (1.0 + k1 * (1.0 - b + b));
+    // No `(k1 + 1)` numerator factor -- see `similarity.rs`'s module doc.
+    let tf_norm = 1.0 / (1.0 + k1 * (1.0 - b + b));
     let expected = (idf_sum * tf_norm) as f32;
 
     assert!(

@@ -38,7 +38,11 @@ impl TermQuery {
 /// with the depth of whatever query tree is embedded inside it — a `BooleanQuery`
 /// containing a `Vec<Clause>` would otherwise be an infinitely-sized type without
 /// the indirection.
-#[derive(Debug, Clone, PartialEq, Eq)]
+// Only `PartialEq`, not `Eq`: `Clause::DisjunctionMax` embeds a `tie_breaker:
+// f32` (task #32), and `f32` has no total order (`NaN`) so it can't derive
+// `Eq`. Nothing in this crate needs `Clause: Eq` (no `HashSet<Clause>`/`BTreeSet<Clause>`
+// use) -- every existing `assert_eq!`/`==` call site only needs `PartialEq`.
+#[derive(Debug, Clone, PartialEq)]
 pub enum Clause {
     /// A leaf exact-term clause.
     Term(TermQuery),
@@ -53,6 +57,12 @@ pub enum Clause {
     /// independently of the parent query's — see [`crate::search_boolean_query`]'s
     /// doc comment for the exact recursive semantics.
     Boolean(Box<BooleanQuery>),
+    /// A nested `DisjunctionMaxQuery` (task #32's addition) — matched (a doc
+    /// matches iff any disjunct matches) and scored (real Lucene's `max +
+    /// tieBreaker * sum(rest)` dismax formula) via
+    /// [`crate::resolve_clause_docs`]/[`crate::clause_scores`], same recursive
+    /// treatment as `Clause::Boolean`.
+    DisjunctionMax(Box<DisjunctionMaxQuery>),
 }
 
 impl From<TermQuery> for Clause {
@@ -70,6 +80,12 @@ impl From<PhraseQuery> for Clause {
 impl From<BooleanQuery> for Clause {
     fn from(query: BooleanQuery) -> Self {
         Clause::Boolean(Box::new(query))
+    }
+}
+
+impl From<DisjunctionMaxQuery> for Clause {
+    fn from(query: DisjunctionMaxQuery) -> Self {
+        Clause::DisjunctionMax(Box::new(query))
     }
 }
 
@@ -91,7 +107,9 @@ impl From<BooleanQuery> for Clause {
 /// with no loss of information this slice actually uses. If clause order or a
 /// separate `FILTER` occur land later, revisit — the `Vec<(Occur, Query)>` shape
 /// earns its keep once clause order or a fourth `Occur` matters.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+// Only `PartialEq`, not `Eq` -- see `Clause`'s derive-list note (this struct's
+// `Vec<Clause>` fields propagate the same `f32`-via-`DisjunctionMax` reason).
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct BooleanQuery {
     /// `Occur.MUST`: every doc must match every clause here (conjunction).
     pub must: Vec<Clause>,
@@ -214,6 +232,45 @@ impl PhraseQuery {
     pub fn with_slop(mut self, slop: u32) -> Self {
         self.slop = slop;
         self
+    }
+}
+
+/// `DisjunctionMaxQuery`-equivalent (`org.apache.lucene.search.DisjunctionMaxQuery`):
+/// a list of `disjuncts` where a doc matches if **any** disjunct matches, scored
+/// by real Lucene's `DisjunctionMaxQuery.DisjunctionMaxWeight`/
+/// `DisjunctionMaxScorer` formula — the matching disjunct's **maximum** score
+/// plus `tie_breaker` times the **sum of every other matching disjunct's
+/// score** (see [`crate::clause_scores`]'s `Clause::DisjunctionMax` arm for the
+/// exact implementation). `tie_breaker == 0.0` (real
+/// `DisjunctionMaxQuery(Collection<Query>)`'s single-arg constructor default)
+/// degenerates to pure `max`-of-disjuncts scoring — the same "best matching
+/// field wins, others break ties" behavior real Lucene documents for that
+/// constructor. Each `disjunct` is a [`Clause`] (any of `Term`/`Phrase`/
+/// `Boolean`/`DisjunctionMax`, recursively), same closed-enum nesting pattern
+/// `BooleanQuery`'s clause lists already use — see `Clause`'s doc comment.
+///
+/// **Why `Vec<Clause>` instead of real Lucene's `Collection<Query>`**: this
+/// port has exactly four query shapes that need to nest anywhere a `Query` is
+/// accepted (`Clause`'s four variants); a `DisjunctionMaxQuery`'s disjuncts are
+/// no different from a `BooleanQuery`'s clauses in that respect, so the same
+/// closed enum is reused rather than introducing a second, parallel nesting
+/// mechanism.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DisjunctionMaxQuery {
+    pub disjuncts: Vec<Clause>,
+    /// `tieBreakerMultiplier` in real Lucene's constructor. `f32` has no
+    /// total order (`NaN`), so this struct — and therefore `Clause`, which
+    /// embeds it — derives `PartialEq` only, not `Eq`; see the note on
+    /// `Clause`'s own derive list.
+    pub tie_breaker: f32,
+}
+
+impl DisjunctionMaxQuery {
+    pub fn new(disjuncts: impl IntoIterator<Item = impl Into<Clause>>, tie_breaker: f32) -> Self {
+        Self {
+            disjuncts: disjuncts.into_iter().map(Into::into).collect(),
+            tie_breaker,
+        }
     }
 }
 

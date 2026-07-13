@@ -416,6 +416,27 @@ a doc whose MIN falls in range but MAX doesn't (and vice versa) is decided by
 the selector alone. See `docs/parity.md`'s updated row for the full
 accounting.
 
+**Progress (task #32):** `DisjunctionMaxQuery` is ported — matching (a pure
+union of `disjuncts`, no `minimum_should_match`-style gate) and scoring (real
+`DisjunctionMaxScorer`'s exact `max(disjunct scores) + tie_breaker *
+sum(rest)` formula). `Clause` gains a fourth variant,
+`Clause::DisjunctionMax(Box<DisjunctionMaxQuery>)`, nesting the same way
+`Clause::Boolean` already does (either direction: a `BooleanQuery` clause can
+be a `DisjunctionMax`, and a `DisjunctionMaxQuery` disjunct can be a
+`Boolean`, to arbitrary depth). Verified against real Lucene both by reusing
+`fixtures/data/blocktree_index/`'s already-fixture-verified `body` postings
+and by a genuine `IndexSearcher.search(new DisjunctionMaxQuery(...), 10)` run
+against that exact segment (`fixtures/src/AppendDismaxManifest.java`,
+appended to the manifest without perturbing the segment's committed random
+ID), asserting doc-for-doc, score-for-score agreement with real Lucene's own
+`TopDocs` output. **This cross-engine test caught a pre-existing BM25 formula
+bug**: `similarity::tf_norm` carried a spurious `(k1 + 1)` numerator factor
+(the textbook BM25 term, not real Lucene 10.5.0's actual `BM25Scorer.doScore`
+formula) that every earlier self-consistency test had independently
+reimplemented instead of catching — fixed, with dependent tests' hand-computed
+expected values updated to match. See `docs/parity.md`'s new row and the
+`BM25Similarity` row's updated note for the full accounting.
+
 1. Traits: `Query → Weight → Scorer/ScorerSupplier`, `DocIdSetIterator`,
    `TwoPhaseIterator`, `BulkScorer`. Use enums where the closed set allows
    (DISI is called per-doc — keep it monomorphizable; `Box<dyn>` only at Weight level).
