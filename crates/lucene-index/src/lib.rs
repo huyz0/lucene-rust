@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 //! lucene-index: see /PLAN.md for scope.
 
+pub mod check_index;
 pub mod deletes;
 pub mod merge;
 pub mod merge_policy;

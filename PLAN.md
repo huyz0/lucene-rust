@@ -1394,6 +1394,66 @@ to check string-slicing/highlighting against). Coverage:
 lines, `cargo llvm-cov --fail-under-lines 95` passing). See
 `docs/parity.md` for the full row.
 
+**Progress (task #57):** `lucene-index/src/check_index.rs` -- a
+`CheckIndex`-equivalent: a standalone consistency verifier that opens a
+segment and cross-checks internal relationships a normal single-purpose
+open never bothers to verify. Deliberately *not* built on top of
+`lucene-search`'s `DirectoryReader`/`SegmentReader` (task #45) (those types
+only expose the curated subset of state a query needs and hide exactly
+what a self-check needs to cross-reference -- `SegmentInfo.files`,
+per-field flags, raw `.si`/`.fnm`/stored-fields bytes). Lives in
+`lucene-index`, not `lucene-search` (which it has no actual dependency on
+-- every type it composes is already available here), and reuses
+`crate::segment_infos::read_latest` for the shared "find the latest
+commit, list its segments" piece, otherwise opening each segment's files
+directly through the same lower-level decoders `lucene-search`'s
+`directory_reader.rs` itself calls (`segment_info::parse`,
+`field_infos::parse`, `live_docs::parse`, `stored_fields::open`), since
+those are exactly the values worth comparing against each other.
+
+Checks implemented, each reported as an independent named pass/fail (not
+a single boolean, matching real `CheckIndex`'s per-check `Status` style):
+every file `.si` lists opens and has a structurally valid codec footer;
+`.si` doc_count vs `.liv`'s byte-size-implied word count (computed
+independently of `si.doc_count`, not by construction); `live_docs`
+cardinality vs `SegmentCommitInfo.del_count` (surfaced via
+`live_docs::parse`'s own `DelCountMismatch`, since that cross-check is
+already enforced at decode time -- this module reports it under its own
+check name rather than re-deriving it); `.fnm`'s per-field flags (doc
+values, norms, term vectors, postings via `index_options`) cross-checked in
+both directions against which of `.dvd`/`.dvm`/`.nvd`/`.nvm`/`.tvd`/`.tvx`/
+`.tvm`/`.tim`/`.tip`/`.tmd` the segment's file list actually includes (a
+field claiming a feature with no matching files is flagged, and so is a
+file group present with no field claiming it); stored-fields reader's own
+`max_doc()` vs `.si`'s declared `doc_count`. A `.si` that fails to
+open/parse short-circuits every other check for that segment (nothing else
+can be trusted without a valid file list), reported as a single `si.open`
+failure.
+
+**Deliberately deferred** (this port's honest scope, not an oversight):
+postings term-by-term re-derivation (recomputing docFreq/totalTermFreq from
+raw postings and cross-checking against the term dictionary's own recorded
+stats -- real `CheckIndex`'s single most expensive check), doc-values
+value-range sanity, points-tree structural invariants, and vectors-graph
+structural invariants. Each requires walking per-format internals in a
+different shape (blocktree iteration, points-tree traversal, HNSW graph
+traversal) -- a separate task per format, not a natural extension of this
+module's cross-file bookkeeping checks.
+
+Unit-tested (no new Java fixture -- this is self-consistency logic over
+already-differentially-verified decoders, not new byte decoding, per the
+`differential-testing` skill's precedent): the real `blocktree_index` and
+`live_docs_index` fixtures pass every check cleanly; deliberately corrupted
+inputs confirm each failure mode reports clearly rather than panicking or
+false-passing -- a hand-mutated `SegmentCommitInfo.del_count`, a truncated
+`.liv` file, a `.si` listing a file that doesn't exist, a `.si` that won't
+parse at all, a `.liv` whose byte size disagrees with `si.doc_count`, a
+file with a corrupted footer, a partial `.fdt`/`.fdx`/`.fdm` file set, and a
+`.si.doc_count` that disagrees with a real stored-fields reader's `max_doc()`.
+Coverage: `lucene-index/src/check_index.rs` 96.97% lines (workspace total
+97.25% lines, `cargo llvm-cov --fail-under-lines 95` passing). See
+`docs/parity.md` for the full row.
+
 1. `lucene-analysis`: `TokenStream` as an iterator-of-token-structs (skip Java's
    AttributeSource reflection design entirely — a plain
    `Token { bytes, position_increment, offset, ... }` struct), StandardTokenizer via
