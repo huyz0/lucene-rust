@@ -1224,6 +1224,60 @@ module (not a project dependency). No new Java fixture generator was needed
 since the existing manifest already had everything required. Coverage:
 `facets.rs` 98.74% lines.
 
+**Progress (task #58):** numeric range faceting, `lucene-search/src/facets.rs
+::{NumericRange, range_facet_counts}` — a companion to task #50's SortedSet
+facet counting, extending the same module rather than starting a new one. A
+simplified port of real Lucene's `LongRangeFacetCounts`/
+`DoubleRangeFacetCounts`: given a caller-supplied list of `NumericRange`s
+(each with independently inclusive/exclusive `min`/`max` bounds and a label)
+and a matching-doc-ID slice, `range_facet_counts` decodes each doc's value
+via the already-existing `doc_values::numeric_value` (task #21/#31's numeric
+decode, reused as-is — no new decoding), then checks it against every range
+independently and increments that range's counter on a match. Output is
+`(label, count)` pairs in the **same order as the input `ranges` slice** —
+real Lucene's `FacetResult.labelValues` preserves caller-specified range
+order rather than sorting by count, unlike `top_n_facets`'s deliberate
+sort-and-truncate for the string-facet case.
+
+**Semantics carried over from real Lucene, not simplified away:**
+- **Ranges may overlap, and a doc in two ranges is counted in both.** Real
+  Lucene never requires ranges to partition the value space; `range_facet_
+  counts` makes one independent containment check per range per doc, with no
+  notion of "the" bucket a doc belongs to.
+- **A doc missing the field never counts, in any range — including an
+  unbounded one.** Same missing-value rule `doc_value_query::search_numeric_
+  range` already documents (`numeric_value` returning `None` skips the doc
+  entirely), applied per-range here instead of to one range.
+- **Empty `matching_docs` yields every range at count 0**, matching task
+  #50's own empty-set convention (`facet_counts`'s all-zero-but-present
+  result) rather than an empty `Vec`.
+
+**Boundary handling** (`NumericRange::contains`) checks each end
+independently: `min_inclusive`/`max_inclusive` each switch between `>=`/`>`
+and `<=`/`<` on their own, so all four inclusive/exclusive combinations are
+representable and were each tested precisely at the boundary value itself
+using the real `doc_values_index` fixture's `varying` field (values -100, 7,
+42, 1000, -3 for docs 0..4): `[42,42]` inclusive-inclusive matches (doc 2's
+exact value), `[42,42)` inclusive-exclusive and `(42,42]` exclusive-inclusive
+both correctly exclude it, and `(7,1000)` exclusive-exclusive still matches
+doc 2 (42) while correctly excluding both endpoint docs (7 and 1000
+themselves).
+
+Verified with the same real-Lucene-recorded ground truth `doc_value_query.rs`
+already established for the `doc_values_index` fixture's `varying`
+(-100/7/42/1000/-3) and `sparse` (5/NONE/15/NONE/25) fields — reused directly
+rather than re-deriving decode correctness, since that decode is already
+differentially verified. Tests cover: non-overlapping ranges partitioning
+docs correctly; an overlapping-ranges case where doc 2 (42) is counted in
+both of two overlapping ranges; all four boundary combinations at the exact
+value; the `sparse` field's missing docs never counting even under an
+unbounded `[i64::MIN, i64::MAX]` range; a doc excluded from `matching_docs`
+contributing nothing even under an unbounded range; empty `matching_docs`
+producing all-zero counts; caller-specified range order preserved in the
+output regardless of count; and decode-error propagation surfacing as `Err`.
+Coverage: `facets.rs` 99.10% lines (up from 98.74% pre-task, both new
+functions fully exercised).
+
 **Progress (task #51, final task in this batch):** `lucene-ffi` exposure of
 task #41's multi-segment search and task #45's `DirectoryReader` — the last
 "lucene-ffi exposure" gap those two tasks' own doc comments (and this file's

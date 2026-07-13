@@ -34,7 +34,7 @@
 //! doc in the segment" passes `0..max_doc` (every live doc ID) as that
 //! slice — no separate code path is needed or added.
 
-use lucene_codecs::doc_values::{self, SortedNumericEntry};
+use lucene_codecs::doc_values::{self, NumericEntry, SortedNumericEntry};
 use lucene_codecs::terms_dict::{self, TermsDictEntry};
 
 use crate::Result;
@@ -113,6 +113,92 @@ pub fn top_n_facets(mut facets: Vec<FacetCount>, n: usize) -> Vec<FacetCount> {
     facets.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.ord.cmp(&b.ord)));
     facets.truncate(n);
     facets
+}
+
+/// A single caller-defined numeric bucket for [`range_facet_counts`] — a
+/// simplified port of real Lucene's `LongRange`/`DoubleRange`
+/// (`lucene-facet` module): a `[min, max]` interval with each end
+/// independently inclusive or exclusive, plus the label the bucket is
+/// reported under. Values are `i64` here (the NUMERIC doc-values field's raw
+/// stored representation); a `DoubleRange`-equivalent caller converts its
+/// `f64` bounds to the field's `NumericUtils.doubleToSortableLong`-equivalent
+/// `i64` encoding before constructing one of these, same as
+/// [`crate::doc_value_query`]'s numeric functions already assume for any
+/// non-integer numeric field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NumericRange {
+    pub label: String,
+    pub min: i64,
+    pub min_inclusive: bool,
+    pub max: i64,
+    pub max_inclusive: bool,
+}
+
+impl NumericRange {
+    /// Whether `value` falls inside this range, honoring each bound's own
+    /// inclusive/exclusive flag independently.
+    fn contains(&self, value: i64) -> bool {
+        let above_min = if self.min_inclusive {
+            value >= self.min
+        } else {
+            value > self.min
+        };
+        let below_max = if self.max_inclusive {
+            value <= self.max
+        } else {
+            value < self.max
+        };
+        above_min && below_max
+    }
+}
+
+/// Counts, for every range in `ranges`, how many of `matching_docs` have a
+/// NUMERIC doc-value falling inside it — a simplified port of real Lucene's
+/// `LongRangeFacetCounts`/`DoubleRangeFacetCounts.count`.
+///
+/// **Ranges are caller-defined and may overlap** (real Lucene doesn't
+/// require ranges to partition the value space): a doc whose value matches
+/// two or more ranges is counted in *each* one, independently — this
+/// function makes one pass per range per doc's already-decoded value, with
+/// no notion of "the" bucket a doc belongs to.
+///
+/// **A doc with no value for the field** (`numeric_value` returns `None` —
+/// legitimate for a sparse NUMERIC field, see [`crate::doc_value_query`]'s
+/// module doc) contributes to **no** range, including an unbounded-looking
+/// one like `i64::MIN..=i64::MAX` — the same missing-value rule
+/// [`crate::doc_value_query::search_numeric_range`] already documents,
+/// applied here per-range instead of to a single range.
+///
+/// A doc not present in `matching_docs` contributes nothing. An empty
+/// `matching_docs` produces every range present at count 0 (not an empty
+/// `Vec`) — the same convention [`facet_counts`] documents for an empty
+/// match set, kept consistent here.
+///
+/// Returns `(label, count)` pairs in the **same order** as `ranges` — real
+/// Lucene's `FacetResult.labelValues` preserves caller-specified range
+/// order rather than sorting by count (unlike [`top_n_facets`], which is a
+/// distinct, opt-in sort for the string-facet case).
+pub fn range_facet_counts(
+    doc_values_data: &[u8],
+    entry: &NumericEntry,
+    ranges: &[NumericRange],
+    matching_docs: &[i32],
+) -> Result<Vec<(String, u64)>> {
+    let mut counts = vec![0u64; ranges.len()];
+    for &doc_id in matching_docs {
+        if let Some(value) = doc_values::numeric_value(doc_values_data, entry, doc_id)? {
+            for (range, count) in ranges.iter().zip(counts.iter_mut()) {
+                if range.contains(value) {
+                    *count += 1;
+                }
+            }
+        }
+    }
+    Ok(ranges
+        .iter()
+        .zip(counts)
+        .map(|(range, count)| (range.label.clone(), count))
+        .collect())
 }
 
 #[cfg(test)]
@@ -401,6 +487,301 @@ mod tests {
             terms_data_length: 0,
         };
         let err = facet_counts(&[], &entry, &terms, &[0]).unwrap_err();
+        assert!(matches!(err, crate::Error::DocValues(_)));
+    }
+
+    // --- range_facet_counts ---
+    //
+    // Reuses `doc_values_index`'s `varying` field (task #21/#31's own
+    // fixture -- see `doc_value_query.rs`'s tests), whose 5 docs' real-Lucene-
+    // recorded values are already differentially verified there: -100, 7, 42,
+    // 1000, -3 for docs 0..4. Bucket assignment is hand-verified against
+    // those recorded values rather than re-deriving decode correctness.
+
+    fn dv_dir() -> String {
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/data/doc_values_index/"
+        )
+        .to_string()
+    }
+
+    fn dv_meta_and_data(dir: &str) -> (Manifest, Vec<u8>, DocValuesMeta) {
+        let (manifest, data, meta) = load_dv_meta(dir);
+        (manifest, data, meta)
+    }
+
+    fn field_num(manifest: &Manifest, field: &str) -> i32 {
+        manifest
+            .get("field_numbers")
+            .split(',')
+            .find_map(|kv| {
+                let (name, num) = kv.split_once(':').unwrap();
+                (name == field).then(|| num.parse().unwrap())
+            })
+            .unwrap_or_else(|| panic!("field {field} missing from field_numbers"))
+    }
+
+    #[test]
+    fn range_facet_counts_partitions_non_overlapping_ranges() {
+        let (manifest, data, meta) = dv_meta_and_data(&dv_dir());
+        let entry = meta.numeric_entry(field_num(&manifest, "varying")).unwrap();
+        // values: -100, 7, 42, 1000, -3 for docs 0..4.
+        let ranges = vec![
+            NumericRange {
+                label: "negative".into(),
+                min: i64::MIN,
+                min_inclusive: true,
+                max: 0,
+                max_inclusive: false,
+            },
+            NumericRange {
+                label: "small_positive".into(),
+                min: 0,
+                min_inclusive: true,
+                max: 100,
+                max_inclusive: true,
+            },
+            NumericRange {
+                label: "large".into(),
+                min: 100,
+                min_inclusive: false,
+                max: i64::MAX,
+                max_inclusive: true,
+            },
+        ];
+        let matching: Vec<i32> = (0..5).collect();
+        let counts = range_facet_counts(&data, entry, &ranges, &matching).unwrap();
+        assert_eq!(
+            counts,
+            vec![
+                ("negative".to_string(), 2),       // -100, -3
+                ("small_positive".to_string(), 2), // 7, 42
+                ("large".to_string(), 1),          // 1000
+            ]
+        );
+    }
+
+    #[test]
+    fn range_facet_counts_overlapping_ranges_count_doc_in_both() {
+        let (manifest, data, meta) = dv_meta_and_data(&dv_dir());
+        let entry = meta.numeric_entry(field_num(&manifest, "varying")).unwrap();
+        // doc2's value (42) falls in both overlapping ranges below.
+        let ranges = vec![
+            NumericRange {
+                label: "0-50".into(),
+                min: 0,
+                min_inclusive: true,
+                max: 50,
+                max_inclusive: true,
+            },
+            NumericRange {
+                label: "10-1000".into(),
+                min: 10,
+                min_inclusive: true,
+                max: 1000,
+                max_inclusive: true,
+            },
+        ];
+        let matching: Vec<i32> = (0..5).collect();
+        let counts = range_facet_counts(&data, entry, &ranges, &matching).unwrap();
+        // "0-50": 7, 42 -> 2. "10-1000": 42, 1000 -> 2. doc2 (42) counted in both.
+        assert_eq!(
+            counts,
+            vec![("0-50".to_string(), 2), ("10-1000".to_string(), 2)]
+        );
+    }
+
+    #[test]
+    fn range_facet_counts_boundary_inclusive_inclusive() {
+        let (manifest, data, meta) = dv_meta_and_data(&dv_dir());
+        let entry = meta.numeric_entry(field_num(&manifest, "varying")).unwrap();
+        // [42, 42] inclusive-inclusive: only doc2 (value 42) matches.
+        let ranges = vec![NumericRange {
+            label: "exact".into(),
+            min: 42,
+            min_inclusive: true,
+            max: 42,
+            max_inclusive: true,
+        }];
+        let matching: Vec<i32> = (0..5).collect();
+        let counts = range_facet_counts(&data, entry, &ranges, &matching).unwrap();
+        assert_eq!(counts, vec![("exact".to_string(), 1)]);
+    }
+
+    #[test]
+    fn range_facet_counts_boundary_inclusive_exclusive() {
+        let (manifest, data, meta) = dv_meta_and_data(&dv_dir());
+        let entry = meta.numeric_entry(field_num(&manifest, "varying")).unwrap();
+        // [42, 42) inclusive-exclusive: the max bound equal to the value
+        // itself must exclude it.
+        let ranges = vec![NumericRange {
+            label: "r".into(),
+            min: 42,
+            min_inclusive: true,
+            max: 42,
+            max_inclusive: false,
+        }];
+        let matching: Vec<i32> = (0..5).collect();
+        let counts = range_facet_counts(&data, entry, &ranges, &matching).unwrap();
+        assert_eq!(counts, vec![("r".to_string(), 0)]);
+    }
+
+    #[test]
+    fn range_facet_counts_boundary_exclusive_inclusive() {
+        let (manifest, data, meta) = dv_meta_and_data(&dv_dir());
+        let entry = meta.numeric_entry(field_num(&manifest, "varying")).unwrap();
+        // (42, 42] exclusive-inclusive: the min bound equal to the value
+        // itself must exclude it.
+        let ranges = vec![NumericRange {
+            label: "r".into(),
+            min: 42,
+            min_inclusive: false,
+            max: 42,
+            max_inclusive: true,
+        }];
+        let matching: Vec<i32> = (0..5).collect();
+        let counts = range_facet_counts(&data, entry, &ranges, &matching).unwrap();
+        assert_eq!(counts, vec![("r".to_string(), 0)]);
+    }
+
+    #[test]
+    fn range_facet_counts_boundary_exclusive_exclusive() {
+        let (manifest, data, meta) = dv_meta_and_data(&dv_dir());
+        let entry = meta.numeric_entry(field_num(&manifest, "varying")).unwrap();
+        // (7, 1000) exclusive-exclusive: doc2 (42) still matches, but the
+        // endpoints 7 and 1000 themselves (docs 1 and 3) must not.
+        let ranges = vec![NumericRange {
+            label: "r".into(),
+            min: 7,
+            min_inclusive: false,
+            max: 1000,
+            max_inclusive: false,
+        }];
+        let matching: Vec<i32> = (0..5).collect();
+        let counts = range_facet_counts(&data, entry, &ranges, &matching).unwrap();
+        assert_eq!(counts, vec![("r".to_string(), 1)]);
+    }
+
+    #[test]
+    fn range_facet_counts_missing_value_never_counted_even_unbounded() {
+        // `sparse` field: 5, NONE, 15, NONE, 25 -- docs 1 and 3 have no value.
+        let (manifest, data, meta) = dv_meta_and_data(&dv_dir());
+        let entry = meta.numeric_entry(field_num(&manifest, "sparse")).unwrap();
+        // An unbounded-above range that would catch every value if a missing
+        // doc wrongly counted.
+        let ranges = vec![NumericRange {
+            label: "everything".into(),
+            min: i64::MIN,
+            min_inclusive: true,
+            max: i64::MAX,
+            max_inclusive: true,
+        }];
+        let matching: Vec<i32> = (0..5).collect();
+        let counts = range_facet_counts(&data, entry, &ranges, &matching).unwrap();
+        // Only docs 0, 2, 4 (5, 15, 25) have a value.
+        assert_eq!(counts, vec![("everything".to_string(), 3)]);
+    }
+
+    #[test]
+    fn range_facet_counts_doc_not_in_matching_set_contributes_nothing() {
+        let (manifest, data, meta) = dv_meta_and_data(&dv_dir());
+        let entry = meta.numeric_entry(field_num(&manifest, "varying")).unwrap();
+        // Excludes doc3 (value 1000); an unbounded range would otherwise
+        // count it.
+        let ranges = vec![NumericRange {
+            label: "everything".into(),
+            min: i64::MIN,
+            min_inclusive: true,
+            max: i64::MAX,
+            max_inclusive: true,
+        }];
+        let matching: Vec<i32> = vec![0, 1, 2, 4];
+        let counts = range_facet_counts(&data, entry, &ranges, &matching).unwrap();
+        assert_eq!(counts, vec![("everything".to_string(), 4)]);
+    }
+
+    #[test]
+    fn range_facet_counts_empty_matching_set_yields_all_zero_counts() {
+        let (manifest, data, meta) = dv_meta_and_data(&dv_dir());
+        let entry = meta.numeric_entry(field_num(&manifest, "varying")).unwrap();
+        let ranges = vec![
+            NumericRange {
+                label: "a".into(),
+                min: 0,
+                min_inclusive: true,
+                max: 10,
+                max_inclusive: true,
+            },
+            NumericRange {
+                label: "b".into(),
+                min: 10,
+                min_inclusive: false,
+                max: 100,
+                max_inclusive: true,
+            },
+        ];
+        let counts = range_facet_counts(&data, entry, &ranges, &[]).unwrap();
+        assert_eq!(counts, vec![("a".to_string(), 0), ("b".to_string(), 0)]);
+    }
+
+    #[test]
+    fn range_facet_counts_preserves_caller_specified_range_order() {
+        let (manifest, data, meta) = dv_meta_and_data(&dv_dir());
+        let entry = meta.numeric_entry(field_num(&manifest, "varying")).unwrap();
+        // Deliberately out of value order -- output must mirror input order,
+        // not sort by count.
+        let ranges = vec![
+            NumericRange {
+                label: "large".into(),
+                min: 100,
+                min_inclusive: false,
+                max: i64::MAX,
+                max_inclusive: true,
+            },
+            NumericRange {
+                label: "negative".into(),
+                min: i64::MIN,
+                min_inclusive: true,
+                max: 0,
+                max_inclusive: false,
+            },
+        ];
+        let matching: Vec<i32> = (0..5).collect();
+        let counts = range_facet_counts(&data, entry, &ranges, &matching).unwrap();
+        assert_eq!(
+            counts.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>(),
+            vec!["large", "negative"]
+        );
+        assert_eq!(counts[0].1, 1); // large: 1000
+        assert_eq!(counts[1].1, 2); // negative: -100, -3
+    }
+
+    #[test]
+    fn range_facet_counts_propagates_decode_errors() {
+        let mut entry = doc_values::NumericEntry {
+            field_number: 0,
+            docs_with_field_offset: -1,
+            docs_with_field_length: 0,
+            jump_table_entry_count: -1,
+            dense_rank_power: 0xFF,
+            num_values: 1,
+            table: None,
+            bits_per_value: 8,
+            min_value: 0,
+            gcd: 1,
+            values_offset: 0,
+            values_length: 1,
+        };
+        entry.bits_per_value = 8;
+        let ranges = vec![NumericRange {
+            label: "r".into(),
+            min: 0,
+            min_inclusive: true,
+            max: 100,
+            max_inclusive: true,
+        }];
+        let err = range_facet_counts(&[], &entry, &ranges, &[0]).unwrap_err();
         assert!(matches!(err, crate::Error::DocValues(_)));
     }
 }
