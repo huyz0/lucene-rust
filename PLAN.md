@@ -1342,6 +1342,58 @@ Coverage: `lucene-search/src/lib.rs` 96.10% lines, `query.rs` 98.34% lines
 (workspace total 97.23% lines, `cargo llvm-cov --fail-under-lines 95`
 passing). See `docs/parity.md` for the full row and scope writeup.
 
+**Progress (task #56):** `lucene-search/src/highlighter.rs` -- fragment
+assembly on top of task #39's `matched_term_offsets` primitive, the
+follow-up that primitive's own doc comment explicitly deferred. Given the
+original field text (read separately, e.g. from
+`lucene-codecs/src/stored_fields.rs`'s `StoredFieldsReader`) plus a set of
+`TermOffsetSpan`s, `assemble_fragments` slices out fixed-size character
+windows around each match (or cluster of nearby matches), wraps the matches
+in caller-configurable `pre`/`post` markers (default `<b>`/`</b>`, real
+Lucene's `PassageFormatter` default), and merges overlapping windows into
+one fragment instead of emitting duplicates -- the one piece of this
+logic that's genuinely easy to get wrong, since inserting multiple
+highlight markers into one merged fragment means later insertions must not
+invalidate earlier ones (`render_cluster` inserts back-to-front, by match
+position, so each insertion's byte offsets stay valid for the next).
+
+**Scope decision, made explicitly**: this is a simplified passage-boundary
+heuristic, not real Lucene's `BreakIterator`-based sentence detection --
+window edges are snapped outward to the nearest whitespace so a fragment
+doesn't start/end mid-word, but there is no sentence awareness and no
+term-density passage scoring; fragments are emitted in left-to-right
+document order and truncated at `max_fragments`.
+
+**Offset-unit finding**: term-vector offsets are decoded verbatim off disk
+by task #3 and never reinterpreted by task #39, so they carry whatever unit
+real Lucene's indexing-time `Analyzer` wrote (UTF-16 code units in real
+Lucene). This port's checked-in fixture is ASCII-only, so UTF-16-code-unit/
+UTF-8-byte/Unicode-scalar counts are indistinguishable there. `highlighter.rs`
+picks Unicode-scalar (`char`) count as its contract going forward (matches
+UTF-16 for the entire Basic Multilingual Plane) and converts to UTF-8 byte
+offsets via `char_indices()` before ever slicing `full_text`, so a match
+spanning a multi-byte UTF-8 character cannot panic even on out-of-range or
+mis-unitted input (offsets are clamped to the text's char count first).
+
+Unit-tested: single match windowed/highlighted correctly; two nearby
+matches merge into one fragment with both terms highlighted, verified
+precisely (markers around both terms, neither original word corrupted);
+two far-apart matches stay in separate fragments; window clamping at text
+start/end without panicking; `max_fragments` truncation; a multi-byte UTF-8
+match; out-of-range/invalid spans dropped defensively rather than panicking;
+one test composes task #39/#3's real, cross-engine-verified fixture offsets
+(`fixtures/data/term_vectors_index/`, doc 0's "text" field -- terms "cat"/
+"car"/"cat" at char offsets 0..3/4..7/8..11) with the real text those exact
+offsets denote (`"cat car cat"`, per `fixtures/src/GenTermVectors.java`'s
+`CannedTokenStream`), rather than a made-up string. No new Java fixture was
+generated for the fragment-assembly logic itself, per the
+`differential-testing` skill's precedent for presentation-layer composition
+over already-differentially-verified data (there is no "real Lucene bytes"
+to check string-slicing/highlighting against). Coverage:
+`lucene-search/src/highlighter.rs` 98.67% lines (workspace total 97.25%
+lines, `cargo llvm-cov --fail-under-lines 95` passing). See
+`docs/parity.md` for the full row.
+
 1. `lucene-analysis`: `TokenStream` as an iterator-of-token-structs (skip Java's
    AttributeSource reflection design entirely — a plain
    `Token { bytes, position_increment, offset, ... }` struct), StandardTokenizer via

@@ -187,6 +187,7 @@ pub mod doc_value_query;
 pub mod docid_set;
 pub mod facets;
 pub mod field_norms;
+pub mod highlighter;
 pub mod multi_segment;
 pub mod query;
 pub mod query_parser;
