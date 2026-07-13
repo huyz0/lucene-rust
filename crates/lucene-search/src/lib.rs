@@ -187,6 +187,7 @@ pub mod docid_set;
 pub mod field_norms;
 pub mod query;
 pub mod similarity;
+pub mod term_vectors_query;
 
 pub use collector::{
     Collector, CountCollector, ScoreDoc, ScoringCollector, TopDocsCollector, VecCollector,
@@ -199,6 +200,7 @@ pub use query::{
     BooleanQuery, BoostQuery, Clause, ConstantScoreQuery, DisjunctionMaxQuery, PhraseQuery,
     PrefixQuery, TermQuery, WildcardQuery,
 };
+pub use term_vectors_query::{matched_term_offsets, term_vector_for_doc};
 
 use std::collections::HashMap;
 
@@ -232,6 +234,11 @@ pub enum Error {
     /// range for the norms entry, or a truncated/corrupt `.nvd` region).
     #[error(transparent)]
     Norms(#[from] lucene_codecs::norms::Error),
+    /// Surfaced by [`term_vectors_query::term_vector_for_doc`] when the
+    /// underlying `.tvd`/`.tvx` decode fails (e.g. a doc ID out of range, or
+    /// a truncated/corrupt term-vectors region).
+    #[error(transparent)]
+    TermVectors(#[from] lucene_codecs::term_vectors::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

@@ -791,6 +791,24 @@ bytes *through* `compound_format::parse_entries`/`open_input`, then confirms
 `stored_fields::open` can read the documents back out through those recovered slices (not
 the original in-memory buffers) — an end-to-end check that a byte-offset bug in the new
 wiring would actually fail.
+**Progress (task #39):** `lucene-search/src/term_vectors_query.rs` surfaces task #3/#26's
+already-decoded term vectors through a query-facing read API — real Lucene's
+`IndexReader.getTermVector(int doc, String field)` equivalent. `term_vector_for_doc` resolves
+a caller-friendly `(doc, field name)` pair to the codec's `(doc, field number)` shape via
+`FieldInfos`, then returns whichever fields/terms/frequencies/positions/offsets/payloads
+`term_vectors::TermVectorsReader::document` already decoded — no new byte-format work, purely
+a thin adapter, following the same "None for no match, propagate the codec's own Err" contract
+every other `lucene-search` query function already uses. On top of that, `matched_term_offsets`
+adds one real, scoped-down highlighting primitive: given a field's already-decoded term vector
+and a set of matched terms, it computes `(term, start_offset, end_offset)` spans — exactly what
+a `Highlighter`/`UnifiedHighlighter` needs to slice source text at match boundaries — returning
+`None` (not a guess) when that field has no stored offsets. No fragment selection, snippet
+assembly, or scoring is attempted; this is the offset-lookup primitive a highlighter sits on
+top of, not a highlighter. No new Java fixture was generated — per the `differential-testing`
+skill's precedent for composition/wiring tasks (#36-38), this task's own logic touches no new
+byte format, so its tests reuse the real, already cross-engine-verified
+`fixtures/data/term_vectors_index/` fixture (task #3's) instead. See `docs/parity.md`'s new row
+for the full scoping detail and test list.
 
 1. `lucene-analysis`: `TokenStream` as an iterator-of-token-structs (skip Java's
    AttributeSource reflection design entirely — a plain
