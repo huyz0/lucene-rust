@@ -22,19 +22,17 @@ impl TermQuery {
     }
 }
 
-/// One `must`/`should`/`must_not` slot in a [`BooleanQuery`] — either a leaf
-/// `TermQuery`, or a nested `BooleanQuery` (recursively, to arbitrary depth: a
-/// `Clause::Boolean` can itself contain `Clause::Boolean` clauses). The Rust
-/// analogue of real `BooleanQuery.add(Query, Occur)` accepting any `Query`
-/// implementation into a clause list — this port has exactly two query shapes that
-/// need to nest inside a `BooleanQuery` today (a bare term, or another boolean
-/// combination of terms), so a closed two-variant enum captures the real
-/// requirement without speculative generality (see the `rust-performance` skill's
-/// "enums where the closed set allows" guidance, and this module's own
-/// `PhraseQuery` doc comment for the same "don't build the general shape until a
-/// second real need shows up" call). `PhraseQuery` is deliberately **not** a
-/// `Clause` variant yet — phrase queries as boolean clauses are a documented
-/// future extension (`docs/parity.md`), not a current need.
+/// One `must`/`should`/`must_not` slot in a [`BooleanQuery`] — a leaf
+/// `TermQuery`, a leaf `PhraseQuery` (task #29's addition, closing the gap this
+/// enum's doc comment previously flagged), or a nested `BooleanQuery`
+/// (recursively, to arbitrary depth: a `Clause::Boolean` can itself contain any
+/// of the three variants). The Rust analogue of real `BooleanQuery.add(Query,
+/// Occur)` accepting any `Query` implementation into a clause list — this port
+/// has exactly three query shapes that need to nest inside a `BooleanQuery`
+/// today (a bare term, a phrase, or another boolean combination), so a closed
+/// three-variant enum captures the real requirement without speculative
+/// generality (see the `rust-performance` skill's "enums where the closed set
+/// allows" guidance).
 ///
 /// `Boolean` boxes its nested `BooleanQuery` so `Clause`'s own size doesn't scale
 /// with the depth of whatever query tree is embedded inside it — a `BooleanQuery`
@@ -44,6 +42,12 @@ impl TermQuery {
 pub enum Clause {
     /// A leaf exact-term clause.
     Term(TermQuery),
+    /// A leaf phrase clause — matched via [`crate::search_phrase_query`]'s
+    /// matching logic and, for `search_boolean_query_scored`, scored via
+    /// [`crate::search_phrase_query_scored`]'s scoring logic (see
+    /// [`crate::resolve_clause_docs`]/[`crate::clause_scores`] for exactly how
+    /// this wiring works inside a `BooleanQuery`).
+    Phrase(PhraseQuery),
     /// A nested `BooleanQuery`, matched (and, for `search_boolean_query_scored`,
     /// scored) against its own `must`/`should`/`must_not`/`minimum_should_match`
     /// independently of the parent query's — see [`crate::search_boolean_query`]'s
@@ -57,6 +61,12 @@ impl From<TermQuery> for Clause {
     }
 }
 
+impl From<PhraseQuery> for Clause {
+    fn from(query: PhraseQuery) -> Self {
+        Clause::Phrase(query)
+    }
+}
+
 impl From<BooleanQuery> for Clause {
     fn from(query: BooleanQuery) -> Self {
         Clause::Boolean(Box::new(query))
@@ -64,8 +74,9 @@ impl From<BooleanQuery> for Clause {
 }
 
 /// `BooleanQuery`-equivalent (`org.apache.lucene.search.BooleanQuery`), pared down to
-/// this slice's scope: a flat list of [`Clause`]s (each either a `TermQuery` or a
-/// nested `BooleanQuery`, recursively — see `Clause`'s doc comment) per `Occur`
+/// this slice's scope: a flat list of [`Clause`]s (each a `TermQuery`, a
+/// `PhraseQuery`, or a nested `BooleanQuery`, recursively — see `Clause`'s doc
+/// comment) per `Occur`
 /// bucket (`MUST`, `SHOULD`, `MUST_NOT`) plus `minimumNumberShouldMatch` — no
 /// `FILTER` (a `FILTER` clause only differs from `MUST` by not contributing to
 /// scoring, and this slice has no separate `FILTER` concept yet, so it would be a
@@ -318,6 +329,24 @@ mod tests {
     fn phrase_query_with_slop_sets_the_field() {
         let q = PhraseQuery::new("body", ["quick", "fox"]).with_slop(2);
         assert_eq!(q.slop, 2);
+    }
+
+    #[test]
+    fn clause_from_phrase_query_wraps_in_phrase_variant() {
+        let clause: Clause = PhraseQuery::new("body", ["quick", "fox"]).into();
+        assert_eq!(
+            clause,
+            Clause::Phrase(PhraseQuery::new("body", ["quick", "fox"]))
+        );
+    }
+
+    #[test]
+    fn with_must_accepts_a_phrase_query_clause() {
+        let q = BooleanQuery::new().with_must([PhraseQuery::new("body", ["quick", "fox"])]);
+        assert_eq!(
+            q.must,
+            vec![Clause::Phrase(PhraseQuery::new("body", ["quick", "fox"]))]
+        );
     }
 
     #[test]

@@ -300,14 +300,25 @@ fn term_doc_ids(
 /// matching **live** doc ID to `collector` in ascending order — same parameter
 /// contract as [`search_term_query`], generalized to a `must`/`should`/`must_not`
 /// clause list of `TermQuery`s instead of exactly one.
+///
+/// `pos_in`/`pay_in`: the segment's opened `.pos`/`.pay` files, needed only when
+/// `query` (at any nesting depth) contains a `Clause::Phrase` with more than one
+/// term (task #29's addition — see [`resolve_clause_docs`]). `None` is fine for
+/// a query with no multi-term phrase clause; passing `None` for a query that
+/// turns out to need it surfaces as [`Error::MissingPosInput`], same convention
+/// as [`search_phrase_query`].
+#[allow(clippy::too_many_arguments)]
 pub fn search_boolean_query<C: Collector>(
     fields: &BlockTreeFields,
     doc_in: Option<&DocInput<'_>>,
+    pos_in: Option<&PosInput<'_>>,
+    pay_in: Option<&PayInput<'_>>,
     live_docs: Option<&FixedBitSet>,
     query: &BooleanQuery,
     collector: &mut C,
 ) -> Result<()> {
-    let Some(matched) = matched_boolean_docs(fields, doc_in, live_docs, query)? else {
+    let Some(matched) = matched_boolean_docs(fields, doc_in, pos_in, pay_in, live_docs, query)?
+    else {
         return Ok(());
     };
     for doc_id in matched {
@@ -350,17 +361,38 @@ pub(crate) fn should_match_counts(should_docs: &[Vec<i32>]) -> HashMap<i32, usiz
 ///   merge like any other clause. A nested query that itself resolves to "matches
 ///   nothing" (`Ok(None)`, see `matched_boolean_docs`'s doc comment) contributes an
 ///   empty list here, not an error.
+/// - `Clause::Phrase` (task #29's addition): collects [`search_phrase_query`]'s
+///   matches into a `Vec` via a local [`VecCollector`], reusing that function's
+///   matching logic (missing field/term/degenerate-single-term handling and
+///   all) rather than duplicating it.
 fn resolve_clause_docs(
     fields: &BlockTreeFields,
     doc_in: Option<&DocInput<'_>>,
+    pos_in: Option<&PosInput<'_>>,
+    pay_in: Option<&PayInput<'_>>,
     live_docs: Option<&FixedBitSet>,
     clause: &Clause,
 ) -> Result<Vec<i32>> {
     match clause {
         Clause::Term(query) => term_doc_ids(fields, doc_in, live_docs, query),
-        Clause::Boolean(nested) => Ok(matched_boolean_docs(fields, doc_in, live_docs, nested)?
-            .map(Iterator::collect)
-            .unwrap_or_default()),
+        Clause::Phrase(query) => {
+            let mut collector = collector::VecCollector::default();
+            search_phrase_query(
+                fields,
+                doc_in,
+                pos_in,
+                pay_in,
+                live_docs,
+                query,
+                &mut collector,
+            )?;
+            Ok(collector.docs)
+        }
+        Clause::Boolean(nested) => Ok(matched_boolean_docs(
+            fields, doc_in, pos_in, pay_in, live_docs, nested,
+        )?
+        .map(Iterator::collect)
+        .unwrap_or_default()),
     }
 }
 
@@ -377,9 +409,12 @@ fn resolve_clause_docs(
 /// nested `Clause::Boolean`'s own call to this same function — this is also what
 /// makes this function itself recursive (a nested query resolves via a fresh call
 /// to `matched_boolean_docs`, not a duplicated copy of this algorithm).
+#[allow(clippy::too_many_arguments)]
 fn matched_boolean_docs(
     fields: &BlockTreeFields,
     doc_in: Option<&DocInput<'_>>,
+    pos_in: Option<&PosInput<'_>>,
+    pay_in: Option<&PayInput<'_>>,
     live_docs: Option<&FixedBitSet>,
     query: &BooleanQuery,
 ) -> Result<Option<BoxDocIter<'static>>> {
@@ -393,7 +428,7 @@ fn matched_boolean_docs(
     let clause_docs = |clauses: &[Clause]| -> Result<Vec<Vec<i32>>> {
         clauses
             .iter()
-            .map(|clause| resolve_clause_docs(fields, doc_in, live_docs, clause))
+            .map(|clause| resolve_clause_docs(fields, doc_in, pos_in, pay_in, live_docs, clause))
             .collect()
     };
 
@@ -559,9 +594,16 @@ pub fn search_term_query_scored<C: ScoringCollector>(
 ///   `minimum_should_match` excludes must not leak a score contribution into the
 ///   parent. This recursion has no depth limit: a `Clause::Boolean` nested inside
 ///   another `Clause::Boolean` resolves the same way, one level at a time.
+/// - `Clause::Phrase` (task #29's addition): this clause's own BM25 score per
+///   matching, live doc via [`search_phrase_query_scored`], collected through a
+///   local [`ScoringCollector`] (a tiny inline impl, since neither existing
+///   collector in `collector.rs` needs to be shared for this one-shot use), keyed
+///   by `query.field` in `norms` same as `Clause::Term`.
 fn clause_scores(
     fields: &BlockTreeFields,
     doc_in: Option<&DocInput<'_>>,
+    pos_in: Option<&PosInput<'_>>,
+    pay_in: Option<&PayInput<'_>>,
     live_docs: Option<&FixedBitSet>,
     clause: &Clause,
     norms: Option<&HashMap<String, FieldNorms<'_>>>,
@@ -576,15 +618,40 @@ fn clause_scores(
             }
             Ok(scores)
         }
+        Clause::Phrase(query) => {
+            let clause_norms = norms.and_then(|m| m.get(&query.field));
+            let mut scores: HashMap<i32, f32> = HashMap::new();
+            struct SumCollector<'a>(&'a mut HashMap<i32, f32>);
+            impl collector::ScoringCollector for SumCollector<'_> {
+                fn collect(&mut self, doc_id: i32, score: f32) {
+                    *self.0.entry(doc_id).or_insert(0.0) += score;
+                }
+            }
+            let mut collector = SumCollector(&mut scores);
+            search_phrase_query_scored(
+                fields,
+                doc_in,
+                pos_in,
+                pay_in,
+                live_docs,
+                query,
+                clause_norms,
+                &mut collector,
+            )?;
+            Ok(scores)
+        }
         Clause::Boolean(nested) => {
-            let Some(matched) = matched_boolean_docs(fields, doc_in, live_docs, nested)? else {
+            let Some(matched) =
+                matched_boolean_docs(fields, doc_in, pos_in, pay_in, live_docs, nested)?
+            else {
                 return Ok(HashMap::new());
             };
             let matched: std::collections::HashSet<i32> = matched.collect();
 
             let mut scores: HashMap<i32, f32> = HashMap::new();
             for sub_clause in nested.must.iter().chain(nested.should.iter()) {
-                for (doc_id, score) in clause_scores(fields, doc_in, live_docs, sub_clause, norms)?
+                for (doc_id, score) in
+                    clause_scores(fields, doc_in, pos_in, pay_in, live_docs, sub_clause, norms)?
                 {
                     if matched.contains(&doc_id) {
                         *scores.entry(doc_id).or_insert(0.0) += score;
@@ -614,15 +681,23 @@ fn clause_scores(
 /// approximation as [`term_doc_scores`]. A `BooleanQuery`'s clauses can span
 /// multiple fields, unlike a single [`TermQuery`], hence the map instead of one
 /// `FieldNorms`.
+///
+/// `pos_in`/`pay_in`: see [`search_boolean_query`]'s doc comment -- same
+/// contract, needed only when `query` contains a multi-term `Clause::Phrase` at
+/// any nesting depth.
+#[allow(clippy::too_many_arguments)]
 pub fn search_boolean_query_scored<C: ScoringCollector>(
     fields: &BlockTreeFields,
     doc_in: Option<&DocInput<'_>>,
+    pos_in: Option<&PosInput<'_>>,
+    pay_in: Option<&PayInput<'_>>,
     live_docs: Option<&FixedBitSet>,
     query: &BooleanQuery,
     norms: Option<&HashMap<String, FieldNorms<'_>>>,
     collector: &mut C,
 ) -> Result<()> {
-    let Some(matched) = matched_boolean_docs(fields, doc_in, live_docs, query)? else {
+    let Some(matched) = matched_boolean_docs(fields, doc_in, pos_in, pay_in, live_docs, query)?
+    else {
         return Ok(());
     };
 
@@ -630,7 +705,9 @@ pub fn search_boolean_query_scored<C: ScoringCollector>(
     // and `should` (never `must_not`, which only filters -- see doc comment).
     let mut scores: HashMap<i32, f32> = HashMap::new();
     for clause in query.must.iter().chain(query.should.iter()) {
-        for (doc_id, score) in clause_scores(fields, doc_in, live_docs, clause, norms)? {
+        for (doc_id, score) in
+            clause_scores(fields, doc_in, pos_in, pay_in, live_docs, clause, norms)?
+        {
             *scores.entry(doc_id).or_insert(0.0) += score;
         }
     }
@@ -763,6 +840,52 @@ pub(crate) fn phrase_matches_in_doc_sloppy(term_positions: &[Vec<i32>], slop: u3
         return true;
     }
     false
+}
+
+/// `ExactPhraseScorer`'s per-doc `phraseFreq`-equivalent: counts every valid base
+/// position `p0` in `term_positions[0]` for which the rest of `term_positions`
+/// align exactly (`term_positions[i]` contains `p0 + i` for every `i`) — the
+/// same alignment condition [`phrase_matches_in_doc`] checks, except this counts
+/// every satisfying `p0` instead of stopping at the first one.
+///
+/// **Why counting distinct `p0` values in the first term's own (already
+/// deduplicated, strictly ascending) position list can't double-count the same
+/// occurrence**: each `p0` is one real position of `term_positions[0]` in the
+/// doc, and a real doc position occurs at most once in that list (positions are
+/// decoded in strictly increasing order — see
+/// [`lucene_codecs::postings::read_positions`]), so every counted match starts
+/// at a genuinely distinct occurrence of the phrase's first word — this is
+/// exactly `ExactPhraseScorer`'s own counting granularity: one match per
+/// starting position of the phrase's first term that the rest of the phrase
+/// aligns to. A repeated phrase (e.g. "the the" appearing twice, positions
+/// 0,1,2,3 for "the") is counted once per valid starting position (0 and 2 for
+/// non-overlapping repeats, or 0 *and* 1 if "the the the" — position 1 also
+/// starts a valid "the the" alignment against positions 2 — matching real
+/// Lucene's own per-start-position counting, which does not suppress
+/// overlapping matches).
+///
+/// **Edge cases** (same contract as [`phrase_matches_in_doc`]): an empty
+/// `term_positions`, or any single empty position list, both yield `0`. A
+/// single-term phrase (`term_positions.len() == 1`) counts every occurrence of
+/// that lone term (the inner alignment loop is empty, so every `p0` counts).
+pub(crate) fn phrase_freq_exact(term_positions: &[Vec<i32>]) -> i32 {
+    let Some((first, rest)) = term_positions.split_first() else {
+        return 0;
+    };
+    if rest.iter().any(|positions| positions.is_empty()) {
+        return 0;
+    }
+    let mut freq = 0;
+    'candidate: for &p0 in first {
+        for (i, positions) in rest.iter().enumerate() {
+            let target = p0 + (i as i32 + 1);
+            if positions.binary_search(&target).is_err() {
+                continue 'candidate;
+            }
+        }
+        freq += 1;
+    }
+    freq
 }
 
 /// One phrase-query term's live-filtered doc-ID list plus a `doc_id -> sorted
@@ -916,6 +1039,144 @@ pub fn search_phrase_query<C: Collector>(
         if is_match {
             collector.collect(doc_id);
         }
+    }
+    Ok(())
+}
+
+/// Scored sibling of [`search_phrase_query`] (task #29): same matching
+/// semantics and parameter contract, but feeds each matched, live doc's BM25
+/// score to a [`ScoringCollector`] instead of a plain [`Collector`].
+///
+/// **Formula, verified against real Lucene's `PhraseWeight`/`BM25Similarity`
+/// source rather than guessed**: a multi-term phrase's `idf` is the *sum* of
+/// each constituent term's own `idf(docFreq, docCount)` — this is
+/// `BM25Similarity.idf(CollectionStatistics, TermStatistics[])`'s actual
+/// behavior for a phrase's combined term statistics (it iterates every term
+/// and sums each one's `idf`, then reports that sum as the phrase's overall
+/// idf), not this port's invention. `tfNorm` is computed exactly like
+/// [`term_doc_scores`]'s, except with the doc's **phrase frequency** in place
+/// of a single term's `freq`:
+/// - `query.slop == 0`: phrase frequency is [`phrase_freq_exact`]'s count of
+///   valid alignments (`ExactPhraseScorer`'s real `phraseFreq` accumulation —
+///   see that function's doc comment for the exact counting rule and why it
+///   doesn't double-count).
+/// - `query.slop > 0`: phrase frequency is simplified to `1` if
+///   [`phrase_matches_in_doc_sloppy`] finds any valid alignment, `0`
+///   otherwise — **a deliberate, honestly-scoped simplification**, not a
+///   verified port of real Lucene's `SloppyPhraseMatcher` scoring. Real
+///   Lucene's sloppy scorer accumulates a graduated per-match contribution of
+///   `1.0 / (matchLength + 1)` (favoring tighter alignments) summed across
+///   every valid alignment its priority-queue-based algorithm finds — this
+///   port could not confidently re-derive/verify that exact per-match
+///   weighting formula (or the surrounding alignment-enumeration algorithm,
+///   already scoped down to in-order-only by
+///   [`phrase_matches_in_doc_sloppy`]'s own doc comment) within this task's
+///   scope, so graduated sloppy match-quality scoring is deliberately
+///   deferred (see `docs/parity.md`) in favor of this simpler matches-or-not
+///   boolean signal, consistent with this port's established "scope down
+///   honestly rather than guess at unverified Lucene internals" practice (see
+///   BKD's split heuristic, `phrase_matches_in_doc_sloppy` itself).
+///
+/// `norms`/`collector`: same contract as [`search_term_query_scored`]'s.
+#[allow(clippy::too_many_arguments)]
+pub fn search_phrase_query_scored<C: ScoringCollector>(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    pos_in: Option<&PosInput<'_>>,
+    pay_in: Option<&PayInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    query: &PhraseQuery,
+    norms: Option<&FieldNorms<'_>>,
+    collector: &mut C,
+) -> Result<()> {
+    if query.terms.is_empty() {
+        return Ok(());
+    }
+    if query.terms.len() == 1 {
+        let term_query = TermQuery::new(query.field.clone(), query.terms[0].clone());
+        return search_term_query_scored(fields, doc_in, live_docs, &term_query, norms, collector);
+    }
+    let Some(pos_in) = pos_in else {
+        return Err(Error::MissingPosInput);
+    };
+
+    let Some(field_terms) = fields.field(&query.field) else {
+        return Ok(());
+    };
+
+    // Real BM25's phrase idf is the sum of every constituent term's own idf --
+    // see this function's doc comment. A missing term means the phrase can
+    // never match, same convention as `search_phrase_query`.
+    let doc_count = field_terms.doc_count as i64;
+    let mut idf_sum = 0.0f32;
+    for term in &query.terms {
+        let Some(stats) = field_terms.seek_exact(term) else {
+            return Ok(());
+        };
+        idf_sum += similarity::idf(stats.doc_freq as i64, doc_count);
+    }
+
+    let mut per_term_docs: Vec<Vec<i32>> = Vec::with_capacity(query.terms.len());
+    let mut per_term_maps: Vec<HashMap<i32, Vec<i32>>> = Vec::with_capacity(query.terms.len());
+    for term in &query.terms {
+        let Some((docs, map)) = term_doc_positions(
+            fields,
+            doc_in,
+            pos_in,
+            pay_in,
+            live_docs,
+            &query.field,
+            term,
+        )?
+        else {
+            return Ok(());
+        };
+        per_term_docs.push(docs);
+        per_term_maps.push(map);
+    }
+
+    let candidate_docs: Vec<i32> = Conjunction::new(
+        per_term_docs
+            .into_iter()
+            .map(|v| Box::new(v.into_iter()) as BoxDocIter<'static>)
+            .collect(),
+    )
+    .collect();
+
+    for doc_id in candidate_docs {
+        let term_positions: Vec<Vec<i32>> = per_term_maps
+            .iter()
+            .map(|m| {
+                m.get(&doc_id)
+                    .cloned()
+                    .expect("doc_id came from the conjunction of every term's own doc list")
+            })
+            .collect();
+        let phrase_freq = if query.slop == 0 {
+            phrase_freq_exact(&term_positions)
+        } else if phrase_matches_in_doc_sloppy(&term_positions, query.slop) {
+            1
+        } else {
+            0
+        };
+        if phrase_freq == 0 {
+            continue;
+        }
+        let (field_length, avg_field_length) = match norms {
+            Some(fn_) => (fn_.field_length(doc_id)?, fn_.avg_field_length),
+            None => (
+                similarity::UNNORMED_FIELD_LENGTH,
+                similarity::UNNORMED_FIELD_LENGTH,
+            ),
+        };
+        let tf_norm = similarity::tf_norm(
+            phrase_freq as f32,
+            field_length,
+            avg_field_length,
+            similarity::DEFAULT_K1,
+            similarity::DEFAULT_B,
+        );
+        collector.collect(doc_id, idf_sum * tf_norm);
     }
     Ok(())
 }
@@ -1141,7 +1402,7 @@ mod tests {
         let mut c = VecCollector::default();
         let q = BooleanQuery::new()
             .with_must([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")]);
-        search_boolean_query(&fields, doc_in.as_ref(), None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &q, &mut c).unwrap();
         assert_eq!(c.docs, vec![0]);
     }
 
@@ -1154,7 +1415,7 @@ mod tests {
             TermQuery::new("body", "cat"),
             TermQuery::new("body", "bird"),
         ]);
-        search_boolean_query(&fields, doc_in.as_ref(), None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &q, &mut c).unwrap();
         assert_eq!(c.docs, vec![0, 1, 2, 4]);
     }
 
@@ -1166,7 +1427,7 @@ mod tests {
         let q = BooleanQuery::new()
             .with_must([TermQuery::new("body", "cat")])
             .with_must_not([TermQuery::new("body", "dog")]);
-        search_boolean_query(&fields, doc_in.as_ref(), None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &q, &mut c).unwrap();
         assert_eq!(c.docs, vec![2]);
     }
 
@@ -1176,7 +1437,7 @@ mod tests {
         let doc_in = doc.as_ref().map(|d| d.open());
         let mut c = VecCollector::default();
         let q = BooleanQuery::new().with_must_not([TermQuery::new("body", "dog")]);
-        search_boolean_query(&fields, doc_in.as_ref(), None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &q, &mut c).unwrap();
         assert!(c.docs.is_empty());
     }
 
@@ -1186,7 +1447,7 @@ mod tests {
         let doc_in = doc.as_ref().map(|d| d.open());
         let mut c = VecCollector::default();
         let q = BooleanQuery::new();
-        search_boolean_query(&fields, doc_in.as_ref(), None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &q, &mut c).unwrap();
         assert!(c.docs.is_empty());
     }
 
@@ -1204,7 +1465,7 @@ mod tests {
             .with_must([TermQuery::new("body", "cat")])
             .with_should([TermQuery::new("body", "bird")])
             .with_minimum_should_match(0);
-        search_boolean_query(&fields, doc_in.as_ref(), None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &q, &mut c).unwrap();
         assert_eq!(c.docs, vec![0, 2]);
     }
 
@@ -1224,7 +1485,7 @@ mod tests {
                 TermQuery::new("body", "bird"),
             ])
             .with_minimum_should_match(1);
-        search_boolean_query(&fields, doc_in.as_ref(), None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &q, &mut c).unwrap();
         assert_eq!(c.docs, vec![0]);
     }
 
@@ -1243,7 +1504,7 @@ mod tests {
                 TermQuery::new("body", "bird"),
             ])
             .with_minimum_should_match(2);
-        search_boolean_query(&fields, doc_in.as_ref(), None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &q, &mut c).unwrap();
         assert_eq!(c.docs, vec![0, 1]);
     }
 
@@ -1262,7 +1523,7 @@ mod tests {
                 TermQuery::new("body", "bird"),
             ])
             .with_minimum_should_match(1);
-        search_boolean_query(&fields, doc_in.as_ref(), None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &q, &mut c).unwrap();
         assert_eq!(c.docs, vec![0, 1, 2, 4]);
     }
 
@@ -1278,7 +1539,7 @@ mod tests {
         let q = BooleanQuery::new()
             .with_should([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")])
             .with_minimum_should_match(5);
-        search_boolean_query(&fields, doc_in.as_ref(), None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &q, &mut c).unwrap();
         assert!(c.docs.is_empty());
     }
 
@@ -1298,7 +1559,7 @@ mod tests {
             ])
             .with_must_not([TermQuery::new("body", "dog")])
             .with_minimum_should_match(1);
-        search_boolean_query(&fields, doc_in.as_ref(), None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &q, &mut c).unwrap();
         assert!(c.docs.is_empty());
     }
 
@@ -1320,7 +1581,7 @@ mod tests {
             Clause::Term(TermQuery::new("body", "dog")),
             Clause::Boolean(Box::new(nested)),
         ]);
-        search_boolean_query(&fields, doc_in.as_ref(), None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &q, &mut c).unwrap();
         assert_eq!(c.docs, vec![0, 1]);
     }
 
@@ -1334,7 +1595,7 @@ mod tests {
         let nested = BooleanQuery::new()
             .with_must([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")]);
         let q = BooleanQuery::new().with_should([nested]);
-        search_boolean_query(&fields, doc_in.as_ref(), None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &q, &mut c).unwrap();
         assert_eq!(c.docs, vec![0]);
     }
 
@@ -1356,7 +1617,7 @@ mod tests {
             ])
             .with_minimum_should_match(2);
         let q = BooleanQuery::new().with_must([nested]);
-        search_boolean_query(&fields, doc_in.as_ref(), None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &q, &mut c).unwrap();
         assert_eq!(c.docs, vec![1]);
     }
 
@@ -1384,7 +1645,7 @@ mod tests {
                 Clause::Term(TermQuery::new("body", "cat")),
             ])
             .with_minimum_should_match(1);
-        search_boolean_query(&fields, doc_in.as_ref(), None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &q, &mut c).unwrap();
         assert_eq!(c.docs, vec![0, 1, 2]);
     }
 
@@ -1402,7 +1663,7 @@ mod tests {
             Clause::Boolean(Box::new(nested)),
             Clause::Term(TermQuery::new("body", "cat")),
         ]);
-        search_boolean_query(&fields, doc_in.as_ref(), None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &q, &mut c).unwrap();
         assert_eq!(c.docs, vec![0, 2]);
     }
 
@@ -1418,7 +1679,7 @@ mod tests {
             .with_must([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")]);
         let middle = BooleanQuery::new().with_should([innermost]);
         let top = BooleanQuery::new().with_must([middle]);
-        search_boolean_query(&fields, doc_in.as_ref(), None, &top, &mut c).unwrap();
+        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &top, &mut c).unwrap();
         assert_eq!(c.docs, vec![0]);
     }
 
@@ -1439,8 +1700,17 @@ mod tests {
         let top = BooleanQuery::new().with_should([nested]);
 
         let mut top_docs = TopDocsCollector::new(10);
-        search_boolean_query_scored(&fields, doc_in.as_ref(), None, &top, None, &mut top_docs)
-            .unwrap();
+        search_boolean_query_scored(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            None,
+            None,
+            &top,
+            None,
+            &mut top_docs,
+        )
+        .unwrap();
 
         let mut cat_scores = TopDocsCollector::new(10);
         search_term_query_scored(
@@ -1509,8 +1779,17 @@ mod tests {
         let top = BooleanQuery::new().with_should([nested]);
 
         let mut top_docs = TopDocsCollector::new(10);
-        search_boolean_query_scored(&fields, doc_in.as_ref(), None, &top, None, &mut top_docs)
-            .unwrap();
+        search_boolean_query_scored(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            None,
+            None,
+            &top,
+            None,
+            &mut top_docs,
+        )
+        .unwrap();
         let hits = top_docs.top_docs();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].doc_id, 1);
@@ -1555,7 +1834,7 @@ mod tests {
             TermQuery::new("body", "cat"),
             TermQuery::new("body", "zzz-missing"),
         ]);
-        search_boolean_query(&fields, doc_in.as_ref(), None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &q, &mut c).unwrap();
         assert!(c.docs.is_empty());
     }
 
@@ -1587,7 +1866,16 @@ mod tests {
         let mut c = VecCollector::default();
         let q = BooleanQuery::new()
             .with_must([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")]);
-        search_boolean_query(&fields, doc_in.as_ref(), Some(&live_docs), &q, &mut c).unwrap();
+        search_boolean_query(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            None,
+            Some(&live_docs),
+            &q,
+            &mut c,
+        )
+        .unwrap();
         assert!(c.docs.is_empty());
     }
 
@@ -2003,5 +2291,416 @@ mod tests {
         )
         .unwrap();
         assert!(c.docs.is_empty());
+    }
+
+    // `phrase_freq_exact` unit tests (task #29): pure counting logic against
+    // hand-built position lists, no fixture needed.
+
+    #[test]
+    fn phrase_freq_exact_counts_one_match_when_phrase_occurs_once() {
+        // "quick fox" at position 0/1 only.
+        assert_eq!(phrase_freq_exact(&[vec![0], vec![1]]), 1);
+    }
+
+    #[test]
+    fn phrase_freq_exact_counts_every_repeated_occurrence() {
+        // "the the": "the" at 0,1,2,3 -- valid starts at 0,1,2 (0+1=1 present,
+        // 1+1=2 present, 2+1=3 present), 3 has no successor -- 3 matches, not 1.
+        let positions = vec![vec![0, 1, 2, 3], vec![0, 1, 2, 3]];
+        assert_eq!(phrase_freq_exact(&positions), 3);
+    }
+
+    #[test]
+    fn phrase_freq_exact_zero_when_no_alignment_exists() {
+        assert_eq!(phrase_freq_exact(&[vec![0], vec![5]]), 0);
+    }
+
+    #[test]
+    fn phrase_freq_exact_zero_for_empty_term_positions() {
+        assert_eq!(phrase_freq_exact(&[]), 0);
+    }
+
+    #[test]
+    fn phrase_freq_exact_zero_when_any_term_has_no_occurrences() {
+        assert_eq!(phrase_freq_exact(&[vec![0], vec![]]), 0);
+    }
+
+    #[test]
+    fn phrase_freq_exact_single_term_counts_every_occurrence() {
+        assert_eq!(phrase_freq_exact(&[vec![0, 3, 7]]), 3);
+    }
+
+    #[test]
+    fn phrase_freq_exact_non_overlapping_repeats_counts_two() {
+        // "quick fox ... quick fox": two disjoint adjacent pairs, no overlap
+        // possible between them.
+        let positions = vec![vec![0, 10], vec![1, 11]];
+        assert_eq!(phrase_freq_exact(&positions), 2);
+    }
+
+    // `search_phrase_query_scored` fixture-driven tests (task #29): reuses the
+    // `pos` field's real alpha/beta postings this module's `search_phrase_query`
+    // tests already validate at the matching layer.
+
+    #[test]
+    fn phrase_query_scored_matches_unscored_doc_set_and_scores_positively() {
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+        let pos_in = doc.open_pos();
+        let pay_in = doc.open_pay();
+
+        let mut unscored = VecCollector::default();
+        search_phrase_query(
+            &fields,
+            Some(&doc_in),
+            Some(&pos_in),
+            Some(&pay_in),
+            None,
+            &PhraseQuery::new("pos", ["alpha", "beta"]),
+            &mut unscored,
+        )
+        .unwrap();
+        assert_eq!(unscored.docs, vec![8555]);
+
+        let mut top = TopDocsCollector::new(10);
+        search_phrase_query_scored(
+            &fields,
+            Some(&doc_in),
+            Some(&pos_in),
+            Some(&pay_in),
+            None,
+            &PhraseQuery::new("pos", ["alpha", "beta"]),
+            None,
+            &mut top,
+        )
+        .unwrap();
+        let hits = top.top_docs();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].doc_id, 8555);
+        assert!(hits[0].score > 0.0);
+    }
+
+    #[test]
+    fn phrase_query_scored_single_term_delegates_to_term_scoring() {
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+
+        let mut phrase_top = TopDocsCollector::new(10);
+        search_phrase_query_scored(
+            &fields,
+            Some(&doc_in),
+            None,
+            None,
+            None,
+            &PhraseQuery::new("pos", ["alpha"]),
+            None,
+            &mut phrase_top,
+        )
+        .unwrap();
+
+        let mut term_top = TopDocsCollector::new(10);
+        search_term_query_scored(
+            &fields,
+            Some(&doc_in),
+            None,
+            &TermQuery::new("pos", "alpha"),
+            None,
+            &mut term_top,
+        )
+        .unwrap();
+
+        let mut phrase_hits: Vec<(i32, f32)> = phrase_top
+            .top_docs()
+            .iter()
+            .map(|h| (h.doc_id, h.score))
+            .collect();
+        let mut term_hits: Vec<(i32, f32)> = term_top
+            .top_docs()
+            .iter()
+            .map(|h| (h.doc_id, h.score))
+            .collect();
+        phrase_hits.sort_by_key(|h| h.0);
+        term_hits.sort_by_key(|h| h.0);
+        assert_eq!(phrase_hits.len(), term_hits.len());
+        for ((pd, ps), (td, ts)) in phrase_hits.iter().zip(term_hits.iter()) {
+            assert_eq!(pd, td);
+            assert!((ps - ts).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn phrase_query_scored_empty_terms_yields_no_hits() {
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+        let mut top = TopDocsCollector::new(10);
+        search_phrase_query_scored(
+            &fields,
+            Some(&doc_in),
+            None,
+            None,
+            None,
+            &PhraseQuery::default(),
+            None,
+            &mut top,
+        )
+        .unwrap();
+        assert!(top.top_docs().is_empty());
+    }
+
+    #[test]
+    fn phrase_query_scored_missing_term_yields_no_hits() {
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+        let pos_in = doc.open_pos();
+        let pay_in = doc.open_pay();
+        let mut top = TopDocsCollector::new(10);
+        search_phrase_query_scored(
+            &fields,
+            Some(&doc_in),
+            Some(&pos_in),
+            Some(&pay_in),
+            None,
+            &PhraseQuery::new("pos", ["alpha", "zzz-missing"]),
+            None,
+            &mut top,
+        )
+        .unwrap();
+        assert!(top.top_docs().is_empty());
+    }
+
+    #[test]
+    fn phrase_query_scored_multi_term_without_pos_input_is_an_error() {
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+        let mut top = TopDocsCollector::new(10);
+        let err = search_phrase_query_scored(
+            &fields,
+            Some(&doc_in),
+            None,
+            None,
+            None,
+            &PhraseQuery::new("pos", ["alpha", "beta"]),
+            None,
+            &mut top,
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::MissingPosInput));
+    }
+
+    #[test]
+    fn phrase_query_scored_repeated_phrase_scores_higher_than_single_occurrence() {
+        // doc 8556 has "alpha" at 0 and 1 -- "alpha alpha" matches twice there
+        // (phrase_freq_exact counts both consecutive starts). A higher phraseFreq
+        // must yield a strictly higher BM25 score than a doc with phraseFreq 1,
+        // same monotonicity property term scoring already proves for `freq`.
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+        let pos_in = doc.open_pos();
+        let pay_in = doc.open_pay();
+
+        let mut top = TopDocsCollector::new(10);
+        search_phrase_query_scored(
+            &fields,
+            Some(&doc_in),
+            Some(&pos_in),
+            Some(&pay_in),
+            None,
+            &PhraseQuery::new("pos", ["alpha", "alpha"]),
+            None,
+            &mut top,
+        )
+        .unwrap();
+        // Only doc 8556 has a consecutive "alpha alpha" alignment (doc 8555 has
+        // "alpha" only once, doc 8557 likewise) -- see
+        // `phrase_query_duplicate_term_matches_consecutive_occurrences` above.
+        let hits = top.top_docs();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].doc_id, 8556);
+        assert!(hits[0].score > 0.0);
+    }
+
+    // `Clause::Phrase` inside a `BooleanQuery` (task #29): matching + scoring,
+    // plus one nested case.
+
+    #[test]
+    fn boolean_must_with_phrase_clause_narrows_the_matched_set() {
+        // must = [phrase("alpha beta"), term("alpha")]: phrase matches only 8555;
+        // term "alpha" matches 8555, 8556, 8557 -- conjunction is {8555}.
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+        let pos_in = doc.open_pos();
+        let pay_in = doc.open_pay();
+
+        let q = BooleanQuery::new().with_must([
+            Clause::Phrase(PhraseQuery::new("pos", ["alpha", "beta"])),
+            Clause::Term(TermQuery::new("pos", "alpha")),
+        ]);
+        let mut c = VecCollector::default();
+        search_boolean_query(
+            &fields,
+            Some(&doc_in),
+            Some(&pos_in),
+            Some(&pay_in),
+            None,
+            &q,
+            &mut c,
+        )
+        .unwrap();
+        assert_eq!(c.docs, vec![8555]);
+    }
+
+    #[test]
+    fn boolean_should_with_phrase_clause_scores_additively() {
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+        let pos_in = doc.open_pos();
+        let pay_in = doc.open_pay();
+
+        let q = BooleanQuery::new().with_should([
+            Clause::Phrase(PhraseQuery::new("pos", ["alpha", "beta"])),
+            Clause::Term(TermQuery::new("pos", "alpha")),
+        ]);
+        let mut top = TopDocsCollector::new(10);
+        search_boolean_query_scored(
+            &fields,
+            Some(&doc_in),
+            Some(&pos_in),
+            Some(&pay_in),
+            None,
+            &q,
+            None,
+            &mut top,
+        )
+        .unwrap();
+
+        let mut phrase_only = TopDocsCollector::new(10);
+        search_phrase_query_scored(
+            &fields,
+            Some(&doc_in),
+            Some(&pos_in),
+            Some(&pay_in),
+            None,
+            &PhraseQuery::new("pos", ["alpha", "beta"]),
+            None,
+            &mut phrase_only,
+        )
+        .unwrap();
+        let mut term_only = TopDocsCollector::new(10);
+        search_term_query_scored(
+            &fields,
+            Some(&doc_in),
+            None,
+            &TermQuery::new("pos", "alpha"),
+            None,
+            &mut term_only,
+        )
+        .unwrap();
+
+        let lookup = |top: &TopDocsCollector, doc_id: i32| -> Option<f32> {
+            top.top_docs()
+                .iter()
+                .find(|h| h.doc_id == doc_id)
+                .map(|h| h.score)
+        };
+        let hits = top.top_docs();
+        let mut hit_docs: Vec<i32> = hits.iter().map(|h| h.doc_id).collect();
+        hit_docs.sort_unstable();
+        assert_eq!(hit_docs, vec![8555, 8556, 8557]);
+        for hit in hits {
+            let expected = lookup(&phrase_only, hit.doc_id).unwrap_or(0.0)
+                + lookup(&term_only, hit.doc_id).unwrap_or(0.0);
+            assert!(
+                (hit.score - expected).abs() < 1e-4,
+                "doc={} got={} expected={}",
+                hit.doc_id,
+                hit.score,
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn nested_boolean_clause_containing_a_phrase_clause_resolves_correctly() {
+        // top.must = [nested], nested.should = [phrase("alpha beta"), term("gamma"
+        // -- missing, contributes nothing)] -- nested's own disjunction is just the
+        // phrase's matched set {8555}; the parent's conjunction (its only clause)
+        // must equal that same set.
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+        let pos_in = doc.open_pos();
+        let pay_in = doc.open_pay();
+
+        let nested = BooleanQuery::new().with_should([
+            Clause::Phrase(PhraseQuery::new("pos", ["alpha", "beta"])),
+            Clause::Term(TermQuery::new("pos", "zzz-missing")),
+        ]);
+        let top_query = BooleanQuery::new().with_must([Clause::Boolean(Box::new(nested))]);
+
+        let mut c = VecCollector::default();
+        search_boolean_query(
+            &fields,
+            Some(&doc_in),
+            Some(&pos_in),
+            Some(&pay_in),
+            None,
+            &top_query,
+            &mut c,
+        )
+        .unwrap();
+        assert_eq!(c.docs, vec![8555]);
+
+        // Scoring side: the nested clause's phrase contribution must equal the
+        // phrase's own standalone score for doc 8555.
+        let mut top = TopDocsCollector::new(10);
+        search_boolean_query_scored(
+            &fields,
+            Some(&doc_in),
+            Some(&pos_in),
+            Some(&pay_in),
+            None,
+            &top_query,
+            None,
+            &mut top,
+        )
+        .unwrap();
+        let mut phrase_only = TopDocsCollector::new(10);
+        search_phrase_query_scored(
+            &fields,
+            Some(&doc_in),
+            Some(&pos_in),
+            Some(&pay_in),
+            None,
+            &PhraseQuery::new("pos", ["alpha", "beta"]),
+            None,
+            &mut phrase_only,
+        )
+        .unwrap();
+        let hits = top.top_docs();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].doc_id, 8555);
+        let expected = phrase_only.top_docs()[0].score;
+        assert!((hits[0].score - expected).abs() < 1e-4);
+    }
+
+    #[test]
+    fn boolean_phrase_clause_without_pos_input_is_an_error() {
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+        let q = BooleanQuery::new()
+            .with_must([Clause::Phrase(PhraseQuery::new("pos", ["alpha", "beta"]))]);
+        let mut c = VecCollector::default();
+        let err =
+            search_boolean_query(&fields, Some(&doc_in), None, None, None, &q, &mut c).unwrap_err();
+        assert!(matches!(err, Error::MissingPosInput));
     }
 }

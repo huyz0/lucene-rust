@@ -29,7 +29,8 @@
 use lucene_codecs::blocktree;
 use lucene_codecs::field_infos;
 use lucene_codecs::postings::{DocInput, PayInput, PosInput};
-use lucene_search::{search_phrase_query, PhraseQuery, VecCollector};
+use lucene_search::collector::TopDocsCollector;
+use lucene_search::{search_phrase_query, search_phrase_query_scored, PhraseQuery, VecCollector};
 
 fn dir() -> String {
     concat!(
@@ -214,6 +215,67 @@ fn two_term_phrase_matches_real_lucenes_exact_phrase_scorer_doc_set() {
         "sanity: manifest-derived expectation itself"
     );
     assert_eq!(collector.docs, expected);
+}
+
+/// Differential/consistency test for `search_phrase_query_scored` (task #29):
+/// the phrase's BM25 score for doc 8555 must equal `idf(alpha) + idf(beta)`
+/// (real `BM25Similarity`'s combined-term-statistics idf, see
+/// `search_phrase_query_scored`'s doc comment) times `tfNorm(phraseFreq=1, ...)`
+/// -- hand-derived independently from `manifest.properties`' real `docFreq`
+/// values, not by trusting `similarity::score`/`idf`'s own already-separately-
+/// tested unit tests, and cross-checked against the field's real `doc_count`
+/// read from the opened segment.
+#[test]
+fn two_term_phrase_scored_matches_hand_computed_bm25_score() {
+    let (fields, doc, pos, pay, id, suffix, m) = open_segment();
+    let doc_in = DocInput::open(&doc, &id, &suffix).expect("open .doc");
+    let pos_in = PosInput::open(&pos, &id, &suffix).expect("open .pos");
+    let pay_in = PayInput::open(&pay, &id, &suffix).expect("open .pay");
+
+    let mut top = TopDocsCollector::new(10);
+    search_phrase_query_scored(
+        &fields,
+        Some(&doc_in),
+        Some(&pos_in),
+        Some(&pay_in),
+        None,
+        &PhraseQuery::new("pos", ["alpha", "beta"]),
+        None,
+        &mut top,
+    )
+    .unwrap_or_else(|e| panic!("search_phrase_query_scored(pos, \"alpha beta\") failed: {e}"));
+
+    let hits = top.top_docs();
+    assert_eq!(
+        hits.len(),
+        1,
+        "sanity: matches only doc 8555, see the matching test above"
+    );
+    assert_eq!(hits[0].doc_id, 8555);
+
+    let doc_count = fields.field("pos").unwrap().doc_count as i64;
+    let alpha_doc_freq: i64 = m.get("field.pos.term.alpha.docFreq").parse().unwrap();
+    let beta_doc_freq: i64 = m.get("field.pos.term.beta.docFreq").parse().unwrap();
+    assert_eq!(alpha_doc_freq, 3, "sanity: manifest-derived docFreq");
+    assert_eq!(beta_doc_freq, 2, "sanity: manifest-derived docFreq");
+
+    let idf = |doc_freq: i64| -> f64 {
+        (1.0 + (doc_count as f64 - doc_freq as f64 + 0.5) / (doc_freq as f64 + 0.5)).ln()
+    };
+    let idf_sum = idf(alpha_doc_freq) + idf(beta_doc_freq);
+    // phraseFreq == 1 (one alignment: alpha@0, beta@1), unnormed field length
+    // fallback (no norms opened for `pos` in this test): k1=1.2, b=0.75.
+    let k1 = 1.2_f64;
+    let b = 0.75_f64;
+    let tf_norm = 1.0 * (k1 + 1.0) / (1.0 + k1 * (1.0 - b + b));
+    let expected = (idf_sum * tf_norm) as f32;
+
+    assert!(
+        (hits[0].score - expected).abs() < 1e-4,
+        "got={} expected={}",
+        hits[0].score,
+        expected
+    );
 }
 
 /// A single-term "phrase" degenerates to a plain term match: every doc containing

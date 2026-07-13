@@ -26,11 +26,12 @@
 use lucene_codecs::blocktree;
 use lucene_codecs::field_infos;
 use lucene_codecs::norms;
-use lucene_codecs::postings::DocInput;
+use lucene_codecs::postings::{DocInput, PayInput, PosInput};
 use lucene_search::collector::TopDocsCollector;
 use lucene_search::{
-    search_boolean_query, search_boolean_query_scored, search_term_query, search_term_query_scored,
-    BooleanQuery, Clause, FieldNorms, TermQuery,
+    search_boolean_query, search_boolean_query_scored, search_phrase_query_scored,
+    search_term_query, search_term_query_scored, BooleanQuery, Clause, FieldNorms, PhraseQuery,
+    TermQuery,
 };
 
 fn dir() -> String {
@@ -233,11 +234,29 @@ fn boolean_query_scored_matches_unscored_doc_set_and_sums_clause_scores() {
         TermQuery::new("body", "cat"),
         TermQuery::new("body", "bird"),
     ]);
-    search_boolean_query(&fields, Some(&doc_in), None, &should_query, &mut unscored).unwrap();
+    search_boolean_query(
+        &fields,
+        Some(&doc_in),
+        None,
+        None,
+        None,
+        &should_query,
+        &mut unscored,
+    )
+    .unwrap();
 
     let mut top = TopDocsCollector::new(unscored.docs.len().max(1));
-    search_boolean_query_scored(&fields, Some(&doc_in), None, &should_query, None, &mut top)
-        .unwrap();
+    search_boolean_query_scored(
+        &fields,
+        Some(&doc_in),
+        None,
+        None,
+        None,
+        &should_query,
+        None,
+        &mut top,
+    )
+    .unwrap();
 
     let mut scored_docs: Vec<i32> = top.top_docs().iter().map(|h| h.doc_id).collect();
     scored_docs.sort_unstable();
@@ -299,7 +318,17 @@ fn boolean_query_scored_must_not_clause_never_contributes_to_score() {
         .with_must_not([TermQuery::new("body", "dog")]);
 
     let mut top = TopDocsCollector::new(10);
-    search_boolean_query_scored(&fields, Some(&doc_in), None, &query, None, &mut top).unwrap();
+    search_boolean_query_scored(
+        &fields,
+        Some(&doc_in),
+        None,
+        None,
+        None,
+        &query,
+        None,
+        &mut top,
+    )
+    .unwrap();
 
     let mut cat_only = TopDocsCollector::new(10);
     search_term_query_scored(
@@ -351,7 +380,17 @@ fn boolean_query_scored_minimum_should_match_sums_all_matching_clauses() {
         .with_minimum_should_match(1);
 
     let mut top = TopDocsCollector::new(10);
-    search_boolean_query_scored(&fields, Some(&doc_in), None, &query, None, &mut top).unwrap();
+    search_boolean_query_scored(
+        &fields,
+        Some(&doc_in),
+        None,
+        None,
+        None,
+        &query,
+        None,
+        &mut top,
+    )
+    .unwrap();
     let hits = top.top_docs();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].doc_id, 0);
@@ -417,7 +456,17 @@ fn nested_boolean_must_clause_scoring_matches_real_lucene_additive_recursion() {
     ]);
 
     let mut top = TopDocsCollector::new(10);
-    search_boolean_query_scored(&fields, Some(&doc_in), None, &query, None, &mut top).unwrap();
+    search_boolean_query_scored(
+        &fields,
+        Some(&doc_in),
+        None,
+        None,
+        None,
+        &query,
+        None,
+        &mut top,
+    )
+    .unwrap();
     let hits = top.top_docs();
     let mut hit_docs: Vec<i32> = hits.iter().map(|h| h.doc_id).collect();
     hit_docs.sort_unstable();
@@ -473,6 +522,201 @@ fn nested_boolean_must_clause_scoring_matches_real_lucene_additive_recursion() {
             expected
         );
     }
+}
+
+/// `Clause::Phrase` inside a `BooleanQuery` (task #29): reuses the `pos` field's
+/// real alpha/beta postings (`fixtures/data/blocktree_index/`, see
+/// `phrase_query_fixtures.rs`) to prove `search_boolean_query_scored` sums a
+/// `Clause::Phrase` clause's own [`search_phrase_query_scored`] contribution
+/// exactly like it already sums a `Clause::Term` contribution -- top.should =
+/// [phrase("alpha beta"), term("alpha")]: the phrase matches only doc 8555
+/// (real Lucene's `ExactPhraseScorer` doc set, already fixture-verified in
+/// `phrase_query_fixtures.rs`), term "alpha" matches 8555/8556/8557, so the
+/// union is all three docs, with doc 8555's score being the sum of both
+/// clauses' independently-computed scores and the other two docs scoring
+/// exactly their standalone term score.
+#[test]
+fn boolean_query_scored_sums_a_phrase_clauses_own_contribution() {
+    let (fields, doc, id, suffix, m) = open_segment();
+    let doc_in = DocInput::open(&doc, &id, &suffix).expect("open .doc");
+    let pos = read_raw(m.get("pos_file_name"));
+    let pay = read_raw(m.get("pay_file_name"));
+    let pos_in = PosInput::open(&pos, &id, &suffix).expect("open .pos");
+    let pay_in = PayInput::open(&pay, &id, &suffix).expect("open .pay");
+
+    let query = BooleanQuery::new().with_should([
+        Clause::Phrase(PhraseQuery::new("pos", ["alpha", "beta"])),
+        Clause::Term(TermQuery::new("pos", "alpha")),
+    ]);
+
+    let mut top = TopDocsCollector::new(10);
+    search_boolean_query_scored(
+        &fields,
+        Some(&doc_in),
+        Some(&pos_in),
+        Some(&pay_in),
+        None,
+        &query,
+        None,
+        &mut top,
+    )
+    .unwrap();
+
+    let mut phrase_only = TopDocsCollector::new(10);
+    search_phrase_query_scored(
+        &fields,
+        Some(&doc_in),
+        Some(&pos_in),
+        Some(&pay_in),
+        None,
+        &PhraseQuery::new("pos", ["alpha", "beta"]),
+        None,
+        &mut phrase_only,
+    )
+    .unwrap();
+    let mut term_only = TopDocsCollector::new(10);
+    search_term_query_scored(
+        &fields,
+        Some(&doc_in),
+        None,
+        &TermQuery::new("pos", "alpha"),
+        None,
+        &mut term_only,
+    )
+    .unwrap();
+
+    let lookup = |top: &TopDocsCollector, doc_id: i32| -> Option<f32> {
+        top.top_docs()
+            .iter()
+            .find(|h| h.doc_id == doc_id)
+            .map(|h| h.score)
+    };
+    let hits = top.top_docs();
+    let mut hit_docs: Vec<i32> = hits.iter().map(|h| h.doc_id).collect();
+    hit_docs.sort_unstable();
+    assert_eq!(hit_docs, vec![8555, 8556, 8557]);
+
+    for hit in hits {
+        let expected = lookup(&phrase_only, hit.doc_id).unwrap_or(0.0)
+            + lookup(&term_only, hit.doc_id).unwrap_or(0.0);
+        assert!(
+            (hit.score - expected).abs() < 1e-4,
+            "doc={} got={} expected={}",
+            hit.doc_id,
+            hit.score,
+            expected
+        );
+    }
+}
+
+/// `Clause::Phrase` nested inside a `Clause::Boolean` (combining tasks #25 and
+/// #29): top.must = [term("beta"), nested], nested.should = [phrase("alpha
+/// beta"), term("alpha")]. Per `manifest.properties`, "beta" matches docs
+/// {8555, 8557} and "alpha" matches {8555, 8556, 8557}, so the top-level
+/// conjunction restricts matching to {8555, 8557} -- excluding doc 8556, which
+/// satisfies nested's own should clause ("alpha") but not the parent's "beta"
+/// must clause, proving no leakage the other direction. Of the two matched
+/// docs, only 8555 has alpha immediately followed by beta (alpha@0, beta@1),
+/// so the phrase clause additionally matches 8555 but not 8557 (alpha@0,
+/// beta@3, non-adjacent) -- each doc's expected score sums exactly the
+/// sub-clauses that independently matched it.
+#[test]
+fn phrase_clause_nested_inside_a_boolean_clause_scores_and_matches_correctly() {
+    let (fields, doc, id, suffix, m) = open_segment();
+    let doc_in = DocInput::open(&doc, &id, &suffix).expect("open .doc");
+    let pos = read_raw(m.get("pos_file_name"));
+    let pay = read_raw(m.get("pay_file_name"));
+    let pos_in = PosInput::open(&pos, &id, &suffix).expect("open .pos");
+    let pay_in = PayInput::open(&pay, &id, &suffix).expect("open .pay");
+
+    let nested = BooleanQuery::new().with_should([
+        Clause::Phrase(PhraseQuery::new("pos", ["alpha", "beta"])),
+        Clause::Term(TermQuery::new("pos", "alpha")),
+    ]);
+    let query = BooleanQuery::new().with_must([
+        Clause::Term(TermQuery::new("pos", "beta")),
+        Clause::Boolean(Box::new(nested)),
+    ]);
+
+    let mut top = TopDocsCollector::new(10);
+    search_boolean_query_scored(
+        &fields,
+        Some(&doc_in),
+        Some(&pos_in),
+        Some(&pay_in),
+        None,
+        &query,
+        None,
+        &mut top,
+    )
+    .unwrap();
+    let hits = top.top_docs();
+    let mut hit_docs: Vec<i32> = hits.iter().map(|h| h.doc_id).collect();
+    hit_docs.sort_unstable();
+    assert_eq!(
+        hit_docs,
+        vec![8555, 8557],
+        "must(beta) should restrict matching to {{beta}} \u{2229} {{nested's own \
+         should-union}}, excluding doc 8556 which satisfies nested's should but \
+         not the parent's must clause"
+    );
+
+    let mut beta_only = TopDocsCollector::new(10);
+    search_term_query_scored(
+        &fields,
+        Some(&doc_in),
+        None,
+        &TermQuery::new("pos", "beta"),
+        None,
+        &mut beta_only,
+    )
+    .unwrap();
+    let mut phrase_only = TopDocsCollector::new(10);
+    search_phrase_query_scored(
+        &fields,
+        Some(&doc_in),
+        Some(&pos_in),
+        Some(&pay_in),
+        None,
+        &PhraseQuery::new("pos", ["alpha", "beta"]),
+        None,
+        &mut phrase_only,
+    )
+    .unwrap();
+    let mut alpha_only = TopDocsCollector::new(10);
+    search_term_query_scored(
+        &fields,
+        Some(&doc_in),
+        None,
+        &TermQuery::new("pos", "alpha"),
+        None,
+        &mut alpha_only,
+    )
+    .unwrap();
+
+    let lookup = |top: &TopDocsCollector, doc_id: i32| -> Option<f32> {
+        top.top_docs()
+            .iter()
+            .find(|h| h.doc_id == doc_id)
+            .map(|h| h.score)
+    };
+    for hit in hits {
+        let expected = lookup(&beta_only, hit.doc_id).unwrap_or(0.0)
+            + lookup(&phrase_only, hit.doc_id).unwrap_or(0.0)
+            + lookup(&alpha_only, hit.doc_id).unwrap_or(0.0);
+        assert!(
+            (hit.score - expected).abs() < 1e-4,
+            "doc={} got={} expected={}",
+            hit.doc_id,
+            hit.score,
+            expected
+        );
+    }
+    // Sanity: phrase must contribute to 8555's score but not 8557's, or this
+    // test wouldn't actually be distinguishing "matched the phrase" from "matched
+    // only the term" the way its own doc comment claims.
+    assert!(lookup(&phrase_only, 8555).is_some());
+    assert!(lookup(&phrase_only, 8557).is_none());
 }
 
 /// Opens this fixture's real `_0.nvm`/`_0.nvd` (written directly by segment

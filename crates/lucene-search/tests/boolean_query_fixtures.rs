@@ -122,7 +122,16 @@ fn must_conjunction_matches_real_lucene_intersection() {
     let mut collector = VecCollector::default();
     let query = BooleanQuery::new()
         .with_must([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")]);
-    search_boolean_query(&fields, Some(&doc_in), None, &query, &mut collector).unwrap();
+    search_boolean_query(
+        &fields,
+        Some(&doc_in),
+        None,
+        None,
+        None,
+        &query,
+        &mut collector,
+    )
+    .unwrap();
     assert_eq!(collector.docs, sorted_vec(expected));
 }
 
@@ -143,7 +152,16 @@ fn should_disjunction_matches_real_lucene_union() {
         TermQuery::new("body", "cat"),
         TermQuery::new("body", "bird"),
     ]);
-    search_boolean_query(&fields, Some(&doc_in), None, &query, &mut collector).unwrap();
+    search_boolean_query(
+        &fields,
+        Some(&doc_in),
+        None,
+        None,
+        None,
+        &query,
+        &mut collector,
+    )
+    .unwrap();
     assert_eq!(collector.docs, sorted_vec(expected));
 }
 
@@ -163,7 +181,16 @@ fn must_not_subtracts_from_the_must_conjunction() {
     let query = BooleanQuery::new()
         .with_must([TermQuery::new("body", "cat")])
         .with_must_not([TermQuery::new("body", "dog")]);
-    search_boolean_query(&fields, Some(&doc_in), None, &query, &mut collector).unwrap();
+    search_boolean_query(
+        &fields,
+        Some(&doc_in),
+        None,
+        None,
+        None,
+        &query,
+        &mut collector,
+    )
+    .unwrap();
     assert_eq!(collector.docs, sorted_vec(expected));
 }
 
@@ -182,7 +209,16 @@ fn must_with_should_present_ignores_should_for_matching() {
     let query = BooleanQuery::new()
         .with_must([TermQuery::new("body", "cat")])
         .with_should([TermQuery::new("body", "bird")]); // would add doc 1/4 if it mattered
-    search_boolean_query(&fields, Some(&doc_in), None, &query, &mut collector).unwrap();
+    search_boolean_query(
+        &fields,
+        Some(&doc_in),
+        None,
+        None,
+        None,
+        &query,
+        &mut collector,
+    )
+    .unwrap();
     assert_eq!(collector.docs, sorted_vec(expected));
 }
 
@@ -196,7 +232,16 @@ fn pure_must_not_query_matches_nothing() {
 
     let mut collector = VecCollector::default();
     let query = BooleanQuery::new().with_must_not([TermQuery::new("body", "dog")]);
-    search_boolean_query(&fields, Some(&doc_in), None, &query, &mut collector).unwrap();
+    search_boolean_query(
+        &fields,
+        Some(&doc_in),
+        None,
+        None,
+        None,
+        &query,
+        &mut collector,
+    )
+    .unwrap();
     assert!(collector.docs.is_empty());
 }
 
@@ -207,7 +252,16 @@ fn empty_boolean_query_matches_nothing() {
 
     let mut collector = VecCollector::default();
     let query = BooleanQuery::new();
-    search_boolean_query(&fields, Some(&doc_in), None, &query, &mut collector).unwrap();
+    search_boolean_query(
+        &fields,
+        Some(&doc_in),
+        None,
+        None,
+        None,
+        &query,
+        &mut collector,
+    )
+    .unwrap();
     assert!(collector.docs.is_empty());
 }
 
@@ -244,7 +298,16 @@ fn minimum_should_match_narrows_the_matched_set_even_with_must_present() {
             TermQuery::new("body", "bird"),
         ])
         .with_minimum_should_match(1);
-    search_boolean_query(&fields, Some(&doc_in), None, &query, &mut collector).unwrap();
+    search_boolean_query(
+        &fields,
+        Some(&doc_in),
+        None,
+        None,
+        None,
+        &query,
+        &mut collector,
+    )
+    .unwrap();
     assert_eq!(collector.docs, sorted_vec(expected));
 }
 
@@ -270,7 +333,16 @@ fn must_across_multi_block_and_singleton_fields() {
         TermQuery::new("big", "everywhere"),
         TermQuery::new("id", "id2"),
     ]);
-    search_boolean_query(&fields, Some(&doc_in), None, &query, &mut collector).unwrap();
+    search_boolean_query(
+        &fields,
+        Some(&doc_in),
+        None,
+        None,
+        None,
+        &query,
+        &mut collector,
+    )
+    .unwrap();
     assert!(collector.docs.is_empty());
 }
 
@@ -309,7 +381,16 @@ fn nested_boolean_must_clause_matches_real_lucene_intersection_of_the_nested_dis
         Clause::Term(TermQuery::new("body", "dog")),
         Clause::Boolean(Box::new(nested)),
     ]);
-    search_boolean_query(&fields, Some(&doc_in), None, &query, &mut collector).unwrap();
+    search_boolean_query(
+        &fields,
+        Some(&doc_in),
+        None,
+        None,
+        None,
+        &query,
+        &mut collector,
+    )
+    .unwrap();
     assert_eq!(collector.docs, sorted_vec(expected));
 }
 
@@ -335,6 +416,15 @@ fn three_levels_of_nested_boolean_clauses_match_real_lucene() {
     let top = BooleanQuery::new().with_must([middle]);
 
     let mut collector = VecCollector::default();
-    search_boolean_query(&fields, Some(&doc_in), None, &top, &mut collector).unwrap();
+    search_boolean_query(
+        &fields,
+        Some(&doc_in),
+        None,
+        None,
+        None,
+        &top,
+        &mut collector,
+    )
+    .unwrap();
     assert_eq!(collector.docs, sorted_vec(expected));
 }

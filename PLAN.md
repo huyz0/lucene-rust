@@ -290,9 +290,7 @@ single-term "phrase" degenerates to a plain `search_term_query` call (never
 needs an opened `.pos` file); an empty `terms` list matches nothing (mirrors
 real `PhraseQuery.Builder.build()`'s `MatchNoDocsQuery` for zero terms); a
 missing term matches nothing, not an error; a repeated term ("the the") needs
-no special-casing. **No relevance scoring for phrase queries yet** — BM25
-phrase scoring needs a per-doc "phrase freq" concept from the same alignment
-walk, deferred alongside a `ScoringCollector` sibling for `search_phrase_query`.
+no special-casing. (BM25 phrase scoring landed later, task #29 — see below.)
 Differential-tested in `crates/lucene-search/tests/phrase_query_fixtures.rs`,
 reusing the existing `pos` field already in `fixtures/data/blocktree_index/`
 (no fixture generator changes needed — its real occurrences already have an
@@ -327,6 +325,51 @@ Lucene's match/no-match verdicts in `manifest.properties`.
 confirms this port's sloppy path agrees with real Lucene at all five slop
 values — the sloppy-match formula is now cross-engine verified, not just
 self-consistent.
+
+**Task #29** closed two related deferred gaps at once: **`PhraseQuery` BM25
+scoring** and **`PhraseQuery` as a `BooleanQuery` clause**. `search_phrase_query_scored`
+mirrors `search_phrase_query`'s matching, additionally computing a per-doc
+"phrase frequency" fed through the same `similarity::tf_norm`/`FieldNorms`
+machinery `search_term_query_scored` already uses; the phrase's `idf` is the
+sum of each constituent term's own `idf(docFreq, docCount)` (real
+`BM25Similarity.idf(CollectionStatistics, TermStatistics[])`'s actual
+combined-term behavior, verified against source, not guessed). Exact
+(`slop == 0`) phrase frequency (`phrase_freq_exact`) counts every valid base
+position in the first term's own position list — one match per distinct
+starting position, matching `ExactPhraseScorer`'s own counting granularity, no
+double-counting of overlapping repeats. Sloppy (`slop > 0`) phrase frequency
+is **deliberately simplified** to a matches-or-not `1`/`0` signal rather than
+real Lucene's graduated `1.0 / (matchLength + 1)` per-match `SloppyPhraseMatcher`
+weighting — that exact formula (layered on an alignment-enumeration algorithm
+already scoped down to in-order-only, task #28) could not be confidently
+re-derived/verified within this task's scope, so graduated sloppy match-quality
+scoring is deliberately deferred (documented in `docs/parity.md`), consistent
+with this port's "scope down honestly" practice. Separately, `query::Clause`
+grew a third variant, `Clause::Phrase(PhraseQuery)` (alongside the existing
+`Clause::Term`/`Clause::Boolean`), making `PhraseQuery` composable inside a
+`BooleanQuery`'s `must`/`should`/`must_not`. Wiring this in required a
+signature change threaded through the whole recursive chain
+(`search_boolean_query`, `search_boolean_query_scored`, `matched_boolean_docs`,
+`resolve_clause_docs`, `clause_scores`): each now additionally takes
+`pos_in`/`pay_in` (the segment's opened `.pos`/`.pay` files), since resolving
+a `Clause::Phrase` needs them — `resolve_clause_docs` delegates matching to
+`search_phrase_query`, `clause_scores` delegates scoring to
+`search_phrase_query_scored`, both via small local collectors rather than
+duplicating either function's logic. `None`/`None` is fine for a query with no
+multi-term phrase clause; passing `None` for a query that turns out to need it
+surfaces as `Error::MissingPosInput`, same convention `search_phrase_query`
+already established. Tested: unit tests for `phrase_freq_exact` (single
+occurrence, repeated/overlapping occurrences, no-alignment, empty/missing-term
+edge cases), a fixture test hand-deriving the expected BM25 score for the
+`pos` field's real alpha/beta phrase from `manifest.properties`' real `docFreq`
+values, unit tests for `Clause::Phrase` matching/scoring inside a
+`BooleanQuery` (including one clause nested inside a `Clause::Boolean`), and a
+`scoring_fixtures.rs` differential test proving a `Clause::Phrase`'s score sums
+correctly alongside a sibling `Clause::Term`'s. **Deliberately not touched**:
+`lucene-ffi`'s `ffi_search_boolean_query` still only constructs flat
+`Clause::Term` clauses from its C-ABI wire format — exposing `Clause::Phrase`/
+`Clause::Boolean` construction over FFI remains deferred, alongside the
+already-deferred `_scored` FFI wrappers (see `docs/parity.md`).
 
 **Progress (task #21):** doc-values-driven range query and single-key sort now
 exist in `lucene-search/src/doc_value_query.rs`, built directly on

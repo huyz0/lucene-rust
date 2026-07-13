@@ -252,6 +252,8 @@ pub unsafe extern "C" fn ffi_search_boolean_query(
             &segment.fields,
             doc_in.as_ref(),
             None,
+            None,
+            None,
             &query,
             &mut collector,
         )
