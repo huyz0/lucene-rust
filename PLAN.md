@@ -394,6 +394,28 @@ real Lucene by reusing the already-checked-in `fixtures/data/doc_values_index/`
 and `fixtures/data/sorted_dv_index/` fixtures (no new Java generator needed).
 See `docs/parity.md`'s new row for the full accounting.
 
+**Progress (task #31):** the multi-valued gap task #21 deferred is now closed.
+`ValueSelector` (`Min`/`Max`) reduces a SORTED_NUMERIC/SORTED_SET field's
+multiple per-doc values to one comparable value (real Lucene's
+`SortedNumericSelector.Type`/`SortedSetSelector.Type`, scoped to MIN/MAX —
+`MIDDLE_MIN`/`MIDDLE_MAX` remain deferred, a small follow-up if ever needed).
+`search_multi_valued_range`/`sort_by_multi_valued_doc_value` are the
+multi-valued siblings of task #21's two range/sort functions, built on
+`doc_values::sorted_numeric_values` (confirmed to genuinely decode a doc's
+*entire* value list, not just one). Both take a `SortedNumericEntry`, which —
+since `sorted_numeric_values` reads SORTED_NUMERIC values and a multi-valued
+`SortedSetKind::Multi` field's ordinals identically — means the same two
+functions serve **both** field types with no separate sorted-set code path
+(pass the `Multi` variant's `ords` entry for SORTED_SET). Verified against
+real Lucene via the already-checked-in `fixtures/data/multi_valued_dv_index/`
+fixture (`fixtures/src/GenMultiValuedDocValues.java`, already used by
+`lucene-codecs`' own read-side tests — no new Java generator needed): a
+SORTED_NUMERIC field with 0-3 values/doc and a SORTED_SET field with 0-2
+ordinals/doc sharing a terms dictionary, confirming (among other cases) that
+a doc whose MIN falls in range but MAX doesn't (and vice versa) is decided by
+the selector alone. See `docs/parity.md`'s updated row for the full
+accounting.
+
 1. Traits: `Query → Weight → Scorer/ScorerSupplier`, `DocIdSetIterator`,
    `TwoPhaseIterator`, `BulkScorer`. Use enums where the closed set allows
    (DISI is called per-doc — keep it monomorphizable; `Box<dyn>` only at Weight level).

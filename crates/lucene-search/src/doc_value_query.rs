@@ -26,15 +26,30 @@
 //!   ties broken by ascending doc ID (see that function's doc comment for the
 //!   missing-value policy).
 //!
+//! - [`ValueSelector`]/[`search_multi_valued_range`]/
+//!   [`sort_by_multi_valued_doc_value`]: the multi-valued (SORTED_NUMERIC, and
+//!   SORTED_SET's ordinal form) equivalents of the two functions above. Real
+//!   Lucene reduces a multi-valued doc to one comparable value via a
+//!   `SortedNumericSelector`/`SortedSetSelector` (MIN/MAX/MIDDLE_MIN/
+//!   MIDDLE_MAX) before range-filtering or sorting; [`ValueSelector`] covers
+//!   MIN/MAX (MIDDLE_MIN/MIDDLE_MAX are deferred, see below). Both functions
+//!   take a [`lucene_codecs::doc_values::SortedNumericEntry`] — which is also
+//!   exactly the ordinal-array shape a multi-valued
+//!   [`lucene_codecs::doc_values::SortedSetKind::Multi`] field's `ords` uses
+//!   (`sorted_numeric_values` already reads both the same way), so these two
+//!   functions serve SORTED_SET range/sort too: pass the `Multi` variant's
+//!   `ords` entry and the reduced value is a term ordinal instead of a raw
+//!   number. A single-valued `SortedSetKind::Single` field still uses
+//!   [`search_sorted_ord_range`] (no reduction needed, one ordinal per doc).
+//!
 //! **Deliberately out of scope** (tracked in `docs/parity.md`):
-//! - **SORTED_NUMERIC/SORTED_SET (multi-valued) range/sort.** Real Lucene
-//!   resolves a multi-valued field to a single comparable value via a
-//!   `SortedNumericSelector`/`SortedSetSelector` (MIN/MAX/first/etc.) before
-//!   sorting or range-filtering on it — that selector concept doesn't exist
-//!   in this port yet. `sorted_numeric_values` (already read-side complete in
-//!   `lucene-codecs`) is the building block a future slice would add a
-//!   selector on top of; this slice only takes on the single-valued NUMERIC/
-//!   SORTED case, which is the "real search sorting" core the task asked for.
+//! - **MIDDLE_MIN/MIDDLE_MAX selectors.** Real Lucene's `SortedSetSelector`
+//!   also offers "the lower/upper of the two middle values" for even value
+//!   counts — a niche median-ish reduction with no numeric-field equivalent.
+//!   MIN/MAX cover the common range/sort use cases; MIDDLE_* would be a small
+//!   follow-up (`values[(len - 1) / 2]` / `values[len / 2]` on a sorted
+//!   `values`, which [`ValueSelector::reduce`] doesn't need to sort for since
+//!   MIN/MAX only ever need one pass) if a caller needs it.
 //! - **Descending sort / multiple sort fields / secondary sort keys** beyond
 //!   the single documented tie-break (ascending doc ID). Real `Sort`
 //!   composes multiple `SortField`s; this is a single-key sort only.
@@ -46,7 +61,7 @@
 //!   `doc_values.rs`'s `Error::UnsupportedSkipIndex`), so there's nothing to
 //!   skip against — a full sweep is the only correct option available.
 
-use lucene_codecs::doc_values::{self, NumericEntry, SortedEntry};
+use lucene_codecs::doc_values::{self, NumericEntry, SortedEntry, SortedNumericEntry};
 use lucene_util::fixed_bit_set::FixedBitSet;
 
 use crate::{Collector, Result};
@@ -174,6 +189,93 @@ pub fn sort_by_numeric_doc_value(
     let mut pairs = Vec::with_capacity(candidates.len());
     for &doc_id in candidates {
         match doc_values::numeric_value(doc_values_data, entry, doc_id)? {
+            Some(value) => pairs.push((doc_id, value)),
+            None => {
+                if let MissingValue::Default(default) = missing {
+                    pairs.push((doc_id, default));
+                }
+            }
+        }
+    }
+    pairs.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+    Ok(pairs)
+}
+
+/// How a multi-valued doc's several values reduce to one comparable value
+/// before range-filtering or sorting (real Lucene's
+/// `SortedNumericSelector.Type`/`SortedSetSelector.Type`, scoped here to
+/// MIN/MAX — see this module's doc comment for why MIDDLE_MIN/MIDDLE_MAX are
+/// deferred). The same enum serves both SORTED_NUMERIC values and
+/// SORTED_SET ordinals, since the reduction itself (smallest/largest of a
+/// `Vec<i64>`) doesn't care what the numbers mean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValueSelector {
+    /// The smallest of a doc's values (`SortedNumericSelector.Type.MIN` /
+    /// `SortedSetSelector.Type.MIN`).
+    Min,
+    /// The largest of a doc's values (`SortedNumericSelector.Type.MAX` /
+    /// `SortedSetSelector.Type.MAX`).
+    Max,
+}
+
+impl ValueSelector {
+    /// Reduces a doc's values to one, or `None` if the doc has none (mirrors
+    /// [`doc_values::sorted_numeric_values`] returning an empty `Vec` for a
+    /// doc with no values at all — a legitimately missing doc, not a tie to
+    /// break).
+    fn reduce(self, values: &[i64]) -> Option<i64> {
+        match self {
+            ValueSelector::Min => values.iter().copied().min(),
+            ValueSelector::Max => values.iter().copied().max(),
+        }
+    }
+}
+
+/// Multi-valued equivalent of [`search_numeric_range`]: reduces each doc's
+/// values (from a [`SortedNumericEntry`] — a SORTED_NUMERIC field, or a
+/// SORTED_SET field's ordinal array, see this module's doc comment) via
+/// `selector`, then applies the exact same inclusive `[min, max]` check. A
+/// doc with zero values (`sorted_numeric_values` returns an empty `Vec`)
+/// never matches, same missing-value rule as [`search_numeric_range`].
+#[allow(clippy::too_many_arguments)]
+pub fn search_multi_valued_range<C: Collector>(
+    doc_values_data: &[u8],
+    entry: &SortedNumericEntry,
+    selector: ValueSelector,
+    live_docs: Option<&FixedBitSet>,
+    max_doc: i32,
+    min: i64,
+    max: i64,
+    collector: &mut C,
+) -> Result<()> {
+    for doc_id in 0..max_doc {
+        if !live_docs.is_none_or(|bits| bits.get(doc_id as usize)) {
+            continue;
+        }
+        let values = doc_values::sorted_numeric_values(doc_values_data, entry, doc_id)?;
+        if let Some(reduced) = selector.reduce(&values) {
+            if reduced >= min && reduced <= max {
+                collector.collect(doc_id);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Multi-valued equivalent of [`sort_by_numeric_doc_value`]: reduces each
+/// candidate doc's values via `selector`, then sorts ascending with the same
+/// tie-break (ascending doc ID) and [`MissingValue`] policy.
+pub fn sort_by_multi_valued_doc_value(
+    doc_values_data: &[u8],
+    entry: &SortedNumericEntry,
+    selector: ValueSelector,
+    candidates: &[i32],
+    missing: MissingValue,
+) -> Result<Vec<(i32, i64)>> {
+    let mut pairs = Vec::with_capacity(candidates.len());
+    for &doc_id in candidates {
+        let values = doc_values::sorted_numeric_values(doc_values_data, entry, doc_id)?;
+        match selector.reduce(&values) {
             Some(value) => pairs.push((doc_id, value)),
             None => {
                 if let MissingValue::Default(default) = missing {
@@ -536,5 +638,391 @@ mod tests {
         entry.values_length = 1;
         let err = sort_by_numeric_doc_value(&[], &entry, &[0], MissingValue::Exclude).unwrap_err();
         assert!(matches!(err, crate::Error::DocValues(_)));
+    }
+
+    // --- ValueSelector::reduce: isolated selector-reduction tests ---
+
+    #[test]
+    fn selector_min_picks_smallest_of_multiple_values() {
+        assert_eq!(ValueSelector::Min.reduce(&[5, 10]), Some(5));
+        assert_eq!(ValueSelector::Min.reduce(&[7]), Some(7));
+        assert_eq!(ValueSelector::Min.reduce(&[1, 2, 3]), Some(1));
+    }
+
+    #[test]
+    fn selector_max_picks_largest_of_multiple_values() {
+        assert_eq!(ValueSelector::Max.reduce(&[5, 10]), Some(10));
+        assert_eq!(ValueSelector::Max.reduce(&[7]), Some(7));
+        assert_eq!(ValueSelector::Max.reduce(&[1, 2, 3]), Some(3));
+    }
+
+    #[test]
+    fn selector_reduce_of_no_values_is_none() {
+        assert_eq!(ValueSelector::Min.reduce(&[]), None);
+        assert_eq!(ValueSelector::Max.reduce(&[]), None);
+    }
+
+    // --- search_multi_valued_range / sort_by_multi_valued_doc_value:
+    //     real-Lucene fixture tests (multi_valued_dv_index) ---
+    // `nums` (SORTED_NUMERIC) values per doc 0..4: [5,10], NONE, [7], [1,2,3],
+    // NONE -- so MIN per doc is 5, none, 7, 1, none and MAX is 10, none, 7, 3,
+    // none. `tags` (SORTED_SET) ords per doc: [0,2], NONE, [1], [0], [1,2].
+
+    fn multi_dv_dir() -> String {
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/data/multi_valued_dv_index/"
+        )
+        .to_string()
+    }
+
+    #[test]
+    fn multi_range_min_selector_matches_docs_whose_min_falls_in_range() {
+        let (manifest, _id, data, meta) = load_dv_meta(&multi_dv_dir());
+        let entry = meta
+            .sorted_numeric_entry(field_number(&manifest, "nums"))
+            .unwrap();
+        let mut c = VecCollector::default();
+        // mins: doc0=5, doc2=7, doc3=1 -- [1,5] matches doc0 and doc3, not
+        // doc2 (min 7 is out of range) even though doc2's only value (7) is
+        // outside too -- proving MIN, not MAX, drives the match here.
+        search_multi_valued_range(&data, entry, ValueSelector::Min, None, 5, 1, 5, &mut c).unwrap();
+        assert_eq!(c.docs, vec![0, 3]);
+    }
+
+    #[test]
+    fn multi_range_max_selector_matches_docs_whose_max_falls_in_range() {
+        let (manifest, _id, data, meta) = load_dv_meta(&multi_dv_dir());
+        let entry = meta
+            .sorted_numeric_entry(field_number(&manifest, "nums"))
+            .unwrap();
+        let mut c = VecCollector::default();
+        // maxes: doc0=10, doc2=7, doc3=3 -- [7,10] matches doc0 and doc2, not
+        // doc3 (max 3 is out of range).
+        search_multi_valued_range(&data, entry, ValueSelector::Max, None, 5, 7, 10, &mut c)
+            .unwrap();
+        assert_eq!(c.docs, vec![0, 2]);
+    }
+
+    #[test]
+    fn multi_range_selector_determines_match_not_both_values() {
+        let (manifest, _id, data, meta) = load_dv_meta(&multi_dv_dir());
+        let entry = meta
+            .sorted_numeric_entry(field_number(&manifest, "nums"))
+            .unwrap();
+        // doc0 = [5, 10]: MIN (5) falls in [4,6] but MAX (10) does not.
+        let mut c_min = VecCollector::default();
+        search_multi_valued_range(&data, entry, ValueSelector::Min, None, 5, 4, 6, &mut c_min)
+            .unwrap();
+        assert_eq!(c_min.docs, vec![0]);
+
+        let mut c_max = VecCollector::default();
+        search_multi_valued_range(&data, entry, ValueSelector::Max, None, 5, 4, 6, &mut c_max)
+            .unwrap();
+        assert!(c_max.docs.is_empty());
+
+        // doc3 = [1, 2, 3]: MAX (3) falls in [3,3] but MIN (1) does not.
+        let mut c_max2 = VecCollector::default();
+        search_multi_valued_range(&data, entry, ValueSelector::Max, None, 5, 3, 3, &mut c_max2)
+            .unwrap();
+        assert_eq!(c_max2.docs, vec![3]);
+
+        let mut c_min2 = VecCollector::default();
+        search_multi_valued_range(&data, entry, ValueSelector::Min, None, 5, 3, 3, &mut c_min2)
+            .unwrap();
+        assert!(c_min2.docs.is_empty());
+    }
+
+    #[test]
+    fn multi_range_boundary_values_are_inclusive() {
+        let (manifest, _id, data, meta) = load_dv_meta(&multi_dv_dir());
+        let entry = meta
+            .sorted_numeric_entry(field_number(&manifest, "nums"))
+            .unwrap();
+        let mut c = VecCollector::default();
+        // Exact MIN boundary (doc3's min == 1) and MAX boundary (doc0's max
+        // == 10) must both match.
+        search_multi_valued_range(&data, entry, ValueSelector::Min, None, 5, 1, 1, &mut c).unwrap();
+        assert_eq!(c.docs, vec![3]);
+
+        let mut c2 = VecCollector::default();
+        search_multi_valued_range(&data, entry, ValueSelector::Max, None, 5, 10, 10, &mut c2)
+            .unwrap();
+        assert_eq!(c2.docs, vec![0]);
+    }
+
+    #[test]
+    fn multi_range_missing_docs_never_match() {
+        let (manifest, _id, data, meta) = load_dv_meta(&multi_dv_dir());
+        let entry = meta
+            .sorted_numeric_entry(field_number(&manifest, "nums"))
+            .unwrap();
+        let mut c = VecCollector::default();
+        // docs 1 and 4 have zero values -- an unbounded range must not catch
+        // them under either selector.
+        search_multi_valued_range(
+            &data,
+            entry,
+            ValueSelector::Min,
+            None,
+            5,
+            i64::MIN,
+            i64::MAX,
+            &mut c,
+        )
+        .unwrap();
+        assert_eq!(c.docs, vec![0, 2, 3]);
+    }
+
+    #[test]
+    fn multi_range_live_docs_filters_matches() {
+        let (manifest, _id, data, meta) = load_dv_meta(&multi_dv_dir());
+        let entry = meta
+            .sorted_numeric_entry(field_number(&manifest, "nums"))
+            .unwrap();
+        let mut live_docs = FixedBitSet::new(5);
+        for i in 0..5 {
+            live_docs.set(i);
+        }
+        live_docs.clear(0); // doc0's min (5) would otherwise match
+        let mut c = VecCollector::default();
+        search_multi_valued_range(
+            &data,
+            entry,
+            ValueSelector::Min,
+            Some(&live_docs),
+            5,
+            1,
+            5,
+            &mut c,
+        )
+        .unwrap();
+        assert_eq!(c.docs, vec![3]);
+    }
+
+    #[test]
+    fn multi_sort_min_selector_ascending_order_real_fixture() {
+        let (manifest, _id, data, meta) = load_dv_meta(&multi_dv_dir());
+        let entry = meta
+            .sorted_numeric_entry(field_number(&manifest, "nums"))
+            .unwrap();
+        // Candidates excluding the two missing docs (1, 4); mins: doc0=5,
+        // doc2=7, doc3=1.
+        let candidates = [0, 2, 3];
+        let sorted = sort_by_multi_valued_doc_value(
+            &data,
+            entry,
+            ValueSelector::Min,
+            &candidates,
+            MissingValue::Exclude,
+        )
+        .unwrap();
+        assert_eq!(sorted, vec![(3, 1), (0, 5), (2, 7)]);
+    }
+
+    #[test]
+    fn multi_sort_max_selector_ascending_order_real_fixture() {
+        let (manifest, _id, data, meta) = load_dv_meta(&multi_dv_dir());
+        let entry = meta
+            .sorted_numeric_entry(field_number(&manifest, "nums"))
+            .unwrap();
+        // maxes: doc0=10, doc2=7, doc3=3.
+        let candidates = [0, 2, 3];
+        let sorted = sort_by_multi_valued_doc_value(
+            &data,
+            entry,
+            ValueSelector::Max,
+            &candidates,
+            MissingValue::Exclude,
+        )
+        .unwrap();
+        assert_eq!(sorted, vec![(3, 3), (2, 7), (0, 10)]);
+    }
+
+    #[test]
+    fn multi_sort_missing_doc_excluded_by_default_policy() {
+        let (manifest, _id, data, meta) = load_dv_meta(&multi_dv_dir());
+        let entry = meta
+            .sorted_numeric_entry(field_number(&manifest, "nums"))
+            .unwrap();
+        let candidates = [0, 1, 2, 3, 4];
+        let sorted = sort_by_multi_valued_doc_value(
+            &data,
+            entry,
+            ValueSelector::Min,
+            &candidates,
+            MissingValue::Exclude,
+        )
+        .unwrap();
+        assert_eq!(sorted, vec![(3, 1), (0, 5), (2, 7)]);
+    }
+
+    #[test]
+    fn multi_sort_missing_doc_gets_default_value() {
+        let (manifest, _id, data, meta) = load_dv_meta(&multi_dv_dir());
+        let entry = meta
+            .sorted_numeric_entry(field_number(&manifest, "nums"))
+            .unwrap();
+        let candidates = [0, 1, 2, 3, 4];
+        let sorted = sort_by_multi_valued_doc_value(
+            &data,
+            entry,
+            ValueSelector::Min,
+            &candidates,
+            MissingValue::Default(1_000_000),
+        )
+        .unwrap();
+        // Docs 1 and 4 substitute 1_000_000, sorting last (ascending), tied
+        // and broken by ascending doc ID.
+        assert_eq!(
+            sorted,
+            vec![(3, 1), (0, 5), (2, 7), (1, 1_000_000), (4, 1_000_000)]
+        );
+    }
+
+    #[test]
+    fn multi_sort_ties_break_by_ascending_doc_id() {
+        // Every doc's only value is 42 (addresses: None collapses to exactly
+        // one value per doc, same as a single-valued constant NUMERIC field)
+        // -- MIN and MAX agree, so this isolates the tie-break rule.
+        let entry = SortedNumericEntry {
+            field_number: 0,
+            numeric: constant_entry(0, 42, 5),
+            num_docs_with_field: 5,
+            addresses: None,
+        };
+        let candidates = [4, 1, 3, 0, 2];
+        let sorted = sort_by_multi_valued_doc_value(
+            &[],
+            &entry,
+            ValueSelector::Max,
+            &candidates,
+            MissingValue::Exclude,
+        )
+        .unwrap();
+        assert_eq!(sorted, vec![(0, 42), (1, 42), (2, 42), (3, 42), (4, 42)]);
+    }
+
+    #[test]
+    fn multi_sort_empty_candidates_yields_empty_result() {
+        let entry = SortedNumericEntry {
+            field_number: 0,
+            numeric: constant_entry(0, 1, 0),
+            num_docs_with_field: 0,
+            addresses: None,
+        };
+        let sorted = sort_by_multi_valued_doc_value(
+            &[],
+            &entry,
+            ValueSelector::Min,
+            &[],
+            MissingValue::Exclude,
+        )
+        .unwrap();
+        assert!(sorted.is_empty());
+    }
+
+    #[test]
+    fn multi_range_propagates_decode_errors() {
+        let mut numeric = constant_entry(0, 0, 1);
+        numeric.bits_per_value = 8;
+        numeric.values_offset = 0;
+        numeric.values_length = 1;
+        let entry = SortedNumericEntry {
+            field_number: 0,
+            numeric,
+            num_docs_with_field: 1,
+            addresses: None,
+        };
+        let mut c = VecCollector::default();
+        let err =
+            search_multi_valued_range(&[], &entry, ValueSelector::Min, None, 1, 0, 100, &mut c)
+                .unwrap_err();
+        assert!(matches!(err, crate::Error::DocValues(_)));
+    }
+
+    #[test]
+    fn multi_sort_propagates_decode_errors() {
+        let mut numeric = constant_entry(0, 0, 1);
+        numeric.bits_per_value = 8;
+        numeric.values_offset = 0;
+        numeric.values_length = 1;
+        let entry = SortedNumericEntry {
+            field_number: 0,
+            numeric,
+            num_docs_with_field: 1,
+            addresses: None,
+        };
+        let err = sort_by_multi_valued_doc_value(
+            &[],
+            &entry,
+            ValueSelector::Min,
+            &[0],
+            MissingValue::Exclude,
+        )
+        .unwrap_err();
+        assert!(matches!(err, crate::Error::DocValues(_)));
+    }
+
+    // --- search_multi_valued_range / sort_by_multi_valued_doc_value applied
+    //     to a SORTED_SET field's ordinals (`tags`, real fixture) --
+    //     confirms the same functions serve SORTED_SET's multi-valued case
+    //     (see this module's doc comment) since ords are just i64s. ---
+
+    #[test]
+    fn multi_range_over_sorted_set_ordinals_real_fixture() {
+        let (manifest, _id, data, meta) = load_dv_meta(&multi_dv_dir());
+        let entry = meta
+            .sorted_set_entry(field_number(&manifest, "tags"))
+            .unwrap();
+        let ords_entry = match &entry.kind {
+            doc_values::SortedSetKind::Multi { ords, .. } => ords,
+            doc_values::SortedSetKind::Single(_) => panic!("expected a multi-valued SORTED_SET"),
+        };
+        // tags ords: doc0=[0,2], doc1=NONE, doc2=[1], doc3=[0], doc4=[1,2].
+        // MIN ord 0 matches doc0 (min 0) and doc3 (min 0, its only ord).
+        let mut c = VecCollector::default();
+        search_multi_valued_range(&data, ords_entry, ValueSelector::Min, None, 5, 0, 0, &mut c)
+            .unwrap();
+        assert_eq!(c.docs, vec![0, 3]);
+
+        // MAX ord 0 matches only doc3 (doc0's max ord is 2).
+        let mut c2 = VecCollector::default();
+        search_multi_valued_range(
+            &data,
+            ords_entry,
+            ValueSelector::Max,
+            None,
+            5,
+            0,
+            0,
+            &mut c2,
+        )
+        .unwrap();
+        assert_eq!(c2.docs, vec![3]);
+    }
+
+    #[test]
+    fn multi_sort_over_sorted_set_ordinals_real_fixture() {
+        let (manifest, _id, data, meta) = load_dv_meta(&multi_dv_dir());
+        let entry = meta
+            .sorted_set_entry(field_number(&manifest, "tags"))
+            .unwrap();
+        let ords_entry = match &entry.kind {
+            doc_values::SortedSetKind::Multi { ords, .. } => ords,
+            doc_values::SortedSetKind::Single(_) => panic!("expected a multi-valued SORTED_SET"),
+        };
+        // MIN ords: doc0=0, doc2=1, doc3=0, doc4=1 -- doc1 missing.
+        let candidates = [0, 1, 2, 3, 4];
+        let sorted = sort_by_multi_valued_doc_value(
+            &data,
+            ords_entry,
+            ValueSelector::Min,
+            &candidates,
+            MissingValue::Exclude,
+        )
+        .unwrap();
+        // Ascending by ord, ties (0 and 0; 1 and 1) broken by doc ID.
+        assert_eq!(sorted, vec![(0, 0), (3, 0), (2, 1), (4, 1)]);
     }
 }
