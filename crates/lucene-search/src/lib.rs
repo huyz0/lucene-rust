@@ -187,6 +187,7 @@ pub mod docid_set;
 pub mod field_norms;
 pub mod multi_segment;
 pub mod query;
+pub mod query_parser;
 pub mod similarity;
 pub mod term_vectors_query;
 

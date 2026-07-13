@@ -953,6 +953,46 @@ asserting doc-for-doc agreement with this port's own `Clause::Regexp`
 matching for every recorded case on the first run. See `docs/parity.md`'s
 new row for the full accounting.
 
+**Progress (task #44):** a minimal query-string parser —
+`lucene-search/src/query_parser.rs::parse_query(input, default_field) ->
+Result<Clause, ParseError>` — turning a hand-picked subset of classic
+Lucene `QueryParser` syntax straight into this port's existing `Clause`
+tree, reusing every already-ported query constructor
+(`TermQuery`/`PhraseQuery`/`BooleanQuery`/`WildcardQuery`/`PrefixQuery`/
+`FuzzyQuery`/`RegexpQuery`/`BoostQuery`) rather than adding a new query
+shape. **This is not a port of `QueryParser.java`/`StandardQueryParser`**
+(both are large JavaCC-derived grammars with range queries, configurable
+operator precedence, and per-field analyzers) — it's a small,
+from-scratch recursive-descent parser inspired by that syntax, scoped
+down explicitly. **Boolean-operator style: `+`/`-`/bare-is-SHOULD only**,
+not `AND`/`OR`/`NOT` — real Lucene supports both simultaneously with
+precedence rules; picking one avoids the "half-supported mix" trap
+(`AND`/`OR`/`NOT` parse as ordinary terms, not operators, in this
+parser). Supports `field:term` and bare terms (an explicit
+`default_field: Option<&str>` parameter, `None` making a bare term a
+clean `ParseError::MissingField` rather than a silent guess), quoted
+`"phrase terms"`, `field:term~`/`~N` fuzzy (`N` in `0..=2`, matching
+`FuzzyQuery`'s own supported range), `field:prefix*` vs. `field:c?t`
+wildcard disambiguation (a single trailing unescaped `*` and nothing
+else special → `PrefixQuery`, anything else with `*`/`?` → `WildcardQuery`,
+mirroring real `QueryParser`'s own split), `field:/pattern/` regexp
+(Lucene's own delimiter convention), `(...)` grouping to arbitrary
+nesting depth, and a `^boost` suffix on any atom. **Deferred with a parse
+error, not silent misinterpretation**: range queries (`[a TO b]`/
+`{a TO b}`), `AND`/`OR`/`NOT` as real operators, fractional-similarity
+fuzzy (`term~0.8`), and any escaping beyond a single `\`-then-any-byte
+rule. Verified by unit tests covering every grammar case plus malformed-
+input cases (unclosed quote/paren/regexp, unmatched close paren, missing
+field, invalid boost/fuzziness, unsupported range syntax) confirming a
+clean `Err`, never a panic; a fixture-backed integration test
+(`crates/lucene-search/tests/query_parser_fixtures.rs`) parses queries
+against the real `fixtures/data/blocktree_index/` segment and confirms
+they execute (via `search_boolean_query`) to the same doc sets as the
+equivalent hand-built `Clause` values — the meaningful correctness check
+for parser *syntax*, since there's no "real Lucene bytes" to
+differentially decode here. See `docs/parity.md`'s new row for the exact
+grammar accounting.
+
 1. `lucene-analysis`: `TokenStream` as an iterator-of-token-structs (skip Java's
    AttributeSource reflection design entirely — a plain
    `Token { bytes, position_increment, offset, ... }` struct), StandardTokenizer via
