@@ -3,6 +3,7 @@
 
 pub mod deletes;
 pub mod merge;
+pub mod merge_policy;
 pub mod points_delete;
 pub mod segment_info;
 pub mod segment_infos;

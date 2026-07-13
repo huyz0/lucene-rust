@@ -1043,6 +1043,51 @@ that task's own remaining scope line still applies (no reader-pool-wide
 sharing, no warm-up hooks; each call only reuses its own receiver's
 segments).
 
+**Progress (task #47):** a `TieredMergePolicy`-equivalent merge-selection
+function, `lucene-index/src/merge_policy.rs::{find_merges,
+find_forced_merges}` — decides which segments should merge next; it does
+not execute merges (still `merge.rs`'s job) or schedule them in the
+background (`MergeScheduler` is out of scope). `SegmentStat` is a new,
+deliberately unit-agnostic per-segment stat struct (name/doc_count/
+del_count/size_bytes) rather than `SegmentCommitInfo` directly, because
+`SegmentCommitInfo` (`segments_N`) carries `del_count` but not doc count or
+byte size — those live in the separate per-segment `.si` file
+(`segment_info::SegmentInfo`). **Size-unit decision**: real `TieredMergePolicy`
+sizes segments by on-disk byte size; this port adds `segment_byte_size(dir,
+info)`, which sums real file lengths for a segment's `.si`-listed files via
+the existing `Directory` trait (no new trait method needed) — the honest,
+byte-accurate option when a `Directory` is available. A caller without one
+may instead approximate `size_bytes` via `doc_count`
+(`SegmentStat::from_segment_info`), documented explicitly in the module doc
+as an approximation, not real bytes; the algorithm itself doesn't care
+which unit it's given. **Kept from real `TieredMergePolicy`**: excluding
+already-oversized segments from further merge input; a reclaim-weighted
+score (`size * (1 - reclaim_weight * del_count/doc_count)`) so a
+heavily-deleted segment is preferred over an equally-sized clean one, not
+naive size-only bin-packing; a `segments_per_tier` target that suppresses
+merges once segment count is already at/below it; a `max_merge_at_once`
+cap no proposed group ever exceeds; preferring smaller/more-deleted
+segments first via sorting before grouping. **Simplified/dropped**: real
+Lucene's exact `MergeScore` formula (log-based skew penalty, floor/ceiling
+tier smoothing, iterative multi-candidate search with rollback) — this
+uses one simpler, real-shaped score instead; one greedy pass building
+merge groups rather than an iterative multi-merge search; no compound-file
+awareness; `find_forced_merges` merges the excess down to a target count
+in one group rather than real Lucene's own chunked, multi-pass forced-merge
+walk. `MergePolicyConfig` defaults mirror real `TieredMergePolicy`'s own
+(`maxMergeAtOnce=10`, `segmentsPerTier=10`, `maxMergedSegmentMB=5000`).
+**Closing the loop with `merge.rs`**: a new integration test,
+`lucene-index/tests/merge_policy_to_merge_integration.rs`, flushes three
+real stored-fields-only segments, calls `find_merges` to pick all three,
+then feeds that chosen name group straight into
+`merge::merge_stored_only_segments` (re-reading each segment's files off
+disk by name, as a real caller resolving names would) and confirms the
+merged segment holds all six docs — proving `find_merges`' output shape
+plugs into the existing merge-execution machinery with no adapter needed.
+Not wired into an automatic merge-triggering pipeline (no `IndexWriter`
+integration) — that's real Lucene's `MergeScheduler`, explicitly out of
+scope for this task.
+
 1. `lucene-analysis`: `TokenStream` as an iterator-of-token-structs (skip Java's
    AttributeSource reflection design entirely — a plain
    `Token { bytes, position_increment, offset, ... }` struct), StandardTokenizer via
