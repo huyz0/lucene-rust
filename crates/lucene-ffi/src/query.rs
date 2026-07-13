@@ -644,7 +644,11 @@ pub unsafe extern "C" fn ffi_search_boolean_query_scored(
             .chain(query.must_not.iter())
             .filter_map(|c| match c {
                 Clause::Term(t) => Some(t.field.as_str()),
-                Clause::Phrase(_) | Clause::Boolean(_) | Clause::DisjunctionMax(_) => None,
+                Clause::Phrase(_)
+                | Clause::Boolean(_)
+                | Clause::DisjunctionMax(_)
+                | Clause::ConstantScore(_)
+                | Clause::Boost(_) => None,
             })
             .collect();
         field_names.sort_unstable();

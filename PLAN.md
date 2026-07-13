@@ -437,6 +437,21 @@ reimplemented instead of catching — fixed, with dependent tests' hand-computed
 expected values updated to match. See `docs/parity.md`'s new row and the
 `BM25Similarity` row's updated note for the full accounting.
 
+**Progress (task #33):** `ConstantScoreQuery`/`BoostQuery` are ported —
+`Clause` gains two more variants, `ConstantScore(Box<ConstantScoreQuery>)` and
+`Boost(Box<BoostQuery>)`, wrapping any other `Clause` (nesting either
+direction, arbitrary depth, same pattern as `Boolean`/`DisjunctionMax`).
+Matching is always the wrapped clause's own matching set; scoring replaces the
+inner score with a fixed constant (`ConstantScoreQuery`) or multiplies it by a
+boost factor (`BoostQuery`). No new Java fixture generator was added — both
+wrappers are a trivial arithmetic composition (a literal constant, a single
+`f32` multiply) over an inner clause whose own scoring is already cross-engine
+verified (task #30/#32's fixtures), so the tests instead use
+`search_term_query_scored`'s already-real BM25 score as ground truth for the
+"known real" inner score and assert the wrapped result exactly matches the
+constant/product — see `lib.rs`'s test module doc comment for the full
+reasoning.
+
 1. Traits: `Query → Weight → Scorer/ScorerSupplier`, `DocIdSetIterator`,
    `TwoPhaseIterator`, `BulkScorer`. Use enums where the closed set allows
    (DISI is called per-doc — keep it monomorphizable; `Box<dyn>` only at Weight level).

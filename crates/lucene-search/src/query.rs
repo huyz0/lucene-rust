@@ -63,6 +63,15 @@ pub enum Clause {
     /// [`crate::resolve_clause_docs`]/[`crate::clause_scores`], same recursive
     /// treatment as `Clause::Boolean`.
     DisjunctionMax(Box<DisjunctionMaxQuery>),
+    /// A nested `ConstantScoreQuery` (task #33's addition) — matches iff the
+    /// wrapped clause matches, but always scores exactly `score`, discarding
+    /// whatever the wrapped clause's own score would have been; see
+    /// [`ConstantScoreQuery`]'s doc comment.
+    ConstantScore(Box<ConstantScoreQuery>),
+    /// A nested `BoostQuery` (task #33's addition) — matches iff the wrapped
+    /// clause matches, scored as the wrapped clause's own score multiplied by
+    /// `boost`; see [`BoostQuery`]'s doc comment.
+    Boost(Box<BoostQuery>),
 }
 
 impl From<TermQuery> for Clause {
@@ -86,6 +95,18 @@ impl From<BooleanQuery> for Clause {
 impl From<DisjunctionMaxQuery> for Clause {
     fn from(query: DisjunctionMaxQuery) -> Self {
         Clause::DisjunctionMax(Box::new(query))
+    }
+}
+
+impl From<ConstantScoreQuery> for Clause {
+    fn from(query: ConstantScoreQuery) -> Self {
+        Clause::ConstantScore(Box::new(query))
+    }
+}
+
+impl From<BoostQuery> for Clause {
+    fn from(query: BoostQuery) -> Self {
+        Clause::Boost(Box::new(query))
     }
 }
 
@@ -274,6 +295,67 @@ impl DisjunctionMaxQuery {
     }
 }
 
+/// `ConstantScoreQuery`-equivalent (`org.apache.lucene.search.ConstantScoreQuery`):
+/// wraps any other [`Clause`] and matches exactly the same docs the inner clause
+/// matches, but every matching doc scores exactly `score` — the inner clause's own
+/// score (whatever it would have been) is discarded entirely, not folded in.
+/// Real `ConstantScoreQuery`'s `ConstantScoreWeight`/`ConstantScoreScorer` always
+/// scores `boost` (the query's own boost, `1.0` unless wrapped in a `BoostQuery`,
+/// see [`crate::clause_scores`]'s `Clause::ConstantScore` arm) regardless of the
+/// inner query's own scoring — this port names the field `score` rather than
+/// `boost` since that's the value actually reported per match, matching this
+/// struct's single-argument constructor semantics rather than real Lucene's
+/// broader `Weight`-level boost propagation this port doesn't otherwise model.
+///
+/// Nests the same way `Clause::Boolean`/`Clause::DisjunctionMax` already do: the
+/// wrapped `inner` clause may itself be any `Clause` variant, including another
+/// `ConstantScore`/`Boost`, to arbitrary depth.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConstantScoreQuery {
+    pub inner: Box<Clause>,
+    pub score: f32,
+}
+
+impl ConstantScoreQuery {
+    /// Builds a `ConstantScoreQuery` wrapping `inner`, always scoring `score`
+    /// for any doc `inner` matches. `inner` accepts anything convertible to a
+    /// [`Clause`], same builder convenience `BooleanQuery::with_must` etc. use.
+    pub fn new(inner: impl Into<Clause>, score: f32) -> Self {
+        Self {
+            inner: Box::new(inner.into()),
+            score,
+        }
+    }
+}
+
+/// `BoostQuery`-equivalent (`org.apache.lucene.search.BoostQuery`): wraps any
+/// other [`Clause`] and matches exactly the same docs the inner clause matches,
+/// scoring each matching doc as the inner clause's own score multiplied by
+/// `boost` — real `BoostQuery.BoostWeight.explain`/`scorer`'s exact behavior
+/// (a pure multiplicative rescale of the wrapped query's score, unlike
+/// `ConstantScoreQuery`'s discard-and-replace).
+///
+/// Nests the same way `ConstantScoreQuery` does: `inner` may be any `Clause`
+/// variant, including another `Boost`/`ConstantScore`, to arbitrary depth (e.g.
+/// `BoostQuery` wrapping a `ConstantScoreQuery` multiplies the constant score by
+/// `boost`, matching real Lucene's composition of the two).
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoostQuery {
+    pub inner: Box<Clause>,
+    pub boost: f32,
+}
+
+impl BoostQuery {
+    /// Builds a `BoostQuery` wrapping `inner`, scoring `inner`'s own score
+    /// multiplied by `boost` for any doc `inner` matches.
+    pub fn new(inner: impl Into<Clause>, boost: f32) -> Self {
+        Self {
+            inner: Box::new(inner.into()),
+            boost,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -420,5 +502,42 @@ mod tests {
             PhraseQuery::new("body", ["a", "b"]),
             PhraseQuery::new("id", ["a", "b"])
         );
+    }
+
+    #[test]
+    fn constant_score_query_new_stores_inner_and_score() {
+        let q = ConstantScoreQuery::new(TermQuery::new("body", "cat"), 2.0);
+        assert_eq!(*q.inner, Clause::Term(TermQuery::new("body", "cat")));
+        assert_eq!(q.score, 2.0);
+    }
+
+    #[test]
+    fn clause_from_constant_score_query_wraps_in_boxed_variant() {
+        let inner = ConstantScoreQuery::new(TermQuery::new("body", "cat"), 1.5);
+        let clause: Clause = inner.clone().into();
+        assert_eq!(clause, Clause::ConstantScore(Box::new(inner)));
+    }
+
+    #[test]
+    fn boost_query_new_stores_inner_and_boost() {
+        let q = BoostQuery::new(TermQuery::new("body", "cat"), 3.0);
+        assert_eq!(*q.inner, Clause::Term(TermQuery::new("body", "cat")));
+        assert_eq!(q.boost, 3.0);
+    }
+
+    #[test]
+    fn clause_from_boost_query_wraps_in_boxed_variant() {
+        let inner = BoostQuery::new(TermQuery::new("body", "cat"), 2.5);
+        let clause: Clause = inner.clone().into();
+        assert_eq!(clause, Clause::Boost(Box::new(inner)));
+    }
+
+    #[test]
+    fn with_must_accepts_constant_score_and_boost_query_clauses() {
+        let q = BooleanQuery::new().with_must([
+            Clause::from(ConstantScoreQuery::new(TermQuery::new("body", "cat"), 1.0)),
+            Clause::from(BoostQuery::new(TermQuery::new("body", "dog"), 2.0)),
+        ]);
+        assert_eq!(q.must.len(), 2);
     }
 }

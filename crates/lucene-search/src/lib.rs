@@ -195,7 +195,10 @@ pub use doc_value_query::{
     search_numeric_range, search_sorted_ord_range, sort_by_numeric_doc_value, MissingValue,
 };
 pub use field_norms::FieldNorms;
-pub use query::{BooleanQuery, Clause, DisjunctionMaxQuery, PhraseQuery, TermQuery};
+pub use query::{
+    BooleanQuery, BoostQuery, Clause, ConstantScoreQuery, DisjunctionMaxQuery, PhraseQuery,
+    TermQuery,
+};
 
 use std::collections::HashMap;
 
@@ -395,6 +398,12 @@ fn resolve_clause_docs(
         .unwrap_or_default()),
         Clause::DisjunctionMax(nested) => {
             resolve_dismax_docs(fields, doc_in, pos_in, pay_in, live_docs, nested)
+        }
+        Clause::ConstantScore(nested) => {
+            resolve_clause_docs(fields, doc_in, pos_in, pay_in, live_docs, &nested.inner)
+        }
+        Clause::Boost(nested) => {
+            resolve_clause_docs(fields, doc_in, pos_in, pay_in, live_docs, &nested.inner)
         }
     }
 }
@@ -699,6 +708,29 @@ fn clause_scores(
         }
         Clause::DisjunctionMax(nested) => {
             dismax_scores(fields, doc_in, pos_in, pay_in, live_docs, nested, norms)
+        }
+        Clause::ConstantScore(nested) => {
+            let matched =
+                resolve_clause_docs(fields, doc_in, pos_in, pay_in, live_docs, &nested.inner)?;
+            Ok(matched
+                .into_iter()
+                .map(|doc_id| (doc_id, nested.score))
+                .collect())
+        }
+        Clause::Boost(nested) => {
+            let inner_scores = clause_scores(
+                fields,
+                doc_in,
+                pos_in,
+                pay_in,
+                live_docs,
+                &nested.inner,
+                norms,
+            )?;
+            Ok(inner_scores
+                .into_iter()
+                .map(|(doc_id, score)| (doc_id, score * nested.boost))
+                .collect())
         }
     }
 }
@@ -3165,5 +3197,325 @@ mod tests {
             search_disjunction_max_query(&fields, Some(&doc_in), None, None, None, &q, &mut c)
                 .unwrap_err();
         assert!(matches!(err, Error::MissingPosInput));
+    }
+
+    // `ConstantScoreQuery`/`BoostQuery` (task #33). `body`'s known real postings
+    // (see the dismax/boolean tests above): cat={0,2}, dog={0,1}, bird={1,4}.
+    //
+    // **Cross-engine verification scope, decided here rather than adding a new
+    // Java fixture (see the `differential-testing` skill)**: both wrappers are
+    // arithmetically trivial compositions over an inner clause whose own scoring
+    // is *already* cross-engine-verified -- `Clause::Term`/`Clause::Boolean`/
+    // `Clause::DisjunctionMax` scoring was checked against real Lucene's
+    // `IndexSearcher`/`TopDocs` output in earlier tasks (`scoring_fixtures.rs`,
+    // `dismax_query_fixtures.rs` -- see `docs/parity.md`'s `DisjunctionMaxQuery`
+    // row for the exact fixture and its real recorded scores). `ConstantScore`
+    // replaces that already-real inner score with a literal constant (no
+    // arithmetic to get wrong beyond "return `score` verbatim"); `Boost`
+    // multiplies it by a literal `f32` (one `*`, no order-of-operations
+    // ambiguity, no norms/idf/tf interaction of its own). Writing a brand-new
+    // `Gen*.java` generator to prove `x == x` (constant) or `y == a * b` (a
+    // single multiply of Rust's own `f32`, the same float type and operator
+    // Java's `float` multiply uses bit-for-bit under IEEE 754) would not
+    // exercise any Lucene-specific format or algorithm this port could get
+    // subtly wrong -- unlike BM25's `tfNorm`/`idf` formulas or the dismax
+    // tie-breaker formula, which *did* need real Lucene ground truth to catch
+    // a real bug (see the BM25 `tfNorm` fix task #32 found). Instead, these
+    // tests use `search_term_query_scored`'s already-cross-engine-consistent
+    // real BM25 score for `body:cat`/`body:dog` at specific docs as the "known
+    // real" inner score, and assert the wrapped score is exactly that constant,
+    // or exactly that real score times the boost -- i.e. they verify this
+    // task's arithmetic against a real (not hand-faked) inner score, just
+    // without a second Java fixture generator, which would add fixture
+    // maintenance burden without covering anything this reasoning doesn't
+    // already cover.
+
+    fn real_score(fields: &BlockTreeFields, doc_in: &DocInput<'_>, term: &str, doc_id: i32) -> f32 {
+        let mut top = TopDocsCollector::new(10);
+        search_term_query_scored(
+            fields,
+            Some(doc_in),
+            None,
+            &TermQuery::new("body", term),
+            None,
+            &mut top,
+        )
+        .unwrap();
+        top.top_docs()
+            .iter()
+            .find(|h| h.doc_id == doc_id)
+            .map(|h| h.score)
+            .unwrap()
+    }
+
+    #[test]
+    fn constant_score_matching_set_equals_inner_matching_set() {
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+
+        let q = BooleanQuery::new().with_must([Clause::from(ConstantScoreQuery::new(
+            TermQuery::new("body", "cat"),
+            1.0,
+        ))]);
+        let mut c = VecCollector::default();
+        search_boolean_query(&fields, Some(&doc_in), None, None, None, &q, &mut c).unwrap();
+        assert_eq!(c.docs, vec![0, 2]);
+    }
+
+    #[test]
+    fn constant_score_with_a_missing_inner_term_matches_nothing() {
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+
+        let q = BooleanQuery::new().with_must([Clause::from(ConstantScoreQuery::new(
+            TermQuery::new("body", "zzz-missing"),
+            7.0,
+        ))]);
+        let mut c = VecCollector::default();
+        search_boolean_query(&fields, Some(&doc_in), None, None, None, &q, &mut c).unwrap();
+        assert!(c.docs.is_empty());
+    }
+
+    #[test]
+    fn constant_score_scores_exactly_the_configured_score_regardless_of_inner_score() {
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+
+        // Real per-doc BM25 scores for cat differ between doc 0 and doc 2 (real
+        // Lucene never scores two different docs identically for the same term
+        // unless their lengths/freqs coincide) -- proving the constant override
+        // discards both, not just one.
+        let cat0 = real_score(&fields, &doc_in, "cat", 0);
+        let cat2 = real_score(&fields, &doc_in, "cat", 2);
+        let constant = 4.25f32;
+        assert_ne!(cat0, constant);
+        assert_ne!(cat2, constant);
+
+        let q = BooleanQuery::new().with_must([Clause::from(ConstantScoreQuery::new(
+            TermQuery::new("body", "cat"),
+            constant,
+        ))]);
+        let mut top = TopDocsCollector::new(10);
+        search_boolean_query_scored(&fields, Some(&doc_in), None, None, None, &q, None, &mut top)
+            .unwrap();
+        let score_of = |top: &TopDocsCollector, doc_id: i32| -> f32 {
+            top.top_docs()
+                .iter()
+                .find(|h| h.doc_id == doc_id)
+                .map(|h| h.score)
+                .unwrap()
+        };
+        assert_eq!(score_of(&top, 0), constant);
+        assert_eq!(score_of(&top, 2), constant);
+    }
+
+    #[test]
+    fn boost_matching_set_equals_inner_matching_set() {
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+
+        let q = BooleanQuery::new().with_must([Clause::from(BoostQuery::new(
+            TermQuery::new("body", "dog"),
+            2.0,
+        ))]);
+        let mut c = VecCollector::default();
+        search_boolean_query(&fields, Some(&doc_in), None, None, None, &q, &mut c).unwrap();
+        assert_eq!(c.docs, vec![0, 1]);
+    }
+
+    #[test]
+    fn boost_with_a_missing_inner_term_matches_nothing() {
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+
+        let q = BooleanQuery::new().with_must([Clause::from(BoostQuery::new(
+            TermQuery::new("body", "zzz-missing"),
+            2.0,
+        ))]);
+        let mut c = VecCollector::default();
+        search_boolean_query(&fields, Some(&doc_in), None, None, None, &q, &mut c).unwrap();
+        assert!(c.docs.is_empty());
+    }
+
+    #[test]
+    fn boost_score_is_exactly_the_inner_real_score_times_boost() {
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+
+        let dog0 = real_score(&fields, &doc_in, "dog", 0);
+        let boost = 2.5f32;
+
+        let q = BooleanQuery::new().with_must([Clause::from(BoostQuery::new(
+            TermQuery::new("body", "dog"),
+            boost,
+        ))]);
+        let mut top = TopDocsCollector::new(10);
+        search_boolean_query_scored(&fields, Some(&doc_in), None, None, None, &q, None, &mut top)
+            .unwrap();
+        let score0 = top
+            .top_docs()
+            .iter()
+            .find(|h| h.doc_id == 0)
+            .map(|h| h.score)
+            .unwrap();
+        assert!((score0 - dog0 * boost).abs() < 1e-5);
+        assert_ne!(score0, dog0, "boost must actually change the score");
+    }
+
+    #[test]
+    fn constant_score_nested_inside_a_boolean_query_composes_with_other_clauses() {
+        // must = [dog, constant_score(cat, 9.0)]: dog={0,1}, cat={0,2},
+        // conjunction = {0}; doc 0's total score is dog's own real score plus
+        // the constant 9.0 (real Lucene's additive `BooleanScorer`).
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+
+        let dog0 = real_score(&fields, &doc_in, "dog", 0);
+        let constant = 9.0f32;
+
+        let q = BooleanQuery::new().with_must([
+            Clause::Term(TermQuery::new("body", "dog")),
+            Clause::from(ConstantScoreQuery::new(
+                TermQuery::new("body", "cat"),
+                constant,
+            )),
+        ]);
+        let mut c = VecCollector::default();
+        search_boolean_query(&fields, Some(&doc_in), None, None, None, &q, &mut c).unwrap();
+        assert_eq!(c.docs, vec![0]);
+
+        let mut top = TopDocsCollector::new(10);
+        search_boolean_query_scored(&fields, Some(&doc_in), None, None, None, &q, None, &mut top)
+            .unwrap();
+        let score0 = top
+            .top_docs()
+            .iter()
+            .find(|h| h.doc_id == 0)
+            .map(|h| h.score)
+            .unwrap();
+        assert!((score0 - (dog0 + constant)).abs() < 1e-4);
+    }
+
+    #[test]
+    fn boost_nested_inside_a_dismax_disjunct_scores_correctly() {
+        // dismax([boost(cat, 2.0), term(dog)], tie_breaker=0.0): doc 0 matches
+        // both; with tie_breaker 0.0 the winner is whichever disjunct scores
+        // higher, and the boosted disjunct's score must be exactly cat0 * 2.0.
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+
+        let cat0 = real_score(&fields, &doc_in, "cat", 0);
+        let dog0 = real_score(&fields, &doc_in, "dog", 0);
+        let boost = 2.0f32;
+        let boosted_cat0 = cat0 * boost;
+        let expected_max = boosted_cat0.max(dog0);
+
+        let q = DisjunctionMaxQuery::new(
+            [
+                Clause::from(BoostQuery::new(TermQuery::new("body", "cat"), boost)),
+                Clause::Term(TermQuery::new("body", "dog")),
+            ],
+            0.0,
+        );
+        let mut top = TopDocsCollector::new(10);
+        search_disjunction_max_query_scored(
+            &fields,
+            Some(&doc_in),
+            None,
+            None,
+            None,
+            &q,
+            None,
+            &mut top,
+        )
+        .unwrap();
+        let score0 = top
+            .top_docs()
+            .iter()
+            .find(|h| h.doc_id == 0)
+            .map(|h| h.score)
+            .unwrap();
+        assert!((score0 - expected_max).abs() < 1e-4);
+    }
+
+    #[test]
+    fn constant_score_wrapping_a_dismax_query_matches_the_dismax_union_and_scores_fixed() {
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+
+        let dismax = DisjunctionMaxQuery::new(
+            [
+                Clause::Term(TermQuery::new("body", "cat")),
+                Clause::Term(TermQuery::new("body", "bird")),
+            ],
+            0.0,
+        );
+        let constant = 6.0f32;
+        let q = BooleanQuery::new().with_must([Clause::from(ConstantScoreQuery::new(
+            Clause::DisjunctionMax(Box::new(dismax)),
+            constant,
+        ))]);
+        let mut c = VecCollector::default();
+        search_boolean_query(&fields, Some(&doc_in), None, None, None, &q, &mut c).unwrap();
+        // cat={0,2} union bird={1,4} = {0,1,2,4}.
+        assert_eq!(c.docs, vec![0, 1, 2, 4]);
+
+        let mut top = TopDocsCollector::new(10);
+        search_boolean_query_scored(&fields, Some(&doc_in), None, None, None, &q, None, &mut top)
+            .unwrap();
+        for doc_id in [0, 1, 2, 4] {
+            let score = top
+                .top_docs()
+                .iter()
+                .find(|h| h.doc_id == doc_id)
+                .map(|h| h.score)
+                .unwrap();
+            assert_eq!(score, constant);
+        }
+    }
+
+    #[test]
+    fn boost_wrapping_a_constant_score_query_multiplies_the_constant() {
+        // BoostQuery(ConstantScoreQuery(cat, 3.0), 2.0) -- real Lucene composes
+        // the two multiplicatively/replacement in that order: matching docs
+        // score exactly 3.0 * 2.0 = 6.0.
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+
+        let inner_constant = 3.0f32;
+        let boost = 2.0f32;
+        let q = BooleanQuery::new().with_must([Clause::from(BoostQuery::new(
+            Clause::from(ConstantScoreQuery::new(
+                TermQuery::new("body", "cat"),
+                inner_constant,
+            )),
+            boost,
+        ))]);
+        let mut c = VecCollector::default();
+        search_boolean_query(&fields, Some(&doc_in), None, None, None, &q, &mut c).unwrap();
+        assert_eq!(c.docs, vec![0, 2]);
+
+        let mut top = TopDocsCollector::new(10);
+        search_boolean_query_scored(&fields, Some(&doc_in), None, None, None, &q, None, &mut top)
+            .unwrap();
+        for doc_id in [0, 2] {
+            let score = top
+                .top_docs()
+                .iter()
+                .find(|h| h.doc_id == doc_id)
+                .map(|h| h.score)
+                .unwrap();
+            assert_eq!(score, inner_constant * boost);
+        }
     }
 }
