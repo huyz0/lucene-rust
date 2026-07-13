@@ -222,31 +222,53 @@ pub fn flush_stored_only_segment(
     })
 }
 
-/// Like [`flush_stored_only_segment`], but physically reorders `docs` by an
-/// index-sort key before writing anything, and records that sort in the
-/// resulting `.si` (real Lucene's `IndexWriterConfig.setIndexSort` +
-/// `DocumentsWriterPerThread`'s sort-on-flush behavior -- see PLAN.md's
-/// index-sort task).
+/// One field of a multi-field index sort passed to
+/// [`flush_sorted_stored_only_segment`]: a field name, its per-doc sort key
+/// (parallel to the flush's `docs`), and that field's own `reverse`/
+/// `missing` policy. Real Lucene's `Sort` is an array of `SortField`s applied
+/// in priority order -- this struct is one array element.
+#[derive(Debug, Clone)]
+pub struct SortKeySpec<'a> {
+    pub field: &'a str,
+    /// `keys[i]` is doc `i`'s (pre-sort) value for this field, or `None` if
+    /// doc `i` has no value for it. Must have exactly one entry per doc.
+    pub keys: &'a [Option<i64>],
+    pub reverse: bool,
+    pub missing: SortMissingValue,
+}
+
+/// Like [`flush_stored_only_segment`], but physically reorders `docs` by a
+/// (possibly multi-field) index sort before writing anything, and records
+/// that sort in the resulting `.si` (real Lucene's
+/// `IndexWriterConfig.setIndexSort` + `DocumentsWriterPerThread`'s
+/// sort-on-flush behavior -- see PLAN.md's index-sort task).
 ///
 /// # Scope (see `docs/parity.md` for the full write-up)
 ///
-/// - **Single NUMERIC field only.** `sort_keys[i]` is doc `i`'s (pre-sort)
-///   value for the index-sort field, computed by the caller. This port has
-///   no write-side doc-values format yet (see this module's own "What this
-///   deliberately is not" section), so the sort key can't be read back from
-///   an already-written file the way real Lucene's `DocValuesConsumer`-fed
-///   sort does -- it must already be in memory, parallel to `docs`, which is
-///   exactly what this parameter is.
-/// - **Missing values**: `sort_keys[i] == None` means doc `i` has no value
-///   for the sort field; it's placed first or last per `missing`
-///   ([`SortMissingValue`]), regardless of `reverse`, matching real Lucene's
-///   `SortField.setMissingValue` convention (a missing value acts like
-///   `Long.MIN_VALUE`/`MAX_VALUE`. so `First`/ascending and `Last`/descending
-///   both put it at the *start* of the physical layout; see the docstring on
-///   `sort_key_rank` below for the exact rule this function applies).
-/// - **Stable sort**: docs with equal (or both-missing) keys keep their
-///   original relative order, matching `Vec::sort_by_key`'s stability
-///   guarantee and real Lucene's own stable-merge-sort-based flush sort.
+/// - **One or more NUMERIC fields, priority-ordered.** `sort_fields[0]` is
+///   the primary sort key; `sort_fields[1]` breaks ties in `sort_fields[0]`,
+///   `sort_fields[2]` breaks ties in the first two, and so on -- mirroring
+///   real Lucene's `Sort` being an ordered array of `SortField`s. Each
+///   field's `reverse`/`missing` policy applies independently at its own
+///   tier: e.g. field 0 can sort descending with missing-last while field 1
+///   sorts ascending with missing-first. This port has no write-side
+///   doc-values format yet (see this module's own "What this deliberately is
+///   not" section), so each field's sort keys can't be read back from an
+///   already-written file the way real Lucene's `DocValuesConsumer`-fed sort
+///   does -- they must already be in memory, parallel to `docs`, which is
+///   exactly what [`SortKeySpec::keys`] is. `sort_fields` must be non-empty.
+/// - **Missing values**: `keys[i] == None` means doc `i` has no value for
+///   that sort field; it's placed first or last per that field's `missing`
+///   ([`SortMissingValue`]), regardless of that field's `reverse`, matching
+///   real Lucene's `SortField.setMissingValue` convention (a missing value
+///   acts like `Long.MIN_VALUE`/`MAX_VALUE`, so `First`/ascending and
+///   `Last`/descending both put it at the same end of that tier; see the
+///   docstring on `sort_key_rank` below for the exact rule this function
+///   applies).
+/// - **Stable sort**: docs that compare equal across every field (including
+///   both-missing at every tier) keep their original relative order,
+///   matching `Vec::sort_by`'s stability guarantee and real Lucene's own
+///   stable-merge-sort-based flush sort.
 /// - **No merge re-sort**: a later merge of two sorted segments in this port
 ///   does NOT re-sort by this key (see `crate::merge` and `docs/parity.md`)
 ///   -- only fresh single-segment flushes are sorted.
@@ -259,24 +281,36 @@ pub fn flush_sorted_stored_only_segment(
     lucene_version: LuceneVersion,
     fields: &[FieldInfo],
     docs: &[Document],
-    sort_field: &str,
-    sort_keys: &[Option<i64>],
-    reverse: bool,
-    missing: SortMissingValue,
+    sort_fields: &[SortKeySpec<'_>],
 ) -> Result<SegmentCommitInfo> {
-    assert_eq!(
-        docs.len(),
-        sort_keys.len(),
-        "sort_keys must have exactly one entry per doc"
+    assert!(
+        !sort_fields.is_empty(),
+        "sort_fields must contain at least one sort key"
     );
+    for spec in sort_fields {
+        assert_eq!(
+            docs.len(),
+            spec.keys.len(),
+            "sort_keys must have exactly one entry per doc for field {:?}",
+            spec.field
+        );
+    }
 
-    // Stable sort by (rank, original index) so equal/missing keys keep their
-    // original relative order (original index is the explicit tie-breaker;
-    // `sort_by_key` is already stable, but pairing with the index makes that
-    // guarantee explicit and gives us the permutation for free).
+    // Stable sort by (priority-ordered rank, original index) so ties at
+    // every tier keep their original relative order (original index is the
+    // explicit final tie-breaker; `sort_by` is already stable, but pairing
+    // with the index makes that guarantee explicit and gives us the
+    // permutation for free).
     let mut order: Vec<usize> = (0..docs.len()).collect();
     order.sort_by(|&a, &b| {
-        sort_key_rank(sort_keys[a], sort_keys[b], reverse, missing).then(a.cmp(&b))
+        sort_fields
+            .iter()
+            .fold(std::cmp::Ordering::Equal, |acc, spec| {
+                acc.then_with(|| {
+                    sort_key_rank(spec.keys[a], spec.keys[b], spec.reverse, spec.missing)
+                })
+            })
+            .then(a.cmp(&b))
     });
 
     let sorted_docs: Vec<Document> = order.iter().map(|&i| docs[i].clone()).collect();
@@ -294,17 +328,22 @@ pub fn flush_sorted_stored_only_segment(
 
     // Patch the just-written `.si` to add the index-sort descriptor:
     // `flush_stored_only_segment` always writes `index_sort: None`, and
-    // duplicating its whole file-writing sequence here just to plumb one
-    // extra field through would be more surface area than re-reading and
+    // duplicating its whole file-writing sequence here just to plumb the
+    // extra fields through would be more surface area than re-reading and
     // rewriting the one small `.si` file.
     let si_name = format!("{segment_name}.si");
     let si_bytes: Vec<u8> = dir.open(&si_name)?.to_vec();
     let mut si = segment_info::parse(&si_bytes, &segment_id)?;
-    si.index_sort = Some(IndexSortField {
-        field: sort_field.to_string(),
-        reverse,
-        missing,
-    });
+    si.index_sort = Some(
+        sort_fields
+            .iter()
+            .map(|spec| IndexSortField {
+                field: spec.field.to_string(),
+                reverse: spec.reverse,
+                missing: spec.missing,
+            })
+            .collect(),
+    );
     let si_bytes = segment_info::write(&si, "");
     write_file(dir, &si_name, &si_bytes)?;
     dir.sync(&[si_name])?;
@@ -663,7 +702,7 @@ mod tests {
         dir: &FsDirectory,
         segment_name: &str,
         segment_id: [u8; ID_LENGTH],
-    ) -> Option<crate::segment_info::IndexSortField> {
+    ) -> Option<Vec<crate::segment_info::IndexSortField>> {
         let si_bytes = dir.open(&format!("{segment_name}.si")).unwrap().to_vec();
         segment_info::parse(&si_bytes, &segment_id)
             .unwrap()
@@ -688,15 +727,19 @@ mod tests {
             version(),
             &fields,
             &docs,
-            "num",
-            &sort_keys,
-            false,
-            SortMissingValue::Last,
+            &[SortKeySpec {
+                field: "num",
+                keys: &sort_keys,
+                reverse: false,
+                missing: SortMissingValue::Last,
+            }],
         )
         .unwrap();
 
         assert_eq!(doc_ids(&dir, "_0", segment_id, 3), vec!["a", "b", "c"]);
-        let sf = read_index_sort(&dir, "_0", segment_id).unwrap();
+        let fields_sort = read_index_sort(&dir, "_0", segment_id).unwrap();
+        assert_eq!(fields_sort.len(), 1);
+        let sf = &fields_sort[0];
         assert_eq!(sf.field, "num");
         assert!(!sf.reverse);
         assert_eq!(sf.missing, SortMissingValue::Last);
@@ -719,16 +762,18 @@ mod tests {
             version(),
             &fields,
             &docs,
-            "num",
-            &sort_keys,
-            true,
-            SortMissingValue::First,
+            &[SortKeySpec {
+                field: "num",
+                keys: &sort_keys,
+                reverse: true,
+                missing: SortMissingValue::First,
+            }],
         )
         .unwrap();
 
         assert_eq!(doc_ids(&dir, "_0", segment_id, 3), vec!["c", "b", "a"]);
-        let sf = read_index_sort(&dir, "_0", segment_id).unwrap();
-        assert!(sf.reverse);
+        let fields_sort = read_index_sort(&dir, "_0", segment_id).unwrap();
+        assert!(fields_sort[0].reverse);
     }
 
     #[test]
@@ -750,10 +795,12 @@ mod tests {
             version(),
             &fields,
             &docs,
-            "num",
-            &sort_keys,
-            false,
-            SortMissingValue::First,
+            &[SortKeySpec {
+                field: "num",
+                keys: &sort_keys,
+                reverse: false,
+                missing: SortMissingValue::First,
+            }],
         )
         .unwrap();
 
@@ -777,10 +824,12 @@ mod tests {
             version(),
             &fields,
             &docs,
-            "num",
-            &sort_keys,
-            false,
-            SortMissingValue::Last,
+            &[SortKeySpec {
+                field: "num",
+                keys: &sort_keys,
+                reverse: false,
+                missing: SortMissingValue::Last,
+            }],
         )
         .unwrap();
 
@@ -813,10 +862,12 @@ mod tests {
             version(),
             &fields,
             &docs,
-            "num",
-            &sort_keys,
-            true, // descending
-            SortMissingValue::Last,
+            &[SortKeySpec {
+                field: "num",
+                keys: &sort_keys,
+                reverse: true, // descending
+                missing: SortMissingValue::Last,
+            }],
         )
         .unwrap();
 
@@ -844,10 +895,12 @@ mod tests {
             version(),
             &fields,
             &docs,
-            "num",
-            &sort_keys,
-            false,
-            SortMissingValue::Last,
+            &[SortKeySpec {
+                field: "num",
+                keys: &sort_keys,
+                reverse: false,
+                missing: SortMissingValue::Last,
+            }],
         )
         .unwrap();
 
@@ -869,10 +922,167 @@ mod tests {
             version(),
             &fields,
             &[doc("a"), doc("b")],
-            "num",
-            &[Some(1)],
-            false,
-            SortMissingValue::Last,
+            &[SortKeySpec {
+                field: "num",
+                keys: &[Some(1)],
+                reverse: false,
+                missing: SortMissingValue::Last,
+            }],
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "sort_fields must contain at least one sort key")]
+    fn sorted_flush_panics_on_empty_sort_fields() {
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0)];
+
+        let _ = flush_sorted_stored_only_segment(
+            &dir,
+            "_0",
+            [17u8; ID_LENGTH],
+            "Lucene104",
+            version(),
+            &fields,
+            &[doc("a")],
+            &[],
+        );
+    }
+
+    /// The core new multi-field behavior: field 1 has ties (all docs share
+    /// key `1`), so field 2 must break them. Without priority-ordered
+    /// comparison this would either stay in insertion order (ignoring field
+    /// 2 entirely) or crash.
+    #[test]
+    fn sorted_flush_second_field_breaks_ties_in_first() {
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0)];
+        let segment_id = [20u8; ID_LENGTH];
+        // Every doc ties on `primary`; `secondary` must decide the order.
+        let docs = vec![doc("a"), doc("b"), doc("c")];
+        let primary = vec![Some(1), Some(1), Some(1)];
+        let secondary = vec![Some(30), Some(10), Some(20)];
+
+        flush_sorted_stored_only_segment(
+            &dir,
+            "_0",
+            segment_id,
+            "Lucene104",
+            version(),
+            &fields,
+            &docs,
+            &[
+                SortKeySpec {
+                    field: "primary",
+                    keys: &primary,
+                    reverse: false,
+                    missing: SortMissingValue::Last,
+                },
+                SortKeySpec {
+                    field: "secondary",
+                    keys: &secondary,
+                    reverse: false,
+                    missing: SortMissingValue::Last,
+                },
+            ],
+        )
+        .unwrap();
+
+        // Tied on `primary`; ascending `secondary` breaks the tie: b(10),
+        // c(20), a(30).
+        assert_eq!(doc_ids(&dir, "_0", segment_id, 3), vec!["b", "c", "a"]);
+        let fields_sort = read_index_sort(&dir, "_0", segment_id).unwrap();
+        assert_eq!(fields_sort.len(), 2);
+        assert_eq!(fields_sort[0].field, "primary");
+        assert_eq!(fields_sort[1].field, "secondary");
+    }
+
+    /// The primary field actually differs here, so ties never reach the
+    /// second field's comparator -- confirms the primary field, not the
+    /// secondary, decides the order whenever it can.
+    #[test]
+    fn sorted_flush_first_field_wins_when_it_differs() {
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0)];
+        let segment_id = [21u8; ID_LENGTH];
+        let docs = vec![doc("a"), doc("b"), doc("c")];
+        // Distinct primary values; secondary is reversed from primary order
+        // to prove primary wins outright.
+        let primary = vec![Some(30), Some(10), Some(20)];
+        let secondary = vec![Some(1), Some(2), Some(3)];
+
+        flush_sorted_stored_only_segment(
+            &dir,
+            "_0",
+            segment_id,
+            "Lucene104",
+            version(),
+            &fields,
+            &docs,
+            &[
+                SortKeySpec {
+                    field: "primary",
+                    keys: &primary,
+                    reverse: false,
+                    missing: SortMissingValue::Last,
+                },
+                SortKeySpec {
+                    field: "secondary",
+                    keys: &secondary,
+                    reverse: false,
+                    missing: SortMissingValue::Last,
+                },
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(doc_ids(&dir, "_0", segment_id, 3), vec!["b", "c", "a"]);
+    }
+
+    /// Each field's `reverse` flag is independent: field 1 descending while
+    /// field 2 ascending, with field 1 tied so field 2 must decide -- proves
+    /// one field's reverse setting doesn't leak into another's comparison.
+    #[test]
+    fn sorted_flush_second_field_reverse_is_independent_of_first() {
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0)];
+        let segment_id = [22u8; ID_LENGTH];
+        let docs = vec![doc("a"), doc("b"), doc("c")];
+        let primary = vec![Some(1), Some(1), Some(1)];
+        let secondary = vec![Some(10), Some(30), Some(20)];
+
+        flush_sorted_stored_only_segment(
+            &dir,
+            "_0",
+            segment_id,
+            "Lucene104",
+            version(),
+            &fields,
+            &docs,
+            &[
+                SortKeySpec {
+                    field: "primary",
+                    keys: &primary,
+                    reverse: true, // descending, but tied -- irrelevant here
+                    missing: SortMissingValue::Last,
+                },
+                SortKeySpec {
+                    field: "secondary",
+                    keys: &secondary,
+                    reverse: true, // descending: b(30), c(20), a(10)
+                    missing: SortMissingValue::Last,
+                },
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(doc_ids(&dir, "_0", segment_id, 3), vec!["b", "c", "a"]);
+        let fields_sort = read_index_sort(&dir, "_0", segment_id).unwrap();
+        assert!(fields_sort[0].reverse);
+        assert!(fields_sort[1].reverse);
     }
 }

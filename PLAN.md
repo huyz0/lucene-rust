@@ -43,15 +43,20 @@ OpenSearch checkout: `/home/tuong/work/OpenSearch`.
 - No soft-deletes semantics beyond what OpenSearch requires (OpenSearch **does**
   require soft-deletes for replication — this lands in Phase 6, it is required
   before write-path integration, just not before read-path integration).
-- Index sorting: single-field NUMERIC index sort is now supported at flush time
-  (`segment_info.rs`'s `IndexSortField`/`SortMissingValue`, `segment_writer.rs`'s
-  `flush_sorted_stored_only_segment`) -- see `docs/parity.md` for the exact
-  scope. Still explicitly out of scope: multi-field/compound sorts, re-sorting
-  during segment merges (merge always produces an unsorted `.si`), and the
-  `.si` index-sort byte encoding is this port's own internal format, NOT
-  verified byte-compatible with real Lucene's `Lucene99SegmentInfoFormat`
-  (no real-Lucene-written sorted-segment `.si` fixture exists to derive the
-  true `SortFieldProvider` wire format from).
+- Index sorting: multi-field NUMERIC index sort is now supported at flush time
+  (`segment_info.rs`'s `IndexSortField`/`SortMissingValue` with
+  `SegmentInfo::index_sort: Option<Vec<IndexSortField>>`, `segment_writer.rs`'s
+  `flush_sorted_stored_only_segment` taking a `&[SortKeySpec]`) -- a priority-
+  ordered `Sort` of one or more `SortField`s, each with its own independent
+  `reverse`/missing-value policy, ties broken field-by-field just like real
+  Lucene's `Sort` array. See `docs/parity.md` for the exact scope. Still
+  explicitly out of scope: re-sorting during segment merges (merge always
+  produces an unsorted `.si`), and the `.si` index-sort byte encoding remains
+  this port's own internal format, NOT verified byte-compatible with real
+  Lucene's `Lucene99SegmentInfoFormat` (no real-Lucene-written sorted-segment
+  `.si` fixture exists to derive the true `SortFieldProvider` wire format
+  from) -- true for single-field and remains true now that multiple fields
+  are supported.
 - No scoring pluggability beyond BM25 + constant score + a similarity trait.
 
 ---
@@ -1306,9 +1311,9 @@ supported feature matrix; multi-day soak test with random restarts, no index cor
 
 KNN/HNSW (if not done in P2), highlighting (needs term vectors — add `.tvd/.tvx` codec
 support), suggesters (FST-based, reuse P5 FST builder), join/grouping/facets (OpenSearch
-mostly reimplements these as aggs — likely never needed), backward-codecs. Multi-field
-index sorts and merge-time re-sorting of already-sorted segments remain long-tail items
-(single-field NUMERIC index sort at flush time is done, see `docs/parity.md`).
+mostly reimplements these as aggs — likely never needed), backward-codecs. Merge-time
+re-sorting of already-sorted segments remains a long-tail item (multi-field NUMERIC
+index sort at flush time is done, see `docs/parity.md`).
 
 ---
 
