@@ -22,6 +22,50 @@ impl TermQuery {
     }
 }
 
+/// `WildcardQuery`-equivalent (`org.apache.lucene.search.WildcardQuery`), task
+/// #34's addition: a field plus a glob `pattern` (`*` = zero-or-more bytes, `?`
+/// = exactly one Unicode codepoint, `\` escapes the following byte to a plain
+/// literal even if it's `*`/`?`/`\`) matched against every term indexed for
+/// `field` — the matched set is the **union** of every matching term's
+/// postings (see [`crate::resolve_clause_docs`]'s `Clause::Wildcard` arm),
+/// mirroring real `WildcardQuery`'s `MultiTermQuery`-style "match any term the
+/// automaton accepts" semantics.
+///
+/// **Why `pattern: Vec<u8>` instead of `String`**: terms in this port are raw
+/// `Vec<u8>` (see `TermQuery.term`'s own doc comment) with no guaranteed UTF-8
+/// validity, and [`lucene_codecs::wildcard::WildcardPattern`] (the compiled
+/// glob this query delegates to — see [`crate::resolve_clause_docs`]) already
+/// operates byte-wise. A `String` field would force every caller to already
+/// have valid UTF-8 in hand and would need a lossy/fallible conversion back to
+/// bytes internally; `Vec<u8>` matches `TermQuery.term`'s own precedent and
+/// needs no conversion at match time.
+///
+/// **Scoring**: unscored/constant, same choice real Lucene's
+/// `MultiTermQuery.rewrite()` defaults to for a plain (non-`ConstantScore`-
+/// wrapped) multi-term query in modern Lucene — every matching doc scores a
+/// flat `1.0` (see [`crate::clause_scores`]'s `Clause::Wildcard` arm), since a
+/// wildcard match has no single term's frequency/idf to score against
+/// (real Lucene's `MultiTermQuery` documents this default rewrite method as
+/// `CONSTANT_SCORE_BLENDED_REWRITE`, which is unscored in exactly this sense —
+/// this port doesn't attempt idf-blended constant scoring across the matched
+/// terms, just the flat `1.0` a caller can rescale via `Clause::Boost` if it
+/// ever needs to, the same way `ConstantScoreQuery`/`BoostQuery` already
+/// compose with any other clause).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WildcardQuery {
+    pub field: String,
+    pub pattern: Vec<u8>,
+}
+
+impl WildcardQuery {
+    pub fn new(field: impl Into<String>, pattern: impl Into<Vec<u8>>) -> Self {
+        Self {
+            field: field.into(),
+            pattern: pattern.into(),
+        }
+    }
+}
+
 /// One `must`/`should`/`must_not` slot in a [`BooleanQuery`] — a leaf
 /// `TermQuery`, a leaf `PhraseQuery` (task #29's addition, closing the gap this
 /// enum's doc comment previously flagged), or a nested `BooleanQuery`
@@ -72,6 +116,11 @@ pub enum Clause {
     /// clause matches, scored as the wrapped clause's own score multiplied by
     /// `boost`; see [`BoostQuery`]'s doc comment.
     Boost(Box<BoostQuery>),
+    /// A leaf `WildcardQuery` (task #34's addition) -- matches every doc
+    /// containing at least one term (for `query.field`) that
+    /// `lucene_codecs::wildcard::WildcardPattern` accepts, unscored (flat
+    /// `1.0` per match); see [`WildcardQuery`]'s doc comment.
+    Wildcard(WildcardQuery),
 }
 
 impl From<TermQuery> for Clause {
@@ -107,6 +156,12 @@ impl From<ConstantScoreQuery> for Clause {
 impl From<BoostQuery> for Clause {
     fn from(query: BoostQuery) -> Self {
         Clause::Boost(Box::new(query))
+    }
+}
+
+impl From<WildcardQuery> for Clause {
+    fn from(query: WildcardQuery) -> Self {
+        Clause::Wildcard(query)
     }
 }
 

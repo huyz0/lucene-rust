@@ -197,7 +197,7 @@ pub use doc_value_query::{
 pub use field_norms::FieldNorms;
 pub use query::{
     BooleanQuery, BoostQuery, Clause, ConstantScoreQuery, DisjunctionMaxQuery, PhraseQuery,
-    TermQuery,
+    TermQuery, WildcardQuery,
 };
 
 use std::collections::HashMap;
@@ -206,6 +206,7 @@ use docid_set::{BoxDocIter, Conjunction, Disjunction, Excluding};
 
 use lucene_codecs::blocktree::{self, BlockTreeFields};
 use lucene_codecs::postings::{DocInput, PayInput, PosInput};
+use lucene_codecs::wildcard::WildcardPattern;
 use lucene_util::fixed_bit_set::FixedBitSet;
 
 #[derive(Debug, thiserror::Error)]
@@ -296,6 +297,48 @@ fn term_doc_ids(
         .copied()
         .filter(|&doc_id| live_docs.is_none_or(|bits| bits.get(doc_id as usize)))
         .collect())
+}
+
+/// [`Clause::Wildcard`]'s matched doc-ID list: every term
+/// [`lucene_codecs::blocktree::FieldTerms::intersect`] finds matching `query`'s
+/// compiled pattern (for `query.field`) contributes its own postings' doc IDs,
+/// **union**ed across every matching term (real `WildcardQuery`'s
+/// `MultiTermQuery` matching contract -- a doc matches if *any* accepted term
+/// occurs in it) and deduplicated (a doc can hold more than one term the
+/// pattern accepts in a multi-valued field), then filtered by `live_docs` same
+/// as [`term_doc_ids`]. Returns an empty `Vec` -- not an error -- when
+/// `query.field` doesn't exist in this segment, matching every other clause's
+/// "missing field means no matches" convention.
+fn wildcard_doc_ids(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    query: &WildcardQuery,
+) -> Result<Vec<i32>> {
+    let Some(field_terms) = fields.field(&query.field) else {
+        return Ok(Vec::new());
+    };
+    let pattern = WildcardPattern::new(&query.pattern);
+    let matching_terms: Vec<Vec<u8>> = field_terms
+        .intersect(&pattern)
+        .map(|(term, _stats)| term.to_vec())
+        .collect();
+    let mut doc_ids: Vec<i32> = Vec::new();
+    for term in &matching_terms {
+        let Some(postings) = field_terms.postings(term, doc_in)? else {
+            continue;
+        };
+        doc_ids.extend(
+            postings
+                .docs
+                .iter()
+                .copied()
+                .filter(|&doc_id| live_docs.is_none_or(|bits| bits.get(doc_id as usize))),
+        );
+    }
+    doc_ids.sort_unstable();
+    doc_ids.dedup();
+    Ok(doc_ids)
 }
 
 /// Executes `query` (see [`query::BooleanQuery`] and this module's doc comment for
@@ -405,6 +448,7 @@ fn resolve_clause_docs(
         Clause::Boost(nested) => {
             resolve_clause_docs(fields, doc_in, pos_in, pay_in, live_docs, &nested.inner)
         }
+        Clause::Wildcard(query) => wildcard_doc_ids(fields, doc_in, live_docs, query),
     }
 }
 
@@ -730,6 +774,16 @@ fn clause_scores(
             Ok(inner_scores
                 .into_iter()
                 .map(|(doc_id, score)| (doc_id, score * nested.boost))
+                .collect())
+        }
+        Clause::Wildcard(query) => {
+            // Unscored: flat 1.0 per matching doc -- see `WildcardQuery`'s doc
+            // comment in `query.rs` for why (no single term's frequency/idf to
+            // score against for a multi-term match).
+            let matched = wildcard_doc_ids(fields, doc_in, live_docs, query)?;
+            Ok(matched
+                .into_iter()
+                .map(|doc_id| (doc_id, 1.0_f32))
                 .collect())
         }
     }

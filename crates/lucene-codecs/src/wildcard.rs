@@ -40,11 +40,11 @@
 //!   (`LevenshteinAutomata`, `RegExp` parsing) that is a materially larger
 //!   scope than glob matching over an already-sorted `Vec` — deferred
 //!   explicitly rather than half-built here.
-//! - **No escape syntax.** Real Lucene's `WildcardQuery` supports `\*`/`\?`
-//!   to match a literal `*`/`?` character. This module's [`WildcardPattern`]
-//!   has no escape mechanism at all: every `*`/`?` byte in the pattern is
-//!   always a wildcard. A pattern that needs a literal `*`/`?` byte cannot be
-//!   expressed here yet.
+//!
+//! `\`-escaping of literal `*`/`?` **is** supported (see
+//! [`WildcardPattern::new`]'s doc comment) — this mirrors real
+//! `WildcardQuery.toAutomaton`'s `WILDCARD_ESCAPE` handling exactly, added
+//! for task #34's `WildcardQuery` port.
 
 /// One token of a compiled glob pattern.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,16 +102,43 @@ pub struct WildcardPattern {
 }
 
 impl WildcardPattern {
-    /// Compiles a glob pattern from raw bytes (e.g. `b"foo*"`, `b"a?c"`).
+    /// Compiles a glob pattern from raw bytes (e.g. `b"foo*"`, `b"a?c"`),
+    /// supporting `\` as an escape character exactly the way real Lucene's
+    /// `WildcardQuery.toAutomaton` (`WILDCARD_ESCAPE = '\\'`) does: a `\`
+    /// followed by another byte forces that following byte to be treated as
+    /// a plain literal, even if it's itself `*` or `?` (`\*` matches a
+    /// literal `*`, `\?` matches a literal `?`, `\\` matches a literal `\`).
+    /// A trailing `\` with nothing after it (no byte left to escape) falls
+    /// back to matching a literal `\` itself, mirroring
+    /// `WildcardQuery.toAutomaton`'s `case WILDCARD_ESCAPE` fallthrough to
+    /// its `default` branch when `i + length >= wildcardText.length()`.
+    /// Escaping any byte other than `*`/`?`/`\` is a harmless no-op: that
+    /// byte would already have been a plain `Literal` unescaped, same as
+    /// real Lucene (escaping a non-special codepoint just re-adds it as
+    /// `Automata.makeChar`, identical to the unescaped `default` case).
     pub fn new(pattern: &[u8]) -> Self {
-        let tokens = pattern
-            .iter()
-            .map(|&b| match b {
+        let mut tokens = Vec::with_capacity(pattern.len());
+        let mut i = 0;
+        while i < pattern.len() {
+            let b = pattern[i];
+            if b == b'\\' {
+                if let Some(&escaped) = pattern.get(i + 1) {
+                    tokens.push(Token::Literal(escaped));
+                    i += 2;
+                    continue;
+                }
+                // Trailing, unpaired `\`: literal backslash.
+                tokens.push(Token::Literal(b'\\'));
+                i += 1;
+                continue;
+            }
+            tokens.push(match b {
                 b'*' => Token::AnyMany,
                 b'?' => Token::AnyOne,
                 other => Token::Literal(other),
-            })
-            .collect();
+            });
+            i += 1;
+        }
         Self { tokens }
     }
 
@@ -326,6 +353,32 @@ mod tests {
         );
         assert_eq!(WildcardPattern::new(b"?abc").literal_prefix(), b"".to_vec());
         assert_eq!(WildcardPattern::new(b"").literal_prefix(), b"".to_vec());
+    }
+
+    #[test]
+    fn escaped_star_and_question_mark_match_only_the_literal_character() {
+        assert!(m(r"a\*b", "a*b"));
+        assert!(!m(r"a\*b", "axb"));
+        assert!(!m(r"a\*b", "ab"));
+        assert!(m(r"a\?b", "a?b"));
+        assert!(!m(r"a\?b", "axb"));
+    }
+
+    #[test]
+    fn escaped_backslash_matches_a_literal_backslash() {
+        assert!(m(r"a\\b", r"a\b"));
+        assert!(!m(r"a\\b", "ab"));
+    }
+
+    #[test]
+    fn trailing_unescaped_backslash_matches_itself_literally() {
+        assert!(m(r"abc\", r"abc\"));
+        assert!(!m(r"abc\", "abc"));
+    }
+
+    #[test]
+    fn escaping_a_non_special_byte_is_a_harmless_no_op() {
+        assert!(m(r"a\bc", "abc"));
     }
 
     #[test]

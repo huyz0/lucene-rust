@@ -452,6 +452,31 @@ verified (task #30/#32's fixtures), so the tests instead use
 constant/product — see `lib.rs`'s test module doc comment for the full
 reasoning.
 
+**Progress (task #34):** `WildcardQuery` is ported — a leaf `Clause::Wildcard(WildcardQuery)`
+matching every doc containing at least one term (for `query.field`) that
+`lucene_codecs::wildcard::WildcardPattern` accepts, unioned across every
+matching term (`wildcard_doc_ids` in `lib.rs`, reusing task #1's
+`FieldTerms::intersect`/`WildcardPattern` machinery rather than building a
+second parallel term-matching path). Unscored: every matching doc scores a
+flat `1.0` (real `MultiTermQuery`'s default constant-score-style rewrite for
+a bare, unwrapped multi-term query — a caller wanting BM25-shaped scoring
+would wrap it in the existing `ConstantScoreQuery`/`BoostQuery`, same as real
+Lucene's own `rewrite()` chain). This task also closed task #1's one
+remaining documented gap in `WildcardPattern`: `\`-escaping of a literal
+`*`/`?`/`\` byte, matching real `WildcardQuery.toAutomaton`'s
+`WILDCARD_ESCAPE` handling exactly (a `\` forces the following byte to be a
+plain literal even if it's itself special; a trailing, unpaired `\` falls
+back to matching a literal `\`). Verified against real Lucene via
+`fixtures/src/AppendWildcardManifest.java` (same append-only pattern as
+`AppendDismaxManifest.java` — opens the already-committed
+`fixtures/data/blocktree_index/` directory read-only and runs eight real
+`org.apache.lucene.search.WildcardQuery` patterns against `body`'s real terms,
+recording real Lucene's own matched doc IDs), asserting doc-for-doc agreement
+with this port's own `Clause::Wildcard` matching for every recorded case
+(literal, prefix-`*`, `?`, bare `*`, no-match, escaped `*`, escaped
+non-special byte, `?` matching a literal `d` in `bird`). See
+`docs/parity.md`'s new row for the full accounting.
+
 1. Traits: `Query → Weight → Scorer/ScorerSupplier`, `DocIdSetIterator`,
    `TwoPhaseIterator`, `BulkScorer`. Use enums where the closed set allows
    (DISI is called per-doc — keep it monomorphizable; `Box<dyn>` only at Weight level).
@@ -464,9 +489,12 @@ reasoning.
 3. Queries, in order: `MatchAllDocs`, `TermQuery`, `BooleanQuery` (conjunction DISI,
    disjunction heap, minimum-should-match), `PointRangeQuery` (BKD intersect),
    `PhraseQuery` (exact + sloppy), `TermInSetQuery`, `PrefixQuery`/`WildcardQuery`
-   (needs Levenshtein/automaton machinery — port `o.a.l.util.automaton` here; consider
-   the `fst`/`regex-automata` crates for internals but keep Lucene semantics),
-   `FunctionScore`-shaped hooks deferred.
+   (`WildcardQuery` **ported**, task #34 — glob matching via the existing
+   `WildcardPattern`/`FieldTerms::intersect` machinery, not real
+   automaton/`IntersectTermsEnum` block-skipping; regex/`FuzzyQuery` still need
+   real Levenshtein/automaton machinery — port `o.a.l.util.automaton` here;
+   consider the `fst`/`regex-automata` crates for internals but keep Lucene
+   semantics), `FunctionScore`-shaped hooks deferred.
 4. Dynamic pruning: `WANDScorer`/block-max, `ImpactsDISI`, `MaxScoreCache`. This is
    where Lucene's search performance comes from; without it the port is not competitive.
 5. Collectors: `TopScoreDocCollector` (with after/searchAfter), `TotalHitCountCollector`,
