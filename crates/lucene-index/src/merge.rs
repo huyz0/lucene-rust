@@ -115,7 +115,7 @@
 
 use std::collections::HashMap;
 
-use crate::segment_info::{self, LuceneVersion, SegmentInfo};
+use crate::segment_info::{self, IndexSortField, LuceneVersion, SegmentInfo, SortMissingValue};
 use crate::segment_infos::SegmentCommitInfo;
 use lucene_codecs::doc_values::{self, NumericEntry};
 use lucene_codecs::field_infos::{self, FieldInfo};
@@ -448,6 +448,268 @@ pub fn merge_stored_only_segments(
         field_infos_files: vec![],
         dv_update_files: vec![],
     })
+}
+
+/// A single field's priority tier for [`merge_sorted_stored_only_segments`]'s
+/// k-way merge -- the cross-source analogue of
+/// [`crate::segment_writer::SortKeySpec`]: `per_source_keys[i][d]` is source
+/// `i`'s original (pre-merge) doc `d`'s value for this field, or `None` if
+/// that doc has no value. `per_source_keys` must have exactly one entry per
+/// source, and each source's slice must have exactly one entry per doc in
+/// that source (`source.reader.max_doc()` entries).
+pub struct MergeSortKeySpec<'a> {
+    pub field: &'a str,
+    pub reverse: bool,
+    pub missing: SortMissingValue,
+    pub per_source_keys: &'a [&'a [Option<i64>]],
+}
+
+/// Merges `sources` into one brand-new stored-fields-only segment whose
+/// documents are produced in **global** sort order across all sources -- a
+/// genuine k-way merge by sort key (at each step, take whichever source's
+/// current head doc has the smallest key, in `sort_fields` priority order),
+/// not a concatenation of source 0's docs, then source 1's, etc. the way
+/// [`merge_stored_only_segments`] works. This is the real behavior of
+/// merging index-sorted segments in Lucene: since every source is already
+/// internally sorted by the same key, the merged segment can be produced by
+/// a single forward pass over all sources at once.
+///
+/// # Precondition (caller-guaranteed, not re-checked here)
+///
+/// Real Lucene requires every segment being merged to share the exact same
+/// index sort -- merging segments with different (or absent-vs-present)
+/// index sorts is a hard error in `SegmentInfos`/`IndexWriter`, not something
+/// this port tries to detect or repair. This function takes that as a
+/// precondition: `sort_fields` is the *one* shared sort every source is
+/// already ordered by (each source's own doc 0, 1, 2, ... must already be
+/// non-decreasing by this exact key -- true for any segment written by
+/// [`crate::segment_writer::flush_sorted_stored_only_segment`] or produced
+/// by a previous call to this same function). It is the caller's job to
+/// have verified this, e.g. by comparing each source's own
+/// `SegmentInfo.index_sort` against `sort_fields` for equality before
+/// calling; this function does not re-verify it or attempt to detect an
+/// out-of-order source (`crate::merge` deliberately has no dependency on
+/// walking a whole `SegmentInfo` to do that check, keeping this function
+/// usable from a plain in-memory source list, same as
+/// [`merge_stored_only_segments`]). Passing sources that are not actually
+/// sorted by `sort_fields` silently produces a merged segment that is not
+/// sorted either -- garbage in, garbage out, exactly like the analogous
+/// precondition on `flush_sorted_stored_only_segment`'s caller-supplied
+/// `SortKeySpec::keys`.
+///
+/// # Scope
+///
+/// Only stored fields are reordered by sort key here -- this port's write
+/// side has no path that reorders doc-values/norms/term-vectors data during
+/// a merge (see this module's top doc comment). Any doc-values/norms/term-
+/// vectors data attached to a `MergeSource` is silently ignored by this
+/// function; use [`merge_stored_only_segments`] instead if that data needs
+/// to be merged (concatenation order, no re-sort -- and no index-sort
+/// metadata in the resulting `.si`, since that merge doesn't preserve sort
+/// order).
+pub fn merge_sorted_stored_only_segments(
+    dir: &dyn Directory,
+    sources: &[MergeSource],
+    sort_fields: &[MergeSortKeySpec<'_>],
+    merged_segment_name: &str,
+    merged_segment_id: [u8; ID_LENGTH],
+    codec_name: &str,
+    lucene_version: LuceneVersion,
+) -> Result<SegmentCommitInfo> {
+    assert!(
+        !sort_fields.is_empty(),
+        "sort_fields must contain at least one sort key"
+    );
+    for spec in sort_fields {
+        assert_eq!(
+            spec.per_source_keys.len(),
+            sources.len(),
+            "per_source_keys must have exactly one entry per source for field {:?}",
+            spec.field
+        );
+        for (source, keys) in sources.iter().zip(spec.per_source_keys.iter()) {
+            assert_eq!(
+                keys.len(),
+                source.reader.max_doc() as usize,
+                "per_source_keys must have exactly one entry per doc in that source for field {:?}",
+                spec.field
+            );
+        }
+    }
+
+    let sources_fields: Vec<&[FieldInfo]> = sources.iter().map(|s| s.field_infos).collect();
+    let (merged_fields, per_source_maps) = reconcile_field_numbers(&sources_fields);
+
+    // Per-source live (pre-merge) doc ids, ascending -- unlike
+    // merge_stored_only_segments this is NOT concatenated: a k-way merge
+    // walks each source's list via its own cursor, always advancing
+    // whichever source currently has the globally-smallest head key.
+    let mut per_source_live_ids: Vec<Vec<i32>> = Vec::with_capacity(sources.len());
+    for source in sources {
+        let max_doc = source.reader.max_doc();
+        let mut live_ids = Vec::new();
+        for doc_id in 0..max_doc {
+            let is_live = source
+                .live_docs
+                .map(|bits| bits.get(doc_id as usize))
+                .unwrap_or(true);
+            if is_live {
+                live_ids.push(doc_id);
+            }
+        }
+        per_source_live_ids.push(live_ids);
+    }
+
+    let mut cursors = vec![0usize; sources.len()];
+    let mut merged_docs: Vec<Document> = Vec::new();
+    loop {
+        // Find the source whose current head doc has the smallest sort key,
+        // in `sort_fields` priority order -- a linear scan across sources
+        // per step (this port's scale has typically few concurrent merge
+        // sources, so a min-heap would be unneeded complexity here; see the
+        // module-level task note this function was built from).
+        let mut best: Option<usize> = None;
+        for (src_idx, live_ids) in per_source_live_ids.iter().enumerate() {
+            let cursor = cursors[src_idx];
+            if cursor >= live_ids.len() {
+                continue;
+            }
+            best = Some(match best {
+                None => src_idx,
+                Some(current_best) => {
+                    let ord = compare_heads(
+                        sort_fields,
+                        current_best,
+                        per_source_live_ids[current_best][cursors[current_best]],
+                        src_idx,
+                        live_ids[cursor],
+                    );
+                    if ord == std::cmp::Ordering::Greater {
+                        src_idx
+                    } else {
+                        current_best
+                    }
+                }
+            });
+        }
+        let Some(src_idx) = best else {
+            break;
+        };
+        let doc_id = per_source_live_ids[src_idx][cursors[src_idx]];
+        cursors[src_idx] += 1;
+
+        let mut doc = sources[src_idx].reader.document(doc_id)?;
+        let field_number_map = &per_source_maps[src_idx];
+        for field in &mut doc.fields {
+            field.field_number = *field_number_map.get(&field.field_number).ok_or(
+                Error::UnknownSourceFieldNumber {
+                    field_number: field.field_number,
+                },
+            )?;
+        }
+        merged_docs.push(doc);
+    }
+    let doc_count = merged_docs.len() as i32;
+
+    let mut files: Vec<String> = Vec::new();
+
+    let (fdt, fdx, fdm) = stored_fields::write_best_speed(&merged_docs, &merged_segment_id, "");
+    let fdt_name = format!("{merged_segment_name}.fdt");
+    let fdx_name = format!("{merged_segment_name}.fdx");
+    let fdm_name = format!("{merged_segment_name}.fdm");
+    for (name, bytes) in [(&fdt_name, &fdt), (&fdx_name, &fdx), (&fdm_name, &fdm)] {
+        write_file(dir, name, bytes)?;
+        files.push(name.clone());
+    }
+
+    let fnm_name = format!("{merged_segment_name}.fnm");
+    let fnm = field_infos::write(&merged_fields, &merged_segment_id, "");
+    write_file(dir, &fnm_name, &fnm)?;
+    files.push(fnm_name);
+
+    let si = SegmentInfo {
+        id: merged_segment_id,
+        version: lucene_version,
+        min_version: Some(lucene_version),
+        doc_count,
+        is_compound_file: false,
+        has_blocks: false,
+        diagnostics: vec![
+            ("source".to_string(), "merge".to_string()),
+            (
+                "lucene.version".to_string(),
+                format!(
+                    "{}.{}.{}",
+                    lucene_version.major, lucene_version.minor, lucene_version.bugfix
+                ),
+            ),
+        ],
+        files: files.clone(),
+        attributes: vec![(
+            "Lucene90StoredFieldsFormat.mode".to_string(),
+            "BEST_SPEED".to_string(),
+        )],
+        // Unlike merge_stored_only_segments, this merge genuinely preserves
+        // (global) sort order across sources, so -- matching real Lucene --
+        // the merged segment correctly keeps claiming the same index sort
+        // its inputs had, rather than being forced to `None`.
+        index_sort: Some(
+            sort_fields
+                .iter()
+                .map(|spec| IndexSortField {
+                    field: spec.field.to_string(),
+                    reverse: spec.reverse,
+                    missing: spec.missing,
+                })
+                .collect(),
+        ),
+    };
+    let si_name = format!("{merged_segment_name}.si");
+    let si_bytes = segment_info::write(&si, "");
+    write_file(dir, &si_name, &si_bytes)?;
+    files.push(si_name);
+
+    dir.sync(&files)?;
+
+    Ok(SegmentCommitInfo {
+        segment_name: merged_segment_name.to_string(),
+        segment_id: merged_segment_id,
+        codec_name: codec_name.to_string(),
+        del_gen: -1,
+        del_count: 0,
+        field_infos_gen: -1,
+        doc_values_gen: -1,
+        soft_del_count: 0,
+        sci_id: None,
+        field_infos_files: vec![],
+        dv_update_files: vec![],
+    })
+}
+
+/// Multi-tier comparator for the k-way merge: folds `sort_fields` in
+/// priority order using [`crate::segment_writer::sort_key_rank`] (the exact
+/// same per-tier comparator [`crate::segment_writer::flush_sorted_stored_only_segment`]
+/// uses within one batch -- reused here, not reimplemented), then breaks any
+/// remaining tie first by source index and finally by original doc id,
+/// giving a fully deterministic total order.
+fn compare_heads(
+    sort_fields: &[MergeSortKeySpec<'_>],
+    src_a: usize,
+    doc_a: i32,
+    src_b: usize,
+    doc_b: i32,
+) -> std::cmp::Ordering {
+    sort_fields
+        .iter()
+        .fold(std::cmp::Ordering::Equal, |acc, spec| {
+            acc.then_with(|| {
+                let key_a = spec.per_source_keys[src_a][doc_a as usize];
+                let key_b = spec.per_source_keys[src_b][doc_b as usize];
+                crate::segment_writer::sort_key_rank(key_a, key_b, spec.reverse, spec.missing)
+            })
+        })
+        .then_with(|| src_a.cmp(&src_b))
+        .then_with(|| doc_a.cmp(&doc_b))
 }
 
 fn write_file(dir: &dyn Directory, name: &str, bytes: &[u8]) -> Result<()> {
@@ -1905,5 +2167,539 @@ mod tests {
             let name = format!("_merged_all.{ext}");
             assert!(si.files.contains(&name), "missing {name} in .si files list");
         }
+    }
+
+    // --- merge_sorted_stored_only_segments (k-way sort-preserving merge) ---
+
+    /// Reads back the merged segment's stored "id" field (a String) for every
+    /// doc, in doc order -- the assertion helper every k-way-merge test below
+    /// uses to confirm both order and content.
+    fn read_merged_ids(tmp: &str, segment_name: &str, segment_id: [u8; ID_LENGTH]) -> Vec<String> {
+        let fdt =
+            std::fs::read(std::path::Path::new(tmp).join(format!("{segment_name}.fdt"))).unwrap();
+        let fdx =
+            std::fs::read(std::path::Path::new(tmp).join(format!("{segment_name}.fdx"))).unwrap();
+        let fdm =
+            std::fs::read(std::path::Path::new(tmp).join(format!("{segment_name}.fdm"))).unwrap();
+        let reader = stored_fields::open(&fdt, &fdx, &fdm, &segment_id, "").unwrap();
+        (0..reader.max_doc())
+            .map(|d| match &reader.document(d).unwrap().fields[0].value {
+                FieldValue::String(s) => s.clone(),
+                _ => unreachable!(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn two_sources_with_interleaved_keys_produce_globally_sorted_output_not_concatenation() {
+        // Source 0 (already sorted by "num" ascending): 10, 30, 50.
+        // Source 1 (already sorted by "num" ascending): 20, 40.
+        // Naive concatenation would yield 10,30,50,20,40 -- visibly
+        // out-of-order at the 50->20 boundary. The real k-way merge must
+        // interleave to 10,20,30,40,50.
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![field("id", 0)];
+
+        let seg0 = flush(
+            &dir,
+            &tmp,
+            "_0",
+            [1u8; ID_LENGTH],
+            &fields,
+            &[doc_with(0, "10"), doc_with(0, "30"), doc_with(0, "50")],
+        );
+        let seg1 = flush(
+            &dir,
+            &tmp,
+            "_1",
+            [2u8; ID_LENGTH],
+            &fields,
+            &[doc_with(0, "20"), doc_with(0, "40")],
+        );
+
+        let reader0 = open_reader(&seg0);
+        let reader1 = open_reader(&seg1);
+        let sources = vec![
+            MergeSource::stored_only(&seg0.fields, &reader0, None),
+            MergeSource::stored_only(&seg1.fields, &reader1, None),
+        ];
+
+        let keys0: Vec<Option<i64>> = vec![Some(10), Some(30), Some(50)];
+        let keys1: Vec<Option<i64>> = vec![Some(20), Some(40)];
+        let per_source_keys: Vec<&[Option<i64>]> = vec![&keys0, &keys1];
+        let sort_fields = vec![MergeSortKeySpec {
+            field: "num",
+            reverse: false,
+            missing: SortMissingValue::Last,
+            per_source_keys: &per_source_keys,
+        }];
+
+        let merged_id = [9u8; ID_LENGTH];
+        let sci = merge_sorted_stored_only_segments(
+            &dir,
+            &sources,
+            &sort_fields,
+            "_merged_sorted",
+            merged_id,
+            "Lucene104",
+            version(),
+        )
+        .unwrap();
+        assert_eq!(sci.segment_name, "_merged_sorted");
+
+        let ids = read_merged_ids(&tmp, "_merged_sorted", merged_id);
+        assert_eq!(ids, vec!["10", "20", "30", "40", "50"]);
+
+        // Confirm this is NOT what naive concatenation would produce.
+        assert_ne!(ids, vec!["10", "30", "50", "20", "40"]);
+
+        // The merged .si must keep the same index-sort descriptor, not lose
+        // or null it out.
+        let si_bytes = std::fs::read(std::path::Path::new(&tmp).join("_merged_sorted.si")).unwrap();
+        let si = segment_info::parse(&si_bytes, &merged_id).unwrap();
+        let sort = si.index_sort.unwrap();
+        assert_eq!(sort.len(), 1);
+        assert_eq!(sort[0].field, "num");
+        assert!(!sort[0].reverse);
+        assert_eq!(sort[0].missing, SortMissingValue::Last);
+    }
+
+    #[test]
+    fn three_sources_k_way_merge_by_sort_key() {
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![field("id", 0)];
+
+        let seg0 = flush(
+            &dir,
+            &tmp,
+            "_0",
+            [1u8; ID_LENGTH],
+            &fields,
+            &[doc_with(0, "1"), doc_with(0, "9")],
+        );
+        let seg1 = flush(
+            &dir,
+            &tmp,
+            "_1",
+            [2u8; ID_LENGTH],
+            &fields,
+            &[doc_with(0, "4"), doc_with(0, "6")],
+        );
+        let seg2 = flush(
+            &dir,
+            &tmp,
+            "_2",
+            [3u8; ID_LENGTH],
+            &fields,
+            &[doc_with(0, "2"), doc_with(0, "5"), doc_with(0, "8")],
+        );
+
+        let reader0 = open_reader(&seg0);
+        let reader1 = open_reader(&seg1);
+        let reader2 = open_reader(&seg2);
+        let sources = vec![
+            MergeSource::stored_only(&seg0.fields, &reader0, None),
+            MergeSource::stored_only(&seg1.fields, &reader1, None),
+            MergeSource::stored_only(&seg2.fields, &reader2, None),
+        ];
+
+        let keys0: Vec<Option<i64>> = vec![Some(1), Some(9)];
+        let keys1: Vec<Option<i64>> = vec![Some(4), Some(6)];
+        let keys2: Vec<Option<i64>> = vec![Some(2), Some(5), Some(8)];
+        let per_source_keys: Vec<&[Option<i64>]> = vec![&keys0, &keys1, &keys2];
+        let sort_fields = vec![MergeSortKeySpec {
+            field: "num",
+            reverse: false,
+            missing: SortMissingValue::Last,
+            per_source_keys: &per_source_keys,
+        }];
+
+        let merged_id = [9u8; ID_LENGTH];
+        merge_sorted_stored_only_segments(
+            &dir,
+            &sources,
+            &sort_fields,
+            "_merged_three",
+            merged_id,
+            "Lucene104",
+            version(),
+        )
+        .unwrap();
+
+        let ids = read_merged_ids(&tmp, "_merged_three", merged_id);
+        assert_eq!(ids, vec!["1", "2", "4", "5", "6", "8", "9"]);
+    }
+
+    #[test]
+    fn tie_on_primary_field_across_sources_is_broken_by_secondary_field() {
+        // Both sources' first doc ties on "num"=5; the secondary field "tie"
+        // must break it (source 0's doc has tie=1, source 1's has tie=0, so
+        // source 1's doc must come first despite arriving from the
+        // "later" source).
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![field("id", 0)];
+
+        let seg0 = flush(
+            &dir,
+            &tmp,
+            "_0",
+            [1u8; ID_LENGTH],
+            &fields,
+            &[doc_with(0, "A"), doc_with(0, "C")],
+        );
+        let seg1 = flush(
+            &dir,
+            &tmp,
+            "_1",
+            [2u8; ID_LENGTH],
+            &fields,
+            &[doc_with(0, "B")],
+        );
+
+        let reader0 = open_reader(&seg0);
+        let reader1 = open_reader(&seg1);
+        let sources = vec![
+            MergeSource::stored_only(&seg0.fields, &reader0, None),
+            MergeSource::stored_only(&seg1.fields, &reader1, None),
+        ];
+
+        // Primary "num": source0 = [5, 8], source1 = [5].
+        let num0: Vec<Option<i64>> = vec![Some(5), Some(8)];
+        let num1: Vec<Option<i64>> = vec![Some(5)];
+        let num_keys: Vec<&[Option<i64>]> = vec![&num0, &num1];
+        // Secondary "tie": source0's doc "A" has tie=1, source1's doc "B" has
+        // tie=0 -- ascending means "B" (tie=0) must sort before "A" (tie=1).
+        let tie0: Vec<Option<i64>> = vec![Some(1), Some(0)];
+        let tie1: Vec<Option<i64>> = vec![Some(0)];
+        let tie_keys: Vec<&[Option<i64>]> = vec![&tie0, &tie1];
+
+        let sort_fields = vec![
+            MergeSortKeySpec {
+                field: "num",
+                reverse: false,
+                missing: SortMissingValue::Last,
+                per_source_keys: &num_keys,
+            },
+            MergeSortKeySpec {
+                field: "tie",
+                reverse: false,
+                missing: SortMissingValue::Last,
+                per_source_keys: &tie_keys,
+            },
+        ];
+
+        let merged_id = [9u8; ID_LENGTH];
+        merge_sorted_stored_only_segments(
+            &dir,
+            &sources,
+            &sort_fields,
+            "_merged_tiebreak",
+            merged_id,
+            "Lucene104",
+            version(),
+        )
+        .unwrap();
+
+        let ids = read_merged_ids(&tmp, "_merged_tiebreak", merged_id);
+        // "B" (num=5,tie=0) before "A" (num=5,tie=1) before "C" (num=8).
+        assert_eq!(ids, vec!["B", "A", "C"]);
+    }
+
+    #[test]
+    fn stored_field_content_stays_attached_to_the_right_doc_after_reordering() {
+        // Multi-field docs where the field content itself encodes the sort
+        // key, confirming the whole Document (not just a scalar) travels
+        // with its doc through the k-way merge -- a shuffle bug that
+        // permuted docs independently of their sort key would show up here
+        // as mismatched (key, payload) pairs.
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![field("key", 0), field("payload", 1)];
+
+        fn doc(key: &str, payload: &str) -> Document {
+            Document {
+                fields: vec![
+                    StoredField {
+                        field_number: 0,
+                        value: FieldValue::String(key.to_string()),
+                    },
+                    StoredField {
+                        field_number: 1,
+                        value: FieldValue::String(payload.to_string()),
+                    },
+                ],
+            }
+        }
+
+        let seg0 = flush(
+            &dir,
+            &tmp,
+            "_0",
+            [1u8; ID_LENGTH],
+            &fields,
+            &[doc("3", "three"), doc("7", "seven")],
+        );
+        let seg1 = flush(
+            &dir,
+            &tmp,
+            "_1",
+            [2u8; ID_LENGTH],
+            &fields,
+            &[doc("1", "one"), doc("5", "five")],
+        );
+
+        let reader0 = open_reader(&seg0);
+        let reader1 = open_reader(&seg1);
+        let sources = vec![
+            MergeSource::stored_only(&seg0.fields, &reader0, None),
+            MergeSource::stored_only(&seg1.fields, &reader1, None),
+        ];
+
+        let keys0: Vec<Option<i64>> = vec![Some(3), Some(7)];
+        let keys1: Vec<Option<i64>> = vec![Some(1), Some(5)];
+        let per_source_keys: Vec<&[Option<i64>]> = vec![&keys0, &keys1];
+        let sort_fields = vec![MergeSortKeySpec {
+            field: "key",
+            reverse: false,
+            missing: SortMissingValue::Last,
+            per_source_keys: &per_source_keys,
+        }];
+
+        let merged_id = [9u8; ID_LENGTH];
+        merge_sorted_stored_only_segments(
+            &dir,
+            &sources,
+            &sort_fields,
+            "_merged_payload",
+            merged_id,
+            "Lucene104",
+            version(),
+        )
+        .unwrap();
+
+        let fdt = std::fs::read(std::path::Path::new(&tmp).join("_merged_payload.fdt")).unwrap();
+        let fdx = std::fs::read(std::path::Path::new(&tmp).join("_merged_payload.fdx")).unwrap();
+        let fdm = std::fs::read(std::path::Path::new(&tmp).join("_merged_payload.fdm")).unwrap();
+        let reader = stored_fields::open(&fdt, &fdx, &fdm, &merged_id, "").unwrap();
+        assert_eq!(reader.max_doc(), 4);
+
+        let expected = [("1", "one"), ("3", "three"), ("5", "five"), ("7", "seven")];
+        for (i, (key, payload)) in expected.iter().enumerate() {
+            let d = reader.document(i as i32).unwrap();
+            let got_key = match &d.fields[0].value {
+                FieldValue::String(s) => s.clone(),
+                _ => unreachable!(),
+            };
+            let got_payload = match &d.fields[1].value {
+                FieldValue::String(s) => s.clone(),
+                _ => unreachable!(),
+            };
+            assert_eq!(&got_key, key, "doc {i} key mismatch");
+            assert_eq!(&got_payload, payload, "doc {i} payload mismatch");
+        }
+    }
+
+    #[test]
+    fn deleted_docs_are_dropped_before_the_k_way_merge_walks_a_source() {
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![field("id", 0)];
+
+        let seg0 = flush(
+            &dir,
+            &tmp,
+            "_0",
+            [1u8; ID_LENGTH],
+            &fields,
+            &[doc_with(0, "10"), doc_with(0, "20"), doc_with(0, "30")],
+        );
+        let seg1 = flush(
+            &dir,
+            &tmp,
+            "_1",
+            [2u8; ID_LENGTH],
+            &fields,
+            &[doc_with(0, "15")],
+        );
+
+        let reader0 = open_reader(&seg0);
+        let reader1 = open_reader(&seg1);
+
+        // Drop doc 1 ("20") from source 0.
+        let mut live0 = FixedBitSet::new(3);
+        live0.set(0);
+        live0.set(2);
+
+        let sources = vec![
+            MergeSource::stored_only(&seg0.fields, &reader0, Some(&live0)),
+            MergeSource::stored_only(&seg1.fields, &reader1, None),
+        ];
+
+        let keys0: Vec<Option<i64>> = vec![Some(10), Some(20), Some(30)];
+        let keys1: Vec<Option<i64>> = vec![Some(15)];
+        let per_source_keys: Vec<&[Option<i64>]> = vec![&keys0, &keys1];
+        let sort_fields = vec![MergeSortKeySpec {
+            field: "num",
+            reverse: false,
+            missing: SortMissingValue::Last,
+            per_source_keys: &per_source_keys,
+        }];
+
+        let merged_id = [9u8; ID_LENGTH];
+        merge_sorted_stored_only_segments(
+            &dir,
+            &sources,
+            &sort_fields,
+            "_merged_deleted",
+            merged_id,
+            "Lucene104",
+            version(),
+        )
+        .unwrap();
+
+        let ids = read_merged_ids(&tmp, "_merged_deleted", merged_id);
+        assert_eq!(ids, vec!["10", "15", "30"]);
+    }
+
+    #[test]
+    fn no_sources_produces_an_empty_sorted_segment() {
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let sources: Vec<MergeSource> = vec![];
+        let per_source_keys: Vec<&[Option<i64>]> = vec![];
+        let sort_fields = vec![MergeSortKeySpec {
+            field: "num",
+            reverse: false,
+            missing: SortMissingValue::Last,
+            per_source_keys: &per_source_keys,
+        }];
+
+        let merged_id = [3u8; ID_LENGTH];
+        let sci = merge_sorted_stored_only_segments(
+            &dir,
+            &sources,
+            &sort_fields,
+            "_merged_empty_sorted",
+            merged_id,
+            "Lucene104",
+            version(),
+        )
+        .unwrap();
+        assert_eq!(sci.segment_name, "_merged_empty_sorted");
+
+        let fdt =
+            std::fs::read(std::path::Path::new(&tmp).join("_merged_empty_sorted.fdt")).unwrap();
+        let fdx =
+            std::fs::read(std::path::Path::new(&tmp).join("_merged_empty_sorted.fdx")).unwrap();
+        let fdm =
+            std::fs::read(std::path::Path::new(&tmp).join("_merged_empty_sorted.fdm")).unwrap();
+        let reader = stored_fields::open(&fdt, &fdx, &fdm, &merged_id, "").unwrap();
+        assert_eq!(reader.max_doc(), 0);
+    }
+
+    #[test]
+    fn field_number_reconciliation_still_applies_during_the_k_way_merge() {
+        // Same field-name-vs-number-mismatch setup as the concatenation
+        // merge's own test, confirming the k-way merge path also reconciles
+        // field numbers by name rather than trusting per-source numbering.
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let fields0 = vec![field("num", 0), field("id", 1)];
+        let fields1 = vec![field("id", 0), field("num", 1)];
+
+        let doc0 = Document {
+            fields: vec![
+                StoredField {
+                    field_number: 0,
+                    value: FieldValue::String("10".to_string()),
+                },
+                StoredField {
+                    field_number: 1,
+                    value: FieldValue::String("first".to_string()),
+                },
+            ],
+        };
+        let doc1 = Document {
+            fields: vec![
+                StoredField {
+                    field_number: 0,
+                    value: FieldValue::String("second".to_string()),
+                },
+                StoredField {
+                    field_number: 1,
+                    value: FieldValue::String("5".to_string()),
+                },
+            ],
+        };
+
+        let seg0 = flush(&dir, &tmp, "_0", [1u8; ID_LENGTH], &fields0, &[doc0]);
+        let seg1 = flush(&dir, &tmp, "_1", [2u8; ID_LENGTH], &fields1, &[doc1]);
+
+        let reader0 = open_reader(&seg0);
+        let reader1 = open_reader(&seg1);
+        let sources = vec![
+            MergeSource::stored_only(&seg0.fields, &reader0, None),
+            MergeSource::stored_only(&seg1.fields, &reader1, None),
+        ];
+
+        let keys0: Vec<Option<i64>> = vec![Some(10)];
+        let keys1: Vec<Option<i64>> = vec![Some(5)];
+        let per_source_keys: Vec<&[Option<i64>]> = vec![&keys0, &keys1];
+        let sort_fields = vec![MergeSortKeySpec {
+            field: "num",
+            reverse: false,
+            missing: SortMissingValue::Last,
+            per_source_keys: &per_source_keys,
+        }];
+
+        let merged_id = [9u8; ID_LENGTH];
+        merge_sorted_stored_only_segments(
+            &dir,
+            &sources,
+            &sort_fields,
+            "_merged_reconcile",
+            merged_id,
+            "Lucene104",
+            version(),
+        )
+        .unwrap();
+
+        let merged_fnm =
+            std::fs::read(std::path::Path::new(&tmp).join("_merged_reconcile.fnm")).unwrap();
+        let merged_fields = lucene_codecs::field_infos::parse(&merged_fnm, &merged_id, "").unwrap();
+        let id_number = merged_fields
+            .fields
+            .iter()
+            .find(|f| f.name == "id")
+            .unwrap()
+            .number;
+
+        let fdt = std::fs::read(std::path::Path::new(&tmp).join("_merged_reconcile.fdt")).unwrap();
+        let fdx = std::fs::read(std::path::Path::new(&tmp).join("_merged_reconcile.fdx")).unwrap();
+        let fdm = std::fs::read(std::path::Path::new(&tmp).join("_merged_reconcile.fdm")).unwrap();
+        let reader = stored_fields::open(&fdt, &fdx, &fdm, &merged_id, "").unwrap();
+        assert_eq!(reader.max_doc(), 2);
+
+        // Sorted by num: doc1 (num=5, "second"/"5") comes first, doc0
+        // (num=10, "10"/"first") comes second -- confirm the "id" field's
+        // content followed its own doc through the reordering.
+        let d0 = reader.document(0).unwrap();
+        let id0 = d0
+            .fields
+            .iter()
+            .find(|f| f.field_number == id_number)
+            .unwrap();
+        assert_eq!(id0.value, FieldValue::String("second".to_string()));
+
+        let d1 = reader.document(1).unwrap();
+        let id1 = d1
+            .fields
+            .iter()
+            .find(|f| f.field_number == id_number)
+            .unwrap();
+        assert_eq!(id1.value, FieldValue::String("first".to_string()));
     }
 }

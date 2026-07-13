@@ -358,7 +358,7 @@ pub fn flush_sorted_stored_only_segment(
 /// for `Last`. Present-value docs compare by their value, reversed when
 /// `reverse` is set (via `Ordering::reverse`, not negation -- negating
 /// `i64::MIN` would overflow/wrap).
-fn sort_key_rank(
+pub(crate) fn sort_key_rank(
     a: Option<i64>,
     b: Option<i64>,
     reverse: bool,
