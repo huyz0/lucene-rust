@@ -2311,6 +2311,95 @@ mod tests {
         assert!(c.docs.is_empty());
     }
 
+    #[test]
+    fn boolean_minimum_should_match_with_no_should_clauses_at_all_matches_nothing() {
+        // Task #60 edge case: a must-only query with a nonzero
+        // `minimum_should_match` but zero `should` clauses -- this is the same
+        // "should.len() < minimum_should_match" rule the exceeding-clause-count
+        // test above already exercises, just at the should.len() == 0 boundary.
+        // Real Lucene's `Boolean2ScorerSupplier.get()` returns a null scorer
+        // (matches nothing) whenever `minShouldMatch > optionalScorers.size()`,
+        // with no special-case carve-out for "must is otherwise satisfied" --
+        // `minimum_should_match` isn't silently ignored just because there's
+        // nothing for it to apply to. This port's counting mechanism already
+        // produces that exact outcome with no separate branch (an empty
+        // `should_docs` list means every doc's should-match count is 0, which
+        // never reaches a nonzero threshold), so this test locks in already-
+        // correct behavior rather than fixing a bug.
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let mut c = VecCollector::default();
+        let q = BooleanQuery::new()
+            .with_must([TermQuery::new("body", "cat")])
+            .with_minimum_should_match(1);
+        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &q, &mut c).unwrap();
+        assert!(c.docs.is_empty());
+    }
+
+    #[test]
+    fn boolean_duplicate_should_clause_counts_and_scores_twice() {
+        // Task #60 edge case: the same `TermQuery` appears twice in `should`.
+        // Real Lucene does not dedupe clauses at the `BooleanQuery` level --
+        // two identical `TermQuery` clauses produce two independent scorers,
+        // so a matching doc counts twice toward `minimum_should_match` and
+        // scores twice (once per clause instance). This is the CORRECT
+        // behavior to lock in, not a bug to fix: `should_match_counts` and
+        // `clause_scores` already tally per clause instance, not per distinct
+        // clause value, so duplicating a clause naturally double-counts both
+        // the match tally and the score sum with no dedup logic anywhere.
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+
+        // Matching: cat={0,2}. Duplicating "cat" in should with
+        // minimum_should_match=2 requires 2 should-hits; a single distinct
+        // should clause could never reach 2, so a match here proves the
+        // duplicate is counted as two separate hits.
+        let mut c = VecCollector::default();
+        let q = BooleanQuery::new()
+            .with_should([TermQuery::new("body", "cat"), TermQuery::new("body", "cat")])
+            .with_minimum_should_match(2);
+        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &q, &mut c).unwrap();
+        assert_eq!(c.docs, vec![0, 2]);
+
+        // Scoring: the duplicated clause's score contribution must be exactly
+        // double a single instance's, not deduplicated to a single
+        // contribution.
+        let single = BooleanQuery::new().with_should([TermQuery::new("body", "cat")]);
+        let duped = BooleanQuery::new()
+            .with_should([TermQuery::new("body", "cat"), TermQuery::new("body", "cat")]);
+        let mut single_scores = TopDocsCollector::new(10);
+        search_boolean_query_scored(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            None,
+            None,
+            &single,
+            None,
+            &mut single_scores,
+        )
+        .unwrap();
+        let mut duped_scores = TopDocsCollector::new(10);
+        search_boolean_query_scored(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            None,
+            None,
+            &duped,
+            None,
+            &mut duped_scores,
+        )
+        .unwrap();
+        let single_hits = single_scores.top_docs();
+        let duped_hits = duped_scores.top_docs();
+        assert_eq!(single_hits.len(), duped_hits.len());
+        for (single_hit, duped_hit) in single_hits.iter().zip(duped_hits.iter()) {
+            assert_eq!(single_hit.doc_id, duped_hit.doc_id);
+            assert_eq!(duped_hit.score, single_hit.score * 2.0);
+        }
+    }
+
     // Nested `BooleanQuery` clause tests (task #25): cat={0,2}, dog={0,1},
     // bird={1,4} (see above).
 
@@ -2395,6 +2484,48 @@ mod tests {
             .with_minimum_should_match(1);
         search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &q, &mut c).unwrap();
         assert_eq!(c.docs, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn nested_boolean_must_not_at_different_levels_does_not_leak_between_them() {
+        // Task #60 edge case: a `must_not` at the outer level must exclude based
+        // on the outer clause's own matching set, independent of a nested inner
+        // `BooleanQuery`'s own separate `must_not`. dog={0,1}, cat={0,2},
+        // bird={1,4}.
+        //
+        // inner: must=[dog], must_not=[cat] -> dog={0,1} minus cat={0,2} = {1}.
+        let inner = BooleanQuery::new()
+            .with_must([TermQuery::new("body", "dog")])
+            .with_must_not([TermQuery::new("body", "cat")]);
+
+        // First confirm the inner query's own isolated result is {1}, so the
+        // outer-level assertion below is unambiguous about which level's
+        // must_not did the excluding.
+        let mut inner_only = VecCollector::default();
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        search_boolean_query(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            None,
+            None,
+            &inner.clone(),
+            &mut inner_only,
+        )
+        .unwrap();
+        assert_eq!(inner_only.docs, vec![1]);
+
+        // outer: must=[inner], must_not=[bird] -> inner's own result {1} minus
+        // bird={1,4} = {} -- the outer must_not (bird) excludes doc 1 on its own
+        // criteria, entirely independent of inner's own must_not (cat), which
+        // never even mentions bird.
+        let mut c = VecCollector::default();
+        let outer = BooleanQuery::new()
+            .with_must([Clause::Boolean(Box::new(inner))])
+            .with_must_not([TermQuery::new("body", "bird")]);
+        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &outer, &mut c).unwrap();
+        assert!(c.docs.is_empty());
     }
 
     #[test]

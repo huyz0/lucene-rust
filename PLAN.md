@@ -1559,6 +1559,28 @@ directly against this crate's own ground truth). Coverage:
 `cargo llvm-cov --fail-under-lines 95` passing). See `docs/parity.md` for
 the full row.
 
+**Progress (task #60):** `BooleanQuery`/`BooleanWeight` edge cases --
+investigation only, no production fix landed. Six real-Lucene corner cases
+were each independently checked against this port's actual
+`matched_boolean_docs`/`should_match_counts`/`clause_scores` code (not
+assumed correct): a pure `must_not`-only query matches nothing (confirmed
+before `must_not` is ever consulted); `minimum_should_match > 0` with zero
+`should` clauses matches nothing, not "trivially satisfied"; `minimum_
+should_match` exceeding `should.len()` has no distinct code path from the
+in-range case, so no off-by-one is possible past the boundary; a doc
+matching every required clause plus a `must_not` clause is still excluded;
+a nested `Clause::Boolean`'s own `must_not` doesn't leak into or get
+leaked into by an outer level's `must_not` (independently verified, not a
+case where both correct and buggy behavior would coincide); and a literal
+duplicate `should` clause double-counts toward `minimum_should_match` and
+double-scores -- confirmed as real Lucene's own actual (non-deduping)
+behavior, not a bug this port needed to suppress. All six were already
+correct; new regression tests lock each one in (`lib.rs`, `explain.rs`) so
+a future change to this recursion can't silently regress them. Coverage:
+`lucene-search/src/lib.rs` 96.23% lines, `lucene-search/src/explain.rs`
+98.54% lines (workspace total 97.31% lines). See `docs/parity.md`'s
+`BooleanQuery` row for the itemized findings.
+
 1. `lucene-analysis`: `TokenStream` as an iterator-of-token-structs (skip Java's
    AttributeSource reflection design entirely — a plain
    `Token { bytes, position_increment, offset, ... }` struct), StandardTokenizer via

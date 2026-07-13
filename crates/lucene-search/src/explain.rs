@@ -988,6 +988,109 @@ mod tests {
     }
 
     #[test]
+    fn boolean_explain_no_match_for_pure_must_not_query() {
+        // Task #60 edge case: a `BooleanQuery` with only `must_not` clauses
+        // (no `must`/`should`) matches nothing -- `matched_boolean_docs` already
+        // folds this into the same "no must/should clauses" `Ok(None)` case an
+        // entirely empty query hits (see that function's doc comment), so
+        // `explain_boolean` must report a no-match here too, not "everything
+        // except the excluded set."
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let query = BooleanQuery::new().with_must_not([TermQuery::new("body", "dog")]);
+        // Doc 2 doesn't contain "dog" at all -- if pure must_not were buggily
+        // treated as "match everything except the excluded set," this doc would
+        // wrongly explain as a match.
+        let explanation = explain_clause(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            None,
+            None,
+            &Clause::Boolean(Box::new(query)),
+            2,
+            None,
+        )
+        .unwrap();
+        assert!(!explanation.matched);
+        assert_eq!(explanation.value, 0.0);
+    }
+
+    #[test]
+    fn boolean_explain_no_match_when_minimum_should_match_exceeds_should_clause_count() {
+        // Task #60 edge case: `minimum_should_match` greater than the number of
+        // `should` clauses can never be satisfied -- must explain as no-match,
+        // not panic or (worse) accidentally match.
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let query = BooleanQuery::new()
+            .with_should([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")])
+            .with_minimum_should_match(5);
+        let explanation = explain_clause(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            None,
+            None,
+            &Clause::Boolean(Box::new(query)),
+            0,
+            None,
+        )
+        .unwrap();
+        assert!(!explanation.matched);
+        assert_eq!(explanation.value, 0.0);
+    }
+
+    #[test]
+    fn boolean_explain_duplicate_should_clause_sums_twice_matching_scored_search() {
+        // Task #60 edge case: a duplicated `should` clause must contribute its
+        // score twice in the explanation, exactly matching
+        // `search_boolean_query_scored`'s own double-counting (real Lucene does
+        // not dedupe clauses -- see the `lib.rs` regression test
+        // `boolean_duplicate_should_clause_counts_and_scores_twice` for the
+        // full rationale). Verified here by requiring bit-for-bit equality
+        // against the scored search path, the same technique
+        // `boolean_explain_matching_doc_equals_scored_search_output_exactly`
+        // already uses.
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let query = BooleanQuery::new()
+            .with_should([TermQuery::new("body", "cat"), TermQuery::new("body", "cat")]);
+
+        let mut capture = ScoreCapture::default();
+        search_boolean_query_scored(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            None,
+            None,
+            &query,
+            None,
+            &mut capture,
+        )
+        .unwrap();
+        assert!(!capture.scores.is_empty());
+        let (target_doc, expected_score) = capture.scores[0];
+
+        let explanation = explain_clause(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            None,
+            None,
+            &Clause::Boolean(Box::new(query)),
+            target_doc,
+            None,
+        )
+        .unwrap();
+        assert!(explanation.matched);
+        assert_eq!(explanation.value, expected_score);
+        // Two should-clause detail entries, both for "cat", summing to the
+        // duplicated total -- not deduplicated to one.
+        assert_eq!(explanation.details.len(), 2);
+    }
+
+    #[test]
     fn dismax_explain_matching_doc_equals_scored_search_output_exactly() {
         let (fields, doc) = open_fixture();
         let doc_in = doc.as_ref().map(|d| d.open());
