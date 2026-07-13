@@ -299,6 +299,35 @@ reusing the existing `pos` field already in `fixtures/data/blocktree_index/`
 adjacent pair in one doc and a non-adjacent/absent pair in another). See
 `docs/parity.md`'s new `PhraseQuery`/`ExactPhraseScorer` row for full detail.
 
+**Task #28** closed the `slop`-deferred gap above: `PhraseQuery` now carries a
+`slop: u32` field (default `0`, `with_slop` builder method), and
+`search_phrase_query` dispatches to the existing exact-adjacency
+`phrase_matches_in_doc` fast path when `slop == 0`, or a new
+`phrase_matches_in_doc_sloppy(term_positions, slop)` otherwise. That function
+implements an **in-order-only** subset of real Lucene's sloppy semantics: for
+an alignment `p_0 < p_1 < ... < p_{n-1}` (one position per term, strictly
+increasing, in phrase order), the total "moves" needed is
+`(p_{n-1} - p_0) - (n - 1)` (telescoped sum of each adjacent gap's slack,
+per real `PhraseQuery`'s Javadoc description of slop as "moves to line up in
+order"); a doc matches iff some such alignment has moves `<= slop`. Real
+Lucene's general `SloppyPhraseMatcher` additionally allows term **reordering**
+within the slop budget via a priority-queue-based edit-distance computation —
+that general algorithm was not confidently re-derivable/verifiable against
+real Lucene's source within this task's scope, so it's deliberately out of
+scope here (documented on `phrase_matches_in_doc_sloppy` and in
+`docs/parity.md`), not silently guessed at. Tested with hand-computed unit
+tests (exact/boundary/gap-of-N slop values, multiple candidate base
+positions, repeated terms) plus one `search_phrase_query` wiring test against
+the real `pos` fixture. **Cross-engine gap now closed**: `GenBlockTree.java`'s
+`pos` field gained doc7 (alpha@0, beta@3, a real non-adjacent gap needing 2
+moves), and its generator now actually runs real `IndexSearcher`/
+`PhraseQuery.setSlop(n)` against it for `n` in `{0,1,2,3,5}`, recording real
+Lucene's match/no-match verdicts in `manifest.properties`.
+`phrase_query_fixtures.rs::sloppy_phrase_gap_matches_real_lucenes_phrase_query_set_slop_at_every_tested_value`
+confirms this port's sloppy path agrees with real Lucene at all five slop
+values — the sloppy-match formula is now cross-engine verified, not just
+self-consistent.
+
 **Progress (task #21):** doc-values-driven range query and single-key sort now
 exist in `lucene-search/src/doc_value_query.rs`, built directly on
 `lucene-codecs`' already-complete doc-values read side (`numeric_value`,

@@ -8,15 +8,23 @@
 //! `IndexSearcher.search(new PhraseQuery(...), collector)` would for the same
 //! phrase against the same segment.
 //!
-//! No new fixture generator was added for this: the existing `pos` field
-//! (`IndexOptions.DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS`) already has real,
-//! manifest-recorded per-occurrence positions for two terms -- from
-//! `manifest.properties`: `alpha` occurs in doc 8555 at position 0 and in doc 8556
-//! at positions 0 and 1; `beta` occurs only in doc 8555, at position 1. That is
-//! already exactly the shape a phrase-query differential test needs (an adjacent
-//! pair in one doc, a non-adjacent/absent pair in another), so this test reuses it
-//! rather than extending the generator -- see the `differential-testing` skill's
-//! "prefer reuse where a fixture already fits" stance.
+//! The exact-match (`slop == 0`) tests below reuse the existing `pos` field
+//! (`IndexOptions.DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS`) without extending the
+//! generator: from `manifest.properties`, `alpha` occurs in doc 8555 at position 0
+//! and in doc 8556 at positions 0 and 1; `beta` occurs only in doc 8555, at
+//! position 1. That is already exactly the shape an exact phrase-query
+//! differential test needs (an adjacent pair in one doc, a non-adjacent/absent
+//! pair in another) -- see the `differential-testing` skill's "prefer reuse where
+//! a fixture already fits" stance.
+//!
+//! The sloppy (`slop > 0`) test further down *does* extend `GenBlockTree.java`:
+//! it adds one more doc (doc7, `alpha`@0 / `beta`@3, a real non-adjacent gap of
+//! 2 "moves") plus a `field.pos.sloppyGap.realLuceneSlopResults` manifest key
+//! recorded by *actually running* `IndexSearcher.search` with a real
+//! `PhraseQuery.setSlop(n)` against that doc at generation time -- closing a
+//! previously-flagged gap where the sloppy-matching formula had only been
+//! checked against itself (hand-computed unit tests), never against real
+//! Lucene's actual slop semantics for a known non-adjacent gap.
 
 use lucene_codecs::blocktree;
 use lucene_codecs::field_infos;
@@ -234,7 +242,7 @@ fn single_term_phrase_matches_every_doc_containing_the_term() {
         .collect();
     assert_eq!(
         expected,
-        vec![8555, 8556],
+        vec![8555, 8556, 8557],
         "sanity: manifest-derived expectation itself"
     );
     assert_eq!(collector.docs, expected);
@@ -262,4 +270,73 @@ fn phrase_with_a_missing_term_matches_nothing() {
     .unwrap();
 
     assert!(collector.docs.is_empty());
+}
+
+/// Cross-engine differential test for sloppy phrase matching, closing the gap
+/// flagged in code review: the `phrase_matches_in_doc_sloppy` unit tests in
+/// `lib.rs` only checked this port's own formula for self-consistency (hand-
+/// computed "moves needed" arithmetic), never against real Lucene's actual
+/// `PhraseQuery.setSlop(n)` behavior. `GenBlockTree.java`'s doc7 (`"pos"`
+/// field: `alpha`@0, `beta`@3, a real, non-adjacent, manifest-recorded gap)
+/// plus its own `field.pos.sloppyGap.realLuceneSlopResults` manifest key
+/// (written by *actually running* `IndexSearcher.search` with a real
+/// `PhraseQuery.Builder().add(alpha).add(beta).setSlop(n)` against this exact
+/// fixture segment at generation time -- see `GenBlockTree.java`'s "Sloppy
+/// PhraseQuery cross-engine ground truth" section) is the ground truth this
+/// test checks `search_phrase_query`'s sloppy path against, not a value this
+/// test derives independently. Real Lucene's recorded results for this gap
+/// (`(3-0)-(2-1) = 2` moves needed): slop 0 and 1 do NOT match, slop 2, 3, 5
+/// DO match -- i.e. the exact "below/exactly/above the required moves" shape
+/// the review asked for.
+#[test]
+fn sloppy_phrase_gap_matches_real_lucenes_phrase_query_set_slop_at_every_tested_value() {
+    let (fields, doc, pos, pay, id, suffix, m) = open_segment();
+    let doc_in = DocInput::open(&doc, &id, &suffix).expect("open .doc");
+    let pos_in = PosInput::open(&pos, &id, &suffix).expect("open .pos");
+    let pay_in = PayInput::open(&pay, &id, &suffix).expect("open .pay");
+
+    let gap_doc: i32 = m.get("field.pos.sloppyGapDoc").parse().unwrap();
+    assert_eq!(gap_doc, 8557, "sanity: manifest-recorded gap doc ID");
+    let moves_needed: u32 = m.get("field.pos.sloppyGap.movesNeeded").parse().unwrap();
+    assert_eq!(moves_needed, 2, "sanity: manifest-recorded gap size");
+
+    // Parse "0:false,1:false,2:true,3:true,5:true" -- real Lucene's own
+    // PhraseQuery.setSlop(n) match/no-match verdicts for this exact fixture,
+    // recorded at fixture-generation time by GenBlockTree.java.
+    let real_lucene: Vec<(u32, bool)> = m
+        .get("field.pos.sloppyGap.realLuceneSlopResults")
+        .split(',')
+        .map(|pair| {
+            let (slop, matched) = pair.split_once(':').unwrap();
+            (slop.parse().unwrap(), matched.parse().unwrap())
+        })
+        .collect();
+    assert_eq!(
+        real_lucene,
+        vec![(0, false), (1, false), (2, true), (3, true), (5, true)],
+        "sanity: manifest-derived real-Lucene expectation itself"
+    );
+
+    for (slop, expect_match) in real_lucene {
+        let mut collector = VecCollector::default();
+        search_phrase_query(
+            &fields,
+            Some(&doc_in),
+            Some(&pos_in),
+            Some(&pay_in),
+            None,
+            &PhraseQuery::new("pos", ["alpha", "beta"]).with_slop(slop),
+            &mut collector,
+        )
+        .unwrap_or_else(|e| {
+            panic!("search_phrase_query(pos, \"alpha beta\", slop={slop}) failed: {e}")
+        });
+
+        let matched = collector.docs.contains(&gap_doc);
+        assert_eq!(
+            matched, expect_match,
+            "slop={slop}: this port's sloppy match result disagrees with real Lucene's \
+             PhraseQuery.setSlop({slop}) for doc {gap_doc} (alpha@0, beta@3)"
+        );
+    }
 }

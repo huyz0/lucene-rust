@@ -378,7 +378,7 @@ mod tests {
     }
 
     fn segment_id_bytes() -> [u8; 16] {
-        let hex = "a461ec6668896df01024ada528579052";
+        let hex = "6d059d4cdcac6f59197686012f67fc52";
         let mut id = [0u8; 16];
         for (i, slot) in id.iter_mut().enumerate() {
             *slot = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap();
@@ -431,7 +431,7 @@ mod tests {
                 id.as_ptr(),
                 suffix.as_ptr() as *const c_char,
                 suffix.len(),
-                8957,
+                8958,
                 &mut handle as *mut _,
             )
         };

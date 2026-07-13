@@ -144,7 +144,7 @@ mod tests {
     // skill). Known contents (see `manifest.properties`): field `body`, term
     // `cat` -> docs [0, 2] (docFreq 2, needs `.doc`); term `dog` -> docs [0,
     // 1]; term `bird` -> docs [1, 4]; field `id`, term `id0` -> doc [0]
-    // (docFreq 1, singleton, no `.doc` needed). `max_doc` = 8957.
+    // (docFreq 1, singleton, no `.doc` needed). `max_doc` = 8958.
     struct Fixture {
         fields: BlockTreeFields,
         doc_bytes: Vec<u8>,

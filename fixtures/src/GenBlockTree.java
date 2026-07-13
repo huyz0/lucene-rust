@@ -17,6 +17,9 @@ import org.apache.lucene.index.SegmentCommitInfo;
 import org.apache.lucene.index.SegmentInfos;
 import org.apache.lucene.index.Terms;
 import org.apache.lucene.index.TermsEnum;
+import org.apache.lucene.search.IndexSearcher;
+import org.apache.lucene.search.PhraseQuery;
+import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.search.WildcardQuery;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
@@ -243,6 +246,29 @@ public class GenBlockTree {
                 posType));
         w.addDocument(doc6);
 
+        // doc7: "alpha" (pos 0, offset [0,5), no payload), "beta" (pos 3,
+        //       offset [12,16), no payload) -- a KNOWN non-adjacent gap
+        //       (positions 0 and 3, two extra words apart) for sloppy
+        //       PhraseQuery differential testing (see
+        //       crates/lucene-search/tests/phrase_query_fixtures.rs's sloppy
+        //       tests). Real PhraseQuery slop math: moves needed =
+        //       (3 - 0) - (2 - 1) = 2, so real Lucene's PhraseQuery.setSlop(n)
+        //       must NOT match this doc at slop 0 or 1, and MUST match at
+        //       slop 2 and slop 3 -- verified against real
+        //       IndexSearcher/PhraseQuery in GenSloppyPhraseVerify.java.
+        //       "alpha": docFreq becomes 3, totalTermFreq becomes 4 (1 + 2 + 1).
+        //       "beta": docFreq becomes 2, totalTermFreq becomes 2 (1 + 1).
+        Document doc7 = new Document();
+        doc7.add(
+            new Field(
+                "pos",
+                new CannedPosTokenStream(
+                    List.of(
+                        new PosTok("alpha", 1, 0, 5, null),
+                        new PosTok("beta", 3, 12, 16, null))),
+                posType));
+        w.addDocument(doc7);
+
         // "many": 400 distinct terms ("term0000".."term0399"), one per doc,
         // deliberately past the default minItemsInBlock=25/maxItemsInBlock=48
         // thresholds -- forces Lucene103BlockTreeTermsWriter to both split
@@ -439,6 +465,42 @@ public class GenBlockTree {
         // all three (`level1CompetitiveFreqNormAccumulator` isn't cleared
         // until the whole span is written).
         appendImpactsManifest(m, leaf, "l1", "l1term", new int[] {5, 4000, 8191});
+
+        // Sloppy PhraseQuery cross-engine ground truth: doc7's "pos" field
+        // has "alpha"@0 and "beta"@3, a KNOWN gap requiring 2 moves
+        // ((3-0)-(2-1)=2). Run *real* IndexSearcher.search with a real
+        // PhraseQuery.setSlop(n) for n in {0,1,2,3} and record whether real
+        // Lucene actually returns the doc -- this is the cross-engine proof
+        // this port's phrase_matches_in_doc_sloppy is checked against (not a
+        // hand-derived expectation), per the differential-testing skill.
+        IndexSearcher searcher = new IndexSearcher(reader);
+        StringBuilder slopResults = new StringBuilder();
+        for (int slop : new int[] {0, 1, 2, 3, 5}) {
+          PhraseQuery pq =
+              new PhraseQuery.Builder()
+                  .add(new org.apache.lucene.index.Term("pos", "alpha"))
+                  .add(new org.apache.lucene.index.Term("pos", "beta"))
+                  .setSlop(slop)
+                  .build();
+          TopDocs td = searcher.search(pq, 10);
+          boolean matched = false;
+          for (var sd : td.scoreDocs) {
+            if (sd.doc == 8557) {
+              matched = true;
+            }
+          }
+          if (slopResults.length() > 0) {
+            slopResults.append(',');
+          }
+          slopResults.append(slop).append(':').append(matched);
+        }
+        m.append("field.pos.sloppyGapDoc=8557\n");
+        m.append("field.pos.sloppyGap.termA=alpha\n");
+        m.append("field.pos.sloppyGap.termAPos=0\n");
+        m.append("field.pos.sloppyGap.termB=beta\n");
+        m.append("field.pos.sloppyGap.termBPos=3\n");
+        m.append("field.pos.sloppyGap.movesNeeded=2\n");
+        m.append("field.pos.sloppyGap.realLuceneSlopResults=").append(slopResults).append('\n');
       }
 
       Files.writeString(out.resolve("manifest.properties"), m.toString());

@@ -147,33 +147,46 @@ impl BooleanQuery {
 }
 
 /// `PhraseQuery`-equivalent (`org.apache.lucene.search.PhraseQuery`), pared down to
-/// **exact adjacent-position matching only (`slop == 0`)**: `terms` are implicitly at
-/// consecutive positions `0, 1, ..., terms.len() - 1` in phrase order. Real
+/// implicit consecutive term positions: `terms` are always at query-relative
+/// positions `0, 1, ..., terms.len() - 1` in phrase order (real
 /// `PhraseQuery.Builder.add(Term, int position)` lets a caller attach an arbitrary
-/// per-term position (for `slop > 0` sloppy matching, or non-adjacent terms) — this
-/// port has none of that; a doc matches iff every term occurs in the field *and*
-/// there's some base position `p` such that `terms[i]` occurs at position `p + i` for
-/// every `i` (see [`crate::search_phrase_query`]'s doc comment for the exact
-/// algorithm). Sloppy phrase matching is out of scope for this slice, tracked in
-/// `docs/parity.md`.
+/// per-term position for non-adjacent phrase terms — this port has none of that,
+/// see the `Vec<Vec<u8>>` note below). `slop` (default `0`, matching real
+/// `PhraseQuery.Builder`'s default) is real `PhraseQuery`'s sloppy-matching budget:
+/// with `slop == 0` a doc matches iff every term occurs in the field *and* there's
+/// some base position `p` such that `terms[i]` occurs at position `p + i` for every
+/// `i` (exact adjacency); with `slop > 0`, terms may be spread apart by up to
+/// `slop` total positions while staying in phrase order — see
+/// [`crate::phrase_matches_in_doc_sloppy`]'s doc comment for the exact formula this
+/// port implements (an **in-order-only** subset of real Lucene's sloppy semantics;
+/// term reordering within the slop budget is not supported — see that function's
+/// doc comment and `docs/parity.md` for the precise scoping).
 ///
 /// **Why `Vec<Vec<u8>>` instead of a `Vec<(Vec<u8>, i32)>` position-annotated list**:
 /// with positions always `0..terms.len()`, storing them explicitly would be
 /// redundant data a caller could get wrong (e.g. skipping a position) with no
-/// slop/non-adjacent-term feature to justify letting them diverge from the implicit
+/// non-adjacent-term feature to justify letting them diverge from the implicit
 /// sequence — same "don't build the general shape until a second real need shows up"
 /// call this crate's `BooleanQuery` doc comment already makes for its clause list.
+/// `slop` doesn't change this: it widens how far apart the (still implicitly
+/// `0..N`-numbered) terms may drift at match time, it doesn't let a caller assign
+/// arbitrary per-term positions.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PhraseQuery {
     pub field: String,
     pub terms: Vec<Vec<u8>>,
+    /// Sloppy-matching budget, real `PhraseQuery`'s `slop` parameter. `0` (the
+    /// default via [`Self::new`]/`Default`) means exact adjacent matching; see this
+    /// struct's doc comment for `slop > 0`'s semantics.
+    pub slop: u32,
 }
 
 impl PhraseQuery {
-    /// Builds a phrase query for `terms` in phrase order. An empty `terms` list is a
-    /// defined "matches nothing" edge case (mirrors real
+    /// Builds an exact (`slop == 0`) phrase query for `terms` in phrase order. An
+    /// empty `terms` list is a defined "matches nothing" edge case (mirrors real
     /// `PhraseQuery.Builder.build()`, which returns a `MatchNoDocsQuery` when no terms
     /// were added) — not a panic; see [`crate::search_phrase_query`]'s doc comment.
+    /// Use [`Self::with_slop`] to build a sloppy phrase query.
     pub fn new(
         field: impl Into<String>,
         terms: impl IntoIterator<Item = impl Into<Vec<u8>>>,
@@ -181,7 +194,15 @@ impl PhraseQuery {
         Self {
             field: field.into(),
             terms: terms.into_iter().map(Into::into).collect(),
+            slop: 0,
         }
+    }
+
+    /// Builder method setting `slop` (see this struct's doc comment for exact
+    /// semantics), consistent with `BooleanQuery`'s `with_*` builder pattern.
+    pub fn with_slop(mut self, slop: u32) -> Self {
+        self.slop = slop;
+        self
     }
 }
 
@@ -282,6 +303,7 @@ mod tests {
             q.terms,
             vec![b"quick".to_vec(), b"brown".to_vec(), b"fox".to_vec()]
         );
+        assert_eq!(q.slop, 0);
     }
 
     #[test]
@@ -289,6 +311,13 @@ mod tests {
         let q = PhraseQuery::default();
         assert_eq!(q.field, "");
         assert!(q.terms.is_empty());
+        assert_eq!(q.slop, 0);
+    }
+
+    #[test]
+    fn phrase_query_with_slop_sets_the_field() {
+        let q = PhraseQuery::new("body", ["quick", "fox"]).with_slop(2);
+        assert_eq!(q.slop, 2);
     }
 
     #[test]

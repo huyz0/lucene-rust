@@ -680,6 +680,91 @@ pub(crate) fn phrase_matches_in_doc(term_positions: &[Vec<i32>]) -> bool {
     false
 }
 
+/// Sloppy (`slop > 0`) sibling of [`phrase_matches_in_doc`]: checks whether
+/// `term_positions` (same shape/contract as `phrase_matches_in_doc` — one sorted,
+/// ascending position list per phrase term, in phrase order, all for the same doc)
+/// has some strictly-increasing, in-order alignment `p_0 < p_1 < ... <
+/// p_{n-1}` (one position per term, `p_i` drawn from `term_positions[i]`) whose
+/// **total "move" distance** is at most `slop`.
+///
+/// **Exact formula implemented, and where it comes from**: real Lucene's
+/// `PhraseQuery` Javadoc (`org.apache.lucene.search.PhraseQuery`, "the slop
+/// parameter") describes slop as "the number of positions all words need to move
+/// to line up in order" — a term one word away from its expected adjacent slot
+/// costs one "move", two words away costs two, and so on. For an alignment
+/// `p_0 < p_1 < ... < p_{n-1}` in that order, the total moves needed is the sum of
+/// each adjacent gap's slack: `sum_{i=1}^{n-1} (p_i - p_{i-1} - 1)`, which
+/// telescopes to `(p_{n-1} - p_0) - (n - 1)` regardless of the intermediate
+/// positions chosen. A doc matches iff some such alignment has
+/// `(p_{n-1} - p_0) - (n - 1) <= slop`.
+///
+/// **Scope, stated precisely (see `docs/parity.md`)**: this is an **in-order-only**
+/// implementation of real Lucene's sloppy matching — it requires
+/// `p_0 < p_1 < ... < p_{n-1}` strictly increasing in phrase order, matching real
+/// Lucene's common case (phrase terms found in their query order, just spread
+/// apart by up to `slop` extra words). Real Lucene's general `SloppyPhraseMatcher`
+/// (`org.apache.lucene.search.SloppyPhraseMatcher`) additionally allows term
+/// **reordering** within the slop budget (e.g. "quick fox" matching "fox... quick"
+/// at a high enough slop, via a priority-queue-based edit-distance computation over
+/// `PhrasePositions`) — that general algorithm is *not* implemented here; this
+/// port could not confidently re-derive/verify its exact edit-distance formula
+/// against real Lucene's source within this task's scope, so reordering is
+/// deliberately out of scope rather than guessed at. Every test below proves only
+/// this function's own stated in-order formula, not full Lucene byte-for-byte
+/// parity for the reordering case.
+///
+/// For a fixed starting position `p_0`, the smallest valid alignment (and hence
+/// the minimum possible `p_{n-1}`, and thus the minimum possible move count for
+/// that `p_0`) is found by a simple greedy scan: for each subsequent term, pick
+/// the smallest position in its list that's strictly greater than the previous
+/// term's chosen position. Picking any larger position could only increase (never
+/// decrease) the running total, so greedy is optimal for a fixed `p_0`; every
+/// `p_0` in the first term's own position list is tried in turn (same
+/// candidate-and-check structure as `phrase_matches_in_doc`).
+///
+/// **Edge cases** (matching `phrase_matches_in_doc`'s own contract): an empty
+/// `term_positions` or any single empty position list both yield `false`. A
+/// single-term phrase (`term_positions.len() == 1`) degenerates to "does this term
+/// occur at all" regardless of `slop`. `slop == 0` is equivalent to
+/// `phrase_matches_in_doc` (a zero move budget forces every gap to be exactly
+/// `0`, i.e. exact adjacency) — [`search_phrase_query`] still calls the dedicated
+/// exact-match fast path for `slop == 0` rather than this function, but this
+/// function's own unit tests confirm the `slop == 0` case agrees.
+pub(crate) fn phrase_matches_in_doc_sloppy(term_positions: &[Vec<i32>], slop: u32) -> bool {
+    let Some((first, rest)) = term_positions.split_first() else {
+        return false;
+    };
+    if rest.iter().any(|positions| positions.is_empty()) {
+        return false;
+    }
+    if rest.is_empty() {
+        // Single-term phrase: any occurrence at all is a match, same as
+        // `phrase_matches_in_doc`.
+        return !first.is_empty();
+    }
+    let slop = slop as i64;
+    'candidate: for &p0 in first {
+        let mut prev = p0;
+        let mut total_moves: i64 = 0;
+        for positions in rest {
+            // Smallest position strictly greater than `prev` -- `partition_point`
+            // finds the first index where `positions[idx] > prev` since the list is
+            // sorted ascending.
+            let idx = positions.partition_point(|&x| x <= prev);
+            let Some(&pos) = positions.get(idx) else {
+                continue 'candidate;
+            };
+            total_moves += i64::from(pos - prev - 1);
+            if total_moves > slop {
+                continue 'candidate;
+            }
+            prev = pos;
+        }
+        return true;
+    }
+    false
+}
+
 /// One phrase-query term's live-filtered doc-ID list plus a `doc_id -> sorted
 /// position list` map for that same term, or `None` when the field/term doesn't
 /// exist (mirrors [`term_doc_ids`]'s "missing is not an error" convention). The map
@@ -722,9 +807,9 @@ fn term_doc_positions(
     Ok(Some((docs, map)))
 }
 
-/// Executes `query` (see [`query::PhraseQuery`] for the exact exact-adjacent-
-/// position, `slop == 0` semantics) against one already-opened segment, feeding
-/// every matching **live** doc ID to `collector` in ascending order -- same
+/// Executes `query` (see [`query::PhraseQuery`] for `slop`'s exact semantics)
+/// against one already-opened segment, feeding every matching **live** doc ID to
+/// `collector` in ascending order -- same
 /// parameter contract as [`search_term_query`], plus the segment's opened `.pos`/
 /// `.pay` files (needed to check position alignment for a real, multi-term
 /// phrase). Note `live_docs` sits *after* `pos_in`/`pay_in` here, unlike
@@ -744,8 +829,12 @@ fn term_doc_positions(
 /// **Matching semantics**: a doc matches iff it contains every phrase term (a
 /// pure doc-ID conjunction, computed first as a cheap pre-filter -- phrase match
 /// implies term match, so this never does position work for a doc that couldn't
-/// possibly qualify) *and* [`phrase_matches_in_doc`] finds a valid alignment for
-/// that doc's per-term position lists.
+/// possibly qualify) *and* an alignment check finds a valid alignment for that
+/// doc's per-term position lists: `query.slop == 0` uses
+/// [`phrase_matches_in_doc`]'s exact-adjacency fast path (unchanged from before
+/// `slop` existed), `query.slop > 0` uses
+/// [`phrase_matches_in_doc_sloppy`]'s in-order sloppy check -- see that
+/// function's doc comment for the precise formula and its in-order-only scope.
 ///
 /// **Edge cases** (see `query::PhraseQuery`'s doc comment and this port's
 /// `docs/parity.md` for the full accounting):
@@ -819,7 +908,12 @@ pub fn search_phrase_query<C: Collector>(
                     .expect("doc_id came from the conjunction of every term's own doc list")
             })
             .collect();
-        if phrase_matches_in_doc(&term_positions) {
+        let is_match = if query.slop == 0 {
+            phrase_matches_in_doc(&term_positions)
+        } else {
+            phrase_matches_in_doc_sloppy(&term_positions, query.slop)
+        };
+        if is_match {
             collector.collect(doc_id);
         }
     }
@@ -1582,6 +1676,107 @@ mod tests {
         assert!(!phrase_matches_in_doc(&[vec![0, 2, 4], vec![0, 2, 4]]));
     }
 
+    // `phrase_matches_in_doc_sloppy` unit tests: hand-computed slop values against
+    // the formula documented on that function -- `(p_last - p_first) - (n - 1)`.
+
+    #[test]
+    fn sloppy_exact_alignment_needs_zero_slop() {
+        // positions 0,1,2: (2-0)-2 = 0 moves needed -- matches at slop=0.
+        assert!(phrase_matches_in_doc_sloppy(
+            &[vec![0], vec![1], vec![2]],
+            0
+        ));
+    }
+
+    #[test]
+    fn sloppy_agrees_with_exact_for_slop_zero_no_match_case() {
+        // "cat" at 0, "sat" at 2: (2-0)-1 = 1 move needed, slop=0 is one short.
+        assert!(!phrase_matches_in_doc_sloppy(&[vec![0], vec![2]], 0));
+        assert!(!phrase_matches_in_doc(&[vec![0], vec![2]]));
+    }
+
+    #[test]
+    fn sloppy_gap_of_one_extra_word_needs_slop_one() {
+        // "quick" at 0, "fox" at 2 (one word -- "brown" -- skipped in between):
+        // (2-0)-1 = 1 move needed.
+        assert!(!phrase_matches_in_doc_sloppy(&[vec![0], vec![2]], 0));
+        assert!(phrase_matches_in_doc_sloppy(&[vec![0], vec![2]], 1));
+    }
+
+    #[test]
+    fn sloppy_boundary_exactly_enough_slop_matches() {
+        // "a" at 0, "b" at 4: (4-0)-1 = 3 moves needed. slop=3 matches, slop=2 (one
+        // less than enough) does not.
+        assert!(phrase_matches_in_doc_sloppy(&[vec![0], vec![4]], 3));
+        assert!(!phrase_matches_in_doc_sloppy(&[vec![0], vec![4]], 2));
+    }
+
+    #[test]
+    fn sloppy_three_term_gap_sums_across_both_intervals() {
+        // "the" at 0, "quick" at 2 (gap 1), "fox" at 5 (gap 2): total moves =
+        // (5-0)-2 = 3, matching the sum of per-interval gaps (1 + 2).
+        assert!(phrase_matches_in_doc_sloppy(
+            &[vec![0], vec![2], vec![5]],
+            3
+        ));
+        assert!(!phrase_matches_in_doc_sloppy(
+            &[vec![0], vec![2], vec![5]],
+            2
+        ));
+    }
+
+    #[test]
+    fn sloppy_picks_the_best_of_multiple_candidate_base_positions() {
+        // First term at {0, 10}; second term at {1, 11}. Base 0 -> 1 needs 0 moves;
+        // base 10 -> 11 also needs 0 moves -- either way it should match at slop=0,
+        // proving every base candidate is tried (not just the first).
+        assert!(phrase_matches_in_doc_sloppy(&[vec![0, 10], vec![1, 11]], 0));
+    }
+
+    #[test]
+    fn sloppy_greedy_finds_smallest_valid_next_position() {
+        // First term at 0; second term's list has {1, 2, 100} -- greedy must pick 1
+        // (smallest valid), needing 0 moves, not be confused by the far-away 100.
+        assert!(phrase_matches_in_doc_sloppy(&[vec![0], vec![1, 2, 100]], 0));
+    }
+
+    #[test]
+    fn sloppy_no_increasing_alignment_exists_still_fails_at_high_slop() {
+        // Second term's only occurrence (0) is not strictly after the first term's
+        // only occurrence (0) -- no in-order alignment exists at any slop, since
+        // this port's scope excludes reordering/ties.
+        assert!(!phrase_matches_in_doc_sloppy(&[vec![0], vec![0]], 100));
+    }
+
+    #[test]
+    fn sloppy_single_term_degenerates_to_any_occurrence_regardless_of_slop() {
+        assert!(phrase_matches_in_doc_sloppy(&[vec![2, 9]], 0));
+        assert!(phrase_matches_in_doc_sloppy(&[vec![2, 9]], 5));
+    }
+
+    #[test]
+    fn sloppy_single_term_with_no_occurrences_is_false() {
+        assert!(!phrase_matches_in_doc_sloppy(&[vec![]], 5));
+    }
+
+    #[test]
+    fn sloppy_no_terms_at_all_is_false() {
+        assert!(!phrase_matches_in_doc_sloppy(&[], 5));
+    }
+
+    #[test]
+    fn sloppy_a_term_with_no_occurrences_in_this_doc_is_false() {
+        assert!(!phrase_matches_in_doc_sloppy(&[vec![0], vec![]], 5));
+    }
+
+    #[test]
+    fn sloppy_repeated_term_with_a_gap_matches_at_sufficient_slop() {
+        // "the" at 0, 3 -- as a two-term "the the" phrase, base 0 needs the second
+        // "the" strictly after 0: smallest is 3, (3-0)-1 = 2 moves.
+        assert!(phrase_matches_in_doc_sloppy(&[vec![0, 3], vec![0, 3]], 2));
+        assert!(!phrase_matches_in_doc_sloppy(&[vec![0, 3], vec![0, 3]], 1));
+    }
+
     // Fixture-backed `search_phrase_query` tests: reuse the real-Lucene "pos" field
     // (`IndexOptions.DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS`) already checked into
     // `fixtures/data/blocktree_index/` for `crates/lucene-codecs/tests/
@@ -1631,7 +1826,7 @@ mod tests {
             &mut c,
         )
         .unwrap();
-        assert_eq!(c.docs, vec![8555, 8556]);
+        assert_eq!(c.docs, vec![8555, 8556, 8557]);
     }
 
     #[test]
@@ -1714,6 +1909,40 @@ mod tests {
         )
         .unwrap();
         assert_eq!(c.docs, vec![8556]);
+    }
+
+    #[test]
+    fn phrase_query_sloppy_wiring_still_matches_the_exact_adjacent_doc() {
+        // This module's own `open_fixture()` data (alpha/beta) is exact-adjacent
+        // (gap 0). The non-adjacent-by-a-known-gap cross-engine case (doc7,
+        // alpha@0/beta@3) now lives in
+        // `crates/lucene-search/tests/phrase_query_fixtures.rs`'s
+        // `sloppy_phrase_gap_matches_real_lucenes_phrase_query_set_slop_at_every_tested_value`,
+        // verified against real Lucene's actual `PhraseQuery.setSlop(n)` results
+        // recorded by `GenBlockTree.java` -- see `docs/parity.md`. This test
+        // instead proves `search_phrase_query` itself correctly routes `slop > 0`
+        // to the sloppy path end-to-end (not just `phrase_matches_in_doc_sloppy`
+        // in isolation, which the unit tests above
+        // already cover exhaustively): a generous slop must still find exactly the
+        // same match as `slop == 0` for data that's already exact-adjacent.
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+        let pos_in = doc.open_pos();
+        let pay_in = doc.open_pay();
+        let mut c = VecCollector::default();
+        search_phrase_query(
+            &fields,
+            Some(&doc_in),
+            Some(&pos_in),
+            Some(&pay_in),
+            None,
+            &PhraseQuery::new("pos", ["alpha", "beta"]).with_slop(5),
+            &mut c,
+        )
+        .unwrap();
+        // slop=5 also bridges doc7's gap (alpha@0, beta@3, needs 2 moves).
+        assert_eq!(c.docs, vec![8555, 8557]);
     }
 
     #[test]
