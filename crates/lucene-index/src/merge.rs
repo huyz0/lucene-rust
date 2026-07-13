@@ -1,18 +1,20 @@
-//! Port of the stored-fields-only slice of `org.apache.lucene.index.SegmentMerger`
-//! (plus the field-numbering half of `FieldInfos.FieldNumbers`) -- merges N
-//! already-flushed, stored-fields-only segments (see `segment_writer`'s module
-//! doc for exactly what "stored-fields-only" means in this port) into one new
-//! stored-fields-only segment, dropping deleted docs and renumbering doc ids to
-//! be contiguous (`0..mergedDocCount`).
+//! Port of `org.apache.lucene.index.SegmentMerger` (plus the field-numbering
+//! half of `FieldInfos.FieldNumbers`) -- merges N already-flushed segments
+//! into one new segment, dropping deleted docs and renumbering doc ids to be
+//! contiguous (`0..mergedDocCount`). Stored fields are always merged; doc
+//! values, norms, and term vectors are merged too whenever a source supplies
+//! them (see "Doc values / norms / term vectors" below for the honest scope
+//! of that part).
 //!
 //! # What this is
 //!
 //! [`merge_stored_only_segments`] takes, for each source segment, its already
-//! read-back [`FieldInfos`](field_infos::FieldInfos) and [`Document`]s (via
-//! this port's stored-fields reader, [`stored_fields::open`] +
-//! [`stored_fields::StoredFieldsReader::document`]) plus an optional
-//! per-source live-docs bitset (via [`live_docs::parse`], or `None` if the
-//! source has no deletions), and:
+//! read-back [`FieldInfos`](field_infos::FieldInfos), a [`Document`] reader
+//! (via this port's stored-fields reader, [`stored_fields::open`] +
+//! [`stored_fields::StoredFieldsReader::document`]), an optional per-source
+//! live-docs bitset (via [`live_docs::parse`], or `None` if the source has no
+//! deletions), and optional per-source doc-values/norms/term-vectors data
+//! (see [`MergeSource`]), and:
 //! 1. reconciles field numbering across sources by field name (see
 //!    [`reconcile_field_numbers`]) -- real Lucene's `FieldInfos.FieldNumbers`
 //!    does the same job (a global, writer-wide field-number authority so the
@@ -25,11 +27,13 @@
 //!    `SegmentMerger`'s `MergeState.docMaps`, minus any doc-ID-remapping
 //!    policy fancier than "keep source order, drop gaps" -- this port has no
 //!    index sort or other doc-reordering merge policy yet);
-//! 3. hands the merged fields + merged docs to
-//!    [`crate::segment_writer::flush_stored_only_segment`], which already
-//!    does exactly the write-side work a merge's output segment needs (write
-//!    `.fdt`/`.fdx`/`.fdm`/`.fnm`/`.si`, return a [`SegmentCommitInfo`]) --
-//!    nothing merge-specific needed duplicating there.
+//! 3. merges any supplied doc-values/norms/term-vectors data the same way
+//!    (drop deleted docs, renumber contiguously, remap field numbers), then
+//!    writes stored fields, field infos, segment info, and whichever of
+//!    `.dvm`/`.dvd`/`.dvs`, `.nvm`/`.nvd`, `.tvd`/`.tvx`/`.tvm` the merge
+//!    produced, directly through `dir` -- mirroring exactly the write-side
+//!    work [`crate::segment_writer::flush_stored_only_segment`] does for a
+//!    stored-fields-only flush, generalized to the extra formats.
 //!
 //! # What this deliberately is not
 //!
@@ -39,40 +43,106 @@
 //!   `flush_stored_only_segment`.
 //! - **No merge-time codec upgrade.** The merged segment's codec/version are
 //!   caller-supplied, same stance as `flush_stored_only_segment`.
-//! - **No doc values / points / norms / term vectors / postings merging.**
-//!   None of those have a write-side caller that produces a full segment yet
-//!   in this port (see `segment_writer`'s doc comment) -- there is nothing to
-//!   merge beyond stored fields today.
 //! - **No `FieldInfos.FieldNumbers`-style full schema-consistency check.**
 //!   Real Lucene's field-number authority also verifies that two segments
 //!   agreeing on a field name agree on its indexing options, doc-values
-//!   type, etc. (`verifySameSchema`). Every field in every segment this port
-//!   can currently produce is stored-only (`IndexOptions::None`, no doc
-//!   values/points/vectors), so there is no schema attribute left to
-//!   disagree on beyond the name -- this reconciliation only needs to unify
-//!   *numbers*, not resolve real schema conflicts. Revisit once a second
-//!   write-side field kind exists.
+//!   type, etc. (`verifySameSchema`). This port's reconciliation only unifies
+//!   field *numbers* by name; it does not check that two sources agree on
+//!   every other `FieldInfo` attribute. Revisit if that ever bites.
+//!
+//! # Doc values / norms / term vectors: mergeable, but not from a real flush
+//!
+//! [`segment_writer::flush_stored_only_segment`] -- the only write-side path
+//! that produces a full segment in this port -- still only ever writes
+//! stored-fields-only segments; nothing in this port's normal flush path
+//! ever produces a segment with doc values, norms, or term vectors. So this
+//! module cannot (yet) be exercised end-to-end from "flush two real segments,
+//! merge them": there is no real caller that hands it doc-values/norms/
+//! term-vectors *sources* today.
+//!
+//! What *is* real: the write-side encoders for these formats already exist
+//! as standalone functions ([`lucene_codecs::doc_values::write_single_dense_numeric_field`],
+//! [`lucene_codecs::norms::write_single_dense_field`],
+//! [`lucene_codecs::term_vectors::write_best_speed`]), and their read-side
+//! counterparts can decode arbitrary per-source data (including data written
+//! by a test, or by some future caller once a real per-field flush path
+//! exists). [`merge_stored_only_segments`] therefore accepts, per source,
+//! *optional* already-decoded doc-values/norms/term-vectors data (see
+//! [`MergeSource`]) and, if supplied, merges it the same way stored fields
+//! are merged (drop deleted docs, renumber contiguously, reconcile field
+//! numbers) and re-encodes it with the existing write functions. This makes
+//! the merge logic real and testable without requiring a new flush path --
+//! but until a caller exists that can *produce* per-field doc-values/norms/
+//! term-vectors data for a real segment, nothing in this port actually
+//! drives this code outside of its own tests.
+//!
+//! ## Scope of the doc-values/norms merge
+//!
+//! [`lucene_codecs::doc_values::write_single_dense_numeric_field`] and
+//! [`lucene_codecs::norms::write_single_dense_field`] each write a complete,
+//! self-contained `.dvm`/`.dvd`/`.dvs` (or `.nvm`/`.nvd`) file pair/triple
+//! for exactly **one field** -- multi-field `.dvd`/`.nvd` files (the real
+//! on-disk shape, where every field's data shares one file) aren't
+//! supported by this port's write side yet. This merge inherits that same
+//! limit: at most one numeric-doc-values field and at most one norms field
+//! may be merged per call ([`Error::TooManyNumericDocValuesFields`] /
+//! [`Error::TooManyNormsFields`] otherwise). Term vectors have no such limit
+//! (`write_best_speed` already handles any number of fields per doc).
+//!
+//! ## The "sparse across sources" rule
+//!
+//! Real Lucene requires every doc in a merged segment to either uniformly
+//! have or uniformly lack doc-values/norms for a field, per that field's
+//! `FieldInfos` declaration -- a field can't have doc values for some docs
+//! and not others within one segment (`DocValuesType.NONE` vs. non-`NONE` is
+//! segment-wide per field). This port's write functions go further: they
+//! only support the fully **dense** case (every doc 0..max_doc has a value).
+//! So a doc-values/norms field can only be merged here if **every source
+//! that contributes at least one live doc** supplies decodable data for that
+//! field for **every one of its live docs** -- if any live-doc-contributing
+//! source is missing the field entirely, or has it only sparsely, this
+//! returns [`Error::DocValuesFieldMissingInSource`] /
+//! [`Error::NormsFieldMissingInSource`] rather than silently dropping the
+//! field or a doc's value.
+//!
+//! Term vectors have no such constraint: a source with no term-vectors
+//! reader for a doc, or a doc with none, simply contributes an empty
+//! [`lucene_codecs::term_vectors::TermVectorsDocument`] (matches the real
+//! per-doc "this doc has none" case `write_best_speed` already handles).
 //!
 //! See `docs/parity.md` and `PLAN.md`'s Phase 5 section for the exact,
 //! currently-true scope line.
 
 use std::collections::HashMap;
 
-use crate::segment_info::LuceneVersion;
+use crate::segment_info::{self, LuceneVersion, SegmentInfo};
 use crate::segment_infos::SegmentCommitInfo;
-use crate::segment_writer::{self, Error as SegmentWriterError};
-use lucene_codecs::field_infos::FieldInfo;
-use lucene_codecs::stored_fields::Document;
+use lucene_codecs::doc_values::{self, NumericEntry};
+use lucene_codecs::field_infos::{self, FieldInfo};
+use lucene_codecs::norms::{self, NormsEntry};
+use lucene_codecs::stored_fields::{self, Document};
+use lucene_codecs::term_vectors::{self, TermVectorsDocument, TermVectorsReader};
 use lucene_store::codec_util::ID_LENGTH;
+use lucene_store::data_output::DataOutput;
 use lucene_store::directory::Directory;
 use lucene_util::fixed_bit_set::FixedBitSet;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]
-    SegmentWriter(#[from] SegmentWriterError),
+    Store(#[from] lucene_store::Error),
     #[error(transparent)]
     StoredFields(#[from] lucene_codecs::stored_fields::Error),
+    #[error(transparent)]
+    DocValues(#[from] lucene_codecs::doc_values::Error),
+    #[error(transparent)]
+    Norms(#[from] lucene_codecs::norms::Error),
+    #[error(transparent)]
+    TermVectors(#[from] lucene_codecs::term_vectors::Error),
+    #[error(transparent)]
+    DocValuesWrite(#[from] lucene_codecs::doc_values::WriteError),
+    #[error(transparent)]
+    NormsWrite(#[from] lucene_codecs::norms::WriteError),
     /// A `MergeSource`'s stored fields referenced a field number absent from
     /// that same source's own `field_infos` -- an inconsistent/malformed
     /// `MergeSource` (its `reader` and `field_infos` don't actually describe
@@ -81,20 +151,96 @@ pub enum Error {
         "source segment's stored field number {field_number} has no entry in that source's own field_infos"
     )]
     UnknownSourceFieldNumber { field_number: i32 },
+    /// More than one field across the merged sources has numeric doc-values
+    /// data -- unsupported, see this module's doc comment on the
+    /// single-field limit of `write_single_dense_numeric_field`.
+    #[error(
+        "merging numeric doc values for more than one field per call isn't supported yet (found fields {0:?})"
+    )]
+    TooManyNumericDocValuesFields(Vec<i32>),
+    /// Same limit as [`Error::TooManyNumericDocValuesFields`], for norms.
+    #[error(
+        "merging norms for more than one field per call isn't supported yet (found fields {0:?})"
+    )]
+    TooManyNormsFields(Vec<i32>),
+    /// A field has numeric doc-values data in at least one source that
+    /// contributes live docs, but not in every such source (or not for
+    /// every one of that source's live docs) -- see this module's doc
+    /// comment on the "sparse across sources" rule.
+    #[error(
+        "merged field number {merged_field_number} has numeric doc values in some sources but not in every source that contributes live docs (or not for every one of that source's live docs)"
+    )]
+    DocValuesFieldMissingInSource { merged_field_number: i32 },
+    /// Same as [`Error::DocValuesFieldMissingInSource`], for norms.
+    #[error(
+        "merged field number {merged_field_number} has norms in some sources but not in every source that contributes live docs (or not for every one of that source's live docs)"
+    )]
+    NormsFieldMissingInSource { merged_field_number: i32 },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// One source's numeric doc-values data for a single field: the whole
+/// source segment's `.dvd` bytes plus the parsed [`NumericEntry`] describing
+/// that field within it (`entry.field_number` is that source's *original*
+/// field number, before merge-time renumbering).
+pub struct SourceNumericDocValues<'a> {
+    pub data: &'a [u8],
+    pub entry: NumericEntry,
+}
+
+/// One source's norms data for a single field -- same shape as
+/// [`SourceNumericDocValues`], for [`NormsEntry`]/`.nvd` instead.
+pub struct SourceNorms<'a> {
+    pub data: &'a [u8],
+    pub entry: NormsEntry,
+}
+
 /// One source segment's already-decoded input to a merge: its field infos
 /// (from `.fnm`, via [`lucene_codecs::field_infos::parse`]), a stored-fields
-/// reader over its `.fdt`/`.fdx`/`.fdm` (via [`stored_fields::open`]), and an
+/// reader over its `.fdt`/`.fdx`/`.fdm` (via [`stored_fields::open`]), an
 /// optional live-docs bitset (`None` means "no deletions -- every doc up to
 /// `reader.max_doc()` is live", matching a segment whose `SegmentCommitInfo`
-/// has `del_gen == -1`).
+/// has `del_gen == -1`), and optional per-field doc-values/norms/
+/// term-vectors data (all empty/`None` by default -- a source with none of
+/// these contributes only stored fields, same as before this module gained
+/// them).
 pub struct MergeSource<'a> {
     pub field_infos: &'a [FieldInfo],
     pub reader: &'a lucene_codecs::stored_fields::StoredFieldsReader<'a>,
     pub live_docs: Option<&'a FixedBitSet>,
+    /// This source's numeric doc-values fields, if any (see this module's
+    /// doc comment: at most one distinct field across *all* sources may
+    /// have numeric doc-values data in one merge call).
+    pub numeric_doc_values: &'a [SourceNumericDocValues<'a>],
+    /// This source's norms fields, if any (same one-field-across-all-sources
+    /// limit as `numeric_doc_values`).
+    pub norms: &'a [SourceNorms<'a>],
+    /// This source's term-vectors reader, or `None` if this source has no
+    /// term vectors at all (every doc then contributes an empty
+    /// [`TermVectorsDocument`]).
+    pub term_vectors: Option<&'a TermVectorsReader<'a>>,
+}
+
+impl<'a> MergeSource<'a> {
+    /// Convenience constructor for the common "stored fields only" case
+    /// (matches this module's original, pre-doc-values/norms/term-vectors
+    /// shape) -- avoids every existing caller having to spell out three new
+    /// empty/`None` fields.
+    pub fn stored_only(
+        field_infos: &'a [FieldInfo],
+        reader: &'a lucene_codecs::stored_fields::StoredFieldsReader<'a>,
+        live_docs: Option<&'a FixedBitSet>,
+    ) -> Self {
+        Self {
+            field_infos,
+            reader,
+            live_docs,
+            numeric_doc_values: &[],
+            norms: &[],
+            term_vectors: None,
+        }
+    }
 }
 
 /// Reconciles field numbering across `sources_fields` (one source's
@@ -162,9 +308,15 @@ pub fn merge_stored_only_segments(
     let sources_fields: Vec<&[FieldInfo]> = sources.iter().map(|s| s.field_infos).collect();
     let (merged_fields, per_source_maps) = reconcile_field_numbers(&sources_fields);
 
+    // Concatenate surviving docs in source order, remapping field numbers,
+    // and remember each source's list of surviving (pre-merge) doc ids --
+    // needed below to walk the same docs again for doc values/norms/term
+    // vectors without recomputing liveness.
     let mut merged_docs: Vec<Document> = Vec::new();
+    let mut per_source_live_ids: Vec<Vec<i32>> = Vec::with_capacity(sources.len());
     for (source, field_number_map) in sources.iter().zip(per_source_maps.iter()) {
         let max_doc = source.reader.max_doc();
+        let mut live_ids = Vec::new();
         for doc_id in 0..max_doc {
             let is_live = source
                 .live_docs
@@ -173,6 +325,7 @@ pub fn merge_stored_only_segments(
             if !is_live {
                 continue;
             }
+            live_ids.push(doc_id);
             let mut doc = source.reader.document(doc_id)?;
             for field in &mut doc.fields {
                 field.field_number = *field_number_map.get(&field.field_number).ok_or(
@@ -183,27 +336,299 @@ pub fn merge_stored_only_segments(
             }
             merged_docs.push(doc);
         }
+        per_source_live_ids.push(live_ids);
+    }
+    let doc_count = merged_docs.len() as i32;
+
+    let numeric_dv = merge_numeric_doc_values(sources, &per_source_maps, &per_source_live_ids)?;
+    let merged_norms = merge_norms(sources, &per_source_maps, &per_source_live_ids)?;
+    let tv_docs = merge_term_vectors(sources, &per_source_maps, &per_source_live_ids)?;
+
+    let mut files: Vec<String> = Vec::new();
+
+    let (fdt, fdx, fdm) = stored_fields::write_best_speed(&merged_docs, &merged_segment_id, "");
+    let fdt_name = format!("{merged_segment_name}.fdt");
+    let fdx_name = format!("{merged_segment_name}.fdx");
+    let fdm_name = format!("{merged_segment_name}.fdm");
+    for (name, bytes) in [(&fdt_name, &fdt), (&fdx_name, &fdx), (&fdm_name, &fdm)] {
+        write_file(dir, name, bytes)?;
+        files.push(name.clone());
     }
 
-    Ok(segment_writer::flush_stored_only_segment(
-        dir,
-        merged_segment_name,
-        merged_segment_id,
-        codec_name,
-        lucene_version,
-        &merged_fields,
-        &merged_docs,
-    )?)
+    let fnm_name = format!("{merged_segment_name}.fnm");
+    let fnm = field_infos::write(&merged_fields, &merged_segment_id, "");
+    write_file(dir, &fnm_name, &fnm)?;
+    files.push(fnm_name);
+
+    if let Some((field_number, values)) = numeric_dv {
+        let (dvm, dvd, dvs) = doc_values::write_single_dense_numeric_field(
+            field_number,
+            &values,
+            doc_count,
+            &merged_segment_id,
+            "",
+        )?;
+        for (ext, bytes) in [("dvm", &dvm), ("dvd", &dvd), ("dvs", &dvs)] {
+            let name = format!("{merged_segment_name}.{ext}");
+            write_file(dir, &name, bytes)?;
+            files.push(name);
+        }
+    }
+
+    if let Some((field_number, values)) = merged_norms {
+        let (nvm, nvd) = norms::write_single_dense_field(
+            field_number,
+            &values,
+            doc_count,
+            &merged_segment_id,
+            "",
+        )?;
+        for (ext, bytes) in [("nvm", &nvm), ("nvd", &nvd)] {
+            let name = format!("{merged_segment_name}.{ext}");
+            write_file(dir, &name, bytes)?;
+            files.push(name);
+        }
+    }
+
+    if let Some(tv_docs) = tv_docs {
+        let (tvd, tvx, tvm) = term_vectors::write_best_speed(&tv_docs, &merged_segment_id, "");
+        for (ext, bytes) in [("tvd", &tvd), ("tvx", &tvx), ("tvm", &tvm)] {
+            let name = format!("{merged_segment_name}.{ext}");
+            write_file(dir, &name, bytes)?;
+            files.push(name);
+        }
+    }
+
+    let si = SegmentInfo {
+        id: merged_segment_id,
+        version: lucene_version,
+        min_version: Some(lucene_version),
+        doc_count,
+        is_compound_file: false,
+        has_blocks: false,
+        diagnostics: vec![
+            ("source".to_string(), "merge".to_string()),
+            (
+                "lucene.version".to_string(),
+                format!(
+                    "{}.{}.{}",
+                    lucene_version.major, lucene_version.minor, lucene_version.bugfix
+                ),
+            ),
+        ],
+        files: files.clone(),
+        attributes: vec![(
+            "Lucene90StoredFieldsFormat.mode".to_string(),
+            "BEST_SPEED".to_string(),
+        )],
+    };
+    let si_name = format!("{merged_segment_name}.si");
+    let si_bytes = segment_info::write(&si, "");
+    write_file(dir, &si_name, &si_bytes)?;
+    files.push(si_name);
+
+    dir.sync(&files)?;
+
+    Ok(SegmentCommitInfo {
+        segment_name: merged_segment_name.to_string(),
+        segment_id: merged_segment_id,
+        codec_name: codec_name.to_string(),
+        del_gen: -1,
+        del_count: 0,
+        field_infos_gen: -1,
+        doc_values_gen: -1,
+        soft_del_count: 0,
+        sci_id: None,
+        field_infos_files: vec![],
+        dv_update_files: vec![],
+    })
+}
+
+fn write_file(dir: &dyn Directory, name: &str, bytes: &[u8]) -> Result<()> {
+    let mut out = dir.create_output(name)?;
+    out.write_bytes(bytes);
+    out.close()?;
+    Ok(())
+}
+
+/// Merges numeric doc-values data across `sources` into one `(merged_field_
+/// number, per_doc_values)` pair, contiguous in the same doc order
+/// `merged_docs` was built in -- or `Ok(None)` if no source has any numeric
+/// doc-values data at all. See this module's doc comment for the
+/// single-field limit and the "sparse across sources" rule this enforces.
+fn merge_numeric_doc_values(
+    sources: &[MergeSource],
+    per_source_maps: &[HashMap<i32, i32>],
+    per_source_live_ids: &[Vec<i32>],
+) -> Result<Option<(i32, Vec<i64>)>> {
+    let mut candidates: Vec<i32> = Vec::new();
+    for ((source, map), live_ids) in sources.iter().zip(per_source_maps).zip(per_source_live_ids) {
+        if live_ids.is_empty() {
+            // A fully-deleted source contributes no docs, so whatever
+            // doc-values fields it happens to carry can't affect the merged
+            // output -- skip it, consistent with the same exemption applied
+            // when checking for a field missing from a source below.
+            continue;
+        }
+        for nf in source.numeric_doc_values {
+            if let Some(&merged_number) = map.get(&nf.entry.field_number) {
+                if !candidates.contains(&merged_number) {
+                    candidates.push(merged_number);
+                }
+            }
+        }
+    }
+    if candidates.len() > 1 {
+        return Err(Error::TooManyNumericDocValuesFields(candidates));
+    }
+    let Some(merged_field_number) = candidates.into_iter().next() else {
+        return Ok(None);
+    };
+
+    let mut values: Vec<i64> = Vec::new();
+    for ((source, map), live_ids) in sources.iter().zip(per_source_maps).zip(per_source_live_ids) {
+        if live_ids.is_empty() {
+            continue;
+        }
+        let original_number = map
+            .iter()
+            .find(|&(_, &merged)| merged == merged_field_number)
+            .map(|(&orig, _)| orig);
+        let Some(original_number) = original_number else {
+            return Err(Error::DocValuesFieldMissingInSource {
+                merged_field_number,
+            });
+        };
+        let Some(entry) = source
+            .numeric_doc_values
+            .iter()
+            .find(|nf| nf.entry.field_number == original_number)
+        else {
+            return Err(Error::DocValuesFieldMissingInSource {
+                merged_field_number,
+            });
+        };
+        for &doc_id in live_ids {
+            let value = doc_values::numeric_value(entry.data, &entry.entry, doc_id)?.ok_or(
+                Error::DocValuesFieldMissingInSource {
+                    merged_field_number,
+                },
+            )?;
+            values.push(value);
+        }
+    }
+    Ok(Some((merged_field_number, values)))
+}
+
+/// Same shape and same rules as [`merge_numeric_doc_values`], for norms.
+fn merge_norms(
+    sources: &[MergeSource],
+    per_source_maps: &[HashMap<i32, i32>],
+    per_source_live_ids: &[Vec<i32>],
+) -> Result<Option<(i32, Vec<i64>)>> {
+    let mut candidates: Vec<i32> = Vec::new();
+    for ((source, map), live_ids) in sources.iter().zip(per_source_maps).zip(per_source_live_ids) {
+        if live_ids.is_empty() {
+            // Same "fully-deleted source can't affect the merged output"
+            // exemption as merge_numeric_doc_values.
+            continue;
+        }
+        for nf in source.norms {
+            if let Some(&merged_number) = map.get(&nf.entry.field_number) {
+                if !candidates.contains(&merged_number) {
+                    candidates.push(merged_number);
+                }
+            }
+        }
+    }
+    if candidates.len() > 1 {
+        return Err(Error::TooManyNormsFields(candidates));
+    }
+    let Some(merged_field_number) = candidates.into_iter().next() else {
+        return Ok(None);
+    };
+
+    let mut values: Vec<i64> = Vec::new();
+    for ((source, map), live_ids) in sources.iter().zip(per_source_maps).zip(per_source_live_ids) {
+        if live_ids.is_empty() {
+            continue;
+        }
+        let original_number = map
+            .iter()
+            .find(|&(_, &merged)| merged == merged_field_number)
+            .map(|(&orig, _)| orig);
+        let Some(original_number) = original_number else {
+            return Err(Error::NormsFieldMissingInSource {
+                merged_field_number,
+            });
+        };
+        let Some(entry) = source
+            .norms
+            .iter()
+            .find(|nf| nf.entry.field_number == original_number)
+        else {
+            return Err(Error::NormsFieldMissingInSource {
+                merged_field_number,
+            });
+        };
+        for &doc_id in live_ids {
+            let value = norms::norm_value(entry.data, &entry.entry, doc_id)?.ok_or(
+                Error::NormsFieldMissingInSource {
+                    merged_field_number,
+                },
+            )?;
+            values.push(value);
+        }
+    }
+    Ok(Some((merged_field_number, values)))
+}
+
+/// Merges term-vectors data across `sources`, contiguous in the same doc
+/// order `merged_docs` was built in, remapping every merged doc's field
+/// numbers -- or `Ok(None)` if no source has a term-vectors reader at all
+/// (distinguishing "nobody supplied term vectors" from "every doc has an
+/// empty term-vectors document" isn't needed by `write_best_speed`, but
+/// `None` lets a caller skip writing `.tvd`/`.tvx`/`.tvm` entirely when
+/// nothing in the merge has term vectors).
+fn merge_term_vectors(
+    sources: &[MergeSource],
+    per_source_maps: &[HashMap<i32, i32>],
+    per_source_live_ids: &[Vec<i32>],
+) -> Result<Option<Vec<TermVectorsDocument>>> {
+    if sources.iter().all(|s| s.term_vectors.is_none()) {
+        return Ok(None);
+    }
+
+    let mut merged_docs: Vec<TermVectorsDocument> = Vec::new();
+    for ((source, map), live_ids) in sources.iter().zip(per_source_maps).zip(per_source_live_ids) {
+        for &doc_id in live_ids {
+            let mut doc = match source.term_vectors {
+                Some(reader) => reader.document(doc_id)?.unwrap_or_default(),
+                None => TermVectorsDocument::default(),
+            };
+            for field in &mut doc.fields {
+                field.field_number =
+                    *map.get(&field.field_number)
+                        .ok_or(Error::UnknownSourceFieldNumber {
+                            field_number: field.field_number,
+                        })?;
+            }
+            merged_docs.push(doc);
+        }
+    }
+    Ok(Some(merged_docs))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::segment_writer;
     use lucene_codecs::field_infos::{
         DocValuesSkipIndexType, DocValuesType, IndexOptions, VectorEncoding,
         VectorSimilarityFunction,
     };
     use lucene_codecs::stored_fields::{self, FieldValue, StoredField};
+    use lucene_codecs::term_vectors::{TermVectorField, TermVectorTerm};
     use lucene_store::directory::FsDirectory;
 
     fn version() -> LuceneVersion {
@@ -399,16 +824,8 @@ mod tests {
         let reader0 = open_reader(&seg0);
         let reader1 = open_reader(&seg1);
         let sources = vec![
-            MergeSource {
-                field_infos: &seg0.fields,
-                reader: &reader0,
-                live_docs: None,
-            },
-            MergeSource {
-                field_infos: &seg1.fields,
-                reader: &reader1,
-                live_docs: None,
-            },
+            MergeSource::stored_only(&seg0.fields, &reader0, None),
+            MergeSource::stored_only(&seg1.fields, &reader1, None),
         ];
 
         let sci = merge_stored_only_segments(
@@ -472,16 +889,8 @@ mod tests {
         live1.set(1); // drop "c", keep "d"
 
         let sources = vec![
-            MergeSource {
-                field_infos: &seg0.fields,
-                reader: &reader0,
-                live_docs: Some(&live0),
-            },
-            MergeSource {
-                field_infos: &seg1.fields,
-                reader: &reader1,
-                live_docs: Some(&live1),
-            },
+            MergeSource::stored_only(&seg0.fields, &reader0, Some(&live0)),
+            MergeSource::stored_only(&seg1.fields, &reader1, Some(&live1)),
         ];
 
         let dir2 = FsDirectory::open(&tmp);
@@ -541,16 +950,8 @@ mod tests {
         let live1 = FixedBitSet::new(2); // all deleted, nothing set
 
         let sources = vec![
-            MergeSource {
-                field_infos: &seg0.fields,
-                reader: &reader0,
-                live_docs: None,
-            },
-            MergeSource {
-                field_infos: &seg1.fields,
-                reader: &reader1,
-                live_docs: Some(&live1),
-            },
+            MergeSource::stored_only(&seg0.fields, &reader0, None),
+            MergeSource::stored_only(&seg1.fields, &reader1, Some(&live1)),
         ];
 
         merge_stored_only_segments(
@@ -615,16 +1016,8 @@ mod tests {
         let reader0 = open_reader(&seg0);
         let reader1 = open_reader(&seg1);
         let sources = vec![
-            MergeSource {
-                field_infos: &seg0.fields,
-                reader: &reader0,
-                live_docs: None,
-            },
-            MergeSource {
-                field_infos: &seg1.fields,
-                reader: &reader1,
-                live_docs: None,
-            },
+            MergeSource::stored_only(&seg0.fields, &reader0, None),
+            MergeSource::stored_only(&seg1.fields, &reader1, None),
         ];
 
         merge_stored_only_segments(
@@ -733,11 +1126,7 @@ mod tests {
         let seg = flush(&dir, &tmp, "_0", [1u8; ID_LENGTH], &fields, &docs);
         let reader = open_reader(&seg);
 
-        let sources = vec![MergeSource {
-            field_infos: &seg.fields,
-            reader: &reader,
-            live_docs: None,
-        }];
+        let sources = vec![MergeSource::stored_only(&seg.fields, &reader, None)];
         let result = merge_stored_only_segments(
             &dir,
             &sources,
@@ -791,16 +1180,8 @@ mod tests {
         let reader0 = open_reader(&seg0);
         let reader1 = open_reader(&seg1);
         let sources = vec![
-            MergeSource {
-                field_infos: &seg0.fields,
-                reader: &reader0,
-                live_docs: Some(&parsed_live0),
-            },
-            MergeSource {
-                field_infos: &seg1.fields,
-                reader: &reader1,
-                live_docs: None,
-            },
+            MergeSource::stored_only(&seg0.fields, &reader0, Some(&parsed_live0)),
+            MergeSource::stored_only(&seg1.fields, &reader1, None),
         ];
 
         merge_stored_only_segments(
@@ -842,5 +1223,680 @@ mod tests {
         let source_err = stored_fields::Error::DocOutOfRange(5, 3);
         let wrapped: Error = source_err.into();
         assert!(matches!(wrapped, Error::StoredFields(_)));
+    }
+
+    // --- doc values / norms / term vectors merging ---
+
+    fn numeric_field(name: &str, number: i32) -> FieldInfo {
+        let mut f = field(name, number);
+        f.doc_values_type = DocValuesType::Numeric;
+        f
+    }
+
+    fn norms_field(name: &str, number: i32) -> FieldInfo {
+        let mut f = field(name, number);
+        f.omit_norms = false;
+        f
+    }
+
+    fn tv_field(name: &str, number: i32) -> FieldInfo {
+        let mut f = field(name, number);
+        f.store_term_vectors = true;
+        f
+    }
+
+    /// A test-owned numeric doc-values field: writes it via the real
+    /// write-side encoder, then re-parses the meta via the real read-side
+    /// decoder to get a genuine [`NumericEntry`] -- exercises the same
+    /// encode/decode round trip a real caller would, rather than hand
+    /// building a `NumericEntry`.
+    struct FlushedNumericDv {
+        data: Vec<u8>,
+        entry: NumericEntry,
+    }
+
+    fn flush_numeric_dv(
+        field_number: i32,
+        values: &[i64],
+        segment_id: [u8; ID_LENGTH],
+    ) -> FlushedNumericDv {
+        let max_doc = values.len() as i32;
+        let (meta, data, _skip) = doc_values::write_single_dense_numeric_field(
+            field_number,
+            values,
+            max_doc,
+            &segment_id,
+            "",
+        )
+        .unwrap();
+        let field_infos = field_infos::FieldInfos {
+            fields: vec![numeric_field("x", field_number)],
+        };
+        let (_version, parsed) =
+            doc_values::parse_meta(&meta, &segment_id, "", &field_infos).unwrap();
+        let entry = parsed.numeric_entry(field_number).unwrap().clone();
+        FlushedNumericDv { data, entry }
+    }
+
+    impl FlushedNumericDv {
+        fn source(&self) -> SourceNumericDocValues<'_> {
+            SourceNumericDocValues {
+                data: &self.data,
+                entry: self.entry.clone(),
+            }
+        }
+    }
+
+    struct FlushedNorms {
+        data: Vec<u8>,
+        entry: NormsEntry,
+    }
+
+    fn flush_norms(field_number: i32, values: &[i64], segment_id: [u8; ID_LENGTH]) -> FlushedNorms {
+        let max_doc = values.len() as i32;
+        let (meta, data) =
+            norms::write_single_dense_field(field_number, values, max_doc, &segment_id, "")
+                .unwrap();
+        let (_version, parsed) = norms::parse_meta(&meta, &segment_id, "").unwrap();
+        let entry = *parsed.entry(field_number).unwrap();
+        FlushedNorms { data, entry }
+    }
+
+    impl FlushedNorms {
+        fn source(&self) -> SourceNorms<'_> {
+            SourceNorms {
+                data: &self.data,
+                entry: self.entry,
+            }
+        }
+    }
+
+    struct FlushedTermVectors {
+        tvd: Vec<u8>,
+        tvx: Vec<u8>,
+        tvm: Vec<u8>,
+        segment_id: [u8; ID_LENGTH],
+    }
+
+    fn flush_term_vectors(
+        docs: &[TermVectorsDocument],
+        segment_id: [u8; ID_LENGTH],
+    ) -> FlushedTermVectors {
+        let (tvd, tvx, tvm) = term_vectors::write_best_speed(docs, &segment_id, "");
+        FlushedTermVectors {
+            tvd,
+            tvx,
+            tvm,
+            segment_id,
+        }
+    }
+
+    impl FlushedTermVectors {
+        fn reader(&self) -> TermVectorsReader<'_> {
+            term_vectors::open(&self.tvd, &self.tvx, &self.tvm, &self.segment_id, "").unwrap()
+        }
+    }
+
+    fn tv_doc(field_number: i32, terms: &[(&str, i32)]) -> TermVectorsDocument {
+        TermVectorsDocument {
+            fields: vec![TermVectorField {
+                field_number,
+                has_positions: true,
+                has_offsets: false,
+                has_payloads: false,
+                terms: terms
+                    .iter()
+                    .map(|(t, pos)| TermVectorTerm {
+                        term: t.as_bytes().to_vec(),
+                        freq: 1,
+                        positions: Some(vec![*pos]),
+                        start_offsets: None,
+                        end_offsets: None,
+                        payloads: None,
+                    })
+                    .collect(),
+            }],
+        }
+    }
+
+    #[test]
+    fn numeric_doc_values_merge_across_two_sources_with_deletions() {
+        let seg0_id = [1u8; ID_LENGTH];
+        let seg1_id = [2u8; ID_LENGTH];
+        // Source 0: 2 docs, doc 1 deleted -> only doc "10" survives.
+        let dv0 = flush_numeric_dv(0, &[10, 20], seg0_id);
+        // Source 1: 1 doc, no deletions -> "30" survives.
+        let dv1 = flush_numeric_dv(0, &[30], seg1_id);
+
+        let fields = vec![numeric_field("num", 0)];
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let stored0 = flush(
+            &dir,
+            &tmp,
+            "_0",
+            seg0_id,
+            &fields,
+            &[doc_with(0, "a"), doc_with(0, "b")],
+        );
+        let stored1 = flush(&dir, &tmp, "_1", seg1_id, &fields, &[doc_with(0, "c")]);
+        let reader0 = open_reader(&stored0);
+        let reader1 = open_reader(&stored1);
+
+        let mut live0 = FixedBitSet::new(2);
+        live0.set(0); // keep doc 0 ("a"/10), drop doc 1 ("b"/20)
+
+        let dv0_source = [dv0.source()];
+        let dv1_source = [dv1.source()];
+        let source0 = MergeSource {
+            field_infos: &stored0.fields,
+            reader: &reader0,
+            live_docs: Some(&live0),
+            numeric_doc_values: &dv0_source,
+            norms: &[],
+            term_vectors: None,
+        };
+        let source1 = MergeSource {
+            field_infos: &stored1.fields,
+            reader: &reader1,
+            live_docs: None,
+            numeric_doc_values: &dv1_source,
+            norms: &[],
+            term_vectors: None,
+        };
+
+        let sci = merge_stored_only_segments(
+            &dir,
+            &[source0, source1],
+            "_merged_dv",
+            [9u8; ID_LENGTH],
+            "Lucene104",
+            version(),
+        )
+        .unwrap();
+        assert_eq!(sci.segment_name, "_merged_dv");
+
+        let dvd = std::fs::read(std::path::Path::new(&tmp).join("_merged_dv.dvd")).unwrap();
+        let dvm = std::fs::read(std::path::Path::new(&tmp).join("_merged_dv.dvm")).unwrap();
+        let merged_field_infos = field_infos::FieldInfos {
+            fields: vec![numeric_field("num", 0)],
+        };
+        let (_v, meta) =
+            doc_values::parse_meta(&dvm, &[9u8; ID_LENGTH], "", &merged_field_infos).unwrap();
+        let entry = meta.numeric_entry(0).unwrap();
+        let values: Vec<i64> = (0..2)
+            .map(|d| doc_values::numeric_value(&dvd, entry, d).unwrap().unwrap())
+            .collect();
+        assert_eq!(values, vec![10, 30]);
+    }
+
+    #[test]
+    fn numeric_doc_values_missing_in_a_live_contributing_source_is_an_error() {
+        let seg0_id = [1u8; ID_LENGTH];
+        let dv0 = flush_numeric_dv(0, &[10], seg0_id);
+        let fields = vec![numeric_field("num", 0)];
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let stored0 = flush(&dir, &tmp, "_0", seg0_id, &fields, &[doc_with(0, "a")]);
+        let stored1 = flush(
+            &dir,
+            &tmp,
+            "_1",
+            [2u8; ID_LENGTH],
+            &fields,
+            &[doc_with(0, "b")],
+        );
+        let reader0 = open_reader(&stored0);
+        let reader1 = open_reader(&stored1);
+
+        let dv0_source = [dv0.source()];
+        let source0 = MergeSource {
+            field_infos: &stored0.fields,
+            reader: &reader0,
+            live_docs: None,
+            numeric_doc_values: &dv0_source,
+            norms: &[],
+            term_vectors: None,
+        };
+        // Source 1 has live docs but no numeric doc-values entry at all for
+        // field "num" -- the sparse-across-sources case this port refuses
+        // to silently drop.
+        let source1 = MergeSource::stored_only(&stored1.fields, &reader1, None);
+
+        let result = merge_stored_only_segments(
+            &dir,
+            &[source0, source1],
+            "_merged_dv_err",
+            [9u8; ID_LENGTH],
+            "Lucene104",
+            version(),
+        );
+        assert!(matches!(
+            result,
+            Err(Error::DocValuesFieldMissingInSource {
+                merged_field_number: 0
+            })
+        ));
+    }
+
+    #[test]
+    fn more_than_one_numeric_doc_values_field_is_rejected() {
+        let seg0_id = [1u8; ID_LENGTH];
+        let dv_a = flush_numeric_dv(0, &[1], seg0_id);
+        let dv_b = flush_numeric_dv(1, &[2], seg0_id);
+        let fields = vec![numeric_field("a", 0), numeric_field("b", 1)];
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let stored0 = flush(
+            &dir,
+            &tmp,
+            "_0",
+            seg0_id,
+            &fields,
+            &[Document {
+                fields: vec![
+                    StoredField {
+                        field_number: 0,
+                        value: FieldValue::String("x".to_string()),
+                    },
+                    StoredField {
+                        field_number: 1,
+                        value: FieldValue::String("y".to_string()),
+                    },
+                ],
+            }],
+        );
+        let reader0 = open_reader(&stored0);
+        let sources_a = dv_a.source();
+        let sources_b = dv_b.source();
+        let numeric = vec![
+            SourceNumericDocValues {
+                data: sources_a.data,
+                entry: sources_a.entry.clone(),
+            },
+            SourceNumericDocValues {
+                data: sources_b.data,
+                entry: sources_b.entry.clone(),
+            },
+        ];
+        let source0 = MergeSource {
+            field_infos: &stored0.fields,
+            reader: &reader0,
+            live_docs: None,
+            numeric_doc_values: &numeric,
+            norms: &[],
+            term_vectors: None,
+        };
+
+        let result = merge_stored_only_segments(
+            &dir,
+            &[source0],
+            "_merged_dv_toomany",
+            [9u8; ID_LENGTH],
+            "Lucene104",
+            version(),
+        );
+        assert!(matches!(
+            result,
+            Err(Error::TooManyNumericDocValuesFields(_))
+        ));
+    }
+
+    #[test]
+    fn a_fully_deleted_sources_unrelated_numeric_field_does_not_trigger_too_many_fields() {
+        // Source 0 (live) has numeric-dv field "a"; source 1 is 100% deleted
+        // but happens to carry an unrelated numeric-dv field "junk" -- since
+        // source 1 contributes zero docs to the merge, its doc-values field
+        // must not count toward the "more than one field" limit (regression
+        // for a bug where the too-many-fields check ran before the
+        // zero-live-docs exemption already applied elsewhere in this
+        // module).
+        let seg0_id = [1u8; ID_LENGTH];
+        let seg1_id = [2u8; ID_LENGTH];
+        let dv_a = flush_numeric_dv(0, &[10, 20], seg0_id);
+        let dv_junk = flush_numeric_dv(0, &[99], seg1_id);
+        let fields0 = vec![numeric_field("a", 0)];
+        let fields1 = vec![numeric_field("junk", 0)];
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let stored0 = flush(
+            &dir,
+            &tmp,
+            "_0",
+            seg0_id,
+            &fields0,
+            &[
+                Document {
+                    fields: vec![StoredField {
+                        field_number: 0,
+                        value: FieldValue::String("x".to_string()),
+                    }],
+                },
+                Document {
+                    fields: vec![StoredField {
+                        field_number: 0,
+                        value: FieldValue::String("y".to_string()),
+                    }],
+                },
+            ],
+        );
+        let stored1 = flush(
+            &dir,
+            &tmp,
+            "_1",
+            seg1_id,
+            &fields1,
+            &[Document {
+                fields: vec![StoredField {
+                    field_number: 0,
+                    value: FieldValue::String("z".to_string()),
+                }],
+            }],
+        );
+        let reader0 = open_reader(&stored0);
+        let reader1 = open_reader(&stored1);
+        let numeric0 = vec![dv_a.source()];
+        let numeric1 = vec![dv_junk.source()];
+        let all_deleted = FixedBitSet::new(1); // source 1: nothing live
+        let source0 = MergeSource {
+            field_infos: &stored0.fields,
+            reader: &reader0,
+            live_docs: None,
+            numeric_doc_values: &numeric0,
+            norms: &[],
+            term_vectors: None,
+        };
+        let source1 = MergeSource {
+            field_infos: &stored1.fields,
+            reader: &reader1,
+            live_docs: Some(&all_deleted),
+            numeric_doc_values: &numeric1,
+            norms: &[],
+            term_vectors: None,
+        };
+
+        let sci = merge_stored_only_segments(
+            &dir,
+            &[source0, source1],
+            "_merged_dv_deleted_unrelated",
+            [9u8; ID_LENGTH],
+            "Lucene104",
+            version(),
+        )
+        .unwrap();
+
+        let merged_reader =
+            std::fs::read(std::path::Path::new(&tmp).join(format!("{}.fdt", sci.segment_name)));
+        assert!(
+            merged_reader.is_ok(),
+            "merge should succeed, not reject on source 1's unrelated deleted-only field"
+        );
+    }
+
+    #[test]
+    fn norms_merge_across_two_sources_with_deletions() {
+        let seg0_id = [1u8; ID_LENGTH];
+        let seg1_id = [2u8; ID_LENGTH];
+        let norms0 = flush_norms(0, &[1, 2], seg0_id);
+        let norms1 = flush_norms(0, &[3], seg1_id);
+
+        let fields = vec![norms_field("body", 0)];
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let stored0 = flush(
+            &dir,
+            &tmp,
+            "_0",
+            seg0_id,
+            &fields,
+            &[doc_with(0, "a"), doc_with(0, "b")],
+        );
+        let stored1 = flush(&dir, &tmp, "_1", seg1_id, &fields, &[doc_with(0, "c")]);
+        let reader0 = open_reader(&stored0);
+        let reader1 = open_reader(&stored1);
+
+        let mut live0 = FixedBitSet::new(2);
+        live0.set(1); // drop doc 0 ("a"/1), keep doc 1 ("b"/2)
+
+        let norms0_source = [norms0.source()];
+        let norms1_source = [norms1.source()];
+        let source0 = MergeSource {
+            field_infos: &stored0.fields,
+            reader: &reader0,
+            live_docs: Some(&live0),
+            numeric_doc_values: &[],
+            norms: &norms0_source,
+            term_vectors: None,
+        };
+        let source1 = MergeSource {
+            field_infos: &stored1.fields,
+            reader: &reader1,
+            live_docs: None,
+            numeric_doc_values: &[],
+            norms: &norms1_source,
+            term_vectors: None,
+        };
+
+        merge_stored_only_segments(
+            &dir,
+            &[source0, source1],
+            "_merged_norms",
+            [9u8; ID_LENGTH],
+            "Lucene104",
+            version(),
+        )
+        .unwrap();
+
+        let nvd = std::fs::read(std::path::Path::new(&tmp).join("_merged_norms.nvd")).unwrap();
+        let nvm = std::fs::read(std::path::Path::new(&tmp).join("_merged_norms.nvm")).unwrap();
+        let (_v, parsed) = norms::parse_meta(&nvm, &[9u8; ID_LENGTH], "").unwrap();
+        let entry = parsed.entry(0).unwrap();
+        let values: Vec<i64> = (0..2)
+            .map(|d| norms::norm_value(&nvd, entry, d).unwrap().unwrap())
+            .collect();
+        assert_eq!(values, vec![2, 3]);
+    }
+
+    #[test]
+    fn term_vectors_merge_across_two_sources_with_deletions_and_a_source_with_none() {
+        let seg0_id = [1u8; ID_LENGTH];
+        // Source 0: 2 docs, both with a term-vectors field 0 ("id"->0).
+        let tv0 = flush_term_vectors(&[tv_doc(0, &[("a", 0)]), tv_doc(0, &[("b", 0)])], seg0_id);
+        // Source 1: 1 doc, no term-vectors reader at all -- contributes an
+        // empty term-vectors document for its live doc.
+        let fields0 = vec![tv_field("id", 0)];
+        let fields1 = vec![tv_field("id", 0)];
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let stored0 = flush(
+            &dir,
+            &tmp,
+            "_0",
+            seg0_id,
+            &fields0,
+            &[doc_with(0, "a"), doc_with(0, "b")],
+        );
+        let stored1 = flush(
+            &dir,
+            &tmp,
+            "_1",
+            [2u8; ID_LENGTH],
+            &fields1,
+            &[doc_with(0, "c")],
+        );
+        let reader0 = open_reader(&stored0);
+        let reader1 = open_reader(&stored1);
+        let tv0_reader = tv0.reader();
+
+        let mut live0 = FixedBitSet::new(2);
+        live0.set(1); // drop doc 0, keep doc 1 ("b")
+
+        let source0 = MergeSource {
+            field_infos: &stored0.fields,
+            reader: &reader0,
+            live_docs: Some(&live0),
+            numeric_doc_values: &[],
+            norms: &[],
+            term_vectors: Some(&tv0_reader),
+        };
+        let source1 = MergeSource::stored_only(&stored1.fields, &reader1, None);
+
+        merge_stored_only_segments(
+            &dir,
+            &[source0, source1],
+            "_merged_tv",
+            [9u8; ID_LENGTH],
+            "Lucene104",
+            version(),
+        )
+        .unwrap();
+
+        let tvd = std::fs::read(std::path::Path::new(&tmp).join("_merged_tv.tvd")).unwrap();
+        let tvx = std::fs::read(std::path::Path::new(&tmp).join("_merged_tv.tvx")).unwrap();
+        let tvm = std::fs::read(std::path::Path::new(&tmp).join("_merged_tv.tvm")).unwrap();
+        let merged_reader = term_vectors::open(&tvd, &tvx, &tvm, &[9u8; ID_LENGTH], "").unwrap();
+        assert_eq!(merged_reader.max_doc(), 2);
+
+        let doc0 = merged_reader.document(0).unwrap().unwrap();
+        assert_eq!(doc0.fields[0].terms[0].term, b"b");
+
+        // Source 1's doc contributed no term vectors at all.
+        assert!(merged_reader.document(1).unwrap().is_none());
+    }
+
+    #[test]
+    fn full_round_trip_merges_stored_fields_doc_values_norms_and_term_vectors_together() {
+        let seg0_id = [1u8; ID_LENGTH];
+        let seg1_id = [2u8; ID_LENGTH];
+
+        let dv0 = flush_numeric_dv(0, &[100, 200], seg0_id);
+        let dv1 = flush_numeric_dv(0, &[300], seg1_id);
+        let norms0 = flush_norms(0, &[1, 2], seg0_id);
+        let norms1 = flush_norms(0, &[3], seg1_id);
+        let tv0 = flush_term_vectors(&[tv_doc(0, &[("x", 0)]), tv_doc(0, &[("y", 0)])], seg0_id);
+        let tv1 = flush_term_vectors(&[tv_doc(0, &[("z", 0)])], seg1_id);
+
+        let mut field0 = numeric_field("body", 0);
+        field0.store_term_vectors = true;
+        field0.omit_norms = false;
+        let fields = vec![field0];
+
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let stored0 = flush(
+            &dir,
+            &tmp,
+            "_0",
+            seg0_id,
+            &fields,
+            &[doc_with(0, "a"), doc_with(0, "b")],
+        );
+        let stored1 = flush(&dir, &tmp, "_1", seg1_id, &fields, &[doc_with(0, "c")]);
+        let reader0 = open_reader(&stored0);
+        let reader1 = open_reader(&stored1);
+        let tv0_reader = tv0.reader();
+        let tv1_reader = tv1.reader();
+
+        let dv0_source = [dv0.source()];
+        let dv1_source = [dv1.source()];
+        let norms0_source = [norms0.source()];
+        let norms1_source = [norms1.source()];
+        let source0 = MergeSource {
+            field_infos: &stored0.fields,
+            reader: &reader0,
+            live_docs: None,
+            numeric_doc_values: &dv0_source,
+            norms: &norms0_source,
+            term_vectors: Some(&tv0_reader),
+        };
+        let source1 = MergeSource {
+            field_infos: &stored1.fields,
+            reader: &reader1,
+            live_docs: None,
+            numeric_doc_values: &dv1_source,
+            norms: &norms1_source,
+            term_vectors: Some(&tv1_reader),
+        };
+
+        let merged_id = [9u8; ID_LENGTH];
+        merge_stored_only_segments(
+            &dir,
+            &[source0, source1],
+            "_merged_all",
+            merged_id,
+            "Lucene104",
+            version(),
+        )
+        .unwrap();
+
+        // Stored fields.
+        let merged_fdt = std::fs::read(std::path::Path::new(&tmp).join("_merged_all.fdt")).unwrap();
+        let merged_fdx = std::fs::read(std::path::Path::new(&tmp).join("_merged_all.fdx")).unwrap();
+        let merged_fdm = std::fs::read(std::path::Path::new(&tmp).join("_merged_all.fdm")).unwrap();
+        let stored_reader =
+            stored_fields::open(&merged_fdt, &merged_fdx, &merged_fdm, &merged_id, "").unwrap();
+        assert_eq!(stored_reader.max_doc(), 3);
+        let vals: Vec<String> = (0..3)
+            .map(
+                |i| match &stored_reader.document(i).unwrap().fields[0].value {
+                    FieldValue::String(s) => s.clone(),
+                    _ => unreachable!(),
+                },
+            )
+            .collect();
+        assert_eq!(vals, vec!["a", "b", "c"]);
+
+        // Doc values.
+        let dvd = std::fs::read(std::path::Path::new(&tmp).join("_merged_all.dvd")).unwrap();
+        let dvm = std::fs::read(std::path::Path::new(&tmp).join("_merged_all.dvm")).unwrap();
+        let merged_field_infos = field_infos::FieldInfos {
+            fields: vec![numeric_field("body", 0)],
+        };
+        let (_v, dv_meta) =
+            doc_values::parse_meta(&dvm, &merged_id, "", &merged_field_infos).unwrap();
+        let dv_entry = dv_meta.numeric_entry(0).unwrap();
+        let dv_values: Vec<i64> = (0..3)
+            .map(|d| {
+                doc_values::numeric_value(&dvd, dv_entry, d)
+                    .unwrap()
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(dv_values, vec![100, 200, 300]);
+
+        // Norms.
+        let nvd = std::fs::read(std::path::Path::new(&tmp).join("_merged_all.nvd")).unwrap();
+        let nvm = std::fs::read(std::path::Path::new(&tmp).join("_merged_all.nvm")).unwrap();
+        let (_v, norms_meta) = norms::parse_meta(&nvm, &merged_id, "").unwrap();
+        let norms_entry = norms_meta.entry(0).unwrap();
+        let norms_values: Vec<i64> = (0..3)
+            .map(|d| norms::norm_value(&nvd, norms_entry, d).unwrap().unwrap())
+            .collect();
+        assert_eq!(norms_values, vec![1, 2, 3]);
+
+        // Term vectors.
+        let tvd = std::fs::read(std::path::Path::new(&tmp).join("_merged_all.tvd")).unwrap();
+        let tvx = std::fs::read(std::path::Path::new(&tmp).join("_merged_all.tvx")).unwrap();
+        let tvm = std::fs::read(std::path::Path::new(&tmp).join("_merged_all.tvm")).unwrap();
+        let tv_reader = term_vectors::open(&tvd, &tvx, &tvm, &merged_id, "").unwrap();
+        assert_eq!(tv_reader.max_doc(), 3);
+        let terms: Vec<Vec<u8>> = (0..3)
+            .map(|d| {
+                tv_reader.document(d).unwrap().unwrap().fields[0].terms[0]
+                    .term
+                    .clone()
+            })
+            .collect();
+        assert_eq!(terms, vec![b"x".to_vec(), b"y".to_vec(), b"z".to_vec()]);
+
+        // Segment info lists every file.
+        let si_bytes = std::fs::read(std::path::Path::new(&tmp).join("_merged_all.si")).unwrap();
+        let si = segment_info::parse(&si_bytes, &merged_id).unwrap();
+        for ext in [
+            "fdt", "fdx", "fdm", "fnm", "dvm", "dvd", "dvs", "nvm", "nvd", "tvd", "tvx", "tvm",
+        ] {
+            let name = format!("_merged_all.{ext}");
+            assert!(si.files.contains(&name), "missing {name} in .si files list");
+        }
     }
 }

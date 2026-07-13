@@ -448,22 +448,34 @@ merging, no deletes/updates during indexing, no NRT, no concurrency, and no unif
 multi-segment read path on this port's own side (real Lucene's reader federates the
 Rust-written segments fine; this port's own `SegmentReader`/`IndexSearcher` does not yet).
 
-**Progress (task #15):** `lucene-index/src/merge.rs::merge_stored_only_segments` merges N
-already-flushed, stored-fields-only segments into one new stored-fields-only segment: reads
-each source's `FieldInfos` + `Document`s back out (via `stored_fields::open`/`.document()`,
-already read-only ported in Phase 2), drops non-live docs per an optional per-source
-`FixedBitSet` (via `live_docs::parse`), reconciles field numbering across sources by field
-name (`reconcile_field_numbers`, the merge-time slice of `FieldInfos.FieldNumbers` — a
-segment's own field number is local to that segment, so two sources naming the same field
-differently is a real case, not a hypothetical one), renumbers surviving docs contiguously by
-concatenating sources in order, and hands the result to the existing
-`flush_stored_only_segment` to write the merged `.fdt`/`.fdx`/`.fdm`/`.fnm`/`.si`. No new
-read-side decoders were needed — `stored_fields`'s reader and `live_docs::parse` already
-existed from Phase 2. Still missing, and still item 6 below: `TieredMergePolicy`-style
-merge *selection* (this is caller-picks-the-sources merge *execution* only), background/
-concurrent merging, merge-time codec upgrades, and merging anything beyond stored fields
-(doc values/points/norms/term vectors/postings) — none of those have a write-side caller
-producing a full segment yet in this port, so there's nothing there to merge.
+**Progress (task #15, extended by task #26):** `lucene-index/src/merge.rs::merge_stored_only_segments`
+merges N already-flushed segments into one new segment: reads each source's `FieldInfos` +
+`Document`s back out (via `stored_fields::open`/`.document()`, already read-only ported in
+Phase 2), drops non-live docs per an optional per-source `FixedBitSet` (via `live_docs::parse`),
+reconciles field numbering across sources by field name (`reconcile_field_numbers`, the
+merge-time slice of `FieldInfos.FieldNumbers` — a segment's own field number is local to that
+segment, so two sources naming the same field differently is a real case, not a hypothetical
+one), renumbers surviving docs contiguously by concatenating sources in order, and writes the
+merged `.fdt`/`.fdx`/`.fdm`/`.fnm`/`.si`. Task #26 extended this to also merge doc values,
+norms, and term vectors whenever a caller supplies them per source (`MergeSource`'s optional
+`numeric_doc_values`/`norms`/`term_vectors` fields): each format's per-doc data is decoded via
+the existing read-side functions (`doc_values::numeric_value`, `norms::norm_value`,
+`term_vectors::TermVectorsReader::document`), filtered/renumbered/concatenated the same way
+stored fields are, and re-encoded via the existing single-field write-side encoders
+(`doc_values::write_single_dense_numeric_field`, `norms::write_single_dense_field`,
+`term_vectors::write_best_speed`) into `.dvm`/`.dvd`/`.dvs`, `.nvm`/`.nvd`, and
+`.tvd`/`.tvx`/`.tvm`. Because those write-side encoders are single-field-only, at most one
+numeric-doc-values field and one norms field can be merged per call; because they're
+dense-only, a doc-values/norms field can only be merged if every source contributing live docs
+has full data for it (an `Error` otherwise, not a silent drop) — term vectors have neither
+limit. **Important**: this remains mergeable-if-a-caller-has-the-data, not a real
+end-to-end scenario — `flush_stored_only_segment` (this port's only write path that produces a
+full segment) still only ever writes stored-fields-only segments, so no real caller can yet
+*produce* doc-values/norms/term-vectors sources to merge; only this module's own tests do.
+Still missing, and still item 6 below: `TieredMergePolicy`-style merge *selection* (this is
+caller-picks-the-sources merge *execution* only), background/concurrent merging, merge-time
+codec upgrades, multi-field `.dvd`/`.nvd`, and merging points/postings/binary-or-sorted doc
+values/term-vector offsets-payloads.
 
 **Progress (task #16):** `lucene-index/src/deletes.rs` adds the doc-ID-level delete
 mechanics real Lucene's `ReadersAndUpdates.writeLiveDocs` performs: `mark_deleted` clears
