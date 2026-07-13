@@ -185,6 +185,7 @@ pub mod collector;
 pub mod directory_reader;
 pub mod doc_value_query;
 pub mod docid_set;
+pub mod facets;
 pub mod field_norms;
 pub mod multi_segment;
 pub mod query;

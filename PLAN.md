@@ -1129,6 +1129,50 @@ together with that same real sparse field, confirming a soft-deleted doc is
 excluded from real term-query results. See `docs/parity.md` for the full
 row and scope writeup.
 
+**Progress (task #50):** basic faceting over a SORTED_SET doc-values field,
+`lucene-search/src/facets.rs::{facet_counts, resolve_labels, top_n_facets,
+FacetCount}` — a simplified port of real Lucene's
+`SortedSetDocValuesFacetCounts` (`lucene-facet` module): for every doc in a
+caller-supplied matching-doc-ID slice, `facet_counts` increments a counter
+for every one of that doc's SORTED_SET ordinals (multi-valued docs increment
+more than one counter, not just a "primary" one), `resolve_labels` turns
+those per-ordinal counts into `FacetCount { ord, label, count }` via the
+field's existing terms dictionary (`terms_dict::decode_all_terms`, the
+`lookupOrd`-equivalent already in this port), and `top_n_facets` sorts
+descending by count (ties broken by ascending ordinal, this crate's usual
+determinism convention) and truncates — real Lucene's
+`Facets.getTopChildren`. Thin aggregation only: no new format decoding, built
+entirely on the already-decoded `sorted_numeric_values`/`decode_all_terms`
+this port already had from tasks #4/#21/#31.
+
+**Two scope calls, made explicitly:**
+- **Single-segment only.** Real Lucene's faceting is index-wide because
+  `SortedSetDocValuesReaderState` builds one merged ordinal map across every
+  segment up front. This port has no such merged map — each segment's
+  SORTED_SET terms dictionary assigns ordinals independently, so summing raw
+  ordinal counts across segments would silently conflate unrelated terms
+  that happen to share an ordinal number in different segments. `facet_counts`
+  therefore counts one already-opened segment only; multi-segment callers
+  must merge per-segment results **by resolved string label** (via
+  `resolve_labels`), not by raw ordinal — a straightforward follow-up once a
+  caller needs it, not implemented here.
+- **Query-scoped counting is the only mode; "count everything" is the
+  caller's trivial special case**, not a separate code path — pass every live
+  doc ID as the matching-doc-ID slice to count the whole segment, exactly
+  how real Lucene's `FacetsCollector` has no separate API distinct from
+  running `MatchAllDocsQuery`.
+
+Verified against real Lucene ground truth from the existing
+`multi_valued_dv_index` fixture (task #31,
+`fixtures/src/GenMultiValuedDocValues.java`): its manifest already records
+each doc's real `SortedSetDocValues.nextOrd()` output
+(`field.tags.ords`/`field.tags.terms`), written via a straightforward
+per-doc iteration over real Lucene's own `SortedSetDocValues` — a genuine,
+real-Lucene-computed ground truth without depending on the `lucene-facet`
+module (not a project dependency). No new Java fixture generator was needed
+since the existing manifest already had everything required. Coverage:
+`facets.rs` 98.74% lines.
+
 1. `lucene-analysis`: `TokenStream` as an iterator-of-token-structs (skip Java's
    AttributeSource reflection design entirely — a plain
    `Token { bytes, position_increment, offset, ... }` struct), StandardTokenizer via
