@@ -490,19 +490,24 @@ was missing: `deletes::liv_file_name` produces `_<segment>_<delGen in base36>.li
 Lucene's `IndexFileNames.fileNameFromGeneration` (base-36-encoded generation, same convention
 `live_docs.rs`'s own index-header suffix already uses) — `del_gen` was previously tracked in
 `segment_infos.rs` purely as an opaque integer, with no filename derived from it anywhere.
-**Explicitly deferred, and why:** delete-by-term/delete-by-query resolution (real
-`BufferedUpdates`/`ReaderPool` — which doc IDs a `Term`/`Query` names, resolved by running
-it against each segment's live postings/doc-values reader) is a genuinely separate, larger
-feature this task does not attempt: this port's write path has no live per-segment reader
-wired to a query executor across segments yet (search and index/write are still unconnected
-halves), so there's nothing correct to resolve against, and a fake in-memory-scan version
-wouldn't match real generation-ordered `BufferedUpdates` semantics. `updateDocument` is
-deferred for the same reason: it's defined in real Lucene as delete-by-term + `addDocument`,
-so without delete-by-term a faithful version doesn't exist — a doc-ID-keyed "replace" helper
-would silently diverge from real `Term`-keyed semantics, so none was added; a caller needing
-that shape today composes `apply_deletes` with a separate `flush_stored_only_segment`/merge
-call by hand. See `docs/parity.md`'s new row for full detail, including test coverage
-(99.5% lines).
+**Progress (task #27):** `lucene-index/src/term_delete.rs` closes the delete-by-term half of
+the gap above, scoped to **one already-opened segment**: `resolve_term_doc_ids` takes a
+segment's `BlockTreeFields` + opened `.doc` file + a `(field, term)` pair and returns the
+matching **live** doc IDs ascending, using only `lucene-codecs` primitives (`field.postings`
++ a `live_docs` filter) — the same lookup `lucene-search::term_doc_ids` already does, kept at
+the `lucene-codecs` layer rather than depending on `lucene-search` from `lucene-index` (that
+would invert the intended `util ← store ← codecs ← index ← search ← core ← ffi` dependency
+graph, since `lucene-search` already depends on `lucene-index`). `resolve_and_apply_term_delete`
+composes that with `deletes::apply_deletes` for the full per-segment resolve-then-apply flow.
+**Still explicitly deferred, and why:** multi-segment resolution (a real `IndexWriter`'s
+`BufferedUpdates`/`ReaderPool` resolves a delete against *every* currently-open segment, not
+one already-opened one — this port has no multi-segment reader/writer orchestration); delete-
+by-query beyond a single exact term; and `updateDocument` (real Lucene defines it as delete-by-
+term + `addDocument` — now that delete-by-term exists for one segment, a caller can compose
+`resolve_and_apply_term_delete` with a separate `flush_stored_only_segment`/merge call by hand,
+but a first-class `updateDocument` wrapper is left for when multi-segment resolution exists, so
+it composes correctly rather than silently only covering one segment). See `docs/parity.md`'s
+updated row for full detail and test coverage.
 
 1. `lucene-analysis`: `TokenStream` as an iterator-of-token-structs (skip Java's
    AttributeSource reflection design entirely — a plain
