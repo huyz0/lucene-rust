@@ -139,10 +139,12 @@ The heart of the port. For the pinned codec (e.g. `Lucene103Codec`), implement r
 6. **Norms** (`.nvd/.nvm`).
 7. **Points / BKD** (`.kdd/.kdi/.kdm`): BKD tree reader + `intersect` visitor. Hard;
    needed for numeric/date range queries which OpenSearch uses constantly. Read
-   side and a write side supporting one dimension (any number of leaves,
-   multi-leaf packed-index tree construction included) are done -- see
-   `docs/parity.md`'s points row. Multi-dimension write (`LatLonPoint`-style)
-   remains a future slice.
+   side and a write side supporting any number of dimensions and any number of
+   leaves (`LatLonPoint`-shaped multi-dimension fields included, via a
+   widest-range split-dimension heuristic) are done -- see `docs/parity.md`'s
+   points row. Real query-driven pruning execution (an actual `PointRangeQuery`/
+   bounding-box `IntersectVisitor` on the search side) remains a future slice --
+   this port's own reader still decodes every leaf rather than pruning.
 8. **Live docs** (`.liv`) and per-commit deletes/DV-updates generations.
 9. **KNN vectors** (`.vec/.vex/.vem`, HNSW): schedule **last within the phase** and be
    willing to punt to Phase 8 — big, self-contained, and OpenSearch's k-NN often uses
