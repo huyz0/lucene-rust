@@ -18,6 +18,16 @@ for cls in GenPrimitives GenCodecUtil GenSegmentInfo GenSegmentInfos GenLiveDocs
 done
 ```
 
+`GenAnalysis.java` additionally needs `lucene-analysis-common` on the classpath
+(it exercises real `StandardAnalyzer`/`StopFilter`, not `lucene-core` alone):
+
+```sh
+ANALYSIS_JAR=$(find ~/.gradle/caches/modules-2/files-2.1/org.apache.lucene/lucene-analysis-common/10.5.0 \
+  -name '*.jar' ! -name '*sources*' ! -name '*javadoc*')
+javac -nowarn -cp "$JAR:$ANALYSIS_JAR" -d classes src/GenAnalysis.java
+java -cp "classes:$JAR:$ANALYSIS_JAR" GenAnalysis data
+```
+
 `data/` is checked in (small, deterministic) so `cargo test` works without Java
 installed; regenerate and re-commit whenever the pinned Lucene version changes.
 
@@ -358,3 +368,13 @@ it.
   manifest also dumps real `PostingsEnum.advance(target)` ground truth
   (including at the exact level-1 span boundary for "l1") and
   `TermsEnum.next()`/`seekCeil()` output.
+- `GenAnalysis.java` — runs real `StandardAnalyzer` (`StandardTokenizer` +
+  `LowerCaseFilter` + `StopFilter`) with a real stopword set (`the`, `a`,
+  `of`) over six strings (`analysis/` subdirectory, no `IndexWriter`
+  involved -- pure analysis, no index): a stopword mid-sentence, one at the
+  very start, one at the very end, three consecutive stopwords in a row, an
+  all-stopwords string, and a mixed-case/punctuation sentence with none
+  removed. Records each surviving token's term, position increment, and
+  char offsets via real `CharTermAttribute`/`PositionIncrementAttribute`/
+  `OffsetAttribute`, which is what `lucene-analysis`'s `StopFilter`
+  position-increment-preservation rule is checked against.

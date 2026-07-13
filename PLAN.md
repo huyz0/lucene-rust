@@ -1581,6 +1581,37 @@ a future change to this recursion can't silently regress them. Coverage:
 98.54% lines (workspace total 97.31% lines). See `docs/parity.md`'s
 `BooleanQuery` row for the itemized findings.
 
+**Progress (task #61, final task in this batch):** the analyzer chain --
+`lucene-analysis/src/lib.rs` fills in the previously-empty
+`crates/lucene-analysis` crate: `Token { term, start_offset, end_offset,
+position_increment }`, a simplified word-boundary `tokenize()` (split on
+non-alphanumeric boundaries, keep alphanumeric runs, char offsets -- the
+core algorithm of `StandardTokenizer`/`WhitespaceTokenizer`, not full UAX#29
+segmentation, which stays out of scope), `LowerCaseFilter`, `StopFilter`,
+and `Analyzer::standard(stopwords)` composing them, mirroring
+`StandardAnalyzer`. The crate stays dependency-free, sitting below both
+`lucene-index` and `lucene-search` in the workspace's downward graph so
+either could depend on it without a cycle -- neither does yet, since
+wiring an `Analyzer` into `query_parser.rs` or a not-yet-built indexing
+tokenization step is separate follow-on work; every existing "terms" input
+in this port (query parser, term-vector fixtures) still takes
+already-tokenized terms directly, unchanged by this task.
+`StopFilter`'s position-increment-preservation rule (the subtle,
+easy-to-invert one): a removed stopword's own `position_increment` is
+carried onto the *next surviving* token instead of being dropped, so
+`PhraseQuery`/`SpanNear` slop math stays correct across stopword removal.
+Verified against real Lucene: `fixtures/src/GenAnalysis.java` runs a real
+`StandardAnalyzer` with a real stopword set over six cases (stopword
+mid-sentence, leading, trailing, three consecutive, all-stopwords, and a
+mixed-case/punctuation sentence with none removed), and
+`crates/lucene-analysis/tests/analysis_fixtures.rs` asserts this port's
+`Analyzer` produces byte-identical (term, position_increment, offsets)
+sequences -- all six passed on the first real-Lucene run. Coverage:
+`lucene-analysis/src/lib.rs` covered by 12 unit tests plus the fixture
+test; see `docs/parity.md`'s new `lucene-analysis` section for the full
+scope table (ported vs. deferred: stemming, synonyms, ASCII-folding, and
+per-field analyzer configuration are all out of scope for this slice).
+
 1. `lucene-analysis`: `TokenStream` as an iterator-of-token-structs (skip Java's
    AttributeSource reflection design entirely — a plain
    `Token { bytes, position_increment, offset, ... }` struct), StandardTokenizer via
