@@ -30,7 +30,7 @@ use lucene_codecs::postings::DocInput;
 use lucene_search::collector::TopDocsCollector;
 use lucene_search::{
     search_boolean_query, search_boolean_query_scored, search_term_query, search_term_query_scored,
-    BooleanQuery, FieldNorms, TermQuery,
+    BooleanQuery, Clause, FieldNorms, TermQuery,
 };
 
 fn dir() -> String {
@@ -391,6 +391,88 @@ fn boolean_query_scored_minimum_should_match_sums_all_matching_clauses() {
         hits[0].score,
         expected
     );
+}
+
+/// Task #25 (nested `BooleanQuery` clauses): a nested `must` clause's own score
+/// contribution against this fixture's real `body` postings -- top.must =
+/// [dog, nested], nested.should = [cat, bird]. Matching-side proof: dog={0,1},
+/// nested's own disjunction cat∪bird={0,1,2,4}, conjunction={0,1}. Score-side: doc
+/// 0's total score must be dog(0) + cat(0) (bird doesn't match doc 0); doc 1's
+/// total score must be dog(1) + bird(1) (cat doesn't match doc 1) -- exactly real
+/// Lucene's additive `BooleanScorer` recursion (a nested `BooleanQuery`'s own
+/// score is the sum of its own matching sub-clauses), summed with the parent's own
+/// `dog` clause.
+#[test]
+fn nested_boolean_must_clause_scoring_matches_real_lucene_additive_recursion() {
+    let (fields, doc, id, suffix, _m) = open_segment();
+    let doc_in = DocInput::open(&doc, &id, &suffix).expect("open .doc");
+
+    let nested = BooleanQuery::new().with_should([
+        TermQuery::new("body", "cat"),
+        TermQuery::new("body", "bird"),
+    ]);
+    let query = BooleanQuery::new().with_must([
+        Clause::Term(TermQuery::new("body", "dog")),
+        Clause::Boolean(Box::new(nested)),
+    ]);
+
+    let mut top = TopDocsCollector::new(10);
+    search_boolean_query_scored(&fields, Some(&doc_in), None, &query, None, &mut top).unwrap();
+    let hits = top.top_docs();
+    let mut hit_docs: Vec<i32> = hits.iter().map(|h| h.doc_id).collect();
+    hit_docs.sort_unstable();
+    assert_eq!(hit_docs, vec![0, 1]);
+
+    let mut dog_scores = TopDocsCollector::new(10);
+    search_term_query_scored(
+        &fields,
+        Some(&doc_in),
+        None,
+        &TermQuery::new("body", "dog"),
+        None,
+        &mut dog_scores,
+    )
+    .unwrap();
+    let mut cat_scores = TopDocsCollector::new(10);
+    search_term_query_scored(
+        &fields,
+        Some(&doc_in),
+        None,
+        &TermQuery::new("body", "cat"),
+        None,
+        &mut cat_scores,
+    )
+    .unwrap();
+    let mut bird_scores = TopDocsCollector::new(10);
+    search_term_query_scored(
+        &fields,
+        Some(&doc_in),
+        None,
+        &TermQuery::new("body", "bird"),
+        None,
+        &mut bird_scores,
+    )
+    .unwrap();
+
+    let lookup = |top: &TopDocsCollector, doc_id: i32| -> Option<f32> {
+        top.top_docs()
+            .iter()
+            .find(|h| h.doc_id == doc_id)
+            .map(|h| h.score)
+    };
+
+    for hit in hits {
+        let expected = lookup(&dog_scores, hit.doc_id).unwrap_or(0.0)
+            + lookup(&cat_scores, hit.doc_id).unwrap_or(0.0)
+            + lookup(&bird_scores, hit.doc_id).unwrap_or(0.0);
+        assert!(
+            (hit.score - expected).abs() < 1e-4,
+            "doc={} got={} expected={}",
+            hit.doc_id,
+            hit.score,
+            expected
+        );
+    }
 }
 
 /// Opens this fixture's real `_0.nvm`/`_0.nvd` (written directly by segment

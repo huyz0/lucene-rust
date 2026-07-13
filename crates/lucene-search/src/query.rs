@@ -22,27 +22,68 @@ impl TermQuery {
     }
 }
 
+/// One `must`/`should`/`must_not` slot in a [`BooleanQuery`] — either a leaf
+/// `TermQuery`, or a nested `BooleanQuery` (recursively, to arbitrary depth: a
+/// `Clause::Boolean` can itself contain `Clause::Boolean` clauses). The Rust
+/// analogue of real `BooleanQuery.add(Query, Occur)` accepting any `Query`
+/// implementation into a clause list — this port has exactly two query shapes that
+/// need to nest inside a `BooleanQuery` today (a bare term, or another boolean
+/// combination of terms), so a closed two-variant enum captures the real
+/// requirement without speculative generality (see the `rust-performance` skill's
+/// "enums where the closed set allows" guidance, and this module's own
+/// `PhraseQuery` doc comment for the same "don't build the general shape until a
+/// second real need shows up" call). `PhraseQuery` is deliberately **not** a
+/// `Clause` variant yet — phrase queries as boolean clauses are a documented
+/// future extension (`docs/parity.md`), not a current need.
+///
+/// `Boolean` boxes its nested `BooleanQuery` so `Clause`'s own size doesn't scale
+/// with the depth of whatever query tree is embedded inside it — a `BooleanQuery`
+/// containing a `Vec<Clause>` would otherwise be an infinitely-sized type without
+/// the indirection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Clause {
+    /// A leaf exact-term clause.
+    Term(TermQuery),
+    /// A nested `BooleanQuery`, matched (and, for `search_boolean_query_scored`,
+    /// scored) against its own `must`/`should`/`must_not`/`minimum_should_match`
+    /// independently of the parent query's — see [`crate::search_boolean_query`]'s
+    /// doc comment for the exact recursive semantics.
+    Boolean(Box<BooleanQuery>),
+}
+
+impl From<TermQuery> for Clause {
+    fn from(query: TermQuery) -> Self {
+        Clause::Term(query)
+    }
+}
+
+impl From<BooleanQuery> for Clause {
+    fn from(query: BooleanQuery) -> Self {
+        Clause::Boolean(Box::new(query))
+    }
+}
+
 /// `BooleanQuery`-equivalent (`org.apache.lucene.search.BooleanQuery`), pared down to
-/// this slice's scope: a flat list of exact-`TermQuery` clauses per `Occur` bucket
-/// (`MUST`, `SHOULD`, `MUST_NOT`) plus `minimumNumberShouldMatch` — no nested
-/// `BooleanQuery`, no `FILTER` (a `FILTER` clause only differs from `MUST` by not
-/// contributing to scoring, and this slice has no scoring yet, so it would be a
+/// this slice's scope: a flat list of [`Clause`]s (each either a `TermQuery` or a
+/// nested `BooleanQuery`, recursively — see `Clause`'s doc comment) per `Occur`
+/// bucket (`MUST`, `SHOULD`, `MUST_NOT`) plus `minimumNumberShouldMatch` — no
+/// `FILTER` (a `FILTER` clause only differs from `MUST` by not contributing to
+/// scoring, and this slice has no separate `FILTER` concept yet, so it would be a
 /// distinction without a difference here).
 ///
-/// **Why three flat `Vec<TermQuery>` fields instead of real Lucene's single
+/// **Why three flat `Vec<Clause>` fields instead of real Lucene's single
 /// `Vec<(Occur, Query)>` clause list**: real `BooleanQuery` stores clauses in
 /// insertion order because `Occur` is per-clause and clause order matters for some
-/// scoring/explain paths. This port has no scoring yet and no nested query types (every
-/// clause is a `TermQuery`), so grouping by `Occur` up front removes a dispatch step
+/// scoring/explain paths. This port has no `explain()` and no clause-order-sensitive
+/// scoring, so grouping by `Occur` up front removes a dispatch step
 /// `search_boolean_query` would otherwise redo on every call (partition-by-`Occur`),
-/// with no loss of information this slice actually uses. If nested `BooleanQuery`
-/// clauses or scoring-sensitive clause order land later, revisit — the
-/// `Vec<(Occur, Query)>` shape earns its keep once clause order or query nesting
-/// matters.
+/// with no loss of information this slice actually uses. If clause order or a
+/// separate `FILTER` occur land later, revisit — the `Vec<(Occur, Query)>` shape
+/// earns its keep once clause order or a fourth `Occur` matters.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BooleanQuery {
     /// `Occur.MUST`: every doc must match every clause here (conjunction).
-    pub must: Vec<TermQuery>,
+    pub must: Vec<Clause>,
     /// `Occur.SHOULD`: interaction with `minimum_should_match` mirrors real
     /// `BooleanQuery`/`BooleanWeight` exactly (verified against
     /// `BooleanWeight.scorer`/`bulkScorer`/`explain`, not guessed — `should` clauses
@@ -56,9 +97,9 @@ pub struct BooleanQuery {
     /// not it already satisfies every `must` clause — must additionally match at
     /// least `minimum_should_match` of the `should` clauses to match at all; see
     /// `search_boolean_query`'s doc comment in `lib.rs` for the exact algorithm.
-    pub should: Vec<TermQuery>,
+    pub should: Vec<Clause>,
     /// `Occur.MUST_NOT`: a doc must match none of these clauses.
-    pub must_not: Vec<TermQuery>,
+    pub must_not: Vec<Clause>,
     /// `minimumNumberShouldMatch`-equivalent: the minimum number of `should` clauses
     /// a doc must match, on top of satisfying every `must` clause (if any). `0`
     /// (the default, via `Default`/`new`) means "no minimum" — real `BooleanQuery`'s
@@ -75,18 +116,25 @@ impl BooleanQuery {
         Self::default()
     }
 
-    pub fn with_must(mut self, clauses: impl IntoIterator<Item = TermQuery>) -> Self {
-        self.must.extend(clauses);
+    /// Accepts anything convertible to a [`Clause`] — a bare `TermQuery` (via
+    /// `Clause`'s `From<TermQuery>` impl) or an already-built nested `BooleanQuery`
+    /// (via `From<BooleanQuery>`), so existing `with_must([TermQuery::new(...)])`
+    /// call sites keep compiling unchanged while `with_must([nested_query])` now
+    /// also works for a `BooleanQuery` clause.
+    pub fn with_must(mut self, clauses: impl IntoIterator<Item = impl Into<Clause>>) -> Self {
+        self.must.extend(clauses.into_iter().map(Into::into));
         self
     }
 
-    pub fn with_should(mut self, clauses: impl IntoIterator<Item = TermQuery>) -> Self {
-        self.should.extend(clauses);
+    /// See [`Self::with_must`]'s doc comment for the accepted clause shapes.
+    pub fn with_should(mut self, clauses: impl IntoIterator<Item = impl Into<Clause>>) -> Self {
+        self.should.extend(clauses.into_iter().map(Into::into));
         self
     }
 
-    pub fn with_must_not(mut self, clauses: impl IntoIterator<Item = TermQuery>) -> Self {
-        self.must_not.extend(clauses);
+    /// See [`Self::with_must`]'s doc comment for the accepted clause shapes.
+    pub fn with_must_not(mut self, clauses: impl IntoIterator<Item = impl Into<Clause>>) -> Self {
+        self.must_not.extend(clauses.into_iter().map(Into::into));
         self
     }
 
@@ -170,10 +218,52 @@ mod tests {
             .with_must([TermQuery::new("body", "cat")])
             .with_should([TermQuery::new("body", "dog")])
             .with_must_not([TermQuery::new("body", "bird")]);
-        assert_eq!(q.must, vec![TermQuery::new("body", "cat")]);
-        assert_eq!(q.should, vec![TermQuery::new("body", "dog")]);
-        assert_eq!(q.must_not, vec![TermQuery::new("body", "bird")]);
+        assert_eq!(q.must, vec![Clause::Term(TermQuery::new("body", "cat"))]);
+        assert_eq!(q.should, vec![Clause::Term(TermQuery::new("body", "dog"))]);
+        assert_eq!(
+            q.must_not,
+            vec![Clause::Term(TermQuery::new("body", "bird"))]
+        );
         assert_eq!(q.minimum_should_match, 0);
+    }
+
+    #[test]
+    fn clause_from_term_query_wraps_in_term_variant() {
+        let clause: Clause = TermQuery::new("body", "cat").into();
+        assert_eq!(clause, Clause::Term(TermQuery::new("body", "cat")));
+    }
+
+    #[test]
+    fn clause_from_boolean_query_wraps_in_boxed_boolean_variant() {
+        let nested = BooleanQuery::new().with_must([TermQuery::new("body", "cat")]);
+        let clause: Clause = nested.clone().into();
+        assert_eq!(clause, Clause::Boolean(Box::new(nested)));
+    }
+
+    #[test]
+    fn with_must_accepts_a_nested_boolean_query_clause() {
+        let nested = BooleanQuery::new().with_must([TermQuery::new("body", "cat")]);
+        let q = BooleanQuery::new().with_must([nested.clone()]);
+        assert_eq!(q.must, vec![Clause::Boolean(Box::new(nested))]);
+    }
+
+    #[test]
+    fn nested_boolean_clauses_can_recurse_to_multiple_levels() {
+        // A 3-level tree: top.must = [inner], inner.must = [innermost], innermost.must
+        // = [TermQuery] -- confirms `Clause::Boolean` genuinely nests, not just one
+        // extra level.
+        let innermost = BooleanQuery::new().with_must([TermQuery::new("body", "cat")]);
+        let inner = BooleanQuery::new().with_must([innermost.clone()]);
+        let top = BooleanQuery::new().with_must([inner.clone()]);
+
+        let Clause::Boolean(top_inner) = &top.must[0] else {
+            panic!("expected a nested Boolean clause");
+        };
+        assert_eq!(**top_inner, inner);
+        let Clause::Boolean(inner_innermost) = &top_inner.must[0] else {
+            panic!("expected a nested Boolean clause");
+        };
+        assert_eq!(**inner_innermost, innermost);
     }
 
     #[test]

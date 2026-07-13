@@ -20,7 +20,7 @@
 use lucene_codecs::blocktree;
 use lucene_codecs::field_infos;
 use lucene_codecs::postings::DocInput;
-use lucene_search::{search_boolean_query, BooleanQuery, TermQuery, VecCollector};
+use lucene_search::{search_boolean_query, BooleanQuery, Clause, TermQuery, VecCollector};
 use std::collections::BTreeSet;
 
 fn dir() -> String {
@@ -272,4 +272,69 @@ fn must_across_multi_block_and_singleton_fields() {
     ]);
     search_boolean_query(&fields, Some(&doc_in), None, &query, &mut collector).unwrap();
     assert!(collector.docs.is_empty());
+}
+
+/// Task #25 (nested `BooleanQuery` clauses): a top-level `must` clause that is
+/// itself a nested `BooleanQuery`, against this fixture's real `body` postings --
+/// proves `resolve_clause_docs`/`matched_boolean_docs`'s recursion produces the
+/// same result real Lucene's own `BooleanQuery.add(nestedQuery, Occur.MUST)` would,
+/// computed here from the same real `PostingsEnum`-derived doc sets the flat
+/// boolean tests above already use (not hand-picked doc IDs).
+#[test]
+fn nested_boolean_must_clause_matches_real_lucene_intersection_of_the_nested_disjunction() {
+    let (fields, doc, id, suffix, m) = open_segment();
+    let doc_in = DocInput::open(&doc, &id, &suffix).expect("open .doc");
+
+    let cat = m.doc_set("body", "cat");
+    let dog = m.doc_set("body", "dog");
+    let bird = m.doc_set("body", "bird");
+    // Nested query: should=[cat, bird] -- its own disjunction, cat ∪ bird.
+    let nested_expected: BTreeSet<i32> = cat.union(&bird).copied().collect();
+    assert_eq!(
+        nested_expected,
+        BTreeSet::from([0, 1, 2, 4]),
+        "fixture sanity"
+    );
+    // Top level: must=[dog, nested] -- dog's doc set intersected with the nested
+    // query's own disjunction.
+    let expected: BTreeSet<i32> = dog.intersection(&nested_expected).copied().collect();
+    assert_eq!(expected, BTreeSet::from([0, 1]), "fixture sanity");
+
+    let mut collector = VecCollector::default();
+    let nested = BooleanQuery::new().with_should([
+        TermQuery::new("body", "cat"),
+        TermQuery::new("body", "bird"),
+    ]);
+    let query = BooleanQuery::new().with_must([
+        Clause::Term(TermQuery::new("body", "dog")),
+        Clause::Boolean(Box::new(nested)),
+    ]);
+    search_boolean_query(&fields, Some(&doc_in), None, &query, &mut collector).unwrap();
+    assert_eq!(collector.docs, sorted_vec(expected));
+}
+
+/// Three levels of nesting against the real fixture, confirming this port's
+/// recursion isn't hardcoded to exactly one extra level: `innermost` (`must=[cat,
+/// dog]`) sits inside `middle` (`should=[innermost]`), which sits inside `top`
+/// (`must=[middle]`).
+#[test]
+fn three_levels_of_nested_boolean_clauses_match_real_lucene() {
+    let (fields, doc, id, suffix, m) = open_segment();
+    let doc_in = DocInput::open(&doc, &id, &suffix).expect("open .doc");
+
+    let expected: BTreeSet<i32> = m
+        .doc_set("body", "cat")
+        .intersection(&m.doc_set("body", "dog"))
+        .copied()
+        .collect();
+    assert_eq!(expected, BTreeSet::from([0]), "fixture sanity");
+
+    let innermost = BooleanQuery::new()
+        .with_must([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")]);
+    let middle = BooleanQuery::new().with_should([innermost]);
+    let top = BooleanQuery::new().with_must([middle]);
+
+    let mut collector = VecCollector::default();
+    search_boolean_query(&fields, Some(&doc_in), None, &top, &mut collector).unwrap();
+    assert_eq!(collector.docs, sorted_vec(expected));
 }

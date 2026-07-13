@@ -125,9 +125,20 @@
 //! Either way, `must_not`'s disjunction is subtracted from whatever the above
 //! produces, same as before `minimum_should_match` existed.
 //!
-//! Deferred, tracked in `docs/parity.md`: nested `BooleanQuery` clauses (every clause
-//! here is a flat `TermQuery`), and — same as `search_term_query` — relevance
-//! scoring (a separate task, #13).
+//! **Nested `BooleanQuery` clauses** (task #25's addition): a `must`/`should`/
+//! `must_not` clause can itself be a [`query::Clause::Boolean`] (a boxed, nested
+//! `BooleanQuery`), to arbitrary depth — see [`query::Clause`]'s doc comment for
+//! why an enum (not a `Weight`/`Scorer`-style trait object) is the right shape
+//! here, and [`resolve_clause_docs`]/[`clause_scores`] for the recursive
+//! matching/scoring algorithms. A nested query resolves its own
+//! `must`/`should`/`must_not`/`minimum_should_match` completely independently of
+//! its parent's before the parent treats the result as one more clause to merge
+//! or score.
+//!
+//! Deferred, tracked in `docs/parity.md`: `PhraseQuery` as a boolean clause (only
+//! `TermQuery` and nested `BooleanQuery` are `Clause` variants today — see
+//! `query::Clause`'s doc comment), and — same as `search_term_query` — relevance
+//! scoring (a separate task, #13, since implemented — see below).
 //!
 //! ## Relevance scoring (task #13's addition)
 //!
@@ -184,7 +195,7 @@ pub use doc_value_query::{
     search_numeric_range, search_sorted_ord_range, sort_by_numeric_doc_value, MissingValue,
 };
 pub use field_norms::FieldNorms;
-pub use query::{BooleanQuery, PhraseQuery, TermQuery};
+pub use query::{BooleanQuery, Clause, PhraseQuery, TermQuery};
 
 use std::collections::HashMap;
 
@@ -324,6 +335,35 @@ pub(crate) fn should_match_counts(should_docs: &[Vec<i32>]) -> HashMap<i32, usiz
     counts
 }
 
+/// Resolves one `must`/`should`/`must_not` [`Clause`] to its ascending,
+/// live-filtered doc-ID list — the recursive core that lets [`matched_boolean_docs`]
+/// treat a `Clause::Term` and a `Clause::Boolean` identically once resolved.
+///
+/// - `Clause::Term`: delegates straight to [`term_doc_ids`], same as before this
+///   task's `Clause` generalization.
+/// - `Clause::Boolean`: recursively calls [`matched_boolean_docs`] on the nested
+///   query, which independently resolves *that* query's own
+///   `must`/`should`/`must_not`/`minimum_should_match` (its own call to this same
+///   function for each of its own clauses, however deep the nesting goes — genuine
+///   recursion, not a hardcoded second level) before this function materializes the
+///   result as one more doc-ID list for the parent's `Conjunction`/`Disjunction` to
+///   merge like any other clause. A nested query that itself resolves to "matches
+///   nothing" (`Ok(None)`, see `matched_boolean_docs`'s doc comment) contributes an
+///   empty list here, not an error.
+fn resolve_clause_docs(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    clause: &Clause,
+) -> Result<Vec<i32>> {
+    match clause {
+        Clause::Term(query) => term_doc_ids(fields, doc_in, live_docs, query),
+        Clause::Boolean(nested) => Ok(matched_boolean_docs(fields, doc_in, live_docs, nested)?
+            .map(Iterator::collect)
+            .unwrap_or_default()),
+    }
+}
+
 /// Shared matched-doc-set computation for [`search_boolean_query`] and
 /// [`search_boolean_query_scored`] (previously duplicated between the two; unified
 /// here since `minimum_should_match` handling would otherwise need implementing
@@ -332,6 +372,11 @@ pub(crate) fn should_match_counts(should_docs: &[Vec<i32>]) -> HashMap<i32, usiz
 /// and no `should` clauses" case (real `BooleanQuery.rewrite()`'s `MatchNoDocsQuery`
 /// outcome — see the doc comment), `Ok(Some(iter))` of the ascending, live-filtered
 /// matched doc IDs otherwise.
+///
+/// Each clause is resolved via [`resolve_clause_docs`], which recurses into a
+/// nested `Clause::Boolean`'s own call to this same function — this is also what
+/// makes this function itself recursive (a nested query resolves via a fresh call
+/// to `matched_boolean_docs`, not a duplicated copy of this algorithm).
 fn matched_boolean_docs(
     fields: &BlockTreeFields,
     doc_in: Option<&DocInput<'_>>,
@@ -345,10 +390,10 @@ fn matched_boolean_docs(
         return Ok(None);
     }
 
-    let clause_docs = |clauses: &[TermQuery]| -> Result<Vec<Vec<i32>>> {
+    let clause_docs = |clauses: &[Clause]| -> Result<Vec<Vec<i32>>> {
         clauses
             .iter()
-            .map(|q| term_doc_ids(fields, doc_in, live_docs, q))
+            .map(|clause| resolve_clause_docs(fields, doc_in, live_docs, clause))
             .collect()
     };
 
@@ -497,18 +542,75 @@ pub fn search_term_query_scored<C: ScoringCollector>(
     Ok(())
 }
 
+/// Recursive per-clause `(doc_id -> score)` contribution, the scored sibling of
+/// [`resolve_clause_docs`] used by [`search_boolean_query_scored`]:
+///
+/// - `Clause::Term`: this clause's own BM25 score per matching, live doc (via
+///   [`term_doc_scores`]), keyed by `query.field` in `norms` same as before this
+///   task's `Clause` generalization.
+/// - `Clause::Boolean`: real Lucene sums a nested `BooleanQuery`'s own internal
+///   score — itself the sum of *its* matching `must`/`should` sub-clauses' scores
+///   — as one contribution to the parent's total. Implemented here by first
+///   resolving the nested query's own matched-doc set (respecting its own
+///   `must_not`/`minimum_should_match`, same as matching), then recursing into
+///   this same function for each of the nested query's own `must`/`should`
+///   sub-clauses and summing, restricted to docs the nested query itself
+///   actually matched — a should-clause hit the nested query's own `must_not` or
+///   `minimum_should_match` excludes must not leak a score contribution into the
+///   parent. This recursion has no depth limit: a `Clause::Boolean` nested inside
+///   another `Clause::Boolean` resolves the same way, one level at a time.
+fn clause_scores(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    clause: &Clause,
+    norms: Option<&HashMap<String, FieldNorms<'_>>>,
+) -> Result<HashMap<i32, f32>> {
+    match clause {
+        Clause::Term(query) => {
+            let clause_norms = norms.and_then(|m| m.get(&query.field));
+            let mut scores = HashMap::new();
+            for (doc_id, score) in term_doc_scores(fields, doc_in, live_docs, query, clause_norms)?
+            {
+                *scores.entry(doc_id).or_insert(0.0) += score;
+            }
+            Ok(scores)
+        }
+        Clause::Boolean(nested) => {
+            let Some(matched) = matched_boolean_docs(fields, doc_in, live_docs, nested)? else {
+                return Ok(HashMap::new());
+            };
+            let matched: std::collections::HashSet<i32> = matched.collect();
+
+            let mut scores: HashMap<i32, f32> = HashMap::new();
+            for sub_clause in nested.must.iter().chain(nested.should.iter()) {
+                for (doc_id, score) in clause_scores(fields, doc_in, live_docs, sub_clause, norms)?
+                {
+                    if matched.contains(&doc_id) {
+                        *scores.entry(doc_id).or_insert(0.0) += score;
+                    }
+                }
+            }
+            Ok(scores)
+        }
+    }
+}
+
 /// Scored sibling of [`search_boolean_query`]: computes the same matched-doc set
 /// (`must`'s conjunction, else `should`'s disjunction, minus `must_not`'s
 /// disjunction — identical rules to [`search_boolean_query`], see this module's
 /// doc comment), but reports each matched doc's score as the **sum of its BM25
 /// score across every `must`/`should` clause it satisfies** (mirroring real
 /// Lucene's additive `BooleanScorer`; `must_not` clauses never contribute to the
-/// score, matching `Occur.MUST_NOT`'s filter-only contract).
+/// score, matching `Occur.MUST_NOT`'s filter-only contract). A `Clause::Boolean`
+/// clause contributes its own nested score recursively — see [`clause_scores`]'s
+/// doc comment for the exact recursive rule and how it stays correct to
+/// arbitrary nesting depth.
 ///
 /// `norms`: real per-doc/avg field length, keyed by field name, for every
-/// scored (`must`/`should`) clause's field — a clause whose field has no entry
-/// in this map (or when `norms` itself is `None`) falls back to
-/// [`similarity::UNNORMED_FIELD_LENGTH`] for that clause, same documented
+/// scored (`must`/`should`) clause's field, at every nesting depth — a clause
+/// whose field has no entry in this map (or when `norms` itself is `None`) falls
+/// back to [`similarity::UNNORMED_FIELD_LENGTH`] for that clause, same documented
 /// approximation as [`term_doc_scores`]. A `BooleanQuery`'s clauses can span
 /// multiple fields, unlike a single [`TermQuery`], hence the map instead of one
 /// `FieldNorms`.
@@ -528,8 +630,7 @@ pub fn search_boolean_query_scored<C: ScoringCollector>(
     // and `should` (never `must_not`, which only filters -- see doc comment).
     let mut scores: HashMap<i32, f32> = HashMap::new();
     for clause in query.must.iter().chain(query.should.iter()) {
-        let clause_norms = norms.and_then(|m| m.get(&clause.field));
-        for (doc_id, score) in term_doc_scores(fields, doc_in, live_docs, clause, clause_norms)? {
+        for (doc_id, score) in clause_scores(fields, doc_in, live_docs, clause, norms)? {
             *scores.entry(doc_id).or_insert(0.0) += score;
         }
     }
@@ -1105,6 +1206,250 @@ mod tests {
             .with_minimum_should_match(1);
         search_boolean_query(&fields, doc_in.as_ref(), None, &q, &mut c).unwrap();
         assert!(c.docs.is_empty());
+    }
+
+    // Nested `BooleanQuery` clause tests (task #25): cat={0,2}, dog={0,1},
+    // bird={1,4} (see above).
+
+    #[test]
+    fn nested_boolean_must_clause_narrows_the_matched_set() {
+        // top.must = [dog, nested] where nested = should=[cat, bird]. dog={0,1};
+        // nested's own disjunction = cat ∪ bird = {0,1,2,4}. Conjunction: {0,1}.
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let mut c = VecCollector::default();
+        let nested = BooleanQuery::new().with_should([
+            TermQuery::new("body", "cat"),
+            TermQuery::new("body", "bird"),
+        ]);
+        let q = BooleanQuery::new().with_must([
+            Clause::Term(TermQuery::new("body", "dog")),
+            Clause::Boolean(Box::new(nested)),
+        ]);
+        search_boolean_query(&fields, doc_in.as_ref(), None, &q, &mut c).unwrap();
+        assert_eq!(c.docs, vec![0, 1]);
+    }
+
+    #[test]
+    fn nested_boolean_should_clause_contributes_to_the_disjunction() {
+        // top.should = [nested] where nested = must=[cat, dog] -- nested's own
+        // conjunction is {0}, so top's disjunction (its only should clause) is {0}.
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let mut c = VecCollector::default();
+        let nested = BooleanQuery::new()
+            .with_must([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")]);
+        let q = BooleanQuery::new().with_should([nested]);
+        search_boolean_query(&fields, doc_in.as_ref(), None, &q, &mut c).unwrap();
+        assert_eq!(c.docs, vec![0]);
+    }
+
+    #[test]
+    fn nested_boolean_clauses_own_minimum_should_match_does_not_leak_to_parent() {
+        // nested = should=[dog, bird], minimum_should_match=2 (its own threshold):
+        // dog={0,1}, bird={1,4}, so nested's own matched set is {1} (only doc 1 hits
+        // both). Top level has no minimum_should_match of its own (defaults to 0),
+        // and top.must = [nested] alone -- the parent's conjunction is exactly
+        // nested's matched set, proving nested's threshold is evaluated
+        // independently and does narrow nested's own contribution.
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let mut c = VecCollector::default();
+        let nested = BooleanQuery::new()
+            .with_should([
+                TermQuery::new("body", "dog"),
+                TermQuery::new("body", "bird"),
+            ])
+            .with_minimum_should_match(2);
+        let q = BooleanQuery::new().with_must([nested]);
+        search_boolean_query(&fields, doc_in.as_ref(), None, &q, &mut c).unwrap();
+        assert_eq!(c.docs, vec![1]);
+    }
+
+    #[test]
+    fn parent_minimum_should_match_does_not_affect_nested_querys_own_matching() {
+        // Same nested query as above (should=[dog,bird], min_should_match=2 => {1}
+        // is nested's own matched set), but now the *parent* also sets its own
+        // minimum_should_match=1 over should=[nested, cat]. must is empty, so the
+        // matched set is should's disjunction: nested's {1} ∪ cat's {0,2} = {0,1,2},
+        // gated by parent's own min_should_match=1 (trivially satisfied by any
+        // should hit) -- confirms the parent's own threshold is a fully separate
+        // setting from the nested query's, neither overriding the other.
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let mut c = VecCollector::default();
+        let nested = BooleanQuery::new()
+            .with_should([
+                TermQuery::new("body", "dog"),
+                TermQuery::new("body", "bird"),
+            ])
+            .with_minimum_should_match(2);
+        let q = BooleanQuery::new()
+            .with_should([
+                Clause::Boolean(Box::new(nested)),
+                Clause::Term(TermQuery::new("body", "cat")),
+            ])
+            .with_minimum_should_match(1);
+        search_boolean_query(&fields, doc_in.as_ref(), None, &q, &mut c).unwrap();
+        assert_eq!(c.docs, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn nested_boolean_clause_that_matches_nothing_contributes_an_empty_set() {
+        // nested has only a must_not clause -- real `BooleanQuery.rewrite()`'s pure
+        // negative case, matching nothing on its own. As a `should` clause of the
+        // parent, it must contribute no docs, leaving only the sibling should
+        // clause's matches.
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let mut c = VecCollector::default();
+        let nested = BooleanQuery::new().with_must_not([TermQuery::new("body", "dog")]);
+        let q = BooleanQuery::new().with_should([
+            Clause::Boolean(Box::new(nested)),
+            Clause::Term(TermQuery::new("body", "cat")),
+        ]);
+        search_boolean_query(&fields, doc_in.as_ref(), None, &q, &mut c).unwrap();
+        assert_eq!(c.docs, vec![0, 2]);
+    }
+
+    #[test]
+    fn three_levels_of_nested_boolean_clauses_resolve_correctly() {
+        // Genuine multi-level recursion, not just one extra level: innermost =
+        // must=[cat, dog] => {0}. middle.should = [innermost] => {0} (its only
+        // should clause). top.must = [middle] => {0}.
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let mut c = VecCollector::default();
+        let innermost = BooleanQuery::new()
+            .with_must([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")]);
+        let middle = BooleanQuery::new().with_should([innermost]);
+        let top = BooleanQuery::new().with_must([middle]);
+        search_boolean_query(&fields, doc_in.as_ref(), None, &top, &mut c).unwrap();
+        assert_eq!(c.docs, vec![0]);
+    }
+
+    #[test]
+    fn nested_boolean_clause_scoring_sums_its_own_matching_sub_clauses() {
+        // top.should = [nested] alone, nested.should = [cat, bird]. Nested's own
+        // matched set is cat ∪ bird = {0,1,2,4}; each matched doc's score must equal
+        // the sum of whichever of cat/bird it actually matches -- same recursive
+        // rule `boolean_query_scored_matches_unscored_doc_set_and_sums_clause_scores`
+        // in `scoring_fixtures.rs` proves at the top level, now one level deeper.
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+
+        let nested = BooleanQuery::new().with_should([
+            TermQuery::new("body", "cat"),
+            TermQuery::new("body", "bird"),
+        ]);
+        let top = BooleanQuery::new().with_should([nested]);
+
+        let mut top_docs = TopDocsCollector::new(10);
+        search_boolean_query_scored(&fields, doc_in.as_ref(), None, &top, None, &mut top_docs)
+            .unwrap();
+
+        let mut cat_scores = TopDocsCollector::new(10);
+        search_term_query_scored(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            &TermQuery::new("body", "cat"),
+            None,
+            &mut cat_scores,
+        )
+        .unwrap();
+        let mut bird_scores = TopDocsCollector::new(10);
+        search_term_query_scored(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            &TermQuery::new("body", "bird"),
+            None,
+            &mut bird_scores,
+        )
+        .unwrap();
+
+        let lookup = |top: &TopDocsCollector, doc_id: i32| -> Option<f32> {
+            top.top_docs()
+                .iter()
+                .find(|h| h.doc_id == doc_id)
+                .map(|h| h.score)
+        };
+
+        let hits = top_docs.top_docs();
+        let mut hit_docs: Vec<i32> = hits.iter().map(|h| h.doc_id).collect();
+        hit_docs.sort_unstable();
+        assert_eq!(hit_docs, vec![0, 1, 2, 4]);
+
+        for hit in hits {
+            let expected = lookup(&cat_scores, hit.doc_id).unwrap_or(0.0)
+                + lookup(&bird_scores, hit.doc_id).unwrap_or(0.0);
+            assert!(
+                (hit.score - expected).abs() < 1e-4,
+                "doc={} got={} expected={}",
+                hit.doc_id,
+                hit.score,
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn nested_boolean_clause_scoring_excludes_docs_the_nested_query_itself_rejects() {
+        // nested = should=[dog, bird], minimum_should_match=2 -- nested's own
+        // matched set is {1} alone (see the matching-side test above). As a
+        // `should` clause of top (must empty), top's matched set must be exactly
+        // {1}, and its score must be dog(1) + bird(1) (both of nested's own
+        // sub-clauses that doc 1 actually satisfies) -- not a score for doc 0 or 4,
+        // which nested's own threshold rejects even though dog/bird individually
+        // match them.
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+
+        let nested = BooleanQuery::new()
+            .with_should([
+                TermQuery::new("body", "dog"),
+                TermQuery::new("body", "bird"),
+            ])
+            .with_minimum_should_match(2);
+        let top = BooleanQuery::new().with_should([nested]);
+
+        let mut top_docs = TopDocsCollector::new(10);
+        search_boolean_query_scored(&fields, doc_in.as_ref(), None, &top, None, &mut top_docs)
+            .unwrap();
+        let hits = top_docs.top_docs();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].doc_id, 1);
+
+        let mut dog_scores = TopDocsCollector::new(10);
+        search_term_query_scored(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            &TermQuery::new("body", "dog"),
+            None,
+            &mut dog_scores,
+        )
+        .unwrap();
+        let mut bird_scores = TopDocsCollector::new(10);
+        search_term_query_scored(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            &TermQuery::new("body", "bird"),
+            None,
+            &mut bird_scores,
+        )
+        .unwrap();
+        let lookup = |top: &TopDocsCollector, doc_id: i32| -> Option<f32> {
+            top.top_docs()
+                .iter()
+                .find(|h| h.doc_id == doc_id)
+                .map(|h| h.score)
+        };
+        let expected =
+            lookup(&dog_scores, 1).expect("dog matches doc 1") + lookup(&bird_scores, 1).unwrap();
+        assert!((hits[0].score - expected).abs() < 1e-4);
     }
 
     #[test]

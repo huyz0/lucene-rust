@@ -7,6 +7,20 @@
 //!
 //! `live_docs` is always `None` here (no `.liv`/deletions FFI surface yet --
 //! deferred, tracked in `docs/parity.md`): every matched doc is reported.
+//!
+//! **Nested `BooleanQuery` clauses (task #25)**: `lucene_search::BooleanQuery`'s
+//! `must`/`should`/`must_not` are now `Vec<Clause>` (a `Clause` is a `TermQuery` or
+//! a nested `BooleanQuery`, recursively -- see that crate's `query` module doc).
+//! This FFI surface deliberately keeps constructing only flat `Clause::Term`
+//! clauses from its four-parallel-array wire format -- `read_term_clauses` builds
+//! a `Vec<TermQuery>`, and `BooleanQuery::with_must`/`with_should`/`with_must_not`
+//! accept it unchanged (each `TermQuery` converts to `Clause::Term` via `Clause`'s
+//! `From<TermQuery>` impl), so no FFI-side code change was needed for this crate to
+//! keep compiling. Exposing nested-boolean *construction* over the C ABI (a
+//! `BooleanQuery` clause list containing another whole clause list, `Occur`-tagged)
+//! is a real wire-format design question of its own -- deferred here as a
+//! documented decision, not an oversight, since this task's scope is
+//! `lucene-search`'s own nested-clause support, not a new FFI capability.
 
 use std::os::raw::c_char;
 

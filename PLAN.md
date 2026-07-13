@@ -189,9 +189,9 @@ semantics (a pure-`MUST_NOT` query matches nothing; `SHOULD` is non-filtering
 once `MUST` exists) were verified against real `BooleanQuery.rewrite()` source
 rather than assumed. Differential-tested in
 `crates/lucene-search/tests/boolean_query_fixtures.rs` against the same
-fixture segment. Still deferred at that point: nested `BooleanQuery` clauses,
-`minimumNumberShouldMatch` (closed by task #24, see below), and relevance
-scoring.
+fixture segment. Still deferred at that point: nested `BooleanQuery` clauses
+(closed by task #25, see below), `minimumNumberShouldMatch` (closed by task
+#24, see below), and relevance scoring.
 
 Task #24 closed the `minimumNumberShouldMatch` gap: `query::BooleanQuery`
 gained a `minimum_should_match: usize` field (default `0`, via
@@ -213,6 +213,35 @@ unaffected: `search_boolean_query_scored` still sums every `must`/`should`
 clause a matched doc satisfies, not just `minimum_should_match`-worth.
 Differential-tested in `crates/lucene-search/tests/boolean_query_fixtures.rs`
 and `scoring_fixtures.rs` against the same fixture segment.
+
+Task #25 closed the nested-`BooleanQuery`-clauses gap: `query::BooleanQuery`'s
+`must`/`should`/`must_not` fields changed from `Vec<TermQuery>` to
+`Vec<Clause>`, where `Clause` is a new closed two-variant enum
+(`Clause::Term(TermQuery)` / `Clause::Boolean(Box<BooleanQuery>)`) — an enum
+rather than a `Weight`/`Scorer`-style trait object, since `TermQuery` and
+`BooleanQuery` are the only two shapes that actually need to nest today (see
+the `rust-performance` skill's "enums where the closed set allows" guidance;
+`PhraseQuery` deliberately isn't a `Clause` variant yet, tracked as a future
+extension). `Clause`'s `From<TermQuery>`/`From<BooleanQuery>` impls, combined
+with `with_must`/`with_should`/`with_must_not` taking `impl Into<Clause>`
+items, kept every existing `with_must([TermQuery::new(...)])` call site
+(including `lucene-ffi`'s `ffi_search_boolean_query`, which still only ever
+constructs flat `Clause::Term` clauses from its four-parallel-array wire
+format) compiling unchanged. `lib.rs` gained two recursive helpers:
+`resolve_clause_docs` (matching: a `Clause::Boolean` recurses into a fresh
+`matched_boolean_docs` call on the nested query, respecting that query's own
+`must`/`should`/`must_not`/`minimum_should_match` completely independently of
+the parent's) and `clause_scores` (scoring: a nested `BooleanQuery`'s own
+score contribution is the sum of *its own* matching `must`/`should`
+sub-clauses' scores, restricted to the doc set the nested query itself
+matched — mirroring real Lucene's additive `BooleanScorer` recursion).
+Neither helper hardcodes a nesting-depth limit — a `Clause::Boolean` nested
+inside another `Clause::Boolean` resolves the same way, recursively.
+Differential-tested (2–3 levels of nesting, both matching and scoring) in
+`crates/lucene-search/tests/boolean_query_fixtures.rs`/`scoring_fixtures.rs`
+against the same fixture segment, plus unit tests in `lib.rs`/`query.rs`
+proving a nested clause's own `minimum_should_match` is evaluated
+independently of the parent's (no cross-contamination in either direction).
 
 A third slice (task #13) landed **BM25 relevance scoring**: `similarity.rs`
 ports the pure `BM25Similarity` formula (`idf`/`tfNorm`/`score`, defaults
