@@ -770,6 +770,27 @@ building anything new byte-format-wise; a real reader-pool-driven true multi-seg
 as task #27, since this port has no reader pool — the caller still supplies whichever segments'
 `BlockTreeFields` it already has open. See `docs/parity.md`'s new row for full detail, the exact
 atomicity argument, and test coverage.
+**Progress (task #38):** `flush_stored_only_segment` can now actually pack a flushed
+segment's files into a `.cfs`/`.cfe` pair, closing the gap `compound_format.rs`'s own
+parity row flagged (the write-side codec existed but nothing in the writer pipeline called
+it). A new `use_compound_file: bool` parameter picks the on-disk layout: `false` keeps the
+pre-existing loose-file behavior byte-for-byte (regression-tested); `true` packs the same
+`.fdt`/`.fdx`/`.fdm`/`.fnm` bytes through `compound_format::write` into
+`<segment_name>.cfs`/`.cfe` instead, and the `.si` correctly records
+`is_compound_file: true`. Real Lucene only calls `Lucene90CompoundFormat.write` once
+`TieredMergePolicy`'s size heuristic (`noCFSRatio`/`maxCFSSegmentSizeMB`) says a flushed
+segment is small enough — this port has no merge policy or segment-size accounting at all
+(see item 6 below), so a size-based heuristic would have nothing real to compare against;
+a direct boolean is simpler and equally correct for both of this port's current callers
+(`update_document.rs` passes `false`, keeping its existing loose-file commits unchanged).
+No new Java fixture was needed: `compound_format.rs` was already differentially verified
+write→read against real Lucene (see its parity row), so this task is pure Rust-side
+wiring/composition, not new byte-format decoding — verified instead by a unit test that
+flushes with `use_compound_file: true` and recovers the original `.fnm`/`.fdt`/`.fdx`/`.fdm`
+bytes *through* `compound_format::parse_entries`/`open_input`, then confirms
+`stored_fields::open` can read the documents back out through those recovered slices (not
+the original in-memory buffers) — an end-to-end check that a byte-offset bug in the new
+wiring would actually fail.
 
 1. `lucene-analysis`: `TokenStream` as an iterator-of-token-structs (skip Java's
    AttributeSource reflection design entirely — a plain

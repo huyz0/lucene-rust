@@ -118,6 +118,7 @@ fn main() {
         lucene_version(),
         &fields,
         &segment0_docs,
+        false,
     )
     .unwrap();
     let sci1 = flush_stored_only_segment(
@@ -128,6 +129,7 @@ fn main() {
         lucene_version(),
         &fields,
         &segment1_docs,
+        false,
     )
     .unwrap();
 

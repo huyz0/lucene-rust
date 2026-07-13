@@ -783,6 +783,7 @@ mod tests {
             version(),
             fields,
             docs,
+            false,
         )
         .unwrap();
         FlushedSegment {

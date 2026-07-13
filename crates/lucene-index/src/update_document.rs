@@ -167,6 +167,11 @@ pub fn update_document(
     // still nothing committed if this fails (the delete's `.liv` files from
     // step 1 remain orphaned, harmlessly, since the previous `segments_N`
     // never referenced them).
+    // Compound-file packing is a caller decision this port has no
+    // size-based heuristic for yet (see
+    // `segment_writer::flush_stored_only_segment`'s doc comment);
+    // `update_document` keeps the pre-existing loose-file layout rather
+    // than opting this call site into compound files.
     let new_sci = flush_stored_only_segment(
         dir,
         new_segment_name,
@@ -175,6 +180,7 @@ pub fn update_document(
         lucene_version,
         new_fields,
         new_docs,
+        false,
     )?;
     updated_segments.push(new_sci);
 

@@ -152,6 +152,7 @@ fn main() {
         lucene_version(),
         &fields,
         &docs,
+        false,
     )
     .unwrap();
 
