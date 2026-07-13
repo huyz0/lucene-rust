@@ -131,14 +131,30 @@
 //! clause that doc satisfies — mirroring real Lucene's additive `BooleanScorer`
 //! (`must_not` clauses never contribute a score, matching real
 //! `Occur.MUST_NOT`'s "filters, never scores" contract).
+//!
+//! ## Doc-values-driven range query and sort (this slice's addition)
+//!
+//! [`doc_value_query`] adds a numeric range filter ([`search_numeric_range`]), a
+//! single-valued SORTED ordinal range/equality filter ([`search_sorted_ord_range`]),
+//! and a "sort an already-matched doc set by a numeric doc value" post-processing
+//! helper ([`sort_by_numeric_doc_value`]), all built directly on
+//! `lucene_codecs::doc_values`' already-complete read side (`numeric_value`/
+//! `sorted_ord`). See that module's doc comment for the full scope accounting —
+//! notably, multi-valued SORTED_NUMERIC/SORTED_SET range/sort (needs a selector
+//! concept this port doesn't have yet) and skip-index-driven range pruning (this
+//! port doesn't parse doc-values skip indexes) are both deliberately deferred.
 
 pub mod collector;
+pub mod doc_value_query;
 pub mod docid_set;
 pub mod query;
 pub mod similarity;
 
 pub use collector::{
     Collector, CountCollector, ScoreDoc, ScoringCollector, TopDocsCollector, VecCollector,
+};
+pub use doc_value_query::{
+    search_numeric_range, search_sorted_ord_range, sort_by_numeric_doc_value, MissingValue,
 };
 pub use query::{BooleanQuery, PhraseQuery, TermQuery};
 
@@ -161,6 +177,13 @@ pub enum Error {
     /// positions at all.
     #[error("phrase query needs an opened .pos file for a multi-term phrase")]
     MissingPosInput,
+    /// Surfaced by [`doc_value_query::search_numeric_range`]/
+    /// [`doc_value_query::search_sorted_ord_range`]/
+    /// [`doc_value_query::sort_by_numeric_doc_value`] when the underlying
+    /// `.dvd`/`.dvm` decode fails (e.g. a doc ID out of range for the entry,
+    /// or a truncated/corrupt values region).
+    #[error(transparent)]
+    DocValues(#[from] lucene_codecs::doc_values::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

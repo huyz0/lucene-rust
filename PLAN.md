@@ -236,6 +236,28 @@ reusing the existing `pos` field already in `fixtures/data/blocktree_index/`
 adjacent pair in one doc and a non-adjacent/absent pair in another). See
 `docs/parity.md`'s new `PhraseQuery`/`ExactPhraseScorer` row for full detail.
 
+**Progress (task #21):** doc-values-driven range query and single-key sort now
+exist in `lucene-search/src/doc_value_query.rs`, built directly on
+`lucene-codecs`' already-complete doc-values read side (`numeric_value`,
+`sorted_ord`). `search_numeric_range` full-sweeps `[0, max_doc)` checking each
+live doc's `NumericEntry` value against an inclusive `[min, max]` (no BKD/
+skip-index pruning exists to do better); `search_sorted_ord_range` is the same
+shape over a single-valued SORTED field's ordinal. `sort_by_numeric_doc_value`
+sorts an already-collected candidate doc-ID list (e.g. `search_term_query`'s
+output) ascending by numeric value, ties broken by ascending doc ID, with an
+explicit `MissingValue::{Exclude, Default}` policy for candidates lacking a
+value — implemented as a standalone function rather than a new `Collector`
+variant, since sorting needs the whole candidate set before it can produce
+its first output pair (unlike `Collector`'s streaming per-doc callback or
+`TopDocsCollector`'s incremental top-`N` heap). **Scoped to single-valued
+NUMERIC/SORTED fields only** — multi-valued SORTED_NUMERIC/SORTED_SET
+range/sort needs a `SortedNumericSelector`/`SortedSetSelector`-equivalent this
+port doesn't have yet (deferred; `doc_values::sorted_numeric_values` is
+already the read-side building block for that future slice). Verified against
+real Lucene by reusing the already-checked-in `fixtures/data/doc_values_index/`
+and `fixtures/data/sorted_dv_index/` fixtures (no new Java generator needed).
+See `docs/parity.md`'s new row for the full accounting.
+
 1. Traits: `Query → Weight → Scorer/ScorerSupplier`, `DocIdSetIterator`,
    `TwoPhaseIterator`, `BulkScorer`. Use enums where the closed set allows
    (DISI is called per-doc — keep it monomorphizable; `Box<dyn>` only at Weight level).
