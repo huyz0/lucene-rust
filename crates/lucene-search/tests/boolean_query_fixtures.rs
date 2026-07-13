@@ -212,6 +212,43 @@ fn empty_boolean_query_matches_nothing() {
 }
 
 #[test]
+fn minimum_should_match_narrows_the_matched_set_even_with_must_present() {
+    // cat={0,2}, dog={0,1}, bird={1,4} (all real `PostingsEnum`-derived, from
+    // `manifest.properties`, not hand-picked). must=[cat] alone gives {0,2}; adding
+    // should=[dog,bird] with minimum_should_match=1 additionally requires at least
+    // one of dog/bird -- doc 2 satisfies neither, so it drops out even though it
+    // satisfies `must`, unlike the `minimum_should_match == 0` case
+    // (`must_with_should_present_ignores_should_for_matching`, above) where doc 2
+    // stays. This is the exact real-`BooleanWeight` interaction rule this task
+    // implements: `should` gates matching regardless of `must`'s presence, once
+    // `minimum_should_match > 0`.
+    let (fields, doc, id, suffix, m) = open_segment();
+    let doc_in = DocInput::open(&doc, &id, &suffix).expect("open .doc");
+
+    let cat = m.doc_set("body", "cat");
+    let dog = m.doc_set("body", "dog");
+    let bird = m.doc_set("body", "bird");
+    assert_eq!(cat, BTreeSet::from([0, 2]), "fixture sanity");
+    let expected: BTreeSet<i32> = cat
+        .iter()
+        .copied()
+        .filter(|d| dog.contains(d) || bird.contains(d))
+        .collect();
+    assert_eq!(expected, BTreeSet::from([0]), "fixture sanity");
+
+    let mut collector = VecCollector::default();
+    let query = BooleanQuery::new()
+        .with_must([TermQuery::new("body", "cat")])
+        .with_should([
+            TermQuery::new("body", "dog"),
+            TermQuery::new("body", "bird"),
+        ])
+        .with_minimum_should_match(1);
+    search_boolean_query(&fields, Some(&doc_in), None, &query, &mut collector).unwrap();
+    assert_eq!(collector.docs, sorted_vec(expected));
+}
+
+#[test]
 fn must_across_multi_block_and_singleton_fields() {
     // Combines the multi-doc-block "big" field (docFreq 300) with the
     // singleton-in-term-dictionary "id" field to exercise the conjunction merge

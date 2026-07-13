@@ -24,10 +24,10 @@ impl TermQuery {
 
 /// `BooleanQuery`-equivalent (`org.apache.lucene.search.BooleanQuery`), pared down to
 /// this slice's scope: a flat list of exact-`TermQuery` clauses per `Occur` bucket
-/// (`MUST`, `SHOULD`, `MUST_NOT`) — no nested `BooleanQuery`, no `FILTER` (a `FILTER`
-/// clause only differs from `MUST` by not contributing to scoring, and this slice has
-/// no scoring yet, so it would be a distinction without a difference here), no
-/// `minimumNumberShouldMatch`.
+/// (`MUST`, `SHOULD`, `MUST_NOT`) plus `minimumNumberShouldMatch` — no nested
+/// `BooleanQuery`, no `FILTER` (a `FILTER` clause only differs from `MUST` by not
+/// contributing to scoring, and this slice has no scoring yet, so it would be a
+/// distinction without a difference here).
 ///
 /// **Why three flat `Vec<TermQuery>` fields instead of real Lucene's single
 /// `Vec<(Occur, Query)>` clause list**: real `BooleanQuery` stores clauses in
@@ -43,14 +43,31 @@ impl TermQuery {
 pub struct BooleanQuery {
     /// `Occur.MUST`: every doc must match every clause here (conjunction).
     pub must: Vec<TermQuery>,
-    /// `Occur.SHOULD`: a doc must match at least one clause here, but only when
-    /// `must` is empty — matching real `BooleanQuery`'s "SHOULD clauses become purely
-    /// score-contributing, not filtering, once a MUST/FILTER clause exists" rule (no
-    /// `minimumNumberShouldMatch` support yet, so that's the only interaction this
-    /// slice implements; see `search_boolean_query`'s doc comment in `lib.rs`).
+    /// `Occur.SHOULD`: interaction with `minimum_should_match` mirrors real
+    /// `BooleanQuery`/`BooleanWeight` exactly (verified against
+    /// `BooleanWeight.scorer`/`bulkScorer`/`explain`, not guessed — `should` clauses
+    /// are gated by `minimum_should_match` **regardless of whether `must` is also
+    /// non-empty**; it is not a "should only matters when must is absent" rule).
+    /// With `minimum_should_match == 0` (the default): when `must` is non-empty,
+    /// `should` is purely score-contributing and does not narrow the matched set;
+    /// when `must` is empty, `should`'s disjunction *is* the matched set (a doc
+    /// needs at least one `should` hit, which is `minimum_should_match`'s implicit
+    /// floor of 1 in that case). With `minimum_should_match > 0`: a doc — whether or
+    /// not it already satisfies every `must` clause — must additionally match at
+    /// least `minimum_should_match` of the `should` clauses to match at all; see
+    /// `search_boolean_query`'s doc comment in `lib.rs` for the exact algorithm.
     pub should: Vec<TermQuery>,
     /// `Occur.MUST_NOT`: a doc must match none of these clauses.
     pub must_not: Vec<TermQuery>,
+    /// `minimumNumberShouldMatch`-equivalent: the minimum number of `should` clauses
+    /// a doc must match, on top of satisfying every `must` clause (if any). `0`
+    /// (the default, via `Default`/`new`) means "no minimum" — real `BooleanQuery`'s
+    /// own default. Real `BooleanQuery.rewrite()` turns a `should.len() <
+    /// minimum_should_match` query into `MatchNoDocsQuery`; this port doesn't
+    /// special-case that (see `search_boolean_query`'s doc comment) because the
+    /// counting mechanism already yields "no doc can ever reach the threshold" in
+    /// that case, the same observable result, with no separate branch needed.
+    pub minimum_should_match: usize,
 }
 
 impl BooleanQuery {
@@ -70,6 +87,13 @@ impl BooleanQuery {
 
     pub fn with_must_not(mut self, clauses: impl IntoIterator<Item = TermQuery>) -> Self {
         self.must_not.extend(clauses);
+        self
+    }
+
+    /// Sets `minimum_should_match` (see the field doc comment for exact semantics).
+    /// Builder-style, consistent with `with_must`/`with_should`/`with_must_not`.
+    pub fn with_minimum_should_match(mut self, minimum_should_match: usize) -> Self {
+        self.minimum_should_match = minimum_should_match;
         self
     }
 }
@@ -137,6 +161,7 @@ mod tests {
         assert!(q.must.is_empty());
         assert!(q.should.is_empty());
         assert!(q.must_not.is_empty());
+        assert_eq!(q.minimum_should_match, 0);
     }
 
     #[test]
@@ -148,6 +173,15 @@ mod tests {
         assert_eq!(q.must, vec![TermQuery::new("body", "cat")]);
         assert_eq!(q.should, vec![TermQuery::new("body", "dog")]);
         assert_eq!(q.must_not, vec![TermQuery::new("body", "bird")]);
+        assert_eq!(q.minimum_should_match, 0);
+    }
+
+    #[test]
+    fn boolean_query_with_minimum_should_match_sets_the_field() {
+        let q = BooleanQuery::new()
+            .with_should([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")])
+            .with_minimum_should_match(2);
+        assert_eq!(q.minimum_should_match, 2);
     }
 
     #[test]

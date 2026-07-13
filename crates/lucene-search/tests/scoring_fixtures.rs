@@ -328,6 +328,71 @@ fn boolean_query_scored_must_not_clause_never_contributes_to_score() {
     }
 }
 
+/// `minimum_should_match` gates *matching*, not the score formula --
+/// `search_boolean_query_scored` must still sum every `must`/`should` clause a
+/// matched doc actually satisfies, not just `minimum_should_match`-worth of them.
+#[test]
+fn boolean_query_scored_minimum_should_match_sums_all_matching_clauses() {
+    let (fields, doc, id, suffix, _m) = open_segment();
+    let doc_in = DocInput::open(&doc, &id, &suffix).expect("open .doc");
+
+    // must=[cat]={0,2}; should=[dog,bird], dog={0,1}, bird={1,4}, minimum_should_match=1
+    // narrows the matched set to {0} (see `boolean_minimum_should_match_one_with_must_present_narrows_the_set`
+    // in `lib.rs`'s unit tests for the matching-side proof) -- this test instead
+    // asserts the *score* for doc 0 is `cat_score(0) + dog_score(0)` (bird doesn't
+    // match doc 0 at all, so it contributes nothing either way), proving the
+    // threshold only gates which docs match, not how many clause scores get summed.
+    let query = BooleanQuery::new()
+        .with_must([TermQuery::new("body", "cat")])
+        .with_should([
+            TermQuery::new("body", "dog"),
+            TermQuery::new("body", "bird"),
+        ])
+        .with_minimum_should_match(1);
+
+    let mut top = TopDocsCollector::new(10);
+    search_boolean_query_scored(&fields, Some(&doc_in), None, &query, None, &mut top).unwrap();
+    let hits = top.top_docs();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].doc_id, 0);
+
+    let mut cat_scores = TopDocsCollector::new(10);
+    search_term_query_scored(
+        &fields,
+        Some(&doc_in),
+        None,
+        &TermQuery::new("body", "cat"),
+        None,
+        &mut cat_scores,
+    )
+    .unwrap();
+    let mut dog_scores = TopDocsCollector::new(10);
+    search_term_query_scored(
+        &fields,
+        Some(&doc_in),
+        None,
+        &TermQuery::new("body", "dog"),
+        None,
+        &mut dog_scores,
+    )
+    .unwrap();
+
+    let lookup = |top: &TopDocsCollector, doc_id: i32| -> Option<f32> {
+        top.top_docs()
+            .iter()
+            .find(|h| h.doc_id == doc_id)
+            .map(|h| h.score)
+    };
+    let expected = lookup(&cat_scores, 0).expect("cat matches doc 0")
+        + lookup(&dog_scores, 0).expect("dog matches doc 0");
+    assert!(
+        (hits[0].score - expected).abs() < 1e-4,
+        "got={} expected={}",
+        hits[0].score,
+        expected
+    );
+}
+
 /// Opens this fixture's real `_0.nvm`/`_0.nvd` (written directly by segment
 /// name, no per-format suffix -- matching `Lucene90NormsFormat`'s file naming,
 /// unlike the per-field-postings-format `Lucene104_0` suffix `.tim`/`.doc`/etc

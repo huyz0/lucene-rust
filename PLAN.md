@@ -190,7 +190,29 @@ once `MUST` exists) were verified against real `BooleanQuery.rewrite()` source
 rather than assumed. Differential-tested in
 `crates/lucene-search/tests/boolean_query_fixtures.rs` against the same
 fixture segment. Still deferred at that point: nested `BooleanQuery` clauses,
-`minimumNumberShouldMatch`, and relevance scoring.
+`minimumNumberShouldMatch` (closed by task #24, see below), and relevance
+scoring.
+
+Task #24 closed the `minimumNumberShouldMatch` gap: `query::BooleanQuery`
+gained a `minimum_should_match: usize` field (default `0`, via
+`with_minimum_should_match`, an additive builder method — no existing call
+site needed to change). Verified against real `BooleanWeight.scorer`/
+`bulkScorer`/`explain` source rather than assumed: `should` is gated by
+`minimum_should_match` **regardless of whether `must` is also non-empty** —
+the interaction is easy to get backwards, since the pre-#24 rule ("`should` is
+score-only once `must` exists") only applies at `minimum_should_match == 0`.
+A new `should_match_counts` helper (`HashMap<i32, usize>` tally across each
+`should` clause's doc-ID list) gives `matched_boolean_docs` (the merge logic
+shared by `search_boolean_query`/`search_boolean_query_scored`, unified in the
+same task to avoid implementing the new gating twice) the per-doc
+"how many `should` clauses agreed" count a plain `Disjunction` can't answer.
+`minimum_should_match` exceeding `should.len()` needs no special case — no
+doc's count can ever reach an unreachable threshold, so the same comparison
+naturally yields real Lucene's `MatchNoDocsQuery` outcome. Scoring is
+unaffected: `search_boolean_query_scored` still sums every `must`/`should`
+clause a matched doc satisfies, not just `minimum_should_match`-worth.
+Differential-tested in `crates/lucene-search/tests/boolean_query_fixtures.rs`
+and `scoring_fixtures.rs` against the same fixture segment.
 
 A third slice (task #13) landed **BM25 relevance scoring**: `similarity.rs`
 ports the pure `BM25Similarity` formula (`idf`/`tfNorm`/`score`, defaults

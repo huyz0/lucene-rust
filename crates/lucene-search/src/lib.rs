@@ -87,23 +87,47 @@
 //! simplification since both now want exactly "one clause's ascending, live-filtered
 //! doc-ID sequence", with no behavior change to `search_term_query`'s own contract.
 //!
-//! Matching semantics follow real `BooleanQuery.rewrite()`
-//! (`org.apache.lucene.search.BooleanQuery`, verified against that source rather than
-//! guessed): a query with **no `must` and no `should` clauses matches nothing**,
-//! regardless of `must_not` — real Lucene rewrites both "no clauses at all" (`clauses
-//! .isEmpty()`) and "only `MUST_NOT` clauses" (`clauses.size() ==
-//! clauseSets.get(MUST_NOT).size()`) to a `MatchNoDocsQuery`, i.e. a **pure negative
-//! query does not mean "match every doc except the excluded ones"** — it means match
-//! nothing. When `must` is non-empty, `should` clauses do **not** narrow the matched
-//! set at all (they're scoring-only once a `MUST`/`FILTER` clause exists, absent
-//! `minimumNumberShouldMatch` — unimplemented here, see `query::BooleanQuery`'s doc
-//! comment); the matched set is `must`'s conjunction alone, then `must_not`'s
-//! disjunction is subtracted. When `must` is empty but `should` is not, the matched
-//! set is `should`'s disjunction, then `must_not` is subtracted the same way.
+//! Matching semantics follow real `BooleanQuery.rewrite()`/`BooleanWeight`
+//! (`org.apache.lucene.search.BooleanQuery`/`BooleanWeight`, verified against that
+//! source rather than guessed): a query with **no `must` and no `should` clauses
+//! matches nothing**, regardless of `must_not` — real Lucene rewrites both "no
+//! clauses at all" (`clauses.isEmpty()`) and "only `MUST_NOT` clauses"
+//! (`clauses.size() == clauseSets.get(MUST_NOT).size()`) to a `MatchNoDocsQuery`,
+//! i.e. a **pure negative query does not mean "match every doc except the excluded
+//! ones"** — it means match nothing.
+//!
+//! `query.minimum_should_match` (task #24's addition; `query::BooleanQuery`'s doc
+//! comment has the full field-level accounting) gates `should` **regardless of
+//! whether `must` is also non-empty** — this is the one place it's easy to get
+//! backwards, so it's called out explicitly: real `BooleanWeight.scorer`/
+//! `bulkScorer`/`explain` all compute `shouldMatchCount` and reject a doc with
+//! `shouldMatchCount < minShouldMatch` unconditionally, not just when `must` is
+//! empty. Concretely:
+//! - `minimum_should_match == 0` (the default): when `must` is non-empty, `should`
+//!   clauses do **not** narrow the matched set at all (scoring-only once a
+//!   `MUST`/`FILTER` clause exists); the matched set is `must`'s conjunction alone.
+//!   When `must` is empty, the matched set is `should`'s disjunction (a doc needs at
+//!   least one `should` hit — `minimum_should_match`'s implicit floor of 1 in that
+//!   case).
+//! - `minimum_should_match > 0`: **this is a real behavior change from the
+//!   `must`-present case above** — a doc drawn from `must`'s conjunction (or, when
+//!   `must` is empty, from `should`'s disjunction) is only kept if it *also* matches
+//!   at least `minimum_should_match` of the `should` clauses. See
+//!   [`should_match_counts`] for the per-doc counting mechanism this needs (a plain
+//!   `Disjunction` only reports doc-is-in-the-union, not how many clauses agreed).
+//! - `minimum_should_match` exceeding `should.len()`: real
+//!   `BooleanQuery.rewrite()` turns this into an explicit `MatchNoDocsQuery`
+//!   ("SHOULD clause count less than minimumNumberShouldMatch") at query-construction
+//!   time. This port doesn't add a separate branch for it — no doc's should-match
+//!   count can ever exceed `should.len()`, so the threshold comparison above already
+//!   yields the same "matches nothing" outcome for free.
+//!
+//! Either way, `must_not`'s disjunction is subtracted from whatever the above
+//! produces, same as before `minimum_should_match` existed.
 //!
 //! Deferred, tracked in `docs/parity.md`: nested `BooleanQuery` clauses (every clause
-//! here is a flat `TermQuery`), `minimumNumberShouldMatch`, and — same as
-//! `search_term_query` — relevance scoring (a separate task, #13).
+//! here is a flat `TermQuery`), and — same as `search_term_query` — relevance
+//! scoring (a separate task, #13).
 //!
 //! ## Relevance scoring (task #13's addition)
 //!
@@ -272,11 +296,53 @@ pub fn search_boolean_query<C: Collector>(
     query: &BooleanQuery,
     collector: &mut C,
 ) -> Result<()> {
+    let Some(matched) = matched_boolean_docs(fields, doc_in, live_docs, query)? else {
+        return Ok(());
+    };
+    for doc_id in matched {
+        collector.collect(doc_id);
+    }
+    Ok(())
+}
+
+/// Counts, per doc ID, how many of `should_docs` (one ascending, live-filtered doc-ID
+/// list per `should` clause, same shape [`term_doc_ids`] returns per clause) contain
+/// that doc — the mechanism [`matched_boolean_docs`] needs to enforce
+/// `minimum_should_match`, since a plain [`Disjunction`] only reports "this doc is in
+/// the union of at least one clause", not "how many clauses agreed on it". Doc order
+/// and duplicates across clauses (a doc appearing in more than one clause's list) are
+/// both handled the same way a `HashMap<i32, usize>` tally naturally handles them —
+/// same "count occurrences via a map" shape [`term_doc_positions`]'s per-term maps
+/// already use in this module for a different purpose.
+pub(crate) fn should_match_counts(should_docs: &[Vec<i32>]) -> HashMap<i32, usize> {
+    let mut counts = HashMap::new();
+    for docs in should_docs {
+        for &doc_id in docs {
+            *counts.entry(doc_id).or_insert(0) += 1;
+        }
+    }
+    counts
+}
+
+/// Shared matched-doc-set computation for [`search_boolean_query`] and
+/// [`search_boolean_query_scored`] (previously duplicated between the two; unified
+/// here since `minimum_should_match` handling would otherwise need implementing
+/// twice) — see this module's doc comment for the exact semantics, including the
+/// `minimum_should_match` interaction rules. Returns `Ok(None)` for the "no `must`
+/// and no `should` clauses" case (real `BooleanQuery.rewrite()`'s `MatchNoDocsQuery`
+/// outcome — see the doc comment), `Ok(Some(iter))` of the ascending, live-filtered
+/// matched doc IDs otherwise.
+fn matched_boolean_docs(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    query: &BooleanQuery,
+) -> Result<Option<BoxDocIter<'static>>> {
     if query.must.is_empty() && query.should.is_empty() {
         // Real `BooleanQuery.rewrite()` turns both "no clauses at all" and "only
         // MUST_NOT clauses" into a `MatchNoDocsQuery` -- see this module's doc
         // comment. Neither case reaches the merge machinery below.
-        return Ok(());
+        return Ok(None);
     }
 
     let clause_docs = |clauses: &[TermQuery]| -> Result<Vec<Vec<i32>>> {
@@ -292,11 +358,43 @@ pub fn search_boolean_query<C: Collector>(
             .collect()
     };
 
-    let base: BoxDocIter<'static> = if !query.must.is_empty() {
-        Box::new(Conjunction::new(to_iters(clause_docs(&query.must)?)))
+    let min_should_match = query.minimum_should_match;
+    // `should_docs` is only needed when `should` actually participates in matching:
+    // either as the base set (`must` empty) or as a `minimum_should_match` gate on
+    // top of `must`'s conjunction. When `must` is non-empty and
+    // `minimum_should_match == 0`, `should` stays purely score-only (matching
+    // pre-task-#24 behavior exactly) and this never touches it.
+    let should_docs = if query.must.is_empty() || min_should_match > 0 {
+        Some(clause_docs(&query.should)?)
     } else {
-        Box::new(Disjunction::new(to_iters(clause_docs(&query.should)?)))
+        None
     };
+
+    let base: BoxDocIter<'static> =
+        if !query.must.is_empty() {
+            let conjunction = Conjunction::new(to_iters(clause_docs(&query.must)?));
+            if min_should_match > 0 {
+                let counts = should_match_counts(should_docs.as_ref().expect("computed above"));
+                Box::new(conjunction.filter(move |doc_id| {
+                    counts.get(doc_id).copied().unwrap_or(0) >= min_should_match
+                }))
+            } else {
+                Box::new(conjunction)
+            }
+        } else {
+            let should_docs = should_docs.expect("computed above (must is empty)");
+            if min_should_match > 1 {
+                let counts = should_match_counts(&should_docs);
+                let disjunction = Disjunction::new(to_iters(should_docs));
+                Box::new(disjunction.filter(move |doc_id| {
+                    counts.get(doc_id).copied().unwrap_or(0) >= min_should_match
+                }))
+            } else {
+                // `min_should_match` is 0 or 1: a plain disjunction already requires "at
+                // least one should clause matched", so no counting is needed.
+                Box::new(Disjunction::new(to_iters(should_docs)))
+            }
+        };
 
     let matched: BoxDocIter<'static> = if query.must_not.is_empty() {
         base
@@ -306,10 +404,7 @@ pub fn search_boolean_query<C: Collector>(
         Box::new(Excluding::new(base, excluded))
     };
 
-    for doc_id in matched {
-        collector.collect(doc_id);
-    }
-    Ok(())
+    Ok(Some(matched))
 }
 
 /// Shared per-clause lookup, scored sibling of [`term_doc_ids`]: same field/term/
@@ -425,35 +520,8 @@ pub fn search_boolean_query_scored<C: ScoringCollector>(
     norms: Option<&HashMap<String, FieldNorms<'_>>>,
     collector: &mut C,
 ) -> Result<()> {
-    if query.must.is_empty() && query.should.is_empty() {
+    let Some(matched) = matched_boolean_docs(fields, doc_in, live_docs, query)? else {
         return Ok(());
-    }
-
-    let clause_docs = |clauses: &[TermQuery]| -> Result<Vec<Vec<i32>>> {
-        clauses
-            .iter()
-            .map(|q| term_doc_ids(fields, doc_in, live_docs, q))
-            .collect()
-    };
-
-    let to_iters = |docs: Vec<Vec<i32>>| -> Vec<BoxDocIter<'static>> {
-        docs.into_iter()
-            .map(|v| Box::new(v.into_iter()) as BoxDocIter<'static>)
-            .collect()
-    };
-
-    let base: BoxDocIter<'static> = if !query.must.is_empty() {
-        Box::new(Conjunction::new(to_iters(clause_docs(&query.must)?)))
-    } else {
-        Box::new(Disjunction::new(to_iters(clause_docs(&query.should)?)))
-    };
-
-    let matched: BoxDocIter<'static> = if query.must_not.is_empty() {
-        base
-    } else {
-        let excluded: BoxDocIter<'static> =
-            Box::new(Disjunction::new(to_iters(clause_docs(&query.must_not)?)));
-        Box::new(Excluding::new(base, excluded))
     };
 
     // Sum each scoring clause's (doc_id -> score) contributions across `must`
@@ -843,6 +911,30 @@ mod tests {
         assert_eq!(c.docs, vec![2]);
     }
 
+    // `should_match_counts` unit tests: pure counting logic, no fixture needed.
+
+    #[test]
+    fn should_match_counts_tallies_doc_occurrences_across_clauses() {
+        let counts = should_match_counts(&[vec![1, 2, 3], vec![2, 3], vec![3]]);
+        assert_eq!(counts.get(&1), Some(&1));
+        assert_eq!(counts.get(&2), Some(&2));
+        assert_eq!(counts.get(&3), Some(&3));
+        assert_eq!(counts.get(&4), None);
+    }
+
+    #[test]
+    fn should_match_counts_no_clauses_is_empty() {
+        assert!(should_match_counts(&[]).is_empty());
+    }
+
+    #[test]
+    fn should_match_counts_disjoint_clauses_each_count_one() {
+        let counts = should_match_counts(&[vec![1], vec![2], vec![3]]);
+        assert_eq!(counts.get(&1), Some(&1));
+        assert_eq!(counts.get(&2), Some(&1));
+        assert_eq!(counts.get(&3), Some(&1));
+    }
+
     // Boolean-query tests all reuse `body`'s known real-Lucene doc sets from
     // `manifest.properties` (see `term_query_fixtures.rs`'s module doc for how these
     // were captured): cat={0,2}, dog={0,1}, bird={1,4}.
@@ -899,6 +991,118 @@ mod tests {
         let doc_in = doc.as_ref().map(|d| d.open());
         let mut c = VecCollector::default();
         let q = BooleanQuery::new();
+        search_boolean_query(&fields, doc_in.as_ref(), None, &q, &mut c).unwrap();
+        assert!(c.docs.is_empty());
+    }
+
+    // `minimum_should_match` tests: cat={0,2}, dog={0,1}, bird={1,4} (see above).
+
+    #[test]
+    fn boolean_minimum_should_match_zero_with_must_present_is_unchanged_regression() {
+        // Explicit regression test: `minimum_should_match == 0` (the default) must
+        // still leave `should` purely score-only once `must` is non-empty, exactly
+        // like before task #24 added `minimum_should_match` at all.
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let mut c = VecCollector::default();
+        let q = BooleanQuery::new()
+            .with_must([TermQuery::new("body", "cat")])
+            .with_should([TermQuery::new("body", "bird")])
+            .with_minimum_should_match(0);
+        search_boolean_query(&fields, doc_in.as_ref(), None, &q, &mut c).unwrap();
+        assert_eq!(c.docs, vec![0, 2]);
+    }
+
+    #[test]
+    fn boolean_minimum_should_match_one_with_must_present_narrows_the_set() {
+        // must=[cat]={0,2}; should=[dog,bird], dog={0,1}, bird={1,4}. With
+        // minimum_should_match=1, doc 2 (0 should-clause hits) is now excluded even
+        // though it satisfies `must` -- `should` genuinely narrows the set once
+        // minimum_should_match > 0, unlike the 0 case above.
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let mut c = VecCollector::default();
+        let q = BooleanQuery::new()
+            .with_must([TermQuery::new("body", "cat")])
+            .with_should([
+                TermQuery::new("body", "dog"),
+                TermQuery::new("body", "bird"),
+            ])
+            .with_minimum_should_match(1);
+        search_boolean_query(&fields, doc_in.as_ref(), None, &q, &mut c).unwrap();
+        assert_eq!(c.docs, vec![0]);
+    }
+
+    #[test]
+    fn boolean_minimum_should_match_two_with_three_should_clauses_excludes_single_hits() {
+        // should=[cat,dog,bird] (must empty): doc0 hits cat+dog (2), doc1 hits
+        // dog+bird (2), doc2 hits only cat (1), doc4 hits only bird (1). With
+        // minimum_should_match=2, only docs with 2+ hits survive.
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let mut c = VecCollector::default();
+        let q = BooleanQuery::new()
+            .with_should([
+                TermQuery::new("body", "cat"),
+                TermQuery::new("body", "dog"),
+                TermQuery::new("body", "bird"),
+            ])
+            .with_minimum_should_match(2);
+        search_boolean_query(&fields, doc_in.as_ref(), None, &q, &mut c).unwrap();
+        assert_eq!(c.docs, vec![0, 1]);
+    }
+
+    #[test]
+    fn boolean_minimum_should_match_with_must_empty_still_requires_the_threshold() {
+        // Same should set as above but explicitly with must empty and
+        // minimum_should_match=1 -- equivalent to a plain disjunction (every should
+        // clause hit counts as >= 1), confirming must-empty + minSSM=1 matches the
+        // existing should-disjunction-is-the-matched-set behavior.
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let mut c = VecCollector::default();
+        let q = BooleanQuery::new()
+            .with_should([
+                TermQuery::new("body", "cat"),
+                TermQuery::new("body", "bird"),
+            ])
+            .with_minimum_should_match(1);
+        search_boolean_query(&fields, doc_in.as_ref(), None, &q, &mut c).unwrap();
+        assert_eq!(c.docs, vec![0, 1, 2, 4]);
+    }
+
+    #[test]
+    fn boolean_minimum_should_match_exceeding_clause_count_matches_nothing() {
+        // Only 2 should clauses exist; minimum_should_match=5 can never be reached
+        // by any doc -- mirrors real `BooleanQuery.rewrite()`'s `MatchNoDocsQuery`
+        // for "shoulds.size() < minimumNumberShouldMatch", achieved here without a
+        // separate branch (see `matched_boolean_docs`'s doc comment).
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let mut c = VecCollector::default();
+        let q = BooleanQuery::new()
+            .with_should([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")])
+            .with_minimum_should_match(5);
+        search_boolean_query(&fields, doc_in.as_ref(), None, &q, &mut c).unwrap();
+        assert!(c.docs.is_empty());
+    }
+
+    #[test]
+    fn boolean_minimum_should_match_combines_with_must_not() {
+        // must=[cat]={0,2}; should=[dog,bird] with minimum_should_match=1 keeps only
+        // doc 0 (see the "narrows the set" test above); must_not=[dog]={0,1}
+        // additionally excludes doc 0, leaving nothing.
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let mut c = VecCollector::default();
+        let q = BooleanQuery::new()
+            .with_must([TermQuery::new("body", "cat")])
+            .with_should([
+                TermQuery::new("body", "dog"),
+                TermQuery::new("body", "bird"),
+            ])
+            .with_must_not([TermQuery::new("body", "dog")])
+            .with_minimum_should_match(1);
         search_boolean_query(&fields, doc_in.as_ref(), None, &q, &mut c).unwrap();
         assert!(c.docs.is_empty());
     }
