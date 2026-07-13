@@ -11,6 +11,7 @@ pub mod doc_values;
 pub mod field_infos;
 mod for_util;
 pub mod fst;
+pub mod fuzzy;
 pub mod indexed_disi;
 pub mod live_docs;
 mod lz4;

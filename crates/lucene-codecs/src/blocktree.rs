@@ -109,6 +109,7 @@ use lucene_store::codec_util::{self, ID_LENGTH};
 use lucene_store::data_input::{DataInput, SliceInput};
 
 use crate::field_infos::{FieldInfos, IndexOptions};
+use crate::fuzzy::FuzzyMatch;
 use crate::postings::{self, DocInput, Postings, TermMetadata};
 use crate::wildcard::WildcardPattern;
 
@@ -376,6 +377,36 @@ impl FieldTerms {
             .entries
             .partition_point(|(t, _, _)| t.as_slice() < prefix.as_slice());
         let end = match prefix_upper_bound(&prefix) {
+            Some(upper) => self
+                .entries
+                .partition_point(|(t, _, _)| t.as_slice() < upper.as_slice()),
+            None => self.entries.len(),
+        };
+        self.entries[start..end]
+            .iter()
+            .filter(move |(t, _, _)| pattern.matches(t))
+            .map(|(t, s, _)| (t.as_slice(), *s))
+    }
+
+    /// `FuzzyQuery`-equivalent term matching (task #42): every term (in
+    /// sorted order) within `pattern`'s edit-distance budget, paired with its
+    /// stats. Structurally identical to [`Self::intersect`]'s "narrow by
+    /// literal prefix range via binary search, then linearly filter" design —
+    /// here the literal prefix is `pattern`'s required `prefixLength`-byte
+    /// exact prefix ([`crate::fuzzy::FuzzyMatch::literal_prefix`]) rather than
+    /// a glob pattern's leading literal run, and the per-candidate filter is
+    /// [`crate::fuzzy::FuzzyMatch::matches`]'s edit-distance test rather than
+    /// glob matching. See `crate::fuzzy`'s module doc for the full
+    /// automaton-vs-DP tradeoff writeup.
+    pub fn fuzzy_intersect<'a>(
+        &'a self,
+        pattern: &'a FuzzyMatch<'a>,
+    ) -> impl Iterator<Item = (&'a [u8], TermStats)> + 'a {
+        let prefix = pattern.literal_prefix();
+        let start = self
+            .entries
+            .partition_point(|(t, _, _)| t.as_slice() < prefix);
+        let end = match prefix_upper_bound(prefix) {
             Some(upper) => self
                 .entries
                 .partition_point(|(t, _, _)| t.as_slice() < upper.as_slice()),

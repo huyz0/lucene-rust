@@ -877,6 +877,42 @@ still deferred (real index-wide idf, a genuine multi-segment fixture, multi-segm
 wrappers for the other query types, an `IndexReader`/`DirectoryReader` object model,
 FFI exposure), and the exact test list.
 
+**Progress (task #42):** `FuzzyQuery` is ported — a leaf `Clause::Fuzzy(FuzzyQuery)`
+matching every doc containing at least one term (for `query.field`) within
+`max_edits` edit distance of `term`, restricted to terms sharing `term`'s first
+`prefix_length` bytes exactly, unioned across every matching term
+(`fuzzy_doc_ids` in `lib.rs`, structurally identical to task #34/#35's
+`wildcard_doc_ids`/`prefix_doc_ids` but built on the new
+`lucene_codecs::fuzzy::{edit_distance, FuzzyMatch}` and
+`FieldTerms::fuzzy_intersect` instead of `WildcardPattern`). Defaults mirror real
+`FuzzyQuery` exactly: `max_edits = 2`, `prefix_length = 0`, `transpositions = true`.
+Unscored, same flat `1.0` per match as `Clause::Wildcard`/`Clause::Prefix`.
+**No `LevenshteinAutomata`/automaton machinery** — this port computes edit
+distance directly with a plain `O(n*m)` DP each time a candidate term is tested
+(narrowed first by `prefix_length`'s literal-prefix binary-search range, same
+"narrow then filter" shape `FieldTerms::intersect` established for
+`WildcardQuery`/`PrefixQuery`), closing `wildcard.rs`'s last remaining
+explicitly-deferred gap from task #1. **The transpositions subtlety, gotten
+right and verified, not assumed**: `edit_distance(a, b, transpositions)`
+implements restricted/OSA Damerau-Levenshtein when `transpositions = true` (real
+`FuzzyQuery`'s own default — an adjacent-character swap costs 1 edit, not 2) and
+plain Levenshtein when `false`. **Byte-vs-codepoint scope decision, stated
+explicitly**: real Lucene's `LevenshteinAutomata` operates on UTF-32 codepoints;
+this port's `edit_distance` operates on raw bytes instead — a deliberate,
+documented shortcut (not an oversight) since every fixture/test term is ASCII,
+where one byte and one codepoint coincide; full codepoint decoding for non-ASCII
+terms is deferred, see `fuzzy.rs`'s module doc. Verified against real Lucene via
+`fixtures/src/AppendFuzzyManifest.java` (same append-only pattern as
+`AppendWildcardManifest.java`/`AppendPrefixManifest.java`) running eleven real
+`org.apache.lucene.search.FuzzyQuery` cases against `body`'s real terms — exact
+match, single substitution/insertion/deletion, prefix-length exclusion,
+max-edits boundary, a no-match case, and **the single most important case**: a
+transposition (`"cta"` vs. target `"cat"`, `maxEdits=1`) matching with
+`transpositions=true` and not matching with `transpositions=false`, confirmed
+against real Lucene's own output on the first run — asserting doc-for-doc
+agreement with this port's own `Clause::Fuzzy` matching for every recorded case.
+See `docs/parity.md`'s new row for the full accounting.
+
 1. `lucene-analysis`: `TokenStream` as an iterator-of-token-structs (skip Java's
    AttributeSource reflection design entirely — a plain
    `Token { bytes, position_increment, offset, ... }` struct), StandardTokenizer via

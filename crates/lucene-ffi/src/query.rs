@@ -650,7 +650,8 @@ pub unsafe extern "C" fn ffi_search_boolean_query_scored(
                 | Clause::ConstantScore(_)
                 | Clause::Boost(_)
                 | Clause::Wildcard(_)
-                | Clause::Prefix(_) => None,
+                | Clause::Prefix(_)
+                | Clause::Fuzzy(_) => None,
             })
             .collect();
         field_names.sort_unstable();

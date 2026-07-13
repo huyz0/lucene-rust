@@ -124,6 +124,84 @@ impl PrefixQuery {
     }
 }
 
+/// `FuzzyQuery`-equivalent (`org.apache.lucene.search.FuzzyQuery`), task
+/// #42's addition: a field plus a target `term`, matching every term indexed
+/// for `field` whose edit distance to `term` is `<= max_edits`, restricted to
+/// terms sharing `term`'s first `prefix_length` bytes exactly (real
+/// `FuzzyQuery`'s `prefixLength` — an exact-match requirement, not part of
+/// the edit-distance budget). The matched set is the **union** of every
+/// matching term's postings (see [`crate::resolve_clause_docs`]'s
+/// `Clause::Fuzzy` arm), the same "match any term the automaton/predicate
+/// accepts" `MultiTermQuery` contract `WildcardQuery`/`PrefixQuery` already
+/// have.
+///
+/// **Defaults mirror real `FuzzyQuery` exactly**: `max_edits` defaults to
+/// `2` (`FuzzyQuery.defaultMaxEdits`, `LevenshteinAutomata.
+/// MAXIMUM_SUPPORTED_DISTANCE`), `prefix_length` defaults to `0` (no exact-
+/// prefix requirement), and `transpositions` defaults to `true` — real
+/// `FuzzyQuery`'s own three-arg-vs-more-arg constructor defaults, meaning an
+/// adjacent-character swap counts as **one** edit (Damerau-Levenshtein with
+/// transpositions), not two (plain Levenshtein), unless a caller explicitly
+/// opts out via [`Self::with_transpositions`]. See
+/// [`lucene_codecs::fuzzy::edit_distance`]'s doc comment for exactly which
+/// edit-distance variant this is and why, and that module's doc comment for
+/// this port's byte-vs-Unicode-codepoint scope decision.
+///
+/// **Why `term: Vec<u8>` instead of `String`**: same reasoning as
+/// [`WildcardQuery::pattern`]'s own doc comment — terms in this port are raw
+/// `Vec<u8>` with no guaranteed UTF-8 validity, and
+/// [`lucene_codecs::fuzzy::FuzzyMatch`] (the matcher this query delegates
+/// to) already operates byte-wise.
+///
+/// **Scoring**: unscored/constant (flat `1.0` per match), same choice
+/// `WildcardQuery`/`PrefixQuery` make and for the same reason — see
+/// [`crate::clause_scores`]'s `Clause::Fuzzy` arm.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FuzzyQuery {
+    pub field: String,
+    pub term: Vec<u8>,
+    pub max_edits: u8,
+    pub prefix_length: usize,
+    pub transpositions: bool,
+}
+
+impl FuzzyQuery {
+    /// Builds a `FuzzyQuery` with real `FuzzyQuery`'s own defaults:
+    /// `max_edits = 2`, `prefix_length = 0`, `transpositions = true`.
+    pub fn new(field: impl Into<String>, term: impl Into<Vec<u8>>) -> Self {
+        Self {
+            field: field.into(),
+            term: term.into(),
+            max_edits: 2,
+            prefix_length: 0,
+            transpositions: true,
+        }
+    }
+
+    /// Builder method setting `max_edits` (see this struct's doc comment for
+    /// the default and semantics).
+    pub fn with_max_edits(mut self, max_edits: u8) -> Self {
+        self.max_edits = max_edits;
+        self
+    }
+
+    /// Builder method setting `prefix_length` (see this struct's doc comment
+    /// for the default and semantics).
+    pub fn with_prefix_length(mut self, prefix_length: usize) -> Self {
+        self.prefix_length = prefix_length;
+        self
+    }
+
+    /// Builder method setting `transpositions` (see this struct's doc
+    /// comment for the default and semantics — this is the flag that
+    /// switches between Damerau-Levenshtein-with-transpositions, `true`, and
+    /// plain Levenshtein, `false`).
+    pub fn with_transpositions(mut self, transpositions: bool) -> Self {
+        self.transpositions = transpositions;
+        self
+    }
+}
+
 /// One `must`/`should`/`must_not` slot in a [`BooleanQuery`] — a leaf
 /// `TermQuery`, a leaf `PhraseQuery` (task #29's addition, closing the gap this
 /// enum's doc comment previously flagged), or a nested `BooleanQuery`
@@ -184,6 +262,12 @@ pub enum Clause {
     /// `query.prefix`'s literal bytes, unscored (flat `1.0` per match); see
     /// [`PrefixQuery`]'s doc comment.
     Prefix(PrefixQuery),
+    /// A leaf `FuzzyQuery` (task #42's addition) -- matches every doc
+    /// containing at least one term (for `query.field`) within
+    /// `query.max_edits` edit distance of `query.term` (restricted to terms
+    /// sharing `query.term`'s first `query.prefix_length` bytes exactly),
+    /// unscored (flat `1.0` per match); see [`FuzzyQuery`]'s doc comment.
+    Fuzzy(FuzzyQuery),
 }
 
 impl From<TermQuery> for Clause {
@@ -231,6 +315,12 @@ impl From<WildcardQuery> for Clause {
 impl From<PrefixQuery> for Clause {
     fn from(query: PrefixQuery) -> Self {
         Clause::Prefix(query)
+    }
+}
+
+impl From<FuzzyQuery> for Clause {
+    fn from(query: FuzzyQuery) -> Self {
+        Clause::Fuzzy(query)
     }
 }
 
@@ -686,6 +776,39 @@ mod tests {
     fn with_must_accepts_a_prefix_query_clause() {
         let q = BooleanQuery::new().with_must([PrefixQuery::new("body", "ca")]);
         assert_eq!(q.must, vec![Clause::Prefix(PrefixQuery::new("body", "ca"))]);
+    }
+
+    #[test]
+    fn fuzzy_query_new_uses_real_fuzzy_querys_defaults() {
+        let q = FuzzyQuery::new("body", "cat");
+        assert_eq!(q.field, "body");
+        assert_eq!(q.term, b"cat");
+        assert_eq!(q.max_edits, 2);
+        assert_eq!(q.prefix_length, 0);
+        assert!(q.transpositions);
+    }
+
+    #[test]
+    fn fuzzy_query_builder_methods_set_each_field() {
+        let q = FuzzyQuery::new("body", "cat")
+            .with_max_edits(1)
+            .with_prefix_length(2)
+            .with_transpositions(false);
+        assert_eq!(q.max_edits, 1);
+        assert_eq!(q.prefix_length, 2);
+        assert!(!q.transpositions);
+    }
+
+    #[test]
+    fn clause_from_fuzzy_query_wraps_in_fuzzy_variant() {
+        let clause: Clause = FuzzyQuery::new("body", "cat").into();
+        assert_eq!(clause, Clause::Fuzzy(FuzzyQuery::new("body", "cat")));
+    }
+
+    #[test]
+    fn with_must_accepts_a_fuzzy_query_clause() {
+        let q = BooleanQuery::new().with_must([FuzzyQuery::new("body", "cat")]);
+        assert_eq!(q.must, vec![Clause::Fuzzy(FuzzyQuery::new("body", "cat"))]);
     }
 
     #[test]

@@ -202,8 +202,8 @@ pub use multi_segment::{
     search_term_query_multi_segment, OpenSegment,
 };
 pub use query::{
-    BooleanQuery, BoostQuery, Clause, ConstantScoreQuery, DisjunctionMaxQuery, PhraseQuery,
-    PrefixQuery, TermQuery, WildcardQuery,
+    BooleanQuery, BoostQuery, Clause, ConstantScoreQuery, DisjunctionMaxQuery, FuzzyQuery,
+    PhraseQuery, PrefixQuery, TermQuery, WildcardQuery,
 };
 pub use term_vectors_query::{matched_term_offsets, term_vector_for_doc};
 
@@ -212,6 +212,7 @@ use std::collections::HashMap;
 use docid_set::{BoxDocIter, Conjunction, Disjunction, Excluding};
 
 use lucene_codecs::blocktree::{self, BlockTreeFields};
+use lucene_codecs::fuzzy::FuzzyMatch;
 use lucene_codecs::postings::{DocInput, PayInput, PosInput};
 use lucene_codecs::wildcard::WildcardPattern;
 use lucene_util::fixed_bit_set::FixedBitSet;
@@ -393,6 +394,51 @@ fn wildcard_doc_ids(
     Ok(doc_ids)
 }
 
+/// [`Clause::Fuzzy`]'s matched doc-ID list (task #42): same
+/// union-across-matching-terms mechanism as [`wildcard_doc_ids`]/
+/// [`prefix_doc_ids`], built on
+/// [`lucene_codecs::blocktree::FieldTerms::fuzzy_intersect`] and
+/// [`lucene_codecs::fuzzy::FuzzyMatch`] instead of a glob pattern. Returns an
+/// empty `Vec` -- not an error -- when `query.field` doesn't exist in this
+/// segment, same "missing field means no matches" convention every other
+/// clause follows.
+fn fuzzy_doc_ids(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    query: &FuzzyQuery,
+) -> Result<Vec<i32>> {
+    let Some(field_terms) = fields.field(&query.field) else {
+        return Ok(Vec::new());
+    };
+    let pattern = FuzzyMatch::new(
+        &query.term,
+        query.max_edits,
+        query.prefix_length,
+        query.transpositions,
+    );
+    let matching_terms: Vec<Vec<u8>> = field_terms
+        .fuzzy_intersect(&pattern)
+        .map(|(term, _stats)| term.to_vec())
+        .collect();
+    let mut doc_ids: Vec<i32> = Vec::new();
+    for term in &matching_terms {
+        let Some(postings) = field_terms.postings(term, doc_in)? else {
+            continue;
+        };
+        doc_ids.extend(
+            postings
+                .docs
+                .iter()
+                .copied()
+                .filter(|&doc_id| live_docs.is_none_or(|bits| bits.get(doc_id as usize))),
+        );
+    }
+    doc_ids.sort_unstable();
+    doc_ids.dedup();
+    Ok(doc_ids)
+}
+
 /// Executes `query` (see [`query::BooleanQuery`] and this module's doc comment for
 /// the exact matching semantics) against one already-opened segment, feeding every
 /// matching **live** doc ID to `collector` in ascending order — same parameter
@@ -502,6 +548,7 @@ fn resolve_clause_docs(
         }
         Clause::Wildcard(query) => wildcard_doc_ids(fields, doc_in, live_docs, query),
         Clause::Prefix(query) => prefix_doc_ids(fields, doc_in, live_docs, query),
+        Clause::Fuzzy(query) => fuzzy_doc_ids(fields, doc_in, live_docs, query),
     }
 }
 
@@ -844,6 +891,16 @@ fn clause_scores(
             // comment for why (same rationale as `Clause::Wildcard`'s arm
             // above).
             let matched = prefix_doc_ids(fields, doc_in, live_docs, query)?;
+            Ok(matched
+                .into_iter()
+                .map(|doc_id| (doc_id, 1.0_f32))
+                .collect())
+        }
+        Clause::Fuzzy(query) => {
+            // Unscored: flat 1.0 per matching doc -- see `FuzzyQuery`'s doc
+            // comment for why (same rationale as `Clause::Wildcard`'s arm
+            // above).
+            let matched = fuzzy_doc_ids(fields, doc_in, live_docs, query)?;
             Ok(matched
                 .into_iter()
                 .map(|doc_id| (doc_id, 1.0_f32))
