@@ -22,47 +22,65 @@
 //! which is what every field in this port's fixtures implicitly uses (no
 //! per-field `Similarity` override machinery exists here).
 //!
-//! ## The norms gap (honest approximation, not invented data)
+//! ## Norms: real per-doc field length, decoded from `.nvd`/`.nvm` (this task)
 //!
 //! Real BM25 needs each matched document's *own* field length and the field's
 //! *average* length across the whole segment (`fieldLength`/`avgFieldLength`
 //! above) — in real Lucene these come from decoding the `.nvd`/`.nvm` norms file
-//! for that field (`NumericDocValues` over `Similarity.computeNorm`'s per-doc byte).
-//! `crates/lucene-codecs/src/norms.rs` currently has **write-side support only**
-//! (`write_single_dense_field`) — see `docs/parity.md`'s norms row — there is no
-//! norms *reader* wired into this port's search path yet (the plain byte-decode
-//! primitives exist in that module, but nothing in `lucene-search` opens a `.nvd`/
-//! `.nvm` pair the way it opens `.tim`/`.tip`/`.doc`).
+//! for that field (`NumericDocValues` over `Similarity.computeNorm`'s per-doc
+//! byte). `crates/lucene-codecs/src/norms.rs` has a complete read side
+//! (`parse_meta`/`norm_value`, fixture-verified — see `docs/parity.md`'s norms
+//! row), so this module now decodes real norm bytes instead of a constant.
 //!
-//! Rather than inventing a fake norms decode here (this project's stated
-//! philosophy: correctness first, be honest about what's approximated — see
-//! `docs/parity.md`'s norms and postings rows for the same stance), this module
-//! takes `field_length`/`avg_field_length` as plain `f32` parameters, and
-//! [`crate::search_term_query_scored`]/[`crate::search_boolean_query_scored`]
-//! currently always pass `1.0`/`1.0` for both (see [`UNNORMED_FIELD_LENGTH`]).
-//! With both equal to `1.0`, the length-normalization term `b * fieldLength /
-//! avgFieldLength` collapses to exactly `b`, so `tfNorm` becomes `freq * (k1 + 1)
-//! / (freq + k1)` — a real, well-defined BM25 variant (equivalent to every
-//! document having the field's average length), just not one that reflects this
-//! segment's actual per-document field lengths. **This means scores computed by
-//! this module are internally consistent (same-term/same-corpus comparisons rank
-//! correctly relative to each other) but are not expected to numerically match
-//! real Lucene's BM25 scores for the same query**, since real Lucene's norms
-//! would vary `tfNorm` per document. Tracked in `docs/parity.md` as deferred
-//! until a norms reader exists in this port.
+//! Real Lucene's default `Similarity.computeNorm` encodes a field's token-count
+//! length via `SmallFloat.intToByte4` (a lossy 4-bit-mantissa byte encoding, *not*
+//! a literal length) into the single norm byte written per doc; `BM25Similarity`
+//! decodes it back with `SmallFloat.byte4ToInt` (cached per-segment as
+//! `LENGTH_TABLE[0..256]`) to get an *approximate* field length before applying
+//! `b * fieldLength / avgFieldLength`. [`decode_norm`] is this port's
+//! `byte4ToInt`-equivalent decode step (see [`lucene_util::small_float`] for the
+//! bit-manipulation itself, verified byte-for-byte against `SmallFloat.java`).
+//! Skipping this decode and treating a raw norm byte as a literal length would
+//! produce numerically wrong (if plausible-looking) scores — see
+//! `lucene_util::small_float`'s doc comment for why the encoding is lossy above
+//! byte value 24.
+//!
+//! [`crate::field_norms::FieldNorms`] computes `avgFieldLength` once per field
+//! per query (summing every live doc's decoded length, mirroring `avgFieldLength
+//! = sumTotalTermFreq / docCount` — this port has no separately tracked
+//! `sumTotalTermFreq`, but a field's `sumTotalTermFreq` *is* the sum of its
+//! per-doc lengths by definition) and [`crate::search_term_query_scored`]/
+//! [`crate::search_boolean_query_scored`] use it, falling back to
+//! [`UNNORMED_FIELD_LENGTH`]/[`UNNORMED_FIELD_LENGTH`] only when the field has no
+//! opened norms at all (norms disabled for that field, or the caller didn't open
+//! a `.nvd`/`.nvm` pair) — a documented, deliberate fallback, not silently wrong
+//! data; see [`crate::field_norms`] for exactly when that applies.
 
 /// `BM25Similarity`'s default `k1` (term-frequency saturation parameter).
 pub const DEFAULT_K1: f32 = 1.2;
 /// `BM25Similarity`'s default `b` (field-length normalization parameter).
 pub const DEFAULT_B: f32 = 0.75;
 
-/// The constant `fieldLength`/`avgFieldLength` this port substitutes for real
-/// per-document norms, since no norms *reader* exists in this port's search path
-/// yet — see this module's doc comment for why `1.0`/`1.0` (rather than e.g.
-/// `0.0`/`1.0`) is the honest "no-op" substitution: it makes the length-
-/// normalization term collapse to a constant instead of silently zeroing or
-/// exploding it.
+/// The constant `fieldLength`/`avgFieldLength` this port substitutes when a
+/// field has no opened norms (norms disabled for that field, or the caller
+/// didn't open a `.nvd`/`.nvm` pair for this search) — see this module's doc
+/// comment for why `1.0`/`1.0` (rather than e.g. `0.0`/`1.0`) is the honest
+/// "no-op" substitution: it makes the length-normalization term collapse to a
+/// constant instead of silently zeroing or exploding it.
 pub const UNNORMED_FIELD_LENGTH: f32 = 1.0;
+
+/// `SmallFloat.byte4ToInt`-equivalent decode of one real Lucene norm byte back
+/// to an approximate field length, mirroring `BM25Similarity.LENGTH_TABLE[i] =
+/// SmallFloat.byte4ToInt((byte) i)` — see this module's doc comment for why this
+/// decode step (not a literal-length reinterpretation of the byte) is required.
+///
+/// `norm` is the sign-extended `i64` [`lucene_codecs::norms::norm_value`]
+/// returns; truncating back to `u8` recovers the original unsigned byte
+/// regardless of that sign extension (two's complement preserves the low byte),
+/// matching real Lucene's `((byte) encodedNorm) & 0xff` indexing.
+pub fn decode_norm(norm: i64) -> f32 {
+    lucene_util::small_float::byte4_to_int(norm as u8) as f32
+}
 
 /// `BM25Similarity.idf(long docFreq, long docCount)`-equivalent: the inverse
 /// document frequency component of the score, shared by every document matching
@@ -187,5 +205,37 @@ mod tests {
         let low = score(5, 100, 1.0, 1.0, 1.0);
         let high = score(5, 100, 5.0, 1.0, 1.0);
         assert!(high > low);
+    }
+
+    #[test]
+    fn decode_norm_matches_small_float_byte4_to_int() {
+        // Same known values as `lucene_util::small_float`'s test, reached
+        // through this module's `i64`-sign-extension-aware wrapper.
+        assert_eq!(decode_norm(0), 0.0);
+        assert_eq!(decode_norm(23), 23.0);
+        assert_eq!(decode_norm(100), 3096.0);
+        // Byte 200 sign-extends to a negative i64 the way
+        // `norms::norm_value` returns it (`read_byte() as i8 as i64`); the
+        // `as u8` truncation must still recover the original byte.
+        assert_eq!(decode_norm(200i64 as i8 as i64), 16_777_240.0);
+        assert_eq!(decode_norm(255i64 as i8 as i64), 2_013_265_944.0);
+    }
+
+    #[test]
+    fn score_with_real_decoded_lengths_differs_from_unnormed_constant() {
+        // Two docs with different real (decoded) field lengths must get
+        // different tf_norm contributions -- proving the length-
+        // normalization term is actually live, not collapsed to a constant.
+        let short_doc_len = decode_norm(5); // byte 5 -> length 5 (subnormal, exact)
+        let long_doc_len = decode_norm(40); // byte 40 -> a longer decoded length
+        assert!(long_doc_len > short_doc_len);
+
+        let avg = (short_doc_len + long_doc_len) / 2.0;
+        let score_short = score(2, 10, 3.0, short_doc_len, avg);
+        let score_long = score(2, 10, 3.0, long_doc_len, avg);
+        assert_ne!(score_short, score_long);
+        // Same BM25 property as `tf_norm_with_field_longer_than_average_reduces_score`:
+        // the shorter-than-average doc scores higher for the same freq/idf.
+        assert!(score_short > score_long);
     }
 }

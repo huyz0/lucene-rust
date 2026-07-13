@@ -200,17 +200,27 @@ hand-computed in its unit tests), `search_term_query_scored`/
 (deliberately *not* a breaking change to the existing `Collector` trait — see
 `collector.rs`'s module doc), and `TopDocsCollector` is the ported
 `TopScoreDocCollector`-equivalent (tie-break verified against real
-`HitQueue.lessThan`: lower doc ID wins a score tie). **Important caveat, item
-2 below is only partially closed**: this port has no norms *reader* yet (only
-the `.nvd`/`.nvm` write side exists, see that format's `docs/parity.md` row),
-so every score currently uses a constant field-length substitution
-(`fieldLength == avgFieldLength == 1.0`) instead of this segment's real
-per-document lengths — scores are internally consistent and correctly ordered
-but **not** expected to numerically match real Lucene's BM25 output for the
-same query. Closing that gap (a norms reader + a Java-side BM25-score fixture
-generator for true cross-engine verification) remains future work. Verified
-in `crates/lucene-search/tests/scoring_fixtures.rs`. The items below remain as
-originally scoped except where superseded above.
+`HitQueue.lessThan`: lower doc ID wins a score tie). A follow-on task closed
+the norms gap this slice originally left open: `search_term_query_scored`/
+`search_boolean_query_scored` now take an optional opened
+`field_norms::FieldNorms` (real per-doc field length, decoded from `.nvd`/
+`.nvm` via `norms::norm_value` plus a new `lucene_util::small_float`
+`SmallFloat.byte4ToInt`-equivalent decode, with `avgFieldLength` computed once
+per field per query by averaging every live doc's decoded length) instead of
+always substituting a constant. Passing `None` (a field with no opened norms —
+disabled for that field, or a caller that hasn't wired norms opening yet)
+still falls back to the constant `fieldLength == avgFieldLength == 1.0`
+approximation, now a deliberate, documented fallback rather than the only
+option. Differential-verified in `crates/lucene-search/tests/scoring_fixtures.rs`
+against this fixture's real `_0.nvm`/`_0.nvd`: decoded per-doc lengths match
+hand-derived values from the fixture's own known per-term postings
+frequencies, and real-norms scores differ from the constant-fallback scores
+for the same query. Remaining gap: no cross-engine BM25-score fixture
+generator exists yet (a Java-side one comparing this port's final scores
+byte-for-byte against real Lucene's), so exact numeric parity for a full
+query (not just the length-normalization term being live) is still unverified
+— future work. The items below remain as originally scoped except where
+superseded above.
 
 A fourth slice (task #19) landed **`PhraseQuery` matching**, exact adjacent
 positions only (`slop == 0`): `query::PhraseQuery { field, terms: Vec<Vec<u8>> }`

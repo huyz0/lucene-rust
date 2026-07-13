@@ -2,6 +2,7 @@
 
 pub mod base36;
 pub mod fixed_bit_set;
+pub mod small_float;
 pub mod zigzag;
 
 pub use fixed_bit_set::FixedBitSet;

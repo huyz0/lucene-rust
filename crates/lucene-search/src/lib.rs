@@ -108,22 +108,24 @@
 //! ## Relevance scoring (task #13's addition)
 //!
 //! [`search_term_query_scored`]/[`search_boolean_query_scored`] add BM25 relevance
-//! scoring (see [`similarity`] for the formula and, critically, the norms/
-//! avg-field-length approximation this port currently makes — no norms *reader*
-//! exists in this port's search path yet, only the writer, so every score computed
-//! here uses a constant field-length substitution and is **internally consistent
-//! but not expected to numerically match real Lucene's BM25 scores** — see that
-//! module's doc comment for the honest accounting). [`collector::ScoringCollector`]
-//! is the scored sibling of [`collector::Collector`] (a new trait, not a breaking
-//! change — see `collector.rs`'s module doc for why), and
-//! [`collector::TopDocsCollector`] is the `TopScoreDocCollector`-equivalent that
-//! consumes it.
+//! scoring (see [`similarity`] for the formula and [`field_norms`] for how real
+//! per-doc/avg-field-length norms are decoded and fed in). Both take an optional
+//! opened [`field_norms::FieldNorms`] (single field) / `HashMap<String,
+//! FieldNorms>` (boolean, keyed by clause field) for real BM25 length
+//! normalization; passing `None` falls back to a documented constant
+//! approximation (`similarity::UNNORMED_FIELD_LENGTH`) for a field with no
+//! opened norms — see [`similarity`]'s module doc for the honest accounting of
+//! when that fallback applies. [`collector::ScoringCollector`] is the scored
+//! sibling of [`collector::Collector`] (a new trait, not a breaking change —
+//! see `collector.rs`'s module doc for why), and [`collector::TopDocsCollector`]
+//! is the `TopScoreDocCollector`-equivalent that consumes it.
 //!
 //! `search_term_query_scored` mirrors `search_term_query`'s field/term lookup
 //! exactly, additionally reading each matched doc's `freq` (already decoded by
 //! `blocktree::FieldTerms::postings`, just previously discarded by
 //! `term_doc_ids`) and computing `similarity::score(docFreq, docCount, freq,
-//! UNNORMED_FIELD_LENGTH, UNNORMED_FIELD_LENGTH)` per doc.
+//! fieldLength, avgFieldLength)` per doc, using real decoded norms when `norms`
+//! is `Some`.
 //!
 //! `search_boolean_query_scored` computes the same matched-doc set as
 //! `search_boolean_query` (reusing `term_doc_ids` for the pure set algebra), then
@@ -147,6 +149,7 @@
 pub mod collector;
 pub mod doc_value_query;
 pub mod docid_set;
+pub mod field_norms;
 pub mod query;
 pub mod similarity;
 
@@ -156,6 +159,7 @@ pub use collector::{
 pub use doc_value_query::{
     search_numeric_range, search_sorted_ord_range, sort_by_numeric_doc_value, MissingValue,
 };
+pub use field_norms::FieldNorms;
 pub use query::{BooleanQuery, PhraseQuery, TermQuery};
 
 use std::collections::HashMap;
@@ -184,6 +188,11 @@ pub enum Error {
     /// or a truncated/corrupt values region).
     #[error(transparent)]
     DocValues(#[from] lucene_codecs::doc_values::Error),
+    /// Surfaced by [`field_norms::FieldNorms`] / [`term_doc_scores`] when
+    /// decoding a norm byte for a scored query's field fails (a doc ID out of
+    /// range for the norms entry, or a truncated/corrupt `.nvd` region).
+    #[error(transparent)]
+    Norms(#[from] lucene_codecs::norms::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -330,14 +339,18 @@ fn term_doc_freqs(
 }
 
 /// One clause's BM25 score per matching, live doc (ascending by `doc_id`) — see
-/// [`similarity`]'s module doc for the exact formula and the norms/
-/// avg-field-length approximation every score here uses. Returns an empty `Vec`
-/// for a missing field/term (no score to compute), same as [`term_doc_ids`].
+/// [`similarity`]'s module doc for the formula. `norms`, when `Some`, supplies
+/// this query's field's real per-doc/avg field length (see [`field_norms`]);
+/// `None` falls back to [`similarity::UNNORMED_FIELD_LENGTH`] for both, a
+/// documented approximation for a field with no opened norms. Returns an empty
+/// `Vec` for a missing field/term (no score to compute), same as
+/// [`term_doc_ids`].
 fn term_doc_scores(
     fields: &BlockTreeFields,
     doc_in: Option<&DocInput<'_>>,
     live_docs: Option<&FixedBitSet>,
     query: &TermQuery,
+    norms: Option<&FieldNorms<'_>>,
 ) -> Result<Vec<(i32, f32)>> {
     let Some(field_terms) = fields.field(&query.field) else {
         return Ok(Vec::new());
@@ -347,32 +360,43 @@ fn term_doc_scores(
     };
     let doc_freqs = term_doc_freqs(fields, doc_in, live_docs, query)?;
     let doc_count = field_terms.doc_count as i64;
-    Ok(doc_freqs
+    doc_freqs
         .into_iter()
         .map(|(doc_id, freq)| {
+            let (field_length, avg_field_length) = match norms {
+                Some(fn_) => (fn_.field_length(doc_id)?, fn_.avg_field_length),
+                None => (
+                    similarity::UNNORMED_FIELD_LENGTH,
+                    similarity::UNNORMED_FIELD_LENGTH,
+                ),
+            };
             let score = similarity::score(
                 stats.doc_freq as i64,
                 doc_count,
                 freq as f32,
-                similarity::UNNORMED_FIELD_LENGTH,
-                similarity::UNNORMED_FIELD_LENGTH,
+                field_length,
+                avg_field_length,
             );
-            (doc_id, score)
+            Ok((doc_id, score))
         })
-        .collect())
+        .collect()
 }
 
 /// Scored sibling of [`search_term_query`]: same matching semantics, but feeds
 /// each matched, live doc's BM25 score (see [`similarity`]) to a
-/// [`ScoringCollector`] instead of a plain [`Collector`].
+/// [`ScoringCollector`] instead of a plain [`Collector`]. `norms`: see
+/// [`term_doc_scores`]'s doc comment — `Some(&FieldNorms)` for
+/// `query.field`'s real per-doc/avg field length, `None` to fall back to the
+/// constant approximation.
 pub fn search_term_query_scored<C: ScoringCollector>(
     fields: &BlockTreeFields,
     doc_in: Option<&DocInput<'_>>,
     live_docs: Option<&FixedBitSet>,
     query: &TermQuery,
+    norms: Option<&FieldNorms<'_>>,
     collector: &mut C,
 ) -> Result<()> {
-    for (doc_id, score) in term_doc_scores(fields, doc_in, live_docs, query)? {
+    for (doc_id, score) in term_doc_scores(fields, doc_in, live_docs, query, norms)? {
         collector.collect(doc_id, score);
     }
     Ok(())
@@ -385,11 +409,20 @@ pub fn search_term_query_scored<C: ScoringCollector>(
 /// score across every `must`/`should` clause it satisfies** (mirroring real
 /// Lucene's additive `BooleanScorer`; `must_not` clauses never contribute to the
 /// score, matching `Occur.MUST_NOT`'s filter-only contract).
+///
+/// `norms`: real per-doc/avg field length, keyed by field name, for every
+/// scored (`must`/`should`) clause's field — a clause whose field has no entry
+/// in this map (or when `norms` itself is `None`) falls back to
+/// [`similarity::UNNORMED_FIELD_LENGTH`] for that clause, same documented
+/// approximation as [`term_doc_scores`]. A `BooleanQuery`'s clauses can span
+/// multiple fields, unlike a single [`TermQuery`], hence the map instead of one
+/// `FieldNorms`.
 pub fn search_boolean_query_scored<C: ScoringCollector>(
     fields: &BlockTreeFields,
     doc_in: Option<&DocInput<'_>>,
     live_docs: Option<&FixedBitSet>,
     query: &BooleanQuery,
+    norms: Option<&HashMap<String, FieldNorms<'_>>>,
     collector: &mut C,
 ) -> Result<()> {
     if query.must.is_empty() && query.should.is_empty() {
@@ -427,7 +460,8 @@ pub fn search_boolean_query_scored<C: ScoringCollector>(
     // and `should` (never `must_not`, which only filters -- see doc comment).
     let mut scores: HashMap<i32, f32> = HashMap::new();
     for clause in query.must.iter().chain(query.should.iter()) {
-        for (doc_id, score) in term_doc_scores(fields, doc_in, live_docs, clause)? {
+        let clause_norms = norms.and_then(|m| m.get(&clause.field));
+        for (doc_id, score) in term_doc_scores(fields, doc_in, live_docs, clause, clause_norms)? {
             *scores.entry(doc_id).or_insert(0.0) += score;
         }
     }
