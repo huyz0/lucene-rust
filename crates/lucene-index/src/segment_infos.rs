@@ -212,6 +212,17 @@ pub fn parse(buf: &[u8], generation: i64) -> Result<SegmentInfos> {
     })
 }
 
+/// Port of `SegmentInfos.FindSegmentsFile` + `SegmentInfos.read(Directory)`:
+/// locates the highest-generation `segments_N` (or plain `segments`) file in
+/// `dir` via `lucene_store::directory::read_latest_commit` (already-existing
+/// listing/generation-picking logic, not reimplemented here) and parses it.
+/// This is the entry point a `DirectoryReader.open(Directory)`-equivalent
+/// needs first, before it can open any segment the commit lists.
+pub fn read_latest(dir: &dyn Directory) -> Result<SegmentInfos> {
+    let (generation, bytes) = lucene_store::directory::read_latest_commit(dir)?;
+    parse(&bytes, generation)
+}
+
 /// Port of `SegmentInfos.write(Directory)`: the exact byte-level inverse of
 /// [`parse`], plus the durability half of a real commit (`Directory.sync`
 /// before the file is considered "there").

@@ -188,7 +188,7 @@ pub fn segments_file_name(generation: i64) -> Option<String> {
 
 /// Finds and reads the most recent `segments_N` commit file in `dir`.
 /// Returns `(generation, bytes)`; callers pass both to `segment_infos::parse`.
-pub fn read_latest_commit(dir: &impl Directory) -> Result<(i64, Input)> {
+pub fn read_latest_commit(dir: &(impl Directory + ?Sized)) -> Result<(i64, Input)> {
     let files = dir.list_all()?;
     let generation = last_commit_generation(&files);
     let name = segments_file_name(generation)

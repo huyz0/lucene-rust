@@ -182,6 +182,7 @@
 //! port doesn't parse doc-values skip indexes) are both deliberately deferred.
 
 pub mod collector;
+pub mod directory_reader;
 pub mod doc_value_query;
 pub mod docid_set;
 pub mod field_norms;

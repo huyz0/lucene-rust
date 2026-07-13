@@ -558,6 +558,15 @@ impl BlockTreeFields {
     pub fn field(&self, name: &str) -> Option<&FieldTerms> {
         self.fields.iter().find(|(n, _)| n == name).map(|(_, f)| f)
     }
+
+    /// A fields producer for a segment with no postings at all (no
+    /// `.tim`/`.tip`/`.tmd` files) -- e.g. a stored-fields-only segment,
+    /// where `FieldInfos.hasPostings()` is false for every field. Every
+    /// lookup on this behaves exactly like a real segment whose term
+    /// dictionary happens to be empty.
+    pub fn empty() -> Self {
+        BlockTreeFields { fields: Vec::new() }
+    }
 }
 
 /// The exclusive upper bound of the sorted range whose bytes all start with
