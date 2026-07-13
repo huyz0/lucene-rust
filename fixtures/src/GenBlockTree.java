@@ -17,6 +17,11 @@ import org.apache.lucene.index.SegmentCommitInfo;
 import org.apache.lucene.index.SegmentInfos;
 import org.apache.lucene.index.Terms;
 import org.apache.lucene.index.TermsEnum;
+import org.apache.lucene.index.Term;
+import org.apache.lucene.queries.spans.SpanNearQuery;
+import org.apache.lucene.queries.spans.SpanOrQuery;
+import org.apache.lucene.queries.spans.SpanQuery;
+import org.apache.lucene.queries.spans.SpanTermQuery;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.PhraseQuery;
 import org.apache.lucene.search.TopDocs;
@@ -269,6 +274,33 @@ public class GenBlockTree {
                 posType));
         w.addDocument(doc7);
 
+        // doc8: "delta" (pos 0, offset [20,25), no payload), "gamma" (pos 1,
+        //       offset [26,31), no payload) -- brand-new terms (not "alpha"/
+        //       "beta", so existing docFreq/totalTermFreq expectations for
+        //       those two terms are untouched) whose doc order is
+        //       DELIBERATELY REVERSED relative to a SpanNearQuery built with
+        //       clauses in [gamma, delta] order: "gamma" (clause 0) occurs
+        //       at position 1, *after* "delta" (clause 1) at position 0.
+        //       This is the cross-engine ground truth for task #55's
+        //       SpanNearQuery differential test (see
+        //       crates/lucene-search/tests/span_query_fixtures.rs): a real
+        //       SpanNearQuery([gamma, delta], slop=0, inOrder=true) must NOT
+        //       match this doc (clause 0's span does not precede clause 1's),
+        //       while inOrder=false MUST match (any relative order is
+        //       accepted within the slop budget) -- the exact `in_order`
+        //       differentiator this task calls out as most likely to be
+        //       subtly wrong if hand-derived without checking real Lucene.
+        Document doc8 = new Document();
+        doc8.add(
+            new Field(
+                "pos",
+                new CannedPosTokenStream(
+                    List.of(
+                        new PosTok("delta", 1, 20, 25, null),
+                        new PosTok("gamma", 1, 26, 31, null))),
+                posType));
+        w.addDocument(doc8);
+
         // "many": 400 distinct terms ("term0000".."term0399"), one per doc,
         // deliberately past the default minItemsInBlock=25/maxItemsInBlock=48
         // thresholds -- forces Lucene103BlockTreeTermsWriter to both split
@@ -501,12 +533,65 @@ public class GenBlockTree {
         m.append("field.pos.sloppyGap.termBPos=3\n");
         m.append("field.pos.sloppyGap.movesNeeded=2\n");
         m.append("field.pos.sloppyGap.realLuceneSlopResults=").append(slopResults).append('\n');
+
+        // SpanNearQuery/SpanOrQuery cross-engine ground truth (task #55):
+        // doc8's "pos" field has "delta"@0 and "gamma"@1 -- real occurrence
+        // order is REVERSED relative to a SpanNearQuery built with clauses in
+        // [gamma, delta] order. Run *real* SpanNearQuery(slop=0, inOrder) for
+        // both inOrder values, plus a real SpanOrQuery, and record real
+        // Lucene's own match verdicts -- this is the cross-engine proof this
+        // port's span_matches_in_doc's `in_order == false` any-order case is
+        // checked against, not a hand-derived expectation.
+        TopDocs gammaTd =
+            searcher.search(new org.apache.lucene.search.TermQuery(new Term("pos", "gamma")), 10);
+        if (gammaTd.scoreDocs.length != 1) {
+          throw new AssertionError(
+              "expected exactly one doc with term 'gamma', got " + gammaTd.scoreDocs.length);
+        }
+        int spanDoc = gammaTd.scoreDocs[0].doc;
+
+        SpanQuery gammaSpan = new SpanTermQuery(new Term("pos", "gamma"));
+        SpanQuery deltaSpan = new SpanTermQuery(new Term("pos", "delta"));
+
+        SpanNearQuery nearInOrder =
+            new SpanNearQuery(new SpanQuery[] {gammaSpan, deltaSpan}, 0, true);
+        boolean matchedInOrder = spanQueryMatchesDoc(searcher, nearInOrder, spanDoc);
+
+        SpanNearQuery nearOutOfOrder =
+            new SpanNearQuery(new SpanQuery[] {gammaSpan, deltaSpan}, 0, false);
+        boolean matchedOutOfOrder = spanQueryMatchesDoc(searcher, nearOutOfOrder, spanDoc);
+
+        SpanOrQuery spanOr = new SpanOrQuery(gammaSpan, deltaSpan);
+        boolean matchedSpanOr = spanQueryMatchesDoc(searcher, spanOr, spanDoc);
+
+        m.append("field.pos.span.doc=").append(spanDoc).append('\n');
+        m.append("field.pos.span.termGamma=gamma\n");
+        m.append("field.pos.span.termGammaPos=1\n");
+        m.append("field.pos.span.termDelta=delta\n");
+        m.append("field.pos.span.termDeltaPos=0\n");
+        m.append("field.pos.span.nearInOrderSlop0Matches=").append(matchedInOrder).append('\n');
+        m.append("field.pos.span.nearOutOfOrderSlop0Matches=")
+            .append(matchedOutOfOrder)
+            .append('\n');
+        m.append("field.pos.span.orMatches=").append(matchedSpanOr).append('\n');
       }
 
       Files.writeString(out.resolve("manifest.properties"), m.toString());
     }
 
     System.out.println("wrote blocktree_index/ fixture directory");
+  }
+
+  /** Real `IndexSearcher.search` verdict: does `query` match `targetDoc`? */
+  static boolean spanQueryMatchesDoc(IndexSearcher searcher, SpanQuery query, int targetDoc)
+      throws IOException {
+    TopDocs td = searcher.search(query, 10);
+    for (var sd : td.scoreDocs) {
+      if (sd.doc == targetDoc) {
+        return true;
+      }
+    }
+    return false;
   }
 
   static void appendFieldManifest(StringBuilder m, LeafReader leaf, String field, String[] lookups)

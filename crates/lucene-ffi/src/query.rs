@@ -656,7 +656,8 @@ pub unsafe extern "C" fn ffi_search_boolean_query_scored(
                 | Clause::Wildcard(_)
                 | Clause::Prefix(_)
                 | Clause::Fuzzy(_)
-                | Clause::Regexp(_) => None,
+                | Clause::Regexp(_)
+                | Clause::Span(_) => None,
             })
             .collect();
         field_names.sort_unstable();
@@ -807,7 +808,7 @@ mod tests {
     }
 
     fn segment_id_bytes() -> [u8; 16] {
-        let hex = "6d059d4cdcac6f59197686012f67fc52";
+        let hex = "bea914ffd84e035aaac43aca30240b47";
         let mut id = [0u8; 16];
         for (i, slot) in id.iter_mut().enumerate() {
             *slot = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap();
@@ -887,7 +888,7 @@ mod tests {
                 id.as_ptr(),
                 suffix.as_ptr() as *const c_char,
                 suffix.len(),
-                8958,
+                8959,
                 &mut handle as *mut _,
             )
         };

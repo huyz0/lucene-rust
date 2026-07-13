@@ -207,7 +207,7 @@ pub use multi_segment::{
 };
 pub use query::{
     BooleanQuery, BoostQuery, Clause, ConstantScoreQuery, DisjunctionMaxQuery, FuzzyQuery,
-    PhraseQuery, PrefixQuery, RegexpQuery, TermQuery, WildcardQuery,
+    PhraseQuery, PrefixQuery, RegexpQuery, SpanQuery, TermQuery, WildcardQuery,
 };
 pub use term_vectors_query::{matched_term_offsets, term_vector_for_doc};
 
@@ -609,6 +609,7 @@ fn resolve_clause_docs(
         Clause::Prefix(query) => prefix_doc_ids(fields, doc_in, live_docs, query),
         Clause::Fuzzy(query) => fuzzy_doc_ids(fields, doc_in, live_docs, query),
         Clause::Regexp(query) => regexp_doc_ids(fields, doc_in, live_docs, query),
+        Clause::Span(query) => span_doc_ids(fields, doc_in, pos_in, pay_in, live_docs, query),
     }
 }
 
@@ -976,6 +977,17 @@ fn clause_scores(
                 .map(|doc_id| (doc_id, 1.0_f32))
                 .collect())
         }
+        Clause::Span(query) => {
+            // Unscored: flat 1.0 per matching doc -- see `SpanQuery`'s doc
+            // comment for why (same rationale as `Clause::Wildcard`'s arm
+            // above -- real span-aware scoring is a separate, unscoped
+            // problem).
+            let matched = span_doc_ids(fields, doc_in, pos_in, pay_in, live_docs, query)?;
+            Ok(matched
+                .into_iter()
+                .map(|doc_id| (doc_id, 1.0_f32))
+                .collect())
+        }
     }
 }
 
@@ -1303,6 +1315,322 @@ pub(crate) fn phrase_freq_exact(term_positions: &[Vec<i32>]) -> i32 {
         freq += 1;
     }
     freq
+}
+
+/// Key type for [`span_matches_in_doc`]'s `doc_positions` map: one leaf
+/// `SpanQuery::SpanTerm`'s `(field, term)` pair, the finest granularity a span
+/// query ever needs a position list for (unlike `PhraseQuery`, a `SpanQuery`'s
+/// leaves aren't all implicitly the same field — see [`SpanQuery`]'s doc
+/// comment).
+type SpanLeafKey = (String, Vec<u8>);
+
+/// Computes `query`'s matching span ranges (`[start, end)` position pairs, real
+/// `SpanTermQuery`/`SpanNearQuery`/`SpanOrQuery`'s per-doc result shape) against
+/// one doc's already-decoded position lists, `doc_positions` -- one sorted,
+/// ascending position list per distinct `SpanQuery::SpanTerm` leaf appearing
+/// anywhere in `query` (a leaf whose `(field, term)` pair has no entry, or an
+/// empty entry, is treated as "no occurrences in this doc", same convention
+/// [`phrase_matches_in_doc`]'s callers already rely on -- see
+/// [`span_doc_ids`]'s doc comment for how this map is built).
+///
+/// **Scope**: this is the direct, in-memory span computation
+/// [`SpanQuery`]'s own doc comment describes (not a lazy `Spans` iterator) --
+/// callers needing every matching span range for a doc call this once per
+/// doc, the same shape `phrase_matches_in_doc`/`phrase_matches_in_doc_sloppy`
+/// already use for `PhraseQuery`.
+///
+/// - `SpanQuery::SpanTerm`: every occurrence in `doc_positions` becomes exactly
+///   one `(position, position + 1)` span -- real `SpanTermQuery`'s exact
+///   semantics (`termFreq` occurrences, not just "does it occur").
+/// - `SpanQuery::SpanOr`: the union (sorted, deduplicated) of every
+///   sub-`SpanQuery`'s own spans -- real `SpanOrQuery`'s exact semantics.
+/// - `SpanQuery::SpanNear`: delegates to [`span_near_matches`] -- see that
+///   function's doc comment for the `slop`/`in_order` algorithm, including the
+///   `in_order == false` any-order case that's this type's key differentiator
+///   from `PhraseQuery`'s in-order-only sloppy matching.
+///
+/// Returned spans are sorted ascending and deduplicated (`(start, end)`
+/// lexicographic order) regardless of variant, so a caller can treat "matches"
+/// as simply "the returned `Vec` is non-empty" without caring which variant
+/// produced it -- exactly how [`span_doc_ids`] uses this function.
+pub(crate) fn span_matches_in_doc(
+    query: &SpanQuery,
+    doc_positions: &HashMap<SpanLeafKey, Vec<i32>>,
+) -> Vec<(i32, i32)> {
+    match query {
+        SpanQuery::SpanTerm { field, term } => {
+            let key = (field.clone(), term.clone());
+            doc_positions
+                .get(&key)
+                .map(|positions| positions.iter().map(|&p| (p, p + 1)).collect())
+                .unwrap_or_default()
+        }
+        SpanQuery::SpanOr { clauses } => {
+            let mut spans: Vec<(i32, i32)> = clauses
+                .iter()
+                .flat_map(|clause| span_matches_in_doc(clause, doc_positions))
+                .collect();
+            spans.sort_unstable();
+            spans.dedup();
+            spans
+        }
+        SpanQuery::SpanNear {
+            clauses,
+            slop,
+            in_order,
+        } => span_near_matches(clauses, *slop, *in_order, doc_positions),
+    }
+}
+
+/// [`SpanQuery::SpanNear`]'s matching algorithm (real `SpanNearQuery`'s
+/// `NearSpansOrdered`/`NearSpansUnordered` equivalent, computed directly
+/// rather than via a lazy iterator -- see [`span_matches_in_doc`]'s doc
+/// comment for the scope decision): every `clauses[i]`'s own spans (computed
+/// recursively via [`span_matches_in_doc`], so a `SpanNear` of `SpanNear`s
+/// composes for free) are combined, one span chosen per clause, and a
+/// combination is a match iff its chosen spans satisfy the `in_order`
+/// arrangement below with total positional slack at most `slop`.
+///
+/// **`in_order == true`**: the chosen spans must already be non-overlapping
+/// and increasing in `clauses`' own order -- `chosen[i].1 <= chosen[i + 1].0`
+/// for every adjacent pair (span `i` ends at or before span `i + 1` starts).
+/// This is real `SpanNearQuery(clauses, slop, true)`'s ordering requirement:
+/// a reversed pair (clause 1's occurrence sits before clause 0's) never
+/// satisfies it, at any slop -- exactly the case [`PhraseQuery`]'s own
+/// in-order sloppy matching also rejects.
+///
+/// **`in_order == false`**: the chosen spans, **sorted by start position**
+/// (not by `clauses`' order), must satisfy that same non-overlapping,
+/// increasing condition -- any relative order among the clauses is accepted,
+/// provided the spans still fit together without overlapping. This is the
+/// capability [`PhraseQuery`]'s sloppy matching does *not* have (see that
+/// function's own doc comment) -- a reversed pair (clause 1's occurrence
+/// before clause 0's) matches here as long as the total slack fits `slop`,
+/// which is exactly what distinguishes `SpanNearQuery(slop, false)` from a
+/// sloppy phrase.
+///
+/// **Slop formula**, applied to the arranged (in-order or sorted, per above)
+/// spans: the total slack is `sum(next.start - prev.end)` over every adjacent
+/// pair -- `0` when spans touch exactly end-to-start with no gap, growing by
+/// one for every extra intervening position, the same "moves needed to line
+/// up" accounting [`phrase_matches_in_doc_sloppy`]'s doc comment derives for
+/// `PhraseQuery`, generalized from single positions to `[start, end)` span
+/// ranges. A combination whose arranged spans overlap (`next.start <
+/// prev.end`) is rejected outright, regardless of `slop` -- overlapping
+/// sub-spans have no defined "gap" to charge against the budget.
+///
+/// The overall span reported for a matching combination is `(min start, max
+/// end)` across every chosen sub-span -- the smallest range containing every
+/// sub-span, matching real `Spans`' own near-match span extent.
+///
+/// **Complexity**: this evaluates every combination of one span per clause
+/// (a cartesian product) -- acceptable for this port's honestly-scoped MVP
+/// (see [`SpanQuery`]'s doc comment) given the same "correctness first,
+/// profile before optimizing" call this crate's other multi-term matchers
+/// already make (`rust-performance` skill), but not the sub-linear
+/// early-termination a real lazy `NearSpans` iterator gets.
+///
+/// **Edge cases**: an empty `clauses` list, or any clause whose own spans are
+/// empty (the sub-query doesn't occur at all in this doc), both yield no
+/// spans -- a `SpanNear` needs every sub-clause to contribute at least one
+/// occurrence.
+fn span_near_matches(
+    clauses: &[SpanQuery],
+    slop: u32,
+    in_order: bool,
+    doc_positions: &HashMap<SpanLeafKey, Vec<i32>>,
+) -> Vec<(i32, i32)> {
+    if clauses.is_empty() {
+        return Vec::new();
+    }
+    let per_clause_spans: Vec<Vec<(i32, i32)>> = clauses
+        .iter()
+        .map(|clause| span_matches_in_doc(clause, doc_positions))
+        .collect();
+    if per_clause_spans.iter().any(Vec::is_empty) {
+        return Vec::new();
+    }
+
+    let slop = i64::from(slop);
+    let mut results: Vec<(i32, i32)> = Vec::new();
+    let mut chosen: Vec<(i32, i32)> = Vec::with_capacity(clauses.len());
+    combine_span_clauses(&per_clause_spans, &mut chosen, slop, in_order, &mut results);
+    results.sort_unstable();
+    results.dedup();
+    results
+}
+
+/// Recursive cartesian-product helper for [`span_near_matches`]: picks one
+/// span per entry in `per_clause_spans` (via `chosen`, built up one clause at
+/// a time) and, once a full combination is chosen, checks its `in_order`/
+/// `slop` validity and appends the resulting overall span to `results` if
+/// valid -- see [`span_near_matches`]'s doc comment for the exact checks.
+fn combine_span_clauses(
+    per_clause_spans: &[Vec<(i32, i32)>],
+    chosen: &mut Vec<(i32, i32)>,
+    slop: i64,
+    in_order: bool,
+    results: &mut Vec<(i32, i32)>,
+) {
+    let Some((spans, rest)) = per_clause_spans.split_first() else {
+        // Every clause has now contributed one span -- validate this
+        // combination.
+        let mut arranged = chosen.clone();
+        if !in_order {
+            arranged.sort_unstable_by_key(|span| span.0);
+        }
+        let mut slack: i64 = 0;
+        for pair in arranged.windows(2) {
+            let (prev, next) = (pair[0], pair[1]);
+            if next.0 < prev.1 {
+                // Overlapping sub-spans have no defined gap -- invalid at any
+                // slop.
+                return;
+            }
+            slack += i64::from(next.0 - prev.1);
+        }
+        if slack <= slop {
+            let start = arranged
+                .iter()
+                .map(|span| span.0)
+                .min()
+                .expect("non-empty: at least one clause");
+            let end = arranged
+                .iter()
+                .map(|span| span.1)
+                .max()
+                .expect("non-empty: at least one clause");
+            results.push((start, end));
+        }
+        return;
+    };
+    for &span in spans {
+        chosen.push(span);
+        combine_span_clauses(rest, chosen, slop, in_order, results);
+        chosen.pop();
+    }
+}
+
+/// Collects every distinct `SpanQuery::SpanTerm` leaf's `(field, term)` pair
+/// appearing anywhere in `query` (recursively through `SpanNear`/`SpanOr`),
+/// deduplicated -- the set of position lists [`span_doc_ids`] needs to fetch
+/// before it can evaluate [`span_matches_in_doc`] for any candidate doc.
+fn collect_span_leaves(query: &SpanQuery, leaves: &mut Vec<SpanLeafKey>) {
+    match query {
+        SpanQuery::SpanTerm { field, term } => leaves.push((field.clone(), term.clone())),
+        SpanQuery::SpanNear { clauses, .. } | SpanQuery::SpanOr { clauses } => {
+            for clause in clauses {
+                collect_span_leaves(clause, leaves);
+            }
+        }
+    }
+}
+
+/// [`Clause::Span`]'s matched doc-ID list (task #55): gathers every distinct
+/// leaf `(field, term)` pair `query` touches (via [`collect_span_leaves`]),
+/// fetches each one's live-filtered `doc_id -> position list` map (via
+/// [`term_doc_positions`], the same helper [`search_phrase_query`] uses), then
+/// for every doc appearing in **any** leaf's doc list (a safe, simple
+/// over-approximation of the true candidate set -- see this function's own
+/// doc comment below for why that's fine) builds a per-doc `doc_positions` map
+/// and checks [`span_matches_in_doc`] for a non-empty result.
+///
+/// **Why "any leaf's doc list" instead of computing each variant's own tighter
+/// candidate set** (e.g. a `SpanNear`'s candidates could be the *conjunction*
+/// of its sub-clauses' doc lists, `SpanOr`'s the union): this port takes the
+/// simpler, uniformly-correct union-of-every-leaf approach for
+/// [`SpanQuery`]'s honestly-scoped MVP (see that type's doc comment) --
+/// [`span_matches_in_doc`] itself already correctly reports "no match" for a
+/// candidate doc that doesn't actually satisfy a `SpanNear`'s stricter
+/// requirement, so the wider candidate set costs only some wasted position-
+/// list lookups, never an incorrect result. A future optimization pass could
+/// tighten this per-variant if profiling shows it matters (same "correctness
+/// first, profile before optimizing" call this crate's other multi-term
+/// matchers already make).
+///
+/// Returns an empty `Vec` -- not an error -- when `query` has no leaves at all
+/// (a `SpanNear`/`SpanOr` with empty `clauses`, which can never match) or when
+/// every leaf's field/term is missing from this segment. Requires `pos_in` (an
+/// `Err(Error::MissingPosInput)` otherwise) whenever `query` has at least one
+/// leaf -- unlike `PhraseQuery`, even a single-leaf `SpanTerm` needs a real
+/// position list (its spans are per-occurrence `(position, position + 1)`
+/// pairs, not just doc-level presence), so there is no single-term fast path
+/// that skips positions the way [`search_phrase_query`] has for a length-1
+/// phrase.
+#[allow(clippy::too_many_arguments)]
+fn span_doc_ids(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    pos_in: Option<&PosInput<'_>>,
+    pay_in: Option<&PayInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    query: &SpanQuery,
+) -> Result<Vec<i32>> {
+    let mut leaves: Vec<SpanLeafKey> = Vec::new();
+    collect_span_leaves(query, &mut leaves);
+    if leaves.is_empty() {
+        return Ok(Vec::new());
+    }
+    let Some(pos_in) = pos_in else {
+        return Err(Error::MissingPosInput);
+    };
+    leaves.sort_unstable();
+    leaves.dedup();
+
+    let mut candidate_docs: Vec<i32> = Vec::new();
+    let mut per_leaf_maps: Vec<(SpanLeafKey, HashMap<i32, Vec<i32>>)> =
+        Vec::with_capacity(leaves.len());
+    for (field, term) in &leaves {
+        let Some((docs, map)) =
+            term_doc_positions(fields, doc_in, pos_in, pay_in, live_docs, field, term)?
+        else {
+            // A missing leaf term contributes no occurrences anywhere --
+            // `span_matches_in_doc` already treats an absent map entry the
+            // same way, so this leaf simply never adds candidate docs.
+            continue;
+        };
+        candidate_docs.extend(docs);
+        per_leaf_maps.push(((field.clone(), term.clone()), map));
+    }
+    candidate_docs.sort_unstable();
+    candidate_docs.dedup();
+
+    let mut result = Vec::new();
+    for doc_id in candidate_docs {
+        let mut doc_positions: HashMap<SpanLeafKey, Vec<i32>> = HashMap::new();
+        for (key, map) in &per_leaf_maps {
+            if let Some(positions) = map.get(&doc_id) {
+                doc_positions.insert(key.clone(), positions.clone());
+            }
+        }
+        if !span_matches_in_doc(query, &doc_positions).is_empty() {
+            result.push(doc_id);
+        }
+    }
+    Ok(result)
+}
+
+/// Executes `query` (see [`query::SpanQuery`] for the exact matching
+/// semantics and this port's Spans-API-vs-direct-computation scope decision)
+/// against one already-opened segment, feeding every matching **live** doc ID
+/// to `collector` in ascending order -- same parameter contract as
+/// [`search_phrase_query`], with `pos_in` required whenever `query` has at
+/// least one leaf (see [`span_doc_ids`]'s doc comment for why `SpanQuery` has
+/// no single-leaf fast path that skips positions the way a length-1
+/// `PhraseQuery` does).
+pub fn search_span_query<C: Collector>(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    pos_in: Option<&PosInput<'_>>,
+    pay_in: Option<&PayInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    query: &SpanQuery,
+    collector: &mut C,
+) -> Result<()> {
+    for doc_id in span_doc_ids(fields, doc_in, pos_in, pay_in, live_docs, query)? {
+        collector.collect(doc_id);
+    }
+    Ok(())
 }
 
 /// One phrase-query term's live-filtered doc-ID list plus a `doc_id -> sorted
@@ -2753,6 +3081,186 @@ mod tests {
         // possible between them.
         let positions = vec![vec![0, 10], vec![1, 11]];
         assert_eq!(phrase_freq_exact(&positions), 2);
+    }
+
+    // `span_matches_in_doc` unit tests (task #55): synthetic per-leaf position
+    // maps, no fixture needed -- this is the pure span-computation function in
+    // isolation, mirroring `phrase_matches_in_doc`'s own test style above.
+
+    fn leaf_positions(pairs: &[(&str, &[i32])]) -> HashMap<SpanLeafKey, Vec<i32>> {
+        pairs
+            .iter()
+            .map(|&(term, positions)| {
+                (
+                    ("f".to_string(), term.as_bytes().to_vec()),
+                    positions.to_vec(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn span_term_matches_every_occurrence_in_a_multi_occurrence_doc() {
+        let positions = leaf_positions(&[("cat", &[0, 3, 7])]);
+        let query = SpanQuery::span_term("f", "cat");
+        assert_eq!(
+            span_matches_in_doc(&query, &positions),
+            vec![(0, 1), (3, 4), (7, 8)]
+        );
+    }
+
+    #[test]
+    fn span_term_no_occurrences_yields_no_spans() {
+        let positions = leaf_positions(&[]);
+        let query = SpanQuery::span_term("f", "cat");
+        assert!(span_matches_in_doc(&query, &positions).is_empty());
+    }
+
+    #[test]
+    fn span_near_in_order_matches_an_ordered_adjacent_pair() {
+        // "cat" at 0, "sat" at 1 -- adjacent, in phrase order.
+        let positions = leaf_positions(&[("cat", &[0]), ("sat", &[1])]);
+        let query = SpanQuery::span_near(
+            [
+                SpanQuery::span_term("f", "cat"),
+                SpanQuery::span_term("f", "sat"),
+            ],
+            0,
+            true,
+        );
+        assert_eq!(span_matches_in_doc(&query, &positions), vec![(0, 2)]);
+    }
+
+    #[test]
+    fn span_near_in_order_does_not_match_a_reversed_pair() {
+        // "sat" at 0, "cat" at 1 -- clauses are [cat, sat], but the doc has
+        // "sat" occur first: in-order requires clause 0's span before clause 1's.
+        let positions = leaf_positions(&[("cat", &[1]), ("sat", &[0])]);
+        let query = SpanQuery::span_near(
+            [
+                SpanQuery::span_term("f", "cat"),
+                SpanQuery::span_term("f", "sat"),
+            ],
+            0,
+            true,
+        );
+        assert!(span_matches_in_doc(&query, &positions).is_empty());
+    }
+
+    #[test]
+    fn span_near_out_of_order_matches_a_reversed_pair_within_slop() {
+        // Same reversed doc as above, but `in_order == false`: any relative
+        // order is accepted, so this DOES match -- the key differentiator from
+        // `PhraseQuery`'s in-order-only sloppy matching.
+        let positions = leaf_positions(&[("cat", &[1]), ("sat", &[0])]);
+        let query = SpanQuery::span_near(
+            [
+                SpanQuery::span_term("f", "cat"),
+                SpanQuery::span_term("f", "sat"),
+            ],
+            0,
+            false,
+        );
+        assert_eq!(span_matches_in_doc(&query, &positions), vec![(0, 2)]);
+    }
+
+    #[test]
+    fn span_near_respects_slop_boundary_exactly_at_limit_matches() {
+        // "cat" at 0, "sat" at 2 -- one word gap, slack = (2 - 1) = 1.
+        let positions = leaf_positions(&[("cat", &[0]), ("sat", &[2])]);
+        let query = SpanQuery::span_near(
+            [
+                SpanQuery::span_term("f", "cat"),
+                SpanQuery::span_term("f", "sat"),
+            ],
+            1,
+            true,
+        );
+        assert_eq!(span_matches_in_doc(&query, &positions), vec![(0, 3)]);
+    }
+
+    #[test]
+    fn span_near_respects_slop_boundary_one_over_does_not_match() {
+        let positions = leaf_positions(&[("cat", &[0]), ("sat", &[2])]);
+        let query = SpanQuery::span_near(
+            [
+                SpanQuery::span_term("f", "cat"),
+                SpanQuery::span_term("f", "sat"),
+            ],
+            0,
+            true,
+        );
+        assert!(span_matches_in_doc(&query, &positions).is_empty());
+    }
+
+    #[test]
+    fn span_or_matches_if_either_sub_span_matches() {
+        let cat_only = leaf_positions(&[("cat", &[0])]);
+        let dog_only = leaf_positions(&[("dog", &[0])]);
+        let neither = leaf_positions(&[]);
+        let both = leaf_positions(&[("cat", &[0]), ("dog", &[5])]);
+        let query = SpanQuery::span_or([
+            SpanQuery::span_term("f", "cat"),
+            SpanQuery::span_term("f", "dog"),
+        ]);
+        assert_eq!(span_matches_in_doc(&query, &cat_only), vec![(0, 1)]);
+        assert_eq!(span_matches_in_doc(&query, &dog_only), vec![(0, 1)]);
+        assert!(span_matches_in_doc(&query, &neither).is_empty());
+        assert_eq!(span_matches_in_doc(&query, &both), vec![(0, 1), (5, 6)]);
+    }
+
+    #[test]
+    fn span_near_of_span_near_composes_correctly() {
+        // (cat NEAR/0,in-order sat) NEAR/0,in-order mat: "cat" 0, "sat" 1, "mat" 2.
+        let positions = leaf_positions(&[("cat", &[0]), ("sat", &[1]), ("mat", &[2])]);
+        let inner = SpanQuery::span_near(
+            [
+                SpanQuery::span_term("f", "cat"),
+                SpanQuery::span_term("f", "sat"),
+            ],
+            0,
+            true,
+        );
+        let outer = SpanQuery::span_near([inner, SpanQuery::span_term("f", "mat")], 0, true);
+        assert_eq!(span_matches_in_doc(&outer, &positions), vec![(0, 3)]);
+    }
+
+    #[test]
+    fn span_near_of_span_near_no_match_when_inner_does_not_align() {
+        // Inner "cat sat" fails to align (gap too big for slop=0), so the outer
+        // near can never find an inner span to combine with "mat".
+        let positions = leaf_positions(&[("cat", &[0]), ("sat", &[5]), ("mat", &[6])]);
+        let inner = SpanQuery::span_near(
+            [
+                SpanQuery::span_term("f", "cat"),
+                SpanQuery::span_term("f", "sat"),
+            ],
+            0,
+            true,
+        );
+        let outer = SpanQuery::span_near([inner, SpanQuery::span_term("f", "mat")], 0, true);
+        assert!(span_matches_in_doc(&outer, &positions).is_empty());
+    }
+
+    #[test]
+    fn span_near_empty_clauses_never_matches() {
+        let positions = leaf_positions(&[("cat", &[0])]);
+        let query = SpanQuery::span_near(std::iter::empty(), 0, true);
+        assert!(span_matches_in_doc(&query, &positions).is_empty());
+    }
+
+    #[test]
+    fn span_near_a_clause_with_no_occurrences_never_matches() {
+        let positions = leaf_positions(&[("cat", &[0])]);
+        let query = SpanQuery::span_near(
+            [
+                SpanQuery::span_term("f", "cat"),
+                SpanQuery::span_term("f", "sat"),
+            ],
+            10,
+            true,
+        );
+        assert!(span_matches_in_doc(&query, &positions).is_empty());
     }
 
     // `search_phrase_query_scored` fixture-driven tests (task #29): reuses the

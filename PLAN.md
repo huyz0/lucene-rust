@@ -1283,6 +1283,65 @@ unknown-handle, and double-close cases for every new entry point; the
 poison-recovery regression test above. Coverage: `directory_reader.rs`
 96.04% lines (13 new tests; `lucene-ffi` crate total 156 passing tests).
 
+**Progress (task #55):** the `SpanQuery` family --
+`lucene-search/src/query.rs::SpanQuery` (`SpanTerm`/`SpanNear`/`SpanOr`) plus
+`Clause::Span`, wired into `resolve_clause_docs`/`clause_scores` following the
+`Wildcard`/`Prefix`/`Fuzzy`/`Regexp` precedent (flat `1.0`-per-match scoring,
+no new scoring machinery) -- a genuinely different query family from
+`PhraseQuery` (task #19/#28): instead of "does this doc match", a span
+query's result is the actual matching **span ranges** (`[start, end)`
+position pairs), composable (a `SpanNear` of `SpanNear`s, etc).
+
+**Scope decision, made explicitly**: real Lucene's `Spans` is a lazy
+iterator API (`nextStartPosition`/`nextDoc`/`advance`, buffered
+`NearSpansOrdered`/`NearSpansUnordered` merge state) -- substantial machinery
+out of scope here. This port instead computes span matches **directly
+against a doc's already-decoded position lists**
+(`lucene-search/src/lib.rs::span_matches_in_doc`), the same "compute matches
+directly against decoded data" shape `phrase_matches_in_doc`/
+`phrase_matches_in_doc_sloppy` already use for `PhraseQuery` -- an
+honestly-scoped MVP, not a lazy-iterator redesign. `span_doc_ids` (the
+`Clause::Span` doc-ID resolver) takes every leaf `SpanTerm`'s doc list as a
+safe, simple over-approximation of the candidate set (rather than a
+tighter, per-variant candidate computation) -- correctness first, profile
+before optimizing, same call this crate's other multi-term matchers already
+make.
+
+**The `in_order == false` differentiator**: `SpanNearQuery`'s `inOrder`
+flag genuinely supports both in-order and any-order proximity search --
+`in_order == false` allows sub-spans in **any** relative order within the
+`slop` budget, a capability `PhraseQuery`'s own sloppy matching (task #28)
+deliberately does *not* have (that was explicitly scoped to in-order-only).
+`span_near_matches` implements both: `in_order == true` requires sub-spans
+non-overlapping and increasing in the query's own clause order;
+`in_order == false` sorts the chosen sub-spans by start position first, then
+applies the same non-overlapping/slop check -- any relative order among
+clauses is accepted. The total-slack formula
+(`sum(next.start - prev.end)` over adjacent arranged spans) generalizes
+`phrase_matches_in_doc_sloppy`'s single-position "moves needed" accounting
+to `[start, end)` span ranges.
+
+**Cross-engine verified** (`crates/lucene-search/tests/span_query_fixtures.rs`,
+reusing the `blocktree_index` fixture's `pos` field): `GenBlockTree.java`
+gained doc8 (`"delta"@0`, `"gamma"@1` -- occurrence order deliberately
+reversed relative to a `SpanNearQuery` built with clauses in `[gamma,
+delta]` order) plus `field.pos.span.*` manifest keys, recorded by *actually
+running* real `org.apache.lucene.queries.spans.SpanNearQuery`/`SpanOrQuery`
+against this fixture at generation time (`lucene-queries` module, not
+`lucene-core`). Real Lucene's own verdict: `SpanNearQuery([gamma, delta],
+slop=0, inOrder=true)` does NOT match doc8;
+`SpanNearQuery([gamma, delta], slop=0, inOrder=false)` DOES match -- exactly
+the `in_order` differentiator this task's own scoping flagged as most
+likely to be subtly wrong if hand-derived, and this port's implementation
+agrees with real Lucene on both verdicts. Unit tests
+(`lucene-search/src/lib.rs`) additionally cover: `SpanTerm` matching every
+occurrence in a multi-occurrence doc; `SpanNear` slop-boundary exactness
+(exactly-at-limit matches, one-over doesn't); `SpanOr` union semantics
+(either/neither/both sub-spans); nested `SpanNear`-of-`SpanNear` composition.
+Coverage: `lucene-search/src/lib.rs` 96.10% lines, `query.rs` 98.34% lines
+(workspace total 97.23% lines, `cargo llvm-cov --fail-under-lines 95`
+passing). See `docs/parity.md` for the full row and scope writeup.
+
 1. `lucene-analysis`: `TokenStream` as an iterator-of-token-structs (skip Java's
    AttributeSource reflection design entirely — a plain
    `Token { bytes, position_increment, offset, ... }` struct), StandardTokenizer via

@@ -245,6 +245,105 @@ impl RegexpQuery {
     }
 }
 
+/// `SpanQuery`-equivalent (`org.apache.lucene.queries.spans.SpanQuery` and its
+/// three concrete subclasses this port covers: `SpanTermQuery`,
+/// `SpanNearQuery`, `SpanOrQuery` — task #55's addition), a genuinely
+/// different query family from [`PhraseQuery`]: instead of only reporting
+/// "does this doc match", a span query's result is the actual matching
+/// **span ranges** (`[start, end)` position pairs) within a doc, which can
+/// then compose (a `SpanNear` of `SpanNear`s, etc). See
+/// [`crate::span_matches_in_doc`]'s doc comment for the exact matching
+/// algorithm and this type's own scope decision below.
+///
+/// **Scope decision, stated explicitly (see `docs/parity.md`)**: real
+/// Lucene's `Spans` is a lazy iterator API (`nextStartPosition`/`nextDoc`/
+/// `advance`, `TwoPhaseIterator` integration, buffered "atNextSpans" state for
+/// `SpanNearQuery`'s ordered/unordered merge) — substantial machinery whose
+/// full port is out of scope here. This port instead computes span matches
+/// **directly against a doc's already-decoded position lists**, the same
+/// "compute matches directly against decoded data" shape
+/// [`crate::phrase_matches_in_doc`]/[`crate::phrase_matches_in_doc_sloppy`]
+/// already use for `PhraseQuery` — an honestly-scoped MVP: does a doc contain
+/// a valid span for this query, and what are its matching span ranges,
+/// computed eagerly rather than via a lazy iterator. Scoring is likewise flat
+/// (`1.0` per matching doc, via [`crate::clause_scores`]'s `Clause::Span`
+/// arm), matching this crate's existing `Wildcard`/`Prefix`/`Fuzzy`/`Regexp`
+/// precedent — real span-aware scoring (`SpanWeight`/`SpanScorer`) is its own
+/// separate, unscoped problem.
+///
+/// **Variants**:
+/// - `SpanTerm { field, term }`: a leaf matching a single term — its spans are
+///   exactly that term's `(position, position + 1)` occurrences in a doc
+///   (every occurrence, not just "does it occur" — real `SpanTermQuery`'s
+///   exact semantics).
+/// - `SpanNear { clauses, slop, in_order }`: every sub-`SpanQuery` in
+///   `clauses` must have a span within `slop` of each other in the same doc.
+///   `in_order == true` requires the sub-spans to appear left-to-right in
+///   `clauses`' own order (real `SpanNearQuery(clauses, slop, true)`);
+///   `in_order == false` allows the sub-spans in **any** relative order,
+///   provided they still fit within a `slop`-sized window (real
+///   `SpanNearQuery(clauses, slop, false)`) — this is the capability
+///   [`PhraseQuery`]'s own sloppy matching (task #28) deliberately does *not*
+///   support (that was explicitly scoped to in-order-only; see
+///   [`crate::phrase_matches_in_doc_sloppy`]'s doc comment), making
+///   `in_order == false` this type's key differentiator from a sloppy phrase.
+/// - `SpanOr { clauses }`: the union of every sub-`SpanQuery`'s own spans —
+///   a doc/position matches iff **any** sub-query's spans match there (real
+///   `SpanOrQuery`'s exact semantics, the same "pure union" contract
+///   [`DisjunctionMaxQuery`] already uses for whole-doc matching, here
+///   applied at the span-range granularity instead).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SpanQuery {
+    /// A leaf span matching a single term's occurrences, real
+    /// `SpanTermQuery`'s equivalent.
+    SpanTerm { field: String, term: Vec<u8> },
+    /// `slop` sub-spans of `clauses` required within `slop` total positional
+    /// slack of each other; `in_order` selects real `SpanNearQuery`'s
+    /// in-order vs any-order semantics — see this enum's doc comment.
+    SpanNear {
+        clauses: Vec<SpanQuery>,
+        slop: u32,
+        in_order: bool,
+    },
+    /// The union of every sub-`SpanQuery`'s own spans, real `SpanOrQuery`'s
+    /// equivalent — see this enum's doc comment.
+    SpanOr { clauses: Vec<SpanQuery> },
+}
+
+impl SpanQuery {
+    /// Builds a leaf `SpanTerm` span query for `field`/`term`.
+    pub fn span_term(field: impl Into<String>, term: impl Into<Vec<u8>>) -> Self {
+        SpanQuery::SpanTerm {
+            field: field.into(),
+            term: term.into(),
+        }
+    }
+
+    /// Builds a `SpanNear` span query over `clauses`, requiring every
+    /// sub-span within `slop` total positional slack, `in_order` selecting
+    /// real `SpanNearQuery`'s in-order vs any-order semantics — see
+    /// [`SpanQuery`]'s doc comment.
+    pub fn span_near(
+        clauses: impl IntoIterator<Item = SpanQuery>,
+        slop: u32,
+        in_order: bool,
+    ) -> Self {
+        SpanQuery::SpanNear {
+            clauses: clauses.into_iter().collect(),
+            slop,
+            in_order,
+        }
+    }
+
+    /// Builds a `SpanOr` span query unioning every sub-`SpanQuery`'s own
+    /// spans — see [`SpanQuery`]'s doc comment.
+    pub fn span_or(clauses: impl IntoIterator<Item = SpanQuery>) -> Self {
+        SpanQuery::SpanOr {
+            clauses: clauses.into_iter().collect(),
+        }
+    }
+}
+
 /// One `must`/`should`/`must_not` slot in a [`BooleanQuery`] — a leaf
 /// `TermQuery`, a leaf `PhraseQuery` (task #29's addition, closing the gap this
 /// enum's doc comment previously flagged), or a nested `BooleanQuery`
@@ -317,6 +416,13 @@ pub enum Clause {
     /// full, see that module's whole-term-match convention), unscored (flat
     /// `1.0` per match); see [`RegexpQuery`]'s doc comment.
     Regexp(RegexpQuery),
+    /// A `SpanQuery` (task #55's addition, `SpanTerm`/`SpanNear`/`SpanOr`) --
+    /// matches every doc with at least one non-empty span (see
+    /// [`crate::span_matches_in_doc`]), unscored (flat `1.0` per match, same
+    /// convention as `Wildcard`/`Prefix`/`Fuzzy`/`Regexp` above); see
+    /// [`SpanQuery`]'s doc comment for the exact span-matching semantics and
+    /// this port's scope decision.
+    Span(SpanQuery),
 }
 
 impl From<TermQuery> for Clause {
@@ -376,6 +482,12 @@ impl From<FuzzyQuery> for Clause {
 impl From<RegexpQuery> for Clause {
     fn from(query: RegexpQuery) -> Self {
         Clause::Regexp(query)
+    }
+}
+
+impl From<SpanQuery> for Clause {
+    fn from(query: SpanQuery) -> Self {
+        Clause::Span(query)
     }
 }
 

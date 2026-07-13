@@ -648,7 +648,7 @@ mod tests {
         let tip = "_0_Lucene104_0.tip";
         let tmd = "_0_Lucene104_0.tmd";
         let suffix = "Lucene104_0";
-        let hex = "6d059d4cdcac6f59197686012f67fc52";
+        let hex = "bea914ffd84e035aaac43aca30240b47";
         let id = id_from_hex(hex);
         let mut seg_handle: u64 = 0;
         let rc = unsafe {
@@ -679,7 +679,7 @@ mod tests {
                 id.as_ptr(),
                 suffix.as_ptr() as *const c_char,
                 suffix.len(),
-                8958,
+                8959,
                 &mut seg_handle as *mut _,
             )
         };

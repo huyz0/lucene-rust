@@ -214,7 +214,7 @@ mod tests {
     // --- shared fixture plumbing (same real-Lucene fixture term_delete.rs
     // uses; see that module's test doc comment for the known contents:
     // field `body`, term `cat` -> docs [0, 2], term `dog` -> docs [0, 1],
-    // term `bird` -> docs [1, 4]; max_doc = 8958). ---
+    // term `bird` -> docs [1, 4]; max_doc = 8959). ---
 
     struct Fixture {
         fields: BlockTreeFields,

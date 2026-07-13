@@ -544,7 +544,7 @@ mod tests {
         // Real sparse soft-deletes field: docs 0, 2, 4 present -> soft-deleted.
         // Its own real domain is only max_doc=5 (see load_sparse_fixture's
         // doc comment); it's evaluated here over blocktree_index's much
-        // larger max_doc (8958) purely because effective_live_docs needs one
+        // larger max_doc (8959) purely because effective_live_docs needs one
         // shared doc-id space to combine with. For every doc id >= 5, the
         // sparse field's IndexedDISI simply has no entry, so
         // is_soft_deleted returns false there -- those docs are correctly
