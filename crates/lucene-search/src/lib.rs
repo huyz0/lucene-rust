@@ -197,7 +197,7 @@ pub use doc_value_query::{
 pub use field_norms::FieldNorms;
 pub use query::{
     BooleanQuery, BoostQuery, Clause, ConstantScoreQuery, DisjunctionMaxQuery, PhraseQuery,
-    TermQuery, WildcardQuery,
+    PrefixQuery, TermQuery, WildcardQuery,
 };
 
 use std::collections::HashMap;
@@ -297,6 +297,46 @@ fn term_doc_ids(
         .copied()
         .filter(|&doc_id| live_docs.is_none_or(|bits| bits.get(doc_id as usize)))
         .collect())
+}
+
+/// [`Clause::Prefix`]'s matched doc-ID list: same union-across-matching-terms
+/// mechanism as [`wildcard_doc_ids`], built on
+/// [`lucene_codecs::wildcard::WildcardPattern::prefix`] (a literal-bytes-only
+/// pattern -- see [`PrefixQuery`]'s doc comment for why this avoids
+/// `WildcardPattern::new`'s glob-escaping entirely) instead of a general glob
+/// pattern. Returns an empty `Vec` -- not an error -- when `query.field`
+/// doesn't exist in this segment, same "missing field means no matches"
+/// convention every other clause follows.
+fn prefix_doc_ids(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    query: &PrefixQuery,
+) -> Result<Vec<i32>> {
+    let Some(field_terms) = fields.field(&query.field) else {
+        return Ok(Vec::new());
+    };
+    let pattern = WildcardPattern::prefix(&query.prefix);
+    let matching_terms: Vec<Vec<u8>> = field_terms
+        .intersect(&pattern)
+        .map(|(term, _stats)| term.to_vec())
+        .collect();
+    let mut doc_ids: Vec<i32> = Vec::new();
+    for term in &matching_terms {
+        let Some(postings) = field_terms.postings(term, doc_in)? else {
+            continue;
+        };
+        doc_ids.extend(
+            postings
+                .docs
+                .iter()
+                .copied()
+                .filter(|&doc_id| live_docs.is_none_or(|bits| bits.get(doc_id as usize))),
+        );
+    }
+    doc_ids.sort_unstable();
+    doc_ids.dedup();
+    Ok(doc_ids)
 }
 
 /// [`Clause::Wildcard`]'s matched doc-ID list: every term
@@ -449,6 +489,7 @@ fn resolve_clause_docs(
             resolve_clause_docs(fields, doc_in, pos_in, pay_in, live_docs, &nested.inner)
         }
         Clause::Wildcard(query) => wildcard_doc_ids(fields, doc_in, live_docs, query),
+        Clause::Prefix(query) => prefix_doc_ids(fields, doc_in, live_docs, query),
     }
 }
 
@@ -781,6 +822,16 @@ fn clause_scores(
             // comment in `query.rs` for why (no single term's frequency/idf to
             // score against for a multi-term match).
             let matched = wildcard_doc_ids(fields, doc_in, live_docs, query)?;
+            Ok(matched
+                .into_iter()
+                .map(|doc_id| (doc_id, 1.0_f32))
+                .collect())
+        }
+        Clause::Prefix(query) => {
+            // Unscored: flat 1.0 per matching doc -- see `PrefixQuery`'s doc
+            // comment for why (same rationale as `Clause::Wildcard`'s arm
+            // above).
+            let matched = prefix_doc_ids(fields, doc_in, live_docs, query)?;
             Ok(matched
                 .into_iter()
                 .map(|doc_id| (doc_id, 1.0_f32))

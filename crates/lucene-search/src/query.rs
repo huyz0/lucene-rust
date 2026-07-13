@@ -66,6 +66,64 @@ impl WildcardQuery {
     }
 }
 
+/// `PrefixQuery`-equivalent (`org.apache.lucene.search.PrefixQuery`), task
+/// #35's addition: a field plus a literal byte-string `prefix` matched against
+/// every term indexed for `field` — a term matches iff its bytes start with
+/// `prefix` exactly (no glob syntax at all: unlike [`WildcardQuery`], a `*`/
+/// `?`/`\` byte inside `prefix` is just another literal byte to match, never a
+/// wildcard metacharacter or an escape). The matched set is the **union** of
+/// every matching term's postings (see [`crate::resolve_clause_docs`]'s
+/// `Clause::Prefix` arm), same "match any accepted term" contract
+/// `WildcardQuery` already has, since real `PrefixQuery` is itself a
+/// `MultiTermQuery` with exactly this semantics (`PrefixQuery.compile()`
+/// builds an automaton for the same "every term starting with X" language
+/// `WildcardQuery`'s trailing-unescaped-`*` also expresses).
+///
+/// **Design decision: wraps [`lucene_codecs::wildcard::WildcardPattern::prefix`]
+/// directly, not `WildcardPattern::new` on an escaped-plus-`*` string.** Real
+/// Lucene's `PrefixQuery` is functionally "match every term starting with X",
+/// which could be built two ways: (a) a thin wrapper constructing a
+/// `WildcardQuery` pattern by literal-escaping `prefix` (backslash-escaping
+/// every `*`/`?`/`\` byte) and appending an unescaped trailing `*`, reusing
+/// `WildcardPattern::new`'s glob parser unchanged, or (b) a direct prefix
+/// match with no glob syntax involved at all. This port takes (b) — and it's
+/// not even new code: [`lucene_codecs::wildcard::WildcardPattern::prefix`]
+/// already exists (added in task #1 for exactly this purpose, see that
+/// module's doc comment) and builds its token list directly from `prefix`'s
+/// raw bytes as `Literal` tokens plus one trailing `AnyMany`, **never calling
+/// `WildcardPattern::new`'s escape-parsing loop at all**. Option (a) was
+/// rejected because it would require this query to re-escape `prefix` byte-by-
+/// byte before matching could reuse the parser — fiddly and exactly the kind
+/// of edge case the task called out: a prefix like `a*b` must match every term
+/// starting with the 3 literal bytes `a`, `*`, `b`, not be reinterpreted as
+/// "`a`, then anything, then `b`". Building on `WildcardPattern::prefix`
+/// sidesteps that risk entirely rather than mitigating it with careful
+/// escaping — there is no escaping step to get wrong, since `prefix`'s bytes
+/// never pass through anything that treats `*`/`?`/`\` specially.
+///
+/// **Why `prefix: Vec<u8>` instead of `String`**: same reasoning as
+/// [`WildcardQuery::pattern`]'s own doc comment — terms in this port are raw
+/// `Vec<u8>` with no guaranteed UTF-8 validity, and `WildcardPattern::prefix`
+/// already operates byte-wise.
+///
+/// **Scoring**: unscored/constant (flat `1.0` per match), same choice
+/// `WildcardQuery` makes and for the same reason — see
+/// [`crate::clause_scores`]'s `Clause::Prefix` arm.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrefixQuery {
+    pub field: String,
+    pub prefix: Vec<u8>,
+}
+
+impl PrefixQuery {
+    pub fn new(field: impl Into<String>, prefix: impl Into<Vec<u8>>) -> Self {
+        Self {
+            field: field.into(),
+            prefix: prefix.into(),
+        }
+    }
+}
+
 /// One `must`/`should`/`must_not` slot in a [`BooleanQuery`] — a leaf
 /// `TermQuery`, a leaf `PhraseQuery` (task #29's addition, closing the gap this
 /// enum's doc comment previously flagged), or a nested `BooleanQuery`
@@ -121,6 +179,11 @@ pub enum Clause {
     /// `lucene_codecs::wildcard::WildcardPattern` accepts, unscored (flat
     /// `1.0` per match); see [`WildcardQuery`]'s doc comment.
     Wildcard(WildcardQuery),
+    /// A leaf `PrefixQuery` (task #35's addition) -- matches every doc
+    /// containing at least one term (for `query.field`) starting with
+    /// `query.prefix`'s literal bytes, unscored (flat `1.0` per match); see
+    /// [`PrefixQuery`]'s doc comment.
+    Prefix(PrefixQuery),
 }
 
 impl From<TermQuery> for Clause {
@@ -162,6 +225,12 @@ impl From<BoostQuery> for Clause {
 impl From<WildcardQuery> for Clause {
     fn from(query: WildcardQuery) -> Self {
         Clause::Wildcard(query)
+    }
+}
+
+impl From<PrefixQuery> for Clause {
+    fn from(query: PrefixQuery) -> Self {
+        Clause::Prefix(query)
     }
 }
 
@@ -585,6 +654,38 @@ mod tests {
         let inner = BoostQuery::new(TermQuery::new("body", "cat"), 2.5);
         let clause: Clause = inner.clone().into();
         assert_eq!(clause, Clause::Boost(Box::new(inner)));
+    }
+
+    #[test]
+    fn prefix_query_new_stores_field_and_prefix_bytes() {
+        let q = PrefixQuery::new("body", "ca");
+        assert_eq!(q.field, "body");
+        assert_eq!(q.prefix, b"ca");
+    }
+
+    #[test]
+    fn prefix_query_equality_is_field_and_prefix_based() {
+        assert_eq!(
+            PrefixQuery::new("body", "ca"),
+            PrefixQuery::new("body", "ca")
+        );
+        assert_ne!(
+            PrefixQuery::new("body", "ca"),
+            PrefixQuery::new("body", "do")
+        );
+        assert_ne!(PrefixQuery::new("body", "ca"), PrefixQuery::new("id", "ca"));
+    }
+
+    #[test]
+    fn clause_from_prefix_query_wraps_in_prefix_variant() {
+        let clause: Clause = PrefixQuery::new("body", "ca").into();
+        assert_eq!(clause, Clause::Prefix(PrefixQuery::new("body", "ca")));
+    }
+
+    #[test]
+    fn with_must_accepts_a_prefix_query_clause() {
+        let q = BooleanQuery::new().with_must([PrefixQuery::new("body", "ca")]);
+        assert_eq!(q.must, vec![Clause::Prefix(PrefixQuery::new("body", "ca"))]);
     }
 
     #[test]

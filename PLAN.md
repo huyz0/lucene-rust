@@ -477,6 +477,32 @@ with this port's own `Clause::Wildcard` matching for every recorded case
 non-special byte, `?` matching a literal `d` in `bird`). See
 `docs/parity.md`'s new row for the full accounting.
 
+**Progress (task #35):** `PrefixQuery` is ported — a leaf
+`Clause::Prefix(PrefixQuery)` matching every doc containing at least one term
+(for `query.field`) starting with `query.prefix`'s literal bytes, unioned
+across every matching term (`prefix_doc_ids` in `lib.rs`, structurally
+identical to task #34's `wildcard_doc_ids` but built on
+`lucene_codecs::wildcard::WildcardPattern::prefix` instead of
+`WildcardPattern::new`). Unscored, same flat `1.0` per match as
+`Clause::Wildcard` and for the same reason. **Design decision**: rather than
+building `PrefixQuery` as a thin wrapper that escapes `prefix`'s bytes and
+appends an unescaped `*` to reuse `WildcardQuery`'s glob parser,
+`PrefixQuery` calls `WildcardPattern::prefix` directly — a constructor that
+already existed (task #1) and builds its token list straight from `prefix`'s
+raw bytes as literals plus a trailing `AnyMany`, never touching
+`WildcardPattern::new`'s escape/glob-parsing loop at all. This sidesteps the
+escaping-edge-case risk entirely instead of mitigating it: a prefix
+containing a literal `*`/`?`/`\` byte (e.g. `a*b`) is matched as the 3 literal
+bytes it is, with no escaping step that could get it wrong. Verified against
+real Lucene via `fixtures/src/AppendPrefixManifest.java` (same append-only
+pattern as `AppendWildcardManifest.java`) running six real
+`org.apache.lucene.search.PrefixQuery` cases against `body`'s real terms — a
+prefix matching one term, a prefix matching several, the empty prefix
+(matches every term), a prefix equal to a full existing term, a no-match
+prefix, and a prefix containing literal `*`/`?` bytes — asserting doc-for-doc
+agreement with this port's own `Clause::Prefix` matching for every recorded
+case. See `docs/parity.md`'s updated row for the full accounting.
+
 1. Traits: `Query → Weight → Scorer/ScorerSupplier`, `DocIdSetIterator`,
    `TwoPhaseIterator`, `BulkScorer`. Use enums where the closed set allows
    (DISI is called per-doc — keep it monomorphizable; `Box<dyn>` only at Weight level).
@@ -489,9 +515,9 @@ non-special byte, `?` matching a literal `d` in `bird`). See
 3. Queries, in order: `MatchAllDocs`, `TermQuery`, `BooleanQuery` (conjunction DISI,
    disjunction heap, minimum-should-match), `PointRangeQuery` (BKD intersect),
    `PhraseQuery` (exact + sloppy), `TermInSetQuery`, `PrefixQuery`/`WildcardQuery`
-   (`WildcardQuery` **ported**, task #34 — glob matching via the existing
-   `WildcardPattern`/`FieldTerms::intersect` machinery, not real
-   automaton/`IntersectTermsEnum` block-skipping; regex/`FuzzyQuery` still need
+   (both **ported** — `WildcardQuery` task #34, `PrefixQuery` task #35 — glob/
+   prefix matching via the existing `WildcardPattern`/`FieldTerms::intersect`
+   machinery, not real automaton/`IntersectTermsEnum` block-skipping; regex/`FuzzyQuery` still need
    real Levenshtein/automaton machinery — port `o.a.l.util.automaton` here;
    consider the `fst`/`regex-automata` crates for internals but keep Lucene
    semantics), `FunctionScore`-shaped hooks deferred.
