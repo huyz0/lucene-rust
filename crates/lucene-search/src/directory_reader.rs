@@ -630,6 +630,7 @@ mod tests {
             diagnostics: vec![],
             files: vec![], // no .fnm listed
             attributes: vec![],
+            index_sort: None,
         };
         let si_bytes = segment_info::write(&si, "");
         std::fs::write(dir_path.join("_0.si"), &si_bytes).unwrap();
@@ -701,6 +702,7 @@ mod tests {
             diagnostics: vec![],
             files: vec!["_0.fnm".to_string(), "_0_x.tim".to_string()],
             attributes: vec![],
+            index_sort: None,
         };
         let si_bytes = segment_info::write(&si, "");
         std::fs::write(dir_path.join("_0.si"), &si_bytes).unwrap();

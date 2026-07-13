@@ -70,7 +70,7 @@
 //! introducing it earlier would be state management with no real caller
 //! yet.
 
-use crate::segment_info::{self, LuceneVersion, SegmentInfo};
+use crate::segment_info::{self, IndexSortField, LuceneVersion, SegmentInfo, SortMissingValue};
 use crate::segment_infos::SegmentCommitInfo;
 use lucene_codecs::compound_format;
 use lucene_codecs::field_infos::{self, FieldInfo};
@@ -85,6 +85,8 @@ pub enum Error {
     Store(#[from] lucene_store::Error),
     #[error(transparent)]
     CompoundFormat(#[from] compound_format::Error),
+    #[error(transparent)]
+    SegmentInfo(#[from] segment_info::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -195,6 +197,7 @@ pub fn flush_stored_only_segment(
             "Lucene90StoredFieldsFormat.mode".to_string(),
             "BEST_SPEED".to_string(),
         )],
+        index_sort: None,
     };
     let si_name = format!("{segment_name}.si");
     let si_bytes = segment_info::write(&si, "");
@@ -216,6 +219,131 @@ pub fn flush_stored_only_segment(
         sci_id: None,
         field_infos_files: vec![],
         dv_update_files: vec![],
+    })
+}
+
+/// Like [`flush_stored_only_segment`], but physically reorders `docs` by an
+/// index-sort key before writing anything, and records that sort in the
+/// resulting `.si` (real Lucene's `IndexWriterConfig.setIndexSort` +
+/// `DocumentsWriterPerThread`'s sort-on-flush behavior -- see PLAN.md's
+/// index-sort task).
+///
+/// # Scope (see `docs/parity.md` for the full write-up)
+///
+/// - **Single NUMERIC field only.** `sort_keys[i]` is doc `i`'s (pre-sort)
+///   value for the index-sort field, computed by the caller. This port has
+///   no write-side doc-values format yet (see this module's own "What this
+///   deliberately is not" section), so the sort key can't be read back from
+///   an already-written file the way real Lucene's `DocValuesConsumer`-fed
+///   sort does -- it must already be in memory, parallel to `docs`, which is
+///   exactly what this parameter is.
+/// - **Missing values**: `sort_keys[i] == None` means doc `i` has no value
+///   for the sort field; it's placed first or last per `missing`
+///   ([`SortMissingValue`]), regardless of `reverse`, matching real Lucene's
+///   `SortField.setMissingValue` convention (a missing value acts like
+///   `Long.MIN_VALUE`/`MAX_VALUE`. so `First`/ascending and `Last`/descending
+///   both put it at the *start* of the physical layout; see the docstring on
+///   `sort_key_rank` below for the exact rule this function applies).
+/// - **Stable sort**: docs with equal (or both-missing) keys keep their
+///   original relative order, matching `Vec::sort_by_key`'s stability
+///   guarantee and real Lucene's own stable-merge-sort-based flush sort.
+/// - **No merge re-sort**: a later merge of two sorted segments in this port
+///   does NOT re-sort by this key (see `crate::merge` and `docs/parity.md`)
+///   -- only fresh single-segment flushes are sorted.
+#[allow(clippy::too_many_arguments)]
+pub fn flush_sorted_stored_only_segment(
+    dir: &dyn Directory,
+    segment_name: &str,
+    segment_id: [u8; ID_LENGTH],
+    codec_name: &str,
+    lucene_version: LuceneVersion,
+    fields: &[FieldInfo],
+    docs: &[Document],
+    sort_field: &str,
+    sort_keys: &[Option<i64>],
+    reverse: bool,
+    missing: SortMissingValue,
+) -> Result<SegmentCommitInfo> {
+    assert_eq!(
+        docs.len(),
+        sort_keys.len(),
+        "sort_keys must have exactly one entry per doc"
+    );
+
+    // Stable sort by (rank, original index) so equal/missing keys keep their
+    // original relative order (original index is the explicit tie-breaker;
+    // `sort_by_key` is already stable, but pairing with the index makes that
+    // guarantee explicit and gives us the permutation for free).
+    let mut order: Vec<usize> = (0..docs.len()).collect();
+    order.sort_by(|&a, &b| {
+        sort_key_rank(sort_keys[a], sort_keys[b], reverse, missing).then(a.cmp(&b))
+    });
+
+    let sorted_docs: Vec<Document> = order.iter().map(|&i| docs[i].clone()).collect();
+
+    let sci = flush_stored_only_segment(
+        dir,
+        segment_name,
+        segment_id,
+        codec_name,
+        lucene_version,
+        fields,
+        &sorted_docs,
+        false,
+    )?;
+
+    // Patch the just-written `.si` to add the index-sort descriptor:
+    // `flush_stored_only_segment` always writes `index_sort: None`, and
+    // duplicating its whole file-writing sequence here just to plumb one
+    // extra field through would be more surface area than re-reading and
+    // rewriting the one small `.si` file.
+    let si_name = format!("{segment_name}.si");
+    let si_bytes: Vec<u8> = dir.open(&si_name)?.to_vec();
+    let mut si = segment_info::parse(&si_bytes, &segment_id)?;
+    si.index_sort = Some(IndexSortField {
+        field: sort_field.to_string(),
+        reverse,
+        missing,
+    });
+    let si_bytes = segment_info::write(&si, "");
+    write_file(dir, &si_name, &si_bytes)?;
+    dir.sync(&[si_name])?;
+
+    Ok(sci)
+}
+
+/// Total-order comparator used to place two docs within the sorted layout:
+/// real Lucene's missing-value convention treats a missing value as
+/// `Long::MIN`/`Long::MAX` *before* applying `reverse`, so a `First`-missing
+/// doc sorts first whether the sort is ascending or descending, and likewise
+/// for `Last`. Present-value docs compare by their value, reversed when
+/// `reverse` is set (via `Ordering::reverse`, not negation -- negating
+/// `i64::MIN` would overflow/wrap).
+fn sort_key_rank(
+    a: Option<i64>,
+    b: Option<i64>,
+    reverse: bool,
+    missing: SortMissingValue,
+) -> std::cmp::Ordering {
+    let bucket = |k: Option<i64>| -> i8 {
+        match k {
+            Some(_) => 0,
+            None => match missing {
+                SortMissingValue::First => -1,
+                SortMissingValue::Last => 1,
+            },
+        }
+    };
+    bucket(a).cmp(&bucket(b)).then_with(|| match (a, b) {
+        (Some(x), Some(y)) => {
+            let ord = x.cmp(&y);
+            if reverse {
+                ord.reverse()
+            } else {
+                ord
+            }
+        }
+        _ => std::cmp::Ordering::Equal,
     })
 }
 
@@ -507,5 +635,244 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         dir.to_str().unwrap().to_string()
+    }
+
+    fn doc_ids(
+        dir: &FsDirectory,
+        segment_name: &str,
+        segment_id: [u8; ID_LENGTH],
+        n: usize,
+    ) -> Vec<String> {
+        let fdt = dir.open(&format!("{segment_name}.fdt")).unwrap().to_vec();
+        let fdx = dir.open(&format!("{segment_name}.fdx")).unwrap().to_vec();
+        let fdm = dir.open(&format!("{segment_name}.fdm")).unwrap().to_vec();
+        let reader = stored_fields::open(&fdt, &fdx, &fdm, &segment_id, "").unwrap();
+        (0..n as i32)
+            .map(|i| {
+                let d = reader.document(i).unwrap();
+                match &d.fields[0].value {
+                    FieldValue::String(s) => s.clone(),
+                    other => panic!("unexpected field value shape: {other:?}"),
+                }
+            })
+            .collect()
+    }
+
+    /// Reads back the `.si`'s index-sort descriptor for a flushed segment.
+    fn read_index_sort(
+        dir: &FsDirectory,
+        segment_name: &str,
+        segment_id: [u8; ID_LENGTH],
+    ) -> Option<crate::segment_info::IndexSortField> {
+        let si_bytes = dir.open(&format!("{segment_name}.si")).unwrap().to_vec();
+        segment_info::parse(&si_bytes, &segment_id)
+            .unwrap()
+            .index_sort
+    }
+
+    #[test]
+    fn sorted_flush_reorders_docs_ascending_by_numeric_key() {
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0)];
+        let segment_id = [11u8; ID_LENGTH];
+        // Insertion order: c(30), a(10), b(20) -- must come out a, b, c.
+        let docs = vec![doc("c"), doc("a"), doc("b")];
+        let sort_keys = vec![Some(30), Some(10), Some(20)];
+
+        flush_sorted_stored_only_segment(
+            &dir,
+            "_0",
+            segment_id,
+            "Lucene104",
+            version(),
+            &fields,
+            &docs,
+            "num",
+            &sort_keys,
+            false,
+            SortMissingValue::Last,
+        )
+        .unwrap();
+
+        assert_eq!(doc_ids(&dir, "_0", segment_id, 3), vec!["a", "b", "c"]);
+        let sf = read_index_sort(&dir, "_0", segment_id).unwrap();
+        assert_eq!(sf.field, "num");
+        assert!(!sf.reverse);
+        assert_eq!(sf.missing, SortMissingValue::Last);
+    }
+
+    #[test]
+    fn sorted_flush_reorders_docs_descending_by_numeric_key() {
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0)];
+        let segment_id = [12u8; ID_LENGTH];
+        let docs = vec![doc("a"), doc("b"), doc("c")];
+        let sort_keys = vec![Some(10), Some(20), Some(30)];
+
+        flush_sorted_stored_only_segment(
+            &dir,
+            "_0",
+            segment_id,
+            "Lucene104",
+            version(),
+            &fields,
+            &docs,
+            "num",
+            &sort_keys,
+            true,
+            SortMissingValue::First,
+        )
+        .unwrap();
+
+        assert_eq!(doc_ids(&dir, "_0", segment_id, 3), vec!["c", "b", "a"]);
+        let sf = read_index_sort(&dir, "_0", segment_id).unwrap();
+        assert!(sf.reverse);
+    }
+
+    #[test]
+    fn sorted_flush_places_missing_values_first() {
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0)];
+        let segment_id = [13u8; ID_LENGTH];
+        // b has no value; with MissingValue::First it must land before a/c
+        // regardless of its insertion position.
+        let docs = vec![doc("a"), doc("b"), doc("c")];
+        let sort_keys = vec![Some(10), None, Some(20)];
+
+        flush_sorted_stored_only_segment(
+            &dir,
+            "_0",
+            segment_id,
+            "Lucene104",
+            version(),
+            &fields,
+            &docs,
+            "num",
+            &sort_keys,
+            false,
+            SortMissingValue::First,
+        )
+        .unwrap();
+
+        assert_eq!(doc_ids(&dir, "_0", segment_id, 3), vec!["b", "a", "c"]);
+    }
+
+    #[test]
+    fn sorted_flush_places_missing_values_last() {
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0)];
+        let segment_id = [14u8; ID_LENGTH];
+        let docs = vec![doc("a"), doc("b"), doc("c")];
+        let sort_keys = vec![Some(10), None, Some(20)];
+
+        flush_sorted_stored_only_segment(
+            &dir,
+            "_0",
+            segment_id,
+            "Lucene104",
+            version(),
+            &fields,
+            &docs,
+            "num",
+            &sort_keys,
+            false,
+            SortMissingValue::Last,
+        )
+        .unwrap();
+
+        assert_eq!(doc_ids(&dir, "_0", segment_id, 3), vec!["a", "c", "b"]);
+    }
+
+    /// Missing-value placement must be independent of `reverse` -- a missing
+    /// value sorts to the configured position (first/last) regardless of
+    /// ascending vs descending direction, matching real Lucene's
+    /// `SortField.setMissingValue` semantics. Neither `sorted_flush_places_
+    /// missing_values_first`/`_last` above exercises `reverse: true`, so
+    /// this closes that gap: with descending order AND missing-last
+    /// configured, the missing doc must still land last, not first (which
+    /// is what a bug leaking `reverse` into the missing-value bucket
+    /// ordering would produce).
+    #[test]
+    fn sorted_flush_missing_value_placement_is_independent_of_reverse() {
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0)];
+        let segment_id = [16u8; ID_LENGTH];
+        let docs = vec![doc("a"), doc("b"), doc("c")];
+        let sort_keys = vec![Some(10), None, Some(20)];
+
+        flush_sorted_stored_only_segment(
+            &dir,
+            "_0",
+            segment_id,
+            "Lucene104",
+            version(),
+            &fields,
+            &docs,
+            "num",
+            &sort_keys,
+            true, // descending
+            SortMissingValue::Last,
+        )
+        .unwrap();
+
+        // Descending by present value: c(20) then a(10); missing (b) still
+        // last regardless of the descending direction.
+        assert_eq!(doc_ids(&dir, "_0", segment_id, 3), vec!["c", "a", "b"]);
+    }
+
+    #[test]
+    fn sorted_flush_is_stable_for_equal_keys() {
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0)];
+        let segment_id = [15u8; ID_LENGTH];
+        // a and b tie at key 10 -- must keep original relative order (a
+        // before b), with c(5) placed first.
+        let docs = vec![doc("a"), doc("b"), doc("c")];
+        let sort_keys = vec![Some(10), Some(10), Some(5)];
+
+        flush_sorted_stored_only_segment(
+            &dir,
+            "_0",
+            segment_id,
+            "Lucene104",
+            version(),
+            &fields,
+            &docs,
+            "num",
+            &sort_keys,
+            false,
+            SortMissingValue::Last,
+        )
+        .unwrap();
+
+        assert_eq!(doc_ids(&dir, "_0", segment_id, 3), vec!["c", "a", "b"]);
+    }
+
+    #[test]
+    #[should_panic(expected = "sort_keys must have exactly one entry per doc")]
+    fn sorted_flush_panics_on_mismatched_sort_keys_length() {
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0)];
+
+        let _ = flush_sorted_stored_only_segment(
+            &dir,
+            "_0",
+            [16u8; ID_LENGTH],
+            "Lucene104",
+            version(),
+            &fields,
+            &[doc("a"), doc("b")],
+            "num",
+            &[Some(1)],
+            false,
+            SortMissingValue::Last,
+        );
     }
 }

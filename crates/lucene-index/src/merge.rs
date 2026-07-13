@@ -421,6 +421,12 @@ pub fn merge_stored_only_segments(
             "Lucene90StoredFieldsFormat.mode".to_string(),
             "BEST_SPEED".to_string(),
         )],
+        // Merges never re-sort by an index-sort key in this port (a real,
+        // documented gap: see docs/parity.md and PLAN.md's index-sort entry)
+        // -- a merged segment is never sort-order-preserving, so it must not
+        // claim an index sort in its `.si` regardless of what the input
+        // segments declared.
+        index_sort: None,
     };
     let si_name = format!("{merged_segment_name}.si");
     let si_bytes = segment_info::write(&si, "");

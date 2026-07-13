@@ -503,6 +503,7 @@ mod tests {
             diagnostics: vec![],
             files: vec![],
             attributes: vec![],
+            index_sort: None,
         };
         let stat = SegmentStat::from_segment_info("_0", &info, 5);
         assert_eq!(stat.name, "_0");
@@ -551,6 +552,7 @@ mod tests {
                 "_0.missing".to_string(),
             ],
             attributes: vec![],
+            index_sort: None,
         };
         let size = segment_byte_size(&dir, &info);
         assert_eq!(size, 15);

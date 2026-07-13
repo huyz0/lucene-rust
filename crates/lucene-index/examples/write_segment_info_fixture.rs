@@ -57,6 +57,7 @@ fn main() {
                 "Lucene90StoredFieldsFormat.mode".to_string(),
                 "BEST_SPEED".to_string(),
             )],
+            index_sort: None,
         },
     );
 
@@ -79,6 +80,7 @@ fn main() {
             diagnostics: vec![],
             files: vec![],
             attributes: vec![],
+            index_sort: None,
         },
     );
 

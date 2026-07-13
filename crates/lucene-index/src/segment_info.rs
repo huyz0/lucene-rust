@@ -16,14 +16,27 @@
 //! Diagnostics   --> MapOfStrings
 //! Files         --> SetOfStrings
 //! Attributes    --> MapOfStrings
-//! NumSortFields --> vint (index sort — unsupported in v1, must be 0)
+//! NumSortFields --> vint (0, or 1 for a single-field index sort; >1 rejected)
+//! SortField     --> present iff NumSortFields == 1:
+//!                    FieldName (string), SortType (u8, 0 == NUMERIC, only
+//!                    value currently written/accepted), Reverse (u8, 0 ==
+//!                    ascending, 1 == descending), MissingValue (u8, 0 ==
+//!                    sort-first, 1 == sort-last)
 //! Footer
 //! ```
 //!
-//! Index-sort (`numSortFields > 0`) is out of scope for v1: `SortFieldProvider`
-//! implementations are pluggable Java classes, so faithfully decoding arbitrary
-//! sort fields means either a matching plugin registry or a hard-coded allowlist.
-//! We surface it as `Error::Unsupported` rather than silently mis-parsing.
+//! **Index-sort byte-format disclaimer**: real Lucene's index-sort encoding
+//! (`Lucene99SegmentInfoFormat`'s `numSortFields`/`SortFieldProvider.write`)
+//! is written by pluggable `SortFieldProvider` Java classes looked up by name
+//! (`SortFieldProvider.forName`), and its exact byte layout was not available
+//! to verify against (no real-Lucene-written sorted-segment `.si` fixture
+//! exists under `fixtures/`, see `docs/parity.md`). The `SortField` encoding
+//! above is therefore **this port's own internal format**: round-trip-correct
+//! against its own `write`/`parse`, but NOT confirmed byte-compatible with
+//! real Lucene's `.si` files for an index-sorted segment. Only a single
+//! NUMERIC-field sort is supported (`numSortFields` of 0 or 1); a value `> 1`
+//! (a real multi-field `Sort`) is rejected as [`Error::UnsupportedIndexSort`]
+//! rather than silently mis-parsed.
 
 use lucene_store::codec_util::{self, ID_LENGTH};
 use lucene_store::data_input::{DataInput, SliceInput};
@@ -43,8 +56,14 @@ pub enum Error {
     IllegalHasMinVersion(u8),
     #[error("invalid index sort field count: {0}")]
     InvalidSortFieldCount(i32),
-    #[error("index-sorted segments are not yet supported (numSortFields={0})")]
+    #[error("multi-field index sorts are not yet supported (numSortFields={0})")]
     UnsupportedIndexSort(i32),
+    #[error("unknown index sort field type byte: {0}")]
+    UnknownSortFieldType(u8),
+    #[error("illegal boolean value for index sort reverse flag: {0}")]
+    IllegalSortReverse(u8),
+    #[error("illegal index sort missing-value marker: {0}")]
+    IllegalSortMissing(u8),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -54,6 +73,33 @@ pub struct LuceneVersion {
     pub major: i32,
     pub minor: i32,
     pub bugfix: i32,
+}
+
+/// Where a document with no value for the index-sort field ends up, mirroring
+/// real Lucene's `SortField.setMissingValue`/numeric-missing-value convention
+/// (a missing value is treated as if it were `Long.MIN_VALUE`/`MAX_VALUE`,
+/// which sorts it first or last regardless of ascending/descending).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortMissingValue {
+    /// A doc with no value for the sort field sorts before every doc that has
+    /// one.
+    First,
+    /// A doc with no value for the sort field sorts after every doc that has
+    /// one.
+    Last,
+}
+
+/// Single-field index sort descriptor (real Lucene's `SegmentInfo.indexSort`
+/// is a `Sort` of one or more `SortField`s; this port supports exactly one
+/// NUMERIC field, see this module's doc comment for the byte-format
+/// disclaimer and the multi-field scope cut).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexSortField {
+    pub field: String,
+    /// `false` == ascending, `true` == descending (real Lucene's
+    /// `SortField.reverse`).
+    pub reverse: bool,
+    pub missing: SortMissingValue,
 }
 
 #[derive(Debug, Clone)]
@@ -67,7 +113,15 @@ pub struct SegmentInfo {
     pub diagnostics: Vec<(String, String)>,
     pub files: Vec<String>,
     pub attributes: Vec<(String, String)>,
+    /// `None` == unsorted segment (`numSortFields == 0`). See
+    /// [`IndexSortField`] for the single-field-only scope.
+    pub index_sort: Option<IndexSortField>,
 }
+
+/// Sort-field type byte. Only `Numeric` is currently produced by this port's
+/// writer (`segment_writer`'s only doc-values shape today), but the byte is
+/// reserved so a future STRING/other type doesn't have to renumber.
+const SORT_TYPE_NUMERIC: u8 = 0;
 
 /// Parses a whole `.si` file already read into memory, verifying header, footer,
 /// and checksum. `segment_id` is the id Lucene stores alongside the segment in
@@ -109,9 +163,14 @@ pub fn parse(buf: &[u8], segment_id: &[u8; ID_LENGTH]) -> Result<SegmentInfo> {
     if num_sort_fields < 0 {
         return Err(Error::InvalidSortFieldCount(num_sort_fields));
     }
-    if num_sort_fields > 0 {
+    if num_sort_fields > 1 {
         return Err(Error::UnsupportedIndexSort(num_sort_fields));
     }
+    let index_sort = if num_sort_fields == 1 {
+        Some(read_sort_field(&mut input)?)
+    } else {
+        None
+    };
 
     let payload_end = input.position();
     codec_util::check_footer(&mut input, buf.len())?;
@@ -127,14 +186,48 @@ pub fn parse(buf: &[u8], segment_id: &[u8; ID_LENGTH]) -> Result<SegmentInfo> {
         diagnostics,
         files,
         attributes,
+        index_sort,
     })
 }
 
+fn read_sort_field(input: &mut SliceInput) -> Result<IndexSortField> {
+    let field = input.read_string()?;
+    let sort_type = input.read_byte()?;
+    if sort_type != SORT_TYPE_NUMERIC {
+        return Err(Error::UnknownSortFieldType(sort_type));
+    }
+    let reverse = match input.read_byte()? {
+        0 => false,
+        1 => true,
+        other => return Err(Error::IllegalSortReverse(other)),
+    };
+    let missing = match input.read_byte()? {
+        0 => SortMissingValue::First,
+        1 => SortMissingValue::Last,
+        other => return Err(Error::IllegalSortMissing(other)),
+    };
+    Ok(IndexSortField {
+        field,
+        reverse,
+        missing,
+    })
+}
+
+fn write_sort_field(out: &mut Vec<u8>, sf: &IndexSortField) {
+    out.write_string(&sf.field);
+    out.write_byte(SORT_TYPE_NUMERIC);
+    out.write_byte(if sf.reverse { 1 } else { 0 });
+    out.write_byte(match sf.missing {
+        SortMissingValue::First => 0,
+        SortMissingValue::Last => 1,
+    });
+}
+
 /// Port of `Lucene99SegmentInfoFormat.write`: the exact byte-level inverse of
-/// [`parse`]. Always emits `numSortFields = 0` (index sort is out of scope in
-/// v1, mirrored by `parse`'s own `UnsupportedIndexSort` rejection of a
-/// nonzero count) -- this port never needs to write an index-sorted segment,
-/// only fresh unsorted ones. Callers are responsible for `files` containing
+/// [`parse`]. Emits `numSortFields = 0` unless `si.index_sort` is `Some`, in
+/// which case it emits exactly one `SortField` (see this module's doc
+/// comment for the single-field scope and the byte-format disclaimer).
+/// Callers are responsible for `files` containing
 /// only names prefixed by the segment's own name (the real writer enforces
 /// this via `IndexFileNames.parseSegmentName`; this function does not
 /// re-validate it, matching the parser's stance that a hand-built writer is
@@ -166,7 +259,13 @@ pub fn write(si: &SegmentInfo, segment_suffix: &str) -> Vec<u8> {
     out.write_map_of_strings(&si.diagnostics);
     out.write_set_of_strings(&si.files);
     out.write_map_of_strings(&si.attributes);
-    out.write_vint(0); // numSortFields: index sort unsupported in v1
+    match &si.index_sort {
+        Some(sf) => {
+            out.write_vint(1);
+            write_sort_field(&mut out, sf);
+        }
+        None => out.write_vint(0),
+    }
 
     codec_util::write_footer(&mut out);
     out
@@ -204,6 +303,10 @@ mod tests {
         is_compound_file: u8,
         has_blocks: u8,
         num_sort_fields: i32,
+        /// Raw bytes for the single sort field's payload, written verbatim
+        /// after `num_sort_fields` when it's `1` -- lets tests hand-build
+        /// both well-formed and deliberately-corrupt sort-field encodings.
+        sort_field_bytes: Vec<u8>,
     }
 
     impl SiBuilder {
@@ -215,7 +318,17 @@ mod tests {
                 is_compound_file: 1,
                 has_blocks: 0,
                 num_sort_fields: 0,
+                sort_field_bytes: Vec::new(),
             }
+        }
+
+        fn valid_sort_field_bytes(field: &str, sort_type: u8, reverse: u8, missing: u8) -> Vec<u8> {
+            let mut b = Vec::new();
+            write_string(&mut b, field);
+            b.push(sort_type);
+            b.push(reverse);
+            b.push(missing);
+            b
         }
 
         fn build(&self) -> Vec<u8> {
@@ -242,6 +355,7 @@ mod tests {
             write_vint(&mut out, 0); // files: empty set
             write_vint(&mut out, 0); // attributes: empty map
             write_vint(&mut out, self.num_sort_fields);
+            out.extend_from_slice(&self.sort_field_bytes);
 
             out.extend_from_slice(&codec_util::FOOTER_MAGIC.to_be_bytes());
             out.extend_from_slice(&0u32.to_be_bytes());
@@ -316,12 +430,12 @@ mod tests {
     }
 
     #[test]
-    fn positive_sort_field_count_is_unsupported() {
+    fn multi_field_sort_count_is_unsupported() {
         let mut b = SiBuilder::valid();
-        b.num_sort_fields = 1;
+        b.num_sort_fields = 2;
         assert!(matches!(
             parse(&b.build(), &b.id),
-            Err(Error::UnsupportedIndexSort(1))
+            Err(Error::UnsupportedIndexSort(2))
         ));
     }
 
@@ -332,6 +446,51 @@ mod tests {
         assert!(matches!(
             parse(&b.build(), &b.id),
             Err(Error::InvalidSortFieldCount(-1))
+        ));
+    }
+
+    #[test]
+    fn single_numeric_sort_field_parses() {
+        let mut b = SiBuilder::valid();
+        b.num_sort_fields = 1;
+        b.sort_field_bytes = SiBuilder::valid_sort_field_bytes("price", SORT_TYPE_NUMERIC, 0, 1);
+        let si = parse(&b.build(), &b.id).unwrap();
+        let sf = si.index_sort.unwrap();
+        assert_eq!(sf.field, "price");
+        assert!(!sf.reverse);
+        assert_eq!(sf.missing, SortMissingValue::Last);
+    }
+
+    #[test]
+    fn unknown_sort_field_type_byte_rejected() {
+        let mut b = SiBuilder::valid();
+        b.num_sort_fields = 1;
+        b.sort_field_bytes = SiBuilder::valid_sort_field_bytes("price", 7, 0, 0);
+        assert!(matches!(
+            parse(&b.build(), &b.id),
+            Err(Error::UnknownSortFieldType(7))
+        ));
+    }
+
+    #[test]
+    fn illegal_sort_reverse_byte_rejected() {
+        let mut b = SiBuilder::valid();
+        b.num_sort_fields = 1;
+        b.sort_field_bytes = SiBuilder::valid_sort_field_bytes("price", SORT_TYPE_NUMERIC, 5, 0);
+        assert!(matches!(
+            parse(&b.build(), &b.id),
+            Err(Error::IllegalSortReverse(5))
+        ));
+    }
+
+    #[test]
+    fn illegal_sort_missing_byte_rejected() {
+        let mut b = SiBuilder::valid();
+        b.num_sort_fields = 1;
+        b.sort_field_bytes = SiBuilder::valid_sort_field_bytes("price", SORT_TYPE_NUMERIC, 0, 9);
+        assert!(matches!(
+            parse(&b.build(), &b.id),
+            Err(Error::IllegalSortMissing(9))
         ));
     }
 
@@ -359,6 +518,7 @@ mod tests {
             diagnostics: vec![],
             files: vec![],
             attributes: vec![],
+            index_sort: None,
         }
     }
 
@@ -449,5 +609,46 @@ mod tests {
         let bytes = write(&si, "");
         let parsed = parse(&bytes, &si.id).unwrap();
         assert_eq!(parsed.doc_count, 0);
+    }
+
+    #[test]
+    fn write_no_index_sort_round_trips_as_none() {
+        let si = sample_si();
+        assert!(si.index_sort.is_none());
+        let bytes = write(&si, "");
+        let parsed = parse(&bytes, &si.id).unwrap();
+        assert!(parsed.index_sort.is_none());
+    }
+
+    #[test]
+    fn write_ascending_index_sort_round_trips() {
+        let mut si = sample_si();
+        si.index_sort = Some(IndexSortField {
+            field: "timestamp".to_string(),
+            reverse: false,
+            missing: SortMissingValue::First,
+        });
+        let bytes = write(&si, "");
+        let parsed = parse(&bytes, &si.id).unwrap();
+        let sf = parsed.index_sort.unwrap();
+        assert_eq!(sf.field, "timestamp");
+        assert!(!sf.reverse);
+        assert_eq!(sf.missing, SortMissingValue::First);
+    }
+
+    #[test]
+    fn write_descending_index_sort_with_missing_last_round_trips() {
+        let mut si = sample_si();
+        si.index_sort = Some(IndexSortField {
+            field: "score".to_string(),
+            reverse: true,
+            missing: SortMissingValue::Last,
+        });
+        let bytes = write(&si, "");
+        let parsed = parse(&bytes, &si.id).unwrap();
+        let sf = parsed.index_sort.unwrap();
+        assert_eq!(sf.field, "score");
+        assert!(sf.reverse);
+        assert_eq!(sf.missing, SortMissingValue::Last);
     }
 }
