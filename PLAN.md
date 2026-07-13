@@ -1173,6 +1173,65 @@ module (not a project dependency). No new Java fixture generator was needed
 since the existing manifest already had everything required. Coverage:
 `facets.rs` 98.74% lines.
 
+**Progress (task #51, final task in this batch):** `lucene-ffi` exposure of
+task #41's multi-segment search and task #45's `DirectoryReader` — the last
+"lucene-ffi exposure" gap those two tasks' own doc comments (and this file's
+task #45 write-up above) flagged as deferred. New module
+`lucene-ffi/src/directory_reader.rs`, following tasks #20/#30/#40's exact FFI
+pattern: a new `RegistryTag::DirectoryReader` handle/registry
+(`registry::DirectoryReaderHandle`/`registry::directory_readers()`),
+`ffi_open_directory_reader(path, path_len, out_handle)` (opens an internal,
+short-lived `FsDirectory` at `path` and calls `DirectoryReader::open` on it —
+a path string, not an already-open `ffi_open_directory` handle, since a
+`DirectoryReader` copies every segment's bytes into its own owned buffers at
+open time and needs the directory for no longer than that one call, unlike
+`ffi_open_segment`'s directory-handle-reuse case), `ffi_close_directory_reader`,
+and `ffi_search_term_query_multi_segment`/`ffi_search_boolean_query_multi_segment`
+(same wire formats as their single-segment `_scored` siblings in `query.rs` —
+one `(field, term)` pair / the same flat four-parallel-array clause lists —
+plus a `top_n`).
+
+**Results-handle reuse, not a new type**: both multi-segment entry points
+write into the *existing* `ScoredResultsHandle`/`ffi_scored_results_len`/
+`ffi_scored_results_copy`/`ffi_close_scored_results` trio task #30 already
+shipped, rather than inventing a fourth results registry — multi-segment
+search returns exactly the same `Vec<ScoreDoc>` shape single-segment scored
+search already does (`multi_segment.rs`'s own module doc makes this explicit:
+the merge step's output is indistinguishable in shape from any single
+collector's `top_docs()`), so a new type would be a pure duplicate of an
+already-correct wire contract.
+
+**No norms**: task #45's `DirectoryReader`/`SegmentReader` carry no
+`.nvm`/`.nvd` data at all (unchanged by this task), so every per-segment
+norms slot passed to the two multi-segment search functions here is `None`
+— the same documented `UNNORMED_FIELD_LENGTH` fallback this crate's
+single-segment scored queries already use for a bare `None`, not a new
+approximation.
+
+**Avoiding task #29's flakiness pattern**: the new panic-injection
+regression test (`registry_mutex_recovers_from_poisoning_after_a_panic_mid_multi_segment_query`)
+uses a **thread-local** `Cell<bool>` switch
+(`PANIC_ON_NEXT_MULTI_SEGMENT_QUERY`), armed and fired on the same test's own
+thread only — following `query.rs`'s `PANIC_ON_NEXT_SCORED_TERM_QUERY`
+precedent (added after task #29's process-wide-`AtomicBool` flakiness
+history) rather than `query.rs`'s older, still-process-wide
+`PANIC_ON_NEXT_TERM_QUERY`, since `cargo test`'s parallel thread pool can run
+this crate's tests concurrently and a shared atomic armed by one test can
+fire inside an unrelated, concurrently-running test's call to the same
+function.
+
+**Verified**: happy-path multi-segment term and boolean search against the
+real single-segment `blocktree_index` fixture (reused as-is — task #41's own
+tests already establish the "open one real fixture segment twice as two
+segments" pattern for genuine multi-segment coverage, and this task's own
+scope is the FFI wiring around already-verified `lucene-search` logic, not
+new multi-segment correctness proof); wrong-tag handle rejection both
+directions (a `ScoredResultsHandle` id passed as a reader handle, and a
+`DirectoryReader` handle passed to `ffi_scored_results_len`); null-pointer,
+unknown-handle, and double-close cases for every new entry point; the
+poison-recovery regression test above. Coverage: `directory_reader.rs`
+96.04% lines (13 new tests; `lucene-ffi` crate total 156 passing tests).
+
 1. `lucene-analysis`: `TokenStream` as an iterator-of-token-structs (skip Java's
    AttributeSource reflection design entirely — a plain
    `Token { bytes, position_increment, offset, ... }` struct), StandardTokenizer via

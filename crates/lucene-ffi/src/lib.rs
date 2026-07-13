@@ -52,6 +52,17 @@
 //!   [`results_sorted::ffi_close_sorted_results`]: reads a sorted results handle's
 //!   `(doc_id, value)` pairs back out via two caller-allocated parallel buffers,
 //!   same shape as the scored-results trio above, then releases it.
+//! - [`directory_reader::ffi_open_directory_reader`]/[`directory_reader::ffi_close_directory_reader`]
+//!   (task #51): opens/closes task #45's
+//!   `lucene_search::directory_reader::DirectoryReader` (every segment a commit
+//!   lists, opened in one call) behind its own handle/registry.
+//! - [`directory_reader::ffi_search_term_query_multi_segment`]/
+//!   [`directory_reader::ffi_search_boolean_query_multi_segment`] (task #51): task
+//!   #41's multi-segment fan-out/merge, run against a `DirectoryReader` handle,
+//!   keeping the best `top_n` globally-ranked `(doc_id, score)` hits in a
+//!   [`registry::ScoredResultsHandle`] -- the same handle/registry/reader trio
+//!   task #30's single-segment scored queries already use, see
+//!   `directory_reader.rs`'s module doc for why no new results type was needed.
 //! - [`error::guard`]/[`ffi_get_last_error_message`]: every exported
 //!   function's panic-safety wrapper and the thread-local last-error
 //!   message accessor.
@@ -69,10 +80,16 @@
 //!   Option<&PayInput>` and this crate always passes `None`, which is
 //!   correct for a field with no payloads and a hard error surfaced as
 //!   [`error::FfiStatus::Search`] for one that needs it.
-//! - **Multi-segment search / a unified `.si`-driven "open everything"
-//!   entry point** — `ffi_open_segment` takes already-known file
-//!   names/segment ID/suffix/`maxDoc` rather than parsing `segments_N`/
-//!   `.si` itself; see `segment.rs`'s module doc for why.
+//! - ~~**Multi-segment search / a unified `.si`-driven "open everything"
+//!   entry point**~~ — closed by task #51: [`directory_reader::ffi_open_directory_reader`]
+//!   parses `segments_N`/every listed segment's `.si` itself (via task #45's
+//!   `DirectoryReader::open`), and
+//!   [`directory_reader::ffi_search_term_query_multi_segment`]/
+//!   [`directory_reader::ffi_search_boolean_query_multi_segment`] expose task
+//!   #41's fan-out/merge on top of it. `ffi_open_segment` itself is unchanged
+//!   (still takes already-known file names) and remains the right entry point
+//!   for a caller that already has one segment's files named and wants no
+//!   `DirectoryReader`-level bookkeeping at all.
 //! - **The JNI wrapper class itself** — out of scope for this Rust repo;
 //!   this crate only needs to expose a stable C ABI a JNI class can bind to.
 //!
@@ -102,6 +119,7 @@
 //!   final results via [`results::ffi_results_copy`], never a callback.
 
 mod directory;
+mod directory_reader;
 mod error;
 mod handle;
 mod query;
@@ -114,6 +132,10 @@ mod segment;
 mod sort;
 
 pub use directory::{ffi_close_directory, ffi_open_directory};
+pub use directory_reader::{
+    ffi_close_directory_reader, ffi_open_directory_reader, ffi_search_boolean_query_multi_segment,
+    ffi_search_term_query_multi_segment,
+};
 pub use error::FfiStatus;
 pub use query::{
     ffi_search_boolean_query, ffi_search_boolean_query_scored, ffi_search_phrase_query,

@@ -68,7 +68,7 @@ use crate::registry::{
     SegmentHandle,
 };
 
-fn map_search_error(e: lucene_search::Error) -> FfiStatus {
+pub(crate) fn map_search_error(e: lucene_search::Error) -> FfiStatus {
     set_last_error(format!("search failed: {e}"));
     FfiStatus::Search
 }
@@ -202,7 +202,11 @@ pub unsafe extern "C" fn ffi_search_term_query(
 /// [`ffi_search_boolean_query`]'s `must`/`should`/`must_not` clause lists.
 /// `count == 0` is valid or `fields`/`field_lens`/`terms`/`term_lens` are
 /// null (and never dereferenced in that case).
-unsafe fn read_term_clauses(
+///
+/// `pub(crate)` (rather than private) so [`crate::directory_reader`]'s
+/// multi-segment boolean-query entry point (task #51) can reuse the exact
+/// same flat-array clause decoder instead of duplicating it.
+pub(crate) unsafe fn read_term_clauses(
     fields: *const *const c_char,
     field_lens: *const usize,
     terms: *const *const u8,

@@ -56,6 +56,12 @@ pub enum RegistryTag {
     /// another registry separate from both `Results` and `ScoredResults` --
     /// see `registry.rs`'s `SortedResultsHandle` doc comment for why.
     SortedResults = 5,
+    /// An opened `lucene_search::directory_reader::DirectoryReader` (task
+    /// #51), one per open commit -- kept in its own registry (not folded
+    /// into `Directory` or `Segment`) since it owns every segment already
+    /// opened under it, not a single filesystem root or a single segment's
+    /// files -- see `registry.rs`'s `DirectoryReaderHandle` doc comment.
+    DirectoryReader = 6,
 }
 
 fn pack(tag: RegistryTag, index: u32, generation: u32) -> u64 {

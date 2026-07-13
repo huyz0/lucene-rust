@@ -145,6 +145,35 @@ pub struct SortedResultsHandle {
     pub pairs: Vec<(i32, i64)>,
 }
 
+/// An opened `DirectoryReader` (task #51, wrapping task #45's
+/// `lucene_search::directory_reader::DirectoryReader`): every segment listed
+/// in a commit's `segments_N`, already opened with each segment's `doc_base`
+/// computed -- read back via [`crate::directory_reader::ffi_search_term_query_multi_segment`]/
+/// [`crate::directory_reader::ffi_search_boolean_query_multi_segment`] (task #41's
+/// multi-segment fan-out/merge), released via
+/// [`crate::directory_reader::ffi_close_directory_reader`].
+///
+/// **Why its own registry/tag instead of reusing `Directory`**: a
+/// `DirectoryReader` owns a whole tree of already-opened, already-decoded
+/// segment readers (term dictionaries, postings byte buffers, live docs) --
+/// a fundamentally different lifetime and size class from `Directory`'s bare
+/// `FsDirectory` (a filesystem root with no segment state at all) or
+/// `Segment`'s single already-opened segment. Folding it into either would
+/// let a directory/segment handle be silently accepted where a
+/// `DirectoryReader` handle is expected (or vice versa) since they'd share
+/// one registry tag -- exactly the cross-registry confusion `RegistryTag`
+/// exists to rule out (see `handle.rs`'s module doc).
+///
+/// **No norms/doc-values plumbing**: task #45's `DirectoryReader` has no
+/// `.nvm`/`.nvd`/`.dvm`/`.dvd` support at all (see that module's doc
+/// comment) -- every multi-segment scored query built on this handle always
+/// passes `norms: None` per segment, the same documented
+/// `UNNORMED_FIELD_LENGTH` fallback `lucene_search`'s own scored functions
+/// already use for a bare `None`, not a new gap introduced by this handle.
+pub struct DirectoryReaderHandle {
+    pub reader: lucene_search::directory_reader::DirectoryReader,
+}
+
 pub fn directories() -> &'static Mutex<SlotMap<FsDirectory>> {
     static REGISTRY: OnceLock<Mutex<SlotMap<FsDirectory>>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(SlotMap::new(RegistryTag::Directory)))
@@ -168,4 +197,9 @@ pub fn scored_results() -> &'static Mutex<SlotMap<ScoredResultsHandle>> {
 pub fn sorted_results() -> &'static Mutex<SlotMap<SortedResultsHandle>> {
     static REGISTRY: OnceLock<Mutex<SlotMap<SortedResultsHandle>>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(SlotMap::new(RegistryTag::SortedResults)))
+}
+
+pub fn directory_readers() -> &'static Mutex<SlotMap<DirectoryReaderHandle>> {
+    static REGISTRY: OnceLock<Mutex<SlotMap<DirectoryReaderHandle>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(SlotMap::new(RegistryTag::DirectoryReader)))
 }
