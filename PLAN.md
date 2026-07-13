@@ -757,6 +757,19 @@ term + `addDocument` — now that delete-by-term exists for one segment, a calle
 but a first-class `updateDocument` wrapper is left for when multi-segment resolution exists, so
 it composes correctly rather than silently only covering one segment). See `docs/parity.md`'s
 updated row for full detail and test coverage.
+**Progress (task #37):** `lucene-index/src/update_document.rs::update_document` adds that
+first-class `updateDocument` wrapper: it composes task #27's `resolve_and_apply_term_delete`
+(fanned out over every segment in a `SegmentInfos` that the caller supplies an opened
+`SegmentDeleteSource` for) with task #11's `flush_stored_only_segment` (the new document), then
+commits both as one atomic `segment_infos::write` call — the single durable state transition,
+performed only after every earlier fallible step has already succeeded, so a reader can never
+observe a `segments_N` reflecting only the delete or only the add. This closes task #27's
+explicitly-deferred `updateDocument` gap by composing already-verified primitives rather than
+building anything new byte-format-wise; a real reader-pool-driven true multi-segment
+*resolution* (opening/searching every live segment automatically) is still out of scope, same
+as task #27, since this port has no reader pool — the caller still supplies whichever segments'
+`BlockTreeFields` it already has open. See `docs/parity.md`'s new row for full detail, the exact
+atomicity argument, and test coverage.
 
 1. `lucene-analysis`: `TokenStream` as an iterator-of-token-structs (skip Java's
    AttributeSource reflection design entirely — a plain
