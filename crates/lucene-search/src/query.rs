@@ -202,6 +202,49 @@ impl FuzzyQuery {
     }
 }
 
+/// `RegexpQuery`-equivalent (`org.apache.lucene.search.RegexpQuery`), task
+/// #43's addition: a field plus a `pattern` string (Lucene-regexp-subset
+/// syntax — see [`lucene_codecs::regexp::RegexpPattern`]'s module doc for
+/// exactly which operators are supported: literals, `.`, `*`/`+`/`?`,
+/// `[...]` classes, `(...)` grouping, `|` alternation; no `{n,m}`, `~`, `&`,
+/// no named classes) matched **in full** against every term indexed for
+/// `field` — real `RegexpQuery` always matches a term's entire length, never
+/// a substring (see that module's "whole-term-match convention" section).
+/// The matched set is the **union** of every matching term's postings (see
+/// [`crate::resolve_clause_docs`]'s `Clause::Regexp` arm), the same "match
+/// any term the automaton/predicate accepts" `MultiTermQuery` contract
+/// `WildcardQuery`/`PrefixQuery`/`FuzzyQuery` already have.
+///
+/// **Why `pattern: String` instead of `Vec<u8>`**: unlike
+/// [`WildcardQuery::pattern`]/[`FuzzyQuery::term`] (raw glob/target bytes
+/// with no syntax to parse), a regexp pattern is itself a small language
+/// that must be parsed before it can match anything, and
+/// [`lucene_codecs::regexp::RegexpPattern::new`] can fail on unsupported or
+/// malformed syntax (surfaced via [`crate::Error::Regexp`] when this clause
+/// is resolved — see [`crate::resolve_clause_docs`]'s `Clause::Regexp` arm)
+/// — a `String` keeps the un-parsed pattern text human-readable in error
+/// messages and in `Debug`/`PartialEq` output, while the *terms* this
+/// pattern is matched against remain the usual raw `Vec<u8>` inside
+/// `RegexpPattern::matches` itself.
+///
+/// **Scoring**: unscored/constant (flat `1.0` per match), same choice
+/// `WildcardQuery`/`PrefixQuery`/`FuzzyQuery` make and for the same reason —
+/// see [`crate::clause_scores`]'s `Clause::Regexp` arm.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegexpQuery {
+    pub field: String,
+    pub pattern: String,
+}
+
+impl RegexpQuery {
+    pub fn new(field: impl Into<String>, pattern: impl Into<String>) -> Self {
+        Self {
+            field: field.into(),
+            pattern: pattern.into(),
+        }
+    }
+}
+
 /// One `must`/`should`/`must_not` slot in a [`BooleanQuery`] — a leaf
 /// `TermQuery`, a leaf `PhraseQuery` (task #29's addition, closing the gap this
 /// enum's doc comment previously flagged), or a nested `BooleanQuery`
@@ -268,6 +311,12 @@ pub enum Clause {
     /// sharing `query.term`'s first `query.prefix_length` bytes exactly),
     /// unscored (flat `1.0` per match); see [`FuzzyQuery`]'s doc comment.
     Fuzzy(FuzzyQuery),
+    /// A leaf `RegexpQuery` (task #43's addition) -- matches every doc
+    /// containing at least one term (for `query.field`) that
+    /// `lucene_codecs::regexp::RegexpPattern` accepts (matching the term in
+    /// full, see that module's whole-term-match convention), unscored (flat
+    /// `1.0` per match); see [`RegexpQuery`]'s doc comment.
+    Regexp(RegexpQuery),
 }
 
 impl From<TermQuery> for Clause {
@@ -321,6 +370,12 @@ impl From<PrefixQuery> for Clause {
 impl From<FuzzyQuery> for Clause {
     fn from(query: FuzzyQuery) -> Self {
         Clause::Fuzzy(query)
+    }
+}
+
+impl From<RegexpQuery> for Clause {
+    fn from(query: RegexpQuery) -> Self {
+        Clause::Regexp(query)
     }
 }
 
@@ -809,6 +864,44 @@ mod tests {
     fn with_must_accepts_a_fuzzy_query_clause() {
         let q = BooleanQuery::new().with_must([FuzzyQuery::new("body", "cat")]);
         assert_eq!(q.must, vec![Clause::Fuzzy(FuzzyQuery::new("body", "cat"))]);
+    }
+
+    #[test]
+    fn regexp_query_new_stores_field_and_pattern() {
+        let q = RegexpQuery::new("body", "ca.*");
+        assert_eq!(q.field, "body");
+        assert_eq!(q.pattern, "ca.*");
+    }
+
+    #[test]
+    fn regexp_query_equality_is_field_and_pattern_based() {
+        assert_eq!(
+            RegexpQuery::new("body", "ca.*"),
+            RegexpQuery::new("body", "ca.*")
+        );
+        assert_ne!(
+            RegexpQuery::new("body", "ca.*"),
+            RegexpQuery::new("body", "do.*")
+        );
+        assert_ne!(
+            RegexpQuery::new("body", "ca.*"),
+            RegexpQuery::new("id", "ca.*")
+        );
+    }
+
+    #[test]
+    fn clause_from_regexp_query_wraps_in_regexp_variant() {
+        let clause: Clause = RegexpQuery::new("body", "ca.*").into();
+        assert_eq!(clause, Clause::Regexp(RegexpQuery::new("body", "ca.*")));
+    }
+
+    #[test]
+    fn with_must_accepts_a_regexp_query_clause() {
+        let q = BooleanQuery::new().with_must([RegexpQuery::new("body", "ca.*")]);
+        assert_eq!(
+            q.must,
+            vec![Clause::Regexp(RegexpQuery::new("body", "ca.*"))]
+        );
     }
 
     #[test]

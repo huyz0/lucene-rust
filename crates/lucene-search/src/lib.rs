@@ -203,7 +203,7 @@ pub use multi_segment::{
 };
 pub use query::{
     BooleanQuery, BoostQuery, Clause, ConstantScoreQuery, DisjunctionMaxQuery, FuzzyQuery,
-    PhraseQuery, PrefixQuery, TermQuery, WildcardQuery,
+    PhraseQuery, PrefixQuery, RegexpQuery, TermQuery, WildcardQuery,
 };
 pub use term_vectors_query::{matched_term_offsets, term_vector_for_doc};
 
@@ -214,6 +214,7 @@ use docid_set::{BoxDocIter, Conjunction, Disjunction, Excluding};
 use lucene_codecs::blocktree::{self, BlockTreeFields};
 use lucene_codecs::fuzzy::FuzzyMatch;
 use lucene_codecs::postings::{DocInput, PayInput, PosInput};
+use lucene_codecs::regexp::RegexpPattern;
 use lucene_codecs::wildcard::WildcardPattern;
 use lucene_util::fixed_bit_set::FixedBitSet;
 
@@ -245,6 +246,16 @@ pub enum Error {
     /// a truncated/corrupt term-vectors region).
     #[error(transparent)]
     TermVectors(#[from] lucene_codecs::term_vectors::Error),
+    /// Surfaced by [`regexp_doc_ids`] (task #43's `Clause::Regexp`) when
+    /// [`RegexpQuery::pattern`] uses syntax
+    /// [`lucene_codecs::regexp::RegexpPattern::new`] doesn't support (see
+    /// that module's doc comment for exactly which subset is supported) --
+    /// unlike a missing field/term (an empty, non-error match result every
+    /// other clause returns), a malformed pattern is a caller mistake
+    /// worth surfacing distinctly, the same way a truncated `.tim`/`.tip`
+    /// decode is an [`Error::BlockTree`] rather than an empty result.
+    #[error(transparent)]
+    Regexp(#[from] lucene_codecs::regexp::RegexpError),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -439,6 +450,50 @@ fn fuzzy_doc_ids(
     Ok(doc_ids)
 }
 
+/// [`Clause::Regexp`]'s matched doc-ID list (task #43): same
+/// union-across-matching-terms mechanism as [`wildcard_doc_ids`]/
+/// [`prefix_doc_ids`]/[`fuzzy_doc_ids`], built on
+/// [`lucene_codecs::blocktree::FieldTerms::regexp_intersect`] and
+/// [`lucene_codecs::regexp::RegexpPattern`] instead of a glob/edit-distance
+/// pattern. Returns an empty `Vec` -- not an error -- when `query.field`
+/// doesn't exist in this segment, same "missing field means no matches"
+/// convention every other clause follows; a malformed `query.pattern`
+/// (unsupported regexp syntax) instead surfaces as [`Error::Regexp`],
+/// propagated via `?` from [`RegexpPattern::new`] -- distinct from the
+/// missing-field/missing-term case because a bad pattern is a caller
+/// mistake, not a legitimate "matches nothing" outcome.
+fn regexp_doc_ids(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    query: &RegexpQuery,
+) -> Result<Vec<i32>> {
+    let Some(field_terms) = fields.field(&query.field) else {
+        return Ok(Vec::new());
+    };
+    let pattern = RegexpPattern::new(query.pattern.as_bytes())?;
+    let matching_terms: Vec<Vec<u8>> = field_terms
+        .regexp_intersect(&pattern)
+        .map(|(term, _stats)| term.to_vec())
+        .collect();
+    let mut doc_ids: Vec<i32> = Vec::new();
+    for term in &matching_terms {
+        let Some(postings) = field_terms.postings(term, doc_in)? else {
+            continue;
+        };
+        doc_ids.extend(
+            postings
+                .docs
+                .iter()
+                .copied()
+                .filter(|&doc_id| live_docs.is_none_or(|bits| bits.get(doc_id as usize))),
+        );
+    }
+    doc_ids.sort_unstable();
+    doc_ids.dedup();
+    Ok(doc_ids)
+}
+
 /// Executes `query` (see [`query::BooleanQuery`] and this module's doc comment for
 /// the exact matching semantics) against one already-opened segment, feeding every
 /// matching **live** doc ID to `collector` in ascending order — same parameter
@@ -549,6 +604,7 @@ fn resolve_clause_docs(
         Clause::Wildcard(query) => wildcard_doc_ids(fields, doc_in, live_docs, query),
         Clause::Prefix(query) => prefix_doc_ids(fields, doc_in, live_docs, query),
         Clause::Fuzzy(query) => fuzzy_doc_ids(fields, doc_in, live_docs, query),
+        Clause::Regexp(query) => regexp_doc_ids(fields, doc_in, live_docs, query),
     }
 }
 
@@ -901,6 +957,16 @@ fn clause_scores(
             // comment for why (same rationale as `Clause::Wildcard`'s arm
             // above).
             let matched = fuzzy_doc_ids(fields, doc_in, live_docs, query)?;
+            Ok(matched
+                .into_iter()
+                .map(|doc_id| (doc_id, 1.0_f32))
+                .collect())
+        }
+        Clause::Regexp(query) => {
+            // Unscored: flat 1.0 per matching doc -- see `RegexpQuery`'s doc
+            // comment for why (same rationale as `Clause::Wildcard`'s arm
+            // above).
+            let matched = regexp_doc_ids(fields, doc_in, live_docs, query)?;
             Ok(matched
                 .into_iter()
                 .map(|doc_id| (doc_id, 1.0_f32))

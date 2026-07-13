@@ -555,10 +555,13 @@ unknown-field-number no-op, live-docs filtering, and 2D multi-dimension
    `PhraseQuery` (exact + sloppy), `TermInSetQuery`, `PrefixQuery`/`WildcardQuery`
    (both **ported** — `WildcardQuery` task #34, `PrefixQuery` task #35 — glob/
    prefix matching via the existing `WildcardPattern`/`FieldTerms::intersect`
-   machinery, not real automaton/`IntersectTermsEnum` block-skipping; regex/`FuzzyQuery` still need
-   real Levenshtein/automaton machinery — port `o.a.l.util.automaton` here;
-   consider the `fst`/`regex-automata` crates for internals but keep Lucene
-   semantics), `FunctionScore`-shaped hooks deferred.
+   machinery, not real automaton/`IntersectTermsEnum` block-skipping),
+   `FuzzyQuery` (**ported**, task #42 — edit-distance DP, not a
+   `LevenshteinAutomata`), `RegexpQuery` (**ported**, task #43 — a hand-built
+   parser/backtracking matcher over a restricted Lucene-regexp syntax subset,
+   not `o.a.l.util.automaton`/`CompiledAutomaton`; see `docs/parity.md`'s row
+   for exactly which operators are supported vs deferred),
+   `FunctionScore`-shaped hooks deferred.
 4. Dynamic pruning: `WANDScorer`/block-max, `ImpactsDISI`, `MaxScoreCache`. This is
    where Lucene's search performance comes from; without it the port is not competitive.
 5. Collectors: `TopScoreDocCollector` (with after/searchAfter), `TotalHitCountCollector`,
@@ -912,6 +915,43 @@ transposition (`"cta"` vs. target `"cat"`, `maxEdits=1`) matching with
 against real Lucene's own output on the first run — asserting doc-for-doc
 agreement with this port's own `Clause::Fuzzy` matching for every recorded case.
 See `docs/parity.md`'s new row for the full accounting.
+
+**Progress (task #43):** `RegexpQuery` is ported — a leaf
+`Clause::Regexp(RegexpQuery)` matching every doc containing at least one term
+(for `query.field`) that a compiled regexp pattern accepts **in full** (real
+`RegexpQuery`'s whole-term-match convention — never a substring match),
+unioned across every matching term (`regexp_doc_ids` in `lib.rs`, structurally
+identical to task #34/#35/#42's `wildcard_doc_ids`/`prefix_doc_ids`/
+`fuzzy_doc_ids` but built on the new `lucene_codecs::regexp::RegexpPattern`
+and `FieldTerms::regexp_intersect`). Unscored, same flat `1.0` per match as
+`Clause::Wildcard`/`Clause::Prefix`/`Clause::Fuzzy`.
+**Scope decision: a hand-built recursive-descent parser plus a backtracking
+matcher, not the `regex` crate** (no `Cargo.toml` in this workspace depends
+on it) — real Lucene's `RegExp` syntax is deliberately not PCRE/Perl regex
+(no anchors, no lookahead, its own `~`/`&` operators standard `regex` lacks
+entirely), so reusing `regex` would either silently accept syntax Lucene
+rejects or need a translation/validation layer nearly as large as writing a
+purpose-built parser — continuing the `fuzzy.rs`/`wildcard.rs` precedent of
+a small, scoped, from-scratch matcher instead. **Exact subset supported**:
+literals (with `\`-escaping), `.` (any single byte), `*`/`+`/`?` postfix
+quantifiers, `[...]` character classes (with ranges and `^`-negation),
+`(...)` grouping, `|` alternation. **Exact subset deliberately NOT
+supported** (rejected with a parse error, not silently mis-parsed):
+`{n,m}` bounded repetition, `~` complement, `&` intersection, named classes
+— all would need real automaton machinery (complementation/intersection)
+materially beyond this slice's backtracking-matcher scope; see
+`regexp.rs`'s module doc for the full writeup, including the same
+byte-vs-codepoint tradeoff `fuzzy.rs` already documents. Verified against
+real Lucene via `fixtures/src/AppendRegexpManifest.java` (same append-only
+pattern as `AppendFuzzyManifest.java`) running eleven real
+`org.apache.lucene.search.RegexpQuery` cases against `body`'s real terms —
+exact literal, **the single most important case**: the whole-term-match
+convention (`ca` must not match `cat` as a substring, confirmed against real
+Lucene's own output), `.`/`*`/`+`/`?` quantifiers, a `[...]` class,
+two-and-three-way alternation, a no-match case, and a missing-field case —
+asserting doc-for-doc agreement with this port's own `Clause::Regexp`
+matching for every recorded case on the first run. See `docs/parity.md`'s
+new row for the full accounting.
 
 1. `lucene-analysis`: `TokenStream` as an iterator-of-token-structs (skip Java's
    AttributeSource reflection design entirely — a plain

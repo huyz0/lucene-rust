@@ -111,6 +111,7 @@ use lucene_store::data_input::{DataInput, SliceInput};
 use crate::field_infos::{FieldInfos, IndexOptions};
 use crate::fuzzy::FuzzyMatch;
 use crate::postings::{self, DocInput, Postings, TermMetadata};
+use crate::regexp::RegexpPattern;
 use crate::wildcard::WildcardPattern;
 
 const TERMS_CODEC_NAME: &str = "BlockTreeTermsDict";
@@ -407,6 +408,38 @@ impl FieldTerms {
             .entries
             .partition_point(|(t, _, _)| t.as_slice() < prefix);
         let end = match prefix_upper_bound(prefix) {
+            Some(upper) => self
+                .entries
+                .partition_point(|(t, _, _)| t.as_slice() < upper.as_slice()),
+            None => self.entries.len(),
+        };
+        self.entries[start..end]
+            .iter()
+            .filter(move |(t, _, _)| pattern.matches(t))
+            .map(|(t, s, _)| (t.as_slice(), *s))
+    }
+
+    /// `RegexpQuery`-equivalent term matching (task #43): every term (in
+    /// sorted order) [`crate::regexp::RegexpPattern::matches`] accepts,
+    /// paired with its stats. Structurally identical to [`Self::intersect`]/
+    /// [`Self::fuzzy_intersect`]'s "narrow by literal prefix range via
+    /// binary search, then linearly filter" design -- here the literal
+    /// prefix is `pattern`'s guaranteed leading literal byte run
+    /// ([`crate::regexp::RegexpPattern::literal_prefix`]) rather than a glob
+    /// pattern's own, and the per-candidate filter is
+    /// [`crate::regexp::RegexpPattern::matches`]'s whole-term backtracking
+    /// match rather than glob matching. See `crate::regexp`'s module doc for
+    /// the full syntax-subset and automaton-vs-backtracking tradeoff
+    /// writeup.
+    pub fn regexp_intersect<'a>(
+        &'a self,
+        pattern: &'a RegexpPattern,
+    ) -> impl Iterator<Item = (&'a [u8], TermStats)> + 'a {
+        let prefix = pattern.literal_prefix();
+        let start = self
+            .entries
+            .partition_point(|(t, _, _)| t.as_slice() < prefix.as_slice());
+        let end = match prefix_upper_bound(&prefix) {
             Some(upper) => self
                 .entries
                 .partition_point(|(t, _, _)| t.as_slice() < upper.as_slice()),
@@ -1565,6 +1598,46 @@ mod tests {
         let pattern = WildcardPattern::prefix(b"ban");
         let got: Vec<&[u8]> = field.intersect(&pattern).map(|(t, _)| t).collect();
         assert_eq!(got, vec![b"banana".as_slice(), b"band"]);
+    }
+
+    #[test]
+    fn regexp_intersect_over_materialized_field() {
+        let b = Builder::new();
+        let (tim, tip, tmd) = b.build(
+            IndexOptions::DocsAndFreqs,
+            &[
+                ("apple", 1, 1),
+                ("application", 1, 1),
+                ("apply", 1, 1),
+                ("banana", 1, 1),
+                ("band", 1, 1),
+            ],
+        );
+        let fis = FieldInfos {
+            fields: vec![field_info(0, "text", IndexOptions::DocsAndFreqs)],
+        };
+        let fields = open(&tim, &tip, &tmd, &fis, &b.id, &b.suffix, 5).unwrap();
+        let field = fields.field("text").unwrap();
+
+        // Literal-prefix-narrowed range: "appl.*" -> apple, application,
+        // apply (in sorted order).
+        let pattern = RegexpPattern::new(b"appl.*").unwrap();
+        let got: Vec<&[u8]> = field.regexp_intersect(&pattern).map(|(t, _)| t).collect();
+        assert_eq!(got, vec![b"apple".as_slice(), b"application", b"apply"]);
+
+        // Alternation has no useful literal prefix (falls back to a full
+        // scan) but still matches correctly.
+        let pattern = RegexpPattern::new(b"banana|band").unwrap();
+        let got: Vec<&[u8]> = field.regexp_intersect(&pattern).map(|(t, _)| t).collect();
+        assert_eq!(got, vec![b"banana".as_slice(), b"band"]);
+
+        // Whole-term-match: "ban" alone matches neither "banana" nor "band".
+        let pattern = RegexpPattern::new(b"ban").unwrap();
+        assert_eq!(field.regexp_intersect(&pattern).count(), 0);
+
+        // Matches nothing: prefix outside the field's term range entirely.
+        let pattern = RegexpPattern::new(b"zzz.*").unwrap();
+        assert_eq!(field.regexp_intersect(&pattern).count(), 0);
     }
 
     #[test]
