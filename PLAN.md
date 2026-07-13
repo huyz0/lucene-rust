@@ -1035,9 +1035,13 @@ opening the same real fixture segment twice under one hand-built
 two-segment `SegmentInfos`; missing `.fnm` and partial `.tim`/`.tip`/`.tmd`
 (some but not all three present) both surface as typed errors, not panics.
 **Still deferred, same list as before plus this task's own scope line**:
-NRT/reopen (`DirectoryReader.openIfChanged`), soft deletes, compound-file
-segments (above), real index-wide `CollectionStatistics`-based idf
-(task #41's own gap, unchanged), and `lucene-ffi` exposure of this reader.
+soft deletes, compound-file segments (above), real index-wide
+`CollectionStatistics`-based idf (task #41's own gap, unchanged), and
+`lucene-ffi` exposure of this reader. NRT/reopen was closed by task #46
+(`DirectoryReader::open_if_changed`, see its own `docs/parity.md` row) --
+that task's own remaining scope line still applies (no reader-pool-wide
+sharing, no warm-up hooks; each call only reuses its own receiver's
+segments).
 
 1. `lucene-analysis`: `TokenStream` as an iterator-of-token-structs (skip Java's
    AttributeSource reflection design entirely — a plain

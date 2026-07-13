@@ -89,18 +89,35 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// `.doc`/`.pos`/`.pay` are kept as raw bytes because [`DocInput`]/
 /// [`PosInput`]/[`PayInput`] borrow their buffer and are cheap to
 /// (re-)construct on demand -- see [`DirectoryReader::open_segments`].
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SegmentReader {
     pub segment_name: String,
     pub max_doc: i32,
     pub doc_base: i32,
     segment_id: [u8; ID_LENGTH],
+    /// The generation of this segment's deletions at the time this reader
+    /// was opened (`-1` if it has none) -- used by
+    /// [`DirectoryReader::open_if_changed`] to tell "same segment, unchanged
+    /// deletions" (safe to reuse) apart from "same segment, new deletions"
+    /// (must reopen to pick up the new `.liv`/`live_docs`).
+    del_gen: i64,
     segment_suffix: String,
     fields: BlockTreeFields,
     doc_buf: Option<Vec<u8>>,
     pos_buf: Option<Vec<u8>>,
     pay_buf: Option<Vec<u8>>,
     live_docs: Option<FixedBitSet>,
+}
+
+impl SegmentReader {
+    /// A cheap in-memory copy of an already-open reader, used by
+    /// [`DirectoryReader::open_at_reusing`] to reuse a segment without
+    /// re-reading any files -- `Clone` derives from `BlockTreeFields`/
+    /// `FixedBitSet` already being `Clone`, so this is a genuine "no disk
+    /// I/O" reuse, not a relabeled fresh open.
+    fn clone_reader(&self) -> Self {
+        self.clone()
+    }
 }
 
 impl SegmentReader {
@@ -210,6 +227,7 @@ impl SegmentReader {
             max_doc: si.doc_count,
             doc_base,
             segment_id,
+            del_gen: commit.del_gen,
             segment_suffix,
             fields,
             doc_buf,
@@ -247,10 +265,36 @@ impl DirectoryReader {
     /// useful for tests that build a commit by hand rather than reading one
     /// off disk (see this module's unit tests).
     pub fn open_at(dir: &dyn Directory, segment_infos: SegmentInfos) -> Result<Self> {
+        Self::open_at_reusing(dir, segment_infos, &[])
+    }
+
+    /// Shared by [`Self::open_at`] (no reuse candidates) and
+    /// [`Self::open_if_changed`] (reuse candidates = the currently-open
+    /// reader's segments): opens every segment in `segment_infos`, taking an
+    /// already-open [`SegmentReader`] out of `reusable` instead of
+    /// re-reading it from disk whenever one matches -- same `segment_name`
+    /// *and* same `segment_id` *and* same `del_gen` as the new commit's entry
+    /// (see [`Self::open_if_changed`]'s doc comment for why all three must
+    /// match: a del_gen bump means the `.liv` file changed even though the
+    /// segment's own postings/stored fields didn't).
+    fn open_at_reusing(
+        dir: &dyn Directory,
+        segment_infos: SegmentInfos,
+        reusable: &[SegmentReader],
+    ) -> Result<Self> {
         let mut segments = Vec::with_capacity(segment_infos.segments.len());
         let mut doc_base = 0i32;
         for commit in &segment_infos.segments {
-            let reader = SegmentReader::open(dir, commit, doc_base)?;
+            let reused = reusable.iter().find(|r| {
+                r.segment_name == commit.segment_name
+                    && r.segment_id == commit.segment_id
+                    && r.del_gen == commit.del_gen
+            });
+            let mut reader = match reused {
+                Some(r) => r.clone_reader(),
+                None => SegmentReader::open(dir, commit, doc_base)?,
+            };
+            reader.doc_base = doc_base;
             doc_base += reader.max_doc;
             segments.push(reader);
         }
@@ -258,6 +302,41 @@ impl DirectoryReader {
             segment_infos,
             segments,
         })
+    }
+
+    /// `DirectoryReader.openIfChanged(DirectoryReader)`-equivalent: checks
+    /// whether `dir`'s latest `segments_N` generation differs from the one
+    /// `self` was opened from. Returns `Ok(None)` if nothing changed (same
+    /// generation), matching real Lucene's convention that callers should
+    /// keep using their existing reader rather than redundantly rebuild it.
+    ///
+    /// If the generation *did* change, builds a new [`DirectoryReader`] that
+    /// reuses `self`'s already-open [`SegmentReader`]s for every segment
+    /// that is unchanged in the new commit -- same segment name, same
+    /// segment id, *and* same `del_gen` -- and opens fresh readers (reading
+    /// `.si`/`.fnm`/postings/`.liv` from disk, exactly like
+    /// [`Self::open_at`]) for anything new or whose `del_gen` bumped. A
+    /// segment merge or delete replaces the segment name/id, so it always
+    /// falls into "open fresh"; a same-segment delete-only commit keeps the
+    /// same name/id but bumps `del_gen`, which this deliberately treats as
+    /// "must reopen" so the new commit's `live_docs` (not `self`'s stale
+    /// ones) is what queries see -- getting this backwards would silently
+    /// serve deleted documents as live.
+    ///
+    /// **Deliberately excluded** (see this module's doc comment and
+    /// `docs/parity.md`): this is a self-contained reopen, not a
+    /// reader-pool-wide one -- real Lucene's `openIfChanged` operates through
+    /// a shared `ReaderPool` so *every* open reader in a process benefits
+    /// from one segment's reuse, and supports warm-up listeners
+    /// (`ReaderManager`/`SearcherFactory`) called on newly-opened sub-readers
+    /// before they're handed back. Neither exists here; each
+    /// `open_if_changed` call only reuses its own receiver's readers.
+    pub fn open_if_changed(&self, dir: &dyn Directory) -> Result<Option<Self>> {
+        let latest = segment_infos::read_latest(dir)?;
+        if latest.generation == self.segment_infos.generation {
+            return Ok(None);
+        }
+        Some(Self::open_at_reusing(dir, latest, &self.segments)).transpose()
     }
 
     /// Every opened segment's own reader, in commit order.
@@ -641,6 +720,178 @@ mod tests {
         };
         let err = SegmentReader::open(&dir, &commit, 0).expect_err("partial postings must error");
         assert!(matches!(err, Error::PartialBlockTreeFiles { found: 1, .. }));
+
+        std::fs::remove_dir_all(&dir_path).ok();
+    }
+
+    fn stored_only_field_infos() -> Vec<lucene_codecs::field_infos::FieldInfo> {
+        use lucene_codecs::field_infos::{DocValuesType, FieldInfo, IndexOptions};
+        vec![FieldInfo {
+            name: "title".to_string(),
+            number: 0,
+            store_term_vectors: false,
+            omit_norms: false,
+            store_payloads: false,
+            soft_deletes_field: false,
+            parent_field: false,
+            index_options: IndexOptions::None,
+            doc_values_type: DocValuesType::None,
+            doc_values_skip_index_type: lucene_codecs::field_infos::DocValuesSkipIndexType::None,
+            doc_values_gen: -1,
+            attributes: vec![],
+            point_dimension_count: 0,
+            point_index_dimension_count: 0,
+            point_num_bytes: 0,
+            vector_dimension: 0,
+            vector_encoding: lucene_codecs::field_infos::VectorEncoding::Byte,
+            vector_similarity_function:
+                lucene_codecs::field_infos::VectorSimilarityFunction::Euclidean,
+        }]
+    }
+
+    fn flush_stored_only(
+        dir: &FsDirectory,
+        segment_name: &str,
+        segment_id: [u8; ID_LENGTH],
+        text: &str,
+    ) -> segment_infos::SegmentCommitInfo {
+        use lucene_codecs::stored_fields::{Document, FieldValue, StoredField};
+        let docs = vec![Document {
+            fields: vec![StoredField {
+                field_number: 0,
+                value: FieldValue::String(text.to_string()),
+            }],
+        }];
+        let lucene_version = segment_info::LuceneVersion {
+            major: 10,
+            minor: 0,
+            bugfix: 0,
+        };
+        lucene_index::segment_writer::flush_stored_only_segment(
+            dir,
+            segment_name,
+            segment_id,
+            "Lucene104",
+            lucene_version,
+            &stored_only_field_infos(),
+            &docs,
+            false,
+        )
+        .expect("flush stored-only segment")
+    }
+
+    fn write_commit(
+        dir: &FsDirectory,
+        generation: i64,
+        segments: Vec<segment_infos::SegmentCommitInfo>,
+    ) -> SegmentInfos {
+        let segment_infos = SegmentInfos {
+            id: [9u8; ID_LENGTH],
+            generation,
+            format_version: segment_infos::VERSION_86,
+            lucene_version: LuceneVersion {
+                major: 10,
+                minor: 0,
+                bugfix: 0,
+            },
+            index_created_version_major: 10,
+            version: generation,
+            counter: segments.len() as i64,
+            min_segment_lucene_version: None,
+            segments,
+            user_data: vec![],
+        };
+        segment_infos::write(&segment_infos, dir).expect("write segments_N");
+        segment_infos
+    }
+
+    /// Reopening with no writes since `self` was opened returns `None` --
+    /// real `openIfChanged`'s "nothing to do" convention, checked purely off
+    /// the `segments_N` generation (no need to re-diff segment lists).
+    #[test]
+    fn open_if_changed_returns_none_when_generation_unchanged() {
+        let dir_path = tempdir();
+        let dir = FsDirectory::open(&dir_path);
+        let commit0 = flush_stored_only(&dir, "_0", [1u8; ID_LENGTH], "hello");
+        write_commit(&dir, 1, vec![commit0]);
+
+        let reader = DirectoryReader::open(&dir).expect("open segments_1");
+        let reopened = reader.open_if_changed(&dir).expect("open_if_changed");
+        assert!(reopened.is_none());
+
+        std::fs::remove_dir_all(&dir_path).ok();
+    }
+
+    /// Reopening after a genuinely new segment was added returns `Some` with
+    /// both segments visible, correct `doc_base`s, and the *first* segment's
+    /// reader genuinely reused rather than re-read from disk: proven by
+    /// deleting the old segment's on-disk files before reopening -- if
+    /// `open_if_changed` tried to re-open segment `_0` from disk it would
+    /// fail (file not found), so success here is only possible via reuse.
+    #[test]
+    fn open_if_changed_reuses_unchanged_segment_and_opens_new_one() {
+        let dir_path = tempdir();
+        let dir = FsDirectory::open(&dir_path);
+        let commit0 = flush_stored_only(&dir, "_0", [1u8; ID_LENGTH], "hello");
+        write_commit(&dir, 1, vec![commit0.clone()]);
+
+        let reader = DirectoryReader::open(&dir).expect("open segments_1");
+        assert_eq!(reader.segment_readers().len(), 1);
+
+        let commit1 = flush_stored_only(&dir, "_1", [2u8; ID_LENGTH], "world");
+        write_commit(&dir, 2, vec![commit0.clone(), commit1]);
+
+        // Remove segment _0's on-disk files: a fresh open of _0 would now
+        // fail, so if open_if_changed still succeeds and reports the right
+        // doc counts, it must have reused the already-open reader instead of
+        // re-reading the (now-missing) files.
+        for ext in [".fdt", ".fdx", ".fdm", ".fnm"] {
+            std::fs::remove_file(dir_path.join(format!("_0{ext}"))).ok();
+        }
+
+        let reopened = reader
+            .open_if_changed(&dir)
+            .expect("open_if_changed")
+            .expect("segments_2 differs from segments_1");
+        assert_eq!(reopened.segment_readers().len(), 2);
+        assert_eq!(reopened.segment_readers()[0].segment_name, "_0");
+        assert_eq!(reopened.segment_readers()[0].doc_base, 0);
+        assert_eq!(reopened.segment_readers()[1].segment_name, "_1");
+        assert_eq!(reopened.segment_readers()[1].doc_base, 1);
+
+        std::fs::remove_dir_all(&dir_path).ok();
+    }
+
+    /// The correctness-critical case: a del_gen-only change on an *existing*
+    /// segment (no new segment, same name/id) must NOT be served from the
+    /// reused reader's stale `live_docs` -- it must reopen that segment and
+    /// pick up the new deletions.
+    #[test]
+    fn open_if_changed_reopens_segment_whose_del_gen_changed() {
+        let dir_path = tempdir();
+        let dir = FsDirectory::open(&dir_path);
+        let commit0 = flush_stored_only(&dir, "_0", [1u8; ID_LENGTH], "hello");
+        write_commit(&dir, 1, vec![commit0.clone()]);
+
+        let reader = DirectoryReader::open(&dir).expect("open segments_1");
+        assert!(reader.segment_readers()[0].live_docs.is_none());
+
+        // Delete doc 0 in segment _0: bumps del_gen, writes a new .liv.
+        let commit0_deleted = lucene_index::deletes::apply_deletes(&dir, &commit0, None, 1, [0i32])
+            .expect("apply delete");
+        assert_eq!(commit0_deleted.del_gen, 1);
+        write_commit(&dir, 2, vec![commit0_deleted]);
+
+        let reopened = reader
+            .open_if_changed(&dir)
+            .expect("open_if_changed")
+            .expect("segments_2 differs from segments_1");
+        assert_eq!(reopened.segment_readers().len(), 1);
+        let live = reopened.segment_readers()[0]
+            .live_docs
+            .as_ref()
+            .expect("del_gen change must be picked up as new live_docs");
+        assert!(!live.get(0), "doc 0 must now be marked deleted");
 
         std::fs::remove_dir_all(&dir_path).ok();
     }
