@@ -8,6 +8,7 @@ mod deflate;
 pub mod direct_monotonic;
 pub mod direct_reader;
 pub mod doc_values;
+pub mod doc_values_updates;
 pub mod field_infos;
 mod for_util;
 pub mod fst;

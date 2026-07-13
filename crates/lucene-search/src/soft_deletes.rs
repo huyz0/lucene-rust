@@ -17,24 +17,31 @@
 //!
 //! # Scope: what this deliberately is not
 //!
-//! **No cheap incremental marking.** Real Lucene's soft-delete *write* path
-//! (`IndexWriter.softUpdateDocument`) relies on
-//! `NumericDocValuesFieldUpdates`: an existing segment's doc-values file gets
-//! a small delta record appended (a per-doc-values-generation "diff" file),
-//! not rewritten from scratch, so marking one doc soft-deleted is cheap even
-//! on a huge segment. This port's doc-values write side
-//! ([`lucene_codecs::doc_values::write_single_dense_numeric_field`]) only
-//! ever writes a brand-new, complete `.dvm`/`.dvd`/`.dvs` triple for a single
-//! dense field — there is no incremental-update format/codec here at all
-//! (see that function's own doc comment: "Deliberately not attempted here…
-//! sparse fields (`IndexedDISI`)… table compression… multiple fields").
-//! Building a fake "cheap update" shim on top of a full-rewrite primitive
-//! would misrepresent what actually happens on disk, so this port does not
-//! pretend to have it. **Marking** a document soft-deleted is therefore left
-//! to whatever wrote the segment's doc-values in the first place (a fresh
-//! flush, or [`crate::update_document`]-style new-segment flow once a
-//! soft-deletes field is wired into it) — this module only ever *reads*
-//! that state, which is a complete, real, and independently useful half.
+//! **Incremental marking: now available via task #54's update overlay.**
+//! Real Lucene's soft-delete *write* path (`IndexWriter.softUpdateDocument`)
+//! relies on `NumericDocValuesFieldUpdates`: an existing segment's
+//! doc-values file gets a small delta record appended (a per-doc-values-
+//! generation "diff" file), not rewritten from scratch, so marking one doc
+//! soft-deleted is cheap even on a huge segment.
+//! [`lucene_codecs::doc_values_updates`] (task #54) now provides exactly
+//! this primitive in single-generation form: [`mark_soft_deleted_via_overlay`]
+//! writes a tiny standalone overlay file recording just the one doc's
+//! soft-deletes-field value (any value — presence is all that matters, see
+//! [`is_soft_deleted`]'s doc comment) without touching the base
+//! `.dvd`/`.dvm` bytes at all, and [`is_soft_deleted_with_overlay`]/
+//! [`effective_live_docs_with_overlay`] check that overlay before falling
+//! back to the base decode. This is a **single overlay round** (one file, one
+//! batch of updates) — task #54 explicitly does not implement stacking many
+//! sequential update generations with newest-wins semantics across rounds,
+//! nor `SegmentCommitInfo`/`.si` `docValuesGen` metadata wiring (see that
+//! module's own doc comment for the full scope statement). A caller needing
+//! a second independent update round today has to compose a fresh merged
+//! overlay itself rather than relying on multi-generation stacking.
+//!
+//! The plain (non-overlay) [`is_soft_deleted`]/[`effective_live_docs`]
+//! functions below are unchanged and remain the right choice whenever no
+//! overlay is in play (the common case — most segments never get an
+//! incremental doc-values update at all).
 //!
 //! **No cross-segment orchestration.** Like [`crate::directory_reader`],
 //! this operates on one already-opened segment's already-decoded
@@ -53,7 +60,11 @@
 //! [`effective_live_docs`] and keep passing their own `live_docs` straight
 //! through, exactly as before).
 
+use std::collections::HashMap;
+
 use lucene_codecs::doc_values::{self, NumericEntry};
+use lucene_codecs::doc_values_updates;
+use lucene_store::codec_util::ID_LENGTH;
 use lucene_util::fixed_bit_set::FixedBitSet;
 
 pub type Error = doc_values::Error;
@@ -137,6 +148,104 @@ pub fn effective_live_docs(
 
     for doc in 0..max_doc {
         if bits.get(doc) && is_soft_deleted(field, doc as i32)? {
+            bits.clear(doc);
+        }
+    }
+
+    Ok(Some(bits))
+}
+
+/// Task #54's concrete unblocking of this module's write-side gap: marks a
+/// single document soft-deleted by writing **only** a tiny update-overlay
+/// file (`lucene_codecs::doc_values_updates::write_numeric_updates`) — the
+/// base segment's `.dvd`/`.dvm` bytes are never read, decoded, or rewritten
+/// by this function at all. The overlay records `(doc, marker_value)`; per
+/// [`is_soft_deleted`]'s presence-based rule, `marker_value`'s actual number
+/// is irrelevant (any value in the overlay means "soft-deleted"), so `0` is
+/// used here as an arbitrary constant. Composing this with any *other*
+/// already-buffered updates for the same segment (multiple docs marked
+/// before one flush) is the caller's responsibility — pass every
+/// `(doc, value)` pair accumulated so far; this is still exactly one overlay
+/// generation (task #54's documented single-round MVP scope), not a
+/// stacked-generations API.
+pub fn mark_soft_deleted_via_overlay(
+    docs: &[i32],
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+) -> Vec<u8> {
+    let updates: Vec<(i32, i64)> = docs.iter().map(|&doc| (doc, 0i64)).collect();
+    doc_values_updates::write_numeric_updates(&updates, segment_id, segment_suffix)
+}
+
+/// The overlay-aware counterpart to [`is_soft_deleted`]: a doc is
+/// soft-deleted if it has a value in the overlay (marked via
+/// [`mark_soft_deleted_via_overlay`] or any other overlay write) OR the base
+/// doc-values field has a value for it — the same presence-based OR
+/// [`is_soft_deleted`] already implements, just with an extra source of
+/// presence to check first.
+pub fn is_soft_deleted_with_overlay(
+    field: &SoftDeletesField<'_>,
+    overlay: &HashMap<i32, i64>,
+    doc: i32,
+) -> Result<bool> {
+    if overlay.contains_key(&doc) {
+        return Ok(true);
+    }
+    is_soft_deleted(field, doc)
+}
+
+/// The overlay-aware counterpart to [`effective_live_docs`]: identical
+/// hard-live-AND-NOT-soft-deleted computation, except a doc's soft-delete
+/// state is resolved through the overlay first (see
+/// [`is_soft_deleted_with_overlay`]) rather than the base doc-values decode
+/// alone — this is what lets a doc marked soft-deleted purely via
+/// [`mark_soft_deleted_via_overlay`] (no base rewrite) actually become
+/// invisible to search.
+pub fn effective_live_docs_with_overlay(
+    live_docs: Option<&FixedBitSet>,
+    soft_deletes: Option<&SoftDeletesField<'_>>,
+    overlay: &HashMap<i32, i64>,
+    max_doc: usize,
+) -> Result<Option<FixedBitSet>> {
+    let Some(field) = soft_deletes else {
+        if overlay.is_empty() {
+            return Ok(live_docs.cloned());
+        }
+        // No base soft-deletes field configured, but the overlay itself
+        // carries soft-delete marks (e.g. a soft-deletes field introduced
+        // only via updates, never present in the base segment) -- still
+        // apply them.
+        let mut bits = match live_docs {
+            Some(existing) => existing.clone(),
+            None => {
+                let mut all_live = FixedBitSet::new(max_doc);
+                for i in 0..max_doc {
+                    all_live.set(i);
+                }
+                all_live
+            }
+        };
+        for doc in 0..max_doc {
+            if bits.get(doc) && overlay.contains_key(&(doc as i32)) {
+                bits.clear(doc);
+            }
+        }
+        return Ok(Some(bits));
+    };
+
+    let mut bits = match live_docs {
+        Some(existing) => existing.clone(),
+        None => {
+            let mut all_live = FixedBitSet::new(max_doc);
+            for i in 0..max_doc {
+                all_live.set(i);
+            }
+            all_live
+        }
+    };
+
+    for doc in 0..max_doc {
+        if bits.get(doc) && is_soft_deleted_with_overlay(field, overlay, doc as i32)? {
             bits.clear(doc);
         }
     }
@@ -485,5 +594,119 @@ mod tests {
         )
         .unwrap();
         assert!(collector2.docs.is_empty());
+    }
+
+    // --- task #54: overlay-based incremental soft-delete marking ---
+
+    const SEG_ID: [u8; ID_LENGTH] = [3u8; ID_LENGTH];
+
+    #[test]
+    fn mark_soft_deleted_via_overlay_marks_only_the_given_doc_no_base_touch() {
+        // The real sparse fixture already has docs 0, 2, 4 soft-deleted and
+        // 1, 3 not. Mark doc 3 soft-deleted via ONLY an overlay write -- no
+        // base .dvd/.dvm rewrite -- and confirm the overlay-aware check now
+        // reports it soft-deleted, while the plain (non-overlay) base check
+        // still correctly reports doc 3 as not soft-deleted (proving the
+        // base bytes were genuinely never touched).
+        let fx = load_sparse_fixture();
+        let field = fx.field();
+        assert!(!is_soft_deleted(&field, 3).unwrap());
+
+        let overlay_bytes = mark_soft_deleted_via_overlay(&[3], &SEG_ID, "");
+        let overlay =
+            doc_values_updates::read_numeric_updates(&overlay_bytes, &SEG_ID, "").unwrap();
+
+        assert!(is_soft_deleted_with_overlay(&field, &overlay, 3).unwrap());
+        // Base-only check is unaffected: no base rewrite happened.
+        assert!(!is_soft_deleted(&field, 3).unwrap());
+        // Docs already soft-deleted in the base are still soft-deleted
+        // through the overlay-aware path too (overlay doesn't erase base
+        // presence).
+        assert!(is_soft_deleted_with_overlay(&field, &overlay, 0).unwrap());
+        // An untouched, base-absent doc stays not-soft-deleted.
+        assert!(!is_soft_deleted_with_overlay(&field, &overlay, 1).unwrap());
+    }
+
+    #[test]
+    fn effective_live_docs_with_overlay_excludes_overlay_marked_doc() {
+        let fx = load_sparse_fixture();
+        let field = fx.field();
+        let mut live = FixedBitSet::new(5);
+        for i in 0..5 {
+            live.set(i);
+        }
+        // Base soft-deletes: docs 0, 2, 4. Mark doc 3 soft-deleted purely via
+        // overlay (doc 1 stays untouched -> still live).
+        let overlay_bytes = mark_soft_deleted_via_overlay(&[3], &SEG_ID, "");
+        let overlay =
+            doc_values_updates::read_numeric_updates(&overlay_bytes, &SEG_ID, "").unwrap();
+
+        let effective = effective_live_docs_with_overlay(Some(&live), Some(&field), &overlay, 5)
+            .unwrap()
+            .unwrap();
+        // Only doc 1 survives: 0,2,4 base-soft-deleted, 3 overlay-soft-deleted.
+        assert_eq!(effective.cardinality(), 1);
+        assert!(effective.get(1));
+        assert!(!effective.get(0));
+        assert!(!effective.get(2));
+        assert!(!effective.get(3));
+        assert!(!effective.get(4));
+
+        // Without the overlay, doc 3 would have stayed live.
+        let effective_no_overlay = effective_live_docs(Some(&live), Some(&field), 5)
+            .unwrap()
+            .unwrap();
+        assert!(effective_no_overlay.get(3));
+    }
+
+    #[test]
+    fn effective_live_docs_with_overlay_empty_overlay_matches_plain_version() {
+        let fx = load_sparse_fixture();
+        let field = fx.field();
+        let mut live = FixedBitSet::new(5);
+        for i in 0..5 {
+            live.set(i);
+        }
+        let empty_overlay = HashMap::new();
+        let a = effective_live_docs_with_overlay(Some(&live), Some(&field), &empty_overlay, 5)
+            .unwrap()
+            .unwrap();
+        let b = effective_live_docs(Some(&live), Some(&field), 5)
+            .unwrap()
+            .unwrap();
+        assert_eq!(a.cardinality(), b.cardinality());
+        for i in 0..5 {
+            assert_eq!(a.get(i), b.get(i));
+        }
+    }
+
+    #[test]
+    fn effective_live_docs_with_overlay_and_no_soft_deletes_field_still_applies_overlay() {
+        // No base soft-deletes field at all, but the overlay itself carries
+        // marks -- covers the `soft_deletes: None` branch inside
+        // effective_live_docs_with_overlay.
+        let mut live = FixedBitSet::new(3);
+        for i in 0..3 {
+            live.set(i);
+        }
+        let overlay_bytes = mark_soft_deleted_via_overlay(&[1], &SEG_ID, "");
+        let overlay =
+            doc_values_updates::read_numeric_updates(&overlay_bytes, &SEG_ID, "").unwrap();
+        let effective = effective_live_docs_with_overlay(Some(&live), None, &overlay, 3)
+            .unwrap()
+            .unwrap();
+        assert!(effective.get(0));
+        assert!(!effective.get(1));
+        assert!(effective.get(2));
+    }
+
+    #[test]
+    fn effective_live_docs_with_overlay_no_field_no_overlay_no_hard_deletes_is_none() {
+        let empty_overlay = HashMap::new();
+        assert!(
+            effective_live_docs_with_overlay(None, None, &empty_overlay, 5)
+                .unwrap()
+                .is_none()
+        );
     }
 }

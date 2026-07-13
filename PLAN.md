@@ -1139,6 +1139,47 @@ together with that same real sparse field, confirming a soft-deleted doc is
 excluded from real term-query results. See `docs/parity.md` for the full
 row and scope writeup.
 
+**Progress (task #54):** a numeric doc-values **update overlay** —
+`lucene-codecs/src/doc_values_updates.rs::{write_numeric_updates,
+read_numeric_updates, numeric_value_with_updates}` — closes task #48's
+documented write-side gap above. Real Lucene's `NumericDocValuesFieldUpdates`
+marks a doc's doc-values field with a new value by appending a small
+"generation" file of sparse `(docId, value)` deltas rather than rewriting a
+whole segment's `.dvd`/`.dvm` triple, with `SegmentCommitInfo.docValuesGen`
+tracking generations and newest-generation-wins semantics across many update
+rounds. This task ships exactly the core, single-generation mechanism: write
+a sorted, de-duplicated `(docId -> newValue)` map to its own small file
+(reusing `codec_util`'s header/footer/CRC shell for structural integrity);
+read it back to a `HashMap`; and read a base numeric doc-values value
+*through* the overlay (overlay wins, else fall back to the existing
+`doc_values::numeric_value` decode) — proving the real "incremental update,
+no full rewrite" property. **Byte format is this port's own invention**, not
+a port of real Lucene's actual generation-file bytes — same honest,
+documented situation as task #49/#52's index-sort format, and given the
+scope decision below, there's no plan to derive a byte-exact format either.
+**Scope, made explicit**: multiple sequential overlay generations with
+newest-wins semantics across many rounds, and `SegmentCommitInfo`/`.si`
+`docValuesGen` metadata wiring, are both deliberately deferred; this is a
+single overlay round, not the full commit-lifecycle integration. **Wired
+into task #48's soft-deletes flow**:
+`lucene-search/src/soft_deletes.rs::{mark_soft_deleted_via_overlay,
+is_soft_deleted_with_overlay, effective_live_docs_with_overlay}` mark a doc
+soft-deleted via *only* an overlay write (zero base-file I/O) and extend the
+existing presence check / combined-bitset computation to consult the
+overlay first, falling back to the base decode — task #48's own write-side
+gap is now partially closed (one overlay round, not the full incremental-
+update lifecycle). Verified: overlay round-trip (including unsorted input,
+duplicate-doc last-write-wins, empty overlay), corruption rejection (wrong
+segment id, truncated file, hand-built out-of-order doc ids), overlay-vs-base
+composition (override, fallback, no-op-when-empty) against a base field
+built through the real `write_single_dense_numeric_field`/`parse_meta` round
+trip, and the soft-deletes integration against the real checked-in
+`fixtures/data/doc_values_index/` sparse fixture: marking doc 3 soft-deleted
+via the overlay alone (no base rewrite) makes the overlay-aware checks
+correctly exclude it while the plain base-only check still correctly reports
+it as not soft-deleted, proving the base bytes were genuinely untouched. See
+`docs/parity.md` for the full row and scope writeup.
+
 **Progress (task #50):** basic faceting over a SORTED_SET doc-values field,
 `lucene-search/src/facets.rs::{facet_counts, resolve_labels, top_n_facets,
 FacetCount}` — a simplified port of real Lucene's
