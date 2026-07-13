@@ -17,6 +17,7 @@
 use std::os::raw::c_char;
 
 use lucene_codecs::blocktree::{self, BlockTreeFields};
+use lucene_codecs::doc_values;
 use lucene_codecs::field_infos;
 use lucene_codecs::norms;
 use lucene_codecs::postings::{DocInput, PosInput};
@@ -47,6 +48,19 @@ use crate::registry::{lock_recovering, segments, SegmentHandle};
 ///   codec-suffix component), so `nvm_name`/`nvd_name` are ordinary caller-
 ///   supplied names like every other file name here, not derived from
 ///   `segment_suffix`.
+/// - `dvm_name`/`dvd_name`/`dv_suffix` (task #40): the segment's `.dvm`/`.dvd`
+///   (doc-values metadata/data) file names, or a null pointer (any `len`) to
+///   open neither -- required for `ffi_sort_by_doc_value`/
+///   `ffi_sort_by_multi_valued_doc_value` (`sort.rs`) to have any values to
+///   sort by; a segment opened without doc values simply can't serve those
+///   two calls ([`crate::error::FfiStatus::InvalidArgument`], since unlike
+///   norms there is no meaningful "sort by a constant" fallback). Doc-values
+///   files *do* carry a per-field codec-suffix component in their index
+///   header (like `.tim`/`.doc`, unlike `.nvm`/`.nvd`), so `dv_suffix` is a
+///   separate parameter from `segment_suffix` -- real Lucene's doc-values
+///   codec suffix and postings codec suffix are independent strings, not
+///   guaranteed equal, even though this port's own fixtures happen to reuse
+///   the same value for both.
 /// - `segment_id`: the segment's 16-byte ID (`SegmentInfo.getId()`).
 /// - `segment_suffix`: the codec suffix string used in every file's index
 ///   header (often empty).
@@ -78,6 +92,12 @@ pub unsafe extern "C" fn ffi_open_segment(
     nvm_name_len: usize,
     nvd_name: *const c_char,
     nvd_name_len: usize,
+    dvm_name: *const c_char,
+    dvm_name_len: usize,
+    dvd_name: *const c_char,
+    dvd_name_len: usize,
+    dv_suffix: *const c_char,
+    dv_suffix_len: usize,
     segment_id: *const u8,
     segment_suffix: *const c_char,
     segment_suffix_len: usize,
@@ -185,6 +205,35 @@ pub unsafe extern "C" fn ffi_open_segment(
             (Some(parsed), Some(data_bytes))
         };
 
+        // Task #40: `.dvm`/`.dvd` are opened together or not at all -- same
+        // "null means none, one without the other leaves it unavailable"
+        // convention as `.nvm`/`.nvd` above.
+        let (dv_meta, dv_data) = if dvm_name.is_null() || dvd_name.is_null() {
+            (None, None)
+        } else {
+            // SAFETY: caller contract guarantees `dvm_name`/`dvd_name`/`dv_suffix`
+            // are valid for their paired lengths.
+            let (dvm, dvd, dv_suffix) = unsafe {
+                (
+                    str_from_raw(dvm_name as *const u8, dvm_name_len)?,
+                    str_from_raw(dvd_name as *const u8, dvd_name_len)?,
+                    str_from_raw(dv_suffix as *const u8, dv_suffix_len)?,
+                )
+            };
+            let meta_bytes = read_whole_file(dir_handle, dvm)?;
+            let (_version, parsed) =
+                doc_values::parse_meta(&meta_bytes, &id, dv_suffix, &field_infos).map_err(|e| {
+                    set_last_error(format!("parsing .dvm: {e}"));
+                    FfiStatus::Decode
+                })?;
+            let data_bytes = read_whole_file(dir_handle, dvd)?;
+            doc_values::check_data_header_footer(&data_bytes, &id, dv_suffix).map_err(|e| {
+                set_last_error(format!("opening .dvd: {e}"));
+                FfiStatus::Decode
+            })?;
+            (Some(parsed), Some(data_bytes))
+        };
+
         let handle = lock_recovering(segments()).insert(SegmentHandle {
             fields,
             doc_bytes,
@@ -195,6 +244,8 @@ pub unsafe extern "C" fn ffi_open_segment(
             field_infos,
             norms_data,
             norms,
+            dv_data,
+            dv_meta,
         });
         // SAFETY: caller contract guarantees `out_handle` is valid for one write.
         unsafe {
@@ -300,6 +351,12 @@ mod tests {
                 nvm_name.map_or(0, |s| s.len()),
                 nvd_name.map_or(std::ptr::null(), |s| s.as_ptr()) as *const c_char,
                 nvd_name.map_or(0, |s| s.len()),
+                std::ptr::null(), // dvm_name: this fixture has no doc-values files
+                0,
+                std::ptr::null(), // dvd_name
+                0,
+                std::ptr::null(), // dv_suffix
+                0,
                 id.as_ptr(),
                 suffix.as_ptr() as *const c_char,
                 suffix.len(),
@@ -401,6 +458,12 @@ mod tests {
                 0,
                 std::ptr::null(),
                 0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
                 segment_id_bytes().as_ptr(),
                 std::ptr::null(),
                 0,
@@ -421,6 +484,12 @@ mod tests {
                 dir_handle,
                 fnm.as_ptr() as *const c_char,
                 fnm.len(),
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
                 std::ptr::null(),
                 0,
                 std::ptr::null(),
@@ -471,6 +540,12 @@ mod tests {
                 std::ptr::null(),
                 0,
                 std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(), // segment_id: null -- the point of this test
                 std::ptr::null(),
                 0,
                 8958,
@@ -552,6 +627,12 @@ mod tests {
                 0,
                 std::ptr::null(),
                 0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
                 id.as_ptr(),
                 suffix.as_ptr() as *const c_char,
                 suffix.len(),
@@ -588,6 +669,12 @@ mod tests {
                 tip.len(),
                 tmd.as_ptr() as *const c_char,
                 tmd.len(),
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
                 std::ptr::null(),
                 0,
                 std::ptr::null(),
@@ -641,6 +728,12 @@ mod tests {
                 0,
                 std::ptr::null(),
                 0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
                 id.as_ptr(),
                 suffix.as_ptr() as *const c_char,
                 suffix.len(),
@@ -682,6 +775,12 @@ mod tests {
                 0,
                 pos.as_ptr() as *const c_char,
                 pos.len(),
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
                 std::ptr::null(),
                 0,
                 std::ptr::null(),
@@ -734,6 +833,12 @@ mod tests {
                 nvm.len(),
                 nvd.as_ptr() as *const c_char,
                 nvd.len(),
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
                 id.as_ptr(),
                 suffix.as_ptr() as *const c_char,
                 suffix.len(),
@@ -783,6 +888,12 @@ mod tests {
                 nvm.len(),
                 nvd.as_ptr() as *const c_char,
                 nvd.len(),
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
                 id.as_ptr(),
                 suffix.as_ptr() as *const c_char,
                 suffix.len(),

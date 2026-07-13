@@ -810,6 +810,38 @@ byte format, so its tests reuse the real, already cross-engine-verified
 `fixtures/data/term_vectors_index/` fixture (task #3's) instead. See `docs/parity.md`'s new row
 for the full scoping detail and test list.
 
+**Progress (task #40):** task #21/#31's `sort_by_numeric_doc_value`/
+`sort_by_multi_valued_doc_value` (`lucene-search/src/doc_value_query.rs`) now have a
+C-ABI surface, following task #30's exact FFI pattern: `ffi_sort_by_doc_value`/
+`ffi_sort_by_multi_valued_doc_value` (`lucene-ffi/src/sort.rs`) take an already-known
+candidate doc-ID list plus a field name, resolve it to a NUMERIC/SORTED_NUMERIC
+doc-values entry via the segment's opened `.dvm` (new `dvm_name`/`dvd_name`/
+`dv_suffix` parameters on `ffi_open_segment` — doc-values files carry their own
+codec-suffix component, independent of the postings suffix, so this is a separate
+parameter rather than reusing `segment_suffix`), and store the resulting ascending
+`(doc_id, value)` pairs in a new `SortedResultsHandle`/`RegistryTag::SortedResults`
+registry — kept separate from both the unscored `ResultsHandle` and the scored
+`ScoredResultsHandle` since a sort's second element is an arbitrary `i64` doc-value,
+not a BM25 `f32` score, and conflating the three would let a handle from the wrong
+call be silently misread. Read back via `ffi_sorted_results_len`/
+`ffi_sorted_results_copy` (two parallel buffers, doc IDs and values) and released via
+`ffi_close_sorted_results` — the same shape `results_scored.rs` established. The
+missing-value policy (`MissingValue::Exclude`/`Default(i64)`) crosses the wire as a
+plain `missing_is_default: bool` + `missing_default: i64` rather than a tagged union;
+the multi-valued entry point's `ValueSelector` (MIN/MAX) crosses as an `i32` (`0`/`1`,
+anything else is `InvalidArgument`). Ascending-only, single-sort-key-only, matching
+`doc_value_query.rs`'s own documented scope (no descending sort or multi-key `Sort`
+composition exists in this port). Same test rigor as tasks #20/#30: real-fixture
+round-trips against `fixtures/data/doc_values_index/`/`multi_valued_dv_index/` (the
+same fixtures task #31's own differential tests already established as
+cross-engine-correct — no new Java fixture was needed since this is FFI wiring
+around an already-verified sort, not new decoding logic), unknown-field/wrong-entry-
+kind/no-doc-values-opened rejection (`InvalidArgument`), stale/wrong-registry-tag
+handle rejection, and a mutex-poisoning regression test using a `thread_local!`-
+scoped panic-injection switch (not task #20's process-wide `AtomicBool`, for the
+same cross-test-flakiness reason task #30 already documented). See `docs/parity.md`'s
+`## lucene-ffi` section for the exact surface and what's still deferred.
+
 1. `lucene-analysis`: `TokenStream` as an iterator-of-token-structs (skip Java's
    AttributeSource reflection design entirely — a plain
    `Token { bytes, position_increment, offset, ... }` struct), StandardTokenizer via

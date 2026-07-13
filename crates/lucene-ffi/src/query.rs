@@ -872,6 +872,12 @@ mod tests {
                     std::ptr::null()
                 },
                 if with_norms { nvd.len() } else { 0 },
+                std::ptr::null(), // dvm_name: not needed by any scored-query test
+                0,
+                std::ptr::null(), // dvd_name
+                0,
+                std::ptr::null(), // dv_suffix
+                0,
                 id.as_ptr(),
                 suffix.as_ptr() as *const c_char,
                 suffix.len(),

@@ -40,6 +40,18 @@
 //!   `(doc_id, score)` hits back out via two caller-allocated parallel buffers (see
 //!   `results_scored.rs`'s module doc for why parallel buffers, not one interleaved
 //!   one), then releases it.
+//! - [`sort::ffi_sort_by_doc_value`]/[`sort::ffi_sort_by_multi_valued_doc_value`]
+//!   (task #40): wraps `lucene_search::sort_by_numeric_doc_value`/
+//!   `lucene_search::doc_value_query::sort_by_multi_valued_doc_value`, sorting an
+//!   already-known candidate doc-ID list ascending by a NUMERIC/SORTED_NUMERIC
+//!   doc-value into a new [`registry::SortedResultsHandle`] -- see `sort.rs`'s
+//!   module doc for the missing-value/selector wire encoding, and
+//!   [`segment::ffi_open_segment`]'s `dvm_name`/`dvd_name`/`dv_suffix` parameters
+//!   for how a segment's doc-values data reaches it.
+//! - [`results_sorted::ffi_sorted_results_len`]/[`results_sorted::ffi_sorted_results_copy`]/
+//!   [`results_sorted::ffi_close_sorted_results`]: reads a sorted results handle's
+//!   `(doc_id, value)` pairs back out via two caller-allocated parallel buffers,
+//!   same shape as the scored-results trio above, then releases it.
 //! - [`error::guard`]/[`ffi_get_last_error_message`]: every exported
 //!   function's panic-safety wrapper and the thread-local last-error
 //!   message accessor.
@@ -97,7 +109,9 @@ mod raw;
 mod registry;
 mod results;
 mod results_scored;
+mod results_sorted;
 mod segment;
+mod sort;
 
 pub use directory::{ffi_close_directory, ffi_open_directory};
 pub use error::FfiStatus;
@@ -109,7 +123,11 @@ pub use results::{ffi_close_results, ffi_results_copy, ffi_results_len};
 pub use results_scored::{
     ffi_close_scored_results, ffi_scored_results_copy, ffi_scored_results_len,
 };
+pub use results_sorted::{
+    ffi_close_sorted_results, ffi_sorted_results_copy, ffi_sorted_results_len,
+};
 pub use segment::{ffi_close_segment, ffi_open_segment};
+pub use sort::{ffi_sort_by_doc_value, ffi_sort_by_multi_valued_doc_value};
 
 use std::os::raw::c_char;
 

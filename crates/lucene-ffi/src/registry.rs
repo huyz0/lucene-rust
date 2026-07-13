@@ -7,6 +7,7 @@
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
 use lucene_codecs::blocktree::BlockTreeFields;
+use lucene_codecs::doc_values::DocValuesMeta;
 use lucene_codecs::field_infos::FieldInfos;
 use lucene_codecs::norms::Norms;
 use lucene_search::ScoreDoc;
@@ -75,6 +76,19 @@ pub struct SegmentHandle {
     /// `field_infos` above. `Some` iff `norms_data` is `Some` (both come from
     /// the same `nvd_name`/`nvm_name is-null` check in `ffi_open_segment`).
     pub norms: Option<Norms>,
+    /// This segment's whole `.dvd` (doc-values data) file, opened by
+    /// `ffi_open_segment`'s optional `dvm_name`/`dvd_name`/`dv_suffix`
+    /// parameters (task #40) -- `None` when the caller opened the segment
+    /// without doc values, in which case `ffi_sort_by_doc_value`/
+    /// `ffi_sort_by_multi_valued_doc_value` return [`crate::error::FfiStatus::InvalidArgument`]
+    /// (there is nothing to sort by, unlike norms' "fall back to a constant"
+    /// story -- a sort with no values for its field has no sensible
+    /// fallback).
+    pub dv_data: Option<Vec<u8>>,
+    /// This segment's parsed `.dvm` (doc-values metadata) -- one entry per
+    /// doc-values field, looked up by field number via `field_infos` above,
+    /// same pattern as `norms`. `Some` iff `dv_data` is `Some`.
+    pub dv_meta: Option<DocValuesMeta>,
 }
 
 /// A completed unscored query's collected, ascending, live doc IDs -- read
@@ -106,6 +120,31 @@ pub struct ScoredResultsHandle {
     pub hits: Vec<ScoreDoc>,
 }
 
+/// A completed doc-value sort's `(doc_id, value)` pairs (task #40, wrapping
+/// `lucene_search::sort_by_numeric_doc_value`/`sort_by_multi_valued_doc_value`)
+/// -- ascending by value, ties broken by ascending doc ID (see those
+/// functions' own doc comments) -- read back via
+/// `ffi_sorted_results_len`/`ffi_sorted_results_copy`, then released via
+/// `ffi_close_sorted_results`.
+///
+/// **Why a new registry/handle type instead of reusing `ScoredResultsHandle`**:
+/// a sort result's second element is the actual doc-value used for
+/// ordering (an arbitrary `i64` -- a raw NUMERIC value, or a SORTED_NUMERIC/
+/// SORTED_SET reduced value/ordinal), not a BM25 `f32` score -- a different
+/// wire type (`i64` vs `f32`), a different scale/meaning a caller must not
+/// confuse with a relevance score, and a different collector-less code path
+/// (a plain sort over an already-known candidate set, not a
+/// `TopDocsCollector` scored search, see `lucene-search`'s
+/// `doc_value_query.rs` module doc for that design rationale). Keeping this
+/// as its own registry/tag means a scored-results handle can never be
+/// accidentally passed to `ffi_sorted_results_copy` (or vice versa) and
+/// misread as the wrong element type -- exactly the same reasoning
+/// `ScoredResultsHandle`'s own doc comment gives for not widening
+/// `ResultsHandle`.
+pub struct SortedResultsHandle {
+    pub pairs: Vec<(i32, i64)>,
+}
+
 pub fn directories() -> &'static Mutex<SlotMap<FsDirectory>> {
     static REGISTRY: OnceLock<Mutex<SlotMap<FsDirectory>>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(SlotMap::new(RegistryTag::Directory)))
@@ -124,4 +163,9 @@ pub fn results() -> &'static Mutex<SlotMap<ResultsHandle>> {
 pub fn scored_results() -> &'static Mutex<SlotMap<ScoredResultsHandle>> {
     static REGISTRY: OnceLock<Mutex<SlotMap<ScoredResultsHandle>>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(SlotMap::new(RegistryTag::ScoredResults)))
+}
+
+pub fn sorted_results() -> &'static Mutex<SlotMap<SortedResultsHandle>> {
+    static REGISTRY: OnceLock<Mutex<SlotMap<SortedResultsHandle>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(SlotMap::new(RegistryTag::SortedResults)))
 }

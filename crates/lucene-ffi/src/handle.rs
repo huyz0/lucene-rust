@@ -52,6 +52,10 @@ pub enum RegistryTag {
     /// than widening `ResultsHandle` itself — see `registry.rs`'s
     /// `ScoredResultsHandle` doc comment for why.
     ScoredResults = 4,
+    /// `(doc_id, value)` pairs from a doc-value sort (task #40), kept in yet
+    /// another registry separate from both `Results` and `ScoredResults` --
+    /// see `registry.rs`'s `SortedResultsHandle` doc comment for why.
+    SortedResults = 5,
 }
 
 fn pack(tag: RegistryTag, index: u32, generation: u32) -> u64 {
