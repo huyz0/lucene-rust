@@ -1088,6 +1088,38 @@ Not wired into an automatic merge-triggering pipeline (no `IndexWriter`
 integration) — that's real Lucene's `MergeScheduler`, explicitly out of
 scope for this task.
 
+**Progress (task #48):** soft-delete **visibility**,
+`lucene-search/src/soft_deletes.rs::{SoftDeletesField, is_soft_deleted,
+is_live, effective_live_docs}` — real Lucene's
+`IndexWriterConfig.setSoftDeletesField` convention: a document is invisible
+to search if EITHER its hard-delete bit is cleared in `.liv` OR its
+soft-deletes-field doc-values value is *present* (real Lucene's actual rule
+is `DocValuesFieldExistsQuery`-shaped presence, not a marker-value compare).
+`effective_live_docs` computes one combined `FixedBitSet` (hard-live AND NOT
+soft-deleted) that plugs straight into any of this crate's existing
+`live_docs: Option<&FixedBitSet>` parameters unchanged — no query function
+needed a new parameter, and every pre-existing hard-delete-only call site is
+unaffected. **Honest scope call, made explicitly rather than faked**: real
+Lucene's soft-delete *write* path (`IndexWriter.softUpdateDocument`) relies
+on `NumericDocValuesFieldUpdates` — an incremental per-doc-values-generation
+delta file, not a full rewrite. This port's only doc-values write primitive
+(`lucene_codecs::doc_values::write_single_dense_numeric_field`) always
+writes a brand-new, complete, single-dense-field `.dvm`/`.dvd`/`.dvs` triple
+from scratch; there is no incremental-update codec here at all. Rather than
+build a fake "cheap incremental marking" shim on top of a full-rewrite
+primitive, this task ships the read-side (**visibility**) half only, and
+documents marking-a-doc-soft-deleted as deferred to whatever wrote the
+segment's doc-values in the first place. Verified against the real,
+checked-in `fixtures/data/doc_values_index/` fixture's genuinely sparse
+(`IndexedDISI`) `sparse` numeric field (docs 0/2/4 present, 1/3 absent) —
+not a hand-built/dense-encoded stand-in, since a dense field can't represent
+"no value at all" and so can't stand in for real soft-deletes presence
+semantics — plus an end-to-end composition test reusing the real
+`blocktree_index` fixture's `body`/`bird` term query (docs `[1, 4]`)
+together with that same real sparse field, confirming a soft-deleted doc is
+excluded from real term-query results. See `docs/parity.md` for the full
+row and scope writeup.
+
 1. `lucene-analysis`: `TokenStream` as an iterator-of-token-structs (skip Java's
    AttributeSource reflection design entirely — a plain
    `Token { bytes, position_increment, offset, ... }` struct), StandardTokenizer via

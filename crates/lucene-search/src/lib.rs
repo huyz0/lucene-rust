@@ -190,6 +190,7 @@ pub mod multi_segment;
 pub mod query;
 pub mod query_parser;
 pub mod similarity;
+pub mod soft_deletes;
 pub mod term_vectors_query;
 
 pub use collector::{
