@@ -448,7 +448,7 @@ pub unsafe extern "C" fn ffi_search_phrase_query(
 /// threading a live-docs-aware invalidation story into `SegmentHandle` for a
 /// shortcut this task's scope doesn't need; a future perf pass can revisit if
 /// this ever shows up as measurably hot.
-fn open_field_norms<'seg>(
+pub(crate) fn open_field_norms<'seg>(
     segment: &'seg SegmentHandle,
     field: &str,
 ) -> Result<Option<FieldNorms<'seg>>, FfiStatus> {

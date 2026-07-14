@@ -78,6 +78,16 @@ pub enum RegistryTag {
     /// resemblance to any of this crate's other result shapes -- see
     /// `registry.rs`'s `FragmentResultsHandle` doc comment.
     FragmentResults = 8,
+    /// A flattened `lucene_search::explain::Explanation` tree (`explain.rs`'s
+    /// `ffi_explain_term_query`/`ffi_explain_phrase_query`/
+    /// `ffi_explain_boolean_query`, wrapping
+    /// `lucene_search::explain::explain_clause`) -- kept in its own registry
+    /// rather than folded into any existing one since its element (one flattened
+    /// tree node, carrying a `value`/`matched`/`description` plus a
+    /// variable-length list of *child node indices*, not child values) has no
+    /// resemblance to any of this crate's other result shapes -- see
+    /// `registry.rs`'s `ExplainResultsHandle` doc comment.
+    ExplainResults = 9,
 }
 
 fn pack(tag: RegistryTag, index: u32, generation: u32) -> u64 {

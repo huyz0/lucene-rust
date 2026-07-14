@@ -221,6 +221,37 @@ pub struct FragmentResultsHandle {
     pub fragments: Vec<lucene_search::highlighter::Fragment>,
 }
 
+/// One node of a flattened `lucene_search::explain::Explanation` tree (Query
+/// explain FFI exposure, `explain.rs`'s `ffi_explain_term_query`/
+/// `ffi_explain_phrase_query`/`ffi_explain_boolean_query`, wrapping
+/// `lucene_search::explain::explain_clause`) -- see `explain.rs`'s module doc
+/// for the full flattening scheme (depth-first pre-order, root always index
+/// `0`, each node's `children` a list of *indices into the same flat `Vec`*
+/// rather than nested owned `Explanation`s).
+pub struct ExplainNode {
+    pub matched: bool,
+    pub value: f32,
+    pub description: String,
+    pub children: Vec<usize>,
+}
+
+/// A completed explain call's flattened [`ExplainNode`] tree -- read back via
+/// `results_explain.rs`'s `ffi_explain_node_value`/`ffi_explain_node_matched`/
+/// `ffi_explain_node_description`/`ffi_explain_node_child_count`/
+/// `ffi_explain_node_child_at`, then released via `ffi_close_explain_results`.
+///
+/// **Why a new registry/handle type instead of reusing `FragmentResultsHandle`**:
+/// an explain node's shape (a `bool` + an `f32` + a `String` + a list of
+/// *sibling node indices*, forming a recursive tree) has no correspondence to
+/// a fragment's flat `text` + `matched_terms` list -- see this crate's other
+/// handle doc comments for why each genuinely distinct result shape gets its
+/// own registry/tag rather than widening an existing one (a fragment-results
+/// handle must never be accidentally accepted by an explain accessor, or vice
+/// versa).
+pub struct ExplainResultsHandle {
+    pub nodes: Vec<ExplainNode>,
+}
+
 pub fn directories() -> &'static Mutex<SlotMap<FsDirectory>> {
     static REGISTRY: OnceLock<Mutex<SlotMap<FsDirectory>>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(SlotMap::new(RegistryTag::Directory)))
@@ -259,4 +290,9 @@ pub fn facet_results() -> &'static Mutex<SlotMap<FacetResultsHandle>> {
 pub fn fragment_results() -> &'static Mutex<SlotMap<FragmentResultsHandle>> {
     static REGISTRY: OnceLock<Mutex<SlotMap<FragmentResultsHandle>>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(SlotMap::new(RegistryTag::FragmentResults)))
+}
+
+pub fn explain_results() -> &'static Mutex<SlotMap<ExplainResultsHandle>> {
+    static REGISTRY: OnceLock<Mutex<SlotMap<ExplainResultsHandle>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(SlotMap::new(RegistryTag::ExplainResults)))
 }

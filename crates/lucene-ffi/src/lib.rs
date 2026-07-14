@@ -93,6 +93,27 @@
 //!   per-index string accessors (no fixed-size half to bulk-copy, unlike
 //!   `results_facets.rs`/`results_sorted.rs` -- see `results_fragments.rs`'s
 //!   module doc), then releases it.
+//! - [`explain::ffi_explain_term_query`]/[`explain::ffi_explain_phrase_query`]/
+//!   [`explain::ffi_explain_boolean_query`] (Query explain FFI exposure): wraps
+//!   `lucene_search::explain::explain_clause` for exactly the three query
+//!   kinds this crate's `query.rs` can already *construct* from FFI input
+//!   (`Clause::Term`/`Clause::Phrase`/flat-`Clause::Term`-only `Clause::Boolean`)
+//!   -- no explain logic reimplemented, and no wider clause-construction
+//!   surface invented beyond what `query.rs` already exposes; see
+//!   `explain.rs`'s module doc for that scope note and for the recursive
+//!   `Explanation` tree's flattening scheme (a depth-first, pre-order
+//!   `Vec<registry::ExplainNode>`, root always index `0`, each node's
+//!   `children` a list of indices into that same `Vec`).
+//! - [`results_explain::ffi_explain_results_len`]/[`results_explain::ffi_explain_node_value`]/
+//!   [`results_explain::ffi_explain_node_matched`]/
+//!   [`results_explain::ffi_explain_node_description`]/
+//!   [`results_explain::ffi_explain_node_child_count`]/
+//!   [`results_explain::ffi_explain_node_child_at`]/
+//!   [`results_explain::ffi_close_explain_results`]: reads an explain results
+//!   handle's flattened tree back out node-by-node (no fixed-size half to
+//!   bulk-copy and no flat element list to walk in order, unlike every other
+//!   results-handle trio in this crate -- see `results_explain.rs`'s module
+//!   doc), then releases it.
 //! - [`error::guard`]/[`ffi_get_last_error_message`]: every exported
 //!   function's panic-safety wrapper and the thread-local last-error
 //!   message accessor.
@@ -129,6 +150,16 @@
 //!   would need it exposed too before it could get real spans, but that is a
 //!   separate, mechanical follow-up wrapping a different `lucene-search`
 //!   module, not part of this task's scope.
+//! - **`explain_clause`'s `DisjunctionMax`/`ConstantScore`/`Boost`/`Wildcard`/
+//!   `Prefix`/`Fuzzy`/`Regexp`/`Span`/truly-nested-`Boolean` explanations have
+//!   no FFI wrapper** — none of those `Clause` variants are constructible
+//!   from FFI input anywhere in this crate yet (`query.rs` only ever builds
+//!   `Clause::Term`/`Clause::Phrase`/flat-`Clause::Term`-only `Clause::Boolean`
+//!   from wire input), so there is nothing for an explain wrapper to explain
+//!   for them either — not a gap this task introduced, since those clause
+//!   shapes can't be *searched* through this ABI at all yet. Exposing them
+//!   (for both search and explain) is a follow-up to `query.rs`'s own wire
+//!   format, not to `explain.rs`.
 //! - **The JNI wrapper class itself** — out of scope for this Rust repo;
 //!   this crate only needs to expose a stable C ABI a JNI class can bind to.
 //!
@@ -160,6 +191,7 @@
 mod directory;
 mod directory_reader;
 mod error;
+mod explain;
 mod facets;
 mod handle;
 mod highlighter;
@@ -167,6 +199,7 @@ mod query;
 mod raw;
 mod registry;
 mod results;
+mod results_explain;
 mod results_facets;
 mod results_fragments;
 mod results_scored;
@@ -180,6 +213,7 @@ pub use directory_reader::{
     ffi_search_term_query_multi_segment,
 };
 pub use error::FfiStatus;
+pub use explain::{ffi_explain_boolean_query, ffi_explain_phrase_query, ffi_explain_term_query};
 pub use facets::{ffi_facet_counts_sorted_set, ffi_range_facet_counts};
 pub use highlighter::ffi_assemble_fragments;
 pub use query::{
@@ -187,6 +221,11 @@ pub use query::{
     ffi_search_phrase_query_scored, ffi_search_term_query, ffi_search_term_query_scored,
 };
 pub use results::{ffi_close_results, ffi_results_copy, ffi_results_len};
+pub use results_explain::{
+    ffi_close_explain_results, ffi_explain_node_child_at, ffi_explain_node_child_count,
+    ffi_explain_node_description, ffi_explain_node_matched, ffi_explain_node_value,
+    ffi_explain_results_len,
+};
 pub use results_facets::{
     ffi_close_facet_results, ffi_facet_result_label, ffi_facet_results_copy, ffi_facet_results_len,
 };

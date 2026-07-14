@@ -2393,6 +2393,82 @@ and term-density passage scoring remain out of scope, matching
 `highlighter.rs`'s own already-documented scope boundary -- unchanged by
 this FFI-only task.
 
+**Progress (Explain FFI exposure):** `lucene-ffi` C-ABI wrappers for the
+Query explain() task's `lucene-search/src/explain.rs`, closing that module's
+own "no FFI exposure yet" gap. Two new modules, same
+handle/registry/error-code pattern as the Faceted search/Highlighter FFI
+exposure tasks above:
+
+- `crates/lucene-ffi/src/explain.rs`: `ffi_explain_term_query`/
+  `ffi_explain_phrase_query`/`ffi_explain_boolean_query`, each building
+  exactly the same `Clause` `query.rs`'s matching `ffi_search_*_query_scored`
+  sibling already builds (same wire formats and norms-map helpers, reused
+  directly via newly-`pub(crate)` `query::open_field_norms`) and handing it
+  straight to `lucene_search::explain::explain_clause` -- no explain logic
+  reimplemented. **Scope deliberately matches `query.rs`'s existing
+  construction surface**: only `Clause::Term`/`Clause::Phrase`/flat-
+  `Clause::Term`-only `Clause::Boolean` are exposed, since those are the only
+  three clause shapes `query.rs` can build from FFI input at all --
+  `DisjunctionMax`/`ConstantScore`/`Boost`/`Wildcard`/`Prefix`/`Fuzzy`/
+  `Regexp`/`Span`/truly-nested-`Boolean` explanations have no wrapper because
+  those clauses can't be *searched* through this ABI either (not a gap this
+  task introduced).
+- **Recursive-tree flattening scheme**: `Explanation` is a recursive tree
+  (`details: Vec<Self>`, e.g. a single term explanation is already three
+  levels deep: `weight(...)` → `score(freq=...)` → `idf`/`tfNorm`) -- a
+  fundamentally different shape from every prior FFI result (`facets.rs`/
+  `highlighter.rs` both produced flat lists). Chosen scheme: depth-first,
+  pre-order flattening into `Vec<registry::ExplainNode>` at construction
+  time -- each node keeps its own `value`/`matched`/`description` plus a
+  `Vec<usize>` of **its children's indices into that same flat `Vec`** (a
+  child-index list per node, not a parent-index-per-node scheme, so "give me
+  this node's Nth child" is an O(1) index into a small per-node list rather
+  than an O(total nodes) scan). Pre-order guarantees the root explanation is
+  always flattened first, so **node index `0` is always the root** -- a
+  caller walks the whole tree starting at `0` and recursively following
+  `ffi_explain_node_child_at`. `crates/lucene-ffi/src/results_explain.rs`
+  reads it back: `ffi_explain_results_len`, `ffi_explain_node_value`/
+  `ffi_explain_node_matched` (fixed-size per-node fields), a per-node
+  `ffi_explain_node_description` string accessor (same
+  `buf`/`buf_len`/`out_written`/`BufferTooSmall` contract as
+  `ffi_get_last_error_message`), and `ffi_explain_node_child_count`/
+  `ffi_explain_node_child_at` (the "length first, then per-index accessor"
+  shape `results_fragments.rs` already established, applied to a node's
+  *children* instead of a fragment's *matched terms*), then
+  `ffi_close_explain_results`. New `RegistryTag::ExplainResults` /
+  `registry::ExplainResultsHandle` (own registry -- an explain node's shape
+  has no correspondence to any existing handle's element).
+
+**No explain logic was touched or duplicated** -- every new function is a
+thin marshal-in/call-into-`explain_clause`/marshal-out wrapper;
+`lucene-search/src/explain.rs` itself is unchanged. Tests: `explain::tests`
+(18 cases -- a real-fixture differential cross-check against calling
+`lucene_search::explain::explain_clause` directly for the term, phrase, and
+boolean paths, walking the **entire** flattened tree via the FFI accessors
+node-by-node (not just the root) and also independently verifying every
+`ffi_explain_node_child_at` link matches a from-scratch Rust-side
+re-flattening of the same `Explanation`; a non-matching doc collapsing to a
+single no-match node; a single-term phrase delegating to the same tree a
+direct term-explain call produces; a missing-`.pos`-input multi-term phrase
+surfacing as `FfiStatus::Search`; an empty boolean query as a single
+no-match node; unknown segment handle, null out-handle, null field/terms
+with nonzero length, invalid-UTF-8 field, for each of the three functions)
+and `results_explain::tests` (27 cases -- full tree round-trip covering
+value/matched/description/child-count/child-at on both an internal and a
+leaf node, out-of-bounds node/child index on every accessor, buffer-too-small
+on the description accessor, null-pointer variants, unknown/double-close
+handle). `cargo test -p lucene-ffi`: 261 tests pass (up from 221). `cargo
+clippy --workspace --all-targets -- -D warnings` clean. New-file coverage:
+`explain.rs` 97.05% lines / 96.71% regions, `results_explain.rs` 100% lines
+(both above the 95% bar; workspace `lucene-ffi` total 98.41% lines, up from
+98.34%). The handful of missed lines in `explain.rs` are `.doc`/`.pos`
+reopen-decode-error branches identical in shape (and already accepted as
+untested) to `query.rs`'s own equivalent branches -- not reachable without
+hand-corrupting already-validated-on-open segment bytes. **Deferred, not a
+gap in this task**: every clause kind `query.rs` itself doesn't expose (see
+above) has no explain wrapper either -- a follow-up to `query.rs`'s own wire
+format, not to `explain.rs` (either crate).
+
 3. Indexing chain: `IndexWriter`, DWPT-per-thread with in-memory hash (bytes → postings
    builder mirroring `BytesRefHash` + parallel arrays), flush-by-RAM accounting,
    `flush()` → segment.
