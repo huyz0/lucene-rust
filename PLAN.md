@@ -1838,6 +1838,37 @@ post-stemming terms). Coverage: `lucene-analysis/src/lib.rs` 99.44% lines
 (39 unit tests total + 3 fixture tests; workspace total 97.38% lines, gate
 is 95%).
 
+**Progress (task #67):** `TermInterner`, a new standalone byte-sequence
+interning pool in `lucene-util/src/term_interner.rs`
+(`TermInterner`/`TermId`) -- **not** a byte-for-byte port of
+`org.apache.lucene.util.BytesRefHash` and **not yet wired into any indexing
+or query path**. Real `BytesRefHash` is bound to Lucene's `ByteBlockPool`
+arena allocator and carries sort/compact/rehash machinery for the indexing
+chain's per-field term dictionaries; that machinery is out of scope here.
+This module keeps only the core value proposition -- deduplicating recurring
+byte sequences into a stable, cheap-to-copy handle -- via a from-scratch
+`HashMap`-backed pool: `TermInterner::intern(&[u8]) -> TermId` returns the
+same ID for byte-identical input across calls and a fresh one for new
+input, `TermInterner::get(TermId) -> Option<&[u8]>` looks the original bytes
+back up, and `TermId` is a plain `Copy` `u32` wrapper. Lives in `lucene-util`
+(zero workspace dependencies, sits under every other crate per the
+`architecture` skill's downward dependency graph) so any future consumer
+(indexing chain, query term dictionaries) can depend on it without a cycle.
+No `unsafe` -- the workspace only permits it in `lucene-util`/`lucene-store`/
+`lucene-ffi`, and nothing here needed it. Unit tests cover: interning
+identical bytes twice returns the same ID; distinct byte sequences get
+distinct IDs; ID → bytes round trip; the empty byte string is a valid,
+distinct term; looking up an ID this interner never produced returns `None`
+rather than panicking; and a stress case interning 20,000 calls over a
+50-word vocabulary asserting `TermInterner::len() == 50` (dedup actually
+collapsing storage, not just handing back arbitrary IDs), plus a separate
+5,000-all-distinct-terms case confirming no false collisions. **Explicitly
+deferred**: wiring this into `lucene-index`'s indexing chain or
+`lucene-search`'s query term handling (a real future task, once there's a
+concrete allocation hot path to point it at), `ByteBlockPool`-style
+bulk/arena allocation, sort/compaction, and any on-disk format tie-in --
+purely an in-memory primitive today.
+
 1. `lucene-analysis`: `TokenStream` as an iterator-of-token-structs (skip Java's
    AttributeSource reflection design entirely — a plain
    `Token { bytes, position_increment, offset, ... }` struct), StandardTokenizer via
