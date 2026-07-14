@@ -2634,6 +2634,37 @@ for this task; no fixture files were added or changed.
 and `cargo llvm-cov --workspace --fail-under-lines 95` all pass (97.68% total;
 `doc_values.rs` 97.52%, `index_writer.rs` 98.17%).
 
+**Progress (real-Lucene fixture verification for the BINARY/SORTED_NUMERIC/
+SORTED/SORTED_SET doc-values write sides).** Closes the gap the SORTED and
+SORTED_SET entries above both flagged ("not verified against a real Lucene
+reader opening this port's written bytes"): `crates/lucene-codecs/examples/
+write_doc_values_fixture.rs` now writes **ten** segments (up from three,
+NUMERIC-only) covering all five `DocValuesType`s this port's write side
+supports, and `fixtures/src/VerifyDocValues.java` opens every one directly
+through real `Lucene90DocValuesFormat.fieldsProducer` (hand-built
+`SegmentInfo`/`FieldInfos`, no `.si`/`.fnm` writer needed -- same division of
+labor the NUMERIC-only version already used), dispatching per segment on a
+new `<segment>.type` manifest key to the matching production-facing read
+API: `NumericDocValues`, `BinaryDocValues`, `SortedNumericDocValues`,
+`SortedDocValues`, or `SortedSetDocValues`. New segments: `_3`/`_4` (BINARY,
+fixed-length direct addressing and variable-length including an empty value
+via the `DirectMonotonicReader` address block), `_5`/`_6` (SORTED_NUMERIC,
+the single-value-per-doc address-array collapse case and a 1-3-values/doc
+case forcing the real address-range array), `_7` (SORTED, repeated terms
+over a 3-term dictionary), `_8`/`_9` (SORTED_SET, the all-single-value
+collapse to a plain `SortedEntry` and a 1-2-distinct-values/doc case
+including a doc whose raw values dedup to one ordinal). All ten segments
+passed on the first real-Lucene run
+(`java -cp classes:$JAR VerifyDocValues /tmp/rust-doc-values` →
+`All segments verified against real Lucene. PASS`), with no root-cause bugs
+found in the Rust writers themselves -- this was a coverage gap in what had
+been *tested*, not a latent correctness bug. `docs/parity.md`'s doc-values
+row and `fixtures/README.md`'s `VerifyDocValues.java` section updated to
+describe all ten segments/five types instead of the old NUMERIC-only
+three-segment description. `cargo fmt --all`, `cargo clippy --workspace
+--all-targets -- -D warnings`, and `cargo llvm-cov --workspace
+--fail-under-lines 95` all pass.
+
 **Follow-up task: `IndexWriter::rollback()`.** New
 `IndexWriter::rollback(&mut self)` (`crates/lucene-index/src/index_writer.rs`)
 discards every document buffered by `add_document` since the last `commit()`

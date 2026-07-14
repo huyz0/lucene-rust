@@ -155,36 +155,54 @@ port's own reader never validates that field, but real Lucene's
 pass every purely-Rust round-trip test while still failing to open in real
 Lucene.
 
-`VerifyDocValues.java` verifies
-`doc_values::write_single_dense_numeric_field`
-(`crates/lucene-codecs/src/doc_values.rs`), scoped to exactly one shape: a
-single NUMERIC field, dense (every doc has a value), plain delta-compressed
-encoding (no table/GCD compression, no sparse `IndexedDISI`, no varying-bpv
-blocks). It opens the `.dvm`/`.dvd`/`.dvs` triple directly through real
+`VerifyDocValues.java` verifies all five of this port's dense, single-field
+doc-values writers in `crates/lucene-codecs/src/doc_values.rs`:
+`write_single_dense_numeric_field`, `write_single_dense_binary_field`,
+`write_single_dense_sorted_numeric_field`, `write_single_dense_sorted_field`,
+and `write_single_dense_sorted_set_field`. Each is scoped to exactly one
+shape: dense (every doc has a value, or for the multi-valued types, at least
+one), plain delta-compressed encoding for the numeric-shaped parts (no
+table/GCD compression, no sparse `IndexedDISI`, no varying-bpv blocks). It
+opens each `.dvm`/`.dvd`/`.dvs` triple directly through real
 `Lucene90DocValuesFormat.fieldsProducer` with a hand-built
 `SegmentInfo`/`FieldInfos` (same division of labor as `VerifyPoints.java`),
-then iterates the field via real `NumericDocValues.nextDoc`/`longValue` (the
-production-facing API, not a codec-internal decode) and diffs every doc's
-value against `manifest.properties`. `.dvs` (the per-field doc-values skip
-index file) is always header+footer only in this slice's scope, but still
-must exist and pass its own header/footer check:
-`Lucene90DocValuesProducer`'s constructor unconditionally opens `.dvs` once
-the format version is `>= VERSION_SKIPPER_SEPARATE_FILE`, which this port's
-`VERSION_CURRENT` always is, regardless of whether any field actually has a
-skip index. Sparse fields, BINARY/SORTED/SORTED_NUMERIC/SORTED_SET field
-types, GCD/table compression, the varying-bits-per-value block split,
+reading a `<segment>.type` manifest key to pick the matching
+production-facing read API -- `NumericDocValues`, `BinaryDocValues`,
+`SortedNumericDocValues`, `SortedDocValues`, or `SortedSetDocValues`, never a
+codec-internal decode -- and diffs every doc's value(s) against
+`manifest.properties`. `.dvs` (the per-field doc-values skip index file) is
+always header+footer only in this slice's scope, but still must exist and
+pass its own header/footer check: `Lucene90DocValuesProducer`'s constructor
+unconditionally opens `.dvs` once the format version is `>=
+VERSION_SKIPPER_SEPARATE_FILE`, which this port's `VERSION_CURRENT` always
+is, regardless of whether any field actually has a skip index. Sparse
+fields, GCD/table compression, the varying-bits-per-value block split,
 per-field doc-values skip indexes, and multiple fields in one triple are all
-out of scope for this writer -- see `docs/parity.md`'s doc-values row.
+out of scope for these writers -- see `docs/parity.md`'s doc-values row.
 
-The Rust example writes **three** segments: `_0` (mixed small/large/negative
-values, `min <= 0` throughout), `_1`, and `_2`. `_1` and `_2` were added after
-a review pass found two encoding branches with zero coverage against real
-Lucene despite passing this port's own round-trip tests: `_1` gives every
-value a `min > 0` where `unsignedBitsRequired(max) ==
-unsignedBitsRequired(max-min)`, forcing the min-shift-drop optimization
-(`_0` never has `min > 0`, so it can't reach this branch); `_2` is all-equal
-values, forcing the `bitsPerValue == 0` constant encoding. All three now
-verify against real Lucene.
+The Rust example writes **ten** segments. NUMERIC: `_0` (mixed
+small/large/negative values, `min <= 0` throughout), `_1` (every value has
+`min > 0` where `unsignedBitsRequired(max) == unsignedBitsRequired(max-min)`,
+forcing the min-shift-drop optimization -- `_0` never has `min > 0`, so it
+can't reach this branch), and `_2` (all-equal values, forcing the
+`bitsPerValue == 0` constant encoding). BINARY: `_3` (every value the same
+length, direct `ordinal * length` addressing) and `_4` (varying lengths
+including an empty value, the `DirectMonotonicReader` address-block path).
+SORTED_NUMERIC: `_5` (every doc exactly one value, the case where real
+Lucene collapses the address array away entirely since `numDocsWithField ==
+numeric.numValues`) and `_6` (1-3 values per doc, forcing the real
+address-range array). SORTED: `_7` (five docs with repeated values over a
+3-term dictionary, exercising the ordinal decode and the terms-dict decode
+together). SORTED_SET: `_8` (every doc exactly one distinct value, the
+`multiValued = false` collapse to the same shape SORTED uses) and `_9` (1-2
+distinct values per doc sharing a dictionary, including a doc whose raw
+values repeat and dedup down to one ordinal). All ten verify against real
+Lucene. **Scope note**: `_7`'s and `_8`/`_9`'s dictionaries are deliberately
+small (3 terms), so this fixture only exercises `write_terms_dict`'s
+single-64-term-block path -- it does not force real Lucene to open a
+multi-LZ4-block/multi-1024-ordinal-reverse-index-sample dictionary this
+port wrote; that boundary is covered only by unit tests against this
+port's own reader (see `docs/parity.md`'s doc-values row).
 
 `VerifyNorms.java` verifies `norms::write_single_dense_field`
 (`crates/lucene-codecs/src/norms.rs`), scoped to exactly one shape: a single
