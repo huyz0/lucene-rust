@@ -2237,7 +2237,8 @@ mod tests {
             *d = if i % 2 == 0 { 1 } else { 3 };
         }
         let bits_per_value = 2u32;
-        let packed = for_util::test_support::encode_block(&deltas, bits_per_value);
+        let mut packed = Vec::new();
+        for_util::for_encode(&deltas, bits_per_value, &mut packed);
 
         let mut body = Vec::new();
         body.write_byte(bits_per_value as u8);

@@ -43,7 +43,12 @@
 //!   (`Lucene104PostingsWriter`'s `flushDocBlock(true)` branch that never
 //!   reaches `docBufferUpto == BLOCK_SIZE`). A term at or above `BLOCK_SIZE`
 //!   docs is rejected with [`Error::Unsupported`] rather than silently
-//!   producing wrong bytes.
+//!   producing wrong bytes. `crate::for_util::for_encode`/`pfor_encode` are
+//!   real, tested production encoders for the full-block case (the read
+//!   side, `crate::postings`, already fully decodes them) — this writer
+//!   just doesn't call them yet; doing so also needs the level-0 skip-list
+//!   metadata the reader expects alongside a full block, which this writer
+//!   doesn't build. See `docs/parity.md` for the exact scope line.
 //! - **Term frequency only, or term frequency + positions — still no
 //!   offsets/payloads.** `IndexOptions::Docs`/`DocsAndFreqs`/
 //!   `DocsAndFreqsAndPositions` are accepted; `.pay` is never written, and
