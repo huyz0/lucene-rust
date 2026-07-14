@@ -60,12 +60,13 @@
 //! `apply_merge` alone, with no way to produce the `SegmentCommitInfo` it
 //! needs from the JVM side, would be a half-working surface a caller could
 //! never actually drive; exposing manual merge execution is a separate,
-//! larger task. `set_merge_policy` itself only exposes the four
+//! larger task. `set_merge_policy` itself only exposes the five
 //! knobs [`lucene_index::merge_policy::MergePolicyConfig`] actually has today
 //! (`max_merge_at_once`, `segments_per_tier`, `max_merged_segment_size`,
-//! `reclaim_weight`) -- no additional `TieredMergePolicy` knobs (e.g.
-//! `forceMergeDeletesPctAllowed`, `floorSegmentMB`) are invented, since none
-//! exist in this port's `merge_policy.rs` to expose.
+//! `reclaim_weight`, `floor_segment_size`) -- `forceMergeDeletesPctAllowed`
+//! is not invented here, since this port has no `findForcedMerges`
+//! deletes-aware variant (real Lucene's `FORCE_MERGE_DELETES` merge type)
+//! for that knob to configure; see `merge_policy.rs`'s doc comment.
 
 use std::os::raw::c_char;
 
@@ -503,13 +504,26 @@ pub extern "C" fn ffi_writer_rollback(writer_handle: u64) -> i32 {
 /// Opts (`enabled != 0`) or opts out (`enabled == 0`) this writer into
 /// automatic merge triggering -- see [`IndexWriter::set_merge_policy`].
 /// `max_merge_at_once`/`segments_per_tier`/`max_merged_segment_size`/
-/// `reclaim_weight` map straight onto
-/// [`lucene_index::merge_policy::MergePolicyConfig`]'s four fields -- the
-/// only merge-policy knobs this port's `merge_policy.rs` actually
-/// implements today (no `floorSegmentMB`/`forceMergeDeletesPctAllowed`/etc,
-/// since real `TieredMergePolicy` has those but this port's
-/// `MergePolicyConfig` does not -- see this module's doc comment). Ignored
-/// (but still validated as present) when `enabled == 0`.
+/// `reclaim_weight`/`floor_segment_size` map straight onto
+/// [`lucene_index::merge_policy::MergePolicyConfig`]'s five fields -- the
+/// only merge-policy knobs this port's `merge_policy.rs` actually implements
+/// today (no `forceMergeDeletesPctAllowed`/etc, since real
+/// `TieredMergePolicy` has that but this port has no `findForcedMerges`
+/// deletes-aware variant for it to configure -- see this module's doc
+/// comment). `floor_segment_size` is real Lucene's `floorSegmentBytes`
+/// (`setFloorSegmentMB`, default `16 * 1024 * 1024`): segments smaller than
+/// this score as if they were exactly this size, so a large pile of
+/// genuinely tiny segments doesn't get scored as disproportionately cheap
+/// relative to each other. Ignored (but still validated as present) when
+/// `enabled == 0`.
+///
+/// Signature note: `floor_segment_size` was added as a new trailing
+/// parameter (breaking this function's C signature) rather than kept
+/// backward-compatible via a defaulted overload -- this crate has no
+/// existing convention for versioned/overloaded FFI exports, and the only
+/// callers of this function are in-repo tests, so a direct signature break
+/// with updated call sites was simpler than introducing that pattern for a
+/// single knob.
 #[no_mangle]
 pub extern "C" fn ffi_writer_set_merge_policy(
     writer_handle: u64,
@@ -518,6 +532,7 @@ pub extern "C" fn ffi_writer_set_merge_policy(
     segments_per_tier: u64,
     max_merged_segment_size: u64,
     reclaim_weight: f64,
+    floor_segment_size: u64,
 ) -> i32 {
     guard(|| {
         let mut registry = lock_recovering(writers());
@@ -533,6 +548,7 @@ pub extern "C" fn ffi_writer_set_merge_policy(
                 segments_per_tier: segments_per_tier as usize,
                 max_merged_segment_size,
                 reclaim_weight,
+                floor_segment_size,
             })
         };
         handle.writer.set_merge_policy(config);
@@ -1967,7 +1983,7 @@ mod tests {
         let (_, handle) = open_test_writer(&tmp);
         // A tight policy: merge as soon as 2 segments exist.
         assert_eq!(
-            ffi_writer_set_merge_policy(handle, 1, 2, 2, 5_000 * 1024 * 1024, 1.0),
+            ffi_writer_set_merge_policy(handle, 1, 2, 2, 5_000 * 1024 * 1024, 1.0, 0),
             FfiStatus::Ok.code()
         );
 
@@ -1991,7 +2007,7 @@ mod tests {
         let tmp = tempdir("merge-policy-disabled");
         let (_, handle) = open_test_writer(&tmp);
         assert_eq!(
-            ffi_writer_set_merge_policy(handle, 0, 0, 0, 0, 0.0),
+            ffi_writer_set_merge_policy(handle, 0, 0, 0, 0, 0.0, 0),
             FfiStatus::Ok.code()
         );
         ffi_close_writer(handle);
@@ -2233,7 +2249,7 @@ mod tests {
     #[test]
     fn set_merge_policy_unknown_writer_handle_is_invalid_handle() {
         assert_eq!(
-            ffi_writer_set_merge_policy(0xDEAD_BEEF, 1, 2, 2, 1024, 1.0),
+            ffi_writer_set_merge_policy(0xDEAD_BEEF, 1, 2, 2, 1024, 1.0, 0),
             FfiStatus::InvalidHandle.code()
         );
     }

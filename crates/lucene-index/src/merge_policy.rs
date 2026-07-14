@@ -172,6 +172,20 @@ pub struct MergePolicyConfig {
     /// picking purely by size). `0.0` disables reclaim-weighting entirely
     /// (falls back to pure size-based selection).
     pub reclaim_weight: f64,
+    /// Real `TieredMergePolicy`'s `floorSegmentBytes` (`setFloorSegmentMB`):
+    /// segments smaller than this are treated as if they were exactly this
+    /// size for scoring purposes only (real Lucene's `floorSize()`, `Math.max(
+    /// floorSegmentBytes, bytes)`). This does *not* change which segments are
+    /// eligible for merging or a merge's real byte accounting -- only the
+    /// *score* used to rank/select candidates. Its purpose is to stop a large
+    /// pile of genuinely tiny segments from being scored as dramatically
+    /// "cheaper" than they really are relative to each other, which would
+    /// otherwise cause pathological preference among near-empty segments
+    /// (real Lucene's own rationale for the knob). Default matches real
+    /// Lucene's `16 * 1024 * 1024` (16MB), expressed here in the same
+    /// `size_bytes` unit as the rest of this config (see this module's doc
+    /// comment on the real-bytes-vs-doc-count-approximation duality).
+    pub floor_segment_size: u64,
 }
 
 impl Default for MergePolicyConfig {
@@ -184,6 +198,8 @@ impl Default for MergePolicyConfig {
             segments_per_tier: 10,
             max_merged_segment_size: 5_000 * 1024 * 1024,
             reclaim_weight: 1.0,
+            // floorSegmentMB=16 => 16 * 1024 * 1024 bytes (real Lucene default).
+            floor_segment_size: 16 * 1024 * 1024,
         }
     }
 }
@@ -222,8 +238,8 @@ pub fn find_merges(segments: &[SegmentStat], config: &MergePolicyConfig) -> Vec<
     // first = more attractive as a merge input). Effective size = raw size
     // discounted by how much deleted-doc reclaim merging it would achieve.
     eligible.sort_by(|a, b| {
-        let score_a = effective_score(a, config.reclaim_weight);
-        let score_b = effective_score(b, config.reclaim_weight);
+        let score_a = effective_score(a, config.reclaim_weight, config.floor_segment_size);
+        let score_b = effective_score(b, config.reclaim_weight, config.floor_segment_size);
         score_a
             .partial_cmp(&score_b)
             .unwrap_or(std::cmp::Ordering::Equal)
@@ -278,9 +294,19 @@ pub fn find_forced_merges(segments: &[SegmentStat], max_segment_count: usize) ->
     vec![group]
 }
 
-fn effective_score(stat: &SegmentStat, reclaim_weight: f64) -> f64 {
+fn effective_score(stat: &SegmentStat, reclaim_weight: f64, floor_segment_size: u64) -> f64 {
     let discount = (reclaim_weight * stat.del_ratio()).clamp(0.0, 1.0);
-    stat.size_bytes as f64 * (1.0 - discount)
+    // `floored_size` mirrors real Lucene's `floorSize(bytes) = max(floorSegmentBytes,
+    // bytes)` -- clamping a segment's size up to the floor before it's used for
+    // scoring, so tiny segments aren't scored as disproportionately "cheap"
+    // relative to each other. This function's overall shape (floored size times a
+    // reclaim-weighted discount) is this port's own simplified scoring formula,
+    // not a transliteration of real Lucene's actual `TieredMergePolicy.score()`
+    // (which computes a separate skew/balance term from floored sizes and a
+    // reclaim term from RAW, unfloored sizes, then combines them differently) --
+    // only the floor-clamping step itself is a direct port.
+    let floored_size = stat.size_bytes.max(floor_segment_size);
+    floored_size as f64 * (1.0 - discount)
 }
 
 #[cfg(test)]
@@ -302,6 +328,7 @@ mod tests {
             segments_per_tier: 3,
             max_merged_segment_size: 1_000_000,
             reclaim_weight: 1.0,
+            floor_segment_size: 0,
         }
     }
 
@@ -345,6 +372,7 @@ mod tests {
             segments_per_tier: 2,
             max_merged_segment_size: 1_000_000,
             reclaim_weight: 1.0,
+            floor_segment_size: 0,
         };
         let segments = vec![
             stat("_low_del", 100, 0, 2000),
@@ -380,6 +408,7 @@ mod tests {
             segments_per_tier: 2,
             max_merged_segment_size: 1_000_000,
             reclaim_weight: 0.0,
+            floor_segment_size: 0,
         };
         let groups = find_merges(&segments, &no_reclaim_weighting);
         assert_eq!(groups.len(), 1);
@@ -438,6 +467,7 @@ mod tests {
             segments_per_tier: 2,
             max_merged_segment_size: 1_000_000,
             reclaim_weight: 1.0,
+            floor_segment_size: 0,
         };
         let segments: Vec<SegmentStat> = (0..20)
             .map(|i| stat(&format!("_{i}"), 100, 0, 100))
@@ -455,6 +485,141 @@ mod tests {
         assert_eq!(config.max_merge_at_once, 10);
         assert_eq!(config.segments_per_tier, 10);
         assert_eq!(config.max_merged_segment_size, 5_000 * 1024 * 1024);
+        assert_eq!(config.floor_segment_size, 16 * 1024 * 1024);
+    }
+
+    #[test]
+    fn floor_segment_size_changes_selection_among_many_tiny_segments() {
+        // Segments here are all tiny (100-900 bytes) and all well under a
+        // realistic floor_segment_size (16MB, or even a much smaller 1000
+        // used here). Without a floor, del-ratio differences among these
+        // tiny segments are scored at their raw (minuscule) size, so a
+        // segment's absolute size still influences ranking. With a floor
+        // that dwarfs all of them, every segment's *floored* size becomes
+        // identical (the floor value itself), so pure size differences
+        // between tiny segments stop mattering for scoring -- only
+        // reclaim-weighting (del ratio) can still differentiate them. This
+        // proves the floor changes merge-candidate selection in the
+        // documented direction: it stops many-tiny-segment size differences
+        // from dominating scoring pathologically.
+        let segments = vec![
+            stat("_biggest_of_tiny", 100, 0, 900),
+            stat("_mid_tiny", 100, 0, 500),
+            stat("_smallest_clean", 100, 0, 100),
+            stat("_high_del_tiny", 100, 90, 800),
+        ];
+
+        // No floor: pure size scoring picks the two smallest raw sizes,
+        // ignoring the heavily-deleted-but-larger-than-smallest segment.
+        let no_floor = MergePolicyConfig {
+            max_merge_at_once: 2,
+            segments_per_tier: 2,
+            max_merged_segment_size: 1_000_000,
+            reclaim_weight: 0.3,
+            floor_segment_size: 0,
+        };
+        let groups_no_floor = find_merges(&segments, &no_floor);
+        assert_eq!(groups_no_floor.len(), 1);
+        assert!(
+            groups_no_floor[0].contains(&"_smallest_clean".to_string()),
+            "without a floor, the smallest raw-size segment should win a \
+             merge slot on size alone: {groups_no_floor:?}"
+        );
+        assert!(
+            !groups_no_floor[0].contains(&"_high_del_tiny".to_string()),
+            "without a floor, a 0.3 reclaim weight isn't enough to overcome \
+             _high_del_tiny's larger raw size vs. _smallest_clean and \
+             _mid_tiny: {groups_no_floor:?}"
+        );
+
+        // A floor far above all these tiny segments' raw sizes: every
+        // segment's floored size collapses to the same value (the floor),
+        // so only the reclaim (del-ratio) discount differentiates them now
+        // -- _high_del_tiny's heavy deletes should win it a slot instead.
+        let with_floor = MergePolicyConfig {
+            floor_segment_size: 1000,
+            ..no_floor
+        };
+        let groups_with_floor = find_merges(&segments, &with_floor);
+        assert_eq!(groups_with_floor.len(), 1);
+        assert!(
+            groups_with_floor[0].contains(&"_high_del_tiny".to_string()),
+            "with a floor dwarfing all raw sizes, del-ratio should decide \
+             selection instead of raw tiny-segment size differences: \
+             {groups_with_floor:?}"
+        );
+        // Note on the exact runner-up: once the floor collapses
+        // _biggest_of_tiny/_mid_tiny/_smallest_clean to an identical floored
+        // score (del_ratio 0 for all three), which ONE of them fills the
+        // second merge slot alongside _high_del_tiny is decided by the
+        // selection algorithm's tie-break (stable order), not by any size or
+        // del-ratio difference among that trio -- there is none once
+        // floored. The only invariant this test can honestly assert is
+        // "_high_del_tiny now wins a slot it didn't win without the floor,"
+        // not "a specific one of the tied trio loses."
+        assert_eq!(
+            groups_with_floor[0]
+                .iter()
+                .filter(|n| n.as_str() != "_high_del_tiny")
+                .count(),
+            1,
+            "expected exactly one of the tied trio alongside _high_del_tiny: \
+             {groups_with_floor:?}"
+        );
+    }
+
+    #[test]
+    fn floor_segment_size_at_exact_boundary_of_a_real_segment_size() {
+        // A floor set to exactly one segment's raw size: that segment's
+        // floored size is unchanged (max(floor, size) == size == floor),
+        // while a smaller segment's floored size is pulled up to the floor.
+        // Verifies the boundary itself (`==`, not just clearly-above/-below)
+        // behaves as a `max()` clamp should -- neither an off-by-one nor a
+        // strict-inequality bug that would treat the equal-to-floor segment
+        // as needing to be floored to something larger.
+        let segments = vec![
+            stat("_at_floor", 100, 0, 1000),
+            stat("_below_floor", 100, 90, 400),
+        ];
+        let config = MergePolicyConfig {
+            max_merge_at_once: 2,
+            segments_per_tier: 1,
+            max_merged_segment_size: 1_000_000,
+            reclaim_weight: 0.3,
+            floor_segment_size: 1000,
+        };
+        // _at_floor: floored size stays 1000 (== raw size), discount 0 ->
+        // score 1000.0.
+        // _below_floor: floored size becomes 1000 (raw 400, pulled up to the
+        // floor), discount from a 0.9 del_ratio at 0.3 reclaim_weight is
+        // 0.27 -> score 1000.0 * 0.73 = 730.0, strictly lower.
+        let score_at_floor = effective_score(&segments[0], config.reclaim_weight, 1000);
+        let score_below_floor = effective_score(&segments[1], config.reclaim_weight, 1000);
+        assert_eq!(score_at_floor, 1000.0);
+        assert!((score_below_floor - 730.0).abs() < 1e-9);
+        assert!(score_below_floor < score_at_floor);
+
+        let groups = find_merges(&segments, &config);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].len(), 2);
+    }
+
+    #[test]
+    fn floor_segment_size_does_not_affect_oversized_segment_exclusion() {
+        // The floor only affects scoring, not eligibility: a segment at/above
+        // max_merged_segment_size is still excluded even with a large floor.
+        let mut segments: Vec<SegmentStat> = (0..8)
+            .map(|i| stat(&format!("_{i}"), 100, 0, 100))
+            .collect();
+        segments.push(stat("_huge", 100, 0, 10_000_000));
+        let config = MergePolicyConfig {
+            floor_segment_size: 50_000,
+            ..small_config()
+        };
+        let groups = find_merges(&segments, &config);
+        for g in &groups {
+            assert!(!g.contains(&"_huge".to_string()));
+        }
     }
 
     #[test]

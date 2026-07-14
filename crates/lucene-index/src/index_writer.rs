@@ -2526,6 +2526,7 @@ mod tests {
             segments_per_tier: 2,
             max_merged_segment_size: 1_000_000,
             reclaim_weight: 1.0,
+            floor_segment_size: 0,
         }
     }
 

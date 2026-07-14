@@ -1265,6 +1265,40 @@ Not wired into an automatic merge-triggering pipeline (no `IndexWriter`
 integration) — that's real Lucene's `MergeScheduler`, explicitly out of
 scope for this task.
 
+**Progress (`floorSegmentMB` follow-up):** `MergePolicyConfig` gained
+`floor_segment_size`, real `TieredMergePolicy`'s `floorSegmentBytes`
+(`setFloorSegmentMB`/`getFloorSegmentMB`), default `16 * 1024 * 1024` (16MB,
+matching real Lucene's own hardcoded default). Wired into `find_merges`'
+scoring exactly where real Lucene applies it: its own `floorSize(bytes)`
+helper (`Math.max(floorSegmentBytes, bytes)`) is used at the same point real
+`TieredMergePolicy` calls it — clamping a segment's *effective* size up to
+the floor before computing its score — so a segment's raw size never scores
+below the floor value, matching real Lucene's own rationale: without it, a
+large pile of genuinely tiny segments would each be scored as if trivially
+"cheaper" than the next relative to one another, over-weighting size noise
+among segments that are all effectively negligible in cost. The floor only
+affects scoring/selection order, not merge eligibility (the existing
+`max_merged_segment_size` oversized-segment exclusion is untouched) or a
+merge's real byte accounting. `forceMergeDeletesPctAllowed` (real Lucene's
+other companion knob, gating `findForcedMerges`) was **not** added: this
+port's `find_forced_merges` is a plain "merge down to N segments" function
+with no deletion-percentage-aware `FORCE_MERGE_DELETES` merge type
+equivalent at all, so there is nowhere for that knob to plug in without
+inventing unused config — scoped down to `floorSegmentMB` alone per this
+task's own instructions. New tests:
+`floor_segment_size_changes_selection_among_many_tiny_segments` (several
+tiny, well-under-the-floor segments; without the floor, raw-size
+differences alone decide which two are grouped; with a floor dwarfing all
+of them, only the reclaim/del-ratio term can still differentiate them,
+proving the floor changes selection in the documented direction) and
+`floor_segment_size_does_not_affect_oversized_segment_exclusion` (a large
+floor doesn't rescue an already-oversized segment from exclusion).
+`ffi_writer_set_merge_policy` (`lucene-ffi/src/writer.rs`) gained a matching
+trailing `floor_segment_size: u64` parameter — a direct signature break
+(all three in-repo call sites updated) rather than a defaulted overload,
+since this crate has no existing versioned-FFI-export convention to justify
+introducing for one knob.
+
 **Progress (task #48):** soft-delete **visibility**,
 `lucene-search/src/soft_deletes.rs::{SoftDeletesField, is_soft_deleted,
 is_live, effective_live_docs}` — real Lucene's

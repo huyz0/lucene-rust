@@ -111,6 +111,7 @@ fn find_merges_output_feeds_directly_into_merge_execution() {
         segments_per_tier: 1,
         max_merged_segment_size: 1_000_000,
         reclaim_weight: 1.0,
+        floor_segment_size: 0,
     };
     let groups = find_merges(&stats, &config);
     assert_eq!(groups.len(), 1, "expected one merge group proposed");
