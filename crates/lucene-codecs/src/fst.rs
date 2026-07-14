@@ -1,10 +1,20 @@
-//! Port of `org.apache.lucene.util.fst.FST` — read side only.
+//! Port of `org.apache.lucene.util.fst.FST` (read side) plus a from-scratch,
+//! simplified construction path (`build_fst`) usable by this module's own
+//! reader.
 //!
 //! This module implements enough of Lucene's FST (finite state transducer)
 //! format to look up a byte-sequence key in an already-built, on-disk FST and
 //! recover its accumulated output (`Util.get(fst, BytesRef)`). It does **not**
-//! port FST *construction* (`FSTCompiler`) — that lives on the write path and
-//! is a separate, much larger undertaking (see `docs/parity.md`).
+//! port real Lucene's *incremental* construction algorithm
+//! (`FSTCompiler`/`Builder`'s node-freezing, suffix-sharing node hash table)
+//! -- that remains a separate, much larger undertaking (see `docs/parity.md`).
+//! Instead, `build_fst` (see the "FST construction" section near the bottom
+//! of this file) builds a full in-memory trie and serializes it directly to
+//! the same byte format `Fst::read`/`Fst::get` below already parse -- correct
+//! and round-trip-verified against this module's own unmodified reader, but
+//! without real `FSTCompiler`'s suffix sharing/minimization or fixed-length
+//! arc nodes. See that section's doc comment for the precise list of what's
+//! reproduced and what's deferred.
 //!
 //! ## Scope of this slice
 //!
@@ -545,6 +555,265 @@ impl Fst {
     }
 }
 
+// --- FST construction (simplified FSTCompiler) -----------------------------
+//
+// Real Lucene's `FSTCompiler` (`org.apache.lucene.util.fst.FSTCompiler`) is an
+// *incremental*, memory-bounded builder: it consumes keys one at a time in
+// sorted order, keeps only a stack of `UnCompiledNode`s for the current key's
+// path, "freezes" (compiles to bytes) each node as soon as it's known no
+// longer to change, and de-duplicates frozen nodes via a node hash table so
+// that any suffix shared by two or more keys is written to the byte store
+// exactly once (suffix sharing / minimization). That incremental,
+// hash-consing algorithm is a large undertaking on its own.
+//
+// **What's implemented here instead** is a simpler, from-scratch construction
+// that is *correct* (produces bytes `Fst::read`/`Fst::get` decode correctly)
+// but *not* minimal:
+//
+// 1. Build an ordinary in-memory trie from the full sorted `(key, output)`
+//    sequence (not incremental/streaming -- the whole key set is held in
+//    memory as a trie before any bytes are written).
+// 2. Serialize the trie bottom-up (post-order) into the exact list-encoded
+//    ("variable length arc") node/arc byte format `Fst::read`'s
+//    `read_arc`/`find_target_arc` already knows how to parse -- see the
+//    module doc for the field layout and `tests::build_single_key_fst`
+//    (which this generalizes to a full trie with branching) for the
+//    address-ordering contract those functions rely on.
+//
+// Deliberately **not** done, all deferred to a future slice along with real
+// `FSTCompiler` itself:
+// - **Suffix sharing / minimization.** Two keys that happen to share a
+//   *suffix* (not just a prefix) -- e.g. `"cat"` and `"bat"` sharing the
+//   final `"at"` -- get two independent copies of that suffix's nodes here,
+//   whereas real Lucene's node hash table would collapse them into one
+//   shared node reachable from both `'c'` and `'b'` arcs. This only affects
+//   output size/compactness, not correctness: `Fst::get` still resolves every
+//   key to its correct output either way.
+// - **Fixed-length arc nodes** (`ARCS_FOR_BINARY_SEARCH`/`_DIRECT_ADDRESSING`/
+//   `_CONTINUOUS`) and the `BIT_TARGET_NEXT` adjacent-node compaction: every
+//   arc here writes an explicit `vlong` target rather than relying on
+//   physical adjacency, and every node is list-encoded. Larger output, but
+//   still within what `Fst::read` supports (which itself doesn't decode the
+//   array-node encodings -- see the module doc).
+// - **Output pushing down shared prefixes.** Real Lucene's outputs
+//   (`ByteSequenceOutputs`) get pushed as far toward the root as possible so
+//   that arcs shared by many keys carry a common output prefix once. This
+//   builder instead puts each key's *entire* output on the single arc
+//   leading into its accepting node (mirroring the existing hand-built
+//   `tests::build_single_key_fst` shape), relying on `Fst::get`'s
+//   `output_add` accumulation to still assemble the right final bytes.
+// - Only `ByteSequenceOutputs`/`INPUT_TYPE.BYTE1`/on-heap, matching the
+//   reader's own scope.
+//
+// A node in the trie: `children` keyed by the next input byte (a `BTreeMap`
+// so iteration order is the ascending label order the wire format requires),
+// plus whether this node itself is an accepting state for some key and, if
+// so, that key's output.
+#[derive(Debug, Default)]
+struct TrieNode {
+    children: std::collections::BTreeMap<u8, TrieNode>,
+    is_final: bool,
+    final_output: Vec<u8>,
+}
+
+impl TrieNode {
+    fn insert(&mut self, key: &[u8], output: Vec<u8>) {
+        let mut node = self;
+        for &b in key {
+            node = node.children.entry(b).or_default();
+        }
+        node.is_final = true;
+        node.final_output = output;
+    }
+}
+
+fn write_vint(out: &mut Vec<u8>, mut v: i32) {
+    loop {
+        let mut b = (v & 0x7f) as u8;
+        v = ((v as u32) >> 7) as i32;
+        if v != 0 {
+            b |= 0x80;
+            out.push(b);
+        } else {
+            out.push(b);
+            break;
+        }
+    }
+}
+
+fn write_vlong(out: &mut Vec<u8>, mut v: i64) {
+    loop {
+        let mut b = (v & 0x7f) as u8;
+        v = ((v as u64) >> 7) as i64;
+        if v != 0 {
+            b |= 0x80;
+            out.push(b);
+        } else {
+            out.push(b);
+            break;
+        }
+    }
+}
+
+/// Appends one arc's bytes to `bytes` given its fields in logical (forward
+/// read) order, returning that arc's address (the position `find_target_arc`
+/// would `set_position` to land on this arc's flags byte). See the module
+/// doc / `tests::append_arc_logical` for why the physical bytes are the
+/// reverse of `logical`.
+fn append_arc_logical(bytes: &mut Vec<u8>, logical: &[u8]) -> i64 {
+    for &b in logical.iter().rev() {
+        bytes.push(b);
+    }
+    (bytes.len() - 1) as i64
+}
+
+/// Serializes one trie node's children into the byte store, recursing into
+/// any child that itself has further children first (post-order: a child
+/// node's address must be known before the arc pointing at it can write its
+/// `vlong` target). Returns this node's own address (the address of the arc
+/// for its *smallest*-labeled child -- see the module doc's node/arc address
+/// ordering contract). Panics only if called on a node with no children
+/// (callers only recurse into/start from non-empty nodes).
+fn build_node(node: &TrieNode, bytes: &mut Vec<u8>) -> i64 {
+    let labels: Vec<u8> = node.children.keys().copied().collect();
+    assert!(!labels.is_empty(), "build_node requires at least one arc");
+
+    let mut child_addr: std::collections::HashMap<u8, i64> = std::collections::HashMap::new();
+    for &label in &labels {
+        let child = &node.children[&label];
+        if !child.children.is_empty() {
+            child_addr.insert(label, build_node(child, bytes));
+        }
+    }
+
+    // Arcs must be appended in *descending* label order: the first one
+    // appended lands at the lowest address and is read *last* when scanning
+    // ascending from the node's start address, so it's the one carrying
+    // BIT_LAST_ARC.
+    let mut node_addr = 0i64;
+    for (i, &label) in labels.iter().rev().enumerate() {
+        let child = &node.children[&label];
+
+        let mut flags = 0u8;
+        if i == 0 {
+            flags |= BIT_LAST_ARC;
+        }
+        if child.is_final {
+            flags |= BIT_FINAL_ARC;
+            if !child.final_output.is_empty() {
+                flags |= BIT_ARC_HAS_FINAL_OUTPUT;
+            }
+        }
+
+        let has_children = !child.children.is_empty();
+        if !has_children {
+            flags |= BIT_STOP_NODE;
+        }
+
+        let mut logical = Vec::new();
+        logical.push(flags);
+        logical.push(label);
+        if flag(flags, BIT_ARC_HAS_FINAL_OUTPUT) {
+            write_vint(&mut logical, child.final_output.len() as i32);
+            logical.extend_from_slice(&child.final_output);
+        }
+        if has_children {
+            write_vlong(&mut logical, child_addr[&label]);
+        }
+
+        node_addr = append_arc_logical(bytes, &logical);
+    }
+
+    node_addr
+}
+
+/// Errors specific to `build_fst`'s input contract.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum BuildError {
+    #[error("build_fst requires keys in strictly ascending sorted order (duplicate or out-of-order key at index {index})")]
+    NotSorted { index: usize },
+}
+
+/// A minimal from-scratch equivalent of real Lucene's `FSTCompiler` for the
+/// `ByteSequenceOutputs`/`INPUT_TYPE.BYTE1`/on-heap slice this module already
+/// reads -- see the section doc above for exactly which of real
+/// `FSTCompiler`'s behaviors (suffix sharing, output pushing, fixed-length
+/// arc nodes) are and aren't reproduced.
+///
+/// `entries` must already be sorted in strictly ascending key order (as real
+/// `FSTCompiler.add` requires of its caller) -- checked, not silently
+/// tolerated.
+pub fn build_fst(entries: &[(Vec<u8>, Vec<u8>)]) -> std::result::Result<Fst, BuildError> {
+    for i in 1..entries.len() {
+        if entries[i - 1].0 >= entries[i].0 {
+            return Err(BuildError::NotSorted { index: i });
+        }
+    }
+
+    let mut empty_output: Option<Vec<u8>> = None;
+    let mut root = TrieNode::default();
+    for (key, output) in entries {
+        if key.is_empty() {
+            empty_output = Some(output.clone());
+        } else {
+            root.insert(key, output.clone());
+        }
+    }
+
+    let mut bytes = Vec::new();
+    let start_node = if root.children.is_empty() {
+        // No non-empty keys at all: an empty body with a start node address
+        // of 0 is never dereferenced by `Fst::get` since it only calls
+        // `find_target_arc` when `target_has_arcs` (`target > 0`), and 0
+        // fails that check.
+        0
+    } else {
+        build_node(&root, &mut bytes)
+    };
+
+    Ok(Fst {
+        metadata: FstMetadata {
+            input_type: InputType::Byte1,
+            empty_output,
+            start_node,
+            version: VERSION_CURRENT,
+            num_bytes: bytes.len() as i64,
+        },
+        bytes,
+    })
+}
+
+/// Serializes a built `Fst` back into the exact on-disk byte layout
+/// `Fst::read` parses (codec header + `FSTMetadata.save` fields + raw body),
+/// so a caller can round-trip through the real, unmodified `Fst::read` entry
+/// point rather than only exercising the in-memory `Fst` this module's own
+/// builder happens to construct directly.
+pub fn write_fst(fst: &Fst) -> Vec<u8> {
+    let mut out = Vec::new();
+    codec_util::write_header(&mut out, FILE_FORMAT_NAME, VERSION_CURRENT);
+
+    match &fst.metadata.empty_output {
+        Some(output) => {
+            out.push(1);
+            let mut reversed = output.clone();
+            reversed.reverse();
+            write_vint(&mut out, reversed.len() as i32);
+            out.extend_from_slice(&reversed);
+        }
+        None => out.push(0),
+    }
+
+    out.push(match fst.metadata.input_type {
+        InputType::Byte1 => 0,
+        InputType::Byte2 => 1,
+        InputType::Byte4 => 2,
+    });
+    write_vlong(&mut out, fst.metadata.start_node);
+    write_vlong(&mut out, fst.metadata.num_bytes);
+    out.extend_from_slice(&fst.bytes);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1073,5 +1342,184 @@ mod tests {
         let start = append_arc_logical(&mut bytes, &arc);
         let fst = fst_from_body(bytes, start, InputType::Byte1, None);
         assert_eq!(fst.get(b"r").unwrap(), Some(Vec::new()));
+    }
+
+    // --- `build_fst` (simplified FSTCompiler) -----------------------------
+    //
+    // These round-trip *through the existing, unmodified* `Fst::read`/
+    // `Fst::get` -- the whole point of this builder is that its output is
+    // usable by the reader that was already written and tested above, not
+    // just "some bytes this module's own code happens to also understand".
+
+    fn assert_round_trips(
+        entries: &[(Vec<u8>, Vec<u8>)],
+        present: &[(&[u8], &[u8])],
+        absent: &[&[u8]],
+    ) {
+        let fst = build_fst(entries).unwrap();
+        let file = write_fst(&fst);
+        let mut input = SliceInput::new(&file);
+        let read_back = Fst::read(&mut input).unwrap();
+
+        for (key, expected) in present {
+            assert_eq!(
+                read_back.get(key).unwrap(),
+                Some(expected.to_vec()),
+                "key {key:?} should resolve to {expected:?}"
+            );
+            // Also check the in-memory `Fst` `build_fst` returns directly,
+            // independent of the `write_fst`/`Fst::read` serialization round
+            // trip.
+            assert_eq!(fst.get(key).unwrap(), Some(expected.to_vec()));
+        }
+        for key in absent {
+            assert_eq!(
+                read_back.get(key).unwrap(),
+                None,
+                "key {key:?} should be absent"
+            );
+            assert_eq!(fst.get(key).unwrap(), None);
+        }
+    }
+
+    /// The same 7-key shape as `fixtures/src/GenFst.java`'s fixture (shared
+    /// prefixes within each group, two disjoint groups, plus a lone
+    /// single-byte key), so this test can be eyeballed against that fixture's
+    /// differential test for a sanity cross-check even though this builder
+    /// doesn't consume real Lucene bytes.
+    fn seven_key_fixture() -> Vec<(Vec<u8>, Vec<u8>)> {
+        vec![
+            (b"app".to_vec(), b"1".to_vec()),
+            (b"apple".to_vec(), b"2".to_vec()),
+            (b"application".to_vec(), b"3".to_vec()),
+            (b"banana".to_vec(), b"4".to_vec()),
+            (b"band".to_vec(), b"5".to_vec()),
+            (b"bandana".to_vec(), b"6".to_vec()),
+            (b"z".to_vec(), b"7".to_vec()),
+        ]
+    }
+
+    #[test]
+    fn build_fst_seven_key_fixture_round_trips_through_real_reader() {
+        let entries = seven_key_fixture();
+        assert_round_trips(
+            &entries,
+            &[
+                (b"app", b"1"),
+                (b"apple", b"2"),
+                (b"application", b"3"),
+                (b"banana", b"4"),
+                (b"band", b"5"),
+                (b"bandana", b"6"),
+                (b"z", b"7"),
+            ],
+            &[
+                b"ap",         // proper prefix of app, not itself accepted
+                b"appl",       // proper prefix of apple/application
+                b"applicatio", // proper prefix of application
+                b"appz",       // diverges mid-key
+                b"ban",        // proper prefix of banana/band/bandana
+                b"bandanas",   // extends past an accepting node
+                b"",           // no empty-string key in this fixture
+                b"zz",         // extends past z's accepting stop node
+                b"missing-entirely",
+            ],
+        );
+    }
+
+    #[test]
+    fn build_fst_single_key() {
+        let entries = vec![(b"cat".to_vec(), b"1".to_vec())];
+        assert_round_trips(&entries, &[(b"cat", b"1")], &[b"ca", b"cats", b"dog", b""]);
+    }
+
+    #[test]
+    fn build_fst_empty_key_set_never_accepts_anything() {
+        let fst = build_fst(&[]).unwrap();
+        assert_eq!(fst.get(b"").unwrap(), None);
+        assert_eq!(fst.get(b"anything").unwrap(), None);
+    }
+
+    #[test]
+    fn build_fst_accepts_the_empty_string_key_via_empty_output() {
+        let entries = vec![
+            (Vec::new(), b"root".to_vec()),
+            (b"x".to_vec(), b"1".to_vec()),
+        ];
+        assert_round_trips(&entries, &[(b"", b"root"), (b"x", b"1")], &[b"xx", b"y"]);
+    }
+
+    #[test]
+    fn build_fst_one_key_is_a_proper_prefix_of_another() {
+        // "band" is itself accepted *and* has a further child ('a' -> "na")
+        // continuing to "bandana" -- exercises the non-stop-node branch of
+        // `build_node` where a child is both final and has its own children.
+        let entries = vec![
+            (b"band".to_vec(), b"short".to_vec()),
+            (b"bandana".to_vec(), b"long".to_vec()),
+        ];
+        assert_round_trips(
+            &entries,
+            &[(b"band", b"short"), (b"bandana", b"long")],
+            &[b"ban", b"bandan", b"bandanas"],
+        );
+    }
+
+    #[test]
+    fn build_fst_rejects_unsorted_input() {
+        let entries = vec![(b"b".to_vec(), Vec::new()), (b"a".to_vec(), Vec::new())];
+        assert_eq!(
+            build_fst(&entries).unwrap_err(),
+            BuildError::NotSorted { index: 1 }
+        );
+    }
+
+    #[test]
+    fn build_fst_rejects_duplicate_key() {
+        let entries = vec![(b"a".to_vec(), Vec::new()), (b"a".to_vec(), Vec::new())];
+        assert_eq!(
+            build_fst(&entries).unwrap_err(),
+            BuildError::NotSorted { index: 1 }
+        );
+    }
+
+    #[test]
+    fn build_fst_many_keys_forces_multi_byte_vlong_targets() {
+        // Enough keys/branching that at least one child node's address
+        // exceeds the 1-byte vlong threshold (127), forcing `write_vlong`'s
+        // (and `read_vlong`'s, on the read side already covered above)
+        // multi-byte continuation branch through the builder's own target
+        // encoding.
+        let entries: Vec<(Vec<u8>, Vec<u8>)> = (0u16..200)
+            .map(|i| {
+                let key = format!("key{i:04}").into_bytes();
+                let output = i.to_le_bytes().to_vec();
+                (key, output)
+            })
+            .collect();
+        let fst = build_fst(&entries).unwrap();
+        assert!(fst.metadata().num_bytes > 127);
+        for (key, output) in &entries {
+            assert_eq!(fst.get(key).unwrap(), Some(output.clone()));
+        }
+        assert_eq!(fst.get(b"key9999").unwrap(), None);
+    }
+
+    #[test]
+    fn build_fst_long_output_forces_multi_byte_vint_length() {
+        // Every other test's outputs are <=4 bytes, so the final-output
+        // length's `write_vint` call never exercises its own multi-byte
+        // (>127) continuation branch -- distinct from the vlong target
+        // encoding the test above already stresses. A 200-byte output
+        // forces that branch.
+        let long_output: Vec<u8> = (0u16..200).map(|i| (i % 256) as u8).collect();
+        let entries: Vec<(Vec<u8>, Vec<u8>)> = vec![
+            (b"a".to_vec(), vec![]),
+            (b"ab".to_vec(), long_output.clone()),
+        ];
+        let fst = build_fst(&entries).unwrap();
+        assert_eq!(fst.get(b"a").unwrap(), Some(vec![]));
+        assert_eq!(fst.get(b"ab").unwrap(), Some(long_output));
+        assert_eq!(fst.get(b"abc").unwrap(), None);
     }
 }

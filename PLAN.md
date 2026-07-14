@@ -2872,8 +2872,11 @@ the `crates/lucene-ffi/src/writer.rs` write-up — not repeated here.)
    "pre-analyzed" ingestion over FFI: Java runs the analyzer, ships tokens to Rust.
    This makes the Rust analysis chain a fast path, not a compatibility burden.
 2. Codec **writers** for everything Phase 2 reads: postings writer (FOR/PFOR encode,
-   skip/impacts writer), FST builder (hard — port `FSTCompiler` carefully; fixture:
-   build FST from same term set in Java and Rust, require byte-identical output),
+   skip/impacts writer), a real byte-compatible `FSTCompiler` port (still open --
+   `crates/lucene-codecs/src/fst.rs::build_fst` added a simplified, from-scratch
+   construction that round-trips through this port's own `Fst::read`/`Fst::get`,
+   but does not reproduce `FSTCompiler`'s incremental suffix-sharing/minimization
+   or byte-identical output vs. real Lucene; see `docs/parity.md`'s FST row),
    doc values writers, stored fields (LZ4 fast mode first), points (BKD writer with
    offline sort for large fields), norms, `.si`/`segments_N`/`.fnm` writers, compound
    files (`.cfs/.cfe`).
