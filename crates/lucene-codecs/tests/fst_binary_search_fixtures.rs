@@ -138,3 +138,32 @@ fn read_borrowed_matches_read_on_binary_search_fixture() {
         assert_eq!(borrowed.get(&key).unwrap(), None);
     }
 }
+
+/// `Fst::iter` over a real Lucene-written `ARCS_FOR_BINARY_SEARCH` root node
+/// (not just the hand-built one in `fst.rs`'s own unit tests): proves
+/// `read_first_real_target_arc`/`read_next_real_arc`'s fixed-length-arc
+/// branch enumerates every arc of a genuine binary-search node in the
+/// correct (ascending label) order, not just `find_target_arc`'s one-shot
+/// lookup path.
+#[test]
+fn iter_enumerates_every_key_of_a_binary_search_root_node() {
+    let fst = load_fst();
+    let manifest = Manifest::load();
+    let mut expected: Vec<(Vec<u8>, Vec<u8>)> = (0..manifest.count("num_present"))
+        .map(|i| {
+            (
+                from_hex(manifest.get(&format!("present.{i}.key_hex"))),
+                from_hex(manifest.get(&format!("present.{i}.output_hex"))),
+            )
+        })
+        .collect();
+    expected.sort();
+
+    let got: Vec<(Vec<u8>, Vec<u8>)> = fst
+        .iter()
+        .expect("iter should support this BYTE1 fixture")
+        .collect::<Result<_, _>>()
+        .expect("enumeration should not error");
+
+    assert_eq!(got, expected);
+}

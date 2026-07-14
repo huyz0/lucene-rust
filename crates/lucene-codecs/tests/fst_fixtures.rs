@@ -140,3 +140,34 @@ fn read_borrowed_matches_read_on_real_fixture() {
 
     assert_eq!(owned.metadata().num_bytes, borrowed.metadata().num_bytes);
 }
+
+/// `Fst::iter` (full ordered enumeration) must walk every key this
+/// list-encoded, real-Lucene-written fixture accepts, in exactly ascending
+/// key order, with the correct accumulated output for each -- the fixture's
+/// 7 keys span shared prefixes within two disjoint groups ("app"/"apple"/
+/// "application", "banana"/"band"/"bandana") plus a lone single-byte key
+/// ("z"), so this also exercises re-descending past an accepting node
+/// (band -> bandana) and popping back up multiple levels (out of the "app"
+/// group, into the "banana" group, then all the way to "z").
+#[test]
+fn iter_enumerates_all_keys_in_ascending_order() {
+    let fst = load_fst();
+    let manifest = Manifest::load();
+    let mut expected: Vec<(Vec<u8>, Vec<u8>)> = (0..manifest.count("num_present"))
+        .map(|i| {
+            (
+                from_hex(manifest.get(&format!("present.{i}.key_hex"))),
+                from_hex(manifest.get(&format!("present.{i}.output_hex"))),
+            )
+        })
+        .collect();
+    expected.sort();
+
+    let got: Vec<(Vec<u8>, Vec<u8>)> = fst
+        .iter()
+        .expect("iter should support this BYTE1 fixture")
+        .collect::<Result<_, _>>()
+        .expect("enumeration should not error");
+
+    assert_eq!(got, expected);
+}

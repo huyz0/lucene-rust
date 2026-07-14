@@ -3900,3 +3900,37 @@ Biggest technical risks, in order:
    sketched but don't build unless needed.
 4. **Scoring drift** breaking top-k parity — mitigate: float discipline + differential
    harness from day one of P3.
+
+**Progress (task): FST full ordered enumeration (`Fst::iter`).** `crates/lucene-codecs/src/fst.rs`
+previously only supported single-key lookup (`Fst::get`, a port of `Util.get`). Added
+`Fst::iter`, a port of real Lucene's `BytesRefFSTEnum`'s full ascending-order walk
+(`FSTEnum.doNext`/`pushFirst`), returning an `Iterator<Item = Result<(Vec<u8>, Vec<u8>)>>`
+over every `(key, output)` pair an FST accepts, in sorted key order. This required
+reinstating `readFirstTargetArc`/`readFirstRealTargetArc`/`readNextRealArc`/`readNextArc`
+(`FST.java`'s enumeration primitives) -- a prior task had written and then removed these
+as dead code under the earlier `get`-only scope; they're back now that `iter` is a real
+caller, and (since this port has since added `ARCS_FOR_BINARY_SEARCH` fixed-length-arc
+node support) they handle both list-encoded and binary-search-encoded nodes, not just
+list nodes as the original attempt would have. **Scope: full forward enumeration only,
+no seek.** Real Lucene's `BytesRefFSTEnum` also exposes `seekCeil`/`seekFloor`/`seekExact`
+(`FSTEnum.doSeekCeil`/`doSeekFloor`/`doSeekExact`), needed for prefix/range-bounded
+iteration over a term dictionary -- each of those has its own list/binary-search/
+direct-addressing/continuous dispatch in real `FSTEnum.java`, a substantially larger
+increment deliberately left for a future task once prefix/range term queries need it.
+`IntsRefFSTEnum` (the `IntsRef`-input analogue) is also not ported, since this module only
+has a `BytesRef`-shaped output type to begin with. Tests: unit tests in `fst.rs`
+(`iter_over_empty_fst_yields_nothing`, `iter_over_single_key_fst_yields_that_one_key`,
+`iter_over_single_empty_string_key_yields_it`, `iter_over_seven_key_fixture_yields_ascending_sorted_order`,
+`iter_over_empty_string_plus_other_keys`, `iter_over_binary_search_root_node_yields_ascending_order`,
+`iter_errors_on_non_byte1_input_type`) plus differential tests against real Lucene-written
+FSTs: `iter_enumerates_all_keys_in_ascending_order` (`crates/lucene-codecs/tests/fst_fixtures.rs`,
+the existing 7-key list-encoded fixture) and `iter_enumerates_every_key_of_a_binary_search_root_node`
+(`crates/lucene-codecs/tests/fst_binary_search_fixtures.rs`, the `ARCS_FOR_BINARY_SEARCH`
+fixture), both asserting the enumerated order matches the fixture's manifest sorted by key.
+Along the way, fixed a latent bug in `fst.rs`'s own hand-built `build_binary_search_node`
+test helper: every arc slot was stamped `BIT_LAST_ARC` regardless of position, which
+`find_target_arc`'s direct binary-search jump never noticed (it stops at the first match)
+but which made `Fst::iter`'s incremental walk stop after only the first arc -- now only the
+highest-labeled slot carries the bit. `cargo fmt`/`clippy -D warnings`/`cargo llvm-cov
+--fail-under-lines 95` all clean; see `docs/parity.md`'s FST row for the parity-tracking
+update.

@@ -44,10 +44,16 @@
 //!   normally stay in list form, but large/dense FSTs whose compiler picked
 //!   one of the two remaining encodings for some node are a real gap -- see
 //!   `docs/parity.md`.
-//! - **Lookup only, not enumeration.** `get` mirrors `Util.get(FST, BytesRef)`:
-//!   walk arcs for a specific key and return whether it's accepted plus its
-//!   output. Full ordered enumeration (`BytesRefFSTEnum`/`IntsRefFSTEnum`) is
-//!   not ported.
+//! - **Lookup (`get`) and full forward enumeration (`iter`), not seek.** `get`
+//!   mirrors `Util.get(FST, BytesRef)`: walk arcs for a specific key and
+//!   return whether it's accepted plus its output. `iter`/`FstEnum` mirrors
+//!   `BytesRefFSTEnum`'s full ascending-order walk (`next()`) over every
+//!   accepted key -- but not its `seekCeil`/`seekFloor`/`seekExact` (needed
+//!   for prefix/range-bounded iteration, not a full walk); see `FstEnum`'s
+//!   doc comment for the precise scope and `docs/parity.md` for what's
+//!   deferred. `IntsRefFSTEnum` (the `IntsRef`-input analogue) is also not
+//!   ported, since this module only has a `BytesRef`-shaped output type to
+//!   begin with -- see the point above.
 //!
 //! ## Wire format
 //!
@@ -109,6 +115,15 @@ const ARCS_FOR_CONTINUOUS: u8 = ARCS_FOR_DIRECT_ADDRESSING + ARCS_FOR_BINARY_SEA
 
 const FINAL_END_NODE: i64 = -1;
 const NON_FINAL_END_NODE: i64 = 0;
+
+/// `FST.END_LABEL`: the label of the "fake" virtual arc `read_first_target_arc`
+/// inserts to represent a node's own acceptance, before falling through to
+/// its real outgoing arcs (if any). Only meaningful to enumeration
+/// (`FstEnum`/`read_first_target_arc`/`read_next_arc`) -- `get`/
+/// `find_target_arc` never see or produce this value (see
+/// `find_target_arc`'s own doc comment on why `label_to_match` is always a
+/// real byte there).
+const END_LABEL: i32 = -1;
 
 fn flag(flags: u8, bit: u8) -> bool {
     flags & bit != 0
@@ -252,6 +267,13 @@ pub struct Arc {
     num_arcs: i32,
     /// `FST.Arc.posArcsStart`: only meaningful when `bytes_per_arc != 0`.
     pos_arcs_start: i64,
+    /// `FST.Arc.arcIdx`: this arc's index within its fixed-length-arc node's
+    /// slots (only meaningful/maintained when `bytes_per_arc != 0`). Needed
+    /// by `read_next_real_arc`'s `ARCS_FOR_BINARY_SEARCH` branch to advance
+    /// incrementally through a node's arcs during enumeration (`get`/
+    /// `find_target_arc` never need this: they jump straight to one matched
+    /// slot via binary search and stop).
+    arc_idx: i32,
 }
 
 impl Arc {
@@ -721,6 +743,129 @@ impl<'a> Fst<'a> {
         }
     }
 
+    // --- Ordered enumeration (`BytesRefFSTEnum`) --------------------------
+    //
+    // The three methods below are `FST.java`'s `readFirstRealTargetArc`/
+    // `readNextRealArc`/`readFirstTargetArc`/`readNextArc`, ported field-for-
+    // field. Unlike `find_target_arc` (which only ever needs to *find* one
+    // specific labeled arc and can stop as soon as it does), full ordered
+    // enumeration needs to walk every arc of every node it visits in turn --
+    // real Lucene's `readNextRealArc` is exactly that "read the arc after
+    // this one" primitive, generic over list-encoded and fixed-length-arc
+    // (`ARCS_FOR_BINARY_SEARCH`) nodes alike, which is what `find_target_arc`
+    // never needed and so never implemented. See `docs/parity.md` for why
+    // `ARCS_FOR_DIRECT_ADDRESSING`/`ARCS_FOR_CONTINUOUS` remain unsupported
+    // here exactly as they are for lookup.
+
+    /// `FST.readNextRealArc`: advance `arc` in-place to the arc immediately
+    /// following it within the same node (never the virtual `END_LABEL`
+    /// arc -- callers must route through `read_next_arc` for that). `arc`
+    /// must already be positioned at a real arc of the node (as set up by
+    /// `read_first_real_target_arc` or a previous call to this method).
+    fn read_next_real_arc(&self, arc: &mut Arc, r: &mut BytesReader) -> Result<()> {
+        if arc.bytes_per_arc != 0 {
+            // `ARCS_FOR_BINARY_SEARCH` fixed-length-arc node: advance to the
+            // next fixed-size slot by index.
+            arc.arc_idx += 1;
+            debug_assert!(arc.arc_idx >= 0 && arc.arc_idx < arc.num_arcs);
+            r.set_position(arc.pos_arcs_start - arc.bytes_per_arc as i64 * arc.arc_idx as i64);
+            arc.flags = r.read_byte()?;
+        } else {
+            // List-encoded node: `arc.next_arc` is the position `read_arc`
+            // already computed as "where the next arc's flags byte lives".
+            r.set_position(arc.next_arc);
+            arc.flags = r.read_byte()?;
+        }
+        self.read_arc(arc, r)
+    }
+
+    /// `FST.readFirstRealTargetArc`: read the first real (non-virtual) arc
+    /// of the node at `node_address`, handling both list-encoded and
+    /// `ARCS_FOR_BINARY_SEARCH` node headers (mirrors `FST.readFirstArcInfo`
+    /// followed by one `readNextRealArc` call).
+    fn read_first_real_target_arc(&self, node_address: i64, r: &mut BytesReader) -> Result<Arc> {
+        r.set_position(node_address);
+        let flags = r.read_byte()?;
+        let mut arc = Arc::default();
+        if flags == ARCS_FOR_BINARY_SEARCH {
+            let num_arcs = r.read_vint()?;
+            let bytes_per_arc = r.read_vint()?;
+            arc.num_arcs = num_arcs;
+            arc.bytes_per_arc = bytes_per_arc;
+            arc.pos_arcs_start = r.get_position();
+            arc.arc_idx = -1;
+        } else {
+            Self::reject_if_array_node(flags)?;
+            // List-encoded node: `next_arc` re-anchors `read_next_real_arc`
+            // back at this node's first arc (its flags byte gets re-read,
+            // matching `FST.java`'s own re-read of the same byte here).
+            arc.next_arc = node_address;
+            arc.bytes_per_arc = 0;
+        }
+        self.read_next_real_arc(&mut arc, r)?;
+        Ok(arc)
+    }
+
+    /// `FST.readFirstTargetArc`: read the first arc leaving `follow`'s
+    /// target node -- if `follow` is itself an accepting (final) arc, that
+    /// "first arc" is a synthetic `END_LABEL` arc representing acceptance at
+    /// this node, inserted *before* any of the node's real outgoing arcs
+    /// (matching real Lucene's enumeration order: a node's own key, if any,
+    /// sorts before all of its longer descendants).
+    fn read_first_target_arc(&self, follow: &Arc, r: &mut BytesReader) -> Result<Arc> {
+        if follow.is_final() {
+            let mut arc = Arc {
+                label: END_LABEL,
+                output: follow.next_final_output().to_vec(),
+                flags: BIT_FINAL_ARC,
+                target: FINAL_END_NODE,
+                ..Default::default()
+            };
+            if follow.target() <= 0 {
+                arc.flags |= BIT_LAST_ARC;
+            } else {
+                // Not really an address here -- a node address to resume
+                // real-arc enumeration from once this virtual arc is
+                // exhausted (see `read_next_arc`).
+                arc.next_arc = follow.target();
+            }
+            Ok(arc)
+        } else {
+            self.read_first_real_target_arc(follow.target(), r)
+        }
+    }
+
+    /// `FST.readNextArc`: advance `arc` to the arc following it, transparently
+    /// handling the case where `arc` was itself the synthetic `END_LABEL` arc
+    /// (in which case "next" means the target node's first *real* arc).
+    fn read_next_arc(&self, arc: &Arc, r: &mut BytesReader) -> Result<Arc> {
+        if arc.label == END_LABEL {
+            if arc.next_arc <= 0 {
+                return Err(Error::Corrupt(
+                    "read_next_arc called on the last arc of a node".to_string(),
+                ));
+            }
+            self.read_first_real_target_arc(arc.next_arc, r)
+        } else {
+            let mut next = arc.clone();
+            self.read_next_real_arc(&mut next, r)?;
+            Ok(next)
+        }
+    }
+
+    /// Port of `BytesRefFSTEnum`'s full forward walk (`FSTEnum.doNext`/
+    /// `pushFirst`, no seek support -- see `Fst::iter`'s doc comment):
+    /// returns an iterator over every `(key, output)` pair this FST accepts,
+    /// in ascending key order.
+    pub fn iter(&self) -> Result<FstEnum<'_, 'a>> {
+        if self.metadata.input_type != InputType::Byte1 {
+            return Err(Error::Unsupported(
+                "Fst::iter only supports INPUT_TYPE.BYTE1 (term-index FSTs)".to_string(),
+            ));
+        }
+        Ok(FstEnum::new(self))
+    }
+
     /// Port of `Util.get(FST, BytesRef)`: look up `key` and return its
     /// accumulated output if the FST accepts it, else `None`.
     pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
@@ -751,6 +896,162 @@ impl<'a> Fst<'a> {
             Ok(Some(output_add(&output, arc.next_final_output())))
         } else {
             Ok(None)
+        }
+    }
+}
+
+/// Port of `BytesRefFSTEnum`, restricted to a full forward walk (real
+/// Lucene's `next()`) -- **not** ported: `seekCeil`/`seekFloor`/`seekExact`
+/// (`FSTEnum.doSeekCeil`/`doSeekFloor`/`doSeekExact`, `rewindPrefix`'s shared-
+/// prefix-aware re-seek), which real Lucene needs for range/prefix queries
+/// over a term dictionary but which is a substantially larger increment on
+/// top of this (each seek variant has its own list/binary-search/direct-
+/// addressing/continuous dispatch -- see `FSTEnum.java`). This type only
+/// walks every accepted key in ascending order from the start, which is
+/// already enough to enumerate any FST's full contents; see `docs/parity.md`
+/// for the deferred seek support and `IntsRefFSTEnum`'s int-sequence variant
+/// (this port only has `BytesRef`-shaped output, so only the `BytesRef` key
+/// side of enumeration -- i.e. this type -- was ported; real Lucene's
+/// `IntsRefFSTEnum` enumerates `IntsRef` *inputs* against a differently-typed
+/// FST and shares the same `FSTEnum` base class this port's `read_first_target_arc`
+/// et al. mirror, but was not itself needed for any consumer in this port).
+///
+/// Constructed via `Fst::iter`. Implements `Iterator<Item = Result<(Vec<u8>,
+/// Vec<u8>)>>`, yielding `(key, output)` pairs in ascending key order.
+pub struct FstEnum<'f, 'a> {
+    fst: &'f Fst<'a>,
+    r: BytesReader<'f>,
+    /// `FSTEnum.arcs`: `arcs[0]` is the virtual incoming arc to the start
+    /// node (`Fst::first_arc`); `arcs[i]` (`i >= 1`) is the arc last read at
+    /// depth `i`, potentially the synthetic `END_LABEL` arc representing
+    /// acceptance at that depth.
+    arcs: Vec<Arc>,
+    /// `FSTEnum.output`: `outputs[i]` is the cumulative output through
+    /// depth `i` (`outputs[0]` is always empty -- no output accumulated for
+    /// the virtual root arc).
+    outputs: Vec<Vec<u8>>,
+    /// `BytesRefFSTEnum.current`: `labels[i]` (`i >= 1`) is the key byte
+    /// chosen at depth `i` -- i.e. the current key, once accepted, is
+    /// `labels[1..upto]`.
+    labels: Vec<u8>,
+    /// `FSTEnum.upto`.
+    upto: usize,
+    /// Set once enumeration has yielded every key, so a subsequent `next()`
+    /// call keeps returning `None` (a fused iterator) instead of
+    /// misreading `upto == 0`'s *other* meaning -- "not yet started" -- and
+    /// restarting from the first key. `upto` alone can't distinguish these
+    /// two states: both leave it at `0`.
+    done: bool,
+}
+
+impl<'f, 'a> FstEnum<'f, 'a> {
+    fn new(fst: &'f Fst<'a>) -> Self {
+        FstEnum {
+            r: fst.reader(),
+            fst,
+            arcs: vec![fst.first_arc()],
+            outputs: vec![Vec::new()],
+            labels: vec![0u8],
+            upto: 0,
+            done: false,
+        }
+    }
+
+    fn set_arc(&mut self, idx: usize, arc: Arc) {
+        if self.arcs.len() <= idx {
+            self.arcs.resize(idx + 1, Arc::default());
+        }
+        self.arcs[idx] = arc;
+    }
+
+    fn set_output(&mut self, idx: usize, output: Vec<u8>) {
+        if self.outputs.len() <= idx {
+            self.outputs.resize(idx + 1, Vec::new());
+        }
+        self.outputs[idx] = output;
+    }
+
+    fn set_label(&mut self, idx: usize, label: u8) {
+        if self.labels.len() <= idx {
+            self.labels.resize(idx + 1, 0u8);
+        }
+        self.labels[idx] = label;
+    }
+
+    /// `FSTEnum.pushFirst`: from `self.arcs[self.upto]`, repeatedly descend
+    /// via `read_first_target_arc` until landing on an accepting (synthetic
+    /// `END_LABEL`) arc -- the smallest-keyed accepted descendant of the
+    /// node `self.upto` started at.
+    fn push_first(&mut self) -> Result<()> {
+        loop {
+            let arc = self.arcs[self.upto].clone();
+            let cum_output = output_add(&self.outputs[self.upto - 1], arc.output());
+            self.set_output(self.upto, cum_output);
+            if arc.label() == END_LABEL {
+                break;
+            }
+            self.set_label(self.upto, arc.label() as u8);
+            self.upto += 1;
+            let next = self.fst.read_first_target_arc(&arc, &mut self.r)?;
+            self.set_arc(self.upto, next);
+        }
+        Ok(())
+    }
+
+    /// `FSTEnum.doNext` + `BytesRefFSTEnum.setResult`: advance to the next
+    /// accepted key in ascending order, or `Ok(None)` once every key has
+    /// been visited.
+    fn advance(&mut self) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
+        if self.done {
+            return Ok(None);
+        }
+        if self.upto == 0 {
+            let root = self.arcs[0].clone();
+            if !root.is_final() && !target_has_arcs(&root) {
+                // Degenerate FST that accepts no keys at all (not even the
+                // empty string) -- `read_first_target_arc` would otherwise
+                // try to dereference a nonexistent node at address 0/below.
+                // Real Lucene-written FSTs never hit this (every FST accepts
+                // at least one key), but this port's `build_fst` allows
+                // constructing one from an empty key set (see
+                // `build_fst_empty_key_set_never_accepts_anything`).
+                self.done = true;
+                return Ok(None);
+            }
+            self.upto = 1;
+            let first = self.fst.read_first_target_arc(&root, &mut self.r)?;
+            self.set_arc(1, first);
+        } else {
+            loop {
+                if self.arcs[self.upto].is_last() {
+                    self.upto -= 1;
+                    if self.upto == 0 {
+                        self.done = true;
+                        return Ok(None);
+                    }
+                } else {
+                    break;
+                }
+            }
+            let cur = self.arcs[self.upto].clone();
+            let next = self.fst.read_next_arc(&cur, &mut self.r)?;
+            self.set_arc(self.upto, next);
+        }
+        self.push_first()?;
+        let key = self.labels[1..self.upto].to_vec();
+        let output = self.outputs[self.upto].clone();
+        Ok(Some((key, output)))
+    }
+}
+
+impl Iterator for FstEnum<'_, '_> {
+    type Item = Result<(Vec<u8>, Vec<u8>)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.advance() {
+            Ok(Some(pair)) => Some(Ok(pair)),
+            Ok(None) => None,
+            Err(e) => Some(Err(e)),
         }
     }
 }
@@ -1258,7 +1559,20 @@ mod tests {
         let mut logical_arcs: Vec<Vec<u8>> = Vec::with_capacity(num_arcs);
         for (i, &label) in labels.iter().enumerate() {
             let mut logical = Vec::new();
-            let flags = BIT_LAST_ARC | BIT_FINAL_ARC | BIT_STOP_NODE | BIT_ARC_HAS_FINAL_OUTPUT;
+            let mut flags = BIT_FINAL_ARC | BIT_STOP_NODE | BIT_ARC_HAS_FINAL_OUTPUT;
+            if i == num_arcs - 1 {
+                // Only the highest-labeled arc (the last slot, at the
+                // lowest address) is actually the node's last arc --
+                // `is_last()` must be false for every other slot so
+                // enumeration (`FstEnum`) knows to keep advancing through
+                // the node instead of stopping after the first arc it
+                // reads. (Real Lucene-written binary-search nodes get this
+                // right by construction; this hand-built fixture previously
+                // set the bit on every slot, which `find_target_arc`'s
+                // direct binary-search jump never noticed but `FstEnum`'s
+                // incremental walk does.)
+                flags |= BIT_LAST_ARC;
+            }
             logical.push(flags);
             logical.push(label);
             write_vint(&mut logical, 1);
@@ -1982,5 +2296,102 @@ mod tests {
         assert_eq!(fst.get(b"a").unwrap(), Some(vec![]));
         assert_eq!(fst.get(b"ab").unwrap(), Some(long_output));
         assert_eq!(fst.get(b"abc").unwrap(), None);
+    }
+
+    // --- `Fst::iter` (full ordered enumeration) ---------------------------
+
+    fn collect_iter(fst: &Fst) -> Vec<(Vec<u8>, Vec<u8>)> {
+        fst.iter()
+            .expect("BYTE1 fixture should support iter")
+            .collect::<Result<_>>()
+            .expect("enumeration should not error")
+    }
+
+    #[test]
+    fn iter_over_empty_fst_yields_nothing() {
+        let fst = build_fst(&[]).unwrap();
+        assert_eq!(collect_iter(&fst), Vec::<(Vec<u8>, Vec<u8>)>::new());
+    }
+
+    #[test]
+    fn iter_over_single_key_fst_yields_that_one_key() {
+        let entries = vec![(b"cat".to_vec(), b"1".to_vec())];
+        let fst = build_fst(&entries).unwrap();
+        assert_eq!(collect_iter(&fst), vec![(b"cat".to_vec(), b"1".to_vec())]);
+    }
+
+    #[test]
+    fn iter_stays_exhausted_after_yielding_none() {
+        // Found in review: `advance()` used `upto == 0` to mean both
+        // "not yet started" and "just finished" -- calling `next()` again
+        // after it returned `None` re-entered the "not yet started" branch
+        // and silently restarted enumeration from the first key instead of
+        // staying exhausted, violating the standard Rust `Iterator`
+        // contract (an iterator should keep returning `None` once it has).
+        let entries = vec![(b"cat".to_vec(), b"1".to_vec())];
+        let fst = build_fst(&entries).unwrap();
+        let mut it = fst.iter().unwrap();
+        assert_eq!(
+            it.next().unwrap().unwrap(),
+            (b"cat".to_vec(), b"1".to_vec())
+        );
+        assert!(it.next().is_none());
+        // The bug: this second post-exhaustion call would incorrectly
+        // yield "cat" again instead of staying `None`.
+        assert!(it.next().is_none());
+        assert!(it.next().is_none());
+    }
+
+    #[test]
+    fn iter_over_single_empty_string_key_yields_it() {
+        // The only accepted key is the empty string itself (via emptyOutput),
+        // with no other real arcs at all -- exercises `read_first_target_arc`'s
+        // `follow.target() <= 0` branch (the synthetic END_LABEL arc is also
+        // BIT_LAST_ARC, so enumeration must stop immediately after it).
+        let entries = vec![(Vec::new(), b"root".to_vec())];
+        let fst = build_fst(&entries).unwrap();
+        assert_eq!(collect_iter(&fst), vec![(Vec::new(), b"root".to_vec())]);
+    }
+
+    #[test]
+    fn iter_over_seven_key_fixture_yields_ascending_sorted_order() {
+        let entries = seven_key_fixture();
+        let fst = build_fst(&entries).unwrap();
+        assert_eq!(collect_iter(&fst), entries);
+    }
+
+    #[test]
+    fn iter_over_empty_string_plus_other_keys() {
+        // Empty string accepted *and* the root has further real children --
+        // exercises `read_first_target_arc`'s `follow.target() > 0` branch
+        // (the synthetic END_LABEL arc is not last, so `read_next_arc` must
+        // fall through to the root node's first real arc afterwards).
+        let entries = vec![
+            (Vec::new(), b"root".to_vec()),
+            (b"x".to_vec(), b"1".to_vec()),
+        ];
+        let fst = build_fst(&entries).unwrap();
+        assert_eq!(collect_iter(&fst), entries);
+    }
+
+    #[test]
+    fn iter_over_binary_search_root_node_yields_ascending_order() {
+        let labels = [b'a', b'c', b'f', b'm', b'z'];
+        let outputs = [1u8, 2, 3, 4, 5];
+        let (bytes, start) = build_binary_search_node(&labels, &outputs);
+        let fst = fst_from_body(bytes, start, InputType::Byte1, None);
+        let expected: Vec<(Vec<u8>, Vec<u8>)> = labels
+            .iter()
+            .zip(outputs.iter())
+            .map(|(&l, &o)| (vec![l], vec![o]))
+            .collect();
+        assert_eq!(collect_iter(&fst), expected);
+    }
+
+    #[test]
+    fn iter_errors_on_non_byte1_input_type() {
+        let (bytes, start) = build_single_key_fst(b"x", b"1");
+        let fst = fst_from_body(bytes, start, InputType::Byte2, None);
+        assert!(matches!(fst.iter(), Err(Error::Unsupported(_))));
     }
 }
