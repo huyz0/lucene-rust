@@ -821,6 +821,25 @@ and null-field-name rejection for both new functions.
 `docs/parity.md`:** `apply_merge`/`segment_infos`/`pending_doc_count` are not
 wrapped -- a separate task.
 
+**Update:** `segment_infos`/`pending_doc_count` are now wrapped, closing most
+of that gap. `ffi_writer_segment_infos_len`/`ffi_writer_segment_info_name`
+expose the writer's current committed segment list (length-then-per-index-name
+accessor, same shape `results_fragments.rs` already established), and
+`ffi_writer_pending_doc_count` exposes the buffered-doc count. Tests cover
+null/invalid-handle rejection for all three, an out-of-bounds segment index,
+a too-small name buffer, and an end-to-end sequence (0 segments/0 pending on
+a fresh writer, 2 pending after two buffered `add_document` calls, 1 segment
+named `_0`/0 pending after the first commit, 2 segments after a second
+commit). `apply_merge` remains unwrapped: it only makes sense once a caller
+has actually run `merge::merge_stored_only_segments` first, and this crate
+exposes no FFI surface to run that merge -- wrapping `apply_merge` alone
+would be a bookkeeping-only call with no way to produce the
+`SegmentCommitInfo` it needs from the JVM side. Manual merge execution FFI
+(and `apply_merge` alongside it) is left as a separate, larger task. All
+three gates pass: `cargo fmt --all`, `cargo clippy --workspace --all-targets
+-- -D warnings` clean, `cargo llvm-cov --workspace --fail-under-lines 95`
+passes (97.69% total; `writer.rs` 96.54%).
+
 ### Phase 5 — Write path: analysis chain + indexing (est. 12–16 weeks)
 
 **Progress so far:** every single-segment write primitive (stored fields, `FieldInfos`,

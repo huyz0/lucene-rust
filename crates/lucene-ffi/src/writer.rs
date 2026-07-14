@@ -42,10 +42,25 @@
 //! segment left untouched" contract. Neither call is buffered -- both commit
 //! immediately on success, matching the wrapped methods' own atomicity.
 //!
+//! `ffi_writer_segment_infos_len`/`ffi_writer_segment_info_name`/
+//! `ffi_writer_pending_doc_count` wrap [`IndexWriter::segment_infos`]/
+//! [`IndexWriter::pending_doc_count`] read-only, so a caller can introspect
+//! this writer's current committed segment list and buffered-doc count
+//! without a separate directory-scan handle -- same "length first, then
+//! per-index accessor" shape `results_fragments.rs`'s
+//! `ffi_fragment_results_len`/`ffi_fragment_result_text` already established.
+//!
 //! **Deliberately out of scope, tracked in `docs/parity.md`**: this module
-//! does not wrap `IndexWriter::apply_merge`/`segment_infos`/
-//! `pending_doc_count` -- manual merge control and writer-state introspection
-//! are a separate task. `set_merge_policy` itself only exposes the four
+//! does not wrap `IndexWriter::apply_merge` -- folding an already-executed
+//! [`lucene_index::merge::merge_stored_only_segments`] result back into a
+//! writer only makes sense once that merge has actually been *run*, and this
+//! crate exposes no FFI surface to run it (no `ffi_merge_stored_only_segments`
+//! or equivalent exists anywhere in this crate today -- merging only ever
+//! happens automatically, inside `commit()`, via `set_merge_policy`). Wrapping
+//! `apply_merge` alone, with no way to produce the `SegmentCommitInfo` it
+//! needs from the JVM side, would be a half-working surface a caller could
+//! never actually drive; exposing manual merge execution is a separate,
+//! larger task. `set_merge_policy` itself only exposes the four
 //! knobs [`lucene_index::merge_policy::MergePolicyConfig`] actually has today
 //! (`max_merge_at_once`, `segments_per_tier`, `max_merged_segment_size`,
 //! `reclaim_weight`) -- no additional `TieredMergePolicy` knobs (e.g.
@@ -929,6 +944,123 @@ pub unsafe extern "C" fn ffi_writer_delete_documents(
             .delete_documents(&sources, field, term)
             .map(|_| ())
             .map_err(|e| map_writer_error("ffi_writer_delete_documents", e))
+    })
+}
+
+/// Writes the number of segments in `writer_handle`'s current committed
+/// [`IndexWriter::segment_infos`] to `*out_len` -- call before looping
+/// [`ffi_writer_segment_info_name`] over `0..len`, the same "length first"
+/// shape [`crate::results_fragments::ffi_fragment_results_len`] establishes
+/// for its own per-index accessor. Reflects only already-`commit()`ed
+/// segments -- not-yet-flushed [`ffi_writer_add_document`] calls are not
+/// counted here (see [`ffi_writer_pending_doc_count`] for those).
+///
+/// # Safety
+/// `out_len` must be valid for one `usize` write.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_writer_segment_infos_len(
+    writer_handle: u64,
+    out_len: *mut usize,
+) -> i32 {
+    guard(|| {
+        if out_len.is_null() {
+            return Err(FfiStatus::NullPointer);
+        }
+        let registry = lock_recovering(writers());
+        let handle = registry.get(writer_handle).ok_or_else(|| {
+            set_last_error("ffi_writer_segment_infos_len: unknown or already-closed handle");
+            FfiStatus::InvalidHandle
+        })?;
+        // SAFETY: caller contract guarantees `out_len` is valid for one write.
+        unsafe {
+            *out_len = handle.writer.segment_infos().segments.len();
+        }
+        Ok(())
+    })
+}
+
+/// Copies segment index `index`'s name (e.g. `"_0"`) from `writer_handle`'s
+/// current committed [`IndexWriter::segment_infos`] into `buf`
+/// (caller-allocated, `buf_len` bytes), NUL-terminated, writing the number of
+/// bytes written (excluding the NUL) to `*out_written` -- same
+/// `buf`/`buf_len`/`out_written`/`BufferTooSmall` contract as
+/// [`crate::ffi_get_last_error_message`]. Returns
+/// [`FfiStatus::IndexOutOfBounds`] for `index >= ` [`ffi_writer_segment_infos_len`].
+///
+/// # Safety
+/// `buf` must be valid for writes of `buf_len` bytes; `out_written` must be
+/// valid for one `usize` write, or null.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_writer_segment_info_name(
+    writer_handle: u64,
+    index: usize,
+    buf: *mut c_char,
+    buf_len: usize,
+    out_written: *mut usize,
+) -> i32 {
+    guard(|| {
+        let registry = lock_recovering(writers());
+        let handle = registry.get(writer_handle).ok_or_else(|| {
+            set_last_error("ffi_writer_segment_info_name: unknown or already-closed handle");
+            FfiStatus::InvalidHandle
+        })?;
+        let segments = &handle.writer.segment_infos().segments;
+        let segment = segments.get(index).ok_or_else(|| {
+            set_last_error(format!(
+                "ffi_writer_segment_info_name: index {index} out of bounds (len {})",
+                segments.len()
+            ));
+            FfiStatus::IndexOutOfBounds
+        })?;
+        let bytes = segment.segment_name.as_bytes();
+        if bytes.len() + 1 > buf_len {
+            return Err(FfiStatus::BufferTooSmall);
+        }
+        if buf.is_null() {
+            return Err(FfiStatus::NullPointer);
+        }
+        // SAFETY: caller contract guarantees `buf` is valid for `buf_len`
+        // bytes, and `bytes.len() + 1 <= buf_len` was just checked above.
+        unsafe {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr() as *const c_char, buf, bytes.len());
+            *buf.add(bytes.len()) = 0;
+        }
+        if !out_written.is_null() {
+            // SAFETY: caller contract guarantees `out_written` is valid for
+            // one write.
+            unsafe {
+                *out_written = bytes.len();
+            }
+        }
+        Ok(())
+    })
+}
+
+/// Writes the number of documents buffered by [`ffi_writer_add_document`] but
+/// not yet written to disk by [`ffi_writer_commit`] to `*out_len` -- see
+/// [`IndexWriter::pending_doc_count`].
+///
+/// # Safety
+/// `out_len` must be valid for one `usize` write.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_writer_pending_doc_count(
+    writer_handle: u64,
+    out_len: *mut usize,
+) -> i32 {
+    guard(|| {
+        if out_len.is_null() {
+            return Err(FfiStatus::NullPointer);
+        }
+        let registry = lock_recovering(writers());
+        let handle = registry.get(writer_handle).ok_or_else(|| {
+            set_last_error("ffi_writer_pending_doc_count: unknown or already-closed handle");
+            FfiStatus::InvalidHandle
+        })?;
+        // SAFETY: caller contract guarantees `out_len` is valid for one write.
+        unsafe {
+            *out_len = handle.writer.pending_doc_count();
+        }
+        Ok(())
     })
 }
 
@@ -2581,5 +2713,206 @@ mod tests {
             FfiStatus::InvalidHandle.code()
         );
         crate::directory::ffi_close_directory(dir_handle);
+    }
+
+    #[test]
+    fn segment_infos_len_unknown_handle_is_invalid_handle() {
+        let mut out_len: usize = 0;
+        let rc = unsafe { ffi_writer_segment_infos_len(0xDEAD_BEEF, &mut out_len as *mut _) };
+        assert_eq!(rc, FfiStatus::InvalidHandle.code());
+    }
+
+    #[test]
+    fn segment_infos_len_null_out_len_is_null_pointer_error() {
+        let tmp = tempdir("segment-infos-len-null");
+        let (_, handle) = open_test_writer(&tmp);
+        let rc = unsafe { ffi_writer_segment_infos_len(handle, std::ptr::null_mut()) };
+        assert_eq!(rc, FfiStatus::NullPointer.code());
+        ffi_close_writer(handle);
+    }
+
+    #[test]
+    fn segment_info_name_unknown_handle_is_invalid_handle() {
+        let mut buf = [0 as c_char; 64];
+        let mut written: usize = 0;
+        let rc = unsafe {
+            ffi_writer_segment_info_name(
+                0xDEAD_BEEF,
+                0,
+                buf.as_mut_ptr(),
+                buf.len(),
+                &mut written as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::InvalidHandle.code());
+    }
+
+    #[test]
+    fn segment_info_name_out_of_bounds_index_is_index_out_of_bounds() {
+        let tmp = tempdir("segment-info-name-oob");
+        let (_, handle) = open_test_writer(&tmp);
+        let mut buf = [0 as c_char; 64];
+        let mut written: usize = 0;
+        let rc = unsafe {
+            ffi_writer_segment_info_name(
+                handle,
+                0,
+                buf.as_mut_ptr(),
+                buf.len(),
+                &mut written as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::IndexOutOfBounds.code());
+        ffi_close_writer(handle);
+    }
+
+    #[test]
+    fn segment_info_name_buffer_too_small_leaves_buffer_untouched() {
+        let tmp = tempdir("segment-info-name-small-buf");
+        let (_, handle) = open_test_writer(&tmp);
+        assert_eq!(add_doc(handle, "a"), FfiStatus::Ok.code());
+        assert_eq!(ffi_writer_commit(handle), FfiStatus::Ok.code());
+
+        let mut buf = [0 as c_char; 1]; // segment name "_0" needs 3 bytes (2 + NUL)
+        let mut written: usize = 0;
+        let rc = unsafe {
+            ffi_writer_segment_info_name(
+                handle,
+                0,
+                buf.as_mut_ptr(),
+                buf.len(),
+                &mut written as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::BufferTooSmall.code());
+        ffi_close_writer(handle);
+    }
+
+    #[test]
+    fn segment_info_name_exact_size_buffer_succeeds() {
+        // A buffer of exactly `name_bytes.len() + 1` (room for the NUL
+        // terminator, no more) is the boundary between the too-small case
+        // above and the generously-large case the end-to-end test uses --
+        // must succeed, not be rejected as one byte short.
+        let tmp = tempdir("segment-info-name-exact-buf");
+        let (_, handle) = open_test_writer(&tmp);
+        assert_eq!(add_doc(handle, "a"), FfiStatus::Ok.code());
+        assert_eq!(ffi_writer_commit(handle), FfiStatus::Ok.code());
+
+        let mut buf = [0 as c_char; 3]; // "_0" is 2 bytes + 1 for NUL == 3
+        let mut written: usize = 0;
+        let rc = unsafe {
+            ffi_writer_segment_info_name(
+                handle,
+                0,
+                buf.as_mut_ptr(),
+                buf.len(),
+                &mut written as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::Ok.code());
+        assert_eq!(written, 2);
+        let name = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) }
+            .to_str()
+            .unwrap();
+        assert_eq!(name, "_0");
+        ffi_close_writer(handle);
+    }
+
+    #[test]
+    fn pending_doc_count_unknown_handle_is_invalid_handle() {
+        let mut out_len: usize = 0;
+        let rc = unsafe { ffi_writer_pending_doc_count(0xDEAD_BEEF, &mut out_len as *mut _) };
+        assert_eq!(rc, FfiStatus::InvalidHandle.code());
+    }
+
+    #[test]
+    fn pending_doc_count_null_out_len_is_null_pointer_error() {
+        let tmp = tempdir("pending-doc-count-null");
+        let (_, handle) = open_test_writer(&tmp);
+        let rc = unsafe { ffi_writer_pending_doc_count(handle, std::ptr::null_mut()) };
+        assert_eq!(rc, FfiStatus::NullPointer.code());
+        ffi_close_writer(handle);
+    }
+
+    #[test]
+    fn segment_infos_and_pending_doc_count_reflect_writer_state_across_commits() {
+        let tmp = tempdir("segment-infos-pending-e2e");
+        let (rc, handle) = open_test_writer(&tmp);
+        assert_eq!(rc, FfiStatus::Ok.code());
+
+        // Fresh writer: no segments yet, nothing pending.
+        let mut len: usize = 0;
+        assert_eq!(
+            unsafe { ffi_writer_segment_infos_len(handle, &mut len as *mut _) },
+            FfiStatus::Ok.code()
+        );
+        assert_eq!(len, 0);
+        assert_eq!(
+            unsafe { ffi_writer_pending_doc_count(handle, &mut len as *mut _) },
+            FfiStatus::Ok.code()
+        );
+        assert_eq!(len, 0);
+
+        // Buffer two documents: pending_doc_count reflects them, but no
+        // segment exists until commit().
+        assert_eq!(add_doc(handle, "a"), FfiStatus::Ok.code());
+        assert_eq!(add_doc(handle, "b"), FfiStatus::Ok.code());
+        let mut pending: usize = 0;
+        assert_eq!(
+            unsafe { ffi_writer_pending_doc_count(handle, &mut pending as *mut _) },
+            FfiStatus::Ok.code()
+        );
+        assert_eq!(pending, 2);
+        assert_eq!(
+            unsafe { ffi_writer_segment_infos_len(handle, &mut len as *mut _) },
+            FfiStatus::Ok.code()
+        );
+        assert_eq!(len, 0);
+
+        // First commit: one segment, pending count back to 0.
+        assert_eq!(ffi_writer_commit(handle), FfiStatus::Ok.code());
+        assert_eq!(
+            unsafe { ffi_writer_pending_doc_count(handle, &mut pending as *mut _) },
+            FfiStatus::Ok.code()
+        );
+        assert_eq!(pending, 0);
+        assert_eq!(
+            unsafe { ffi_writer_segment_infos_len(handle, &mut len as *mut _) },
+            FfiStatus::Ok.code()
+        );
+        assert_eq!(len, 1);
+
+        let mut buf = [0 as c_char; 64];
+        let mut written: usize = 0;
+        assert_eq!(
+            unsafe {
+                ffi_writer_segment_info_name(
+                    handle,
+                    0,
+                    buf.as_mut_ptr(),
+                    buf.len(),
+                    &mut written as *mut _,
+                )
+            },
+            FfiStatus::Ok.code()
+        );
+        let name = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) }
+            .to_str()
+            .unwrap();
+        assert_eq!(name, "_0");
+        assert_eq!(written, 2);
+
+        // Second commit (no default auto-merge policy set, so no merging
+        // happens here): two segments.
+        assert_eq!(add_doc(handle, "c"), FfiStatus::Ok.code());
+        assert_eq!(ffi_writer_commit(handle), FfiStatus::Ok.code());
+        assert_eq!(
+            unsafe { ffi_writer_segment_infos_len(handle, &mut len as *mut _) },
+            FfiStatus::Ok.code()
+        );
+        assert_eq!(len, 2);
+
+        ffi_close_writer(handle);
     }
 }

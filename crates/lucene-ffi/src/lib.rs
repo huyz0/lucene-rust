@@ -289,7 +289,8 @@ pub use segment::{ffi_close_segment, ffi_open_segment};
 pub use sort::{ffi_sort_by_doc_value, ffi_sort_by_multi_valued_doc_value};
 pub use writer::{
     ffi_close_writer, ffi_open_writer, ffi_writer_add_document, ffi_writer_commit,
-    ffi_writer_finish_commit, ffi_writer_prepare_commit, ffi_writer_rollback,
+    ffi_writer_finish_commit, ffi_writer_pending_doc_count, ffi_writer_prepare_commit,
+    ffi_writer_rollback, ffi_writer_segment_info_name, ffi_writer_segment_infos_len,
     ffi_writer_set_merge_policy,
 };
 
