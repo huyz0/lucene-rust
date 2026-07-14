@@ -76,7 +76,7 @@ Cargo workspace, one crate per Java module boundary (roughly):
 | `lucene-store` | `o.a.l.store` | `Directory`, `IndexInput/Output`, mmap (memmap2), buffered/NIOFS, checksums, locking |
 | `lucene-codecs` | `o.a.l.codecs` | Codec trait + the one pinned default codec: postings (PFOR-delta), doc values, stored fields (LZ4/zstd blocks), points (BKD), KNN vectors (HNSW), norms, live docs, segment infos |
 | `lucene-index` | `o.a.l.index` | SegmentReader/DirectoryReader, Terms/PostingsEnum, IndexWriter, DWPT, merge policy/scheduler, deletes, commits |
-| `lucene-analysis` | `o.a.l.analysis` + `analysis/common` subset | TokenStream trait, StandardTokenizer (from Unicode segmentation), lowercase/stop/ascii-folding; everything else stays JVM-side long-term |
+| `lucene-analysis` | `o.a.l.analysis` + `analysis/common` subset | TokenStream trait, StandardTokenizer (from Unicode segmentation), lowercase/stop/ascii-folding/Porter-stem; everything else stays JVM-side long-term |
 | `lucene-search` | `o.a.l.search` | Query/Weight/Scorer, Boolean (WAND/BMW), term/phrase/points ranges, collectors, BM25, ConstantScore, MatchAll |
 | `lucene-core` | — | Facade crate re-exporting the above; the "public API" |
 | `lucene-ffi` | — | `cdylib`: C ABI + JNI export layer, handle registry, panic → error-code mapping |
@@ -1747,6 +1747,50 @@ through untouched, mixed diacritic+ASCII in one token, a non-table
 character (Cyrillic) passing through unchanged, the composed
 fold-then-lowercase order, and the unchanged no-folding default. Coverage:
 `lucene-analysis/src/lib.rs` 100% lines (28 unit tests + 3 fixture tests).
+
+**Progress (task #65):** `PorterStemFilter`, a fourth `lucene-analysis`
+filter alongside `LowerCaseFilter`/`StopFilter`/`AsciiFoldingFilter`,
+mirroring real `org.apache.lucene.analysis.en.PorterStemFilter`. **All five
+steps of the classic 1980 Porter algorithm are ported, not a subset**: step
+1a (`-sses`->`-ss`, `-ies`->`-i`, `-s`-> delete), step 1b (`-eed`->`-ee`
+under `m>0`; `-ed`/`-ing` deleted only if the stem has a vowel, with the
+at/bl/iz-append, double-consonant-drop, and CVC-append cleanup that
+follows), step 1c (`-y`->`-i` if the stem has a vowel), step 2 (the
+`-ational`/`-tional`/... 20-entry suffix table, `m>0`), step 3
+(`-icate`/`-ative`/... , `m>0`), step 4 (`-al`/`-ance`/`-ion` (only after
+s/t)/... removal, `m>1`), step 5a (final `-e` dropped under `m>1`, or `m==1`
+and not CVC), step 5b (`-ll`->`-l` under `m>1`). Implemented as a private
+`porter` submodule (`is_consonant`/`measure`/`contains_vowel`/
+`ends_double_consonant`/`cvc`/`try_step` helpers plus one function per
+step), operating on `Vec<char>` for correct Unicode-scalar indexing.
+**Domain of definition, stated explicitly**: the algorithm (and Lucene's own
+port of it) is only defined over lowercase ASCII alphabetic words -- a term
+containing any non-ASCII-alphabetic character or uppercase letter passes
+through unchanged (never panics). In the normal analyzer chain this is a
+non-issue since `PorterStemFilter` runs after `LowerCaseFilter`. **Filter
+ordering**: `Analyzer::with_stemming()` inserts stemming *last* (tokenize ->
+fold -> lowercase -> stopwords -> stem), matching real Lucene's
+`EnglishAnalyzer` (its stop set holds unstemmed words like `"the"`, so
+stopword matching must see pre-stem terms). Off by default -- existing
+callers (`query_parser.rs`, `indexing_chain.rs`) are unaffected; opt in via
+`.with_stemming()`. **Verification approach**: direct unit tests against
+known Porter-algorithm input/output pairs rather than a new Java fixture --
+this is a purely algorithmic, non-file-format task (no on-disk bytes to
+diff), and the test vocabulary is drawn from the algorithm's own canonical
+worked examples (Porter's 1980 paper's step 2-4 illustration list, e.g.
+"relational"->"relat", "operator"->"oper", "triplicate"->"triplic"),
+independently traceable step-by-step against the implementation rather than
+guessed. Unit tests cover: step 1a plurals (caresses/ponies/cats/caress),
+step 1b's `m`/vowel guards including words that must **not** stem
+(feed/bled/sing all fail their respective conditions and stay unchanged;
+agreed->agre, plastered->plaster, motoring->motor do stem), the full step
+2/3/4 suffix-family table (47 canonical pairs), step 5's final-e/double-l
+edge cases (rate keeps its `e` since `m==1` and it is CVC; roll keeps one
+`l` since `m==1` not `>1`), offsets/position-increment left untouched,
+non-lowercase-ASCII pass-through (uppercase, accented, empty, digit-only
+terms), and the composed `Analyzer::with_stemming()` running after
+`StopFilter`. Coverage: `lucene-analysis/src/lib.rs` 99.11% lines (61 unit
+tests total + 3 fixture tests; workspace total 97.36% lines, gate is 95%).
 
 1. `lucene-analysis`: `TokenStream` as an iterator-of-token-structs (skip Java's
    AttributeSource reflection design entirely — a plain

@@ -258,43 +258,110 @@ impl AsciiFoldingFilter {
     }
 }
 
+/// Real Lucene's `org.apache.lucene.analysis.en.PorterStemFilter`: the
+/// classic Porter stemming algorithm (Martin Porter, "An algorithm for
+/// suffix stripping", 1980) for English, stemming each token's `term` field
+/// and leaving offsets/position increments untouched (same convention as
+/// every other filter in this crate).
+///
+/// **Scope, stated explicitly**: this ports **all five steps** of the
+/// original 1980 algorithm --
+///
+/// - **Step 1a**: `-sses`->`-ss`, `-ies`->`-i`, `-ss`->`-ss` (no-op), `-s`->
+///   (delete).
+/// - **Step 1b**: `-eed`->`-ee` (only if `m(stem) > 0`); `-ed`/`-ing` deleted
+///   only if the stem contains a vowel, followed by cleanup (`-at`/`-bl`/
+///   `-iz` gets `e` appended; a double consonant not ending in `l`/`s`/`z`
+///   loses its last letter; `m(stem) == 1` and CVC gets `e` appended).
+/// - **Step 1c**: trailing `y` -> `i` if the stem contains a vowel.
+/// - **Step 2** (`m(stem) > 0`): the long suffix-family table (`-ational`->
+///   `-ate`, `-tional`->`-tion`, `-enci`->`-ence`, ... `-biliti`->`-ble`).
+/// - **Step 3** (`m(stem) > 0`): `-icate`->`-ic`, `-ative`-> (delete),
+///   `-alize`->`-al`, `-iciti`->`-ic`, `-ical`->`-ic`, `-ful`/`-ness`->
+///   (delete).
+/// - **Step 4** (`m(stem) > 1`): removes `-al`, `-ance`, `-ence`, `-er`,
+///   `-ic`, `-able`, `-ible`, `-ant`, `-ement`, `-ment`, `-ent`, `-ion` (only
+///   if preceded by `s`/`t`), `-ou`, `-ism`, `-ate`, `-iti`, `-ous`, `-ive`,
+///   `-ize`.
+/// - **Step 5a**: trailing `e` deleted if `m(stem) > 1`, or if `m(stem) == 1`
+///   and the stem is not CVC.
+/// - **Step 5b**: a trailing double `l` collapses to a single `l` if
+///   `m(word) > 1`.
+///
+/// Nothing is deferred -- this is the complete classic algorithm, not a
+/// subset -- but it is still **English-only** and, per the algorithm's own
+/// definition, only meaningful on lowercase ASCII alphabetic input: a term
+/// containing any non-ASCII-alphabetic character (digits, punctuation,
+/// non-Latin scripts) or any uppercase letter is passed through **unchanged**
+/// (never panics, never partially stems). In a normal analyzer chain this
+/// filter runs after [`LowerCaseFilter`], so terms are already lowercase by
+/// the time they reach it; this guard only matters if `PorterStemFilter` is
+/// used standalone on not-yet-lowercased text.
+pub struct PorterStemFilter;
+
+impl PorterStemFilter {
+    pub fn apply(tokens: Vec<Token>) -> Vec<Token> {
+        tokens
+            .into_iter()
+            .map(|mut t| {
+                t.term = porter::stem(&t.term);
+                t
+            })
+            .collect()
+    }
+}
+
 /// An analyzer composing a tokenizer with a configurable filter chain.
 ///
 /// At minimum applies [`LowerCaseFilter`]; optionally applies [`StopFilter`]
-/// when stopwords are configured, and optionally applies
-/// [`AsciiFoldingFilter`] when enabled via [`Analyzer::with_ascii_folding`].
-/// Additional real-Lucene filters (stemming, synonyms, etc.) are out of
-/// scope for this MVP -- see `docs/parity.md`.
+/// when stopwords are configured, optionally applies [`AsciiFoldingFilter`]
+/// when enabled via [`Analyzer::with_ascii_folding`], and optionally applies
+/// [`PorterStemFilter`] when enabled via [`Analyzer::with_stemming`].
+/// Additional real-Lucene filters (synonyms, etc.) are out of scope for this
+/// MVP -- see `docs/parity.md`.
 pub struct Analyzer {
     stopwords: Option<HashSet<String>>,
     ascii_folding: bool,
+    stemming: bool,
 }
 
 impl Analyzer {
     /// A "standard"-style analyzer: word-boundary tokenizer + lowercase +
     /// optional stopword removal, mirroring real Lucene's `StandardAnalyzer`
     /// (`StandardTokenizer` + `LowerCaseFilter` + `StopFilter`) at this
-    /// crate's documented scope. ASCII-folding is off by default -- use
-    /// [`Analyzer::with_ascii_folding`] to enable it -- so every existing
-    /// caller's behavior is unchanged.
+    /// crate's documented scope. ASCII-folding and stemming are off by
+    /// default -- use [`Analyzer::with_ascii_folding`] / [`Analyzer::with_stemming`]
+    /// to enable them -- so every existing caller's behavior is unchanged.
     pub fn standard(stopwords: Option<&HashSet<String>>) -> Self {
         Analyzer {
             stopwords: stopwords.cloned(),
             ascii_folding: false,
+            stemming: false,
         }
     }
 
     /// Enables [`AsciiFoldingFilter`] in this analyzer's chain. Filter
-    /// order: tokenize -> **fold** -> lowercase -> stopwords. Folding runs
-    /// before lowercasing so that an uppercase accented letter (e.g. `É`)
-    /// folds straight to its ASCII letter (`E`) and then gets lowercased
-    /// along with every other token in the same pass, rather than needing
-    /// its own case-conversion step; this also means stopword matching (which
-    /// happens last, against already-lowercased terms) sees the fully
-    /// folded-and-lowercased form regardless of the input's original
-    /// diacritics/casing.
+    /// order: tokenize -> **fold** -> lowercase -> stopwords -> stemming.
+    /// Folding runs before lowercasing so that an uppercase accented letter
+    /// (e.g. `É`) folds straight to its ASCII letter (`E`) and then gets
+    /// lowercased along with every other token in the same pass, rather than
+    /// needing its own case-conversion step; this also means stopword
+    /// matching (which happens next, against already-lowercased terms) sees
+    /// the fully folded-and-lowercased form regardless of the input's
+    /// original diacritics/casing.
     pub fn with_ascii_folding(mut self) -> Self {
         self.ascii_folding = true;
+        self
+    }
+
+    /// Enables [`PorterStemFilter`] in this analyzer's chain, mirroring real
+    /// Lucene's `EnglishAnalyzer` running `PorterStemFilter` as its last
+    /// stage. Filter order: tokenize -> fold -> lowercase -> stopwords ->
+    /// **stem**. Stemming runs last so that stopword matching sees
+    /// unstemmed terms (matching real Lucene: `EnglishAnalyzer`'s stop set
+    /// contains unstemmed words like `"the"`, not stems).
+    pub fn with_stemming(mut self) -> Self {
+        self.stemming = true;
         self
     }
 
@@ -306,9 +373,285 @@ impl Analyzer {
             tokens
         };
         let tokens = LowerCaseFilter::apply(tokens);
-        match &self.stopwords {
+        let tokens = match &self.stopwords {
             Some(stopwords) => StopFilter::apply(tokens, stopwords),
             None => tokens,
+        };
+        if self.stemming {
+            PorterStemFilter::apply(tokens)
+        } else {
+            tokens
+        }
+    }
+}
+
+/// The classic Porter stemming algorithm (Martin Porter, 1980), operating on
+/// lowercase ASCII alphabetic words. See [`PorterStemFilter`] for the
+/// documented per-step scope; this module is a direct, mechanical port of
+/// the published algorithm's five steps.
+mod porter {
+    /// Stems `term`, or returns it unchanged if it isn't a lowercase ASCII
+    /// alphabetic word (the algorithm's own domain of definition).
+    pub(super) fn stem(term: &str) -> String {
+        if term.is_empty() || !term.chars().all(|c| c.is_ascii_lowercase()) {
+            return term.to_string();
+        }
+        let mut w: Vec<char> = term.chars().collect();
+        step1a(&mut w);
+        step1b(&mut w);
+        step1c(&mut w);
+        step2(&mut w);
+        step3(&mut w);
+        step4(&mut w);
+        step5a(&mut w);
+        step5b(&mut w);
+        w.into_iter().collect()
+    }
+
+    /// Is `chars[i]` a consonant? Vowels are `a`/`e`/`i`/`o`/`u`; `y` is a
+    /// consonant at position 0 or immediately after a VOWEL, and a vowel
+    /// immediately after a consonant -- Porter's own reference rule
+    /// (`case 'y': return (i==0) ? TRUE : !cons(i-1);`). E.g. "syzygy": the
+    /// first `y` follows consonant `s`, so it's a VOWEL there (not a
+    /// consonant); "toy": `y` follows vowel `o`, so it's a CONSONANT there.
+    fn is_consonant(chars: &[char], i: usize) -> bool {
+        match chars[i] {
+            'a' | 'e' | 'i' | 'o' | 'u' => false,
+            'y' => i == 0 || !is_consonant(chars, i - 1),
+            _ => true,
+        }
+    }
+
+    /// The algorithm's "measure" `m`: the number of `VC` (vowel-then-
+    /// consonant) sequences in `chars`, after skipping any leading
+    /// consonants and ignoring any trailing vowels.
+    fn measure(chars: &[char]) -> u32 {
+        let n = chars.len();
+        let mut i = 0;
+        while i < n && is_consonant(chars, i) {
+            i += 1;
+        }
+        let mut m = 0;
+        loop {
+            while i < n && !is_consonant(chars, i) {
+                i += 1;
+            }
+            if i >= n {
+                break;
+            }
+            while i < n && is_consonant(chars, i) {
+                i += 1;
+            }
+            m += 1;
+            if i >= n {
+                break;
+            }
+        }
+        m
+    }
+
+    /// Does `chars` contain at least one vowel?
+    fn contains_vowel(chars: &[char]) -> bool {
+        (0..chars.len()).any(|i| !is_consonant(chars, i))
+    }
+
+    /// Does `chars` end in a double consonant (e.g. `-tt`, `-ss`)?
+    fn ends_double_consonant(chars: &[char]) -> bool {
+        let n = chars.len();
+        n >= 2 && chars[n - 1] == chars[n - 2] && is_consonant(chars, n - 1)
+    }
+
+    /// Does `chars` end in consonant-vowel-consonant, where the final
+    /// consonant is not `w`, `x`, or `y` (real Porter's `*o` condition)?
+    fn cvc(chars: &[char]) -> bool {
+        let n = chars.len();
+        n >= 3
+            && is_consonant(chars, n - 3)
+            && !is_consonant(chars, n - 2)
+            && is_consonant(chars, n - 1)
+            && !matches!(chars[n - 1], 'w' | 'x' | 'y')
+    }
+
+    /// If `w` ends with `suffix` and `measure` of the remaining stem is
+    /// `>= min_m`, replaces the suffix with `replacement` and returns `true`.
+    /// Otherwise leaves `w` untouched and returns `false`.
+    fn try_step(w: &mut Vec<char>, suffix: &str, replacement: &str, min_m: u32) -> bool {
+        let n = w.len();
+        let suf_len = suffix.chars().count();
+        if n < suf_len {
+            return false;
+        }
+        if w[n - suf_len..].iter().collect::<String>() != suffix {
+            return false;
+        }
+        let stem = &w[..n - suf_len];
+        if measure(stem) < min_m {
+            return false;
+        }
+        let mut new_w: Vec<char> = stem.to_vec();
+        new_w.extend(replacement.chars());
+        *w = new_w;
+        true
+    }
+
+    /// Step 1a: `-sses`->`-ss`, `-ies`->`-i`, `-ss`->`-ss` (no-op), else
+    /// trailing `-s`-> (delete). Unconditional on measure.
+    fn step1a(w: &mut Vec<char>) {
+        let s: String = w.iter().collect();
+        if s.ends_with("sses") {
+            w.truncate(w.len() - 2);
+        } else if s.ends_with("ies") {
+            w.truncate(w.len() - 3);
+            w.push('i');
+        } else if s.ends_with("ss") {
+            // no-op: "ss" stays "ss".
+        } else if s.ends_with('s') {
+            w.truncate(w.len() - 1);
+        }
+    }
+
+    /// Step 1b: `-eed`->`-ee` (if `m(stem) > 0`); `-ed`/`-ing` deleted only
+    /// if the stem contains a vowel, then post-deletion cleanup.
+    fn step1b(w: &mut Vec<char>) {
+        let s: String = w.iter().collect();
+        if s.ends_with("eed") {
+            let stem_len = w.len() - 3;
+            if measure(&w[..stem_len]) > 0 {
+                w.truncate(w.len() - 1);
+            }
+            return;
+        }
+        let deleted = if s.ends_with("ed") && contains_vowel(&w[..w.len() - 2]) {
+            w.truncate(w.len() - 2);
+            true
+        } else if s.ends_with("ing") && contains_vowel(&w[..w.len() - 3]) {
+            w.truncate(w.len() - 3);
+            true
+        } else {
+            false
+        };
+        if !deleted {
+            return;
+        }
+        let s2: String = w.iter().collect();
+        if s2.ends_with("at") || s2.ends_with("bl") || s2.ends_with("iz") {
+            w.push('e');
+        } else if ends_double_consonant(w) && !matches!(w[w.len() - 1], 'l' | 's' | 'z') {
+            w.pop();
+        } else if measure(w) == 1 && cvc(w) {
+            w.push('e');
+        }
+    }
+
+    /// Step 1c: trailing `y` -> `i` if the stem (word minus the `y`)
+    /// contains a vowel.
+    fn step1c(w: &mut [char]) {
+        let n = w.len();
+        if n > 0 && w[n - 1] == 'y' && contains_vowel(&w[..n - 1]) {
+            w[n - 1] = 'i';
+        }
+    }
+
+    /// Step 2 (`m(stem) > 0`): the long suffix-family table. Tried in the
+    /// order the original paper lists them (longer/more-specific suffixes
+    /// like `-ational` before their shorter overlapping counterparts like
+    /// `-tional`), stopping at the first match.
+    fn step2(w: &mut Vec<char>) {
+        const RULES: &[(&str, &str)] = &[
+            ("ational", "ate"),
+            ("tional", "tion"),
+            ("enci", "ence"),
+            ("anci", "ance"),
+            ("izer", "ize"),
+            ("abli", "able"),
+            ("alli", "al"),
+            ("entli", "ent"),
+            ("eli", "e"),
+            ("ousli", "ous"),
+            ("ization", "ize"),
+            ("ation", "ate"),
+            ("ator", "ate"),
+            ("alism", "al"),
+            ("iveness", "ive"),
+            ("fulness", "ful"),
+            ("ousness", "ous"),
+            ("aliti", "al"),
+            ("iviti", "ive"),
+            ("biliti", "ble"),
+        ];
+        for (suf, rep) in RULES {
+            if try_step(w, suf, rep, 1) {
+                return;
+            }
+        }
+    }
+
+    /// Step 3 (`m(stem) > 0`): a smaller suffix-family table.
+    fn step3(w: &mut Vec<char>) {
+        const RULES: &[(&str, &str)] = &[
+            ("icate", "ic"),
+            ("ative", ""),
+            ("alize", "al"),
+            ("iciti", "ic"),
+            ("ical", "ic"),
+            ("ful", ""),
+            ("ness", ""),
+        ];
+        for (suf, rep) in RULES {
+            if try_step(w, suf, rep, 1) {
+                return;
+            }
+        }
+    }
+
+    /// Step 4 (`m(stem) > 1`): strips a suffix entirely. `-ion` additionally
+    /// requires the stem to end in `s` or `t` (real Porter's special case).
+    fn step4(w: &mut Vec<char>) {
+        const RULES: &[&str] = &[
+            "al", "ance", "ence", "er", "ic", "able", "ible", "ant", "ement", "ment", "ent",
+        ];
+        for suf in RULES {
+            if try_step(w, suf, "", 2) {
+                return;
+            }
+        }
+        let n = w.len();
+        if n >= 4 && w[n - 3..].iter().collect::<String>() == "ion" && matches!(w[n - 4], 's' | 't')
+        {
+            let stem = &w[..n - 3];
+            if measure(stem) > 1 {
+                w.truncate(n - 3);
+                return;
+            }
+        }
+        const REST: &[&str] = &["ou", "ism", "ate", "iti", "ous", "ive", "ize"];
+        for suf in REST {
+            if try_step(w, suf, "", 2) {
+                return;
+            }
+        }
+    }
+
+    /// Step 5a: trailing `e` deleted if `m(stem) > 1`, or if `m(stem) == 1`
+    /// and the stem is not CVC.
+    fn step5a(w: &mut Vec<char>) {
+        let n = w.len();
+        if n == 0 || w[n - 1] != 'e' {
+            return;
+        }
+        let stem = &w[..n - 1];
+        let m = measure(stem);
+        if m > 1 || (m == 1 && !cvc(stem)) {
+            w.truncate(n - 1);
+        }
+    }
+
+    /// Step 5b: a trailing double `l` collapses to a single `l` if
+    /// `m(word) > 1`.
+    fn step5b(w: &mut Vec<char>) {
+        let n = w.len();
+        if n >= 2 && w[n - 1] == 'l' && w[n - 2] == 'l' && measure(w) > 1 {
+            w.pop();
         }
     }
 }
@@ -621,6 +964,192 @@ mod tests {
                 tok("ecole", 13, 19, 1),
             ]
         );
+    }
+
+    #[test]
+    fn porter_step1a_plural_forms() {
+        let tokens = vec![
+            tok("caresses", 0, 8, 1),
+            tok("ponies", 0, 6, 1),
+            tok("cats", 0, 4, 1),
+            tok("caress", 0, 6, 1),
+        ];
+        let out = PorterStemFilter::apply(tokens);
+        assert_eq!(
+            out,
+            vec![
+                tok("caress", 0, 8, 1),
+                tok("poni", 0, 6, 1),
+                tok("cat", 0, 4, 1),
+                tok("caress", 0, 6, 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn porter_step1b_ed_ing_and_short_word_guard() {
+        let cases: &[(&str, &str)] = &[
+            ("feed", "feed"),   // *v* fails on stem "f" -- must NOT stem.
+            ("agreed", "agre"), // m(stem)>0 for "eed" -> "ee", then 5a strips "e".
+            ("plastered", "plaster"),
+            ("bled", "bled"), // stem "bl" has no vowel -- must NOT stem.
+            ("motoring", "motor"),
+            ("sing", "sing"), // stem "s" has no vowel -- must NOT stem.
+        ];
+        for (input, expected) in cases {
+            let out = PorterStemFilter::apply(vec![tok(input, 0, 1, 1)]);
+            assert_eq!(out[0].term, *expected, "stemming {input:?}");
+        }
+    }
+
+    #[test]
+    fn porter_stem_leaves_offsets_and_position_increment_untouched() {
+        let tokens = vec![tok("running", 5, 12, 2)];
+        let out = PorterStemFilter::apply(tokens);
+        assert_eq!(out, vec![tok("run", 5, 12, 2)]);
+    }
+
+    #[test]
+    fn porter_stem_happiness_and_running() {
+        assert_eq!(
+            PorterStemFilter::apply(vec![tok("running", 0, 1, 1)])[0].term,
+            "run"
+        );
+        assert_eq!(
+            PorterStemFilter::apply(vec![tok("flies", 0, 1, 1)])[0].term,
+            "fli"
+        );
+        assert_eq!(
+            PorterStemFilter::apply(vec![tok("happiness", 0, 1, 1)])[0].term,
+            "happi"
+        );
+    }
+
+    /// Regression test for a real bug caught in review: `y` immediately
+    /// after a CONSONANT must count as a VOWEL (Porter's own reference rule,
+    /// `case 'y': return (i==0) ? TRUE : !cons(i-1);`), not a consonant, when
+    /// deciding whether a stem "contains a vowel" for step 1b's `-ing`
+    /// removal guard. Before this fix, `contains_vowel("fly")` was wrongly
+    /// `false` (the `y`, following consonant `l`, was misclassified as a
+    /// consonant instead of a vowel), so `-ing` was never stripped and
+    /// "flying"/"trying" passed through completely unstemmed. After the fix,
+    /// `-ing` correctly strips to "fly"/"try" -- step 1c's own, separate
+    /// `(*v*)` condition (checked against the letters preceding the trailing
+    /// `y`, i.e. "fl"/"tr") doesn't additionally fire here since neither
+    /// contains a vowel, so the final `y` is not further converted to `i`.
+    #[test]
+    fn porter_stem_y_after_consonant_is_a_vowel_not_a_consonant() {
+        assert_eq!(
+            PorterStemFilter::apply(vec![tok("flying", 0, 1, 1)])[0].term,
+            "fly",
+            "the -ing suffix must be stripped now that y-after-consonant counts as a vowel"
+        );
+        assert_eq!(
+            PorterStemFilter::apply(vec![tok("trying", 0, 1, 1)])[0].term,
+            "try",
+            "the -ing suffix must be stripped now that y-after-consonant counts as a vowel"
+        );
+    }
+
+    #[test]
+    fn porter_stem_step2_step3_step4_suffix_families() {
+        let cases: &[(&str, &str)] = &[
+            ("relational", "relat"),
+            ("conditional", "condit"),
+            ("rational", "ration"),
+            ("valenci", "valenc"),
+            ("hesitanci", "hesit"),
+            ("digitizer", "digit"),
+            ("conformabli", "conform"),
+            ("radicalli", "radic"),
+            ("differentli", "differ"),
+            ("vileli", "vile"),
+            ("analogousli", "analog"),
+            ("vietnamization", "vietnam"),
+            ("predication", "predic"),
+            ("operator", "oper"),
+            ("feudalism", "feudal"),
+            ("decisiveness", "decis"),
+            ("hopefulness", "hope"),
+            ("callousness", "callous"),
+            ("formaliti", "formal"),
+            ("sensitiviti", "sensit"),
+            ("sensibiliti", "sensibl"),
+            ("triplicate", "triplic"),
+            ("formative", "form"),
+            ("formalize", "formal"),
+            ("electriciti", "electr"),
+            ("electrical", "electr"),
+            ("hopeful", "hope"),
+            ("goodness", "good"),
+            ("revival", "reviv"),
+            ("allowance", "allow"),
+            ("inference", "infer"),
+            ("airliner", "airlin"),
+            ("gyroscopic", "gyroscop"),
+            ("adjustable", "adjust"),
+            ("defensible", "defens"),
+            ("irritant", "irrit"),
+            ("replacement", "replac"),
+            ("adjustment", "adjust"),
+            ("dependent", "depend"),
+            ("adoption", "adopt"),
+            ("homologou", "homolog"),
+            ("communism", "commun"),
+            ("activate", "activ"),
+            ("angulariti", "angular"),
+            ("homologous", "homolog"),
+            ("effective", "effect"),
+            ("bowdlerize", "bowdler"),
+        ];
+        for (input, expected) in cases {
+            let out = PorterStemFilter::apply(vec![tok(input, 0, 1, 1)]);
+            assert_eq!(out[0].term, *expected, "stemming {input:?}");
+        }
+    }
+
+    #[test]
+    fn porter_stem_step5_final_e_and_double_l() {
+        let cases: &[(&str, &str)] = &[
+            ("probate", "probat"),
+            ("rate", "rate"), // m==1 and IS cvc -- 'e' must survive.
+            ("cease", "ceas"),
+            ("controll", "control"),
+            ("roll", "roll"), // m==1, not >1 -- must NOT collapse.
+        ];
+        for (input, expected) in cases {
+            let out = PorterStemFilter::apply(vec![tok(input, 0, 1, 1)]);
+            assert_eq!(out[0].term, *expected, "stemming {input:?}");
+        }
+    }
+
+    #[test]
+    fn porter_stem_non_lowercase_ascii_passes_through_unchanged() {
+        // Uppercase and non-ASCII terms are outside the algorithm's domain
+        // of definition -- must pass through unchanged, never panic.
+        let tokens = vec![
+            tok("Running", 0, 7, 1),
+            tok("café", 0, 4, 1),
+            tok("", 0, 0, 1),
+            tok("123", 0, 3, 1),
+        ];
+        let out = PorterStemFilter::apply(tokens.clone());
+        assert_eq!(out, tokens);
+    }
+
+    #[test]
+    fn analyzer_with_stemming_runs_after_stopwords() {
+        let stopwords: HashSet<String> = ["the".to_string()].into_iter().collect();
+        let analyzer = Analyzer::standard(Some(&stopwords)).with_stemming();
+        let out = analyzer.analyze("The Running Flies");
+        assert_eq!(out, vec![tok("run", 4, 11, 2), tok("fli", 12, 17, 1),]);
+    }
+
+    #[test]
+    fn analyzer_default_has_no_stemming_backward_compatible() {
+        let analyzer = Analyzer::standard(None);
+        let out = analyzer.analyze("running");
+        assert_eq!(out, vec![tok("running", 0, 7, 1)]);
     }
 
     #[test]
