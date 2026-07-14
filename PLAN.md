@@ -743,6 +743,44 @@ invalid-argument/invalid-handle/double-close/wrong-registry-tag rejection tests
 for every exported function. `cargo llvm-cov --workspace --fail-under-lines 95`
 passes (97.66% total; `writer.rs` 95.76%).
 
+**Progress (follow-up task): IndexWriter postings/term-vector/doc-values FFI
+exposure.** `writer.rs` now also wraps `IndexWriter::set_postings_field`/
+`set_term_vector_field`/`set_doc_values_field` -- the three setters task #90
+explicitly deferred. `ffi_writer_set_postings_field`/`ffi_writer_set_term_vector_field`/
+`ffi_writer_set_doc_values_field` each take `(writer_handle, enabled: u8,
+field_name: *const c_char, field_name_len: usize)`, following
+`ffi_writer_set_merge_policy`'s own `enabled == 0` -> `None` scalar-parameter
+convention rather than a parallel-array shape, since each setter only ever
+configures one field at a time (matching the underlying Rust methods'
+`Option<&str>` signature exactly). A shared `decode_optional_field_name` helper
+centralizes the `enabled`/`str_from_raw` decoding all three share.
+`map_writer_error` was extended to map the nine new caller-input error variants
+these setters/commit can now surface (`UnknownPostingsField`,
+`UnsupportedPostingsIndexOptions`, `UnknownTermVectorField`,
+`UnsupportedTermVectorField`, `UnknownDocValuesField`,
+`UnsupportedDocValuesType`, `MissingDenseDocValue`, `NonNumericDocValue`,
+`NonBinaryDocValue`) to `FfiStatus::InvalidArgument`.
+
+Tests added to `writer.rs`'s own module: `set_postings_field_end_to_end_writes_
+readable_postings`, `set_term_vector_field_end_to_end_writes_readable_term_
+vectors`, `set_doc_values_field_end_to_end_writes_readable_numeric_values` (each
+opts a field in over FFI, adds documents and commits over FFI, then reads the
+resulting segment back Rust-side through this crate's own unmodified read side
+-- `lucene_codecs::blocktree`/`postings`, `lucene_codecs::term_vectors::open`,
+`lucene_codecs::doc_values::parse_meta`/`numeric_value` respectively -- to prove
+the field was genuinely written, not just that the FFI call returned `Ok`), plus
+unknown-handle rejection, a disabled (`enabled == 0`) no-op, and an
+unknown-field-name-is-`InvalidArgument` rejection for each of the three setters.
+`cargo llvm-cov --workspace --fail-under-lines 95` passes (97.70% total;
+`writer.rs` 97.82%).
+
+**Still out of scope, called out in the module doc comment and
+`docs/parity.md`:** `update_document`/`delete_documents`/`apply_merge`/
+`segment_infos`/`pending_doc_count` are not wrapped -- a separate task.
+`ffi_open_writer`'s field schema still fixes every `FieldInfo` flag besides
+index options/doc-values type/term-vector storage at its default (no
+`omit_norms`/points/vector dimensions over this entry point yet).
+
 ### Phase 5 — Write path: analysis chain + indexing (est. 12–16 weeks)
 
 **Progress so far:** every single-segment write primitive (stored fields, `FieldInfos`,

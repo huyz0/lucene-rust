@@ -13,18 +13,27 @@
 //! commit/two-phase-commit/rollback/auto-merge lifecycle exactly as
 //! `lucene_index::index_writer::IndexWriter` already implements it.
 //!
+//! `ffi_writer_set_postings_field`/`ffi_writer_set_term_vector_field`/
+//! `ffi_writer_set_doc_values_field` wrap
+//! [`IndexWriter::set_postings_field`]/[`IndexWriter::set_term_vector_field`]/
+//! [`IndexWriter::set_doc_values_field`] the same way `ffi_writer_set_merge_policy`
+//! wraps `set_merge_policy`: an `enabled` flag picks `None` (clears the
+//! setting) vs `Some(field_name)`, mirroring these three Rust-side methods'
+//! own `Option<&str>` parameter -- no new config surface invented, just the
+//! FFI plumbing.
+//!
 //! **Deliberately out of scope, tracked in `docs/parity.md`**: this module
-//! does not wrap `IndexWriter::set_postings_field`/`set_term_vector_field`/
-//! `set_doc_values_field`/`update_document`/`delete_documents`/`apply_merge`/
-//! `segment_infos`/`pending_doc_count` -- only the specific surface this
-//! task asked for (open/add_document/commit/prepare_commit/finish_commit/
-//! rollback/set_merge_policy) is exposed. `set_merge_policy` itself only
-//! exposes the four knobs [`lucene_index::merge_policy::MergePolicyConfig`]
-//! actually has today (`max_merge_at_once`, `segments_per_tier`,
-//! `max_merged_segment_size`, `reclaim_weight`) -- no additional
-//! `TieredMergePolicy` knobs (e.g. `forceMergeDeletesPctAllowed`,
-//! `floorSegmentMB`) are invented, since none exist in this port's
-//! `merge_policy.rs` to expose.
+//! does not wrap `IndexWriter::update_document`/`delete_documents`/
+//! `apply_merge`/`segment_infos`/`pending_doc_count` -- only the specific
+//! surface this task asked for (open/add_document/commit/prepare_commit/
+//! finish_commit/rollback/set_merge_policy/set_postings_field/
+//! set_term_vector_field/set_doc_values_field) is exposed. `set_merge_policy`
+//! itself only exposes the four knobs
+//! [`lucene_index::merge_policy::MergePolicyConfig`] actually has today
+//! (`max_merge_at_once`, `segments_per_tier`, `max_merged_segment_size`,
+//! `reclaim_weight`) -- no additional `TieredMergePolicy` knobs (e.g.
+//! `forceMergeDeletesPctAllowed`, `floorSegmentMB`) are invented, since none
+//! exist in this port's `merge_policy.rs` to expose.
 
 use std::os::raw::c_char;
 
@@ -40,6 +49,31 @@ use lucene_store::directory::{Directory, FsDirectory};
 use crate::error::{guard, set_last_error, FfiStatus};
 use crate::raw::{bytes_from_raw, str_from_raw};
 use crate::registry::{lock_recovering, writers, WriterHandle};
+
+/// Decodes the `(enabled, field_name, field_name_len)` triple
+/// [`ffi_writer_set_postings_field`]/[`ffi_writer_set_term_vector_field`]/
+/// [`ffi_writer_set_doc_values_field`] all share into the `Option<&str>`
+/// their wrapped `IndexWriter` setter expects: `enabled == 0` is `None`
+/// (`field_name`/`field_name_len` ignored, same as
+/// [`ffi_writer_set_merge_policy`]'s own "ignored but not required" `enabled
+/// == 0` convention); otherwise `field_name` is decoded via
+/// [`str_from_raw`] (null pointer only valid when `field_name_len == 0`).
+///
+/// # Safety
+/// `field_name` must be valid for reads of `field_name_len` bytes (or null
+/// iff `field_name_len == 0`), same contract as [`str_from_raw`].
+unsafe fn decode_optional_field_name<'a>(
+    enabled: u8,
+    field_name: *const c_char,
+    field_name_len: usize,
+) -> Result<Option<&'a str>, FfiStatus> {
+    if enabled == 0 {
+        return Ok(None);
+    }
+    // SAFETY: forwarded from this function's own caller contract.
+    let name = unsafe { str_from_raw(field_name as *const u8, field_name_len)? };
+    Ok(Some(name))
+}
 
 /// Builds a [`WriterHandle`] over a brand-new (heap-boxed) [`FsDirectory`]
 /// rooted at `path`.
@@ -132,14 +166,25 @@ fn decode_field_value(kind: u8, bytes: &[u8]) -> Result<FieldValue, FfiStatus> {
 /// actually produce to a stable [`FfiStatus`], recording the formatted error
 /// as the last-error message first (same "set message, then return a status
 /// code" convention every other module in this crate already follows).
-/// Caller-input validation problems (an unopened prepared commit) become
+/// Caller-input validation problems -- an unopened prepared commit, an
+/// unknown/unsupported field passed to
+/// [`ffi_writer_set_postings_field`]/[`ffi_writer_set_term_vector_field`]/
+/// [`ffi_writer_set_doc_values_field`], or a doc-values commit missing/
+/// mistyping the opted-in field's value -- become
 /// [`FfiStatus::InvalidArgument`]; everything else (I/O, decode, or
-/// downstream write-side errors this module's own callers cannot trigger
-/// today, since it never wires `set_postings_field`/`set_term_vector_field`/
-/// `set_doc_values_field`) becomes [`FfiStatus::Io`].
+/// downstream write-side errors) becomes [`FfiStatus::Io`].
 fn map_writer_error(context: &str, e: index_writer::Error) -> FfiStatus {
     let status = match &e {
-        index_writer::Error::NoPreparedCommit => FfiStatus::InvalidArgument,
+        index_writer::Error::NoPreparedCommit
+        | index_writer::Error::UnknownPostingsField(_)
+        | index_writer::Error::UnsupportedPostingsIndexOptions(_, _)
+        | index_writer::Error::UnknownTermVectorField(_)
+        | index_writer::Error::UnsupportedTermVectorField(_)
+        | index_writer::Error::UnknownDocValuesField(_)
+        | index_writer::Error::UnsupportedDocValuesType(_, _)
+        | index_writer::Error::MissingDenseDocValue(_, _)
+        | index_writer::Error::NonNumericDocValue(_, _, _)
+        | index_writer::Error::NonBinaryDocValue(_, _, _) => FfiStatus::InvalidArgument,
         _ => FfiStatus::Io,
     };
     set_last_error(format!("{context}: {e}"));
@@ -457,6 +502,99 @@ pub extern "C" fn ffi_writer_set_merge_policy(
     })
 }
 
+/// Opts (`enabled != 0`) or opts out (`enabled == 0`) this writer into
+/// building and writing real postings for one field -- see
+/// [`IndexWriter::set_postings_field`]. `field_name`/`field_name_len` are
+/// ignored when `enabled == 0`.
+///
+/// # Safety
+/// `field_name` must be valid for reads of `field_name_len` bytes (or null
+/// iff `field_name_len == 0`), same contract as [`str_from_raw`]. Ignored
+/// entirely when `enabled == 0`.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_writer_set_postings_field(
+    writer_handle: u64,
+    enabled: u8,
+    field_name: *const c_char,
+    field_name_len: usize,
+) -> i32 {
+    guard(|| {
+        // SAFETY: forwarded from this function's own caller contract.
+        let name = unsafe { decode_optional_field_name(enabled, field_name, field_name_len)? };
+        let mut registry = lock_recovering(writers());
+        let handle = registry.get_mut(writer_handle).ok_or_else(|| {
+            set_last_error("ffi_writer_set_postings_field: unknown or already-closed handle");
+            FfiStatus::InvalidHandle
+        })?;
+        handle
+            .writer
+            .set_postings_field(name)
+            .map_err(|e| map_writer_error("ffi_writer_set_postings_field", e))
+    })
+}
+
+/// Opts (`enabled != 0`) or opts out (`enabled == 0`) this writer into
+/// building and writing real term vectors for one field -- see
+/// [`IndexWriter::set_term_vector_field`]. `field_name`/`field_name_len` are
+/// ignored when `enabled == 0`.
+///
+/// # Safety
+/// `field_name` must be valid for reads of `field_name_len` bytes (or null
+/// iff `field_name_len == 0`), same contract as [`str_from_raw`]. Ignored
+/// entirely when `enabled == 0`.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_writer_set_term_vector_field(
+    writer_handle: u64,
+    enabled: u8,
+    field_name: *const c_char,
+    field_name_len: usize,
+) -> i32 {
+    guard(|| {
+        // SAFETY: forwarded from this function's own caller contract.
+        let name = unsafe { decode_optional_field_name(enabled, field_name, field_name_len)? };
+        let mut registry = lock_recovering(writers());
+        let handle = registry.get_mut(writer_handle).ok_or_else(|| {
+            set_last_error("ffi_writer_set_term_vector_field: unknown or already-closed handle");
+            FfiStatus::InvalidHandle
+        })?;
+        handle
+            .writer
+            .set_term_vector_field(name)
+            .map_err(|e| map_writer_error("ffi_writer_set_term_vector_field", e))
+    })
+}
+
+/// Opts (`enabled != 0`) or opts out (`enabled == 0`) this writer into
+/// building and writing real doc values for one field -- see
+/// [`IndexWriter::set_doc_values_field`]. `field_name`/`field_name_len` are
+/// ignored when `enabled == 0`.
+///
+/// # Safety
+/// `field_name` must be valid for reads of `field_name_len` bytes (or null
+/// iff `field_name_len == 0`), same contract as [`str_from_raw`]. Ignored
+/// entirely when `enabled == 0`.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_writer_set_doc_values_field(
+    writer_handle: u64,
+    enabled: u8,
+    field_name: *const c_char,
+    field_name_len: usize,
+) -> i32 {
+    guard(|| {
+        // SAFETY: forwarded from this function's own caller contract.
+        let name = unsafe { decode_optional_field_name(enabled, field_name, field_name_len)? };
+        let mut registry = lock_recovering(writers());
+        let handle = registry.get_mut(writer_handle).ok_or_else(|| {
+            set_last_error("ffi_writer_set_doc_values_field: unknown or already-closed handle");
+            FfiStatus::InvalidHandle
+        })?;
+        handle
+            .writer
+            .set_doc_values_field(name)
+            .map_err(|e| map_writer_error("ffi_writer_set_doc_values_field", e))
+    })
+}
+
 /// Closes a writer handle opened by [`ffi_open_writer`]. Returns
 /// [`FfiStatus::InvalidHandle`] for an unknown/already-closed handle.
 #[no_mangle]
@@ -762,6 +900,594 @@ mod tests {
         assert_eq!(ffi_writer_commit(handle), FfiStatus::Ok.code());
         let sis = segment_infos::read_latest(&dir).unwrap();
         assert_eq!(sis.segments.len(), 1);
+
+        ffi_close_writer(handle);
+    }
+
+    /// Opens a writer with the fixed `id` (number `0`, stored-only) field
+    /// plus one caller-supplied extra field -- used by the
+    /// `set_postings_field`/`set_term_vector_field`/`set_doc_values_field`
+    /// end-to-end tests, each of which needs a second field with different
+    /// `index_options`/`doc_values_type`/`store_term_vectors` than
+    /// [`open_test_writer`]'s single stored-only field allows.
+    #[allow(clippy::too_many_arguments)]
+    fn open_test_writer_with_extra_field(
+        path: &std::path::Path,
+        extra_name: &str,
+        index_options: i32,
+        doc_values_type: i32,
+        store_term_vectors: u8,
+    ) -> (i32, u64) {
+        let path_str = path.to_str().unwrap();
+        let codec = "Lucene104";
+        let names = ["id", extra_name];
+        let name_lens = [names[0].len(), names[1].len()];
+        let name_ptrs = [names[0].as_ptr(), names[1].as_ptr()];
+        let numbers = [0i32, 1i32];
+        let index_options_arr = [0i32, index_options];
+        let doc_values_types_arr = [0i32, doc_values_type];
+        let store_tvs = [0u8, store_term_vectors];
+        let mut handle: u64 = 0;
+        let rc = unsafe {
+            ffi_open_writer(
+                path_str.as_ptr() as *const c_char,
+                path_str.len(),
+                name_ptrs.as_ptr(),
+                name_lens.as_ptr(),
+                numbers.as_ptr(),
+                index_options_arr.as_ptr(),
+                doc_values_types_arr.as_ptr(),
+                store_tvs.as_ptr(),
+                2,
+                codec.as_ptr() as *const c_char,
+                codec.len(),
+                10,
+                0,
+                0,
+                &mut handle as *mut _,
+            )
+        };
+        (rc, handle)
+    }
+
+    fn add_doc_id_and_extra(writer_handle: u64, id: &str, extra: &str) -> i32 {
+        let numbers = [0i32, 1i32];
+        let kinds = [0u8, 0u8]; // both String
+        let ptrs = [id.as_ptr(), extra.as_ptr()];
+        let lens = [id.len(), extra.len()];
+        unsafe {
+            ffi_writer_add_document(
+                writer_handle,
+                numbers.as_ptr(),
+                kinds.as_ptr(),
+                ptrs.as_ptr(),
+                lens.as_ptr(),
+                2,
+            )
+        }
+    }
+
+    #[test]
+    fn set_postings_field_end_to_end_writes_readable_postings() {
+        let tmp = tempdir("postings-ffi");
+        // index_options 2 == DocsAndFreqs (see index_options_from_i32).
+        let (rc, handle) = open_test_writer_with_extra_field(&tmp, "body", 2, 0, 0);
+        assert_eq!(rc, FfiStatus::Ok.code());
+
+        let field_name = "body";
+        assert_eq!(
+            unsafe {
+                ffi_writer_set_postings_field(
+                    handle,
+                    1,
+                    field_name.as_ptr() as *const c_char,
+                    field_name.len(),
+                )
+            },
+            FfiStatus::Ok.code()
+        );
+
+        assert_eq!(
+            add_doc_id_and_extra(handle, "a", "the quick fox"),
+            FfiStatus::Ok.code()
+        );
+        assert_eq!(
+            add_doc_id_and_extra(handle, "b", "the lazy fox"),
+            FfiStatus::Ok.code()
+        );
+        assert_eq!(ffi_writer_commit(handle), FfiStatus::Ok.code());
+
+        // Real end-to-end read-back through this crate's own unmodified
+        // read-side (`lucene_codecs::blocktree`/`postings`), not through the
+        // FFI writer handle -- proves the postings field was genuinely
+        // written, not just that the FFI calls returned Ok.
+        let dir = FsDirectory::open(&tmp);
+        let sis = segment_infos::read_latest(&dir).unwrap();
+        assert_eq!(sis.segments.len(), 1);
+        let sci = &sis.segments[0];
+        let tim = dir.open(&format!("{}.tim", sci.segment_name)).unwrap();
+        let tip = dir.open(&format!("{}.tip", sci.segment_name)).unwrap();
+        let tmd = dir.open(&format!("{}.tmd", sci.segment_name)).unwrap();
+        let doc_bytes = dir.open(&format!("{}.doc", sci.segment_name)).unwrap();
+        let field_infos = lucene_codecs::field_infos::FieldInfos {
+            fields: vec![
+                FieldInfo {
+                    name: "id".to_string(),
+                    number: 0,
+                    store_term_vectors: false,
+                    omit_norms: false,
+                    store_payloads: false,
+                    soft_deletes_field: false,
+                    parent_field: false,
+                    index_options: IndexOptions::None,
+                    doc_values_type: DocValuesType::None,
+                    doc_values_skip_index_type: DocValuesSkipIndexType::None,
+                    doc_values_gen: -1,
+                    attributes: vec![],
+                    point_dimension_count: 0,
+                    point_index_dimension_count: 0,
+                    point_num_bytes: 0,
+                    vector_dimension: 0,
+                    vector_encoding: VectorEncoding::Float32,
+                    vector_similarity_function: VectorSimilarityFunction::Euclidean,
+                },
+                FieldInfo {
+                    name: "body".to_string(),
+                    number: 1,
+                    store_term_vectors: false,
+                    omit_norms: false,
+                    store_payloads: false,
+                    soft_deletes_field: false,
+                    parent_field: false,
+                    index_options: IndexOptions::DocsAndFreqs,
+                    doc_values_type: DocValuesType::None,
+                    doc_values_skip_index_type: DocValuesSkipIndexType::None,
+                    doc_values_gen: -1,
+                    attributes: vec![],
+                    point_dimension_count: 0,
+                    point_index_dimension_count: 0,
+                    point_num_bytes: 0,
+                    vector_dimension: 0,
+                    vector_encoding: VectorEncoding::Float32,
+                    vector_similarity_function: VectorSimilarityFunction::Euclidean,
+                },
+            ],
+        };
+        let block_fields =
+            lucene_codecs::blocktree::open(&tim, &tip, &tmd, &field_infos, &sci.segment_id, "", 2)
+                .expect("blocktree::open on FFI-produced .tim/.tip/.tmd");
+        let doc_in = lucene_codecs::postings::DocInput::open(&doc_bytes, &sci.segment_id, "")
+            .expect("open .doc");
+        let field = block_fields.field("body").unwrap();
+        let postings = field.postings(b"fox", Some(&doc_in)).unwrap().unwrap();
+        assert_eq!(postings.docs, vec![0, 1]);
+        let postings = field.postings(b"quick", Some(&doc_in)).unwrap().unwrap();
+        assert_eq!(postings.docs, vec![0]);
+        let postings = field.postings(b"lazy", Some(&doc_in)).unwrap().unwrap();
+        assert_eq!(postings.docs, vec![1]);
+
+        ffi_close_writer(handle);
+    }
+
+    #[test]
+    fn set_term_vector_field_end_to_end_writes_readable_term_vectors() {
+        let tmp = tempdir("tv-ffi");
+        // index_options 2 == DocsAndFreqs (term vectors require an indexed field).
+        let (rc, handle) = open_test_writer_with_extra_field(&tmp, "body", 2, 0, 1);
+        assert_eq!(rc, FfiStatus::Ok.code());
+
+        let field_name = "body";
+        assert_eq!(
+            unsafe {
+                ffi_writer_set_term_vector_field(
+                    handle,
+                    1,
+                    field_name.as_ptr() as *const c_char,
+                    field_name.len(),
+                )
+            },
+            FfiStatus::Ok.code()
+        );
+
+        assert_eq!(
+            add_doc_id_and_extra(handle, "a", "the quick fox"),
+            FfiStatus::Ok.code()
+        );
+        assert_eq!(ffi_writer_commit(handle), FfiStatus::Ok.code());
+
+        // Real end-to-end read-back through this crate's own unmodified
+        // `lucene_codecs::term_vectors::open` read side.
+        let dir = FsDirectory::open(&tmp);
+        let sis = segment_infos::read_latest(&dir).unwrap();
+        let sci = &sis.segments[0];
+        let tvd = dir.open(&format!("{}.tvd", sci.segment_name)).unwrap();
+        let tvx = dir.open(&format!("{}.tvx", sci.segment_name)).unwrap();
+        let tvm = dir.open(&format!("{}.tvm", sci.segment_name)).unwrap();
+        let reader = lucene_codecs::term_vectors::open(&tvd, &tvx, &tvm, &sci.segment_id, "")
+            .expect("term_vectors::open on FFI-produced .tvd/.tvx/.tvm");
+        assert_eq!(reader.max_doc(), 1);
+        let doc0 = reader.document(0).unwrap().unwrap();
+        assert_eq!(doc0.fields.len(), 1);
+        assert_eq!(doc0.fields[0].field_number, 1);
+        let mut terms0: Vec<String> = doc0.fields[0]
+            .terms
+            .iter()
+            .map(|t| String::from_utf8(t.term.clone()).unwrap())
+            .collect();
+        terms0.sort();
+        assert_eq!(terms0, vec!["fox", "quick", "the"]);
+
+        ffi_close_writer(handle);
+    }
+
+    #[test]
+    fn set_doc_values_field_end_to_end_writes_readable_numeric_values() {
+        let tmp = tempdir("dv-ffi");
+        // doc_values_type 1 == Numeric (see doc_values_type_from_i32).
+        let (rc, handle) = open_test_writer_with_extra_field(&tmp, "score", 0, 1, 0);
+        assert_eq!(rc, FfiStatus::Ok.code());
+
+        let field_name = "score";
+        assert_eq!(
+            unsafe {
+                ffi_writer_set_doc_values_field(
+                    handle,
+                    1,
+                    field_name.as_ptr() as *const c_char,
+                    field_name.len(),
+                )
+            },
+            FfiStatus::Ok.code()
+        );
+
+        // Doc-values are dense-only: every pending doc must carry a value
+        // for the opted-in field (see `IndexWriter::set_doc_values_field`'s
+        // doc comment), so use kind 3 (i64) for "score" here.
+        let ids = ["a", "b"];
+        let scores: [i64; 2] = [5, -7];
+        for (id, score) in ids.iter().zip(scores.iter()) {
+            let numbers = [0i32, 1i32];
+            let kinds = [0u8, 3u8]; // String, Long
+            let score_bytes = score.to_le_bytes();
+            let ptrs = [id.as_ptr(), score_bytes.as_ptr()];
+            let lens = [id.len(), score_bytes.len()];
+            let rc = unsafe {
+                ffi_writer_add_document(
+                    handle,
+                    numbers.as_ptr(),
+                    kinds.as_ptr(),
+                    ptrs.as_ptr(),
+                    lens.as_ptr(),
+                    2,
+                )
+            };
+            assert_eq!(rc, FfiStatus::Ok.code());
+        }
+        assert_eq!(ffi_writer_commit(handle), FfiStatus::Ok.code());
+
+        // Real end-to-end read-back through this crate's own unmodified
+        // `lucene_codecs::doc_values` read side.
+        let dir = FsDirectory::open(&tmp);
+        let sis = segment_infos::read_latest(&dir).unwrap();
+        let sci = &sis.segments[0];
+        let dvm = dir.open(&format!("{}.dvm", sci.segment_name)).unwrap();
+        let dvd = dir.open(&format!("{}.dvd", sci.segment_name)).unwrap();
+        let field_infos = lucene_codecs::field_infos::FieldInfos {
+            fields: vec![
+                FieldInfo {
+                    name: "id".to_string(),
+                    number: 0,
+                    store_term_vectors: false,
+                    omit_norms: false,
+                    store_payloads: false,
+                    soft_deletes_field: false,
+                    parent_field: false,
+                    index_options: IndexOptions::None,
+                    doc_values_type: DocValuesType::None,
+                    doc_values_skip_index_type: DocValuesSkipIndexType::None,
+                    doc_values_gen: -1,
+                    attributes: vec![],
+                    point_dimension_count: 0,
+                    point_index_dimension_count: 0,
+                    point_num_bytes: 0,
+                    vector_dimension: 0,
+                    vector_encoding: VectorEncoding::Float32,
+                    vector_similarity_function: VectorSimilarityFunction::Euclidean,
+                },
+                FieldInfo {
+                    name: "score".to_string(),
+                    number: 1,
+                    store_term_vectors: false,
+                    omit_norms: false,
+                    store_payloads: false,
+                    soft_deletes_field: false,
+                    parent_field: false,
+                    index_options: IndexOptions::None,
+                    doc_values_type: DocValuesType::Numeric,
+                    doc_values_skip_index_type: DocValuesSkipIndexType::None,
+                    doc_values_gen: -1,
+                    attributes: vec![],
+                    point_dimension_count: 0,
+                    point_index_dimension_count: 0,
+                    point_num_bytes: 0,
+                    vector_dimension: 0,
+                    vector_encoding: VectorEncoding::Float32,
+                    vector_similarity_function: VectorSimilarityFunction::Euclidean,
+                },
+            ],
+        };
+        let (_, meta) =
+            lucene_codecs::doc_values::parse_meta(&dvm, &sci.segment_id, "", &field_infos)
+                .expect("parse_meta on FFI-produced .dvm");
+        let entry = meta.numeric_entry(1).unwrap();
+        for (doc, want) in [(0, 5i64), (1, -7)] {
+            assert_eq!(
+                lucene_codecs::doc_values::numeric_value(&dvd, entry, doc).unwrap(),
+                Some(want)
+            );
+        }
+
+        ffi_close_writer(handle);
+    }
+
+    #[test]
+    fn set_postings_field_unknown_writer_handle_is_invalid_handle() {
+        let name = "body";
+        assert_eq!(
+            unsafe {
+                ffi_writer_set_postings_field(
+                    0xDEAD_BEEF,
+                    1,
+                    name.as_ptr() as *const c_char,
+                    name.len(),
+                )
+            },
+            FfiStatus::InvalidHandle.code()
+        );
+    }
+
+    #[test]
+    fn set_postings_field_disabled_is_a_no_op_and_ok() {
+        let tmp = tempdir("postings-disabled");
+        let (_, handle) = open_test_writer(&tmp);
+        assert_eq!(
+            unsafe { ffi_writer_set_postings_field(handle, 0, std::ptr::null(), 0) },
+            FfiStatus::Ok.code()
+        );
+        ffi_close_writer(handle);
+    }
+
+    #[test]
+    fn set_postings_field_unknown_field_name_is_invalid_argument() {
+        let tmp = tempdir("postings-unknown-field");
+        let (_, handle) = open_test_writer(&tmp);
+        let name = "nonexistent";
+        assert_eq!(
+            unsafe {
+                ffi_writer_set_postings_field(handle, 1, name.as_ptr() as *const c_char, name.len())
+            },
+            FfiStatus::InvalidArgument.code()
+        );
+        ffi_close_writer(handle);
+    }
+
+    #[test]
+    fn set_term_vector_field_unknown_writer_handle_is_invalid_handle() {
+        let name = "body";
+        assert_eq!(
+            unsafe {
+                ffi_writer_set_term_vector_field(
+                    0xDEAD_BEEF,
+                    1,
+                    name.as_ptr() as *const c_char,
+                    name.len(),
+                )
+            },
+            FfiStatus::InvalidHandle.code()
+        );
+    }
+
+    #[test]
+    fn set_term_vector_field_disabled_is_a_no_op_and_ok() {
+        let tmp = tempdir("tv-disabled");
+        let (_, handle) = open_test_writer(&tmp);
+        assert_eq!(
+            unsafe { ffi_writer_set_term_vector_field(handle, 0, std::ptr::null(), 0) },
+            FfiStatus::Ok.code()
+        );
+        ffi_close_writer(handle);
+    }
+
+    #[test]
+    fn set_term_vector_field_unknown_field_name_is_invalid_argument() {
+        let tmp = tempdir("tv-unknown-field");
+        let (_, handle) = open_test_writer(&tmp);
+        let name = "nonexistent";
+        assert_eq!(
+            unsafe {
+                ffi_writer_set_term_vector_field(
+                    handle,
+                    1,
+                    name.as_ptr() as *const c_char,
+                    name.len(),
+                )
+            },
+            FfiStatus::InvalidArgument.code()
+        );
+        ffi_close_writer(handle);
+    }
+
+    #[test]
+    fn set_doc_values_field_unknown_writer_handle_is_invalid_handle() {
+        let name = "score";
+        assert_eq!(
+            unsafe {
+                ffi_writer_set_doc_values_field(
+                    0xDEAD_BEEF,
+                    1,
+                    name.as_ptr() as *const c_char,
+                    name.len(),
+                )
+            },
+            FfiStatus::InvalidHandle.code()
+        );
+    }
+
+    #[test]
+    fn set_doc_values_field_disabled_is_a_no_op_and_ok() {
+        let tmp = tempdir("dv-disabled");
+        let (_, handle) = open_test_writer(&tmp);
+        assert_eq!(
+            unsafe { ffi_writer_set_doc_values_field(handle, 0, std::ptr::null(), 0) },
+            FfiStatus::Ok.code()
+        );
+        ffi_close_writer(handle);
+    }
+
+    #[test]
+    fn set_doc_values_field_unknown_field_name_is_invalid_argument() {
+        let tmp = tempdir("dv-unknown-field");
+        let (_, handle) = open_test_writer(&tmp);
+        let name = "nonexistent";
+        assert_eq!(
+            unsafe {
+                ffi_writer_set_doc_values_field(
+                    handle,
+                    1,
+                    name.as_ptr() as *const c_char,
+                    name.len(),
+                )
+            },
+            FfiStatus::InvalidArgument.code()
+        );
+        ffi_close_writer(handle);
+    }
+
+    #[test]
+    fn set_postings_field_rejects_a_field_with_no_index_options() {
+        // open_test_writer's "id" field is stored-only (index_options=0/
+        // None), so it's a real field but not a valid postings target --
+        // exercises Error::UnsupportedPostingsIndexOptions via
+        // map_writer_error, distinct from the "unknown field name" path
+        // already tested above.
+        let tmp = tempdir("postings-unsupported-index-options");
+        let (_, handle) = open_test_writer(&tmp);
+        let name = "id";
+        assert_eq!(
+            unsafe {
+                ffi_writer_set_postings_field(handle, 1, name.as_ptr() as *const c_char, name.len())
+            },
+            FfiStatus::InvalidArgument.code()
+        );
+        ffi_close_writer(handle);
+    }
+
+    #[test]
+    fn set_doc_values_field_rejects_a_field_with_no_doc_values_type() {
+        let tmp = tempdir("dv-unsupported-type");
+        let (_, handle) = open_test_writer(&tmp);
+        let name = "id";
+        assert_eq!(
+            unsafe {
+                ffi_writer_set_doc_values_field(
+                    handle,
+                    1,
+                    name.as_ptr() as *const c_char,
+                    name.len(),
+                )
+            },
+            FfiStatus::InvalidArgument.code()
+        );
+        ffi_close_writer(handle);
+    }
+
+    #[test]
+    fn set_term_vector_field_rejects_a_field_without_store_term_vectors() {
+        // "body" is a real field with real index_options, but
+        // open_test_writer_with_extra_field's store_term_vectors=0 here
+        // means it was never configured to store term vectors --
+        // exercises Error::UnsupportedTermVectorField.
+        let tmp = tempdir("tv-unsupported-field");
+        let (_, handle) = open_test_writer_with_extra_field(&tmp, "body", 2, 0, 0);
+        let name = "body";
+        assert_eq!(
+            unsafe {
+                ffi_writer_set_term_vector_field(
+                    handle,
+                    1,
+                    name.as_ptr() as *const c_char,
+                    name.len(),
+                )
+            },
+            FfiStatus::InvalidArgument.code()
+        );
+        ffi_close_writer(handle);
+    }
+
+    #[test]
+    fn set_postings_field_can_be_switched_to_a_different_field_and_disabled() {
+        // Configuring a postings field twice (to two different field
+        // names) must fully replace the prior config, not append/conflict;
+        // disabling afterward must also succeed cleanly -- proves
+        // set_postings_field's assignment is a real reassignment, not a
+        // merge, at the FFI boundary (the Rust-side guarantee was already
+        // unit-tested in lucene-index; this proves it's reachable the same
+        // way through FFI).
+        let tmp = tempdir("postings-switch-field");
+        let path_str = tmp.to_str().unwrap();
+        let codec = "Lucene104";
+        let names = ["id", "body", "extra"];
+        let name_lens: Vec<usize> = names.iter().map(|n| n.len()).collect();
+        let name_ptrs: Vec<*const u8> = names.iter().map(|n| n.as_ptr()).collect();
+        let numbers = [0i32, 1i32, 2i32];
+        let index_options_arr = [0i32, 2i32, 2i32]; // id=None, body/extra=DocsAndFreqs
+        let doc_values_types_arr = [0i32, 0i32, 0i32];
+        let store_tvs = [0u8, 0u8, 0u8];
+        let mut handle: u64 = 0;
+        let rc = unsafe {
+            ffi_open_writer(
+                path_str.as_ptr() as *const c_char,
+                path_str.len(),
+                name_ptrs.as_ptr(),
+                name_lens.as_ptr(),
+                numbers.as_ptr(),
+                index_options_arr.as_ptr(),
+                doc_values_types_arr.as_ptr(),
+                store_tvs.as_ptr(),
+                3,
+                codec.as_ptr() as *const c_char,
+                codec.len(),
+                10,
+                0,
+                0,
+                &mut handle as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::Ok.code());
+
+        let body = "body";
+        assert_eq!(
+            unsafe {
+                ffi_writer_set_postings_field(handle, 1, body.as_ptr() as *const c_char, body.len())
+            },
+            FfiStatus::Ok.code()
+        );
+        let extra = "extra";
+        assert_eq!(
+            unsafe {
+                ffi_writer_set_postings_field(
+                    handle,
+                    1,
+                    extra.as_ptr() as *const c_char,
+                    extra.len(),
+                )
+            },
+            FfiStatus::Ok.code()
+        );
+        assert_eq!(
+            unsafe { ffi_writer_set_postings_field(handle, 0, std::ptr::null(), 0) },
+            FfiStatus::Ok.code()
+        );
 
         ffi_close_writer(handle);
     }
