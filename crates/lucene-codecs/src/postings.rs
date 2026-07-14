@@ -31,7 +31,8 @@
 //! `docFreq` is an exact multiple of `BLOCK_SIZE` — the last full block is
 //! still written via the full-block path in that case, see
 //! `Lucene104PostingsWriter.finishTerm`/`flushDocBlock`). Each full block is
-//! `ForUtil`/`PForUtil`-encoded ([`read_full_block`], ported in
+//! `ForUtil`/`PForUtil`-encoded ([`read_full_block_header`] +
+//! [`decode_full_block_body`], ported in
 //! [`crate::for_util`]) and prefixed by a level-0 skip header
 //! (`Lucene104PostingsWriter.flushDocBlock`'s `else` branch) that this reader
 //! parses field-by-field in wire order rather than exploiting its skip
@@ -58,7 +59,7 @@
 //! why), `docDelta` (`writeVInt15`-encoded — this block's last doc ID minus
 //! the previous block's, used by [`LazyDocsCursor`]/[`read_full_block_header`]
 //! to decide whether to skip the block without decoding it, discarded by the
-//! eager [`read_full_block`]), `blockLength` (`writeVLong15`-encoded — the
+//! eager path), `blockLength` (`writeVLong15`-encoded — the
 //! byte length, from right after this field, of everything through the end
 //! of the block, i.e. impacts/pos-pay fields plus the body; used the same
 //! way as `docDelta` to compute where the block ends without decoding it);
@@ -93,7 +94,7 @@
 //! (`Lucene104PostingsReader.java:237-250`), and a full `.doc` block's
 //! level-0 header carries extra pos/pay skip-pointer fields
 //! (`Lucene104PostingsReader.java:754-761`, parsed-and-discarded by
-//! [`read_full_block`] same as the rest of that header). The actual
+//! [`read_full_block_header`] same as the rest of that header). The actual
 //! position/offset/payload bytes live entirely in `.pos`/`.pay`
 //! ([`PosInput`]/[`PayInput`], opened the same way as [`DocInput`]), not
 //! `.doc`, as **one flat sequence of `totalTermFreq` occurrences** rather
@@ -310,11 +311,60 @@ pub fn decode_term_metadata(
     })
 }
 
-/// One term's decoded `(docID, freq)` pairs, in ascending doc-ID order.
+/// One term's decoded `(docID, freq)` pairs, in ascending doc-ID order, plus
+/// the competitive impacts `DocInput::read_postings` captured in passing while
+/// it was already decoding each level-0 header and level-1 entry — no second
+/// decode pass, just retaining what [`LazyDocsCursor`] retains too instead of
+/// discarding it (see this struct's `level0_impacts`/`level1_impacts` fields
+/// and [`PostingsCursor::level0_impacts`]/[`PostingsCursor::level1_impacts`]).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Postings {
     pub docs: Vec<i32>,
     pub freqs: Vec<i32>,
+    /// One entry per full level-0 block actually present on the wire, in
+    /// ascending order: `(last_doc_id_in_block, impacts_for_that_block)`.
+    /// Empty when the term has no full blocks (`docFreq < BLOCK_SIZE`) or the
+    /// field has no freqs. Since blocks are decoded in ascending, contiguous
+    /// doc-ID order with no gaps, [`PostingsCursor::level0_impacts`] finds the
+    /// block covering a given doc ID with a single binary search over the
+    /// `last_doc_id_in_block` column (the first entry whose bound is `>=` the
+    /// target doc ID) rather than needing an explicit per-doc index.
+    pub level0_impacts: Vec<(i32, Impacts)>,
+    /// One entry per level-1 skip entry actually present on the wire (only
+    /// non-empty once `docFreq >= LEVEL1_NUM_DOCS`), in ascending order:
+    /// `(last_doc_id_in_span, impacts_for_that_span)`. Empty below
+    /// `LEVEL1_NUM_DOCS` docs or for a field with no freqs. Looked up the same
+    /// way as `level0_impacts`.
+    pub level1_impacts: Vec<(i32, Impacts)>,
+}
+
+// Tradeoff, not a bug: `level0_impacts`/`level1_impacts` are populated on
+// every `read_postings` call for a field with freqs, one small `Vec`
+// allocation per full block/span, even for callers that never call
+// `PostingsCursor::level0_impacts`/`level1_impacts`. This mirrors
+// `docs`/`freqs` themselves already being fully eager (the whole point of
+// `read_postings` vs. `DocInput::lazy_cursor`), and the added cost is
+// proportional to `docFreq / BLOCK_SIZE` (one entry per ~256 docs), not
+// per-doc -- negligible next to the `docs`/`freqs` `Vec<i32>`s already
+// dominating this struct's size. A caller that wants to avoid this
+// entirely already has `DocInput::lazy_cursor`/`LazyDocsCursor` as the
+// decode-on-demand alternative.
+
+/// Binary-searches a `(last_doc_id_covered, impacts)` column (as stored in
+/// [`Postings::level0_impacts`]/[`Postings::level1_impacts`]) for the entry
+/// covering `doc_id`, given the entries are in ascending, contiguous,
+/// non-overlapping doc-ID order (true for both columns: level-0/level-1
+/// blocks/spans are decoded back-to-back with no gaps in doc-ID coverage).
+/// Returns an empty slice if `doc_id` falls in a trailing region no entry
+/// covers (the tail block, or — for `level1_impacts` — any full blocks/tail
+/// past the last level-1 span), matching [`LazyDocsCursor`]'s contract of
+/// reporting no impacts there.
+fn find_impacts(column: &[(i32, Impacts)], doc_id: i32) -> &[Impact] {
+    let pos = column.partition_point(|&(last, _)| last < doc_id);
+    column
+        .get(pos)
+        .map(|(_, impacts)| impacts.as_slice())
+        .unwrap_or(&[])
 }
 
 /// A single competitive `(freq, norm)` pair, port of `Impact`
@@ -413,7 +463,8 @@ impl<'a> DocInput<'a> {
     /// (`docFreq == 1` singletons are pulsed into the term dictionary, see
     /// [`singleton_postings`]). Dispatches on `doc_freq` the same way
     /// `BlockPostingsEnum.refillDocs` does: zero or more full 256-doc PFOR
-    /// blocks (`refillFullBlock`, [`read_full_block`]) followed by at most
+    /// blocks (`refillFullBlock`, [`read_full_block_header`] +
+    /// [`decode_full_block_body`]) followed by at most
     /// one group-varint tail block for the `docFreq % BLOCK_SIZE` remainder
     /// (`refillRemainder`'s non-singleton branch,
     /// `Lucene104PostingsReader.java:647-656`, [`read_tail_block`]).
@@ -457,9 +508,15 @@ impl<'a> DocInput<'a> {
         let n = doc_freq as usize;
         let mut docs = Vec::with_capacity(n);
         let mut freqs = Vec::with_capacity(n);
+        let mut level0_impacts: Vec<(i32, Impacts)> = Vec::new();
+        let mut level1_impacts: Vec<(i32, Impacts)> = Vec::new();
 
         let mut prev_doc_id: i32 = -1;
         let mut doc_count_left = doc_freq;
+        // Mirrors `LazyDocsCursor`'s `level1_last_doc_id` accumulator (starts
+        // at -1, `+= doc_delta` per level-1 entry) purely to record each
+        // span's covering doc-ID bound in `level1_impacts` above.
+        let mut level1_last_doc_id: i32 = -1;
 
         // `docFreq >= LEVEL1_NUM_DOCS` (8192): the `.doc` stream interleaves a
         // level-1 skip entry before every span of `LEVEL1_FACTOR` (32) full
@@ -473,21 +530,31 @@ impl<'a> DocInput<'a> {
         // level-1 entries appear and the remaining full blocks + tail decode
         // exactly like a sub-8192 term.
         while doc_count_left >= LEVEL1_NUM_DOCS {
-            read_level1_entry(
+            let entry = read_level1_entry(
                 &mut r,
                 index_has_freq,
                 index_has_pos,
                 index_has_offsets_or_payloads,
             )?;
+            level1_last_doc_id += entry.doc_delta;
+            if index_has_freq {
+                level1_impacts.push((level1_last_doc_id, entry.impacts));
+            }
             for _ in 0..LEVEL1_FACTOR {
-                let (block_docs, block_freqs) = read_full_block(
+                let header = read_full_block_header(
                     &mut r,
                     prev_doc_id,
                     index_has_freq,
                     index_has_pos,
                     index_has_offsets_or_payloads,
                 )?;
-                prev_doc_id = block_docs[block_docs.len() - 1];
+                let (block_docs, block_freqs) =
+                    decode_full_block_body(&mut r, prev_doc_id, index_has_freq)?;
+                debug_assert_eq!(r.position(), header.body_end);
+                prev_doc_id = header.last_doc_id;
+                if index_has_freq {
+                    level0_impacts.push((header.last_doc_id, header.impacts));
+                }
                 docs.extend_from_slice(&block_docs);
                 freqs.extend_from_slice(&block_freqs);
                 doc_count_left -= BLOCK_SIZE;
@@ -495,14 +562,20 @@ impl<'a> DocInput<'a> {
         }
 
         while doc_count_left >= BLOCK_SIZE {
-            let (block_docs, block_freqs) = read_full_block(
+            let header = read_full_block_header(
                 &mut r,
                 prev_doc_id,
                 index_has_freq,
                 index_has_pos,
                 index_has_offsets_or_payloads,
             )?;
-            prev_doc_id = block_docs[block_docs.len() - 1];
+            let (block_docs, block_freqs) =
+                decode_full_block_body(&mut r, prev_doc_id, index_has_freq)?;
+            debug_assert_eq!(r.position(), header.body_end);
+            prev_doc_id = header.last_doc_id;
+            if index_has_freq {
+                level0_impacts.push((header.last_doc_id, header.impacts));
+            }
             docs.extend_from_slice(&block_docs);
             freqs.extend_from_slice(&block_freqs);
             doc_count_left -= BLOCK_SIZE;
@@ -518,7 +591,12 @@ impl<'a> DocInput<'a> {
             )?;
         }
 
-        Ok(Postings { docs, freqs })
+        Ok(Postings {
+            docs,
+            freqs,
+            level0_impacts,
+            level1_impacts,
+        })
     }
 
     /// Opens a [`LazyDocsCursor`] over this term's `(docID, freq)` pairs:
@@ -993,7 +1071,7 @@ fn read_level1_entry(
 struct FullBlockHeader {
     /// This block's last (highest) doc ID — `prev_doc_id + docDelta`, proven
     /// consistent with the body's own delta-decoded last entry by every
-    /// existing fixture/unit test that decodes both (see `read_full_block`).
+    /// existing fixture/unit test that decodes both (see `read_full_block_header`).
     last_doc_id: i32,
     /// Byte offset (into the same buffer `r` reads from) where the block's
     /// body (`bitsPerValue` token onward) begins.
@@ -1067,7 +1145,7 @@ fn read_full_block_header(
 
 /// Decodes a full block's body (the `bitsPerValue` token onward) — `r` must
 /// already be positioned at [`FullBlockHeader::body_start`]. Shared by
-/// [`read_full_block`] (eager path) and [`LazyDocsCursor`] (lazy path) so
+/// [`DocInput::read_postings`] (eager path) and [`LazyDocsCursor`] (lazy path) so
 /// there is exactly one body decoder to keep in sync with `ForUtil`/
 /// `PForUtil`.
 fn decode_full_block_body(
@@ -1140,35 +1218,6 @@ fn decode_full_block_body(
     }
 
     Ok((docs, freqs))
-}
-
-/// One full 256-doc block (`BlockPostingsEnum.refillFullBlock` plus the
-/// level-0 skip header that precedes every full block on the wire,
-/// `Lucene104PostingsWriter.flushDocBlock`'s `else` branch —
-/// `docBufferUpto == BLOCK_SIZE`). Thin wrapper over
-/// [`read_full_block_header`] + [`decode_full_block_body`]: this always
-/// decodes the body, since the eager [`DocInput::read_postings`] caller
-/// wants every doc regardless of what the header says — see
-/// [`LazyDocsCursor`] for the decode-on-demand path that actually uses the
-/// header to skip a block's body.
-fn read_full_block(
-    r: &mut SliceInput,
-    prev_doc_id: i32,
-    index_has_freq: bool,
-    index_has_pos: bool,
-    index_has_offsets_or_payloads: bool,
-) -> Result<([i32; BLOCK_SIZE as usize], [i32; BLOCK_SIZE as usize])> {
-    let header = read_full_block_header(
-        r,
-        prev_doc_id,
-        index_has_freq,
-        index_has_pos,
-        index_has_offsets_or_payloads,
-    )?;
-    debug_assert_eq!(r.position(), header.body_start);
-    let result = decode_full_block_body(r, prev_doc_id, index_has_freq)?;
-    debug_assert_eq!(r.position(), header.body_end);
-    Ok(result)
 }
 
 /// The `docFreq % BLOCK_SIZE` remainder after zero or more full blocks
@@ -1267,6 +1316,11 @@ pub fn singleton_postings(meta: TermMetadata, total_term_freq: i64) -> Result<Po
     Ok(Postings {
         docs: vec![meta.singleton_doc_id],
         freqs: vec![total_term_freq as i32],
+        // No `.doc` bytes at all for a singleton -- no impacts to report,
+        // same as `PostingsCursor::level0_impacts`/`level1_impacts`'s
+        // "no covering entry" empty-slice contract.
+        level0_impacts: Vec::new(),
+        level1_impacts: Vec::new(),
     })
 }
 
@@ -1355,6 +1409,35 @@ impl<'p> PostingsCursor<'p> {
         } else {
             None
         }
+    }
+
+    /// `ImpactsEnum.getImpacts()`'s level-0 result, conceptually — same
+    /// meaning as [`LazyDocsCursor::level0_impacts`]: the competitive
+    /// `(freq, norm)` pairs for the level-0 block currently covering
+    /// `doc_id()`. Empty before the first `next_doc()`/`advance()` call, once
+    /// exhausted, when `doc_id()` falls in the trailing tail block (no
+    /// level-0 impacts exist on the wire for it), or for a field with no
+    /// freqs. Looks up [`Postings::level0_impacts`] (captured once, up front,
+    /// by [`DocInput::read_postings`]) rather than decoding anything itself.
+    pub fn level0_impacts(&self) -> &[Impact] {
+        if !self.started || self.idx >= self.postings.docs.len() {
+            return &[];
+        }
+        find_impacts(&self.postings.level0_impacts, self.postings.docs[self.idx])
+    }
+
+    /// `ImpactsEnum.getImpacts()`'s level-1 result, conceptually — same
+    /// meaning as [`LazyDocsCursor::level1_impacts`]: the competitive
+    /// `(freq, norm)` pairs merged across the whole 32-block level-1 span
+    /// currently covering `doc_id()`. Empty below `LEVEL1_NUM_DOCS` docs, for
+    /// a field with no freqs, before the first `next_doc()`/`advance()` call,
+    /// once exhausted, or once `doc_id()` is past the last level-1 span (the
+    /// trailing sub-8192 region of full blocks + tail).
+    pub fn level1_impacts(&self) -> &[Impact] {
+        if !self.started || self.idx >= self.postings.docs.len() {
+            return &[];
+        }
+        find_impacts(&self.postings.level1_impacts, self.postings.docs[self.idx])
     }
 
     /// `PostingsEnum.nextDoc()`: moves to the next doc, returning its ID (or
@@ -1938,6 +2021,33 @@ mod tests {
         doc.write_vlong(span.len() as i64);
     }
 
+    /// Writes a level-1 skip entry for a field with freqs but no positions
+    /// (`IndexOptions::DocsAndFreqs`), with a real (possibly non-empty)
+    /// impacts byte run — the freq-gated counterpart to
+    /// [`write_level1_entry_docs`], needed to exercise `PostingsCursor::
+    /// level1_impacts`/`Postings::level1_impacts` with real level-1 impacts
+    /// data. See [`read_level1_entry`] for the exact field layout this
+    /// mirrors.
+    fn write_level1_entry_with_impacts(
+        doc: &mut Vec<u8>,
+        doc_delta: i32,
+        span: &[u8],
+        impacts: &[Impact],
+    ) {
+        doc.write_vint(doc_delta);
+        doc.write_vlong(span.len() as i64);
+        let mut impact_bytes = Vec::new();
+        write_impacts(&mut impact_bytes, impacts);
+        // `skip1EndFP` is measured from right after the short that carries it
+        // (i.e. from the start of `numImpactBytes`) through the end of this
+        // entry's freq-gated metadata: here that's just `numImpactBytes` (2
+        // bytes) plus the impact bytes themselves (no pos/pay sub-fields,
+        // since this helper is scoped to DocsAndFreqs).
+        doc.write_i16((2 + impact_bytes.len()) as i16);
+        doc.write_i16(impact_bytes.len() as i16);
+        doc.write_bytes(&impact_bytes);
+    }
+
     #[test]
     fn read_postings_level1_span_plus_tail() {
         // docFreq == LEVEL1_NUM_DOCS + 8 (8200): one level-1 entry, then a
@@ -1970,6 +2080,133 @@ mod tests {
             .unwrap();
         assert_eq!(postings.docs, (0..LEVEL1_NUM_DOCS + 8).collect::<Vec<_>>());
         assert!(postings.freqs.iter().all(|&f| f == 1));
+    }
+
+    #[test]
+    fn postings_cursor_level0_impacts_varies_within_block_and_across_blocks() {
+        // docFreq == 2 * BLOCK_SIZE (512): two full blocks, each with its own
+        // distinct (freq, norm) impacts list -- mirrors the "impacts varying
+        // within a level-0 block" real-Lucene case
+        // (`big_field_impacts_match_real_lucene_impacts_enum`), but hand-built
+        // so `PostingsCursor::level0_impacts`/`Postings::level0_impacts` are
+        // exercised directly against known-good expected values rather than
+        // only cross-checked against the lazy path or real Lucene bytes.
+        let id = [20u8; ID_LENGTH];
+        let (mut doc, footer) = header_and_footer(DOC_CODEC, &id);
+        let doc_start_fp = doc.len() as u64;
+
+        let block0_impacts = vec![Impact { freq: 1, norm: 1 }, Impact { freq: 5, norm: 10 }];
+        let block1_impacts = vec![Impact { freq: 2, norm: 3 }];
+        write_full_block_with_impacts(&mut doc, true, 3, &block0_impacts);
+        write_full_block_with_impacts(&mut doc, true, 7, &block1_impacts);
+        doc.extend_from_slice(&footer);
+
+        let input = DocInput::open(&doc, &id, "").unwrap();
+        let meta = TermMetadata {
+            doc_start_fp,
+            singleton_doc_id: -1,
+            ..TermMetadata::EMPTY
+        };
+        let postings = input
+            .read_postings(meta, 2 * BLOCK_SIZE, IndexOptions::DocsAndFreqs, false)
+            .unwrap();
+        assert_eq!(
+            postings.level0_impacts,
+            vec![
+                (BLOCK_SIZE - 1, block0_impacts.clone()),
+                (2 * BLOCK_SIZE - 1, block1_impacts.clone()),
+            ]
+        );
+
+        let mut cursor = PostingsCursor::new(&postings);
+        assert_eq!(cursor.advance(0), 0);
+        assert_eq!(cursor.level0_impacts(), block0_impacts.as_slice());
+        assert!(cursor.level1_impacts().is_empty());
+
+        // Exact last doc of block 0 -- the boundary value a `<` vs `<=` bug
+        // in `find_impacts`'s binary search would only surface at.
+        assert_eq!(cursor.advance(BLOCK_SIZE - 1), BLOCK_SIZE - 1);
+        assert_eq!(cursor.level0_impacts(), block0_impacts.as_slice());
+
+        assert_eq!(cursor.advance(BLOCK_SIZE), BLOCK_SIZE);
+        assert_eq!(cursor.level0_impacts(), block1_impacts.as_slice());
+        assert!(cursor.level1_impacts().is_empty());
+    }
+
+    #[test]
+    fn postings_cursor_level1_impacts_reachable_across_span() {
+        // docFreq == LEVEL1_NUM_DOCS + 8 (8200): one level-1 entry carrying a
+        // real (non-empty) merged span impacts list, a span of 32 full blocks
+        // (each with its own distinct level-0 impacts), then an 8-doc tail --
+        // mirrors "l1_field_impacts_match_real_lucene_impacts_enum" but hand-
+        // built so both `level0_impacts()` (varying block-to-block within the
+        // span) and `level1_impacts()` (constant across the whole span, empty
+        // once past it in the tail) are checked against known-good values.
+        let id = [21u8; ID_LENGTH];
+        let (mut doc, footer) = header_and_footer(DOC_CODEC, &id);
+        let doc_start_fp = doc.len() as u64;
+
+        let first_block_impacts = vec![Impact { freq: 1, norm: 1 }];
+        let last_block_impacts = vec![Impact { freq: 4, norm: 9 }];
+        let span_impacts = vec![Impact { freq: 4, norm: 9 }, Impact { freq: 8, norm: 20 }];
+
+        let mut span = Vec::new();
+        write_full_block_with_impacts(&mut span, true, 1, &first_block_impacts);
+        for _ in 1..LEVEL1_FACTOR - 1 {
+            write_full_block_with_impacts(&mut span, true, 1, &[]);
+        }
+        write_full_block_with_impacts(&mut span, true, 1, &last_block_impacts);
+
+        write_level1_entry_with_impacts(&mut doc, LEVEL1_NUM_DOCS, &span, &span_impacts);
+        doc.extend_from_slice(&span);
+        // Tail: 8 consecutive docs (deltas all 1) from prevDocID 8191, no
+        // freq exceptions (freq==1 bit path).
+        write_group_vints(&mut doc, &[(1 << 1) | 1; 8]);
+        doc.extend_from_slice(&footer);
+
+        let input = DocInput::open(&doc, &id, "").unwrap();
+        let meta = TermMetadata {
+            doc_start_fp,
+            singleton_doc_id: -1,
+            ..TermMetadata::EMPTY
+        };
+        let postings = input
+            .read_postings(meta, LEVEL1_NUM_DOCS + 8, IndexOptions::DocsAndFreqs, false)
+            .unwrap();
+        assert_eq!(
+            postings.level1_impacts,
+            vec![(LEVEL1_NUM_DOCS - 1, span_impacts.clone())]
+        );
+
+        let mut cursor = PostingsCursor::new(&postings);
+
+        // First doc of the span: level-0 impacts are the first block's own,
+        // level-1 impacts are the whole span's merged list.
+        assert_eq!(cursor.advance(0), 0);
+        assert_eq!(cursor.level0_impacts(), first_block_impacts.as_slice());
+        assert_eq!(cursor.level1_impacts(), span_impacts.as_slice());
+
+        // Last full block of the span: level-0 impacts change, level-1
+        // impacts stay the same (whole-span merge, not per-block).
+        assert_eq!(
+            cursor.advance(LEVEL1_NUM_DOCS - BLOCK_SIZE),
+            LEVEL1_NUM_DOCS - BLOCK_SIZE
+        );
+        assert_eq!(cursor.level0_impacts(), last_block_impacts.as_slice());
+        assert_eq!(cursor.level1_impacts(), span_impacts.as_slice());
+
+        // Exact last doc of the entire span -- the boundary value a `<` vs
+        // `<=` bug in `find_impacts` would only surface at, distinct from
+        // the "first doc of the last block" check just above.
+        assert_eq!(cursor.advance(LEVEL1_NUM_DOCS - 1), LEVEL1_NUM_DOCS - 1);
+        assert_eq!(cursor.level0_impacts(), last_block_impacts.as_slice());
+        assert_eq!(cursor.level1_impacts(), span_impacts.as_slice());
+
+        // Into the trailing tail (past the level-1 span entirely): both are
+        // empty, same as `LazyDocsCursor`'s contract for the tail block.
+        assert_eq!(cursor.advance(LEVEL1_NUM_DOCS), LEVEL1_NUM_DOCS);
+        assert!(cursor.level0_impacts().is_empty());
+        assert!(cursor.level1_impacts().is_empty());
     }
 
     #[test]
@@ -2042,15 +2279,34 @@ mod tests {
     /// `docDelta` and `blockLength` are real, consistent header fields here
     /// (not filler) — [`LazyDocsCursor`]'s skip-ahead relies on them being
     /// accurate, unlike the pre-lazy-cursor version of this helper, which
-    /// only needed `read_full_block`'s wire-order-only decode to work.
+    /// only needed `read_full_block_header`'s wire-order-only decode to work.
     /// `docDelta` is always `BLOCK_SIZE` (256), matching the "all 256 deltas
     /// are 1" body this helper always writes.
     fn write_full_block(out: &mut Vec<u8>, index_has_freq: bool, freq_value: i32) {
+        write_full_block_with_impacts(out, index_has_freq, freq_value, &[]);
+    }
+
+    /// Same as [`write_full_block`], but with a real (possibly non-empty)
+    /// level-0 impacts byte run instead of always writing an empty one —
+    /// needed to exercise `PostingsCursor::level0_impacts`/`Postings::
+    /// level0_impacts` with real per-block impacts data rather than a
+    /// perpetually-empty section.
+    fn write_full_block_with_impacts(
+        out: &mut Vec<u8>,
+        index_has_freq: bool,
+        freq_value: i32,
+        impacts: &[Impact],
+    ) {
         let mut body = Vec::new();
         if index_has_freq {
-            // impacts: empty (zero-length section is valid — a reader that
-            // needed them would just see none).
-            body.write_vlong(0);
+            let mut impact_bytes = Vec::new();
+            write_impacts(&mut impact_bytes, impacts);
+            // Impacts byte-length is a plain vint on the wire here
+            // (`read_full_block_header`'s doc comment) — `write_vint` matches
+            // that (not `write_vlong`, even though the two happen to agree
+            // byte-for-byte for any value small enough to fit both).
+            body.write_vint(impact_bytes.len() as i32);
+            body.write_bytes(&impact_bytes);
         }
         body.write_byte(0); // bitsPerValue == 0: all 256 deltas are 1.
         if index_has_freq {
@@ -2062,7 +2318,7 @@ mod tests {
         // right here) through the end of the whole block -- see
         // `read_full_block_header`'s doc comment -- so it equals `body.len()`
         // exactly, since this helper writes no impacts/pos/pay bytes before
-        // `body` starts recording (`index_has_freq`'s impacts-length vlong
+        // `body` starts recording (`index_has_freq`'s impacts-length vint
         // above is itself part of `body`).
         out.write_vlong(body.len() as i64); // level0NumBytes (not used to skip in these tests)
         out.write_i16(BLOCK_SIZE as i16); // docDelta via writeVInt15
@@ -2293,6 +2549,8 @@ mod tests {
         Postings {
             docs: docs.to_vec(),
             freqs: freqs.to_vec(),
+            level0_impacts: Vec::new(),
+            level1_impacts: Vec::new(),
         }
     }
 

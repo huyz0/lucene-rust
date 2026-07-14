@@ -928,26 +928,67 @@ fn assert_impacts_match_real_lucene(
             "field={field} term={term} doc_id={doc_id}"
         );
 
-        if let Some(expected) = expected_level0 {
+        if let Some(expected) = &expected_level0 {
             let actual: Vec<(i32, i64)> = cursor
                 .level0_impacts()
                 .iter()
                 .map(|i| (i.freq, i.norm))
                 .collect();
             assert_eq!(
-                actual, expected,
-                "field={field} term={term} doc_id={doc_id} level0"
+                &actual, expected,
+                "field={field} term={term} doc_id={doc_id} level0 (lazy)"
             );
         }
-        if let Some(expected) = expected_level1 {
+        if let Some(expected) = &expected_level1 {
             let actual: Vec<(i32, i64)> = cursor
                 .level1_impacts()
                 .iter()
                 .map(|i| (i.freq, i.norm))
                 .collect();
             assert_eq!(
-                actual, expected,
-                "field={field} term={term} doc_id={doc_id} level1"
+                &actual, expected,
+                "field={field} term={term} doc_id={doc_id} level1 (lazy)"
+            );
+        }
+
+        // Same ground truth, walked through the eager `PostingsCursor` on
+        // top of `DocInput::read_postings`'s fully-materialized `Postings`
+        // instead of the lazy decode-on-demand cursor above -- proves
+        // `Postings::level0_impacts`/`level1_impacts` (captured once, up
+        // front) and `PostingsCursor::level0_impacts`/`level1_impacts` (the
+        // lookup over them) against real Lucene bytes too, not just
+        // self-consistency with the lazy path.
+        let postings = entry
+            .postings(term.as_bytes(), Some(doc_in))
+            .unwrap()
+            .expect("term found");
+        let mut eager_cursor = postings::PostingsCursor::new(&postings);
+        assert_eq!(
+            eager_cursor.advance(doc_id),
+            doc_id,
+            "field={field} term={term} doc_id={doc_id} (eager)"
+        );
+
+        if let Some(expected) = &expected_level0 {
+            let actual: Vec<(i32, i64)> = eager_cursor
+                .level0_impacts()
+                .iter()
+                .map(|i| (i.freq, i.norm))
+                .collect();
+            assert_eq!(
+                &actual, expected,
+                "field={field} term={term} doc_id={doc_id} level0 (eager)"
+            );
+        }
+        if let Some(expected) = &expected_level1 {
+            let actual: Vec<(i32, i64)> = eager_cursor
+                .level1_impacts()
+                .iter()
+                .map(|i| (i.freq, i.norm))
+                .collect();
+            assert_eq!(
+                &actual, expected,
+                "field={field} term={term} doc_id={doc_id} level1 (eager)"
             );
         }
     }
