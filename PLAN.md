@@ -1038,11 +1038,14 @@ as_open_segments()` returns the final `Vec<OpenSegment>` — two calls, not
 one, because `OpenSegment` holds `&'a DocInput<'a>` (a reference to an
 already-constructed value), and storing that value inside `SegmentReader`
 itself would be self-referential (illegal without `unsafe`, forbidden in
-this crate). **Compound-file segments (`.cfs`/`.cfe`) are out of scope**:
-`SegmentReader::open` returns `Error::CompoundFileUnsupported` rather than
-silently mis-reading — packing/unpacking compound sub-files into this
-reader was more scope than this task's "centralize what callers already
-did by hand" brief called for. **Verified**: opens the real single-segment
+this crate). **Compound-file segments (`.cfs`/`.cfe`) were out of scope at
+the time this task landed**: `SegmentReader::open` returned
+`Error::CompoundFileUnsupported` rather than silently mis-reading —
+packing/unpacking compound sub-files into this reader was more scope than
+this task's "centralize what callers already did by hand" brief called
+for. **Superseded by task #76 below**, which wires real compound-file
+reads into `SegmentReader::open` and removes `Error::CompoundFileUnsupported`
+entirely — see that entry for the current, accurate state. **Verified**: opens the real single-segment
 `fixtures/data/blocktree_index/` fixture end-to-end and reproduces task
 #41's `search_term_query_multi_segment` result; opens the real
 `fixtures/data/live_docs_index/` fixture and confirms `.liv` is read and
@@ -2030,6 +2033,45 @@ deferred: no merge-policy configurability from `IndexWriter::open` itself
 merging, and no multi-tier scheduling beyond whatever one
 `merge_policy::find_merges` call already does -- `update_document`/
 `delete_documents` do not trigger this check, only `commit()` does.
+
+**Progress (task #76): compound-file read wiring in `DirectoryReader`.**
+`lucene-search/src/directory_reader.rs::SegmentReader::open` now opens a
+segment's `.cfs`/`.cfe` pair when `SegmentInfo.is_compound_file` is set,
+instead of returning `Error::CompoundFileUnsupported`. This is read-path
+*wiring*, not new codec work: the new `CompoundArchive` type calls
+`lucene_codecs::compound_format::{parse_entries, check_data_header_footer,
+open_input}` exactly as already written and already differentially verified
+(see that module's `docs/parity.md` row) -- nothing about the `.cfs`/`.cfe`
+byte format is touched. Every sub-file lookup this reader needs (`.fnm`,
+`.tim`, `.tip`, `.tmd`, `.doc`, `.pos`, `.pay`) now goes through one shared
+helper, `open_segment_file` (plus `find_segment_file_name` for the
+name-only lookup `.tim`'s embedded codec-suffix parsing needs), so there's a
+single branch point -- "compound: read out of the archive, by extension
+suffix; loose: `dir.open` the `SegmentInfo.files` entry ending in that
+extension, exactly as before" -- rather than duplicating that decision at
+each of the seven call sites. Verified against a real Java-written compound
+segment, not just this port's own writer: `fixtures/data/compound_index/`
+(`GenCompoundFormat.java`, a real `IndexWriter` with `useCompoundFile=true`,
+5 docs, real `.tim`/`.tip`/`.tmd`/`.doc` postings packed inside the `.cfs`
+alongside `.fnm`/stored-fields/doc-values files) now opens through
+`DirectoryReader::open` and answers a real term query correctly -- replacing
+the old test that merely checked for a rejection error. A second test
+flushes the same documents through this port's own
+`segment_writer::flush_stored_only_segment` twice, loose and compound, and
+confirms the compound segment's field infos/doc count match the loose one
+with no loose `.fnm` present to silently fall back to. Every pre-existing
+`directory_reader.rs` test (real fixtures, stored-fields-only, missing
+`.fnm`, partial blocktree files, `open_if_changed` reuse/reopen) still
+passes unchanged. **Honestly still not compound-aware**: doc-values, norms,
+and term-vector reading elsewhere in `lucene-search`
+(`doc_value_query.rs`, `field_norms.rs`, `term_vectors_query.rs`,
+`soft_deletes.rs`) each open their files directly off the outer `Directory`
+by name, independent of `SegmentReader`; none of them check
+`SegmentInfo.is_compound_file` or use this task's new helpers, so a segment
+with doc-values/norms/term-vectors packed into its `.cfs` would still fail
+to open through those call sites. This port's own write side doesn't
+produce such a segment yet, so nothing exercises that gap today, but it's a
+real, unclosed one, not silently papered over.
 
 1. `lucene-analysis`: `TokenStream` as an iterator-of-token-structs (skip Java's
    AttributeSource reflection design entirely — a plain

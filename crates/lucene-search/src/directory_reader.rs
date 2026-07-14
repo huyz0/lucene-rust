@@ -19,13 +19,22 @@
 //! [`OpenSegment`] values ready for [`crate::multi_segment`]'s existing
 //! fan-out/merge functions.
 //!
+//! **Compound-file segments** (`.cfs`/`.cfe`, `SegmentInfo.is_compound_file`)
+//! are opened transparently: [`SegmentReader::open`] reads the segment's
+//! `.cfs`/`.cfe` pair through the existing
+//! [`lucene_codecs::compound_format`] read API and pulls each sub-file
+//! (`.fnm`, and `.tim`/`.tip`/`.tmd`/`.doc`/`.pos`/`.pay` when present) out of
+//! that in-memory archive instead of `dir.open`-ing a loose file that
+//! wouldn't exist on disk for such a segment -- see [`open_segment_file`]'s
+//! doc comment for exactly which sub-files this port's own write side
+//! (`segment_writer.rs`) ever actually packs into one today.
+//!
 //! **Deliberately excluded** (see `docs/parity.md` for the authoritative
-//! list): NRT/reopen (`DirectoryReader.openIfChanged`), soft deletes,
-//! compound-file segments (`.cfs`/`.cfe` -- [`Error::CompoundFileUnsupported`]
-//! is returned rather than silently mis-reading), and doc-values/norms/term
-//! vectors (irrelevant here: [`OpenSegment`] itself has no fields for them --
-//! `crate::field_norms`/doc-values/term-vectors query functions still take
-//! their own already-opened readers directly, unchanged by this task).
+//! list): NRT/reopen (`DirectoryReader.openIfChanged`), soft deletes, and
+//! doc-values/norms/term vectors (irrelevant here: [`OpenSegment`] itself has
+//! no fields for them -- `crate::field_norms`/doc-values/term-vectors query
+//! functions still take their own already-opened readers directly, unchanged
+//! by this task).
 //!
 //! # Why the two-step `open_segments`/`as_open_segments` API
 //!
@@ -45,6 +54,7 @@
 //! to do.
 
 use lucene_codecs::blocktree::{self, BlockTreeFields};
+use lucene_codecs::compound_format;
 use lucene_codecs::field_infos;
 use lucene_codecs::live_docs;
 use lucene_codecs::postings::{self, DocInput, PayInput, PosInput};
@@ -73,8 +83,8 @@ pub enum Error {
     Postings(#[from] postings::Error),
     #[error(transparent)]
     LiveDocs(#[from] live_docs::Error),
-    #[error("segment {0} is compound-file packed; DirectoryReader does not open .cfs/.cfe yet")]
-    CompoundFileUnsupported(String),
+    #[error(transparent)]
+    CompoundFormat(#[from] compound_format::Error),
     #[error("segment {segment} has {found} of .tim/.tip/.tmd (need all three or none)")]
     PartialBlockTreeFiles { segment: String, found: usize },
 }
@@ -136,65 +146,63 @@ impl SegmentReader {
 
         let si_bytes = dir.open(&format!("{segment_name}.si"))?;
         let si: SegmentInfo = segment_info::parse(&si_bytes, &segment_id)?;
-        if si.is_compound_file {
-            return Err(Error::CompoundFileUnsupported(segment_name));
-        }
 
-        let fnm_name = find_file_ending(&si.files, ".fnm").ok_or_else(|| {
-            Error::Store(lucene_store::Error::Corrupted(format!(
-                "segment {segment_name} has no .fnm file"
-            )))
-        })?;
-        let fnm_bytes = dir.open(&fnm_name)?;
+        // Compound-file segments (`.cfs`/`.cfe`) pack every other codec file
+        // into one archive -- see `open_segment_file`'s doc comment for how
+        // every sub-file lookup below transparently reads from it instead of
+        // `dir.open`-ing a loose file that wouldn't exist on disk.
+        let compound = if si.is_compound_file {
+            Some(CompoundArchive::open(dir, &segment_name, &segment_id)?)
+        } else {
+            None
+        };
+
+        let fnm_bytes =
+            open_segment_file(dir, compound.as_ref(), &si.files, ".fnm")?.ok_or_else(|| {
+                Error::Store(lucene_store::Error::Corrupted(format!(
+                    "segment {segment_name} has no .fnm file"
+                )))
+            })?;
         let field_infos = field_infos::parse(&fnm_bytes, &segment_id, "")?;
 
-        let tim_name = find_file_ending(&si.files, ".tim");
-        let tip_name = find_file_ending(&si.files, ".tip");
-        let tmd_name = find_file_ending(&si.files, ".tmd");
-        let found = [&tim_name, &tip_name, &tmd_name]
+        let tim_bytes = open_segment_file(dir, compound.as_ref(), &si.files, ".tim")?;
+        let tip_bytes = open_segment_file(dir, compound.as_ref(), &si.files, ".tip")?;
+        let tmd_bytes = open_segment_file(dir, compound.as_ref(), &si.files, ".tmd")?;
+        let found = [&tim_bytes, &tip_bytes, &tmd_bytes]
             .iter()
             .filter(|f| f.is_some())
             .count();
 
         let (fields, segment_suffix, doc_buf, pos_buf, pay_buf) = if found == 3 {
-            let tim_name = tim_name.unwrap();
-            // Suffix is embedded in the file name itself: strip the
-            // `<segment_name>_` prefix and `.tim` extension, e.g.
-            // `_0_Lucene104_0.tim` (segment `_0`) -> `Lucene104_0`.
-            let segment_suffix = tim_name
+            // Suffix is embedded in the sub-file's own name: strip the
+            // `<segment_name>_` prefix (loose files, e.g.
+            // `_0_Lucene104_0.tim` -> `Lucene104_0`) or the leading `_`
+            // (compound entries, already stripped of the segment-name prefix
+            // by `IndexFileNames.stripSegmentName` when packed -- e.g.
+            // `_Lucene104_0.tim` -> `Lucene104_0`), then the `.tim`
+            // extension.
+            let tim_file_name = find_segment_file_name(&si.files, compound.as_ref(), ".tim")
+                .expect("found == 3 implies a .tim entry exists");
+            let segment_suffix = tim_file_name
                 .strip_prefix(&format!("{segment_name}_"))
+                .or_else(|| tim_file_name.strip_prefix('_'))
                 .and_then(|s| s.strip_suffix(".tim"))
-                .unwrap_or("")
+                .unwrap_or_default()
                 .to_string();
 
-            let tim_bytes = dir.open(&tim_name)?;
-            let tip_bytes = dir.open(&tip_name.unwrap())?;
-            let tmd_bytes = dir.open(&tmd_name.unwrap())?;
             let fields = blocktree::open(
-                &tim_bytes,
-                &tip_bytes,
-                &tmd_bytes,
+                tim_bytes.as_ref().unwrap(),
+                tip_bytes.as_ref().unwrap(),
+                tmd_bytes.as_ref().unwrap(),
                 &field_infos,
                 &segment_id,
                 &segment_suffix,
                 si.doc_count,
             )?;
 
-            let doc_name = find_file_ending(&si.files, ".doc");
-            let doc_buf = match &doc_name {
-                Some(name) => Some(dir.open(name)?.to_vec()),
-                None => None,
-            };
-            let pos_name = find_file_ending(&si.files, ".pos");
-            let pos_buf = match &pos_name {
-                Some(name) => Some(dir.open(name)?.to_vec()),
-                None => None,
-            };
-            let pay_name = find_file_ending(&si.files, ".pay");
-            let pay_buf = match &pay_name {
-                Some(name) => Some(dir.open(name)?.to_vec()),
-                None => None,
-            };
+            let doc_buf = open_segment_file(dir, compound.as_ref(), &si.files, ".doc")?;
+            let pos_buf = open_segment_file(dir, compound.as_ref(), &si.files, ".pos")?;
+            let pay_buf = open_segment_file(dir, compound.as_ref(), &si.files, ".pay")?;
 
             (fields, segment_suffix, doc_buf, pos_buf, pay_buf)
         } else if found == 0 {
@@ -240,6 +248,87 @@ impl SegmentReader {
 
 fn find_file_ending(files: &[String], ext: &str) -> Option<String> {
     files.iter().find(|f| f.ends_with(ext)).cloned()
+}
+
+/// A segment's already-opened, already-validated `.cfs`/`.cfe` pair --
+/// opened once per compound segment in [`SegmentReader::open`] and then
+/// queried by [`find_segment_file_name`]/[`open_segment_file`] for each
+/// sub-file the reader needs, entirely through the read-side API
+/// `compound_format` already exposes ([`compound_format::parse_entries`],
+/// [`compound_format::check_data_header_footer`],
+/// [`compound_format::open_input`]) -- nothing about the archive format
+/// itself is reimplemented here.
+struct CompoundArchive {
+    data: Vec<u8>,
+    entries: compound_format::CompoundEntries,
+}
+
+impl CompoundArchive {
+    fn open(dir: &dyn Directory, segment_name: &str, segment_id: &[u8; ID_LENGTH]) -> Result<Self> {
+        let cfs_bytes = dir.open(&format!("{segment_name}.cfs"))?.to_vec();
+        let cfe_bytes = dir.open(&format!("{segment_name}.cfe"))?;
+        let entries = compound_format::parse_entries(&cfe_bytes, segment_id)?;
+        compound_format::check_data_header_footer(&cfs_bytes, segment_id, &entries)?;
+        Ok(CompoundArchive {
+            data: cfs_bytes,
+            entries,
+        })
+    }
+}
+
+/// Resolves the on-disk (loose) or in-archive (compound) name of a segment's
+/// sub-file ending in `ext`, without reading its bytes -- shared by
+/// [`open_segment_file`] and [`SegmentReader::open`]'s `.tim`-suffix
+/// derivation, both of which need the *name*, not just its contents. Loose
+/// sub-file names are full file names (`SegmentInfo.files`, e.g.
+/// `_0_Lucene104_0.tim`); compound entry ids are already stripped of the
+/// segment-name prefix by the writer (`IndexFileNames.stripSegmentName`,
+/// e.g. `_Lucene104_0.tim`) -- either way, matching by extension suffix is
+/// exactly what real Lucene's per-format file-name lookup does.
+fn find_segment_file_name(
+    files: &[String],
+    compound: Option<&CompoundArchive>,
+    ext: &str,
+) -> Option<String> {
+    match compound {
+        Some(archive) => archive
+            .entries
+            .names()
+            .find(|name| name.ends_with(ext))
+            .map(str::to_string),
+        None => find_file_ending(files, ext),
+    }
+}
+
+/// The one shared "read a segment's sub-file" call site every extension
+/// (`.fnm`/`.tim`/`.tip`/`.tmd`/`.doc`/`.pos`/`.pay`) goes through: resolves
+/// the file's name via [`find_segment_file_name`], then either reads it out
+/// of the already-opened [`CompoundArchive`] via
+/// [`compound_format::open_input`] (compound segments) or `dir.open`s the
+/// loose file (everything else) -- unchanged behavior for non-compound
+/// segments, transparent compound-file reading for segments whose `.si` set
+/// `is_compound_file`. Returns `Ok(None)` when the segment simply doesn't
+/// have that file (e.g. a stored-fields-only segment has no `.tim`/`.tip`/
+/// `.tmd`/`.doc`/`.pos`/`.pay`), the same "missing is not an error" contract
+/// the call sites had before this helper existed.
+fn open_segment_file(
+    dir: &dyn Directory,
+    compound: Option<&CompoundArchive>,
+    files: &[String],
+    ext: &str,
+) -> Result<Option<Vec<u8>>> {
+    let name = match find_segment_file_name(files, compound, ext) {
+        Some(name) => name,
+        None => return Ok(None),
+    };
+    match compound {
+        Some(archive) => Ok(Some(
+            compound_format::open_input(&archive.data, &archive.entries, &name)?
+                .as_slice()
+                .to_vec(),
+        )),
+        None => Ok(Some(dir.open(&name)?.to_vec())),
+    }
 }
 
 /// `DirectoryReader.open(Directory)`-equivalent: reads the latest
@@ -538,6 +627,250 @@ mod tests {
         std::fs::remove_dir_all(&dir_path).ok();
     }
 
+    /// A stored-fields-only segment flushed with `use_compound_file: true`
+    /// (so only `_0.cfs`/`_0.cfe`/`_0.si` exist on disk -- no loose `.fnm`)
+    /// must open through `DirectoryReader` with the same doc count and "no
+    /// postings" shape as the non-compound flush of the same documents,
+    /// proving the `.fnm` read out of the compound archive succeeds (a
+    /// missing/unreadable `.fnm` would fail `DirectoryReader::open_at`
+    /// itself, since field infos are required to open any segment). Also
+    /// confirms a *loose* `.fnm` genuinely does not exist next to the
+    /// compound segment -- so success here can only come from reading
+    /// through `.cfs`, not from an accidental loose-file fallback. Does NOT
+    /// compare field name/number directly (`SegmentReader` doesn't expose
+    /// parsed field infos publicly); [`compound_file_segment_opens_and_is_queryable`]
+    /// below covers that indirectly by running a real term query, which
+    /// only succeeds if the field/term data read out of `.cfs` is correct.
+    #[test]
+    fn compound_flushed_segment_opens_with_field_infos_matching_non_compound_flush() {
+        use lucene_codecs::stored_fields::{Document, FieldValue, StoredField};
+
+        let dir_path = tempdir();
+        let dir = FsDirectory::open(&dir_path);
+
+        let lucene_version = segment_info::LuceneVersion {
+            major: 10,
+            minor: 0,
+            bugfix: 0,
+        };
+        let docs = vec![Document {
+            fields: vec![StoredField {
+                field_number: 0,
+                value: FieldValue::String("hello".to_string()),
+            }],
+        }];
+
+        // Loose flush of the same documents, for a same-shape baseline.
+        let loose_commit = lucene_index::segment_writer::flush_stored_only_segment(
+            &dir,
+            "_0",
+            [7u8; ID_LENGTH],
+            "Lucene104",
+            lucene_version,
+            &stored_only_field_infos(),
+            &docs,
+            false,
+        )
+        .expect("flush loose segment");
+        assert!(dir_path.join("_0.fnm").exists());
+
+        let loose_infos = SegmentInfos {
+            id: [9u8; ID_LENGTH],
+            generation: 1,
+            format_version: segment_infos::VERSION_86,
+            lucene_version: LuceneVersion {
+                major: 10,
+                minor: 0,
+                bugfix: 0,
+            },
+            index_created_version_major: 10,
+            version: 1,
+            counter: 1,
+            min_segment_lucene_version: None,
+            segments: vec![loose_commit],
+            user_data: vec![],
+        };
+        let loose_reader = DirectoryReader::open_at(&dir, loose_infos).expect("open loose");
+        let loose_seg = &loose_reader.segment_readers()[0];
+
+        // Compound flush of the same documents into a second segment, in
+        // the same directory (a distinct segment name/id so both coexist).
+        let compound_commit = lucene_index::segment_writer::flush_stored_only_segment(
+            &dir,
+            "_1",
+            [8u8; ID_LENGTH],
+            "Lucene104",
+            lucene_version,
+            &stored_only_field_infos(),
+            &docs,
+            true,
+        )
+        .expect("flush compound segment");
+        assert!(dir_path.join("_1.cfs").exists());
+        assert!(dir_path.join("_1.cfe").exists());
+        assert!(
+            !dir_path.join("_1.fnm").exists(),
+            "compound flush must not also write a loose .fnm"
+        );
+
+        let compound_infos = SegmentInfos {
+            id: [9u8; ID_LENGTH],
+            generation: 1,
+            format_version: segment_infos::VERSION_86,
+            lucene_version: LuceneVersion {
+                major: 10,
+                minor: 0,
+                bugfix: 0,
+            },
+            index_created_version_major: 10,
+            version: 1,
+            counter: 1,
+            min_segment_lucene_version: None,
+            segments: vec![compound_commit],
+            user_data: vec![],
+        };
+        let compound_reader =
+            DirectoryReader::open_at(&dir, compound_infos).expect("open compound segment");
+        let compound_seg = &compound_reader.segment_readers()[0];
+
+        // Both must have the same doc count and same "no postings" shape --
+        // the compound one exercised entirely through `.cfs`/`.cfe`.
+        assert_eq!(compound_seg.max_doc, loose_seg.max_doc);
+        assert!(compound_seg.doc_buf.is_none());
+        assert!(compound_seg.pos_buf.is_none());
+        assert!(compound_seg.pay_buf.is_none());
+        assert!(compound_seg.live_docs.is_none());
+
+        std::fs::remove_dir_all(&dir_path).ok();
+    }
+
+    /// A compound segment whose `.cfs` data has been truncated (corrupting
+    /// its header/footer) must surface as a typed error out of
+    /// [`CompoundArchive::open`]'s `compound_format::check_data_header_footer`
+    /// call, not panic or silently read garbage.
+    #[test]
+    fn compound_file_segment_with_truncated_cfs_is_a_typed_error() {
+        use lucene_codecs::stored_fields::{Document, FieldValue, StoredField};
+
+        let dir_path = tempdir();
+        let dir = FsDirectory::open(&dir_path);
+        let lucene_version = segment_info::LuceneVersion {
+            major: 10,
+            minor: 0,
+            bugfix: 0,
+        };
+        let docs = vec![Document {
+            fields: vec![StoredField {
+                field_number: 0,
+                value: FieldValue::String("hello".to_string()),
+            }],
+        }];
+        let commit = lucene_index::segment_writer::flush_stored_only_segment(
+            &dir,
+            "_0",
+            [7u8; ID_LENGTH],
+            "Lucene104",
+            lucene_version,
+            &stored_only_field_infos(),
+            &docs,
+            true,
+        )
+        .expect("flush compound segment");
+
+        let cfs_path = dir_path.join("_0.cfs");
+        let mut bytes = std::fs::read(&cfs_path).unwrap();
+        bytes.truncate(bytes.len() / 2);
+        std::fs::write(&cfs_path, bytes).unwrap();
+
+        let segment_infos = SegmentInfos {
+            id: [9u8; ID_LENGTH],
+            generation: 1,
+            format_version: segment_infos::VERSION_86,
+            lucene_version: LuceneVersion {
+                major: 10,
+                minor: 0,
+                bugfix: 0,
+            },
+            index_created_version_major: 10,
+            version: 1,
+            counter: 1,
+            min_segment_lucene_version: None,
+            segments: vec![commit],
+            user_data: vec![],
+        };
+        let err = DirectoryReader::open_at(&dir, segment_infos)
+            .expect_err("truncated .cfs must not open successfully");
+        assert!(
+            matches!(err, Error::CompoundFormat(_)),
+            "expected a typed CompoundFormat error, got {err:?}"
+        );
+
+        std::fs::remove_dir_all(&dir_path).ok();
+    }
+
+    /// A compound segment whose `.cfe` entry table is truncated must
+    /// surface as a typed error out of `compound_format::parse_entries`
+    /// rather than panicking on an out-of-bounds read.
+    #[test]
+    fn compound_file_segment_with_truncated_cfe_is_a_typed_error() {
+        use lucene_codecs::stored_fields::{Document, FieldValue, StoredField};
+
+        let dir_path = tempdir();
+        let dir = FsDirectory::open(&dir_path);
+        let lucene_version = segment_info::LuceneVersion {
+            major: 10,
+            minor: 0,
+            bugfix: 0,
+        };
+        let docs = vec![Document {
+            fields: vec![StoredField {
+                field_number: 0,
+                value: FieldValue::String("hello".to_string()),
+            }],
+        }];
+        let commit = lucene_index::segment_writer::flush_stored_only_segment(
+            &dir,
+            "_0",
+            [7u8; ID_LENGTH],
+            "Lucene104",
+            lucene_version,
+            &stored_only_field_infos(),
+            &docs,
+            true,
+        )
+        .expect("flush compound segment");
+
+        let cfe_path = dir_path.join("_0.cfe");
+        let mut bytes = std::fs::read(&cfe_path).unwrap();
+        bytes.truncate(bytes.len() / 2);
+        std::fs::write(&cfe_path, bytes).unwrap();
+
+        let segment_infos = SegmentInfos {
+            id: [9u8; ID_LENGTH],
+            generation: 1,
+            format_version: segment_infos::VERSION_86,
+            lucene_version: LuceneVersion {
+                major: 10,
+                minor: 0,
+                bugfix: 0,
+            },
+            index_created_version_major: 10,
+            version: 1,
+            counter: 1,
+            min_segment_lucene_version: None,
+            segments: vec![commit],
+            user_data: vec![],
+        };
+        let err = DirectoryReader::open_at(&dir, segment_infos)
+            .expect_err("truncated .cfe must not open successfully");
+        assert!(
+            matches!(err, Error::CompoundFormat(_)),
+            "expected a typed CompoundFormat error, got {err:?}"
+        );
+
+        std::fs::remove_dir_all(&dir_path).ok();
+    }
+
     /// Confirms `doc_base` is computed as the running sum of previous
     /// segments' `maxDoc`, by opening the same real fixture segment twice
     /// under one hand-built two-segment `SegmentInfos` (the same "open the
@@ -594,18 +927,42 @@ mod tests {
         assert!(seg.pay_buf.is_none());
     }
 
-    /// A compound-file (`.cfs`/`.cfe`) segment is out of scope for this
-    /// task's `DirectoryReader` (see this module's doc comment) and must
-    /// surface a typed error, not silently mis-open or panic.
+    /// A real, Java-written compound-file (`.cfs`/`.cfe`) segment must open
+    /// through `DirectoryReader` exactly like a loose segment would -- same
+    /// field infos, same doc count, same postings query results -- reading
+    /// every sub-file (`.fnm`/`.tim`/`.tip`/`.tmd`/`.doc`, this fixture has no
+    /// `.pos`/`.pay`) out of the `.cfs` archive instead of failing to find
+    /// loose files that were never written.
     #[test]
-    fn compound_file_segment_is_rejected_with_typed_error() {
+    fn compound_file_segment_opens_and_is_queryable() {
         let dir_path = std::path::PathBuf::from(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../fixtures/data/compound_index/"
         ));
         let dir = FsDirectory::open(&dir_path);
-        let err = DirectoryReader::open(&dir).expect_err("compound segment must be rejected");
-        assert!(matches!(err, Error::CompoundFileUnsupported(_)));
+        let reader = DirectoryReader::open(&dir).expect("open real compound-file segment");
+
+        assert_eq!(reader.segment_readers().len(), 1);
+        let seg = &reader.segment_readers()[0];
+        assert_eq!(seg.max_doc, 5);
+        assert!(
+            seg.doc_buf.is_some(),
+            "compound fixture has real .doc postings"
+        );
+        assert!(seg.pos_buf.is_none(), "compound fixture has no .pos");
+        assert!(seg.pay_buf.is_none(), "compound fixture has no .pay");
+
+        // GenCompoundFormat.java indexes docs 0..5 with a `StringField("id",
+        // ...)` -- confirms the `.fnm`/`.tim`/`.tip`/`.tmd`/`.doc` bytes
+        // pulled out of the compound archive are actually usable for a real
+        // query, not merely non-empty.
+        let opened = reader.open_segments().unwrap();
+        let segments = opened.as_open_segments();
+        let query = TermQuery::new("id", "3");
+        let norms = [None];
+        let hits = search_term_query_multi_segment(&segments, &query, &norms, 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].doc_id, 3);
     }
 
     /// A segment whose `.si` lists no `.fnm` file at all is corrupt (every
