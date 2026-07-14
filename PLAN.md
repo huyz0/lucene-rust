@@ -2293,6 +2293,61 @@ same as postings), and any RAM-threshold/auto-flush triggering (unchanged
 from `IndexWriter`'s existing scope). See `docs/parity.md`'s updated row for
 the full accounting.
 
+**Follow-up task: NUMERIC doc values wired into `IndexWriter::commit()`.**
+`IndexWriter::set_doc_values_field(Some(field_name))` (new,
+`crates/lucene-index/src/index_writer.rs`) opts a writer into calling
+`doc_values::write_single_dense_numeric_field` unmodified for exactly one
+field of every segment `commit()` flushes, writing `.dvd`/`.dvm`/`.dvs` and
+patching that segment's `.si` to list them -- same "one field per call, build
+in memory before touching `dir`" shape `set_postings_field`/
+`set_term_vector_field` already established. Only NUMERIC is wired: BINARY
+and SORTED_NUMERIC write sides exist in `doc_values.rs` (task #77) but
+`set_doc_values_field` rejects any field whose `FieldInfo.doc_values_type`
+isn't `DocValuesType::Numeric` with `Error::UnsupportedDocValuesType`.
+
+**Dense-only, enforced at `commit()` time, atomically**: unlike
+`set_postings_field`/`set_term_vector_field`'s "best effort, skip that doc"
+handling of a missing/wrong-typed value, `write_single_dense_numeric_field`
+has no missing-value encoding at all, so *every* pending doc must carry a
+`FieldValue::Int`/`FieldValue::Long` value for the opted-in field or the
+whole `commit()` call fails -- `Error::MissingDenseDocValue` for a doc with
+no value at all, `Error::NonNumericDocValue` for a doc whose value isn't
+`Int`/`Long` -- leaving `dir`/`pending_docs`/`segment_infos` completely
+unchanged, same atomicity guarantee as the `docFreq >= 256` postings
+rejection. Backward compatible: a writer that never calls
+`set_doc_values_field` produces byte-identical output to before this feature
+existed (covered by `commit_with_no_doc_values_field_configured_stays_stored_only`).
+
+**Interaction with automatic merge triggering (task #71), applied
+proactively from the postings/term-vector features' own review findings**:
+`execute_merge`/`merge_stored_only_segments` have no `.dvd`/`.dvm`/`.dvs`
+awareness either, so `segment_stats()` now also excludes any segment whose
+`.si` lists a `.dvd` file from `find_merges`' candidate pool, keeping it
+permanently un-mergeable rather than mergeable-with-silent-data-loss. Covered
+by `segments_with_doc_values_are_never_automatically_merged_away`, mirroring
+the postings/term-vector versions exactly.
+
+**Postings + term vectors + doc values together, tested**:
+`postings_term_vectors_and_doc_values_configured_together_all_write_correctly`
+enables `set_postings_field`, `set_term_vector_field`, and
+`set_doc_values_field` (different fields) in the same commit and asserts all
+ten files land correctly in one `.si` and are all independently readable --
+no ordering bug found between the three independent `.si`-patching passes.
+
+Required end-to-end proof:
+`commit_with_doc_values_field_writes_readable_numeric_values_for_multiple_docs`
+(`crates/lucene-index/src/index_writer.rs`) adds documents via
+`IndexWriter::add_document`/`commit()` and reads the written `.dvm`/`.dvd`
+back via the existing unmodified `lucene_codecs::doc_values::{parse_meta,
+numeric_value}`, asserting the exact per-document values a real
+`NumericDocValues.longValue` would return.
+
+**Still explicitly deferred**: BINARY/SORTED_NUMERIC doc values wired into
+`IndexWriter`, multiple doc-values fields in one commit, sparse (missing-value)
+doc values, and doc-values-aware segment merging (a segment with doc values
+can never be auto-merged today, same as postings/term vectors). See
+`docs/parity.md`'s updated rows for the full accounting.
+
 1. `lucene-analysis`: `TokenStream` as an iterator-of-token-structs (skip Java's
    AttributeSource reflection design entirely — a plain
    `Token { bytes, position_increment, offset, ... }` struct), StandardTokenizer via

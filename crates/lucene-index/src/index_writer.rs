@@ -117,7 +117,8 @@ use crate::term_delete;
 use crate::update_document::{self, SegmentDeleteSource};
 
 use lucene_analysis::Analyzer;
-use lucene_codecs::field_infos::{FieldInfo, IndexOptions};
+use lucene_codecs::doc_values;
+use lucene_codecs::field_infos::{DocValuesType, FieldInfo, IndexOptions};
 use lucene_codecs::postings_writer::{self, FieldPostingsInput, TermPostings};
 use lucene_codecs::stored_fields::{self, Document, FieldValue};
 use lucene_codecs::term_vectors::{self, TermVectorField, TermVectorTerm, TermVectorsDocument};
@@ -155,6 +156,8 @@ pub enum Error {
     PostingsWriter(#[from] postings_writer::Error),
     #[error(transparent)]
     TermVectors(#[from] term_vectors::Error),
+    #[error(transparent)]
+    DocValues(#[from] doc_values::WriteError),
     #[error("set_postings_field: no field named {0:?} in this writer's field list")]
     UnknownPostingsField(String),
     #[error(
@@ -170,6 +173,23 @@ pub enum Error {
          whose FieldInfo already advertises them"
     )]
     UnsupportedTermVectorField(String),
+    #[error("set_doc_values_field: no field named {0:?} in this writer's field list")]
+    UnknownDocValuesField(String),
+    #[error(
+        "set_doc_values_field: field {0:?} has doc_values_type {1:?}; only \
+         DocValuesType::Numeric is supported by this writer's doc-values write-side"
+    )]
+    UnsupportedDocValuesType(String, DocValuesType),
+    #[error(
+        "commit: doc-values field {0:?} is dense-only (write_single_dense_numeric_field has \
+         no missing-value encoding) but pending doc {1} has no value for it"
+    )]
+    MissingDenseDocValue(String, usize),
+    #[error(
+        "commit: doc-values field {0:?} requires FieldValue::Int or FieldValue::Long on every \
+         pending doc, but doc {1} has a {2} value"
+    )]
+    NonNumericDocValue(String, usize, &'static str),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -186,6 +206,7 @@ pub struct IndexWriter<'d> {
     merge_policy: Option<MergePolicyConfig>,
     postings_field: Option<PostingsFieldConfig>,
     term_vector_field: Option<TermVectorFieldConfig>,
+    doc_values_field: Option<DocValuesFieldConfig>,
 }
 
 /// One field this writer has been opted into also indexing real postings
@@ -205,6 +226,16 @@ struct PostingsFieldConfig {
 /// every commit" shape as [`PostingsFieldConfig`].
 #[derive(Debug, Clone)]
 struct TermVectorFieldConfig {
+    name: String,
+    field_number: i32,
+}
+
+/// One field this writer has been opted into also building real NUMERIC doc
+/// values for, resolved once by [`IndexWriter::set_doc_values_field`] against
+/// this writer's fixed `fields` list -- same "resolve once, reuse every
+/// commit" shape as [`PostingsFieldConfig`]/[`TermVectorFieldConfig`].
+#[derive(Debug, Clone)]
+struct DocValuesFieldConfig {
     name: String,
     field_number: i32,
 }
@@ -244,6 +275,7 @@ impl<'d> IndexWriter<'d> {
             merge_policy: None,
             postings_field: None,
             term_vector_field: None,
+            doc_values_field: None,
         })
     }
 
@@ -343,6 +375,64 @@ impl<'d> IndexWriter<'d> {
                     return Err(Error::UnsupportedTermVectorField(name.to_string()));
                 }
                 Some(TermVectorFieldConfig {
+                    name: name.to_string(),
+                    field_number: info.number,
+                })
+            }
+        };
+        Ok(())
+    }
+
+    /// Opts this writer into also building and writing real NUMERIC doc
+    /// values (`.dvd`/`.dvm`/`.dvs`, via
+    /// [`doc_values::write_single_dense_numeric_field`]) for one field of
+    /// every segment [`IndexWriter::commit`] flushes from here on -- same
+    /// "one field per call" scope as [`IndexWriter::set_postings_field`]/
+    /// [`IndexWriter::set_term_vector_field`] (no per-field file-suffix
+    /// machinery here to fan this out to more than one field within a single
+    /// segment).
+    ///
+    /// **Only NUMERIC doc values are wired up by this writer.** BINARY and
+    /// SORTED_NUMERIC write-side functions already exist in
+    /// [`lucene_codecs::doc_values`] but are not wired into this facade --
+    /// see that module's parity notes and `docs/parity.md` for the exact
+    /// scope split.
+    ///
+    /// `Some(field_name)` looks `field_name` up in this writer's fixed
+    /// `fields` list and requires its `doc_values_type` to already be
+    /// `DocValuesType::Numeric` (an `Err` otherwise) -- matching real
+    /// Lucene's own `FieldType.setDocValuesType(DocValuesType.NUMERIC)`
+    /// convention. `None` (the default a freshly [`IndexWriter::open`]ed
+    /// writer starts with) turns this back off -- `commit()` then behaves
+    /// exactly as it did before this feature existed.
+    ///
+    /// **Dense-only, enforced fail-fast at `commit()` time, not here:**
+    /// [`doc_values::write_single_dense_numeric_field`] has no missing-value
+    /// encoding, so *every* pending doc at the time of a `commit()` call
+    /// must carry a [`FieldValue::Int`] or [`FieldValue::Long`] value for
+    /// the opted-in field, or the whole `commit()` call fails with
+    /// [`Error::MissingDenseDocValue`]/[`Error::NonNumericDocValue`] and
+    /// leaves `dir`/`pending_docs`/`segment_infos` unchanged -- unlike
+    /// [`IndexWriter::set_postings_field`]/
+    /// [`IndexWriter::set_term_vector_field`], a missing or wrong-typed value
+    /// for this field is not "best effort, skip that doc" (there is no
+    /// sparse/missing-value doc-values shape to fall back to here).
+    pub fn set_doc_values_field(&mut self, field_name: Option<&str>) -> Result<()> {
+        self.doc_values_field = match field_name {
+            None => None,
+            Some(name) => {
+                let info = self
+                    .fields
+                    .iter()
+                    .find(|f| f.name == name)
+                    .ok_or_else(|| Error::UnknownDocValuesField(name.to_string()))?;
+                if info.doc_values_type != DocValuesType::Numeric {
+                    return Err(Error::UnsupportedDocValuesType(
+                        name.to_string(),
+                        info.doc_values_type,
+                    ));
+                }
+                Some(DocValuesFieldConfig {
                     name: name.to_string(),
                     field_number: info.number,
                 })
@@ -519,6 +609,14 @@ impl<'d> IndexWriter<'d> {
                     .map(|docs| term_vectors::write_best_speed(&docs, &segment_id, "")),
                 None => None,
             };
+            let doc_values_output = match &self.doc_values_field {
+                Some(cfg) => Some(Self::build_doc_values_output(
+                    &self.pending_docs,
+                    cfg,
+                    &segment_id,
+                )?),
+                None => None,
+            };
 
             let sci = flush_stored_only_segment(
                 self.dir,
@@ -542,6 +640,16 @@ impl<'d> IndexWriter<'d> {
                     &tvd,
                     &tvx,
                     &tvm,
+                )?;
+            }
+            if let Some((dvm, dvd, dvs)) = doc_values_output {
+                Self::write_doc_values_files(
+                    self.dir,
+                    &segment_name,
+                    &segment_id,
+                    &dvm,
+                    &dvd,
+                    &dvs,
                 )?;
             }
 
@@ -735,6 +843,94 @@ impl<'d> IndexWriter<'d> {
         Some(tv_docs)
     }
 
+    /// Builds [`doc_values::write_single_dense_numeric_field`]'s input from
+    /// `docs`' values for `config.field_number` (each pending doc's index
+    /// into `docs` becomes its doc ID in the new segment, matching
+    /// [`flush_stored_only_segment`]'s own doc-ordering) and calls it to
+    /// actually encode the bytes.
+    ///
+    /// Unlike [`IndexWriter::build_postings_output`]/
+    /// [`IndexWriter::build_term_vectors_output`], this has no "best effort,
+    /// skip that doc" fallback: [`doc_values::write_single_dense_numeric_field`]
+    /// is dense-only, so a pending doc with no value at all for
+    /// `config.field_number` fails the whole `commit()` call with
+    /// [`Error::MissingDenseDocValue`], and a pending doc whose value isn't
+    /// [`FieldValue::Int`]/[`FieldValue::Long`] fails it with
+    /// [`Error::NonNumericDocValue`] -- see [`IndexWriter::set_doc_values_field`]'s
+    /// doc comment. Called only when `docs` is non-empty (see `commit`'s own
+    /// `!self.pending_docs.is_empty()` guard), so this never has to decide
+    /// what an empty-batch doc-values write even means.
+    fn build_doc_values_output(
+        docs: &[Document],
+        config: &DocValuesFieldConfig,
+        segment_id: &[u8; ID_LENGTH],
+    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+        let mut values: Vec<i64> = Vec::with_capacity(docs.len());
+        for (doc_id, doc) in docs.iter().enumerate() {
+            let field = doc
+                .fields
+                .iter()
+                .find(|f| f.field_number == config.field_number)
+                .ok_or_else(|| Error::MissingDenseDocValue(config.name.clone(), doc_id))?;
+            let value = match &field.value {
+                FieldValue::Int(v) => *v as i64,
+                FieldValue::Long(v) => *v,
+                other => {
+                    return Err(Error::NonNumericDocValue(
+                        config.name.clone(),
+                        doc_id,
+                        field_value_kind(other),
+                    ));
+                }
+            };
+            values.push(value);
+        }
+
+        let max_doc = docs.len() as i32;
+        let output = doc_values::write_single_dense_numeric_field(
+            config.field_number,
+            &values,
+            max_doc,
+            segment_id,
+            "",
+        )?;
+        Ok(output)
+    }
+
+    /// Writes [`IndexWriter::build_doc_values_output`]'s three files
+    /// (`<segment_name>.dvm`/`.dvd`/`.dvs`) into `dir` and patches the
+    /// already-written `<segment_name>.si` to list them -- same
+    /// read-modify-write-then-resync pattern
+    /// [`IndexWriter::write_term_vector_files`]/
+    /// [`IndexWriter::write_postings_files`] already use.
+    fn write_doc_values_files(
+        dir: &dyn Directory,
+        segment_name: &str,
+        segment_id: &[u8; ID_LENGTH],
+        dvm: &[u8],
+        dvd: &[u8],
+        dvs: &[u8],
+    ) -> Result<()> {
+        let dvm_name = format!("{segment_name}.dvm");
+        let dvd_name = format!("{segment_name}.dvd");
+        let dvs_name = format!("{segment_name}.dvs");
+
+        for (name, bytes) in [(&dvm_name, dvm), (&dvd_name, dvd), (&dvs_name, dvs)] {
+            write_file(dir, name, bytes)?;
+        }
+
+        let si_name = format!("{segment_name}.si");
+        let si_bytes: Vec<u8> = dir.open(&si_name)?.to_vec();
+        let mut si = segment_info::parse(&si_bytes, segment_id)?;
+        si.files
+            .extend([dvm_name.clone(), dvd_name.clone(), dvs_name.clone()]);
+        let si_bytes = segment_info::write(&si, "");
+        write_file(dir, &si_name, &si_bytes)?;
+
+        dir.sync(&[dvm_name, dvd_name, dvs_name, si_name])?;
+        Ok(())
+    }
+
     /// Writes [`IndexWriter::build_term_vectors_output`]'s three files
     /// (`<segment_name>.tvd`/`.tvx`/`.tvm`) into `dir` and patches the
     /// already-written `<segment_name>.si` to list them -- same
@@ -855,21 +1051,23 @@ impl<'d> IndexWriter<'d> {
     /// own [`SegmentCommitInfo`] (already in memory, no re-read needed).
     ///
     /// **Segments with postings files (`.doc`/`.tim`/`.tip`/`.tmd`, written
-    /// when [`IndexWriter::set_postings_field`] is configured) or term-vector
+    /// when [`IndexWriter::set_postings_field`] is configured), term-vector
     /// files (`.tvd`/`.tvx`/`.tvm`, written when
-    /// [`IndexWriter::set_term_vector_field`] is configured) are excluded
+    /// [`IndexWriter::set_term_vector_field`] is configured), or doc-values
+    /// files (`.dvd`/`.dvm`/`.dvs`, written when
+    /// [`IndexWriter::set_doc_values_field`] is configured) are excluded
     /// entirely** -- [`execute_merge`](IndexWriter::execute_merge) only
     /// merges stored fields via
     /// [`crate::merge::merge_stored_only_segments`], which has no knowledge
-    /// of postings or term vectors at all. Feeding such a segment into
-    /// `find_merges` would let an automatic merge silently drop that
-    /// segment's postings/term vectors (the merged segment's `.si` would
-    /// list only stored-fields files, and the source segment's real
-    /// `.doc`/`.tim`/`.tip`/`.tmd`/`.tvd`/`.tvx`/`.tvm` would become orphaned
-    /// on disk) with no error surfaced -- excluding these segments from
-    /// consideration keeps them permanently un-mergeable rather than
-    /// mergeable-with-silent-data-loss, until postings/term-vector-aware
-    /// merging exists.
+    /// of postings, term vectors, or doc values at all. Feeding such a
+    /// segment into `find_merges` would let an automatic merge silently drop
+    /// that segment's postings/term vectors/doc values (the merged segment's
+    /// `.si` would list only stored-fields files, and the source segment's
+    /// real `.doc`/`.tim`/`.tip`/`.tmd`/`.tvd`/`.tvx`/`.tvm`/`.dvd`/`.dvm`/
+    /// `.dvs` would become orphaned on disk) with no error surfaced --
+    /// excluding these segments from consideration keeps them permanently
+    /// un-mergeable rather than mergeable-with-silent-data-loss, until
+    /// postings/term-vector/doc-values-aware merging exists.
     fn segment_stats(&self) -> Result<Vec<merge_policy::SegmentStat>> {
         let mut stats = Vec::with_capacity(self.segment_infos.segments.len());
         for sci in &self.segment_infos.segments {
@@ -878,7 +1076,7 @@ impl<'d> IndexWriter<'d> {
             if si
                 .files
                 .iter()
-                .any(|f| f.ends_with(".doc") || f.ends_with(".tvd"))
+                .any(|f| f.ends_with(".doc") || f.ends_with(".tvd") || f.ends_with(".dvd"))
             {
                 continue;
             }
@@ -1087,6 +1285,19 @@ fn write_file(dir: &dyn Directory, name: &str, bytes: &[u8]) -> Result<()> {
     out.write_bytes(bytes);
     out.close()?;
     Ok(())
+}
+
+/// The `&'static str` kind name [`Error::NonNumericDocValue`] reports for a
+/// [`FieldValue`] that isn't [`FieldValue::Int`]/[`FieldValue::Long`].
+fn field_value_kind(value: &FieldValue) -> &'static str {
+    match value {
+        FieldValue::String(_) => "String",
+        FieldValue::Binary(_) => "Binary",
+        FieldValue::Int(_) => "Int",
+        FieldValue::Long(_) => "Long",
+        FieldValue::Float(_) => "Float",
+        FieldValue::Double(_) => "Double",
+    }
 }
 
 fn generate_segment_id(salt: i64) -> [u8; ID_LENGTH] {
@@ -2437,5 +2648,376 @@ mod tests {
             .collect();
         terms0.sort();
         assert_eq!(terms0, vec!["fox", "quick", "the"]);
+    }
+
+    fn numeric_field(name: &str, number: i32) -> FieldInfo {
+        FieldInfo {
+            doc_values_type: DocValuesType::Numeric,
+            ..stored_only_field(name, number)
+        }
+    }
+
+    fn doc_with_score(id: &str, score: i64) -> Document {
+        Document {
+            fields: vec![
+                StoredField {
+                    field_number: 0,
+                    value: FieldValue::String(id.to_string()),
+                },
+                StoredField {
+                    field_number: 1,
+                    value: FieldValue::Long(score),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn set_doc_values_field_rejects_an_unknown_field_name() {
+        let tmp = tempdir("unknown-dv-field");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+
+        let err = writer
+            .set_doc_values_field(Some("nonexistent"))
+            .unwrap_err();
+        assert!(matches!(err, Error::UnknownDocValuesField(name) if name == "nonexistent"));
+    }
+
+    #[test]
+    fn set_doc_values_field_rejects_a_field_with_no_doc_values_type() {
+        let tmp = tempdir("untyped-dv-field");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+
+        let err = writer.set_doc_values_field(Some("id")).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::UnsupportedDocValuesType(name, DocValuesType::None) if name == "id"
+        ));
+    }
+
+    #[test]
+    fn commit_with_doc_values_field_writes_readable_numeric_values_for_multiple_docs() {
+        let tmp = tempdir("dv-commit");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), numeric_field("score", 1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_doc_values_field(Some("score")).unwrap();
+
+        writer.add_document(doc_with_score("a", 5));
+        writer.add_document(doc_with_score("b", 250));
+        writer.add_document(doc_with_score("c", -7));
+        let sis = writer.commit().unwrap().clone();
+        assert_eq!(sis.segments.len(), 1);
+        let sci = &sis.segments[0];
+
+        // Stored fields are still intact (backward-compatible).
+        assert_eq!(read_all_docs(&dir, &sis), vec!["a", "b", "c"]);
+
+        // The doc-values files exist and are listed in `.si`.
+        let si_bytes = dir.open(&format!("{}.si", sci.segment_name)).unwrap();
+        let si = segment_info::parse(&si_bytes, &sci.segment_id).unwrap();
+        for ext in ["dvm", "dvd", "dvs"] {
+            let name = format!("{}.{ext}", sci.segment_name);
+            assert!(si.files.contains(&name), "missing {name} in .si files");
+            assert!(
+                dir.list_all().unwrap().contains(&name),
+                "missing {name} on disk"
+            );
+        }
+
+        // Readable via the existing, unmodified read side.
+        let dvm = dir.open(&format!("{}.dvm", sci.segment_name)).unwrap();
+        let dvd = dir.open(&format!("{}.dvd", sci.segment_name)).unwrap();
+        let field_infos = fi::FieldInfos {
+            fields: vec![stored_only_field("id", 0), numeric_field("score", 1)],
+        };
+        let (_, meta) =
+            lucene_codecs::doc_values::parse_meta(&dvm, &sci.segment_id, "", &field_infos)
+                .expect("parse_meta on IndexWriter-produced .dvm");
+        let entry = meta.numeric_entry(1).unwrap();
+        assert!(entry.is_dense());
+        for (doc, want) in [(0, 5i64), (1, 250), (2, -7)] {
+            assert_eq!(
+                lucene_codecs::doc_values::numeric_value(&dvd, entry, doc).unwrap(),
+                Some(want)
+            );
+        }
+    }
+
+    #[test]
+    fn commit_with_doc_values_field_accepts_int_values_not_just_long() {
+        // build_doc_values_output accepts both FieldValue::Int and
+        // FieldValue::Long -- the multi-doc test above only exercises Long,
+        // so this covers the Int arm's i64 sign-extension explicitly.
+        let tmp = tempdir("dv-commit-int");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), numeric_field("score", 1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_doc_values_field(Some("score")).unwrap();
+
+        writer.add_document(Document {
+            fields: vec![
+                StoredField {
+                    field_number: 0,
+                    value: FieldValue::String("a".to_string()),
+                },
+                StoredField {
+                    field_number: 1,
+                    value: FieldValue::Int(-42),
+                },
+            ],
+        });
+        let sis = writer.commit().unwrap().clone();
+        let sci = &sis.segments[0];
+
+        let dvm = dir.open(&format!("{}.dvm", sci.segment_name)).unwrap();
+        let dvd = dir.open(&format!("{}.dvd", sci.segment_name)).unwrap();
+        let field_infos = fi::FieldInfos {
+            fields: vec![stored_only_field("id", 0), numeric_field("score", 1)],
+        };
+        let (_, meta) =
+            lucene_codecs::doc_values::parse_meta(&dvm, &sci.segment_id, "", &field_infos)
+                .expect("parse_meta on IndexWriter-produced .dvm");
+        let entry = meta.numeric_entry(1).unwrap();
+        assert_eq!(
+            lucene_codecs::doc_values::numeric_value(&dvd, entry, 0).unwrap(),
+            Some(-42i64)
+        );
+    }
+
+    #[test]
+    fn commit_with_no_doc_values_field_configured_stays_stored_only() {
+        // Backward compatibility: a writer that never calls
+        // `set_doc_values_field` must produce exactly the same on-disk shape
+        // as before this feature existed -- no `.dvm`/`.dvd`/`.dvs` files at
+        // all.
+        let tmp = tempdir("no-dv-field");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), numeric_field("score", 1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+
+        writer.add_document(doc_with_score("a", 5));
+        let sis = writer.commit().unwrap().clone();
+        let sci = &sis.segments[0];
+
+        let files = dir.list_all().unwrap();
+        for ext in ["dvm", "dvd", "dvs"] {
+            assert!(!files.contains(&format!("{}.{ext}", sci.segment_name)));
+        }
+    }
+
+    #[test]
+    fn commit_with_doc_values_field_but_no_pending_docs_writes_no_doc_values_files() {
+        let tmp = tempdir("dv-empty-commit");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), numeric_field("score", 1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_doc_values_field(Some("score")).unwrap();
+
+        let sis = writer.commit().unwrap().clone();
+        assert!(sis.segments.is_empty());
+    }
+
+    #[test]
+    fn commit_rejects_and_leaves_state_unchanged_when_a_pending_doc_has_no_doc_values_field() {
+        // Dense-only: a doc missing the opted-in field entirely must reject
+        // the whole commit atomically, not silently skip that doc (there is
+        // no sparse/missing-value doc-values shape to fall back to).
+        let tmp = tempdir("dv-missing-value");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), numeric_field("score", 1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_doc_values_field(Some("score")).unwrap();
+
+        writer.add_document(doc_with_score("a", 5));
+        writer.add_document(doc("b")); // only field_number 0 ("id"), no "score"
+        let before = writer.segment_infos().clone();
+        let before_pending = writer.pending_doc_count();
+
+        let err = writer.commit().unwrap_err();
+        assert!(matches!(err, Error::MissingDenseDocValue(name, 1) if name == "score"));
+
+        assert_eq!(writer.segment_infos(), &before);
+        assert_eq!(writer.pending_doc_count(), before_pending);
+        assert!(!tmp.join("segments_1").exists());
+    }
+
+    #[test]
+    fn commit_rejects_when_a_pending_docs_value_is_not_numeric() {
+        let tmp = tempdir("dv-non-numeric-value");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), numeric_field("score", 1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_doc_values_field(Some("score")).unwrap();
+
+        writer.add_document(Document {
+            fields: vec![
+                StoredField {
+                    field_number: 0,
+                    value: FieldValue::String("a".to_string()),
+                },
+                StoredField {
+                    field_number: 1,
+                    value: FieldValue::String("not-a-number".to_string()), // wrong type
+                },
+            ],
+        });
+
+        let err = writer.commit().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::NonNumericDocValue(name, 0, "String") if name == "score"
+        ));
+    }
+
+    #[test]
+    fn setting_doc_values_field_back_to_none_restores_stored_only_behavior() {
+        let tmp = tempdir("dv-field-reset");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), numeric_field("score", 1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_doc_values_field(Some("score")).unwrap();
+        writer.set_doc_values_field(None).unwrap();
+
+        writer.add_document(doc_with_score("a", 5));
+        let sis = writer.commit().unwrap().clone();
+        let sci = &sis.segments[0];
+
+        let files = dir.list_all().unwrap();
+        assert!(!files.contains(&format!("{}.dvm", sci.segment_name)));
+    }
+
+    #[test]
+    fn segments_with_doc_values_are_never_automatically_merged_away() {
+        // Same class of bug as `segments_with_postings_are_never_...`/
+        // `segments_with_term_vectors_are_never_...`, for doc values:
+        // enabling both `set_doc_values_field` and `set_merge_policy` at once
+        // must not let automatic merging silently drop a segment's doc
+        // values -- `execute_merge` only knows how to merge stored fields,
+        // so `segment_stats()` excludes any segment carrying `.dvd` from
+        // `find_merges`' candidate pool entirely.
+        let tmp = tempdir("dv-and-merge-policy");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), numeric_field("score", 1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_doc_values_field(Some("score")).unwrap();
+        writer.set_merge_policy(Some(tight_merge_policy()));
+
+        for (id, score) in [("a", 1i64), ("b", 2), ("c", 3)] {
+            writer.add_document(doc_with_score(id, score));
+            writer.commit().unwrap();
+        }
+
+        let final_count = writer.segment_infos().segments.len();
+        assert_eq!(
+            final_count, 3,
+            "segments carrying doc values must never be automatically merged"
+        );
+
+        for sci in &writer.segment_infos().segments.clone() {
+            let files = dir.list_all().unwrap();
+            assert!(files.contains(&format!("{}.dvd", sci.segment_name)));
+            let si_bytes = dir.open(&format!("{}.si", sci.segment_name)).unwrap();
+            let si = segment_info::parse(&si_bytes, &sci.segment_id).unwrap();
+            assert!(si.files.iter().any(|f| f.ends_with(".dvd")));
+        }
+    }
+
+    #[test]
+    fn postings_term_vectors_and_doc_values_configured_together_all_write_correctly() {
+        // Three independent write-side passes (postings, term vectors, doc
+        // values) each patching the same `.si` after the fact -- proves
+        // there's no ordering bug where a later writer's read-modify-write
+        // clobbers an earlier one's file-list additions.
+        let tmp = tempdir("postings-tv-and-dv-together");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![
+            stored_only_field("id", 0),
+            tv_body_field(1),
+            numeric_field("score", 2),
+        ];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_postings_field(Some("body")).unwrap();
+        writer.set_term_vector_field(Some("body")).unwrap();
+        writer.set_doc_values_field(Some("score")).unwrap();
+
+        writer.add_document(Document {
+            fields: vec![
+                StoredField {
+                    field_number: 0,
+                    value: FieldValue::String("a".to_string()),
+                },
+                StoredField {
+                    field_number: 1,
+                    value: FieldValue::String("the quick fox".to_string()),
+                },
+                StoredField {
+                    field_number: 2,
+                    value: FieldValue::Long(10),
+                },
+            ],
+        });
+        writer.add_document(Document {
+            fields: vec![
+                StoredField {
+                    field_number: 0,
+                    value: FieldValue::String("b".to_string()),
+                },
+                StoredField {
+                    field_number: 1,
+                    value: FieldValue::String("the lazy fox".to_string()),
+                },
+                StoredField {
+                    field_number: 2,
+                    value: FieldValue::Long(20),
+                },
+            ],
+        });
+        let sis = writer.commit().unwrap().clone();
+        assert_eq!(sis.segments.len(), 1);
+        let sci = &sis.segments[0];
+
+        let si_bytes = dir.open(&format!("{}.si", sci.segment_name)).unwrap();
+        let si = segment_info::parse(&si_bytes, &sci.segment_id).unwrap();
+        for ext in [
+            "doc", "tim", "tip", "tmd", "tvd", "tvx", "tvm", "dvm", "dvd", "dvs",
+        ] {
+            let name = format!("{}.{ext}", sci.segment_name);
+            assert!(si.files.contains(&name), "missing {name} in .si files");
+        }
+
+        // Doc-values side readable.
+        let dvm = dir.open(&format!("{}.dvm", sci.segment_name)).unwrap();
+        let dvd = dir.open(&format!("{}.dvd", sci.segment_name)).unwrap();
+        let field_infos = fi::FieldInfos {
+            fields: vec![
+                stored_only_field("id", 0),
+                tv_body_field(1),
+                numeric_field("score", 2),
+            ],
+        };
+        let (_, meta) =
+            lucene_codecs::doc_values::parse_meta(&dvm, &sci.segment_id, "", &field_infos).unwrap();
+        let entry = meta.numeric_entry(2).unwrap();
+        assert_eq!(
+            lucene_codecs::doc_values::numeric_value(&dvd, entry, 0).unwrap(),
+            Some(10)
+        );
+        assert_eq!(
+            lucene_codecs::doc_values::numeric_value(&dvd, entry, 1).unwrap(),
+            Some(20)
+        );
+
+        // Term-vector side still readable too.
+        let tvd = dir.open(&format!("{}.tvd", sci.segment_name)).unwrap();
+        let tvx = dir.open(&format!("{}.tvx", sci.segment_name)).unwrap();
+        let tvm = dir.open(&format!("{}.tvm", sci.segment_name)).unwrap();
+        let reader =
+            lucene_codecs::term_vectors::open(&tvd, &tvx, &tvm, &sci.segment_id, "").unwrap();
+        assert!(reader.document(0).unwrap().is_some());
     }
 }
