@@ -2424,6 +2424,29 @@ can never be auto-merged today, same as postings/term vectors). See
      `IndexWriter::set_postings_field` (`crates/lucene-index/src/index_writer.rs`)
      was **not** touched — it still only tracks one configured field per
      commit; wiring it to accept multiple fields is a separate follow-up.
+   - **Postings writer: multi-block terms writer added, deliberately scoped
+     down to one splitting policy and one trie-node shape.** A field whose
+     terms span more than one distinct leading byte now gets one physical
+     `.tim` leaf block *per leading byte* (each block storing only the bytes
+     after the shared leading byte) addressed by a single `SIGN_MULTI_CHILDREN`
+     `.tip` root node (`ChildSaveStrategy::ARRAY`, the simplest of the three
+     label encodings the read side supports) — `write_fields`'s
+     `group_terms_by_leading_byte`/`write_tim_block`/`write_leaf_node`/
+     `write_multi_children_root` (`lucene-codecs/src/postings_writer.rs`). A
+     field with only one leading byte (or a single term, or a term with zero
+     bytes) still gets the original single-block/`SIGN_NO_CHILDREN`-root shape,
+     byte-for-byte unchanged. **Explicitly out of scope, deferred further**:
+     floor sub-blocks (a leading-byte group too large for one block), a
+     second/deeper trie level (needed past 33 distinct leading bytes, rejected
+     with `Error::TooManyLeadingByteGroups` rather than silently misencoding),
+     and the `BITS`/`REVERSE_ARRAY` label-encoding strategies. Proven correct
+     by round-tripping through the existing, unmodified `blocktree::open`
+     (26-leading-byte-group unit test,
+     `postings_writer.rs::many_leading_byte_groups_force_multi_child_trie_root`)
+     and, end-to-end, through `lucene_search::search_term_query` for terms in
+     the first, a middle, and the last physical block
+     (`crates/lucene-search/tests/postings_writer_round_trip.rs::term_query_finds_correct_docs_across_multiple_tim_blocks`).
+     See `docs/parity.md`'s row for the full scope statement.
 
 **Progress (task #79): `BooleanQuery`/`Clause` rewrite pass.** New
 `crates/lucene-search/src/query.rs::{BooleanQuery::rewrite, Clause::rewrite}`

@@ -8,18 +8,35 @@
 //!
 //! # Scope (read this before assuming more than it proves)
 //!
-//! - **One field per call.** Real Lucene's `.tmd`/`.tim`/`.tip` interleave
-//!   every field of a segment; this writer emits exactly one field's record
-//!   (`numFields = 1` in `.tmd`) and one physical `.tim` block for that
-//!   field's whole term dictionary.
-//! - **One `.tim` block, one trie node.** Every term must fit in a single
-//!   leaf block (`Lucene103BlockTreeTermsWriter`'s block-splitting,
-//!   floor sub-blocks, and multi-level tries are not implemented) and the
-//!   `.tip` index is a single root `SIGN_NO_CHILDREN` node with `hasTerms`
-//!   set and no floor data — i.e. the same trivial single-block/single-node
-//!   shape `blocktree.rs`'s own test-only `Builder` already exercises for
-//!   read-side tests, except this module's metadata is real (computed from
-//!   actual `.doc` file offsets), not placeholder.
+//! - **One or more fields per call**, each independently written (`numFields`
+//!   in `.tmd` is `inputs.len()`).
+//! - **One physical `.tim` block per field, OR multiple sibling leaf blocks
+//!   under a single multi-child `.tip` root — never a deeper/floor-split
+//!   trie.** This is the load-bearing scope restriction, added in the
+//!   "multi-block writer" task after the single-block-only writer proved out.
+//!   The splitting policy is deliberately the simplest one that produces a
+//!   *valid* trie without floor blocks or a second trie level: **group a
+//!   field's (already-sorted) terms by their first byte.** If every term
+//!   shares one leading byte (or there's only one term), the field still gets
+//!   the original single-block/single-`SIGN_NO_CHILDREN`-root shape,
+//!   unchanged from before. If the terms span 2..=33 distinct leading bytes,
+//!   each group becomes its own leaf `.tim` block (storing only each term's
+//!   bytes *after* the shared leading byte — that byte is the trie label, not
+//!   stored twice) addressed by its own `SIGN_NO_CHILDREN` child node, and the
+//!   field's `.tip` root is a single `SIGN_MULTI_CHILDREN` node (always
+//!   `ChildSaveStrategy::ARRAY`, the simplest of the three label encodings to
+//!   emit) whose children are exactly those leaf nodes, with no output of its
+//!   own. **Explicitly still unimplemented**: floor sub-blocks (a single
+//!   leading-byte group too large for one block), a second/deeper trie level
+//!   (needed if 34+ distinct leading bytes appear, or if finer splitting
+//!   within one leading byte is ever needed), and the `BITS`/`REVERSE_ARRAY`
+//!   label-encoding strategies (read-side supports all three; this writer
+//!   only ever emits `ARRAY`). A field needing more than 33 leading-byte
+//!   groups is rejected with `Error::TooManyLeadingByteGroups` rather than
+//!   silently misencoding the 5-bit strategy-byte-count field. A field
+//!   containing an empty-byte-string term also falls back to the
+//!   single-block path unconditionally (there's no leading byte to
+//!   strip/route on for that term).
 //! - **`docFreq < BLOCK_SIZE` (256) for every term.** No full `ForUtil`/
 //!   `PForUtil`-encoded blocks are ever written — every non-singleton term's
 //!   postings are the group-varint "tail block" encoding alone
@@ -75,26 +92,33 @@
 //!   never has either) — see `crate::postings::read_positions`'s tail-block
 //!   branch (`has_payloads == false`, `has_offsets == false`) for the exact
 //!   inverse. `Footer`.
-//! - `.tim`: `IndexHeader(codec="BlockTreeTermsDict")`, one physical block
-//!   (`entCount << 1 | 1` code, `isLeafBlock` + `NO_COMPRESSION` code,
-//!   suffix bytes, suffix lengths, per-term stats, per-term postings
-//!   metadata — see [`write_term_metadata`]), `Footer`.
-//! - `.tip`: `IndexHeader(codec="BlockTreeTermsIndex")`, one
-//!   `SIGN_NO_CHILDREN`/`hasTerms`/no-floor root node pointing at the `.tim`
-//!   block, `Footer`.
+//! - `.tim`: `IndexHeader(codec="BlockTreeTermsDict")`, then, per field, one
+//!   physical block (single-block case) or one physical block per
+//!   leading-byte group (multi-block case), each block being
+//!   (`entCount << 1 | 1` code, `isLeafBlock` + `NO_COMPRESSION` code, suffix
+//!   bytes, suffix lengths, per-term stats, per-term postings metadata — see
+//!   [`write_term_metadata`]), `Footer`.
+//! - `.tip`: `IndexHeader(codec="BlockTreeTermsIndex")`, then, per field,
+//!   either one `SIGN_NO_CHILDREN`/`hasTerms`/no-floor root node pointing at
+//!   the field's single `.tim` block (single-block case), or one
+//!   `SIGN_NO_CHILDREN`/`hasTerms`/no-floor leaf node per leading-byte group
+//!   followed by one `SIGN_MULTI_CHILDREN`/`ChildSaveStrategy::ARRAY` root
+//!   node (no output of its own) whose children are exactly those leaf nodes
+//!   (multi-block case) — see [`write_multi_children_root`]. `Footer`.
 //! - `.tmd`: `IndexHeader(codec="BlockTreeTermsMeta")`, the postings writer's
 //!   own embedded header (`IndexHeader(codec="Lucene104PostingsWriterTerms")`,
-//!   `indexBlockSize = 256`), `numFields = 1`, the one field's record
-//!   (`fieldNumber, numTerms, sumTotalTermFreq/sumDocFreq, docCount, minTerm/maxTerm,
+//!   `indexBlockSize = 256`), `numFields = inputs.len()`, then each field's
+//!   record (`fieldNumber, numTerms, sumTotalTermFreq/sumDocFreq, docCount, minTerm/maxTerm,
 //!   indexStart/rootFP/indexEnd`), `indexLength`, `termsLength`, `Footer`.
 
 use lucene_store::codec_util::{self, ID_LENGTH};
 use lucene_store::data_output::DataOutput;
+use std::ops::Range;
 
 use crate::blocktree::{
-    LEAF_NODE_HAS_TERMS, POSTINGS_BLOCK_SIZE, POSTINGS_TERMS_CODEC, POSTINGS_VERSION_CURRENT,
-    SIGN_NO_CHILDREN, TERMS_CODEC_NAME, TERMS_INDEX_CODEC_NAME, TERMS_META_CODEC_NAME,
-    VERSION_CURRENT as BLOCKTREE_VERSION_CURRENT,
+    CHILD_STRATEGY_ARRAY, LEAF_NODE_HAS_TERMS, POSTINGS_BLOCK_SIZE, POSTINGS_TERMS_CODEC,
+    POSTINGS_VERSION_CURRENT, SIGN_MULTI_CHILDREN, SIGN_NO_CHILDREN, TERMS_CODEC_NAME,
+    TERMS_INDEX_CODEC_NAME, TERMS_META_CODEC_NAME, VERSION_CURRENT as BLOCKTREE_VERSION_CURRENT,
 };
 use crate::field_infos::IndexOptions;
 use crate::postings::{
@@ -148,6 +172,11 @@ pub enum Error {
          duplicate positions -- positions must strictly increase within a doc"
     )]
     PositionsNotAscending { index: usize, doc_index: usize },
+    #[error(
+        "write_fields: field has {0} distinct leading-byte groups, but this writer's multi-child \
+         trie root only supports 2..=33 children (ChildSaveStrategy::ARRAY's 5-bit strategy-byte-count field)"
+    )]
+    TooManyLeadingByteGroups(usize),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -331,58 +360,54 @@ pub fn write_fields(
             }
         }
 
-        // ---- this field's one .tim block ----
-        let block_fp = tim.len();
-        let ent_count = input.terms.len() as u32;
-        let code = (ent_count << 1) | 1; // isLastInFloor
-        tim.write_vint(code as i32);
-
-        let mut suffix_bytes = Vec::new();
-        let mut suffix_lengths = Vec::new();
-        let mut stats = Vec::new();
-        for t in input.terms {
-            suffix_bytes.write_bytes(&t.term);
-            suffix_lengths.write_vint(t.term.len() as i32);
-            let doc_freq = t.docs.len() as u32;
-            let total_term_freq: i64 = t.docs.iter().map(|&(_, f)| f as i64).sum();
-            stats.write_vint((doc_freq << 1) as i32); // never singleton-run-encoded
-            if input.index_options != IndexOptions::Docs {
-                stats.write_vlong(total_term_freq - doc_freq as i64);
+        // ---- this field's .tim block(s) + .tip node(s) ----
+        // See the module doc's "Scope" section: a field whose terms span
+        // only one leading byte (or has a single term, or contains an
+        // empty-byte-string term) keeps the original single-block/
+        // single-`SIGN_NO_CHILDREN`-root shape; a field spanning 2..=33
+        // distinct leading bytes gets one leaf block per leading-byte group
+        // under a `SIGN_MULTI_CHILDREN` root (see [`write_multi_children_root`]).
+        let groups = group_terms_by_leading_byte(input.terms);
+        let (index_start, root_fp, index_end) = if groups.len() <= 1 {
+            let block_fp = write_tim_block(
+                &mut tim,
+                input.terms,
+                &doc_start_fp,
+                &pos_start_fp,
+                0,
+                input.index_options,
+                index_has_positions,
+            );
+            let index_start = tip.len();
+            let root_fp_abs = write_leaf_node(&mut tip, block_fp as u64);
+            let index_end = tip.len();
+            (index_start, root_fp_abs - index_start, index_end)
+        } else {
+            if groups.len() > 33 {
+                return Err(Error::TooManyLeadingByteGroups(groups.len()));
             }
-        }
-
-        let code_l = ((suffix_bytes.len() as u64) << 3) | 0x04; // isLeafBlock, NO_COMPRESSION
-        tim.write_vlong(code_l as i64);
-        tim.write_bytes(&suffix_bytes);
-
-        tim.write_vint((suffix_lengths.len() as i32) << 1); // not allEqual
-        tim.write_bytes(&suffix_lengths);
-
-        tim.write_vint(stats.len() as i32);
-        tim.write_bytes(&stats);
-
-        let mut meta = Vec::new();
-        write_term_metadata(
-            &mut meta,
-            input.terms,
-            &doc_start_fp,
-            &pos_start_fp,
-            index_has_positions,
-        );
-        tim.write_vint(meta.len() as i32);
-        tim.write_bytes(&meta);
-
-        // ---- this field's one .tip root node ----
-        let index_start = tip.len();
-        let root_fp = 0usize;
-        let output_fp_bytes = 8usize; // keep it simple: always 8 bytes, same as blocktree.rs's test Builder
-        let header = (SIGN_NO_CHILDREN as u8)
-            | ((output_fp_bytes as u8 - 1) << 2)
-            | (LEAF_NODE_HAS_TERMS as u8);
-        tip.push(header);
-        tip.extend_from_slice(&(block_fp as u64).to_le_bytes());
-        tip.extend_from_slice(&0u64.to_le_bytes()); // 8-byte over-read pad, `load_node`'s SIGN_NO_CHILDREN reads up to fp+1..fp+9
-        let index_end = tip.len();
+            let index_start = tip.len();
+            let mut labels = Vec::with_capacity(groups.len());
+            let mut child_fps_abs = Vec::with_capacity(groups.len());
+            for (label, range) in &groups {
+                let group_terms = &input.terms[range.clone()];
+                let block_fp = write_tim_block(
+                    &mut tim,
+                    group_terms,
+                    &doc_start_fp[range.clone()],
+                    &pos_start_fp[range.clone()],
+                    1, // strip the shared leading byte (it's the trie label)
+                    input.index_options,
+                    index_has_positions,
+                );
+                let child_fp_abs = write_leaf_node(&mut tip, block_fp as u64);
+                labels.push(*label);
+                child_fps_abs.push(child_fp_abs);
+            }
+            let root_fp_abs = write_multi_children_root(&mut tip, &labels, &child_fps_abs);
+            let index_end = tip.len();
+            (index_start, root_fp_abs - index_start, index_end)
+        };
 
         // ---- this field's .tmd record ----
         tmd.write_vint(input.field_number);
@@ -433,6 +458,178 @@ pub fn write_fields(
         tip,
         tmd,
     })
+}
+
+/// Groups `terms` (already sorted ascending, per [`write_fields`]'s caller
+/// obligations) into maximal runs sharing the same first byte, returning
+/// `(label, range)` pairs in ascending label order — the splitting policy
+/// described in the module doc's "Scope" section. Falls back to a single
+/// group spanning every term (i.e. the caller takes the single-block path)
+/// whenever splitting wouldn't be safe: `terms` is empty, has only one term,
+/// contains an empty-byte-string term (no leading byte to strip/route on), or
+/// every term happens to share one leading byte already.
+fn group_terms_by_leading_byte(terms: &[TermPostings]) -> Vec<(u8, Range<usize>)> {
+    if terms.len() <= 1 || terms.iter().any(|t| t.term.is_empty()) {
+        return vec![(0, 0..terms.len())];
+    }
+    let mut groups = Vec::new();
+    let mut start = 0;
+    for i in 1..=terms.len() {
+        if i == terms.len() || terms[i].term[0] != terms[start].term[0] {
+            groups.push((terms[start].term[0], start..i));
+            start = i;
+        }
+    }
+    groups
+}
+
+/// Writes one physical `.tim` leaf block for `terms` (a contiguous,
+/// already-sorted slice — either a whole field in the single-block case, or
+/// one leading-byte group in the multi-block case), returning the block's
+/// absolute byte offset into `tim`. `strip_prefix_len` is `0` for the
+/// single-block case (the block stores each term's full bytes as its
+/// "suffix", matching the trie root's empty path prefix) or `1` for a
+/// leading-byte group (the block stores only the bytes *after* the shared
+/// leading byte, which the enclosing `SIGN_MULTI_CHILDREN` trie node already
+/// encodes as that child's label — see [`crate::blocktree::collect_leaf_blocks`]'s
+/// doc comment for why a block only ever stores its own suffix). `doc_start_fp`/
+/// `pos_start_fp` must be the same length as `terms` and already sliced to
+/// line up with it; metadata deltas are threaded fresh starting from
+/// `TermMetadata::EMPTY` for this block alone (`write_term_metadata`'s
+/// `base_doc_start_fp`/`base_pos_start_fp` both start at 0 here), matching
+/// `SegmentTermsEnumFrame`'s per-frame reset the read side
+/// (`crate::blocktree::decode_block`) already assumes — blocks never share
+/// metadata-delta state across a floor split *or* across sibling leaf blocks.
+#[allow(clippy::too_many_arguments)]
+fn write_tim_block(
+    tim: &mut Vec<u8>,
+    terms: &[TermPostings],
+    doc_start_fp: &[u64],
+    pos_start_fp: &[u64],
+    strip_prefix_len: usize,
+    index_options: IndexOptions,
+    index_has_positions: bool,
+) -> usize {
+    let block_fp = tim.len();
+    let ent_count = terms.len() as u32;
+    let code = (ent_count << 1) | 1; // isLastInFloor
+    tim.write_vint(code as i32);
+
+    let mut suffix_bytes = Vec::new();
+    let mut suffix_lengths = Vec::new();
+    let mut stats = Vec::new();
+    for t in terms {
+        let suffix = &t.term[strip_prefix_len..];
+        suffix_bytes.write_bytes(suffix);
+        suffix_lengths.write_vint(suffix.len() as i32);
+        let doc_freq = t.docs.len() as u32;
+        let total_term_freq: i64 = t.docs.iter().map(|&(_, f)| f as i64).sum();
+        stats.write_vint((doc_freq << 1) as i32); // never singleton-run-encoded
+        if index_options != IndexOptions::Docs {
+            stats.write_vlong(total_term_freq - doc_freq as i64);
+        }
+    }
+
+    let code_l = ((suffix_bytes.len() as u64) << 3) | 0x04; // isLeafBlock, NO_COMPRESSION
+    tim.write_vlong(code_l as i64);
+    tim.write_bytes(&suffix_bytes);
+
+    tim.write_vint((suffix_lengths.len() as i32) << 1); // not allEqual
+    tim.write_bytes(&suffix_lengths);
+
+    tim.write_vint(stats.len() as i32);
+    tim.write_bytes(&stats);
+
+    let mut meta = Vec::new();
+    write_term_metadata(
+        &mut meta,
+        terms,
+        doc_start_fp,
+        pos_start_fp,
+        index_has_positions,
+    );
+    tim.write_vint(meta.len() as i32);
+    tim.write_bytes(&meta);
+
+    block_fp
+}
+
+/// Writes one `SIGN_NO_CHILDREN`/`hasTerms`/no-floor `.tip` node pointing at
+/// `block_fp` (a `.tim` block's absolute offset), returning this node's own
+/// absolute offset into `tip` — shared by the single-block root and, in the
+/// multi-block case, every one of the `SIGN_MULTI_CHILDREN` root's leaf
+/// children (see [`write_multi_children_root`]).
+fn write_leaf_node(tip: &mut Vec<u8>, block_fp: u64) -> usize {
+    let fp = tip.len();
+    let output_fp_bytes = 8usize; // keep it simple: always 8 bytes, same as blocktree.rs's test Builder
+    let header =
+        (SIGN_NO_CHILDREN as u8) | ((output_fp_bytes as u8 - 1) << 2) | (LEAF_NODE_HAS_TERMS as u8);
+    tip.push(header);
+    tip.extend_from_slice(&block_fp.to_le_bytes());
+    tip.extend_from_slice(&0u64.to_le_bytes()); // 8-byte over-read pad, `load_node`'s SIGN_NO_CHILDREN reads up to fp+1..fp+9
+    fp
+}
+
+/// Writes one `SIGN_MULTI_CHILDREN` root node (`ChildSaveStrategy::ARRAY`,
+/// no output of its own) whose children are exactly the leaf nodes at
+/// `child_fps_abs` (already written into `tip`, one per entry of `labels`, in
+/// the same ascending-label order), returning the root node's own absolute
+/// offset into `tip`.
+///
+/// Mirrors `TrieReader.loadMultiChildrenNode`'s read side
+/// (`crate::blocktree::load_node`) for the "no own output" branch
+/// (`term & 0x20 == 0`, so `strategy_fp = fp + 3` — a 3-byte header packing
+/// `sign`/`childrenDeltaFpBytes`/`hasOutput=0`/`childSaveStrategy`/
+/// `strategyBytes`/`minChildrenLabel`) followed by `ChildSaveStrategy::ARRAY`'s
+/// layout (`crate::blocktree::multi_children_labels_and_fps`'s `ARRAY` arm):
+/// `labels.len() - 1` raw label bytes (every label after `min_label`, which
+/// the header already carries) then `labels.len()` children-delta-fp entries,
+/// each `children_delta_fp_bytes` (fixed at 8 here, matching [`write_leaf_node`]'s
+/// own 8-byte output-fp convention) little-endian bytes encoding
+/// `this_root_fp - child_fp` (the read side's "delta from parent" convention;
+/// [`crate::blocktree::multi_children_labels_and_fps`] rejects a delta
+/// exceeding the parent's own fp, so every child must already be written
+/// — hence must be written to `tip` before this call).
+///
+/// `labels.len()` must be in `2..=33` (checked by the caller,
+/// `Error::TooManyLeadingByteGroups`) — the header's 5-bit
+/// `strategyBytes - 1` field can only address `labels.len() - 1` in `1..=32`.
+fn write_multi_children_root(tip: &mut Vec<u8>, labels: &[u8], child_fps_abs: &[usize]) -> usize {
+    debug_assert_eq!(labels.len(), child_fps_abs.len());
+    debug_assert!((2..=33).contains(&labels.len()));
+
+    let root_fp = tip.len();
+    let child_count = labels.len() as u32;
+    let children_delta_fp_bytes = 8u32; // field value; raw header bits are (this - 1)
+    let strategy_bytes = child_count - 1; // field value; raw header bits are (this - 1)
+    let min_label = labels[0];
+
+    let term_u32: u32 = SIGN_MULTI_CHILDREN
+        | ((children_delta_fp_bytes - 1) << 2)
+        // bit 5 (0x20, "has own output") deliberately left clear: this root
+        // has no terms of its own, only children.
+        | (CHILD_STRATEGY_ARRAY << 9)
+        | ((strategy_bytes - 1) << 11)
+        | ((min_label as u32) << 16);
+    let header_bytes = term_u32.to_le_bytes();
+    tip.push(header_bytes[0]);
+    tip.push(header_bytes[1]);
+    tip.push(header_bytes[2]);
+
+    // ChildSaveStrategy::ARRAY: `labels[1..]` written verbatim (ascending, one
+    // byte each) right after the header.
+    for &label in &labels[1..] {
+        tip.push(label);
+    }
+    // Then one children-delta-fp entry per label (including `labels[0]`),
+    // in the same order, each `this_root_fp - child_fp`, little-endian,
+    // `children_delta_fp_bytes` (8) bytes wide.
+    for &child_fp in child_fps_abs {
+        let delta = (root_fp - child_fp) as u64;
+        tip.extend_from_slice(&delta.to_le_bytes());
+    }
+
+    root_fp
 }
 
 /// Validates one field's structural invariants (sortedness, `docFreq`/
@@ -1032,6 +1229,192 @@ mod tests {
             assert_eq!(postings.docs, expected_docs, "term{i:02}");
             assert_eq!(postings.freqs, expected_freqs, "term{i:02}");
         }
+    }
+
+    /// Forces the multi-block/multi-child-trie path this task added: 26
+    /// terms, one per lowercase letter (`"a0".."z0"`), so every term is its
+    /// own leading-byte group -- 26 physical `.tim` blocks under one
+    /// `SIGN_MULTI_CHILDREN` `.tip` root, well above the "does it even split"
+    /// bar of 2 blocks. Every term is looked up independently (not just
+    /// first/last) through the existing, unmodified `blocktree::open`/
+    /// `postings::DocInput`, proving `group_terms_by_leading_byte`/
+    /// `write_multi_children_root`'s child ordering, per-block suffix
+    /// stripping, and per-block metadata-delta reset (each block restarts
+    /// `doc_start_fp`/`pos_start_fp` threading from zero -- see
+    /// `write_tim_block`'s doc comment) are all correct, not just the "it
+    /// happens to work for the first block" case. See
+    /// `crates/lucene-search/tests/postings_writer_round_trip.rs`'s
+    /// `term_query_finds_correct_docs_across_multiple_tim_blocks` for the
+    /// required real `search_term_query` end-to-end proof of the same
+    /// property.
+    #[test]
+    fn many_leading_byte_groups_force_multi_child_trie_root() {
+        let mut terms = Vec::new();
+        for (i, c) in (b'a'..=b'z').enumerate() {
+            let term = vec![c, b'0'];
+            let docs: Vec<(i32, i32)> = (0..3).map(|d| ((i as i32) * 3 + d, d + 1)).collect();
+            terms.push(TermPostings {
+                term,
+                docs,
+                ..Default::default()
+            });
+        }
+        let input = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqs,
+            doc_count: 78,
+            terms: &terms,
+        };
+        let output = write_single_field(&input, &SEG_ID, SUFFIX).unwrap();
+        let fis = FieldInfos {
+            fields: vec![field_info(0, "f", IndexOptions::DocsAndFreqs)],
+        };
+        let (fields, doc_in) = open_written(&output, &fis, 78);
+        let field = fields.field("f").unwrap();
+        assert_eq!(field.num_terms, 26);
+        assert_eq!(field.min_term, b"a0");
+        assert_eq!(field.max_term, b"z0");
+        for (i, c) in (b'a'..=b'z').enumerate() {
+            let term = vec![c, b'0'];
+            let postings = field.postings(&term, Some(&doc_in)).unwrap().unwrap();
+            let expected_docs: Vec<i32> = (0..3).map(|d| (i as i32) * 3 + d).collect();
+            let expected_freqs: Vec<i32> = (0..3).map(|d| d + 1).collect();
+            assert_eq!(postings.docs, expected_docs, "term index {i}");
+            assert_eq!(postings.freqs, expected_freqs, "term index {i}");
+        }
+        // A term that doesn't exist must still miss cleanly across a
+        // multi-child trie (not just the single-block case).
+        assert!(field.seek_exact(b"zz").is_none());
+    }
+
+    /// A field with 40 distinct leading bytes exceeds this writer's
+    /// multi-child root capacity (2..=33 children, see the module doc) and
+    /// must fail loudly rather than silently misencode the 5-bit
+    /// `strategyBytes` header field.
+    #[test]
+    fn rejects_field_needing_more_than_33_leading_byte_groups() {
+        let mut terms = Vec::new();
+        for i in 0..40u8 {
+            terms.push(TermPostings {
+                term: vec![i, b'x'],
+                docs: vec![(i as i32, 1)],
+                ..Default::default()
+            });
+        }
+        let input = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqs,
+            doc_count: 40,
+            terms: &terms,
+        };
+        assert!(matches!(
+            write_single_field(&input, &SEG_ID, SUFFIX),
+            Err(Error::TooManyLeadingByteGroups(40))
+        ));
+    }
+
+    fn leading_byte_group_terms(n: u8) -> Vec<TermPostings> {
+        (0..n)
+            .map(|i| TermPostings {
+                term: vec![i, b'x'],
+                docs: vec![(i as i32, 1)],
+                ..Default::default()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn exactly_33_leading_byte_groups_succeeds() {
+        let terms = leading_byte_group_terms(33);
+        let input = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqs,
+            doc_count: 33,
+            terms: &terms,
+        };
+        let output =
+            write_single_field(&input, &SEG_ID, SUFFIX).expect("exactly 33 groups must succeed");
+        let fis = FieldInfos {
+            fields: vec![field_info(0, "f", IndexOptions::DocsAndFreqs)],
+        };
+        let fields = blocktree::open(
+            &output.tim,
+            &output.tip,
+            &output.tmd,
+            &fis,
+            &SEG_ID,
+            SUFFIX,
+            33,
+        )
+        .expect("33-group output must open cleanly");
+        let f = fields.field("f").unwrap();
+        assert_eq!(f.num_terms, 33);
+    }
+
+    #[test]
+    fn exactly_34_leading_byte_groups_is_rejected() {
+        let terms = leading_byte_group_terms(34);
+        let input = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqs,
+            doc_count: 34,
+            terms: &terms,
+        };
+        assert!(matches!(
+            write_single_field(&input, &SEG_ID, SUFFIX),
+            Err(Error::TooManyLeadingByteGroups(34))
+        ));
+    }
+
+    /// A field with an empty-byte-string term falls back to the single-block
+    /// path even when the remaining terms would otherwise split into several
+    /// leading-byte groups -- there's no leading byte to strip/route on for
+    /// the empty term, so `group_terms_by_leading_byte` must not attempt to
+    /// split at all in that case.
+    #[test]
+    fn empty_term_falls_back_to_single_block_even_with_other_distinct_leading_bytes() {
+        let terms = vec![
+            TermPostings {
+                term: b"".to_vec(),
+                docs: vec![(0, 1)],
+                ..Default::default()
+            },
+            TermPostings {
+                term: b"m".to_vec(),
+                docs: vec![(1, 1)],
+                ..Default::default()
+            },
+            TermPostings {
+                term: b"z".to_vec(),
+                docs: vec![(2, 1)],
+                ..Default::default()
+            },
+        ];
+        let input = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqs,
+            doc_count: 3,
+            terms: &terms,
+        };
+        let output = write_single_field(&input, &SEG_ID, SUFFIX).unwrap();
+        let fis = FieldInfos {
+            fields: vec![field_info(0, "f", IndexOptions::DocsAndFreqs)],
+        };
+        let (fields, doc_in) = open_written(&output, &fis, 3);
+        let field = fields.field("f").unwrap();
+        assert_eq!(field.num_terms, 3);
+        assert_eq!(
+            field.postings(b"", Some(&doc_in)).unwrap().unwrap().docs,
+            vec![0]
+        );
+        assert_eq!(
+            field.postings(b"m", Some(&doc_in)).unwrap().unwrap().docs,
+            vec![1]
+        );
+        assert_eq!(
+            field.postings(b"z", Some(&doc_in)).unwrap().unwrap().docs,
+            vec![2]
+        );
     }
 
     /// Positions write-side byte-level round trip through the existing

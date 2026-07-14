@@ -363,3 +363,79 @@ fn multi_field_segment_term_queries_are_isolated_per_field() {
     .expect("search_phrase_query");
     assert_eq!(collector.docs, vec![1, 2]);
 }
+
+/// Required end-to-end capstone for the multi-block writer task
+/// (`write_fields`'s leading-byte-group splitting into a `SIGN_MULTI_CHILDREN`
+/// `.tip` root, see `lucene-codecs/src/postings_writer.rs`'s module doc's
+/// "Scope" section and `postings_writer.rs`'s own
+/// `many_leading_byte_groups_force_multi_child_trie_root` unit test for the
+/// byte/decode-level proof). This test is the query-layer proof the task
+/// requires: 26 terms, one per lowercase letter (so 26 distinct leading
+/// bytes -- 26 physical `.tim` blocks under one multi-child trie root, well
+/// past the "does 2 blocks work" bar), written by the real
+/// `write_single_field`, opened by the existing unmodified `blocktree::open`,
+/// and queried via the existing unmodified `search_term_query` for terms
+/// from the first block, a middle block, and the last block -- not just the
+/// first/last term, so the multi-child trie's child ordering and per-block
+/// suffix-stripping are proven correct across the whole span, not just at
+/// the edges.
+#[test]
+fn term_query_finds_correct_docs_across_multiple_tim_blocks() {
+    let mut terms = Vec::new();
+    for (i, c) in (b'a'..=b'z').enumerate() {
+        let term = vec![c, b'0'];
+        let docs: Vec<(i32, i32)> = (0..3).map(|d| ((i as i32) * 3 + d, d + 1)).collect();
+        terms.push(TermPostings {
+            term,
+            docs,
+            ..Default::default()
+        });
+    }
+    let input = FieldPostingsInput {
+        field_number: 0,
+        index_options: IndexOptions::DocsAndFreqs,
+        doc_count: 78,
+        terms: &terms,
+    };
+    let output = write_single_field(&input, &SEG_ID, SUFFIX).expect("write_single_field");
+
+    let field_infos = FieldInfos {
+        fields: vec![field_info(0, "body", IndexOptions::DocsAndFreqs)],
+    };
+    let fields = blocktree::open(
+        &output.tim,
+        &output.tip,
+        &output.tmd,
+        &field_infos,
+        &SEG_ID,
+        SUFFIX,
+        78,
+    )
+    .expect("blocktree::open on freshly written multi-block .tim/.tip/.tmd");
+    let doc_in = DocInput::open(&output.doc, &SEG_ID, SUFFIX).expect("DocInput::open");
+
+    let case = |letter: u8, index: i32| {
+        let term = vec![letter, b'0'];
+        let expected: Vec<i32> = (0..3).map(|d| index * 3 + d).collect();
+        let mut collector = VecCollector::default();
+        let query = TermQuery::new("body", term.clone());
+        search_term_query(&fields, Some(&doc_in), None, &query, &mut collector)
+            .unwrap_or_else(|e| panic!("search_term_query({:?}) failed: {e}", term));
+        assert_eq!(collector.docs, expected, "term {:?}", term);
+    };
+
+    // First block ('a'), a middle block ('m'), and the last block ('z') --
+    // proves every physical .tim block is independently reachable and
+    // correctly decoded, not just the one a naive single-block
+    // implementation would still get right.
+    case(b'a', 0);
+    case(b'm', 12);
+    case(b'z', 25);
+
+    // A term absent from every block must still miss cleanly through the
+    // multi-child trie.
+    let mut collector = VecCollector::default();
+    let query = TermQuery::new("body", b"zz");
+    search_term_query(&fields, Some(&doc_in), None, &query, &mut collector).unwrap();
+    assert!(collector.docs.is_empty());
+}
