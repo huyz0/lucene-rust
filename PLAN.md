@@ -2962,6 +2962,42 @@ the `crates/lucene-ffi/src/writer.rs` write-up — not repeated here.)
      `IndexWriter`-level test of the new boundary exists (blocked by
      `flush_stored_only_segment`'s unrelated, pre-existing `< 128`-docs
      `write_best_speed` cap).
+   - **Postings writer: level-1 skip-entry emission added, closing the
+     `docFreq >= LEVEL1_NUM_DOCS` gap.** `write_level1_span`
+     (`lucene-codecs/src/postings_writer.rs`) now emits one level-1 skip
+     entry before every complete span of `LEVEL1_FACTOR` (32) full level-0
+     blocks, the exact write-side inverse of the existing, unmodified
+     `crate::postings::read_level1_entry`/`LazyDocsCursor::skip_level1_to`.
+     The entry's own byte-length field must span from right after itself
+     through the end of the whole entry *plus* the 32-block span that
+     follows (matching how `read_level1_entry` computes `doc_end_fp` before
+     reading the freq-gated `skip1EndFP`/`numImpactBytes` fields) — this
+     writer got that wrong on the first pass (measuring only the span, not
+     the header bytes in between), caught by
+     `docfreq_at_level1_boundaries_advance_via_lazy_cursor` landing on the
+     wrong doc. Like level-0, the level-1 entry's impacts region is always
+     empty (no competitive-impact computation at either level); the
+     `indexHasPos`-gated pos/pay sub-fields are never written because
+     positions can't co-occur with a `docFreq >= LEVEL1_NUM_DOCS` term in
+     the first place (`total_term_freq >= LEVEL1_NUM_DOCS` would already
+     have tripped `TotalTermFreqTooLarge`, the same reasoning
+     `write_full_block`'s own doc comment gives for its level-0 header).
+     `validate_field`'s docFreq ceiling is gone entirely — there's no
+     level-2 skip structure in `Lucene104` postings for a further limit to
+     land on. Proven correct by round-tripping through the existing,
+     unmodified `blocktree::open`/`DocInput::read_postings` at
+     `docFreq == LEVEL1_NUM_DOCS` (one span, no remainder),
+     `LEVEL1_NUM_DOCS + 1` (one span plus a one-doc tail), and
+     `2 * LEVEL1_NUM_DOCS` (two spans back to back, proving
+     `level1_last_doc_id`/`prev_doc_id` thread correctly across more than
+     one span) — plus the same three boundaries again through
+     `LazyDocsCursor::advance`, and a corrupted-first-block-header test
+     (`writer_level1_span_advance_past_it_skips_corrupted_first_block_header`)
+     proving `advance()` past a whole span never decodes it, mirroring the
+     reader's own `lazy_cursor_advance_skips_whole_corrupted_level1_span_
+     without_decoding_it` proof. All in `postings_writer.rs`'s own unit
+     tests; no new `fixtures/src/Gen*.java` generator, same "writer and
+     already-fixture-verified reader agree" reasoning as the level-0 task.
    - **`TopFieldCollector` wired into multi-segment search**
      (`crates/lucene-search/src/multi_segment.rs::merge_multi_segment_by_field`/
      `search_numeric_range_sorted_by_field_multi_segment`) — the sort-by-field

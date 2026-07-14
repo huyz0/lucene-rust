@@ -51,11 +51,23 @@
 //!   space — see `docs/parity.md` for that scope cut) and impacts are always
 //!   an empty byte region (no competitive-impact computation) — the reader
 //!   accepts an empty impacts run and this writer never emits any queries
-//!   that need real ones. **No per-term upper bound remains** other than
-//!   what `crate::postings`'s own reader supports (`LEVEL1_NUM_DOCS` level-1
-//!   skip entries above 8192 docs are read-only; this writer never emits
-//!   them, so a term at `docFreq >= LEVEL1_NUM_DOCS` would round-trip
-//!   incorrectly and is rejected with [`Error::DocFreqTooLarge`]).
+//!   that need real ones. **`docFreq >= LEVEL1_NUM_DOCS` (8192) is now
+//!   supported too**: for every complete span of [`LEVEL1_FACTOR`] (32) full
+//!   level-0 blocks, a level-1 skip entry ([`write_level1_span`]) is emitted
+//!   immediately before them — the exact write-side inverse of
+//!   `crate::postings::read_level1_entry`/`LazyDocsCursor::skip_level1_to`.
+//!   Like level-0, the level-1 entry's impacts region is always empty (no
+//!   competitive-impact computation at either level); since positions never
+//!   co-occur with a full block in the first place (`total_term_freq <
+//!   BLOCK_SIZE` is required whenever positions are indexed, and
+//!   `docFreq >= LEVEL1_NUM_DOCS` implies `total_term_freq >= 8192`), the
+//!   level-1 entry's `indexHasPos`-gated pos/pay sub-fields are never
+//!   reachable from this writer and are simply never written. **There is no
+//!   further per-term docFreq ceiling**: the reader has no level-2 skip
+//!   structure (`Lucene104` postings only ever have levels 0 and 1), so a
+//!   term spanning any number of level-1 spans plus a final partial span
+//!   round-trips the same way arbitrarily large `docFreq` already did below
+//!   `LEVEL1_NUM_DOCS`.
 //! - **Term frequency only, or term frequency + positions — still no
 //!   offsets/payloads.** `IndexOptions::Docs`/`DocsAndFreqs`/
 //!   `DocsAndFreqsAndPositions` are accepted; `.pay` is never written, and
@@ -151,12 +163,6 @@ pub enum Error {
     DocIdsNotSorted { index: usize },
     #[error("write_single_field: term at index {index} has freq < 1")]
     NonPositiveFreq { index: usize },
-    #[error(
-        "write_single_field: term at index {index} has docFreq {doc_freq} >= LEVEL1_NUM_DOCS \
-         ({LEVEL1_NUM_DOCS}); this writer never emits the level-1 skip entries the reader would \
-         then expect, so a term this large is rejected rather than silently misencoded"
-    )]
-    DocFreqTooLarge { index: usize, doc_freq: usize },
     #[error(
         "write_single_field: only IndexOptions::Docs/DocsAndFreqs/DocsAndFreqsAndPositions is \
          supported, got {0:?}"
@@ -367,7 +373,23 @@ pub fn write_fields(
             // write-side inverse of `DocInput::read_postings`'s own
             // full-blocks-then-tail dispatch.
             let mut prev_doc_id = -1i32;
+            let mut level1_last_doc_id = -1i32;
             let mut start = 0usize;
+            // `docFreq >= LEVEL1_NUM_DOCS` (8192): emit a level-1 skip entry
+            // before every complete span of `LEVEL1_FACTOR` (32) full
+            // level-0 blocks, mirroring `DocInput::read_postings`'s own
+            // `doc_count_left >= LEVEL1_NUM_DOCS` loop exactly.
+            while t.docs.len() - start >= LEVEL1_NUM_DOCS as usize {
+                let span = &t.docs[start..start + LEVEL1_NUM_DOCS as usize];
+                prev_doc_id = write_level1_span(
+                    &mut doc,
+                    span,
+                    prev_doc_id,
+                    &mut level1_last_doc_id,
+                    index_has_freq,
+                );
+                start += LEVEL1_NUM_DOCS as usize;
+            }
             while t.docs.len() - start >= BLOCK_SIZE as usize {
                 let block = &t.docs[start..start + BLOCK_SIZE as usize];
                 prev_doc_id = write_full_block(&mut doc, block, prev_doc_id, index_has_freq);
@@ -686,12 +708,6 @@ fn validate_field(input: &FieldPostingsInput<'_>) -> Result<()> {
         if t.docs.is_empty() {
             return Err(Error::EmptyPostings(i));
         }
-        if t.docs.len() >= LEVEL1_NUM_DOCS as usize {
-            return Err(Error::DocFreqTooLarge {
-                index: i,
-                doc_freq: t.docs.len(),
-            });
-        }
         for (j, &(_, freq)) in t.docs.iter().enumerate() {
             if freq < 1 {
                 return Err(Error::NonPositiveFreq { index: i });
@@ -839,6 +855,79 @@ fn write_full_block(
     write_vlong15(out, rest.len() as i64);
     out.write_bytes(&rest);
 
+    last_doc_id
+}
+
+/// Writes one level-1 skip entry followed by the `LEVEL1_FACTOR` (32) full
+/// level-0 blocks it covers — the exact write-side inverse of
+/// `crate::postings::read_level1_entry` (shared by `DocInput::read_postings`
+/// and `LazyDocsCursor::skip_level1_to`). `span` must be exactly
+/// `LEVEL1_NUM_DOCS` (8192) `(doc_id, freq)` pairs, ascending. `prev_doc_id`
+/// is the running per-term doc-ID base threaded in from whatever preceded
+/// this span (`-1` for the first span, or the previous span's last doc ID).
+/// `level1_last_doc_id` is the running level-1 accumulator the read side
+/// also keeps (`LazyDocsCursor::level1_last_doc_id`, starts at `-1`, `+=
+/// doc_delta` per entry) — passed by `&mut` so the caller can thread it
+/// across multiple spans for the same term. Returns this span's last doc ID,
+/// for the caller to thread as `prev_doc_id` into the next span or the
+/// trailing full-block/tail-block loop.
+///
+/// The level-1 entry's own fields, in wire order: `doc_delta` (vint, `this
+/// span's last doc ID - *level1_last_doc_id` before update), the span's
+/// byte length (vlong, needed by the reader to compute `level1DocEndFP`
+/// without decoding the span), then — only when `index_has_freq` — a
+/// `skip1EndFP` `i16` (byte length from right after it to the end of this
+/// entry's freq-gated metadata) and a `numImpactBytes` `i16`, both fixed at
+/// `2`/`0` here: the impacts region is always empty (no competitive-impact
+/// computation at level 1, mirroring [`write_full_block`]'s own level-0
+/// choice), so `skip1EndFP` only ever needs to span the two bytes of
+/// `numImpactBytes` itself. The `indexHasPos`-gated pos/pay sub-fields
+/// `read_level1_entry` supports are never written: `index_has_pos` is always
+/// false on this path, since a term reaching `docFreq >= LEVEL1_NUM_DOCS`
+/// implies `total_term_freq >= LEVEL1_NUM_DOCS`, which
+/// [`validate_field`]'s `TotalTermFreqTooLarge` check (`total_term_freq >=
+/// BLOCK_SIZE`) already rejects whenever positions are indexed — the same
+/// reasoning [`write_full_block`]'s own doc comment gives for why its header
+/// never writes pos/pay skip fields either.
+fn write_level1_span(
+    out: &mut Vec<u8>,
+    span: &[(i32, i32)],
+    prev_doc_id: i32,
+    level1_last_doc_id: &mut i32,
+    index_has_freq: bool,
+) -> i32 {
+    debug_assert_eq!(span.len(), LEVEL1_NUM_DOCS as usize);
+
+    // Build the span's 32 full blocks into a scratch buffer first so the
+    // level-1 entry's byte-length field is known before the entry header is
+    // written (same "measure by building into scratch first" approach
+    // `write_full_block` uses for `blockLength`).
+    let mut span_bytes = Vec::new();
+    let mut prev = prev_doc_id;
+    for block in span.chunks(BLOCK_SIZE as usize) {
+        prev = write_full_block(&mut span_bytes, block, prev, index_has_freq);
+    }
+    let last_doc_id = prev;
+
+    // `read_level1_entry` computes `doc_end_fp` as this vlong's value added
+    // to `r.position()` measured right after the vlong itself -- i.e.
+    // *before* the freq-gated `skip1EndFP`/`numImpactBytes` fields below are
+    // read. So the vlong must span every byte from there through the end of
+    // the whole entry+span, not just `span_bytes` alone: the freq-gated
+    // header contributes `2 (skip1EndFP) + 2 (numImpactBytes) + 0 (impact
+    // bytes, always empty)` extra bytes whenever `index_has_freq`.
+    let freq_header_len: usize = if index_has_freq { 4 } else { 0 };
+    let doc_delta = last_doc_id - *level1_last_doc_id;
+    out.write_vint(doc_delta);
+    out.write_vlong((freq_header_len + span_bytes.len()) as i64);
+    if index_has_freq {
+        out.write_i16(2); // skip1EndFP delta: exactly `numImpactBytes`'s 2 bytes, since
+                          // no impact bytes and no pos/pay sub-fields follow (see doc comment).
+        out.write_i16(0); // numImpactBytes: always an empty impacts region.
+    }
+    out.write_bytes(&span_bytes);
+
+    *level1_last_doc_id = last_doc_id;
     last_doc_id
 }
 
@@ -1292,27 +1381,192 @@ mod tests {
         ));
     }
 
+    /// Round-trips a `docFreq` at each level-1-relevant boundary through the
+    /// existing, unmodified `blocktree::open`/`DocInput::read_postings` --
+    /// asserting the full doc/freq lists, not just "didn't error". Covers:
+    /// exactly `LEVEL1_NUM_DOCS` (one level-1 span, no remainder), one more
+    /// than that (one span + a one-doc tail), and two full level-1 spans
+    /// back to back, proving `write_level1_span`'s `level1_last_doc_id`/
+    /// `prev_doc_id` threading across more than one span.
     #[test]
-    fn rejects_docfreq_at_or_above_level1_num_docs() {
-        let docs: Vec<(i32, i32)> = (0..LEVEL1_NUM_DOCS).map(|d| (d, 1)).collect();
-        let terms = vec![TermPostings {
-            term: b"a".to_vec(),
-            docs,
-            ..Default::default()
-        }];
+    fn docfreq_at_level1_boundaries_round_trips() {
+        for doc_freq in [LEVEL1_NUM_DOCS, LEVEL1_NUM_DOCS + 1, 2 * LEVEL1_NUM_DOCS] {
+            let term = varied_docs_term(b"a", doc_freq);
+            let max_doc = term.docs.last().unwrap().0 + 1;
+            let terms = vec![term.clone()];
+            let input = FieldPostingsInput {
+                field_number: 0,
+                index_options: IndexOptions::DocsAndFreqs,
+                doc_count: term.docs.len() as i32,
+                terms: &terms,
+            };
+            let output = write_single_field(&input, &SEG_ID, SUFFIX)
+                .unwrap_or_else(|e| panic!("doc_freq={doc_freq}: {e}"));
+            let fis = FieldInfos {
+                fields: vec![field_info(0, "f", IndexOptions::DocsAndFreqs)],
+            };
+            let (fields, doc_in) = open_written(&output, &fis, max_doc);
+            let field = fields.field("f").unwrap();
+            assert_eq!(
+                field.seek_exact(b"a").unwrap().doc_freq,
+                doc_freq,
+                "doc_freq={doc_freq}"
+            );
+            let postings = field.postings(b"a", Some(&doc_in)).unwrap().unwrap();
+            let expected_docs: Vec<i32> = term.docs.iter().map(|&(d, _)| d).collect();
+            let expected_freqs: Vec<i32> = term.docs.iter().map(|&(_, f)| f).collect();
+            assert_eq!(postings.docs, expected_docs, "doc_freq={doc_freq}");
+            assert_eq!(postings.freqs, expected_freqs, "doc_freq={doc_freq}");
+        }
+    }
+
+    /// Same boundaries as [`docfreq_at_level1_boundaries_round_trips`] but
+    /// through [`crate::postings::DocInput::lazy_cursor`]'s `advance`, which
+    /// is what actually exercises `LazyDocsCursor::skip_level1_to` --
+    /// jumping straight past whole level-1 spans without decoding their
+    /// level-0 blocks. Advancing to the very last doc after a full span (or
+    /// two) proves the skip landed in the right place.
+    #[test]
+    fn docfreq_at_level1_boundaries_advance_via_lazy_cursor() {
+        for doc_freq in [LEVEL1_NUM_DOCS, LEVEL1_NUM_DOCS + 1, 2 * LEVEL1_NUM_DOCS] {
+            let term = varied_docs_term(b"a", doc_freq);
+            let max_doc = term.docs.last().unwrap().0 + 1;
+            let terms = vec![term.clone()];
+            let input = FieldPostingsInput {
+                field_number: 0,
+                index_options: IndexOptions::DocsAndFreqs,
+                doc_count: term.docs.len() as i32,
+                terms: &terms,
+            };
+            let output = write_single_field(&input, &SEG_ID, SUFFIX).unwrap();
+            let fis = FieldInfos {
+                fields: vec![field_info(0, "f", IndexOptions::DocsAndFreqs)],
+            };
+            let (fields, doc_in) = open_written(&output, &fis, max_doc);
+            let field = fields.field("f").unwrap();
+            let mut cursor = field
+                .lazy_postings(b"a", &doc_in)
+                .unwrap()
+                .expect("term must exist");
+            let last_doc = term.docs.last().unwrap().0;
+            assert_eq!(
+                cursor.advance(last_doc).unwrap(),
+                last_doc,
+                "doc_freq={doc_freq}"
+            );
+        }
+    }
+
+    /// Same as [`docfreq_at_level1_boundaries_round_trips`] but with
+    /// [`irregular_docs_term`]'s non-constant doc-ID gaps and widely varying
+    /// freqs instead of [`varied_docs_term`]'s constant delta-of-2 -- a
+    /// delta/length-accounting bug in `write_level1_span` could plausibly
+    /// only surface once the span's actual byte length varies unpredictably
+    /// with real data, not a uniform pattern.
+    #[test]
+    fn docfreq_at_level1_boundary_with_irregular_gaps_and_varying_freqs() {
+        let doc_freq = LEVEL1_NUM_DOCS + 100;
+        let term = irregular_docs_term(b"a", doc_freq);
+        let max_doc = term.docs.last().unwrap().0 + 1;
+        let terms = vec![term.clone()];
         let input = FieldPostingsInput {
             field_number: 0,
             index_options: IndexOptions::DocsAndFreqs,
-            doc_count: LEVEL1_NUM_DOCS,
+            doc_count: term.docs.len() as i32,
             terms: &terms,
         };
-        assert!(matches!(
-            write_single_field(&input, &SEG_ID, SUFFIX),
-            Err(Error::DocFreqTooLarge {
-                index: 0,
-                doc_freq
-            }) if doc_freq == LEVEL1_NUM_DOCS as usize
-        ));
+        let output = write_single_field(&input, &SEG_ID, SUFFIX).unwrap();
+        let fis = FieldInfos {
+            fields: vec![field_info(0, "f", IndexOptions::DocsAndFreqs)],
+        };
+        let (fields, doc_in) = open_written(&output, &fis, max_doc);
+        let field = fields.field("f").unwrap();
+        assert_eq!(field.seek_exact(b"a").unwrap().doc_freq, doc_freq);
+        let postings = field.postings(b"a", Some(&doc_in)).unwrap().unwrap();
+        let expected_docs: Vec<i32> = term.docs.iter().map(|&(d, _)| d).collect();
+        let expected_freqs: Vec<i32> = term.docs.iter().map(|&(_, f)| f).collect();
+        assert_eq!(postings.docs, expected_docs);
+        assert_eq!(postings.freqs, expected_freqs);
+
+        // Also confirm the lazy cursor can advance straight to the last doc
+        // (exercising skip_level1_to against this same irregular span).
+        let mut cursor = field
+            .lazy_postings(b"a", &doc_in)
+            .unwrap()
+            .expect("term must exist");
+        let last_doc = term.docs.last().unwrap().0;
+        assert_eq!(cursor.advance(last_doc).unwrap(), last_doc);
+    }
+
+    /// The write-side analogue of `postings`'s own
+    /// `lazy_cursor_advance_skips_whole_corrupted_level1_span_without_decoding_it`
+    /// test: writes a real level-1 span via [`write_level1_span`], then
+    /// corrupts its first level-0 block's header bytes in place. An
+    /// `advance()` to a doc in the trailing tail (past the whole span) must
+    /// still succeed -- proving `skip_level1_to` jumped straight to
+    /// `doc_end_fp` without ever reading the corrupted block 0 header. A
+    /// control `advance()` to a target inside the span forces that same
+    /// header to be decoded and must surface the corruption, confirming the
+    /// first assertion wasn't passing by luck (e.g. because the corruption
+    /// was inert).
+    #[test]
+    fn writer_level1_span_advance_past_it_skips_corrupted_first_block_header() {
+        let doc_freq = LEVEL1_NUM_DOCS + 8;
+        let term = varied_docs_term(b"a", doc_freq); // IndexOptions::Docs below -> freq ignored
+        let max_doc = term.docs.last().unwrap().0 + 1;
+        let terms = vec![term.clone()];
+        let input = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::Docs,
+            doc_count: term.docs.len() as i32,
+            terms: &terms,
+        };
+        let mut output = write_single_field(&input, &SEG_ID, SUFFIX).unwrap();
+
+        // Locate the level-1 span's first byte in `.doc`: the term's only
+        // level-1 entry starts right after the `.doc` index header (this is
+        // the field's one and only term), and -- since `IndexOptions::Docs`
+        // has no freq, `index_has_freq` is false, so the entry is just
+        // `vint(doc_delta)` then `vlong(span_len)` with no freq-gated
+        // header fields (see `write_level1_span`'s doc comment) -- the span
+        // bytes start immediately after those two fields.
+        use lucene_store::data_input::{DataInput, SliceInput};
+        let mut r = SliceInput::new(&output.doc);
+        codec_util::check_index_header(&mut r, DOC_CODEC, 0, DOC_VERSION_CURRENT, &SEG_ID, SUFFIX)
+            .unwrap();
+        r.read_vint().unwrap(); // doc_delta
+        r.read_vlong().unwrap(); // span_len
+        let span_start = r.position();
+
+        // Corrupt the first level-0 block's header (`level0NumBytes`
+        // vlong + `docDelta`/`blockLength` fields) with bytes whose
+        // continuation bits never terminate within the block -- any decode
+        // attempt of this header must error out.
+        for b in output.doc[span_start..span_start + 8].iter_mut() {
+            *b = 0xFF;
+        }
+
+        let fis = FieldInfos {
+            fields: vec![field_info(0, "f", IndexOptions::Docs)],
+        };
+        let (fields, doc_in) = open_written(&output, &fis, max_doc);
+        let field = fields.field("f").unwrap();
+
+        // Past the whole (corrupted) span, in the tail: must succeed.
+        let last_doc = term.docs.last().unwrap().0;
+        let mut cursor = field
+            .lazy_postings(b"a", &doc_in)
+            .unwrap()
+            .expect("term must exist");
+        assert_eq!(cursor.advance(last_doc).unwrap(), last_doc);
+
+        // Control: a target inside the span forces decoding the corrupted
+        // block 0 header, which must surface an error.
+        let mut cursor2 = field
+            .lazy_postings(b"a", &doc_in)
+            .unwrap()
+            .expect("term must exist");
+        assert!(cursor2.advance(100).is_err());
     }
 
     /// `docFreq == LEVEL1_NUM_DOCS - 1` (8191): the largest term size this

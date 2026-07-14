@@ -843,11 +843,11 @@ impl<'d> IndexWriter<'d> {
     /// being a caller-input problem, not a "commit anyway" outcome we want to
     /// force on every commit that happens to have no postings content).
     /// Returns `Err` on [`postings_writer::write_single_field`]'s own
-    /// validation failures, in particular
-    /// [`postings_writer::Error::DocFreqTooLarge`] once any one term in this
-    /// commit's batch occurs in `>= BLOCK_SIZE` (256) pending docs -- this
-    /// writer has no multi-block `.tim` support, so that case is rejected
-    /// rather than silently producing wrong bytes (see module doc comment).
+    /// validation failures -- see that module's doc comment for the current
+    /// set of rejected shapes (e.g. `TotalTermFreqTooLarge` for a
+    /// positions-indexing term reaching `BLOCK_SIZE` occurrences); `docFreq`
+    /// itself has no ceiling any more (full level-0 blocks and level-1 skip
+    /// entries both scale to any size).
     fn build_postings_output(
         docs: &[Document],
         config: &PostingsFieldConfig,
@@ -2775,18 +2775,20 @@ mod tests {
     /// postings_writer.rs`'s `write_full_block` and its own
     /// `docfreq_exactly_one_full_block_no_tail`/`docfreq_spans_multiple_full_blocks_plus_tail`
     /// unit tests for the byte-level round-trip proof), so `docFreq == 256`
-    /// alone no longer rejects a `commit()` the way it used to -- the
-    /// remaining postings-side upper bound moved to `LEVEL1_NUM_DOCS`
-    /// (8192), see `postings_writer::Error::DocFreqTooLarge`'s current
-    /// doc comment. There is deliberately no end-to-end `IndexWriter`-level
-    /// test of *that* boundary here: reaching it requires >=8192 pending
-    /// docs in one flush, which trips a wholly unrelated, pre-existing cap
-    /// in `flush_stored_only_segment`'s `write_best_speed` (`docs.len() <
-    /// 128` per flush chunk, see `commit_succeeds_below_the_doc_freq_boundary`'s
-    /// own doc comment) before the postings boundary is ever reached. The
+    /// alone no longer rejects a `commit()` the way it used to. A later task
+    /// added level-1 skip-entry emission
+    /// (`postings_writer::write_level1_span`), so `docFreq >= LEVEL1_NUM_DOCS`
+    /// (8192) is no longer a hard ceiling either -- see that module's doc
+    /// comment for the current state (no further per-term docFreq ceiling
+    /// remains). There is deliberately no end-to-end `IndexWriter`-level test
+    /// of the 8192 boundary here: reaching it requires >=8192 pending docs in
+    /// one flush, which trips a wholly unrelated, pre-existing cap in
+    /// `flush_stored_only_segment`'s `write_best_speed` (`docs.len() < 128`
+    /// per flush chunk, see `commit_succeeds_below_the_doc_freq_boundary`'s
+    /// own doc comment) before the postings layer is ever reached. The
     /// `LEVEL1_NUM_DOCS` boundary itself is exercised directly at the
     /// `postings_writer` unit level instead
-    /// (`rejects_docfreq_at_or_above_level1_num_docs`).
+    /// (`docfreq_at_level1_boundaries_round_trips`).
     /// A term under the 256 boundary must still commit successfully.
     /// Capped at 100 docs (well under 256) rather
     /// than the tightest possible "255" case, because
