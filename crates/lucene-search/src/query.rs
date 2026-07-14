@@ -7,7 +7,12 @@
 
 /// A single exact-term lookup against one field, e.g. `TermQuery::new("body",
 /// "cat")` — the Rust analogue of `new TermQuery(new Term("body", "cat"))`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Derives `Hash` (in addition to `Eq`, already derived above) so it can be
+/// used as a cache key, e.g. by [`crate::query_cache::QueryCache`] -- purely
+/// additive, since both fields (`String`, `Vec<u8>`) are already `Hash` and
+/// nothing about this type's existing behavior changes.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TermQuery {
     pub field: String,
     pub term: Vec<u8>,

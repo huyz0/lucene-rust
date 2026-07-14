@@ -1869,6 +1869,54 @@ concrete allocation hot path to point it at), `ByteBlockPool`-style
 bulk/arena allocation, sort/compaction, and any on-disk format tie-in --
 purely an in-memory primitive today.
 
+**Progress (basic query cache):** `QueryCache`, a new standalone primitive in
+`lucene-search/src/query_cache.rs` -- analogous in spirit to real Lucene's
+`LRUQueryCache` (`org.apache.lucene.search.LRUQueryCache`), **not** a
+byte-for-byte port of it. Real `LRUQueryCache` tracks per-segment
+`IndexReader.CacheKey` identity via weak references, bounds itself by both
+entry count *and* estimated RAM usage, and decides per-query whether caching
+is even worthwhile (`shouldCache`). None of that is implemented; this module
+keeps only the core value proposition -- given a `(segment, query)` pair,
+hand back a previously computed `FixedBitSet` of matching doc IDs instead of
+re-running the query's scorer/matcher. `QueryCache<S, Q>` is generic over any
+segment identifier `S: Eq + Hash + Clone` and any query representation
+`Q: Eq + Hash + Clone` (this port has no `IndexReader.CacheKey`-style segment
+identity object yet, so a caller-supplied key -- a segment name, a generation
+number -- stands in); `query::TermQuery` picked up an additive `Hash` derive
+(alongside its existing `PartialEq + Eq`) so it can be used directly as `Q`,
+rather than inventing a parallel query representation just for caching. API:
+`QueryCache::new(max_entries)`, `get_or_compute(segment, query, || ->
+FixedBitSet)` (computes and inserts on a miss, returns the cached bitset
+unchanged on a hit), `invalidate_segment(&segment) -> usize` (removes that
+segment's entries only), `clear()`, `len()`/`is_empty()`. Eviction is bounded
+by entry count only, least-recently-used-first, tracked via a monotonic
+access counter stamped on every hit/insert (no external LRU-list crate in
+the workspace, and a linear scan over a small bounded cache to find the
+minimum is the right amount of machinery for this scope). No `unsafe`
+(`lucene-search` is `#![forbid(unsafe_code)]`). **Not wired into any live
+search path** -- `IndexSearcher`-equivalent query execution
+(`directory_reader.rs`/`multi_segment.rs`) still always re-evaluates a
+query's scorer/matcher on every call, exactly as before this module existed;
+wiring this cache in (with real segment-lifecycle-triggered invalidation and
+a cache-worthiness heuristic) is future work. Unit tests cover: a cache miss
+calls the compute closure and stores the result; a cache hit reuses the
+stored bitset without calling compute again (verified via a call counter);
+distinct queries against the same segment get distinct entries; the same
+query against different segments gets distinct entries; inserting past
+`max_entries` evicts the correct least-recently-used entry (verified by
+re-touching one entry to change eviction order, then confirming the
+untouched one is evicted and the touched one survives); `invalidate_segment`
+removes only that segment's entries, leaving other segments' entries and
+cache hits intact; a `max_entries == 0` cache never actually retains
+anything; `clear()` empties every segment's entries; and `TermQuery` used as
+a concrete `Q` end-to-end. **Explicitly deferred** (see `docs/parity.md`):
+RAM-based cache sizing (bounded by count alone here), automatic per-segment
+invalidation hooks tied to real segment open/close/merge lifecycle events
+(`invalidate_segment` exists and is correct, but nothing in this port calls
+it yet -- no segment lifecycle to hook into), cache-worthiness heuristics
+like real `LRUQueryCache.shouldCache`, and wiring into `IndexSearcher`-
+equivalent live query execution.
+
 1. `lucene-analysis`: `TokenStream` as an iterator-of-token-structs (skip Java's
    AttributeSource reflection design entirely — a plain
    `Token { bytes, position_increment, offset, ... }` struct), StandardTokenizer via

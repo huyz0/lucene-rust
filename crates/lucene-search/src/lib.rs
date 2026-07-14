@@ -191,6 +191,7 @@ pub mod field_norms;
 pub mod highlighter;
 pub mod multi_segment;
 pub mod query;
+pub mod query_cache;
 pub mod query_parser;
 pub mod similarity;
 pub mod soft_deletes;
@@ -212,6 +213,7 @@ pub use query::{
     BooleanQuery, BoostQuery, Clause, ConstantScoreQuery, DisjunctionMaxQuery, FuzzyQuery,
     PhraseQuery, PrefixQuery, RegexpQuery, SpanQuery, TermQuery, WildcardQuery,
 };
+pub use query_cache::QueryCache;
 pub use term_vectors_query::{matched_term_offsets, term_vector_for_doc};
 
 use std::collections::HashMap;
