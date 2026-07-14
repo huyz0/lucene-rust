@@ -1917,6 +1917,39 @@ it yet -- no segment lifecycle to hook into), cache-worthiness heuristics
 like real `LRUQueryCache.shouldCache`, and wiring into `IndexSearcher`-
 equivalent live query execution.
 
+**Progress (concurrent segment search):** `multi_segment.rs` gained a `rayon`-
+based parallel sibling of its existing sequential fan-out/merge core --
+analogous in spirit to real Lucene's `IndexSearcher` constructed with an
+`ExecutorService` (each `LeafReaderContext` searched on the executor, partial
+`TopDocs` merged once every leaf finishes), **not** a port of that
+`Executor`/`LeafSlice` machinery itself. This port has no thread-pool
+abstraction of its own, so `merge_multi_segment_scored_concurrent` uses
+`rayon::prelude::*`'s `par_iter` (rayon is already a workspace dependency used
+elsewhere in this crate) over segments instead of inventing one: each
+segment's own `TopDocsCollector`, per-segment search call, and doc-base
+translation happen independently inside the parallel closure (no shared
+mutable state, so no locking), and the final merge across segments' results
+runs sequentially through the same `TopDocsCollector` type the existing
+sequential path already uses -- the exact same merge logic, not a
+reimplementation of it, since `rayon`'s `.collect()` preserves input order
+regardless of which worker thread computed which element. Two thin
+concurrent wrappers, `search_term_query_multi_segment_concurrent`/
+`search_boolean_query_multi_segment_concurrent`, mirror the existing
+`search_term_query_multi_segment`/`search_boolean_query_multi_segment`
+exactly, one call to the new core instead of the old one. The existing
+sequential functions are unchanged -- this is a pure addition, not a
+replacement. **Correctness property tested directly**: sequential and
+concurrent results are asserted byte-for-byte identical (same doc IDs, same
+order, same scores) for the same input, across an empty index, a single
+segment, 16 synthetic segments (enough for rayon's pool to plausibly
+parallelize), a top-N-truncation case, a same-score-tie-across-segments case,
+and both real-fixture end-to-end query types (term, boolean). **Explicitly
+deferred**: any thread-pool configuration/sizing knobs (real Lucene's
+`Executor` lets a caller supply its own pool size; this uses rayon's global
+pool as-is, no equivalent knob exposed), work-stealing tuning beyond what
+rayon's global pool already provides, and any I/O-bound async concern -- this
+is CPU-parallel scorer evaluation only, no FFI entry point for it yet either.
+
 1. `lucene-analysis`: `TokenStream` as an iterator-of-token-structs (skip Java's
    AttributeSource reflection design entirely — a plain
    `Token { bytes, position_increment, offset, ... }` struct), StandardTokenizer via

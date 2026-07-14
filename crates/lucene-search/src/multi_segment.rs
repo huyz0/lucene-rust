@@ -152,6 +152,69 @@ where
     Ok(merged.top_docs().to_vec())
 }
 
+/// Concurrent sibling of [`merge_multi_segment_scored`] -- real Lucene's
+/// `IndexSearcher` constructed with an `Executor` runs each leaf's search on
+/// that executor and merges the partial `TopDocs` once every leaf finishes
+/// (`IndexSearcher.slices`/`searchLeaf`). This port has no thread-pool
+/// abstraction of its own (`rayon` is already a workspace dependency used
+/// elsewhere in this crate), so the per-segment fan-out below is expressed as
+/// a `rayon` `par_iter` instead of hand-rolling an `Executor`/`Future`
+/// mechanism -- rayon's global pool plays the same role real Lucene's
+/// `Executor` does here, minus any configuration knobs (see this crate's
+/// `docs/parity.md` entry for this task for exactly what that leaves out).
+///
+/// Every segment's own `TopDocsCollector::new(top_n)` + doc-base translation
+/// happens independently inside the `par_iter` closure -- each segment's
+/// contribution is a self-contained `Vec<ScoreDoc>` with no shared mutable
+/// state between segments, so no locking is needed for the fan-out itself.
+/// The final merge step is then run **sequentially**, feeding every
+/// segment's already-doc-base-translated `Vec<ScoreDoc>` through one more
+/// [`TopDocsCollector`] in segment order -- this is the exact same merge
+/// [`merge_multi_segment_scored`] performs (same collector type, same
+/// insertion order across segments, since `par_iter`'s `.collect()` preserves
+/// input order regardless of which thread computed which element), which is
+/// what makes the two functions' outputs provably identical for the same
+/// input rather than merely usually-the-same.
+///
+/// `per_segment_search` must be `Fn` (not `FnMut`, unlike
+/// [`merge_multi_segment_scored`]'s closure) and `Sync`, since `rayon` may
+/// invoke it concurrently from multiple worker threads, one call per segment.
+pub fn merge_multi_segment_scored_concurrent<F>(
+    doc_bases: &[i32],
+    top_n: usize,
+    per_segment_search: F,
+) -> Result<Vec<ScoreDoc>>
+where
+    F: Fn(usize, &mut TopDocsCollector) -> Result<()> + Sync,
+{
+    use rayon::prelude::*;
+
+    let per_segment_hits: Vec<Result<Vec<ScoreDoc>>> = doc_bases
+        .par_iter()
+        .enumerate()
+        .map(|(i, &doc_base)| {
+            let mut local = TopDocsCollector::new(top_n);
+            per_segment_search(i, &mut local)?;
+            Ok(local
+                .top_docs()
+                .iter()
+                .map(|hit| ScoreDoc {
+                    doc_id: hit.doc_id + doc_base,
+                    score: hit.score,
+                })
+                .collect())
+        })
+        .collect();
+
+    let mut merged = TopDocsCollector::new(top_n);
+    for hits in per_segment_hits {
+        for hit in hits? {
+            merged.collect(hit.doc_id, hit.score);
+        }
+    }
+    Ok(merged.top_docs().to_vec())
+}
+
 /// Multi-segment sibling of [`crate::search_term_query_scored`]: runs `query`
 /// against every segment in `segments` (in the order given -- `doc_base`
 /// values are used exactly as supplied, see [`OpenSegment::doc_base`]'s doc
@@ -196,6 +259,38 @@ pub fn search_term_query_multi_segment(
     })
 }
 
+/// Concurrent sibling of [`search_term_query_multi_segment`], built on
+/// [`merge_multi_segment_scored_concurrent`] instead of
+/// [`merge_multi_segment_scored`] -- searches every segment in parallel via
+/// `rayon` and merges the results with the identical merge logic. See
+/// [`merge_multi_segment_scored_concurrent`]'s doc comment for why this
+/// produces byte-for-byte identical output to the sequential path.
+pub fn search_term_query_multi_segment_concurrent(
+    segments: &[OpenSegment<'_>],
+    query: &TermQuery,
+    norms: &[Option<&FieldNorms<'_>>],
+    top_n: usize,
+) -> Result<Vec<ScoreDoc>> {
+    debug_assert_eq!(
+        segments.len(),
+        norms.len(),
+        "one norms entry per segment expected"
+    );
+    let doc_bases: Vec<i32> = segments.iter().map(|s| s.doc_base).collect();
+    merge_multi_segment_scored_concurrent(&doc_bases, top_n, |i, local| {
+        let seg = &segments[i];
+        let seg_norms = norms.get(i).copied().flatten();
+        crate::search_term_query_scored(
+            seg.fields,
+            seg.doc_in,
+            seg.live_docs,
+            query,
+            seg_norms,
+            local,
+        )
+    })
+}
+
 /// Multi-segment sibling of [`crate::search_boolean_query_scored`] -- same
 /// per-segment fan-out/merge as [`search_term_query_multi_segment`], built on
 /// the same shared [`merge_multi_segment_scored`] core, generalized to a
@@ -219,6 +314,37 @@ pub fn search_boolean_query_multi_segment(
     );
     let doc_bases: Vec<i32> = segments.iter().map(|s| s.doc_base).collect();
     merge_multi_segment_scored(&doc_bases, top_n, |i, local| {
+        let seg = &segments[i];
+        let seg_norms = norms.get(i).copied().flatten();
+        crate::search_boolean_query_scored(
+            seg.fields,
+            seg.doc_in,
+            seg.pos_in,
+            seg.pay_in,
+            seg.live_docs,
+            query,
+            seg_norms,
+            local,
+        )
+    })
+}
+
+/// Concurrent sibling of [`search_boolean_query_multi_segment`] -- same
+/// relationship as [`search_term_query_multi_segment_concurrent`] has to
+/// [`search_term_query_multi_segment`].
+pub fn search_boolean_query_multi_segment_concurrent(
+    segments: &[OpenSegment<'_>],
+    query: &BooleanQuery,
+    norms: &[Option<&HashMap<String, FieldNorms<'_>>>],
+    top_n: usize,
+) -> Result<Vec<ScoreDoc>> {
+    debug_assert_eq!(
+        segments.len(),
+        norms.len(),
+        "one norms entry per segment expected"
+    );
+    let doc_bases: Vec<i32> = segments.iter().map(|s| s.doc_base).collect();
+    merge_multi_segment_scored_concurrent(&doc_bases, top_n, |i, local| {
         let seg = &segments[i];
         let seg_norms = norms.get(i).copied().flatten();
         crate::search_boolean_query_scored(
@@ -546,5 +672,210 @@ mod tests {
         let result: Vec<ScoreDoc> =
             merge_multi_segment_scored(&doc_bases, 10, |_, _| Ok(())).unwrap();
         assert!(result.is_empty());
+    }
+
+    // --- Concurrent (rayon) path: must be byte-for-byte identical to the
+    // sequential path for the same input. ---
+
+    /// Builds `n` synthetic segments, each contributing a small, distinctly
+    /// scored set of hits, with doc bases spaced far enough apart that global
+    /// doc IDs never collide -- shared by every concurrent-vs-sequential test
+    /// below so both paths run over the exact same fan-out.
+    fn synthetic_doc_bases_and_hits(n: usize) -> (Vec<i32>, Vec<Vec<(i32, f32)>>) {
+        let mut doc_bases = Vec::with_capacity(n);
+        let mut hits = Vec::with_capacity(n);
+        for i in 0..n {
+            doc_bases.push((i as i32) * 100);
+            // Distinct, deterministic scores per segment/doc so tie-breaks
+            // and ordering are exercised the same way every run.
+            hits.push(vec![
+                (0, (i as f32) * 0.37 + 1.0),
+                (1, (i as f32) * 0.11 + 2.0),
+                (2, (i as f32 % 3.0) + 0.5),
+            ]);
+        }
+        (doc_bases, hits)
+    }
+
+    fn run_sequential(doc_bases: &[i32], hits: &[Vec<(i32, f32)>], top_n: usize) -> Vec<ScoreDoc> {
+        merge_multi_segment_scored(doc_bases, top_n, |i, local| {
+            for &(doc_id, score) in &hits[i] {
+                local.collect(doc_id, score);
+            }
+            Ok(())
+        })
+        .unwrap()
+    }
+
+    fn run_concurrent(doc_bases: &[i32], hits: &[Vec<(i32, f32)>], top_n: usize) -> Vec<ScoreDoc> {
+        merge_multi_segment_scored_concurrent(doc_bases, top_n, |i, local| {
+            for &(doc_id, score) in &hits[i] {
+                local.collect(doc_id, score);
+            }
+            Ok(())
+        })
+        .unwrap()
+    }
+
+    fn assert_identical(a: &[ScoreDoc], b: &[ScoreDoc]) {
+        let a: Vec<(i32, f32)> = a.iter().map(|d| (d.doc_id, d.score)).collect();
+        let b: Vec<(i32, f32)> = b.iter().map(|d| (d.doc_id, d.score)).collect();
+        assert_eq!(a, b, "sequential and concurrent results must be identical");
+    }
+
+    #[test]
+    fn sequential_merge_propagates_per_segment_search_error() {
+        let doc_bases = vec![0, 10, 20];
+        let err = merge_multi_segment_scored(&doc_bases, 10, |i, _local| {
+            if i == 1 {
+                Err(crate::Error::MissingPosInput)
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap_err();
+        assert!(matches!(err, crate::Error::MissingPosInput));
+    }
+
+    #[test]
+    fn concurrent_merge_propagates_per_segment_search_error() {
+        let doc_bases = vec![0, 10, 20];
+        let err = merge_multi_segment_scored_concurrent(&doc_bases, 10, |i, _local| {
+            if i == 1 {
+                Err(crate::Error::MissingPosInput)
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap_err();
+        assert!(matches!(err, crate::Error::MissingPosInput));
+    }
+
+    #[test]
+    fn concurrent_matches_sequential_empty_index() {
+        let doc_bases: Vec<i32> = vec![];
+        let hits: Vec<Vec<(i32, f32)>> = vec![];
+        let seq = run_sequential(&doc_bases, &hits, 10);
+        let con = run_concurrent(&doc_bases, &hits, 10);
+        assert!(seq.is_empty());
+        assert_identical(&seq, &con);
+    }
+
+    #[test]
+    fn concurrent_matches_sequential_single_segment() {
+        let (doc_bases, hits) = synthetic_doc_bases_and_hits(1);
+        let seq = run_sequential(&doc_bases, &hits, 10);
+        let con = run_concurrent(&doc_bases, &hits, 10);
+        assert!(!seq.is_empty());
+        assert_identical(&seq, &con);
+    }
+
+    #[test]
+    fn concurrent_matches_sequential_many_segments() {
+        // 16 segments -- enough for rayon's global pool to plausibly run
+        // more than one in parallel.
+        let (doc_bases, hits) = synthetic_doc_bases_and_hits(16);
+        let seq = run_sequential(&doc_bases, &hits, 10);
+        let con = run_concurrent(&doc_bases, &hits, 10);
+        assert!(!seq.is_empty());
+        assert_identical(&seq, &con);
+    }
+
+    #[test]
+    fn concurrent_matches_sequential_with_ties_across_segments() {
+        // Every segment contributes the exact same score at local doc 0 --
+        // forces the same score-tie, ordered-by-global-doc-id path the
+        // sequential merge already covers, now also through the concurrent
+        // merge.
+        let doc_bases: Vec<i32> = (0..8).map(|i| i * 10).collect();
+        let hits: Vec<Vec<(i32, f32)>> = (0..8).map(|_| vec![(0, 3.0)]).collect();
+        let seq = run_sequential(&doc_bases, &hits, 100);
+        let con = run_concurrent(&doc_bases, &hits, 100);
+        assert_identical(&seq, &con);
+    }
+
+    #[test]
+    fn concurrent_matches_sequential_with_top_n_truncation() {
+        let (doc_bases, hits) = synthetic_doc_bases_and_hits(10);
+        let seq = run_sequential(&doc_bases, &hits, 3);
+        let con = run_concurrent(&doc_bases, &hits, 3);
+        assert_eq!(seq.len(), 3);
+        assert_identical(&seq, &con);
+    }
+
+    /// End-to-end: [`search_term_query_multi_segment_concurrent`] against the
+    /// same two real segments [`search_term_query_multi_segment_merges_two_real_segments`]
+    /// uses, proving the concurrent wrapper (not just the generic merge core)
+    /// matches the sequential wrapper exactly.
+    #[test]
+    fn search_term_query_multi_segment_concurrent_matches_sequential() {
+        let (fields0, doc0, id0, suffix0, max_doc0) = open_real_segment();
+        let (fields1, doc1, id1, suffix1, _) = open_real_segment();
+        let doc_in0 = lucene_codecs::postings::DocInput::open(&doc0, &id0, &suffix0).unwrap();
+        let doc_in1 = lucene_codecs::postings::DocInput::open(&doc1, &id1, &suffix1).unwrap();
+
+        let query = TermQuery::new("body", "cat");
+        let segments = [
+            OpenSegment {
+                fields: &fields0,
+                doc_in: Some(&doc_in0),
+                pos_in: None,
+                pay_in: None,
+                live_docs: None,
+                doc_base: 0,
+            },
+            OpenSegment {
+                fields: &fields1,
+                doc_in: Some(&doc_in1),
+                pos_in: None,
+                pay_in: None,
+                live_docs: None,
+                doc_base: max_doc0,
+            },
+        ];
+        let norms = [None, None];
+
+        let seq = search_term_query_multi_segment(&segments, &query, &norms, 10).unwrap();
+        let con =
+            search_term_query_multi_segment_concurrent(&segments, &query, &norms, 10).unwrap();
+        assert!(!seq.is_empty());
+        assert_identical(&seq, &con);
+    }
+
+    /// Same end-to-end check for [`search_boolean_query_multi_segment_concurrent`].
+    #[test]
+    fn search_boolean_query_multi_segment_concurrent_matches_sequential() {
+        let (fields0, doc0, id0, suffix0, max_doc0) = open_real_segment();
+        let (fields1, doc1, id1, suffix1, _) = open_real_segment();
+        let doc_in0 = lucene_codecs::postings::DocInput::open(&doc0, &id0, &suffix0).unwrap();
+        let doc_in1 = lucene_codecs::postings::DocInput::open(&doc1, &id1, &suffix1).unwrap();
+
+        let query =
+            BooleanQuery::new().with_should([TQ::new("body", "cat"), TQ::new("body", "bird")]);
+        let segments = [
+            OpenSegment {
+                fields: &fields0,
+                doc_in: Some(&doc_in0),
+                pos_in: None,
+                pay_in: None,
+                live_docs: None,
+                doc_base: 0,
+            },
+            OpenSegment {
+                fields: &fields1,
+                doc_in: Some(&doc_in1),
+                pos_in: None,
+                pay_in: None,
+                live_docs: None,
+                doc_base: max_doc0,
+            },
+        ];
+        let norms = [None, None];
+
+        let seq = search_boolean_query_multi_segment(&segments, &query, &norms, 10).unwrap();
+        let con =
+            search_boolean_query_multi_segment_concurrent(&segments, &query, &norms, 10).unwrap();
+        assert!(!seq.is_empty());
+        assert_identical(&seq, &con);
     }
 }
