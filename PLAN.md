@@ -2988,9 +2988,21 @@ the `crates/lucene-ffi/src/writer.rs` write-up — not repeated here.)
 2. Codec **writers** for everything Phase 2 reads: postings writer (FOR/PFOR encode,
    skip/impacts writer), a real byte-compatible `FSTCompiler` port (still open --
    `crates/lucene-codecs/src/fst.rs::build_fst` added a simplified, from-scratch
-   construction that round-trips through this port's own `Fst::read`/`Fst::get`,
-   but does not reproduce `FSTCompiler`'s incremental suffix-sharing/minimization
-   or byte-identical output vs. real Lucene; see `docs/parity.md`'s FST row),
+   construction that round-trips through this port's own `Fst::read`/`Fst::get`
+   and, as of the reverse-direction cross-check below, is now also confirmed
+   readable by real Lucene itself, not just byte-identical to it. It does not
+   reproduce `FSTCompiler`'s incremental suffix-sharing/minimization or
+   output-pushing, so the bytes it writes are larger/differently-shaped than
+   what real `FSTCompiler` would produce for the same keys -- but
+   `crates/lucene-codecs/examples/write_fst_fixture.rs` +
+   `fixtures/src/VerifyFst.java` (Rust writes via `build_fst`/`write_fst`, real
+   Lucene's `FST.read(Path, ByteSequenceOutputs)` + `Util.get` reads it back)
+   ran and passed on both the same 7-key set `GenFst.java` uses AND a larger
+   200-key set forcing multi-byte `vlong` node-address targets: `VerifyFst OK
+   (<dir>): 7 present keys resolved, 8 absent keys rejected` and `VerifyFst OK
+   (large): 200 present keys resolved, 3 absent keys rejected`. So the open
+   item is now narrowly "not byte-identical to `FSTCompiler`'s output," not
+   "unverified against real Lucene" -- see `docs/parity.md`'s FST row),
    doc values writers, stored fields (LZ4 fast mode first), points (BKD writer with
    offline sort for large fields), norms, `.si`/`segments_N`/`.fnm` writers, compound
    files (`.cfs/.cfe`).
@@ -3874,7 +3886,12 @@ isn't decisively faster there, stop before paying for the write path.
 Biggest technical risks, in order:
 1. **FST builder byte-compatibility** (P5) — mitigate: reader-only first, and consider
    accepting non-byte-identical-but-format-valid output (Java can read it; only golden
-   tests need loosening).
+   tests need loosening). **Confirmed, not just hoped**: `build_fst`'s simplified,
+   non-suffix-sharing construction was cross-checked against real Lucene's own
+   `FST.read`/`Util.get` (`crates/lucene-codecs/examples/write_fst_fixture.rs` +
+   `fixtures/src/VerifyFst.java`) and passed outright — real Lucene's reader has no
+   structural expectation of minimality or fixed-length arcs, so this mitigation is
+   validated rather than merely assumed.
 2. **Two-phase commit / translog recovery semantics** (P6) — mitigate: segment
    replication first, exhaustive crash fuzzing.
 3. **JNI crash blast radius** — a Rust bug can kill a node, not just a shard —

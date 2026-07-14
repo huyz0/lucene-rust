@@ -38,7 +38,8 @@ needs the opposite: Rust writes real bytes, and a Java program confirms real Luc
 can open and read them back. `VerifyStoredFields.java`, `VerifyFieldInfos.java`,
 `VerifySegmentInfo.java`, `VerifySegmentInfos.java`, `VerifyPoints.java`,
 `VerifyTermVectors.java`, `VerifyDocValues.java`, `VerifyNorms.java`,
-`VerifyLiveDocs.java`, and `VerifyCompoundFormat.java` are these verifiers so far:
+`VerifyLiveDocs.java`, `VerifyCompoundFormat.java`, and `VerifyFst.java` are these
+verifiers so far:
 
 ```sh
 cargo run -p lucene-codecs --example write_stored_fields_fixture -- /tmp/rust-stored-fields
@@ -52,9 +53,10 @@ cargo run -p lucene-codecs --example write_doc_values_fixture -- /tmp/rust-doc-v
 cargo run -p lucene-codecs --example write_norms_fixture -- /tmp/rust-norms
 cargo run -p lucene-codecs --example write_live_docs_fixture -- /tmp/rust-live-docs
 cargo run -p lucene-codecs --example write_compound_format_fixture -- /tmp/rust-compound-format
+cargo run -p lucene-codecs --example write_fst_fixture -- /tmp/rust-fst
 JAR=$(find ~/.gradle/caches/modules-2/files-2.1/org.apache.lucene/lucene-core/10.5.0 \
   -name 'lucene-core-10.5.0.jar' ! -name '*sources*' ! -name '*javadoc*')
-javac -nowarn -cp "$JAR" -d classes src/VerifyStoredFields.java src/VerifyFieldInfos.java src/VerifySegmentInfo.java src/VerifySegmentInfos.java src/VerifyPoints.java src/VerifyTermVectors.java src/VerifyDocValues.java src/VerifyNorms.java src/VerifyLiveDocs.java src/VerifyCompoundFormat.java
+javac -nowarn -cp "$JAR" -d classes src/VerifyStoredFields.java src/VerifyFieldInfos.java src/VerifySegmentInfo.java src/VerifySegmentInfos.java src/VerifyPoints.java src/VerifyTermVectors.java src/VerifyDocValues.java src/VerifyNorms.java src/VerifyLiveDocs.java src/VerifyCompoundFormat.java src/VerifyFst.java
 java -cp "classes:$JAR" VerifyStoredFields /tmp/rust-stored-fields
 java -cp "classes:$JAR" VerifyFieldInfos /tmp/rust-field-infos
 java -cp "classes:$JAR" VerifySegmentInfo /tmp/rust-segment-info
@@ -66,6 +68,7 @@ java -cp "classes:$JAR" VerifyDocValues /tmp/rust-doc-values
 java -cp "classes:$JAR" VerifyNorms /tmp/rust-norms
 java -cp "classes:$JAR" VerifyLiveDocs /tmp/rust-live-docs
 java -cp "classes:$JAR" VerifyCompoundFormat /tmp/rust-compound-format
+java -cp "classes:$JAR" VerifyFst /tmp/rust-fst
 ```
 
 `VerifyStoredFields.java` opens each `.fdt`/`.fdx`/`.fdm` triple directly through
@@ -240,6 +243,35 @@ Java's writer does beyond a bare concatenation (smallest-first ordering,
 64-byte alignment, per-sub-file header/footer verification) and why this
 port's simpler "validate then copy verbatim" approach is byte-identical to
 it.
+
+`VerifyFst.java` verifies `fst::build_fst`/`fst::write_fst`
+(`crates/lucene-codecs/src/fst.rs`), the from-scratch, simplified FST
+construction path that (unlike everything else in this list) has no real
+`FSTCompiler` counterpart to fall back on for the write side. The Rust example
+(`write_fst_fixture.rs`) builds the same 7-key set `GenFst.java` uses
+(`app`/`apple`/`application`, `banana`/`band`/`bandana`, `z`) via `build_fst`
+and writes the bytes with `write_fst`, and the Java verifier opens the result
+through real `FST.read(Path, ByteSequenceOutputs)` and looks up all 7 present
+and 8 deliberately-absent keys via real `Util.get(FST, BytesRef)`. A second,
+larger fixture (`large/`, 200 keys forcing multi-byte `vlong` node-address
+targets -- the same shape `build_fst_many_keys_forces_multi_byte_vlong_targets`
+self-round-trips in `fst.rs`'s own unit tests, never previously checked
+against a real Lucene reader) is written and verified the same way. This is
+the reverse of `GenFst.java`/`fst_fixtures.rs` (which is Java-writes/Rust-reads):
+here Rust writes and real Lucene reads. Both fixtures passed on the first run
+(`VerifyFst OK (<dir>): 7 present keys resolved, 8 absent keys rejected` and
+`VerifyFst OK (large): 200 present keys resolved, 3 absent keys rejected`), a
+genuine, non-obvious result worth stating plainly: `build_fst`'s simplified
+construction skips real `FSTCompiler`'s suffix sharing/minimization, output
+pushing, and fixed-length-arc node compaction, so it was not a given that real
+Lucene's reader -- written against `FSTCompiler`'s actual output shapes --
+would accept a non-minimal, always-list-encoded, always-explicit-`vlong`-
+target FST without complaint. It does: nothing in `FST.java`'s read path
+(`readArc`, `findTargetArc`, `seekToNextNode`) assumes minimality or
+fixed-length arcs are present, only that whichever encoding a node actually
+uses is self-consistent, so a structurally simpler but format-valid FST is
+read identically to one `FSTCompiler` would have produced. See
+`docs/parity.md`'s FST row for the full detail.
 
 ## Generators
 
