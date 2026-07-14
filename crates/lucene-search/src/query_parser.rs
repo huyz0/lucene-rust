@@ -96,10 +96,32 @@
 //! tracked during the initial scan, not by re-inspecting the escaped text
 //! afterward.
 //!
+//! **Numeric range queries**: `field:[min TO max]` (task #64's addition) --
+//! an inclusive `i64` range, parsed into [`Clause::PointsRange`]. Either
+//! bound may be `*` for an open end (mapped to `i64::MIN`/`i64::MAX`,
+//! matching real Lucene's own unbounded-range convention), and either bound
+//! may be a negative decimal integer (e.g. `field:[-100 TO 0]`). The `TO`
+//! keyword is matched case-sensitively (real classic `QueryParser`'s grammar
+//! requires uppercase `TO` too). **Parsing only**: the resulting
+//! [`crate::query::PointsRangeQuery`] is not yet resolved against a segment
+//! by anything in this crate -- see that struct's doc comment for the exact
+//! deferred scope.
+//!
 //! ## Deliberately deferred (parse error, not silent misinterpretation)
 //!
-//! - **Range queries** (`field:[a TO b]`, `field:{a TO b}`) -- rejected with
-//!   [`ParseError::UnsupportedSyntax`] at the `[`/`{` character.
+//! - **Exclusive-bound range queries** (`field:{a TO b}`) -- rejected with
+//!   [`ParseError::UnsupportedSyntax`] at the `{` character. A mixed
+//!   `field:[a TO b}` opens as an inclusive range (the `[`) but then fails
+//!   the closing-bracket check with [`ParseError::InvalidRangeBound`] at the
+//!   `}` -- still a clean, typed error, just a different variant than the
+//!   pure `{...}` case, since the parser has already committed to the
+//!   inclusive-range code path by the time it sees the mismatched closer.
+//!   Only the fully-inclusive `[a TO b]` shape is actually supported.
+//! - **String/date range queries** (`field:[aaa TO zzz]` over a
+//!   non-numeric/`TermRangeQuery`-shaped field) -- a `[min TO max]` whose
+//!   bounds don't parse as a plain (optionally negative) decimal integer or
+//!   `*` is a [`ParseError::InvalidRangeBound`], not a fallback to string
+//!   comparison.
 //! - **`AND`/`OR`/`NOT` as real operators with precedence rules** -- not
 //!   implemented at all (see above); those words parse as ordinary terms.
 //! - **Boosting a group's boost multiplying inner boosts / any boost
@@ -115,8 +137,8 @@
 //!   `QueryParserBase.escape` doesn't even round-trip for parsing).
 
 use crate::query::{
-    BooleanQuery, BoostQuery, Clause, FuzzyQuery, PhraseQuery, PrefixQuery, RegexpQuery, TermQuery,
-    WildcardQuery,
+    BooleanQuery, BoostQuery, Clause, FuzzyQuery, PhraseQuery, PointsRangeQuery, PrefixQuery,
+    RegexpQuery, TermQuery, WildcardQuery,
 };
 use lucene_analysis::Analyzer;
 
@@ -154,9 +176,15 @@ pub enum ParseError {
     #[error("invalid boost at byte {0}: {1}")]
     InvalidBoost(usize, String),
     /// Syntax this module explicitly does not support (see the module doc's
-    /// "deliberately deferred" list) -- e.g. `[`/`{` range-query syntax.
+    /// "deliberately deferred" list) -- e.g. exclusive (`{`) or mixed range
+    /// syntax.
     #[error("unsupported syntax at byte {0}: {1}")]
     UnsupportedSyntax(usize, String),
+    /// A `field:[min TO max]` range bound wasn't `*` and didn't parse as a
+    /// plain (optionally negative) decimal `i64`, or the `TO` keyword was
+    /// missing/misspelled, or the range wasn't closed by a matching `]`.
+    #[error("invalid range at byte {0}: {1}")]
+    InvalidRangeBound(usize, String),
     /// A character appeared where no valid token could start (e.g. a bare
     /// `:` with no preceding field name, or a stray `~`/`^` with no
     /// preceding term).
@@ -396,9 +424,17 @@ impl<'a> Parser<'a> {
         match self.peek() {
             None => Err(ParseError::UnexpectedEnd("an atom")),
             Some('(') => self.parse_group(),
-            Some('[') | Some('{') => Err(ParseError::UnsupportedSyntax(
+            Some('[') => {
+                let start = self.pos;
+                let field = self
+                    .default_field
+                    .map(str::to_string)
+                    .ok_or(ParseError::MissingField(start))?;
+                self.parse_range(&field)
+            }
+            Some('{') => Err(ParseError::UnsupportedSyntax(
                 self.pos,
-                "range queries ([a TO b] / {a TO b}) are not supported".to_string(),
+                "exclusive range queries ({a TO b}) are not supported".to_string(),
             )),
             Some(')') => Err(ParseError::UnexpectedChar(self.pos, ')')),
             _ => self.parse_term(),
@@ -437,13 +473,93 @@ impl<'a> Parser<'a> {
         match self.peek() {
             Some('"') => self.parse_phrase(&field),
             Some('/') => self.parse_regexp(&field),
-            Some('[') | Some('{') => Err(ParseError::UnsupportedSyntax(
+            Some('[') => self.parse_range(&field),
+            Some('{') => Err(ParseError::UnsupportedSyntax(
                 self.pos,
-                "range queries ([a TO b] / {a TO b}) are not supported".to_string(),
+                "exclusive range queries ({a TO b}) are not supported".to_string(),
             )),
             None => Err(ParseError::UnexpectedEnd("a term after ':'")),
             _ => self.parse_wordterm(&field),
         }
+    }
+
+    /// `'[' bound 'TO' bound ']'` -- an inclusive numeric range, called with
+    /// `self.pos` at the opening `[`. `bound` is `*` (open end) or an
+    /// optionally-negative decimal `i64`; see the module doc comment for the
+    /// exact supported/deferred syntax.
+    fn parse_range(&mut self, field: &str) -> Result<Clause, ParseError> {
+        let open_pos = self.pos;
+        self.advance(); // consume '['
+        self.skip_ws();
+        let min = self.parse_range_bound(i64::MIN, open_pos)?;
+        self.skip_ws();
+        self.expect_keyword("TO", open_pos)?;
+        self.skip_ws();
+        let max = self.parse_range_bound(i64::MAX, open_pos)?;
+        self.skip_ws();
+        if self.peek() != Some(']') {
+            return Err(ParseError::InvalidRangeBound(
+                open_pos,
+                "expected closing ']'".to_string(),
+            ));
+        }
+        self.advance(); // consume ']'
+        Ok(Clause::PointsRange(PointsRangeQuery::new(field, min, max)))
+    }
+
+    /// One `[`/`{`-range bound: `*` (mapped to `open_value`) or a plain,
+    /// optionally-negative, decimal `i64`.
+    fn parse_range_bound(&mut self, open_value: i64, open_pos: usize) -> Result<i64, ParseError> {
+        let bound_start = self.pos;
+        if self.peek() == Some('*') {
+            self.advance();
+            return Ok(open_value);
+        }
+        if self.peek() == Some('-') {
+            self.advance();
+        }
+        let digits_start = self.pos;
+        while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
+            self.pos += 1;
+        }
+        if self.pos == digits_start {
+            let text: String = self.chars[bound_start..self.pos].iter().collect();
+            return Err(ParseError::InvalidRangeBound(
+                open_pos,
+                format!("expected a number or '*', found {text:?}"),
+            ));
+        }
+        let text: String = self.chars[bound_start..self.pos].iter().collect();
+        text.parse::<i64>().map_err(|_| {
+            ParseError::InvalidRangeBound(open_pos, format!("invalid integer {text:?}"))
+        })
+    }
+
+    /// Consumes exactly the literal `keyword` (case-sensitive), preceded and
+    /// followed by nothing (caller handles surrounding whitespace) --
+    /// requires a word boundary after it (not immediately followed by
+    /// another identifier char) so `TOxyz` isn't mistaken for `TO`.
+    fn expect_keyword(&mut self, keyword: &str, open_pos: usize) -> Result<(), ParseError> {
+        let start = self.pos;
+        for expected in keyword.chars() {
+            if self.peek() != Some(expected) {
+                let found: String = self.chars[start..self.pos.min(self.chars.len())]
+                    .iter()
+                    .collect();
+                return Err(ParseError::InvalidRangeBound(
+                    open_pos,
+                    format!("expected {keyword:?}, found {found:?}"),
+                ));
+            }
+            self.advance();
+        }
+        if matches!(self.peek(), Some(c) if !c.is_whitespace()) {
+            return Err(ParseError::InvalidRangeBound(
+                open_pos,
+                format!("expected {keyword:?} followed by whitespace"),
+            ));
+        }
+        Ok(())
     }
 
     /// Looks ahead for `identifier ':'` and, if found, consumes it and
@@ -904,9 +1020,144 @@ mod tests {
     }
 
     #[test]
-    fn range_query_syntax_is_unsupported() {
-        let err = parse_query("body:[a TO b]", None).unwrap_err();
+    fn exclusive_range_query_syntax_is_unsupported() {
+        let err = parse_query("body:{0 TO 100}", None).unwrap_err();
         assert!(matches!(err, ParseError::UnsupportedSyntax(_, _)));
+    }
+
+    #[test]
+    fn bare_exclusive_range_query_syntax_is_unsupported() {
+        // The bare-atom `{` arm (no `field:` prefix) is a separate code path
+        // from `parse_term`'s -- exercise it directly, not just the
+        // field-prefixed sibling above.
+        let err = parse_query("{0 TO 100}", Some("body")).unwrap_err();
+        assert!(matches!(err, ParseError::UnsupportedSyntax(_, _)));
+    }
+
+    #[test]
+    fn non_numeric_range_bound_is_a_clean_error() {
+        let err = parse_query("body:[a TO b]", None).unwrap_err();
+        assert!(matches!(err, ParseError::InvalidRangeBound(_, _)));
+    }
+
+    #[test]
+    fn inclusive_numeric_range_query() {
+        let clause = parse_query("body:[0 TO 100]", None).unwrap();
+        assert_eq!(
+            clause,
+            Clause::PointsRange(crate::query::PointsRangeQuery::new("body", 0, 100))
+        );
+    }
+
+    #[test]
+    fn inclusive_numeric_range_query_with_negative_bounds() {
+        let clause = parse_query("body:[-100 TO -1]", None).unwrap();
+        assert_eq!(
+            clause,
+            Clause::PointsRange(crate::query::PointsRangeQuery::new("body", -100, -1))
+        );
+    }
+
+    #[test]
+    fn range_query_with_star_on_low_end() {
+        let clause = parse_query("body:[* TO 100]", None).unwrap();
+        assert_eq!(
+            clause,
+            Clause::PointsRange(crate::query::PointsRangeQuery::new("body", i64::MIN, 100))
+        );
+    }
+
+    #[test]
+    fn range_query_with_star_on_high_end() {
+        let clause = parse_query("body:[0 TO *]", None).unwrap();
+        assert_eq!(
+            clause,
+            Clause::PointsRange(crate::query::PointsRangeQuery::new("body", 0, i64::MAX))
+        );
+    }
+
+    #[test]
+    fn range_query_with_star_on_both_ends() {
+        let clause = parse_query("body:[* TO *]", None).unwrap();
+        assert_eq!(
+            clause,
+            Clause::PointsRange(crate::query::PointsRangeQuery::new(
+                "body",
+                i64::MIN,
+                i64::MAX
+            ))
+        );
+    }
+
+    #[test]
+    fn range_query_uses_default_field_when_bare() {
+        let clause = parse_query("[0 TO 100]", Some("body")).unwrap();
+        assert_eq!(
+            clause,
+            Clause::PointsRange(crate::query::PointsRangeQuery::new("body", 0, 100))
+        );
+    }
+
+    #[test]
+    fn range_query_missing_to_keyword_is_a_clean_error() {
+        let err = parse_query("body:[0 100]", None).unwrap_err();
+        assert!(matches!(err, ParseError::InvalidRangeBound(_, _)));
+    }
+
+    #[test]
+    fn range_query_lowercase_to_is_not_recognized() {
+        let err = parse_query("body:[0 to 100]", None).unwrap_err();
+        assert!(matches!(err, ParseError::InvalidRangeBound(_, _)));
+    }
+
+    #[test]
+    fn range_query_missing_closing_bracket_is_a_clean_error() {
+        let err = parse_query("body:[0 TO 100", None).unwrap_err();
+        assert!(matches!(err, ParseError::InvalidRangeBound(_, _)));
+    }
+
+    #[test]
+    fn range_query_missing_min_bound_is_a_clean_error() {
+        let err = parse_query("body:[ TO 100]", None).unwrap_err();
+        assert!(matches!(err, ParseError::InvalidRangeBound(_, _)));
+    }
+
+    #[test]
+    fn range_query_missing_max_bound_is_a_clean_error() {
+        let err = parse_query("body:[0 TO ]", None).unwrap_err();
+        assert!(matches!(err, ParseError::InvalidRangeBound(_, _)));
+    }
+
+    #[test]
+    fn range_query_non_numeric_max_bound_is_a_clean_error() {
+        let err = parse_query("body:[0 TO a]", None).unwrap_err();
+        assert!(matches!(err, ParseError::InvalidRangeBound(_, _)));
+    }
+
+    #[test]
+    fn range_query_bound_overflowing_i64_is_a_clean_error() {
+        let err = parse_query("body:[99999999999999999999 TO 100]", None).unwrap_err();
+        assert!(matches!(err, ParseError::InvalidRangeBound(_, _)));
+    }
+
+    #[test]
+    fn range_query_to_keyword_without_trailing_word_boundary_is_a_clean_error() {
+        // "TOxyz" must not be accepted as the "TO" keyword just because it
+        // starts with the right two characters.
+        let err = parse_query("body:[0 TOxyz 100]", None).unwrap_err();
+        assert!(matches!(err, ParseError::InvalidRangeBound(_, _)));
+    }
+
+    #[test]
+    fn range_query_boosted() {
+        let clause = parse_query("body:[0 TO 100]^2", None).unwrap();
+        assert_eq!(
+            clause,
+            Clause::Boost(Box::new(BoostQuery::new(
+                crate::query::PointsRangeQuery::new("body", 0, 100),
+                2.0
+            )))
+        );
     }
 
     #[test]
@@ -979,9 +1230,9 @@ mod tests {
     }
 
     #[test]
-    fn bare_range_query_syntax_without_field_prefix_is_unsupported() {
-        let err = parse_query("[a TO b]", Some("body")).unwrap_err();
-        assert!(matches!(err, ParseError::UnsupportedSyntax(_, _)));
+    fn bare_range_query_syntax_without_field_prefix_and_no_default_field_is_missing_field() {
+        let err = parse_query("[0 TO 100]", None).unwrap_err();
+        assert!(matches!(err, ParseError::MissingField(_)));
     }
 
     #[test]

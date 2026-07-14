@@ -274,6 +274,21 @@ pub enum Error {
     /// region) -- the points-range analog of [`Error::DocValues`].
     #[error(transparent)]
     Points(#[from] lucene_codecs::points::Error),
+    /// A [`Clause::PointsRange`] (task #64's `field:[min TO max]` query-parser
+    /// syntax) reached [`resolve_clause_docs`]/[`clause_scores`]/
+    /// [`crate::explain::explain_clause`] -- this crate parses that syntax
+    /// into a structured clause but does not yet resolve it against a
+    /// segment (see [`crate::query::PointsRangeQuery`]'s doc comment: this
+    /// clause is deliberately not wired to
+    /// [`points_query::search_points_range`] yet, unlike every other leaf
+    /// `Clause` variant). Surfaced as an explicit error rather than silently
+    /// matching nothing, since "parsed but unexecutable" is a caller-visible
+    /// gap, not an empty-result query.
+    #[error(
+        "Clause::PointsRange is parsed but not yet executable (field {0:?}); \
+         see PointsRangeQuery's doc comment"
+    )]
+    UnexecutablePointsRange(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -624,6 +639,7 @@ fn resolve_clause_docs(
         Clause::Fuzzy(query) => fuzzy_doc_ids(fields, doc_in, live_docs, query),
         Clause::Regexp(query) => regexp_doc_ids(fields, doc_in, live_docs, query),
         Clause::Span(query) => span_doc_ids(fields, doc_in, pos_in, pay_in, live_docs, query),
+        Clause::PointsRange(query) => Err(Error::UnexecutablePointsRange(query.field.clone())),
     }
 }
 
@@ -1002,6 +1018,7 @@ fn clause_scores(
                 .map(|doc_id| (doc_id, 1.0_f32))
                 .collect())
         }
+        Clause::PointsRange(query) => Err(Error::UnexecutablePointsRange(query.field.clone())),
     }
 }
 
@@ -2163,6 +2180,41 @@ mod tests {
             .with_must([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")]);
         search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &q, &mut c).unwrap();
         assert_eq!(c.docs, vec![0]);
+    }
+
+    #[test]
+    fn points_range_clause_is_parsed_but_not_yet_executable_in_match() {
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let mut c = VecCollector::default();
+        let q = BooleanQuery::new().with_must([Clause::PointsRange(
+            crate::query::PointsRangeQuery::new("body", 0, 100),
+        )]);
+        let err = search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &q, &mut c)
+            .unwrap_err();
+        assert!(matches!(err, Error::UnexecutablePointsRange(field) if field == "body"));
+    }
+
+    #[test]
+    fn points_range_clause_is_not_yet_executable_in_scored_match() {
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let mut c = collector::TopDocsCollector::new(10);
+        let q = BooleanQuery::new().with_must([Clause::PointsRange(
+            crate::query::PointsRangeQuery::new("body", 0, 100),
+        )]);
+        let err = search_boolean_query_scored(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            None,
+            None,
+            &q,
+            None,
+            &mut c,
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::UnexecutablePointsRange(field) if field == "body"));
     }
 
     #[test]

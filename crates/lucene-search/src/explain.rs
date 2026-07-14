@@ -176,6 +176,9 @@ pub fn explain_clause(
                 .contains(&doc);
             Ok(explain_flat_match(matched))
         }
+        Clause::PointsRange(query) => {
+            Err(crate::Error::UnexecutablePointsRange(query.field.clone()))
+        }
     }
 }
 
@@ -734,6 +737,16 @@ mod tests {
         fn open_pay(&self) -> PayInput<'_> {
             PayInput::open(&self.pay, &self.id, &self.suffix).expect("open .pay")
         }
+    }
+
+    #[test]
+    fn points_range_clause_is_not_yet_explainable() {
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let clause = Clause::PointsRange(crate::query::PointsRangeQuery::new("body", 0, 100));
+        let err = explain_clause(&fields, doc_in.as_ref(), None, None, None, &clause, 0, None)
+            .unwrap_err();
+        assert!(matches!(err, crate::Error::UnexecutablePointsRange(field) if field == "body"));
     }
 
     #[test]

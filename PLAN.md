@@ -3084,6 +3084,50 @@ warnings` clean. New code (`apply_bidirectional`, `build_bidirectional_map`,
 `docs/parity.md`'s updated `SynonymFilter` row for the exact scope
 statement.
 
+**Progress (task #64): query-parser numeric range syntax.**
+`crates/lucene-search/src/query_parser.rs` now parses classic
+`QueryParser`'s `field:[min TO max]` range syntax -- inclusive both ends
+only, into a new leaf `crate::query::Clause::PointsRange(PointsRangeQuery)`
+(new struct in `query.rs`: `field: String`, `min: i64`, `max: i64`). Either
+bound may be `*` (open end, mapped to `i64::MIN`/`i64::MAX`, matching real
+Lucene's own unbounded-range convention) or a plain, optionally-negative
+decimal integer. `{min TO max}` (exclusive) and any mixed `[`/`{` bracket
+combination are still rejected with `ParseError::UnsupportedSyntax`, same
+as before this task -- **inclusive-only is the deliberate scope cut**,
+matching the task's own "simpler defensible subset" guidance. A malformed
+bound (non-numeric, missing/misspelled `TO`, missing closing `]`) is a new
+`ParseError::InvalidRangeBound`, not a panic or silently-wrong clause.
+**Parsing only -- execution deliberately not wired in this task.** Every
+exhaustive `match Clause` in `lib.rs` (`resolve_clause_docs`,
+`clause_scores`) and `explain.rs` (`explain_clause`) gained a
+`Clause::PointsRange` arm, but it returns a new
+`Error::UnexecutablePointsRange(field)` rather than resolving against a
+segment -- there is no `resolve_clause_docs`/`PointsReader` plumbing yet to
+call the already-existing `crate::points_query::search_points_range`
+(single-segment BKD range resolver, task #81) from inside these
+`BlockTreeFields`-only functions; that wiring (reconstructing a segment's
+`PointsReader` alongside the term-dictionary reader already opened, plus
+packing an `i64` bound into `search_points_range`'s big-endian
+`min_packed`/`max_packed` convention) is left as a clean, well-scoped
+follow-on rather than half-done here. Tests: 16 new in
+`query_parser.rs::tests` (inclusive range with plain bounds, negative
+bounds, `*` on low/high/both ends, bare range using the default field, a
+boosted range, missing default field on a bare range, and every malformed
+shape -- non-numeric bound, missing `TO`, lowercase `to`, missing closing
+`]`, missing min bound, exclusive `{}` still rejected) plus 2 new in
+`lib.rs::tests` and 1 new in `explain.rs::tests` pinning the new
+`Error::UnexecutablePointsRange` path through `search_boolean_query`,
+`search_boolean_query_scored`, and `explain_clause`. `cargo test -p
+lucene-search`: 68 `query_parser` unit tests pass (up from 51), 481 total
+lib tests pass (up from 461), all fixture-based integration test binaries
+unaffected. `cargo fmt --all` and `cargo clippy --workspace --all-targets
+-- -D warnings` clean (the new `Clause::PointsRange` variant required a new
+match arm in two `lucene-ffi` exhaustive filters too --
+`crates/lucene-ffi/src/explain.rs` and `crates/lucene-ffi/src/query.rs` --
+both updated to pass it through as `None`, same as every other non-`Term`
+clause those filters already skip). See `docs/parity.md`'s updated
+`queryparser/classic/QueryParser` row for the exact scope statement.
+
 3. Indexing chain: `IndexWriter`, DWPT-per-thread with in-memory hash (bytes → postings
    builder mirroring `BytesRefHash` + parallel arrays), flush-by-RAM accounting,
    `flush()` → segment.

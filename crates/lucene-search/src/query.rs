@@ -250,6 +250,45 @@ impl RegexpQuery {
     }
 }
 
+/// `PointRangeQuery`-equivalent (`org.apache.lucene.search.PointRangeQuery`),
+/// task #64's addition: a field plus an inclusive `[min, max]` `i64` range --
+/// this port's [`crate::query_parser`] produces this from `field:[min TO
+/// max]` syntax. **Parsing-only for now**: nothing in this crate resolves a
+/// `PointsRange` clause against an actual segment yet (see
+/// [`crate::resolve_clause_docs`]'s doc comment and `docs/parity.md` for the
+/// exact deferred scope) -- unlike every other leaf `Clause` variant, there
+/// is deliberately no `_doc_ids` resolver function paired with this one yet.
+/// The eventual resolver is expected to compose with the already-existing
+/// [`crate::points_query::search_points_range`] (this struct's `min`/`max`
+/// are exactly what that function's `min_packed`/`max_packed` need once
+/// encoded via the field's numeric point encoding, e.g.
+/// `lucene_codecs::points`' big-endian-flipped-sign-bit convention for
+/// `LongPoint`), not reimplemented here.
+///
+/// Only `i64`-typed bounds are supported (matching this port's existing
+/// `LongPoint`/`search_points_range` numeric convention) -- `String`/date
+/// range queries are out of scope for this struct.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PointsRangeQuery {
+    pub field: String,
+    /// Inclusive lower bound. [`crate::query_parser`]'s `*` (open-ended)
+    /// syntax on the low end maps to `i64::MIN`.
+    pub min: i64,
+    /// Inclusive upper bound. [`crate::query_parser`]'s `*` (open-ended)
+    /// syntax on the high end maps to `i64::MAX`.
+    pub max: i64,
+}
+
+impl PointsRangeQuery {
+    pub fn new(field: impl Into<String>, min: i64, max: i64) -> Self {
+        Self {
+            field: field.into(),
+            min,
+            max,
+        }
+    }
+}
+
 /// `SpanQuery`-equivalent (`org.apache.lucene.queries.spans.SpanQuery` and its
 /// three concrete subclasses this port covers: `SpanTermQuery`,
 /// `SpanNearQuery`, `SpanOrQuery` — task #55's addition), a genuinely
@@ -428,6 +467,11 @@ pub enum Clause {
     /// [`SpanQuery`]'s doc comment for the exact span-matching semantics and
     /// this port's scope decision.
     Span(SpanQuery),
+    /// A leaf `PointRangeQuery` (task #64's addition) -- parsing-only for
+    /// now, see [`PointsRangeQuery`]'s doc comment for the exact deferred
+    /// execution scope; no `resolve_clause_docs`/`clause_scores` arm exists
+    /// for this variant yet.
+    PointsRange(PointsRangeQuery),
 }
 
 impl Clause {
@@ -532,6 +576,12 @@ impl From<FuzzyQuery> for Clause {
 impl From<RegexpQuery> for Clause {
     fn from(query: RegexpQuery) -> Self {
         Clause::Regexp(query)
+    }
+}
+
+impl From<PointsRangeQuery> for Clause {
+    fn from(query: PointsRangeQuery) -> Self {
+        Clause::PointsRange(query)
     }
 }
 

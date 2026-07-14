@@ -380,7 +380,8 @@ pub unsafe extern "C" fn ffi_explain_boolean_query(
                 | Clause::Prefix(_)
                 | Clause::Fuzzy(_)
                 | Clause::Regexp(_)
-                | Clause::Span(_) => None,
+                | Clause::Span(_)
+                | Clause::PointsRange(_) => None,
             })
             .collect();
         field_names.sort_unstable();
