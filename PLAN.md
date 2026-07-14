@@ -2489,6 +2489,86 @@ docs are unchanged and the rolled-back docs never appear), and
 field configuration and merge-policy config all still work correctly on a
 commit made after a rollback).
 
+**Follow-up task: `IndexWriter` two-phase commit
+(`prepare_commit()`/`finish_commit()`).** Splits `commit()`'s single call into
+`IndexWriter::prepare_commit(&mut self) -> Result<()>` and
+`IndexWriter::finish_commit(&mut self) -> Result<&SegmentInfos>`
+(`crates/lucene-index/src/index_writer.rs`) -- real Lucene's
+`IndexWriter.prepareCommit()`/`commit()` split. `commit()` itself is now just
+`prepare_commit()` immediately followed by `finish_commit()`; every existing
+caller is unchanged and every pre-existing `commit()` test still passes
+unmodified.
+
+`prepare_commit()` does everything `commit()` used to do -- flush
+`pending_docs` via `flush_stored_only_segment`, build and write real
+postings/term-vector/doc-values files for the flushed segment -- **except**
+the final `segment_infos::write` call, and stashes the resulting in-memory
+`SegmentInfos` (bumped generation/version, new segment appended if any) in a
+new `prepared_commit: Option<SegmentInfos>` writer field. `finish_commit()`
+takes that stashed value (`Err(Error::NoPreparedCommit)` if none is pending)
+and calls `segment_infos::write` -- the one call that actually writes the
+next `segments_N` -- then runs auto-merge exactly as `commit()` always has.
+
+**Honest scope statement, read this before assuming any crash-safety**: real
+Lucene's `prepareCommit()`/`SegmentInfos.prepareCommit` write a
+`pending_segments_N` file, durable on disk, plus enough state that a *new
+process* opening the index later can discover a prepared-but-uncommitted
+generation and roll it forward or discard it -- that is what makes real
+two-phase commit useful for cross-process 2PC coordinators. This port's
+`crate::segment_infos::write` has no `pending_segments_N` equivalent and no
+`segments.gen` pointer file; there is exactly one kind of `segments_N` file,
+and "what's current" is entirely defined by
+`lucene_store::directory::last_commit_generation`/`segment_infos::read_latest`
+scanning for the highest-numbered `segments_N` that exists. Given that
+constraint, the split implemented here is the most defensible slice
+available without a much larger change to `segment_infos.rs`'s on-disk
+format:
+
+- **What genuinely differs, caller-visibly:** after `prepare_commit()`
+  returns, the new segment's data files are durably on disk and fsynced
+  (via the same `flush_stored_only_segment`/`write_postings_files`/etc calls
+  `commit()` always used), but *no* `segments_N` references them yet -- a
+  fresh `IndexWriter::open`/`segment_infos::read_latest` against the same
+  `dir` still returns the previous commit, completely unchanged, until
+  `finish_commit()` runs. This is a real, observable durability/visibility
+  split, not a no-op relabeling of `commit()`.
+- **What does NOT survive, unlike real Lucene:** `prepared_commit` lives
+  purely in the live `IndexWriter` Rust value's memory. If the process
+  crashes or the value is simply dropped between `prepare_commit()` and
+  `finish_commit()`, the prepared state is gone with **no on-disk trace** a
+  later `IndexWriter::open` (in this process or any other) can discover, roll
+  forward, or explicitly clean up -- the orphaned segment files are just
+  inert bytes no `segments_N` ever points at. There is no cross-process or
+  cross-restart handoff either: `prepare_commit()` on one `IndexWriter` value
+  and `finish_commit()` on another is not supported.
+
+In short: this is a real split in *when a generation becomes visible*,
+useful for "flush everything now, but don't publish until some other
+in-process step also succeeds," within one live `IndexWriter` in one
+process -- **not** a crash-recoverable two-phase-commit primitive, and the
+doc comments on both methods say so explicitly rather than implying Lucene
+parity that doesn't exist here.
+
+Tests added (`crates/lucene-index/src/index_writer.rs`):
+`prepare_commit_then_finish_commit_matches_commit_directly` (two directories
+fed identical pending docs, one via `commit()` and one via
+`prepare_commit()` + `finish_commit()`, asserting byte-identical
+`SegmentInfos`/readable documents, and that the prepared generation is
+invisible to `last_commit_generation` before `finish_commit()` runs),
+`prepare_commit_without_finish_commit_leaves_the_previous_commit_current`
+(simulated crash-before-activation: a fresh `read_latest` and the live
+writer's own `segment_infos()` both still show only the prior commit),
+`finish_commit_without_a_prior_prepare_commit_is_an_error`,
+`finish_commit_twice_in_a_row_is_an_error_the_second_time`,
+`calling_prepare_commit_again_before_finish_commit_replaces_the_pending_prepared_state`
+(now also asserting the reused segment name directly, and that only one
+segment ends up current -- added during review, since the original pass
+only checked the final activated doc set, not the specific
+same-name-overwrite claim its own doc comment made), and
+`prepare_commit_and_finish_commit_with_no_pending_documents_is_a_valid_no_op`
+(the zero-pending-docs path through the split API, mirroring `commit()`'s
+own no-op-content-commit case).
+
 1. `lucene-analysis`: `TokenStream` as an iterator-of-token-structs (skip Java's
    AttributeSource reflection design entirely — a plain
    `Token { bytes, position_increment, offset, ... }` struct), StandardTokenizer via

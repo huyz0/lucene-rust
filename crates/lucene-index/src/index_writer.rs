@@ -81,12 +81,14 @@
 //!   term (it isn't a segment yet), matching real Lucene's own
 //!   `BufferedUpdates` timing (a delete only ever resolves against segments
 //!   that exist *at delete time*).
-//! - **No two-phase commit (`prepareCommit`/`commit`/`rollback`)** -- each
-//!   [`IndexWriter::commit`] is a single, already-atomic
-//!   [`crate::segment_infos::write`] call (see that function's own doc
-//!   comment on why it bakes `Directory::sync` in); there is no separate
-//!   "prepare" step to roll back before the final rename the way real
-//!   Lucene's two-phase commit protocol has.
+//! - **[`IndexWriter::rollback`] and a scoped-down [`IndexWriter::prepare_commit`]/
+//!   [`IndexWriter::finish_commit`] two-phase commit split are now
+//!   implemented** -- see those methods' own doc comments for exactly what
+//!   guarantee each one does and does not provide (in particular,
+//!   `prepare_commit`/`finish_commit` is explicitly **not** crash-safe: the
+//!   prepared state lives only in this writer's own in-memory field, with no
+//!   on-disk marker a crashed process could discover and roll forward or
+//!   back from, unlike real Lucene's `prepareCommit`/`commit` protocol).
 //!
 //! # Segment/commit-file lifecycle
 //!
@@ -190,6 +192,11 @@ pub enum Error {
          pending doc, but doc {1} has a {2} value"
     )]
     NonNumericDocValue(String, usize, &'static str),
+    #[error(
+        "finish_commit: no prepared commit pending -- call prepare_commit() first \
+         (or use commit(), which calls both)"
+    )]
+    NoPreparedCommit,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -207,6 +214,15 @@ pub struct IndexWriter<'d> {
     postings_field: Option<PostingsFieldConfig>,
     term_vector_field: Option<TermVectorFieldConfig>,
     doc_values_field: Option<DocValuesFieldConfig>,
+    /// Set by [`IndexWriter::prepare_commit`], consumed by
+    /// [`IndexWriter::finish_commit`] -- see [`IndexWriter::prepare_commit`]'s
+    /// doc comment for exactly what "prepared" does and does not mean on
+    /// this port's on-disk format (in short: the *segment* files it flushes
+    /// are already durable and synced when this is `Some`, but the
+    /// `segments_N` commit file that would make them discoverable to a
+    /// fresh [`IndexWriter::open`]/reader has deliberately not been written
+    /// yet).
+    prepared_commit: Option<SegmentInfos>,
 }
 
 /// One field this writer has been opted into also indexing real postings
@@ -276,6 +292,7 @@ impl<'d> IndexWriter<'d> {
             postings_field: None,
             term_vector_field: None,
             doc_values_field: None,
+            prepared_commit: None,
         })
     }
 
@@ -587,7 +604,88 @@ impl<'d> IndexWriter<'d> {
     /// call fail with `Err` and leaves `dir`/`pending_docs`/`segment_infos`
     /// completely unchanged, exactly like [`IndexWriter::update_document`]'s
     /// own atomicity guarantee -- never a partially-written segment.
+    ///
+    /// Equivalent to [`IndexWriter::prepare_commit`] immediately followed by
+    /// [`IndexWriter::finish_commit`] -- kept as one call for every caller
+    /// that doesn't need the two-phase split (see those two methods' own
+    /// doc comments for what "two-phase" honestly means on this port's
+    /// on-disk format).
     pub fn commit(&mut self) -> Result<&SegmentInfos> {
+        self.prepare_commit()?;
+        self.finish_commit()
+    }
+
+    /// The file-writing half of a real two-phase commit, port of real
+    /// Lucene's `IndexWriter.prepareCommit()`: does every single thing
+    /// [`IndexWriter::commit`] used to do *except* the final
+    /// [`crate::segment_infos::write`] call that actually produces the next
+    /// `segments_N` -- flushes `pending_docs` (if any) to a brand-new
+    /// segment via [`flush_stored_only_segment`], builds and writes that
+    /// segment's postings/term-vector/doc-values files exactly as
+    /// [`IndexWriter::commit`] always has, and stashes the resulting
+    /// in-memory [`SegmentInfos`] (bumped generation/version, new segment
+    /// appended) in `self.prepared_commit` for [`IndexWriter::finish_commit`]
+    /// to pick up.
+    ///
+    /// # What "prepared" means on this port's on-disk format -- read before
+    /// relying on this for crash safety
+    ///
+    /// Real Lucene's `prepareCommit()`/`commit()` split exists so a caller
+    /// (e.g. a 2-phase-commit coordinator across several indices) can get
+    /// every byte durably on disk, then decide moments later whether to
+    /// activate or roll back -- and, critically, that decision itself
+    /// survives a crash: Lucene's `SegmentInfos.prepareCommit` writes a
+    /// `pending_segments_N` file plus enough state that a *new* process
+    /// opening the index afterward can tell a prepared-but-uncommitted
+    /// generation was left behind and roll it forward or clean it up.
+    ///
+    /// This port's [`crate::segment_infos::write`] has no `pending_segments_N`
+    /// equivalent and no `segments.gen` pointer file -- there is exactly one
+    /// kind of `segments_N` file, and [`lucene_store::directory::last_commit_generation`]/
+    /// [`crate::segment_infos::read_latest`] (what every fresh
+    /// [`IndexWriter::open`] uses to find "the current commit") work by
+    /// scanning for the highest-numbered `segments_N` already present. That
+    /// means the *only* way to make a generation invisible to a fresh reader
+    /// is to never write its `segments_N` file at all -- which is exactly
+    /// what this method does, and exactly what makes the split honest rather
+    /// than cosmetic: after `prepare_commit()` returns, the new segment's
+    /// data files (`.fdt`/`.fdx`/`.tim`/`.tip`/`.tvd`/... as applicable) are
+    /// on disk and synced, but no `segments_N` references them yet, so
+    /// [`IndexWriter::open`]/[`crate::segment_infos::read_latest`] against
+    /// this same `dir` still return the previous commit, unchanged.
+    ///
+    /// What this does **not** provide, unlike real Lucene:
+    /// - **No crash-survivable "prepared" state.** `self.prepared_commit` is
+    ///   only ever in-memory. If this process crashes (or is simply dropped)
+    ///   after `prepare_commit()` and before `finish_commit()`, the prepared
+    ///   generation is lost completely -- there is no on-disk marker a new
+    ///   [`IndexWriter::open`] could discover, roll forward, or explicitly
+    ///   discard. The orphaned segment files are simply inert bytes no
+    ///   `segments_N` ever points at (harmless, but not "prepared" in the
+    ///   crash-recoverable sense).
+    /// - **No cross-process/cross-restart handoff.** `prepare_commit()` on
+    ///   one `IndexWriter` and `finish_commit()` on another (e.g. after a
+    ///   restart) is not supported -- `prepared_commit` lives on `self`.
+    ///
+    /// What it *does* honestly provide: calling `prepare_commit()` and later
+    /// `finish_commit()` genuinely defers the moment the new generation
+    /// becomes visible to fresh readers of `dir`, for as long as this same
+    /// `IndexWriter` value stays alive in this same process -- e.g. useful
+    /// for "flush everything now, but don't publish until this other
+    /// in-process step also succeeds."
+    ///
+    /// Calling `prepare_commit()` again while a previous prepared commit
+    /// hasn't been activated by [`IndexWriter::finish_commit`] overwrites
+    /// `self.prepared_commit` with the new one. This does **not** orphan a
+    /// second set of segment files on disk: `next_segment_name()`/
+    /// `self.segment_infos.counter` only advance inside
+    /// [`IndexWriter::finish_commit`], so a second `prepare_commit()` before
+    /// any `finish_commit()` reuses the exact same segment name/ID the first
+    /// one used, and every file writer here (`Directory::create_output`)
+    /// truncates on create -- the second prepare's bytes simply overwrite
+    /// the first's same-named files in place, rather than leaving two
+    /// distinct segments where only one is ever referenced.
+    pub fn prepare_commit(&mut self) -> Result<()> {
         let mut new_segment_infos = self.segment_infos.clone();
         new_segment_infos.generation += 1;
         new_segment_infos.version += 1;
@@ -657,6 +755,30 @@ impl<'d> IndexWriter<'d> {
             new_segment_infos.counter += 1;
             self.pending_docs.clear();
         }
+
+        self.prepared_commit = Some(new_segment_infos);
+        Ok(())
+    }
+
+    /// The activation half of a real two-phase commit, port of real
+    /// Lucene's `IndexWriter.commit()` when a `prepareCommit()` already ran
+    /// (real Lucene's `finishCommit`): writes the `segments_N` file for the
+    /// [`SegmentInfos`] [`IndexWriter::prepare_commit`] stashed in
+    /// `self.prepared_commit`, via the exact same
+    /// [`crate::segment_infos::write`] call [`IndexWriter::commit`] always
+    /// used -- this is the single call that actually makes the new
+    /// generation discoverable to a fresh [`IndexWriter::open`]/reader (see
+    /// [`IndexWriter::prepare_commit`]'s doc comment for why that one call is
+    /// exactly where "prepared" ends and "current" begins on this port's
+    /// on-disk format). Runs auto-merge afterward exactly as
+    /// [`IndexWriter::commit`] always has.
+    ///
+    /// Returns `Err(Error::NoPreparedCommit)` if no [`IndexWriter::prepare_commit`]
+    /// call is currently pending (nothing to activate) -- distinct from a
+    /// no-op, since silently succeeding here could hide a caller bug (calling
+    /// `finish_commit()` twice, or before ever calling `prepare_commit()`).
+    pub fn finish_commit(&mut self) -> Result<&SegmentInfos> {
+        let new_segment_infos = self.prepared_commit.take().ok_or(Error::NoPreparedCommit)?;
 
         segment_infos::write(&new_segment_infos, self.dir)?;
         self.segment_infos = new_segment_infos;
@@ -1534,6 +1656,163 @@ mod tests {
 
         let reopened = segment_infos::read_latest(&dir).unwrap();
         assert_eq!(reopened.generation, 1);
+    }
+
+    #[test]
+    fn prepare_commit_then_finish_commit_matches_commit_directly() {
+        // Two writers over two separate directories, fed the identical
+        // pending docs -- one calls `commit()`, the other calls
+        // `prepare_commit()` then `finish_commit()`. Their on-disk results
+        // (the returned `SegmentInfos` and every readable document) must be
+        // identical.
+        let fields = || vec![stored_only_field("id", 0)];
+
+        let tmp_a = tempdir("two-phase-direct");
+        let dir_a = FsDirectory::open(&tmp_a);
+        let mut writer_a = IndexWriter::open(&dir_a, fields(), "Lucene104", version()).unwrap();
+        writer_a.add_document(doc("a"));
+        writer_a.add_document(doc("b"));
+        let sis_a = writer_a.commit().unwrap().clone();
+
+        let tmp_b = tempdir("two-phase-split");
+        let dir_b = FsDirectory::open(&tmp_b);
+        let mut writer_b = IndexWriter::open(&dir_b, fields(), "Lucene104", version()).unwrap();
+        writer_b.add_document(doc("a"));
+        writer_b.add_document(doc("b"));
+        writer_b.prepare_commit().unwrap();
+        // Not yet visible: the prepared generation hasn't been activated.
+        assert_eq!(
+            lucene_store::directory::last_commit_generation(&dir_b.list_all().unwrap()),
+            -1
+        );
+        let sis_b = writer_b.finish_commit().unwrap().clone();
+
+        assert_eq!(sis_a.generation, sis_b.generation);
+        assert_eq!(sis_a.segments.len(), sis_b.segments.len());
+        assert_eq!(read_all_docs(&dir_a, &sis_a), read_all_docs(&dir_b, &sis_b));
+
+        let reopened_b = segment_infos::read_latest(&dir_b).unwrap();
+        assert_eq!(reopened_b.generation, sis_b.generation);
+        assert_eq!(read_all_docs(&dir_b, &reopened_b), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn prepare_commit_without_finish_commit_leaves_the_previous_commit_current() {
+        // Simulates "prepared but never activated" (e.g. a crash before
+        // `finish_commit()`): a fresh reader of `dir` must still see the
+        // prior commit, not the prepared-but-unpublished one -- this port
+        // provides no crash-recoverable "prepared" marker at all (see
+        // `prepare_commit`'s doc comment), so the only honest guarantee is
+        // that nothing changes until `finish_commit()` actually runs.
+        let tmp = tempdir("prepare-only");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+
+        writer.add_document(doc("a"));
+        writer.commit().unwrap();
+        let committed_generation = writer.segment_infos().generation;
+
+        writer.add_document(doc("b"));
+        writer.prepare_commit().unwrap();
+
+        // The new segment's files are on disk, but no segments_N points at
+        // them: a fresh open() still sees only the first commit.
+        let reopened = segment_infos::read_latest(&dir).unwrap();
+        assert_eq!(reopened.generation, committed_generation);
+        assert_eq!(read_all_docs(&dir, &reopened), vec!["a"]);
+
+        // `self.segment_infos` on the live writer is likewise untouched --
+        // only `finish_commit()` would update it.
+        assert_eq!(writer.segment_infos().generation, committed_generation);
+        assert_eq!(
+            writer.segment_infos().segments.len(),
+            reopened.segments.len()
+        );
+    }
+
+    #[test]
+    fn finish_commit_without_a_prior_prepare_commit_is_an_error() {
+        let tmp = tempdir("finish-without-prepare");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+
+        let err = writer.finish_commit().unwrap_err();
+        assert!(matches!(err, Error::NoPreparedCommit));
+    }
+
+    #[test]
+    fn finish_commit_twice_in_a_row_is_an_error_the_second_time() {
+        let tmp = tempdir("finish-twice");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+
+        writer.add_document(doc("a"));
+        writer.prepare_commit().unwrap();
+        writer.finish_commit().unwrap();
+
+        let err = writer.finish_commit().unwrap_err();
+        assert!(matches!(err, Error::NoPreparedCommit));
+    }
+
+    #[test]
+    fn calling_prepare_commit_again_before_finish_commit_replaces_the_pending_prepared_state() {
+        let tmp = tempdir("prepare-twice");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+
+        writer.add_document(doc("a"));
+        writer.prepare_commit().unwrap();
+        let first_segment_name = writer.prepared_commit.as_ref().unwrap().segments[0]
+            .segment_name
+            .clone();
+
+        // A second prepare_commit() (with a different pending set) replaces
+        // the first prepared state; finish_commit() activates only the
+        // latest one. Since next_segment_name()/segment_infos.counter only
+        // advance in finish_commit(), this reuses the SAME segment name as
+        // the first prepare -- the second prepare's file writes overwrite
+        // the first's in place (Directory::create_output truncates), rather
+        // than leaving two distinct segments on disk.
+        writer.add_document(doc("b"));
+        writer.prepare_commit().unwrap();
+        let second_segment_name = writer.prepared_commit.as_ref().unwrap().segments[0]
+            .segment_name
+            .clone();
+        assert_eq!(
+            first_segment_name, second_segment_name,
+            "a second prepare_commit() before finish_commit() must reuse the same segment name"
+        );
+
+        let sis = writer.finish_commit().unwrap().clone();
+
+        let reopened = segment_infos::read_latest(&dir).unwrap();
+        assert_eq!(reopened.generation, sis.generation);
+        assert_eq!(
+            reopened.segments.len(),
+            1,
+            "only one segment must be current"
+        );
+        assert_eq!(read_all_docs(&dir, &reopened), vec!["b"]);
+    }
+
+    #[test]
+    fn prepare_commit_and_finish_commit_with_no_pending_documents_is_a_valid_no_op() {
+        let tmp = tempdir("two-phase-empty-commit");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+
+        writer.prepare_commit().unwrap();
+        let sis = writer.finish_commit().unwrap().clone();
+        assert!(sis.segments.is_empty());
+
+        let reopened = segment_infos::read_latest(&dir).unwrap();
+        assert_eq!(reopened.generation, sis.generation);
+        assert!(reopened.segments.is_empty());
     }
 
     #[test]
