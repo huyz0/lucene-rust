@@ -2110,6 +2110,45 @@ constant-value/`bitsPerValue == 0` encoding still applies to the flattened
 array), and the empty-per-doc-value rejection path. See `docs/parity.md`'s
 updated row for the full accounting.
 
+**Progress (task #78): postings write side, single-field first cut.** New
+module `crates/lucene-codecs/src/postings_writer.rs::write_single_field`
+writes `.doc`/`.tim`/`.tip`/`.tmd` for exactly one field: one `.tim` block
+(single `SIGN_NO_CHILDREN` `.tip` root, no floor/multi-child trie), every
+term's `docFreq < BLOCK_SIZE` (256, the group-varint "tail block" shape
+only — no full `ForUtil`/`PForUtil` blocks), `IndexOptions::Docs`/
+`DocsAndFreqs` only (no positions/offsets/payloads, no `.pos`/`.pay`), and
+`docFreq == 1` pulsed into the term dictionary exactly like the real writer
+(no `.doc` bytes for a singleton). No read-side decode logic was
+reimplemented -- the writer only emits bytes, promoting a handful of
+previously-private format constants (`postings::DOC_CODEC`/
+`VERSION_CURRENT`, blocktree's codec-name/version/trie-sign constants) to
+`pub(crate)` so the writer references the exact same wire constants the
+reader checks, and promoting the pre-existing test-only `write_group_vints`
+encoder (`postings.rs`) to a real `pub(crate)` production function. **Not
+wired into `flush_stored_only_segment`/`IndexWriter` at all** -- this closes
+the "can this port's own code produce `.doc`/`.tim`/`.tip`/`.tmd` bytes the
+existing reader accepts" gap for one narrow shape, not the "is a document
+added via `IndexWriter` now searchable" gap (that still needs multi-field
+support, wiring into the segment flush path, and a `.si`/`.fnm` record that
+actually points at postings files, none of which this task touched).
+**Required end-to-end proof**: `crates/lucene-search/tests/
+postings_writer_round_trip.rs::term_query_finds_correct_docs_over_freshly_written_postings`
+writes a field with singleton and multi-doc terms, opens it via the
+existing unmodified `blocktree::open`/`postings::DocInput::open`, and runs
+the existing unmodified `lucene_search::search_term_query` for every term
+(plus a missing term and a live-docs-filtered case in a sibling test),
+asserting the correct doc IDs come back through the whole stack -- not just
+a byte-level decode check. `postings_writer.rs`'s own unit tests cover the
+byte layer beneath that (mixed singleton/multi-doc, `IndexOptions::Docs`
+no-freqs aliasing, all-singleton field needing no `.doc` file, 20
+terms x 5 docs each for running-`doc_start_fp`-delta correctness across
+more than a couple of terms) plus one negative test per structural
+invariant. **Deferred, explicitly**: multiple fields per call/segment,
+multi-block `.tim` fields (block-splitting/floor sub-blocks/multi-level
+`.tip` tries), `docFreq >= BLOCK_SIZE` (full blocks/skip data/impacts),
+positions/offsets/payloads, and any wiring into the segment writer/
+`IndexWriter`. See `docs/parity.md`'s new row for the full accounting.
+
 1. `lucene-analysis`: `TokenStream` as an iterator-of-token-structs (skip Java's
    AttributeSource reflection design entirely — a plain
    `Token { bytes, position_increment, offset, ... }` struct), StandardTokenizer via
@@ -2124,6 +2163,17 @@ updated row for the full accounting.
    doc values writers, stored fields (LZ4 fast mode first), points (BKD writer with
    offline sort for large fields), norms, `.si`/`segments_N`/`.fnm` writers, compound
    files (`.cfs/.cfe`).
+   - **Postings writer: single-field, single-block first slice landed**
+     (`lucene-codecs/src/postings_writer.rs::write_single_field`) — one field,
+     one `.tim` block/trie node, `docFreq < BLOCK_SIZE` (no full FOR/PFOR
+     blocks, no skip/impacts data), term-frequency-only (no positions). Proven
+     correct by round-tripping through the existing unmodified
+     `blocktree::open`/`postings::DocInput` and, end-to-end, through
+     `lucene_search::search_term_query`
+     (`crates/lucene-search/tests/postings_writer_round_trip.rs`) — see
+     `docs/parity.md`'s row for the precise scope/deferred list. Multi-block
+     terms, multi-block/multi-field term dictionaries, and positions/offsets/
+     payloads remain unimplemented.
 3. Indexing chain: `IndexWriter`, DWPT-per-thread with in-memory hash (bytes → postings
    builder mirroring `BytesRefHash` + parallel arrays), flush-by-RAM accounting,
    `flush()` → segment.

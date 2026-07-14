@@ -20,6 +20,7 @@ pub mod norms;
 mod packed_ints;
 pub mod points;
 pub mod postings;
+pub mod postings_writer;
 pub mod regexp;
 pub mod stored_fields;
 pub mod term_vectors;

@@ -164,14 +164,15 @@
 
 use lucene_store::codec_util::{self, ID_LENGTH};
 use lucene_store::data_input::{DataInput, SliceInput};
+use lucene_store::data_output::DataOutput;
 
 use crate::field_infos::IndexOptions;
 use crate::for_util;
 
 /// `Lucene104PostingsFormat.DOC_CODEC`.
-const DOC_CODEC: &str = "Lucene104PostingsWriterDoc";
+pub(crate) const DOC_CODEC: &str = "Lucene104PostingsWriterDoc";
 const VERSION_START: i32 = 0;
-const VERSION_CURRENT: i32 = 0;
+pub(crate) const VERSION_CURRENT: i32 = 0;
 /// `ForUtil.BLOCK_SIZE` (== `Lucene104PostingsFormat.BLOCK_SIZE`).
 pub const BLOCK_SIZE: i32 = 256;
 /// `Lucene104PostingsFormat.LEVEL1_NUM_DOCS` (`LEVEL1_FACTOR(=32) * BLOCK_SIZE`):
@@ -1219,6 +1220,41 @@ fn read_tail_block(
     Ok(())
 }
 
+/// `GroupVIntUtil.writeGroupVInts`'s wire format (groups of 4 values, one
+/// flag byte packing each value's byte-length minus one, then that many
+/// little-endian bytes per value; a final partial group of fewer than 4
+/// falls back to plain vints) — the write-side companion to
+/// [`DataInput::read_group_vints`], needed by [`crate::postings_writer`]'s
+/// tail-block encoder ([`read_tail_block`]'s exact inverse).
+pub(crate) fn write_group_vints(out: &mut impl DataOutput, values: &[u32]) {
+    let mut i = 0;
+    while i + 4 <= values.len() {
+        let chunk = &values[i..i + 4];
+        let lens: Vec<u8> = chunk
+            .iter()
+            .map(|&v| {
+                let bytes = if v == 0 {
+                    1
+                } else {
+                    4 - (v.leading_zeros() / 8)
+                };
+                (bytes - 1) as u8
+            })
+            .collect();
+        let flag = (lens[0] << 6) | (lens[1] << 4) | (lens[2] << 2) | lens[3];
+        out.write_byte(flag);
+        for (j, &v) in chunk.iter().enumerate() {
+            let n = lens[j] as usize + 1;
+            out.write_bytes(&v.to_le_bytes()[..n]);
+        }
+        i += 4;
+    }
+    while i < values.len() {
+        out.write_vint(values[i] as i32);
+        i += 1;
+    }
+}
+
 /// `docFreq == 1`: the single doc/freq is reconstructed entirely from the
 /// term dictionary's metadata (`termState.singletonDocID`) and
 /// `totalTermFreq` (implicitly the one doc's freq) — no `.doc` file access,
@@ -1754,42 +1790,6 @@ mod tests {
         bytes.write_vint(1); // freqDelta << 1 | 1, i.e. freqDelta=0, explicit flag
                              // no zlong bytes follow
         assert!(decode_impacts(&bytes).is_err());
-    }
-
-    /// Test-only encoder for `GroupVIntUtil.writeGroupVInts`'s wire format
-    /// (groups of 4 values, 1 flag byte packing each value's byte-length minus
-    /// one, then that many little-endian bytes per value; a final partial
-    /// group of fewer than 4 falls back to plain vints) — mirrors this
-    /// project's pattern of small test-only encoders (see `data_input.rs`'s
-    /// own tests) rather than adding a writer this port doesn't otherwise need
-    /// yet.
-    fn write_group_vints(out: &mut Vec<u8>, values: &[u32]) {
-        let mut i = 0;
-        while i + 4 <= values.len() {
-            let chunk = &values[i..i + 4];
-            let lens: Vec<u8> = chunk
-                .iter()
-                .map(|&v| {
-                    let bytes = if v == 0 {
-                        1
-                    } else {
-                        4 - (v.leading_zeros() / 8)
-                    };
-                    (bytes - 1) as u8
-                })
-                .collect();
-            let flag = (lens[0] << 6) | (lens[1] << 4) | (lens[2] << 2) | lens[3];
-            out.push(flag);
-            for (j, &v) in chunk.iter().enumerate() {
-                let n = lens[j] as usize + 1;
-                out.extend_from_slice(&v.to_le_bytes()[..n]);
-            }
-            i += 4;
-        }
-        while i < values.len() {
-            out.write_vint(values[i] as i32);
-            i += 1;
-        }
     }
 
     fn header_and_footer(codec: &str, id: &[u8; ID_LENGTH]) -> (Vec<u8>, Vec<u8>) {

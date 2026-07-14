@@ -114,23 +114,23 @@ use crate::postings::{self, DocInput, Postings, TermMetadata};
 use crate::regexp::RegexpPattern;
 use crate::wildcard::WildcardPattern;
 
-const TERMS_CODEC_NAME: &str = "BlockTreeTermsDict";
-const TERMS_INDEX_CODEC_NAME: &str = "BlockTreeTermsIndex";
-const TERMS_META_CODEC_NAME: &str = "BlockTreeTermsMeta";
+pub(crate) const TERMS_CODEC_NAME: &str = "BlockTreeTermsDict";
+pub(crate) const TERMS_INDEX_CODEC_NAME: &str = "BlockTreeTermsIndex";
+pub(crate) const TERMS_META_CODEC_NAME: &str = "BlockTreeTermsMeta";
 const VERSION_START: i32 = 0;
-const VERSION_CURRENT: i32 = 0;
+pub(crate) const VERSION_CURRENT: i32 = 0;
 
 /// `Lucene104PostingsFormat.TERMS_CODEC` — the postings writer's own header,
 /// embedded in the `.tmd` stream right after BlockTree's own index header.
-const POSTINGS_TERMS_CODEC: &str = "Lucene104PostingsWriterTerms";
+pub(crate) const POSTINGS_TERMS_CODEC: &str = "Lucene104PostingsWriterTerms";
 const POSTINGS_VERSION_START: i32 = 0;
-const POSTINGS_VERSION_CURRENT: i32 = 0;
+pub(crate) const POSTINGS_VERSION_CURRENT: i32 = 0;
 /// `Lucene104PostingsFormat.BLOCK_SIZE` (= `ForUtil.BLOCK_SIZE`), the postings
 /// block size the `.tmd` stream's `indexBlockSize` field must match.
-const POSTINGS_BLOCK_SIZE: i32 = 256;
+pub(crate) const POSTINGS_BLOCK_SIZE: i32 = 256;
 
 /// `TrieBuilder.SIGN_NO_CHILDREN` — a leaf trie node (no children).
-const SIGN_NO_CHILDREN: u32 = 0x00;
+pub(crate) const SIGN_NO_CHILDREN: u32 = 0x00;
 /// `TrieBuilder.SIGN_SINGLE_CHILD_WITH_OUTPUT`.
 const SIGN_SINGLE_CHILD_WITH_OUTPUT: u32 = 0x01;
 /// `TrieBuilder.SIGN_SINGLE_CHILD_WITHOUT_OUTPUT`.
@@ -138,7 +138,7 @@ const SIGN_SINGLE_CHILD_WITHOUT_OUTPUT: u32 = 0x02;
 /// `TrieBuilder.SIGN_MULTI_CHILDREN`.
 const SIGN_MULTI_CHILDREN: u32 = 0x03;
 /// `TrieBuilder.LEAF_NODE_HAS_TERMS` (`1 << 5`).
-const LEAF_NODE_HAS_TERMS: u32 = 1 << 5;
+pub(crate) const LEAF_NODE_HAS_TERMS: u32 = 1 << 5;
 /// `TrieBuilder.LEAF_NODE_HAS_FLOOR` (`1 << 6`).
 const LEAF_NODE_HAS_FLOOR: u32 = 1 << 6;
 /// `TrieBuilder.NON_LEAF_NODE_HAS_TERMS` (`1L << 1`) — the equivalent flag
