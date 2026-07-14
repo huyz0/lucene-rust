@@ -2073,6 +2073,43 @@ to open through those call sites. This port's own write side doesn't
 produce such a segment yet, so nothing exercises that gap today, but it's a
 real, unclosed one, not silently papered over.
 
+**Progress (task #77): doc-values write-side generalization.** Before this
+task, `lucene-codecs/src/doc_values.rs::write_single_dense_numeric_field`
+was the only doc-values write function -- one kind (NUMERIC), dense-only,
+plain delta-compressed. This task adds two siblings built on the same
+dense/no-terms-dict scope: `write_single_dense_binary_field` (BINARY --
+fixed-length, `ordinal * length` indexing, and variable-length via a
+`direct_monotonic::write`-backed end-offset array, both dense) and
+`write_single_dense_sorted_numeric_field` (SORTED_NUMERIC -- every doc has
+>= 1 value, flattened into one shared value array plus a per-doc address
+range, with the same one-value-per-doc collapse real Lucene's own reader
+does: when every doc has exactly one value, `read_sorted_numeric_entry`
+infers "no address array" from `num_docs_with_field == numeric.num_values`
+rather than a stored flag, so the writer must detect and match that case
+rather than always writing addresses). The three functions now share one
+extracted helper, `write_dense_numeric_entry_body`, for the NUMERIC-entry
+layout SORTED_NUMERIC's flat value array reuses verbatim. **SORTED and
+SORTED_SET still have no write side, and it's not an oversight**: both need
+a terms-dictionary write side (`terms_dict.rs`'s 64-term LZ4-compressed,
+prefix-compressed blocks plus an FST reverse index) that doesn't exist in
+this port at all -- `terms_dict.rs` is decode-only (see its parity row) --
+so writing either would mean building an entire new codec, not extending
+today's dense/no-compression-tricks scope this task's generalization
+otherwise stayed inside. That remains a real, separately-sized future slice.
+**Not wired into any writer pipeline**: same as `write_single_dense_numeric_field`
+before it, nothing in `flush_stored_only_segment`/`IndexWriter` calls the new
+functions; only this module's own tests do. Verified by round-tripping
+through this port's own unmodified read side (`parse_meta`/`binary_value`/
+`sorted_numeric_values`/`check_data_header_footer`), the read function's own
+correctness oracle per this task's brief: BINARY fixed-length and
+variable-length (including an empty-string value), the non-dense-input
+rejection path; SORTED_NUMERIC with varying per-doc value counts (1-3),
+the all-single-valued collapse case (confirms no address array is written,
+matching what the reader infers), the all-same-value case (confirms the
+constant-value/`bitsPerValue == 0` encoding still applies to the flattened
+array), and the empty-per-doc-value rejection path. See `docs/parity.md`'s
+updated row for the full accounting.
+
 1. `lucene-analysis`: `TokenStream` as an iterator-of-token-structs (skip Java's
    AttributeSource reflection design entirely — a plain
    `Token { bytes, position_increment, offset, ... }` struct), StandardTokenizer via
