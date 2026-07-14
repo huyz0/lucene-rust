@@ -1199,6 +1199,49 @@ impl<'d> IndexWriter<'d> {
         self.pending_docs.len()
     }
 
+    /// Discards every document buffered by [`IndexWriter::add_document`]
+    /// since the last [`IndexWriter::commit`] -- real Lucene's
+    /// `IndexWriter.rollback()`, scoped to what this facade actually has to
+    /// roll back.
+    ///
+    /// **What gets reset:** only `pending_docs` (this writer's in-memory
+    /// buffer of not-yet-flushed [`Document`]s). This is a pure in-memory
+    /// reset -- `rollback` never touches `dir` and never reads or writes
+    /// `segment_infos`, matching this method's doc comment on why `commit()`
+    /// is the only thing in this facade that ever calls
+    /// [`crate::segment_infos::write`]. Calling `rollback()` when
+    /// `pending_doc_count()` is already `0` (nothing buffered, including
+    /// right after `IndexWriter::open`) is a safe no-op.
+    ///
+    /// **What is preserved, deliberately:** this writer's already-committed
+    /// [`IndexWriter::segment_infos`] (any *prior* `commit()`'s segments are
+    /// on disk and are never touched by this call, so they remain fully
+    /// readable/searchable after a rollback -- only documents added *after*
+    /// the last commit are discarded) and every writer-configuration field
+    /// set via [`IndexWriter::set_postings_field`]/
+    /// [`IndexWriter::set_term_vector_field`]/
+    /// [`IndexWriter::set_doc_values_field`]/[`IndexWriter::set_merge_policy`].
+    /// This matches real Lucene's own split between `IndexWriterConfig`
+    /// (survives a `rollback()`, since it belongs to the caller, not to any
+    /// one buffered batch of documents) and buffered-but-uncommitted document
+    /// state (discarded) -- `rollback()` only ever undoes *documents*, never
+    /// *configuration*.
+    ///
+    /// **Not replicated from real Lucene's `rollback()`:** real
+    /// `IndexWriter.rollback()` also closes the writer and permanently
+    /// releases its write lock, so the `IndexWriter` instance itself becomes
+    /// unusable afterward (any further call throws
+    /// `AlreadyClosedException`). This facade has no open/close lifecycle or
+    /// write-lock concept at all (see module doc comment: "one caller, one
+    /// `Directory`, sequential calls" -- there is no `IndexWriterConfig`-style
+    /// closeable object here to begin with), so this `rollback()` leaves the
+    /// writer fully usable for further [`IndexWriter::add_document`]/
+    /// [`IndexWriter::commit`] calls immediately afterward -- the same choice
+    /// this facade already made for having no `close()` method at all.
+    pub fn rollback(&mut self) {
+        self.pending_docs.clear();
+    }
+
     /// Replaces this writer's committed segment list with `merged` in place
     /// of `source_segment_names` -- the composition point for a caller that
     /// has just run [`crate::merge::merge_stored_only_segments`] against
@@ -1514,6 +1557,137 @@ mod tests {
         let reopened = segment_infos::read_latest(&dir).unwrap();
         assert_eq!(reopened.segments.len(), 2);
         assert_eq!(read_all_docs(&dir, &reopened), vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn rollback_discards_pending_docs_so_next_commit_never_sees_them() {
+        let tmp = tempdir("rollback-basic");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+
+        writer.add_document(doc("a"));
+        writer.add_document(doc("b"));
+        assert_eq!(writer.pending_doc_count(), 2);
+
+        writer.rollback();
+        assert_eq!(writer.pending_doc_count(), 0);
+
+        // Nothing was ever written to disk -- a subsequent commit is a
+        // no-op-content commit, same as if the docs had never been added.
+        let sis = writer.commit().unwrap().clone();
+        assert!(sis.segments.is_empty());
+
+        let reopened = segment_infos::read_latest(&dir).unwrap();
+        assert!(reopened.segments.is_empty());
+        assert_eq!(read_all_docs(&dir, &reopened), Vec::<String>::new());
+    }
+
+    #[test]
+    fn rollback_with_nothing_pending_is_a_safe_no_op() {
+        let tmp = tempdir("rollback-noop");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+
+        assert_eq!(writer.pending_doc_count(), 0);
+        writer.rollback();
+        assert_eq!(writer.pending_doc_count(), 0);
+
+        // Still fully usable afterward.
+        writer.add_document(doc("a"));
+        let sis = writer.commit().unwrap().clone();
+        assert_eq!(sis.segments.len(), 1);
+        let reopened = segment_infos::read_latest(&dir).unwrap();
+        assert_eq!(read_all_docs(&dir, &reopened), vec!["a"]);
+    }
+
+    #[test]
+    fn rollback_never_affects_a_prior_commits_segments() {
+        let tmp = tempdir("rollback-prior-commit");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+
+        // First commit: "a" is on disk for good.
+        writer.add_document(doc("a"));
+        let first = writer.commit().unwrap().clone();
+        assert_eq!(first.segments.len(), 1);
+
+        // Second batch: buffered but never committed, then rolled back.
+        writer.add_document(doc("b"));
+        writer.add_document(doc("c"));
+        assert_eq!(writer.pending_doc_count(), 2);
+        writer.rollback();
+        assert_eq!(writer.pending_doc_count(), 0);
+
+        // A commit right after the rollback only re-writes segments_N with
+        // no new segment appended -- "a"'s segment from the first commit is
+        // still exactly as it was, "b"/"c" never appear anywhere.
+        let second = writer.commit().unwrap().clone();
+        assert_eq!(second.segments.len(), 1);
+        assert_eq!(
+            second.segments[0].segment_name,
+            first.segments[0].segment_name
+        );
+
+        let reopened = segment_infos::read_latest(&dir).unwrap();
+        assert_eq!(read_all_docs(&dir, &reopened), vec!["a"]);
+    }
+
+    #[test]
+    fn rollback_preserves_writer_configuration() {
+        let tmp = tempdir("rollback-config");
+        let dir = FsDirectory::open(&tmp);
+        let mut text_field = stored_only_field("text", 0);
+        text_field.index_options = IndexOptions::DocsAndFreqs;
+        text_field.store_term_vectors = true;
+        let mut num_field = stored_only_field("num", 1);
+        num_field.doc_values_type = DocValuesType::Numeric;
+        let fields = vec![text_field, num_field];
+
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_postings_field(Some("text")).unwrap();
+        writer.set_term_vector_field(Some("text")).unwrap();
+        writer.set_doc_values_field(Some("num")).unwrap();
+        writer.set_merge_policy(Some(MergePolicyConfig {
+            max_merge_at_once: 2,
+            ..Default::default()
+        }));
+
+        // Buffer a doc with no values for the configured fields (so this
+        // rolled-back batch doesn't have to satisfy the dense doc-values
+        // requirement), then roll it back.
+        writer.add_document(doc("placeholder"));
+        writer.rollback();
+        assert_eq!(writer.pending_doc_count(), 0);
+
+        // Configuration must have survived: a doc with real values for every
+        // configured field, committed after the rollback, produces postings/
+        // term-vector/doc-values files exactly as if the rollback never
+        // happened.
+        let real_doc = Document {
+            fields: vec![
+                StoredField {
+                    field_number: 0,
+                    value: FieldValue::String("hello world".to_string()),
+                },
+                StoredField {
+                    field_number: 1,
+                    value: FieldValue::Long(42),
+                },
+            ],
+        };
+        writer.add_document(real_doc);
+        let sis = writer.commit().unwrap().clone();
+        assert_eq!(sis.segments.len(), 1);
+
+        let segment_name = &sis.segments[0].segment_name;
+        let si_bytes = dir.open(&format!("{segment_name}.si")).unwrap();
+        let si = segment_info::parse(&si_bytes, &sis.segments[0].segment_id).unwrap();
+        assert!(si.files.iter().any(|f| f.ends_with(".doc")));
+        assert!(si.files.iter().any(|f| f.ends_with(".tvd")));
+        assert!(si.files.iter().any(|f| f.ends_with(".dvd")));
     }
 
     #[test]

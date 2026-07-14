@@ -2452,6 +2452,43 @@ doc values, and doc-values-aware segment merging (a segment with doc values
 can never be auto-merged today, same as postings/term vectors). See
 `docs/parity.md`'s updated rows for the full accounting.
 
+**Follow-up task: `IndexWriter::rollback()`.** New
+`IndexWriter::rollback(&mut self)` (`crates/lucene-index/src/index_writer.rs`)
+discards every document buffered by `add_document` since the last `commit()`
+-- real Lucene's `IndexWriter.rollback()`, scoped to what this facade
+actually has to roll back. It is a pure in-memory reset: it only clears
+`pending_docs` and never touches `dir`, never reads or writes
+`segment_infos` (no `crate::segment_infos::write` call at all -- unlike
+every other state-changing method on this writer).
+
+**What is reset vs preserved, precisely**: only `pending_docs` is discarded.
+This writer's already-committed `segment_infos` (any *prior* `commit()`'s
+segments) is untouched -- those segments are already on disk and stay fully
+readable after a rollback; only documents added *after* the last commit are
+discarded. Every writer-configuration field set via `set_postings_field`/
+`set_term_vector_field`/`set_doc_values_field`/`set_merge_policy` also
+survives -- this matches real Lucene's own split between `IndexWriterConfig`
+(survives a `rollback()`) and buffered-but-uncommitted document state
+(discarded): `rollback()` only ever undoes *documents*, never *configuration*.
+
+**Real Lucene semantic NOT replicated**: real `IndexWriter.rollback()` also
+closes the writer and permanently releases its write lock (any further call
+throws `AlreadyClosedException`). This facade has no open/close lifecycle or
+write-lock concept at all (see module doc comment's "one caller, one
+`Directory`, sequential calls" scope), so this `rollback()` leaves the writer
+fully usable for further `add_document`/`commit()` calls immediately
+afterward -- consistent with this facade already having no `close()` method.
+
+Tests added (`crates/lucene-index/src/index_writer.rs`):
+`rollback_discards_pending_docs_so_next_commit_never_sees_them`,
+`rollback_with_nothing_pending_is_a_safe_no_op`,
+`rollback_never_affects_a_prior_commits_segments` (add doc, commit, add more
+docs, rollback, commit again -- asserts the first commit's segment name and
+docs are unchanged and the rolled-back docs never appear), and
+`rollback_preserves_writer_configuration` (postings/term-vector/doc-values
+field configuration and merge-policy config all still work correctly on a
+commit made after a rollback).
+
 1. `lucene-analysis`: `TokenStream` as an iterator-of-token-structs (skip Java's
    AttributeSource reflection design entirely — a plain
    `Token { bytes, position_increment, offset, ... }` struct), StandardTokenizer via
