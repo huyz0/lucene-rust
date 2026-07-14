@@ -77,6 +77,22 @@
 //!   reads a facet results handle's `(ord, count)` pairs back via parallel
 //!   buffers plus a per-index label accessor (see `results_facets.rs`'s
 //!   module doc for why labels need their own accessor), then releases it.
+//! - [`highlighter::ffi_assemble_fragments`] (Highlighter FFI exposure):
+//!   wraps `lucene_search::highlighter::assemble_fragments` -- no
+//!   fragment-assembly logic reimplemented -- taking the field's full text
+//!   plus a caller-supplied set of `TermOffsetSpan`s (four parallel input
+//!   arrays; see `highlighter.rs`'s module doc for the wire encoding) and
+//!   collecting the assembled fragments into a new
+//!   [`registry::FragmentResultsHandle`].
+//! - [`results_fragments::ffi_fragment_results_len`]/
+//!   [`results_fragments::ffi_fragment_result_text`]/
+//!   [`results_fragments::ffi_fragment_result_matched_terms_len`]/
+//!   [`results_fragments::ffi_fragment_result_matched_term`]/
+//!   [`results_fragments::ffi_close_fragment_results`]: reads a fragment
+//!   results handle's per-fragment `text` and `matched_terms` back via
+//!   per-index string accessors (no fixed-size half to bulk-copy, unlike
+//!   `results_facets.rs`/`results_sorted.rs` -- see `results_fragments.rs`'s
+//!   module doc), then releases it.
 //! - [`error::guard`]/[`ffi_get_last_error_message`]: every exported
 //!   function's panic-safety wrapper and the thread-local last-error
 //!   message accessor.
@@ -104,6 +120,15 @@
 //!   (still takes already-known file names) and remains the right entry point
 //!   for a caller that already has one segment's files named and wants no
 //!   `DirectoryReader`-level bookkeeping at all.
+//! - **`term_vectors_query::matched_term_offsets` has no FFI wrapper yet** —
+//!   [`highlighter::ffi_assemble_fragments`] takes its `TermOffsetSpan`s as
+//!   plain caller-supplied input (the caller computes them however it likes,
+//!   e.g. by calling `lucene_search::term_vectors_query::matched_term_offsets`
+//!   directly if it links against `lucene-search` itself, or by some other
+//!   means); a JNI-only caller with no Rust-side access to that function
+//!   would need it exposed too before it could get real spans, but that is a
+//!   separate, mechanical follow-up wrapping a different `lucene-search`
+//!   module, not part of this task's scope.
 //! - **The JNI wrapper class itself** — out of scope for this Rust repo;
 //!   this crate only needs to expose a stable C ABI a JNI class can bind to.
 //!
@@ -137,11 +162,13 @@ mod directory_reader;
 mod error;
 mod facets;
 mod handle;
+mod highlighter;
 mod query;
 mod raw;
 mod registry;
 mod results;
 mod results_facets;
+mod results_fragments;
 mod results_scored;
 mod results_sorted;
 mod segment;
@@ -154,6 +181,7 @@ pub use directory_reader::{
 };
 pub use error::FfiStatus;
 pub use facets::{ffi_facet_counts_sorted_set, ffi_range_facet_counts};
+pub use highlighter::ffi_assemble_fragments;
 pub use query::{
     ffi_search_boolean_query, ffi_search_boolean_query_scored, ffi_search_phrase_query,
     ffi_search_phrase_query_scored, ffi_search_term_query, ffi_search_term_query_scored,
@@ -161,6 +189,10 @@ pub use query::{
 pub use results::{ffi_close_results, ffi_results_copy, ffi_results_len};
 pub use results_facets::{
     ffi_close_facet_results, ffi_facet_result_label, ffi_facet_results_copy, ffi_facet_results_len,
+};
+pub use results_fragments::{
+    ffi_close_fragment_results, ffi_fragment_result_matched_term,
+    ffi_fragment_result_matched_terms_len, ffi_fragment_result_text, ffi_fragment_results_len,
 };
 pub use results_scored::{
     ffi_close_scored_results, ffi_scored_results_copy, ffi_scored_results_len,

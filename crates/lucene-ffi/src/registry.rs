@@ -201,6 +201,26 @@ pub struct FacetResultsHandle {
     pub facets: Vec<lucene_search::facets::FacetCount>,
 }
 
+/// A completed highlight fragment assembly's [`lucene_search::highlighter::Fragment`]s
+/// (`highlighter.rs`'s `ffi_assemble_fragments`, wrapping
+/// `lucene_search::highlighter::assemble_fragments`) -- read back via
+/// `results_fragments.rs`'s `ffi_fragment_results_len`/`ffi_fragment_result_text`/
+/// `ffi_fragment_result_matched_terms_len`/`ffi_fragment_result_matched_term`,
+/// then released via `ffi_close_fragment_results`.
+///
+/// **Why a new registry/handle type instead of reusing `FacetResultsHandle`**:
+/// a fragment carries a highlighted `text` string *and* a variable-length list
+/// of `matched_terms` strings per element -- a two-level variable-length shape
+/// none of this crate's existing handles have (`FacetResultsHandle`'s element
+/// has exactly one string field, `label`). Keeping this as its own
+/// registry/tag means a facet- or sorted-results handle can never be
+/// accidentally passed to a fragment accessor (or vice versa) and misread --
+/// the same reasoning every other handle type in this file already gives for
+/// not widening an existing one.
+pub struct FragmentResultsHandle {
+    pub fragments: Vec<lucene_search::highlighter::Fragment>,
+}
+
 pub fn directories() -> &'static Mutex<SlotMap<FsDirectory>> {
     static REGISTRY: OnceLock<Mutex<SlotMap<FsDirectory>>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(SlotMap::new(RegistryTag::Directory)))
@@ -234,4 +254,9 @@ pub fn directory_readers() -> &'static Mutex<SlotMap<DirectoryReaderHandle>> {
 pub fn facet_results() -> &'static Mutex<SlotMap<FacetResultsHandle>> {
     static REGISTRY: OnceLock<Mutex<SlotMap<FacetResultsHandle>>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(SlotMap::new(RegistryTag::FacetResults)))
+}
+
+pub fn fragment_results() -> &'static Mutex<SlotMap<FragmentResultsHandle>> {
+    static REGISTRY: OnceLock<Mutex<SlotMap<FragmentResultsHandle>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(SlotMap::new(RegistryTag::FragmentResults)))
 }

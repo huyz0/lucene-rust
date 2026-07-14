@@ -2332,6 +2332,67 @@ aggregation (same scope boundary tasks #50/#58 already documented);
 hierarchical/taxonomy facets, drill-down/drill-sideways (no `lucene-facet`-
 module equivalent exists anywhere in this port).
 
+**Progress (Highlighter FFI exposure):** `lucene-ffi` C-ABI wrapper for task
+#56's `lucene-search/src/highlighter.rs`, closing that module's own
+"lucene-ffi C-ABI exposure" deferred item. Two new modules, same
+handle/registry/error-code pattern as the Faceted search FFI exposure task
+above:
+
+- `crates/lucene-ffi/src/highlighter.rs`: one function,
+  `ffi_assemble_fragments`, wraps `highlighter::assemble_fragments` directly
+  -- no fragment-assembly logic reimplemented. Unlike every other function in
+  this crate it needs no segment/directory handle at all: `assemble_fragments`
+  only takes a field's full text plus a set of `TermOffsetSpan`s, both
+  supplied as plain input buffers. Spans cross the wire as four parallel
+  arrays (`span_start_offsets`/`span_end_offsets` plus a concatenated
+  `span_term_data` buffer sliced by `span_term_lens`), the same
+  concatenated-buffer convention `facets.rs`'s `ranges_from_raw` already
+  established for per-range labels. `window_chars`/`pre`/`post`/
+  `max_fragments` build a `FragmentConfig` directly; `max_fragments == 0` is
+  rejected as `FfiStatus::InvalidArgument` (not silently zero fragments)
+  since `highlighter.rs`'s `assemble_fragments` never documents that as a
+  meaningful input.
+- `crates/lucene-ffi/src/results_fragments.rs`: `ffi_fragment_results_len`,
+  `ffi_fragment_result_text` (per-fragment highlighted text), plus
+  `ffi_fragment_result_matched_terms_len`/`ffi_fragment_result_matched_term`
+  (per-fragment matched-term list) -- all per-index string accessors reusing
+  the `buf`/`buf_len`/`out_written`/`BufferTooSmall` contract from
+  `ffi_get_last_error_message`, no `_copy` bulk call: unlike a facet result's
+  `(ord, count)` half, a `Fragment` has no fixed-size field at all (both
+  `text` and `matched_terms` are variable-length), so there is nothing to
+  bulk-copy into parallel buffers. New `RegistryTag::FragmentResults` /
+  `registry::FragmentResultsHandle` (own registry, not folded into
+  `FacetResultsHandle` -- a fragment's two-level variable-length shape has no
+  fixed-size element `FacetResultsHandle`'s accessors assume).
+
+**No highlighting logic was touched or duplicated** -- `ffi_assemble_fragments`
+is a thin marshal-in/call-into-`highlighter.rs`/marshal-out wrapper;
+`highlighter.rs` itself is unchanged. Tests: `highlighter::tests` (12 cases --
+a real fixture cross-check against calling `lucene_search::highlighter`
+directly, reusing task #39/#3's `fixtures/data/term_vectors_index/`-derived
+offsets the same way `highlighter.rs`'s own differential test does; empty
+spans; empty full_text with a null pointer and zero length; out-of-range
+spans dropped rather than erroring; null out-handle, null full_text with
+nonzero length, null pre/post, null span_term_lens/span_term_data with
+nonzero counts, invalid-UTF-8 term, zero `max_fragments`) and
+`results_fragments::tests` (15 cases -- len/text/matched-terms-len/
+matched-term round-trip, out-of-bounds fragment index and out-of-bounds
+term index on every accessor, buffer-too-small on both text and
+matched-term calls, null buffers, unknown handles, unknown/double-close
+handle). `cargo test -p lucene-ffi`: 221 tests pass (up from 189).
+`cargo clippy --workspace --all-targets -- -D warnings` clean. New-file
+coverage: `highlighter.rs` 99.76% lines, `results_fragments.rs` 97.60% lines
+(both above the 95% bar; workspace `lucene-ffi` total 98.34%, up from
+98.27%). **Deferred, not a gap in this task**:
+`term_vectors_query::matched_term_offsets` has no FFI wrapper of its own yet
+-- a JNI-only caller with no direct Rust-side access to `lucene-search` would
+need that exposed too before it could compute real `TermOffsetSpan`s itself;
+`ffi_assemble_fragments` takes spans as plain caller-supplied input rather
+than assuming that gap closed. `BreakIterator` sentence-boundary detection
+and term-density passage scoring remain out of scope, matching
+`highlighter.rs`'s own already-documented scope boundary -- unchanged by
+this FFI-only task.
+
 3. Indexing chain: `IndexWriter`, DWPT-per-thread with in-memory hash (bytes → postings
    builder mirroring `BytesRefHash` + parallel arrays), flush-by-RAM accounting,
    `flush()` → segment.

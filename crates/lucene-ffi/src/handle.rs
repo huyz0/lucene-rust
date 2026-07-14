@@ -70,6 +70,14 @@ pub enum RegistryTag {
     /// not just a `(doc_id, value)` pair -- see `registry.rs`'s
     /// `FacetResultsHandle` doc comment.
     FacetResults = 7,
+    /// Assembled highlight fragments (`highlighter.rs`'s
+    /// `ffi_assemble_fragments`, wrapping
+    /// `lucene_search::highlighter::assemble_fragments`) -- kept in its own
+    /// registry rather than folded into any existing one since a fragment's
+    /// element (`text` plus a variable-length `matched_terms` list) has no
+    /// resemblance to any of this crate's other result shapes -- see
+    /// `registry.rs`'s `FragmentResultsHandle` doc comment.
+    FragmentResults = 8,
 }
 
 fn pack(tag: RegistryTag, index: u32, generation: u32) -> u64 {
