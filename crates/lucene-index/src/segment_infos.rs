@@ -70,7 +70,7 @@ pub struct LuceneVersion {
 
 /// One segment's entry in a commit: everything `segments_N` records about it,
 /// *excluding* what lives in the segment's own `.si` file.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SegmentCommitInfo {
     pub segment_name: String,
     pub segment_id: [u8; ID_LENGTH],
@@ -87,7 +87,7 @@ pub struct SegmentCommitInfo {
     pub dv_update_files: Vec<(i32, Vec<String>)>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SegmentInfos {
     pub id: [u8; ID_LENGTH],
     pub generation: i64,

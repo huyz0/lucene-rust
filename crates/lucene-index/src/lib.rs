@@ -3,6 +3,7 @@
 
 pub mod check_index;
 pub mod deletes;
+pub mod index_writer;
 pub mod indexing_chain;
 pub mod merge;
 pub mod merge_policy;
