@@ -25,6 +25,14 @@
 //!   and a `NumericEntry`, returns `(doc_id, value)` pairs ascending by value,
 //!   ties broken by ascending doc ID (see that function's doc comment for the
 //!   missing-value policy).
+//! - [`sort_top_n_by_numeric_doc_value`]: the bounded, `TopFieldCollector`-
+//!   driven sibling of [`sort_by_numeric_doc_value`] — same candidate-list
+//!   contract, but ascending **or** descending (real search-time
+//!   `SortField`/`TopFieldCollector` sorting, not just index-sort's
+//!   ascending-only helper) and truncated to the top `n` hits without
+//!   materializing a full sorted `Vec`. [`search_numeric_range_sorted_by_field`]
+//!   is the concrete end-to-end wiring of this into an existing query
+//!   ([`search_numeric_range`]).
 //!
 //! - [`ValueSelector`]/[`search_multi_valued_range`]/
 //!   [`sort_by_multi_valued_doc_value`]: the multi-valued (SORTED_NUMERIC, and
@@ -50,9 +58,12 @@
 //!   follow-up (`values[(len - 1) / 2]` / `values[len / 2]` on a sorted
 //!   `values`, which [`ValueSelector::reduce`] doesn't need to sort for since
 //!   MIN/MAX only ever need one pass) if a caller needs it.
-//! - **Descending sort / multiple sort fields / secondary sort keys** beyond
-//!   the single documented tie-break (ascending doc ID). Real `Sort`
-//!   composes multiple `SortField`s; this is a single-key sort only.
+//! - **Multiple sort fields / secondary sort keys** beyond the single
+//!   documented tie-break (ascending doc ID). Real `Sort` composes multiple
+//!   `SortField`s; [`sort_by_numeric_doc_value`]/[`sort_top_n_by_numeric_doc_value`]
+//!   are single-key sorts only (the latter does support ascending *and*
+//!   descending, via [`SortDirection`] — only [`sort_by_numeric_doc_value`],
+//!   the original index-sort-era helper, is ascending-only).
 //! - **A skip-list/DISI-driven range scorer.** [`search_numeric_range`] is a
 //!   full `[0, max_doc)` sweep (see that function's doc comment) — Lucene's
 //!   real doc-values range query can use the field's optional skip index
@@ -64,6 +75,7 @@
 use lucene_codecs::doc_values::{self, NumericEntry, SortedEntry, SortedNumericEntry};
 use lucene_util::fixed_bit_set::FixedBitSet;
 
+use crate::collector::{FieldValueDoc, SortDirection, TopFieldCollector};
 use crate::{Collector, Result};
 
 /// Feeds every **live** doc in `[0, max_doc)` whose numeric doc-value falls in
@@ -199,6 +211,93 @@ pub fn sort_by_numeric_doc_value(
     }
     pairs.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
     Ok(pairs)
+}
+
+/// `TopFieldCollector`-driven, **bounded** sibling of [`sort_by_numeric_doc_value`]:
+/// decodes each `candidates` doc's numeric doc-value (applying `missing`'s
+/// policy exactly as [`sort_by_numeric_doc_value`] does) and offers it to a
+/// fresh [`TopFieldCollector`], returning only the top `top_n` hits ranked by
+/// `direction` (ascending or descending — see [`SortDirection`]), ties broken
+/// by ascending doc ID.
+///
+/// This is the general "run an already-matched doc set through
+/// `TopFieldCollector`" composition point this module's doc comment
+/// describes: `candidates` can come from any existing matched-doc source in
+/// this crate ([`crate::search_term_query`], [`crate::search_boolean_query`],
+/// [`search_numeric_range`], [`search_sorted_ord_range`], ...) — this
+/// function only needs the resulting `&[i32]`, the same contract
+/// [`sort_by_numeric_doc_value`] already has. Unlike that function, this one
+/// never materializes a fully sorted `Vec` of every candidate: only up to
+/// `top_n` hits are ever held at once (see [`TopFieldCollector`]'s doc
+/// comment for why decode-then-`offer` is the shape, not a `Collector` impl).
+///
+/// **Scope**: numeric doc-value fields only (`SortField.Type.LONG`/`INT`),
+/// single sort key, no descending-then-ascending secondary key. See
+/// `docs/parity.md` for the precise statement.
+pub fn sort_top_n_by_numeric_doc_value(
+    doc_values_data: &[u8],
+    entry: &NumericEntry,
+    candidates: &[i32],
+    direction: SortDirection,
+    missing: MissingValue,
+    top_n: usize,
+) -> Result<Vec<FieldValueDoc>> {
+    let mut collector = TopFieldCollector::new(top_n, direction);
+    for &doc_id in candidates {
+        match doc_values::numeric_value(doc_values_data, entry, doc_id)? {
+            Some(value) => collector.offer(doc_id, value),
+            None => {
+                if let MissingValue::Default(default) = missing {
+                    collector.offer(doc_id, default);
+                }
+            }
+        }
+    }
+    Ok(collector.top_docs().to_vec())
+}
+
+/// End-to-end entry point wiring an EXISTING query execution path
+/// ([`search_numeric_range`]) into [`sort_top_n_by_numeric_doc_value`]: runs
+/// `search_numeric_range` (matching every live doc whose `range_entry` value
+/// falls in `[min, max]`) into a [`crate::collector::VecCollector`] to gather
+/// the matched-doc set, then sorts that set by `sort_entry`'s numeric
+/// doc-value and returns the top `top_n` hits — `sort_entry` may be the same
+/// field as `range_entry` (sort the matches by the field just queried) or a
+/// different one (query by one field, sort results by another), both real
+/// Lucene use cases (`IndexSearcher.search(query, n, sort)` with a
+/// `PointRangeQuery`/`SortedNumericDocValuesField.newSlowRangeQuery` query and
+/// a `SortField` on a different field).
+#[allow(clippy::too_many_arguments)]
+pub fn search_numeric_range_sorted_by_field(
+    doc_values_data: &[u8],
+    range_entry: &NumericEntry,
+    live_docs: Option<&FixedBitSet>,
+    max_doc: i32,
+    min: i64,
+    max: i64,
+    sort_entry: &NumericEntry,
+    direction: SortDirection,
+    missing: MissingValue,
+    top_n: usize,
+) -> Result<Vec<FieldValueDoc>> {
+    let mut matches = crate::collector::VecCollector::default();
+    search_numeric_range(
+        doc_values_data,
+        range_entry,
+        live_docs,
+        max_doc,
+        min,
+        max,
+        &mut matches,
+    )?;
+    sort_top_n_by_numeric_doc_value(
+        doc_values_data,
+        sort_entry,
+        &matches.docs,
+        direction,
+        missing,
+        top_n,
+    )
 }
 
 /// How a multi-valued doc's several values reduce to one comparable value
@@ -628,6 +727,239 @@ mod tests {
         let entry = constant_entry(0, 1, 0);
         let sorted = sort_by_numeric_doc_value(&[], &entry, &[], MissingValue::Exclude).unwrap();
         assert!(sorted.is_empty());
+    }
+
+    // --- sort_top_n_by_numeric_doc_value / search_numeric_range_sorted_by_field
+    //     (TopFieldCollector-driven search-time sort) ---
+
+    fn field_docs(v: &[(i32, i64)]) -> Vec<crate::collector::FieldValueDoc> {
+        v.iter()
+            .map(|&(doc_id, value)| crate::collector::FieldValueDoc { doc_id, value })
+            .collect()
+    }
+
+    #[test]
+    fn sort_top_n_ascending_order_real_fixture() {
+        let (manifest, _id, data, meta) = load_dv_meta(&dv_dir());
+        let entry = meta
+            .numeric_entry(field_number(&manifest, "varying"))
+            .unwrap();
+        // values -100,7,42,1000,-3 for docs 0..4.
+        let candidates = [0, 1, 2, 3, 4];
+        let top = sort_top_n_by_numeric_doc_value(
+            &data,
+            entry,
+            &candidates,
+            SortDirection::Ascending,
+            MissingValue::Exclude,
+            10,
+        )
+        .unwrap();
+        assert_eq!(
+            top,
+            field_docs(&[(0, -100), (4, -3), (1, 7), (2, 42), (3, 1000)])
+        );
+    }
+
+    #[test]
+    fn sort_top_n_descending_order_real_fixture() {
+        let (manifest, _id, data, meta) = load_dv_meta(&dv_dir());
+        let entry = meta
+            .numeric_entry(field_number(&manifest, "varying"))
+            .unwrap();
+        let candidates = [0, 1, 2, 3, 4];
+        let top = sort_top_n_by_numeric_doc_value(
+            &data,
+            entry,
+            &candidates,
+            SortDirection::Descending,
+            MissingValue::Exclude,
+            10,
+        )
+        .unwrap();
+        assert_eq!(
+            top,
+            field_docs(&[(3, 1000), (2, 42), (1, 7), (4, -3), (0, -100)])
+        );
+    }
+
+    #[test]
+    fn sort_top_n_truncates_ascending_and_descending() {
+        let (manifest, _id, data, meta) = load_dv_meta(&dv_dir());
+        let entry = meta
+            .numeric_entry(field_number(&manifest, "varying"))
+            .unwrap();
+        let candidates = [0, 1, 2, 3, 4];
+        let top_asc = sort_top_n_by_numeric_doc_value(
+            &data,
+            entry,
+            &candidates,
+            SortDirection::Ascending,
+            MissingValue::Exclude,
+            2,
+        )
+        .unwrap();
+        assert_eq!(top_asc, field_docs(&[(0, -100), (4, -3)]));
+
+        let top_desc = sort_top_n_by_numeric_doc_value(
+            &data,
+            entry,
+            &candidates,
+            SortDirection::Descending,
+            MissingValue::Exclude,
+            2,
+        )
+        .unwrap();
+        assert_eq!(top_desc, field_docs(&[(3, 1000), (2, 42)]));
+    }
+
+    #[test]
+    fn sort_top_n_tie_break_prefers_lower_doc_id() {
+        // Every doc has the same value (constant NUMERIC field) -- ascending
+        // and descending must both fall back to the ascending-doc-ID
+        // tie-break for equal values.
+        let entry = constant_entry(0, 42, 5);
+        let candidates = [4, 1, 3, 0, 2];
+        let top = sort_top_n_by_numeric_doc_value(
+            &[],
+            &entry,
+            &candidates,
+            SortDirection::Ascending,
+            MissingValue::Exclude,
+            3,
+        )
+        .unwrap();
+        assert_eq!(top, field_docs(&[(0, 42), (1, 42), (2, 42)]));
+
+        let top_desc = sort_top_n_by_numeric_doc_value(
+            &[],
+            &entry,
+            &candidates,
+            SortDirection::Descending,
+            MissingValue::Exclude,
+            3,
+        )
+        .unwrap();
+        assert_eq!(top_desc, field_docs(&[(0, 42), (1, 42), (2, 42)]));
+    }
+
+    #[test]
+    fn sort_top_n_missing_doc_excluded_by_default_policy() {
+        let (manifest, _id, data, meta) = load_dv_meta(&dv_dir());
+        let entry = meta
+            .numeric_entry(field_number(&manifest, "sparse"))
+            .unwrap();
+        // sparse: 5, NONE, 15, NONE, 25 -- docs 1 and 3 have no value.
+        let candidates = [0, 1, 2, 3, 4];
+        let top = sort_top_n_by_numeric_doc_value(
+            &data,
+            entry,
+            &candidates,
+            SortDirection::Ascending,
+            MissingValue::Exclude,
+            10,
+        )
+        .unwrap();
+        assert_eq!(top, field_docs(&[(0, 5), (2, 15), (4, 25)]));
+    }
+
+    #[test]
+    fn sort_top_n_missing_doc_gets_default_value() {
+        let (manifest, _id, data, meta) = load_dv_meta(&dv_dir());
+        let entry = meta
+            .numeric_entry(field_number(&manifest, "sparse"))
+            .unwrap();
+        let candidates = [0, 1, 2, 3, 4];
+        let top = sort_top_n_by_numeric_doc_value(
+            &data,
+            entry,
+            &candidates,
+            SortDirection::Ascending,
+            MissingValue::Default(1_000_000),
+            10,
+        )
+        .unwrap();
+        assert_eq!(
+            top,
+            field_docs(&[(0, 5), (2, 15), (4, 25), (1, 1_000_000), (3, 1_000_000)])
+        );
+    }
+
+    #[test]
+    fn sort_top_n_propagates_decode_errors() {
+        let mut entry = constant_entry(0, 0, 1);
+        entry.bits_per_value = 8;
+        entry.values_offset = 0;
+        entry.values_length = 1;
+        let err = sort_top_n_by_numeric_doc_value(
+            &[],
+            &entry,
+            &[0],
+            SortDirection::Ascending,
+            MissingValue::Exclude,
+            10,
+        )
+        .unwrap_err();
+        assert!(matches!(err, crate::Error::DocValues(_)));
+    }
+
+    #[test]
+    fn search_numeric_range_sorted_by_field_end_to_end_real_fixture() {
+        let (manifest, _id, data, meta) = load_dv_meta(&dv_dir());
+        // Query: "gcd" in [1000, 1100] -- gcd values 1000,1025,1075,1200,1050
+        // for docs 0..4 match docs 0, 1, 2, 4 (doc 3's 1200 is out of range).
+        let range_entry = meta.numeric_entry(field_number(&manifest, "gcd")).unwrap();
+        // Sort the matches by "varying" (-100,7,42,1000,-3 for docs 0..4):
+        // doc0=-100, doc1=7, doc2=42, doc4=-3.
+        let sort_entry = meta
+            .numeric_entry(field_number(&manifest, "varying"))
+            .unwrap();
+
+        let asc = search_numeric_range_sorted_by_field(
+            &data,
+            range_entry,
+            None,
+            5,
+            1000,
+            1100,
+            sort_entry,
+            SortDirection::Ascending,
+            MissingValue::Exclude,
+            10,
+        )
+        .unwrap();
+        assert_eq!(asc, field_docs(&[(0, -100), (4, -3), (1, 7), (2, 42)]));
+
+        let desc = search_numeric_range_sorted_by_field(
+            &data,
+            range_entry,
+            None,
+            5,
+            1000,
+            1100,
+            sort_entry,
+            SortDirection::Descending,
+            MissingValue::Exclude,
+            10,
+        )
+        .unwrap();
+        assert_eq!(desc, field_docs(&[(2, 42), (1, 7), (4, -3), (0, -100)]));
+
+        // Top-2 truncation on the same query, descending.
+        let desc_top2 = search_numeric_range_sorted_by_field(
+            &data,
+            range_entry,
+            None,
+            5,
+            1000,
+            1100,
+            sort_entry,
+            SortDirection::Descending,
+            MissingValue::Exclude,
+            2,
+        )
+        .unwrap();
+        assert_eq!(desc_top2, field_docs(&[(2, 42), (1, 7)]));
     }
 
     #[test]

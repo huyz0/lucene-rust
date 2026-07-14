@@ -174,9 +174,230 @@ impl ScoringCollector for TopDocsCollector {
     }
 }
 
+/// Ascending/descending toggle for [`TopFieldCollector`] — real Lucene's
+/// `SortField.setReverse` flag, generalized to any numeric sort key (this
+/// port's `SortField.Type.LONG`/`INT` support; see `doc_value_query`'s
+/// `sort_top_n_by_numeric_doc_value` for how a `DOUBLE` field would map onto
+/// this same `i64` key if a caller bit-reinterprets it, which this port
+/// doesn't do yet — see `docs/parity.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortDirection {
+    Ascending,
+    Descending,
+}
+
+/// One ranked-by-field hit: a doc ID plus its already-decoded numeric sort
+/// value — the `FieldDoc`-equivalent minimal shape (no `shardIndex`, same
+/// simplification [`ScoreDoc`] already makes, and no secondary sort fields —
+/// see [`TopFieldCollector`]'s doc comment).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FieldValueDoc {
+    pub doc_id: i32,
+    pub value: i64,
+}
+
+/// Real Lucene's `FieldValueHitQueue`-equivalent ranking order: ranks by
+/// `value` in `direction` (ascending or descending), and — on an exact value
+/// tie — **lower doc ID wins**, the same tie-break convention
+/// [`TopDocsCollector`]'s [`rank_order`] already documents for a BM25 score
+/// tie, kept consistent here for a sort-value tie. Returns
+/// `Ordering::Greater` when `a` should rank ahead of `b`.
+fn field_rank_order(
+    a: &FieldValueDoc,
+    b: &FieldValueDoc,
+    direction: SortDirection,
+) -> std::cmp::Ordering {
+    let value_order = match direction {
+        // Ascending: the *smaller* value ranks ahead, so `a` ranking ahead of
+        // `b` (Greater) happens when `a.value < b.value`, i.e. when
+        // `b.value.cmp(&a.value)` is `Greater`.
+        SortDirection::Ascending => b.value.cmp(&a.value),
+        // Descending: the *larger* value ranks ahead -- direct `a.cmp(b)`.
+        SortDirection::Descending => a.value.cmp(&b.value),
+    };
+    match value_order {
+        std::cmp::Ordering::Equal => b.doc_id.cmp(&a.doc_id),
+        other => other,
+    }
+}
+
+/// `TopFieldCollector`-equivalent (`org.apache.lucene.search.TopFieldCollector`,
+/// scoped to a single numeric `SortField`): keeps the top `n` `(doc_id, value)`
+/// hits ranked by a numeric doc-value field, ascending or descending per
+/// [`SortDirection`], ties broken by ascending doc ID (see [`field_rank_order`]),
+/// discarding everything else.
+///
+/// **Scope**: numeric doc-value fields only (`SortField.Type.LONG`/`INT`,
+/// via the `i64` key `value` already carries — a `DOUBLE` field's sort key
+/// would need a bit-reinterpret step this port doesn't add yet). No String/
+/// `SortedDocValues`-based sort, no multiple sort fields/secondary keys
+/// beyond the single documented doc-ID tie-break. Missing-value handling
+/// (a candidate doc with no value for the sort field) is the caller's job —
+/// this collector only ever sees `(doc_id, value)` pairs a caller already
+/// decided to `offer`; see `doc_value_query::MissingValue` for the policy
+/// its composition functions apply before calling [`TopFieldCollector::offer`].
+/// See `docs/parity.md` for the precise, honest scope statement.
+///
+/// **Design**: not a [`Collector`]/[`ScoringCollector`] impl, because neither
+/// trait's `collect` signature can carry a `Result` for a doc-value decode
+/// error, and reading a doc's sort value is a fallible operation (the same
+/// reason `doc_value_query::sort_by_numeric_doc_value` is a standalone
+/// function rather than a `Collector` variant, see that function's doc
+/// comment). Composition functions (e.g.
+/// `doc_value_query::sort_top_n_by_numeric_doc_value`) decode each candidate
+/// doc's value themselves (propagating any decode error via `Result`) and
+/// call [`TopFieldCollector::offer`] with the already-decoded `i64`, which is
+/// infallible. Internally this is the exact same bounded, always-sorted
+/// `Vec` design [`TopDocsCollector`] already uses (see that struct's doc
+/// comment for the tradeoff rationale) — same `O(n)`-per-insert simple first
+/// cut, revisit if scale demands it.
+#[derive(Debug, Clone)]
+pub struct TopFieldCollector {
+    top_n: usize,
+    direction: SortDirection,
+    hits: Vec<FieldValueDoc>,
+}
+
+impl TopFieldCollector {
+    /// A collector that keeps at most `top_n` hits ranked by `direction`.
+    /// `top_n == 0` is a defined "keep nothing" edge case (every `offer` call
+    /// is a no-op), not a panic.
+    pub fn new(top_n: usize, direction: SortDirection) -> Self {
+        Self {
+            top_n,
+            direction,
+            hits: Vec::new(),
+        }
+    }
+
+    /// Offers one already-decoded `(doc_id, value)` pair. Only inserted if it
+    /// ranks ahead of the current worst kept hit (or there's still room) --
+    /// see [`field_rank_order`].
+    pub fn offer(&mut self, doc_id: i32, value: i64) {
+        if self.top_n == 0 {
+            return;
+        }
+        let candidate = FieldValueDoc { doc_id, value };
+        if self.hits.len() < self.top_n {
+            let pos = self.hits.partition_point(|h| {
+                field_rank_order(h, &candidate, self.direction) == std::cmp::Ordering::Greater
+            });
+            self.hits.insert(pos, candidate);
+            return;
+        }
+        if let Some(worst) = self.hits.last() {
+            if field_rank_order(&candidate, worst, self.direction) == std::cmp::Ordering::Greater {
+                self.hits.pop();
+                let pos = self.hits.partition_point(|h| {
+                    field_rank_order(h, &candidate, self.direction) == std::cmp::Ordering::Greater
+                });
+                self.hits.insert(pos, candidate);
+            }
+        }
+    }
+
+    /// The kept hits, best-first per [`SortDirection`] (see [`field_rank_order`]).
+    pub fn top_docs(&self) -> &[FieldValueDoc] {
+        &self.hits
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn field_docs(v: &[(i32, i64)]) -> Vec<FieldValueDoc> {
+        v.iter()
+            .map(|&(doc_id, value)| FieldValueDoc { doc_id, value })
+            .collect()
+    }
+
+    #[test]
+    fn top_field_collector_empty_input_yields_no_hits() {
+        let c = TopFieldCollector::new(3, SortDirection::Ascending);
+        assert!(c.top_docs().is_empty());
+    }
+
+    #[test]
+    fn top_field_collector_top_n_zero_keeps_nothing() {
+        let mut c = TopFieldCollector::new(0, SortDirection::Ascending);
+        c.offer(1, 5);
+        c.offer(2, 9);
+        assert!(c.top_docs().is_empty());
+    }
+
+    #[test]
+    fn top_field_collector_ascending_orders_smallest_first() {
+        let mut c = TopFieldCollector::new(5, SortDirection::Ascending);
+        c.offer(1, 30);
+        c.offer(2, 10);
+        c.offer(3, 20);
+        assert_eq!(
+            c.top_docs().to_vec(),
+            field_docs(&[(2, 10), (3, 20), (1, 30)])
+        );
+    }
+
+    #[test]
+    fn top_field_collector_descending_orders_largest_first() {
+        let mut c = TopFieldCollector::new(5, SortDirection::Descending);
+        c.offer(1, 30);
+        c.offer(2, 10);
+        c.offer(3, 20);
+        assert_eq!(
+            c.top_docs().to_vec(),
+            field_docs(&[(1, 30), (3, 20), (2, 10)])
+        );
+    }
+
+    #[test]
+    fn top_field_collector_truncates_to_top_n_ascending() {
+        let mut c = TopFieldCollector::new(2, SortDirection::Ascending);
+        c.offer(1, 30);
+        c.offer(2, 10);
+        c.offer(3, 20);
+        // Worst (doc 1, value 30) must be evicted, keeping the two smallest.
+        assert_eq!(c.top_docs().to_vec(), field_docs(&[(2, 10), (3, 20)]));
+    }
+
+    #[test]
+    fn top_field_collector_truncates_to_top_n_descending() {
+        let mut c = TopFieldCollector::new(2, SortDirection::Descending);
+        c.offer(1, 30);
+        c.offer(2, 10);
+        c.offer(3, 20);
+        // Worst (doc 2, value 10) must be evicted, keeping the two largest.
+        assert_eq!(c.top_docs().to_vec(), field_docs(&[(1, 30), (3, 20)]));
+    }
+
+    #[test]
+    fn top_field_collector_tie_break_prefers_lower_doc_id() {
+        let mut c = TopFieldCollector::new(2, SortDirection::Ascending);
+        c.offer(5, 2);
+        c.offer(2, 2);
+        c.offer(9, 2);
+        assert_eq!(c.top_docs().to_vec(), field_docs(&[(2, 2), (5, 2)]));
+    }
+
+    #[test]
+    fn field_rank_order_ties_break_by_ascending_doc_id() {
+        let a = FieldValueDoc {
+            doc_id: 1,
+            value: 5,
+        };
+        let b = FieldValueDoc {
+            doc_id: 2,
+            value: 5,
+        };
+        assert_eq!(
+            field_rank_order(&a, &b, SortDirection::Ascending),
+            std::cmp::Ordering::Greater
+        );
+        assert_eq!(
+            field_rank_order(&a, &b, SortDirection::Descending),
+            std::cmp::Ordering::Greater
+        );
+    }
 
     #[test]
     fn vec_collector_collects_in_call_order() {

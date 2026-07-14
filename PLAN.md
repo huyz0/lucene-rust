@@ -2213,6 +2213,65 @@ passes in full (426 lib tests, including the 15 new `query::tests::rewrite_*`
 cases, plus every integration test, including `boolean_query_fixtures.rs`'s
 13, up from 10 pre-existing).
 
+**Progress (task #80): `TopFieldCollector` -- search-time sort-by-field.**
+New `crates/lucene-search/src/collector.rs::{SortDirection, FieldValueDoc,
+TopFieldCollector}` -- the first general SEARCH-time "sort matched query
+results by a doc-value field" collector, as opposed to the earlier
+segment-level index-sort infrastructure (`sort_by_numeric_doc_value`, task
+#21/#31) or `IndexSort`-by-field write-side ordering. `TopFieldCollector` is
+structurally identical to the existing `TopDocsCollector` (same bounded,
+always-sorted `Vec` design, same tradeoff rationale), but ranks by an
+already-decoded `i64` doc-value instead of an `f32` score, and supports both
+`SortDirection::Ascending` and `Descending` (real `SortField.setReverse`).
+Ties break by ascending doc ID, the same convention `TopDocsCollector`
+already uses for a score tie. It intentionally does **not** implement
+`Collector`/`ScoringCollector` -- reading a doc's sort value is fallible
+(propagates `doc_values::Error`), and neither trait's `collect` signature can
+carry a `Result`; instead callers decode each candidate's value themselves
+and call `TopFieldCollector::offer(doc_id, value)` with the plain, already-
+decoded value.
+
+Two new functions in `doc_value_query.rs` provide the actual end-to-end
+usable entry points: `sort_top_n_by_numeric_doc_value` (the general
+composition point -- takes any already-collected `&[i32]` candidate list,
+same contract `sort_by_numeric_doc_value` already has, plus a
+`SortDirection` and a `top_n` bound, decoding via the existing
+`doc_values::numeric_value` primitive, no new decode logic) and
+`search_numeric_range_sorted_by_field` (a concrete wiring of that composition
+point onto an existing query execution path, `search_numeric_range`: run the
+range query into a `VecCollector`, then sort the matches by a second numeric
+field, ascending or descending, top-N truncated). **Scope, stated precisely**:
+numeric doc-value fields only (`SortField.Type.LONG`/`INT` -- no `DOUBLE`
+bit-reinterpret step, no String/`SortedDocValues`-based sort), single sort
+key (no secondary `Sort` composition), ties broken by ascending doc ID.
+**Missing-value handling**: governed by the same `MissingValue::Exclude`/
+`Default(i64)` enum `sort_by_numeric_doc_value` already established --
+`Exclude` drops a candidate with no value from the top-N entirely,
+`Default(v)` substitutes `v` and lets it compete normally. **Standalone,
+not wired into every existing scored-search caller**: `search_term_query`/
+`search_boolean_query`/`search_term_query_scored`/`search_boolean_query_scored`
+are all unchanged; a caller wanting field-sorted results explicitly calls one
+of the two new functions above, the same "additive, not a breaking change"
+posture this crate has kept for every collector addition so far (see
+`collector.rs`'s own module doc on `ScoringCollector`). Tests: 8 new unit
+tests in `collector.rs` (`top_field_collector_*`, `field_rank_order_*` --
+empty/zero-`top_n`, ascending/descending ordering, top-N truncation both
+directions, ascending-doc-ID tie-break) plus 9 new unit tests in
+`doc_value_query.rs` (`sort_top_n_*`, `search_numeric_range_sorted_by_field_
+end_to_end_real_fixture`) reusing the real, already-checked-in
+`fixtures/data/doc_values_index/` fixture's `varying`/`gcd`/`sparse` fields --
+the end-to-end test queries `gcd in [1000, 1100]` (matching real docs 0, 1,
+2, 4 out of the fixture's 5), then sorts those matches by the `varying`
+field both ascending and descending, asserting the exact real-value-derived
+doc-ID order (`[(0,-100),(4,-3),(1,7),(2,42)]` ascending, reversed
+descending) plus a top-2-truncated descending case, all hand-computed
+against the fixture's own recorded values, not just "sorted somehow". A
+separate hand-built constant-value case confirms the ascending-doc-ID
+tie-break under both directions. `cargo test -p lucene-search`: 442 lib
+tests pass (up from 426), plus every pre-existing integration test still
+green. `cargo clippy --workspace --all-targets -- -D warnings` clean. See
+`docs/parity.md`'s updated row for the exact scope statement.
+
 3. Indexing chain: `IndexWriter`, DWPT-per-thread with in-memory hash (bytes → postings
    builder mirroring `BytesRefHash` + parallel arrays), flush-by-RAM accounting,
    `flush()` → segment.
