@@ -9,6 +9,7 @@ thiserror.workspace = true
 lucene-util = { path = "../lucene-util" }
 lucene-store = { path = "../lucene-store" }
 lucene-codecs = { path = "../lucene-codecs" }
+lucene-analysis = { path = "../lucene-analysis" }
 rayon.workspace = true
 
 [dev-dependencies]

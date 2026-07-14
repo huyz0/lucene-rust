@@ -1664,6 +1664,38 @@ zero/one/multi-token control flow this task adds is new Rust-level logic
 verified directly by the unit tests above, not new byte-format decoding that
 would need a fixture.
 
+**Progress (task #63):** an in-memory tokenize-and-invert *builder*,
+`crates/lucene-index/src/indexing_chain.rs::invert_documents`, real Lucene's
+`DocumentsWriterPerThread`/`IndexingChain`'s job of running a document's
+indexed field text through an `Analyzer` and grouping the result into
+`InMemoryInvertedIndex { terms: BTreeMap<(field, term), Vec<PostingEntry>> }`
+-- each `PostingEntry` a doc's `doc_id` plus its occurrences' resolved
+absolute positions and character offsets (`term_freq()` is
+`occurrences.len()`). `lucene-index/Cargo.toml` gained the same clean
+downward `lucene-analysis` path dependency `lucene-search` already has (no
+cycle, since `lucene-analysis` has zero workspace deps). **Scope reality,
+stated explicitly so this doesn't overclaim:** `segment_writer.rs` still has
+no write-side postings encoder at all (every flushed field is
+`IndexOptions::None`, per that module's own "what this deliberately is not"
+section, unchanged by this task) -- so there is no path from this new
+in-memory structure to any file on disk. Nothing in this port today is
+indexed/searchable via analyzed text as a *result* of this task; what exists
+now is the tested tokenize-and-group logic a future postings writer (task
+#75) will need as its input, with an output shape (doc-ID-sorted
+`Vec<PostingEntry>` per term, each carrying freq/positions/offsets) chosen
+to match what `Lucene104PostingsWriter`'s `.doc`/`.pos`/`.pay` encode needs
+directly, so that writer can consume it without re-deriving doc ordering or
+re-grouping occurrences into frequencies itself. Verified by unit tests
+only (no new Java fixture -- composition of task #61's already
+cross-engine-verified analyzer plus this task's own new Rust-level grouping
+logic, same precedent as task #62): single doc/field exact shape, multiple
+docs sharing a term produce a doc-ID-sorted list, a repeated term's
+`term_freq`/positions are all recorded (not just the first), independent
+per-field entries for the same term text, and stopword-filtered text
+excludes the stopword while preserving surviving tokens' positions.
+Coverage: `indexing_chain.rs` 100% lines/functions/regions (workspace total
+97.35% lines, gate is 95%).
+
 1. `lucene-analysis`: `TokenStream` as an iterator-of-token-structs (skip Java's
    AttributeSource reflection design entirely — a plain
    `Token { bytes, position_increment, offset, ... }` struct), StandardTokenizer via
