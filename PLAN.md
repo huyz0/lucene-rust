@@ -2221,6 +2221,78 @@ see above), and any RAM-threshold/auto-flush triggering (unchanged from
 `IndexWriter`'s existing scope). See `docs/parity.md`'s updated row for the
 full accounting.
 
+**Progress (task #78 follow-up #2): term-vector write side wired into
+`IndexWriter::commit()`.** `IndexWriter::set_term_vector_field(Some(field_name))`
+(new, `crates/lucene-index/src/index_writer.rs`) opts a writer into building
+and writing real term vectors for exactly one field, using
+`crate::indexing_chain::invert_documents` (same tokenize-and-invert builder
+`set_postings_field` already reuses, unchanged) and regrouping its
+term-keyed inverted index by doc ID (term vectors need
+per-document `term -> (freq, positions)`, the transpose of what a postings
+writer wants), then calling `term_vectors::write_best_speed` unmodified to
+encode the bytes -- **no term-vector-encoding logic was reimplemented**.
+`commit()` now, when a term-vector field is set and there are pending docs:
+builds that field's term vectors entirely in memory first (alongside, and
+independently of, any `set_postings_field` output), then flushes stored
+fields via the unchanged `flush_stored_only_segment`, then writes
+`<segment>.tvd`/`.tvx`/`.tvm` and patches `<segment>.si`'s file list to
+include them (reusing the same read-modify-write-then-resync `.si`-patching
+helper shape `write_postings_files` already established, so a segment with
+both postings and term vectors ends up with one `.si` correctly listing all
+seven files regardless of which write happened first). Scope matches
+`term_vectors.rs::write_best_speed`'s own documented scope exactly: one
+field opted into term vectors at a time, single chunk, positions only (no
+offsets/payloads yet). `set_term_vector_field` validates the field exists
+and has `store_term_vectors == true` on its `FieldInfo` (an `Err` otherwise,
+mirroring `set_postings_field`'s own fail-fast validation and
+`field_infos::FieldInfo::check_consistency`'s own "non-indexed field cannot
+store term vectors" invariant). Backward compatible: a writer that never
+calls `set_term_vector_field` (`None`, the default) produces byte-identical
+segments to before this feature existed. **Required end-to-end proof**:
+`crates/lucene-search/tests/index_writer_term_vectors_fixtures.rs::
+documents_added_via_index_writer_have_readable_term_vectors` adds 3
+documents via `IndexWriter::add_document`/`commit()` (not a hand-built
+fixture), opens the resulting segment through the existing unmodified
+`term_vectors::open`/`TermVectorsReader::document`, and reads them back via
+the existing unmodified `lucene_search::term_vector_for_doc`, asserting the
+exact per-document term/frequency/position data a real
+`IndexReader.getTermVector` would return (plus that a field never opted in
+has none). `crates/lucene-index/src/index_writer.rs`'s own unit tests cover
+`set_term_vector_field` misuse (unknown field name, a field without
+`store_term_vectors`), a doc missing the field/holding a non-`String` value,
+text that tokenizes to zero terms, a doc-count mismatch check (a doc with no
+term-vector text for this field still gets a `TermVectorsDocument` entry so
+doc IDs stay aligned with the segment, even though
+`TermVectorsReader::document` itself then decodes that doc as `None`), and
+an empty-pending-docs commit with a term-vector field set.
+**Interaction with automatic merge triggering (task #71), applied
+proactively from the postings-feature review finding above**: the exact
+same class of bug applies here -- `execute_merge`/`merge_stored_only_segments`
+have no `.tvd`/`.tvx`/`.tvm` awareness either, so `segment_stats()` now also
+excludes any segment whose `.si` lists a `.tvd` file from `find_merges`'
+candidate pool, keeping it permanently un-mergeable rather than
+mergeable-with-silent-data-loss. Covered by
+`segments_with_term_vectors_are_never_automatically_merged_away`, mirroring
+the postings version exactly. **Postings + term vectors together, tested**:
+`a_field_with_both_postings_and_term_vectors_configured_together_produces_both_correctly`
+(in `lucene-search`'s fixture file) and
+`a_field_with_both_postings_and_term_vectors_configured_at_once_writes_both_correctly`
+(in `lucene-index`'s own unit tests) both enable
+`set_postings_field(Some("body"))` and `set_term_vector_field(Some("body"))`
+on the same field in the same commit and assert both write sides land
+correctly in one `.si` and are both independently readable -- no
+interaction bug found; the two build/write passes are fully independent
+(separate in-memory builds before either touches `dir`, separate file sets,
+and the `.si`-patching helper for each reads back whatever the other has
+already written rather than overwriting it).
+
+**Still explicitly deferred**: offsets/payloads in term vectors, multiple
+fields with term vectors in one commit, multi-chunk `.tvd`, term-vector-aware
+segment merging (a segment with term vectors can never be auto-merged today,
+same as postings), and any RAM-threshold/auto-flush triggering (unchanged
+from `IndexWriter`'s existing scope). See `docs/parity.md`'s updated row for
+the full accounting.
+
 1. `lucene-analysis`: `TokenStream` as an iterator-of-token-structs (skip Java's
    AttributeSource reflection design entirely — a plain
    `Token { bytes, position_increment, offset, ... }` struct), StandardTokenizer via

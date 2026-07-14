@@ -120,6 +120,7 @@ use lucene_analysis::Analyzer;
 use lucene_codecs::field_infos::{FieldInfo, IndexOptions};
 use lucene_codecs::postings_writer::{self, FieldPostingsInput, TermPostings};
 use lucene_codecs::stored_fields::{self, Document, FieldValue};
+use lucene_codecs::term_vectors::{self, TermVectorField, TermVectorTerm, TermVectorsDocument};
 use lucene_store::codec_util::ID_LENGTH;
 use lucene_store::data_output::DataOutput;
 use lucene_store::directory::Directory;
@@ -152,6 +153,8 @@ pub enum Error {
     LiveDocs(#[from] lucene_codecs::live_docs::Error),
     #[error(transparent)]
     PostingsWriter(#[from] postings_writer::Error),
+    #[error(transparent)]
+    TermVectors(#[from] term_vectors::Error),
     #[error("set_postings_field: no field named {0:?} in this writer's field list")]
     UnknownPostingsField(String),
     #[error(
@@ -159,6 +162,14 @@ pub enum Error {
          is supported by this writer's postings write-side"
     )]
     UnsupportedPostingsIndexOptions(String, IndexOptions),
+    #[error("set_term_vector_field: no field named {0:?} in this writer's field list")]
+    UnknownTermVectorField(String),
+    #[error(
+        "set_term_vector_field: field {0:?} does not have store_term_vectors set; \
+         this writer's term-vector write-side only builds term vectors for a field \
+         whose FieldInfo already advertises them"
+    )]
+    UnsupportedTermVectorField(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -174,6 +185,7 @@ pub struct IndexWriter<'d> {
     pending_docs: Vec<Document>,
     merge_policy: Option<MergePolicyConfig>,
     postings_field: Option<PostingsFieldConfig>,
+    term_vector_field: Option<TermVectorFieldConfig>,
 }
 
 /// One field this writer has been opted into also indexing real postings
@@ -185,6 +197,16 @@ struct PostingsFieldConfig {
     name: String,
     field_number: i32,
     index_options: IndexOptions,
+}
+
+/// One field this writer has been opted into also building real term
+/// vectors for, resolved once by [`IndexWriter::set_term_vector_field`]
+/// against this writer's fixed `fields` list -- same "resolve once, reuse
+/// every commit" shape as [`PostingsFieldConfig`].
+#[derive(Debug, Clone)]
+struct TermVectorFieldConfig {
+    name: String,
+    field_number: i32,
 }
 
 impl<'d> IndexWriter<'d> {
@@ -221,6 +243,7 @@ impl<'d> IndexWriter<'d> {
             pending_docs: Vec::new(),
             merge_policy: None,
             postings_field: None,
+            term_vector_field: None,
         })
     }
 
@@ -273,6 +296,55 @@ impl<'d> IndexWriter<'d> {
                     name: name.to_string(),
                     field_number: info.number,
                     index_options: info.index_options,
+                })
+            }
+        };
+        Ok(())
+    }
+
+    /// Opts this writer into also building and writing real term vectors
+    /// (`.tvd`/`.tvx`/`.tvm`, via [`term_vectors::write_best_speed`]) for one
+    /// field of every segment [`IndexWriter::commit`] flushes from here on --
+    /// same "one field per call" scope as [`IndexWriter::set_postings_field`]
+    /// (there is no per-field file-suffix machinery here to fan this out to
+    /// more than one field within a single segment, and
+    /// [`term_vectors::write_best_speed`] itself is a single-chunk writer,
+    /// same as [`postings_writer::write_single_field`]).
+    ///
+    /// `Some(field_name)` looks `field_name` up in this writer's fixed
+    /// `fields` list and requires its `store_term_vectors` flag to already be
+    /// `true` (an `Err` otherwise) -- matching real Lucene's own
+    /// `FieldType.setStoreTermVectors` convention, and this crate's own
+    /// [`lucene_codecs::field_infos::FieldInfo::check_consistency`]
+    /// invariant that a non-indexed field can never set that flag. `None`
+    /// (the default a freshly [`IndexWriter::open`]ed writer starts with)
+    /// turns this back off -- `commit()` then behaves exactly as it did
+    /// before this feature existed.
+    ///
+    /// Only [`FieldValue::String`] values contribute indexable text for the
+    /// opted-in field -- a document with no value, or a non-`String` value,
+    /// for that field contributes no term vector for that document (same
+    /// "best effort per document" shape [`IndexWriter::set_postings_field`]
+    /// already has). This is independent of
+    /// [`IndexWriter::set_postings_field`] -- a writer may have both set at
+    /// once (to the same field or different fields); each is built and
+    /// written from its own in-memory pass over `pending_docs` before
+    /// anything reaches `dir`.
+    pub fn set_term_vector_field(&mut self, field_name: Option<&str>) -> Result<()> {
+        self.term_vector_field = match field_name {
+            None => None,
+            Some(name) => {
+                let info = self
+                    .fields
+                    .iter()
+                    .find(|f| f.name == name)
+                    .ok_or_else(|| Error::UnknownTermVectorField(name.to_string()))?;
+                if !info.store_term_vectors {
+                    return Err(Error::UnsupportedTermVectorField(name.to_string()));
+                }
+                Some(TermVectorFieldConfig {
+                    name: name.to_string(),
+                    field_number: info.number,
                 })
             }
         };
@@ -442,6 +514,11 @@ impl<'d> IndexWriter<'d> {
                 Some(cfg) => Self::build_postings_output(&self.pending_docs, cfg, &segment_id)?,
                 None => None,
             };
+            let term_vectors_output = match &self.term_vector_field {
+                Some(cfg) => Self::build_term_vectors_output(&self.pending_docs, cfg)
+                    .map(|docs| term_vectors::write_best_speed(&docs, &segment_id, "")),
+                None => None,
+            };
 
             let sci = flush_stored_only_segment(
                 self.dir,
@@ -456,6 +533,16 @@ impl<'d> IndexWriter<'d> {
 
             if let Some(output) = postings_output {
                 Self::write_postings_files(self.dir, &segment_name, &segment_id, &output)?;
+            }
+            if let Some((tvd, tvx, tvm)) = term_vectors_output {
+                Self::write_term_vector_files(
+                    self.dir,
+                    &segment_name,
+                    &segment_id,
+                    &tvd,
+                    &tvx,
+                    &tvm,
+                )?;
             }
 
             new_segment_infos.segments.push(sci);
@@ -555,6 +642,136 @@ impl<'d> IndexWriter<'d> {
         Ok(Some(output))
     }
 
+    /// Builds one [`TermVectorsDocument`] per entry in `docs` (in the same
+    /// doc-ID order [`flush_stored_only_segment`] uses -- index into `docs`
+    /// == doc ID in the new segment), sourced from `config.field_number`'s
+    /// [`FieldValue::String`] values, tokenized via
+    /// [`crate::indexing_chain::invert_documents`] with a plain
+    /// [`Analyzer::standard`] (same analyzer/scope notes as
+    /// [`IndexWriter::build_postings_output`]).
+    ///
+    /// [`crate::indexing_chain::invert_documents`] returns a *term-keyed*
+    /// inverted index (postings grouped by `(field, term)`, each entry a
+    /// doc-ID-sorted list) -- the shape a postings writer wants. Term
+    /// vectors need the transpose: *per-document* `term -> (freq,
+    /// positions)`, so this regroups that same inverted index by doc ID
+    /// rather than reimplementing tokenization a second time.
+    ///
+    /// Returns `Ok(None)` when no pending doc has any indexable text for this
+    /// field at all (mirrors [`IndexWriter::build_postings_output`]'s own
+    /// "nothing to write this commit" outcome). Otherwise returns exactly
+    /// `docs.len()` entries, one per doc ID -- a doc with no term-vector data
+    /// of its own still gets an entry with an empty `fields` list (a
+    /// legitimate, readable "no term vectors for this doc" shape; see
+    /// [`term_vectors::write_best_speed`]'s own tests for this exact case),
+    /// never a shorter vector, since [`term_vectors::write_best_speed`]
+    /// derives `max_doc` directly from `docs.len()`.
+    fn build_term_vectors_output(
+        docs: &[Document],
+        config: &TermVectorFieldConfig,
+    ) -> Option<Vec<TermVectorsDocument>> {
+        let mut triples: Vec<(i32, &str, &str)> = Vec::new();
+        for (doc_id, doc) in docs.iter().enumerate() {
+            let text = doc
+                .fields
+                .iter()
+                .find(|f| f.field_number == config.field_number)
+                .and_then(|f| match &f.value {
+                    FieldValue::String(s) => Some(s.as_str()),
+                    _ => None,
+                });
+            if let Some(text) = text {
+                triples.push((doc_id as i32, config.name.as_str(), text));
+            }
+        }
+        if triples.is_empty() {
+            return None;
+        }
+
+        let analyzer = Analyzer::standard(None);
+        let inverted = invert_documents(&triples, &analyzer);
+        if inverted.terms.is_empty() {
+            // Every doc's text tokenized to zero terms (e.g. only
+            // whitespace) -- same "nothing to write this commit" outcome as
+            // an empty `triples`, not an error.
+            return None;
+        }
+
+        // Regroup the term-keyed inverted index by doc ID: for each doc,
+        // collect every term it occurs in (ascending term-byte order, since
+        // `inverted.terms` -- a `BTreeMap` keyed only by this one field's
+        // `(field, term)` pairs here -- already iterates that way) into one
+        // `TermVectorField`.
+        let mut per_doc: Vec<Vec<TermVectorTerm>> = vec![Vec::new(); docs.len()];
+        for ((_, term), entries) in &inverted.terms {
+            for entry in entries {
+                per_doc[entry.doc_id as usize].push(TermVectorTerm {
+                    term: term.as_bytes().to_vec(),
+                    freq: entry.term_freq(),
+                    positions: Some(entry.positions()),
+                    start_offsets: None,
+                    end_offsets: None,
+                    payloads: None,
+                });
+            }
+        }
+
+        let tv_docs = per_doc
+            .into_iter()
+            .map(|terms| TermVectorsDocument {
+                fields: if terms.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![TermVectorField {
+                        field_number: config.field_number,
+                        has_positions: true,
+                        has_offsets: false,
+                        has_payloads: false,
+                        terms,
+                    }]
+                },
+            })
+            .collect();
+        Some(tv_docs)
+    }
+
+    /// Writes [`IndexWriter::build_term_vectors_output`]'s three files
+    /// (`<segment_name>.tvd`/`.tvx`/`.tvm`) into `dir` and patches the
+    /// already-written `<segment_name>.si` to list them -- same
+    /// read-modify-write-then-resync pattern
+    /// [`IndexWriter::write_postings_files`] already uses, reused rather than
+    /// duplicated here so a segment with both postings and term vectors
+    /// configured ends up with one `.si` correctly listing all seven files
+    /// (whichever write happened first is read back and extended by the
+    /// second, not overwritten).
+    fn write_term_vector_files(
+        dir: &dyn Directory,
+        segment_name: &str,
+        segment_id: &[u8; ID_LENGTH],
+        tvd: &[u8],
+        tvx: &[u8],
+        tvm: &[u8],
+    ) -> Result<()> {
+        let tvd_name = format!("{segment_name}.tvd");
+        let tvx_name = format!("{segment_name}.tvx");
+        let tvm_name = format!("{segment_name}.tvm");
+
+        for (name, bytes) in [(&tvd_name, tvd), (&tvx_name, tvx), (&tvm_name, tvm)] {
+            write_file(dir, name, bytes)?;
+        }
+
+        let si_name = format!("{segment_name}.si");
+        let si_bytes: Vec<u8> = dir.open(&si_name)?.to_vec();
+        let mut si = segment_info::parse(&si_bytes, segment_id)?;
+        si.files
+            .extend([tvd_name.clone(), tvx_name.clone(), tvm_name.clone()]);
+        let si_bytes = segment_info::write(&si, "");
+        write_file(dir, &si_name, &si_bytes)?;
+
+        dir.sync(&[tvd_name, tvx_name, tvm_name, si_name])?;
+        Ok(())
+    }
+
     /// Writes [`IndexWriter::build_postings_output`]'s four files
     /// (`<segment_name>.doc`/`.tim`/`.tip`/`.tmd`) into `dir` and patches the
     /// already-written `<segment_name>.si` (from
@@ -638,23 +855,31 @@ impl<'d> IndexWriter<'d> {
     /// own [`SegmentCommitInfo`] (already in memory, no re-read needed).
     ///
     /// **Segments with postings files (`.doc`/`.tim`/`.tip`/`.tmd`, written
-    /// when [`IndexWriter::set_postings_field`] is configured) are excluded
+    /// when [`IndexWriter::set_postings_field`] is configured) or term-vector
+    /// files (`.tvd`/`.tvx`/`.tvm`, written when
+    /// [`IndexWriter::set_term_vector_field`] is configured) are excluded
     /// entirely** -- [`execute_merge`](IndexWriter::execute_merge) only
     /// merges stored fields via
     /// [`crate::merge::merge_stored_only_segments`], which has no knowledge
-    /// of postings at all. Feeding such a segment into `find_merges` would
-    /// let an automatic merge silently drop that segment's postings (the
-    /// merged segment's `.si` would list only stored-fields files, and the
-    /// source segment's real `.doc`/`.tim`/`.tip`/`.tmd` would become
-    /// orphaned on disk) with no error surfaced -- excluding these segments
-    /// from consideration keeps them permanently un-mergeable rather than
-    /// mergeable-with-silent-data-loss, until postings-aware merging exists.
+    /// of postings or term vectors at all. Feeding such a segment into
+    /// `find_merges` would let an automatic merge silently drop that
+    /// segment's postings/term vectors (the merged segment's `.si` would
+    /// list only stored-fields files, and the source segment's real
+    /// `.doc`/`.tim`/`.tip`/`.tmd`/`.tvd`/`.tvx`/`.tvm` would become orphaned
+    /// on disk) with no error surfaced -- excluding these segments from
+    /// consideration keeps them permanently un-mergeable rather than
+    /// mergeable-with-silent-data-loss, until postings/term-vector-aware
+    /// merging exists.
     fn segment_stats(&self) -> Result<Vec<merge_policy::SegmentStat>> {
         let mut stats = Vec::with_capacity(self.segment_infos.segments.len());
         for sci in &self.segment_infos.segments {
             let si_bytes = self.dir.open(&format!("{}.si", sci.segment_name))?.to_vec();
             let si = segment_info::parse(&si_bytes, &sci.segment_id)?;
-            if si.files.iter().any(|f| f.ends_with(".doc")) {
+            if si
+                .files
+                .iter()
+                .any(|f| f.ends_with(".doc") || f.ends_with(".tvd"))
+            {
                 continue;
             }
             let size_bytes = merge_policy::segment_byte_size(self.dir, &si);
@@ -1872,5 +2097,345 @@ mod tests {
             let si = segment_info::parse(&si_bytes, &sci.segment_id).unwrap();
             assert!(si.files.iter().any(|f| f.ends_with(".tim")));
         }
+    }
+
+    // --- set_term_vector_field / commit()'s term-vector-writing path ---
+
+    fn tv_body_field(number: i32) -> FieldInfo {
+        FieldInfo {
+            index_options: IndexOptions::DocsAndFreqs,
+            store_term_vectors: true,
+            ..stored_only_field("body", number)
+        }
+    }
+
+    #[test]
+    fn set_term_vector_field_rejects_an_unknown_field_name() {
+        let tmp = tempdir("unknown-tv-field");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+
+        let err = writer
+            .set_term_vector_field(Some("nonexistent"))
+            .unwrap_err();
+        assert!(matches!(err, Error::UnknownTermVectorField(name) if name == "nonexistent"));
+    }
+
+    #[test]
+    fn set_term_vector_field_rejects_a_field_without_store_term_vectors() {
+        let tmp = tempdir("unflagged-tv-field");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), body_field(1)]; // body_field: store_term_vectors == false
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+
+        let err = writer.set_term_vector_field(Some("body")).unwrap_err();
+        assert!(matches!(err, Error::UnsupportedTermVectorField(name) if name == "body"));
+    }
+
+    #[test]
+    fn commit_with_term_vector_field_writes_readable_term_vectors_for_multiple_docs_and_terms() {
+        let tmp = tempdir("tv-commit");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), tv_body_field(1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_term_vector_field(Some("body")).unwrap();
+
+        writer.add_document(doc_with_body("a", "the quick fox"));
+        writer.add_document(doc_with_body("b", "the lazy fox"));
+        writer.add_document(doc_with_body("c", "the fox runs"));
+        let sis = writer.commit().unwrap().clone();
+        assert_eq!(sis.segments.len(), 1);
+        let sci = &sis.segments[0];
+
+        // Stored fields are still intact (backward-compatible).
+        assert_eq!(read_all_docs(&dir, &sis), vec!["a", "b", "c"]);
+
+        // The term-vector files exist and are listed in `.si`.
+        let si_bytes = dir.open(&format!("{}.si", sci.segment_name)).unwrap();
+        let si = segment_info::parse(&si_bytes, &sci.segment_id).unwrap();
+        for ext in ["tvd", "tvx", "tvm"] {
+            let name = format!("{}.{ext}", sci.segment_name);
+            assert!(si.files.contains(&name), "missing {name} in .si files");
+            assert!(
+                dir.list_all().unwrap().contains(&name),
+                "missing {name} on disk"
+            );
+        }
+
+        // Readable via the existing, unmodified read side.
+        let tvd = dir.open(&format!("{}.tvd", sci.segment_name)).unwrap();
+        let tvx = dir.open(&format!("{}.tvx", sci.segment_name)).unwrap();
+        let tvm = dir.open(&format!("{}.tvm", sci.segment_name)).unwrap();
+        let reader = lucene_codecs::term_vectors::open(&tvd, &tvx, &tvm, &sci.segment_id, "")
+            .expect("term_vectors::open on IndexWriter-produced .tvd/.tvx/.tvm");
+        assert_eq!(reader.max_doc(), 3);
+
+        let doc0 = reader.document(0).unwrap().unwrap();
+        assert_eq!(doc0.fields.len(), 1);
+        assert_eq!(doc0.fields[0].field_number, 1);
+        assert!(doc0.fields[0].has_positions);
+        let mut terms0: Vec<String> = doc0.fields[0]
+            .terms
+            .iter()
+            .map(|t| String::from_utf8(t.term.clone()).unwrap())
+            .collect();
+        terms0.sort();
+        assert_eq!(terms0, vec!["fox", "quick", "the"]);
+
+        let doc2 = reader.document(2).unwrap().unwrap();
+        let mut terms2: Vec<String> = doc2.fields[0]
+            .terms
+            .iter()
+            .map(|t| String::from_utf8(t.term.clone()).unwrap())
+            .collect();
+        terms2.sort();
+        assert_eq!(terms2, vec!["fox", "runs", "the"]);
+    }
+
+    #[test]
+    fn commit_with_no_term_vector_field_configured_stays_stored_only() {
+        // Backward compatibility: a writer that never calls
+        // `set_term_vector_field` must produce exactly the same on-disk
+        // shape as before this feature existed -- no `.tvd`/`.tvx`/`.tvm`
+        // files at all.
+        let tmp = tempdir("no-tv-field");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), tv_body_field(1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+
+        writer.add_document(doc_with_body("a", "the quick fox"));
+        let sis = writer.commit().unwrap().clone();
+        let sci = &sis.segments[0];
+
+        let files = dir.list_all().unwrap();
+        for ext in ["tvd", "tvx", "tvm"] {
+            assert!(!files.contains(&format!("{}.{ext}", sci.segment_name)));
+        }
+    }
+
+    #[test]
+    fn commit_with_term_vector_field_but_no_pending_docs_writes_no_term_vector_files() {
+        let tmp = tempdir("tv-empty-commit");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), tv_body_field(1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_term_vector_field(Some("body")).unwrap();
+
+        let sis = writer.commit().unwrap().clone();
+        assert!(sis.segments.is_empty());
+    }
+
+    #[test]
+    fn commit_with_term_vector_field_but_no_doc_has_that_fields_text_skips_term_vectors() {
+        let tmp = tempdir("tv-no-text");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), tv_body_field(1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_term_vector_field(Some("body")).unwrap();
+
+        writer.add_document(doc("a")); // only field_number 0 ("id"), no "body"
+        let sis = writer.commit().unwrap().clone();
+        let sci = &sis.segments[0];
+
+        let files = dir.list_all().unwrap();
+        assert!(!files.contains(&format!("{}.tvd", sci.segment_name)));
+    }
+
+    #[test]
+    fn commit_with_term_vector_field_holding_a_non_string_value_skips_that_doc() {
+        let tmp = tempdir("tv-non-string-value");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), tv_body_field(1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_term_vector_field(Some("body")).unwrap();
+
+        writer.add_document(Document {
+            fields: vec![
+                StoredField {
+                    field_number: 0,
+                    value: FieldValue::String("a".to_string()),
+                },
+                StoredField {
+                    field_number: 1,
+                    value: FieldValue::Int(42), // not a String -- must be skipped
+                },
+            ],
+        });
+        let sis = writer.commit().unwrap().clone();
+        let sci = &sis.segments[0];
+
+        let files = dir.list_all().unwrap();
+        assert!(!files.contains(&format!("{}.tvd", sci.segment_name)));
+    }
+
+    #[test]
+    fn commit_with_term_vector_field_text_that_tokenizes_to_nothing_skips_term_vectors() {
+        let tmp = tempdir("tv-empty-tokenization");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), tv_body_field(1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_term_vector_field(Some("body")).unwrap();
+
+        writer.add_document(doc_with_body("a", "   "));
+        let sis = writer.commit().unwrap().clone();
+        let sci = &sis.segments[0];
+
+        let files = dir.list_all().unwrap();
+        assert!(!files.contains(&format!("{}.tvd", sci.segment_name)));
+    }
+
+    #[test]
+    fn commit_with_term_vector_field_where_only_some_docs_have_text_still_writes_an_entry_per_doc()
+    {
+        // A doc with no indexable text for the opted-in field still needs a
+        // `TermVectorsDocument` entry (empty `fields`) so doc IDs stay
+        // aligned with the segment's real doc count --
+        // `write_best_speed` derives `max_doc` from `docs.len()`.
+        let tmp = tempdir("tv-partial-docs");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), tv_body_field(1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_term_vector_field(Some("body")).unwrap();
+
+        writer.add_document(doc_with_body("a", "alpha"));
+        writer.add_document(doc("b")); // no "body" field at all
+        writer.add_document(doc_with_body("c", "gamma"));
+        let sis = writer.commit().unwrap().clone();
+        let sci = &sis.segments[0];
+
+        let tvd = dir.open(&format!("{}.tvd", sci.segment_name)).unwrap();
+        let tvx = dir.open(&format!("{}.tvx", sci.segment_name)).unwrap();
+        let tvm = dir.open(&format!("{}.tvm", sci.segment_name)).unwrap();
+        let reader =
+            lucene_codecs::term_vectors::open(&tvd, &tvx, &tvm, &sci.segment_id, "").unwrap();
+        assert_eq!(reader.max_doc(), 3);
+        assert_eq!(reader.document(0).unwrap().unwrap().fields.len(), 1);
+        // A doc contributing zero fields to this chunk decodes as `None`,
+        // not `Some(fields: vec![])` -- see `TermVectorsReader::document`'s
+        // own `doc_num_fields == 0 => Ok(None)` branch.
+        assert!(reader.document(1).unwrap().is_none());
+        assert_eq!(reader.document(2).unwrap().unwrap().fields.len(), 1);
+    }
+
+    #[test]
+    fn setting_term_vector_field_back_to_none_restores_stored_only_behavior() {
+        let tmp = tempdir("tv-field-reset");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), tv_body_field(1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_term_vector_field(Some("body")).unwrap();
+        writer.set_term_vector_field(None).unwrap();
+
+        writer.add_document(doc_with_body("a", "the quick fox"));
+        let sis = writer.commit().unwrap().clone();
+        let sci = &sis.segments[0];
+
+        let files = dir.list_all().unwrap();
+        assert!(!files.contains(&format!("{}.tvd", sci.segment_name)));
+    }
+
+    #[test]
+    fn segments_with_term_vectors_are_never_automatically_merged_away() {
+        // Same class of bug as `segments_with_postings_are_never_...`, for
+        // term vectors instead of postings: enabling both
+        // `set_term_vector_field` and `set_merge_policy` at once must not
+        // let automatic merging silently drop a segment's term vectors --
+        // `execute_merge` only knows how to merge stored fields, so
+        // `segment_stats()` excludes any segment carrying `.tvd` from
+        // `find_merges`' candidate pool entirely.
+        let tmp = tempdir("tv-and-merge-policy");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), tv_body_field(1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_term_vector_field(Some("body")).unwrap();
+        writer.set_merge_policy(Some(tight_merge_policy()));
+
+        // tight_merge_policy's segments_per_tier is 2 -- three one-doc
+        // commits, each producing a segment with real term vectors, must
+        // cross that threshold and would normally trigger a merge.
+        for id in ["a", "b", "c"] {
+            writer.add_document(doc_with_body(id, "shared text"));
+            writer.commit().unwrap();
+        }
+
+        let final_count = writer.segment_infos().segments.len();
+        assert_eq!(
+            final_count, 3,
+            "segments carrying term vectors must never be automatically merged"
+        );
+
+        // Every segment's real term-vector files must still be present and
+        // correctly listed in its own .si -- nothing was silently dropped.
+        for sci in &writer.segment_infos().segments.clone() {
+            let files = dir.list_all().unwrap();
+            assert!(files.contains(&format!("{}.tvd", sci.segment_name)));
+            let si_bytes = dir.open(&format!("{}.si", sci.segment_name)).unwrap();
+            let si = segment_info::parse(&si_bytes, &sci.segment_id).unwrap();
+            assert!(si.files.iter().any(|f| f.ends_with(".tvd")));
+        }
+    }
+
+    #[test]
+    fn a_field_with_both_postings_and_term_vectors_configured_at_once_writes_both_correctly() {
+        // Real Lucene's ordinary case: a field is both indexed (postings)
+        // and has term vectors stored, in the same commit. Both write-side
+        // passes must coexist: the segment's `.si` lists all seven files,
+        // and both remain independently readable.
+        let tmp = tempdir("postings-and-tv-together");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), tv_body_field(1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_postings_field(Some("body")).unwrap();
+        writer.set_term_vector_field(Some("body")).unwrap();
+
+        writer.add_document(doc_with_body("a", "the quick fox"));
+        writer.add_document(doc_with_body("b", "the lazy fox"));
+        let sis = writer.commit().unwrap().clone();
+        assert_eq!(sis.segments.len(), 1);
+        let sci = &sis.segments[0];
+
+        let si_bytes = dir.open(&format!("{}.si", sci.segment_name)).unwrap();
+        let si = segment_info::parse(&si_bytes, &sci.segment_id).unwrap();
+        for ext in ["doc", "tim", "tip", "tmd", "tvd", "tvx", "tvm"] {
+            let name = format!("{}.{ext}", sci.segment_name);
+            assert!(si.files.contains(&name), "missing {name} in .si files");
+        }
+
+        // Postings side still readable.
+        let tim = dir.open(&format!("{}.tim", sci.segment_name)).unwrap();
+        let tip = dir.open(&format!("{}.tip", sci.segment_name)).unwrap();
+        let tmd = dir.open(&format!("{}.tmd", sci.segment_name)).unwrap();
+        let field_infos = fi::FieldInfos {
+            fields: vec![
+                fi::FieldInfo {
+                    index_options: IndexOptions::None,
+                    ..stored_only_field("id", 0)
+                },
+                tv_body_field(1),
+            ],
+        };
+        let block_fields = blocktree::open(&tim, &tip, &tmd, &field_infos, &sci.segment_id, "", 2)
+            .expect("blocktree::open on IndexWriter-produced .tim/.tip/.tmd");
+        let field = block_fields.field("body").unwrap();
+        let doc_bytes = dir.open(&format!("{}.doc", sci.segment_name)).unwrap();
+        let doc_in = DocInput::open(&doc_bytes, &sci.segment_id, "").expect("open .doc");
+        let postings = field.postings(b"fox", Some(&doc_in)).unwrap().unwrap();
+        assert_eq!(postings.docs, vec![0, 1]);
+
+        // Term-vector side also readable.
+        let tvd = dir.open(&format!("{}.tvd", sci.segment_name)).unwrap();
+        let tvx = dir.open(&format!("{}.tvx", sci.segment_name)).unwrap();
+        let tvm = dir.open(&format!("{}.tvm", sci.segment_name)).unwrap();
+        let reader =
+            lucene_codecs::term_vectors::open(&tvd, &tvx, &tvm, &sci.segment_id, "").unwrap();
+        let doc0 = reader.document(0).unwrap().unwrap();
+        let mut terms0: Vec<String> = doc0.fields[0]
+            .terms
+            .iter()
+            .map(|t| String::from_utf8(t.term.clone()).unwrap())
+            .collect();
+        terms0.sort();
+        assert_eq!(terms0, vec!["fox", "quick", "the"]);
     }
 }
