@@ -2892,6 +2892,75 @@ through `search_points_range` itself, not just through `points::open`.
 coverage: `points_query.rs` 98.72% lines (above the 95% bar). See
 `docs/parity.md`'s updated row for the exact scope statement.
 
+**Progress (TopFieldCollector FFI exposure):** `lucene-ffi` C-ABI wrappers
+for task #80's `search_numeric_range_sorted_by_field` (single segment) and
+task #88's `search_numeric_range_sorted_by_field_multi_segment`
+(multi-segment fan-out/merge), closing that pair's own "no FFI exposure
+yet" gap flagged in `docs/parity.md`. New module
+`crates/lucene-ffi/src/range_sort.rs`:
+
+- `ffi_search_numeric_range_sorted_by_field(segment_handle, range_field,
+  range_field_len, min, max, sort_field, sort_field_len, direction,
+  missing_is_default, missing_default, top_n, out_sorted_results_handle)`
+  and its multi-segment sibling
+  `ffi_search_numeric_range_sorted_by_field_multi_segment(segment_handles,
+  doc_bases, segment_count, range_field, range_field_len, min, max,
+  sort_field, sort_field_len, direction, missing_is_default,
+  missing_default, top_n, out_sorted_results_handle)` -- both thin
+  `catch_unwind`-guarded marshal-in/call-into/marshal-out wrappers; no
+  range-matching, sorting, or doc-ID-translation logic reimplemented.
+- **Result-handle shape: reuses the existing `SortedResultsHandle`/
+  `registry::sorted_results()` (task #40), no new handle type.** Both
+  wrapped Rust functions return `Vec<FieldValueDoc>` -- exactly the same
+  `(doc_id: i32, value: i64)` pair `SortedResultsHandle` already carries for
+  `sort.rs`'s `ffi_sort_by_doc_value`/`ffi_sort_by_multi_valued_doc_value`
+  (also a doc-value-ranked `Vec<(i32, i64)>`) -- so this reuses the existing
+  `ffi_sorted_results_len`/`ffi_sorted_results_copy`/`ffi_close_sorted_results`
+  accessor trio verbatim rather than inventing a fourth, structurally
+  identical results type.
+- `direction` crosses the wire as `i32` (`0` = `SortDirection::Ascending`,
+  `1` = `SortDirection::Descending`, anything else is
+  `FfiStatus::InvalidArgument`) -- the same `0`/`1`-selector convention
+  `sort.rs`'s `ffi_sort_by_multi_valued_doc_value` already established for
+  `ValueSelector`. Field lookup (`sort.rs::numeric_entry_for`, now
+  `pub(crate)`) and the missing-value wire encoding
+  (`sort.rs::missing_value`) are reused directly, not duplicated.
+- **Multi-segment wire format: a flat array of already-open segment
+  handles plus a parallel caller-supplied `doc_base` array, not a
+  `DirectoryReaderHandle`.** Task #51's `DirectoryReaderHandle` carries no
+  `.dvm`/`.dvd` doc-values data per segment at all (see that handle's own
+  doc comment), so there is nothing for a reader-handle-based entry point
+  to read a doc-value from. Each already-opened `ffi_open_segment` handle
+  already carries its own `dv_data`/`dv_meta` (task #40), so the
+  multi-segment entry point instead looks each handle up in the existing
+  `segments()` registry and builds the exact
+  `lucene_search::multi_segment::DocValueSegment` list that function
+  already expects, with the caller supplying each segment's `doc_base`
+  explicitly -- a bare segment handle has no way to know its own position
+  in a larger commit. `live_docs` is always `None` (no `.liv` FFI surface
+  exists anywhere in this crate yet), matching every other query entry
+  point here.
+
+No range-matching/sort/merge logic was touched or duplicated --
+`lucene-search/src/doc_value_query.rs` and `multi_segment.rs` are
+unchanged. Tests (20, all in `range_sort::tests`): a differential test
+asserting the FFI wrapper's output matches calling
+`search_numeric_range_sorted_by_field` directly against the same real
+`fixtures/data/doc_values_index/` fixture bytes; both sort directions and
+top-`n` truncation; the missing-value default policy; multi-segment
+doc-ID translation (the same fixture segment opened twice with different
+`doc_base`s, mirroring `multi_segment.rs`'s own cross-segment tests) and a
+descending-plus-truncation case; and the usual null-pointer (out-handle,
+segment-handle array, doc-base array)/unknown-handle/decode-error/
+invalid-direction/invalid-field/segment-without-doc-values error paths for
+both entry points. `cargo test -p lucene-ffi`: 289 tests pass. `cargo fmt
+--all` and `cargo clippy --workspace --all-targets -- -D warnings` clean.
+New-file coverage: `range_sort.rs` 99.33% lines / 99.03% regions / 97.87%
+functions (above the 95% bar; workspace `lucene-ffi` total 98.40% lines).
+See `docs/parity.md`'s updated rows (the `TopFieldCollector` row's
+"Deferred" note and the new `range_sort.rs` row) for the exact scope
+statement.
+
 3. Indexing chain: `IndexWriter`, DWPT-per-thread with in-memory hash (bytes → postings
    builder mirroring `BytesRefHash` + parallel arrays), flush-by-RAM accounting,
    `flush()` → segment.

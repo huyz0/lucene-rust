@@ -125,6 +125,20 @@
 //!   bulk-copy and no flat element list to walk in order, unlike every other
 //!   results-handle trio in this crate -- see `results_explain.rs`'s module
 //!   doc), then releases it.
+//! - [`range_sort::ffi_search_numeric_range_sorted_by_field`]/
+//!   [`range_sort::ffi_search_numeric_range_sorted_by_field_multi_segment`]
+//!   (TopFieldCollector FFI exposure): wraps
+//!   `lucene_search::doc_value_query::search_numeric_range_sorted_by_field`
+//!   (single segment) and
+//!   `lucene_search::multi_segment::search_numeric_range_sorted_by_field_multi_segment`
+//!   (multi-segment fan-out/merge across a flat array of already-open
+//!   segment handles plus caller-supplied `doc_base`s, since
+//!   [`registry::DirectoryReaderHandle`] carries no doc-values data -- see
+//!   `range_sort.rs`'s module doc) -- no range-matching/sort/merge logic
+//!   reimplemented, results collected into the existing
+//!   [`registry::SortedResultsHandle`] (same `(doc_id, value)` wire shape
+//!   `sort.rs`'s functions already use, read back via the existing
+//!   `results_sorted.rs` trio).
 //! - [`error::guard`]/[`ffi_get_last_error_message`]: every exported
 //!   function's panic-safety wrapper and the thread-local last-error
 //!   message accessor.
@@ -207,6 +221,7 @@ mod facets;
 mod handle;
 mod highlighter;
 mod query;
+mod range_sort;
 mod raw;
 mod registry;
 mod results;
@@ -231,6 +246,10 @@ pub use highlighter::ffi_assemble_fragments;
 pub use query::{
     ffi_search_boolean_query, ffi_search_boolean_query_scored, ffi_search_phrase_query,
     ffi_search_phrase_query_scored, ffi_search_term_query, ffi_search_term_query_scored,
+};
+pub use range_sort::{
+    ffi_search_numeric_range_sorted_by_field,
+    ffi_search_numeric_range_sorted_by_field_multi_segment,
 };
 pub use results::{ffi_close_results, ffi_results_copy, ffi_results_len};
 pub use results_explain::{

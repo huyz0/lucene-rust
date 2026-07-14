@@ -50,12 +50,12 @@ use crate::registry::{
     lock_recovering, segments, sorted_results, SegmentHandle, SortedResultsHandle,
 };
 
-fn map_sort_error(e: lucene_search::Error) -> FfiStatus {
+pub(crate) fn map_sort_error(e: lucene_search::Error) -> FfiStatus {
     set_last_error(format!("doc-value sort failed: {e}"));
     FfiStatus::Decode
 }
 
-fn missing_value(missing_is_default: bool, missing_default: i64) -> MissingValue {
+pub(crate) fn missing_value(missing_is_default: bool, missing_default: i64) -> MissingValue {
     if missing_is_default {
         MissingValue::Default(missing_default)
     } else {
@@ -85,7 +85,14 @@ unsafe fn candidates_from_raw(ptr: *const i32, len: usize) -> Result<Vec<i32>, F
 /// [`NumericEntry`] in `segment`'s opened `.dvm`. `Err(InvalidArgument)` when
 /// the segment has no doc values open, the field is unknown, or the field
 /// has no NUMERIC doc-values entry.
-fn numeric_entry_for<'seg>(
+///
+/// `pub(crate)` (rather than private) so [`crate::range_sort`]'s
+/// range-then-sort-by-field entry points (TopFieldCollector FFI exposure)
+/// can reuse the exact same field-name -> `NumericEntry` lookup instead of
+/// duplicating it -- both `range_entry`/`sort_entry` there are NUMERIC
+/// entries looked up the same way `ffi_sort_by_doc_value`'s single sort key
+/// already is.
+pub(crate) fn numeric_entry_for<'seg>(
     segment: &'seg SegmentHandle,
     field: &str,
 ) -> Result<&'seg NumericEntry, FfiStatus> {
