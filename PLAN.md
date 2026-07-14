@@ -2149,6 +2149,78 @@ multi-block `.tim` fields (block-splitting/floor sub-blocks/multi-level
 positions/offsets/payloads, and any wiring into the segment writer/
 `IndexWriter`. See `docs/parity.md`'s new row for the full accounting.
 
+**Progress (task #78 follow-up): postings write side wired into `IndexWriter::commit()`.**
+`IndexWriter::set_postings_field(Some(field_name))` (new,
+`crates/lucene-index/src/index_writer.rs`) opts a writer into building and
+writing real postings for exactly one field, using
+`crate::indexing_chain::invert_documents` (already-built tokenize-and-invert
+builder, unchanged) to turn that field's `FieldValue::String` values into
+`postings_writer::TermPostings`, then calling
+`postings_writer::write_single_field` unmodified to encode the bytes --
+**no postings-encoding logic was reimplemented**. `commit()` now, when a
+postings field is set and there are pending docs: builds that field's
+postings entirely in memory first, then flushes stored fields via the
+unchanged `flush_stored_only_segment`, then writes `<segment>.doc`/`.tim`/
+`.tip`/`.tmd` and patches `<segment>.si`'s file list to include them. This
+closes the "is a document added via `IndexWriter` now searchable" gap task
+#78 explicitly left open, but for the **exact same narrow scope**
+`postings_writer.rs` already has: one field indexed with postings at a
+time (no per-field file-suffix machinery to fan out to more than one),
+one `.tim` block per commit (`docFreq < BLOCK_SIZE` = 256), term-frequency
+only (no positions/offsets/payloads, so no phrase queries over
+`IndexWriter`-produced postings yet). A term reaching `docFreq >= 256` in
+one commit's pending-document batch makes the **whole `commit()` call
+fail** with `Error::PostingsWriter(postings_writer::Error::DocFreqTooLarge)`
+-- checked before anything is written to `dir`, so `dir`/`pending_docs`/
+`segment_infos` are all left completely unchanged, never a partially-written
+segment (same atomicity `IndexWriter::update_document` already guarantees).
+Backward compatible: a writer that never calls `set_postings_field`
+(`None`, the default) produces byte-identical stored-only segments to
+before this feature existed -- every pre-existing `IndexWriter` test still
+passes unchanged. **Required end-to-end proof**:
+`crates/lucene-search/tests/index_writer_postings_fixtures.rs::
+documents_added_via_index_writer_are_searchable_by_term_query` adds 3
+documents via `IndexWriter::add_document`/`commit()` (not a hand-built
+fixture), opens the resulting segment through the existing unmodified
+`blocktree::open`/`postings::DocInput`, and runs the existing unmodified
+`lucene_search::search_term_query` for 5 distinct terms (shared and
+singleton) plus a missing term, asserting the exact doc IDs a real
+`IndexSearcher` would return. A sibling test,
+`commit_rejects_a_term_at_the_256_doc_freq_boundary`, drives 256 docs
+sharing one term through `IndexWriter` itself and asserts `commit()`
+returns `Err` rather than silently writing wrong/truncated postings.
+`crates/lucene-index/src/index_writer.rs`'s own unit tests cover the same
+boundary from inside the crate (`commit_rejects_and_leaves_state_unchanged_
+when_a_term_reaches_doc_freq_256`, `commit_succeeds_below_the_doc_freq_
+boundary`), plus `set_postings_field` misuse (unknown field name, a field
+with `IndexOptions::None`), a doc missing the field/holding a non-`String`
+value, text that tokenizes to zero terms, and an empty-pending-docs commit
+with a postings field set -- all "skip postings, don't error" cases.
+**Interaction with automatic merge triggering (task #71), fixed during
+review**: `execute_merge`/`merge_stored_only_segments` only know how to
+merge stored fields -- they have no `.doc`/`.tim`/`.tip`/`.tmd` awareness at
+all. Feeding a postings-carrying segment into `find_merges` would let an
+automatic merge silently drop that segment's postings with no error
+(the merged segment's `.si` would list only stored-fields files, and the
+source's real postings files would become orphaned on disk). `segment_stats()`
+now excludes any segment whose `.si` lists a `.doc` file from
+`find_merges`' candidate pool entirely, so such a segment is permanently
+un-mergeable rather than mergeable-with-silent-data-loss, until
+postings-aware merging exists. Covered by
+`segments_with_postings_are_never_automatically_merged_away`: enables both
+`set_postings_field` and `set_merge_policy` at once, crosses the tight
+policy's merge threshold with three postings-carrying one-doc commits, and
+asserts the segment count stays at 3 (no auto-merge fires) with every
+segment's `.tim` file still present and correctly listed in its own `.si`.
+
+**Still explicitly deferred**: multiple fields indexed with postings in one
+commit, multi-block `.tim` fields, positions/offsets/payloads (so no
+`PhraseQuery` support over `IndexWriter`-produced segments), postings-aware
+segment merging (a segment with postings can never be auto-merged today,
+see above), and any RAM-threshold/auto-flush triggering (unchanged from
+`IndexWriter`'s existing scope). See `docs/parity.md`'s updated row for the
+full accounting.
+
 1. `lucene-analysis`: `TokenStream` as an iterator-of-token-structs (skip Java's
    AttributeSource reflection design entirely — a plain
    `Token { bytes, position_increment, offset, ... }` struct), StandardTokenizer via

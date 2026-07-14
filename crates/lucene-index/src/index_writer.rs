@@ -107,6 +107,7 @@
 //! earlier writer session already used.
 
 use crate::deletes;
+use crate::indexing_chain::invert_documents;
 use crate::merge;
 use crate::merge_policy;
 use crate::segment_info::{self, LuceneVersion};
@@ -115,9 +116,12 @@ use crate::segment_writer::{self, flush_stored_only_segment};
 use crate::term_delete;
 use crate::update_document::{self, SegmentDeleteSource};
 
-use lucene_codecs::field_infos::FieldInfo;
-use lucene_codecs::stored_fields::{self, Document};
+use lucene_analysis::Analyzer;
+use lucene_codecs::field_infos::{FieldInfo, IndexOptions};
+use lucene_codecs::postings_writer::{self, FieldPostingsInput, TermPostings};
+use lucene_codecs::stored_fields::{self, Document, FieldValue};
 use lucene_store::codec_util::ID_LENGTH;
+use lucene_store::data_output::DataOutput;
 use lucene_store::directory::Directory;
 use lucene_util::fixed_bit_set::FixedBitSet;
 
@@ -146,6 +150,15 @@ pub enum Error {
     StoredFields(#[from] lucene_codecs::stored_fields::Error),
     #[error(transparent)]
     LiveDocs(#[from] lucene_codecs::live_docs::Error),
+    #[error(transparent)]
+    PostingsWriter(#[from] postings_writer::Error),
+    #[error("set_postings_field: no field named {0:?} in this writer's field list")]
+    UnknownPostingsField(String),
+    #[error(
+        "set_postings_field: field {0:?} has index_options {1:?}; only Docs/DocsAndFreqs \
+         is supported by this writer's postings write-side"
+    )]
+    UnsupportedPostingsIndexOptions(String, IndexOptions),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -160,6 +173,18 @@ pub struct IndexWriter<'d> {
     segment_infos: SegmentInfos,
     pending_docs: Vec<Document>,
     merge_policy: Option<MergePolicyConfig>,
+    postings_field: Option<PostingsFieldConfig>,
+}
+
+/// One field this writer has been opted into also indexing real postings
+/// for, resolved once by [`IndexWriter::set_postings_field`] against this
+/// writer's fixed `fields` list (see that method's doc comment for the exact
+/// scope this mirrors from [`postings_writer::write_single_field`]).
+#[derive(Debug, Clone)]
+struct PostingsFieldConfig {
+    name: String,
+    field_number: i32,
+    index_options: IndexOptions,
 }
 
 impl<'d> IndexWriter<'d> {
@@ -195,7 +220,63 @@ impl<'d> IndexWriter<'d> {
             segment_infos,
             pending_docs: Vec::new(),
             merge_policy: None,
+            postings_field: None,
         })
+    }
+
+    /// Opts this writer into also building and writing real postings
+    /// (`.doc`/`.tim`/`.tip`/`.tmd`, via
+    /// [`postings_writer::write_single_field`]) for one field of every
+    /// segment [`IndexWriter::commit`] flushes from here on -- mirroring
+    /// real Lucene's per-field `FieldType.setIndexOptions`, except this
+    /// facade only ever indexes **one** field at a time (see
+    /// [`postings_writer::write_single_field`]'s own "one field per call"
+    /// scope note; there is no per-field file-suffix machinery here to fan
+    /// that out to more than one field within a single segment).
+    ///
+    /// `Some(field_name)` looks `field_name` up in this writer's fixed
+    /// `fields` list (from [`IndexWriter::open`]) and requires its
+    /// `index_options` to already be `IndexOptions::Docs` or
+    /// `IndexOptions::DocsAndFreqs` (an `Err` otherwise) -- the same
+    /// analyzed-field-text convention real Lucene's own `FieldType` uses to
+    /// mark a field indexable, and the same `index_options` restriction
+    /// [`postings_writer::write_single_field`] itself enforces (no
+    /// positions/offsets/payloads yet). `None` (the default a freshly
+    /// [`IndexWriter::open`]ed writer starts with) turns this back off --
+    /// `commit()` then behaves exactly as it did before this feature
+    /// existed (stored fields only, matching every pre-existing caller).
+    ///
+    /// Only [`FieldValue::String`] values contribute indexable text for the
+    /// opted-in field -- a document with no value, or a non-`String` value,
+    /// for that field contributes no postings for that document (same "best
+    /// effort per document" shape [`crate::indexing_chain::invert_documents`]
+    /// already has for a missing `(doc_id, field, text)` triple).
+    pub fn set_postings_field(&mut self, field_name: Option<&str>) -> Result<()> {
+        self.postings_field = match field_name {
+            None => None,
+            Some(name) => {
+                let info = self
+                    .fields
+                    .iter()
+                    .find(|f| f.name == name)
+                    .ok_or_else(|| Error::UnknownPostingsField(name.to_string()))?;
+                if !matches!(
+                    info.index_options,
+                    IndexOptions::Docs | IndexOptions::DocsAndFreqs
+                ) {
+                    return Err(Error::UnsupportedPostingsIndexOptions(
+                        name.to_string(),
+                        info.index_options,
+                    ));
+                }
+                Some(PostingsFieldConfig {
+                    name: name.to_string(),
+                    field_number: info.number,
+                    index_options: info.index_options,
+                })
+            }
+        };
+        Ok(())
     }
 
     /// Opts this writer into automatic merge triggering (see module doc
@@ -332,6 +413,18 @@ impl<'d> IndexWriter<'d> {
     /// segment appended -- matches real Lucene's `commit()` being a valid,
     /// if unusual, no-op-content commit rather than a special "nothing to do"
     /// case that skips writing. Returns the new committed [`SegmentInfos`].
+    ///
+    /// If [`IndexWriter::set_postings_field`] has opted this writer into
+    /// postings for one field, this also builds and writes that field's real
+    /// `.doc`/`.tim`/`.tip`/`.tmd` for the flushed segment (see
+    /// [`IndexWriter::build_postings_output`]/
+    /// [`IndexWriter::write_postings_files`]) -- entirely in memory *before*
+    /// anything is written to `dir`, so a docFreq >= 256 term (this writer's
+    /// documented single-`.tim`-block limit, see
+    /// [`postings_writer::write_single_field`]) makes the **whole** `commit()`
+    /// call fail with `Err` and leaves `dir`/`pending_docs`/`segment_infos`
+    /// completely unchanged, exactly like [`IndexWriter::update_document`]'s
+    /// own atomicity guarantee -- never a partially-written segment.
     pub fn commit(&mut self) -> Result<&SegmentInfos> {
         let mut new_segment_infos = self.segment_infos.clone();
         new_segment_infos.generation += 1;
@@ -340,6 +433,16 @@ impl<'d> IndexWriter<'d> {
         if !self.pending_docs.is_empty() {
             let segment_name = self.next_segment_name();
             let segment_id = generate_segment_id(self.segment_infos.counter);
+
+            // Built and validated entirely in memory before anything is
+            // written to `dir` -- see this method's own doc comment on why
+            // that ordering is what makes a docFreq-too-large rejection
+            // atomic.
+            let postings_output = match &self.postings_field {
+                Some(cfg) => Self::build_postings_output(&self.pending_docs, cfg, &segment_id)?,
+                None => None,
+            };
+
             let sci = flush_stored_only_segment(
                 self.dir,
                 &segment_name,
@@ -350,6 +453,11 @@ impl<'d> IndexWriter<'d> {
                 &self.pending_docs,
                 false,
             )?;
+
+            if let Some(output) = postings_output {
+                Self::write_postings_files(self.dir, &segment_name, &segment_id, &output)?;
+            }
+
             new_segment_infos.segments.push(sci);
             new_segment_infos.counter += 1;
             self.pending_docs.clear();
@@ -363,6 +471,133 @@ impl<'d> IndexWriter<'d> {
         }
 
         Ok(&self.segment_infos)
+    }
+
+    /// Builds [`postings_writer::write_single_field`]'s input from `docs`'
+    /// [`FieldValue::String`] values for `config.field_number` (each pending
+    /// doc's index into `docs` becomes its doc ID in the new segment,
+    /// matching [`flush_stored_only_segment`]'s own doc-ordering), tokenizes
+    /// via [`crate::indexing_chain::invert_documents`] with a plain
+    /// [`Analyzer::standard`] (no stopwords -- this facade has no
+    /// per-field-analyzer configuration yet, see module doc comment's scope
+    /// notes elsewhere in this crate), and calls
+    /// [`postings_writer::write_single_field`] to actually encode the bytes.
+    ///
+    /// Returns `Ok(None)` when no pending doc has any indexable text for this
+    /// field (nothing to write -- not an error; matches
+    /// [`postings_writer::write_single_field`]'s own `Error::EmptyTerms`
+    /// being a caller-input problem, not a "commit anyway" outcome we want to
+    /// force on every commit that happens to have no postings content).
+    /// Returns `Err` on [`postings_writer::write_single_field`]'s own
+    /// validation failures, in particular
+    /// [`postings_writer::Error::DocFreqTooLarge`] once any one term in this
+    /// commit's batch occurs in `>= BLOCK_SIZE` (256) pending docs -- this
+    /// writer has no multi-block `.tim` support, so that case is rejected
+    /// rather than silently producing wrong bytes (see module doc comment).
+    fn build_postings_output(
+        docs: &[Document],
+        config: &PostingsFieldConfig,
+        segment_id: &[u8; ID_LENGTH],
+    ) -> Result<Option<postings_writer::Output>> {
+        let mut triples: Vec<(i32, &str, &str)> = Vec::new();
+        for (doc_id, doc) in docs.iter().enumerate() {
+            let text = doc
+                .fields
+                .iter()
+                .find(|f| f.field_number == config.field_number)
+                .and_then(|f| match &f.value {
+                    FieldValue::String(s) => Some(s.as_str()),
+                    _ => None,
+                });
+            if let Some(text) = text {
+                triples.push((doc_id as i32, config.name.as_str(), text));
+            }
+        }
+        if triples.is_empty() {
+            return Ok(None);
+        }
+
+        let analyzer = Analyzer::standard(None);
+        let inverted = invert_documents(&triples, &analyzer);
+
+        // Every triple built above shares `config.name` as its field, so
+        // `inverted.terms` (keyed by `(field, term)`) only ever has entries
+        // for this one field -- no need to filter by field here. Its
+        // `BTreeMap` iteration order is therefore already ascending by term
+        // bytes (the ordering `postings_writer::write_single_field`
+        // requires), so no separate sort is needed either.
+        let mut doc_ids = std::collections::BTreeSet::new();
+        let mut terms: Vec<TermPostings> = Vec::new();
+        for ((_, term), entries) in &inverted.terms {
+            let term_docs: Vec<(i32, i32)> = entries
+                .iter()
+                .map(|entry| {
+                    doc_ids.insert(entry.doc_id);
+                    (entry.doc_id, entry.term_freq())
+                })
+                .collect();
+            terms.push(TermPostings {
+                term: term.as_bytes().to_vec(),
+                docs: term_docs,
+            });
+        }
+        if terms.is_empty() {
+            return Ok(None);
+        }
+
+        let input = FieldPostingsInput {
+            field_number: config.field_number,
+            index_options: config.index_options,
+            doc_count: doc_ids.len() as i32,
+            terms: &terms,
+        };
+        let output = postings_writer::write_single_field(&input, segment_id, "")?;
+        Ok(Some(output))
+    }
+
+    /// Writes [`IndexWriter::build_postings_output`]'s four files
+    /// (`<segment_name>.doc`/`.tim`/`.tip`/`.tmd`) into `dir` and patches the
+    /// already-written `<segment_name>.si` (from
+    /// [`flush_stored_only_segment`], called just before this) to list them
+    /// in [`crate::segment_info::SegmentInfo::files`] -- same
+    /// read-modify-write-then-resync pattern
+    /// [`crate::segment_writer::flush_sorted_stored_only_segment`] already
+    /// uses to patch a `.si` after the fact, rather than duplicating
+    /// [`flush_stored_only_segment`]'s own file-writing sequence here.
+    fn write_postings_files(
+        dir: &dyn Directory,
+        segment_name: &str,
+        segment_id: &[u8; ID_LENGTH],
+        output: &postings_writer::Output,
+    ) -> Result<()> {
+        let doc_name = format!("{segment_name}.doc");
+        let tim_name = format!("{segment_name}.tim");
+        let tip_name = format!("{segment_name}.tip");
+        let tmd_name = format!("{segment_name}.tmd");
+
+        for (name, bytes) in [
+            (&doc_name, &output.doc),
+            (&tim_name, &output.tim),
+            (&tip_name, &output.tip),
+            (&tmd_name, &output.tmd),
+        ] {
+            write_file(dir, name, bytes)?;
+        }
+
+        let si_name = format!("{segment_name}.si");
+        let si_bytes: Vec<u8> = dir.open(&si_name)?.to_vec();
+        let mut si = segment_info::parse(&si_bytes, segment_id)?;
+        si.files.extend([
+            doc_name.clone(),
+            tim_name.clone(),
+            tip_name.clone(),
+            tmd_name.clone(),
+        ]);
+        let si_bytes = segment_info::write(&si, "");
+        write_file(dir, &si_name, &si_bytes)?;
+
+        dir.sync(&[doc_name, tim_name, tip_name, tmd_name, si_name])?;
+        Ok(())
     }
 
     /// The automatic-merge-triggering step [`IndexWriter::commit`] runs when
@@ -401,11 +636,27 @@ impl<'d> IndexWriter<'d> {
     /// [`crate::merge_policy::segment_byte_size`], the byte-accurate path
     /// that module's doc comment describes), `del_count` from this writer's
     /// own [`SegmentCommitInfo`] (already in memory, no re-read needed).
+    ///
+    /// **Segments with postings files (`.doc`/`.tim`/`.tip`/`.tmd`, written
+    /// when [`IndexWriter::set_postings_field`] is configured) are excluded
+    /// entirely** -- [`execute_merge`](IndexWriter::execute_merge) only
+    /// merges stored fields via
+    /// [`crate::merge::merge_stored_only_segments`], which has no knowledge
+    /// of postings at all. Feeding such a segment into `find_merges` would
+    /// let an automatic merge silently drop that segment's postings (the
+    /// merged segment's `.si` would list only stored-fields files, and the
+    /// source segment's real `.doc`/`.tim`/`.tip`/`.tmd` would become
+    /// orphaned on disk) with no error surfaced -- excluding these segments
+    /// from consideration keeps them permanently un-mergeable rather than
+    /// mergeable-with-silent-data-loss, until postings-aware merging exists.
     fn segment_stats(&self) -> Result<Vec<merge_policy::SegmentStat>> {
         let mut stats = Vec::with_capacity(self.segment_infos.segments.len());
         for sci in &self.segment_infos.segments {
             let si_bytes = self.dir.open(&format!("{}.si", sci.segment_name))?.to_vec();
             let si = segment_info::parse(&si_bytes, &sci.segment_id)?;
+            if si.files.iter().any(|f| f.ends_with(".doc")) {
+                continue;
+            }
             let size_bytes = merge_policy::segment_byte_size(self.dir, &si);
             stats.push(merge_policy::SegmentStat {
                 name: sci.segment_name.clone(),
@@ -601,6 +852,18 @@ fn to_segment_infos_version(v: LuceneVersion) -> segment_infos::LuceneVersion {
 /// monotonically increasing counter already guarantees deterministically,
 /// without pulling in a new dependency for a property this scope doesn't
 /// need.
+/// Same minimal `create_output`/`write_bytes`/`close` sequence
+/// `crate::segment_writer`'s own private `write_file` helper uses -- kept as
+/// a separate copy here rather than made `pub(crate)` there, since this is
+/// the only other module that currently needs it and the function is a
+/// three-line wrapper, not shared logic worth a cross-module dependency for.
+fn write_file(dir: &dyn Directory, name: &str, bytes: &[u8]) -> Result<()> {
+    let mut out = dir.create_output(name)?;
+    out.write_bytes(bytes);
+    out.close()?;
+    Ok(())
+}
+
 fn generate_segment_id(salt: i64) -> [u8; ID_LENGTH] {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -1277,5 +1540,337 @@ mod tests {
         let reopened = segment_infos::read_latest(&dir).unwrap();
         assert_eq!(reopened.segments.len(), 1);
         assert_eq!(read_all_docs(&dir, &reopened), vec!["a", "b"]);
+    }
+
+    // --- set_postings_field / commit()'s postings-writing path ---
+
+    fn body_field(number: i32) -> FieldInfo {
+        FieldInfo {
+            index_options: IndexOptions::DocsAndFreqs,
+            ..stored_only_field("body", number)
+        }
+    }
+
+    fn doc_with_body(id: &str, body: &str) -> Document {
+        Document {
+            fields: vec![
+                StoredField {
+                    field_number: 0,
+                    value: FieldValue::String(id.to_string()),
+                },
+                StoredField {
+                    field_number: 1,
+                    value: FieldValue::String(body.to_string()),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn set_postings_field_rejects_an_unknown_field_name() {
+        let tmp = tempdir("unknown-postings-field");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+
+        let err = writer.set_postings_field(Some("nonexistent")).unwrap_err();
+        assert!(matches!(err, Error::UnknownPostingsField(name) if name == "nonexistent"));
+    }
+
+    #[test]
+    fn set_postings_field_rejects_a_field_with_no_index_options() {
+        let tmp = tempdir("unindexed-postings-field");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+
+        let err = writer.set_postings_field(Some("id")).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::UnsupportedPostingsIndexOptions(name, IndexOptions::None) if name == "id"
+        ));
+    }
+
+    #[test]
+    fn commit_with_postings_field_writes_readable_postings_for_multiple_docs_and_terms() {
+        let tmp = tempdir("postings-commit");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), body_field(1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_postings_field(Some("body")).unwrap();
+
+        writer.add_document(doc_with_body("a", "the quick fox"));
+        writer.add_document(doc_with_body("b", "the lazy fox"));
+        writer.add_document(doc_with_body("c", "the fox runs"));
+        let sis = writer.commit().unwrap().clone();
+        assert_eq!(sis.segments.len(), 1);
+        let sci = &sis.segments[0];
+
+        // Stored fields are still intact (backward-compatible).
+        assert_eq!(read_all_docs(&dir, &sis), vec!["a", "b", "c"]);
+
+        // The postings files exist and are listed in `.si`.
+        let si_bytes = dir.open(&format!("{}.si", sci.segment_name)).unwrap();
+        let si = segment_info::parse(&si_bytes, &sci.segment_id).unwrap();
+        for ext in ["doc", "tim", "tip", "tmd"] {
+            let name = format!("{}.{ext}", sci.segment_name);
+            assert!(si.files.contains(&name), "missing {name} in .si files");
+            assert!(
+                dir.list_all().unwrap().contains(&name),
+                "missing {name} on disk"
+            );
+        }
+
+        // Readable via the existing, unmodified read side: `fox` occurs in
+        // all 3 docs, `quick`/`lazy`/`runs` are singletons, `the` occurs in
+        // all 3 too but is not a singleton either.
+        let tim = dir.open(&format!("{}.tim", sci.segment_name)).unwrap();
+        let tip = dir.open(&format!("{}.tip", sci.segment_name)).unwrap();
+        let tmd = dir.open(&format!("{}.tmd", sci.segment_name)).unwrap();
+        let doc_bytes = dir.open(&format!("{}.doc", sci.segment_name)).unwrap();
+        let field_infos = fi::FieldInfos {
+            fields: vec![
+                fi::FieldInfo {
+                    index_options: IndexOptions::None,
+                    ..stored_only_field("id", 0)
+                },
+                body_field(1),
+            ],
+        };
+        let block_fields = blocktree::open(&tim, &tip, &tmd, &field_infos, &sci.segment_id, "", 3)
+            .expect("blocktree::open on IndexWriter-produced .tim/.tip/.tmd");
+        let doc_in = DocInput::open(&doc_bytes, &sci.segment_id, "").expect("open .doc");
+        let field = block_fields.field("body").unwrap();
+
+        let postings = field.postings(b"fox", Some(&doc_in)).unwrap().unwrap();
+        assert_eq!(postings.docs, vec![0, 1, 2]);
+        let postings = field.postings(b"the", Some(&doc_in)).unwrap().unwrap();
+        assert_eq!(postings.docs, vec![0, 1, 2]);
+        let postings = field.postings(b"quick", Some(&doc_in)).unwrap().unwrap();
+        assert_eq!(postings.docs, vec![0]);
+        let postings = field.postings(b"lazy", Some(&doc_in)).unwrap().unwrap();
+        assert_eq!(postings.docs, vec![1]);
+        let postings = field.postings(b"runs", Some(&doc_in)).unwrap().unwrap();
+        assert_eq!(postings.docs, vec![2]);
+        assert!(field.seek_exact(b"missing").is_none());
+    }
+
+    #[test]
+    fn commit_with_no_postings_field_configured_stays_stored_only() {
+        // Backward compatibility: a writer that never calls
+        // `set_postings_field` must produce exactly the same on-disk shape
+        // as before this feature existed -- no `.doc`/`.tim`/`.tip`/`.tmd`
+        // files at all.
+        let tmp = tempdir("no-postings-field");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), body_field(1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+
+        writer.add_document(doc_with_body("a", "the quick fox"));
+        let sis = writer.commit().unwrap().clone();
+        let sci = &sis.segments[0];
+
+        let files = dir.list_all().unwrap();
+        for ext in ["doc", "tim", "tip", "tmd"] {
+            assert!(!files.contains(&format!("{}.{ext}", sci.segment_name)));
+        }
+    }
+
+    /// The documented `docFreq >= BLOCK_SIZE (256)` boundary: this writer
+    /// has no multi-block `.tim` support, so a term occurring in 256+ pending
+    /// docs must reject the *whole* `commit()` call atomically, leaving
+    /// `dir`/`pending_docs`/`segment_infos` completely unchanged -- never a
+    /// partially-written segment.
+    #[test]
+    fn commit_rejects_and_leaves_state_unchanged_when_a_term_reaches_doc_freq_256() {
+        let tmp = tempdir("postings-docfreq-too-large");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), body_field(1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_postings_field(Some("body")).unwrap();
+
+        for i in 0..256 {
+            writer.add_document(doc_with_body(&i.to_string(), "shared"));
+        }
+        let before = writer.segment_infos().clone();
+        let before_pending = writer.pending_doc_count();
+
+        let err = writer.commit().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::PostingsWriter(postings_writer::Error::DocFreqTooLarge {
+                index: 0,
+                doc_freq: 256
+            })
+        ));
+
+        // Nothing committed: state and pending buffer both unchanged, and no
+        // segments_1 was ever written.
+        assert_eq!(writer.segment_infos(), &before);
+        assert_eq!(writer.pending_doc_count(), before_pending);
+        assert!(!tmp.join("segments_1").exists());
+    }
+
+    /// A term under the 256 boundary must still commit successfully -- the
+    /// boundary is `>=`, not `>`. Capped at 100 docs (well under 256) rather
+    /// than the tightest possible "255" case, because
+    /// `flush_stored_only_segment`'s own `write_best_speed` has a separate,
+    /// pre-existing, unrelated cap of `< 128` docs per flush (its bulk
+    /// per-doc-array encoding only implements the scalar-tail path, not the
+    /// 128-value transposed-block path -- see that assert's own message);
+    /// this test only needs to prove the postings-side boundary isn't
+    /// off-by-one in the "too eager" direction, which 100 already does.
+    #[test]
+    fn commit_succeeds_below_the_doc_freq_boundary() {
+        let tmp = tempdir("postings-docfreq-just-under");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), body_field(1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_postings_field(Some("body")).unwrap();
+
+        for i in 0..100 {
+            writer.add_document(doc_with_body(&i.to_string(), "shared"));
+        }
+        let sis = writer.commit().unwrap().clone();
+        assert_eq!(sis.segments.len(), 1);
+    }
+
+    #[test]
+    fn commit_with_postings_field_but_no_pending_docs_writes_no_postings_files() {
+        let tmp = tempdir("postings-empty-commit");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), body_field(1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_postings_field(Some("body")).unwrap();
+
+        let sis = writer.commit().unwrap().clone();
+        assert!(sis.segments.is_empty());
+    }
+
+    #[test]
+    fn commit_with_postings_field_but_no_doc_has_that_fields_text_skips_postings() {
+        // A document that omits the opted-in postings field entirely (no
+        // `StoredField` for its `field_number`) contributes no postings --
+        // this must not be an error, just "nothing to index this commit".
+        let tmp = tempdir("postings-no-text");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), body_field(1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_postings_field(Some("body")).unwrap();
+
+        writer.add_document(doc("a")); // only field_number 0 ("id"), no "body"
+        let sis = writer.commit().unwrap().clone();
+        let sci = &sis.segments[0];
+
+        let files = dir.list_all().unwrap();
+        assert!(!files.contains(&format!("{}.tim", sci.segment_name)));
+    }
+
+    #[test]
+    fn commit_with_postings_field_holding_a_non_string_value_skips_that_doc() {
+        // A doc whose stored value for the opted-in postings field isn't a
+        // `FieldValue::String` (e.g. `Int`) contributes no indexable text --
+        // matches `set_postings_field`'s own doc comment.
+        let tmp = tempdir("postings-non-string-value");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), body_field(1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_postings_field(Some("body")).unwrap();
+
+        writer.add_document(Document {
+            fields: vec![
+                StoredField {
+                    field_number: 0,
+                    value: FieldValue::String("a".to_string()),
+                },
+                StoredField {
+                    field_number: 1,
+                    value: FieldValue::Int(42), // not a String -- must be skipped
+                },
+            ],
+        });
+        let sis = writer.commit().unwrap().clone();
+        let sci = &sis.segments[0];
+
+        let files = dir.list_all().unwrap();
+        assert!(!files.contains(&format!("{}.tim", sci.segment_name)));
+    }
+
+    #[test]
+    fn commit_with_postings_field_text_that_tokenizes_to_nothing_skips_postings() {
+        // The opted-in field has a `String` value on every doc, but that
+        // text tokenizes to zero terms (e.g. only whitespace) -- still not
+        // an error, just nothing to index this commit, distinct from the
+        // "field missing/non-String" case above.
+        let tmp = tempdir("postings-empty-tokenization");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), body_field(1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_postings_field(Some("body")).unwrap();
+
+        writer.add_document(doc_with_body("a", "   "));
+        let sis = writer.commit().unwrap().clone();
+        let sci = &sis.segments[0];
+
+        let files = dir.list_all().unwrap();
+        assert!(!files.contains(&format!("{}.tim", sci.segment_name)));
+    }
+
+    #[test]
+    fn setting_postings_field_back_to_none_restores_stored_only_behavior() {
+        let tmp = tempdir("postings-field-reset");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), body_field(1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_postings_field(Some("body")).unwrap();
+        writer.set_postings_field(None).unwrap();
+
+        writer.add_document(doc_with_body("a", "the quick fox"));
+        let sis = writer.commit().unwrap().clone();
+        let sci = &sis.segments[0];
+
+        let files = dir.list_all().unwrap();
+        assert!(!files.contains(&format!("{}.tim", sci.segment_name)));
+    }
+
+    #[test]
+    fn segments_with_postings_are_never_automatically_merged_away() {
+        // Enabling both set_postings_field and set_merge_policy at once must
+        // not let automatic merging silently drop a segment's postings --
+        // execute_merge only knows how to merge stored fields
+        // (merge_stored_only_segments has no .doc/.tim/.tip/.tmd awareness at
+        // all), so segment_stats() excludes any segment carrying postings
+        // files from find_merges' candidate pool entirely, keeping it
+        // un-mergeable rather than mergeable-with-silent-data-loss.
+        let tmp = tempdir("postings-and-merge-policy");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), body_field(1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_postings_field(Some("body")).unwrap();
+        writer.set_merge_policy(Some(tight_merge_policy()));
+
+        // tight_merge_policy's segments_per_tier is 2 -- three one-doc
+        // commits, each producing a segment with real postings, must cross
+        // that threshold and would normally trigger a merge.
+        for id in ["a", "b", "c"] {
+            writer.add_document(doc_with_body(id, "shared text"));
+            writer.commit().unwrap();
+        }
+
+        let final_count = writer.segment_infos().segments.len();
+        assert_eq!(
+            final_count, 3,
+            "segments carrying postings must never be automatically merged"
+        );
+
+        // Every segment's real postings files must still be present and
+        // correctly listed in its own .si -- nothing was silently dropped.
+        for sci in &writer.segment_infos().segments.clone() {
+            let files = dir.list_all().unwrap();
+            assert!(files.contains(&format!("{}.tim", sci.segment_name)));
+            let si_bytes = dir.open(&format!("{}.si", sci.segment_name)).unwrap();
+            let si = segment_info::parse(&si_bytes, &sci.segment_id).unwrap();
+            assert!(si.files.iter().any(|f| f.ends_with(".tim")));
+        }
     }
 }
