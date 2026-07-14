@@ -2458,11 +2458,58 @@ back via the existing unmodified `lucene_codecs::doc_values::{parse_meta,
 numeric_value}`, asserting the exact per-document values a real
 `NumericDocValues.longValue` would return.
 
-**Still explicitly deferred**: BINARY/SORTED_NUMERIC doc values wired into
-`IndexWriter`, multiple doc-values fields in one commit, sparse (missing-value)
-doc values, and doc-values-aware segment merging (a segment with doc values
-can never be auto-merged today, same as postings/term vectors). See
-`docs/parity.md`'s updated rows for the full accounting.
+**Still explicitly deferred (before task #89 below)**: BINARY/SORTED_NUMERIC/
+SORTED doc values wired into `IndexWriter`, multiple doc-values fields in one
+commit, sparse (missing-value) doc values, and doc-values-aware segment
+merging (a segment with doc values can never be auto-merged today, same as
+postings/term vectors). See `docs/parity.md`'s updated rows for the full
+accounting.
+
+**Progress (task #89): SORTED doc-values write side (dictionary + ordinals),
+wired into `IndexWriter`.** New `doc_values::write_single_dense_sorted_field`
+(`crates/lucene-codecs/src/doc_values.rs`) is the write-side counterpart of
+the already-ported SORTED read side: given one raw `Vec<u8>` value per doc
+(dense only, same convention as the other three write functions), it builds
+the sorted, deduplicated distinct-value dictionary, maps each doc to its
+term's ordinal (a plain dense NUMERIC entry, since SORTED is always
+single-valued -- no address array), and writes the dictionary itself via a
+new `write_terms_dict` helper, a from-scratch port of
+`Lucene90DocValuesConsumer.addTermsDict`/`writeTermsIndex` (64-term
+LZ4-compressed prefix-compressed blocks, a `DirectMonotonicWriter`-backed
+block-address array, and the coarser every-1024th-ordinal reverse index).
+Real Lucene shares this exact machinery byte-for-byte between
+`addSortedField` and `addSortedSetField`, so `write_terms_dict` is already
+positioned to serve a future SORTED_SET writer unchanged -- **SORTED_SET
+write-side is still not implemented** (out of scope for this task), but is
+now a small, well-scoped follow-up rather than "build a whole new codec".
+
+Wired into `IndexWriter::commit()` the same way NUMERIC is:
+`set_doc_values_field` now also accepts a field whose
+`FieldInfo.doc_values_type == DocValuesType::Sorted`, dispatching to the new
+`build_sorted_doc_values_output` (sources per-doc bytes from
+`FieldValue::String`/`FieldValue::Binary`, same dense-only/atomic-failure
+contract as the NUMERIC path -- `Error::MissingDenseDocValue` for a missing
+value, the new `Error::NonBinaryDocValue` for a wrong-typed one). BINARY and
+SORTED_NUMERIC write sides remain unwired.
+
+Required end-to-end proof:
+`commit_with_doc_values_field_writes_readable_sorted_values_for_multiple_docs`
+(`crates/lucene-index/src/index_writer.rs`) adds documents via
+`IndexWriter::add_document`/`commit()` and resolves the written `.dvm`/`.dvd`
+back through the existing unmodified
+`lucene_codecs::doc_values::{parse_meta, sorted_ord}`/
+`terms_dict::decode_all_terms`, asserting every doc's ordinal resolves to its
+original term bytes; `commit_with_doc_values_field_rejects_non_binary_sorted_value`
+covers the new error. Unit-tested in `doc_values.rs` (round-tripping through
+this port's own reader): a small dictionary with repeated values (dedup +
+ordinal reuse), an all-docs-share-one-value set (constant-ordinal encoding),
+an empty-`Vec<u8>` value (present, not "no value"), a 300-term dictionary
+(multiple LZ4 blocks + reverse-index samples), and the non-dense-input
+rejection path. **Not verified against a real Lucene reader opening this
+port's written bytes** (unlike NUMERIC's `VerifyDocValues.java` fixture from
+task #11) -- explicitly out of scope for this task; no fixture files were
+added or changed. `cargo llvm-cov --workspace --fail-under-lines 95` passes
+(97.67% total; `doc_values.rs` 97.10%, `index_writer.rs` 98.37%).
 
 **Follow-up task: `IndexWriter::rollback()`.** New
 `IndexWriter::rollback(&mut self)` (`crates/lucene-index/src/index_writer.rs`)

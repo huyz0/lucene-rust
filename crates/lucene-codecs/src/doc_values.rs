@@ -46,6 +46,7 @@ use crate::direct_monotonic;
 use crate::direct_reader;
 use crate::field_infos::FieldInfos;
 use crate::indexed_disi;
+use crate::lz4;
 use crate::terms_dict::{self, TermsDictEntry};
 
 const SKIP_INDEX_META_CODEC: &str = "Lucene90DocValuesSkipIndex";
@@ -64,6 +65,23 @@ const DOC_VALUES_TYPE_SORTED_NUMERIC: u8 = 4;
 
 const DOCS_WITH_FIELD_EMPTY: i64 = -2;
 const DOCS_WITH_FIELD_DENSE: i64 = -1;
+
+/// `Lucene90DocValuesFormat.TERMS_DICT_BLOCK_LZ4_SHIFT`/`_MASK`: 64 terms per
+/// LZ4-compressed block (matches [`crate::terms_dict`]'s `BLOCK_SIZE`).
+const TERMS_DICT_BLOCK_LZ4_SHIFT: i64 = 6;
+const TERMS_DICT_BLOCK_LZ4_MASK: i64 = (1 << TERMS_DICT_BLOCK_LZ4_SHIFT) - 1;
+/// `Lucene90DocValuesFormat.TERMS_DICT_REVERSE_INDEX_SHIFT`/`_MASK`: one
+/// sampled term address every 1024 ordinals, for the coarse reverse index.
+const TERMS_DICT_REVERSE_INDEX_SHIFT: u32 = 10;
+const TERMS_DICT_REVERSE_INDEX_MASK: i64 = (1i64 << TERMS_DICT_REVERSE_INDEX_SHIFT) - 1;
+/// `DirectMonotonicWriter` block shift for both the terms-address and
+/// reverse-index address arrays -- real Lucene always uses 16
+/// (`Lucene90DocValuesFormat.DIRECT_MONOTONIC_BLOCK_SHIFT`); this port picks
+/// 0 instead, same simplicity-over-compression-ratio choice
+/// [`write_single_dense_binary_field`]'s variable-length address array
+/// already made for its own [`direct_monotonic::write`] call -- the format
+/// stores `block_shift` per-field, so any value round-trips correctly.
+const TERMS_DICT_DIRECT_MONOTONIC_BLOCK_SHIFT: u32 = 0;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -972,6 +990,204 @@ pub fn write_single_dense_sorted_numeric_field(
         meta.extend_from_slice(&addr_meta);
         meta.write_i64(addresses_length);
     }
+
+    let skip_index =
+        finish_field_list_and_footers(&mut meta, &mut data, segment_id, segment_suffix);
+    Ok((meta, data, skip_index))
+}
+
+/// Longest common byte prefix of `a` and `b` (`StringHelper.bytesDifference`,
+/// scoped to the "always in order, never equal" case terms-dict callers
+/// guarantee -- real Lucene's version also doubles as an out-of-order
+/// assertion, not needed here since [`write_terms_dict`]'s caller already
+/// sorts+dedups).
+fn common_prefix_len(a: &[u8], b: &[u8]) -> usize {
+    a.iter().zip(b.iter()).take_while(|(x, y)| x == y).count()
+}
+
+/// Port of `Lucene90DocValuesConsumer.addTermsDict` (block-LZ4-compressed
+/// terms + block-address array) followed by `writeTermsIndex` (a coarser
+/// sampled reverse index, sampled every
+/// [`TERMS_DICT_REVERSE_INDEX_MASK`]`+1`th ordinal) -- the machinery
+/// `SORTED`'s single-valued dictionary and `SORTED_SET`'s multi-valued one
+/// share verbatim in real Lucene (`addSortedField`/`addSortedSetField` both
+/// end by calling this same method). `terms` must already be sorted
+/// ascending with no duplicates (the caller's job -- this port always builds
+/// it from a `BTreeSet`/`sort_unstable+dedup` over the field's raw values).
+///
+/// Writes directly into `meta`/`data`, mirroring
+/// [`write_dense_numeric_entry_body`]'s "body only, no leading
+/// field-number/type byte" shape -- appends exactly what
+/// [`terms_dict::read_term_dict_entry`] expects to read right after a
+/// SORTED/SORTED_SET field's ords entry.
+fn write_terms_dict(meta: &mut Vec<u8>, data: &mut Vec<u8>, terms: &[Vec<u8>]) {
+    let size = terms.len() as i64;
+    meta.write_vlong(size);
+    meta.write_i32(TERMS_DICT_DIRECT_MONOTONIC_BLOCK_SHIFT as i32);
+
+    let start = data.len() as i64;
+    let mut max_length = 0i32;
+    let mut max_block_length = 0i32;
+    let mut block_addresses: Vec<i64> = Vec::new();
+    let mut block_body: Vec<u8> = Vec::new();
+
+    let mut ord = 0usize;
+    while ord < terms.len() {
+        let term = &terms[ord];
+        block_addresses.push(data.len() as i64 - start);
+        data.write_vint(term.len() as i32);
+        data.extend_from_slice(term);
+        max_length = max_length.max(term.len() as i32);
+
+        // The rest of this 64-term block, prefix-compressed against its
+        // immediate predecessor (first term included as the implicit
+        // dictionary).
+        block_body.clear();
+        let block_end = terms
+            .len()
+            .min(ord + (TERMS_DICT_BLOCK_LZ4_MASK as usize) + 1);
+        let mut prev: &[u8] = term;
+        for later in &terms[ord + 1..block_end] {
+            let prefix_len = common_prefix_len(prev, later);
+            let suffix_len = later.len() - prefix_len;
+            block_body.push((prefix_len.min(15) as u8) | (((suffix_len - 1).min(15) as u8) << 4));
+            if prefix_len >= 15 {
+                block_body.write_vint((prefix_len - 15) as i32);
+            }
+            if suffix_len >= 16 {
+                block_body.write_vint((suffix_len - 16) as i32);
+            }
+            block_body.extend_from_slice(&later[prefix_len..]);
+            max_length = max_length.max(later.len() as i32);
+            prev = later;
+        }
+
+        if !block_body.is_empty() {
+            // See [`write_single_dense_sorted_field`]'s doc comment: this
+            // port's `lz4::compress` has no preset-dictionary variant, but
+            // the decompressor tolerates that (it only ever *allows* matches
+            // into the dictionary region, never requires them), so
+            // compressing `block_body` on its own still round-trips.
+            let compressed = lz4::compress(&block_body);
+            data.write_vint(block_body.len() as i32);
+            data.extend_from_slice(&compressed);
+        }
+        max_block_length = max_block_length.max(block_body.len() as i32);
+        ord = block_end;
+    }
+
+    // `DirectMonotonicWriter` flushes each completed block's meta entry as
+    // soon as it fills (`DirectMonotonicWriter.flush`), i.e. interleaved
+    // with the term loop above and always finished before `maxLength` is
+    // written -- see `read_term_dict_entry`'s read order, which expects this
+    // meta array right after `block_shift`, before `max_term_length`.
+    let (addr_meta, addr_data) =
+        direct_monotonic::write(&block_addresses, TERMS_DICT_DIRECT_MONOTONIC_BLOCK_SHIFT);
+    meta.extend_from_slice(&addr_meta);
+
+    meta.write_i32(max_length);
+    meta.write_i32(max_block_length);
+    meta.write_i64(start);
+    meta.write_i64(data.len() as i64 - start);
+
+    let addresses_start = data.len() as i64;
+    data.extend_from_slice(&addr_data);
+    meta.write_i64(addresses_start);
+    meta.write_i64(data.len() as i64 - addresses_start);
+
+    // `writeTermsIndex`: a coarser reverse index, one sampled address + a
+    // short disambiguating prefix every `TERMS_DICT_REVERSE_INDEX_MASK + 1`
+    // ordinals.
+    meta.write_i32(TERMS_DICT_REVERSE_INDEX_SHIFT as i32);
+    let index_start = data.len() as i64;
+    let mut offset = 0i64;
+    let mut index_addresses: Vec<i64> = Vec::new();
+    let mut sampled_previous: Vec<u8> = Vec::new();
+    for (ord, term) in terms.iter().enumerate() {
+        let ord = ord as i64;
+        if ord & TERMS_DICT_REVERSE_INDEX_MASK == 0 {
+            index_addresses.push(offset);
+            let sort_key_len = if ord == 0 {
+                0
+            } else {
+                common_prefix_len(&sampled_previous, term) + 1
+            };
+            offset += sort_key_len as i64;
+            data.extend_from_slice(&term[..sort_key_len]);
+        } else if ord & TERMS_DICT_REVERSE_INDEX_MASK == TERMS_DICT_REVERSE_INDEX_MASK {
+            sampled_previous.clear();
+            sampled_previous.extend_from_slice(term);
+        }
+    }
+    index_addresses.push(offset);
+
+    // Same interleaving note as the block-address writer above: its meta
+    // entries are already fully flushed by this point, so they can be
+    // written now, before `indexOffset`/`indexLength`.
+    let (index_addr_meta, index_addr_data) =
+        direct_monotonic::write(&index_addresses, TERMS_DICT_DIRECT_MONOTONIC_BLOCK_SHIFT);
+    meta.extend_from_slice(&index_addr_meta);
+
+    meta.write_i64(index_start);
+    meta.write_i64(data.len() as i64 - index_start);
+
+    let index_addresses_start = data.len() as i64;
+    data.extend_from_slice(&index_addr_data);
+    meta.write_i64(index_addresses_start);
+    meta.write_i64(data.len() as i64 - index_addresses_start);
+}
+
+/// Port of `Lucene90DocValuesConsumer.addSortedField`, scoped to exactly one
+/// shape: **a single SORTED field, DENSE** (every doc from `0` to `max_doc -
+/// 1` has a value -- `values[doc]` is that doc's raw term bytes; an empty
+/// slice is a legitimate present value, same convention
+/// [`write_single_dense_binary_field`] uses). Builds the sorted, deduplicated
+/// distinct-value dictionary (`BTreeSet` over `values`), maps each doc to its
+/// term's ordinal into that dictionary (written as a plain dense NUMERIC
+/// entry via [`write_dense_numeric_entry_body`] -- exactly how real Lucene's
+/// `doAddSortedField` always wraps a `SortedDocValues` as a singleton
+/// `SortedNumericDocValues`, which collapses back to a bare per-doc ordinal
+/// with no address array since it's single-valued), then the dictionary
+/// itself via [`write_terms_dict`] (shared, byte-for-byte, with what a future
+/// SORTED_SET writer would call for the same values).
+///
+/// Deliberately not attempted here, same as
+/// [`write_single_dense_numeric_field`]: sparse fields (`IndexedDISI`,
+/// i.e. `Ok(None)`/missing values), per-field doc-values skip indexes, and
+/// multiple fields in one `.dvm`/`.dvd`/`.dvs` triple.
+///
+/// Returns `(meta_bytes, data_bytes, skip_index_bytes)`, same shape as
+/// [`write_single_dense_numeric_field`].
+pub fn write_single_dense_sorted_field(
+    field_number: i32,
+    values: &[Vec<u8>],
+    max_doc: i32,
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+) -> WriteResult<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    if values.len() != max_doc as usize {
+        return Err(WriteError::NotDense {
+            values: values.len(),
+            max_doc,
+        });
+    }
+
+    let mut dict: Vec<Vec<u8>> = values.to_vec();
+    dict.sort_unstable();
+    dict.dedup();
+
+    let ords: Vec<i64> = values
+        .iter()
+        .map(|v| dict.binary_search(v).unwrap() as i64)
+        .collect();
+
+    let mut meta = new_meta_output(segment_id, segment_suffix);
+    let mut data = new_data_output(segment_id, segment_suffix);
+
+    meta.write_i32(field_number);
+    meta.push(DOC_VALUES_TYPE_SORTED);
+    write_dense_numeric_entry_body(&mut meta, &mut data, &ords);
+    write_terms_dict(&mut meta, &mut data, &dict);
 
     let skip_index =
         finish_field_list_and_footers(&mut meta, &mut data, segment_id, segment_suffix);
@@ -2151,5 +2367,160 @@ mod tests {
         let values: Vec<Vec<i64>> = vec![vec![1], Vec::new(), vec![2]];
         let err = write_single_dense_sorted_numeric_field(0, &values, &id, "").unwrap_err();
         assert!(matches!(err, WriteError::EmptyMultiValuedDoc(1)));
+    }
+
+    // --- write_single_dense_sorted_field / write_terms_dict ---
+
+    fn sorted_field_infos() -> FieldInfos {
+        let mut fis = field_infos_with(&[0]);
+        fis.fields[0].doc_values_type = DocValuesType::Sorted;
+        fis
+    }
+
+    fn read_sorted_field(meta_bytes: &[u8], id: &[u8; ID_LENGTH], fis: &FieldInfos) -> SortedEntry {
+        let (_, meta) = parse_meta(meta_bytes, id, "", fis).unwrap();
+        meta.sorted_entry(0).unwrap().clone()
+    }
+
+    fn resolved_sorted_values(
+        data_bytes: &[u8],
+        entry: &SortedEntry,
+        max_doc: i32,
+    ) -> Vec<Option<Vec<u8>>> {
+        let dict = terms_dict::decode_all_terms(data_bytes, &entry.terms).unwrap();
+        (0..max_doc)
+            .map(|doc| {
+                sorted_ord(data_bytes, entry, doc)
+                    .unwrap()
+                    .map(|ord| dict[ord as usize].clone())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn write_single_dense_sorted_field_round_trips_small_dictionary() {
+        let id = [20u8; ID_LENGTH];
+        let values: Vec<Vec<u8>> = vec![
+            b"banana".to_vec(),
+            b"apple".to_vec(),
+            b"cherry".to_vec(),
+            b"apple".to_vec(),
+        ];
+        let (meta_bytes, data_bytes, skip_bytes) =
+            write_single_dense_sorted_field(0, &values, values.len() as i32, &id, "").unwrap();
+
+        assert_eq!(
+            check_data_header_footer_generic(&skip_bytes, "Lucene90DocValuesSkipIndex", &id)
+                .unwrap(),
+            VERSION_CURRENT
+        );
+        assert_eq!(
+            check_data_header_footer(&data_bytes, &id, "").unwrap(),
+            VERSION_CURRENT
+        );
+
+        let fis = sorted_field_infos();
+        let entry = read_sorted_field(&meta_bytes, &id, &fis);
+        let dict = terms_dict::decode_all_terms(&data_bytes, &entry.terms).unwrap();
+        assert_eq!(
+            dict,
+            vec![b"apple".to_vec(), b"banana".to_vec(), b"cherry".to_vec()]
+        );
+
+        let resolved = resolved_sorted_values(&data_bytes, &entry, values.len() as i32);
+        assert_eq!(resolved, values.into_iter().map(Some).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn write_single_dense_sorted_field_all_docs_share_one_value() {
+        let id = [21u8; ID_LENGTH];
+        let values: Vec<Vec<u8>> = vec![b"same".to_vec(); 5];
+        let (meta_bytes, data_bytes, _skip_bytes) =
+            write_single_dense_sorted_field(0, &values, values.len() as i32, &id, "").unwrap();
+
+        let fis = sorted_field_infos();
+        let entry = read_sorted_field(&meta_bytes, &id, &fis);
+        assert_eq!(entry.ords.bits_per_value, 0); // constant-ordinal encoding
+        let resolved = resolved_sorted_values(&data_bytes, &entry, values.len() as i32);
+        assert_eq!(resolved, values.into_iter().map(Some).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn write_single_dense_sorted_field_empty_bytes_value_is_a_present_value() {
+        let id = [22u8; ID_LENGTH];
+        let values: Vec<Vec<u8>> = vec![Vec::new(), b"x".to_vec(), Vec::new()];
+        let (meta_bytes, data_bytes, _skip_bytes) =
+            write_single_dense_sorted_field(0, &values, values.len() as i32, &id, "").unwrap();
+
+        let fis = sorted_field_infos();
+        let entry = read_sorted_field(&meta_bytes, &id, &fis);
+        let resolved = resolved_sorted_values(&data_bytes, &entry, values.len() as i32);
+        assert_eq!(resolved, values.into_iter().map(Some).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn write_single_dense_sorted_field_large_dictionary_spans_many_lz4_blocks_and_index_samples() {
+        // 300 distinct terms: exercises multiple 64-term LZ4 blocks (4 full +
+        // 1 partial). Only one reverse-index sample (ord == 0) fires at this
+        // size -- the multi-sample case is covered separately below.
+        let id = [23u8; ID_LENGTH];
+        let mut values: Vec<Vec<u8>> = (0..300)
+            .map(|i: i32| format!("term{i:04}").into_bytes())
+            .collect();
+        // Make the dictionary genuinely sorted-ascending-as-strings by
+        // reusing the zero-padded formatting above, then also shuffle the
+        // per-doc assignment so ordinals aren't just doc id.
+        values.reverse();
+        let (meta_bytes, data_bytes, _skip_bytes) =
+            write_single_dense_sorted_field(0, &values, values.len() as i32, &id, "").unwrap();
+
+        let fis = sorted_field_infos();
+        let entry = read_sorted_field(&meta_bytes, &id, &fis);
+        let dict = terms_dict::decode_all_terms(&data_bytes, &entry.terms).unwrap();
+        assert_eq!(dict.len(), 300);
+        assert!(dict.windows(2).all(|w| w[0] < w[1]));
+
+        let resolved = resolved_sorted_values(&data_bytes, &entry, values.len() as i32);
+        assert_eq!(resolved, values.into_iter().map(Some).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn write_single_dense_sorted_field_reverse_index_multi_sample_boundary() {
+        // TERMS_DICT_REVERSE_INDEX_MASK is 1023 (sample every 1024th
+        // ordinal), so 300 terms only ever hits the `ord == 0` sample.
+        // 2200 distinct terms crosses two sample boundaries (ord 1024,
+        // 2048), exercising the `ord & MASK == MASK` capture and the
+        // `common_prefix_len(&sampled_previous, term) + 1` branch for a
+        // sample past the first -- both previously untested.
+        let id = [24u8; ID_LENGTH];
+        let mut values: Vec<Vec<u8>> = (0..2200)
+            .map(|i: i32| format!("term{i:05}").into_bytes())
+            .collect();
+        values.reverse();
+        let (meta_bytes, data_bytes, _skip_bytes) =
+            write_single_dense_sorted_field(0, &values, values.len() as i32, &id, "").unwrap();
+
+        let fis = sorted_field_infos();
+        let entry = read_sorted_field(&meta_bytes, &id, &fis);
+        let dict = terms_dict::decode_all_terms(&data_bytes, &entry.terms).unwrap();
+        assert_eq!(dict.len(), 2200);
+        assert!(dict.windows(2).all(|w| w[0] < w[1]));
+
+        let resolved = resolved_sorted_values(&data_bytes, &entry, values.len() as i32);
+        assert_eq!(resolved, values.into_iter().map(Some).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn write_single_dense_sorted_field_rejects_non_dense_value_count() {
+        let id = [1u8; ID_LENGTH];
+        let values: Vec<Vec<u8>> = vec![b"a".to_vec()];
+        let err = write_single_dense_sorted_field(0, &values, 2, &id, "").unwrap_err();
+        assert!(matches!(
+            err,
+            WriteError::NotDense {
+                values: 1,
+                max_doc: 2
+            }
+        ));
     }
 }
