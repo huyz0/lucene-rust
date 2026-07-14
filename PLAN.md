@@ -1792,6 +1792,52 @@ terms), and the composed `Analyzer::with_stemming()` running after
 `StopFilter`. Coverage: `lucene-analysis/src/lib.rs` 99.11% lines (61 unit
 tests total + 3 fixture tests; workspace total 97.36% lines, gate is 95%).
 
+**Progress (task #66):** `SynonymFilter`, a fifth `lucene-analysis` filter
+alongside `LowerCaseFilter`/`StopFilter`/`AsciiFoldingFilter`/
+`PorterStemFilter`, a scoped-down version of real
+`org.apache.lucene.analysis.synonym.SynonymFilter`/`SynonymGraphFilter`:
+single-word-to-single-word synonym injection only. **Scope, stated
+explicitly**: real Lucene's full `SynonymGraphFilter` also handles
+multi-word synonym *phrases* (`"New York"` <-> `"NYC"`) via a graph token
+stream -- legitimately out-of-scope machinery for this task. This filter
+takes a caller-supplied `HashMap<String, Vec<String>>` and, for each token
+whose term is a map key, injects one additional token per configured
+replacement immediately after the original, with `position_increment == 0`
+and the same `start_offset`/`end_offset` as the original -- real Lucene's
+own convention for representing "these two tokens are alternatives at the
+same spot" so `PhraseQuery`/`SpanNear` built against either term still
+aligns with surrounding words. This is the first token in the crate with
+`position_increment == 0` (every prior token, including `StopFilter`'s
+carried-over increments, has been `>= 1`). **Bidirectionality is explicitly
+NOT automatic**, matching real Lucene's `SynonymMap`: configuring
+`"quick" -> ["fast"]` does not also expand `"fast"` to `"quick"`; a caller
+wanting symmetric synonyms configures both directions themselves. **Filter
+ordering**: `Analyzer::with_synonyms()` inserts synonym expansion *last*
+(tokenize -> fold -> lowercase -> stopwords -> stem -> synonyms), for two
+reasons -- (1) real Lucene's convention is that synonym expansion runs over
+already-normalized terms, so the caller-supplied map's keys are expected to
+already be lowercased/stemmed; (2) running after `StopFilter` means a term
+that is itself a stopword (and thus removed) never gets its synonym
+expanded, since expanding a term about to be dropped would produce an
+orphaned synonym token with no corresponding original. **Verification
+approach**: no new Java fixture -- the position_increment==0 injection is
+new Rust-level control flow over an already cross-engine-verified position
+system (`StopFilter`'s increment mechanics were differentially verified in
+task #61), not new byte-format decoding, so unit tests are the right tool
+here. Unit tests cover: a token with one configured synonym produces two
+tokens (original at its own increment, synonym at increment 0); a token with
+multiple synonyms produces the original plus all of them, all at increment
+0; a token with no configured synonym passes through unchanged; synonym
+expansion is confirmed NOT automatically bidirectional; injected-token
+offsets match the original's exactly; composed with `StopFilter` (a
+stopword's synonym is never expanded since the stopword is removed first,
+and a surviving term's synonym is correctly carried through with the
+right accumulated position_increment); and composed with `PorterStemFilter`
+(the synonym map's key matches the *stemmed* form, proving synonyms see
+post-stemming terms). Coverage: `lucene-analysis/src/lib.rs` 99.44% lines
+(39 unit tests total + 3 fixture tests; workspace total 97.38% lines, gate
+is 95%).
+
 1. `lucene-analysis`: `TokenStream` as an iterator-of-token-structs (skip Java's
    AttributeSource reflection design entirely — a plain
    `Token { bytes, position_increment, offset, ... }` struct), StandardTokenizer via

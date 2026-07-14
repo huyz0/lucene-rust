@@ -4,12 +4,14 @@
 //! A minimal, real analyzer chain mirroring Lucene's
 //! `Analyzer`/`Tokenizer`/`TokenFilter` pipeline: a simplified word-boundary
 //! tokenizer (not full UAX#29 Unicode text segmentation -- see the module
-//! docs on [`tokenize`]), plus `LowerCaseFilter` and `StopFilter`.
+//! docs on [`tokenize`]), plus `LowerCaseFilter`, `StopFilter`,
+//! `AsciiFoldingFilter`, `PorterStemFilter`, and `SynonymFilter`.
 //!
 //! This crate sits below both `lucene-index` and `lucene-search` in the
 //! workspace's downward dependency graph (it depends on nothing else in the
 //! workspace), so either can depend on it without creating a cycle.
 
+use std::collections::HashMap;
 use std::collections::HashSet;
 
 /// One analyzed token: term text plus the attributes real Lucene's
@@ -311,18 +313,82 @@ impl PorterStemFilter {
     }
 }
 
+/// A scoped-down version of real Lucene's
+/// `org.apache.lucene.analysis.synonym.SynonymFilter`/`SynonymGraphFilter`:
+/// single-word-to-single-word synonym injection only.
+///
+/// **Scope, stated explicitly**: real Lucene's full `SynonymGraphFilter`
+/// handles multi-word synonym *phrases* (e.g. `"New York"` <-> `"NYC"`) via a
+/// graph token stream with its own traversal machinery -- that's substantial,
+/// legitimately out-of-scope NLP infrastructure. This filter only maps one
+/// term to one or more single-word replacement terms, configured via a
+/// caller-supplied `HashMap<String, Vec<String>>`.
+///
+/// **Positional semantics (the real Lucene rule this mirrors)**: an injected
+/// synonym occupies the *same position* as the term it's a synonym for --
+/// `position_increment == 0` -- since it doesn't advance past the original,
+/// it's an alternative *at* that position (so a `PhraseQuery`/`SpanNear`
+/// built against either the original or the synonym term still aligns with
+/// surrounding words). The original token keeps its own (unmodified)
+/// `position_increment`; only the injected synonym token gets `0`. This is
+/// the first token in this crate with `position_increment == 0` -- every
+/// prior token (including ones StopFilter bumps) has had `>= 1`.
+///
+/// **Offsets**: the injected synonym token gets the exact same
+/// `start_offset`/`end_offset` as the original -- real Lucene's convention,
+/// since the synonym doesn't correspond to distinct source text, it's an
+/// alternative reading of the same span.
+///
+/// **Bidirectionality is NOT automatic** (matching real Lucene's
+/// `SynonymMap`, which also requires explicit configuration in both
+/// directions): configuring `"quick" -> ["fast"]` does *not* also expand
+/// `"fast"` to `"quick"`. A caller wanting symmetric synonyms must configure
+/// both `"quick" -> ["fast"]` and `"fast" -> ["quick"]` themselves.
+pub struct SynonymFilter;
+
+impl SynonymFilter {
+    /// For each token whose term is a key in `synonyms`, injects one
+    /// additional token per configured synonym value immediately after the
+    /// original, each with `position_increment == 0` and the same
+    /// `start_offset`/`end_offset` as the original. Tokens with no
+    /// configured synonym pass through unchanged (no extra token, no
+    /// modification).
+    pub fn apply(tokens: Vec<Token>, synonyms: &HashMap<String, Vec<String>>) -> Vec<Token> {
+        let mut out = Vec::with_capacity(tokens.len());
+        for t in tokens {
+            let replacements = synonyms.get(&t.term).cloned();
+            let (start_offset, end_offset) = (t.start_offset, t.end_offset);
+            out.push(t);
+            if let Some(replacements) = replacements {
+                for replacement in replacements {
+                    out.push(Token {
+                        term: replacement,
+                        start_offset,
+                        end_offset,
+                        position_increment: 0,
+                    });
+                }
+            }
+        }
+        out
+    }
+}
+
 /// An analyzer composing a tokenizer with a configurable filter chain.
 ///
 /// At minimum applies [`LowerCaseFilter`]; optionally applies [`StopFilter`]
 /// when stopwords are configured, optionally applies [`AsciiFoldingFilter`]
-/// when enabled via [`Analyzer::with_ascii_folding`], and optionally applies
-/// [`PorterStemFilter`] when enabled via [`Analyzer::with_stemming`].
-/// Additional real-Lucene filters (synonyms, etc.) are out of scope for this
+/// when enabled via [`Analyzer::with_ascii_folding`], optionally applies
+/// [`PorterStemFilter`] when enabled via [`Analyzer::with_stemming`], and
+/// optionally applies [`SynonymFilter`] when enabled via
+/// [`Analyzer::with_synonyms`]. Additional real-Lucene filters (multi-word
+/// synonym phrases via `SynonymGraphFilter`, etc.) are out of scope for this
 /// MVP -- see `docs/parity.md`.
 pub struct Analyzer {
     stopwords: Option<HashSet<String>>,
     ascii_folding: bool,
     stemming: bool,
+    synonyms: Option<HashMap<String, Vec<String>>>,
 }
 
 impl Analyzer {
@@ -337,6 +403,7 @@ impl Analyzer {
             stopwords: stopwords.cloned(),
             ascii_folding: false,
             stemming: false,
+            synonyms: None,
         }
     }
 
@@ -365,6 +432,23 @@ impl Analyzer {
         self
     }
 
+    /// Enables [`SynonymFilter`] in this analyzer's chain, injecting
+    /// configured single-word synonyms at the same position as the term
+    /// they replace (see [`SynonymFilter`] for the full scope/positional
+    /// semantics). Filter order: tokenize -> fold -> lowercase -> stopwords
+    /// -> stem -> **synonyms** (last). Synonyms run last for two reasons:
+    /// (1) real Lucene's convention is that synonym expansion operates on
+    /// already-normalized terms, so it should see lowercased/stemmed forms,
+    /// matching the caller-supplied map's expected (normalized) keys; (2)
+    /// running after [`StopFilter`] means a term that is itself a stopword
+    /// (and thus removed) never gets its synonym expanded -- expanding a
+    /// term that's about to be dropped would be wasted and would leave an
+    /// orphaned synonym token with no corresponding original.
+    pub fn with_synonyms(mut self, synonyms: HashMap<String, Vec<String>>) -> Self {
+        self.synonyms = Some(synonyms);
+        self
+    }
+
     pub fn analyze(&self, text: &str) -> Vec<Token> {
         let tokens = tokenize(text);
         let tokens = if self.ascii_folding {
@@ -377,10 +461,14 @@ impl Analyzer {
             Some(stopwords) => StopFilter::apply(tokens, stopwords),
             None => tokens,
         };
-        if self.stemming {
+        let tokens = if self.stemming {
             PorterStemFilter::apply(tokens)
         } else {
             tokens
+        };
+        match &self.synonyms {
+            Some(synonyms) => SynonymFilter::apply(tokens, synonyms),
+            None => tokens,
         }
     }
 }
@@ -1150,6 +1238,126 @@ mod tests {
         let analyzer = Analyzer::standard(None);
         let out = analyzer.analyze("running");
         assert_eq!(out, vec![tok("running", 0, 7, 1)]);
+    }
+
+    #[test]
+    fn synonym_filter_injects_single_synonym_at_same_position() {
+        let tokens = vec![tok("quick", 0, 5, 1)];
+        let synonyms: HashMap<String, Vec<String>> =
+            [("quick".to_string(), vec!["fast".to_string()])]
+                .into_iter()
+                .collect();
+        let out = SynonymFilter::apply(tokens, &synonyms);
+        assert_eq!(out, vec![tok("quick", 0, 5, 1), tok("fast", 0, 5, 0),]);
+    }
+
+    #[test]
+    fn synonym_filter_multiple_synonyms_all_same_position() {
+        let tokens = vec![tok("quick", 0, 5, 1)];
+        let synonyms: HashMap<String, Vec<String>> = [(
+            "quick".to_string(),
+            vec!["fast".to_string(), "speedy".to_string()],
+        )]
+        .into_iter()
+        .collect();
+        let out = SynonymFilter::apply(tokens, &synonyms);
+        assert_eq!(
+            out,
+            vec![
+                tok("quick", 0, 5, 1),
+                tok("fast", 0, 5, 0),
+                tok("speedy", 0, 5, 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn synonym_filter_no_configured_synonym_passes_through_unchanged() {
+        let tokens = vec![tok("hello", 0, 5, 1)];
+        let synonyms: HashMap<String, Vec<String>> =
+            [("quick".to_string(), vec!["fast".to_string()])]
+                .into_iter()
+                .collect();
+        let out = SynonymFilter::apply(tokens.clone(), &synonyms);
+        assert_eq!(out, tokens);
+    }
+
+    #[test]
+    fn synonym_filter_not_automatically_bidirectional() {
+        // Configuring "quick" -> "fast" must NOT also expand "fast" ->
+        // "quick" -- real Lucene requires explicit configuration in both
+        // directions.
+        let tokens = vec![tok("fast", 0, 4, 1)];
+        let synonyms: HashMap<String, Vec<String>> =
+            [("quick".to_string(), vec!["fast".to_string()])]
+                .into_iter()
+                .collect();
+        let out = SynonymFilter::apply(tokens.clone(), &synonyms);
+        assert_eq!(out, tokens);
+    }
+
+    #[test]
+    fn synonym_filter_composed_with_stop_filter_stopword_removed_before_expansion() {
+        // "the quick fox" with "the" as a stopword and "quick" -> "fast"
+        // configured: stopwords run first, so "the" is gone and never
+        // considered for synonym expansion (it isn't in the map anyway, but
+        // this also proves the ordering doesn't crash/misbehave on a
+        // stopword-adjacent term); "quick" survives and still expands.
+        let analyzer = {
+            let stopwords: HashSet<String> = ["the".to_string()].into_iter().collect();
+            let synonyms: HashMap<String, Vec<String>> =
+                [("quick".to_string(), vec!["fast".to_string()])]
+                    .into_iter()
+                    .collect();
+            Analyzer::standard(Some(&stopwords)).with_synonyms(synonyms)
+        };
+        let out = analyzer.analyze("the quick fox");
+        assert_eq!(
+            out,
+            vec![
+                tok("quick", 4, 9, 2),
+                tok("fast", 4, 9, 0),
+                tok("fox", 10, 13, 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn synonym_filter_stopword_itself_never_gets_expanded() {
+        // If the stopword itself had a configured synonym, it must not
+        // survive to be expanded, since it's removed before synonym
+        // expansion runs.
+        let stopwords: HashSet<String> = ["the".to_string()].into_iter().collect();
+        let synonyms: HashMap<String, Vec<String>> =
+            [("the".to_string(), vec!["definite_article".to_string()])]
+                .into_iter()
+                .collect();
+        let analyzer = Analyzer::standard(Some(&stopwords)).with_synonyms(synonyms);
+        let out = analyzer.analyze("the fox");
+        assert_eq!(out, vec![tok("fox", 4, 7, 2)]);
+    }
+
+    #[test]
+    fn synonym_filter_runs_after_stemming() {
+        // Configuring the map with the STEMMED form ("run") as the key
+        // proves synonyms see post-stemming terms, since stemming runs
+        // before synonym expansion in the chain.
+        let synonyms: HashMap<String, Vec<String>> =
+            [("run".to_string(), vec!["sprint".to_string()])]
+                .into_iter()
+                .collect();
+        let analyzer = Analyzer::standard(None)
+            .with_stemming()
+            .with_synonyms(synonyms);
+        let out = analyzer.analyze("running");
+        assert_eq!(out, vec![tok("run", 0, 7, 1), tok("sprint", 0, 7, 0),]);
+    }
+
+    #[test]
+    fn analyzer_default_has_no_synonyms_backward_compatible() {
+        let analyzer = Analyzer::standard(None);
+        let out = analyzer.analyze("quick");
+        assert_eq!(out, vec![tok("quick", 0, 5, 1)]);
     }
 
     #[test]
