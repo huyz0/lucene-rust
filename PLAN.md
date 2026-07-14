@@ -1992,6 +1992,38 @@ pool as-is, no equivalent knob exposed), work-stealing tuning beyond what
 rayon's global pool already provides, and any I/O-bound async concern -- this
 is CPU-parallel scorer evaluation only, no FFI entry point for it yet either.
 
+**Progress (Concurrent segment search FFI exposure):** the "no FFI entry
+point yet" gap flagged just above is now closed for the two functions that
+had it. `lucene-ffi/src/directory_reader.rs` gained
+`ffi_search_term_query_multi_segment_concurrent`/
+`ffi_search_boolean_query_multi_segment_concurrent`, calling straight into
+`search_term_query_multi_segment_concurrent`/
+`search_boolean_query_multi_segment_concurrent` -- no search/merge logic
+reimplemented at the FFI layer, only the fan-out function called differs from
+the existing sequential wrappers. Wire format, handle validation
+(`DirectoryReaderHandle` lookup, `InvalidHandle` on a miss), and results
+readback are byte-for-byte the same as `ffi_search_term_query_multi_segment`/
+`ffi_search_boolean_query_multi_segment`: results land in the same
+`ScoredResultsHandle`/`scored_results()` registry those two already use, read
+back through the same existing `ffi_scored_results_len`/
+`ffi_scored_results_copy`/`ffi_close_scored_results` trio -- no new result
+type. **Correctness property tested directly at the FFI boundary**: two new
+tests, `term_query_multi_segment_concurrent_matches_sequential_ffi_wrapper`
+and `boolean_query_multi_segment_concurrent_matches_sequential_ffi_wrapper`,
+open two independent `DirectoryReader` handles against the same real
+two-segment fixture, run the sequential wrapper through one and the
+concurrent wrapper through the other, and assert the read-back
+`(doc_id, score)` vectors are equal -- proving the identical-output property
+`multi_segment.rs`'s own tests already established for the underlying Rust
+functions still holds once the FFI marshaling/handle/registry layer is in
+the loop. Plus the usual per-wrapper coverage this crate already carries for
+every other exported function: real-fixture happy path, unknown-reader-handle
+`InvalidHandle`, and null-out-handle `NullPointer` for both new entry points.
+**Explicitly out of scope, same as the underlying functions**: no thread-pool
+configuration/sizing knobs, and `search_numeric_range_sorted_by_field_multi_segment`
+(the sort-by-field case) still has no concurrent sibling at all (documented
+above), so there is nothing to expose over FFI for it yet either.
+
 **Progress (IndexWriter facade):** `IndexWriter`, a new struct in
 `lucene-index/src/index_writer.rs` -- analogous in spirit to real Lucene's
 `org.apache.lucene.index.IndexWriter` as the single entry point for

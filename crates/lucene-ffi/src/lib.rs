@@ -63,6 +63,17 @@
 //!   [`registry::ScoredResultsHandle`] -- the same handle/registry/reader trio
 //!   task #30's single-segment scored queries already use, see
 //!   `directory_reader.rs`'s module doc for why no new results type was needed.
+//! - [`directory_reader::ffi_search_term_query_multi_segment_concurrent`]/
+//!   [`directory_reader::ffi_search_boolean_query_multi_segment_concurrent`]
+//!   (Concurrent segment search FFI exposure): expose
+//!   `lucene_search::multi_segment::search_term_query_multi_segment_concurrent`/
+//!   `search_boolean_query_multi_segment_concurrent` (rayon-based per-segment
+//!   fan-out) over the exact same wire format, handle validation, and
+//!   `ScoredResultsHandle` readback the sequential wrappers above already
+//!   use — no search/merge logic reimplemented, only the fan-out function
+//!   called differs. See `directory_reader.rs`'s own doc comments on these
+//!   two functions for the byte-for-byte-identical-to-sequential proof and
+//!   the tests that exercise it directly at the FFI boundary.
 //! - [`facets::ffi_facet_counts_sorted_set`]/[`facets::ffi_range_facet_counts`]
 //!   (Faceted search FFI exposure): wraps `lucene_search::facets::facet_counts`/
 //!   `resolve_labels`/`top_n_facets` (SortedSet string facets) and
@@ -210,7 +221,8 @@ mod sort;
 pub use directory::{ffi_close_directory, ffi_open_directory};
 pub use directory_reader::{
     ffi_close_directory_reader, ffi_open_directory_reader, ffi_search_boolean_query_multi_segment,
-    ffi_search_term_query_multi_segment,
+    ffi_search_boolean_query_multi_segment_concurrent, ffi_search_term_query_multi_segment,
+    ffi_search_term_query_multi_segment_concurrent,
 };
 pub use error::FfiStatus;
 pub use explain::{ffi_explain_boolean_query, ffi_explain_phrase_query, ffi_explain_term_query};
