@@ -2447,6 +2447,32 @@ can never be auto-merged today, same as postings/term vectors). See
      the first, a middle, and the last physical block
      (`crates/lucene-search/tests/postings_writer_round_trip.rs::term_query_finds_correct_docs_across_multiple_tim_blocks`).
      See `docs/parity.md`'s row for the full scope statement.
+   - **`TopFieldCollector` wired into multi-segment search**
+     (`crates/lucene-search/src/multi_segment.rs::merge_multi_segment_by_field`/
+     `search_numeric_range_sorted_by_field_multi_segment`) — the sort-by-field
+     analogue of `merge_multi_segment_scored`: runs a numeric-range-then-sort
+     query independently per already-opened segment (via the existing,
+     unmodified `doc_value_query::search_numeric_range_sorted_by_field`),
+     translates each segment's local doc IDs to global via `doc_base`, and
+     merges into one globally-ranked, `top_n`-truncated result through
+     `TopFieldCollector` a second time — reusing that type's own
+     ascending-doc-ID tie-break rather than reimplementing it, the same
+     "merge already-sorted lists with the same comparator composes" argument
+     `merge_multi_segment_scored`'s doc comment already makes for scored
+     search. **Sequential only** — no `rayon`-concurrent sibling yet (the
+     scored path has one via `merge_multi_segment_scored_concurrent`); adding
+     an unmotivated, untested concurrent twin here would be exactly the
+     surface `rust-performance`/`test-coverage` warn against, so it's a
+     documented follow-up in `docs/parity.md` instead. **Scope unchanged
+     from `TopFieldCollector` itself**: numeric doc-value fields only, single
+     sort key. Proven correct by
+     `multi_segment::tests::sort_by_field_multi_segment_translates_doc_ids_across_segments`
+     (two segments with different doc bases, ascending and descending order
+     asserted against hand-computed global values) and, critically,
+     `sort_by_field_multi_segment_tie_break_is_global_ascending_doc_id`
+     (three equal-valued docs split across two segments, proving the
+     tie-break survives cross-segment doc-ID translation, not just
+     within one segment).
 
 **Progress (task #79): `BooleanQuery`/`Clause` rewrite pass.** New
 `crates/lucene-search/src/query.rs::{BooleanQuery::rewrite, Clause::rewrite}`

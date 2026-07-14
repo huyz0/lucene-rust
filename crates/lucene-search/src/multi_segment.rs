@@ -87,7 +87,9 @@
 //! doesn't have yet) and is out of scope for this task -- tracked as a
 //! follow-up in `docs/parity.md` rather than silently glossed over.
 
-use crate::collector::{ScoreDoc, ScoringCollector, TopDocsCollector};
+use crate::collector::{
+    FieldValueDoc, ScoreDoc, ScoringCollector, SortDirection, TopDocsCollector, TopFieldCollector,
+};
 use crate::field_norms::FieldNorms;
 use crate::query::{BooleanQuery, TermQuery};
 use crate::Result;
@@ -357,6 +359,133 @@ pub fn search_boolean_query_multi_segment_concurrent(
             seg_norms,
             local,
         )
+    })
+}
+
+// --- Sort-by-field multi-segment fan-out/merge ---
+//
+// Everything above this point merges *scored* (`ScoreDoc`) per-segment
+// results through `TopDocsCollector`. `TopFieldCollector`/`FieldValueDoc`
+// (`collector.rs`) and `sort_top_n_by_numeric_doc_value`/
+// `search_numeric_range_sorted_by_field` (`doc_value_query.rs`) are that same
+// shape's numeric-doc-value-sort sibling, but scoped to one already-opened
+// segment -- there is no multi-segment fan-out/merge for a sort-by-field
+// query yet. [`merge_multi_segment_by_field`] is the direct analogue of
+// [`merge_multi_segment_scored`] for that shape: same per-segment-collect-
+// then-doc-base-translate-then-re-collect pattern, just keyed by
+// `(value, direction)` via [`TopFieldCollector`]/[`field_rank_order`]-
+// equivalent ordering instead of by score.
+//
+// **Scope decision: sequential only, no `rayon`-concurrent sibling (yet).**
+// [`merge_multi_segment_scored`] has a `_concurrent` twin
+// ([`merge_multi_segment_scored_concurrent`]) because that was this crate's
+// established pattern for scored multi-segment search. This task adds only
+// the sequential path for sort-by-field: the per-segment work here (a
+// doc-values sweep, see `doc_value_query::search_numeric_range`'s own "why a
+// full sweep" note) has the same shape as the scored case and a concurrent
+// version would follow the exact same recipe (`par_iter` over segments,
+// each segment producing its own `Vec<FieldValueDoc>`, sequential final
+// merge) -- but adding it here without a caller or test exercising it would
+// be exactly the untested, unmotivated surface `rust-performance`/
+// `test-coverage` warn against. Tracked as a documented follow-up in
+// `docs/parity.md`, not silently dropped.
+use crate::doc_value_query::{self, MissingValue};
+use lucene_codecs::doc_values::NumericEntry;
+
+/// The shared fan-out+merge core for sort-by-field, the sort-by-field
+/// analogue of [`merge_multi_segment_scored`]: runs `per_segment_search` once
+/// per index in `0..doc_bases.len()` (each call expected to `offer` that
+/// segment's own locally-ranked hits, in **local** doc-ID space, into the
+/// `&mut TopFieldCollector` it's given), translates every kept hit to global
+/// doc-ID space via `doc_bases[i]`, and merges all segments' contributions
+/// into one globally-ranked (by `direction`, ties broken by ascending global
+/// doc ID -- see [`crate::collector::TopFieldCollector`]'s own doc comment),
+/// `top_n`-truncated result.
+///
+/// `top_n == 0` and an empty-contribution segment are defined the same way
+/// [`merge_multi_segment_scored`] defines them (see that function's doc
+/// comment) -- [`TopFieldCollector::new`] shares the same `top_n == 0`
+/// contract as [`TopDocsCollector::new`].
+pub fn merge_multi_segment_by_field<F>(
+    doc_bases: &[i32],
+    top_n: usize,
+    direction: SortDirection,
+    mut per_segment_search: F,
+) -> Result<Vec<FieldValueDoc>>
+where
+    F: FnMut(usize, &mut TopFieldCollector) -> Result<()>,
+{
+    let mut merged = TopFieldCollector::new(top_n, direction);
+    for (i, &doc_base) in doc_bases.iter().enumerate() {
+        let mut local = TopFieldCollector::new(top_n, direction);
+        per_segment_search(i, &mut local)?;
+        for hit in local.top_docs() {
+            merged.offer(hit.doc_id + doc_base, hit.value);
+        }
+    }
+    Ok(merged.top_docs().to_vec())
+}
+
+/// One already-opened segment's doc-values inputs for a sort-by-field
+/// multi-segment query -- the sort-by-field sibling of [`OpenSegment`],
+/// scoped to what [`doc_value_query::search_numeric_range_sorted_by_field`]
+/// needs per segment rather than to postings/term-dictionary access.
+/// `doc_base` carries the exact same meaning and caller responsibility as
+/// [`OpenSegment::doc_base`].
+pub struct DocValueSegment<'a> {
+    pub doc_values_data: &'a [u8],
+    pub range_entry: &'a NumericEntry,
+    pub sort_entry: &'a NumericEntry,
+    pub live_docs: Option<&'a lucene_util::fixed_bit_set::FixedBitSet>,
+    pub max_doc: i32,
+    pub doc_base: i32,
+}
+
+/// Multi-segment sibling of
+/// [`doc_value_query::search_numeric_range_sorted_by_field`]: runs that exact
+/// function against every segment in `segments` independently (matching
+/// `[min, max]` on `range_entry`, then ranking the matches by `sort_entry`
+/// per `direction`), translates each segment's local doc IDs to global via
+/// `doc_base` (see [`DocValueSegment::doc_base`]), and merges into the
+/// globally top-`top_n` hits via [`merge_multi_segment_by_field`] --
+/// reusing [`TopFieldCollector`]'s existing ascending-doc-ID tie-break both
+/// per segment and again across segments (same "merge already-sorted lists
+/// with the same comparator composes" argument [`merge_multi_segment_scored`]'s
+/// doc comment already makes for the scored case).
+///
+/// **Scope**: numeric doc-value fields only, single sort key -- the exact
+/// same scope [`doc_value_query::search_numeric_range_sorted_by_field`]
+/// already has (see that function's and `doc_value_query`'s own module doc
+/// for the precise statement); this function adds only the multi-segment
+/// fan-out/merge on top, no new capability. See `docs/parity.md` for this
+/// task's entry.
+pub fn search_numeric_range_sorted_by_field_multi_segment(
+    segments: &[DocValueSegment<'_>],
+    min: i64,
+    max: i64,
+    direction: SortDirection,
+    missing: MissingValue,
+    top_n: usize,
+) -> Result<Vec<FieldValueDoc>> {
+    let doc_bases: Vec<i32> = segments.iter().map(|s| s.doc_base).collect();
+    merge_multi_segment_by_field(&doc_bases, top_n, direction, |i, local| {
+        let seg = &segments[i];
+        let hits = doc_value_query::search_numeric_range_sorted_by_field(
+            seg.doc_values_data,
+            seg.range_entry,
+            seg.live_docs,
+            seg.max_doc,
+            min,
+            max,
+            seg.sort_entry,
+            direction,
+            missing,
+            top_n,
+        )?;
+        for hit in hits {
+            local.offer(hit.doc_id, hit.value);
+        }
+        Ok(())
     })
 }
 
@@ -877,5 +1006,287 @@ mod tests {
             search_boolean_query_multi_segment_concurrent(&segments, &query, &norms, 10).unwrap();
         assert!(!seq.is_empty());
         assert_identical(&seq, &con);
+    }
+
+    // --- Sort-by-field multi-segment fan-out/merge ---
+
+    fn numeric_field_infos(field_number: i32) -> lucene_codecs::field_infos::FieldInfos {
+        use lucene_codecs::field_infos::{
+            DocValuesSkipIndexType, DocValuesType, FieldInfo, IndexOptions, VectorEncoding,
+            VectorSimilarityFunction,
+        };
+        lucene_codecs::field_infos::FieldInfos {
+            fields: vec![FieldInfo {
+                name: "score".to_string(),
+                number: field_number,
+                store_term_vectors: false,
+                omit_norms: false,
+                store_payloads: false,
+                soft_deletes_field: false,
+                parent_field: false,
+                index_options: IndexOptions::None,
+                doc_values_type: DocValuesType::Numeric,
+                doc_values_skip_index_type: DocValuesSkipIndexType::None,
+                doc_values_gen: -1,
+                attributes: vec![],
+                point_dimension_count: 0,
+                point_index_dimension_count: 0,
+                point_num_bytes: 0,
+                vector_dimension: 0,
+                vector_encoding: VectorEncoding::Float32,
+                vector_similarity_function: VectorSimilarityFunction::Euclidean,
+            }],
+        }
+    }
+
+    /// Writes one synthetic segment's dense NUMERIC doc-values field and
+    /// returns `(dvd_bytes, entry)` -- the same shape `DocValueSegment`
+    /// needs, built via the real (unmodified) `doc_values::write_single_dense_numeric_field`/
+    /// `parse_meta` round trip rather than hand-crafted bytes.
+    fn write_numeric_segment(values: &[i64]) -> (Vec<u8>, NumericEntry) {
+        let seg_id = [7u8; lucene_store::codec_util::ID_LENGTH];
+        let (dvm, dvd, _dvs) = lucene_codecs::doc_values::write_single_dense_numeric_field(
+            0,
+            values,
+            values.len() as i32,
+            &seg_id,
+            "",
+        )
+        .unwrap();
+        let fis = numeric_field_infos(0);
+        let (_, meta) = lucene_codecs::doc_values::parse_meta(&dvm, &seg_id, "", &fis).unwrap();
+        (dvd, meta.numeric_entry(0).unwrap().clone())
+    }
+
+    #[test]
+    fn sort_by_field_multi_segment_translates_doc_ids_across_segments() {
+        // Segment 0: 3 docs, values [30, 10, 20]. Segment 1 (doc_base=3): 2
+        // docs, values [5, 25].
+        let (dvd0, entry0) = write_numeric_segment(&[30, 10, 20]);
+        let (dvd1, entry1) = write_numeric_segment(&[5, 25]);
+
+        let segments = [
+            DocValueSegment {
+                doc_values_data: &dvd0,
+                range_entry: &entry0,
+                sort_entry: &entry0,
+                live_docs: None,
+                max_doc: 3,
+                doc_base: 0,
+            },
+            DocValueSegment {
+                doc_values_data: &dvd1,
+                range_entry: &entry1,
+                sort_entry: &entry1,
+                live_docs: None,
+                max_doc: 2,
+                doc_base: 3,
+            },
+        ];
+
+        let ascending = search_numeric_range_sorted_by_field_multi_segment(
+            &segments,
+            i64::MIN,
+            i64::MAX,
+            SortDirection::Ascending,
+            MissingValue::Exclude,
+            10,
+        )
+        .unwrap();
+        // Global values by doc id: 0->30, 1->10, 2->20, 3(=0+3)->5, 4->25.
+        let got: Vec<(i32, i64)> = ascending.iter().map(|d| (d.doc_id, d.value)).collect();
+        assert_eq!(got, vec![(3, 5), (1, 10), (2, 20), (4, 25), (0, 30)]);
+
+        let descending = search_numeric_range_sorted_by_field_multi_segment(
+            &segments,
+            i64::MIN,
+            i64::MAX,
+            SortDirection::Descending,
+            MissingValue::Exclude,
+            10,
+        )
+        .unwrap();
+        let got_desc: Vec<(i32, i64)> = descending.iter().map(|d| (d.doc_id, d.value)).collect();
+        assert_eq!(got_desc, vec![(0, 30), (4, 25), (2, 20), (1, 10), (3, 5)]);
+    }
+
+    #[test]
+    fn sort_by_field_multi_segment_tie_break_is_global_ascending_doc_id() {
+        // Segment 0 (doc_base=0): 2 docs, values [50, 50] (doc 0 and doc 1
+        // tie). Segment 1 (doc_base=2): 1 doc, value 50 (global doc id 2,
+        // also ties). All three docs tie on value -- the merged order must
+        // be ascending GLOBAL doc id (0, 1, 2), proving the tie-break
+        // survives translation across segment boundaries, not just within
+        // one segment.
+        let (dvd0, entry0) = write_numeric_segment(&[50, 50]);
+        let (dvd1, entry1) = write_numeric_segment(&[50]);
+
+        let segments = [
+            DocValueSegment {
+                doc_values_data: &dvd0,
+                range_entry: &entry0,
+                sort_entry: &entry0,
+                live_docs: None,
+                max_doc: 2,
+                doc_base: 0,
+            },
+            DocValueSegment {
+                doc_values_data: &dvd1,
+                range_entry: &entry1,
+                sort_entry: &entry1,
+                live_docs: None,
+                max_doc: 1,
+                doc_base: 2,
+            },
+        ];
+
+        let result = search_numeric_range_sorted_by_field_multi_segment(
+            &segments,
+            i64::MIN,
+            i64::MAX,
+            SortDirection::Ascending,
+            MissingValue::Exclude,
+            10,
+        )
+        .unwrap();
+        let doc_ids: Vec<i32> = result.iter().map(|d| d.doc_id).collect();
+        assert_eq!(doc_ids, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn sort_by_field_multi_segment_top_n_truncates_globally() {
+        let (dvd0, entry0) = write_numeric_segment(&[30, 10, 20]);
+        let (dvd1, entry1) = write_numeric_segment(&[5, 25]);
+        let segments = [
+            DocValueSegment {
+                doc_values_data: &dvd0,
+                range_entry: &entry0,
+                sort_entry: &entry0,
+                live_docs: None,
+                max_doc: 3,
+                doc_base: 0,
+            },
+            DocValueSegment {
+                doc_values_data: &dvd1,
+                range_entry: &entry1,
+                sort_entry: &entry1,
+                live_docs: None,
+                max_doc: 2,
+                doc_base: 3,
+            },
+        ];
+        let top2 = search_numeric_range_sorted_by_field_multi_segment(
+            &segments,
+            i64::MIN,
+            i64::MAX,
+            SortDirection::Ascending,
+            MissingValue::Exclude,
+            2,
+        )
+        .unwrap();
+        let doc_ids: Vec<i32> = top2.iter().map(|d| d.doc_id).collect();
+        assert_eq!(doc_ids, vec![3, 1]);
+    }
+
+    #[test]
+    fn sort_by_field_multi_segment_no_segments_returns_empty() {
+        let segments: [DocValueSegment<'_>; 0] = [];
+        let result = search_numeric_range_sorted_by_field_multi_segment(
+            &segments,
+            i64::MIN,
+            i64::MAX,
+            SortDirection::Ascending,
+            MissingValue::Exclude,
+            10,
+        )
+        .unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn sort_by_field_multi_segment_top_n_zero_returns_nothing() {
+        let (dvd0, entry0) = write_numeric_segment(&[30, 10, 20]);
+        let segments = [DocValueSegment {
+            doc_values_data: &dvd0,
+            range_entry: &entry0,
+            sort_entry: &entry0,
+            live_docs: None,
+            max_doc: 3,
+            doc_base: 0,
+        }];
+        let result = search_numeric_range_sorted_by_field_multi_segment(
+            &segments,
+            i64::MIN,
+            i64::MAX,
+            SortDirection::Ascending,
+            MissingValue::Exclude,
+            0,
+        )
+        .unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn sort_by_field_multi_segment_segment_with_zero_matches_does_not_break_the_merge() {
+        // Segment 0's values are all outside [100, 200] -- zero matches --
+        // segment 1's are inside; the merge must still return segment 1's
+        // hits correctly, not error or drop them.
+        let (dvd0, entry0) = write_numeric_segment(&[1, 2, 3]);
+        let (dvd1, entry1) = write_numeric_segment(&[150, 175]);
+        let segments = [
+            DocValueSegment {
+                doc_values_data: &dvd0,
+                range_entry: &entry0,
+                sort_entry: &entry0,
+                live_docs: None,
+                max_doc: 3,
+                doc_base: 0,
+            },
+            DocValueSegment {
+                doc_values_data: &dvd1,
+                range_entry: &entry1,
+                sort_entry: &entry1,
+                live_docs: None,
+                max_doc: 2,
+                doc_base: 3,
+            },
+        ];
+        let result = search_numeric_range_sorted_by_field_multi_segment(
+            &segments,
+            100,
+            200,
+            SortDirection::Ascending,
+            MissingValue::Exclude,
+            10,
+        )
+        .unwrap();
+        let doc_ids: Vec<i32> = result.iter().map(|d| d.doc_id).collect();
+        assert_eq!(doc_ids, vec![3, 4]);
+    }
+
+    #[test]
+    fn sort_by_field_multi_segment_propagates_decode_errors() {
+        // max_doc claims more docs than the dense entry actually holds --
+        // numeric_value's Error::DocOutOfRange must surface through the
+        // multi-segment wrapper, not be swallowed or panic.
+        let (dvd, entry) = write_numeric_segment(&[1, 2, 3]);
+        let segments = [DocValueSegment {
+            doc_values_data: &dvd,
+            range_entry: &entry,
+            sort_entry: &entry,
+            live_docs: None,
+            max_doc: 10, // beyond the entry's real 3 values
+            doc_base: 0,
+        }];
+        let err = search_numeric_range_sorted_by_field_multi_segment(
+            &segments,
+            i64::MIN,
+            i64::MAX,
+            SortDirection::Ascending,
+            MissingValue::Exclude,
+            10,
+        )
+        .unwrap_err();
+        assert!(matches!(err, crate::Error::DocValues(_)));
     }
 }
