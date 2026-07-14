@@ -63,6 +63,20 @@
 //!   [`registry::ScoredResultsHandle`] -- the same handle/registry/reader trio
 //!   task #30's single-segment scored queries already use, see
 //!   `directory_reader.rs`'s module doc for why no new results type was needed.
+//! - [`facets::ffi_facet_counts_sorted_set`]/[`facets::ffi_range_facet_counts`]
+//!   (Faceted search FFI exposure): wraps `lucene_search::facets::facet_counts`/
+//!   `resolve_labels`/`top_n_facets` (SortedSet string facets) and
+//!   `lucene_search::facets::range_facet_counts` (NUMERIC range facets), no
+//!   facet-counting logic reimplemented -- see `facets.rs`'s module doc for
+//!   the wire encoding (a new [`registry::FacetResultsHandle`] for the
+//!   SortedSet case, since labels are resolved from the index; direct
+//!   caller-allocated output buffers for the range case, since labels there
+//!   are caller-supplied input already known to the caller).
+//! - [`results_facets::ffi_facet_results_len`]/[`results_facets::ffi_facet_results_copy`]/
+//!   [`results_facets::ffi_facet_result_label`]/[`results_facets::ffi_close_facet_results`]:
+//!   reads a facet results handle's `(ord, count)` pairs back via parallel
+//!   buffers plus a per-index label accessor (see `results_facets.rs`'s
+//!   module doc for why labels need their own accessor), then releases it.
 //! - [`error::guard`]/[`ffi_get_last_error_message`]: every exported
 //!   function's panic-safety wrapper and the thread-local last-error
 //!   message accessor.
@@ -121,11 +135,13 @@
 mod directory;
 mod directory_reader;
 mod error;
+mod facets;
 mod handle;
 mod query;
 mod raw;
 mod registry;
 mod results;
+mod results_facets;
 mod results_scored;
 mod results_sorted;
 mod segment;
@@ -137,11 +153,15 @@ pub use directory_reader::{
     ffi_search_term_query_multi_segment,
 };
 pub use error::FfiStatus;
+pub use facets::{ffi_facet_counts_sorted_set, ffi_range_facet_counts};
 pub use query::{
     ffi_search_boolean_query, ffi_search_boolean_query_scored, ffi_search_phrase_query,
     ffi_search_phrase_query_scored, ffi_search_term_query, ffi_search_term_query_scored,
 };
 pub use results::{ffi_close_results, ffi_results_copy, ffi_results_len};
+pub use results_facets::{
+    ffi_close_facet_results, ffi_facet_result_label, ffi_facet_results_copy, ffi_facet_results_len,
+};
 pub use results_scored::{
     ffi_close_scored_results, ffi_scored_results_copy, ffi_scored_results_len,
 };

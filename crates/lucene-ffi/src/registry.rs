@@ -174,6 +174,33 @@ pub struct DirectoryReaderHandle {
     pub reader: lucene_search::directory_reader::DirectoryReader,
 }
 
+/// A completed SortedSet facet count's resolved `(ord, label, count)` triples
+/// (Faceted search FFI exposure, wrapping `lucene_search::facets::facet_counts`/
+/// `resolve_labels`/`top_n_facets`) -- read back via
+/// `results_facets.rs`'s `ffi_facet_results_len`/`ffi_facet_results_copy`/
+/// `ffi_facet_result_label`, then released via `ffi_close_facet_results`.
+///
+/// **Why a new registry/handle type instead of reusing `SortedResultsHandle`**:
+/// a facet result's element is `(ord, label, count)` -- it carries a resolved
+/// string label alongside a `u64` count, not a `(doc_id, value)` `i64` pair --
+/// a different wire shape needing its own string-accessor
+/// (`ffi_facet_result_label`) that a sorted-results handle has no equivalent
+/// of. Keeping this as its own registry/tag means a sorted-results handle can
+/// never be accidentally passed to a facet-results accessor (or vice versa)
+/// and misread as the wrong element type -- exactly the same reasoning
+/// `SortedResultsHandle`'s own doc comment gives for not widening
+/// `ScoredResultsHandle`.
+///
+/// **NUMERIC range facet counts have no equivalent handle**: `ffi_range_facet_counts`
+/// (also in `facets.rs`) writes counts directly into a caller-allocated
+/// buffer instead -- every range's label is caller-supplied input, not
+/// resolved from the index, so the caller already owns every label string
+/// and there is nothing new to hand back behind a handle. See `facets.rs`'s
+/// module doc for the full rationale.
+pub struct FacetResultsHandle {
+    pub facets: Vec<lucene_search::facets::FacetCount>,
+}
+
 pub fn directories() -> &'static Mutex<SlotMap<FsDirectory>> {
     static REGISTRY: OnceLock<Mutex<SlotMap<FsDirectory>>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(SlotMap::new(RegistryTag::Directory)))
@@ -202,4 +229,9 @@ pub fn sorted_results() -> &'static Mutex<SlotMap<SortedResultsHandle>> {
 pub fn directory_readers() -> &'static Mutex<SlotMap<DirectoryReaderHandle>> {
     static REGISTRY: OnceLock<Mutex<SlotMap<DirectoryReaderHandle>>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(SlotMap::new(RegistryTag::DirectoryReader)))
+}
+
+pub fn facet_results() -> &'static Mutex<SlotMap<FacetResultsHandle>> {
+    static REGISTRY: OnceLock<Mutex<SlotMap<FacetResultsHandle>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(SlotMap::new(RegistryTag::FacetResults)))
 }

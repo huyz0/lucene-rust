@@ -2272,6 +2272,66 @@ tests pass (up from 426), plus every pre-existing integration test still
 green. `cargo clippy --workspace --all-targets -- -D warnings` clean. See
 `docs/parity.md`'s updated row for the exact scope statement.
 
+**Progress (Faceted search FFI exposure):** `lucene-ffi` C-ABI wrappers for
+tasks #50/#58's `lucene-search/src/facets.rs`, the last "no FFI exposure"
+gap that module's own scope notes left open. Two new modules following
+tasks #20/#30/#40's exact pattern (opaque `u64` handles, `catch_unwind`
+via `guard`, per-call status codes, handle validation before use):
+
+- `crates/lucene-ffi/src/facets.rs`: `ffi_facet_counts_sorted_set` (wraps
+  `facets::facet_counts` + `resolve_labels`, then `top_n_facets` when
+  `top_n > 0` -- `top_n == 0` returns every facet in ordinal order,
+  untruncated, simply by not calling `top_n_facets`) and
+  `ffi_range_facet_counts` (wraps `facets::range_facet_counts`). Field-name
+  -> field-number/doc-values-entry lookup follows `sort.rs`'s
+  `numeric_entry_for` pattern exactly; a SORTED_SET field written as
+  `SortedSetKind::Single` is `FfiStatus::InvalidArgument` since
+  `facet_counts` itself has no counting path for that shape (not a gap this
+  FFI layer introduces -- see `facets.rs`'s own module doc).
+- `crates/lucene-ffi/src/results_facets.rs`: `ffi_facet_results_len`/
+  `ffi_facet_results_copy` (parallel `i64`/`u64` `(ord, count)` buffers, same
+  shape `results_sorted.rs` established) plus a new
+  `ffi_facet_result_label` per-index accessor (labels are variable-length
+  strings resolved from the index, so they don't fit the fixed-size
+  parallel-buffer shape -- reuses this crate's existing
+  `buf`/`buf_len`/`out_written`/`BufferTooSmall` contract from
+  `ffi_get_last_error_message` rather than inventing a new wire encoding),
+  and `ffi_close_facet_results`. New `RegistryTag::FacetResults` /
+  `registry::FacetResultsHandle` (own registry, not folded into
+  `SortedResultsHandle` -- a facet result carries a resolved label
+  `SortedResultsHandle`'s element has no room for).
+- `ffi_range_facet_counts` needs **no output handle at all**: every range's
+  label is caller-supplied input (not resolved from the index), so counts
+  are written straight into a caller-allocated `out_counts: *mut u64` buffer
+  in the same order as the input ranges. Range inputs cross the wire as
+  five parallel arrays (`range_mins`/`range_min_inclusive`/`range_maxs`/
+  `range_max_inclusive`/label bytes sliced by `range_label_lens`) -- the
+  concatenated-buffer encoding is only usable on the input side, where the
+  caller already knows every length up front; see `facets.rs`'s module doc
+  for why the output side (`ffi_facet_result_label`) had to take a different
+  shape.
+
+**No facet-counting logic was touched or duplicated** -- every new function
+is a thin marshal-in/call-into-`facets.rs`/marshal-out wrapper; `facets.rs`
+itself is unchanged. Tests: `facets::tests` (20 cases -- a real fixture
+cross-check against calling `lucene_search::facets` directly for the
+SortedSet path, `top_n` truncation, unknown/wrong-kind field, unknown
+segment handle, null out-handle, null candidates with nonzero length, empty
+candidates, a field with no SORTED_SET entry; a real fixture cross-check for
+the range path, zero-ranges no-op, unknown field, a field with no NUMERIC
+entry, null out-counts, null candidates/mins/label-data with nonzero
+lengths, an invalid-UTF-8 label, unknown segment handle) and
+`results_facets::tests` (13 cases -- len/copy/label round-trip,
+buffer-too-small on both copy and label, a null label buffer, empty-results
+no-op, null-pointer variants, out-of-bounds label index, unknown/
+double-close handle). `cargo test -p lucene-ffi`: 189 tests pass (up
+from 156). `cargo clippy --workspace --all-targets -- -D warnings` clean.
+**Deferred, not a gap in this task**: `SortedSetKind::Single` counting (no
+underlying `facets.rs` support to wrap); index-wide/multi-segment facet
+aggregation (same scope boundary tasks #50/#58 already documented);
+hierarchical/taxonomy facets, drill-down/drill-sideways (no `lucene-facet`-
+module equivalent exists anywhere in this port).
+
 3. Indexing chain: `IndexWriter`, DWPT-per-thread with in-memory hash (bytes → postings
    builder mirroring `BytesRefHash` + parallel arrays), flush-by-RAM accounting,
    `flush()` → segment.

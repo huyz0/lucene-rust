@@ -62,6 +62,14 @@ pub enum RegistryTag {
     /// opened under it, not a single filesystem root or a single segment's
     /// files -- see `registry.rs`'s `DirectoryReaderHandle` doc comment.
     DirectoryReader = 6,
+    /// Resolved `(ord, label, count)` triples from a SortedSet facet count
+    /// (`facets.rs`'s `ffi_facet_counts_sorted_set`, wrapping
+    /// `lucene_search::facets::facet_counts`/`resolve_labels`/`top_n_facets`)
+    /// -- kept in its own registry rather than folded into `SortedResults`
+    /// since a facet result's element also carries a resolved string label,
+    /// not just a `(doc_id, value)` pair -- see `registry.rs`'s
+    /// `FacetResultsHandle` doc comment.
+    FacetResults = 7,
 }
 
 fn pack(tag: RegistryTag, index: u32, generation: u32) -> u64 {
