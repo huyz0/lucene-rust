@@ -190,6 +190,7 @@ pub mod facets;
 pub mod field_norms;
 pub mod highlighter;
 pub mod multi_segment;
+pub mod points_query;
 pub mod query;
 pub mod query_cache;
 pub mod query_parser;
@@ -267,6 +268,11 @@ pub enum Error {
     /// decode is an [`Error::BlockTree`] rather than an empty result.
     #[error(transparent)]
     Regexp(#[from] lucene_codecs::regexp::RegexpError),
+    /// Surfaced by [`points_query::search_points_range`] when the underlying
+    /// `.kdd`/`.kdi`/`.kdm` decode fails (a truncated/corrupt BKD points
+    /// region) -- the points-range analog of [`Error::DocValues`].
+    #[error(transparent)]
+    Points(#[from] lucene_codecs::points::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

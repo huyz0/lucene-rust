@@ -2469,6 +2469,59 @@ gap in this task**: every clause kind `query.rs` itself doesn't expose (see
 above) has no explain wrapper either -- a follow-up to `query.rs`'s own wire
 format, not to `explain.rs` (either crate).
 
+**Progress (task #81): search-side BKD points range query.** New
+`crates/lucene-search/src/points_query.rs::search_points_range`, the
+read-only, non-deleting sibling of task #36's delete-side
+`lucene-index/src/points_delete.rs::resolve_points_range_doc_ids` -- "which
+live doc IDs does a `PointRangeQuery`-shaped search actually match, in one
+already-opened segment", fed through this crate's existing `Collector`
+trait (the same shape `search_term_query`/`doc_value_query`'s `search_*`
+functions already use), rather than a standalone `Vec<i32>` function.
+**No BKD read/traversal logic reimplemented, not even the filtering
+logic**: `search_points_range` calls `resolve_points_range_doc_ids`
+directly (the dependency graph already has `lucene-search -> lucene-index`,
+confirmed by `crates/lucene-search/Cargo.toml`) and only adapts its
+`Result<Vec<i32>>` onto `Collector`/this crate's own `Error` type -- the
+per-dimension unsigned-byte-wise range comparison, the `decode_all_points`
+call, and the ascending/deduplicated doc-ID ordering are all task #36's
+code, used as-is. A new `Error::Points(#[from] lucene_codecs::points::Error)`
+variant was added to `lucene-search`'s crate-level `Error` enum (mirroring
+the existing `Error::DocValues`) since `resolve_points_range_doc_ids` can
+surface a `.kdd` decode failure; its sibling
+`lucene_index::points_delete::Error::Deletes` variant is matched but
+`unreachable!()` here, since `resolve_points_range_doc_ids` (unlike its
+`resolve_and_apply_*` sibling) never calls `deletes::apply_deletes`.
+**Deliberately out of scope**: a scored variant (`PointRangeQuery` is a
+`ConstantScoreQuery`-shaped match-only query in real Lucene too, so there is
+no `ScoredCollector` sibling to add); the sublinear `BKDReader.intersect`
+tree-pruning traversal (same honest `O(field's point count)` gap task #36's
+row already documents, inherited unchanged here); multi-segment federation
+(single already-opened segment's `PointsReader`, same scope as every other
+query module in this crate). **This port's already-built multi-dimension
+BKD points support is exercised, not just single-dimension**: one new test
+(`two_dimension_range_checks_every_dimension_independently`) builds a 2D
+`LatLonPoint`-shaped fixture in-memory via the existing `points::write` and
+confirms a doc whose first dimension alone would match but whose second
+dimension doesn't is correctly excluded -- the same AND-across-dimensions
+semantics task #36's own 2D test already proved at the delete layer, now
+proven again at this new search-side entry point. Tests (9, all in
+`points_query.rs`, same hand-built-fixture-via-`points::write` approach
+task #36's tests use rather than a new checked-in Java fixture, for the
+same reason that task's row gives: the existing
+`fixtures/data/points_index/` fixture is single-dimension only and can't
+exercise the 2D AND semantics anyway): exact range match, inclusive
+boundaries on both ends, a zero-match range, a range matching every doc, an
+unknown field number, `live_docs` filtering an already-deleted doc out, the
+2D multi-dimension case above, and a corrupt-`.kdd`-leaf-data case
+(scrambling bytes strictly between the codec header and footer so
+`points::open` itself still succeeds but `decode_all_points`'s leaf read
+fails) confirming the new `Error::Points` surfaces correctly all the way
+through `search_points_range` itself, not just through `points::open`.
+`cargo test -p lucene-search`: all tests pass (450 lib tests, up from 442).
+`cargo clippy --workspace --all-targets -- -D warnings` clean. New-file
+coverage: `points_query.rs` 98.72% lines (above the 95% bar). See
+`docs/parity.md`'s updated row for the exact scope statement.
+
 3. Indexing chain: `IndexWriter`, DWPT-per-thread with in-memory hash (bytes → postings
    builder mirroring `BytesRefHash` + parallel arrays), flush-by-RAM accounting,
    `flush()` → segment.
