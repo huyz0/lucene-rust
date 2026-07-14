@@ -22,7 +22,9 @@ use lucene_codecs::field_infos::{
     VectorSimilarityFunction,
 };
 use lucene_codecs::postings::{DocInput, PosInput};
-use lucene_codecs::postings_writer::{write_single_field, FieldPostingsInput, TermPostings};
+use lucene_codecs::postings_writer::{
+    write_fields, write_single_field, FieldPostingsInput, TermPostings,
+};
 use lucene_search::{search_phrase_query, search_term_query, PhraseQuery, TermQuery, VecCollector};
 
 const SEG_ID: [u8; 16] = [42u8; 16];
@@ -250,4 +252,114 @@ fn phrase_query_finds_correct_docs_over_freshly_written_positions() {
     // case showing the writer's positions distinguish more than just doc-ID
     // conjunction (both docs contain all three terms).
     case(&[b"quick", b"jumps", b"fox"], &[1]);
+}
+
+/// The required end-to-end proof for multi-field postings writes
+/// (`lucene_codecs::postings_writer::write_fields`): writes TWO fields --
+/// "title" (`DocsAndFreqs`, no positions) and "body"
+/// (`DocsAndFreqsAndPositions`) -- in a *single* `write_fields` call, so
+/// they share one physical `.doc`/`.pos`/`.tim`/`.tip`/`.tmd` file set with
+/// `numFields == 2`. Both fields index the term `"rust"` with different
+/// postings, which is the crucial isolation check: a `TermQuery` against
+/// "title" and one against "body" for the *same term bytes* must return
+/// disjoint, field-correct doc sets, not a merged/cross-contaminated result.
+/// Also runs a `PhraseQuery` against "body" to prove positions decode
+/// correctly for a non-first field sharing the segment with a
+/// no-positions field.
+#[test]
+fn multi_field_segment_term_queries_are_isolated_per_field() {
+    let title_terms = vec![
+        TermPostings {
+            term: b"paris".to_vec(),
+            docs: vec![(2, 1)],
+            ..Default::default()
+        },
+        TermPostings {
+            term: b"rust".to_vec(),
+            docs: vec![(0, 1)],
+            ..Default::default()
+        },
+    ];
+    let body_terms = vec![
+        TermPostings {
+            term: b"crab".to_vec(),
+            docs: vec![(1, 1)],
+            positions: vec![vec![1]],
+        },
+        TermPostings {
+            term: b"rust".to_vec(), // same term bytes as "title", different field/postings
+            docs: vec![(1, 1), (2, 2)],
+            positions: vec![vec![0], vec![0, 4]],
+        },
+    ];
+    let inputs = vec![
+        FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqs,
+            doc_count: 2,
+            terms: &title_terms,
+        },
+        FieldPostingsInput {
+            field_number: 1,
+            index_options: IndexOptions::DocsAndFreqsAndPositions,
+            doc_count: 3,
+            terms: &body_terms,
+        },
+    ];
+    let output = write_fields(&inputs, &SEG_ID, SUFFIX).expect("write_fields");
+
+    let field_infos = FieldInfos {
+        fields: vec![
+            field_info(0, "title", IndexOptions::DocsAndFreqs),
+            field_info(1, "body", IndexOptions::DocsAndFreqsAndPositions),
+        ],
+    };
+    let fields = blocktree::open(
+        &output.tim,
+        &output.tip,
+        &output.tmd,
+        &field_infos,
+        &SEG_ID,
+        SUFFIX,
+        3,
+    )
+    .expect("blocktree::open on freshly written multi-field .tim/.tip/.tmd");
+    let doc_in = DocInput::open(&output.doc, &SEG_ID, SUFFIX).expect("DocInput::open");
+    let pos_in = PosInput::open(&output.pos, &SEG_ID, SUFFIX).expect("PosInput::open");
+
+    let term_case = |field: &str, term: &str, expected: &[i32]| {
+        let mut collector = VecCollector::default();
+        let query = TermQuery::new(field, term.as_bytes());
+        search_term_query(&fields, Some(&doc_in), None, &query, &mut collector)
+            .unwrap_or_else(|e| panic!("search_term_query({field:?}, {term:?}) failed: {e}"));
+        assert_eq!(collector.docs, expected, "field {field:?} term {term:?}");
+    };
+
+    // "title" only has doc 0 for "rust"; "paris" is title-only.
+    term_case("title", "rust", &[0]);
+    term_case("title", "paris", &[2]);
+    // "body" has docs 1 and 2 for the *same term bytes* "rust" -- proves
+    // this field's postings weren't merged/overwritten by "title"'s.
+    term_case("body", "rust", &[1, 2]);
+    term_case("body", "crab", &[1]);
+    // Cross-field lookups must miss cleanly: "paris"/"crab" don't exist in
+    // the other field's term dictionary.
+    term_case("title", "crab", &[]);
+    term_case("body", "paris", &[]);
+
+    // Positions on "body" still decode correctly alongside a no-positions
+    // "title" field in the same segment.
+    let mut collector = VecCollector::default();
+    let query = PhraseQuery::new("body", [b"rust".to_vec()]);
+    search_phrase_query(
+        &fields,
+        Some(&doc_in),
+        Some(&pos_in),
+        None,
+        None,
+        &query,
+        &mut collector,
+    )
+    .expect("search_phrase_query");
+    assert_eq!(collector.docs, vec![1, 2]);
 }

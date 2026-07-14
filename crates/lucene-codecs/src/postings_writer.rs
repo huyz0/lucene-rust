@@ -203,15 +203,243 @@ pub struct Output {
     pub tmd: Vec<u8>,
 }
 
-/// Writes `.doc`/`.tim`/`.tip`/`.tmd` bytes for `input`'s single field — see
-/// the module doc for the exact scope and wire format. `segment_id`/
-/// `segment_suffix` must match what the caller will later open the files
-/// with (`blocktree::open`/`postings::DocInput::open` both check them).
+/// Writes `.doc`/`.tim`/`.tip`/`.tmd` bytes for `input`'s single field — a
+/// thin one-element-slice wrapper over [`write_fields`], kept so existing
+/// single-field callers/tests are unaffected.
 pub fn write_single_field(
     input: &FieldPostingsInput<'_>,
     segment_id: &[u8; ID_LENGTH],
     segment_suffix: &str,
 ) -> Result<Output> {
+    write_fields(std::slice::from_ref(input), segment_id, segment_suffix)
+}
+
+/// Writes `.doc`/`.tim`/`.tip`/`.tmd` bytes for **one or more** fields in a
+/// single segment — see the module doc for the exact per-field scope and
+/// wire format, each of which applies independently to every field in
+/// `inputs`. `numFields` in the resulting `.tmd` is `inputs.len()`; each
+/// field still gets its own single `.tim` block and single root `.tip` trie
+/// node (no multi-block/multi-level-trie support here, see the module doc),
+/// but all fields' blocks/nodes/records are interleaved into the *same*
+/// physical `.doc`/`.pos`/`.tim`/`.tip`/`.tmd` byte buffers, exactly like a
+/// real multi-field segment. `segment_id`/`segment_suffix` must match what
+/// the caller will later open the files with (`blocktree::open`/
+/// `postings::DocInput::open` both check them).
+pub fn write_fields(
+    inputs: &[FieldPostingsInput<'_>],
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+) -> Result<Output> {
+    if inputs.is_empty() {
+        return Err(Error::EmptyTerms);
+    }
+    for input in inputs {
+        validate_field(input)?;
+    }
+
+    // ---- .doc ----
+    let mut doc = Vec::new();
+    codec_util::write_index_header(
+        &mut doc,
+        DOC_CODEC,
+        DOC_VERSION_CURRENT,
+        segment_id,
+        segment_suffix,
+    );
+
+    // ---- .pos ----
+    // Only written at all if at least one field indexes positions, exactly
+    // like a real segment has no `.pos` file when no field needs one.
+    let any_positions = inputs
+        .iter()
+        .any(|input| input.index_options.subsumes_positions());
+    let mut pos = Vec::new();
+    if any_positions {
+        codec_util::write_index_header(
+            &mut pos,
+            POS_CODEC,
+            DOC_VERSION_CURRENT,
+            segment_id,
+            segment_suffix,
+        );
+    }
+
+    // ---- .tim / .tip headers ----
+    let mut tim = Vec::new();
+    codec_util::write_index_header(
+        &mut tim,
+        TERMS_CODEC_NAME,
+        BLOCKTREE_VERSION_CURRENT,
+        segment_id,
+        segment_suffix,
+    );
+    let mut tip = Vec::new();
+    codec_util::write_index_header(
+        &mut tip,
+        TERMS_INDEX_CODEC_NAME,
+        BLOCKTREE_VERSION_CURRENT,
+        segment_id,
+        segment_suffix,
+    );
+
+    // ---- .tmd header ----
+    let mut tmd = Vec::new();
+    codec_util::write_index_header(
+        &mut tmd,
+        TERMS_META_CODEC_NAME,
+        BLOCKTREE_VERSION_CURRENT,
+        segment_id,
+        segment_suffix,
+    );
+    codec_util::write_index_header(
+        &mut tmd,
+        POSTINGS_TERMS_CODEC,
+        POSTINGS_VERSION_CURRENT,
+        segment_id,
+        segment_suffix,
+    );
+    tmd.write_vint(POSTINGS_BLOCK_SIZE);
+    tmd.write_vint(inputs.len() as i32); // numFields
+
+    for input in inputs {
+        let index_has_positions = input.index_options.subsumes_positions();
+        let index_has_freq = input.index_options != IndexOptions::Docs;
+
+        // `doc_start_fp[i]` is term `i`'s byte offset into the *shared* `.doc`
+        // buffer (relative to the whole file including its header — the same
+        // absolute convention `postings::TermMetadata::doc_start_fp` decodes
+        // into) where its tail block begins, or `0` for a singleton term
+        // (never read for singletons, see `postings::singleton_postings`).
+        let mut doc_start_fp = vec![0u64; input.terms.len()];
+        for (i, t) in input.terms.iter().enumerate() {
+            if t.docs.len() == 1 {
+                continue;
+            }
+            doc_start_fp[i] = doc.len() as u64;
+            write_tail_block(&mut doc, &t.docs, index_has_freq);
+        }
+
+        // `pos_start_fp[i]` is term `i`'s absolute byte offset into the
+        // shared `.pos` buffer, same convention as `doc_start_fp` above. Left
+        // at `0` (never read, see `write_term_metadata`) when this field
+        // doesn't index positions.
+        let mut pos_start_fp = vec![0u64; input.terms.len()];
+        if index_has_positions {
+            for (i, t) in input.terms.iter().enumerate() {
+                pos_start_fp[i] = pos.len() as u64;
+                write_position_tail(&mut pos, &t.positions);
+            }
+        }
+
+        // ---- this field's one .tim block ----
+        let block_fp = tim.len();
+        let ent_count = input.terms.len() as u32;
+        let code = (ent_count << 1) | 1; // isLastInFloor
+        tim.write_vint(code as i32);
+
+        let mut suffix_bytes = Vec::new();
+        let mut suffix_lengths = Vec::new();
+        let mut stats = Vec::new();
+        for t in input.terms {
+            suffix_bytes.write_bytes(&t.term);
+            suffix_lengths.write_vint(t.term.len() as i32);
+            let doc_freq = t.docs.len() as u32;
+            let total_term_freq: i64 = t.docs.iter().map(|&(_, f)| f as i64).sum();
+            stats.write_vint((doc_freq << 1) as i32); // never singleton-run-encoded
+            if input.index_options != IndexOptions::Docs {
+                stats.write_vlong(total_term_freq - doc_freq as i64);
+            }
+        }
+
+        let code_l = ((suffix_bytes.len() as u64) << 3) | 0x04; // isLeafBlock, NO_COMPRESSION
+        tim.write_vlong(code_l as i64);
+        tim.write_bytes(&suffix_bytes);
+
+        tim.write_vint((suffix_lengths.len() as i32) << 1); // not allEqual
+        tim.write_bytes(&suffix_lengths);
+
+        tim.write_vint(stats.len() as i32);
+        tim.write_bytes(&stats);
+
+        let mut meta = Vec::new();
+        write_term_metadata(
+            &mut meta,
+            input.terms,
+            &doc_start_fp,
+            &pos_start_fp,
+            index_has_positions,
+        );
+        tim.write_vint(meta.len() as i32);
+        tim.write_bytes(&meta);
+
+        // ---- this field's one .tip root node ----
+        let index_start = tip.len();
+        let root_fp = 0usize;
+        let output_fp_bytes = 8usize; // keep it simple: always 8 bytes, same as blocktree.rs's test Builder
+        let header = (SIGN_NO_CHILDREN as u8)
+            | ((output_fp_bytes as u8 - 1) << 2)
+            | (LEAF_NODE_HAS_TERMS as u8);
+        tip.push(header);
+        tip.extend_from_slice(&(block_fp as u64).to_le_bytes());
+        tip.extend_from_slice(&0u64.to_le_bytes()); // 8-byte over-read pad, `load_node`'s SIGN_NO_CHILDREN reads up to fp+1..fp+9
+        let index_end = tip.len();
+
+        // ---- this field's .tmd record ----
+        tmd.write_vint(input.field_number);
+        let num_terms = input.terms.len() as i64;
+        tmd.write_vlong(num_terms);
+        let sum_doc_freq: i64 = input.terms.iter().map(|t| t.docs.len() as i64).sum();
+        let sum_total_term_freq: i64 = if input.index_options == IndexOptions::Docs {
+            sum_doc_freq
+        } else {
+            input
+                .terms
+                .iter()
+                .flat_map(|t| t.docs.iter())
+                .map(|&(_, f)| f as i64)
+                .sum()
+        };
+        if input.index_options != IndexOptions::Docs {
+            tmd.write_vlong(sum_total_term_freq);
+        }
+        tmd.write_vlong(sum_doc_freq);
+        tmd.write_vint(input.doc_count);
+        let min_term = &input.terms[0].term;
+        let max_term = &input.terms[input.terms.len() - 1].term;
+        tmd.write_vint(min_term.len() as i32);
+        tmd.write_bytes(min_term);
+        tmd.write_vint(max_term.len() as i32);
+        tmd.write_bytes(max_term);
+        tmd.write_vlong(index_start as i64);
+        tmd.write_vlong(root_fp as i64);
+        tmd.write_vlong(index_end as i64);
+    }
+
+    codec_util::write_footer(&mut doc);
+    if any_positions {
+        codec_util::write_footer(&mut pos);
+    }
+    codec_util::write_footer(&mut tim);
+    codec_util::write_footer(&mut tip);
+
+    tmd.write_i64(tip.len() as i64 - codec_util::FOOTER_LENGTH as i64); // indexLength
+    tmd.write_i64(tim.len() as i64 - codec_util::FOOTER_LENGTH as i64); // termsLength
+    codec_util::write_footer(&mut tmd);
+
+    Ok(Output {
+        doc,
+        pos,
+        tim,
+        tip,
+        tmd,
+    })
+}
+
+/// Validates one field's structural invariants (sortedness, `docFreq`/
+/// `totalTermFreq` bounds, positions shape) — the exact same checks
+/// `write_single_field` ran inline before this became a per-field helper
+/// shared by [`write_fields`]'s loop.
+fn validate_field(input: &FieldPostingsInput<'_>) -> Result<()> {
     if !matches!(
         input.index_options,
         IndexOptions::Docs | IndexOptions::DocsAndFreqs | IndexOptions::DocsAndFreqsAndPositions
@@ -277,188 +505,7 @@ pub fn write_single_field(
             }
         }
     }
-
-    let index_has_freq = input.index_options != IndexOptions::Docs;
-
-    // ---- .doc ----
-    let mut doc = Vec::new();
-    codec_util::write_index_header(
-        &mut doc,
-        DOC_CODEC,
-        DOC_VERSION_CURRENT,
-        segment_id,
-        segment_suffix,
-    );
-
-    // `doc_start_fp[i]` is the byte offset (into `doc`, i.e. relative to the
-    // whole file including its header — the same absolute convention
-    // `postings::TermMetadata::doc_start_fp` decodes into) where term `i`'s
-    // tail block begins, or `0` for a singleton term (never read for
-    // singletons, see `postings::singleton_postings`).
-    let mut doc_start_fp = vec![0u64; input.terms.len()];
-    for (i, t) in input.terms.iter().enumerate() {
-        if t.docs.len() == 1 {
-            continue;
-        }
-        doc_start_fp[i] = doc.len() as u64;
-        write_tail_block(&mut doc, &t.docs, index_has_freq);
-    }
-    codec_util::write_footer(&mut doc);
-
-    // ---- .pos ----
-    // `pos_start_fp[i]` is term `i`'s absolute byte offset into `pos` (into
-    // the whole file including its header, same convention as
-    // `doc_start_fp` above) where its position deltas begin. Left at `0`
-    // (never read, see `write_term_metadata`) when `index_has_positions` is
-    // false.
-    let mut pos = Vec::new();
-    let mut pos_start_fp = vec![0u64; input.terms.len()];
-    if index_has_positions {
-        codec_util::write_index_header(
-            &mut pos,
-            POS_CODEC,
-            DOC_VERSION_CURRENT,
-            segment_id,
-            segment_suffix,
-        );
-        for (i, t) in input.terms.iter().enumerate() {
-            pos_start_fp[i] = pos.len() as u64;
-            write_position_tail(&mut pos, &t.positions);
-        }
-        codec_util::write_footer(&mut pos);
-    }
-
-    // ---- .tim ----
-    let mut tim = Vec::new();
-    codec_util::write_index_header(
-        &mut tim,
-        TERMS_CODEC_NAME,
-        BLOCKTREE_VERSION_CURRENT,
-        segment_id,
-        segment_suffix,
-    );
-    let block_fp = tim.len();
-
-    let ent_count = input.terms.len() as u32;
-    let code = (ent_count << 1) | 1; // isLastInFloor
-    tim.write_vint(code as i32);
-
-    let mut suffix_bytes = Vec::new();
-    let mut suffix_lengths = Vec::new();
-    let mut stats = Vec::new();
-    for t in input.terms {
-        suffix_bytes.write_bytes(&t.term);
-        suffix_lengths.write_vint(t.term.len() as i32);
-        let doc_freq = t.docs.len() as u32;
-        let total_term_freq: i64 = t.docs.iter().map(|&(_, f)| f as i64).sum();
-        stats.write_vint((doc_freq << 1) as i32); // never singleton-run-encoded
-        if input.index_options != IndexOptions::Docs {
-            stats.write_vlong(total_term_freq - doc_freq as i64);
-        }
-    }
-
-    let code_l = ((suffix_bytes.len() as u64) << 3) | 0x04; // isLeafBlock, NO_COMPRESSION
-    tim.write_vlong(code_l as i64);
-    tim.write_bytes(&suffix_bytes);
-
-    tim.write_vint((suffix_lengths.len() as i32) << 1); // not allEqual
-    tim.write_bytes(&suffix_lengths);
-
-    tim.write_vint(stats.len() as i32);
-    tim.write_bytes(&stats);
-
-    let mut meta = Vec::new();
-    write_term_metadata(
-        &mut meta,
-        input.terms,
-        &doc_start_fp,
-        &pos_start_fp,
-        index_has_positions,
-    );
-    tim.write_vint(meta.len() as i32);
-    tim.write_bytes(&meta);
-
-    codec_util::write_footer(&mut tim);
-
-    // ---- .tip ----
-    let mut tip = Vec::new();
-    codec_util::write_index_header(
-        &mut tip,
-        TERMS_INDEX_CODEC_NAME,
-        BLOCKTREE_VERSION_CURRENT,
-        segment_id,
-        segment_suffix,
-    );
-    let index_start = tip.len();
-    let root_fp = 0usize;
-    let output_fp_bytes = 8usize; // keep it simple: always 8 bytes, same as blocktree.rs's test Builder
-    let header =
-        (SIGN_NO_CHILDREN as u8) | ((output_fp_bytes as u8 - 1) << 2) | (LEAF_NODE_HAS_TERMS as u8);
-    tip.push(header);
-    tip.extend_from_slice(&(block_fp as u64).to_le_bytes());
-    tip.extend_from_slice(&0u64.to_le_bytes()); // 8-byte over-read pad, `load_node`'s SIGN_NO_CHILDREN reads up to fp+1..fp+9
-    let index_end = tip.len();
-    codec_util::write_footer(&mut tip);
-
-    // ---- .tmd ----
-    let mut tmd = Vec::new();
-    codec_util::write_index_header(
-        &mut tmd,
-        TERMS_META_CODEC_NAME,
-        BLOCKTREE_VERSION_CURRENT,
-        segment_id,
-        segment_suffix,
-    );
-    codec_util::write_index_header(
-        &mut tmd,
-        POSTINGS_TERMS_CODEC,
-        POSTINGS_VERSION_CURRENT,
-        segment_id,
-        segment_suffix,
-    );
-    tmd.write_vint(POSTINGS_BLOCK_SIZE);
-
-    tmd.write_vint(1); // numFields
-    tmd.write_vint(input.field_number);
-    let num_terms = input.terms.len() as i64;
-    tmd.write_vlong(num_terms);
-    let sum_doc_freq: i64 = input.terms.iter().map(|t| t.docs.len() as i64).sum();
-    let sum_total_term_freq: i64 = if input.index_options == IndexOptions::Docs {
-        sum_doc_freq
-    } else {
-        input
-            .terms
-            .iter()
-            .flat_map(|t| t.docs.iter())
-            .map(|&(_, f)| f as i64)
-            .sum()
-    };
-    if input.index_options != IndexOptions::Docs {
-        tmd.write_vlong(sum_total_term_freq);
-    }
-    tmd.write_vlong(sum_doc_freq);
-    tmd.write_vint(input.doc_count);
-    let min_term = &input.terms[0].term;
-    let max_term = &input.terms[input.terms.len() - 1].term;
-    tmd.write_vint(min_term.len() as i32);
-    tmd.write_bytes(min_term);
-    tmd.write_vint(max_term.len() as i32);
-    tmd.write_bytes(max_term);
-    tmd.write_vlong(index_start as i64);
-    tmd.write_vlong(root_fp as i64);
-    tmd.write_vlong(index_end as i64);
-
-    tmd.write_i64(index_end as i64); // indexLength
-    tmd.write_i64(tim.len() as i64); // termsLength
-    codec_util::write_footer(&mut tmd);
-
-    Ok(Output {
-        doc,
-        pos,
-        tim,
-        tip,
-        tmd,
-    })
+    Ok(())
 }
 
 /// Writes one term's `.doc` tail-block bytes (`docFreq < BLOCK_SIZE`, the
@@ -1123,6 +1170,199 @@ mod tests {
                 doc_index: 0,
             })
         ));
+    }
+
+    /// Two fields ("title": term-freq only, "body": positions) written in
+    /// ONE [`write_fields`] call, sharing the same physical `.doc`/`.pos`/
+    /// `.tim`/`.tip`/`.tmd` buffers — `numFields == 2` in `.tmd`, and each
+    /// field must be independently seekable/queryable through the existing
+    /// unmodified `blocktree::open` read side with no cross-contamination
+    /// (see `crates/lucene-search/tests/postings_writer_round_trip.rs`'s
+    /// `multi_field_segment_term_queries_are_isolated_per_field` for the
+    /// required real `search_term_query` end-to-end proof of the same
+    /// property).
+    #[test]
+    fn write_fields_two_fields_share_one_tmd_and_stay_isolated() {
+        let title_terms = vec![
+            TermPostings {
+                term: b"rust".to_vec(),
+                docs: vec![(0, 1)],
+                ..Default::default()
+            },
+            TermPostings {
+                term: b"tokyo".to_vec(),
+                docs: vec![(1, 1)],
+                ..Default::default()
+            },
+        ];
+        let body_terms = vec![
+            TermPostings {
+                term: b"fox".to_vec(),
+                docs: vec![(0, 1), (2, 1)],
+                positions: vec![vec![3], vec![0]],
+            },
+            TermPostings {
+                term: b"rust".to_vec(), // same bytes as "title"'s term, different field
+                docs: vec![(1, 2)],
+                positions: vec![vec![0, 5]],
+            },
+        ];
+        let inputs = vec![
+            FieldPostingsInput {
+                field_number: 0,
+                index_options: IndexOptions::DocsAndFreqs,
+                doc_count: 2,
+                terms: &title_terms,
+            },
+            FieldPostingsInput {
+                field_number: 1,
+                index_options: IndexOptions::DocsAndFreqsAndPositions,
+                doc_count: 3,
+                terms: &body_terms,
+            },
+        ];
+        let output = write_fields(&inputs, &SEG_ID, SUFFIX).unwrap();
+
+        let fis = FieldInfos {
+            fields: vec![
+                field_info(0, "title", IndexOptions::DocsAndFreqs),
+                field_info(1, "body", IndexOptions::DocsAndFreqsAndPositions),
+            ],
+        };
+        let fields = blocktree::open(
+            &output.tim,
+            &output.tip,
+            &output.tmd,
+            &fis,
+            &SEG_ID,
+            SUFFIX,
+            3,
+        )
+        .expect("write_fields' own bytes must open cleanly");
+        assert!(fields.field("title").is_some());
+        assert!(fields.field("body").is_some());
+
+        let doc_in = DocInput::open(&output.doc, &SEG_ID, SUFFIX).expect("open .doc");
+        let pos_in =
+            crate::postings::PosInput::open(&output.pos, &SEG_ID, SUFFIX).expect("open .pos");
+
+        let title = fields.field("title").unwrap();
+        assert_eq!(title.num_terms, 2);
+        let p = title.postings(b"rust", Some(&doc_in)).unwrap().unwrap();
+        assert_eq!(p.docs, vec![0]);
+        assert!(title.seek_exact(b"fox").is_none()); // no cross-contamination from "body"
+
+        let body = fields.field("body").unwrap();
+        assert_eq!(body.num_terms, 2);
+        let p = body.postings(b"fox", Some(&doc_in)).unwrap().unwrap();
+        assert_eq!(p.docs, vec![0, 2]);
+        // "rust" exists in both fields with different postings -- prove
+        // "body"'s copy is independent of "title"'s.
+        let p = body.postings(b"rust", Some(&doc_in)).unwrap().unwrap();
+        assert_eq!(p.docs, vec![1]);
+        assert_eq!(p.freqs, vec![2]);
+        let positions = body
+            .positions(b"rust", Some(&doc_in), &pos_in, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            positions[0]
+                .iter()
+                .map(|pp| pp.position)
+                .collect::<Vec<_>>(),
+            vec![0, 5]
+        );
+    }
+
+    #[test]
+    fn write_fields_rejects_an_empty_inputs_slice() {
+        assert!(matches!(
+            write_fields(&[], &SEG_ID, SUFFIX),
+            Err(Error::EmptyTerms)
+        ));
+    }
+
+    #[test]
+    fn write_fields_three_fields_each_stay_isolated() {
+        let a_terms = vec![TermPostings {
+            term: b"alpha".to_vec(),
+            docs: vec![(0, 1)],
+            ..Default::default()
+        }];
+        let b_terms = vec![TermPostings {
+            term: b"beta".to_vec(),
+            docs: vec![(1, 1)],
+            ..Default::default()
+        }];
+        let c_terms = vec![TermPostings {
+            term: b"gamma".to_vec(),
+            docs: vec![(2, 1)],
+            ..Default::default()
+        }];
+        let inputs = vec![
+            FieldPostingsInput {
+                field_number: 0,
+                index_options: IndexOptions::DocsAndFreqs,
+                doc_count: 1,
+                terms: &a_terms,
+            },
+            FieldPostingsInput {
+                field_number: 1,
+                index_options: IndexOptions::DocsAndFreqs,
+                doc_count: 1,
+                terms: &b_terms,
+            },
+            FieldPostingsInput {
+                field_number: 2,
+                index_options: IndexOptions::DocsAndFreqs,
+                doc_count: 1,
+                terms: &c_terms,
+            },
+        ];
+        let output = write_fields(&inputs, &SEG_ID, SUFFIX).unwrap();
+
+        let fis = FieldInfos {
+            fields: vec![
+                field_info(0, "a", IndexOptions::DocsAndFreqs),
+                field_info(1, "b", IndexOptions::DocsAndFreqs),
+                field_info(2, "c", IndexOptions::DocsAndFreqs),
+            ],
+        };
+        let fields = blocktree::open(
+            &output.tim,
+            &output.tip,
+            &output.tmd,
+            &fis,
+            &SEG_ID,
+            SUFFIX,
+            3,
+        )
+        .expect("write_fields' own bytes must open cleanly for 3 fields");
+
+        let doc_in = DocInput::open(&output.doc, &SEG_ID, SUFFIX).expect("open .doc");
+        let a = fields.field("a").unwrap();
+        assert_eq!(
+            a.postings(b"alpha", Some(&doc_in)).unwrap().unwrap().docs,
+            vec![0]
+        );
+        assert!(a.seek_exact(b"beta").is_none());
+        assert!(a.seek_exact(b"gamma").is_none());
+
+        let b = fields.field("b").unwrap();
+        assert_eq!(
+            b.postings(b"beta", Some(&doc_in)).unwrap().unwrap().docs,
+            vec![1]
+        );
+        assert!(b.seek_exact(b"alpha").is_none());
+        assert!(b.seek_exact(b"gamma").is_none());
+
+        let c = fields.field("c").unwrap();
+        assert_eq!(
+            c.postings(b"gamma", Some(&doc_in)).unwrap().unwrap().docs,
+            vec![2]
+        );
+        assert!(c.seek_exact(b"alpha").is_none());
+        assert!(c.seek_exact(b"beta").is_none());
     }
 
     #[test]

@@ -2406,6 +2406,24 @@ can never be auto-merged today, same as postings/term vectors). See
      `docs/parity.md`'s row for the precise scope/deferred list. Multi-block
      terms, multi-block/multi-field term dictionaries, and positions/offsets/
      payloads remain unimplemented.
+   - **Postings writer: multi-field support added**
+     (`lucene-codecs/src/postings_writer.rs::write_fields`, `write_single_field`
+     now a one-element-slice wrapper over it) — `numFields` in `.tmd` can now
+     be greater than 1: several fields' `.doc`/`.pos` term-postings blocks and
+     `.tim`/`.tip` blocks/root nodes are interleaved into the same physical
+     file set in one call, exactly like a real multi-field segment. Each
+     field is still independently limited to a single `.tim` block/root trie
+     node, `docFreq < BLOCK_SIZE`, and (if positions are indexed)
+     `total_term_freq < BLOCK_SIZE` — those per-field limits are unchanged
+     and unrelated to how many fields are in the call. Multi-block terms and
+     multi-block/multi-level tries are still out of scope (deferred
+     separately). Proven correct end-to-end, including field isolation (two
+     fields sharing a term's exact byte spelling but with different,
+     independently-correct postings), by
+     `crates/lucene-search/tests/postings_writer_round_trip.rs::multi_field_segment_term_queries_are_isolated_per_field`.
+     `IndexWriter::set_postings_field` (`crates/lucene-index/src/index_writer.rs`)
+     was **not** touched — it still only tracks one configured field per
+     commit; wiring it to accept multiple fields is a separate follow-up.
 
 **Progress (task #79): `BooleanQuery`/`Clause` rewrite pass.** New
 `crates/lucene-search/src/query.rs::{BooleanQuery::rewrite, Clause::rewrite}`
