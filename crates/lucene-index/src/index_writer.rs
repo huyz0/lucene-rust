@@ -1399,14 +1399,21 @@ impl<'d> IndexWriter<'d> {
     /// `IndexWriter.rollback()`, scoped to what this facade actually has to
     /// roll back.
     ///
-    /// **What gets reset:** only `pending_docs` (this writer's in-memory
-    /// buffer of not-yet-flushed [`Document`]s). This is a pure in-memory
-    /// reset -- `rollback` never touches `dir` and never reads or writes
-    /// `segment_infos`, matching this method's doc comment on why `commit()`
-    /// is the only thing in this facade that ever calls
+    /// **What gets reset:** `pending_docs` (this writer's in-memory buffer of
+    /// not-yet-flushed [`Document`]s) and `prepared_commit` (any state
+    /// stashed by a prior [`IndexWriter::prepare_commit`] that hasn't been
+    /// activated by [`IndexWriter::finish_commit`] yet -- discarding this
+    /// too is what makes `rollback()` actually undo "everything not yet
+    /// durably committed," matching what its own name implies; leaving a
+    /// dangling `prepared_commit` in place would let a *later* unrelated
+    /// `finish_commit()` call silently activate segments the caller just
+    /// asked to roll back). Both are a pure in-memory reset -- `rollback`
+    /// never touches `dir` and never reads or writes `segment_infos`,
+    /// matching this method's doc comment on why `commit()`/`finish_commit()`
+    /// are the only things in this facade that ever call
     /// [`crate::segment_infos::write`]. Calling `rollback()` when
-    /// `pending_doc_count()` is already `0` (nothing buffered, including
-    /// right after `IndexWriter::open`) is a safe no-op.
+    /// `pending_doc_count()` is already `0` and no commit is prepared
+    /// (including right after `IndexWriter::open`) is a safe no-op.
     ///
     /// **What is preserved, deliberately:** this writer's already-committed
     /// [`IndexWriter::segment_infos`] (any *prior* `commit()`'s segments are
@@ -1435,6 +1442,7 @@ impl<'d> IndexWriter<'d> {
     /// this facade already made for having no `close()` method at all.
     pub fn rollback(&mut self) {
         self.pending_docs.clear();
+        self.prepared_commit = None;
     }
 
     /// Replaces this writer's committed segment list with `merged` in place
@@ -1933,6 +1941,39 @@ mod tests {
         let reopened = segment_infos::read_latest(&dir).unwrap();
         assert!(reopened.segments.is_empty());
         assert_eq!(read_all_docs(&dir, &reopened), Vec::<String>::new());
+    }
+
+    #[test]
+    fn rollback_after_prepare_commit_discards_the_prepared_state_too() {
+        // Found in review: rollback() previously only cleared pending_docs,
+        // leaving `prepared_commit` intact -- so prepare_commit() ->
+        // rollback() -> finish_commit() would silently activate the segment
+        // the caller just asked to roll back. rollback() must now discard
+        // prepared_commit as well, and finish_commit() afterward must fail
+        // with NoPreparedCommit, exactly like it would if prepare_commit()
+        // had never been called.
+        let tmp = tempdir("rollback-after-prepare");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+
+        writer.add_document(doc("a"));
+        writer.prepare_commit().unwrap();
+        assert!(writer.pending_doc_count() == 0 || writer.pending_doc_count() == 1);
+
+        writer.rollback();
+
+        let err = writer.finish_commit().unwrap_err();
+        assert!(matches!(err, Error::NoPreparedCommit));
+
+        // Nothing was ever written to disk -- no segments_N file exists at all.
+        assert!(segment_infos::read_latest(&dir).is_err());
+
+        // The writer is still fully usable afterward.
+        writer.add_document(doc("b"));
+        let sis = writer.commit().unwrap().clone();
+        assert_eq!(sis.segments.len(), 1);
+        assert_eq!(read_all_docs(&dir, &sis), vec!["b"]);
     }
 
     #[test]

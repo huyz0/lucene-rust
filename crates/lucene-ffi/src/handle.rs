@@ -88,6 +88,15 @@ pub enum RegistryTag {
     /// resemblance to any of this crate's other result shapes -- see
     /// `registry.rs`'s `ExplainResultsHandle` doc comment.
     ExplainResults = 9,
+    /// An opened `lucene_index::index_writer::IndexWriter` (IndexWriter
+    /// commit/merge-policy FFI exposure, `writer.rs`'s `ffi_open_writer`) --
+    /// kept in its own registry since it owns not just a filesystem root
+    /// (unlike `Directory`) but a live, mutable, stateful writer session
+    /// (buffered documents, a committed `SegmentInfos`, an optional prepared
+    /// commit) -- see `registry.rs`'s `WriterHandle` doc comment for why this
+    /// handle's value is not a plain `Directory`/`SegmentHandle`-shaped
+    /// struct.
+    Writer = 10,
 }
 
 fn pack(tag: RegistryTag, index: u32, generation: u32) -> u64 {
@@ -156,13 +165,14 @@ impl<T> SlotMap<T> {
         self.slot(handle)?.value.as_ref()
     }
 
-    /// Test-only in-place mutation accessor, used to fabricate an otherwise
-    /// unreachable corrupted state (e.g. a `SegmentHandle` whose `.doc`
-    /// bytes fail to reopen) for `query.rs`'s decode-error-path tests --
-    /// production code never needs to mutate a handle's value in place, so
-    /// this is `#[cfg(test)]`-only rather than a real part of the crate's
-    /// handle API surface.
-    #[cfg(test)]
+    /// In-place mutation accessor. Originally test-only (used to fabricate
+    /// an otherwise unreachable corrupted state, e.g. a `SegmentHandle`
+    /// whose `.doc` bytes fail to reopen, for `query.rs`'s decode-error-path
+    /// tests) -- every handle type before `writer.rs`'s `WriterHandle` was
+    /// immutable once inserted, so production code never needed this.
+    /// `writer.rs`'s `IndexWriter`-backed handle is genuinely stateful
+    /// (`add_document`/`commit`/etc. all take `&mut self`), so this is now a
+    /// real part of the crate's handle API surface, not test-only.
     pub fn get_mut(&mut self, handle: u64) -> Option<&mut T> {
         let (tag, index, generation) = unpack(handle);
         if tag != self.tag as u8 {

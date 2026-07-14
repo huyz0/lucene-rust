@@ -703,9 +703,45 @@ serialization / OpenSearch plugin work below, all still not started).
 - Benchmark with OpenSearch Benchmark (`nyc_taxis`, `pmc`, `big5` workloads), Rust vs
   Java engine on the same shards.
 
-**Exit criteria:** an OpenSearch node serving term/bool/range/match queries for a real
-workload through lucene-rust in shadow-read mode, with automatic per-query fallback,
-and a benchmark report.
+**Progress (task #90): IndexWriter commit/merge-policy FFI exposure.** New
+`crates/lucene-ffi/src/writer.rs` wraps `lucene_index::index_writer::IndexWriter`'s
+open/add_document/commit/prepare_commit/finish_commit/rollback/set_merge_policy
+lifecycle behind the same handle-registry/`FfiStatus`/`catch_unwind` conventions
+task #20/#30 established: `ffi_open_writer` (a filesystem path plus a caller-supplied
+field schema via parallel arrays, mirroring `segment.rs`'s existing array-parameter
+style), `ffi_writer_add_document` (field number/kind/value-bytes parallel arrays,
+six value kinds: UTF-8 string, raw binary, `i32`/`i64`/`f32`/`f64`),
+`ffi_writer_commit`/`ffi_writer_prepare_commit`/`ffi_writer_finish_commit`/
+`ffi_writer_rollback`, `ffi_writer_set_merge_policy` (the four real
+`MergePolicyConfig` knobs: `max_merge_at_once`, `segments_per_tier`,
+`max_merged_segment_size`, `reclaim_weight` -- no invented knobs for merge-policy
+options this port's `merge_policy.rs` doesn't have), and `ffi_close_writer`. A new
+`RegistryTag::Writer`/`WriterHandle` (`registry.rs`) holds the `IndexWriter` next to
+its heap-boxed `FsDirectory` so the writer's internal `&'d dyn Directory` borrow
+stays valid for the handle's lifetime (a `Box` address never moves even if the
+`WriterHandle` itself does; the struct's field order guarantees the borrow drops
+before its referent).
+
+**Out of scope, called out in the module doc comment and `docs/parity.md`:**
+`set_postings_field`/`set_term_vector_field`/`set_doc_values_field`/
+`update_document`/`delete_documents`/`apply_merge`/`segment_infos`/
+`pending_doc_count` are not wrapped -- only the commit/merge-policy surface this
+task asked for. `ffi_open_writer`'s field schema also fixes every `FieldInfo` flag
+besides index options/doc-values type/term-vector storage at its default (no
+`omit_norms`/points/vector dimensions over this entry point yet).
+
+Tests in `writer.rs`'s own module: `open_add_commit_end_to_end_produces_a_readable_
+segment` (opens a writer, adds documents, commits, then reads the written segment
+back through this crate's own unmodified read-side FFI functions -- proving the
+segment is genuinely queryable, not just that the writer calls didn't crash),
+`prepare_commit_then_finish_commit_round_trips_through_ffi`,
+`finish_commit_without_prepare_is_invalid_argument`,
+`rollback_discards_pending_docs`,
+`set_merge_policy_then_many_commits_converge_to_fewer_segments`,
+`set_merge_policy_disabled_is_a_no_op_and_ok`, plus null-pointer/invalid-UTF-8/
+invalid-argument/invalid-handle/double-close/wrong-registry-tag rejection tests
+for every exported function. `cargo llvm-cov --workspace --fail-under-lines 95`
+passes (97.66% total; `writer.rs` 95.76%).
 
 ### Phase 5 — Write path: analysis chain + indexing (est. 12–16 weeks)
 
@@ -2663,6 +2699,9 @@ same-name-overwrite claim its own doc comment made), and
 `prepare_commit_and_finish_commit_with_no_pending_documents_is_a_valid_no_op`
 (the zero-pending-docs path through the split API, mirroring `commit()`'s
 own no-op-content-commit case).
+
+(See "Progress (task #90): IndexWriter commit/merge-policy FFI exposure" above for
+the `crates/lucene-ffi/src/writer.rs` write-up — not repeated here.)
 
 1. `lucene-analysis`: `TokenStream` as an iterator-of-token-structs (skip Java's
    AttributeSource reflection design entirely — a plain

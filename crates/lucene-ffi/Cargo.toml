@@ -9,6 +9,7 @@ thiserror.workspace = true
 lucene-core = { path = "../lucene-core" }
 lucene-store = { path = "../lucene-store" }
 lucene-codecs = { path = "../lucene-codecs" }
+lucene-index = { path = "../lucene-index" }
 lucene-search = { path = "../lucene-search" }
 jni.workspace = true
 

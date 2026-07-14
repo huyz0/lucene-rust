@@ -267,6 +267,61 @@ pub struct ExplainResultsHandle {
     pub nodes: Vec<ExplainNode>,
 }
 
+/// An opened `lucene_index::index_writer::IndexWriter` (IndexWriter
+/// commit/merge-policy FFI exposure, `writer.rs`'s `ffi_open_writer`) --
+/// read back/mutated in place via `writer.rs`'s `ffi_writer_add_document`/
+/// `ffi_writer_commit`/`ffi_writer_prepare_commit`/`ffi_writer_finish_commit`/
+/// `ffi_writer_rollback`/`ffi_writer_set_merge_policy`, released via
+/// `ffi_close_writer`.
+///
+/// **Why this owns a boxed `FsDirectory` alongside the writer, and why that
+/// is sound**: [`lucene_index::index_writer::IndexWriter`] is generic over a
+/// borrowed `&'d dyn Directory` -- there is no owned, 'static-lifetime
+/// `IndexWriter` type this crate could otherwise put behind a plain handle
+/// the way [`SegmentHandle`] holds owned bytes. This struct instead owns the
+/// `FsDirectory` on the heap (`Box<FsDirectory>`, a stable address that does
+/// not move even if this whole `WriterHandle` value is moved -- only the
+/// `Box` pointer itself would move, not its heap allocation) and constructs
+/// the writer against a reference into that same allocation, lifetime-erased
+/// to `'static` via one contained `unsafe` block in `writer.rs` (see that
+/// module's `open_writer_handle` for the exact `# Safety` argument). This is
+/// sound as long as `dir` outlives every use of `writer`, which struct field
+/// declaration order guarantees here: Rust drops a struct's fields in
+/// declaration order, so `writer` (declared first, holding the borrow) is
+/// always dropped before `dir` (declared last, owning the allocation the
+/// borrow points into) -- the borrow is never live past its referent's
+/// lifetime.
+pub struct WriterHandle {
+    pub writer: lucene_index::index_writer::IndexWriter<'static>,
+    // Never read directly (the whole point of this field is to keep the
+    // heap allocation `writer`'s borrow points into alive -- see this
+    // struct's own doc comment), hence the `allow`.
+    #[allow(dead_code)]
+    pub dir: Box<FsDirectory>,
+}
+
+// SAFETY: `WriterHandle` is only ever reached through `writers()`'s
+// `Mutex<SlotMap<WriterHandle>>` -- the mutex is this crate's only access
+// path (see `lock_recovering`), so at most one thread ever touches a given
+// `WriterHandle` at a time, and the mutex's own happens-before edges make
+// that access visible across threads. The `dyn Directory` trait object
+// `writer` borrows (see this struct's own doc comment) is a plain
+// `FsDirectory` underneath, which is itself just file-path/file-handle state
+// with no thread-affinity requirement -- nothing here relies on
+// thread-local state or a non-thread-safe primitive the auto-derived
+// `!Send`/`!Sync` (from the bare `&dyn Directory` trait object, which
+// carries no compiler-visible `Send`/`Sync` bound) is being conservative
+// about.
+unsafe impl Send for WriterHandle {}
+// SAFETY: see the `Send` impl above -- the same "only ever accessed through
+// one mutex, one thread at a time" argument makes `Sync` sound too (a
+// `Mutex<T>` only requires `T: Send` to itself be `Sync`, but `OnceLock`'s
+// static-storage requirement here goes through `Sync` on the `Mutex`, which
+// in turn is automatically satisfied once `T: Send` -- this explicit impl
+// exists only because `WriterHandle`'s `&dyn Directory` borrow does not
+// itself carry a `Send`/`Sync` bound for the compiler to see).
+unsafe impl Sync for WriterHandle {}
+
 pub fn directories() -> &'static Mutex<SlotMap<FsDirectory>> {
     static REGISTRY: OnceLock<Mutex<SlotMap<FsDirectory>>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(SlotMap::new(RegistryTag::Directory)))
@@ -310,4 +365,9 @@ pub fn fragment_results() -> &'static Mutex<SlotMap<FragmentResultsHandle>> {
 pub fn explain_results() -> &'static Mutex<SlotMap<ExplainResultsHandle>> {
     static REGISTRY: OnceLock<Mutex<SlotMap<ExplainResultsHandle>>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(SlotMap::new(RegistryTag::ExplainResults)))
+}
+
+pub fn writers() -> &'static Mutex<SlotMap<WriterHandle>> {
+    static REGISTRY: OnceLock<Mutex<SlotMap<WriterHandle>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(SlotMap::new(RegistryTag::Writer)))
 }

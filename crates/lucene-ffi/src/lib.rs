@@ -139,6 +139,18 @@
 //!   [`registry::SortedResultsHandle`] (same `(doc_id, value)` wire shape
 //!   `sort.rs`'s functions already use, read back via the existing
 //!   `results_sorted.rs` trio).
+//! - [`writer::ffi_open_writer`]/[`writer::ffi_writer_add_document`]/
+//!   [`writer::ffi_writer_commit`]/[`writer::ffi_writer_prepare_commit`]/
+//!   [`writer::ffi_writer_finish_commit`]/[`writer::ffi_writer_rollback`]/
+//!   [`writer::ffi_writer_set_merge_policy`]/[`writer::ffi_close_writer`]
+//!   (IndexWriter commit/merge-policy FFI exposure): wraps
+//!   `lucene_index::index_writer::IndexWriter`'s open/add_document/commit/
+//!   prepare_commit/finish_commit/rollback/set_merge_policy lifecycle -- no
+//!   write-side logic reimplemented, see `writer.rs`'s module doc for the
+//!   wire encoding (parallel arrays for field schema/document field data,
+//!   same convention `segment.rs`/`query.rs` already use) and exactly which
+//!   `IndexWriter` methods/`MergePolicyConfig` knobs are and are not
+//!   exposed.
 //! - [`error::guard`]/[`ffi_get_last_error_message`]: every exported
 //!   function's panic-safety wrapper and the thread-local last-error
 //!   message accessor.
@@ -233,6 +245,7 @@ mod results_scored;
 mod results_sorted;
 mod segment;
 mod sort;
+mod writer;
 
 pub use directory::{ffi_close_directory, ffi_open_directory};
 pub use directory_reader::{
@@ -274,6 +287,11 @@ pub use results_sorted::{
 };
 pub use segment::{ffi_close_segment, ffi_open_segment};
 pub use sort::{ffi_sort_by_doc_value, ffi_sort_by_multi_valued_doc_value};
+pub use writer::{
+    ffi_close_writer, ffi_open_writer, ffi_writer_add_document, ffi_writer_commit,
+    ffi_writer_finish_commit, ffi_writer_prepare_commit, ffi_writer_rollback,
+    ffi_writer_set_merge_policy,
+};
 
 use std::os::raw::c_char;
 
