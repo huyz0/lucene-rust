@@ -597,6 +597,16 @@ unknown-field-number no-op, live-docs filtering, and 2D multi-dimension
    `FunctionScore`-shaped hooks deferred.
 4. Dynamic pruning: `WANDScorer`/block-max, `ImpactsDISI`, `MaxScoreCache`. This is
    where Lucene's search performance comes from; without it the port is not competitive.
+   **First small increment landed**: `lucene-search/src/similarity.rs::max_score_for_impacts`
+   computes the true upper-bound BM25 score for a block's/span's competitive impacts
+   (`postings::Impact` list), proven safe via a test-only single-clause, single-block
+   pruning-vs-brute-force harness in the same file. **Not wired into the production
+   `search_term_query_scored` path** (that path still eagerly decodes every block via
+   `DocInput::read_postings` before scoring, so a real skip needs the `LazyDocsCursor`
+   decode-on-demand loop instead), and full multi-clause `WANDScorer`-style dynamic
+   pruning across a `BooleanQuery`'s clauses (a running minimum-competitive-score
+   threshold shared across clauses) is still entirely unimplemented — see
+   `docs/parity.md`'s postings row for the precise scope.
 5. Collectors: `TopScoreDocCollector` (with after/searchAfter), `TotalHitCountCollector`,
    early termination, `CollectorManager` + intra-query concurrency via rayon over leaves
    (mirror Lucene's leaf-slice model). **`TopScoreDocCollector`'s core (fixed `top_n`,
