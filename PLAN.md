@@ -2221,6 +2221,39 @@ see above), and any RAM-threshold/auto-flush triggering (unchanged from
 `IndexWriter`'s existing scope). See `docs/parity.md`'s updated row for the
 full accounting.
 
+**Progress (task #78 follow-up): positions write-side (`.pos`) for
+`postings_writer.rs`.** `write_single_field` now also accepts
+`IndexOptions::DocsAndFreqsAndPositions` (still rejects
+`DocsAndFreqsAndPositionsAndOffsets` with `Error::UnsupportedIndexOptions` --
+offsets/payloads remain a further deferred layer) and, when given per-doc
+position data, writes `.pos` bytes alongside `.doc`/`.tim`/`.tip`/`.tmd`.
+`TermPostings` gained a `positions: Vec<Vec<i32>>` field parallel to `docs`
+(each entry the doc's absolute, ascending occurrence positions; empty for
+`Docs`/`DocsAndFreqs` fields), validated against `docs`' freqs
+(`Error::MissingPositions`/`Error::PositionsFreqMismatch`). Same narrow
+scope as the term-frequency writer, plus one more restriction:
+**`total_term_freq < BLOCK_SIZE` (256) per term** -- only the vint-tail
+`.pos` encoding is ever written, never a full `ForUtil`/`PForUtil` block
+(`Error::TotalTermFreqTooLarge` above that bound). No read-side logic
+reimplemented; correctness proven by round-tripping through the existing,
+unmodified `postings::read_positions`/`blocktree::FieldTerms::positions`.
+**Required end-to-end proof**: `crates/lucene-search/tests/
+postings_writer_round_trip.rs::phrase_query_finds_correct_docs_over_freshly_written_positions`
+writes a 3-term field across two docs that share every term but align
+adjacently in only one of them, and runs the existing unmodified
+`lucene_search::search_phrase_query` for three different phrase queries,
+asserting the exact doc each one matches -- including the negative case
+where both docs contain every term but only one has them in that exact
+order, the phrase-query analogue of task #78's `search_term_query` proof.
+**`IndexWriter` wiring explicitly NOT touched by this follow-up**:
+`IndexWriter::build_postings_output` still only ever builds
+term-frequency-only `TermPostings` (`positions: Vec::new()`); a real
+`IndexWriter::add_document`/`commit()` session still cannot produce a
+`.pos` file or support `PhraseQuery` yet -- wiring positions into
+`IndexWriter` (sourcing per-doc position lists from `invert_documents`'s
+already-recorded `PostingEntry::positions`) is left for a further
+follow-up task. See `docs/parity.md`'s updated row for the full accounting.
+
 **Progress (task #78 follow-up #2): term-vector write side wired into
 `IndexWriter::commit()`.** `IndexWriter::set_term_vector_field(Some(field_name))`
 (new, `crates/lucene-index/src/index_writer.rs`) opts a writer into building

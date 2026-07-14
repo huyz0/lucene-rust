@@ -734,6 +734,14 @@ impl<'d> IndexWriter<'d> {
             terms.push(TermPostings {
                 term: term.as_bytes().to_vec(),
                 docs: term_docs,
+                // `IndexWriter::build_postings_output` is intentionally not
+                // wired up to positions yet (this task only adds the
+                // write-side capability in `postings_writer`; see
+                // `docs/parity.md` for the deferred-wiring note) --
+                // `set_postings_field` only ever accepts
+                // `IndexOptions::Docs`/`DocsAndFreqs` fields, so `positions`
+                // is never consulted here.
+                positions: Vec::new(),
             });
         }
         if terms.is_empty() {

@@ -593,7 +593,7 @@ impl<'a> DocInput<'a> {
 }
 
 /// `Lucene104PostingsFormat.POS_CODEC`.
-const POS_CODEC: &str = "Lucene104PostingsWriterPos";
+pub(crate) const POS_CODEC: &str = "Lucene104PostingsWriterPos";
 /// `Lucene104PostingsFormat.PAY_CODEC`.
 const PAY_CODEC: &str = "Lucene104PostingsWriterPay";
 

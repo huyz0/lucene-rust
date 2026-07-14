@@ -27,12 +27,21 @@
 //!   reaches `docBufferUpto == BLOCK_SIZE`). A term at or above `BLOCK_SIZE`
 //!   docs is rejected with [`Error::Unsupported`] rather than silently
 //!   producing wrong bytes.
-//! - **Term frequency only — no positions/offsets/payloads.** Only
-//!   `IndexOptions::Docs`/`DocsAndFreqs` are accepted; `.pos`/`.pay` are
-//!   never written. This mirrors `flush_stored_only_segment`'s own
-//!   historical "start with the smallest defensible slice" precedent (see
+//! - **Term frequency only, or term frequency + positions — still no
+//!   offsets/payloads.** `IndexOptions::Docs`/`DocsAndFreqs`/
+//!   `DocsAndFreqsAndPositions` are accepted; `.pay` is never written, and
+//!   `.pos` is only written for the `DocsAndFreqsAndPositions` case. This
+//!   mirrors `flush_stored_only_segment`'s own historical "start with the
+//!   smallest defensible slice" precedent (see
 //!   `crate::term_vectors::write_best_speed`'s positions-only cut for
 //!   another example of the same policy).
+//! - **`total_term_freq < BLOCK_SIZE` (256) for every term with positions.**
+//!   Like the `.doc` tail-block restriction above, this writer never emits
+//!   a full `ForUtil`/`PForUtil`-encoded `.pos` block
+//!   (`Lucene104PostingsWriter.addPosition`'s `posBufferUpto == BLOCK_SIZE`
+//!   flush path) — every term's positions are the vint tail
+//!   (`refillLastPositionBlock`) alone. A term whose `total_term_freq`
+//!   reaches `BLOCK_SIZE` is rejected with [`Error::TotalTermFreqTooLarge`].
 //! - **`docFreq == 1` is pulsed into the term dictionary**, exactly like the
 //!   real writer (`Lucene104PostingsWriter.java:568-577`): no `.doc` bytes at
 //!   all for a singleton term, matching what `postings::singleton_postings`
@@ -58,6 +67,14 @@
 //!   carries freqs, else plain `docDelta`, followed by one plain vint per
 //!   `freq != 1` doc, in doc order) — see `crate::postings::read_tail_block`
 //!   for the exact inverse. `Footer`.
+//! - `.pos` (only when `index_options` is `DocsAndFreqsAndPositions`):
+//!   `IndexHeader(codec="Lucene104PostingsWriterPos")`, then, for each term
+//!   that indexes positions, its vint-tail-only position deltas in doc
+//!   order (accumulator reset to 0 at each doc's first occurrence, plain
+//!   `posDelta` vints — no payload/offset bit-packing, since this writer
+//!   never has either) — see `crate::postings::read_positions`'s tail-block
+//!   branch (`has_payloads == false`, `has_offsets == false`) for the exact
+//!   inverse. `Footer`.
 //! - `.tim`: `IndexHeader(codec="BlockTreeTermsDict")`, one physical block
 //!   (`entCount << 1 | 1` code, `isLeafBlock` + `NO_COMPRESSION` code,
 //!   suffix bytes, suffix lengths, per-term stats, per-term postings
@@ -81,7 +98,7 @@ use crate::blocktree::{
 };
 use crate::field_infos::IndexOptions;
 use crate::postings::{
-    write_group_vints, BLOCK_SIZE, DOC_CODEC, VERSION_CURRENT as DOC_VERSION_CURRENT,
+    write_group_vints, BLOCK_SIZE, DOC_CODEC, POS_CODEC, VERSION_CURRENT as DOC_VERSION_CURRENT,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -101,8 +118,36 @@ pub enum Error {
          ({BLOCK_SIZE}); multi-block terms are not supported by this writer"
     )]
     DocFreqTooLarge { index: usize, doc_freq: usize },
-    #[error("write_single_field: only IndexOptions::Docs/DocsAndFreqs is supported, got {0:?}")]
+    #[error(
+        "write_single_field: only IndexOptions::Docs/DocsAndFreqs/DocsAndFreqsAndPositions is \
+         supported, got {0:?}"
+    )]
     UnsupportedIndexOptions(IndexOptions),
+    #[error(
+        "write_single_field: term at index {index} has totalTermFreq {total_term_freq} >= \
+         BLOCK_SIZE ({BLOCK_SIZE}); multi-block positions are not supported by this writer"
+    )]
+    TotalTermFreqTooLarge { index: usize, total_term_freq: i64 },
+    #[error(
+        "write_single_field: term at index {index}, doc index {doc_index} has {positions} \
+         position(s) but freq {freq}; they must match when index_options indexes positions"
+    )]
+    PositionsFreqMismatch {
+        index: usize,
+        doc_index: usize,
+        positions: usize,
+        freq: i32,
+    },
+    #[error(
+        "write_single_field: term at index {index}, doc index {doc_index} has no positions but \
+         index_options indexes positions; every doc needs exactly `freq` positions"
+    )]
+    MissingPositions { index: usize, doc_index: usize },
+    #[error(
+        "write_single_field: term at index {index}, doc index {doc_index} has non-ascending or \
+         duplicate positions -- positions must strictly increase within a doc"
+    )]
+    PositionsNotAscending { index: usize, doc_index: usize },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -110,10 +155,25 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// One term's postings: `docs` is `(doc_id, freq)` pairs, ascending doc-ID
 /// order, no duplicates, every `freq >= 1` (see the module doc's "Caller
 /// obligations").
-#[derive(Debug, Clone)]
+///
+/// `positions` carries per-occurrence position data and is only consulted
+/// when [`FieldPostingsInput::index_options`] is
+/// `IndexOptions::DocsAndFreqsAndPositions`; leave it `Vec::new()` for
+/// `Docs`/`DocsAndFreqs` fields. When positions are required, `positions`
+/// must have exactly `docs.len()` entries in the same doc order, and
+/// `positions[i].len()` must equal `docs[i].1` (that doc's `freq`) —
+/// `write_single_field` validates both. Each `positions[i]` entry is a doc's
+/// *absolute*, ascending (Lucene positions never repeat or go backwards
+/// within a doc) per-occurrence position sequence, e.g. `[0, 3, 4]` for a
+/// term occurring at token positions 0, 3, and 4 in that doc; the writer
+/// derives the on-wire deltas itself (position deltas reset to the absolute
+/// first position at each doc's first occurrence, exactly like real
+/// Lucene's `Lucene104PostingsWriter.startDoc`/`addPosition`).
+#[derive(Debug, Clone, Default)]
 pub struct TermPostings {
     pub term: Vec<u8>,
     pub docs: Vec<(i32, i32)>,
+    pub positions: Vec<Vec<i32>>,
 }
 
 /// Input to [`write_single_field`]: one field's whole term dictionary,
@@ -129,10 +189,15 @@ pub struct FieldPostingsInput<'a> {
     pub terms: &'a [TermPostings],
 }
 
-/// The four files this writer produces for one field.
+/// The files this writer produces for one field. `pos` is empty when
+/// `index_options` doesn't index positions (`IndexOptions::Docs`/
+/// `DocsAndFreqs`) — no `.pos` file is needed in that case, mirroring how a
+/// real segment simply has no `.pos` file when no field in it indexes
+/// positions.
 #[derive(Debug, Clone, Default)]
 pub struct Output {
     pub doc: Vec<u8>,
+    pub pos: Vec<u8>,
     pub tim: Vec<u8>,
     pub tip: Vec<u8>,
     pub tmd: Vec<u8>,
@@ -149,7 +214,7 @@ pub fn write_single_field(
 ) -> Result<Output> {
     if !matches!(
         input.index_options,
-        IndexOptions::Docs | IndexOptions::DocsAndFreqs
+        IndexOptions::Docs | IndexOptions::DocsAndFreqs | IndexOptions::DocsAndFreqsAndPositions
     ) {
         return Err(Error::UnsupportedIndexOptions(input.index_options));
     }
@@ -161,6 +226,7 @@ pub fn write_single_field(
             return Err(Error::TermsNotSorted(i + 1));
         }
     }
+    let index_has_positions = input.index_options.subsumes_positions();
     for (i, t) in input.terms.iter().enumerate() {
         if t.docs.is_empty() {
             return Err(Error::EmptyPostings(i));
@@ -177,6 +243,37 @@ pub fn write_single_field(
             }
             if j > 0 && t.docs[j - 1].0 >= t.docs[j].0 {
                 return Err(Error::DocIdsNotSorted { index: i });
+            }
+        }
+        if index_has_positions {
+            if t.positions.len() != t.docs.len() {
+                return Err(Error::MissingPositions {
+                    index: i,
+                    doc_index: t.positions.len(),
+                });
+            }
+            for (j, (&(_, freq), positions)) in t.docs.iter().zip(&t.positions).enumerate() {
+                if positions.len() != freq as usize {
+                    return Err(Error::PositionsFreqMismatch {
+                        index: i,
+                        doc_index: j,
+                        positions: positions.len(),
+                        freq,
+                    });
+                }
+                if positions.windows(2).any(|w| w[0] >= w[1]) {
+                    return Err(Error::PositionsNotAscending {
+                        index: i,
+                        doc_index: j,
+                    });
+                }
+            }
+            let total_term_freq: i64 = t.docs.iter().map(|&(_, f)| f as i64).sum();
+            if total_term_freq >= BLOCK_SIZE as i64 {
+                return Err(Error::TotalTermFreqTooLarge {
+                    index: i,
+                    total_term_freq,
+                });
             }
         }
     }
@@ -207,6 +304,29 @@ pub fn write_single_field(
         write_tail_block(&mut doc, &t.docs, index_has_freq);
     }
     codec_util::write_footer(&mut doc);
+
+    // ---- .pos ----
+    // `pos_start_fp[i]` is term `i`'s absolute byte offset into `pos` (into
+    // the whole file including its header, same convention as
+    // `doc_start_fp` above) where its position deltas begin. Left at `0`
+    // (never read, see `write_term_metadata`) when `index_has_positions` is
+    // false.
+    let mut pos = Vec::new();
+    let mut pos_start_fp = vec![0u64; input.terms.len()];
+    if index_has_positions {
+        codec_util::write_index_header(
+            &mut pos,
+            POS_CODEC,
+            DOC_VERSION_CURRENT,
+            segment_id,
+            segment_suffix,
+        );
+        for (i, t) in input.terms.iter().enumerate() {
+            pos_start_fp[i] = pos.len() as u64;
+            write_position_tail(&mut pos, &t.positions);
+        }
+        codec_util::write_footer(&mut pos);
+    }
 
     // ---- .tim ----
     let mut tim = Vec::new();
@@ -248,7 +368,13 @@ pub fn write_single_field(
     tim.write_bytes(&stats);
 
     let mut meta = Vec::new();
-    write_term_metadata(&mut meta, input.terms, &doc_start_fp);
+    write_term_metadata(
+        &mut meta,
+        input.terms,
+        &doc_start_fp,
+        &pos_start_fp,
+        index_has_positions,
+    );
     tim.write_vint(meta.len() as i32);
     tim.write_bytes(&meta);
 
@@ -326,7 +452,13 @@ pub fn write_single_field(
     tmd.write_i64(tim.len() as i64); // termsLength
     codec_util::write_footer(&mut tmd);
 
-    Ok(Output { doc, tim, tip, tmd })
+    Ok(Output {
+        doc,
+        pos,
+        tim,
+        tip,
+        tmd,
+    })
 }
 
 /// Writes one term's `.doc` tail-block bytes (`docFreq < BLOCK_SIZE`, the
@@ -357,33 +489,73 @@ fn write_tail_block(out: &mut Vec<u8>, docs: &[(i32, i32)], index_has_freq: bool
     }
 }
 
+/// Writes one term's `.pos` position-tail bytes — the vint-tail-only branch
+/// of `crate::postings::read_positions` (`has_payloads == false`,
+/// `has_offsets == false`: `code = posDelta`, no bit-packing). `positions`
+/// is one `Vec<i32>` per doc (parallel to that term's `docs`), each holding
+/// the doc's absolute, ascending occurrence positions — see
+/// [`TermPostings`]'s `positions` field doc comment for the exact input
+/// shape.
+fn write_position_tail(out: &mut Vec<u8>, positions: &[Vec<i32>]) {
+    for doc_positions in positions {
+        let mut prev = 0i32;
+        for &p in doc_positions {
+            out.write_vint(p - prev);
+            prev = p;
+        }
+    }
+}
+
 /// Writes every term's per-term postings metadata bytes — the write-side
-/// inverse of `crate::postings::decode_term_metadata`'s no-positions branch
-/// (`IndexOptions::Docs`/`DocsAndFreqs` only, matching this writer's own
-/// scope restriction). Always takes the bit-clear ("absolute-ish
-/// `docStartFP` delta") branch, never the zigzag-singleton-delta branch —
-/// this writer has no need for that alternate encoding's extra compactness.
+/// inverse of `crate::postings::decode_term_metadata` (restricted to this
+/// writer's own scope: no offsets/payloads, so no `payStartFP`/
+/// `lastPosBlockOffset` field ever appears). Always takes the bit-clear
+/// ("absolute-ish `docStartFP` delta") branch, never the
+/// zigzag-singleton-delta branch — this writer has no need for that
+/// alternate encoding's extra compactness.
 ///
-/// `doc_start_fp` deltas are threaded exactly like
+/// `doc_start_fp`/`pos_start_fp` deltas are threaded exactly like
 /// `SegmentTermsEnumFrame.metaDataUpto`/`absolute` on the read side: the
 /// first term in the (only) block decodes against `TermMetadata::EMPTY`
-/// (`doc_start_fp == 0`), every subsequent term against the *previous*
-/// term's already-written `doc_start_fp` — so this writer must emit the same
-/// running delta, not each term's absolute offset.
-fn write_term_metadata(out: &mut Vec<u8>, terms: &[TermPostings], doc_start_fp: &[u64]) {
+/// (`doc_start_fp`/`pos_start_fp == 0`), every subsequent term against the
+/// *previous* term's already-written value — so this writer must emit the
+/// same running delta, not each term's absolute offset. Unlike
+/// `doc_start_fp`, `pos_start_fp` never has a singleton-skip special case:
+/// every term that indexes positions writes real `.pos` bytes and so always
+/// advances `pos_start_fp`, even when `docFreq == 1` pulses its `.doc`
+/// entry away.
+fn write_term_metadata(
+    out: &mut Vec<u8>,
+    terms: &[TermPostings],
+    doc_start_fp: &[u64],
+    pos_start_fp: &[u64],
+    index_has_positions: bool,
+) {
     let mut base_doc_start_fp = 0u64;
-    for (t, &fp) in terms.iter().zip(doc_start_fp) {
+    let mut base_pos_start_fp = 0u64;
+    for (i, t) in terms.iter().enumerate() {
         let doc_freq = t.docs.len();
         // Singleton terms never advance `doc_start_fp` (no `.doc` bytes are
         // written for them, see `write_single_field`), so their delta is 0
         // and the running base is left unchanged for the next term.
-        let this_fp = if doc_freq == 1 { base_doc_start_fp } else { fp };
+        let this_fp = if doc_freq == 1 {
+            base_doc_start_fp
+        } else {
+            doc_start_fp[i]
+        };
         let delta = this_fp.wrapping_sub(base_doc_start_fp);
         out.write_vlong(((delta << 1) as i64) & !1); // bit 0 clear: absolute-ish delta branch
         if doc_freq == 1 {
             out.write_vint(t.docs[0].0);
         }
         base_doc_start_fp = this_fp;
+
+        if index_has_positions {
+            let this_pos_fp = pos_start_fp[i];
+            let pos_delta = this_pos_fp.wrapping_sub(base_pos_start_fp);
+            out.write_vlong(pos_delta as i64);
+            base_pos_start_fp = this_pos_fp;
+        }
     }
 }
 
@@ -455,14 +627,17 @@ mod tests {
             TermPostings {
                 term: b"fox".to_vec(),
                 docs: vec![(1, 2), (4, 1), (7, 3)],
+                ..Default::default()
             },
             TermPostings {
                 term: b"quick".to_vec(),
                 docs: vec![(4, 1)], // singleton
+                ..Default::default()
             },
             TermPostings {
                 term: b"the".to_vec(),
                 docs: vec![(0, 1), (1, 1), (4, 2), (7, 1)],
+                ..Default::default()
             },
         ];
         let input = FieldPostingsInput {
@@ -508,10 +683,12 @@ mod tests {
             TermPostings {
                 term: b"a".to_vec(),
                 docs: vec![(0, 1), (2, 1)],
+                ..Default::default()
             },
             TermPostings {
                 term: b"b".to_vec(),
                 docs: vec![(1, 1)],
+                ..Default::default()
             },
         ];
         let input = FieldPostingsInput {
@@ -550,10 +727,12 @@ mod tests {
             TermPostings {
                 term: b"alpha".to_vec(),
                 docs: vec![(2, 1)],
+                ..Default::default()
             },
             TermPostings {
                 term: b"beta".to_vec(),
                 docs: vec![(5, 4)],
+                ..Default::default()
             },
         ];
         let input = FieldPostingsInput {
@@ -604,10 +783,12 @@ mod tests {
             TermPostings {
                 term: b"b".to_vec(),
                 docs: vec![(0, 1)],
+                ..Default::default()
             },
             TermPostings {
                 term: b"a".to_vec(),
                 docs: vec![(0, 1)],
+                ..Default::default()
             },
         ];
         let input = FieldPostingsInput {
@@ -628,10 +809,12 @@ mod tests {
             TermPostings {
                 term: b"a".to_vec(),
                 docs: vec![(0, 1)],
+                ..Default::default()
             },
             TermPostings {
                 term: b"a".to_vec(),
                 docs: vec![(1, 1)],
+                ..Default::default()
             },
         ];
         let input = FieldPostingsInput {
@@ -651,6 +834,7 @@ mod tests {
         let terms = vec![TermPostings {
             term: b"a".to_vec(),
             docs: vec![],
+            ..Default::default()
         }];
         let input = FieldPostingsInput {
             field_number: 0,
@@ -669,6 +853,7 @@ mod tests {
         let terms = vec![TermPostings {
             term: b"a".to_vec(),
             docs: vec![(2, 1), (1, 1)],
+            ..Default::default()
         }];
         let input = FieldPostingsInput {
             field_number: 0,
@@ -687,6 +872,7 @@ mod tests {
         let terms = vec![TermPostings {
             term: b"a".to_vec(),
             docs: vec![(1, 1), (1, 1)],
+            ..Default::default()
         }];
         let input = FieldPostingsInput {
             field_number: 0,
@@ -705,6 +891,7 @@ mod tests {
         let terms = vec![TermPostings {
             term: b"a".to_vec(),
             docs: vec![(0, 0), (1, 1)],
+            ..Default::default()
         }];
         let input = FieldPostingsInput {
             field_number: 0,
@@ -724,6 +911,7 @@ mod tests {
         let terms = vec![TermPostings {
             term: b"a".to_vec(),
             docs,
+            ..Default::default()
         }];
         let input = FieldPostingsInput {
             field_number: 0,
@@ -745,17 +933,18 @@ mod tests {
         let terms = vec![TermPostings {
             term: b"a".to_vec(),
             docs: vec![(0, 1)],
+            ..Default::default()
         }];
         let input = FieldPostingsInput {
             field_number: 0,
-            index_options: IndexOptions::DocsAndFreqsAndPositions,
+            index_options: IndexOptions::DocsAndFreqsAndPositionsAndOffsets,
             doc_count: 1,
             terms: &terms,
         };
         assert!(matches!(
             write_single_field(&input, &SEG_ID, SUFFIX),
             Err(Error::UnsupportedIndexOptions(
-                IndexOptions::DocsAndFreqsAndPositions
+                IndexOptions::DocsAndFreqsAndPositionsAndOffsets
             ))
         ));
     }
@@ -769,7 +958,11 @@ mod tests {
         for i in 0..20 {
             let term = format!("term{i:02}").into_bytes();
             let docs: Vec<(i32, i32)> = (0..5).map(|d| (i * 5 + d, (d + 1))).collect();
-            terms.push(TermPostings { term, docs });
+            terms.push(TermPostings {
+                term,
+                docs,
+                ..Default::default()
+            });
         }
         let input = FieldPostingsInput {
             field_number: 0,
@@ -792,5 +985,166 @@ mod tests {
             assert_eq!(postings.docs, expected_docs, "term{i:02}");
             assert_eq!(postings.freqs, expected_freqs, "term{i:02}");
         }
+    }
+
+    /// Positions write-side byte-level round trip through the existing
+    /// unmodified `postings::read_positions` (no query layer here -- see
+    /// `crates/lucene-search/tests/postings_writer_round_trip.rs`'s
+    /// `phrase_query_finds_correct_docs_over_freshly_written_positions` for
+    /// the required phrase-query capstone proof). Covers a singleton term
+    /// (`"beta"`, `docFreq == 1`, still needs `.pos` bytes since positions
+    /// are independent of the `.doc` singleton-pulsing optimization), a
+    /// multi-doc term, and per-doc freq > 1 (multiple occurrences in one
+    /// doc), to exercise the position-accumulator reset at each doc's first
+    /// occurrence.
+    #[test]
+    fn positions_round_trip_via_read_positions() {
+        let terms = vec![
+            TermPostings {
+                term: b"alpha".to_vec(),
+                docs: vec![(0, 2), (3, 1)],
+                positions: vec![vec![1, 4], vec![2]],
+            },
+            TermPostings {
+                term: b"beta".to_vec(),
+                docs: vec![(1, 3)], // singleton doc, but freq == 3 occurrences
+                positions: vec![vec![0, 5, 6]],
+            },
+        ];
+        let input = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqsAndPositions,
+            doc_count: 3,
+            terms: &terms,
+        };
+        let output = write_single_field(&input, &SEG_ID, SUFFIX).unwrap();
+
+        let fis = FieldInfos {
+            fields: vec![field_info(
+                0,
+                "body",
+                IndexOptions::DocsAndFreqsAndPositions,
+            )],
+        };
+        let (fields, doc_in) = open_written(&output, &fis, 4);
+        let pos_in =
+            crate::postings::PosInput::open(&output.pos, &SEG_ID, SUFFIX).expect("open .pos");
+
+        let field = fields.field("body").unwrap();
+
+        let positions = field
+            .positions(b"alpha", Some(&doc_in), &pos_in, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(positions.len(), 2);
+        assert_eq!(
+            positions[0].iter().map(|p| p.position).collect::<Vec<_>>(),
+            vec![1, 4]
+        );
+        assert_eq!(
+            positions[1].iter().map(|p| p.position).collect::<Vec<_>>(),
+            vec![2]
+        );
+
+        let positions = field
+            .positions(b"beta", Some(&doc_in), &pos_in, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(positions.len(), 1);
+        assert_eq!(
+            positions[0].iter().map(|p| p.position).collect::<Vec<_>>(),
+            vec![0, 5, 6]
+        );
+    }
+
+    #[test]
+    fn rejects_missing_positions_when_index_options_needs_them() {
+        let terms = vec![TermPostings {
+            term: b"a".to_vec(),
+            docs: vec![(0, 1)],
+            positions: vec![], // no positions supplied, but index_options needs them
+        }];
+        let input = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqsAndPositions,
+            doc_count: 1,
+            terms: &terms,
+        };
+        assert!(matches!(
+            write_single_field(&input, &SEG_ID, SUFFIX),
+            Err(Error::MissingPositions {
+                index: 0,
+                doc_index: 0
+            })
+        ));
+    }
+
+    #[test]
+    fn rejects_positions_freq_mismatch() {
+        let terms = vec![TermPostings {
+            term: b"a".to_vec(),
+            docs: vec![(0, 2)],
+            positions: vec![vec![1]], // only 1 position but freq == 2
+        }];
+        let input = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqsAndPositions,
+            doc_count: 1,
+            terms: &terms,
+        };
+        assert!(matches!(
+            write_single_field(&input, &SEG_ID, SUFFIX),
+            Err(Error::PositionsFreqMismatch {
+                index: 0,
+                doc_index: 0,
+                positions: 1,
+                freq: 2,
+            })
+        ));
+    }
+
+    #[test]
+    fn rejects_non_ascending_positions_within_a_doc() {
+        let terms = vec![TermPostings {
+            term: b"a".to_vec(),
+            docs: vec![(0, 2)],
+            positions: vec![vec![3, 3]], // duplicate, not strictly ascending
+        }];
+        let input = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqsAndPositions,
+            doc_count: 1,
+            terms: &terms,
+        };
+        assert!(matches!(
+            write_single_field(&input, &SEG_ID, SUFFIX),
+            Err(Error::PositionsNotAscending {
+                index: 0,
+                doc_index: 0,
+            })
+        ));
+    }
+
+    #[test]
+    fn rejects_total_term_freq_at_or_above_block_size() {
+        let positions: Vec<Vec<i32>> = vec![(0..BLOCK_SIZE).collect()];
+        let terms = vec![TermPostings {
+            term: b"a".to_vec(),
+            docs: vec![(0, BLOCK_SIZE)],
+            positions,
+        }];
+        let input = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqsAndPositions,
+            doc_count: 1,
+            terms: &terms,
+        };
+        assert!(matches!(
+            write_single_field(&input, &SEG_ID, SUFFIX),
+            Err(Error::TotalTermFreqTooLarge {
+                index: 0,
+                total_term_freq
+            }) if total_term_freq == BLOCK_SIZE as i64
+        ));
     }
 }

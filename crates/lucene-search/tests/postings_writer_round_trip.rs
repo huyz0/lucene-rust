@@ -21,9 +21,9 @@ use lucene_codecs::field_infos::{
     DocValuesSkipIndexType, DocValuesType, FieldInfo, FieldInfos, IndexOptions, VectorEncoding,
     VectorSimilarityFunction,
 };
-use lucene_codecs::postings::DocInput;
+use lucene_codecs::postings::{DocInput, PosInput};
 use lucene_codecs::postings_writer::{write_single_field, FieldPostingsInput, TermPostings};
-use lucene_search::{search_term_query, TermQuery, VecCollector};
+use lucene_search::{search_phrase_query, search_term_query, PhraseQuery, TermQuery, VecCollector};
 
 const SEG_ID: [u8; 16] = [42u8; 16];
 const SUFFIX: &str = "";
@@ -61,14 +61,17 @@ fn term_query_finds_correct_docs_over_freshly_written_postings() {
         TermPostings {
             term: b"fox".to_vec(),
             docs: vec![(1, 2), (4, 1), (7, 3)],
+            ..Default::default()
         },
         TermPostings {
             term: b"quick".to_vec(),
             docs: vec![(4, 1)], // docFreq == 1: pulsed into the term dict, no .doc bytes
+            ..Default::default()
         },
         TermPostings {
             term: b"the".to_vec(),
             docs: vec![(0, 1), (1, 1), (4, 2), (7, 1)],
+            ..Default::default()
         },
     ];
     let input = FieldPostingsInput {
@@ -118,6 +121,7 @@ fn term_query_respects_live_docs_filter() {
     let terms = vec![TermPostings {
         term: b"fox".to_vec(),
         docs: vec![(1, 1), (4, 1), (7, 1)],
+        ..Default::default()
     }];
     let input = FieldPostingsInput {
         field_number: 0,
@@ -159,4 +163,91 @@ fn term_query_respects_live_docs_filter() {
     )
     .unwrap();
     assert_eq!(collector.docs, vec![1, 7]);
+}
+
+/// The critical end-to-end proof for the positions write-side: writes a
+/// multi-term field (`"fox"`/`"jumps"`/`"quick"`, three terms so the `.tim`
+/// suffix/stats/metadata threading gets exercised, not just a single-term
+/// edge case) with `IndexOptions::DocsAndFreqsAndPositions`, where two docs
+/// share every term but only one doc has them in an exactly adjacent
+/// "quick fox" pattern -- then runs the *existing, unmodified*
+/// `lucene_search::search_phrase_query` against the freshly written
+/// `.doc`/`.pos`/`.tim`/`.tip`/`.tmd` bytes and asserts:
+/// - doc 0 ("quick fox jumps": quick@0, fox@1, jumps@2) matches the
+///   `["quick", "fox"]` phrase (exact adjacency) and also `["fox", "jumps"]`.
+/// - doc 1 ("quick jumps fox": quick@0, jumps@1, fox@2) does **not** match
+///   `["quick", "fox"]` (both terms are present in the doc, and a plain
+///   `TermQuery` conjunction would wrongly include it, but they're 2 apart,
+///   not adjacent) -- the required negative case proving this isn't just a
+///   doc-ID conjunction wearing a phrase-query hat.
+#[test]
+fn phrase_query_finds_correct_docs_over_freshly_written_positions() {
+    let terms = vec![
+        TermPostings {
+            term: b"fox".to_vec(),
+            docs: vec![(0, 1), (1, 1)],
+            positions: vec![vec![1], vec![2]],
+        },
+        TermPostings {
+            term: b"jumps".to_vec(),
+            docs: vec![(0, 1), (1, 1)],
+            positions: vec![vec![2], vec![1]],
+        },
+        TermPostings {
+            term: b"quick".to_vec(),
+            docs: vec![(0, 1), (1, 1)],
+            positions: vec![vec![0], vec![0]],
+        },
+    ];
+    let input = FieldPostingsInput {
+        field_number: 0,
+        index_options: IndexOptions::DocsAndFreqsAndPositions,
+        doc_count: 2,
+        terms: &terms,
+    };
+    let output = write_single_field(&input, &SEG_ID, SUFFIX).expect("write_single_field");
+
+    let field_infos = FieldInfos {
+        fields: vec![field_info(
+            0,
+            "body",
+            IndexOptions::DocsAndFreqsAndPositions,
+        )],
+    };
+    let fields = blocktree::open(
+        &output.tim,
+        &output.tip,
+        &output.tmd,
+        &field_infos,
+        &SEG_ID,
+        SUFFIX,
+        2,
+    )
+    .expect("blocktree::open on freshly written .tim/.tip/.tmd");
+    let doc_in = DocInput::open(&output.doc, &SEG_ID, SUFFIX).expect("DocInput::open");
+    let pos_in = PosInput::open(&output.pos, &SEG_ID, SUFFIX).expect("PosInput::open");
+
+    let case = |terms: &[&[u8]], expected: &[i32]| {
+        let mut collector = VecCollector::default();
+        let query = PhraseQuery::new("body", terms.iter().map(|t| t.to_vec()));
+        search_phrase_query(
+            &fields,
+            Some(&doc_in),
+            Some(&pos_in),
+            None,
+            None,
+            &query,
+            &mut collector,
+        )
+        .unwrap_or_else(|e| panic!("search_phrase_query({terms:?}) failed: {e}"));
+        assert_eq!(collector.docs, expected, "phrase {terms:?}");
+    };
+
+    case(&[b"quick", b"fox"], &[0]);
+    case(&[b"fox", b"jumps"], &[0]);
+    // doc 1 is "quick jumps fox" (quick@0, jumps@1, fox@2): this exact
+    // 3-term order matches doc 1, not doc 0 -- the mirror-image negative
+    // case showing the writer's positions distinguish more than just doc-ID
+    // conjunction (both docs contain all three terms).
+    case(&[b"quick", b"jumps", b"fox"], &[1]);
 }
