@@ -1896,12 +1896,7 @@ by entry count only, least-recently-used-first, tracked via a monotonic
 access counter stamped on every hit/insert (no external LRU-list crate in
 the workspace, and a linear scan over a small bounded cache to find the
 minimum is the right amount of machinery for this scope). No `unsafe`
-(`lucene-search` is `#![forbid(unsafe_code)]`). **Not wired into any live
-search path** -- `IndexSearcher`-equivalent query execution
-(`directory_reader.rs`/`multi_segment.rs`) still always re-evaluates a
-query's scorer/matcher on every call, exactly as before this module existed;
-wiring this cache in (with real segment-lifecycle-triggered invalidation and
-a cache-worthiness heuristic) is future work. Unit tests cover: a cache miss
+(`lucene-search` is `#![forbid(unsafe_code)]`). Unit tests cover: a cache miss
 calls the compute closure and stores the result; a cache hit reuses the
 stored bitset without calling compute again (verified via a call counter);
 distinct queries against the same segment get distinct entries; the same
@@ -1912,13 +1907,57 @@ untouched one is evicted and the touched one survives); `invalidate_segment`
 removes only that segment's entries, leaving other segments' entries and
 cache hits intact; a `max_entries == 0` cache never actually retains
 anything; `clear()` empties every segment's entries; and `TermQuery` used as
-a concrete `Q` end-to-end. **Explicitly deferred** (see `docs/parity.md`):
+a concrete `Q` end-to-end.
+
+**Progress (wired into a real search entry point):** `query_cache.rs` gained
+`search_term_query_cached(cache: &mut QueryCache<S, TermQuery>, segment: S,
+fields, doc_in, live_docs, num_docs, query: &TermQuery, collector: &mut impl
+Collector) -> Result<()>`, a cached wrapper composing the existing
+`QueryCache::get_or_compute` with the existing, completely unchanged
+`search_term_query` (in `lib.rs`) -- neither function's own logic changed at
+all. On a cache miss, it runs `search_term_query` into a `VecCollector`,
+packs the result into a `FixedBitSet` sized by the caller-supplied `num_docs`,
+and stores it; on a hit, it feeds the cached bitset's set bits straight to
+`collector`, never touching `fields`/`doc_in` again. This closes the "not
+wired into any live search path" gap the cache used to have, but only for
+`TermQuery` -- `BooleanQuery` is not wired, and can't cheaply be: its
+`Clause::DisjunctionMax` variant embeds an `f32` `tie_breaker`, and `f32` has
+no total order/hash, so `BooleanQuery`/`Clause` deliberately derive only
+`PartialEq`, not the `Eq + Hash` `QueryCache`'s `Q` bound requires. Wiring
+`BooleanQuery` in would mean inventing a `NaN`-handling hash/equality
+convention with no precedent elsewhere in this crate, so it's left for a
+future task. A `search_term_query` failure during a cache-miss `compute` is
+captured out-of-band (the `compute` closure can only return a plain
+`FixedBitSet`, not a `Result`) and re-raised as this function's own `Err` --
+the empty placeholder bitset `compute` handed back in that case is then
+explicitly removed again via a new `QueryCache::remove(&segment, &query) ->
+bool` method (a small additive API, not a change to `get_or_compute`'s own
+logic), so a failed computation never leaves a poisoned "matches nothing"
+entry behind to shadow a later, correct recompute. This is opt-in: existing
+callers of the uncached `search_term_query` are completely unaffected, and a
+caller has to explicitly own a `QueryCache` and call the new function to get
+caching at all. Tested against the real `blocktree_index` fixture (not
+synthetic data): the same query run twice against the same segment through
+`search_term_query_cached` returns the exact same, correct doc IDs on both
+calls, and the second call is proven to be a genuine cache hit (not a
+recompute) by deliberately omitting `.doc` input on the second call -- since
+both fixture terms used (`"cat"`/`"dog"`, `docFreq == 2` each) require `.doc`
+input to actually execute, a real recompute without it would fail with
+`Error::BlockTree`, so the second call only succeeding (and matching the
+correct result) proves the cache path was taken; a different query against
+the same segment, and the same query against a different segment key, are
+both proven to be genuine fresh misses the same way (an attempt without
+`.doc` input fails, confirming no stale/wrong entry was silently served); and
+`invalidate_segment` is proven to force a real recompute on the next call for
+that segment, the same way. **Explicitly deferred** (see `docs/parity.md`):
 RAM-based cache sizing (bounded by count alone here), automatic per-segment
 invalidation hooks tied to real segment open/close/merge lifecycle events
 (`invalidate_segment` exists and is correct, but nothing in this port calls
-it yet -- no segment lifecycle to hook into), cache-worthiness heuristics
-like real `LRUQueryCache.shouldCache`, and wiring into `IndexSearcher`-
-equivalent live query execution.
+it automatically yet -- no segment lifecycle to hook into; a caller of
+`search_term_query_cached` still has to call it manually), cache-worthiness
+heuristics like real `LRUQueryCache.shouldCache`, and wiring any query type
+other than `TermQuery` (in particular `BooleanQuery`, see above) into a
+cached entry point.
 
 **Progress (concurrent segment search):** `multi_segment.rs` gained a `rayon`-
 based parallel sibling of its existing sequential fan-out/merge core --

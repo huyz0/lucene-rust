@@ -216,7 +216,7 @@ pub use query::{
     BooleanQuery, BoostQuery, Clause, ConstantScoreQuery, DisjunctionMaxQuery, FuzzyQuery,
     PhraseQuery, PrefixQuery, RegexpQuery, SpanQuery, TermQuery, WildcardQuery,
 };
-pub use query_cache::QueryCache;
+pub use query_cache::{search_term_query_cached, QueryCache};
 pub use term_vectors_query::{matched_term_offsets, term_vector_for_doc};
 
 use std::collections::HashMap;
