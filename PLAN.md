@@ -2851,6 +2851,39 @@ the `crates/lucene-ffi/src/writer.rs` write-up — not repeated here.)
      the first, a middle, and the last physical block
      (`crates/lucene-search/tests/postings_writer_round_trip.rs::term_query_finds_correct_docs_across_multiple_tim_blocks`).
      See `docs/parity.md`'s row for the full scope statement.
+   - **Postings writer: full `.doc` block emission added, closing the
+     `docFreq >= BLOCK_SIZE` gap.** `write_full_block`
+     (`lucene-codecs/src/postings_writer.rs`) now emits a level-0 skip
+     header (new `write_vint15`/`write_vlong15` helpers) plus a
+     `ForUtil`/`PForUtil`-packed doc-delta/freq body for every complete
+     256-doc chunk of a term's postings, reusing `for_util::for_encode`/
+     `pfor_encode` directly rather than reimplementing bit-packing. Doc
+     deltas always take the plain positive-`bitsPerValue` shape (never the
+     all-consecutive/dense-bitset alternate encodings the real writer
+     sometimes prefers); impacts are always an empty byte region (no
+     competitive-impact computation). The `docFreq % BLOCK_SIZE` remainder
+     still uses the existing tail-block path, `prev_doc_id`-chained from the
+     last full block. `validate_field`'s upper bound moved from
+     `>= BLOCK_SIZE` to `>= LEVEL1_NUM_DOCS` (8192) — this writer still
+     never emits level-1 skip entries, so that threshold remains a real
+     limit, just a much higher one. `.pos` full blocks
+     (`total_term_freq >= BLOCK_SIZE`) remain out of scope and are provably
+     unreachable from this path today (`total_term_freq >= doc_freq`
+     always, so a term reaching a `.doc` full block would already have
+     tripped `Error::TotalTermFreqTooLarge` first). Proven correct by
+     round-tripping through the existing, unmodified `blocktree::open`/
+     `DocInput::read_postings` (`docFreq == 256` exactly one block,
+     `== 257` one block plus a one-doc tail, `== 600` two blocks plus an
+     88-doc tail, a no-freqs full block, and mixed small/full-block terms in
+     one field — all in `postings_writer.rs`'s own unit tests). No new
+     `fixtures/src/Gen*.java` generator was added: this proves the port's
+     own writer and the port's own already-fixture-verified reader agree, a
+     Rust-only question, not a new wire-format claim (same reasoning the
+     original single-block writer slice gave). See `docs/parity.md`'s row
+     for the full scope statement, including why no end-to-end
+     `IndexWriter`-level test of the new boundary exists (blocked by
+     `flush_stored_only_segment`'s unrelated, pre-existing `< 128`-docs
+     `write_best_speed` cap).
    - **`TopFieldCollector` wired into multi-segment search**
      (`crates/lucene-search/src/multi_segment.rs::merge_multi_segment_by_field`/
      `search_numeric_range_sorted_by_field_multi_segment`) — the sort-by-field

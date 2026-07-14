@@ -37,18 +37,25 @@
 //!   containing an empty-byte-string term also falls back to the
 //!   single-block path unconditionally (there's no leading byte to
 //!   strip/route on for that term).
-//! - **`docFreq < BLOCK_SIZE` (256) for every term.** No full `ForUtil`/
-//!   `PForUtil`-encoded blocks are ever written — every non-singleton term's
-//!   postings are the group-varint "tail block" encoding alone
-//!   (`Lucene104PostingsWriter`'s `flushDocBlock(true)` branch that never
-//!   reaches `docBufferUpto == BLOCK_SIZE`). A term at or above `BLOCK_SIZE`
-//!   docs is rejected with [`Error::Unsupported`] rather than silently
-//!   producing wrong bytes. `crate::for_util::for_encode`/`pfor_encode` are
-//!   real, tested production encoders for the full-block case (the read
-//!   side, `crate::postings`, already fully decodes them) — this writer
-//!   just doesn't call them yet; doing so also needs the level-0 skip-list
-//!   metadata the reader expects alongside a full block, which this writer
-//!   doesn't build. See `docs/parity.md` for the exact scope line.
+//! - **`docFreq` of any size is now supported for the `.doc` doc-delta/freq
+//!   stream**: every complete 256-doc chunk of a term's postings is emitted
+//!   as a full `ForUtil`/`PForUtil`-encoded block ([`write_full_block`],
+//!   reusing `crate::for_util::for_encode`/`pfor_encode` directly — no
+//!   bit-packing is reimplemented here), preceded by a level-0 skip header
+//!   the existing, unmodified `crate::postings::read_full_block_header`/
+//!   `decode_full_block_body` already parses. The `docFreq % BLOCK_SIZE`
+//!   remainder still uses the group-varint tail-block path. Doc deltas
+//!   always take the plain positive-`bitsPerValue` `ForUtil` shape (never
+//!   the `bitsPerValue == 0` "all-256-consecutive" or `bitsPerValue < 0`
+//!   dense-bitset alternate encodings the real writer sometimes prefers for
+//!   space — see `docs/parity.md` for that scope cut) and impacts are always
+//!   an empty byte region (no competitive-impact computation) — the reader
+//!   accepts an empty impacts run and this writer never emits any queries
+//!   that need real ones. **No per-term upper bound remains** other than
+//!   what `crate::postings`'s own reader supports (`LEVEL1_NUM_DOCS` level-1
+//!   skip entries above 8192 docs are read-only; this writer never emits
+//!   them, so a term at `docFreq >= LEVEL1_NUM_DOCS` would round-trip
+//!   incorrectly and is rejected with [`Error::DocFreqTooLarge`]).
 //! - **Term frequency only, or term frequency + positions — still no
 //!   offsets/payloads.** `IndexOptions::Docs`/`DocsAndFreqs`/
 //!   `DocsAndFreqsAndPositions` are accepted; `.pay` is never written, and
@@ -126,8 +133,10 @@ use crate::blocktree::{
     TERMS_INDEX_CODEC_NAME, TERMS_META_CODEC_NAME, VERSION_CURRENT as BLOCKTREE_VERSION_CURRENT,
 };
 use crate::field_infos::IndexOptions;
+use crate::for_util;
 use crate::postings::{
-    write_group_vints, BLOCK_SIZE, DOC_CODEC, POS_CODEC, VERSION_CURRENT as DOC_VERSION_CURRENT,
+    write_group_vints, BLOCK_SIZE, DOC_CODEC, LEVEL1_NUM_DOCS, POS_CODEC,
+    VERSION_CURRENT as DOC_VERSION_CURRENT,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -143,8 +152,9 @@ pub enum Error {
     #[error("write_single_field: term at index {index} has freq < 1")]
     NonPositiveFreq { index: usize },
     #[error(
-        "write_single_field: term at index {index} has docFreq {doc_freq} >= BLOCK_SIZE \
-         ({BLOCK_SIZE}); multi-block terms are not supported by this writer"
+        "write_single_field: term at index {index} has docFreq {doc_freq} >= LEVEL1_NUM_DOCS \
+         ({LEVEL1_NUM_DOCS}); this writer never emits the level-1 skip entries the reader would \
+         then expect, so a term this large is rejected rather than silently misencoded"
     )]
     DocFreqTooLarge { index: usize, doc_freq: usize },
     #[error(
@@ -350,7 +360,22 @@ pub fn write_fields(
                 continue;
             }
             doc_start_fp[i] = doc.len() as u64;
-            write_tail_block(&mut doc, &t.docs, index_has_freq);
+
+            // Zero or more full 256-doc `ForUtil`/`PForUtil` blocks
+            // (`write_full_block`) followed by at most one group-varint tail
+            // block for the `docFreq % BLOCK_SIZE` remainder -- the exact
+            // write-side inverse of `DocInput::read_postings`'s own
+            // full-blocks-then-tail dispatch.
+            let mut prev_doc_id = -1i32;
+            let mut start = 0usize;
+            while t.docs.len() - start >= BLOCK_SIZE as usize {
+                let block = &t.docs[start..start + BLOCK_SIZE as usize];
+                prev_doc_id = write_full_block(&mut doc, block, prev_doc_id, index_has_freq);
+                start += BLOCK_SIZE as usize;
+            }
+            if start < t.docs.len() {
+                write_tail_block(&mut doc, &t.docs[start..], prev_doc_id, index_has_freq);
+            }
         }
 
         // `pos_start_fp[i]` is term `i`'s absolute byte offset into the
@@ -661,7 +686,7 @@ fn validate_field(input: &FieldPostingsInput<'_>) -> Result<()> {
         if t.docs.is_empty() {
             return Err(Error::EmptyPostings(i));
         }
-        if t.docs.len() >= BLOCK_SIZE as usize {
+        if t.docs.len() >= LEVEL1_NUM_DOCS as usize {
             return Err(Error::DocFreqTooLarge {
                 index: i,
                 doc_freq: t.docs.len(),
@@ -710,15 +735,128 @@ fn validate_field(input: &FieldPostingsInput<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Writes one term's `.doc` tail-block bytes (`docFreq < BLOCK_SIZE`, the
-/// only shape this writer produces) — the exact inverse of
-/// `crate::postings::read_tail_block` with `prev_doc_id == -1` (a term's
-/// postings never share a running doc-ID base with another term; only
-/// full-block chaining within one term does that, which this writer never
-/// emits).
-fn write_tail_block(out: &mut Vec<u8>, docs: &[(i32, i32)], index_has_freq: bool) {
+/// `Lucene104PostingsWriter.writeVInt15`'s write-side companion to
+/// `crate::postings::read_vint15` (the 2-byte fast path for `0..=0x7FFF`,
+/// else a negative `i16` flag carrying the low 15 bits plus a following vint
+/// for the high bits).
+fn write_vint15(out: &mut Vec<u8>, value: i32) {
+    if (0..=0x7FFF).contains(&value) {
+        out.write_i16(value as i16);
+    } else {
+        out.write_i16((0x8000 | (value & 0x7FFF)) as i16);
+        out.write_vint(value >> 15);
+    }
+}
+
+/// `Lucene104PostingsWriter.writeVLong15`'s write-side companion to
+/// `crate::postings::read_vlong15`, the `long`-widening sibling of
+/// [`write_vint15`].
+fn write_vlong15(out: &mut Vec<u8>, value: i64) {
+    if (0..=0x7FFF).contains(&value) {
+        out.write_i16(value as i16);
+    } else {
+        out.write_i16((0x8000 | (value & 0x7FFF)) as i16);
+        out.write_vlong(value >> 15);
+    }
+}
+
+/// Writes one full 256-doc `.doc` block — a level-0 skip header
+/// (`level0NumBytes` skip pointer, `docDelta`, `blockLength`, an always-empty
+/// impacts region) followed by the doc-delta/freq body — the exact
+/// write-side inverse of `crate::postings::read_full_block_header`/
+/// `decode_full_block_body`. This deliberately never writes the header's
+/// pos/pay skip fields (only present on the wire when the field indexes
+/// positions *and* has freqs): a term can only reach this full-block path at
+/// `docFreq >= BLOCK_SIZE`, and `docFreq >= total_term_freq` always, so a
+/// field indexing positions would already have tripped
+/// [`Error::TotalTermFreqTooLarge`] in [`validate_field`] before a full
+/// block is ever built — positions genuinely cannot co-occur with this
+/// function today. `block` must be exactly `BLOCK_SIZE` (256)
+/// `(doc_id, freq)` pairs, ascending. Returns `block`'s last doc ID, which
+/// the caller threads through as `prev_doc_id` for the next full block or
+/// the trailing tail block (`Lucene104PostingsReader.prefixSum`'s running
+/// per-term base).
+///
+/// Doc deltas always take the plain positive-`bitsPerValue` `ForUtil` shape
+/// (`decode_full_block_body`'s `bitsPerValue > 0` branch) — this writer never
+/// emits the `bitsPerValue == 0` "all-256-consecutive" or `bitsPerValue < 0`
+/// dense-bitset alternate encodings the real writer sometimes picks for
+/// space efficiency (see the module doc's scope section and
+/// `docs/parity.md`). Freqs (when `index_has_freq`) go through
+/// `for_util::pfor_encode` directly — its on-wire token/body shape is byte-
+/// identical to what `for_util::pfor_decode` (called from
+/// `decode_full_block_body`) expects, so no re-derivation of that format
+/// happens here.
+fn write_full_block(
+    out: &mut Vec<u8>,
+    block: &[(i32, i32)],
+    prev_doc_id: i32,
+    index_has_freq: bool,
+) -> i32 {
+    debug_assert_eq!(block.len(), BLOCK_SIZE as usize);
+
+    // Everything from here down is what `blockLength` measures (i.e. what
+    // `read_full_block_header` reads as `body_end - r.position()`
+    // immediately after `blockLength` itself) -- build it in a scratch
+    // buffer first so `blockLength`'s value is known before the header is
+    // written.
+    let mut rest = Vec::new();
+    if index_has_freq {
+        rest.write_vint(0); // impacts byte-length: always an empty region
+                            // (no competitive-impact computation, see the module doc).
+    }
+
+    let mut deltas = [0u32; for_util::BLOCK_SIZE];
+    let mut prev = prev_doc_id;
+    let mut max_delta = 0u32;
+    for (i, &(doc_id, _)) in block.iter().enumerate() {
+        let delta = (doc_id - prev) as u32;
+        deltas[i] = delta;
+        max_delta = max_delta.max(delta);
+        prev = doc_id;
+    }
+    // `bits_required` returns 0 only for an all-zero input; every delta here
+    // is `>= 1` (ascending, no duplicates), so `max_delta >= 1` and this is
+    // always `>= 1` in practice -- `.max(1)` just keeps the invariant
+    // explicit rather than relying on that fact silently.
+    let bits_per_value = for_util::bits_required(max_delta).max(1);
+    rest.write_byte(bits_per_value as u8);
+    for_util::for_encode(&deltas, bits_per_value, &mut rest);
+
+    if index_has_freq {
+        let mut freqs = [0u32; for_util::BLOCK_SIZE];
+        for (i, &(_, freq)) in block.iter().enumerate() {
+            freqs[i] = freq as u32;
+        }
+        for_util::pfor_encode(&mut freqs, &mut rest);
+    }
+
+    let last_doc_id = block[block.len() - 1].0;
+    out.write_vlong(0); // level0NumBytes: a skip pointer this reader parses
+                        // but never uses (see read_full_block_header), so any
+                        // valid vlong is fine here.
+    write_vint15(out, last_doc_id - prev_doc_id);
+    write_vlong15(out, rest.len() as i64);
+    out.write_bytes(&rest);
+
+    last_doc_id
+}
+
+/// Writes one term's `.doc` tail-block bytes (the `docFreq % BLOCK_SIZE`
+/// remainder, or the whole term when `docFreq < BLOCK_SIZE`) — the exact
+/// inverse of `crate::postings::read_tail_block`. `prev_doc_id` is `-1` when
+/// there are no preceding full blocks for this term, or the last full
+/// block's last doc ID otherwise (full-block chaining within one term, see
+/// [`write_full_block`]) — a term's postings never share a running doc-ID
+/// base with another *term*, only across blocks within the same term.
+fn write_tail_block(
+    out: &mut Vec<u8>,
+    docs: &[(i32, i32)],
+    prev_doc_id: i32,
+    index_has_freq: bool,
+) {
     let mut raw = Vec::with_capacity(docs.len());
-    let mut prev = -1i32;
+    let mut prev = prev_doc_id;
     for &(doc_id, freq) in docs {
         let delta = (doc_id - prev) as u32;
         prev = doc_id;
@@ -1155,8 +1293,8 @@ mod tests {
     }
 
     #[test]
-    fn rejects_docfreq_at_or_above_block_size() {
-        let docs: Vec<(i32, i32)> = (0..BLOCK_SIZE).map(|d| (d, 1)).collect();
+    fn rejects_docfreq_at_or_above_level1_num_docs() {
+        let docs: Vec<(i32, i32)> = (0..LEVEL1_NUM_DOCS).map(|d| (d, 1)).collect();
         let terms = vec![TermPostings {
             term: b"a".to_vec(),
             docs,
@@ -1165,7 +1303,7 @@ mod tests {
         let input = FieldPostingsInput {
             field_number: 0,
             index_options: IndexOptions::DocsAndFreqs,
-            doc_count: BLOCK_SIZE,
+            doc_count: LEVEL1_NUM_DOCS,
             terms: &terms,
         };
         assert!(matches!(
@@ -1173,8 +1311,39 @@ mod tests {
             Err(Error::DocFreqTooLarge {
                 index: 0,
                 doc_freq
-            }) if doc_freq == BLOCK_SIZE as usize
+            }) if doc_freq == LEVEL1_NUM_DOCS as usize
         ));
+    }
+
+    /// `docFreq == LEVEL1_NUM_DOCS - 1` (8191): the largest term size this
+    /// writer accepts, one doc short of the rejection boundary tested above.
+    /// Round-tripped through the unmodified reader, not just checked for an
+    /// `Ok` result.
+    #[test]
+    fn docfreq_one_less_than_level1_num_docs_is_accepted() {
+        let doc_freq = LEVEL1_NUM_DOCS - 1;
+        let term = varied_docs_term(b"a", doc_freq);
+        let max_doc = term.docs.last().unwrap().0 + 1;
+        let doc_count = term.docs.len() as i32;
+        let terms = vec![term.clone()];
+        let input = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqs,
+            doc_count,
+            terms: &terms,
+        };
+        let output = write_single_field(&input, &SEG_ID, SUFFIX).unwrap();
+        let fis = FieldInfos {
+            fields: vec![field_info(0, "f", IndexOptions::DocsAndFreqs)],
+        };
+        let (fields, doc_in) = open_written(&output, &fis, max_doc);
+        let field = fields.field("f").unwrap();
+        assert_eq!(field.seek_exact(b"a").unwrap().doc_freq, doc_freq);
+        let postings = field.postings(b"a", Some(&doc_in)).unwrap().unwrap();
+        let expected_docs: Vec<i32> = term.docs.iter().map(|&(d, _)| d).collect();
+        let expected_freqs: Vec<i32> = term.docs.iter().map(|&(_, f)| f).collect();
+        assert_eq!(postings.docs, expected_docs);
+        assert_eq!(postings.freqs, expected_freqs);
     }
 
     #[test]
@@ -1774,5 +1943,300 @@ mod tests {
                 total_term_freq
             }) if total_term_freq == BLOCK_SIZE as i64
         ));
+    }
+
+    /// Builds a term with `doc_freq` docs, doc IDs `0, 2, 4, .. 2*(doc_freq-1)`
+    /// (varied deltas, not all-1, so `write_full_block` never takes a trivial
+    /// all-equal-delta shortcut) and per-doc freq `1 + (doc_index % 5)`
+    /// (varied, some `!= 1`, so the tail-block's freq-exception path and the
+    /// full block's `pfor_encode` both see non-trivial input).
+    fn varied_docs_term(term: &[u8], doc_freq: i32) -> TermPostings {
+        TermPostings {
+            term: term.to_vec(),
+            docs: (0..doc_freq).map(|i| (i * 2, 1 + (i % 5))).collect(),
+            ..Default::default()
+        }
+    }
+
+    /// Unlike [`varied_docs_term`] (a constant doc-delta of 2), this
+    /// produces genuinely irregular gaps -- deltas cycling through
+    /// 1/1/1/50/1/1/1/300/... -- and widely varying freqs (1 up to 1000),
+    /// exercising `write_full_block`'s per-block `bits_required(max_delta)`
+    /// computation against a real spread of values rather than one that
+    /// happens to be uniform.
+    fn irregular_docs_term(term: &[u8], doc_freq: i32) -> TermPostings {
+        let deltas = [1i32, 1, 1, 50, 1, 1, 1, 300];
+        let mut doc_id = 0i32;
+        let mut docs = Vec::with_capacity(doc_freq as usize);
+        for i in 0..doc_freq {
+            if i > 0 {
+                doc_id += deltas[(i as usize) % deltas.len()];
+            }
+            let freq = 1 + (i * 37) % 1000;
+            docs.push((doc_id, freq));
+        }
+        TermPostings {
+            term: term.to_vec(),
+            docs,
+            ..Default::default()
+        }
+    }
+
+    /// `docFreq == BLOCK_SIZE` (256): exactly one full block, no tail block
+    /// at all -- the boundary the module doc's "no per-term upper bound"
+    /// claim rests on. Round-tripped through the existing, unmodified
+    /// `blocktree::open`/`DocInput::read_postings` (not just "didn't
+    /// panic" -- every doc/freq is asserted).
+    #[test]
+    fn docfreq_exactly_one_full_block_no_tail() {
+        let term = varied_docs_term(b"a", BLOCK_SIZE);
+        let max_doc = term.docs.last().unwrap().0 + 1;
+        let doc_count = term.docs.len() as i32;
+        let terms = vec![term.clone()];
+        let input = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqs,
+            doc_count,
+            terms: &terms,
+        };
+        let output = write_single_field(&input, &SEG_ID, SUFFIX).unwrap();
+        let fis = FieldInfos {
+            fields: vec![field_info(0, "f", IndexOptions::DocsAndFreqs)],
+        };
+        let (fields, doc_in) = open_written(&output, &fis, max_doc);
+        let field = fields.field("f").unwrap();
+        let postings = field.postings(b"a", Some(&doc_in)).unwrap().unwrap();
+        let expected_docs: Vec<i32> = term.docs.iter().map(|&(d, _)| d).collect();
+        let expected_freqs: Vec<i32> = term.docs.iter().map(|&(_, f)| f).collect();
+        assert_eq!(postings.docs, expected_docs);
+        assert_eq!(postings.freqs, expected_freqs);
+    }
+
+    /// `docFreq == BLOCK_SIZE + 1` (257): one full block plus a one-doc
+    /// tail block, proving `prev_doc_id` threads correctly from the full
+    /// block into the tail block's delta base.
+    #[test]
+    fn docfreq_one_full_block_plus_one_doc_tail() {
+        let term = varied_docs_term(b"a", BLOCK_SIZE + 1);
+        let max_doc = term.docs.last().unwrap().0 + 1;
+        let doc_count = term.docs.len() as i32;
+        let terms = vec![term.clone()];
+        let input = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqs,
+            doc_count,
+            terms: &terms,
+        };
+        let output = write_single_field(&input, &SEG_ID, SUFFIX).unwrap();
+        let fis = FieldInfos {
+            fields: vec![field_info(0, "f", IndexOptions::DocsAndFreqs)],
+        };
+        let (fields, doc_in) = open_written(&output, &fis, max_doc);
+        let field = fields.field("f").unwrap();
+        let postings = field.postings(b"a", Some(&doc_in)).unwrap().unwrap();
+        let expected_docs: Vec<i32> = term.docs.iter().map(|&(d, _)| d).collect();
+        let expected_freqs: Vec<i32> = term.docs.iter().map(|&(_, f)| f).collect();
+        assert_eq!(postings.docs, expected_docs);
+        assert_eq!(postings.freqs, expected_freqs);
+    }
+
+    /// `docFreq == 600`: two full blocks plus an 88-doc tail, exercising
+    /// full-block-to-full-block `prev_doc_id` chaining (not just
+    /// full-block-to-tail).
+    #[test]
+    fn docfreq_spans_multiple_full_blocks_plus_tail() {
+        let doc_freq = 600;
+        assert_eq!(doc_freq / BLOCK_SIZE, 2);
+        assert_eq!(doc_freq % BLOCK_SIZE, 88);
+        let term = varied_docs_term(b"a", doc_freq);
+        let max_doc = term.docs.last().unwrap().0 + 1;
+        let doc_count = term.docs.len() as i32;
+        let terms = vec![term.clone()];
+        let input = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqs,
+            doc_count,
+            terms: &terms,
+        };
+        let output = write_single_field(&input, &SEG_ID, SUFFIX).unwrap();
+        let fis = FieldInfos {
+            fields: vec![field_info(0, "f", IndexOptions::DocsAndFreqs)],
+        };
+        let (fields, doc_in) = open_written(&output, &fis, max_doc);
+        let field = fields.field("f").unwrap();
+        assert_eq!(field.seek_exact(b"a").unwrap().doc_freq, doc_freq);
+        let postings = field.postings(b"a", Some(&doc_in)).unwrap().unwrap();
+        let expected_docs: Vec<i32> = term.docs.iter().map(|&(d, _)| d).collect();
+        let expected_freqs: Vec<i32> = term.docs.iter().map(|&(_, f)| f).collect();
+        assert_eq!(postings.docs, expected_docs);
+        assert_eq!(postings.freqs, expected_freqs);
+    }
+
+    /// `docFreq == 2 * BLOCK_SIZE` with irregular, non-constant doc-ID gaps
+    /// and widely varying freqs (see [`irregular_docs_term`]) -- every
+    /// other full-block test in this module uses a constant doc-delta,
+    /// which can't distinguish "the per-block bit width was computed from
+    /// the real max delta in that block" from "it happened to be right
+    /// because every delta was identical."
+    #[test]
+    fn docfreq_spans_full_blocks_with_irregular_gaps_and_varying_freqs() {
+        let doc_freq = 2 * BLOCK_SIZE;
+        let term = irregular_docs_term(b"a", doc_freq);
+        let max_doc = term.docs.last().unwrap().0 + 1;
+        let doc_count = term.docs.len() as i32;
+        let terms = vec![term.clone()];
+        let input = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqs,
+            doc_count,
+            terms: &terms,
+        };
+        let output = write_single_field(&input, &SEG_ID, SUFFIX).unwrap();
+        let fis = FieldInfos {
+            fields: vec![field_info(0, "f", IndexOptions::DocsAndFreqs)],
+        };
+        let (fields, doc_in) = open_written(&output, &fis, max_doc);
+        let field = fields.field("f").unwrap();
+        let postings = field.postings(b"a", Some(&doc_in)).unwrap().unwrap();
+        let expected_docs: Vec<i32> = term.docs.iter().map(|&(d, _)| d).collect();
+        let expected_freqs: Vec<i32> = term.docs.iter().map(|&(_, f)| f).collect();
+        assert_eq!(postings.docs, expected_docs);
+        assert_eq!(postings.freqs, expected_freqs);
+    }
+
+    /// A field with `IndexOptions::Docs` (no freqs at all) at `docFreq ==
+    /// BLOCK_SIZE` still round-trips through a full block -- proves the
+    /// `index_has_freq == false` branch (no impacts field, no `pfor_encode`
+    /// freq body) is wired correctly too, not just the freq-carrying case.
+    #[test]
+    fn docfreq_exactly_one_full_block_no_freqs() {
+        let doc_freq = BLOCK_SIZE;
+        let docs: Vec<(i32, i32)> = (0..doc_freq).map(|i| (i * 3, 1)).collect();
+        let max_doc = docs.last().unwrap().0 + 1;
+        let doc_count = docs.len() as i32;
+        let terms = vec![TermPostings {
+            term: b"a".to_vec(),
+            docs: docs.clone(),
+            ..Default::default()
+        }];
+        let input = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::Docs,
+            doc_count,
+            terms: &terms,
+        };
+        let output = write_single_field(&input, &SEG_ID, SUFFIX).unwrap();
+        let fis = FieldInfos {
+            fields: vec![field_info(0, "f", IndexOptions::Docs)],
+        };
+        let (fields, doc_in) = open_written(&output, &fis, max_doc);
+        let field = fields.field("f").unwrap();
+        let postings = field.postings(b"a", Some(&doc_in)).unwrap().unwrap();
+        let expected_docs: Vec<i32> = docs.iter().map(|&(d, _)| d).collect();
+        assert_eq!(postings.docs, expected_docs);
+    }
+
+    /// Two fields written in one [`write_fields`] call, only one of which
+    /// has a full-block term (`docFreq == BLOCK_SIZE`) -- proves full-block
+    /// emission for one field doesn't corrupt or bleed into a neighboring
+    /// field's own (small, tail-only) postings, mirroring this module's
+    /// established multi-field-isolation pattern
+    /// (`write_fields_two_fields_share_one_tmd_and_stay_isolated`).
+    #[test]
+    fn full_block_field_and_small_field_stay_isolated() {
+        let full_term = varied_docs_term(b"big", BLOCK_SIZE);
+        let small_terms = vec![TermPostings {
+            term: b"small".to_vec(),
+            docs: vec![(0, 1), (2, 3)],
+            ..Default::default()
+        }];
+        let full_max_doc = full_term.docs.last().unwrap().0 + 1;
+        let full_doc_count = full_term.docs.len() as i32;
+        let full_terms = vec![full_term.clone()];
+        let inputs = vec![
+            FieldPostingsInput {
+                field_number: 0,
+                index_options: IndexOptions::DocsAndFreqs,
+                doc_count: full_doc_count,
+                terms: &full_terms,
+            },
+            FieldPostingsInput {
+                field_number: 1,
+                index_options: IndexOptions::DocsAndFreqs,
+                doc_count: 2,
+                terms: &small_terms,
+            },
+        ];
+        let max_doc = full_max_doc.max(3);
+        let output = write_fields(&inputs, &SEG_ID, SUFFIX).unwrap();
+        let fis = FieldInfos {
+            fields: vec![
+                field_info(0, "big_field", IndexOptions::DocsAndFreqs),
+                field_info(1, "small_field", IndexOptions::DocsAndFreqs),
+            ],
+        };
+        let fields = blocktree::open(
+            &output.tim,
+            &output.tip,
+            &output.tmd,
+            &fis,
+            &SEG_ID,
+            SUFFIX,
+            max_doc,
+        )
+        .unwrap();
+        let doc_in = DocInput::open(&output.doc, &SEG_ID, SUFFIX).expect("open .doc");
+
+        let big = fields.field("big_field").unwrap();
+        let big_postings = big.postings(b"big", Some(&doc_in)).unwrap().unwrap();
+        let expected_docs: Vec<i32> = full_term.docs.iter().map(|&(d, _)| d).collect();
+        let expected_freqs: Vec<i32> = full_term.docs.iter().map(|&(_, f)| f).collect();
+        assert_eq!(big_postings.docs, expected_docs);
+        assert_eq!(big_postings.freqs, expected_freqs);
+
+        let small = fields.field("small_field").unwrap();
+        let small_postings = small.postings(b"small", Some(&doc_in)).unwrap().unwrap();
+        assert_eq!(small_postings.docs, vec![0, 2]);
+        assert_eq!(small_postings.freqs, vec![1, 3]);
+    }
+
+    /// Several terms in one field, some below and some spanning full
+    /// blocks, each independently seekable -- proves full-block emission
+    /// doesn't disturb the term-dictionary metadata threading
+    /// (`doc_start_fp` deltas) for neighboring terms in the same block-tree
+    /// leaf block.
+    #[test]
+    fn mixed_small_and_full_block_terms_in_one_field() {
+        let small = TermPostings {
+            term: b"small".to_vec(),
+            docs: vec![(0, 2), (5, 1)],
+            ..Default::default()
+        };
+        let big = varied_docs_term(b"zzz", BLOCK_SIZE + 10);
+        let max_doc = big.docs.last().unwrap().0 + 1;
+        let doc_count = small.docs.len() as i32 + big.docs.len() as i32;
+        let terms = vec![small.clone(), big.clone()];
+        let input = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqs,
+            doc_count,
+            terms: &terms,
+        };
+        let output = write_single_field(&input, &SEG_ID, SUFFIX).unwrap();
+        let fis = FieldInfos {
+            fields: vec![field_info(0, "f", IndexOptions::DocsAndFreqs)],
+        };
+        let (fields, doc_in) = open_written(&output, &fis, max_doc);
+        let field = fields.field("f").unwrap();
+
+        let postings = field.postings(b"small", Some(&doc_in)).unwrap().unwrap();
+        assert_eq!(postings.docs, vec![0, 5]);
+        assert_eq!(postings.freqs, vec![2, 1]);
+
+        let postings = field.postings(b"zzz", Some(&doc_in)).unwrap().unwrap();
+        let expected_docs: Vec<i32> = big.docs.iter().map(|&(d, _)| d).collect();
+        let expected_freqs: Vec<i32> = big.docs.iter().map(|&(_, f)| f).collect();
+        assert_eq!(postings.docs, expected_docs);
+        assert_eq!(postings.freqs, expected_freqs);
     }
 }

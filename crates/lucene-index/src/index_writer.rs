@@ -2747,50 +2747,32 @@ mod tests {
         }
     }
 
-    /// The documented `docFreq >= BLOCK_SIZE (256)` boundary: this writer
-    /// has no multi-block `.tim` support, so a term occurring in 256+ pending
-    /// docs must reject the *whole* `commit()` call atomically, leaving
-    /// `dir`/`pending_docs`/`segment_infos` completely unchanged -- never a
-    /// partially-written segment.
-    #[test]
-    fn commit_rejects_and_leaves_state_unchanged_when_a_term_reaches_doc_freq_256() {
-        let tmp = tempdir("postings-docfreq-too-large");
-        let dir = FsDirectory::open(&tmp);
-        let fields = vec![stored_only_field("id", 0), body_field(1)];
-        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
-        writer.set_postings_field(Some("body")).unwrap();
-
-        for i in 0..256 {
-            writer.add_document(doc_with_body(&i.to_string(), "shared"));
-        }
-        let before = writer.segment_infos().clone();
-        let before_pending = writer.pending_doc_count();
-
-        let err = writer.commit().unwrap_err();
-        assert!(matches!(
-            err,
-            Error::PostingsWriter(postings_writer::Error::DocFreqTooLarge {
-                index: 0,
-                doc_freq: 256
-            })
-        ));
-
-        // Nothing committed: state and pending buffer both unchanged, and no
-        // segments_1 was ever written.
-        assert_eq!(writer.segment_infos(), &before);
-        assert_eq!(writer.pending_doc_count(), before_pending);
-        assert!(!tmp.join("segments_1").exists());
-    }
-
-    /// A term under the 256 boundary must still commit successfully -- the
-    /// boundary is `>=`, not `>`. Capped at 100 docs (well under 256) rather
+    /// `postings_writer` now emits real full `ForUtil`/`PForUtil` blocks for
+    /// `docFreq >= BLOCK_SIZE (256)` (see `crates/lucene-codecs/src/
+    /// postings_writer.rs`'s `write_full_block` and its own
+    /// `docfreq_exactly_one_full_block_no_tail`/`docfreq_spans_multiple_full_blocks_plus_tail`
+    /// unit tests for the byte-level round-trip proof), so `docFreq == 256`
+    /// alone no longer rejects a `commit()` the way it used to -- the
+    /// remaining postings-side upper bound moved to `LEVEL1_NUM_DOCS`
+    /// (8192), see `postings_writer::Error::DocFreqTooLarge`'s current
+    /// doc comment. There is deliberately no end-to-end `IndexWriter`-level
+    /// test of *that* boundary here: reaching it requires >=8192 pending
+    /// docs in one flush, which trips a wholly unrelated, pre-existing cap
+    /// in `flush_stored_only_segment`'s `write_best_speed` (`docs.len() <
+    /// 128` per flush chunk, see `commit_succeeds_below_the_doc_freq_boundary`'s
+    /// own doc comment) before the postings boundary is ever reached. The
+    /// `LEVEL1_NUM_DOCS` boundary itself is exercised directly at the
+    /// `postings_writer` unit level instead
+    /// (`rejects_docfreq_at_or_above_level1_num_docs`).
+    /// A term under the 256 boundary must still commit successfully.
+    /// Capped at 100 docs (well under 256) rather
     /// than the tightest possible "255" case, because
     /// `flush_stored_only_segment`'s own `write_best_speed` has a separate,
     /// pre-existing, unrelated cap of `< 128` docs per flush (its bulk
     /// per-doc-array encoding only implements the scalar-tail path, not the
     /// 128-value transposed-block path -- see that assert's own message);
-    /// this test only needs to prove the postings-side boundary isn't
-    /// off-by-one in the "too eager" direction, which 100 already does.
+    /// this test only needs to prove a term with a substantial (but
+    /// unremarkable) `docFreq` commits cleanly.
     #[test]
     fn commit_succeeds_below_the_doc_freq_boundary() {
         let tmp = tempdir("postings-docfreq-just-under");

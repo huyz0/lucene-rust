@@ -18,14 +18,13 @@
 //! or under `MAX_EXCEPTIONS = 7`, plus the `bitsPerValue == 0`/all-equal
 //! fast path) — this is genuine `PForUtil`, not `ForUtil`-only with the label
 //! borrowed; see `docs/parity.md` for exactly what still isn't wired to a
-//! writer. **`crate::postings_writer` does not call these yet** — it still
-//! only emits the vint/group-vint "tail block" encoding for every term
-//! (`docFreq`/`total_term_freq` are rejected at `>= BLOCK_SIZE`, see that
-//! module's doc comment). Wiring full-block emission into the postings
-//! writer additionally needs the multi-block skip-list metadata
-//! (`crate::postings`'s `LEVEL1_NUM_DOCS` skip data) the writer does not
-//! build today; that's out of scope here and tracked in `docs/parity.md`
-//! rather than silently left unimplemented.
+//! writer. **`crate::postings_writer` now calls [`for_encode`] (doc deltas,
+//! plain FOR, never the `bitsPerValue == 0`/dense-bitset alternate shapes)
+//! and [`pfor_encode`] (freqs)** for the `docFreq >= BLOCK_SIZE` full-block
+//! case — see that module's `write_full_block`. `.pos` full blocks
+//! (`total_term_freq >= BLOCK_SIZE`) still aren't wired to a writer; that's
+//! out of scope here and tracked in `docs/parity.md` rather than silently
+//! left unimplemented.
 //!
 //! ## Why it looks like scalar "SIMD-in-a-register" bit twiddling
 //!
@@ -726,7 +725,6 @@ pub fn pfor_decode<R: DataInput>(r: &mut R, ints: &mut [u32; BLOCK_SIZE]) -> Res
 
 /// `ForUtil.collapse8`: interleave 4 consecutive values into one 32-bit int's
 /// four byte lanes (the exact inverse of [`expand8`]).
-#[allow(dead_code)]
 fn collapse8(arr: &mut [u32; BLOCK_SIZE]) {
     for i in 0..64 {
         arr[i] = (arr[i] << 24) | (arr[64 + i] << 16) | (arr[128 + i] << 8) | arr[192 + i];
@@ -735,14 +733,12 @@ fn collapse8(arr: &mut [u32; BLOCK_SIZE]) {
 
 /// `ForUtil.collapse16`: interleave 2 consecutive values into one 32-bit
 /// int's two halfword lanes (the exact inverse of [`expand16`]).
-#[allow(dead_code)]
 fn collapse16(arr: &mut [u32; BLOCK_SIZE]) {
     for i in 0..128 {
         arr[i] = (arr[i] << 16) | arr[128 + i];
     }
 }
 
-#[allow(dead_code)]
 fn mask_for(bits: u32, primitive_size: u32) -> u32 {
     match primitive_size {
         8 => mask8(bits),
@@ -755,7 +751,6 @@ fn mask_for(bits: u32, primitive_size: u32) -> u32 {
 /// bit-packing body shared by every `bits_per_value`, parameterized by
 /// `primitive_size` (8/16 for the lane-interleaved `collapse8`/`collapse16`
 /// paths, 32 for the `decodeSlow`-equivalent plain packing).
-#[allow(dead_code)]
 fn encode_generic<W: DataOutput>(
     ints: &[u32],
     bits_per_value: u32,
@@ -815,7 +810,6 @@ fn encode_generic<W: DataOutput>(
 
 /// `ForUtil.encode`: bit-pack 256 values, each already known to fit in
 /// `bits_per_value` bits (`1..=32`), and write them to `out`.
-#[allow(dead_code)]
 pub fn for_encode<W: DataOutput>(values: &[u32; BLOCK_SIZE], bits_per_value: u32, out: &mut W) {
     let primitive_size = if bits_per_value <= 8 {
         8
@@ -836,13 +830,11 @@ pub fn for_encode<W: DataOutput>(values: &[u32; BLOCK_SIZE], bits_per_value: u32
 /// `PackedInts.bitsRequired`: the minimum number of bits needed to represent
 /// `v` unsigned (`0` for `v == 0`, matching Java's `bitsRequired(0) == 0`).
 #[inline]
-#[allow(dead_code)]
-fn bits_required(v: u32) -> u32 {
+pub(crate) fn bits_required(v: u32) -> u32 {
     32 - v.leading_zeros()
 }
 
 /// `PForUtil.allEqual`.
-#[allow(dead_code)]
 fn all_equal(ints: &[u32; BLOCK_SIZE]) -> bool {
     ints.iter().all(|&v| v == ints[0])
 }
@@ -863,7 +855,6 @@ fn all_equal(ints: &[u32; BLOCK_SIZE]) -> bool {
 /// silently corrupt the decode. This matches the real domain exactly --
 /// Lucene doc deltas and term frequencies are non-negative Java `int`s, so
 /// `PackedInts.bitsRequired` never returns 32 for them in practice.
-#[allow(dead_code)]
 pub fn pfor_encode<W: DataOutput>(ints: &mut [u32; BLOCK_SIZE], out: &mut W) {
     let mut histogram = [0u32; 33];
     let mut max_bits_required = 0u32;

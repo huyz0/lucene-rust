@@ -178,7 +178,7 @@ pub const BLOCK_SIZE: i32 = 256;
 /// `Lucene104PostingsFormat.LEVEL1_NUM_DOCS` (`LEVEL1_FACTOR(=32) * BLOCK_SIZE`):
 /// below this many docs, a term's `.doc` bytes contain only level-0 skip
 /// headers (no level-1 entries) — see the module doc's "Deferred" section.
-const LEVEL1_NUM_DOCS: i32 = 32 * BLOCK_SIZE;
+pub(crate) const LEVEL1_NUM_DOCS: i32 = 32 * BLOCK_SIZE;
 /// `Lucene104PostingsFormat.LEVEL1_FACTOR`: one level-1 skip entry precedes a
 /// span of exactly this many consecutive full level-0 blocks
 /// (`32 * BLOCK_SIZE == LEVEL1_NUM_DOCS` docs).

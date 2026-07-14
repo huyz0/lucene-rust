@@ -161,28 +161,20 @@ fn documents_added_via_index_writer_are_searchable_by_term_query() {
     case("nonexistent", &[]);
 }
 
-/// The documented `docFreq >= 256` boundary as seen from `IndexWriter`
-/// itself: a term shared by 256 pending docs must make `commit()` fail
-/// rather than silently write a wrong/truncated segment -- this writer has
-/// no multi-block `.tim` support (see `postings_writer.rs`'s own scope note).
-#[test]
-fn commit_rejects_a_term_at_the_256_doc_freq_boundary() {
-    let tmp = tempdir("docfreq-boundary");
-    let dir = FsDirectory::open(&tmp);
-    let fields = vec![
-        field_info(0, "id", IndexOptions::None),
-        field_info(1, "body", IndexOptions::DocsAndFreqs),
-    ];
-    let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
-    writer.set_postings_field(Some("body")).unwrap();
-
-    for i in 0..256 {
-        writer.add_document(doc(&i.to_string(), "shared"));
-    }
-    let result = writer.commit();
-    assert!(
-        result.is_err(),
-        "expected commit() to reject a docFreq >= 256 term rather than \
-         silently write wrong/truncated postings"
-    );
-}
+// `postings_writer` now emits real full `ForUtil`/`PForUtil` blocks for
+// `docFreq >= BLOCK_SIZE (256)` (see `crates/lucene-codecs/src/
+// postings_writer.rs`'s `write_full_block`), so `docFreq == 256` alone no
+// longer makes `commit()` fail the way it used to -- there is deliberately
+// no end-to-end `IndexWriter`-level test of that here, though: reaching
+// `docFreq == 256` requires 256 pending docs in one flush, which trips a
+// wholly unrelated, pre-existing cap in `flush_stored_only_segment`'s
+// `write_best_speed` (`docs.len() < 128` per flush chunk -- see that
+// function's own assert message in `crates/lucene-codecs/src/
+// stored_fields.rs`) before the postings side is ever exercised. The
+// full-block byte-level round trip is proven directly at the
+// `postings_writer` unit level instead (`docfreq_exactly_one_full_block_no_tail`/
+// `docfreq_one_full_block_plus_one_doc_tail`/
+// `docfreq_spans_multiple_full_blocks_plus_tail` in
+// `crates/lucene-codecs/src/postings_writer.rs`), and the remaining
+// postings-side upper bound (`LEVEL1_NUM_DOCS`, 8192) is exercised there too
+// (`rejects_docfreq_at_or_above_level1_num_docs`).
