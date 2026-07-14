@@ -28,17 +28,41 @@
 //! before writing it; `update_document`/`delete_documents` delegate straight
 //! to the existing atomic primitives).
 //!
+//! # Automatic merge triggering
+//!
+//! [`IndexWriter::set_merge_policy`] lets a caller opt this writer into
+//! automatic merging: once a [`MergePolicyConfig`] is set, every
+//! [`IndexWriter::commit`] call, right after writing its own `segments_N`,
+//! synchronously asks [`crate::merge_policy::find_merges`] whether any of
+//! this writer's *now-committed* segments should merge, and if so executes
+//! each proposed group via [`crate::merge::merge_stored_only_segments`] and
+//! folds the result in via [`IndexWriter::apply_merge`] -- reusing exactly
+//! those two existing functions, not reimplementing either one. This repeats
+//! (re-querying `find_merges` against the post-merge segment list) until it
+//! proposes nothing further; each merge strictly reduces the total segment
+//! count by at least one, so this loop is guaranteed to terminate. By
+//! default (no [`MergePolicyConfig`] set), `commit()` behaves exactly as
+//! before: no merge-policy consultation at all, matching every existing
+//! caller of `commit()` from before this feature existed.
+//!
+//! This is deliberately synchronous, inside `commit()` itself -- this port
+//! has no background-thread/`ConcurrentMergeScheduler`-equivalent
+//! infrastructure, so "run it right there" is the only shape that fits
+//! everything else here. [`IndexWriter::apply_merge`] remains public and
+//! usable on its own for a caller that wants to drive a merge manually
+//! instead (e.g. with different sources, or a policy this module doesn't
+//! model).
+//!
+//! Still out of scope: no per-writer merge-policy *tuning* beyond whatever
+//! [`MergePolicyConfig`] itself exposes, no concurrent/background merging, no
+//! merge-scheduling across many tiers beyond what [`crate::merge_policy`]
+//! itself already does in one [`crate::merge_policy::find_merges`] call, and
+//! [`IndexWriter::update_document`]/[`IndexWriter::delete_documents`] do not
+//! trigger this check (only [`IndexWriter::commit`] does, matching where
+//! this port's flush/commit work already lived before this feature).
+//!
 //! # What this deliberately is not
 //!
-//! - **No automatic merge triggering.** This port's merge-policy decision
-//!   function ([`crate::merge_policy::find_merges`]) and merge executor
-//!   ([`crate::merge::merge_stored_only_segments`]) both already exist, but
-//!   nothing wires "call `find_merges` after every commit and merge whatever
-//!   it proposes" into this facade -- that automatic trigger is a genuinely
-//!   separate, later task (see `PLAN.md`/`docs/parity.md`). [`IndexWriter`]
-//!   exposes [`IndexWriter::segment_infos`] (its current committed segment
-//!   list) precisely so a caller can still drive [`crate::merge_policy`]/
-//!   [`crate::merge`] manually today.
 //! - **No RAM-based flush triggering.** Real `IndexWriter` auto-flushes once
 //!   buffered documents exceed `ramBufferSizeMB`; this facade only flushes
 //!   on an explicit [`IndexWriter::commit`] call, matching
@@ -84,17 +108,20 @@
 
 use crate::deletes;
 use crate::merge;
-use crate::segment_info::LuceneVersion;
+use crate::merge_policy;
+use crate::segment_info::{self, LuceneVersion};
 use crate::segment_infos::{self, SegmentCommitInfo, SegmentInfos};
 use crate::segment_writer::{self, flush_stored_only_segment};
 use crate::term_delete;
 use crate::update_document::{self, SegmentDeleteSource};
 
 use lucene_codecs::field_infos::FieldInfo;
-use lucene_codecs::stored_fields::Document;
+use lucene_codecs::stored_fields::{self, Document};
 use lucene_store::codec_util::ID_LENGTH;
 use lucene_store::directory::Directory;
+use lucene_util::fixed_bit_set::FixedBitSet;
 
+pub use crate::merge_policy::MergePolicyConfig;
 pub use crate::update_document::SegmentDeleteSource as DeleteSource;
 
 #[derive(Debug, thiserror::Error)]
@@ -113,6 +140,12 @@ pub enum Error {
     Deletes(#[from] deletes::Error),
     #[error(transparent)]
     Merge(#[from] merge::Error),
+    #[error(transparent)]
+    SegmentInfo(#[from] segment_info::Error),
+    #[error(transparent)]
+    StoredFields(#[from] lucene_codecs::stored_fields::Error),
+    #[error(transparent)]
+    LiveDocs(#[from] lucene_codecs::live_docs::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -126,6 +159,7 @@ pub struct IndexWriter<'d> {
     lucene_version: LuceneVersion,
     segment_infos: SegmentInfos,
     pending_docs: Vec<Document>,
+    merge_policy: Option<MergePolicyConfig>,
 }
 
 impl<'d> IndexWriter<'d> {
@@ -160,7 +194,20 @@ impl<'d> IndexWriter<'d> {
             lucene_version,
             segment_infos,
             pending_docs: Vec::new(),
+            merge_policy: None,
         })
+    }
+
+    /// Opts this writer into automatic merge triggering (see module doc
+    /// comment): `Some(config)` makes every subsequent
+    /// [`IndexWriter::commit`] call consult
+    /// [`crate::merge_policy::find_merges`] with `config` after writing its
+    /// own commit, and execute/fold in whatever it proposes. `None` (the
+    /// default a freshly [`IndexWriter::open`]ed writer starts with) turns
+    /// this back off -- `commit()` then behaves exactly as it did before
+    /// this feature existed.
+    pub fn set_merge_policy(&mut self, config: Option<MergePolicyConfig>) {
+        self.merge_policy = config;
     }
 
     /// Buffers `doc` for the next [`IndexWriter::commit`] -- real Lucene's
@@ -273,9 +320,12 @@ impl<'d> IndexWriter<'d> {
     /// list, and writes the whole updated list as the next `segments_N`
     /// generation via [`crate::segment_infos::write`] -- real Lucene's
     /// `IndexWriter.commit()` after one or more buffered
-    /// `DocumentsWriterPerThread.flush()`-worth of documents, minus the
-    /// automatic merge-triggering real `commit()` also performs (see module
-    /// doc comment: this port has no automatic merge trigger yet).
+    /// `DocumentsWriterPerThread.flush()`-worth of documents. If this writer
+    /// has a [`MergePolicyConfig`] set via [`IndexWriter::set_merge_policy`],
+    /// this also performs real `commit()`'s automatic merge-triggering step
+    /// (see module doc comment) right after the flush commits; with no
+    /// merge policy set (the default), this method is unchanged from before
+    /// that feature existed.
     ///
     /// A `commit()` with an empty pending-document buffer still writes the
     /// next `segments_N` generation (bumping `version`) with no new
@@ -307,7 +357,149 @@ impl<'d> IndexWriter<'d> {
 
         segment_infos::write(&new_segment_infos, self.dir)?;
         self.segment_infos = new_segment_infos;
+
+        if self.merge_policy.is_some() {
+            self.auto_merge()?;
+        }
+
         Ok(&self.segment_infos)
+    }
+
+    /// The automatic-merge-triggering step [`IndexWriter::commit`] runs when
+    /// a [`MergePolicyConfig`] is set (see module doc comment). Repeatedly
+    /// asks [`crate::merge_policy::find_merges`] for merge candidates among
+    /// this writer's current committed segments and, for each proposed
+    /// group, executes it via [`crate::merge::merge_stored_only_segments`]
+    /// and folds the result in via [`IndexWriter::apply_merge`], until
+    /// `find_merges` proposes nothing further. Terminates because every
+    /// executed merge strictly reduces this writer's segment count by at
+    /// least one (merging >= 2 segments into exactly 1).
+    fn auto_merge(&mut self) -> Result<()> {
+        let config = self
+            .merge_policy
+            .clone()
+            .expect("auto_merge only called when merge_policy is Some");
+
+        loop {
+            let stats = self.segment_stats()?;
+            let groups = merge_policy::find_merges(&stats, &config);
+            if groups.is_empty() {
+                break;
+            }
+            for group in groups {
+                self.execute_merge(&group)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Builds the [`crate::merge_policy::SegmentStat`] list
+    /// [`IndexWriter::auto_merge`] feeds to
+    /// [`crate::merge_policy::find_merges`], sourced from this writer's
+    /// current committed segments: `doc_count`/on-disk size come from each
+    /// segment's own `.si` file (via [`crate::segment_info::parse`] and
+    /// [`crate::merge_policy::segment_byte_size`], the byte-accurate path
+    /// that module's doc comment describes), `del_count` from this writer's
+    /// own [`SegmentCommitInfo`] (already in memory, no re-read needed).
+    fn segment_stats(&self) -> Result<Vec<merge_policy::SegmentStat>> {
+        let mut stats = Vec::with_capacity(self.segment_infos.segments.len());
+        for sci in &self.segment_infos.segments {
+            let si_bytes = self.dir.open(&format!("{}.si", sci.segment_name))?.to_vec();
+            let si = segment_info::parse(&si_bytes, &sci.segment_id)?;
+            let size_bytes = merge_policy::segment_byte_size(self.dir, &si);
+            stats.push(merge_policy::SegmentStat {
+                name: sci.segment_name.clone(),
+                doc_count: si.doc_count,
+                del_count: sci.del_count,
+                size_bytes,
+            });
+        }
+        Ok(stats)
+    }
+
+    /// Executes one merge group `names` proposed by
+    /// [`crate::merge_policy::find_merges`]: opens each named segment's
+    /// stored fields (and live-docs bitset, if it has deletions) straight off
+    /// `dir`, merges them via [`crate::merge::merge_stored_only_segments`]
+    /// into a brand-new segment, and folds the result into this writer's
+    /// committed state via [`IndexWriter::apply_merge`] (which itself writes
+    /// the next `segments_N` generation -- each executed merge group is its
+    /// own commit, same as a caller manually driving
+    /// [`IndexWriter::apply_merge`] would produce).
+    fn execute_merge(&mut self, names: &[String]) -> Result<()> {
+        struct OpenedSegment {
+            sci: SegmentCommitInfo,
+            fdt: Vec<u8>,
+            fdx: Vec<u8>,
+            fdm: Vec<u8>,
+            live_docs: Option<FixedBitSet>,
+        }
+
+        let mut opened = Vec::with_capacity(names.len());
+        for name in names {
+            let sci = self
+                .segment_infos
+                .segments
+                .iter()
+                .find(|s| &s.segment_name == name)
+                .expect("merge_policy::find_merges only proposes segment names this writer currently has committed")
+                .clone();
+
+            let fdt = self.dir.open(&format!("{name}.fdt"))?.to_vec();
+            let fdx = self.dir.open(&format!("{name}.fdx"))?.to_vec();
+            let fdm = self.dir.open(&format!("{name}.fdm"))?.to_vec();
+
+            let live_docs = if sci.del_gen >= 0 {
+                let liv = self.dir.open(&deletes::liv_file_name(name, sci.del_gen))?;
+                let reader = stored_fields::open(&fdt, &fdx, &fdm, &sci.segment_id, "")?;
+                Some(lucene_codecs::live_docs::parse(
+                    &liv,
+                    &sci.segment_id,
+                    sci.del_gen,
+                    reader.max_doc() as usize,
+                    sci.del_count as usize,
+                )?)
+            } else {
+                None
+            };
+
+            opened.push(OpenedSegment {
+                sci,
+                fdt,
+                fdx,
+                fdm,
+                live_docs,
+            });
+        }
+
+        let readers: Vec<_> = opened
+            .iter()
+            .map(|o| stored_fields::open(&o.fdt, &o.fdx, &o.fdm, &o.sci.segment_id, ""))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        let sources: Vec<merge::MergeSource> = opened
+            .iter()
+            .zip(readers.iter())
+            .map(|(o, reader)| {
+                merge::MergeSource::stored_only(&self.fields, reader, o.live_docs.as_ref())
+            })
+            .collect();
+
+        let merged_segment_name = self.next_segment_name();
+        let merged_segment_id = generate_segment_id(self.segment_infos.counter);
+        let merged_sci = merge::merge_stored_only_segments(
+            self.dir,
+            &sources,
+            &merged_segment_name,
+            merged_segment_id,
+            &self.codec_name,
+            self.lucene_version,
+        )?;
+        self.segment_infos.counter += 1;
+
+        let source_names: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+        self.apply_merge(&source_names, merged_sci)?;
+        Ok(())
     }
 
     /// This writer's most recently committed [`SegmentInfos`] -- does not
@@ -859,6 +1051,176 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(writer.segment_infos(), &before);
         assert!(!tmp.join("segments_1").exists());
+    }
+
+    /// A tight [`MergePolicyConfig`] whose threshold (`segments_per_tier`)
+    /// this test suite deliberately crosses/stays-under, so `commit()`'s
+    /// automatic-merge behavior is exercised deterministically rather than
+    /// relying on the (much larger) real-Lucene-shaped defaults.
+    fn tight_merge_policy() -> MergePolicyConfig {
+        MergePolicyConfig {
+            max_merge_at_once: 10,
+            segments_per_tier: 2,
+            max_merged_segment_size: 1_000_000,
+            reclaim_weight: 1.0,
+        }
+    }
+
+    #[test]
+    fn commit_with_no_merge_policy_set_never_auto_merges() {
+        let tmp = tempdir("no-merge-policy");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+
+        for doc_id in 0..5 {
+            writer.add_document(doc(&doc_id.to_string()));
+            writer.commit().unwrap();
+        }
+
+        // 5 commits, no merge policy set => still 5 independent segments,
+        // exactly as before automatic merge triggering existed.
+        assert_eq!(writer.segment_infos().segments.len(), 5);
+    }
+
+    #[test]
+    fn commit_below_merge_threshold_stays_unmerged() {
+        let tmp = tempdir("below-threshold");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_merge_policy(Some(tight_merge_policy()));
+
+        // tight_merge_policy's segments_per_tier is 2, so 2 commits (2
+        // segments) must stay below/at threshold and remain unmerged.
+        writer.add_document(doc("a"));
+        writer.commit().unwrap();
+        writer.add_document(doc("b"));
+        writer.commit().unwrap();
+
+        assert_eq!(writer.segment_infos().segments.len(), 2);
+        let reopened = segment_infos::read_latest(&dir).unwrap();
+        assert_eq!(reopened.segments.len(), 2);
+        assert_eq!(read_all_docs(&dir, &reopened), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn commit_above_merge_threshold_automatically_merges_and_stays_readable() {
+        let tmp = tempdir("above-threshold");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_merge_policy(Some(tight_merge_policy()));
+
+        // tight_merge_policy's segments_per_tier is 2; crossing it (5
+        // one-document commits) must trigger at least one automatic merge,
+        // ending with fewer segments than commits.
+        let ids = ["a", "b", "c", "d", "e"];
+        for id in ids {
+            writer.add_document(doc(id));
+            writer.commit().unwrap();
+        }
+
+        let final_count = writer.segment_infos().segments.len();
+        assert!(
+            final_count < ids.len(),
+            "expected automatic merging to reduce segment count below {}, got {final_count}",
+            ids.len()
+        );
+
+        let reopened = segment_infos::read_latest(&dir).unwrap();
+        assert_eq!(reopened.segments.len(), final_count);
+        let mut docs = read_all_docs(&dir, &reopened);
+        docs.sort();
+        assert_eq!(docs, vec!["a", "b", "c", "d", "e"]);
+    }
+
+    #[test]
+    fn repeated_commits_with_auto_merge_converge_without_panicking_or_looping_forever() {
+        let tmp = tempdir("converge");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_merge_policy(Some(tight_merge_policy()));
+
+        // Many small single-document commits in a row: each commit() call
+        // must return (no infinite auto-merge loop), and the segment count
+        // must never run away unboundedly.
+        for i in 0..20 {
+            writer.add_document(doc(&i.to_string()));
+            writer.commit().unwrap();
+            assert!(
+                writer.segment_infos().segments.len() <= 20,
+                "segment count should never exceed the number of commits made so far"
+            );
+        }
+
+        let reopened = segment_infos::read_latest(&dir).unwrap();
+        let mut docs = read_all_docs(&dir, &reopened);
+        docs.sort();
+        let mut expected: Vec<String> = (0..20).map(|i| i.to_string()).collect();
+        expected.sort();
+        assert_eq!(docs, expected);
+    }
+
+    #[test]
+    fn auto_merge_correctly_carries_forward_a_segments_existing_deletions() {
+        let tmp = tempdir("auto-merge-with-deletions");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0)];
+        let mut writer = IndexWriter::open(&dir, fields.clone(), "Lucene104", version()).unwrap();
+
+        // Two ordinary commits (no merge policy yet), so segment "_0" has a
+        // real, on-disk, flushed segment to apply a deletion to directly via
+        // `deletes::apply_deletes` (the same primitive `delete_documents`
+        // itself calls), independent of term resolution.
+        writer.add_document(doc("a"));
+        writer.add_document(doc("b"));
+        writer.commit().unwrap();
+
+        let sci = writer.segment_infos().segments[0].clone();
+        assert_eq!(sci.segment_name, "_0");
+        let fdt = dir.open("_0.fdt").unwrap();
+        let fdx = dir.open("_0.fdx").unwrap();
+        let fdm = dir.open("_0.fdm").unwrap();
+        let reader = stored_fields::open(&fdt, &fdx, &fdm, &sci.segment_id, "").unwrap();
+        let max_doc = reader.max_doc() as usize;
+
+        // Delete doc 0 ("a") directly, bypassing term resolution entirely --
+        // this is exactly what `execute_merge`'s `sci.del_gen >= 0` branch
+        // must read back correctly during an automatic merge.
+        let updated_sci = deletes::apply_deletes(&dir, &sci, None, max_doc, [0]).unwrap();
+        assert_eq!(updated_sci.del_gen, 1);
+        assert_eq!(updated_sci.del_count, 1);
+
+        let mut new_segment_infos = writer.segment_infos().clone();
+        new_segment_infos.segments[0] = updated_sci;
+        new_segment_infos.generation += 1;
+        new_segment_infos.version += 1;
+        segment_infos::write(&new_segment_infos, &dir).unwrap();
+
+        // Reopen the writer against this on-disk state (one segment with a
+        // real deletion already applied), enable the merge policy, and cross
+        // its threshold so the deleted segment gets folded into an automatic
+        // merge.
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_merge_policy(Some(tight_merge_policy()));
+        writer.add_document(doc("c"));
+        writer.commit().unwrap();
+        writer.add_document(doc("d"));
+        writer.commit().unwrap();
+
+        let final_count = writer.segment_infos().segments.len();
+        assert!(
+            final_count < 3,
+            "expected the deleted-doc segment to merge away, got {final_count} segments"
+        );
+
+        let reopened = segment_infos::read_latest(&dir).unwrap();
+        let mut docs = read_all_docs(&dir, &reopened);
+        docs.sort();
+        // "a" was deleted before the merge, so only "b", "c", "d" survive.
+        assert_eq!(docs, vec!["b", "c", "d"]);
     }
 
     #[test]
