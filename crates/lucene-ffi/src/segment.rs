@@ -20,6 +20,7 @@ use lucene_codecs::blocktree::{self, BlockTreeFields};
 use lucene_codecs::doc_values;
 use lucene_codecs::field_infos;
 use lucene_codecs::norms;
+use lucene_codecs::points;
 use lucene_codecs::postings::{DocInput, PosInput};
 
 use crate::directory::read_whole_file;
@@ -61,6 +62,20 @@ use crate::registry::{lock_recovering, segments, SegmentHandle};
 ///   codec suffix and postings codec suffix are independent strings, not
 ///   guaranteed equal, even though this port's own fixtures happen to reuse
 ///   the same value for both.
+/// - `kdm_name`/`kdi_name`/`kdd_name` (Points range query FFI exposure): the
+///   segment's `.kdm`/`.kdi`/`.kdd` (BKD points meta/index/data) file names,
+///   or a null pointer (any `len`) to open none -- required for
+///   `ffi_search_points_range` (`points_query.rs`) to have any points data to
+///   search; a segment opened without them simply can't serve that call
+///   ([`FfiStatus::InvalidArgument`], same as `.dvm`/`.dvd`'s "no sensible
+///   fallback" story, unlike norms). Like `.nvm`/`.nvd`, real Lucene's points
+///   format has no per-field codec-suffix component in its index header, so
+///   these are always validated against the empty suffix (`""`), not this
+///   segment's postings `suffix` or `dv_suffix` -- matching
+///   `lucene_codecs::points`'s own tests, which always write/open with `""`.
+///   All three names must be non-null together, or all null -- one without
+///   the others leaves points data unavailable for this segment, same
+///   "opened together or not at all" convention as `.nvm`/`.nvd`/`.dvm`/`.dvd`.
 /// - `segment_id`: the segment's 16-byte ID (`SegmentInfo.getId()`).
 /// - `segment_suffix`: the codec suffix string used in every file's index
 ///   header (often empty).
@@ -98,6 +113,12 @@ pub unsafe extern "C" fn ffi_open_segment(
     dvd_name_len: usize,
     dv_suffix: *const c_char,
     dv_suffix_len: usize,
+    kdm_name: *const c_char,
+    kdm_name_len: usize,
+    kdi_name: *const c_char,
+    kdi_name_len: usize,
+    kdd_name: *const c_char,
+    kdd_name_len: usize,
     segment_id: *const u8,
     segment_suffix: *const c_char,
     segment_suffix_len: usize,
@@ -234,6 +255,39 @@ pub unsafe extern "C" fn ffi_open_segment(
             (Some(parsed), Some(data_bytes))
         };
 
+        // Points range query FFI exposure: `.kdm`/`.kdi`/`.kdd` are opened
+        // together or not at all -- same "null means none, one without the
+        // others leaves it unavailable" convention as `.nvm`/`.nvd` and
+        // `.dvm`/`.dvd` above. Validated once here (via `points::open`, then
+        // discarded -- see `SegmentHandle::points_data`'s doc comment for why
+        // a fresh reader is reconstructed per query call instead) so a
+        // corrupt file surfaces as `FfiStatus::Decode` at open time, same as
+        // every other file this function opens.
+        let points_data = if kdm_name.is_null() || kdi_name.is_null() || kdd_name.is_null() {
+            None
+        } else {
+            // SAFETY: caller contract guarantees `kdm_name`/`kdi_name`/`kdd_name`
+            // are valid for their paired lengths.
+            let (kdm, kdi, kdd) = unsafe {
+                (
+                    str_from_raw(kdm_name as *const u8, kdm_name_len)?,
+                    str_from_raw(kdi_name as *const u8, kdi_name_len)?,
+                    str_from_raw(kdd_name as *const u8, kdd_name_len)?,
+                )
+            };
+            let kdm_bytes = read_whole_file(dir_handle, kdm)?;
+            let kdi_bytes = read_whole_file(dir_handle, kdi)?;
+            let kdd_bytes = read_whole_file(dir_handle, kdd)?;
+            // Empty suffix -- real Lucene's points format has no per-field
+            // codec-suffix component in its index header, same as `.nvm`/`.nvd`
+            // above (see this function's doc comment).
+            points::open(&kdm_bytes, &kdi_bytes, &kdd_bytes, &id, "").map_err(|e| {
+                set_last_error(format!("opening points data: {e}"));
+                FfiStatus::Decode
+            })?;
+            Some((kdm_bytes, kdi_bytes, kdd_bytes))
+        };
+
         let handle = lock_recovering(segments()).insert(SegmentHandle {
             fields,
             doc_bytes,
@@ -246,6 +300,7 @@ pub unsafe extern "C" fn ffi_open_segment(
             norms,
             dv_data,
             dv_meta,
+            points_data,
         });
         // SAFETY: caller contract guarantees `out_handle` is valid for one write.
         unsafe {
@@ -357,6 +412,12 @@ mod tests {
                 0,
                 std::ptr::null(), // dv_suffix
                 0,
+                std::ptr::null(), // kdm_name: no points data needed by this test/call
+                0,
+                std::ptr::null(), // kdi_name
+                0,
+                std::ptr::null(), // kdd_name
+                0,
                 id.as_ptr(),
                 suffix.as_ptr() as *const c_char,
                 suffix.len(),
@@ -464,6 +525,12 @@ mod tests {
                 0,
                 std::ptr::null(),
                 0,
+                std::ptr::null(), // kdm_name: no points data needed by this test/call
+                0,
+                std::ptr::null(), // kdi_name
+                0,
+                std::ptr::null(), // kdd_name
+                0,
                 segment_id_bytes().as_ptr(),
                 std::ptr::null(),
                 0,
@@ -503,6 +570,12 @@ mod tests {
                 std::ptr::null(),
                 0,
                 std::ptr::null(),
+                0,
+                std::ptr::null(), // kdm_name: no points data needed by this test/call
+                0,
+                std::ptr::null(), // kdi_name
+                0,
+                std::ptr::null(), // kdd_name
                 0,
                 segment_id_bytes().as_ptr(),
                 std::ptr::null(),
@@ -544,6 +617,12 @@ mod tests {
                 std::ptr::null(),
                 0,
                 std::ptr::null(),
+                0,
+                std::ptr::null(), // kdm_name: no points data needed by this test/call
+                0,
+                std::ptr::null(), // kdi_name
+                0,
+                std::ptr::null(), // kdd_name
                 0,
                 std::ptr::null(), // segment_id: null -- the point of this test
                 std::ptr::null(),
@@ -633,6 +712,12 @@ mod tests {
                 0,
                 std::ptr::null(),
                 0,
+                std::ptr::null(), // kdm_name: no points data needed by this test/call
+                0,
+                std::ptr::null(), // kdi_name
+                0,
+                std::ptr::null(), // kdd_name
+                0,
                 id.as_ptr(),
                 suffix.as_ptr() as *const c_char,
                 suffix.len(),
@@ -682,6 +767,12 @@ mod tests {
                 std::ptr::null(),
                 0,
                 std::ptr::null(),
+                0,
+                std::ptr::null(), // kdm_name: no points data needed by this test/call
+                0,
+                std::ptr::null(), // kdi_name
+                0,
+                std::ptr::null(), // kdd_name
                 0,
                 id.as_ptr(),
                 suffix.as_ptr() as *const c_char,
@@ -734,6 +825,12 @@ mod tests {
                 0,
                 std::ptr::null(),
                 0,
+                std::ptr::null(), // kdm_name: no points data needed by this test/call
+                0,
+                std::ptr::null(), // kdi_name
+                0,
+                std::ptr::null(), // kdd_name
+                0,
                 id.as_ptr(),
                 suffix.as_ptr() as *const c_char,
                 suffix.len(),
@@ -784,6 +881,12 @@ mod tests {
                 std::ptr::null(),
                 0,
                 std::ptr::null(),
+                0,
+                std::ptr::null(), // kdm_name: no points data needed by this test/call
+                0,
+                std::ptr::null(), // kdi_name
+                0,
+                std::ptr::null(), // kdd_name
                 0,
                 id.as_ptr(),
                 suffix.as_ptr() as *const c_char,
@@ -839,6 +942,12 @@ mod tests {
                 0,
                 std::ptr::null(),
                 0,
+                std::ptr::null(), // kdm_name: no points data needed by this test/call
+                0,
+                std::ptr::null(), // kdi_name
+                0,
+                std::ptr::null(), // kdd_name
+                0,
                 id.as_ptr(),
                 suffix.as_ptr() as *const c_char,
                 suffix.len(),
@@ -893,6 +1002,12 @@ mod tests {
                 std::ptr::null(),
                 0,
                 std::ptr::null(),
+                0,
+                std::ptr::null(), // kdm_name: no points data needed by this test/call
+                0,
+                std::ptr::null(), // kdi_name
+                0,
+                std::ptr::null(), // kdd_name
                 0,
                 id.as_ptr(),
                 suffix.as_ptr() as *const c_char,

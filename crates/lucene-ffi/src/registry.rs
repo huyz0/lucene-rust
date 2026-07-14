@@ -89,6 +89,21 @@ pub struct SegmentHandle {
     /// doc-values field, looked up by field number via `field_infos` above,
     /// same pattern as `norms`. `Some` iff `dv_data` is `Some`.
     pub dv_meta: Option<DocValuesMeta>,
+    /// This segment's whole `.kdm`/`.kdi`/`.kdd` (BKD points meta/index/data)
+    /// files, opened together by `ffi_open_segment`'s optional
+    /// `kdm_name`/`kdi_name`/`kdd_name` parameters (Points range query FFI
+    /// exposure) -- `None` when the caller opened the segment without points
+    /// data, in which case `ffi_search_points_range` returns
+    /// [`crate::error::FfiStatus::InvalidArgument`] (there is nothing to
+    /// search, same "no sensible fallback" reasoning `dv_data`'s own doc
+    /// comment gives). Stored as owned bytes rather than an already-open
+    /// `lucene_codecs::points::PointsReader` for the same self-referential
+    /// reason `doc_bytes`/`pos_bytes` are raw bytes, not an already-open
+    /// `DocInput`/`PosInput` -- see this struct's own doc comment; a fresh
+    /// `PointsReader::open` is reconstructed per query call (cheap -- header/
+    /// footer checks only, `PointsReader::open` does no per-point decoding
+    /// up front).
+    pub points_data: Option<(Vec<u8>, Vec<u8>, Vec<u8>)>,
 }
 
 /// A completed unscored query's collected, ascending, live doc IDs -- read

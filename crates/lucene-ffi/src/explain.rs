@@ -511,6 +511,12 @@ mod tests {
                 0,
                 std::ptr::null(), // dv_suffix
                 0,
+                std::ptr::null(), // kdm_name: no points data needed by this test/call
+                0,
+                std::ptr::null(), // kdi_name
+                0,
+                std::ptr::null(), // kdd_name
+                0,
                 id.as_ptr(),
                 suffix.as_ptr() as *const c_char,
                 suffix.len(),

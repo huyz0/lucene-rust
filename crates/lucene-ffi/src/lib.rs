@@ -220,6 +220,7 @@ mod explain;
 mod facets;
 mod handle;
 mod highlighter;
+mod points_query;
 mod query;
 mod range_sort;
 mod raw;
@@ -243,6 +244,7 @@ pub use error::FfiStatus;
 pub use explain::{ffi_explain_boolean_query, ffi_explain_phrase_query, ffi_explain_term_query};
 pub use facets::{ffi_facet_counts_sorted_set, ffi_range_facet_counts};
 pub use highlighter::ffi_assemble_fragments;
+pub use points_query::ffi_search_points_range;
 pub use query::{
     ffi_search_boolean_query, ffi_search_boolean_query_scored, ffi_search_phrase_query,
     ffi_search_phrase_query_scored, ffi_search_term_query, ffi_search_term_query_scored,

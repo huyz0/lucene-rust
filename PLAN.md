@@ -2961,6 +2961,89 @@ See `docs/parity.md`'s updated rows (the `TopFieldCollector` row's
 "Deferred" note and the new `range_sort.rs` row) for the exact scope
 statement.
 
+**Progress (Points range query FFI exposure):** `lucene-ffi` C-ABI wrapper
+for `lucene-search/src/points_query.rs::search_points_range` (single
+segment, BKD points range query -- see the "Progress" entry above this one
+for that function's own scope), closing that function's "no FFI exposure
+yet" gap. New module `crates/lucene-ffi/src/points_query.rs`:
+
+- `ffi_search_points_range(segment_handle, field, field_len, min_packed,
+  min_packed_len, max_packed, max_packed_len, out_results_handle)` -- a
+  thin `catch_unwind`-guarded marshal-in/call-into/marshal-out wrapper; no
+  BKD read/traversal or packed-value comparison logic reimplemented.
+- **Result-handle shape: reuses the existing `ResultsHandle`/
+  `registry::results()` (task #20's original unscored FFI work), no new
+  handle type.** `search_points_range` collects through this crate's plain
+  `Collector` trait into a flat, ascending `Vec<i32>` of matched doc IDs --
+  exactly the same "unscored, unsorted doc-ID list" shape `query.rs`'s
+  `ffi_search_term_query`/`ffi_search_boolean_query`/`ffi_search_phrase_query`
+  already collect into `ResultsHandle` (also built from a `VecCollector`).
+  A `PointRangeQuery`-shaped match has no score and no sort key of its own
+  (real Lucene's `PointRangeQuery` is `ConstantScoreQuery`-shaped, see
+  `search_points_range`'s own module doc), so neither `ScoredResultsHandle`
+  nor `SortedResultsHandle` fit here -- `ResultsHandle` is the one existing
+  handle whose element type (`i32` alone) already matches. Reused verbatim
+  via the existing `ffi_results_len`/`ffi_results_copy`/`ffi_close_results`
+  trio -- no new accessor trio or registry needed.
+- **New plumbing: `ffi_open_segment` (`segment.rs`) gained three optional
+  parameters, `kdm_name`/`kdi_name`/`kdd_name`**, opened together or not at
+  all (same convention as task #30's `.nvm`/`.nvd` and task #40's
+  `.dvm`/`.dvd`), validated once at open time via `points::open` then
+  stored as owned bytes on a new `SegmentHandle::points_data` field (a
+  fresh `PointsReader` is reconstructed per query call, the same
+  self-referential-borrow reasoning `doc_bytes`/`pos_bytes` already
+  follow). Always validated against the empty codec suffix (`""`), not the
+  segment's postings suffix -- real Lucene's points format has no
+  per-field codec-suffix component in its index header, same as
+  `.nvm`/`.nvd`, and matching `lucene_codecs::points`'s own tests. A
+  segment opened without them can't serve `ffi_search_points_range`
+  (`FfiStatus::InvalidArgument` -- no sensible fallback, same as doc
+  values' absence).
+- Field-name -> field-number lookup reuses the same
+  `field_infos.fields.iter().find(|f| f.name == field)` pattern
+  `sort.rs::numeric_entry_for`/`query.rs::open_field_norms` already use;
+  an unknown field name is `FfiStatus::InvalidArgument` (same precedent),
+  distinct from `search_points_range`'s own "unknown field *number*
+  matches nothing" convention (which only applies once a valid number is
+  already in hand).
+- **Explicit packed-length check, not a caught panic**:
+  `search_points_range` documents that a wrong `min_packed`/`max_packed`
+  length panics via a slice index -- reachable here from adversarial
+  caller bytes (unlike, e.g., `range_sort.rs`'s array-length check, noted
+  unreachable by construction in that module's own doc comment), so this
+  wrapper checks `min_packed.len() == max_packed.len() == num_dims *
+  bytes_per_dim` itself first and returns `FfiStatus::InvalidArgument`
+  instead of relying on `guard`'s `catch_unwind` to turn it into
+  `FfiStatus::Panic`. `live_docs` is always `None` (no `.liv` FFI surface
+  exists anywhere in this crate yet), matching every other query entry
+  point here.
+
+No BKD/points logic was touched or duplicated --
+`lucene-search/src/points_query.rs` and `lucene-index/src/points_delete.rs`
+are unchanged. Every pre-existing call site of `ffi_open_segment` across
+`query.rs`/`explain.rs`/`range_sort.rs`/`facets.rs`/`sort.rs`/`segment.rs`'s
+own tests was updated for the three new parameters (always passed as
+null/none -- none of those tests exercise points data).
+
+Tests (11, all in `points_query::tests`): a differential test asserting
+the FFI wrapper's output matches calling `search_points_range` directly
+against the same real `fixtures/data/doc_values_index/` bytes (reusing
+that fixture's real `.fnm`/`.tim`/`.tip`/`.tmd` plus hand-written
+single-dimension `.kdm`/`.kdi`/`.kdd` files keyed to its real "gcd" field
+number, since no pre-generated fixture combines real field infos with
+points data yet); inclusive boundary values on both ends; the 2D
+multi-dimension case (mirroring `points_query.rs`'s own two-dimension
+test); an empty-range-matches-nothing case; and the usual
+null-out-handle/unknown-segment-handle/directory-handle-as-segment-handle/
+unknown-field-name/segment-without-points-data/wrong-packed-length/
+decode-error paths. `cargo test -p lucene-ffi`: 300 tests pass (up from
+289). `cargo fmt --all` and `cargo clippy --workspace --all-targets -- -D
+warnings` clean. New-file coverage: `points_query.rs` 98.90% regions /
+98.83% lines / 96.88% functions (above the 95% bar; workspace `lucene-ffi`
+total 98.29% lines). See `docs/parity.md`'s updated row (the
+`search_points_range` row's "no FFI exposure yet" note replaced) for the
+exact scope statement.
+
 3. Indexing chain: `IndexWriter`, DWPT-per-thread with in-memory hash (bytes → postings
    builder mirroring `BytesRefHash` + parallel arrays), flush-by-RAM accounting,
    `flush()` → segment.
