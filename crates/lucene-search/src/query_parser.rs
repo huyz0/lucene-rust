@@ -118,6 +118,7 @@ use crate::query::{
     BooleanQuery, BoostQuery, Clause, FuzzyQuery, PhraseQuery, PrefixQuery, RegexpQuery, TermQuery,
     WildcardQuery,
 };
+use lucene_analysis::Analyzer;
 
 /// Errors this parser can return -- every malformed input documented in the
 /// module doc's "deliberately deferred" section, plus basic
@@ -183,11 +184,47 @@ enum Occur {
 /// `field:` prefix) term; `None` makes a bare term a
 /// [`ParseError::MissingField`].
 pub fn parse_query(input: &str, default_field: Option<&str>) -> Result<Clause, ParseError> {
+    parse_query_with_analyzer(input, default_field, None)
+}
+
+/// Same as [`parse_query`], but when `analyzer` is `Some`, every bareword
+/// term's text -- both plain `wordterm`s and each whitespace-separated word of
+/// a quoted `phrase` -- is run through the analyzer before becoming a
+/// [`Clause`], mirroring real Lucene's `QueryParser`, which analyzes query
+/// text through the same `Analyzer` used at index time rather than treating
+/// the raw query string as literal terms.
+///
+/// **Not analyzed**: wildcard (`Clause::Wildcard`/`Clause::Prefix`), fuzzy
+/// (`Clause::Fuzzy`), and regexp (`Clause::Regexp`) pattern text. Real
+/// Lucene's classic `QueryParser` does not analyze these either -- running an
+/// analyzer (tokenization, lowercasing, stopword removal) over glob/regex
+/// syntax would corrupt the pattern (e.g. splitting `c*t` into `c`/`t` tokens,
+/// destroying the wildcard).
+///
+/// **Multi-token/zero-token handling** for an analyzed bareword or phrase
+/// word (a simplification of real `QueryParserBase.newFieldQuery`'s fuller
+/// multi-token handling, which additionally builds position-aware
+/// `SynonymQuery`/graph queries in some cases -- out of scope here): if the
+/// analyzer produces exactly one token, it becomes a single `Clause::Term`
+/// (or, within a phrase, a single phrase position); if it produces zero
+/// tokens (e.g. the bareword was itself a single stopword), the result is an
+/// empty [`BooleanQuery`] (`must`/`should`/`must_not` all empty), which
+/// already means "matches nothing" throughout this crate (see
+/// `matched_boolean_docs`'s doc comment) -- a clean no-match rather than an
+/// error; if it produces multiple tokens, they become a [`Clause::Phrase`] in
+/// order (for a bareword) or are spliced in place (for one word of an
+/// already-multi-word phrase).
+pub fn parse_query_with_analyzer(
+    input: &str,
+    default_field: Option<&str>,
+    analyzer: Option<&Analyzer>,
+) -> Result<Clause, ParseError> {
     let bytes: Vec<char> = input.chars().collect();
     let mut parser = Parser {
         chars: &bytes,
         pos: 0,
         default_field,
+        analyzer,
     };
     parser.skip_ws();
     if parser.pos >= parser.chars.len() {
@@ -201,10 +238,48 @@ pub fn parse_query(input: &str, default_field: Option<&str>) -> Result<Clause, P
     parser.parse_clause_list(false)
 }
 
+/// Runs `text` through `analyzer` (if any), returning the resulting term
+/// strings in order. `None` means "no analysis" -- `text` passes through
+/// unchanged as a single term, preserving this parser's pre-analyzer literal
+/// behavior exactly.
+fn analyze_term_text(analyzer: Option<&Analyzer>, text: &str) -> Vec<String> {
+    match analyzer {
+        None => vec![text.to_string()],
+        Some(analyzer) => analyzer.analyze(text).into_iter().map(|t| t.term).collect(),
+    }
+}
+
+/// A [`Clause`] that matches no documents -- an empty [`BooleanQuery`] (no
+/// `must`/`should`/`must_not` clauses), which `matched_boolean_docs` already
+/// treats as `MatchNoDocsQuery` (see that function's doc comment). Used for
+/// the zero-token case: a bareword or phrase that analyzed away to nothing
+/// (e.g. it was itself a stopword) is a clean no-match, not an error.
+fn no_match_clause() -> Clause {
+    Clause::Boolean(Box::new(BooleanQuery {
+        must: Vec::new(),
+        should: Vec::new(),
+        must_not: Vec::new(),
+        minimum_should_match: 0,
+    }))
+}
+
+/// Builds the [`Clause`] for one analyzed bareword, applying the
+/// zero/one/multi-token handling documented on [`parse_query_with_analyzer`]:
+/// zero tokens => [`no_match_clause`]; one token => `Clause::Term`; more than
+/// one => `Clause::Phrase` in order.
+fn clause_from_analyzed_terms(field: &str, mut terms: Vec<String>) -> Clause {
+    match terms.len() {
+        0 => no_match_clause(),
+        1 => Clause::Term(TermQuery::new(field, terms.remove(0))),
+        _ => Clause::Phrase(PhraseQuery::new(field, terms)),
+    }
+}
+
 struct Parser<'a> {
     chars: &'a [char],
     pos: usize,
     default_field: Option<&'a str>,
+    analyzer: Option<&'a Analyzer>,
 }
 
 impl<'a> Parser<'a> {
@@ -403,7 +478,24 @@ impl<'a> Parser<'a> {
                 Some(c) => text.push(c),
             }
         }
-        let terms: Vec<String> = text.split_whitespace().map(str::to_string).collect();
+        // Real Lucene's `QueryParser` analyzes phrase query text word-by-word
+        // too (not the whole phrase as one blob -- that would let the
+        // tokenizer merge words across the original whitespace boundaries).
+        // Each whitespace-separated word gets the same zero/one/multi-token
+        // treatment as a bareword, but spliced flat into the phrase's term
+        // sequence in order (a "multi-token per word" here just means that
+        // one input word can contribute more than one phrase position, e.g.
+        // an analyzer that splits "state-of-the-art" into several tokens);
+        // a word that analyzes to zero tokens (a stopword) simply
+        // contributes nothing, same as real `StopFilter` removing it from a
+        // phrase's token stream.
+        let terms: Vec<String> = text
+            .split_whitespace()
+            .flat_map(|word| analyze_term_text(self.analyzer, word))
+            .collect();
+        if terms.is_empty() {
+            return Ok(no_match_clause());
+        }
         Ok(Clause::Phrase(PhraseQuery::new(field, terms)))
     }
 
@@ -550,7 +642,8 @@ impl<'a> Parser<'a> {
             return Ok(Clause::Wildcard(WildcardQuery::new(field, wildcard_text)));
         }
 
-        Ok(Clause::Term(TermQuery::new(field, text)))
+        let terms = analyze_term_text(self.analyzer, &text);
+        Ok(clause_from_analyzed_terms(field, terms))
     }
 }
 
@@ -916,5 +1009,124 @@ mod tests {
         // `RegexpPattern::new`'s own escaping rules to interpret later.
         let clause = parse_query(r"body:/a\d/", None).unwrap();
         assert_eq!(clause, Clause::Regexp(RegexpQuery::new("body", r"a\d")));
+    }
+
+    // --- Analyzer wiring (task #62) ---
+
+    use lucene_analysis::Analyzer;
+    use std::collections::HashSet;
+
+    #[test]
+    fn none_analyzer_behavior_is_unchanged() {
+        // Every existing test above calls `parse_query`, which now delegates
+        // to `parse_query_with_analyzer(.., None)` -- this test additionally
+        // pins that calling the two spellings directly produces identical
+        // results for a representative case.
+        let a = parse_query("Quick", Some("body")).unwrap();
+        let b = parse_query_with_analyzer("Quick", Some("body"), None).unwrap();
+        assert_eq!(a, b);
+        assert_eq!(a, Clause::Term(TermQuery::new("body", "Quick")));
+    }
+
+    #[test]
+    fn bareword_through_lowercase_only_analyzer_is_lowercased() {
+        let analyzer = Analyzer::standard(None);
+        let clause = parse_query_with_analyzer("Quick", Some("body"), Some(&analyzer)).unwrap();
+        assert_eq!(clause, Clause::Term(TermQuery::new("body", "quick")));
+    }
+
+    #[test]
+    fn bareword_that_is_a_stopword_yields_no_match_not_panic() {
+        let stopwords: HashSet<String> = ["the".to_string()].into_iter().collect();
+        let analyzer = Analyzer::standard(Some(&stopwords));
+        let clause = parse_query_with_analyzer("the", Some("body"), Some(&analyzer)).unwrap();
+        assert_eq!(
+            clause,
+            Clause::Boolean(Box::new(BooleanQuery {
+                must: vec![],
+                should: vec![],
+                must_not: vec![],
+                minimum_should_match: 0,
+            }))
+        );
+    }
+
+    #[test]
+    fn bareword_analyzer_splits_into_multiple_tokens_becomes_phrase() {
+        // The analysis-crate tokenizer splits on non-alphanumeric boundaries,
+        // so a hyphenated bareword like "state-of-the-art" naturally becomes
+        // multiple tokens -- exercising the "analyzer produced >1 token from
+        // one bareword" path without needing a custom analyzer.
+        let stopwords: HashSet<String> = ["the".to_string()].into_iter().collect();
+        let analyzer = Analyzer::standard(Some(&stopwords));
+        let clause =
+            parse_query_with_analyzer("state-of-the-art", Some("body"), Some(&analyzer)).unwrap();
+        assert_eq!(
+            clause,
+            Clause::Phrase(PhraseQuery::new("body", ["state", "of", "art"]))
+        );
+    }
+
+    #[test]
+    fn wildcard_pattern_text_is_not_analyzed() {
+        // Uppercase letters in a wildcard pattern must survive untouched --
+        // the analyzer must never see wildcard/prefix/fuzzy/regexp pattern
+        // text.
+        let analyzer = Analyzer::standard(None);
+        let clause = parse_query_with_analyzer("body:C?T", None, Some(&analyzer)).unwrap();
+        assert_eq!(clause, Clause::Wildcard(WildcardQuery::new("body", "C?T")));
+    }
+
+    #[test]
+    fn prefix_pattern_text_is_not_analyzed() {
+        let analyzer = Analyzer::standard(None);
+        let clause = parse_query_with_analyzer("body:CA*", None, Some(&analyzer)).unwrap();
+        assert_eq!(clause, Clause::Prefix(PrefixQuery::new("body", "CA")));
+    }
+
+    #[test]
+    fn fuzzy_pattern_text_is_not_analyzed() {
+        let analyzer = Analyzer::standard(None);
+        let clause = parse_query_with_analyzer("body:CAT~", None, Some(&analyzer)).unwrap();
+        assert_eq!(clause, Clause::Fuzzy(FuzzyQuery::new("body", "CAT")));
+    }
+
+    #[test]
+    fn regexp_pattern_text_is_not_analyzed() {
+        // A would-be-stopword-shaped substring ("the") inside the pattern
+        // must survive verbatim, and case must be untouched.
+        let stopwords: HashSet<String> = ["the".to_string()].into_iter().collect();
+        let analyzer = Analyzer::standard(Some(&stopwords));
+        let clause = parse_query_with_analyzer("body:/THE.*/", None, Some(&analyzer)).unwrap();
+        assert_eq!(clause, Clause::Regexp(RegexpQuery::new("body", "THE.*")));
+    }
+
+    #[test]
+    fn quoted_phrase_words_are_analyzed_per_word() {
+        let stopwords: HashSet<String> = ["the".to_string()].into_iter().collect();
+        let analyzer = Analyzer::standard(Some(&stopwords));
+        let clause =
+            parse_query_with_analyzer(r#"body:"The Quick FOX""#, None, Some(&analyzer)).unwrap();
+        // "The" is a stopword and drops out entirely; the rest lowercase.
+        assert_eq!(
+            clause,
+            Clause::Phrase(PhraseQuery::new("body", ["quick", "fox"]))
+        );
+    }
+
+    #[test]
+    fn quoted_phrase_entirely_stopwords_is_no_match() {
+        let stopwords: HashSet<String> = ["the".to_string()].into_iter().collect();
+        let analyzer = Analyzer::standard(Some(&stopwords));
+        let clause = parse_query_with_analyzer(r#"body:"the the""#, None, Some(&analyzer)).unwrap();
+        assert_eq!(
+            clause,
+            Clause::Boolean(Box::new(BooleanQuery {
+                must: vec![],
+                should: vec![],
+                must_not: vec![],
+                minimum_should_match: 0,
+            }))
+        );
     }
 }

@@ -1612,6 +1612,58 @@ test; see `docs/parity.md`'s new `lucene-analysis` section for the full
 scope table (ported vs. deferred: stemming, synonyms, ASCII-folding, and
 per-field analyzer configuration are all out of scope for this slice).
 
+**Progress (task #62):** wired task #61's `Analyzer` into
+`crates/lucene-search/src/query_parser.rs`, the first real consumer of
+`lucene-analysis` outside `lucene-core`. `lucene-search/Cargo.toml` gained a
+`lucene-analysis` path dependency (a clean downward edge -- `lucene-analysis`
+has zero workspace deps, so no cycle). `parse_query` is unchanged and now
+just delegates to a new, additive entry point,
+`parse_query_with_analyzer(input, default_field, analyzer: Option<&Analyzer>)`;
+`None` (every existing call site, via `parse_query`) preserves the exact
+pre-task-#62 literal-term behavior byte-for-byte -- confirmed by running the
+full existing `query_parser.rs` test suite unmodified (all 41 pre-existing
+tests still pass) plus a new test that directly compares `parse_query` and
+`parse_query_with_analyzer(.., None)` output on the same input. When an
+analyzer is supplied, it runs over: (a) a plain bareword's text before
+deciding `Clause::Term`, and (b) each whitespace-separated word of a quoted
+phrase's text before building `Clause::Phrase` (real `QueryParser` analyzes
+phrase text word-by-word too, not as one blob, so the original phrase-word
+boundaries are preserved and each word gets independent zero/one/multi-token
+handling, then results are spliced flat into the phrase's term sequence in
+order). It deliberately does **not** run over wildcard/prefix (`c*t`),
+fuzzy (`cat~`), or regexp (`/ca.*/`) pattern text -- verified with tests using
+uppercase letters and a stopword-shaped substring (`the`) inside pattern text
+that must survive untouched, since real Lucene's classic `QueryParser` never
+analyzes those either (tokenizing/lowercasing/stopword-filtering glob or
+regex syntax would corrupt the pattern). Zero/one/multi-token handling per
+analyzed bareword or phrase word (`clause_from_analyzed_terms`/inline splice
+in `parse_phrase`), a deliberately simplified subset of real
+`QueryParserBase.newFieldQuery`'s fuller multi-token handling (which can also
+build position-aware `SynonymQuery`s in some cases -- out of scope): exactly
+one token becomes a `Clause::Term`/one phrase position; zero tokens (the
+bareword or phrase-word analyzed away entirely, e.g. it was itself a
+stopword) becomes `no_match_clause()`, an empty `BooleanQuery` (no
+`must`/`should`/`must_not`) -- already a well-established "matches nothing"
+shape in this crate per `matched_boolean_docs`'s own doc comment, so no new
+`Clause` variant was needed; more than one token becomes a `Clause::Phrase`
+in order (for a bareword) or is spliced into the surrounding phrase's term
+list (for one word of an already-multi-word phrase). New unit tests in
+`query_parser.rs`: lowercase-only analyzer lowercases a bareword; a
+stopword bareword yields the no-match empty-`BooleanQuery` clause, not a
+panic; a hyphenated bareword (`state-of-the-art`) that the tokenizer splits
+into multiple tokens, with one token also a stopword, produces a
+`Clause::Phrase` in the correct order; wildcard/prefix/fuzzy/regexp pattern
+text is untouched by the analyzer; a quoted phrase's words are analyzed
+per-word (one word dropped as a stopword, others lowercased); a phrase made
+entirely of stopwords collapses to the no-match clause. Coverage:
+`query_parser.rs` 96.92% lines (workspace total 97.33% lines, gate is 95%).
+No new Java fixture -- this is composition of two already independently
+cross-engine-verified pieces (task #44's parser grammar, task #61's analyzer
+chain, both already verified against real Lucene separately); the
+zero/one/multi-token control flow this task adds is new Rust-level logic
+verified directly by the unit tests above, not new byte-format decoding that
+would need a fixture.
+
 1. `lucene-analysis`: `TokenStream` as an iterator-of-token-structs (skip Java's
    AttributeSource reflection design entirely — a plain
    `Token { bytes, position_increment, offset, ... }` struct), StandardTokenizer via

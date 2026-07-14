@@ -10,4 +10,5 @@ lucene-util = { path = "../lucene-util" }
 lucene-store = { path = "../lucene-store" }
 lucene-codecs = { path = "../lucene-codecs" }
 lucene-index = { path = "../lucene-index" }
+lucene-analysis = { path = "../lucene-analysis" }
 rayon.workspace = true
