@@ -1613,6 +1613,47 @@ very start and very end of a multi-sentence text
 100.00% lines (workspace total 97.69% lines, `cargo llvm-cov
 --fail-under-lines 95` passing). See `docs/parity.md` for the updated row.
 
+**Progress (highlighter sentence-boundary heuristic, abbreviation +
+quote/paren extension):** Extended the sentence-terminator heuristic above
+in two tractable ways, still explicitly *not* attempting ICU/`BreakIterator`
+UAX #29 segmentation:
+
+- **Small hardcoded abbreviation list** (`ABBREVIATIONS` in
+  `highlighter.rs`): "mr", "mrs", "ms", "dr", "jr", "sr", "vs", "etc", "inc",
+  "st", "prof", "capt", "co", "ltd", "gen". When the word immediately
+  before a `.` case-insensitively matches one of these, that `.` no longer
+  counts as a sentence terminator -- closing the previously-documented "Mr.
+  Smith" false positive. **Not a dictionary**: any abbreviation not on this
+  short English-only list still produces the old false positive, proven by
+  a new test using "Cmdr." (not listed).
+- **Closing quote/paren skipping**: a terminator immediately followed by a
+  closing quote (`"`, `'`, U+201D, U+2019) or paren/bracket (`)`, `]`, `}`)
+  before any whitespace is now still recognized as a sentence end (the
+  closing punctuation is skipped before the whitespace+uppercase check) --
+  previously `He said "Stop." Then left.` failed to break after the quote
+  at all, since the character right after `.` wasn't whitespace.
+- **Decimal numbers**: already correctly handled by the pre-existing
+  terminator rule (a `.` followed directly by a digit, no intervening
+  whitespace, never matches "whitespace then uppercase") -- confirmed
+  still correct, no change needed; no new numeric edge case (e.g. "no. 5"
+  as an abbreviation) was judged worth the added surface for this pass.
+
+New tests in `highlighter.rs`:
+`sentence_snap_abbreviation_list_closes_mr_smith_false_positive` (re-tests
+the "Mr. Smith" scenario, now asserting it correctly does NOT break),
+`sentence_snap_unlisted_abbreviation_still_breaks` (proves the extension is
+scoped, not a universal period-suppression), and
+`sentence_snap_closing_quote_after_terminator_is_recognized` /
+`sentence_snap_closing_paren_after_terminator_is_recognized`. No FFI-level
+change needed -- `ffi_assemble_fragments`'s `snap_to_sentence` flag already
+routes straight into this same logic, and `lucene-ffi/src/highlighter.rs`'s
+existing tests still pass unmodified. Coverage:
+`lucene-search/src/highlighter.rs` 99.37% lines (workspace total 97.68%
+lines, `cargo llvm-cov --fail-under-lines 95` passing). **Still explicitly
+out of scope**: full ICU/`BreakIterator`-grade Unicode sentence
+segmentation, any locale awareness, and a comprehensive (vs. small fixed)
+abbreviation dictionary. See `docs/parity.md` for the updated row.
+
 **Progress (task #57):** `lucene-index/src/check_index.rs` -- a
 `CheckIndex`-equivalent: a standalone consistency verifier that opens a
 segment and cross-checks internal relationships a normal single-purpose

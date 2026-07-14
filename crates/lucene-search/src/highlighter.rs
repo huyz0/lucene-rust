@@ -57,12 +57,25 @@
 //!   text is one sentence: the fragment still comes out sensible (the
 //!   surrounding sentence extends to a document/text boundary), never empty
 //!   or panicking.
-//! - **Known false positive, not addressed by this heuristic**: an
-//!   abbreviation like "Mr." followed by a capitalized word ("Mr. Smith") is
-//!   indistinguishable from a real sentence end by this rule and is
-//!   (incorrectly) treated as one -- there is no abbreviation dictionary,
-//!   locale table, or ICU `BreakIterator` behind this, by design (see this
-//!   module's doc comment above and `docs/parity.md`'s highlighter row).
+//! - **A small, hardcoded, English-only abbreviation list** (see
+//!   [`ABBREVIATIONS`]) suppresses a sentence break when the word
+//!   immediately preceding the terminator (case-insensitively) is one of
+//!   "Mr", "Mrs", "Ms", "Dr", "Jr", "Sr", "vs", "etc", "Inc", "St", "Prof",
+//!   "Capt", "Co", "Ltd", "Gen" -- this closes the exact "Mr. Smith" false
+//!   positive from an earlier version of this heuristic. **This list is not
+//!   a comprehensive abbreviation dictionary and never will be**: any
+//!   abbreviation not on it (e.g. "Gen." misspelled, or any non-English
+//!   abbreviation) still produces the same false-positive sentence break as
+//!   before -- there is no locale table or ICU `BreakIterator` behind this,
+//!   by design (see this module's doc comment above and `docs/parity.md`'s
+//!   highlighter row).
+//! - **Closing quote/paren after the terminator**: a terminator immediately
+//!   followed by a closing quote (`"`, `'`, U+201D `"`, U+2019 `'`) or
+//!   paren/bracket (`)`, `]`, `}`) before any whitespace -- e.g. `He said
+//!   "stop." Then left.` or `(See note.) Next sentence.` -- has that
+//!   closing punctuation skipped before the whitespace+uppercase check, so
+//!   the sentence break is still recognized right after the closing
+//!   punctuation rather than missed entirely.
 //!
 //! ## Overlapping-window merging
 //!
@@ -147,17 +160,75 @@ impl Default for FragmentConfig {
     }
 }
 
+/// Small, hardcoded, English-only list of common abbreviations whose
+/// trailing `.` must not be treated as a sentence terminator by
+/// [`sentence_start_offsets`], even when followed by a capitalized word --
+/// e.g. "Mr. Smith" is one sentence, not two. Matched case-insensitively
+/// against the word immediately preceding the terminator. **This is
+/// intentionally a short fixed set, not a comprehensive dictionary**: any
+/// abbreviation not listed here still triggers the same (documented) false
+/// positive as before. See this module's doc comment section on
+/// sentence-boundary snapping.
+const ABBREVIATIONS: &[&str] = &[
+    "mr", "mrs", "ms", "dr", "jr", "sr", "vs", "etc", "inc", "st", "prof", "capt", "co", "ltd",
+    "gen",
+];
+
+/// Closing quote or paren/bracket characters that may sit between a
+/// sentence terminator and the whitespace that follows it (e.g. `stop." `
+/// or `note.) `) -- see this module's doc comment section on
+/// sentence-boundary snapping.
+fn is_closing_quote_or_paren(c: char) -> bool {
+    matches!(c, '"' | '\'' | ')' | ']' | '}' | '\u{201D}' | '\u{2019}')
+}
+
+/// Returns whether the word ending immediately before `terminator_idx`
+/// (the index, into `chars`, of the `.`/`!`/`?` itself) case-insensitively
+/// matches one of [`ABBREVIATIONS`]. `chars` is a `char_indices()`-style
+/// slice of the full text.
+fn ends_with_abbreviation(chars: &[(usize, char)], terminator_idx: usize) -> bool {
+    let mut j = terminator_idx;
+    let mut word: Vec<char> = Vec::new();
+    while j > 0 && chars[j - 1].1.is_alphabetic() {
+        j -= 1;
+        word.push(chars[j].1);
+    }
+    if word.is_empty() {
+        return false;
+    }
+    // An alphabetic run directly preceded by a digit is an ordinal suffix
+    // (21st./1st./2nd.), not the abbreviation "St." -- without this guard,
+    // "st" (on the list for "St." as in "Main St.") would also suppress a
+    // real sentence break after any ordinal ending the sentence, e.g. "He
+    // finished 21st. She started next."
+    if j > 0 && chars[j - 1].1.is_ascii_digit() {
+        return false;
+    }
+    word.reverse();
+    let word: String = word.into_iter().collect::<String>().to_lowercase();
+    ABBREVIATIONS.contains(&word.as_str())
+}
+
 /// Byte offsets (into `text`) where each recognized sentence begins, always
 /// including `0` and always sorted ascending. See this module's doc comment
 /// section on sentence-boundary snapping for the exact terminator rule and
-/// its documented scope (no abbreviation handling, no locale/ICU semantics).
+/// its documented scope (small fixed abbreviation list, closing-quote/paren
+/// skipping, no locale/ICU semantics).
 fn sentence_start_offsets(text: &str) -> Vec<usize> {
     let chars: Vec<(usize, char)> = text.char_indices().collect();
     let mut starts = vec![0usize];
     for i in 0..chars.len() {
         let (_, c) = chars[i];
         if c == '.' || c == '!' || c == '?' {
+            if c == '.' && ends_with_abbreviation(&chars, i) {
+                continue;
+            }
             let mut j = i + 1;
+            // Skip a closing quote/paren sitting between the terminator and
+            // any following whitespace (e.g. `stop." Then`).
+            while j < chars.len() && is_closing_quote_or_paren(chars[j].1) {
+                j += 1;
+            }
             while j < chars.len() && chars[j].1.is_whitespace() {
                 j += 1;
             }
@@ -667,11 +738,12 @@ mod tests {
     }
 
     #[test]
-    fn sentence_snap_documents_abbreviation_false_positive() {
-        // "Mr." followed by a capitalized word is indistinguishable from a
-        // real sentence end by this module's terminator+uppercase heuristic
-        // -- documented here as a known, accepted false positive (see this
-        // module's doc comment), not a bug this test is trying to catch.
+    fn sentence_snap_abbreviation_list_closes_mr_smith_false_positive() {
+        // Regression test: an earlier version of this heuristic treated
+        // "Mr." as a sentence end (a documented false positive). With the
+        // `ABBREVIATIONS` list, "Mr." followed by "Smith" is now correctly
+        // NOT a sentence break -- the fragment must include the whole "Mr.
+        // Smith arrived early." sentence, not start mid-sentence at "Smith".
         let text = "Mr. Smith arrived early. He left before noon.";
         let start = text.find("Smith").unwrap() as i32;
         let end = start + "Smith".len() as i32;
@@ -679,10 +751,82 @@ mod tests {
 
         let out = assemble_fragments(text, &spans, &sentence_cfg(5, 5));
         assert_eq!(out.len(), 1);
-        // The false positive: "Mr." is (incorrectly) treated as a sentence
-        // end, so the fragment starts at "Smith", not "Mr. Smith".
-        assert!(out[0].text.starts_with("<b>Smith</b>"));
-        assert!(!out[0].text.contains("Mr."));
+        assert!(out[0].text.starts_with("Mr. <b>Smith</b>"));
+        assert!(out[0].text.ends_with("early."));
+        assert!(!out[0].text.contains("He left"));
+    }
+
+    #[test]
+    fn sentence_snap_unlisted_abbreviation_still_breaks() {
+        // "Gen." IS on the list (checks the negative would be pointless);
+        // use a title that's deliberately NOT in `ABBREVIATIONS` to prove
+        // this extension suppresses breaks only for the specific listed
+        // abbreviations, not universally after every period. "Cmdr." is not
+        // on the list, so the pre-existing (documented) false positive must
+        // still occur here.
+        let text = "Cmdr. Ripley reported in. She left before noon.";
+        let start = text.find("Ripley").unwrap() as i32;
+        let end = start + "Ripley".len() as i32;
+        let spans = [span("Ripley", start, end)];
+
+        let out = assemble_fragments(text, &spans, &sentence_cfg(5, 5));
+        assert_eq!(out.len(), 1);
+        // Not suppressed: "Cmdr." is (still, correctly per this heuristic's
+        // documented scope) treated as a sentence end, so the fragment
+        // starts at "Ripley", not "Cmdr. Ripley".
+        assert!(out[0].text.starts_with("<b>Ripley</b>"));
+        assert!(!out[0].text.contains("Cmdr."));
+    }
+
+    #[test]
+    fn sentence_snap_ordinal_number_is_not_mistaken_for_st_abbreviation() {
+        // "st" is on ABBREVIATIONS (for "St." as in a street name), which
+        // would incorrectly also suppress a sentence break after any
+        // ordinal number ending in "st" (21st, 1st, 91st, ...) unless the
+        // abbreviation check excludes an alphabetic run directly preceded
+        // by a digit. Found in review: without that guard, this exact text
+        // incorrectly merged into one fragment instead of breaking after
+        // "21st.".
+        let text = "He finished 21st. She started next.";
+        let start = text.find("She").unwrap() as i32;
+        let end = start + "She".len() as i32;
+        let spans = [span("She", start, end)];
+
+        let out = assemble_fragments(text, &spans, &sentence_cfg(5, 5));
+        assert_eq!(out.len(), 1);
+        assert!(out[0].text.starts_with("<b>She</b>"));
+        assert!(!out[0].text.contains("21st"));
+    }
+
+    #[test]
+    fn sentence_snap_closing_quote_after_terminator_is_recognized() {
+        // A terminator immediately followed by a closing quote, then
+        // whitespace and an uppercase letter, must still be recognized as a
+        // sentence break -- without quote-skipping, the char right after
+        // the period is `"` (not whitespace), so the old heuristic would
+        // fail to find the break here and spill into the quoted sentence.
+        let text = "He said \"Stop.\" Then he left the room for good today.";
+        let start = text.find("Then").unwrap() as i32;
+        let end = start + "Then".len() as i32;
+        let spans = [span("Then", start, end)];
+
+        let out = assemble_fragments(text, &spans, &sentence_cfg(3, 5));
+        assert_eq!(out.len(), 1);
+        assert!(out[0].text.starts_with("<b>Then</b>"));
+        assert!(!out[0].text.contains("Stop"));
+    }
+
+    #[test]
+    fn sentence_snap_closing_paren_after_terminator_is_recognized() {
+        let text = "(See note.) Next sentence begins here and continues on.";
+        let start = text.find("Next").unwrap() as i32;
+        let end = start + "Next".len() as i32;
+        let spans = [span("Next", start, end)];
+
+        let out = assemble_fragments(text, &spans, &sentence_cfg(3, 5));
+        assert_eq!(out.len(), 1);
+        assert!(out[0].text.starts_with("<b>Next</b>"));
+        assert!(!out[0].text.contains("See note"));
     }
 
     #[test]
