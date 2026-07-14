@@ -62,7 +62,11 @@ use std::collections::BTreeMap;
 
 /// One document's occurrence of a term within a single field: its position
 /// (already position-increment-resolved by the analyzer, i.e. an absolute
-/// position, not just an increment) and its character offset span.
+/// position, not just an increment) and its offset span, passed through
+/// opaquely from [`lucene_analysis::Token`] -- see that type's own doc
+/// comment for a real, currently-latent unit caveat (these are UTF-8 byte
+/// offsets, not character offsets, which matters once a future writer
+/// persists this structure and something downstream assumes char offsets).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Occurrence {
     pub position: i32,

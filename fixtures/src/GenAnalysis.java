@@ -1,6 +1,10 @@
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.analysis.TokenStream;
+import org.apache.lucene.analysis.Tokenizer;
 import org.apache.lucene.analysis.standard.StandardAnalyzer;
+import org.apache.lucene.analysis.standard.StandardTokenizer;
+import org.apache.lucene.analysis.core.LowerCaseFilter;
+import org.apache.lucene.analysis.miscellaneous.ASCIIFoldingFilter;
 import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
 import org.apache.lucene.analysis.tokenattributes.OffsetAttribute;
 import org.apache.lucene.analysis.tokenattributes.PositionIncrementAttribute;
@@ -51,6 +55,22 @@ public class GenAnalysis {
     // exercises tokenizer + lowercasing + stopword removal all together.
     analyze(m, "case6", "The Quick, Brown FOX!", stopwords);
 
+    // Task #64 (ASCIIFoldingFilter): a real ASCIIFoldingFilter run, fold-only
+    // (no lowercasing), over a string with several diacritics and a
+    // ligature -- this checks this port's AsciiFoldingFilter::apply in
+    // isolation (case preserved, offsets untouched despite the ligature
+    // growing the term's character length).
+    try (Analyzer foldOnly = new FoldOnlyAnalyzer()) {
+      analyze(m, "fold_only", "café naïve Müller cœur straße", foldOnly);
+    }
+
+    // Task #64: the composed Analyzer chain this port wires up via
+    // Analyzer::with_ascii_folding -- fold, then lowercase, then (no
+    // stopwords here) -- over the same text.
+    try (Analyzer foldLower = new FoldThenLowerAnalyzer()) {
+      analyze(m, "fold_then_lower", "Café Naïve ÉCOLE", foldLower);
+    }
+
     Files.writeString(out.resolve("manifest.properties"), m.toString());
     System.out.println("wrote analysis/ fixture directory");
   }
@@ -58,30 +78,56 @@ public class GenAnalysis {
   static void analyze(StringBuilder m, String caseName, String text, CharArraySet stopwords)
       throws IOException {
     try (Analyzer analyzer = new StandardAnalyzer(stopwords)) {
-      StringBuilder tokensOut = new StringBuilder();
-      int count = 0;
-      try (TokenStream ts = analyzer.tokenStream("field", text)) {
-        CharTermAttribute termAtt = ts.addAttribute(CharTermAttribute.class);
-        OffsetAttribute offsetAtt = ts.addAttribute(OffsetAttribute.class);
-        PositionIncrementAttribute posIncAtt = ts.addAttribute(PositionIncrementAttribute.class);
-        ts.reset();
-        while (ts.incrementToken()) {
-          if (tokensOut.length() > 0) tokensOut.append(';');
-          tokensOut
-              .append(termAtt.toString())
-              .append(':')
-              .append(posIncAtt.getPositionIncrement())
-              .append(':')
-              .append(offsetAtt.startOffset())
-              .append(',')
-              .append(offsetAtt.endOffset());
-          count++;
-        }
-        ts.end();
+      analyze(m, caseName, text, analyzer);
+    }
+  }
+
+  static void analyze(StringBuilder m, String caseName, String text, Analyzer analyzer)
+      throws IOException {
+    StringBuilder tokensOut = new StringBuilder();
+    int count = 0;
+    try (TokenStream ts = analyzer.tokenStream("field", text)) {
+      CharTermAttribute termAtt = ts.addAttribute(CharTermAttribute.class);
+      OffsetAttribute offsetAtt = ts.addAttribute(OffsetAttribute.class);
+      PositionIncrementAttribute posIncAtt = ts.addAttribute(PositionIncrementAttribute.class);
+      ts.reset();
+      while (ts.incrementToken()) {
+        if (tokensOut.length() > 0) tokensOut.append(';');
+        tokensOut
+            .append(termAtt.toString())
+            .append(':')
+            .append(posIncAtt.getPositionIncrement())
+            .append(':')
+            .append(offsetAtt.startOffset())
+            .append(',')
+            .append(offsetAtt.endOffset());
+        count++;
       }
-      m.append(caseName).append(".text=").append(text).append('\n');
-      m.append(caseName).append(".count=").append(count).append('\n');
-      m.append(caseName).append(".tokens=").append(tokensOut).append('\n');
+      ts.end();
+    }
+    m.append(caseName).append(".text=").append(text).append('\n');
+    m.append(caseName).append(".count=").append(count).append('\n');
+    m.append(caseName).append(".tokens=").append(tokensOut).append('\n');
+  }
+
+  /** StandardTokenizer + ASCIIFoldingFilter only, no lowercasing. */
+  static class FoldOnlyAnalyzer extends Analyzer {
+    @Override
+    protected TokenStreamComponents createComponents(String fieldName) {
+      Tokenizer source = new StandardTokenizer();
+      TokenStream filter = new ASCIIFoldingFilter(source);
+      return new TokenStreamComponents(source, filter);
+    }
+  }
+
+  /** StandardTokenizer + ASCIIFoldingFilter + LowerCaseFilter, in that order. */
+  static class FoldThenLowerAnalyzer extends Analyzer {
+    @Override
+    protected TokenStreamComponents createComponents(String fieldName) {
+      Tokenizer source = new StandardTokenizer();
+      TokenStream filter = new ASCIIFoldingFilter(source);
+      filter = new LowerCaseFilter(filter);
+      return new TokenStreamComponents(source, filter);
     }
   }
 }

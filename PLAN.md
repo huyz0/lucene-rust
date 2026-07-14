@@ -1696,6 +1696,58 @@ excludes the stopword while preserving surviving tokens' positions.
 Coverage: `indexing_chain.rs` 100% lines/functions/regions (workspace total
 97.35% lines, gate is 95%).
 
+**Progress (task #64):** `AsciiFoldingFilter`, a third `lucene-analysis`
+filter alongside `LowerCaseFilter`/`StopFilter` from task #61, mirroring
+real `org.apache.lucene.analysis.miscellaneous.ASCIIFoldingFilter`.
+**Scope, itemized rather than "some diacritics"**: the full Latin-1
+Supplement letter block (U+00C0-U+00DE / U+00E0-U+00FE, skipping `×`/`÷`),
+plus a documented Latin Extended-A subset -- Polish (Ą/ą, Ć/ć, Ę/ę, Ł/ł,
+Ń/ń, Ś/ś, Ź/ź, Ż/ż) and Czech/Slovak/Baltic caron forms (Š/š, Č/č, Ž/ž,
+Ď/ď, Ť/ť, Ň/ň). `Æ`/`æ` and `Œ`/`œ` fold to **two** ASCII characters
+(`AE`/`ae`, `OE`/`oe`), and `ß` folds to `ss` -- both real Lucene's actual
+special-case behavior, verified against real `ASCIIFoldingFilter`, not
+guessed. **Deferred**: the rest of real Lucene's table (remaining Latin
+Extended-A/B, Latin Extended Additional, and non-Latin-script folding) --
+a character outside this table passes through unchanged, never dropped,
+never a panic. **Offsets are not adjusted for folding-driven length
+changes**: `æther` folds to `aether` (5 chars -> 6), but `start_offset`/
+`end_offset` still denote the *original* source span, matching real
+Lucene's `ASCIIFoldingFilter` (it never touches `OffsetAttribute`).
+**Filter ordering decision**: `Analyzer::with_ascii_folding()` inserts
+folding *before* lowercasing (fold -> lowercase -> stopwords), so an
+uppercase accented letter (`É`) folds straight to its ASCII letter (`E`)
+and is lowercased in the same subsequent pass as every other token, and
+stopword matching (last in the chain) always sees the fully
+folded-and-lowercased form. Folding is **off by default** --
+`Analyzer::standard(stopwords)` is unchanged, so `query_parser.rs` (task
+#62) and `indexing_chain.rs` (task #63) keep their exact prior behavior;
+callers opt in via the new `.with_ascii_folding()` builder method.
+Verified against real Lucene: `fixtures/src/GenAnalysis.java` gained two
+new cases using a hand-built `Analyzer` subclass wiring real
+`StandardTokenizer` + `ASCIIFoldingFilter` (`fold_only`, case preserved,
+over "café naïve Müller cœur straße") and the same plus real
+`LowerCaseFilter` (`fold_then_lower`, over "Café Naïve ÉCOLE") --
+`crates/lucene-analysis/tests/analysis_fixtures.rs` asserts this port's
+`AsciiFoldingFilter`/`Analyzer::with_ascii_folding()` produce the same
+(term, position_increment, offset-span) sequences, both passing on the
+first real-Lucene run. **Offset-unit reconciliation needed for this
+fixture specifically** (documented in the test, `char_offsets_to_byte_offsets`):
+this crate's `tokenize()` emits UTF-8 *byte* offsets (despite its own doc
+comment calling them "character offsets" -- a pre-existing, harmless
+mislabel that only becomes visible once non-ASCII text is involved, since
+every prior fixture was ASCII-only where the two units coincide), while
+real Lucene reports `char`/UTF-16-code-unit offsets; the test converts
+real Lucene's char offsets to byte offsets via the fixture's own text
+before comparing -- the same kind of documented byte-vs-codepoint scope
+call `fuzzy.rs`/`wildcard.rs` already make elsewhere in this port, not a
+new bug. Unit tests (`lib.rs`) cover: each Latin-1 spot-check
+(café/naïve/Müller/ñ), the eszett special case, a ligature growing the
+term's character count while offsets stay put, a plain-ASCII token passing
+through untouched, mixed diacritic+ASCII in one token, a non-table
+character (Cyrillic) passing through unchanged, the composed
+fold-then-lowercase order, and the unchanged no-folding default. Coverage:
+`lucene-analysis/src/lib.rs` 100% lines (28 unit tests + 3 fixture tests).
+
 1. `lucene-analysis`: `TokenStream` as an iterator-of-token-structs (skip Java's
    AttributeSource reflection design entirely — a plain
    `Token { bytes, position_increment, offset, ... }` struct), StandardTokenizer via
