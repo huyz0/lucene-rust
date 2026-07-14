@@ -50,7 +50,7 @@ fn from_hex(s: &str) -> Vec<u8> {
         .collect()
 }
 
-fn load_fst() -> Fst {
+fn load_fst() -> Fst<'static> {
     let buf =
         std::fs::read(format!("{}fst.bin", dir())).expect("run fixtures generator first (GenFst)");
     let mut input = SliceInput::new(&buf);
@@ -107,4 +107,36 @@ fn metadata_matches_expected_shape() {
     assert_eq!(meta.input_type, lucene_codecs::fst::InputType::Byte1);
     assert!(meta.empty_output.is_none());
     assert!(meta.num_bytes > 0);
+}
+
+/// `Fst::read_borrowed` (zero-copy body) must resolve every present/absent
+/// key from the real fixture identically to `Fst::read` (owned-copy body)
+/// over the exact same bytes -- the whole point of adding a borrowing
+/// constructor is that it's a drop-in alternative for lookup, not a
+/// different code path with different semantics.
+#[test]
+fn read_borrowed_matches_read_on_real_fixture() {
+    let buf =
+        std::fs::read(format!("{}fst.bin", dir())).expect("run fixtures generator first (GenFst)");
+
+    let mut owned_input = SliceInput::new(&buf);
+    let owned = Fst::read(&mut owned_input).expect("owned decode");
+
+    let mut borrowed_input = SliceInput::new(&buf);
+    let borrowed = Fst::read_borrowed(&mut borrowed_input).expect("borrowed decode");
+    assert!(borrowed.is_borrowed());
+    assert!(!owned.is_borrowed());
+
+    let manifest = Manifest::load();
+    for i in 0..manifest.count("num_present") {
+        let key = from_hex(manifest.get(&format!("present.{i}.key_hex")));
+        assert_eq!(owned.get(&key).unwrap(), borrowed.get(&key).unwrap());
+    }
+    for i in 0..manifest.count("num_absent") {
+        let key = from_hex(manifest.get(&format!("absent.{i}.key_hex")));
+        assert_eq!(owned.get(&key).unwrap(), borrowed.get(&key).unwrap());
+        assert_eq!(borrowed.get(&key).unwrap(), None);
+    }
+
+    assert_eq!(owned.metadata().num_bytes, borrowed.metadata().num_bytes);
 }

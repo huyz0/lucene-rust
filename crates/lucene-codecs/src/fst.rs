@@ -285,69 +285,202 @@ pub struct FstMetadata {
     pub num_bytes: i64,
 }
 
-/// An on-heap, `ByteSequenceOutputs`-typed FST, read from bytes written by
-/// real Lucene's `FST.save`.
+/// The FST body ("`OnHeapFSTStore`'s bytes"), either owned by this `Fst` or
+/// borrowed from a caller-owned byte slice.
+///
+/// ## On "off-heap" storage in this port
+///
+/// Real Lucene's `OffHeapFSTStore` backs the FST body with a slice into a
+/// memory-mapped file, so opening a large FST never pays for a full extra
+/// heap copy of its bytes -- the OS page cache is the only backing store,
+/// and pages are faulted in lazily on access. This port's `Directory`
+/// abstraction (`lucene_store::directory::MmapDirectory`) already provides
+/// exactly that: `MmapDirectory::open` returns `Input::Mapped(memmap2::Mmap)`,
+/// a real OS memory mapping that `Deref`s to `&[u8]` without ever copying the
+/// file into a `Vec<u8>`.
+///
+/// What `FstBytes::Borrowed` adds on top is the missing piece for FSTs
+/// specifically: previously, the *only* way to construct an `Fst` was
+/// `Fst::read`, which unconditionally allocates a fresh `Vec<u8>` and copies
+/// `num_bytes` of body into it (see `Fst::read`'s `Owned` path below) --
+/// *even if* the caller's `input` was itself already a zero-copy view over an
+/// `Input::Mapped` mmap. That copy is real, avoidable off-heap-storage cost:
+/// for a large `.tip` FST, it's a full second copy of already-resident,
+/// already-addressable bytes. `Fst::read_borrowed` (below) instead slices the
+/// body directly out of the caller's `'a`-lifetime buffer via
+/// `SliceInput::slice`/`SliceInput::as_slice`, which for an `Input::Mapped`-
+/// backed `SliceInput` is a sub-range of the mmap itself -- no allocation, no
+/// copy, and (because `memmap2::Mmap` pages are only faulted in as touched)
+/// genuinely OS-page-cache-backed the same way real Lucene's
+/// `OffHeapFSTStore` is.
+///
+/// This is **not** a claim that this module itself performs `mmap(2)` --
+/// it doesn't, and doesn't need to: that's `lucene-store`'s job, already
+/// done. What's added here is the FST-level plumbing (a lifetime-generic
+/// `Fst<'a>` and a body representation that can be either owned or borrowed)
+/// so an `Fst` can be constructed *without* forcing a copy when the caller
+/// already holds zero-copy, mmap-backed bytes. If this port had no zero-copy
+/// `Directory` backend at all, the honest version of this task would be
+/// scoped down further to "borrowing an arbitrary caller-owned `&[u8]`,
+/// which happens not to be backed by mmap" -- that is not the case here,
+/// since `MmapDirectory` already exists and is exercised by
+/// `crates/lucene-store/src/directory.rs`'s own tests.
 #[derive(Debug, Clone)]
-pub struct Fst {
-    metadata: FstMetadata,
-    bytes: Vec<u8>,
+enum FstBytes<'a> {
+    Owned(Vec<u8>),
+    Borrowed(&'a [u8]),
 }
 
-impl Fst {
+impl std::ops::Deref for FstBytes<'_> {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            FstBytes::Owned(v) => v,
+            FstBytes::Borrowed(s) => s,
+        }
+    }
+}
+
+/// A `ByteSequenceOutputs`-typed FST, read from bytes written by real
+/// Lucene's `FST.save`.
+///
+/// `'a` is `'static` for `Fst::read`'s owned path (`Fst<'static>`, i.e.
+/// plain `Fst` in the common case) and the lifetime of the caller's backing
+/// buffer for `Fst::read_borrowed`'s zero-copy path -- see `FstBytes`'s doc
+/// comment above for what "off-heap" honestly means in this port.
+#[derive(Debug, Clone)]
+pub struct Fst<'a> {
+    metadata: FstMetadata,
+    bytes: FstBytes<'a>,
+}
+
+/// Metadata common to both `Fst::read` (owned) and `Fst::read_borrowed`
+/// (zero-copy) -- everything in the wire format up to, but not including,
+/// the raw body bytes themselves, which each caller handles differently
+/// (copy vs. borrow).
+struct ParsedMetadata {
+    input_type: InputType,
+    empty_output: Option<Vec<u8>>,
+    start_node: i64,
+    version: i32,
+    num_bytes: i64,
+}
+
+fn read_fst_metadata_prefix(input: &mut SliceInput) -> Result<ParsedMetadata> {
+    let header = codec_util::check_header(input, FILE_FORMAT_NAME, VERSION_START, VERSION_CURRENT)?;
+    let version = header.version;
+
+    let empty_output = if input.read_byte()? == 1 {
+        let num_bytes = input.read_vint()? as usize;
+        let mut reversed = vec![0u8; num_bytes];
+        input.read_bytes(&mut reversed)?;
+        // FSTMetadata.save writes the empty output's bytes reversed so
+        // that reading them back with a reverse BytesReader (starting
+        // at the last byte) reproduces `outputs.readFinalOutput` in the
+        // original order. We only need the plain byte sequence, so
+        // reverse it back here instead of building a one-shot reverse
+        // reader.
+        reversed.reverse();
+        Some(reversed)
+    } else {
+        None
+    };
+
+    let input_type = match input.read_byte()? {
+        0 => InputType::Byte1,
+        1 => InputType::Byte2,
+        2 => InputType::Byte4,
+        other => return Err(Error::Corrupt(format!("invalid FST input type {other}"))),
+    };
+    let start_node = input.read_vlong()?;
+    let num_bytes = input.read_vlong()?;
+    if num_bytes < 0 {
+        return Err(Error::Corrupt(format!("negative FST numBytes {num_bytes}")));
+    }
+
+    Ok(ParsedMetadata {
+        input_type,
+        empty_output,
+        start_node,
+        version,
+        num_bytes,
+    })
+}
+
+impl Fst<'static> {
     /// Port of `FST.readMetadata` + the `FST(FSTMetadata, DataInput)`
     /// constructor's `OnHeapFSTStore` body read, both operating on the same
     /// forward cursor (matching `FST.save(Path)`/`FST.read(Path, Outputs)`,
     /// which write/read metadata and body through one stream).
-    pub fn read(input: &mut SliceInput) -> Result<Fst> {
-        let header =
-            codec_util::check_header(input, FILE_FORMAT_NAME, VERSION_START, VERSION_CURRENT)?;
-        let version = header.version;
-
-        let empty_output = if input.read_byte()? == 1 {
-            let num_bytes = input.read_vint()? as usize;
-            let mut reversed = vec![0u8; num_bytes];
-            input.read_bytes(&mut reversed)?;
-            // FSTMetadata.save writes the empty output's bytes reversed so
-            // that reading them back with a reverse BytesReader (starting
-            // at the last byte) reproduces `outputs.readFinalOutput` in the
-            // original order. We only need the plain byte sequence, so
-            // reverse it back here instead of building a one-shot reverse
-            // reader.
-            reversed.reverse();
-            Some(reversed)
-        } else {
-            None
-        };
-
-        let input_type = match input.read_byte()? {
-            0 => InputType::Byte1,
-            1 => InputType::Byte2,
-            2 => InputType::Byte4,
-            other => return Err(Error::Corrupt(format!("invalid FST input type {other}"))),
-        };
-        let start_node = input.read_vlong()?;
-        let num_bytes = input.read_vlong()?;
-
-        if num_bytes < 0 {
-            return Err(Error::Corrupt(format!("negative FST numBytes {num_bytes}")));
-        }
-        let mut bytes = vec![0u8; num_bytes as usize];
+    ///
+    /// Allocates a fresh `Vec<u8>` and copies the body into it (real
+    /// Lucene's `OnHeapFSTStore` semantics). See `Fst::read_borrowed` for the
+    /// zero-copy alternative when the caller's `input` is itself backed by
+    /// mmap'd (or otherwise already-owned) bytes.
+    pub fn read(input: &mut SliceInput) -> Result<Fst<'static>> {
+        let meta = read_fst_metadata_prefix(input)?;
+        let mut bytes = vec![0u8; meta.num_bytes as usize];
         input.read_bytes(&mut bytes)?;
 
         Ok(Fst {
             metadata: FstMetadata {
-                input_type,
-                empty_output,
-                start_node,
-                version,
-                num_bytes,
+                input_type: meta.input_type,
+                empty_output: meta.empty_output,
+                start_node: meta.start_node,
+                version: meta.version,
+                num_bytes: meta.num_bytes,
             },
-            bytes,
+            bytes: FstBytes::Owned(bytes),
+        })
+    }
+}
+
+impl<'a> Fst<'a> {
+    /// Zero-copy equivalent of `Fst::read`: parses the same metadata but,
+    /// instead of copying `num_bytes` of body into a new `Vec<u8>`, borrows
+    /// them directly out of `input`'s own `'a`-lifetime backing buffer via
+    /// `SliceInput::slice` -- no allocation for the body at all.
+    ///
+    /// This is real Lucene's `OffHeapFSTStore` distinction *iff* `input`
+    /// itself is backed by a zero-copy source (an `Input::Mapped` mmap, via
+    /// `lucene_store::directory::MmapDirectory` + `SliceInput::new` over its
+    /// `Deref<Target = [u8]>`): in that case, the returned `Fst<'a>` never
+    /// materializes a second full-size copy of the FST body, matching real
+    /// Lucene's mmap'd-FST cost model. If `input` instead already wraps an
+    /// owned `Vec<u8>` (e.g. from `Directory::open` on a non-mmap backend),
+    /// this still avoids the *extra* copy `Fst::read` would have made, but
+    /// obviously doesn't retroactively make the caller's own buffer
+    /// OS-mmap'd -- see `FstBytes`'s doc comment for the precise claim.
+    pub fn read_borrowed(input: &mut SliceInput<'a>) -> Result<Fst<'a>> {
+        let meta = read_fst_metadata_prefix(input)?;
+        let start = input.position();
+        let end = start
+            .checked_add(meta.num_bytes as usize)
+            .ok_or_else(|| Error::Corrupt(format!("FST numBytes {} overflows", meta.num_bytes)))?;
+        let bytes = input.slice(start, end)?;
+        input.seek(end)?;
+
+        Ok(Fst {
+            metadata: FstMetadata {
+                input_type: meta.input_type,
+                empty_output: meta.empty_output,
+                start_node: meta.start_node,
+                version: meta.version,
+                num_bytes: meta.num_bytes,
+            },
+            bytes: FstBytes::Borrowed(bytes),
         })
     }
 
     pub fn metadata(&self) -> &FstMetadata {
         &self.metadata
+    }
+
+    /// `true` if this `Fst`'s body is borrowed (zero-copy) rather than owned
+    /// by this struct -- exposed for tests/diagnostics; not needed for
+    /// lookup itself, which goes through `reader()`/`Deref` either way.
+    pub fn is_borrowed(&self) -> bool {
+        matches!(self.bytes, FstBytes::Borrowed(_))
     }
 
     fn reader(&self) -> BytesReader<'_> {
@@ -743,7 +876,7 @@ pub enum BuildError {
 /// `entries` must already be sorted in strictly ascending key order (as real
 /// `FSTCompiler.add` requires of its caller) -- checked, not silently
 /// tolerated.
-pub fn build_fst(entries: &[(Vec<u8>, Vec<u8>)]) -> std::result::Result<Fst, BuildError> {
+pub fn build_fst(entries: &[(Vec<u8>, Vec<u8>)]) -> std::result::Result<Fst<'static>, BuildError> {
     for i in 1..entries.len() {
         if entries[i - 1].0 >= entries[i].0 {
             return Err(BuildError::NotSorted { index: i });
@@ -779,7 +912,7 @@ pub fn build_fst(entries: &[(Vec<u8>, Vec<u8>)]) -> std::result::Result<Fst, Bui
             version: VERSION_CURRENT,
             num_bytes: bytes.len() as i64,
         },
-        bytes,
+        bytes: FstBytes::Owned(bytes),
     })
 }
 
@@ -788,7 +921,7 @@ pub fn build_fst(entries: &[(Vec<u8>, Vec<u8>)]) -> std::result::Result<Fst, Bui
 /// so a caller can round-trip through the real, unmodified `Fst::read` entry
 /// point rather than only exercising the in-memory `Fst` this module's own
 /// builder happens to construct directly.
-pub fn write_fst(fst: &Fst) -> Vec<u8> {
+pub fn write_fst(fst: &Fst<'_>) -> Vec<u8> {
     let mut out = Vec::new();
     codec_util::write_header(&mut out, FILE_FORMAT_NAME, VERSION_CURRENT);
 
@@ -936,7 +1069,7 @@ mod tests {
         start_node: i64,
         input_type: InputType,
         empty_output: Option<Vec<u8>>,
-    ) -> Fst {
+    ) -> Fst<'static> {
         Fst {
             metadata: FstMetadata {
                 input_type,
@@ -945,7 +1078,7 @@ mod tests {
                 version: VERSION_CURRENT,
                 num_bytes: bytes.len() as i64,
             },
-            bytes,
+            bytes: FstBytes::Owned(bytes),
         }
     }
 
@@ -1079,6 +1212,25 @@ mod tests {
         write_vlong(&mut file, 1000); // claims 1000 body bytes, none follow
         let mut input = SliceInput::new(&file);
         assert!(matches!(Fst::read(&mut input), Err(Error::Store(_))));
+    }
+
+    #[test]
+    fn read_borrowed_rejects_truncated_body_same_as_read() {
+        // Same malformed bytes as `read_rejects_truncated_body`, through
+        // `read_borrowed` -- `SliceInput::slice`'s bounds check must reject
+        // this the same way `read_bytes` does for the owned path, not
+        // silently return a short/garbage slice.
+        let mut file = Vec::new();
+        codec_util::write_header(&mut file, FILE_FORMAT_NAME, VERSION_CURRENT);
+        file.push(0);
+        file.push(0);
+        write_vlong(&mut file, 0);
+        write_vlong(&mut file, 1000); // claims 1000 body bytes, none follow
+        let mut input = SliceInput::new(&file);
+        assert!(matches!(
+            Fst::read_borrowed(&mut input),
+            Err(Error::Store(_))
+        ));
     }
 
     #[test]
@@ -1503,6 +1655,155 @@ mod tests {
             assert_eq!(fst.get(key).unwrap(), Some(output.clone()));
         }
         assert_eq!(fst.get(b"key9999").unwrap(), None);
+    }
+
+    #[test]
+    fn build_fst_many_keys_round_trips_through_write_fst_and_both_readers() {
+        // The 200-key/multi-byte-vlong-target case above only queries the
+        // freshly-built in-memory `Fst` directly -- it never serializes via
+        // `write_fst` and never re-parses via `Fst::read`/`Fst::read_borrowed`,
+        // so the multi-byte vlong target shape was never exercised through
+        // either actual reader, only through the builder's own in-memory
+        // representation. This closes that gap.
+        let entries: Vec<(Vec<u8>, Vec<u8>)> = (0u16..200)
+            .map(|i| {
+                let key = format!("key{i:04}").into_bytes();
+                let output = i.to_le_bytes().to_vec();
+                (key, output)
+            })
+            .collect();
+        let built = build_fst(&entries).unwrap();
+        let bytes = write_fst(&built);
+
+        let mut owned_input = SliceInput::new(&bytes);
+        let read_fst = Fst::read(&mut owned_input).unwrap();
+        for (key, output) in &entries {
+            assert_eq!(read_fst.get(key).unwrap(), Some(output.clone()));
+        }
+        assert_eq!(read_fst.get(b"key9999").unwrap(), None);
+
+        let mut borrowed_input = SliceInput::new(&bytes);
+        let borrowed_fst = Fst::read_borrowed(&mut borrowed_input).unwrap();
+        assert!(borrowed_fst.is_borrowed());
+        for (key, output) in &entries {
+            assert_eq!(borrowed_fst.get(key).unwrap(), Some(output.clone()));
+        }
+        assert_eq!(borrowed_fst.get(b"key9999").unwrap(), None);
+    }
+
+    // --- `Fst::read_borrowed` (zero-copy body) ----------------------------
+
+    /// Builds one `(codec header + metadata + body)` byte buffer via
+    /// `build_fst`/`write_fst`, then confirms `Fst::read` (owned copy) and
+    /// `Fst::read_borrowed` (zero-copy) agree on every present/absent key --
+    /// same fixture shape `build_fst_seven_key_fixture_round_trips_through_real_reader`
+    /// already uses for the owned path.
+    #[test]
+    fn read_borrowed_matches_read_for_same_bytes() {
+        let entries = seven_key_fixture();
+        let built = build_fst(&entries).unwrap();
+        let file = write_fst(&built);
+
+        let mut owned_input = SliceInput::new(&file);
+        let owned = Fst::read(&mut owned_input).unwrap();
+
+        let mut borrowed_input = SliceInput::new(&file);
+        let borrowed = Fst::read_borrowed(&mut borrowed_input).unwrap();
+
+        assert!(!owned.is_borrowed());
+        assert!(borrowed.is_borrowed());
+
+        let present: &[(&[u8], &[u8])] = &[
+            (b"app", b"1"),
+            (b"apple", b"2"),
+            (b"application", b"3"),
+            (b"banana", b"4"),
+            (b"band", b"5"),
+            (b"bandana", b"6"),
+            (b"z", b"7"),
+        ];
+        for (key, expected) in present {
+            assert_eq!(owned.get(key).unwrap(), Some(expected.to_vec()));
+            assert_eq!(borrowed.get(key).unwrap(), Some(expected.to_vec()));
+        }
+        for key in [b"ap".as_slice(), b"appz", b"missing-entirely"] {
+            assert_eq!(owned.get(key).unwrap(), None);
+            assert_eq!(borrowed.get(key).unwrap(), None);
+        }
+    }
+
+    /// Structural proof (not just a runtime output check) that
+    /// `Fst::read_borrowed` really borrows rather than allocating its own
+    /// second copy of the body: `FstBytes::Borrowed` holds a `&[u8]`, which
+    /// (unlike `FstBytes::Owned(Vec<u8>)`) cannot itself own heap
+    /// allocation -- if the body were copied, this variant would have had
+    /// to be `Vec<u8>` to hold it. This is the honest, provable half of
+    /// "no extra full-size copy happens": a `&[u8]` is a pointer+length,
+    /// never a second buffer.
+    #[test]
+    fn read_borrowed_body_is_a_slice_not_a_second_owned_buffer() {
+        let entries = seven_key_fixture();
+        let built = build_fst(&entries).unwrap();
+        let file = write_fst(&built);
+
+        let mut input = SliceInput::new(&file);
+        let fst = Fst::read_borrowed(&mut input).unwrap();
+        match &fst.bytes {
+            FstBytes::Borrowed(slice) => {
+                // The slice's address must fall inside `file`'s own
+                // allocation -- proof this is a view into the caller's
+                // buffer, not a copy living at some independent address.
+                let file_start = file.as_ptr() as usize;
+                let file_end = file_start + file.len();
+                let slice_start = slice.as_ptr() as usize;
+                assert!(slice_start >= file_start && slice_start <= file_end);
+                assert_eq!(slice.len(), fst.metadata.num_bytes as usize);
+            }
+            FstBytes::Owned(_) => panic!("read_borrowed must produce FstBytes::Borrowed"),
+        }
+    }
+
+    /// End-to-end through this port's real zero-copy `Directory` backend
+    /// (`MmapDirectory`): writes an FST file to disk, opens it via
+    /// `MmapDirectory` (an actual OS `mmap(2)`, `lucene_store::directory`'s
+    /// `Input::Mapped`), and confirms `Fst::read_borrowed` over that mapped
+    /// buffer resolves keys correctly -- this is the concrete scenario the
+    /// module doc on `FstBytes` describes: a large FST backed by mmap'd
+    /// bytes, opened without a second full-size heap copy.
+    #[test]
+    fn read_borrowed_over_a_real_mmap_directory_input() {
+        use lucene_store::directory::{Directory, MmapDirectory};
+        use lucene_store::DataOutput;
+
+        let entries = seven_key_fixture();
+        let built = build_fst(&entries).unwrap();
+        let file_bytes = write_fst(&built);
+
+        let mut root = std::env::temp_dir();
+        root.push(format!(
+            "lucene-rust-fst-mmap-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+
+        let dir = MmapDirectory::open(&root);
+        let mut out = dir.create_output("fst.bin").unwrap();
+        out.write_bytes(&file_bytes);
+        out.close().unwrap();
+
+        let mapped = dir.open("fst.bin").unwrap();
+        let mut input = SliceInput::new(&mapped);
+        let fst = Fst::read_borrowed(&mut input).unwrap();
+        assert!(fst.is_borrowed());
+        assert_eq!(fst.get(b"app").unwrap(), Some(b"1".to_vec()));
+        assert_eq!(fst.get(b"bandana").unwrap(), Some(b"6".to_vec()));
+        assert_eq!(fst.get(b"missing").unwrap(), None);
+
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
