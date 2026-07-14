@@ -20,7 +20,10 @@
 use lucene_codecs::blocktree;
 use lucene_codecs::field_infos;
 use lucene_codecs::postings::DocInput;
-use lucene_search::{search_boolean_query, BooleanQuery, Clause, TermQuery, VecCollector};
+use lucene_search::{
+    search_boolean_query, search_boolean_query_scored, BooleanQuery, Clause, TermQuery,
+    VecCollector,
+};
 use std::collections::BTreeSet;
 
 fn dir() -> String {
@@ -392,6 +395,163 @@ fn nested_boolean_must_clause_matches_real_lucene_intersection_of_the_nested_dis
     )
     .unwrap();
     assert_eq!(collector.docs, sorted_vec(expected));
+}
+
+/// `BooleanQuery::rewrite`'s single-clause-unwrap rule, proven end-to-end: the
+/// same `must=[cat]`-alone query, scored via `search_boolean_query_scored`,
+/// produces byte-identical (doc ID *and* score) results before and after
+/// `rewrite()` collapses it to a bare `Clause::Term`. This is the critical
+/// correctness property the rewrite pass promises -- not just "the shape looks
+/// simplified", but that a real caller swapping in the rewritten query gets
+/// the exact same ranked results against a real segment.
+#[test]
+fn rewrite_produces_identical_scored_results_for_single_must_clause() {
+    let (fields, doc, id, suffix, _m) = open_segment();
+    let doc_in = DocInput::open(&doc, &id, &suffix).expect("open .doc");
+
+    let query = BooleanQuery::new().with_must([TermQuery::new("body", "cat")]);
+    let rewritten_clause = query.clone().rewrite();
+    // Sanity: the rewrite actually collapsed to the bare leaf term, not a no-op.
+    assert_eq!(
+        rewritten_clause,
+        Clause::Term(TermQuery::new("body", "cat"))
+    );
+    let rewritten_query = BooleanQuery::new().with_must([rewritten_clause]);
+
+    let mut before = lucene_search::collector::TopDocsCollector::new(100);
+    search_boolean_query_scored(
+        &fields,
+        Some(&doc_in),
+        None,
+        None,
+        None,
+        &query,
+        None,
+        &mut before,
+    )
+    .unwrap();
+
+    let mut after = lucene_search::collector::TopDocsCollector::new(100);
+    search_boolean_query_scored(
+        &fields,
+        Some(&doc_in),
+        None,
+        None,
+        None,
+        &rewritten_query,
+        None,
+        &mut after,
+    )
+    .unwrap();
+
+    assert!(!before.top_docs().is_empty(), "fixture sanity: some hits");
+    assert_eq!(before.top_docs(), after.top_docs());
+}
+
+/// Same equivalence property as the test above, but for the `should`-only
+/// single-clause collapse rule (`should.len() == 1`, `must` empty,
+/// `minimum_should_match == 0`).
+#[test]
+fn rewrite_produces_identical_scored_results_for_single_should_clause() {
+    let (fields, doc, id, suffix, _m) = open_segment();
+    let doc_in = DocInput::open(&doc, &id, &suffix).expect("open .doc");
+
+    let query = BooleanQuery::new().with_should([TermQuery::new("body", "bird")]);
+    let rewritten_clause = query.clone().rewrite();
+    assert_eq!(
+        rewritten_clause,
+        Clause::Term(TermQuery::new("body", "bird"))
+    );
+    let rewritten_query = BooleanQuery::new().with_must([rewritten_clause]);
+
+    let mut before = lucene_search::collector::TopDocsCollector::new(100);
+    search_boolean_query_scored(
+        &fields,
+        Some(&doc_in),
+        None,
+        None,
+        None,
+        &query,
+        None,
+        &mut before,
+    )
+    .unwrap();
+
+    let mut after = lucene_search::collector::TopDocsCollector::new(100);
+    search_boolean_query_scored(
+        &fields,
+        Some(&doc_in),
+        None,
+        None,
+        None,
+        &rewritten_query,
+        None,
+        &mut after,
+    )
+    .unwrap();
+
+    assert!(!before.top_docs().is_empty(), "fixture sanity: some hits");
+    assert_eq!(before.top_docs(), after.top_docs());
+}
+
+/// Equivalence for a multi-clause query that does NOT collapse at the top
+/// level but whose nested `Clause::Boolean` must clause does -- proves the
+/// recursive rewrite doesn't just happen to work at the top level.
+#[test]
+fn rewrite_produces_identical_scored_results_for_nested_single_clause_boolean() {
+    let (fields, doc, id, suffix, _m) = open_segment();
+    let doc_in = DocInput::open(&doc, &id, &suffix).expect("open .doc");
+
+    let nested = BooleanQuery::new().with_must([TermQuery::new("body", "cat")]);
+    let query = BooleanQuery::new().with_must([
+        Clause::Term(TermQuery::new("body", "dog")),
+        Clause::Boolean(Box::new(nested)),
+    ]);
+    let rewritten_clause = query.clone().rewrite();
+    assert_eq!(
+        rewritten_clause,
+        Clause::Boolean(Box::new(BooleanQuery {
+            must: vec![
+                Clause::Term(TermQuery::new("body", "dog")),
+                Clause::Term(TermQuery::new("body", "cat")),
+            ],
+            should: vec![],
+            must_not: vec![],
+            minimum_should_match: 0,
+        }))
+    );
+    let Clause::Boolean(rewritten_query) = rewritten_clause else {
+        panic!("expected a Boolean clause");
+    };
+
+    let mut before = lucene_search::collector::TopDocsCollector::new(100);
+    search_boolean_query_scored(
+        &fields,
+        Some(&doc_in),
+        None,
+        None,
+        None,
+        &query,
+        None,
+        &mut before,
+    )
+    .unwrap();
+
+    let mut after = lucene_search::collector::TopDocsCollector::new(100);
+    search_boolean_query_scored(
+        &fields,
+        Some(&doc_in),
+        None,
+        None,
+        None,
+        &rewritten_query,
+        None,
+        &mut after,
+    )
+    .unwrap();
+
+    assert!(!before.top_docs().is_empty(), "fixture sanity: some hits");
+    assert_eq!(before.top_docs(), after.top_docs());
 }
 
 /// Three levels of nesting against the real fixture, confirming this port's

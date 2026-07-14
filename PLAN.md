@@ -2174,6 +2174,45 @@ positions/offsets/payloads, and any wiring into the segment writer/
      `docs/parity.md`'s row for the precise scope/deferred list. Multi-block
      terms, multi-block/multi-field term dictionaries, and positions/offsets/
      payloads remain unimplemented.
+
+**Progress (task #79): `BooleanQuery`/`Clause` rewrite pass.** New
+`crates/lucene-search/src/query.rs::{BooleanQuery::rewrite, Clause::rewrite}`
+-- a pure, standalone simplification pass, **opt-in only**, not wired into
+`search_boolean_query`/`search_boolean_query_scored` (neither function
+changed). Rules implemented, precisely: (1) single-clause unwrap -- a
+`BooleanQuery` with exactly one clause total and no `must_not` collapses to
+that clause directly, but only in the two cases that provably don't change
+matching: `must.len() == 1` with `should` empty and `minimum_should_match ==
+0`, or `should.len() == 1` with `must` empty and `minimum_should_match <=
+1` (both `minimum_should_match > 0` against an empty `should`, and `> 1`
+against a single `should` clause, are deliberately excluded -- either would
+turn "matches nothing" into a positive match, see `BooleanQuery::rewrite`'s
+doc comment); (2) zero-clause/`must_not`-only "matches nothing" -- confirmed
+as a no-op in code, since `matched_boolean_docs` already treats that case as
+matching nothing with no `MatchNoDocsQuery`-equivalent `Clause` variant
+needed; (3) recursion -- every clause is rewritten bottom-up before a parent
+checks its own collapse condition, reaching into nested `Clause::Boolean`/
+`DisjunctionMax`/`ConstantScore`/`Boost`. **Deliberately NOT implemented:
+duplicate-clause deduplication** -- task #60 already confirmed, against this
+port's real executor, that a duplicate `should` clause double-counts toward
+`minimum_should_match` and double-scores (real Lucene's actual behavior, not
+a bug), and the same sum-based scoring applies to duplicate `must` clauses;
+deduplicating either would silently change scores or matched sets, the
+opposite of what this pass promises, so it's skipped rather than guessed at.
+Scoring-equivalence is proven end-to-end, not just structurally: three new
+tests in `crates/lucene-search/tests/boolean_query_fixtures.rs`
+(`rewrite_produces_identical_scored_results_for_single_must_clause`,
+`_for_single_should_clause`, `_for_nested_single_clause_boolean`) run the
+same query pre- and post-`rewrite()` through `search_boolean_query_scored`
+against the real `blocktree_index` fixture and assert identical
+`TopDocsCollector::top_docs()` output (doc IDs and scores both), plus 15
+structural unit tests in `query.rs` covering each rule and its boundary
+(`minimum_should_match` too high/one-past, `must_not` present, more than one
+clause, leaf clauses passed through unchanged). `cargo test -p lucene-search`
+passes in full (426 lib tests, including the 15 new `query::tests::rewrite_*`
+cases, plus every integration test, including `boolean_query_fixtures.rs`'s
+13, up from 10 pre-existing).
+
 3. Indexing chain: `IndexWriter`, DWPT-per-thread with in-memory hash (bytes → postings
    builder mirroring `BytesRefHash` + parallel arrays), flush-by-RAM accounting,
    `flush()` → segment.

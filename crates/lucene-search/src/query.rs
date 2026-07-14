@@ -430,6 +430,51 @@ pub enum Clause {
     Span(SpanQuery),
 }
 
+impl Clause {
+    /// Recursively rewrites this clause, applying [`BooleanQuery::rewrite`]'s
+    /// simplifications wherever a `Clause::Boolean` occurs, and rewriting the
+    /// contents of every other nesting variant (`DisjunctionMax`/
+    /// `ConstantScore`/`Boost`) so their children are simplified too --
+    /// leaves (`Term`/`Phrase`/`Wildcard`/`Prefix`/`Fuzzy`/`Regexp`/`Span`)
+    /// pass through unchanged, since none of them nest a sub-`Clause`.
+    ///
+    /// See [`BooleanQuery::rewrite`]'s doc comment for the exact rewrite
+    /// rules this delegates to for `Clause::Boolean`; `DisjunctionMax`/
+    /// `ConstantScore`/`Boost` themselves are never collapsed away (this
+    /// port implements no simplification for those three), only their
+    /// wrapped clause(s) are rewritten.
+    pub fn rewrite(self) -> Clause {
+        match self {
+            Clause::Boolean(boxed) => (*boxed).rewrite(),
+            Clause::DisjunctionMax(boxed) => {
+                let DisjunctionMaxQuery {
+                    disjuncts,
+                    tie_breaker,
+                } = *boxed;
+                Clause::DisjunctionMax(Box::new(DisjunctionMaxQuery {
+                    disjuncts: disjuncts.into_iter().map(Clause::rewrite).collect(),
+                    tie_breaker,
+                }))
+            }
+            Clause::ConstantScore(boxed) => {
+                let ConstantScoreQuery { inner, score } = *boxed;
+                Clause::ConstantScore(Box::new(ConstantScoreQuery {
+                    inner: Box::new(inner.rewrite()),
+                    score,
+                }))
+            }
+            Clause::Boost(boxed) => {
+                let BoostQuery { inner, boost } = *boxed;
+                Clause::Boost(Box::new(BoostQuery {
+                    inner: Box::new(inner.rewrite()),
+                    boost,
+                }))
+            }
+            leaf => leaf,
+        }
+    }
+}
+
 impl From<TermQuery> for Clause {
     fn from(query: TermQuery) -> Self {
         Clause::Term(query)
@@ -550,6 +595,106 @@ pub struct BooleanQuery {
 impl BooleanQuery {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// `BooleanQuery.rewrite()`-equivalent: a pure, semantics-preserving
+    /// simplification pass, **opt-in** -- consumes `self` and returns the
+    /// simplified [`Clause`] tree, but is never called by
+    /// [`crate::search_boolean_query`]/[`crate::search_boolean_query_scored`]
+    /// themselves. A caller wanting rewritten queries applies this explicitly
+    /// before executing; existing callers that don't call it see zero change
+    /// in behavior.
+    ///
+    /// Rules implemented, precisely (each proven to change neither the
+    /// matched-doc set nor per-doc scores -- see
+    /// `crates/lucene-search/tests/boolean_query_fixtures.rs`'s
+    /// `rewrite_produces_identical_scored_results_*` tests, which run the same
+    /// query pre- and post-rewrite against a real fixture segment and assert
+    /// identical `search_boolean_query_scored` output):
+    ///
+    /// 1. **Single-clause unwrap.** A query with exactly one clause total,
+    ///    no `must_not`, collapses to that one (already-recursively-rewritten)
+    ///    clause directly:
+    ///    - `must.len() == 1`, `should` empty, `must_not` empty,
+    ///      `minimum_should_match == 0` -- collapses to the sole `must`
+    ///      clause. (`minimum_should_match > 0` with an empty `should` list is
+    ///      *not* a no-op: [`crate::matched_boolean_docs`] makes that
+    ///      combination match nothing, since no doc can ever reach a positive
+    ///      threshold against zero `should` clauses -- collapsing here would
+    ///      silently turn "matches nothing" into "matches whatever `must`
+    ///      matches", so this case is deliberately excluded.)
+    ///    - `should.len() == 1`, `must` empty, `must_not` empty,
+    ///      `minimum_should_match <= 1` -- collapses to the sole `should`
+    ///      clause. (A lone `should` clause with `minimum_should_match` of `0`
+    ///      or `1` is already exactly a plain disjunction of one clause, real
+    ///      Lucene's own "at least one should must match" floor -- see
+    ///      [`crate::matched_boolean_docs`]'s doc comment. A `minimum_should_match`
+    ///      greater than `1` is excluded because it can never be satisfied by a
+    ///      single clause.)
+    ///
+    ///    A **pure `must_not`-only** query (or an empty query) is *not*
+    ///    collapsed to anything positive: real `BooleanQuery.rewrite()`
+    ///    treats both as `MatchNoDocsQuery`
+    ///    ([`crate::matched_boolean_docs`]'s doc comment; also task #60's
+    ///    confirmed finding), and this port's executor already produces that
+    ///    result with no rewrite needed -- see rule 2.
+    ///
+    /// 2. **Zero clauses / `must_not`-only -> matches nothing.** This port has
+    ///    no separate `MatchNoDocsQuery`-equivalent `Clause` variant to
+    ///    rewrite *to* -- [`crate::matched_boolean_docs`] already treats
+    ///    "`must` and `should` both empty" (including the `must_not`-only and
+    ///    the fully-empty case) as "matches nothing" directly, with no
+    ///    rewrite required to get that behavior. This rule is therefore a
+    ///    **no-op in code** (this function leaves such a `BooleanQuery`
+    ///    structurally unchanged, wrapped back in `Clause::Boolean`) --
+    ///    documented and tested (see `boolean_query_default_is_all_empty_clause_lists`-
+    ///    adjacent rewrite tests below and
+    ///    `empty_boolean_query_matches_nothing`/`pure_must_not_query_matches_nothing`
+    ///    in `boolean_query_fixtures.rs`) rather than silently assumed.
+    ///
+    /// 3. **Recursive.** Every clause in `must`/`should`/`must_not` is
+    ///    rewritten (via [`Clause::rewrite`]) *before* this function checks
+    ///    whether the parent itself simplifies, so a `Clause::Boolean` nested
+    ///    arbitrarily deep is simplified bottom-up, and a parent that becomes
+    ///    single-clause only after its own child collapsed still collapses
+    ///    correctly.
+    ///
+    /// **Deliberately NOT implemented: duplicate-clause deduplication.** Task
+    /// #60 (see `PLAN.md`) already confirmed, against this port's real
+    /// executor code (not assumed), that a literal duplicate `should` clause
+    /// **double-counts** toward `minimum_should_match` and **double-scores**
+    /// in `search_boolean_query_scored` -- real Lucene's own actual
+    /// (non-deduping) `BooleanWeight` behavior, not a bug. The same is true
+    /// for a duplicate `must` clause: [`crate::clause_scores`] sums every
+    /// `must`/`should` clause's own per-doc score, so two identical `must`
+    /// clauses contribute that clause's score *twice*. Deduplicating either
+    /// would therefore silently change scores (and, for `should` clauses
+    /// under `minimum_should_match`, potentially change which docs match) --
+    /// the opposite of this function's "matching/scoring never changes"
+    /// contract. This rule is skipped rather than implemented incorrectly;
+    /// revisit only if a future task adds a scoring model where duplicate
+    /// clauses are provably inert.
+    pub fn rewrite(self) -> Clause {
+        let must: Vec<Clause> = self.must.into_iter().map(Clause::rewrite).collect();
+        let should: Vec<Clause> = self.should.into_iter().map(Clause::rewrite).collect();
+        let must_not: Vec<Clause> = self.must_not.into_iter().map(Clause::rewrite).collect();
+        let minimum_should_match = self.minimum_should_match;
+
+        if must_not.is_empty() && minimum_should_match == 0 && must.len() == 1 && should.is_empty()
+        {
+            return must.into_iter().next().expect("len checked above");
+        }
+        if must_not.is_empty() && minimum_should_match <= 1 && should.len() == 1 && must.is_empty()
+        {
+            return should.into_iter().next().expect("len checked above");
+        }
+
+        Clause::Boolean(Box::new(BooleanQuery {
+            must,
+            should,
+            must_not,
+            minimum_should_match,
+        }))
     }
 
     /// Accepts anything convertible to a [`Clause`] — a bare `TermQuery` (via
@@ -1018,6 +1163,228 @@ mod tests {
         assert_eq!(
             q.must,
             vec![Clause::Regexp(RegexpQuery::new("body", "ca.*"))]
+        );
+    }
+
+    #[test]
+    fn rewrite_collapses_single_must_clause_with_no_should_or_must_not() {
+        let q = BooleanQuery::new().with_must([TermQuery::new("body", "cat")]);
+        assert_eq!(q.rewrite(), Clause::Term(TermQuery::new("body", "cat")));
+    }
+
+    #[test]
+    fn rewrite_collapses_single_should_clause_with_default_minimum_should_match() {
+        let q = BooleanQuery::new().with_should([TermQuery::new("body", "cat")]);
+        assert_eq!(q.rewrite(), Clause::Term(TermQuery::new("body", "cat")));
+    }
+
+    #[test]
+    fn rewrite_collapses_single_should_clause_with_minimum_should_match_one() {
+        let q = BooleanQuery::new()
+            .with_should([TermQuery::new("body", "cat")])
+            .with_minimum_should_match(1);
+        assert_eq!(q.rewrite(), Clause::Term(TermQuery::new("body", "cat")));
+    }
+
+    #[test]
+    fn rewrite_does_not_collapse_single_must_when_minimum_should_match_is_positive() {
+        // must=[cat], should=[], minimum_should_match=1 matches nothing (no `should`
+        // clause can ever reach the threshold) -- collapsing to a bare `cat` clause
+        // would silently turn "matches nothing" into "matches whatever cat matches",
+        // so this combination must NOT collapse.
+        let q = BooleanQuery::new()
+            .with_must([TermQuery::new("body", "cat")])
+            .with_minimum_should_match(1);
+        let rewritten = q.clone().rewrite();
+        assert_eq!(
+            rewritten,
+            Clause::Boolean(Box::new(BooleanQuery {
+                must: vec![Clause::Term(TermQuery::new("body", "cat"))],
+                should: vec![],
+                must_not: vec![],
+                minimum_should_match: 1,
+            }))
+        );
+    }
+
+    #[test]
+    fn rewrite_does_not_collapse_single_should_when_minimum_should_match_exceeds_one() {
+        let q = BooleanQuery::new()
+            .with_should([TermQuery::new("body", "cat")])
+            .with_minimum_should_match(2);
+        let rewritten = q.clone().rewrite();
+        assert_eq!(
+            rewritten,
+            Clause::Boolean(Box::new(BooleanQuery {
+                must: vec![],
+                should: vec![Clause::Term(TermQuery::new("body", "cat"))],
+                must_not: vec![],
+                minimum_should_match: 2,
+            }))
+        );
+    }
+
+    #[test]
+    fn rewrite_does_not_collapse_single_must_clause_with_a_must_not_present() {
+        let q = BooleanQuery::new()
+            .with_must([TermQuery::new("body", "cat")])
+            .with_must_not([TermQuery::new("body", "dog")]);
+        let rewritten = q.clone().rewrite();
+        assert_eq!(
+            rewritten,
+            Clause::Boolean(Box::new(BooleanQuery {
+                must: vec![Clause::Term(TermQuery::new("body", "cat"))],
+                should: vec![],
+                must_not: vec![Clause::Term(TermQuery::new("body", "dog"))],
+                minimum_should_match: 0,
+            }))
+        );
+    }
+
+    #[test]
+    fn rewrite_does_not_collapse_a_pure_must_not_only_query() {
+        // Real BooleanQuery.rewrite() treats a pure must_not query as
+        // MatchNoDocsQuery, not as "the must_not clause itself" -- confirm this
+        // rewrite leaves it structurally intact (the executor already treats it as
+        // matching nothing with no rewrite needed -- see `matched_boolean_docs`).
+        let q = BooleanQuery::new().with_must_not([TermQuery::new("body", "dog")]);
+        let rewritten = q.clone().rewrite();
+        assert_eq!(
+            rewritten,
+            Clause::Boolean(Box::new(BooleanQuery {
+                must: vec![],
+                should: vec![],
+                must_not: vec![Clause::Term(TermQuery::new("body", "dog"))],
+                minimum_should_match: 0,
+            }))
+        );
+    }
+
+    #[test]
+    fn rewrite_leaves_an_empty_boolean_query_structurally_unchanged() {
+        let q = BooleanQuery::new();
+        assert_eq!(
+            q.clone().rewrite(),
+            Clause::Boolean(Box::new(BooleanQuery::new()))
+        );
+    }
+
+    #[test]
+    fn rewrite_does_not_collapse_when_more_than_one_clause_is_present() {
+        let q = BooleanQuery::new()
+            .with_must([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")]);
+        let rewritten = q.clone().rewrite();
+        assert_eq!(
+            rewritten,
+            Clause::Boolean(Box::new(BooleanQuery {
+                must: vec![
+                    Clause::Term(TermQuery::new("body", "cat")),
+                    Clause::Term(TermQuery::new("body", "dog")),
+                ],
+                should: vec![],
+                must_not: vec![],
+                minimum_should_match: 0,
+            }))
+        );
+    }
+
+    #[test]
+    fn rewrite_recurses_into_a_nested_boolean_must_clause_before_checking_the_parent() {
+        // inner: must=[cat] alone -> collapses to Term(cat). Outer: must=[inner]
+        // alone (after inner's own collapse) -> the *outer* BooleanQuery now also
+        // has exactly one must clause and no should/must_not, so it collapses too,
+        // all the way down to the bare leaf term.
+        let inner = BooleanQuery::new().with_must([TermQuery::new("body", "cat")]);
+        let outer = BooleanQuery::new().with_must([inner]);
+        assert_eq!(outer.rewrite(), Clause::Term(TermQuery::new("body", "cat")));
+    }
+
+    #[test]
+    fn rewrite_recurses_into_a_nested_boolean_clause_that_does_not_itself_collapse() {
+        // inner has two must clauses, so it does NOT collapse -- but it must still
+        // come back as a rewritten (structurally-normalized) nested Boolean clause,
+        // proving the recursion actually reaches nested clauses rather than only
+        // rewriting the top level.
+        let inner = BooleanQuery::new()
+            .with_must([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")]);
+        let outer = BooleanQuery::new()
+            .with_should([inner.clone()])
+            .with_must([TermQuery::new("body", "bird")]);
+        let rewritten = outer.rewrite();
+        assert_eq!(
+            rewritten,
+            Clause::Boolean(Box::new(BooleanQuery {
+                must: vec![Clause::Term(TermQuery::new("body", "bird"))],
+                should: vec![Clause::Boolean(Box::new(inner))],
+                must_not: vec![],
+                minimum_should_match: 0,
+            }))
+        );
+    }
+
+    #[test]
+    fn rewrite_recurses_into_disjunction_max_disjuncts() {
+        let single_must = BooleanQuery::new().with_must([TermQuery::new("body", "cat")]);
+        let dismax = DisjunctionMaxQuery::new([Clause::from(single_must)], 0.5);
+        let clause: Clause = dismax.into();
+        assert_eq!(
+            clause.rewrite(),
+            Clause::DisjunctionMax(Box::new(DisjunctionMaxQuery::new(
+                [Clause::Term(TermQuery::new("body", "cat"))],
+                0.5
+            )))
+        );
+    }
+
+    #[test]
+    fn rewrite_recurses_into_constant_score_inner_clause() {
+        let single_must = BooleanQuery::new().with_must([TermQuery::new("body", "cat")]);
+        let csq = ConstantScoreQuery::new(single_must, 2.0);
+        let clause: Clause = csq.into();
+        assert_eq!(
+            clause.rewrite(),
+            Clause::ConstantScore(Box::new(ConstantScoreQuery::new(
+                TermQuery::new("body", "cat"),
+                2.0
+            )))
+        );
+    }
+
+    #[test]
+    fn rewrite_recurses_into_boost_inner_clause() {
+        let single_should = BooleanQuery::new().with_should([TermQuery::new("body", "cat")]);
+        let bq = BoostQuery::new(single_should, 3.0);
+        let clause: Clause = bq.into();
+        assert_eq!(
+            clause.rewrite(),
+            Clause::Boost(Box::new(BoostQuery::new(
+                TermQuery::new("body", "cat"),
+                3.0
+            )))
+        );
+    }
+
+    #[test]
+    fn rewrite_leaves_leaf_clauses_unchanged() {
+        assert_eq!(
+            Clause::Wildcard(WildcardQuery::new("body", "ca*")).rewrite(),
+            Clause::Wildcard(WildcardQuery::new("body", "ca*"))
+        );
+        assert_eq!(
+            Clause::Prefix(PrefixQuery::new("body", "ca")).rewrite(),
+            Clause::Prefix(PrefixQuery::new("body", "ca"))
+        );
+        assert_eq!(
+            Clause::Fuzzy(FuzzyQuery::new("body", "cat")).rewrite(),
+            Clause::Fuzzy(FuzzyQuery::new("body", "cat"))
+        );
+        assert_eq!(
+            Clause::Regexp(RegexpQuery::new("body", "ca.*")).rewrite(),
+            Clause::Regexp(RegexpQuery::new("body", "ca.*"))
+        );
+        assert_eq!(
+            Clause::Phrase(PhraseQuery::new("body", ["quick", "fox"])).rewrite(),
+            Clause::Phrase(PhraseQuery::new("body", ["quick", "fox"]))
         );
     }
 
