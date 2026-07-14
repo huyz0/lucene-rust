@@ -13,7 +13,7 @@ JAR=$(find ~/.gradle/caches/modules-2/files-2.1/org.apache.lucene/lucene-core/10
   -name 'lucene-core-10.5.0.jar' ! -name '*sources*' ! -name '*javadoc*')
 mkdir -p classes data
 javac -nowarn -cp "$JAR" -d classes src/*.java
-for cls in GenPrimitives GenCodecUtil GenSegmentInfo GenSegmentInfos GenLiveDocs GenFieldInfos GenNorms GenDocValues GenCompoundFormat GenStoredFields GenStoredFieldsBestCompression GenSortedDocValues GenMultiValuedDocValues GenTermVectors GenPoints GenFst GenBlockTree GenBlockTreeCompressed; do
+for cls in GenPrimitives GenCodecUtil GenSegmentInfo GenSegmentInfos GenLiveDocs GenFieldInfos GenNorms GenDocValues GenCompoundFormat GenStoredFields GenStoredFieldsBestCompression GenSortedDocValues GenMultiValuedDocValues GenTermVectors GenPoints GenFst GenBlockTree GenBlockTreeCompressed GenFstBinarySearch; do
   java -cp "classes:$JAR" $cls data
 done
 ```
@@ -391,13 +391,27 @@ read identically to one `FSTCompiler` would have produced. See
 - `GenFst.java` — a real `FST<BytesRef>` (`fst/` subdirectory) built via
   real `FSTCompiler` with `ByteSequenceOutputs` (the output type real
   Lucene's term index FST uses) and `allowFixedLengthArcs(false)` (so it
-  never emits the fixed-length-arc node encodings this port's reader
-  doesn't support yet). 7 keys sharing prefixes/suffixes
+  never emits the fixed-length-arc node encodings -- see
+  `GenFstBinarySearch.java` below for those). 7 keys sharing prefixes/suffixes
   (`app`/`apple`/`application`, `banana`/`band`/`bandana`, `z`) exercise
   real arc sharing; the manifest also lists 8 keys deliberately absent
   from the FST (proper prefixes, over-extensions past an accepting node,
   a disjoint key, the empty string) so the differential test checks
   correct rejection, not just correct acceptance.
+- `GenFstBinarySearch.java` — a real `FST<BytesRef>` (`fst_binary_search/`
+  subdirectory) built via real `FSTCompiler` with
+  `allowFixedLengthArcs(true)` and 7 single-byte root labels spread widely
+  (1, 40, 80, 120, 160, 200, 240) specifically to make `FSTCompiler`'s own
+  cost heuristic pick `ARCS_FOR_BINARY_SEARCH` encoding for the root node
+  (confirmed via a self-check that the debug arc dump contains `"(bs)"`,
+  not just assumed) -- this port's reader supports that encoding but still
+  rejects `ARCS_FOR_DIRECT_ADDRESSING`/`ARCS_FOR_CONTINUOUS` outright, so
+  this fixture deliberately stays small/sparse enough to land on binary
+  search rather than direct addressing. The manifest's 8 absent keys are
+  chosen in the gaps between and around the present labels (e.g. 60
+  between 40/80), not just far-outside values, so the differential test
+  exercises the binary search's boundary behavior, not just "obviously not
+  present."
 - `GenBlockTree.java` — a real `IndexWriter` session (`blocktree_index/`
   subdirectory) producing `.tim`/`.tip`/`.tmd` (`Lucene103BlockTreeTermsWriter`,
   via `Lucene104PostingsFormat`), plus the `.fnm`/`.si` this port's readers

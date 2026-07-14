@@ -29,16 +29,21 @@
 //!   sequences to concatenated block-pointer byte sequences), so it's the one
 //!   needed to eventually navigate BlockTree. Other output types
 //!   (`PositiveIntOutputs`, `PairOutputs`, ...) are not implemented.
-//! - **Only variable-length ("list") arc nodes.** Real Lucene's `FSTCompiler`
-//!   also emits fixed-length arc nodes for binary search
-//!   (`ARCS_FOR_BINARY_SEARCH`), direct addressing (`ARCS_FOR_DIRECT_ADDRESSING`)
-//!   and continuous ranges (`ARCS_FOR_CONTINUOUS`) once a node has "enough"
-//!   arcs to make the space/speed tradeoff worth it. Reading those array-style
-//!   nodes is not implemented; encountering one returns
+//! - **Variable-length ("list") arc nodes, plus `ARCS_FOR_BINARY_SEARCH`
+//!   fixed-length arc nodes.** Real Lucene's `FSTCompiler` also emits
+//!   fixed-length arc nodes for binary search (`ARCS_FOR_BINARY_SEARCH`),
+//!   direct addressing (`ARCS_FOR_DIRECT_ADDRESSING`) and continuous ranges
+//!   (`ARCS_FOR_CONTINUOUS`) once a node has "enough" arcs to make the
+//!   space/speed tradeoff worth it. `ARCS_FOR_BINARY_SEARCH` is ported
+//!   (`find_target_arc`'s sparse binary search over fixed-size arc slots,
+//!   `read_arc`'s matching `BIT_TARGET_NEXT` target rule); reading
+//!   `ARCS_FOR_DIRECT_ADDRESSING`/`ARCS_FOR_CONTINUOUS` nodes is not yet
+//!   implemented -- encountering one still returns
 //!   `Error::Unsupported("FST array-encoded node ...")` rather than silently
 //!   misdecoding. Small term-index FSTs (few dozen distinct labels per node)
-//!   normally stay in list form, but this is a real gap for large/dense FSTs
-//!   -- see `docs/parity.md`.
+//!   normally stay in list form, but large/dense FSTs whose compiler picked
+//!   one of the two remaining encodings for some node are a real gap -- see
+//!   `docs/parity.md`.
 //! - **Lookup only, not enumeration.** `get` mirrors `Util.get(FST, BytesRef)`:
 //!   walk arcs for a specific key and return whether it's accepted plus its
 //!   output. Full ordered enumeration (`BytesRefFSTEnum`/`IntsRefFSTEnum`) is
@@ -231,7 +236,7 @@ fn output_add(prefix: &[u8], output: &[u8]) -> Vec<u8> {
 /// ("list") arc nodes -- see the module doc for why fixed-length (array)
 /// node fields (`bytesPerArc`, `posArcsStart`, `arcIdx`, `numArcs`, the
 /// direct-addressing bit-table fields) are omitted entirely.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Arc {
     label: i32,
     output: Vec<u8>,
@@ -239,6 +244,14 @@ pub struct Arc {
     flags: u8,
     next_final_output: Vec<u8>,
     next_arc: i64,
+    /// `FST.Arc.bytesPerArc`: 0 for list-encoded (variable length arc) nodes;
+    /// non-zero for `ARCS_FOR_BINARY_SEARCH` fixed-length-arc nodes (the only
+    /// array encoding this port currently decodes -- see the module doc).
+    bytes_per_arc: i32,
+    /// `FST.Arc.numArcs`: only meaningful when `bytes_per_arc != 0`.
+    num_arcs: i32,
+    /// `FST.Arc.posArcsStart`: only meaningful when `bytes_per_arc != 0`.
+    pos_arcs_start: i64,
 }
 
 impl Arc {
@@ -508,12 +521,10 @@ impl<'a> Fst<'a> {
             None => (BIT_LAST_ARC, Vec::new()),
         };
         Arc {
-            label: 0,
-            output: Vec::new(),
             target: self.metadata.start_node,
             flags,
             next_final_output,
-            next_arc: 0,
+            ..Default::default()
         }
     }
 
@@ -545,11 +556,20 @@ impl<'a> Fst<'a> {
         } else if flag(arc.flags, BIT_TARGET_NEXT) {
             arc.next_arc = r.get_position();
             if !flag(arc.flags, BIT_LAST_ARC) {
-                // Must scan past the remaining sibling arcs to find this
-                // arc's target (list-encoded nodes only; see module docs
-                // for why the fixed-length-array `bytesPerArc != 0` branch
-                // is not ported).
-                self.seek_to_next_node(r)?;
+                if arc.bytes_per_arc == 0 {
+                    // List-encoded node: must scan past the remaining
+                    // sibling arcs to find this arc's implicit target.
+                    self.seek_to_next_node(r)?;
+                } else {
+                    // `ARCS_FOR_BINARY_SEARCH` fixed-length-arc node: the
+                    // target is simply the position right before the fixed
+                    // arcs array starts (`FST.readArc`'s `bytesPerArc() != 0`
+                    // branch) -- no scan needed since every arc's on-disk
+                    // size is known.
+                    r.set_position(
+                        arc.pos_arcs_start - arc.bytes_per_arc as i64 * arc.num_arcs as i64,
+                    );
+                }
             }
             arc.target = r.get_position();
         } else {
@@ -581,19 +601,67 @@ impl<'a> Fst<'a> {
     }
 
     fn reject_if_array_node(flags: u8) -> Result<()> {
-        if flags == ARCS_FOR_BINARY_SEARCH
-            || flags == ARCS_FOR_DIRECT_ADDRESSING
-            || flags == ARCS_FOR_CONTINUOUS
-        {
+        if flags == ARCS_FOR_DIRECT_ADDRESSING || flags == ARCS_FOR_CONTINUOUS {
             return Err(Error::Unsupported(format!(
-                "FST array-encoded node (flags={flags:#x}); only list-encoded (variable length arc) nodes are supported in this slice"
+                "FST array-encoded node (flags={flags:#x}); only list-encoded (variable length arc) and ARCS_FOR_BINARY_SEARCH nodes are supported in this slice"
             )));
         }
         Ok(())
     }
 
+    /// `FST.findTargetArc`'s `ARCS_FOR_BINARY_SEARCH` branch: `follow`'s
+    /// target node has already been confirmed (by the caller) to be a fixed-
+    /// length-arc, binary-searchable node, with `r` positioned right after
+    /// the node header's `flags` byte. Ported field-for-field from
+    /// `FST.java`'s `findTargetArc`: `numArcs`/`bytesPerArc` (both `vint`),
+    /// then a sparse binary search over `numArcs` fixed-size arc slots, each
+    /// addressed as `posArcsStart - bytesPerArc * idx` (slot `idx`'s flags
+    /// byte sits one byte after that address, mirroring the `+1`/`-1`
+    /// asymmetry in `FST.java`'s own address arithmetic between the
+    /// mid-search label peek and the final `readNextRealArc` call).
+    fn find_target_arc_binary_search(
+        &self,
+        label_to_match: i32,
+        r: &mut BytesReader,
+    ) -> Result<Option<Arc>> {
+        let num_arcs = r.read_vint()?;
+        let bytes_per_arc = r.read_vint()?;
+        let pos_arcs_start = r.get_position();
+
+        let mut low = 0i32;
+        let mut high = num_arcs - 1;
+        while low <= high {
+            let mid = (low + high) >> 1;
+            // +1 to skip over the mid arc's flags byte, matching
+            // `FST.java`'s `posArcsStart - (bytesPerArc * mid + 1)`.
+            r.set_position(pos_arcs_start - (bytes_per_arc as i64 * mid as i64 + 1));
+            let mid_label = self.read_label(r)?;
+            match mid_label.cmp(&label_to_match) {
+                std::cmp::Ordering::Less => low = mid + 1,
+                std::cmp::Ordering::Greater => high = mid - 1,
+                std::cmp::Ordering::Equal => {
+                    r.set_position(pos_arcs_start - bytes_per_arc as i64 * mid as i64);
+                    let flags = r.read_byte()?;
+                    let mut arc = Arc {
+                        flags,
+                        bytes_per_arc,
+                        num_arcs,
+                        pos_arcs_start,
+                        ..Default::default()
+                    };
+                    self.read_arc(&mut arc, r)?;
+                    return Ok(Some(arc));
+                }
+            }
+        }
+        Ok(None)
+    }
+
     /// `FST.findTargetArc`: find the arc leaving `follow` labeled
-    /// `label_to_match`, or `None` if there is none. List-encoded nodes only.
+    /// `label_to_match`, or `None` if there is none. List-encoded and
+    /// `ARCS_FOR_BINARY_SEARCH` nodes only (see module docs for
+    /// `ARCS_FOR_DIRECT_ADDRESSING`/`ARCS_FOR_CONTINUOUS`, which remain
+    /// rejected via `Error::Unsupported`).
     ///
     /// Note: real Lucene's `findTargetArc` also accepts `label_to_match ==
     /// END_LABEL` (used by `FSTEnum`/enumeration consumers to re-derive the
@@ -615,16 +683,15 @@ impl<'a> Fst<'a> {
 
         r.set_position(follow.target());
         let flags = r.read_byte()?;
+        if flags == ARCS_FOR_BINARY_SEARCH {
+            return self.find_target_arc_binary_search(label_to_match, r);
+        }
         Self::reject_if_array_node(flags)?;
 
-        // Linear scan (the only node encoding this slice supports).
+        // Linear scan (list-encoded nodes).
         let mut arc = Arc {
-            label: 0,
-            output: Vec::new(),
-            target: 0,
             flags,
-            next_final_output: Vec::new(),
-            next_arc: 0,
+            ..Default::default()
         };
         loop {
             let flags = arc.flags;
@@ -1145,15 +1212,108 @@ mod tests {
     }
 
     #[test]
-    fn array_encoded_node_is_rejected_not_misdecoded() {
-        // A node header byte equal to ARCS_FOR_BINARY_SEARCH must be
-        // rejected outright rather than silently misparsed as a list node.
+    fn direct_addressing_node_is_rejected_not_misdecoded() {
+        // A node header byte equal to ARCS_FOR_DIRECT_ADDRESSING must be
+        // rejected outright rather than silently misparsed -- this encoding
+        // is not yet implemented (see module doc).
         let mut bytes = vec![0u8];
         let node_addr = bytes.len() as i64;
-        bytes.push(ARCS_FOR_BINARY_SEARCH);
+        bytes.push(ARCS_FOR_DIRECT_ADDRESSING);
         let fst = fst_from_body(bytes, node_addr, InputType::Byte1, None);
         let err = fst.get(b"a").unwrap_err();
         assert!(matches!(err, Error::Unsupported(_)));
+    }
+
+    #[test]
+    fn continuous_arcs_node_is_rejected_not_misdecoded() {
+        // Same, for ARCS_FOR_CONTINUOUS.
+        let mut bytes = vec![0u8];
+        let node_addr = bytes.len() as i64;
+        bytes.push(ARCS_FOR_CONTINUOUS);
+        let fst = fst_from_body(bytes, node_addr, InputType::Byte1, None);
+        let err = fst.get(b"a").unwrap_err();
+        assert!(matches!(err, Error::Unsupported(_)));
+    }
+
+    // --- `ARCS_FOR_BINARY_SEARCH` fixed-length-arc nodes ------------------
+    //
+    // Hand-built (not real-Lucene-written) node in this encoding, to pin
+    // down `find_target_arc_binary_search`'s byte-level field layout and
+    // binary-search bounds before/alongside the real-fixture differential
+    // test in `tests/fst_fixtures.rs`.
+
+    /// Builds a single root node with `labels.len()` arcs (ascending,
+    /// distinct byte labels) encoded as `ARCS_FOR_BINARY_SEARCH`: each arc is
+    /// a fixed-size slot of `bytes_per_arc` bytes (padded with trailing zero
+    /// bytes after its real content -- real Lucene pads the same way so
+    /// every slot can be addressed via `posArcsStart - bytesPerArc * idx`).
+    /// Every arc is a final, accepting stop node whose 1-byte output is
+    /// `outputs[i]`. Returns `(body_bytes, start_node_address)`.
+    fn build_binary_search_node(labels: &[u8], outputs: &[u8]) -> (Vec<u8>, i64) {
+        assert_eq!(labels.len(), outputs.len());
+        let num_arcs = labels.len();
+
+        // Build each arc's logical (forward-read) bytes first, to find the
+        // max length -> bytes_per_arc (every slot is padded to this size).
+        let mut logical_arcs: Vec<Vec<u8>> = Vec::with_capacity(num_arcs);
+        for (i, &label) in labels.iter().enumerate() {
+            let mut logical = Vec::new();
+            let flags = BIT_LAST_ARC | BIT_FINAL_ARC | BIT_STOP_NODE | BIT_ARC_HAS_FINAL_OUTPUT;
+            logical.push(flags);
+            logical.push(label);
+            write_vint(&mut logical, 1);
+            logical.push(outputs[i]);
+            logical_arcs.push(logical);
+        }
+        let bytes_per_arc = logical_arcs.iter().map(|a| a.len()).max().unwrap();
+
+        // Build the *entire* node (header + every fixed-size slot) as one
+        // logical (forward-read-order) byte sequence, then push it via
+        // `append_arc_logical`'s single whole-blob reversal -- this keeps
+        // every field's relative addressing (header bytes, then slot 0,
+        // slot 1, ...) consistent with the reverse `BytesReader`'s
+        // decreasing-position reads, exactly the way a real node's bytes
+        // are laid out. `append_arc_logical` returns the flags byte's
+        // address (`node_addr`), matching what `find_target_arc` seeks to.
+        let mut logical = vec![ARCS_FOR_BINARY_SEARCH];
+        write_vint(&mut logical, num_arcs as i32);
+        write_vint(&mut logical, bytes_per_arc as i32);
+        for arc in &logical_arcs {
+            let mut padded = arc.clone();
+            padded.resize(bytes_per_arc, 0u8);
+            logical.extend_from_slice(&padded);
+        }
+
+        let mut bytes = Vec::new();
+        let node_addr = append_arc_logical(&mut bytes, &logical);
+        (bytes, node_addr)
+    }
+
+    #[test]
+    fn binary_search_node_finds_every_label() {
+        let labels = [b'a', b'c', b'f', b'm', b'z'];
+        let outputs = [1u8, 2, 3, 4, 5];
+        let (bytes, start) = build_binary_search_node(&labels, &outputs);
+        let fst = fst_from_body(bytes, start, InputType::Byte1, None);
+        for (label, output) in labels.iter().zip(outputs.iter()) {
+            assert_eq!(
+                fst.get(&[*label]).unwrap(),
+                Some(vec![*output]),
+                "label {label} should resolve to {output}"
+            );
+        }
+    }
+
+    #[test]
+    fn binary_search_node_rejects_absent_labels() {
+        let labels = [b'a', b'c', b'f', b'm', b'z'];
+        let outputs = [1u8, 2, 3, 4, 5];
+        let (bytes, start) = build_binary_search_node(&labels, &outputs);
+        let fst = fst_from_body(bytes, start, InputType::Byte1, None);
+        // Before the first label, between two labels, and after the last.
+        for absent in [b'0', b'b', b'd', b'g', b'n', 0xffu8] {
+            assert_eq!(fst.get(&[absent]).unwrap(), None);
+        }
     }
 
     #[test]
