@@ -179,7 +179,8 @@ pub enum Error {
     UnknownDocValuesField(String),
     #[error(
         "set_doc_values_field: field {0:?} has doc_values_type {1:?}; only \
-         DocValuesType::Numeric/DocValuesType::Sorted are supported by this writer's \
+         DocValuesType::Numeric/DocValuesType::Binary/DocValuesType::Sorted/\
+         DocValuesType::SortedNumeric/DocValuesType::SortedSet are supported by this writer's \
          doc-values write-side"
     )]
     UnsupportedDocValuesType(String, DocValuesType),
@@ -417,15 +418,15 @@ impl<'d> IndexWriter<'d> {
     /// machinery here to fan this out to more than one field within a single
     /// segment).
     ///
-    /// **Only NUMERIC, SORTED, and SORTED_SET doc values are wired up by
-    /// this writer.** BINARY and SORTED_NUMERIC write-side functions already
-    /// exist in [`lucene_codecs::doc_values`] but are not wired into this
-    /// facade -- see that module's parity notes and `docs/parity.md` for the
-    /// exact scope split.
+    /// **NUMERIC, BINARY, SORTED, SORTED_NUMERIC, and SORTED_SET doc values
+    /// are all wired up by this writer** -- see
+    /// [`Self::build_doc_values_output`]'s per-type branches for exactly how
+    /// each sources its per-doc values from [`FieldValue`].
     ///
     /// `Some(field_name)` looks `field_name` up in this writer's fixed
     /// `fields` list and requires its `doc_values_type` to already be
-    /// `DocValuesType::Numeric`, `DocValuesType::Sorted`, or
+    /// `DocValuesType::Numeric`, `DocValuesType::Binary`,
+    /// `DocValuesType::Sorted`, `DocValuesType::SortedNumeric`, or
     /// `DocValuesType::SortedSet` (an `Err` otherwise) -- matching real
     /// Lucene's own
     /// `FieldType.setDocValuesType(...)` convention. `None` (the default a
@@ -455,7 +456,11 @@ impl<'d> IndexWriter<'d> {
                     .ok_or_else(|| Error::UnknownDocValuesField(name.to_string()))?;
                 if !matches!(
                     info.doc_values_type,
-                    DocValuesType::Numeric | DocValuesType::Sorted | DocValuesType::SortedSet
+                    DocValuesType::Numeric
+                        | DocValuesType::Binary
+                        | DocValuesType::Sorted
+                        | DocValuesType::SortedNumeric
+                        | DocValuesType::SortedSet
                 ) {
                     return Err(Error::UnsupportedDocValuesType(
                         name.to_string(),
@@ -1033,7 +1038,11 @@ impl<'d> IndexWriter<'d> {
         segment_id: &[u8; ID_LENGTH],
     ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
         match config.doc_values_type {
+            DocValuesType::Binary => Self::build_binary_doc_values_output(docs, config, segment_id),
             DocValuesType::Sorted => Self::build_sorted_doc_values_output(docs, config, segment_id),
+            DocValuesType::SortedNumeric => {
+                Self::build_sorted_numeric_doc_values_output(docs, config, segment_id)
+            }
             DocValuesType::SortedSet => {
                 Self::build_sorted_set_doc_values_output(docs, config, segment_id)
             }
@@ -1121,6 +1130,103 @@ impl<'d> IndexWriter<'d> {
             config.field_number,
             &values,
             max_doc,
+            segment_id,
+            "",
+        )?;
+        Ok(output)
+    }
+
+    /// [`Self::build_doc_values_output`]'s `DocValuesType::Binary` branch:
+    /// builds [`doc_values::write_single_dense_binary_field`]'s input from
+    /// `docs`' values for `config.field_number` -- same dense-only, "missing
+    /// value fails the whole commit" contract and same accepted
+    /// [`FieldValue::String`]/[`FieldValue::Binary`] shape as
+    /// [`Self::build_sorted_doc_values_output`] (BINARY has no terms
+    /// dictionary/dedup/ordinals -- every doc's raw bytes are stored
+    /// verbatim, unlike SORTED).
+    fn build_binary_doc_values_output(
+        docs: &[Document],
+        config: &DocValuesFieldConfig,
+        segment_id: &[u8; ID_LENGTH],
+    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+        let mut values: Vec<Vec<u8>> = Vec::with_capacity(docs.len());
+        for (doc_id, doc) in docs.iter().enumerate() {
+            let field = doc
+                .fields
+                .iter()
+                .find(|f| f.field_number == config.field_number)
+                .ok_or_else(|| Error::MissingDenseDocValue(config.name.clone(), doc_id))?;
+            let value = match &field.value {
+                FieldValue::String(s) => s.as_bytes().to_vec(),
+                FieldValue::Binary(b) => b.clone(),
+                other => {
+                    return Err(Error::NonBinaryDocValue(
+                        config.name.clone(),
+                        doc_id,
+                        field_value_kind(other),
+                    ));
+                }
+            };
+            values.push(value);
+        }
+
+        let max_doc = docs.len() as i32;
+        let output = doc_values::write_single_dense_binary_field(
+            config.field_number,
+            &values,
+            max_doc,
+            segment_id,
+            "",
+        )?;
+        Ok(output)
+    }
+
+    /// [`Self::build_doc_values_output`]'s `DocValuesType::SortedNumeric`
+    /// branch: builds [`doc_values::write_single_dense_sorted_numeric_field`]'s
+    /// input from `docs`' values for `config.field_number` -- same "every doc
+    /// opts into multiple values by repeating the field" shape as
+    /// [`Self::build_sorted_set_doc_values_output`], except each value must be
+    /// [`FieldValue::Int`]/[`FieldValue::Long`] (numeric, not binary), else
+    /// [`Error::NonNumericDocValue`]; a doc with zero matching fields fails
+    /// the whole commit with [`Error::MissingDenseDocValue`] (real Lucene's
+    /// `SortedNumericDocValuesField` requires at least one value per doc in
+    /// this dense-only shape, same as [`doc_values::write_single_dense_sorted_numeric_field`]'s
+    /// own `EmptyMultiValuedDoc` guard).
+    fn build_sorted_numeric_doc_values_output(
+        docs: &[Document],
+        config: &DocValuesFieldConfig,
+        segment_id: &[u8; ID_LENGTH],
+    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+        let mut values: Vec<Vec<i64>> = Vec::with_capacity(docs.len());
+        for (doc_id, doc) in docs.iter().enumerate() {
+            let mut per_doc: Vec<i64> = Vec::new();
+            for field in doc
+                .fields
+                .iter()
+                .filter(|f| f.field_number == config.field_number)
+            {
+                let value = match &field.value {
+                    FieldValue::Int(v) => *v as i64,
+                    FieldValue::Long(v) => *v,
+                    other => {
+                        return Err(Error::NonNumericDocValue(
+                            config.name.clone(),
+                            doc_id,
+                            field_value_kind(other),
+                        ));
+                    }
+                };
+                per_doc.push(value);
+            }
+            if per_doc.is_empty() {
+                return Err(Error::MissingDenseDocValue(config.name.clone(), doc_id));
+            }
+            values.push(per_doc);
+        }
+
+        let output = doc_values::write_single_dense_sorted_numeric_field(
+            config.field_number,
+            &values,
             segment_id,
             "",
         )?;
@@ -3313,6 +3419,20 @@ mod tests {
         }
     }
 
+    fn binary_field(name: &str, number: i32) -> FieldInfo {
+        FieldInfo {
+            doc_values_type: DocValuesType::Binary,
+            ..stored_only_field(name, number)
+        }
+    }
+
+    fn sorted_numeric_field(name: &str, number: i32) -> FieldInfo {
+        FieldInfo {
+            doc_values_type: DocValuesType::SortedNumeric,
+            ..stored_only_field(name, number)
+        }
+    }
+
     fn doc_with_score(id: &str, score: i64) -> Document {
         Document {
             fields: vec![
@@ -3503,6 +3623,167 @@ mod tests {
             want_sorted.sort_unstable();
             assert_eq!(got, want_sorted);
         }
+    }
+
+    #[test]
+    fn commit_with_doc_values_field_writes_readable_binary_values_for_multiple_docs() {
+        let tmp = tempdir("dv-commit-binary");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), binary_field("payload", 1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_doc_values_field(Some("payload")).unwrap();
+
+        let payloads: [&[u8]; 3] = [b"abc", b"", b"hello world"];
+        for (i, payload) in payloads.iter().enumerate() {
+            writer.add_document(Document {
+                fields: vec![
+                    StoredField {
+                        field_number: 0,
+                        value: FieldValue::String(format!("doc{i}")),
+                    },
+                    StoredField {
+                        field_number: 1,
+                        value: FieldValue::Binary(payload.to_vec()),
+                    },
+                ],
+            });
+        }
+        let sis = writer.commit().unwrap().clone();
+        let sci = &sis.segments[0];
+
+        let dvm = dir.open(&format!("{}.dvm", sci.segment_name)).unwrap();
+        let dvd = dir.open(&format!("{}.dvd", sci.segment_name)).unwrap();
+        let field_infos = fi::FieldInfos {
+            fields: vec![stored_only_field("id", 0), binary_field("payload", 1)],
+        };
+        let (_, meta) =
+            lucene_codecs::doc_values::parse_meta(&dvm, &sci.segment_id, "", &field_infos)
+                .expect("parse_meta on IndexWriter-produced BINARY .dvm");
+        let entry = meta.binary_entry(1).unwrap();
+        for (doc, want) in payloads.iter().enumerate() {
+            let got = lucene_codecs::doc_values::binary_value(&dvd, entry, doc as i32)
+                .unwrap()
+                .unwrap();
+            assert_eq!(got, *want);
+        }
+    }
+
+    #[test]
+    fn commit_with_doc_values_field_rejects_non_binary_binary_value() {
+        let tmp = tempdir("dv-commit-binary-nonbinary");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), binary_field("payload", 1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_doc_values_field(Some("payload")).unwrap();
+
+        writer.add_document(Document {
+            fields: vec![
+                StoredField {
+                    field_number: 0,
+                    value: FieldValue::String("a".to_string()),
+                },
+                StoredField {
+                    field_number: 1,
+                    value: FieldValue::Long(1),
+                },
+            ],
+        });
+        let err = writer.commit().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::NonBinaryDocValue(name, 0, "Long") if name == "payload"
+        ));
+    }
+
+    #[test]
+    fn commit_with_doc_values_field_writes_readable_sorted_numeric_values_for_multiple_docs() {
+        let tmp = tempdir("dv-commit-sorted-numeric");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), sorted_numeric_field("nums", 1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_doc_values_field(Some("nums")).unwrap();
+
+        // Doc with multiple values exercises the address-array path; the
+        // other two docs (one value each) alone would collapse it away.
+        let doc_nums: Vec<Vec<i64>> = vec![vec![10, 20], vec![-5], vec![0, 1, 2]];
+        for (i, nums) in doc_nums.iter().enumerate() {
+            let mut doc_fields = vec![StoredField {
+                field_number: 0,
+                value: FieldValue::String(format!("doc{i}")),
+            }];
+            for n in nums {
+                doc_fields.push(StoredField {
+                    field_number: 1,
+                    value: FieldValue::Long(*n),
+                });
+            }
+            writer.add_document(Document { fields: doc_fields });
+        }
+        let sis = writer.commit().unwrap().clone();
+        let sci = &sis.segments[0];
+
+        let dvm = dir.open(&format!("{}.dvm", sci.segment_name)).unwrap();
+        let dvd = dir.open(&format!("{}.dvd", sci.segment_name)).unwrap();
+        let field_infos = fi::FieldInfos {
+            fields: vec![stored_only_field("id", 0), sorted_numeric_field("nums", 1)],
+        };
+        let (_, meta) =
+            lucene_codecs::doc_values::parse_meta(&dvm, &sci.segment_id, "", &field_infos)
+                .expect("parse_meta on IndexWriter-produced SORTED_NUMERIC .dvm");
+        let entry = meta.sorted_numeric_entry(1).unwrap();
+        for (doc, want) in doc_nums.iter().enumerate() {
+            let got =
+                lucene_codecs::doc_values::sorted_numeric_values(&dvd, entry, doc as i32).unwrap();
+            assert_eq!(&got, want);
+        }
+    }
+
+    #[test]
+    fn commit_with_doc_values_field_rejects_non_numeric_sorted_numeric_value() {
+        let tmp = tempdir("dv-commit-sorted-numeric-nonnumeric");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), sorted_numeric_field("nums", 1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_doc_values_field(Some("nums")).unwrap();
+
+        writer.add_document(Document {
+            fields: vec![
+                StoredField {
+                    field_number: 0,
+                    value: FieldValue::String("a".to_string()),
+                },
+                StoredField {
+                    field_number: 1,
+                    value: FieldValue::String("not a number".to_string()),
+                },
+            ],
+        });
+        let err = writer.commit().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::NonNumericDocValue(name, 0, "String") if name == "nums"
+        ));
+    }
+
+    #[test]
+    fn commit_with_doc_values_field_rejects_doc_with_no_sorted_numeric_values() {
+        let tmp = tempdir("dv-commit-sorted-numeric-missing");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), sorted_numeric_field("nums", 1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_doc_values_field(Some("nums")).unwrap();
+
+        writer.add_document(Document {
+            fields: vec![StoredField {
+                field_number: 0,
+                value: FieldValue::String("a".to_string()),
+            }],
+        });
+        let err = writer.commit().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::MissingDenseDocValue(name, 0) if name == "nums"
+        ));
     }
 
     #[test]

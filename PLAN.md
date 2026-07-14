@@ -2784,6 +2784,60 @@ three-segment description. `cargo fmt --all`, `cargo clippy --workspace
 --all-targets -- -D warnings`, and `cargo llvm-cov --workspace
 --fail-under-lines 95` all pass.
 
+**Follow-up task: BINARY/SORTED_NUMERIC doc-values write sides wired into
+`IndexWriter`.** Closes the gap the SORTED_SET entry above flagged ("BINARY
+and SORTED_NUMERIC write sides remain unwired"): `set_doc_values_field` now
+also accepts a field whose `FieldInfo.doc_values_type` is
+`DocValuesType::Binary` or `DocValuesType::SortedNumeric`, dispatching (via
+`build_doc_values_output`) to two new methods,
+`build_binary_doc_values_output`/`build_sorted_numeric_doc_values_output`
+(`crates/lucene-index/src/index_writer.rs`), that build
+`doc_values::write_single_dense_binary_field`/
+`write_single_dense_sorted_numeric_field`'s input from `pending_docs`. BINARY
+sources exactly one value per doc from `FieldValue::String`/`FieldValue::Binary`
+(same accepted-value shape as SORTED, but no dictionary/ordinals -- every
+doc's raw bytes are stored verbatim), template being
+`build_sorted_doc_values_output`. SORTED_NUMERIC sources every `StoredField`
+entry carrying that field's number as `FieldValue::Int`/`FieldValue::Long`
+(a doc opts into multiple values by repeating the field), template being
+`build_sorted_set_doc_values_output`. Same dense-only/atomic-failure contract
+as every other doc-values type already wired: `Error::MissingDenseDocValue`
+for a doc with no matching fields, `Error::NonBinaryDocValue` (BINARY) or
+`Error::NonNumericDocValue` (SORTED_NUMERIC) for a wrong-typed one.
+
+**This task is IndexWriter wiring only, not new codec logic.**
+`write_single_dense_binary_field`/`write_single_dense_sorted_numeric_field`
+themselves were already implemented and already had real-Lucene fixture
+verification from task #103 above (`write_doc_values_fixture.rs` segments
+`_3`-`_6`, opened by `VerifyDocValues.java` through real
+`Lucene90DocValuesFormat.fieldsProducer`) -- this task adds no new fixture,
+only the `IndexWriter` call sites and `IndexWriter`-level tests exercising
+those already-verified write functions through `add_document`/`commit()`.
+
+Required end-to-end proof:
+`commit_with_doc_values_field_writes_readable_binary_values_for_multiple_docs`
+adds three docs (including an empty-bytes value) via
+`IndexWriter::add_document`/`commit()` and reads the written `.dvm`/`.dvd`
+back through the existing unmodified
+`lucene_codecs::doc_values::{parse_meta, binary_value}`, asserting each doc's
+exact raw bytes;
+`commit_with_doc_values_field_writes_readable_sorted_numeric_values_for_multiple_docs`
+adds three docs with varying value counts (including a doc repeating the
+field twice and once three times, forcing the address-range-array path) and
+reads back through `parse_meta`/`sorted_numeric_values`, asserting each doc's
+exact value list. Rejection tests:
+`commit_with_doc_values_field_rejects_non_binary_binary_value`
+(`Error::NonBinaryDocValue`),
+`commit_with_doc_values_field_rejects_non_numeric_sorted_numeric_value`
+(`Error::NonNumericDocValue`), and
+`commit_with_doc_values_field_rejects_doc_with_no_sorted_numeric_values`
+(`Error::MissingDenseDocValue`) -- all in
+`crates/lucene-index/src/index_writer.rs`. `docs/parity.md`'s doc-values row
+updated to describe all five `DocValuesType`s as wired into `IndexWriter`
+rather than three. `cargo fmt --all`, `cargo clippy --workspace
+--all-targets -- -D warnings`, and `cargo llvm-cov --workspace
+--fail-under-lines 95` all pass (97.68% total; `index_writer.rs` 98.07%).
+
 **Follow-up task: `IndexWriter::rollback()`.** New
 `IndexWriter::rollback(&mut self)` (`crates/lucene-index/src/index_writer.rs`)
 discards every document buffered by `add_document` since the last `commit()`
