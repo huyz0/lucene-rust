@@ -1,17 +1,19 @@
 //! `ffi_open_writer`/`ffi_writer_add_document`/`ffi_writer_commit`/
 //! `ffi_writer_prepare_commit`/`ffi_writer_finish_commit`/`ffi_writer_rollback`/
-//! `ffi_writer_set_merge_policy`/`ffi_close_writer` (IndexWriter commit/
-//! merge-policy FFI exposure): wraps
+//! `ffi_writer_set_merge_policy`/`ffi_writer_update_document`/
+//! `ffi_writer_delete_documents`/`ffi_close_writer` (IndexWriter commit/
+//! merge-policy/update/delete FFI exposure): wraps
 //! [`lucene_index::index_writer::IndexWriter`]'s open/add_document/commit/
-//! prepare_commit/finish_commit/rollback/set_merge_policy lifecycle -- no
-//! write-side logic reimplemented here, only the FFI plumbing (handle
-//! lifecycle, wire decoding, error mapping) this crate's other modules
-//! already follow.
+//! prepare_commit/finish_commit/rollback/set_merge_policy/update_document/
+//! delete_documents lifecycle -- no write-side logic reimplemented here, only
+//! the FFI plumbing (handle lifecycle, wire decoding, error mapping) this
+//! crate's other modules already follow.
 //!
 //! **In scope**: opening a writer over a filesystem path with a caller-supplied
-//! field list, buffering stored-fields-only documents, and the full
-//! commit/two-phase-commit/rollback/auto-merge lifecycle exactly as
-//! `lucene_index::index_writer::IndexWriter` already implements it.
+//! field list, buffering stored-fields-only documents, the full
+//! commit/two-phase-commit/rollback/auto-merge lifecycle, and atomic
+//! delete-by-term/update-by-term, exactly as
+//! `lucene_index::index_writer::IndexWriter` already implements them.
 //!
 //! `ffi_writer_set_postings_field`/`ffi_writer_set_term_vector_field`/
 //! `ffi_writer_set_doc_values_field` wrap
@@ -22,14 +24,29 @@
 //! own `Option<&str>` parameter -- no new config surface invented, just the
 //! FFI plumbing.
 //!
+//! `ffi_writer_update_document`/`ffi_writer_delete_documents` wrap
+//! [`IndexWriter::update_document`]/[`IndexWriter::delete_documents`]. Both
+//! identify their delete term as raw, already-analyzed `(field_name, term)`
+//! bytes -- no analysis happens at this FFI boundary, same stance this
+//! crate's `query.rs` already takes for its own raw-bytes terms.
+//! `ffi_writer_update_document`'s replacement document reuses
+//! `ffi_writer_add_document`'s exact parallel-array field encoding. Because
+//! [`IndexWriter::update_document`]/[`IndexWriter::delete_documents`] need a
+//! [`lucene_index::update_document::SegmentDeleteSource`] per segment the
+//! caller wants the term resolved against, this module builds those itself
+//! via [`open_all_segment_sources`]/[`build_delete_sources`]: every
+//! currently-committed segment with a `.tim` file on disk (i.e. flushed with
+//! [`ffi_writer_set_postings_field`] enabled at that commit) is reopened
+//! fresh from the writer's own directory; a segment with no `.tim` file is
+//! skipped, not errored, matching `SegmentDeleteSource`'s own "unlisted
+//! segment left untouched" contract. Neither call is buffered -- both commit
+//! immediately on success, matching the wrapped methods' own atomicity.
+//!
 //! **Deliberately out of scope, tracked in `docs/parity.md`**: this module
-//! does not wrap `IndexWriter::update_document`/`delete_documents`/
-//! `apply_merge`/`segment_infos`/`pending_doc_count` -- only the specific
-//! surface this task asked for (open/add_document/commit/prepare_commit/
-//! finish_commit/rollback/set_merge_policy/set_postings_field/
-//! set_term_vector_field/set_doc_values_field) is exposed. `set_merge_policy`
-//! itself only exposes the four knobs
-//! [`lucene_index::merge_policy::MergePolicyConfig`] actually has today
+//! does not wrap `IndexWriter::apply_merge`/`segment_infos`/
+//! `pending_doc_count` -- manual merge control and writer-state introspection
+//! are a separate task. `set_merge_policy` itself only exposes the four
+//! knobs [`lucene_index::merge_policy::MergePolicyConfig`] actually has today
 //! (`max_merge_at_once`, `segments_per_tier`, `max_merged_segment_size`,
 //! `reclaim_weight`) -- no additional `TieredMergePolicy` knobs (e.g.
 //! `forceMergeDeletesPctAllowed`, `floorSegmentMB`) are invented, since none
@@ -37,14 +54,20 @@
 
 use std::os::raw::c_char;
 
+use lucene_codecs::blocktree::{self, BlockTreeFields};
+use lucene_codecs::field_infos::FieldInfos;
 use lucene_codecs::field_infos::{
     DocValuesSkipIndexType, DocValuesType, FieldInfo, IndexOptions, VectorEncoding,
     VectorSimilarityFunction,
 };
-use lucene_codecs::stored_fields::{Document, FieldValue, StoredField};
+use lucene_codecs::postings::DocInput;
+use lucene_codecs::stored_fields::{self, Document, FieldValue, StoredField};
+use lucene_index::deletes;
 use lucene_index::index_writer::{self, IndexWriter, MergePolicyConfig};
 use lucene_index::segment_info::LuceneVersion;
+use lucene_index::update_document::SegmentDeleteSource;
 use lucene_store::directory::{Directory, FsDirectory};
+use lucene_util::fixed_bit_set::FixedBitSet;
 
 use crate::error::{guard, set_last_error, FfiStatus};
 use crate::raw::{bytes_from_raw, str_from_raw};
@@ -592,6 +615,320 @@ pub unsafe extern "C" fn ffi_writer_set_doc_values_field(
             .writer
             .set_doc_values_field(name)
             .map_err(|e| map_writer_error("ffi_writer_set_doc_values_field", e))
+    })
+}
+
+/// One committed segment's postings/live-docs bytes, reopened fresh from
+/// `dir` -- the owned backing storage a [`SegmentDeleteSource`] built by
+/// [`open_all_segment_sources`] borrows from for the lifetime of one
+/// [`ffi_writer_update_document`]/[`ffi_writer_delete_documents`] call.
+struct OpenedSegmentSource {
+    segment_name: String,
+    segment_id: [u8; lucene_store::codec_util::ID_LENGTH],
+    tim: lucene_store::directory::Input,
+    tip: lucene_store::directory::Input,
+    tmd: lucene_store::directory::Input,
+    doc: lucene_store::directory::Input,
+    live_docs: Option<FixedBitSet>,
+    max_doc: usize,
+}
+
+/// Reopens every currently-committed segment of `writer` that has a `.tim`
+/// file -- i.e. was flushed by a commit with
+/// [`ffi_writer_set_postings_field`] enabled -- so
+/// [`ffi_writer_update_document`]/[`ffi_writer_delete_documents`] can build a
+/// [`SegmentDeleteSource`] per segment. A segment with no `.tim` file is
+/// skipped entirely (not an error): [`IndexWriter::update_document`]/
+/// [`IndexWriter::delete_documents`] already treat a segment absent from
+/// `delete_sources` as "left untouched" (see those methods' own doc
+/// comments), so a stored-fields-only segment simply never has its docs
+/// considered for this delete/update -- matching real Lucene's own
+/// `BufferedUpdates` timing limitation this port documents (a delete only
+/// ever resolves against segments whose postings are actually available to
+/// resolve it against).
+fn open_all_segment_sources(writer: &IndexWriter) -> Result<Vec<OpenedSegmentSource>, FfiStatus> {
+    let dir = writer.dir();
+    let all_files = dir.list_all().map_err(|e| {
+        set_last_error(format!("ffi_writer: listing directory: {e}"));
+        FfiStatus::Io
+    })?;
+
+    let read = |name: &str| -> Result<lucene_store::directory::Input, FfiStatus> {
+        dir.open(name).map_err(|e| {
+            set_last_error(format!("ffi_writer: opening {name}: {e}"));
+            FfiStatus::Io
+        })
+    };
+
+    let mut out = Vec::new();
+    for sci in &writer.segment_infos().segments {
+        let tim_name = format!("{}.tim", sci.segment_name);
+        if !all_files.iter().any(|f| f == &tim_name) {
+            continue;
+        }
+        let tim = read(&tim_name)?;
+        let tip = read(&format!("{}.tip", sci.segment_name))?;
+        let tmd = read(&format!("{}.tmd", sci.segment_name))?;
+        let doc = read(&format!("{}.doc", sci.segment_name))?;
+
+        let fdt = read(&format!("{}.fdt", sci.segment_name))?;
+        let fdx = read(&format!("{}.fdx", sci.segment_name))?;
+        let fdm = read(&format!("{}.fdm", sci.segment_name))?;
+        let max_doc = stored_fields::open(&fdt, &fdx, &fdm, &sci.segment_id, "")
+            .map_err(|e| {
+                set_last_error(format!(
+                    "ffi_writer: opening stored fields for {}: {e}",
+                    sci.segment_name
+                ));
+                FfiStatus::Io
+            })?
+            .max_doc() as usize;
+
+        let live_docs = if sci.del_gen >= 0 {
+            let liv = read(&deletes::liv_file_name(&sci.segment_name, sci.del_gen))?;
+            let parsed = lucene_codecs::live_docs::parse(
+                &liv,
+                &sci.segment_id,
+                sci.del_gen,
+                max_doc,
+                sci.del_count as usize,
+            )
+            .map_err(|e| {
+                set_last_error(format!(
+                    "ffi_writer: parsing live docs for {}: {e}",
+                    sci.segment_name
+                ));
+                FfiStatus::Io
+            })?;
+            Some(parsed)
+        } else {
+            None
+        };
+
+        out.push(OpenedSegmentSource {
+            segment_name: sci.segment_name.clone(),
+            segment_id: sci.segment_id,
+            tim,
+            tip,
+            tmd,
+            doc,
+            live_docs,
+            max_doc,
+        });
+    }
+    Ok(out)
+}
+
+/// Builds one [`SegmentDeleteSource`] per [`OpenedSegmentSource`], resolving
+/// each segment's [`BlockTreeFields`]/[`DocInput`] against `field_infos` --
+/// the shared setup [`ffi_writer_update_document`]/
+/// [`ffi_writer_delete_documents`] both need before calling into
+/// [`IndexWriter::update_document`]/[`IndexWriter::delete_documents`].
+fn build_delete_sources<'a>(
+    opened: &'a [OpenedSegmentSource],
+    field_infos: &FieldInfos,
+    blocktree_fields: &'a mut Vec<BlockTreeFields>,
+    doc_inputs: &'a mut Vec<DocInput<'a>>,
+) -> Result<Vec<SegmentDeleteSource<'a>>, FfiStatus> {
+    for seg in opened {
+        let fields = blocktree::open(
+            &seg.tim,
+            &seg.tip,
+            &seg.tmd,
+            field_infos,
+            &seg.segment_id,
+            "",
+            seg.max_doc as i32,
+        )
+        .map_err(|e| {
+            set_last_error(format!(
+                "ffi_writer: opening blocktree fields for {}: {e}",
+                seg.segment_name
+            ));
+            FfiStatus::Io
+        })?;
+        blocktree_fields.push(fields);
+
+        let doc_in = DocInput::open(&seg.doc, &seg.segment_id, "").map_err(|e| {
+            set_last_error(format!(
+                "ffi_writer: opening doc input for {}: {e}",
+                seg.segment_name
+            ));
+            FfiStatus::Io
+        })?;
+        doc_inputs.push(doc_in);
+    }
+
+    Ok(opened
+        .iter()
+        .zip(blocktree_fields.iter())
+        .zip(doc_inputs.iter())
+        .map(|((seg, fields), doc_in)| SegmentDeleteSource {
+            segment_name: &seg.segment_name,
+            fields,
+            doc_in: Some(doc_in),
+            live_docs: seg.live_docs.as_ref(),
+            max_doc: seg.max_doc,
+        })
+        .collect())
+}
+
+/// The atomic delete-by-term + add-document real Lucene calls
+/// `updateDocument` -- see [`IndexWriter::update_document`]. `field_name`/
+/// `field_name_len` and `term_ptr`/`term_len` identify the term to delete:
+/// raw, already-analyzed bytes (e.g. lowercase) exactly as this writer's own
+/// postings would have indexed them -- this FFI boundary performs no
+/// analysis of its own, same as every other raw-bytes term this crate's
+/// `query.rs` already accepts. The replacement document's fields are
+/// described by the same four parallel arrays [`ffi_writer_add_document`]
+/// uses (see its own doc comment, and [`decode_field_value`]'s, for the six
+/// `field_kinds` values understood).
+///
+/// Delete resolution only reaches segments that already have a `.tim` file
+/// on disk -- see [`open_all_segment_sources`]'s doc comment for exactly why
+/// (a segment this writer flushed with no [`ffi_writer_set_postings_field`]
+/// enabled at commit time has no postings to search, so it is left
+/// untouched, matching [`IndexWriter::update_document`]'s own "no matching
+/// source" contract). Unlike [`ffi_writer_add_document`], this commits
+/// immediately on success -- it is **not** buffered (see
+/// [`IndexWriter::update_document`]'s own doc comment for why).
+///
+/// # Safety
+/// `field_name` must be valid for reads of `field_name_len` bytes. `term_ptr`
+/// must be valid for reads of `term_len` bytes (or null iff `term_len == 0`).
+/// The four document-field arrays follow [`ffi_writer_add_document`]'s exact
+/// same safety contract.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn ffi_writer_update_document(
+    writer_handle: u64,
+    field_name: *const c_char,
+    field_name_len: usize,
+    term_ptr: *const u8,
+    term_len: usize,
+    field_numbers: *const i32,
+    field_kinds: *const u8,
+    field_value_ptrs: *const *const u8,
+    field_value_lens: *const usize,
+    field_count: usize,
+) -> i32 {
+    guard(|| {
+        // SAFETY: caller contract guarantees `field_name` is valid for
+        // `field_name_len` bytes.
+        let field = unsafe { str_from_raw(field_name as *const u8, field_name_len)? };
+        // SAFETY: caller contract guarantees `term_ptr` is valid for
+        // `term_len` bytes (or null iff `term_len == 0`).
+        let term = unsafe { bytes_from_raw(term_ptr, term_len)? };
+
+        let mut new_fields = Vec::with_capacity(field_count);
+        if field_count > 0 {
+            if field_numbers.is_null()
+                || field_kinds.is_null()
+                || field_value_ptrs.is_null()
+                || field_value_lens.is_null()
+            {
+                return Err(FfiStatus::NullPointer);
+            }
+            // SAFETY: caller contract guarantees each array is valid for
+            // `field_count` elements.
+            let (numbers, kinds, value_ptrs, value_lens) = unsafe {
+                (
+                    std::slice::from_raw_parts(field_numbers, field_count),
+                    std::slice::from_raw_parts(field_kinds, field_count),
+                    std::slice::from_raw_parts(field_value_ptrs, field_count),
+                    std::slice::from_raw_parts(field_value_lens, field_count),
+                )
+            };
+            for i in 0..field_count {
+                // SAFETY: caller contract guarantees `value_ptrs[i]` is
+                // valid for `value_lens[i]` bytes.
+                let bytes = unsafe { bytes_from_raw(value_ptrs[i], value_lens[i])? };
+                let value = decode_field_value(kinds[i], bytes)?;
+                new_fields.push(StoredField {
+                    field_number: numbers[i],
+                    value,
+                });
+            }
+        }
+
+        let mut registry = lock_recovering(writers());
+        let handle = registry.get_mut(writer_handle).ok_or_else(|| {
+            set_last_error("ffi_writer_update_document: unknown or already-closed handle");
+            FfiStatus::InvalidHandle
+        })?;
+
+        let opened = open_all_segment_sources(&handle.writer)?;
+        let field_infos = FieldInfos {
+            fields: handle.writer.fields().to_vec(),
+        };
+        let mut blocktree_fields = Vec::new();
+        let mut doc_inputs = Vec::new();
+        let sources = build_delete_sources(
+            &opened,
+            &field_infos,
+            &mut blocktree_fields,
+            &mut doc_inputs,
+        )?;
+
+        handle
+            .writer
+            .update_document(&sources, field, term, Document { fields: new_fields })
+            .map(|_| ())
+            .map_err(|e| map_writer_error("ffi_writer_update_document", e))
+    })
+}
+
+/// Deletes every live doc matching `(field_name, term)` -- see
+/// [`IndexWriter::delete_documents`]. `field_name`/`field_name_len` and
+/// `term_ptr`/`term_len` use the exact same raw-bytes term convention as
+/// [`ffi_writer_update_document`] (see its own doc comment); delete
+/// resolution likewise only reaches segments with a `.tim` file already on
+/// disk (see [`open_all_segment_sources`]). Commits immediately on success,
+/// same as [`ffi_writer_update_document`].
+///
+/// # Safety
+/// `field_name` must be valid for reads of `field_name_len` bytes. `term_ptr`
+/// must be valid for reads of `term_len` bytes (or null iff `term_len == 0`).
+#[no_mangle]
+pub unsafe extern "C" fn ffi_writer_delete_documents(
+    writer_handle: u64,
+    field_name: *const c_char,
+    field_name_len: usize,
+    term_ptr: *const u8,
+    term_len: usize,
+) -> i32 {
+    guard(|| {
+        // SAFETY: caller contract guarantees `field_name` is valid for
+        // `field_name_len` bytes.
+        let field = unsafe { str_from_raw(field_name as *const u8, field_name_len)? };
+        // SAFETY: caller contract guarantees `term_ptr` is valid for
+        // `term_len` bytes (or null iff `term_len == 0`).
+        let term = unsafe { bytes_from_raw(term_ptr, term_len)? };
+
+        let mut registry = lock_recovering(writers());
+        let handle = registry.get_mut(writer_handle).ok_or_else(|| {
+            set_last_error("ffi_writer_delete_documents: unknown or already-closed handle");
+            FfiStatus::InvalidHandle
+        })?;
+
+        let opened = open_all_segment_sources(&handle.writer)?;
+        let field_infos = FieldInfos {
+            fields: handle.writer.fields().to_vec(),
+        };
+        let mut blocktree_fields = Vec::new();
+        let mut doc_inputs = Vec::new();
+        let sources = build_delete_sources(
+            &opened,
+            &field_infos,
+            &mut blocktree_fields,
+            &mut doc_inputs,
+        )?;
+
+        handle
+            .writer
+            .delete_documents(&sources, field, term)
+            .map(|_| ())
+            .map_err(|e| map_writer_error("ffi_writer_delete_documents", e))
     })
 }
 
@@ -1789,6 +2126,442 @@ mod tests {
     /// this module's functions -- the registry-tag check in `handle.rs`
     /// rejects it before any index/generation lookup happens. Exercised here
     /// via a segment/directory registry handle passed to a writer function.
+    /// Opens a writer with a single field named `id` (field number `0`),
+    /// stored and indexed with `DocsAndFreqs` -- callers then opt it into
+    /// [`ffi_writer_set_postings_field`] so `ffi_writer_update_document`/
+    /// `ffi_writer_delete_documents` have real postings to resolve their
+    /// delete term against.
+    fn open_test_writer_with_postings_id_field(path: &std::path::Path) -> (i32, u64) {
+        let path_str = path.to_str().unwrap();
+        let codec = "Lucene104";
+        let name = "id";
+        let mut handle: u64 = 0;
+        let name_ptr = name.as_ptr();
+        let name_lens = [name.len()];
+        let name_ptrs = [name_ptr];
+        let numbers = [0i32];
+        let index_options = [2i32]; // DocsAndFreqs
+        let doc_values_types = [0i32]; // None
+        let store_tvs = [0u8];
+        let rc = unsafe {
+            ffi_open_writer(
+                path_str.as_ptr() as *const c_char,
+                path_str.len(),
+                name_ptrs.as_ptr(),
+                name_lens.as_ptr(),
+                numbers.as_ptr(),
+                index_options.as_ptr(),
+                doc_values_types.as_ptr(),
+                store_tvs.as_ptr(),
+                1,
+                codec.as_ptr() as *const c_char,
+                codec.len(),
+                10,
+                0,
+                0,
+                &mut handle as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::Ok.code());
+        let id_field = "id";
+        assert_eq!(
+            unsafe {
+                ffi_writer_set_postings_field(
+                    handle,
+                    1,
+                    id_field.as_ptr() as *const c_char,
+                    id_field.len(),
+                )
+            },
+            FfiStatus::Ok.code()
+        );
+        (rc, handle)
+    }
+
+    /// Reads every field-0 (`id`) string value still live across every
+    /// segment `segments_N` currently lists, filtering out docs a `.liv` file
+    /// marks dead -- the "real end-to-end read-back through this crate's own
+    /// unmodified read side" this module's other end-to-end tests already
+    /// use, extended to skip deleted docs the way a real reader would.
+    fn read_all_live_ids(dir: &FsDirectory) -> Vec<String> {
+        let sis = segment_infos::read_latest(dir).unwrap();
+        let mut values = Vec::new();
+        for sci in &sis.segments {
+            let fdt = dir.open(&format!("{}.fdt", sci.segment_name)).unwrap();
+            let fdx = dir.open(&format!("{}.fdx", sci.segment_name)).unwrap();
+            let fdm = dir.open(&format!("{}.fdm", sci.segment_name)).unwrap();
+            let reader =
+                lucene_codecs::stored_fields::open(&fdt, &fdx, &fdm, &sci.segment_id, "").unwrap();
+            let max_doc = reader.max_doc() as usize;
+            let live_docs = if sci.del_gen >= 0 {
+                let liv = dir
+                    .open(&lucene_index::deletes::liv_file_name(
+                        &sci.segment_name,
+                        sci.del_gen,
+                    ))
+                    .unwrap();
+                Some(
+                    lucene_codecs::live_docs::parse(
+                        &liv,
+                        &sci.segment_id,
+                        sci.del_gen,
+                        max_doc,
+                        sci.del_count as usize,
+                    )
+                    .unwrap(),
+                )
+            } else {
+                None
+            };
+            for doc_id in 0..reader.max_doc() {
+                if let Some(bits) = &live_docs {
+                    if !bits.get(doc_id as usize) {
+                        continue;
+                    }
+                }
+                let doc = reader.document(doc_id).unwrap();
+                match &doc.fields[0].value {
+                    FieldValue::String(s) => values.push(s.clone()),
+                    other => panic!("unexpected value: {other:?}"),
+                }
+            }
+        }
+        values.sort();
+        values
+    }
+
+    #[test]
+    fn update_document_end_to_end_replaces_the_old_doc_with_the_new_one() {
+        let tmp = tempdir("update-doc-ffi");
+        let (_, handle) = open_test_writer_with_postings_id_field(&tmp);
+
+        assert_eq!(add_doc(handle, "docaaa"), FfiStatus::Ok.code());
+        assert_eq!(add_doc(handle, "docbbb"), FfiStatus::Ok.code());
+        assert_eq!(ffi_writer_commit(handle), FfiStatus::Ok.code());
+
+        let field_name = "id";
+        let term = b"docaaa";
+        let new_numbers = [0i32];
+        let new_kinds = [0u8];
+        let new_value = "docccc";
+        let new_ptrs = [new_value.as_ptr()];
+        let new_lens = [new_value.len()];
+        let rc = unsafe {
+            ffi_writer_update_document(
+                handle,
+                field_name.as_ptr() as *const c_char,
+                field_name.len(),
+                term.as_ptr(),
+                term.len(),
+                new_numbers.as_ptr(),
+                new_kinds.as_ptr(),
+                new_ptrs.as_ptr(),
+                new_lens.as_ptr(),
+                1,
+            )
+        };
+        assert_eq!(rc, FfiStatus::Ok.code());
+        // `update_document` commits immediately -- no separate
+        // `ffi_writer_commit` call needed before the on-disk state reflects
+        // the replacement, but this module's own read-back must go through
+        // a fresh `segments_N` read, which is what `read_all_live_ids` does.
+
+        let dir = FsDirectory::open(&tmp);
+        let values = read_all_live_ids(&dir);
+        assert_eq!(values, vec!["docbbb".to_string(), "docccc".to_string()]);
+
+        ffi_close_writer(handle);
+    }
+
+    #[test]
+    fn delete_documents_end_to_end_removes_only_the_matching_doc() {
+        let tmp = tempdir("delete-doc-ffi");
+        let (_, handle) = open_test_writer_with_postings_id_field(&tmp);
+
+        assert_eq!(add_doc(handle, "doc1"), FfiStatus::Ok.code());
+        assert_eq!(add_doc(handle, "doc2"), FfiStatus::Ok.code());
+        assert_eq!(add_doc(handle, "doc3"), FfiStatus::Ok.code());
+        assert_eq!(ffi_writer_commit(handle), FfiStatus::Ok.code());
+
+        let field_name = "id";
+        let term = b"doc2";
+        let rc = unsafe {
+            ffi_writer_delete_documents(
+                handle,
+                field_name.as_ptr() as *const c_char,
+                field_name.len(),
+                term.as_ptr(),
+                term.len(),
+            )
+        };
+        assert_eq!(rc, FfiStatus::Ok.code());
+
+        let dir = FsDirectory::open(&tmp);
+        let values = read_all_live_ids(&dir);
+        assert_eq!(values, vec!["doc1".to_string(), "doc3".to_string()]);
+
+        ffi_close_writer(handle);
+    }
+
+    #[test]
+    fn update_document_unknown_writer_handle_is_invalid_handle() {
+        let field_name = "id";
+        let term = b"x";
+        let numbers = [0i32];
+        let kinds = [0u8];
+        let value = "y";
+        let ptrs = [value.as_ptr()];
+        let lens = [value.len()];
+        let rc = unsafe {
+            ffi_writer_update_document(
+                0xDEAD_BEEF,
+                field_name.as_ptr() as *const c_char,
+                field_name.len(),
+                term.as_ptr(),
+                term.len(),
+                numbers.as_ptr(),
+                kinds.as_ptr(),
+                ptrs.as_ptr(),
+                lens.as_ptr(),
+                1,
+            )
+        };
+        assert_eq!(rc, FfiStatus::InvalidHandle.code());
+    }
+
+    #[test]
+    fn update_document_null_field_name_is_null_pointer_error() {
+        let term = b"x";
+        let rc = unsafe {
+            ffi_writer_update_document(
+                0xDEAD_BEEF,
+                std::ptr::null(),
+                1,
+                term.as_ptr(),
+                term.len(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+            )
+        };
+        assert_eq!(rc, FfiStatus::NullPointer.code());
+    }
+
+    #[test]
+    fn delete_documents_unknown_writer_handle_is_invalid_handle() {
+        let field_name = "id";
+        let term = b"x";
+        let rc = unsafe {
+            ffi_writer_delete_documents(
+                0xDEAD_BEEF,
+                field_name.as_ptr() as *const c_char,
+                field_name.len(),
+                term.as_ptr(),
+                term.len(),
+            )
+        };
+        assert_eq!(rc, FfiStatus::InvalidHandle.code());
+    }
+
+    #[test]
+    fn delete_documents_null_field_name_is_null_pointer_error() {
+        let term = b"x";
+        let rc = unsafe {
+            ffi_writer_delete_documents(0xDEAD_BEEF, std::ptr::null(), 1, term.as_ptr(), term.len())
+        };
+        assert_eq!(rc, FfiStatus::NullPointer.code());
+    }
+
+    #[test]
+    fn delete_documents_on_a_writer_with_no_postings_segments_is_a_no_op() {
+        // A writer whose only committed segment was flushed stored-only (no
+        // `set_postings_field`) has no `.tim` file at all --
+        // `open_all_segment_sources` must skip it (not error), leaving
+        // `delete_documents` with an empty `delete_sources` list -- exactly
+        // the "no matching source" no-op path.
+        let tmp = tempdir("delete-doc-no-postings");
+        let (_, handle) = open_test_writer(&tmp);
+        assert_eq!(add_doc(handle, "a"), FfiStatus::Ok.code());
+        assert_eq!(ffi_writer_commit(handle), FfiStatus::Ok.code());
+
+        let field_name = "id";
+        let term = b"a";
+        let rc = unsafe {
+            ffi_writer_delete_documents(
+                handle,
+                field_name.as_ptr() as *const c_char,
+                field_name.len(),
+                term.as_ptr(),
+                term.len(),
+            )
+        };
+        assert_eq!(rc, FfiStatus::Ok.code());
+
+        let dir = FsDirectory::open(&tmp);
+        let sis = segment_infos::read_latest(&dir).unwrap();
+        assert_eq!(sis.segments.len(), 1);
+        assert_eq!(sis.segments[0].del_count, 0);
+
+        ffi_close_writer(handle);
+    }
+
+    #[test]
+    fn delete_documents_with_a_term_matching_zero_docs_in_a_postings_segment_is_a_no_op() {
+        // Distinct from the "no postings segments at all" no-op above: here
+        // a real `.tim` file exists and is opened as a delete source, but
+        // the term itself matches nothing -- `resolve_term_doc_ids`
+        // returning empty, not `open_all_segment_sources` skipping the
+        // segment entirely.
+        let tmp = tempdir("delete-doc-zero-match");
+        let (_, handle) = open_test_writer_with_postings_id_field(&tmp);
+        assert_eq!(add_doc(handle, "doc1"), FfiStatus::Ok.code());
+        assert_eq!(ffi_writer_commit(handle), FfiStatus::Ok.code());
+
+        let field_name = "id";
+        let term = b"nonexistent";
+        let rc = unsafe {
+            ffi_writer_delete_documents(
+                handle,
+                field_name.as_ptr() as *const c_char,
+                field_name.len(),
+                term.as_ptr(),
+                term.len(),
+            )
+        };
+        assert_eq!(rc, FfiStatus::Ok.code());
+
+        let dir = FsDirectory::open(&tmp);
+        let values = read_all_live_ids(&dir);
+        assert_eq!(values, vec!["doc1".to_string()]);
+
+        ffi_close_writer(handle);
+    }
+
+    #[test]
+    fn delete_documents_matches_docs_across_multiple_committed_segments() {
+        // Two separate commits produce two segments; the delete term
+        // matches a doc in each. Proves `open_all_segment_sources`/
+        // `build_delete_sources` resolve every committed segment, not just
+        // the most recent one.
+        let tmp = tempdir("delete-doc-cross-segment");
+        let (_, handle) = open_test_writer_with_postings_id_field(&tmp);
+        assert_eq!(add_doc(handle, "target"), FfiStatus::Ok.code());
+        assert_eq!(add_doc(handle, "keep1"), FfiStatus::Ok.code());
+        assert_eq!(ffi_writer_commit(handle), FfiStatus::Ok.code());
+        assert_eq!(add_doc(handle, "target"), FfiStatus::Ok.code());
+        assert_eq!(add_doc(handle, "keep2"), FfiStatus::Ok.code());
+        assert_eq!(ffi_writer_commit(handle), FfiStatus::Ok.code());
+
+        let dir = FsDirectory::open(&tmp);
+        let sis = segment_infos::read_latest(&dir).unwrap();
+        assert_eq!(sis.segments.len(), 2, "expected two separate segments");
+
+        let field_name = "id";
+        let term = b"target";
+        let rc = unsafe {
+            ffi_writer_delete_documents(
+                handle,
+                field_name.as_ptr() as *const c_char,
+                field_name.len(),
+                term.as_ptr(),
+                term.len(),
+            )
+        };
+        assert_eq!(rc, FfiStatus::Ok.code());
+
+        let values = read_all_live_ids(&dir);
+        assert_eq!(values, vec!["keep1".to_string(), "keep2".to_string()]);
+
+        ffi_close_writer(handle);
+    }
+
+    #[test]
+    fn update_document_where_term_matches_multiple_docs_replaces_all_of_them() {
+        // Real Lucene's updateDocument semantics: every doc matching the
+        // term is deleted, then exactly one new doc is added -- not "delete
+        // the first match" or "error on ambiguous match."
+        let tmp = tempdir("update-doc-multi-match");
+        let (_, handle) = open_test_writer_with_postings_id_field(&tmp);
+        assert_eq!(add_doc(handle, "dup"), FfiStatus::Ok.code());
+        assert_eq!(add_doc(handle, "dup"), FfiStatus::Ok.code());
+        assert_eq!(add_doc(handle, "keep"), FfiStatus::Ok.code());
+        assert_eq!(ffi_writer_commit(handle), FfiStatus::Ok.code());
+
+        let field_name = "id";
+        let term = b"dup";
+        let new_numbers = [0i32];
+        let new_kinds = [0u8];
+        let new_value = "replaced";
+        let new_ptrs = [new_value.as_ptr()];
+        let new_lens = [new_value.len()];
+        let rc = unsafe {
+            ffi_writer_update_document(
+                handle,
+                field_name.as_ptr() as *const c_char,
+                field_name.len(),
+                term.as_ptr(),
+                term.len(),
+                new_numbers.as_ptr(),
+                new_kinds.as_ptr(),
+                new_ptrs.as_ptr(),
+                new_lens.as_ptr(),
+                1,
+            )
+        };
+        assert_eq!(rc, FfiStatus::Ok.code());
+
+        let dir = FsDirectory::open(&tmp);
+        let values = read_all_live_ids(&dir);
+        assert_eq!(values, vec!["keep".to_string(), "replaced".to_string()]);
+
+        ffi_close_writer(handle);
+    }
+
+    #[test]
+    fn delete_documents_does_not_affect_pending_uncommitted_documents() {
+        // A doc added but not yet committed lives only in pending_docs,
+        // which delete_documents/update_document never touch (they operate
+        // on already-committed segment_infos) -- it must survive an
+        // interleaved delete untouched and still appear after the next
+        // commit. Uses single-word values deliberately (no underscore/
+        // punctuation): the "id" field goes through the real tokenizer via
+        // set_postings_field, so a value like "committed_target" would
+        // split into two tokens and never match an exact-term delete for
+        // the whole string -- caught during review by dumping segment_infos
+        // and seeing del_count stay 0 despite del_gen bumping to 1.
+        let tmp = tempdir("delete-doc-pending-survives");
+        let (_, handle) = open_test_writer_with_postings_id_field(&tmp);
+        assert_eq!(add_doc(handle, "target"), FfiStatus::Ok.code());
+        assert_eq!(ffi_writer_commit(handle), FfiStatus::Ok.code());
+
+        // Buffered but not yet committed.
+        assert_eq!(add_doc(handle, "pending"), FfiStatus::Ok.code());
+
+        let field_name = "id";
+        let term = b"target";
+        let rc = unsafe {
+            ffi_writer_delete_documents(
+                handle,
+                field_name.as_ptr() as *const c_char,
+                field_name.len(),
+                term.as_ptr(),
+                term.len(),
+            )
+        };
+        assert_eq!(rc, FfiStatus::Ok.code());
+
+        // Flush the still-pending doc.
+        assert_eq!(ffi_writer_commit(handle), FfiStatus::Ok.code());
+
+        let dir = FsDirectory::open(&tmp);
+        let values = read_all_live_ids(&dir);
+        assert_eq!(values, vec!["pending".to_string()]);
+
+        ffi_close_writer(handle);
+    }
+
     #[test]
     fn directory_handle_passed_to_writer_function_is_invalid_handle() {
         use crate::directory::ffi_open_directory;

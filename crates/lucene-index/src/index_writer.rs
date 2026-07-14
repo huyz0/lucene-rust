@@ -484,6 +484,29 @@ impl<'d> IndexWriter<'d> {
         self.merge_policy = config;
     }
 
+    /// Read-only access to the directory this writer was opened over.
+    /// Exists so a caller that wants to drive
+    /// [`IndexWriter::update_document`]/[`IndexWriter::delete_documents`]
+    /// itself can reopen this writer's already-committed segments' files to
+    /// build the [`update_document::SegmentDeleteSource`]s those two methods
+    /// require (see `crates/lucene-ffi/src/writer.rs`'s
+    /// `ffi_writer_update_document`/`ffi_writer_delete_documents` for exactly
+    /// that use) -- nothing about the writer's own state is exposed here,
+    /// only the same `&dyn Directory` it already holds.
+    pub fn dir(&self) -> &'d dyn Directory {
+        self.dir
+    }
+
+    /// Read-only access to this writer's fixed field list (see
+    /// [`IndexWriter::open`]'s doc comment for what "fixed" means here) --
+    /// same rationale as [`IndexWriter::dir`]: a caller building
+    /// [`update_document::SegmentDeleteSource`]s externally needs the exact
+    /// [`FieldInfo`] list this writer's own segments were written against to
+    /// reopen their postings via [`lucene_codecs::blocktree::open`].
+    pub fn fields(&self) -> &[FieldInfo] {
+        &self.fields
+    }
+
     /// Buffers `doc` for the next [`IndexWriter::commit`] -- real Lucene's
     /// `IndexWriter.addDocument`, minus the RAM-threshold auto-flush this
     /// port doesn't have (see module doc comment). Nothing is written to

@@ -781,6 +781,46 @@ unknown-field-name-is-`InvalidArgument` rejection for each of the three setters.
 index options/doc-values type/term-vector storage at its default (no
 `omit_norms`/points/vector dimensions over this entry point yet).
 
+**Progress (follow-up task): IndexWriter update_document/delete_documents FFI
+exposure.** `writer.rs` now also wraps `IndexWriter::update_document`/
+`delete_documents` -- the two of the previously-deferred five (alongside
+`apply_merge`/`segment_infos`/`pending_doc_count`, which remain out of scope)
+this task targeted. `ffi_writer_update_document`/`ffi_writer_delete_documents`
+identify their delete term as raw, already-analyzed `(field_name, term)`
+bytes (no analysis at this FFI boundary, matching `query.rs`'s existing
+raw-bytes-term stance); `ffi_writer_update_document`'s replacement document
+reuses `ffi_writer_add_document`'s exact parallel-array field encoding.
+Because `SegmentDeleteSource` needs an opened `BlockTreeFields`/`DocInput` per
+segment, a new pair of helpers (`open_all_segment_sources`/
+`build_delete_sources`) builds that itself: every currently-committed segment
+with a `.tim` file on disk (flushed with `ffi_writer_set_postings_field`
+enabled at that commit) is reopened fresh from the writer's own directory,
+plus its `.liv` if one exists; a segment with no `.tim` file is skipped, not
+errored, matching `SegmentDeleteSource`'s own "unlisted segment left
+untouched" contract. `IndexWriter` gained two small read-only accessors,
+`dir()`/`fields()`, purely so this FFI-side helper can reopen those files and
+know the field schema to decode postings against. Neither FFI call is
+buffered -- both commit immediately on success, matching the wrapped
+methods' own atomicity.
+
+Tests added to `writer.rs`'s own module:
+`update_document_end_to_end_replaces_the_old_doc_with_the_new_one` (adds two
+docs with real postings on `id` over FFI, commits, updates one by term over
+FFI, then reads every live doc back through this crate's own unmodified
+`stored_fields`/`live_docs` read side to confirm the old doc is gone and the
+new one present), `delete_documents_end_to_end_removes_only_the_matching_doc`
+(same shape, proving only the matching doc is removed and the others
+survive), `delete_documents_on_a_writer_with_no_postings_segments_is_a_no_op`
+(a writer whose only committed segment was flushed stored-only leaves
+`del_count` at `0`, proving the skip-not-error contract), plus unknown-handle
+and null-field-name rejection for both new functions.
+`cargo llvm-cov --workspace --fail-under-lines 95` passes (97.64% total;
+`writer.rs` 95.85%).
+
+**Still out of scope, called out in the module doc comment and
+`docs/parity.md`:** `apply_merge`/`segment_infos`/`pending_doc_count` are not
+wrapped -- a separate task.
+
 ### Phase 5 — Write path: analysis chain + indexing (est. 12–16 weeks)
 
 **Progress so far:** every single-segment write primitive (stored fields, `FieldInfos`,
