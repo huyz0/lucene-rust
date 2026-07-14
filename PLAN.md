@@ -3044,6 +3044,46 @@ total 98.29% lines). See `docs/parity.md`'s updated row (the
 `search_points_range` row's "no FFI exposure yet" note replaced) for the
 exact scope statement.
 
+**Progress (SynonymFilter bidirectional expansion):** opt-in bidirectional
+mode for `lucene-analysis/src/lib.rs::SynonymFilter`, mirroring real
+Lucene's `SynonymMap.Builder(true)` bidirectional construction option at
+this filter's existing single-word-to-single-word scope. New
+`SynonymFilter::apply_bidirectional(tokens, synonyms)` and a matching
+`Analyzer::with_bidirectional_synonyms(synonyms)` builder method -- both
+purely additive; `SynonymFilter::apply` and `Analyzer::with_synonyms` are
+untouched, so every existing caller's behavior is unchanged (confirmed by a
+new test asserting the same config still expands only forward through
+`apply`). Given the same `HashMap<String, Vec<String>>` config, a `key ->
+[values]` mapping now also expands each `value -> key`: configuring only
+`"cat" -> ["feline"]` is enough for analyzing `"feline"` to inject `"cat"`,
+without the caller configuring both directions. A new private helper,
+`build_bidirectional_map`, builds the combined forward+reverse map once per
+`apply_bidirectional` call (not per-token) and dedupes so a term configured
+in both directions already (e.g. `"cat" -> ["feline"]` and `"feline" ->
+["cat"]` both present) never gets injected twice. **What "bidirectional"
+means here, stated exactly**: only the direct reverse of each configured
+one-word-to-one-word pair is added -- no transitive closure (if `"cat" ->
+["feline"]` and `"feline" -> ["kitty"]` are both configured, this does not
+infer `"cat" -> ["kitty"]`), no multi-word synonym phrases, no
+weighted/scored synonyms, and no `includeOrig` flag -- all the same scope
+carve-outs `SynonymFilter`'s existing doc comment already states for the
+unidirectional case, since this mode reuses the same injection mechanics.
+Tests (7 new, all in `lucene-analysis/src/lib.rs::tests`): a
+forward-only-configured term expands in both directions under
+`apply_bidirectional`; the original `apply` entry point confirmed still
+unidirectional with the same config; both-directions-configured produces no
+duplicate injection either way; a multi-synonym key (`"cat" -> ["feline",
+"kitty"]`) reverses into two independent entries rather than cross-linking
+"feline"/"kitty" to each other; composed with `StopFilter` (mirroring the
+existing stopword-composition test); composed with `PorterStemFilter`
+(mirroring the existing stemming-composition test, exercised in both
+directions). `cargo test -p lucene-analysis`: 45 lib tests pass (up from
+39). `cargo fmt --all` and `cargo clippy --workspace --all-targets -- -D
+warnings` clean. New code (`apply_bidirectional`, `build_bidirectional_map`,
+`with_bidirectional_synonyms`) fully exercised by the new tests. See
+`docs/parity.md`'s updated `SynonymFilter` row for the exact scope
+statement.
+
 3. Indexing chain: `IndexWriter`, DWPT-per-thread with in-memory hash (bytes → postings
    builder mirroring `BytesRefHash` + parallel arrays), flush-by-RAM accounting,
    `flush()` → segment.

@@ -339,11 +339,14 @@ impl PorterStemFilter {
 /// since the synonym doesn't correspond to distinct source text, it's an
 /// alternative reading of the same span.
 ///
-/// **Bidirectionality is NOT automatic** (matching real Lucene's
+/// **Bidirectionality is NOT automatic by default** (matching real Lucene's
 /// `SynonymMap`, which also requires explicit configuration in both
 /// directions): configuring `"quick" -> ["fast"]` does *not* also expand
-/// `"fast"` to `"quick"`. A caller wanting symmetric synonyms must configure
-/// both `"quick" -> ["fast"]` and `"fast" -> ["quick"]` themselves.
+/// `"fast"` to `"quick"`. A caller wanting symmetric synonyms must either
+/// configure both `"quick" -> ["fast"]` and `"fast" -> ["quick"]` themselves,
+/// or use [`SynonymFilter::apply_bidirectional`] (see that method for the
+/// opt-in bidirectional mode, mirroring real Lucene's
+/// `SynonymMap.Builder(true)` construction option at a scoped-down level).
 pub struct SynonymFilter;
 
 impl SynonymFilter {
@@ -372,6 +375,72 @@ impl SynonymFilter {
         }
         out
     }
+
+    /// Opt-in bidirectional variant of [`SynonymFilter::apply`], mirroring
+    /// real Lucene's `SynonymMap.Builder(true)` (bidirectional) construction
+    /// mode at this crate's documented single-word-to-single-word scope:
+    /// given the same `HashMap<String, Vec<String>>` config, a `key ->
+    /// [values]` mapping ALSO expands each `value -> key` (the reverse of a
+    /// direct one-word-to-one-word mapping), so configuring only `"cat" ->
+    /// ["feline"]` is enough for analyzing `"feline"` to also inject `"cat"`
+    /// -- the caller no longer needs to configure both directions
+    /// themselves.
+    ///
+    /// **Not replicated** (same scope carve-outs as [`SynonymFilter::apply`],
+    /// plus one more specific to this mode): multi-word synonym phrases,
+    /// weighted/scored synonyms, and real Lucene's `includeOrig` flag are all
+    /// out of scope. Also out of scope: transitive closure -- if `"cat" ->
+    /// ["feline"]` and `"feline" -> ["kitty"]` are both configured, this does
+    /// *not* additionally infer `"cat" -> ["kitty"]` or `"kitty" -> ["cat"]`;
+    /// only the direct reverse of each configured pair is added.
+    ///
+    /// The combined forward+reverse map is built once per call (not
+    /// per-token) via an internal helper, then delegated to
+    /// [`SynonymFilter::apply`]. A term appearing as both a key and a value
+    /// across different mappings (e.g. `"cat" -> ["feline"]` and `"feline"
+    /// -> ["cat"]` both configured) is deduplicated -- each direction's
+    /// value list never contains the same term twice.
+    pub fn apply_bidirectional(
+        tokens: Vec<Token>,
+        synonyms: &HashMap<String, Vec<String>>,
+    ) -> Vec<Token> {
+        let merged = build_bidirectional_map(synonyms);
+        Self::apply(tokens, &merged)
+    }
+}
+
+/// Builds a combined forward+reverse synonym map from `synonyms`: every
+/// configured `key -> [values]` entry is kept as-is, and additionally each
+/// `value -> key` reverse entry is added. Used by
+/// [`SynonymFilter::apply_bidirectional`] to precompute the expanded map
+/// once per call rather than re-deriving it per token.
+///
+/// Deduplicates so that a term already present in a target term's value
+/// list (whether from the forward or reverse pass) is never added twice --
+/// this handles both a term mapping to itself (`v == k`, skipped) and a pair
+/// configured in both directions already (e.g. `"cat" -> ["feline"]` and
+/// `"feline" -> ["cat"]` both present in `synonyms`).
+fn build_bidirectional_map(
+    synonyms: &HashMap<String, Vec<String>>,
+) -> HashMap<String, Vec<String>> {
+    let mut merged: HashMap<String, Vec<String>> = HashMap::new();
+    for (k, vs) in synonyms {
+        let entry = merged.entry(k.clone()).or_default();
+        for v in vs {
+            if !entry.contains(v) {
+                entry.push(v.clone());
+            }
+        }
+    }
+    for (k, vs) in synonyms {
+        for v in vs {
+            let entry = merged.entry(v.clone()).or_default();
+            if v != k && !entry.contains(k) {
+                entry.push(k.clone());
+            }
+        }
+    }
+    merged
 }
 
 /// An analyzer composing a tokenizer with a configurable filter chain.
@@ -389,6 +458,7 @@ pub struct Analyzer {
     ascii_folding: bool,
     stemming: bool,
     synonyms: Option<HashMap<String, Vec<String>>>,
+    synonyms_bidirectional: bool,
 }
 
 impl Analyzer {
@@ -404,6 +474,7 @@ impl Analyzer {
             ascii_folding: false,
             stemming: false,
             synonyms: None,
+            synonyms_bidirectional: false,
         }
     }
 
@@ -449,6 +520,19 @@ impl Analyzer {
         self
     }
 
+    /// Opt-in bidirectional variant of [`Analyzer::with_synonyms`]: same
+    /// filter-chain position (last), but applies
+    /// [`SynonymFilter::apply_bidirectional`] instead of
+    /// [`SynonymFilter::apply`], so a configured `key -> [values]` mapping
+    /// also expands each `value -> key`. Does not affect any other
+    /// existing behavior -- an `Analyzer` built with [`Analyzer::with_synonyms`]
+    /// is completely unaffected by this method's existence.
+    pub fn with_bidirectional_synonyms(mut self, synonyms: HashMap<String, Vec<String>>) -> Self {
+        self.synonyms = Some(synonyms);
+        self.synonyms_bidirectional = true;
+        self
+    }
+
     pub fn analyze(&self, text: &str) -> Vec<Token> {
         let tokens = tokenize(text);
         let tokens = if self.ascii_folding {
@@ -467,6 +551,9 @@ impl Analyzer {
             tokens
         };
         match &self.synonyms {
+            Some(synonyms) if self.synonyms_bidirectional => {
+                SynonymFilter::apply_bidirectional(tokens, synonyms)
+            }
             Some(synonyms) => SynonymFilter::apply(tokens, synonyms),
             None => tokens,
         }
@@ -1351,6 +1438,151 @@ mod tests {
             .with_synonyms(synonyms);
         let out = analyzer.analyze("running");
         assert_eq!(out, vec![tok("run", 0, 7, 1), tok("sprint", 0, 7, 0),]);
+    }
+
+    #[test]
+    fn synonym_filter_apply_bidirectional_expands_both_directions() {
+        // Only "cat" -> ["feline"] is configured; apply_bidirectional must
+        // ALSO expand "feline" -> "cat" without that reverse mapping being
+        // configured explicitly.
+        let synonyms: HashMap<String, Vec<String>> =
+            [("cat".to_string(), vec!["feline".to_string()])]
+                .into_iter()
+                .collect();
+
+        let out_forward = SynonymFilter::apply_bidirectional(vec![tok("cat", 0, 3, 1)], &synonyms);
+        assert_eq!(
+            out_forward,
+            vec![tok("cat", 0, 3, 1), tok("feline", 0, 3, 0)]
+        );
+
+        let out_reverse =
+            SynonymFilter::apply_bidirectional(vec![tok("feline", 0, 6, 1)], &synonyms);
+        assert_eq!(
+            out_reverse,
+            vec![tok("feline", 0, 6, 1), tok("cat", 0, 6, 0)]
+        );
+    }
+
+    #[test]
+    fn synonym_filter_apply_non_bidirectional_still_unidirectional() {
+        // The original `apply` entry point must remain completely unchanged:
+        // with the same config, analyzing "feline" injects nothing.
+        let synonyms: HashMap<String, Vec<String>> =
+            [("cat".to_string(), vec!["feline".to_string()])]
+                .into_iter()
+                .collect();
+        let tokens = vec![tok("feline", 0, 6, 1)];
+        let out = SynonymFilter::apply(tokens.clone(), &synonyms);
+        assert_eq!(out, tokens);
+    }
+
+    #[test]
+    fn synonym_filter_apply_bidirectional_no_duplicate_when_both_directions_configured() {
+        // "cat" -> ["feline"] AND "feline" -> ["cat"] both explicitly
+        // configured: the merged map must not inject "cat" (or "feline")
+        // twice.
+        let synonyms: HashMap<String, Vec<String>> = [
+            ("cat".to_string(), vec!["feline".to_string()]),
+            ("feline".to_string(), vec!["cat".to_string()]),
+        ]
+        .into_iter()
+        .collect();
+
+        let out_cat = SynonymFilter::apply_bidirectional(vec![tok("cat", 0, 3, 1)], &synonyms);
+        assert_eq!(out_cat, vec![tok("cat", 0, 3, 1), tok("feline", 0, 3, 0)]);
+
+        let out_feline =
+            SynonymFilter::apply_bidirectional(vec![tok("feline", 0, 6, 1)], &synonyms);
+        assert_eq!(
+            out_feline,
+            vec![tok("feline", 0, 6, 1), tok("cat", 0, 6, 0)]
+        );
+    }
+
+    #[test]
+    fn synonym_filter_apply_bidirectional_multi_value_key_reverses_independently() {
+        // "cat" -> ["feline", "kitty"]: the reverse mapping must produce two
+        // SEPARATE entries, "feline" -> ["cat"] and "kitty" -> ["cat"] --
+        // "feline" and "kitty" must NOT become synonyms of each other, since
+        // the forward config never said that.
+        let synonyms: HashMap<String, Vec<String>> = [(
+            "cat".to_string(),
+            vec!["feline".to_string(), "kitty".to_string()],
+        )]
+        .into_iter()
+        .collect();
+
+        let out_feline =
+            SynonymFilter::apply_bidirectional(vec![tok("feline", 0, 6, 1)], &synonyms);
+        assert_eq!(
+            out_feline,
+            vec![tok("feline", 0, 6, 1), tok("cat", 0, 6, 0)]
+        );
+
+        let out_kitty = SynonymFilter::apply_bidirectional(vec![tok("kitty", 0, 5, 1)], &synonyms);
+        assert_eq!(out_kitty, vec![tok("kitty", 0, 5, 1), tok("cat", 0, 5, 0)]);
+
+        // Forward direction still expands to BOTH synonyms, unaffected.
+        let out_cat = SynonymFilter::apply_bidirectional(vec![tok("cat", 0, 3, 1)], &synonyms);
+        assert_eq!(
+            out_cat,
+            vec![
+                tok("cat", 0, 3, 1),
+                tok("feline", 0, 3, 0),
+                tok("kitty", 0, 3, 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn synonym_filter_bidirectional_composed_with_stop_filter() {
+        // Mirrors synonym_filter_composed_with_stop_filter_stopword_removed_before_expansion,
+        // but with bidirectional mode on: "the cat fox" with "the" as a
+        // stopword and "cat" -> ["feline"] configured bidirectionally --
+        // stopwords still run first, and "cat" still expands to "feline".
+        let stopwords: HashSet<String> = ["the".to_string()].into_iter().collect();
+        let synonyms: HashMap<String, Vec<String>> =
+            [("cat".to_string(), vec!["feline".to_string()])]
+                .into_iter()
+                .collect();
+        let analyzer = Analyzer::standard(Some(&stopwords)).with_bidirectional_synonyms(synonyms);
+        let out = analyzer.analyze("the cat fox");
+        assert_eq!(
+            out,
+            vec![
+                tok("cat", 4, 7, 2),
+                tok("feline", 4, 7, 0),
+                tok("fox", 8, 11, 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn synonym_filter_bidirectional_composed_with_stemming() {
+        // Mirrors synonym_filter_runs_after_stemming, but bidirectional:
+        // configuring the STEMMED form "run" -> ["sprint"] bidirectionally
+        // means analyzing "sprint" (already the stemmed form of itself)
+        // also injects "run".
+        let synonyms: HashMap<String, Vec<String>> =
+            [("run".to_string(), vec!["sprint".to_string()])]
+                .into_iter()
+                .collect();
+        let analyzer = Analyzer::standard(None)
+            .with_stemming()
+            .with_bidirectional_synonyms(synonyms);
+
+        let out_forward = analyzer.analyze("running");
+        assert_eq!(
+            out_forward,
+            vec![tok("run", 0, 7, 1), tok("sprint", 0, 7, 0),]
+        );
+
+        let out_reverse = analyzer.analyze("sprint");
+        assert_eq!(
+            out_reverse,
+            vec![tok("sprint", 0, 6, 1), tok("run", 0, 6, 0),]
+        );
     }
 
     #[test]
