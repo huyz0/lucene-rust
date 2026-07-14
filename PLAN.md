@@ -148,7 +148,19 @@ The heart of the port. For the pinned codec (e.g. `Lucene103Codec`), implement r
    `.doc/.pos/.pay`): block-decoded FOR/PFOR (the `ForUtil`/`PForUtil` generated code —
    port the generator output, then vectorize with `std::simd` or explicit AVX2 behind
    feature flags; scalar fallback first), skip data (impacts!), `PostingsEnum` with
-   positions/offsets/payloads.
+   positions/offsets/payloads. **Term-suffix block compression (read-side) is done**:
+   `blocktree.rs::decode_block` now dispatches on `CompressionAlgorithm`
+   (`NO_COMPRESSION`/`LOWERCASE_ASCII`/`LZ4`, `code_l & 0x03`), reusing the existing
+   `lz4.rs` decompressor for LZ4 and a small standalone port of
+   `LowercaseAsciiCompression.decompress` for the other mode. LZ4 is verified against
+   a real `Lucene103BlockTreeTermsWriter`-produced fixture
+   (`fixtures/data/blocktree_compressed_index/`, `tests/blocktree_compressed_fixture.rs`);
+   `LOWERCASE_ASCII` is verified against bytes produced by directly invoking real
+   Lucene's own `LowercaseAsciiCompression.compress` (not embedded in an on-disk
+   segment — forcing a real `IndexWriter` to pick that mode over `LZ4`/`NO_COMPRESSION`
+   wasn't achieved in reasonable effort), see `decompress_lowercase_ascii_matches_real_lucene_compress_output`
+   in `blocktree.rs`. This port's own blocktree *writer* still only ever emits
+   `NO_COMPRESSION`.
 3. **Impacts** (`ImpactsEnum`): required for WAND/MAXSCORE in Phase 3 — do not skip.
 4. **Doc values** (`.dvd/.dvm`): numeric (direct-monotonic + gcd/table compression),
    sorted/sorted-set (term dicts + ordinals), binary, sorted-numeric. OpenSearch

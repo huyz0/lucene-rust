@@ -94,9 +94,18 @@
 //! [`TermsEnum`]/[`FieldTerms::iter`] — as a thin cursor over the
 //! already-sorted `entries` `Vec` rather than a reimplementation of
 //! `SegmentTermsEnum`'s lazy block-walking machinery (see `TermsEnum`'s own
-//! doc comment for the full rationale). Suffix compression (`CompressionAlgorithm::LZ4`/
-//! `LowercaseAscii`) also remains unimplemented (`Error::Unsupported`) —
-//! every block this port's fixtures produce still uses `NO_COMPRESSION`.
+//! doc comment for the full rationale). **Suffix compression is now decoded**:
+//! `CompressionAlgorithm::LZ4` (reusing `crate::lz4::decompress`) and
+//! `LowercaseAscii` (a small standalone port of
+//! `LowercaseAsciiCompression.decompress`, see `decompress_lowercase_ascii`)
+//! are both handled read-side in [`decode_block`], alongside the original
+//! `NO_COMPRESSION` path (unchanged). This port's own blocktree *writer*
+//! (see the writer section below) still only ever emits `NO_COMPRESSION` —
+//! this is purely a read-side feature for interoperating with real
+//! Lucene-written segments whose blocks happened to compress. Only code `3`
+//! (never assigned to a `CompressionAlgorithm` constant) is rejected, as
+//! `Error::Store(Corrupted)`, matching `CompressionAlgorithm.byCode`'s own
+//! `IllegalArgumentException`.
 //!
 //! Because this slice never decodes postings inline with block loading, the
 //! per-term metadata bytes written by the postings writer (doc/pos/pay file
@@ -1022,6 +1031,49 @@ fn collect_leaf_blocks(
     Ok(())
 }
 
+/// Port of `LowercaseAsciiCompression.decompress` (`o.a.l.util.compress`):
+/// undoes the 4-into-3-byte 6-bit pack (bytes mostly in `[0x1F,0x3F)` /
+/// `[0x5F,0x7F)`, i.e. ASCII digits/lowercase/`.`/`-`/`_`) plus a trailing
+/// exception list for the rare non-compressible byte. `out.len()` is the
+/// *original* (decompressed) length, matching Java's `len` parameter; the
+/// compressed byte count (`compressedLen = len - len/4`) is derived from it,
+/// not read from the stream.
+fn decompress_lowercase_ascii(r: &mut SliceInput, out: &mut [u8]) -> Result<()> {
+    let len = out.len();
+    let saved = len >> 2;
+    let compressed_len = len - saved;
+
+    // 1. Copy the packed bytes.
+    r.read_bytes(&mut out[..compressed_len])?;
+
+    // 2. Restore the leading 2 bits of each packed byte into whole bytes.
+    for i in 0..saved {
+        out[compressed_len + i] = ((out[i] & 0xC0) >> 2)
+            | ((out[saved + i] & 0xC0) >> 4)
+            | ((out[(saved << 1) + i] & 0xC0) >> 6);
+    }
+
+    // 3. Move back to the original range.
+    for b in out.iter_mut() {
+        *b = ((*b & 0x1F) | 0x20 | ((*b & 0x20) << 1)).wrapping_sub(1);
+    }
+
+    // 4. Restore exceptions.
+    let num_exceptions = r.read_vint()?;
+    let mut i: usize = 0;
+    for _ in 0..num_exceptions {
+        i += r.read_byte()? as usize;
+        if i >= out.len() {
+            return Err(Error::Store(lucene_store::Error::Corrupted(
+                "lowercase-ASCII exception index out of range".into(),
+            )));
+        }
+        out[i] = r.read_byte()?;
+    }
+
+    Ok(())
+}
+
 /// Decodes a single physical `.tim` block at `fp`, materializing every
 /// (term, stats, metadata) entry — `SegmentTermsEnumFrame.loadBlock` plus a
 /// full `decodeMetaData` pass over every entry, restricted to a **leaf**
@@ -1061,13 +1113,33 @@ fn decode_block(
     }
     let num_suffix_bytes = (code_l >> 3) as usize;
     let compression_alg = code_l & 0x03;
-    if compression_alg != 0 {
-        return Err(Error::Unsupported(
-            "suffix compression (LZ4/lowercase-ASCII) not supported in this slice",
-        ));
-    }
     let mut suffix_bytes = vec![0u8; num_suffix_bytes];
-    r.read_bytes(&mut suffix_bytes)?;
+    match compression_alg {
+        0 => {
+            // NO_COMPRESSION (`CompressionAlgorithm.NO_COMPRESSION.read`): the
+            // suffix bytes sit raw in the stream.
+            r.read_bytes(&mut suffix_bytes)?;
+        }
+        1 => {
+            // LOWERCASE_ASCII (`CompressionAlgorithm.LOWERCASE_ASCII.read` ->
+            // `LowercaseAsciiCompression.decompress`).
+            decompress_lowercase_ascii(&mut r, &mut suffix_bytes)?;
+        }
+        2 => {
+            // LZ4 (`CompressionAlgorithm.LZ4.read` -> `LZ4.decompress`),
+            // reusing this port's own `lz4::decompress`.
+            crate::lz4::decompress(&mut r, num_suffix_bytes, &mut suffix_bytes, 0)?;
+        }
+        _ => {
+            // `code_l & 0x03` is masked to 2 bits, so `3` is the only
+            // remaining value; real Lucene's `CompressionAlgorithm.byCode`
+            // throws `IllegalArgumentException` for it too (only codes 0-2
+            // are ever assigned to an enum constant).
+            return Err(Error::Store(lucene_store::Error::Corrupted(
+                "illegal compression algorithm code (3) for a terms block".into(),
+            )));
+        }
+    }
 
     let num_suffix_length_bytes_raw = r.read_vint()? as u32;
     let all_equal = (num_suffix_length_bytes_raw & 1) != 0;
@@ -2355,12 +2427,19 @@ mod tests {
     }
 
     #[test]
-    fn decode_block_rejects_suffix_compression() {
+    fn decode_block_rejects_illegal_compression_code() {
+        // `code_l & 0x03 == 3` never corresponds to a `CompressionAlgorithm`
+        // enum constant (only 0/NO_COMPRESSION, 1/LOWERCASE_ASCII,
+        // 2/LZ4 are assigned) -- real Lucene's `CompressionAlgorithm.byCode`
+        // throws for it too.
         let mut tim = Vec::new();
         tim.write_vint((1 << 1) | 1); // entCount=1, isLastInFloor
-        tim.write_vlong(0x04 | 0x01); // isLeafBlock, compressionAlg=1 (LZ4)
+        tim.write_vlong(0x04 | 0x03); // isLeafBlock, illegal compressionAlg=3
         let err = decode_block(&tim, 0, IndexOptions::Docs, false).unwrap_err();
-        assert!(matches!(err, Error::Unsupported(_)));
+        assert!(matches!(
+            err,
+            Error::Store(lucene_store::Error::Corrupted(_))
+        ));
     }
 
     #[test]
@@ -2518,6 +2597,148 @@ mod tests {
         }
         assert_eq!(entries[0].0, b"aa");
         assert_eq!(entries[2].0, b"cc");
+    }
+
+    #[test]
+    fn decode_block_lz4_compressed_suffixes() {
+        // Hand-built block using `code_l & 0x03 == 2` (LZ4) with the suffix
+        // bytes actually run through this port's own `crate::lz4::compress`
+        // (a real, general-purpose LZ4 compressor, not a fake/no-op one --
+        // see `lz4.rs`'s module doc), then decoded back via `decode_block`'s
+        // new LZ4 dispatch arm. This is a hand-built *test vector* (compress
+        // + decompress round-trip through this port's own LZ4, cross-checked
+        // separately against real Lucene bytes by
+        // `tests/blocktree_compressed_fixture.rs`, which decodes an actual
+        // `Lucene103BlockTreeTermsWriter`-produced LZ4 block).
+        let mut tim = Vec::new();
+        let terms = ["aaaaaaaa", "aaaaaaab", "aaaaaaac", "aaaaaaad"];
+        let ent_count = terms.len() as u32;
+        tim.write_vint(((ent_count << 1) | 1) as i32);
+
+        let suffix_bytes: Vec<u8> = terms.iter().flat_map(|t| t.bytes()).collect();
+        let compressed = crate::lz4::compress(&suffix_bytes);
+        // Sanity: this input is repetitive enough that LZ4 actually shrinks
+        // it -- otherwise this test wouldn't be exercising anything real.
+        assert!(compressed.len() < suffix_bytes.len());
+
+        let code_l = ((suffix_bytes.len() as u64) << 3) | 0x04 | 0x02; // leaf, LZ4
+        tim.write_vlong(code_l as i64);
+        tim.write_bytes(&compressed);
+
+        tim.write_vint(((ent_count as i32) << 1) | 1); // allEqual suffix lengths
+        tim.write_byte(8);
+
+        let mut stats = Vec::new();
+        stats.write_vint((ent_count << 1 | 1) as i32); // singleton run of length 4
+        tim.write_vint(stats.len() as i32);
+        tim.write_bytes(&stats);
+
+        let mut meta = Vec::new();
+        for singleton_doc_id in 0..ent_count as i32 {
+            meta.write_vlong(0);
+            meta.write_vint(singleton_doc_id);
+        }
+        tim.write_vint(meta.len() as i32);
+        tim.write_bytes(&meta);
+
+        let entries = decode_block(&tim, 0, IndexOptions::DocsAndFreqs, false).unwrap();
+        assert_eq!(entries.len(), 4);
+        for (i, (term, stats, _meta)) in entries.iter().enumerate() {
+            assert_eq!(term, terms[i].as_bytes());
+            assert_eq!(stats.doc_freq, 1);
+            assert_eq!(stats.total_term_freq, 1);
+        }
+    }
+
+    #[test]
+    fn decompress_lowercase_ascii_matches_real_lucene_compress_output() {
+        // Real Lucene bytes: generated by directly invoking
+        // `org.apache.lucene.util.compress.LowercaseAsciiCompression.compress`
+        // (from the pinned lucene-core-10.5.0.jar) on the ASCII string below,
+        // which mixes lowercase letters, digits, `.`/`-`/`_` (all
+        // compressible) with two exceptions (`Z`, `!`, both outside the
+        // compressible ranges) to exercise the exception-list decode branch
+        // too. Not embedded in an actual on-disk `.tim` block -- see
+        // `tests/blocktree_compressed_fixture.rs`'s module doc for why
+        // forcing a real `IndexWriter` to choose `LOWERCASE_ASCII` (as
+        // opposed to `LZ4` or `NO_COMPRESSION`) for this port's own fixtures
+        // wasn't achieved in reasonable effort, and why this vector is the
+        // honest fallback for that one mode.
+        let original = b"the-quick_brown.fox.jumps_over-42.lazy_dogs.1234567890Z!abcdefghij";
+        let compressed_hex = "7569664ef236aaa4aca0a3b3b0b8af8fa7b0b90fab362e3174607077a6b38e95134fad62fbbaa0e53068b4cf125394d5161701365a";
+        let compressed: Vec<u8> = (0..compressed_hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&compressed_hex[i..i + 2], 16).unwrap())
+            .collect();
+
+        let mut r = SliceInput::new(&compressed);
+        let mut out = vec![0u8; original.len()];
+        decompress_lowercase_ascii(&mut r, &mut out).unwrap();
+        assert_eq!(out, original);
+    }
+
+    #[test]
+    fn decompress_lowercase_ascii_rejects_out_of_range_exception_index() {
+        // Hand-built, not real-Lucene-generated: 4-byte output (saved=1,
+        // compressed_len=3), 3 arbitrary packed bytes, then a single
+        // exception whose delta (10) pushes the cumulative index to 10,
+        // past `out.len()` (4) -- must error before even reading the
+        // exception's replacement value byte.
+        let compressed: Vec<u8> = vec![0x61, 0x62, 0x63, 0x01, 0x0A];
+        let mut r = SliceInput::new(&compressed);
+        let mut out = vec![0u8; 4];
+        let err = decompress_lowercase_ascii(&mut r, &mut out).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::Store(lucene_store::Error::Corrupted(_))
+        ));
+    }
+
+    #[test]
+    fn decode_block_lowercase_ascii_compressed_suffixes() {
+        // Same real-Lucene-generated compressed bytes as the standalone
+        // decompress test above, this time threaded through the full
+        // `decode_block` dispatch (`code_l & 0x03 == 1`) with a single
+        // whole-block suffix rather than per-term suffix lengths (the term
+        // boundary doesn't line up with the compression -- LowercaseAscii
+        // compresses the concatenated suffix blob as one unit, same as
+        // LZ4 -- so this test uses one giant "term" spanning the whole
+        // decompressed suffix, which is enough to prove the dispatch wires
+        // the compression-alg byte, the decompressed length, and the
+        // decoded bytes together correctly).
+        let mut tim = Vec::new();
+        tim.write_vint((1 << 1) | 1); // entCount=1, isLastInFloor
+
+        let original = b"the-quick_brown.fox.jumps_over-42.lazy_dogs.1234567890Z!abcdefghij";
+        let compressed_hex = "7569664ef236aaa4aca0a3b3b0b8af8fa7b0b90fab362e3174607077a6b38e95134fad62fbbaa0e53068b4cf125394d5161701365a";
+        let compressed: Vec<u8> = (0..compressed_hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&compressed_hex[i..i + 2], 16).unwrap())
+            .collect();
+
+        let code_l = ((original.len() as u64) << 3) | 0x04 | 0x01; // leaf, LOWERCASE_ASCII
+        tim.write_vlong(code_l as i64);
+        tim.write_bytes(&compressed);
+
+        tim.write_vint((1 << 1) | 1); // allEqual, single entry -> irrelevant, but still 1 length byte
+        tim.write_byte(original.len() as u8);
+
+        let mut stats = Vec::new();
+        stats.write_vint(1 << 1 | 1); // singleton run of length 1
+        tim.write_vint(stats.len() as i32);
+        tim.write_bytes(&stats);
+
+        let mut meta = Vec::new();
+        meta.write_vlong(0);
+        meta.write_vint(0);
+        tim.write_vint(meta.len() as i32);
+        tim.write_bytes(&meta);
+
+        let entries = decode_block(&tim, 0, IndexOptions::DocsAndFreqs, false).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, original);
+        assert_eq!(entries[0].1.doc_freq, 1);
+        assert_eq!(entries[0].1.total_term_freq, 1);
     }
 
     #[test]
