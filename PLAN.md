@@ -2583,6 +2583,57 @@ task #11) -- explicitly out of scope for this task; no fixture files were
 added or changed. `cargo llvm-cov --workspace --fail-under-lines 95` passes
 (97.67% total; `doc_values.rs` 97.10%, `index_writer.rs` 98.37%).
 
+**Progress (SORTED_SET doc-values write side, dictionary + ordinals), wired
+into `IndexWriter`.** New `doc_values::write_single_dense_sorted_set_field`
+(`crates/lucene-codecs/src/doc_values.rs`) is the write-side counterpart of
+the already-ported SORTED_SET read side, built on the `write_terms_dict`
+helper the SORTED write side left ready for exactly this. Given a
+`Vec<Vec<u8>>` per doc (dense only, at least one value per doc), it builds
+the dictionary from every value of every doc (not one per doc, since a doc
+can repeat a value or hold several distinct ones), sorted and deduped the
+same way SORTED does. Per-doc ordinals follow the exact collapse rule
+`write_single_dense_sorted_numeric_field` uses: when every doc ends up with
+exactly one distinct value, it writes a plain `SortedEntry` (`multiValued =
+0`, per-doc ordinal, no address array); otherwise a true multi-valued form
+(`multiValued = 1`, flattened ordinals plus a `direct_monotonic` address-range
+array). Unlike SORTED_NUMERIC's read side, which infers the address array's
+presence from a count equality, SORTED_SET's read side (`read_sorted_set_entry`)
+decides purely from the stored `multiValued` flag byte, so the writer sets
+that flag directly rather than relying on the same inference. A doc with zero
+values is rejected with `WriteError::EmptyMultiValuedDoc`, same as
+SORTED_NUMERIC.
+
+Wired into `IndexWriter::commit()` the same way SORTED is: `set_doc_values_field`
+now also accepts a field whose `FieldInfo.doc_values_type ==
+DocValuesType::SortedSet`, dispatching to the new
+`build_sorted_set_doc_values_output`. A doc's value set is every `StoredField`
+entry carrying that field's number (a doc opts into multiple values by
+repeating the field, matching real Lucene's `SortedSetDocValuesField`
+convention), sourced from `FieldValue::String`/`FieldValue::Binary`. Same
+dense-only/atomic-failure contract as SORTED: `Error::MissingDenseDocValue`
+for a doc with no matching fields, `Error::NonBinaryDocValue` for a
+wrong-typed one. BINARY and SORTED_NUMERIC write sides remain unwired.
+
+Required end-to-end proof:
+`commit_with_doc_values_field_writes_readable_sorted_set_values_for_multiple_docs`
+(`crates/lucene-index/src/index_writer.rs`) adds documents (some repeating the
+field, so the entry stays multi-valued) via `IndexWriter::add_document`/`commit()`
+and resolves the written `.dvm`/`.dvd` back through the existing unmodified
+`lucene_codecs::doc_values::{parse_meta, sorted_numeric_values}`/
+`terms_dict::decode_all_terms`, asserting every doc's ordinals resolve to its
+original term bytes. Unit-tested in `doc_values.rs` (round-tripping through
+this port's own reader): a small dictionary with overlapping value sets
+shared across docs, an all-docs-single-value set (confirms the collapse to no
+address array), varying per-doc value counts (1-3), a 2000-term dictionary
+crossing multiple LZ4 blocks and a 1024-ordinal reverse-index sample boundary,
+the empty-per-doc-value rejection path, and the non-dense-input rejection
+path. **Not verified against a real Lucene reader opening this port's written
+bytes** (same gap SORTED's write side documented) -- explicitly out of scope
+for this task; no fixture files were added or changed.
+`cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`,
+and `cargo llvm-cov --workspace --fail-under-lines 95` all pass (97.68% total;
+`doc_values.rs` 97.52%, `index_writer.rs` 98.17%).
+
 **Follow-up task: `IndexWriter::rollback()`.** New
 `IndexWriter::rollback(&mut self)` (`crates/lucene-index/src/index_writer.rs`)
 discards every document buffered by `add_document` since the last `commit()`

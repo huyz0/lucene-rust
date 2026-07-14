@@ -417,16 +417,17 @@ impl<'d> IndexWriter<'d> {
     /// machinery here to fan this out to more than one field within a single
     /// segment).
     ///
-    /// **Only NUMERIC and SORTED doc values are wired up by this writer.**
-    /// BINARY and SORTED_NUMERIC write-side functions already exist in
-    /// [`lucene_codecs::doc_values`] but are not wired into this facade --
-    /// see that module's parity notes and `docs/parity.md` for the exact
-    /// scope split.
+    /// **Only NUMERIC, SORTED, and SORTED_SET doc values are wired up by
+    /// this writer.** BINARY and SORTED_NUMERIC write-side functions already
+    /// exist in [`lucene_codecs::doc_values`] but are not wired into this
+    /// facade -- see that module's parity notes and `docs/parity.md` for the
+    /// exact scope split.
     ///
     /// `Some(field_name)` looks `field_name` up in this writer's fixed
     /// `fields` list and requires its `doc_values_type` to already be
-    /// `DocValuesType::Numeric` or `DocValuesType::Sorted` (an `Err`
-    /// otherwise) -- matching real Lucene's own
+    /// `DocValuesType::Numeric`, `DocValuesType::Sorted`, or
+    /// `DocValuesType::SortedSet` (an `Err` otherwise) -- matching real
+    /// Lucene's own
     /// `FieldType.setDocValuesType(...)` convention. `None` (the default a
     /// freshly [`IndexWriter::open`]ed writer starts with) turns this back
     /// off -- `commit()` then behaves exactly as it did before this feature
@@ -454,7 +455,7 @@ impl<'d> IndexWriter<'d> {
                     .ok_or_else(|| Error::UnknownDocValuesField(name.to_string()))?;
                 if !matches!(
                     info.doc_values_type,
-                    DocValuesType::Numeric | DocValuesType::Sorted
+                    DocValuesType::Numeric | DocValuesType::Sorted | DocValuesType::SortedSet
                 ) {
                     return Err(Error::UnsupportedDocValuesType(
                         name.to_string(),
@@ -1010,6 +1011,9 @@ impl<'d> IndexWriter<'d> {
     ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
         match config.doc_values_type {
             DocValuesType::Sorted => Self::build_sorted_doc_values_output(docs, config, segment_id),
+            DocValuesType::SortedSet => {
+                Self::build_sorted_set_doc_values_output(docs, config, segment_id)
+            }
             _ => Self::build_numeric_doc_values_output(docs, config, segment_id),
         }
     }
@@ -1091,6 +1095,62 @@ impl<'d> IndexWriter<'d> {
 
         let max_doc = docs.len() as i32;
         let output = doc_values::write_single_dense_sorted_field(
+            config.field_number,
+            &values,
+            max_doc,
+            segment_id,
+            "",
+        )?;
+        Ok(output)
+    }
+
+    /// [`Self::build_doc_values_output`]'s `DocValuesType::SortedSet` branch:
+    /// builds [`doc_values::write_single_dense_sorted_set_field`]'s input
+    /// from `docs`' values for `config.field_number` -- unlike
+    /// [`Self::build_sorted_doc_values_output`] (exactly one value per doc),
+    /// a doc's value-set here is *every* [`StoredField`] entry in that doc
+    /// carrying `config.field_number`, so a doc opts into multiple values by
+    /// simply repeating the field (real Lucene's own multi-`add`-calls-per-
+    /// doc convention for `SortedSetDocValuesField`). Each such value must be
+    /// [`FieldValue::String`] (UTF-8 bytes) or [`FieldValue::Binary`] (raw
+    /// bytes), else [`Error::NonBinaryDocValue`]; a doc with zero matching
+    /// fields fails the whole commit with [`Error::MissingDenseDocValue`] --
+    /// same dense-only, "missing value fails the whole commit" contract as
+    /// [`Self::build_sorted_doc_values_output`].
+    fn build_sorted_set_doc_values_output(
+        docs: &[Document],
+        config: &DocValuesFieldConfig,
+        segment_id: &[u8; ID_LENGTH],
+    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+        let mut values: Vec<Vec<Vec<u8>>> = Vec::with_capacity(docs.len());
+        for (doc_id, doc) in docs.iter().enumerate() {
+            let mut per_doc: Vec<Vec<u8>> = Vec::new();
+            for field in doc
+                .fields
+                .iter()
+                .filter(|f| f.field_number == config.field_number)
+            {
+                let value = match &field.value {
+                    FieldValue::String(s) => s.as_bytes().to_vec(),
+                    FieldValue::Binary(b) => b.clone(),
+                    other => {
+                        return Err(Error::NonBinaryDocValue(
+                            config.name.clone(),
+                            doc_id,
+                            field_value_kind(other),
+                        ));
+                    }
+                };
+                per_doc.push(value);
+            }
+            if per_doc.is_empty() {
+                return Err(Error::MissingDenseDocValue(config.name.clone(), doc_id));
+            }
+            values.push(per_doc);
+        }
+
+        let max_doc = docs.len() as i32;
+        let output = doc_values::write_single_dense_sorted_set_field(
             config.field_number,
             &values,
             max_doc,
@@ -3239,6 +3299,13 @@ mod tests {
         }
     }
 
+    fn sorted_set_field(name: &str, number: i32) -> FieldInfo {
+        FieldInfo {
+            doc_values_type: DocValuesType::SortedSet,
+            ..stored_only_field(name, number)
+        }
+    }
+
     fn doc_with_score(id: &str, score: i64) -> Document {
         Document {
             fields: vec![
@@ -3371,6 +3438,63 @@ mod tests {
                 .unwrap()
                 .unwrap();
             assert_eq!(dict[ord as usize], want.as_bytes());
+        }
+    }
+
+    #[test]
+    fn commit_with_doc_values_field_writes_readable_sorted_set_values_for_multiple_docs() {
+        let tmp = tempdir("dv-commit-sorted-set");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), sorted_set_field("tags", 1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_doc_values_field(Some("tags")).unwrap();
+
+        // A doc opts into multiple SORTED_SET values by repeating the field.
+        let doc_tags: Vec<Vec<&str>> = vec![vec!["fruit", "red"], vec!["vegetable"], vec!["red"]];
+        for (i, tags) in doc_tags.iter().enumerate() {
+            let mut doc_fields = vec![StoredField {
+                field_number: 0,
+                value: FieldValue::String(format!("doc{i}")),
+            }];
+            for tag in tags {
+                doc_fields.push(StoredField {
+                    field_number: 1,
+                    value: FieldValue::String(tag.to_string()),
+                });
+            }
+            writer.add_document(Document { fields: doc_fields });
+        }
+        let sis = writer.commit().unwrap().clone();
+        let sci = &sis.segments[0];
+
+        let dvm = dir.open(&format!("{}.dvm", sci.segment_name)).unwrap();
+        let dvd = dir.open(&format!("{}.dvd", sci.segment_name)).unwrap();
+        let field_infos = fi::FieldInfos {
+            fields: vec![stored_only_field("id", 0), sorted_set_field("tags", 1)],
+        };
+        let (_, meta) =
+            lucene_codecs::doc_values::parse_meta(&dvm, &sci.segment_id, "", &field_infos)
+                .expect("parse_meta on IndexWriter-produced SORTED_SET .dvm");
+        let entry = meta.sorted_set_entry(1).unwrap();
+        let (ords_entry, terms_entry) = match &entry.kind {
+            lucene_codecs::doc_values::SortedSetKind::Multi { ords, terms } => (ords, terms),
+            lucene_codecs::doc_values::SortedSetKind::Single(_) => {
+                panic!("expected Multi (some doc has 2 values)")
+            }
+        };
+        let dict = lucene_codecs::terms_dict::decode_all_terms(&dvd, terms_entry).unwrap();
+        for (doc, want) in doc_tags.iter().enumerate() {
+            let ords =
+                lucene_codecs::doc_values::sorted_numeric_values(&dvd, ords_entry, doc as i32)
+                    .unwrap();
+            let mut got: Vec<&str> = ords
+                .iter()
+                .map(|&ord| std::str::from_utf8(&dict[ord as usize]).unwrap())
+                .collect();
+            got.sort_unstable();
+            let mut want_sorted = want.clone();
+            want_sorted.sort_unstable();
+            assert_eq!(got, want_sorted);
         }
     }
 

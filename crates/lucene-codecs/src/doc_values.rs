@@ -1194,6 +1194,126 @@ pub fn write_single_dense_sorted_field(
     Ok((meta, data, skip_index))
 }
 
+/// Port of `Lucene90DocValuesConsumer.addSortedSetField`, scoped to exactly
+/// one shape: **a single SORTED_SET field, DENSE** (every doc from `0` to
+/// `max_doc - 1` has **at least one** value -- `values[doc]` must be
+/// non-empty, [`WriteError::EmptyMultiValuedDoc`] otherwise, same
+/// "every doc must have a value" contract as
+/// [`write_single_dense_sorted_numeric_field`]). Builds the sorted,
+/// deduplicated distinct-value dictionary across *every* value of *every*
+/// doc (not one value per doc -- a doc's own value set can itself repeat a
+/// value, which is deduped away per-doc too, since a sorted set never
+/// stores the same ordinal twice for one doc), then writes the per-doc
+/// ordinals following the exact same collapse rule
+/// [`write_single_dense_sorted_numeric_field`] uses: when every doc has
+/// exactly one distinct value, this is written as a plain [`SortedEntry`]
+/// (`multiValued = 0`, per-doc ordinal via [`write_dense_numeric_entry_body`],
+/// no address array) exactly like [`write_single_dense_sorted_field`] would;
+/// otherwise as a true multi-valued form (`multiValued = 1`, flattened
+/// ordinals via [`write_dense_numeric_entry_body`] plus a
+/// [`direct_monotonic`] address-range array). This matches
+/// [`read_sorted_set_entry`]'s own inference exactly -- it decides
+/// single-vs-multi purely from the stored `multiValued` flag byte (unlike
+/// [`write_single_dense_sorted_numeric_field`]'s address array, whose
+/// presence the read side infers from a count equality rather than a flag),
+/// and its `Multi` branch in turn infers the address array's own presence
+/// from `num_docs_with_field == numeric.num_values` -- which always holds
+/// exactly when every doc has one value, i.e. never in the `multiValued = 1`
+/// branch this function takes (docs must have >= 1 value each, so any doc
+/// with more than one forces the total above `num_docs_with_field`).
+/// The dictionary itself is written via [`write_terms_dict`] (shared,
+/// byte-for-byte, with [`write_single_dense_sorted_field`]).
+///
+/// Deliberately not attempted here, same as [`write_single_dense_numeric_field`]:
+/// sparse per-doc value *presence* (every doc must have >= 1 value),
+/// per-field doc-values skip indexes, and multiple fields in one
+/// `.dvm`/`.dvd`/`.dvs` triple.
+///
+/// Returns `(meta_bytes, data_bytes, skip_index_bytes)`, same shape as
+/// [`write_single_dense_numeric_field`].
+pub fn write_single_dense_sorted_set_field(
+    field_number: i32,
+    values: &[Vec<Vec<u8>>],
+    max_doc: i32,
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+) -> WriteResult<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    if values.len() != max_doc as usize {
+        return Err(WriteError::NotDense {
+            values: values.len(),
+            max_doc,
+        });
+    }
+    for (doc, per_doc) in values.iter().enumerate() {
+        if per_doc.is_empty() {
+            return Err(WriteError::EmptyMultiValuedDoc(doc as i32));
+        }
+    }
+
+    let mut dict: Vec<Vec<u8>> = values.iter().flatten().cloned().collect();
+    dict.sort_unstable();
+    dict.dedup();
+
+    let per_doc_ords: Vec<Vec<i64>> = values
+        .iter()
+        .map(|per_doc| {
+            let mut ords: Vec<i64> = per_doc
+                .iter()
+                .map(|v| dict.binary_search(v).unwrap() as i64)
+                .collect();
+            ords.sort_unstable();
+            ords.dedup();
+            ords
+        })
+        .collect();
+
+    let num_docs_with_field = per_doc_ords.len() as i32;
+    let all_single = per_doc_ords.iter().all(|ords| ords.len() == 1);
+
+    let mut meta = new_meta_output(segment_id, segment_suffix);
+    let mut data = new_data_output(segment_id, segment_suffix);
+
+    meta.write_i32(field_number);
+    meta.push(DOC_VALUES_TYPE_SORTED_SET);
+
+    if all_single {
+        meta.push(0); // multiValued = false: plain SORTED shape.
+        let single_ords: Vec<i64> = per_doc_ords.iter().map(|ords| ords[0]).collect();
+        write_dense_numeric_entry_body(&mut meta, &mut data, &single_ords);
+    } else {
+        meta.push(1); // multiValued = true.
+        let flat: Vec<i64> = per_doc_ords.iter().flatten().copied().collect();
+        write_dense_numeric_entry_body(&mut meta, &mut data, &flat);
+
+        meta.write_i32(num_docs_with_field);
+        if num_docs_with_field as i64 != flat.len() as i64 {
+            let mut end = 0i64;
+            let mut ends: Vec<i64> = Vec::with_capacity(per_doc_ords.len() + 1);
+            ends.push(0);
+            for ords in &per_doc_ords {
+                end += ords.len() as i64;
+                ends.push(end);
+            }
+            let block_shift = 0u32;
+            let (addr_meta, addr_data) = direct_monotonic::write(&ends, block_shift);
+            let addresses_offset = data.len() as i64;
+            data.extend_from_slice(&addr_data);
+            let addresses_length = data.len() as i64 - addresses_offset;
+
+            meta.write_i64(addresses_offset);
+            meta.write_vint(block_shift as i32);
+            meta.extend_from_slice(&addr_meta);
+            meta.write_i64(addresses_length);
+        }
+    }
+
+    write_terms_dict(&mut meta, &mut data, &dict);
+
+    let skip_index =
+        finish_field_list_and_footers(&mut meta, &mut data, segment_id, segment_suffix);
+    Ok((meta, data, skip_index))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2515,6 +2635,238 @@ mod tests {
         let id = [1u8; ID_LENGTH];
         let values: Vec<Vec<u8>> = vec![b"a".to_vec()];
         let err = write_single_dense_sorted_field(0, &values, 2, &id, "").unwrap_err();
+        assert!(matches!(
+            err,
+            WriteError::NotDense {
+                values: 1,
+                max_doc: 2
+            }
+        ));
+    }
+
+    // --- write_single_dense_sorted_set_field ---
+
+    fn sorted_set_field_infos() -> FieldInfos {
+        let mut fis = field_infos_with(&[0]);
+        fis.fields[0].doc_values_type = DocValuesType::SortedSet;
+        fis
+    }
+
+    fn read_sorted_set_field(
+        meta_bytes: &[u8],
+        id: &[u8; ID_LENGTH],
+        fis: &FieldInfos,
+    ) -> SortedSetEntry {
+        let (_, meta) = parse_meta(meta_bytes, id, "", fis).unwrap();
+        meta.sorted_set_entry(0).unwrap().clone()
+    }
+
+    /// Resolves every doc's full (sorted, deduped) value set, regardless of
+    /// whether the entry collapsed to [`SortedSetKind::Single`] or stayed
+    /// [`SortedSetKind::Multi`].
+    fn resolved_sorted_set_values(
+        data_bytes: &[u8],
+        entry: &SortedSetEntry,
+        max_doc: i32,
+    ) -> Vec<Vec<Vec<u8>>> {
+        match &entry.kind {
+            SortedSetKind::Single(sorted) => {
+                let dict = terms_dict::decode_all_terms(data_bytes, &sorted.terms).unwrap();
+                (0..max_doc)
+                    .map(|doc| {
+                        sorted_ord(data_bytes, sorted, doc)
+                            .unwrap()
+                            .map(|ord| vec![dict[ord as usize].clone()])
+                            .unwrap_or_default()
+                    })
+                    .collect()
+            }
+            SortedSetKind::Multi { ords, terms } => {
+                let dict = terms_dict::decode_all_terms(data_bytes, terms).unwrap();
+                (0..max_doc)
+                    .map(|doc| {
+                        sorted_numeric_values(data_bytes, ords, doc)
+                            .unwrap()
+                            .into_iter()
+                            .map(|ord| dict[ord as usize].clone())
+                            .collect()
+                    })
+                    .collect()
+            }
+        }
+    }
+
+    #[test]
+    fn write_single_dense_sorted_set_field_small_dictionary_shared_across_docs() {
+        let id = [30u8; ID_LENGTH];
+        let values: Vec<Vec<Vec<u8>>> = vec![
+            vec![b"apple".to_vec(), b"cherry".to_vec()],
+            vec![b"banana".to_vec()],
+            vec![b"apple".to_vec(), b"banana".to_vec(), b"cherry".to_vec()],
+            vec![b"banana".to_vec()],
+        ];
+        let (meta_bytes, data_bytes, skip_bytes) =
+            write_single_dense_sorted_set_field(0, &values, values.len() as i32, &id, "").unwrap();
+
+        assert_eq!(
+            check_data_header_footer_generic(&skip_bytes, "Lucene90DocValuesSkipIndex", &id)
+                .unwrap(),
+            VERSION_CURRENT
+        );
+        assert_eq!(
+            check_data_header_footer(&data_bytes, &id, "").unwrap(),
+            VERSION_CURRENT
+        );
+
+        let fis = sorted_set_field_infos();
+        let entry = read_sorted_set_field(&meta_bytes, &id, &fis);
+        assert!(matches!(entry.kind, SortedSetKind::Multi { .. }));
+
+        let resolved = resolved_sorted_set_values(&data_bytes, &entry, values.len() as i32);
+        let want: Vec<Vec<Vec<u8>>> = values
+            .into_iter()
+            .map(|mut v| {
+                v.sort_unstable();
+                v.dedup();
+                v
+            })
+            .collect();
+        assert_eq!(resolved, want);
+    }
+
+    #[test]
+    fn write_single_dense_sorted_set_field_all_docs_single_value_collapses_to_no_addresses() {
+        let id = [31u8; ID_LENGTH];
+        let values: Vec<Vec<Vec<u8>>> = vec![vec![b"same".to_vec()]; 5];
+        let (meta_bytes, data_bytes, _skip_bytes) =
+            write_single_dense_sorted_set_field(0, &values, values.len() as i32, &id, "").unwrap();
+
+        let fis = sorted_set_field_infos();
+        let entry = read_sorted_set_field(&meta_bytes, &id, &fis);
+        match &entry.kind {
+            SortedSetKind::Single(sorted) => {
+                assert_eq!(sorted.ords.bits_per_value, 0); // constant-ordinal encoding
+            }
+            SortedSetKind::Multi { .. } => panic!("expected Single collapse"),
+        }
+
+        let resolved = resolved_sorted_set_values(&data_bytes, &entry, values.len() as i32);
+        assert_eq!(resolved, values);
+    }
+
+    #[test]
+    fn write_single_dense_sorted_set_field_intra_doc_duplicate_raw_values_collapse_per_doc() {
+        // A doc's raw input value-set can itself contain duplicates (e.g. a
+        // caller indexed the same value twice) -- these must collapse to one
+        // ordinal reference per distinct value, same as the dictionary
+        // itself is deduplicated at the field level. Doc 0 references
+        // "same" three times raw (must resolve to exactly one ordinal); doc
+        // 1 has two genuinely distinct values, which is what forces this
+        // field to stay a true Multi (a doc referencing only one distinct
+        // value, however many times raw, would otherwise collapse the
+        // whole field to Single -- proving that distinction independently
+        // of the dedicated Single-collapse test above, which never feeds
+        // any raw duplicates at all).
+        let id = [34u8; ID_LENGTH];
+        let values: Vec<Vec<Vec<u8>>> = vec![
+            vec![b"same".to_vec(), b"same".to_vec(), b"same".to_vec()],
+            vec![b"other".to_vec(), b"third".to_vec()],
+        ];
+        let (meta_bytes, data_bytes, _skip_bytes) =
+            write_single_dense_sorted_set_field(0, &values, values.len() as i32, &id, "").unwrap();
+
+        let fis = sorted_set_field_infos();
+        let entry = read_sorted_set_field(&meta_bytes, &id, &fis);
+        assert!(matches!(entry.kind, SortedSetKind::Multi { .. }));
+
+        let resolved = resolved_sorted_set_values(&data_bytes, &entry, values.len() as i32);
+        assert_eq!(
+            resolved,
+            vec![
+                vec![b"same".to_vec()],
+                vec![b"other".to_vec(), b"third".to_vec()],
+            ]
+        );
+    }
+
+    #[test]
+    fn write_single_dense_sorted_set_field_varying_value_counts_per_doc() {
+        let id = [32u8; ID_LENGTH];
+        let values: Vec<Vec<Vec<u8>>> = vec![
+            vec![b"a".to_vec()],
+            vec![b"a".to_vec(), b"b".to_vec()],
+            vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()],
+            vec![b"c".to_vec()],
+        ];
+        let (meta_bytes, data_bytes, _skip_bytes) =
+            write_single_dense_sorted_set_field(0, &values, values.len() as i32, &id, "").unwrap();
+
+        let fis = sorted_set_field_infos();
+        let entry = read_sorted_set_field(&meta_bytes, &id, &fis);
+        assert!(matches!(entry.kind, SortedSetKind::Multi { .. }));
+
+        let resolved = resolved_sorted_set_values(&data_bytes, &entry, values.len() as i32);
+        assert_eq!(resolved, values);
+    }
+
+    #[test]
+    fn write_single_dense_sorted_set_field_large_dictionary_spans_many_lz4_blocks_and_multiple_reverse_index_samples(
+    ) {
+        // 2200 distinct terms: crosses many 64-term LZ4 blocks and TWO
+        // non-trivial 1024-ordinal reverse-index sample boundaries (ord
+        // 1024 and ord 2048) -- matching the SORTED large-dictionary test's
+        // own term count, chosen there (and reused here) specifically
+        // because a smaller count (e.g. 2000) only reaches the first
+        // non-trivial sample (ord 1024), never the second. Each doc gets
+        // exactly 2 values so the entry stays a true Multi (never collapses
+        // to Single).
+        let id = [33u8; ID_LENGTH];
+        let mut terms: Vec<Vec<u8>> = (0..2200)
+            .map(|i: i32| format!("term{i:05}").into_bytes())
+            .collect();
+        terms.reverse();
+
+        let values: Vec<Vec<Vec<u8>>> = terms.chunks(2).map(|pair| pair.to_vec()).collect();
+
+        let (meta_bytes, data_bytes, _skip_bytes) =
+            write_single_dense_sorted_set_field(0, &values, values.len() as i32, &id, "").unwrap();
+
+        let fis = sorted_set_field_infos();
+        let entry = read_sorted_set_field(&meta_bytes, &id, &fis);
+        let terms_entry = match &entry.kind {
+            SortedSetKind::Multi { terms, .. } => terms,
+            SortedSetKind::Single(_) => panic!("expected Multi"),
+        };
+        let dict = terms_dict::decode_all_terms(&data_bytes, terms_entry).unwrap();
+        assert_eq!(dict.len(), 2200);
+        assert!(dict.windows(2).all(|w| w[0] < w[1]));
+
+        let resolved = resolved_sorted_set_values(&data_bytes, &entry, values.len() as i32);
+        let want: Vec<Vec<Vec<u8>>> = values
+            .into_iter()
+            .map(|mut v| {
+                v.sort_unstable();
+                v.dedup();
+                v
+            })
+            .collect();
+        assert_eq!(resolved, want);
+    }
+
+    #[test]
+    fn write_single_dense_sorted_set_field_rejects_empty_doc_value_set() {
+        let id = [1u8; ID_LENGTH];
+        let values: Vec<Vec<Vec<u8>>> = vec![vec![b"a".to_vec()], Vec::new(), vec![b"b".to_vec()]];
+        let err = write_single_dense_sorted_set_field(0, &values, values.len() as i32, &id, "")
+            .unwrap_err();
+        assert!(matches!(err, WriteError::EmptyMultiValuedDoc(1)));
+    }
+
+    #[test]
+    fn write_single_dense_sorted_set_field_rejects_non_dense_value_count() {
+        let id = [1u8; ID_LENGTH];
+        let values: Vec<Vec<Vec<u8>>> = vec![vec![b"a".to_vec()]];
+        let err = write_single_dense_sorted_set_field(0, &values, 2, &id, "").unwrap_err();
         assert!(matches!(
             err,
             WriteError::NotDense {
