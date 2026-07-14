@@ -1463,6 +1463,42 @@ to check string-slicing/highlighting against). Coverage:
 lines, `cargo llvm-cov --fail-under-lines 95` passing). See
 `docs/parity.md` for the full row.
 
+**Progress (highlighter sentence-boundary detection follow-up):**
+`highlighter.rs`'s fixed-window heuristic above cuts a fragment off wherever
+`window_chars` happens to land, even mid-sentence. Added an opt-in second
+mode, `FragmentConfig::snap_to_sentence` (default `false`, so every existing
+caller's behavior is unchanged): when set, a cluster's rendered fragment
+snaps to the start/end of the sentence(s) actually containing its match(es)
+instead of the fixed char window (`window_chars` still governs which nearby
+matches merge into one cluster; it no longer bounds the rendered size once
+sentence-snapped). Sentence terminator rule, stated precisely because it is
+intentionally narrow: a `.`/`!`/`?` counts as ending a sentence only when
+(after skipping whitespace) it's followed by an uppercase letter or the end
+of the text. **This is not `BreakIterator`** -- no ICU/UAX #29 Unicode
+segmentation, no locale rules, no abbreviation dictionary. A known,
+documented false positive: "Mr. Smith" reads as two sentences ("Mr." / "
+Smith ...") because the heuristic can't tell an abbreviation's period from a
+real sentence end -- covered by a test that asserts and documents this
+exact behavior rather than hiding it. `crates/lucene-ffi/src/highlighter.rs`'s
+`ffi_assemble_fragments` gained one new trailing parameter, `snap_to_sentence:
+u8` (C-`bool`-style, `0`/nonzero), so this mode is reachable across the FFI
+boundary too; every existing test call site was updated to pass `0`
+(preserving prior behavior) plus one new test exercising `1` and
+cross-checking its output against calling `lucene_search::highlighter`
+directly. New unit tests in `highlighter.rs`: a passage where a sentence
+boundary falls inside what the fixed window would otherwise include
+(`sentence_snap_changes_output_vs_naive_fixed_window`, asserting the output
+actually differs from the naive-window result); a passage with no sentence
+terminators at all, still producing one sensible non-empty fragment
+(`sentence_snap_with_no_terminators_still_produces_whole_text_fragment`); the
+abbreviation false positive, explicitly asserted
+(`sentence_snap_documents_abbreviation_false_positive`); and matches at the
+very start and very end of a multi-sentence text
+(`sentence_snap_match_at_very_start_and_very_end_does_not_panic`). Coverage:
+`lucene-search/src/highlighter.rs` 99.16% lines, `lucene-ffi/src/highlighter.rs`
+100.00% lines (workspace total 97.69% lines, `cargo llvm-cov
+--fail-under-lines 95` passing). See `docs/parity.md` for the updated row.
+
 **Progress (task #57):** `lucene-index/src/check_index.rs` -- a
 `CheckIndex`-equivalent: a standalone consistency verifier that opens a
 segment and cross-checks internal relationships a normal single-purpose

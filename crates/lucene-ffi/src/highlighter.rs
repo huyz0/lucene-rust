@@ -127,7 +127,10 @@ unsafe fn spans_from_raw(
 /// `span_term_lens.iter().sum()` bytes (or null when that sum is `0`);
 /// `pre`/`post` must be valid for `pre_len`/`post_len` bytes respectively (or
 /// null when their length is `0`); `out_fragment_results_handle` must be
-/// valid for one `u64` write.
+/// valid for one `u64` write. `snap_to_sentence` is a C `bool`-style flag
+/// (`0` = fixed `window_chars` window, nonzero = sentence-boundary snapping)
+/// -- see `lucene_search::highlighter`'s doc comment on sentence-boundary
+/// snapping for the exact heuristic and its documented scope.
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "C" fn ffi_assemble_fragments(
@@ -144,6 +147,7 @@ pub unsafe extern "C" fn ffi_assemble_fragments(
     post: *const c_char,
     post_len: usize,
     max_fragments: usize,
+    snap_to_sentence: u8,
     out_fragment_results_handle: *mut u64,
 ) -> i32 {
     guard(|| {
@@ -178,6 +182,7 @@ pub unsafe extern "C" fn ffi_assemble_fragments(
             pre: pre.to_string(),
             post: post.to_string(),
             max_fragments,
+            snap_to_sentence: snap_to_sentence != 0,
         };
 
         let fragments = highlighter::assemble_fragments(full_text, &spans, &config);
@@ -264,6 +269,7 @@ mod tests {
                 post.as_ptr() as *const c_char,
                 post.len(),
                 5,
+                0,
                 &mut out as *mut _,
             )
         };
@@ -303,6 +309,7 @@ mod tests {
                 pre: "<b>".to_string(),
                 post: "</b>".to_string(),
                 max_fragments: 5,
+                snap_to_sentence: false,
             },
         );
         assert_eq!(len, expected.len());
@@ -371,6 +378,7 @@ mod tests {
                 "</b>".as_ptr() as *const c_char,
                 4,
                 5,
+                0,
                 &mut out as *mut _,
             )
         };
@@ -404,6 +412,7 @@ mod tests {
                 "</b>".as_ptr() as *const c_char,
                 4,
                 5,
+                0,
                 &mut out as *mut _,
             )
         };
@@ -438,6 +447,7 @@ mod tests {
                 "</b>".as_ptr() as *const c_char,
                 4,
                 5,
+                0,
                 &mut out as *mut _,
             )
         };
@@ -472,6 +482,7 @@ mod tests {
                 "</b>".as_ptr() as *const c_char,
                 4,
                 5,
+                0,
                 std::ptr::null_mut(),
             )
         };
@@ -498,6 +509,7 @@ mod tests {
                 "</b>".as_ptr() as *const c_char,
                 4,
                 5,
+                0,
                 &mut out as *mut _,
             )
         };
@@ -525,6 +537,7 @@ mod tests {
                 "</b>".as_ptr() as *const c_char,
                 4,
                 5,
+                0,
                 &mut out as *mut _,
             )
         };
@@ -552,6 +565,7 @@ mod tests {
                 std::ptr::null(),
                 4,
                 5,
+                0,
                 &mut out as *mut _,
             )
         };
@@ -579,6 +593,7 @@ mod tests {
                 "</b>".as_ptr() as *const c_char,
                 4,
                 5,
+                0,
                 &mut out as *mut _,
             )
         };
@@ -607,6 +622,7 @@ mod tests {
                 "</b>".as_ptr() as *const c_char,
                 4,
                 5,
+                0,
                 &mut out as *mut _,
             )
         };
@@ -636,6 +652,7 @@ mod tests {
                 "</b>".as_ptr() as *const c_char,
                 4,
                 5,
+                0,
                 &mut out as *mut _,
             )
         };
@@ -662,6 +679,7 @@ mod tests {
                 3,
                 "</b>".as_ptr() as *const c_char,
                 4,
+                0,
                 0,
                 &mut out as *mut _,
             )
@@ -693,10 +711,69 @@ mod tests {
                 "</b>".as_ptr() as *const c_char,
                 4,
                 5,
+                0,
                 &mut out as *mut _,
             )
         };
         assert_eq!(rc, FfiStatus::Ok.code());
+        ffi_close_fragment_results(out);
+    }
+
+    #[test]
+    fn assemble_fragments_snap_to_sentence_flag_matches_direct_call() {
+        // Cross-checks the `snap_to_sentence` wire flag against calling
+        // `lucene_search::highlighter::assemble_fragments` directly with
+        // `snap_to_sentence: true` -- same real-world shape as
+        // `highlighter.rs`'s own `sentence_snap_changes_output_vs_naive_fixed_window`
+        // test, ported across the FFI boundary.
+        let full_text = "Cats are great pets. Dogs are loyal companions too.";
+        let start = full_text.find("great").unwrap() as i32;
+        let end = start + "great".len() as i32;
+        let spans = [("great", start, end)];
+        let (term_data, term_lens, starts, ends) = span_arrays(&spans);
+        let mut out: u64 = 0;
+        let rc = unsafe {
+            ffi_assemble_fragments(
+                full_text.as_ptr() as *const c_char,
+                full_text.len(),
+                spans.len(),
+                term_data.as_ptr(),
+                term_lens.as_ptr(),
+                starts.as_ptr(),
+                ends.as_ptr(),
+                15,
+                "<b>".as_ptr() as *const c_char,
+                3,
+                "</b>".as_ptr() as *const c_char,
+                4,
+                5,
+                1,
+                &mut out as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::Ok.code());
+
+        let text = read_all_fragment_text(out, 0);
+        let expected = highlighter::assemble_fragments(
+            full_text,
+            &[TermOffsetSpan {
+                term: "great".to_string(),
+                start_offset: start,
+                end_offset: end,
+            }],
+            &FragmentConfig {
+                window_chars: 15,
+                pre: "<b>".to_string(),
+                post: "</b>".to_string(),
+                max_fragments: 5,
+                snap_to_sentence: true,
+            },
+        );
+        assert_eq!(expected.len(), 1);
+        assert_eq!(text, expected[0].text);
+        assert!(text.starts_with("Cats are"));
+        assert!(!text.contains("Dogs"));
+
         ffi_close_fragment_results(out);
     }
 }

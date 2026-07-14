@@ -30,6 +30,40 @@
 //! - There is no term-density scoring -- fragments are emitted in
 //!   left-to-right document order and simply truncated at `max_fragments`.
 //!
+//! ## Sentence-boundary snapping (opt-in via `FragmentConfig::snap_to_sentence`)
+//!
+//! `assemble_fragments`'s default behavior above (fixed-size char window,
+//! snapped outward to whitespace) is unchanged. Setting
+//! [`FragmentConfig::snap_to_sentence`] to `true` switches a fragment's edges
+//! from that fixed window to the boundaries of the sentence(s) actually
+//! containing its match(es) -- closer to real `UnifiedHighlighter`'s
+//! `BreakIterator.getSentenceInstance()`-based passage boundaries, but with a
+//! deliberately narrow, explicitly-scoped heuristic instead of ICU's full
+//! Unicode sentence-segmentation algorithm (UAX #29-style, locale-aware,
+//! abbreviation-dictionary-aware):
+//!
+//! - A sentence is considered to end at a `.`/`!`/`?` that is followed
+//!   (after skipping any whitespace) by an uppercase letter, or by the end of
+//!   the text.
+//! - A fragment's start snaps to the start of the sentence containing its
+//!   cluster's earliest match; its end snaps to the end of the sentence
+//!   containing its cluster's latest match (trailing whitespace trimmed).
+//!   `window_chars` still governs which nearby matches get merged into one
+//!   cluster, but no longer bounds the rendered fragment's size once
+//!   sentence-snapped -- a fragment can be shorter *or* longer than the fixed
+//!   window it would have used, since it's exactly the sentence(s), not a
+//!   char count.
+//! - If the text has no recognized sentence terminator at all, the whole
+//!   text is one sentence: the fragment still comes out sensible (the
+//!   surrounding sentence extends to a document/text boundary), never empty
+//!   or panicking.
+//! - **Known false positive, not addressed by this heuristic**: an
+//!   abbreviation like "Mr." followed by a capitalized word ("Mr. Smith") is
+//!   indistinguishable from a real sentence end by this rule and is
+//!   (incorrectly) treated as one -- there is no abbreviation dictionary,
+//!   locale table, or ICU `BreakIterator` behind this, by design (see this
+//!   module's doc comment above and `docs/parity.md`'s highlighter row).
+//!
 //! ## Overlapping-window merging
 //!
 //! Two matches whose extended windows overlap (or abut) are merged into a
@@ -89,19 +123,80 @@ pub struct FragmentConfig {
     /// Maximum number of fragments to return; later fragments (in
     /// left-to-right document order) beyond this count are dropped.
     pub max_fragments: usize,
+    /// When `true`, a fragment's rendered start/end are snapped to the
+    /// boundaries of the sentence(s) containing its match(es) instead of the
+    /// fixed `window_chars` window -- see this module's doc comment section
+    /// on sentence-boundary snapping for the exact (deliberately narrow)
+    /// heuristic. Defaults to `false`, preserving this struct's prior
+    /// fixed-window-only behavior for existing callers.
+    pub snap_to_sentence: bool,
 }
 
 impl Default for FragmentConfig {
     /// `window_chars: 40`, `pre: "<b>"`, `post: "</b>"` (real Lucene's
-    /// `PassageFormatter` default markers), `max_fragments: 5`.
+    /// `PassageFormatter` default markers), `max_fragments: 5`,
+    /// `snap_to_sentence: false`.
     fn default() -> Self {
         FragmentConfig {
             window_chars: 40,
             pre: "<b>".to_string(),
             post: "</b>".to_string(),
             max_fragments: 5,
+            snap_to_sentence: false,
         }
     }
+}
+
+/// Byte offsets (into `text`) where each recognized sentence begins, always
+/// including `0` and always sorted ascending. See this module's doc comment
+/// section on sentence-boundary snapping for the exact terminator rule and
+/// its documented scope (no abbreviation handling, no locale/ICU semantics).
+fn sentence_start_offsets(text: &str) -> Vec<usize> {
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    let mut starts = vec![0usize];
+    for i in 0..chars.len() {
+        let (_, c) = chars[i];
+        if c == '.' || c == '!' || c == '?' {
+            let mut j = i + 1;
+            while j < chars.len() && chars[j].1.is_whitespace() {
+                j += 1;
+            }
+            if j < chars.len() && chars[j].1.is_uppercase() {
+                starts.push(chars[j].0);
+            }
+        }
+    }
+    starts.sort_unstable();
+    starts.dedup();
+    starts
+}
+
+/// Snaps `byte_offset` back to the start of the sentence containing it: the
+/// largest recognized sentence-start `<= byte_offset`, or `0` if none (the
+/// very first sentence always starts at `0`, so this never fails to find one
+/// in a non-empty `sentence_starts`).
+fn snap_start_to_sentence(sentence_starts: &[usize], byte_offset: usize) -> usize {
+    sentence_starts
+        .iter()
+        .rev()
+        .find(|&&s| s <= byte_offset)
+        .copied()
+        .unwrap_or(0)
+}
+
+/// Snaps `byte_offset` forward to the end of the sentence containing it: the
+/// smallest recognized sentence-start `> byte_offset` (i.e. the next
+/// sentence's start), or `text`'s length if `byte_offset`'s sentence is the
+/// last one in the text. Trailing whitespace is trimmed off the result so a
+/// sentence-snapped fragment doesn't end with dangling blank space.
+fn snap_end_to_sentence(sentence_starts: &[usize], byte_offset: usize, text: &str) -> usize {
+    let raw_end = sentence_starts
+        .iter()
+        .find(|&&s| s > byte_offset)
+        .copied()
+        .unwrap_or(text.len());
+    let trimmed = text[..raw_end].trim_end();
+    trimmed.len().max(byte_offset)
 }
 
 use crate::term_vectors_query::TermOffsetSpan;
@@ -232,6 +327,44 @@ pub fn assemble_fragments(
         }
     }
 
+    // Sentence-snapping (opt-in): recompute each cluster's window from the
+    // sentence(s) actually containing its matches, overriding the
+    // fixed-window edges computed above. `window_chars` above still governs
+    // merging (which matches share one cluster); this only changes what
+    // gets rendered.
+    if config.snap_to_sentence {
+        let sentence_starts = sentence_start_offsets(full_text);
+        for cluster in &mut clusters {
+            let earliest_match_start = cluster.matches.iter().map(|m| m.0).min().unwrap();
+            let latest_match_end = cluster.matches.iter().map(|m| m.1).max().unwrap();
+            let start = snap_start_to_sentence(&sentence_starts, earliest_match_start);
+            let end = snap_end_to_sentence(&sentence_starts, latest_match_end, full_text);
+            cluster.window_start = start;
+            cluster.window_end = end.max(start);
+        }
+
+        // Snapping can expand two clusters that didn't overlap under the
+        // fixed `window_chars` window into the same (or an overlapping)
+        // sentence -- e.g. two matches far apart in one long sentence. Without
+        // this second sweep they'd render as separate, overlapping fragments
+        // covering nearly the same text. Clusters are already sorted by
+        // window_start (they were built via a left-to-right sweep over
+        // matches sorted by start offset, and snapping only ever grows a
+        // window, never reorders it), so a single left-to-right merge pass
+        // is enough, identical in shape to the fixed-window sweep above.
+        let mut merged: Vec<Cluster> = Vec::with_capacity(clusters.len());
+        for cluster in clusters {
+            match merged.last_mut() {
+                Some(last) if cluster.window_start <= last.window_end => {
+                    last.window_end = last.window_end.max(cluster.window_end);
+                    last.matches.extend(cluster.matches);
+                }
+                _ => merged.push(cluster),
+            }
+        }
+        clusters = merged;
+    }
+
     clusters
         .into_iter()
         .take(config.max_fragments)
@@ -299,6 +432,14 @@ mod tests {
             pre: "<b>".to_string(),
             post: "</b>".to_string(),
             max_fragments,
+            snap_to_sentence: false,
+        }
+    }
+
+    fn sentence_cfg(window_chars: usize, max_fragments: usize) -> FragmentConfig {
+        FragmentConfig {
+            snap_to_sentence: true,
+            ..cfg(window_chars, max_fragments)
         }
     }
 
@@ -479,5 +620,171 @@ mod tests {
             out[0].matched_terms,
             vec!["cat".to_string(), "car".to_string()]
         );
+    }
+
+    // --- Sentence-boundary snapping (`snap_to_sentence: true`) ---
+
+    #[test]
+    fn sentence_snap_changes_output_vs_naive_fixed_window() {
+        // A sentence boundary sits inside what a fixed 15-char window would
+        // otherwise include: the naive window spills into the next
+        // sentence's leading words, while sentence-snap mode must stop at
+        // the sentence containing the match instead.
+        let text = "Cats are great pets. Dogs are loyal companions too.";
+        let start = text.find("great").unwrap() as i32;
+        let end = start + "great".len() as i32;
+        let spans = [span("great", start, end)];
+
+        let naive = assemble_fragments(text, &spans, &cfg(15, 5));
+        let snapped = assemble_fragments(text, &spans, &sentence_cfg(15, 5));
+
+        assert_eq!(naive.len(), 1);
+        assert_eq!(snapped.len(), 1);
+        assert_ne!(
+            naive[0].text, snapped[0].text,
+            "sentence snapping must actually change the fragment boundaries"
+        );
+        // Sentence-snap keeps the whole first sentence, not a fragment of
+        // the second one.
+        assert!(snapped[0].text.starts_with("Cats are"));
+        assert!(snapped[0].text.ends_with('.'));
+        assert!(!snapped[0].text.contains("Dogs"));
+    }
+
+    #[test]
+    fn sentence_snap_with_no_terminators_still_produces_whole_text_fragment() {
+        let text = "no sentence terminators here just plain running text forever";
+        let start = text.find("running").unwrap() as i32;
+        let end = start + "running".len() as i32;
+        let spans = [span("running", start, end)];
+
+        let out = assemble_fragments(text, &spans, &sentence_cfg(5, 5));
+        assert_eq!(out.len(), 1);
+        assert!(!out[0].text.is_empty());
+        assert!(out[0].text.contains("<b>running</b>"));
+        // No terminators at all -- the whole text is one "sentence".
+        assert_eq!(out[0].text.replace("<b>", "").replace("</b>", ""), text);
+    }
+
+    #[test]
+    fn sentence_snap_documents_abbreviation_false_positive() {
+        // "Mr." followed by a capitalized word is indistinguishable from a
+        // real sentence end by this module's terminator+uppercase heuristic
+        // -- documented here as a known, accepted false positive (see this
+        // module's doc comment), not a bug this test is trying to catch.
+        let text = "Mr. Smith arrived early. He left before noon.";
+        let start = text.find("Smith").unwrap() as i32;
+        let end = start + "Smith".len() as i32;
+        let spans = [span("Smith", start, end)];
+
+        let out = assemble_fragments(text, &spans, &sentence_cfg(5, 5));
+        assert_eq!(out.len(), 1);
+        // The false positive: "Mr." is (incorrectly) treated as a sentence
+        // end, so the fragment starts at "Smith", not "Mr. Smith".
+        assert!(out[0].text.starts_with("<b>Smith</b>"));
+        assert!(!out[0].text.contains("Mr."));
+    }
+
+    #[test]
+    fn sentence_snap_match_at_very_start_and_very_end_does_not_panic() {
+        let text = "First sentence here. Middle sentence stands alone. Last sentence ends.";
+        let first_word_end = "First".len() as i32;
+        let last_word_start = text.rfind("Last").unwrap() as i32;
+        let last_word_end = last_word_start + "Last".len() as i32;
+        let spans = [
+            span("First", 0, first_word_end),
+            span("Last", last_word_start, last_word_end),
+        ];
+
+        let out = assemble_fragments(text, &spans, &sentence_cfg(3, 5));
+        assert!(!out.is_empty());
+        for f in &out {
+            assert!(!f.text.is_empty());
+        }
+        // The very-first match's fragment must start right at the text's
+        // start (byte offset 0), not run off the front.
+        let first_fragment = out
+            .iter()
+            .find(|f| f.text.contains("<b>First</b>"))
+            .expect("a fragment containing the first match");
+        assert!(first_fragment.text.starts_with("<b>First</b>"));
+        // The very-last match's fragment must end at (or before) the text's
+        // end, not run off the back.
+        let last_fragment = out
+            .iter()
+            .find(|f| f.text.contains("<b>Last</b>"))
+            .expect("a fragment containing the last match");
+        assert!(last_fragment.text.ends_with('.'));
+    }
+
+    #[test]
+    fn sentence_snap_re_merges_clusters_that_expand_into_the_same_sentence() {
+        // A small window_chars keeps these two matches in separate clusters
+        // under the fixed-window sweep (they're far apart), but they both
+        // fall inside the same long sentence -- sentence-snapping expands
+        // both clusters' windows to that whole sentence. Without a re-merge
+        // pass after snapping, this produced two separate, nearly-identical,
+        // overlapping fragments instead of one fragment with both matches
+        // highlighted.
+        let text = "One two three four five six seven eight nine ten eleven twelve \
+                     thirteen fourteen fifteen sixteen. Next sentence word.";
+        let one_start = text.find("One").unwrap() as i32;
+        let one_end = one_start + "One".len() as i32;
+        let sixteen_start = text.find("sixteen").unwrap() as i32;
+        let sixteen_end = sixteen_start + "sixteen".len() as i32;
+        let spans = [
+            span("One", one_start, one_end),
+            span("sixteen", sixteen_start, sixteen_end),
+        ];
+
+        let out = assemble_fragments(text, &spans, &sentence_cfg(3, 5));
+        assert_eq!(
+            out.len(),
+            1,
+            "expected the two same-sentence clusters to merge into one fragment, got: {out:?}"
+        );
+        assert!(out[0].text.contains("<b>One</b>"));
+        assert!(out[0].text.contains("<b>sixteen</b>"));
+    }
+
+    #[test]
+    fn sentence_snap_lowercase_after_period_is_not_a_terminator() {
+        // "3.5" -- a period followed by a lowercase/digit character is not
+        // this heuristic's terminator (it requires whitespace then an
+        // uppercase letter, or end-of-text), so the fragment must not break
+        // there.
+        let text = "The price is 3.5 and rising steadily today.";
+        let start = text.find("3.5").unwrap() as i32;
+        let end = start + "3.5".len() as i32;
+        let spans = [span("3.5", start, end)];
+
+        let out = assemble_fragments(text, &spans, &sentence_cfg(3, 5));
+        assert_eq!(out.len(), 1);
+        assert!(out[0].text.starts_with("The price is"));
+        assert!(out[0].text.ends_with("today."));
+    }
+
+    #[test]
+    fn sentence_snap_consecutive_terminators_do_not_panic() {
+        // "Really?!" and "Wow..." both have runs of terminator characters;
+        // the heuristic must not double-count them or panic walking past
+        // the run.
+        let text = "Really?! Wow... That is surprising indeed today.";
+        let start = text.find("Wow").unwrap() as i32;
+        let end = start + "Wow".len() as i32;
+        let spans = [span("Wow", start, end)];
+
+        let out = assemble_fragments(text, &spans, &sentence_cfg(3, 5));
+        assert_eq!(out.len(), 1);
+        assert!(out[0].text.contains("<b>Wow</b>"));
+    }
+
+    #[test]
+    fn sentence_snap_single_word_no_terminator_no_whitespace() {
+        let text = "Hello";
+        let spans = [span("Hello", 0, 5)];
+        let out = assemble_fragments(text, &spans, &sentence_cfg(3, 5));
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].text, "<b>Hello</b>");
     }
 }
