@@ -434,17 +434,23 @@ impl<'d> IndexWriter<'d> {
     /// off -- `commit()` then behaves exactly as it did before this feature
     /// existed.
     ///
-    /// **Dense-only, enforced fail-fast at `commit()` time, not here:**
-    /// [`doc_values::write_single_dense_numeric_field`] has no missing-value
-    /// encoding, so *every* pending doc at the time of a `commit()` call
-    /// must carry a [`FieldValue::Int`] or [`FieldValue::Long`] value for
-    /// the opted-in field, or the whole `commit()` call fails with
-    /// [`Error::MissingDenseDocValue`]/[`Error::NonNumericDocValue`] and
-    /// leaves `dir`/`pending_docs`/`segment_infos` unchanged -- unlike
-    /// [`IndexWriter::set_postings_field`]/
-    /// [`IndexWriter::set_term_vector_field`], a missing or wrong-typed value
-    /// for this field is not "best effort, skip that doc" (there is no
-    /// sparse/missing-value doc-values shape to fall back to here).
+    /// **Dense when every pending doc has a value, sparse otherwise,
+    /// decided at `commit()` time, not here:** if *some* pending docs at
+    /// commit time carry a value for the opted-in field and some don't,
+    /// [`Self::build_doc_values_output`] routes the present docs' values
+    /// through the corresponding `write_single_sparse_*_field` writer
+    /// instead of the dense one (the missing docs read back as absent, not
+    /// as a wrong/zero value) -- unlike a doc whose value is present but the
+    /// wrong `FieldValue` variant, which still fails the whole `commit()`
+    /// call with [`Error::NonNumericDocValue`]/[`Error::NonBinaryDocValue`]
+    /// and leaves `dir`/`pending_docs`/`segment_infos` unchanged. If *no*
+    /// pending doc has a value for the field, `commit()` still fails with
+    /// [`Error::MissingDenseDocValue`] (nothing meaningful to encode).
+    ///
+    /// Only one field can be configured at a time (this is a single
+    /// `Option<DocValuesFieldConfig>`, not a list) -- a second
+    /// `set_doc_values_field(Some(...))` call replaces, rather than adds to,
+    /// the previous one.
     pub fn set_doc_values_field(&mut self, field_name: Option<&str>) -> Result<()> {
         self.doc_values_field = match field_name {
             None => None,
@@ -1021,21 +1027,26 @@ impl<'d> IndexWriter<'d> {
         Some(tv_docs)
     }
 
-    /// Builds [`doc_values::write_single_dense_numeric_field`]'s input from
+    /// Builds [`doc_values::write_single_dense_numeric_field`]'s (or, when
+    /// some but not all docs carry a value,
+    /// [`doc_values::write_single_sparse_numeric_field`]'s) input from
     /// `docs`' values for `config.field_number` (each pending doc's index
     /// into `docs` becomes its doc ID in the new segment, matching
-    /// [`flush_stored_only_segment`]'s own doc-ordering) and calls it to
-    /// actually encode the bytes.
+    /// [`flush_stored_only_segment`]'s own doc-ordering) and calls the
+    /// appropriate one to actually encode the bytes.
     ///
-    /// Unlike [`IndexWriter::build_postings_output`]/
-    /// [`IndexWriter::build_term_vectors_output`], this has no "best effort,
-    /// skip that doc" fallback: [`doc_values::write_single_dense_numeric_field`]
-    /// is dense-only, so a pending doc with no value at all for
-    /// `config.field_number` fails the whole `commit()` call with
-    /// [`Error::MissingDenseDocValue`], and a pending doc whose value isn't
-    /// [`FieldValue::Int`]/[`FieldValue::Long`] fails it with
-    /// [`Error::NonNumericDocValue`] -- see [`IndexWriter::set_doc_values_field`]'s
-    /// doc comment. Called only when `docs` is non-empty (see `commit`'s own
+    /// A pending doc with no value at all for `config.field_number` is no
+    /// longer always an error: if *some but not all* docs in `docs` have it,
+    /// the present docs' `(doc_id, value)` pairs are routed to
+    /// [`doc_values::write_single_sparse_numeric_field`] instead of the dense
+    /// writer, exactly like real Lucene's own dense-vs-sparse choice at flush
+    /// time (`numDocsWithValue == maxDoc`). If *no* doc has a value,
+    /// [`Error::MissingDenseDocValue`] is still returned (nothing meaningful
+    /// to encode, same as before this doc had zero docs to be dense over). A
+    /// pending doc whose value isn't [`FieldValue::Int`]/[`FieldValue::Long`]
+    /// still fails the whole commit with [`Error::NonNumericDocValue`] -- see
+    /// [`IndexWriter::set_doc_values_field`]'s doc comment. Called only when
+    /// `docs` is non-empty (see `commit`'s own
     /// `!self.pending_docs.is_empty()` guard), so this never has to decide
     /// what an empty-batch doc-values write even means.
     fn build_doc_values_output(
@@ -1064,13 +1075,15 @@ impl<'d> IndexWriter<'d> {
         config: &DocValuesFieldConfig,
         segment_id: &[u8; ID_LENGTH],
     ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
-        let mut values: Vec<i64> = Vec::with_capacity(docs.len());
+        let mut present: Vec<(i32, i64)> = Vec::with_capacity(docs.len());
         for (doc_id, doc) in docs.iter().enumerate() {
-            let field = doc
+            let Some(field) = doc
                 .fields
                 .iter()
                 .find(|f| f.field_number == config.field_number)
-                .ok_or_else(|| Error::MissingDenseDocValue(config.name.clone(), doc_id))?;
+            else {
+                continue;
+            };
             let value = match &field.value {
                 FieldValue::Int(v) => *v as i64,
                 FieldValue::Long(v) => *v,
@@ -1082,17 +1095,31 @@ impl<'d> IndexWriter<'d> {
                     ));
                 }
             };
-            values.push(value);
+            present.push((doc_id as i32, value));
         }
 
         let max_doc = docs.len() as i32;
-        let output = doc_values::write_single_dense_numeric_field(
-            config.field_number,
-            &values,
-            max_doc,
-            segment_id,
-            "",
-        )?;
+        if present.is_empty() {
+            return Err(Error::MissingDenseDocValue(config.name.clone(), 0));
+        }
+        let output = if present.len() == docs.len() {
+            let values: Vec<i64> = present.into_iter().map(|(_, v)| v).collect();
+            doc_values::write_single_dense_numeric_field(
+                config.field_number,
+                &values,
+                max_doc,
+                segment_id,
+                "",
+            )?
+        } else {
+            doc_values::write_single_sparse_numeric_field(
+                config.field_number,
+                &present,
+                max_doc,
+                segment_id,
+                "",
+            )?
+        };
         Ok(output)
     }
 
@@ -1110,13 +1137,15 @@ impl<'d> IndexWriter<'d> {
         config: &DocValuesFieldConfig,
         segment_id: &[u8; ID_LENGTH],
     ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
-        let mut values: Vec<Vec<u8>> = Vec::with_capacity(docs.len());
+        let mut present: Vec<(i32, Vec<u8>)> = Vec::with_capacity(docs.len());
         for (doc_id, doc) in docs.iter().enumerate() {
-            let field = doc
+            let Some(field) = doc
                 .fields
                 .iter()
                 .find(|f| f.field_number == config.field_number)
-                .ok_or_else(|| Error::MissingDenseDocValue(config.name.clone(), doc_id))?;
+            else {
+                continue;
+            };
             let value = match &field.value {
                 FieldValue::String(s) => s.as_bytes().to_vec(),
                 FieldValue::Binary(b) => b.clone(),
@@ -1128,17 +1157,31 @@ impl<'d> IndexWriter<'d> {
                     ));
                 }
             };
-            values.push(value);
+            present.push((doc_id as i32, value));
         }
 
         let max_doc = docs.len() as i32;
-        let output = doc_values::write_single_dense_sorted_field(
-            config.field_number,
-            &values,
-            max_doc,
-            segment_id,
-            "",
-        )?;
+        if present.is_empty() {
+            return Err(Error::MissingDenseDocValue(config.name.clone(), 0));
+        }
+        let output = if present.len() == docs.len() {
+            let values: Vec<Vec<u8>> = present.into_iter().map(|(_, v)| v).collect();
+            doc_values::write_single_dense_sorted_field(
+                config.field_number,
+                &values,
+                max_doc,
+                segment_id,
+                "",
+            )?
+        } else {
+            doc_values::write_single_sparse_sorted_field(
+                config.field_number,
+                &present,
+                max_doc,
+                segment_id,
+                "",
+            )?
+        };
         Ok(output)
     }
 
@@ -1155,13 +1198,15 @@ impl<'d> IndexWriter<'d> {
         config: &DocValuesFieldConfig,
         segment_id: &[u8; ID_LENGTH],
     ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
-        let mut values: Vec<Vec<u8>> = Vec::with_capacity(docs.len());
+        let mut present: Vec<(i32, Vec<u8>)> = Vec::with_capacity(docs.len());
         for (doc_id, doc) in docs.iter().enumerate() {
-            let field = doc
+            let Some(field) = doc
                 .fields
                 .iter()
                 .find(|f| f.field_number == config.field_number)
-                .ok_or_else(|| Error::MissingDenseDocValue(config.name.clone(), doc_id))?;
+            else {
+                continue;
+            };
             let value = match &field.value {
                 FieldValue::String(s) => s.as_bytes().to_vec(),
                 FieldValue::Binary(b) => b.clone(),
@@ -1173,17 +1218,31 @@ impl<'d> IndexWriter<'d> {
                     ));
                 }
             };
-            values.push(value);
+            present.push((doc_id as i32, value));
         }
 
         let max_doc = docs.len() as i32;
-        let output = doc_values::write_single_dense_binary_field(
-            config.field_number,
-            &values,
-            max_doc,
-            segment_id,
-            "",
-        )?;
+        if present.is_empty() {
+            return Err(Error::MissingDenseDocValue(config.name.clone(), 0));
+        }
+        let output = if present.len() == docs.len() {
+            let values: Vec<Vec<u8>> = present.into_iter().map(|(_, v)| v).collect();
+            doc_values::write_single_dense_binary_field(
+                config.field_number,
+                &values,
+                max_doc,
+                segment_id,
+                "",
+            )?
+        } else {
+            doc_values::write_single_sparse_binary_field(
+                config.field_number,
+                &present,
+                max_doc,
+                segment_id,
+                "",
+            )?
+        };
         Ok(output)
     }
 
@@ -1203,7 +1262,7 @@ impl<'d> IndexWriter<'d> {
         config: &DocValuesFieldConfig,
         segment_id: &[u8; ID_LENGTH],
     ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
-        let mut values: Vec<Vec<i64>> = Vec::with_capacity(docs.len());
+        let mut present: Vec<(i32, Vec<i64>)> = Vec::with_capacity(docs.len());
         for (doc_id, doc) in docs.iter().enumerate() {
             let mut per_doc: Vec<i64> = Vec::new();
             for field in doc
@@ -1224,18 +1283,32 @@ impl<'d> IndexWriter<'d> {
                 };
                 per_doc.push(value);
             }
-            if per_doc.is_empty() {
-                return Err(Error::MissingDenseDocValue(config.name.clone(), doc_id));
+            if !per_doc.is_empty() {
+                present.push((doc_id as i32, per_doc));
             }
-            values.push(per_doc);
         }
 
-        let output = doc_values::write_single_dense_sorted_numeric_field(
-            config.field_number,
-            &values,
-            segment_id,
-            "",
-        )?;
+        if present.is_empty() {
+            return Err(Error::MissingDenseDocValue(config.name.clone(), 0));
+        }
+        let max_doc = docs.len() as i32;
+        let output = if present.len() == docs.len() {
+            let values: Vec<Vec<i64>> = present.into_iter().map(|(_, v)| v).collect();
+            doc_values::write_single_dense_sorted_numeric_field(
+                config.field_number,
+                &values,
+                segment_id,
+                "",
+            )?
+        } else {
+            doc_values::write_single_sparse_sorted_numeric_field(
+                config.field_number,
+                &present,
+                max_doc,
+                segment_id,
+                "",
+            )?
+        };
         Ok(output)
     }
 
@@ -1257,7 +1330,7 @@ impl<'d> IndexWriter<'d> {
         config: &DocValuesFieldConfig,
         segment_id: &[u8; ID_LENGTH],
     ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
-        let mut values: Vec<Vec<Vec<u8>>> = Vec::with_capacity(docs.len());
+        let mut present: Vec<(i32, Vec<Vec<u8>>)> = Vec::with_capacity(docs.len());
         for (doc_id, doc) in docs.iter().enumerate() {
             let mut per_doc: Vec<Vec<u8>> = Vec::new();
             for field in doc
@@ -1278,20 +1351,33 @@ impl<'d> IndexWriter<'d> {
                 };
                 per_doc.push(value);
             }
-            if per_doc.is_empty() {
-                return Err(Error::MissingDenseDocValue(config.name.clone(), doc_id));
+            if !per_doc.is_empty() {
+                present.push((doc_id as i32, per_doc));
             }
-            values.push(per_doc);
         }
 
+        if present.is_empty() {
+            return Err(Error::MissingDenseDocValue(config.name.clone(), 0));
+        }
         let max_doc = docs.len() as i32;
-        let output = doc_values::write_single_dense_sorted_set_field(
-            config.field_number,
-            &values,
-            max_doc,
-            segment_id,
-            "",
-        )?;
+        let output = if present.len() == docs.len() {
+            let values: Vec<Vec<Vec<u8>>> = present.into_iter().map(|(_, v)| v).collect();
+            doc_values::write_single_dense_sorted_set_field(
+                config.field_number,
+                &values,
+                max_doc,
+                segment_id,
+                "",
+            )?
+        } else {
+            doc_values::write_single_sparse_sorted_set_field(
+                config.field_number,
+                &present,
+                max_doc,
+                segment_id,
+                "",
+            )?
+        };
         Ok(output)
     }
 
@@ -3896,11 +3982,13 @@ mod tests {
     }
 
     #[test]
-    fn commit_rejects_and_leaves_state_unchanged_when_a_pending_doc_has_no_doc_values_field() {
-        // Dense-only: a doc missing the opted-in field entirely must reject
-        // the whole commit atomically, not silently skip that doc (there is
-        // no sparse/missing-value doc-values shape to fall back to).
-        let tmp = tempdir("dv-missing-value");
+    fn commit_writes_sparse_numeric_doc_values_when_a_pending_doc_has_no_value() {
+        // A doc missing the opted-in NUMERIC field entirely no longer
+        // rejects the whole commit: it routes the present docs' values
+        // through `write_single_sparse_numeric_field` instead of the dense
+        // writer, and the missing doc reads back as absent (`None`), not as
+        // a wrong/zero value.
+        let tmp = tempdir("dv-sparse-numeric");
         let dir = FsDirectory::open(&tmp);
         let fields = vec![stored_only_field("id", 0), numeric_field("score", 1)];
         let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
@@ -3908,16 +3996,315 @@ mod tests {
 
         writer.add_document(doc_with_score("a", 5));
         writer.add_document(doc("b")); // only field_number 0 ("id"), no "score"
-        let before = writer.segment_infos().clone();
-        let before_pending = writer.pending_doc_count();
+        writer.add_document(doc_with_score("c", 7));
 
-        let err = writer.commit().unwrap_err();
-        assert!(matches!(err, Error::MissingDenseDocValue(name, 1) if name == "score"));
+        let sis = writer.commit().unwrap().clone();
+        let sci = &sis.segments[0];
 
-        assert_eq!(writer.segment_infos(), &before);
-        assert_eq!(writer.pending_doc_count(), before_pending);
-        assert!(!tmp.join("segments_1").exists());
+        let dvm = dir.open(&format!("{}.dvm", sci.segment_name)).unwrap();
+        let dvd = dir.open(&format!("{}.dvd", sci.segment_name)).unwrap();
+        let field_infos = fi::FieldInfos {
+            fields: vec![stored_only_field("id", 0), numeric_field("score", 1)],
+        };
+        let (_, meta) =
+            lucene_codecs::doc_values::parse_meta(&dvm, &sci.segment_id, "", &field_infos)
+                .expect("parse_meta on IndexWriter-produced sparse .dvm");
+        let entry = meta.numeric_entry(1).unwrap();
+
+        assert_eq!(
+            lucene_codecs::doc_values::numeric_value(&dvd, entry, 0).unwrap(),
+            Some(5)
+        );
+        assert_eq!(
+            lucene_codecs::doc_values::numeric_value(&dvd, entry, 1).unwrap(),
+            None
+        );
+        assert_eq!(
+            lucene_codecs::doc_values::numeric_value(&dvd, entry, 2).unwrap(),
+            Some(7)
+        );
     }
+
+    #[test]
+    fn commit_writes_sparse_sorted_doc_values_when_a_pending_doc_has_no_value() {
+        // Same sparse contract as the NUMERIC test above, but for SORTED,
+        // whose sparse writer builds a terms dictionary of only the present
+        // docs' values and writes per-doc ordinals only for those docs.
+        let tmp = tempdir("dv-sparse-sorted");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), sorted_field("category", 1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_doc_values_field(Some("category")).unwrap();
+
+        writer.add_document(Document {
+            fields: vec![
+                StoredField {
+                    field_number: 0,
+                    value: FieldValue::String("a".to_string()),
+                },
+                StoredField {
+                    field_number: 1,
+                    value: FieldValue::String("red".to_string()),
+                },
+            ],
+        });
+        writer.add_document(doc("b")); // no "category" value
+        writer.add_document(Document {
+            fields: vec![
+                StoredField {
+                    field_number: 0,
+                    value: FieldValue::String("c".to_string()),
+                },
+                StoredField {
+                    field_number: 1,
+                    value: FieldValue::String("blue".to_string()),
+                },
+            ],
+        });
+
+        let sis = writer.commit().unwrap().clone();
+        let sci = &sis.segments[0];
+
+        let dvm = dir.open(&format!("{}.dvm", sci.segment_name)).unwrap();
+        let dvd = dir.open(&format!("{}.dvd", sci.segment_name)).unwrap();
+        let field_infos = fi::FieldInfos {
+            fields: vec![stored_only_field("id", 0), sorted_field("category", 1)],
+        };
+        let (_, meta) =
+            lucene_codecs::doc_values::parse_meta(&dvm, &sci.segment_id, "", &field_infos)
+                .expect("parse_meta on IndexWriter-produced sparse SORTED .dvm");
+        let entry = meta.sorted_entry(1).unwrap();
+
+        assert!(lucene_codecs::doc_values::sorted_ord(&dvd, entry, 0)
+            .unwrap()
+            .is_some());
+        assert_eq!(
+            lucene_codecs::doc_values::sorted_ord(&dvd, entry, 1).unwrap(),
+            None
+        );
+        assert!(lucene_codecs::doc_values::sorted_ord(&dvd, entry, 2)
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn commit_writes_sparse_binary_doc_values_when_a_pending_doc_has_no_value() {
+        let tmp = tempdir("dv-sparse-binary");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), binary_field("payload", 1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_doc_values_field(Some("payload")).unwrap();
+
+        writer.add_document(Document {
+            fields: vec![
+                StoredField {
+                    field_number: 0,
+                    value: FieldValue::String("a".to_string()),
+                },
+                StoredField {
+                    field_number: 1,
+                    value: FieldValue::Binary(b"abc".to_vec()),
+                },
+            ],
+        });
+        writer.add_document(doc("b")); // no "payload" value
+        writer.add_document(Document {
+            fields: vec![
+                StoredField {
+                    field_number: 0,
+                    value: FieldValue::String("c".to_string()),
+                },
+                StoredField {
+                    field_number: 1,
+                    value: FieldValue::Binary(b"xyz".to_vec()),
+                },
+            ],
+        });
+
+        let sis = writer.commit().unwrap().clone();
+        let sci = &sis.segments[0];
+
+        let dvm = dir.open(&format!("{}.dvm", sci.segment_name)).unwrap();
+        let dvd = dir.open(&format!("{}.dvd", sci.segment_name)).unwrap();
+        let field_infos = fi::FieldInfos {
+            fields: vec![stored_only_field("id", 0), binary_field("payload", 1)],
+        };
+        let (_, meta) =
+            lucene_codecs::doc_values::parse_meta(&dvm, &sci.segment_id, "", &field_infos)
+                .expect("parse_meta on IndexWriter-produced sparse BINARY .dvm");
+        let entry = meta.binary_entry(1).unwrap();
+
+        assert_eq!(
+            lucene_codecs::doc_values::binary_value(&dvd, entry, 0).unwrap(),
+            Some(b"abc".as_slice())
+        );
+        assert_eq!(
+            lucene_codecs::doc_values::binary_value(&dvd, entry, 1).unwrap(),
+            None
+        );
+        assert_eq!(
+            lucene_codecs::doc_values::binary_value(&dvd, entry, 2).unwrap(),
+            Some(b"xyz".as_slice())
+        );
+    }
+
+    #[test]
+    fn commit_writes_sparse_sorted_numeric_doc_values_when_a_pending_doc_has_no_value() {
+        let tmp = tempdir("dv-sparse-sorted-numeric");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), sorted_numeric_field("nums", 1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_doc_values_field(Some("nums")).unwrap();
+
+        writer.add_document(Document {
+            fields: vec![
+                StoredField {
+                    field_number: 0,
+                    value: FieldValue::String("a".to_string()),
+                },
+                StoredField {
+                    field_number: 1,
+                    value: FieldValue::Long(10),
+                },
+                StoredField {
+                    field_number: 1,
+                    value: FieldValue::Long(20),
+                },
+            ],
+        });
+        writer.add_document(doc("b")); // no "nums" value at all
+        writer.add_document(Document {
+            fields: vec![
+                StoredField {
+                    field_number: 0,
+                    value: FieldValue::String("c".to_string()),
+                },
+                StoredField {
+                    field_number: 1,
+                    value: FieldValue::Long(-5),
+                },
+            ],
+        });
+
+        let sis = writer.commit().unwrap().clone();
+        let sci = &sis.segments[0];
+
+        let dvm = dir.open(&format!("{}.dvm", sci.segment_name)).unwrap();
+        let dvd = dir.open(&format!("{}.dvd", sci.segment_name)).unwrap();
+        let field_infos = fi::FieldInfos {
+            fields: vec![stored_only_field("id", 0), sorted_numeric_field("nums", 1)],
+        };
+        let (_, meta) =
+            lucene_codecs::doc_values::parse_meta(&dvm, &sci.segment_id, "", &field_infos)
+                .expect("parse_meta on IndexWriter-produced sparse SORTED_NUMERIC .dvm");
+        let entry = meta.sorted_numeric_entry(1).unwrap();
+
+        assert_eq!(
+            lucene_codecs::doc_values::sorted_numeric_values(&dvd, entry, 0).unwrap(),
+            vec![10, 20]
+        );
+        assert_eq!(
+            lucene_codecs::doc_values::sorted_numeric_values(&dvd, entry, 1).unwrap(),
+            Vec::<i64>::new()
+        );
+        assert_eq!(
+            lucene_codecs::doc_values::sorted_numeric_values(&dvd, entry, 2).unwrap(),
+            vec![-5]
+        );
+    }
+
+    #[test]
+    fn commit_writes_sparse_sorted_set_doc_values_when_a_pending_doc_has_no_value() {
+        let tmp = tempdir("dv-sparse-sorted-set");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), sorted_set_field("tags", 1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_doc_values_field(Some("tags")).unwrap();
+
+        writer.add_document(Document {
+            fields: vec![
+                StoredField {
+                    field_number: 0,
+                    value: FieldValue::String("a".to_string()),
+                },
+                StoredField {
+                    field_number: 1,
+                    value: FieldValue::String("fruit".to_string()),
+                },
+                StoredField {
+                    field_number: 1,
+                    value: FieldValue::String("red".to_string()),
+                },
+            ],
+        });
+        writer.add_document(doc("b")); // no "tags" value at all
+        writer.add_document(Document {
+            fields: vec![
+                StoredField {
+                    field_number: 0,
+                    value: FieldValue::String("c".to_string()),
+                },
+                StoredField {
+                    field_number: 1,
+                    value: FieldValue::String("vegetable".to_string()),
+                },
+            ],
+        });
+
+        let sis = writer.commit().unwrap().clone();
+        let sci = &sis.segments[0];
+
+        let dvm = dir.open(&format!("{}.dvm", sci.segment_name)).unwrap();
+        let dvd = dir.open(&format!("{}.dvd", sci.segment_name)).unwrap();
+        let field_infos = fi::FieldInfos {
+            fields: vec![stored_only_field("id", 0), sorted_set_field("tags", 1)],
+        };
+        let (_, meta) =
+            lucene_codecs::doc_values::parse_meta(&dvm, &sci.segment_id, "", &field_infos)
+                .expect("parse_meta on IndexWriter-produced sparse SORTED_SET .dvm");
+        let entry = meta.sorted_set_entry(1).unwrap();
+        let (ords_entry, terms_entry) = match &entry.kind {
+            lucene_codecs::doc_values::SortedSetKind::Multi { ords, terms } => (ords, terms),
+            lucene_codecs::doc_values::SortedSetKind::Single(_) => {
+                panic!("expected Multi (some doc has 2 values)")
+            }
+        };
+        let dict = lucene_codecs::terms_dict::decode_all_terms(&dvd, terms_entry).unwrap();
+
+        let mut doc0: Vec<&str> =
+            lucene_codecs::doc_values::sorted_numeric_values(&dvd, ords_entry, 0)
+                .unwrap()
+                .iter()
+                .map(|&ord| std::str::from_utf8(&dict[ord as usize]).unwrap())
+                .collect();
+        doc0.sort_unstable();
+        assert_eq!(doc0, vec!["fruit", "red"]);
+
+        assert_eq!(
+            lucene_codecs::doc_values::sorted_numeric_values(&dvd, ords_entry, 1).unwrap(),
+            Vec::<i64>::new(),
+            "doc without a \"tags\" value must report zero ordinals, not a stale/wrong one"
+        );
+
+        let doc2: Vec<&str> = lucene_codecs::doc_values::sorted_numeric_values(&dvd, ords_entry, 2)
+            .unwrap()
+            .iter()
+            .map(|&ord| std::str::from_utf8(&dict[ord as usize]).unwrap())
+            .collect();
+        assert_eq!(doc2, vec!["vegetable"]);
+    }
+
+    // Note: a "one field dense, another field on the same docs sparse"
+    // mixed-commit test is not expressible against the current API --
+    // `IndexWriter` supports only one `doc_values_field` configured at a
+    // time (`doc_values_field: Option<DocValuesFieldConfig>`, not a list;
+    // see `set_doc_values_field`'s doc comment), a pre-existing limitation
+    // unrelated to sparse support and out of this task's scope. The dense
+    // vs. sparse build paths for a *single* field are independent match
+    // arms in `build_doc_values_output` (dense/sparse is decided per field,
+    // per call), so there is no shared mutable state between fields for
+    // multiple fields to interfere through even once that limitation is
+    // lifted.
 
     #[test]
     fn commit_rejects_when_a_pending_docs_value_is_not_numeric() {
