@@ -37,7 +37,8 @@ Every generator above is Java-writes-Rust-reads. The write path (PLAN.md Phase 5
 needs the opposite: Rust writes real bytes, and a Java program confirms real Lucene
 can open and read them back. `VerifyStoredFields.java`, `VerifyFieldInfos.java`,
 `VerifySegmentInfo.java`, `VerifySegmentInfos.java`, `VerifyPoints.java`,
-`VerifyTermVectors.java`, `VerifyDocValues.java`, `VerifyNorms.java`,
+`VerifyTermVectors.java`, `VerifyDocValues.java`,
+`VerifySparseNumericDocValues.java`, `VerifyNorms.java`,
 `VerifyLiveDocs.java`, `VerifyCompoundFormat.java`, and `VerifyFst.java` are these
 verifiers so far:
 
@@ -50,13 +51,14 @@ cargo run -p lucene-index --example write_multi_segment_commit_fixture -- /tmp/r
 cargo run -p lucene-codecs --example write_points_fixture -- /tmp/rust-points
 cargo run -p lucene-codecs --example write_term_vectors_fixture -- /tmp/rust-term-vectors
 cargo run -p lucene-codecs --example write_doc_values_fixture -- /tmp/rust-doc-values
+cargo run -p lucene-codecs --example write_sparse_numeric_doc_values_fixture -- /tmp/rust-sparse-numeric-dv
 cargo run -p lucene-codecs --example write_norms_fixture -- /tmp/rust-norms
 cargo run -p lucene-codecs --example write_live_docs_fixture -- /tmp/rust-live-docs
 cargo run -p lucene-codecs --example write_compound_format_fixture -- /tmp/rust-compound-format
 cargo run -p lucene-codecs --example write_fst_fixture -- /tmp/rust-fst
 JAR=$(find ~/.gradle/caches/modules-2/files-2.1/org.apache.lucene/lucene-core/10.5.0 \
   -name 'lucene-core-10.5.0.jar' ! -name '*sources*' ! -name '*javadoc*')
-javac -nowarn -cp "$JAR" -d classes src/VerifyStoredFields.java src/VerifyFieldInfos.java src/VerifySegmentInfo.java src/VerifySegmentInfos.java src/VerifyPoints.java src/VerifyTermVectors.java src/VerifyDocValues.java src/VerifyNorms.java src/VerifyLiveDocs.java src/VerifyCompoundFormat.java src/VerifyFst.java
+javac -nowarn -cp "$JAR" -d classes src/VerifyStoredFields.java src/VerifyFieldInfos.java src/VerifySegmentInfo.java src/VerifySegmentInfos.java src/VerifyPoints.java src/VerifyTermVectors.java src/VerifyDocValues.java src/VerifySparseNumericDocValues.java src/VerifyNorms.java src/VerifyLiveDocs.java src/VerifyCompoundFormat.java src/VerifyFst.java
 java -cp "classes:$JAR" VerifyStoredFields /tmp/rust-stored-fields
 java -cp "classes:$JAR" VerifyFieldInfos /tmp/rust-field-infos
 java -cp "classes:$JAR" VerifySegmentInfo /tmp/rust-segment-info
@@ -65,6 +67,7 @@ java -cp "classes:$JAR" VerifySegmentInfos /tmp/rust-multi-segment
 java -cp "classes:$JAR" VerifyPoints /tmp/rust-points
 java -cp "classes:$JAR" VerifyTermVectors /tmp/rust-term-vectors
 java -cp "classes:$JAR" VerifyDocValues /tmp/rust-doc-values
+java -cp "classes:$JAR" VerifySparseNumericDocValues /tmp/rust-sparse-numeric-dv
 java -cp "classes:$JAR" VerifyNorms /tmp/rust-norms
 java -cp "classes:$JAR" VerifyLiveDocs /tmp/rust-live-docs
 java -cp "classes:$JAR" VerifyCompoundFormat /tmp/rust-compound-format
@@ -206,6 +209,27 @@ single-64-term-block path -- it does not force real Lucene to open a
 multi-LZ4-block/multi-1024-ordinal-reverse-index-sample dictionary this
 port wrote; that boundary is covered only by unit tests against this
 port's own reader (see `docs/parity.md`'s doc-values row).
+
+`VerifySparseNumericDocValues.java` verifies
+`write_single_sparse_numeric_field` (`crates/lucene-codecs/src/doc_values.rs`),
+which had previously only been checked against this port's own reader
+(`write_single_sparse_numeric_field_round_trips_through_own_reader`'s unit
+test in that file) -- never against real Lucene. It opens the
+`.dvm`/`.dvd`/`.dvs` triple written by
+`crates/lucene-codecs/examples/write_sparse_numeric_doc_values_fixture.rs`
+directly through real `Lucene90DocValuesFormat.fieldsProducer`, with a
+hand-built `SegmentInfo`/`FieldInfos` (same division of labor as
+`VerifyDocValues.java`). Unlike the dense verifier, it does not just walk
+present docs via `nextDoc()` -- it calls real `NumericDocValues.advanceExact`
+for every doc id from `0` to `max_doc - 1`, confirming docs with a value
+return `true` and the correct value via `longValue()`, and docs without a
+value correctly report `false`, which is the property that actually matters
+for a sparse field's `IndexedDISI`-backed presence check. The Rust example
+writes two segments: `_0` (20 docs, missing values interspersed throughout --
+not just trailing) and `_1` (200,000 docs, 1 of every 3 present, forcing
+`IndexedDISI`'s DENSE-bitset per-block shape, the same shape the pure-Rust
+unit test already covers, now also checked against real Lucene). Both passed
+on the first run.
 
 `VerifyNorms.java` verifies `norms::write_single_dense_field`
 (`crates/lucene-codecs/src/norms.rs`), scoped to exactly one shape: a single
