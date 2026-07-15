@@ -1016,8 +1016,9 @@ pub fn write_single_dense_numeric_field(
 /// [`write_single_dense_numeric_field`] always writes) -- the one doc-values
 /// type/shape this port's write side extends beyond dense in this slice; see
 /// that function's doc comment for the rest of this module's scope
-/// statement (BINARY/SORTED/SORTED_NUMERIC/SORTED_SET sparse writing is
-/// still deferred, as is real Lucene's SPARSE-as-shorts-vs-DENSE-bitset
+/// statement (BINARY sparse writing is also now ported, see
+/// [`write_single_sparse_binary_field`]; SORTED/SORTED_NUMERIC/SORTED_SET
+/// sparse writing remains deferred, as is real Lucene's SPARSE-as-shorts-vs-DENSE-bitset
 /// choice for any *single* 65536-doc block -- [`indexed_disi::write`]
 /// already makes that choice per block exactly like real Lucene, so a
 /// `doc_values` big enough to span more than one block, at varying
@@ -1074,9 +1075,10 @@ pub fn write_single_sparse_numeric_field(
 /// choice `term_vectors.rs`/`stored_fields.rs`'s own monotonic writers
 /// already made, simplicity over compression ratio for an in-memory buffer).
 ///
-/// Deliberately not attempted here, same as [`write_single_dense_numeric_field`]:
-/// sparse fields (`IndexedDISI`), per-field doc-values skip indexes, and
-/// multiple fields in one `.dvm`/`.dvd`/`.dvs` triple.
+/// Deliberately not attempted here: per-field doc-values skip indexes, and
+/// multiple fields in one `.dvm`/`.dvd`/`.dvs` triple. Sparse BINARY fields
+/// (`IndexedDISI`) are no longer out of scope -- see
+/// [`write_single_sparse_binary_field`] below.
 ///
 /// Returns `(meta_bytes, data_bytes, skip_index_bytes)`, same shape as
 /// [`write_single_dense_numeric_field`].
@@ -1125,6 +1127,104 @@ pub fn write_single_dense_binary_field(
         let mut ends: Vec<i64> = Vec::with_capacity(values.len() + 1);
         ends.push(0);
         for v in values {
+            end += v.len() as i64;
+            ends.push(end);
+        }
+        let block_shift = 0u32;
+        let (addr_meta, addr_data) = direct_monotonic::write(&ends, block_shift);
+        let addresses_offset = data.len() as i64;
+        data.extend_from_slice(&addr_data);
+        let addresses_length = data.len() as i64 - addresses_offset;
+
+        meta.write_i64(addresses_offset);
+        meta.write_vint(block_shift as i32);
+        meta.extend_from_slice(&addr_meta);
+        meta.write_i64(addresses_length);
+    }
+
+    let skip_index =
+        finish_field_list_and_footers(&mut meta, &mut data, segment_id, segment_suffix);
+    Ok((meta, data, skip_index))
+}
+
+/// Port of `Lucene90DocValuesConsumer.addBinaryField`'s **sparse** branch
+/// (`numDocsWithValue != maxDoc`), the BINARY analogue of
+/// [`write_single_sparse_numeric_field`]: an [`indexed_disi`]-backed
+/// docs-with-field structure instead of the `-1`/DENSE marker
+/// [`write_single_dense_binary_field`] always writes, followed by the value
+/// bytes for *only* the docs that have one -- no placeholder bytes for
+/// missing docs, matching real Lucene exactly (a sparse field's value array
+/// is indexed by rank among present docs, not by doc id, same as sparse
+/// NUMERIC's value array).
+///
+/// `doc_values` need not be sorted by the caller; this function sorts a
+/// clone by doc id itself, same contract as
+/// [`write_single_sparse_numeric_field`]. Each doc id must be unique and
+/// `< max_doc`. Empty `Vec<u8>` values are allowed (an empty value is still
+/// present, distinct from absent).
+///
+/// Handles both length shapes real Lucene distinguishes, same as
+/// [`write_single_dense_binary_field`]: fixed-length (no address array,
+/// `rank * length` indexing) and variable-length ([`direct_monotonic`]
+/// end-offset array over the present docs' values, in rank order).
+pub fn write_single_sparse_binary_field(
+    field_number: i32,
+    doc_values: &[(i32, Vec<u8>)],
+    max_doc: i32,
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+) -> WriteResult<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    let mut sorted: Vec<(i32, Vec<u8>)> = doc_values.to_vec();
+    sorted.sort_unstable_by_key(|&(doc, _)| doc);
+    for i in 1..sorted.len() {
+        if sorted[i - 1].0 == sorted[i].0 {
+            return Err(WriteError::DocIdsNotAscending(sorted[i].0));
+        }
+    }
+    for &(doc, _) in &sorted {
+        if doc < 0 || doc >= max_doc {
+            return Err(WriteError::DocIdOutOfRange(doc, max_doc));
+        }
+    }
+
+    let doc_ids: Vec<i32> = sorted.iter().map(|&(doc, _)| doc).collect();
+    let values: Vec<Vec<u8>> = sorted.into_iter().map(|(_, v)| v).collect();
+
+    let mut meta = new_meta_output(segment_id, segment_suffix);
+    let mut data = new_data_output(segment_id, segment_suffix);
+
+    meta.write_i32(field_number);
+    meta.push(DOC_VALUES_TYPE_BINARY);
+
+    let data_offset = data.len() as i64;
+    for v in &values {
+        data.extend_from_slice(v);
+    }
+    let data_length = data.len() as i64 - data_offset;
+    meta.write_i64(data_offset);
+    meta.write_i64(data_length);
+
+    let disi_bytes = indexed_disi::write(&doc_ids);
+    let docs_with_field_offset = data.len() as i64;
+    data.extend_from_slice(&disi_bytes);
+    let docs_with_field_length = data.len() as i64 - docs_with_field_offset;
+
+    meta.write_i64(docs_with_field_offset);
+    meta.write_i64(docs_with_field_length);
+    meta.write_i16(-1); // jumpTableEntryCount: no jump table written
+    meta.push(0xFF); // denseRankPower: no rank table written
+
+    meta.write_i32(values.len() as i32); // numDocsWithField
+    let min_length = values.iter().map(|v| v.len() as i32).min().unwrap_or(0);
+    let max_length = values.iter().map(|v| v.len() as i32).max().unwrap_or(0);
+    meta.write_i32(min_length);
+    meta.write_i32(max_length);
+
+    if min_length < max_length {
+        let mut end = 0i64;
+        let mut ends: Vec<i64> = Vec::with_capacity(values.len() + 1);
+        ends.push(0);
+        for v in &values {
             end += v.len() as i64;
             ends.push(end);
         }
@@ -2924,6 +3024,207 @@ mod tests {
                 max_doc: 5
             }
         ));
+    }
+
+    #[test]
+    fn write_single_sparse_binary_field_interspersed_missing_docs_round_trips() {
+        // Missing docs interspersed throughout, not just trailing: doc 0
+        // present, doc 1 missing, doc 2 present, etc, plus a fixed-length
+        // shape so both the fixed and variable address paths get exercised
+        // once each in this module (variable-length is covered by the next
+        // test).
+        let id = [20u8; ID_LENGTH];
+        let max_doc = 10i32;
+        let doc_values: Vec<(i32, Vec<u8>)> = (0..max_doc)
+            .step_by(2)
+            .map(|doc| (doc, vec![doc as u8, doc as u8]))
+            .collect();
+
+        let (meta_bytes, data_bytes, skip_bytes) =
+            write_single_sparse_binary_field(0, &doc_values, max_doc, &id, "").unwrap();
+
+        assert_eq!(
+            check_data_header_footer_generic(&skip_bytes, "Lucene90DocValuesSkipIndex", &id)
+                .unwrap(),
+            VERSION_CURRENT
+        );
+        assert_eq!(
+            check_data_header_footer(&data_bytes, &id, "").unwrap(),
+            VERSION_CURRENT
+        );
+
+        let fis = binary_field_infos();
+        let (_, meta) = parse_meta(&meta_bytes, &id, "", &fis).unwrap();
+        let entry = meta.binary_entry(0).unwrap();
+        assert!(!entry.is_dense());
+        assert!(!entry.is_empty_field());
+        assert!(entry.is_fixed_length());
+
+        let present: std::collections::HashMap<i32, &Vec<u8>> =
+            doc_values.iter().map(|(d, v)| (*d, v)).collect();
+        for doc in 0..max_doc {
+            let got = binary_value(&data_bytes, entry, doc).unwrap();
+            assert_eq!(got, present.get(&doc).map(|v| v.as_slice()), "doc {doc}");
+        }
+    }
+
+    #[test]
+    fn write_single_sparse_binary_field_variable_length_round_trips() {
+        let id = [21u8; ID_LENGTH];
+        let max_doc = 8i32;
+        let doc_values: Vec<(i32, Vec<u8>)> = vec![
+            (0, b"a".to_vec()),
+            (2, b"".to_vec()),
+            (3, b"bbbbb".to_vec()),
+            (6, b"cc".to_vec()),
+        ];
+
+        let (meta_bytes, data_bytes, _skip_bytes) =
+            write_single_sparse_binary_field(0, &doc_values, max_doc, &id, "").unwrap();
+
+        let fis = binary_field_infos();
+        let (_, meta) = parse_meta(&meta_bytes, &id, "", &fis).unwrap();
+        let entry = meta.binary_entry(0).unwrap();
+        assert!(!entry.is_dense());
+        assert!(!entry.is_fixed_length());
+
+        let present: std::collections::HashMap<i32, &Vec<u8>> =
+            doc_values.iter().map(|(d, v)| (*d, v)).collect();
+        for doc in 0..max_doc {
+            let got = binary_value(&data_bytes, entry, doc).unwrap();
+            assert_eq!(got, present.get(&doc).map(|v| v.as_slice()), "doc {doc}");
+        }
+    }
+
+    #[test]
+    fn write_single_sparse_binary_field_first_doc_missing() {
+        let id = [22u8; ID_LENGTH];
+        let max_doc = 5i32;
+        let doc_values: Vec<(i32, Vec<u8>)> = vec![
+            (1, b"a".to_vec()),
+            (2, b"b".to_vec()),
+            (3, b"c".to_vec()),
+            (4, b"d".to_vec()),
+        ];
+
+        let (meta_bytes, data_bytes, _skip_bytes) =
+            write_single_sparse_binary_field(0, &doc_values, max_doc, &id, "").unwrap();
+
+        let fis = binary_field_infos();
+        let (_, meta) = parse_meta(&meta_bytes, &id, "", &fis).unwrap();
+        let entry = meta.binary_entry(0).unwrap();
+        assert_eq!(binary_value(&data_bytes, entry, 0).unwrap(), None);
+        for (doc, want) in &doc_values {
+            assert_eq!(
+                binary_value(&data_bytes, entry, *doc).unwrap(),
+                Some(want.as_slice())
+            );
+        }
+    }
+
+    #[test]
+    fn write_single_sparse_binary_field_last_doc_missing() {
+        let id = [23u8; ID_LENGTH];
+        let max_doc = 5i32;
+        let doc_values: Vec<(i32, Vec<u8>)> = vec![
+            (0, b"a".to_vec()),
+            (1, b"b".to_vec()),
+            (2, b"c".to_vec()),
+            (3, b"d".to_vec()),
+        ];
+
+        let (meta_bytes, data_bytes, _skip_bytes) =
+            write_single_sparse_binary_field(0, &doc_values, max_doc, &id, "").unwrap();
+
+        let fis = binary_field_infos();
+        let (_, meta) = parse_meta(&meta_bytes, &id, "", &fis).unwrap();
+        let entry = meta.binary_entry(0).unwrap();
+        assert_eq!(binary_value(&data_bytes, entry, 4).unwrap(), None);
+        for (doc, want) in &doc_values {
+            assert_eq!(
+                binary_value(&data_bytes, entry, *doc).unwrap(),
+                Some(want.as_slice())
+            );
+        }
+    }
+
+    #[test]
+    fn write_single_sparse_binary_field_all_but_one_missing() {
+        let id = [24u8; ID_LENGTH];
+        let max_doc = 1000i32;
+        let doc_values: Vec<(i32, Vec<u8>)> = vec![(500, b"only".to_vec())];
+
+        let (meta_bytes, data_bytes, _skip_bytes) =
+            write_single_sparse_binary_field(0, &doc_values, max_doc, &id, "").unwrap();
+
+        let fis = binary_field_infos();
+        let (_, meta) = parse_meta(&meta_bytes, &id, "", &fis).unwrap();
+        let entry = meta.binary_entry(0).unwrap();
+        assert!(!entry.is_dense());
+        assert_eq!(entry.num_docs_with_field, 1);
+        for doc in (0..max_doc).step_by(37) {
+            let got = binary_value(&data_bytes, entry, doc).unwrap();
+            if doc == 500 {
+                assert_eq!(got, Some(b"only".as_slice()));
+            } else {
+                assert_eq!(got, None, "doc {doc}");
+            }
+        }
+        assert_eq!(
+            binary_value(&data_bytes, entry, 500).unwrap(),
+            Some(b"only".as_slice())
+        );
+    }
+
+    #[test]
+    fn write_single_sparse_binary_field_rejects_duplicate_doc_id() {
+        let id = [25u8; ID_LENGTH];
+        let err = write_single_sparse_binary_field(
+            0,
+            &[(1, b"a".to_vec()), (1, b"b".to_vec())],
+            5,
+            &id,
+            "",
+        )
+        .unwrap_err();
+        assert!(matches!(err, WriteError::DocIdsNotAscending(1)));
+    }
+
+    #[test]
+    fn write_single_sparse_binary_field_rejects_out_of_range_doc_id() {
+        let id = [26u8; ID_LENGTH];
+        let err = write_single_sparse_binary_field(
+            0,
+            &[(0, b"a".to_vec()), (5, b"b".to_vec())],
+            5,
+            &id,
+            "",
+        )
+        .unwrap_err();
+        assert!(matches!(err, WriteError::DocIdOutOfRange(5, 5)));
+    }
+
+    #[test]
+    fn write_single_dense_binary_field_still_dense_after_sparse_addition() {
+        // Regression: adding the sparse write path must not change the
+        // dense path's output at all. Same values/assertions as
+        // `write_single_dense_binary_field_fixed_length_round_trips`.
+        let id = [27u8; ID_LENGTH];
+        let values: Vec<Vec<u8>> = vec![b"aa".to_vec(), b"bb".to_vec(), b"cc".to_vec()];
+        let (meta_bytes, data_bytes, _skip_bytes) =
+            write_single_dense_binary_field(0, &values, values.len() as i32, &id, "").unwrap();
+
+        let fis = binary_field_infos();
+        let (_, meta) = parse_meta(&meta_bytes, &id, "", &fis).unwrap();
+        let entry = meta.binary_entry(0).unwrap();
+        assert!(entry.is_dense());
+        assert!(entry.is_fixed_length());
+        for (doc, want) in values.iter().enumerate() {
+            assert_eq!(
+                binary_value(&data_bytes, entry, doc as i32).unwrap(),
+                Some(want.as_slice())
+            );
+        }
     }
 
     #[test]
