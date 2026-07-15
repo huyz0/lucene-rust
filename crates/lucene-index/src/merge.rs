@@ -110,6 +110,23 @@
 //! [`lucene_codecs::term_vectors::TermVectorsDocument`] (matches the real
 //! per-doc "this doc has none" case `write_best_speed` already handles).
 //!
+//! ## Doc-values type scope (audit note, not yet implemented)
+//!
+//! Only **NUMERIC** doc-values are merged here ([`merge_numeric_doc_values`]).
+//! `IndexWriter::build_doc_values_output` can already flush segments with
+//! BINARY/SORTED/SORTED_NUMERIC/SORTED_SET doc-values fields (dense only,
+//! IndexWriter wiring task), but this merge path has no equivalent
+//! `merge_binary_doc_values`/`merge_sorted_doc_values`/etc. -- a merge simply
+//! drops those fields from the output segment entirely, silently, rather
+//! than erroring like the "sparse across sources" rule above does for
+//! NUMERIC. This is a real, reachable gap, not a merely theoretical one:
+//! confirmed by audit, not yet fixed. Extending this file to the other four
+//! types is **not** a small mechanical copy of `merge_numeric_doc_values` --
+//! SORTED/SORTED_SET need ordinal remapping across each source's
+//! independent term dictionary (not simple concatenation), comparable in
+//! scope to this session's other deliberately-deferred slices (e.g.
+//! `doBlocks`, per-field skip indexes) rather than a quick follow-up.
+//!
 //! See `docs/parity.md` and `PLAN.md`'s Phase 5 section for the exact,
 //! currently-true scope line.
 
