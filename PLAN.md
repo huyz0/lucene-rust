@@ -3978,3 +3978,51 @@ but which made `Fst::iter`'s incremental walk stop after only the first arc -- n
 highest-labeled slot carries the bit. `cargo fmt`/`clippy -D warnings`/`cargo llvm-cov
 --fail-under-lines 95` all clean; see `docs/parity.md`'s FST row for the parity-tracking
 update.
+
+**Progress (task): sparse NUMERIC doc-values write support.** All five doc-values write
+functions in `crates/lucene-codecs/src/doc_values.rs` were DENSE-only (every doc must
+carry a value); `docs/parity.md` listed sparse (`IndexedDISI`-backed docs-with-value)
+fields as deferred for all five. This task closes that gap for **NUMERIC only**, scoped
+down deliberately given the size of a full `IndexedDISI` write port (see below). The
+read side already fully supported sparse NUMERIC/BINARY/SORTED_NUMERIC (`indexed_disi.rs`,
+built in an earlier task, decodes all three real-Lucene on-disk block shapes -- SPARSE,
+ALL, DENSE -- into a sorted `Vec<i32>` that callers binary-search), so this task only
+needed a writer whose bytes that existing reader can already open; no new reader code
+was needed. Added `indexed_disi::write(doc_ids: &[i32]) -> Vec<u8>`, the write-side
+counterpart of `decode_doc_ids`: given strictly-ascending doc ids, it groups them into
+65536-doc blocks and picks a shape per block by cardinality, exactly like real
+`IndexedDISIBuilder` (`<= 4095` -> SPARSE, `== 65536` -> ALL, otherwise -> DENSE bitset),
+always omitting the DENSE rank table and the trailing jump table (both pure
+random-access speedups the existing whole-structure-decode reader never uses -- every
+sparse entry this port writes has `denseRankPower = 0xFF`). Added
+`doc_values::write_single_sparse_numeric_field(field_number, doc_values: &[(doc_id,
+value)], max_doc, ...)`, which sorts/validates its input, calls `indexed_disi::write` for
+the docs-with-field structure, then reuses the exact same per-rank value encoding the
+dense writer already had (extracted into a shared `write_numeric_values_body` helper from
+what was `write_dense_numeric_entry_body`'s tail) -- a sparse field's value array is
+indexed by rank-among-present-docs, which is exactly what the existing reader's sparse
+branch already expects. `write_dense_numeric_entry_body` and the other four write
+functions are untouched in behavior; a regression test
+(`write_single_dense_numeric_field_still_dense_after_sparse_addition`) confirms the dense
+path's output is unaffected. **Explicitly deferred, and why**: BINARY/SORTED/
+SORTED_NUMERIC/SORTED_SET sparse writing (the same `indexed_disi::write` +
+`write_numeric_values_body`-style machinery would extend to them, but each needs its own
+wiring and this task budgeted for NUMERIC only); the DENSE rank table and jump table on
+the write side (never needed by this port's reader); and `IndexWriter` integration (no
+`set_doc_values_field` call site produces sparse output yet -- that wiring always used
+the dense writer and still does). **Verification level, stated honestly**: self-round-trip
+only, through this port's own existing reader -- no new real-Lucene fixture was written
+for the sparse write path (unlike the dense NUMERIC/BINARY/SORTED/SORTED_NUMERIC/
+SORTED_SET write functions, which do have `write_doc_values_fixture.rs`/
+`VerifyDocValues.java` coverage). Tests: `write_single_sparse_numeric_field_round_trips_
+through_own_reader` (200,000 docs, every 3rd present, forcing multiple DENSE blocks),
+`write_single_sparse_numeric_field_uses_all_three_block_shapes` (a 3-block field
+constructed to force SPARSE/ALL/DENSE respectively, one block each), and the two new
+`WriteError` variants' rejection paths (`DocIdsNotAscending`, `DocIdOutOfRange`). Both
+round-trip tests sample a stride of docs rather than checking all of them, since
+`numeric_value` re-decodes the whole `IndexedDISI` structure on every call (a deliberate
+one-shot-decode design, not built for per-call random access -- see `indexed_disi.rs`'s
+doc comment) and an exhaustive per-doc check over hundreds of thousands of docs would be
+quadratic. `cargo fmt`/`clippy -D warnings` clean; `cargo llvm-cov --fail-under-lines 95`
+passes workspace-wide (`doc_values.rs` 97.67% lines, `indexed_disi.rs` 98.74% lines); see
+`docs/parity.md`'s doc-values-write row for the parity-tracking update.

@@ -667,6 +667,10 @@ pub enum WriteError {
     NotDense { values: usize, max_doc: i32 },
     #[error("dense sorted-numeric write requires every doc to have at least one value; doc {0} has none")]
     EmptyMultiValuedDoc(i32),
+    #[error("sparse doc-values write requires strictly ascending doc ids; doc {0} is out of order or duplicated")]
+    DocIdsNotAscending(i32),
+    #[error("sparse doc-values write requires doc {0} < max_doc={1}")]
+    DocIdOutOfRange(i32, i32),
 }
 
 pub type WriteResult<T> = std::result::Result<T, WriteError>;
@@ -693,6 +697,49 @@ fn write_dense_numeric_entry_body(meta: &mut Vec<u8>, data: &mut Vec<u8>, values
     meta.write_i16(-1); // jumpTableEntryCount
     meta.push(0xFF); // denseRankPower (-1 as u8)
 
+    write_numeric_values_body(meta, data, values);
+}
+
+/// Writes a **sparse** NUMERIC entry body: an [`indexed_disi`]-backed
+/// docs-with-field structure (only `doc_ids` have a value, out of `max_doc`
+/// total docs) followed by the same per-rank value encoding
+/// [`write_dense_numeric_entry_body`] uses for per-doc values -- a sparse
+/// field's value array is indexed by *rank among present docs*, not by doc
+/// id, exactly what [`numeric_value`]'s sparse branch already expects
+/// (`indexed_disi::rank_of` then [`decode_value`] at that rank).
+///
+/// `doc_ids` must be strictly ascending, every id `< max_doc`, and
+/// `values.len() == doc_ids.len()` (each `values[i]` is `doc_ids[i]`'s
+/// value) -- the caller's job, same contract [`indexed_disi::write`]
+/// documents.
+///
+/// Always writes `dense_rank_power = 0xFF` (no rank table), matching
+/// [`indexed_disi::write`]'s own choice (this port never builds one on the
+/// write side; the reader tolerates its absence).
+fn write_sparse_numeric_entry_body(
+    meta: &mut Vec<u8>,
+    data: &mut Vec<u8>,
+    doc_ids: &[i32],
+    values: &[i64],
+) {
+    let disi_bytes = indexed_disi::write(doc_ids);
+    let docs_with_field_offset = data.len() as i64;
+    data.extend_from_slice(&disi_bytes);
+    let docs_with_field_length = data.len() as i64 - docs_with_field_offset;
+
+    meta.write_i64(docs_with_field_offset);
+    meta.write_i64(docs_with_field_length);
+    meta.write_i16(-1); // jumpTableEntryCount: no jump table written
+    meta.push(0xFF); // denseRankPower: no rank table written
+
+    write_numeric_values_body(meta, data, values);
+}
+
+/// Shared tail of a NUMERIC entry body -- everything after the
+/// docs-with-field header, common to both the dense and sparse shapes:
+/// `numValues`, the constant/table/GCD-delta encoding choice, and the
+/// bit-packed (or absent, for the constant case) value array itself.
+fn write_numeric_values_body(meta: &mut Vec<u8>, data: &mut Vec<u8>, values: &[i64]) {
     let num_values = values.len() as i64;
     meta.write_i64(num_values);
 
@@ -796,10 +843,13 @@ fn finish_field_list_and_footers(
 /// compression attempted) and `doBlocks == false` (no varying-bits-per-value
 /// blocks) branches, feeding `writeValuesSingleBlock`.
 ///
+/// Sparse NUMERIC fields are handled by the sibling
+/// [`write_single_sparse_numeric_field`], not here.
+///
 /// Deliberately not attempted here, all deferred to future slices (see
-/// `docs/parity.md`): sparse fields (`IndexedDISI`), SORTED/SORTED_SET field
-/// types (both need a terms-dictionary write side this port doesn't have
-/// yet -- see [`crate::terms_dict`]'s parity row), GCD compression, table
+/// `docs/parity.md`): sparse BINARY/SORTED/SORTED_NUMERIC/SORTED_SET fields,
+/// SORTED/SORTED_SET field types (both need a terms-dictionary write side
+/// this port doesn't have yet -- see [`crate::terms_dict`]'s parity row), GCD compression, table
 /// compression, the varying-bits-per-value block split, per-field
 /// doc-values skip indexes, and multiple fields in one `.dvm`/`.dvd`/`.dvs`
 /// triple. BINARY ([`write_single_dense_binary_field`]) and SORTED_NUMERIC
@@ -836,6 +886,58 @@ pub fn write_single_dense_numeric_field(
     meta.write_i32(field_number);
     meta.push(DOC_VALUES_TYPE_NUMERIC);
     write_dense_numeric_entry_body(&mut meta, &mut data, values);
+
+    let skip_index =
+        finish_field_list_and_footers(&mut meta, &mut data, segment_id, segment_suffix);
+    Ok((meta, data, skip_index))
+}
+
+/// Port of `Lucene90DocValuesConsumer.addNumericField`'s **sparse** branch
+/// (`numDocsWithValue != maxDoc`, feeding an [`indexed_disi`]-backed
+/// docs-with-field structure instead of the `-1`/DENSE marker
+/// [`write_single_dense_numeric_field`] always writes) -- the one doc-values
+/// type/shape this port's write side extends beyond dense in this slice; see
+/// that function's doc comment for the rest of this module's scope
+/// statement (BINARY/SORTED/SORTED_NUMERIC/SORTED_SET sparse writing is
+/// still deferred, as is real Lucene's SPARSE-as-shorts-vs-DENSE-bitset
+/// choice for any *single* 65536-doc block -- [`indexed_disi::write`]
+/// already makes that choice per block exactly like real Lucene, so a
+/// `doc_values` big enough to span more than one block, at varying
+/// densities, already exercises all three on-disk block shapes; only the
+/// jump table and DENSE rank table are never written, both pure
+/// random-access speedups this port's whole-structure decode doesn't need).
+///
+/// `doc_values` need not be sorted by the caller; this function sorts a
+/// clone by doc id itself. Each doc id must be unique and `< max_doc`.
+pub fn write_single_sparse_numeric_field(
+    field_number: i32,
+    doc_values: &[(i32, i64)],
+    max_doc: i32,
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+) -> WriteResult<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    let mut sorted: Vec<(i32, i64)> = doc_values.to_vec();
+    sorted.sort_unstable_by_key(|&(doc, _)| doc);
+    for i in 1..sorted.len() {
+        if sorted[i - 1].0 == sorted[i].0 {
+            return Err(WriteError::DocIdsNotAscending(sorted[i].0));
+        }
+    }
+    for &(doc, _) in &sorted {
+        if doc < 0 || doc >= max_doc {
+            return Err(WriteError::DocIdOutOfRange(doc, max_doc));
+        }
+    }
+
+    let doc_ids: Vec<i32> = sorted.iter().map(|&(doc, _)| doc).collect();
+    let values: Vec<i64> = sorted.iter().map(|&(_, v)| v).collect();
+
+    let mut meta = new_meta_output(segment_id, segment_suffix);
+    let mut data = new_data_output(segment_id, segment_suffix);
+
+    meta.write_i32(field_number);
+    meta.push(DOC_VALUES_TYPE_NUMERIC);
+    write_sparse_numeric_entry_body(&mut meta, &mut data, &doc_ids, &values);
 
     let skip_index =
         finish_field_list_and_footers(&mut meta, &mut data, segment_id, segment_suffix);
@@ -2290,6 +2392,143 @@ mod tests {
                 max_doc: 5
             }
         ));
+    }
+
+    #[test]
+    fn write_single_sparse_numeric_field_round_trips_through_own_reader() {
+        // Every 3rd doc out of 200000 has a value -- enough docs to span
+        // three 65536-doc blocks, so `indexed_disi::write` picks its shape
+        // per block from actual density: with 1/3 of docs present, every
+        // block here has ~21845 docs present, well above the 4095 SPARSE
+        // threshold, so all three blocks land in DENSE-bitset shape. See
+        // `write_single_sparse_numeric_field_uses_all_three_block_shapes`
+        // below for a case that actually forces SPARSE and ALL too.
+        let id = [11u8; ID_LENGTH];
+        let max_doc = 200_000i32;
+        let doc_values: Vec<(i32, i64)> = (0..max_doc)
+            .step_by(3)
+            .map(|doc| (doc, (doc as i64) * 7 - 3))
+            .collect();
+
+        let (meta_bytes, data_bytes, _skip_bytes) =
+            write_single_sparse_numeric_field(0, &doc_values, max_doc, &id, "").unwrap();
+
+        let version = check_data_header_footer(&data_bytes, &id, "").unwrap();
+        assert_eq!(version, VERSION_CURRENT);
+
+        let fis = field_infos_with(&[0]);
+        let (_, meta) = parse_meta(&meta_bytes, &id, "", &fis).unwrap();
+        let entry = meta.numeric_entry(0).unwrap();
+        assert!(!entry.is_dense());
+        assert!(!entry.is_empty_field());
+
+        // `numeric_value` re-decodes the whole IndexedDISI structure on every
+        // call (see that function's doc comment / indexed_disi.rs's module
+        // doc for why -- a one-shot decode-then-binary-search design, not
+        // built for per-call random access), so checking every one of
+        // `max_doc` docs here would be O(max_doc^2). Sample instead: every
+        // present doc plus a stride of absent ones is still an exhaustive
+        // check of both branches without the quadratic blowup.
+        let present: std::collections::HashMap<i32, i64> = doc_values.iter().copied().collect();
+        for &(doc, want) in doc_values.iter().step_by(97) {
+            assert_eq!(numeric_value(&data_bytes, entry, doc).unwrap(), Some(want));
+        }
+        for doc in (0..max_doc).step_by(97) {
+            let got = numeric_value(&data_bytes, entry, doc).unwrap();
+            assert_eq!(got, present.get(&doc).copied(), "doc {doc}");
+        }
+    }
+
+    #[test]
+    fn write_single_sparse_numeric_field_uses_all_three_block_shapes() {
+        // Block 0 (docs 0..65536): only 10 docs present -> SPARSE.
+        // Block 1 (docs 65536..131072): every doc present -> ALL.
+        // Block 2 (docs 131072..196608): half the docs present -> DENSE.
+        let id = [12u8; ID_LENGTH];
+        let max_doc = 196_608i32; // 3 * 65536
+        let mut doc_values: Vec<(i32, i64)> = Vec::new();
+        for i in 0..10 {
+            doc_values.push((i * 1000, i as i64));
+        }
+        for doc in 65536..131072 {
+            doc_values.push((doc, doc as i64));
+        }
+        for doc in (131072..196608).step_by(2) {
+            doc_values.push((doc, doc as i64));
+        }
+
+        let (meta_bytes, data_bytes, _skip_bytes) =
+            write_single_sparse_numeric_field(0, &doc_values, max_doc, &id, "").unwrap();
+
+        let fis = field_infos_with(&[0]);
+        let (_, meta) = parse_meta(&meta_bytes, &id, "", &fis).unwrap();
+        let entry = meta.numeric_entry(0).unwrap();
+
+        // Same O(n^2)-avoidance rationale as the round-trip test above:
+        // check every present doc (all three block shapes exercised) plus a
+        // stride of absent ones, not all `max_doc` docs individually.
+        let present: std::collections::HashMap<i32, i64> = doc_values.iter().copied().collect();
+        // All 10 SPARSE-block docs (cheap: few calls), plus a stride through
+        // the ALL and DENSE blocks so every block shape gets both a present-
+        // and absent-doc check without O(n^2) blowup.
+        for &(doc, want) in doc_values.iter().take(10) {
+            assert_eq!(
+                numeric_value(&data_bytes, entry, doc).unwrap(),
+                Some(want),
+                "doc {doc}"
+            );
+        }
+        for doc in (0..max_doc).step_by(4001) {
+            let got = numeric_value(&data_bytes, entry, doc).unwrap();
+            assert_eq!(got, present.get(&doc).copied(), "doc {doc}");
+        }
+    }
+
+    #[test]
+    fn write_single_sparse_numeric_field_rejects_duplicate_doc_id() {
+        let id = [13u8; ID_LENGTH];
+        let err =
+            write_single_sparse_numeric_field(0, &[(1, 10), (1, 20)], 5, &id, "").unwrap_err();
+        assert!(matches!(err, WriteError::DocIdsNotAscending(1)));
+    }
+
+    #[test]
+    fn write_single_sparse_numeric_field_rejects_out_of_range_doc_id() {
+        let id = [14u8; ID_LENGTH];
+        let err =
+            write_single_sparse_numeric_field(0, &[(0, 10), (5, 20)], 5, &id, "").unwrap_err();
+        assert!(matches!(err, WriteError::DocIdOutOfRange(5, 5)));
+    }
+
+    #[test]
+    fn write_single_dense_numeric_field_still_dense_after_sparse_addition() {
+        // Regression: adding the sparse write path must not change the
+        // dense path's output at all. Same values/assertions as
+        // `write_single_dense_numeric_field_round_trips_through_own_reader`.
+        let id = [7u8; ID_LENGTH];
+        let values = vec![5i64, 250, 0, 100];
+        let (meta_bytes, data_bytes, skip_bytes) =
+            write_single_dense_numeric_field(0, &values, values.len() as i32, &id, "").unwrap();
+
+        assert_eq!(
+            check_data_header_footer_generic(&skip_bytes, "Lucene90DocValuesSkipIndex", &id)
+                .unwrap(),
+            VERSION_CURRENT
+        );
+        let version = check_data_header_footer(&data_bytes, &id, "").unwrap();
+        assert_eq!(version, VERSION_CURRENT);
+
+        let fis = field_infos_with(&[0]);
+        let (meta_version, meta) = parse_meta(&meta_bytes, &id, "", &fis).unwrap();
+        assert_eq!(meta_version, VERSION_CURRENT);
+        let entry = meta.numeric_entry(0).unwrap();
+        assert!(entry.is_dense());
+        for (doc, &want) in values.iter().enumerate() {
+            assert_eq!(
+                numeric_value(&data_bytes, entry, doc as i32).unwrap(),
+                Some(want)
+            );
+        }
     }
 
     /// Same shape as [`check_data_header_footer`] but parameterized over the
