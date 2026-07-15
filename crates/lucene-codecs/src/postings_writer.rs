@@ -76,13 +76,32 @@
 //!   smallest defensible slice" precedent (see
 //!   `crate::term_vectors::write_best_speed`'s positions-only cut for
 //!   another example of the same policy).
-//! - **`total_term_freq < BLOCK_SIZE` (256) for every term with positions.**
-//!   Like the `.doc` tail-block restriction above, this writer never emits
-//!   a full `ForUtil`/`PForUtil`-encoded `.pos` block
-//!   (`Lucene104PostingsWriter.addPosition`'s `posBufferUpto == BLOCK_SIZE`
-//!   flush path) — every term's positions are the vint tail
-//!   (`refillLastPositionBlock`) alone. A term whose `total_term_freq`
-//!   reaches `BLOCK_SIZE` is rejected with [`Error::TotalTermFreqTooLarge`].
+//! - **`total_term_freq` of any size is now supported for the `.pos` position
+//!   stream too**: every complete 256-occurrence chunk of a term's positions
+//!   (buffered across doc boundaries, matching real
+//!   `Lucene104PostingsWriter.addPosition`'s `posBufferUpto == BLOCK_SIZE`
+//!   flush timing) is emitted as a full `PForUtil`-encoded block
+//!   ([`write_full_position_block`], reusing `crate::for_util::pfor_encode`
+//!   directly), with the `total_term_freq % BLOCK_SIZE` remainder still using
+//!   the vint-tail path (`refillLastPositionBlock`-equivalent). Unlike `.doc`
+//!   full blocks, a `.pos` full block has **no skip header at all** — it's
+//!   read back by a bare, unframed `for_util::pfor_decode` call, per
+//!   `crate::postings::read_positions`'s `num_full_blocks` loop — so no
+//!   level-0/level-1-equivalent skip structure exists for positions to write
+//!   the write-side inverse of in the first place. **Still deferred**:
+//!   offsets/payloads in a full `.pos` block (this writer has neither at
+//!   all, see the next bullet, so this is unreachable rather than untested).
+//!   **`docFreq` must still stay below `BLOCK_SIZE` whenever a term indexes
+//!   positions** ([`Error::DocFreqTooLargeForPositions`]): this writer's
+//!   `.doc`-side [`write_full_block`] never emits the pos/pay skip
+//!   sub-fields `read_full_block_header` expects on a full `.doc` block for
+//!   a positions-indexing field, so a term can never be allowed to push its
+//!   `.doc` stream into the full-block path while also indexing positions.
+//!   Since `docFreq <= total_term_freq` always, this is a strictly separate,
+//!   independent ceiling from the (now unbounded) `total_term_freq` one
+//!   above — a term can have enormous `total_term_freq` from few, high-freq
+//!   docs and still round-trip, as long as `docFreq` itself stays under
+//!   `BLOCK_SIZE`.
 //! - **`docFreq == 1` is pulsed into the term dictionary**, exactly like the
 //!   real writer (`Lucene104PostingsWriter.java:568-577`): no `.doc` bytes at
 //!   all for a singleton term, matching what `postings::singleton_postings`
@@ -169,10 +188,13 @@ pub enum Error {
     )]
     UnsupportedIndexOptions(IndexOptions),
     #[error(
-        "write_single_field: term at index {index} has totalTermFreq {total_term_freq} >= \
-         BLOCK_SIZE ({BLOCK_SIZE}); multi-block positions are not supported by this writer"
+        "write_single_field: term at index {index} indexes positions and has docFreq \
+         {doc_freq} >= BLOCK_SIZE ({BLOCK_SIZE}); this writer's `.doc` full-block path never \
+         emits the pos/pay skip sub-fields a positions-indexing field's full block needs, so \
+         docFreq must stay below BLOCK_SIZE whenever positions are indexed (total_term_freq \
+         itself has no such ceiling — see the module doc)"
     )]
-    TotalTermFreqTooLarge { index: usize, total_term_freq: i64 },
+    DocFreqTooLargeForPositions { index: usize, doc_freq: i64 },
     #[error(
         "write_single_field: term at index {index}, doc index {doc_index} has {positions} \
          position(s) but freq {freq}; they must match when index_options indexes positions"
@@ -739,12 +761,9 @@ fn validate_field(input: &FieldPostingsInput<'_>) -> Result<()> {
                     });
                 }
             }
-            let total_term_freq: i64 = t.docs.iter().map(|&(_, f)| f as i64).sum();
-            if total_term_freq >= BLOCK_SIZE as i64 {
-                return Err(Error::TotalTermFreqTooLarge {
-                    index: i,
-                    total_term_freq,
-                });
+            let doc_freq = t.docs.len() as i64;
+            if doc_freq >= BLOCK_SIZE as i64 {
+                return Err(Error::DocFreqTooLargeForPositions { index: i, doc_freq });
             }
         }
     }
@@ -783,10 +802,10 @@ fn write_vlong15(out: &mut Vec<u8>, value: i64) {
 /// `decode_full_block_body`. This deliberately never writes the header's
 /// pos/pay skip fields (only present on the wire when the field indexes
 /// positions *and* has freqs): a term can only reach this full-block path at
-/// `docFreq >= BLOCK_SIZE`, and `docFreq >= total_term_freq` always, so a
-/// field indexing positions would already have tripped
-/// [`Error::TotalTermFreqTooLarge`] in [`validate_field`] before a full
-/// block is ever built — positions genuinely cannot co-occur with this
+/// `docFreq >= BLOCK_SIZE`, and [`validate_field`]'s
+/// [`Error::DocFreqTooLargeForPositions`] check already rejects exactly that
+/// combination (`docFreq >= BLOCK_SIZE` while positions are indexed) before a
+/// full block is ever built — positions genuinely cannot co-occur with this
 /// function today. `block` must be exactly `BLOCK_SIZE` (256)
 /// `(doc_id, freq)` pairs, ascending. Returns `block`'s last doc ID, which
 /// the caller threads through as `prev_doc_id` for the next full block or
@@ -884,11 +903,10 @@ fn write_full_block(
 /// `numImpactBytes` itself. The `indexHasPos`-gated pos/pay sub-fields
 /// `read_level1_entry` supports are never written: `index_has_pos` is always
 /// false on this path, since a term reaching `docFreq >= LEVEL1_NUM_DOCS`
-/// implies `total_term_freq >= LEVEL1_NUM_DOCS`, which
-/// [`validate_field`]'s `TotalTermFreqTooLarge` check (`total_term_freq >=
-/// BLOCK_SIZE`) already rejects whenever positions are indexed — the same
-/// reasoning [`write_full_block`]'s own doc comment gives for why its header
-/// never writes pos/pay skip fields either.
+/// implies `docFreq >= BLOCK_SIZE`, which [`validate_field`]'s
+/// [`Error::DocFreqTooLargeForPositions`] check already rejects whenever
+/// positions are indexed — the same reasoning [`write_full_block`]'s own doc
+/// comment gives for why its header never writes pos/pay skip fields either.
 fn write_level1_span(
     out: &mut Vec<u8>,
     span: &[(i32, i32)],
@@ -965,30 +983,68 @@ fn write_tail_block(
     }
 }
 
-/// Writes one term's `.pos` position-tail bytes — the vint-tail-only branch
-/// of `crate::postings::read_positions` (`has_payloads == false`,
-/// `has_offsets == false`: `code = posDelta`, no bit-packing). `positions`
-/// is one `Vec<i32>` per doc (parallel to that term's `docs`), each holding
-/// the doc's absolute, ascending occurrence positions — see
-/// [`TermPostings`]'s `positions` field doc comment for the exact input
-/// shape.
+/// Writes one term's whole `.pos` byte range: zero or more full 256-position
+/// `PForUtil` blocks ([`write_full_position_block`]) followed by a
+/// group-varint-free vint tail for the `total_term_freq % BLOCK_SIZE`
+/// remainder — the exact write-side inverse of `crate::postings::
+/// read_positions`'s `num_full_blocks`/`tail_count` split (`has_payloads ==
+/// false`, `has_offsets == false` branch throughout: this writer never has
+/// either, see the module doc). `positions` is one `Vec<i32>` per doc
+/// (parallel to that term's `docs`), each holding the doc's absolute,
+/// ascending occurrence positions — see [`TermPostings`]'s `positions` field
+/// doc comment for the exact input shape.
+///
+/// Position deltas are buffered into one flat, cross-doc sequence first
+/// (resetting to each doc's absolute first position at that doc's first
+/// occurrence, exactly like `read_positions`'s own flat `pos_deltas` before
+/// it re-chops the sequence by `freqs`) so that a 256-occurrence chunk
+/// spanning a doc boundary is still encoded as a single full block — matching
+/// real Lucene's own `addPosition`/`posBufferUpto == BLOCK_SIZE` flush
+/// timing, which is entirely doc-boundary-agnostic.
 fn write_position_tail(out: &mut Vec<u8>, positions: &[Vec<i32>]) {
+    let mut deltas = Vec::new();
     for doc_positions in positions {
         let mut prev = 0i32;
         for &p in doc_positions {
-            out.write_vint(p - prev);
+            deltas.push(p - prev);
             prev = p;
         }
     }
+
+    let mut start = 0usize;
+    while deltas.len() - start >= BLOCK_SIZE as usize {
+        write_full_position_block(out, &deltas[start..start + BLOCK_SIZE as usize]);
+        start += BLOCK_SIZE as usize;
+    }
+    for &delta in &deltas[start..] {
+        out.write_vint(delta);
+    }
+}
+
+/// Writes one full 256-occurrence `.pos` `PForUtil` block — no skip header
+/// at all (unlike [`write_full_block`]'s `.doc` full blocks): `.pos` full
+/// blocks are just a bare `for_util::pfor_encode`'d array of position deltas,
+/// read back by a plain `for_util::pfor_decode` call with no header framing
+/// whatsoever, per `crate::postings::read_positions`'s `num_full_blocks` loop.
+/// `deltas` must be exactly `BLOCK_SIZE` (256) position deltas.
+fn write_full_position_block(out: &mut Vec<u8>, deltas: &[i32]) {
+    debug_assert_eq!(deltas.len(), BLOCK_SIZE as usize);
+    let mut vals = [0u32; for_util::BLOCK_SIZE];
+    for (v, &d) in vals.iter_mut().zip(deltas) {
+        *v = d as u32;
+    }
+    for_util::pfor_encode(&mut vals, out);
 }
 
 /// Writes every term's per-term postings metadata bytes — the write-side
 /// inverse of `crate::postings::decode_term_metadata` (restricted to this
-/// writer's own scope: no offsets/payloads, so no `payStartFP`/
-/// `lastPosBlockOffset` field ever appears). Always takes the bit-clear
-/// ("absolute-ish `docStartFP` delta") branch, never the
-/// zigzag-singleton-delta branch — this writer has no need for that
-/// alternate encoding's extra compactness.
+/// writer's own scope: no offsets/payloads, so no `payStartFP` field ever
+/// appears; `lastPosBlockOffset` is written -- always `0`, since this reader
+/// never re-derives or acts on the value, see below -- exactly when
+/// `decode_term_metadata`'s own `total_term_freq > BLOCK_SIZE` gate requires
+/// it). Always takes the bit-clear ("absolute-ish `docStartFP` delta")
+/// branch, never the zigzag-singleton-delta branch — this writer has no need
+/// for that alternate encoding's extra compactness.
 ///
 /// `doc_start_fp`/`pos_start_fp` deltas are threaded exactly like
 /// `SegmentTermsEnumFrame.metaDataUpto`/`absolute` on the read side: the
@@ -1031,6 +1087,22 @@ fn write_term_metadata(
             let pos_delta = this_pos_fp.wrapping_sub(base_pos_start_fp);
             out.write_vlong(pos_delta as i64);
             base_pos_start_fp = this_pos_fp;
+
+            // `lastPosBlockOffset`: only present on the wire when
+            // `total_term_freq > BLOCK_SIZE` (`decode_term_metadata`'s
+            // `total_term_freq > BLOCK_SIZE` gate, strictly greater --
+            // exactly `BLOCK_SIZE` needs no tail block at all, so the real
+            // writer only ever emits this field once there's a genuine tail
+            // to point at). This reader never re-derives or uses the value
+            // (`read_positions`'s doc comment: it computes the full-block
+            // count from `total_term_freq` itself instead), so any valid
+            // vlong round-trips correctly -- same "the reader parses it but
+            // never acts on it" shape as [`write_full_block`]'s
+            // `level0NumBytes` skip pointer.
+            let total_term_freq: i64 = t.docs.iter().map(|&(_, f)| f as i64).sum();
+            if total_term_freq > BLOCK_SIZE as i64 {
+                out.write_vlong(0);
+            }
         }
     }
 }
@@ -2176,8 +2248,14 @@ mod tests {
         assert!(c.seek_exact(b"beta").is_none());
     }
 
+    /// `total_term_freq >= BLOCK_SIZE` alone (via a single doc with a huge
+    /// freq, so `docFreq == 1`) is no longer rejected -- only `docFreq >=
+    /// BLOCK_SIZE` is, per [`Error::DocFreqTooLargeForPositions`]'s doc
+    /// comment. This is the "one doc, many positions" full-position-block
+    /// case (see [`positions_full_block_from_one_doc_round_trips`] for the
+    /// round-trip proof); this test only checks it no longer errors.
     #[test]
-    fn rejects_total_term_freq_at_or_above_block_size() {
+    fn total_term_freq_at_or_above_block_size_from_one_doc_is_now_accepted() {
         let positions: Vec<Vec<i32>> = vec![(0..BLOCK_SIZE).collect()];
         let terms = vec![TermPostings {
             term: b"a".to_vec(),
@@ -2190,12 +2268,32 @@ mod tests {
             doc_count: 1,
             terms: &terms,
         };
+        write_single_field(&input, &SEG_ID, SUFFIX)
+            .expect("docFreq == 1 stays well under BLOCK_SIZE; only docFreq is now bounded");
+    }
+
+    /// `docFreq >= BLOCK_SIZE` while indexing positions is still rejected --
+    /// this is the ceiling [`Error::DocFreqTooLargeForPositions`] actually
+    /// protects (the `.doc`-side full-block path's missing pos/pay skip
+    /// fields), replacing the old `total_term_freq`-based check.
+    #[test]
+    fn rejects_doc_freq_at_or_above_block_size_when_indexing_positions() {
+        let doc_freq = BLOCK_SIZE;
+        let terms = vec![TermPostings {
+            term: b"a".to_vec(),
+            docs: (0..doc_freq).map(|i| (i, 1)).collect(),
+            positions: (0..doc_freq).map(|i| vec![i]).collect(),
+        }];
+        let input = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqsAndPositions,
+            doc_count: doc_freq,
+            terms: &terms,
+        };
         assert!(matches!(
             write_single_field(&input, &SEG_ID, SUFFIX),
-            Err(Error::TotalTermFreqTooLarge {
-                index: 0,
-                total_term_freq
-            }) if total_term_freq == BLOCK_SIZE as i64
+            Err(Error::DocFreqTooLargeForPositions { index: 0, doc_freq })
+            if doc_freq == BLOCK_SIZE as i64
         ));
     }
 
@@ -2492,5 +2590,167 @@ mod tests {
         let expected_freqs: Vec<i32> = big.docs.iter().map(|&(_, f)| f).collect();
         assert_eq!(postings.docs, expected_docs);
         assert_eq!(postings.freqs, expected_freqs);
+    }
+
+    /// Builds a term whose `total_term_freq` is exactly `total`, spread
+    /// across a handful of docs (`docFreq` well under `BLOCK_SIZE`, so
+    /// [`Error::DocFreqTooLargeForPositions`] never trips) with genuinely
+    /// irregular per-occurrence position deltas -- cycling through
+    /// 1/1/4/1/1/30/1/1/2/... rather than a uniform delta, so a bug in
+    /// [`write_full_position_block`]'s flat cross-doc buffering (e.g. an
+    /// off-by-one at a doc boundary, or the accumulator failing to reset at
+    /// each doc's first occurrence) would produce a wrong position sequence
+    /// rather than silently passing on uniform test data. Occurrences are
+    /// spread across `num_docs` docs as evenly as possible (the last doc
+    /// absorbing any remainder), so a 256-or-257-long chunk genuinely spans
+    /// several doc boundaries.
+    fn irregular_positions_term(term: &[u8], total: i32, num_docs: i32) -> TermPostings {
+        let delta_cycle = [1i32, 1, 4, 1, 1, 30, 1, 1, 2, 7];
+        let base_freq = total / num_docs;
+        let mut freqs = vec![base_freq; num_docs as usize];
+        freqs[(num_docs - 1) as usize] += total - base_freq * num_docs;
+
+        let mut docs = Vec::with_capacity(num_docs as usize);
+        let mut positions = Vec::with_capacity(num_docs as usize);
+        let mut cycle_idx = 0usize;
+        for (doc_idx, &freq) in freqs.iter().enumerate() {
+            let doc_id = (doc_idx as i32) * 3; // arbitrary but strictly ascending
+            docs.push((doc_id, freq));
+            let mut doc_positions = Vec::with_capacity(freq as usize);
+            let mut pos = 0i32;
+            for _ in 0..freq {
+                pos += delta_cycle[cycle_idx % delta_cycle.len()];
+                cycle_idx += 1;
+                doc_positions.push(pos);
+            }
+            positions.push(doc_positions);
+        }
+        TermPostings {
+            term: term.to_vec(),
+            docs,
+            positions,
+        }
+    }
+
+    /// `total_term_freq == BLOCK_SIZE` (256): exactly one full `.pos`
+    /// `PForUtil` block, no vint tail at all -- the boundary
+    /// [`write_position_tail`]'s "no per-term upper bound" claim rests on.
+    /// Round-tripped through the existing, unmodified
+    /// `crate::postings::read_positions` (via `FieldTerms::positions`),
+    /// asserting the exact irregular position sequence per doc, not just
+    /// counts.
+    #[test]
+    fn total_term_freq_exactly_one_full_position_block_round_trips() {
+        let term = irregular_positions_term(b"a", BLOCK_SIZE, 5);
+        let max_doc = term.docs.last().unwrap().0 + 1;
+        let doc_count = term.docs.len() as i32;
+        let expected_positions = term.positions.clone();
+        let terms = vec![term.clone()];
+        let input = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqsAndPositions,
+            doc_count,
+            terms: &terms,
+        };
+        let output = write_single_field(&input, &SEG_ID, SUFFIX).unwrap();
+        let fis = FieldInfos {
+            fields: vec![field_info(0, "f", IndexOptions::DocsAndFreqsAndPositions)],
+        };
+        let (fields, doc_in) = open_written(&output, &fis, max_doc);
+        let pos_in =
+            crate::postings::PosInput::open(&output.pos, &SEG_ID, SUFFIX).expect("open .pos");
+        let field = fields.field("f").unwrap();
+
+        let positions = field
+            .positions(b"a", Some(&doc_in), &pos_in, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(positions.len(), expected_positions.len());
+        for (doc_idx, (got, expected)) in positions.iter().zip(&expected_positions).enumerate() {
+            let got_positions: Vec<i32> = got.iter().map(|p| p.position).collect();
+            assert_eq!(&got_positions, expected, "doc index {doc_idx}");
+        }
+    }
+
+    /// `total_term_freq == BLOCK_SIZE + 1` (257): one full `.pos` block plus
+    /// a single-occurrence vint tail, proving the flat cross-doc delta
+    /// buffer's `start` offset threads correctly from the full block into
+    /// the tail. Same irregular-delta construction and per-doc assertion
+    /// style as [`total_term_freq_exactly_one_full_position_block_round_trips`].
+    #[test]
+    fn total_term_freq_one_full_position_block_plus_tail_round_trips() {
+        let term = irregular_positions_term(b"a", BLOCK_SIZE + 1, 7);
+        let max_doc = term.docs.last().unwrap().0 + 1;
+        let doc_count = term.docs.len() as i32;
+        let expected_positions = term.positions.clone();
+        let terms = vec![term.clone()];
+        let input = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqsAndPositions,
+            doc_count,
+            terms: &terms,
+        };
+        let output = write_single_field(&input, &SEG_ID, SUFFIX).unwrap();
+        let fis = FieldInfos {
+            fields: vec![field_info(0, "f", IndexOptions::DocsAndFreqsAndPositions)],
+        };
+        let (fields, doc_in) = open_written(&output, &fis, max_doc);
+        let pos_in =
+            crate::postings::PosInput::open(&output.pos, &SEG_ID, SUFFIX).expect("open .pos");
+        let field = fields.field("f").unwrap();
+
+        let positions = field
+            .positions(b"a", Some(&doc_in), &pos_in, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(positions.len(), expected_positions.len());
+        for (doc_idx, (got, expected)) in positions.iter().zip(&expected_positions).enumerate() {
+            let got_positions: Vec<i32> = got.iter().map(|p| p.position).collect();
+            assert_eq!(&got_positions, expected, "doc index {doc_idx}");
+        }
+    }
+
+    /// The exact test named in this task's requirements: `docs: vec![(0, 1),
+    /// (2, 1)...]`-shaped round trip specifically for the "one doc, huge
+    /// freq" full-position-block case accepted by
+    /// [`total_term_freq_at_or_above_block_size_from_one_doc_is_now_accepted`]
+    /// above -- proves that acceptance actually round-trips correctly, not
+    /// just "doesn't error."
+    #[test]
+    fn positions_full_block_from_one_doc_round_trips() {
+        let delta_cycle = [1i32, 1, 4, 1, 1, 30, 1, 1, 2, 7];
+        let mut doc_positions = Vec::with_capacity(BLOCK_SIZE as usize);
+        let mut pos = 0i32;
+        for i in 0..BLOCK_SIZE {
+            pos += delta_cycle[(i as usize) % delta_cycle.len()];
+            doc_positions.push(pos);
+        }
+        let terms = vec![TermPostings {
+            term: b"a".to_vec(),
+            docs: vec![(0, BLOCK_SIZE)],
+            positions: vec![doc_positions.clone()],
+        }];
+        let input = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqsAndPositions,
+            doc_count: 1,
+            terms: &terms,
+        };
+        let output = write_single_field(&input, &SEG_ID, SUFFIX).unwrap();
+        let fis = FieldInfos {
+            fields: vec![field_info(0, "f", IndexOptions::DocsAndFreqsAndPositions)],
+        };
+        let (fields, doc_in) = open_written(&output, &fis, 1);
+        let pos_in =
+            crate::postings::PosInput::open(&output.pos, &SEG_ID, SUFFIX).expect("open .pos");
+        let field = fields.field("f").unwrap();
+
+        let positions = field
+            .positions(b"a", Some(&doc_in), &pos_in, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(positions.len(), 1);
+        let got_positions: Vec<i32> = positions[0].iter().map(|p| p.position).collect();
+        assert_eq!(got_positions, doc_positions);
     }
 }

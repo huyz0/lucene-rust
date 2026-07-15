@@ -2568,10 +2568,12 @@ position data, writes `.pos` bytes alongside `.doc`/`.tim`/`.tip`/`.tmd`.
 (each entry the doc's absolute, ascending occurrence positions; empty for
 `Docs`/`DocsAndFreqs` fields), validated against `docs`' freqs
 (`Error::MissingPositions`/`Error::PositionsFreqMismatch`). Same narrow
-scope as the term-frequency writer, plus one more restriction:
-**`total_term_freq < BLOCK_SIZE` (256) per term** -- only the vint-tail
-`.pos` encoding is ever written, never a full `ForUtil`/`PForUtil` block
-(`Error::TotalTermFreqTooLarge` above that bound). No read-side logic
+scope as the term-frequency writer. `total_term_freq` itself has **no**
+upper bound: a later task (see below) added full `PForUtil`-block emission
+for `.pos` too, so the real remaining restriction is **`docFreq < BLOCK_SIZE`
+(256) whenever a term indexes positions** (`Error::DocFreqTooLargeForPositions`)
+-- tied to the `.doc`-side full-block writer's own missing pos/pay skip
+fields, not to `.pos` itself. No read-side logic
 reimplemented; correctness proven by round-tripping through the existing,
 unmodified `postings::read_positions`/`blocktree::FieldTerms::positions`.
 **Required end-to-end proof**: `crates/lucene-search/tests/
@@ -3118,10 +3120,11 @@ the `crates/lucene-ffi/src/writer.rs` write-up — not repeated here.)
      `>= BLOCK_SIZE` to `>= LEVEL1_NUM_DOCS` (8192) — this writer still
      never emits level-1 skip entries, so that threshold remains a real
      limit, just a much higher one. `.pos` full blocks
-     (`total_term_freq >= BLOCK_SIZE`) remain out of scope and are provably
-     unreachable from this path today (`total_term_freq >= doc_freq`
-     always, so a term reaching a `.doc` full block would already have
-     tripped `Error::TotalTermFreqTooLarge` first). Proven correct by
+     (`total_term_freq >= BLOCK_SIZE`) remained out of scope as of this task
+     (added by a later task, see below) and were provably unreachable from
+     this path at the time (`total_term_freq >= doc_freq` always, so a term
+     reaching a `.doc` full block would already have tripped
+     `Error::TotalTermFreqTooLarge` first). Proven correct by
      round-tripping through the existing, unmodified `blocktree::open`/
      `DocInput::read_postings` (`docFreq == 256` exactly one block,
      `== 257` one block plus a one-doc tail, `== 600` two blocks plus an
@@ -3171,6 +3174,41 @@ the `crates/lucene-ffi/src/writer.rs` write-up — not repeated here.)
      without_decoding_it` proof. All in `postings_writer.rs`'s own unit
      tests; no new `fixtures/src/Gen*.java` generator, same "writer and
      already-fixture-verified reader agree" reasoning as the level-0 task.
+   - **Postings writer: full-block `.pos` position emission added, closing
+     the `total_term_freq >= BLOCK_SIZE` gap.** `write_position_tail`
+     (`lucene-codecs/src/postings_writer.rs`) now buffers a term's position
+     deltas into one flat, cross-doc sequence (resetting at each doc's first
+     occurrence, matching `read_positions`'s own flat-then-re-chop shape)
+     and emits every complete 256-occurrence chunk as a full `PForUtil`
+     block via the new `write_full_position_block`, reusing
+     `for_util::pfor_encode` directly. Unlike `.doc` full blocks, a `.pos`
+     full block has **no skip header at all** — `read_positions`'s
+     `num_full_blocks` loop is a bare, unframed `for_util::pfor_decode`, so
+     there is no level-0/level-1-equivalent skip structure to write the
+     inverse of. The real remaining ceiling moved from `total_term_freq` to
+     `docFreq`: `validate_field` now rejects `docFreq >= BLOCK_SIZE`
+     whenever a term indexes positions (`Error::DocFreqTooLargeForPositions`,
+     replacing `Error::TotalTermFreqTooLarge`) — not because `.pos` itself
+     has a ceiling anymore, but because this writer's `.doc`-side
+     `write_full_block` still never emits the pos/pay skip sub-fields
+     `read_full_block_header` expects on a full `.doc` block for a
+     positions-indexing field; since `docFreq <= total_term_freq` always, a
+     term can have arbitrarily large `total_term_freq` from a few high-freq
+     docs and still round-trip, as long as `docFreq` stays under
+     `BLOCK_SIZE`. Offsets/payloads in a full `.pos` block remain out of
+     scope (this writer has neither at all). Proven correct by
+     round-tripping through the existing, unmodified `postings::
+     read_positions`/`blocktree::FieldTerms::positions` at
+     `total_term_freq == BLOCK_SIZE` (one full block, no tail) and
+     `== BLOCK_SIZE + 1` (one full block plus a one-occurrence tail), both
+     using irregular (non-uniform) position deltas spread across several
+     docs and asserting the exact per-doc position sequence, plus a test
+     proving the previously-rejected "one doc, `freq == BLOCK_SIZE`" shape
+     now round-trips and a replacement test confirming `docFreq >=
+     BLOCK_SIZE` while indexing positions is still rejected. No new
+     `fixtures/src/Gen*.java` generator, same "writer and already-fixture-
+     verified reader agree" reasoning as every other writer-side task here.
+     See `docs/parity.md`'s row for the full scope statement.
    - **`TopFieldCollector` wired into multi-segment search**
      (`crates/lucene-search/src/multi_segment.rs::merge_multi_segment_by_field`/
      `search_numeric_range_sorted_by_field_multi_segment`) — the sort-by-field

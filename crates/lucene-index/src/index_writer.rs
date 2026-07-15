@@ -849,10 +849,13 @@ impl<'d> IndexWriter<'d> {
     /// force on every commit that happens to have no postings content).
     /// Returns `Err` on [`postings_writer::write_single_field`]'s own
     /// validation failures -- see that module's doc comment for the current
-    /// set of rejected shapes (e.g. `TotalTermFreqTooLarge` for a
-    /// positions-indexing term reaching `BLOCK_SIZE` occurrences); `docFreq`
-    /// itself has no ceiling any more (full level-0 blocks and level-1 skip
-    /// entries both scale to any size).
+    /// set of rejected shapes (e.g. `DocFreqTooLargeForPositions` for a
+    /// positions-indexing term whose `docFreq` reaches `BLOCK_SIZE`, tied to
+    /// the `.doc`-side full-block writer's own missing pos/pay skip fields,
+    /// not to `.pos` itself -- `total_term_freq` alone has no ceiling
+    /// anymore); a term with no positions has no `docFreq` ceiling at all
+    /// (full level-0 blocks and level-1 skip entries both scale to any
+    /// size).
     fn build_postings_output(
         docs: &[Document],
         config: &PostingsFieldConfig,
