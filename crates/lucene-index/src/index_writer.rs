@@ -2533,6 +2533,7 @@ mod tests {
             max_merged_segment_size: 1_000_000,
             reclaim_weight: 1.0,
             floor_segment_size: 0,
+            force_merge_deletes_pct_allowed: 10.0,
         }
     }
 

@@ -505,17 +505,17 @@ pub extern "C" fn ffi_writer_rollback(writer_handle: u64) -> i32 {
 /// automatic merge triggering -- see [`IndexWriter::set_merge_policy`].
 /// `max_merge_at_once`/`segments_per_tier`/`max_merged_segment_size`/
 /// `reclaim_weight`/`floor_segment_size` map straight onto
-/// [`lucene_index::merge_policy::MergePolicyConfig`]'s five fields -- the
-/// only merge-policy knobs this port's `merge_policy.rs` actually implements
-/// today (no `forceMergeDeletesPctAllowed`/etc, since real
-/// `TieredMergePolicy` has that but this port has no `findForcedMerges`
-/// deletes-aware variant for it to configure -- see this module's doc
-/// comment). `floor_segment_size` is real Lucene's `floorSegmentBytes`
+/// [`lucene_index::merge_policy::MergePolicyConfig`]'s corresponding fields.
+/// `floor_segment_size` is real Lucene's `floorSegmentBytes`
 /// (`setFloorSegmentMB`, default `16 * 1024 * 1024`): segments smaller than
 /// this score as if they were exactly this size, so a large pile of
 /// genuinely tiny segments doesn't get scored as disproportionately cheap
-/// relative to each other. Ignored (but still validated as present) when
-/// `enabled == 0`.
+/// relative to each other. `MergePolicyConfig` also now has a
+/// `force_merge_deletes_pct_allowed` field (`find_forced_delete_merges`'s
+/// threshold), but this FFI entry point doesn't take it as a parameter yet --
+/// it's always constructed at `MergePolicyConfig::default()`'s value
+/// (`10.0`), not yet configurable from FFI callers. Ignored (but still
+/// validated as present) when `enabled == 0`.
 ///
 /// Signature note: `floor_segment_size` was added as a new trailing
 /// parameter (breaking this function's C signature) rather than kept
@@ -549,6 +549,8 @@ pub extern "C" fn ffi_writer_set_merge_policy(
                 max_merged_segment_size,
                 reclaim_weight,
                 floor_segment_size,
+                force_merge_deletes_pct_allowed: MergePolicyConfig::default()
+                    .force_merge_deletes_pct_allowed,
             })
         };
         handle.writer.set_merge_policy(config);

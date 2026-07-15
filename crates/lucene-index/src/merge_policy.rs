@@ -80,14 +80,17 @@
 //!   `segments_per_tier` eligible segments remain (or fewer than 2, since a
 //!   1-segment "merge" is meaningless) -- similar end effect, simpler
 //!   control flow.
-//! - **No forced-merge deletes-pending-only variant, no compound-file
-//!   awareness, no `maxMergedSegmentBytes` floor tiering
+//! - **No compound-file awareness, no `maxMergedSegmentBytes` floor tiering
 //!   (`floorSegmentBytes`).**
 //!
 //! [`find_forced_merges`] is also provided, a simplified
 //! `findForcedMerges`-equivalent: merge everything down to at most
 //! `max_segment_count` segments, ignoring size/reclaim scoring (real forced
-//! merge is "merge down to N segments, full stop").
+//! merge is "merge down to N segments, full stop"). [`find_forced_delete_merges`]
+//! is a simplified `findForcedDeletesMerges`-equivalent: unlike a normal
+//! forced merge, it only targets segments whose deleted-doc percentage
+//! exceeds `force_merge_deletes_pct_allowed`, leaving low-deletion segments
+//! untouched.
 
 use crate::segment_info::SegmentInfo;
 use lucene_store::directory::Directory;
@@ -186,6 +189,16 @@ pub struct MergePolicyConfig {
     /// `size_bytes` unit as the rest of this config (see this module's doc
     /// comment on the real-bytes-vs-doc-count-approximation duality).
     pub floor_segment_size: u64,
+    /// Real `TieredMergePolicy`'s `forceMergeDeletesPctAllowed`
+    /// (`setForceMergeDeletesPctAllowed`): only segments whose deleted-doc
+    /// percentage (`100.0 * del_count / doc_count`) *strictly exceeds* this
+    /// threshold are selected by [`find_forced_delete_merges`]; segments at
+    /// or below it are left untouched (real Lucene's `pctDeletes <=
+    /// forceMergeDeletesPctAllowed` skip condition -- see
+    /// `TieredMergePolicy.findForcedDeletesMerges`). Expressed as a
+    /// percentage (`0.0..=100.0`), matching real Lucene's own unit, not a
+    /// `0.0..=1.0` ratio. Default matches real Lucene's `10.0`.
+    pub force_merge_deletes_pct_allowed: f64,
 }
 
 impl Default for MergePolicyConfig {
@@ -200,6 +213,8 @@ impl Default for MergePolicyConfig {
             reclaim_weight: 1.0,
             // floorSegmentMB=16 => 16 * 1024 * 1024 bytes (real Lucene default).
             floor_segment_size: 16 * 1024 * 1024,
+            // forceMergeDeletesPctAllowed=10.0 (real Lucene default).
+            force_merge_deletes_pct_allowed: 10.0,
         }
     }
 }
@@ -294,6 +309,47 @@ pub fn find_forced_merges(segments: &[SegmentStat], max_segment_count: usize) ->
     vec![group]
 }
 
+/// Real `TieredMergePolicy.findForcedDeletesMerges`-equivalent: unlike
+/// [`find_forced_merges`] (merge everything down to as few segments as
+/// possible), this only targets segments whose deleted-doc percentage
+/// *strictly exceeds* `config.force_merge_deletes_pct_allowed` -- segments
+/// with few or no deletions are left untouched, matching real Lucene's
+/// mechanism for reclaiming disk space from deletions without a full
+/// force-merge's cost. Returns a single group containing every over-threshold
+/// segment name (real Lucene may split this across several merges bounded by
+/// `maxMergeAtOnceExplicit`/segment-size limits; this port keeps it simple --
+/// one group of all qualifying segments, matching this module's existing
+/// "simplified, not byte-for-byte" scope). Empty if no segment exceeds the
+/// threshold (e.g. zero deletions anywhere).
+///
+/// Note this deliberately allows a group of a single qualifying segment
+/// (unlike [`find_merges`]/[`find_forced_merges`], where a 1-segment "merge"
+/// is meaningless): real Lucene's `findForcedDeletesMerges` can and does
+/// rewrite a single heavily-deleted segment on its own to physically drop its
+/// deleted docs and reclaim space, even with no other segment to combine it
+/// with.
+pub fn find_forced_delete_merges(
+    segments: &[SegmentStat],
+    config: &MergePolicyConfig,
+) -> Vec<Vec<String>> {
+    let group: Vec<String> = segments
+        .iter()
+        .filter(|s| pct_deletes(s) > config.force_merge_deletes_pct_allowed)
+        .map(|s| s.name.clone())
+        .collect();
+
+    if group.is_empty() {
+        return Vec::new();
+    }
+    vec![group]
+}
+
+/// Real Lucene's `100.0 * delCount / maxDoc` -- a percentage (`0.0..=100.0`),
+/// not the `0.0..=1.0` ratio [`SegmentStat::del_ratio`] returns.
+fn pct_deletes(stat: &SegmentStat) -> f64 {
+    stat.del_ratio() * 100.0
+}
+
 fn effective_score(stat: &SegmentStat, reclaim_weight: f64, floor_segment_size: u64) -> f64 {
     let discount = (reclaim_weight * stat.del_ratio()).clamp(0.0, 1.0);
     // `floored_size` mirrors real Lucene's `floorSize(bytes) = max(floorSegmentBytes,
@@ -329,6 +385,7 @@ mod tests {
             max_merged_segment_size: 1_000_000,
             reclaim_weight: 1.0,
             floor_segment_size: 0,
+            force_merge_deletes_pct_allowed: 10.0,
         }
     }
 
@@ -373,6 +430,7 @@ mod tests {
             max_merged_segment_size: 1_000_000,
             reclaim_weight: 1.0,
             floor_segment_size: 0,
+            force_merge_deletes_pct_allowed: 10.0,
         };
         let segments = vec![
             stat("_low_del", 100, 0, 2000),
@@ -409,6 +467,7 @@ mod tests {
             max_merged_segment_size: 1_000_000,
             reclaim_weight: 0.0,
             floor_segment_size: 0,
+            force_merge_deletes_pct_allowed: 10.0,
         };
         let groups = find_merges(&segments, &no_reclaim_weighting);
         assert_eq!(groups.len(), 1);
@@ -468,6 +527,7 @@ mod tests {
             max_merged_segment_size: 1_000_000,
             reclaim_weight: 1.0,
             floor_segment_size: 0,
+            force_merge_deletes_pct_allowed: 10.0,
         };
         let segments: Vec<SegmentStat> = (0..20)
             .map(|i| stat(&format!("_{i}"), 100, 0, 100))
@@ -517,6 +577,7 @@ mod tests {
             max_merged_segment_size: 1_000_000,
             reclaim_weight: 0.3,
             floor_segment_size: 0,
+            force_merge_deletes_pct_allowed: 10.0,
         };
         let groups_no_floor = find_merges(&segments, &no_floor);
         assert_eq!(groups_no_floor.len(), 1);
@@ -587,6 +648,7 @@ mod tests {
             max_merged_segment_size: 1_000_000,
             reclaim_weight: 0.3,
             floor_segment_size: 1000,
+            force_merge_deletes_pct_allowed: 10.0,
         };
         // _at_floor: floored size stays 1000 (== raw size), discount 0 ->
         // score 1000.0.
@@ -650,6 +712,75 @@ mod tests {
         // excess = 6 - 3 + 1 = 4 segments merged into one group, 2 untouched.
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].len(), 4);
+    }
+
+    #[test]
+    fn find_forced_delete_merges_selects_only_over_threshold_segments() {
+        // pct_deletes: _clean=0%, _light=5%, _heavy=50%, _mostly_gone=90%.
+        // Threshold 10.0 -> only _heavy and _mostly_gone qualify.
+        let segments = vec![
+            stat("_clean", 100, 0, 100),
+            stat("_light", 100, 5, 100),
+            stat("_heavy", 100, 50, 100),
+            stat("_mostly_gone", 100, 90, 100),
+        ];
+        let config = MergePolicyConfig {
+            force_merge_deletes_pct_allowed: 10.0,
+            ..MergePolicyConfig::default()
+        };
+        let groups = find_forced_delete_merges(&segments, &config);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].len(), 2);
+        assert!(groups[0].contains(&"_heavy".to_string()));
+        assert!(groups[0].contains(&"_mostly_gone".to_string()));
+        assert!(!groups[0].contains(&"_clean".to_string()));
+        assert!(!groups[0].contains(&"_light".to_string()));
+    }
+
+    #[test]
+    fn find_forced_delete_merges_boundary_at_exact_threshold_is_excluded() {
+        // _at_threshold has exactly 10% deletes: real Lucene's condition is
+        // `pctDeletes > forceMergeDeletesPctAllowed` (strictly greater), so a
+        // segment sitting exactly at the threshold must NOT be selected.
+        let segments = vec![
+            stat("_at_threshold", 100, 10, 100),
+            stat("_just_over", 1000, 101, 100),
+        ];
+        let config = MergePolicyConfig {
+            force_merge_deletes_pct_allowed: 10.0,
+            ..MergePolicyConfig::default()
+        };
+        let groups = find_forced_delete_merges(&segments, &config);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0], vec!["_just_over".to_string()]);
+    }
+
+    #[test]
+    fn find_forced_delete_merges_zero_deletions_selects_nothing() {
+        let segments: Vec<SegmentStat> = (0..5)
+            .map(|i| stat(&format!("_{i}"), 100, 0, 100))
+            .collect();
+        let config = MergePolicyConfig::default();
+        assert!(find_forced_delete_merges(&segments, &config).is_empty());
+    }
+
+    #[test]
+    fn find_forced_delete_merges_single_qualifying_segment_still_selected() {
+        // Unlike find_merges/find_forced_merges, a lone over-threshold
+        // segment is still worth "merging" (rewritten to drop its deletes),
+        // so a group of size 1 is valid here.
+        let segments = vec![stat("_clean", 100, 0, 100), stat("_heavy", 100, 90, 100)];
+        let config = MergePolicyConfig::default();
+        let groups = find_forced_delete_merges(&segments, &config);
+        assert_eq!(groups, vec![vec!["_heavy".to_string()]]);
+    }
+
+    #[test]
+    fn default_config_matches_real_lucene_force_merge_deletes_pct_allowed() {
+        assert_eq!(
+            MergePolicyConfig::default().force_merge_deletes_pct_allowed,
+            10.0
+        );
     }
 
     #[test]
