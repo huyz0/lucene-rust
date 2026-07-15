@@ -910,6 +910,7 @@ impl<'d> IndexWriter<'d> {
                 // is never consulted here.
                 positions: Vec::new(),
                 offsets: Vec::new(),
+                payloads: Vec::new(),
             });
         }
         if terms.is_empty() {
@@ -920,6 +921,7 @@ impl<'d> IndexWriter<'d> {
             field_number: config.field_number,
             index_options: config.index_options,
             doc_count: doc_ids.len() as i32,
+            has_payloads: false,
             terms: &terms,
         };
         let output = postings_writer::write_single_field(&input, segment_id, "")?;

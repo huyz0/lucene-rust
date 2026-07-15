@@ -77,6 +77,7 @@ fn term_query_finds_correct_docs_over_freshly_written_postings() {
         },
     ];
     let input = FieldPostingsInput {
+        has_payloads: false,
         field_number: 0,
         index_options: IndexOptions::DocsAndFreqs,
         doc_count: 8,
@@ -126,6 +127,7 @@ fn term_query_respects_live_docs_filter() {
         ..Default::default()
     }];
     let input = FieldPostingsInput {
+        has_payloads: false,
         field_number: 0,
         index_options: IndexOptions::DocsAndFreqs,
         doc_count: 3,
@@ -186,18 +188,21 @@ fn term_query_respects_live_docs_filter() {
 fn phrase_query_finds_correct_docs_over_freshly_written_positions() {
     let terms = vec![
         TermPostings {
+            payloads: Vec::new(),
             term: b"fox".to_vec(),
             docs: vec![(0, 1), (1, 1)],
             positions: vec![vec![1], vec![2]],
             offsets: Vec::new(),
         },
         TermPostings {
+            payloads: Vec::new(),
             term: b"jumps".to_vec(),
             docs: vec![(0, 1), (1, 1)],
             positions: vec![vec![2], vec![1]],
             offsets: Vec::new(),
         },
         TermPostings {
+            payloads: Vec::new(),
             term: b"quick".to_vec(),
             docs: vec![(0, 1), (1, 1)],
             positions: vec![vec![0], vec![0]],
@@ -205,6 +210,7 @@ fn phrase_query_finds_correct_docs_over_freshly_written_positions() {
         },
     ];
     let input = FieldPostingsInput {
+        has_payloads: false,
         field_number: 0,
         index_options: IndexOptions::DocsAndFreqsAndPositions,
         doc_count: 2,
@@ -285,12 +291,14 @@ fn multi_field_segment_term_queries_are_isolated_per_field() {
     ];
     let body_terms = vec![
         TermPostings {
+            payloads: Vec::new(),
             term: b"crab".to_vec(),
             docs: vec![(1, 1)],
             positions: vec![vec![1]],
             offsets: Vec::new(),
         },
         TermPostings {
+            payloads: Vec::new(),
             term: b"rust".to_vec(), // same term bytes as "title", different field/postings
             docs: vec![(1, 1), (2, 2)],
             positions: vec![vec![0], vec![0, 4]],
@@ -299,12 +307,14 @@ fn multi_field_segment_term_queries_are_isolated_per_field() {
     ];
     let inputs = vec![
         FieldPostingsInput {
+            has_payloads: false,
             field_number: 0,
             index_options: IndexOptions::DocsAndFreqs,
             doc_count: 2,
             terms: &title_terms,
         },
         FieldPostingsInput {
+            has_payloads: false,
             field_number: 1,
             index_options: IndexOptions::DocsAndFreqsAndPositions,
             doc_count: 3,
@@ -397,6 +407,7 @@ fn term_query_finds_correct_docs_across_multiple_tim_blocks() {
         });
     }
     let input = FieldPostingsInput {
+        has_payloads: false,
         field_number: 0,
         index_options: IndexOptions::DocsAndFreqs,
         doc_count: 78,
