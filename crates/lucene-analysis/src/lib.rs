@@ -47,44 +47,91 @@ pub struct Token {
     pub position_increment: i32,
 }
 
+/// True for characters this tokenizer treats as *internal word connectors*:
+/// kept as part of a token when they sit strictly between two alphanumeric
+/// characters (e.g. the `.` in `"3.14"`, the `,` in `"1,000"`, the `'`/`’` in
+/// `"don't"`/`"O'Brien"`), but still treated as a plain separator everywhere
+/// else (e.g. a sentence-ending `"sentence."` still splits off the period,
+/// since nothing alphanumeric follows it).
+fn is_word_connector(c: char) -> bool {
+    matches!(c, '.' | ',' | '\'' | '\u{2019}')
+}
+
 /// A simplified, real word-boundary tokenizer: splits on whitespace and
 /// punctuation boundaries, keeping maximal runs of alphanumeric characters
-/// (Unicode alphanumeric, via `char::is_alphanumeric`) as terms.
+/// (Unicode alphanumeric, via `char::is_alphanumeric`) as terms, plus three
+/// narrowly-scoped UAX#29-inspired extensions (see [`is_word_connector`]):
+///
+/// - **Embedded numeric punctuation**: `.`/`,` between two alphanumeric
+///   characters stays part of the token, so `"3.14"` and `"1,000"` are each
+///   one token rather than splitting at the punctuation.
+/// - **Acronym-style internal periods**: the same rule means `"U.S.A."`
+///   tokenizes as `"U.S.A"` (the trailing period, followed by nothing
+///   alphanumeric, is still dropped) rather than three separate
+///   single-letter tokens.
+/// - **Internal apostrophes**: `'`/`’` between two alphanumeric characters
+///   stays part of the token, so `"don't"` and `"O'Brien"` survive as single
+///   tokens instead of splitting at the apostrophe.
+///
+/// A connector followed by whitespace, end-of-text, or any other
+/// non-alphanumeric character is *not* absorbed -- e.g. a real
+/// sentence-ending period (`"end of sentence."`) still splits the trailing
+/// `.` off, since nothing alphanumeric follows it.
 ///
 /// This mirrors the *core algorithm* of real Lucene's `StandardTokenizer`/
-/// `WhitespaceTokenizer` -- split on non-alphanumeric boundaries -- but is
-/// **not** a port of full UAX#29 Unicode Text Segmentation (which handles
-/// things like combining marks, locale-specific word breaking, and complex
-/// script segmentation). That's substantial, legitimately out-of-scope NLP
-/// machinery; see `docs/parity.md` for the explicit scope note.
+/// `WhitespaceTokenizer` -- split on non-alphanumeric boundaries, with a
+/// small set of hand-picked exceptions -- but is **not** a port of full
+/// UAX#29 Unicode Text Segmentation (which additionally handles combining
+/// marks, locale-specific word breaking, CJK/complex script segmentation,
+/// and full email/URL recognition). That's substantial, legitimately
+/// out-of-scope NLP machinery; see `docs/parity.md` for the explicit scope
+/// note.
 ///
 /// Every token gets `position_increment == 1` (tokenizers never skip
 /// positions -- that only happens in filters, e.g. [`StopFilter`]).
 pub fn tokenize(text: &str) -> Vec<Token> {
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    let n = chars.len();
     let mut tokens = Vec::new();
-    let mut chars = text.char_indices().peekable();
-    while let Some(&(start, ch)) = chars.peek() {
+    let mut i = 0;
+    while i < n {
+        let (start, ch) = chars[i];
         if !ch.is_alphanumeric() {
-            chars.next();
+            i += 1;
             continue;
         }
-        let mut end = start;
-        let mut end_char_len = 0;
-        while let Some(&(idx, c)) = chars.peek() {
-            if !c.is_alphanumeric() {
-                break;
+        // `last_included` tracks the index of the last char absorbed into
+        // this token; it only ever advances over alphanumeric chars or
+        // connectors that are themselves followed by another alphanumeric
+        // char, so a token never ends on a bare connector.
+        let mut last_included = i;
+        let mut j = i + 1;
+        while j < n {
+            let (_, c) = chars[j];
+            if c.is_alphanumeric() {
+                last_included = j;
+                j += 1;
+                continue;
             }
-            end = idx;
-            end_char_len = c.len_utf8();
-            chars.next();
+            if is_word_connector(c) && j + 1 < n && chars[j + 1].1.is_alphanumeric() {
+                // Absorb the connector provisionally; `last_included` is
+                // only bumped to it once the following alphanumeric char is
+                // also absorbed (next loop iteration), so a trailing
+                // connector at the very end of the run is never included.
+                j += 1;
+                continue;
+            }
+            break;
         }
-        let end_offset = end + end_char_len;
+        let (end_start, end_ch) = chars[last_included];
+        let end_offset = end_start + end_ch.len_utf8();
         tokens.push(Token {
             term: text[start..end_offset].to_string(),
             start_offset: start as i32,
             end_offset: end_offset as i32,
             position_increment: 1,
         });
+        i = last_included + 1;
     }
     tokens
 }
@@ -874,6 +921,119 @@ mod tests {
         assert_eq!(
             tokens,
             vec![tok("abc123", 0, 6, 1), tok("456def", 7, 13, 1),]
+        );
+    }
+
+    // -- Embedded numeric punctuation ("3.14", "1,000") --
+
+    #[test]
+    fn tokenize_number_with_embedded_period_stays_one_token() {
+        // OLD (wrong) behavior: this split into "3" and "14".
+        let tokens = tokenize("pi is 3.14 today");
+        assert_eq!(
+            tokens,
+            vec![
+                tok("pi", 0, 2, 1),
+                tok("is", 3, 5, 1),
+                tok("3.14", 6, 10, 1),
+                tok("today", 11, 16, 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn tokenize_number_with_embedded_comma_stays_one_token() {
+        // OLD (wrong) behavior: this split into "1" and "000".
+        let tokens = tokenize("1,000 dollars");
+        assert_eq!(
+            tokens,
+            vec![tok("1,000", 0, 5, 1), tok("dollars", 6, 13, 1),]
+        );
+    }
+
+    #[test]
+    fn tokenize_sentence_ending_period_after_number_still_splits() {
+        // Adjacent case that must NOT be affected: a real sentence-ending
+        // period (nothing alphanumeric follows it) still splits off.
+        let tokens = tokenize("The total is 42. Done.");
+        assert_eq!(
+            tokens,
+            vec![
+                tok("The", 0, 3, 1),
+                tok("total", 4, 9, 1),
+                tok("is", 10, 12, 1),
+                tok("42", 13, 15, 1),
+                tok("Done", 17, 21, 1),
+            ]
+        );
+    }
+
+    // -- Acronym-style internal periods ("U.S.A.") --
+
+    #[test]
+    fn tokenize_acronym_kept_together() {
+        // OLD (wrong) behavior: this split into "U", "S", "A".
+        let tokens = tokenize("U.S.A. is here");
+        assert_eq!(
+            tokens,
+            vec![
+                tok("U.S.A", 0, 5, 1),
+                tok("is", 7, 9, 1),
+                tok("here", 10, 14, 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn tokenize_trailing_sentence_period_after_word_still_splits() {
+        // Adjacent case that must NOT be affected: a normal word followed by
+        // a sentence-ending period still splits the period off.
+        let tokens = tokenize("This is the end. Next sentence.");
+        assert_eq!(
+            tokens,
+            vec![
+                tok("This", 0, 4, 1),
+                tok("is", 5, 7, 1),
+                tok("the", 8, 11, 1),
+                tok("end", 12, 15, 1),
+                tok("Next", 17, 21, 1),
+                tok("sentence", 22, 30, 1),
+            ]
+        );
+    }
+
+    // -- Internal apostrophes ("don't", "O'Brien") --
+
+    #[test]
+    fn tokenize_apostrophe_contraction_kept_together() {
+        // OLD (wrong) behavior: this split into "don" and "t".
+        let tokens = tokenize("don't stop");
+        assert_eq!(tokens, vec![tok("don't", 0, 5, 1), tok("stop", 6, 10, 1),]);
+    }
+
+    #[test]
+    fn tokenize_apostrophe_name_kept_together() {
+        // OLD (wrong) behavior: this split into "O" and "Brien".
+        let tokens = tokenize("O'Brien arrived");
+        assert_eq!(
+            tokens,
+            vec![tok("O'Brien", 0, 7, 1), tok("arrived", 8, 15, 1),]
+        );
+    }
+
+    #[test]
+    fn tokenize_leading_apostrophe_not_absorbed() {
+        // Adjacent case that must NOT be affected: an apostrophe with no
+        // alphanumeric character before it (e.g. an opening quote) is a
+        // plain separator, not part of the following word.
+        let tokens = tokenize("'tis the season");
+        assert_eq!(
+            tokens,
+            vec![
+                tok("tis", 1, 4, 1),
+                tok("the", 5, 8, 1),
+                tok("season", 9, 15, 1),
+            ]
         );
     }
 
