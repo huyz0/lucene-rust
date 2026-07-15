@@ -13,7 +13,7 @@ JAR=$(find ~/.gradle/caches/modules-2/files-2.1/org.apache.lucene/lucene-core/10
   -name 'lucene-core-10.5.0.jar' ! -name '*sources*' ! -name '*javadoc*')
 mkdir -p classes data
 javac -nowarn -cp "$JAR" -d classes src/*.java
-for cls in GenPrimitives GenCodecUtil GenSegmentInfo GenSegmentInfos GenLiveDocs GenFieldInfos GenNorms GenDocValues GenCompoundFormat GenStoredFields GenStoredFieldsBestCompression GenSortedDocValues GenMultiValuedDocValues GenTermVectors GenPoints GenFst GenBlockTree GenBlockTreeCompressed GenFstBinarySearch; do
+for cls in GenPrimitives GenCodecUtil GenSegmentInfo GenSegmentInfos GenLiveDocs GenFieldInfos GenNorms GenDocValues GenCompoundFormat GenStoredFields GenStoredFieldsBestCompression GenSortedDocValues GenMultiValuedDocValues GenTermVectors GenPoints GenFst GenBlockTree GenBlockTreeCompressed GenFstBinarySearch GenFstDirectAddressing; do
   java -cp "classes:$JAR" $cls data
 done
 ```
@@ -404,14 +404,29 @@ read identically to one `FSTCompiler` would have produced. See
   (1, 40, 80, 120, 160, 200, 240) specifically to make `FSTCompiler`'s own
   cost heuristic pick `ARCS_FOR_BINARY_SEARCH` encoding for the root node
   (confirmed via a self-check that the debug arc dump contains `"(bs)"`,
-  not just assumed) -- this port's reader supports that encoding but still
-  rejects `ARCS_FOR_DIRECT_ADDRESSING`/`ARCS_FOR_CONTINUOUS` outright, so
-  this fixture deliberately stays small/sparse enough to land on binary
-  search rather than direct addressing. The manifest's 8 absent keys are
-  chosen in the gaps between and around the present labels (e.g. 60
-  between 40/80), not just far-outside values, so the differential test
-  exercises the binary search's boundary behavior, not just "obviously not
-  present."
+  not just assumed) -- this port's reader supports that encoding, but still
+  rejects `ARCS_FOR_CONTINUOUS` outright, so this fixture deliberately stays
+  small/sparse enough to land on binary search rather than direct addressing
+  or continuous. The manifest's 8 absent keys are chosen in the gaps between
+  and around the present labels (e.g. 60 between 40/80), not just
+  far-outside values, so the differential test exercises the binary
+  search's boundary behavior, not just "obviously not present."
+- `GenFstDirectAddressing.java` — the direct-addressing counterpart to
+  `GenFstBinarySearch.java` above: a real `FST<BytesRef>`
+  (`fst_direct_addressing/` subdirectory) built via real `FSTCompiler` with
+  `allowFixedLengthArcs(true)` and 7 single-byte root labels chosen dense but
+  not fully contiguous (`a`-`f` plus `h`, skipping `g`) -- dense enough that
+  `FSTCompiler`'s cost heuristic prefers direct addressing's small presence
+  bitset over binary search's larger sparse array, but with one gap so the
+  label range doesn't qualify for the (even cheaper, still-unsupported-here)
+  `ARCS_FOR_CONTINUOUS` encoding, which `FSTCompiler` always picks instead
+  once every label in the range is present. Confirmed via a self-check that
+  the debug arc dump contains `"(da)"`, not just assumed. The manifest's 6
+  absent keys specifically include `g` -- the one gap *inside* the label
+  range (present bit clear, not merely out of range) -- alongside
+  just-outside-the-range and clearly-disjoint values, so the differential
+  test exercises the presence-bitset rejection path, not just the
+  range-bounds check.
 - `GenBlockTree.java` — a real `IndexWriter` session (`blocktree_index/`
   subdirectory) producing `.tim`/`.tip`/`.tmd` (`Lucene103BlockTreeTermsWriter`,
   via `Lucene104PostingsFormat`), plus the `.fnm`/`.si` this port's readers

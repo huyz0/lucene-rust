@@ -29,21 +29,24 @@
 //!   sequences to concatenated block-pointer byte sequences), so it's the one
 //!   needed to eventually navigate BlockTree. Other output types
 //!   (`PositiveIntOutputs`, `PairOutputs`, ...) are not implemented.
-//! - **Variable-length ("list") arc nodes, plus `ARCS_FOR_BINARY_SEARCH`
-//!   fixed-length arc nodes.** Real Lucene's `FSTCompiler` also emits
-//!   fixed-length arc nodes for binary search (`ARCS_FOR_BINARY_SEARCH`),
-//!   direct addressing (`ARCS_FOR_DIRECT_ADDRESSING`) and continuous ranges
+//! - **Variable-length ("list") arc nodes, plus `ARCS_FOR_BINARY_SEARCH` and
+//!   `ARCS_FOR_DIRECT_ADDRESSING` fixed-length arc nodes.** Real Lucene's
+//!   `FSTCompiler` also emits fixed-length arc nodes for binary search
+//!   (`ARCS_FOR_BINARY_SEARCH`), direct addressing
+//!   (`ARCS_FOR_DIRECT_ADDRESSING`) and continuous ranges
 //!   (`ARCS_FOR_CONTINUOUS`) once a node has "enough" arcs to make the
 //!   space/speed tradeoff worth it. `ARCS_FOR_BINARY_SEARCH` is ported
 //!   (`find_target_arc`'s sparse binary search over fixed-size arc slots,
-//!   `read_arc`'s matching `BIT_TARGET_NEXT` target rule); reading
-//!   `ARCS_FOR_DIRECT_ADDRESSING`/`ARCS_FOR_CONTINUOUS` nodes is not yet
-//!   implemented -- encountering one still returns
-//!   `Error::Unsupported("FST array-encoded node ...")` rather than silently
-//!   misdecoding. Small term-index FSTs (few dozen distinct labels per node)
-//!   normally stay in list form, but large/dense FSTs whose compiler picked
-//!   one of the two remaining encodings for some node are a real gap -- see
-//!   `docs/parity.md`.
+//!   `read_arc`'s matching `BIT_TARGET_NEXT` target rule); `ARCS_FOR_DIRECT_ADDRESSING`
+//!   is also ported (node header's label range + presence bitset ("bit
+//!   table"), then fixed-size arc slots addressed only for present labels via
+//!   `BitTableUtil`-equivalent bit counting -- see `bit_table_*` helpers below).
+//!   Reading `ARCS_FOR_CONTINUOUS` nodes is not yet implemented -- encountering
+//!   one still returns `Error::Unsupported("FST array-encoded node ...")`
+//!   rather than silently misdecoding. Small term-index FSTs (few dozen
+//!   distinct labels per node) normally stay in list form, but large/dense
+//!   FSTs whose compiler picked `ARCS_FOR_CONTINUOUS` for some node are a
+//!   real (rarer) gap -- see `docs/parity.md`.
 //! - **Lookup (`get`) and full forward enumeration (`iter`), not seek.** `get`
 //!   mirrors `Util.get(FST, BytesRef)`: walk arcs for a specific key and
 //!   return whether it's accepted plus its output. `iter`/`FstEnum` mirrors
@@ -232,6 +235,86 @@ impl<'a> BytesReader<'a> {
     }
 }
 
+/// `FST.getNumPresenceBytes`: number of bytes needed to hold one presence bit
+/// per label in a range of `label_range` labels.
+fn num_presence_bytes(label_range: i32) -> i32 {
+    (label_range + 7) >> 3
+}
+
+/// `BitTableUtil.isBitSet`, pre-positioned via `arc.bit_table_start`
+/// (`FST.Arc.BitTable.isBitSet`). `arc.node_flags` must be
+/// `ARCS_FOR_DIRECT_ADDRESSING`.
+fn bit_table_is_bit_set(bit_index: i32, arc: &Arc, r: &mut BytesReader) -> Result<bool> {
+    debug_assert_eq!(arc.node_flags, ARCS_FOR_DIRECT_ADDRESSING);
+    r.set_position(arc.bit_table_start);
+    r.skip_bytes((bit_index >> 3) as i64);
+    let b = r.read_byte()?;
+    Ok(b & (1u8 << (bit_index & 7)) != 0)
+}
+
+/// `BitTableUtil.countBits`, pre-positioned via `arc.bit_table_start`: the
+/// total number of set bits in the whole bit-table, i.e. the number of arcs
+/// actually present in this direct-addressing node.
+fn bit_table_count_bits(arc: &Arc, r: &mut BytesReader) -> Result<i32> {
+    debug_assert_eq!(arc.node_flags, ARCS_FOR_DIRECT_ADDRESSING);
+    r.set_position(arc.bit_table_start);
+    let num_bytes = num_presence_bytes(arc.num_arcs);
+    let mut count = 0i32;
+    for _ in 0..num_bytes {
+        count += r.read_byte()?.count_ones() as i32;
+    }
+    Ok(count)
+}
+
+/// `BitTableUtil.countBitsUpTo`, pre-positioned via `arc.bit_table_start`:
+/// the number of set bits strictly before `bit_index` -- i.e. `bit_index`'s
+/// corresponding `presence_index` if its bit is set.
+fn bit_table_count_bits_up_to(bit_index: i32, arc: &Arc, r: &mut BytesReader) -> Result<i32> {
+    debug_assert_eq!(arc.node_flags, ARCS_FOR_DIRECT_ADDRESSING);
+    r.set_position(arc.bit_table_start);
+    let full_bytes = bit_index >> 3;
+    let mut count = 0i32;
+    for _ in 0..full_bytes {
+        count += r.read_byte()?.count_ones() as i32;
+    }
+    let rem_bits = bit_index & 7;
+    if rem_bits != 0 {
+        let b = r.read_byte()?;
+        let mask = (1u8 << rem_bits) - 1;
+        count += (b & mask).count_ones() as i32;
+    }
+    Ok(count)
+}
+
+/// `BitTableUtil.nextBitSet`, pre-positioned via `arc.bit_table_start`: the
+/// index of the next set bit strictly after `bit_index` (which may be `-1`,
+/// meaning "the first set bit"), or `-1` if none.
+fn bit_table_next_bit_set(bit_index: i32, arc: &Arc, r: &mut BytesReader) -> Result<i32> {
+    debug_assert_eq!(arc.node_flags, ARCS_FOR_DIRECT_ADDRESSING);
+    r.set_position(arc.bit_table_start);
+    let bit_table_bytes = num_presence_bytes(arc.num_arcs);
+    let mut byte_index = bit_index / 8;
+    let shift = ((bit_index + 1) & 7) as u32;
+    let mask: i32 = -1i32 << shift;
+    let mut i: i32;
+    if mask == -1 && bit_index != -1 {
+        r.skip_bytes((byte_index + 1) as i64);
+        i = 0;
+    } else {
+        r.skip_bytes(byte_index as i64);
+        let b = r.read_byte()? as i32;
+        i = (b & 0xff) & mask;
+    }
+    while i == 0 {
+        byte_index += 1;
+        if byte_index == bit_table_bytes {
+            return Ok(-1);
+        }
+        i = (r.read_byte()? as i32) & 0xff;
+    }
+    Ok(i.trailing_zeros() as i32 + (byte_index << 3))
+}
+
 /// `ByteSequenceOutputs.add`: concatenate prefix output with an arc's own
 /// output.
 fn output_add(prefix: &[u8], output: &[u8]) -> Vec<u8> {
@@ -248,9 +331,9 @@ fn output_add(prefix: &[u8], output: &[u8]) -> Vec<u8> {
 }
 
 /// `FST.Arc<T>`, restricted to the fields needed for variable-length
-/// ("list") arc nodes -- see the module doc for why fixed-length (array)
-/// node fields (`bytesPerArc`, `posArcsStart`, `arcIdx`, `numArcs`, the
-/// direct-addressing bit-table fields) are omitted entirely.
+/// ("list") arc nodes plus the two array-node encodings this port decodes
+/// (`ARCS_FOR_BINARY_SEARCH`, `ARCS_FOR_DIRECT_ADDRESSING`) -- see the module
+/// doc for why `ARCS_FOR_CONTINUOUS`'s fields are omitted entirely.
 #[derive(Debug, Clone, Default)]
 pub struct Arc {
     label: i32,
@@ -259,21 +342,44 @@ pub struct Arc {
     flags: u8,
     next_final_output: Vec<u8>,
     next_arc: i64,
+    /// `FST.Arc.nodeFlags`: the node header's own flags byte (as opposed to
+    /// `flags`, this arc's *own* per-arc flags byte). `0` for list-encoded
+    /// nodes (never one of the two special constants below); one of
+    /// `ARCS_FOR_BINARY_SEARCH`/`ARCS_FOR_DIRECT_ADDRESSING` for a fixed-
+    /// length-arc node. Needed because both share a non-zero `bytes_per_arc`
+    /// but decode differently (label storage, target-skip arithmetic).
+    node_flags: u8,
     /// `FST.Arc.bytesPerArc`: 0 for list-encoded (variable length arc) nodes;
-    /// non-zero for `ARCS_FOR_BINARY_SEARCH` fixed-length-arc nodes (the only
-    /// array encoding this port currently decodes -- see the module doc).
+    /// non-zero for `ARCS_FOR_BINARY_SEARCH`/`ARCS_FOR_DIRECT_ADDRESSING`
+    /// fixed-length-arc nodes.
     bytes_per_arc: i32,
-    /// `FST.Arc.numArcs`: only meaningful when `bytes_per_arc != 0`.
+    /// `FST.Arc.numArcs`: only meaningful when `bytes_per_arc != 0`. For
+    /// `ARCS_FOR_BINARY_SEARCH` this is the arc-array size; for
+    /// `ARCS_FOR_DIRECT_ADDRESSING` this is the label range (`numArcs` in
+    /// `FST.java`'s own naming, despite actually holding a range width).
     num_arcs: i32,
     /// `FST.Arc.posArcsStart`: only meaningful when `bytes_per_arc != 0`.
     pos_arcs_start: i64,
     /// `FST.Arc.arcIdx`: this arc's index within its fixed-length-arc node's
     /// slots (only meaningful/maintained when `bytes_per_arc != 0`). Needed
-    /// by `read_next_real_arc`'s `ARCS_FOR_BINARY_SEARCH` branch to advance
+    /// by `read_next_real_arc`'s fixed-length-arc branches to advance
     /// incrementally through a node's arcs during enumeration (`get`/
     /// `find_target_arc` never need this: they jump straight to one matched
-    /// slot via binary search and stop).
+    /// slot and stop).
     arc_idx: i32,
+    /// `FST.Arc.bitTableStart`: start position of the presence bit-table for
+    /// an `ARCS_FOR_DIRECT_ADDRESSING` node (only meaningful when
+    /// `node_flags == ARCS_FOR_DIRECT_ADDRESSING`).
+    bit_table_start: i64,
+    /// `FST.Arc.firstLabel`: first (lowest) label of an
+    /// `ARCS_FOR_DIRECT_ADDRESSING` node's label range (only meaningful when
+    /// `node_flags == ARCS_FOR_DIRECT_ADDRESSING`).
+    first_label: i32,
+    /// `FST.Arc.presenceIndex`: this arc's index among only the *present*
+    /// labels of an `ARCS_FOR_DIRECT_ADDRESSING` node (i.e. the count of set
+    /// bits before `arc_idx` in the bit-table) -- only meaningful when
+    /// `node_flags == ARCS_FOR_DIRECT_ADDRESSING`.
+    presence_index: i32,
 }
 
 impl Arc {
@@ -554,7 +660,13 @@ impl<'a> Fst<'a> {
     /// been read into `arc.flags` and `r` is positioned right after it.
     /// List-encoded nodes only (see module docs).
     fn read_arc(&self, arc: &mut Arc, r: &mut BytesReader) -> Result<()> {
-        arc.label = self.read_label(r)?;
+        arc.label = if arc.node_flags == ARCS_FOR_DIRECT_ADDRESSING {
+            // Direct-addressing nodes never store the label explicitly --
+            // it's implied by the arc's position in the label range.
+            arc.first_label + arc.arc_idx
+        } else {
+            self.read_label(r)?
+        };
 
         arc.output = if flag(arc.flags, BIT_ARC_HAS_OUTPUT) {
             r.read_output()?
@@ -583,14 +695,20 @@ impl<'a> Fst<'a> {
                     // sibling arcs to find this arc's implicit target.
                     self.seek_to_next_node(r)?;
                 } else {
-                    // `ARCS_FOR_BINARY_SEARCH` fixed-length-arc node: the
-                    // target is simply the position right before the fixed
-                    // arcs array starts (`FST.readArc`'s `bytesPerArc() != 0`
-                    // branch) -- no scan needed since every arc's on-disk
-                    // size is known.
-                    r.set_position(
-                        arc.pos_arcs_start - arc.bytes_per_arc as i64 * arc.num_arcs as i64,
-                    );
+                    // Fixed-length-arc node (`ARCS_FOR_BINARY_SEARCH` or
+                    // `ARCS_FOR_DIRECT_ADDRESSING`): the target is simply the
+                    // position right before the fixed arcs array starts
+                    // (`FST.readArc`'s `bytesPerArc() != 0` branch) -- no scan
+                    // needed since every arc's on-disk size is known. For
+                    // direct addressing, the array only holds *present* arcs,
+                    // so its size is the bit-table's set-bit count, not the
+                    // label range (`num_arcs`).
+                    let num_arcs = if arc.node_flags == ARCS_FOR_DIRECT_ADDRESSING {
+                        bit_table_count_bits(arc, r)?
+                    } else {
+                        arc.num_arcs
+                    };
+                    r.set_position(arc.pos_arcs_start - arc.bytes_per_arc as i64 * num_arcs as i64);
                 }
             }
             arc.target = r.get_position();
@@ -623,12 +741,42 @@ impl<'a> Fst<'a> {
     }
 
     fn reject_if_array_node(flags: u8) -> Result<()> {
-        if flags == ARCS_FOR_DIRECT_ADDRESSING || flags == ARCS_FOR_CONTINUOUS {
+        if flags == ARCS_FOR_CONTINUOUS {
             return Err(Error::Unsupported(format!(
-                "FST array-encoded node (flags={flags:#x}); only list-encoded (variable length arc) and ARCS_FOR_BINARY_SEARCH nodes are supported in this slice"
+                "FST array-encoded node (flags={flags:#x}); only list-encoded (variable length arc), ARCS_FOR_BINARY_SEARCH and ARCS_FOR_DIRECT_ADDRESSING nodes are supported in this slice"
             )));
         }
         Ok(())
+    }
+
+    /// `FST.readPresenceBytes`: record the bit-table's start position and
+    /// skip past its `getNumPresenceBytes(arc.numArcs)` bytes (the presence
+    /// bits themselves are read lazily, on demand, via the `bit_table_*`
+    /// helpers -- matching real Lucene's own "don't read them here, just
+    /// skip them" comment).
+    fn read_presence_bytes(&self, arc: &mut Arc, r: &mut BytesReader) -> Result<()> {
+        debug_assert!(arc.bytes_per_arc > 0);
+        debug_assert_eq!(arc.node_flags, ARCS_FOR_DIRECT_ADDRESSING);
+        arc.bit_table_start = r.get_position();
+        r.skip_bytes(num_presence_bytes(arc.num_arcs) as i64);
+        Ok(())
+    }
+
+    /// `FST.readArcByDirectAddressing(Arc, BytesReader, int, int)`: seek to
+    /// the arc slot for the (already known-present) `range_index`/
+    /// `presence_index` pair and decode it via the shared `read_arc`.
+    fn read_arc_by_direct_addressing(
+        &self,
+        arc: &mut Arc,
+        r: &mut BytesReader,
+        range_index: i32,
+        presence_index: i32,
+    ) -> Result<()> {
+        r.set_position(arc.pos_arcs_start - presence_index as i64 * arc.bytes_per_arc as i64);
+        arc.arc_idx = range_index;
+        arc.presence_index = presence_index;
+        arc.flags = r.read_byte()?;
+        self.read_arc(arc, r)
     }
 
     /// `FST.findTargetArc`'s `ARCS_FOR_BINARY_SEARCH` branch: `follow`'s
@@ -666,6 +814,7 @@ impl<'a> Fst<'a> {
                     let flags = r.read_byte()?;
                     let mut arc = Arc {
                         flags,
+                        node_flags: ARCS_FOR_BINARY_SEARCH,
                         bytes_per_arc,
                         num_arcs,
                         pos_arcs_start,
@@ -679,11 +828,51 @@ impl<'a> Fst<'a> {
         Ok(None)
     }
 
+    /// `FST.findTargetArc`'s `ARCS_FOR_DIRECT_ADDRESSING` branch: `follow`'s
+    /// target node has already been confirmed (by the caller) to be a direct-
+    /// addressing node, with `r` positioned right after the node header's
+    /// `flags` byte. Ported field-for-field from `FST.java`: label range
+    /// (`numArcs`, despite the name) + `bytesPerArc` (both `vint`), the
+    /// presence bit-table (skipped, not read yet), `firstLabel`, then a
+    /// direct `label_to_match - first_label` index into the label range --
+    /// rejected outright if out of range or (if in range) not actually
+    /// present in the bit-table, otherwise decoded via
+    /// `read_arc_by_direct_addressing` at its bit-table-derived presence
+    /// index.
+    fn find_target_arc_direct_addressing(
+        &self,
+        label_to_match: i32,
+        r: &mut BytesReader,
+    ) -> Result<Option<Arc>> {
+        let num_arcs = r.read_vint()?; // Label range.
+        let bytes_per_arc = r.read_vint()?;
+        let mut arc = Arc {
+            node_flags: ARCS_FOR_DIRECT_ADDRESSING,
+            num_arcs,
+            bytes_per_arc,
+            ..Default::default()
+        };
+        self.read_presence_bytes(&mut arc, r)?;
+        arc.first_label = self.read_label(r)?;
+        arc.pos_arcs_start = r.get_position();
+
+        let arc_index = label_to_match - arc.first_label;
+        if arc_index < 0 || arc_index >= arc.num_arcs {
+            return Ok(None); // Before or after the label range.
+        }
+        if !bit_table_is_bit_set(arc_index, &arc, r)? {
+            return Ok(None); // Arc missing in the range.
+        }
+        let presence_index = bit_table_count_bits_up_to(arc_index, &arc, r)?;
+        self.read_arc_by_direct_addressing(&mut arc, r, arc_index, presence_index)?;
+        Ok(Some(arc))
+    }
+
     /// `FST.findTargetArc`: find the arc leaving `follow` labeled
-    /// `label_to_match`, or `None` if there is none. List-encoded and
-    /// `ARCS_FOR_BINARY_SEARCH` nodes only (see module docs for
-    /// `ARCS_FOR_DIRECT_ADDRESSING`/`ARCS_FOR_CONTINUOUS`, which remain
-    /// rejected via `Error::Unsupported`).
+    /// `label_to_match`, or `None` if there is none. List-encoded,
+    /// `ARCS_FOR_BINARY_SEARCH` and `ARCS_FOR_DIRECT_ADDRESSING` nodes only
+    /// (see module docs for `ARCS_FOR_CONTINUOUS`, which remains rejected via
+    /// `Error::Unsupported`).
     ///
     /// Note: real Lucene's `findTargetArc` also accepts `label_to_match ==
     /// END_LABEL` (used by `FSTEnum`/enumeration consumers to re-derive the
@@ -707,6 +896,9 @@ impl<'a> Fst<'a> {
         let flags = r.read_byte()?;
         if flags == ARCS_FOR_BINARY_SEARCH {
             return self.find_target_arc_binary_search(label_to_match, r);
+        }
+        if flags == ARCS_FOR_DIRECT_ADDRESSING {
+            return self.find_target_arc_direct_addressing(label_to_match, r);
         }
         Self::reject_if_array_node(flags)?;
 
@@ -763,7 +955,13 @@ impl<'a> Fst<'a> {
     /// must already be positioned at a real arc of the node (as set up by
     /// `read_first_real_target_arc` or a previous call to this method).
     fn read_next_real_arc(&self, arc: &mut Arc, r: &mut BytesReader) -> Result<()> {
-        if arc.bytes_per_arc != 0 {
+        if arc.node_flags == ARCS_FOR_DIRECT_ADDRESSING {
+            // Direct-addressing node: advance to the next *present* label in
+            // the range (the bit-table's next set bit after `arc_idx`, which
+            // is `-1` on the very first call).
+            let next_index = bit_table_next_bit_set(arc.arc_idx, arc, r)?;
+            return self.read_arc_by_direct_addressing(arc, r, next_index, arc.presence_index + 1);
+        } else if arc.bytes_per_arc != 0 {
             // `ARCS_FOR_BINARY_SEARCH` fixed-length-arc node: advance to the
             // next fixed-size slot by index.
             arc.arc_idx += 1;
@@ -786,12 +984,25 @@ impl<'a> Fst<'a> {
     fn read_first_real_target_arc(&self, node_address: i64, r: &mut BytesReader) -> Result<Arc> {
         r.set_position(node_address);
         let flags = r.read_byte()?;
-        let mut arc = Arc::default();
+        let mut arc = Arc {
+            node_flags: flags,
+            ..Default::default()
+        };
         if flags == ARCS_FOR_BINARY_SEARCH {
             let num_arcs = r.read_vint()?;
             let bytes_per_arc = r.read_vint()?;
             arc.num_arcs = num_arcs;
             arc.bytes_per_arc = bytes_per_arc;
+            arc.pos_arcs_start = r.get_position();
+            arc.arc_idx = -1;
+        } else if flags == ARCS_FOR_DIRECT_ADDRESSING {
+            let num_arcs = r.read_vint()?; // Label range.
+            let bytes_per_arc = r.read_vint()?;
+            arc.num_arcs = num_arcs;
+            arc.bytes_per_arc = bytes_per_arc;
+            self.read_presence_bytes(&mut arc, r)?;
+            arc.first_label = self.read_label(r)?;
+            arc.presence_index = -1;
             arc.pos_arcs_start = r.get_position();
             arc.arc_idx = -1;
         } else {
@@ -801,6 +1012,7 @@ impl<'a> Fst<'a> {
             // matching `FST.java`'s own re-read of the same byte here).
             arc.next_arc = node_address;
             arc.bytes_per_arc = 0;
+            arc.node_flags = 0;
         }
         self.read_next_real_arc(&mut arc, r)?;
         Ok(arc)
@@ -1512,17 +1724,133 @@ mod tests {
         assert!(matches!(fst.get(b"x"), Err(Error::Unsupported(_))));
     }
 
+    // --- `ARCS_FOR_DIRECT_ADDRESSING` fixed-length-arc nodes ---------------
+    //
+    // Hand-built (not real-Lucene-written) node in this encoding, to pin down
+    // `find_target_arc_direct_addressing`/`bit_table_*`'s byte-level field
+    // layout before/alongside the real-fixture differential test in
+    // `tests/fst_direct_addressing_fixtures.rs`.
+
+    /// Builds a single root node spanning the label range
+    /// `[first_label, first_label + num_arcs)`, encoded as
+    /// `ARCS_FOR_DIRECT_ADDRESSING`: a presence bit-table (one bit per label
+    /// in the range) followed by `first_label`, then one fixed-size arc slot
+    /// per *present* label only (ascending order), each a final, accepting
+    /// stop node whose 1-byte output is given by `present`. `present`'s
+    /// labels must all fall within the range and need not be pre-sorted.
+    /// Returns `(body_bytes, start_node_address)`.
+    fn build_direct_addressing_node(
+        first_label: u8,
+        num_arcs: i32,
+        present: &[(u8, u8)],
+    ) -> (Vec<u8>, i64) {
+        let num_presence_bytes = num_presence_bytes(num_arcs) as usize;
+        let mut presence = vec![0u8; num_presence_bytes];
+        for &(label, _) in present {
+            let idx = (label - first_label) as usize;
+            presence[idx / 8] |= 1 << (idx % 8);
+        }
+
+        let mut sorted_present = present.to_vec();
+        sorted_present.sort_by_key(|(l, _)| *l);
+        let num_present = sorted_present.len();
+
+        let mut logical_arcs: Vec<Vec<u8>> = Vec::with_capacity(num_present);
+        for (i, &(_label, output)) in sorted_present.iter().enumerate() {
+            let mut logical = Vec::new();
+            let mut flags = BIT_FINAL_ARC | BIT_STOP_NODE | BIT_ARC_HAS_FINAL_OUTPUT;
+            if i == num_present - 1 {
+                flags |= BIT_LAST_ARC;
+            }
+            logical.push(flags);
+            // No label byte: direct-addressing arcs never store the label
+            // explicitly, it's implied by position in the range.
+            write_vint(&mut logical, 1);
+            logical.push(output);
+            logical_arcs.push(logical);
+        }
+        let bytes_per_arc = logical_arcs.iter().map(|a| a.len()).max().unwrap_or(0);
+
+        let mut logical = vec![ARCS_FOR_DIRECT_ADDRESSING];
+        write_vint(&mut logical, num_arcs);
+        write_vint(&mut logical, bytes_per_arc as i32);
+        logical.extend_from_slice(&presence);
+        logical.push(first_label);
+        for arc in &logical_arcs {
+            let mut padded = arc.clone();
+            padded.resize(bytes_per_arc, 0u8);
+            logical.extend_from_slice(&padded);
+        }
+
+        let mut bytes = Vec::new();
+        let node_addr = append_arc_logical(&mut bytes, &logical);
+        (bytes, node_addr)
+    }
+
     #[test]
-    fn direct_addressing_node_is_rejected_not_misdecoded() {
-        // A node header byte equal to ARCS_FOR_DIRECT_ADDRESSING must be
-        // rejected outright rather than silently misparsed -- this encoding
-        // is not yet implemented (see module doc).
-        let mut bytes = vec![0u8];
-        let node_addr = bytes.len() as i64;
-        bytes.push(ARCS_FOR_DIRECT_ADDRESSING);
-        let fst = fst_from_body(bytes, node_addr, InputType::Byte1, None);
-        let err = fst.get(b"a").unwrap_err();
-        assert!(matches!(err, Error::Unsupported(_)));
+    fn direct_addressing_node_finds_every_present_label() {
+        let first_label = b'a';
+        let num_arcs = (b'z' - b'a' + 1) as i32;
+        let present = [
+            (b'a', 1u8),
+            (b'c', 2u8),
+            (b'f', 3u8),
+            (b'm', 4u8),
+            (b'z', 5u8),
+        ];
+        let (bytes, start) = build_direct_addressing_node(first_label, num_arcs, &present);
+        let fst = fst_from_body(bytes, start, InputType::Byte1, None);
+        for (label, output) in present {
+            assert_eq!(
+                fst.get(&[label]).unwrap(),
+                Some(vec![output]),
+                "label {label} should resolve to {output}"
+            );
+        }
+    }
+
+    #[test]
+    fn direct_addressing_node_rejects_absent_labels_in_and_around_range() {
+        let first_label = b'a';
+        let num_arcs = (b'z' - b'a' + 1) as i32;
+        let present = [
+            (b'a', 1u8),
+            (b'c', 2u8),
+            (b'f', 3u8),
+            (b'm', 4u8),
+            (b'z', 5u8),
+        ];
+        let (bytes, start) = build_direct_addressing_node(first_label, num_arcs, &present);
+        let fst = fst_from_body(bytes, start, InputType::Byte1, None);
+        // In-range but not present (bit clear), plus strictly before/after
+        // the label range entirely.
+        for absent in [b'b', b'd', b'g', b'n', b'y', 0u8, 0xffu8] {
+            assert_eq!(
+                fst.get(&[absent]).unwrap(),
+                None,
+                "label {absent} should be absent"
+            );
+        }
+    }
+
+    #[test]
+    fn direct_addressing_node_enumerates_every_present_label_in_ascending_order() {
+        let first_label = b'a';
+        let num_arcs = (b'z' - b'a' + 1) as i32;
+        let present = [
+            (b'm', 4u8),
+            (b'a', 1u8),
+            (b'z', 5u8),
+            (b'c', 2u8),
+            (b'f', 3u8),
+        ];
+        let (bytes, start) = build_direct_addressing_node(first_label, num_arcs, &present);
+        let fst = fst_from_body(bytes, start, InputType::Byte1, None);
+        let mut expected: Vec<(Vec<u8>, Vec<u8>)> =
+            present.iter().map(|&(l, o)| (vec![l], vec![o])).collect();
+        expected.sort();
+        let got: Vec<(Vec<u8>, Vec<u8>)> = fst.iter().unwrap().collect::<Result<_>>().unwrap();
+        assert_eq!(got, expected);
     }
 
     #[test]
