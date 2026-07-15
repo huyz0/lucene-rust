@@ -966,14 +966,16 @@ fn finish_field_list_and_footers(
 /// [`write_single_sparse_numeric_field`], not here.
 ///
 /// Deliberately not attempted here, all deferred to future slices (see
-/// `docs/parity.md`): sparse BINARY/SORTED_NUMERIC/SORTED_SET fields, the
+/// `docs/parity.md`): sparse SORTED_NUMERIC/SORTED_SET fields, the
 /// varying-bits-per-value block split, per-field doc-values skip indexes,
 /// and multiple fields in one `.dvm`/`.dvd`/`.dvs` triple. BINARY
 /// ([`write_single_dense_binary_field`]), SORTED_NUMERIC
 /// ([`write_single_dense_sorted_numeric_field`]), SORTED
 /// ([`write_single_dense_sorted_field`]), and SORTED_SET
 /// ([`write_single_dense_sorted_set_field`]) write sides now exist as
-/// siblings of this function, all built on this same dense scope.
+/// siblings of this function, all built on this same dense scope. Sparse
+/// BINARY ([`write_single_sparse_binary_field`]) and sparse SORTED
+/// ([`write_single_sparse_sorted_field`]) writing are also now ported.
 ///
 /// Returns `(meta_bytes, data_bytes, skip_index_bytes)` -- three separate
 /// buffers matching the real writer's three `IndexOutput`s (`.dvm`, `.dvd`,
@@ -1017,7 +1019,8 @@ pub fn write_single_dense_numeric_field(
 /// type/shape this port's write side extends beyond dense in this slice; see
 /// that function's doc comment for the rest of this module's scope
 /// statement (BINARY sparse writing is also now ported, see
-/// [`write_single_sparse_binary_field`]; SORTED/SORTED_NUMERIC/SORTED_SET
+/// [`write_single_sparse_binary_field`]; SORTED sparse writing is now ported
+/// too, see [`write_single_sparse_sorted_field`]; SORTED_NUMERIC/SORTED_SET
 /// sparse writing remains deferred, as is real Lucene's SPARSE-as-shorts-vs-DENSE-bitset
 /// choice for any *single* 65536-doc block -- [`indexed_disi::write`]
 /// already makes that choice per block exactly like real Lucene, so a
@@ -1471,10 +1474,12 @@ fn write_terms_dict(meta: &mut Vec<u8>, data: &mut Vec<u8>, terms: &[Vec<u8>]) {
 /// itself via [`write_terms_dict`] (shared, byte-for-byte, with what a future
 /// SORTED_SET writer would call for the same values).
 ///
+/// Sparse SORTED fields (`IndexedDISI`, i.e. some docs with no value at all)
+/// are handled by the sibling [`write_single_sparse_sorted_field`], not here.
+///
 /// Deliberately not attempted here, same as
-/// [`write_single_dense_numeric_field`]: sparse fields (`IndexedDISI`,
-/// i.e. `Ok(None)`/missing values), per-field doc-values skip indexes, and
-/// multiple fields in one `.dvm`/`.dvd`/`.dvs` triple.
+/// [`write_single_dense_numeric_field`]: per-field doc-values skip indexes,
+/// and multiple fields in one `.dvm`/`.dvd`/`.dvs` triple.
 ///
 /// Returns `(meta_bytes, data_bytes, skip_index_bytes)`, same shape as
 /// [`write_single_dense_numeric_field`].
@@ -1492,6 +1497,30 @@ pub fn write_single_dense_sorted_field(
         });
     }
 
+    let (dict, ords) = build_sorted_dict_and_ords(values);
+
+    let mut meta = new_meta_output(segment_id, segment_suffix);
+    let mut data = new_data_output(segment_id, segment_suffix);
+
+    meta.write_i32(field_number);
+    meta.push(DOC_VALUES_TYPE_SORTED);
+    write_dense_numeric_entry_body(&mut meta, &mut data, &ords);
+    write_terms_dict(&mut meta, &mut data, &dict);
+
+    let skip_index =
+        finish_field_list_and_footers(&mut meta, &mut data, segment_id, segment_suffix);
+    Ok((meta, data, skip_index))
+}
+
+/// Builds the sorted, deduplicated distinct-value dictionary for a SORTED
+/// field's raw per-doc term bytes (a `BTreeSet`-equivalent `sort_unstable` +
+/// `dedup` over `values`) and maps each entry of `values` to its ordinal into
+/// that dictionary. Shared by [`write_single_dense_sorted_field`] and
+/// [`write_single_sparse_sorted_field`] -- in the sparse case, `values` holds
+/// only the present docs' terms, in doc-id order, so the returned `ords`
+/// align with those docs' *ranks*, exactly what
+/// [`write_sparse_numeric_entry_body`] expects.
+fn build_sorted_dict_and_ords(values: &[Vec<u8>]) -> (Vec<Vec<u8>>, Vec<i64>) {
     let mut dict: Vec<Vec<u8>> = values.to_vec();
     dict.sort_unstable();
     dict.dedup();
@@ -1500,13 +1529,58 @@ pub fn write_single_dense_sorted_field(
         .iter()
         .map(|v| dict.binary_search(v).unwrap() as i64)
         .collect();
+    (dict, ords)
+}
+
+/// Port of `Lucene90DocValuesConsumer.addSortedField`'s **sparse** branch
+/// (`numDocsWithValue != maxDoc`), the SORTED analogue of
+/// [`write_single_sparse_numeric_field`]/[`write_single_sparse_binary_field`]:
+/// an [`indexed_disi`]-backed docs-with-field structure instead of the
+/// `-1`/DENSE marker [`write_single_dense_sorted_field`] always writes,
+/// followed by per-doc ordinals for *only* the docs that have a value --
+/// missing docs get no ordinal at all, not even a placeholder, matching
+/// [`write_sparse_numeric_entry_body`]'s rank-indexed (not doc-id-indexed)
+/// value array. The terms dictionary itself
+/// ([`build_sorted_dict_and_ords`]/[`write_terms_dict`]) is built only from
+/// the present docs' values, same as real Lucene's `addSortedField`, which
+/// only ever sees values for docs `DocIdSetIterator` actually advances to.
+///
+/// `doc_values` need not be sorted by the caller; this function sorts a
+/// clone by doc id itself, same contract as
+/// [`write_single_sparse_numeric_field`]. Each doc id must be unique and
+/// `< max_doc`. Empty `Vec<u8>` values are allowed (an empty value is still
+/// present, distinct from absent).
+pub fn write_single_sparse_sorted_field(
+    field_number: i32,
+    doc_values: &[(i32, Vec<u8>)],
+    max_doc: i32,
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+) -> WriteResult<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    let mut sorted: Vec<(i32, Vec<u8>)> = doc_values.to_vec();
+    sorted.sort_unstable_by_key(|&(doc, _)| doc);
+    for i in 1..sorted.len() {
+        if sorted[i - 1].0 == sorted[i].0 {
+            return Err(WriteError::DocIdsNotAscending(sorted[i].0));
+        }
+    }
+    for &(doc, _) in &sorted {
+        if doc < 0 || doc >= max_doc {
+            return Err(WriteError::DocIdOutOfRange(doc, max_doc));
+        }
+    }
+
+    let doc_ids: Vec<i32> = sorted.iter().map(|&(doc, _)| doc).collect();
+    let values: Vec<Vec<u8>> = sorted.into_iter().map(|(_, v)| v).collect();
+
+    let (dict, ords) = build_sorted_dict_and_ords(&values);
 
     let mut meta = new_meta_output(segment_id, segment_suffix);
     let mut data = new_data_output(segment_id, segment_suffix);
 
     meta.write_i32(field_number);
     meta.push(DOC_VALUES_TYPE_SORTED);
-    write_dense_numeric_entry_body(&mut meta, &mut data, &ords);
+    write_sparse_numeric_entry_body(&mut meta, &mut data, &doc_ids, &ords);
     write_terms_dict(&mut meta, &mut data, &dict);
 
     let skip_index =
@@ -3457,6 +3531,194 @@ mod tests {
                 max_doc: 2
             }
         ));
+    }
+
+    // --- write_single_sparse_sorted_field ---
+
+    fn resolved_sparse_sorted_values(
+        data_bytes: &[u8],
+        entry: &SortedEntry,
+        max_doc: i32,
+    ) -> Vec<Option<Vec<u8>>> {
+        let dict = terms_dict::decode_all_terms(data_bytes, &entry.terms).unwrap();
+        (0..max_doc)
+            .map(|doc| {
+                sorted_ord(data_bytes, entry, doc)
+                    .unwrap()
+                    .map(|ord| dict[ord as usize].clone())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn write_single_sparse_sorted_field_interspersed_missing_docs_round_trips() {
+        let id = [30u8; ID_LENGTH];
+        let max_doc = 10i32;
+        let doc_values: Vec<(i32, Vec<u8>)> = (0..max_doc)
+            .step_by(2)
+            .map(|doc| (doc, format!("term{doc}").into_bytes()))
+            .collect();
+
+        let (meta_bytes, data_bytes, skip_bytes) =
+            write_single_sparse_sorted_field(0, &doc_values, max_doc, &id, "").unwrap();
+
+        assert_eq!(
+            check_data_header_footer_generic(&skip_bytes, "Lucene90DocValuesSkipIndex", &id)
+                .unwrap(),
+            VERSION_CURRENT
+        );
+        assert_eq!(
+            check_data_header_footer(&data_bytes, &id, "").unwrap(),
+            VERSION_CURRENT
+        );
+
+        let fis = sorted_field_infos();
+        let entry = read_sorted_field(&meta_bytes, &id, &fis);
+        let expected: std::collections::HashMap<i32, Vec<u8>> = doc_values.into_iter().collect();
+        let resolved = resolved_sparse_sorted_values(&data_bytes, &entry, max_doc);
+        for doc in 0..max_doc {
+            assert_eq!(
+                resolved[doc as usize],
+                expected.get(&doc).cloned(),
+                "doc {doc}"
+            );
+        }
+    }
+
+    #[test]
+    fn write_single_sparse_sorted_field_first_doc_missing() {
+        let id = [31u8; ID_LENGTH];
+        let max_doc = 5i32;
+        let doc_values: Vec<(i32, Vec<u8>)> = vec![
+            (1, b"a".to_vec()),
+            (2, b"b".to_vec()),
+            (3, b"c".to_vec()),
+            (4, b"d".to_vec()),
+        ];
+
+        let (meta_bytes, data_bytes, _skip_bytes) =
+            write_single_sparse_sorted_field(0, &doc_values, max_doc, &id, "").unwrap();
+
+        let fis = sorted_field_infos();
+        let entry = read_sorted_field(&meta_bytes, &id, &fis);
+        assert_eq!(sorted_ord(&data_bytes, &entry, 0).unwrap(), None);
+        let resolved = resolved_sparse_sorted_values(&data_bytes, &entry, max_doc);
+        for (doc, want) in &doc_values {
+            assert_eq!(resolved[*doc as usize], Some(want.clone()));
+        }
+    }
+
+    #[test]
+    fn write_single_sparse_sorted_field_last_doc_missing() {
+        let id = [32u8; ID_LENGTH];
+        let max_doc = 5i32;
+        let doc_values: Vec<(i32, Vec<u8>)> = vec![
+            (0, b"a".to_vec()),
+            (1, b"b".to_vec()),
+            (2, b"c".to_vec()),
+            (3, b"d".to_vec()),
+        ];
+
+        let (meta_bytes, data_bytes, _skip_bytes) =
+            write_single_sparse_sorted_field(0, &doc_values, max_doc, &id, "").unwrap();
+
+        let fis = sorted_field_infos();
+        let entry = read_sorted_field(&meta_bytes, &id, &fis);
+        assert_eq!(sorted_ord(&data_bytes, &entry, 4).unwrap(), None);
+        let resolved = resolved_sparse_sorted_values(&data_bytes, &entry, max_doc);
+        for (doc, want) in &doc_values {
+            assert_eq!(resolved[*doc as usize], Some(want.clone()));
+        }
+    }
+
+    #[test]
+    fn write_single_sparse_sorted_field_all_but_one_missing() {
+        let id = [33u8; ID_LENGTH];
+        let max_doc = 1000i32;
+        let doc_values: Vec<(i32, Vec<u8>)> = vec![(500, b"only".to_vec())];
+
+        let (meta_bytes, data_bytes, _skip_bytes) =
+            write_single_sparse_sorted_field(0, &doc_values, max_doc, &id, "").unwrap();
+
+        let fis = sorted_field_infos();
+        let entry = read_sorted_field(&meta_bytes, &id, &fis);
+        for doc in (0..max_doc).step_by(37) {
+            let got = sorted_ord(&data_bytes, &entry, doc).unwrap();
+            if doc == 500 {
+                assert!(got.is_some());
+            } else {
+                assert_eq!(got, None, "doc {doc}");
+            }
+        }
+        let dict = terms_dict::decode_all_terms(&data_bytes, &entry.terms).unwrap();
+        assert_eq!(dict, vec![b"only".to_vec()]);
+        let ord = sorted_ord(&data_bytes, &entry, 500).unwrap().unwrap();
+        assert_eq!(dict[ord as usize], b"only".to_vec());
+    }
+
+    #[test]
+    fn write_single_sparse_sorted_field_rejects_duplicate_doc_id() {
+        let id = [34u8; ID_LENGTH];
+        let err = write_single_sparse_sorted_field(
+            0,
+            &[(1, b"a".to_vec()), (1, b"b".to_vec())],
+            5,
+            &id,
+            "",
+        )
+        .unwrap_err();
+        assert!(matches!(err, WriteError::DocIdsNotAscending(1)));
+    }
+
+    #[test]
+    fn write_single_sparse_sorted_field_rejects_out_of_range_doc_id() {
+        let id = [35u8; ID_LENGTH];
+        let err = write_single_sparse_sorted_field(
+            0,
+            &[(0, b"a".to_vec()), (5, b"b".to_vec())],
+            5,
+            &id,
+            "",
+        )
+        .unwrap_err();
+        assert!(matches!(err, WriteError::DocIdOutOfRange(5, 5)));
+    }
+
+    #[test]
+    fn write_single_dense_sorted_field_still_dense_after_sparse_addition() {
+        // Regression: adding the sparse SORTED write path must not change
+        // the dense path's output at all. Same values/assertions as
+        // `write_single_dense_sorted_field_round_trips_small_dictionary`.
+        let id = [36u8; ID_LENGTH];
+        let values: Vec<Vec<u8>> = vec![
+            b"banana".to_vec(),
+            b"apple".to_vec(),
+            b"cherry".to_vec(),
+            b"apple".to_vec(),
+        ];
+        let (meta_bytes, data_bytes, skip_bytes) =
+            write_single_dense_sorted_field(0, &values, values.len() as i32, &id, "").unwrap();
+
+        assert_eq!(
+            check_data_header_footer_generic(&skip_bytes, "Lucene90DocValuesSkipIndex", &id)
+                .unwrap(),
+            VERSION_CURRENT
+        );
+        assert_eq!(
+            check_data_header_footer(&data_bytes, &id, "").unwrap(),
+            VERSION_CURRENT
+        );
+
+        let fis = sorted_field_infos();
+        let entry = read_sorted_field(&meta_bytes, &id, &fis);
+        let dict = terms_dict::decode_all_terms(&data_bytes, &entry.terms).unwrap();
+        assert_eq!(
+            dict,
+            vec![b"apple".to_vec(), b"banana".to_vec(), b"cherry".to_vec()]
+        );
+
+        let resolved = resolved_sorted_values(&data_bytes, &entry, values.len() as i32);
+        assert_eq!(resolved, values.into_iter().map(Some).collect::<Vec<_>>());
     }
 
     // --- write_single_dense_sorted_set_field ---
