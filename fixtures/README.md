@@ -13,7 +13,7 @@ JAR=$(find ~/.gradle/caches/modules-2/files-2.1/org.apache.lucene/lucene-core/10
   -name 'lucene-core-10.5.0.jar' ! -name '*sources*' ! -name '*javadoc*')
 mkdir -p classes data
 javac -nowarn -cp "$JAR" -d classes src/*.java
-for cls in GenPrimitives GenCodecUtil GenSegmentInfo GenSegmentInfos GenLiveDocs GenFieldInfos GenNorms GenDocValues GenCompoundFormat GenStoredFields GenStoredFieldsBestCompression GenSortedDocValues GenMultiValuedDocValues GenTermVectors GenPoints GenFst GenBlockTree GenBlockTreeCompressed GenFstBinarySearch GenFstDirectAddressing; do
+for cls in GenPrimitives GenCodecUtil GenSegmentInfo GenSegmentInfos GenLiveDocs GenFieldInfos GenNorms GenDocValues GenCompoundFormat GenStoredFields GenStoredFieldsBestCompression GenSortedDocValues GenMultiValuedDocValues GenTermVectors GenPoints GenFst GenBlockTree GenBlockTreeCompressed GenFstBinarySearch GenFstDirectAddressing GenFstContinuous; do
   java -cp "classes:$JAR" $cls data
 done
 ```
@@ -418,15 +418,27 @@ read identically to one `FSTCompiler` would have produced. See
   not fully contiguous (`a`-`f` plus `h`, skipping `g`) -- dense enough that
   `FSTCompiler`'s cost heuristic prefers direct addressing's small presence
   bitset over binary search's larger sparse array, but with one gap so the
-  label range doesn't qualify for the (even cheaper, still-unsupported-here)
-  `ARCS_FOR_CONTINUOUS` encoding, which `FSTCompiler` always picks instead
-  once every label in the range is present. Confirmed via a self-check that
-  the debug arc dump contains `"(da)"`, not just assumed. The manifest's 6
-  absent keys specifically include `g` -- the one gap *inside* the label
-  range (present bit clear, not merely out of range) -- alongside
-  just-outside-the-range and clearly-disjoint values, so the differential
-  test exercises the presence-bitset rejection path, not just the
-  range-bounds check.
+  label range doesn't qualify for the (even cheaper) `ARCS_FOR_CONTINUOUS`
+  encoding, which `FSTCompiler` always picks instead once every label in the
+  range is present -- see `GenFstContinuous.java` below for that encoding's
+  own fixture. Confirmed via a self-check that the debug arc dump contains
+  `"(da)"`, not just assumed. The manifest's 6 absent keys specifically
+  include `g` -- the one gap *inside* the label range (present bit clear, not
+  merely out of range) -- alongside just-outside-the-range and
+  clearly-disjoint values, so the differential test exercises the
+  presence-bitset rejection path, not just the range-bounds check.
+- `GenFstContinuous.java` — the continuous-range counterpart to
+  `GenFstDirectAddressing.java` above: a real `FST<BytesRef>`
+  (`fst_continuous/` subdirectory) built via real `FSTCompiler` with
+  `allowFixedLengthArcs(true)` and 7 single-byte root labels that are
+  *fully* contiguous (`a`-`g`, no gaps at all) -- once a label range has zero
+  gaps, `FSTCompiler`'s cost heuristic always prefers `ARCS_FOR_CONTINUOUS`
+  over both direct addressing and binary search, since no presence bitset is
+  needed at all. Confirmed via a self-check that the debug arc dump contains
+  `"(cs)"`, not just assumed. The manifest's 6 absent keys are all strictly
+  outside the label range (there is no in-range gap to test, unlike direct
+  addressing), so the differential test exercises the before/after-range
+  bounds check specifically.
 - `GenBlockTree.java` — a real `IndexWriter` session (`blocktree_index/`
   subdirectory) producing `.tim`/`.tip`/`.tmd` (`Lucene103BlockTreeTermsWriter`,
   via `Lucene104PostingsFormat`), plus the `.fnm`/`.si` this port's readers
