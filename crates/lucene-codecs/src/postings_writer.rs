@@ -68,30 +68,37 @@
 //!   term spanning any number of level-1 spans plus a final partial span
 //!   round-trips the same way arbitrarily large `docFreq` already did below
 //!   `LEVEL1_NUM_DOCS`.
-//! - **Term frequency only, or term frequency + positions — still no
-//!   offsets/payloads.** `IndexOptions::Docs`/`DocsAndFreqs`/
-//!   `DocsAndFreqsAndPositions` are accepted; `.pay` is never written, and
-//!   `.pos` is only written for the `DocsAndFreqsAndPositions` case. This
+//! - **Term frequency, positions, and now offsets too — still no
+//!   payloads.** `IndexOptions::Docs`/`DocsAndFreqs`/
+//!   `DocsAndFreqsAndPositions`/`DocsAndFreqsAndPositionsAndOffsets` are all
+//!   accepted; `.pos` is only written once a field indexes positions, and
+//!   `.pay` is only written once a field indexes offsets (this writer never
+//!   has payloads, so `.pay` is never opened for that reason alone). This
 //!   mirrors `flush_stored_only_segment`'s own historical "start with the
 //!   smallest defensible slice" precedent (see
 //!   `crate::term_vectors::write_best_speed`'s positions-only cut for
 //!   another example of the same policy).
-//! - **`total_term_freq` of any size is now supported for the `.pos` position
-//!   stream too**: every complete 256-occurrence chunk of a term's positions
-//!   (buffered across doc boundaries, matching real
+//! - **`total_term_freq` of any size is now supported for the `.pos`/`.pay`
+//!   position/offset streams too**: every complete 256-occurrence chunk of a
+//!   term's positions (buffered across doc boundaries, matching real
 //!   `Lucene104PostingsWriter.addPosition`'s `posBufferUpto == BLOCK_SIZE`
 //!   flush timing) is emitted as a full `PForUtil`-encoded block
 //!   ([`write_full_position_block`], reusing `crate::for_util::pfor_encode`
-//!   directly), with the `total_term_freq % BLOCK_SIZE` remainder still using
-//!   the vint-tail path (`refillLastPositionBlock`-equivalent). Unlike `.doc`
-//!   full blocks, a `.pos` full block has **no skip header at all** — it's
-//!   read back by a bare, unframed `for_util::pfor_decode` call, per
-//!   `crate::postings::read_positions`'s `num_full_blocks` loop — so no
-//!   level-0/level-1-equivalent skip structure exists for positions to write
-//!   the write-side inverse of in the first place. **Still deferred**:
-//!   offsets/payloads in a full `.pos` block (this writer has neither at
-//!   all, see the next bullet, so this is unreachable rather than untested).
-//!   **`docFreq` must still stay below `BLOCK_SIZE` whenever a term indexes
+//!   directly) — and, when the field indexes offsets, that same chunk's
+//!   offset start-deltas/lengths are emitted as a full `PForUtil`-encoded
+//!   `.pay` block right alongside it ([`write_full_offset_block`]) — with the
+//!   `total_term_freq % BLOCK_SIZE` remainder still using the vint-tail path
+//!   (`refillLastPositionBlock`-equivalent, offset start-delta/length pairs
+//!   inlined in `.pos` right after each occurrence's position delta).
+//!   Unlike `.doc` full blocks, a `.pos`/`.pay` full block has **no skip
+//!   header at all** — it's read back by bare, unframed
+//!   `for_util::pfor_decode` calls, per `crate::postings::read_positions`'s
+//!   `num_full_blocks` loop — so no level-0/level-1-equivalent skip structure
+//!   exists for positions/offsets to write the write-side inverse of in the
+//!   first place. **Still deferred**: payloads (this writer has none at
+//!   all, so that part of `read_positions`'s `has_payloads` branch is
+//!   unreachable rather than untested). **`docFreq` must still stay below
+//!   `BLOCK_SIZE` whenever a term indexes
 //!   positions** ([`Error::DocFreqTooLargeForPositions`]): this writer's
 //!   `.doc`-side [`write_full_block`] never emits the pos/pay skip
 //!   sub-fields `read_full_block_header` expects on a full `.doc` block for
@@ -127,14 +134,25 @@
 //!   carries freqs, else plain `docDelta`, followed by one plain vint per
 //!   `freq != 1` doc, in doc order) — see `crate::postings::read_tail_block`
 //!   for the exact inverse. `Footer`.
-//! - `.pos` (only when `index_options` is `DocsAndFreqsAndPositions`):
+//! - `.pos` (only when `index_options` indexes positions —
+//!   `DocsAndFreqsAndPositions` or `DocsAndFreqsAndPositionsAndOffsets`):
 //!   `IndexHeader(codec="Lucene104PostingsWriterPos")`, then, for each term
-//!   that indexes positions, its vint-tail-only position deltas in doc
-//!   order (accumulator reset to 0 at each doc's first occurrence, plain
-//!   `posDelta` vints — no payload/offset bit-packing, since this writer
-//!   never has either) — see `crate::postings::read_positions`'s tail-block
-//!   branch (`has_payloads == false`, `has_offsets == false`) for the exact
-//!   inverse. `Footer`.
+//!   that indexes positions, zero or more full 256-occurrence `PForUtil`
+//!   blocks followed by a vint tail for the remainder — plain `posDelta`
+//!   vints (accumulator reset to 0 at each doc's first occurrence; no
+//!   payload bit-packing, since this writer never has payloads), each
+//!   optionally followed, when the field also indexes offsets, by an
+//!   `(offsetStartDelta << 1) | changed` vint and, only when `changed`, an
+//!   offset-length vint — see `crate::postings::read_positions`'s tail-block
+//!   branch (`has_payloads == false`) for the exact inverse. `Footer`.
+//! - `.pay` (only when `index_options` is
+//!   `DocsAndFreqsAndPositionsAndOffsets`): `IndexHeader(codec=
+//!   "Lucene104PostingsWriterPay")`, then, for each term's full
+//!   256-occurrence `.pos` blocks, that same chunk's offset start-deltas
+//!   then offset lengths as two back-to-back bare `PForUtil` arrays (no
+//!   payload-length/payload-bytes fields, since this writer never has
+//!   payloads) — see `crate::postings::read_positions`'s `has_offsets`
+//!   full-block branch for the exact inverse. `Footer`.
 //! - `.tim`: `IndexHeader(codec="BlockTreeTermsDict")`, then, per field, one
 //!   physical block (single-block case) or one physical block per
 //!   leading-byte group (multi-block case), each block being
@@ -166,7 +184,7 @@ use crate::blocktree::{
 use crate::field_infos::IndexOptions;
 use crate::for_util;
 use crate::postings::{
-    write_group_vints, BLOCK_SIZE, DOC_CODEC, LEVEL1_NUM_DOCS, POS_CODEC,
+    write_group_vints, BLOCK_SIZE, DOC_CODEC, LEVEL1_NUM_DOCS, PAY_CODEC, POS_CODEC,
     VERSION_CURRENT as DOC_VERSION_CURRENT,
 };
 
@@ -183,8 +201,8 @@ pub enum Error {
     #[error("write_single_field: term at index {index} has freq < 1")]
     NonPositiveFreq { index: usize },
     #[error(
-        "write_single_field: only IndexOptions::Docs/DocsAndFreqs/DocsAndFreqsAndPositions is \
-         supported, got {0:?}"
+        "write_single_field: only IndexOptions::Docs/DocsAndFreqs/DocsAndFreqsAndPositions/\
+         DocsAndFreqsAndPositionsAndOffsets is supported, got {0:?}"
     )]
     UnsupportedIndexOptions(IndexOptions),
     #[error(
@@ -220,6 +238,32 @@ pub enum Error {
          trie root only supports 2..=33 children (ChildSaveStrategy::ARRAY's 5-bit strategy-byte-count field)"
     )]
     TooManyLeadingByteGroups(usize),
+    #[error(
+        "write_single_field: term at index {index}, doc index {doc_index} has no offsets but \
+         index_options indexes offsets; every doc needs exactly `freq` (start, end) offset pairs"
+    )]
+    MissingOffsets { index: usize, doc_index: usize },
+    #[error(
+        "write_single_field: term at index {index}, doc index {doc_index} has {offsets} offset \
+         pair(s) but freq {freq}; they must match when index_options indexes offsets"
+    )]
+    OffsetsFreqMismatch {
+        index: usize,
+        doc_index: usize,
+        offsets: usize,
+        freq: i32,
+    },
+    #[error(
+        "write_single_field: term at index {index}, doc index {doc_index}, occurrence \
+         {occurrence} has an invalid offset pair (startOffset must be >= the previous \
+         occurrence's startOffset in the same doc, or >= 0 for the first occurrence, and \
+         endOffset must be >= startOffset)"
+    )]
+    InvalidOffsets {
+        index: usize,
+        doc_index: usize,
+        occurrence: usize,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -241,11 +285,24 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// derives the on-wire deltas itself (position deltas reset to the absolute
 /// first position at each doc's first occurrence, exactly like real
 /// Lucene's `Lucene104PostingsWriter.startDoc`/`addPosition`).
+/// `offsets` mirrors `positions`: only consulted when
+/// [`FieldPostingsInput::index_options`] is
+/// `IndexOptions::DocsAndFreqsAndPositionsAndOffsets`, in which case it must
+/// have exactly `docs.len()` entries (same doc order as `positions`) and
+/// `offsets[i].len()` must equal `positions[i].len()` (== that doc's
+/// `freq`). Each entry is an occurrence's absolute `(startOffset,
+/// endOffset)` pair; per real Lucene's `addPosition` assertions
+/// (`Lucene104PostingsWriter.java:332-333`), `endOffset >= startOffset` and,
+/// within one doc, `startOffset` never decreases from one occurrence to the
+/// next (it resets to comparing against `0` at each doc's first
+/// occurrence) — the writer derives the on-wire
+/// `startOffset - lastStartOffset` delta itself, exactly like `positions`.
 #[derive(Debug, Clone, Default)]
 pub struct TermPostings {
     pub term: Vec<u8>,
     pub docs: Vec<(i32, i32)>,
     pub positions: Vec<Vec<i32>>,
+    pub offsets: Vec<Vec<(i32, i32)>>,
 }
 
 /// Input to [`write_single_field`]: one field's whole term dictionary,
@@ -270,6 +327,10 @@ pub struct FieldPostingsInput<'a> {
 pub struct Output {
     pub doc: Vec<u8>,
     pub pos: Vec<u8>,
+    /// Empty unless at least one field indexes offsets
+    /// (`IndexOptions::DocsAndFreqsAndPositionsAndOffsets`) — same "no file
+    /// needed" convention as `pos`.
+    pub pay: Vec<u8>,
     pub tim: Vec<u8>,
     pub tip: Vec<u8>,
     pub tmd: Vec<u8>,
@@ -330,6 +391,24 @@ pub fn write_fields(
         codec_util::write_index_header(
             &mut pos,
             POS_CODEC,
+            DOC_VERSION_CURRENT,
+            segment_id,
+            segment_suffix,
+        );
+    }
+
+    // ---- .pay ----
+    // Only written at all if at least one field indexes offsets (this
+    // writer never has payloads), same "no file needed" convention as
+    // `.pos`.
+    let any_offsets = inputs
+        .iter()
+        .any(|input| input.index_options.subsumes_offsets());
+    let mut pay = Vec::new();
+    if any_offsets {
+        codec_util::write_index_header(
+            &mut pay,
+            PAY_CODEC,
             DOC_VERSION_CURRENT,
             segment_id,
             segment_suffix,
@@ -426,11 +505,22 @@ pub fn write_fields(
         // shared `.pos` buffer, same convention as `doc_start_fp` above. Left
         // at `0` (never read, see `write_term_metadata`) when this field
         // doesn't index positions.
+        let index_has_offsets = input.index_options.subsumes_offsets();
         let mut pos_start_fp = vec![0u64; input.terms.len()];
+        let mut pay_start_fp = vec![0u64; input.terms.len()];
         if index_has_positions {
             for (i, t) in input.terms.iter().enumerate() {
                 pos_start_fp[i] = pos.len() as u64;
-                write_position_tail(&mut pos, &t.positions);
+                if index_has_offsets {
+                    pay_start_fp[i] = pay.len() as u64;
+                }
+                write_position_tail(
+                    &mut pos,
+                    &mut pay,
+                    &t.positions,
+                    &t.offsets,
+                    index_has_offsets,
+                );
             }
         }
 
@@ -448,6 +538,7 @@ pub fn write_fields(
                 input.terms,
                 &doc_start_fp,
                 &pos_start_fp,
+                &pay_start_fp,
                 0,
                 input.index_options,
                 index_has_positions,
@@ -470,6 +561,7 @@ pub fn write_fields(
                     group_terms,
                     &doc_start_fp[range.clone()],
                     &pos_start_fp[range.clone()],
+                    &pay_start_fp[range.clone()],
                     1, // strip the shared leading byte (it's the trie label)
                     input.index_options,
                     index_has_positions,
@@ -518,6 +610,9 @@ pub fn write_fields(
     if any_positions {
         codec_util::write_footer(&mut pos);
     }
+    if any_offsets {
+        codec_util::write_footer(&mut pay);
+    }
     codec_util::write_footer(&mut tim);
     codec_util::write_footer(&mut tip);
 
@@ -528,6 +623,7 @@ pub fn write_fields(
     Ok(Output {
         doc,
         pos,
+        pay,
         tim,
         tip,
         tmd,
@@ -580,6 +676,7 @@ fn write_tim_block(
     terms: &[TermPostings],
     doc_start_fp: &[u64],
     pos_start_fp: &[u64],
+    pay_start_fp: &[u64],
     strip_prefix_len: usize,
     index_options: IndexOptions,
     index_has_positions: bool,
@@ -620,7 +717,9 @@ fn write_tim_block(
         terms,
         doc_start_fp,
         pos_start_fp,
+        pay_start_fp,
         index_has_positions,
+        index_options.subsumes_offsets(),
     );
     tim.write_vint(meta.len() as i32);
     tim.write_bytes(&meta);
@@ -713,7 +812,10 @@ fn write_multi_children_root(tip: &mut Vec<u8>, labels: &[u8], child_fps_abs: &[
 fn validate_field(input: &FieldPostingsInput<'_>) -> Result<()> {
     if !matches!(
         input.index_options,
-        IndexOptions::Docs | IndexOptions::DocsAndFreqs | IndexOptions::DocsAndFreqsAndPositions
+        IndexOptions::Docs
+            | IndexOptions::DocsAndFreqs
+            | IndexOptions::DocsAndFreqsAndPositions
+            | IndexOptions::DocsAndFreqsAndPositionsAndOffsets
     ) {
         return Err(Error::UnsupportedIndexOptions(input.index_options));
     }
@@ -726,6 +828,7 @@ fn validate_field(input: &FieldPostingsInput<'_>) -> Result<()> {
         }
     }
     let index_has_positions = input.index_options.subsumes_positions();
+    let index_has_offsets = input.index_options.subsumes_offsets();
     for (i, t) in input.terms.iter().enumerate() {
         if t.docs.is_empty() {
             return Err(Error::EmptyPostings(i));
@@ -759,6 +862,35 @@ fn validate_field(input: &FieldPostingsInput<'_>) -> Result<()> {
                         index: i,
                         doc_index: j,
                     });
+                }
+            }
+            if index_has_offsets {
+                if t.offsets.len() != t.docs.len() {
+                    return Err(Error::MissingOffsets {
+                        index: i,
+                        doc_index: t.offsets.len(),
+                    });
+                }
+                for (j, (&(_, freq), doc_offsets)) in t.docs.iter().zip(&t.offsets).enumerate() {
+                    if doc_offsets.len() != freq as usize {
+                        return Err(Error::OffsetsFreqMismatch {
+                            index: i,
+                            doc_index: j,
+                            offsets: doc_offsets.len(),
+                            freq,
+                        });
+                    }
+                    let mut last_start_offset = 0i32;
+                    for (k, &(start_offset, end_offset)) in doc_offsets.iter().enumerate() {
+                        if start_offset < last_start_offset || end_offset < start_offset {
+                            return Err(Error::InvalidOffsets {
+                                index: i,
+                                doc_index: j,
+                                occurrence: k,
+                            });
+                        }
+                        last_start_offset = start_offset;
+                    }
                 }
             }
             let doc_freq = t.docs.len() as i64;
@@ -983,41 +1115,89 @@ fn write_tail_block(
     }
 }
 
-/// Writes one term's whole `.pos` byte range: zero or more full 256-position
-/// `PForUtil` blocks ([`write_full_position_block`]) followed by a
+/// Writes one term's whole `.pos` (and, when `has_offsets`, `.pay`) byte
+/// range: zero or more full 256-position `PForUtil` blocks
+/// ([`write_full_position_block`]/[`write_full_offset_block`]) followed by a
 /// group-varint-free vint tail for the `total_term_freq % BLOCK_SIZE`
 /// remainder — the exact write-side inverse of `crate::postings::
 /// read_positions`'s `num_full_blocks`/`tail_count` split (`has_payloads ==
-/// false`, `has_offsets == false` branch throughout: this writer never has
-/// either, see the module doc). `positions` is one `Vec<i32>` per doc
-/// (parallel to that term's `docs`), each holding the doc's absolute,
-/// ascending occurrence positions — see [`TermPostings`]'s `positions` field
-/// doc comment for the exact input shape.
+/// false` throughout: this writer never has payloads, see the module doc).
+/// `positions` is one `Vec<i32>` per doc (parallel to that term's `docs`),
+/// each holding the doc's absolute, ascending occurrence positions —
+/// see [`TermPostings`]'s `positions` field doc comment for the exact input
+/// shape. `offsets` is only consulted when `has_offsets`, in which case it
+/// must be the same shape (one `Vec<(i32, i32)>` per doc, `offsets[i].len()
+/// == positions[i].len()`) — see [`TermPostings`]'s `offsets` field doc
+/// comment.
 ///
-/// Position deltas are buffered into one flat, cross-doc sequence first
-/// (resetting to each doc's absolute first position at that doc's first
-/// occurrence, exactly like `read_positions`'s own flat `pos_deltas` before
+/// Position deltas (and, when `has_offsets`, offset start-deltas/lengths)
+/// are buffered into one flat, cross-doc sequence first (resetting to each
+/// doc's absolute first position/offset at that doc's first occurrence,
+/// exactly like `read_positions`'s own flat `pos_deltas`/`offset_*` before
 /// it re-chops the sequence by `freqs`) so that a 256-occurrence chunk
 /// spanning a doc boundary is still encoded as a single full block — matching
 /// real Lucene's own `addPosition`/`posBufferUpto == BLOCK_SIZE` flush
-/// timing, which is entirely doc-boundary-agnostic.
-fn write_position_tail(out: &mut Vec<u8>, positions: &[Vec<i32>]) {
+/// timing, which is entirely doc-boundary-agnostic
+/// (`Lucene104PostingsWriter.java:315-355`).
+fn write_position_tail(
+    pos_out: &mut Vec<u8>,
+    pay_out: &mut Vec<u8>,
+    positions: &[Vec<i32>],
+    offsets: &[Vec<(i32, i32)>],
+    has_offsets: bool,
+) {
     let mut deltas = Vec::new();
-    for doc_positions in positions {
+    let mut offset_start_deltas = Vec::new();
+    let mut offset_lengths = Vec::new();
+    for (doc_idx, doc_positions) in positions.iter().enumerate() {
         let mut prev = 0i32;
-        for &p in doc_positions {
+        let mut prev_start_offset = 0i32;
+        for (occ_idx, &p) in doc_positions.iter().enumerate() {
             deltas.push(p - prev);
             prev = p;
+            if has_offsets {
+                let (start_offset, end_offset) = offsets[doc_idx][occ_idx];
+                offset_start_deltas.push(start_offset - prev_start_offset);
+                offset_lengths.push(end_offset - start_offset);
+                prev_start_offset = start_offset;
+            }
         }
     }
 
     let mut start = 0usize;
     while deltas.len() - start >= BLOCK_SIZE as usize {
-        write_full_position_block(out, &deltas[start..start + BLOCK_SIZE as usize]);
-        start += BLOCK_SIZE as usize;
+        let end = start + BLOCK_SIZE as usize;
+        write_full_position_block(pos_out, &deltas[start..end]);
+        if has_offsets {
+            write_full_offset_block(
+                pay_out,
+                &offset_start_deltas[start..end],
+                &offset_lengths[start..end],
+            );
+        }
+        start = end;
     }
-    for &delta in &deltas[start..] {
-        out.write_vint(delta);
+
+    // Vint tail (`refillLastPositionBlock`'s write-side inverse,
+    // `Lucene104PostingsWriter.finishTerm`, `writePayloads == false` branch
+    // throughout): a plain vint position delta per occurrence, then, only
+    // when `has_offsets`, an offset start-delta/length pair whose length is
+    // only re-written when it changes from the previous occurrence's
+    // (`Lucene104PostingsWriter.java:622-632`).
+    let mut last_offset_length = -1i32; // force the first occurrence's length to be written
+    for i in start..deltas.len() {
+        pos_out.write_vint(deltas[i]);
+        if has_offsets {
+            let delta = offset_start_deltas[i];
+            let length = offset_lengths[i];
+            if length != last_offset_length {
+                pos_out.write_vint((delta << 1) | 1);
+                pos_out.write_vint(length);
+                last_offset_length = length;
+            } else {
+                pos_out.write_vint(delta << 1);
+            }
+        }
     }
 }
 
@@ -1036,35 +1216,62 @@ fn write_full_position_block(out: &mut Vec<u8>, deltas: &[i32]) {
     for_util::pfor_encode(&mut vals, out);
 }
 
+/// Writes one full 256-occurrence `.pay` offset block: two back-to-back
+/// bare `PForUtil` arrays (offset start-deltas, then offset lengths), same
+/// "no skip header at all" shape as [`write_full_position_block`] — the
+/// exact write-side inverse of `crate::postings::read_positions`'s
+/// `has_offsets` full-block branch (`Lucene104PostingsWriter.java:350-353`:
+/// `pforUtil.encode(offsetStartDeltaBuffer, payOut);
+/// pforUtil.encode(offsetLengthBuffer, payOut);`). Both slices must be
+/// exactly `BLOCK_SIZE` (256) long.
+fn write_full_offset_block(out: &mut Vec<u8>, start_deltas: &[i32], lengths: &[i32]) {
+    debug_assert_eq!(start_deltas.len(), BLOCK_SIZE as usize);
+    debug_assert_eq!(lengths.len(), BLOCK_SIZE as usize);
+    let mut starts = [0u32; for_util::BLOCK_SIZE];
+    for (v, &d) in starts.iter_mut().zip(start_deltas) {
+        *v = d as u32;
+    }
+    for_util::pfor_encode(&mut starts, out);
+    let mut lens = [0u32; for_util::BLOCK_SIZE];
+    for (v, &l) in lens.iter_mut().zip(lengths) {
+        *v = l as u32;
+    }
+    for_util::pfor_encode(&mut lens, out);
+}
+
 /// Writes every term's per-term postings metadata bytes — the write-side
 /// inverse of `crate::postings::decode_term_metadata` (restricted to this
-/// writer's own scope: no offsets/payloads, so no `payStartFP` field ever
-/// appears; `lastPosBlockOffset` is written -- always `0`, since this reader
-/// never re-derives or acts on the value, see below -- exactly when
-/// `decode_term_metadata`'s own `total_term_freq > BLOCK_SIZE` gate requires
-/// it). Always takes the bit-clear ("absolute-ish `docStartFP` delta")
-/// branch, never the zigzag-singleton-delta branch — this writer has no need
-/// for that alternate encoding's extra compactness.
+/// writer's own scope: no payloads, so `payStartFP` only ever appears when
+/// the field indexes offsets; `lastPosBlockOffset` is written -- always `0`,
+/// since this reader never re-derives or acts on the value, see below --
+/// exactly when `decode_term_metadata`'s own `total_term_freq > BLOCK_SIZE`
+/// gate requires it). Always takes the bit-clear ("absolute-ish
+/// `docStartFP` delta") branch, never the zigzag-singleton-delta branch —
+/// this writer has no need for that alternate encoding's extra compactness.
 ///
-/// `doc_start_fp`/`pos_start_fp` deltas are threaded exactly like
-/// `SegmentTermsEnumFrame.metaDataUpto`/`absolute` on the read side: the
+/// `doc_start_fp`/`pos_start_fp`/`pay_start_fp` deltas are threaded exactly
+/// like `SegmentTermsEnumFrame.metaDataUpto`/`absolute` on the read side: the
 /// first term in the (only) block decodes against `TermMetadata::EMPTY`
-/// (`doc_start_fp`/`pos_start_fp == 0`), every subsequent term against the
-/// *previous* term's already-written value — so this writer must emit the
-/// same running delta, not each term's absolute offset. Unlike
-/// `doc_start_fp`, `pos_start_fp` never has a singleton-skip special case:
-/// every term that indexes positions writes real `.pos` bytes and so always
-/// advances `pos_start_fp`, even when `docFreq == 1` pulses its `.doc`
-/// entry away.
+/// (`doc_start_fp`/`pos_start_fp`/`pay_start_fp == 0`), every subsequent term
+/// against the *previous* term's already-written value — so this writer must
+/// emit the same running delta, not each term's absolute offset. Unlike
+/// `doc_start_fp`, `pos_start_fp`/`pay_start_fp` never have a singleton-skip
+/// special case: every term that indexes positions/offsets writes real
+/// `.pos`/`.pay` bytes and so always advances them, even when `docFreq == 1`
+/// pulses its `.doc` entry away.
+#[allow(clippy::too_many_arguments)]
 fn write_term_metadata(
     out: &mut Vec<u8>,
     terms: &[TermPostings],
     doc_start_fp: &[u64],
     pos_start_fp: &[u64],
+    pay_start_fp: &[u64],
     index_has_positions: bool,
+    index_has_offsets: bool,
 ) {
     let mut base_doc_start_fp = 0u64;
     let mut base_pos_start_fp = 0u64;
+    let mut base_pay_start_fp = 0u64;
     for (i, t) in terms.iter().enumerate() {
         let doc_freq = t.docs.len();
         // Singleton terms never advance `doc_start_fp` (no `.doc` bytes are
@@ -1087,6 +1294,13 @@ fn write_term_metadata(
             let pos_delta = this_pos_fp.wrapping_sub(base_pos_start_fp);
             out.write_vlong(pos_delta as i64);
             base_pos_start_fp = this_pos_fp;
+
+            if index_has_offsets {
+                let this_pay_fp = pay_start_fp[i];
+                let pay_delta = this_pay_fp.wrapping_sub(base_pay_start_fp);
+                out.write_vlong(pay_delta as i64);
+                base_pay_start_fp = this_pay_fp;
+            }
 
             // `lastPosBlockOffset`: only present on the wire when
             // `total_term_freq > BLOCK_SIZE` (`decode_term_metadata`'s
@@ -1681,14 +1895,14 @@ mod tests {
         }];
         let input = FieldPostingsInput {
             field_number: 0,
-            index_options: IndexOptions::DocsAndFreqsAndPositionsAndOffsets,
+            index_options: IndexOptions::DocsAndCustomFreqs,
             doc_count: 1,
             terms: &terms,
         };
         assert!(matches!(
             write_single_field(&input, &SEG_ID, SUFFIX),
             Err(Error::UnsupportedIndexOptions(
-                IndexOptions::DocsAndFreqsAndPositionsAndOffsets
+                IndexOptions::DocsAndCustomFreqs
             ))
         ));
     }
@@ -1934,11 +2148,13 @@ mod tests {
                 term: b"alpha".to_vec(),
                 docs: vec![(0, 2), (3, 1)],
                 positions: vec![vec![1, 4], vec![2]],
+                offsets: Vec::new(),
             },
             TermPostings {
                 term: b"beta".to_vec(),
                 docs: vec![(1, 3)], // singleton doc, but freq == 3 occurrences
                 positions: vec![vec![0, 5, 6]],
+                offsets: Vec::new(),
             },
         ];
         let input = FieldPostingsInput {
@@ -1993,6 +2209,7 @@ mod tests {
             term: b"a".to_vec(),
             docs: vec![(0, 1)],
             positions: vec![], // no positions supplied, but index_options needs them
+            offsets: Vec::new(),
         }];
         let input = FieldPostingsInput {
             field_number: 0,
@@ -2015,6 +2232,7 @@ mod tests {
             term: b"a".to_vec(),
             docs: vec![(0, 2)],
             positions: vec![vec![1]], // only 1 position but freq == 2
+            offsets: Vec::new(),
         }];
         let input = FieldPostingsInput {
             field_number: 0,
@@ -2039,6 +2257,7 @@ mod tests {
             term: b"a".to_vec(),
             docs: vec![(0, 2)],
             positions: vec![vec![3, 3]], // duplicate, not strictly ascending
+            offsets: Vec::new(),
         }];
         let input = FieldPostingsInput {
             field_number: 0,
@@ -2083,11 +2302,13 @@ mod tests {
                 term: b"fox".to_vec(),
                 docs: vec![(0, 1), (2, 1)],
                 positions: vec![vec![3], vec![0]],
+                offsets: Vec::new(),
             },
             TermPostings {
                 term: b"rust".to_vec(), // same bytes as "title"'s term, different field
                 docs: vec![(1, 2)],
                 positions: vec![vec![0, 5]],
+                offsets: Vec::new(),
             },
         ];
         let inputs = vec![
@@ -2261,6 +2482,7 @@ mod tests {
             term: b"a".to_vec(),
             docs: vec![(0, BLOCK_SIZE)],
             positions,
+            offsets: Vec::new(),
         }];
         let input = FieldPostingsInput {
             field_number: 0,
@@ -2283,6 +2505,7 @@ mod tests {
             term: b"a".to_vec(),
             docs: (0..doc_freq).map(|i| (i, 1)).collect(),
             positions: (0..doc_freq).map(|i| vec![i]).collect(),
+            offsets: Vec::new(),
         }];
         let input = FieldPostingsInput {
             field_number: 0,
@@ -2629,6 +2852,7 @@ mod tests {
             term: term.to_vec(),
             docs,
             positions,
+            offsets: Vec::new(),
         }
     }
 
@@ -2729,6 +2953,7 @@ mod tests {
             term: b"a".to_vec(),
             docs: vec![(0, BLOCK_SIZE)],
             positions: vec![doc_positions.clone()],
+            offsets: Vec::new(),
         }];
         let input = FieldPostingsInput {
             field_number: 0,
@@ -2752,5 +2977,265 @@ mod tests {
         assert_eq!(positions.len(), 1);
         let got_positions: Vec<i32> = positions[0].iter().map(|p| p.position).collect();
         assert_eq!(got_positions, doc_positions);
+    }
+
+    /// Derives deterministic, non-uniform `(startOffset, endOffset)` pairs
+    /// from a term's already-built `positions` shape: `startOffset =
+    /// position * 10` (strictly increasing since positions are strictly
+    /// increasing within a doc, satisfying real Lucene's `startOffset >=
+    /// lastStartOffset` assertion) and a length cycling through 1/3/2/5/1 so
+    /// [`Error`]-free offset lengths aren't all identical (which would hide a
+    /// bug where the writer always took the "length unchanged" tail-encoding
+    /// branch).
+    fn offsets_from_positions(positions: &[Vec<i32>]) -> Vec<Vec<(i32, i32)>> {
+        let length_cycle = [1i32, 3, 2, 5, 1];
+        let mut cycle_idx = 0usize;
+        positions
+            .iter()
+            .map(|doc_positions| {
+                doc_positions
+                    .iter()
+                    .map(|&p| {
+                        let start = p * 10;
+                        let len = length_cycle[cycle_idx % length_cycle.len()];
+                        cycle_idx += 1;
+                        (start, start + len)
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Single position per doc, with offsets: every doc's lone occurrence
+    /// still needs a correct `startOffsetDelta`/`length` pair even though
+    /// there's only ever one occurrence to reset against per doc (no
+    /// intra-doc delta to get wrong, but the accumulator must still reset to
+    /// `0` at each new doc rather than leaking the previous doc's last
+    /// `startOffset`). Round-tripped through the existing, unmodified
+    /// `crate::postings::read_positions` (via `FieldTerms::positions`),
+    /// asserting exact `(startOffset, endOffset)` pairs, not just positions.
+    #[test]
+    fn single_position_per_doc_with_offsets_round_trips() {
+        let terms = vec![TermPostings {
+            term: b"a".to_vec(),
+            docs: vec![(0, 1), (2, 1), (5, 1)],
+            positions: vec![vec![0], vec![3], vec![7]],
+            offsets: vec![vec![(0, 4)], vec![(30, 33)], vec![(70, 77)]],
+        }];
+        let input = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqsAndPositionsAndOffsets,
+            doc_count: 3,
+            terms: &terms,
+        };
+        let output = write_single_field(&input, &SEG_ID, SUFFIX).unwrap();
+        let fis = FieldInfos {
+            fields: vec![field_info(
+                0,
+                "f",
+                IndexOptions::DocsAndFreqsAndPositionsAndOffsets,
+            )],
+        };
+        let (fields, doc_in) = open_written(&output, &fis, 6);
+        let pos_in =
+            crate::postings::PosInput::open(&output.pos, &SEG_ID, SUFFIX).expect("open .pos");
+        let pay_in =
+            crate::postings::PayInput::open(&output.pay, &SEG_ID, SUFFIX).expect("open .pay");
+        let field = fields.field("f").unwrap();
+
+        let positions = field
+            .positions(b"a", Some(&doc_in), &pos_in, Some(&pay_in))
+            .unwrap()
+            .unwrap();
+        assert_eq!(positions.len(), 3);
+        let expected = [(0, 0, 4), (3, 30, 33), (7, 70, 77)];
+        for (doc_idx, (got, &(pos, start, end))) in positions.iter().zip(&expected).enumerate() {
+            assert_eq!(got.len(), 1, "doc index {doc_idx}");
+            assert_eq!(got[0].position, pos, "doc index {doc_idx}");
+            assert_eq!(got[0].start_offset, start, "doc index {doc_idx}");
+            assert_eq!(got[0].end_offset, end, "doc index {doc_idx}");
+        }
+    }
+
+    /// Multiple positions per doc, with offsets: confirms the
+    /// `startOffsetDelta` is computed relative to the *previous occurrence in
+    /// the same doc*, not the absolute `startOffset`, and that it resets to
+    /// `0` at each new doc's first occurrence (not carried over from the
+    /// previous doc's last `startOffset`).
+    #[test]
+    fn multi_position_per_doc_with_offsets_round_trips() {
+        let terms = vec![TermPostings {
+            term: b"a".to_vec(),
+            docs: vec![(0, 3), (4, 2)],
+            positions: vec![vec![1, 4, 9], vec![0, 2]],
+            offsets: vec![vec![(5, 9), (20, 24), (45, 50)], vec![(0, 3), (10, 15)]],
+        }];
+        let input = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqsAndPositionsAndOffsets,
+            doc_count: 2,
+            terms: &terms,
+        };
+        let output = write_single_field(&input, &SEG_ID, SUFFIX).unwrap();
+        let fis = FieldInfos {
+            fields: vec![field_info(
+                0,
+                "f",
+                IndexOptions::DocsAndFreqsAndPositionsAndOffsets,
+            )],
+        };
+        let (fields, doc_in) = open_written(&output, &fis, 5);
+        let pos_in =
+            crate::postings::PosInput::open(&output.pos, &SEG_ID, SUFFIX).expect("open .pos");
+        let pay_in =
+            crate::postings::PayInput::open(&output.pay, &SEG_ID, SUFFIX).expect("open .pay");
+        let field = fields.field("f").unwrap();
+
+        let positions = field
+            .positions(b"a", Some(&doc_in), &pos_in, Some(&pay_in))
+            .unwrap()
+            .unwrap();
+        assert_eq!(positions.len(), 2);
+        let got0: Vec<(i32, i32, i32)> = positions[0]
+            .iter()
+            .map(|p| (p.position, p.start_offset, p.end_offset))
+            .collect();
+        assert_eq!(got0, vec![(1, 5, 9), (4, 20, 24), (9, 45, 50)]);
+        let got1: Vec<(i32, i32, i32)> = positions[1]
+            .iter()
+            .map(|p| (p.position, p.start_offset, p.end_offset))
+            .collect();
+        assert_eq!(got1, vec![(0, 0, 3), (2, 10, 15)]);
+    }
+
+    /// `total_term_freq` large enough to force at least one full
+    /// `PForUtil`-encoded `.pos`/`.pay` block ([`write_full_position_block`]/
+    /// [`write_full_offset_block`]), not just the vint-tail path -- proves
+    /// the full-block offset encoding round-trips exact `(startOffset,
+    /// endOffset)` pairs, including a length that changes from one
+    /// occurrence to the next inside a full block (exercising
+    /// `read_positions`'s `PForUtil`-decoded `offset_lengths` array, not the
+    /// tail's "reuse unless changed" path). Occurrences span several docs
+    /// (`docFreq` well under `BLOCK_SIZE`, so `Error::DocFreqTooLargeForPositions`
+    /// never trips) via [`irregular_positions_term`], with offsets derived by
+    /// [`offsets_from_positions`].
+    #[test]
+    fn total_term_freq_full_block_with_offsets_round_trips() {
+        let mut term = irregular_positions_term(b"a", BLOCK_SIZE + 1, 5);
+        term.offsets = offsets_from_positions(&term.positions);
+        let max_doc = term.docs.last().unwrap().0 + 1;
+        let doc_count = term.docs.len() as i32;
+        let expected_positions = term.positions.clone();
+        let expected_offsets = term.offsets.clone();
+        let terms = vec![term.clone()];
+        let input = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqsAndPositionsAndOffsets,
+            doc_count,
+            terms: &terms,
+        };
+        let output = write_single_field(&input, &SEG_ID, SUFFIX).unwrap();
+        let fis = FieldInfos {
+            fields: vec![field_info(
+                0,
+                "f",
+                IndexOptions::DocsAndFreqsAndPositionsAndOffsets,
+            )],
+        };
+        let (fields, doc_in) = open_written(&output, &fis, max_doc);
+        let pos_in =
+            crate::postings::PosInput::open(&output.pos, &SEG_ID, SUFFIX).expect("open .pos");
+        let pay_in =
+            crate::postings::PayInput::open(&output.pay, &SEG_ID, SUFFIX).expect("open .pay");
+        let field = fields.field("f").unwrap();
+
+        let positions = field
+            .positions(b"a", Some(&doc_in), &pos_in, Some(&pay_in))
+            .unwrap()
+            .unwrap();
+        assert_eq!(positions.len(), expected_positions.len());
+        for (doc_idx, (got, (expected_pos, expected_off))) in positions
+            .iter()
+            .zip(expected_positions.iter().zip(&expected_offsets))
+            .enumerate()
+        {
+            let got_positions: Vec<i32> = got.iter().map(|p| p.position).collect();
+            assert_eq!(&got_positions, expected_pos, "doc index {doc_idx}");
+            let got_offsets: Vec<(i32, i32)> =
+                got.iter().map(|p| (p.start_offset, p.end_offset)).collect();
+            assert_eq!(&got_offsets, expected_off, "doc index {doc_idx}");
+        }
+    }
+
+    #[test]
+    fn rejects_missing_offsets_when_index_options_needs_them() {
+        let terms = vec![TermPostings {
+            term: b"a".to_vec(),
+            docs: vec![(0, 1)],
+            positions: vec![vec![0]],
+            offsets: vec![], // no offsets supplied, but index_options needs them
+        }];
+        let input = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqsAndPositionsAndOffsets,
+            doc_count: 1,
+            terms: &terms,
+        };
+        assert!(matches!(
+            write_single_field(&input, &SEG_ID, SUFFIX),
+            Err(Error::MissingOffsets {
+                index: 0,
+                doc_index: 0
+            })
+        ));
+    }
+
+    #[test]
+    fn rejects_offsets_freq_mismatch() {
+        let terms = vec![TermPostings {
+            term: b"a".to_vec(),
+            docs: vec![(0, 2)],
+            positions: vec![vec![0, 1]],
+            offsets: vec![vec![(0, 1)]], // only 1 offset pair but freq == 2
+        }];
+        let input = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqsAndPositionsAndOffsets,
+            doc_count: 1,
+            terms: &terms,
+        };
+        assert!(matches!(
+            write_single_field(&input, &SEG_ID, SUFFIX),
+            Err(Error::OffsetsFreqMismatch {
+                index: 0,
+                doc_index: 0,
+                offsets: 1,
+                freq: 2,
+            })
+        ));
+    }
+
+    #[test]
+    fn rejects_invalid_offsets() {
+        let terms = vec![TermPostings {
+            term: b"a".to_vec(),
+            docs: vec![(0, 2)],
+            positions: vec![vec![0, 1]],
+            offsets: vec![vec![(5, 8), (3, 6)]], // startOffset decreases
+        }];
+        let input = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqsAndPositionsAndOffsets,
+            doc_count: 1,
+            terms: &terms,
+        };
+        assert!(matches!(
+            write_single_field(&input, &SEG_ID, SUFFIX),
+            Err(Error::InvalidOffsets {
+                index: 0,
+                doc_index: 0,
+                occurrence: 1,
+            })
+        ));
     }
 }

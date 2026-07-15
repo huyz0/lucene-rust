@@ -189,16 +189,19 @@ fn phrase_query_finds_correct_docs_over_freshly_written_positions() {
             term: b"fox".to_vec(),
             docs: vec![(0, 1), (1, 1)],
             positions: vec![vec![1], vec![2]],
+            offsets: Vec::new(),
         },
         TermPostings {
             term: b"jumps".to_vec(),
             docs: vec![(0, 1), (1, 1)],
             positions: vec![vec![2], vec![1]],
+            offsets: Vec::new(),
         },
         TermPostings {
             term: b"quick".to_vec(),
             docs: vec![(0, 1), (1, 1)],
             positions: vec![vec![0], vec![0]],
+            offsets: Vec::new(),
         },
     ];
     let input = FieldPostingsInput {
@@ -285,11 +288,13 @@ fn multi_field_segment_term_queries_are_isolated_per_field() {
             term: b"crab".to_vec(),
             docs: vec![(1, 1)],
             positions: vec![vec![1]],
+            offsets: Vec::new(),
         },
         TermPostings {
             term: b"rust".to_vec(), // same term bytes as "title", different field/postings
             docs: vec![(1, 1), (2, 2)],
             positions: vec![vec![0], vec![0, 4]],
+            offsets: Vec::new(),
         },
     ];
     let inputs = vec![

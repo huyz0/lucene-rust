@@ -909,6 +909,7 @@ impl<'d> IndexWriter<'d> {
                 // `IndexOptions::Docs`/`DocsAndFreqs` fields, so `positions`
                 // is never consulted here.
                 positions: Vec::new(),
+                offsets: Vec::new(),
             });
         }
         if terms.is_empty() {

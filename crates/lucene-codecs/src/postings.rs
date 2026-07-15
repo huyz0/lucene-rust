@@ -673,7 +673,7 @@ impl<'a> DocInput<'a> {
 /// `Lucene104PostingsFormat.POS_CODEC`.
 pub(crate) const POS_CODEC: &str = "Lucene104PostingsWriterPos";
 /// `Lucene104PostingsFormat.PAY_CODEC`.
-const PAY_CODEC: &str = "Lucene104PostingsWriterPay";
+pub(crate) const PAY_CODEC: &str = "Lucene104PostingsWriterPay";
 
 /// One decoded position occurrence — `PostingsEnum.nextPosition()` bundled
 /// with `startOffset()`/`endOffset()`/`getPayload()` for a single occurrence
