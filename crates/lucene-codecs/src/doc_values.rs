@@ -676,7 +676,7 @@ pub enum WriteError {
 pub type WriteResult<T> = std::result::Result<T, WriteError>;
 
 /// Writes just the NUMERIC entry body (`addNumericField` -> `writeValues`,
-/// the `numDocsWithValue == maxDoc` / no-table / no-blocks branches, feeding
+/// the `numDocsWithValue == maxDoc` / no-blocks branches, feeding
 /// `writeValuesSingleBlock`) into an already-open meta/data pair -- shared by
 /// [`write_single_dense_numeric_field`] (a standalone NUMERIC field) and
 /// [`write_single_dense_sorted_numeric_field`] (whose per-doc value counts
@@ -686,10 +686,12 @@ pub type WriteResult<T> = std::result::Result<T, WriteError>;
 /// already consumed by its caller.
 ///
 /// Always dense (`docsWithFieldOffset = -1`, i.e. `values[i]` is doc `i`'s
-/// value / doc `i`'s rank into a shared value array) and plain
-/// delta-compressed (`gcd = 1`, no table compression, no varying-bits-per-
-/// value blocks) -- see [`write_single_dense_numeric_field`]'s doc comment
-/// for the full scope statement, which applies here identically.
+/// value / doc `i`'s rank into a shared value array); the per-value encoding
+/// itself (plain delta, GCD-delta, or table compression) is chosen by
+/// [`write_numeric_values_body`] exactly like real Lucene -- see that
+/// function's doc comment. Varying-bits-per-value blocks are still deferred
+/// -- see [`write_single_dense_numeric_field`]'s doc comment for the full
+/// scope statement, which applies here identically.
 fn write_dense_numeric_entry_body(meta: &mut Vec<u8>, data: &mut Vec<u8>, values: &[i64]) {
     // numDocsWithValue == maxDoc: meta[-1, 0], no IndexedDISI structure.
     meta.write_i64(DOCS_WITH_FIELD_DENSE);
@@ -735,10 +737,45 @@ fn write_sparse_numeric_entry_body(
     write_numeric_values_body(meta, data, values);
 }
 
+/// Euclidean GCD of two `i64`s (matches `MathUtil.gcd`'s contract: always
+/// non-negative, `gcd(0, x) == |x|`). Computed in `i128` so the intermediate
+/// `unsigned_abs()` can never overflow even for `i64::MIN`; the result
+/// itself always fits back in `i64` since a GCD never exceeds the smaller
+/// of its two (absolute) inputs.
+fn gcd_i64(a: i64, b: i64) -> i64 {
+    let mut a = (a as i128).unsigned_abs();
+    let mut b = (b as i128).unsigned_abs();
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a as i64
+}
+
 /// Shared tail of a NUMERIC entry body -- everything after the
 /// docs-with-field header, common to both the dense and sparse shapes:
 /// `numValues`, the constant/table/GCD-delta encoding choice, and the
 /// bit-packed (or absent, for the constant case) value array itself.
+///
+/// Port of `Lucene90DocValuesConsumer.writeValues`'s encoding-choice logic
+/// (minus its `doBlocks` varying-bits-per-value split, still deferred -- see
+/// `docs/parity.md`): computes a running GCD of every value's difference
+/// from the first value (mirrors `MathUtil.gcd` accumulation, including
+/// Java's overflow guard: values outside `[i64::MIN/2, i64::MAX/2]` abandon
+/// GCD tracking for the rest of the scan rather than risk `v - firstValue`
+/// overflowing), and a `<= 256`-entry distinct-value set (abandoned, same as
+/// Java's `uniqueValues`, the moment a 257th distinct value appears). Then
+/// picks whichever of table-compression (`bitsPerValue =
+/// unsignedBitsRequired(uniqueValues.len() - 1)`) or GCD/plain-delta
+/// (`bitsPerValue = unsignedBitsRequired((max - min) / gcd)`) needs fewer
+/// bits, strictly preferring delta on a tie (`<`, not `<=`, exactly like
+/// Java) -- this also means a field whose values are already a dense
+/// contiguous ordinal range (e.g. a SORTED field's per-doc dictionary
+/// ordinals, which reuse this exact function) never accidentally picks table
+/// compression: `uniqueValues.len() - 1 == max - min` there, so the `<`
+/// comparison always favors delta, matching `Lucene90DocValuesConsumer`'s own
+/// explicit `ords ? null : new LongHashSet()` (ordinals never build a
+/// `uniqueValues` set at all; this port gets the same *outcome* without
+/// needing that special case, since the two paths tie).
 fn write_numeric_values_body(meta: &mut Vec<u8>, data: &mut Vec<u8>, values: &[i64]) {
     let num_values = values.len() as i64;
     meta.write_i64(num_values);
@@ -746,37 +783,118 @@ fn write_numeric_values_body(meta: &mut Vec<u8>, data: &mut Vec<u8>, values: &[i
     let min = values.iter().copied().min().unwrap_or(0);
     let max = values.iter().copied().max().unwrap_or(0);
 
-    let (bits_per_value, min) = if min >= max {
+    if min >= max {
         // All values equal (including the empty-values case, which can't
         // actually happen for a standalone NUMERIC field since
         // `values.len() == max_doc` and `max_doc` is a real field count, but
         // can for a SORTED_NUMERIC field's flat value array when every doc
         // has zero values -- Java's `min >= max` check covers both "all
         // equal" and "no values" the same way).
-        (0u8, min)
+        meta.write_i32(-1); // tableSize
+        meta.push(0); // bitsPerValue
+        meta.write_i64(min);
+        meta.write_i64(1); // gcd
+        let start_offset = data.len() as i64;
+        meta.write_i64(start_offset);
+        meta.write_i64(0); // valuesLength
+        meta.write_i64(-1); // valueJumpTableOffset
+        return;
+    }
+
+    // GCD of every value's offset from the first value seen.
+    let first_value = values[0];
+    let mut gcd: i64 = 0;
+    // Real Lucene's own overflow guard only checks the CURRENT value against
+    // `[MIN/2, MAX/2]`, same as below -- but Java's `long` subtraction wraps
+    // silently on overflow, while Rust's default arithmetic panics in debug
+    // builds. If `first_value` itself falls outside that safe range (e.g.
+    // `i64::MIN`) while a later value is in-range, `v - first_value` can
+    // still overflow even though the per-`v` guard passed. Using
+    // `wrapping_sub` here reproduces Java's exact (silently-wrapping, "gcd
+    // may come out numerically odd but never crashes") behavior instead of
+    // panicking -- this is a correctness-irrelevant edge case Java itself
+    // doesn't handle "correctly" either, just without a hard crash.
+    for &v in values {
+        if gcd == 1 {
+            break;
+        }
+        if !(i64::MIN / 2..=i64::MAX / 2).contains(&v) {
+            gcd = 1;
+        } else {
+            gcd = gcd_i64(gcd, v.wrapping_sub(first_value));
+        }
+    }
+    if gcd == 0 {
+        gcd = 1;
+    }
+
+    // Distinct-value set, capped at 256 entries (table compression's max
+    // table size), same as Java's `uniqueValues`.
+    let mut unique: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();
+    let mut unique_tracked = true;
+    for &v in values {
+        if !unique_tracked {
+            break;
+        }
+        unique.insert(v);
+        if unique.len() > 256 {
+            unique_tracked = false;
+        }
+    }
+
+    // Same wraparound-not-panic reasoning as the GCD loop above: `max - min`
+    // can overflow i64 for a pathological value set (e.g. min == i64::MIN),
+    // just like Java's `long` subtraction would -- wrap instead of crash.
+    let range_bits = direct_reader::unsigned_bits_required(max.wrapping_sub(min) / gcd);
+    let use_table = unique_tracked
+        && unique.len() > 1
+        && direct_reader::unsigned_bits_required(unique.len() as i64 - 1) < range_bits;
+
+    let (bits_per_value, min, gcd, table): (u8, i64, i64, Option<Vec<i64>>) = if use_table {
+        let sorted_unique: Vec<i64> = unique.into_iter().collect();
+        let bpv = direct_reader::unsigned_bits_required(sorted_unique.len() as i64 - 1);
+        (bpv, 0, 1, Some(sorted_unique))
     } else {
-        let mut bpv = direct_reader::unsigned_bits_required(max - min);
+        let mut bpv = range_bits;
         let mut min = min;
         // Java: if gcd==1 && min>0 && bits(max) == bits(max-min), drop the
         // min-shift (store raw values instead) since it doesn't save space.
-        if min > 0 && direct_reader::unsigned_bits_required(max) == bpv {
+        if gcd == 1 && min > 0 && direct_reader::unsigned_bits_required(max) == bpv {
             min = 0;
             bpv = direct_reader::unsigned_bits_required(max);
         }
-        (bpv, min)
+        (bpv, min, gcd, None)
     };
 
-    meta.write_i32(-1); // tableSize: no table compression in this slice
+    match &table {
+        Some(t) => {
+            meta.write_i32(t.len() as i32);
+            for &v in t {
+                meta.write_i64(v);
+            }
+        }
+        None => meta.write_i32(-1),
+    }
     meta.push(bits_per_value);
     meta.write_i64(min);
-    meta.write_i64(1); // gcd: always 1, no GCD compression in this slice
+    meta.write_i64(gcd);
 
     let start_offset = data.len() as i64;
     meta.write_i64(start_offset);
 
     if bits_per_value != 0 {
-        let gcd = 1i64;
-        let raw: Vec<i64> = values.iter().map(|&v| (v - min) / gcd).collect();
+        let raw: Vec<i64> = match &table {
+            Some(t) => values
+                .iter()
+                .map(|v| t.binary_search(v).expect("value must be in its own table") as i64)
+                .collect(),
+            // `v - min` for `v` in `values` is normally in `[0, max - min]`
+            // (min/max are this array's own extrema), but `wrapping_sub`
+            // keeps the same non-panicking-on-pathological-input guarantee
+            // as `range_bits`'s `max.wrapping_sub(min)` above for the same
+            // reason -- both derive from the same possibly-huge min/max.
+            None => values.iter().map(|&v| v.wrapping_sub(min) / gcd).collect(),
+        };
         let mut packed = direct_reader::encode(&raw, bits_per_value);
         packed.extend(std::iter::repeat_n(
             0u8,
@@ -836,26 +954,26 @@ fn finish_field_list_and_footers(
 }
 
 /// Port of `Lucene90DocValuesConsumer`, scoped to exactly one shape: **a
-/// single NUMERIC field, DENSE (every doc from `0` to `max_doc - 1` has a
-/// value), plain delta-compressed** (`bitsPerValue = unsignedBitsRequired(max
-/// - min)`, `gcd = 1`) -- the `numDocsWithValue == maxDoc` branch of
-/// `writeValues` followed by its `uniqueValues == null` (no table
-/// compression attempted) and `doBlocks == false` (no varying-bits-per-value
-/// blocks) branches, feeding `writeValuesSingleBlock`.
+/// single NUMERIC field, DENSE** (every doc from `0` to `max_doc - 1` has a
+/// value) -- the `numDocsWithValue == maxDoc` branch of `writeValues`,
+/// followed by its `doBlocks == false` (no varying-bits-per-value blocks)
+/// branch, feeding `writeValuesSingleBlock`. The per-value encoding itself
+/// (plain delta, GCD-delta, or table compression) is chosen by
+/// [`write_numeric_values_body`] exactly like real Lucene's own
+/// `uniqueValues`/`gcd` logic -- see that function's doc comment.
 ///
 /// Sparse NUMERIC fields are handled by the sibling
 /// [`write_single_sparse_numeric_field`], not here.
 ///
 /// Deliberately not attempted here, all deferred to future slices (see
-/// `docs/parity.md`): sparse BINARY/SORTED/SORTED_NUMERIC/SORTED_SET fields,
-/// SORTED/SORTED_SET field types (both need a terms-dictionary write side
-/// this port doesn't have yet -- see [`crate::terms_dict`]'s parity row), GCD compression, table
-/// compression, the varying-bits-per-value block split, per-field
-/// doc-values skip indexes, and multiple fields in one `.dvm`/`.dvd`/`.dvs`
-/// triple. BINARY ([`write_single_dense_binary_field`]) and SORTED_NUMERIC
-/// ([`write_single_dense_sorted_numeric_field`]) write sides now exist as
-/// siblings of this function, both built on this same dense/no-terms-dict
-/// scope.
+/// `docs/parity.md`): sparse BINARY/SORTED_NUMERIC/SORTED_SET fields, the
+/// varying-bits-per-value block split, per-field doc-values skip indexes,
+/// and multiple fields in one `.dvm`/`.dvd`/`.dvs` triple. BINARY
+/// ([`write_single_dense_binary_field`]), SORTED_NUMERIC
+/// ([`write_single_dense_sorted_numeric_field`]), SORTED
+/// ([`write_single_dense_sorted_field`]), and SORTED_SET
+/// ([`write_single_dense_sorted_set_field`]) write sides now exist as
+/// siblings of this function, all built on this same dense scope.
 ///
 /// Returns `(meta_bytes, data_bytes, skip_index_bytes)` -- three separate
 /// buffers matching the real writer's three `IndexOutput`s (`.dvm`, `.dvd`,
@@ -2373,6 +2491,163 @@ mod tests {
         let fis = field_infos_with(&[0]);
         let (_, meta) = parse_meta(&meta_bytes, &id, "", &fis).unwrap();
         let entry = meta.numeric_entry(0).unwrap();
+        for (doc, &want) in values.iter().enumerate() {
+            assert_eq!(
+                numeric_value(&data_bytes, entry, doc as i32).unwrap(),
+                Some(want)
+            );
+        }
+    }
+
+    #[test]
+    fn write_single_dense_numeric_field_uses_gcd_compression_when_a_common_divisor_exists() {
+        // 300 distinct multiples of 1000 (0, 1000, ..., 299000): more than
+        // the 256-entry table cap, so table compression is never even a
+        // candidate here (`unique_tracked` gets abandoned partway through) --
+        // this isolates the GCD path on its own. Plain delta would need
+        // unsignedBitsRequired(299000) = 19 bits; dividing out gcd=1000
+        // shrinks that to unsignedBitsRequired(299) = 9 bits, a real,
+        // measurable win.
+        let id = [20u8; ID_LENGTH];
+        let values: Vec<i64> = (0..300).map(|i| i * 1000).collect();
+        let (meta_bytes, data_bytes, _) =
+            write_single_dense_numeric_field(0, &values, values.len() as i32, &id, "").unwrap();
+
+        let fis = field_infos_with(&[0]);
+        let (_, meta) = parse_meta(&meta_bytes, &id, "", &fis).unwrap();
+        let entry = meta.numeric_entry(0).unwrap();
+
+        assert_eq!(entry.gcd, 1000);
+        assert!(entry.table.is_none());
+        let plain_delta_bits = direct_reader::unsigned_bits_required(299_000);
+        assert!(
+            entry.bits_per_value < plain_delta_bits,
+            "GCD compression should need fewer bits ({}) than plain delta ({plain_delta_bits})",
+            entry.bits_per_value
+        );
+        assert_eq!(
+            entry.bits_per_value,
+            direct_reader::unsigned_bits_required(299)
+        );
+
+        for (doc, &want) in values.iter().enumerate() {
+            assert_eq!(
+                numeric_value(&data_bytes, entry, doc as i32).unwrap(),
+                Some(want)
+            );
+        }
+    }
+
+    #[test]
+    fn write_single_dense_numeric_field_falls_back_to_plain_delta_with_no_common_gcd() {
+        // No common divisor > 1 across these five values (consecutive-ish,
+        // coprime spread) -- must fall back to gcd = 1 rather than pick some
+        // spurious divisor.
+        let id = [21u8; ID_LENGTH];
+        let values: Vec<i64> = vec![0, 1, 3, 7, 100];
+        let (meta_bytes, data_bytes, _) =
+            write_single_dense_numeric_field(0, &values, values.len() as i32, &id, "").unwrap();
+
+        let fis = field_infos_with(&[0]);
+        let (_, meta) = parse_meta(&meta_bytes, &id, "", &fis).unwrap();
+        let entry = meta.numeric_entry(0).unwrap();
+
+        assert_eq!(entry.gcd, 1);
+        for (doc, &want) in values.iter().enumerate() {
+            assert_eq!(
+                numeric_value(&data_bytes, entry, doc as i32).unwrap(),
+                Some(want)
+            );
+        }
+    }
+
+    #[test]
+    fn write_single_dense_numeric_field_gcd_computation_does_not_panic_on_extreme_first_value() {
+        // Found in review: the GCD loop's overflow guard only checked the
+        // CURRENT value against [i64::MIN/2, i64::MAX/2], never the first
+        // value itself. With first_value == i64::MIN and a later in-range
+        // value, `v - first_value` overflowed i64 and panicked in debug
+        // builds (including `cargo test`) even though the per-value guard
+        // passed. Must not panic, regardless of what gcd/encoding it picks.
+        let id = [22u8; ID_LENGTH];
+        let values: Vec<i64> = vec![i64::MIN, 0, 5, 5, 5];
+        let (meta_bytes, data_bytes, _) =
+            write_single_dense_numeric_field(0, &values, values.len() as i32, &id, "").unwrap();
+
+        let fis = field_infos_with(&[0]);
+        let (_, meta) = parse_meta(&meta_bytes, &id, "", &fis).unwrap();
+        let entry = meta.numeric_entry(0).unwrap();
+        for (doc, &want) in values.iter().enumerate() {
+            assert_eq!(
+                numeric_value(&data_bytes, entry, doc as i32).unwrap(),
+                Some(want)
+            );
+        }
+    }
+
+    #[test]
+    fn write_single_dense_numeric_field_extreme_min_does_not_panic_in_delta_encoding_path() {
+        // Same class of bug as the test above, but with >256 distinct
+        // values so table compression is ruled out (`unique.len() > 256`)
+        // and the plain-delta path's own `v - min` computation
+        // (`raw.push((v - min) / gcd)`) is what actually gets exercised --
+        // the previous test's 3-distinct-value input took the table path
+        // instead, which never reaches this line at all.
+        let id = [23u8; ID_LENGTH];
+        let mut values: Vec<i64> = vec![i64::MIN];
+        values.extend(0..300);
+        let (meta_bytes, data_bytes, _) =
+            write_single_dense_numeric_field(0, &values, values.len() as i32, &id, "").unwrap();
+
+        let fis = field_infos_with(&[0]);
+        let (_, meta) = parse_meta(&meta_bytes, &id, "", &fis).unwrap();
+        let entry = meta.numeric_entry(0).unwrap();
+        for (doc, &want) in values.iter().enumerate() {
+            assert_eq!(
+                numeric_value(&data_bytes, entry, doc as i32).unwrap(),
+                Some(want)
+            );
+        }
+    }
+
+    #[test]
+    fn write_single_dense_numeric_field_uses_table_compression_for_few_distinct_values() {
+        // Only 3 distinct values (0, 1, 1_000_000) repeated across 64 docs,
+        // with no shared GCD (0 and 1 are both present, so gcd collapses to
+        // 1): table compression needs unsignedBitsRequired(3 - 1) = 2
+        // bits/doc, while plain/GCD delta over range [0, 1_000_000] needs
+        // unsignedBitsRequired(1_000_000) = 20 bits/doc -- table wins by a
+        // wide, checkable margin.
+        let id = [22u8; ID_LENGTH];
+        let values: Vec<i64> = (0..64)
+            .map(|i| match i % 3 {
+                0 => 0,
+                1 => 1,
+                _ => 1_000_000,
+            })
+            .collect();
+        let (meta_bytes, data_bytes, _) =
+            write_single_dense_numeric_field(0, &values, values.len() as i32, &id, "").unwrap();
+
+        let fis = field_infos_with(&[0]);
+        let (_, meta) = parse_meta(&meta_bytes, &id, "", &fis).unwrap();
+        let entry = meta.numeric_entry(0).unwrap();
+
+        let table = entry.table.as_ref().expect("table compression expected");
+        assert_eq!(table, &vec![0, 1, 1_000_000]);
+        assert_eq!(entry.min_value, 0);
+        assert_eq!(entry.gcd, 1);
+        let plain_delta_bits = direct_reader::unsigned_bits_required(1_000_000);
+        assert!(
+            entry.bits_per_value < plain_delta_bits,
+            "table compression should need fewer bits ({}) than plain delta ({plain_delta_bits})",
+            entry.bits_per_value
+        );
+        assert_eq!(
+            entry.bits_per_value,
+            direct_reader::unsigned_bits_required(2)
+        );
+
         for (doc, &want) in values.iter().enumerate() {
             assert_eq!(
                 numeric_value(&data_bytes, entry, doc as i32).unwrap(),

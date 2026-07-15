@@ -4026,3 +4026,54 @@ doc comment) and an exhaustive per-doc check over hundreds of thousands of docs 
 quadratic. `cargo fmt`/`clippy -D warnings` clean; `cargo llvm-cov --fail-under-lines 95`
 passes workspace-wide (`doc_values.rs` 97.67% lines, `indexed_disi.rs` 98.74% lines); see
 `docs/parity.md`'s doc-values-write row for the parity-tracking update.
+
+**Progress (task): GCD and table compression for NUMERIC doc-values write.**
+`write_numeric_values_body` (the shared per-value-encoding tail every NUMERIC/SORTED/
+SORTED_NUMERIC/SORTED_SET write function funnels through) previously always chose plain
+delta compression (`bitsPerValue = unsignedBitsRequired(max - min)`, `gcd` hardcoded to
+`1`) -- `docs/parity.md` listed GCD and table compression as deferred. The read side
+(`read_numeric_entry`/`decode_value`) already fully decoded both: it was ported read-only
+and real-Lucene-fixture-verified in an earlier task, well before this task's write-side
+work existed, so no new reader code was needed here -- only a writer whose bytes that
+existing reader can already open. Ported `Lucene90DocValuesConsumer.writeValues`'s
+encoding-choice logic exactly (minus its `doBlocks` varying-bits-per-value split, which
+stays deferred): a running GCD of every value's offset from the first value seen,
+mirroring `MathUtil.gcd`'s accumulation including Java's own overflow guard (values
+outside `[i64::MIN/2, i64::MAX/2]` abandon GCD tracking for the rest of the scan), and a
+`<= 256`-entry distinct-value set (abandoned past that cap, matching Java's
+`uniqueValues`). Table compression wins only if it needs strictly fewer bits than
+GCD/plain-delta (`unsignedBitsRequired(uniqueValues.len() - 1) <
+unsignedBitsRequired((max - min) / gcd)`, `<` not `<=`, same tie-break as Java). The
+on-disk fields distinguishing the three modes are exactly Java's own: the `tableSize` i32
+in the meta (`-1` = no table, `>= 0` = that many `i64` table entries follow) and the `gcd`
+i64 written right after `bitsPerValue`/`min` (`1` = no GCD scaling). Since this same
+function is shared by SORTED/SORTED_SET's ordinal-array writers, a natural question was
+whether GCD/table compression could ever misfire there -- it can't: a SORTED field's
+ordinals are always the dense range `0..dict.len()-1`, which makes `uniqueValues.len() -
+1 == max - min` exactly, so the strict `<` comparison always favors plain delta, matching
+what Java's own `ords ? null : new LongHashSet()` special-case achieves by construction
+rather than by tie-break. Added a Euclidean `gcd_i64` helper (computed in `i128` so
+`unsigned_abs()` can never overflow, even for `i64::MIN`). Tests (all in
+`crates/lucene-codecs/src/doc_values.rs`):
+`write_single_dense_numeric_field_uses_gcd_compression_when_a_common_divisor_exists` (300
+distinct multiples of 1000 -- more than the 256-entry table cap, so table compression is
+never a candidate, isolating the GCD path -- confirms `gcd == 1000`, `bits_per_value`
+strictly smaller than plain delta's 19 bits, and a full round-trip through the reader);
+`write_single_dense_numeric_field_falls_back_to_plain_delta_with_no_common_gcd` (five
+values with no shared divisor, confirms `gcd == 1`);
+`write_single_dense_numeric_field_uses_table_compression_for_few_distinct_values` (3
+distinct values with no common GCD -- `0`, `1`, and `1_000_000` are all present, so `gcd`
+collapses to `1` -- repeated across 64 docs, confirming the table is chosen, `bits_per_value`
+strictly smaller than the 20 bits plain delta would need, and a full round-trip). All
+three are genuine compression-effectiveness tests (asserting the smaller bit width was
+actually chosen), not just round-trip correctness checks. **Verification level, stated
+honestly**: self-round-trip only, through this port's own existing reader -- no new
+real-Lucene fixture was added. Extending `write_doc_values_fixture.rs`/
+`VerifyDocValues.java` with an eleventh GCD-friendly segment was considered but not done
+in this task: unlike the sparse-NUMERIC follow-up noted above (a cheap addition to an
+already-running harness), doing so here would require rebuilding and rerunning the
+Gradle/JVM-based fixture generator, which is a heavier, separate step from this task's
+Rust-only change -- a reasonable, cheap follow-up, just not bundled into this task.
+`cargo fmt`/`clippy --workspace --all-targets -D warnings` clean; `cargo llvm-cov
+--workspace --fail-under-lines 95` passes workspace-wide (`doc_values.rs` 97.69% lines);
+see `docs/parity.md`'s doc-values-write row for the parity-tracking update.
