@@ -146,6 +146,24 @@ impl TopDocsCollector {
     pub fn top_docs(&self) -> &[ScoreDoc] {
         &self.hits
     }
+
+    /// Real Lucene's `Scorable.setMinCompetitiveScore`-equivalent read side —
+    /// the MAXSCORE/WAND mechanism's core value: once this collector is
+    /// holding a full `top_n` hits, no candidate below the current worst kept
+    /// hit's score (see [`rank_order`]) can possibly be kept, so that score is
+    /// the threshold a block-level skip (e.g.
+    /// `search_term_query_scored_maxscore`, via
+    /// `crate::similarity::max_score_for_impacts`) compares a block's proven
+    /// upper bound against. Returns `None` before the collector is full (every
+    /// remaining candidate still has a chance, so there is no safe threshold
+    /// yet) or when `top_n == 0`.
+    pub fn min_competitive_score(&self) -> Option<f32> {
+        if self.top_n == 0 || self.hits.len() < self.top_n {
+            None
+        } else {
+            self.hits.last().map(|h| h.score)
+        }
+    }
 }
 
 impl ScoringCollector for TopDocsCollector {

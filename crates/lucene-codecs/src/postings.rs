@@ -1609,6 +1609,21 @@ impl<'a> LazyDocsCursor<'a> {
         &self.level1_impacts
     }
 
+    /// The last (highest) doc ID covered by the level-0 block the cursor is
+    /// currently positioned in (`self.prev_doc_id`, set from `header.last_doc_id`
+    /// when a full block is decoded in [`Self::advance`] and left unchanged
+    /// while `block_pos` walks within it). Only meaningful while
+    /// [`Self::level0_impacts`] is non-empty (i.e. a real full block, not the
+    /// trailing tail block, which never updates `prev_doc_id` and always
+    /// reports empty impacts) — a caller that has proven a block's
+    /// [`Self::level0_impacts`] can't beat its threshold calls
+    /// `advance(this value + 1)` to skip straight past the rest of the block
+    /// without decoding any more of it (see `search_term_query_scored_maxscore`
+    /// in `lucene-search` for the real caller).
+    pub fn current_block_last_doc_id(&self) -> i32 {
+        self.prev_doc_id
+    }
+
     /// `PostingsEnum.nextDoc()`: moves to the next doc, returning its ID (or
     /// [`NO_MORE_DOCS`] if there isn't one). Implemented as `advance(doc_id +
     /// 1)`, saturating rather than overflowing once already at

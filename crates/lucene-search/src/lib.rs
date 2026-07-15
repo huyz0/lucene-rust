@@ -858,6 +858,180 @@ pub fn search_term_query_scored<C: ScoringCollector>(
     Ok(())
 }
 
+/// MAXSCORE-style sibling of [`search_term_query_scored`], scoped narrowly and
+/// honestly: single `TermQuery`, [`collector::TopDocsCollector`] only (the
+/// only collector this crate has that exposes a min-competitive-score
+/// threshold, via [`collector::TopDocsCollector::min_competitive_score`]).
+/// Streams the term's postings through
+/// [`lucene_codecs::postings::LazyDocsCursor`] instead of eagerly
+/// materializing every block via [`DocInput::read_postings`] (the path
+/// [`term_doc_scores`]/[`search_term_query_scored`] use): once the collector
+/// is holding a full top-`n` (`min_competitive_score()` returns `Some`), a
+/// level-0 block whose [`similarity::max_score_for_impacts`] upper bound
+/// can't beat that threshold is skipped whole — `advance()`d straight past
+/// its last doc without ever running `ForUtil`/`PForUtil` decode on it — the
+/// same proof-of-safety this crate's `assert_block_pruning_matches_brute_force`
+/// test harness (`similarity.rs`) already established for the bound in
+/// isolation, now wired into a real collector loop.
+///
+/// Falls back to calling [`search_term_query_scored`] verbatim whenever the
+/// fast path isn't available — no `.doc` file opened (`doc_in == None`),
+/// `docFreq <= 1` (no `.doc` bytes are even written for a singleton term, so
+/// there's nothing to stream lazily), or an index option
+/// [`lucene_codecs::postings::LazyDocsCursor`] doesn't support
+/// (`IndexOptions::DocsAndCustomFreqs`) — so this function never produces a
+/// result the eager path wouldn't already produce on its own; the skip is
+/// purely a performance path, not a matching-semantics change. Verified
+/// identical to [`search_term_query_scored`] for many `top_n`/term-frequency
+/// combinations, including ones that exercise real block skipping, by
+/// `search_term_query_scored_maxscore_matches_eager_path` below.
+pub fn search_term_query_scored_maxscore(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    query: &TermQuery,
+    norms: Option<&FieldNorms<'_>>,
+    collector: &mut collector::TopDocsCollector,
+) -> Result<()> {
+    let Some(field_terms) = fields.field(&query.field) else {
+        return Ok(());
+    };
+    let Some(stats) = field_terms.seek_exact(&query.term) else {
+        return Ok(());
+    };
+    let Some(doc_in) = doc_in else {
+        return search_term_query_scored(fields, None, live_docs, query, norms, collector);
+    };
+    if stats.doc_freq <= 1 {
+        return search_term_query_scored(fields, Some(doc_in), live_docs, query, norms, collector);
+    }
+    let mut cursor = match field_terms.lazy_postings(&query.term, doc_in) {
+        Ok(Some(c)) => c,
+        Ok(None) => return Ok(()),
+        Err(blocktree::Error::Postings(lucene_codecs::postings::Error::Unsupported(_))) => {
+            return search_term_query_scored(
+                fields,
+                Some(doc_in),
+                live_docs,
+                query,
+                norms,
+                collector,
+            );
+        }
+        Err(e) => return Err(e.into()),
+    };
+
+    let doc_freq = stats.doc_freq as i64;
+    let doc_count = field_terms.doc_count as i64;
+    let avg_field_length = match norms {
+        Some(fn_) => fn_.avg_field_length,
+        None => similarity::UNNORMED_FIELD_LENGTH,
+    };
+
+    let mut doc_id = cursor.next_doc().map_err(blocktree::Error::from)?;
+    while doc_id != lucene_codecs::postings::NO_MORE_DOCS {
+        if let Some(threshold) = collector.min_competitive_score() {
+            let impacts = cursor.level0_impacts();
+            if !impacts.is_empty() {
+                // When `norms` is `None`, every doc is actually scored below
+                // with `field_length == UNNORMED_FIELD_LENGTH ==
+                // avg_field_length` (the length-norm term collapses to
+                // 1.0), NOT with whatever real per-doc norm byte this
+                // block's impacts happen to carry on the wire. Feeding
+                // `max_score_for_impacts` the real wire norms here would
+                // compute a bound for a *different* scoring formula than the
+                // one actually used below -- an unsound mix that can
+                // underestimate the bound and skip a doc that should have
+                // been collected (see `similarity::decode_norm`: any real
+                // norm byte decoding to a field length > 1.0 inflates the
+                // bound's denominator, making it too low relative to the
+                // UNNORMED_FIELD_LENGTH score actually computed downstream).
+                let bound = match norms {
+                    Some(_) => similarity::max_score_for_impacts(
+                        impacts,
+                        doc_freq,
+                        doc_count,
+                        avg_field_length,
+                    ),
+                    None => {
+                        let idf = similarity::idf(doc_freq, doc_count);
+                        impacts
+                            .iter()
+                            .map(|impact| {
+                                idf * similarity::tf_norm(
+                                    impact.freq as f32,
+                                    similarity::UNNORMED_FIELD_LENGTH,
+                                    similarity::UNNORMED_FIELD_LENGTH,
+                                    similarity::DEFAULT_K1,
+                                    similarity::DEFAULT_B,
+                                )
+                            })
+                            .fold(0.0f32, f32::max)
+                    }
+                };
+                if bound <= threshold {
+                    #[cfg(test)]
+                    test_only_maxscore_block_skip_counter::record_skip();
+                    let skip_to = cursor.current_block_last_doc_id().saturating_add(1);
+                    doc_id = cursor.advance(skip_to).map_err(blocktree::Error::from)?;
+                    continue;
+                }
+            }
+        }
+
+        if live_docs.is_none_or(|bits| bits.get(doc_id as usize)) {
+            let freq = cursor.freq().expect("cursor started, doc_id in range");
+            let field_length = match norms {
+                Some(fn_) => fn_.field_length(doc_id)?,
+                None => similarity::UNNORMED_FIELD_LENGTH,
+            };
+            let score = similarity::score(
+                doc_freq,
+                doc_count,
+                freq as f32,
+                field_length,
+                avg_field_length,
+            );
+            collector.collect(doc_id, score);
+        }
+        doc_id = cursor.next_doc().map_err(blocktree::Error::from)?;
+    }
+    Ok(())
+}
+
+/// Test-only instrumentation for [`search_term_query_scored_maxscore`]'s
+/// block-skip branch: a thread-local counter, incremented once per whole
+/// level-0 block actually skipped (i.e. `advance()`d past without decoding),
+/// so a differential test can assert real skipping happened rather than only
+/// asserting the (necessarily identical) end result — a test could otherwise
+/// pass vacuously if the skip branch were dead code. Never compiled into a
+/// non-test build (`#[cfg(test)]` both here and at the increment site in
+/// [`search_term_query_scored_maxscore`]).
+#[cfg(test)]
+mod test_only_maxscore_block_skip_counter {
+    use std::cell::Cell;
+
+    thread_local! {
+        static SKIPPED_BLOCKS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub(crate) fn record_skip() {
+        SKIPPED_BLOCKS.with(|c| c.set(c.get() + 1));
+    }
+
+    /// Resets the counter to 0 -- call before a test's search, then
+    /// [`take`] after to read how many blocks that search skipped.
+    pub(crate) fn reset() {
+        SKIPPED_BLOCKS.with(|c| c.set(0));
+    }
+
+    /// Reads (without resetting) the number of blocks skipped since the last
+    /// [`reset`].
+    pub(crate) fn count() -> usize {
+        SKIPPED_BLOCKS.with(|c| c.get())
+    }
+}
+
 /// Recursive per-clause `(doc_id -> score)` contribution, the scored sibling of
 /// [`resolve_clause_docs`] used by [`search_boolean_query_scored`]:
 ///
@@ -4466,5 +4640,249 @@ mod tests {
                 .unwrap();
             assert_eq!(score, inner_constant * boost);
         }
+    }
+
+    /// Differential proof for [`search_term_query_scored_maxscore`], against
+    /// the checked-in real-Lucene fixture's `big`/`"everywhere"` term
+    /// (`docFreq == 300`: one full 256-doc level-0 block with real,
+    /// Java-written impacts -- `field.big.term.everywhere.impacts.results` in
+    /// `manifest.properties` -- plus a 44-doc tail; see
+    /// `crates/lucene-codecs/tests/blocktree_fixtures.rs`'s
+    /// `big_field_impacts_match_real_lucene_impacts_enum`, which already
+    /// proves those decoded impacts match real Lucene byte-for-byte). Opens
+    /// this field's *real* per-doc norms (`_0.nvd`/`_0.nvm`) rather than
+    /// passing `norms: None` -- deliberately, because the impacts'
+    /// `(freq, norm)` bound is only a valid upper bound against the score
+    /// formula that actually consumes those same real norm bytes; comparing
+    /// it against the unrelated `UNNORMED_FIELD_LENGTH` fallback score
+    /// instead would not be a documented approximation but an unproven (and
+    /// in general unsound) mix, so this test doesn't exercise that
+    /// combination.
+    ///
+    /// For several `top_n` values asserts:
+    /// - [`search_term_query_scored_maxscore`]'s `TopDocsCollector::top_docs()`
+    ///   is *exactly* [`search_term_query_scored`] (the eager path)'s, proving
+    ///   the skip never changes the result;
+    /// - for small `top_n` (1, 5, 50), at least one real block-skip actually
+    ///   happened (via `test_only_maxscore_block_skip_counter`, reset/read
+    ///   around each call) -- ruling out a vacuously-passing test where the
+    ///   skip branch is simply never taken. Every doc in this fixture's block
+    ///   is one of only four distinct `(freq, norm)` combinations, cycling
+    ///   `1,2,3,4,1,2,3,...`, so the single best-scoring combination is
+    ///   reached within the first few docs and the whole rest of the block
+    ///   (a few hundred docs) becomes safely skippable from there on;
+    /// - for `top_n = 300` (the full `docFreq`: every doc must eventually be
+    ///   collected, so the collector is never "full" until after the very
+    ///   last doc), the skip count is 0 -- proving the threshold check itself
+    ///   is conservative, not "sometimes skips, still happens to match".
+    #[test]
+    fn maxscore_lazy_path_matches_eager_path_on_real_fixture_and_actually_skips_blocks() {
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+
+        // Open real per-doc norms for "big" (see this test's doc comment for
+        // why `norms: None` wouldn't be a sound comparison here).
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/data/blocktree_index/"
+        );
+        let manifest = std::fs::read_to_string(format!("{dir}manifest.properties"))
+            .expect("run fixtures generator first (GenBlockTree)");
+        let get = |key: &str| -> String {
+            manifest
+                .lines()
+                .find_map(|l| l.strip_prefix(&format!("{key}=")))
+                .unwrap_or_else(|| panic!("manifest key {key} missing"))
+                .to_string()
+        };
+        let id_hex = get("id_hex");
+        let mut id = [0u8; 16];
+        for (i, slot) in id.iter_mut().enumerate() {
+            *slot = u8::from_str_radix(&id_hex[i * 2..i * 2 + 2], 16).unwrap();
+        }
+        let max_doc: i32 = get("max_doc").parse().unwrap();
+        let fnm = std::fs::read(format!("{dir}{}.raw", get("fnm_file_name"))).expect("read .fnm");
+        let field_infos = lucene_codecs::field_infos::parse(&fnm, &id, "").expect("parse .fnm");
+        let big_field_number = field_infos
+            .fields
+            .iter()
+            .find(|f| f.name == "big")
+            .expect("fixture has a \"big\" field")
+            .number;
+
+        let nvm = std::fs::read(format!("{dir}_0.nvm")).expect("read _0.nvm");
+        let nvd = std::fs::read(format!("{dir}_0.nvd")).expect("read _0.nvd");
+        let (_, parsed_norms) =
+            lucene_codecs::norms::parse_meta(&nvm, &id, "").expect("parse .nvm");
+        let entry = *parsed_norms
+            .entry(big_field_number)
+            .expect("\"big\" field has a norms entry");
+        let norms = FieldNorms::open(&nvd, entry, max_doc, None).expect("FieldNorms::open");
+
+        let query = TermQuery::new("big", b"everywhere".as_slice());
+
+        for &top_n in &[1usize, 5, 50, 300] {
+            let mut eager = TopDocsCollector::new(top_n);
+            search_term_query_scored(
+                &fields,
+                Some(&doc_in),
+                None,
+                &query,
+                Some(&norms),
+                &mut eager,
+            )
+            .expect("eager search");
+
+            test_only_maxscore_block_skip_counter::reset();
+            let mut lazy = TopDocsCollector::new(top_n);
+            search_term_query_scored_maxscore(
+                &fields,
+                Some(&doc_in),
+                None,
+                &query,
+                Some(&norms),
+                &mut lazy,
+            )
+            .expect("maxscore search");
+            let skips = test_only_maxscore_block_skip_counter::count();
+
+            assert_eq!(
+                eager.top_docs(),
+                lazy.top_docs(),
+                "top_{top_n} must match exactly between eager and maxscore paths"
+            );
+
+            if top_n < 300 {
+                assert!(
+                    skips > 0,
+                    "top_{top_n} should reach the block's best-scoring combination \
+                     within its first few docs, making the rest of the block \
+                     (out of docFreq 300) safely skippable (got {skips} skips)"
+                );
+            } else {
+                assert_eq!(
+                    skips, 0,
+                    "top_{top_n} == the full docFreq: the collector is never full \
+                     until the very last doc, so nothing should be skippable \
+                     (got {skips} skips)"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn maxscore_returns_immediately_for_unknown_field_or_term() {
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+
+        let mut c = TopDocsCollector::new(5);
+        search_term_query_scored_maxscore(
+            &fields,
+            Some(&doc_in),
+            None,
+            &TermQuery::new("nonexistent_field", "x"),
+            None,
+            &mut c,
+        )
+        .unwrap();
+        assert!(c.top_docs().is_empty());
+
+        let mut c = TopDocsCollector::new(5);
+        search_term_query_scored_maxscore(
+            &fields,
+            Some(&doc_in),
+            None,
+            &TermQuery::new("body", "no_such_term_anywhere"),
+            None,
+            &mut c,
+        )
+        .unwrap();
+        assert!(c.top_docs().is_empty());
+    }
+
+    #[test]
+    fn maxscore_falls_back_to_eager_path_when_doc_in_is_none() {
+        // `body` is a multi-doc field/term, so both the eager and maxscore
+        // paths require `.doc` bytes -- confirms the `doc_in == None`
+        // fallback branch produces the same (error) outcome as calling the
+        // eager path directly, rather than panicking or silently succeeding.
+        let (fields, _doc) = open_fixture();
+        let query = TermQuery::new("body", "cat");
+
+        let mut eager = TopDocsCollector::new(5);
+        let eager_result = search_term_query_scored(&fields, None, None, &query, None, &mut eager);
+
+        let mut lazy = TopDocsCollector::new(5);
+        let lazy_result =
+            search_term_query_scored_maxscore(&fields, None, None, &query, None, &mut lazy);
+
+        assert_eq!(eager_result.is_err(), lazy_result.is_err());
+        if eager_result.is_ok() {
+            assert_eq!(eager.top_docs(), lazy.top_docs());
+        }
+    }
+
+    #[test]
+    fn maxscore_falls_back_to_eager_path_for_a_singleton_docfreq_one_term() {
+        // "id"/"id2" is a `docFreq == 1` singleton (pulsed into the term
+        // dictionary, no `.doc` bytes at all) -- exercises the `doc_freq <=
+        // 1` fallback branch specifically, distinct from the `doc_in ==
+        // None` branch above (here `doc_in` is `Some`).
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+        let query = TermQuery::new("id", "id2");
+
+        let mut eager = TopDocsCollector::new(5);
+        search_term_query_scored(&fields, Some(&doc_in), None, &query, None, &mut eager).unwrap();
+
+        test_only_maxscore_block_skip_counter::reset();
+        let mut lazy = TopDocsCollector::new(5);
+        search_term_query_scored_maxscore(&fields, Some(&doc_in), None, &query, None, &mut lazy)
+            .unwrap();
+
+        assert_eq!(eager.top_docs(), lazy.top_docs());
+        assert_eq!(
+            test_only_maxscore_block_skip_counter::count(),
+            0,
+            "a singleton term has no blocks to skip"
+        );
+    }
+
+    #[test]
+    fn maxscore_falls_back_to_unnormed_field_length_when_norms_is_none() {
+        // Confirms the `norms: None` -> `UNNORMED_FIELD_LENGTH` branch is
+        // exercised, that skipping actually happens (not vacuously passing
+        // because nothing gets pruned), and -- the specific bug this test
+        // caught during review -- that the block-skip bound is computed
+        // against the *same* `UNNORMED_FIELD_LENGTH` scoring formula the
+        // real per-doc score below uses, not against the field's real
+        // on-wire norm bytes (which would be an unsound mix: this fixture's
+        // "big"/"everywhere" impacts were written against real per-doc
+        // norms, so blindly feeding them into `max_score_for_impacts` while
+        // scoring downstream with `UNNORMED_FIELD_LENGTH` produced an
+        // under-estimated bound that could -- and did -- skip a block
+        // containing a doc that belonged in the top-K).
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+        let query = TermQuery::new("big", b"everywhere".as_slice());
+
+        let mut eager = TopDocsCollector::new(5);
+        search_term_query_scored(&fields, Some(&doc_in), None, &query, None, &mut eager).unwrap();
+
+        test_only_maxscore_block_skip_counter::reset();
+        let mut lazy = TopDocsCollector::new(5);
+        search_term_query_scored_maxscore(&fields, Some(&doc_in), None, &query, None, &mut lazy)
+            .unwrap();
+
+        assert_eq!(eager.top_docs(), lazy.top_docs());
+        assert!(
+            test_only_maxscore_block_skip_counter::count() > 0,
+            "this fixture's docFreq (300) spans more than one level-0 block, \
+             so some block should be skippable once the top-5 threshold is reached"
+        );
     }
 }
