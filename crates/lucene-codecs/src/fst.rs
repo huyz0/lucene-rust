@@ -313,6 +313,30 @@ fn bit_table_next_bit_set(bit_index: i32, arc: &Arc, r: &mut BytesReader) -> Res
     Ok(i.trailing_zeros() as i32 + (byte_index << 3))
 }
 
+/// `BitTableUtil.previousBitSet`, pre-positioned via `arc.bit_table_start`:
+/// the index of the next set bit strictly *before* `bit_index`, or `-1` if
+/// none. Needed by `FstEnum`'s `seek_floor` support (`FSTEnum`'s
+/// `findNextFloorArcDirectAddressing`/`doSeekFloorArrayDirectAddressing`) --
+/// `bit_table_next_bit_set`'s mirror-image counterpart.
+fn bit_table_previous_bit_set(bit_index: i32, arc: &Arc, r: &mut BytesReader) -> Result<i32> {
+    debug_assert_eq!(arc.node_flags, ARCS_FOR_DIRECT_ADDRESSING);
+    debug_assert!(bit_index >= 0);
+    r.set_position(arc.bit_table_start);
+    let mut byte_index = bit_index >> 3;
+    r.skip_bytes(byte_index as i64);
+    let mask = (1i32 << (bit_index & 7)) - 1;
+    let mut i = (r.read_byte()? as i32) & mask;
+    while i == 0 {
+        if byte_index == 0 {
+            return Ok(-1);
+        }
+        byte_index -= 1;
+        r.skip_bytes(-2);
+        i = r.read_byte()? as i32;
+    }
+    Ok(31 - i.leading_zeros() as i32 + (byte_index << 3))
+}
+
 /// `ByteSequenceOutputs.add`: concatenate prefix output with an arc's own
 /// output.
 fn output_add(prefix: &[u8], output: &[u8]) -> Vec<u8> {
@@ -911,19 +935,40 @@ impl<'a> Fst<'a> {
     /// `ARCS_FOR_BINARY_SEARCH`, `ARCS_FOR_DIRECT_ADDRESSING` and
     /// `ARCS_FOR_CONTINUOUS` nodes.
     ///
-    /// Note: real Lucene's `findTargetArc` also accepts `label_to_match ==
-    /// END_LABEL` (used by `FSTEnum`/enumeration consumers to re-derive the
-    /// "fake" accepting arc). `Util.get`'s loop -- the only caller here --
-    /// never does that: it calls this once per actual key byte and then
-    /// checks `arc.is_final()` directly (see `Fst::get`), so that branch
-    /// is omitted as unreachable dead code in this slice's scope.
-    /// `label_to_match` is therefore always a real byte value (0..=255).
+    /// `label_to_match == END_LABEL` is also supported (needed by
+    /// `FstEnum::do_seek_exact`, which -- like real `FSTEnum.doSeekExact` --
+    /// re-derives the "fake" accepting arc this way once the target key's
+    /// bytes are exhausted): re-synthesizes the same synthetic arc
+    /// `read_first_target_arc` would insert, without touching `r` at all.
+    /// `Fst::get`'s loop never does this (it calls this once per actual key
+    /// byte and then checks `arc.is_final()` directly instead), so for that
+    /// caller `label_to_match` is always a real byte value (0..=255).
     fn find_target_arc(
         &self,
         label_to_match: i32,
         follow: &Arc,
         r: &mut BytesReader,
     ) -> Result<Option<Arc>> {
+        if label_to_match == END_LABEL {
+            return Ok(if follow.is_final() {
+                let mut arc = Arc {
+                    label: END_LABEL,
+                    output: follow.next_final_output().to_vec(),
+                    ..Default::default()
+                };
+                if follow.target() <= 0 {
+                    arc.flags = BIT_LAST_ARC;
+                } else {
+                    // NOTE: next_arc is a node (not an address!) in this case.
+                    arc.flags = 0;
+                    arc.next_arc = follow.target();
+                }
+                arc.node_flags = arc.flags;
+                Some(arc)
+            } else {
+                None
+            });
+        }
         debug_assert!((0..=255).contains(&label_to_match));
         if !target_has_arcs(follow) {
             return Ok(None);
@@ -971,6 +1016,281 @@ impl<'a> Fst<'a> {
                 arc.flags = r.read_byte()?;
             }
         }
+    }
+
+    // --- Seek support helpers (`FSTEnum`'s array/direct/continuous "read
+    // arc N", "read last arc" and "peek next label" primitives) -----------
+    //
+    // These are additional per-arc random-access primitives `find_target_arc`
+    // and the ordered-enumeration methods above never needed (they either
+    // jump straight to one matched arc and stop, or only ever advance
+    // forward one arc at a time): reading an arbitrary arc by index within a
+    // fixed-length-arc node, reading a node's *last* arc directly (without
+    // scanning through every arc first), and peeking at the label of the
+    // arc following the current one without mutating it. `FstEnum`'s
+    // `seek_ceil`/`seek_floor`/`seek_exact` (below) are built on top of
+    // these plus the existing `find_target_arc`/`read_first_real_target_arc`/
+    // `read_next_real_arc`.
+
+    /// `FST.readArcByIndex`: read the arc at (0-based) slot `idx` of an
+    /// `ARCS_FOR_BINARY_SEARCH` node -- `arc` must already carry that node's
+    /// header fields (`pos_arcs_start`/`bytes_per_arc`/`node_flags`), as set
+    /// up by `find_target_arc_binary_search`/`read_first_real_target_arc`/
+    /// `find_arc_binary_search`.
+    fn read_arc_by_index(&self, arc: &mut Arc, r: &mut BytesReader, idx: i32) -> Result<()> {
+        debug_assert!(arc.bytes_per_arc > 0);
+        debug_assert_eq!(arc.node_flags, ARCS_FOR_BINARY_SEARCH);
+        debug_assert!(idx >= 0 && idx < arc.num_arcs);
+        r.set_position(arc.pos_arcs_start - idx as i64 * arc.bytes_per_arc as i64);
+        arc.arc_idx = idx;
+        arc.flags = r.read_byte()?;
+        self.read_arc(arc, r)
+    }
+
+    /// `FST.readArcByContinuous`: read the arc at (0-based) range-index
+    /// `range_index` of an `ARCS_FOR_CONTINUOUS` node.
+    fn read_arc_by_continuous(
+        &self,
+        arc: &mut Arc,
+        r: &mut BytesReader,
+        range_index: i32,
+    ) -> Result<()> {
+        debug_assert!(range_index >= 0 && range_index < arc.num_arcs);
+        r.set_position(arc.pos_arcs_start - range_index as i64 * arc.bytes_per_arc as i64);
+        arc.arc_idx = range_index;
+        arc.flags = r.read_byte()?;
+        self.read_arc(arc, r)
+    }
+
+    /// `FST.readLastArcByDirectAddressing`: read an `ARCS_FOR_DIRECT_ADDRESSING`
+    /// node's last (highest-labeled) present arc directly, without scanning
+    /// through the whole bit-table arc by arc.
+    fn read_last_arc_by_direct_addressing(&self, arc: &mut Arc, r: &mut BytesReader) -> Result<()> {
+        let presence_index = bit_table_count_bits(arc, r)? - 1;
+        let range_index = arc.num_arcs - 1;
+        self.read_arc_by_direct_addressing(arc, r, range_index, presence_index)
+    }
+
+    /// `FST.readLastArcByContinuous`: read an `ARCS_FOR_CONTINUOUS` node's
+    /// last arc.
+    fn read_last_arc_by_continuous(&self, arc: &mut Arc, r: &mut BytesReader) -> Result<()> {
+        let range_index = arc.num_arcs - 1;
+        self.read_arc_by_continuous(arc, r, range_index)
+    }
+
+    /// `FST.readLastTargetArc`: follow `follow` and read the *last* arc of
+    /// its target node (as opposed to `read_first_real_target_arc`'s first
+    /// arc) -- needed by `FstEnum::push_last`, `seek_floor`'s "beyond the
+    /// last arc of this range" cases.
+    fn read_last_target_arc(&self, follow: &Arc, r: &mut BytesReader) -> Result<Arc> {
+        if !target_has_arcs(follow) {
+            debug_assert!(follow.is_final());
+            return Ok(Arc {
+                label: END_LABEL,
+                target: FINAL_END_NODE,
+                output: follow.next_final_output().to_vec(),
+                flags: BIT_LAST_ARC,
+                node_flags: BIT_LAST_ARC,
+                ..Default::default()
+            });
+        }
+
+        r.set_position(follow.target());
+        let flags = r.read_byte()?;
+        let mut arc = Arc {
+            node_flags: flags,
+            ..Default::default()
+        };
+        if flags == ARCS_FOR_BINARY_SEARCH
+            || flags == ARCS_FOR_DIRECT_ADDRESSING
+            || flags == ARCS_FOR_CONTINUOUS
+        {
+            arc.num_arcs = r.read_vint()?;
+            arc.bytes_per_arc = r.read_vint()?;
+            if flags == ARCS_FOR_DIRECT_ADDRESSING {
+                self.read_presence_bytes(&mut arc, r)?;
+                arc.first_label = self.read_label(r)?;
+                arc.pos_arcs_start = r.get_position();
+                self.read_last_arc_by_direct_addressing(&mut arc, r)?;
+            } else if flags == ARCS_FOR_BINARY_SEARCH {
+                arc.arc_idx = arc.num_arcs - 2;
+                arc.pos_arcs_start = r.get_position();
+                self.read_next_real_arc(&mut arc, r)?;
+            } else {
+                arc.first_label = self.read_label(r)?;
+                arc.pos_arcs_start = r.get_position();
+                self.read_last_arc_by_continuous(&mut arc, r)?;
+            }
+        } else {
+            arc.flags = flags;
+            arc.bytes_per_arc = 0;
+            while !flag(arc.flags, BIT_LAST_ARC) {
+                self.read_label(r)?;
+                if flag(arc.flags, BIT_ARC_HAS_OUTPUT) {
+                    r.skip_output()?;
+                }
+                if flag(arc.flags, BIT_ARC_HAS_FINAL_OUTPUT) {
+                    r.skip_output()?;
+                }
+                if !flag(arc.flags, BIT_STOP_NODE) && !flag(arc.flags, BIT_TARGET_NEXT) {
+                    r.read_vlong()?;
+                }
+                arc.flags = r.read_byte()?;
+            }
+            // Undo the flags byte just read.
+            r.skip_bytes(-1);
+            arc.next_arc = r.get_position();
+            self.read_next_real_arc(&mut arc, r)?;
+        }
+        debug_assert!(arc.is_last());
+        Ok(arc)
+    }
+
+    /// `FST.readNextArcLabel`: peek at the label of the arc immediately
+    /// following `arc` (which must not be the node's last arc) without
+    /// mutating `arc` itself.
+    fn read_next_arc_label(&self, arc: &Arc, r: &mut BytesReader) -> Result<i32> {
+        debug_assert!(!arc.is_last());
+        if arc.label == END_LABEL {
+            r.set_position(arc.next_arc);
+            let flags = r.read_byte()?;
+            if flags == ARCS_FOR_BINARY_SEARCH
+                || flags == ARCS_FOR_DIRECT_ADDRESSING
+                || flags == ARCS_FOR_CONTINUOUS
+            {
+                let num_arcs = r.read_vint()?;
+                r.read_vint()?; // bytes_per_arc, unused here.
+                if flags == ARCS_FOR_BINARY_SEARCH {
+                    r.read_byte()?; // Skip the arc's own flags byte.
+                } else if flags == ARCS_FOR_DIRECT_ADDRESSING {
+                    r.skip_bytes(num_presence_bytes(num_arcs) as i64);
+                }
+            }
+        } else {
+            match arc.node_flags {
+                ARCS_FOR_BINARY_SEARCH => {
+                    r.set_position(
+                        arc.pos_arcs_start
+                            - (1 + arc.arc_idx) as i64 * arc.bytes_per_arc as i64
+                            - 1,
+                    );
+                }
+                ARCS_FOR_DIRECT_ADDRESSING => {
+                    let next_index = bit_table_next_bit_set(arc.arc_idx, arc, r)?;
+                    debug_assert!(next_index != -1);
+                    return Ok(arc.first_label + next_index);
+                }
+                ARCS_FOR_CONTINUOUS => {
+                    return Ok(arc.first_label + arc.arc_idx + 1);
+                }
+                _ => {
+                    debug_assert_eq!(arc.bytes_per_arc, 0);
+                    r.set_position(arc.next_arc - 1);
+                }
+            }
+        }
+        self.read_label(r)
+    }
+
+    /// `Util.binarySearch`: binary search an `ARCS_FOR_BINARY_SEARCH` node's
+    /// arcs for `target_label`, starting from `arc.arc_idx` (usually `0`, but
+    /// `find_next_floor_arc_binary_search` resumes from a nonzero index).
+    /// Returns the matching slot index if found, else `-1 - insertion_point`
+    /// (matching `Collections.binarySearch`'s / `Util.binarySearch`'s own
+    /// negative-encoding convention).
+    fn find_arc_binary_search(
+        &self,
+        arc: &Arc,
+        target_label: i32,
+        r: &mut BytesReader,
+    ) -> Result<i32> {
+        debug_assert_eq!(arc.node_flags, ARCS_FOR_BINARY_SEARCH);
+        let mut low = arc.arc_idx;
+        let mut high = arc.num_arcs - 1;
+        while low <= high {
+            let mid = (low + high) >> 1;
+            r.set_position(arc.pos_arcs_start);
+            r.skip_bytes(arc.bytes_per_arc as i64 * mid as i64 + 1);
+            let mid_label = self.read_label(r)?;
+            match mid_label.cmp(&target_label) {
+                std::cmp::Ordering::Less => low = mid + 1,
+                std::cmp::Ordering::Greater => high = mid - 1,
+                std::cmp::Ordering::Equal => return Ok(mid),
+            }
+        }
+        Ok(-1 - low)
+    }
+
+    /// `FSTEnum.findNextFloorArcBinarySearch`: given `arc` positioned at its
+    /// node's first arc, find and read the arc whose label is strictly less
+    /// than `target_label` (skipping the first arc, which has already been
+    /// read and is used as-is if it's already the floor arc).
+    fn find_next_floor_arc_binary_search(
+        &self,
+        arc: &mut Arc,
+        target_label: i32,
+        r: &mut BytesReader,
+    ) -> Result<()> {
+        debug_assert_eq!(arc.node_flags, ARCS_FOR_BINARY_SEARCH);
+        debug_assert_eq!(arc.arc_idx, 0);
+        if arc.num_arcs > 1 {
+            let idx = self.find_arc_binary_search(arc, target_label, r)?;
+            debug_assert!(idx != -1);
+            if idx > 1 {
+                self.read_arc_by_index(arc, r, idx - 1)?;
+            } else if idx < -2 {
+                self.read_arc_by_index(arc, r, -2 - idx)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// `FSTEnum.findNextFloorArcDirectAddressing`: direct-addressing analogue
+    /// of `find_next_floor_arc_binary_search`.
+    fn find_next_floor_arc_direct_addressing(
+        &self,
+        arc: &mut Arc,
+        target_label: i32,
+        r: &mut BytesReader,
+    ) -> Result<()> {
+        debug_assert_eq!(arc.node_flags, ARCS_FOR_DIRECT_ADDRESSING);
+        debug_assert_eq!(arc.label, arc.first_label);
+        if arc.num_arcs > 1 {
+            let target_index = target_label - arc.first_label;
+            debug_assert!(target_index >= 0);
+            if target_index >= arc.num_arcs {
+                self.read_last_arc_by_direct_addressing(arc, r)?;
+            } else {
+                let floor_index = bit_table_previous_bit_set(target_index, arc, r)?;
+                if floor_index > 0 {
+                    let presence_index = bit_table_count_bits_up_to(floor_index, arc, r)?;
+                    self.read_arc_by_direct_addressing(arc, r, floor_index, presence_index)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// `FSTEnum.findNextFloorArcContinuous`: continuous-node analogue of
+    /// `find_next_floor_arc_binary_search`.
+    fn find_next_floor_arc_continuous(
+        &self,
+        arc: &mut Arc,
+        target_label: i32,
+        r: &mut BytesReader,
+    ) -> Result<()> {
+        debug_assert_eq!(arc.node_flags, ARCS_FOR_CONTINUOUS);
+        debug_assert_eq!(arc.label, arc.first_label);
+        if arc.num_arcs > 1 {
+            let target_index = target_label - arc.first_label;
+            debug_assert!(target_index >= 0);
+            if target_index >= arc.num_arcs {
+                self.read_last_arc_by_continuous(arc, r)?;
+            } else {
+                self.read_arc_by_continuous(arc, r, target_index - 1)?;
+            }
+        }
+        Ok(())
     }
 
     // --- Ordered enumeration (`BytesRefFSTEnum`) --------------------------
@@ -1156,6 +1476,25 @@ impl<'a> Fst<'a> {
             Ok(None)
         }
     }
+
+    /// Port of `BytesRefFSTEnum.seekExact`: look up `key` and return its
+    /// accumulated output if the FST accepts it, else `None`.
+    ///
+    /// This legitimately delegates to `Fst::get` rather than re-implementing
+    /// an independent arc-by-arc descent: `get` *is* that descent (walk one
+    /// arc per key byte via `find_target_arc`, never a linear scan over the
+    /// FST's full contents), which is exactly what real `FSTEnum.doSeekExact`
+    /// does too (its main loop is `fst.findTargetArc(targetLabel, arc,
+    /// getArc(upto), fstReader)` called once per key byte) -- the only
+    /// difference is `doSeekExact` additionally maintains `FSTEnum`'s
+    /// persistent per-depth arc/output stack so a subsequent `next()` can
+    /// resume enumeration from where the seek landed, which this
+    /// non-iterator convenience method has no need for. See
+    /// `FstEnum::seek_exact` for the stateful, stack-maintaining equivalent
+    /// used when seeking is followed by continued enumeration.
+    pub fn seek_exact(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        self.get(key)
+    }
 }
 
 /// Port of `BytesRefFSTEnum`, restricted to a full forward walk (real
@@ -1200,6 +1539,15 @@ pub struct FstEnum<'f, 'a> {
     /// restarting from the first key. `upto` alone can't distinguish these
     /// two states: both leave it at `0`.
     done: bool,
+    /// `BytesRefFSTEnum.target`: the key most recently passed to
+    /// `seek_ceil`/`seek_floor`/`seek_exact`, byte-indexed from `0` (unlike
+    /// `labels`, which is 1-indexed by depth) -- empty/unused until the
+    /// first seek call.
+    target: Vec<u8>,
+    /// `FSTEnum.targetLength`: `target.len()`, cached since `get_target_label`
+    /// (`BytesRefFSTEnum.getTargetLabel`) is called once per arc visited
+    /// during a seek.
+    target_length: usize,
 }
 
 impl<'f, 'a> FstEnum<'f, 'a> {
@@ -1212,6 +1560,8 @@ impl<'f, 'a> FstEnum<'f, 'a> {
             labels: vec![0u8],
             upto: 0,
             done: false,
+            target: Vec::new(),
+            target_length: 0,
         }
     }
 
@@ -1254,6 +1604,569 @@ impl<'f, 'a> FstEnum<'f, 'a> {
             self.set_arc(self.upto, next);
         }
         Ok(())
+    }
+
+    /// `FSTEnum.pushLast`: from `self.arcs[self.upto]`, repeatedly descend
+    /// via `read_last_target_arc` until landing on an accepting (synthetic
+    /// `END_LABEL`) arc -- the largest-keyed accepted descendant of the node
+    /// `self.upto` started at. `push_first`'s mirror image, needed by
+    /// `seek_floor`'s "target falls strictly between two sibling arcs, or
+    /// past the last one" cases.
+    fn push_last(&mut self) -> Result<()> {
+        loop {
+            let arc = self.arcs[self.upto].clone();
+            self.set_label(self.upto, arc.label() as u8);
+            let cum_output = output_add(&self.outputs[self.upto - 1], arc.output());
+            self.set_output(self.upto, cum_output);
+            if arc.label() == END_LABEL {
+                break;
+            }
+            self.upto += 1;
+            let next = self.fst.read_last_target_arc(&arc, &mut self.r)?;
+            self.set_arc(self.upto, next);
+        }
+        Ok(())
+    }
+
+    // --- getTargetLabel/getCurrentLabel/setCurrentLabel/incr -------------
+
+    /// `BytesRefFSTEnum.getTargetLabel`.
+    fn get_target_label(&self) -> i32 {
+        if self.upto - 1 == self.target_length {
+            END_LABEL
+        } else {
+            self.target[self.upto - 1] as i32
+        }
+    }
+
+    /// `BytesRefFSTEnum.getCurrentLabel`.
+    fn get_current_label(&self) -> i32 {
+        self.labels[self.upto] as i32
+    }
+
+    /// `FSTEnum.rewindPrefix`: rewind `self.upto` back to the end of the
+    /// shared prefix between the enum's current position and `self.target`,
+    /// so `do_seek_ceil`/`do_seek_floor`/`do_seek_exact`'s main loops only
+    /// need to (re)walk the target's differing suffix.
+    fn rewind_prefix(&mut self) -> Result<()> {
+        if self.upto == 0 {
+            let root = self.arcs[0].clone();
+            if !root.is_final() && !target_has_arcs(&root) {
+                // Degenerate FST that accepts no keys at all (see the same
+                // guard in `advance`) -- leave `self.upto` at `0` so the
+                // seek drivers below treat this as "nothing to find" without
+                // dereferencing a nonexistent node.
+                return Ok(());
+            }
+            self.upto = 1;
+            let first = self.fst.read_first_target_arc(&root, &mut self.r)?;
+            self.set_arc(1, first);
+            return Ok(());
+        }
+
+        let current_limit = self.upto;
+        self.upto = 1;
+        while self.upto < current_limit && self.upto <= self.target_length + 1 {
+            let cmp = self.get_current_label() - self.get_target_label();
+            if cmp < 0 {
+                // Seek forward: the shared prefix ends here.
+                break;
+            } else if cmp > 0 {
+                // Seek backwards -- reset this arc to the first arc of its
+                // parent node.
+                let parent = self.arcs[self.upto - 1].clone();
+                let first = self.fst.read_first_target_arc(&parent, &mut self.r)?;
+                self.set_arc(self.upto, first);
+                break;
+            }
+            self.upto += 1;
+        }
+        Ok(())
+    }
+
+    /// `FSTEnum.rollbackToLastForkThenPush`: the current node's label range
+    /// is exhausted with no ceiling arc found -- back up depth by depth
+    /// until a node with an unvisited next-sibling arc is found, take that
+    /// sibling, then `push_first` from there (the smallest-keyed accepted
+    /// descendant of that sibling). If no such node exists (`self.upto`
+    /// reaches `0`), there is no key `>=` the target anywhere in the FST.
+    fn rollback_to_last_fork_then_push(&mut self) -> Result<()> {
+        if self.upto == 0 {
+            return Ok(());
+        }
+        self.upto -= 1;
+        loop {
+            if self.upto == 0 {
+                return Ok(());
+            }
+            let prev = self.arcs[self.upto].clone();
+            if !prev.is_last() {
+                let next = self.fst.read_next_arc(&prev, &mut self.r)?;
+                self.set_arc(self.upto, next);
+                self.push_first()?;
+                return Ok(());
+            }
+            self.upto -= 1;
+        }
+    }
+
+    /// `FSTEnum.backtrackToFloorArc`: backtracks until it finds a node whose
+    /// first arc is before the (possibly-updated, after backing up a level)
+    /// target label, then on that node finds the arc just before the target
+    /// label and `push_last`s from there. If `self.upto` reaches `0`, there
+    /// is no key `<=` the target anywhere in the FST.
+    fn backtrack_to_floor_arc(&mut self) -> Result<()> {
+        loop {
+            let target_label = self.get_target_label();
+            let parent = self.arcs[self.upto - 1].clone();
+            let mut arc = self.fst.read_first_target_arc(&parent, &mut self.r)?;
+            if arc.label() < target_label {
+                if !arc.is_last() {
+                    if arc.bytes_per_arc != 0 && arc.label() != END_LABEL {
+                        match arc.node_flags {
+                            ARCS_FOR_BINARY_SEARCH => self.fst.find_next_floor_arc_binary_search(
+                                &mut arc,
+                                target_label,
+                                &mut self.r,
+                            )?,
+                            ARCS_FOR_DIRECT_ADDRESSING => {
+                                self.fst.find_next_floor_arc_direct_addressing(
+                                    &mut arc,
+                                    target_label,
+                                    &mut self.r,
+                                )?
+                            }
+                            _ => {
+                                debug_assert_eq!(arc.node_flags, ARCS_FOR_CONTINUOUS);
+                                self.fst.find_next_floor_arc_continuous(
+                                    &mut arc,
+                                    target_label,
+                                    &mut self.r,
+                                )?
+                            }
+                        }
+                    } else {
+                        while !arc.is_last()
+                            && self.fst.read_next_arc_label(&arc, &mut self.r)? < target_label
+                        {
+                            arc = self.fst.read_next_arc(&arc, &mut self.r)?;
+                        }
+                    }
+                }
+                self.set_arc(self.upto, arc);
+                self.push_last()?;
+                return Ok(());
+            }
+            self.upto -= 1;
+            if self.upto == 0 {
+                return Ok(());
+            }
+        }
+    }
+
+    /// Shared tail of every "found an exact match at this depth" branch
+    /// across `seek_ceil`'s/`seek_exact`'s per-encoding helpers: records the
+    /// matched arc/output, then either stops (if it's the synthetic
+    /// `END_LABEL` acceptance arc) or descends one level and continues the
+    /// seek loop from the newly matched arc's target's first arc.
+    fn finish_seek_match(&mut self, arc: Arc, target_label: i32) -> Result<bool> {
+        let cum_output = output_add(&self.outputs[self.upto - 1], arc.output());
+        self.set_output(self.upto, cum_output);
+        self.set_arc(self.upto, arc.clone());
+        if target_label == END_LABEL {
+            return Ok(false);
+        }
+        self.set_label(self.upto, arc.label() as u8);
+        self.upto += 1;
+        let next = self.fst.read_first_target_arc(&arc, &mut self.r)?;
+        self.set_arc(self.upto, next);
+        Ok(true)
+    }
+
+    /// Shared tail of every "ceiling arc found, but past an exact match" seek
+    /// branch: record `arc` then `push_first` from it.
+    fn finish_seek_push_first(&mut self, arc: Arc) -> Result<()> {
+        self.set_arc(self.upto, arc);
+        self.push_first()
+    }
+
+    /// Shared tail of every "floor arc found, but before an exact match" seek
+    /// branch: record `arc` then `push_last` from it.
+    fn finish_seek_push_last(&mut self, arc: Arc) -> Result<()> {
+        self.set_arc(self.upto, arc);
+        self.push_last()
+    }
+
+    // --- doSeekCeil ---------------------------------------------------------
+
+    fn seek_ceil_list(&mut self, target_label: i32) -> Result<bool> {
+        let arc = self.arcs[self.upto].clone();
+        if arc.label() == target_label {
+            self.finish_seek_match(arc, target_label)
+        } else if arc.label() > target_label {
+            self.finish_seek_push_first(arc)?;
+            Ok(false)
+        } else if arc.is_last() {
+            self.rollback_to_last_fork_then_push()?;
+            Ok(false)
+        } else {
+            let next = self.fst.read_next_arc(&arc, &mut self.r)?;
+            self.set_arc(self.upto, next);
+            Ok(true)
+        }
+    }
+
+    fn seek_ceil_binary_search(&mut self, target_label: i32) -> Result<bool> {
+        let mut arc = self.arcs[self.upto].clone();
+        let idx = self
+            .fst
+            .find_arc_binary_search(&arc, target_label, &mut self.r)?;
+        if idx >= 0 {
+            self.fst.read_arc_by_index(&mut arc, &mut self.r, idx)?;
+            self.finish_seek_match(arc, target_label)
+        } else {
+            let idx = -1 - idx;
+            if idx == arc.num_arcs {
+                // Dead end: target is after the last arc.
+                self.fst.read_arc_by_index(&mut arc, &mut self.r, idx - 1)?;
+                debug_assert!(arc.is_last());
+                self.rollback_to_last_fork_then_push()?;
+            } else {
+                self.fst.read_arc_by_index(&mut arc, &mut self.r, idx)?;
+                self.finish_seek_push_first(arc)?;
+            }
+            Ok(false)
+        }
+    }
+
+    fn seek_ceil_direct_addressing(&mut self, target_label: i32) -> Result<bool> {
+        let mut arc = self.arcs[self.upto].clone();
+        let target_index = target_label - arc.first_label;
+        if target_index >= arc.num_arcs {
+            self.rollback_to_last_fork_then_push()?;
+            Ok(false)
+        } else {
+            let clamped_index = if target_index < 0 { -1 } else { target_index };
+            if clamped_index >= 0 && bit_table_is_bit_set(clamped_index, &arc, &mut self.r)? {
+                let presence_index = bit_table_count_bits_up_to(clamped_index, &arc, &mut self.r)?;
+                self.fst.read_arc_by_direct_addressing(
+                    &mut arc,
+                    &mut self.r,
+                    clamped_index,
+                    presence_index,
+                )?;
+                self.finish_seek_match(arc, target_label)
+            } else {
+                let ceil_index = bit_table_next_bit_set(clamped_index, &arc, &mut self.r)?;
+                debug_assert!(ceil_index != -1);
+                let presence_index = bit_table_count_bits_up_to(ceil_index, &arc, &mut self.r)?;
+                self.fst.read_arc_by_direct_addressing(
+                    &mut arc,
+                    &mut self.r,
+                    ceil_index,
+                    presence_index,
+                )?;
+                self.finish_seek_push_first(arc)?;
+                Ok(false)
+            }
+        }
+    }
+
+    fn seek_ceil_continuous(&mut self, target_label: i32) -> Result<bool> {
+        let mut arc = self.arcs[self.upto].clone();
+        let target_index = target_label - arc.first_label;
+        if target_index >= arc.num_arcs {
+            self.rollback_to_last_fork_then_push()?;
+            Ok(false)
+        } else if target_index < 0 {
+            self.fst.read_arc_by_continuous(&mut arc, &mut self.r, 0)?;
+            debug_assert!(arc.label() > target_label);
+            self.finish_seek_push_first(arc)?;
+            Ok(false)
+        } else {
+            self.fst
+                .read_arc_by_continuous(&mut arc, &mut self.r, target_index)?;
+            self.finish_seek_match(arc, target_label)
+        }
+    }
+
+    /// `FSTEnum.doSeekCeil`: seeks to the smallest accepted key `>=`
+    /// `self.target`.
+    fn do_seek_ceil(&mut self) -> Result<()> {
+        self.rewind_prefix()?;
+        if self.upto == 0 {
+            // Degenerate, key-less FST -- see `rewind_prefix`'s guard.
+            return Ok(());
+        }
+        loop {
+            let target_label = self.get_target_label();
+            let arc = self.arcs[self.upto].clone();
+            let keep_going = if arc.bytes_per_arc != 0 && arc.label() != END_LABEL {
+                match arc.node_flags {
+                    ARCS_FOR_DIRECT_ADDRESSING => self.seek_ceil_direct_addressing(target_label)?,
+                    ARCS_FOR_BINARY_SEARCH => self.seek_ceil_binary_search(target_label)?,
+                    _ => {
+                        debug_assert_eq!(arc.node_flags, ARCS_FOR_CONTINUOUS);
+                        self.seek_ceil_continuous(target_label)?
+                    }
+                }
+            } else {
+                self.seek_ceil_list(target_label)?
+            };
+            if !keep_going {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    // --- doSeekFloor --------------------------------------------------------
+
+    fn seek_floor_list(&mut self, target_label: i32) -> Result<bool> {
+        let arc = self.arcs[self.upto].clone();
+        if arc.label() == target_label {
+            self.finish_seek_match(arc, target_label)
+        } else if arc.label() > target_label {
+            self.seek_floor_list_backtrack()?;
+            Ok(false)
+        } else if !arc.is_last() {
+            if self.fst.read_next_arc_label(&arc, &mut self.r)? > target_label {
+                self.finish_seek_push_last(arc)?;
+                Ok(false)
+            } else {
+                let next = self.fst.read_next_arc(&arc, &mut self.r)?;
+                self.set_arc(self.upto, next);
+                Ok(true)
+            }
+        } else {
+            self.finish_seek_push_last(arc)?;
+            Ok(false)
+        }
+    }
+
+    /// `doSeekFloorList`'s own inline backward walk (distinct from
+    /// `backtrack_to_floor_arc`, which the array-encoding seek-floor variants
+    /// use): correct for a rewound node of *any* encoding since it drives
+    /// entirely through the generic `read_next_arc`/`read_next_arc_label`
+    /// dispatchers rather than an encoding-specific fast path -- just
+    /// potentially slower.
+    fn seek_floor_list_backtrack(&mut self) -> Result<()> {
+        loop {
+            let target_label = self.get_target_label();
+            let parent = self.arcs[self.upto - 1].clone();
+            let mut arc = self.fst.read_first_target_arc(&parent, &mut self.r)?;
+            if arc.label() < target_label {
+                while !arc.is_last()
+                    && self.fst.read_next_arc_label(&arc, &mut self.r)? < target_label
+                {
+                    arc = self.fst.read_next_arc(&arc, &mut self.r)?;
+                }
+                self.set_arc(self.upto, arc);
+                self.push_last()?;
+                return Ok(());
+            }
+            self.upto -= 1;
+            if self.upto == 0 {
+                return Ok(());
+            }
+        }
+    }
+
+    fn seek_floor_binary_search(&mut self, target_label: i32) -> Result<bool> {
+        let mut arc = self.arcs[self.upto].clone();
+        let idx = self
+            .fst
+            .find_arc_binary_search(&arc, target_label, &mut self.r)?;
+        if idx >= 0 {
+            self.fst.read_arc_by_index(&mut arc, &mut self.r, idx)?;
+            self.finish_seek_match(arc, target_label)
+        } else if idx == -1 {
+            self.backtrack_to_floor_arc()?;
+            Ok(false)
+        } else {
+            self.fst
+                .read_arc_by_index(&mut arc, &mut self.r, -2 - idx)?;
+            self.finish_seek_push_last(arc)?;
+            Ok(false)
+        }
+    }
+
+    fn seek_floor_direct_addressing(&mut self, target_label: i32) -> Result<bool> {
+        let mut arc = self.arcs[self.upto].clone();
+        let target_index = target_label - arc.first_label;
+        if target_index < 0 {
+            self.backtrack_to_floor_arc()?;
+            Ok(false)
+        } else if target_index >= arc.num_arcs {
+            self.fst
+                .read_last_arc_by_direct_addressing(&mut arc, &mut self.r)?;
+            self.finish_seek_push_last(arc)?;
+            Ok(false)
+        } else if bit_table_is_bit_set(target_index, &arc, &mut self.r)? {
+            let presence_index = bit_table_count_bits_up_to(target_index, &arc, &mut self.r)?;
+            self.fst.read_arc_by_direct_addressing(
+                &mut arc,
+                &mut self.r,
+                target_index,
+                presence_index,
+            )?;
+            self.finish_seek_match(arc, target_label)
+        } else {
+            let floor_index = bit_table_previous_bit_set(target_index, &arc, &mut self.r)?;
+            let presence_index = bit_table_count_bits_up_to(floor_index, &arc, &mut self.r)?;
+            self.fst.read_arc_by_direct_addressing(
+                &mut arc,
+                &mut self.r,
+                floor_index,
+                presence_index,
+            )?;
+            self.finish_seek_push_last(arc)?;
+            Ok(false)
+        }
+    }
+
+    fn seek_floor_continuous(&mut self, target_label: i32) -> Result<bool> {
+        let mut arc = self.arcs[self.upto].clone();
+        let target_index = target_label - arc.first_label;
+        if target_index < 0 {
+            self.backtrack_to_floor_arc()?;
+            Ok(false)
+        } else if target_index >= arc.num_arcs {
+            self.fst
+                .read_last_arc_by_continuous(&mut arc, &mut self.r)?;
+            self.finish_seek_push_last(arc)?;
+            Ok(false)
+        } else {
+            self.fst
+                .read_arc_by_continuous(&mut arc, &mut self.r, target_index)?;
+            self.finish_seek_match(arc, target_label)
+        }
+    }
+
+    /// `FSTEnum.doSeekFloor`: seeks to the largest accepted key `<=`
+    /// `self.target`.
+    fn do_seek_floor(&mut self) -> Result<()> {
+        self.rewind_prefix()?;
+        if self.upto == 0 {
+            // Degenerate, key-less FST -- see `rewind_prefix`'s guard.
+            return Ok(());
+        }
+        loop {
+            let target_label = self.get_target_label();
+            let arc = self.arcs[self.upto].clone();
+            let keep_going = if arc.bytes_per_arc != 0 && arc.label() != END_LABEL {
+                match arc.node_flags {
+                    ARCS_FOR_DIRECT_ADDRESSING => {
+                        self.seek_floor_direct_addressing(target_label)?
+                    }
+                    ARCS_FOR_BINARY_SEARCH => self.seek_floor_binary_search(target_label)?,
+                    _ => {
+                        debug_assert_eq!(arc.node_flags, ARCS_FOR_CONTINUOUS);
+                        self.seek_floor_continuous(target_label)?
+                    }
+                }
+            } else {
+                self.seek_floor_list(target_label)?
+            };
+            if !keep_going {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    // --- doSeekExact ---------------------------------------------------------
+
+    /// `FSTEnum.doSeekExact`: seeks to exactly `self.target`, returning
+    /// whether it was found -- unlike `seek_ceil`/`seek_floor`, short-circuits
+    /// as soon as a byte fails to match rather than continuing to search for
+    /// a nearby key.
+    fn do_seek_exact(&mut self) -> Result<bool> {
+        self.rewind_prefix()?;
+        if self.upto == 0 {
+            // Degenerate, key-less FST -- see `rewind_prefix`'s guard.
+            return Ok(false);
+        }
+        let mut arc = self.arcs[self.upto - 1].clone();
+        let mut target_label = self.get_target_label();
+        loop {
+            match self.fst.find_target_arc(target_label, &arc, &mut self.r)? {
+                None => {
+                    let first = self.fst.read_first_target_arc(&arc, &mut self.r)?;
+                    self.set_arc(self.upto, first);
+                    return Ok(false);
+                }
+                Some(next_arc) => {
+                    self.set_arc(self.upto, next_arc.clone());
+                    let cum_output = output_add(&self.outputs[self.upto - 1], next_arc.output());
+                    self.set_output(self.upto, cum_output);
+                    if target_label == END_LABEL {
+                        return Ok(true);
+                    }
+                    self.set_label(self.upto, target_label as u8);
+                    self.upto += 1;
+                    target_label = self.get_target_label();
+                    arc = next_arc;
+                }
+            }
+        }
+    }
+
+    /// Reads out `(key, output)` at the enum's current position, or `None`
+    /// if the last seek found nothing (`self.upto == 0`) -- shared tail of
+    /// `seek_ceil`/`seek_floor` (`BytesRefFSTEnum.setResult`).
+    fn current_result(&self) -> Option<(Vec<u8>, Vec<u8>)> {
+        if self.upto == 0 {
+            None
+        } else {
+            Some((
+                self.labels[1..self.upto].to_vec(),
+                self.outputs[self.upto].clone(),
+            ))
+        }
+    }
+
+    /// Port of `BytesRefFSTEnum.seekCeil`: seeks to the smallest accepted
+    /// key `>=` `target`, returning `(key, output)` if one exists.
+    pub fn seek_ceil(&mut self, target: &[u8]) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
+        self.target = target.to_vec();
+        self.target_length = target.len();
+        self.do_seek_ceil()?;
+        let result = self.current_result();
+        self.done = result.is_none();
+        Ok(result)
+    }
+
+    /// Port of `BytesRefFSTEnum.seekFloor`: seeks to the largest accepted key
+    /// `<=` `target`, returning `(key, output)` if one exists.
+    pub fn seek_floor(&mut self, target: &[u8]) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
+        self.target = target.to_vec();
+        self.target_length = target.len();
+        self.do_seek_floor()?;
+        let result = self.current_result();
+        self.done = result.is_none();
+        Ok(result)
+    }
+
+    /// Port of `BytesRefFSTEnum.seekExact`: seeks to exactly `target`,
+    /// returning `(target, output)` if the FST accepts it, else `None` --
+    /// short-circuits as soon as a byte fails to match, unlike
+    /// `seek_ceil`/`seek_floor`. Unlike `Fst::seek_exact` (a stateless
+    /// convenience wrapper around `Fst::get`), this maintains `FstEnum`'s
+    /// per-depth arc/output stack so a subsequent `next()` call can resume
+    /// ordered enumeration from the found key.
+    pub fn seek_exact(&mut self, target: &[u8]) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
+        self.target = target.to_vec();
+        self.target_length = target.len();
+        let found = self.do_seek_exact()?;
+        if found {
+            let result = self.current_result();
+            self.done = result.is_none();
+            Ok(result)
+        } else {
+            self.done = true;
+            Ok(None)
+        }
     }
 
     /// `FSTEnum.doNext` + `BytesRefFSTEnum.setResult`: advance to the next
@@ -2849,5 +3762,236 @@ mod tests {
         let (bytes, start) = build_single_key_fst(b"x", b"1");
         let fst = fst_from_body(bytes, start, InputType::Byte2, None);
         assert!(matches!(fst.iter(), Err(Error::Unsupported(_))));
+    }
+
+    // --- Seek support (`seek_exact`/`seek_ceil`/`seek_floor`) --------------
+    //
+    // These exercise the hand-built, list-encoded seven-key fixture already
+    // used above -- `tests/fst_seek_fixtures.rs` covers the same operations
+    // against real, Lucene-written fixtures spanning all four node encodings
+    // (list, binary search, direct addressing, continuous).
+
+    #[test]
+    fn fst_seek_exact_on_present_and_absent_keys() {
+        let fst = build_fst(&seven_key_fixture()).unwrap();
+        assert_eq!(fst.seek_exact(b"app").unwrap(), Some(b"1".to_vec()));
+        assert_eq!(fst.seek_exact(b"bandana").unwrap(), Some(b"6".to_vec()));
+        assert_eq!(fst.seek_exact(b"appl").unwrap(), None);
+        assert_eq!(fst.seek_exact(b"missing").unwrap(), None);
+
+        let mut e = fst.iter().unwrap();
+        assert_eq!(
+            e.seek_exact(b"z").unwrap(),
+            Some((b"z".to_vec(), b"7".to_vec()))
+        );
+        assert_eq!(e.seek_exact(b"appl").unwrap(), None);
+    }
+
+    #[test]
+    fn fst_enum_seek_ceil_lands_between_two_keys() {
+        let fst = build_fst(&seven_key_fixture()).unwrap();
+        let mut e = fst.iter().unwrap();
+        // "appl" sits strictly between "app" and "apple".
+        assert_eq!(
+            e.seek_ceil(b"appl").unwrap(),
+            Some((b"apple".to_vec(), b"2".to_vec()))
+        );
+        // "ban" sits strictly between "bandana"'s prefix and "banana".
+        assert_eq!(
+            e.seek_ceil(b"ban").unwrap(),
+            Some((b"banana".to_vec(), b"4".to_vec()))
+        );
+    }
+
+    #[test]
+    fn fst_enum_seek_ceil_before_first_key_finds_first_key() {
+        let fst = build_fst(&seven_key_fixture()).unwrap();
+        let mut e = fst.iter().unwrap();
+        assert_eq!(
+            e.seek_ceil(b"").unwrap(),
+            Some((b"app".to_vec(), b"1".to_vec()))
+        );
+        assert_eq!(
+            e.seek_ceil(b"AAA").unwrap(),
+            Some((b"app".to_vec(), b"1".to_vec()))
+        );
+    }
+
+    #[test]
+    fn fst_enum_seek_ceil_past_last_key_finds_nothing() {
+        let fst = build_fst(&seven_key_fixture()).unwrap();
+        let mut e = fst.iter().unwrap();
+        assert_eq!(e.seek_ceil(b"zz").unwrap(), None);
+        assert_eq!(e.seek_ceil(b"zzzzzzzzzz").unwrap(), None);
+    }
+
+    #[test]
+    fn fst_enum_seek_ceil_on_exact_key_returns_it() {
+        let fst = build_fst(&seven_key_fixture()).unwrap();
+        let mut e = fst.iter().unwrap();
+        assert_eq!(
+            e.seek_ceil(b"banana").unwrap(),
+            Some((b"banana".to_vec(), b"4".to_vec()))
+        );
+    }
+
+    #[test]
+    fn fst_enum_seek_floor_lands_between_two_keys() {
+        let fst = build_fst(&seven_key_fixture()).unwrap();
+        let mut e = fst.iter().unwrap();
+        assert_eq!(
+            e.seek_floor(b"appl").unwrap(),
+            Some((b"app".to_vec(), b"1".to_vec()))
+        );
+        assert_eq!(
+            e.seek_floor(b"bane").unwrap(),
+            Some((b"bandana".to_vec(), b"6".to_vec()))
+        );
+    }
+
+    #[test]
+    fn fst_enum_seek_floor_past_last_key_finds_last_key() {
+        let fst = build_fst(&seven_key_fixture()).unwrap();
+        let mut e = fst.iter().unwrap();
+        assert_eq!(
+            e.seek_floor(b"zzzzzzzzzz").unwrap(),
+            Some((b"z".to_vec(), b"7".to_vec()))
+        );
+    }
+
+    #[test]
+    fn fst_enum_seek_floor_before_first_key_finds_nothing() {
+        let fst = build_fst(&seven_key_fixture()).unwrap();
+        let mut e = fst.iter().unwrap();
+        assert_eq!(e.seek_floor(b"").unwrap(), None);
+        assert_eq!(e.seek_floor(b"AAA").unwrap(), None);
+    }
+
+    #[test]
+    fn fst_enum_seek_floor_on_exact_key_returns_it() {
+        let fst = build_fst(&seven_key_fixture()).unwrap();
+        let mut e = fst.iter().unwrap();
+        assert_eq!(
+            e.seek_floor(b"band").unwrap(),
+            Some((b"band".to_vec(), b"5".to_vec()))
+        );
+    }
+
+    #[test]
+    fn fst_enum_sequential_seeks_forward_and_backward_use_rewind_prefix() {
+        // Exercises `rewind_prefix`'s forward (cmp<0) and backward (cmp>0)
+        // branches across successive seeks on the same `FstEnum`, not just a
+        // single fresh seek from the start.
+        let fst = build_fst(&seven_key_fixture()).unwrap();
+        let mut e = fst.iter().unwrap();
+        assert_eq!(
+            e.seek_ceil(b"application").unwrap(),
+            Some((b"application".to_vec(), b"3".to_vec()))
+        );
+        // Backward: "ap" < "application"'s shared prefix.
+        assert_eq!(
+            e.seek_ceil(b"ap").unwrap(),
+            Some((b"app".to_vec(), b"1".to_vec()))
+        );
+        // Forward again, past everything already visited.
+        assert_eq!(
+            e.seek_ceil(b"c").unwrap(),
+            Some((b"z".to_vec(), b"7".to_vec()))
+        );
+        // "z" is the last key -- a plain `next()` after landing on it (via
+        // seek) correctly reports the enumeration is exhausted, same as real
+        // Lucene's `FSTEnum` (seeking only repositions the enum; it doesn't
+        // change what "the next key after this one" means).
+        assert!(e.next().is_none());
+    }
+
+    #[test]
+    fn fst_enum_seek_on_empty_string_key_fixture() {
+        let entries = vec![
+            (Vec::new(), b"root".to_vec()),
+            (b"x".to_vec(), b"1".to_vec()),
+        ];
+        let fst = build_fst(&entries).unwrap();
+        assert_eq!(fst.seek_exact(b"").unwrap(), Some(b"root".to_vec()));
+
+        let mut e = fst.iter().unwrap();
+        assert_eq!(
+            e.seek_ceil(b"").unwrap(),
+            Some((Vec::new(), b"root".to_vec()))
+        );
+        assert_eq!(
+            e.seek_floor(b"").unwrap(),
+            Some((Vec::new(), b"root".to_vec()))
+        );
+        assert_eq!(
+            e.seek_ceil(b"w").unwrap(),
+            Some((b"x".to_vec(), b"1".to_vec()))
+        );
+        assert_eq!(
+            e.seek_floor(b"w").unwrap(),
+            Some((Vec::new(), b"root".to_vec()))
+        );
+    }
+
+    #[test]
+    fn fst_enum_seek_on_empty_fst_finds_nothing() {
+        let fst = build_fst(&[]).unwrap();
+        let mut e = fst.iter().unwrap();
+        assert_eq!(e.seek_ceil(b"anything").unwrap(), None);
+        assert_eq!(e.seek_floor(b"anything").unwrap(), None);
+        assert_eq!(fst.seek_exact(b"").unwrap(), None);
+    }
+
+    #[test]
+    fn fst_enum_next_resumes_after_seek_following_full_exhaustion() {
+        // Regression test: `seek_ceil`/`seek_floor`/`seek_exact` must clear
+        // `done` (a Rust-only fused-iterator flag with no Java equivalent) so
+        // that repositioning a fully-exhausted `FstEnum` and calling `next()`
+        // again resumes ordered enumeration instead of short-circuiting.
+        let fst = build_fst(&seven_key_fixture()).unwrap();
+        let mut e = fst.iter().unwrap();
+        while e.next().is_some() {}
+        assert_eq!(
+            e.seek_ceil(b"ban").unwrap(),
+            Some((b"banana".to_vec(), b"4".to_vec()))
+        );
+        assert_eq!(
+            e.next().unwrap().unwrap(),
+            (b"band".to_vec(), b"5".to_vec())
+        );
+        assert_eq!(
+            e.next().unwrap().unwrap(),
+            (b"bandana".to_vec(), b"6".to_vec())
+        );
+    }
+
+    #[test]
+    fn fst_enum_next_resumes_after_seek_floor_following_full_exhaustion() {
+        let fst = build_fst(&seven_key_fixture()).unwrap();
+        let mut e = fst.iter().unwrap();
+        while e.next().is_some() {}
+        assert_eq!(
+            e.seek_floor(b"band").unwrap(),
+            Some((b"band".to_vec(), b"5".to_vec()))
+        );
+        assert_eq!(
+            e.next().unwrap().unwrap(),
+            (b"bandana".to_vec(), b"6".to_vec())
+        );
+    }
+
+    #[test]
+    fn fst_enum_next_resumes_after_seek_exact_following_full_exhaustion() {
+        let fst = build_fst(&seven_key_fixture()).unwrap();
+        let mut e = fst.iter().unwrap();
+        while e.next().is_some() {}
+        assert_eq!(
+            e.seek_exact(b"banana").unwrap(),
+            Some((b"banana".to_vec(), b"4".to_vec()))
+        );
+        assert_eq!(
+            e.next().unwrap().unwrap(),
+            (b"band".to_vec(), b"5".to_vec())
+        );
     }
 }

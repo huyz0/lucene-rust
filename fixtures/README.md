@@ -13,7 +13,7 @@ JAR=$(find ~/.gradle/caches/modules-2/files-2.1/org.apache.lucene/lucene-core/10
   -name 'lucene-core-10.5.0.jar' ! -name '*sources*' ! -name '*javadoc*')
 mkdir -p classes data
 javac -nowarn -cp "$JAR" -d classes src/*.java
-for cls in GenPrimitives GenCodecUtil GenSegmentInfo GenSegmentInfos GenLiveDocs GenFieldInfos GenNorms GenDocValues GenCompoundFormat GenStoredFields GenStoredFieldsBestCompression GenSortedDocValues GenMultiValuedDocValues GenTermVectors GenPoints GenFst GenBlockTree GenBlockTreeCompressed GenFstBinarySearch GenFstDirectAddressing GenFstContinuous; do
+for cls in GenPrimitives GenCodecUtil GenSegmentInfo GenSegmentInfos GenLiveDocs GenFieldInfos GenNorms GenDocValues GenCompoundFormat GenStoredFields GenStoredFieldsBestCompression GenSortedDocValues GenMultiValuedDocValues GenTermVectors GenPoints GenFst GenBlockTree GenBlockTreeCompressed GenFstBinarySearch GenFstDirectAddressing GenFstContinuous GenFstSeekNonRootArrayNode GenFstSeekBacktrackFloorArc; do
   java -cp "classes:$JAR" $cls data
 done
 ```
@@ -439,6 +439,34 @@ read identically to one `FSTCompiler` would have produced. See
   outside the label range (there is no in-range gap to test, unlike direct
   addressing), so the differential test exercises the before/after-range
   bounds check specifically.
+- `GenFstSeekNonRootArrayNode.java` — a real `FST<BytesRef>`
+  (`fst_seek_non_root_array_node/` subdirectory) whose root stays
+  list-encoded (only 3 arcs: `'B'`, `'C'`, `'D'`) while each of the three
+  fixed-length-arc encodings sits one level *below* the root, under a shared
+  prefix byte: `'B'` groups widely-spaced labels forced into
+  `ARCS_FOR_BINARY_SEARCH`, `'D'` groups `a`-`f`,`h` (gap at `g`) forced into
+  `ARCS_FOR_DIRECT_ADDRESSING`, `'C'` groups fully contiguous `a`-`g` forced
+  into `ARCS_FOR_CONTINUOUS`. Every prior `GenFst*` fixture above puts its
+  array-encoded node at the root, so seeking across them never recurses past
+  a non-root array node; this fixture specifically exercises that
+  backtracking path (`read_last_target_arc`'s array branch,
+  `find_next_floor_arc_binary_search`/`_direct_addressing`/`_continuous`).
+  Confirmed via a self-check that each depth-1 node's debug arc dump contains
+  the expected `"(bs)"`/`"(da)"`/`"(cs)"` marker and that the root itself has
+  `bytesPerArc() == 0` (list-encoded), not just assumed.
+- `GenFstSeekBacktrackFloorArc.java` — three real `FST<BytesRef>`s
+  (`fst_seek_floor_backtrack_binary_search/`, `_direct_addressing/`,
+  `_continuous/` subdirectories), one per fixed-length-arc encoding, where the
+  *root itself* is array-encoded (reusing each sibling fixture's own label
+  set to force that) *and* one root label additionally has its own
+  `ARCS_FOR_CONTINUOUS` child (a fully contiguous `a`-`g` two-byte
+  extension). `seek_floor`'s `find_next_floor_arc_binary_search`/
+  `_direct_addressing`/`_continuous` are only ever reached from
+  `backtrack_to_floor_arc` re-reading a *parent* node that is itself
+  array-encoded -- every other `GenFst*` fixture's array nodes sit at or
+  below a list-encoded root, so backtracking from them never exercises this
+  path. Confirmed via a self-check that both the root and the extended
+  label's child node contain their expected debug-arc-dump marker.
 - `GenBlockTree.java` — a real `IndexWriter` session (`blocktree_index/`
   subdirectory) producing `.tim`/`.tip`/`.tmd` (`Lucene103BlockTreeTermsWriter`,
   via `Lucene104PostingsFormat`), plus the `.fnm`/`.si` this port's readers
