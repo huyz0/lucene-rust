@@ -295,6 +295,123 @@ pub unsafe extern "C" fn ffi_sort_by_multi_valued_doc_value(
     })
 }
 
+/// Reads `field`'s NUMERIC doc-value for a single `doc`
+/// (`lucene_codecs::doc_values::numeric_value`), writing whether `doc` has a
+/// value at all to `*out_has_value` and, only when `*out_has_value` is
+/// `true`, the value itself to `*out_value` -- this is the FFI surface a
+/// caller needs to answer "does this document have a value for this sparse
+/// field, and what is it" for one doc at a time, distinct from
+/// [`ffi_sort_by_doc_value`]'s bulk sort-a-candidate-set shape. When `doc`
+/// has no value (an empty field, or a sparse field's doc not present in its
+/// docs-with-field bitset), `*out_has_value` is set to `false` and
+/// `*out_value` is left untouched -- callers must check `*out_has_value`
+/// before reading `*out_value`, never inferring "no value" from a `0`
+/// there, since a stored value of `0` and "no value" both need to round-trip
+/// distinctly across this boundary (the same distinction
+/// [`lucene_codecs::doc_values::numeric_value`]'s `Result<Option<i64>>`
+/// already makes on the Rust side -- this entry point is a thin wire
+/// encoding of that `Option`, not a new decision).
+///
+/// Same field lookup and entry-kind validation as [`ffi_sort_by_doc_value`]
+/// (see [`numeric_entry_for`]): unknown field or a non-NUMERIC entry is
+/// [`FfiStatus::InvalidArgument`]. `doc < 0` or `doc >= segment.max_doc` is
+/// also [`FfiStatus::InvalidArgument`] -- checked directly against the
+/// segment's own `max_doc` here, uniformly for dense AND sparse entries
+/// (review-confirmed gap, fixed before landing:
+/// [`lucene_codecs::doc_values::numeric_value`]'s own `DocOutOfRange` check
+/// only bounds-checks `doc` for DENSE entries; a sparse entry has no
+/// `max_doc` of its own to check against internally, so a doc ID past the
+/// segment's real document count would otherwise silently fall through the
+/// docs-with-field bitset lookup as "no value" instead of erroring -- there
+/// is no well-defined value to report for a doc ID that never existed in
+/// this segment, unlike "doc exists but this field has no value for it").
+///
+/// **Only NUMERIC fields** -- BINARY/SORTED/SORTED_NUMERIC/SORTED_SET
+/// per-doc lookups are not exposed through FFI yet, tracked in
+/// `docs/parity.md` alongside this function.
+///
+/// # Safety
+/// `field` must be valid for `field_len` bytes; `out_has_value` must be
+/// valid for one `bool` write; `out_value` must be valid for one `i64`
+/// write.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_numeric_doc_value_for_doc(
+    segment_handle: u64,
+    field: *const c_char,
+    field_len: usize,
+    doc: i32,
+    out_has_value: *mut bool,
+    out_value: *mut i64,
+) -> i32 {
+    guard(|| {
+        if out_has_value.is_null() || out_value.is_null() {
+            return Err(FfiStatus::NullPointer);
+        }
+        // SAFETY: caller contract guarantees `field` is valid for `field_len`
+        // bytes.
+        let field = unsafe { str_from_raw(field as *const u8, field_len)? };
+
+        let segments = lock_recovering(segments());
+        let segment = segments.get(segment_handle).ok_or_else(|| {
+            set_last_error(
+                "ffi_numeric_doc_value_for_doc: unknown or already-closed segment handle",
+            );
+            FfiStatus::InvalidHandle
+        })?;
+
+        // `lucene_codecs::doc_values::numeric_value` only bounds-checks `doc`
+        // against `max_doc` for DENSE entries -- a SPARSE entry has no
+        // `max_doc` of its own to check against, so a doc ID past the
+        // segment's real document count silently falls through the
+        // docs-with-field bitset lookup as "no value" rather than an error
+        // (review-confirmed gap). Check against the segment's own `max_doc`
+        // here, uniformly for both dense and sparse entries, so this
+        // function's own documented contract (doc < 0 or doc >= max_doc is
+        // `InvalidArgument`) actually holds for every entry shape, not just
+        // dense ones.
+        if doc < 0 || doc >= segment.max_doc {
+            set_last_error(format!(
+                "ffi_numeric_doc_value_for_doc: doc {doc} is out of range 0..{}",
+                segment.max_doc
+            ));
+            return Err(FfiStatus::InvalidArgument);
+        }
+
+        let entry = numeric_entry_for(segment, field)?;
+        // `dv_meta` is `Some` whenever `dv_data` is (see `SegmentHandle`'s doc
+        // comment) -- `numeric_entry_for` above already returned early if
+        // `dv_meta` was `None`, so this is always populated here.
+        let dv_data = segment.dv_data.as_deref().unwrap_or(&[]);
+
+        let value = lucene_codecs::doc_values::numeric_value(dv_data, entry, doc).map_err(|e| {
+            set_last_error(format!("ffi_numeric_doc_value_for_doc: {e}"));
+            match e {
+                lucene_codecs::doc_values::Error::DocOutOfRange(..) => FfiStatus::InvalidArgument,
+                _ => FfiStatus::Decode,
+            }
+        })?;
+
+        match value {
+            Some(v) => {
+                // SAFETY: caller contract guarantees `out_has_value`/
+                // `out_value` are each valid for one write.
+                unsafe {
+                    *out_has_value = true;
+                    *out_value = v;
+                }
+            }
+            None => {
+                // SAFETY: caller contract guarantees `out_has_value` is
+                // valid for one write.
+                unsafe {
+                    *out_has_value = false;
+                }
+            }
+        }
+        Ok(())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1042,6 +1159,308 @@ mod tests {
             )
         };
         assert_eq!(rc, FfiStatus::NullPointer.code());
+
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    // --- ffi_numeric_doc_value_for_doc: same `sparse` fixture as
+    //     `sort_by_doc_value_missing_default_policy_real_fixture` above (5,
+    //     NONE, 15, NONE, 25 across docs 0..4) -- proves a caller can tell
+    //     "doc has no value" apart from "doc has value 0" (or any other
+    //     value) through the FFI boundary itself, one doc at a time. ---
+
+    #[test]
+    fn numeric_doc_value_for_doc_present_value_real_fixture() {
+        let dir = dv_dir();
+        let manifest = Manifest::load(&dir);
+        let dir_handle = open_dir(&dir);
+        let seg_handle = open_segment(dir_handle, &manifest);
+
+        let field = "sparse";
+        let mut has_value = false;
+        let mut value: i64 = -1;
+        let rc = unsafe {
+            ffi_numeric_doc_value_for_doc(
+                seg_handle,
+                field.as_ptr() as *const c_char,
+                field.len(),
+                0,
+                &mut has_value as *mut _,
+                &mut value as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::Ok.code());
+        assert!(has_value);
+        assert_eq!(value, 5);
+
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    #[test]
+    fn numeric_doc_value_for_doc_missing_value_real_fixture() {
+        let dir = dv_dir();
+        let manifest = Manifest::load(&dir);
+        let dir_handle = open_dir(&dir);
+        let seg_handle = open_segment(dir_handle, &manifest);
+
+        // doc 1 has no value at all in the `sparse` field -- must come back
+        // as `has_value == false`, not e.g. `value == 0`.
+        let field = "sparse";
+        let mut has_value = true;
+        let mut value: i64 = 12345;
+        let rc = unsafe {
+            ffi_numeric_doc_value_for_doc(
+                seg_handle,
+                field.as_ptr() as *const c_char,
+                field.len(),
+                1,
+                &mut has_value as *mut _,
+                &mut value as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::Ok.code());
+        assert!(!has_value);
+        // `value` is documented as untouched (not a meaningful `0`) when
+        // `has_value` is `false` -- confirm it really was left alone rather
+        // than silently zeroed.
+        assert_eq!(value, 12345);
+
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    #[test]
+    fn numeric_doc_value_for_doc_dense_field_all_present_real_fixture() {
+        let dir = dv_dir();
+        let manifest = Manifest::load(&dir);
+        let dir_handle = open_dir(&dir);
+        let seg_handle = open_segment(dir_handle, &manifest);
+
+        let field = "varying";
+        let mut has_value = false;
+        let mut value: i64 = 0;
+        let rc = unsafe {
+            ffi_numeric_doc_value_for_doc(
+                seg_handle,
+                field.as_ptr() as *const c_char,
+                field.len(),
+                2,
+                &mut has_value as *mut _,
+                &mut value as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::Ok.code());
+        assert!(has_value);
+        assert_eq!(value, 42);
+
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    #[test]
+    fn numeric_doc_value_for_doc_unknown_field_is_invalid_argument() {
+        let dir = dv_dir();
+        let manifest = Manifest::load(&dir);
+        let dir_handle = open_dir(&dir);
+        let seg_handle = open_segment(dir_handle, &manifest);
+
+        let field = "no-such-field";
+        let mut has_value = false;
+        let mut value: i64 = 0;
+        let rc = unsafe {
+            ffi_numeric_doc_value_for_doc(
+                seg_handle,
+                field.as_ptr() as *const c_char,
+                field.len(),
+                0,
+                &mut has_value as *mut _,
+                &mut value as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::InvalidArgument.code());
+
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    #[test]
+    fn numeric_doc_value_for_doc_wrong_entry_kind_is_invalid_argument() {
+        let dir = dv_dir();
+        let manifest = Manifest::load(&dir);
+        let dir_handle = open_dir(&dir);
+        let seg_handle = open_segment(dir_handle, &manifest);
+
+        let field = "bin_fixed";
+        let mut has_value = false;
+        let mut value: i64 = 0;
+        let rc = unsafe {
+            ffi_numeric_doc_value_for_doc(
+                seg_handle,
+                field.as_ptr() as *const c_char,
+                field.len(),
+                0,
+                &mut has_value as *mut _,
+                &mut value as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::InvalidArgument.code());
+
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    #[test]
+    fn numeric_doc_value_for_doc_negative_doc_is_invalid_argument() {
+        let dir = dv_dir();
+        let manifest = Manifest::load(&dir);
+        let dir_handle = open_dir(&dir);
+        let seg_handle = open_segment(dir_handle, &manifest);
+
+        let field = "varying";
+        let mut has_value = false;
+        let mut value: i64 = 0;
+        let rc = unsafe {
+            ffi_numeric_doc_value_for_doc(
+                seg_handle,
+                field.as_ptr() as *const c_char,
+                field.len(),
+                -1,
+                &mut has_value as *mut _,
+                &mut value as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::InvalidArgument.code());
+
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    #[test]
+    fn numeric_doc_value_for_doc_out_of_range_positive_doc_on_sparse_field_is_invalid_argument() {
+        // Review-confirmed gap this closes: `lucene_codecs::doc_values::
+        // numeric_value` only bounds-checks `doc` against `max_doc` for
+        // DENSE entries -- a sparse entry has no `max_doc` of its own, so
+        // a doc ID past the segment's real document count used to silently
+        // fall through the docs-with-field bitset lookup as "no value"
+        // instead of erroring. Confirm a doc ID far past this segment's
+        // real max_doc against the SPARSE field is now correctly rejected,
+        // not silently reported as `has_value == false`.
+        let dir = dv_dir();
+        let manifest = Manifest::load(&dir);
+        let dir_handle = open_dir(&dir);
+        let seg_handle = open_segment(dir_handle, &manifest);
+
+        let field = "sparse";
+        let mut has_value = false;
+        let mut value: i64 = 0;
+        let rc = unsafe {
+            ffi_numeric_doc_value_for_doc(
+                seg_handle,
+                field.as_ptr() as *const c_char,
+                field.len(),
+                1_000_000,
+                &mut has_value as *mut _,
+                &mut value as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::InvalidArgument.code());
+
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    #[test]
+    fn numeric_doc_value_for_doc_unknown_segment_handle_is_invalid_handle() {
+        let field = "varying";
+        let mut has_value = false;
+        let mut value: i64 = 0;
+        let rc = unsafe {
+            ffi_numeric_doc_value_for_doc(
+                0xFFFF,
+                field.as_ptr() as *const c_char,
+                field.len(),
+                0,
+                &mut has_value as *mut _,
+                &mut value as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::InvalidHandle.code());
+    }
+
+    #[test]
+    fn numeric_doc_value_for_doc_null_out_has_value_is_null_pointer_error() {
+        let dir = dv_dir();
+        let manifest = Manifest::load(&dir);
+        let dir_handle = open_dir(&dir);
+        let seg_handle = open_segment(dir_handle, &manifest);
+
+        let field = "varying";
+        let mut value: i64 = 0;
+        let rc = unsafe {
+            ffi_numeric_doc_value_for_doc(
+                seg_handle,
+                field.as_ptr() as *const c_char,
+                field.len(),
+                0,
+                std::ptr::null_mut(),
+                &mut value as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::NullPointer.code());
+
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    #[test]
+    fn numeric_doc_value_for_doc_null_out_value_is_null_pointer_error() {
+        let dir = dv_dir();
+        let manifest = Manifest::load(&dir);
+        let dir_handle = open_dir(&dir);
+        let seg_handle = open_segment(dir_handle, &manifest);
+
+        let field = "varying";
+        let mut has_value = false;
+        let rc = unsafe {
+            ffi_numeric_doc_value_for_doc(
+                seg_handle,
+                field.as_ptr() as *const c_char,
+                field.len(),
+                0,
+                &mut has_value as *mut _,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(rc, FfiStatus::NullPointer.code());
+
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    #[test]
+    fn numeric_doc_value_for_doc_decode_error_propagates_as_decode_status() {
+        let dir = dv_dir();
+        let manifest = Manifest::load(&dir);
+        let dir_handle = open_dir(&dir);
+        let seg_handle = open_segment(dir_handle, &manifest);
+        corrupt_dv_data(seg_handle);
+
+        let field = "varying";
+        let mut has_value = false;
+        let mut value: i64 = 0;
+        let rc = unsafe {
+            ffi_numeric_doc_value_for_doc(
+                seg_handle,
+                field.as_ptr() as *const c_char,
+                field.len(),
+                0,
+                &mut has_value as *mut _,
+                &mut value as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::Decode.code());
 
         ffi_close_segment(seg_handle);
         ffi_close_directory(dir_handle);

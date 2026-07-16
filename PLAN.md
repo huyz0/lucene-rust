@@ -5711,3 +5711,73 @@ Files touched: `crates/lucene-analysis/src/lib.rs` (new `NGramTokenFilter`/
 tests), `docs/parity.md`, `PLAN.md`. `cargo test -p lucene-analysis`: 79 lib
 tests pass (up from 66). `cargo fmt --all` and `cargo clippy --workspace
 --all-targets -- -D warnings` both clean.
+
+**Progress (task: FFI exposure for sparse doc-values reading).** Audited
+what `crates/lucene-ffi` already exposes for reading doc-values, focused on
+whether a sparse field's "no value at all" is distinguishable from a stored
+value of `0` across the C ABI. Finding: every existing doc-values FFI entry
+point (`sort.rs::{ffi_sort_by_doc_value, ffi_sort_by_multi_valued_doc_value}`,
+`range_sort.rs`'s range-sort pair, `facets.rs`'s facet counters) operates
+over a *set* of candidate docs and already handles the sparse case correctly
+at that level (`MissingValue::Exclude` drops a missing doc from the output
+entirely; `MissingValue::Default` substitutes a caller-chosen value) — so
+there was no collapsing-into-zero bug in the existing bulk paths. But there
+was a real gap: no FFI entry point let a caller ask "does *this specific
+doc* have a value for this field" and get a genuine present/absent answer —
+a caller had to sort a one-doc candidate list and infer presence from
+whether the result came back empty, which breaks entirely once
+`MissingValue::Default` is in play (a missing doc and a present doc with
+that same value are then indistinguishable).
+
+Closed the NUMERIC case: added `lucene-ffi/src/sort.rs::ffi_numeric_doc_value_for_doc`,
+a thin wrapper directly around the already-`Option`-shaped
+`lucene_codecs::doc_values::numeric_value` (`Ok(None)` already meant
+"legitimately no value" on the Rust side; this is a wire encoding of that
+distinction, not a new design decision). Wire shape: `out_has_value: *mut
+bool` plus `out_value: *mut i64`, with `out_value` left untouched (not
+zeroed) whenever `*out_has_value` is `false` — verified with a test that
+pre-poisons `*out_value` with a nonzero sentinel and confirms it survives a
+missing-value call. Reuses `sort.rs`'s existing `numeric_entry_for` field
+lookup and its `InvalidArgument`/`InvalidHandle`/`Decode` status
+conventions; everything else maps to `Decode`.
+
+**Review-confirmed bug fixed before landing**: `lucene_codecs::doc_values::
+numeric_value`'s own `DocOutOfRange` check only bounds-checks `doc` for
+DENSE entries -- a sparse entry has no `max_doc` of its own to check
+against, so a doc ID far past the segment's real document count silently
+fell through the docs-with-field bitset lookup as `has_value == false`
+instead of an error. Fixed by validating `doc < 0 || doc >= segment.max_doc`
+directly inside this FFI function, uniformly for dense and sparse entries,
+before ever calling into the codec. New test:
+`numeric_doc_value_for_doc_out_of_range_positive_doc_on_sparse_field_is_invalid_argument`
+(doc ID `1_000_000` against the `sparse` field, which only has 5 real docs).
+
+**Scope explicitly limited to NUMERIC.** BINARY/SORTED/SORTED_NUMERIC/
+SORTED_SET per-doc "has a value" FFI lookups are not exposed yet — a real,
+stated gap, not silently dropped. The underlying `lucene_codecs::doc_values::
+{binary_value, sorted_ord, sorted_numeric_values}` functions are already
+`Option`-shaped the same way `numeric_value` is, so extending this to the
+other field types later is "more wiring of the same shape", not new design
+work.
+
+New tests (10, all in `lucene-ffi/src/sort.rs::tests`, against the real
+`fixtures/data/doc_values_index/`'s `sparse`/`varying` fields):
+`numeric_doc_value_for_doc_present_value_real_fixture`,
+`numeric_doc_value_for_doc_missing_value_real_fixture` (the core sparse
+present-vs-absent proof, doc 1 of `sparse` has no value),
+`numeric_doc_value_for_doc_dense_field_all_present_real_fixture`,
+`numeric_doc_value_for_doc_unknown_field_is_invalid_argument`,
+`numeric_doc_value_for_doc_wrong_entry_kind_is_invalid_argument`,
+`numeric_doc_value_for_doc_negative_doc_is_invalid_argument`,
+`numeric_doc_value_for_doc_unknown_segment_handle_is_invalid_handle`,
+`numeric_doc_value_for_doc_null_out_has_value_is_null_pointer_error`,
+`numeric_doc_value_for_doc_null_out_value_is_null_pointer_error`,
+`numeric_doc_value_for_doc_decode_error_propagates_as_decode_status`,
+`numeric_doc_value_for_doc_out_of_range_positive_doc_on_sparse_field_is_invalid_argument`.
+
+Files touched: `crates/lucene-ffi/src/sort.rs` (new
+`ffi_numeric_doc_value_for_doc` function plus 11 new tests),
+`crates/lucene-ffi/src/lib.rs` (re-export plus module-doc entry),
+`docs/parity.md`, `PLAN.md`. `cargo test -p lucene-ffi`: 373 tests pass (up
+from 362). `cargo fmt --all` and `cargo clippy --workspace --all-targets --
+-D warnings` both clean.

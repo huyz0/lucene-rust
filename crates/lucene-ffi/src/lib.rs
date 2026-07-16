@@ -48,6 +48,14 @@
 //!   module doc for the missing-value/selector wire encoding, and
 //!   [`segment::ffi_open_segment`]'s `dvm_name`/`dvd_name`/`dv_suffix` parameters
 //!   for how a segment's doc-values data reaches it.
+//! - [`sort::ffi_numeric_doc_value_for_doc`] (FFI exposure for sparse
+//!   doc-values reading): the single-doc sibling of the two entries above --
+//!   wraps `lucene_codecs::doc_values::numeric_value` directly, reporting
+//!   whether one doc has a value for a NUMERIC field via an `out_has_value`
+//!   bool separate from the `out_value` it's only meaningful alongside, so a
+//!   sparse field's "no value at all" is never collapsed into (or confused
+//!   with) a stored `0`. BINARY/SORTED/SORTED_NUMERIC/SORTED_SET per-doc
+//!   lookups aren't exposed yet -- see `docs/parity.md`.
 //! - [`results_sorted::ffi_sorted_results_len`]/[`results_sorted::ffi_sorted_results_copy`]/
 //!   [`results_sorted::ffi_close_sorted_results`]: reads a sorted results handle's
 //!   `(doc_id, value)` pairs back out via two caller-allocated parallel buffers,
@@ -286,7 +294,9 @@ pub use results_sorted::{
     ffi_close_sorted_results, ffi_sorted_results_copy, ffi_sorted_results_len,
 };
 pub use segment::{ffi_close_segment, ffi_open_segment};
-pub use sort::{ffi_sort_by_doc_value, ffi_sort_by_multi_valued_doc_value};
+pub use sort::{
+    ffi_numeric_doc_value_for_doc, ffi_sort_by_doc_value, ffi_sort_by_multi_valued_doc_value,
+};
 pub use writer::{
     ffi_close_writer, ffi_open_writer, ffi_writer_add_document, ffi_writer_commit,
     ffi_writer_finish_commit, ffi_writer_pending_doc_count, ffi_writer_prepare_commit,
