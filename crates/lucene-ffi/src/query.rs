@@ -25,6 +25,21 @@
 //! ## Scored variants (task #30) -- `ffi_search_term_query_scored`/
 //! `ffi_search_boolean_query_scored`/`ffi_search_phrase_query_scored`
 //!
+//! ## MAXSCORE-pruned variant -- `ffi_search_term_query_scored_maxscore`
+//!
+//! `ffi_search_term_query_scored_maxscore` is the one FFI entry point in this
+//! module backed by real, block-level MAXSCORE dynamic pruning
+//! (`lucene_search::search_term_query_scored_maxscore`, which streams a
+//! single `TermQuery`'s postings through a `LazyDocsCursor` and skips whole
+//! level-0 blocks a `TopDocsCollector`'s current worst kept score proves are
+//! unreachable, instead of eagerly decoding every block). It is scoped as
+//! narrowly as its Rust-level counterpart: single `TermQuery` only. Every
+//! other scored function here -- including `ffi_search_boolean_query_scored`
+//! -- has no competitive-score threshold at all and never prunes; multi-clause
+//! `BooleanQuery` WAND/MAXSCORE dynamic pruning is not yet implemented at the
+//! `lucene-search` level (see `docs/parity.md`), so there is no FFI gap to
+//! close there beyond what's already documented as future work.
+//!
 //! Same matching semantics as their unscored siblings above, but each feeds
 //! the matched, live docs' real BM25 score (`lucene_search::similarity`) to a
 //! [`lucene_search::TopDocsCollector`] (keeping only the best `top_n` hits,
@@ -58,6 +73,7 @@ use lucene_search::field_norms::FieldNorms;
 use lucene_search::{
     search_boolean_query, search_boolean_query_scored, search_phrase_query,
     search_phrase_query_scored, search_term_query, search_term_query_scored,
+    search_term_query_scored_maxscore,
 };
 use lucene_search::{BooleanQuery, Clause, PhraseQuery, TermQuery, TopDocsCollector, VecCollector};
 
@@ -540,6 +556,102 @@ pub unsafe extern "C" fn ffi_search_term_query_scored(
 
         let mut collector = TopDocsCollector::new(top_n);
         search_term_query_scored(
+            &segment.fields,
+            doc_in.as_ref(),
+            None,
+            &query,
+            norms.as_ref(),
+            &mut collector,
+        )
+        .map_err(map_search_error)?;
+
+        let handle = lock_recovering(scored_results()).insert(ScoredResultsHandle {
+            hits: collector.top_docs().to_vec(),
+        });
+        // SAFETY: caller contract guarantees `out_scored_results_handle` is valid
+        // for one write.
+        unsafe {
+            *out_scored_results_handle = handle;
+        }
+        Ok(())
+    })
+}
+
+/// MAXSCORE-pruned sibling of [`ffi_search_term_query_scored`]: same
+/// `(field, term)`/`top_n`/[`ScoredResultsHandle`] contract, but runs
+/// [`lucene_search::search_term_query_scored_maxscore`] instead of
+/// [`search_term_query_scored`] -- streaming the term's postings through
+/// [`lucene_codecs::postings::LazyDocsCursor`] and skipping whole level-0
+/// blocks whose [`lucene_search::similarity::max_score_for_impacts`] upper
+/// bound can't beat the [`TopDocsCollector`]'s current worst kept score
+/// (once it's holding a full top-`n`), rather than eagerly decoding every
+/// block via `DocInput::read_postings` the way `ffi_search_term_query_scored`
+/// does. Produces byte-for-byte identical `top_docs()` results to
+/// `ffi_search_term_query_scored` for the same query -- see that function's
+/// Rust-level counterpart doc comment
+/// ([`lucene_search::search_term_query_scored_maxscore`]) for the full
+/// safety argument and its fallback cases (no `.doc` opened, `docFreq <= 1`,
+/// or an index option `LazyDocsCursor` doesn't support all transparently
+/// fall back to the exact same eager path `ffi_search_term_query_scored`
+/// uses, never a silently different result).
+///
+/// This is the *only* FFI entry point in this module that reaches this
+/// port's real, block-level MAXSCORE dynamic pruning -- `ffi_search_boolean_query_scored`
+/// (below) sums per-clause BM25 scores over an eagerly-resolved matched-doc
+/// set with no competitive-score threshold at all, matching
+/// `search_boolean_query_scored`'s own documented scope (multi-clause
+/// `BooleanQuery` WAND/MAXSCORE dynamic pruning remains unimplemented at the
+/// `lucene-search` level, see `docs/parity.md`), and none of this module's
+/// other scored functions consult `min_competitive_score()` either.
+///
+/// # Safety
+/// Same contract as [`ffi_search_term_query_scored`]'s.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn ffi_search_term_query_scored_maxscore(
+    segment_handle: u64,
+    field: *const c_char,
+    field_len: usize,
+    term: *const u8,
+    term_len: usize,
+    top_n: usize,
+    out_scored_results_handle: *mut u64,
+) -> i32 {
+    guard(|| {
+        if out_scored_results_handle.is_null() {
+            return Err(FfiStatus::NullPointer);
+        }
+        // SAFETY: caller contract guarantees `field`/`term` are valid for their
+        // paired lengths.
+        let (field, term) = unsafe {
+            (
+                str_from_raw(field as *const u8, field_len)?,
+                bytes_from_raw(term, term_len)?,
+            )
+        };
+        let query = TermQuery::new(field, term.to_vec());
+
+        let segments = lock_recovering(segments());
+        let segment = segments.get(segment_handle).ok_or_else(|| {
+            set_last_error(
+                "ffi_search_term_query_scored_maxscore: unknown or already-closed segment handle",
+            );
+            FfiStatus::InvalidHandle
+        })?;
+
+        let doc_in = segment
+            .doc_bytes
+            .as_deref()
+            .map(|b| DocInput::open(b, &segment.segment_id, &segment.segment_suffix))
+            .transpose()
+            .map_err(|e| {
+                set_last_error(format!("reopening .doc: {e}"));
+                FfiStatus::Decode
+            })?;
+        let norms = open_field_norms(segment, &query.field)?;
+
+        let mut collector = TopDocsCollector::new(top_n);
+        search_term_query_scored_maxscore(
             &segment.fields,
             doc_in.as_ref(),
             None,
@@ -1857,6 +1969,153 @@ mod tests {
         let mut scored_handle: u64 = 0;
         let rc = unsafe {
             ffi_search_term_query_scored(
+                seg_handle,
+                field.as_ptr() as *const c_char,
+                field.len(),
+                term.as_ptr(),
+                term.len(),
+                10,
+                &mut scored_handle as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::Ok.code());
+        assert!(read_scored_results(scored_handle).is_empty());
+
+        ffi_close_scored_results(scored_handle);
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    /// Proves this crate's MAXSCORE-pruned entry point,
+    /// `ffi_search_term_query_scored_maxscore`, both (a) returns results
+    /// identical to the naive/eager FFI path (`ffi_search_term_query_scored`)
+    /// and (b) genuinely exercises real level-0 block skipping *through the
+    /// FFI boundary* -- not just that `lucene_search`'s own Rust-level unit
+    /// test (`maxscore_lazy_path_matches_eager_path_on_real_fixture_and_actually_skips_blocks`
+    /// in `lucene-search/src/lib.rs`) already proves the underlying function
+    /// prunes; that's a strictly weaker claim than "the FFI caller actually
+    /// reaches the pruned path".
+    ///
+    /// Uses the same real, Java-written fixture term as that Rust-level test:
+    /// `big`/`"everywhere"`, `docFreq == 300` (one full 256-doc level-0 block
+    /// with real impacts, plus a 44-doc tail), opened here with real per-doc
+    /// norms (same reasoning as that test's doc comment: the impacts' bound
+    /// is only a valid upper bound against the score formula that consumes
+    /// those same real norm bytes).
+    ///
+    /// The skip-happened signal is `lucene_search::test_only_maxscore_block_skip_counter`
+    /// itself -- reused verbatim across the crate boundary rather than
+    /// reimplemented, made reachable here only via this crate's
+    /// `[dev-dependencies]` edge enabling `lucene-search`'s `test-support`
+    /// feature (see both `Cargo.toml`s), which normal (non-test) builds of
+    /// this crate never enable.
+    #[test]
+    fn term_query_scored_maxscore_matches_eager_ffi_path_and_actually_skips_blocks() {
+        let dir_handle = open_dir();
+        let seg_handle = open_segment_with_norms(dir_handle, false, true);
+
+        let field = "big";
+        let term = b"everywhere";
+
+        for &top_n in &[1usize, 5, 50, 300] {
+            let mut eager_handle: u64 = 0;
+            let rc = unsafe {
+                ffi_search_term_query_scored(
+                    seg_handle,
+                    field.as_ptr() as *const c_char,
+                    field.len(),
+                    term.as_ptr(),
+                    term.len(),
+                    top_n,
+                    &mut eager_handle as *mut _,
+                )
+            };
+            assert_eq!(rc, FfiStatus::Ok.code());
+            let eager_hits = read_scored_results(eager_handle);
+
+            lucene_search::test_only_maxscore_block_skip_counter::reset();
+            let mut maxscore_handle: u64 = 0;
+            let rc = unsafe {
+                ffi_search_term_query_scored_maxscore(
+                    seg_handle,
+                    field.as_ptr() as *const c_char,
+                    field.len(),
+                    term.as_ptr(),
+                    term.len(),
+                    top_n,
+                    &mut maxscore_handle as *mut _,
+                )
+            };
+            assert_eq!(rc, FfiStatus::Ok.code());
+            let maxscore_hits = read_scored_results(maxscore_handle);
+            let skips = lucene_search::test_only_maxscore_block_skip_counter::count();
+
+            assert_eq!(
+                eager_hits, maxscore_hits,
+                "top_{top_n}: MAXSCORE FFI path must match the eager FFI path exactly"
+            );
+
+            if top_n < 300 {
+                assert!(
+                    skips > 0,
+                    "top_{top_n}: should reach the block's best-scoring combination \
+                     within its first few docs, making the rest of the block safely \
+                     skippable through the FFI boundary (got {skips} skips)"
+                );
+            } else {
+                assert_eq!(
+                    skips, 0,
+                    "top_{top_n} == the full docFreq: nothing should be skippable \
+                     (got {skips} skips)"
+                );
+            }
+
+            ffi_close_scored_results(eager_handle);
+            ffi_close_scored_results(maxscore_handle);
+        }
+
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    /// `ffi_search_term_query_scored_maxscore`'s unknown-segment-handle branch
+    /// must behave exactly like `ffi_search_term_query_scored`'s: an
+    /// `InvalidHandle` error, not a panic/UB, and `*out_scored_results_handle`
+    /// left untouched.
+    #[test]
+    fn term_query_scored_maxscore_unknown_segment_handle_is_an_error() {
+        let field = "big";
+        let term = b"everywhere";
+        let mut scored_handle: u64 = 0xDEAD_u64;
+        let rc = unsafe {
+            ffi_search_term_query_scored_maxscore(
+                999_999, // never allocated
+                field.as_ptr() as *const c_char,
+                field.len(),
+                term.as_ptr(),
+                term.len(),
+                10,
+                &mut scored_handle as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::InvalidHandle.code());
+        assert_eq!(scored_handle, 0xDEAD_u64);
+    }
+
+    /// `ffi_search_term_query_scored_maxscore`'s missing-term branch must
+    /// return an empty, well-formed results handle (falls back to
+    /// `search_term_query_scored_maxscore`'s own early return for an unknown
+    /// field/term), not an error.
+    #[test]
+    fn term_query_scored_maxscore_missing_term_returns_empty_results_not_an_error() {
+        let dir_handle = open_dir();
+        let seg_handle = open_segment(dir_handle, false);
+
+        let field = "body";
+        let term = b"zzz-missing";
+        let mut scored_handle: u64 = 0;
+        let rc = unsafe {
+            ffi_search_term_query_scored_maxscore(
                 seg_handle,
                 field.as_ptr() as *const c_char,
                 field.len(),

@@ -35,6 +35,16 @@
 //!   [`registry::ScoredResultsHandle`] — see `query.rs`'s module doc for the norms
 //!   plumbing and [`segment::ffi_open_segment`]'s `nvm_name`/`nvd_name` parameters
 //!   for how a segment's real per-doc/avg field lengths reach these functions.
+//! - [`query::ffi_search_term_query_scored_maxscore`] (MAXSCORE FFI exposure task):
+//!   MAXSCORE-pruned sibling of [`query::ffi_search_term_query_scored`], single
+//!   `TermQuery` only — wraps `lucene_search::search_term_query_scored_maxscore`
+//!   (streams postings through a `LazyDocsCursor`, skipping whole level-0 blocks a
+//!   `TopDocsCollector`'s current worst kept score proves are unreachable) instead
+//!   of the eager, fully-materializing decode the other scored functions use. The
+//!   only FFI entry point in this crate backed by real block-level dynamic
+//!   pruning — see `query.rs`'s module doc for why `ffi_search_boolean_query_scored`
+//!   has none (multi-clause `BooleanQuery` WAND/MAXSCORE pruning doesn't exist at
+//!   the `lucene_search` level yet).
 //! - [`results_scored::ffi_scored_results_len`]/[`results_scored::ffi_scored_results_copy`]/
 //!   [`results_scored::ffi_close_scored_results`]: reads a scored results handle's
 //!   `(doc_id, score)` hits back out via two caller-allocated parallel buffers (see
@@ -269,6 +279,7 @@ pub use points_query::ffi_search_points_range;
 pub use query::{
     ffi_search_boolean_query, ffi_search_boolean_query_scored, ffi_search_phrase_query,
     ffi_search_phrase_query_scored, ffi_search_term_query, ffi_search_term_query_scored,
+    ffi_search_term_query_scored_maxscore,
 };
 pub use range_sort::{
     ffi_search_numeric_range_sorted_by_field,

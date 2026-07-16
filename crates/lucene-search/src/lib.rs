@@ -1023,7 +1023,7 @@ pub fn search_term_query_scored_maxscore(
                     }
                 };
                 if bound <= threshold {
-                    #[cfg(test)]
+                    #[cfg(any(test, feature = "test-support"))]
                     test_only_maxscore_block_skip_counter::record_skip();
                     let skip_to = cursor.current_block_last_doc_id().saturating_add(1);
                     doc_id = cursor.advance(skip_to).map_err(blocktree::Error::from)?;
@@ -1058,29 +1058,39 @@ pub fn search_term_query_scored_maxscore(
 /// so a differential test can assert real skipping happened rather than only
 /// asserting the (necessarily identical) end result — a test could otherwise
 /// pass vacuously if the skip branch were dead code. Never compiled into a
-/// non-test build (`#[cfg(test)]` both here and at the increment site in
-/// [`search_term_query_scored_maxscore`]).
-#[cfg(test)]
-mod test_only_maxscore_block_skip_counter {
+/// normal (non-test, non-`test-support`) build: gated on `#[cfg(any(test,
+/// feature = "test-support"))]` both here and at the increment site in
+/// [`search_term_query_scored_maxscore`]. The `test-support` feature (see
+/// this crate's `Cargo.toml`) exists solely so `lucene-ffi`'s own test suite
+/// -- a *different* crate, which can never see this crate's `#[cfg(test)]`
+/// code no matter what it depends on -- can reuse this exact counter to
+/// prove MAXSCORE pruning genuinely happened underneath an FFI call, instead
+/// of duplicating the instrumentation or (worse) only asserting the
+/// necessarily-identical end result. `lucene-ffi`'s non-test build never
+/// enables this feature (only its `[dev-dependencies]` edge does, per Cargo's
+/// resolver-2 feature unification, which scopes dev-dependency features to
+/// test/bench targets only), so this stays out of any production binary.
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_only_maxscore_block_skip_counter {
     use std::cell::Cell;
 
     thread_local! {
         static SKIPPED_BLOCKS: Cell<usize> = const { Cell::new(0) };
     }
 
-    pub(crate) fn record_skip() {
+    pub fn record_skip() {
         SKIPPED_BLOCKS.with(|c| c.set(c.get() + 1));
     }
 
     /// Resets the counter to 0 -- call before a test's search, then
     /// [`take`] after to read how many blocks that search skipped.
-    pub(crate) fn reset() {
+    pub fn reset() {
         SKIPPED_BLOCKS.with(|c| c.set(0));
     }
 
     /// Reads (without resetting) the number of blocks skipped since the last
     /// [`reset`].
-    pub(crate) fn count() -> usize {
+    pub fn count() -> usize {
         SKIPPED_BLOCKS.with(|c| c.get())
     }
 }

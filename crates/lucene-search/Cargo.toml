@@ -12,3 +12,15 @@ lucene-codecs = { path = "../lucene-codecs" }
 lucene-index = { path = "../lucene-index" }
 lucene-analysis = { path = "../lucene-analysis" }
 rayon.workspace = true
+
+[features]
+# Exposes this crate's `#[cfg(test)]`-only MAXSCORE block-skip counter
+# (`test_only_maxscore_block_skip_counter`) to a *different* crate's own test
+# suite -- namely `lucene-ffi`, which cannot see `lucene-search`'s
+# `#[cfg(test)]` code no matter what it depends on, since that cfg is scoped
+# to this crate's own `cargo test` build. Enabled only via `lucene-ffi`'s
+# `[dev-dependencies]` edge (see that crate's `Cargo.toml`), which Cargo's
+# resolver-2 feature unification confines to `lucene-ffi`'s test/bench
+# targets -- never its normal library/cdylib build, so this never reaches a
+# production binary.
+test-support = []

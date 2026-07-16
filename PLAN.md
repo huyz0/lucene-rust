@@ -5781,3 +5781,89 @@ Files touched: `crates/lucene-ffi/src/sort.rs` (new
 `docs/parity.md`, `PLAN.md`. `cargo test -p lucene-ffi`: 373 tests pass (up
 from 362). `cargo fmt --all` and `cargo clippy --workspace --all-targets --
 -D warnings` both clean.
+
+## FFI exposure for MAXSCORE-scored search path
+
+Task brief: investigate whether this port's real MAXSCORE dynamic pruning is
+actually reachable through the FFI boundary, or whether FFI callers can only
+reach a non-pruned/naive scoring path — and either add a proof test (if
+pruning already happens transparently) or close a genuine FFI gap.
+
+**Finding: a genuine FFI gap, not something already transparently exposed.**
+This port's real block-level MAXSCORE pruning lives in
+`lucene-search/src/lib.rs::search_term_query_scored_maxscore` — a `TopDocsCollector`-only,
+single-`TermQuery`-only function that streams postings through
+`LazyDocsCursor` and skips whole level-0 blocks once
+`similarity::max_score_for_impacts`'s bound for that block can't beat the
+collector's current worst kept score. Before this task, every scored FFI
+entry point in `lucene-ffi/src/query.rs`
+(`ffi_search_term_query_scored`/`ffi_search_boolean_query_scored`/`ffi_search_phrase_query_scored`)
+called only the *eager* sibling, `search_term_query_scored` (via
+`DocInput::read_postings`'s whole-term eager materialization) — none of them
+called `search_term_query_scored_maxscore` at all. Traced each existing FFI
+function's call chain down into `lucene-search` to confirm this directly,
+rather than assuming it.
+
+Also confirmed, while investigating whether "FFI exposure" could instead
+mean "prove an existing function already prunes transparently": multi-clause
+`BooleanQuery` WAND/MAXSCORE dynamic pruning does not exist at the
+`lucene-search` level at all yet.
+`search_boolean_query_scored` computes its matched-doc set eagerly and sums
+each clause's BM25 score with no competitive-score threshold or pruning of
+any kind — `docs/parity.md`'s own postings-decode entry already documents
+this ("full multi-clause WAND/MAXSCORE dynamic pruning across a
+`BooleanQuery`'s clauses ... remains substantial, wholly unimplemented
+future work"). So there was no boolean-side FFI gap to close beyond
+confirming that the underlying capability itself doesn't exist yet — closing
+it would be a `lucene-search` task, not an FFI task.
+
+**Closed the single-`TermQuery` gap**: added
+`lucene-ffi/src/query.rs::ffi_search_term_query_scored_maxscore`, same
+`(segment_handle, field, term, top_n) -> ScoredResultsHandle` shape,
+`open_field_norms` norms lookup, and error-handling conventions as
+`ffi_search_term_query_scored`, wired directly to
+`lucene_search::search_term_query_scored_maxscore`.
+
+**Proving pruning is genuinely reached through the FFI boundary itself**
+(not just that `lucene-search`'s own Rust-level unit test already proves the
+underlying function prunes, a strictly weaker claim): reused
+`lucene_search::test_only_maxscore_block_skip_counter` — the exact
+instrumentation `lucene-search`'s own
+`maxscore_lazy_path_matches_eager_path_on_real_fixture_and_actually_skips_blocks`
+test uses — instead of reimplementing it. That counter is normally
+`#[cfg(test)]`-private to `lucene-search` and invisible to a different
+crate's tests, so it's now reachable from `lucene-ffi`'s test suite via a new
+`test-support` Cargo feature on `lucene-search` (`crates/lucene-search/Cargo.toml`),
+gating the counter module on `#[cfg(any(test, feature = "test-support"))]`
+instead of `#[cfg(test)]` alone. Only `lucene-ffi`'s `[dev-dependencies]`
+edge enables that feature (`crates/lucene-ffi/Cargo.toml`) — Cargo's
+resolver-2 feature unification confines a dev-dependency's features to that
+crate's own test/bench targets, so this never reaches a normal
+library/cdylib build or a production binary.
+
+New test `term_query_scored_maxscore_matches_eager_ffi_path_and_actually_skips_blocks`
+(`crates/lucene-ffi/src/query.rs`) reuses the same real, Java-written fixture
+term `lucene-search`'s own proof uses (`big`/`"everywhere"`, `docFreq ==
+300`, one full level-0 block with real impacts plus a 44-doc tail, real
+per-doc norms opened), and for `top_n` in `{1, 5, 50, 300}` asserts both that
+`ffi_search_term_query_scored_maxscore`'s results are byte-for-byte identical
+to `ffi_search_term_query_scored`'s (the eager FFI path), and that real block
+skips happened for `top_n < 300` while zero skips happened at `top_n == 300`
+(the full `docFreq`, where nothing is safely skippable) — ruling out both a
+silent correctness change and a vacuously-passing "skip branch never taken"
+test. Two more new tests,
+`term_query_scored_maxscore_unknown_segment_handle_is_an_error` and
+`term_query_scored_maxscore_missing_term_returns_empty_results_not_an_error`,
+mirror `ffi_search_term_query_scored`'s own equivalent error/empty-result
+branches for the new function.
+
+Files touched: `crates/lucene-search/Cargo.toml` (new `test-support`
+feature), `crates/lucene-search/src/lib.rs` (widen the skip counter's cfg
+gate and visibility, no behavior change under a normal build),
+`crates/lucene-ffi/Cargo.toml` (new `[dev-dependencies]` edge enabling that
+feature), `crates/lucene-ffi/src/query.rs` (new
+`ffi_search_term_query_scored_maxscore` function plus 3 new tests),
+`crates/lucene-ffi/src/lib.rs` (re-export plus module-doc entry),
+`docs/parity.md`, `PLAN.md`. `cargo test -p lucene-ffi`: 376 tests pass (up
+from 373). `cargo fmt --all` and `cargo clippy --workspace --all-targets --
+-D warnings` both clean.

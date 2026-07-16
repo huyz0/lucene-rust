@@ -14,5 +14,14 @@ lucene-search = { path = "../lucene-search" }
 lucene-util = { path = "../lucene-util" }
 jni.workspace = true
 
+[dev-dependencies]
+# Enables `lucene-search`'s `test-support` feature only for this crate's own
+# test/bench targets (resolver-2 feature unification confines a
+# `[dev-dependencies]` edge's features to those targets) -- this is what lets
+# this crate's own tests reuse `lucene_search::test_only_maxscore_block_skip_counter`
+# (otherwise a `#[cfg(test)]`-only item of a *different* crate, invisible
+# here) to prove MAXSCORE pruning genuinely happened underneath an FFI call.
+lucene-search = { path = "../lucene-search", features = ["test-support"] }
+
 [lib]
 crate-type = ["cdylib", "rlib"]
