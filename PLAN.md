@@ -4115,3 +4115,30 @@ Rust-only change -- a reasonable, cheap follow-up, just not bundled into this ta
 `cargo fmt`/`clippy --workspace --all-targets -D warnings` clean; `cargo llvm-cov
 --workspace --fail-under-lines 95` passes workspace-wide (`doc_values.rs` 97.69% lines);
 see `docs/parity.md`'s doc-values-write row for the parity-tracking update.
+
+**Progress (`merge_sorted_doc_values`):** `lucene-index/src/merge.rs` can now merge a
+SORTED doc-values field across sources, closing the gap this file's own doc comment (and
+`merge.rs`'s "Doc-values type scope" note) had flagged: SORTED needs ordinal remapping
+across each source's independently-built term dictionary, not the simple concatenation
+NUMERIC/BINARY use. Rather than building an explicit source-ordinal-to-merged-ordinal
+table, each live doc's own source ordinal is resolved straight to term bytes via that
+source's own `terms_dict::decode_all_terms`, and the merge's full per-doc term-bytes list
+is handed to `doc_values::write_single_dense_sorted_field`, which already rebuilds a
+deduplicated, sorted merged dictionary from raw term bytes -- so two sources' docs
+sharing a term land on the same merged dictionary entry with no separate remapping step
+to get wrong. Same "sparse across sources" rule, same single-field-per-call limit, and
+the same-file-extension guard against NUMERIC/BINARY now generalized to reject any two of
+NUMERIC/BINARY/SORTED present at once (`Error::MultipleDocValuesTypesInOneMerge`,
+replacing the old `NumericAndBinaryDocValuesBothPresent`). New tests in
+`crates/lucene-index/src/merge.rs`: overlapping term dictionaries across two sources
+dedupe into one shared dictionary entry; disjoint term dictionaries produce a merged
+dictionary containing every term from both; a live-contributing source missing the field
+is a hard error; more than one SORTED field in a call is rejected; and a full round-trip
+test merging stored fields + SORTED doc values (with an overlapping term) + norms + term
+vectors together, with every doc's merged term resolved back through the unmodified
+reader stack and checked against the actual expected bytes (not just "some valid
+ordinal"). SORTED_NUMERIC/SORTED_SET remain unmerged (still silently dropped) -- both are
+multi-valued-per-doc on top of the same independent-dictionary problem, so extending this
+further is not a small follow-up. `cargo fmt`/`clippy --workspace --all-targets -D
+warnings` clean; `cargo test --workspace` passes. See `docs/parity.md`'s `SegmentMerger`
+row for the parity-tracking update.
