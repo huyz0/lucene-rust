@@ -27,8 +27,9 @@ import java.util.Arrays;
  * <p>Uses `body`'s already-fixture-known real terms/postings (`cat`={0,2},
  * `dog`={0,1}, `bird`={1,4} -- see {@code GenBlockTree.java}'s own doc
  * comment) against a handful of real {@link RegexpQuery} cases exercising
- * this port's supported syntax subset (literal, `.`, `*`/`+`/`?`, `[...]`
- * classes, `(...)` alternation) plus, most importantly, the whole-term-match
+ * this port's supported syntax subset (literal, `.`, `*`/`+`/`?`,
+ * `{n}`/`{n,}`/`{n,m}` bounded repetition, `[...]` classes, `(...)`
+ * alternation) plus, most importantly, the whole-term-match
  * convention: a bare `ca` regexp must NOT match indexed term `cat` (real
  * `RegexpQuery` always matches a term's entire length, never a substring --
  * exactly the subtlety this fixture exists to pin against real Lucene, not
@@ -69,6 +70,17 @@ public class AppendRegexpManifest {
       new Case("noMatch", "body", "zzzzzzz"),
       // Missing field.
       new Case("missingField", "no_such_field", "cat"),
+      // "{n}" exact-count bounded repetition: "do{1}g" matches only "dog"
+      // (single "o"), not e.g. a hypothetical "doog"/"dg".
+      new Case("repeatExactCount", "body", "do{1}g"),
+      // "{n,}" unbounded-min bounded repetition: "bi{1,}rd" matches "bird".
+      new Case("repeatMinUnbounded", "body", "bi{1,}rd"),
+      // "{n,m}" full bounded repetition composed with a literal prefix/
+      // suffix: "ca{1,2}t" matches "cat" (one "a", within [1,2]).
+      new Case("repeatMinMax", "body", "ca{1,2}t"),
+      // "{0,1}" bounded repetition behaving like "?": "do{0,1}g" matches
+      // both "dg" (zero, not indexed) and "dog" (one) -- only "dog" hits.
+      new Case("repeatZeroMinLikeQuestion", "body", "do{0,1}g"),
     };
 
     try (Directory dir = FSDirectory.open(indexDir);

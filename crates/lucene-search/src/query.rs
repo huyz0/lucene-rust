@@ -211,8 +211,9 @@ impl FuzzyQuery {
 /// #43's addition: a field plus a `pattern` string (Lucene-regexp-subset
 /// syntax — see [`lucene_codecs::regexp::RegexpPattern`]'s module doc for
 /// exactly which operators are supported: literals, `.`, `*`/`+`/`?`,
-/// `[...]` classes, `(...)` grouping, `|` alternation; no `{n,m}`, `~`, `&`,
-/// no named classes) matched **in full** against every term indexed for
+/// `[...]` classes, `(...)` grouping, `|` alternation, `{n}`/`{n,}`/`{n,m}`
+/// bounded repetition; no `~`, `&`, no named classes) matched **in full**
+/// against every term indexed for
 /// `field` — real `RegexpQuery` always matches a term's entire length, never
 /// a substring (see that module's "whole-term-match convention" section).
 /// The matched set is the **union** of every matching term's postings (see

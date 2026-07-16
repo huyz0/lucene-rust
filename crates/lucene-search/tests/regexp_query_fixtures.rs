@@ -13,8 +13,9 @@
 //! whole-term-match convention -- the single most important case, since
 //! it's the exact "looks right in isolation, subtly wrong vs real regex
 //! conventions" bug this task called out -- `.`/`*`/`+`/`?` quantifiers,
-//! `[...]` classes, `|` alternation across two and three terms, a no-match
-//! case, and a missing-field case) through a real `IndexSearcher`, recording
+//! `{n}`/`{n,}`/`{n,m}` bounded repetition, `[...]` classes, `|` alternation
+//! across two and three terms, a no-match case, and a missing-field case)
+//! through a real `IndexSearcher`, recording
 //! real Lucene's own matched doc IDs into `manifest.properties`'
 //! `regexp.*` keys -- this is the actual cross-engine proof this port's
 //! `RegexpQuery` matching is checked against, not a hand-derived
@@ -178,14 +179,17 @@ fn regexp_composes_inside_boolean_query_must() {
     assert_eq!(c.docs, vec![0, 1]);
 }
 
-/// A malformed pattern (unsupported `{n,m}` syntax) surfaces as an
+/// A malformed pattern (unsupported `~` complement syntax) surfaces as an
 /// `Err(Error::Regexp(_))`, not a panic or a silent empty match.
 #[test]
 fn regexp_malformed_pattern_is_an_error_not_a_panic() {
     let (fields, doc, id, suffix) = open_segment();
     let doc_in = DocInput::open(&doc, &id, &suffix).expect("open .doc");
 
-    let query = BooleanQuery::new().with_must([Clause::from(RegexpQuery::new("body", "a{2,3}"))]);
+    // `{n,m}` bounded repetition is now supported (see
+    // `crates/lucene-codecs/src/regexp.rs`); `~` (complement) remains
+    // deliberately unsupported, so it's what exercises this error path now.
+    let query = BooleanQuery::new().with_must([Clause::from(RegexpQuery::new("body", "a~b"))]);
     let mut c = VecCollector::default();
     let result = search_boolean_query(
         &fields,
