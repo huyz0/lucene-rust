@@ -139,18 +139,20 @@
 //! reader for a doc, or a doc with none, simply contributes an empty
 //! [`lucene_codecs::term_vectors::TermVectorsDocument`] (matches the real
 //! per-doc "this doc has none" case `write_best_speed` already handles).
-//! Term vectors do have one different constraint, though: `write_best_speed`
-//! itself now supports offsets and payloads as well as positions (a later
-//! task added that -- see its own doc comment), but this merge path has not
-//! been updated to pass them through, so [`merge_term_vectors`] still
-//! validates every source's term-vector fields up front and returns
-//! [`Error::TermVectorOffsetsOrPayloadsNotSupported`] for any offsets/
-//! payloads field rather than risk merging them incorrectly (the merge's own
-//! field-reprefixing/combination logic for offsets/payloads has not been
-//! reviewed). Positions-only term vectors (with or without positions at all)
-//! merge and round-trip correctly through the real reader/writer stack; this
-//! is otherwise the same "reuse the existing decoder/encoder verbatim" story
-//! as postings.
+//! `write_best_speed` supports offsets and payloads as well as positions,
+//! and [`merge_term_vectors`] passes them through unchanged: unlike postings
+//! (whose per-term doc/freq/position lists from different sources have to be
+//! concatenated into one ascending-by-docID stream per term), a term
+//! vector's positions/offsets/payloads are entirely doc-local -- each
+//! source's [`TermVectorsReader::document`] call already returns one fully
+//! self-contained [`lucene_codecs::term_vectors::TermVectorsDocument`], so
+//! merging is just "read the doc, remap its field numbers, append it to the
+//! merged doc list" with no cross-source term-level combination step at all.
+//! This applies uniformly regardless of `has_offsets`/`has_payloads`: those
+//! flags and their per-term data ride along with the rest of the field
+//! untouched. Positions-only, offsets-only, payloads-only, and
+//! offsets+payloads term vectors all merge and round-trip correctly through
+//! the real reader/writer stack.
 //!
 //! ## Doc-values type scope
 //!
@@ -521,19 +523,6 @@ pub enum Error {
         merged_field_number: i32,
         merged_has_payloads: bool,
         source_has_payloads: bool,
-    },
-    /// [`lucene_codecs::term_vectors::write_best_speed`] itself now supports
-    /// offsets and payloads (a later task added that), but this merge path's
-    /// own field-reprefixing/combination logic for them has not been
-    /// reviewed, so a merge source whose term vectors have offsets/payloads
-    /// is rejected here up front rather than merged unverified.
-    #[error(
-        "merged field number {merged_field_number} has term vectors with offsets ({has_offsets}) or payloads ({has_payloads}), which this merge path does not yet pass through (write_best_speed itself supports them, but merge.rs's own combination logic for them is unreviewed)"
-    )]
-    TermVectorOffsetsOrPayloadsNotSupported {
-        merged_field_number: i32,
-        has_offsets: bool,
-        has_payloads: bool,
     },
     #[error(transparent)]
     Points(#[from] lucene_codecs::points::Error),
@@ -1947,13 +1936,6 @@ fn merge_term_vectors(
                         .ok_or(Error::UnknownSourceFieldNumber {
                             field_number: field.field_number,
                         })?;
-                if field.has_offsets || field.has_payloads {
-                    return Err(Error::TermVectorOffsetsOrPayloadsNotSupported {
-                        merged_field_number: field.field_number,
-                        has_offsets: field.has_offsets,
-                        has_payloads: field.has_payloads,
-                    });
-                }
             }
             merged_docs.push(doc);
         }
@@ -4613,177 +4595,88 @@ mod tests {
         assert!(merged_reader.document(1).unwrap().is_none());
     }
 
-    fn write_tv_vint(out: &mut Vec<u8>, mut v: i32) {
-        loop {
-            let mut b = (v & 0x7f) as u8;
-            v = ((v as u32) >> 7) as i32;
-            if v != 0 {
-                b |= 0x80;
-                out.push(b);
-            } else {
-                out.push(b);
-                break;
-            }
+    /// Builds a single-field, single-term term-vector document with
+    /// POSITIONS+OFFSETS+PAYLOADS all populated -- unlike [`tv_doc`] (which
+    /// only exercises positions), this is the shape
+    /// [`term_vectors_merge_carries_offsets_and_payloads_through`] needs to
+    /// prove offsets/payloads survive [`merge_term_vectors`] unchanged.
+    fn tv_doc_with_offsets_and_payloads(
+        field_number: i32,
+        term: &str,
+        position: i32,
+        start_offset: i32,
+        end_offset: i32,
+        payload: &[u8],
+    ) -> TermVectorsDocument {
+        TermVectorsDocument {
+            fields: vec![TermVectorField {
+                field_number,
+                has_positions: true,
+                has_offsets: true,
+                has_payloads: true,
+                terms: vec![TermVectorTerm {
+                    term: term.as_bytes().to_vec(),
+                    freq: 1,
+                    positions: Some(vec![position]),
+                    start_offsets: Some(vec![start_offset]),
+                    end_offsets: Some(vec![end_offset]),
+                    payloads: Some(vec![payload.to_vec()]),
+                }],
+            }],
         }
-    }
-
-    fn write_tv_string(out: &mut Vec<u8>, s: &str) {
-        write_tv_vint(out, s.len() as i32);
-        out.extend_from_slice(s.as_bytes());
-    }
-
-    /// Hand-encodes a single-doc, single-chunk `.tvd`/`.tvx`/`.tvm` triple
-    /// with one field (number 0) that has POSITIONS+OFFSETS+PAYLOADS and one
-    /// term "a" (freq 1) -- mirrors
-    /// `lucene_codecs::term_vectors::tests::build_single_doc_chunk`'s shape,
-    /// trimmed to a single term, since this port's write side
-    /// (`write_best_speed`) can't produce offsets/payloads itself (that's
-    /// exactly the gap [`Error::TermVectorOffsetsOrPayloadsNotSupported`]
-    /// guards against) -- a merge source with such data has to be hand-built
-    /// to exercise the check.
-    fn build_offsets_payloads_term_vectors(
-        segment_id: [u8; ID_LENGTH],
-    ) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-        use lucene_store::codec_util;
-
-        const DATA_CODEC: &str = "Lucene90TermVectorsData";
-        const INDEX_CODEC: &str = "Lucene90TermVectorsIndexIdx";
-        const META_CODEC: &str = "Lucene90TermVectorsIndexMeta";
-
-        let mut tvd = Vec::new();
-        tvd.extend_from_slice(&codec_util::CODEC_MAGIC.to_be_bytes());
-        write_tv_string(&mut tvd, DATA_CODEC);
-        tvd.extend_from_slice(&0u32.to_be_bytes()); // version
-        tvd.extend_from_slice(&segment_id);
-        tvd.push(0); // empty suffix
-        let chunk_start = tvd.len() as i64;
-
-        write_tv_vint(&mut tvd, 0); // docBase
-        write_tv_vint(&mut tvd, 1 << 1); // token: chunkDocs=1, dirty=0
-        write_tv_vint(&mut tvd, 1); // numFields = totalFields = 1
-
-        // fieldNums: 1 distinct field (number 0), 8 bits/value.
-        tvd.push(8);
-        tvd.push(0);
-
-        // allFieldNumOffs: 1 field, offset 0, 1 bit/value.
-        write_tv_vint(&mut tvd, 1);
-        tvd.push(0x00);
-
-        // flags: selector=1 (direct array), 1 field, value=7
-        // (POSITIONS|OFFSETS|PAYLOADS).
-        write_tv_vint(&mut tvd, 1);
-        write_tv_vint(&mut tvd, 1);
-        tvd.push(0x07);
-
-        // numTerms: 1 field, value=1.
-        write_tv_vint(&mut tvd, 1); // bitsRequired
-        write_tv_vint(&mut tvd, 1); // slice byte length
-        tvd.push(1);
-
-        // prefixLengths [0] (bpv=0, constant).
-        tvd.push(0x01);
-        // suffixLengths [1] (bpv=0, constant, min=1): token, minValue vlong.
-        tvd.extend_from_slice(&[0x00, 0x01]);
-        // termFreqsMinus1 [0] (bpv=0, constant).
-        tvd.push(0x01);
-
-        // positions_flat [0] (bpv=0, constant).
-        tvd.push(0x01);
-
-        // charsPerTerm: 1 distinct field, value 1.0.
-        tvd.extend_from_slice(&1.0f32.to_bits().to_le_bytes());
-        // start_offsets_flat [0] (bpv=0, constant).
-        tvd.push(0x01);
-        // lengths_flat [1] (bpv=0, constant, min=1).
-        tvd.extend_from_slice(&[0x00, 0x01]);
-        // payload_lengths_flat [1] (bpv=0, constant, min=1).
-        tvd.extend_from_slice(&[0x00, 0x01]);
-
-        // LZ4 (CompressionMode.FAST, no dictionary): literal-only unit
-        // wrapping "a" (term suffix) then payload byte 0xAA.
-        let payload = [b'a', 0xAA];
-        tvd.push((payload.len() as u8) << 4);
-        tvd.extend_from_slice(&payload);
-
-        tvd.extend_from_slice(&codec_util::FOOTER_MAGIC.to_be_bytes());
-        tvd.extend_from_slice(&0u32.to_be_bytes());
-        let checksum = crc32fast::hash(&tvd) as u64;
-        tvd.extend_from_slice(&checksum.to_be_bytes());
-
-        let mut tvx = Vec::new();
-        tvx.extend_from_slice(&codec_util::CODEC_MAGIC.to_be_bytes());
-        write_tv_string(&mut tvx, INDEX_CODEC);
-        tvx.extend_from_slice(&0u32.to_be_bytes());
-        tvx.extend_from_slice(&segment_id);
-        tvx.push(0);
-        let docs_start = tvx.len() as i64;
-        let docs_end = tvx.len() as i64;
-        let start_pointers_end = tvx.len() as i64;
-        tvx.extend_from_slice(&codec_util::FOOTER_MAGIC.to_be_bytes());
-        tvx.extend_from_slice(&0u32.to_be_bytes());
-        let checksum = crc32fast::hash(&tvx) as u64;
-        tvx.extend_from_slice(&checksum.to_be_bytes());
-
-        let max_doc = 1i32;
-        let max_pointer = (tvd.len() - codec_util::FOOTER_LENGTH) as i64;
-        let mut tvm = Vec::new();
-        tvm.extend_from_slice(&codec_util::CODEC_MAGIC.to_be_bytes());
-        write_tv_string(&mut tvm, META_CODEC);
-        tvm.extend_from_slice(&0u32.to_be_bytes());
-        tvm.extend_from_slice(&segment_id);
-        tvm.push(0);
-        write_tv_vint(&mut tvm, 0); // packedIntsVersion
-        write_tv_vint(&mut tvm, 4096); // chunkSize
-        tvm.extend_from_slice(&max_doc.to_le_bytes());
-        tvm.extend_from_slice(&0i32.to_le_bytes()); // blockShift
-        tvm.extend_from_slice(&2i32.to_le_bytes()); // index_num_chunks
-        tvm.extend_from_slice(&docs_start.to_le_bytes());
-        for min in [0i64, max_doc as i64] {
-            tvm.extend_from_slice(&min.to_le_bytes());
-            tvm.extend_from_slice(&0i32.to_le_bytes());
-            tvm.extend_from_slice(&0i64.to_le_bytes());
-            tvm.push(0);
-        }
-        tvm.extend_from_slice(&docs_end.to_le_bytes());
-        for min in [chunk_start, max_pointer] {
-            tvm.extend_from_slice(&min.to_le_bytes());
-            tvm.extend_from_slice(&0i32.to_le_bytes());
-            tvm.extend_from_slice(&0i64.to_le_bytes());
-            tvm.push(0);
-        }
-        tvm.extend_from_slice(&start_pointers_end.to_le_bytes());
-        tvm.extend_from_slice(&max_pointer.to_le_bytes());
-        write_tv_vint(&mut tvm, 1); // numChunks (outer)
-        write_tv_vint(&mut tvm, 0); // numDirtyChunks
-        write_tv_vint(&mut tvm, 0); // numDirtyDocs
-        tvm.extend_from_slice(&codec_util::FOOTER_MAGIC.to_be_bytes());
-        tvm.extend_from_slice(&0u32.to_be_bytes());
-        let checksum = crc32fast::hash(&tvm) as u64;
-        tvm.extend_from_slice(&checksum.to_be_bytes());
-
-        (tvd, tvx, tvm)
     }
 
     #[test]
-    fn term_vectors_merge_rejects_offsets_and_payloads() {
+    fn term_vectors_merge_carries_offsets_and_payloads_through() {
         let seg0_id = [1u8; ID_LENGTH];
-        let (tvd, tvx, tvm) = build_offsets_payloads_term_vectors(seg0_id);
-        let tv0_reader = term_vectors::open(&tvd, &tvx, &tvm, &seg0_id, "").unwrap();
-        // Sanity-check the hand-built bytes actually decode to
-        // POSITIONS+OFFSETS+PAYLOADS before using them to exercise the
-        // merge-time rejection.
+        let seg1_id = [2u8; ID_LENGTH];
+
+        // Source 0: 2 docs, both with offsets+payloads term vectors.
+        let tv0 = flush_term_vectors(
+            &[
+                tv_doc_with_offsets_and_payloads(0, "alpha", 0, 0, 5, &[0xAA]),
+                tv_doc_with_offsets_and_payloads(0, "beta", 0, 0, 4, &[0xBB, 0xCC]),
+            ],
+            seg0_id,
+        );
+        // Source 1: 1 doc, also with offsets+payloads term vectors.
+        let tv1 = flush_term_vectors(
+            &[tv_doc_with_offsets_and_payloads(
+                0,
+                "gamma",
+                0,
+                0,
+                5,
+                &[0xDD],
+            )],
+            seg1_id,
+        );
+        let tv0_reader = tv0.reader();
+        let tv1_reader = tv1.reader();
+
+        // Sanity-check both flush side actually round-trips offsets/payloads
+        // before using them to exercise the merge.
         let doc0 = tv0_reader.document(0).unwrap().unwrap();
         assert!(doc0.fields[0].has_offsets && doc0.fields[0].has_payloads);
-        assert_eq!(doc0.fields[0].terms[0].term, b"a");
         assert_eq!(doc0.fields[0].terms[0].start_offsets, Some(vec![0]));
+        assert_eq!(doc0.fields[0].terms[0].end_offsets, Some(vec![5]));
         assert_eq!(doc0.fields[0].terms[0].payloads, Some(vec![vec![0xAA]]));
 
         let fields0 = vec![tv_field("id", 0)];
+        let fields1 = vec![tv_field("id", 0)];
         let tmp = tempdir();
         let dir = FsDirectory::open(&tmp);
-        let stored0 = flush(&dir, &tmp, "_0", seg0_id, &fields0, &[doc_with(0, "a")]);
+        let stored0 = flush(
+            &dir,
+            &tmp,
+            "_0",
+            seg0_id,
+            &fields0,
+            &[doc_with(0, "alpha"), doc_with(0, "beta")],
+        );
+        let stored1 = flush(&dir, &tmp, "_1", seg1_id, &fields1, &[doc_with(0, "gamma")]);
         let reader0 = open_reader(&stored0);
+        let reader1 = open_reader(&stored1);
 
         let source0 = MergeSource {
             field_infos: &stored0.fields,
@@ -4799,24 +4692,66 @@ mod tests {
             postings: &[],
             points: &[],
         };
+        let source1 = MergeSource {
+            field_infos: &stored1.fields,
+            reader: &reader1,
+            live_docs: None,
+            numeric_doc_values: &[],
+            binary_doc_values: &[],
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &[],
+            norms: &[],
+            term_vectors: Some(&tv1_reader),
+            postings: &[],
+            points: &[],
+        };
 
-        let err = merge_stored_only_segments(
+        merge_stored_only_segments(
             &dir,
-            &[source0],
-            "_merged_tv_rejected",
+            &[source0, source1],
+            "_merged_tv_offsets_payloads",
             [9u8; ID_LENGTH],
             "Lucene104",
             version(),
         )
-        .unwrap_err();
-        assert!(matches!(
-            err,
-            Error::TermVectorOffsetsOrPayloadsNotSupported {
-                merged_field_number: 0,
-                has_offsets: true,
-                has_payloads: true,
-            }
-        ));
+        .unwrap();
+
+        let merged_tvd =
+            std::fs::read(std::path::Path::new(&tmp).join("_merged_tv_offsets_payloads.tvd"))
+                .unwrap();
+        let merged_tvx =
+            std::fs::read(std::path::Path::new(&tmp).join("_merged_tv_offsets_payloads.tvx"))
+                .unwrap();
+        let merged_tvm =
+            std::fs::read(std::path::Path::new(&tmp).join("_merged_tv_offsets_payloads.tvm"))
+                .unwrap();
+        let merged_reader =
+            term_vectors::open(&merged_tvd, &merged_tvx, &merged_tvm, &[9u8; ID_LENGTH], "")
+                .unwrap();
+
+        let merged0 = merged_reader.document(0).unwrap().unwrap();
+        assert!(merged0.fields[0].has_offsets && merged0.fields[0].has_payloads);
+        assert_eq!(merged0.fields[0].terms[0].term, b"alpha");
+        assert_eq!(merged0.fields[0].terms[0].start_offsets, Some(vec![0]));
+        assert_eq!(merged0.fields[0].terms[0].end_offsets, Some(vec![5]));
+        assert_eq!(merged0.fields[0].terms[0].payloads, Some(vec![vec![0xAA]]));
+
+        let merged1 = merged_reader.document(1).unwrap().unwrap();
+        assert_eq!(merged1.fields[0].terms[0].term, b"beta");
+        assert_eq!(merged1.fields[0].terms[0].start_offsets, Some(vec![0]));
+        assert_eq!(merged1.fields[0].terms[0].end_offsets, Some(vec![4]));
+        assert_eq!(
+            merged1.fields[0].terms[0].payloads,
+            Some(vec![vec![0xBB, 0xCC]])
+        );
+
+        // Doc 2 comes from source 1 (seg1), merged after source 0's 2 docs.
+        let merged2 = merged_reader.document(2).unwrap().unwrap();
+        assert_eq!(merged2.fields[0].terms[0].term, b"gamma");
+        assert_eq!(merged2.fields[0].terms[0].start_offsets, Some(vec![0]));
+        assert_eq!(merged2.fields[0].terms[0].end_offsets, Some(vec![5]));
+        assert_eq!(merged2.fields[0].terms[0].payloads, Some(vec![vec![0xDD]]));
     }
 
     #[test]

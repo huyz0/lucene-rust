@@ -592,15 +592,16 @@ impl<'d> TermVectorsReader<'d> {
 /// ratio, chunk count, and prefix-sharing differ from what a real flush
 /// would produce.
 ///
-/// **Not yet wired**: nothing in `IndexWriter`'s or `merge.rs`'s term-vector
-/// commit paths currently constructs a [`TermVectorField`] with
-/// `has_offsets`/`has_payloads` set -- that plumbing (tokenization ->
-/// `TermVectorField` construction with real offsets/payloads) is a separate
-/// follow-up. `merge.rs`'s `TermVectorOffsetsOrPayloadsNotSupported` guard is
-/// therefore deliberately left in place even though this function no longer
-/// needs it: lifting it is out of scope here since the merge path's own
-/// reprefixing/combination logic for offsets/payloads hasn't been reviewed
-/// for correctness (only this codec function has).
+/// `merge.rs`'s `merge_term_vectors` passes offsets/payloads through this
+/// function unchanged (term-vector data is entirely doc-local, so merging
+/// needs no cross-source term-level combination the way postings does --
+/// see that module's doc comment). **Still not wired**: nothing in
+/// `IndexWriter`'s flush path yet constructs a [`TermVectorField`] with
+/// `has_offsets`/`has_payloads` set (tokenization -> `TermVectorField`
+/// construction with real offsets/payloads is a separate follow-up), so a
+/// real flush is still positions-only; only a merge of already-flushed
+/// segments (or a hand-built `TermVectorsDocument`) can produce one with
+/// offsets/payloads today.
 const CHARS_PER_TERM: f32 = 1.0;
 
 pub fn write_best_speed(

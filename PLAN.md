@@ -6058,3 +6058,37 @@ Files changed: `crates/lucene-index/src/index_writer.rs` (new
 updated), `PLAN.md` (this entry). `cargo fmt --all`, `cargo clippy
 --workspace --all-targets -- -D warnings`, `cargo test -p lucene-index`,
 and `cargo test -p lucene-search` all clean.
+
+**Progress (term-vectors merge: offsets/payloads now pass through):**
+Closed the gap `dad3e8c` flagged: `merge_term_vectors` in
+`lucene-index/src/merge.rs` rejected any source whose term vectors had
+offsets or payloads (`Error::TermVectorOffsetsOrPayloadsNotSupported`)
+rather than merging them, because the merge's own combination logic for
+that data hadn't been reviewed. On inspection, there is no combination
+logic to review: term-vector data is entirely doc-local (each source's
+`TermVectorsReader::document` call already returns one fully self-contained
+`TermVectorsDocument`), so merging never needed the cross-source term-level
+concatenation postings needs -- it's read-doc, remap-field-numbers, append,
+same as the positions-only case already handled. Removed the rejection
+check and the now-dead `Error::TermVectorOffsetsOrPayloadsNotSupported`
+variant. Replaced the old `term_vectors_merge_rejects_offsets_and_payloads`
+test (which hand-encoded raw `.tvd`/`.tvx`/`.tvm` bytes byte-by-byte, since
+`write_best_speed` couldn't produce offsets/payloads at the time it was
+written) with `term_vectors_merge_carries_offsets_and_payloads_through`:
+two real sources, flushed via `write_best_speed` (which already supports
+offsets/payloads today) with distinct terms/offsets/payloads per doc,
+merged via `merge_stored_only_segments`, and read back through the
+unmodified `TermVectorsReader` with every doc's exact term/offset/payload
+values checked. `cargo fmt --all -- --check`, `cargo clippy --workspace
+--all-targets -- -D warnings` clean; `cargo test -p lucene-index --lib
+merge::` passes (64/64). See `docs/parity.md`'s `SegmentMerger` and
+`Lucene90CompressingTermVectorsWriter` rows for the parity-tracking update.
+
+Files changed: `crates/lucene-index/src/merge.rs` (removed the
+offsets/payloads rejection in `merge_term_vectors`, removed the
+now-unreachable `Error::TermVectorOffsetsOrPayloadsNotSupported` variant
+and its hand-built-bytes test infrastructure, added the new end-to-end
+merge test, updated module doc comment), `crates/lucene-codecs/src/term_vectors.rs`
+(updated `write_best_speed`'s doc comment to reflect the merge path no
+longer needing the guard), `docs/parity.md` (`SegmentMerger` and
+`Lucene90CompressingTermVectorsWriter` rows), `PLAN.md` (this entry).
