@@ -2308,6 +2308,150 @@ mod tests {
     }
 
     #[test]
+    fn write_then_read_exactly_at_max_points_per_leaf_stays_single_leaf() {
+        // count == max exactly: must stay a single leaf (num_leaves ==
+        // ceil(count / max) == 1), the boundary just below the split trigger.
+        let points: Vec<(i32, Vec<u8>)> = (0..4)
+            .map(|i| (i, long_sortable_bytes((i as i64) * 1000)))
+            .collect();
+        let field = WritePointsField {
+            field_number: 0,
+            num_dims: 1,
+            bytes_per_dim: 8,
+            points: points.clone(),
+        };
+        let (kdm, kdi, kdd) = write(&[field], 4, &id(), "").unwrap();
+        let reader = open(&kdm, &kdi, &kdd, &id(), "").unwrap();
+        let meta = reader.field(0).unwrap();
+        assert_eq!(meta.num_leaves, 1);
+        assert_eq!(meta.point_count, 4);
+
+        let mut decoded = reader.decode_all_points(0).unwrap();
+        decoded.sort_by_key(|p| p.doc_id);
+        let mut expected: Vec<Point> = points
+            .into_iter()
+            .map(|(doc_id, packed_value)| Point {
+                doc_id,
+                packed_value,
+            })
+            .collect();
+        expected.sort_by_key(|p| p.doc_id);
+        assert_eq!(decoded, expected);
+    }
+
+    #[test]
+    fn write_then_read_one_over_max_points_per_leaf_splits_into_two() {
+        // count == max + 1: exactly one point over the threshold must
+        // trigger a split into 2 leaves (the classic BKD off-by-one
+        // boundary), with the left leaf getting exactly `max` points and the
+        // right leaf getting the single leftover point.
+        let points: Vec<(i32, Vec<u8>)> = (0..5)
+            .map(|i| (i, long_sortable_bytes((i as i64) * 1000)))
+            .collect();
+        let field = WritePointsField {
+            field_number: 0,
+            num_dims: 1,
+            bytes_per_dim: 8,
+            points: points.clone(),
+        };
+        let (kdm, kdi, kdd) = write(&[field], 4, &id(), "").unwrap();
+        let reader = open(&kdm, &kdi, &kdd, &id(), "").unwrap();
+        let meta = reader.field(0).unwrap();
+        assert_eq!(meta.num_leaves, 2);
+        assert_eq!(meta.point_count, 5);
+
+        let mut decoded = reader.decode_all_points(0).unwrap();
+        decoded.sort_by_key(|p| p.doc_id);
+        let mut expected: Vec<Point> = points
+            .into_iter()
+            .map(|(doc_id, packed_value)| Point {
+                doc_id,
+                packed_value,
+            })
+            .collect();
+        expected.sort_by_key(|p| p.doc_id);
+        assert_eq!(decoded, expected);
+    }
+
+    #[test]
+    fn write_then_read_all_points_identical_degenerate_case() {
+        // Every point identical in every dimension -- no dimension has any
+        // variance to split on. A real BKD tree still must split purely by
+        // count (never by value), producing several valid leaves rather
+        // than looping forever or panicking. 2 dimensions so widest_dim's
+        // all-zero-range tie-break (dimension 0) is actually exercised.
+        let value = vec![7u8, 7, 7, 7, 9, 9, 9, 9]; // 2 dims x 4 bytes, identical
+        let points: Vec<(i32, Vec<u8>)> = (0..10).map(|i| (i, value.clone())).collect();
+        let field = WritePointsField {
+            field_number: 0,
+            num_dims: 2,
+            bytes_per_dim: 4,
+            points: points.clone(),
+        };
+        let (kdm, kdi, kdd) = write(&[field], 4, &id(), "").unwrap();
+        let reader = open(&kdm, &kdi, &kdd, &id(), "").unwrap();
+        let meta = reader.field(0).unwrap();
+        assert_eq!(meta.num_leaves, 3); // ceil(10/4)
+        assert_eq!(meta.point_count, 10);
+
+        let mut decoded = reader.decode_all_points(0).unwrap();
+        decoded.sort_by_key(|p| p.doc_id);
+        let mut expected: Vec<Point> = points
+            .into_iter()
+            .map(|(doc_id, packed_value)| Point {
+                doc_id,
+                packed_value,
+            })
+            .collect();
+        expected.sort_by_key(|p| p.doc_id);
+        assert_eq!(decoded, expected);
+    }
+
+    #[test]
+    fn widest_dim_picks_last_dim_when_only_it_varies() {
+        // dims 0 and 1 are identical across every point (zero range); only
+        // dim 2 varies. A naive "cycle through dimensions" splitter would
+        // pick 0 or 1 at some point; the real range-driven heuristic must
+        // pick dim 2 every time since it's the only one with any spread.
+        let points: Vec<(i32, Vec<u8>)> = (0..8).map(|i| (i, vec![1, 1, i as u8])).collect();
+        assert_eq!(widest_dim(&points, 3, 1), 2);
+    }
+
+    #[test]
+    fn write_then_read_last_dim_only_varies_multi_leaf_round_trips() {
+        // Full write/read round-trip of the same shape as
+        // `widest_dim_picks_last_dim_when_only_it_varies` above, but through
+        // the real writer with enough points to force multiple leaves --
+        // proves compute_leaf_plan actually splits on dimension 2 at every
+        // level rather than stalling because dims 0/1 look unsplittable.
+        let points: Vec<(i32, Vec<u8>)> =
+            (0..40i32).map(|i| (i, vec![5, 5, (i * 3) as u8])).collect();
+        let field = WritePointsField {
+            field_number: 0,
+            num_dims: 3,
+            bytes_per_dim: 1,
+            points: points.clone(),
+        };
+        let (kdm, kdi, kdd) = write(&[field], 4, &id(), "").unwrap();
+        let reader = open(&kdm, &kdi, &kdd, &id(), "").unwrap();
+        let meta = reader.field(0).unwrap();
+        assert_eq!(meta.num_leaves, 10); // ceil(40/4)
+        assert_eq!(meta.point_count, 40);
+
+        let mut decoded = reader.decode_all_points(0).unwrap();
+        decoded.sort_by_key(|p| p.doc_id);
+        let mut expected: Vec<Point> = points
+            .into_iter()
+            .map(|(doc_id, packed_value)| Point {
+                doc_id,
+                packed_value,
+            })
+            .collect();
+        expected.sort_by_key(|p| p.doc_id);
+        assert_eq!(decoded, expected);
+    }
+
+    #[test]
     fn write_rejects_empty_field() {
         let field = WritePointsField {
             field_number: 0,

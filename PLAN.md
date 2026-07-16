@@ -5128,3 +5128,74 @@ tests), `docs/parity.md`, `PLAN.md`. `merge.rs` and `index_writer.rs` are
 unchanged. `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D
 warnings`, `cargo test -p lucene-codecs`, and `cargo test -p lucene-index`
 all pass clean.
+
+**Progress (points write-side multi-leaf/multi-dimension edge cases audit):**
+Audited `points::write` (`crates/lucene-codecs/src/points.rs`) against the
+classic BKD multi-leaf/multi-dimension edge cases. Confirmed this is a real
+recursive KD-tree build, not a flattened approximation: `compute_leaf_plan`
+picks a split dimension via `widest_dim` (widest per-dimension value range,
+unsigned byte-wise), sorts the current subset by that dimension, and splits
+at `mid = num_left_leaf_nodes * max_points_in_leaf_node` exactly matching
+real `BKDWriter.build`/`getNumLeftLeafNodes`, recursing until `num_leaves ==
+1`.
+
+Per-edge-case outcome, all already-correct (no production bug found):
+- **Max-points-per-leaf boundary**: `count == max` stays a single leaf;
+  `count == max + 1` splits into exactly 2 (left gets `max`, right gets the
+  1 leftover point) -- verified correct, but wasn't previously tested at
+  this exact boundary. New tests:
+  `write_then_read_exactly_at_max_points_per_leaf_stays_single_leaf`,
+  `write_then_read_one_over_max_points_per_leaf_splits_into_two`.
+- **All points identical in every dimension** (degenerate, no dimension has
+  variance): `widest_dim`'s tie-break (lowest dimension index) still
+  returns a valid dimension, and `compute_leaf_plan`'s recursion terminates
+  purely by leaf count, never by value variance, so no infinite loop/panic
+  risk exists structurally. Was untested; new test
+  `write_then_read_all_points_identical_degenerate_case` (2D, 10 points, 3
+  leaves) proves it round-trips exactly.
+- **Only the last dimension varies** (dims 0..N-2 constant): `widest_dim`
+  correctly picks the varying dimension since a zero-range dimension's
+  unsigned-byte-subtracted range is all-zero bytes, always less than any
+  nonzero-range dimension's, regardless of dimension order -- not a
+  "cycle through dimensions" heuristic. New unit test
+  `widest_dim_picks_last_dim_when_only_it_varies` plus a full write/read
+  round trip through multiple leaves,
+  `write_then_read_last_dim_only_varies_multi_leaf_round_trips`.
+- **num_dims == 1 vs. num_dims >= 2**: both paths were already exercised
+  (`write_then_read_two_leaves_round_trips` etc. for 1D;
+  `write_then_read_2d_multi_leaf_round_trips`/`_3d_multi_leaf_round_trips`
+  for multi-dimension) -- no gap, no new test needed.
+- **num_index_dims < num_dims**: confirmed **not supported** at the write
+  side, and this is a genuine, documented, pre-existing scope boundary, not
+  something this audit was expected to close. `WritePointsField` has no
+  `num_index_dims` field at all; `write_field` hardcodes `let
+  num_index_dims = num_dims;` (`points.rs:1035`). This matches (and is the
+  root cause of) `merge.rs`'s `Error::PointsIndexDimsNotSupported`. Left
+  out of scope per the task brief.
+- **Exact multiple of max-points-per-leaf vs. not**: already covered by
+  existing tests (`write_then_read_two_leaves_round_trips`, 8 points/max 4,
+  exact multiple; `write_then_read_many_leaves_round_trips`, 173 points/max
+  4, not a multiple) -- both the exact-multiple and partial-last-leaf paths
+  were already exercised correctly.
+- **Deep recursion / many leaves**: already covered by
+  `write_then_read_many_leaves_round_trips` (44 leaves) and
+  `write_then_read_three_leaves_unbalanced_round_trips` (both branches of
+  `get_num_left_leaf_nodes`'s unbalanced-remainder rule) -- no stack or
+  bookkeeping issues found; `compute_leaf_plan`/`pack_index`'s save/restore
+  of `last_split_values`/`negative_deltas` around each recursive call was
+  already correct at depth.
+
+No production code changes were required -- every edge case audited was
+already handled correctly by the existing recursive KD-tree build; the gaps
+were purely in test coverage for boundary/degenerate cases that weren't
+previously exercised end-to-end. Files changed:
+`crates/lucene-codecs/src/points.rs` (five new tests, no non-test changes),
+`docs/parity.md`, `PLAN.md`. New/modified tests:
+`write_then_read_exactly_at_max_points_per_leaf_stays_single_leaf`,
+`write_then_read_one_over_max_points_per_leaf_splits_into_two`,
+`write_then_read_all_points_identical_degenerate_case`,
+`widest_dim_picks_last_dim_when_only_it_varies`,
+`write_then_read_last_dim_only_varies_multi_leaf_round_trips` (all new).
+`cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`,
+and `cargo test -p lucene-codecs` (47 `points::tests::*` passing, up from
+42) all pass clean.
