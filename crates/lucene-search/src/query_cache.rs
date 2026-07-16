@@ -474,6 +474,56 @@ mod tests {
     }
 
     #[test]
+    fn no_hits_degrades_to_pure_fifo_eviction_order() {
+        // Sanity check: with zero cache hits between inserts, "least recently
+        // used" and "oldest inserted" coincide -- eviction order must be
+        // exactly insertion order (q1 evicted first, then q2, ...) once the
+        // cache is at capacity and nothing has ever been re-accessed.
+        //
+        // Note: probing whether a query is still cached is itself a
+        // `get_or_compute` call, which would touch that entry's recency and
+        // perturb the very order under test -- so this test only ever probes
+        // *after* all insertions are done, and only for entries whose cached
+        // status doesn't change what gets evicted next (i.e. never revives
+        // an evicted entry mid-sequence).
+        let mut cache: QueryCache<&str, &str> = QueryCache::new(2);
+        cache.get_or_compute("seg0", "q1", || bitset_with(&[1], 8));
+        cache.get_or_compute("seg0", "q2", || bitset_with(&[2], 8));
+        assert_eq!(cache.len(), 2);
+
+        // Inserting q3 (no hits so far) must evict q1 -- the oldest entry --
+        // not q2.
+        cache.get_or_compute("seg0", "q3", || bitset_with(&[3], 8));
+        assert_eq!(cache.len(), 2);
+
+        // Inserting q4 (still no hits) must evict q2 next, in the same
+        // insertion order -- not q3, which is newer.
+        cache.get_or_compute("seg0", "q4", || bitset_with(&[4], 8));
+        assert_eq!(cache.len(), 2);
+
+        // Now probe, without disturbing eviction order further: q1 and q2
+        // (evicted, in that order) must both recompute; q3 and q4 (still
+        // cached) must both still be hits.
+        let calls_q1 = Cell::new(0);
+        cache.get_or_compute("seg0", "q1", || {
+            calls_q1.set(calls_q1.get() + 1);
+            bitset_with(&[1], 8)
+        });
+        assert_eq!(calls_q1.get(), 1, "q1 (oldest) should have been evicted");
+
+        let calls_q2 = Cell::new(0);
+        cache.get_or_compute("seg0", "q2", || {
+            calls_q2.set(calls_q2.get() + 1);
+            bitset_with(&[2], 8)
+        });
+        assert_eq!(
+            calls_q2.get(),
+            1,
+            "q2 (second oldest) should have been evicted next, in insertion order"
+        );
+    }
+
+    #[test]
     fn invalidate_segment_removes_only_that_segments_entries() {
         let mut cache: QueryCache<&str, &str> = QueryCache::new(8);
         cache.get_or_compute("seg0", "q1", || bitset_with(&[1], 8));
