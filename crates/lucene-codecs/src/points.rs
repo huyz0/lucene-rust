@@ -444,12 +444,15 @@ const DELTA_BPV_16: i8 = 16;
 const BPV_21: i8 = 21;
 const BPV_24: i8 = 24;
 const BPV_32: i8 = 32;
+/// Legacy marker: per Java's own comment on `DocIdsWriter.LEGACY_DELTA_VINT`,
+/// "these signs are legacy, should no longer be used in the writing side."
+/// No Lucene 10.5.0 writer emits this, but `DocIdsWriter.readInts` still
+/// decodes it for backward compatibility with indices written by very old
+/// versions, so this port mirrors that read path.
+const LEGACY_DELTA_VINT: i8 = 0;
 
 /// Port of `DocIdsWriter.readInts` -- decodes `count` doc ids using
-/// whichever of the current encodings the leaf's leading marker byte
-/// selects. `LEGACY_DELTA_VINT` (marker 0) is not supported: per Java's own
-/// comment, "these signs are legacy, should no longer be used in the
-/// writing side," so no current write can produce it.
+/// whichever encoding the leaf's leading marker byte selects.
 fn read_doc_ids(input: &mut SliceInput, count: usize) -> Result<Vec<i32>> {
     let bpv = input.read_byte()? as i8;
     match bpv {
@@ -468,8 +471,24 @@ fn read_doc_ids(input: &mut SliceInput, count: usize) -> Result<Vec<i32>> {
             }
             Ok(out)
         }
+        LEGACY_DELTA_VINT => read_legacy_delta_vint(input, count),
         other => Err(Error::UnsupportedDocIdsEncoding(other)),
     }
+}
+
+/// Port of `DocIdsWriter.readLegacyDeltaVInts`: each doc id is a vint delta
+/// from the previous one (starting at 0), the encoding used by index
+/// versions that predate `DELTA_BPV_16`/`BPV_21`/`BPV_24`/`BPV_32`. No
+/// current writer in this port (or in Lucene 10.5.0) produces this, so it
+/// is exercised only by hand-built unit tests, not a real-Lucene fixture.
+fn read_legacy_delta_vint(input: &mut SliceInput, count: usize) -> Result<Vec<i32>> {
+    let mut out = Vec::with_capacity(count);
+    let mut doc = 0i32;
+    for _ in 0..count {
+        doc += input.read_vint()?;
+        out.push(doc);
+    }
+    Ok(out)
 }
 
 fn read_bitset_ids(input: &mut SliceInput, count: usize) -> Result<Vec<i32>> {
@@ -1333,12 +1352,33 @@ mod tests {
 
     #[test]
     fn unsupported_doc_ids_encoding_rejected() {
-        let bytes = [0u8]; // LEGACY_DELTA_VINT marker, not supported
+        let bytes = [1u8]; // no such marker byte is defined
         let mut input = SliceInput::new(&bytes);
         assert!(matches!(
             read_doc_ids(&mut input, 1),
-            Err(Error::UnsupportedDocIdsEncoding(0))
+            Err(Error::UnsupportedDocIdsEncoding(1))
         ));
+    }
+
+    #[test]
+    fn legacy_delta_vint_decode() {
+        // marker 0 (LEGACY_DELTA_VINT): each id is a vint delta from the
+        // previous one, starting at 0. Real Lucene 10.5.0 writers never
+        // produce this marker (it predates DELTA_BPV_16/BPV_21/BPV_24/
+        // BPV_32), so this is a hand-built fixture, not a real-Lucene one.
+        let mut bytes = vec![0u8]; // LEGACY_DELTA_VINT
+        write_vint(&mut bytes, 5); // doc 0: 0 + 5 = 5
+        write_vint(&mut bytes, 3); // doc 1: 5 + 3 = 8
+        write_vint(&mut bytes, 100); // doc 2: 8 + 100 = 108
+        let mut input = SliceInput::new(&bytes);
+        assert_eq!(read_doc_ids(&mut input, 3).unwrap(), vec![5, 8, 108]);
+    }
+
+    #[test]
+    fn legacy_delta_vint_empty() {
+        let bytes = vec![0u8];
+        let mut input = SliceInput::new(&bytes);
+        assert_eq!(read_doc_ids(&mut input, 0).unwrap(), Vec::<i32>::new());
     }
 
     /// A single-leaf field (numLeaves=1): the packed index is just the root
