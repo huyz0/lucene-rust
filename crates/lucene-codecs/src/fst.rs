@@ -1455,6 +1455,14 @@ impl<'a> Fst<'a> {
         Ok(FstEnum::new(self))
     }
 
+    /// `IntsRefFSTEnum`'s constructor equivalent -- see `IntsRefFstEnum`'s
+    /// type doc for exactly what this does and does not port.
+    pub fn iter_ints(&self) -> Result<IntsRefFstEnum<'_, 'a>> {
+        Ok(IntsRefFstEnum {
+            inner: self.iter()?,
+        })
+    }
+
     /// Port of `Util.get(FST, BytesRef)`: look up `key` and return its
     /// accumulated output if the FST accepts it, else `None`.
     pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
@@ -1517,12 +1525,8 @@ impl<'a> Fst<'a> {
 /// addressing/continuous dispatch -- see `FSTEnum.java`). This type only
 /// walks every accepted key in ascending order from the start, which is
 /// already enough to enumerate any FST's full contents; see `docs/parity.md`
-/// for the deferred seek support and `IntsRefFSTEnum`'s int-sequence variant
-/// (this port only has `BytesRef`-shaped output, so only the `BytesRef` key
-/// side of enumeration -- i.e. this type -- was ported; real Lucene's
-/// `IntsRefFSTEnum` enumerates `IntsRef` *inputs* against a differently-typed
-/// FST and shares the same `FSTEnum` base class this port's `read_first_target_arc`
-/// et al. mirror, but was not itself needed for any consumer in this port).
+/// for the deferred seek support and `IntsRefFstEnum` (below) for the
+/// `IntsRef`-keyed sibling of this type.
 ///
 /// Constructed via `Fst::iter`. Implements `Iterator<Item = Result<(Vec<u8>,
 /// Vec<u8>)>>`, yielding `(key, output)` pairs in ascending key order.
@@ -2808,6 +2812,174 @@ impl<'a> Fst<'a> {
     /// accumulated output bytes via `O::decode`.
     pub fn get_typed<O: Outputs>(&self, key: &[u8]) -> Result<Option<O::Value>> {
         Ok(self.get(key)?.map(|bytes| O::decode(&bytes)))
+    }
+}
+
+// --- `IntsRefFSTEnum` (`IntsRef`-keyed ordered enumeration) ---------------
+//
+// Real Lucene's `IntsRefFSTEnum` is `BytesRefFSTEnum`'s sibling: both extend
+// the same abstract `FSTEnum` base class (shared `pushFirst`/`pushLast`/
+// `rewindPrefix`/`doSeekCeil`/`doSeekFloor`/`doSeekExact`/`doNext` algorithm),
+// differing only in the *type* of one key element -- a `BytesRef`'s elements
+// are bytes (0..=255), an `IntsRef`'s elements are full `int`s -- and in how
+// a finished walk's accumulated `labels` array is turned back into the
+// caller-facing key type (`BytesRef` vs `IntsRef`). Concretely,
+// `IntsRefFSTEnum` is used over FSTs whose `FST.INPUT_TYPE` is `BYTE4`: each
+// `int` key element is stored as its own arc label (a genuinely 32-bit-wide
+// alphabet), which is how e.g. `SynonymMap`'s FST works -- token ordinals,
+// not raw bytes, are the arc labels.
+//
+// This port's `Fst`/`Arc`/`read_label` et al. do carry labels as `i32`
+// end-to-end (see `Arc::label`, `read_label`'s return type) -- so nothing
+// forces bytes specifically at the *type* level. But the on-disk node/arc
+// format this module's reader (`read_label`) and builder (`build_node`/
+// `TrieNode`) actually implement is hardcoded to single-byte labels:
+// `read_label` asserts `input_type == Byte1` and always does a plain
+// `read_byte`, and `TrieNode::children` is keyed by `u8`. Real `BYTE4`/
+// `BYTE2` FSTs (`FST.readLabel`'s other two branches, which decode a label
+// as a 4-byte or 2-byte value with its own varint-like packing) are outside
+// this reader's scope entirely (see the module doc and `Fst::get`'s guard).
+// Building a genuinely `BYTE4`-keyed FST variant -- widening `TrieNode`,
+// `build_node`'s arc-signature hashing, `read_label`/`find_target_arc`'s
+// direct-addressing and continuous-node arithmetic, etc., all to accept a
+// real 32-bit alphabet -- is a substantially larger slice than this task's
+// reasonable scope (it's effectively rebuilding the node/arc codec a second
+// time for a wider label width).
+//
+// **What's implemented here instead**: `IntsRefFstEnum` presents the real
+// `IntsRefFSTEnum` *API* (ordered enumeration + `seekCeil`/`seekFloor`/
+// `seekExact` over `Vec<i32>` keys) but is a byte-keyed `BYTE1` FST wearing
+// an int-keyed face -- each `i32` key element is encoded as 4 big-endian
+// bytes (`encode_ints_key`/`decode_ints_key`) at the API boundary, so the
+// underlying FST this type walks is an ordinary `Fst` built by
+// `build_fst_from_ints`/`build_fst`, and `IntsRefFstEnum` itself is a thin
+// wrapper around the existing `FstEnum` (composition, not a duplicated
+// traversal algorithm) that decodes each 4-byte group back into an `i32` on
+// the way out. Big-endian encoding is exactly what makes this a legitimate
+// stand-in rather than a hack: unsigned-byte-lexicographic order over the
+// 4-byte encoding matches numeric order over the original `i32`s, so
+// ascending-key enumeration over the encoded bytes *is* ascending-key
+// enumeration over the original ints -- **provided every key element is
+// non-negative** (`i32::MIN..0`'s two's-complement bit pattern sorts as
+// *larger*, unsigned, than any non-negative value, which would corrupt
+// ordering). This mirrors real `IntsRefFSTEnum`'s actual usage: token
+// ordinals (`SynonymMap` et al.) are always non-negative, so the restriction
+// costs nothing in practice. `encode_ints_key`/`build_fst_from_ints` both
+// document and enforce this rather than silently misordering negative
+// inputs.
+//
+// This is **not** real Lucene's `IntsRefFSTEnum` (which needs no such
+// restriction and walks a genuinely wider-alphabet FST) -- see `docs/parity.md`
+// for this scoping call spelled out.
+
+/// Encodes one `IntsRef`-equivalent key element (`i32`) as 4 big-endian
+/// bytes, so a sequence of `i32`s becomes the byte-keyed `Fst` key
+/// `IntsRefFstEnum`/`build_fst_from_ints` actually walk. Big-endian is what
+/// makes unsigned-byte order over the encoding match numeric order over the
+/// original ints -- see the section doc above for why that only holds for
+/// non-negative inputs.
+///
+/// # Panics
+///
+/// Panics (in both debug and release builds, not compiled out) if any
+/// element is negative -- a negative `i32`'s two's-complement bit pattern
+/// would sort as *larger*, unsigned, than any non-negative value, silently
+/// corrupting the ordering invariant the whole `IntsRefFstEnum` scoping
+/// depends on. Rejected loudly instead.
+pub fn encode_ints_key(key: &[i32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(key.len() * 4);
+    for &v in key {
+        assert!(
+            v >= 0,
+            "encode_ints_key requires non-negative elements, got {v}"
+        );
+        out.extend_from_slice(&v.to_be_bytes());
+    }
+    out
+}
+
+/// Inverse of `encode_ints_key`: splits a byte-keyed `Fst` key back into its
+/// original `i32` sequence. `bytes.len()` must be a multiple of 4 (true of
+/// any key produced by `encode_ints_key`, or read back out of an FST built by
+/// `build_fst_from_ints`).
+pub fn decode_ints_key(bytes: &[u8]) -> Vec<i32> {
+    debug_assert_eq!(
+        bytes.len() % 4,
+        0,
+        "decode_ints_key: key length {} is not a multiple of 4",
+        bytes.len()
+    );
+    bytes
+        .chunks_exact(4)
+        .map(|c| i32::from_be_bytes([c[0], c[1], c[2], c[3]]))
+        .collect()
+}
+
+/// `IntsRef`-keyed equivalent of `build_fst_typed`: each entry's key is a
+/// non-negative `i32` sequence, encoded via `encode_ints_key` before
+/// delegating to the existing byte-keyed builder. `entries` must be sorted
+/// in strictly ascending key order (lexicographic over the `i32` sequence,
+/// which -- given non-negative elements -- is also the byte-encoded entries'
+/// required ascending order).
+pub fn build_fst_from_ints<O: Outputs>(
+    entries: &[(Vec<i32>, O::Value)],
+) -> std::result::Result<Fst<'static>, BuildError> {
+    let byte_entries: Vec<(Vec<u8>, O::Value)> = entries
+        .iter()
+        .map(|(key, value)| (encode_ints_key(key), value.clone()))
+        .collect();
+    build_fst_typed::<O>(&byte_entries)
+}
+
+/// Port of `IntsRefFSTEnum`, restricted (like `FstEnum`/`BytesRefFSTEnum`
+/// here) to a full forward walk plus `seekCeil`/`seekFloor`/`seekExact`. See
+/// the section doc above this type for the byte-keyed-FST-wearing-an-int-API
+/// scoping this implementation takes, and why. Constructed via
+/// `Fst::iter_ints`. Implements `Iterator<Item = Result<(Vec<i32>, Vec<u8>)>>`,
+/// yielding `(key, output)` pairs in ascending key order -- mirroring
+/// `FstEnum`'s `(Vec<u8>, Vec<u8>)` shape, just with an `i32`-sequence key.
+pub struct IntsRefFstEnum<'f, 'a> {
+    inner: FstEnum<'f, 'a>,
+}
+
+impl<'f, 'a> IntsRefFstEnum<'f, 'a> {
+    /// Port of `IntsRefFSTEnum.seekCeil` (inherited, unchanged, from
+    /// `FSTEnum.doSeekCeil`): seeks to the smallest accepted key `>=`
+    /// `target`, returning `(key, output)` if one exists.
+    pub fn seek_ceil(&mut self, target: &[i32]) -> Result<Option<(Vec<i32>, Vec<u8>)>> {
+        Ok(self
+            .inner
+            .seek_ceil(&encode_ints_key(target))?
+            .map(|(key, output)| (decode_ints_key(&key), output)))
+    }
+
+    /// Port of `IntsRefFSTEnum.seekFloor`: seeks to the largest accepted key
+    /// `<=` `target`, returning `(key, output)` if one exists.
+    pub fn seek_floor(&mut self, target: &[i32]) -> Result<Option<(Vec<i32>, Vec<u8>)>> {
+        Ok(self
+            .inner
+            .seek_floor(&encode_ints_key(target))?
+            .map(|(key, output)| (decode_ints_key(&key), output)))
+    }
+
+    /// Port of `IntsRefFSTEnum.seekExact`: seeks to exactly `target`,
+    /// returning `(target, output)` if the FST accepts it, else `None`.
+    pub fn seek_exact(&mut self, target: &[i32]) -> Result<Option<(Vec<i32>, Vec<u8>)>> {
+        Ok(self
+            .inner
+            .seek_exact(&encode_ints_key(target))?
+            .map(|(key, output)| (decode_ints_key(&key), output)))
+    }
+}
+
+impl Iterator for IntsRefFstEnum<'_, '_> {
+    type Item = Result<(Vec<i32>, Vec<u8>)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.inner.next()? {
+            Ok((key, output)) => Some(Ok((decode_ints_key(&key), output))),
+            Err(e) => Some(Err(e)),
+        }
     }
 }
 
@@ -4635,5 +4807,133 @@ mod tests {
         let zero = <IntPair as Outputs>::zero();
         assert_eq!(IntPair::encode(&zero), Vec::<u8>::new());
         assert_eq!(IntPair::decode(&[]), zero);
+    }
+
+    // --- `IntsRefFstEnum` (`IntsRefFSTEnum`-equivalent) --------------------
+
+    #[test]
+    fn encode_decode_ints_key_round_trips() {
+        let key = vec![0, 1, 255, 256, 65536, i32::MAX];
+        let encoded = encode_ints_key(&key);
+        assert_eq!(encoded.len(), key.len() * 4);
+        assert_eq!(decode_ints_key(&encoded), key);
+    }
+
+    #[test]
+    #[should_panic(expected = "encode_ints_key requires non-negative elements")]
+    fn encode_ints_key_rejects_a_negative_element_even_in_release_builds() {
+        // A real `assert!`, not `debug_assert!` -- must not be compiled out
+        // under `--release`, since silently accepting a negative element
+        // would corrupt the big-endian ordering invariant this whole
+        // IntsRefFstEnum scoping depends on.
+        encode_ints_key(&[3, -1, 7]);
+    }
+
+    #[test]
+    fn encode_ints_key_big_endian_preserves_numeric_order() {
+        // Unsigned-byte-lexicographic order over the encoding must match
+        // numeric order over the original ints, which is the property that
+        // lets ascending byte-key enumeration double as ascending int-key
+        // enumeration -- see the `IntsRefFstEnum` section doc.
+        let mut values = vec![0i32, 1, 2, 255, 256, 65535, 65536, 1_000_000, i32::MAX];
+        let mut encoded: Vec<Vec<u8>> = values.iter().map(|&v| encode_ints_key(&[v])).collect();
+        let sorted_encoded = {
+            let mut e = encoded.clone();
+            e.sort();
+            e
+        };
+        values.sort_unstable();
+        encoded.sort();
+        assert_eq!(encoded, sorted_encoded);
+        assert_eq!(
+            encoded,
+            values
+                .iter()
+                .map(|&v| encode_ints_key(&[v]))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn ints_ref_fst_enum_over_empty_fst_yields_nothing() {
+        let fst = build_fst_from_ints::<ByteSequenceOutputs>(&[]).unwrap();
+        let keys: Vec<_> = fst.iter_ints().unwrap().map(|r| r.unwrap().0).collect();
+        assert!(keys.is_empty());
+    }
+
+    #[test]
+    fn ints_ref_fst_enum_over_single_key_fst_yields_that_one_key() {
+        let entries = vec![(vec![1i32, 2, 3], b"abc".to_vec())];
+        let fst = build_fst_from_ints::<ByteSequenceOutputs>(&entries).unwrap();
+        let results: Vec<_> = fst.iter_ints().unwrap().map(|r| r.unwrap()).collect();
+        assert_eq!(results, vec![(vec![1, 2, 3], b"abc".to_vec())]);
+    }
+
+    #[test]
+    fn ints_ref_fst_enum_multi_key_shared_prefix_and_suffix_ascending_order() {
+        // Overlapping prefixes (`[1,2,*]`) and a shared suffix (`,9,9]`) to
+        // stress enumeration together with suffix-sharing minimization.
+        let mut entries = vec![
+            (vec![1i32, 2, 100], 10i64),
+            (vec![1, 2, 200], 20i64),
+            (vec![1, 3, 9, 9], 30i64),
+            (vec![5, 3, 9, 9], 40i64),
+            (vec![5, 4], 50i64),
+        ];
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let fst = build_fst_from_ints::<PositiveIntOutputs>(&entries).unwrap();
+        let results: Vec<_> = fst
+            .iter_ints()
+            .unwrap()
+            .map(|r| {
+                let (key, output) = r.unwrap();
+                (key, PositiveIntOutputs::decode(&output))
+            })
+            .collect();
+        assert_eq!(results, entries);
+
+        // Confirm each key is independently reachable via `get_typed` too,
+        // through the same big-endian encoding boundary.
+        for (key, value) in &entries {
+            assert_eq!(
+                fst.get_typed::<PositiveIntOutputs>(&encode_ints_key(key))
+                    .unwrap(),
+                Some(*value)
+            );
+        }
+    }
+
+    #[test]
+    fn ints_ref_fst_enum_seek_ceil_floor_exact() {
+        let entries = vec![
+            (vec![1i32, 2], b"a".to_vec()),
+            (vec![1, 2, 3], b"b".to_vec()),
+            (vec![1, 5], b"c".to_vec()),
+            (vec![9, 9], b"d".to_vec()),
+        ];
+        let fst = build_fst_from_ints::<ByteSequenceOutputs>(&entries).unwrap();
+        let mut e = fst.iter_ints().unwrap();
+
+        // seek_ceil lands on an in-between target's smallest key >= target.
+        assert_eq!(
+            e.seek_ceil(&[1, 3]).unwrap(),
+            Some((vec![1, 5], b"c".to_vec()))
+        );
+        // seek_floor lands on the largest key <= target.
+        assert_eq!(
+            e.seek_floor(&[1, 4]).unwrap(),
+            Some((vec![1, 2, 3], b"b".to_vec()))
+        );
+        // seek_exact only succeeds on a real key.
+        assert_eq!(
+            e.seek_exact(&[9, 9]).unwrap(),
+            Some((vec![9, 9], b"d".to_vec()))
+        );
+        assert_eq!(e.seek_exact(&[9, 8]).unwrap(), None);
+        // Past the last key.
+        assert_eq!(e.seek_ceil(&[100]).unwrap(), None);
+        // Before the first key: no accepted key <= target.
+        assert_eq!(e.seek_floor(&[0]).unwrap(), None);
     }
 }

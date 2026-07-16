@@ -4614,3 +4614,58 @@ highest-risk suffix-sharing-vs-distinct-output interaction, above), and
 clean; `cargo clippy --workspace --all-targets -- -D warnings` clean;
 `cargo test -p lucene-codecs` passes (681 tests, up from 677). See
 `docs/parity.md`'s FST row for the parity-tracking update.
+
+**Progress (task: FST `IntsRefFSTEnum`).** `crates/lucene-codecs/src/fst.rs`.
+
+Investigated before writing anything, per this task's own instructions.
+Findings: `Arc::label`/`read_label` already carry labels as `i32`
+end-to-end, so nothing at the *type* level forces byte-only labels. But the
+actual node/arc codec this reader and builder implement is hardcoded to
+single-byte labels regardless: `read_label` asserts `input_type ==
+InputType::Byte1` and always does a plain `read_byte`, and the builder's
+`TrieNode::children` is keyed by `u8`. Real `BYTE4`-keyed FSTs (the encoding
+`IntsRefFSTEnum` walks in real Lucene, e.g. `SynonymMap`'s FST) decode labels
+completely differently and are out of this reader's scope already (see the
+existing module doc and `Fst::get`'s `Byte1`-only guard). Building a
+genuinely wider-alphabet FST variant -- widening `TrieNode`, the node-hash
+arc signature, `read_label`/`find_target_arc`'s direct-addressing/continuous
+arithmetic, all for a real 32-bit label -- would be rebuilding a second
+node/arc codec, well beyond this task's scope.
+
+So: took the explicitly-sanctioned fallback path. `IntsRefFstEnum` is a
+byte-keyed `BYTE1` `Fst` wearing an `IntsRef`-shaped API, not real Lucene's
+genuinely-wider-alphabet `IntsRefFSTEnum` -- documented as such, prominently,
+in the new section doc above its definition. Each `i32` key element is
+encoded as 4 big-endian bytes (`encode_ints_key`/`decode_ints_key`) at the
+API boundary; big-endian is what makes unsigned-byte order over the
+encoding equal numeric order over the original ints, so ascending byte-key
+enumeration over the encoded `Fst` doubles as ascending int-key enumeration
+-- provided every element is non-negative (two's-complement negative values
+would sort as larger than any non-negative one, corrupting order). This
+restriction is documented and costs nothing in practice: real
+`IntsRefFSTEnum`'s actual consumers (token ordinals in `SynonymMap` etc.)
+are always non-negative.
+
+Built entirely by composition, no duplicated traversal algorithm:
+`build_fst_from_ints::<O>` just encodes each key via `encode_ints_key` and
+delegates to the existing `build_fst_typed`; `IntsRefFstEnum` wraps the
+existing `FstEnum` (`inner: FstEnum<'f, 'a>`) and decodes each yielded key
+back to `Vec<i32>` via `decode_ints_key` -- `next()`/`seek_ceil`/
+`seek_floor`/`seek_exact` are all one-line encode-in/decode-out wrappers
+around `FstEnum`'s existing implementations of the same names. `Fst::iter_ints`
+mirrors `Fst::iter` as the constructor entry point.
+
+New tests in `fst.rs::tests`: `encode_decode_ints_key_round_trips`,
+`encode_ints_key_big_endian_preserves_numeric_order` (the load-bearing
+ordering property above), `ints_ref_fst_enum_over_empty_fst_yields_nothing`,
+`ints_ref_fst_enum_over_single_key_fst_yields_that_one_key`,
+`ints_ref_fst_enum_multi_key_shared_prefix_and_suffix_ascending_order` (5
+`Vec<i32>` keys with overlapping prefixes `[1,2,*]` and a shared suffix
+`[*,9,9]`, stressing enumeration together with suffix-sharing minimization,
+built with `PositiveIntOutputs` and checked both via full enumeration and
+per-key `get_typed`), and `ints_ref_fst_enum_seek_ceil_floor_exact` (ceil
+landing strictly between two keys, floor likewise, exact hit/miss, past-last,
+before-first). `cargo fmt --all` clean; `cargo clippy --workspace
+--all-targets -- -D warnings` clean; `cargo test -p lucene-codecs` passes
+(687 tests, up from 681). See `docs/parity.md`'s FST row for the
+parity-tracking update.
