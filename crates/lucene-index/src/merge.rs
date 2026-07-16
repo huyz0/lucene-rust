@@ -51,15 +51,20 @@
 //!   field *numbers* by name; it does not check that two sources agree on
 //!   every other `FieldInfo` attribute. Revisit if that ever bites.
 //!
-//! # Doc values / norms / term vectors: mergeable, but not from a real flush
+//! # Doc values / norms / term vectors: mergeable, and now real flush callers exist
 //!
-//! [`segment_writer::flush_stored_only_segment`] -- the only write-side path
-//! that produces a full segment in this port -- still only ever writes
-//! stored-fields-only segments; nothing in this port's normal flush path
-//! ever produces a segment with doc values, norms, or term vectors. So this
-//! module cannot (yet) be exercised end-to-end from "flush two real segments,
-//! merge them": there is no real caller that hands it doc-values/norms/
-//! term-vectors *sources* today.
+//! [`segment_writer::flush_stored_only_segment`] itself still only ever
+//! writes stored-fields-only segments. But `IndexWriter::commit`
+//! (`index_writer.rs`) is a real caller for postings, term vectors, doc
+//! values, and norms: postings and term vectors support multiple fields per
+//! commit (`add_postings_field`/`add_term_vector_field`), while doc values
+//! and norms are still single-field-per-commit
+//! (`set_doc_values_field`/`set_norms_field`). Each produces a real segment
+//! carrying that format, decodable by this module's merge sources. This
+//! module still cannot be exercised end-to-end for the *general*
+//! multi-doc-values/norms-field-per-source case ("flush two real segments
+//! each with several doc-values/norms fields, merge them") from a single
+//! commit, since those two formats are only wired one field at a time today.
 //!
 //! What *is* real: the write-side encoders for these formats already exist
 //! as standalone functions ([`lucene_codecs::doc_values::write_single_dense_numeric_field`],

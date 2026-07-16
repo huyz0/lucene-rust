@@ -121,6 +121,7 @@ use crate::update_document::{self, SegmentDeleteSource};
 use lucene_analysis::Analyzer;
 use lucene_codecs::doc_values;
 use lucene_codecs::field_infos::{DocValuesType, FieldInfo, IndexOptions};
+use lucene_codecs::norms;
 use lucene_codecs::postings_writer::{self, FieldPostingsInput, TermPostings};
 use lucene_codecs::stored_fields::{self, Document, FieldValue};
 use lucene_codecs::term_vectors::{self, TermVectorField, TermVectorTerm, TermVectorsDocument};
@@ -128,6 +129,7 @@ use lucene_store::codec_util::ID_LENGTH;
 use lucene_store::data_output::DataOutput;
 use lucene_store::directory::Directory;
 use lucene_util::fixed_bit_set::FixedBitSet;
+use lucene_util::small_float;
 
 pub use crate::merge_policy::MergePolicyConfig;
 pub use crate::update_document::SegmentDeleteSource as DeleteSource;
@@ -160,6 +162,8 @@ pub enum Error {
     TermVectors(#[from] term_vectors::Error),
     #[error(transparent)]
     DocValues(#[from] doc_values::WriteError),
+    #[error(transparent)]
+    Norms(#[from] norms::WriteError),
     #[error("set_postings_field: no field named {0:?} in this writer's field list")]
     UnknownPostingsField(String),
     #[error(
@@ -212,6 +216,14 @@ pub enum Error {
          every pending doc, but doc {1} has a {2} value"
     )]
     NonBinaryDocValue(String, usize, &'static str),
+    #[error("set_norms_field: no field named {0:?} in this writer's field list")]
+    UnknownNormsField(String),
+    #[error(
+        "set_norms_field: field {0:?} has omit_norms set (or index_options == None); norms \
+         are only computable for an indexed field that has not opted out of them, matching \
+         real Lucene's FieldInfo.omitsNorms()/IndexOptions.NONE gates on Similarity.computeNorm"
+    )]
+    UnsupportedNormsField(String),
     #[error(
         "finish_commit: no prepared commit pending -- call prepare_commit() first \
          (or use commit(), which calls both)"
@@ -245,6 +257,11 @@ pub struct IndexWriter<'d> {
     /// (which already accepts multiple fields per document).
     term_vector_fields: Vec<TermVectorFieldConfig>,
     doc_values_field: Option<DocValuesFieldConfig>,
+    /// The single field this writer is currently opted into automatically
+    /// computing and writing real norms for -- see
+    /// [`IndexWriter::set_norms_field`] for the exact opt-in contract and
+    /// module doc comment / `docs/parity.md` for what "automatic" covers.
+    norms_field: Option<NormsFieldConfig>,
     /// Set by [`IndexWriter::prepare_commit`], consumed by
     /// [`IndexWriter::finish_commit`] -- see [`IndexWriter::prepare_commit`]'s
     /// doc comment for exactly what "prepared" does and does not mean on
@@ -293,6 +310,20 @@ struct DocValuesFieldConfig {
     doc_values_type: DocValuesType,
 }
 
+/// One field this writer has been opted into also automatically computing
+/// and writing real norms (`.nvm`/`.nvd`, via
+/// [`norms::write_single_dense_field`]) for, resolved once by
+/// [`IndexWriter::set_norms_field`] against this writer's fixed `fields`
+/// list -- same "resolve once, reuse every commit" shape as
+/// [`PostingsFieldConfig`]/[`DocValuesFieldConfig`], but single-field-only
+/// (a single `Option`, not a list) matching [`DocValuesFieldConfig`]'s own
+/// current scope rather than [`PostingsFieldConfig`]'s multi-field one.
+#[derive(Debug, Clone)]
+struct NormsFieldConfig {
+    name: String,
+    field_number: i32,
+}
+
 impl<'d> IndexWriter<'d> {
     /// Opens a writer over `dir`: resumes the latest existing commit if one
     /// is present, or starts a brand-new, empty index otherwise. `fields`
@@ -329,6 +360,7 @@ impl<'d> IndexWriter<'d> {
             postings_fields: Vec::new(),
             term_vector_fields: Vec::new(),
             doc_values_field: None,
+            norms_field: None,
             prepared_commit: None,
         })
     }
@@ -585,6 +617,67 @@ impl<'d> IndexWriter<'d> {
                     name: name.to_string(),
                     field_number: info.number,
                     doc_values_type: info.doc_values_type,
+                })
+            }
+        };
+        Ok(())
+    }
+
+    /// Opts this writer into **automatically** computing and writing real
+    /// norms (`.nvm`/`.nvd`, via [`norms::write_single_dense_field`]) for one
+    /// field of every segment [`IndexWriter::commit`] flushes from here on --
+    /// matching real Lucene's default behavior for an indexed, non-
+    /// `omitNorms` field: `IndexWriter.commit()`'s indexing chain there
+    /// computes `Similarity.computeNorm` automatically from each document's
+    /// actual field length, without any caller-supplied norm value. This
+    /// writer's own indexing chain ([`Self::build_norms_output`]) does the
+    /// same: it re-tokenizes `field_name`'s text via
+    /// [`crate::indexing_chain::invert_documents`] (same analyzer/scope as
+    /// [`IndexWriter::set_postings_field`]), sums every term's occurrence
+    /// count per doc into that document's field length (real Lucene's
+    /// `FieldInvertState.length`, i.e. total indexed token count, not
+    /// distinct-term count), and encodes each doc's length into a norm byte
+    /// via [`lucene_util::small_float::int_to_byte4`] -- the exact inverse of
+    /// `lucene_search::similarity::decode_norm` (this port's BM25 read-side),
+    /// which decodes a stored norm byte back with
+    /// `lucene_util::small_float::byte4_to_int`. No caller
+    /// ever supplies a norm value directly; it is always derived from actual
+    /// indexed field length.
+    ///
+    /// `Some(field_name)` looks `field_name` up in this writer's fixed
+    /// `fields` list and requires `index_options != IndexOptions::None` (the
+    /// field must actually be indexed -- a norm without indexed terms is
+    /// meaningless) and `omit_norms == false` (an `Err` otherwise, mirroring
+    /// real Lucene's `FieldInfo.omitsNorms()` gate on
+    /// `Similarity.computeNorm`). `None` (the default a freshly
+    /// [`IndexWriter::open`]ed writer starts with) turns this back off --
+    /// `commit()` then behaves exactly as it did before this feature
+    /// existed (no `.nvm`/`.nvd` files at all).
+    ///
+    /// **Scope**: single field per commit only (a single
+    /// `Option<NormsFieldConfig>`, not a list, same current scope as
+    /// [`IndexWriter::set_doc_values_field`]) -- there is no
+    /// `add_norms_field` multi-field entry point yet (see `docs/parity.md`).
+    /// A document with no [`FieldValue::String`] value for the configured
+    /// field gets a length of `0` (norm byte `0`), rather than being
+    /// omitted -- this writer's norms output is always dense (one value per
+    /// doc, matching [`norms::write_single_dense_field`]'s dense-only
+    /// contract), so every pending doc must get *some* norm value.
+    pub fn set_norms_field(&mut self, field_name: Option<&str>) -> Result<()> {
+        self.norms_field = match field_name {
+            None => None,
+            Some(name) => {
+                let info = self
+                    .fields
+                    .iter()
+                    .find(|f| f.name == name)
+                    .ok_or_else(|| Error::UnknownNormsField(name.to_string()))?;
+                if info.omit_norms || matches!(info.index_options, IndexOptions::None) {
+                    return Err(Error::UnsupportedNormsField(name.to_string()));
+                }
+                Some(NormsFieldConfig {
+                    name: name.to_string(),
+                    field_number: info.number,
                 })
             }
         };
@@ -875,6 +968,14 @@ impl<'d> IndexWriter<'d> {
                 )?),
                 None => None,
             };
+            let norms_output = match &self.norms_field {
+                Some(cfg) => Some(Self::build_norms_output(
+                    &self.pending_docs,
+                    cfg,
+                    &segment_id,
+                )?),
+                None => None,
+            };
 
             let sci = flush_stored_only_segment(
                 self.dir,
@@ -909,6 +1010,9 @@ impl<'d> IndexWriter<'d> {
                     &dvd,
                     &dvs,
                 )?;
+            }
+            if let Some((nvm, nvd)) = norms_output {
+                Self::write_norms_files(self.dir, &segment_name, &segment_id, &nvm, &nvd)?;
             }
 
             new_segment_infos.segments.push(sci);
@@ -1073,6 +1177,78 @@ impl<'d> IndexWriter<'d> {
             .collect();
         let output = postings_writer::write_fields(&inputs, segment_id, "")?;
         Ok(Some(output))
+    }
+
+    /// Builds [`norms::write_single_dense_field`]'s input for `config`'s
+    /// field, automatically, from `docs`' own indexed text -- this is the
+    /// method [`IndexWriter::set_norms_field`]'s doc comment describes as
+    /// this writer's automatic norm computation.
+    ///
+    /// Re-tokenizes `config`'s field via
+    /// [`crate::indexing_chain::invert_documents`] (same plain
+    /// [`Analyzer::standard`] as [`IndexWriter::build_postings_output`]) and,
+    /// for each pending doc (index into `docs` == doc ID, matching
+    /// [`flush_stored_only_segment`]'s own doc-ordering), sums every
+    /// matching term's occurrence count into that doc's field length --
+    /// real Lucene's `FieldInvertState.length` (total indexed token count,
+    /// *not* distinct-term count: a doc with "fox fox fox" has length 3, one
+    /// distinct term). A doc with no [`FieldValue::String`] value for the
+    /// field (or whose text tokenizes to nothing) gets length `0`, so every
+    /// doc always gets *some* value -- `norms::write_single_dense_field`
+    /// requires exactly `docs.len()` values (dense-only, no sparse/missing
+    /// encoding).
+    ///
+    /// Each doc's length is then encoded into a single norm byte via
+    /// [`small_float::int_to_byte4`], sign-extended into an `i64` the same
+    /// way `norms::norm_value`'s own read-side sign-extends a stored byte
+    /// back (`byte as i8 as i64`) -- this is the exact inverse
+    /// transformation `lucene_search::similarity::decode_norm` undoes when
+    /// reading a norm back (`byte4_to_int(norm as u8)`, discarding the sign
+    /// extension this write side adds and this read side later strips via
+    /// `as u8`).
+    fn build_norms_output(
+        docs: &[Document],
+        config: &NormsFieldConfig,
+        segment_id: &[u8; ID_LENGTH],
+    ) -> Result<(Vec<u8>, Vec<u8>)> {
+        let analyzer = Analyzer::standard(None);
+        let mut triples: Vec<(i32, &str, &str)> = Vec::new();
+        for (doc_id, doc) in docs.iter().enumerate() {
+            let text = doc
+                .fields
+                .iter()
+                .find(|f| f.field_number == config.field_number)
+                .and_then(|f| match &f.value {
+                    FieldValue::String(s) => Some(s.as_str()),
+                    _ => None,
+                });
+            if let Some(text) = text {
+                triples.push((doc_id as i32, config.name.as_str(), text));
+            }
+        }
+
+        let mut lengths = vec![0u32; docs.len()];
+        if !triples.is_empty() {
+            let inverted = invert_documents(&triples, &analyzer);
+            for ((_, _term), entries) in &inverted.terms {
+                for entry in entries {
+                    lengths[entry.doc_id as usize] += entry.term_freq() as u32;
+                }
+            }
+        }
+
+        let values: Vec<i64> = lengths
+            .iter()
+            .map(|&len| small_float::int_to_byte4(len) as i8 as i64)
+            .collect();
+
+        Ok(norms::write_single_dense_field(
+            config.field_number,
+            &values,
+            docs.len() as i32,
+            segment_id,
+            "",
+        )?)
     }
 
     /// Builds one [`TermVectorsDocument`] per entry in `docs` (in the same
@@ -1575,6 +1751,37 @@ impl<'d> IndexWriter<'d> {
         write_file(dir, &si_name, &si_bytes)?;
 
         dir.sync(&[dvm_name, dvd_name, dvs_name, si_name])?;
+        Ok(())
+    }
+
+    /// Writes [`IndexWriter::build_norms_output`]'s two files
+    /// (`<segment_name>.nvm`/`.nvd`) into `dir` and patches the already-
+    /// written `<segment_name>.si` to list them -- same read-modify-write-
+    /// then-resync pattern [`IndexWriter::write_doc_values_files`]/
+    /// [`IndexWriter::write_term_vector_files`]/
+    /// [`IndexWriter::write_postings_files`] already use.
+    fn write_norms_files(
+        dir: &dyn Directory,
+        segment_name: &str,
+        segment_id: &[u8; ID_LENGTH],
+        nvm: &[u8],
+        nvd: &[u8],
+    ) -> Result<()> {
+        let nvm_name = format!("{segment_name}.nvm");
+        let nvd_name = format!("{segment_name}.nvd");
+
+        for (name, bytes) in [(&nvm_name, nvm), (&nvd_name, nvd)] {
+            write_file(dir, name, bytes)?;
+        }
+
+        let si_name = format!("{segment_name}.si");
+        let si_bytes: Vec<u8> = dir.open(&si_name)?.to_vec();
+        let mut si = segment_info::parse(&si_bytes, segment_id)?;
+        si.files.extend([nvm_name.clone(), nvd_name.clone()]);
+        let si_bytes = segment_info::write(&si, "");
+        write_file(dir, &si_name, &si_bytes)?;
+
+        dir.sync(&[nvm_name, nvd_name, si_name])?;
         Ok(())
     }
 
@@ -4716,5 +4923,189 @@ mod tests {
         let reader =
             lucene_codecs::term_vectors::open(&tvd, &tvx, &tvm, &sci.segment_id, "").unwrap();
         assert!(reader.document(0).unwrap().is_some());
+    }
+
+    #[test]
+    fn set_norms_field_rejects_an_unknown_field_name() {
+        let tmp = tempdir("unknown-norms-field");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+
+        let err = writer.set_norms_field(Some("nonexistent")).unwrap_err();
+        assert!(matches!(err, Error::UnknownNormsField(name) if name == "nonexistent"));
+    }
+
+    #[test]
+    fn set_norms_field_rejects_a_field_with_no_index_options() {
+        let tmp = tempdir("unindexed-norms-field");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+
+        let err = writer.set_norms_field(Some("id")).unwrap_err();
+        assert!(matches!(err, Error::UnsupportedNormsField(name) if name == "id"));
+    }
+
+    #[test]
+    fn set_norms_field_rejects_a_field_with_omit_norms_set() {
+        let tmp = tempdir("omit-norms-field");
+        let dir = FsDirectory::open(&tmp);
+        let omitted = FieldInfo {
+            omit_norms: true,
+            ..body_field(1)
+        };
+        let fields = vec![stored_only_field("id", 0), omitted];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+
+        let err = writer.set_norms_field(Some("body")).unwrap_err();
+        assert!(matches!(err, Error::UnsupportedNormsField(name) if name == "body"));
+    }
+
+    /// End-to-end: add real documents with different `body` field lengths
+    /// via `add_document`/`commit()`, *without* supplying any norm data
+    /// ourselves, then read the norm back through the unmodified
+    /// `lucene_codecs::norms` read side and confirm it is a real,
+    /// length-dependent value -- not a placeholder/constant. Two docs with
+    /// different token counts in the same field must decode to different
+    /// norm bytes, proving the indexing chain is genuinely deriving the
+    /// value from each document's actual tokenized field length rather than
+    /// writing some fixed default.
+    #[test]
+    fn commit_with_norms_field_writes_readable_length_dependent_norms_for_multiple_docs() {
+        let tmp = tempdir("norms-commit");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), body_field(1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_norms_field(Some("body")).unwrap();
+
+        // doc 0: "fox" -> length 1; doc 1: "the quick brown fox jumps" ->
+        // length 5; doc 2: "fox fox fox" -> length 3 (repeated term still
+        // counts every occurrence, not just distinct terms).
+        writer.add_document(doc_with_body("a", "fox"));
+        writer.add_document(doc_with_body("b", "the quick brown fox jumps"));
+        writer.add_document(doc_with_body("c", "fox fox fox"));
+        let sis = writer.commit().unwrap().clone();
+        assert_eq!(sis.segments.len(), 1);
+        let sci = &sis.segments[0];
+
+        // Stored fields are still intact (backward-compatible).
+        assert_eq!(read_all_docs(&dir, &sis), vec!["a", "b", "c"]);
+
+        // The norms files exist and are listed in `.si`.
+        let si_bytes = dir.open(&format!("{}.si", sci.segment_name)).unwrap();
+        let si = segment_info::parse(&si_bytes, &sci.segment_id).unwrap();
+        for ext in ["nvm", "nvd"] {
+            let name = format!("{}.{ext}", sci.segment_name);
+            assert!(si.files.contains(&name), "missing {name} in .si files");
+            assert!(
+                dir.list_all().unwrap().contains(&name),
+                "missing {name} on disk"
+            );
+        }
+
+        // Readable via the existing, unmodified norms read side.
+        let nvm = dir.open(&format!("{}.nvm", sci.segment_name)).unwrap();
+        let nvd = dir.open(&format!("{}.nvd", sci.segment_name)).unwrap();
+        let (_version, parsed) = lucene_codecs::norms::parse_meta(&nvm, &sci.segment_id, "")
+            .expect("parse_meta on IndexWriter-produced .nvm");
+        let entry = parsed.entry(1).expect("field 1 (body) has a norms entry");
+        assert!(entry.is_dense());
+
+        let norm_a = lucene_codecs::norms::norm_value(&nvd, entry, 0)
+            .unwrap()
+            .unwrap();
+        let norm_b = lucene_codecs::norms::norm_value(&nvd, entry, 1)
+            .unwrap()
+            .unwrap();
+        let norm_c = lucene_codecs::norms::norm_value(&nvd, entry, 2)
+            .unwrap()
+            .unwrap();
+
+        // Decode back to lengths via this crate's own BM25 read-side
+        // decoder -- these are exact for small lengths (below the 24-value
+        // subnormal threshold), so this also pins down the exact expected
+        // byte, not just "some nonzero value".
+        assert_eq!(lucene_util::small_float::byte4_to_int(norm_a as u8), 1);
+        assert_eq!(lucene_util::small_float::byte4_to_int(norm_b as u8), 5);
+        assert_eq!(lucene_util::small_float::byte4_to_int(norm_c as u8), 3);
+
+        // The core proof this is real, length-dependent computation and not
+        // a constant: three different lengths produce three different norm
+        // bytes.
+        assert_ne!(norm_a, norm_b);
+        assert_ne!(norm_b, norm_c);
+        assert_ne!(norm_a, norm_c);
+    }
+
+    #[test]
+    fn commit_with_no_norms_field_configured_stays_stored_only() {
+        let tmp = tempdir("no-norms-commit");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), body_field(1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+
+        writer.add_document(doc_with_body("a", "fox"));
+        let sis = writer.commit().unwrap().clone();
+        let sci = &sis.segments[0];
+
+        assert!(!dir
+            .list_all()
+            .unwrap()
+            .contains(&format!("{}.nvm", sci.segment_name)));
+        assert!(!dir
+            .list_all()
+            .unwrap()
+            .contains(&format!("{}.nvd", sci.segment_name)));
+    }
+
+    #[test]
+    fn commit_with_norms_field_but_no_pending_docs_writes_no_norms_files() {
+        let tmp = tempdir("norms-commit-no-docs");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), body_field(1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_norms_field(Some("body")).unwrap();
+
+        writer.commit().unwrap();
+        assert!(dir
+            .list_all()
+            .unwrap()
+            .iter()
+            .all(|f| !f.ends_with(".nvm") && !f.ends_with(".nvd")));
+    }
+
+    /// A doc with no text (or a non-`String` value) for the configured norms
+    /// field still gets a dense entry -- length `0`, norm byte `0` -- rather
+    /// than making the whole commit fail or producing a sparse encoding
+    /// `norms::write_single_dense_field` doesn't support.
+    #[test]
+    fn commit_with_norms_field_gives_docs_missing_the_field_a_zero_length_norm() {
+        let tmp = tempdir("norms-commit-missing-field");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), body_field(1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_norms_field(Some("body")).unwrap();
+
+        writer.add_document(doc_with_body("a", "fox"));
+        // doc 1 has no `body` field at all.
+        writer.add_document(Document {
+            fields: vec![StoredField {
+                field_number: 0,
+                value: FieldValue::String("b".to_string()),
+            }],
+        });
+        let sis = writer.commit().unwrap().clone();
+        let sci = &sis.segments[0];
+
+        let nvm = dir.open(&format!("{}.nvm", sci.segment_name)).unwrap();
+        let nvd = dir.open(&format!("{}.nvd", sci.segment_name)).unwrap();
+        let (_version, parsed) =
+            lucene_codecs::norms::parse_meta(&nvm, &sci.segment_id, "").unwrap();
+        let entry = parsed.entry(1).unwrap();
+        let norm_b = lucene_codecs::norms::norm_value(&nvd, entry, 1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(lucene_util::small_float::byte4_to_int(norm_b as u8), 0);
     }
 }

@@ -5955,3 +5955,106 @@ restriction) and that the real remaining gap is `merge_term_vectors`'s own
 unreviewed field-combination logic, not the writer itself -- the same
 correction already made in `merge.rs`, now consistent across all three
 locations instead of two out of three.
+
+## Wire norms computation into the `IndexWriter` indexing chain
+
+**Gap found, confirmed by reading the code rather than assuming it**:
+before this task, `crates/lucene-index/src/index_writer.rs` had no norms
+write-side wiring at all. `crate::indexing_chain::invert_documents` already
+tracked, as a side effect of tokenizing a field, every doc's per-term
+occurrence list (`PostingEntry::term_freq()`), but nothing in
+`index_writer.rs` ever summed that into a per-doc field length or called
+`lucene_codecs::norms::write_single_dense_field`. `commit()`/`prepare_commit()`
+only ever built postings/term-vectors/doc-values output (`build_postings_output`/
+`build_term_vectors_output`/`build_doc_values_output`); there was no
+`set_norms_field`-equivalent method, no `NormsFieldConfig`, and no `.nvm`/`.nvd`
+file writing anywhere in this writer. Norms only existed as a standalone
+codec primitive (`write_single_dense_field`) exercised directly by
+`crates/lucene-index/src/merge.rs`'s merge-side tests and unit tests within
+`norms.rs` itself — a caller building an index through `IndexWriter` had no
+way to get norms written at all, automatically or otherwise. So the real
+gap was the stronger one: not "automatic computation has a narrow bug," but
+"no norms computation existed in the indexing chain in any form."
+
+**What was added**, following the same single-field-per-commit precedent
+`set_doc_values_field` already established:
+- `IndexWriter::set_norms_field(Option<&str>)` (`crates/lucene-index/src/index_writer.rs`):
+  opts a writer into automatically computing and writing norms for one
+  field. Validates the field exists, `index_options != IndexOptions::None`,
+  and `omit_norms == false` — reusing `FieldInfo`'s existing
+  `omit_norms`/`index_options` flags rather than inventing a new opt-in
+  mechanism. Two new errors: `Error::UnknownNormsField`,
+  `Error::UnsupportedNormsField`.
+- `IndexWriter::build_norms_output` (private): re-tokenizes the configured
+  field's text via the existing `crate::indexing_chain::invert_documents`
+  (same analyzer/scope as `build_postings_output`), and for each pending
+  doc sums every matching term's `PostingEntry::term_freq()` into that
+  doc's field length — real Lucene's `FieldInvertState.length` (total
+  indexed token count, not distinct-term count). A doc with no text for the
+  field gets length `0`, so the output is always dense (one value per doc),
+  matching `write_single_dense_field`'s dense-only contract.
+- **Encoding formula derived from this port's own existing read-side, not
+  guessed or re-derived from Java source**: `crates/lucene-search/src/similarity.rs::decode_norm`
+  already computes `lucene_util::small_float::byte4_to_int(norm as u8)` to
+  turn a stored norm byte back into an approximate length. The write side
+  added here is the precise inverse already available in the same
+  `small_float` module: `small_float::int_to_byte4(length) as i8 as i64`
+  (the `as i8 as i64` sign-extension matches `norms::norm_value`'s own
+  read-side sign-extension, so `decode_norm`'s `norm as u8` truncation
+  recovers the exact same byte). No new SmallFloat implementation was
+  written — `int_to_byte4` already existed in `lucene-util`, unused until
+  now.
+- `IndexWriter::write_norms_files` (private) and wiring in `prepare_commit`:
+  writes `<segment>.nvm`/`.nvd` and patches `<segment>.si`'s file list, same
+  read-modify-write-then-resync pattern as `write_doc_values_files`/
+  `write_term_vector_files`/`write_postings_files`.
+
+**Scope, stated precisely**: single field per commit only (a single
+`Option<NormsFieldConfig>`, no `add_norms_field` multi-field entry point
+yet — same current limitation as `set_doc_values_field`, not a new one).
+Automatic computation covers exactly the field opted in via
+`set_norms_field`; a field not opted in still gets no norms at all (matching
+every other pre-existing opt-in field type in this writer, not real
+Lucene's true default of "every indexed field gets norms unless
+`omitNorms()`"). Docs missing the field entirely get a `0`-length norm
+rather than being excluded, since the writer's dense-only contract requires
+a value for every doc.
+
+**Tests added** (`crates/lucene-index/src/index_writer.rs`, `tests` module):
+`set_norms_field_rejects_an_unknown_field_name`,
+`set_norms_field_rejects_a_field_with_no_index_options`,
+`set_norms_field_rejects_a_field_with_omit_norms_set`,
+`commit_with_norms_field_writes_readable_length_dependent_norms_for_multiple_docs`
+(the end-to-end proof: three docs with body-field token counts 1/5/3, added
+via plain `add_document`/`commit()` with no norm data supplied by the
+caller, read back through the unmodified `lucene_codecs::norms::parse_meta`/
+`norm_value` and decoded via `small_float::byte4_to_int` to confirm the
+exact lengths 1/5/3 and that all three norm bytes differ from each other),
+`commit_with_no_norms_field_configured_stays_stored_only`,
+`commit_with_norms_field_but_no_pending_docs_writes_no_norms_files`,
+`commit_with_norms_field_gives_docs_missing_the_field_a_zero_length_norm`.
+
+**Does this unblock competitive-impact computation in
+`postings_writer.rs`?** Partially, and not automatically. Real BM25
+competitive-impact bytes (per-block/per-span upper-bound scores, currently
+always an empty region per `docs/parity.md`'s postings-writer rows) need
+each doc's norm *available at postings-build time*, in the same pass that
+builds `.doc` blocks. Today, `build_postings_output` and
+`build_norms_output` are two independent passes over `pending_docs` with no
+shared state — a future competitive-impact task would still need to either
+merge these two passes or have `build_postings_output` consult
+`build_norms_output`'s per-doc lengths directly. What this task *does*
+remove is the prerequisite gap that made competitive-impact computation
+moot before now: there was no norm data flowing through `IndexWriter` at
+all to compute an upper bound from. That data now exists (for a
+`set_norms_field`-opted-in field), so a future task can wire it into
+`postings_writer.rs` without first having to build norms support from
+scratch.
+
+Files changed: `crates/lucene-index/src/index_writer.rs` (new
+`NormsFieldConfig`, `norms_field` writer state, `set_norms_field`,
+`build_norms_output`, `write_norms_files`, `prepare_commit` wiring, two new
+`Error` variants, six new tests), `docs/parity.md` (norms write-side row
+updated), `PLAN.md` (this entry). `cargo fmt --all`, `cargo clippy
+--workspace --all-targets -- -D warnings`, `cargo test -p lucene-index`,
+and `cargo test -p lucene-search` all clean.
