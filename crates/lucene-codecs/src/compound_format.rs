@@ -592,4 +592,142 @@ mod tests {
         let err = write(&id, &[(".fnm".to_string(), sub_file)]).unwrap_err();
         assert!(matches!(err, Error::Store(_)));
     }
+
+    #[test]
+    fn write_rejects_completely_empty_sub_file_bytes() {
+        // Not even a full magic number's worth of bytes -- must fail cleanly
+        // (EOF) rather than panic on the initial `read_be_u32`.
+        let id = [1u8; ID_LENGTH];
+        let err = write(&id, &[(".fnm".to_string(), Vec::new())]).unwrap_err();
+        assert!(matches!(err, Error::Store(_)));
+    }
+
+    #[test]
+    fn write_single_sub_file_round_trips() {
+        // Exactly one sub-file: no ordering to exercise, but the header/footer
+        // framing and offset math for a lone entry must still be correct.
+        let id = [3u8; ID_LENGTH];
+        let fnm = build_sub_file("FieldInfos", 1, &id, b"only file");
+        let (cfs, cfe) = write(&id, &[(".fnm".to_string(), fnm.clone())]).unwrap();
+
+        let entries = parse_entries(&cfe, &id).unwrap();
+        assert_eq!(entries.entries.len(), 1);
+        check_data_header_footer(&cfs, &id, &entries).unwrap();
+        assert_eq!(
+            open_input(&cfs, &entries, ".fnm").unwrap().as_slice(),
+            fnm.as_slice()
+        );
+        assert_eq!(
+            entries.get(".fnm").unwrap().offset % ALIGNMENT_BYTES as i64,
+            0
+        );
+    }
+
+    #[test]
+    fn write_zero_length_body_sub_file_round_trips() {
+        // A sub-file whose own body is empty (header+footer only, e.g. a
+        // degenerate all-empty doc-values file) -- its recorded length is
+        // just header+footer, and the *next* sub-file's offset must start
+        // right after it with no gap or off-by-one, aligned as usual.
+        let id = [4u8; ID_LENGTH];
+        let empty_dvd = build_sub_file("DocValues", 0, &id, b"");
+        let fnm = build_sub_file("FieldInfos", 1, &id, b"non-empty body");
+
+        let sub_files = vec![
+            (".dvd".to_string(), empty_dvd.clone()),
+            (".fnm".to_string(), fnm.clone()),
+        ];
+        let (cfs, cfe) = write(&id, &sub_files).unwrap();
+        let entries = parse_entries(&cfe, &id).unwrap();
+        check_data_header_footer(&cfs, &id, &entries).unwrap();
+
+        let dvd_entry = entries.get(".dvd").unwrap();
+        assert_eq!(dvd_entry.length as usize, empty_dvd.len());
+        assert_eq!(
+            open_input(&cfs, &entries, ".dvd").unwrap().as_slice(),
+            empty_dvd.as_slice()
+        );
+        assert_eq!(
+            open_input(&cfs, &entries, ".fnm").unwrap().as_slice(),
+            fnm.as_slice()
+        );
+    }
+
+    #[test]
+    fn write_many_sub_files_stresses_entry_count_vint_boundary() {
+        // 200 sub-files pushes the `.cfe` entry-count vint from 1 byte to 2
+        // bytes (boundary at 128) and stresses the alignment/offset math
+        // across many small entries -- a scale no real segment's handful of
+        // sub-files would ever reach.
+        let id = [5u8; ID_LENGTH];
+        let mut sub_files = Vec::new();
+        for i in 0..200 {
+            let name = format!(".x{i}");
+            let body = vec![i as u8; (i % 7) as usize];
+            sub_files.push((name, build_sub_file("Misc", 0, &id, &body)));
+        }
+        let (cfs, cfe) = write(&id, &sub_files).unwrap();
+        let entries = parse_entries(&cfe, &id).unwrap();
+        assert_eq!(entries.entries.len(), 200);
+        check_data_header_footer(&cfs, &id, &entries).unwrap();
+
+        for (name, original) in &sub_files {
+            assert_eq!(
+                open_input(&cfs, &entries, name).unwrap().as_slice(),
+                original.as_slice(),
+                "mismatch for {name}"
+            );
+        }
+        for (_, entry) in &entries.entries {
+            assert_eq!(entry.offset % ALIGNMENT_BYTES as i64, 0);
+        }
+    }
+
+    #[test]
+    fn write_unusual_sub_file_names_round_trip() {
+        // Codec-suffix-shaped names (e.g. `_Lucene104_0.doc`) are what real
+        // segments actually produce (see fixtures/data/compound_index's
+        // manifest); also check an empty name and a non-ASCII one to be sure
+        // the id is treated as an opaque string, not parsed/validated.
+        let id = [6u8; ID_LENGTH];
+        let names = ["_Lucene104_0.doc", "_Lucene90_0.dvd", "", "héllo.tïm"];
+        let sub_files: Vec<(String, Vec<u8>)> = names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                (
+                    name.to_string(),
+                    build_sub_file("Misc", 0, &id, format!("body {i}").as_bytes()),
+                )
+            })
+            .collect();
+
+        let (cfs, cfe) = write(&id, &sub_files).unwrap();
+        let entries = parse_entries(&cfe, &id).unwrap();
+        for (name, original) in &sub_files {
+            assert_eq!(
+                open_input(&cfs, &entries, name).unwrap().as_slice(),
+                original.as_slice(),
+                "mismatch for {name:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn write_duplicate_sub_file_names_detected_on_read() {
+        // `write` itself doesn't dedupe by name (that's a caller-correctness
+        // invariant, not something the packer can/should second-guess) but
+        // the resulting `.cfe` must still be caught as corrupt/ambiguous by
+        // `parse_entries` rather than silently letting the second entry
+        // shadow the first.
+        let id = [7u8; ID_LENGTH];
+        let a = build_sub_file("Misc", 0, &id, b"aaa");
+        let b = build_sub_file("Misc", 0, &id, b"bbbbb");
+        let (_cfs, cfe) = write(&id, &[(".fnm".to_string(), a), (".fnm".to_string(), b)]).unwrap();
+
+        assert!(matches!(
+            parse_entries(&cfe, &id),
+            Err(Error::DuplicateEntry(name)) if name == ".fnm"
+        ));
+    }
 }

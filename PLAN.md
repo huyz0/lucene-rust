@@ -5199,3 +5199,66 @@ previously exercised end-to-end. Files changed:
 `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`,
 and `cargo test -p lucene-codecs` (47 `points::tests::*` passing, up from
 42) all pass clean.
+
+**Progress: compound-file write-side edge-case audit.** Systematic pass over
+`crates/lucene-codecs/src/compound_format.rs::write` (the `.cfs`/`.cfe`
+packer) against the edge-case list a real compound-file writer needs to get
+right. No production bug found -- every case was already handled correctly;
+the gaps were all in test coverage.
+
+Per-edge-case outcome:
+- **Zero sub-files**: already correct and already tested
+  (`write_empty_sub_files_round_trips`) -- produces a valid, openable
+  `.cfs`/`.cfe` pair with an empty entries table, header/footer only.
+- **Exactly one sub-file**: was correct but untested in isolation (only
+  exercised as part of a 3-file case). New test
+  `write_single_sub_file_round_trips` confirms header/footer framing,
+  64-byte-aligned offset, and byte-exact recovery for the single-entry case.
+- **Many sub-files (vint entry-count boundary)**: `.cfe`'s `NumEntries` is a
+  vint, whose encoded width grows at 128 entries -- untested at that
+  boundary. New test `write_many_sub_files_stresses_entry_count_vint_boundary`
+  packs 200 tiny sub-files (varying body lengths, several empty) and
+  round-trips every one, plus re-checks 64-byte alignment across all of them.
+- **A sub-file with zero-length body**: `write` packs each sub-file as a
+  complete standalone codec file (header+body+footer), so a "zero-length
+  sub-file" in practice means an empty *body* with header+footer still
+  present -- confirmed this already round-trips with no off-by-one between
+  it and the next sub-file's offset. New test
+  `write_zero_length_body_sub_file_round_trips`. Also added
+  `write_rejects_completely_empty_sub_file_bytes` for the more literal
+  "zero bytes total" case (no header at all), confirming it fails cleanly
+  (EOF via `Error::Store`) rather than panicking.
+- **Unusual sub-file names**: real segments already exercise
+  codec-suffixed names like `_Lucene104_0.doc` (see
+  `fixtures/data/compound_index/manifest.properties`, differentially
+  tested), confirming this shape works. New unit test
+  `write_unusual_sub_file_names_round_trip` additionally covers an empty
+  name and a non-ASCII name, confirming the id is treated as an opaque
+  string with no implicit validation/parsing.
+- **Byte-alignment/padding**: already correct (64-byte `ALIGNMENT_BYTES`,
+  the LCM of every format's own alignment) and already tested for the
+  multi-file case; the new many-sub-files test re-checks it at scale.
+- **Checksum/footer correctness**: already correct and already tested
+  (`check_data_header_footer_valid_with_entries`/`_with_no_entries`,
+  `write_rejects_sub_file_with_corrupt_footer_checksum`).
+- **Round-trip through this port's own write -> read pipeline**: the
+  existing `write_round_trips_through_reader_with_multiple_sub_files` test
+  already covered the common multi-file case end to end; the new tests
+  above extend that to the boundary/degenerate shapes it didn't reach.
+- **Duplicate sub-file names**: `write` itself doesn't dedupe by name (a
+  caller-correctness invariant, not the packer's job to second-guess), but
+  confirmed the resulting `.cfe` is still caught as corrupt on read rather
+  than silently letting one entry shadow another. New test
+  `write_duplicate_sub_file_names_detected_on_read`.
+
+Files changed: `crates/lucene-codecs/src/compound_format.rs` (six new
+tests, no non-test changes), `docs/parity.md`, `PLAN.md`. New tests:
+`write_rejects_completely_empty_sub_file_bytes`,
+`write_single_sub_file_round_trips`,
+`write_zero_length_body_sub_file_round_trips`,
+`write_many_sub_files_stresses_entry_count_vint_boundary`,
+`write_unusual_sub_file_names_round_trip`,
+`write_duplicate_sub_file_names_detected_on_read`.
+`cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`,
+`cargo test -p lucene-codecs` (706 passing, up from 700), and
+`cargo test -p lucene-index` all pass clean.
