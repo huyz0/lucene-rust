@@ -52,12 +52,20 @@
 //!   alternation nesting; does not capture).
 //! - `|` -- alternation between the terms on either side, at the current
 //!   grouping level.
+//! - `{n}` / `{n,}` / `{n,m}` -- bounded repetition of the *immediately
+//!   preceding* atom (same postfix-quantifier position as `*`/`+`/`?`, and
+//!   mutually exclusive with them -- Lucene's grammar allows only one
+//!   quantifier per atom). `{n}` means exactly `n` reps, `{n,}` means `n` or
+//!   more (unbounded max, same as `real Lucene's `REPEAT_MIN`), `{n,m}` means
+//!   between `n` and `m` inclusive (`REPEAT_MINMAX`). `{0,0}` is legal and
+//!   matches the atom zero times (equivalent to the atom being absent).
+//!   `m < n` or a missing/non-numeric bound is a [`RegexpError::
+//!   MalformedRepeat`] parse error.
 //!
 //! **What's deliberately NOT supported** (real Lucene `RegExp` operators
 //! this port does not implement -- rejected with a parse error rather than
 //! silently mis-parsed):
 //!
-//! - `{n}`/`{n,m}` bounded repetition.
 //! - `~` (complement) and `&` (intersection) -- Lucene-specific operators
 //!   with no direct backtracking-matcher analogue as cheap as the rest of
 //!   this subset; a real implementation would need actual automaton
@@ -97,7 +105,17 @@
 //! classic "looks right in isolation, subtly wrong vs real regex
 //! conventions" bug this task's differential fixture exists to catch.
 
+use std::cell::Cell;
 use std::fmt;
+
+/// Hard ceiling on total backtracking steps `Pattern::matches` will spend on
+/// a single term, regardless of pattern shape -- see that method's doc
+/// comment for why bounded repetition (`{n,m}`) makes this necessary. Chosen
+/// generously above any realistic legitimate match (worst-case legitimate
+/// patterns in this module's test suite spend well under 10_000 steps) while
+/// still bounding a pathological nested-repeat pattern to a bounded,
+/// sub-second amount of work.
+const MATCH_STEP_BUDGET: u64 = 1_000_000;
 
 /// A parse error for an unsupported or malformed pattern -- see the module
 /// doc's "what's deliberately NOT supported" list for exactly which syntax
@@ -119,6 +137,10 @@ pub enum RegexpError {
     /// doc's "what's deliberately NOT supported" list. Carries the
     /// offending byte for a useful error message.
     UnsupportedOperator(u8),
+    /// A `{...}` bounded-repetition quantifier that isn't well-formed:
+    /// missing/non-numeric bound(s), a missing closing `}`, or `m < n` in
+    /// `{n,m}`.
+    MalformedRepeat,
 }
 
 impl fmt::Display for RegexpError {
@@ -134,9 +156,13 @@ impl fmt::Display for RegexpError {
             RegexpError::UnsupportedOperator(b) => write!(
                 f,
                 "unsupported regexp operator '{}' (byte 0x{b:02x}) -- \
-                 this port supports only literals/./*+?/[]/()/| \
-                 (no {{n,m}}, no '~' complement, no '&' intersection)",
+                 this port supports only literals/./*+?/{{n,m}}/[]/()/| \
+                 (no '~' complement, no '&' intersection)",
                 *b as char
+            ),
+            RegexpError::MalformedRepeat => write!(
+                f,
+                "malformed '{{n,m}}' bounded-repetition quantifier in regexp pattern"
             ),
         }
     }
@@ -157,6 +183,14 @@ enum Node {
     Star(Box<Node>),
     Plus(Box<Node>),
     Ques(Box<Node>),
+    /// `{n}` / `{n,}` / `{n,m}` bounded repetition of `inner`. `max ==
+    /// None` means unbounded (`{n,}`); `max == Some(m)` means `inner` may
+    /// repeat at most `m` times, with `m >= min` enforced at parse time.
+    Repeat {
+        inner: Box<Node>,
+        min: u32,
+        max: Option<u32>,
+    },
     Alt(Vec<Node>),
 }
 
@@ -192,7 +226,19 @@ impl RegexpPattern {
     /// `RegexpQuery`'s whole-term-match convention (see the module doc):
     /// e.g. pattern `ca` does not match term `cat`, only term `ca` exactly.
     pub fn matches(&self, term: &[u8]) -> bool {
-        node_match(&self.root, term, &|rest| rest.is_empty())
+        // A step budget, not just a nesting-depth cap: bounded repetition
+        // (`{n,m}`) lets small, innocent-looking numbers combine
+        // multiplicatively when nested (e.g. `(a{1,15}){1,15}` against a
+        // long run of `a`s with no trailing match), and `RegexpQuery`
+        // patterns can come from an untrusted query string, so this
+        // backtracking matcher needs a hard ceiling on total work rather
+        // than trusting every pattern to terminate promptly. Exceeding the
+        // budget is treated as "no match" (never a panic or a hang) -- the
+        // same fail-safe direction real Lucene's automaton construction
+        // takes when a pattern would blow up (it rejects it up front
+        // instead of exploring it at query time).
+        let budget = Cell::new(MATCH_STEP_BUDGET);
+        node_match(&self.root, term, &budget, &|rest| rest.is_empty())
     }
 
     /// The pattern's longest guaranteed literal leading byte run, e.g.
@@ -238,7 +284,16 @@ impl RegexpPattern {
 /// be allowed to depend on what comes *after* the group) -- the same shape
 /// `wildcard.rs`'s `matches_from` uses for its simpler `*`/`?`-only
 /// grammar, generalized here to handle groups and alternation.
-fn node_match(node: &Node, term: &[u8], cont: &dyn Fn(&[u8]) -> bool) -> bool {
+fn node_match(node: &Node, term: &[u8], budget: &Cell<u64>, cont: &dyn Fn(&[u8]) -> bool) -> bool {
+    // Charge every node visited, not just quantifier iterations: nested
+    // bounded repetition (`{n,m}`) can combine multiplicatively (see
+    // `Pattern::matches`'s doc comment), so the budget must cap total
+    // backtracking work regardless of which node shape drives it.
+    let remaining = budget.get();
+    if remaining == 0 {
+        return false;
+    }
+    budget.set(remaining - 1);
     match node {
         Node::Literal(b) => term.first() == Some(b) && cont(&term[1..]),
         Node::AnyByte => !term.is_empty() && cont(&term[1..]),
@@ -253,11 +308,50 @@ fn node_match(node: &Node, term: &[u8], cont: &dyn Fn(&[u8]) -> bool) -> bool {
             }
             None => false,
         },
-        Node::Concat(nodes) => concat_match(nodes, term, cont),
-        Node::Alt(alts) => alts.iter().any(|n| node_match(n, term, cont)),
-        Node::Ques(inner) => cont(term) || node_match(inner, term, cont),
-        Node::Plus(inner) => node_match(inner, term, &|rest| star_match(inner, rest, cont)),
-        Node::Star(inner) => star_match(inner, term, cont),
+        Node::Concat(nodes) => concat_match(nodes, term, budget, cont),
+        Node::Alt(alts) => alts.iter().any(|n| node_match(n, term, budget, cont)),
+        Node::Ques(inner) => cont(term) || node_match(inner, term, budget, cont),
+        Node::Plus(inner) => node_match(inner, term, budget, &|rest| {
+            star_match(inner, rest, budget, cont)
+        }),
+        Node::Star(inner) => star_match(inner, term, budget, cont),
+        Node::Repeat { inner, min, max } => repeat_match(inner, term, *min, *max, budget, cont),
+    }
+}
+
+/// `inner{min,max}` against `term` (`max == None` means unbounded, i.e.
+/// `{min,}`). Consumes the mandatory `min` repetitions first (recursion
+/// terminates because `min` strictly decreases each step, regardless of
+/// whether `inner` makes byte progress), then behaves like `star_match`
+/// once mandatory reps are exhausted and `max` is unbounded, or like a
+/// bounded `?`-chain (try zero more first, then one more, decrementing the
+/// remaining budget) when `max` is bounded -- the bounded countdown itself
+/// guards against the zero-width-inner infinite-loop `star_match` guards
+/// against explicitly, since the recursion depth is capped by the shrinking
+/// `max` budget either way.
+fn repeat_match(
+    inner: &Node,
+    term: &[u8],
+    min: u32,
+    max: Option<u32>,
+    budget: &Cell<u64>,
+    cont: &dyn Fn(&[u8]) -> bool,
+) -> bool {
+    if min > 0 {
+        node_match(inner, term, budget, &|rest| {
+            repeat_match(inner, rest, min - 1, max.map(|m| m - 1), budget, cont)
+        })
+    } else {
+        match max {
+            None => star_match(inner, term, budget, cont),
+            Some(0) => cont(term),
+            Some(m) => {
+                cont(term)
+                    || node_match(inner, term, budget, &|rest| {
+                        repeat_match(inner, rest, 0, Some(m - 1), budget, cont)
+                    })
+            }
+        }
     }
 }
 
@@ -266,11 +360,11 @@ fn node_match(node: &Node, term: &[u8], cont: &dyn Fn(&[u8]) -> bool) -> bool {
 /// infinite loop on a zero-width repetition (an inner node that can match
 /// while consuming no bytes at all) by refusing to recurse when a
 /// repetition made no progress.
-fn star_match(inner: &Node, term: &[u8], cont: &dyn Fn(&[u8]) -> bool) -> bool {
+fn star_match(inner: &Node, term: &[u8], budget: &Cell<u64>, cont: &dyn Fn(&[u8]) -> bool) -> bool {
     if cont(term) {
         return true;
     }
-    node_match(inner, term, &|rest| {
+    node_match(inner, term, budget, &|rest| {
         if rest.len() == term.len() {
             // No progress this iteration -- would recurse forever on a
             // zero-width inner match; every atom in this module's grammar
@@ -279,15 +373,22 @@ fn star_match(inner: &Node, term: &[u8], cont: &dyn Fn(&[u8]) -> bool) -> bool {
             // future case rather than firing in practice.
             false
         } else {
-            star_match(inner, rest, cont)
+            star_match(inner, rest, budget, cont)
         }
     })
 }
 
-fn concat_match(nodes: &[Node], term: &[u8], cont: &dyn Fn(&[u8]) -> bool) -> bool {
+fn concat_match(
+    nodes: &[Node],
+    term: &[u8],
+    budget: &Cell<u64>,
+    cont: &dyn Fn(&[u8]) -> bool,
+) -> bool {
     match nodes.split_first() {
         None => cont(term),
-        Some((first, rest)) => node_match(first, term, &|r| concat_match(rest, r, cont)),
+        Some((first, rest)) => node_match(first, term, budget, &|r| {
+            concat_match(rest, r, budget, cont)
+        }),
     }
 }
 
@@ -297,7 +398,8 @@ fn concat_match(nodes: &[Node], term: &[u8], cont: &dyn Fn(&[u8]) -> bool) -> bo
 /// ```text
 /// alt    := concat ('|' concat)*
 /// concat := factor*
-/// factor := atom ('*' | '+' | '?')?
+/// factor := atom ('*' | '+' | '?' | repeat)?
+/// repeat := '{' number (',' number?)? '}'
 /// atom   := literal | '.' | '[' class ']' | '(' alt ')'
 /// class  := '^'? item+
 /// item   := byte | byte '-' byte
@@ -359,15 +461,65 @@ impl<'a> Parser<'a> {
                 self.advance();
                 Ok(Node::Ques(Box::new(atom)))
             }
+            Some(b'{') => self.parse_repeat(atom),
             _ => Ok(atom),
         }
+    }
+
+    /// Parses a `{n}` / `{n,}` / `{n,m}` bounded-repetition suffix. Called
+    /// with `self.pos` positioned exactly at the opening `{` (not yet
+    /// consumed).
+    fn parse_repeat(&mut self, atom: Node) -> Result<Node, RegexpError> {
+        self.advance(); // consume '{'
+        let min = self.parse_repeat_number()?;
+        let max = if self.peek() == Some(b',') {
+            self.advance();
+            if self.peek() == Some(b'}') {
+                None
+            } else {
+                Some(self.parse_repeat_number()?)
+            }
+        } else {
+            Some(min)
+        };
+        if self.advance() != Some(b'}') {
+            return Err(RegexpError::MalformedRepeat);
+        }
+        if let Some(max) = max {
+            if max < min {
+                return Err(RegexpError::MalformedRepeat);
+            }
+        }
+        Ok(Node::Repeat {
+            inner: Box::new(atom),
+            min,
+            max,
+        })
+    }
+
+    /// Parses one or more ASCII decimal digits as a `u32` bound inside a
+    /// `{...}` repeat; a non-digit (including `}`/`,`/end-of-input) with no
+    /// digits consumed yet, or a value too large for `u32`, is a
+    /// [`RegexpError::MalformedRepeat`].
+    fn parse_repeat_number(&mut self) -> Result<u32, RegexpError> {
+        let start = self.pos;
+        while matches!(self.peek(), Some(b) if b.is_ascii_digit()) {
+            self.advance();
+        }
+        if self.pos == start {
+            return Err(RegexpError::MalformedRepeat);
+        }
+        std::str::from_utf8(&self.bytes[start..self.pos])
+            .expect("ASCII digits are always valid UTF-8")
+            .parse()
+            .map_err(|_| RegexpError::MalformedRepeat)
     }
 
     fn parse_atom(&mut self) -> Result<Node, RegexpError> {
         let b = self.advance().ok_or(RegexpError::DanglingQuantifier)?;
         match b {
-            b'*' | b'+' | b'?' => Err(RegexpError::DanglingQuantifier),
-            b'{' | b'~' | b'&' => Err(RegexpError::UnsupportedOperator(b)),
+            b'*' | b'+' | b'?' | b'{' => Err(RegexpError::DanglingQuantifier),
+            b'~' | b'&' => Err(RegexpError::UnsupportedOperator(b)),
             b'\\' => {
                 let escaped = self.advance().unwrap_or(b'\\');
                 Ok(Node::Literal(escaped))
@@ -649,10 +801,6 @@ mod tests {
     #[test]
     fn unsupported_operators_are_rejected_not_silently_mismatched() {
         assert_eq!(
-            RegexpPattern::new(b"a{2,3}").unwrap_err(),
-            RegexpError::UnsupportedOperator(b'{')
-        );
-        assert_eq!(
             RegexpPattern::new(b"a~b").unwrap_err(),
             RegexpError::UnsupportedOperator(b'~')
         );
@@ -664,8 +812,117 @@ mod tests {
 
     #[test]
     fn error_display_mentions_supported_subset() {
-        let msg = RegexpError::UnsupportedOperator(b'{').to_string();
-        assert!(msg.contains("no {n,m}"));
+        let msg = RegexpError::UnsupportedOperator(b'~').to_string();
+        assert!(msg.contains("{n,m}"));
+        assert!(msg.contains("no '~' complement"));
+    }
+
+    // -- {n,m} bounded repetition -------------------------------------
+
+    #[test]
+    fn exact_count_repeat_matches_only_that_many() {
+        assert!(!m("a{3}", "aa"));
+        assert!(m("a{3}", "aaa"));
+        assert!(!m("a{3}", "aaaa"));
+    }
+
+    #[test]
+    fn zero_zero_repeat_matches_zero_occurrences_only() {
+        assert!(m("a{0,0}b", "b"));
+        assert!(!m("a{0,0}b", "ab"));
+    }
+
+    #[test]
+    fn min_only_repeat_is_unbounded_above() {
+        assert!(!m("a{2,}", "a"));
+        assert!(m("a{2,}", "aa"));
+        assert!(m("a{2,}", "aaa"));
+        assert!(m("a{2,}", "aaaaaaaa"));
+    }
+
+    #[test]
+    fn min_max_repeat_bounds_both_ends() {
+        assert!(!m("a{2,4}", "a"));
+        assert!(m("a{2,4}", "aa"));
+        assert!(m("a{2,4}", "aaa"));
+        assert!(m("a{2,4}", "aaaa"));
+        assert!(!m("a{2,4}", "aaaaa"));
+    }
+
+    #[test]
+    fn repeat_zero_min_allows_absence() {
+        assert!(m("a{0,2}b", "b"));
+        assert!(m("a{0,2}b", "ab"));
+        assert!(m("a{0,2}b", "aab"));
+        assert!(!m("a{0,2}b", "aaab"));
+    }
+
+    #[test]
+    fn repeat_composes_with_other_operators() {
+        assert!(m("a{2,3}b*", "aa"));
+        assert!(m("a{2,3}b*", "aaab"));
+        assert!(m("a{2,3}b*", "aaabbb"));
+        assert!(!m("a{2,3}b*", "a"));
+        assert!(!m("a{2,3}b*", "aaaab"));
+    }
+
+    #[test]
+    fn repeat_on_group_applies_to_whole_group() {
+        assert!(m("(ab){2,3}", "abab"));
+        assert!(m("(ab){2,3}", "ababab"));
+        assert!(!m("(ab){2,3}", "ab"));
+        assert!(!m("(ab){2,3}", "abababab"));
+    }
+
+    /// A nested bounded-repeat pattern whose two `{1,15}` counts combine
+    /// multiplicatively against a matching-but-ultimately-failing input
+    /// (an all-`a` term with no trailing `b`) -- without the step budget in
+    /// `Pattern::matches`, this would backtrack combinatorially and hang;
+    /// with it, this must return promptly (the test itself times out the
+    /// whole suite otherwise) and correctly report no match.
+    #[test]
+    fn nested_bounded_repeat_does_not_hang_on_a_failing_match() {
+        assert!(!m("(a{1,15}){1,15}b", &"a".repeat(40)));
+    }
+
+    #[test]
+    fn malformed_repeat_missing_close_brace_is_a_parse_error() {
+        assert_eq!(
+            RegexpPattern::new(b"a{2,3").unwrap_err(),
+            RegexpError::MalformedRepeat
+        );
+    }
+
+    #[test]
+    fn malformed_repeat_non_numeric_bound_is_a_parse_error() {
+        assert_eq!(
+            RegexpPattern::new(b"a{x}").unwrap_err(),
+            RegexpError::MalformedRepeat
+        );
+    }
+
+    #[test]
+    fn malformed_repeat_empty_braces_is_a_parse_error() {
+        assert_eq!(
+            RegexpPattern::new(b"a{}").unwrap_err(),
+            RegexpError::MalformedRepeat
+        );
+    }
+
+    #[test]
+    fn malformed_repeat_max_less_than_min_is_a_parse_error() {
+        assert_eq!(
+            RegexpPattern::new(b"a{3,2}").unwrap_err(),
+            RegexpError::MalformedRepeat
+        );
+    }
+
+    #[test]
+    fn dangling_repeat_with_no_preceding_atom_is_a_parse_error() {
+        assert_eq!(
+            RegexpPattern::new(b"{2,3}").unwrap_err(),
+            RegexpError::DanglingQuantifier
+        );
     }
 
     #[test]
@@ -682,6 +939,7 @@ mod tests {
             RegexpError::EmptyClass,
             RegexpError::DanglingQuantifier,
             RegexpError::UnsupportedOperator(b'~'),
+            RegexpError::MalformedRepeat,
         ] {
             assert!(!err.to_string().is_empty());
         }
@@ -703,6 +961,14 @@ mod tests {
         );
         assert_eq!(
             RegexpPattern::new(b"ca*t").unwrap().literal_prefix(),
+            b"c".to_vec()
+        );
+    }
+
+    #[test]
+    fn literal_prefix_stops_at_bounded_repeat() {
+        assert_eq!(
+            RegexpPattern::new(b"ca{2,3}t").unwrap().literal_prefix(),
             b"c".to_vec()
         );
     }

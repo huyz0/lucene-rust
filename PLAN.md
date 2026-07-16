@@ -1110,11 +1110,11 @@ rejects or need a translation/validation layer nearly as large as writing a
 purpose-built parser — continuing the `fuzzy.rs`/`wildcard.rs` precedent of
 a small, scoped, from-scratch matcher instead. **Exact subset supported**:
 literals (with `\`-escaping), `.` (any single byte), `*`/`+`/`?` postfix
-quantifiers, `[...]` character classes (with ranges and `^`-negation),
-`(...)` grouping, `|` alternation. **Exact subset deliberately NOT
-supported** (rejected with a parse error, not silently mis-parsed):
-`{n,m}` bounded repetition, `~` complement, `&` intersection, named classes
-— all would need real automaton machinery (complementation/intersection)
+quantifiers, `{n}`/`{n,}`/`{n,m}` bounded repetition, `[...]` character
+classes (with ranges and `^`-negation), `(...)` grouping, `|` alternation.
+**Exact subset deliberately NOT supported** (rejected with a parse error,
+not silently mis-parsed): `~` complement, `&` intersection, named classes
+— both would need real automaton machinery (complementation/intersection)
 materially beyond this slice's backtracking-matcher scope; see
 `regexp.rs`'s module doc for the full writeup, including the same
 byte-vs-codepoint tradeoff `fuzzy.rs` already documents. Verified against
