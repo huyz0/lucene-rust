@@ -789,6 +789,82 @@ mod tests {
         assert_eq!(score_node.value, expected_score);
     }
 
+    /// Confirms `explain_clause` has no interaction whatsoever with
+    /// `crate::search_term_query_scored_maxscore`'s MAXSCORE-skip path (task
+    /// #135): `explain_term` only ever calls `crate::term_doc_freqs` (the
+    /// eager, non-pruning path this module's top doc comment already
+    /// documents), so it can correctly explain a doc that a MAXSCORE search
+    /// over the *same term* would have safely skipped decoding entirely once
+    /// its `TopDocsCollector` filled up. This uses the same "big"/"everywhere"
+    /// fixture term (`docFreq == 300`, real impacts) as
+    /// `lib.rs`'s `maxscore_lazy_path_matches_eager_path_on_real_fixture_and_actually_skips_blocks`:
+    /// a `top_n = 1` MAXSCORE search only ever collects/returns its single
+    /// best-scoring doc, skipping real-Lucene-block decode for the rest of
+    /// the term's docs -- yet `explain_clause` asked to explain one of those
+    /// *not*-returned docs still produces the exact score
+    /// `search_term_query_scored` (the eager path) computes for it,
+    /// unaffected by the unrelated search having pruned blocks. This is not a
+    /// bug fix (`explain_clause` never touches the maxscore path in the first
+    /// place, by construction), just a regression test making that
+    /// non-interaction explicit and permanent.
+    #[test]
+    fn explain_is_unaffected_by_an_unrelated_maxscore_search_pruning_the_same_term() {
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let query = TermQuery::new("big", b"everywhere".as_slice());
+
+        // Eager, ground-truth per-doc scores for every doc matching this term.
+        let mut eager = ScoreCapture::default();
+        search_term_query_scored(&fields, doc_in.as_ref(), None, &query, None, &mut eager).unwrap();
+        assert!(
+            eager.scores.len() > 1,
+            "fixture term must match more than one doc for this test to be meaningful"
+        );
+
+        // A top_n=1 MAXSCORE search over the identical term/doc_in/norms
+        // returns only its single best doc.
+        let mut maxscore = crate::TopDocsCollector::new(1);
+        crate::search_term_query_scored_maxscore(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            &query,
+            None,
+            &mut maxscore,
+        )
+        .unwrap();
+        let kept_docs: std::collections::HashSet<i32> = maxscore
+            .top_docs()
+            .iter()
+            .map(|score_doc| score_doc.doc_id)
+            .collect();
+        assert_eq!(kept_docs.len(), 1, "top_n=1 keeps exactly one doc");
+
+        // Pick a doc the maxscore search did NOT keep (and thus, per its own
+        // design, may not have even decoded) and confirm explain_clause still
+        // reports the correct eager score for it.
+        let (pruned_doc, expected_score) = *eager
+            .scores
+            .iter()
+            .find(|(doc_id, _)| !kept_docs.contains(doc_id))
+            .expect("at least one doc must have been pruned by top_n=1");
+
+        let explanation = explain_clause(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            None,
+            None,
+            &Clause::Term(query),
+            pruned_doc,
+            None,
+        )
+        .unwrap();
+
+        assert!(explanation.matched);
+        assert_eq!(explanation.value, expected_score);
+    }
+
     /// Builds a synthetic, dense [`FieldNorms`] covering every doc up to
     /// `max_doc` with the same norm byte -- exercises the "real opened
     /// norms" (`Some(fn_)`) branch in [`explain_term`]/[`explain_phrase`],
