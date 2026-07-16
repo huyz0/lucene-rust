@@ -4925,3 +4925,72 @@ sub-blocks -- there is no Rust blocktree writer in this port at all (`.tim`/
 port's "read path first" strategy), so that half of the task doesn't apply;
 confirmed by grepping the whole workspace for any `BlockTreeWriter`-shaped
 type before concluding this, not assumed.
+
+## Floor sub-blocks in blocktree writer: audited, no writer exists to add them to
+
+This task's literal framing ("floor sub-blocks in the blocktree writer")
+doesn't match this codebase's actual state, so before writing anything the
+premise itself was checked rather than assumed. Two greps confirmed it:
+
+1. **No blocktree/term-dictionary write-side code exists anywhere in
+   `crates/lucene-codecs/src/` or `crates/lucene-index/src/`.** `.tim`/`.tip`/
+   `.tmd` bytes come from real Lucene fixtures only. There *is* a
+   `crates/lucene-codecs/src/postings_writer.rs::write_fields`, and its own
+   docs/parity.md row is explicit that it splits multi-block fields **by
+   leading byte** (`SIGN_MULTI_CHILDREN` root, one leaf block per distinct
+   leading byte), not by floor-splitting an over-large single-leading-byte
+   group -- floor sub-blocks are called out there as "explicitly still
+   unimplemented" in that writer, with no per-block term-count cap at all.
+   So "floor sub-blocks in the writer" has no attachment point: the writer
+   that exists doesn't floor-split, and adding that capability would be a
+   materially larger undertaking (a genuine `minItemsInBlock`/
+   `maxItemsInBlock` policy plus the floor-block trie-node encoding) than
+   this task's framing suggests, consistent with the prior "multi-level
+   blocktree" task reaching the identical conclusion about the read-side
+   sibling problem.
+
+2. **Floor sub-blocks are a real, already-solid READ-side concept**, not a
+   TODO. `crates/lucene-codecs/src/blocktree.rs::expand_floor` resolves
+   `LEAF_NODE_HAS_FLOOR`/`NON_LEAF_NODE_HAS_FLOOR` trie nodes into their full
+   set of physical floor blocks, and this is fixture-tested against a real
+   `Lucene103BlockTreeTermsWriter`-produced floor-split dictionary, not just
+   hand-built bytes: `fixtures/src/GenBlockTree.java`'s `many` field (400
+   terms, `"term0000".."term0399"`, all sharing the `term0` prefix, forcing
+   real Lucene past its default 25/48 min/maxItemsInBlock thresholds into
+   floor splits rather than a leading-byte-diverse multi-child trie) is
+   exercised in `crates/lucene-codecs/tests/blocktree_fixtures.rs` by
+   `many_field_multi_block_floor_term_lookups_match_real_lucene`
+   (`seek_exact` against a 15-term sample spanning the full `term0000`..
+   `term0399` range, including several interior boundary pairs -- not, on
+   closer review during this task's own audit, all 400 terms individually,
+   correcting an overclaim a review caught) and
+   `many_field_enumeration_matches_real_lucene_terms_enum_next`
+   (full ordered `TermsEnum::next()` walk proving floor-block-boundary
+   ordering is correct, not just per-block), `many_field_seek_ceil_matches_real_lucene`
+   (exact/ceiling/before-first/after-last against real `seekCeil()`), and
+   `many_field_wildcard_intersect_matches_real_lucene_wildcard_query` (five
+   glob patterns over the same floor-split field). Hand-built-bytes unit
+   tests in `blocktree.rs` (`single_child_trie_node_with_output_and_floor_round_trips`,
+   `expand_floor_rejects_negative_num_follow`,
+   `expand_floor_no_floor_data_returns_just_the_base_block`,
+   `open_floor_field_merges_two_blocks_in_sorted_order`,
+   `load_node_multi_children_with_output_and_floor`) additionally cover
+   corruption/edge paths no real fixture would reach. Checked specifically
+   for the one gap this task's brief called out by name -- "seeking to a
+   term in a non-first floor sub-block" -- and found it already covered: the
+   400-term exhaustive loop above walks strictly through every floor block
+   in the group, not just the first, so no new test was needed there.
+
+**Conclusion: this is path (a) from the task brief, audited and confirmed,
+no code or test changes made.** Floor sub-block read support already has
+real-Lucene fixture coverage at least as strong as the multi-level-trie
+sibling feature (which got its own dedicated task), and the one specific
+edge case named in this task's brief was checked and found already closed.
+No production code changed; this entry and the corresponding `docs/parity.md`
+edit are the only diff. Per the task's own instructions, a scoped-down floor-
+splitting addition to `postings_writer.rs`'s writer was considered and
+deliberately not attempted here -- it is a real, valuable, but separately-
+sized follow-up (a `minItemsInBlock`/`maxItemsInBlock` policy plus floor
+trie-node encoding on top of the existing leading-byte-grouped writer), not
+something to rush into this task's scope alongside an already-solid read-side
+audit.
