@@ -5360,3 +5360,77 @@ Files changed: `crates/lucene-codecs/src/blocktree.rs` (new
 `cargo clippy --workspace --all-targets -- -D warnings`,
 `cargo test -p lucene-index` (18 passing in `check_index`, no regressions)
 and `cargo test -p lucene-codecs` (706 passing) all pass clean.
+
+## Per-field doc-values skip indexes (revisit scope)
+
+Task brief: given how much doc-values infrastructure has landed since the
+original scoping decision — multi-field writing via
+`doc_values::write_dense_fields`, all five doc-values types now
+segment-mergeable (`lucene-index/src/merge.rs`), doc values wired into
+`SegmentReader`/NRT reopen — check whether real per-field skip-index
+(`Lucene90DocValuesSkipIndex`, per-block min/max summaries that let a range
+query skip whole blocks) content is now tractable, and either implement a
+scoped increment or confirm the deferral still holds.
+
+**What the original scoping actually says** (there's no dedicated PLAN.md
+entry by that name to revisit — the scoping lives in `doc_values.rs`'s own
+doc comments and error type): the module doc comment states plainly that
+"per-field doc-values skip indexes are not [supported]" and points at
+[`Error::UnsupportedSkipIndex`] — the *read* side rejects any field whose
+`FieldInfo.doc_values_skip_index_type != None` outright rather than parsing
+it. Every write-side function (`write_single_dense_numeric_field`,
+`write_dense_fields`, the merge-driven re-encoders, etc.) shares one
+`finish_field_list_and_footers` helper that emits the `.dvs` skip-index
+section as a bare index-header-plus-footer stub — never any real per-block
+min/max data — regardless of which doc-values type or how many fields are
+being written. `doc_value_query.rs`'s module doc comment independently
+confirms the query-side consequence: `search_numeric_range` does a full
+`[0, max_doc)` sweep specifically because "this port doesn't parse that skip
+index at all yet... so there's nothing to skip against."
+
+**Checked whether the new infrastructure changes any of this — it doesn't,
+because the actual gate is one layer up from `doc_values.rs`.** Every call
+site that constructs a `FieldInfo` — `lucene-index/src/segment_writer.rs`,
+`update_document.rs`, `index_writer.rs`, `merge.rs`, `check_index.rs`, the
+example fixture writers — hardcodes
+`doc_values_skip_index_type: DocValuesSkipIndexType::None`. None of this
+session's new multi-field/merge/NRT work touches that field; it was already
+`None` everywhere before and after. That means the write side never even
+*decides* a field should have a skip index, independent of whether
+`write_dense_fields` knows how to serialize per-block summaries. Writing
+real skip-index bytes into `doc_values.rs` today would produce content that:
+(a) no `FieldInfo` in this codebase would ever advertise as present (so nothing
+would look for it), and (b) the read side would reject on sight if it somehow
+were advertised, since `UnsupportedSkipIndex` fires before any skip-index
+bytes are ever touched. `merge.rs`'s merge functions re-encode purely from
+decoded values (never from a source's raw skip-index bytes), so there's
+nothing there to "correctly handle or reject" — sources never carry real
+skip-index data to begin with, by construction.
+
+**Decision: the deferral still holds, unchanged.** A genuine skip-index
+feature is a four-part chain — (1) the writer deciding to set
+`doc_values_skip_index_type` to something other than `None` for eligible
+fields (a policy decision none of this session's FieldInfo-constructing call
+sites make), (2) `doc_values.rs`'s write side actually computing and encoding
+per-block min/max summaries instead of the shared stub, (3) the read side
+parsing them instead of erroring via `UnsupportedSkipIndex`, and (4) a query-
+side consumer (`doc_value_query.rs`'s range search) actually using them to
+skip blocks. None of the infrastructure that landed this session — dense
+multi-field writing, five-type merge support, NRT doc-values reopen — touches
+any of these four links; they're all upstream/downstream of `doc_values.rs`
+in crates it doesn't own (`lucene-index` for (1), `lucene-search` for (4)).
+Implementing just link (2) in isolation, as the task's own framing
+anticipated, would be exactly the "unconsumed accessor" pattern flagged in
+sibling tasks this session: real bytes with no writer ever set up to request
+them and no reader ever willing to parse them back, so no round-trip test
+could exercise it meaningfully — it would just be dead serialization code
+covered by a test that manually forces `doc_values_skip_index_type` to
+something other than `None` on a `FieldInfo` nobody else in the codebase
+would construct that way. No smaller, independently valuable increment
+surfaced either: the read side's `UnsupportedSkipIndex` rejection and the
+query side's full-sweep fallback are both already correctly documented and
+tested for the "no skip index" case, which is the only case this port's
+writer ever actually produces.
+
+No code changes. Files touched: `PLAN.md`, `docs/parity.md` (progress-log
+entries only, recording the revisit and its outcome).
