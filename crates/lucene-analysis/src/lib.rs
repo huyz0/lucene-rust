@@ -689,6 +689,186 @@ fn build_bidirectional_map(
     merged
 }
 
+/// Real Lucene's `org.apache.lucene.analysis.ngram.NGramTokenFilter`: expands
+/// each input token into every contiguous substring ("gram") whose length is
+/// between `min_gram` and `max_gram` codepoints, inclusive.
+///
+/// **Token-filter form, not tokenizer form (a deliberate, documented scope
+/// choice)**: real Lucene has both an `NGramTokenizer` (grams raw text
+/// directly, ignoring this crate's own word-boundary rules) and an
+/// `NGramTokenFilter` (grams already-tokenized terms). This port only
+/// implements the token-filter form, since it composes naturally with this
+/// crate's existing `Vec<Token> -> Vec<Token>` filter chain (see
+/// [`Analyzer::analyze`]) and lets n-gramming sit downstream of
+/// [`tokenize`]'s word-boundary logic, [`LowerCaseFilter`], etc. **The
+/// tokenizer form is a real, deferred gap**: it would need a raw-`&str ->
+/// Vec<Token>` entry point that ignores word boundaries entirely (gramming
+/// straight across whitespace/punctuation), which is a different code shape
+/// from every other producer in this module and is not implemented here --
+/// see `docs/parity.md`.
+///
+/// **Gram order (confirmed against real Lucene's own behavior)**: for each
+/// input token, grams are produced in order of increasing start position,
+/// and for each start position, in order of increasing length -- e.g.
+/// `"abcde"` with `min_gram = 2`/`max_gram = 3` produces, in this exact
+/// order: `"ab"`, `"abc"`, `"bc"`, `"bcd"`, `"cd"`, `"cde"`, `"de"`.
+///
+/// **A token shorter than `min_gram` produces no output at all** (real
+/// Lucene's actual behavior -- not a truncated or padded gram, and not the
+/// whole token passed through unchanged).
+///
+/// **Positions**: the first gram derived from a given input token keeps that
+/// token's own `position_increment`; every subsequent gram from the *same*
+/// input token gets `position_increment == 0` (an alternative reading at the
+/// same starting position -- same convention this crate's [`SynonymFilter`]
+/// already uses for injected tokens). `position_length` stays `1` for every
+/// gram (each gram is a single alternative token, not a multi-position span).
+///
+/// **Offsets**: each gram gets its own precise `start_offset`/`end_offset`,
+/// computed from the *codepoint* range it covers within the original token's
+/// term (never splitting a multi-byte UTF-8 character), added onto the
+/// original token's `start_offset` -- consistent with this module's existing
+/// (documented, byte-offset) `Token::start_offset`/`end_offset` convention.
+pub struct NGramTokenFilter;
+
+/// Computes, for `term`, the ordered list of `(gram_text, start_char, end_char)`
+/// substrings whose codepoint length falls in `min_gram..=max_gram`; if
+/// `edge_only` is true, only grams starting at codepoint 0 are produced
+/// (the [`EdgeNGramTokenFilter`] case). `start_char`/`end_char` are codepoint
+/// indices into `term`, suitable for translating to byte offsets via
+/// `char_indices`.
+fn ngrams_for_term(
+    term: &str,
+    min_gram: i32,
+    max_gram: i32,
+    edge_only: bool,
+) -> Vec<(String, usize, usize)> {
+    let chars: Vec<char> = term.chars().collect();
+    let n = chars.len();
+    let min_gram = min_gram as usize;
+    let max_gram = max_gram as usize;
+    if n < min_gram {
+        return Vec::new();
+    }
+    let mut grams = Vec::new();
+    let starts: Vec<usize> = if edge_only { vec![0] } else { (0..n).collect() };
+    for start in starts {
+        for len in min_gram..=max_gram {
+            let end = start + len;
+            if end > n {
+                break;
+            }
+            let gram: String = chars[start..end].iter().collect();
+            grams.push((gram, start, end));
+        }
+    }
+    grams
+}
+
+/// Translates a codepoint range `[start_char, end_char)` within `term` into
+/// byte offsets relative to the start of `term`, by walking `char_indices`.
+/// `end_char == term.chars().count()` maps to `term.len()` (the byte length
+/// of the whole term).
+fn char_range_to_byte_range(term: &str, start_char: usize, end_char: usize) -> (usize, usize) {
+    let mut start_byte = term.len();
+    let mut end_byte = term.len();
+    let mut found_start = false;
+    for (char_idx, (byte_idx, _)) in term.char_indices().enumerate() {
+        if char_idx == start_char {
+            start_byte = byte_idx;
+            found_start = true;
+        }
+        if char_idx == end_char {
+            end_byte = byte_idx;
+        }
+    }
+    debug_assert!(found_start || start_char == term.chars().count());
+    (start_byte, end_byte)
+}
+
+/// Shared validation for [`NGramTokenFilter::apply`]/
+/// [`EdgeNGramTokenFilter::apply`]: `min_gram`/`max_gram` must both be
+/// positive, and `min_gram` must not exceed `max_gram`. Mirrors real
+/// Lucene's `NGramTokenFilter`/`EdgeNGramTokenFilter` constructors, which
+/// both throw `IllegalArgumentException` for these same conditions -- ported
+/// here as a `Result::Err` rather than a panic, since this is caller
+/// configuration error, not an invariant violation.
+fn validate_gram_range(min_gram: i32, max_gram: i32) -> Result<(), String> {
+    if min_gram <= 0 {
+        return Err(format!("min_gram must be positive, got {min_gram}"));
+    }
+    if max_gram <= 0 {
+        return Err(format!("max_gram must be positive, got {max_gram}"));
+    }
+    if min_gram > max_gram {
+        return Err(format!(
+            "min_gram ({min_gram}) must not exceed max_gram ({max_gram})"
+        ));
+    }
+    Ok(())
+}
+
+/// Grams `tokens` per [`NGramTokenFilter`]'s documented algorithm/positional
+/// convention, applying `ngrams_for_term` (with `edge_only`) to each input
+/// token's `term` and emitting one output token per gram. Shared
+/// implementation for both [`NGramTokenFilter::apply`] and
+/// [`EdgeNGramTokenFilter::apply`].
+fn apply_ngram_filter(
+    tokens: Vec<Token>,
+    min_gram: i32,
+    max_gram: i32,
+    edge_only: bool,
+) -> Result<Vec<Token>, String> {
+    validate_gram_range(min_gram, max_gram)?;
+    let mut out = Vec::new();
+    for t in tokens {
+        let grams = ngrams_for_term(&t.term, min_gram, max_gram, edge_only);
+        for (idx, (gram, start_char, end_char)) in grams.into_iter().enumerate() {
+            let (start_byte, end_byte) = char_range_to_byte_range(&t.term, start_char, end_char);
+            out.push(Token {
+                term: gram,
+                start_offset: t.start_offset + start_byte as i32,
+                end_offset: t.start_offset + end_byte as i32,
+                position_increment: if idx == 0 { t.position_increment } else { 0 },
+                position_length: 1,
+            });
+        }
+    }
+    Ok(out)
+}
+
+impl NGramTokenFilter {
+    /// Grams every token in `tokens` per this filter's documented algorithm.
+    /// Returns `Err` if `min_gram`/`max_gram` are not both positive or if
+    /// `min_gram > max_gram` (see [`validate_gram_range`]); on success,
+    /// tokens shorter than `min_gram` (in codepoints) contribute no output
+    /// tokens at all.
+    pub fn apply(tokens: Vec<Token>, min_gram: i32, max_gram: i32) -> Result<Vec<Token>, String> {
+        apply_ngram_filter(tokens, min_gram, max_gram, false)
+    }
+}
+
+/// Real Lucene's `org.apache.lucene.analysis.ngram.EdgeNGramTokenFilter`:
+/// like [`NGramTokenFilter`], but only produces **prefix** grams anchored at
+/// the start of each input token (codepoint index 0) -- the shape used for
+/// autocomplete/prefix-search indexing. E.g. `"abcde"` with `min_gram = 2`/
+/// `max_gram = 4` produces, in order: `"ab"`, `"abc"`, `"abcd"`.
+///
+/// Same token-filter-only scope note, no-output-below-`min_gram` rule,
+/// position/offset convention, and config-error validation as
+/// [`NGramTokenFilter`] -- see that type's docs for the full rationale; this
+/// type differs only in which start positions are grammed.
+pub struct EdgeNGramTokenFilter;
+
+impl EdgeNGramTokenFilter {
+    /// Grams every token in `tokens`, keeping only prefix substrings anchored
+    /// at the start of each token. Returns `Err` under the same conditions as
+    /// [`NGramTokenFilter::apply`].
+    pub fn apply(tokens: Vec<Token>, min_gram: i32, max_gram: i32) -> Result<Vec<Token>, String> {
+        apply_ngram_filter(tokens, min_gram, max_gram, true)
+    }
+}
+
 /// An analyzer composing a tokenizer with a configurable filter chain.
 ///
 /// At minimum applies [`LowerCaseFilter`]; optionally applies [`StopFilter`]
@@ -2290,5 +2470,134 @@ mod tests {
         let analyzer = Analyzer::standard(None);
         let out = analyzer.analyze("Café");
         assert_eq!(out, vec![tok("café", 0, 5, 1)]);
+    }
+
+    // -- NGramTokenFilter / EdgeNGramTokenFilter --
+
+    #[test]
+    fn ngram_filter_abcde_min2_max3_exact_gram_set_and_order() {
+        let tokens = vec![tok("abcde", 0, 5, 1)];
+        let out = NGramTokenFilter::apply(tokens, 2, 3).unwrap();
+        let terms: Vec<&str> = out.iter().map(|t| t.term.as_str()).collect();
+        assert_eq!(terms, vec!["ab", "abc", "bc", "bcd", "cd", "cde", "de"]);
+        // First gram keeps the original token's position_increment; every
+        // subsequent gram from the same input token is position_increment 0.
+        let pos_incs: Vec<i32> = out.iter().map(|t| t.position_increment).collect();
+        assert_eq!(pos_incs, vec![1, 0, 0, 0, 0, 0, 0]);
+        assert!(out.iter().all(|t| t.position_length == 1));
+        // Offsets: "ab" is chars 0..2 of a token starting at byte 0.
+        assert_eq!((out[0].start_offset, out[0].end_offset), (0, 2));
+        // "de" is chars 3..5.
+        assert_eq!((out[6].start_offset, out[6].end_offset), (3, 5));
+    }
+
+    #[test]
+    fn edge_ngram_filter_abcde_min2_max4_exact_prefix_gram_set() {
+        let tokens = vec![tok("abcde", 0, 5, 1)];
+        let out = EdgeNGramTokenFilter::apply(tokens, 2, 4).unwrap();
+        let terms: Vec<&str> = out.iter().map(|t| t.term.as_str()).collect();
+        assert_eq!(terms, vec!["ab", "abc", "abcd"]);
+        let pos_incs: Vec<i32> = out.iter().map(|t| t.position_increment).collect();
+        assert_eq!(pos_incs, vec![1, 0, 0]);
+        assert_eq!((out[0].start_offset, out[0].end_offset), (0, 2));
+        assert_eq!((out[2].start_offset, out[2].end_offset), (0, 4));
+    }
+
+    #[test]
+    fn ngram_filter_token_shorter_than_min_gram_produces_no_output() {
+        let tokens = vec![tok("ab", 0, 2, 1)];
+        let out = NGramTokenFilter::apply(tokens, 3, 5).unwrap();
+        assert_eq!(out, vec![]);
+    }
+
+    #[test]
+    fn edge_ngram_filter_token_shorter_than_min_gram_produces_no_output() {
+        let tokens = vec![tok("ab", 0, 2, 1)];
+        let out = EdgeNGramTokenFilter::apply(tokens, 3, 5).unwrap();
+        assert_eq!(out, vec![]);
+    }
+
+    #[test]
+    fn ngram_filter_min_gram_greater_than_max_gram_is_config_error() {
+        let tokens = vec![tok("abcde", 0, 5, 1)];
+        let err = NGramTokenFilter::apply(tokens, 4, 2).unwrap_err();
+        assert!(err.contains("min_gram"));
+    }
+
+    #[test]
+    fn edge_ngram_filter_min_gram_greater_than_max_gram_is_config_error() {
+        let tokens = vec![tok("abcde", 0, 5, 1)];
+        let err = EdgeNGramTokenFilter::apply(tokens, 4, 2).unwrap_err();
+        assert!(err.contains("min_gram"));
+    }
+
+    #[test]
+    fn ngram_filter_zero_or_negative_gram_sizes_are_config_errors() {
+        let tokens = vec![tok("abcde", 0, 5, 1)];
+        assert!(NGramTokenFilter::apply(tokens.clone(), 0, 3).is_err());
+        assert!(NGramTokenFilter::apply(tokens.clone(), 1, 0).is_err());
+        assert!(NGramTokenFilter::apply(tokens.clone(), -1, 3).is_err());
+        assert!(NGramTokenFilter::apply(tokens, 2, -2).is_err());
+    }
+
+    #[test]
+    fn edge_ngram_filter_zero_or_negative_gram_sizes_are_config_errors() {
+        let tokens = vec![tok("abcde", 0, 5, 1)];
+        assert!(EdgeNGramTokenFilter::apply(tokens.clone(), 0, 3).is_err());
+        assert!(EdgeNGramTokenFilter::apply(tokens, 1, -1).is_err());
+    }
+
+    #[test]
+    fn ngram_filter_single_character_token() {
+        // A single-char token with min_gram == 1 produces exactly one gram
+        // equal to the whole token.
+        let tokens = vec![tok("a", 0, 1, 1)];
+        let out = NGramTokenFilter::apply(tokens, 1, 3).unwrap();
+        assert_eq!(out, vec![tok("a", 0, 1, 1)]);
+    }
+
+    #[test]
+    fn ngram_filter_multibyte_unicode_grams_by_codepoint_not_byte() {
+        // "café" -- 'é' is 2 bytes in UTF-8, so byte-based gramming would
+        // either split it into invalid UTF-8 or misalign lengths. Grammed by
+        // codepoint (4 chars: c,a,f,é) with min=2/max=2: "ca","af","fé".
+        let tokens = vec![tok("café", 0, 5, 1)];
+        let out = NGramTokenFilter::apply(tokens, 2, 2).unwrap();
+        let terms: Vec<&str> = out.iter().map(|t| t.term.as_str()).collect();
+        assert_eq!(terms, vec!["ca", "af", "fé"]);
+        // "fé" spans the last two codepoints: byte 2..5 (since 'é' is 2
+        // bytes), not 2..4.
+        assert_eq!((out[2].start_offset, out[2].end_offset), (2, 5));
+    }
+
+    #[test]
+    fn edge_ngram_filter_multibyte_unicode_grams_by_codepoint_not_byte() {
+        let tokens = vec![tok("café", 0, 5, 1)];
+        let out = EdgeNGramTokenFilter::apply(tokens, 1, 4).unwrap();
+        let terms: Vec<&str> = out.iter().map(|t| t.term.as_str()).collect();
+        assert_eq!(terms, vec!["c", "ca", "caf", "café"]);
+        assert_eq!((out[3].start_offset, out[3].end_offset), (0, 5));
+    }
+
+    #[test]
+    fn ngram_filter_multiple_tokens_grammed_independently() {
+        // Each input token is grammed on its own -- no gramming across token
+        // boundaries.
+        let tokens = vec![tok("ab", 0, 2, 1), tok("cd", 3, 5, 1)];
+        let out = NGramTokenFilter::apply(tokens, 2, 2).unwrap();
+        assert_eq!(out, vec![tok("ab", 0, 2, 1), tok("cd", 3, 5, 1)]);
+    }
+
+    #[test]
+    fn edge_ngram_filter_multiple_tokens_grammed_independently() {
+        let tokens = vec![tok("abc", 0, 3, 1), tok("xyz", 4, 7, 1)];
+        let out = EdgeNGramTokenFilter::apply(tokens, 1, 2).unwrap();
+        let terms: Vec<&str> = out.iter().map(|t| t.term.as_str()).collect();
+        assert_eq!(terms, vec!["a", "ab", "x", "xy"]);
+        // Second input token's grams carry its own position_increment on the
+        // first gram, then 0 for the rest -- independent of the first
+        // token's grams.
+        let pos_incs: Vec<i32> = out.iter().map(|t| t.position_increment).collect();
+        assert_eq!(pos_incs, vec![1, 0, 1, 0]);
     }
 }

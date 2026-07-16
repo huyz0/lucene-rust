@@ -5631,3 +5631,83 @@ field on `Token`, new `SynonymRule` struct, new `SynonymFilter::apply_multiword`
 8 new tests, `tok_len` test helper), `docs/parity.md`, `PLAN.md`. `cargo test
 -p lucene-analysis`: 66 lib tests pass (up from 58). `cargo fmt
 --all` and `cargo clippy --workspace --all-targets -- -D warnings` clean.
+
+**Progress (task: basic n-gram/edge-n-gram tokenizer).** Added
+`crates/lucene-analysis/src/lib.rs::{NGramTokenFilter, EdgeNGramTokenFilter}`,
+two new `Vec<Token> -> Result<Vec<Token>, String>` filters gramming each
+already-tokenized token's `term` into substrings, sharing one internal
+implementation (`ngrams_for_term`, `char_range_to_byte_range`,
+`validate_gram_range`, `apply_ngram_filter`) parameterized by an `edge_only`
+flag so the edge-n-gram case doesn't duplicate the plain n-gram logic.
+
+**Token-filter form only, not the tokenizer form -- a deliberate, stated
+scope choice.** Real Lucene has both `NGramTokenizer`/`EdgeNGramTokenizer`
+(gram raw text directly, ignoring existing token boundaries) and
+`NGramTokenFilter`/`EdgeNGramTokenFilter` (gram already-tokenized terms). Only
+the token-filter form is implemented, since it composes naturally with this
+crate's existing `Vec<Token> -> Vec<Token>` filter-chain shape (same as every
+other filter here) rather than needing a new raw-`&str` entry point. **The
+tokenizer form is a real, deferred gap** -- noted explicitly in
+`docs/parity.md`, not silently dropped.
+
+**Algorithm**: `NGramTokenFilter::apply(tokens, min_gram, max_gram)` produces
+every contiguous codepoint substring of each token's term with length in
+`min_gram..=max_gram`, ordered by increasing start position then increasing
+length (`"abcde"` min=2/max=3 -> `"ab","abc","bc","bcd","cd","cde","de"`, an
+order confirmed by an exact-match test). `EdgeNGramTokenFilter::apply` is the
+same algorithm restricted to grams starting at codepoint 0 (`"abcde"`
+min=2/max=4 -> `"ab","abc","abcd"`).
+
+**Edge cases**: a token shorter than `min_gram` (codepoints) produces no
+output at all (confirmed real Lucene behavior, not a truncated/padded gram);
+`min_gram > max_gram` and `min_gram`/`max_gram <= 0` (including negative) are
+all rejected as `Result::Err` configuration errors via a shared
+`validate_gram_range` helper, never a panic; a single-character token with
+`min_gram == 1` yields one gram equal to the whole token; multiple input
+tokens are grammed fully independently.
+
+**Unicode**: grams are computed over `term.chars().collect::<Vec<char>>()`
+(codepoints), never bytes, so a multi-byte character is never split
+mid-character; `char_range_to_byte_range` then translates the codepoint range
+back to byte offsets via `char_indices()` for the emitted token's
+`start_offset`/`end_offset`, consistent with this crate's existing
+(documented) byte-offset `Token` convention. Verified with a `"café"` test
+case (min=2/max=2 -> `"ca","af","fé"`, with `"fé"`'s byte span correctly
+`2..5` since `é` is 2 bytes).
+
+**Position/offset convention chosen**: the first gram from a given input
+token keeps that token's own `position_increment`; every subsequent gram from
+the same input token gets `position_increment == 0` (same "alternative
+reading at the same position" convention `SynonymFilter` already uses for
+injected tokens), and every gram's `position_length` stays `1`. Each gram
+gets its own precise `start_offset`/`end_offset` (its codepoint span within
+the term, translated to bytes and added onto the original token's
+`start_offset`) rather than reusing the whole original token's span for every
+gram.
+
+**Not wired into `Analyzer`**: no `with_ngrams`/`with_edge_ngrams` builder
+method -- n-gram filters are typically used in a dedicated
+autocomplete/fuzzy-matching analyzer rather than the general-purpose chain
+`Analyzer` composes, so callers call `NGramTokenFilter::apply`/
+`EdgeNGramTokenFilter::apply` directly for now.
+
+New tests (13 new, all in `lucene-analysis/src/lib.rs::tests`):
+`ngram_filter_abcde_min2_max3_exact_gram_set_and_order`,
+`edge_ngram_filter_abcde_min2_max4_exact_prefix_gram_set`,
+`ngram_filter_token_shorter_than_min_gram_produces_no_output`,
+`edge_ngram_filter_token_shorter_than_min_gram_produces_no_output`,
+`ngram_filter_min_gram_greater_than_max_gram_is_config_error`,
+`edge_ngram_filter_min_gram_greater_than_max_gram_is_config_error`,
+`ngram_filter_zero_or_negative_gram_sizes_are_config_errors`,
+`edge_ngram_filter_zero_or_negative_gram_sizes_are_config_errors`,
+`ngram_filter_single_character_token`,
+`ngram_filter_multibyte_unicode_grams_by_codepoint_not_byte`,
+`edge_ngram_filter_multibyte_unicode_grams_by_codepoint_not_byte`,
+`ngram_filter_multiple_tokens_grammed_independently`, and
+`edge_ngram_filter_multiple_tokens_grammed_independently`.
+
+Files touched: `crates/lucene-analysis/src/lib.rs` (new `NGramTokenFilter`/
+`EdgeNGramTokenFilter` types plus their shared helper functions, 13 new
+tests), `docs/parity.md`, `PLAN.md`. `cargo test -p lucene-analysis`: 79 lib
+tests pass (up from 66). `cargo fmt --all` and `cargo clippy --workspace
+--all-targets -- -D warnings` both clean.
