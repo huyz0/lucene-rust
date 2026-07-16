@@ -68,9 +68,11 @@
 //!   full `[0, max_doc)` sweep (see that function's doc comment) — Lucene's
 //!   real doc-values range query can use the field's optional skip index
 //!   (`Lucene90DocValuesSkipIndex`) to skip whole blocks that can't match;
-//!   this port doesn't parse that skip index at all yet (see
-//!   `doc_values.rs`'s `Error::UnsupportedSkipIndex`), so there's nothing to
-//!   skip against — a full sweep is the only correct option available.
+//!   `doc_values.rs` now decodes that skip index
+//!   ([`doc_values::parse_skip_index`][lucene_codecs::doc_values::parse_skip_index]),
+//!   but this module doesn't consult it yet, so there's nothing wired up to
+//!   skip against — a full sweep is the only option this module implements
+//!   today.
 
 use lucene_codecs::doc_values::{self, NumericEntry, SortedEntry, SortedNumericEntry};
 use lucene_util::fixed_bit_set::FixedBitSet;
