@@ -1,7 +1,8 @@
 //! Port of `org.apache.lucene.codecs.lucene104.Lucene104PostingsReader`'s
 //! `.doc`/`.pos`/`.pay` file decode — read-only, scoped to
 //! **`IndexOptions.DOCS`/`DOCS_AND_FREQS`/`DOCS_AND_FREQS_AND_POSITIONS`/
-//! `DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS`** (incl. payloads) at any
+//! `DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS`/`DOCS_AND_CUSTOM_FREQS`** (incl.
+//! payloads) at any
 //! `docFreq`, including `docFreq >= LEVEL1_NUM_DOCS` (32 * `BLOCK_SIZE` =
 //! 8192), whose interleaved level-1 skip entries both paths now handle (see
 //! "`docFreq >= LEVEL1_NUM_DOCS`" below). Two decode strategies are
@@ -156,10 +157,22 @@
 //! skip-past-one-block described above. Positions inherit this via the same
 //! `docFreq` gate through `postings()`.
 //!
+//! ## `IndexOptions::DocsAndCustomFreqs`
+//!
+//! Wire-identical to `IndexOptions::DocsAndFreqs`: real Lucene's
+//! `Lucene104PostingsReader`/`Lucene104PostingsWriter` derive `indexHasFreq`/
+//! `writeFreqs` from `IndexOptions.subsumes(DOCS_AND_FREQS)`
+//! (`IndexOptions.java`'s `subsumes` override), which is `true` for both
+//! variants — they differ only in how the caller *interprets* the freq value
+//! (a term count vs. an opaque per-doc "custom" score, e.g. for similarity
+//! implementations that want an arbitrary integer instead of a real
+//! occurrence count), never in how it's encoded or decoded. So this decoder
+//! treats it exactly like `DocsAndFreqs` (same `index_has_freq` derivation,
+//! same false `subsumes_positions()`/`subsumes_offsets()`) with no separate
+//! code path.
+//!
 //! ## Deferred (all rejected with [`Error::Unsupported`])
 //!
-//! - `IndexOptions::DocsAndCustomFreqs` — real Lucene never writes this for
-//!   an ordinary indexed text field, so it's out of scope here.
 //! - Impacts (`ImpactsEnum`, `CompetitiveImpactAccumulator`, competitive-scoring
 //!   metadata) — see `docs/parity.md`.
 
@@ -493,9 +506,10 @@ impl<'a> DocInput<'a> {
                 | IndexOptions::DocsAndFreqs
                 | IndexOptions::DocsAndFreqsAndPositions
                 | IndexOptions::DocsAndFreqsAndPositionsAndOffsets
+                | IndexOptions::DocsAndCustomFreqs
         ) {
             return Err(Error::Unsupported(
-                "IndexOptions::DocsAndCustomFreqs is not supported in this slice",
+                "IndexOptions::None is not supported in this slice",
             ));
         }
         let index_has_freq = index_options != IndexOptions::Docs;
@@ -604,7 +618,7 @@ impl<'a> DocInput<'a> {
     /// is behind the caller's `advance()` target is skipped without ever
     /// running `ForUtil`/`PForUtil` decode on it (see [`LazyDocsCursor`]'s
     /// own doc comment for exactly what "skipped" means here). Validation
-    /// (`doc_freq <= 1`, `IndexOptions::DocsAndCustomFreqs`) mirrors
+    /// (`doc_freq <= 1`, `IndexOptions::None`) mirrors
     /// [`Self::read_postings`] exactly — same scope, different decode
     /// strategy. `docFreq >= LEVEL1_NUM_DOCS` is supported by both: this
     /// cursor additionally jumps whole 32-block level-1 spans (see
@@ -627,9 +641,10 @@ impl<'a> DocInput<'a> {
                 | IndexOptions::DocsAndFreqs
                 | IndexOptions::DocsAndFreqsAndPositions
                 | IndexOptions::DocsAndFreqsAndPositionsAndOffsets
+                | IndexOptions::DocsAndCustomFreqs
         ) {
             return Err(Error::Unsupported(
-                "IndexOptions::DocsAndCustomFreqs is not supported in this slice",
+                "IndexOptions::None is not supported in this slice",
             ));
         }
         let mut r = SliceInput::new(self.buf);
@@ -1976,6 +1991,72 @@ mod tests {
             .unwrap();
         assert_eq!(postings.docs, vec![0, 3, 4]);
         assert_eq!(postings.freqs, vec![1, 1, 1]);
+    }
+
+    /// `IndexOptions::DocsAndCustomFreqs` is wire-identical to `DocsAndFreqs`
+    /// (see the module doc): the exact same `.doc` bytes as
+    /// `read_postings_all_freq_one_docs_only_bit_path` above decode
+    /// identically when read under this option, for both the eager
+    /// [`DocInput::read_postings`] and the lazy [`DocInput::lazy_cursor`]
+    /// path.
+    #[test]
+    fn read_postings_docs_and_custom_freqs_matches_docs_and_freqs() {
+        let id = [6u8; ID_LENGTH];
+        let (mut doc, footer) = header_and_footer(DOC_CODEC, &id);
+        let doc_start_fp = doc.len() as u64;
+        write_group_vints(&mut doc, &[(1 << 1) | 1, (3 << 1) | 1, (1 << 1) | 1]);
+        doc.extend_from_slice(&footer);
+
+        let input = DocInput::open(&doc, &id, "").unwrap();
+        let meta = TermMetadata {
+            doc_start_fp,
+            singleton_doc_id: -1,
+            ..TermMetadata::EMPTY
+        };
+        let postings = input
+            .read_postings(meta, 3, IndexOptions::DocsAndCustomFreqs, false)
+            .unwrap();
+        assert_eq!(postings.docs, vec![0, 3, 4]);
+        assert_eq!(postings.freqs, vec![1, 1, 1]);
+
+        let mut cursor = input
+            .lazy_cursor(meta, 3, IndexOptions::DocsAndCustomFreqs, false)
+            .unwrap();
+        let mut docs = Vec::new();
+        loop {
+            let d = cursor.next_doc().unwrap();
+            if d == NO_MORE_DOCS {
+                break;
+            }
+            docs.push(d);
+        }
+        assert_eq!(docs, vec![0, 3, 4]);
+    }
+
+    /// `IndexOptions::None` isn't a valid postings-carrying option (real
+    /// Lucene never writes `.doc` bytes for an unindexed field) -- both
+    /// decode entry points reject it, distinct from the now-accepted
+    /// `DocsAndCustomFreqs` case above.
+    #[test]
+    fn read_postings_rejects_index_options_none() {
+        let id = [6u8; ID_LENGTH];
+        let (mut doc, footer) = header_and_footer(DOC_CODEC, &id);
+        let doc_start_fp = doc.len() as u64;
+        doc.extend_from_slice(&footer);
+        let input = DocInput::open(&doc, &id, "").unwrap();
+        let meta = TermMetadata {
+            doc_start_fp,
+            singleton_doc_id: -1,
+            ..TermMetadata::EMPTY
+        };
+        assert!(matches!(
+            input.read_postings(meta, 3, IndexOptions::None, false),
+            Err(Error::Unsupported(_))
+        ));
+        assert!(matches!(
+            input.lazy_cursor(meta, 3, IndexOptions::None, false),
+            Err(Error::Unsupported(_))
+        ));
     }
 
     #[test]

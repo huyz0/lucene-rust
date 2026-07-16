@@ -931,8 +931,9 @@ pub fn search_term_query_scored<C: ScoringCollector>(
 /// fast path isn't available — no `.doc` file opened (`doc_in == None`),
 /// `docFreq <= 1` (no `.doc` bytes are even written for a singleton term, so
 /// there's nothing to stream lazily), or an index option
-/// [`lucene_codecs::postings::LazyDocsCursor`] doesn't support
-/// (`IndexOptions::DocsAndCustomFreqs`) — so this function never produces a
+/// [`lucene_codecs::postings::LazyDocsCursor`] doesn't support (currently
+/// only `IndexOptions::None`, which never carries postings in the first
+/// place) — so this function never produces a
 /// result the eager path wouldn't already produce on its own; the skip is
 /// purely a performance path, not a matching-semantics change. Verified
 /// identical to [`search_term_query_scored`] for many `top_n`/term-frequency

@@ -70,8 +70,13 @@
 //!   `LEVEL1_NUM_DOCS`.
 //! - **Term frequency, positions, and now offsets too — still no
 //!   payloads.** `IndexOptions::Docs`/`DocsAndFreqs`/
-//!   `DocsAndFreqsAndPositions`/`DocsAndFreqsAndPositionsAndOffsets` are all
-//!   accepted; `.pos` is only written once a field indexes positions, and
+//!   `DocsAndFreqsAndPositions`/`DocsAndFreqsAndPositionsAndOffsets`/
+//!   `DocsAndCustomFreqs` are all accepted — `DocsAndCustomFreqs` is
+//!   wire-identical to `DocsAndFreqs` (real Lucene's `writeFreqs` derives from
+//!   `IndexOptions.subsumes(DOCS_AND_FREQS)`, which the two share; they only
+//!   differ in how the freq value is *interpreted* by the caller, never in
+//!   encoding), so no separate code path is needed for it here; `.pos` is only
+//!   written once a field indexes positions, and
 //!   `.pay` is only written once a field indexes offsets (this writer never
 //!   has payloads, so `.pay` is never opened for that reason alone). This
 //!   mirrors `flush_stored_only_segment`'s own historical "start with the
@@ -202,7 +207,7 @@ pub enum Error {
     NonPositiveFreq { index: usize },
     #[error(
         "write_single_field: only IndexOptions::Docs/DocsAndFreqs/DocsAndFreqsAndPositions/\
-         DocsAndFreqsAndPositionsAndOffsets is supported, got {0:?}"
+         DocsAndFreqsAndPositionsAndOffsets/DocsAndCustomFreqs is supported, got {0:?}"
     )]
     UnsupportedIndexOptions(IndexOptions),
     #[error(
@@ -859,6 +864,7 @@ fn validate_field(input: &FieldPostingsInput<'_>) -> Result<()> {
             | IndexOptions::DocsAndFreqs
             | IndexOptions::DocsAndFreqsAndPositions
             | IndexOptions::DocsAndFreqsAndPositionsAndOffsets
+            | IndexOptions::DocsAndCustomFreqs
     ) {
         return Err(Error::UnsupportedIndexOptions(input.index_options));
     }
@@ -2128,17 +2134,50 @@ mod tests {
         }];
         let input = FieldPostingsInput {
             field_number: 0,
-            index_options: IndexOptions::DocsAndCustomFreqs,
+            index_options: IndexOptions::None,
             doc_count: 1,
             has_payloads: false,
             terms: &terms,
         };
         assert!(matches!(
             write_single_field(&input, &SEG_ID, SUFFIX),
-            Err(Error::UnsupportedIndexOptions(
-                IndexOptions::DocsAndCustomFreqs
-            ))
+            Err(Error::UnsupportedIndexOptions(IndexOptions::None))
         ));
+    }
+
+    /// `IndexOptions::DocsAndCustomFreqs` is wire-identical to `DocsAndFreqs`
+    /// (see the module doc): this round-trips a multi-doc, multi-freq term
+    /// through the real writer + unmodified reader under that option, proving
+    /// it's accepted end-to-end rather than just not-rejected.
+    #[test]
+    fn docs_and_custom_freqs_round_trips_like_docs_and_freqs() {
+        let term = TermPostings {
+            term: b"a".to_vec(),
+            docs: vec![(0, 3), (1, 1), (5, 7)],
+            ..Default::default()
+        };
+        let max_doc = term.docs.last().unwrap().0 + 1;
+        let doc_count = term.docs.len() as i32;
+        let terms = vec![term.clone()];
+        let input = FieldPostingsInput {
+            has_payloads: false,
+            field_number: 0,
+            index_options: IndexOptions::DocsAndCustomFreqs,
+            doc_count,
+            terms: &terms,
+        };
+        let output = write_single_field(&input, &SEG_ID, SUFFIX).unwrap();
+        let fis = FieldInfos {
+            fields: vec![field_info(0, "f", IndexOptions::DocsAndCustomFreqs)],
+        };
+        let (fields, doc_in) = open_written(&output, &fis, max_doc);
+        let field = fields.field("f").unwrap();
+        assert_eq!(field.seek_exact(b"a").unwrap().doc_freq, 3);
+        let postings = field.postings(b"a", Some(&doc_in)).unwrap().unwrap();
+        let expected_docs: Vec<i32> = term.docs.iter().map(|&(d, _)| d).collect();
+        let expected_freqs: Vec<i32> = term.docs.iter().map(|&(_, f)| f).collect();
+        assert_eq!(postings.docs, expected_docs);
+        assert_eq!(postings.freqs, expected_freqs);
     }
 
     /// Many terms, each with several docs, all under `BLOCK_SIZE` -- checks
