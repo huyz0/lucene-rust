@@ -1377,12 +1377,30 @@ mod tests {
 
     #[test]
     fn read_bulk_ints_unsupported_width_rejected() {
-        let out = vec![3u8]; // not one of 0/8/16/32
-        let mut input = SliceInput::new(&out);
-        assert!(matches!(
-            read_bulk_ints(&mut input, 4),
-            Err(Error::UnsupportedBulkIntWidth(3))
-        ));
+        // Real Lucene's writer (`StoredFieldsInts.writeInts`) only ever emits
+        // bpv 0 (constant-fill) or the smallest of 8/16/32 that fits the max
+        // value, and Java's own `readInts` throws `IOException("Unsupported
+        // number of bits per value: " + bpv)` for every other byte value --
+        // confirmed against
+        // lucene/core/.../codecs/lucene90/compressing/StoredFieldsInts.java.
+        // Sweep the whole invalid space (not just one sentinel) to prove the
+        // rejection boundary is exactly "not 0, 8, 16, or 32", matching
+        // Java's switch/default exactly.
+        for width in 0u16..=255 {
+            let bpv = width as u8;
+            if matches!(bpv, 0 | 8 | 16 | 32) {
+                continue;
+            }
+            let out = vec![bpv];
+            let mut input = SliceInput::new(&out);
+            assert!(
+                matches!(
+                    read_bulk_ints(&mut input, 4),
+                    Err(Error::UnsupportedBulkIntWidth(w)) if w == bpv
+                ),
+                "expected UnsupportedBulkIntWidth({bpv}) to be rejected"
+            );
+        }
     }
 
     #[test]
