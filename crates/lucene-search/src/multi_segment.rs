@@ -95,6 +95,7 @@ use crate::query::{BooleanQuery, TermQuery};
 use crate::Result;
 
 use std::collections::HashMap;
+use std::time::Instant;
 
 use lucene_codecs::blocktree::BlockTreeFields;
 use lucene_codecs::postings::{DocInput, PayInput, PosInput};
@@ -152,6 +153,58 @@ where
         }
     }
     Ok(merged.top_docs().to_vec())
+}
+
+/// Deadline-aware sibling of [`merge_multi_segment_scored`] -- real Lucene's
+/// `TimeLimitingBulkScorer`/`IndexSearcher.search`'s `queryTimeout` param stop
+/// scoring early once a caller-supplied clock expires, returning whatever
+/// hits were already collected rather than hanging or erroring
+/// (`TimeLimitingBulkScorer.intersect` throws `TimeExceededException`, which
+/// `IndexSearcher` catches and turns into a "partial" `TopDocs` --
+/// `TopDocs.totalHits.relation ==
+/// GREATER_THAN_OR_EQUAL_TO`). This port has no `TotalHits`/relation type
+/// yet (`ScoreDoc`/`TopDocsCollector` only ever track exact counts -- see
+/// `collector.rs`), so the partial/complete signal here is the plain `bool`
+/// returned alongside the hits: `true` means the deadline was hit before
+/// every segment could be searched, `false` means every segment ran to
+/// completion exactly as [`merge_multi_segment_scored`] would have.
+///
+/// The deadline is checked at the one natural checkpoint this fan-out
+/// already has without restructuring the collector API: **once per
+/// segment**, before that segment's own `per_segment_search` call starts
+/// (mirroring real Lucene's own per-segment/per-leaf timeout granularity --
+/// `TimeLimitingBulkScorer` itself only checks every ~grow-doubling interval
+/// of docs *within* one leaf, i.e. also not a true per-document check). A
+/// segment that's already started always finishes -- this is a best-effort,
+/// wall-clock deadline, not preemption.
+///
+/// `deadline: None` means "no timeout" -- behaves identically to
+/// [`merge_multi_segment_scored`] (same hits, `timed_out` always `false`).
+pub fn merge_multi_segment_scored_with_deadline<F>(
+    doc_bases: &[i32],
+    top_n: usize,
+    deadline: Option<Instant>,
+    mut per_segment_search: F,
+) -> Result<(Vec<ScoreDoc>, bool)>
+where
+    F: FnMut(usize, &mut TopDocsCollector) -> Result<()>,
+{
+    let mut merged = TopDocsCollector::new(top_n);
+    let mut timed_out = false;
+    for (i, &doc_base) in doc_bases.iter().enumerate() {
+        if let Some(d) = deadline {
+            if Instant::now() >= d {
+                timed_out = true;
+                break;
+            }
+        }
+        let mut local = TopDocsCollector::new(top_n);
+        per_segment_search(i, &mut local)?;
+        for hit in local.top_docs() {
+            merged.collect(hit.doc_id + doc_base, hit.score);
+        }
+    }
+    Ok((merged.top_docs().to_vec(), timed_out))
 }
 
 /// Concurrent sibling of [`merge_multi_segment_scored`] -- real Lucene's
@@ -215,6 +268,66 @@ where
         }
     }
     Ok(merged.top_docs().to_vec())
+}
+
+/// Deadline-aware sibling of [`merge_multi_segment_scored_concurrent`]. Since
+/// `rayon`'s `par_iter` dispatches work to its pool up front rather than one
+/// segment at a time, there is no single "before segment `i`" checkpoint to
+/// hook the way the sequential [`merge_multi_segment_scored_with_deadline`]
+/// does -- instead, each segment's own closure checks the deadline itself,
+/// right before calling `per_segment_search`, and contributes an empty
+/// result (skips its own search) if the deadline has already passed. A
+/// segment whose closure has already started `per_segment_search` still
+/// always finishes (same best-effort contract as the sequential version --
+/// this is not preemption). `timed_out` is `true` iff at least one segment
+/// was skipped this way.
+pub fn merge_multi_segment_scored_concurrent_with_deadline<F>(
+    doc_bases: &[i32],
+    top_n: usize,
+    deadline: Option<Instant>,
+    per_segment_search: F,
+) -> Result<(Vec<ScoreDoc>, bool)>
+where
+    F: Fn(usize, &mut TopDocsCollector) -> Result<()> + Sync,
+{
+    use rayon::prelude::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let timed_out = AtomicBool::new(false);
+
+    let per_segment_hits: Vec<Result<Vec<ScoreDoc>>> = doc_bases
+        .par_iter()
+        .enumerate()
+        .map(|(i, &doc_base)| {
+            if let Some(d) = deadline {
+                if Instant::now() >= d {
+                    timed_out.store(true, Ordering::Relaxed);
+                    return Ok(Vec::new());
+                }
+            }
+            let mut local = TopDocsCollector::new(top_n);
+            per_segment_search(i, &mut local)?;
+            Ok(local
+                .top_docs()
+                .iter()
+                .map(|hit| ScoreDoc {
+                    doc_id: hit.doc_id + doc_base,
+                    score: hit.score,
+                })
+                .collect())
+        })
+        .collect();
+
+    let mut merged = TopDocsCollector::new(top_n);
+    for hits in per_segment_hits {
+        for hit in hits? {
+            merged.collect(hit.doc_id, hit.score);
+        }
+    }
+    Ok((
+        merged.top_docs().to_vec(),
+        timed_out.load(Ordering::Relaxed),
+    ))
 }
 
 /// Multi-segment sibling of [`crate::search_term_query_scored`]: runs `query`
@@ -1262,6 +1375,185 @@ mod tests {
         .unwrap();
         let doc_ids: Vec<i32> = result.iter().map(|d| d.doc_id).collect();
         assert_eq!(doc_ids, vec![3, 4]);
+    }
+
+    // --- Deadline / timeout (task: caller-supplied wall-clock deadline) ---
+
+    #[test]
+    fn expired_deadline_returns_partial_results_without_hanging() {
+        let doc_bases = [0, 10, 20];
+        let mut seg0 = fake_segment_search(vec![(0, 1.0)]);
+        let mut seg1 = fake_segment_search(vec![(0, 2.0)]);
+        let mut seg2 = fake_segment_search(vec![(0, 3.0)]);
+        // A deadline already in the past: the very first per-segment check
+        // must trip immediately, contributing nothing rather than hanging or
+        // erroring.
+        let past = Instant::now() - std::time::Duration::from_secs(3600);
+        let (result, timed_out) =
+            merge_multi_segment_scored_with_deadline(&doc_bases, 10, Some(past), |i, local| {
+                match i {
+                    0 => seg0(local),
+                    1 => seg1(local),
+                    2 => seg2(local),
+                    _ => unreachable!(),
+                }
+                Ok(())
+            })
+            .unwrap();
+        assert!(timed_out);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn generous_deadline_matches_no_timeout_path() {
+        let doc_bases = [0, 3, 5];
+        let seg0 = vec![(0, 1.0), (1, 5.0), (2, 3.0)];
+        let seg1 = vec![(0, 4.0), (1, 2.0)];
+        let seg2 = vec![(0, 6.0), (1, 0.5), (2, 4.5)];
+        let hits = [seg0, seg1, seg2];
+        let no_timeout = merge_multi_segment_scored(&doc_bases, 10, |i, local| {
+            for &(doc_id, score) in &hits[i] {
+                local.collect(doc_id, score);
+            }
+            Ok(())
+        })
+        .unwrap();
+        let generous = Instant::now() + std::time::Duration::from_secs(3600);
+        let (with_deadline, timed_out) =
+            merge_multi_segment_scored_with_deadline(&doc_bases, 10, Some(generous), |i, local| {
+                for &(doc_id, score) in &hits[i] {
+                    local.collect(doc_id, score);
+                }
+                Ok(())
+            })
+            .unwrap();
+        assert!(!timed_out);
+        assert_identical(&no_timeout, &with_deadline);
+    }
+
+    #[test]
+    fn none_deadline_behaves_identically_to_no_timeout_path() {
+        let doc_bases = [0, 10];
+        let hits = [vec![(0, 1.0), (1, 2.0)], vec![(0, 4.0), (1, 5.0)]];
+        let no_timeout = merge_multi_segment_scored(&doc_bases, 2, |i, local| {
+            for &(doc_id, score) in &hits[i] {
+                local.collect(doc_id, score);
+            }
+            Ok(())
+        })
+        .unwrap();
+        let (with_none, timed_out) =
+            merge_multi_segment_scored_with_deadline(&doc_bases, 2, None, |i, local| {
+                for &(doc_id, score) in &hits[i] {
+                    local.collect(doc_id, score);
+                }
+                Ok(())
+            })
+            .unwrap();
+        assert!(!timed_out);
+        assert_identical(&no_timeout, &with_none);
+    }
+
+    #[test]
+    fn expired_deadline_returns_partial_results_concurrent() {
+        let (doc_bases, hits) = synthetic_doc_bases_and_hits(16);
+        let past = Instant::now() - std::time::Duration::from_secs(3600);
+        let (result, timed_out) = merge_multi_segment_scored_concurrent_with_deadline(
+            &doc_bases,
+            10,
+            Some(past),
+            |i, local| {
+                for &(doc_id, score) in &hits[i] {
+                    local.collect(doc_id, score);
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(timed_out);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn generous_deadline_matches_no_timeout_path_concurrent() {
+        let (doc_bases, hits) = synthetic_doc_bases_and_hits(16);
+        let no_timeout = run_concurrent(&doc_bases, &hits, 10);
+        let generous = Instant::now() + std::time::Duration::from_secs(3600);
+        let (with_deadline, timed_out) = merge_multi_segment_scored_concurrent_with_deadline(
+            &doc_bases,
+            10,
+            Some(generous),
+            |i, local| {
+                for &(doc_id, score) in &hits[i] {
+                    local.collect(doc_id, score);
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(!timed_out);
+        assert_identical(&no_timeout, &with_deadline);
+    }
+
+    #[test]
+    fn none_deadline_behaves_identically_to_no_timeout_path_concurrent() {
+        let (doc_bases, hits) = synthetic_doc_bases_and_hits(16);
+        let no_timeout = run_concurrent(&doc_bases, &hits, 10);
+        let (with_none, timed_out) = merge_multi_segment_scored_concurrent_with_deadline(
+            &doc_bases,
+            10,
+            None,
+            |i, local| {
+                for &(doc_id, score) in &hits[i] {
+                    local.collect(doc_id, score);
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(!timed_out);
+        assert_identical(&no_timeout, &with_none);
+    }
+
+    #[test]
+    fn a_deadline_that_expires_only_partway_through_still_keeps_earlier_segments() {
+        // The concurrent variant's per-segment pre-check means a deadline
+        // expiring *during* the run (not before it starts) still lets any
+        // segment whose own check ran before expiry contribute its real
+        // hits -- this is NOT a shared stop-the-world cutoff that would
+        // discard already-in-flight work once the deadline passes.
+        let (doc_bases, hits) = synthetic_doc_bases_and_hits(16);
+        // Expires shortly after the call starts, but not before it -- every
+        // segment's own pre-check races against real wall-clock time, so
+        // this can't deterministically prove a specific split; it proves
+        // instead that a deadline landing mid-run doesn't corrupt output:
+        // whatever subset of segments got in before expiry still produces a
+        // properly sorted, correctly truncated top-N of real collected
+        // hits, not garbage or a panic.
+        let mid_run = Instant::now() + std::time::Duration::from_millis(5);
+        let (result, _timed_out) = merge_multi_segment_scored_concurrent_with_deadline(
+            &doc_bases,
+            10,
+            Some(mid_run),
+            |i, local| {
+                for &(doc_id, score) in &hits[i] {
+                    local.collect(doc_id, score);
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+        // Whatever came back must be a subset of the real top-10 computed
+        // with no deadline at all -- every entry present is a genuine hit,
+        // never a wrong/corrupted score, regardless of how many segments
+        // the race let through.
+        let no_timeout = run_concurrent(&doc_bases, &hits, 10);
+        for entry in &result {
+            assert!(
+                no_timeout.contains(entry),
+                "{entry:?} must be a real hit from the full (no-deadline) top-10"
+            );
+        }
     }
 
     #[test]
