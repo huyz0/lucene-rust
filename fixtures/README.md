@@ -13,7 +13,7 @@ JAR=$(find ~/.gradle/caches/modules-2/files-2.1/org.apache.lucene/lucene-core/10
   -name 'lucene-core-10.5.0.jar' ! -name '*sources*' ! -name '*javadoc*')
 mkdir -p classes data
 javac -nowarn -cp "$JAR" -d classes src/*.java
-for cls in GenPrimitives GenCodecUtil GenSegmentInfo GenSegmentInfos GenLiveDocs GenFieldInfos GenNorms GenDocValues GenDocValuesSkipIndex GenDocValuesVaryingBpv GenCompoundFormat GenStoredFields GenStoredFieldsBestCompression GenSortedDocValues GenMultiValuedDocValues GenTermVectors GenPoints GenFst GenBlockTree GenBlockTreeCompressed GenBlockTreeMultilevel GenBlockTreeChildStrategies GenFstBinarySearch GenFstDirectAddressing GenFstContinuous GenFstSeekNonRootArrayNode GenFstSeekBacktrackFloorArc GenFstDeepTrie; do
+for cls in GenPrimitives GenCodecUtil GenSegmentInfo GenSegmentInfos GenLiveDocs GenFieldInfos GenNorms GenDocValues GenDocValuesSkipIndex GenDocValuesVaryingBpv GenCompoundFormat GenStoredFields GenStoredFieldsBestCompression GenSortedDocValues GenMultiValuedDocValues GenTermVectors GenPoints GenFst GenBlockTree GenBlockTreeCompressed GenBlockTreeMultilevel GenBlockTreeChildStrategies GenFstBinarySearch GenFstDirectAddressing GenFstContinuous GenFstSeekNonRootArrayNode GenFstSeekBacktrackFloorArc GenFstDeepTrie GenFstWideInputTypes; do
   java -cp "classes:$JAR" $cls data
 done
 ```
@@ -504,6 +504,20 @@ read identically to one `FSTCompiler` would have produced. See
   their expected ceil/floor/exact results come from real Lucene's own
   `BytesRefFSTEnum.seekCeil`/`seekFloor`/`seekExact` against the reloaded
   FST, not hand-derived.
+- `GenFstWideInputTypes.java` — two real `FST<BytesRef>`s (`fst_byte2/`,
+  `fst_byte4/` subdirectories) whose `FST.INPUT_TYPE` is `BYTE2` and `BYTE4`
+  respectively, unlike every other `GenFst*` generator here (`BYTE1`).
+  `FSTCompiler.Builder`'s `INPUT_TYPE` parameter and `FSTCompiler.add(IntsRef,
+  T)` are both public API, so no non-public hook is needed to build a
+  genuinely wider-than-byte alphabet: each key is an explicit `int` label
+  sequence (not derived from a `BytesRef`), including values well past 255
+  (UTF-16-range code units for `BYTE2`, up to `0xFFFF`; full Unicode code
+  points for `BYTE4`, up to `0x10FFFF`). `allowFixedLengthArcs(false)` keeps
+  both to list-encoded nodes, matching `GenFst.java`'s own scope -- this
+  fixture is about the arc *label* width, an orthogonal axis from node
+  encoding. Exercised by
+  `crates/lucene-codecs/tests/fst_wide_input_types_fixtures.rs` against
+  `Fst::get_labels`/`Fst::iter_labels`/`FstEnum::seek_*_labels`.
 - `GenBlockTree.java` — a real `IndexWriter` session (`blocktree_index/`
   subdirectory) producing `.tim`/`.tip`/`.tmd` (`Lucene103BlockTreeTermsWriter`,
   via `Lucene104PostingsFormat`), plus the `.fnm`/`.si` this port's readers

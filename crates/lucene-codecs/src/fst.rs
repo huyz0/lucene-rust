@@ -111,6 +111,13 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 const FILE_FORMAT_NAME: &str = "FST";
 const VERSION_START: i32 = 6;
+/// `FST.VERSION_LITTLE_ENDIAN`: from this version on, `BYTE2` labels
+/// (`FST.readLabel`'s `readShort()` branch) are stored little-endian and read
+/// back as-is; versions before this one wrote/read them byte-swapped (real
+/// Lucene's short-lived big-endian `DataOutput`/`DataInput` era). Needed here
+/// because this port's supported version range (`VERSION_START..=
+/// VERSION_CURRENT`, i.e. 6..=9) straddles this boundary.
+const VERSION_LITTLE_ENDIAN: i32 = 8;
 const VERSION_CONTINUOUS_ARCS: i32 = 9;
 const VERSION_CURRENT: i32 = VERSION_CONTINUOUS_ARCS;
 
@@ -664,14 +671,36 @@ impl<'a> Fst<'a> {
         BytesReader::new(&self.bytes)
     }
 
-    /// `FST.readLabel`, `BYTE1` only: `get` (the only arc-traversal entry
-    /// point this slice implements) rejects any FST whose
-    /// `metadata.input_type != Byte1` before ever calling this, so
-    /// `BYTE2`/`BYTE4` label decoding (relevant only to non-term-index FSTs)
-    /// is out of scope here -- see the module docs and `Fst::get`.
+    /// `FST.readLabel`: decode one arc label per `metadata.input_type`.
+    /// `BYTE1` (raw term bytes, used by the BlockTree term index) is an
+    /// unsigned byte; `BYTE2` (UTF-16 code units, used by some suggesters) is
+    /// an unsigned 16-bit value -- little-endian from `VERSION_LITTLE_ENDIAN`
+    /// on, byte-swapped before that (matches `Short.reverseBytes` in
+    /// `FST.java`'s own `metadata.version < VERSION_LITTLE_ENDIAN` branch);
+    /// `BYTE4` (full Unicode code points) is a `vint`, *not* a fixed 4-byte
+    /// value -- real Lucene picked a variable-length encoding there since
+    /// most code points fit in 1-2 bytes despite the "4" in the name
+    /// referring to the logical label width, not its wire encoding.
     fn read_label(&self, r: &mut BytesReader) -> Result<i32> {
-        debug_assert_eq!(self.metadata.input_type, InputType::Byte1);
-        Ok(r.read_byte()? as i32)
+        match self.metadata.input_type {
+            InputType::Byte1 => Ok(r.read_byte()? as i32),
+            InputType::Byte2 => {
+                // `DataInput.readShort`: b1 = first byte read, b2 = second;
+                // value = (b2 << 8) | b1 (little-endian), regardless of
+                // whether the underlying reader walks forward or backward --
+                // see `BytesReader::read_vint`'s identical observation.
+                let b1 = r.read_byte()?;
+                let b2 = r.read_byte()?;
+                let le = ((b2 as u16) << 8) | (b1 as u16);
+                let v = if self.metadata.version < VERSION_LITTLE_ENDIAN {
+                    le.swap_bytes()
+                } else {
+                    le
+                };
+                Ok(v as i32)
+            }
+            InputType::Byte4 => r.read_vint(),
+        }
     }
 
     /// `FST.getFirstArc`: the virtual incoming arc to the start node.
@@ -951,9 +980,12 @@ impl<'a> Fst<'a> {
     /// re-derives the "fake" accepting arc this way once the target key's
     /// bytes are exhausted): re-synthesizes the same synthetic arc
     /// `read_first_target_arc` would insert, without touching `r` at all.
-    /// `Fst::get`'s loop never does this (it calls this once per actual key
-    /// byte and then checks `arc.is_final()` directly instead), so for that
-    /// caller `label_to_match` is always a real byte value (0..=255).
+    /// `Fst::get_labels`'s loop never does this (it calls this once per
+    /// actual key label and then checks `arc.is_final()` directly instead),
+    /// so for that caller `label_to_match` is always a real, non-negative
+    /// label -- a raw byte (0..=255) for `BYTE1`, a UTF-16 code unit
+    /// (0..=0xFFFF) for `BYTE2`, or a Unicode code point (0..=0x10FFFF) for
+    /// `BYTE4`.
     fn find_target_arc(
         &self,
         label_to_match: i32,
@@ -980,7 +1012,7 @@ impl<'a> Fst<'a> {
                 None
             });
         }
-        debug_assert!((0..=255).contains(&label_to_match));
+        debug_assert!(label_to_match >= 0);
         if !target_has_arcs(follow) {
             return Ok(None);
         }
@@ -1449,10 +1481,25 @@ impl<'a> Fst<'a> {
     pub fn iter(&self) -> Result<FstEnum<'_, 'a>> {
         if self.metadata.input_type != InputType::Byte1 {
             return Err(Error::Unsupported(
-                "Fst::iter only supports INPUT_TYPE.BYTE1 (term-index FSTs)".to_string(),
+                "Fst::iter only supports INPUT_TYPE.BYTE1 (byte-keyed `Vec<u8>` keys); \
+                 use Fst::iter_labels for BYTE2/BYTE4 FSTs, whose labels don't fit in a byte"
+                    .to_string(),
             ));
         }
         Ok(FstEnum::new(self))
+    }
+
+    /// Label-domain equivalent of `iter`, usable for **any** `INPUT_TYPE`:
+    /// the same `FstEnum` engine (`BytesRefFSTEnum`'s full ascending walk),
+    /// but its `next_labels`/`seek_*_labels` methods yield/accept `Vec<i32>`
+    /// keys instead of `Vec<u8>` ones. `BYTE1` FSTs' labels are numerically
+    /// identical to their byte values, so `iter_labels` (widened to `i32`)
+    /// and `iter` (restricted to `u8`) walk a `BYTE1` FST identically, just
+    /// with a wider key type -- but only `iter_labels` can walk a `BYTE2`/
+    /// `BYTE4` FST, whose labels (UTF-16 code units / Unicode code points)
+    /// generally don't fit in a `u8`.
+    pub fn iter_labels(&self) -> FstEnum<'_, 'a> {
+        FstEnum::new(self)
     }
 
     /// `IntsRefFSTEnum`'s constructor equivalent -- see `IntsRefFstEnum`'s
@@ -1464,23 +1511,39 @@ impl<'a> Fst<'a> {
     }
 
     /// Port of `Util.get(FST, BytesRef)`: look up `key` and return its
-    /// accumulated output if the FST accepts it, else `None`.
+    /// accumulated output if the FST accepts it, else `None`. Only meaningful
+    /// for `BYTE1` FSTs, whose labels are exactly the raw bytes of `key`; use
+    /// `get_labels` for `BYTE2`/`BYTE4` FSTs, whose labels (UTF-16 code units
+    /// / Unicode code points) aren't representable as a `u8` in general.
     pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         if self.metadata.input_type != InputType::Byte1 {
             return Err(Error::Unsupported(
-                "Fst::get only supports INPUT_TYPE.BYTE1 (term-index FSTs)".to_string(),
+                "Fst::get only supports INPUT_TYPE.BYTE1 (byte-keyed `&[u8]` keys); \
+                 use Fst::get_labels for BYTE2/BYTE4 FSTs, whose labels don't fit in a byte"
+                    .to_string(),
             ));
         }
+        let labels: Vec<i32> = key.iter().map(|&b| b as i32).collect();
+        self.get_labels(&labels)
+    }
 
+    /// Label-domain equivalent of `get`, mirroring `Util.get(FST, IntsRef)`:
+    /// walks `find_target_arc` once per element of `labels` rather than once
+    /// per raw byte, so it works for **any** `INPUT_TYPE` -- `BYTE1` FSTs'
+    /// labels happen to be literal byte values (`get` delegates to this),
+    /// `BYTE2` FSTs' labels are UTF-16 code units, and `BYTE4` FSTs' labels
+    /// are full Unicode code points, neither representable in a `u8`, which
+    /// is why `get` alone can't reach those.
+    pub fn get_labels(&self, labels: &[i32]) -> Result<Option<Vec<u8>>> {
         let mut r = self.reader();
         let mut arc = self.first_arc();
         // The virtual first arc isn't itself the answer for an empty key --
-        // Util.get walks `input.length` arcs and only then checks
-        // `arc.isFinal()`, so an empty key's answer is the empty output.
+        // Util.get walks every label and only then checks `arc.isFinal()`,
+        // so an empty key's answer is the empty output.
         let mut output: Vec<u8> = Vec::new();
 
-        for &b in key {
-            match self.find_target_arc(b as i32, &arc, &mut r)? {
+        for &label in labels {
+            match self.find_target_arc(label, &arc, &mut r)? {
                 Some(next) => {
                     output = output_add(&output, next.output());
                     arc = next;
@@ -1514,6 +1577,13 @@ impl<'a> Fst<'a> {
     pub fn seek_exact(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         self.get(key)
     }
+
+    /// Label-domain equivalent of `seek_exact`, delegating to `get_labels`
+    /// for the same reason `seek_exact` delegates to `get` -- usable for any
+    /// `INPUT_TYPE`, see `get_labels`.
+    pub fn seek_exact_labels(&self, labels: &[i32]) -> Result<Option<Vec<u8>>> {
+        self.get_labels(labels)
+    }
 }
 
 /// Port of `BytesRefFSTEnum`, restricted to a full forward walk (real
@@ -1542,10 +1612,16 @@ pub struct FstEnum<'f, 'a> {
     /// depth `i` (`outputs[0]` is always empty -- no output accumulated for
     /// the virtual root arc).
     outputs: Vec<Vec<u8>>,
-    /// `BytesRefFSTEnum.current`: `labels[i]` (`i >= 1`) is the key byte
+    /// `BytesRefFSTEnum.current`: `labels[i]` (`i >= 1`) is the key label
     /// chosen at depth `i` -- i.e. the current key, once accepted, is
-    /// `labels[1..upto]`.
-    labels: Vec<u8>,
+    /// `labels[1..upto]`. Stored as `i32` (the full arc-label domain,
+    /// matching `Arc::label`'s own type) rather than `u8` so this single
+    /// engine can walk `BYTE2`/`BYTE4` FSTs (UTF-16 code units / Unicode code
+    /// points, both wider than a byte) as well as `BYTE1` ones -- the
+    /// byte-keyed public API (`Iterator for FstEnum`, `seek_ceil`/
+    /// `seek_floor`/`seek_exact`) narrows back to `u8` only at its own
+    /// boundary, where `Fst::iter`'s `BYTE1`-only guard makes that lossless.
+    labels: Vec<i32>,
     /// `FSTEnum.upto`.
     upto: usize,
     /// Set once enumeration has yielded every key, so a subsequent `next()`
@@ -1555,10 +1631,10 @@ pub struct FstEnum<'f, 'a> {
     /// two states: both leave it at `0`.
     done: bool,
     /// `BytesRefFSTEnum.target`: the key most recently passed to
-    /// `seek_ceil`/`seek_floor`/`seek_exact`, byte-indexed from `0` (unlike
+    /// `seek_ceil`/`seek_floor`/`seek_exact`, label-indexed from `0` (unlike
     /// `labels`, which is 1-indexed by depth) -- empty/unused until the
-    /// first seek call.
-    target: Vec<u8>,
+    /// first seek call. `i32`-typed for the same reason `labels` is.
+    target: Vec<i32>,
     /// `FSTEnum.targetLength`: `target.len()`, cached since `get_target_label`
     /// (`BytesRefFSTEnum.getTargetLabel`) is called once per arc visited
     /// during a seek.
@@ -1572,7 +1648,7 @@ impl<'f, 'a> FstEnum<'f, 'a> {
             fst,
             arcs: vec![fst.first_arc()],
             outputs: vec![Vec::new()],
-            labels: vec![0u8],
+            labels: vec![0i32],
             upto: 0,
             done: false,
             target: Vec::new(),
@@ -1594,9 +1670,9 @@ impl<'f, 'a> FstEnum<'f, 'a> {
         self.outputs[idx] = output;
     }
 
-    fn set_label(&mut self, idx: usize, label: u8) {
+    fn set_label(&mut self, idx: usize, label: i32) {
         if self.labels.len() <= idx {
-            self.labels.resize(idx + 1, 0u8);
+            self.labels.resize(idx + 1, 0i32);
         }
         self.labels[idx] = label;
     }
@@ -1613,7 +1689,7 @@ impl<'f, 'a> FstEnum<'f, 'a> {
             if arc.label() == END_LABEL {
                 break;
             }
-            self.set_label(self.upto, arc.label() as u8);
+            self.set_label(self.upto, arc.label());
             self.upto += 1;
             let next = self.fst.read_first_target_arc(&arc, &mut self.r)?;
             self.set_arc(self.upto, next);
@@ -1630,7 +1706,7 @@ impl<'f, 'a> FstEnum<'f, 'a> {
     fn push_last(&mut self) -> Result<()> {
         loop {
             let arc = self.arcs[self.upto].clone();
-            self.set_label(self.upto, arc.label() as u8);
+            self.set_label(self.upto, arc.label());
             let cum_output = output_add(&self.outputs[self.upto - 1], arc.output());
             self.set_output(self.upto, cum_output);
             if arc.label() == END_LABEL {
@@ -1650,13 +1726,13 @@ impl<'f, 'a> FstEnum<'f, 'a> {
         if self.upto - 1 == self.target_length {
             END_LABEL
         } else {
-            self.target[self.upto - 1] as i32
+            self.target[self.upto - 1]
         }
     }
 
     /// `BytesRefFSTEnum.getCurrentLabel`.
     fn get_current_label(&self) -> i32 {
-        self.labels[self.upto] as i32
+        self.labels[self.upto]
     }
 
     /// `FSTEnum.rewindPrefix`: rewind `self.upto` back to the end of the
@@ -1791,7 +1867,7 @@ impl<'f, 'a> FstEnum<'f, 'a> {
         if target_label == END_LABEL {
             return Ok(false);
         }
-        self.set_label(self.upto, arc.label() as u8);
+        self.set_label(self.upto, arc.label());
         self.upto += 1;
         let next = self.fst.read_first_target_arc(&arc, &mut self.r)?;
         self.set_arc(self.upto, next);
@@ -2118,7 +2194,7 @@ impl<'f, 'a> FstEnum<'f, 'a> {
                     if target_label == END_LABEL {
                         return Ok(true);
                     }
-                    self.set_label(self.upto, target_label as u8);
+                    self.set_label(self.upto, target_label);
                     self.upto += 1;
                     target_label = self.get_target_label();
                     arc = next_arc;
@@ -2129,8 +2205,10 @@ impl<'f, 'a> FstEnum<'f, 'a> {
 
     /// Reads out `(key, output)` at the enum's current position, or `None`
     /// if the last seek found nothing (`self.upto == 0`) -- shared tail of
-    /// `seek_ceil`/`seek_floor` (`BytesRefFSTEnum.setResult`).
-    fn current_result(&self) -> Option<(Vec<u8>, Vec<u8>)> {
+    /// `seek_ceil`/`seek_floor` (`BytesRefFSTEnum.setResult`). Label-domain
+    /// (`Vec<i32>` keys); the byte-keyed public methods below narrow this to
+    /// `Vec<u8>` at their own boundary.
+    fn current_result(&self) -> Option<(Vec<i32>, Vec<u8>)> {
         if self.upto == 0 {
             None
         } else {
@@ -2141,53 +2219,10 @@ impl<'f, 'a> FstEnum<'f, 'a> {
         }
     }
 
-    /// Port of `BytesRefFSTEnum.seekCeil`: seeks to the smallest accepted
-    /// key `>=` `target`, returning `(key, output)` if one exists.
-    pub fn seek_ceil(&mut self, target: &[u8]) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
-        self.target = target.to_vec();
-        self.target_length = target.len();
-        self.do_seek_ceil()?;
-        let result = self.current_result();
-        self.done = result.is_none();
-        Ok(result)
-    }
-
-    /// Port of `BytesRefFSTEnum.seekFloor`: seeks to the largest accepted key
-    /// `<=` `target`, returning `(key, output)` if one exists.
-    pub fn seek_floor(&mut self, target: &[u8]) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
-        self.target = target.to_vec();
-        self.target_length = target.len();
-        self.do_seek_floor()?;
-        let result = self.current_result();
-        self.done = result.is_none();
-        Ok(result)
-    }
-
-    /// Port of `BytesRefFSTEnum.seekExact`: seeks to exactly `target`,
-    /// returning `(target, output)` if the FST accepts it, else `None` --
-    /// short-circuits as soon as a byte fails to match, unlike
-    /// `seek_ceil`/`seek_floor`. Unlike `Fst::seek_exact` (a stateless
-    /// convenience wrapper around `Fst::get`), this maintains `FstEnum`'s
-    /// per-depth arc/output stack so a subsequent `next()` call can resume
-    /// ordered enumeration from the found key.
-    pub fn seek_exact(&mut self, target: &[u8]) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
-        self.target = target.to_vec();
-        self.target_length = target.len();
-        let found = self.do_seek_exact()?;
-        if found {
-            let result = self.current_result();
-            self.done = result.is_none();
-            Ok(result)
-        } else {
-            self.done = true;
-            Ok(None)
-        }
-    }
-
     /// `FSTEnum.doNext` + `BytesRefFSTEnum.setResult`: advance to the next
     /// accepted key in ascending order, or `Ok(None)` once every key has
-    /// been visited.
-    fn advance(&mut self) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
+    /// been visited. Label-domain; see `current_result`.
+    fn advance(&mut self) -> Result<Option<(Vec<i32>, Vec<u8>)>> {
         if self.done {
             return Ok(None);
         }
@@ -2228,6 +2263,108 @@ impl<'f, 'a> FstEnum<'f, 'a> {
         let output = self.outputs[self.upto].clone();
         Ok(Some((key, output)))
     }
+
+    // --- Label-domain public API (any `INPUT_TYPE`) -------------------------
+
+    /// Label-domain equivalent of `seek_ceil`, usable for any `INPUT_TYPE`.
+    pub fn seek_ceil_labels(&mut self, target: &[i32]) -> Result<Option<(Vec<i32>, Vec<u8>)>> {
+        self.target = target.to_vec();
+        self.target_length = target.len();
+        self.do_seek_ceil()?;
+        let result = self.current_result();
+        self.done = result.is_none();
+        Ok(result)
+    }
+
+    /// Label-domain equivalent of `seek_floor`, usable for any `INPUT_TYPE`.
+    pub fn seek_floor_labels(&mut self, target: &[i32]) -> Result<Option<(Vec<i32>, Vec<u8>)>> {
+        self.target = target.to_vec();
+        self.target_length = target.len();
+        self.do_seek_floor()?;
+        let result = self.current_result();
+        self.done = result.is_none();
+        Ok(result)
+    }
+
+    /// Label-domain equivalent of `seek_exact`, usable for any `INPUT_TYPE`.
+    pub fn seek_exact_labels(&mut self, target: &[i32]) -> Result<Option<(Vec<i32>, Vec<u8>)>> {
+        self.target = target.to_vec();
+        self.target_length = target.len();
+        let found = self.do_seek_exact()?;
+        if found {
+            let result = self.current_result();
+            self.done = result.is_none();
+            Ok(result)
+        } else {
+            self.done = true;
+            Ok(None)
+        }
+    }
+
+    /// Label-domain equivalent of the `Iterator` impl below, usable for any
+    /// `INPUT_TYPE`: advance to the next accepted key in ascending order, or
+    /// `None` once every key has been visited (fused, like `Iterator`).
+    #[allow(clippy::should_implement_trait)]
+    pub fn next_labels(&mut self) -> Option<Result<(Vec<i32>, Vec<u8>)>> {
+        match self.advance() {
+            Ok(Some(pair)) => Some(Ok(pair)),
+            Ok(None) => None,
+            Err(e) => Some(Err(e)),
+        }
+    }
+
+    // --- Byte-domain public API (`BYTE1` FSTs only -- see `Fst::iter`) ------
+
+    /// Port of `BytesRefFSTEnum.seekCeil`: seeks to the smallest accepted
+    /// key `>=` `target`, returning `(key, output)` if one exists. Only
+    /// meaningful for `BYTE1` FSTs (see `seek_ceil_labels` for other
+    /// `INPUT_TYPE`s); `Fst::iter`'s guard is what makes narrowing the
+    /// label-domain result back to `u8` here lossless.
+    pub fn seek_ceil(&mut self, target: &[u8]) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
+        let target: Vec<i32> = target.iter().map(|&b| b as i32).collect();
+        Ok(self
+            .seek_ceil_labels(&target)?
+            .map(|(key, output)| (labels_to_bytes(&key), output)))
+    }
+
+    /// Port of `BytesRefFSTEnum.seekFloor`: seeks to the largest accepted key
+    /// `<=` `target`, returning `(key, output)` if one exists. Only
+    /// meaningful for `BYTE1` FSTs; see `seek_ceil`'s doc comment.
+    pub fn seek_floor(&mut self, target: &[u8]) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
+        let target: Vec<i32> = target.iter().map(|&b| b as i32).collect();
+        Ok(self
+            .seek_floor_labels(&target)?
+            .map(|(key, output)| (labels_to_bytes(&key), output)))
+    }
+
+    /// Port of `BytesRefFSTEnum.seekExact`: seeks to exactly `target`,
+    /// returning `(target, output)` if the FST accepts it, else `None` --
+    /// short-circuits as soon as a byte fails to match, unlike
+    /// `seek_ceil`/`seek_floor`. Unlike `Fst::seek_exact` (a stateless
+    /// convenience wrapper around `Fst::get`), this maintains `FstEnum`'s
+    /// per-depth arc/output stack so a subsequent `next()` call can resume
+    /// ordered enumeration from the found key. Only meaningful for `BYTE1`
+    /// FSTs; see `seek_ceil`'s doc comment.
+    pub fn seek_exact(&mut self, target: &[u8]) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
+        let target: Vec<i32> = target.iter().map(|&b| b as i32).collect();
+        Ok(self
+            .seek_exact_labels(&target)?
+            .map(|(key, output)| (labels_to_bytes(&key), output)))
+    }
+}
+
+/// Narrows a label-domain key back to bytes -- only ever called from the
+/// `BYTE1`-only public API (`FstEnum::seek_ceil`/`seek_floor`/`seek_exact`,
+/// `Iterator for FstEnum`), which `Fst::iter`'s guard ensures never sees a
+/// label outside `0..=255` in the first place.
+fn labels_to_bytes(labels: &[i32]) -> Vec<u8> {
+    labels
+        .iter()
+        .map(|&l| {
+            debug_assert!((0..=255).contains(&l), "label {l} does not fit in a byte");
+            l as u8
+        })
+        .collect()
 }
 
 impl Iterator for FstEnum<'_, '_> {
@@ -2235,7 +2372,7 @@ impl Iterator for FstEnum<'_, '_> {
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.advance() {
-            Ok(Some(pair)) => Some(Ok(pair)),
+            Ok(Some((key, output))) => Some(Ok((labels_to_bytes(&key), output))),
             Ok(None) => None,
             Err(e) => Some(Err(e)),
         }
@@ -3106,16 +3243,196 @@ mod tests {
         input_type: InputType,
         empty_output: Option<Vec<u8>>,
     ) -> Fst<'static> {
+        fst_from_body_with_version(bytes, start_node, input_type, empty_output, VERSION_CURRENT)
+    }
+
+    fn fst_from_body_with_version(
+        bytes: Vec<u8>,
+        start_node: i64,
+        input_type: InputType,
+        empty_output: Option<Vec<u8>>,
+        version: i32,
+    ) -> Fst<'static> {
         Fst {
             metadata: FstMetadata {
                 input_type,
                 empty_output,
                 start_node,
-                version: VERSION_CURRENT,
+                version,
                 num_bytes: bytes.len() as i64,
             },
             bytes: FstBytes::Owned(bytes),
         }
+    }
+
+    /// Appends one `FST.readLabel`-format label to `logical` (an
+    /// in-construction-order arc byte buffer, later reversed by
+    /// `append_arc_logical` -- see `build_single_key_fst`'s doc comment),
+    /// exactly mirroring `read_label`'s three decode branches so a
+    /// hand-built fixture round-trips through the real decoder.
+    fn write_label(logical: &mut Vec<u8>, input_type: InputType, version: i32, label: i32) {
+        match input_type {
+            InputType::Byte1 => {
+                debug_assert!((0..=255).contains(&label));
+                logical.push(label as u8);
+            }
+            InputType::Byte2 => {
+                debug_assert!((0..=0xFFFF).contains(&label));
+                let v = label as u16;
+                // `read_label`'s `BYTE2` branch computes
+                // `le = (b2 << 8) | b1` then (for legacy versions) byte-swaps
+                // `le` to recover the original value -- so writing the
+                // *already-swapped* value's low/high bytes here is what
+                // makes that swap round-trip back to `v`.
+                let sw = if version < VERSION_LITTLE_ENDIAN {
+                    v.swap_bytes()
+                } else {
+                    v
+                };
+                logical.push((sw & 0xFF) as u8);
+                logical.push((sw >> 8) as u8);
+            }
+            InputType::Byte4 => write_vint(logical, label),
+        }
+    }
+
+    /// `BYTE2`/`BYTE4` analogue of `build_single_key_fst`: a minimal,
+    /// list-encoded FST accepting exactly one label sequence (`labels`) with
+    /// final output `output`, using `write_label` for each label instead of
+    /// `build_single_key_fst`'s raw byte push -- the only difference from
+    /// `build_single_key_fst`'s own construction beyond that is operating in
+    /// the `i32` label domain throughout.
+    fn build_single_label_seq_fst(
+        labels: &[i32],
+        output: &[u8],
+        input_type: InputType,
+        version: i32,
+    ) -> (Vec<u8>, i64) {
+        let mut bytes: Vec<u8> = Vec::new();
+        let mut next_target: Option<i64> = None;
+        let mut addrs = vec![0i64; labels.len()];
+
+        for i in (0..labels.len()).rev() {
+            let label = labels[i];
+            let is_last = i == labels.len() - 1;
+
+            let mut logical = Vec::new();
+            let mut flags = BIT_LAST_ARC;
+            if is_last {
+                flags |= BIT_FINAL_ARC | BIT_STOP_NODE;
+                if !output.is_empty() {
+                    flags |= BIT_ARC_HAS_FINAL_OUTPUT;
+                }
+                logical.push(flags);
+                write_label(&mut logical, input_type, version, label);
+                if !output.is_empty() {
+                    write_vint(&mut logical, output.len() as i32);
+                    logical.extend_from_slice(output);
+                }
+            } else {
+                logical.push(flags);
+                write_label(&mut logical, input_type, version, label);
+                write_vlong(
+                    &mut logical,
+                    next_target.expect("target known from reverse pass"),
+                );
+            }
+
+            let addr = append_arc_logical(&mut bytes, &logical);
+            addrs[i] = addr;
+            next_target = Some(addr);
+        }
+
+        let start_node = addrs[0];
+        (bytes, start_node)
+    }
+
+    #[test]
+    fn read_label_decodes_byte2_little_endian() {
+        let labels = [0x1234i32, 0x00ff, 0xffff];
+        let (bytes, start) =
+            build_single_label_seq_fst(&labels, b"v", InputType::Byte2, VERSION_CURRENT);
+        let fst = fst_from_body_with_version(bytes, start, InputType::Byte2, None, VERSION_CURRENT);
+        assert_eq!(
+            fst.get_labels(&labels).unwrap(),
+            Some(b"v".to_vec()),
+            "BYTE2 little-endian label round-trip"
+        );
+    }
+
+    #[test]
+    fn read_label_decodes_byte2_legacy_big_endian() {
+        // `VERSION_START` (6) predates `VERSION_LITTLE_ENDIAN` (8): `BYTE2`
+        // labels were stored byte-swapped relative to the current format.
+        let labels = [0x1234i32, 0xabcd];
+        let (bytes, start) =
+            build_single_label_seq_fst(&labels, b"v", InputType::Byte2, VERSION_START);
+        let fst = fst_from_body_with_version(bytes, start, InputType::Byte2, None, VERSION_START);
+        assert_eq!(
+            fst.get_labels(&labels).unwrap(),
+            Some(b"v".to_vec()),
+            "BYTE2 legacy big-endian label round-trip"
+        );
+    }
+
+    #[test]
+    fn read_label_decodes_byte4_as_vint() {
+        // Includes values spanning `vint`'s 1-, 2-, 3-, 4-, and 5-byte
+        // encodings (7, 14, and 21+ significant bits), plus the maximum
+        // valid Unicode code point (0x10FFFF, comfortably within `i32`'s
+        // range but well past a single byte or even `BYTE2`'s 0xFFFF
+        // ceiling).
+        let labels = [0x41i32, 0x1f600, 0x10ffff, 0];
+        let (bytes, start) =
+            build_single_label_seq_fst(&labels, b"v", InputType::Byte4, VERSION_CURRENT);
+        let fst = fst_from_body_with_version(bytes, start, InputType::Byte4, None, VERSION_CURRENT);
+        assert_eq!(
+            fst.get_labels(&labels).unwrap(),
+            Some(b"v".to_vec()),
+            "BYTE4 vint label round-trip"
+        );
+    }
+
+    #[test]
+    fn get_labels_returns_none_for_absent_label_sequence() {
+        let labels = [0x1f600i32, 0x1f601];
+        let (bytes, start) =
+            build_single_label_seq_fst(&labels, b"v", InputType::Byte4, VERSION_CURRENT);
+        let fst = fst_from_body_with_version(bytes, start, InputType::Byte4, None, VERSION_CURRENT);
+        assert_eq!(fst.get_labels(&[0x1f600, 0x99]).unwrap(), None);
+        assert_eq!(fst.get_labels(&[0x1f600]).unwrap(), None);
+    }
+
+    #[test]
+    fn get_delegates_to_get_labels_for_byte1() {
+        let (bytes, start) = build_single_key_fst(b"cat", b"1");
+        let fst = fst_from_body(bytes, start, InputType::Byte1, None);
+        let labels: Vec<i32> = b"cat".iter().map(|&b| b as i32).collect();
+        assert_eq!(fst.get(b"cat").unwrap(), fst.get_labels(&labels).unwrap());
+        assert_eq!(
+            fst.seek_exact(b"cat").unwrap(),
+            fst.seek_exact_labels(&labels).unwrap()
+        );
+    }
+
+    #[test]
+    fn iter_labels_walks_byte1_fst_same_as_iter() {
+        let (bytes, start) = build_single_key_fst(b"cat", b"1");
+        let fst = fst_from_body(bytes, start, InputType::Byte1, None);
+
+        let via_iter: Vec<(Vec<u8>, Vec<u8>)> = fst.iter().unwrap().collect::<Result<_>>().unwrap();
+
+        let mut enumerator = fst.iter_labels();
+        let mut via_iter_labels = Vec::new();
+        while let Some(pair) = enumerator.next_labels() {
+            let (key, output) = pair.unwrap();
+            via_iter_labels.push((
+                key.into_iter().map(|l| l as u8).collect::<Vec<u8>>(),
+                output,
+            ));
+        }
+
+        assert_eq!(via_iter, via_iter_labels);
     }
 
     #[test]
