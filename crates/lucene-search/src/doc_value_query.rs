@@ -568,6 +568,8 @@ mod tests {
             gcd: 1,
             values_offset: 0,
             values_length: 0,
+            block_shift: None,
+            value_jump_table_offset: 0,
         }
     }
 
