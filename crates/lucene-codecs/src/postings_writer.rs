@@ -1005,12 +1005,24 @@ fn write_vlong15(out: &mut Vec<u8>, value: i64) {
 /// the trailing tail block (`Lucene104PostingsReader.prefixSum`'s running
 /// per-term base).
 ///
-/// Doc deltas always take the plain positive-`bitsPerValue` `ForUtil` shape
-/// (`decode_full_block_body`'s `bitsPerValue > 0` branch) — this writer never
-/// emits the `bitsPerValue == 0` "all-256-consecutive" or `bitsPerValue < 0`
-/// dense-bitset alternate encodings the real writer sometimes picks for
-/// space efficiency (see the module doc's scope section and
-/// `docs/parity.md`). Freqs (when `index_has_freq`) go through
+/// Doc deltas pick one of the three shapes `decode_full_block_body` can
+/// parse, using the exact same heuristic as
+/// `Lucene104PostingsWriter.flushDocBlock`:
+///
+/// - `docRange == BLOCK_SIZE` (every delta is 1, i.e. all 256 docs in the
+///   block are consecutive): the `bitsPerValue == 0` marker, no body bytes.
+/// - Otherwise, compare the packed-`ForUtil` cost at the *next* bits-per-value
+///   step (`min(32, bitsPerValue + 1) * BLOCK_SIZE` bits) against the dense
+///   bit-set cost (`bits2words(docRange) * 64` bits, one `i64` word per 64
+///   possible doc IDs spanned). If the *next-tier* packed cost is no smaller
+///   than the bit-set cost, use the bit set (`bitsPerValue < 0`, `numLongs =
+///   -bitsPerValue` words follow) -- comparing against the next tier rather
+///   than the current one (and taking the plain packed array on an exact
+///   tie) is what slightly biases this toward the bit set, matching Java
+///   exactly. Otherwise fall back to the plain positive-`bitsPerValue`
+///   packed array.
+///
+/// Freqs (when `index_has_freq`) go through
 /// `for_util::pfor_encode` directly — its on-wire token/body shape is byte-
 /// identical to what `for_util::pfor_decode` (called from
 /// `decode_full_block_body`) expects, so no re-derivation of that format
@@ -1048,8 +1060,33 @@ fn write_full_block(
     // always `>= 1` in practice -- `.max(1)` just keeps the invariant
     // explicit rather than relying on that fact silently.
     let bits_per_value = for_util::bits_required(max_delta).max(1);
-    rest.write_byte(bits_per_value as u8);
-    for_util::for_encode(&deltas, bits_per_value, &mut rest);
+    let last_doc_id = block[block.len() - 1].0;
+    let doc_range = (last_doc_id - prev_doc_id) as u32;
+    // `FixedBitSet.bits2words`: ceil(doc_range / 64), doc_range >= 1 here.
+    let num_bit_set_longs = doc_range.div_ceil(64);
+    let num_bits_next_bits_per_value = bits_per_value.saturating_add(1).min(32) * BLOCK_SIZE as u32;
+    if doc_range == BLOCK_SIZE as u32 {
+        // Every delta is 1: all 256 docs in the block are consecutive.
+        rest.write_byte(0);
+    } else if num_bits_next_bits_per_value <= num_bit_set_longs * 64 {
+        rest.write_byte(bits_per_value as u8);
+        for_util::for_encode(&deltas, bits_per_value, &mut rest);
+    } else {
+        // Dense unary bit-set encoding: doc IDs are the set-bit positions
+        // (ascending) in a `num_bit_set_longs`-word bitset based at
+        // `prev_doc_id + 1`, matching `FixedBitSet`'s word/bit layout
+        // (word = bit_index / 64, bit = bit_index % 64).
+        let mut words = vec![0u64; num_bit_set_longs as usize];
+        let mut s: i64 = -1;
+        for &delta in deltas.iter() {
+            s += delta as i64;
+            words[(s / 64) as usize] |= 1u64 << (s % 64);
+        }
+        rest.write_byte((-(num_bit_set_longs as i32)) as u8);
+        for word in &words {
+            rest.write_i64(*word as i64);
+        }
+    }
 
     if index_has_freq {
         let mut freqs = [0u32; for_util::BLOCK_SIZE];
@@ -1059,7 +1096,6 @@ fn write_full_block(
         for_util::pfor_encode(&mut freqs, &mut rest);
     }
 
-    let last_doc_id = block[block.len() - 1].0;
     out.write_vlong(0); // level0NumBytes: a skip pointer this reader parses
                         // but never uses (see read_full_block_header), so any
                         // valid vlong is fine here.
@@ -1981,7 +2017,15 @@ mod tests {
     #[test]
     fn writer_level1_span_advance_past_it_skips_corrupted_first_block_header() {
         let doc_freq = LEVEL1_NUM_DOCS + 8;
-        let term = varied_docs_term(b"a", doc_freq); // IndexOptions::Docs below -> freq ignored
+        // `irregular_docs_term` (not `varied_docs_term`'s constant delta-2
+        // docs): a constant delta of 2 makes `docRange == BLOCK_SIZE * 2`
+        // land exactly on the writer's bit-set-vs-packed boundary (see
+        // `write_full_block`'s doc comment), so the first level-0 block
+        // would be written in the dense bit-set shape rather than the
+        // generic packed shape this test's header corruption assumes.
+        // `irregular_docs_term`'s widely varying deltas keep the packed
+        // shape (IndexOptions::Docs below -> freq ignored anyway).
+        let term = irregular_docs_term(b"a", doc_freq);
         let max_doc = term.docs.last().unwrap().0 + 1;
         let terms = vec![term.clone()];
         let input = FieldPostingsInput {
@@ -2009,10 +2053,14 @@ mod tests {
         let span_start = r.position();
 
         // Corrupt the first level-0 block's header (`level0NumBytes`
-        // vlong + `docDelta`/`blockLength` fields) with bytes whose
-        // continuation bits never terminate within the block -- any decode
-        // attempt of this header must error out.
-        for b in output.doc[span_start..span_start + 8].iter_mut() {
+        // vlong + `docDelta`/`blockLength` fields) and well into its body
+        // with bytes whose continuation bits never terminate -- 40 bytes
+        // (not just the ~5-byte header) because `write_full_block` can pick
+        // any of three doc-delta shapes, and a shorter corrupted run was
+        // observed to occasionally decode "successfully" (silently wrong,
+        // not an error) for the wider dense-bit-set body; 40 bytes reliably
+        // errors regardless of which shape this block took.
+        for b in output.doc[span_start..span_start + 40].iter_mut() {
             *b = 0xFF;
         }
 
@@ -2767,6 +2815,162 @@ mod tests {
             docs,
             ..Default::default()
         }
+    }
+
+    /// Calls [`write_full_block`] directly with `index_has_freq: false` (so
+    /// `rest` -- the block body -- starts immediately with the `bitsPerValue`
+    /// token, no impacts-length prefix in front of it) and returns that
+    /// token, decoded straight off the wire bytes: `level0NumBytes` (plain
+    /// vlong, always `0` here), then `vint15`/`vlong15` (the doc-delta and
+    /// blockLength header fields), then the token byte itself. This lets
+    /// tests assert *which shape the writer picked* (the byte value), not
+    /// just that the reader can still decode whatever shape came out.
+    fn full_block_bits_per_value_token(block: &[(i32, i32)], prev_doc_id: i32) -> i8 {
+        use lucene_store::data_input::{DataInput, SliceInput};
+        let mut out = Vec::new();
+        write_full_block(&mut out, block, prev_doc_id, false);
+        let mut r = SliceInput::new(&out);
+        let _level0_num_bytes = r.read_vlong().unwrap();
+        // vint15: i16, non-negative fast path or a following vint for the
+        // high bits -- our test blocks' doc deltas are always small enough
+        // for the fast path, but handle both for robustness.
+        let s = r.read_i16().unwrap();
+        if s < 0 {
+            r.read_vint().unwrap();
+        }
+        // vlong15: same shape, long-widening.
+        let s = r.read_i16().unwrap();
+        if s < 0 {
+            r.read_vlong().unwrap();
+        }
+        r.read_byte().unwrap() as i8
+    }
+
+    /// All 256 doc deltas are exactly 1 (a term present in 256 consecutive
+    /// docs with no gaps) -- real Lucene's `docRange == BLOCK_SIZE` case.
+    /// Asserts the writer picks the `bitsPerValue == 0` "all-256-consecutive"
+    /// marker (not just that the block round-trips), then round-trips the
+    /// whole term through the unmodified reader and checks the exact doc ID
+    /// sequence.
+    #[test]
+    fn full_block_all_consecutive_picks_zero_token() {
+        let block: Vec<(i32, i32)> = (0..BLOCK_SIZE).map(|i| (i, 1)).collect();
+        assert_eq!(full_block_bits_per_value_token(&block, -1), 0);
+
+        let term = TermPostings {
+            term: b"a".to_vec(),
+            docs: block.clone(),
+            ..Default::default()
+        };
+        let max_doc = term.docs.last().unwrap().0 + 1;
+        let doc_count = term.docs.len() as i32;
+        let terms = vec![term.clone()];
+        let input = FieldPostingsInput {
+            has_payloads: false,
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqs,
+            doc_count,
+            terms: &terms,
+        };
+        let output = write_single_field(&input, &SEG_ID, SUFFIX).unwrap();
+        let fis = FieldInfos {
+            fields: vec![field_info(0, "f", IndexOptions::DocsAndFreqs)],
+        };
+        let (fields, doc_in) = open_written(&output, &fis, max_doc);
+        let field = fields.field("f").unwrap();
+        let postings = field.postings(b"a", Some(&doc_in)).unwrap().unwrap();
+        let expected_docs: Vec<i32> = term.docs.iter().map(|&(d, _)| d).collect();
+        assert_eq!(postings.docs, expected_docs);
+    }
+
+    /// A block dense enough that the bit-set shape beats the next
+    /// `bitsPerValue` step: 256 docs packed into the smallest possible
+    /// doc-ID span (deltas of 1 except the very last delta of 2, so
+    /// `docRange == 257` -- one more than `BLOCK_SIZE`, avoiding the
+    /// `docRange == BLOCK_SIZE` all-consecutive shortcut while staying as
+    /// dense as possible). `numBitSetLongs = bits2words(257) = 5`, so the
+    /// bit set costs `5 * 64 = 320` bits, while the next `bitsPerValue` step
+    /// above `bitsRequired(2) = 2` is `3`, costing `3 * 256 = 768` bits --
+    /// the bit set wins. Asserts the writer picks `bitsPerValue < 0` with
+    /// the expected `numLongs`, then round-trips through the unmodified
+    /// reader.
+    #[test]
+    fn full_block_dense_picks_bitset_token() {
+        let mut block: Vec<(i32, i32)> = (0..BLOCK_SIZE).map(|i| (i, 1)).collect();
+        let last = block.len() - 1;
+        block[last].0 += 1; // doc IDs 0..254, then 256 (skipping 255): docRange == 257.
+        let token = full_block_bits_per_value_token(&block, -1);
+        assert_eq!(token, -5);
+
+        let term = TermPostings {
+            term: b"a".to_vec(),
+            docs: block.clone(),
+            ..Default::default()
+        };
+        let max_doc = term.docs.last().unwrap().0 + 1;
+        let doc_count = term.docs.len() as i32;
+        let terms = vec![term.clone()];
+        let input = FieldPostingsInput {
+            has_payloads: false,
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqs,
+            doc_count,
+            terms: &terms,
+        };
+        let output = write_single_field(&input, &SEG_ID, SUFFIX).unwrap();
+        let fis = FieldInfos {
+            fields: vec![field_info(0, "f", IndexOptions::DocsAndFreqs)],
+        };
+        let (fields, doc_in) = open_written(&output, &fis, max_doc);
+        let field = fields.field("f").unwrap();
+        let postings = field.postings(b"a", Some(&doc_in)).unwrap().unwrap();
+        let expected_docs: Vec<i32> = term.docs.iter().map(|&(d, _)| d).collect();
+        assert_eq!(postings.docs, expected_docs);
+    }
+
+    /// A block whose deltas alternate 1/100 -- sparse enough (`docRange`
+    /// around 12,900) that the dense bit-set shape (`~203` words, `~12,992`
+    /// bits) is no cheaper than the next `bitsPerValue` step above
+    /// `bitsRequired(100) == 7` (`8 * 256 == 2048` bits) -- confirms the
+    /// plain positive-`bitsPerValue` `ForUtil` path (pre-existing behavior)
+    /// is still chosen when neither special shape wins.
+    #[test]
+    fn full_block_irregular_picks_plain_packed_token() {
+        let block: Vec<(i32, i32)> = (0..BLOCK_SIZE)
+            .scan(0i32, |doc_id, i| {
+                if i > 0 {
+                    *doc_id += if i % 2 == 0 { 1 } else { 100 };
+                }
+                Some((*doc_id, 1))
+            })
+            .collect();
+        let token = full_block_bits_per_value_token(&block, -1);
+        assert_eq!(token, 7); // bitsRequired(100) == 7.
+
+        let term = TermPostings {
+            term: b"a".to_vec(),
+            docs: block.clone(),
+            ..Default::default()
+        };
+        let max_doc = term.docs.last().unwrap().0 + 1;
+        let doc_count = term.docs.len() as i32;
+        let terms = vec![term.clone()];
+        let input = FieldPostingsInput {
+            has_payloads: false,
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqs,
+            doc_count,
+            terms: &terms,
+        };
+        let output = write_single_field(&input, &SEG_ID, SUFFIX).unwrap();
+        let fis = FieldInfos {
+            fields: vec![field_info(0, "f", IndexOptions::DocsAndFreqs)],
+        };
+        let (fields, doc_in) = open_written(&output, &fis, max_doc);
+        let field = fields.field("f").unwrap();
+        let postings = field.postings(b"a", Some(&doc_in)).unwrap().unwrap();
+        let expected_docs: Vec<i32> = term.docs.iter().map(|&(d, _)| d).collect();
+        assert_eq!(postings.docs, expected_docs);
     }
 
     /// `docFreq == BLOCK_SIZE` (256): exactly one full block, no tail block
