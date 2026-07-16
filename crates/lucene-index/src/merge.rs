@@ -2,9 +2,9 @@
 //! half of `FieldInfos.FieldNumbers`) -- merges N already-flushed segments
 //! into one new segment, dropping deleted docs and renumbering doc ids to be
 //! contiguous (`0..mergedDocCount`). Stored fields are always merged; doc
-//! values, norms, and term vectors are merged too whenever a source supplies
-//! them (see "Doc values / norms / term vectors" below for the honest scope
-//! of that part).
+//! values, norms, term vectors, and now postings are merged too whenever a
+//! source supplies them (see "Doc values / norms / term vectors" and
+//! "Postings" below for the honest scope of each part).
 //!
 //! # What this is
 //!
@@ -163,18 +163,70 @@
 //! rebuilds the merged, deduplicated dictionary itself -- same
 //! no-ordinal-remapping-table-to-get-wrong property as SORTED.
 //!
+//! # Postings
+//!
+//! [`merge_postings`] merges each source's term dictionary + doc/freq data
+//! (`.tim`/`.tip`/`.tmd`/`.doc`) for every field any source declares
+//! postings for ([`SourcePostings`], attached per source via
+//! [`MergeSource::postings`]), re-encoding the result with
+//! [`lucene_codecs::postings_writer::write_fields`]. Because each source's
+//! term dictionary is independent (same reason SORTED doc values need
+//! special handling above), this resolves each source's own terms straight
+//! to bytes via that source's already-opened
+//! [`lucene_codecs::blocktree::FieldTerms`], unions those bytes across
+//! sources into one sorted term set, and for each term concatenates every
+//! contributing source's `(mergedDocId, freq)` pairs in source order --
+//! ascending overall for free, since merged doc ids occupy disjoint,
+//! increasing per-source ranges (see [`build_doc_id_maps`]'s doc comment).
+//! `write_fields` already accepts any number of fields in one call, so
+//! unlike doc-values/norms there is no single-field-per-merge-call limit
+//! for postings. The same "sparse across sources" philosophy still applies
+//! at the field level: a source that contributes live docs but has no
+//! postings field at all for a name another live-doc-contributing source
+//! does is a hard error ([`Error::PostingsFieldMissingInSource`]), not a
+//! silent drop -- ordinary per-doc/per-term sparsity (most docs don't
+//! contain most terms) is not an error, since that's exactly what a term
+//! dictionary already models.
+//!
+//! **Scope: `IndexOptions::Docs`/`DocsAndFreqs` only.** Positions, offsets,
+//! and payloads (`.pos`/`.pay`) are not merged -- a field whose merged
+//! `index_options` indexes positions is rejected with
+//! [`Error::PostingsIndexOptionsNotSupported`] rather than silently
+//! dropping that data. This mirrors the doc-values/norms merge's own
+//! "start with the smallest defensible slice, be honest about the rest"
+//! precedent; extending it to positions/offsets/payloads is a documented
+//! follow-up (see `docs/parity.md`). Because field-number reconciliation
+//! only records the *first-seen* source's `FieldInfo` as the merged one and
+//! never checks agreement across sources sharing a field name, every other
+//! live-doc-contributing source's own `index_options` for that field is
+//! independently checked against the merged choice
+//! ([`Error::PostingsIndexOptionsDisagreement`]) -- otherwise a source with
+//! positions could have them silently dropped whenever an earlier,
+//! positions-free source happened to be picked as canonical.
+//!
+//! Same caveat as doc values/norms/term vectors: nothing in this port's
+//! normal flush path produces a segment with postings yet (`.tim`/`.tip`/
+//! `.tmd`/`.doc` are written by
+//! [`lucene_codecs::postings_writer::write_fields`] as a standalone
+//! function, not from a per-field indexing flush path), so this merge
+//! logic is real and tested on its own, but not yet reachable from a real
+//! end-to-end "flush two segments, merge them" caller.
+//!
 //! See `docs/parity.md` and `PLAN.md`'s Phase 5 section for the exact,
 //! currently-true scope line.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::segment_info::{self, IndexSortField, LuceneVersion, SegmentInfo, SortMissingValue};
 use crate::segment_infos::SegmentCommitInfo;
+use lucene_codecs::blocktree::FieldTerms;
 use lucene_codecs::doc_values::{
     self, BinaryEntry, NumericEntry, SortedEntry, SortedNumericEntry, SortedSetEntry, SortedSetKind,
 };
-use lucene_codecs::field_infos::{self, FieldInfo};
+use lucene_codecs::field_infos::{self, FieldInfo, IndexOptions};
 use lucene_codecs::norms::{self, NormsEntry};
+use lucene_codecs::postings::DocInput;
+use lucene_codecs::postings_writer::{self, FieldPostingsInput, TermPostings};
 use lucene_codecs::stored_fields::{self, Document};
 use lucene_codecs::term_vectors::{self, TermVectorsDocument, TermVectorsReader};
 use lucene_codecs::terms_dict;
@@ -199,6 +251,10 @@ pub enum Error {
     DocValuesWrite(#[from] lucene_codecs::doc_values::WriteError),
     #[error(transparent)]
     NormsWrite(#[from] lucene_codecs::norms::WriteError),
+    #[error(transparent)]
+    Blocktree(#[from] lucene_codecs::blocktree::Error),
+    #[error(transparent)]
+    PostingsWrite(#[from] lucene_codecs::postings_writer::Error),
     /// A `MergeSource`'s stored fields referenced a field number absent from
     /// that same source's own `field_infos` -- an inconsistent/malformed
     /// `MergeSource` (its `reader` and `field_infos` don't actually describe
@@ -305,6 +361,41 @@ pub enum Error {
         sorted_numeric_field_number: Option<i32>,
         sorted_set_field_number: Option<i32>,
     },
+    /// A field has postings data in at least one source that contributes
+    /// live docs, but not in every such source -- see this module's doc
+    /// comment on the "sparse across sources" rule (postings within one
+    /// source are naturally sparse per-doc/per-term; this error is only
+    /// about a whole source missing the *field* entirely).
+    #[error(
+        "merged field number {merged_field_number} has postings in some sources but not in every source that contributes live docs"
+    )]
+    PostingsFieldMissingInSource { merged_field_number: i32 },
+    /// This port's postings merge only handles `IndexOptions::Docs` and
+    /// `IndexOptions::DocsAndFreqs` fields -- positions/offsets/payloads
+    /// merging isn't implemented yet (see this module's doc comment).
+    #[error(
+        "merging postings for merged field number {merged_field_number} isn't supported: index_options {index_options:?} indexes positions, but this port's postings merge only supports IndexOptions::Docs/DocsAndFreqs so far"
+    )]
+    PostingsIndexOptionsNotSupported {
+        merged_field_number: i32,
+        index_options: IndexOptions,
+    },
+    /// Field-number reconciliation only records the *first-seen* source's
+    /// `FieldInfo` as the merged one (see `reconcile_field_numbers`) and
+    /// never checks that every other live-doc-contributing source agrees on
+    /// `index_options` for that field name. Without this check, a source
+    /// whose own `index_options` indexes positions/offsets/payloads could
+    /// have that data silently dropped whenever an earlier source in the
+    /// list happens to be Docs/DocsAndFreqs-only -- this is the hard error
+    /// instead.
+    #[error(
+        "merged field number {merged_field_number} has disagreeing index_options across sources: source claims {source_index_options:?} but the merged field is {merged_index_options:?}"
+    )]
+    PostingsIndexOptionsDisagreement {
+        merged_field_number: i32,
+        merged_index_options: IndexOptions,
+        source_index_options: IndexOptions,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -366,6 +457,34 @@ pub struct SourceSortedSetDocValues<'a> {
     pub entry: SortedSetEntry,
 }
 
+/// One source's postings (term dictionary + doc/freq data) for a single
+/// field -- `field_number` is that source's own original field number
+/// (pre-merge, same convention as [`SourceNumericDocValues::entry`]'s
+/// `field_number`). `field_terms` is that field's already-decoded term
+/// dictionary (via [`lucene_codecs::blocktree::open`] +
+/// [`lucene_codecs::blocktree::BlockTreeFields::field`]); `doc_in` is that
+/// source's already-opened `.doc` file reader ([`DocInput::open`]), needed
+/// to resolve any term whose `docFreq > 1` (`docFreq == 1` singleton terms
+/// need no `.doc` bytes at all -- `None` is fine if every field in this
+/// source's segment happens to have no `docFreq > 1` terms, though in
+/// practice almost every real segment needs one).
+///
+/// # Scope: Docs/DocsAndFreqs only, no positions/offsets/payloads
+///
+/// [`merge_postings`] (driven from this field) only merges fields whose
+/// merged [`FieldInfo::index_options`] is [`IndexOptions::Docs`] or
+/// [`IndexOptions::DocsAndFreqs`] -- merging positions/offsets/payloads
+/// (`.pos`/`.pay`) is a documented follow-up, not implemented here (see
+/// this module's top doc comment and `docs/parity.md`). A field whose
+/// merged `index_options` indexes positions is rejected with
+/// [`Error::PostingsIndexOptionsNotSupported`] rather than silently
+/// dropping its positions/offsets/payloads data.
+pub struct SourcePostings<'a> {
+    pub field_number: i32,
+    pub field_terms: &'a FieldTerms,
+    pub doc_in: Option<&'a DocInput<'a>>,
+}
+
 /// One source segment's already-decoded input to a merge: its field infos
 /// (from `.fnm`, via [`lucene_codecs::field_infos::parse`]), a stored-fields
 /// reader over its `.fdt`/`.fdx`/`.fdm` (via [`stored_fields::open`]), an
@@ -402,6 +521,12 @@ pub struct MergeSource<'a> {
     /// term vectors at all (every doc then contributes an empty
     /// [`TermVectorsDocument`]).
     pub term_vectors: Option<&'a TermVectorsReader<'a>>,
+    /// This source's postings (term dictionary + doc/freq data) fields, if
+    /// any -- unlike doc-values/norms, [`postings_writer::write_fields`]
+    /// already supports any number of fields per call, so there is no
+    /// single-field-per-merge-call limit here (see [`SourcePostings`] for
+    /// the Docs/DocsAndFreqs-only scope of what gets merged).
+    pub postings: &'a [SourcePostings<'a>],
 }
 
 impl<'a> MergeSource<'a> {
@@ -425,6 +550,7 @@ impl<'a> MergeSource<'a> {
             sorted_set_doc_values: &[],
             norms: &[],
             term_vectors: None,
+            postings: &[],
         }
     }
 }
@@ -554,6 +680,12 @@ pub fn merge_stored_only_segments(
     }
     let merged_norms = merge_norms(sources, &per_source_maps, &per_source_live_ids)?;
     let tv_docs = merge_term_vectors(sources, &per_source_maps, &per_source_live_ids)?;
+    let merged_postings_fields = merge_postings(
+        sources,
+        &per_source_maps,
+        &per_source_live_ids,
+        &merged_fields,
+    )?;
 
     let mut files: Vec<String> = Vec::new();
 
@@ -663,6 +795,37 @@ pub fn merge_stored_only_segments(
     if let Some(tv_docs) = tv_docs {
         let (tvd, tvx, tvm) = term_vectors::write_best_speed(&tv_docs, &merged_segment_id, "");
         for (ext, bytes) in [("tvd", &tvd), ("tvx", &tvx), ("tvm", &tvm)] {
+            let name = format!("{merged_segment_name}.{ext}");
+            write_file(dir, &name, bytes)?;
+            files.push(name);
+        }
+    }
+
+    if !merged_postings_fields.is_empty() {
+        let inputs: Vec<FieldPostingsInput<'_>> = merged_postings_fields
+            .iter()
+            .map(|f| FieldPostingsInput {
+                field_number: f.field_number,
+                index_options: f.index_options,
+                doc_count: f.doc_count,
+                has_payloads: false,
+                terms: &f.terms,
+            })
+            .collect();
+        let output = postings_writer::write_fields(&inputs, &merged_segment_id, "")?;
+        let mut exts: Vec<(&str, &[u8])> = vec![
+            ("doc", &output.doc),
+            ("tim", &output.tim),
+            ("tip", &output.tip),
+            ("tmd", &output.tmd),
+        ];
+        if !output.pos.is_empty() {
+            exts.push(("pos", &output.pos));
+        }
+        if !output.pay.is_empty() {
+            exts.push(("pay", &output.pay));
+        }
+        for (ext, bytes) in exts {
             let name = format!("{merged_segment_name}.{ext}");
             write_file(dir, &name, bytes)?;
             files.push(name);
@@ -1529,6 +1692,238 @@ fn merge_term_vectors(
     Ok(Some(merged_docs))
 }
 
+/// Builds, per source, a map from that source's own (pre-merge) live doc ids
+/// to the merged, contiguous doc id space -- the postings-merge analogue of
+/// `merge_stored_only_segments`'s own doc-concatenation loop, factored out
+/// here since [`merge_postings`] needs random-access lookup (a term's
+/// postings can reference any live doc in any order a source's `.doc` file
+/// happens to store them in -- already ascending per source, see below --
+/// not just a linear walk), unlike the linear `per_source_live_ids` iteration
+/// every other `merge_*` function does. Source `i`'s live docs land, in
+/// order, immediately after source `i-1`'s (matching
+/// `merge_stored_only_segments`'s concatenation order), so within one
+/// source the resulting map is order-preserving: a term's ascending
+/// (docID) list from one source's `.doc` file maps to an ascending merged-
+/// docID list too, and since sources occupy disjoint, increasing merged-id
+/// ranges, concatenating sources in order for a given term also yields a
+/// fully ascending merged-docID list overall -- no separate sort step
+/// needed.
+fn build_doc_id_maps(per_source_live_ids: &[Vec<i32>]) -> Vec<HashMap<i32, i32>> {
+    let mut maps = Vec::with_capacity(per_source_live_ids.len());
+    let mut merged_offset: i32 = 0;
+    for live_ids in per_source_live_ids {
+        let mut map = HashMap::with_capacity(live_ids.len());
+        for (i, &doc_id) in live_ids.iter().enumerate() {
+            map.insert(doc_id, merged_offset + i as i32);
+        }
+        merged_offset += live_ids.len() as i32;
+        maps.push(map);
+    }
+    maps
+}
+
+/// One merged field's postings, ready to hand to
+/// [`lucene_codecs::postings_writer::write_fields`] (via a borrowed
+/// [`FieldPostingsInput`] built from `terms`).
+struct MergedPostingsField {
+    field_number: i32,
+    index_options: IndexOptions,
+    doc_count: i32,
+    terms: Vec<TermPostings>,
+}
+
+/// Merges postings (term dictionaries + doc/freq data) across `sources` for
+/// every field any source declares postings for, returning one
+/// [`MergedPostingsField`] per distinct merged field number that has
+/// postings data in at least one source -- or an empty `Vec` if no source
+/// supplied any postings data at all.
+///
+/// Each source's term dictionary is independent (the same reason
+/// [`merge_sorted_doc_values`] can't just concatenate ordinals): this
+/// resolves each contributing source's own term dictionary directly to
+/// term *bytes* (no cross-source ordinal-remapping table), unions those
+/// bytes across sources into one sorted term set, and for each term walks
+/// the contributing sources **in source order**, concatenating each
+/// source's `(mergedDocId, freq)` pairs for that term (dropping non-live
+/// docs via [`build_doc_id_maps`]) -- ascending overall because merged doc
+/// ids are assigned in increasing, source-disjoint ranges (see
+/// [`build_doc_id_maps`]'s doc comment).
+///
+/// Unlike doc-values/norms, [`postings_writer::write_fields`] already
+/// supports any number of fields per call (`numFields` in `.tmd` is simply
+/// `inputs.len()`), so there is no single-field-per-merge-call limit here
+/// the way `TooManyNumericDocValuesFields` etc. enforce for doc-values.
+///
+/// # The "sparse across sources" rule, postings edition
+///
+/// A term's postings are naturally sparse per-doc (most docs don't contain
+/// most terms) -- that sparsity is exactly what a term dictionary already
+/// models, and is not an error here. What *is* an error, matching the same
+/// philosophy as doc-values/norms: if a merged field has postings data in
+/// at least one source that contributes live docs, but another live-doc-
+/// contributing source has no postings *field* at all for it (schema
+/// mismatch across sources), this returns
+/// [`Error::PostingsFieldMissingInSource`] rather than silently treating
+/// that source's docs as having no terms for the field.
+///
+/// # Scope: Docs/DocsAndFreqs only
+///
+/// See [`SourcePostings`]'s doc comment: a candidate field whose merged
+/// `index_options` indexes positions is rejected with
+/// [`Error::PostingsIndexOptionsNotSupported`].
+fn merge_postings(
+    sources: &[MergeSource],
+    per_source_maps: &[HashMap<i32, i32>],
+    per_source_live_ids: &[Vec<i32>],
+    merged_fields: &[FieldInfo],
+) -> Result<Vec<MergedPostingsField>> {
+    let mut candidates: Vec<i32> = Vec::new();
+    for ((source, map), live_ids) in sources.iter().zip(per_source_maps).zip(per_source_live_ids) {
+        if live_ids.is_empty() {
+            // Same "fully-deleted source can't affect the merged output"
+            // exemption as merge_numeric_doc_values.
+            continue;
+        }
+        for pf in source.postings {
+            if let Some(&merged_number) = map.get(&pf.field_number) {
+                if !candidates.contains(&merged_number) {
+                    candidates.push(merged_number);
+                }
+            }
+        }
+    }
+    candidates.sort_unstable();
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let doc_id_maps = build_doc_id_maps(per_source_live_ids);
+    let mut result = Vec::with_capacity(candidates.len());
+
+    for merged_field_number in candidates {
+        let merged_field = merged_fields
+            .iter()
+            .find(|f| f.number == merged_field_number)
+            .expect("merged_field_number came from reconcile_field_numbers over these same sources, so it must have an entry in merged_fields");
+        let index_options = merged_field.index_options;
+        if !matches!(
+            index_options,
+            IndexOptions::Docs | IndexOptions::DocsAndFreqs
+        ) {
+            return Err(Error::PostingsIndexOptionsNotSupported {
+                merged_field_number,
+                index_options,
+            });
+        }
+
+        // Per-source (in source order) this field's `SourcePostings`, or
+        // `None` for a fully-deleted source (exempt, same as elsewhere) --
+        // any other missing source is the hard "sparse across sources"
+        // error.
+        let mut per_source_field: Vec<Option<&SourcePostings<'_>>> =
+            Vec::with_capacity(sources.len());
+        for ((source, map), live_ids) in
+            sources.iter().zip(per_source_maps).zip(per_source_live_ids)
+        {
+            if live_ids.is_empty() {
+                per_source_field.push(None);
+                continue;
+            }
+            let original_number = map
+                .iter()
+                .find(|&(_, &merged)| merged == merged_field_number)
+                .map(|(&orig, _)| orig);
+            let Some(original_number) = original_number else {
+                return Err(Error::PostingsFieldMissingInSource {
+                    merged_field_number,
+                });
+            };
+            if let Some(source_field) = source
+                .field_infos
+                .iter()
+                .find(|f| f.number == original_number)
+            {
+                if source_field.index_options != index_options {
+                    return Err(Error::PostingsIndexOptionsDisagreement {
+                        merged_field_number,
+                        merged_index_options: index_options,
+                        source_index_options: source_field.index_options,
+                    });
+                }
+            }
+            let Some(pf) = source
+                .postings
+                .iter()
+                .find(|pf| pf.field_number == original_number)
+            else {
+                return Err(Error::PostingsFieldMissingInSource {
+                    merged_field_number,
+                });
+            };
+            per_source_field.push(Some(pf));
+        }
+
+        // Union of every contributing source's own term dictionary, by
+        // bytes -- resolves each source's terms independently, same
+        // "let the merged structure dedupe by bytes" approach
+        // merge_sorted_doc_values uses for ordinals.
+        let mut all_terms: BTreeSet<Vec<u8>> = BTreeSet::new();
+        for pf in per_source_field.iter().flatten() {
+            let mut it = pf.field_terms.iter();
+            while let Some((term, _stats)) = it.next() {
+                all_terms.insert(term.to_vec());
+            }
+        }
+
+        let mut terms_out: Vec<TermPostings> = Vec::with_capacity(all_terms.len());
+        for term in all_terms {
+            let mut docs: Vec<(i32, i32)> = Vec::new();
+            for (src_idx, pf) in per_source_field.iter().enumerate() {
+                let Some(pf) = pf else { continue };
+                let Some(source_postings) = pf.field_terms.postings(&term, pf.doc_in)? else {
+                    continue;
+                };
+                let doc_id_map = &doc_id_maps[src_idx];
+                for (&doc_id, &freq) in source_postings
+                    .docs
+                    .iter()
+                    .zip(source_postings.freqs.iter())
+                {
+                    if let Some(&merged_doc_id) = doc_id_map.get(&doc_id) {
+                        docs.push((merged_doc_id, freq));
+                    }
+                }
+            }
+            if !docs.is_empty() {
+                terms_out.push(TermPostings {
+                    term,
+                    docs,
+                    positions: Vec::new(),
+                    offsets: Vec::new(),
+                    payloads: Vec::new(),
+                });
+            }
+        }
+
+        let mut doc_set: HashSet<i32> = HashSet::new();
+        for t in &terms_out {
+            for &(doc_id, _) in &t.docs {
+                doc_set.insert(doc_id);
+            }
+        }
+        let doc_count = doc_set.len() as i32;
+
+        result.push(MergedPostingsField {
+            field_number: merged_field_number,
+            index_options,
+            doc_count,
+            terms: terms_out,
+        });
+    }
+
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2354,6 +2749,7 @@ mod tests {
             sorted_set_doc_values: &[],
             norms: &[],
             term_vectors: None,
+            postings: &[],
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -2366,6 +2762,7 @@ mod tests {
             sorted_set_doc_values: &[],
             norms: &[],
             term_vectors: None,
+            postings: &[],
         };
 
         let sci = merge_stored_only_segments(
@@ -2424,6 +2821,7 @@ mod tests {
             sorted_set_doc_values: &[],
             norms: &[],
             term_vectors: None,
+            postings: &[],
         };
         // Source 1 has live docs but no numeric doc-values entry at all for
         // field "num" -- the sparse-across-sources case this port refuses
@@ -2497,6 +2895,7 @@ mod tests {
             sorted_set_doc_values: &[],
             norms: &[],
             term_vectors: None,
+            postings: &[],
         };
 
         let result = merge_stored_only_segments(
@@ -2555,6 +2954,7 @@ mod tests {
             sorted_set_doc_values: &[],
             norms: &[],
             term_vectors: None,
+            postings: &[],
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -2567,6 +2967,7 @@ mod tests {
             sorted_set_doc_values: &[],
             norms: &[],
             term_vectors: None,
+            postings: &[],
         };
 
         let sci = merge_stored_only_segments(
@@ -2630,6 +3031,7 @@ mod tests {
             sorted_set_doc_values: &[],
             norms: &[],
             term_vectors: None,
+            postings: &[],
         };
         // Source 1 has live docs but no binary doc-values entry at all for
         // field "bin" -- the sparse-across-sources case this port refuses to
@@ -2703,6 +3105,7 @@ mod tests {
             sorted_set_doc_values: &[],
             norms: &[],
             term_vectors: None,
+            postings: &[],
         };
 
         let result = merge_stored_only_segments(
@@ -2844,6 +3247,7 @@ mod tests {
             sorted_set_doc_values: &[],
             norms: &[],
             term_vectors: None,
+            postings: &[],
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -2856,6 +3260,7 @@ mod tests {
             sorted_set_doc_values: &[],
             norms: &[],
             term_vectors: None,
+            postings: &[],
         };
 
         let tmp_dir = FsDirectory::open(&tmp);
@@ -2926,6 +3331,7 @@ mod tests {
             sorted_set_doc_values: &[],
             norms: &[],
             term_vectors: None,
+            postings: &[],
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -2938,6 +3344,7 @@ mod tests {
             sorted_set_doc_values: &[],
             norms: &[],
             term_vectors: None,
+            postings: &[],
         };
 
         merge_stored_only_segments(
@@ -2989,6 +3396,7 @@ mod tests {
             sorted_set_doc_values: &[],
             norms: &[],
             term_vectors: None,
+            postings: &[],
         };
         // Source 1 has live docs but no SORTED doc-values entry at all for
         // field "word".
@@ -3061,6 +3469,7 @@ mod tests {
             sorted_set_doc_values: &[],
             norms: &[],
             term_vectors: None,
+            postings: &[],
         };
 
         let result = merge_stored_only_segments(
@@ -3122,6 +3531,7 @@ mod tests {
             sorted_set_doc_values: &[],
             norms: &[],
             term_vectors: None,
+            postings: &[],
         };
 
         let result = merge_stored_only_segments(
@@ -3183,6 +3593,7 @@ mod tests {
             sorted_set_doc_values: &sorted_set_source,
             norms: &[],
             term_vectors: None,
+            postings: &[],
         };
 
         let result = merge_stored_only_segments(
@@ -3266,6 +3677,7 @@ mod tests {
             sorted_set_doc_values: &[],
             norms: &[],
             term_vectors: None,
+            postings: &[],
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -3278,6 +3690,7 @@ mod tests {
             sorted_set_doc_values: &[],
             norms: &[],
             term_vectors: None,
+            postings: &[],
         };
 
         let sci = merge_stored_only_segments(
@@ -3362,6 +3775,7 @@ mod tests {
             sorted_set_doc_values: &[],
             norms: &[],
             term_vectors: None,
+            postings: &[],
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -3374,6 +3788,7 @@ mod tests {
             sorted_set_doc_values: &[],
             norms: &[],
             term_vectors: None,
+            postings: &[],
         };
 
         let sci = merge_stored_only_segments(
@@ -3432,6 +3847,7 @@ mod tests {
             sorted_set_doc_values: &[],
             norms: &norms0_source,
             term_vectors: None,
+            postings: &[],
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -3444,6 +3860,7 @@ mod tests {
             sorted_set_doc_values: &[],
             norms: &norms1_source,
             term_vectors: None,
+            postings: &[],
         };
 
         merge_stored_only_segments(
@@ -3511,6 +3928,7 @@ mod tests {
             sorted_set_doc_values: &[],
             norms: &[],
             term_vectors: Some(&tv0_reader),
+            postings: &[],
         };
         let source1 = MergeSource::stored_only(&stored1.fields, &reader1, None);
 
@@ -3585,6 +4003,7 @@ mod tests {
             sorted_set_doc_values: &[],
             norms: &norms0_source,
             term_vectors: Some(&tv0_reader),
+            postings: &[],
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -3597,6 +4016,7 @@ mod tests {
             sorted_set_doc_values: &[],
             norms: &norms1_source,
             term_vectors: Some(&tv1_reader),
+            postings: &[],
         };
 
         let merged_id = [9u8; ID_LENGTH];
@@ -3734,6 +4154,7 @@ mod tests {
             sorted_set_doc_values: &[],
             norms: &norms0_source,
             term_vectors: Some(&tv0_reader),
+            postings: &[],
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -3746,6 +4167,7 @@ mod tests {
             sorted_set_doc_values: &[],
             norms: &norms1_source,
             term_vectors: Some(&tv1_reader),
+            postings: &[],
         };
 
         let merged_id = [9u8; ID_LENGTH];
@@ -3891,6 +4313,7 @@ mod tests {
             sorted_set_doc_values: &[],
             norms: &norms0_source,
             term_vectors: Some(&tv0_reader),
+            postings: &[],
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -3903,6 +4326,7 @@ mod tests {
             sorted_set_doc_values: &[],
             norms: &norms1_source,
             term_vectors: Some(&tv1_reader),
+            postings: &[],
         };
 
         let merged_id = [9u8; ID_LENGTH];
@@ -4629,6 +5053,7 @@ mod tests {
             sorted_set_doc_values: &[],
             norms: &[],
             term_vectors: None,
+            postings: &[],
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -4641,6 +5066,7 @@ mod tests {
             sorted_set_doc_values: &[],
             norms: &[],
             term_vectors: None,
+            postings: &[],
         };
 
         merge_stored_only_segments(
@@ -4692,6 +5118,7 @@ mod tests {
             sorted_set_doc_values: &[],
             norms: &[],
             term_vectors: None,
+            postings: &[],
         };
         // Source 1 has live docs but no SORTED_NUMERIC doc-values entry at
         // all for field "nums".
@@ -4753,6 +5180,7 @@ mod tests {
             sorted_set_doc_values: &[],
             norms: &[],
             term_vectors: None,
+            postings: &[],
         };
 
         let result = merge_stored_only_segments(
@@ -4889,6 +5317,7 @@ mod tests {
             sorted_set_doc_values: &dv0_source,
             norms: &[],
             term_vectors: None,
+            postings: &[],
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -4901,6 +5330,7 @@ mod tests {
             sorted_set_doc_values: &dv1_source,
             norms: &[],
             term_vectors: None,
+            postings: &[],
         };
 
         merge_stored_only_segments(
@@ -4980,6 +5410,7 @@ mod tests {
             sorted_set_doc_values: &dv0_source,
             norms: &[],
             term_vectors: None,
+            postings: &[],
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -4992,6 +5423,7 @@ mod tests {
             sorted_set_doc_values: &dv1_source,
             norms: &[],
             term_vectors: None,
+            postings: &[],
         };
 
         merge_stored_only_segments(
@@ -5046,6 +5478,7 @@ mod tests {
             sorted_set_doc_values: &dv0_source,
             norms: &[],
             term_vectors: None,
+            postings: &[],
         };
         // Source 1 has live docs but no SORTED_SET doc-values entry at all
         // for field "word".
@@ -5107,6 +5540,7 @@ mod tests {
             sorted_set_doc_values: &sorted_set,
             norms: &[],
             term_vectors: None,
+            postings: &[],
         };
 
         let result = merge_stored_only_segments(
@@ -5120,6 +5554,930 @@ mod tests {
         assert!(matches!(
             result,
             Err(Error::TooManySortedSetDocValuesFields(_))
+        ));
+    }
+
+    // --- postings ---
+
+    fn postings_field(name: &str, number: i32) -> FieldInfo {
+        let mut f = field(name, number);
+        f.index_options = IndexOptions::DocsAndFreqs;
+        f
+    }
+
+    #[test]
+    fn two_sources_no_deletions_merge_postings_correctly() {
+        let seg0_id = [1u8; ID_LENGTH];
+        let seg1_id = [2u8; ID_LENGTH];
+
+        // Source 0: 2 docs -- doc 0 has "apple" (freq 2), doc 1 has "banana"
+        // (freq 1).
+        let terms0 = vec![
+            TermPostings {
+                term: b"apple".to_vec(),
+                docs: vec![(0, 2)],
+                ..Default::default()
+            },
+            TermPostings {
+                term: b"banana".to_vec(),
+                docs: vec![(1, 1)],
+                ..Default::default()
+            },
+        ];
+        let input0 = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqs,
+            doc_count: 2,
+            has_payloads: false,
+            terms: &terms0,
+        };
+        let output0 = postings_writer::write_single_field(&input0, &seg0_id, "").unwrap();
+        let field_infos0 = field_infos::FieldInfos {
+            fields: vec![postings_field("body", 0)],
+        };
+        let fields0 = lucene_codecs::blocktree::open(
+            &output0.tim,
+            &output0.tip,
+            &output0.tmd,
+            &field_infos0,
+            &seg0_id,
+            "",
+            2,
+        )
+        .unwrap();
+        let doc_in0 = DocInput::open(&output0.doc, &seg0_id, "").unwrap();
+        let field_terms0 = fields0.field("body").unwrap();
+
+        // Source 1: 1 doc -- doc 0 has "cherry" (freq 3).
+        let terms1 = vec![TermPostings {
+            term: b"cherry".to_vec(),
+            docs: vec![(0, 3)],
+            ..Default::default()
+        }];
+        let input1 = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqs,
+            doc_count: 1,
+            has_payloads: false,
+            terms: &terms1,
+        };
+        let output1 = postings_writer::write_single_field(&input1, &seg1_id, "").unwrap();
+        let field_infos1 = field_infos::FieldInfos {
+            fields: vec![postings_field("body", 0)],
+        };
+        let fields1 = lucene_codecs::blocktree::open(
+            &output1.tim,
+            &output1.tip,
+            &output1.tmd,
+            &field_infos1,
+            &seg1_id,
+            "",
+            1,
+        )
+        .unwrap();
+        let doc_in1 = DocInput::open(&output1.doc, &seg1_id, "").unwrap();
+        let field_terms1 = fields1.field("body").unwrap();
+
+        let fields = vec![postings_field("body", 0)];
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let stored0 = flush(
+            &dir,
+            &tmp,
+            "_0",
+            seg0_id,
+            &fields,
+            &[doc_with(0, "a"), doc_with(0, "b")],
+        );
+        let stored1 = flush(&dir, &tmp, "_1", seg1_id, &fields, &[doc_with(0, "c")]);
+        let reader0 = open_reader(&stored0);
+        let reader1 = open_reader(&stored1);
+
+        let src_postings0 = [SourcePostings {
+            field_number: 0,
+            field_terms: field_terms0,
+            doc_in: Some(&doc_in0),
+        }];
+        let src_postings1 = [SourcePostings {
+            field_number: 0,
+            field_terms: field_terms1,
+            doc_in: Some(&doc_in1),
+        }];
+        let source0 = MergeSource {
+            field_infos: &stored0.fields,
+            reader: &reader0,
+            live_docs: None,
+            numeric_doc_values: &[],
+            binary_doc_values: &[],
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &[],
+            norms: &[],
+            term_vectors: None,
+            postings: &src_postings0,
+        };
+        let source1 = MergeSource {
+            field_infos: &stored1.fields,
+            reader: &reader1,
+            live_docs: None,
+            numeric_doc_values: &[],
+            binary_doc_values: &[],
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &[],
+            norms: &[],
+            term_vectors: None,
+            postings: &src_postings1,
+        };
+
+        let sci = merge_stored_only_segments(
+            &dir,
+            &[source0, source1],
+            "_merged_postings",
+            [9u8; ID_LENGTH],
+            "Lucene104",
+            version(),
+        )
+        .unwrap();
+        assert_eq!(sci.segment_name, "_merged_postings");
+
+        let tim = std::fs::read(std::path::Path::new(&tmp).join("_merged_postings.tim")).unwrap();
+        let tip = std::fs::read(std::path::Path::new(&tmp).join("_merged_postings.tip")).unwrap();
+        let tmd = std::fs::read(std::path::Path::new(&tmp).join("_merged_postings.tmd")).unwrap();
+        let doc = std::fs::read(std::path::Path::new(&tmp).join("_merged_postings.doc")).unwrap();
+        let merged_field_infos = field_infos::FieldInfos {
+            fields: vec![postings_field("body", 0)],
+        };
+        let merged_fields = lucene_codecs::blocktree::open(
+            &tim,
+            &tip,
+            &tmd,
+            &merged_field_infos,
+            &[9u8; ID_LENGTH],
+            "",
+            3,
+        )
+        .unwrap();
+        let merged_doc_in = DocInput::open(&doc, &[9u8; ID_LENGTH], "").unwrap();
+        let merged_terms = merged_fields.field("body").unwrap();
+
+        let apple = merged_terms
+            .postings(b"apple", Some(&merged_doc_in))
+            .unwrap()
+            .unwrap();
+        assert_eq!(apple.docs, vec![0]);
+        assert_eq!(apple.freqs, vec![2]);
+
+        let banana = merged_terms
+            .postings(b"banana", Some(&merged_doc_in))
+            .unwrap()
+            .unwrap();
+        assert_eq!(banana.docs, vec![1]);
+        assert_eq!(banana.freqs, vec![1]);
+
+        // "cherry" only existed in source 1's doc 0, which is renumbered to
+        // merged doc 2 (after source 0's 2 docs).
+        let cherry = merged_terms
+            .postings(b"cherry", Some(&merged_doc_in))
+            .unwrap()
+            .unwrap();
+        assert_eq!(cherry.docs, vec![2]);
+        assert_eq!(cherry.freqs, vec![3]);
+    }
+
+    #[test]
+    fn term_across_multiple_sources_merges_in_doc_id_order() {
+        let seg0_id = [1u8; ID_LENGTH];
+        let seg1_id = [2u8; ID_LENGTH];
+
+        // Both sources index "the": source 0 doc 0 (freq 1), source 1 doc 0
+        // (freq 2) -- the merged term must contain both docs in ascending
+        // merged-doc-id order (source 0's docs first).
+        let terms0 = vec![TermPostings {
+            term: b"the".to_vec(),
+            docs: vec![(0, 1)],
+            ..Default::default()
+        }];
+        let input0 = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqs,
+            doc_count: 1,
+            has_payloads: false,
+            terms: &terms0,
+        };
+        let output0 = postings_writer::write_single_field(&input0, &seg0_id, "").unwrap();
+        let field_infos0 = field_infos::FieldInfos {
+            fields: vec![postings_field("body", 0)],
+        };
+        let fields0 = lucene_codecs::blocktree::open(
+            &output0.tim,
+            &output0.tip,
+            &output0.tmd,
+            &field_infos0,
+            &seg0_id,
+            "",
+            1,
+        )
+        .unwrap();
+        let doc_in0 = DocInput::open(&output0.doc, &seg0_id, "").unwrap();
+        let field_terms0 = fields0.field("body").unwrap();
+
+        let terms1 = vec![TermPostings {
+            term: b"the".to_vec(),
+            docs: vec![(0, 2)],
+            ..Default::default()
+        }];
+        let input1 = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqs,
+            doc_count: 1,
+            has_payloads: false,
+            terms: &terms1,
+        };
+        let output1 = postings_writer::write_single_field(&input1, &seg1_id, "").unwrap();
+        let field_infos1 = field_infos::FieldInfos {
+            fields: vec![postings_field("body", 0)],
+        };
+        let fields1 = lucene_codecs::blocktree::open(
+            &output1.tim,
+            &output1.tip,
+            &output1.tmd,
+            &field_infos1,
+            &seg1_id,
+            "",
+            1,
+        )
+        .unwrap();
+        let doc_in1 = DocInput::open(&output1.doc, &seg1_id, "").unwrap();
+        let field_terms1 = fields1.field("body").unwrap();
+
+        let fields = vec![postings_field("body", 0)];
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let stored0 = flush(&dir, &tmp, "_0", seg0_id, &fields, &[doc_with(0, "a")]);
+        let stored1 = flush(&dir, &tmp, "_1", seg1_id, &fields, &[doc_with(0, "b")]);
+        let reader0 = open_reader(&stored0);
+        let reader1 = open_reader(&stored1);
+
+        let src_postings0 = [SourcePostings {
+            field_number: 0,
+            field_terms: field_terms0,
+            doc_in: Some(&doc_in0),
+        }];
+        let src_postings1 = [SourcePostings {
+            field_number: 0,
+            field_terms: field_terms1,
+            doc_in: Some(&doc_in1),
+        }];
+        let source0 = MergeSource {
+            field_infos: &stored0.fields,
+            reader: &reader0,
+            live_docs: None,
+            numeric_doc_values: &[],
+            binary_doc_values: &[],
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &[],
+            norms: &[],
+            term_vectors: None,
+            postings: &src_postings0,
+        };
+        let source1 = MergeSource {
+            field_infos: &stored1.fields,
+            reader: &reader1,
+            live_docs: None,
+            numeric_doc_values: &[],
+            binary_doc_values: &[],
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &[],
+            norms: &[],
+            term_vectors: None,
+            postings: &src_postings1,
+        };
+
+        let tmp2 = tmp.clone();
+        merge_stored_only_segments(
+            &dir,
+            &[source0, source1],
+            "_merged_the",
+            [9u8; ID_LENGTH],
+            "Lucene104",
+            version(),
+        )
+        .unwrap();
+
+        let tim = std::fs::read(std::path::Path::new(&tmp2).join("_merged_the.tim")).unwrap();
+        let tip = std::fs::read(std::path::Path::new(&tmp2).join("_merged_the.tip")).unwrap();
+        let tmd = std::fs::read(std::path::Path::new(&tmp2).join("_merged_the.tmd")).unwrap();
+        let doc = std::fs::read(std::path::Path::new(&tmp2).join("_merged_the.doc")).unwrap();
+        let merged_field_infos = field_infos::FieldInfos {
+            fields: vec![postings_field("body", 0)],
+        };
+        let merged_fields = lucene_codecs::blocktree::open(
+            &tim,
+            &tip,
+            &tmd,
+            &merged_field_infos,
+            &[9u8; ID_LENGTH],
+            "",
+            2,
+        )
+        .unwrap();
+        let merged_doc_in = DocInput::open(&doc, &[9u8; ID_LENGTH], "").unwrap();
+        let merged_terms = merged_fields.field("body").unwrap();
+
+        let the = merged_terms
+            .postings(b"the", Some(&merged_doc_in))
+            .unwrap()
+            .unwrap();
+        assert_eq!(the.docs, vec![0, 1]);
+        assert_eq!(the.freqs, vec![1, 2]);
+    }
+
+    #[test]
+    fn deletions_drop_docs_from_merged_postings() {
+        let seg0_id = [1u8; ID_LENGTH];
+
+        // Source 0: 2 docs -- doc 0 has "apple", doc 1 has "banana"; doc 1 is
+        // deleted, so "banana" must not survive the merge at all.
+        let terms0 = vec![
+            TermPostings {
+                term: b"apple".to_vec(),
+                docs: vec![(0, 1)],
+                ..Default::default()
+            },
+            TermPostings {
+                term: b"banana".to_vec(),
+                docs: vec![(1, 1)],
+                ..Default::default()
+            },
+        ];
+        let input0 = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqs,
+            doc_count: 2,
+            has_payloads: false,
+            terms: &terms0,
+        };
+        let output0 = postings_writer::write_single_field(&input0, &seg0_id, "").unwrap();
+        let field_infos0 = field_infos::FieldInfos {
+            fields: vec![postings_field("body", 0)],
+        };
+        let fields0 = lucene_codecs::blocktree::open(
+            &output0.tim,
+            &output0.tip,
+            &output0.tmd,
+            &field_infos0,
+            &seg0_id,
+            "",
+            2,
+        )
+        .unwrap();
+        let doc_in0 = DocInput::open(&output0.doc, &seg0_id, "").unwrap();
+        let field_terms0 = fields0.field("body").unwrap();
+
+        let fields = vec![postings_field("body", 0)];
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let stored0 = flush(
+            &dir,
+            &tmp,
+            "_0",
+            seg0_id,
+            &fields,
+            &[doc_with(0, "a"), doc_with(0, "b")],
+        );
+        let reader0 = open_reader(&stored0);
+
+        let mut live0 = FixedBitSet::new(2);
+        live0.set(0); // keep doc 0 only
+
+        let src_postings0 = [SourcePostings {
+            field_number: 0,
+            field_terms: field_terms0,
+            doc_in: Some(&doc_in0),
+        }];
+        let source0 = MergeSource {
+            field_infos: &stored0.fields,
+            reader: &reader0,
+            live_docs: Some(&live0),
+            numeric_doc_values: &[],
+            binary_doc_values: &[],
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &[],
+            norms: &[],
+            term_vectors: None,
+            postings: &src_postings0,
+        };
+
+        merge_stored_only_segments(
+            &dir,
+            &[source0],
+            "_merged_del",
+            [9u8; ID_LENGTH],
+            "Lucene104",
+            version(),
+        )
+        .unwrap();
+
+        let tim = std::fs::read(std::path::Path::new(&tmp).join("_merged_del.tim")).unwrap();
+        let tip = std::fs::read(std::path::Path::new(&tmp).join("_merged_del.tip")).unwrap();
+        let tmd = std::fs::read(std::path::Path::new(&tmp).join("_merged_del.tmd")).unwrap();
+        let doc = std::fs::read(std::path::Path::new(&tmp).join("_merged_del.doc")).unwrap();
+        let merged_field_infos = field_infos::FieldInfos {
+            fields: vec![postings_field("body", 0)],
+        };
+        let merged_fields = lucene_codecs::blocktree::open(
+            &tim,
+            &tip,
+            &tmd,
+            &merged_field_infos,
+            &[9u8; ID_LENGTH],
+            "",
+            1,
+        )
+        .unwrap();
+        let merged_doc_in = DocInput::open(&doc, &[9u8; ID_LENGTH], "").unwrap();
+        let merged_terms = merged_fields.field("body").unwrap();
+
+        let apple = merged_terms
+            .postings(b"apple", Some(&merged_doc_in))
+            .unwrap()
+            .unwrap();
+        assert_eq!(apple.docs, vec![0]);
+
+        assert!(merged_terms.seek_exact(b"banana").is_none());
+    }
+
+    #[test]
+    fn fully_deleted_source_contributes_nothing_to_postings() {
+        let seg0_id = [1u8; ID_LENGTH];
+        let seg1_id = [2u8; ID_LENGTH];
+
+        // Source 0: 1 doc, fully deleted -- its "ghost" term must not survive.
+        let terms0 = vec![TermPostings {
+            term: b"ghost".to_vec(),
+            docs: vec![(0, 1)],
+            ..Default::default()
+        }];
+        let input0 = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqs,
+            doc_count: 1,
+            has_payloads: false,
+            terms: &terms0,
+        };
+        let output0 = postings_writer::write_single_field(&input0, &seg0_id, "").unwrap();
+        let field_infos0 = field_infos::FieldInfos {
+            fields: vec![postings_field("body", 0)],
+        };
+        let fields0 = lucene_codecs::blocktree::open(
+            &output0.tim,
+            &output0.tip,
+            &output0.tmd,
+            &field_infos0,
+            &seg0_id,
+            "",
+            1,
+        )
+        .unwrap();
+        let doc_in0 = DocInput::open(&output0.doc, &seg0_id, "").unwrap();
+        let field_terms0 = fields0.field("body").unwrap();
+
+        // Source 1: 1 doc, alive -- "alive" survives.
+        let terms1 = vec![TermPostings {
+            term: b"alive".to_vec(),
+            docs: vec![(0, 1)],
+            ..Default::default()
+        }];
+        let input1 = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqs,
+            doc_count: 1,
+            has_payloads: false,
+            terms: &terms1,
+        };
+        let output1 = postings_writer::write_single_field(&input1, &seg1_id, "").unwrap();
+        let field_infos1 = field_infos::FieldInfos {
+            fields: vec![postings_field("body", 0)],
+        };
+        let fields1 = lucene_codecs::blocktree::open(
+            &output1.tim,
+            &output1.tip,
+            &output1.tmd,
+            &field_infos1,
+            &seg1_id,
+            "",
+            1,
+        )
+        .unwrap();
+        let doc_in1 = DocInput::open(&output1.doc, &seg1_id, "").unwrap();
+        let field_terms1 = fields1.field("body").unwrap();
+
+        let fields = vec![postings_field("body", 0)];
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let stored0 = flush(&dir, &tmp, "_0", seg0_id, &fields, &[doc_with(0, "a")]);
+        let stored1 = flush(&dir, &tmp, "_1", seg1_id, &fields, &[doc_with(0, "b")]);
+        let reader0 = open_reader(&stored0);
+        let reader1 = open_reader(&stored1);
+
+        let live0 = FixedBitSet::new(1); // no bits set -- fully deleted
+
+        let src_postings0 = [SourcePostings {
+            field_number: 0,
+            field_terms: field_terms0,
+            doc_in: Some(&doc_in0),
+        }];
+        let src_postings1 = [SourcePostings {
+            field_number: 0,
+            field_terms: field_terms1,
+            doc_in: Some(&doc_in1),
+        }];
+        let source0 = MergeSource {
+            field_infos: &stored0.fields,
+            reader: &reader0,
+            live_docs: Some(&live0),
+            numeric_doc_values: &[],
+            binary_doc_values: &[],
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &[],
+            norms: &[],
+            term_vectors: None,
+            postings: &src_postings0,
+        };
+        let source1 = MergeSource {
+            field_infos: &stored1.fields,
+            reader: &reader1,
+            live_docs: None,
+            numeric_doc_values: &[],
+            binary_doc_values: &[],
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &[],
+            norms: &[],
+            term_vectors: None,
+            postings: &src_postings1,
+        };
+
+        merge_stored_only_segments(
+            &dir,
+            &[source0, source1],
+            "_merged_fully_deleted",
+            [9u8; ID_LENGTH],
+            "Lucene104",
+            version(),
+        )
+        .unwrap();
+
+        let tim =
+            std::fs::read(std::path::Path::new(&tmp).join("_merged_fully_deleted.tim")).unwrap();
+        let tip =
+            std::fs::read(std::path::Path::new(&tmp).join("_merged_fully_deleted.tip")).unwrap();
+        let tmd =
+            std::fs::read(std::path::Path::new(&tmp).join("_merged_fully_deleted.tmd")).unwrap();
+        let doc =
+            std::fs::read(std::path::Path::new(&tmp).join("_merged_fully_deleted.doc")).unwrap();
+        let merged_field_infos = field_infos::FieldInfos {
+            fields: vec![postings_field("body", 0)],
+        };
+        let merged_fields = lucene_codecs::blocktree::open(
+            &tim,
+            &tip,
+            &tmd,
+            &merged_field_infos,
+            &[9u8; ID_LENGTH],
+            "",
+            1,
+        )
+        .unwrap();
+        let merged_doc_in = DocInput::open(&doc, &[9u8; ID_LENGTH], "").unwrap();
+        let merged_terms = merged_fields.field("body").unwrap();
+
+        assert!(merged_terms.seek_exact(b"ghost").is_none());
+        let alive = merged_terms
+            .postings(b"alive", Some(&merged_doc_in))
+            .unwrap()
+            .unwrap();
+        assert_eq!(alive.docs, vec![0]);
+    }
+
+    #[test]
+    fn postings_field_missing_in_a_live_contributing_source_is_an_error() {
+        let seg0_id = [1u8; ID_LENGTH];
+
+        let terms0 = vec![TermPostings {
+            term: b"apple".to_vec(),
+            docs: vec![(0, 1)],
+            ..Default::default()
+        }];
+        let input0 = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqs,
+            doc_count: 1,
+            has_payloads: false,
+            terms: &terms0,
+        };
+        let output0 = postings_writer::write_single_field(&input0, &seg0_id, "").unwrap();
+        let field_infos0 = field_infos::FieldInfos {
+            fields: vec![postings_field("body", 0)],
+        };
+        let fields0 = lucene_codecs::blocktree::open(
+            &output0.tim,
+            &output0.tip,
+            &output0.tmd,
+            &field_infos0,
+            &seg0_id,
+            "",
+            1,
+        )
+        .unwrap();
+        let doc_in0 = DocInput::open(&output0.doc, &seg0_id, "").unwrap();
+        let field_terms0 = fields0.field("body").unwrap();
+
+        let fields = vec![postings_field("body", 0)];
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let stored0 = flush(&dir, &tmp, "_0", seg0_id, &fields, &[doc_with(0, "a")]);
+        // Source 1 declares the same "body" field but supplies no postings
+        // data for it at all -- a schema mismatch, since source 0 has live
+        // docs indexing that field.
+        let stored1 = flush(
+            &dir,
+            &tmp,
+            "_1",
+            [2u8; ID_LENGTH],
+            &fields,
+            &[doc_with(0, "b")],
+        );
+        let reader0 = open_reader(&stored0);
+        let reader1 = open_reader(&stored1);
+
+        let src_postings0 = [SourcePostings {
+            field_number: 0,
+            field_terms: field_terms0,
+            doc_in: Some(&doc_in0),
+        }];
+        let source0 = MergeSource {
+            field_infos: &stored0.fields,
+            reader: &reader0,
+            live_docs: None,
+            numeric_doc_values: &[],
+            binary_doc_values: &[],
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &[],
+            norms: &[],
+            term_vectors: None,
+            postings: &src_postings0,
+        };
+        let source1 = MergeSource {
+            field_infos: &stored1.fields,
+            reader: &reader1,
+            live_docs: None,
+            numeric_doc_values: &[],
+            binary_doc_values: &[],
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &[],
+            norms: &[],
+            term_vectors: None,
+            postings: &[],
+        };
+
+        let result = merge_stored_only_segments(
+            &dir,
+            &[source0, source1],
+            "_merged_missing_postings",
+            [9u8; ID_LENGTH],
+            "Lucene104",
+            version(),
+        );
+        assert!(matches!(
+            result,
+            Err(Error::PostingsFieldMissingInSource { .. })
+        ));
+    }
+
+    #[test]
+    fn postings_field_with_positions_is_rejected_as_out_of_scope() {
+        let seg0_id = [1u8; ID_LENGTH];
+
+        let terms0 = vec![TermPostings {
+            term: b"apple".to_vec(),
+            docs: vec![(0, 1)],
+            positions: vec![vec![0]],
+            ..Default::default()
+        }];
+        let input0 = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqsAndPositions,
+            doc_count: 1,
+            has_payloads: false,
+            terms: &terms0,
+        };
+        let output0 = postings_writer::write_single_field(&input0, &seg0_id, "").unwrap();
+        let mut field_with_positions = postings_field("body", 0);
+        field_with_positions.index_options = IndexOptions::DocsAndFreqsAndPositions;
+        let field_infos0 = field_infos::FieldInfos {
+            fields: vec![field_with_positions.clone()],
+        };
+        let fields0 = lucene_codecs::blocktree::open(
+            &output0.tim,
+            &output0.tip,
+            &output0.tmd,
+            &field_infos0,
+            &seg0_id,
+            "",
+            1,
+        )
+        .unwrap();
+        let doc_in0 = DocInput::open(&output0.doc, &seg0_id, "").unwrap();
+        let field_terms0 = fields0.field("body").unwrap();
+
+        let fields = vec![field_with_positions];
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let stored0 = flush(&dir, &tmp, "_0", seg0_id, &fields, &[doc_with(0, "a")]);
+        let reader0 = open_reader(&stored0);
+
+        let src_postings0 = [SourcePostings {
+            field_number: 0,
+            field_terms: field_terms0,
+            doc_in: Some(&doc_in0),
+        }];
+        let source0 = MergeSource {
+            field_infos: &stored0.fields,
+            reader: &reader0,
+            live_docs: None,
+            numeric_doc_values: &[],
+            binary_doc_values: &[],
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &[],
+            norms: &[],
+            term_vectors: None,
+            postings: &src_postings0,
+        };
+
+        let result = merge_stored_only_segments(
+            &dir,
+            &[source0],
+            "_merged_positions_rejected",
+            [9u8; ID_LENGTH],
+            "Lucene104",
+            version(),
+        );
+        assert!(matches!(
+            result,
+            Err(Error::PostingsIndexOptionsNotSupported { .. })
+        ));
+    }
+
+    #[test]
+    fn a_source_with_positions_disagreeing_with_the_merged_docs_and_freqs_field_is_rejected() {
+        // Source 0's "body" is Docs/DocsAndFreqs (first-seen, so it becomes
+        // the merged field's canonical index_options via
+        // `reconcile_field_numbers`). Source 1's own "body" indexes
+        // positions. Without cross-source validation this would silently
+        // drop source 1's positions data instead of erroring -- regression
+        // test for `Error::PostingsIndexOptionsDisagreement`.
+        let seg0_id = [1u8; ID_LENGTH];
+        let seg1_id = [2u8; ID_LENGTH];
+
+        let terms0 = vec![TermPostings {
+            term: b"apple".to_vec(),
+            docs: vec![(0, 1)],
+            ..Default::default()
+        }];
+        let input0 = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqs,
+            doc_count: 1,
+            has_payloads: false,
+            terms: &terms0,
+        };
+        let output0 = postings_writer::write_single_field(&input0, &seg0_id, "").unwrap();
+        let field_infos0 = field_infos::FieldInfos {
+            fields: vec![postings_field("body", 0)],
+        };
+        let fields0 = lucene_codecs::blocktree::open(
+            &output0.tim,
+            &output0.tip,
+            &output0.tmd,
+            &field_infos0,
+            &seg0_id,
+            "",
+            1,
+        )
+        .unwrap();
+        let doc_in0 = DocInput::open(&output0.doc, &seg0_id, "").unwrap();
+        let field_terms0 = fields0.field("body").unwrap();
+
+        let terms1 = vec![TermPostings {
+            term: b"banana".to_vec(),
+            docs: vec![(0, 1)],
+            positions: vec![vec![0]],
+            ..Default::default()
+        }];
+        let input1 = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqsAndPositions,
+            doc_count: 1,
+            has_payloads: false,
+            terms: &terms1,
+        };
+        let output1 = postings_writer::write_single_field(&input1, &seg1_id, "").unwrap();
+        let mut field_with_positions = postings_field("body", 0);
+        field_with_positions.index_options = IndexOptions::DocsAndFreqsAndPositions;
+        let field_infos1 = field_infos::FieldInfos {
+            fields: vec![field_with_positions.clone()],
+        };
+        let fields1 = lucene_codecs::blocktree::open(
+            &output1.tim,
+            &output1.tip,
+            &output1.tmd,
+            &field_infos1,
+            &seg1_id,
+            "",
+            1,
+        )
+        .unwrap();
+        let doc_in1 = DocInput::open(&output1.doc, &seg1_id, "").unwrap();
+        let field_terms1 = fields1.field("body").unwrap();
+
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let stored0 = flush(
+            &dir,
+            &tmp,
+            "_0",
+            seg0_id,
+            &[postings_field("body", 0)],
+            &[doc_with(0, "a")],
+        );
+        let reader0 = open_reader(&stored0);
+        let stored1 = flush(
+            &dir,
+            &tmp,
+            "_1",
+            seg1_id,
+            &[field_with_positions],
+            &[doc_with(0, "a")],
+        );
+        let reader1 = open_reader(&stored1);
+
+        let src_postings0 = [SourcePostings {
+            field_number: 0,
+            field_terms: field_terms0,
+            doc_in: Some(&doc_in0),
+        }];
+        let src_postings1 = [SourcePostings {
+            field_number: 0,
+            field_terms: field_terms1,
+            doc_in: Some(&doc_in1),
+        }];
+        let source0 = MergeSource {
+            field_infos: &stored0.fields,
+            reader: &reader0,
+            live_docs: None,
+            numeric_doc_values: &[],
+            binary_doc_values: &[],
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &[],
+            norms: &[],
+            term_vectors: None,
+            postings: &src_postings0,
+        };
+        let source1 = MergeSource {
+            field_infos: &stored1.fields,
+            reader: &reader1,
+            live_docs: None,
+            numeric_doc_values: &[],
+            binary_doc_values: &[],
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &[],
+            norms: &[],
+            term_vectors: None,
+            postings: &src_postings1,
+        };
+
+        let result = merge_stored_only_segments(
+            &dir,
+            &[source0, source1],
+            "_merged_disagreeing_index_options",
+            [9u8; ID_LENGTH],
+            "Lucene104",
+            version(),
+        );
+        assert!(matches!(
+            result,
+            Err(Error::PostingsIndexOptionsDisagreement { .. })
         ));
     }
 }

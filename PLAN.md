@@ -3883,6 +3883,10 @@ mostly reimplements these as aggs — likely never needed), backward-codecs. Mer
 re-sorting of already-sorted segments (stored fields only, via k-way merge) and
 multi-field NUMERIC index sort at flush time are both done, see `docs/parity.md`;
 reordering doc values/norms/term vectors during a merge remains a long-tail item.
+`merge.rs` now also merges postings (term dictionaries + `.doc` freq data) for
+`IndexOptions::Docs`/`DocsAndFreqs` fields, given per-source term dictionaries
+and `.doc` readers; positions/offsets/payloads and points merging are still not
+implemented (see `docs/parity.md`'s `SegmentMerger` row).
 
 ---
 
@@ -4142,3 +4146,43 @@ multi-valued-per-doc on top of the same independent-dictionary problem, so exten
 further is not a small follow-up. `cargo fmt`/`clippy --workspace --all-targets -D
 warnings` clean; `cargo test --workspace` passes. See `docs/parity.md`'s `SegmentMerger`
 row for the parity-tracking update.
+
+**Progress (`merge_postings`):** `lucene-index/src/merge.rs` can now merge
+postings (term dictionaries + doc/freq data, `.tim`/`.tip`/`.tmd`/`.doc`)
+across sources, closing another gap this file's own doc comment had flagged
+under "Deliberately not implemented." Each source's term dictionary is
+independent (the same problem `merge_sorted_doc_values` solved for SORTED
+doc values), so this resolves each contributing source's own terms straight
+to bytes via that source's already-opened `blocktree::FieldTerms`, unions
+those bytes across sources into one sorted term set, and for each term
+concatenates every contributing source's `(mergedDocId, freq)` pairs in
+source order -- ascending overall for free, since merged doc ids occupy
+disjoint, increasing per-source ranges (new helper `build_doc_id_maps`).
+Re-encoded via `postings_writer::write_fields`, which -- unlike the
+doc-values/norms writers -- already accepts any number of fields per call,
+so there is no single-field-per-merge-call limit here the way
+`TooManyNumericDocValuesFields` etc. enforce elsewhere. New `MergeSource`
+field `postings: &[SourcePostings]` (one entry per field a source supplies
+postings for); every one of the ~40 existing `MergeSource` test literals
+picked up `postings: &[]`. Same "sparse across sources" philosophy as
+doc-values/norms, at the field level: a live-doc-contributing source
+missing the postings field entirely (while another live-doc-contributing
+source has it) is `Error::PostingsFieldMissingInSource` -- ordinary
+per-doc/per-term sparsity within one field is not an error, since that's
+exactly what a term dictionary already models. **Scope: `IndexOptions::
+Docs`/`DocsAndFreqs` only** -- positions/offsets/payloads merging
+(`.pos`/`.pay`) is not implemented; a field whose merged `index_options`
+indexes positions is rejected with `Error::PostingsIndexOptionsNotSupported`
+rather than silently dropping that data, a documented follow-up rather than
+a silent gap. New tests in `crates/lucene-index/src/merge.rs`: two sources
+with no deletions merge correctly (verified by reopening the merged
+`.tim`/`.tip`/`.tmd`/`.doc` through the unmodified `blocktree`/
+`postings::DocInput` reader stack and checking actual doc ids/freqs, not
+just "some valid output"); a term shared by both sources merges in
+ascending merged-doc-id order; deletions drop a doc's terms from the
+merge; a fully-deleted source contributes nothing; a live-contributing
+source missing the postings field is a hard error; and a positions-
+indexed field is rejected as out of scope. `cargo fmt`/`clippy --workspace
+--all-targets -- -D warnings` clean; `cargo test -p lucene-index --lib
+merge::` passes (52/52). See `docs/parity.md`'s `SegmentMerger` row for the
+parity-tracking update.
