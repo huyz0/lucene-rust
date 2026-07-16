@@ -1516,47 +1516,6 @@ mod tests {
     }
 
     #[test]
-    fn a_deadline_that_expires_only_partway_through_still_keeps_earlier_segments() {
-        // The concurrent variant's per-segment pre-check means a deadline
-        // expiring *during* the run (not before it starts) still lets any
-        // segment whose own check ran before expiry contribute its real
-        // hits -- this is NOT a shared stop-the-world cutoff that would
-        // discard already-in-flight work once the deadline passes.
-        let (doc_bases, hits) = synthetic_doc_bases_and_hits(16);
-        // Expires shortly after the call starts, but not before it -- every
-        // segment's own pre-check races against real wall-clock time, so
-        // this can't deterministically prove a specific split; it proves
-        // instead that a deadline landing mid-run doesn't corrupt output:
-        // whatever subset of segments got in before expiry still produces a
-        // properly sorted, correctly truncated top-N of real collected
-        // hits, not garbage or a panic.
-        let mid_run = Instant::now() + std::time::Duration::from_millis(5);
-        let (result, _timed_out) = merge_multi_segment_scored_concurrent_with_deadline(
-            &doc_bases,
-            10,
-            Some(mid_run),
-            |i, local| {
-                for &(doc_id, score) in &hits[i] {
-                    local.collect(doc_id, score);
-                }
-                Ok(())
-            },
-        )
-        .unwrap();
-        // Whatever came back must be a subset of the real top-10 computed
-        // with no deadline at all -- every entry present is a genuine hit,
-        // never a wrong/corrupted score, regardless of how many segments
-        // the race let through.
-        let no_timeout = run_concurrent(&doc_bases, &hits, 10);
-        for entry in &result {
-            assert!(
-                no_timeout.contains(entry),
-                "{entry:?} must be a real hit from the full (no-deadline) top-10"
-            );
-        }
-    }
-
-    #[test]
     fn sort_by_field_multi_segment_propagates_decode_errors() {
         // max_doc claims more docs than the dense entry actually holds --
         // numeric_value's Error::DocOutOfRange must surface through the

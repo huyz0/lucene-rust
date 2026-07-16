@@ -73,45 +73,51 @@ pub(crate) fn map_search_error(e: lucene_search::Error) -> FfiStatus {
     FfiStatus::Search
 }
 
-/// Test-only panic-injection switch for
-/// `registry_mutex_recovers_from_poisoning_after_a_panic_mid_query` below:
-/// there is no way to reach a real internal `unwrap()`/indexing panic from
-/// adversarial-but-otherwise-well-formed bytes through this crate's public
-/// decode paths (every decoder here already turns corrupted bytes into an
-/// `Err` -> `FfiStatus::Decode`, per `segment.rs`'s garbage-bytes tests), so
-/// this flag fabricates the one thing a real panic there would have in
-/// common with any other panic: it fires *while `ffi_search_term_query`
-/// still holds the `segments()` registry's `MutexGuard`*, the exact
-/// condition that poisons the mutex. Never armed outside a test, and always
-/// disarmed (via `swap`) the instant it fires, so it can't leak into any
-/// other test.
+// Test-only panic-injection switch for
+// `registry_mutex_recovers_from_poisoning_after_a_panic_mid_query` below:
+// there is no way to reach a real internal `unwrap()`/indexing panic from
+// adversarial-but-otherwise-well-formed bytes through this crate's public
+// decode paths (every decoder here already turns corrupted bytes into an
+// `Err` -> `FfiStatus::Decode`, per `segment.rs`'s garbage-bytes tests), so
+// this flag fabricates the one thing a real panic there would have in
+// common with any other panic: it fires *while `ffi_search_term_query`
+// still holds the `segments()` registry's `MutexGuard`*, the exact
+// condition that poisons the mutex. Never armed outside a test, and always
+// disarmed (via `.replace(false)`) the instant it fires.
+//
+// **`thread_local!`, not a process-wide `static`** -- same reasoning as
+// `PANIC_ON_NEXT_SCORED_TERM_QUERY` below: `cargo test` runs this crate's
+// tests in parallel by default, and `ffi_search_term_query` is called by
+// more than one test (this one arms it, but e.g.
+// `scored_results_handle_rejected_by_unscored_results_accessors` also calls
+// the unscored `ffi_search_term_query` for its own, unrelated assertions).
+// A process-wide flag armed by this test could fire inside that other
+// test's call if the two happened to run concurrently on separate threads,
+// panicking a test that never armed anything -- exactly the intermittent
+// failure this flag used to be exposed to. Scoping it `thread_local!`
+// instead means arming and firing both happen on this test's own thread, so
+// no other test's thread can ever observe or trigger it, regardless of
+// scheduling.
 #[cfg(test)]
-static PANIC_ON_NEXT_TERM_QUERY: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+thread_local! {
+    static PANIC_ON_NEXT_TERM_QUERY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 
 #[cfg(test)]
 pub(crate) fn arm_panic_on_next_term_query() {
-    PANIC_ON_NEXT_TERM_QUERY.store(true, std::sync::atomic::Ordering::SeqCst);
+    PANIC_ON_NEXT_TERM_QUERY.with(|c| c.set(true));
 }
 
 // Test-only panic-injection switch for
 // `registry_mutex_recovers_from_poisoning_after_a_panic_mid_scored_query`
-// below -- same purpose as `PANIC_ON_NEXT_TERM_QUERY` (see its doc comment
-// for what it fabricates and why), but **thread-local rather than a
-// process-wide `static`**. `cargo test` runs a crate's tests in parallel on a
-// thread pool by default, so a process-wide `AtomicBool` armed by one test
-// can fire inside a *different*, unrelated test's call to
-// `ffi_search_term_query_scored` if the two happen to run concurrently on
-// separate threads -- a real, if narrow, source of test flakiness a global
-// flag like `PANIC_ON_NEXT_TERM_QUERY` is exposed to (that one has stayed
-// safe in practice only because its own test is the sole caller of
-// `ffi_search_term_query` that ever arms it, and no other currently-running
-// test happens to call that same function while it's armed -- not because
-// the mechanism itself is race-free). Rather than reuse that same
-// process-wide shape for a second, newly-added test, this flag is scoped
-// `thread_local!` instead: arming it and firing it both happen on the same
-// test's own thread, so no other test's thread can ever observe or trigger
-// it, regardless of scheduling.
+// below -- same purpose and same `thread_local!` shape as
+// `PANIC_ON_NEXT_TERM_QUERY` above (see its doc comment for the race a
+// process-wide `static` flag would otherwise expose this to: `cargo test`
+// runs a crate's tests in parallel on a thread pool by default, and more
+// than one test calls the function a shared flag would gate). Kept as its
+// own flag rather than reusing `PANIC_ON_NEXT_TERM_QUERY` because it gates a
+// different function (`ffi_search_term_query_scored`, not
+// `ffi_search_term_query`).
 #[cfg(test)]
 thread_local! {
     static PANIC_ON_NEXT_SCORED_TERM_QUERY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -162,7 +168,7 @@ pub unsafe extern "C" fn ffi_search_term_query(
         // like a real decode panic reached through `search_term_query` below
         // would.
         #[cfg(test)]
-        if PANIC_ON_NEXT_TERM_QUERY.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        if PANIC_ON_NEXT_TERM_QUERY.with(|c| c.replace(false)) {
             panic!("test-only simulated panic while the segments registry lock is held");
         }
 
@@ -2284,9 +2290,12 @@ mod tests {
     /// Regression test for the mutex-poisoning fix, exercised for the scored
     /// query path (task #30): mirrors
     /// `registry_mutex_recovers_from_poisoning_after_a_panic_mid_query` above,
-    /// but for `ffi_search_term_query_scored` and using the thread-local (not
-    /// process-global) panic-injection switch -- see
-    /// `arm_panic_on_next_scored_term_query`'s doc comment for why.
+    /// but for `ffi_search_term_query_scored`, using its own thread-local
+    /// panic-injection switch -- see `arm_panic_on_next_scored_term_query`'s
+    /// doc comment for why both this and the unscored path's switch are
+    /// thread-local (both were once a shared process-global `AtomicBool`,
+    /// which raced with unrelated tests calling the same FFI entry point
+    /// concurrently under `cargo test`'s default parallel execution).
     #[test]
     fn registry_mutex_recovers_from_poisoning_after_a_panic_mid_scored_query() {
         let dir_handle = open_dir();
