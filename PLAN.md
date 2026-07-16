@@ -4448,3 +4448,50 @@ new ones); `cargo test -p lucene-index --lib` passes unaffected (270/270).
 See `docs/parity.md`'s `index/DirectoryReader.open(Directory)` and
 `index/DirectoryReader.openIfChanged(DirectoryReader)` rows for the
 parity-tracking update.
+
+**Progress (follow-up task: DocValues field updates merge-awareness audit).**
+Investigated whether task #54's numeric doc-values update overlay
+(`lucene-codecs/src/doc_values_updates.rs`) and this session's now-complete
+doc-values-aware segment merging (`crates/lucene-index/src/merge.rs`)
+compose correctly -- does a merge pick up an overlay-updated value, or does
+it silently merge the stale base value?
+
+**Finding: there is no production code path where this composition question
+even arises yet.** `doc_values_updates` has exactly one consumer in this
+codebase, `lucene-search/src/soft_deletes.rs`'s query-time overlay-aware
+live-docs check -- which never calls into `merge.rs`. `IndexWriter` has no
+`update_numeric_doc_value`-style method that writes an overlay against a
+committed segment (`SegmentCommitInfo::doc_values_gen` is hardcoded to `-1`
+everywhere it's constructed and never read back or bumped). And
+`merge.rs`'s `MergeSource`/`SourceNumericDocValues` (and its BINARY/SORTED/
+SORTED_NUMERIC/SORTED_SET siblings) carry no overlay field at all -- the
+merge's numeric-field code path calls `doc_values::numeric_value` directly
+against each source's base `data`/`entry`, so there's no parameter a caller
+could plug an overlay into even if one wanted to.
+
+**Proved concretely, not just asserted:** a new regression test,
+`merge::tests::numeric_doc_values_update_overlay_does_not_survive_a_merge_today`
+(`crates/lucene-index/src/merge.rs`), builds a base numeric field, writes a
+real overlay marking doc 0 with a new value via
+`doc_values_updates::write_numeric_updates`, confirms
+`numeric_value_with_updates` genuinely returns the new value for that doc,
+then runs an actual `merge_stored_only_segments` call over that same source
+(using only the base `data`/`entry`, since that's all `SourceNumericDocValues`
+can express) and confirms the merged segment's doc 0 keeps its **stale**
+pre-update value, not the overlay's. This demonstrates precisely what would
+go wrong if a future task wired an overlay-writing update API into
+`IndexWriter` without also teaching the merge call site to resolve each
+source's effective (overlay-folded) values first.
+
+**Scope conclusion: documented as an explicit, currently-out-of-scope
+architectural boundary, not fixed** -- per this task's own branching
+criteria, forcing a fix here would be artificial, since there is no real
+caller today that both writes an overlay against a committed segment and
+later merges it. `docs/parity.md`'s task #54 row (`index/
+NumericDocValuesFieldUpdates`) now has a "Merge-awareness audit" paragraph
+recording this finding and pointing at the new test, so any future task that
+wires doc-values updates into `IndexWriter`'s write path knows to fold
+overlays into base values before constructing `MergeSource`s. `cargo fmt
+--all` clean; `cargo clippy --workspace --all-targets -- -D warnings` clean;
+`cargo test -p lucene-index` passes (272 lib tests, up from 271, plus all
+pre-existing integration-test binaries unaffected).

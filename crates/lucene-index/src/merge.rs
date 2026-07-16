@@ -3172,6 +3172,128 @@ mod tests {
         assert_eq!(values, vec![10, 30]);
     }
 
+    /// Task #54's numeric doc-values update overlay
+    /// (`lucene_codecs::doc_values_updates`) composed with this module's
+    /// numeric doc-values merge -- proving, end to end through both
+    /// already-shipped features' real public APIs, that a doc's
+    /// overlay-updated value does **not** survive a merge today.
+    ///
+    /// This is not a bug in either feature: [`doc_values_updates`] is
+    /// documented (see that module's top doc comment) as a standalone
+    /// single-generation overlay primitive with no `SegmentCommitInfo`/`.si`
+    /// `docValuesGen` wiring, and nothing in `IndexWriter` ever applies an
+    /// overlay to a committed segment (there is no `update_numeric_doc_value`-
+    /// style method on `IndexWriter`; the overlay's only production consumer
+    /// is `lucene_search::soft_deletes`'s query-time live-docs check, which
+    /// never touches `merge.rs`). [`MergeSource`]/[`SourceNumericDocValues`]
+    /// accordingly carry no overlay field at all -- there is no parameter a
+    /// caller could even use to plug an overlay into a merge call. This test
+    /// documents the current, honest shape of that gap: build a base numeric
+    /// field, write a real overlay marking doc 0 with a new value via
+    /// [`lucene_codecs::doc_values_updates::write_numeric_updates`], confirm
+    /// the overlay-aware read
+    /// ([`lucene_codecs::doc_values_updates::numeric_value_with_updates`])
+    /// sees the new value, then run an actual `merge_stored_only_segments`
+    /// call using only the base `data`/`entry` (since that's all
+    /// `SourceNumericDocValues` can express) and confirm the merged segment
+    /// still has the **stale** pre-update value -- i.e. if a caller ever did
+    /// wire an overlay-writing update path into `IndexWriter` without also
+    /// teaching the merge call site to resolve "effective" (overlay-folded)
+    /// values before constructing `MergeSource`, updates would be silently
+    /// lost across a merge. See `docs/parity.md` and `PLAN.md` for the full
+    /// scope writeup.
+    #[test]
+    fn numeric_doc_values_update_overlay_does_not_survive_a_merge_today() {
+        use lucene_codecs::doc_values_updates;
+
+        let seg0_id = [1u8; ID_LENGTH];
+        // Base segment: 2 docs, values [10, 20].
+        let dv0 = flush_numeric_dv(0, &[10, 20], seg0_id);
+
+        // Apply a real overlay update: doc 0's value becomes 999.
+        let overlay_bytes = doc_values_updates::write_numeric_updates(&[(0, 999)], &seg0_id, "");
+        let overlay = doc_values_updates::read_numeric_updates(&overlay_bytes, &seg0_id, "")
+            .expect("overlay round-trips");
+
+        // Sanity: the overlay-aware read genuinely sees the new value for
+        // doc 0 and correctly falls back to the base value for doc 1 --
+        // proving the overlay mechanism itself works in isolation.
+        assert_eq!(
+            doc_values_updates::numeric_value_with_updates(&dv0.entry, &dv0.data, &overlay, 0)
+                .unwrap(),
+            Some(999)
+        );
+        assert_eq!(
+            doc_values_updates::numeric_value_with_updates(&dv0.entry, &dv0.data, &overlay, 1)
+                .unwrap(),
+            Some(20)
+        );
+
+        // Now actually merge this single source through the real merge
+        // entry point. `SourceNumericDocValues` has no overlay field, so the
+        // only thing that can be handed to the merge is the base data/entry
+        // -- exactly what a hypothetical "apply overlay before merge" caller
+        // would need to have already flattened, and exactly what today's
+        // codebase has no code path that does.
+        let fields = vec![numeric_field("num", 0)];
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let stored0 = flush(
+            &dir,
+            &tmp,
+            "_0",
+            seg0_id,
+            &fields,
+            &[doc_with(0, "a"), doc_with(0, "b")],
+        );
+        let reader0 = open_reader(&stored0);
+        let dv0_source = [dv0.source()];
+        let source0 = MergeSource {
+            field_infos: &stored0.fields,
+            reader: &reader0,
+            live_docs: None,
+            numeric_doc_values: &dv0_source,
+            binary_doc_values: &[],
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &[],
+            norms: &[],
+            term_vectors: None,
+            postings: &[],
+            points: &[],
+        };
+
+        let sci = merge_stored_only_segments(
+            &dir,
+            &[source0],
+            "_merged_dv_overlay",
+            [9u8; ID_LENGTH],
+            "Lucene104",
+            version(),
+        )
+        .unwrap();
+        assert_eq!(sci.segment_name, "_merged_dv_overlay");
+
+        let dvd = std::fs::read(std::path::Path::new(&tmp).join("_merged_dv_overlay.dvd")).unwrap();
+        let dvm = std::fs::read(std::path::Path::new(&tmp).join("_merged_dv_overlay.dvm")).unwrap();
+        let merged_field_infos = field_infos::FieldInfos {
+            fields: vec![numeric_field("num", 0)],
+        };
+        let (_v, meta) =
+            doc_values::parse_meta(&dvm, &[9u8; ID_LENGTH], "", &merged_field_infos).unwrap();
+        let entry = meta.numeric_entry(0).unwrap();
+        let merged_values: Vec<i64> = (0..2)
+            .map(|d| doc_values::numeric_value(&dvd, entry, d).unwrap().unwrap())
+            .collect();
+
+        // The merged segment has the STALE base value (10) for doc 0, not
+        // the overlay-updated value (999) -- proving the update was silently
+        // lost across this merge, since nothing resolved it before the
+        // merge call.
+        assert_eq!(merged_values, vec![10, 20]);
+        assert_ne!(merged_values[0], 999);
+    }
+
     #[test]
     fn numeric_doc_values_missing_in_a_live_contributing_source_is_an_error() {
         let seg0_id = [1u8; ID_LENGTH];
