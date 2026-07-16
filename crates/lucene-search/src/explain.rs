@@ -184,6 +184,11 @@ pub fn explain_clause(
             Ok(explain_flat_match(matched))
         }
         Clause::MatchNoDocs(_) => Ok(Explanation::no_match("MatchNoDocsQuery never matches")),
+        Clause::TermInSet(query) => {
+            let matched =
+                crate::term_in_set_doc_ids(fields, doc_in, live_docs, query)?.contains(&doc);
+            Ok(explain_flat_match(matched))
+        }
     }
 }
 

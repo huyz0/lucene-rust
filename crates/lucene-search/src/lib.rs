@@ -216,7 +216,7 @@ pub use multi_segment::{
 pub use query::{
     BooleanQuery, BoostQuery, Clause, ConstantScoreQuery, DisjunctionMaxQuery, FuzzyQuery,
     MatchAllDocsQuery, MatchNoDocsQuery, PhraseQuery, PrefixQuery, RegexpQuery, SpanQuery,
-    TermQuery, WildcardQuery,
+    TermInSetQuery, TermQuery, WildcardQuery,
 };
 pub use query_cache::{search_term_query_cached, QueryCache};
 pub use term_vectors_query::{matched_term_offsets, term_vector_for_doc};
@@ -528,6 +528,44 @@ fn regexp_doc_ids(
     Ok(doc_ids)
 }
 
+/// [`Clause::TermInSet`]'s matched doc-ID list: each of `query.terms` is
+/// resolved via the same per-term postings lookup [`term_doc_ids`] uses for a
+/// plain [`crate::query::TermQuery`], and the results are **union**ed and
+/// deduplicated -- the same "match any of several terms in one field" shape
+/// [`wildcard_doc_ids`]/[`prefix_doc_ids`]/[`fuzzy_doc_ids`]/[`regexp_doc_ids`]
+/// already implement for a computed (pattern-matched) term set, here applied
+/// to an explicit, caller-supplied term list instead. A term absent from the
+/// segment (or an absent `query.field` entirely) contributes no doc IDs, not
+/// an error -- same "missing means no matches" convention every other clause
+/// follows. An empty `query.terms` returns an empty `Vec` (matches nothing)
+/// with no special-case branch needed, since the loop below simply doesn't run.
+fn term_in_set_doc_ids(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    query: &TermInSetQuery,
+) -> Result<Vec<i32>> {
+    let Some(field_terms) = fields.field(&query.field) else {
+        return Ok(Vec::new());
+    };
+    let mut doc_ids: Vec<i32> = Vec::new();
+    for term in &query.terms {
+        let Some(postings) = field_terms.postings(term, doc_in)? else {
+            continue;
+        };
+        doc_ids.extend(
+            postings
+                .docs
+                .iter()
+                .copied()
+                .filter(|&doc_id| live_docs.is_none_or(|bits| bits.get(doc_id as usize))),
+        );
+    }
+    doc_ids.sort_unstable();
+    doc_ids.dedup();
+    Ok(doc_ids)
+}
+
 /// Executes `query` (see [`query::BooleanQuery`] and this module's doc comment for
 /// the exact matching semantics) against one already-opened segment, feeding every
 /// matching **live** doc ID to `collector` in ascending order — same parameter
@@ -643,6 +681,7 @@ fn resolve_clause_docs(
         Clause::PointsRange(query) => Err(Error::UnexecutablePointsRange(query.field.clone())),
         Clause::MatchAllDocs(query) => Ok(match_all_doc_ids(live_docs, query.max_doc)),
         Clause::MatchNoDocs(_) => Ok(Vec::new()),
+        Clause::TermInSet(query) => term_in_set_doc_ids(fields, doc_in, live_docs, query),
     }
 }
 
@@ -1216,6 +1255,17 @@ fn clause_scores(
                 .collect())
         }
         Clause::MatchNoDocs(_) => Ok(HashMap::new()),
+        Clause::TermInSet(query) => {
+            // Unscored: flat 1.0 per matching doc -- see `TermInSetQuery`'s
+            // doc comment for why (verified against real `TermInSetQuery`'s
+            // own class doc comment: "produces scores that are equal to its
+            // boost", not a summed/max-of-matched-terms formula).
+            let matched = term_in_set_doc_ids(fields, doc_in, live_docs, query)?;
+            Ok(matched
+                .into_iter()
+                .map(|doc_id| (doc_id, 1.0_f32))
+                .collect())
+        }
     }
 }
 

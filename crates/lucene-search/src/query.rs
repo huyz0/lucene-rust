@@ -456,6 +456,69 @@ impl MatchNoDocsQuery {
     }
 }
 
+/// `TermInSetQuery`-equivalent (`org.apache.lucene.search.TermInSetQuery`): a
+/// field plus a set of exact `terms`, matching every doc containing **any**
+/// of them -- semantically a disjunction over same-field `TermQuery`s (real
+/// `TermInSetQuery`'s own class doc comment: "by default, behaves like a
+/// `ConstantScoreQuery` over a `BooleanQuery` containing only `SHOULD`
+/// clauses"), implemented more efficiently than building that full
+/// `BooleanQuery` scorer tree by seeking each term directly (see
+/// [`crate::resolve_clause_docs`]'s `Clause::TermInSet` arm, which unions
+/// each term's own postings the same way [`WildcardQuery`]/[`PrefixQuery`]
+/// already union their matched terms' postings).
+///
+/// **Scoring: unscored/constant, NOT max-of-matched-terms, NOT
+/// summed-like-a-`BooleanQuery`-OR.** Verified directly against real
+/// `TermInSetQuery.java`'s class doc comment, which states outright: "NOTE:
+/// This query produces scores that are equal to its boost" -- i.e. flat
+/// `1.0` per matching doc (no boost wrapper) regardless of which or how many
+/// of the given terms matched, exactly the same convention
+/// `WildcardQuery`/`PrefixQuery`/`FuzzyQuery`/`RegexpQuery` already use in
+/// this port (see [`crate::clause_scores`]'s `Clause::TermInSet` arm). This
+/// is a real semantic difference from a `BooleanQuery` of `SHOULD` clauses,
+/// which sums each matched clause's own idf-based score -- `TermInSetQuery`
+/// only matches "like" that shape, it does not score like it (real Lucene's
+/// default `CONSTANT_SCORE_BLENDED_REWRITE` rewrite is exactly this: a
+/// constant-scoring rewrite, not `SCORING_BOOLEAN_REWRITE`).
+///
+/// **Why `terms: Vec<Vec<u8>>` instead of a `PrefixCodedTerms`-style packed
+/// encoding**: real `TermInSetQuery` sorts, dedupes, and prefix-compresses
+/// its terms into a `PrefixCodedTerms` for compact storage and to enable its
+/// `SetEnum`'s ping-pong intersection against the terms dict. This port's
+/// existing multi-term clauses (`Wildcard`/`Prefix`/`Fuzzy`/`Regexp`) all
+/// resolve by intersecting the terms dict once per query and unioning
+/// postings, so there's no equivalent packed-storage need here; a plain
+/// `Vec<Vec<u8>>` matches [`TermQuery::term`]'s own raw-bytes convention and
+/// needs no packing/sorting step. Duplicate terms in `terms` are harmless --
+/// [`crate::resolve_clause_docs`]'s `Clause::TermInSet` arm already
+/// deduplicates the resulting doc-ID list (same as `WildcardQuery`'s
+/// multi-term union), matching real `TermInSetQuery.packTerms`'s own
+/// dedup step, just applied to doc IDs downstream rather than to `terms`
+/// upfront.
+///
+/// **Empty `terms`**: matches nothing (an empty union is empty), the same
+/// "no doc ever collected" outcome [`MatchNoDocsQuery`] documents, requiring
+/// no special-case branch since [`crate::resolve_clause_docs`]'s
+/// `Clause::TermInSet` arm's loop over zero terms already produces an empty
+/// `Vec` naturally.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TermInSetQuery {
+    pub field: String,
+    pub terms: Vec<Vec<u8>>,
+}
+
+impl TermInSetQuery {
+    pub fn new(
+        field: impl Into<String>,
+        terms: impl IntoIterator<Item = impl Into<Vec<u8>>>,
+    ) -> Self {
+        Self {
+            field: field.into(),
+            terms: terms.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
 /// One `must`/`should`/`must_not` slot in a [`BooleanQuery`] — a leaf
 /// `TermQuery`, a leaf `PhraseQuery` (task #29's addition, closing the gap this
 /// enum's doc comment previously flagged), or a nested `BooleanQuery`
@@ -547,6 +610,10 @@ pub enum Clause {
     /// A leaf `MatchNoDocsQuery` -- matches nothing, ever; see
     /// [`MatchNoDocsQuery`]'s doc comment.
     MatchNoDocs(MatchNoDocsQuery),
+    /// A leaf `TermInSetQuery` -- matches every doc containing at least one
+    /// of `query.terms` (for `query.field`), unscored (flat `1.0` per
+    /// match); see [`TermInSetQuery`]'s doc comment.
+    TermInSet(TermInSetQuery),
 }
 
 impl Clause {
@@ -554,8 +621,9 @@ impl Clause {
     /// simplifications wherever a `Clause::Boolean` occurs, and rewriting the
     /// contents of every other nesting variant (`DisjunctionMax`/
     /// `ConstantScore`/`Boost`) so their children are simplified too --
-    /// leaves (`Term`/`Phrase`/`Wildcard`/`Prefix`/`Fuzzy`/`Regexp`/`Span`)
-    /// pass through unchanged, since none of them nest a sub-`Clause`.
+    /// leaves (`Term`/`Phrase`/`Wildcard`/`Prefix`/`Fuzzy`/`Regexp`/`Span`/
+    /// `TermInSet`) pass through unchanged, since none of them nest a
+    /// sub-`Clause`.
     ///
     /// See [`BooleanQuery::rewrite`]'s doc comment for the exact rewrite
     /// rules this delegates to for `Clause::Boolean`; `DisjunctionMax`/
@@ -675,6 +743,12 @@ impl From<MatchAllDocsQuery> for Clause {
 impl From<MatchNoDocsQuery> for Clause {
     fn from(query: MatchNoDocsQuery) -> Self {
         Clause::MatchNoDocs(query)
+    }
+}
+
+impl From<TermInSetQuery> for Clause {
+    fn from(query: TermInSetQuery) -> Self {
+        Clause::TermInSet(query)
     }
 }
 
