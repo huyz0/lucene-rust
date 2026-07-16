@@ -97,26 +97,30 @@
 //! afterward.
 //!
 //! **Numeric range queries**: `field:[min TO max]` (task #64's addition) --
-//! an inclusive `i64` range, parsed into [`Clause::PointsRange`]. Either
-//! bound may be `*` for an open end (mapped to `i64::MIN`/`i64::MAX`,
-//! matching real Lucene's own unbounded-range convention), and either bound
-//! may be a negative decimal integer (e.g. `field:[-100 TO 0]`). The `TO`
-//! keyword is matched case-sensitively (real classic `QueryParser`'s grammar
-//! requires uppercase `TO` too). **Parsing only**: the resulting
+//! an `i64` range, parsed into [`Clause::PointsRange`]. Either bound may be
+//! `*` for an open end (mapped to `i64::MIN`/`i64::MAX`, matching real
+//! Lucene's own unbounded-range convention), and either bound may be a
+//! negative decimal integer (e.g. `field:[-100 TO 0]`). The `TO` keyword is
+//! matched case-sensitively (real classic `QueryParser`'s grammar requires
+//! uppercase `TO` too). **Parsing only**: the resulting
 //! [`crate::query::PointsRangeQuery`] is not yet resolved against a segment
 //! by anything in this crate -- see that struct's doc comment for the exact
 //! deferred scope.
 //!
+//! **Exclusive bounds** (`{`/`}`) are supported independently per side, same
+//! as real classic `QueryParser`: `[` / `]` mean inclusive, `{` / `}` mean
+//! exclusive, and the two may mix in one range (`field:[0 TO 100}`,
+//! `field:{0 TO 100]`, `field:{0 TO 100}`). Since [`crate::query::PointsRangeQuery`]
+//! only stores one inclusive `[min, max]` pair, an exclusive *literal* bound
+//! is converted to the equivalent inclusive one at parse time (stepped by
+//! one toward the other bound, saturating at `i64::MIN`/`i64::MAX`) --
+//! mirroring real Lucene's own `QueryParserBase.getRangeQuery`, which does
+//! the same adjustment before constructing its inclusive-only
+//! `PointRangeQuery`. An exclusive `*` (open) bound is left unstepped, since
+//! `*` means "no bound" rather than a literal value.
+//!
 //! ## Deliberately deferred (parse error, not silent misinterpretation)
 //!
-//! - **Exclusive-bound range queries** (`field:{a TO b}`) -- rejected with
-//!   [`ParseError::UnsupportedSyntax`] at the `{` character. A mixed
-//!   `field:[a TO b}` opens as an inclusive range (the `[`) but then fails
-//!   the closing-bracket check with [`ParseError::InvalidRangeBound`] at the
-//!   `}` -- still a clean, typed error, just a different variant than the
-//!   pure `{...}` case, since the parser has already committed to the
-//!   inclusive-range code path by the time it sees the mismatched closer.
-//!   Only the fully-inclusive `[a TO b]` shape is actually supported.
 //! - **String/date range queries** (`field:[aaa TO zzz]` over a
 //!   non-numeric/`TermRangeQuery`-shaped field) -- a `[min TO max]` whose
 //!   bounds don't parse as a plain (optionally negative) decimal integer or
@@ -176,13 +180,13 @@ pub enum ParseError {
     #[error("invalid boost at byte {0}: {1}")]
     InvalidBoost(usize, String),
     /// Syntax this module explicitly does not support (see the module doc's
-    /// "deliberately deferred" list) -- e.g. exclusive (`{`) or mixed range
-    /// syntax.
+    /// "deliberately deferred" list).
     #[error("unsupported syntax at byte {0}: {1}")]
     UnsupportedSyntax(usize, String),
-    /// A `field:[min TO max]` range bound wasn't `*` and didn't parse as a
-    /// plain (optionally negative) decimal `i64`, or the `TO` keyword was
-    /// missing/misspelled, or the range wasn't closed by a matching `]`.
+    /// A `field:[min TO max]`/`field:{min TO max}` range bound wasn't `*` and
+    /// didn't parse as a plain (optionally negative) decimal `i64`, or the
+    /// `TO` keyword was missing/misspelled, or the range wasn't closed by a
+    /// matching `]`/`}`.
     #[error("invalid range at byte {0}: {1}")]
     InvalidRangeBound(usize, String),
     /// A character appeared where no valid token could start (e.g. a bare
@@ -432,10 +436,14 @@ impl<'a> Parser<'a> {
                     .ok_or(ParseError::MissingField(start))?;
                 self.parse_range(&field)
             }
-            Some('{') => Err(ParseError::UnsupportedSyntax(
-                self.pos,
-                "exclusive range queries ({a TO b}) are not supported".to_string(),
-            )),
+            Some('{') => {
+                let start = self.pos;
+                let field = self
+                    .default_field
+                    .map(str::to_string)
+                    .ok_or(ParseError::MissingField(start))?;
+                self.parse_range(&field)
+            }
             Some(')') => Err(ParseError::UnexpectedChar(self.pos, ')')),
             _ => self.parse_term(),
         }
@@ -473,47 +481,81 @@ impl<'a> Parser<'a> {
         match self.peek() {
             Some('"') => self.parse_phrase(&field),
             Some('/') => self.parse_regexp(&field),
-            Some('[') => self.parse_range(&field),
-            Some('{') => Err(ParseError::UnsupportedSyntax(
-                self.pos,
-                "exclusive range queries ({a TO b}) are not supported".to_string(),
-            )),
+            Some('[') | Some('{') => self.parse_range(&field),
             None => Err(ParseError::UnexpectedEnd("a term after ':'")),
             _ => self.parse_wordterm(&field),
         }
     }
 
-    /// `'[' bound 'TO' bound ']'` -- an inclusive numeric range, called with
-    /// `self.pos` at the opening `[`. `bound` is `*` (open end) or an
-    /// optionally-negative decimal `i64`; see the module doc comment for the
-    /// exact supported/deferred syntax.
+    /// `('[' | '{') bound 'TO' bound (']' | '}')` -- a numeric range, called
+    /// with `self.pos` at the opening delimiter. `bound` is `*` (open end) or
+    /// an optionally-negative decimal `i64`; see the module doc comment for
+    /// the exact supported/deferred syntax.
+    ///
+    /// Each side's delimiter is inclusive/exclusive independently, matching
+    /// real classic `QueryParser`: `[` / `]` mean inclusive, `{` / `}` mean
+    /// exclusive, and the two sides may mix (e.g. `{a TO b]`). Since
+    /// [`PointsRangeQuery`] only stores an inclusive `[min, max]` `i64` pair
+    /// (there is no separate min/max-inclusive flag -- see that struct's doc
+    /// comment), an exclusive *literal* bound is turned into the equivalent
+    /// inclusive one here by stepping it one closer to the other bound
+    /// (`min + 1` / `max - 1`, saturating so an exclusive bound already at
+    /// `i64::MAX`/`i64::MIN` doesn't overflow). This mirrors real Lucene's own
+    /// `QueryParserBase.getRangeQuery`, which does the identical adjustment
+    /// before constructing the (inclusive-only) `PointRangeQuery`. An
+    /// exclusive `*` (open) bound is left untouched -- `*` denotes "no bound
+    /// at all" rather than a literal value to step away from, so
+    /// `{* TO 100]`'s low end is still fully unbounded, same as `[* TO 100]`.
     fn parse_range(&mut self, field: &str) -> Result<Clause, ParseError> {
         let open_pos = self.pos;
-        self.advance(); // consume '['
+        let min_inclusive = self.peek() == Some('[');
+        self.advance(); // consume '[' or '{'
         self.skip_ws();
-        let min = self.parse_range_bound(i64::MIN, open_pos)?;
+        let (min, min_is_open) = self.parse_range_bound(i64::MIN, open_pos)?;
         self.skip_ws();
         self.expect_keyword("TO", open_pos)?;
         self.skip_ws();
-        let max = self.parse_range_bound(i64::MAX, open_pos)?;
+        let (max, max_is_open) = self.parse_range_bound(i64::MAX, open_pos)?;
         self.skip_ws();
-        if self.peek() != Some(']') {
-            return Err(ParseError::InvalidRangeBound(
-                open_pos,
-                "expected closing ']'".to_string(),
-            ));
-        }
-        self.advance(); // consume ']'
+        let max_inclusive = match self.peek() {
+            Some(']') => true,
+            Some('}') => false,
+            _ => {
+                return Err(ParseError::InvalidRangeBound(
+                    open_pos,
+                    "expected closing ']' or '}'".to_string(),
+                ));
+            }
+        };
+        self.advance(); // consume ']' or '}'
+
+        let min = if !min_inclusive && !min_is_open {
+            min.saturating_add(1)
+        } else {
+            min
+        };
+        let max = if !max_inclusive && !max_is_open {
+            max.saturating_sub(1)
+        } else {
+            max
+        };
         Ok(Clause::PointsRange(PointsRangeQuery::new(field, min, max)))
     }
 
-    /// One `[`/`{`-range bound: `*` (mapped to `open_value`) or a plain,
-    /// optionally-negative, decimal `i64`.
-    fn parse_range_bound(&mut self, open_value: i64, open_pos: usize) -> Result<i64, ParseError> {
+    /// One `[`/`{`-range bound: `*` (mapped to `open_value`, second element
+    /// `true`) or a plain, optionally-negative, decimal `i64` (second element
+    /// `false`) -- the second element tells [`Self::parse_range`] whether the
+    /// bound was a literal value (eligible for the exclusive +-1/-1 step) or
+    /// an open `*` (never stepped).
+    fn parse_range_bound(
+        &mut self,
+        open_value: i64,
+        open_pos: usize,
+    ) -> Result<(i64, bool), ParseError> {
         let bound_start = self.pos;
         if self.peek() == Some('*') {
             self.advance();
-            return Ok(open_value);
+            return Ok((open_value, true));
         }
         if self.peek() == Some('-') {
             self.advance();
@@ -530,9 +572,10 @@ impl<'a> Parser<'a> {
             ));
         }
         let text: String = self.chars[bound_start..self.pos].iter().collect();
-        text.parse::<i64>().map_err(|_| {
+        let value = text.parse::<i64>().map_err(|_| {
             ParseError::InvalidRangeBound(open_pos, format!("invalid integer {text:?}"))
-        })
+        })?;
+        Ok((value, false))
     }
 
     /// Consumes exactly the literal `keyword` (case-sensitive), preceded and
@@ -1020,18 +1063,91 @@ mod tests {
     }
 
     #[test]
-    fn exclusive_range_query_syntax_is_unsupported() {
-        let err = parse_query("body:{0 TO 100}", None).unwrap_err();
-        assert!(matches!(err, ParseError::UnsupportedSyntax(_, _)));
+    fn inclusive_inclusive_range_query() {
+        let clause = parse_query("body:[0 TO 100]", None).unwrap();
+        assert_eq!(
+            clause,
+            Clause::PointsRange(crate::query::PointsRangeQuery::new("body", 0, 100))
+        );
     }
 
     #[test]
-    fn bare_exclusive_range_query_syntax_is_unsupported() {
+    fn exclusive_exclusive_range_query() {
+        // `{0 TO 100}` excludes both 0 and 100, i.e. equivalent to `[1 TO 99]`.
+        let clause = parse_query("body:{0 TO 100}", None).unwrap();
+        assert_eq!(
+            clause,
+            Clause::PointsRange(crate::query::PointsRangeQuery::new("body", 1, 99))
+        );
+    }
+
+    #[test]
+    fn inclusive_exclusive_range_query() {
+        // `[0 TO 100}` includes 0, excludes 100.
+        let clause = parse_query("body:[0 TO 100}", None).unwrap();
+        assert_eq!(
+            clause,
+            Clause::PointsRange(crate::query::PointsRangeQuery::new("body", 0, 99))
+        );
+    }
+
+    #[test]
+    fn exclusive_inclusive_range_query() {
+        // `{0 TO 100]` excludes 0, includes 100.
+        let clause = parse_query("body:{0 TO 100]", None).unwrap();
+        assert_eq!(
+            clause,
+            Clause::PointsRange(crate::query::PointsRangeQuery::new("body", 1, 100))
+        );
+    }
+
+    #[test]
+    fn bare_exclusive_range_query_is_supported() {
         // The bare-atom `{` arm (no `field:` prefix) is a separate code path
         // from `parse_term`'s -- exercise it directly, not just the
-        // field-prefixed sibling above.
-        let err = parse_query("{0 TO 100}", Some("body")).unwrap_err();
-        assert!(matches!(err, ParseError::UnsupportedSyntax(_, _)));
+        // field-prefixed siblings above.
+        let clause = parse_query("{0 TO 100}", Some("body")).unwrap();
+        assert_eq!(
+            clause,
+            Clause::PointsRange(crate::query::PointsRangeQuery::new("body", 1, 99))
+        );
+    }
+
+    #[test]
+    fn exclusive_range_with_open_bound_is_not_stepped() {
+        // `*` denotes "no bound", so the exclusive side doesn't get stepped
+        // even though it's written with `{`/`}`.
+        let clause = parse_query("body:{* TO 100}", None).unwrap();
+        assert_eq!(
+            clause,
+            Clause::PointsRange(crate::query::PointsRangeQuery::new("body", i64::MIN, 99))
+        );
+        let clause = parse_query("body:{0 TO *}", None).unwrap();
+        assert_eq!(
+            clause,
+            Clause::PointsRange(crate::query::PointsRangeQuery::new("body", 1, i64::MAX))
+        );
+    }
+
+    #[test]
+    fn exclusive_range_bound_at_extreme_does_not_overflow() {
+        // An exclusive literal bound already at i64::MAX/i64::MIN saturates
+        // instead of overflowing when stepped.
+        let clause = parse_query(&format!("body:{{{} TO {}}}", i64::MIN, i64::MAX), None).unwrap();
+        assert_eq!(
+            clause,
+            Clause::PointsRange(crate::query::PointsRangeQuery::new(
+                "body",
+                i64::MIN + 1,
+                i64::MAX - 1
+            ))
+        );
+    }
+
+    #[test]
+    fn mismatched_range_delimiter_is_a_clean_error() {
+        let err = parse_query("body:[0 TO 100)", None).unwrap_err();
+        assert!(matches!(err, ParseError::InvalidRangeBound(_, _)));
     }
 
     #[test]
@@ -1379,5 +1495,76 @@ mod tests {
                 minimum_should_match: 0,
             }))
         );
+    }
+
+    /// Execution-level proof, not just a parsed-`Clause` shape check: an
+    /// exclusive bound produced by [`parse_query`] actually excludes the
+    /// boundary value when the resulting [`PointsRangeQuery`]'s `min`/`max`
+    /// are fed through the real BKD points search path
+    /// ([`crate::points_query::search_points_range`]). `Clause::PointsRange`
+    /// itself has no resolver yet (see that variant's doc comment), so this
+    /// drives `search_points_range` directly with the parser's output --
+    /// the same thing a future resolver would do -- rather than going
+    /// through `resolve_clause_docs`.
+    #[test]
+    fn exclusive_bound_excludes_boundary_value_end_to_end() {
+        use crate::collector::VecCollector;
+        use crate::points_query::search_points_range;
+        use lucene_codecs::points::{self, WritePointsField};
+        use lucene_store::codec_util::ID_LENGTH;
+
+        fn long_bytes(v: i64) -> [u8; 8] {
+            ((v as u64) ^ 0x8000_0000_0000_0000).to_be_bytes()
+        }
+
+        // Doc 0 -> 10, doc 1 -> 20, doc 2 -> 30, doc 3 -> 40, doc 4 -> 50.
+        let segment_id = [7u8; ID_LENGTH];
+        let points: Vec<(i32, Vec<u8>)> = vec![
+            (0, long_bytes(10).to_vec()),
+            (1, long_bytes(20).to_vec()),
+            (2, long_bytes(30).to_vec()),
+            (3, long_bytes(40).to_vec()),
+            (4, long_bytes(50).to_vec()),
+        ];
+        let field = WritePointsField {
+            field_number: 1,
+            num_dims: 1,
+            num_index_dims: 1,
+            bytes_per_dim: 8,
+            points,
+        };
+        let (kdm, kdi, kdd) = points::write(&[field], 512, &segment_id, "").unwrap();
+        let reader = points::open(&kdm, &kdi, &kdd, &segment_id, "").unwrap();
+
+        // `{10 TO 40}` must exclude both boundary docs (values 10 and 40)
+        // and match only the strictly-between ones (20, 30).
+        let clause = parse_query("body:{10 TO 40}", None).unwrap();
+        let Clause::PointsRange(range) = clause else {
+            panic!("expected PointsRange, got {clause:?}");
+        };
+        assert_eq!(range.min, 11);
+        assert_eq!(range.max, 39);
+        let min = long_bytes(range.min);
+        let max = long_bytes(range.max);
+        let mut collector = VecCollector::default();
+        search_points_range(&reader, None, 1, &min, &max, &mut collector).unwrap();
+        assert_eq!(
+            collector.docs,
+            vec![1, 2],
+            "must match only values 20 and 30, excluding boundary values 10 and 40"
+        );
+
+        // Sanity check: the equivalent inclusive `[10 TO 40]` does include
+        // both boundary docs, proving the exclusion above is really coming
+        // from `{`/`}`, not from some unrelated bug.
+        let clause = parse_query("body:[10 TO 40]", None).unwrap();
+        let Clause::PointsRange(range) = clause else {
+            panic!("expected PointsRange, got {clause:?}");
+        };
+        let min = long_bytes(range.min);
+        let max = long_bytes(range.max);
+        let mut collector = VecCollector::default();
+        search_points_range(&reader, None, 1, &min, &max, &mut collector).unwrap();
+        assert_eq!(collector.docs, vec![0, 1, 2, 3]);
     }
 }
