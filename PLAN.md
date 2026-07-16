@@ -5558,3 +5558,76 @@ constant, `english_stop_words()` function, four new tests), `docs/parity.md`,
 `PLAN.md`. `cargo test -p lucene-analysis` (58 lib tests, up from 54, all
 passing), `cargo clippy --workspace --all-targets -- -D warnings`, and
 `cargo fmt --all` all pass clean.
+
+**Progress (task: synonym expansion multi-word phrase support).** Extended
+`crates/lucene-analysis/src/lib.rs::SynonymFilter` with a third, purely
+additive entry point, `SynonymFilter::apply_multiword(tokens, rules: &[SynonymRule])`,
+covering multi-word synonym phrases on either or both sides of a mapping --
+e.g. `"wi" "fi" -> "wifi"` (multi-word input collapsing to a single output
+token) and `"usa" -> "united" "states" "of" "america"` (single-word input
+expanding to a multi-word output phrase), including multi-word-to-multi-word.
+`SynonymFilter::apply`/`apply_bidirectional` and their `HashMap<String,
+Vec<String>>` config are completely untouched -- this is a new entry point,
+not a change to the existing single-word one, confirmed by a regression test
+(`synonym_filter_apply_and_apply_bidirectional_unaffected_by_multiword_addition`).
+
+**Data structure**: a new `SynonymRule { input: Vec<String>, outputs:
+Vec<Vec<String>> }` replaces the single-word `HashMap` shape for this entry
+point only, since a phrase-keyed lookup can't be a simple string-keyed map.
+
+**Matching (the lookahead this needs over the single-token loop)**: at each
+input position, every rule whose first input word equals that position's
+term is a candidate, tried longest-input-first (greedy longest match, real
+Lucene's `SynonymMap` convention), and a rule only fires when every one of
+its input words matches the corresponding contiguous following token --
+`"wi"` not immediately followed by `"fi"` (whether followed by something
+else or by nothing at all, i.e. end of stream) never fires. This required
+buffering/indexing directly into the input `Vec<Token>` rather than the
+single-token `for t in tokens` loop `apply` uses.
+
+**Position tracking**: added a new `position_length: i32` field to `Token`
+(default `1` everywhere else in the crate -- every existing `tokenize`/filter
+call site updated to set it explicitly), mirroring real Lucene's
+`PositionLengthAttribute`. A matched multi-word-input/single-output rule
+emits one token at `position_increment == 0` and `position_length` equal to
+the number of input tokens it replaces (e.g. `2` for `"wi fi" -> "wifi"`). A
+multi-word output phrase emits one chained token per output word: the first
+at `position_increment == 0`, each subsequent one at `1`, and every one of
+them at `position_length == 1` (each occupies exactly one position on its
+own output path).
+
+**Scope, stated explicitly**: this produces real `SynonymGraphFilter`'s
+token-stream *shape* -- the same `PositionLengthAttribute`/
+`PositionIncrementAttribute` markers on ordinary `Token`s -- proven via
+direct token-stream inspection (unit tests asserting exact token sequences),
+not its full graph `TokenStream`/lattice-traversal API. There is no
+graph-aware traversal type; output is still one flat `Vec<Token>`, and a
+multi-word *output* phrase does not extend the overall position count the
+way a true lattice would (tokens after the match keep the position they'd
+have had relative to the original single input position, not the expanded
+output's length). Consuming this correctly from a real `PhraseQuery`/
+`SpanQuery` lattice traversal is deferred -- `PhraseQuery`'s existing
+position-increment-based matching (task history) was written against a
+linear, non-branching token stream and was not extended in this task to
+understand `position_length > 1` spans or alternative paths. Not wired into
+`Analyzer` (no `with_multiword_synonyms` builder method) for the same
+reason: the flat-consumer approximation isn't yet proven against a real
+downstream query consumer, and adding an `Analyzer` entry point would imply
+more integration than is actually backed.
+
+New tests (8 new, all in `lucene-analysis/src/lib.rs::tests`):
+`synonym_filter_multiword_input_collapses_to_single_output_token`,
+`synonym_filter_single_word_input_expands_to_multiword_output`,
+`synonym_filter_multiword_to_multiword`,
+`synonym_filter_multiword_partial_prefix_does_not_match` (both mid-stream and
+end-of-stream non-match cases), `synonym_filter_multiword_no_rules_passes_through_unchanged`,
+`synonym_filter_multiword_prefers_longest_match`,
+`synonym_filter_multiword_multiple_output_alternatives`, and
+`synonym_filter_apply_and_apply_bidirectional_unaffected_by_multiword_addition`
+(regression proving the earlier bidirectional task's tests still hold).
+
+Files touched: `crates/lucene-analysis/src/lib.rs` (new `position_length`
+field on `Token`, new `SynonymRule` struct, new `SynonymFilter::apply_multiword`,
+8 new tests, `tok_len` test helper), `docs/parity.md`, `PLAN.md`. `cargo test
+-p lucene-analysis`: 66 lib tests pass (up from 58). `cargo fmt
+--all` and `cargo clippy --workspace --all-targets -- -D warnings` clean.

@@ -39,12 +39,25 @@ use std::collections::HashSet;
 /// `position_increment` is the gap from the *previous surviving* token's
 /// position (1 for immediately-adjacent tokens; see [`StopFilter`] for how
 /// removed tokens affect this).
+///
+/// `position_length` mirrors real Lucene's `PositionLengthAttribute`: the
+/// number of positions this token spans, starting at its own position. Every
+/// token produced by [`tokenize`] and every filter in this crate except
+/// [`SynonymFilter::apply_multiword`] leaves it at `1` (a token that only
+/// occupies its own position -- the overwhelming common case, including
+/// real Lucene's own default). [`SynonymFilter::apply_multiword`] is the only
+/// producer of `position_length > 1`: a multi-word input phrase collapsed to
+/// a single output token (e.g. `"wi fi"` -> `"wifi"`) gets a `position_length`
+/// equal to the number of input tokens it replaces, so a consumer that reads
+/// this attribute (unlike this crate's own [`Analyzer`], which does not) can
+/// tell the synonym token spans multiple original positions rather than one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Token {
     pub term: String,
     pub start_offset: i32,
     pub end_offset: i32,
     pub position_increment: i32,
+    pub position_length: i32,
 }
 
 /// True for characters this tokenizer treats as *internal word connectors*:
@@ -130,6 +143,7 @@ pub fn tokenize(text: &str) -> Vec<Token> {
             start_offset: start as i32,
             end_offset: end_offset as i32,
             position_increment: 1,
+            position_length: 1,
         });
         i = last_included + 1;
     }
@@ -444,6 +458,7 @@ impl SynonymFilter {
                         start_offset,
                         end_offset,
                         position_increment: 0,
+                        position_length: 1,
                     });
                 }
             }
@@ -482,6 +497,162 @@ impl SynonymFilter {
         let merged = build_bidirectional_map(synonyms);
         Self::apply(tokens, &merged)
     }
+
+    /// Multi-word extension of [`SynonymFilter::apply`]/[`apply_bidirectional`]:
+    /// matches a **sequence** of one or more input tokens against each
+    /// [`SynonymRule::input`] phrase (not just a single token), so rules like
+    /// `"wi" "fi" -> "wifi"` (multi-word input collapsing to one output word)
+    /// or `"usa" -> "united" "states" "of" "america"` (one input word
+    /// expanding to a multi-word output phrase) are both supported, as is
+    /// multi-word-to-multi-word.
+    ///
+    /// **Matching (the lookahead/buffering this needs over
+    /// [`SynonymFilter::apply`]'s per-token loop)**: because `rules` is a
+    /// slice (not a single-token-keyed map), matching a phrase requires
+    /// looking ahead across multiple *input* tokens before deciding whether a
+    /// rule fires. At each input position, this scans every rule whose first
+    /// input word equals the current token's term, tries the longest
+    /// candidate first (**greedy longest match**, mirroring real Lucene's
+    /// `SynonymMap`/`SynonymGraphFilter` preference for the longest matching
+    /// input phrase), and requires every subsequent word in that rule's
+    /// `input` to equal the term of the correspondingly-offset *following*
+    /// token -- not just the current one. A partial prefix match (e.g. input
+    /// `"wi"` immediately followed by any word other than `"fi"`, or `"wi"`
+    /// as the very last token with no `"fi"` following at all) never fires:
+    /// the rule is only applied when the *entire* input phrase is present
+    /// contiguously (`position_increment == 1` between the matched tokens,
+    /// same adjacency notion [`tokenize`] itself produces).
+    ///
+    /// **Emission**: on a match spanning `len` input tokens, this passes
+    /// the `len` matched original tokens through unchanged (same convention
+    /// as [`SynonymFilter::apply`]: the original is never dropped), then
+    /// appends one alternative path per `rule.outputs` entry:
+    /// - A single-word output (`output.len() == 1`) becomes one token with
+    ///   `position_increment == 0` (an alternative reading at the same
+    ///   starting position as the match) and `position_length == len` --
+    ///   the real Lucene `PositionLengthAttribute` convention for a token
+    ///   that spans multiple original positions (e.g. `"wifi"` replacing
+    ///   `"wi" "fi"` gets `position_length == 2`).
+    /// - A multi-word output (`output.len() > 1`) becomes `output.len()`
+    ///   chained tokens: the first at `position_increment == 0` (same
+    ///   starting position as the match), each subsequent one at
+    ///   `position_increment == 1` (advancing one position per output word,
+    ///   same as any ordinary adjacent-token sequence), and every one of them
+    ///   at `position_length == 1` (each occupies exactly one position in its
+    ///   own output path).
+    ///
+    /// All emitted tokens (matched-through originals and every rule output
+    /// token) get the exact same `start_offset`/`end_offset`: the first
+    /// matched input token's `start_offset` and the last matched input
+    /// token's `end_offset` -- the span of source text the whole match
+    /// covers, same convention as [`SynonymFilter::apply`] applied to a
+    /// (potentially multi-token) span instead of a single token.
+    ///
+    /// **Scope carve-out, stated explicitly (see also this type's own
+    /// doc)**: this produces a genuinely graph-*shaped* token stream --
+    /// distinct output paths recorded via `position_increment`/
+    /// `position_length` on [`Token`], the same attributes real Lucene's
+    /// `SynonymGraphFilter` uses -- but it is **not** a full graph
+    /// `TokenStream`: output is still a single flat `Vec<Token>` in one
+    /// linear order (no `PositionLengthAttribute`-aware graph traversal
+    /// API), and a multi-word *output* phrase (the `"usa" -> united states
+    /// of america"` direction) does not extend the overall position count
+    /// the way a true lattice would -- tokens immediately after the matched
+    /// span keep the position they'd have had relative to the *original*
+    /// single input position, not the expanded output phrase's length. This
+    /// means downstream consumers that only read a flat token sequence (this
+    /// crate's own [`Analyzer`], most simple positional indexes) see a
+    /// reasonable in-order token sequence with correct `position_length`
+    /// markers, but full alignment for arbitrary phrase/span queries
+    /// spanning *past* a multi-word output on a lattice would require a real
+    /// graph-consuming `PhraseQuery`/`SpanQuery`, which is out of scope here
+    /// (see `docs/parity.md` for the precise deferred-vs-covered split).
+    ///
+    /// Rules are matched independently per starting position; overlapping
+    /// rules are not combined (only the single longest match at each
+    /// position is applied), and a rule's `input` must be non-empty (an
+    /// empty-`input` rule is simply never matched, since no starting term can
+    /// equal a nonexistent first word).
+    pub fn apply_multiword(tokens: Vec<Token>, rules: &[SynonymRule]) -> Vec<Token> {
+        let mut by_first_word: HashMap<&str, Vec<&SynonymRule>> = HashMap::new();
+        for rule in rules {
+            if let Some(first) = rule.input.first() {
+                by_first_word.entry(first.as_str()).or_default().push(rule);
+            }
+        }
+        for candidates in by_first_word.values_mut() {
+            candidates.sort_by_key(|r| std::cmp::Reverse(r.input.len()));
+        }
+
+        let mut out = Vec::with_capacity(tokens.len());
+        let mut i = 0;
+        while i < tokens.len() {
+            let matched = by_first_word
+                .get(tokens[i].term.as_str())
+                .and_then(|candidates| {
+                    candidates.iter().copied().find(|rule| {
+                        let len = rule.input.len();
+                        len > 0
+                            && i + len <= tokens.len()
+                            && rule
+                                .input
+                                .iter()
+                                .enumerate()
+                                .all(|(k, word)| tokens[i + k].term == *word)
+                    })
+                });
+
+            match matched {
+                Some(rule) => {
+                    let len = rule.input.len();
+                    let start_offset = tokens[i].start_offset;
+                    let end_offset = tokens[i + len - 1].end_offset;
+                    for t in &tokens[i..i + len] {
+                        out.push(t.clone());
+                    }
+                    for output in &rule.outputs {
+                        let span_len = if output.len() == 1 { len as i32 } else { 1 };
+                        for (idx, term) in output.iter().enumerate() {
+                            out.push(Token {
+                                term: term.clone(),
+                                start_offset,
+                                end_offset,
+                                position_increment: if idx == 0 { 0 } else { 1 },
+                                position_length: span_len,
+                            });
+                        }
+                    }
+                    i += len;
+                }
+                None => {
+                    out.push(tokens[i].clone());
+                    i += 1;
+                }
+            }
+        }
+        out
+    }
+}
+
+/// A single multi-word synonym rule for [`SynonymFilter::apply_multiword`]:
+/// maps a contiguous sequence of one or more input terms (`input`) to one or
+/// more alternative output phrases (`outputs`), each itself a sequence of one
+/// or more terms. Matching is exact-term, case-sensitive (same as the
+/// single-word `HashMap<String, Vec<String>>` rules used by
+/// [`SynonymFilter::apply`]) -- callers wanting case-insensitive matching
+/// should lowercase both `input`/`outputs` and run this after
+/// [`LowerCaseFilter`], same convention as the single-word filter.
+///
+/// Examples: `SynonymRule { input: vec!["wi".into(), "fi".into()], outputs:
+/// vec![vec!["wifi".into()]] }` (multi-word input, single-word output) and
+/// `SynonymRule { input: vec!["usa".into()], outputs: vec![vec!["united".into(),
+/// "states".into(), "of".into(), "america".into()]] }` (single-word input,
+/// multi-word output) are both valid, as is a rule with multi-word `input`
+/// *and* a multi-word entry in `outputs`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SynonymRule {
+    pub input: Vec<String>,
+    pub outputs: Vec<Vec<String>>,
 }
 
 /// Builds a combined forward+reverse synonym map from `synonyms`: every
@@ -916,6 +1087,17 @@ mod tests {
             start_offset: start,
             end_offset: end,
             position_increment: pos_inc,
+            position_length: 1,
+        }
+    }
+
+    fn tok_len(term: &str, start: i32, end: i32, pos_inc: i32, pos_len: i32) -> Token {
+        Token {
+            term: term.to_string(),
+            start_offset: start,
+            end_offset: end,
+            position_increment: pos_inc,
+            position_length: pos_len,
         }
     }
 
@@ -1920,6 +2102,176 @@ mod tests {
         assert_eq!(
             out_reverse,
             vec![tok("sprint", 0, 6, 1), tok("run", 0, 6, 0),]
+        );
+    }
+
+    #[test]
+    fn synonym_filter_multiword_input_collapses_to_single_output_token() {
+        // "wi fi" -> "wifi": a 2-token input phrase becomes 1 output token
+        // with position_length == 2, marking it spans both original
+        // positions. Offsets cover the whole matched span.
+        let tokens = vec![tok("wi", 0, 2, 1), tok("fi", 3, 5, 1)];
+        let rules = vec![SynonymRule {
+            input: vec!["wi".to_string(), "fi".to_string()],
+            outputs: vec![vec!["wifi".to_string()]],
+        }];
+        let out = SynonymFilter::apply_multiword(tokens, &rules);
+        assert_eq!(
+            out,
+            vec![
+                tok("wi", 0, 2, 1),
+                tok("fi", 3, 5, 1),
+                tok_len("wifi", 0, 5, 0, 2),
+            ]
+        );
+    }
+
+    #[test]
+    fn synonym_filter_single_word_input_expands_to_multiword_output() {
+        // "usa" -> "united states of america": 1 input token becomes 4
+        // chained output tokens, first at position_increment 0 (same slot as
+        // "usa"), the rest at position_increment 1 each, all position_length
+        // 1 (each occupies exactly one position on the output path).
+        let tokens = vec![tok("usa", 0, 3, 1)];
+        let rules = vec![SynonymRule {
+            input: vec!["usa".to_string()],
+            outputs: vec![vec![
+                "united".to_string(),
+                "states".to_string(),
+                "of".to_string(),
+                "america".to_string(),
+            ]],
+        }];
+        let out = SynonymFilter::apply_multiword(tokens, &rules);
+        assert_eq!(
+            out,
+            vec![
+                tok("usa", 0, 3, 1),
+                tok_len("united", 0, 3, 0, 1),
+                tok_len("states", 0, 3, 1, 1),
+                tok_len("of", 0, 3, 1, 1),
+                tok_len("america", 0, 3, 1, 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn synonym_filter_multiword_to_multiword() {
+        // "new york" -> "big apple": a 2-token input phrase to a 2-token
+        // output phrase. The output's first token gets position_length 1
+        // (not the input's length of 2), since output.len() > 1.
+        let tokens = vec![tok("new", 0, 3, 1), tok("york", 4, 8, 1)];
+        let rules = vec![SynonymRule {
+            input: vec!["new".to_string(), "york".to_string()],
+            outputs: vec![vec!["big".to_string(), "apple".to_string()]],
+        }];
+        let out = SynonymFilter::apply_multiword(tokens, &rules);
+        assert_eq!(
+            out,
+            vec![
+                tok("new", 0, 3, 1),
+                tok("york", 4, 8, 1),
+                tok_len("big", 0, 8, 0, 1),
+                tok_len("apple", 0, 8, 1, 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn synonym_filter_multiword_partial_prefix_does_not_match() {
+        // "wi" alone (not followed by "fi") must NOT trigger the "wi fi"
+        // rule -- neither mid-stream (followed by something else) nor as the
+        // very last token (nothing following at all).
+        let rules = vec![SynonymRule {
+            input: vec!["wi".to_string(), "fi".to_string()],
+            outputs: vec![vec!["wifi".to_string()]],
+        }];
+
+        let followed_by_other = vec![tok("wi", 0, 2, 1), tok("max", 3, 6, 1)];
+        let out = SynonymFilter::apply_multiword(followed_by_other.clone(), &rules);
+        assert_eq!(out, followed_by_other);
+
+        let last_token = vec![tok("wi", 0, 2, 1)];
+        let out = SynonymFilter::apply_multiword(last_token.clone(), &rules);
+        assert_eq!(out, last_token);
+    }
+
+    #[test]
+    fn synonym_filter_multiword_no_rules_passes_through_unchanged() {
+        let tokens = vec![tok("hello", 0, 5, 1), tok("world", 6, 11, 1)];
+        let out = SynonymFilter::apply_multiword(tokens.clone(), &[]);
+        assert_eq!(out, tokens);
+    }
+
+    #[test]
+    fn synonym_filter_multiword_prefers_longest_match() {
+        // Both "new" -> "novel" and "new york" -> "nyc" configured; the
+        // longer "new york" phrase should win over the shorter "new" rule
+        // when both could match at the same starting position.
+        let tokens = vec![tok("new", 0, 3, 1), tok("york", 4, 8, 1)];
+        let rules = vec![
+            SynonymRule {
+                input: vec!["new".to_string()],
+                outputs: vec![vec!["novel".to_string()]],
+            },
+            SynonymRule {
+                input: vec!["new".to_string(), "york".to_string()],
+                outputs: vec![vec!["nyc".to_string()]],
+            },
+        ];
+        let out = SynonymFilter::apply_multiword(tokens, &rules);
+        assert_eq!(
+            out,
+            vec![
+                tok("new", 0, 3, 1),
+                tok("york", 4, 8, 1),
+                tok_len("nyc", 0, 8, 0, 2),
+            ]
+        );
+    }
+
+    #[test]
+    fn synonym_filter_multiword_multiple_output_alternatives() {
+        // A single multi-word input can have more than one alternative
+        // output path (e.g. "wi fi" -> "wifi" or "wireless").
+        let tokens = vec![tok("wi", 0, 2, 1), tok("fi", 3, 5, 1)];
+        let rules = vec![SynonymRule {
+            input: vec!["wi".to_string(), "fi".to_string()],
+            outputs: vec![vec!["wifi".to_string()], vec!["wireless".to_string()]],
+        }];
+        let out = SynonymFilter::apply_multiword(tokens, &rules);
+        assert_eq!(
+            out,
+            vec![
+                tok("wi", 0, 2, 1),
+                tok("fi", 3, 5, 1),
+                tok_len("wifi", 0, 5, 0, 2),
+                tok_len("wireless", 0, 5, 0, 2),
+            ]
+        );
+    }
+
+    #[test]
+    fn synonym_filter_apply_and_apply_bidirectional_unaffected_by_multiword_addition() {
+        // Sanity check the earlier single-word bidirectional task's behavior
+        // is untouched by adding apply_multiword: same assertions as
+        // synonym_filter_apply_bidirectional_expands_both_directions.
+        let synonyms: HashMap<String, Vec<String>> =
+            [("cat".to_string(), vec!["feline".to_string()])]
+                .into_iter()
+                .collect();
+
+        let out_forward = SynonymFilter::apply_bidirectional(vec![tok("cat", 0, 3, 1)], &synonyms);
+        assert_eq!(
+            out_forward,
+            vec![tok("cat", 0, 3, 1), tok("feline", 0, 3, 0)]
+        );
+
+        let out_reverse =
+            SynonymFilter::apply_bidirectional(vec![tok("feline", 0, 6, 1)], &synonyms);
+        assert_eq!(
+            out_reverse,
+            vec![tok("feline", 0, 6, 1), tok("cat", 0, 6, 0)]
         );
     }
 
