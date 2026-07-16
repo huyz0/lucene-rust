@@ -4216,3 +4216,62 @@ decodes as expected, then feeds it into `merge_stored_only_segments` as a
 `cargo fmt`/`clippy --workspace --all-targets -- -D warnings` clean; `cargo
 test -p lucene-index --lib merge::` passes (54/54, up from 52). See
 `docs/parity.md`'s `SegmentMerger` row for the parity-tracking update.
+
+**Progress (points/BKD merge):** Extended `merge_stored_only_segments` in
+`crates/lucene-index/src/merge.rs` to also merge BKD points data
+(`.kdm`/`.kdi`/`.kdd`), following the same "read back via the existing
+decoder, drop non-live docs, renumber, re-encode" pattern already used for
+doc-values/norms/term-vectors/postings. A points field has no shared term
+dictionary to reconcile (unlike SORTED doc values or postings) -- it's a
+flat, per-doc set of fixed-width packed values, closer in spirit to
+SORTED_NUMERIC doc values. New `merge_points` reads every live doc's points
+via that source's own already-opened `lucene_codecs::points::PointsReader`
+(the *same* reader `lucene-search`'s points range query already uses -- no
+new BKD decode logic written), remaps surviving doc ids to the merged space
+via the existing `build_doc_id_maps` helper (reused from the postings
+merge), and concatenates across sources in source order; `points::write`
+rebuilds the merged BKD tree (leaf plan, packed index, bounding boxes)
+itself, so there's no tree-merge logic to get wrong here. Like postings and
+unlike doc-values/norms, `points::write` already accepts any number of
+fields per call, so there's no single-field-per-merge-call limit for
+points. New `MergeSource` field `points: &[SourcePoints]` (one entry per
+field a source supplies points for); every one of the ~50 existing
+`MergeSource` test literals picked up `points: &[]` (done mechanically with
+a small script). Same "sparse across sources" philosophy as everywhere
+else in this module, at the field level: a live-doc-contributing source
+missing the points field entirely (while another live-doc-contributing
+source has it) is `Error::PointsFieldMissingInSource` -- a live doc simply
+contributing zero points for a field is not an error (points are naturally
+sparse the same way postings are), and a merged field that ends up with
+zero points overall is simply omitted from the merged segment (matching
+`points::write`'s own `EmptyField` restriction and real Lucene's `finish()`
+returning `null` in that case). **Scope: `num_index_dims == num_dims`
+only** -- `points::write` always treats them as equal (no support for
+extra, non-indexed data-only dimensions), so a source field violating that
+is rejected with the new `Error::PointsIndexDimsNotSupported`. **Cross-
+source shape validation**: because field-number reconciliation only
+records the first-seen source's `FieldInfo`, every other live-doc-
+contributing source's own BKD tree shape (`num_dims`/`bytes_per_dim`) is
+checked against the merged field's declared shape and rejected with the
+new `Error::PointsShapeDisagreement` on a mismatch -- otherwise a source
+using a different dimension count/width than an earlier, differently-
+shaped source picked as canonical could have its points silently
+misinterpreted. Multi-dimension (e.g. `LatLonPoint`-shaped 2D) and multi-
+valued (multiple points per doc) points are both supported unchanged, since
+that's exactly what `points::write`'s existing multi-field/multi-dimension
+support already handles and the concatenation this merge performs
+preserves both. New tests in `crates/lucene-index/src/merge.rs`: two
+sources with no deletions merge correctly (verified by reopening the
+merged `.kdm`/`.kdi`/`.kdd` through the unmodified `points::PointsReader`
+and checking actual doc ids/packed values, plus a full round trip through
+the unmodified `points_delete::resolve_points_range_doc_ids` range
+resolver); deletions drop non-live docs from the merged points; a fully-
+deleted source contributes nothing; a live-contributing source missing the
+points field is a hard error; a cross-source BKD-shape-disagreement case
+(mismatched `bytes_per_dim`) is rejected; and a hand-built
+`num_index_dims != num_dims` points fixture (a shape `points::write` itself
+can never produce, so built by hand mirroring `points.rs`'s own low-level
+write primitives) is rejected with `Error::PointsIndexDimsNotSupported`.
+`cargo fmt`/`clippy --workspace --all-targets -- -D warnings` clean; `cargo
+test -p lucene-index --lib merge::` passes (60/60, up from 54). See
+`docs/parity.md`'s `SegmentMerger` row for the parity-tracking update.

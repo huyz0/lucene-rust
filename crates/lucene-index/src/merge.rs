@@ -2,9 +2,9 @@
 //! half of `FieldInfos.FieldNumbers`) -- merges N already-flushed segments
 //! into one new segment, dropping deleted docs and renumbering doc ids to be
 //! contiguous (`0..mergedDocCount`). Stored fields are always merged; doc
-//! values, norms, term vectors, and now postings are merged too whenever a
-//! source supplies them (see "Doc values / norms / term vectors" and
-//! "Postings" below for the honest scope of each part).
+//! values, norms, term vectors, postings, and now BKD points are merged too
+//! whenever a source supplies them (see "Doc values / norms / term vectors",
+//! "Postings", and "Points" below for the honest scope of each part).
 //!
 //! # What this is
 //!
@@ -27,12 +27,13 @@
 //!    `SegmentMerger`'s `MergeState.docMaps`, minus any doc-ID-remapping
 //!    policy fancier than "keep source order, drop gaps" -- this port has no
 //!    index sort or other doc-reordering merge policy yet);
-//! 3. merges any supplied doc-values/norms/term-vectors data the same way
-//!    (drop deleted docs, renumber contiguously, remap field numbers), then
-//!    writes stored fields, field infos, segment info, and whichever of
-//!    `.dvm`/`.dvd`/`.dvs`, `.nvm`/`.nvd`, `.tvd`/`.tvx`/`.tvm` the merge
-//!    produced, directly through `dir` -- mirroring exactly the write-side
-//!    work [`crate::segment_writer::flush_stored_only_segment`] does for a
+//! 3. merges any supplied doc-values/norms/term-vectors/postings/points data
+//!    the same way (drop deleted docs, renumber contiguously, remap field
+//!    numbers), then writes stored fields, field infos, segment info, and
+//!    whichever of `.dvm`/`.dvd`/`.dvs`, `.nvm`/`.nvd`, `.tvd`/`.tvx`/`.tvm`,
+//!    `.doc`/`.tim`/`.tip`/`.tmd`, `.kdm`/`.kdi`/`.kdd` the merge produced,
+//!    directly through `dir` -- mirroring exactly the write-side work
+//!    [`crate::segment_writer::flush_stored_only_segment`] does for a
 //!    stored-fields-only flush, generalized to the extra formats.
 //!
 //! # What this deliberately is not
@@ -222,6 +223,69 @@
 //! logic is real and tested on its own, but not yet reachable from a real
 //! end-to-end "flush two segments, merge them" caller.
 //!
+//! # Points
+//!
+//! [`merge_points`] merges each source's BKD points data (`.kdm`/`.kdi`/
+//! `.kdd`) for every field any source declares points for ([`SourcePoints`],
+//! attached per source via [`MergeSource::points`]), re-encoding the result
+//! with [`lucene_codecs::points::write`]. Unlike SORTED doc values or
+//! postings, a points field has no shared term dictionary to resolve
+//! ordinals against -- it's a flat, per-doc set of fixed-width packed values
+//! (closer in spirit to SORTED_NUMERIC doc values than to postings), so this
+//! reads back every live doc's points via that source's own already-opened
+//! [`lucene_codecs::points::PointsReader`] (the *exact same* reader
+//! `lucene_search`'s points range query already uses -- no new BKD decode
+//! logic was written for this merge), drops non-live docs and remaps
+//! surviving doc ids to the merged id space (reusing
+//! [`build_doc_id_maps`], the same mechanism [`merge_postings`] uses), and
+//! concatenates the results across sources in source order.
+//! [`lucene_codecs::points::write`] already accepts any number of fields per
+//! call, so, like postings and unlike doc-values/norms, there is no
+//! single-field-per-merge-call limit for points.
+//!
+//! A merged field with points data in at least one live-doc-contributing
+//! source but not in every such source is a hard error
+//! ([`Error::PointsFieldMissingInSource`]), matching the "sparse across
+//! sources" philosophy applied everywhere else in this module -- but unlike
+//! doc-values/norms, a field has no per-doc denseness requirement of its
+//! own here: a live doc contributing zero points for a field (or a field
+//! that ends up with zero surviving points overall, e.g. every
+//! contributing doc's point belonged to a deleted doc) is not an error --
+//! points are naturally sparse the same way postings are. A field that ends
+//! up with zero points after the merge is simply omitted from the merged
+//! segment (matching real Lucene's `finish()` returning `null`/omitting the
+//! field, and [`lucene_codecs::points::write`]'s own documented
+//! `EmptyField` restriction).
+//!
+//! **Scope: `num_index_dims == num_dims` only, single packed-value shape per
+//! field across all sources.** [`lucene_codecs::points::write`] always
+//! treats `num_index_dims` as equal to `num_dims` (see its own doc comment)
+//! -- a source field with extra, non-indexed data-only dimensions
+//! (`num_index_dims != num_dims`) is rejected with
+//! [`Error::PointsIndexDimsNotSupported`] rather than silently dropping the
+//! non-indexed dimensions. And because field-number reconciliation only
+//! records the *first-seen* source's `FieldInfo` as the merged one, every
+//! other live-doc-contributing source's own BKD tree shape
+//! (`num_dims`/`bytes_per_dim`) is independently checked against the merged
+//! field's declared shape and rejected with
+//! [`Error::PointsShapeDisagreement`] on a mismatch -- otherwise a source
+//! using, say, 2 dimensions could have its points silently misinterpreted as
+//! 1-dimensional (or vice versa) whenever an earlier, differently-shaped
+//! source happened to be picked as canonical. Multi-dimension points (e.g.
+//! `LatLonPoint`-shaped 2D fields) and multi-valued points (multiple points
+//! per doc for the same field) are both supported -- this is exactly what
+//! [`lucene_codecs::points::write`] itself already handles, and the
+//! concatenation this merge performs preserves both.
+//!
+//! Same caveat as doc values/norms/term vectors/postings: nothing in this
+//! port's normal flush path produces a segment with points yet (`.kdm`/
+//! `.kdi`/`.kdd` are written by [`lucene_codecs::points::write`] as a
+//! standalone function, not from a per-field indexing flush path), so this
+//! merge logic is real and tested on its own (including a full round-trip
+//! through the unmodified [`lucene_codecs::points::PointsReader`] and
+//! `lucene_search` points range-query stack), but not yet reachable from a
+//! real end-to-end "flush two segments, merge them" caller.
+//!
 //! See `docs/parity.md` and `PLAN.md`'s Phase 5 section for the exact,
 //! currently-true scope line.
 
@@ -235,6 +299,7 @@ use lucene_codecs::doc_values::{
 };
 use lucene_codecs::field_infos::{self, FieldInfo, IndexOptions};
 use lucene_codecs::norms::{self, NormsEntry};
+use lucene_codecs::points::{self, WritePointsField};
 use lucene_codecs::postings::DocInput;
 use lucene_codecs::postings_writer::{self, FieldPostingsInput, TermPostings};
 use lucene_codecs::stored_fields::{self, Document};
@@ -421,6 +486,52 @@ pub enum Error {
         has_offsets: bool,
         has_payloads: bool,
     },
+    #[error(transparent)]
+    Points(#[from] lucene_codecs::points::Error),
+    /// A field has BKD points data in at least one source that contributes
+    /// live docs, but not in every such source -- see this module's doc
+    /// comment on the "sparse across sources" rule. Unlike postings, points
+    /// have no per-doc sparsity of their own to model (a doc either has a
+    /// point for a field or it doesn't), so this is the only "missing"
+    /// failure mode for points.
+    #[error(
+        "merged field number {merged_field_number} has BKD points in some sources but not in every source that contributes live docs"
+    )]
+    PointsFieldMissingInSource { merged_field_number: i32 },
+    /// Field-number reconciliation only records the *first-seen* source's
+    /// `FieldInfo` as the merged one (see `reconcile_field_numbers`) and
+    /// never checks that every other live-doc-contributing source's own BKD
+    /// tree shape (dimension count / bytes per dimension) agrees. Without
+    /// this check, a source whose points use a different shape than the
+    /// merged field's declared shape would either panic deep inside
+    /// [`lucene_codecs::points::write`] (wrong packed-value length) or, if
+    /// the lengths happened to coincidentally match, silently produce a
+    /// merged tree with garbage values -- so this is checked explicitly and
+    /// rejected loudly instead.
+    #[error(
+        "merged field number {merged_field_number} has disagreeing BKD points shape across sources: source has num_dims={source_num_dims}/bytes_per_dim={source_bytes_per_dim}, but the merged field is num_dims={merged_num_dims}/bytes_per_dim={merged_bytes_per_dim}"
+    )]
+    PointsShapeDisagreement {
+        merged_field_number: i32,
+        merged_num_dims: i32,
+        merged_bytes_per_dim: i32,
+        source_num_dims: i32,
+        source_bytes_per_dim: i32,
+    },
+    /// [`lucene_codecs::points::write`] always treats `num_index_dims` as
+    /// equal to `num_dims` (no support for extra, non-indexed data-only
+    /// dimensions) -- a source field whose own `num_index_dims != num_dims`
+    /// can't be re-encoded by this port's write side, so it's rejected
+    /// outright rather than silently dropping the non-indexed dimensions or
+    /// mis-encoding the tree.
+    #[error(
+        "merged field number {merged_field_number} has BKD points with num_index_dims ({num_index_dims}) != num_dims ({num_dims}) in a contributing source, which this port's points write side does not support"
+    )]
+    PointsIndexDimsNotSupported {
+        merged_field_number: i32,
+        num_dims: i32,
+        num_index_dims: i32,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -510,6 +621,27 @@ pub struct SourcePostings<'a> {
     pub doc_in: Option<&'a DocInput<'a>>,
 }
 
+/// One source's BKD points (`.kdm`/`.kdi`/`.kdd`) data for a single field --
+/// `field_number` is that source's own original field number (pre-merge,
+/// same convention as [`SourcePostings::field_number`]). `reader` is that
+/// source's already-opened [`lucene_codecs::points::PointsReader`] (via
+/// [`lucene_codecs::points::open`]) -- the exact same read path
+/// `lucene_search`'s points range query already uses, reused verbatim here
+/// rather than re-deriving points decoding.
+///
+/// # Scope: one packed value per dimension count/width, no data-only dims
+///
+/// [`lucene_codecs::points::write`] always treats `num_index_dims` as equal
+/// to `num_dims` (see its own doc comment) -- a field with extra, non-indexed
+/// data-only dimensions on the *read* side (`num_index_dims != num_dims`)
+/// can't be re-encoded by this port's write side, so [`merge_points`] rejects
+/// that shape with [`Error::PointsIndexDimsNotSupported`] rather than
+/// silently truncating or corrupting the merged tree.
+pub struct SourcePoints<'a> {
+    pub field_number: i32,
+    pub reader: &'a lucene_codecs::points::PointsReader<'a>,
+}
+
 /// One source segment's already-decoded input to a merge: its field infos
 /// (from `.fnm`, via [`lucene_codecs::field_infos::parse`]), a stored-fields
 /// reader over its `.fdt`/`.fdx`/`.fdm` (via [`stored_fields::open`]), an
@@ -552,6 +684,11 @@ pub struct MergeSource<'a> {
     /// single-field-per-merge-call limit here (see [`SourcePostings`] for
     /// the Docs/DocsAndFreqs-only scope of what gets merged).
     pub postings: &'a [SourcePostings<'a>],
+    /// This source's BKD points fields, if any -- like postings,
+    /// [`lucene_codecs::points::write`] already supports any number of
+    /// fields per call, so there is no single-field-per-merge-call limit
+    /// here (see [`SourcePoints`] for the exact scope of what gets merged).
+    pub points: &'a [SourcePoints<'a>],
 }
 
 impl<'a> MergeSource<'a> {
@@ -576,6 +713,7 @@ impl<'a> MergeSource<'a> {
             norms: &[],
             term_vectors: None,
             postings: &[],
+            points: &[],
         }
     }
 }
@@ -706,6 +844,12 @@ pub fn merge_stored_only_segments(
     let merged_norms = merge_norms(sources, &per_source_maps, &per_source_live_ids)?;
     let tv_docs = merge_term_vectors(sources, &per_source_maps, &per_source_live_ids)?;
     let merged_postings_fields = merge_postings(
+        sources,
+        &per_source_maps,
+        &per_source_live_ids,
+        &merged_fields,
+    )?;
+    let merged_points_fields = merge_points(
         sources,
         &per_source_maps,
         &per_source_live_ids,
@@ -857,6 +1001,38 @@ pub fn merge_stored_only_segments(
         }
     }
 
+    // A merged field with zero surviving points (every contributing live
+    // doc happened to have none) is simply omitted -- `points::write`
+    // doesn't support empty fields (see its own doc comment), and this
+    // matches real Lucene's `finish()` returning `null`/omitting the field
+    // entirely in that case.
+    let non_empty_points_fields: Vec<&MergedPointsField> = merged_points_fields
+        .iter()
+        .filter(|f| !f.points.is_empty())
+        .collect();
+    if !non_empty_points_fields.is_empty() {
+        let inputs: Vec<WritePointsField> = non_empty_points_fields
+            .iter()
+            .map(|f| WritePointsField {
+                field_number: f.field_number,
+                num_dims: f.num_dims,
+                bytes_per_dim: f.bytes_per_dim,
+                points: f.points.clone(),
+            })
+            .collect();
+        let (kdm, kdi, kdd) = points::write(
+            &inputs,
+            points::DEFAULT_MAX_POINTS_IN_LEAF_NODE,
+            &merged_segment_id,
+            "",
+        )?;
+        for (ext, bytes) in [("kdm", &kdm), ("kdi", &kdi), ("kdd", &kdd)] {
+            let name = format!("{merged_segment_name}.{ext}");
+            write_file(dir, &name, bytes)?;
+            files.push(name);
+        }
+    }
+
     let si = SegmentInfo {
         id: merged_segment_id,
         version: lucene_version,
@@ -958,10 +1134,11 @@ pub struct MergeSortKeySpec<'a> {
 /// # Scope
 ///
 /// Only stored fields are reordered by sort key here -- this port's write
-/// side has no path that reorders doc-values/norms/term-vectors data during
-/// a merge (see this module's top doc comment). Any doc-values/norms/term-
-/// vectors data attached to a `MergeSource` is silently ignored by this
-/// function; use [`merge_stored_only_segments`] instead if that data needs
+/// side has no path that reorders doc-values/norms/term-vectors/postings/
+/// points data during a merge (see this module's top doc comment). Any
+/// doc-values/norms/term-vectors/postings/points data attached to a
+/// `MergeSource` is silently ignored by this function; use
+/// [`merge_stored_only_segments`] instead if that data needs
 /// to be merged (concatenation order, no re-sort -- and no index-sort
 /// metadata in the resulting `.si`, since that merge doesn't preserve sort
 /// order).
@@ -1956,6 +2133,170 @@ fn merge_postings(
     Ok(result)
 }
 
+/// One merged field's BKD points, ready to hand to
+/// [`lucene_codecs::points::write`] (via a [`WritePointsField`] built from
+/// `points`).
+struct MergedPointsField {
+    field_number: i32,
+    num_dims: i32,
+    bytes_per_dim: i32,
+    points: Vec<(i32, Vec<u8>)>,
+}
+
+/// Merges BKD points (`.kdm`/`.kdi`/`.kdd`) data across `sources` for every
+/// field any source declares points for, returning one [`MergedPointsField`]
+/// per distinct merged field number that has points data in at least one
+/// source -- or an empty `Vec` if no source supplied any points data at all.
+///
+/// Unlike SORTED doc values or postings, a points field has no shared
+/// dictionary to resolve ordinals against -- it's fundamentally a per-doc set
+/// of fixed-width packed values (like NUMERIC/SORTED_NUMERIC doc values, but
+/// with a merged tree rebuilt from scratch rather than a single scalar per
+/// doc). So this simply reads back every live doc's points via each source's
+/// own already-opened [`lucene_codecs::points::PointsReader`]
+/// ([`SourcePoints::reader`], the same reader `lucene_search`'s points range
+/// query uses), drops non-live docs and remaps surviving doc ids to the
+/// merged id space via [`build_doc_id_maps`] (same mechanism
+/// [`merge_postings`] uses), and concatenates the results across sources in
+/// source order. [`lucene_codecs::points::write`] rebuilds the merged BKD
+/// tree (leaf plan, packed index, bounding boxes) from this flat list
+/// itself, so there is no tree-merging logic to get wrong here, and -- like
+/// postings, unlike doc-values/norms -- `write` already supports any number
+/// of fields per call, so there is no single-field-per-merge-call limit.
+///
+/// # The "sparse across sources" rule, points edition
+///
+/// A field has no per-doc sparsity of its own to model here (a live doc
+/// either contributes exactly one packed value for the field, from
+/// [`lucene_codecs::points::PointsReader::decode_all_points`], or none) --
+/// this merge does not require every live doc to have a point (multi-valued
+/// points and docs with zero points for a field are both realistic and
+/// simply mean fewer points end up in the merged tree for that doc). What
+/// *is* an error, matching the same philosophy as doc-values/norms/postings:
+/// if a merged field has points data in at least one source that contributes
+/// live docs, but another live-doc-contributing source has no points *field*
+/// at all for it (schema mismatch across sources), this returns
+/// [`Error::PointsFieldMissingInSource`].
+///
+/// # Cross-source shape validation
+///
+/// Because field-number reconciliation only records the first-seen source's
+/// `FieldInfo` (see `reconcile_field_numbers`), every contributing source's
+/// own BKD tree shape (`num_dims`/`bytes_per_dim`, from that source's own
+/// [`lucene_codecs::points::PointsField`]) is checked against the merged
+/// field's declared shape (`FieldInfo::point_dimension_count`/
+/// `point_num_bytes`) and rejected with [`Error::PointsShapeDisagreement`] on
+/// a mismatch, and any source field whose `num_index_dims != num_dims` is
+/// rejected with [`Error::PointsIndexDimsNotSupported`] (see [`SourcePoints`]
+/// for why).
+fn merge_points(
+    sources: &[MergeSource],
+    per_source_maps: &[HashMap<i32, i32>],
+    per_source_live_ids: &[Vec<i32>],
+    merged_fields: &[FieldInfo],
+) -> Result<Vec<MergedPointsField>> {
+    let mut candidates: Vec<i32> = Vec::new();
+    for ((source, map), live_ids) in sources.iter().zip(per_source_maps).zip(per_source_live_ids) {
+        if live_ids.is_empty() {
+            // Same "fully-deleted source can't affect the merged output"
+            // exemption as merge_numeric_doc_values.
+            continue;
+        }
+        for sp in source.points {
+            if let Some(&merged_number) = map.get(&sp.field_number) {
+                if !candidates.contains(&merged_number) {
+                    candidates.push(merged_number);
+                }
+            }
+        }
+    }
+    candidates.sort_unstable();
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let doc_id_maps = build_doc_id_maps(per_source_live_ids);
+    let mut result = Vec::with_capacity(candidates.len());
+
+    for merged_field_number in candidates {
+        let merged_field = merged_fields
+            .iter()
+            .find(|f| f.number == merged_field_number)
+            .expect("merged_field_number came from reconcile_field_numbers over these same sources, so it must have an entry in merged_fields");
+        let merged_num_dims = merged_field.point_dimension_count;
+        let merged_bytes_per_dim = merged_field.point_num_bytes;
+
+        let mut points: Vec<(i32, Vec<u8>)> = Vec::new();
+        for (src_idx, ((source, map), live_ids)) in sources
+            .iter()
+            .zip(per_source_maps)
+            .zip(per_source_live_ids)
+            .enumerate()
+        {
+            if live_ids.is_empty() {
+                continue;
+            }
+            let original_number = map
+                .iter()
+                .find(|&(_, &merged)| merged == merged_field_number)
+                .map(|(&orig, _)| orig);
+            let Some(original_number) = original_number else {
+                return Err(Error::PointsFieldMissingInSource {
+                    merged_field_number,
+                });
+            };
+            let Some(sp) = source
+                .points
+                .iter()
+                .find(|sp| sp.field_number == original_number)
+            else {
+                return Err(Error::PointsFieldMissingInSource {
+                    merged_field_number,
+                });
+            };
+            let Some(field_meta) = sp.reader.field(original_number) else {
+                return Err(Error::PointsFieldMissingInSource {
+                    merged_field_number,
+                });
+            };
+            if field_meta.num_index_dims != field_meta.num_dims {
+                return Err(Error::PointsIndexDimsNotSupported {
+                    merged_field_number,
+                    num_dims: field_meta.num_dims,
+                    num_index_dims: field_meta.num_index_dims,
+                });
+            }
+            if field_meta.num_dims != merged_num_dims
+                || field_meta.bytes_per_dim != merged_bytes_per_dim
+            {
+                return Err(Error::PointsShapeDisagreement {
+                    merged_field_number,
+                    merged_num_dims,
+                    merged_bytes_per_dim,
+                    source_num_dims: field_meta.num_dims,
+                    source_bytes_per_dim: field_meta.bytes_per_dim,
+                });
+            }
+
+            let doc_id_map = &doc_id_maps[src_idx];
+            for point in sp.reader.decode_all_points(original_number)? {
+                if let Some(&merged_doc_id) = doc_id_map.get(&point.doc_id) {
+                    points.push((merged_doc_id, point.packed_value));
+                }
+            }
+        }
+
+        result.push(MergedPointsField {
+            field_number: merged_field_number,
+            num_dims: merged_num_dims,
+            bytes_per_dim: merged_bytes_per_dim,
+            points,
+        });
+    }
+
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2782,6 +3123,7 @@ mod tests {
             norms: &[],
             term_vectors: None,
             postings: &[],
+            points: &[],
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -2795,6 +3137,7 @@ mod tests {
             norms: &[],
             term_vectors: None,
             postings: &[],
+            points: &[],
         };
 
         let sci = merge_stored_only_segments(
@@ -2854,6 +3197,7 @@ mod tests {
             norms: &[],
             term_vectors: None,
             postings: &[],
+            points: &[],
         };
         // Source 1 has live docs but no numeric doc-values entry at all for
         // field "num" -- the sparse-across-sources case this port refuses
@@ -2928,6 +3272,7 @@ mod tests {
             norms: &[],
             term_vectors: None,
             postings: &[],
+            points: &[],
         };
 
         let result = merge_stored_only_segments(
@@ -2987,6 +3332,7 @@ mod tests {
             norms: &[],
             term_vectors: None,
             postings: &[],
+            points: &[],
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -3000,6 +3346,7 @@ mod tests {
             norms: &[],
             term_vectors: None,
             postings: &[],
+            points: &[],
         };
 
         let sci = merge_stored_only_segments(
@@ -3064,6 +3411,7 @@ mod tests {
             norms: &[],
             term_vectors: None,
             postings: &[],
+            points: &[],
         };
         // Source 1 has live docs but no binary doc-values entry at all for
         // field "bin" -- the sparse-across-sources case this port refuses to
@@ -3138,6 +3486,7 @@ mod tests {
             norms: &[],
             term_vectors: None,
             postings: &[],
+            points: &[],
         };
 
         let result = merge_stored_only_segments(
@@ -3280,6 +3629,7 @@ mod tests {
             norms: &[],
             term_vectors: None,
             postings: &[],
+            points: &[],
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -3293,6 +3643,7 @@ mod tests {
             norms: &[],
             term_vectors: None,
             postings: &[],
+            points: &[],
         };
 
         let tmp_dir = FsDirectory::open(&tmp);
@@ -3364,6 +3715,7 @@ mod tests {
             norms: &[],
             term_vectors: None,
             postings: &[],
+            points: &[],
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -3377,6 +3729,7 @@ mod tests {
             norms: &[],
             term_vectors: None,
             postings: &[],
+            points: &[],
         };
 
         merge_stored_only_segments(
@@ -3429,6 +3782,7 @@ mod tests {
             norms: &[],
             term_vectors: None,
             postings: &[],
+            points: &[],
         };
         // Source 1 has live docs but no SORTED doc-values entry at all for
         // field "word".
@@ -3502,6 +3856,7 @@ mod tests {
             norms: &[],
             term_vectors: None,
             postings: &[],
+            points: &[],
         };
 
         let result = merge_stored_only_segments(
@@ -3564,6 +3919,7 @@ mod tests {
             norms: &[],
             term_vectors: None,
             postings: &[],
+            points: &[],
         };
 
         let result = merge_stored_only_segments(
@@ -3626,6 +3982,7 @@ mod tests {
             norms: &[],
             term_vectors: None,
             postings: &[],
+            points: &[],
         };
 
         let result = merge_stored_only_segments(
@@ -3710,6 +4067,7 @@ mod tests {
             norms: &[],
             term_vectors: None,
             postings: &[],
+            points: &[],
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -3723,6 +4081,7 @@ mod tests {
             norms: &[],
             term_vectors: None,
             postings: &[],
+            points: &[],
         };
 
         let sci = merge_stored_only_segments(
@@ -3808,6 +4167,7 @@ mod tests {
             norms: &[],
             term_vectors: None,
             postings: &[],
+            points: &[],
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -3821,6 +4181,7 @@ mod tests {
             norms: &[],
             term_vectors: None,
             postings: &[],
+            points: &[],
         };
 
         let sci = merge_stored_only_segments(
@@ -3880,6 +4241,7 @@ mod tests {
             norms: &norms0_source,
             term_vectors: None,
             postings: &[],
+            points: &[],
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -3893,6 +4255,7 @@ mod tests {
             norms: &norms1_source,
             term_vectors: None,
             postings: &[],
+            points: &[],
         };
 
         merge_stored_only_segments(
@@ -3961,6 +4324,7 @@ mod tests {
             norms: &[],
             term_vectors: Some(&tv0_reader),
             postings: &[],
+            points: &[],
         };
         let source1 = MergeSource::stored_only(&stored1.fields, &reader1, None);
 
@@ -4171,6 +4535,7 @@ mod tests {
             norms: &[],
             term_vectors: Some(&tv0_reader),
             postings: &[],
+            points: &[],
         };
 
         let err = merge_stored_only_segments(
@@ -4241,6 +4606,7 @@ mod tests {
             norms: &norms0_source,
             term_vectors: Some(&tv0_reader),
             postings: &[],
+            points: &[],
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -4254,6 +4620,7 @@ mod tests {
             norms: &norms1_source,
             term_vectors: Some(&tv1_reader),
             postings: &[],
+            points: &[],
         };
 
         let merged_id = [9u8; ID_LENGTH];
@@ -4392,6 +4759,7 @@ mod tests {
             norms: &norms0_source,
             term_vectors: Some(&tv0_reader),
             postings: &[],
+            points: &[],
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -4405,6 +4773,7 @@ mod tests {
             norms: &norms1_source,
             term_vectors: Some(&tv1_reader),
             postings: &[],
+            points: &[],
         };
 
         let merged_id = [9u8; ID_LENGTH];
@@ -4551,6 +4920,7 @@ mod tests {
             norms: &norms0_source,
             term_vectors: Some(&tv0_reader),
             postings: &[],
+            points: &[],
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -4564,6 +4934,7 @@ mod tests {
             norms: &norms1_source,
             term_vectors: Some(&tv1_reader),
             postings: &[],
+            points: &[],
         };
 
         let merged_id = [9u8; ID_LENGTH];
@@ -5291,6 +5662,7 @@ mod tests {
             norms: &[],
             term_vectors: None,
             postings: &[],
+            points: &[],
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -5304,6 +5676,7 @@ mod tests {
             norms: &[],
             term_vectors: None,
             postings: &[],
+            points: &[],
         };
 
         merge_stored_only_segments(
@@ -5356,6 +5729,7 @@ mod tests {
             norms: &[],
             term_vectors: None,
             postings: &[],
+            points: &[],
         };
         // Source 1 has live docs but no SORTED_NUMERIC doc-values entry at
         // all for field "nums".
@@ -5418,6 +5792,7 @@ mod tests {
             norms: &[],
             term_vectors: None,
             postings: &[],
+            points: &[],
         };
 
         let result = merge_stored_only_segments(
@@ -5555,6 +5930,7 @@ mod tests {
             norms: &[],
             term_vectors: None,
             postings: &[],
+            points: &[],
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -5568,6 +5944,7 @@ mod tests {
             norms: &[],
             term_vectors: None,
             postings: &[],
+            points: &[],
         };
 
         merge_stored_only_segments(
@@ -5648,6 +6025,7 @@ mod tests {
             norms: &[],
             term_vectors: None,
             postings: &[],
+            points: &[],
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -5661,6 +6039,7 @@ mod tests {
             norms: &[],
             term_vectors: None,
             postings: &[],
+            points: &[],
         };
 
         merge_stored_only_segments(
@@ -5716,6 +6095,7 @@ mod tests {
             norms: &[],
             term_vectors: None,
             postings: &[],
+            points: &[],
         };
         // Source 1 has live docs but no SORTED_SET doc-values entry at all
         // for field "word".
@@ -5778,6 +6158,7 @@ mod tests {
             norms: &[],
             term_vectors: None,
             postings: &[],
+            points: &[],
         };
 
         let result = merge_stored_only_segments(
@@ -5912,6 +6293,7 @@ mod tests {
             norms: &[],
             term_vectors: None,
             postings: &src_postings0,
+            points: &[],
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -5925,6 +6307,7 @@ mod tests {
             norms: &[],
             term_vectors: None,
             postings: &src_postings1,
+            points: &[],
         };
 
         let sci = merge_stored_only_segments(
@@ -6078,6 +6461,7 @@ mod tests {
             norms: &[],
             term_vectors: None,
             postings: &src_postings0,
+            points: &[],
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -6091,6 +6475,7 @@ mod tests {
             norms: &[],
             term_vectors: None,
             postings: &src_postings1,
+            points: &[],
         };
 
         let tmp2 = tmp.clone();
@@ -6207,6 +6592,7 @@ mod tests {
             norms: &[],
             term_vectors: None,
             postings: &src_postings0,
+            points: &[],
         };
 
         merge_stored_only_segments(
@@ -6345,6 +6731,7 @@ mod tests {
             norms: &[],
             term_vectors: None,
             postings: &src_postings0,
+            points: &[],
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -6358,6 +6745,7 @@ mod tests {
             norms: &[],
             term_vectors: None,
             postings: &src_postings1,
+            points: &[],
         };
 
         merge_stored_only_segments(
@@ -6470,6 +6858,7 @@ mod tests {
             norms: &[],
             term_vectors: None,
             postings: &src_postings0,
+            points: &[],
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -6483,6 +6872,7 @@ mod tests {
             norms: &[],
             term_vectors: None,
             postings: &[],
+            points: &[],
         };
 
         let result = merge_stored_only_segments(
@@ -6558,6 +6948,7 @@ mod tests {
             norms: &[],
             term_vectors: None,
             postings: &src_postings0,
+            points: &[],
         };
 
         let result = merge_stored_only_segments(
@@ -6689,6 +7080,7 @@ mod tests {
             norms: &[],
             term_vectors: None,
             postings: &src_postings0,
+            points: &[],
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -6702,6 +7094,7 @@ mod tests {
             norms: &[],
             term_vectors: None,
             postings: &src_postings1,
+            points: &[],
         };
 
         let result = merge_stored_only_segments(
@@ -6715,6 +7108,579 @@ mod tests {
         assert!(matches!(
             result,
             Err(Error::PostingsIndexOptionsDisagreement { .. })
+        ));
+    }
+
+    fn points_field(name: &str, number: i32, num_dims: i32, bytes_per_dim: i32) -> FieldInfo {
+        let mut f = field(name, number);
+        f.point_dimension_count = num_dims;
+        f.point_index_dimension_count = num_dims;
+        f.point_num_bytes = bytes_per_dim;
+        f
+    }
+
+    fn packed4(v: u32) -> Vec<u8> {
+        v.to_be_bytes().to_vec()
+    }
+
+    fn write_one_field_points(
+        field_number: i32,
+        num_dims: i32,
+        bytes_per_dim: i32,
+        points: Vec<(i32, Vec<u8>)>,
+        segment_id: &[u8; ID_LENGTH],
+    ) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let fields = vec![WritePointsField {
+            field_number,
+            num_dims,
+            bytes_per_dim,
+            points,
+        }];
+        points::write(
+            &fields,
+            points::DEFAULT_MAX_POINTS_IN_LEAF_NODE,
+            segment_id,
+            "",
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn two_sources_no_deletions_merge_points_correctly() {
+        let seg0_id = [1u8; ID_LENGTH];
+        let seg1_id = [2u8; ID_LENGTH];
+
+        let (kdm0, kdi0, kdd0) =
+            write_one_field_points(0, 1, 4, vec![(0, packed4(10)), (1, packed4(20))], &seg0_id);
+        let points_reader0 = points::open(&kdm0, &kdi0, &kdd0, &seg0_id, "").unwrap();
+
+        let (kdm1, kdi1, kdd1) = write_one_field_points(0, 1, 4, vec![(0, packed4(30))], &seg1_id);
+        let points_reader1 = points::open(&kdm1, &kdi1, &kdd1, &seg1_id, "").unwrap();
+
+        let fields = vec![points_field("loc", 0, 1, 4)];
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let stored0 = flush(
+            &dir,
+            &tmp,
+            "_0",
+            seg0_id,
+            &fields,
+            &[doc_with(0, "a"), doc_with(0, "b")],
+        );
+        let stored1 = flush(&dir, &tmp, "_1", seg1_id, &fields, &[doc_with(0, "c")]);
+        let reader0 = open_reader(&stored0);
+        let reader1 = open_reader(&stored1);
+
+        let src_points0 = [SourcePoints {
+            field_number: 0,
+            reader: &points_reader0,
+        }];
+        let src_points1 = [SourcePoints {
+            field_number: 0,
+            reader: &points_reader1,
+        }];
+        let source0 = MergeSource {
+            field_infos: &stored0.fields,
+            reader: &reader0,
+            live_docs: None,
+            numeric_doc_values: &[],
+            binary_doc_values: &[],
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &[],
+            norms: &[],
+            term_vectors: None,
+            postings: &[],
+            points: &src_points0,
+        };
+        let source1 = MergeSource {
+            field_infos: &stored1.fields,
+            reader: &reader1,
+            live_docs: None,
+            numeric_doc_values: &[],
+            binary_doc_values: &[],
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &[],
+            norms: &[],
+            term_vectors: None,
+            postings: &[],
+            points: &src_points1,
+        };
+
+        let sci = merge_stored_only_segments(
+            &dir,
+            &[source0, source1],
+            "_merged_points",
+            [9u8; ID_LENGTH],
+            "Lucene104",
+            version(),
+        )
+        .unwrap();
+        assert_eq!(sci.segment_name, "_merged_points");
+
+        let kdm = std::fs::read(std::path::Path::new(&tmp).join("_merged_points.kdm")).unwrap();
+        let kdi = std::fs::read(std::path::Path::new(&tmp).join("_merged_points.kdi")).unwrap();
+        let kdd = std::fs::read(std::path::Path::new(&tmp).join("_merged_points.kdd")).unwrap();
+        let merged_reader = points::open(&kdm, &kdi, &kdd, &[9u8; ID_LENGTH], "").unwrap();
+
+        let mut merged_points = merged_reader.decode_all_points(0).unwrap();
+        merged_points.sort_by_key(|p| p.doc_id);
+        assert_eq!(
+            merged_points
+                .iter()
+                .map(|p| (p.doc_id, p.packed_value.clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                (0, packed4(10)),
+                (1, packed4(20)),
+                // Source 1's only doc is renumbered to merged doc 2, after
+                // source 0's 2 docs.
+                (2, packed4(30)),
+            ]
+        );
+
+        // Full round-trip: a range query through the unmodified points-range
+        // resolver (the same one `lucene_search`'s points range query
+        // composes) must return exactly the merged docs whose values fall in
+        // range, using the real reader/decoder stack end to end.
+        let in_range = crate::points_delete::resolve_points_range_doc_ids(
+            &merged_reader,
+            None,
+            0,
+            &packed4(15),
+            &packed4(30),
+        )
+        .unwrap();
+        assert_eq!(in_range, vec![1, 2]);
+    }
+
+    #[test]
+    fn points_field_with_deletions_drops_non_live_docs() {
+        let seg0_id = [1u8; ID_LENGTH];
+
+        let (kdm0, kdi0, kdd0) = write_one_field_points(
+            0,
+            1,
+            4,
+            vec![(0, packed4(10)), (1, packed4(20)), (2, packed4(30))],
+            &seg0_id,
+        );
+        let points_reader0 = points::open(&kdm0, &kdi0, &kdd0, &seg0_id, "").unwrap();
+
+        let fields = vec![points_field("loc", 0, 1, 4)];
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let stored0 = flush(
+            &dir,
+            &tmp,
+            "_0",
+            seg0_id,
+            &fields,
+            &[doc_with(0, "a"), doc_with(0, "b"), doc_with(0, "c")],
+        );
+        let reader0 = open_reader(&stored0);
+
+        // Drop doc 1 -- surviving docs 0 and 2 renumber to merged 0 and 1.
+        let mut live0 = FixedBitSet::new(3);
+        live0.set(0);
+        live0.set(2);
+
+        let src_points0 = [SourcePoints {
+            field_number: 0,
+            reader: &points_reader0,
+        }];
+        let source0 = MergeSource {
+            field_infos: &stored0.fields,
+            reader: &reader0,
+            live_docs: Some(&live0),
+            numeric_doc_values: &[],
+            binary_doc_values: &[],
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &[],
+            norms: &[],
+            term_vectors: None,
+            postings: &[],
+            points: &src_points0,
+        };
+
+        merge_stored_only_segments(
+            &dir,
+            &[source0],
+            "_merged_points_deletions",
+            [9u8; ID_LENGTH],
+            "Lucene104",
+            version(),
+        )
+        .unwrap();
+
+        let kdm =
+            std::fs::read(std::path::Path::new(&tmp).join("_merged_points_deletions.kdm")).unwrap();
+        let kdi =
+            std::fs::read(std::path::Path::new(&tmp).join("_merged_points_deletions.kdi")).unwrap();
+        let kdd =
+            std::fs::read(std::path::Path::new(&tmp).join("_merged_points_deletions.kdd")).unwrap();
+        let merged_reader = points::open(&kdm, &kdi, &kdd, &[9u8; ID_LENGTH], "").unwrap();
+        let mut merged_points = merged_reader.decode_all_points(0).unwrap();
+        merged_points.sort_by_key(|p| p.doc_id);
+        assert_eq!(
+            merged_points
+                .iter()
+                .map(|p| (p.doc_id, p.packed_value.clone()))
+                .collect::<Vec<_>>(),
+            vec![(0, packed4(10)), (1, packed4(30))]
+        );
+    }
+
+    #[test]
+    fn fully_deleted_source_contributes_no_points() {
+        let seg0_id = [1u8; ID_LENGTH];
+        let seg1_id = [2u8; ID_LENGTH];
+
+        let (kdm0, kdi0, kdd0) = write_one_field_points(0, 1, 4, vec![(0, packed4(10))], &seg0_id);
+        let points_reader0 = points::open(&kdm0, &kdi0, &kdd0, &seg0_id, "").unwrap();
+        let (kdm1, kdi1, kdd1) = write_one_field_points(0, 1, 4, vec![(0, packed4(99))], &seg1_id);
+        let points_reader1 = points::open(&kdm1, &kdi1, &kdd1, &seg1_id, "").unwrap();
+
+        let fields = vec![points_field("loc", 0, 1, 4)];
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let stored0 = flush(&dir, &tmp, "_0", seg0_id, &fields, &[doc_with(0, "a")]);
+        let stored1 = flush(&dir, &tmp, "_1", seg1_id, &fields, &[doc_with(0, "b")]);
+        let reader0 = open_reader(&stored0);
+        let reader1 = open_reader(&stored1);
+
+        let all_deleted = FixedBitSet::new(1); // source 1: nothing live
+
+        let src_points0 = [SourcePoints {
+            field_number: 0,
+            reader: &points_reader0,
+        }];
+        let src_points1 = [SourcePoints {
+            field_number: 0,
+            reader: &points_reader1,
+        }];
+        let source0 = MergeSource {
+            field_infos: &stored0.fields,
+            reader: &reader0,
+            live_docs: None,
+            numeric_doc_values: &[],
+            binary_doc_values: &[],
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &[],
+            norms: &[],
+            term_vectors: None,
+            postings: &[],
+            points: &src_points0,
+        };
+        let source1 = MergeSource {
+            field_infos: &stored1.fields,
+            reader: &reader1,
+            live_docs: Some(&all_deleted),
+            numeric_doc_values: &[],
+            binary_doc_values: &[],
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &[],
+            norms: &[],
+            term_vectors: None,
+            postings: &[],
+            points: &src_points1,
+        };
+
+        merge_stored_only_segments(
+            &dir,
+            &[source0, source1],
+            "_merged_points_fully_deleted",
+            [9u8; ID_LENGTH],
+            "Lucene104",
+            version(),
+        )
+        .unwrap();
+
+        let kdm =
+            std::fs::read(std::path::Path::new(&tmp).join("_merged_points_fully_deleted.kdm"))
+                .unwrap();
+        let kdi =
+            std::fs::read(std::path::Path::new(&tmp).join("_merged_points_fully_deleted.kdi"))
+                .unwrap();
+        let kdd =
+            std::fs::read(std::path::Path::new(&tmp).join("_merged_points_fully_deleted.kdd"))
+                .unwrap();
+        let merged_reader = points::open(&kdm, &kdi, &kdd, &[9u8; ID_LENGTH], "").unwrap();
+        let merged_points = merged_reader.decode_all_points(0).unwrap();
+        assert_eq!(
+            merged_points
+                .iter()
+                .map(|p| (p.doc_id, p.packed_value.clone()))
+                .collect::<Vec<_>>(),
+            vec![(0, packed4(10))]
+        );
+    }
+
+    #[test]
+    fn points_field_missing_in_a_live_contributing_source_is_an_error() {
+        let seg0_id = [1u8; ID_LENGTH];
+
+        let (kdm0, kdi0, kdd0) = write_one_field_points(0, 1, 4, vec![(0, packed4(10))], &seg0_id);
+        let points_reader0 = points::open(&kdm0, &kdi0, &kdd0, &seg0_id, "").unwrap();
+
+        let fields = vec![points_field("loc", 0, 1, 4)];
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let stored0 = flush(&dir, &tmp, "_0", seg0_id, &fields, &[doc_with(0, "a")]);
+        // Source 1 declares the same "loc" field but supplies no points data
+        // for it at all -- a schema mismatch, since source 0 has live docs
+        // indexing that field.
+        let stored1 = flush(
+            &dir,
+            &tmp,
+            "_1",
+            [2u8; ID_LENGTH],
+            &fields,
+            &[doc_with(0, "b")],
+        );
+        let reader0 = open_reader(&stored0);
+        let reader1 = open_reader(&stored1);
+
+        let src_points0 = [SourcePoints {
+            field_number: 0,
+            reader: &points_reader0,
+        }];
+        let source0 = MergeSource {
+            field_infos: &stored0.fields,
+            reader: &reader0,
+            live_docs: None,
+            numeric_doc_values: &[],
+            binary_doc_values: &[],
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &[],
+            norms: &[],
+            term_vectors: None,
+            postings: &[],
+            points: &src_points0,
+        };
+        let source1 = MergeSource {
+            field_infos: &stored1.fields,
+            reader: &reader1,
+            live_docs: None,
+            numeric_doc_values: &[],
+            binary_doc_values: &[],
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &[],
+            norms: &[],
+            term_vectors: None,
+            postings: &[],
+            points: &[],
+        };
+
+        let result = merge_stored_only_segments(
+            &dir,
+            &[source0, source1],
+            "_merged_missing_points",
+            [9u8; ID_LENGTH],
+            "Lucene104",
+            version(),
+        );
+        assert!(matches!(
+            result,
+            Err(Error::PointsFieldMissingInSource { .. })
+        ));
+    }
+
+    #[test]
+    fn points_shape_disagreement_across_sources_is_an_error() {
+        let seg0_id = [1u8; ID_LENGTH];
+        let seg1_id = [2u8; ID_LENGTH];
+
+        let (kdm0, kdi0, kdd0) = write_one_field_points(0, 1, 4, vec![(0, packed4(10))], &seg0_id);
+        let points_reader0 = points::open(&kdm0, &kdi0, &kdd0, &seg0_id, "").unwrap();
+        // Source 1's own points data uses 8 bytes per dimension, disagreeing
+        // with the merged field's declared shape (4 bytes per dimension,
+        // taken from source 0's FieldInfo since it's first-seen).
+        let (kdm1, kdi1, kdd1) = write_one_field_points(
+            0,
+            1,
+            8,
+            vec![(0, vec![0u8, 0, 0, 0, 0, 0, 0, 42])],
+            &seg1_id,
+        );
+        let points_reader1 = points::open(&kdm1, &kdi1, &kdd1, &seg1_id, "").unwrap();
+
+        let fields = vec![points_field("loc", 0, 1, 4)];
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let stored0 = flush(&dir, &tmp, "_0", seg0_id, &fields, &[doc_with(0, "a")]);
+        let stored1 = flush(&dir, &tmp, "_1", seg1_id, &fields, &[doc_with(0, "b")]);
+        let reader0 = open_reader(&stored0);
+        let reader1 = open_reader(&stored1);
+
+        let src_points0 = [SourcePoints {
+            field_number: 0,
+            reader: &points_reader0,
+        }];
+        let src_points1 = [SourcePoints {
+            field_number: 0,
+            reader: &points_reader1,
+        }];
+        let source0 = MergeSource {
+            field_infos: &stored0.fields,
+            reader: &reader0,
+            live_docs: None,
+            numeric_doc_values: &[],
+            binary_doc_values: &[],
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &[],
+            norms: &[],
+            term_vectors: None,
+            postings: &[],
+            points: &src_points0,
+        };
+        let source1 = MergeSource {
+            field_infos: &stored1.fields,
+            reader: &reader1,
+            live_docs: None,
+            numeric_doc_values: &[],
+            binary_doc_values: &[],
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &[],
+            norms: &[],
+            term_vectors: None,
+            postings: &[],
+            points: &src_points1,
+        };
+
+        let result = merge_stored_only_segments(
+            &dir,
+            &[source0, source1],
+            "_merged_points_shape_mismatch",
+            [9u8; ID_LENGTH],
+            "Lucene104",
+            version(),
+        );
+        assert!(matches!(result, Err(Error::PointsShapeDisagreement { .. })));
+    }
+
+    /// Hand-builds a single-field, single-leaf `.kdm`/`.kdi`/`.kdd` triple
+    /// whose `num_index_dims` differs from `num_dims` -- a shape
+    /// [`lucene_codecs::points::write`] itself can never produce (it always
+    /// treats them as equal), but one the read side already tolerates, so
+    /// this exercises [`Error::PointsIndexDimsNotSupported`] without relying
+    /// on a write path that can't create the input in the first place.
+    fn build_index_dims_mismatch_points(
+        segment_id: &[u8; ID_LENGTH],
+    ) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        use lucene_store::codec_util;
+
+        let num_dims: i32 = 2;
+        let num_index_dims: i32 = 1;
+        let bytes_per_dim: i32 = 4;
+        let field_number: i32 = 0;
+
+        // -- kdd (data): index header, then one leaf block, then footer.
+        let mut kdd: Vec<u8> = Vec::new();
+        codec_util::write_index_header(&mut kdd, "Lucene90PointsFormatData", 1, segment_id, "");
+        let leaf_fp = kdd.len() as i64;
+        kdd.write_vint(1); // count
+        kdd.write_byte((-2i8) as u8); // CONTINUOUS_IDS
+        kdd.write_vint(0); // start doc id
+        kdd.write_vint(0); // common prefix, dim 0
+        kdd.write_vint(0); // common prefix, dim 1
+        kdd.write_byte((-2i8) as u8); // compressedDim marker: sparse run encoding
+                                      // num_index_dims == 1, so no per-leaf bounding box is written/read.
+        kdd.write_vint(1); // sub-block run length
+        kdd.write_bytes(&[0, 0, 0, 11]); // dim 0 value
+        kdd.write_bytes(&[0, 0, 0, 22]); // dim 1 value
+        codec_util::write_footer(&mut kdd);
+
+        // -- kdi (index): index header, then this field's packed index (a
+        // single leaf needs only its own file-pointer delta, matching
+        // `pack_index`'s `num_leaves == 1` top-level case).
+        let mut kdi: Vec<u8> = Vec::new();
+        codec_util::write_index_header(&mut kdi, "Lucene90PointsFormatIndex", 1, segment_id, "");
+        let index_start_pointer = kdi.len() as i64;
+        kdi.write_vlong(leaf_fp);
+        let num_index_bytes = (kdi.len() as i64 - index_start_pointer) as i32;
+        codec_util::write_footer(&mut kdi);
+
+        // -- kdm (meta): index header, one field entry, terminator, lengths,
+        // footer.
+        let mut kdm: Vec<u8> = Vec::new();
+        codec_util::write_index_header(&mut kdm, "Lucene90PointsFormatMeta", 1, segment_id, "");
+        kdm.write_i32(field_number);
+        codec_util::write_header(&mut kdm, "BKD", 10);
+        kdm.write_vint(num_dims);
+        kdm.write_vint(num_index_dims);
+        kdm.write_vint(512); // max_points_in_leaf_node
+        kdm.write_vint(bytes_per_dim);
+        kdm.write_vint(1); // num_leaves
+        kdm.write_bytes(&[0, 0, 0, 11]); // min_packed_value (num_index_dims * bytes_per_dim)
+        kdm.write_bytes(&[0, 0, 0, 11]); // max_packed_value
+        kdm.write_vlong(1); // point_count
+        kdm.write_vint(1); // doc_count
+        kdm.write_vint(num_index_bytes);
+        kdm.write_i64(leaf_fp); // min_leaf_block_fp (discarded on read)
+        kdm.write_i64(index_start_pointer);
+        kdm.write_i32(-1); // field-loop terminator
+        kdm.write_i64(kdi.len() as i64);
+        kdm.write_i64(kdd.len() as i64);
+        codec_util::write_footer(&mut kdm);
+
+        (kdm, kdi, kdd)
+    }
+
+    #[test]
+    fn points_index_dims_not_supported_is_rejected() {
+        let seg0_id = [1u8; ID_LENGTH];
+        let (kdm0, kdi0, kdd0) = build_index_dims_mismatch_points(&seg0_id);
+        let points_reader0 = points::open(&kdm0, &kdi0, &kdd0, &seg0_id, "").unwrap();
+
+        // The field's FieldInfo declares 2 dims/2 index dims to match the
+        // hand-built data's `num_dims`; only the points data itself has the
+        // unsupported `num_index_dims != num_dims` shape.
+        let fields = vec![points_field("loc", 0, 2, 4)];
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let stored0 = flush(&dir, &tmp, "_0", seg0_id, &fields, &[doc_with(0, "a")]);
+        let reader0 = open_reader(&stored0);
+
+        let src_points0 = [SourcePoints {
+            field_number: 0,
+            reader: &points_reader0,
+        }];
+        let source0 = MergeSource {
+            field_infos: &stored0.fields,
+            reader: &reader0,
+            live_docs: None,
+            numeric_doc_values: &[],
+            binary_doc_values: &[],
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &[],
+            norms: &[],
+            term_vectors: None,
+            postings: &[],
+            points: &src_points0,
+        };
+
+        let result = merge_stored_only_segments(
+            &dir,
+            &[source0],
+            "_merged_points_index_dims",
+            [9u8; ID_LENGTH],
+            "Lucene104",
+            version(),
+        );
+        assert!(matches!(
+            result,
+            Err(Error::PointsIndexDimsNotSupported { .. })
         ));
     }
 }
