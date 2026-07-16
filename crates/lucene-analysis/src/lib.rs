@@ -1458,6 +1458,61 @@ mod tests {
         }
     }
 
+    /// Porter's 1980 paper illustrates steps 1a/1b/1c with their own worked
+    /// vocabulary (distinct from the step 2/3/4 list already covered by
+    /// `porter_stem_step2_step3_step4_suffix_families`); this test traces
+    /// that vocabulary directly against the implementation to close a real
+    /// gap in this port's test coverage: step 1a's plural forms
+    /// (`caresses`/`ponies`/`ties`/`caress`/`cats`); step 1b's guards *not*
+    /// firing when they shouldn't (`feed` hits the `-eed` rule but
+    /// `m(fe) == 0` so it stays `feed`; `bled`/`sing` have no vowel before
+    /// `-ed`/`-ing` so they stay unchanged too) versus firing correctly
+    /// (`agreed`->`agre`, `plastered`->`plaster`, `motoring`->`motor`), plus
+    /// each of the three post-deletion cleanup branches (`-at`/`-bl`/`-iz`
+    /// append via `sized`->`size`; double-consonant-drop via
+    /// `hopping`->`hop`/`tanned`->`tan`/`falling`->`fall`/`hissing`->`hiss`/
+    /// `fizzed`->`fizz`; plain deletion with no cleanup needed via
+    /// `failing`->`fail`/`filing`->`file`); and step 1c's `-y`->`-i`
+    /// conversion (`happy`->`happi`) versus its vowel guard not firing
+    /// (`sky`->`sky`, since `sk` contains no vowel).
+    #[test]
+    fn porter_stem_step1a_step1b_step1c_paper_vocabulary() {
+        let cases: &[(&str, &str)] = &[
+            // Step 1a.
+            ("caresses", "caress"),
+            ("ponies", "poni"),
+            ("ties", "ti"),
+            ("caress", "caress"),
+            ("cats", "cat"),
+            // Step 1b: `-eed` with m==0 stays put; `-ed`/`-ing` with no vowel
+            // in the stem stays put too.
+            ("feed", "feed"),
+            ("agreed", "agre"),
+            ("plastered", "plaster"),
+            ("bled", "bled"),
+            ("motoring", "motor"),
+            ("sing", "sing"),
+            // Step 1b post-deletion cleanup, all three branches.
+            ("conflated", "conflat"),
+            ("troubled", "troubl"),
+            ("sized", "size"),
+            ("hopping", "hop"),
+            ("tanned", "tan"),
+            ("falling", "fall"),
+            ("hissing", "hiss"),
+            ("fizzed", "fizz"),
+            ("failing", "fail"),
+            ("filing", "file"),
+            // Step 1c.
+            ("happy", "happi"),
+            ("sky", "sky"),
+        ];
+        for (input, expected) in cases {
+            let out = PorterStemFilter::apply(vec![tok(input, 0, 1, 1)]);
+            assert_eq!(out[0].term, *expected, "stemming {input:?}");
+        }
+    }
+
     #[test]
     fn porter_stem_non_lowercase_ascii_passes_through_unchanged() {
         // Uppercase and non-ASCII terms are outside the algorithm's domain

@@ -5434,3 +5434,77 @@ writer ever actually produces.
 
 No code changes. Files touched: `PLAN.md`, `docs/parity.md` (progress-log
 entries only, recording the revisit and its outcome).
+
+## `PorterStemFilter` Porter2/Snowball parity check (revisit scope)
+
+Task brief: check whether task #65's stemmer is a simplified subset (e.g.
+just plural stripping) versus a real Porter2/Snowball-style algorithm with
+R1/R2 regions, compare against the Snowball English stemmer spec step-by-step
+(step 0/1a/1b/1c/2/3/4/5, R1/R2), and close high-value gaps.
+
+**Finding: the premise doesn't hold — this is not a simplified stemmer, and
+the relevant real-Lucene comparison point is the classic 1980 Porter
+algorithm, not Porter2/Snowball.** Rereading `lucene-analysis/src/lib.rs`'s
+`porter` module (task #65) confirms it already implements all five steps of
+Martin Porter's original 1980 algorithm faithfully — step 1a/1b/1c, the full
+20-entry step 2 suffix table, step 3's table, step 4's `m>1`-gated removals
+(including the `-ion` special case requiring the stem to end in `s`/`t`), and
+step 5a/5b — with a real `measure()` (`m`) computation, not a stand-in. That
+*is* what real Lucene's `EnglishAnalyzer` actually runs: `EnglishAnalyzer`
+wires up `PorterStemFilter`, whose Java implementation is a direct port of
+the classic Porter algorithm (`org.tartarus.snowball.ext.PorterStemmer`,
+generated from Snowball's `porter.sbl`, not `english.sbl`). The Porter2 /
+"Snowball English" stemmer — the R1/R2-region-based algorithm with step 0's
+apostrophe handling, doubled-consonant undoubling, and the exceptions table
+this task's brief describes — is a *different*, separate Snowball grammar.
+Real Lucene exposes it only via the general-purpose `SnowballFilter`
+constructed with the `English` variant (`new SnowballFilter(input, new
+EnglishStemmer())`), which `EnglishAnalyzer` does **not** use by default.
+So: the thing this port has already ported (task #65) is genuine, complete
+parity with real Lucene's actual default English stemming path. There is no
+missing R1/R2 computation to "wire through" here, because R1/R2 belongs to a
+different algorithm that isn't in scope for `PorterStemFilter` parity at all.
+
+**Real, tractable gap identified instead: test-vocabulary coverage of steps
+1a/1b/1c was thinner than steps 2/3/4.** The existing
+`porter_stem_step2_step3_step4_suffix_families` test already traces Porter's
+own paper's 47-word step 2-4 illustration list end to end, but steps 1a/1b/1c
+only had three ad hoc examples (`running`/`flies`/`happiness`,
+`flying`/`trying`). Porter's paper publishes its own worked vocabulary for
+steps 1a/1b/1c too, covering cases this port's tests didn't previously
+exercise directly: step 1a's `caresses`->`caress`/`ponies`->`poni`/
+`ties`->`ti`; step 1b's guard *not* firing (`feed`->`feed` since `m(fe)==0`;
+`bled`/`sing` unchanged since their stems have no vowel before `-ed`/`-ing`)
+versus firing (`agreed`->`agre`, `plastered`->`plaster`, `motoring`->`motor`)
+plus all three of its post-deletion cleanup branches exercised individually
+(`-at`/`-bl`/`-iz`-append via `sized`->`size`; double-consonant-drop via
+`hopping`->`hop`/`tanned`->`tan`/`falling`->`fall`/`hissing`->`hiss`/
+`fizzed`->`fizz`; plain deletion via `failing`->`fail`/`filing`->`file`); and
+step 1c's `happy`->`happi` versus its vowel guard not firing on `sky`->`sky`.
+Added one new test, `porter_stem_step1a_step1b_step1c_paper_vocabulary` (24
+cases), tracing this vocabulary directly against the implementation — all 24
+passed against the existing code with no changes needed to the algorithm
+itself, confirming (not just asserting) that the implementation is correct
+over this reference vocabulary, not merely that it was previously untested.
+
+**Decision: no algorithm changes.** The classic-Porter implementation is
+complete and correct against both the step 2-4 and (now) step 1a-1c
+canonical vocabularies. A real Porter2/Snowball-English stemmer is a
+legitimately separate, sizeable follow-on feature (its own step 0, R1/R2
+region computation threaded through nearly every later step, a different
+suffix table per step, and its own exceptions list) — not a fix or extension
+of `PorterStemFilter`, and not attempted here; `docs/parity.md`'s
+`PorterStemFilter` row now says so explicitly so a future reader doesn't
+mistake the existing port for Porter2 coverage or vice versa. A smaller
+alternative was weighed and rejected explicitly, not silently skipped:
+adding Porter2/Snowball-English as a new, separate, opt-in sibling filter
+(not touching `PorterStemFilter`) is real and tractable, but its own
+R1/R2-threading, step 0, doubled-consonant undoubling, and exception table
+are enough surface area to warrant a dedicated task rather than folding it
+into this one.
+
+Files touched: `crates/lucene-analysis/src/lib.rs` (one new test, no
+production-code changes), `docs/parity.md`, `PLAN.md`. `cargo test -p
+lucene-analysis` (54 lib tests, up from 53, all passing),
+`cargo clippy --workspace --all-targets -- -D warnings`, and
+`cargo fmt --all` all pass clean.
