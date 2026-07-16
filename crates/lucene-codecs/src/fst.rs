@@ -26,12 +26,20 @@
 //!   on-heap representation is ported: the FST body is a plain `Vec<u8>`
 //!   (`OnHeapFSTStore` with `bytesArray != null` writes/reads the body as one
 //!   contiguous forward byte array — see `OnHeapFSTStore.java`).
-//! - **Single output type: `BytesRef`-shaped (`ByteSequenceOutputs`).** This
-//!   is the output type real Lucene uses for the term index FST
-//!   (`Lucene90BlockTreeTermsReader`'s `.tip` FST maps term-prefix byte
-//!   sequences to concatenated block-pointer byte sequences), so it's the one
-//!   needed to eventually navigate BlockTree. Other output types
-//!   (`PositiveIntOutputs`, `PairOutputs`, ...) are not implemented.
+//! - **Single output type on the wire: `BytesRef`-shaped
+//!   (`ByteSequenceOutputs`).** This is the output type real Lucene uses for
+//!   the term index FST (`Lucene90BlockTreeTermsReader`'s `.tip` FST maps
+//!   term-prefix byte sequences to concatenated block-pointer byte
+//!   sequences), so it's the one needed to eventually navigate BlockTree.
+//!   `Fst`/`build_fst`/`build_node` are hardcoded to `Vec<u8>` outputs and
+//!   stay that way. Typed output values (`PositiveIntOutputs`,
+//!   `ByteSequenceOutputs`, `PairOutputs<A, B>`) are layered *on top of* that
+//!   single wire type via the `Outputs` trait and `build_fst_typed`/
+//!   `Fst::get_typed`, which just encode/decode a typed value to/from the
+//!   `Vec<u8>` this module already stores -- see the "Typed output values"
+//!   section near the bottom of this file for why that's a faithful (not a
+//!   corner-cut) port of `PairOutputs` given this builder never pushes
+//!   output prefixes toward the root.
 //! - **Variable-length ("list") arc nodes, plus all three fixed-length arc
 //!   node encodings.** Real Lucene's `FSTCompiler` also emits fixed-length
 //!   arc nodes for binary search (`ARCS_FOR_BINARY_SEARCH`), direct
@@ -2544,6 +2552,265 @@ pub fn write_fst(fst: &Fst<'_>) -> Vec<u8> {
     out
 }
 
+// --- Typed output values (`PositiveIntOutputs`, `PairOutputs`) ------------
+//
+// Everything above this point stores exactly one output type on the wire:
+// a raw byte sequence (`ByteSequenceOutputs`, matching `Fst::get`'s
+// `Result<Option<Vec<u8>>>` and `build_fst`'s `(Vec<u8>, Vec<u8>)` entries).
+// There is no generic `Outputs<T>`/arc-output abstraction underneath the
+// reader or `build_node` -- both are hardcoded to `Vec<u8>` -- and this
+// builder never pushes a shared output prefix up toward the root (see the
+// "FST construction" section doc above: "Output pushing down shared
+// prefixes ... deferred"). That absence of output-pushing is exactly what
+// makes the two typed output values below simple to add correctly: each
+// key's *entire* output value lives on the single arc leading to its
+// accepting node (same as today), so combining "two arcs from different
+// nodes get merged/shared" never has to reconcile an output already pushed
+// partway down one path with a different one pushed down another -- there
+// is no pushed output to reconcile. `build_node`'s existing `NodeHash`
+// dedup keys on each node's exact arc signature, which includes the
+// (encoded) final output bytes -- so two subtrees whose accepting arcs
+// carry different typed output values naturally get different signatures
+// and are never incorrectly merged; two subtrees whose typed values are
+// equal (and whose deeper structure also matches) naturally *are* merged,
+// which is the correct, space-saving behavior and is exercised by
+// `tests::pair_outputs_shared_suffix_nodes_keep_distinct_first_components`
+// below.
+//
+// Rather than threading a generic output type through `Fst`/`TrieNode`/
+// `build_node` (a much larger change touching the reader too), typed
+// support is layered *on top of* the existing byte-sequence machinery: an
+// `Outputs` trait describes how to encode a typed value to/from the
+// `Vec<u8>` this module already reads and writes, and `build_fst_typed`/
+// `Fst::get_typed` are thin encode/decode wrappers around `build_fst`/
+// `Fst::get`. This intentionally does not attempt real Lucene's separate
+// `add`/`common`/`subtract` operations (`Outputs.add/common/subtract`) --
+// those exist in real `FSTCompiler` purely to support output-pushing
+// (finding/removing a shared output prefix so it can be hoisted onto a
+// shared arc); since this builder never pushes outputs, there is no shared
+// prefix to find or subtract, so those operations would have no caller and
+// are omitted rather than stubbed out dishonestly.
+
+/// A typed FST output value, encoded to/from the raw `Vec<u8>` this module's
+/// `Fst`/`build_fst` already store on the wire. `Self::Value` mirrors real
+/// Lucene's `T` type parameter of `Outputs<T>`; `Self` itself is a
+/// zero-sized marker type selecting *which* codec applies (matching real
+/// Lucene's `Outputs<T>` being a singleton descriptor object distinct from
+/// the values `T` it produces).
+pub trait Outputs {
+    /// The typed output value this codec encodes/decodes, e.g. `i64` for
+    /// `PositiveIntOutputs` or `Vec<u8>` for `ByteSequenceOutputs`.
+    type Value: Clone + PartialEq;
+
+    /// `Outputs.getNoOutput()`: the identity/absent value (real Lucene's
+    /// `NO_OUTPUT` sentinel), e.g. `0i64` or the empty byte sequence. Must
+    /// encode to the empty `Vec<u8>` so it lines up with this module's
+    /// existing "empty output bytes -> `BIT_ARC_HAS_(FINAL_)OUTPUT` unset"
+    /// convention in `build_node`/`read_arc` -- i.e. a key whose typed
+    /// output is `zero()` costs no extra output bytes on the wire, same as
+    /// today's plain `Vec<u8>` empty-output keys.
+    fn zero() -> Self::Value;
+
+    /// Encode `value` to the byte sequence `build_fst`/`Fst::get` store and
+    /// return respectively.
+    fn encode(value: &Self::Value) -> Vec<u8>;
+
+    /// Decode a byte sequence previously produced by `encode` (only ever
+    /// called on bytes this same `Outputs` impl produced, never validated
+    /// against a foreign encoding).
+    fn decode(bytes: &[u8]) -> Self::Value;
+}
+
+/// Forward (non-reversed) `vint` reader over a plain slice -- the encode
+/// direction's counterpart to `write_vint` (also forward) and distinct from
+/// `BytesReader::read_vint`, which walks its cursor *backwards* to match the
+/// on-disk FST body's own reverse-read convention. Typed output *values*
+/// (this section) are encoded/decoded independently of that body layout, in
+/// ordinary forward byte order, since they're just the payload `build_node`
+/// copies verbatim into an arc's final-output bytes. Returns `(value,
+/// bytes_consumed)`.
+fn read_vint_forward(bytes: &[u8]) -> (i32, usize) {
+    let mut idx = 0usize;
+    let mut b = bytes[idx];
+    idx += 1;
+    let mut v = (b & 0x7f) as i32;
+    let mut shift = 7;
+    while b & 0x80 != 0 {
+        b = bytes[idx];
+        idx += 1;
+        v |= ((b & 0x7f) as i32) << shift;
+        shift += 7;
+    }
+    (v, idx)
+}
+
+/// Forward `vlong` reader, `read_vint_forward`'s 64-bit counterpart (used by
+/// `PositiveIntOutputs::decode`).
+fn read_vlong_forward(bytes: &[u8]) -> (i64, usize) {
+    let mut idx = 0usize;
+    let mut b = bytes[idx];
+    idx += 1;
+    let mut v = (b & 0x7f) as i64;
+    let mut shift = 7;
+    while b & 0x80 != 0 {
+        b = bytes[idx];
+        idx += 1;
+        v |= ((b & 0x7f) as i64) << shift;
+        shift += 7;
+    }
+    (v, idx)
+}
+
+/// Port of `PositiveIntOutputs`: an FST output type whose value is a single
+/// non-negative `i64` (real Lucene rejects negative values; this port
+/// mirrors that with a `debug_assert`, since silently wrapping/rejecting in
+/// release builds isn't this slice's concern and every current caller is a
+/// test). `NO_OUTPUT` is `0`, matching real Lucene, which is why it encodes
+/// to the empty byte sequence (see `Outputs::zero`'s doc comment).
+pub struct PositiveIntOutputs;
+
+impl Outputs for PositiveIntOutputs {
+    type Value = i64;
+
+    fn zero() -> i64 {
+        0
+    }
+
+    fn encode(value: &i64) -> Vec<u8> {
+        debug_assert!(
+            *value >= 0,
+            "PositiveIntOutputs requires non-negative values, got {value}"
+        );
+        if *value == 0 {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        write_vlong(&mut out, *value);
+        out
+    }
+
+    fn decode(bytes: &[u8]) -> i64 {
+        if bytes.is_empty() {
+            return 0;
+        }
+        let (value, consumed) = read_vlong_forward(bytes);
+        debug_assert_eq!(
+            consumed,
+            bytes.len(),
+            "PositiveIntOutputs::decode: trailing bytes"
+        );
+        value
+    }
+}
+
+/// Port of `ByteSequenceOutputs`, expressed as an `Outputs` impl: the
+/// identity codec, matching what `build_fst`/`Fst::get` already do directly
+/// for plain `(Vec<u8>, Vec<u8>)` callers. Exists so `PairOutputs<A, B>` can
+/// use it as either component type (e.g. `PairOutputs<PositiveIntOutputs,
+/// ByteSequenceOutputs>`, the shape real Lucene's synonym/suggest
+/// infrastructure uses for `PairOutputs<Long, BytesRef>`).
+pub struct ByteSequenceOutputs;
+
+impl Outputs for ByteSequenceOutputs {
+    type Value = Vec<u8>;
+
+    fn zero() -> Vec<u8> {
+        Vec::new()
+    }
+
+    fn encode(value: &Vec<u8>) -> Vec<u8> {
+        value.clone()
+    }
+
+    fn decode(bytes: &[u8]) -> Vec<u8> {
+        bytes.to_vec()
+    }
+}
+
+/// Port of `PairOutputs.Pair<A, B>`: a value combining two independent
+/// component output values.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pair<A, B> {
+    pub first: A,
+    pub second: B,
+}
+
+/// Port of `PairOutputs<A, B>`: combines two independent `Outputs` codecs
+/// (`A`, `B`) into one `Outputs` impl over `Pair<A::Value, B::Value>`, so a
+/// single FST can map each key to both an `A`-typed and a `B`-typed output
+/// simultaneously (e.g. a weight *and* a payload per key, as real Lucene's
+/// synonym/suggest FSTs do with `PairOutputs<Long, BytesRef>`).
+///
+/// Encoding: if both components encode to the empty byte sequence (i.e. the
+/// pair *is* `zero()`), the whole pair also encodes to the empty byte
+/// sequence -- preserving the "no output bytes for a no-op key" convention
+/// `Outputs::zero`'s doc comment describes, rather than always paying a
+/// length-prefix byte even for an all-zero pair. Otherwise: the first
+/// component's encoded length (`vint`), then its encoded bytes, then the
+/// second component's encoded bytes filling the remainder (no length prefix
+/// needed for the second component since it's always everything left).
+pub struct PairOutputs<A, B>(std::marker::PhantomData<(A, B)>);
+
+impl<A: Outputs, B: Outputs> Outputs for PairOutputs<A, B> {
+    type Value = Pair<A::Value, B::Value>;
+
+    fn zero() -> Self::Value {
+        Pair {
+            first: A::zero(),
+            second: B::zero(),
+        }
+    }
+
+    fn encode(value: &Self::Value) -> Vec<u8> {
+        let first = A::encode(&value.first);
+        let second = B::encode(&value.second);
+        if first.is_empty() && second.is_empty() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        write_vint(&mut out, first.len() as i32);
+        out.extend_from_slice(&first);
+        out.extend_from_slice(&second);
+        out
+    }
+
+    fn decode(bytes: &[u8]) -> Self::Value {
+        if bytes.is_empty() {
+            return Self::zero();
+        }
+        let (first_len, header_len) = read_vint_forward(bytes);
+        let first_len = first_len as usize;
+        let first_bytes = &bytes[header_len..header_len + first_len];
+        let second_bytes = &bytes[header_len + first_len..];
+        Pair {
+            first: A::decode(first_bytes),
+            second: B::decode(second_bytes),
+        }
+    }
+}
+
+/// Typed equivalent of `build_fst`: encodes each entry's `O::Value` output
+/// via `O::encode` before delegating to the existing byte-sequence builder.
+/// `entries` must be sorted in strictly ascending key order, exactly like
+/// `build_fst`.
+pub fn build_fst_typed<O: Outputs>(
+    entries: &[(Vec<u8>, O::Value)],
+) -> std::result::Result<Fst<'static>, BuildError> {
+    let byte_entries: Vec<(Vec<u8>, Vec<u8>)> = entries
+        .iter()
+        .map(|(key, value)| (key.clone(), O::encode(value)))
+        .collect();
+    build_fst(&byte_entries)
+}
+
+impl<'a> Fst<'a> {
+    /// Typed equivalent of `Fst::get`: looks up `key` and decodes its
+    /// accumulated output bytes via `O::decode`.
+    pub fn get_typed<O: Outputs>(&self, key: &[u8]) -> Result<Option<O::Value>> {
+        Ok(self.get(key)?.map(|bytes| O::decode(&bytes)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4220,5 +4487,153 @@ mod tests {
                 prefixes[0]
             );
         }
+    }
+
+    // --- Typed outputs: `PositiveIntOutputs` / `PairOutputs` ---------------
+
+    type WeightedEntry = (Vec<u8>, Pair<i64, Vec<u8>>);
+
+    #[test]
+    fn positive_int_outputs_round_trips_values_including_zero() {
+        let entries: Vec<(Vec<u8>, i64)> = vec![
+            (b"a".to_vec(), 0),
+            (b"apple".to_vec(), 1),
+            (b"banana".to_vec(), 300),
+            (b"grape".to_vec(), i64::MAX),
+        ];
+        let fst = build_fst_typed::<PositiveIntOutputs>(&entries).unwrap();
+        for (key, value) in &entries {
+            assert_eq!(
+                fst.get_typed::<PositiveIntOutputs>(key).unwrap(),
+                Some(*value),
+                "get_typed({key:?})"
+            );
+        }
+        assert_eq!(
+            fst.get_typed::<PositiveIntOutputs>(b"missing").unwrap(),
+            None
+        );
+
+        // NO_OUTPUT (0) must encode to zero extra bytes, same as a plain
+        // empty `Vec<u8>` output today.
+        assert_eq!(PositiveIntOutputs::encode(&0), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn pair_outputs_round_trips_both_components_over_a_shared_prefix_key_set() {
+        // A realistic key set with both shared prefixes ("band"/"banana"/
+        // "bandana") and a shared suffix ("cat"/"bat", stressing interaction
+        // with `build_node`'s suffix-sharing dedup) -- every key gets a
+        // distinct (weight, payload) pair and both components must read
+        // back correctly regardless of which nodes ended up shared.
+        type Weighted = PairOutputs<PositiveIntOutputs, ByteSequenceOutputs>;
+        let entries: Vec<WeightedEntry> = vec![
+            (
+                b"banana".to_vec(),
+                Pair {
+                    first: 4,
+                    second: b"fruit".to_vec(),
+                },
+            ),
+            (
+                b"band".to_vec(),
+                Pair {
+                    first: 5,
+                    second: b"music".to_vec(),
+                },
+            ),
+            (
+                b"bandana".to_vec(),
+                Pair {
+                    first: 6,
+                    second: b"headwear".to_vec(),
+                },
+            ),
+            (
+                b"bat".to_vec(),
+                Pair {
+                    first: 1,
+                    second: Vec::new(),
+                },
+            ),
+            (
+                b"cat".to_vec(),
+                Pair {
+                    first: 2,
+                    second: b"meow".to_vec(),
+                },
+            ),
+        ];
+        let sorted = {
+            let mut e = entries.clone();
+            e.sort_by(|a, b| a.0.cmp(&b.0));
+            e
+        };
+        let fst = build_fst_typed::<Weighted>(&sorted).unwrap();
+
+        for (key, value) in &entries {
+            let got = fst.get_typed::<Weighted>(key).unwrap();
+            assert_eq!(got.as_ref(), Some(value), "get_typed({key:?})");
+        }
+        assert_eq!(fst.get_typed::<Weighted>(b"ba").unwrap(), None);
+    }
+
+    #[test]
+    fn pair_outputs_shared_suffix_nodes_keep_distinct_first_components() {
+        // Highest-risk interaction with suffix sharing: "bat" and "cat" would
+        // share their tail node under plain `ByteSequenceOutputs` (see
+        // `build_fst_shares_identical_suffix_node_across_two_prefixes`
+        // above), but here their *entire* output lives on that same final
+        // arc and differs per key (different `Pair` values) -- so the two
+        // subtrees must NOT collapse to one shared node this time, and each
+        // key's distinct pair must still read back correctly.
+        type Weighted = PairOutputs<PositiveIntOutputs, ByteSequenceOutputs>;
+        let entries: Vec<WeightedEntry> = vec![
+            (
+                b"bat".to_vec(),
+                Pair {
+                    first: 1,
+                    second: b"flying".to_vec(),
+                },
+            ),
+            (
+                b"cat".to_vec(),
+                Pair {
+                    first: 2,
+                    second: b"purring".to_vec(),
+                },
+            ),
+        ];
+        let fst = build_fst_typed::<Weighted>(&entries).unwrap();
+
+        let after_b = node_after_prefix(&fst, b"b");
+        let after_c = node_after_prefix(&fst, b"c");
+        assert_ne!(
+            after_b, after_c,
+            "distinct per-key Pair outputs on the shared-shape \"at\" tail must prevent node sharing"
+        );
+
+        assert_eq!(
+            fst.get_typed::<Weighted>(b"bat").unwrap(),
+            Some(Pair {
+                first: 1,
+                second: b"flying".to_vec()
+            })
+        );
+        assert_eq!(
+            fst.get_typed::<Weighted>(b"cat").unwrap(),
+            Some(Pair {
+                first: 2,
+                second: b"purring".to_vec()
+            })
+        );
+    }
+
+    #[test]
+    fn pair_outputs_zero_value_encodes_to_no_extra_bytes() {
+        type IntPair = PairOutputs<PositiveIntOutputs, PositiveIntOutputs>;
+        let zero = <IntPair as Outputs>::zero();
+        assert_eq!(IntPair::encode(&zero), Vec::<u8>::new());
+        assert_eq!(IntPair::decode(&[]), zero);
     }
 }

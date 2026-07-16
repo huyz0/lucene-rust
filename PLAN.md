@@ -4556,3 +4556,61 @@ clean; `cargo test -p lucene-codecs` passes (72 `fst::` unit tests, up from
 `docs/parity.md`'s FST row for the parity-tracking update -- the row now
 states minimization is done and only real `FSTCompiler`'s incremental/
 memory-bounded construction and output-pushing remain deferred.
+
+
+**Progress (task: FST `PairOutputs` support).** `crates/lucene-codecs/src/fst.rs`
+gained a typed output-value layer: an `Outputs` trait (`zero`/`encode`/`decode`)
+plus three implementations -- `PositiveIntOutputs` (`i64`, `NO_OUTPUT = 0`
+encoding to zero bytes, matching real Lucene's sentinel), `ByteSequenceOutputs`
+(identity codec over the `Vec<u8>` `Fst`/`build_fst` already use), and
+`PairOutputs<A, B>` (`Pair<A::Value, B::Value>`, combining two independent
+output types the way real Lucene's synonym/suggest FSTs combine a weight and a
+payload) -- plus `build_fst_typed::<O>`/`Fst::get_typed::<O>` wrapper functions
+that just encode/decode a typed value to/from the byte sequence `build_fst`/
+`Fst::get` already store and return.
+
+Investigated first, per the `differential-testing`/`parity-tracking` skills'
+"read the current state fresh" rule, rather than assuming the prior task
+report's framing: the module's doc comment already stated `PositiveIntOutputs`
+and `PairOutputs` were *not* implemented (contrary to this task's initial
+premise that `PositiveIntOutputs` already existed from an earlier task --
+grep confirmed no such code anywhere in the crate), and, more importantly,
+that this port's builder does **not** do real Lucene's output-pushing
+(pushing a shared output prefix toward the root during minimization) --
+confirmed by re-reading the "FST construction" section doc, which explicitly
+lists "Output pushing down shared prefixes" as deferred, each key's whole
+output living on the single arc leading to its accepting node. That absence
+is exactly what makes `PairOutputs` simple to add correctly here: combining
+two arcs' outputs when nodes are merged/shared during suffix-sharing dedup
+never has to reconcile an output already pushed partway down one path with a
+different one pushed down another, since nothing is ever pushed. `build_node`'s
+existing `NodeHash` already keys node identity on each node's exact
+(encoded) final-output bytes, so two subtrees whose typed values are equal
+still dedup correctly and two subtrees whose typed values differ never
+incorrectly merge -- verified directly, not just assumed, by
+`pair_outputs_shared_suffix_nodes_keep_distinct_first_components`: `"bat"`/
+`"cat"` would share their tail node under plain byte outputs (as the prior
+minimization task's own test proved), but distinct per-key `Pair` values on
+that same arc shape must, and do, prevent the dedup from merging them.
+
+Given there was no existing generic output-type abstraction to plug into
+(unlike this task's initial premise assumed), `PairOutputs` is layered *on
+top of* the existing byte-sequence-only `Fst`/`build_fst`/`build_node`
+machinery via the encode/decode `Outputs` trait, rather than threading a
+generic output parameter through the reader and builder themselves (a much
+larger change touching the wire-format reader too, out of scope for this
+task and not needed for correctness here). Real Lucene's `Outputs.add`/
+`common`/`subtract` operations are deliberately not ported: they exist
+solely to support output-pushing, which this builder doesn't do, so they'd
+have no caller.
+
+New tests in `fst.rs::tests`: `positive_int_outputs_round_trips_values_including_zero`,
+`pair_outputs_round_trips_both_components_over_a_shared_prefix_key_set`
+(a `band`/`banana`/`bandana`/`bat`/`cat` key set mixing prefix- and
+suffix-sharing, both components read back correctly per key),
+`pair_outputs_shared_suffix_nodes_keep_distinct_first_components` (the
+highest-risk suffix-sharing-vs-distinct-output interaction, above), and
+`pair_outputs_zero_value_encodes_to_no_extra_bytes`. `cargo fmt --all`
+clean; `cargo clippy --workspace --all-targets -- -D warnings` clean;
+`cargo test -p lucene-codecs` passes (681 tests, up from 677). See
+`docs/parity.md`'s FST row for the parity-tracking update.
