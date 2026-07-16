@@ -412,6 +412,29 @@ read identically to one `FSTCompiler` would have produced. See
   whose `compare` always returns `CELL_CROSSES_QUERY`, forcing Lucene's
   own reader to fully decode every point rather than taking a
   bounding-box shortcut, not our own arithmetic.
+
+  Every doc also gets a second, 2-dimension `IntPoint` field ("multi"):
+  dim0 is `i` run through an odd multiplicative hash (bijective mod 2^32,
+  spreading doc ids across the full 32-bit range) and dim1 is `i % 4`
+  (only 4 distinct values). That shape is deliberate: it's what makes
+  real `BKDWriter`'s per-leaf `sortedDim` selection (lowest in-leaf
+  cardinality wins) reliably pick dim1, not dim0, so every leaf is
+  written with a nonzero `compressedDim` — exercising the leaf decoder's
+  `compressed_dim * bytes_per_dim + ...` offset math at a real
+  dimension index instead of only ever at 0 (which is all the
+  single-dimension "val" field can produce). A naive sequential dim0
+  (just `i`) doesn't work here: `BKDWriter`'s recursive range-narrowing
+  squeezes such a narrow-range dimension's in-leaf cardinality down to
+  1-2 distinct bytes, which ties or beats dim1's fixed cardinality and
+  keeps `compressedDim` at 0 in every leaf — confirmed by instrumenting
+  `read_leaf_block` with a temporary debug print, not just by reasoning
+  about it. The generator mechanically double-checks this at generation
+  time via `CompressedDimSpy.java` (see that file), which independently
+  re-reads the raw per-leaf `compressedDim` byte straight out of the
+  written `.kdd`/`.kdi` bytes without going through this port's own
+  decoder, and fails the build if no leaf ever has `compressedDim >= 1`;
+  the observed value is also recorded in the `multi_leaf_compressed_dims`
+  manifest key so the Rust differential test can assert on it directly.
 - `GenFst.java` — a real `FST<BytesRef>` (`fst/` subdirectory) built via
   real `FSTCompiler` with `ByteSequenceOutputs` (the output type real
   Lucene's term index FST uses) and `allowFixedLengthArcs(false)` (so it
