@@ -213,6 +213,7 @@ pub use multi_segment::{
     search_boolean_query_multi_segment_concurrent, search_term_query_multi_segment,
     search_term_query_multi_segment_concurrent, OpenSegment,
 };
+pub use points_query::{pack_i64, search_points_range, PointsInput};
 pub use query::{
     BooleanQuery, BoostQuery, Clause, ConstantScoreQuery, DisjunctionMaxQuery, FuzzyQuery,
     MatchAllDocsQuery, MatchNoDocsQuery, PhraseQuery, PrefixQuery, RegexpQuery, SpanQuery,
@@ -276,20 +277,23 @@ pub enum Error {
     #[error(transparent)]
     Points(#[from] lucene_codecs::points::Error),
     /// A [`Clause::PointsRange`] (task #64's `field:[min TO max]` query-parser
-    /// syntax) reached [`resolve_clause_docs`]/[`clause_scores`]/
-    /// [`crate::explain::explain_clause`] -- this crate parses that syntax
-    /// into a structured clause but does not yet resolve it against a
-    /// segment (see [`crate::query::PointsRangeQuery`]'s doc comment: this
-    /// clause is deliberately not wired to
-    /// [`points_query::search_points_range`] yet, unlike every other leaf
-    /// `Clause` variant). Surfaced as an explicit error rather than silently
-    /// matching nothing, since "parsed but unexecutable" is a caller-visible
-    /// gap, not an empty-result query.
+    /// syntax) reached [`resolve_clause_docs`]/[`clause_scores`] with no
+    /// [`points_query::PointsInput`] supplied -- same "this clause needs an
+    /// opened resource this call didn't provide" shape as
+    /// [`Error::MissingPosInput`] for a multi-term [`PhraseQuery`], not a
+    /// permanent gap: [`crate::explain::explain_clause`] never has a
+    /// `PointsInput` to pass (see that module's own scope note) and so always
+    /// surfaces this for a `Clause::PointsRange`, but
+    /// [`search_boolean_query`]/[`search_boolean_query_scored`]/
+    /// [`search_disjunction_max_query`]/[`search_disjunction_max_query_scored`]
+    /// resolve it against a real segment's BKD points data
+    /// ([`points_query::search_points_range`]) whenever a caller passes
+    /// `points: Some(..)`.
     #[error(
-        "Clause::PointsRange is parsed but not yet executable (field {0:?}); \
-         see PointsRangeQuery's doc comment"
+        "Clause::PointsRange needs an opened PointsInput (.kdm/.kdi/.kdd) to execute \
+         (field {0:?})"
     )]
-    UnexecutablePointsRange(String),
+    MissingPointsInput(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -578,6 +582,13 @@ fn term_in_set_doc_ids(
 /// a query with no multi-term phrase clause; passing `None` for a query that
 /// turns out to need it surfaces as [`Error::MissingPosInput`], same convention
 /// as [`search_phrase_query`].
+///
+/// `points` (task #199's addition): the segment's opened `.kdm`/`.kdi`/`.kdd`
+/// BKD points data plus field infos, bundled as a [`points_query::PointsInput`]
+/// -- needed only when `query` (at any nesting depth) contains a
+/// `Clause::PointsRange`. `None` is fine for a query with no such clause;
+/// passing `None` for a query that turns out to need it surfaces as
+/// [`Error::MissingPointsInput`], same convention as `pos_in`/`pay_in` above.
 #[allow(clippy::too_many_arguments)]
 pub fn search_boolean_query<C: Collector>(
     fields: &BlockTreeFields,
@@ -585,10 +596,12 @@ pub fn search_boolean_query<C: Collector>(
     pos_in: Option<&PosInput<'_>>,
     pay_in: Option<&PayInput<'_>>,
     live_docs: Option<&FixedBitSet>,
+    points: Option<&PointsInput<'_>>,
     query: &BooleanQuery,
     collector: &mut C,
 ) -> Result<()> {
-    let Some(matched) = matched_boolean_docs(fields, doc_in, pos_in, pay_in, live_docs, query)?
+    let Some(matched) =
+        matched_boolean_docs(fields, doc_in, pos_in, pay_in, live_docs, points, query)?
     else {
         return Ok(());
     };
@@ -636,12 +649,14 @@ pub(crate) fn should_match_counts(should_docs: &[Vec<i32>]) -> HashMap<i32, usiz
 ///   matches into a `Vec` via a local [`VecCollector`], reusing that function's
 ///   matching logic (missing field/term/degenerate-single-term handling and
 ///   all) rather than duplicating it.
+#[allow(clippy::too_many_arguments)]
 fn resolve_clause_docs(
     fields: &BlockTreeFields,
     doc_in: Option<&DocInput<'_>>,
     pos_in: Option<&PosInput<'_>>,
     pay_in: Option<&PayInput<'_>>,
     live_docs: Option<&FixedBitSet>,
+    points: Option<&PointsInput<'_>>,
     clause: &Clause,
 ) -> Result<Vec<i32>> {
     match clause {
@@ -660,29 +675,82 @@ fn resolve_clause_docs(
             Ok(collector.docs)
         }
         Clause::Boolean(nested) => Ok(matched_boolean_docs(
-            fields, doc_in, pos_in, pay_in, live_docs, nested,
+            fields, doc_in, pos_in, pay_in, live_docs, points, nested,
         )?
         .map(Iterator::collect)
         .unwrap_or_default()),
         Clause::DisjunctionMax(nested) => {
-            resolve_dismax_docs(fields, doc_in, pos_in, pay_in, live_docs, nested)
+            resolve_dismax_docs(fields, doc_in, pos_in, pay_in, live_docs, points, nested)
         }
-        Clause::ConstantScore(nested) => {
-            resolve_clause_docs(fields, doc_in, pos_in, pay_in, live_docs, &nested.inner)
-        }
-        Clause::Boost(nested) => {
-            resolve_clause_docs(fields, doc_in, pos_in, pay_in, live_docs, &nested.inner)
-        }
+        Clause::ConstantScore(nested) => resolve_clause_docs(
+            fields,
+            doc_in,
+            pos_in,
+            pay_in,
+            live_docs,
+            points,
+            &nested.inner,
+        ),
+        Clause::Boost(nested) => resolve_clause_docs(
+            fields,
+            doc_in,
+            pos_in,
+            pay_in,
+            live_docs,
+            points,
+            &nested.inner,
+        ),
         Clause::Wildcard(query) => wildcard_doc_ids(fields, doc_in, live_docs, query),
         Clause::Prefix(query) => prefix_doc_ids(fields, doc_in, live_docs, query),
         Clause::Fuzzy(query) => fuzzy_doc_ids(fields, doc_in, live_docs, query),
         Clause::Regexp(query) => regexp_doc_ids(fields, doc_in, live_docs, query),
         Clause::Span(query) => span_doc_ids(fields, doc_in, pos_in, pay_in, live_docs, query),
-        Clause::PointsRange(query) => Err(Error::UnexecutablePointsRange(query.field.clone())),
+        Clause::PointsRange(query) => points_range_doc_ids(points, live_docs, query),
         Clause::MatchAllDocs(query) => Ok(match_all_doc_ids(live_docs, query.max_doc)),
         Clause::MatchNoDocs(_) => Ok(Vec::new()),
         Clause::TermInSet(query) => term_in_set_doc_ids(fields, doc_in, live_docs, query),
     }
+}
+
+/// [`Clause::PointsRange`]'s matched doc-ID list (task #199's addition):
+/// looks `query.field`'s number up from `points`'s [`PointsInput::field_infos`],
+/// packs `query.min`/`query.max` via [`points_query::pack_i64`] (real
+/// Lucene's `LongPoint` sortable-bytes encoding -- see that function's doc
+/// comment), then delegates to [`points_query::search_points_range`] --
+/// the same "look the number up, reopen/reuse the reader, delegate" sequence
+/// `lucene_ffi::points_query::ffi_search_points_range` already performs at
+/// the C-ABI boundary, one layer down.
+///
+/// `points: None` (no `.kdm`/`.kdi`/`.kdd` opened for this call) is
+/// [`Error::MissingPointsInput`] -- a genuine capability gap for *this* call,
+/// not "no matches" (mirrors [`Error::MissingPosInput`]'s same "the caller
+/// needed to open this input and didn't" precedent). An unknown field name
+/// (present in the query but absent from `points.field_infos`) instead
+/// returns an empty `Vec`, matching every other clause's "missing field means
+/// no matches" convention (see [`term_doc_ids`]'s doc comment).
+fn points_range_doc_ids(
+    points: Option<&PointsInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    query: &query::PointsRangeQuery,
+) -> Result<Vec<i32>> {
+    let Some(points) = points else {
+        return Err(Error::MissingPointsInput(query.field.clone()));
+    };
+    let Some(field_number) = points.field_number(&query.field) else {
+        return Ok(Vec::new());
+    };
+    let min_packed = points_query::pack_i64(query.min);
+    let max_packed = points_query::pack_i64(query.max);
+    let mut collector = collector::VecCollector::default();
+    points_query::search_points_range(
+        &points.reader,
+        live_docs,
+        field_number,
+        &min_packed,
+        &max_packed,
+        &mut collector,
+    )?;
+    Ok(collector.docs)
 }
 
 /// [`Clause::MatchAllDocs`]'s matched doc-ID list: every live doc in
@@ -704,12 +772,14 @@ pub(crate) fn match_all_doc_ids(live_docs: Option<&FixedBitSet>, max_doc: i32) -
 /// then merged through the same [`Disjunction`] iterator `matched_boolean_docs`
 /// uses for its own `should`-only case, deduplicated and sorted ascending by
 /// construction.
+#[allow(clippy::too_many_arguments)]
 fn resolve_dismax_docs(
     fields: &BlockTreeFields,
     doc_in: Option<&DocInput<'_>>,
     pos_in: Option<&PosInput<'_>>,
     pay_in: Option<&PayInput<'_>>,
     live_docs: Option<&FixedBitSet>,
+    points: Option<&PointsInput<'_>>,
     query: &DisjunctionMaxQuery,
 ) -> Result<Vec<i32>> {
     if query.disjuncts.is_empty() {
@@ -721,7 +791,9 @@ fn resolve_dismax_docs(
     let doc_lists: Vec<Vec<i32>> = query
         .disjuncts
         .iter()
-        .map(|clause| resolve_clause_docs(fields, doc_in, pos_in, pay_in, live_docs, clause))
+        .map(|clause| {
+            resolve_clause_docs(fields, doc_in, pos_in, pay_in, live_docs, points, clause)
+        })
         .collect::<Result<_>>()?;
     let iters: Vec<BoxDocIter<'static>> = doc_lists
         .into_iter()
@@ -750,6 +822,7 @@ fn matched_boolean_docs(
     pos_in: Option<&PosInput<'_>>,
     pay_in: Option<&PayInput<'_>>,
     live_docs: Option<&FixedBitSet>,
+    points: Option<&PointsInput<'_>>,
     query: &BooleanQuery,
 ) -> Result<Option<BoxDocIter<'static>>> {
     if query.must.is_empty() && query.should.is_empty() {
@@ -762,7 +835,9 @@ fn matched_boolean_docs(
     let clause_docs = |clauses: &[Clause]| -> Result<Vec<Vec<i32>>> {
         clauses
             .iter()
-            .map(|clause| resolve_clause_docs(fields, doc_in, pos_in, pay_in, live_docs, clause))
+            .map(|clause| {
+                resolve_clause_docs(fields, doc_in, pos_in, pay_in, live_docs, points, clause)
+            })
             .collect()
     };
 
@@ -1118,12 +1193,14 @@ pub mod test_only_maxscore_block_skip_counter {
 ///   local [`ScoringCollector`] (a tiny inline impl, since neither existing
 ///   collector in `collector.rs` needs to be shared for this one-shot use), keyed
 ///   by `query.field` in `norms` same as `Clause::Term`.
+#[allow(clippy::too_many_arguments)]
 fn clause_scores(
     fields: &BlockTreeFields,
     doc_in: Option<&DocInput<'_>>,
     pos_in: Option<&PosInput<'_>>,
     pay_in: Option<&PayInput<'_>>,
     live_docs: Option<&FixedBitSet>,
+    points: Option<&PointsInput<'_>>,
     clause: &Clause,
     norms: Option<&HashMap<String, FieldNorms<'_>>>,
 ) -> Result<HashMap<i32, f32>> {
@@ -1161,7 +1238,7 @@ fn clause_scores(
         }
         Clause::Boolean(nested) => {
             let Some(matched) =
-                matched_boolean_docs(fields, doc_in, pos_in, pay_in, live_docs, nested)?
+                matched_boolean_docs(fields, doc_in, pos_in, pay_in, live_docs, points, nested)?
             else {
                 return Ok(HashMap::new());
             };
@@ -1169,9 +1246,9 @@ fn clause_scores(
 
             let mut scores: HashMap<i32, f32> = HashMap::new();
             for sub_clause in nested.must.iter().chain(nested.should.iter()) {
-                for (doc_id, score) in
-                    clause_scores(fields, doc_in, pos_in, pay_in, live_docs, sub_clause, norms)?
-                {
+                for (doc_id, score) in clause_scores(
+                    fields, doc_in, pos_in, pay_in, live_docs, points, sub_clause, norms,
+                )? {
                     if matched.contains(&doc_id) {
                         *scores.entry(doc_id).or_insert(0.0) += score;
                     }
@@ -1179,12 +1256,19 @@ fn clause_scores(
             }
             Ok(scores)
         }
-        Clause::DisjunctionMax(nested) => {
-            dismax_scores(fields, doc_in, pos_in, pay_in, live_docs, nested, norms)
-        }
+        Clause::DisjunctionMax(nested) => dismax_scores(
+            fields, doc_in, pos_in, pay_in, live_docs, points, nested, norms,
+        ),
         Clause::ConstantScore(nested) => {
-            let matched =
-                resolve_clause_docs(fields, doc_in, pos_in, pay_in, live_docs, &nested.inner)?;
+            let matched = resolve_clause_docs(
+                fields,
+                doc_in,
+                pos_in,
+                pay_in,
+                live_docs,
+                points,
+                &nested.inner,
+            )?;
             Ok(matched
                 .into_iter()
                 .map(|doc_id| (doc_id, nested.score))
@@ -1197,6 +1281,7 @@ fn clause_scores(
                 pos_in,
                 pay_in,
                 live_docs,
+                points,
                 &nested.inner,
                 norms,
             )?;
@@ -1256,7 +1341,17 @@ fn clause_scores(
                 .map(|doc_id| (doc_id, 1.0_f32))
                 .collect())
         }
-        Clause::PointsRange(query) => Err(Error::UnexecutablePointsRange(query.field.clone())),
+        Clause::PointsRange(query) => {
+            // Unscored: flat 1.0 per matching doc -- real Lucene's
+            // `PointRangeQuery` is `ConstantScoreQuery`-shaped (see
+            // `points_query`'s module doc comment), same rationale as
+            // `Clause::Wildcard`'s arm above.
+            let matched = points_range_doc_ids(points, live_docs, query)?;
+            Ok(matched
+                .into_iter()
+                .map(|doc_id| (doc_id, 1.0_f32))
+                .collect())
+        }
         Clause::MatchAllDocs(query) => {
             // Flat 1.0 per live doc -- see `MatchAllDocsQuery`'s doc comment
             // for why (real `ConstantScoreScorer`'s own boost, undiscounted).
@@ -1291,19 +1386,25 @@ fn clause_scores(
 /// depth). A doc appearing in zero disjuncts' score maps never appears in the
 /// result at all (matching [`resolve_dismax_docs`]'s "union" matching
 /// contract -- scoring and matching agree on which docs are present).
+#[allow(clippy::too_many_arguments)]
 fn dismax_scores(
     fields: &BlockTreeFields,
     doc_in: Option<&DocInput<'_>>,
     pos_in: Option<&PosInput<'_>>,
     pay_in: Option<&PayInput<'_>>,
     live_docs: Option<&FixedBitSet>,
+    points: Option<&PointsInput<'_>>,
     query: &DisjunctionMaxQuery,
     norms: Option<&HashMap<String, FieldNorms<'_>>>,
 ) -> Result<HashMap<i32, f32>> {
     let per_disjunct: Vec<HashMap<i32, f32>> = query
         .disjuncts
         .iter()
-        .map(|clause| clause_scores(fields, doc_in, pos_in, pay_in, live_docs, clause, norms))
+        .map(|clause| {
+            clause_scores(
+                fields, doc_in, pos_in, pay_in, live_docs, points, clause, norms,
+            )
+        })
         .collect::<Result<_>>()?;
 
     // Every doc appearing in at least one disjunct's score map.
@@ -1359,11 +1460,13 @@ pub fn search_boolean_query_scored<C: ScoringCollector>(
     pos_in: Option<&PosInput<'_>>,
     pay_in: Option<&PayInput<'_>>,
     live_docs: Option<&FixedBitSet>,
+    points: Option<&PointsInput<'_>>,
     query: &BooleanQuery,
     norms: Option<&HashMap<String, FieldNorms<'_>>>,
     collector: &mut C,
 ) -> Result<()> {
-    let Some(matched) = matched_boolean_docs(fields, doc_in, pos_in, pay_in, live_docs, query)?
+    let Some(matched) =
+        matched_boolean_docs(fields, doc_in, pos_in, pay_in, live_docs, points, query)?
     else {
         return Ok(());
     };
@@ -1372,9 +1475,9 @@ pub fn search_boolean_query_scored<C: ScoringCollector>(
     // and `should` (never `must_not`, which only filters -- see doc comment).
     let mut scores: HashMap<i32, f32> = HashMap::new();
     for clause in query.must.iter().chain(query.should.iter()) {
-        for (doc_id, score) in
-            clause_scores(fields, doc_in, pos_in, pay_in, live_docs, clause, norms)?
-        {
+        for (doc_id, score) in clause_scores(
+            fields, doc_in, pos_in, pay_in, live_docs, points, clause, norms,
+        )? {
             *scores.entry(doc_id).or_insert(0.0) += score;
         }
     }
@@ -1398,10 +1501,11 @@ pub fn search_disjunction_max_query<C: Collector>(
     pos_in: Option<&PosInput<'_>>,
     pay_in: Option<&PayInput<'_>>,
     live_docs: Option<&FixedBitSet>,
+    points: Option<&PointsInput<'_>>,
     query: &DisjunctionMaxQuery,
     collector: &mut C,
 ) -> Result<()> {
-    let matched = resolve_dismax_docs(fields, doc_in, pos_in, pay_in, live_docs, query)?;
+    let matched = resolve_dismax_docs(fields, doc_in, pos_in, pay_in, live_docs, points, query)?;
     for doc_id in matched {
         collector.collect(doc_id);
     }
@@ -1423,11 +1527,14 @@ pub fn search_disjunction_max_query_scored<C: ScoringCollector>(
     pos_in: Option<&PosInput<'_>>,
     pay_in: Option<&PayInput<'_>>,
     live_docs: Option<&FixedBitSet>,
+    points: Option<&PointsInput<'_>>,
     query: &DisjunctionMaxQuery,
     norms: Option<&HashMap<String, FieldNorms<'_>>>,
     collector: &mut C,
 ) -> Result<()> {
-    let scores = dismax_scores(fields, doc_in, pos_in, pay_in, live_docs, query, norms)?;
+    let scores = dismax_scores(
+        fields, doc_in, pos_in, pay_in, live_docs, points, query, norms,
+    )?;
     let mut docs: Vec<i32> = scores.keys().copied().collect();
     docs.sort_unstable();
     for doc_id in docs {
@@ -2436,25 +2543,26 @@ mod tests {
         let mut c = VecCollector::default();
         let q = BooleanQuery::new()
             .with_must([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")]);
-        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, None, &q, &mut c).unwrap();
         assert_eq!(c.docs, vec![0]);
     }
 
     #[test]
-    fn points_range_clause_is_parsed_but_not_yet_executable_in_match() {
+    fn points_range_clause_without_points_input_is_missing_points_input_in_match() {
         let (fields, doc) = open_fixture();
         let doc_in = doc.as_ref().map(|d| d.open());
         let mut c = VecCollector::default();
         let q = BooleanQuery::new().with_must([Clause::PointsRange(
             crate::query::PointsRangeQuery::new("body", 0, 100),
         )]);
-        let err = search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &q, &mut c)
-            .unwrap_err();
-        assert!(matches!(err, Error::UnexecutablePointsRange(field) if field == "body"));
+        let err =
+            search_boolean_query(&fields, doc_in.as_ref(), None, None, None, None, &q, &mut c)
+                .unwrap_err();
+        assert!(matches!(err, Error::MissingPointsInput(field) if field == "body"));
     }
 
     #[test]
-    fn points_range_clause_is_not_yet_executable_in_scored_match() {
+    fn points_range_clause_without_points_input_is_missing_points_input_in_scored_match() {
         let (fields, doc) = open_fixture();
         let doc_in = doc.as_ref().map(|d| d.open());
         let mut c = collector::TopDocsCollector::new(10);
@@ -2467,12 +2575,158 @@ mod tests {
             None,
             None,
             None,
+            None,
             &q,
             None,
             &mut c,
         )
         .unwrap_err();
-        assert!(matches!(err, Error::UnexecutablePointsRange(field) if field == "body"));
+        assert!(matches!(err, Error::MissingPointsInput(field) if field == "body"));
+    }
+
+    /// `field_infos` for a single synthetic `LongPoint`-shaped numeric field
+    /// named "price" -- same minimal-construction template
+    /// `multi_segment.rs`'s `numeric_field_infos` test helper uses for a
+    /// doc-values field, adapted for `point_dimension_count`/
+    /// `point_index_dimension_count`/`point_num_bytes` instead.
+    fn price_field_infos(field_number: i32) -> lucene_codecs::field_infos::FieldInfos {
+        use lucene_codecs::field_infos::{
+            DocValuesSkipIndexType, DocValuesType, FieldInfo, IndexOptions, VectorEncoding,
+            VectorSimilarityFunction,
+        };
+        lucene_codecs::field_infos::FieldInfos {
+            fields: vec![FieldInfo {
+                name: "price".to_string(),
+                number: field_number,
+                store_term_vectors: false,
+                omit_norms: false,
+                store_payloads: false,
+                soft_deletes_field: false,
+                parent_field: false,
+                index_options: IndexOptions::None,
+                doc_values_type: DocValuesType::None,
+                doc_values_skip_index_type: DocValuesSkipIndexType::None,
+                doc_values_gen: -1,
+                attributes: vec![],
+                point_dimension_count: 1,
+                point_index_dimension_count: 1,
+                point_num_bytes: 8,
+                vector_dimension: 0,
+                vector_encoding: VectorEncoding::Float32,
+                vector_similarity_function: VectorSimilarityFunction::Euclidean,
+            }],
+        }
+    }
+
+    /// Task #199's end-to-end proof: a real query *string* (not a
+    /// hand-built [`Clause::PointsRange`]) parsed via
+    /// [`query_parser::parse_query`], resolved through
+    /// [`search_boolean_query`] against a real `PointsInput` -- the full
+    /// query-string-to-results path this task wires up, matching this
+    /// module's own doc comment on [`Error::MissingPointsInput`].
+    #[test]
+    fn points_range_query_string_matches_real_segment_end_to_end() {
+        use lucene_codecs::points::{self, WritePointsField};
+        let segment_id = [7u8; lucene_store::codec_util::ID_LENGTH];
+        // doc 0 -> 10, doc 1 -> 20, doc 2 -> 30, doc 3 -> 40, doc 4 -> 50.
+        let points_field = WritePointsField {
+            field_number: 3,
+            num_dims: 1,
+            num_index_dims: 1,
+            bytes_per_dim: 8,
+            points: (0..5)
+                .map(|doc_id| {
+                    (
+                        doc_id,
+                        points_query::pack_i64((doc_id as i64 + 1) * 10).to_vec(),
+                    )
+                })
+                .collect(),
+        };
+        let (kdm, kdi, kdd) = points::write(&[points_field], 512, &segment_id, "").unwrap();
+        let reader = points::open(&kdm, &kdi, &kdd, &segment_id, "").unwrap();
+        let field_infos = price_field_infos(3);
+        let points_input = PointsInput {
+            reader,
+            field_infos: &field_infos,
+        };
+
+        let fields = BlockTreeFields::empty();
+
+        // Inclusive `[20 TO 40]` -- docs with values 20, 30, 40 (doc 1..=3).
+        let clause = query_parser::parse_query("price:[20 TO 40]", None).unwrap();
+        let q = BooleanQuery::new().with_must([clause]);
+        let mut c = VecCollector::default();
+        search_boolean_query(
+            &fields,
+            None,
+            None,
+            None,
+            None,
+            Some(&points_input),
+            &q,
+            &mut c,
+        )
+        .unwrap();
+        assert_eq!(c.docs, vec![1, 2, 3]);
+
+        // Exclusive `{20 TO 40}` (task #195's syntax) -- only doc 2 (value 30)
+        // is strictly between 20 and 40.
+        let clause = query_parser::parse_query("price:{20 TO 40}", None).unwrap();
+        let q = BooleanQuery::new().with_must([clause]);
+        let mut c = VecCollector::default();
+        search_boolean_query(
+            &fields,
+            None,
+            None,
+            None,
+            None,
+            Some(&points_input),
+            &q,
+            &mut c,
+        )
+        .unwrap();
+        assert_eq!(c.docs, vec![2]);
+
+        // Unknown field name: no matches, not an error (same "missing field
+        // means no matches" convention every other clause follows).
+        let clause = query_parser::parse_query("nope:[0 TO 100]", None).unwrap();
+        let q = BooleanQuery::new().with_must([clause]);
+        let mut c = VecCollector::default();
+        search_boolean_query(
+            &fields,
+            None,
+            None,
+            None,
+            None,
+            Some(&points_input),
+            &q,
+            &mut c,
+        )
+        .unwrap();
+        assert!(c.docs.is_empty());
+
+        // Scored sibling: same matched set, constant `1.0` score per doc
+        // (real `PointRangeQuery` is `ConstantScoreQuery`-shaped).
+        let clause = query_parser::parse_query("price:[20 TO 40]", None).unwrap();
+        let q = BooleanQuery::new().with_must([clause]);
+        let mut top = collector::TopDocsCollector::new(10);
+        search_boolean_query_scored(
+            &fields,
+            None,
+            None,
+            None,
+            None,
+            Some(&points_input),
+            &q,
+            None,
+            &mut top,
+        )
+        .unwrap();
+        let mut docs: Vec<i32> = top.top_docs().iter().map(|d| d.doc_id).collect();
+        docs.sort_unstable();
+        assert_eq!(docs, vec![1, 2, 3]);
+        assert!(top.top_docs().iter().all(|d| d.score == 1.0));
     }
 
     #[test]
@@ -2484,7 +2738,7 @@ mod tests {
             TermQuery::new("body", "cat"),
             TermQuery::new("body", "bird"),
         ]);
-        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, None, &q, &mut c).unwrap();
         assert_eq!(c.docs, vec![0, 1, 2, 4]);
     }
 
@@ -2496,7 +2750,7 @@ mod tests {
         let q = BooleanQuery::new()
             .with_must([TermQuery::new("body", "cat")])
             .with_must_not([TermQuery::new("body", "dog")]);
-        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, None, &q, &mut c).unwrap();
         assert_eq!(c.docs, vec![2]);
     }
 
@@ -2506,7 +2760,7 @@ mod tests {
         let doc_in = doc.as_ref().map(|d| d.open());
         let mut c = VecCollector::default();
         let q = BooleanQuery::new().with_must_not([TermQuery::new("body", "dog")]);
-        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, None, &q, &mut c).unwrap();
         assert!(c.docs.is_empty());
     }
 
@@ -2516,7 +2770,7 @@ mod tests {
         let doc_in = doc.as_ref().map(|d| d.open());
         let mut c = VecCollector::default();
         let q = BooleanQuery::new();
-        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, None, &q, &mut c).unwrap();
         assert!(c.docs.is_empty());
     }
 
@@ -2534,7 +2788,7 @@ mod tests {
             .with_must([TermQuery::new("body", "cat")])
             .with_should([TermQuery::new("body", "bird")])
             .with_minimum_should_match(0);
-        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, None, &q, &mut c).unwrap();
         assert_eq!(c.docs, vec![0, 2]);
     }
 
@@ -2554,7 +2808,7 @@ mod tests {
                 TermQuery::new("body", "bird"),
             ])
             .with_minimum_should_match(1);
-        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, None, &q, &mut c).unwrap();
         assert_eq!(c.docs, vec![0]);
     }
 
@@ -2573,7 +2827,7 @@ mod tests {
                 TermQuery::new("body", "bird"),
             ])
             .with_minimum_should_match(2);
-        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, None, &q, &mut c).unwrap();
         assert_eq!(c.docs, vec![0, 1]);
     }
 
@@ -2592,7 +2846,7 @@ mod tests {
                 TermQuery::new("body", "bird"),
             ])
             .with_minimum_should_match(1);
-        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, None, &q, &mut c).unwrap();
         assert_eq!(c.docs, vec![0, 1, 2, 4]);
     }
 
@@ -2608,7 +2862,7 @@ mod tests {
         let q = BooleanQuery::new()
             .with_should([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")])
             .with_minimum_should_match(5);
-        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, None, &q, &mut c).unwrap();
         assert!(c.docs.is_empty());
     }
 
@@ -2628,7 +2882,7 @@ mod tests {
             ])
             .with_must_not([TermQuery::new("body", "dog")])
             .with_minimum_should_match(1);
-        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, None, &q, &mut c).unwrap();
         assert!(c.docs.is_empty());
     }
 
@@ -2653,7 +2907,7 @@ mod tests {
         let q = BooleanQuery::new()
             .with_must([TermQuery::new("body", "cat")])
             .with_minimum_should_match(1);
-        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, None, &q, &mut c).unwrap();
         assert!(c.docs.is_empty());
     }
 
@@ -2679,7 +2933,7 @@ mod tests {
         let q = BooleanQuery::new()
             .with_should([TermQuery::new("body", "cat"), TermQuery::new("body", "cat")])
             .with_minimum_should_match(2);
-        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, None, &q, &mut c).unwrap();
         assert_eq!(c.docs, vec![0, 2]);
 
         // Scoring: the duplicated clause's score contribution must be exactly
@@ -2695,6 +2949,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             &single,
             None,
             &mut single_scores,
@@ -2704,6 +2959,7 @@ mod tests {
         search_boolean_query_scored(
             &fields,
             doc_in.as_ref(),
+            None,
             None,
             None,
             None,
@@ -2739,7 +2995,7 @@ mod tests {
             Clause::Term(TermQuery::new("body", "dog")),
             Clause::Boolean(Box::new(nested)),
         ]);
-        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, None, &q, &mut c).unwrap();
         assert_eq!(c.docs, vec![0, 1]);
     }
 
@@ -2753,7 +3009,7 @@ mod tests {
         let nested = BooleanQuery::new()
             .with_must([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")]);
         let q = BooleanQuery::new().with_should([nested]);
-        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, None, &q, &mut c).unwrap();
         assert_eq!(c.docs, vec![0]);
     }
 
@@ -2775,7 +3031,7 @@ mod tests {
             ])
             .with_minimum_should_match(2);
         let q = BooleanQuery::new().with_must([nested]);
-        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, None, &q, &mut c).unwrap();
         assert_eq!(c.docs, vec![1]);
     }
 
@@ -2803,7 +3059,7 @@ mod tests {
                 Clause::Term(TermQuery::new("body", "cat")),
             ])
             .with_minimum_should_match(1);
-        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, None, &q, &mut c).unwrap();
         assert_eq!(c.docs, vec![0, 1, 2]);
     }
 
@@ -2831,6 +3087,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             &inner.clone(),
             &mut inner_only,
         )
@@ -2845,7 +3102,17 @@ mod tests {
         let outer = BooleanQuery::new()
             .with_must([Clause::Boolean(Box::new(inner))])
             .with_must_not([TermQuery::new("body", "bird")]);
-        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &outer, &mut c).unwrap();
+        search_boolean_query(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            None,
+            None,
+            None,
+            &outer,
+            &mut c,
+        )
+        .unwrap();
         assert!(c.docs.is_empty());
     }
 
@@ -2863,7 +3130,7 @@ mod tests {
             Clause::Boolean(Box::new(nested)),
             Clause::Term(TermQuery::new("body", "cat")),
         ]);
-        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, None, &q, &mut c).unwrap();
         assert_eq!(c.docs, vec![0, 2]);
     }
 
@@ -2879,7 +3146,17 @@ mod tests {
             .with_must([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")]);
         let middle = BooleanQuery::new().with_should([innermost]);
         let top = BooleanQuery::new().with_must([middle]);
-        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &top, &mut c).unwrap();
+        search_boolean_query(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            None,
+            None,
+            None,
+            &top,
+            &mut c,
+        )
+        .unwrap();
         assert_eq!(c.docs, vec![0]);
     }
 
@@ -2903,6 +3180,7 @@ mod tests {
         search_boolean_query_scored(
             &fields,
             doc_in.as_ref(),
+            None,
             None,
             None,
             None,
@@ -2985,6 +3263,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             &top,
             None,
             &mut top_docs,
@@ -3034,7 +3313,7 @@ mod tests {
             TermQuery::new("body", "cat"),
             TermQuery::new("body", "zzz-missing"),
         ]);
-        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, doc_in.as_ref(), None, None, None, None, &q, &mut c).unwrap();
         assert!(c.docs.is_empty());
     }
 
@@ -3072,6 +3351,7 @@ mod tests {
             None,
             None,
             Some(&live_docs),
+            None,
             &q,
             &mut c,
         )
@@ -3929,6 +4209,7 @@ mod tests {
             Some(&pos_in),
             Some(&pay_in),
             None,
+            None,
             &q,
             &mut c,
         )
@@ -3954,6 +4235,7 @@ mod tests {
             Some(&doc_in),
             Some(&pos_in),
             Some(&pay_in),
+            None,
             None,
             &q,
             None,
@@ -4032,6 +4314,7 @@ mod tests {
             Some(&pos_in),
             Some(&pay_in),
             None,
+            None,
             &top_query,
             &mut c,
         )
@@ -4046,6 +4329,7 @@ mod tests {
             Some(&doc_in),
             Some(&pos_in),
             Some(&pay_in),
+            None,
             None,
             &top_query,
             None,
@@ -4079,8 +4363,8 @@ mod tests {
         let q = BooleanQuery::new()
             .with_must([Clause::Phrase(PhraseQuery::new("pos", ["alpha", "beta"]))]);
         let mut c = VecCollector::default();
-        let err =
-            search_boolean_query(&fields, Some(&doc_in), None, None, None, &q, &mut c).unwrap_err();
+        let err = search_boolean_query(&fields, Some(&doc_in), None, None, None, None, &q, &mut c)
+            .unwrap_err();
         assert!(matches!(err, Error::MissingPosInput));
     }
 
@@ -4103,7 +4387,8 @@ mod tests {
             0.0,
         );
         let mut c = VecCollector::default();
-        search_disjunction_max_query(&fields, Some(&doc_in), None, None, None, &q, &mut c).unwrap();
+        search_disjunction_max_query(&fields, Some(&doc_in), None, None, None, None, &q, &mut c)
+            .unwrap();
         // cat={0,2} union bird={1,4} = {0,1,2,4}, ascending.
         assert_eq!(c.docs, vec![0, 1, 2, 4]);
     }
@@ -4116,7 +4401,8 @@ mod tests {
 
         let q = DisjunctionMaxQuery::new(Vec::<Clause>::new(), 0.0);
         let mut c = VecCollector::default();
-        search_disjunction_max_query(&fields, Some(&doc_in), None, None, None, &q, &mut c).unwrap();
+        search_disjunction_max_query(&fields, Some(&doc_in), None, None, None, None, &q, &mut c)
+            .unwrap();
         assert!(c.docs.is_empty());
     }
 
@@ -4134,7 +4420,8 @@ mod tests {
             0.0,
         );
         let mut c = VecCollector::default();
-        search_disjunction_max_query(&fields, Some(&doc_in), None, None, None, &q, &mut c).unwrap();
+        search_disjunction_max_query(&fields, Some(&doc_in), None, None, None, None, &q, &mut c)
+            .unwrap();
         assert_eq!(c.docs, vec![0, 2]);
     }
 
@@ -4192,6 +4479,7 @@ mod tests {
         search_disjunction_max_query_scored(
             &fields,
             Some(&doc_in),
+            None,
             None,
             None,
             None,
@@ -4258,6 +4546,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             &q,
             None,
             &mut top,
@@ -4308,6 +4597,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             &q,
             None,
             &mut top,
@@ -4336,7 +4626,7 @@ mod tests {
             Clause::DisjunctionMax(Box::new(dismax)),
         ]);
         let mut c = VecCollector::default();
-        search_boolean_query(&fields, Some(&doc_in), None, None, None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, Some(&doc_in), None, None, None, None, &q, &mut c).unwrap();
         assert_eq!(c.docs, vec![0, 1]);
     }
 
@@ -4358,7 +4648,8 @@ mod tests {
             0.0,
         );
         let mut c = VecCollector::default();
-        search_disjunction_max_query(&fields, Some(&doc_in), None, None, None, &q, &mut c).unwrap();
+        search_disjunction_max_query(&fields, Some(&doc_in), None, None, None, None, &q, &mut c)
+            .unwrap();
         assert_eq!(c.docs, vec![0, 1, 4]);
     }
 
@@ -4385,8 +4676,17 @@ mod tests {
             0.0,
         );
         let mut c = VecCollector::default();
-        search_disjunction_max_query(&fields, Some(&doc_in), None, None, None, &outer, &mut c)
-            .unwrap();
+        search_disjunction_max_query(
+            &fields,
+            Some(&doc_in),
+            None,
+            None,
+            None,
+            None,
+            &outer,
+            &mut c,
+        )
+        .unwrap();
         assert_eq!(c.docs, vec![0, 1, 2, 4]);
     }
 
@@ -4400,9 +4700,17 @@ mod tests {
             0.0,
         );
         let mut c = VecCollector::default();
-        let err =
-            search_disjunction_max_query(&fields, Some(&doc_in), None, None, None, &q, &mut c)
-                .unwrap_err();
+        let err = search_disjunction_max_query(
+            &fields,
+            Some(&doc_in),
+            None,
+            None,
+            None,
+            None,
+            &q,
+            &mut c,
+        )
+        .unwrap_err();
         assert!(matches!(err, Error::MissingPosInput));
     }
 
@@ -4466,7 +4774,7 @@ mod tests {
             1.0,
         ))]);
         let mut c = VecCollector::default();
-        search_boolean_query(&fields, Some(&doc_in), None, None, None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, Some(&doc_in), None, None, None, None, &q, &mut c).unwrap();
         assert_eq!(c.docs, vec![0, 2]);
     }
 
@@ -4481,7 +4789,7 @@ mod tests {
             7.0,
         ))]);
         let mut c = VecCollector::default();
-        search_boolean_query(&fields, Some(&doc_in), None, None, None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, Some(&doc_in), None, None, None, None, &q, &mut c).unwrap();
         assert!(c.docs.is_empty());
     }
 
@@ -4506,8 +4814,18 @@ mod tests {
             constant,
         ))]);
         let mut top = TopDocsCollector::new(10);
-        search_boolean_query_scored(&fields, Some(&doc_in), None, None, None, &q, None, &mut top)
-            .unwrap();
+        search_boolean_query_scored(
+            &fields,
+            Some(&doc_in),
+            None,
+            None,
+            None,
+            None,
+            &q,
+            None,
+            &mut top,
+        )
+        .unwrap();
         let score_of = |top: &TopDocsCollector, doc_id: i32| -> f32 {
             top.top_docs()
                 .iter()
@@ -4530,7 +4848,7 @@ mod tests {
             2.0,
         ))]);
         let mut c = VecCollector::default();
-        search_boolean_query(&fields, Some(&doc_in), None, None, None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, Some(&doc_in), None, None, None, None, &q, &mut c).unwrap();
         assert_eq!(c.docs, vec![0, 1]);
     }
 
@@ -4545,7 +4863,7 @@ mod tests {
             2.0,
         ))]);
         let mut c = VecCollector::default();
-        search_boolean_query(&fields, Some(&doc_in), None, None, None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, Some(&doc_in), None, None, None, None, &q, &mut c).unwrap();
         assert!(c.docs.is_empty());
     }
 
@@ -4563,8 +4881,18 @@ mod tests {
             boost,
         ))]);
         let mut top = TopDocsCollector::new(10);
-        search_boolean_query_scored(&fields, Some(&doc_in), None, None, None, &q, None, &mut top)
-            .unwrap();
+        search_boolean_query_scored(
+            &fields,
+            Some(&doc_in),
+            None,
+            None,
+            None,
+            None,
+            &q,
+            None,
+            &mut top,
+        )
+        .unwrap();
         let score0 = top
             .top_docs()
             .iter()
@@ -4595,12 +4923,22 @@ mod tests {
             )),
         ]);
         let mut c = VecCollector::default();
-        search_boolean_query(&fields, Some(&doc_in), None, None, None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, Some(&doc_in), None, None, None, None, &q, &mut c).unwrap();
         assert_eq!(c.docs, vec![0]);
 
         let mut top = TopDocsCollector::new(10);
-        search_boolean_query_scored(&fields, Some(&doc_in), None, None, None, &q, None, &mut top)
-            .unwrap();
+        search_boolean_query_scored(
+            &fields,
+            Some(&doc_in),
+            None,
+            None,
+            None,
+            None,
+            &q,
+            None,
+            &mut top,
+        )
+        .unwrap();
         let score0 = top
             .top_docs()
             .iter()
@@ -4639,6 +4977,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             &q,
             None,
             &mut top,
@@ -4672,13 +5011,23 @@ mod tests {
             constant,
         ))]);
         let mut c = VecCollector::default();
-        search_boolean_query(&fields, Some(&doc_in), None, None, None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, Some(&doc_in), None, None, None, None, &q, &mut c).unwrap();
         // cat={0,2} union bird={1,4} = {0,1,2,4}.
         assert_eq!(c.docs, vec![0, 1, 2, 4]);
 
         let mut top = TopDocsCollector::new(10);
-        search_boolean_query_scored(&fields, Some(&doc_in), None, None, None, &q, None, &mut top)
-            .unwrap();
+        search_boolean_query_scored(
+            &fields,
+            Some(&doc_in),
+            None,
+            None,
+            None,
+            None,
+            &q,
+            None,
+            &mut top,
+        )
+        .unwrap();
         for doc_id in [0, 1, 2, 4] {
             let score = top
                 .top_docs()
@@ -4709,12 +5058,22 @@ mod tests {
             boost,
         ))]);
         let mut c = VecCollector::default();
-        search_boolean_query(&fields, Some(&doc_in), None, None, None, &q, &mut c).unwrap();
+        search_boolean_query(&fields, Some(&doc_in), None, None, None, None, &q, &mut c).unwrap();
         assert_eq!(c.docs, vec![0, 2]);
 
         let mut top = TopDocsCollector::new(10);
-        search_boolean_query_scored(&fields, Some(&doc_in), None, None, None, &q, None, &mut top)
-            .unwrap();
+        search_boolean_query_scored(
+            &fields,
+            Some(&doc_in),
+            None,
+            None,
+            None,
+            None,
+            &q,
+            None,
+            &mut top,
+        )
+        .unwrap();
         for doc_id in [0, 2] {
             let score = top
                 .top_docs()

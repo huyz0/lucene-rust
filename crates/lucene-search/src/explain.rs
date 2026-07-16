@@ -176,9 +176,7 @@ pub fn explain_clause(
                 .contains(&doc);
             Ok(explain_flat_match(matched))
         }
-        Clause::PointsRange(query) => {
-            Err(crate::Error::UnexecutablePointsRange(query.field.clone()))
-        }
+        Clause::PointsRange(query) => Err(crate::Error::MissingPointsInput(query.field.clone())),
         Clause::MatchAllDocs(query) => {
             let matched = crate::match_all_doc_ids(live_docs, query.max_doc).contains(&doc);
             Ok(explain_flat_match(matched))
@@ -217,7 +215,7 @@ fn clause_matches(
     doc: i32,
 ) -> Result<bool> {
     Ok(
-        crate::resolve_clause_docs(fields, doc_in, pos_in, pay_in, live_docs, clause)?
+        crate::resolve_clause_docs(fields, doc_in, pos_in, pay_in, live_docs, None, clause)?
             .contains(&doc),
     )
 }
@@ -492,7 +490,7 @@ fn explain_boolean(
     norms: Option<&HashMap<String, FieldNorms<'_>>>,
 ) -> Result<Explanation> {
     let Some(matched) =
-        crate::matched_boolean_docs(fields, doc_in, pos_in, pay_in, live_docs, query)?
+        crate::matched_boolean_docs(fields, doc_in, pos_in, pay_in, live_docs, None, query)?
     else {
         return Ok(Explanation::no_match(
             "BooleanQuery with no must/should clauses matches nothing",
@@ -756,7 +754,7 @@ mod tests {
         let clause = Clause::PointsRange(crate::query::PointsRangeQuery::new("body", 0, 100));
         let err = explain_clause(&fields, doc_in.as_ref(), None, None, None, &clause, 0, None)
             .unwrap_err();
-        assert!(matches!(err, crate::Error::UnexecutablePointsRange(field) if field == "body"));
+        assert!(matches!(err, crate::Error::MissingPointsInput(field) if field == "body"));
     }
 
     #[test]
@@ -1018,6 +1016,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             &query,
             None,
             &mut capture,
@@ -1163,6 +1162,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             &query,
             None,
             &mut capture,
@@ -1205,6 +1205,7 @@ mod tests {
         search_disjunction_max_query_scored(
             &fields,
             doc_in.as_ref(),
+            None,
             None,
             None,
             None,

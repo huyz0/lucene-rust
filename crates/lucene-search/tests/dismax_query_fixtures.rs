@@ -130,7 +130,17 @@ fn dismax_matches_the_real_union_of_its_disjuncts() {
         0.0,
     );
     let mut c = VecCollector::default();
-    search_disjunction_max_query(&fields, Some(&doc_in), None, None, None, &query, &mut c).unwrap();
+    search_disjunction_max_query(
+        &fields,
+        Some(&doc_in),
+        None,
+        None,
+        None,
+        None,
+        &query,
+        &mut c,
+    )
+    .unwrap();
     assert_eq!(c.docs, vec![0, 1, 2, 4]);
 }
 
@@ -197,6 +207,7 @@ fn dismax_scored_tie_breaker_formula_matches_real_bm25_scores() {
             None,
             None,
             None,
+            None,
             &query,
             None,
             &mut top,
@@ -224,6 +235,7 @@ fn dismax_scored_tie_breaker_formula_matches_real_bm25_scores() {
     search_disjunction_max_query_scored(
         &fields,
         Some(&doc_in),
+        None,
         None,
         None,
         None,
@@ -271,6 +283,7 @@ fn dismax_scored_single_matching_disjunct_gets_its_own_real_score_exactly() {
     search_disjunction_max_query_scored(
         &fields,
         Some(&doc_in),
+        None,
         None,
         None,
         None,
@@ -348,6 +361,7 @@ fn dismax_scored_matches_real_lucenes_own_disjunctionmaxquery_output() {
     search_disjunction_max_query_scored(
         &fields,
         Some(&doc_in),
+        None,
         None,
         None,
         None,

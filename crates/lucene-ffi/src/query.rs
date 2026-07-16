@@ -344,6 +344,7 @@ pub unsafe extern "C" fn ffi_search_boolean_query(
             None,
             None,
             None,
+            None,
             &query,
             &mut collector,
         )
@@ -796,6 +797,7 @@ pub unsafe extern "C" fn ffi_search_boolean_query_scored(
         search_boolean_query_scored(
             &segment.fields,
             doc_in.as_ref(),
+            None,
             None,
             None,
             None,

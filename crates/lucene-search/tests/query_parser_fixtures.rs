@@ -89,7 +89,17 @@ fn run(clause: Clause) -> Vec<i32> {
     let doc_in = DocInput::open(&doc, &id, &suffix).expect("open .doc");
     let query = BooleanQuery::new().with_must([clause]);
     let mut c = VecCollector::default();
-    search_boolean_query(&fields, Some(&doc_in), None, None, None, &query, &mut c).unwrap();
+    search_boolean_query(
+        &fields,
+        Some(&doc_in),
+        None,
+        None,
+        None,
+        None,
+        &query,
+        &mut c,
+    )
+    .unwrap();
     c.docs
 }
 
@@ -139,6 +149,7 @@ fn parsed_plus_minus_combination_executes_like_hand_built_boolean_query() {
         None,
         None,
         None,
+        None,
         &parsed_query,
         &mut parsed_collector,
     )
@@ -148,6 +159,7 @@ fn parsed_plus_minus_combination_executes_like_hand_built_boolean_query() {
     search_boolean_query(
         &fields,
         Some(&doc_in),
+        None,
         None,
         None,
         None,

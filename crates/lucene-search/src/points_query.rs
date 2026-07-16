@@ -55,10 +55,57 @@
 //!   crate takes (no `IndexSearcher`/`DirectoryReader` federation exists in
 //!   this port yet).
 
+use lucene_codecs::field_infos::FieldInfos;
 use lucene_codecs::points::PointsReader;
 use lucene_util::fixed_bit_set::FixedBitSet;
 
 use crate::{Collector, Error, Result};
+
+/// Bundles an already-opened [`PointsReader`] with the segment's
+/// [`FieldInfos`] -- the pairing [`crate::resolve_clause_docs`]/
+/// [`crate::clause_scores`] need to resolve a [`crate::query::Clause::PointsRange`]'s
+/// field *name* (that's all a query string / [`crate::query::PointsRangeQuery`]
+/// ever has) down to the field *number* [`PointsReader::field`]/
+/// [`search_points_range`] key on, the same "look the number up from
+/// `field_infos`, then reopen the reader" two-step
+/// `lucene_ffi::points_query::ffi_search_points_range` already performs at
+/// the C-ABI boundary -- this is that same pairing, reused one layer down so
+/// a pure-Rust caller (no FFI involved) gets the same capability.
+pub struct PointsInput<'d> {
+    pub reader: PointsReader<'d>,
+    pub field_infos: &'d FieldInfos,
+}
+
+impl<'d> PointsInput<'d> {
+    /// `field`'s number in `field_infos`, or `None` if this segment's field
+    /// infos never heard of it -- mirrors
+    /// `lucene_ffi::points_query::field_number_for`'s `find(|f| f.name ==
+    /// field)` lookup, but returns `Option` instead of an FFI status since a
+    /// caller here isn't crossing a C ABI: an unknown field name is treated
+    /// the same "missing field means no matches" way every other clause
+    /// resolver in this crate already treats a missing field (not an error).
+    pub fn field_number(&self, field: &str) -> Option<i32> {
+        self.field_infos
+            .fields
+            .iter()
+            .find(|f| f.name == field)
+            .map(|f| f.number)
+    }
+}
+
+/// Packs an `i64` into real Lucene's `LongPoint`/`NumericUtils.longToSortableBytes`
+/// big-endian, sign-bit-flipped 8-byte encoding -- the same encoding this
+/// module's own tests (`long_bytes`) and `lucene_index::points_delete`'s
+/// tests hand-roll locally, now available as a real (non-test-only) helper
+/// for [`crate::resolve_clause_docs`]/[`crate::clause_scores`] to pack a
+/// [`crate::query::PointsRangeQuery`]'s `i64` `min`/`max` bounds into the
+/// `min_packed`/`max_packed` bytes [`search_points_range`] needs. Flipping the
+/// sign bit before a big-endian byte view makes unsigned byte-wise comparison
+/// (what the BKD tree's leaf/split-value comparisons use) agree with signed
+/// `i64` ordering -- exactly why real Lucene does the same flip.
+pub fn pack_i64(v: i64) -> [u8; 8] {
+    ((v as u64) ^ 0x8000_0000_0000_0000).to_be_bytes()
+}
 
 /// Every live doc ID in `reader`'s `field_number` whose packed BKD value
 /// falls within the inclusive `[min_packed, max_packed]` range, fed through
