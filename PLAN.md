@@ -5262,3 +5262,101 @@ tests, no non-test changes), `docs/parity.md`, `PLAN.md`. New tests:
 `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`,
 `cargo test -p lucene-codecs` (706 passing, up from 700), and
 `cargo test -p lucene-index` all pass clean.
+
+**Progress (task: "CheckIndex postings term-by-term re-derivation (revisit
+scope)"):** re-examined task #57's deferral of postings re-derivation
+("recomputing docFreq/totalTermFreq from raw postings and cross-checking
+against the term dictionary's own recorded stats") against how much more of
+the postings/blocktree read machinery has been built since. The originally
+stated blocker — "requires walking per-format internals this port's
+read-side decoders expose in different shapes per format -- genuinely a
+separate, large task" — no longer holds for postings specifically:
+`blocktree::FieldTerms::iter()` already yields every `(term, TermStats)` pair
+in a field in one pass, and `DocInput::read_postings`/
+`postings::singleton_postings` already fully materialize a term's `(docID,
+freq)` pairs — both already exercised by `lucene-search`'s query path (task
+#45) before this task started. Only a one-line accessor was missing:
+`blocktree::BlockTreeFields::iter_fields()` (new), which yields every
+field's dictionary the same way `field()` yields one by name. No new decode
+logic was written.
+
+Implemented in `lucene-index/src/check_index.rs`'s new
+`check_postings_term_stats`, wired into `check_segment` after the existing
+checks: for every field with postings (skipped for compound segments,
+matching this module's existing no-compound-support scope, and for segments
+missing `.tim`/`.tip`/`.tmd` entirely or only partially — the latter is
+already flagged by the existing `fnm.postings_vs_files` check), opens
+`.tim`/`.tip`/`.tmd`/`.doc` directly (deriving the codec suffix from the
+`.tim` file name the same way `lucene-search/src/directory_reader.rs`'s
+`SegmentReader::open` does, duplicated rather than shared per this module's
+existing no-`lucene-search`-dependency stance) and walks every term via
+`iter_fields()`/`FieldTerms::iter()`. Two independent per-field checks are
+reported: `postings.total_term_freq:<field>` (sums each term's decoded
+per-doc freqs and cross-checks against the dictionary's recorded
+`total_term_freq` — the actual metadata-vs-data disagreement task #57 asked
+for) and `postings.doc_ids_valid:<field>` (every decoded doc ID must be
+`0 <= id < si.doc_count` and strictly increasing). A field needing `.doc`
+bytes with none present reports `postings.doc_open`; any other failure
+(corrupt/truncated `.tim`/`.tip`/`.tmd`/`.doc`, a term `iter()` enumerates
+that `postings()` can't re-seek) reports `postings.open`.
+
+**Why `docFreq` isn't re-derived via a plain recount**: investigating
+`DocInput::read_postings`/`postings::singleton_postings` surfaced a
+structural fact worth stating plainly rather than glossing over — both are
+*parameterized by* the term dictionary's own claimed `docFreq` (it drives how
+many full 256-doc blocks vs. how large a tail block to decode), exactly like
+real Lucene's own `PostingsEnum.reset`/`BlockDocsEnum` (`TermState.docFreq`
+plays the identical role there). That means `postings.docs.len()` is
+*always* exactly equal to the claimed `docFreq` whenever decoding succeeds at
+all — a plain recount can never disagree, so implementing one would be a
+vacuous, always-passing check dressed up as real verification. What a
+genuinely wrong claimed `docFreq` actually produces is the reader consuming a
+different number of bytes than the writer intended and wandering into
+unrelated bytes — observed as an out-of-range or non-monotonically-increasing
+decoded doc ID (`postings.doc_ids_valid`) or an outright decode error
+(`postings.open`), which is what's actually implemented and tested. This is
+the same reason real `CheckIndex` catches this class of bug the way it does,
+not a limitation invented for this port. Separately, a `docFreq == 1`
+singleton term stores no per-doc freq on disk at all — `singleton_postings`
+reconstructs its one `(docID, freq)` pair from `TermMetadata.singleton_doc_id`
+and the dictionary's own recorded `total_term_freq` — so `total_term_freq`
+re-derivation is honestly vacuous for singleton terms specifically, mirroring
+real Lucene's own format rather than a port-specific gap.
+
+**Still deliberately deferred**, unchanged from task #57 and for the same
+reason: doc-values value-range sanity, points-tree structural invariants, and
+vectors-graph structural invariants — each walks a genuinely different
+per-format internal shape (points-tree traversal, HNSW graph traversal), a
+separate task per format rather than a natural extension of postings
+re-derivation.
+
+New tests in `lucene-index/src/check_index.rs`:
+`valid_blocktree_fixture_passes_postings_re_derivation` (the real
+`blocktree_index` Java fixture, mixed singleton/multi-doc terms, passes both
+new checks cleanly — the "no false positives on real data" baseline),
+`hand_built_consistent_postings_pass_re_derivation` (a self-consistent
+segment built via the existing `postings_writer::write_single_field` API
+passes both checks), `corrupted_total_term_freq_is_caught_by_re_derivation`
+(the actual proof: a term dictionary built to claim `totalTermFreq=60` is
+paired with real `.doc` bytes whose per-doc freqs actually sum to 6 — same
+doc IDs/doc count in both, so decoding succeeds cleanly and this is a genuine
+metadata/data disagreement, not a corrupt file; `postings.total_term_freq:body`
+fails naming both numbers, while the unrelated
+`postings.doc_ids_valid:body` still passes), and
+`missing_doc_file_for_multi_doc_term_fails_doc_open_check` (a segment
+genuinely missing `.doc` reports `postings.doc_open`, not a panic). The
+corruption test builds its mismatch entirely through the existing
+`postings_writer::write_single_field` API (two builds sharing doc IDs but
+differing per-doc freq values, with the `.doc` buffer swapped between them),
+not raw byte mutation, matching the `differential-testing` skill's
+"self-consistency logic over already-differentially-verified decoders, no
+new byte parsing" precedent set by task #57's original tests.
+
+Files changed: `crates/lucene-codecs/src/blocktree.rs` (new
+`BlockTreeFields::iter_fields()` accessor, no other changes),
+`crates/lucene-index/src/check_index.rs` (new `check_postings_term_stats`/
+`named_field_check`, updated module doc comment, four new tests),
+`docs/parity.md`, `PLAN.md`. `cargo fmt --all`,
+`cargo clippy --workspace --all-targets -- -D warnings`,
+`cargo test -p lucene-index` (18 passing in `check_index`, no regressions)
+and `cargo test -p lucene-codecs` (706 passing) all pass clean.

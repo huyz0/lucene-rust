@@ -44,23 +44,101 @@
 //!   `.dvd`/`.dvm` file present with no field claiming doc-values).
 //! - Stored-fields doc count (`StoredFieldsReader::max_doc`) vs `.si`'s
 //!   declared `doc_count`.
+//! - Postings term-by-term re-derivation (revisited; previously deferred --
+//!   see below): for every field with postings and every term in that
+//!   field's dictionary, walks the term's *actual* postings via
+//!   [`blocktree::BlockTreeFields`]/[`DocInput::read_postings`] (the same
+//!   read-side API `lucene-search`'s `directory_reader.rs` uses for real
+//!   queries) and independently recomputes `totalTermFreq` (sum of decoded
+//!   per-doc freqs), cross-checking it against the `.tmd`/`.tim`-recorded
+//!   [`lucene_codecs::postings::TermStats`] for that exact term -- a
+//!   metadata/data consistency check, not a re-validation of already-checked
+//!   block encoding: it would catch a dictionary claiming `totalTermFreq=50`
+//!   for a term whose actual per-doc freqs only sum to 49. Each decoded doc
+//!   ID is also checked for being in-range and strictly increasing (see
+//!   "why not a plain docFreq recount" below for why this, not a `docFreq`
+//!   recount, is `docFreq`'s meaningful proxy here).
 //!
-//! **Deliberately out of scope** (see `docs/parity.md`): postings
-//! term-by-term re-derivation (recomputing docFreq/totalTermFreq from raw
-//! postings and cross-checking against the term dictionary's own recorded
-//! stats -- real `CheckIndex`'s single most expensive check), doc-values
-//! value-range sanity, points-tree structural invariants, and vectors-graph
-//! structural invariants. All of these require walking per-format internals
-//! this port's read-side decoders expose in different shapes per format
-//! (blocktree iteration, points-tree traversal, HNSW graph traversal) --
-//! genuinely a separate, large task per format rather than a natural
-//! extension of this module's cross-file bookkeeping checks.
+//! ## Revisited scope decision: postings re-derivation
+//!
+//! This check was **deliberately deferred** in task #57 (see the prior
+//! revision of this doc comment / `PLAN.md`'s task #57 entry) with the
+//! stated reason "requires walking per-format internals this port's
+//! read-side decoders expose in different shapes per format -- genuinely a
+//! separate, large task". Re-examined now: that blocker no longer holds for
+//! postings specifically. `blocktree::FieldTerms::iter()` already yields
+//! every `(term, TermStats)` pair in a field in one pass,
+//! `blocktree::BlockTreeFields::iter_fields()` (added by this task) yields
+//! every field's dictionary, and `DocInput::read_postings`/
+//! `postings::singleton_postings` already fully materialize a term's
+//! `(docID, freq)` pairs -- every piece this check needs was already built
+//! and already exercised by `lucene-search`'s query path (task #45) before
+//! this task started; only a one-line accessor (`iter_fields`) was missing.
+//! Nothing about this check requires new decode logic, matching the
+//! `differential-testing` skill's precedent that this module's checks are
+//! self-consistency logic over already-differentially-verified decoders,
+//! not new byte parsing.
+//!
+//! **Why not a plain `docFreq` recount**: investigating this port's decode
+//! API (`DocInput::read_postings`/`postings::singleton_postings`) turned up
+//! a structural fact worth being explicit about rather than silently
+//! glossing over -- both are *parameterized by* the term dictionary's own
+//! claimed `docFreq` (it drives how many full 256-doc blocks vs. how large a
+//! tail block to decode), exactly like real Lucene's own
+//! `PostingsEnum.reset`/`BlockDocsEnum` (`TermState.docFreq` plays the same
+//! role there). That means `postings.docs.len()` is *always* exactly equal
+//! to the claimed `docFreq` whenever decoding succeeds at all -- a plain
+//! recount can never disagree, so it would be a vacuous, always-passing
+//! check dressed up as real verification. What a genuinely wrong claimed
+//! `docFreq` actually produces is the reader consuming a different number of
+//! bytes than the writer intended and wandering into unrelated bytes (the
+//! next term's data, or past the buffer) -- observable as a decoded doc ID
+//! that is out of the segment's valid `0..doc_count` range or not strictly
+//! increasing, which `postings.doc_ids_valid:<field>` checks directly, or as
+//! an outright decode error (already surfaced via this function's
+//! `postings.open` failure path). This is the same reason real `CheckIndex`
+//! catches this class of bug the way it does, not a limitation invented for
+//! this port.
+//!
+//! **Known, honest limitation carried over rather than papered over**: a
+//! term with `docFreq == 1` stores no per-doc freq on disk at all --
+//! `singleton_postings` reconstructs its one `(docID, freq)` pair from
+//! `TermMetadata.singleton_doc_id` and the term dictionary's own recorded
+//! `total_term_freq` (see `blocktree.rs`'s `postings()` and
+//! `postings::singleton_postings`'s doc comment). Re-deriving stats for such
+//! a term from "postings" therefore trivially reproduces the claimed
+//! `total_term_freq` rather than independently verifying it -- this mirrors
+//! real Lucene's own format (a singleton's freq genuinely isn't stored
+//! independently anywhere), not a gap specific to this port.
+//!
+//! **The same vacuity also applies to any `IndexOptions::Docs` (freq-less)
+//! field, not just singleton terms**: `blocktree.rs`'s meta parsing sets
+//! `total_term_freq = doc_freq` for such a field (no independent
+//! `total_term_freq` vlong is ever written for it -- see
+//! `postings_writer.rs`'s `IndexOptions::Docs` branch), and the postings
+//! decoder itself synthesizes freq `1` for every doc when the field has no
+//! stored freqs (never reading it from the wire). So for a `Docs`-only
+//! field with `docFreq > 1`, `postings.total_term_freq:<field>` compares
+//! `doc_freq` against `doc_freq` -- always trivially true, the same class
+//! of vacuity as the singleton case above, just for a different reason
+//! (field-wide format choice vs. per-term encoding). `postings.doc_ids_valid`
+//! remains meaningful for such fields regardless, since it only depends on
+//! decoded doc IDs, not freqs.
+//!
+//! **Still out of scope** (unchanged from before, and for the reason
+//! originally given): doc-values value-range sanity, points-tree structural
+//! invariants, and vectors-graph structural invariants. Each of those checks
+//! a genuinely different per-format internal shape (points-tree traversal,
+//! HNSW graph traversal) that this task did not touch -- a separate task per
+//! format, not a natural extension of postings re-derivation.
 
 use crate::deletes::liv_file_name;
 use crate::segment_info::{self, SegmentInfo};
 use crate::segment_infos::{self, SegmentCommitInfo};
+use lucene_codecs::blocktree;
 use lucene_codecs::field_infos::{self, FieldInfos};
 use lucene_codecs::live_docs;
+use lucene_codecs::postings::DocInput;
 use lucene_codecs::stored_fields;
 use lucene_store::codec_util;
 use lucene_store::directory::Directory;
@@ -176,6 +254,9 @@ pub fn check_segment(dir: &dyn Directory, commit: &SegmentCommitInfo) -> CheckRe
 
     check_live_docs(dir, commit, &si, &mut checks);
     check_stored_fields_doc_count(dir, commit, &si, &mut checks);
+    if let Some(fi) = &field_infos {
+        check_postings_term_stats(dir, commit, &si, fi, &mut checks);
+    }
 
     CheckResult {
         segment_name,
@@ -450,6 +531,200 @@ fn check_stored_fields_doc_count(
         Err(e) => {
             checks.push(Check::fail("stored_fields.doc_count_matches_si", e));
         }
+    }
+}
+
+/// For every field with postings and every term in that field, walks the
+/// term's *actual* postings and independently recomputes `totalTermFreq`
+/// (the sum of each doc's decoded freq), cross-checking it against the term
+/// dictionary's own recorded [`lucene_codecs::postings::TermStats`] -- see
+/// this module's doc comment ("Revisited scope decision: postings
+/// re-derivation") for why this is now implemented rather than deferred,
+/// and its known singleton-term limitation.
+///
+/// **`docFreq` is deliberately *not* cross-checked against a plain recount**
+/// here -- see the doc comment's "why not a plain docFreq recount" note.
+/// Instead, every decoded doc ID is checked for being in-range
+/// (`0 <= id < si.doc_count`) and strictly increasing
+/// (`postings.doc_ids_valid`): the observable symptom a wrong claimed
+/// `docFreq` actually produces with this decode API (wandering into
+/// unrelated bytes, not a clean short/over count).
+///
+/// Skipped (not failed) when: the segment is a compound (`.cfs`/`.cfe`)
+/// segment (this module has no compound-file support anywhere, matching its
+/// existing scope); the segment has none of `.tim`/`.tip`/`.tmd` (no
+/// postings at all, nothing to check); or the segment has only some of
+/// `.tim`/`.tip`/`.tmd` (already flagged by
+/// [`check_field_flags_vs_files`]'s `fnm.postings_vs_files` orphan check --
+/// this function does not duplicate that failure). A field with postings
+/// but no `.doc` file present (needed for any term with `docFreq > 1`) is
+/// reported as a single `postings.doc_open` failure rather than silently
+/// skipped.
+/// Builds one named `Check` from a field's collected list of problem
+/// messages (empty -> pass, non-empty -> fail listing at most the first 5,
+/// with a total count) -- shared by [`check_postings_term_stats`]'s two
+/// per-field checks so the "how many terms, show a few" reporting shape
+/// isn't duplicated.
+fn named_field_check(name: &str, problems: &[String], num_terms: i64) -> Check {
+    if problems.is_empty() {
+        Check::pass(name)
+    } else {
+        let shown = problems.len().min(5);
+        Check::fail(
+            name,
+            format!(
+                "{} of {num_terms} terms affected; first {shown}: {}",
+                problems.len(),
+                problems[..shown].join("; ")
+            ),
+        )
+    }
+}
+
+fn check_postings_term_stats(
+    dir: &dyn Directory,
+    commit: &SegmentCommitInfo,
+    si: &SegmentInfo,
+    field_infos: &FieldInfos,
+    checks: &mut Vec<Check>,
+) {
+    if si.is_compound_file {
+        return;
+    }
+    let tim_name = si.files.iter().find(|f| f.ends_with(".tim"));
+    let tip_name = si.files.iter().find(|f| f.ends_with(".tip"));
+    let tmd_name = si.files.iter().find(|f| f.ends_with(".tmd"));
+    let (tim_name, tip_name, tmd_name) = match (tim_name, tip_name, tmd_name) {
+        (Some(t), Some(p), Some(m)) => (t, p, m),
+        (None, None, None) => return,
+        _ => return,
+    };
+
+    let result = (|| -> Result<Vec<Check>, String> {
+        let tim = dir.open(tim_name).map_err(|e| e.to_string())?;
+        let tip = dir.open(tip_name).map_err(|e| e.to_string())?;
+        let tmd = dir.open(tmd_name).map_err(|e| e.to_string())?;
+
+        // The postings codec suffix is embedded in the sub-file's own name:
+        // strip the `<segment_name>_` prefix (e.g. `_0_Lucene104_0.tim` ->
+        // `Lucene104_0`) and the `.tim` extension -- same derivation
+        // `lucene-search`'s `directory_reader.rs` (`SegmentReader::open`)
+        // uses, duplicated here rather than shared since that logic lives in
+        // a crate this module has no dependency on (see this module's own
+        // top doc comment on why it doesn't build on `lucene-search`).
+        let segment_suffix = tim_name
+            .strip_prefix(&format!("{}_", commit.segment_name))
+            .or_else(|| tim_name.strip_prefix('_'))
+            .and_then(|s| s.strip_suffix(".tim"))
+            .unwrap_or_default()
+            .to_string();
+
+        let fields = blocktree::open(
+            &tim,
+            &tip,
+            &tmd,
+            field_infos,
+            &commit.segment_id,
+            &segment_suffix,
+            si.doc_count,
+        )
+        .map_err(|e| e.to_string())?;
+
+        let doc_bytes = si
+            .files
+            .iter()
+            .find(|f| f.ends_with(".doc"))
+            .map(|name| dir.open(name).map_err(|e| e.to_string()))
+            .transpose()?;
+        let doc_in = doc_bytes
+            .as_ref()
+            .map(|bytes| DocInput::open(bytes, &commit.segment_id, &segment_suffix))
+            .transpose()
+            .map_err(|e| e.to_string())?;
+
+        let mut field_checks = Vec::new();
+        let mut any_needs_doc_file = false;
+        for (field_name, field_terms) in fields.iter_fields() {
+            let mut freq_mismatches: Vec<String> = Vec::new();
+            let mut doc_id_problems: Vec<String> = Vec::new();
+            let mut terms = field_terms.iter();
+            while let Some((term, claimed)) = terms.next() {
+                if claimed.doc_freq > 1 && doc_in.is_none() {
+                    any_needs_doc_file = true;
+                    continue;
+                }
+                let postings = field_terms
+                    .postings(term, doc_in.as_ref())
+                    .map_err(|e| e.to_string())?
+                    .ok_or_else(|| {
+                        format!(
+                            "field {field_name:?}: term {term:?} enumerated by iter() but not \
+                             found by postings() seek"
+                        )
+                    })?;
+
+                // `totalTermFreq` re-derivation: genuinely independent data
+                // (each doc's decoded freq comes straight off the wire, not
+                // from anything this loop already assumed) -- exactly the
+                // "dictionary metadata vs. actual postings" cross-check task
+                // #57 originally deferred.
+                let actual_total_term_freq: i64 = postings.freqs.iter().map(|&f| f as i64).sum();
+                if actual_total_term_freq != claimed.total_term_freq {
+                    freq_mismatches.push(format!(
+                        "field {field_name:?} term {term:?}: dictionary claims \
+                         totalTermFreq={}, but postings actually sum to {actual_total_term_freq}",
+                        claimed.total_term_freq
+                    ));
+                }
+
+                // `docFreq` proxy: `postings.docs.len()` always equals
+                // `claimed.doc_freq` by construction whenever decode
+                // succeeds at all (`read_postings`/`singleton_postings` are
+                // parameterized by the claimed count, exactly like real
+                // Lucene's own `PostingsEnum.reset`) -- a plain recount could
+                // never disagree, so it would be a no-op check. What a wrong
+                // claimed `docFreq` actually does on decode is make the
+                // reader consume a different number of bytes than the
+                // writer intended, wandering into unrelated bytes -- caught
+                // here as an out-of-range or non-monotonically-increasing
+                // decoded doc ID, not as a count mismatch.
+                let mut prev_doc_id = -1i32;
+                for &doc_id in &postings.docs {
+                    if doc_id <= prev_doc_id || doc_id >= si.doc_count {
+                        doc_id_problems.push(format!(
+                            "field {field_name:?} term {term:?}: decoded doc ID {doc_id} is not \
+                             in the valid strictly-increasing 0..{} range (previous was \
+                             {prev_doc_id})",
+                            si.doc_count
+                        ));
+                        break;
+                    }
+                    prev_doc_id = doc_id;
+                }
+            }
+            field_checks.push(named_field_check(
+                &format!("postings.total_term_freq:{field_name}"),
+                &freq_mismatches,
+                field_terms.num_terms,
+            ));
+            field_checks.push(named_field_check(
+                &format!("postings.doc_ids_valid:{field_name}"),
+                &doc_id_problems,
+                field_terms.num_terms,
+            ));
+        }
+        if any_needs_doc_file {
+            field_checks.push(Check::fail(
+                "postings.doc_open",
+                "a term with docFreq > 1 needs the segment's .doc file, but none was found",
+            ));
+        }
+        Ok(field_checks)
+    })();
+
+    match result {
+        Ok(field_checks) => checks.extend(field_checks),
+        Err(e) => checks.push(Check::fail("postings.open", e)),
     }
 }
 
@@ -970,5 +1245,395 @@ mod tests {
         assert_eq!(checks.len(), 1);
         assert!(!checks[0].passed);
         assert!(checks[0].message.contains("999"));
+    }
+
+    // -- postings term-by-term re-derivation (task: "revisit scope") --
+
+    const POSTINGS_SEG_ID: [u8; ID_LENGTH] = [11u8; ID_LENGTH];
+    const POSTINGS_SUFFIX: &str = "Lucene104_0";
+
+    fn postings_field_info(index_options: field_infos::IndexOptions) -> field_infos::FieldInfo {
+        field_infos::FieldInfo {
+            name: "body".to_string(),
+            number: 0,
+            store_term_vectors: false,
+            omit_norms: true,
+            store_payloads: false,
+            soft_deletes_field: false,
+            parent_field: false,
+            index_options,
+            doc_values_type: field_infos::DocValuesType::None,
+            doc_values_skip_index_type: field_infos::DocValuesSkipIndexType::None,
+            doc_values_gen: -1,
+            attributes: vec![],
+            point_dimension_count: 0,
+            point_index_dimension_count: 0,
+            point_num_bytes: 0,
+            vector_dimension: 0,
+            vector_encoding: field_infos::VectorEncoding::Float32,
+            vector_similarity_function: field_infos::VectorSimilarityFunction::Euclidean,
+        }
+    }
+
+    /// Writes a minimal, self-contained, non-compound one-field segment
+    /// (`.si`/`.fnm`/`.tim`/`.tip`/`.tmd`/`.doc`) into `dst_dir` from
+    /// `postings_writer::write_single_field`'s output, and returns the
+    /// `SegmentCommitInfo` to open it with. `doc_bytes_override` lets a test
+    /// substitute a *different* `.doc` buffer than the one that naturally
+    /// matches `terms` -- the mechanism the corruption test below uses to
+    /// build a term dictionary that claims one `totalTermFreq` while the
+    /// actual `.doc` bytes sum to a different one, without any raw byte
+    /// surgery.
+    fn write_postings_fixture(
+        dst_dir: &std::path::Path,
+        terms: &[lucene_codecs::postings_writer::TermPostings],
+        field_doc_count: i32,
+        max_doc: i32,
+        doc_bytes_override: Option<&[u8]>,
+    ) -> segment_infos::SegmentCommitInfo {
+        use lucene_codecs::field_infos::IndexOptions;
+        use lucene_codecs::postings_writer::{write_single_field, FieldPostingsInput};
+
+        let input = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqs,
+            doc_count: field_doc_count,
+            has_payloads: false,
+            terms,
+        };
+        let output = write_single_field(&input, &POSTINGS_SEG_ID, POSTINGS_SUFFIX)
+            .expect("hand-built postings must write cleanly");
+        let doc_bytes = doc_bytes_override.unwrap_or(&output.doc);
+
+        let fields = field_infos::write(
+            &[postings_field_info(IndexOptions::DocsAndFreqs)],
+            &POSTINGS_SEG_ID,
+            "",
+        );
+        std::fs::write(dst_dir.join("_0.fnm"), &fields).unwrap();
+        std::fs::write(
+            dst_dir.join(format!("_0_{POSTINGS_SUFFIX}.tim")),
+            &output.tim,
+        )
+        .unwrap();
+        std::fs::write(
+            dst_dir.join(format!("_0_{POSTINGS_SUFFIX}.tip")),
+            &output.tip,
+        )
+        .unwrap();
+        std::fs::write(
+            dst_dir.join(format!("_0_{POSTINGS_SUFFIX}.tmd")),
+            &output.tmd,
+        )
+        .unwrap();
+        std::fs::write(dst_dir.join(format!("_0_{POSTINGS_SUFFIX}.doc")), doc_bytes).unwrap();
+
+        let si = SegmentInfo {
+            id: POSTINGS_SEG_ID,
+            version: segment_info::LuceneVersion {
+                major: 10,
+                minor: 0,
+                bugfix: 0,
+            },
+            min_version: None,
+            doc_count: max_doc,
+            is_compound_file: false,
+            has_blocks: false,
+            diagnostics: vec![],
+            files: vec![
+                "_0.fnm".to_string(),
+                format!("_0_{POSTINGS_SUFFIX}.tim"),
+                format!("_0_{POSTINGS_SUFFIX}.tip"),
+                format!("_0_{POSTINGS_SUFFIX}.tmd"),
+                format!("_0_{POSTINGS_SUFFIX}.doc"),
+            ],
+            attributes: vec![],
+            index_sort: None,
+        };
+        std::fs::write(dst_dir.join("_0.si"), segment_info::write(&si, "")).unwrap();
+
+        segment_infos::SegmentCommitInfo {
+            segment_name: "_0".to_string(),
+            segment_id: POSTINGS_SEG_ID,
+            codec_name: "Lucene104".to_string(),
+            del_gen: -1,
+            del_count: 0,
+            field_infos_gen: -1,
+            doc_values_gen: -1,
+            soft_del_count: 0,
+            sci_id: None,
+            field_infos_files: vec![],
+            dv_update_files: vec![],
+        }
+    }
+
+    /// The real `blocktree_index` fixture (genuine Java-written postings, a
+    /// mix of singleton and multi-doc terms) must pass the new re-derivation
+    /// checks cleanly -- the "no false positives on real data" baseline,
+    /// same role `valid_blocktree_fixture_passes_every_check` plays for the
+    /// rest of this module.
+    #[test]
+    fn valid_blocktree_fixture_passes_postings_re_derivation() {
+        let dir = FsDirectory::open(fixture_dir("blocktree_index"));
+        let results = check_directory(&dir).expect("read segments_N");
+        let result = &results[0];
+        assert!(
+            result.all_passed(),
+            "unexpected failures: {:?}",
+            result.failures()
+        );
+        assert!(
+            result
+                .checks
+                .iter()
+                .any(|c| c.name.starts_with("postings.total_term_freq:") && c.passed),
+            "expected a passing postings.total_term_freq:<field> check, got: {:?}",
+            result.checks
+        );
+        assert!(
+            result
+                .checks
+                .iter()
+                .any(|c| c.name.starts_with("postings.doc_ids_valid:") && c.passed),
+            "expected a passing postings.doc_ids_valid:<field> check, got: {:?}",
+            result.checks
+        );
+    }
+
+    /// A hand-built, genuinely self-consistent segment (real writer output,
+    /// not raw-byte surgery) must pass the re-derivation checks -- proves
+    /// the machinery works on this port's own writer output, not just the
+    /// one real-Lucene fixture above.
+    #[test]
+    fn hand_built_consistent_postings_pass_re_derivation() {
+        use lucene_codecs::postings_writer::TermPostings;
+
+        let terms = vec![
+            TermPostings {
+                term: b"apple".to_vec(),
+                docs: vec![(0, 2), (2, 1), (5, 3)],
+                ..Default::default()
+            },
+            TermPostings {
+                term: b"kiwi".to_vec(),
+                docs: vec![(1, 1)], // singleton
+                ..Default::default()
+            },
+        ];
+
+        // Distinct docs across both terms: {0, 1, 2, 5} -> field doc_count 4;
+        // max_doc must exceed the highest doc ID (5) -> 6.
+        let dst_dir = tempdir();
+        let commit = write_postings_fixture(&dst_dir, &terms, 4, 6, None);
+        let dir = FsDirectory::open(&dst_dir);
+
+        let result = check_segment(&dir, &commit);
+        assert!(
+            result.all_passed(),
+            "unexpected failures: {:?}",
+            result.failures()
+        );
+
+        std::fs::remove_dir_all(&dst_dir).ok();
+    }
+
+    /// The actual proof this check does something real: the term
+    /// dictionary (`.tim`/`.tip`/`.tmd`) is built from `claimed_terms` (which
+    /// says term `"apple"`'s `totalTermFreq` is 60), but the `.doc` bytes it
+    /// points at are swapped for `actual_terms`' real postings (whose three
+    /// per-doc freqs actually sum to 6) -- same doc IDs and doc count in
+    /// both (so decoding itself succeeds cleanly; this is a metadata/data
+    /// disagreement, not a corrupt/truncated file), yet
+    /// `postings.total_term_freq:body` must fail and name the exact
+    /// mismatch, while `postings.doc_ids_valid:body` (an unrelated
+    /// dimension) must still pass -- proving the new check independently
+    /// recomputes from the actual postings rather than trusting the
+    /// dictionary's own claim.
+    #[test]
+    fn corrupted_total_term_freq_is_caught_by_re_derivation() {
+        use lucene_codecs::field_infos::IndexOptions;
+        use lucene_codecs::postings_writer::{
+            write_single_field, FieldPostingsInput, TermPostings,
+        };
+
+        let actual_terms = vec![TermPostings {
+            term: b"apple".to_vec(),
+            docs: vec![(0, 2), (2, 1), (5, 3)], // real per-doc freqs, sum = 6
+            ..Default::default()
+        }];
+        let claimed_terms = vec![TermPostings {
+            term: b"apple".to_vec(),
+            // Same doc IDs/doc count (docFreq stays consistent -- this test
+            // isolates totalTermFreq disagreement), different per-doc freqs
+            // so the dictionary's recorded totalTermFreq (60) disagrees with
+            // what the swapped-in real `.doc` bytes below actually contain.
+            docs: vec![(0, 20), (2, 10), (5, 30)],
+            ..Default::default()
+        }];
+
+        // Distinct docs {0, 2, 5} -> field doc_count 3; max_doc must exceed
+        // the highest doc ID (5) -> 6.
+        let actual_output = write_single_field(
+            &FieldPostingsInput {
+                field_number: 0,
+                index_options: IndexOptions::DocsAndFreqs,
+                doc_count: 3,
+                has_payloads: false,
+                terms: &actual_terms,
+            },
+            &POSTINGS_SEG_ID,
+            POSTINGS_SUFFIX,
+        )
+        .unwrap();
+        assert!(!actual_output.doc.is_empty());
+
+        let dst_dir = tempdir();
+        // `write_postings_fixture` builds .tim/.tip/.tmd from
+        // `claimed_terms` (dictionary says totalTermFreq=60) but the `.doc`
+        // file on disk is overridden to `actual_output.doc` (real bytes
+        // summing to 6) -- both used the same doc IDs/doc_count, so
+        // `meta.doc_start_fp` still points at the right offset and decoding
+        // succeeds; only the recorded stat disagrees with the real data.
+        let commit =
+            write_postings_fixture(&dst_dir, &claimed_terms, 3, 6, Some(&actual_output.doc));
+        let dir = FsDirectory::open(&dst_dir);
+
+        let result = check_segment(&dir, &commit);
+        assert!(!result.all_passed());
+
+        let freq_check = result
+            .checks
+            .iter()
+            .find(|c| c.name == "postings.total_term_freq:body")
+            .expect("total_term_freq check must have run");
+        assert!(!freq_check.passed);
+        assert!(freq_check.message.contains("totalTermFreq=60"));
+        assert!(freq_check.message.contains("sum to 6"));
+
+        // An unrelated dimension (doc ID validity) must still pass -- one
+        // wrong stat must not suppress or corrupt an unrelated check.
+        let doc_ids_check = result
+            .checks
+            .iter()
+            .find(|c| c.name == "postings.doc_ids_valid:body")
+            .expect("doc_ids_valid check must have run");
+        assert!(doc_ids_check.passed);
+
+        std::fs::remove_dir_all(&dst_dir).ok();
+    }
+
+    /// The `postings.doc_ids_valid` proxy's own actual proof: unlike
+    /// `total_term_freq` above, this swaps in `.doc` bytes whose per-doc
+    /// freqs still sum correctly (so `total_term_freq` passes) but whose
+    /// decoded doc IDs include one at/past `si.doc_count` -- exactly the
+    /// "wrong claimed docFreq made the reader wander into unrelated bytes"
+    /// symptom the doc comment above describes as this check's real
+    /// purpose. Without this test, the check added specifically to catch
+    /// docFreq corruption had never actually been exercised on its failure
+    /// path.
+    #[test]
+    fn corrupted_doc_id_is_caught_by_doc_ids_valid_check() {
+        use lucene_codecs::field_infos::IndexOptions;
+        use lucene_codecs::postings_writer::{
+            write_single_field, FieldPostingsInput, TermPostings,
+        };
+
+        let claimed_terms = vec![TermPostings {
+            term: b"apple".to_vec(),
+            docs: vec![(0, 2), (2, 1), (5, 3)], // sum = 6, doc IDs all < max_doc (6)
+            ..Default::default()
+        }];
+        let actual_terms = vec![TermPostings {
+            term: b"apple".to_vec(),
+            // Same per-doc freqs in the same order (sum still 6, so
+            // total_term_freq must still agree) but the third doc ID is
+            // 9, past this segment's max_doc of 6 -- doc_ids_valid must
+            // catch it even though total_term_freq does not.
+            docs: vec![(0, 2), (2, 1), (9, 3)],
+            ..Default::default()
+        }];
+
+        let actual_output = write_single_field(
+            &FieldPostingsInput {
+                field_number: 0,
+                index_options: IndexOptions::DocsAndFreqs,
+                doc_count: 3,
+                has_payloads: false,
+                terms: &actual_terms,
+            },
+            &POSTINGS_SEG_ID,
+            POSTINGS_SUFFIX,
+        )
+        .unwrap();
+
+        let dst_dir = tempdir();
+        let commit =
+            write_postings_fixture(&dst_dir, &claimed_terms, 3, 6, Some(&actual_output.doc));
+        let dir = FsDirectory::open(&dst_dir);
+
+        let result = check_segment(&dir, &commit);
+        assert!(!result.all_passed());
+
+        let doc_ids_check = result
+            .checks
+            .iter()
+            .find(|c| c.name == "postings.doc_ids_valid:body")
+            .expect("doc_ids_valid check must have run");
+        assert!(!doc_ids_check.passed);
+        assert!(doc_ids_check.message.contains("doc ID 9"));
+
+        // total_term_freq is an unrelated dimension here (both sides sum
+        // to 6) -- must still pass, proving the two checks are
+        // independent.
+        let freq_check = result
+            .checks
+            .iter()
+            .find(|c| c.name == "postings.total_term_freq:body")
+            .expect("total_term_freq check must have run");
+        assert!(freq_check.passed);
+
+        std::fs::remove_dir_all(&dst_dir).ok();
+    }
+
+    /// A field claiming postings whose segment is missing the `.doc` file
+    /// (needed for any term with `docFreq > 1`) must be flagged as
+    /// `postings.doc_open`, not panic -- exercises the "term needs `.doc`
+    /// bytes but none were found" branch distinctly from a plain I/O error.
+    #[test]
+    fn missing_doc_file_for_multi_doc_term_fails_doc_open_check() {
+        use lucene_codecs::postings_writer::TermPostings;
+
+        let terms = vec![TermPostings {
+            term: b"apple".to_vec(),
+            docs: vec![(0, 2), (2, 1), (5, 3)],
+            ..Default::default()
+        }];
+
+        // Distinct docs {0, 2, 5} -> field doc_count 3; max_doc must exceed
+        // the highest doc ID (5) -> 6.
+        let dst_dir = tempdir();
+        let commit = write_postings_fixture(&dst_dir, &terms, 3, 6, None);
+
+        // Make the .doc file genuinely absent, not just unlisted: delete it
+        // from disk *and* drop it from `.si`'s file list, then rewrite
+        // `.si` -- so this is "the segment legitimately has no .doc file"
+        // from this function's point of view, not an I/O error on an
+        // expected file (that's a different, already-covered failure mode).
+        let dir_ro = FsDirectory::open(&dst_dir);
+        let mut si = open_si(&dir_ro, &commit).expect("hand-built .si parses");
+        si.files.retain(|f| !f.ends_with(".doc"));
+        std::fs::write(dst_dir.join("_0.si"), segment_info::write(&si, "")).unwrap();
+        std::fs::remove_file(dst_dir.join(format!("_0_{POSTINGS_SUFFIX}.doc"))).unwrap();
+
+        let dir = FsDirectory::open(&dst_dir);
+        let result = check_segment(&dir, &commit);
+        let doc_open_check = result
+            .checks
+            .iter()
+            .find(|c| c.name == "postings.doc_open")
+            .expect("postings.doc_open check must have run");
+        assert!(!doc_open_check.passed);
+
+        std::fs::remove_dir_all(&dst_dir).ok();
     }
 }

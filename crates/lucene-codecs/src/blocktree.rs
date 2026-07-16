@@ -584,6 +584,14 @@ impl BlockTreeFields {
         self.fields.iter().find(|(n, _)| n == name).map(|(_, f)| f)
     }
 
+    /// Every field's name paired with its term dictionary, in the order
+    /// `.tmd` listed them -- used by callers (e.g. `CheckIndex`-equivalent's
+    /// postings re-derivation) that need to walk *every* field's *every*
+    /// term rather than looking one up by name via [`Self::field`].
+    pub fn iter_fields(&self) -> impl Iterator<Item = (&str, &FieldTerms)> {
+        self.fields.iter().map(|(n, f)| (n.as_str(), f))
+    }
+
     /// A fields producer for a segment with no postings at all (no
     /// `.tim`/`.tip`/`.tmd` files) -- e.g. a stored-fields-only segment,
     /// where `FieldInfos.hasPostings()` is false for every field. Every
