@@ -1488,6 +1488,299 @@ pub fn search_boolean_query_scored<C: ScoringCollector>(
     Ok(())
 }
 
+/// MAXSCORE-style sibling of [`search_boolean_query_scored`], scoped narrowly
+/// and honestly, mirroring [`search_term_query_scored_maxscore`]'s own scope
+/// decisions one level up (pure SHOULD-disjunction of terms instead of a
+/// single term):
+///
+/// **Fast-path preconditions** (falls back to calling
+/// [`search_boolean_query_scored`] verbatim the moment any of these doesn't
+/// hold, so this function never changes matching/scoring semantics, only
+/// performance):
+/// - `query.must` and `query.must_not` are both empty (pure SHOULD
+///   disjunction — no conjunction/exclusion gating to reason about).
+/// - `query.minimum_should_match <= 1` (so every `should` hit independently
+///   qualifies a doc, same as an unconstrained disjunction).
+/// - `query.should` is non-empty and every clause is `Clause::Term` (no
+///   nested `Boolean`/`Phrase`/`DisjunctionMax`/wildcard-family/points
+///   clause — this fast path only streams postings for plain terms).
+/// - `doc_in` is `Some`, and every clause's term exists (`seek_exact`
+///   succeeds), has `doc_freq > 1`, and its field supports
+///   [`blocktree::FieldTerms::lazy_postings`] (same per-term fallback
+///   conditions [`search_term_query_scored_maxscore`] already checks).
+///
+/// **Algorithm — simplified two-tier essential/non-essential MAXSCORE, not
+/// full multi-way WAND pivot selection** (an explicit, documented scope
+/// narrowing from a "real" `WANDScorer`/`MaxScoreSumPropagator`, permitted by
+/// this task's own scope note when full pivot selection would be unsafe to
+/// rush): each clause gets one lazy postings cursor
+/// ([`lucene_codecs::postings::LazyDocsCursor`]), merged into the disjunction
+/// candidate set by taking, each round, the minimum current doc ID across
+/// every still-active cursor (same shape as [`Disjunction`], just streamed
+/// instead of eagerly materialized). What makes this MAXSCORE rather than a
+/// plain lazy disjunction is the skip check run before each round: for every
+/// clause still positioned inside a real (non-tail) level-0 block, this
+/// function compares that one clause's own current-block upper bound (real
+/// [`similarity::max_score_for_impacts`], the exact bound
+/// [`search_term_query_scored_maxscore`] already established block-skip
+/// soundness for) against `threshold - sum(every OTHER clause's *global*
+/// upper bound)`. Every other clause's contribution is bounded not by its own
+/// current block (which would go stale the moment that clause's cursor falls
+/// behind and stops being re-checked — a real correctness trap this function
+/// deliberately avoids) but by a per-clause bound that holds for its *entire*
+/// remaining postings list, computed once, cheaply, and reused forever:
+/// `idf(doc_freq, doc_count)` — [`similarity::tf_norm`]'s formula (this
+/// port's actual BM25 formula, see that function's own doc comment on why
+/// there is no textbook `(k1 + 1)` numerator) has `freq / (freq + k1 * ...)`
+/// strictly less than `1.0` for any finite `freq`, approaching but never
+/// reaching `1.0` as `freq -> infinity` regardless of field length, so
+/// `idf * 1.0 == idf` is a real, always-valid, never-stale ceiling on any
+/// document this clause could ever score — not an approximation of one, and
+/// not dependent on which block (if any) is currently loaded. A clause whose
+/// cursor has already reached [`lucene_codecs::postings::NO_MORE_DOCS`]
+/// contributes `0.0` instead (it provably can never match another doc, a
+/// tighter and equally sound bound than its own already-computed `idf`).
+/// When one clause's own current block can't push the sum over threshold
+/// even granting every other still-active clause its absolute best case,
+/// that whole block is skipped outright — `advance()`d straight past its
+/// last doc, exactly like `search_term_query_scored_maxscore`'s own skip,
+/// and counted by the same [`test_only_maxscore_block_skip_counter`] this
+/// function shares.
+///
+/// This scheme is intentionally coarser than real Lucene's per-clause
+/// block-level bound propagation (which keeps every clause's block-level
+/// bound continuously fresh via a shared priority queue over block
+/// boundaries) — here, only the clause actually being considered for a skip
+/// uses its own fresh block bound; every other still-active clause is
+/// charged its worst-possible-ever score. That's strictly more conservative
+/// (skips less than a fully-refreshed multi-way WAND would), never
+/// incorrect: since the substitute bound only ever overstates another
+/// clause's true contribution, a block this function proves skippable
+/// really is skippable, and
+/// [`boolean_maxscore_lazy_path_matches_eager_path_on_real_fixture`] below
+/// checks exactly that (byte-identical `TopDocsCollector` output to the
+/// eager path) across many `top_n`/clause-frequency combinations, while
+/// [`test_only_boolean_maxscore_block_skip_counter_records_real_skips`]
+/// proves real per-clause block decode is actually skipped for a genuine
+/// multi-clause query, not merely that the (necessarily identical) end
+/// result matches.
+#[allow(clippy::too_many_arguments)]
+pub fn search_boolean_query_scored_maxscore(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    pos_in: Option<&PosInput<'_>>,
+    pay_in: Option<&PayInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    points: Option<&PointsInput<'_>>,
+    query: &BooleanQuery,
+    norms: Option<&HashMap<String, FieldNorms<'_>>>,
+    collector: &mut collector::TopDocsCollector,
+) -> Result<()> {
+    // Every fallback path below routes through this closure so there is
+    // exactly one call site reproducing `search_boolean_query_scored`'s exact
+    // behavior -- no risk of the fast path silently diverging from it.
+    let fallback = |collector: &mut collector::TopDocsCollector| {
+        search_boolean_query_scored(
+            fields, doc_in, pos_in, pay_in, live_docs, points, query, norms, collector,
+        )
+    };
+
+    if !query.must.is_empty() || !query.must_not.is_empty() || query.minimum_should_match > 1 {
+        return fallback(collector);
+    }
+    if query.should.is_empty() {
+        return fallback(collector);
+    }
+    let Some(doc_in) = doc_in else {
+        return fallback(collector);
+    };
+
+    struct ClauseCursor<'a> {
+        cursor: lucene_codecs::postings::LazyDocsCursor<'a>,
+        doc_id: i32,
+        doc_freq: i64,
+        doc_count: i64,
+        /// This clause's own field name, used to look up its real norms
+        /// entry (a `BooleanQuery`'s `should` clauses can span multiple
+        /// fields, unlike a single `TermQuery`).
+        field: String,
+        /// `idf(doc_freq, doc_count)` -- see this function's doc comment: a
+        /// real, always-valid (never block-stale) upper bound on any score
+        /// this clause could ever contribute, computed once up front. Used
+        /// as-is while this clause is still active; treated as `0.0` once
+        /// its cursor reaches `NO_MORE_DOCS` (see the skip loop below).
+        global_bound: f32,
+    }
+
+    let mut clauses: Vec<ClauseCursor<'_>> = Vec::with_capacity(query.should.len());
+    for clause in &query.should {
+        let Clause::Term(tq) = clause else {
+            return fallback(collector);
+        };
+        let Some(field_terms) = fields.field(&tq.field) else {
+            return fallback(collector);
+        };
+        let Some(stats) = field_terms.seek_exact(&tq.term) else {
+            return fallback(collector);
+        };
+        if stats.doc_freq <= 1 {
+            return fallback(collector);
+        }
+        let cursor = match field_terms.lazy_postings(&tq.term, doc_in) {
+            Ok(Some(c)) => c,
+            Ok(None) => return fallback(collector),
+            Err(blocktree::Error::Postings(lucene_codecs::postings::Error::Unsupported(_))) => {
+                return fallback(collector);
+            }
+            Err(e) => return Err(e.into()),
+        };
+        let doc_freq = stats.doc_freq as i64;
+        let doc_count = field_terms.doc_count as i64;
+        let global_bound = similarity::idf(doc_freq, doc_count);
+        clauses.push(ClauseCursor {
+            cursor,
+            doc_id: -1,
+            doc_freq,
+            doc_count,
+            field: tq.field.clone(),
+            global_bound,
+        });
+    }
+
+    for c in clauses.iter_mut() {
+        c.doc_id = c.cursor.next_doc().map_err(blocktree::Error::from)?;
+    }
+
+    loop {
+        // Skip pass: whenever the collector is full, check every clause
+        // still sitting in a real (non-tail) level-0 block against
+        // "threshold - sum(every OTHER clause's global bound)"; repeat for a
+        // clause whose next block is *also* skippable, so a long run of
+        // uncompetitive blocks for one clause is skipped block-by-block, not
+        // just once.
+        if let Some(threshold) = collector.min_competitive_score() {
+            for i in 0..clauses.len() {
+                loop {
+                    if clauses[i].doc_id == lucene_codecs::postings::NO_MORE_DOCS {
+                        break;
+                    }
+                    let impacts = clauses[i].cursor.level0_impacts();
+                    if impacts.is_empty() {
+                        // Tail block (or a field with no freqs): no bound
+                        // available to prove a skip, so this clause must be
+                        // decoded doc-by-doc from here on.
+                        break;
+                    }
+                    let avg_field_length =
+                        match norms.and_then(|m| m.get(clauses[i].field.as_str())) {
+                            Some(fn_) => fn_.avg_field_length,
+                            None => similarity::UNNORMED_FIELD_LENGTH,
+                        };
+                    let own_bound = match norms.and_then(|m| m.get(clauses[i].field.as_str())) {
+                        Some(_) => similarity::max_score_for_impacts(
+                            impacts,
+                            clauses[i].doc_freq,
+                            clauses[i].doc_count,
+                            avg_field_length,
+                        ),
+                        None => {
+                            let idf = similarity::idf(clauses[i].doc_freq, clauses[i].doc_count);
+                            impacts
+                                .iter()
+                                .map(|impact| {
+                                    idf * similarity::tf_norm(
+                                        impact.freq as f32,
+                                        similarity::UNNORMED_FIELD_LENGTH,
+                                        similarity::UNNORMED_FIELD_LENGTH,
+                                        similarity::DEFAULT_K1,
+                                        similarity::DEFAULT_B,
+                                    )
+                                })
+                                .fold(0.0f32, f32::max)
+                        }
+                    };
+                    // A clause that has already reached `NO_MORE_DOCS` can
+                    // never contribute to any future candidate, so it's
+                    // charged `0.0` here rather than its (looser) global
+                    // bound -- exhausted `should` clauses are common once a
+                    // low-`docFreq` clause runs out well before a
+                    // high-`docFreq` one, and without this the sum could
+                    // never tighten enough to prove a skip.
+                    let others_bound: f32 = clauses
+                        .iter()
+                        .enumerate()
+                        .filter(|&(j, _)| j != i)
+                        .map(|(_, c)| {
+                            if c.doc_id == lucene_codecs::postings::NO_MORE_DOCS {
+                                0.0
+                            } else {
+                                c.global_bound
+                            }
+                        })
+                        .sum();
+                    if own_bound + others_bound <= threshold {
+                        #[cfg(any(test, feature = "test-support"))]
+                        test_only_maxscore_block_skip_counter::record_skip();
+                        let skip_to = clauses[i]
+                            .cursor
+                            .current_block_last_doc_id()
+                            .saturating_add(1);
+                        clauses[i].doc_id = clauses[i]
+                            .cursor
+                            .advance(skip_to)
+                            .map_err(blocktree::Error::from)?;
+                        continue;
+                    }
+                    break;
+                }
+            }
+        }
+
+        let candidate = clauses
+            .iter()
+            .map(|c| c.doc_id)
+            .filter(|&d| d != lucene_codecs::postings::NO_MORE_DOCS)
+            .min();
+        let Some(candidate) = candidate else {
+            break;
+        };
+
+        let mut score = 0.0f32;
+        for c in clauses.iter() {
+            if c.doc_id == candidate {
+                let freq = c.cursor.freq().expect("cursor positioned at candidate");
+                let field_length = match norms.and_then(|m| m.get(c.field.as_str())) {
+                    Some(fn_) => fn_.field_length(candidate)?,
+                    None => similarity::UNNORMED_FIELD_LENGTH,
+                };
+                let avg_field_length = match norms.and_then(|m| m.get(c.field.as_str())) {
+                    Some(fn_) => fn_.avg_field_length,
+                    None => similarity::UNNORMED_FIELD_LENGTH,
+                };
+                score += similarity::score(
+                    c.doc_freq,
+                    c.doc_count,
+                    freq as f32,
+                    field_length,
+                    avg_field_length,
+                );
+            }
+        }
+
+        if live_docs.is_none_or(|bits| bits.get(candidate as usize)) {
+            collector.collect(candidate, score);
+        }
+
+        for c in clauses.iter_mut() {
+            if c.doc_id == candidate {
+                c.doc_id = c.cursor.next_doc().map_err(blocktree::Error::from)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// `DisjunctionMaxQuery`-equivalent (task #32): reports every doc matching at
 /// least one of `query.disjuncts` (a pure union -- see [`resolve_dismax_docs`]'s
 /// doc comment) to `collector`, in ascending doc-ID order. Same
@@ -5327,5 +5620,339 @@ mod tests {
             "this fixture's docFreq (300) spans more than one level-0 block, \
              so some block should be skippable once the top-5 threshold is reached"
         );
+    }
+
+    /// Differential proof for
+    /// [`search_boolean_query_scored_maxscore`], analogous to
+    /// `maxscore_lazy_path_matches_eager_path_on_real_fixture_and_actually_skips_blocks`
+    /// one level up: a three-clause pure-SHOULD `BooleanQuery` over this
+    /// fixture's real Lucene-written data (`big`/`"everywhere"`, `docFreq ==
+    /// 300`, spanning a real full level-0 block plus a tail; `body`/`"cat"`
+    /// and `body`/`"dog"`, `docFreq == 2` each). For many `top_n` values,
+    /// asserts [`search_boolean_query_scored_maxscore`]'s
+    /// `TopDocsCollector::top_docs()` is byte-identical to
+    /// [`search_boolean_query_scored`] (the exhaustive path), proving the
+    /// skip logic never changes the result.
+    #[test]
+    fn boolean_maxscore_lazy_path_matches_eager_path_on_real_fixture() {
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+
+        let query = BooleanQuery::new().with_should([
+            Clause::from(TermQuery::new("big", b"everywhere".as_slice())),
+            Clause::from(TermQuery::new("body", "cat")),
+            Clause::from(TermQuery::new("body", "dog")),
+        ]);
+
+        for &top_n in &[1usize, 2, 5, 20, 300] {
+            let mut eager = TopDocsCollector::new(top_n);
+            search_boolean_query_scored(
+                &fields,
+                Some(&doc_in),
+                None,
+                None,
+                None,
+                None,
+                &query,
+                None,
+                &mut eager,
+            )
+            .expect("eager search");
+
+            let mut lazy = TopDocsCollector::new(top_n);
+            search_boolean_query_scored_maxscore(
+                &fields,
+                Some(&doc_in),
+                None,
+                None,
+                None,
+                None,
+                &query,
+                None,
+                &mut lazy,
+            )
+            .expect("maxscore search");
+
+            assert_eq!(
+                eager.top_docs(),
+                lazy.top_docs(),
+                "top_{top_n} must match exactly between eager and maxscore boolean paths"
+            );
+        }
+    }
+
+    /// Counter-based proof (analogous to
+    /// `maxscore_lazy_path_matches_eager_path_on_real_fixture_and_actually_skips_blocks`'s
+    /// own skip-count assertion) that
+    /// [`search_boolean_query_scored_maxscore`] doesn't just happen to match
+    /// the eager path's output -- it genuinely skips real per-clause level-0
+    /// block decode for the same three-clause query above, reusing
+    /// [`test_only_maxscore_block_skip_counter`] (shared with the
+    /// single-term MAXSCORE path, since both increment the same counter at
+    /// the same kind of skip site: `advance()`ing straight past a level-0
+    /// block's last doc without decoding the rest of it).
+    #[test]
+    fn test_only_boolean_maxscore_block_skip_counter_records_real_skips() {
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+
+        let query = BooleanQuery::new().with_should([
+            Clause::from(TermQuery::new("big", b"everywhere".as_slice())),
+            Clause::from(TermQuery::new("body", "cat")),
+            Clause::from(TermQuery::new("body", "dog")),
+        ]);
+
+        // A small top_n reaches its final threshold quickly relative to
+        // "big"'s 300-doc postings list, making at least one of its blocks
+        // (out of several) provably unable to beat that threshold once
+        // combined with the other clauses' global bounds.
+        test_only_maxscore_block_skip_counter::reset();
+        let mut lazy = TopDocsCollector::new(1);
+        search_boolean_query_scored_maxscore(
+            &fields,
+            Some(&doc_in),
+            None,
+            None,
+            None,
+            None,
+            &query,
+            None,
+            &mut lazy,
+        )
+        .expect("maxscore search");
+        assert!(
+            test_only_maxscore_block_skip_counter::count() > 0,
+            "top_1 should make at least one clause's block provably \
+             uncompetitive against the other clauses' global bounds"
+        );
+
+        // The full docFreq: the collector is never full until the very last
+        // candidate doc, so nothing should be skippable -- same conservative
+        // check the single-term differential test above makes.
+        test_only_maxscore_block_skip_counter::reset();
+        let mut lazy_full = TopDocsCollector::new(9000);
+        search_boolean_query_scored_maxscore(
+            &fields,
+            Some(&doc_in),
+            None,
+            None,
+            None,
+            None,
+            &query,
+            None,
+            &mut lazy_full,
+        )
+        .expect("maxscore search");
+        assert_eq!(
+            test_only_maxscore_block_skip_counter::count(),
+            0,
+            "top_n covering every possible hit should never need to skip anything"
+        );
+    }
+
+    #[test]
+    fn boolean_maxscore_falls_back_to_eager_path_when_must_clause_present() {
+        // A non-empty `must` disqualifies the fast path entirely (see this
+        // function's doc comment) -- confirms the fallback produces exactly
+        // the eager path's output rather than silently mishandling `must`.
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+
+        let query = BooleanQuery::new()
+            .with_must([Clause::from(TermQuery::new("body", "cat"))])
+            .with_should([Clause::from(TermQuery::new("body", "dog"))]);
+
+        let mut eager = TopDocsCollector::new(5);
+        search_boolean_query_scored(
+            &fields,
+            Some(&doc_in),
+            None,
+            None,
+            None,
+            None,
+            &query,
+            None,
+            &mut eager,
+        )
+        .unwrap();
+
+        let mut lazy = TopDocsCollector::new(5);
+        search_boolean_query_scored_maxscore(
+            &fields,
+            Some(&doc_in),
+            None,
+            None,
+            None,
+            None,
+            &query,
+            None,
+            &mut lazy,
+        )
+        .unwrap();
+
+        assert_eq!(eager.top_docs(), lazy.top_docs());
+    }
+
+    #[test]
+    fn boolean_maxscore_falls_back_to_eager_path_for_minimum_should_match_above_one() {
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+
+        let query = BooleanQuery::new()
+            .with_should([
+                Clause::from(TermQuery::new("body", "cat")),
+                Clause::from(TermQuery::new("body", "dog")),
+                Clause::from(TermQuery::new("body", "bird")),
+            ])
+            .with_minimum_should_match(2);
+
+        let mut eager = TopDocsCollector::new(5);
+        search_boolean_query_scored(
+            &fields,
+            Some(&doc_in),
+            None,
+            None,
+            None,
+            None,
+            &query,
+            None,
+            &mut eager,
+        )
+        .unwrap();
+
+        let mut lazy = TopDocsCollector::new(5);
+        search_boolean_query_scored_maxscore(
+            &fields,
+            Some(&doc_in),
+            None,
+            None,
+            None,
+            None,
+            &query,
+            None,
+            &mut lazy,
+        )
+        .unwrap();
+
+        assert_eq!(eager.top_docs(), lazy.top_docs());
+    }
+
+    #[test]
+    fn boolean_maxscore_falls_back_to_eager_path_for_nested_boolean_clause() {
+        // A nested `Clause::Boolean` isn't `Clause::Term`, so it disqualifies
+        // the fast path (see this function's doc comment) -- confirms the
+        // fallback still produces the exhaustive path's exact result.
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+
+        let query = BooleanQuery::new().with_should([
+            Clause::from(TermQuery::new("body", "cat")),
+            Clause::Boolean(Box::new(
+                BooleanQuery::new().with_should([Clause::from(TermQuery::new("body", "dog"))]),
+            )),
+        ]);
+
+        let mut eager = TopDocsCollector::new(5);
+        search_boolean_query_scored(
+            &fields,
+            Some(&doc_in),
+            None,
+            None,
+            None,
+            None,
+            &query,
+            None,
+            &mut eager,
+        )
+        .unwrap();
+
+        let mut lazy = TopDocsCollector::new(5);
+        search_boolean_query_scored_maxscore(
+            &fields,
+            Some(&doc_in),
+            None,
+            None,
+            None,
+            None,
+            &query,
+            None,
+            &mut lazy,
+        )
+        .unwrap();
+
+        assert_eq!(eager.top_docs(), lazy.top_docs());
+    }
+
+    #[test]
+    fn boolean_maxscore_falls_back_to_eager_path_for_singleton_docfreq_one_clause() {
+        // "id"/"id2" has `docFreq == 1` (pulsed, no `.doc` bytes) -- exercises
+        // the per-clause `doc_freq <= 1` fallback branch.
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+
+        let query = BooleanQuery::new().with_should([
+            Clause::from(TermQuery::new("body", "cat")),
+            Clause::from(TermQuery::new("id", "id2")),
+        ]);
+
+        let mut eager = TopDocsCollector::new(5);
+        search_boolean_query_scored(
+            &fields,
+            Some(&doc_in),
+            None,
+            None,
+            None,
+            None,
+            &query,
+            None,
+            &mut eager,
+        )
+        .unwrap();
+
+        let mut lazy = TopDocsCollector::new(5);
+        search_boolean_query_scored_maxscore(
+            &fields,
+            Some(&doc_in),
+            None,
+            None,
+            None,
+            None,
+            &query,
+            None,
+            &mut lazy,
+        )
+        .unwrap();
+
+        assert_eq!(eager.top_docs(), lazy.top_docs());
+    }
+
+    #[test]
+    fn boolean_maxscore_falls_back_to_eager_path_when_doc_in_is_none() {
+        let (fields, _doc) = open_fixture();
+        let query = BooleanQuery::new().with_should([
+            Clause::from(TermQuery::new("body", "cat")),
+            Clause::from(TermQuery::new("body", "dog")),
+        ]);
+
+        let mut eager = TopDocsCollector::new(5);
+        let eager_result = search_boolean_query_scored(
+            &fields, None, None, None, None, None, &query, None, &mut eager,
+        );
+
+        let mut lazy = TopDocsCollector::new(5);
+        let lazy_result = search_boolean_query_scored_maxscore(
+            &fields, None, None, None, None, None, &query, None, &mut lazy,
+        );
+
+        assert_eq!(eager_result.is_err(), lazy_result.is_err());
+        if eager_result.is_ok() {
+            assert_eq!(eager.top_docs(), lazy.top_docs());
+        }
     }
 }
