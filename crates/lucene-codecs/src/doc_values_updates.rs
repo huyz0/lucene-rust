@@ -16,26 +16,38 @@
 //! winning ties for the same doc. Crucially, the base doc-values file itself
 //! is never rewritten for this -- only new (small) overlay files accumulate.
 //!
-//! # Scope of this port: single-generation MVP
+//! # Scope of this port: multi-generation overlay chain
 //!
-//! This module implements exactly **one** overlay round: write a sparse
-//! `(docId -> newValue)` map to a small standalone file, and read a base
-//! numeric doc-values value *through* that overlay (overlay wins if present,
-//! else fall back to the base `.dvd` decode). This is the real property the
-//! task needs -- "update without a full rewrite" -- proven end to end.
+//! This module implements the core mechanism for **any number** of
+//! sequential overlay rounds: write a sparse `(docId -> newValue)` map to a
+//! small standalone file per generation, and read a base numeric doc-values
+//! value *through* an ordered chain of those overlays (the newest generation
+//! that touched a doc wins; a doc untouched by every generation falls back
+//! to the base `.dvd` decode). This is the real property the task needs --
+//! "update without a full rewrite", repeatable across many update rounds --
+//! proven end to end.
+//!
+//! Each generation is still an independent file written/read by
+//! [`write_numeric_updates`]/[`read_numeric_updates`] exactly as before --
+//! layering multiple generations does not change that per-generation format
+//! at all. [`numeric_value_with_generations`] is the new composition
+//! primitive: it takes the generations in ascending generation order (oldest
+//! first, matching real Lucene's `SegmentCommitInfo.docValuesGen` ordering)
+//! and checks them from newest to oldest, so a later generation's write
+//! always overrides an earlier one for the same doc, while a doc any given
+//! generation didn't touch transparently falls through to older generations
+//! and finally the base.
 //!
 //! **Explicitly not implemented** (future work, not silently assumed):
-//! - **Multiple sequential generations.** Real Lucene supports arbitrarily
-//!   many update rounds, each producing its own generation file, with
-//!   newest-generation-wins semantics when the same doc is touched more than
-//!   once across rounds. This port has exactly one overlay layer; composing
-//!   two overlays (or re-deriving a merged overlay from many rounds) is not
-//!   implemented. A caller who needs a second update round today would have
-//!   to build a fresh overlay from a merged map themselves.
 //! - **`SegmentCommitInfo`/`.si` `docValuesGen` wiring.** This module does
 //!   not touch segment metadata / commit generation counters at all; it's a
 //!   standalone read/write primitive a caller (e.g. task #37/#48's future
-//!   commit-lifecycle code) can adopt once that wiring exists.
+//!   commit-lifecycle code) can adopt once that wiring exists. In
+//!   particular, nothing here tracks *which* generation number each overlay
+//!   file corresponds to on disk -- callers are expected to keep the
+//!   `Vec`/slice of decoded overlay maps they pass to
+//!   [`numeric_value_with_generations`] in the same ascending order real
+//!   Lucene's generation counter would assign.
 //!
 //! # Byte format: this port's own invention
 //!
@@ -190,6 +202,37 @@ pub fn numeric_value_with_updates(
     doc_values::numeric_value(base_data, base_entry, doc_id)
 }
 
+/// The overlay-aware numeric doc-values read for **any number** of chained
+/// update generations: checks `generations` from newest to oldest (later
+/// entries in the slice win), falling back to the existing full
+/// [`doc_values::numeric_value`] base decode when `doc` isn't present in any
+/// generation. This is [`numeric_value_with_updates`] generalized from one
+/// overlay layer to a whole ordered chain, matching real Lucene's
+/// newest-generation-wins semantics when the same doc is touched more than
+/// once across sequential update rounds.
+///
+/// `generations` must be in **ascending generation order** (oldest first --
+/// generation 1 at index 0, generation 2 at index 1, and so on), the same
+/// order real Lucene's `SegmentCommitInfo.docValuesGen` counter assigns as
+/// updates accumulate. An empty slice degenerates to a plain base decode,
+/// identical to [`numeric_value_with_updates`] with an empty map.
+///
+/// `Ok(None)` means `doc` legitimately has no value in any generation or the
+/// base (matching [`doc_values::numeric_value`]'s own `None` meaning).
+pub fn numeric_value_with_generations(
+    base_entry: &NumericEntry,
+    base_data: &[u8],
+    generations: &[HashMap<i32, i64>],
+    doc_id: i32,
+) -> doc_values::Result<Option<i64>> {
+    for generation in generations.iter().rev() {
+        if let Some(&value) = generation.get(&doc_id) {
+            return Ok(Some(value));
+        }
+    }
+    doc_values::numeric_value(base_data, base_entry, doc_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -333,5 +376,110 @@ mod tests {
             let result = numeric_value_with_updates(&entry, &data, &updates, doc).unwrap();
             assert_eq!(result, Some(expected));
         }
+    }
+
+    // --- numeric_value_with_generations (multi-generation overlay chain) ---
+
+    #[test]
+    fn three_generations_newest_wins_for_a_doc_touched_by_all_three() {
+        let (entry, data) = dense_entry_and_data();
+        // Doc 1 (base value 20) gets updated at generation 1, then again at
+        // generation 2, then again at generation 3 -- generation 3's value
+        // must win, matching newest-generation-wins semantics.
+        let gen1 = HashMap::from([(1, 1_001i64)]);
+        let gen2 = HashMap::from([(1, 1_002i64)]);
+        let gen3 = HashMap::from([(1, 1_003i64)]);
+        let generations = [gen1, gen2, gen3];
+        let result = numeric_value_with_generations(&entry, &data, &generations, 1).unwrap();
+        assert_eq!(result, Some(1_003));
+    }
+
+    #[test]
+    fn overlapping_doc_sets_across_generations_each_doc_takes_its_own_newest_write() {
+        let (entry, data) = dense_entry_and_data();
+        // gen1 touches docs 0 and 1; gen2 touches docs 1 and 2 (overlapping
+        // on doc 1, where gen2 must win); gen3 touches only doc 2 again.
+        let gen1 = HashMap::from([(0, 100i64), (1, 101)]);
+        let gen2 = HashMap::from([(1, 201i64), (2, 202)]);
+        let gen3 = HashMap::from([(2, 302i64)]);
+        let generations = [gen1, gen2, gen3];
+
+        // Doc 0: only gen1 touched it -> gen1's value.
+        assert_eq!(
+            numeric_value_with_generations(&entry, &data, &generations, 0).unwrap(),
+            Some(100)
+        );
+        // Doc 1: gen1 then gen2 touched it -> gen2 (newer) wins.
+        assert_eq!(
+            numeric_value_with_generations(&entry, &data, &generations, 1).unwrap(),
+            Some(201)
+        );
+        // Doc 2: gen2 then gen3 touched it -> gen3 (newest) wins.
+        assert_eq!(
+            numeric_value_with_generations(&entry, &data, &generations, 2).unwrap(),
+            Some(302)
+        );
+    }
+
+    #[test]
+    fn doc_untouched_by_any_generation_falls_back_to_base() {
+        let (entry, data) = dense_entry_and_data();
+        let gen1 = HashMap::from([(0, 900i64)]);
+        let gen2 = HashMap::from([(1, 901i64)]);
+        let generations = [gen1, gen2];
+        // Doc 3 (base value 40) isn't in either generation.
+        let result = numeric_value_with_generations(&entry, &data, &generations, 3).unwrap();
+        assert_eq!(result, Some(40));
+    }
+
+    #[test]
+    fn empty_generation_chain_degenerates_to_plain_base_decode() {
+        let (entry, data) = dense_entry_and_data();
+        let generations: [HashMap<i32, i64>; 0] = [];
+        for (doc, expected) in [(0, 10), (1, 20), (2, 30), (3, 40)] {
+            let result = numeric_value_with_generations(&entry, &data, &generations, doc).unwrap();
+            assert_eq!(result, Some(expected));
+        }
+    }
+
+    #[test]
+    fn a_generation_that_reverts_to_an_earlier_generations_untouched_state_still_falls_through() {
+        let (entry, data) = dense_entry_and_data();
+        // gen1 touches doc 2; gen2 touches a disjoint doc (0) only, so for
+        // doc 2 the chain must fall through past gen2 to gen1's write.
+        let gen1 = HashMap::from([(2, 555i64)]);
+        let gen2 = HashMap::from([(0, 777i64)]);
+        let generations = [gen1, gen2];
+        let result = numeric_value_with_generations(&entry, &data, &generations, 2).unwrap();
+        assert_eq!(result, Some(555));
+    }
+
+    #[test]
+    fn generations_can_be_written_and_read_back_via_existing_single_generation_io_then_chained() {
+        // Proves the chain composes with the *unmodified* per-generation
+        // write_numeric_updates/read_numeric_updates I/O -- each generation
+        // really is just a standalone file, as the module doc comment says.
+        let (entry, data) = dense_entry_and_data();
+        let gen1_bytes = write_numeric_updates(&[(1, 111i64)], &SEG_ID, "");
+        let gen2_bytes = write_numeric_updates(&[(1, 222i64), (2, 322)], &SEG_ID, "");
+        let gen1 = read_numeric_updates(&gen1_bytes, &SEG_ID, "").unwrap();
+        let gen2 = read_numeric_updates(&gen2_bytes, &SEG_ID, "").unwrap();
+        let generations = [gen1, gen2];
+
+        // Doc 1: both generations touched it -> gen2 (newer) wins.
+        assert_eq!(
+            numeric_value_with_generations(&entry, &data, &generations, 1).unwrap(),
+            Some(222)
+        );
+        // Doc 2: only gen2 touched it.
+        assert_eq!(
+            numeric_value_with_generations(&entry, &data, &generations, 2).unwrap(),
+            Some(322)
+        );
+        // Doc 0: untouched by either generation -> base value 10.
+        assert_eq!(
+            numeric_value_with_generations(&entry, &data, &generations, 0).unwrap(),
+            Some(10)
+        );
     }
 }
