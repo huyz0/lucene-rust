@@ -513,8 +513,9 @@ impl FieldTerms {
     /// `seekExact(term)` followed by opening a [`postings::LazyDocsCursor`]:
     /// the decode-on-demand sibling of [`Self::postings`] (see that method
     /// and `crate::postings`'s module doc for the shared scope/validation —
-    /// `docFreq <= 1`, `DocsAndCustomFreqs`, `docFreq >= LEVEL1_NUM_DOCS` are
-    /// all rejected identically). Unlike `postings()`, this never decodes any
+    /// `docFreq <= 1` and `IndexOptions::None` are rejected identically;
+    /// `DocsAndCustomFreqs` is accepted, wire-identical to `DocsAndFreqs`).
+    /// Unlike `postings()`, this never decodes any
     /// `.doc` bytes until the cursor's `next_doc()`/`advance()` is actually
     /// called, and `advance()` can skip whole undecoded blocks — see
     /// `LazyDocsCursor`'s own doc comment.
