@@ -1,8 +1,17 @@
 //! Port of `org.apache.lucene.codecs.lucene90.Lucene90DocValuesFormat`
-//! (`.dvm` metadata + `.dvd` data) — read-only. All five doc-values types
-//! are supported (NUMERIC, BINARY, SORTED, SORTED_SET, SORTED_NUMERIC);
-//! per-field doc-values skip indexes are not (see
-//! [`Error::UnsupportedSkipIndex`]).
+//! (`.dvm` metadata + `.dvd` data + `.dvs` skip index) — read-only. All five
+//! doc-values types are supported (NUMERIC, BINARY, SORTED, SORTED_SET,
+//! SORTED_NUMERIC).
+//!
+//! A field with a non-`None` `doc_values_skip_index_type` carries an extra
+//! [`DocValuesSkipperMeta`] record in `.dvm` (`Lucene90DocValuesProducer
+//! .readDocValueSkipperMeta`) pointing at a run of per-interval min/max/doc-
+//! count summaries in `.dvs`, decoded eagerly here by [`parse_skip_index`]
+//! into a [`DocValuesSkipIndex`] -- see that function's doc comment for the
+//! on-disk level structure. This is decode-only: nothing in this crate or
+//! `lucene-search`'s `doc_value_query.rs` yet consults a decoded skip index
+//! to prune a range scan (see `docs/parity.md` and the follow-up tracked as
+//! "Doc-values skip index in range query scan").
 //!
 //! `SORTED` fields store a per-doc ordinal (reusing the exact NUMERIC entry
 //! layout — see [`NumericEntry`]) into a terms dictionary
@@ -83,6 +92,10 @@ const TERMS_DICT_REVERSE_INDEX_MASK: i64 = (1i64 << TERMS_DICT_REVERSE_INDEX_SHI
 /// stores `block_shift` per-field, so any value round-trips correctly.
 const TERMS_DICT_DIRECT_MONOTONIC_BLOCK_SHIFT: u32 = 0;
 
+/// `Lucene90DocValuesFormat.SKIP_INDEX_MAX_LEVEL`: at most 4 levels in the
+/// multi-level skip structure written per doc-values field.
+const SKIP_INDEX_MAX_LEVEL: u8 = 4;
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]
@@ -91,8 +104,6 @@ pub enum Error {
     UnknownFieldNumber(i32),
     #[error("field {0} has unknown doc values type byte {1}")]
     UnsupportedFieldType(i32, u8),
-    #[error("field {0} has a doc-values skip index, which this port doesn't parse")]
-    UnsupportedSkipIndex(i32),
     #[error("field {0} splits values into varying-bits-per-value blocks, which this port doesn't decode")]
     UnsupportedVaryingBpvBlocks(i32),
     #[error("invalid table size: {0}")]
@@ -103,6 +114,12 @@ pub enum Error {
     DocOutOfRange(i32, i64),
     #[error("field {0} has invalid multiValued flag: {1}")]
     InvalidMultiValuedFlag(i32, u8),
+    #[error("doc-values skip index level count {0} is out of range (must be 1..={SKIP_INDEX_MAX_LEVEL})")]
+    InvalidSkipIndexLevelCount(u8),
+    #[error(
+        "doc-values skip index offset/length ({0}, {1}) is out of range for a {2}-byte .dvs slice"
+    )]
+    SkipIndexOutOfRange(i64, i64, usize),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -221,6 +238,60 @@ pub struct SortedSetEntry {
     pub kind: SortedSetKind,
 }
 
+/// `Lucene90DocValuesProducer.DocValuesSkipperEntry`: the fixed-size summary
+/// recorded in `.dvm` for a field with a doc-values skip index, pointing at
+/// its per-interval detail in `.dvs` (see [`DocValuesSkipIndex`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DocValuesSkipperMeta {
+    /// Byte offset of this field's skip data within `.dvs`.
+    pub offset: i64,
+    /// Byte length of this field's skip data within `.dvs`.
+    pub length: i64,
+    pub min_value: i64,
+    pub max_value: i64,
+    pub doc_count: i32,
+    pub max_doc_id: i32,
+    /// Most values per doc seen across the whole field, or `-1` if unknown
+    /// (pre-`VERSION_SKIPPER_MAX_VALUE_COUNT` files never recorded it and
+    /// `doc_count == 0` is the only case this port can still infer as `0`).
+    pub max_value_count: i32,
+}
+
+/// One level's summary within a single skip interval:
+/// `Lucene90DocValuesConsumer.SkipAccumulator`, as written by `writeLevels`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkipIndexLevelInterval {
+    pub min_doc_id: i32,
+    pub max_doc_id: i32,
+    pub min_value: i64,
+    pub max_value: i64,
+    pub doc_count: i32,
+}
+
+/// One skip interval, one entry per level it was written at.
+/// `levels[0]` is the finest (base, every-`skipIndexIntervalSize`-docs)
+/// interval; `levels[levels.len() - 1]` is the coarsest. On disk the levels
+/// are written coarsest-first (so a lazy/streaming reader can bail out
+/// after the first uncompetitive level without reading the rest) but this
+/// port reorders them to level-ascending on the way in, since it decodes
+/// every interval eagerly and ascending is the more natural iteration order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkipIndexInterval {
+    pub levels: Vec<SkipIndexLevelInterval>,
+}
+
+/// A field's whole decoded doc-values skip index: the `.dvm` summary plus
+/// every interval decoded out of its `.dvs` slice. See [`parse_skip_index`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocValuesSkipIndex {
+    pub min_value: i64,
+    pub max_value: i64,
+    pub doc_count: i32,
+    pub max_doc_id: i32,
+    pub max_value_count: i32,
+    pub intervals: Vec<SkipIndexInterval>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct DocValuesMeta {
     pub numeric: Vec<NumericEntry>,
@@ -228,6 +299,11 @@ pub struct DocValuesMeta {
     pub sorted: Vec<SortedEntry>,
     pub sorted_numeric: Vec<SortedNumericEntry>,
     pub sorted_set: Vec<SortedSetEntry>,
+    /// Keyed by field number, present only for fields whose `FieldInfo` has
+    /// a non-`None` `doc_values_skip_index_type` (mirrors the Java reader's
+    /// own `skippers` map -- a skip index is orthogonal to the field's
+    /// doc-values *type*, so it isn't folded into any of the `Vec`s above).
+    pub skippers: std::collections::HashMap<i32, DocValuesSkipperMeta>,
 }
 
 impl DocValuesMeta {
@@ -253,6 +329,13 @@ impl DocValuesMeta {
         self.sorted_set
             .iter()
             .find(|e| e.field_number == field_number)
+    }
+
+    /// The `.dvm` skip-index summary for `field_number`, if that field has
+    /// one. Pass it to [`parse_skip_index`] along with the segment's `.dvs`
+    /// bytes to decode the full per-interval structure.
+    pub fn skipper_meta(&self, field_number: i32) -> Option<&DocValuesSkipperMeta> {
+        self.skippers.get(&field_number)
     }
 }
 
@@ -287,7 +370,8 @@ pub fn parse_meta(
 
         let ty = input.read_byte()?;
         if field.doc_values_skip_index_type != crate::field_infos::DocValuesSkipIndexType::None {
-            return Err(Error::UnsupportedSkipIndex(field_number));
+            let skipper = read_skipper_meta(&mut input, header.version)?;
+            meta.skippers.insert(field_number, skipper);
         }
         match ty {
             DOC_VALUES_TYPE_NUMERIC => {
@@ -492,6 +576,142 @@ pub fn check_data_header_footer(
     )?;
     codec_util::retrieve_checksum(buf)?;
     Ok(header.version)
+}
+
+/// Reads one `Lucene90DocValuesProducer.DocValuesSkipperEntry` out of
+/// `.dvm` -- called from [`parse_meta`] right after the field's type byte,
+/// for any field whose `FieldInfo` carries a non-`None`
+/// `doc_values_skip_index_type`. `meta_version` is the `.dvm` header's own
+/// version (not `.dvs`'s), matching Java's `readDocValueSkipperMeta`, which
+/// gates the trailing `maxValueCount` field on it.
+fn read_skipper_meta(input: &mut SliceInput, meta_version: i32) -> Result<DocValuesSkipperMeta> {
+    let offset = input.read_i64()?;
+    let length = input.read_i64()?;
+    let max_value = input.read_i64()?;
+    let min_value = input.read_i64()?;
+    let doc_count = input.read_i32()?;
+    let max_doc_id = input.read_i32()?;
+    let max_value_count = if meta_version >= VERSION_SKIPPER_MAX_VALUE_COUNT {
+        input.read_i32()?
+    } else if doc_count == 0 {
+        0
+    } else {
+        -1
+    };
+    Ok(DocValuesSkipperMeta {
+        offset,
+        length,
+        min_value,
+        max_value,
+        doc_count,
+        max_doc_id,
+        max_value_count,
+    })
+}
+
+/// Validates a `.dvs` skip-index file's header/footer -- same structural,
+/// no-full-checksum shape as [`check_data_header_footer`], but against
+/// `.dvs`'s own codec name.
+pub fn check_skip_index_header_footer(
+    buf: &[u8],
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+) -> Result<i32> {
+    let mut input = SliceInput::new(buf);
+    let header = codec_util::check_index_header(
+        &mut input,
+        SKIP_INDEX_META_CODEC,
+        VERSION_START,
+        VERSION_CURRENT,
+        segment_id,
+        segment_suffix,
+    )?;
+    codec_util::retrieve_checksum(buf)?;
+    Ok(header.version)
+}
+
+/// Decodes the full per-interval doc-values skip index
+/// (`Lucene90DocValuesConsumer.writeLevels`'s inverse) for one field, given
+/// its `.dvm` summary (`skipper`) and the segment's whole `.dvs` buffer.
+///
+/// Real Lucene reads this lazily, interval-by-interval, while `advance`-ing
+/// a query scan (`Lucene90DocValuesProducer.getSkipper`); this port instead
+/// decodes every interval in `[skipper.offset, skipper.offset +
+/// skipper.length)` up front into a `Vec`, which is simpler to reason about
+/// and to test, at the cost of not being useful yet for actually skipping
+/// (see the module doc comment's TODO on wiring this into a range-query
+/// scan).
+///
+/// Each interval is a run of 1..=[`SKIP_INDEX_MAX_LEVEL`] levels, written
+/// coarsest-first:
+/// - one `u8` level count,
+/// - then, per level from coarsest down to level 0: `maxDocID: i32`,
+///   `minDocID: i32`, `maxValue: i64`, `minValue: i64`, `docCount: i32`
+///   (28 bytes/level).
+///
+/// This function reads sequential intervals until the byte window is fully
+/// consumed (real Lucene never needs to do this -- it stops once it finds a
+/// competitive interval -- so there's no equivalent Java loop to mirror
+/// beyond `writeLevels`'s write order).
+pub fn parse_skip_index(
+    dvs_buf: &[u8],
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+    skipper: &DocValuesSkipperMeta,
+) -> Result<DocValuesSkipIndex> {
+    check_skip_index_header_footer(dvs_buf, segment_id, segment_suffix)?;
+
+    let offset = usize::try_from(skipper.offset)
+        .map_err(|_| Error::SkipIndexOutOfRange(skipper.offset, skipper.length, dvs_buf.len()))?;
+    let length = usize::try_from(skipper.length)
+        .map_err(|_| Error::SkipIndexOutOfRange(skipper.offset, skipper.length, dvs_buf.len()))?;
+    let end = offset
+        .checked_add(length)
+        .filter(|&e| e <= dvs_buf.len())
+        .ok_or(Error::SkipIndexOutOfRange(
+            skipper.offset,
+            skipper.length,
+            dvs_buf.len(),
+        ))?;
+
+    let mut input = SliceInput::new(&dvs_buf[offset..end]);
+    let mut intervals = Vec::new();
+    while input.position() < length {
+        let levels = input.read_byte()?;
+        if levels == 0 || levels > SKIP_INDEX_MAX_LEVEL {
+            return Err(Error::InvalidSkipIndexLevelCount(levels));
+        }
+        let mut by_level: Vec<Option<SkipIndexLevelInterval>> = vec![None; levels as usize];
+        for level in (0..levels as usize).rev() {
+            let max_doc_id = input.read_i32()?;
+            let min_doc_id = input.read_i32()?;
+            let max_value = input.read_i64()?;
+            let min_value = input.read_i64()?;
+            let doc_count = input.read_i32()?;
+            by_level[level] = Some(SkipIndexLevelInterval {
+                min_doc_id,
+                max_doc_id,
+                min_value,
+                max_value,
+                doc_count,
+            });
+        }
+        intervals.push(SkipIndexInterval {
+            levels: by_level
+                .into_iter()
+                .map(|l| l.expect("every level index was written above"))
+                .collect(),
+        });
+    }
+
+    Ok(DocValuesSkipIndex {
+        min_value: skipper.min_value,
+        max_value: skipper.max_value,
+        doc_count: skipper.doc_count,
+        max_doc_id: skipper.max_doc_id,
+        max_value_count: skipper.max_value_count,
+        intervals,
+    })
 }
 
 /// Reads the numeric doc-values value for `doc`, handling all three
@@ -2318,12 +2538,63 @@ mod tests {
         ));
     }
 
+    fn skipper_meta_bytes(m: &DocValuesSkipperMeta) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&m.offset.to_le_bytes());
+        out.extend_from_slice(&m.length.to_le_bytes());
+        out.extend_from_slice(&m.max_value.to_le_bytes());
+        out.extend_from_slice(&m.min_value.to_le_bytes());
+        out.extend_from_slice(&m.doc_count.to_le_bytes());
+        out.extend_from_slice(&m.max_doc_id.to_le_bytes());
+        out.extend_from_slice(&m.max_value_count.to_le_bytes());
+        out
+    }
+
+    /// One level's 28-byte on-disk record within a skip interval.
+    fn level_bytes(l: &SkipIndexLevelInterval) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&l.max_doc_id.to_le_bytes());
+        out.extend_from_slice(&l.min_doc_id.to_le_bytes());
+        out.extend_from_slice(&l.max_value.to_le_bytes());
+        out.extend_from_slice(&l.min_value.to_le_bytes());
+        out.extend_from_slice(&l.doc_count.to_le_bytes());
+        out
+    }
+
+    /// Builds one on-disk skip interval: a level-count byte, then each
+    /// level's bytes written coarsest (last in `levels`) first.
+    fn interval_bytes(levels: &[SkipIndexLevelInterval]) -> Vec<u8> {
+        let mut out = vec![levels.len() as u8];
+        for l in levels.iter().rev() {
+            out.extend_from_slice(&level_bytes(l));
+        }
+        out
+    }
+
+    fn dvs_bytes(id: &[u8; ID_LENGTH], intervals_body: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        codec_util::write_index_header(&mut out, SKIP_INDEX_META_CODEC, VERSION_CURRENT, id, "");
+        out.extend_from_slice(intervals_body);
+        codec_util::write_footer(&mut out);
+        out
+    }
+
     #[test]
-    fn unsupported_skip_index_rejected() {
+    fn skip_index_meta_parsed_instead_of_rejected() {
         let id = [1u8; ID_LENGTH];
         let mut fis = field_infos_with(&[0]);
         fis.fields[0].doc_values_skip_index_type = DocValuesSkipIndexType::Range;
         let e = EntryBuilder::dense(0, 8, 3);
+        let skipper = DocValuesSkipperMeta {
+            offset: 128,
+            length: 29,
+            min_value: -5,
+            max_value: 500,
+            doc_count: 3,
+            max_doc_id: 2,
+            max_value_count: 1,
+        };
+
         let mut buf = Vec::new();
         buf.extend_from_slice(&codec_util::CODEC_MAGIC.to_be_bytes());
         write_string(&mut buf, META_CODEC);
@@ -2332,10 +2603,244 @@ mod tests {
         buf.push(0);
         buf.extend_from_slice(&e.field_number.to_le_bytes());
         buf.push(DOC_VALUES_TYPE_NUMERIC);
+        buf.extend_from_slice(&skipper_meta_bytes(&skipper));
+        e.build_body(&mut buf);
+        buf.extend_from_slice(&(-1i32).to_le_bytes());
+        buf.extend_from_slice(&codec_util::FOOTER_MAGIC.to_be_bytes());
+        buf.extend_from_slice(&0u32.to_be_bytes());
+        let checksum = crc32fast::hash(&buf) as u64;
+        buf.extend_from_slice(&checksum.to_be_bytes());
+
+        let (_, meta) = parse_meta(&buf, &id, "", &fis).unwrap();
+        assert_eq!(meta.skipper_meta(0), Some(&skipper));
+        // A field with no skip index type set has no entry in the map.
+        assert_eq!(meta.skipper_meta(99), None);
+    }
+
+    #[test]
+    fn skip_index_meta_pre_max_value_count_version_infers_it() {
+        // VERSION_START (0) predates VERSION_SKIPPER_MAX_VALUE_COUNT (2), so
+        // `maxValueCount` isn't stored on disk and must be inferred: 0 when
+        // docCount == 0, -1 (unknown) otherwise.
+        let zero_docs_bytes = {
+            let mut b = Vec::new();
+            b.extend_from_slice(&10i64.to_le_bytes()); // offset
+            b.extend_from_slice(&0i64.to_le_bytes()); // length
+            b.extend_from_slice(&0i64.to_le_bytes()); // maxValue
+            b.extend_from_slice(&0i64.to_le_bytes()); // minValue
+            b.extend_from_slice(&0i32.to_le_bytes()); // docCount
+            b.extend_from_slice(&(-1i32).to_le_bytes()); // maxDocId
+            b
+        };
+        let mut input_zero_docs = SliceInput::new(&zero_docs_bytes);
+        let m = read_skipper_meta(&mut input_zero_docs, VERSION_START).unwrap();
+        assert_eq!(m.max_value_count, 0);
+
+        let some_docs_bytes = {
+            let mut b = Vec::new();
+            b.extend_from_slice(&10i64.to_le_bytes());
+            b.extend_from_slice(&0i64.to_le_bytes());
+            b.extend_from_slice(&5i64.to_le_bytes());
+            b.extend_from_slice(&1i64.to_le_bytes());
+            b.extend_from_slice(&4i32.to_le_bytes()); // docCount
+            b.extend_from_slice(&3i32.to_le_bytes());
+            b
+        };
+        let mut input_some_docs = SliceInput::new(&some_docs_bytes);
+        let m = read_skipper_meta(&mut input_some_docs, VERSION_START).unwrap();
+        assert_eq!(m.max_value_count, -1);
+    }
+
+    #[test]
+    fn parse_skip_index_decodes_multi_level_intervals() {
+        let id = [9u8; ID_LENGTH];
+        let base0 = SkipIndexLevelInterval {
+            min_doc_id: 0,
+            max_doc_id: 99,
+            min_value: -3,
+            max_value: 40,
+            doc_count: 100,
+        };
+        let level1 = SkipIndexLevelInterval {
+            min_doc_id: 0,
+            max_doc_id: 199,
+            min_value: -3,
+            max_value: 70,
+            doc_count: 200,
+        };
+        let base1 = SkipIndexLevelInterval {
+            min_doc_id: 100,
+            max_doc_id: 199,
+            min_value: 2,
+            max_value: 70,
+            doc_count: 100,
+        };
+
+        let mut body = Vec::new();
+        body.extend_from_slice(&interval_bytes(&[base0, level1]));
+        body.extend_from_slice(&interval_bytes(&[base1]));
+
+        let header_len = {
+            let mut probe = Vec::new();
+            codec_util::write_index_header(
+                &mut probe,
+                SKIP_INDEX_META_CODEC,
+                VERSION_CURRENT,
+                &id,
+                "",
+            );
+            probe.len()
+        };
+        let dvs = dvs_bytes(&id, &body);
+
+        let skipper = DocValuesSkipperMeta {
+            offset: header_len as i64,
+            length: body.len() as i64,
+            min_value: -3,
+            max_value: 70,
+            doc_count: 200,
+            max_doc_id: 199,
+            max_value_count: 1,
+        };
+
+        let decoded = parse_skip_index(&dvs, &id, "", &skipper).unwrap();
+        assert_eq!(decoded.min_value, -3);
+        assert_eq!(decoded.max_value, 70);
+        assert_eq!(decoded.doc_count, 200);
+        assert_eq!(decoded.max_doc_id, 199);
+        assert_eq!(decoded.intervals.len(), 2);
+        assert_eq!(decoded.intervals[0].levels, vec![base0, level1]);
+        assert_eq!(decoded.intervals[1].levels, vec![base1]);
+    }
+
+    #[test]
+    fn parse_skip_index_rejects_zero_level_count() {
+        let id = [9u8; ID_LENGTH];
+        let body = vec![0u8]; // level count 0 is invalid (must be 1..=4)
+        let header_len = {
+            let mut probe = Vec::new();
+            codec_util::write_index_header(
+                &mut probe,
+                SKIP_INDEX_META_CODEC,
+                VERSION_CURRENT,
+                &id,
+                "",
+            );
+            probe.len()
+        };
+        let dvs = dvs_bytes(&id, &body);
+        let skipper = DocValuesSkipperMeta {
+            offset: header_len as i64,
+            length: body.len() as i64,
+            min_value: 0,
+            max_value: 0,
+            doc_count: 0,
+            max_doc_id: -1,
+            max_value_count: 0,
+        };
         assert!(matches!(
-            parse_meta(&buf, &id, "", &fis),
-            Err(Error::UnsupportedSkipIndex(0))
+            parse_skip_index(&dvs, &id, "", &skipper),
+            Err(Error::InvalidSkipIndexLevelCount(0))
         ));
+    }
+
+    #[test]
+    fn parse_skip_index_rejects_level_count_above_max() {
+        let id = [9u8; ID_LENGTH];
+        let body = vec![SKIP_INDEX_MAX_LEVEL + 1];
+        let header_len = {
+            let mut probe = Vec::new();
+            codec_util::write_index_header(
+                &mut probe,
+                SKIP_INDEX_META_CODEC,
+                VERSION_CURRENT,
+                &id,
+                "",
+            );
+            probe.len()
+        };
+        let dvs = dvs_bytes(&id, &body);
+        let skipper = DocValuesSkipperMeta {
+            offset: header_len as i64,
+            length: body.len() as i64,
+            min_value: 0,
+            max_value: 0,
+            doc_count: 0,
+            max_doc_id: -1,
+            max_value_count: 0,
+        };
+        assert!(matches!(
+            parse_skip_index(&dvs, &id, "", &skipper),
+            Err(Error::InvalidSkipIndexLevelCount(n)) if n == SKIP_INDEX_MAX_LEVEL + 1
+        ));
+    }
+
+    #[test]
+    fn parse_skip_index_rejects_truncated_level_body() {
+        let id = [9u8; ID_LENGTH];
+        // Level count says 1 level (28 bytes) but only 10 bytes follow.
+        let mut body = vec![1u8];
+        body.extend_from_slice(&[0u8; 10]);
+        let header_len = {
+            let mut probe = Vec::new();
+            codec_util::write_index_header(
+                &mut probe,
+                SKIP_INDEX_META_CODEC,
+                VERSION_CURRENT,
+                &id,
+                "",
+            );
+            probe.len()
+        };
+        let dvs = dvs_bytes(&id, &body);
+        let skipper = DocValuesSkipperMeta {
+            offset: header_len as i64,
+            length: body.len() as i64,
+            min_value: 0,
+            max_value: 0,
+            doc_count: 0,
+            max_doc_id: -1,
+            max_value_count: 0,
+        };
+        assert!(parse_skip_index(&dvs, &id, "", &skipper).is_err());
+    }
+
+    #[test]
+    fn parse_skip_index_rejects_offset_length_out_of_range() {
+        let id = [9u8; ID_LENGTH];
+        let dvs = dvs_bytes(&id, &[]);
+        let skipper = DocValuesSkipperMeta {
+            offset: dvs.len() as i64, // starts past the end of the buffer
+            length: 100,
+            min_value: 0,
+            max_value: 0,
+            doc_count: 0,
+            max_doc_id: -1,
+            max_value_count: 0,
+        };
+        assert!(matches!(
+            parse_skip_index(&dvs, &id, "", &skipper),
+            Err(Error::SkipIndexOutOfRange(_, _, _))
+        ));
+    }
+
+    #[test]
+    fn parse_skip_index_rejects_bad_dvs_header() {
+        let id = [9u8; ID_LENGTH];
+        let other_id = [8u8; ID_LENGTH];
+        let dvs = dvs_bytes(&other_id, &[]);
+        let skipper = DocValuesSkipperMeta {
+            offset: 0,
+            length: 0,
+            min_value: 0,
+            max_value: 0,
+            doc_count: 0,
+            max_doc_id: -1,
+            max_value_count: 0,
+        };
+        // Segment id mismatch -> header check fails before offset/length are
+        // even consulted.
+        assert!(parse_skip_index(&dvs, &id, "", &skipper).is_err());
     }
 
     #[test]
