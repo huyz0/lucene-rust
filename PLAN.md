@@ -4186,3 +4186,33 @@ indexed field is rejected as out of scope. `cargo fmt`/`clippy --workspace
 --all-targets -- -D warnings` clean; `cargo test -p lucene-index --lib
 merge::` passes (52/52). See `docs/parity.md`'s `SegmentMerger` row for the
 parity-tracking update.
+
+**Progress (term-vectors merge audit + offsets/payloads guard):**
+Investigated whether `merge_term_vectors` in `lucene-index/src/merge.rs`
+silently drops term-vector positions/offsets/payloads the way postings did
+before the previous task -- it does not decode-and-drop, but it had a worse
+gap: `TermVectorsReader::document` already fully decodes positions,
+offsets, and payloads when a source has them, and `merge_term_vectors`
+passed that data straight through unchanged into `merged_docs`, but
+`term_vectors::write_best_speed` only ever supported positions (its own doc
+comment says so) and used an `assert!` -- not a `Result` -- to enforce
+that. A merge source whose term vectors had offsets or payloads would have
+passed the type system, sailed through `merge_term_vectors`, and then
+panicked deep inside the writer instead of failing cleanly. Fixed by adding
+`Error::TermVectorOffsetsOrPayloadsNotSupported` and checking every merged
+field's `has_offsets`/`has_payloads` in `merge_term_vectors` itself, right
+where the field numbers get remapped, so the rejection happens as a normal
+`Result` before any data reaches the writer. Positions-only term vectors
+(the only case `write_best_speed` supports) were already correct and are
+unaffected. New test `term_vectors_merge_rejects_offsets_and_payloads` in
+`crates/lucene-index/src/merge.rs`: hand-encodes a raw single-doc
+`.tvd`/`.tvx`/`.tvm` triple with a POSITIONS+OFFSETS+PAYLOADS field (this
+port's write side can't produce one itself, so the bytes are built by hand,
+mirroring `lucene_codecs::term_vectors::tests::build_single_doc_chunk`'s
+approach), opens it through the real `TermVectorsReader` to confirm it
+decodes as expected, then feeds it into `merge_stored_only_segments` as a
+`MergeSource` and asserts the merge returns
+`Error::TermVectorOffsetsOrPayloadsNotSupported` rather than panicking.
+`cargo fmt`/`clippy --workspace --all-targets -- -D warnings` clean; `cargo
+test -p lucene-index --lib merge::` passes (54/54, up from 52). See
+`docs/parity.md`'s `SegmentMerger` row for the parity-tracking update.

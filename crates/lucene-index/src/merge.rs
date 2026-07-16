@@ -126,6 +126,16 @@
 //! reader for a doc, or a doc with none, simply contributes an empty
 //! [`lucene_codecs::term_vectors::TermVectorsDocument`] (matches the real
 //! per-doc "this doc has none" case `write_best_speed` already handles).
+//! Term vectors do have one different constraint, though: `write_best_speed`
+//! only supports fields with positions (no offsets, no payloads -- see its
+//! own doc comment), so [`merge_term_vectors`] validates every source's term-
+//! vector fields up front and returns
+//! [`Error::TermVectorOffsetsOrPayloadsNotSupported`] rather than letting an
+//! offsets/payloads field reach `write_best_speed`'s internal `assert!` and
+//! panic. Positions-only term vectors (with or without positions at all)
+//! merge and round-trip correctly through the real reader/writer stack; this
+//! is otherwise the same "reuse the existing decoder/encoder verbatim" story
+//! as postings.
 //!
 //! ## Doc-values type scope
 //!
@@ -395,6 +405,21 @@ pub enum Error {
         merged_field_number: i32,
         merged_index_options: IndexOptions,
         source_index_options: IndexOptions,
+    },
+    /// [`lucene_codecs::term_vectors::write_best_speed`] only supports
+    /// term-vector fields with positions (no offsets, no payloads) --
+    /// passing it a field with offsets or payloads trips an internal
+    /// `assert!`, not a `Result`. Without this check, a merge source whose
+    /// term vectors have offsets/payloads would panic deep inside the
+    /// writer instead of failing cleanly, so this validates every source's
+    /// term-vector fields up front and rejects the unsupported case loudly.
+    #[error(
+        "merged field number {merged_field_number} has term vectors with offsets ({has_offsets}) or payloads ({has_payloads}), but this port's term-vectors write side (write_best_speed) only supports positions"
+    )]
+    TermVectorOffsetsOrPayloadsNotSupported {
+        merged_field_number: i32,
+        has_offsets: bool,
+        has_payloads: bool,
     },
 }
 
@@ -1685,6 +1710,13 @@ fn merge_term_vectors(
                         .ok_or(Error::UnknownSourceFieldNumber {
                             field_number: field.field_number,
                         })?;
+                if field.has_offsets || field.has_payloads {
+                    return Err(Error::TermVectorOffsetsOrPayloadsNotSupported {
+                        merged_field_number: field.field_number,
+                        has_offsets: field.has_offsets,
+                        has_payloads: field.has_payloads,
+                    });
+                }
             }
             merged_docs.push(doc);
         }
@@ -3953,6 +3985,211 @@ mod tests {
 
         // Source 1's doc contributed no term vectors at all.
         assert!(merged_reader.document(1).unwrap().is_none());
+    }
+
+    fn write_tv_vint(out: &mut Vec<u8>, mut v: i32) {
+        loop {
+            let mut b = (v & 0x7f) as u8;
+            v = ((v as u32) >> 7) as i32;
+            if v != 0 {
+                b |= 0x80;
+                out.push(b);
+            } else {
+                out.push(b);
+                break;
+            }
+        }
+    }
+
+    fn write_tv_string(out: &mut Vec<u8>, s: &str) {
+        write_tv_vint(out, s.len() as i32);
+        out.extend_from_slice(s.as_bytes());
+    }
+
+    /// Hand-encodes a single-doc, single-chunk `.tvd`/`.tvx`/`.tvm` triple
+    /// with one field (number 0) that has POSITIONS+OFFSETS+PAYLOADS and one
+    /// term "a" (freq 1) -- mirrors
+    /// `lucene_codecs::term_vectors::tests::build_single_doc_chunk`'s shape,
+    /// trimmed to a single term, since this port's write side
+    /// (`write_best_speed`) can't produce offsets/payloads itself (that's
+    /// exactly the gap [`Error::TermVectorOffsetsOrPayloadsNotSupported`]
+    /// guards against) -- a merge source with such data has to be hand-built
+    /// to exercise the check.
+    fn build_offsets_payloads_term_vectors(
+        segment_id: [u8; ID_LENGTH],
+    ) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        use lucene_store::codec_util;
+
+        const DATA_CODEC: &str = "Lucene90TermVectorsData";
+        const INDEX_CODEC: &str = "Lucene90TermVectorsIndexIdx";
+        const META_CODEC: &str = "Lucene90TermVectorsIndexMeta";
+
+        let mut tvd = Vec::new();
+        tvd.extend_from_slice(&codec_util::CODEC_MAGIC.to_be_bytes());
+        write_tv_string(&mut tvd, DATA_CODEC);
+        tvd.extend_from_slice(&0u32.to_be_bytes()); // version
+        tvd.extend_from_slice(&segment_id);
+        tvd.push(0); // empty suffix
+        let chunk_start = tvd.len() as i64;
+
+        write_tv_vint(&mut tvd, 0); // docBase
+        write_tv_vint(&mut tvd, 1 << 1); // token: chunkDocs=1, dirty=0
+        write_tv_vint(&mut tvd, 1); // numFields = totalFields = 1
+
+        // fieldNums: 1 distinct field (number 0), 8 bits/value.
+        tvd.push(8);
+        tvd.push(0);
+
+        // allFieldNumOffs: 1 field, offset 0, 1 bit/value.
+        write_tv_vint(&mut tvd, 1);
+        tvd.push(0x00);
+
+        // flags: selector=1 (direct array), 1 field, value=7
+        // (POSITIONS|OFFSETS|PAYLOADS).
+        write_tv_vint(&mut tvd, 1);
+        write_tv_vint(&mut tvd, 1);
+        tvd.push(0x07);
+
+        // numTerms: 1 field, value=1.
+        write_tv_vint(&mut tvd, 1); // bitsRequired
+        write_tv_vint(&mut tvd, 1); // slice byte length
+        tvd.push(1);
+
+        // prefixLengths [0] (bpv=0, constant).
+        tvd.push(0x01);
+        // suffixLengths [1] (bpv=0, constant, min=1): token, minValue vlong.
+        tvd.extend_from_slice(&[0x00, 0x01]);
+        // termFreqsMinus1 [0] (bpv=0, constant).
+        tvd.push(0x01);
+
+        // positions_flat [0] (bpv=0, constant).
+        tvd.push(0x01);
+
+        // charsPerTerm: 1 distinct field, value 1.0.
+        tvd.extend_from_slice(&1.0f32.to_bits().to_le_bytes());
+        // start_offsets_flat [0] (bpv=0, constant).
+        tvd.push(0x01);
+        // lengths_flat [1] (bpv=0, constant, min=1).
+        tvd.extend_from_slice(&[0x00, 0x01]);
+        // payload_lengths_flat [1] (bpv=0, constant, min=1).
+        tvd.extend_from_slice(&[0x00, 0x01]);
+
+        // LZ4 (CompressionMode.FAST, no dictionary): literal-only unit
+        // wrapping "a" (term suffix) then payload byte 0xAA.
+        let payload = [b'a', 0xAA];
+        tvd.push((payload.len() as u8) << 4);
+        tvd.extend_from_slice(&payload);
+
+        tvd.extend_from_slice(&codec_util::FOOTER_MAGIC.to_be_bytes());
+        tvd.extend_from_slice(&0u32.to_be_bytes());
+        let checksum = crc32fast::hash(&tvd) as u64;
+        tvd.extend_from_slice(&checksum.to_be_bytes());
+
+        let mut tvx = Vec::new();
+        tvx.extend_from_slice(&codec_util::CODEC_MAGIC.to_be_bytes());
+        write_tv_string(&mut tvx, INDEX_CODEC);
+        tvx.extend_from_slice(&0u32.to_be_bytes());
+        tvx.extend_from_slice(&segment_id);
+        tvx.push(0);
+        let docs_start = tvx.len() as i64;
+        let docs_end = tvx.len() as i64;
+        let start_pointers_end = tvx.len() as i64;
+        tvx.extend_from_slice(&codec_util::FOOTER_MAGIC.to_be_bytes());
+        tvx.extend_from_slice(&0u32.to_be_bytes());
+        let checksum = crc32fast::hash(&tvx) as u64;
+        tvx.extend_from_slice(&checksum.to_be_bytes());
+
+        let max_doc = 1i32;
+        let max_pointer = (tvd.len() - codec_util::FOOTER_LENGTH) as i64;
+        let mut tvm = Vec::new();
+        tvm.extend_from_slice(&codec_util::CODEC_MAGIC.to_be_bytes());
+        write_tv_string(&mut tvm, META_CODEC);
+        tvm.extend_from_slice(&0u32.to_be_bytes());
+        tvm.extend_from_slice(&segment_id);
+        tvm.push(0);
+        write_tv_vint(&mut tvm, 0); // packedIntsVersion
+        write_tv_vint(&mut tvm, 4096); // chunkSize
+        tvm.extend_from_slice(&max_doc.to_le_bytes());
+        tvm.extend_from_slice(&0i32.to_le_bytes()); // blockShift
+        tvm.extend_from_slice(&2i32.to_le_bytes()); // index_num_chunks
+        tvm.extend_from_slice(&docs_start.to_le_bytes());
+        for min in [0i64, max_doc as i64] {
+            tvm.extend_from_slice(&min.to_le_bytes());
+            tvm.extend_from_slice(&0i32.to_le_bytes());
+            tvm.extend_from_slice(&0i64.to_le_bytes());
+            tvm.push(0);
+        }
+        tvm.extend_from_slice(&docs_end.to_le_bytes());
+        for min in [chunk_start, max_pointer] {
+            tvm.extend_from_slice(&min.to_le_bytes());
+            tvm.extend_from_slice(&0i32.to_le_bytes());
+            tvm.extend_from_slice(&0i64.to_le_bytes());
+            tvm.push(0);
+        }
+        tvm.extend_from_slice(&start_pointers_end.to_le_bytes());
+        tvm.extend_from_slice(&max_pointer.to_le_bytes());
+        write_tv_vint(&mut tvm, 1); // numChunks (outer)
+        write_tv_vint(&mut tvm, 0); // numDirtyChunks
+        write_tv_vint(&mut tvm, 0); // numDirtyDocs
+        tvm.extend_from_slice(&codec_util::FOOTER_MAGIC.to_be_bytes());
+        tvm.extend_from_slice(&0u32.to_be_bytes());
+        let checksum = crc32fast::hash(&tvm) as u64;
+        tvm.extend_from_slice(&checksum.to_be_bytes());
+
+        (tvd, tvx, tvm)
+    }
+
+    #[test]
+    fn term_vectors_merge_rejects_offsets_and_payloads() {
+        let seg0_id = [1u8; ID_LENGTH];
+        let (tvd, tvx, tvm) = build_offsets_payloads_term_vectors(seg0_id);
+        let tv0_reader = term_vectors::open(&tvd, &tvx, &tvm, &seg0_id, "").unwrap();
+        // Sanity-check the hand-built bytes actually decode to
+        // POSITIONS+OFFSETS+PAYLOADS before using them to exercise the
+        // merge-time rejection.
+        let doc0 = tv0_reader.document(0).unwrap().unwrap();
+        assert!(doc0.fields[0].has_offsets && doc0.fields[0].has_payloads);
+        assert_eq!(doc0.fields[0].terms[0].term, b"a");
+        assert_eq!(doc0.fields[0].terms[0].start_offsets, Some(vec![0]));
+        assert_eq!(doc0.fields[0].terms[0].payloads, Some(vec![vec![0xAA]]));
+
+        let fields0 = vec![tv_field("id", 0)];
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let stored0 = flush(&dir, &tmp, "_0", seg0_id, &fields0, &[doc_with(0, "a")]);
+        let reader0 = open_reader(&stored0);
+
+        let source0 = MergeSource {
+            field_infos: &stored0.fields,
+            reader: &reader0,
+            live_docs: None,
+            numeric_doc_values: &[],
+            binary_doc_values: &[],
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &[],
+            norms: &[],
+            term_vectors: Some(&tv0_reader),
+            postings: &[],
+        };
+
+        let err = merge_stored_only_segments(
+            &dir,
+            &[source0],
+            "_merged_tv_rejected",
+            [9u8; ID_LENGTH],
+            "Lucene104",
+            version(),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            Error::TermVectorOffsetsOrPayloadsNotSupported {
+                merged_field_number: 0,
+                has_offsets: true,
+                has_payloads: true,
+            }
+        ));
     }
 
     #[test]
