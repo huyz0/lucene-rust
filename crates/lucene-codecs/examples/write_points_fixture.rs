@@ -192,6 +192,7 @@ fn main() {
     let field0 = WritePointsField {
         field_number: FIELD_NUMBER,
         num_dims: 1,
+        num_index_dims: 1,
         bytes_per_dim: 8,
         points: points0.clone(),
     };
@@ -204,6 +205,7 @@ fn main() {
     let field1 = WritePointsField {
         field_number: FIELD_NUMBER,
         num_dims: 1,
+        num_index_dims: 1,
         bytes_per_dim: 8,
         points: points1.clone(),
     };
@@ -223,6 +225,7 @@ fn main() {
     let field2 = WritePointsField {
         field_number: FIELD_NUMBER,
         num_dims: 2,
+        num_index_dims: 2,
         bytes_per_dim: 4,
         points: points2_packed,
     };

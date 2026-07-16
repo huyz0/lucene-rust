@@ -77,6 +77,12 @@ pub enum Error {
         expected: i32,
         actual: usize,
     },
+    #[error("field {field_number}: num_index_dims ({num_index_dims}) must be between 1 and num_dims ({num_dims}) inclusive")]
+    InvalidNumIndexDims {
+        field_number: i32,
+        num_dims: i32,
+        num_index_dims: i32,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -602,13 +608,21 @@ fn read_bpv24(input: &mut SliceInput, count: usize) -> Result<Vec<i32>> {
 /// conversion itself, same division of labor as the read side, which also
 /// just hands back raw packed bytes). `num_dims == 1` is `LongPoint`/
 /// `IntPoint`'s shape; `num_dims > 1` (e.g. 2 for `LatLonPoint`) is also
-/// supported -- see [`write`]'s doc comment for the scope of that support
-/// (`num_index_dims` is always treated as equal to `num_dims`; a field with
-/// extra *data-only*, non-indexed dimensions is not supported).
+/// supported -- see [`write`]'s doc comment for the scope of that support.
+/// `num_index_dims` may be less than `num_dims` (e.g. 4/2 for a
+/// `LatLonShape`-style bounding box, where the trailing 2 dimensions ride
+/// along in every leaf's per-doc values but never participate in a split or
+/// a common-prefix computation) -- see [`write`]'s doc comment.
 #[derive(Debug, Clone)]
 pub struct WritePointsField {
     pub field_number: i32,
     pub num_dims: i32,
+    /// How many of `num_dims` leading dimensions are used to build the tree's
+    /// split structure; must be in `1..=num_dims`. The remaining
+    /// `num_dims - num_index_dims` trailing dimensions are data-only payload:
+    /// stored in every leaf's per-doc packed values but never chosen as a
+    /// split dimension and never part of the per-leaf/per-field bounding box.
+    pub num_index_dims: i32,
     pub bytes_per_dim: i32,
     /// `(docID, packedValue)`, in any order -- [`write`] sorts (recursively,
     /// per split node -- see [`compute_leaf_plan`]) a local copy before
@@ -692,10 +706,17 @@ pub struct WritePointsField {
 /// requirement, just never previously exercised by this module's own write
 /// path.
 ///
-/// **Scope**: `num_index_dims` is always treated as equal to `num_dims` --
-/// a field with extra data-only (non-indexed) dimensions, real `BKDWriter`'s
-/// `numDims > numIndexDims` case, is not supported (see `docs/parity.md`).
-/// Empty fields (`points.is_empty()` returns [`Error::EmptyField`]) also
+/// **Scope**: `num_index_dims <= num_dims`, matching real `BKDWriter`'s
+/// `numDataDims`/`numIndexDims` split -- the trailing `num_dims -
+/// num_index_dims` dimensions are data-only payload (e.g. a
+/// `LatLonShape`-style bounding box's extra corner), stored in every leaf's
+/// packed values but never chosen by [`widest_dim`] as a split dimension,
+/// never part of the field-/leaf-level bounding box, and never touched by
+/// [`pack_index`]'s prefix-coding (all indexed the same way real
+/// `BKDWriter.split`/`recursePackIndex` only ever range over
+/// `config.numIndexDims()`). [`write_field`] rejects `num_index_dims` outside
+/// `1..=num_dims` with [`Error::InvalidNumIndexDims`]. Empty fields
+/// (`points.is_empty()` returns [`Error::EmptyField`]) also
 /// remain out of scope: real Lucene's `finish()` returns `null` and the
 /// field is omitted from `.kdm` entirely in that case; this port's callers
 /// are expected to simply not pass an empty field rather than replicate
@@ -796,12 +817,14 @@ fn unsigned_byte_sub(a: &[u8], b: &[u8]) -> Vec<u8> {
 /// how it compares to real `BKDWriter`'s own choice): the dimension with the
 /// widest value range (`max - min`, unsigned byte-wise, via
 /// [`unsigned_byte_sub`]) across `points`, ties broken toward the lowest
-/// dimension index. `num_dims == 1` always returns `0`.
-fn widest_dim(points: &[(i32, Vec<u8>)], num_dims: usize, bytes_per_dim: usize) -> usize {
+/// dimension index. `num_index_dims == 1` always returns `0`. Only ever
+/// scans `0..num_index_dims` -- matching real `BKDWriter.split`, which never
+/// considers a data-only, non-indexed dimension as a split candidate.
+fn widest_dim(points: &[(i32, Vec<u8>)], num_index_dims: usize, bytes_per_dim: usize) -> usize {
     debug_assert!(!points.is_empty());
     let mut best_dim = 0usize;
     let mut best_range: Option<Vec<u8>> = None;
-    for dim in 0..num_dims {
+    for dim in 0..num_index_dims {
         let lo = dim * bytes_per_dim;
         let hi = lo + bytes_per_dim;
         let mut min = &points[0].1[lo..hi];
@@ -846,7 +869,7 @@ fn compute_leaf_plan(
     leaves_offset: usize,
     num_leaves: usize,
     max_points_in_leaf_node: usize,
-    num_dims: usize,
+    num_index_dims: usize,
     bytes_per_dim: usize,
     leaves: &mut Vec<Vec<(i32, Vec<u8>)>>,
     split_values: &mut [Vec<u8>],
@@ -856,7 +879,7 @@ fn compute_leaf_plan(
         leaves.push(points);
         return;
     }
-    let dim = widest_dim(&points, num_dims, bytes_per_dim);
+    let dim = widest_dim(&points, num_index_dims, bytes_per_dim);
     let lo = dim * bytes_per_dim;
     let hi = lo + bytes_per_dim;
     let mut points = points;
@@ -874,7 +897,7 @@ fn compute_leaf_plan(
         leaves_offset,
         num_left,
         max_points_in_leaf_node,
-        num_dims,
+        num_index_dims,
         bytes_per_dim,
         leaves,
         split_values,
@@ -885,7 +908,7 @@ fn compute_leaf_plan(
         right_offset,
         num_leaves - num_left,
         max_points_in_leaf_node,
-        num_dims,
+        num_index_dims,
         bytes_per_dim,
         leaves,
         split_values,
@@ -1051,7 +1074,14 @@ fn write_field(
         });
     }
     let num_dims = field.num_dims as usize;
-    let num_index_dims = num_dims; // scope: no data-only dims -- see `write`'s doc comment.
+    let num_index_dims = field.num_index_dims as usize;
+    if field.num_index_dims < 1 || field.num_index_dims > field.num_dims {
+        return Err(Error::InvalidNumIndexDims {
+            field_number: field.field_number,
+            num_dims: field.num_dims,
+            num_index_dims: field.num_index_dims,
+        });
+    }
     let bytes_per_dim = field.bytes_per_dim as usize;
     let packed_bytes_length = num_dims * bytes_per_dim;
     for (i, (_, value)) in field.points.iter().enumerate() {
@@ -1108,7 +1138,7 @@ fn write_field(
         0,
         num_leaves,
         max,
-        num_dims,
+        num_index_dims,
         bytes_per_dim,
         &mut leaves,
         &mut split_values,
@@ -1852,6 +1882,7 @@ mod tests {
         let field = WritePointsField {
             field_number: 3,
             num_dims: 1,
+            num_index_dims: 1,
             bytes_per_dim: 8,
             points: points.clone(),
         };
@@ -1891,6 +1922,7 @@ mod tests {
         let field = WritePointsField {
             field_number: 0,
             num_dims: 1,
+            num_index_dims: 1,
             bytes_per_dim: 8,
             points: points.clone(),
         };
@@ -1919,6 +1951,7 @@ mod tests {
         let field_a = WritePointsField {
             field_number: 0,
             num_dims: 1,
+            num_index_dims: 1,
             bytes_per_dim: 4,
             points: vec![
                 (0, vec![0, 0, 0, 1]),
@@ -1929,6 +1962,7 @@ mod tests {
         let field_b = WritePointsField {
             field_number: 1,
             num_dims: 1,
+            num_index_dims: 1,
             bytes_per_dim: 8,
             points: vec![(5, long_sortable_bytes(42)), (7, long_sortable_bytes(-1))],
         };
@@ -1980,6 +2014,7 @@ mod tests {
         let field = WritePointsField {
             field_number: 0,
             num_dims: 1,
+            num_index_dims: 1,
             bytes_per_dim: 8,
             points: vec![(9, long_sortable_bytes(123_456_789))],
         };
@@ -2159,6 +2194,7 @@ mod tests {
         let field = WritePointsField {
             field_number: 0,
             num_dims: 1,
+            num_index_dims: 1,
             bytes_per_dim: 8,
             points: points.clone(),
         };
@@ -2199,6 +2235,7 @@ mod tests {
         let field = WritePointsField {
             field_number: 0,
             num_dims: 1,
+            num_index_dims: 1,
             bytes_per_dim: 8,
             points: points.clone(),
         };
@@ -2242,6 +2279,7 @@ mod tests {
         let field = WritePointsField {
             field_number: 0,
             num_dims: 2,
+            num_index_dims: 2,
             bytes_per_dim: 4,
             points: points.clone(),
         };
@@ -2288,6 +2326,7 @@ mod tests {
         let field = WritePointsField {
             field_number: 3,
             num_dims: 3,
+            num_index_dims: 3,
             bytes_per_dim: 2,
             points: points.clone(),
         };
@@ -2315,6 +2354,67 @@ mod tests {
     }
 
     #[test]
+    fn write_then_read_num_index_dims_less_than_num_dims_round_trips() {
+        // 3 dimensions, but only the first 2 are index dims -- like a
+        // `LatLonShape`-style bounding box where the 3rd dimension is a
+        // non-indexed, data-only payload dimension. Multiple leaves, so both
+        // the split-dimension selection (must never pick dim 2) and the
+        // per-leaf/per-field bounding boxes (must only cover dims 0-1) get
+        // exercised, not just single-leaf storage.
+        let points: Vec<(i32, Vec<u8>)> = (0..40i32)
+            .map(|i| {
+                let d0 = ((i * 41) % 500) as u16;
+                let d1 = ((i * 173) % 30000) as u16;
+                // Data-only dim: deliberately made *wider-ranging* than the
+                // two index dims, so a widest-dim implementation that (wrongly)
+                // considered all `num_dims` dimensions instead of only the
+                // first `num_index_dims` would pick this one instead.
+                let d2 = (i * 1777) as u16;
+                let mut v = Vec::with_capacity(6);
+                v.extend_from_slice(&d0.to_be_bytes());
+                v.extend_from_slice(&d1.to_be_bytes());
+                v.extend_from_slice(&d2.to_be_bytes());
+                (i, v)
+            })
+            .collect();
+        let expected_leaves = points.len().div_ceil(8) as i32;
+        let field = WritePointsField {
+            field_number: 4,
+            num_dims: 3,
+            num_index_dims: 2,
+            bytes_per_dim: 2,
+            points: points.clone(),
+        };
+        let (kdm, kdi, kdd) = write(&[field], 8, &id(), "").unwrap();
+
+        let reader = open(&kdm, &kdi, &kdd, &id(), "").unwrap();
+        let meta = reader.field(4).unwrap();
+        assert_eq!(meta.num_dims, 3);
+        assert_eq!(meta.num_index_dims, 2);
+        assert_eq!(meta.num_leaves, expected_leaves);
+        assert_eq!(meta.point_count, points.len() as i64);
+        assert_eq!(meta.doc_count, points.len() as i32);
+        // min/max packed value is sized for index dims only (2 * 2 bytes),
+        // not the full 3 dims.
+        assert_eq!(meta.min_packed_value.len(), 4);
+        assert_eq!(meta.max_packed_value.len(), 4);
+
+        let mut decoded = reader.decode_all_points(4).unwrap();
+        decoded.sort_by_key(|p| p.doc_id);
+        let mut expected: Vec<Point> = points
+            .into_iter()
+            .map(|(doc_id, packed_value)| Point {
+                doc_id,
+                packed_value,
+            })
+            .collect();
+        expected.sort_by_key(|p| p.doc_id);
+        // Every point's full packed value -- including the non-indexed 3rd
+        // dimension -- must survive the round trip unchanged.
+        assert_eq!(decoded, expected);
+    }
+
+    #[test]
     fn write_then_read_three_leaves_unbalanced_round_trips() {
         // 9 points, max 4 => ceil(9/4) = 3 leaves (numLeftLeafNodes(3) ==
         // 2), exercising the same 2-leaves-left/1-leaf-right shape as the
@@ -2325,6 +2425,7 @@ mod tests {
         let field = WritePointsField {
             field_number: 7,
             num_dims: 1,
+            num_index_dims: 1,
             bytes_per_dim: 1,
             points: points.clone(),
         };
@@ -2357,6 +2458,7 @@ mod tests {
         let field = WritePointsField {
             field_number: 0,
             num_dims: 1,
+            num_index_dims: 1,
             bytes_per_dim: 8,
             points: points.clone(),
         };
@@ -2391,6 +2493,7 @@ mod tests {
         let field = WritePointsField {
             field_number: 0,
             num_dims: 1,
+            num_index_dims: 1,
             bytes_per_dim: 8,
             points: points.clone(),
         };
@@ -2425,6 +2528,7 @@ mod tests {
         let field = WritePointsField {
             field_number: 0,
             num_dims: 2,
+            num_index_dims: 2,
             bytes_per_dim: 4,
             points: points.clone(),
         };
@@ -2469,6 +2573,7 @@ mod tests {
         let field = WritePointsField {
             field_number: 0,
             num_dims: 3,
+            num_index_dims: 3,
             bytes_per_dim: 1,
             points: points.clone(),
         };
@@ -2496,6 +2601,7 @@ mod tests {
         let field = WritePointsField {
             field_number: 0,
             num_dims: 1,
+            num_index_dims: 1,
             bytes_per_dim: 4,
             points: vec![],
         };
@@ -2506,10 +2612,49 @@ mod tests {
     }
 
     #[test]
+    fn write_rejects_num_index_dims_zero() {
+        let field = WritePointsField {
+            field_number: 0,
+            num_dims: 2,
+            num_index_dims: 0,
+            bytes_per_dim: 4,
+            points: vec![(0, vec![0u8; 8])],
+        };
+        assert!(matches!(
+            write(&[field], 512, &id(), ""),
+            Err(Error::InvalidNumIndexDims {
+                field_number: 0,
+                num_dims: 2,
+                num_index_dims: 0,
+            })
+        ));
+    }
+
+    #[test]
+    fn write_rejects_num_index_dims_greater_than_num_dims() {
+        let field = WritePointsField {
+            field_number: 0,
+            num_dims: 2,
+            num_index_dims: 3,
+            bytes_per_dim: 4,
+            points: vec![(0, vec![0u8; 8])],
+        };
+        assert!(matches!(
+            write(&[field], 512, &id(), ""),
+            Err(Error::InvalidNumIndexDims {
+                field_number: 0,
+                num_dims: 2,
+                num_index_dims: 3,
+            })
+        ));
+    }
+
+    #[test]
     fn write_rejects_wrong_packed_value_length() {
         let field = WritePointsField {
             field_number: 0,
             num_dims: 1,
+            num_index_dims: 1,
             bytes_per_dim: 8,
             points: vec![(0, vec![1, 2, 3])],
         };
@@ -2529,6 +2674,7 @@ mod tests {
         let field = WritePointsField {
             field_number: 0,
             num_dims: 1,
+            num_index_dims: 1,
             bytes_per_dim: 4,
             points: vec![(0, vec![0, 0, 0, 1])],
         };

@@ -1,4 +1,6 @@
 import org.apache.lucene.document.Document;
+import org.apache.lucene.document.Field;
+import org.apache.lucene.document.FieldType;
 import org.apache.lucene.document.IntPoint;
 import org.apache.lucene.document.LongPoint;
 import org.apache.lucene.document.StringField;
@@ -34,6 +36,34 @@ import java.util.List;
  * of which encoding was chosen for each leaf.
  */
 public class GenPoints {
+  private static final FieldType SHAPE_FIELD_TYPE = new FieldType();
+
+  static {
+    // 4 total dimensions, only the first 2 are indexed -- dims 2/3 are
+    // data-only payload that rides along in every leaf's per-doc values but
+    // never participates in a split or a common-prefix computation.
+    SHAPE_FIELD_TYPE.setDimensions(4, 2, Integer.BYTES);
+    SHAPE_FIELD_TYPE.freeze();
+  }
+
+  // Packs doc `i`'s 4-dimension `shape` value: dims 0/1 (indexed) spread
+  // across the full `int` range the same multiplicative-hash way `multi`'s
+  // dim0 does (so the tree actually splits on both indexed dims across its
+  // several leaves), dims 2/3 (data-only) are simple, easily-checked
+  // functions of `i` distinct from the indexed dims' values.
+  private static byte[] packShapeValue(int i) {
+    int d0 = (int) (i * 2654435761L);
+    int d1 = (int) ((i + 1) * 40503L); // Knuth's other odd multiplicative constant
+    int d2 = i; // data-only payload dim, never used for splitting
+    int d3 = -i; // second data-only payload dim
+    byte[] out = new byte[4 * Integer.BYTES];
+    NumericUtils.intToSortableBytes(d0, out, 0);
+    NumericUtils.intToSortableBytes(d1, out, Integer.BYTES);
+    NumericUtils.intToSortableBytes(d2, out, 2 * Integer.BYTES);
+    NumericUtils.intToSortableBytes(d3, out, 3 * Integer.BYTES);
+    return out;
+  }
+
   public static void main(String[] args) throws Exception {
     Path out = Path.of(args[0]).resolve("points_index");
     if (Files.exists(out)) {
@@ -91,6 +121,18 @@ public class GenPoints {
           // of the written leaves, independent of this repo's Rust decoder.
           int dim0 = (int) (i * 2654435761L); // Knuth multiplicative hash, odd multiplier
           doc.add(new IntPoint("multi", dim0, i % 4));
+
+          // Third field: `num_dims=4`/`num_index_dims=2` (a
+          // `LatLonShape`-style bounding-box shape with two trailing
+          // data-only payload dimensions that ride along in every leaf's
+          // per-doc values but are never used for splitting or common-prefix
+          // computation) -- exercises numIndexDims < numDims end to end
+          // through a real Lucene-written BKD tree. Built via a custom
+          // `FieldType`/`Field` pair (`setDimensions(numDims,
+          // numIndexDims, bytesPerDim)`) since none of the stock `*Point`
+          // classes expose this shape.
+          doc.add(new Field("shape", packShapeValue(i), SHAPE_FIELD_TYPE));
+
           w.addDocument(doc);
         }
         w.commit();
@@ -248,6 +290,62 @@ public class GenPoints {
                 + leafCompressedDimsStr);
       }
       m.append("multi_leaf_compressed_dims=").append(leafCompressedDimsStr).append('\n');
+
+      // "shape" field: num_dims=4, num_index_dims=2 -- the numIndexDims <
+      // numDims fixture.
+      FieldInfo shapeFieldInfo =
+          sci.info
+              .getCodec()
+              .fieldInfosFormat()
+              .read(dir, sci.info, "", IOContext.READONCE)
+              .fieldInfo("shape");
+      m.append("shape_field_number=").append(shapeFieldInfo.number).append('\n');
+
+      PointValues shapeValues = pointsReader.getValues("shape");
+      m.append("shape_num_dims=").append(shapeValues.getNumDimensions()).append('\n');
+      m.append("shape_num_index_dims=").append(shapeValues.getNumIndexDimensions()).append('\n');
+      m.append("shape_bytes_per_dim=").append(shapeValues.getBytesPerDimension()).append('\n');
+      m.append("shape_point_count=").append(shapeValues.size()).append('\n');
+      m.append("shape_doc_count=").append(shapeValues.getDocCount()).append('\n');
+
+      List<int[]> shapeCollected = new ArrayList<>();
+      shapeValues.intersect(
+          new PointValues.IntersectVisitor() {
+            @Override
+            public void visit(int docID) {
+              throw new AssertionError("should not be called: compare always returns CROSSES");
+            }
+
+            @Override
+            public void visit(int docID, byte[] packedValue) {
+              int d0 = NumericUtils.sortableBytesToInt(packedValue, 0);
+              int d1 = NumericUtils.sortableBytesToInt(packedValue, Integer.BYTES);
+              int d2 = NumericUtils.sortableBytesToInt(packedValue, 2 * Integer.BYTES);
+              int d3 = NumericUtils.sortableBytesToInt(packedValue, 3 * Integer.BYTES);
+              shapeCollected.add(new int[] {docID, d0, d1, d2, d3});
+            }
+
+            @Override
+            public PointValues.Relation compare(byte[] minPackedValue, byte[] maxPackedValue) {
+              return PointValues.Relation.CELL_CROSSES_QUERY;
+            }
+          });
+      shapeCollected.sort((a, b) -> Integer.compare(a[0], b[0]));
+      StringBuilder shapePoints = new StringBuilder();
+      for (int[] entry : shapeCollected) {
+        if (shapePoints.length() > 0) shapePoints.append(';');
+        shapePoints
+            .append(entry[0])
+            .append(':')
+            .append(entry[1])
+            .append(':')
+            .append(entry[2])
+            .append(':')
+            .append(entry[3])
+            .append(':')
+            .append(entry[4]);
+      }
+      m.append("shape_points=").append(shapePoints).append('\n');
 
       pointsReader.close();
 

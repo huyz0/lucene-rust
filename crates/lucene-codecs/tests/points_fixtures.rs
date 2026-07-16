@@ -218,3 +218,80 @@ fn parses_real_multi_dim_points_and_matches_lucene_values() {
     assert_eq!(got.len(), want.len(), "point count");
     assert_eq!(got, want);
 }
+
+/// Differential test for the `shape` field: `num_dims=4`/`num_index_dims=2`
+/// (a `LatLonShape`-style bounding box with two trailing, non-indexed
+/// data-only dimensions), written by a real `IndexWriter` via a custom
+/// `FieldType::setDimensions(4, 2, Integer.BYTES)` (see `GenPoints.java`).
+/// Proves this port's write-side support for `num_index_dims < num_dims`
+/// against real Lucene bytes read back through this port's own reader --
+/// every point's full 4-dimension packed value, including the two
+/// non-indexed dims, must round-trip identically.
+#[test]
+fn parses_real_shape_points_and_matches_lucene_values() {
+    let manifest = Manifest::load();
+    let id = id_from_hex(manifest.get("id_hex"));
+    let kdm = std::fs::read(format!("{}{}.raw", dir(), manifest.get("kdm_file_name"))).unwrap();
+    let kdi = std::fs::read(format!("{}{}.raw", dir(), manifest.get("kdi_file_name"))).unwrap();
+    let kdd = std::fs::read(format!("{}{}.raw", dir(), manifest.get("kdd_file_name"))).unwrap();
+
+    let reader = points::open(&kdm, &kdi, &kdd, &id, "").unwrap();
+    let field_number: i32 = manifest.get("shape_field_number").parse().unwrap();
+    let field = reader.field(field_number).unwrap();
+
+    assert_eq!(
+        field.num_dims,
+        manifest.get("shape_num_dims").parse::<i32>().unwrap()
+    );
+    assert_eq!(
+        field.num_index_dims,
+        manifest.get("shape_num_index_dims").parse::<i32>().unwrap()
+    );
+    assert_eq!(field.num_index_dims, 2);
+    assert_eq!(field.num_dims, 4);
+    assert_eq!(
+        field.bytes_per_dim,
+        manifest.get("shape_bytes_per_dim").parse::<i32>().unwrap()
+    );
+    assert_eq!(
+        field.point_count,
+        manifest.get("shape_point_count").parse::<i64>().unwrap()
+    );
+    assert_eq!(
+        field.doc_count,
+        manifest.get("shape_doc_count").parse::<i32>().unwrap()
+    );
+
+    let bytes_per_dim = field.bytes_per_dim as usize;
+    let mut got: Vec<(i32, i32, i32, i32, i32)> = reader
+        .decode_all_points(field_number)
+        .unwrap()
+        .into_iter()
+        .map(|p| {
+            let d0 = sortable_bytes_to_int(&p.packed_value[0..bytes_per_dim]);
+            let d1 = sortable_bytes_to_int(&p.packed_value[bytes_per_dim..2 * bytes_per_dim]);
+            let d2 = sortable_bytes_to_int(&p.packed_value[2 * bytes_per_dim..3 * bytes_per_dim]);
+            let d3 = sortable_bytes_to_int(&p.packed_value[3 * bytes_per_dim..4 * bytes_per_dim]);
+            (p.doc_id, d0, d1, d2, d3)
+        })
+        .collect();
+    got.sort_by_key(|&(doc_id, ..)| doc_id);
+
+    let mut want: Vec<(i32, i32, i32, i32, i32)> = manifest
+        .get("shape_points")
+        .split(';')
+        .map(|entry| {
+            let mut parts = entry.split(':');
+            let doc_id = parts.next().unwrap().parse().unwrap();
+            let d0 = parts.next().unwrap().parse().unwrap();
+            let d1 = parts.next().unwrap().parse().unwrap();
+            let d2 = parts.next().unwrap().parse().unwrap();
+            let d3 = parts.next().unwrap().parse().unwrap();
+            (doc_id, d0, d1, d2, d3)
+        })
+        .collect();
+    want.sort_by_key(|&(doc_id, ..)| doc_id);
+
+    assert_eq!(got.len(), want.len(), "point count");
+    assert_eq!(got, want);
+}
