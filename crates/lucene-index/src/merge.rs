@@ -213,14 +213,19 @@
 //! contain most terms) is not an error, since that's exactly what a term
 //! dictionary already models.
 //!
-//! **Scope: `IndexOptions::Docs`/`DocsAndFreqs` only.** Positions, offsets,
-//! and payloads (`.pos`/`.pay`) are not merged -- a field whose merged
-//! `index_options` indexes positions is rejected with
-//! [`Error::PostingsIndexOptionsNotSupported`] rather than silently
-//! dropping that data. This mirrors the doc-values/norms merge's own
-//! "start with the smallest defensible slice, be honest about the rest"
-//! precedent; extending it to positions/offsets/payloads is a documented
-//! follow-up (see `docs/parity.md`). Because field-number reconciliation
+//! **Scope: `Docs`/`DocsAndFreqs`/`DocsAndCustomFreqs`, plus positions/
+//! offsets/payloads.** A field whose merged `index_options` indexes
+//! positions ([`IndexOptions::DocsAndFreqsAndPositions`] or
+//! [`IndexOptions::DocsAndFreqsAndPositionsAndOffsets`]) has every
+//! contributing source's positions read back via
+//! [`lucene_codecs::blocktree::FieldTerms::positions`] (the same read path
+//! `lucene_search`'s phrase matching uses) and concatenated in the same
+//! source order as docs/freqs; offsets are carried along automatically
+//! since `Position` bundles them, and payloads whenever the merged field's
+//! `FieldInfo::store_payloads` is set. Any other `index_options` this port
+//! doesn't model (there are none left in the [`IndexOptions`] enum) would
+//! still be rejected with [`Error::PostingsIndexOptionsNotSupported`].
+//! Because field-number reconciliation
 //! only records the *first-seen* source's `FieldInfo` as the merged one and
 //! never checks agreement across sources sharing a field name, every other
 //! live-doc-contributing source's own `index_options` for that field is
@@ -463,6 +468,19 @@ pub enum Error {
         "merged field number {merged_field_number} has postings in some sources but not in every source that contributes live docs"
     )]
     PostingsFieldMissingInSource { merged_field_number: i32 },
+    /// A field's merged `index_options` indexes positions, but a source
+    /// contributing live docs for it wasn't given an opened `.pos` reader
+    /// (`SourcePostings::pos_in`) -- a caller-side wiring inconsistency,
+    /// same class of error as [`Error::PostingsFieldMissingInSource`] rather
+    /// than a panic, since a real, well-formed segment for this field always
+    /// has a `.pos` file to open.
+    #[error(
+        "merged field number {merged_field_number} indexes positions but source index {source_index} has no opened .pos reader"
+    )]
+    PostingsPositionsInputMissingInSource {
+        merged_field_number: i32,
+        source_index: usize,
+    },
     /// This port's postings merge only handles `IndexOptions::Docs` and
     /// `IndexOptions::DocsAndFreqs` fields -- positions/offsets/payloads
     /// merging isn't implemented yet (see this module's doc comment).
@@ -488,6 +506,21 @@ pub enum Error {
         merged_field_number: i32,
         merged_index_options: IndexOptions,
         source_index_options: IndexOptions,
+    },
+    /// Same hazard as [`Error::PostingsIndexOptionsDisagreement`] but for
+    /// `FieldInfo::store_payloads`: the merged field's `has_payloads` is
+    /// taken from the first-seen source only, so a later source that
+    /// genuinely stores payloads (identical `index_options`, so the check
+    /// above wouldn't catch it) would have its real payload bytes silently
+    /// dropped from the merged output if a disagreeing source went
+    /// unchecked -- this is the hard error instead.
+    #[error(
+        "merged field number {merged_field_number} has disagreeing store_payloads across sources: source claims {source_has_payloads} but the merged field is {merged_has_payloads}"
+    )]
+    PostingsPayloadsDisagreement {
+        merged_field_number: i32,
+        merged_has_payloads: bool,
+        source_has_payloads: bool,
     },
     /// [`lucene_codecs::term_vectors::write_best_speed`] itself now supports
     /// offsets and payloads (a later task added that), but this merge path's
@@ -624,20 +657,25 @@ pub struct SourceSortedSetDocValues<'a> {
 /// source's segment happens to have no `docFreq > 1` terms, though in
 /// practice almost every real segment needs one).
 ///
-/// # Scope: Docs/DocsAndFreqs only, no positions/offsets/payloads
+/// # Positions/offsets/payloads
 ///
-/// [`merge_postings`] (driven from this field) only merges fields whose
-/// merged [`FieldInfo::index_options`] is [`IndexOptions::Docs`] or
-/// [`IndexOptions::DocsAndFreqs`] -- merging positions/offsets/payloads
-/// (`.pos`/`.pay`) is a documented follow-up, not implemented here (see
-/// this module's top doc comment and `docs/parity.md`). A field whose
-/// merged `index_options` indexes positions is rejected with
-/// [`Error::PostingsIndexOptionsNotSupported`] rather than silently
-/// dropping its positions/offsets/payloads data.
+/// `pos_in`/`pay_in` are this source's already-opened `.pos`/`.pay` file
+/// readers (via [`lucene_codecs::postings::PosInput::open`]/
+/// [`lucene_codecs::postings::PayInput::open`]), needed by [`merge_postings`]
+/// whenever the merged field's `index_options` indexes positions
+/// ([`IndexOptions::DocsAndFreqsAndPositions`] or
+/// [`IndexOptions::DocsAndFreqsAndPositionsAndOffsets`]) -- both are `None`
+/// for a `Docs`/`DocsAndFreqs`/`DocsAndCustomFreqs` field, exactly like
+/// `doc_in` is `None` when a source never opens a `.doc` file. `pay_in` may
+/// still be `None` even for a field with offsets/payloads if no term's
+/// `total_term_freq` spans a full 256-position block (see
+/// [`lucene_codecs::postings::read_positions`]'s doc comment).
 pub struct SourcePostings<'a> {
     pub field_number: i32,
     pub field_terms: &'a FieldTerms,
     pub doc_in: Option<&'a DocInput<'a>>,
+    pub pos_in: Option<&'a lucene_codecs::postings::PosInput<'a>>,
+    pub pay_in: Option<&'a lucene_codecs::postings::PayInput<'a>>,
 }
 
 /// One source's BKD points (`.kdm`/`.kdi`/`.kdd`) data for a single field --
@@ -998,7 +1036,7 @@ pub fn merge_stored_only_segments(
                 field_number: f.field_number,
                 index_options: f.index_options,
                 doc_count: f.doc_count,
-                has_payloads: false,
+                has_payloads: f.has_payloads,
                 terms: &f.terms,
             })
             .collect();
@@ -1960,6 +1998,7 @@ struct MergedPostingsField {
     field_number: i32,
     index_options: IndexOptions,
     doc_count: i32,
+    has_payloads: bool,
     terms: Vec<TermPostings>,
 }
 
@@ -1997,11 +2036,12 @@ struct MergedPostingsField {
 /// [`Error::PostingsFieldMissingInSource`] rather than silently treating
 /// that source's docs as having no terms for the field.
 ///
-/// # Scope: Docs/DocsAndFreqs only
+/// # Positions/offsets/payloads
 ///
 /// See [`SourcePostings`]'s doc comment: a candidate field whose merged
-/// `index_options` indexes positions is rejected with
-/// [`Error::PostingsIndexOptionsNotSupported`].
+/// `index_options` indexes positions has every contributing source's
+/// per-term positions (and offsets/payloads, when applicable) read back and
+/// concatenated in the same source order as docs/freqs.
 fn merge_postings(
     sources: &[MergeSource],
     per_source_maps: &[HashMap<i32, i32>],
@@ -2039,13 +2079,27 @@ fn merge_postings(
         let index_options = merged_field.index_options;
         if !matches!(
             index_options,
-            IndexOptions::Docs | IndexOptions::DocsAndFreqs
+            IndexOptions::Docs
+                | IndexOptions::DocsAndFreqs
+                | IndexOptions::DocsAndCustomFreqs
+                | IndexOptions::DocsAndFreqsAndPositions
+                | IndexOptions::DocsAndFreqsAndPositionsAndOffsets
         ) {
             return Err(Error::PostingsIndexOptionsNotSupported {
                 merged_field_number,
                 index_options,
             });
         }
+        let has_positions = matches!(
+            index_options,
+            IndexOptions::DocsAndFreqsAndPositions
+                | IndexOptions::DocsAndFreqsAndPositionsAndOffsets
+        );
+        let has_offsets = matches!(
+            index_options,
+            IndexOptions::DocsAndFreqsAndPositionsAndOffsets
+        );
+        let has_payloads = merged_field.store_payloads;
 
         // Per-source (in source order) this field's `SourcePostings`, or
         // `None` for a fully-deleted source (exempt, same as elsewhere) --
@@ -2081,6 +2135,13 @@ fn merge_postings(
                         source_index_options: source_field.index_options,
                     });
                 }
+                if source_field.store_payloads != has_payloads {
+                    return Err(Error::PostingsPayloadsDisagreement {
+                        merged_field_number,
+                        merged_has_payloads: has_payloads,
+                        source_has_payloads: source_field.store_payloads,
+                    });
+                }
             }
             let Some(pf) = source
                 .postings
@@ -2091,6 +2152,12 @@ fn merge_postings(
                     merged_field_number,
                 });
             };
+            if has_positions && pf.pos_in.is_none() {
+                return Err(Error::PostingsPositionsInputMissingInSource {
+                    merged_field_number,
+                    source_index: per_source_field.len(),
+                });
+            }
             per_source_field.push(Some(pf));
         }
 
@@ -2109,19 +2176,65 @@ fn merge_postings(
         let mut terms_out: Vec<TermPostings> = Vec::with_capacity(all_terms.len());
         for term in all_terms {
             let mut docs: Vec<(i32, i32)> = Vec::new();
+            let mut positions: Vec<Vec<i32>> = Vec::new();
+            let mut offsets: Vec<Vec<(i32, i32)>> = Vec::new();
+            let mut payloads: Vec<Vec<Vec<u8>>> = Vec::new();
             for (src_idx, pf) in per_source_field.iter().enumerate() {
                 let Some(pf) = pf else { continue };
                 let Some(source_postings) = pf.field_terms.postings(&term, pf.doc_in)? else {
                     continue;
                 };
+                // Positions (and offsets/payloads, bundled into `Position`)
+                // for every live doc this source has for the term, in the
+                // same doc order as `source_postings.docs`/`freqs` --
+                // `FieldTerms::positions` re-derives docs/freqs itself
+                // (cheap relative to the position/offset/payload decode it
+                // also does), so this reuses that single read path rather
+                // than re-deriving position decoding here.
+                let source_positions = if has_positions {
+                    Some(
+                        pf.field_terms
+                            .positions(
+                                &term,
+                                pf.doc_in,
+                                pf.pos_in.expect(
+                                    "checked as Error::PostingsPositionsInputMissingInSource above",
+                                ),
+                                pf.pay_in,
+                            )?
+                            .expect(
+                                "term found via postings() above, so positions() must find it too",
+                            ),
+                    )
+                } else {
+                    None
+                };
                 let doc_id_map = &doc_id_maps[src_idx];
-                for (&doc_id, &freq) in source_postings
+                for (doc_idx, (&doc_id, &freq)) in source_postings
                     .docs
                     .iter()
                     .zip(source_postings.freqs.iter())
+                    .enumerate()
                 {
                     if let Some(&merged_doc_id) = doc_id_map.get(&doc_id) {
                         docs.push((merged_doc_id, freq));
+                        if let Some(source_positions) = &source_positions {
+                            let doc_positions = &source_positions[doc_idx];
+                            positions.push(doc_positions.iter().map(|p| p.position).collect());
+                            if has_offsets {
+                                offsets.push(
+                                    doc_positions
+                                        .iter()
+                                        .map(|p| (p.start_offset, p.end_offset))
+                                        .collect(),
+                                );
+                            }
+                            if has_payloads {
+                                payloads.push(
+                                    doc_positions.iter().map(|p| p.payload.clone()).collect(),
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -2129,9 +2242,9 @@ fn merge_postings(
                 terms_out.push(TermPostings {
                     term,
                     docs,
-                    positions: Vec::new(),
-                    offsets: Vec::new(),
-                    payloads: Vec::new(),
+                    positions,
+                    offsets,
+                    payloads,
                 });
             }
         }
@@ -2148,6 +2261,7 @@ fn merge_postings(
             field_number: merged_field_number,
             index_options,
             doc_count,
+            has_payloads,
             terms: terms_out,
         });
     }
@@ -6423,11 +6537,15 @@ mod tests {
             field_number: 0,
             field_terms: field_terms0,
             doc_in: Some(&doc_in0),
+            pos_in: None,
+            pay_in: None,
         }];
         let src_postings1 = [SourcePostings {
             field_number: 0,
             field_terms: field_terms1,
             doc_in: Some(&doc_in1),
+            pos_in: None,
+            pay_in: None,
         }];
         let source0 = MergeSource {
             field_infos: &stored0.fields,
@@ -6591,11 +6709,15 @@ mod tests {
             field_number: 0,
             field_terms: field_terms0,
             doc_in: Some(&doc_in0),
+            pos_in: None,
+            pay_in: None,
         }];
         let src_postings1 = [SourcePostings {
             field_number: 0,
             field_terms: field_terms1,
             doc_in: Some(&doc_in1),
+            pos_in: None,
+            pay_in: None,
         }];
         let source0 = MergeSource {
             field_infos: &stored0.fields,
@@ -6727,6 +6849,8 @@ mod tests {
             field_number: 0,
             field_terms: field_terms0,
             doc_in: Some(&doc_in0),
+            pos_in: None,
+            pay_in: None,
         }];
         let source0 = MergeSource {
             field_infos: &stored0.fields,
@@ -6861,11 +6985,15 @@ mod tests {
             field_number: 0,
             field_terms: field_terms0,
             doc_in: Some(&doc_in0),
+            pos_in: None,
+            pay_in: None,
         }];
         let src_postings1 = [SourcePostings {
             field_number: 0,
             field_terms: field_terms1,
             doc_in: Some(&doc_in1),
+            pos_in: None,
+            pay_in: None,
         }];
         let source0 = MergeSource {
             field_infos: &stored0.fields,
@@ -6993,6 +7121,8 @@ mod tests {
             field_number: 0,
             field_terms: field_terms0,
             doc_in: Some(&doc_in0),
+            pos_in: None,
+            pay_in: None,
         }];
         let source0 = MergeSource {
             field_infos: &stored0.fields,
@@ -7038,25 +7168,37 @@ mod tests {
     }
 
     #[test]
-    fn postings_field_with_positions_is_rejected_as_out_of_scope() {
+    fn two_sources_merge_positions_offsets_and_payloads_correctly() {
+        // End-to-end: two segments, each with a field indexing positions,
+        // offsets, and payloads, merged into one -- regression test for the
+        // gap flagged in the module's top doc comment ("only Docs/
+        // DocsAndFreqs fields merge today"). Verifies the merged term
+        // dictionary's positions/offsets/payloads are queryable post-merge
+        // via `FieldTerms::positions`, the same read path phrase matching
+        // uses.
         let seg0_id = [1u8; ID_LENGTH];
+        let seg1_id = [2u8; ID_LENGTH];
 
+        // Source 0: 1 doc -- doc 0 has "apple" at positions 0 and 2, with
+        // offsets and a payload on the second occurrence only.
         let terms0 = vec![TermPostings {
             term: b"apple".to_vec(),
-            docs: vec![(0, 1)],
-            positions: vec![vec![0]],
-            ..Default::default()
+            docs: vec![(0, 2)],
+            positions: vec![vec![0, 2]],
+            offsets: vec![vec![(0, 5), (10, 15)]],
+            payloads: vec![vec![Vec::new(), b"pay0".to_vec()]],
         }];
         let input0 = FieldPostingsInput {
             field_number: 0,
-            index_options: IndexOptions::DocsAndFreqsAndPositions,
+            index_options: IndexOptions::DocsAndFreqsAndPositionsAndOffsets,
             doc_count: 1,
-            has_payloads: false,
+            has_payloads: true,
             terms: &terms0,
         };
         let output0 = postings_writer::write_single_field(&input0, &seg0_id, "").unwrap();
         let mut field_with_positions = postings_field("body", 0);
-        field_with_positions.index_options = IndexOptions::DocsAndFreqsAndPositions;
+        field_with_positions.index_options = IndexOptions::DocsAndFreqsAndPositionsAndOffsets;
+        field_with_positions.store_payloads = true;
         let field_infos0 = field_infos::FieldInfos {
             fields: vec![field_with_positions.clone()],
         };
@@ -7071,18 +7213,65 @@ mod tests {
         )
         .unwrap();
         let doc_in0 = DocInput::open(&output0.doc, &seg0_id, "").unwrap();
+        let pos_in0 = lucene_codecs::postings::PosInput::open(&output0.pos, &seg0_id, "").unwrap();
+        let pay_in0 = lucene_codecs::postings::PayInput::open(&output0.pay, &seg0_id, "").unwrap();
         let field_terms0 = fields0.field("body").unwrap();
 
-        let fields = vec![field_with_positions];
+        // Source 1: 1 doc -- doc 0 has "banana" at position 1, no payload.
+        let terms1 = vec![TermPostings {
+            term: b"banana".to_vec(),
+            docs: vec![(0, 1)],
+            positions: vec![vec![1]],
+            offsets: vec![vec![(6, 12)]],
+            payloads: vec![vec![Vec::new()]],
+        }];
+        let input1 = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqsAndPositionsAndOffsets,
+            doc_count: 1,
+            has_payloads: true,
+            terms: &terms1,
+        };
+        let output1 = postings_writer::write_single_field(&input1, &seg1_id, "").unwrap();
+        let field_infos1 = field_infos::FieldInfos {
+            fields: vec![field_with_positions.clone()],
+        };
+        let fields1 = lucene_codecs::blocktree::open(
+            &output1.tim,
+            &output1.tip,
+            &output1.tmd,
+            &field_infos1,
+            &seg1_id,
+            "",
+            1,
+        )
+        .unwrap();
+        let doc_in1 = DocInput::open(&output1.doc, &seg1_id, "").unwrap();
+        let pos_in1 = lucene_codecs::postings::PosInput::open(&output1.pos, &seg1_id, "").unwrap();
+        let pay_in1 = lucene_codecs::postings::PayInput::open(&output1.pay, &seg1_id, "").unwrap();
+        let field_terms1 = fields1.field("body").unwrap();
+
+        let fields = vec![field_with_positions.clone()];
         let tmp = tempdir();
         let dir = FsDirectory::open(&tmp);
         let stored0 = flush(&dir, &tmp, "_0", seg0_id, &fields, &[doc_with(0, "a")]);
+        let stored1 = flush(&dir, &tmp, "_1", seg1_id, &fields, &[doc_with(0, "b")]);
         let reader0 = open_reader(&stored0);
+        let reader1 = open_reader(&stored1);
 
         let src_postings0 = [SourcePostings {
             field_number: 0,
             field_terms: field_terms0,
             doc_in: Some(&doc_in0),
+            pos_in: Some(&pos_in0),
+            pay_in: Some(&pay_in0),
+        }];
+        let src_postings1 = [SourcePostings {
+            field_number: 0,
+            field_terms: field_terms1,
+            doc_in: Some(&doc_in1),
+            pos_in: Some(&pos_in1),
+            pay_in: Some(&pay_in1),
         }];
         let source0 = MergeSource {
             field_infos: &stored0.fields,
@@ -7098,19 +7287,114 @@ mod tests {
             postings: &src_postings0,
             points: &[],
         };
+        let source1 = MergeSource {
+            field_infos: &stored1.fields,
+            reader: &reader1,
+            live_docs: None,
+            numeric_doc_values: &[],
+            binary_doc_values: &[],
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &[],
+            norms: &[],
+            term_vectors: None,
+            postings: &src_postings1,
+            points: &[],
+        };
 
-        let result = merge_stored_only_segments(
+        let sci = merge_stored_only_segments(
             &dir,
-            &[source0],
-            "_merged_positions_rejected",
+            &[source0, source1],
+            "_merged_positions",
             [9u8; ID_LENGTH],
             "Lucene104",
             version(),
+        )
+        .unwrap();
+        assert_eq!(sci.segment_name, "_merged_positions");
+
+        let tim = std::fs::read(std::path::Path::new(&tmp).join("_merged_positions.tim")).unwrap();
+        let tip = std::fs::read(std::path::Path::new(&tmp).join("_merged_positions.tip")).unwrap();
+        let tmd = std::fs::read(std::path::Path::new(&tmp).join("_merged_positions.tmd")).unwrap();
+        let doc = std::fs::read(std::path::Path::new(&tmp).join("_merged_positions.doc")).unwrap();
+        let pos = std::fs::read(std::path::Path::new(&tmp).join("_merged_positions.pos")).unwrap();
+        let pay = std::fs::read(std::path::Path::new(&tmp).join("_merged_positions.pay")).unwrap();
+        let merged_field_infos = field_infos::FieldInfos {
+            fields: vec![field_with_positions],
+        };
+        let merged_fields = lucene_codecs::blocktree::open(
+            &tim,
+            &tip,
+            &tmd,
+            &merged_field_infos,
+            &[9u8; ID_LENGTH],
+            "",
+            2,
+        )
+        .unwrap();
+        let merged_doc_in = DocInput::open(&doc, &[9u8; ID_LENGTH], "").unwrap();
+        let merged_pos_in =
+            lucene_codecs::postings::PosInput::open(&pos, &[9u8; ID_LENGTH], "").unwrap();
+        let merged_pay_in =
+            lucene_codecs::postings::PayInput::open(&pay, &[9u8; ID_LENGTH], "").unwrap();
+        let merged_terms = merged_fields.field("body").unwrap();
+
+        let apple = merged_terms
+            .positions(
+                b"apple",
+                Some(&merged_doc_in),
+                &merged_pos_in,
+                Some(&merged_pay_in),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            apple.len(),
+            1,
+            "apple occurs in exactly 1 doc (merged doc 0)"
         );
-        assert!(matches!(
-            result,
-            Err(Error::PostingsIndexOptionsNotSupported { .. })
-        ));
+        assert_eq!(
+            apple[0]
+                .iter()
+                .map(|p| (p.position, p.start_offset, p.end_offset, p.payload.clone()))
+                .collect::<Vec<_>>(),
+            vec![(0, 0, 5, Vec::new()), (2, 10, 15, b"pay0".to_vec()),]
+        );
+
+        // "banana" only existed in source 1's doc 0, renumbered to merged
+        // doc 1 (after source 0's 1 doc).
+        let banana = merged_terms
+            .positions(
+                b"banana",
+                Some(&merged_doc_in),
+                &merged_pos_in,
+                Some(&merged_pay_in),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            banana.len(),
+            1,
+            "banana occurs in exactly 1 doc (merged doc 1)"
+        );
+        assert_eq!(
+            banana[0]
+                .iter()
+                .map(|p| (p.position, p.start_offset, p.end_offset, p.payload.clone()))
+                .collect::<Vec<_>>(),
+            vec![(1, 6, 12, Vec::new())]
+        );
+
+        let apple_docs = merged_terms
+            .postings(b"apple", Some(&merged_doc_in))
+            .unwrap()
+            .unwrap();
+        assert_eq!(apple_docs.docs, vec![0]);
+        let banana_docs = merged_terms
+            .postings(b"banana", Some(&merged_doc_in))
+            .unwrap()
+            .unwrap();
+        assert_eq!(banana_docs.docs, vec![1]);
     }
 
     #[test]
@@ -7210,11 +7494,15 @@ mod tests {
             field_number: 0,
             field_terms: field_terms0,
             doc_in: Some(&doc_in0),
+            pos_in: None,
+            pay_in: None,
         }];
         let src_postings1 = [SourcePostings {
             field_number: 0,
             field_terms: field_terms1,
             doc_in: Some(&doc_in1),
+            pos_in: None,
+            pay_in: None,
         }];
         let source0 = MergeSource {
             field_infos: &stored0.fields,
@@ -7256,6 +7544,233 @@ mod tests {
         assert!(matches!(
             result,
             Err(Error::PostingsIndexOptionsDisagreement { .. })
+        ));
+    }
+
+    #[test]
+    fn a_source_with_payloads_disagreeing_with_the_merged_field_is_rejected() {
+        // Both sources index positions (same index_options, so the
+        // index_options check above doesn't catch this), but source 1's
+        // "body" also stores payloads while source 0's (first-seen, so it
+        // becomes the merged field's canonical store_payloads) doesn't.
+        // Without cross-source validation this would silently drop source
+        // 1's real payload bytes instead of erroring -- regression test for
+        // `Error::PostingsPayloadsDisagreement`.
+        let seg0_id = [1u8; ID_LENGTH];
+        let seg1_id = [2u8; ID_LENGTH];
+
+        let terms0 = vec![TermPostings {
+            term: b"apple".to_vec(),
+            docs: vec![(0, 1)],
+            positions: vec![vec![0]],
+            ..Default::default()
+        }];
+        let input0 = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqsAndPositions,
+            doc_count: 1,
+            has_payloads: false,
+            terms: &terms0,
+        };
+        let output0 = postings_writer::write_single_field(&input0, &seg0_id, "").unwrap();
+        let mut field0 = postings_field("body", 0);
+        field0.index_options = IndexOptions::DocsAndFreqsAndPositions;
+        let field_infos0 = field_infos::FieldInfos {
+            fields: vec![field0.clone()],
+        };
+        let fields0 = lucene_codecs::blocktree::open(
+            &output0.tim,
+            &output0.tip,
+            &output0.tmd,
+            &field_infos0,
+            &seg0_id,
+            "",
+            1,
+        )
+        .unwrap();
+        let doc_in0 = DocInput::open(&output0.doc, &seg0_id, "").unwrap();
+        let pos_in0 = lucene_codecs::postings::PosInput::open(&output0.pos, &seg0_id, "").unwrap();
+        let field_terms0 = fields0.field("body").unwrap();
+
+        let terms1 = vec![TermPostings {
+            term: b"banana".to_vec(),
+            docs: vec![(0, 1)],
+            positions: vec![vec![0]],
+            payloads: vec![vec![b"pay".to_vec()]],
+            ..Default::default()
+        }];
+        let input1 = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqsAndPositions,
+            doc_count: 1,
+            has_payloads: true,
+            terms: &terms1,
+        };
+        let output1 = postings_writer::write_single_field(&input1, &seg1_id, "").unwrap();
+        let mut field1 = postings_field("body", 0);
+        field1.index_options = IndexOptions::DocsAndFreqsAndPositions;
+        field1.store_payloads = true;
+        let field_infos1 = field_infos::FieldInfos {
+            fields: vec![field1.clone()],
+        };
+        let fields1 = lucene_codecs::blocktree::open(
+            &output1.tim,
+            &output1.tip,
+            &output1.tmd,
+            &field_infos1,
+            &seg1_id,
+            "",
+            1,
+        )
+        .unwrap();
+        let doc_in1 = DocInput::open(&output1.doc, &seg1_id, "").unwrap();
+        let pos_in1 = lucene_codecs::postings::PosInput::open(&output1.pos, &seg1_id, "").unwrap();
+        let field_terms1 = fields1.field("body").unwrap();
+
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let stored0 = flush(&dir, &tmp, "_0", seg0_id, &[field0], &[doc_with(0, "a")]);
+        let reader0 = open_reader(&stored0);
+        let stored1 = flush(&dir, &tmp, "_1", seg1_id, &[field1], &[doc_with(0, "a")]);
+        let reader1 = open_reader(&stored1);
+
+        let src_postings0 = [SourcePostings {
+            field_number: 0,
+            field_terms: field_terms0,
+            doc_in: Some(&doc_in0),
+            pos_in: Some(&pos_in0),
+            pay_in: None,
+        }];
+        let src_postings1 = [SourcePostings {
+            field_number: 0,
+            field_terms: field_terms1,
+            doc_in: Some(&doc_in1),
+            pos_in: Some(&pos_in1),
+            pay_in: None,
+        }];
+        let source0 = MergeSource {
+            field_infos: &stored0.fields,
+            reader: &reader0,
+            live_docs: None,
+            numeric_doc_values: &[],
+            binary_doc_values: &[],
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &[],
+            norms: &[],
+            term_vectors: None,
+            postings: &src_postings0,
+            points: &[],
+        };
+        let source1 = MergeSource {
+            field_infos: &stored1.fields,
+            reader: &reader1,
+            live_docs: None,
+            numeric_doc_values: &[],
+            binary_doc_values: &[],
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &[],
+            norms: &[],
+            term_vectors: None,
+            postings: &src_postings1,
+            points: &[],
+        };
+
+        let result = merge_stored_only_segments(
+            &dir,
+            &[source0, source1],
+            "_merged_disagreeing_payloads",
+            [9u8; ID_LENGTH],
+            "Lucene104",
+            version(),
+        );
+        assert!(matches!(
+            result,
+            Err(Error::PostingsPayloadsDisagreement { .. })
+        ));
+    }
+
+    #[test]
+    fn a_positions_indexing_source_missing_an_opened_pos_reader_is_a_clean_error_not_a_panic() {
+        // Reuses source0's fixture from the payloads-disagreement test above
+        // (a real DocsAndFreqsAndPositions field), but the caller "forgets"
+        // to open pos_in -- regression test proving this is a typed
+        // `Error::PostingsPositionsInputMissingInSource`, not an `expect()`
+        // panic deep inside the per-term merge loop.
+        let seg0_id = [1u8; ID_LENGTH];
+
+        let terms0 = vec![TermPostings {
+            term: b"apple".to_vec(),
+            docs: vec![(0, 1)],
+            positions: vec![vec![0]],
+            ..Default::default()
+        }];
+        let input0 = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqsAndPositions,
+            doc_count: 1,
+            has_payloads: false,
+            terms: &terms0,
+        };
+        let output0 = postings_writer::write_single_field(&input0, &seg0_id, "").unwrap();
+        let mut field0 = postings_field("body", 0);
+        field0.index_options = IndexOptions::DocsAndFreqsAndPositions;
+        let field_infos0 = field_infos::FieldInfos {
+            fields: vec![field0.clone()],
+        };
+        let fields0 = lucene_codecs::blocktree::open(
+            &output0.tim,
+            &output0.tip,
+            &output0.tmd,
+            &field_infos0,
+            &seg0_id,
+            "",
+            1,
+        )
+        .unwrap();
+        let doc_in0 = DocInput::open(&output0.doc, &seg0_id, "").unwrap();
+        let field_terms0 = fields0.field("body").unwrap();
+
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let stored0 = flush(&dir, &tmp, "_0", seg0_id, &[field0], &[doc_with(0, "a")]);
+        let reader0 = open_reader(&stored0);
+
+        // pos_in deliberately left None despite the field indexing positions.
+        let src_postings0 = [SourcePostings {
+            field_number: 0,
+            field_terms: field_terms0,
+            doc_in: Some(&doc_in0),
+            pos_in: None,
+            pay_in: None,
+        }];
+        let source0 = MergeSource {
+            field_infos: &stored0.fields,
+            reader: &reader0,
+            live_docs: None,
+            numeric_doc_values: &[],
+            binary_doc_values: &[],
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &[],
+            norms: &[],
+            term_vectors: None,
+            postings: &src_postings0,
+            points: &[],
+        };
+
+        let result = merge_stored_only_segments(
+            &dir,
+            &[source0],
+            "_merged_missing_pos_input",
+            [9u8; ID_LENGTH],
+            "Lucene104",
+            version(),
+        );
+        assert!(matches!(
+            result,
+            Err(Error::PostingsPositionsInputMissingInSource { .. })
         ));
     }
 
