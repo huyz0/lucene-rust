@@ -4744,3 +4744,63 @@ passes clean overall, including the new integration binary's 5 tests (the
 in-module `fst.rs` unit-test count is unchanged at 688, since all new tests
 live in the new `fst_borrowed_seek_fixtures.rs` integration-test file). See
 `docs/parity.md`'s FST row for the parity-tracking update.
+
+## FST real-Lucene fixture for seek across a 3+ level trie
+
+Every existing FST fixture (`fst`, `fst_binary_search`,
+`fst_direct_addressing`, `fst_continuous`, `fst_seek_non_root_array_node`,
+`fst_seek_floor_backtrack_*`) has its interesting structure at the root or
+one level below it -- none forces a single seek to descend through 3+
+distinct trie nodes. Closed that gap with a genuine real-Lucene-generated
+fixture, not a hand-built approximation: JDK and the pinned
+`lucene-core-10.5.0.jar` were both available in this environment
+(`~/.sdkman/candidates/java/current/bin/java`, jar under
+`~/.gradle/caches/modules-2/files-2.1/org.apache.lucene/lucene-core/10.5.0/`),
+so the Java generator was compiled and actually run, not merely written.
+
+New generator `fixtures/src/GenFstDeepTrie.java` builds a real
+`FST<BytesRef>` via `FSTCompiler` (`allowFixedLengthArcs(false)`, same scope
+as `GenFst.java`) over 9 keys chosen so their shared prefixes force a real
+multi-level chain: `abcaa`/`abcab`/`abcz` (diverging at successively deeper
+levels under `abc`), `abda`/`abdz`, `acaa`/`aczz`, `baaa`/`bzzz`. Before
+writing the fixture, the generator manually walks the path to `"abcaa"` via
+`readFirstTargetArc`/`readNextArc` and asserts it crosses at least 3 arcs
+(it actually finds 5: root -a-> -b-> -c-> -a-> -a->) -- the same
+"self-check the property before shipping" discipline
+`GenFstBinarySearch.java` uses for its `"(bs)"` marker, so a future Lucene
+version that started collapsing single-child chains would fail fixture
+generation loudly instead of silently testing a shallow FST under a
+deep-sounding name.
+
+17 seek targets are recorded in the manifest, chosen to force
+`seekCeil`/`seekFloor`/`seekExact` to resolve or backtrack at every level of
+the trie (root, and the nodes after `a`, `ab`, `abc`, `abca`) -- e.g.
+`"abcaz"` runs past the last arc under the `abca` node and must backtrack
+up to the `abc` node to find `"abcz"`; `"ad"` sits between the `ac...` and
+`b...` subtrees and must backtrack to the root. Ground truth for every
+target's ceil/floor/exact result comes from real Lucene's own
+`BytesRefFSTEnum.seekCeil`/`seekFloor`/`seekExact` against the reloaded FST
+(`FST.read` immediately after `FST.save`), not hand-derived -- matching the
+"verified against real Lucene" standard every sibling fixture in this
+directory holds to, now extended to genuinely deep, multi-level backtracking
+specifically.
+
+New Rust test `crates/lucene-codecs/tests/fst_deep_trie_fixtures.rs` opens
+`fixtures/data/fst_deep_trie/fst.bin` through unmodified `Fst::read` and
+checks: every present key via `Fst::get`
+(`get_resolves_every_present_key_at_every_depth`); `seek_ceil`, `seek_floor`,
+and `seek_exact` (both the stateful `FstEnum` and the stateless
+`Fst::seek_exact`) against all 17 manifest targets
+(`seek_ceil_matches_real_lucene_across_every_backtrack_target`,
+`seek_floor_matches_real_lucene_across_every_backtrack_target`,
+`seek_exact_matches_real_lucene_across_every_backtrack_target`); and full
+ascending enumeration via `FstEnum::next`
+(`full_ascending_enumeration_yields_every_present_key_in_sorted_order`). All
+5 tests passed on the first run, with no changes to `fst.rs` itself needed.
+
+`cargo fmt --all` clean; `cargo clippy --workspace --all-targets -- -D
+warnings` clean (fixed a `clippy::while_let_on_iterator` and an
+`unused_mut` in the new test file along the way); `cargo test -p
+lucene-codecs` passes clean overall. `fixtures/README.md`'s regeneration
+command and generator list, and `docs/parity.md`'s FST row, were both
+updated to include `GenFstDeepTrie`/`fst_deep_trie`.

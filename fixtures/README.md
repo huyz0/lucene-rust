@@ -13,7 +13,7 @@ JAR=$(find ~/.gradle/caches/modules-2/files-2.1/org.apache.lucene/lucene-core/10
   -name 'lucene-core-10.5.0.jar' ! -name '*sources*' ! -name '*javadoc*')
 mkdir -p classes data
 javac -nowarn -cp "$JAR" -d classes src/*.java
-for cls in GenPrimitives GenCodecUtil GenSegmentInfo GenSegmentInfos GenLiveDocs GenFieldInfos GenNorms GenDocValues GenCompoundFormat GenStoredFields GenStoredFieldsBestCompression GenSortedDocValues GenMultiValuedDocValues GenTermVectors GenPoints GenFst GenBlockTree GenBlockTreeCompressed GenFstBinarySearch GenFstDirectAddressing GenFstContinuous GenFstSeekNonRootArrayNode GenFstSeekBacktrackFloorArc; do
+for cls in GenPrimitives GenCodecUtil GenSegmentInfo GenSegmentInfos GenLiveDocs GenFieldInfos GenNorms GenDocValues GenCompoundFormat GenStoredFields GenStoredFieldsBestCompression GenSortedDocValues GenMultiValuedDocValues GenTermVectors GenPoints GenFst GenBlockTree GenBlockTreeCompressed GenFstBinarySearch GenFstDirectAddressing GenFstContinuous GenFstSeekNonRootArrayNode GenFstSeekBacktrackFloorArc GenFstDeepTrie; do
   java -cp "classes:$JAR" $cls data
 done
 ```
@@ -491,6 +491,19 @@ read identically to one `FSTCompiler` would have produced. See
   below a list-encoded root, so backtracking from them never exercises this
   path. Confirmed via a self-check that both the root and the extended
   label's child node contain their expected debug-arc-dump marker.
+- `GenFstDeepTrie.java` — a real `FST<BytesRef>` (`fst_deep_trie/`
+  subdirectory) whose 9 keys (`abcaa`/`abcab`/`abcz`/`abda`/`abdz`/`acaa`/
+  `aczz`/`baaa`/`bzzz`) share prefixes deeply enough that, with
+  `allowFixedLengthArcs(false)` (list-encoded nodes, same scope as
+  `GenFst.java`), the path to `"abcaa"` crosses 5 distinct trie levels --
+  confirmed by a manual `readFirstTargetArc`/`readNextArc` walk before the
+  fixture is written, not assumed. Every prior `GenFstSeek*` fixture's
+  interesting structure sits at or one level below the root; this one
+  forces `seekCeil`/`seekFloor`/`seekExact` to backtrack across 2-4 levels
+  to resolve absent targets correctly. The manifest's 17 seek targets and
+  their expected ceil/floor/exact results come from real Lucene's own
+  `BytesRefFSTEnum.seekCeil`/`seekFloor`/`seekExact` against the reloaded
+  FST, not hand-derived.
 - `GenBlockTree.java` — a real `IndexWriter` session (`blocktree_index/`
   subdirectory) producing `.tim`/`.tip`/`.tmd` (`Lucene103BlockTreeTermsWriter`,
   via `Lucene104PostingsFormat`), plus the `.fnm`/`.si` this port's readers
