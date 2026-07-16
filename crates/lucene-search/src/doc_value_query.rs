@@ -50,6 +50,16 @@
 //!   number. A single-valued `SortedSetKind::Single` field still uses
 //!   [`search_sorted_ord_range`] (no reduction needed, one ordinal per doc).
 //!
+//! - [`search_numeric_range_with_skip_index`]: same match semantics as
+//!   [`search_numeric_range`], but driven by an already-decoded
+//!   [`doc_values::DocValuesSkipIndex`] ([`doc_values::parse_skip_index`]'s
+//!   output) instead of sweeping every doc — see that function's doc comment
+//!   for exactly how a level-0 interval's `[min_value, max_value]` decides
+//!   whether its whole doc range gets skipped without decoding a single
+//!   value. Only usable for a field that actually has a skip index (real
+//!   Lucene's `DocValuesSkipIndexType.RANGE`); [`search_numeric_range`]
+//!   remains the correct (and only) choice for a field without one.
+//!
 //! **Deliberately out of scope** (tracked in `docs/parity.md`):
 //! - **MIDDLE_MIN/MIDDLE_MAX selectors.** Real Lucene's `SortedSetSelector`
 //!   also offers "the lower/upper of the two middle values" for even value
@@ -64,15 +74,11 @@
 //!   are single-key sorts only (the latter does support ascending *and*
 //!   descending, via [`SortDirection`] — only [`sort_by_numeric_doc_value`],
 //!   the original index-sort-era helper, is ascending-only).
-//! - **A skip-list/DISI-driven range scorer.** [`search_numeric_range`] is a
-//!   full `[0, max_doc)` sweep (see that function's doc comment) — Lucene's
-//!   real doc-values range query can use the field's optional skip index
-//!   (`Lucene90DocValuesSkipIndex`) to skip whole blocks that can't match;
-//!   `doc_values.rs` now decodes that skip index
-//!   ([`doc_values::parse_skip_index`][lucene_codecs::doc_values::parse_skip_index]),
-//!   but this module doesn't consult it yet, so there's nothing wired up to
-//!   skip against — a full sweep is the only option this module implements
-//!   today.
+//! - **A DISI-driven range scorer for [`search_sorted_ord_range`] /
+//!   [`search_multi_valued_range`].** [`search_numeric_range_with_skip_index`]
+//!   covers the NUMERIC case; the SORTED/SORTED_NUMERIC/SORTED_SET range
+//!   queries above still only offer the full `[0, max_doc)` sweep — a future
+//!   follow-up if a skip index is ever recorded for those doc-values types.
 
 use lucene_codecs::doc_values::{self, NumericEntry, SortedEntry, SortedNumericEntry};
 use lucene_util::fixed_bit_set::FixedBitSet;
@@ -93,11 +99,15 @@ use crate::{Collector, Result};
 /// unlike [`crate::search_term_query`] (which starts from a term dictionary's
 /// already-known matching-doc postings list), a numeric range has no
 /// dictionary to seek into — every doc's value is independent, so without a
-/// skip index (unsupported, see module doc) there is no cheaper starting
-/// point than checking every doc. This matches real Lucene's own fallback
-/// behavior (`PointRangeQuery`'s "slow" `SortedNumericDocValuesField
-/// .newSlowRangeQuery` path, used precisely when no BKD point index exists
-/// for the field, as is the case in this port so far).
+/// skip index there is no cheaper starting point than checking every doc.
+/// This matches real Lucene's own fallback behavior (`PointRangeQuery`'s
+/// "slow" `SortedNumericDocValuesField.newSlowRangeQuery` path, used
+/// precisely when no BKD point index exists for the field, as is the case in
+/// this port so far). **If the field does have a decoded skip index**
+/// ([`doc_values::parse_skip_index`]), prefer
+/// [`search_numeric_range_with_skip_index`] instead — it skips whole
+/// doc-ID ranges the skip index proves can't match, without decoding a
+/// single value in them.
 pub fn search_numeric_range<C: Collector>(
     doc_values_data: &[u8],
     entry: &NumericEntry,
@@ -118,6 +128,79 @@ pub fn search_numeric_range<C: Collector>(
         }
     }
     Ok(())
+}
+
+/// Skip-index-driven sibling of [`search_numeric_range`]: same inclusive
+/// `[min, max]` match semantics and the same missing-value rule (a doc with
+/// no value never matches), but walks `skip_index`'s intervals in doc-ID
+/// order instead of sweeping every doc in `[0, max_doc)`.
+///
+/// **How the skip works** (mirrors real Lucene's
+/// `Lucene90DocValuesProducer.DocValuesSkipper`/`IndexedDISI` block-skipping,
+/// used by `PointRangeQuery`'s doc-values fallback when a skip index is
+/// present): each [`doc_values::SkipIndexInterval`] covers a contiguous
+/// `[min_doc_id, max_doc_id]` doc range at its finest level
+/// (`levels[0]` — see that type's doc comment on level ordering) and records
+/// the `[min_value, max_value]` span of every value in that range. If that
+/// span doesn't intersect the query's `[min, max]` at all, **no doc in the
+/// interval can possibly match**, so the whole range is skipped without
+/// decoding a single value — exactly the same "read the summary, skip the
+/// block" trick a BKD point range query uses, just over doc-values blocks
+/// instead of BKD leaf blocks. Otherwise every live doc in the interval's
+/// range is decoded and checked individually (this port only ever consults
+/// the finest level — real Lucene's own reader also falls back to per-doc
+/// decoding once it reaches a competitive base interval; recursing through
+/// coarser levels first is a possible future optimization, not a
+/// correctness requirement, since level 0's summary alone is exact enough to
+/// decide skip-or-scan for the whole interval).
+///
+/// Returns `Ok(decoded)`, the number of docs whose value was actually
+/// decoded (i.e. docs inside intervals that couldn't be skipped) — callers
+/// that don't care can ignore it; it exists so tests (and diagnostics) can
+/// prove real skipping happened rather than just "didn't crash" (see this
+/// module's tests).
+///
+/// **Panics**: never — every interval is assumed to carry at least one level
+/// (`levels[0]` always exists), which [`doc_values::parse_skip_index`]
+/// guarantees (it rejects a zero-level interval as
+/// [`doc_values::Error::InvalidSkipIndexLevelCount`]).
+#[allow(clippy::too_many_arguments)]
+pub fn search_numeric_range_with_skip_index<C: Collector>(
+    doc_values_data: &[u8],
+    entry: &NumericEntry,
+    skip_index: &doc_values::DocValuesSkipIndex,
+    live_docs: Option<&FixedBitSet>,
+    max_doc: i32,
+    min: i64,
+    max: i64,
+    collector: &mut C,
+) -> Result<usize> {
+    let mut decoded = 0usize;
+    for interval in &skip_index.intervals {
+        let finest = interval
+            .levels
+            .first()
+            .expect("parse_skip_index never yields a zero-level interval");
+        if finest.max_value < min || finest.min_value > max {
+            // The whole interval's value range can't intersect [min, max] --
+            // skip every doc in it without decoding anything.
+            continue;
+        }
+        let start = finest.min_doc_id.max(0);
+        let end = finest.max_doc_id.min(max_doc - 1);
+        for doc_id in start..=end {
+            if !live_docs.is_none_or(|bits| bits.get(doc_id as usize)) {
+                continue;
+            }
+            if let Some(value) = doc_values::numeric_value(doc_values_data, entry, doc_id)? {
+                decoded += 1;
+                if value >= min && value <= max {
+                    collector.collect(doc_id);
+                }
+            }
+        }
+    }
+    Ok(decoded)
 }
 
 /// Same shape as [`search_numeric_range`], but for a single-valued SORTED
@@ -480,6 +563,206 @@ mod tests {
         let suffix = dv_suffix(&manifest);
         let (_, parsed) = ndv::parse_meta(&meta_buf, &id, &suffix, &fis).unwrap();
         (manifest, id, data_buf, parsed)
+    }
+
+    // --- search_numeric_range_with_skip_index: real-Lucene fixture tests ---
+    // `fixtures/data/doc_values_skip_index/` (task #185's fixture): 36000
+    // docs, field "skip_numeric" with a strictly-increasing value
+    // `i*7 - 3`, giving a 2-level skip index (see GenDocValuesSkipIndex.java).
+
+    fn skip_dv_dir() -> String {
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/data/doc_values_skip_index/"
+        )
+        .to_string()
+    }
+
+    /// Loads the skip-index fixture's `.dvd` data, `NumericEntry`, and
+    /// decoded [`ndv::DocValuesSkipIndex`] together.
+    fn load_skip_index_fixture() -> (i32, Vec<u8>, NumericEntry, ndv::DocValuesSkipIndex) {
+        let dir = skip_dv_dir();
+        let (manifest, id, data, meta) = load_dv_meta(&dir);
+        let field_number: i32 = manifest.get("field_number").parse().unwrap();
+        let entry = meta.numeric_entry(field_number).unwrap().clone();
+        let skipper_meta = meta.skipper_meta(field_number).copied().unwrap();
+        let suffix = dv_suffix(&manifest);
+        let dvs = std::fs::read(format!("{dir}{}.raw", manifest.get("dvs_file_name"))).unwrap();
+        let skip_index = ndv::parse_skip_index(&dvs, &id, &suffix, &skipper_meta).unwrap();
+        let max_doc: i32 = manifest.get("max_doc").parse().unwrap();
+        (max_doc, data, entry, skip_index)
+    }
+
+    /// Asserts that the skip-index-driven scan and the full sweep agree on
+    /// `[min, max]`, and returns `(matches, decoded)` so callers can also
+    /// assert on how many values got decoded.
+    fn assert_skip_matches_full_sweep(min: i64, max: i64) -> (Vec<i32>, usize) {
+        let (max_doc, data, entry, skip_index) = load_skip_index_fixture();
+
+        let mut full = VecCollector::default();
+        search_numeric_range(&data, &entry, None, max_doc, min, max, &mut full).unwrap();
+
+        let mut skip = VecCollector::default();
+        let decoded = search_numeric_range_with_skip_index(
+            &data,
+            &entry,
+            &skip_index,
+            None,
+            max_doc,
+            min,
+            max,
+            &mut skip,
+        )
+        .unwrap();
+
+        assert_eq!(
+            full.docs, skip.docs,
+            "skip-index scan disagreed with full sweep for [{min}, {max}]"
+        );
+        (skip.docs, decoded)
+    }
+
+    #[test]
+    fn skip_index_matches_full_sweep_narrow_range() {
+        // value = i*7 - 3, so value == 42 <=> i == (42+3)/7 == 45/7, not
+        // integral -- pick an exact hit instead: i=100 -> value 697.
+        let (docs, decoded) = assert_skip_matches_full_sweep(697, 697);
+        assert_eq!(docs, vec![100]);
+        // Only the base interval(s) whose value range covers 697 should ever
+        // get decoded -- nowhere near all 36000 docs. Base interval size is
+        // 4096 docs, so a single-value hit should decode at most one or two
+        // intervals' worth (up to 2*4096), not a meaningful fraction of the
+        // field.
+        assert!(
+            decoded <= 2 * 4096,
+            "expected skip index to decode only a couple of base intervals, decoded={decoded}"
+        );
+    }
+
+    #[test]
+    fn skip_index_matches_full_sweep_range_spanning_one_base_interval() {
+        // Base interval size is 4096 docs; a range comfortably inside a
+        // single 4096-doc interval (e.g. docs ~0..50, values -3..346).
+        let (docs, decoded) = assert_skip_matches_full_sweep(-3, 346);
+        assert_eq!(docs.len(), 50);
+        assert!(
+            decoded < 36000 / 8,
+            "expected far fewer than 1/8 of all docs decoded, decoded={decoded}"
+        );
+    }
+
+    #[test]
+    fn skip_index_matches_full_sweep_matches_everything() {
+        let (docs, decoded) = assert_skip_matches_full_sweep(i64::MIN, i64::MAX);
+        assert_eq!(docs.len(), 36000);
+        // An unbounded range can't skip anything -- every doc still gets
+        // decoded, same as the full sweep.
+        assert_eq!(decoded, 36000);
+    }
+
+    #[test]
+    fn skip_index_matches_full_sweep_matches_nothing() {
+        // Field's value range is [-3, 251990] (see manifest) -- anything
+        // above the max can never match.
+        let (docs, decoded) = assert_skip_matches_full_sweep(1_000_000, 2_000_000);
+        assert!(docs.is_empty());
+        // No interval's value range can intersect -- nothing gets decoded at
+        // all, proving whole-interval skipping (not just fewer per-doc
+        // hits).
+        assert_eq!(
+            decoded, 0,
+            "expected zero decodes when no interval can match"
+        );
+    }
+
+    #[test]
+    fn skip_index_matches_full_sweep_live_docs_filters() {
+        let (max_doc, data, entry, skip_index) = load_skip_index_fixture();
+        let mut live_docs = FixedBitSet::new(max_doc as usize);
+        for i in 0..max_doc as usize {
+            live_docs.set(i);
+        }
+        live_docs.clear(100); // doc 100 (value 697) would otherwise match
+
+        // value = i*7 - 3: only i=100 (697) falls in [691, 703] -- i=99
+        // (690) and i=101 (704) both fall just outside.
+        let mut full = VecCollector::default();
+        search_numeric_range(
+            &data,
+            &entry,
+            Some(&live_docs),
+            max_doc,
+            691,
+            703,
+            &mut full,
+        )
+        .unwrap();
+        let mut skip = VecCollector::default();
+        search_numeric_range_with_skip_index(
+            &data,
+            &entry,
+            &skip_index,
+            Some(&live_docs),
+            max_doc,
+            691,
+            703,
+            &mut skip,
+        )
+        .unwrap();
+        assert_eq!(full.docs, skip.docs);
+        assert!(skip.docs.is_empty());
+    }
+
+    #[test]
+    fn skip_index_propagates_decode_errors() {
+        // A skip index whose lone interval's value range does intersect
+        // [min, max] forces the decode path to actually run against a
+        // deliberately-broken NumericEntry, surfacing the underlying
+        // `doc_values::Error` through `Result` rather than panicking.
+        let mut entry = constant_entry(0, 0, 1);
+        entry.bits_per_value = 8;
+        entry.values_offset = 0;
+        entry.values_length = 1;
+        let skip_index = ndv::DocValuesSkipIndex {
+            min_value: 0,
+            max_value: 0,
+            doc_count: 1,
+            max_doc_id: 0,
+            max_value_count: 1,
+            intervals: vec![ndv::SkipIndexInterval {
+                levels: vec![ndv::SkipIndexLevelInterval {
+                    min_doc_id: 0,
+                    max_doc_id: 0,
+                    min_value: 0,
+                    max_value: 0,
+                    doc_count: 1,
+                }],
+            }],
+        };
+        let mut c = VecCollector::default();
+        let err =
+            search_numeric_range_with_skip_index(&[], &entry, &skip_index, None, 1, 0, 100, &mut c)
+                .unwrap_err();
+        assert!(matches!(err, crate::Error::DocValues(_)));
+    }
+
+    #[test]
+    fn skip_index_empty_intervals_matches_nothing() {
+        let skip_index = ndv::DocValuesSkipIndex {
+            min_value: 0,
+            max_value: 0,
+            doc_count: 0,
+            max_doc_id: -1,
+            max_value_count: 0,
+            intervals: vec![],
+        };
+        let entry = constant_entry(0, 7, 3);
+        let mut c = VecCollector::default();
+        let decoded =
+            search_numeric_range_with_skip_index(&[], &entry, &skip_index, None, 3, 0, 100, &mut c)
+                .unwrap();
+        assert_eq!(decoded, 0);
+        assert!(c.docs.is_empty());
     }
 
     // --- search_numeric_range: real-Lucene fixture tests ---
