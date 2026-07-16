@@ -4804,3 +4804,124 @@ warnings` clean (fixed a `clippy::while_let_on_iterator` and an
 lucene-codecs` passes clean overall. `fixtures/README.md`'s regeneration
 command and generator list, and `docs/parity.md`'s FST row, were both
 updated to include `GenFstDeepTrie`/`fst_deep_trie`.
+
+## Blocktree: multi-level (`.tim` non-leaf blocks) support
+
+**This was a real gap, not just a missing test -- implemented for the first
+time.** `blocktree.rs`'s own module doc had, since the floor/multi-child-trie
+task, explicitly flagged one remaining unsupported case: a `.tim` block that
+is itself non-leaf (`isLeafBlock == false` -- some of its entries are
+in-block pointers to further-nested sub-blocks, rather than raw term
+suffixes, addressed by a delta-fp relative to the block's own start). Every
+existing fixture (including `GenBlockTree.java`'s "many" field, 400
+sequential-numeric-suffix terms already forcing multiple `.tim` blocks and a
+multi-child `.tip` trie) never happened to produce one, so `decode_block`
+simply rejected it with `Error::Unsupported` -- this port never had a
+`.tim` block reader that handled real Lucene's genuine multi-level blocktree
+(root block -> internal block -> leaf block), only the `.tip` trie's own
+multi-level node nesting (already arbitrarily deep) and floor sub-blocks
+(same trie node, several sibling physical blocks). This task's own framing
+made the same distinction; confirmed by direct experimentation (see below)
+that it maps exactly onto "non-leaf `.tim` blocks", not either of the two
+already-working mechanisms.
+
+**Investigation first**: read the extracted `Lucene103BlockTreeTermsReader`
+sources (`SegmentTermsEnumFrame.nextNonLeaf`/`loadBlock`, pulled from the
+pinned `lucene-core-10.5.0-sources.jar`, already cached locally) to get the
+exact wire format right before writing any Rust: a non-leaf block's
+suffix-length stream packs `suffixLength << 1 | isSubBlock` per entry
+(instead of leaf blocks' plain per-entry suffix-length vint); when the low
+bit is set, a `subCode` vlong immediately follows in that same stream, and
+`subFP = thisBlock'sOwnFp - subCode`; stats/meta streams hold one record
+*only* for real-term entries, never for sub-block entries, so
+`decode_term_metadata`'s `absolute` flag needed to key off a running
+term-only ordinal (`termBlockOrd`-equivalent), not the raw entry index --
+this port's code had been using the entry index directly (`i == 0`), which
+would have been a latent bug the moment a non-leaf block was decoded at all.
+
+Real Lucene bytes were used throughout, not guesses: this environment has
+both the JDK and the pinned `lucene-core-10.5.0.jar`/`-sources.jar` cached
+locally, so several throwaway Java programs were compiled and actually run
+against real `IndexWriter` output to determine empirically what term
+distribution forces a genuine non-leaf block (not assumed from reading the
+writer's heuristics, which weren't fully legible from the reader source
+alone). Sequential zero-padded numeric terms (`GenBlockTree.java`'s "many"
+field, scaled up to 400) only ever produced *floor* blocks for over-large
+groups, never a deeper trie split or a non-leaf block, no matter the count.
+Real dictionary words (`/usr/share/dict/words`, ~20k sampled) did reach both
+a genuinely 4-level-deep `.tip` trie *and* a non-leaf `.tim` block -- but a
+fixture generator can't depend on an OS word list being present or
+identical across machines. A `java.util.Random(12345)`-seeded synthetic set
+of 8000 pseudo-random 4-12-byte lowercase strings reproduced the same
+non-leaf-block outcome deterministically, so that's what the committed
+generator (`fixtures/src/GenBlockTreeMultilevel.java`) uses.
+
+**One real correctness bug surfaced and was fixed during this work**, found
+by actually running the new fixture through `open()` rather than trusting
+the implementation once it compiled: a sub-block can be addressed **both**
+by its parent's in-block pointer *and* by its own independently-indexed
+`.tip` trie arc reached via a different path. Real `SegmentTermsEnum` never
+notices this, since a targeted `seekExact` only ever takes one of the two
+paths per lookup; this module's eager whole-field materialization design
+(see the module doc) visits every reachable block, so the first working
+version double-decoded such blocks (confirmed directly: 8025 decoded entries
+against a 8000-term field, with the 25-term duplicate set traced to one
+specific block reachable both ways). Fixed by having `open()` build the set
+of every block fp `collect_leaf_blocks` already collected directly from the
+`.tip` trie and pass it down through a new `already_trie_indexed` parameter
+on `decode_block_at_depth`; a sub-block pointer whose target fp is in that
+set is skipped rather than re-decoded (the same "redundant, independently
+reachable elsewhere, don't decode it twice" reasoning the module already
+applied to trie nodes with `hasTerms == false`, generalized to in-block
+sub-block pointers).
+
+**Changes**: `crates/lucene-codecs/src/blocktree.rs` -- `decode_block` is now
+a thin test-only (`#[cfg(test)]`) wrapper around the real implementation,
+`decode_block_at_depth`, which recurses into sub-block entries (with the
+depth-bounded/cycle-guarded/dedup-aware behavior above) and is what `open()`
+now calls directly; module doc updated to describe the three-way distinction
+(`.tip` trie nesting / floor blocks / non-leaf `.tim` blocks) and mark the
+last one as now-supported instead of deferred. New unit tests:
+`decode_block_recurses_into_sub_block` (hand-built two-level `.tim` bytes:
+leaf child block + non-leaf parent with one real term and one sub-block
+entry, checks the sub-block's key byte gets reattached as a prefix),
+`decode_block_rejects_sub_block_delta_fp_past_parent` (corruption check for
+the new subCode bounds check), and
+`multilevel_fixture_reaches_a_genuine_non_leaf_block` (loads the new real
+fixture, independently re-derives which physical blocks are leaf vs.
+non-leaf by peeking each one's own `isLeafBlock` bit, and asserts at least
+one non-leaf block was actually reached -- structural proof, not just
+"lookups still work", which could stay green even if a future fixture regen
+degenerated to an all-leaf shape). Replaced the old
+`decode_block_rejects_non_leaf_block` test (asserted the now-obsolete
+`Error::Unsupported` behavior) with the above. New fixture generator
+`fixtures/src/GenBlockTreeMultilevel.java` and committed fixture data
+`fixtures/data/blocktree_multilevel_index/`. New differential test file
+`crates/lucene-codecs/tests/blocktree_multilevel_fixture.rs`
+(`multilevel_field_seek_exact_matches_real_lucene`,
+`multilevel_field_enumeration_matches_real_lucene_terms_enum_next`) checking
+every one of the 8000 terms via both `seek_exact` and full ordered
+`TermsEnum::next()` enumeration against real Lucene's own sorted term list.
+`fixtures/README.md`'s regeneration list and `docs/parity.md`'s blocktree row
+were both updated.
+
+All existing blocktree/postings tests still pass unchanged (regression
+checked, not assumed): `cargo test -p lucene-codecs` -- 690 lib tests (up
+from 688; net +2 after removing the one obsolete non-leaf-rejection test and
+adding two new hand-built-bytes tests, plus the fixture-backed structural
+test) and every existing integration test file (`blocktree_fixtures.rs` 24,
+`blocktree_compressed_fixture.rs` 2) green, plus the 2 new
+`blocktree_multilevel_fixture.rs` tests. `cargo test --workspace` also
+checked green end to end (no other crate's tests regressed).
+`cargo fmt --all` clean; `cargo clippy --workspace --all-targets -- -D
+warnings` clean (fixed two `clippy::identity_op` lints in the new
+hand-built-bytes test, `| 0x00` on an already-zero non-leaf codeL, changed to
+just the shifted value).
+
+**Scoped down, stated explicitly**: this task's own instructions asked to
+check whether the *writer* also needed generalizing to recurse into
+sub-blocks -- there is no Rust blocktree writer in this port at all (`.tim`/
+`.tip`/`.tmd` bytes are only ever produced by real Lucene fixtures, per this
+port's "read path first" strategy), so that half of the task doesn't apply;
+confirmed by grepping the whole workspace for any `BlockTreeWriter`-shaped
+type before concluding this, not assumed.

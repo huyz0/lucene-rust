@@ -78,18 +78,32 @@
 //! notice; `rust-performance`'s "correctness first, profile before the next
 //! phase" stance applies) and is flagged here rather than silently accepted.
 //!
-//! **Still out of scope, and now the load-bearing restriction going
-//! forward**: a `.tim` block that is itself **non-leaf** (`isLeafBlock`
-//! false — some of its entries are pointers to further nested sub-blocks
-//! addressed by an in-block delta-fp, rather than raw term suffixes) is
-//! rejected with [`Error::Unsupported`], for every block this slice's trie
-//! traversal reaches, not just the field's single block as before. Every
-//! fixture this port generates only produces leaf blocks (real Lucene seems
-//! to prefer trie-indexed floor/child splits, at least for the term counts
-//! this port's fixtures reach — see `fixtures/src/GenBlockTree.java`'s
-//! "many" field), but a large enough/adversarial field could in principle
-//! still hit a non-leaf block; that remains deferred, same as automaton
-//! intersection (`IntersectTermsEnum`). **Ordered enumeration (`next()`) and
+//! **Multi-level blocktree tries (`.tim` blocks that are themselves
+//! non-leaf) are now decoded.** A `.tim` block can be `isLeafBlock == false`:
+//! some of its entries are pointers to further-nested sub-blocks (an
+//! in-block delta-fp, `SegmentTermsEnumFrame.nextNonLeaf`'s `code & 1`
+//! "is this a sub-block" bit) rather than raw term suffixes — real Lucene's
+//! own mechanism for a prefix so wide it isn't worth giving every one of its
+//! sub-prefixes a separate `.tip` trie/index entry (distinct from *both* the
+//! `.tip` trie's own multi-level node nesting -- root/single-child/multi-children,
+//! already arbitrarily deep and covered by [`collect_leaf_blocks`] -- and
+//! floor blocks, see [`expand_floor`]). [`decode_block`] now recurses into
+//! every sub-block entry it finds (reattaching that entry's own key bytes as
+//! a prefix before merging its sub-entries in), so a field whose dictionary
+//! needed a genuinely deep block tree (root block -> internal block -> leaf
+//! block, not just root -> leaf) round-trips correctly. The real
+//! `Lucene103BlockTreeTermsWriter`-produced fixture (~8k terms, see
+//! `crates/lucene-codecs/tests/blocktree_multilevel_fixture.rs`) does contain
+//! a genuine non-leaf `.tim` block, proving that SHAPE is decoded without
+//! error -- but its one sub-block pointer happens to also be independently
+//! reachable via the `.tip` trie, so the dedup check (below) skips it there
+//! and the *recursive re-prefixing* code path itself is only actually
+//! exercised, not merely shape-checked, by the hand-built unit test
+//! [`decode_block_recurses_into_sub_block`]. A future fixture engineered so a
+//! sub-block pointer is the *only* path to some terms (not also trie-indexed)
+//! would close that gap with a real differential proof; flagged here rather
+//! than silently overclaimed.
+//! **Ordered enumeration (`next()`) and
 //! nearest-match seeking (`seekCeil()`) are now ported** — see
 //! [`TermsEnum`]/[`FieldTerms::iter`] — as a thin cursor over the
 //! already-sorted `entries` `Vec` rather than a reimplementation of
@@ -110,9 +124,11 @@
 //! Because this slice never decodes postings inline with block loading, the
 //! per-term metadata bytes written by the postings writer (doc/pos/pay file
 //! pointer deltas) are decoded per block via `crate::postings::decode_term_metadata`
-//! (threaded across each individual block's own entries, `absolute` true only
-//! for each block's first entry — blocks never share metadata state, matching
-//! `SegmentTermsEnumFrame`'s per-frame `metaDataUpto`/`absolute` reset).
+//! (threaded across each individual block's own *term* entries -- sub-block
+//! entries carry no metadata of their own, see [`decode_block`] -- `absolute`
+//! true only for each block's first term entry — blocks never share metadata
+//! state, matching `SegmentTermsEnumFrame`'s per-frame `metaDataUpto`/`absolute`
+//! reset).
 
 use lucene_store::codec_util::{self, ID_LENGTH};
 use lucene_store::data_input::{DataInput, SliceInput};
@@ -1076,17 +1092,86 @@ fn decompress_lowercase_ascii(r: &mut SliceInput, out: &mut [u8]) -> Result<()> 
 
 /// Decodes a single physical `.tim` block at `fp`, materializing every
 /// (term, stats, metadata) entry — `SegmentTermsEnumFrame.loadBlock` plus a
-/// full `decodeMetaData` pass over every entry, restricted to a **leaf**
-/// block (`isLeafBlock`; see the module doc for why non-leaf blocks stay
-/// unsupported). Floor sub-blocks are just more calls to this same function
-/// at different `fp`s — floor selection happens one level up, in
+/// full `decodeMetaData` pass over every entry. Handles both **leaf** blocks
+/// (`isLeafBlock`, every entry a term) and **non-leaf** blocks (some entries
+/// are pointers to further-nested sub-blocks, `SegmentTermsEnumFrame.nextNonLeaf`'s
+/// `code & 1` "is this a sub-block" bit) by recursing into [`decode_block`]
+/// again at each sub-block's resolved `fp` — this is the genuine "multi-level
+/// blocktree" case: a `.tim` block that is itself an *internal* node pointing
+/// to child blocks rather than directly to postings, distinct from both the
+/// `.tip` trie's own multi-level node structure (root/single-child/multi-children,
+/// arbitrarily deep, already supported by [`collect_leaf_blocks`]) and from
+/// floor sub-blocks (same trie node, multiple physical blocks, see
+/// [`expand_floor`]). A sub-block entry's own key bytes are only that
+/// sub-block's *own* shared prefix relative to *this* block's prefix (not a
+/// full term) — the returned entries for a sub-block are prefixed with those
+/// bytes before being merged into this block's own entries, so every entry
+/// this function returns is relative to the same prefix depth regardless of
+/// how many sub-block levels were recursed through (the caller, [`open`],
+/// then prepends the `.tip`-trie-derived prefix on top, same as before).
+/// Floor sub-blocks are just more calls to this same function at different
+/// `fp`s — floor selection happens one level up, in
 /// [`expand_floor`]/[`collect_leaf_blocks`], not here.
+///
+/// Test-only: [`open`] calls [`decode_block_at_depth`] directly (it always
+/// has an `already_trie_indexed` set on hand to pass through), so this
+/// no-cross-check convenience wrapper is only exercised by this module's own
+/// unit tests, which decode one block in isolation.
+#[cfg(test)]
 fn decode_block(
     tim: &[u8],
     fp: usize,
     index_options: IndexOptions,
     has_payloads: bool,
 ) -> Result<Vec<(Vec<u8>, TermStats, TermMetadata)>> {
+    decode_block_at_depth(tim, fp, index_options, has_payloads, 0, None)
+}
+
+/// `decode_block`'s actual implementation, `depth`-tracked so a
+/// corrupted/cyclic sub-block chain (`subFP` pointing at or past its own
+/// parent) fails with [`Error::Unsupported`] rather than recursing forever —
+/// mirrors [`collect_leaf_blocks`]'s own `depth > 10_000` sanity bound for the
+/// `.tip` trie's recursion.
+///
+/// `already_trie_indexed`, when given, is the full set of physical block fps
+/// [`collect_leaf_blocks`] already collected directly from the `.tip` trie
+/// for this field (i.e. every block reachable via its own dedicated trie/FST
+/// arc). A sub-block pointer whose target fp is in that set is **not**
+/// recursed into here: real Lucene's writer can and does give some sub-blocks
+/// *both* an in-block pointer from their parent's non-leaf entries *and* a
+/// separate, independently-indexed `.tip` trie arc reached by a different
+/// path (confirmed empirically against a real ~8k-distinct-term fixture —
+/// see `crates/lucene-codecs/tests/blocktree_multilevel_fixture.rs`'s module
+/// doc). Real `SegmentTermsEnum` never notices this redundancy because it
+/// only ever takes *one* of the two paths per lookup; this module's eager
+/// whole-field materialization (see the module doc) visits every reachable
+/// block, so without this check a doubly-addressed sub-block would be
+/// decoded twice — once here, following its parent's pointer, and once more
+/// as its own top-level entry in [`open`]'s block loop — producing duplicate
+/// entries `entries.sort_by` can't detect (same term appears twice with
+/// identical stats, silently violating an implicit "each term once"
+/// invariant instead of throwing anything). Skipping it here is exactly
+/// [`collect_leaf_blocks`]'s own existing "hasTerms == false is redundant,
+/// don't decode it, it's independently reachable as a deeper trie node"
+/// reasoning, generalized from *trie nodes* to *in-block sub-block pointers*.
+/// `None` (used by direct/standalone [`decode_block`] callers, including
+/// every unit test in this module) means "no known independent top-level set
+/// to cross-check against", so every sub-block pointer is followed — correct
+/// for decoding one block's own self-contained sub-tree in isolation, where
+/// this cross-cutting duplication with *other* top-level blocks cannot arise.
+fn decode_block_at_depth(
+    tim: &[u8],
+    fp: usize,
+    index_options: IndexOptions,
+    has_payloads: bool,
+    depth: u32,
+    already_trie_indexed: Option<&std::collections::HashSet<usize>>,
+) -> Result<Vec<(Vec<u8>, TermStats, TermMetadata)>> {
+    if depth > 10_000 {
+        return Err(Error::Unsupported(
+            "terms block sub-block nesting too deep (possible cycle)",
+        ));
+    }
     let mut r = SliceInput::new(tim);
     r.seek(fp)?;
 
@@ -1106,11 +1191,6 @@ fn decode_block(
 
     let code_l = r.read_vlong()? as u64;
     let is_leaf_block = (code_l & 0x04) != 0;
-    if !is_leaf_block {
-        return Err(Error::Unsupported(
-            "non-leaf block (nested sub-blocks) not supported in this slice",
-        ));
-    }
     let num_suffix_bytes = (code_l >> 3) as usize;
     let compression_alg = code_l & 0x03;
     let mut suffix_bytes = vec![0u8; num_suffix_bytes];
@@ -1171,11 +1251,59 @@ fn decode_block(
 
     let mut singleton_run_length: u32 = 0;
     let mut prev_meta = TermMetadata::EMPTY;
+    // Real-term ordinal within this block (`SegmentTermsEnumFrame.state.termBlockOrd`),
+    // distinct from the raw entry loop counter once sub-block entries are
+    // possible: stats/meta streams only ever hold one record per *term*
+    // entry, never per sub-block entry, and `decode_term_metadata`'s
+    // `absolute` flag is true only for this block's first *term* (ordinal 0),
+    // not merely the first entry (which could be a sub-block).
+    let mut term_ord: u32 = 0;
     let mut entries = Vec::with_capacity(ent_count as usize);
-    for i in 0..ent_count {
-        let suffix_len = suffix_lengths_reader.read_vint()? as usize;
-        let mut term = vec![0u8; suffix_len];
-        suffixes_reader.read_bytes(&mut term)?;
+    for _ in 0..ent_count {
+        // Leaf entries carry a plain suffix-length vint (every entry is a
+        // term); non-leaf entries pack `suffixLength << 1 | isSubBlock` into
+        // that same vint (`SegmentTermsEnumFrame.nextNonLeaf`'s `code`), with
+        // a sub-block's own delta-fp (`subCode`, a vlong) following
+        // immediately in the *same* suffix-lengths stream when the low bit is
+        // set.
+        let (suffix_len, is_sub_block) = if is_leaf_block {
+            (suffix_lengths_reader.read_vint()? as usize, false)
+        } else {
+            let code = suffix_lengths_reader.read_vint()? as u32;
+            ((code >> 1) as usize, (code & 1) != 0)
+        };
+        let mut suffix = vec![0u8; suffix_len];
+        suffixes_reader.read_bytes(&mut suffix)?;
+
+        if is_sub_block {
+            let sub_code = suffix_lengths_reader.read_vlong()? as u64;
+            if sub_code as usize > fp {
+                return Err(Error::Store(lucene_store::Error::Corrupted(
+                    "terms block sub-block delta fp exceeds parent fp".into(),
+                )));
+            }
+            let sub_fp = fp - sub_code as usize;
+            if already_trie_indexed.is_some_and(|s| s.contains(&sub_fp)) {
+                // Independently reachable as its own top-level block via the
+                // `.tip` trie (see this function's doc comment) -- decoding
+                // it here too would duplicate every one of its terms.
+                continue;
+            }
+            let sub_entries = decode_block_at_depth(
+                tim,
+                sub_fp,
+                index_options,
+                has_payloads,
+                depth + 1,
+                already_trie_indexed,
+            )?;
+            for (sub_suffix, stats, meta) in sub_entries {
+                let mut full = suffix.clone();
+                full.extend_from_slice(&sub_suffix);
+                entries.push((full, stats, meta));
+            }
+            continue;
+        }
 
         let (doc_freq, total_term_freq) = if singleton_run_length > 0 {
             singleton_run_length -= 1;
@@ -1199,16 +1327,17 @@ fn decode_block(
         let meta = postings::decode_term_metadata(
             &mut meta_reader,
             doc_freq,
-            i == 0,
+            term_ord == 0,
             prev_meta,
             index_options,
             has_payloads,
             total_term_freq,
         )?;
         prev_meta = meta;
+        term_ord += 1;
 
         entries.push((
-            term,
+            suffix,
             TermStats {
                 doc_freq,
                 total_term_freq,
@@ -1340,13 +1469,23 @@ pub fn open(
             ));
         }
 
+        // Every block fp reached directly via the `.tip` trie -- passed down
+        // so `decode_block_at_depth` can recognize (and skip re-decoding) a
+        // sub-block that's *also* independently trie-indexed elsewhere (see
+        // that function's doc comment for why real Lucene bytes can and do
+        // address the same physical block both ways).
+        let trie_block_fps: std::collections::HashSet<usize> =
+            blocks.iter().map(|(fp, _)| *fp as usize).collect();
+
         let mut entries = Vec::with_capacity(num_terms as usize);
         for (block_fp, block_prefix) in blocks {
-            for (suffix, stats, meta) in decode_block(
+            for (suffix, stats, meta) in decode_block_at_depth(
                 tim,
                 block_fp as usize,
                 field_info.index_options,
                 field_info.store_payloads,
+                0,
+                Some(&trie_block_fps),
             )? {
                 // `decode_block` only ever sees a block's suffix bytes (the
                 // writer strips the shared trie-path prefix); re-attach it
@@ -2417,13 +2556,94 @@ mod tests {
         assert!(matches!(err, Error::Store(_)));
     }
 
+    /// Hand-builds a two-level `.tim` byte sequence: a leaf child block
+    /// (term `"zz"`, docFreq/totalTermFreq 1/1) followed by a non-leaf parent
+    /// block whose two entries are a real term (`"aa"`) and a sub-block
+    /// pointer (key byte `b`) resolving back to the child block via
+    /// `parent_fp - subCode` — the genuine "multi-level blocktree" case
+    /// (`SegmentTermsEnumFrame.nextNonLeaf`'s `code & 1` sub-block bit),
+    /// distinct from the `.tip` trie's own multi-level nesting (already
+    /// covered by [`collect_leaf_blocks`]'s tests) and from floor blocks.
+    /// Confirms `decode_block` recurses into the sub-block and reattaches its
+    /// key byte as a prefix, producing all three terms in the same block's
+    /// entry list.
     #[test]
-    fn decode_block_rejects_non_leaf_block() {
+    fn decode_block_recurses_into_sub_block() {
+        let mut tim = Vec::new();
+
+        // --- child (leaf) block: one term "zz", docFreq=1/totalTermFreq=1 ---
+        let child_fp = tim.len();
+        tim.write_vint((1 << 1) | 1); // entCount=1, isLastInFloor
+        let child_suffix = b"zz";
+        let child_code_l = ((child_suffix.len() as u64) << 3) | 0x04; // leaf, no compression
+        tim.write_vlong(child_code_l as i64);
+        tim.write_bytes(child_suffix);
+        tim.write_vint((1i32 << 1) | 1); // allEqual, logical len 1
+        tim.write_byte(2); // suffix length 2
+        let mut child_stats = Vec::new();
+        child_stats.write_vint(1 << 1); // token&1==0, docFreq=1
+        tim.write_vint(child_stats.len() as i32);
+        tim.write_bytes(&child_stats);
+        let mut child_meta = Vec::new();
+        child_meta.write_vlong(10 << 1); // docStartFP delta=10, absolute
+        child_meta.write_vint(0); // singleton_doc_id (docFreq==1)
+        tim.write_vint(child_meta.len() as i32);
+        tim.write_bytes(&child_meta);
+
+        // --- parent (non-leaf) block: term "aa" + sub-block "b" -> child ---
+        let parent_fp = tim.len();
+        tim.write_vint((2 << 1) | 1); // entCount=2, isLastInFloor
+        let parent_suffix_bytes = b"ab"; // "a" (term "aa"'s suffix) then "b" (sub-block key)
+        let parent_code_l = (parent_suffix_bytes.len() as u64) << 3; // non-leaf, no compression
+        tim.write_vlong(parent_code_l as i64);
+        tim.write_bytes(parent_suffix_bytes);
+
+        let mut suffix_lengths = Vec::new();
+        suffix_lengths.write_vint(1 << 1); // entry 0: suffix len 1, not a sub-block
+        suffix_lengths.write_vint((1 << 1) | 1); // entry 1: suffix len 1, IS a sub-block
+        let sub_code = (parent_fp - child_fp) as i64;
+        suffix_lengths.write_vlong(sub_code); // entry 1's subCode
+        tim.write_vint((suffix_lengths.len() as i32) << 1); // not allEqual
+        tim.write_bytes(&suffix_lengths);
+
+        let mut parent_stats = Vec::new();
+        parent_stats.write_vint(1 << 1); // entry 0 ("aa"): docFreq=1
+        tim.write_vint(parent_stats.len() as i32);
+        tim.write_bytes(&parent_stats);
+
+        let mut parent_meta = Vec::new();
+        parent_meta.write_vlong(5 << 1); // entry 0's docStartFP delta=5, absolute
+        parent_meta.write_vint(0); // singleton_doc_id
+        tim.write_vint(parent_meta.len() as i32);
+        tim.write_bytes(&parent_meta);
+
+        let entries = decode_block(&tim, parent_fp, IndexOptions::Docs, false).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].0, b"a");
+        assert_eq!(entries[0].1.doc_freq, 1);
+        assert_eq!(entries[1].0, b"bzz");
+        assert_eq!(entries[1].1.doc_freq, 1);
+        assert_eq!(entries[1].1.total_term_freq, 1);
+    }
+
+    #[test]
+    fn decode_block_rejects_sub_block_delta_fp_past_parent() {
         let mut tim = Vec::new();
         tim.write_vint((1 << 1) | 1); // entCount=1, isLastInFloor
-        tim.write_vlong(0); // codeL: isLeafBlock bit (0x04) unset -> non-leaf
+        let suffix_bytes = b"x";
+        let code_l = (suffix_bytes.len() as u64) << 3; // non-leaf
+        tim.write_vlong(code_l as i64);
+        tim.write_bytes(suffix_bytes);
+        let mut suffix_lengths = Vec::new();
+        suffix_lengths.write_vint((1 << 1) | 1); // suffix len 1, is a sub-block
+        suffix_lengths.write_vlong(1_000_000); // subCode far exceeding this block's own fp
+        tim.write_vint((suffix_lengths.len() as i32) << 1);
+        tim.write_bytes(&suffix_lengths);
+        tim.write_vint(0); // no stat bytes
+        tim.write_vint(0); // no meta bytes
+
         let err = decode_block(&tim, 0, IndexOptions::Docs, false).unwrap_err();
-        assert!(matches!(err, Error::Unsupported(_)));
+        assert!(matches!(err, Error::Store(_)));
     }
 
     #[test]
@@ -2878,5 +3098,145 @@ mod tests {
         };
         let err = open(&tim, &tip, &tmd, &fis, &id, &suffix, 5).unwrap_err();
         assert!(matches!(err, Error::Store(_)));
+    }
+
+    /// Structural proof (not just "lookups still work") that
+    /// `fixtures/data/blocktree_multilevel_index/` -- 8000 pseudo-random
+    /// terms, regenerated via `fixtures/src/GenBlockTreeMultilevel.java` --
+    /// actually forces real Lucene to write a genuine **non-leaf** `.tim`
+    /// block (some of its entries are in-block pointers to further-nested
+    /// sub-blocks, not raw term suffixes) reachable from this field's `.tip`
+    /// trie, i.e. the "root block -> internal block -> leaf block" case this
+    /// module's `decode_block`/`decode_block_at_depth` now decode. Walks the
+    /// same trie [`collect_leaf_blocks`] would, independently re-deriving
+    /// which physical `.tim` blocks are leaf vs. non-leaf by peeking each
+    /// one's own `isLeafBlock` bit -- this test would fail (assert
+    /// `saw_non_leaf_block`) if a future regen of this fixture, or a change
+    /// to real Lucene's own writer heuristics, stopped producing one, which
+    /// is exactly the failure mode a purely behavioral "every term still
+    /// findable" test could miss (it'd stay green even if this fixture
+    /// degenerated to an all-leaf-blocks shape). The full differential
+    /// (every term findable via the public API, matching real Lucene's own
+    /// ground truth) lives in `crates/lucene-codecs/tests/blocktree_multilevel_fixture.rs`,
+    /// same split as every other real-bytes fixture test in this crate:
+    /// external test = public-API differential, in-crate test = structural
+    /// invariant only reachable with this module's private internals.
+    #[test]
+    fn multilevel_fixture_reaches_a_genuine_non_leaf_block() {
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/data/blocktree_multilevel_index/"
+        );
+        let manifest = std::fs::read_to_string(format!("{dir}manifest.properties"))
+            .expect("run fixtures generator first (GenBlockTreeMultilevel)");
+        let kv: std::collections::HashMap<String, String> = manifest
+            .lines()
+            .filter_map(|l| l.split_once('='))
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let read_raw = |name: &str| {
+            std::fs::read(format!("{dir}{name}.raw"))
+                .unwrap_or_else(|_| panic!("missing {name}.raw"))
+        };
+
+        let tmd = read_raw(kv.get("tmd_file_name").unwrap());
+        let tip = read_raw(kv.get("tip_file_name").unwrap());
+        let tim = read_raw(kv.get("tim_file_name").unwrap());
+        let fnm = read_raw(kv.get("fnm_file_name").unwrap());
+        let id_hex = kv.get("id_hex").unwrap();
+        let mut id = [0u8; ID_LENGTH];
+        for (i, slot) in id.iter_mut().enumerate() {
+            *slot = u8::from_str_radix(&id_hex[i * 2..i * 2 + 2], 16).unwrap();
+        }
+        let suffix = kv.get("segment_suffix").unwrap();
+        let field_infos = crate::field_infos::parse(&fnm, &id, "").unwrap();
+
+        // Re-derive "many"'s index_start/root_fp/index_end the same way
+        // `open()` does, so this test doesn't need any new `pub` surface on
+        // this module just to expose them.
+        let mut tmd_input = SliceInput::new(&tmd);
+        codec_util::check_index_header(
+            &mut tmd_input,
+            TERMS_META_CODEC_NAME,
+            VERSION_START,
+            VERSION_CURRENT,
+            &id,
+            suffix,
+        )
+        .unwrap();
+        codec_util::check_index_header(
+            &mut tmd_input,
+            POSTINGS_TERMS_CODEC,
+            POSTINGS_VERSION_START,
+            POSTINGS_VERSION_CURRENT,
+            &id,
+            suffix,
+        )
+        .unwrap();
+        let _index_block_size = tmd_input.read_vint().unwrap();
+        let num_fields = tmd_input.read_vint().unwrap();
+        let mut field_index = None;
+        for _ in 0..num_fields {
+            let field_number = tmd_input.read_vint().unwrap();
+            let _num_terms = tmd_input.read_vlong().unwrap();
+            let fi = field_infos.field_by_number(field_number).unwrap();
+            read_freq_pair(&mut tmd_input, fi.index_options).unwrap();
+            let _doc_count = tmd_input.read_vint().unwrap();
+            let _min_term = read_bytes_ref(&mut tmd_input).unwrap();
+            let _max_term = read_bytes_ref(&mut tmd_input).unwrap();
+            let index_start = tmd_input.read_vlong().unwrap() as usize;
+            let root_fp = tmd_input.read_vlong().unwrap() as usize;
+            let index_end = tmd_input.read_vlong().unwrap() as usize;
+            if fi.name == "many" {
+                field_index = Some((index_start, root_fp, index_end));
+            }
+        }
+        let (index_start, root_fp, index_end) = field_index.expect("field \"many\" in .tmd");
+
+        let index_slice = &tip[index_start..index_end];
+        let root = load_node(index_slice, root_fp).unwrap();
+        let mut blocks = Vec::new();
+        let mut prefix = Vec::new();
+        collect_leaf_blocks(index_slice, &root, 0, &mut prefix, &mut blocks).unwrap();
+        assert!(
+            blocks.len() > 1,
+            "expected the trie to reach more than one physical block"
+        );
+
+        // Peek each reached block's own isLeafBlock bit directly (the same
+        // two reads `decode_block_at_depth` starts with) without doing a
+        // full decode -- purely structural.
+        let mut saw_non_leaf_block = false;
+        for (block_fp, _prefix) in &blocks {
+            let mut r = SliceInput::new(&tim);
+            r.seek(*block_fp as usize).unwrap();
+            let _code = r.read_vint().unwrap();
+            let code_l = r.read_vlong().unwrap() as u64;
+            if (code_l & 0x04) == 0 {
+                saw_non_leaf_block = true;
+            }
+        }
+        assert!(
+            saw_non_leaf_block,
+            "expected at least one physical .tim block reachable from the \"many\" \
+             field's trie to be non-leaf (isLeafBlock == false) -- this fixture is \
+             supposed to force real Lucene into a genuine multi-level blocktree \
+             (root block -> internal block -> leaf block), not just multiple \
+             sibling leaf blocks/floor blocks under one trie node"
+        );
+
+        // And the full round trip through the *unmodified* public API must
+        // still recover every term correctly despite that non-leaf block
+        // (this is the behavioral half; the fuller differential -- matching
+        // real Lucene's own sorted term list -- lives in
+        // `tests/blocktree_multilevel_fixture.rs`).
+        let max_doc: i32 = kv.get("max_doc").unwrap().parse().unwrap();
+        let fields = open(&tim, &tip, &tmd, &field_infos, &id, suffix, max_doc).unwrap();
+        let field = fields.field("many").unwrap();
+        let num_terms: i64 = kv.get("field.many.numTerms").unwrap().parse().unwrap();
+        assert_eq!(field.num_terms, num_terms);
+        for (term, stats, _meta) in &field.entries {
+            assert_eq!(field.seek_exact(term).unwrap(), *stats);
+        }
     }
 }
