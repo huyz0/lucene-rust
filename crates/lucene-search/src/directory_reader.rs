@@ -31,10 +31,19 @@
 //!
 //! **Deliberately excluded** (see `docs/parity.md` for the authoritative
 //! list): NRT/reopen (`DirectoryReader.openIfChanged`), soft deletes, and
-//! doc-values/norms/term vectors (irrelevant here: [`OpenSegment`] itself has
-//! no fields for them -- `crate::field_norms`/doc-values/term-vectors query
-//! functions still take their own already-opened readers directly, unchanged
-//! by this task).
+//! norms/term vectors (irrelevant here: [`OpenSegment`] itself has no fields
+//! for them -- `crate::field_norms`/term-vectors query functions still take
+//! their own already-opened readers directly, unchanged by this task).
+//! **Doc-values are now wired in** (see the "NRT reopen after sparse
+//! doc-values commits" entry in `docs/parity.md`): [`SegmentReader::open`]
+//! also opens a segment's `.dvm`/`.dvd` when present (together or not at
+//! all, same contract as `.tim`/`.tip`/`.tmd`), exposed via
+//! [`SegmentReader::field_infos`]/[`SegmentReader::doc_values_meta`]/
+//! [`SegmentReader::doc_values_data`] -- callers feed those straight into the
+//! existing dense/sparse-agnostic `lucene_codecs::doc_values` value readers,
+//! and [`DirectoryReader::open_if_changed`] refreshes them for free since
+//! they live on `SegmentReader` alongside every other per-segment file this
+//! module already reopens-or-reuses.
 //!
 //! # Why the two-step `open_segments`/`as_open_segments` API
 //!
@@ -55,7 +64,8 @@
 
 use lucene_codecs::blocktree::{self, BlockTreeFields};
 use lucene_codecs::compound_format;
-use lucene_codecs::field_infos;
+use lucene_codecs::doc_values::{self, DocValuesMeta};
+use lucene_codecs::field_infos::{self, FieldInfos};
 use lucene_codecs::live_docs;
 use lucene_codecs::postings::{self, DocInput, PayInput, PosInput};
 use lucene_index::deletes::liv_file_name;
@@ -85,6 +95,8 @@ pub enum Error {
     LiveDocs(#[from] live_docs::Error),
     #[error(transparent)]
     CompoundFormat(#[from] compound_format::Error),
+    #[error(transparent)]
+    DocValues(#[from] doc_values::Error),
     #[error("segment {segment} has {found} of .tim/.tip/.tmd (need all three or none)")]
     PartialBlockTreeFiles { segment: String, found: usize },
 }
@@ -117,6 +129,23 @@ pub struct SegmentReader {
     pos_buf: Option<Vec<u8>>,
     pay_buf: Option<Vec<u8>>,
     live_docs: Option<FixedBitSet>,
+    field_infos: FieldInfos,
+    /// The segment's doc-values data (`.dvd`), kept as raw bytes so the
+    /// dense/sparse-agnostic `doc_values::{numeric_value, binary_value,
+    /// sorted_ord, sorted_numeric_values}` readers (unchanged, no new
+    /// low-level format logic here) can be called directly against it --
+    /// `None` when the segment has no `.dvm`/`.dvd` at all (e.g. no field is
+    /// opted into doc values, matching `segment_writer.rs`'s "no pending
+    /// values -> no `.dvm`/`.dvd`/`.dvs` files" contract).
+    dv_data: Option<Vec<u8>>,
+    /// The segment's parsed `.dvm` (per-field entries -- `NumericEntry`,
+    /// `SortedEntry`, etc., each already carrying whichever of the
+    /// dense/sparse shapes `doc_values.rs`'s write side actually produced;
+    /// there is no separate "is this field sparse" flag to track here since
+    /// every entry type already self-describes dense vs.
+    /// `IndexedDISI`-backed sparse, and the existing value readers dispatch
+    /// on that internally).
+    dv_meta: Option<DocValuesMeta>,
 }
 
 impl SegmentReader {
@@ -230,6 +259,44 @@ impl SegmentReader {
             None
         };
 
+        // `.dvm`/`.dvd` (no `.dvs` reader exists yet in this port, matching
+        // `doc_value_query.rs`/`facets.rs`'s own scope): present together or
+        // not at all, exactly like `.tim`/`.tip`/`.tmd` above -- a segment
+        // with no doc-values field opted in has neither (see
+        // `segment_writer.rs`'s "no pending values -> no files" contract).
+        // The codec suffix is derived the same way `.tim`'s is above --
+        // this port's own writer uses `""` (matching the sparse/dense unit
+        // tests in `index_writer.rs`), but a real Lucene-written segment
+        // (e.g. `fixtures/data/compound_index/`) gives doc values their own
+        // codec suffix (`Lucene90_<n>`), independent of the postings suffix.
+        let dvm_bytes = open_segment_file(dir, compound.as_ref(), &si.files, ".dvm")?;
+        let dvd_bytes = open_segment_file(dir, compound.as_ref(), &si.files, ".dvd")?;
+        let (dv_meta, dv_data) = match (dvm_bytes, dvd_bytes) {
+            (Some(dvm), Some(dvd)) => {
+                let dvm_file_name = find_segment_file_name(&si.files, compound.as_ref(), ".dvm")
+                    .expect("dvm_bytes.is_some() implies a .dvm entry exists");
+                // No-codec-suffix case first (this port's own writer, e.g.
+                // loose `_0.dvm`): the generic strip-and-derive logic below
+                // would otherwise misparse the segment name's own trailing
+                // digit as a bogus suffix (`_0.dvm` -> strip leading `_` ->
+                // `0.dvm` -> suffix `"0"`, wrong).
+                let dv_suffix = if dvm_file_name == format!("{segment_name}.dvm") {
+                    String::new()
+                } else {
+                    dvm_file_name
+                        .strip_prefix(&format!("{segment_name}_"))
+                        .or_else(|| dvm_file_name.strip_prefix('_'))
+                        .and_then(|s| s.strip_suffix(".dvm"))
+                        .unwrap_or_default()
+                        .to_string()
+                };
+                let (_, meta) =
+                    doc_values::parse_meta(&dvm, &segment_id, &dv_suffix, &field_infos)?;
+                (Some(meta), Some(dvd))
+            }
+            _ => (None, None),
+        };
+
         Ok(SegmentReader {
             segment_name,
             max_doc: si.doc_count,
@@ -242,7 +309,32 @@ impl SegmentReader {
             pos_buf,
             pay_buf,
             live_docs,
+            field_infos,
+            dv_data,
+            dv_meta,
         })
+    }
+
+    /// The segment's `.fnm`-derived field metadata (field name/number
+    /// mapping, doc-values type, etc.) -- callers use this to resolve a field
+    /// name to the number [`Self::doc_values_meta`]'s entries are keyed by.
+    pub fn field_infos(&self) -> &FieldInfos {
+        &self.field_infos
+    }
+
+    /// The segment's parsed `.dvm`, or `None` if it has no doc-values files
+    /// at all. Each entry (`NumericEntry`/`BinaryEntry`/`SortedEntry`/etc.)
+    /// already self-describes dense vs. sparse (`IndexedDISI`-backed); feed
+    /// it and [`Self::doc_values_data`] straight into the existing
+    /// `lucene_codecs::doc_values::{numeric_value, binary_value, sorted_ord,
+    /// sorted_numeric_values}` readers, unchanged.
+    pub fn doc_values_meta(&self) -> Option<&DocValuesMeta> {
+        self.dv_meta.as_ref()
+    }
+
+    /// The segment's `.dvd`, or `None` if it has no doc-values files at all.
+    pub fn doc_values_data(&self) -> Option<&[u8]> {
+        self.dv_data.as_deref()
     }
 }
 
@@ -1267,5 +1359,203 @@ mod tests {
         ));
         std::fs::create_dir_all(&p).unwrap();
         p
+    }
+
+    // -- "NRT reopen after sparse doc-values commits" (docs/parity.md) --
+    //
+    // The rest of this module never previously read a segment's `.dvm`/
+    // `.dvd` at all (see this module's doc comment, before this task) --
+    // every other doc-values test in this crate (`doc_value_query.rs`,
+    // `facets.rs`) fed hand-loaded fixture bytes straight to the low-level
+    // `lucene_codecs::doc_values` readers, never through
+    // `DirectoryReader`/`SegmentReader`. These tests are the real
+    // `IndexWriter` -> commit -> NRT reopen -> read-back path: a genuinely
+    // sparse NUMERIC field (some docs opted out entirely), read through a
+    // `DirectoryReader` opened by this module, refreshed via
+    // `open_if_changed` across a second commit that adds a brand-new sparse
+    // segment.
+    mod sparse_doc_values_nrt {
+        use super::*;
+        use lucene_codecs::doc_values;
+        use lucene_codecs::field_infos::{
+            DocValuesSkipIndexType, DocValuesType, FieldInfo, IndexOptions, VectorEncoding,
+            VectorSimilarityFunction,
+        };
+        use lucene_codecs::stored_fields::{Document, FieldValue, StoredField};
+        use lucene_index::index_writer::IndexWriter;
+        use lucene_index::segment_info::LuceneVersion;
+
+        fn version() -> LuceneVersion {
+            LuceneVersion {
+                major: 10,
+                minor: 0,
+                bugfix: 0,
+            }
+        }
+
+        fn stored_only_field(name: &str, number: i32) -> FieldInfo {
+            FieldInfo {
+                name: name.to_string(),
+                number,
+                store_term_vectors: false,
+                omit_norms: false,
+                store_payloads: false,
+                soft_deletes_field: false,
+                parent_field: false,
+                index_options: IndexOptions::None,
+                doc_values_type: DocValuesType::None,
+                doc_values_skip_index_type: DocValuesSkipIndexType::None,
+                doc_values_gen: -1,
+                attributes: vec![],
+                point_dimension_count: 0,
+                point_index_dimension_count: 0,
+                point_num_bytes: 0,
+                vector_dimension: 0,
+                vector_encoding: VectorEncoding::Float32,
+                vector_similarity_function: VectorSimilarityFunction::Euclidean,
+            }
+        }
+
+        fn numeric_field(name: &str, number: i32) -> FieldInfo {
+            FieldInfo {
+                doc_values_type: DocValuesType::Numeric,
+                ..stored_only_field(name, number)
+            }
+        }
+
+        fn doc_with_score(id: &str, score: i64) -> Document {
+            Document {
+                fields: vec![
+                    StoredField {
+                        field_number: 0,
+                        value: FieldValue::String(id.to_string()),
+                    },
+                    StoredField {
+                        field_number: 1,
+                        value: FieldValue::Long(score),
+                    },
+                ],
+            }
+        }
+
+        fn doc_without_score(id: &str) -> Document {
+            Document {
+                fields: vec![StoredField {
+                    field_number: 0,
+                    value: FieldValue::String(id.to_string()),
+                }],
+            }
+        }
+
+        /// The base scenario: one segment, one commit, a sparse NUMERIC
+        /// field with a present/absent/present pattern, read back correctly
+        /// through `DirectoryReader::open` -- not a hand-loaded fixture, the
+        /// actual bytes `IndexWriter::commit` wrote.
+        #[test]
+        fn nrt_reader_reads_sparse_numeric_field_after_first_commit() {
+            let dir_path = tempdir();
+            let dir = FsDirectory::open(&dir_path);
+            let fields = vec![stored_only_field("id", 0), numeric_field("score", 1)];
+            let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+            writer.set_doc_values_field(Some("score")).unwrap();
+
+            writer.add_document(doc_with_score("a", 5));
+            writer.add_document(doc_without_score("b"));
+            writer.add_document(doc_with_score("c", 7));
+            writer.commit().unwrap();
+
+            let reader = DirectoryReader::open(&dir).expect("open segments_1");
+            assert_eq!(reader.segment_readers().len(), 1);
+            let seg = &reader.segment_readers()[0];
+
+            let field_number = seg
+                .field_infos()
+                .field_by_number(1)
+                .expect("score field present")
+                .number;
+            let meta = seg
+                .doc_values_meta()
+                .expect("sparse-committed segment must have .dvm/.dvd wired in");
+            let entry = meta
+                .numeric_entry(field_number)
+                .expect("score has a NumericEntry");
+            let data = seg.doc_values_data().expect("segment has .dvd bytes");
+
+            assert_eq!(doc_values::numeric_value(data, entry, 0).unwrap(), Some(5));
+            assert_eq!(
+                doc_values::numeric_value(data, entry, 1).unwrap(),
+                None,
+                "doc 1 opted out of the field entirely -- sparse, not zero"
+            );
+            assert_eq!(doc_values::numeric_value(data, entry, 2).unwrap(), Some(7));
+
+            std::fs::remove_dir_all(&dir_path).ok();
+        }
+
+        /// The genuine NRT-reopen scenario: a second commit adds a brand-new
+        /// *second* segment, itself also sparse, with a different
+        /// present/absent pattern. `open_if_changed` must refresh doc-values
+        /// wiring for the newly-opened segment while continuing to serve the
+        /// first (reused) segment's sparse data correctly too.
+        #[test]
+        fn nrt_reopen_reads_new_segments_sparse_numeric_values_correctly() {
+            let dir_path = tempdir();
+            let dir = FsDirectory::open(&dir_path);
+            let fields = vec![stored_only_field("id", 0), numeric_field("score", 1)];
+            let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+            writer.set_doc_values_field(Some("score")).unwrap();
+
+            writer.add_document(doc_with_score("a", 5));
+            writer.add_document(doc_without_score("b"));
+            writer.commit().unwrap();
+
+            let reader = DirectoryReader::open(&dir).expect("open segments_1");
+            assert_eq!(reader.segment_readers().len(), 1);
+
+            // Second commit: a new segment, sparse in the opposite pattern
+            // (present, absent, present) so this is not just re-reading the
+            // first segment's bytes.
+            writer.add_document(doc_without_score("x"));
+            writer.add_document(doc_with_score("y", 42));
+            writer.add_document(doc_without_score("z"));
+            writer.commit().unwrap();
+
+            let reopened = reader
+                .open_if_changed(&dir)
+                .expect("open_if_changed")
+                .expect("second commit differs from the first");
+            assert_eq!(reopened.segment_readers().len(), 2);
+
+            let seg0 = &reopened.segment_readers()[0];
+            let seg1 = &reopened.segment_readers()[1];
+            assert_eq!(seg0.doc_base, 0);
+            assert_eq!(seg1.doc_base, 2);
+
+            // First (reused) segment: still reads its original sparse values.
+            let meta0 = seg0.doc_values_meta().expect("segment 0 has doc values");
+            let entry0 = meta0.numeric_entry(1).unwrap();
+            let data0 = seg0.doc_values_data().unwrap();
+            assert_eq!(
+                doc_values::numeric_value(data0, entry0, 0).unwrap(),
+                Some(5)
+            );
+            assert_eq!(doc_values::numeric_value(data0, entry0, 1).unwrap(), None);
+
+            // Second (freshly opened via reopen) segment: its own, different
+            // sparse pattern.
+            let meta1 = seg1
+                .doc_values_meta()
+                .expect("newly reopened segment must have doc-values wired in too");
+            let entry1 = meta1.numeric_entry(1).unwrap();
+            let data1 = seg1.doc_values_data().unwrap();
+            assert_eq!(doc_values::numeric_value(data1, entry1, 0).unwrap(), None);
+            assert_eq!(
+                doc_values::numeric_value(data1, entry1, 1).unwrap(),
+                Some(42)
+            );
+            assert_eq!(doc_values::numeric_value(data1, entry1, 2).unwrap(), None);
+
+            std::fs::remove_dir_all(&dir_path).ok();
+        }
     }
 }

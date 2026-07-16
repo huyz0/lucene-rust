@@ -4376,3 +4376,75 @@ test -p lucene-index` passes (270/270, up from 265); `cargo test --workspace`
 passes unaffected. See `docs/parity.md`'s `index/IndexWriter` and
 `Lucene104PostingsWriter`/`Lucene90CompressingTermVectorsWriter` rows for the
 parity-tracking update.
+
+**Progress (NRT reopen after sparse doc-values commits): found and fixed a
+real gap, not a false alarm.** Audited the intersection of two
+already-shipped features: task #45/#46's `DirectoryReader`/`SegmentReader`
+NRT reopen (`lucene-search/src/directory_reader.rs`) and the sparse
+NUMERIC/BINARY/SORTED/SORTED_NUMERIC/SORTED_SET doc-values write side
+(`lucene-codecs/src/doc_values.rs`, wired into `IndexWriter::commit` earlier
+in this project's history). `directory_reader.rs`'s own module doc comment
+already said the quiet part out loud: doc-values were "deliberately
+excluded... irrelevant here: `OpenSegment` itself has no fields for them" --
+confirmed by reading `SegmentReader::open` end to end, which opened `.si`/
+`.fnm`/`.tim`/`.tip`/`.tmd`/`.doc`/`.pos`/`.pay`/`.liv` but never touched
+`.dvm`/`.dvd` at all. Every doc-values consumer in `lucene-search`
+(`doc_value_query.rs`, `facets.rs`) took raw already-loaded `.dvm`/`.dvd`
+bytes as parameters, fed by hand in every test -- none of them went through
+`DirectoryReader`/`SegmentReader`, dense or sparse. So the literal scenario
+this task describes (open an `IndexWriter`, commit a sparse doc-values field,
+get an NRT reader via `open_if_changed`, read the field back through it) was
+not just untested, it was *unimplementable* through the existing reader API:
+there was no way to reach a segment's doc-values bytes from a
+`DirectoryReader` at all.
+
+Fixed by wiring `.dvm`/`.dvd` into `SegmentReader::open`
+(`lucene-search/src/directory_reader.rs`), following the same "open only the
+files this segment actually has, transparently through a `.cfs`/`.cfe`
+compound archive when present" pattern `.tim`/`.tip`/`.tmd` already
+established: present together or not at all (no field opted into doc values
+-> neither file, matching `segment_writer.rs`'s existing "no pending values ->
+no files" contract), parsed via the **unchanged** `doc_values::parse_meta`
+into a new `dv_meta: Option<DocValuesMeta>` field, with the matching `.dvd`
+bytes kept as `dv_data: Option<Vec<u8>>` -- no new low-level codec logic, this
+is read-path wiring of two already-differentially-verified primitives, same
+as task #76's compound-file wiring for postings. New public accessors,
+`SegmentReader::field_infos`/`doc_values_meta`/`doc_values_data`, let a
+caller resolve a field name to its entry and feed it straight into the
+existing dense/sparse-agnostic `doc_values::{numeric_value, binary_value,
+sorted_ord, sorted_numeric_values}` readers, unchanged. Because these live on
+`SegmentReader` alongside every other per-segment file `open_if_changed`
+already reopens-or-reuses, NRT reopen refreshes them for free -- no separate
+doc-values-specific reopen logic was needed once the read-path gap was
+closed. One genuine bug surfaced and fixed while wiring this in: doc-values
+codec suffix must be derived from the actual `.dvm` file name (mirroring how
+`.tim`'s suffix is already derived), not hardcoded to `""` -- a real
+Lucene-written segment (`fixtures/data/compound_index/`) gives doc values
+their own codec suffix (`Lucene90_<n>`) independent of the postings suffix,
+and the first cut of this wiring broke that fixture's existing
+`compound_file_segment_opens_and_is_queryable` test with a suffix-mismatch
+error before the fix.
+
+**Verified end-to-end, the way the task demanded -- through the real
+`IndexWriter` -> commit -> NRT reopen -> read-back path, not a hand-built
+fixture:** two new tests in
+`lucene-search/src/directory_reader.rs::tests::sparse_doc_values_nrt`.
+`nrt_reader_reads_sparse_numeric_field_after_first_commit` commits a sparse
+NUMERIC field (present/absent/present across 3 docs) through a real
+`IndexWriter`, opens a `DirectoryReader::open`, and confirms doc 0/2 read
+back their values and doc 1 reads back `None` (sparse, not zero) --
+resolving the field purely through `SegmentReader::field_infos`/
+`doc_values_meta`/`doc_values_data`, no direct file access.
+`nrt_reopen_reads_new_segments_sparse_numeric_values_correctly` is the
+genuine reopen case: a second commit adds a brand-new second segment with
+the *opposite* sparse pattern, `open_if_changed` is called, and both the
+reused first segment's original sparse values and the freshly-opened second
+segment's own (different) sparse values read back correctly with the right
+`doc_base`s. `cargo fmt --all` clean; `cargo clippy --workspace
+--all-targets -- -D warnings` clean; `cargo test -p lucene-search --lib`
+passes (was already exercising every existing `directory_reader` test,
+including the previously-broken-then-fixed compound-file test, plus the two
+new ones); `cargo test -p lucene-index --lib` passes unaffected (270/270).
+See `docs/parity.md`'s `index/DirectoryReader.open(Directory)` and
+`index/DirectoryReader.openIfChanged(DirectoryReader)` rows for the
+parity-tracking update.
