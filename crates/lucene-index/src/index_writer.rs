@@ -158,6 +158,16 @@ pub enum Error {
     LiveDocs(#[from] lucene_codecs::live_docs::Error),
     #[error(transparent)]
     PostingsWriter(#[from] postings_writer::Error),
+    /// A source segment's `.tim`/`.tip`/`.tmd` term dictionary couldn't be
+    /// opened while [`IndexWriter::execute_merge`] was assembling that
+    /// segment's [`crate::merge::SourcePostings`].
+    #[error(transparent)]
+    Blocktree(#[from] lucene_codecs::blocktree::Error),
+    /// A source segment's `.doc` file couldn't be opened while
+    /// [`IndexWriter::execute_merge`] was assembling that segment's
+    /// [`crate::merge::SourcePostings`].
+    #[error(transparent)]
+    Postings(#[from] lucene_codecs::postings::Error),
     #[error(transparent)]
     TermVectors(#[from] term_vectors::Error),
     #[error(transparent)]
@@ -1905,23 +1915,27 @@ impl<'d> IndexWriter<'d> {
     /// own [`SegmentCommitInfo`] (already in memory, no re-read needed).
     ///
     /// **Segments with postings files (`.doc`/`.tim`/`.tip`/`.tmd`, written
-    /// when [`IndexWriter::set_postings_field`] is configured), term-vector
-    /// files (`.tvd`/`.tvx`/`.tvm`, written when
-    /// [`IndexWriter::set_term_vector_field`] is configured), or doc-values
+    /// when [`IndexWriter::set_postings_field`] is configured) are now
+    /// mergeable** -- [`execute_merge`](IndexWriter::execute_merge) opens
+    /// each source's postings (if present) and feeds them through
+    /// [`crate::merge::merge_stored_only_segments`]'s existing
+    /// [`crate::merge::merge_postings`] plumbing (see that function's doc
+    /// comment). Term-vector files (`.tvd`/`.tvx`/`.tvm`, written when
+    /// [`IndexWriter::set_term_vector_field`] is configured) and doc-values
     /// files (`.dvd`/`.dvm`/`.dvs`, written when
-    /// [`IndexWriter::set_doc_values_field`] is configured) are excluded
-    /// entirely** -- [`execute_merge`](IndexWriter::execute_merge) only
-    /// merges stored fields via
-    /// [`crate::merge::merge_stored_only_segments`], which has no knowledge
-    /// of postings, term vectors, or doc values at all. Feeding such a
-    /// segment into `find_merges` would let an automatic merge silently drop
-    /// that segment's postings/term vectors/doc values (the merged segment's
-    /// `.si` would list only stored-fields files, and the source segment's
-    /// real `.doc`/`.tim`/`.tip`/`.tmd`/`.tvd`/`.tvx`/`.tvm`/`.dvd`/`.dvm`/
-    /// `.dvs` would become orphaned on disk) with no error surfaced --
-    /// excluding these segments from consideration keeps them permanently
-    /// un-mergeable rather than mergeable-with-silent-data-loss, until
-    /// postings/term-vector/doc-values-aware merging exists.
+    /// [`IndexWriter::set_doc_values_field`] is configured) are still
+    /// excluded entirely -- `execute_merge` does not yet open a source's
+    /// term-vectors/doc-values data at all (only postings and, in principle,
+    /// points -- see [`execute_merge`](IndexWriter::execute_merge)'s doc
+    /// comment on why points never actually appears in practice yet).
+    /// Feeding a term-vector/doc-values-bearing segment into `find_merges`
+    /// would let an automatic merge silently drop that data (the merged
+    /// segment's `.si` would list only stored-fields/postings files, and the
+    /// source segment's real `.tvd`/`.tvx`/`.tvm`/`.dvd`/`.dvm`/`.dvs` would
+    /// become orphaned on disk) with no error surfaced -- excluding these
+    /// segments from consideration keeps them permanently un-mergeable
+    /// rather than mergeable-with-silent-data-loss, until term-vector/
+    /// doc-values-aware merging exists.
     fn segment_stats(&self) -> Result<Vec<merge_policy::SegmentStat>> {
         let mut stats = Vec::with_capacity(self.segment_infos.segments.len());
         for sci in &self.segment_infos.segments {
@@ -1930,7 +1944,7 @@ impl<'d> IndexWriter<'d> {
             if si
                 .files
                 .iter()
-                .any(|f| f.ends_with(".doc") || f.ends_with(".tvd") || f.ends_with(".dvd"))
+                .any(|f| f.ends_with(".tvd") || f.ends_with(".dvd"))
             {
                 continue;
             }
@@ -1954,13 +1968,47 @@ impl<'d> IndexWriter<'d> {
     /// the next `segments_N` generation -- each executed merge group is its
     /// own commit, same as a caller manually driving
     /// [`IndexWriter::apply_merge`] would produce).
+    ///
+    /// **Postings.** If a source segment's `.si` lists a `.tim` file (i.e.
+    /// it has postings at all -- written when
+    /// [`IndexWriter::set_postings_field`]/[`IndexWriter::add_postings_field`]
+    /// was configured at flush time), this opens that segment's `.tim`/
+    /// `.tip`/`.tmd` term dictionary (via [`lucene_codecs::blocktree::open`])
+    /// and `.doc` file (via [`lucene_codecs::postings::DocInput::open`]) and
+    /// builds one [`crate::merge::SourcePostings`] per field this writer's
+    /// own `self.fields` schema marks as postings-eligible
+    /// (`index_options` of [`IndexOptions::Docs`]/[`IndexOptions::DocsAndFreqs`]
+    /// -- the same restriction [`IndexWriter::set_postings_field`] itself
+    /// enforces at write time, so no field ever needs positions/payloads
+    /// here) *and* that segment's term dictionary actually has an entry for.
+    /// This writer never writes positions (see
+    /// [`IndexWriter::build_postings_output`]'s doc comment), so `pos_in`/
+    /// `pay_in` are always `None` here -- consistent with every field this
+    /// writer can produce.
+    ///
+    /// **Points are not wired here.** [`crate::merge::SourcePoints`] exists
+    /// and [`crate::merge::merge_stored_only_segments`] already merges it
+    /// when populated (see that function's/[`crate::merge::merge_points`]'s
+    /// doc comments), but this writer has no points write path at flush time
+    /// at all yet (no `set_points_field`-equivalent, no points-carrying
+    /// `Document` field shape) -- there is currently no real segment this
+    /// writer could ever produce with `.kdm`/`.kdi`/`.kdd` files, so there is
+    /// nothing for this method to open. Wiring points end-to-end needs
+    /// flush-side points support added first; until then, `merge_points` is
+    /// exercised only by `merge.rs`'s own hand-built `MergeSource` fixtures.
+    /// See `docs/parity.md`.
     fn execute_merge(&mut self, names: &[String]) -> Result<()> {
+        /// Raw `.tim`/`.tip`/`.tmd`/`.doc` bytes for a source that has
+        /// postings -- `None` when that source's `.si` lists no `.tim` file.
+        type RawPostingsFiles = Option<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)>;
+
         struct OpenedSegment {
             sci: SegmentCommitInfo,
             fdt: Vec<u8>,
             fdx: Vec<u8>,
             fdm: Vec<u8>,
             live_docs: Option<FixedBitSet>,
+            postings: RawPostingsFiles,
         }
 
         let mut opened = Vec::with_capacity(names.len());
@@ -1991,12 +2039,25 @@ impl<'d> IndexWriter<'d> {
                 None
             };
 
+            let si_bytes = self.dir.open(&format!("{name}.si"))?.to_vec();
+            let si = segment_info::parse(&si_bytes, &sci.segment_id)?;
+            let postings = if si.files.iter().any(|f| f.ends_with(".tim")) {
+                let tim = self.dir.open(&format!("{name}.tim"))?.to_vec();
+                let tip = self.dir.open(&format!("{name}.tip"))?.to_vec();
+                let tmd = self.dir.open(&format!("{name}.tmd"))?.to_vec();
+                let doc = self.dir.open(&format!("{name}.doc"))?.to_vec();
+                Some((tim, tip, tmd, doc))
+            } else {
+                None
+            };
+
             opened.push(OpenedSegment {
                 sci,
                 fdt,
                 fdx,
                 fdm,
                 live_docs,
+                postings,
             });
         }
 
@@ -2005,11 +2066,92 @@ impl<'d> IndexWriter<'d> {
             .map(|o| stored_fields::open(&o.fdt, &o.fdx, &o.fdm, &o.sci.segment_id, ""))
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
+        // Fields this writer's fixed schema marks as postings-eligible --
+        // the same `IndexOptions::Docs`/`DocsAndFreqs`-only restriction
+        // `set_postings_field`/`add_postings_field` enforce at write time.
+        let postings_field_infos = lucene_codecs::field_infos::FieldInfos {
+            fields: self
+                .fields
+                .iter()
+                .filter(|f| {
+                    matches!(
+                        f.index_options,
+                        IndexOptions::Docs | IndexOptions::DocsAndFreqs
+                    )
+                })
+                .cloned()
+                .collect(),
+        };
+
+        let opened_postings: Vec<
+            Option<(
+                lucene_codecs::blocktree::BlockTreeFields,
+                lucene_codecs::postings::DocInput,
+            )>,
+        > = opened
+            .iter()
+            .zip(readers.iter())
+            .map(|(o, reader)| match &o.postings {
+                Some((tim, tip, tmd, doc)) => {
+                    let fields = lucene_codecs::blocktree::open(
+                        tim,
+                        tip,
+                        tmd,
+                        &postings_field_infos,
+                        &o.sci.segment_id,
+                        "",
+                        reader.max_doc(),
+                    )?;
+                    let doc_in =
+                        lucene_codecs::postings::DocInput::open(doc, &o.sci.segment_id, "")?;
+                    Ok::<_, Error>(Some((fields, doc_in)))
+                }
+                None => Ok(None),
+            })
+            .collect::<std::result::Result<Vec<_>, Error>>()?;
+
+        // One `Vec<SourcePostings>` per source, holding every
+        // postings-eligible field that source's own term dictionary
+        // actually has an entry for.
+        let per_source_postings: Vec<Vec<merge::SourcePostings>> = opened_postings
+            .iter()
+            .map(|maybe| match maybe {
+                Some((fields, doc_in)) => postings_field_infos
+                    .fields
+                    .iter()
+                    .filter_map(|f| {
+                        fields
+                            .field(&f.name)
+                            .map(|field_terms| merge::SourcePostings {
+                                field_number: f.number,
+                                field_terms,
+                                doc_in: Some(doc_in),
+                                pos_in: None,
+                                pay_in: None,
+                            })
+                    })
+                    .collect(),
+                None => Vec::new(),
+            })
+            .collect();
+
         let sources: Vec<merge::MergeSource> = opened
             .iter()
             .zip(readers.iter())
-            .map(|(o, reader)| {
-                merge::MergeSource::stored_only(&self.fields, reader, o.live_docs.as_ref())
+            .zip(per_source_postings.iter())
+            .map(|((o, reader), postings)| merge::MergeSource {
+                field_infos: &self.fields,
+                reader,
+                live_docs: o.live_docs.as_ref(),
+                numeric_doc_values: &[],
+                binary_doc_values: &[],
+                sorted_doc_values: &[],
+                sorted_numeric_doc_values: &[],
+                sorted_set_doc_values: &[],
+                norms: &[],
+                term_vectors: None,
+                postings,
+                points: &[],
             })
             .collect();
 
@@ -3532,14 +3674,14 @@ mod tests {
     }
 
     #[test]
-    fn segments_with_postings_are_never_automatically_merged_away() {
-        // Enabling both set_postings_field and set_merge_policy at once must
-        // not let automatic merging silently drop a segment's postings --
-        // execute_merge only knows how to merge stored fields
-        // (merge_stored_only_segments has no .doc/.tim/.tip/.tmd awareness at
-        // all), so segment_stats() excludes any segment carrying postings
-        // files from find_merges' candidate pool entirely, keeping it
-        // un-mergeable rather than mergeable-with-silent-data-loss.
+    fn segments_with_postings_are_automatically_merged_with_postings_preserved() {
+        // Enabling both set_postings_field and set_merge_policy at once now
+        // merges postings-carrying segments for real: execute_merge opens
+        // each source's .tim/.tip/.tmd/.doc (when present) and feeds them
+        // through crate::merge::merge_postings via MergeSource::postings, so
+        // segment_stats() no longer needs to exclude postings-bearing
+        // segments from find_merges' candidate pool to avoid silent data
+        // loss.
         let tmp = tempdir("postings-and-merge-policy");
         let dir = FsDirectory::open(&tmp);
         let fields = vec![stored_only_field("id", 0), body_field(1)];
@@ -3549,27 +3691,72 @@ mod tests {
 
         // tight_merge_policy's segments_per_tier is 2 -- three one-doc
         // commits, each producing a segment with real postings, must cross
-        // that threshold and would normally trigger a merge.
-        for id in ["a", "b", "c"] {
-            writer.add_document(doc_with_body(id, "shared text"));
+        // that threshold and trigger a merge down to one segment.
+        for (id, text) in [
+            ("a", "shared apple"),
+            ("b", "shared banana"),
+            ("c", "shared cherry"),
+        ] {
+            writer.add_document(doc_with_body(id, text));
             writer.commit().unwrap();
         }
 
-        let final_count = writer.segment_infos().segments.len();
+        let segments = writer.segment_infos().segments.clone();
         assert_eq!(
-            final_count, 3,
-            "segments carrying postings must never be automatically merged"
+            segments.len(),
+            1,
+            "postings-carrying segments must now merge down like any other"
         );
+        let sci = &segments[0];
 
-        // Every segment's real postings files must still be present and
-        // correctly listed in its own .si -- nothing was silently dropped.
-        for sci in &writer.segment_infos().segments.clone() {
-            let files = dir.list_all().unwrap();
-            assert!(files.contains(&format!("{}.tim", sci.segment_name)));
-            let si_bytes = dir.open(&format!("{}.si", sci.segment_name)).unwrap();
-            let si = segment_info::parse(&si_bytes, &sci.segment_id).unwrap();
-            assert!(si.files.iter().any(|f| f.ends_with(".tim")));
-        }
+        let files = dir.list_all().unwrap();
+        assert!(files.contains(&format!("{}.tim", sci.segment_name)));
+        let si_bytes = dir.open(&format!("{}.si", sci.segment_name)).unwrap();
+        let si = segment_info::parse(&si_bytes, &sci.segment_id).unwrap();
+        assert!(si.files.iter().any(|f| f.ends_with(".tim")));
+
+        // The merged segment's postings must still resolve every term from
+        // every source doc -- open the merged .tim/.tip/.tmd/.doc for real
+        // and confirm "shared" (present in all three docs) and "banana"
+        // (present in exactly one) both round-trip correctly.
+        let tim = dir.open(&format!("{}.tim", sci.segment_name)).unwrap();
+        let tip = dir.open(&format!("{}.tip", sci.segment_name)).unwrap();
+        let tmd = dir.open(&format!("{}.tmd", sci.segment_name)).unwrap();
+        let doc_bytes = dir.open(&format!("{}.doc", sci.segment_name)).unwrap();
+        let field_infos = lucene_codecs::field_infos::FieldInfos {
+            fields: vec![body_field(1)],
+        };
+        let fdt = dir.open(&format!("{}.fdt", sci.segment_name)).unwrap();
+        let fdx = dir.open(&format!("{}.fdx", sci.segment_name)).unwrap();
+        let fdm = dir.open(&format!("{}.fdm", sci.segment_name)).unwrap();
+        let stored = stored_fields::open(&fdt, &fdx, &fdm, &sci.segment_id, "").unwrap();
+        let max_doc = stored.max_doc();
+        let block_tree = lucene_codecs::blocktree::open(
+            &tim,
+            &tip,
+            &tmd,
+            &field_infos,
+            &sci.segment_id,
+            "",
+            max_doc,
+        )
+        .unwrap();
+        let doc_in = DocInput::open(&doc_bytes, &sci.segment_id, "").unwrap();
+        let body_terms = block_tree.field("body").unwrap();
+
+        let shared_stats = body_terms.seek_exact(b"shared").unwrap();
+        assert_eq!(
+            shared_stats.doc_freq, 3,
+            "\"shared\" appears in all 3 merged docs"
+        );
+        let shared_postings = body_terms
+            .postings(b"shared", Some(&doc_in))
+            .unwrap()
+            .unwrap();
+        assert_eq!(shared_postings.docs.len(), 3);
+
+        let banana_stats = body_terms.seek_exact(b"banana").unwrap();
+        assert_eq!(banana_stats.doc_freq, 1);
     }
 
     // --- set_term_vector_field / commit()'s term-vector-writing path ---

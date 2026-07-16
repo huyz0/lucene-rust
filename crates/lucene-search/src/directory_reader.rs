@@ -1558,4 +1558,215 @@ mod tests {
             std::fs::remove_dir_all(&dir_path).ok();
         }
     }
+
+    /// End-to-end exercise of `lucene_index::merge::merge_postings` (task:
+    /// "wire a real end-to-end caller for postings merge logic") -- not a
+    /// hand-built `MergeSource` fixture (see `merge.rs`'s own unit tests for
+    /// that), but the real path: `IndexWriter` flushes two real segments,
+    /// each with real `.tim`/`.tip`/`.tmd`/`.doc` postings
+    /// (`set_postings_field`), a configured `MergePolicyConfig` triggers a
+    /// real automatic merge inside `commit()` (`IndexWriter::auto_merge` ->
+    /// `execute_merge`, which now opens each source's postings and builds
+    /// `MergeSource::postings` from real on-disk data), and the merged
+    /// result is read back through this crate's own `DirectoryReader` ->
+    /// `SegmentReader` -> `search_term_query_multi_segment` stack -- the
+    /// exact same read path a caller with a fully general multi-segment
+    /// index already uses, run here against a single post-merge segment.
+    ///
+    /// (Points (`merge_points`) is not exercised here: this port's
+    /// `IndexWriter` has no points write path at flush time at all yet --
+    /// no `set_points_field`-equivalent, no points-carrying `Document`
+    /// field shape -- so there is no real segment it could ever produce
+    /// with `.kdm`/`.kdi`/`.kdd` files to merge in the first place. See
+    /// `docs/parity.md` and `merge.rs`'s module doc comment.)
+    mod postings_merge_e2e {
+        use super::*;
+        use crate::multi_segment::search_term_query_multi_segment;
+        use crate::query::TermQuery;
+        use lucene_codecs::field_infos::{
+            DocValuesSkipIndexType, DocValuesType, FieldInfo, IndexOptions, VectorEncoding,
+            VectorSimilarityFunction,
+        };
+        use lucene_codecs::stored_fields::{Document, FieldValue, StoredField};
+        use lucene_index::index_writer::IndexWriter;
+        use lucene_index::merge_policy::MergePolicyConfig;
+        use lucene_index::segment_info::LuceneVersion;
+
+        fn version() -> LuceneVersion {
+            LuceneVersion {
+                major: 10,
+                minor: 0,
+                bugfix: 0,
+            }
+        }
+
+        fn stored_only_field(name: &str, number: i32) -> FieldInfo {
+            FieldInfo {
+                name: name.to_string(),
+                number,
+                store_term_vectors: false,
+                omit_norms: false,
+                store_payloads: false,
+                soft_deletes_field: false,
+                parent_field: false,
+                index_options: IndexOptions::None,
+                doc_values_type: DocValuesType::None,
+                doc_values_skip_index_type: DocValuesSkipIndexType::None,
+                doc_values_gen: -1,
+                attributes: vec![],
+                point_dimension_count: 0,
+                point_index_dimension_count: 0,
+                point_num_bytes: 0,
+                vector_dimension: 0,
+                vector_encoding: VectorEncoding::Float32,
+                vector_similarity_function: VectorSimilarityFunction::Euclidean,
+            }
+        }
+
+        fn body_field(number: i32) -> FieldInfo {
+            FieldInfo {
+                index_options: IndexOptions::DocsAndFreqs,
+                ..stored_only_field("body", number)
+            }
+        }
+
+        fn doc_with_body(id: &str, body: &str) -> Document {
+            Document {
+                fields: vec![
+                    StoredField {
+                        field_number: 0,
+                        value: FieldValue::String(id.to_string()),
+                    },
+                    StoredField {
+                        field_number: 1,
+                        value: FieldValue::String(body.to_string()),
+                    },
+                ],
+            }
+        }
+
+        fn tight_merge_policy() -> MergePolicyConfig {
+            MergePolicyConfig {
+                max_merge_at_once: 10,
+                segments_per_tier: 2,
+                ..MergePolicyConfig::default()
+            }
+        }
+
+        /// Flushes two real segments (one doc each, via two separate
+        /// `commit()` calls) with real postings, then a third `commit()`
+        /// crosses `tight_merge_policy`'s `segments_per_tier` threshold and
+        /// triggers a real automatic merge down to one segment -- confirms
+        /// via a real `TermQuery` that every source doc's terms survived
+        /// the merge, not just that the merged segment's raw bytes exist.
+        #[test]
+        fn term_query_finds_docs_from_both_flushed_segments_after_automatic_merge() {
+            let dir_path = tempdir();
+            let dir = FsDirectory::open(&dir_path);
+            let fields = vec![stored_only_field("id", 0), body_field(1)];
+            let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+            writer.set_postings_field(Some("body")).unwrap();
+            writer.set_merge_policy(Some(tight_merge_policy()));
+
+            writer.add_document(doc_with_body("a", "quick fox"));
+            writer.commit().unwrap();
+            writer.add_document(doc_with_body("b", "lazy fox"));
+            writer.commit().unwrap();
+            // Crosses segments_per_tier (2) with a third one-doc commit,
+            // triggering `auto_merge` to fold all three segments into one.
+            writer.add_document(doc_with_body("c", "quick dog"));
+            writer.commit().unwrap();
+
+            let segments_after = writer.segment_infos().segments.clone();
+            assert_eq!(
+                segments_after.len(),
+                1,
+                "postings-carrying segments must merge down like any other"
+            );
+            let merged = &segments_after[0];
+
+            // Opened straight off disk with this port's own no-codec-suffix
+            // convention (segment_suffix == "", matching every write site in
+            // `index_writer.rs`/`merge.rs`) rather than through
+            // `DirectoryReader`/`SegmentReader::open`, which assumes real
+            // Lucene's `_<n>_<Codec>_<n>` suffixed sub-file names -- a
+            // separate, pre-existing gap in this port's own writer/reader
+            // naming convention, out of scope for this merge-wiring task.
+            let tim = dir.open(&format!("{}.tim", merged.segment_name)).unwrap();
+            let tip = dir.open(&format!("{}.tip", merged.segment_name)).unwrap();
+            let tmd = dir.open(&format!("{}.tmd", merged.segment_name)).unwrap();
+            let doc_bytes = dir.open(&format!("{}.doc", merged.segment_name)).unwrap();
+            let fdt = dir.open(&format!("{}.fdt", merged.segment_name)).unwrap();
+            let fdx = dir.open(&format!("{}.fdx", merged.segment_name)).unwrap();
+            let fdm = dir.open(&format!("{}.fdm", merged.segment_name)).unwrap();
+            let stored =
+                lucene_codecs::stored_fields::open(&fdt, &fdx, &fdm, &merged.segment_id, "")
+                    .unwrap();
+            let field_infos = lucene_codecs::field_infos::FieldInfos {
+                fields: vec![body_field(1)],
+            };
+            let block_tree = blocktree::open(
+                &tim,
+                &tip,
+                &tmd,
+                &field_infos,
+                &merged.segment_id,
+                "",
+                stored.max_doc(),
+            )
+            .unwrap();
+            let doc_in = DocInput::open(&doc_bytes, &merged.segment_id, "").unwrap();
+
+            let segments = vec![crate::multi_segment::OpenSegment {
+                fields: &block_tree,
+                doc_in: Some(&doc_in),
+                pos_in: None,
+                pay_in: None,
+                live_docs: None,
+                doc_base: 0,
+            }];
+            let norms = [None];
+
+            // "fox" was indexed by docs "a" and "b" -- originally in two
+            // different flushed segments, now merged into one.
+            let fox_hits = search_term_query_multi_segment(
+                &segments,
+                &TermQuery::new("body", "fox"),
+                &norms,
+                10,
+            )
+            .unwrap();
+            assert_eq!(
+                fox_hits.len(),
+                2,
+                "\"fox\" must resolve to both merged docs"
+            );
+
+            // "quick" was indexed by docs "a" and "c".
+            let quick_hits = search_term_query_multi_segment(
+                &segments,
+                &TermQuery::new("body", "quick"),
+                &norms,
+                10,
+            )
+            .unwrap();
+            assert_eq!(
+                quick_hits.len(),
+                2,
+                "\"quick\" must resolve to both merged docs"
+            );
+
+            // "lazy" was indexed by doc "b" only.
+            let lazy_hits = search_term_query_multi_segment(
+                &segments,
+                &TermQuery::new("body", "lazy"),
+                &norms,
+                10,
+            )
+            .unwrap();
+            assert_eq!(lazy_hits.len(), 1);
+
+            std::fs::remove_dir_all(&dir_path).ok();
+        }
+    }
 }
