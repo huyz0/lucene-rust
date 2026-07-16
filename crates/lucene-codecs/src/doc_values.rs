@@ -25,11 +25,14 @@
 //! is written as a plain `SORTED` field with a multi-valued flag byte
 //! (see [`SortedSetFieldEntry`]), not as a degenerate `SORTED_NUMERIC`.
 //!
-//! Also out of scope for now: "varying bits-per-value" blocks (Java splits
-//! a field's values into 16384-value blocks with independently chosen
-//! bits-per-value when that's a better fit — `blockShift >= 0` in the meta).
-//! Small-to-medium fields Lucene doesn't bother splitting; reading one that
-//! was split returns [`Error::UnsupportedVaryingBpvBlocks`].
+//! A NUMERIC field's values can also be split into "varying bits-per-value"
+//! blocks (`Lucene90DocValuesConsumer.writeValues`'s `doBlocks` path): rather
+//! than one uniform width for the whole field, each `2^blockShift`-value
+//! block (16384 in real Lucene) is independently bit-packed, whenever doing
+//! so saves at least 10% versus the whole-field width. On disk this is
+//! `tableSize < -1` in the meta (`blockShift = -2 - tableSize`); see
+//! [`NumericEntry::block_shift`] and [`decode_value_varying_bpv`] for the
+//! block layout this decodes.
 //!
 //! Three encodings for a NUMERIC field's per-doc values (`bitsPerValue` in
 //! the meta):
@@ -104,8 +107,6 @@ pub enum Error {
     UnknownFieldNumber(i32),
     #[error("field {0} has unknown doc values type byte {1}")]
     UnsupportedFieldType(i32, u8),
-    #[error("field {0} splits values into varying-bits-per-value blocks, which this port doesn't decode")]
-    UnsupportedVaryingBpvBlocks(i32),
     #[error("invalid table size: {0}")]
     InvalidTableSize(i32),
     #[error("invalid bitsPerValue: {0}, field number {1}")]
@@ -138,6 +139,20 @@ pub struct NumericEntry {
     pub gcd: i64,
     pub values_offset: i64,
     pub values_length: i64,
+    /// `Some(shift)` when this field's values are split into independently
+    /// bit-packed blocks of `2^shift` values each (`Lucene90DocValuesConsumer
+    /// .writeValues`'s `doBlocks` path, on disk as `tableSize < -1` ->
+    /// `blockShift = -2 - tableSize`) rather than one uniform width for the
+    /// whole field. `bits_per_value` is then a meaningless `0xFF` sentinel;
+    /// each block carries its own width and its own `min`-equivalent delta,
+    /// read via [`value_jump_table_offset`](Self::value_jump_table_offset)
+    /// -- see [`decode_value_varying_bpv`].
+    pub block_shift: Option<u32>,
+    /// Absolute byte offset into the whole `.dvd` file of this field's
+    /// per-block offset table (one `i64` absolute block-start offset per
+    /// block, plus one trailing self-referential entry) -- only meaningful
+    /// when [`block_shift`](Self::block_shift) is `Some`.
+    pub value_jump_table_offset: i64,
 }
 
 impl NumericEntry {
@@ -513,32 +528,41 @@ fn read_numeric_entry(input: &mut SliceInput, field_number: i32) -> Result<Numer
     if table_size > 256 {
         return Err(Error::InvalidTableSize(table_size));
     }
-    let table = if table_size >= 0 {
+    // `tableSize < -1` means this field's values are split into varying-
+    // bits-per-value blocks (`blockShift = -2 - tableSize`) rather than a
+    // lookup table; `bits_per_value` below is then a meaningless `0xFF`
+    // sentinel (real Lucene writes `numBitsPerValue = 0xFF` in this case),
+    // so skip the normal table/enum reads for it.
+    let (table, block_shift) = if table_size < -1 {
+        let shift = -2i64 - table_size as i64;
+        if !(0..=63).contains(&shift) {
+            return Err(Error::InvalidTableSize(table_size));
+        }
+        (None, Some(shift as u32))
+    } else if table_size >= 0 {
         let mut t = Vec::with_capacity(table_size as usize);
         for _ in 0..table_size {
             t.push(input.read_i64()?);
         }
-        Some(t)
+        (Some(t), None)
     } else {
-        None
+        (None, None)
     };
-    if table_size < -1 {
-        // Varying-bits-per-value blocks: `blockShift = -2 - tableSize`.
-        return Err(Error::UnsupportedVaryingBpvBlocks(field_number));
-    }
 
     let bits_per_value = input.read_byte()?;
-    if !matches!(
-        bits_per_value,
-        0 | 1 | 2 | 4 | 8 | 12 | 16 | 20 | 24 | 28 | 32 | 40 | 48 | 56 | 64
-    ) {
+    if block_shift.is_none()
+        && !matches!(
+            bits_per_value,
+            0 | 1 | 2 | 4 | 8 | 12 | 16 | 20 | 24 | 28 | 32 | 40 | 48 | 56 | 64
+        )
+    {
         return Err(Error::InvalidBitsPerValue(bits_per_value, field_number));
     }
     let min_value = input.read_i64()?;
     let gcd = input.read_i64()?;
     let values_offset = input.read_i64()?;
     let values_length = input.read_i64()?;
-    let _value_jump_table_offset = input.read_i64()?; // only meaningful for varying-bpv blocks
+    let value_jump_table_offset = input.read_i64()?; // only meaningful for varying-bpv blocks
 
     Ok(NumericEntry {
         field_number,
@@ -553,6 +577,8 @@ fn read_numeric_entry(input: &mut SliceInput, field_number: i32) -> Result<Numer
         gcd,
         values_offset,
         values_length,
+        block_shift,
+        value_jump_table_offset,
     })
 }
 
@@ -749,6 +775,9 @@ pub fn numeric_value(data: &[u8], entry: &NumericEntry, doc: i32) -> Result<Opti
 /// rank-among-present-docs for sparse ones) and applies the table or
 /// GCD-delta transform to get the final value.
 fn decode_value(data: &[u8], entry: &NumericEntry, ordinal: i64) -> Result<i64> {
+    if let Some(shift) = entry.block_shift {
+        return decode_value_varying_bpv(data, entry, shift, ordinal);
+    }
     if entry.bits_per_value == 0 {
         return Ok(entry.min_value);
     }
@@ -766,6 +795,58 @@ fn decode_value(data: &[u8], entry: &NumericEntry, ordinal: i64) -> Result<i64> 
     } else {
         Ok(entry.gcd.wrapping_mul(raw).wrapping_add(entry.min_value))
     }
+}
+
+/// Decodes `ordinal`'s value out of a varying-bits-per-value field
+/// (`entry.block_shift.is_some()`), mirroring
+/// `Lucene90DocValuesProducer.VaryingBPVReader.getLongValue`.
+///
+/// Each block's own start offset (absolute in the whole `.dvd` file) is
+/// looked up directly in the per-field jump table at
+/// `entry.value_jump_table_offset + block * 8` -- no need to walk prior
+/// blocks first, unlike a sequential scan. A block's own header is then:
+/// one byte bits-per-value, an `i64` delta (the block's own min value, or
+/// its single constant value when bits-per-value is 0), and -- only when
+/// bits-per-value is non-zero -- an `i32` byte length followed by that many
+/// bytes of bit-packed `(value - delta) / gcd` values (`entry.gcd` is the
+/// whole field's GCD, reused by every block).
+fn decode_value_varying_bpv(
+    data: &[u8],
+    entry: &NumericEntry,
+    shift: u32,
+    ordinal: i64,
+) -> Result<i64> {
+    let block = ordinal >> shift;
+    let jump_table_pos = entry
+        .value_jump_table_offset
+        .checked_add(
+            block
+                .checked_mul(8)
+                .ok_or(lucene_store::Error::Eof { offset: 0 })?,
+        )
+        .ok_or(lucene_store::Error::Eof { offset: 0 })?;
+    let jump_table_pos =
+        usize::try_from(jump_table_pos).map_err(|_| lucene_store::Error::Eof { offset: 0 })?;
+    let mut input = SliceInput::new(data);
+    input.seek(jump_table_pos)?;
+    let block_start =
+        usize::try_from(input.read_i64()?).map_err(|_| lucene_store::Error::Eof { offset: 0 })?;
+
+    input.seek(block_start)?;
+    let bits_per_value = input.read_byte()?;
+    let delta = input.read_i64()?;
+    if bits_per_value == 0 {
+        return Ok(delta);
+    }
+    let length = input.read_i32()?;
+    let length = usize::try_from(length).map_err(|_| lucene_store::Error::Eof { offset: 0 })?;
+    let values_start = input.position();
+    let values = data
+        .get(values_start..values_start + length)
+        .ok_or(lucene_store::Error::Eof { offset: 0 })?;
+    let mask = (1i64 << shift) - 1;
+    let raw = direct_reader::get(values, bits_per_value, ordinal & mask)?;
+    Ok(entry.gcd.wrapping_mul(raw).wrapping_add(delta))
 }
 
 /// Reads the binary doc-values value for `doc`, handling all three
@@ -2316,6 +2397,11 @@ mod tests {
         gcd: i64,
         values_offset: i64,
         values_length: i64,
+        /// `Some(shift)` builds a varying-bits-per-value entry (`tableSize
+        /// = -2 - shift`, `bits_per_value` written as the `0xFF` sentinel)
+        /// instead of the normal table/no-table shape.
+        block_shift: Option<u32>,
+        value_jump_table_offset: i64,
     }
 
     impl EntryBuilder {
@@ -2331,6 +2417,8 @@ mod tests {
                 gcd: 1,
                 values_offset: 0,
                 values_length: 0,
+                block_shift: None,
+                value_jump_table_offset: 0,
             }
         }
 
@@ -2348,21 +2436,30 @@ mod tests {
             out.extend_from_slice(&0i16.to_le_bytes()); // jumpTableEntryCount
             out.push(0); // denseRankPower
             out.extend_from_slice(&self.num_values.to_le_bytes());
-            match &self.table {
-                Some(t) => {
-                    out.extend_from_slice(&(t.len() as i32).to_le_bytes());
-                    for v in t {
-                        out.extend_from_slice(&v.to_le_bytes());
+            if let Some(shift) = self.block_shift {
+                let table_size: i32 = -2 - shift as i32;
+                out.extend_from_slice(&table_size.to_le_bytes());
+            } else {
+                match &self.table {
+                    Some(t) => {
+                        out.extend_from_slice(&(t.len() as i32).to_le_bytes());
+                        for v in t {
+                            out.extend_from_slice(&v.to_le_bytes());
+                        }
                     }
+                    None => out.extend_from_slice(&(-1i32).to_le_bytes()),
                 }
-                None => out.extend_from_slice(&(-1i32).to_le_bytes()),
             }
-            out.push(self.bits_per_value);
+            out.push(if self.block_shift.is_some() {
+                0xFF
+            } else {
+                self.bits_per_value
+            });
             out.extend_from_slice(&self.min_value.to_le_bytes());
             out.extend_from_slice(&self.gcd.to_le_bytes());
             out.extend_from_slice(&self.values_offset.to_le_bytes());
             out.extend_from_slice(&self.values_length.to_le_bytes());
-            out.extend_from_slice(&0i64.to_le_bytes()); // valueJumpTableOffset
+            out.extend_from_slice(&self.value_jump_table_offset.to_le_bytes());
         }
 
         /// Round-trips through `build_body`/`read_numeric_entry` rather than
@@ -2495,29 +2592,115 @@ mod tests {
     }
 
     #[test]
-    fn varying_bpv_blocks_rejected() {
+    fn invalid_varying_bpv_shift_rejected() {
         let id = [1u8; ID_LENGTH];
-        let mut e = EntryBuilder::dense(0, 8, 3);
-        e.table = None;
-        let mut buf = Vec::new();
-        buf.extend_from_slice(&codec_util::CODEC_MAGIC.to_be_bytes());
-        write_string(&mut buf, META_CODEC);
-        buf.extend_from_slice(&(VERSION_CURRENT as u32).to_be_bytes());
-        buf.extend_from_slice(&id);
-        buf.push(0);
-        buf.extend_from_slice(&e.field_number.to_le_bytes());
-        buf.push(DOC_VALUES_TYPE_NUMERIC);
-        buf.extend_from_slice(&e.docs_with_field_offset.to_le_bytes());
-        buf.extend_from_slice(&e.docs_with_field_length.to_le_bytes());
-        buf.extend_from_slice(&0i16.to_le_bytes());
-        buf.push(0);
-        buf.extend_from_slice(&e.num_values.to_le_bytes());
-        buf.extend_from_slice(&(-3i32).to_le_bytes()); // tableSize < -1 -> varying bpv
+        let mut out = Vec::new();
+        out.extend_from_slice(&codec_util::CODEC_MAGIC.to_be_bytes());
+        write_string(&mut out, META_CODEC);
+        out.extend_from_slice(&(VERSION_CURRENT as u32).to_be_bytes());
+        out.extend_from_slice(&id);
+        out.push(0);
+        out.extend_from_slice(&0i32.to_le_bytes()); // field number
+        out.push(DOC_VALUES_TYPE_NUMERIC);
+        out.extend_from_slice(&DOCS_WITH_FIELD_DENSE.to_le_bytes());
+        out.extend_from_slice(&0i64.to_le_bytes());
+        out.extend_from_slice(&0i16.to_le_bytes());
+        out.push(0);
+        out.extend_from_slice(&3i64.to_le_bytes());
+        // tableSize < -1 encodes blockShift = -2 - tableSize; i32::MIN would
+        // overflow that subtraction, and any shift > 63 is unusable as a
+        // bit-shift amount -- both must be rejected rather than accepted and
+        // later panicking in decode_value_varying_bpv.
+        out.extend_from_slice(&i32::MIN.to_le_bytes());
         let fis = field_infos_with(&[0]);
         assert!(matches!(
-            parse_meta(&buf, &id, "", &fis),
-            Err(Error::UnsupportedVaryingBpvBlocks(0))
+            parse_meta(&out, &id, "", &fis),
+            Err(Error::InvalidTableSize(i32::MIN))
         ));
+    }
+
+    /// Hand-builds a two-block varying-bits-per-value field (block size
+    /// `2^shift = 4`) with 6 values split `[10, 12, 11, 9]` / `[100, 5]` --
+    /// block 0 needs 2 bits per value (range 9..12), block 1 needs 7 bits
+    /// (range 5..100) and a different `bitsPerValue` byte -- and checks
+    /// every value decodes correctly across the block boundary, plus the
+    /// all-same-value (`bitsPerValue == 0`) single-value shape within a
+    /// block.
+    #[test]
+    fn varying_bpv_blocks_decoded_across_two_blocks() {
+        let shift: u32 = 2; // block size 4
+        let block0 = [10i64, 12, 11, 9];
+        let block1 = [100i64, 5];
+
+        let mut data = Vec::new();
+
+        // Block 0: min=9, values relative to min packed at bitsPerValue=2.
+        let block0_start = data.len() as i64;
+        let min0 = *block0.iter().min().unwrap();
+        let max0 = *block0.iter().max().unwrap();
+        let bpv0 = direct_reader::unsigned_bits_required(max0 - min0);
+        let raw0: Vec<i64> = block0.iter().map(|v| v - min0).collect();
+        let packed0 = direct_reader::encode(&raw0, bpv0);
+        data.push(bpv0);
+        data.extend_from_slice(&min0.to_le_bytes());
+        data.extend_from_slice(&(packed0.len() as i32).to_le_bytes());
+        data.extend_from_slice(&packed0);
+
+        // Block 1: min=5, values relative to min packed at bitsPerValue=7.
+        let block1_start = data.len() as i64;
+        let min1 = *block1.iter().min().unwrap();
+        let max1 = *block1.iter().max().unwrap();
+        let bpv1 = direct_reader::unsigned_bits_required(max1 - min1);
+        let raw1: Vec<i64> = block1.iter().map(|v| v - min1).collect();
+        let packed1 = direct_reader::encode(&raw1, bpv1);
+        data.push(bpv1);
+        data.extend_from_slice(&min1.to_le_bytes());
+        data.extend_from_slice(&(packed1.len() as i32).to_le_bytes());
+        data.extend_from_slice(&packed1);
+
+        // Jump table: one absolute block-start offset per block, plus a
+        // trailing self-referential entry (unused by the decoder, present
+        // for on-disk fidelity with the real writer).
+        let jump_table_offset = data.len() as i64;
+        data.extend_from_slice(&block0_start.to_le_bytes());
+        data.extend_from_slice(&block1_start.to_le_bytes());
+        data.extend_from_slice(&jump_table_offset.to_le_bytes());
+
+        let mut e = EntryBuilder::dense(0, 0, (block0.len() + block1.len()) as i64);
+        e.block_shift = Some(shift);
+        e.value_jump_table_offset = jump_table_offset;
+        let entry = e.to_entry();
+        assert_eq!(entry.block_shift, Some(shift));
+
+        let all_values: Vec<i64> = block0.iter().chain(block1.iter()).copied().collect();
+        for (doc, &want) in all_values.iter().enumerate() {
+            let got = numeric_value(&data, &entry, doc as i32).unwrap();
+            assert_eq!(got, Some(want), "doc {doc}");
+        }
+    }
+
+    /// A varying-bpv block where every value is identical takes the
+    /// `bitsPerValue == 0` single-value shape (no packed data at all,
+    /// just the constant stored as the block's delta).
+    #[test]
+    fn varying_bpv_block_all_same_value() {
+        let shift: u32 = 1; // block size 2
+        let mut data = Vec::new();
+        let block_start = data.len() as i64;
+        data.push(0u8); // bitsPerValue == 0
+        data.extend_from_slice(&7i64.to_le_bytes()); // constant value
+
+        let jump_table_offset = data.len() as i64;
+        data.extend_from_slice(&block_start.to_le_bytes());
+        data.extend_from_slice(&jump_table_offset.to_le_bytes());
+
+        let mut e = EntryBuilder::dense(0, 0, 2);
+        e.block_shift = Some(shift);
+        e.value_jump_table_offset = jump_table_offset;
+        let entry = e.to_entry();
+
+        assert_eq!(numeric_value(&data, &entry, 0).unwrap(), Some(7));
+        assert_eq!(numeric_value(&data, &entry, 1).unwrap(), Some(7));
     }
 
     #[test]

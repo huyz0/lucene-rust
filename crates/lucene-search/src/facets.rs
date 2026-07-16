@@ -472,6 +472,8 @@ mod tests {
             gcd: 1,
             values_offset: 0,
             values_length: 1,
+            block_shift: None,
+            value_jump_table_offset: 0,
         };
         numeric.bits_per_value = 8;
         let entry = SortedNumericEntry {
@@ -772,6 +774,8 @@ mod tests {
             gcd: 1,
             values_offset: 0,
             values_length: 1,
+            block_shift: None,
+            value_jump_table_offset: 0,
         };
         entry.bits_per_value = 8;
         let ranges = vec![NumericRange {
