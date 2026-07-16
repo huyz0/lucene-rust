@@ -5067,3 +5067,64 @@ already-correct code paths and added an explicit assertion for a third
 `fixtures/README.md` (added the new generator to the regen command list),
 `crates/lucene-codecs/src/blocktree.rs` (two new/extended tests, no
 non-test changes), `docs/parity.md`.
+
+**Progress (term vectors write-side offsets/payloads):** `term_vectors::write_best_speed`
+(`crates/lucene-codecs/src/term_vectors.rs`) previously only supported
+POSITIONS-only term-vector fields, rejecting `has_offsets`/`has_payloads`
+with an `assert!` -- a scoped-down state left over from the function's
+original slice, and the reason `merge_term_vectors` in `merge.rs` (a sibling
+task) needed its own `Error::TermVectorOffsetsOrPayloadsNotSupported` guard
+to fail cleanly instead of hitting that panic during a merge. The read side
+(`TermVectorsReader::document`) already fully decoded offsets/payloads
+correctly, fixture-verified, so this task's job was purely to write the
+exact inverse of what that decoder already parses.
+
+The offsets encoding mirrors the read side's per-term (not per-field) delta
+chain and its `charsPerTerm`-patched delta math exactly: this writer picks a
+fixed `CHARS_PER_TERM = 1.0` for every distinct field number that has
+OFFSETS, computes each occurrence's `raw_delta = target - correction` where
+`correction = (CHARS_PER_TERM * position) as i32` (0 when the field has no
+positions), and writes `lengths_flat = (end - start) - term_len` -- exactly
+undoing the read side's `patched = raw_delta + correction` /
+`length = lengths_flat + term_len`. The constant's value doesn't affect
+round-trip correctness (it's always exactly cancelled on decode), unlike a
+real flush's analyzer-derived ratio. Payload bytes are appended into the
+same LZ4 literal unit as term suffixes, restructured to group **per
+document** (a doc's fields' suffixes, then that doc's PAYLOADS fields'
+payloads, then the next doc's) rather than the previous single global pass
+over all fields -- required because chunks can hold multiple documents and
+the read side's decompression slicing is doc-scoped, not field-scoped.
+
+Three new round-trip tests in `term_vectors.rs`'s own test module construct
+`TermVectorField`s with offsets only, payloads only, and positions+offsets+
+payloads together across a multi-doc/multi-term chunk, write them via the
+now-extended `write_best_speed`, and read them back via the **unmodified**
+`TermVectorsReader::document`, asserting every term's positions/offsets/
+payloads match exactly. The previous `write_best_speed_rejects_offsets`
+`#[should_panic]` test (proving the old restriction) was replaced since the
+restriction no longer exists; a new
+`write_best_speed_positions_only_regression_still_works` test makes the
+positions-only path's continued correctness explicit rather than leaving it
+implicit in the pre-existing tests.
+
+**Scope boundary, deliberately not crossed**: this task only extends the
+codec-level `write_best_speed` function. Neither `IndexWriter`'s term-vector
+commit path (`build_term_vectors_output` in `index_writer.rs`) nor
+`merge.rs`'s merge path constructs a `TermVectorField` with
+`has_offsets`/`has_payloads` set today -- that plumbing (real tokenizer
+offsets/payloads flowing through to `TermVectorField` construction) is a
+separate follow-up, the same "write-side capability added, IndexWriter/merge
+consumption left for later" pattern used for doc-values multi-field writing
+earlier in this project. `merge.rs`'s `TermVectorOffsetsOrPayloadsNotSupported`
+guard and its `term_vectors_merge_rejects_offsets_and_payloads` regression
+test are both left untouched: lifting the guard would require separately
+verifying the merge path's own field-reprefixing/combination logic handles
+offsets/payloads correctly, which is unrelated to (and unreviewed by) this
+task.
+
+Files changed: `crates/lucene-codecs/src/term_vectors.rs` (`write_best_speed`
+extended; doc comment rewritten to describe the new scope; five new/changed
+tests), `docs/parity.md`, `PLAN.md`. `merge.rs` and `index_writer.rs` are
+unchanged. `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D
+warnings`, `cargo test -p lucene-codecs`, and `cargo test -p lucene-index`
+all pass clean.

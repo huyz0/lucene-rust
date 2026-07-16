@@ -564,22 +564,24 @@ impl<'d> TermVectorsReader<'d> {
 
 /// Port of `Lucene90CompressingTermVectorsWriter` -- write-side counterpart
 /// of [`open`]/[`TermVectorsReader::document`]. Deliberately scoped down
-/// twice over from the real writer:
+/// from the real writer:
 ///
 /// - **Single chunk only**: every document in `docs` goes into one chunk
 ///   (`chunk_docs = docs.len()`), same as [`crate::stored_fields::write_best_speed`].
-/// - **Positions only, no offsets, no payloads, no prefix sharing**: every
-///   field passed in must have `has_offsets == false` and
-///   `has_payloads == false` (checked with an assertion), and every term is
-///   written with `prefix_len = 0` (the full term text as its "suffix" --
-///   this port doesn't attempt to find a shared prefix with the previous
-///   term in the field). `GenTermVectors.java`'s fixture exercises
-///   positions+offsets+payloads together on the *read* side, but committing
-///   the write side to that whole matrix in one pass risked a half-correct
-///   implementation of offset-patching's `charsPerTerm` interaction with
-///   positions; positions alone is fully correct and independently useful
-///   (freq/positions are the common case for term-vector consumers), so
-///   offsets/payloads are left for a follow-up slice.
+/// - **No prefix sharing**: every term is written with `prefix_len = 0` (the
+///   full term text as its "suffix" -- this port doesn't attempt to find a
+///   shared prefix with the previous term in the field).
+/// - **Positions, offsets, and payloads are all supported** (this used to be
+///   positions-only; see git history for the earlier scoped-down version).
+///   Offset deltas are patched against a fixed `charsPerTerm = 1.0` for every
+///   distinct field number that has OFFSETS -- unlike a real flush, which
+///   derives `charsPerTerm` from the analyzer's actual character/position
+///   ratio, this port's constant is only meaningful to *this* writer's own
+///   inverse math (see [`TermVectorsReader::document`]'s offset-patching
+///   comment): whatever constant is chosen here is exactly cancelled back
+///   out on read, so its value doesn't affect round-trip correctness, only
+///   (hypothetically) compressibility of the delta stream, which this
+///   "best speed" writer doesn't optimize for anyway.
 /// - **Worst-case encoding widths**: every `block_packed`/`direct_reader`
 ///   array uses the exact bit width its own values need (see
 ///   [`block_packed::encode_all`]), not a real writer's cross-block/
@@ -589,6 +591,18 @@ impl<'d> TermVectorsReader<'d> {
 /// Java-Lucene-openable `.tvd`/`.tvx`/`.tvm` files; only the compression
 /// ratio, chunk count, and prefix-sharing differ from what a real flush
 /// would produce.
+///
+/// **Not yet wired**: nothing in `IndexWriter`'s or `merge.rs`'s term-vector
+/// commit paths currently constructs a [`TermVectorField`] with
+/// `has_offsets`/`has_payloads` set -- that plumbing (tokenization ->
+/// `TermVectorField` construction with real offsets/payloads) is a separate
+/// follow-up. `merge.rs`'s `TermVectorOffsetsOrPayloadsNotSupported` guard is
+/// therefore deliberately left in place even though this function no longer
+/// needs it: lifting it is out of scope here since the merge path's own
+/// reprefixing/combination logic for offsets/payloads hasn't been reviewed
+/// for correctness (only this codec function has).
+const CHARS_PER_TERM: f32 = 1.0;
+
 pub fn write_best_speed(
     docs: &[TermVectorsDocument],
     segment_id: &[u8; ID_LENGTH],
@@ -596,17 +610,7 @@ pub fn write_best_speed(
 ) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     for doc in docs {
         for field in &doc.fields {
-            assert!(
-                !field.has_offsets && !field.has_payloads,
-                "write_best_speed only supports positions (no offsets/payloads); \
-                 see the function doc comment for the scoped-down feature matrix"
-            );
             for term in &field.terms {
-                assert!(
-                    term.start_offsets.is_none() && term.payloads.is_none(),
-                    "term-level offsets/payloads must be None when the field \
-                     doesn't advertise them"
-                );
                 if field.has_positions {
                     assert_eq!(
                         term.positions.as_ref().map(|p| p.len()),
@@ -615,6 +619,29 @@ pub fn write_best_speed(
                     );
                 } else {
                     assert!(term.positions.is_none());
+                }
+                if field.has_offsets {
+                    assert_eq!(
+                        term.start_offsets.as_ref().map(|p| p.len()),
+                        Some(term.freq as usize),
+                        "start_offsets length must equal freq"
+                    );
+                    assert_eq!(
+                        term.end_offsets.as_ref().map(|p| p.len()),
+                        Some(term.freq as usize),
+                        "end_offsets length must equal freq"
+                    );
+                } else {
+                    assert!(term.start_offsets.is_none() && term.end_offsets.is_none());
+                }
+                if field.has_payloads {
+                    assert_eq!(
+                        term.payloads.as_ref().map(|p| p.len()),
+                        Some(term.freq as usize),
+                        "payloads length must equal freq"
+                    );
+                } else {
+                    assert!(term.payloads.is_none());
                 }
             }
         }
@@ -701,7 +728,11 @@ pub fn write_best_speed(
         fdt.write_vint(1);
         let flag_values: Vec<i64> = all_fields
             .iter()
-            .map(|f| (if f.has_positions { FLAG_POSITIONS } else { 0 }) as i64)
+            .map(|f| {
+                (if f.has_positions { FLAG_POSITIONS } else { 0 }
+                    | if f.has_offsets { FLAG_OFFSETS } else { 0 }
+                    | if f.has_payloads { FLAG_PAYLOADS } else { 0 }) as i64
+            })
             .collect();
         let flags_bytes = direct_reader::encode(&flag_values, FLAGS_BITS);
         fdt.write_vint(flags_bytes.len() as i32);
@@ -721,20 +752,70 @@ pub fn write_best_speed(
         let mut suffix_lengths: Vec<i64> = Vec::new();
         let mut term_freqs_minus1: Vec<i64> = Vec::new();
         let mut positions_flat: Vec<i64> = Vec::new();
-        let mut suffix_payload: Vec<u8> = Vec::new();
+        let mut start_offsets_flat: Vec<i64> = Vec::new();
+        let mut lengths_flat: Vec<i64> = Vec::new();
+        let mut payload_lengths_flat: Vec<i64> = Vec::new();
+
+        let total_offsets_any = all_fields.iter().any(|f| f.has_offsets);
+        let total_payloads_any = all_fields.iter().any(|f| f.has_payloads);
 
         for (field_idx, f) in all_fields.iter().enumerate() {
+            let has_positions = flag_values[field_idx] & FLAG_POSITIONS as i64 != 0;
+            let has_offsets = flag_values[field_idx] & FLAG_OFFSETS as i64 != 0;
+            let has_payloads = flag_values[field_idx] & FLAG_PAYLOADS as i64 != 0;
             for term in &f.terms {
                 prefix_lengths.push(0);
                 suffix_lengths.push(term.term.len() as i64);
                 term_freqs_minus1.push(term.freq as i64 - 1);
-                suffix_payload.extend_from_slice(&term.term);
-                if flag_values[field_idx] & FLAG_POSITIONS as i64 != 0 {
+
+                if has_positions {
                     let positions = term.positions.as_ref().unwrap();
                     let mut prev = 0i32;
                     for (k, &p) in positions.iter().enumerate() {
                         positions_flat.push(if k == 0 { p as i64 } else { (p - prev) as i64 });
                         prev = p;
+                    }
+                }
+
+                if has_offsets {
+                    let starts = term.start_offsets.as_ref().unwrap();
+                    let ends = term.end_offsets.as_ref().unwrap();
+                    let positions = term.positions.as_ref();
+                    let term_len = term.term.len() as i32;
+                    let mut prev_abs = 0i32;
+                    let mut prev_position = 0i32;
+                    for k in 0..starts.len() {
+                        // Must match the *same* position-delta stream the read side
+                        // (`build_field`) applies as its correction input -- absolute
+                        // for k == 0, delta-from-previous for k >= 1, exactly mirroring
+                        // `positions_flat`'s own encoding above. Using the absolute
+                        // position here (instead of the delta) only coincidentally
+                        // agrees with the read side when freq <= 2 or the first
+                        // occurrence is at position 0; for freq >= 3 it silently
+                        // corrupts every subsequent occurrence's decoded offsets.
+                        let correction = if has_positions {
+                            let p = positions.unwrap()[k];
+                            let position_delta = if k == 0 { p } else { p - prev_position };
+                            prev_position = p;
+                            (CHARS_PER_TERM * position_delta as f32) as i32
+                        } else {
+                            0
+                        };
+                        let target = if k == 0 {
+                            starts[k]
+                        } else {
+                            starts[k] - prev_abs
+                        };
+                        start_offsets_flat.push((target - correction) as i64);
+                        let length = ends[k] - starts[k];
+                        lengths_flat.push((length - term_len) as i64);
+                        prev_abs = starts[k];
+                    }
+                }
+
+                if has_payloads {
+                    for payload in term.payloads.as_ref().unwrap() {
+                        payload_lengths_flat.push(payload.len() as i64);
                     }
                 }
             }
@@ -746,8 +827,50 @@ pub fn write_best_speed(
         if !positions_flat.is_empty() {
             fdt.write_bytes(&block_packed::encode_all(&positions_flat));
         }
+        if total_offsets_any {
+            // One charsPerTerm entry per distinct field number (see the
+            // read side's `chars_per_term` array), regardless of whether
+            // every occurrence of that field number has OFFSETS.
+            for _ in &field_nums {
+                fdt.write_i32(CHARS_PER_TERM.to_bits() as i32);
+            }
+            fdt.write_bytes(&block_packed::encode_all(&start_offsets_flat));
+            fdt.write_bytes(&block_packed::encode_all(&lengths_flat));
+        }
+        if total_payloads_any {
+            fdt.write_bytes(&block_packed::encode_all(&payload_lengths_flat));
+        }
 
-        // No offsets/payloads streams (out of scope; see doc comment).
+        // Suffix + payload bytes, doc-major then field-minor, mirroring the
+        // read side's decompression grouping: for each document, all of its
+        // fields' term suffix bytes (field order), then that same
+        // document's PAYLOADS fields' payload bytes (field order) -- see
+        // [`open`]'s doc comment on the LZ4 unit's layout.
+        let mut suffix_payload: Vec<u8> = Vec::new();
+        let mut field_offsets: Vec<i64> = Vec::with_capacity(docs.len() + 1);
+        field_offsets.push(0);
+        for &n in &num_fields_per_doc {
+            field_offsets.push(field_offsets.last().unwrap() + n);
+        }
+        for doc_idx in 0..docs.len() {
+            let fstart = field_offsets[doc_idx] as usize;
+            let fend = field_offsets[doc_idx + 1] as usize;
+            for field in &all_fields[fstart..fend] {
+                for term in &field.terms {
+                    suffix_payload.extend_from_slice(&term.term);
+                }
+            }
+            for field_idx in fstart..fend {
+                if flag_values[field_idx] & FLAG_PAYLOADS as i64 != 0 {
+                    for term in &all_fields[field_idx].terms {
+                        for payload in term.payloads.as_ref().unwrap() {
+                            suffix_payload.extend_from_slice(payload);
+                        }
+                    }
+                }
+            }
+        }
+
         let compressed = encode_literal_lz4(&suffix_payload);
         fdt.write_bytes(&compressed);
     }
@@ -1745,18 +1868,202 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "only supports positions")]
-    fn write_best_speed_rejects_offsets() {
+    fn write_best_speed_offsets_only_round_trips() {
         let docs = vec![TermVectorsDocument {
             fields: vec![TermVectorField {
-                field_number: 0,
+                field_number: 3,
                 has_positions: false,
                 has_offsets: true,
                 has_payloads: false,
-                terms: vec![],
+                terms: vec![TermVectorTerm {
+                    term: b"cat".to_vec(),
+                    freq: 2,
+                    positions: None,
+                    start_offsets: Some(vec![0, 10]),
+                    end_offsets: Some(vec![3, 13]),
+                    payloads: None,
+                }],
             }],
         }];
-        write_best_speed(&docs, &id(), "");
+        let (tvd, tvx, tvm) = write_best_speed(&docs, &id(), "");
+        let reader = open(&tvd, &tvx, &tvm, &id(), "").unwrap();
+        let doc = reader.document(0).unwrap().unwrap();
+        let field = &doc.fields[0];
+        assert!(!field.has_positions && field.has_offsets && !field.has_payloads);
+        let cat = &field.terms[0];
+        assert_eq!(cat.positions, None);
+        assert_eq!(cat.start_offsets, Some(vec![0, 10]));
+        assert_eq!(cat.end_offsets, Some(vec![3, 13]));
+        assert_eq!(cat.payloads, None);
+    }
+
+    #[test]
+    fn write_best_speed_positions_and_offsets_freq_three_round_trips() {
+        // Regression for a review-confirmed bug: the offset-delta correction used
+        // the absolute position instead of the position *delta* the read side
+        // actually applies, which only coincidentally matched for freq <= 2. A
+        // freq-3 term with non-trivial, non-uniform position gaps is the
+        // smallest case that would silently corrupt the 3rd+ occurrence's
+        // decoded offsets under the old (buggy) code.
+        let docs = vec![TermVectorsDocument {
+            fields: vec![TermVectorField {
+                field_number: 3,
+                has_positions: true,
+                has_offsets: true,
+                has_payloads: false,
+                terms: vec![TermVectorTerm {
+                    term: b"the".to_vec(),
+                    freq: 3,
+                    positions: Some(vec![0, 5, 12]),
+                    start_offsets: Some(vec![0, 20, 45]),
+                    end_offsets: Some(vec![3, 23, 48]),
+                    payloads: None,
+                }],
+            }],
+        }];
+        let (tvd, tvx, tvm) = write_best_speed(&docs, &id(), "");
+        let reader = open(&tvd, &tvx, &tvm, &id(), "").unwrap();
+        let doc = reader.document(0).unwrap().unwrap();
+        let field = &doc.fields[0];
+        let the = &field.terms[0];
+        assert_eq!(the.positions, Some(vec![0, 5, 12]));
+        assert_eq!(the.start_offsets, Some(vec![0, 20, 45]));
+        assert_eq!(the.end_offsets, Some(vec![3, 23, 48]));
+    }
+
+    #[test]
+    fn write_best_speed_payloads_only_round_trips() {
+        let docs = vec![TermVectorsDocument {
+            fields: vec![TermVectorField {
+                field_number: 4,
+                has_positions: false,
+                has_offsets: false,
+                has_payloads: true,
+                terms: vec![TermVectorTerm {
+                    term: b"dog".to_vec(),
+                    freq: 2,
+                    positions: None,
+                    start_offsets: None,
+                    end_offsets: None,
+                    payloads: Some(vec![vec![0xAA, 0xBB], vec![]]),
+                }],
+            }],
+        }];
+        let (tvd, tvx, tvm) = write_best_speed(&docs, &id(), "");
+        let reader = open(&tvd, &tvx, &tvm, &id(), "").unwrap();
+        let doc = reader.document(0).unwrap().unwrap();
+        let field = &doc.fields[0];
+        assert!(!field.has_positions && !field.has_offsets && field.has_payloads);
+        let dog = &field.terms[0];
+        assert_eq!(dog.payloads, Some(vec![vec![0xAA, 0xBB], vec![]]));
+    }
+
+    #[test]
+    fn write_best_speed_positions_offsets_payloads_round_trips_multi_term_multi_doc() {
+        let docs = vec![
+            TermVectorsDocument {
+                fields: vec![TermVectorField {
+                    field_number: 5,
+                    has_positions: true,
+                    has_offsets: true,
+                    has_payloads: true,
+                    terms: vec![
+                        TermVectorTerm {
+                            term: b"cat".to_vec(),
+                            freq: 2,
+                            positions: Some(vec![0, 2]),
+                            start_offsets: Some(vec![0, 8]),
+                            end_offsets: Some(vec![3, 11]),
+                            payloads: Some(vec![vec![0xAA], vec![]]),
+                        },
+                        TermVectorTerm {
+                            term: b"car".to_vec(),
+                            freq: 1,
+                            positions: Some(vec![1]),
+                            start_offsets: Some(vec![4]),
+                            end_offsets: Some(vec![7]),
+                            payloads: Some(vec![vec![0xBB, 0xCC]]),
+                        },
+                    ],
+                }],
+            },
+            TermVectorsDocument {
+                fields: vec![TermVectorField {
+                    field_number: 5,
+                    has_positions: true,
+                    has_offsets: true,
+                    has_payloads: true,
+                    terms: vec![TermVectorTerm {
+                        term: b"dog".to_vec(),
+                        freq: 1,
+                        positions: Some(vec![0]),
+                        start_offsets: Some(vec![0]),
+                        end_offsets: Some(vec![3]),
+                        payloads: Some(vec![vec![0xDD, 0xEE, 0xFF]]),
+                    }],
+                }],
+            },
+        ];
+        let (tvd, tvx, tvm) = write_best_speed(&docs, &id(), "");
+        let reader = open(&tvd, &tvx, &tvm, &id(), "").unwrap();
+        assert_eq!(reader.max_doc(), 2);
+
+        let doc0 = reader.document(0).unwrap().unwrap();
+        let field0 = &doc0.fields[0];
+        assert!(field0.has_positions && field0.has_offsets && field0.has_payloads);
+        let cat = &field0.terms[0];
+        assert_eq!(cat.term, b"cat");
+        assert_eq!(cat.positions, Some(vec![0, 2]));
+        assert_eq!(cat.start_offsets, Some(vec![0, 8]));
+        assert_eq!(cat.end_offsets, Some(vec![3, 11]));
+        assert_eq!(cat.payloads, Some(vec![vec![0xAA], vec![]]));
+        let car = &field0.terms[1];
+        assert_eq!(car.term, b"car");
+        assert_eq!(car.positions, Some(vec![1]));
+        assert_eq!(car.start_offsets, Some(vec![4]));
+        assert_eq!(car.end_offsets, Some(vec![7]));
+        assert_eq!(car.payloads, Some(vec![vec![0xBB, 0xCC]]));
+
+        let doc1 = reader.document(1).unwrap().unwrap();
+        let field1 = &doc1.fields[0];
+        let dog = &field1.terms[0];
+        assert_eq!(dog.term, b"dog");
+        assert_eq!(dog.positions, Some(vec![0]));
+        assert_eq!(dog.start_offsets, Some(vec![0]));
+        assert_eq!(dog.end_offsets, Some(vec![3]));
+        assert_eq!(dog.payloads, Some(vec![vec![0xDD, 0xEE, 0xFF]]));
+    }
+
+    #[test]
+    fn write_best_speed_positions_only_regression_still_works() {
+        // Same shape as `write_best_speed_single_doc_single_field_multiple_terms_round_trips`
+        // but re-asserted here to make explicit that the positions-only path
+        // (has_offsets=false, has_payloads=false) is unaffected by the
+        // offsets/payloads extension.
+        let docs = vec![TermVectorsDocument {
+            fields: vec![TermVectorField {
+                field_number: 1,
+                has_positions: true,
+                has_offsets: false,
+                has_payloads: false,
+                terms: vec![TermVectorTerm {
+                    term: b"only".to_vec(),
+                    freq: 1,
+                    positions: Some(vec![0]),
+                    start_offsets: None,
+                    end_offsets: None,
+                    payloads: None,
+                }],
+            }],
+        }];
+        let (tvd, tvx, tvm) = write_best_speed(&docs, &id(), "");
+        let reader = open(&tvd, &tvx, &tvm, &id(), "").unwrap();
+        let doc = reader.document(0).unwrap().unwrap();
+        let field = &doc.fields[0];
+        assert!(field.has_positions && !field.has_offsets && !field.has_payloads);
+        assert_eq!(field.terms[0].positions, Some(vec![0]));
+        assert_eq!(field.terms[0].start_offsets, None);
+        assert_eq!(field.terms[0].payloads, None);
     }
 
     #[test]
