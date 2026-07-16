@@ -130,6 +130,7 @@ fn match_all_docs_returns_every_live_doc_not_the_deleted_ones() {
         None,
         None,
         Some(&live_docs),
+        None,
         &boolean,
         &mut collector,
     )
@@ -144,7 +145,17 @@ fn match_all_docs_with_no_deletions_returns_every_doc() {
     let mut collector = VecCollector::default();
     let query = Clause::MatchAllDocs(MatchAllDocsQuery::new(max_doc));
     let boolean = BooleanQuery::new().with_must([query]);
-    search_boolean_query(&fields, None, None, None, None, &boolean, &mut collector).unwrap();
+    search_boolean_query(
+        &fields,
+        None,
+        None,
+        None,
+        None,
+        None,
+        &boolean,
+        &mut collector,
+    )
+    .unwrap();
     let expected: Vec<i32> = (0..max_doc).collect();
     assert_eq!(collector.docs, expected);
 }
@@ -156,7 +167,17 @@ fn match_no_docs_always_returns_empty_regardless_of_deletions() {
     // No deletions.
     let mut collector = VecCollector::default();
     let boolean = BooleanQuery::new().with_must([Clause::MatchNoDocs(MatchNoDocsQuery::new())]);
-    search_boolean_query(&fields, None, None, None, None, &boolean, &mut collector).unwrap();
+    search_boolean_query(
+        &fields,
+        None,
+        None,
+        None,
+        None,
+        None,
+        &boolean,
+        &mut collector,
+    )
+    .unwrap();
     assert!(collector.docs.is_empty());
 
     // With deletions -- still empty (MatchNoDocsQuery ignores live_docs entirely).
@@ -168,6 +189,7 @@ fn match_no_docs_always_returns_empty_regardless_of_deletions() {
         None,
         None,
         Some(&live_docs),
+        None,
         &boolean,
         &mut collector2,
     )
@@ -195,6 +217,7 @@ fn match_all_docs_as_must_clause_alongside_another_behaves_like_the_other_clause
         None,
         None,
         None,
+        None,
         &boolean,
         &mut collector,
     )
@@ -215,6 +238,7 @@ fn match_no_docs_as_must_clause_makes_the_whole_boolean_query_match_nothing() {
     search_boolean_query(
         &fields,
         Some(&doc_in),
+        None,
         None,
         None,
         None,
@@ -241,6 +265,7 @@ fn match_all_docs_scored_variant_scores_every_live_doc_flat_1_0() {
         None,
         None,
         Some(&live_docs),
+        None,
         &boolean,
         None,
         &mut collector,
@@ -270,6 +295,7 @@ fn match_no_docs_scored_variant_produces_no_hits() {
     let mut collector = lucene_search::TopDocsCollector::new(10);
     search_boolean_query_scored(
         &fields,
+        None,
         None,
         None,
         None,

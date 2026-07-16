@@ -1089,6 +1089,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             &query,
             None,
             &mut capture,

@@ -95,7 +95,17 @@ fn wildcard_docs(field: &str, pattern: &str) -> Vec<i32> {
         pattern.as_bytes().to_vec(),
     ))]);
     let mut c = VecCollector::default();
-    search_boolean_query(&fields, Some(&doc_in), None, None, None, &query, &mut c).unwrap();
+    search_boolean_query(
+        &fields,
+        Some(&doc_in),
+        None,
+        None,
+        None,
+        None,
+        &query,
+        &mut c,
+    )
+    .unwrap();
     c.docs
 }
 
@@ -158,6 +168,16 @@ fn wildcard_composes_inside_boolean_query_must() {
         Clause::Term(lucene_search::TermQuery::new("body", "dog")),
     ]);
     let mut c = VecCollector::default();
-    search_boolean_query(&fields, Some(&doc_in), None, None, None, &query, &mut c).unwrap();
+    search_boolean_query(
+        &fields,
+        Some(&doc_in),
+        None,
+        None,
+        None,
+        None,
+        &query,
+        &mut c,
+    )
+    .unwrap();
     assert_eq!(c.docs, vec![1]);
 }

@@ -244,6 +244,7 @@ fn boolean_query_scored_matches_unscored_doc_set_and_sums_clause_scores() {
         None,
         None,
         None,
+        None,
         &should_query,
         &mut unscored,
     )
@@ -253,6 +254,7 @@ fn boolean_query_scored_matches_unscored_doc_set_and_sums_clause_scores() {
     search_boolean_query_scored(
         &fields,
         Some(&doc_in),
+        None,
         None,
         None,
         None,
@@ -328,6 +330,7 @@ fn boolean_query_scored_must_not_clause_never_contributes_to_score() {
         None,
         None,
         None,
+        None,
         &query,
         None,
         &mut top,
@@ -387,6 +390,7 @@ fn boolean_query_scored_minimum_should_match_sums_all_matching_clauses() {
     search_boolean_query_scored(
         &fields,
         Some(&doc_in),
+        None,
         None,
         None,
         None,
@@ -463,6 +467,7 @@ fn nested_boolean_must_clause_scoring_matches_real_lucene_additive_recursion() {
     search_boolean_query_scored(
         &fields,
         Some(&doc_in),
+        None,
         None,
         None,
         None,
@@ -560,6 +565,7 @@ fn boolean_query_scored_sums_a_phrase_clauses_own_contribution() {
         Some(&pos_in),
         Some(&pay_in),
         None,
+        None,
         &query,
         None,
         &mut top,
@@ -648,6 +654,7 @@ fn phrase_clause_nested_inside_a_boolean_clause_scores_and_matches_correctly() {
         Some(&doc_in),
         Some(&pos_in),
         Some(&pay_in),
+        None,
         None,
         &query,
         None,

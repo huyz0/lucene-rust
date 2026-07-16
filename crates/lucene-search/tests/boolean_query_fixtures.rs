@@ -131,6 +131,7 @@ fn must_conjunction_matches_real_lucene_intersection() {
         None,
         None,
         None,
+        None,
         &query,
         &mut collector,
     )
@@ -158,6 +159,7 @@ fn should_disjunction_matches_real_lucene_union() {
     search_boolean_query(
         &fields,
         Some(&doc_in),
+        None,
         None,
         None,
         None,
@@ -190,6 +192,7 @@ fn must_not_subtracts_from_the_must_conjunction() {
         None,
         None,
         None,
+        None,
         &query,
         &mut collector,
     )
@@ -218,6 +221,7 @@ fn must_with_should_present_ignores_should_for_matching() {
         None,
         None,
         None,
+        None,
         &query,
         &mut collector,
     )
@@ -241,6 +245,7 @@ fn pure_must_not_query_matches_nothing() {
         None,
         None,
         None,
+        None,
         &query,
         &mut collector,
     )
@@ -258,6 +263,7 @@ fn empty_boolean_query_matches_nothing() {
     search_boolean_query(
         &fields,
         Some(&doc_in),
+        None,
         None,
         None,
         None,
@@ -307,6 +313,7 @@ fn minimum_should_match_narrows_the_matched_set_even_with_must_present() {
         None,
         None,
         None,
+        None,
         &query,
         &mut collector,
     )
@@ -339,6 +346,7 @@ fn must_across_multi_block_and_singleton_fields() {
     search_boolean_query(
         &fields,
         Some(&doc_in),
+        None,
         None,
         None,
         None,
@@ -390,6 +398,7 @@ fn nested_boolean_must_clause_matches_real_lucene_intersection_of_the_nested_dis
         None,
         None,
         None,
+        None,
         &query,
         &mut collector,
     )
@@ -425,6 +434,7 @@ fn rewrite_produces_identical_scored_results_for_single_must_clause() {
         None,
         None,
         None,
+        None,
         &query,
         None,
         &mut before,
@@ -435,6 +445,7 @@ fn rewrite_produces_identical_scored_results_for_single_must_clause() {
     search_boolean_query_scored(
         &fields,
         Some(&doc_in),
+        None,
         None,
         None,
         None,
@@ -471,6 +482,7 @@ fn rewrite_produces_identical_scored_results_for_single_should_clause() {
         None,
         None,
         None,
+        None,
         &query,
         None,
         &mut before,
@@ -481,6 +493,7 @@ fn rewrite_produces_identical_scored_results_for_single_should_clause() {
     search_boolean_query_scored(
         &fields,
         Some(&doc_in),
+        None,
         None,
         None,
         None,
@@ -531,6 +544,7 @@ fn rewrite_produces_identical_scored_results_for_nested_single_clause_boolean() 
         None,
         None,
         None,
+        None,
         &query,
         None,
         &mut before,
@@ -541,6 +555,7 @@ fn rewrite_produces_identical_scored_results_for_nested_single_clause_boolean() 
     search_boolean_query_scored(
         &fields,
         Some(&doc_in),
+        None,
         None,
         None,
         None,
@@ -579,6 +594,7 @@ fn three_levels_of_nested_boolean_clauses_match_real_lucene() {
     search_boolean_query(
         &fields,
         Some(&doc_in),
+        None,
         None,
         None,
         None,

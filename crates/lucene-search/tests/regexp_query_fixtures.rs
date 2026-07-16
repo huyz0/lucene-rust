@@ -96,7 +96,17 @@ fn regexp_docs(field: &str, pattern: &str) -> Vec<i32> {
 
     let query = BooleanQuery::new().with_must([Clause::from(RegexpQuery::new(field, pattern))]);
     let mut c = VecCollector::default();
-    search_boolean_query(&fields, Some(&doc_in), None, None, None, &query, &mut c).unwrap();
+    search_boolean_query(
+        &fields,
+        Some(&doc_in),
+        None,
+        None,
+        None,
+        None,
+        &query,
+        &mut c,
+    )
+    .unwrap();
     c.docs
 }
 
@@ -154,7 +164,17 @@ fn regexp_composes_inside_boolean_query_must() {
         Clause::Term(lucene_search::TermQuery::new("body", "dog")),
     ]);
     let mut c = VecCollector::default();
-    search_boolean_query(&fields, Some(&doc_in), None, None, None, &query, &mut c).unwrap();
+    search_boolean_query(
+        &fields,
+        Some(&doc_in),
+        None,
+        None,
+        None,
+        None,
+        &query,
+        &mut c,
+    )
+    .unwrap();
     assert_eq!(c.docs, vec![0, 1]);
 }
 
@@ -167,6 +187,15 @@ fn regexp_malformed_pattern_is_an_error_not_a_panic() {
 
     let query = BooleanQuery::new().with_must([Clause::from(RegexpQuery::new("body", "a{2,3}"))]);
     let mut c = VecCollector::default();
-    let result = search_boolean_query(&fields, Some(&doc_in), None, None, None, &query, &mut c);
+    let result = search_boolean_query(
+        &fields,
+        Some(&doc_in),
+        None,
+        None,
+        None,
+        None,
+        &query,
+        &mut c,
+    );
     assert!(matches!(result, Err(lucene_search::Error::Regexp(_))));
 }

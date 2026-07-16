@@ -105,7 +105,17 @@ fn term_in_set_docs(field: &str, terms: &[&[u8]]) -> Vec<i32> {
         terms.iter().map(|t| t.to_vec()),
     ))]);
     let mut c = VecCollector::default();
-    search_boolean_query(&fields, Some(&doc_in), None, None, None, &query, &mut c).unwrap();
+    search_boolean_query(
+        &fields,
+        Some(&doc_in),
+        None,
+        None,
+        None,
+        None,
+        &query,
+        &mut c,
+    )
+    .unwrap();
     c.docs
 }
 
@@ -180,7 +190,17 @@ fn composes_as_a_boolean_query_must_clause() {
         Clause::Term(TermQuery::new("body", "dog")),
     ]);
     let mut c = VecCollector::default();
-    search_boolean_query(&fields, Some(&doc_in), None, None, None, &query, &mut c).unwrap();
+    search_boolean_query(
+        &fields,
+        Some(&doc_in),
+        None,
+        None,
+        None,
+        None,
+        &query,
+        &mut c,
+    )
+    .unwrap();
     assert_eq!(c.docs, vec![0, 1]);
 }
 
@@ -197,7 +217,17 @@ fn composes_as_a_boolean_query_should_clause() {
         Clause::Term(TermQuery::new("body", "cat")),
     ]);
     let mut c = VecCollector::default();
-    search_boolean_query(&fields, Some(&doc_in), None, None, None, &query, &mut c).unwrap();
+    search_boolean_query(
+        &fields,
+        Some(&doc_in),
+        None,
+        None,
+        None,
+        None,
+        &query,
+        &mut c,
+    )
+    .unwrap();
     assert_eq!(c.docs, vec![0, 1, 2, 4]);
 }
 
@@ -235,6 +265,7 @@ fn term_in_set_scores_flat_1_0_not_summed_like_a_boolean_should_disjunction() {
     search_boolean_query_scored(
         &fields,
         Some(&doc_in),
+        None,
         None,
         None,
         None,
