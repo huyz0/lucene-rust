@@ -1472,11 +1472,30 @@ pub fn open(
         let mut blocks = Vec::new();
         let mut prefix = Vec::new();
         collect_leaf_blocks(index_slice, &root, 0, &mut prefix, &mut blocks)?;
-        if blocks.is_empty() {
-            return Err(Error::Unsupported(
-                "root block with no terms (all sub-blocks) not supported in this slice",
-            ));
-        }
+        // A field's root `.tip` trie node having its own `hasTerms == false`
+        // (the root's own physical `.tim` block holds nothing but sub-block
+        // pointers -- real Lucene produces this whenever a field's very
+        // first terms already diverge enough on their leading byte(s) that
+        // every top-level group hits `minItemsInBlock` on its own, e.g.
+        // `GenBlockTreeChildStrategies.java`'s "arraystrat"/"bitsstrat"
+        // fields, confirmed empirically: see
+        // `open_field_with_no_terms_in_root_block_still_finds_every_term`)
+        // needs no special case here: `collect_leaf_blocks` already recurses
+        // into every trie child regardless of the *current* node's own
+        // `has_terms` (see that function's own doc comment on the
+        // `hasTerms == false` skip), and real Lucene's `PendingBlock.
+        // compileIndex`/`writeBlocks` guarantee the `.tip` trie always
+        // mirrors the `.tim` block hierarchy structurally -- a block with
+        // sub-block-pointer entries always has a matching trie child per
+        // pointer, root included -- so `blocks` still ends up with every
+        // reachable leaf block regardless of whether the root itself
+        // contributed one. `blocks` can only be empty here if the trie
+        // itself is corrupt (a leaf trie node claiming no output at all for
+        // a field metadata already asserts has `num_terms >= 1`), a case
+        // the `entries.len() as i64 != num_terms` check below already
+        // catches with an accurate `Corrupted` error instead of this
+        // previously overly-conservative `Unsupported` rejection of a shape
+        // that was never actually unhandled.
 
         // Every block fp reached directly via the `.tip` trie -- passed down
         // so `decode_block_at_depth` can recognize (and skip re-decoding) a
@@ -3398,6 +3417,170 @@ mod tests {
             for (term, stats, _meta) in &field.entries {
                 assert_eq!(field.seek_exact(term).unwrap(), *stats);
             }
+        }
+    }
+
+    /// Real-Lucene-fixture differential test for the "root block with no
+    /// terms of its own (all sub-blocks)" shape: a field whose first terms
+    /// already diverge enough on their leading byte that real Lucene's
+    /// writer gives every top-level leading-byte group its own `.tim` block
+    /// before the root ever accumulates `minItemsInBlock` raw terms of its
+    /// own -- `writeBlocks(0, count)` (`Lucene103BlockTreeTermsWriter.java`)
+    /// then sees only `PendingBlock` entries at the root, never a loose
+    /// `PendingTerm`, so the root `PendingBlock`'s own `hasTerms` is `false`.
+    ///
+    /// Reuses `fixtures/src/GenBlockTreeChildStrategies.java`'s existing
+    /// "arraystrat"/"bitsstrat" fields (5 and 9 distinct leading bytes, 30
+    /// terms each, comfortably above the default `minItemsInBlock=25`) rather
+    /// than adding a new generator -- confirmed structurally here (`assert!
+    /// (!root.has_terms)`) to be exactly this shape, which the
+    /// `child_strategies_fixture_forces_array_and_bits_strategies` test above
+    /// already opens successfully but never asserted the root's own
+    /// `has_terms` bit against.
+    ///
+    /// This is the fixture that caught `open()`'s previous
+    /// `Error::Unsupported("root block with no terms (all sub-blocks) ...")`
+    /// rejection being unreachable-by-correct-data dead code: real Lucene's
+    /// `PendingBlock.compileIndex` always merges every sub-block's own
+    /// compiled trie into its parent's, so the `.tip` trie structurally
+    /// mirrors the `.tim` block hierarchy at *every* level including the
+    /// root -- `collect_leaf_blocks` already walks past a no-terms output
+    /// into that node's trie children unconditionally (see its own doc
+    /// comment), so `blocks` was never actually empty for this shape; the
+    /// check was simply wrong, not a real gap, and was removed rather than
+    /// specially handled.
+    #[test]
+    fn open_field_with_no_terms_in_root_block_still_finds_every_term() {
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/data/blocktree_child_strategies_index/"
+        );
+        let manifest = std::fs::read_to_string(format!("{dir}manifest.properties"))
+            .expect("run fixtures generator first (GenBlockTreeChildStrategies)");
+        let kv: std::collections::HashMap<String, String> = manifest
+            .lines()
+            .filter_map(|l| l.split_once('='))
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let read_raw = |name: &str| {
+            std::fs::read(format!("{dir}{name}.raw"))
+                .unwrap_or_else(|_| panic!("missing {name}.raw"))
+        };
+        let tmd = read_raw(kv.get("tmd_file_name").unwrap());
+        let tip = read_raw(kv.get("tip_file_name").unwrap());
+        let tim = read_raw(kv.get("tim_file_name").unwrap());
+        let fnm = read_raw(kv.get("fnm_file_name").unwrap());
+        let id_hex = kv.get("id_hex").unwrap();
+        let mut id = [0u8; ID_LENGTH];
+        for (i, slot) in id.iter_mut().enumerate() {
+            *slot = u8::from_str_radix(&id_hex[i * 2..i * 2 + 2], 16).unwrap();
+        }
+        let suffix = kv.get("segment_suffix").unwrap();
+        let field_infos = crate::field_infos::parse(&fnm, &id, "").unwrap();
+
+        let mut tmd_input = SliceInput::new(&tmd);
+        codec_util::check_index_header(
+            &mut tmd_input,
+            TERMS_META_CODEC_NAME,
+            VERSION_START,
+            VERSION_CURRENT,
+            &id,
+            suffix,
+        )
+        .unwrap();
+        codec_util::check_index_header(
+            &mut tmd_input,
+            POSTINGS_TERMS_CODEC,
+            POSTINGS_VERSION_START,
+            POSTINGS_VERSION_CURRENT,
+            &id,
+            suffix,
+        )
+        .unwrap();
+        let _index_block_size = tmd_input.read_vint().unwrap();
+        let num_fields = tmd_input.read_vint().unwrap();
+        let mut field_index: std::collections::HashMap<String, (usize, usize, usize)> =
+            std::collections::HashMap::new();
+        for _ in 0..num_fields {
+            let field_number = tmd_input.read_vint().unwrap();
+            let _num_terms = tmd_input.read_vlong().unwrap();
+            let fi = field_infos.field_by_number(field_number).unwrap();
+            read_freq_pair(&mut tmd_input, fi.index_options).unwrap();
+            let _doc_count = tmd_input.read_vint().unwrap();
+            let _min_term = read_bytes_ref(&mut tmd_input).unwrap();
+            let _max_term = read_bytes_ref(&mut tmd_input).unwrap();
+            let index_start = tmd_input.read_vlong().unwrap() as usize;
+            let root_fp = tmd_input.read_vlong().unwrap() as usize;
+            let index_end = tmd_input.read_vlong().unwrap() as usize;
+            field_index.insert(fi.name.clone(), (index_start, root_fp, index_end));
+        }
+
+        // Structural confirmation, for both fields, that the root trie
+        // node's own output really is `hasTerms == false` -- this is the
+        // exact shape this test exists to cover, not an incidental fact.
+        for name in ["arraystrat", "bitsstrat"] {
+            let (index_start, root_fp, index_end) = field_index[name];
+            let index_slice = &tip[index_start..index_end];
+            let root = load_node(index_slice, root_fp).unwrap();
+            assert!(
+                !root.has_terms,
+                "expected field {name:?}'s root .tip trie node to have \
+                 hasTerms == false (every leading-byte group forming its \
+                 own sub-block before the root ever keeps a loose term) -- \
+                 if this fails, GenBlockTreeChildStrategies.java's label \
+                 counts no longer force this shape and this test needs a \
+                 different fixture"
+            );
+            assert_ne!(
+                root.sign, SIGN_NO_CHILDREN,
+                "a no-terms root with zero trie children would mean every \
+                 term is unreachable -- this test's whole point is a \
+                 no-terms root that still has children"
+            );
+
+            let mut blocks = Vec::new();
+            let mut prefix = Vec::new();
+            collect_leaf_blocks(index_slice, &root, 0, &mut prefix, &mut blocks).unwrap();
+            assert!(
+                !blocks.is_empty(),
+                "field {name:?}: the previous (removed) `blocks.is_empty()` \
+                 check would have wrongly rejected this fixture as \
+                 unsupported"
+            );
+        }
+
+        // Behavioral proof: seek_exact for every known term, plus full
+        // ordered TermsEnum::next() enumeration, both still work correctly
+        // through a root block that itself holds no terms.
+        let max_doc: i32 = kv.get("max_doc").unwrap().parse().unwrap();
+        let fields = open(&tim, &tip, &tmd, &field_infos, &id, suffix, max_doc).unwrap();
+        for name in ["arraystrat", "bitsstrat"] {
+            let field = fields.field(name).unwrap();
+            let terms_tsv = std::fs::read_to_string(format!("{dir}{name}.terms.tsv")).unwrap();
+            let mut expected_terms: Vec<&str> = terms_tsv.lines().collect();
+            expected_terms.sort_unstable();
+
+            for term in &expected_terms {
+                field
+                    .seek_exact(term.as_bytes())
+                    .unwrap_or_else(|| panic!("term {term:?} not found in field {name}"));
+            }
+
+            let mut enumerated: Vec<Vec<u8>> = Vec::new();
+            let mut cursor = field.iter();
+            while let Some((term, _stats)) = cursor.next() {
+                enumerated.push(term.to_vec());
+            }
+            let expected_bytes: Vec<Vec<u8>> = expected_terms
+                .iter()
+                .map(|t| t.as_bytes().to_vec())
+                .collect();
+            assert_eq!(
+                enumerated, expected_bytes,
+                "field {name:?}: TermsEnum::next() must yield every term in \
+                 sorted order even though the root block contributes none \
+                 of its own"
+            );
         }
     }
 }
