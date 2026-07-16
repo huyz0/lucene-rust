@@ -671,9 +671,306 @@ pub enum WriteError {
     DocIdsNotAscending(i32),
     #[error("sparse doc-values write requires doc {0} < max_doc={1}")]
     DocIdOutOfRange(i32, i32),
+    #[error("write_dense_fields requires at least one field")]
+    EmptyFieldList,
+    #[error(
+        "write_dense_fields requires distinct field numbers; field {0} appears more than once"
+    )]
+    DuplicateFieldNumber(i32),
 }
 
 pub type WriteResult<T> = std::result::Result<T, WriteError>;
+
+/// One field's dense (every doc `0..max_doc` has a value) doc-values input,
+/// as accepted by [`write_dense_fields`] -- one variant per
+/// [`crate::field_infos::DocValuesType`]. Each variant's `values` slice must
+/// have exactly `max_doc` entries (the same `max_doc` [`write_dense_fields`]
+/// is called with, shared across every field in the call since they all
+/// describe the same segment), mirroring each single-field function's own
+/// `values.len() == max_doc` requirement ([`WriteError::NotDense`]).
+///
+/// `SortedNumeric`'s per-doc entry must be non-empty (a doc with zero values
+/// is a sparse concept, out of scope for this dense-only entry point --
+/// [`WriteError::EmptyMultiValuedDoc`]), same restriction
+/// [`write_single_dense_sorted_numeric_field`] already enforces.
+/// `SortedSet`'s per-doc entry has the same restriction.
+#[derive(Debug, Clone, Copy)]
+pub enum DenseField<'a> {
+    Numeric(i32, &'a [i64]),
+    Binary(i32, &'a [Vec<u8>]),
+    Sorted(i32, &'a [Vec<u8>]),
+    SortedNumeric(i32, &'a [Vec<i64>]),
+    SortedSet(i32, &'a [Vec<Vec<u8>>]),
+}
+
+impl DenseField<'_> {
+    fn field_number(&self) -> i32 {
+        match self {
+            DenseField::Numeric(n, _)
+            | DenseField::Binary(n, _)
+            | DenseField::Sorted(n, _)
+            | DenseField::SortedNumeric(n, _)
+            | DenseField::SortedSet(n, _) => *n,
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            DenseField::Numeric(_, v) => v.len(),
+            DenseField::Binary(_, v) => v.len(),
+            DenseField::Sorted(_, v) => v.len(),
+            DenseField::SortedNumeric(_, v) => v.len(),
+            DenseField::SortedSet(_, v) => v.len(),
+        }
+    }
+}
+
+/// Writes **one or more** distinct dense doc-values fields into a single
+/// `.dvm`/`.dvd`/`.dvs` triple -- the multi-field analogue of
+/// [`write_single_dense_numeric_field`]/[`write_single_dense_binary_field`]/
+/// [`write_single_dense_sorted_field`]/
+/// [`write_single_dense_sorted_numeric_field`]/
+/// [`write_single_dense_sorted_set_field`], all five of which are now thin
+/// one-element-slice wrappers over this function (kept so existing callers
+/// are unaffected, same precedent as
+/// [`crate::postings_writer::write_single_field`] over
+/// [`crate::postings_writer::write_fields`]). `numFields` worth of per-field
+/// meta entries are interleaved into the *same* physical meta/data buffers,
+/// exactly like a real multi-field segment's `.dvm`/`.dvd`.
+///
+/// Every field in `fields` must be dense over the same `max_doc` (`values.len()
+/// == max_doc` for every field -- [`WriteError::NotDense`]) and have a
+/// distinct field number ([`WriteError::DuplicateFieldNumber`]); `fields` must
+/// be non-empty ([`WriteError::EmptyFieldList`]).
+pub fn write_dense_fields(
+    fields: &[DenseField<'_>],
+    max_doc: i32,
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+) -> WriteResult<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    if fields.is_empty() {
+        return Err(WriteError::EmptyFieldList);
+    }
+    for field in fields {
+        if field.len() != max_doc as usize {
+            return Err(WriteError::NotDense {
+                values: field.len(),
+                max_doc,
+            });
+        }
+    }
+    for i in 0..fields.len() {
+        for j in (i + 1)..fields.len() {
+            if fields[i].field_number() == fields[j].field_number() {
+                return Err(WriteError::DuplicateFieldNumber(fields[i].field_number()));
+            }
+        }
+    }
+    // Validate multi-valued emptiness up front, before any bytes are written,
+    // same "fail before touching the buffers" order the single-field
+    // functions use.
+    for field in fields {
+        if let DenseField::SortedNumeric(_, values) = field {
+            for (doc, per_doc) in values.iter().enumerate() {
+                if per_doc.is_empty() {
+                    return Err(WriteError::EmptyMultiValuedDoc(doc as i32));
+                }
+            }
+        }
+        if let DenseField::SortedSet(_, values) = field {
+            for (doc, per_doc) in values.iter().enumerate() {
+                if per_doc.is_empty() {
+                    return Err(WriteError::EmptyMultiValuedDoc(doc as i32));
+                }
+            }
+        }
+    }
+
+    let mut meta = new_meta_output(segment_id, segment_suffix);
+    let mut data = new_data_output(segment_id, segment_suffix);
+
+    for field in fields {
+        let field_number = field.field_number();
+        meta.write_i32(field_number);
+        match field {
+            DenseField::Numeric(_, values) => {
+                meta.push(DOC_VALUES_TYPE_NUMERIC);
+                write_dense_numeric_entry_body(&mut meta, &mut data, values);
+            }
+            DenseField::Binary(_, values) => {
+                meta.push(DOC_VALUES_TYPE_BINARY);
+                write_dense_binary_entry_body(&mut meta, &mut data, values, max_doc);
+            }
+            DenseField::Sorted(_, values) => {
+                meta.push(DOC_VALUES_TYPE_SORTED);
+                let (dict, ords) = build_sorted_dict_and_ords(values);
+                write_dense_numeric_entry_body(&mut meta, &mut data, &ords);
+                write_terms_dict(&mut meta, &mut data, &dict);
+            }
+            DenseField::SortedNumeric(_, values) => {
+                meta.push(DOC_VALUES_TYPE_SORTED_NUMERIC);
+                write_dense_sorted_numeric_entry_body(&mut meta, &mut data, values);
+            }
+            DenseField::SortedSet(_, values) => {
+                meta.push(DOC_VALUES_TYPE_SORTED_SET);
+                write_dense_sorted_set_entry_body(&mut meta, &mut data, values);
+            }
+        }
+    }
+
+    let skip_index =
+        finish_field_list_and_footers(&mut meta, &mut data, segment_id, segment_suffix);
+    Ok((meta, data, skip_index))
+}
+
+/// The BINARY entry body [`write_single_dense_binary_field`] writes after its
+/// leading field-number/type byte -- extracted so [`write_dense_fields`] can
+/// share it verbatim.
+fn write_dense_binary_entry_body(
+    meta: &mut Vec<u8>,
+    data: &mut Vec<u8>,
+    values: &[Vec<u8>],
+    max_doc: i32,
+) {
+    let data_offset = data.len() as i64;
+    for v in values {
+        data.extend_from_slice(v);
+    }
+    let data_length = data.len() as i64 - data_offset;
+    meta.write_i64(data_offset);
+    meta.write_i64(data_length);
+
+    // numDocsWithValue == maxDoc: [-1, 0], no IndexedDISI structure.
+    meta.write_i64(DOCS_WITH_FIELD_DENSE);
+    meta.write_i64(0);
+    meta.write_i16(-1); // jumpTableEntryCount
+    meta.push(0xFF); // denseRankPower (-1 as u8)
+
+    meta.write_i32(max_doc);
+    let min_length = values.iter().map(|v| v.len() as i32).min().unwrap_or(0);
+    let max_length = values.iter().map(|v| v.len() as i32).max().unwrap_or(0);
+    meta.write_i32(min_length);
+    meta.write_i32(max_length);
+
+    if min_length < max_length {
+        let mut end = 0i64;
+        let mut ends: Vec<i64> = Vec::with_capacity(values.len() + 1);
+        ends.push(0);
+        for v in values {
+            end += v.len() as i64;
+            ends.push(end);
+        }
+        let block_shift = 0u32;
+        let (addr_meta, addr_data) = direct_monotonic::write(&ends, block_shift);
+        let addresses_offset = data.len() as i64;
+        data.extend_from_slice(&addr_data);
+        let addresses_length = data.len() as i64 - addresses_offset;
+
+        meta.write_i64(addresses_offset);
+        meta.write_vint(block_shift as i32);
+        meta.extend_from_slice(&addr_meta);
+        meta.write_i64(addresses_length);
+    }
+}
+
+/// The SORTED_NUMERIC entry body [`write_single_dense_sorted_numeric_field`]
+/// writes after its leading field-number/type byte -- extracted so
+/// [`write_dense_fields`] can share it verbatim. Caller must already have
+/// checked every `values[doc]` is non-empty.
+fn write_dense_sorted_numeric_entry_body(
+    meta: &mut Vec<u8>,
+    data: &mut Vec<u8>,
+    values: &[Vec<i64>],
+) {
+    let num_docs_with_field = values.len() as i32;
+    let flat: Vec<i64> = values.iter().flatten().copied().collect();
+
+    write_dense_numeric_entry_body(meta, data, &flat);
+
+    meta.write_i32(num_docs_with_field);
+    if num_docs_with_field as i64 != flat.len() as i64 {
+        let mut end = 0i64;
+        let mut ends: Vec<i64> = Vec::with_capacity(values.len() + 1);
+        ends.push(0);
+        for per_doc in values {
+            end += per_doc.len() as i64;
+            ends.push(end);
+        }
+        let block_shift = 0u32;
+        let (addr_meta, addr_data) = direct_monotonic::write(&ends, block_shift);
+        let addresses_offset = data.len() as i64;
+        data.extend_from_slice(&addr_data);
+        let addresses_length = data.len() as i64 - addresses_offset;
+
+        meta.write_i64(addresses_offset);
+        meta.write_vint(block_shift as i32);
+        meta.extend_from_slice(&addr_meta);
+        meta.write_i64(addresses_length);
+    }
+}
+
+/// The SORTED_SET entry body [`write_single_dense_sorted_set_field`] writes
+/// after its leading field-number/type byte -- extracted so
+/// [`write_dense_fields`] can share it verbatim. Caller must already have
+/// checked every `values[doc]` is non-empty.
+fn write_dense_sorted_set_entry_body(
+    meta: &mut Vec<u8>,
+    data: &mut Vec<u8>,
+    values: &[Vec<Vec<u8>>],
+) {
+    let mut dict: Vec<Vec<u8>> = values.iter().flatten().cloned().collect();
+    dict.sort_unstable();
+    dict.dedup();
+
+    let per_doc_ords: Vec<Vec<i64>> = values
+        .iter()
+        .map(|per_doc| {
+            let mut ords: Vec<i64> = per_doc
+                .iter()
+                .map(|v| dict.binary_search(v).unwrap() as i64)
+                .collect();
+            ords.sort_unstable();
+            ords.dedup();
+            ords
+        })
+        .collect();
+
+    let num_docs_with_field = per_doc_ords.len() as i32;
+    let all_single = per_doc_ords.iter().all(|ords| ords.len() == 1);
+
+    if all_single {
+        meta.push(0); // multiValued = false: plain SORTED shape.
+        let single_ords: Vec<i64> = per_doc_ords.iter().map(|ords| ords[0]).collect();
+        write_dense_numeric_entry_body(meta, data, &single_ords);
+    } else {
+        meta.push(1); // multiValued = true.
+        let flat: Vec<i64> = per_doc_ords.iter().flatten().copied().collect();
+        write_dense_numeric_entry_body(meta, data, &flat);
+
+        meta.write_i32(num_docs_with_field);
+        if num_docs_with_field as i64 != flat.len() as i64 {
+            let mut end = 0i64;
+            let mut ends: Vec<i64> = Vec::with_capacity(per_doc_ords.len() + 1);
+            ends.push(0);
+            for ords in &per_doc_ords {
+                end += ords.len() as i64;
+                ends.push(end);
+            }
+            let block_shift = 0u32;
+            let (addr_meta, addr_data) = direct_monotonic::write(&ends, block_shift);
+            let addresses_offset = data.len() as i64;
+            data.extend_from_slice(&addr_data);
+            let addresses_length = data.len() as i64 - addresses_offset;
+
+            meta.write_i64(addresses_offset);
+            meta.write_vint(block_shift as i32);
+            meta.extend_from_slice(&addr_meta);
+            meta.write_i64(addresses_length);
+        }
+    }
+
+    write_terms_dict(meta, data, &dict);
+}
 
 /// Writes just the NUMERIC entry body (`addNumericField` -> `writeValues`,
 /// the `numDocsWithValue == maxDoc` / no-blocks branches, feeding
@@ -998,24 +1295,12 @@ pub fn write_single_dense_numeric_field(
     segment_id: &[u8; ID_LENGTH],
     segment_suffix: &str,
 ) -> WriteResult<(Vec<u8>, Vec<u8>, Vec<u8>)> {
-    if values.len() != max_doc as usize {
-        return Err(WriteError::NotDense {
-            values: values.len(),
-            max_doc,
-        });
-    }
-
-    let mut meta = new_meta_output(segment_id, segment_suffix);
-    let mut data = new_data_output(segment_id, segment_suffix);
-
-    // Per-field meta entry (`addNumericField` -> `writeValues`).
-    meta.write_i32(field_number);
-    meta.push(DOC_VALUES_TYPE_NUMERIC);
-    write_dense_numeric_entry_body(&mut meta, &mut data, values);
-
-    let skip_index =
-        finish_field_list_and_footers(&mut meta, &mut data, segment_id, segment_suffix);
-    Ok((meta, data, skip_index))
+    write_dense_fields(
+        &[DenseField::Numeric(field_number, values)],
+        max_doc,
+        segment_id,
+        segment_suffix,
+    )
 }
 
 /// Port of `Lucene90DocValuesConsumer.addNumericField`'s **sparse** branch
@@ -1103,62 +1388,12 @@ pub fn write_single_dense_binary_field(
     segment_id: &[u8; ID_LENGTH],
     segment_suffix: &str,
 ) -> WriteResult<(Vec<u8>, Vec<u8>, Vec<u8>)> {
-    if values.len() != max_doc as usize {
-        return Err(WriteError::NotDense {
-            values: values.len(),
-            max_doc,
-        });
-    }
-
-    let mut meta = new_meta_output(segment_id, segment_suffix);
-    let mut data = new_data_output(segment_id, segment_suffix);
-
-    meta.write_i32(field_number);
-    meta.push(DOC_VALUES_TYPE_BINARY);
-
-    let data_offset = data.len() as i64;
-    for v in values {
-        data.extend_from_slice(v);
-    }
-    let data_length = data.len() as i64 - data_offset;
-    meta.write_i64(data_offset);
-    meta.write_i64(data_length);
-
-    // numDocsWithValue == maxDoc: [-1, 0], no IndexedDISI structure.
-    meta.write_i64(DOCS_WITH_FIELD_DENSE);
-    meta.write_i64(0);
-    meta.write_i16(-1); // jumpTableEntryCount
-    meta.push(0xFF); // denseRankPower (-1 as u8)
-
-    meta.write_i32(max_doc);
-    let min_length = values.iter().map(|v| v.len() as i32).min().unwrap_or(0);
-    let max_length = values.iter().map(|v| v.len() as i32).max().unwrap_or(0);
-    meta.write_i32(min_length);
-    meta.write_i32(max_length);
-
-    if min_length < max_length {
-        let mut end = 0i64;
-        let mut ends: Vec<i64> = Vec::with_capacity(values.len() + 1);
-        ends.push(0);
-        for v in values {
-            end += v.len() as i64;
-            ends.push(end);
-        }
-        let block_shift = 0u32;
-        let (addr_meta, addr_data) = direct_monotonic::write(&ends, block_shift);
-        let addresses_offset = data.len() as i64;
-        data.extend_from_slice(&addr_data);
-        let addresses_length = data.len() as i64 - addresses_offset;
-
-        meta.write_i64(addresses_offset);
-        meta.write_vint(block_shift as i32);
-        meta.extend_from_slice(&addr_meta);
-        meta.write_i64(addresses_length);
-    }
-
-    let skip_index =
-        finish_field_list_and_footers(&mut meta, &mut data, segment_id, segment_suffix);
-    Ok((meta, data, skip_index))
+    write_dense_fields(
+        &[DenseField::Binary(field_number, values)],
+        max_doc,
+        segment_id,
+        segment_suffix,
+    )
 }
 
 /// Port of `Lucene90DocValuesConsumer.addBinaryField`'s **sparse** branch
@@ -1288,46 +1523,13 @@ pub fn write_single_dense_sorted_numeric_field(
     segment_id: &[u8; ID_LENGTH],
     segment_suffix: &str,
 ) -> WriteResult<(Vec<u8>, Vec<u8>, Vec<u8>)> {
-    for (doc, per_doc) in values.iter().enumerate() {
-        if per_doc.is_empty() {
-            return Err(WriteError::EmptyMultiValuedDoc(doc as i32));
-        }
-    }
-
-    let num_docs_with_field = values.len() as i32;
-    let flat: Vec<i64> = values.iter().flatten().copied().collect();
-
-    let mut meta = new_meta_output(segment_id, segment_suffix);
-    let mut data = new_data_output(segment_id, segment_suffix);
-
-    meta.write_i32(field_number);
-    meta.push(DOC_VALUES_TYPE_SORTED_NUMERIC);
-    write_dense_numeric_entry_body(&mut meta, &mut data, &flat);
-
-    meta.write_i32(num_docs_with_field);
-    if num_docs_with_field as i64 != flat.len() as i64 {
-        let mut end = 0i64;
-        let mut ends: Vec<i64> = Vec::with_capacity(values.len() + 1);
-        ends.push(0);
-        for per_doc in values {
-            end += per_doc.len() as i64;
-            ends.push(end);
-        }
-        let block_shift = 0u32;
-        let (addr_meta, addr_data) = direct_monotonic::write(&ends, block_shift);
-        let addresses_offset = data.len() as i64;
-        data.extend_from_slice(&addr_data);
-        let addresses_length = data.len() as i64 - addresses_offset;
-
-        meta.write_i64(addresses_offset);
-        meta.write_vint(block_shift as i32);
-        meta.extend_from_slice(&addr_meta);
-        meta.write_i64(addresses_length);
-    }
-
-    let skip_index =
-        finish_field_list_and_footers(&mut meta, &mut data, segment_id, segment_suffix);
-    Ok((meta, data, skip_index))
+    let max_doc = values.len() as i32;
+    write_dense_fields(
+        &[DenseField::SortedNumeric(field_number, values)],
+        max_doc,
+        segment_id,
+        segment_suffix,
+    )
 }
 
 /// Port of `Lucene90DocValuesConsumer.addSortedNumericField`'s **sparse**
@@ -1599,26 +1801,12 @@ pub fn write_single_dense_sorted_field(
     segment_id: &[u8; ID_LENGTH],
     segment_suffix: &str,
 ) -> WriteResult<(Vec<u8>, Vec<u8>, Vec<u8>)> {
-    if values.len() != max_doc as usize {
-        return Err(WriteError::NotDense {
-            values: values.len(),
-            max_doc,
-        });
-    }
-
-    let (dict, ords) = build_sorted_dict_and_ords(values);
-
-    let mut meta = new_meta_output(segment_id, segment_suffix);
-    let mut data = new_data_output(segment_id, segment_suffix);
-
-    meta.write_i32(field_number);
-    meta.push(DOC_VALUES_TYPE_SORTED);
-    write_dense_numeric_entry_body(&mut meta, &mut data, &ords);
-    write_terms_dict(&mut meta, &mut data, &dict);
-
-    let skip_index =
-        finish_field_list_and_footers(&mut meta, &mut data, segment_id, segment_suffix);
-    Ok((meta, data, skip_index))
+    write_dense_fields(
+        &[DenseField::Sorted(field_number, values)],
+        max_doc,
+        segment_id,
+        segment_suffix,
+    )
 }
 
 /// Builds the sorted, deduplicated distinct-value dictionary for a SORTED
@@ -1743,80 +1931,12 @@ pub fn write_single_dense_sorted_set_field(
     segment_id: &[u8; ID_LENGTH],
     segment_suffix: &str,
 ) -> WriteResult<(Vec<u8>, Vec<u8>, Vec<u8>)> {
-    if values.len() != max_doc as usize {
-        return Err(WriteError::NotDense {
-            values: values.len(),
-            max_doc,
-        });
-    }
-    for (doc, per_doc) in values.iter().enumerate() {
-        if per_doc.is_empty() {
-            return Err(WriteError::EmptyMultiValuedDoc(doc as i32));
-        }
-    }
-
-    let mut dict: Vec<Vec<u8>> = values.iter().flatten().cloned().collect();
-    dict.sort_unstable();
-    dict.dedup();
-
-    let per_doc_ords: Vec<Vec<i64>> = values
-        .iter()
-        .map(|per_doc| {
-            let mut ords: Vec<i64> = per_doc
-                .iter()
-                .map(|v| dict.binary_search(v).unwrap() as i64)
-                .collect();
-            ords.sort_unstable();
-            ords.dedup();
-            ords
-        })
-        .collect();
-
-    let num_docs_with_field = per_doc_ords.len() as i32;
-    let all_single = per_doc_ords.iter().all(|ords| ords.len() == 1);
-
-    let mut meta = new_meta_output(segment_id, segment_suffix);
-    let mut data = new_data_output(segment_id, segment_suffix);
-
-    meta.write_i32(field_number);
-    meta.push(DOC_VALUES_TYPE_SORTED_SET);
-
-    if all_single {
-        meta.push(0); // multiValued = false: plain SORTED shape.
-        let single_ords: Vec<i64> = per_doc_ords.iter().map(|ords| ords[0]).collect();
-        write_dense_numeric_entry_body(&mut meta, &mut data, &single_ords);
-    } else {
-        meta.push(1); // multiValued = true.
-        let flat: Vec<i64> = per_doc_ords.iter().flatten().copied().collect();
-        write_dense_numeric_entry_body(&mut meta, &mut data, &flat);
-
-        meta.write_i32(num_docs_with_field);
-        if num_docs_with_field as i64 != flat.len() as i64 {
-            let mut end = 0i64;
-            let mut ends: Vec<i64> = Vec::with_capacity(per_doc_ords.len() + 1);
-            ends.push(0);
-            for ords in &per_doc_ords {
-                end += ords.len() as i64;
-                ends.push(end);
-            }
-            let block_shift = 0u32;
-            let (addr_meta, addr_data) = direct_monotonic::write(&ends, block_shift);
-            let addresses_offset = data.len() as i64;
-            data.extend_from_slice(&addr_data);
-            let addresses_length = data.len() as i64 - addresses_offset;
-
-            meta.write_i64(addresses_offset);
-            meta.write_vint(block_shift as i32);
-            meta.extend_from_slice(&addr_meta);
-            meta.write_i64(addresses_length);
-        }
-    }
-
-    write_terms_dict(&mut meta, &mut data, &dict);
-
-    let skip_index =
-        finish_field_list_and_footers(&mut meta, &mut data, segment_id, segment_suffix);
-    Ok((meta, data, skip_index))
+    write_dense_fields(
+        &[DenseField::SortedSet(field_number, values)],
+        max_doc,
+        segment_id,
+        segment_suffix,
+    )
 }
 
 /// Port of `Lucene90DocValuesConsumer.addSortedSetField`'s **sparse** branch
@@ -4602,5 +4722,322 @@ mod tests {
             })
             .collect();
         assert_eq!(resolved, want);
+    }
+
+    // --- write_dense_fields (multi-field .dvm/.dvd/.dvs) ---
+
+    /// Builds a [`FieldInfos`] with `numbers.len()` fields, field `numbers[i]`
+    /// given `types[i]` -- unlike [`field_infos_with`] (always NUMERIC), this
+    /// lets a multi-field test mix doc-values types the way
+    /// [`write_dense_fields`] itself does.
+    fn mixed_field_infos(numbers: &[i32], types: &[DocValuesType]) -> FieldInfos {
+        FieldInfos {
+            fields: numbers
+                .iter()
+                .zip(types.iter())
+                .map(|(&n, &ty)| {
+                    let mut fi = numeric_field(n);
+                    fi.doc_values_type = ty;
+                    fi
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn write_dense_fields_rejects_empty_slice() {
+        let id = [90u8; ID_LENGTH];
+        let err = write_dense_fields(&[], 4, &id, "").unwrap_err();
+        assert!(matches!(err, WriteError::EmptyFieldList));
+    }
+
+    #[test]
+    fn write_dense_fields_rejects_duplicate_field_numbers() {
+        let id = [91u8; ID_LENGTH];
+        let a = vec![1i64, 2, 3];
+        let b = vec![4i64, 5, 6];
+        let err = write_dense_fields(
+            &[DenseField::Numeric(0, &a), DenseField::Numeric(0, &b)],
+            3,
+            &id,
+            "",
+        )
+        .unwrap_err();
+        assert!(matches!(err, WriteError::DuplicateFieldNumber(0)));
+    }
+
+    #[test]
+    fn write_dense_fields_rejects_a_field_that_is_not_dense_over_max_doc() {
+        let id = [92u8; ID_LENGTH];
+        let a = vec![1i64, 2, 3];
+        let err = write_dense_fields(&[DenseField::Numeric(0, &a)], 4, &id, "").unwrap_err();
+        assert!(matches!(
+            err,
+            WriteError::NotDense {
+                values: 3,
+                max_doc: 4
+            }
+        ));
+    }
+
+    #[test]
+    fn write_dense_fields_two_numeric_fields_round_trip_independently() {
+        let id = [93u8; ID_LENGTH];
+        let max_doc = 4i32;
+        let values_a = vec![5i64, 250, 0, 100];
+        let values_b = vec![-7i64, -7, 42, 1000];
+        let (meta_bytes, data_bytes, skip_bytes) = write_dense_fields(
+            &[
+                DenseField::Numeric(0, &values_a),
+                DenseField::Numeric(1, &values_b),
+            ],
+            max_doc,
+            &id,
+            "",
+        )
+        .unwrap();
+
+        assert_eq!(
+            check_data_header_footer_generic(&skip_bytes, "Lucene90DocValuesSkipIndex", &id)
+                .unwrap(),
+            VERSION_CURRENT
+        );
+        assert_eq!(
+            check_data_header_footer(&data_bytes, &id, "").unwrap(),
+            VERSION_CURRENT
+        );
+
+        let fis = field_infos_with(&[0, 1]);
+        let (meta_version, meta) = parse_meta(&meta_bytes, &id, "", &fis).unwrap();
+        assert_eq!(meta_version, VERSION_CURRENT);
+        assert_eq!(meta.numeric.len(), 2);
+
+        let entry_a = meta.numeric_entry(0).unwrap();
+        for (doc, &want) in values_a.iter().enumerate() {
+            assert_eq!(
+                numeric_value(&data_bytes, entry_a, doc as i32).unwrap(),
+                Some(want)
+            );
+        }
+        let entry_b = meta.numeric_entry(1).unwrap();
+        for (doc, &want) in values_b.iter().enumerate() {
+            assert_eq!(
+                numeric_value(&data_bytes, entry_b, doc as i32).unwrap(),
+                Some(want)
+            );
+        }
+    }
+
+    #[test]
+    fn write_dense_fields_single_field_matches_write_single_dense_numeric_field() {
+        let id = [94u8; ID_LENGTH];
+        let values = vec![5i64, 250, 0, 100];
+        let max_doc = values.len() as i32;
+
+        let via_multi =
+            write_dense_fields(&[DenseField::Numeric(0, &values)], max_doc, &id, "").unwrap();
+        let via_single = write_single_dense_numeric_field(0, &values, max_doc, &id, "").unwrap();
+        assert_eq!(via_multi, via_single);
+    }
+
+    #[test]
+    fn write_dense_fields_single_field_matches_write_single_dense_binary_field() {
+        let id = [96u8; ID_LENGTH];
+        let values: Vec<Vec<u8>> = vec![b"a".to_vec(), b"bb".to_vec(), b"ccc".to_vec()];
+        let max_doc = values.len() as i32;
+
+        let via_multi =
+            write_dense_fields(&[DenseField::Binary(0, &values)], max_doc, &id, "").unwrap();
+        let via_single = write_single_dense_binary_field(0, &values, max_doc, &id, "").unwrap();
+        assert_eq!(via_multi, via_single);
+    }
+
+    #[test]
+    fn write_dense_fields_single_field_matches_write_single_dense_sorted_field() {
+        let id = [97u8; ID_LENGTH];
+        let values: Vec<Vec<u8>> = vec![b"banana".to_vec(), b"apple".to_vec(), b"cherry".to_vec()];
+        let max_doc = values.len() as i32;
+
+        let via_multi =
+            write_dense_fields(&[DenseField::Sorted(0, &values)], max_doc, &id, "").unwrap();
+        let via_single = write_single_dense_sorted_field(0, &values, max_doc, &id, "").unwrap();
+        assert_eq!(via_multi, via_single);
+    }
+
+    #[test]
+    fn write_dense_fields_single_field_matches_write_single_dense_sorted_numeric_field() {
+        let id = [98u8; ID_LENGTH];
+        let values: Vec<Vec<i64>> = vec![vec![1, 2], vec![3], vec![4, 5, 6]];
+        let max_doc = values.len() as i32;
+
+        let via_multi =
+            write_dense_fields(&[DenseField::SortedNumeric(0, &values)], max_doc, &id, "").unwrap();
+        let via_single = write_single_dense_sorted_numeric_field(0, &values, &id, "").unwrap();
+        assert_eq!(via_multi, via_single);
+    }
+
+    #[test]
+    fn write_dense_fields_single_field_matches_write_single_dense_sorted_set_field() {
+        let id = [99u8; ID_LENGTH];
+        let values: Vec<Vec<Vec<u8>>> = vec![
+            vec![b"red".to_vec(), b"blue".to_vec()],
+            vec![b"green".to_vec()],
+            vec![b"red".to_vec(), b"green".to_vec()],
+        ];
+        let max_doc = values.len() as i32;
+
+        let via_multi =
+            write_dense_fields(&[DenseField::SortedSet(0, &values)], max_doc, &id, "").unwrap();
+        let via_single = write_single_dense_sorted_set_field(0, &values, max_doc, &id, "").unwrap();
+        assert_eq!(via_multi, via_single);
+    }
+
+    #[test]
+    fn write_dense_fields_numeric_and_sorted_fields_do_not_cross_contaminate() {
+        let id = [95u8; ID_LENGTH];
+        let max_doc = 3i32;
+        let numeric_values = vec![10i64, 20, 30];
+        let sorted_values: Vec<Vec<u8>> =
+            vec![b"banana".to_vec(), b"apple".to_vec(), b"cherry".to_vec()];
+
+        let (meta_bytes, data_bytes, _skip_bytes) = write_dense_fields(
+            &[
+                DenseField::Numeric(0, &numeric_values),
+                DenseField::Sorted(1, &sorted_values),
+            ],
+            max_doc,
+            &id,
+            "",
+        )
+        .unwrap();
+
+        let fis = mixed_field_infos(&[0, 1], &[DocValuesType::Numeric, DocValuesType::Sorted]);
+        let (_, meta) = parse_meta(&meta_bytes, &id, "", &fis).unwrap();
+        assert_eq!(meta.numeric.len(), 1);
+        assert_eq!(meta.sorted.len(), 1);
+
+        let numeric_entry = meta.numeric_entry(0).unwrap();
+        for (doc, &want) in numeric_values.iter().enumerate() {
+            assert_eq!(
+                numeric_value(&data_bytes, numeric_entry, doc as i32).unwrap(),
+                Some(want)
+            );
+        }
+
+        let sorted_entry = meta.sorted_entry(1).unwrap();
+        let dict = terms_dict::decode_all_terms(&data_bytes, &sorted_entry.terms).unwrap();
+        for (doc, want) in sorted_values.iter().enumerate() {
+            let ord = sorted_ord(&data_bytes, sorted_entry, doc as i32)
+                .unwrap()
+                .unwrap();
+            assert_eq!(&dict[ord as usize], want);
+        }
+    }
+
+    #[test]
+    fn write_dense_fields_all_five_types_together_round_trip() {
+        let id = [96u8; ID_LENGTH];
+        let max_doc = 3i32;
+        let numeric_values = vec![10i64, 20, 30];
+        let binary_values: Vec<Vec<u8>> = vec![b"aa".to_vec(), b"bb".to_vec(), b"cc".to_vec()];
+        let sorted_values: Vec<Vec<u8>> =
+            vec![b"banana".to_vec(), b"apple".to_vec(), b"cherry".to_vec()];
+        let sorted_numeric_field_values: Vec<Vec<i64>> = vec![vec![1, 2], vec![3], vec![4, 5, 6]];
+        let sorted_set_values: Vec<Vec<Vec<u8>>> = vec![
+            vec![b"x".to_vec(), b"y".to_vec()],
+            vec![b"y".to_vec()],
+            vec![b"z".to_vec()],
+        ];
+
+        let (meta_bytes, data_bytes, skip_bytes) = write_dense_fields(
+            &[
+                DenseField::Numeric(0, &numeric_values),
+                DenseField::Binary(1, &binary_values),
+                DenseField::Sorted(2, &sorted_values),
+                DenseField::SortedNumeric(3, &sorted_numeric_field_values),
+                DenseField::SortedSet(4, &sorted_set_values),
+            ],
+            max_doc,
+            &id,
+            "",
+        )
+        .unwrap();
+
+        assert_eq!(
+            check_data_header_footer_generic(&skip_bytes, "Lucene90DocValuesSkipIndex", &id)
+                .unwrap(),
+            VERSION_CURRENT
+        );
+
+        let fis = mixed_field_infos(
+            &[0, 1, 2, 3, 4],
+            &[
+                DocValuesType::Numeric,
+                DocValuesType::Binary,
+                DocValuesType::Sorted,
+                DocValuesType::SortedNumeric,
+                DocValuesType::SortedSet,
+            ],
+        );
+        let (_, meta) = parse_meta(&meta_bytes, &id, "", &fis).unwrap();
+        assert_eq!(meta.numeric.len(), 1);
+        assert_eq!(meta.binary.len(), 1);
+        assert_eq!(meta.sorted.len(), 1);
+        assert_eq!(meta.sorted_numeric.len(), 1);
+        assert_eq!(meta.sorted_set.len(), 1);
+
+        // Numeric.
+        let numeric_entry = meta.numeric_entry(0).unwrap();
+        for (doc, &want) in numeric_values.iter().enumerate() {
+            assert_eq!(
+                numeric_value(&data_bytes, numeric_entry, doc as i32).unwrap(),
+                Some(want)
+            );
+        }
+
+        // Binary.
+        let binary_entry = meta.binary_entry(1).unwrap();
+        for (doc, want) in binary_values.iter().enumerate() {
+            assert_eq!(
+                binary_value(&data_bytes, binary_entry, doc as i32).unwrap(),
+                Some(want.as_slice())
+            );
+        }
+
+        // Sorted.
+        let sorted_entry = meta.sorted_entry(2).unwrap();
+        let sorted_dict = terms_dict::decode_all_terms(&data_bytes, &sorted_entry.terms).unwrap();
+        for (doc, want) in sorted_values.iter().enumerate() {
+            let ord = sorted_ord(&data_bytes, sorted_entry, doc as i32)
+                .unwrap()
+                .unwrap();
+            assert_eq!(&sorted_dict[ord as usize], want);
+        }
+
+        // Sorted numeric.
+        let sorted_numeric_entry = meta.sorted_numeric_entry(3).unwrap();
+        for (doc, want) in sorted_numeric_field_values.iter().enumerate() {
+            let got = sorted_numeric_values(&data_bytes, sorted_numeric_entry, doc as i32).unwrap();
+            assert_eq!(&got, want);
+        }
+
+        // Sorted set.
+        let sorted_set_entry = meta.sorted_set_entry(4).unwrap();
+        let SortedSetKind::Multi { ords, terms } = &sorted_set_entry.kind else {
+            panic!("expected multi-valued SORTED_SET entry");
+        };
+        let set_dict = terms_dict::decode_all_terms(&data_bytes, terms).unwrap();
+        for (doc, want) in sorted_set_values.iter().enumerate() {
+            let doc_ords = sorted_numeric_values(&data_bytes, ords, doc as i32).unwrap();
+            let mut got: Vec<Vec<u8>> = doc_ords
+                .iter()
+                .map(|&ord| set_dict[ord as usize].clone())
+                .collect();
+            got.sort_unstable();
+            let mut want_sorted = want.clone();
+            want_sorted.sort_unstable();
+            want_sorted.dedup();
+            assert_eq!(got, want_sorted);
+        }
     }
 }

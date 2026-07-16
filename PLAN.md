@@ -4275,3 +4275,47 @@ write primitives) is rejected with `Error::PointsIndexDimsNotSupported`.
 `cargo fmt`/`clippy --workspace --all-targets -- -D warnings` clean; `cargo
 test -p lucene-index --lib merge::` passes (60/60, up from 54). See
 `docs/parity.md`'s `SegmentMerger` row for the parity-tracking update.
+
+**Progress (multi-field doc-values write support):** Extended
+`lucene-codecs/src/doc_values.rs`'s write side so a single `.dvm`/`.dvd`/`.dvs`
+triple can hold **multiple distinct dense doc-values fields** (any mix of
+NUMERIC/BINARY/SORTED/SORTED_NUMERIC/SORTED_SET), following the same
+"multiple fields interleaved into one physical container" precedent
+`postings_writer::write_fields` already established for `.doc`/`.tim`/`.tip`/
+`.tmd`. New `DenseField<'a>` enum (one variant per doc-values type, each
+carrying `(field_number, values)`) and `write_dense_fields(fields, max_doc,
+segment_id, segment_suffix)` write every field's meta entry and data into a
+shared buffer pair before a single field-list terminator/footer, exactly
+mirroring how `parse_meta`'s read loop already consumed multiple field
+entries from one `.dvm` (a format capability this port's read side already
+had -- the single-field restriction was purely a write-side gap, not a
+format limitation). The five existing `write_single_dense_*_field` functions
+are now thin one-element-slice wrappers over `write_dense_fields`, so all
+~50 existing call sites in `merge.rs`, `doc_values_updates.rs`,
+`index_writer.rs`, `multi_segment.rs`, and the differential-test fixture
+generator are unaffected. New tests in `doc_values.rs`:
+`write_dense_fields_rejects_empty_slice`,
+`write_dense_fields_rejects_duplicate_field_numbers`,
+`write_dense_fields_rejects_a_field_that_is_not_dense_over_max_doc`,
+`write_dense_fields_two_numeric_fields_round_trip_independently`,
+`write_dense_fields_single_field_matches_write_single_dense_numeric_field`
+(regression: multi-field path produces byte-identical output to the
+original single-field function), `write_dense_fields_numeric_and_sorted_fields_do_not_cross_contaminate`,
+and `write_dense_fields_all_five_types_together_round_trip` (all five
+doc-values types in one call, each read back independently through the
+unmodified `parse_meta`/`numeric_value`/`binary_value`/`sorted_ord`/
+`sorted_numeric_values`/`terms_dict::decode_all_terms` readers and checked
+for correct, non-cross-contaminated values). **Deliberately left as a
+documented follow-up, not lifted in this task**: `IndexWriter::commit()`
+(`lucene-index/src/index_writer.rs`) and `lucene-index/src/merge.rs`'s merge
+path still only ever call the single-field wrappers one field at a time --
+wiring either to actually pass multiple fields through in one call would
+require reworking their one-field-per-commit/one-`Option`-per-type internal
+shapes, which is out of scope here; `merge.rs`'s
+`Error::TooManyNumericDocValuesFields`-style single-field-per-merge-call
+limit is therefore unchanged. `cargo fmt`/`clippy --workspace --all-targets
+-- -D warnings` clean; `cargo test -p lucene-codecs --lib doc_values::`
+passes (104/104, up from 97); `cargo test -p lucene-codecs` (fixtures
+included) and `cargo test -p lucene-index` both pass unaffected. See
+`docs/parity.md`'s `Lucene90DocValuesConsumer` row for the parity-tracking
+update.

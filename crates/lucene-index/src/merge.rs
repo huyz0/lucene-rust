@@ -86,10 +86,17 @@
 //! [`lucene_codecs::doc_values::write_single_dense_sorted_set_field`], and
 //! [`lucene_codecs::norms::write_single_dense_field`] each write a complete,
 //! self-contained `.dvm`/`.dvd`/`.dvs` (or `.nvm`/`.nvd`) file pair/triple
-//! for exactly **one field** -- multi-field `.dvd`/`.nvd` files (the real
-//! on-disk shape, where every field's data shares one file) aren't
-//! supported by this port's write side yet. This merge inherits that same
-//! limit: at most one numeric-doc-values field, at most one BINARY-doc-
+//! for exactly **one field** -- these five are now thin one-field wrappers
+//! over [`lucene_codecs::doc_values::write_dense_fields`], which *can* write
+//! multiple distinct fields (of the same or different doc-values types) into
+//! one multi-field `.dvd`/`.dvm`/`.dvs` container, the real on-disk shape
+//! where every field's data shares one file. **This merge module does not
+//! yet consume that capability**: it's a documented, deliberate scope
+//! boundary, not a silent gap -- wiring multi-field merges through would mean
+//! reworking [`MergeSource`]'s one-`Option<...>`-per-type shape into
+//! per-source field lists, which is out of scope for the task that added
+//! `write_dense_fields`. So this merge still inherits the old limit: at most
+//! one numeric-doc-values field, at most one BINARY-doc-
 //! values field, at most one SORTED-doc-values field, at most one
 //! SORTED_NUMERIC-doc-values field, at most one SORTED_SET-doc-values field,
 //! and at most one norms field may be merged per call
