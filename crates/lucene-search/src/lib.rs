@@ -215,7 +215,8 @@ pub use multi_segment::{
 };
 pub use query::{
     BooleanQuery, BoostQuery, Clause, ConstantScoreQuery, DisjunctionMaxQuery, FuzzyQuery,
-    PhraseQuery, PrefixQuery, RegexpQuery, SpanQuery, TermQuery, WildcardQuery,
+    MatchAllDocsQuery, MatchNoDocsQuery, PhraseQuery, PrefixQuery, RegexpQuery, SpanQuery,
+    TermQuery, WildcardQuery,
 };
 pub use query_cache::{search_term_query_cached, QueryCache};
 pub use term_vectors_query::{matched_term_offsets, term_vector_for_doc};
@@ -640,7 +641,20 @@ fn resolve_clause_docs(
         Clause::Regexp(query) => regexp_doc_ids(fields, doc_in, live_docs, query),
         Clause::Span(query) => span_doc_ids(fields, doc_in, pos_in, pay_in, live_docs, query),
         Clause::PointsRange(query) => Err(Error::UnexecutablePointsRange(query.field.clone())),
+        Clause::MatchAllDocs(query) => Ok(match_all_doc_ids(live_docs, query.max_doc)),
+        Clause::MatchNoDocs(_) => Ok(Vec::new()),
     }
+}
+
+/// [`Clause::MatchAllDocs`]'s matched doc-ID list: every live doc in
+/// `0..max_doc`, ascending -- there's no term dictionary to seek into (see
+/// [`MatchAllDocsQuery`]'s doc comment), so this is a direct `0..max_doc` sweep
+/// filtered by `live_docs`, the same shape
+/// [`doc_value_query::search_numeric_range`]'s own `[0, max_doc)` sweep uses.
+pub(crate) fn match_all_doc_ids(live_docs: Option<&FixedBitSet>, max_doc: i32) -> Vec<i32> {
+    (0..max_doc)
+        .filter(|&doc_id| live_docs.is_none_or(|bits| bits.get(doc_id as usize)))
+        .collect()
 }
 
 /// Resolves a [`DisjunctionMaxQuery`]'s matched doc-ID list -- a doc matches
@@ -1193,6 +1207,15 @@ fn clause_scores(
                 .collect())
         }
         Clause::PointsRange(query) => Err(Error::UnexecutablePointsRange(query.field.clone())),
+        Clause::MatchAllDocs(query) => {
+            // Flat 1.0 per live doc -- see `MatchAllDocsQuery`'s doc comment
+            // for why (real `ConstantScoreScorer`'s own boost, undiscounted).
+            Ok(match_all_doc_ids(live_docs, query.max_doc)
+                .into_iter()
+                .map(|doc_id| (doc_id, 1.0_f32))
+                .collect())
+        }
+        Clause::MatchNoDocs(_) => Ok(HashMap::new()),
     }
 }
 

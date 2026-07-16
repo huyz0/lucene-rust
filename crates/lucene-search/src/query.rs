@@ -388,6 +388,74 @@ impl SpanQuery {
     }
 }
 
+/// `MatchAllDocsQuery`-equivalent (`org.apache.lucene.search.MatchAllDocsQuery`):
+/// matches every **live** (non-deleted) doc in a segment, scoring each match a
+/// flat `1.0` — real `MatchAllDocsQuery`'s `ConstantScoreScorer`/`ConstantScoreWeight`
+/// always score `boost` (the query's own boost, `1.0` unless wrapped in a
+/// `BoostQuery`/`Clause::Boost`) regardless of any per-doc statistic, so `1.0`
+/// unwrapped is exactly this query's own score, matching this crate's existing
+/// `ConstantScoreQuery`/`BoostQuery` composition convention -- a caller wanting a
+/// different constant just wraps this in `Clause::ConstantScore`/`Clause::Boost`
+/// the same way it already would for any other clause.
+///
+/// **Why `max_doc: i32` lives on the query itself, not threaded as a new
+/// parameter through `resolve_clause_docs`/`clause_scores`/`search_boolean_query`
+/// and friends**: every other leaf `Clause` variant resolves its matched-doc set
+/// from a term dictionary lookup (a term's own postings list already enumerates
+/// exactly the docs it needs), so none of those call sites need to know a
+/// segment's `maxDoc` at all. `MatchAllDocsQuery` is the first clause with
+/// nothing to seek into -- "every doc" only means something once `maxDoc` is
+/// known -- so rather than adding a `max_doc: i32` parameter to every function in
+/// `resolve_clause_docs`'s call graph (a wide, purely-mechanical signature change
+/// touching every existing call site, including in other crates' tests, for a
+/// value only this one variant needs), the caller building the query supplies
+/// `max_doc` once, at construction time, exactly the same way it already knows
+/// and passes `live_docs` per search call. This mirrors
+/// [`crate::doc_value_query::search_numeric_range`]'s own `max_doc: i32`
+/// parameter (that function's full `[0, max_doc)` sweep is the same "no
+/// dictionary to seek into" shape this query needs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct MatchAllDocsQuery {
+    pub max_doc: i32,
+}
+
+impl MatchAllDocsQuery {
+    pub fn new(max_doc: i32) -> Self {
+        Self { max_doc }
+    }
+}
+
+/// `MatchNoDocsQuery`-equivalent (`org.apache.lucene.search.MatchNoDocsQuery`):
+/// matches nothing, ever, regardless of segment contents or `live_docs` --
+/// real `MatchNoDocsQuery.createWeight` returns a `Weight` whose `scorer` is
+/// always `null`, the same "no doc ever collected" outcome
+/// [`crate::resolve_clause_docs`]'s `Clause::MatchNoDocs` arm returns directly
+/// (an empty `Vec`, no segment lookup at all -- there is nothing to look up).
+///
+/// `reason` mirrors real `MatchNoDocsQuery(String reason)`'s documented
+/// human-readable explanation of *why* nothing matches (e.g. what rewrite rule
+/// produced this query) -- purely informational, `Default`/`PartialEq`/`Eq`
+/// included so it composes with the rest of this module's derive conventions,
+/// but nothing in this crate's matching/scoring logic ever inspects it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct MatchNoDocsQuery {
+    pub reason: String,
+}
+
+impl MatchNoDocsQuery {
+    /// Builds a `MatchNoDocsQuery` with an empty `reason` (see
+    /// [`Self::with_reason`] to set one).
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Builder method setting `reason` (see this struct's doc comment).
+    pub fn with_reason(mut self, reason: impl Into<String>) -> Self {
+        self.reason = reason.into();
+        self
+    }
+}
+
 /// One `must`/`should`/`must_not` slot in a [`BooleanQuery`] — a leaf
 /// `TermQuery`, a leaf `PhraseQuery` (task #29's addition, closing the gap this
 /// enum's doc comment previously flagged), or a nested `BooleanQuery`
@@ -472,6 +540,13 @@ pub enum Clause {
     /// execution scope; no `resolve_clause_docs`/`clause_scores` arm exists
     /// for this variant yet.
     PointsRange(PointsRangeQuery),
+    /// A leaf `MatchAllDocsQuery` -- matches every live doc in
+    /// `0..query.max_doc`, scored flat `1.0` per match; see
+    /// [`MatchAllDocsQuery`]'s doc comment.
+    MatchAllDocs(MatchAllDocsQuery),
+    /// A leaf `MatchNoDocsQuery` -- matches nothing, ever; see
+    /// [`MatchNoDocsQuery`]'s doc comment.
+    MatchNoDocs(MatchNoDocsQuery),
 }
 
 impl Clause {
@@ -588,6 +663,18 @@ impl From<PointsRangeQuery> for Clause {
 impl From<SpanQuery> for Clause {
     fn from(query: SpanQuery) -> Self {
         Clause::Span(query)
+    }
+}
+
+impl From<MatchAllDocsQuery> for Clause {
+    fn from(query: MatchAllDocsQuery) -> Self {
+        Clause::MatchAllDocs(query)
+    }
+}
+
+impl From<MatchNoDocsQuery> for Clause {
+    fn from(query: MatchNoDocsQuery) -> Self {
+        Clause::MatchNoDocs(query)
     }
 }
 
@@ -1111,6 +1198,36 @@ mod tests {
         let inner = BoostQuery::new(TermQuery::new("body", "cat"), 2.5);
         let clause: Clause = inner.clone().into();
         assert_eq!(clause, Clause::Boost(Box::new(inner)));
+    }
+
+    #[test]
+    fn match_all_docs_query_new_stores_max_doc() {
+        let q = MatchAllDocsQuery::new(5);
+        assert_eq!(q.max_doc, 5);
+    }
+
+    #[test]
+    fn clause_from_match_all_docs_query_wraps_in_variant() {
+        let clause: Clause = MatchAllDocsQuery::new(5).into();
+        assert_eq!(clause, Clause::MatchAllDocs(MatchAllDocsQuery::new(5)));
+    }
+
+    #[test]
+    fn match_no_docs_query_default_has_empty_reason() {
+        let q = MatchNoDocsQuery::new();
+        assert_eq!(q.reason, "");
+    }
+
+    #[test]
+    fn match_no_docs_query_with_reason_sets_the_field() {
+        let q = MatchNoDocsQuery::new().with_reason("rewrite collapsed to nothing");
+        assert_eq!(q.reason, "rewrite collapsed to nothing");
+    }
+
+    #[test]
+    fn clause_from_match_no_docs_query_wraps_in_variant() {
+        let clause: Clause = MatchNoDocsQuery::new().into();
+        assert_eq!(clause, Clause::MatchNoDocs(MatchNoDocsQuery::new()));
     }
 
     #[test]

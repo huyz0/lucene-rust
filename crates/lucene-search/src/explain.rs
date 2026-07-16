@@ -179,6 +179,11 @@ pub fn explain_clause(
         Clause::PointsRange(query) => {
             Err(crate::Error::UnexecutablePointsRange(query.field.clone()))
         }
+        Clause::MatchAllDocs(query) => {
+            let matched = crate::match_all_doc_ids(live_docs, query.max_doc).contains(&doc);
+            Ok(explain_flat_match(matched))
+        }
+        Clause::MatchNoDocs(_) => Ok(Explanation::no_match("MatchNoDocsQuery never matches")),
     }
 }
 
