@@ -4994,3 +4994,76 @@ sized follow-up (a `minItemsInBlock`/`maxItemsInBlock` policy plus floor
 trie-node encoding on top of the existing leading-byte-grouped writer), not
 something to rush into this task's scope alongside an already-solid read-side
 audit.
+
+## BITS/REVERSE_ARRAY label-encoding strategies for multi-children trie root
+
+Task brief: audit whether `blocktree.rs`'s multi-children trie decode really
+supports all three real `TrieBuilder.ChildSaveStrategy` label encodings
+(`BITS`/`ARRAY`/`REVERSE_ARRAY`), and, if so, whether each has a real-Lucene-
+fixture differential proof (not just hand-built bytes) the way the sibling
+FST arc-encoding tasks got one each.
+
+**Audit result: all three strategies were already fully implemented and
+covered by hand-built unit tests before this task**
+(`multi_children_array_strategy`, `multi_children_bits_strategy`,
+`multi_children_reverse_array_strategy`,
+`multi_children_reverse_array_strategy_with_gap`,
+`multi_children_node_with_invalid_strategy_code_rejected` --
+`multi_children_labels_and_fps` in `crates/lucene-codecs/src/blocktree.rs`
+generalizes `TrieReader.lookupChild`'s three per-strategy label decodings
+into "list every child", and was not missing any of the three). The actual
+gap was fixture coverage: only `ARRAY` had ever been exercised end-to-end via
+`blocktree_fixtures.rs`'s "many" field, and no fixture had been checked
+against which strategy real Lucene's writer actually picked at all.
+
+Auditing the existing `blocktree_multilevel_index` fixture (8000 pseudo-
+random lowercase terms, `GenBlockTreeMultilevel.java`) found `REVERSE_ARRAY`
+already forced there for real, previously unnoticed: that field's root trie
+node's children are a fully dense `'a'..='z'` range (all 26 letters appear
+among 8000 random terms), and `TrieBuilder.ChildSaveStrategy.choose`'s cost
+formula (`needBytes`: `REVERSE_ARRAY` = `26 - 26 + 1` = 1, `ARRAY` = 25,
+`BITS` = `ceil(26/8)` = 4) picks `REVERSE_ARRAY` outright. Confirmed by
+decoding the real fixture bytes directly (`load_node` on the root, reading
+`child_save_strategy`) before touching any test code. Added assertions to
+`multilevel_fixture_reaches_a_genuine_non_leaf_block` making this explicit
+(`assert_eq!(root.child_save_strategy, CHILD_STRATEGY_REVERSE_ARRAY)` plus
+`strategy_bytes`/`min_children_label`) instead of leaving it an unverified
+implicit property.
+
+`BITS` and `ARRAY` had no real-fixture forcing anywhere, so this task adds
+one: `fixtures/src/GenBlockTreeChildStrategies.java` generates
+`fixtures/data/blocktree_child_strategies_index/` with two fields whose
+terms' leading bytes were hand-picked (using `TrieBuilder.ChildSaveStrategy`'s
+own `needBytes` formulas, read directly from the pinned 10.5.0 sources jar,
+not guessed) so each field's root trie node lands on a different, predicted
+strategy: "arraystrat" (5 labels spanning printable ASCII, distance 94:
+BITS=12, ARRAY=4, REVERSE_ARRAY=90 -> `ARRAY` wins) and "bitsstrat" (9 labels
+spaced 5 apart, distance 41: BITS=6, ARRAY=8, REVERSE_ARRAY=33 -> `BITS`
+wins). Each field groups 30 terms (comfortably above the default
+`minItemsInBlock=25`) per leading byte so real Lucene's writer gives each
+leading-byte group its own `.tim` block and hence an actual root-level trie
+child for that label -- the same mechanism `GenBlockTreeMultilevel`'s many
+distinct leading letters already rely on for a multi-children root, just
+with a deliberately chosen label set. Self-checked before committing to the
+design: generated the fixture, then decoded the real bytes and confirmed
+`root.child_save_strategy` matched the hand-computed prediction for both
+fields on the first run -- no trial-and-error iteration was needed once the
+cost arithmetic was worked out.
+
+New differential test `child_strategies_fixture_forces_array_and_bits_strategies`
+(`crates/lucene-codecs/src/blocktree.rs`) asserts each field's exact
+`child_save_strategy` code and `strategy_bytes`, then round-trips every term
+in both fields through the unmodified public `open`/`seek_exact` API against
+the manifest's real-Lucene-derived ground-truth term list and per-term
+`docFreq`/`totalTermFreq` -- proving the label *decode*, not just the
+strategy *code*, is correct for both `ARRAY` and `BITS` against real bytes.
+
+**No production code changes were needed** -- both strategies' decode logic
+was already correct; this task closed a fixture-coverage gap for two
+already-correct code paths and added an explicit assertion for a third
+(`REVERSE_ARRAY`) that was being exercised but not verified. Files changed:
+`fixtures/src/GenBlockTreeChildStrategies.java` (new),
+`fixtures/data/blocktree_child_strategies_index/` (new, checked in),
+`fixtures/README.md` (added the new generator to the regen command list),
+`crates/lucene-codecs/src/blocktree.rs` (two new/extended tests, no
+non-test changes), `docs/parity.md`.

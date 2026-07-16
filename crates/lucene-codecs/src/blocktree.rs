@@ -3195,6 +3195,18 @@ mod tests {
 
         let index_slice = &tip[index_start..index_end];
         let root = load_node(index_slice, root_fp).unwrap();
+        // This field's 8000 pseudo-random lowercase terms cover all 26
+        // letters at depth 0, so the root's `(minLabel, maxLabel, labelCnt)`
+        // is `('a', 'z', 26)` -- a fully dense range, for which
+        // `TrieBuilder.ChildSaveStrategy.choose`'s cost formula picks
+        // `REVERSE_ARRAY` (`needBytes` = `26 - 26 + 1` = 1, beating both
+        // `ARRAY` = 25 and `BITS` = `ceil(26/8)` = 4). This is this fixture's
+        // real-Lucene-forced multi-children strategy; `ARRAY` and `BITS` are
+        // covered by the dedicated `blocktree_child_strategies_index`
+        // fixture instead (see `child_strategies_fixture_forces_array_and_bits_strategies`).
+        assert_eq!(root.child_save_strategy, CHILD_STRATEGY_REVERSE_ARRAY);
+        assert_eq!(root.strategy_bytes, 1);
+        assert_eq!(root.min_children_label, b'a');
         let mut blocks = Vec::new();
         let mut prefix = Vec::new();
         collect_leaf_blocks(index_slice, &root, 0, &mut prefix, &mut blocks).unwrap();
@@ -3237,6 +3249,146 @@ mod tests {
         assert_eq!(field.num_terms, num_terms);
         for (term, stats, _meta) in &field.entries {
             assert_eq!(field.seek_exact(term).unwrap(), *stats);
+        }
+    }
+
+    /// Real-Lucene-fixture differential test proving `ChildSaveStrategy::ARRAY`
+    /// and `ChildSaveStrategy::BITS` (the two of the three real
+    /// `TrieBuilder.ChildSaveStrategy` label-encodings that
+    /// `multilevel_fixture_reaches_a_genuine_non_leaf_block`'s "many" field
+    /// does *not* land on -- that root happens to pick `REVERSE_ARRAY`, see
+    /// that test) are each forced onto a real `.tip` trie root node and
+    /// decode correctly.
+    ///
+    /// `fixtures/src/GenBlockTreeChildStrategies.java` builds two fields
+    /// whose terms' leading bytes were hand-picked so
+    /// `TrieBuilder.ChildSaveStrategy.choose`'s own `needBytes` cost formula
+    /// -- BITS: `ceil((maxLabel-minLabel+1)/8)`, ARRAY: `labelCnt-1`,
+    /// REVERSE_ARRAY: `(maxLabel-minLabel+1)-labelCnt+1` -- picks a distinct
+    /// winner for each field (see that file's module doc for the exact
+    /// arithmetic): "arraystrat" (5 labels spanning printable-ASCII, distance
+    /// 94: BITS=12, ARRAY=4, REVERSE_ARRAY=90 -> ARRAY wins) and "bitsstrat"
+    /// (9 labels spaced 5 apart, distance 41: BITS=6, ARRAY=8,
+    /// REVERSE_ARRAY=33 -> BITS wins). This test decodes each field's root
+    /// trie node and asserts the exact `child_save_strategy` code real
+    /// Lucene's writer chose, then round-trips every term through the
+    /// public `open`/`seek_exact` API to prove the decode is not just
+    /// structurally plausible but actually correct.
+    #[test]
+    fn child_strategies_fixture_forces_array_and_bits_strategies() {
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/data/blocktree_child_strategies_index/"
+        );
+        let manifest = std::fs::read_to_string(format!("{dir}manifest.properties"))
+            .expect("run fixtures generator first (GenBlockTreeChildStrategies)");
+        let kv: std::collections::HashMap<String, String> = manifest
+            .lines()
+            .filter_map(|l| l.split_once('='))
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let read_raw = |name: &str| {
+            std::fs::read(format!("{dir}{name}.raw"))
+                .unwrap_or_else(|_| panic!("missing {name}.raw"))
+        };
+        let tmd = read_raw(kv.get("tmd_file_name").unwrap());
+        let tip = read_raw(kv.get("tip_file_name").unwrap());
+        let tim = read_raw(kv.get("tim_file_name").unwrap());
+        let fnm = read_raw(kv.get("fnm_file_name").unwrap());
+        let id_hex = kv.get("id_hex").unwrap();
+        let mut id = [0u8; ID_LENGTH];
+        for (i, slot) in id.iter_mut().enumerate() {
+            *slot = u8::from_str_radix(&id_hex[i * 2..i * 2 + 2], 16).unwrap();
+        }
+        let suffix = kv.get("segment_suffix").unwrap();
+        let field_infos = crate::field_infos::parse(&fnm, &id, "").unwrap();
+
+        let mut tmd_input = SliceInput::new(&tmd);
+        codec_util::check_index_header(
+            &mut tmd_input,
+            TERMS_META_CODEC_NAME,
+            VERSION_START,
+            VERSION_CURRENT,
+            &id,
+            suffix,
+        )
+        .unwrap();
+        codec_util::check_index_header(
+            &mut tmd_input,
+            POSTINGS_TERMS_CODEC,
+            POSTINGS_VERSION_START,
+            POSTINGS_VERSION_CURRENT,
+            &id,
+            suffix,
+        )
+        .unwrap();
+        let _index_block_size = tmd_input.read_vint().unwrap();
+        let num_fields = tmd_input.read_vint().unwrap();
+        let mut field_index: std::collections::HashMap<String, (usize, usize, usize)> =
+            std::collections::HashMap::new();
+        for _ in 0..num_fields {
+            let field_number = tmd_input.read_vint().unwrap();
+            let _num_terms = tmd_input.read_vlong().unwrap();
+            let fi = field_infos.field_by_number(field_number).unwrap();
+            read_freq_pair(&mut tmd_input, fi.index_options).unwrap();
+            let _doc_count = tmd_input.read_vint().unwrap();
+            let _min_term = read_bytes_ref(&mut tmd_input).unwrap();
+            let _max_term = read_bytes_ref(&mut tmd_input).unwrap();
+            let index_start = tmd_input.read_vlong().unwrap() as usize;
+            let root_fp = tmd_input.read_vlong().unwrap() as usize;
+            let index_end = tmd_input.read_vlong().unwrap() as usize;
+            field_index.insert(fi.name.clone(), (index_start, root_fp, index_end));
+        }
+
+        // "arraystrat": 5 labels, distance 94 (0x21..=0x7e) -> ARRAY (code 1).
+        let (index_start, root_fp, index_end) = field_index["arraystrat"];
+        let root = load_node(&tip[index_start..index_end], root_fp).unwrap();
+        assert_eq!(
+            root.child_save_strategy, CHILD_STRATEGY_ARRAY,
+            "expected real Lucene to pick ChildSaveStrategy.ARRAY for \"arraystrat\"'s \
+             root node (needBytes: BITS=12, ARRAY=4, REVERSE_ARRAY=90)"
+        );
+        assert_eq!(root.strategy_bytes, 4); // labelCnt - 1 = 5 - 1
+        assert_eq!(root.min_children_label, 0x21);
+
+        // "bitsstrat": 9 labels, distance 41 (0x21..=0x49) -> BITS (code 2).
+        let (index_start, root_fp, index_end) = field_index["bitsstrat"];
+        let root = load_node(&tip[index_start..index_end], root_fp).unwrap();
+        assert_eq!(
+            root.child_save_strategy, CHILD_STRATEGY_BITS,
+            "expected real Lucene to pick ChildSaveStrategy.BITS for \"bitsstrat\"'s \
+             root node (needBytes: BITS=6, ARRAY=8, REVERSE_ARRAY=33)"
+        );
+        assert_eq!(root.strategy_bytes, 6); // ceil(41 / 8)
+        assert_eq!(root.min_children_label, 0x21);
+
+        // Full round trip through the unmodified public API: every term in
+        // both fields must be findable via seek_exact, proving the ARRAY and
+        // BITS label decodes (not just the strategy *code*) are correct.
+        let max_doc: i32 = kv.get("max_doc").unwrap().parse().unwrap();
+        let fields = open(&tim, &tip, &tmd, &field_infos, &id, suffix, max_doc).unwrap();
+        for name in ["arraystrat", "bitsstrat"] {
+            let field = fields.field(name).unwrap();
+            let expected_count: i64 = kv
+                .get(&format!("field.{name}.count"))
+                .unwrap()
+                .parse()
+                .unwrap();
+            assert_eq!(field.num_terms, expected_count);
+            assert_eq!(field.entries.len() as i64, expected_count);
+            let terms_tsv = std::fs::read_to_string(format!("{dir}{name}.terms.tsv")).unwrap();
+            let expected_terms: Vec<&str> = terms_tsv.lines().collect();
+            assert_eq!(expected_terms.len() as i64, expected_count);
+            for term in &expected_terms {
+                let stats = field
+                    .seek_exact(term.as_bytes())
+                    .unwrap_or_else(|| panic!("term {term:?} not found in field {name}"));
+                assert_eq!(stats.doc_freq, 1);
+                assert_eq!(stats.total_term_freq, 1);
+            }
+            for (term, stats, _meta) in &field.entries {
+                assert_eq!(field.seek_exact(term).unwrap(), *stats);
+            }
         }
     }
 }
