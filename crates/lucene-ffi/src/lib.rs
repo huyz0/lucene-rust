@@ -40,11 +40,19 @@
 //!   `TermQuery` only — wraps `lucene_search::search_term_query_scored_maxscore`
 //!   (streams postings through a `LazyDocsCursor`, skipping whole level-0 blocks a
 //!   `TopDocsCollector`'s current worst kept score proves are unreachable) instead
-//!   of the eager, fully-materializing decode the other scored functions use. The
-//!   only FFI entry point in this crate backed by real block-level dynamic
-//!   pruning — see `query.rs`'s module doc for why `ffi_search_boolean_query_scored`
-//!   has none (multi-clause `BooleanQuery` WAND/MAXSCORE pruning doesn't exist at
-//!   the `lucene_search` level yet).
+//!   of the eager, fully-materializing decode the other scored functions use.
+//! - [`query::ffi_search_boolean_query_scored_maxscore`] (BooleanQuery WAND/MAXSCORE
+//!   dynamic pruning task): MAXSCORE-pruned sibling of
+//!   [`query::ffi_search_boolean_query_scored`], scoped to a pure SHOULD-disjunction
+//!   `BooleanQuery` of plain term clauses (no `must`/`must_not`,
+//!   `minimum_should_match <= 1`, every clause's term with `docFreq > 1`) — wraps
+//!   `lucene_search::search_boolean_query_scored_maxscore`'s simplified two-tier
+//!   essential/non-essential-style skip (see that function's doc comment for the
+//!   exact algorithm and its honestly-documented scope versus a full multi-way WAND
+//!   pivot); any `BooleanQuery` outside that scope transparently falls back to the
+//!   same exhaustive path `ffi_search_boolean_query_scored` uses. Every other scored
+//!   function in this crate has no competitive-score threshold at all and never
+//!   prunes.
 //! - [`results_scored::ffi_scored_results_len`]/[`results_scored::ffi_scored_results_copy`]/
 //!   [`results_scored::ffi_close_scored_results`]: reads a scored results handle's
 //!   `(doc_id, score)` hits back out via two caller-allocated parallel buffers (see
@@ -277,7 +285,8 @@ pub use facets::{ffi_facet_counts_sorted_set, ffi_range_facet_counts};
 pub use highlighter::ffi_assemble_fragments;
 pub use points_query::ffi_search_points_range;
 pub use query::{
-    ffi_search_boolean_query, ffi_search_boolean_query_scored, ffi_search_phrase_query,
+    ffi_search_boolean_query, ffi_search_boolean_query_scored,
+    ffi_search_boolean_query_scored_maxscore, ffi_search_phrase_query,
     ffi_search_phrase_query_scored, ffi_search_term_query, ffi_search_term_query_scored,
     ffi_search_term_query_scored_maxscore,
 };

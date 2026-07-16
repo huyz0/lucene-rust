@@ -600,12 +600,12 @@ unknown-field-number no-op, live-docs filtering, and 2D multi-dimension
    **First small increment landed**: `lucene-search/src/similarity.rs::max_score_for_impacts`
    computes the true upper-bound BM25 score for a block's/span's competitive impacts
    (`postings::Impact` list), proven safe via a test-only single-clause, single-block
-   pruning-vs-brute-force harness in the same file. **Not wired into the production
-   `search_term_query_scored` path** (that path still eagerly decodes every block via
-   `DocInput::read_postings` before scoring, so a real skip needs the `LazyDocsCursor`
-   decode-on-demand loop instead), and full multi-clause `WANDScorer`-style dynamic
-   pruning across a `BooleanQuery`'s clauses (a running minimum-competitive-score
-   threshold shared across clauses) is still entirely unimplemented — see
+   **Now wired into a `LazyDocsCursor`-based MAXSCORE skip** for single-`TermQuery`
+   scoring and, as of task #197, for pure-SHOULD `BooleanQuery` disjunctions of plain
+   `Clause::Term` (a conservative two-tier essential/non-essential bound using a
+   static per-clause idf ceiling, not a full live per-clause block-max refresh/pivot
+   selection). Any `must`/`must_not` clause, `minimum_should_match > 1`, or a nested
+   Boolean/Phrase/other clause still falls back to exhaustive scoring -- see
    `docs/parity.md`'s postings row for the precise scope.
 5. Collectors: `TopScoreDocCollector` (with after/searchAfter), `TotalHitCountCollector`,
    early termination, `CollectorManager` + intra-query concurrency via rayon over leaves

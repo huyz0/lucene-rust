@@ -25,20 +25,33 @@
 //! ## Scored variants (task #30) -- `ffi_search_term_query_scored`/
 //! `ffi_search_boolean_query_scored`/`ffi_search_phrase_query_scored`
 //!
-//! ## MAXSCORE-pruned variant -- `ffi_search_term_query_scored_maxscore`
+//! ## MAXSCORE-pruned variants -- `ffi_search_term_query_scored_maxscore`/
+//! `ffi_search_boolean_query_scored_maxscore`
 //!
-//! `ffi_search_term_query_scored_maxscore` is the one FFI entry point in this
-//! module backed by real, block-level MAXSCORE dynamic pruning
-//! (`lucene_search::search_term_query_scored_maxscore`, which streams a
-//! single `TermQuery`'s postings through a `LazyDocsCursor` and skips whole
-//! level-0 blocks a `TopDocsCollector`'s current worst kept score proves are
-//! unreachable, instead of eagerly decoding every block). It is scoped as
-//! narrowly as its Rust-level counterpart: single `TermQuery` only. Every
-//! other scored function here -- including `ffi_search_boolean_query_scored`
-//! -- has no competitive-score threshold at all and never prunes; multi-clause
-//! `BooleanQuery` WAND/MAXSCORE dynamic pruning is not yet implemented at the
-//! `lucene-search` level (see `docs/parity.md`), so there is no FFI gap to
-//! close there beyond what's already documented as future work.
+//! `ffi_search_term_query_scored_maxscore` is backed by real, block-level
+//! MAXSCORE dynamic pruning (`lucene_search::search_term_query_scored_maxscore`,
+//! which streams a single `TermQuery`'s postings through a `LazyDocsCursor`
+//! and skips whole level-0 blocks a `TopDocsCollector`'s current worst kept
+//! score proves are unreachable, instead of eagerly decoding every block). It
+//! is scoped as narrowly as its Rust-level counterpart: single `TermQuery`
+//! only.
+//!
+//! `ffi_search_boolean_query_scored_maxscore` extends this one level up:
+//! `lucene_search::search_boolean_query_scored_maxscore` prunes a pure
+//! SHOULD-disjunction `BooleanQuery` of plain `Clause::Term` clauses (no
+//! `must`/`must_not`, `minimum_should_match <= 1`, every clause's term with
+//! `docFreq > 1`) using a simplified two-tier essential/non-essential-style
+//! MAXSCORE skip -- see that function's doc comment for the exact algorithm
+//! and its honestly-documented scope narrowing versus a full multi-way WAND
+//! pivot. Any `BooleanQuery` outside that scope (a `must`/`must_not` clause,
+//! `minimum_should_match > 1`, a nested/non-term clause, or a singleton
+//! `docFreq == 1` term) transparently falls back to the same exhaustive
+//! `search_boolean_query_scored` path `ffi_search_boolean_query_scored`
+//! itself calls, so the fast path never changes a result, only whether it's
+//! reached faster.
+//!
+//! Every other scored function here has no competitive-score threshold at
+//! all and never prunes.
 //!
 //! Same matching semantics as their unscored siblings above, but each feeds
 //! the matched, live docs' real BM25 score (`lucene_search::similarity`) to a
@@ -71,8 +84,8 @@ use std::os::raw::c_char;
 use lucene_codecs::postings::{DocInput, PosInput};
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::{
-    search_boolean_query, search_boolean_query_scored, search_phrase_query,
-    search_phrase_query_scored, search_term_query, search_term_query_scored,
+    search_boolean_query, search_boolean_query_scored, search_boolean_query_scored_maxscore,
+    search_phrase_query, search_phrase_query_scored, search_term_query, search_term_query_scored,
     search_term_query_scored_maxscore,
 };
 use lucene_search::{BooleanQuery, Clause, PhraseQuery, TermQuery, TopDocsCollector, VecCollector};
@@ -596,14 +609,14 @@ pub unsafe extern "C" fn ffi_search_term_query_scored(
 /// fall back to the exact same eager path `ffi_search_term_query_scored`
 /// uses, never a silently different result).
 ///
-/// This is the *only* FFI entry point in this module that reaches this
-/// port's real, block-level MAXSCORE dynamic pruning -- `ffi_search_boolean_query_scored`
-/// (below) sums per-clause BM25 scores over an eagerly-resolved matched-doc
-/// set with no competitive-score threshold at all, matching
-/// `search_boolean_query_scored`'s own documented scope (multi-clause
-/// `BooleanQuery` WAND/MAXSCORE dynamic pruning remains unimplemented at the
-/// `lucene-search` level, see `docs/parity.md`), and none of this module's
-/// other scored functions consult `min_competitive_score()` either.
+/// `ffi_search_boolean_query_scored_maxscore` (further below) is this
+/// module's other MAXSCORE-pruned entry point, one level up (a pure
+/// SHOULD-disjunction `BooleanQuery` of plain term clauses, see that
+/// function's doc comment for its own scope). `ffi_search_boolean_query_scored`
+/// itself (below) still sums per-clause BM25 scores over an eagerly-resolved
+/// matched-doc set with no competitive-score threshold at all -- unchanged --
+/// and none of this module's other scored functions consult
+/// `min_competitive_score()` either.
 ///
 /// # Safety
 /// Same contract as [`ffi_search_term_query_scored`]'s.
@@ -795,6 +808,171 @@ pub unsafe extern "C" fn ffi_search_boolean_query_scored(
 
         let mut collector = TopDocsCollector::new(top_n);
         search_boolean_query_scored(
+            &segment.fields,
+            doc_in.as_ref(),
+            None,
+            None,
+            None,
+            None,
+            &query,
+            norms_arg,
+            &mut collector,
+        )
+        .map_err(map_search_error)?;
+
+        let handle = lock_recovering(scored_results()).insert(ScoredResultsHandle {
+            hits: collector.top_docs().to_vec(),
+        });
+        // SAFETY: caller contract guarantees `out_scored_results_handle` is valid
+        // for one write.
+        unsafe {
+            *out_scored_results_handle = handle;
+        }
+        Ok(())
+    })
+}
+
+/// MAXSCORE-pruned sibling of [`ffi_search_boolean_query_scored`]: same flat,
+/// four-parallel-array clause wire format and the exact same
+/// [`ScoredResultsHandle`] contract, but runs
+/// [`lucene_search::search_boolean_query_scored_maxscore`] instead of
+/// [`search_boolean_query_scored`] -- streaming every `should` clause's
+/// postings through its own [`lucene_codecs::postings::LazyDocsCursor`] and
+/// skipping whole level-0 blocks that a per-clause bound proves can never
+/// beat the [`TopDocsCollector`]'s current worst kept score, rather than
+/// eagerly materializing the whole matched-doc set the way
+/// `ffi_search_boolean_query_scored` does. See
+/// [`lucene_search::search_boolean_query_scored_maxscore`]'s own doc comment
+/// for:
+/// - the exact fast-path preconditions (pure SHOULD disjunction, no nested
+///   clauses, every clause a plain `Clause::Term` with `docFreq > 1`,
+///   `minimum_should_match <= 1`) -- any query outside that scope
+///   transparently falls back to calling `search_boolean_query_scored`
+///   verbatim, the same function `ffi_search_boolean_query_scored` calls, so
+///   this entry point never produces a different result for a query the
+///   fast path can't handle;
+/// - the honestly-scoped simplification this function's pruning actually
+///   implements (a two-tier essential/non-essential-style skip driven by a
+///   real, always-valid per-clause global score bound, not a full
+///   multi-way WAND pivot).
+///
+/// Produces byte-for-byte identical `top_docs()` results to
+/// [`ffi_search_boolean_query_scored`] for the same query, for every
+/// `must`/`should`/`must_not` combination -- including ones outside the fast
+/// path's scope, which simply take the identical eager code path under the
+/// hood.
+///
+/// # Safety
+/// Same contract as [`ffi_search_boolean_query_scored`]'s.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn ffi_search_boolean_query_scored_maxscore(
+    segment_handle: u64,
+    must_fields: *const *const c_char,
+    must_field_lens: *const usize,
+    must_terms: *const *const u8,
+    must_term_lens: *const usize,
+    must_count: usize,
+    should_fields: *const *const c_char,
+    should_field_lens: *const usize,
+    should_terms: *const *const u8,
+    should_term_lens: *const usize,
+    should_count: usize,
+    must_not_fields: *const *const c_char,
+    must_not_field_lens: *const usize,
+    must_not_terms: *const *const u8,
+    must_not_term_lens: *const usize,
+    must_not_count: usize,
+    top_n: usize,
+    out_scored_results_handle: *mut u64,
+) -> i32 {
+    guard(|| {
+        if out_scored_results_handle.is_null() {
+            return Err(FfiStatus::NullPointer);
+        }
+        // SAFETY: see `read_term_clauses`'s contract; every array/count pair here
+        // matches it exactly.
+        let query = unsafe {
+            BooleanQuery::new()
+                .with_must(read_term_clauses(
+                    must_fields,
+                    must_field_lens,
+                    must_terms,
+                    must_term_lens,
+                    must_count,
+                )?)
+                .with_should(read_term_clauses(
+                    should_fields,
+                    should_field_lens,
+                    should_terms,
+                    should_term_lens,
+                    should_count,
+                )?)
+                .with_must_not(read_term_clauses(
+                    must_not_fields,
+                    must_not_field_lens,
+                    must_not_terms,
+                    must_not_term_lens,
+                    must_not_count,
+                )?)
+        };
+
+        let segments = lock_recovering(segments());
+        let segment = segments.get(segment_handle).ok_or_else(|| {
+            set_last_error(
+                "ffi_search_boolean_query_scored_maxscore: unknown or already-closed segment \
+                 handle",
+            );
+            FfiStatus::InvalidHandle
+        })?;
+        let doc_in = segment
+            .doc_bytes
+            .as_deref()
+            .map(|b| DocInput::open(b, &segment.segment_id, &segment.segment_suffix))
+            .transpose()
+            .map_err(|e| {
+                set_last_error(format!("reopening .doc: {e}"));
+                FfiStatus::Decode
+            })?;
+
+        // Same norms-map construction as `ffi_search_boolean_query_scored` above
+        // -- see that function's comment for why a field with no norms entry is
+        // simply absent from the map.
+        let mut field_names: Vec<&str> = query
+            .must
+            .iter()
+            .chain(query.should.iter())
+            .chain(query.must_not.iter())
+            .filter_map(|c| match c {
+                Clause::Term(t) => Some(t.field.as_str()),
+                Clause::Phrase(_)
+                | Clause::Boolean(_)
+                | Clause::DisjunctionMax(_)
+                | Clause::ConstantScore(_)
+                | Clause::Boost(_)
+                | Clause::Wildcard(_)
+                | Clause::Prefix(_)
+                | Clause::Fuzzy(_)
+                | Clause::Regexp(_)
+                | Clause::Span(_)
+                | Clause::PointsRange(_)
+                | Clause::MatchAllDocs(_)
+                | Clause::MatchNoDocs(_)
+                | Clause::TermInSet(_) => None,
+            })
+            .collect();
+        field_names.sort_unstable();
+        field_names.dedup();
+        let mut norms_map: HashMap<String, FieldNorms<'_>> = HashMap::new();
+        for name in field_names {
+            if let Some(field_norms) = open_field_norms(segment, name)? {
+                norms_map.insert(name.to_string(), field_norms);
+            }
+        }
+        let norms_arg = (!norms_map.is_empty()).then_some(&norms_map);
+
+        let mut collector = TopDocsCollector::new(top_n);
+        search_boolean_query_scored_maxscore(
             &segment.fields,
             doc_in.as_ref(),
             None,
@@ -2131,6 +2309,295 @@ mod tests {
         assert!(read_scored_results(scored_handle).is_empty());
 
         ffi_close_scored_results(scored_handle);
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    /// Proves this crate's `ffi_search_boolean_query_scored_maxscore` entry
+    /// point, analogous to
+    /// `term_query_scored_maxscore_matches_eager_ffi_path_and_actually_skips_blocks`
+    /// one level up: a three-clause pure-SHOULD `BooleanQuery`
+    /// (`big`/`"everywhere"`, `body`/`"cat"`, `body`/`"dog"` -- the same
+    /// three-clause fixture `lucene_search`'s own
+    /// `boolean_maxscore_lazy_path_matches_eager_path_on_real_fixture`/
+    /// `test_only_boolean_maxscore_block_skip_counter_records_real_skips`
+    /// unit tests already prove skip block decode for at the Rust level)
+    /// both (a) returns results identical to
+    /// `ffi_search_boolean_query_scored` and (b) genuinely reaches real
+    /// level-0 block skipping *through the FFI boundary*, via the same
+    /// `lucene_search::test_only_maxscore_block_skip_counter` reused across
+    /// the crate boundary (see
+    /// `term_query_scored_maxscore_matches_eager_ffi_path_and_actually_skips_blocks`'s
+    /// doc comment for why that's a strictly stronger claim than the
+    /// Rust-level unit test alone).
+    #[test]
+    fn boolean_query_scored_maxscore_matches_eager_ffi_path_and_actually_skips_blocks() {
+        let dir_handle = open_dir();
+        let seg_handle = open_segment(dir_handle, false);
+
+        let big_field = "big";
+        let big_term = b"everywhere";
+        let cat_field = "body";
+        let cat_term = b"cat";
+        let dog_field = "body";
+        let dog_term = b"dog";
+
+        let should_fields = [
+            big_field.as_ptr() as *const c_char,
+            cat_field.as_ptr() as *const c_char,
+            dog_field.as_ptr() as *const c_char,
+        ];
+        let should_field_lens = [big_field.len(), cat_field.len(), dog_field.len()];
+        let should_terms = [big_term.as_ptr(), cat_term.as_ptr(), dog_term.as_ptr()];
+        let should_term_lens = [big_term.len(), cat_term.len(), dog_term.len()];
+
+        for &top_n in &[1usize, 2, 5, 20, 9000] {
+            let mut eager_handle: u64 = 0;
+            let rc = unsafe {
+                ffi_search_boolean_query_scored(
+                    seg_handle,
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    0,
+                    should_fields.as_ptr(),
+                    should_field_lens.as_ptr(),
+                    should_terms.as_ptr(),
+                    should_term_lens.as_ptr(),
+                    3,
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    0,
+                    top_n,
+                    &mut eager_handle as *mut _,
+                )
+            };
+            assert_eq!(rc, FfiStatus::Ok.code());
+            let eager_hits = read_scored_results(eager_handle);
+
+            lucene_search::test_only_maxscore_block_skip_counter::reset();
+            let mut maxscore_handle: u64 = 0;
+            let rc = unsafe {
+                ffi_search_boolean_query_scored_maxscore(
+                    seg_handle,
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    0,
+                    should_fields.as_ptr(),
+                    should_field_lens.as_ptr(),
+                    should_terms.as_ptr(),
+                    should_term_lens.as_ptr(),
+                    3,
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    0,
+                    top_n,
+                    &mut maxscore_handle as *mut _,
+                )
+            };
+            assert_eq!(rc, FfiStatus::Ok.code());
+            let maxscore_hits = read_scored_results(maxscore_handle);
+
+            assert_eq!(
+                eager_hits, maxscore_hits,
+                "top_{top_n}: boolean MAXSCORE FFI path must match the eager FFI path exactly"
+            );
+
+            ffi_close_scored_results(eager_handle);
+            ffi_close_scored_results(maxscore_handle);
+        }
+
+        // A small top_n should have reached at least one real per-clause
+        // block skip through the FFI boundary somewhere across the loop
+        // above (the last iteration run was top_n == 9000, so re-run top_n
+        // == 1 alone here to check the skip counter deterministically).
+        lucene_search::test_only_maxscore_block_skip_counter::reset();
+        let mut maxscore_handle: u64 = 0;
+        let rc = unsafe {
+            ffi_search_boolean_query_scored_maxscore(
+                seg_handle,
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                should_fields.as_ptr(),
+                should_field_lens.as_ptr(),
+                should_terms.as_ptr(),
+                should_term_lens.as_ptr(),
+                3,
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                1,
+                &mut maxscore_handle as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::Ok.code());
+        let skips = lucene_search::test_only_maxscore_block_skip_counter::count();
+        assert!(
+            skips > 0,
+            "top_1 should make at least one clause's block provably \
+             uncompetitive through the FFI boundary (got {skips} skips)"
+        );
+        ffi_close_scored_results(maxscore_handle);
+
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    /// `ffi_search_boolean_query_scored_maxscore`'s unknown-segment-handle
+    /// branch must behave exactly like `ffi_search_boolean_query_scored`'s.
+    #[test]
+    fn boolean_query_scored_maxscore_unknown_segment_handle_is_invalid_handle() {
+        let mut scored_handle: u64 = 0;
+        let rc = unsafe {
+            ffi_search_boolean_query_scored_maxscore(
+                0xFFFF,
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                10,
+                &mut scored_handle as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::InvalidHandle.code());
+    }
+
+    /// `ffi_search_boolean_query_scored_maxscore`'s null-out-pointer branch
+    /// must behave exactly like `ffi_search_boolean_query_scored`'s.
+    #[test]
+    fn boolean_query_scored_maxscore_null_out_handle_is_null_pointer_error() {
+        let dir_handle = open_dir();
+        let seg_handle = open_segment(dir_handle, false);
+        let rc = unsafe {
+            ffi_search_boolean_query_scored_maxscore(
+                seg_handle,
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                10,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(rc, FfiStatus::NullPointer.code());
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    /// Falls back to the eager path unchanged when a `must` clause is
+    /// present -- `ffi_search_boolean_query_scored_maxscore`'s fast-path
+    /// precondition (see its doc comment) excludes `must`/`must_not`
+    /// entirely.
+    #[test]
+    fn boolean_query_scored_maxscore_falls_back_when_must_clause_present() {
+        let dir_handle = open_dir();
+        let seg_handle = open_segment(dir_handle, false);
+
+        let must_field = "body";
+        let must_term = b"cat";
+        let must_fields = [must_field.as_ptr() as *const c_char];
+        let must_field_lens = [must_field.len()];
+        let must_terms = [must_term.as_ptr()];
+        let must_term_lens = [must_term.len()];
+
+        let should_field = "body";
+        let should_term = b"dog";
+        let should_fields = [should_field.as_ptr() as *const c_char];
+        let should_field_lens = [should_field.len()];
+        let should_terms = [should_term.as_ptr()];
+        let should_term_lens = [should_term.len()];
+
+        let mut eager_handle: u64 = 0;
+        let rc = unsafe {
+            ffi_search_boolean_query_scored(
+                seg_handle,
+                must_fields.as_ptr(),
+                must_field_lens.as_ptr(),
+                must_terms.as_ptr(),
+                must_term_lens.as_ptr(),
+                1,
+                should_fields.as_ptr(),
+                should_field_lens.as_ptr(),
+                should_terms.as_ptr(),
+                should_term_lens.as_ptr(),
+                1,
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                10,
+                &mut eager_handle as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::Ok.code());
+
+        let mut maxscore_handle: u64 = 0;
+        let rc = unsafe {
+            ffi_search_boolean_query_scored_maxscore(
+                seg_handle,
+                must_fields.as_ptr(),
+                must_field_lens.as_ptr(),
+                must_terms.as_ptr(),
+                must_term_lens.as_ptr(),
+                1,
+                should_fields.as_ptr(),
+                should_field_lens.as_ptr(),
+                should_terms.as_ptr(),
+                should_term_lens.as_ptr(),
+                1,
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                10,
+                &mut maxscore_handle as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::Ok.code());
+
+        assert_eq!(
+            read_scored_results(eager_handle),
+            read_scored_results(maxscore_handle)
+        );
+
+        ffi_close_scored_results(eager_handle);
+        ffi_close_scored_results(maxscore_handle);
         ffi_close_segment(seg_handle);
         ffi_close_directory(dir_handle);
     }
