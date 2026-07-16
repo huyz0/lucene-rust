@@ -4669,3 +4669,78 @@ before-first). `cargo fmt --all` clean; `cargo clippy --workspace
 --all-targets -- -D warnings` clean; `cargo test -p lucene-codecs` passes
 (687 tests, up from 681). See `docs/parity.md`'s FST row for the
 parity-tracking update.
+
+**Progress (task: FST off-heap seek path validation).** Investigated whether
+`FstEnum::seek_ceil`/`seek_floor`/`seek_exact` and `Fst::iter` enumeration had
+ever been exercised over a `Fst` opened via `Fst::read_borrowed` (the
+off-heap/zero-copy path), as opposed to only `Fst::read` (owned copy) --
+seeking walks a push/pop stack across levels and can backtrack to a previous
+arc or ascend to a parent node, a substantially more complex access pattern
+than a single `get()` descent, so a subtle borrow-lifetime or slicing issue
+specific to the borrowed path could plausibly hide behind passing GET tests
+and only surface under seek.
+
+Grepped every test in `crates/lucene-codecs/src/fst.rs` and
+`crates/lucene-codecs/tests/fst_seek_fixtures.rs` that calls `read_borrowed`
+or exercises seek/`iter`. Confirmed a real testing gap, not an implementation
+bug: `fst_seek_fixtures.rs` (the differential seek suite, covering list,
+binary-search, direct-addressing, continuous, non-root-array-node, and all
+three floor-backtrack fixtures) loads its `Fst` exclusively via `Fst::read`
+(`load_fst`'s only call is `Fst::read(&mut input)`); `fst.rs`'s own in-module
+seek unit tests (`fst_seek_exact_on_present_and_absent_keys`,
+`fst_enum_seek_ceil_*`, `fst_enum_seek_floor_*`, etc.) build their `Fst` via
+`build_fst` (in-memory, never even serialized). Conversely, every existing
+`read_borrowed` test (`read_borrowed_matches_read_for_same_bytes`,
+`read_borrowed_over_a_real_mmap_directory_input`,
+`read_borrowed_body_is_a_slice_not_a_second_owned_buffer`) only ever calls
+`get`/`get_typed`. So seek/enumeration over the borrowed/off-heap path had
+zero coverage before this task.
+
+Closed the gap with a new file,
+`crates/lucene-codecs/tests/fst_borrowed_seek_fixtures.rs`, which loads every
+existing fixture directory via both `Fst::read` and `Fst::read_borrowed` and
+asserts `seek_ceil`/`seek_floor`/`seek_exact`/`iter` produce byte-identical
+results between the two for the same real, Lucene-written bytes: `iter`
+enumerates every key identically across all 8 fixture directories
+(`iter_agrees_between_owned_and_borrowed_across_every_node_encoding`);
+`seek_exact` agrees for present keys across list/binary-search/direct-
+addressing/continuous/non-root-array-node fixtures, checked through both the
+stateless `Fst::seek_exact` and the stateful `FstEnum::seek_exact`
+(`seek_exact_agrees_between_owned_and_borrowed_for_present_keys`);
+`seek_ceil`/`seek_floor` land-between-keys and range-edge scenarios agree
+across the same encodings
+(`seek_ceil_and_floor_agree_between_owned_and_borrowed_across_encodings`);
+and the three floor-backtrack fixtures (root itself array-encoded, one label
+has an array-encoded child, forcing `seek_floor` to backtrack from child to
+parent) agree exactly with the expected result, not just with each other
+(`seek_floor_backtrack_scenarios_agree_between_owned_and_borrowed`). A fifth
+test, `seek_and_enumerate_over_a_real_mmap_directory_backed_borrowed_fst`,
+mirrors `read_borrowed_over_a_real_mmap_directory_input`'s pattern but drives
+the *full* seek/enumeration surface (stateless `seek_exact`, `FstEnum::
+seek_ceil` then `seek_floor` on the same stateful enum -- exercising
+backtracking from wherever the prior seek left the stack -- then full
+`iter` enumeration) against a real OS `mmap(2)`-backed byte slice, not just
+an in-memory `Vec<u8>`.
+
+All five new tests passed on the first run, with no changes needed to
+`fst.rs` itself -- this was "confirmed already working [after adding the
+missing proof], no real gap found," not "found and fixed a bug." Checked
+why: the borrowed path's node/arc reads all go through
+`SliceInput::slice(from, to)`, which does arbitrary positional (not
+streaming/forward-only) access into the borrowed `&'a [u8]` -- structurally
+identical to how the owned `Vec<u8>` path reads arcs, since both go through
+the same `slice`/`seek` primitives on `SliceInput`. There is no place in the
+borrowed path that assumes forward-only access, so backtracking to a
+previous arc or ascending to a parent node works identically regardless of
+which constructor produced the `Fst`.
+
+`cargo fmt --all` clean; `cargo clippy --workspace --all-targets -- -D
+warnings` clean (fixed two lints in the new test file along the way: a
+`clippy::type_complexity` on an inline tuple-slice type in
+`seek_floor_backtrack_scenarios_agree_between_owned_and_borrowed`, factored
+into a local `type Case = ...` alias; and a `clippy::while_let_on_iterator`
+in the mmap test, changed to a `for` loop); `cargo test -p lucene-codecs`
+passes clean overall, including the new integration binary's 5 tests (the
+in-module `fst.rs` unit-test count is unchanged at 688, since all new tests
+live in the new `fst_borrowed_seek_fixtures.rs` integration-test file). See
+`docs/parity.md`'s FST row for the parity-tracking update.
