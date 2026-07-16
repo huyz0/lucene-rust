@@ -167,6 +167,12 @@ pub enum Error {
          is supported by this writer's postings write-side"
     )]
     UnsupportedPostingsIndexOptions(String, IndexOptions),
+    #[error(
+        "add_postings_field: field {0:?} is already opted into postings for this writer \
+         (via set_postings_field or an earlier add_postings_field call) -- each field number \
+         may only be added once per commit"
+    )]
+    DuplicatePostingsField(String),
     #[error("set_term_vector_field: no field named {0:?} in this writer's field list")]
     UnknownTermVectorField(String),
     #[error(
@@ -175,6 +181,12 @@ pub enum Error {
          whose FieldInfo already advertises them"
     )]
     UnsupportedTermVectorField(String),
+    #[error(
+        "add_term_vector_field: field {0:?} is already opted into term vectors for this writer \
+         (via set_term_vector_field or an earlier add_term_vector_field call) -- each field \
+         number may only be added once per commit"
+    )]
+    DuplicateTermVectorField(String),
     #[error("set_doc_values_field: no field named {0:?} in this writer's field list")]
     UnknownDocValuesField(String),
     #[error(
@@ -219,8 +231,19 @@ pub struct IndexWriter<'d> {
     segment_infos: SegmentInfos,
     pending_docs: Vec<Document>,
     merge_policy: Option<MergePolicyConfig>,
-    postings_field: Option<PostingsFieldConfig>,
-    term_vector_field: Option<TermVectorFieldConfig>,
+    /// Every field this writer is currently opted into building real
+    /// postings for, in insertion order -- see [`IndexWriter::set_postings_field`]/
+    /// [`IndexWriter::add_postings_field`] for how entries are added/replaced.
+    /// All entries here are batched into a **single**
+    /// [`postings_writer::write_fields`] call per `commit()`, so a commit can
+    /// carry postings for any number of distinct fields at once (see module
+    /// doc comment).
+    postings_fields: Vec<PostingsFieldConfig>,
+    /// Every field this writer is currently opted into building real term
+    /// vectors for -- same "batched into one write call per commit" shape as
+    /// [`Self::postings_fields`], via [`term_vectors::write_best_speed`]
+    /// (which already accepts multiple fields per document).
+    term_vector_fields: Vec<TermVectorFieldConfig>,
     doc_values_field: Option<DocValuesFieldConfig>,
     /// Set by [`IndexWriter::prepare_commit`], consumed by
     /// [`IndexWriter::finish_commit`] -- see [`IndexWriter::prepare_commit`]'s
@@ -234,9 +257,12 @@ pub struct IndexWriter<'d> {
 }
 
 /// One field this writer has been opted into also indexing real postings
-/// for, resolved once by [`IndexWriter::set_postings_field`] against this
-/// writer's fixed `fields` list (see that method's doc comment for the exact
-/// scope this mirrors from [`postings_writer::write_single_field`]).
+/// for, resolved once by [`IndexWriter::set_postings_field`]/
+/// [`IndexWriter::add_postings_field`] against this writer's fixed `fields`
+/// list -- `self.postings_fields` may hold any number of these at once (see
+/// [`IndexWriter::set_postings_field`]'s doc comment for exactly how entries
+/// are added/replaced, and [`IndexWriter::build_postings_output`] for how
+/// they're all batched into one [`postings_writer::write_fields`] call).
 #[derive(Debug, Clone)]
 struct PostingsFieldConfig {
     name: String,
@@ -245,9 +271,11 @@ struct PostingsFieldConfig {
 }
 
 /// One field this writer has been opted into also building real term
-/// vectors for, resolved once by [`IndexWriter::set_term_vector_field`]
-/// against this writer's fixed `fields` list -- same "resolve once, reuse
-/// every commit" shape as [`PostingsFieldConfig`].
+/// vectors for, resolved once by [`IndexWriter::set_term_vector_field`]/
+/// [`IndexWriter::add_term_vector_field`] against this writer's fixed
+/// `fields` list -- `self.term_vector_fields` may hold any number of these at
+/// once, same "batch every entry into one write call per commit" shape as
+/// [`PostingsFieldConfig`].
 #[derive(Debug, Clone)]
 struct TermVectorFieldConfig {
     name: String,
@@ -298,8 +326,8 @@ impl<'d> IndexWriter<'d> {
             segment_infos,
             pending_docs: Vec::new(),
             merge_policy: None,
-            postings_field: None,
-            term_vector_field: None,
+            postings_fields: Vec::new(),
+            term_vector_fields: Vec::new(),
             doc_values_field: None,
             prepared_commit: None,
         })
@@ -307,67 +335,111 @@ impl<'d> IndexWriter<'d> {
 
     /// Opts this writer into also building and writing real postings
     /// (`.doc`/`.tim`/`.tip`/`.tmd`, via
-    /// [`postings_writer::write_single_field`]) for one field of every
-    /// segment [`IndexWriter::commit`] flushes from here on -- mirroring
-    /// real Lucene's per-field `FieldType.setIndexOptions`, except this
-    /// facade only ever indexes **one** field at a time (see
-    /// [`postings_writer::write_single_field`]'s own "one field per call"
-    /// scope note; there is no per-field file-suffix machinery here to fan
-    /// that out to more than one field within a single segment).
+    /// [`postings_writer::write_fields`]) for one field of every segment
+    /// [`IndexWriter::commit`] flushes from here on -- mirroring real
+    /// Lucene's per-field `FieldType.setIndexOptions`.
     ///
-    /// `Some(field_name)` looks `field_name` up in this writer's fixed
-    /// `fields` list (from [`IndexWriter::open`]) and requires its
-    /// `index_options` to already be `IndexOptions::Docs` or
-    /// `IndexOptions::DocsAndFreqs` (an `Err` otherwise) -- the same
-    /// analyzed-field-text convention real Lucene's own `FieldType` uses to
-    /// mark a field indexable, and the same `index_options` restriction
-    /// [`postings_writer::write_single_field`] itself enforces (no
-    /// positions/offsets/payloads yet). `None` (the default a freshly
-    /// [`IndexWriter::open`]ed writer starts with) turns this back off --
-    /// `commit()` then behaves exactly as it did before this feature
-    /// existed (stored fields only, matching every pre-existing caller).
+    /// `Some(field_name)` **replaces** this writer's entire postings-field
+    /// list with just `field_name` (matching this method's historical
+    /// "reassign, don't accumulate" semantics) -- to index postings for
+    /// *more than one* field in the same commit, call
+    /// [`IndexWriter::add_postings_field`] afterward for each additional
+    /// field, or call it repeatedly on its own (`set_postings_field` is only
+    /// needed to establish or replace the first one / to disable postings
+    /// entirely). `field_name` is looked up in this writer's fixed `fields`
+    /// list (from [`IndexWriter::open`]) and requires its `index_options` to
+    /// already be `IndexOptions::Docs` or `IndexOptions::DocsAndFreqs` (an
+    /// `Err` otherwise) -- the same analyzed-field-text convention real
+    /// Lucene's own `FieldType` uses to mark a field indexable, and the same
+    /// `index_options` restriction [`postings_writer::write_fields`] itself
+    /// enforces (no positions/offsets/payloads yet). `None` (the default a
+    /// freshly [`IndexWriter::open`]ed writer starts with) turns this back
+    /// off entirely -- `commit()` then behaves exactly as it did before this
+    /// feature existed (stored fields only, matching every pre-existing
+    /// caller).
     ///
-    /// Only [`FieldValue::String`] values contribute indexable text for the
+    /// Only [`FieldValue::String`] values contribute indexable text for an
     /// opted-in field -- a document with no value, or a non-`String` value,
     /// for that field contributes no postings for that document (same "best
     /// effort per document" shape [`crate::indexing_chain::invert_documents`]
     /// already has for a missing `(doc_id, field, text)` triple).
     pub fn set_postings_field(&mut self, field_name: Option<&str>) -> Result<()> {
-        self.postings_field = match field_name {
-            None => None,
-            Some(name) => {
-                let info = self
-                    .fields
-                    .iter()
-                    .find(|f| f.name == name)
-                    .ok_or_else(|| Error::UnknownPostingsField(name.to_string()))?;
-                if !matches!(
-                    info.index_options,
-                    IndexOptions::Docs | IndexOptions::DocsAndFreqs
-                ) {
-                    return Err(Error::UnsupportedPostingsIndexOptions(
-                        name.to_string(),
-                        info.index_options,
-                    ));
-                }
-                Some(PostingsFieldConfig {
-                    name: name.to_string(),
-                    field_number: info.number,
-                    index_options: info.index_options,
-                })
-            }
+        self.postings_fields = match field_name {
+            None => Vec::new(),
+            Some(name) => vec![Self::resolve_postings_field(&self.fields, name)?],
         };
         Ok(())
+    }
+
+    /// Opts this writer into building and writing real postings for
+    /// **one additional** field, on top of whatever
+    /// [`IndexWriter::set_postings_field`]/earlier `add_postings_field` calls
+    /// already opted in -- the multi-field entry point this writer needed to
+    /// carry more than one distinct postings field through a single
+    /// [`IndexWriter::commit`] (see module doc comment and
+    /// [`postings_writer::write_fields`], which already accepts any number of
+    /// fields in one call; `commit()` batches every entry in this writer's
+    /// postings-field list into exactly one `write_fields` call per flush, so
+    /// they land in one `.doc`/`.tim`/`.tip`/`.tmd` file set together, never
+    /// as separate per-field file sets).
+    ///
+    /// Same validation as [`IndexWriter::set_postings_field`] (`field_name`
+    /// must exist in this writer's fixed `fields` list and have
+    /// `index_options` of `IndexOptions::Docs`/`IndexOptions::DocsAndFreqs`),
+    /// plus a new one: `field_name` must not already be opted in (an already
+    /// -added field number returns
+    /// [`Error::DuplicatePostingsField`] rather than silently duplicating it
+    /// in the list, since [`postings_writer::write_fields`] itself has no
+    /// defined behavior for two inputs sharing one `field_number`).
+    pub fn add_postings_field(&mut self, field_name: &str) -> Result<()> {
+        let config = Self::resolve_postings_field(&self.fields, field_name)?;
+        if self
+            .postings_fields
+            .iter()
+            .any(|f| f.field_number == config.field_number)
+        {
+            return Err(Error::DuplicatePostingsField(field_name.to_string()));
+        }
+        self.postings_fields.push(config);
+        Ok(())
+    }
+
+    /// Shared lookup/validation [`IndexWriter::set_postings_field`]/
+    /// [`IndexWriter::add_postings_field`] both build a
+    /// [`PostingsFieldConfig`] from.
+    fn resolve_postings_field(fields: &[FieldInfo], name: &str) -> Result<PostingsFieldConfig> {
+        let info = fields
+            .iter()
+            .find(|f| f.name == name)
+            .ok_or_else(|| Error::UnknownPostingsField(name.to_string()))?;
+        if !matches!(
+            info.index_options,
+            IndexOptions::Docs | IndexOptions::DocsAndFreqs
+        ) {
+            return Err(Error::UnsupportedPostingsIndexOptions(
+                name.to_string(),
+                info.index_options,
+            ));
+        }
+        Ok(PostingsFieldConfig {
+            name: name.to_string(),
+            field_number: info.number,
+            index_options: info.index_options,
+        })
     }
 
     /// Opts this writer into also building and writing real term vectors
     /// (`.tvd`/`.tvx`/`.tvm`, via [`term_vectors::write_best_speed`]) for one
     /// field of every segment [`IndexWriter::commit`] flushes from here on --
-    /// same "one field per call" scope as [`IndexWriter::set_postings_field`]
-    /// (there is no per-field file-suffix machinery here to fan this out to
-    /// more than one field within a single segment, and
-    /// [`term_vectors::write_best_speed`] itself is a single-chunk writer,
-    /// same as [`postings_writer::write_single_field`]).
+    /// same "replace, don't accumulate" semantics as
+    /// [`IndexWriter::set_postings_field`]. To build term vectors for *more
+    /// than one* field in the same commit, call
+    /// [`IndexWriter::add_term_vector_field`] for each additional field --
+    /// [`term_vectors::write_best_speed`] already accepts multiple fields per
+    /// document (`TermVectorsDocument::fields` is itself a `Vec`), so every
+    /// entry in this writer's term-vector-field list is folded into each
+    /// pending doc's own multi-field [`TermVectorsDocument`] before one
+    /// `write_best_speed` call per commit -- never one call per field.
     ///
     /// `Some(field_name)` looks `field_name` up in this writer's fixed
     /// `fields` list and requires its `store_term_vectors` flag to already be
@@ -376,47 +448,83 @@ impl<'d> IndexWriter<'d> {
     /// [`lucene_codecs::field_infos::FieldInfo::check_consistency`]
     /// invariant that a non-indexed field can never set that flag. `None`
     /// (the default a freshly [`IndexWriter::open`]ed writer starts with)
-    /// turns this back off -- `commit()` then behaves exactly as it did
-    /// before this feature existed.
+    /// turns this back off entirely -- `commit()` then behaves exactly as it
+    /// did before this feature existed.
     ///
-    /// Only [`FieldValue::String`] values contribute indexable text for the
+    /// Only [`FieldValue::String`] values contribute indexable text for an
     /// opted-in field -- a document with no value, or a non-`String` value,
     /// for that field contributes no term vector for that document (same
     /// "best effort per document" shape [`IndexWriter::set_postings_field`]
     /// already has). This is independent of
-    /// [`IndexWriter::set_postings_field`] -- a writer may have both set at
-    /// once (to the same field or different fields); each is built and
-    /// written from its own in-memory pass over `pending_docs` before
-    /// anything reaches `dir`.
+    /// [`IndexWriter::set_postings_field`]/[`IndexWriter::add_postings_field`]
+    /// -- a writer may have both postings and term-vector fields set at once
+    /// (to the same fields or different ones); each is built and written
+    /// from its own in-memory pass over `pending_docs` before anything
+    /// reaches `dir`.
     pub fn set_term_vector_field(&mut self, field_name: Option<&str>) -> Result<()> {
-        self.term_vector_field = match field_name {
-            None => None,
-            Some(name) => {
-                let info = self
-                    .fields
-                    .iter()
-                    .find(|f| f.name == name)
-                    .ok_or_else(|| Error::UnknownTermVectorField(name.to_string()))?;
-                if !info.store_term_vectors {
-                    return Err(Error::UnsupportedTermVectorField(name.to_string()));
-                }
-                Some(TermVectorFieldConfig {
-                    name: name.to_string(),
-                    field_number: info.number,
-                })
-            }
+        self.term_vector_fields = match field_name {
+            None => Vec::new(),
+            Some(name) => vec![Self::resolve_term_vector_field(&self.fields, name)?],
         };
         Ok(())
+    }
+
+    /// Opts this writer into building and writing real term vectors for
+    /// **one additional** field, on top of whatever
+    /// [`IndexWriter::set_term_vector_field`]/earlier `add_term_vector_field`
+    /// calls already opted in -- see [`IndexWriter::set_term_vector_field`]'s
+    /// doc comment for how multiple fields are batched into one
+    /// [`term_vectors::write_best_speed`] call per commit.
+    ///
+    /// Same validation as [`IndexWriter::set_term_vector_field`], plus: an
+    /// already-added field number returns
+    /// [`Error::DuplicateTermVectorField`] instead of silently duplicating it
+    /// in the list.
+    pub fn add_term_vector_field(&mut self, field_name: &str) -> Result<()> {
+        let config = Self::resolve_term_vector_field(&self.fields, field_name)?;
+        if self
+            .term_vector_fields
+            .iter()
+            .any(|f| f.field_number == config.field_number)
+        {
+            return Err(Error::DuplicateTermVectorField(field_name.to_string()));
+        }
+        self.term_vector_fields.push(config);
+        Ok(())
+    }
+
+    /// Shared lookup/validation [`IndexWriter::set_term_vector_field`]/
+    /// [`IndexWriter::add_term_vector_field`] both build a
+    /// [`TermVectorFieldConfig`] from.
+    fn resolve_term_vector_field(
+        fields: &[FieldInfo],
+        name: &str,
+    ) -> Result<TermVectorFieldConfig> {
+        let info = fields
+            .iter()
+            .find(|f| f.name == name)
+            .ok_or_else(|| Error::UnknownTermVectorField(name.to_string()))?;
+        if !info.store_term_vectors {
+            return Err(Error::UnsupportedTermVectorField(name.to_string()));
+        }
+        Ok(TermVectorFieldConfig {
+            name: name.to_string(),
+            field_number: info.number,
+        })
     }
 
     /// Opts this writer into also building and writing real NUMERIC doc
     /// values (`.dvd`/`.dvm`/`.dvs`, via
     /// [`doc_values::write_single_dense_numeric_field`]) for one field of
-    /// every segment [`IndexWriter::commit`] flushes from here on -- same
-    /// "one field per call" scope as [`IndexWriter::set_postings_field`]/
-    /// [`IndexWriter::set_term_vector_field`] (no per-field file-suffix
-    /// machinery here to fan this out to more than one field within a single
-    /// segment).
+    /// every segment [`IndexWriter::commit`] flushes from here on -- unlike
+    /// [`IndexWriter::set_postings_field`]/[`IndexWriter::set_term_vector_field`]
+    /// (which now support multiple fields per commit via
+    /// `add_postings_field`/`add_term_vector_field`, see those methods' doc
+    /// comments), doc values remain **one field per commit** here: this is a
+    /// single `Option<DocValuesFieldConfig>`, not a list, and there is no
+    /// `add_doc_values_field` equivalent (no per-field file-suffix machinery
+    /// here to fan this out to more than one field within a single segment;
+    /// see `docs/parity.md` for this still-open gap).
     ///
     /// **NUMERIC, BINARY, SORTED, SORTED_NUMERIC, and SORTED_SET doc values
     /// are all wired up by this writer** -- see
@@ -641,14 +749,16 @@ impl<'d> IndexWriter<'d> {
     /// if unusual, no-op-content commit rather than a special "nothing to do"
     /// case that skips writing. Returns the new committed [`SegmentInfos`].
     ///
-    /// If [`IndexWriter::set_postings_field`] has opted this writer into
-    /// postings for one field, this also builds and writes that field's real
-    /// `.doc`/`.tim`/`.tip`/`.tmd` for the flushed segment (see
+    /// If [`IndexWriter::set_postings_field`]/[`IndexWriter::add_postings_field`]
+    /// have opted this writer into postings for one or more fields, this also
+    /// builds and writes those fields' real `.doc`/`.tim`/`.tip`/`.tmd` for
+    /// the flushed segment in one batched
+    /// [`lucene_codecs::postings_writer::write_fields`] call (see
     /// [`IndexWriter::build_postings_output`]/
     /// [`IndexWriter::write_postings_files`]) -- entirely in memory *before*
-    /// anything is written to `dir`, so a docFreq >= 256 term (this writer's
-    /// documented single-`.tim`-block limit, see
-    /// [`postings_writer::write_single_field`]) makes the **whole** `commit()`
+    /// anything is written to `dir`, so any validation failure across *any*
+    /// configured field (see [`postings_writer::write_fields`]'s doc comment
+    /// for the current set of rejected shapes) makes the **whole** `commit()`
     /// call fail with `Err` and leaves `dir`/`pending_docs`/`segment_infos`
     /// completely unchanged, exactly like [`IndexWriter::update_document`]'s
     /// own atomicity guarantee -- never a partially-written segment.
@@ -746,14 +856,16 @@ impl<'d> IndexWriter<'d> {
             // written to `dir` -- see this method's own doc comment on why
             // that ordering is what makes a docFreq-too-large rejection
             // atomic.
-            let postings_output = match &self.postings_field {
-                Some(cfg) => Self::build_postings_output(&self.pending_docs, cfg, &segment_id)?,
-                None => None,
+            let postings_output = if self.postings_fields.is_empty() {
+                None
+            } else {
+                Self::build_postings_output(&self.pending_docs, &self.postings_fields, &segment_id)?
             };
-            let term_vectors_output = match &self.term_vector_field {
-                Some(cfg) => Self::build_term_vectors_output(&self.pending_docs, cfg)
-                    .map(|docs| term_vectors::write_best_speed(&docs, &segment_id, "")),
-                None => None,
+            let term_vectors_output = if self.term_vector_fields.is_empty() {
+                None
+            } else {
+                Self::build_term_vectors_output(&self.pending_docs, &self.term_vector_fields)
+                    .map(|docs| term_vectors::write_best_speed(&docs, &segment_id, ""))
             };
             let doc_values_output = match &self.doc_values_field {
                 Some(cfg) => Some(Self::build_doc_values_output(
@@ -838,24 +950,31 @@ impl<'d> IndexWriter<'d> {
         Ok(&self.segment_infos)
     }
 
-    /// Builds [`postings_writer::write_single_field`]'s input from `docs`'
-    /// [`FieldValue::String`] values for `config.field_number` (each pending
-    /// doc's index into `docs` becomes its doc ID in the new segment,
+    /// Builds [`postings_writer::write_fields`]'s input from `docs`'
+    /// [`FieldValue::String`] values for **every** field in `configs` (each
+    /// pending doc's index into `docs` becomes its doc ID in the new segment,
     /// matching [`flush_stored_only_segment`]'s own doc-ordering), tokenizes
-    /// via [`crate::indexing_chain::invert_documents`] with a plain
+    /// each field independently via
+    /// [`crate::indexing_chain::invert_documents`] with a plain
     /// [`Analyzer::standard`] (no stopwords -- this facade has no
     /// per-field-analyzer configuration yet, see module doc comment's scope
     /// notes elsewhere in this crate), and calls
-    /// [`postings_writer::write_single_field`] to actually encode the bytes.
+    /// [`postings_writer::write_fields`] **once** with every field's terms
+    /// batched together -- so a commit with, say, two distinct indexed text
+    /// fields produces exactly one `.doc`/`.tim`/`.tip`/`.tmd` file set
+    /// covering both fields, never two separate file sets (mirroring
+    /// [`crate::merge::merge_stored_only_segments`]'s own
+    /// `merge_postings`-then-single-`write_fields`-call shape in
+    /// `crates/lucene-index/src/merge.rs`).
     ///
-    /// Returns `Ok(None)` when no pending doc has any indexable text for this
-    /// field (nothing to write -- not an error; matches
-    /// [`postings_writer::write_single_field`]'s own `Error::EmptyTerms`
-    /// being a caller-input problem, not a "commit anyway" outcome we want to
-    /// force on every commit that happens to have no postings content).
-    /// Returns `Err` on [`postings_writer::write_single_field`]'s own
-    /// validation failures -- see that module's doc comment for the current
-    /// set of rejected shapes (e.g. `DocFreqTooLargeForPositions` for a
+    /// A field in `configs` with no indexable text across any pending doc is
+    /// simply omitted from the `write_fields` call (not an error on its own);
+    /// `Ok(None)` is only returned when *every* field in `configs` has
+    /// nothing to write, matching this method's previous single-field
+    /// "nothing to write this commit" outcome for that case.
+    /// Returns `Err` on [`postings_writer::write_fields`]'s own validation
+    /// failures -- see that module's doc comment for the current set of
+    /// rejected shapes (e.g. `DocFreqTooLargeForPositions` for a
     /// positions-indexing term whose `docFreq` reaches `BLOCK_SIZE`, tied to
     /// the `.doc`-side full-block writer's own missing pos/pay skip fields,
     /// not to `.pos` itself -- `total_term_freq` alone has no ceiling
@@ -864,165 +983,209 @@ impl<'d> IndexWriter<'d> {
     /// size).
     fn build_postings_output(
         docs: &[Document],
-        config: &PostingsFieldConfig,
+        configs: &[PostingsFieldConfig],
         segment_id: &[u8; ID_LENGTH],
     ) -> Result<Option<postings_writer::Output>> {
-        let mut triples: Vec<(i32, &str, &str)> = Vec::new();
-        for (doc_id, doc) in docs.iter().enumerate() {
-            let text = doc
-                .fields
-                .iter()
-                .find(|f| f.field_number == config.field_number)
-                .and_then(|f| match &f.value {
-                    FieldValue::String(s) => Some(s.as_str()),
-                    _ => None,
-                });
-            if let Some(text) = text {
-                triples.push((doc_id as i32, config.name.as_str(), text));
-            }
-        }
-        if triples.is_empty() {
-            return Ok(None);
+        struct FieldData {
+            config: PostingsFieldConfig,
+            doc_count: i32,
+            terms: Vec<TermPostings>,
         }
 
         let analyzer = Analyzer::standard(None);
-        let inverted = invert_documents(&triples, &analyzer);
+        let mut per_field: Vec<FieldData> = Vec::new();
+        for config in configs {
+            let mut triples: Vec<(i32, &str, &str)> = Vec::new();
+            for (doc_id, doc) in docs.iter().enumerate() {
+                let text = doc
+                    .fields
+                    .iter()
+                    .find(|f| f.field_number == config.field_number)
+                    .and_then(|f| match &f.value {
+                        FieldValue::String(s) => Some(s.as_str()),
+                        _ => None,
+                    });
+                if let Some(text) = text {
+                    triples.push((doc_id as i32, config.name.as_str(), text));
+                }
+            }
+            if triples.is_empty() {
+                continue;
+            }
 
-        // Every triple built above shares `config.name` as its field, so
-        // `inverted.terms` (keyed by `(field, term)`) only ever has entries
-        // for this one field -- no need to filter by field here. Its
-        // `BTreeMap` iteration order is therefore already ascending by term
-        // bytes (the ordering `postings_writer::write_single_field`
-        // requires), so no separate sort is needed either.
-        let mut doc_ids = std::collections::BTreeSet::new();
-        let mut terms: Vec<TermPostings> = Vec::new();
-        for ((_, term), entries) in &inverted.terms {
-            let term_docs: Vec<(i32, i32)> = entries
-                .iter()
-                .map(|entry| {
-                    doc_ids.insert(entry.doc_id);
-                    (entry.doc_id, entry.term_freq())
-                })
-                .collect();
-            terms.push(TermPostings {
-                term: term.as_bytes().to_vec(),
-                docs: term_docs,
-                // `IndexWriter::build_postings_output` is intentionally not
-                // wired up to positions yet (this task only adds the
-                // write-side capability in `postings_writer`; see
-                // `docs/parity.md` for the deferred-wiring note) --
-                // `set_postings_field` only ever accepts
-                // `IndexOptions::Docs`/`DocsAndFreqs` fields, so `positions`
-                // is never consulted here.
-                positions: Vec::new(),
-                offsets: Vec::new(),
-                payloads: Vec::new(),
+            let inverted = invert_documents(&triples, &analyzer);
+
+            // Every triple built above shares `config.name` as its field, so
+            // `inverted.terms` (keyed by `(field, term)`) only ever has
+            // entries for this one field -- no need to filter by field here.
+            // Its `BTreeMap` iteration order is therefore already ascending
+            // by term bytes (the ordering `postings_writer::write_fields`
+            // requires per field), so no separate sort is needed either.
+            let mut doc_ids = std::collections::BTreeSet::new();
+            let mut terms: Vec<TermPostings> = Vec::new();
+            for ((_, term), entries) in &inverted.terms {
+                let term_docs: Vec<(i32, i32)> = entries
+                    .iter()
+                    .map(|entry| {
+                        doc_ids.insert(entry.doc_id);
+                        (entry.doc_id, entry.term_freq())
+                    })
+                    .collect();
+                terms.push(TermPostings {
+                    term: term.as_bytes().to_vec(),
+                    docs: term_docs,
+                    // `IndexWriter::build_postings_output` is intentionally
+                    // not wired up to positions yet (this task only adds the
+                    // write-side capability in `postings_writer`; see
+                    // `docs/parity.md` for the deferred-wiring note) --
+                    // `set_postings_field`/`add_postings_field` only ever
+                    // accept `IndexOptions::Docs`/`DocsAndFreqs` fields, so
+                    // `positions` is never consulted here.
+                    positions: Vec::new(),
+                    offsets: Vec::new(),
+                    payloads: Vec::new(),
+                });
+            }
+            if terms.is_empty() {
+                continue;
+            }
+
+            per_field.push(FieldData {
+                config: config.clone(),
+                doc_count: doc_ids.len() as i32,
+                terms,
             });
         }
-        if terms.is_empty() {
+
+        if per_field.is_empty() {
             return Ok(None);
         }
 
-        let input = FieldPostingsInput {
-            field_number: config.field_number,
-            index_options: config.index_options,
-            doc_count: doc_ids.len() as i32,
-            has_payloads: false,
-            terms: &terms,
-        };
-        let output = postings_writer::write_single_field(&input, segment_id, "")?;
+        let inputs: Vec<FieldPostingsInput<'_>> = per_field
+            .iter()
+            .map(|f| FieldPostingsInput {
+                field_number: f.config.field_number,
+                index_options: f.config.index_options,
+                doc_count: f.doc_count,
+                has_payloads: false,
+                terms: &f.terms,
+            })
+            .collect();
+        let output = postings_writer::write_fields(&inputs, segment_id, "")?;
         Ok(Some(output))
     }
 
     /// Builds one [`TermVectorsDocument`] per entry in `docs` (in the same
     /// doc-ID order [`flush_stored_only_segment`] uses -- index into `docs`
-    /// == doc ID in the new segment), sourced from `config.field_number`'s
-    /// [`FieldValue::String`] values, tokenized via
-    /// [`crate::indexing_chain::invert_documents`] with a plain
+    /// == doc ID in the new segment), sourced from **every** field in
+    /// `configs`' [`FieldValue::String`] values, each tokenized independently
+    /// via [`crate::indexing_chain::invert_documents`] with a plain
     /// [`Analyzer::standard`] (same analyzer/scope notes as
     /// [`IndexWriter::build_postings_output`]).
     ///
     /// [`crate::indexing_chain::invert_documents`] returns a *term-keyed*
     /// inverted index (postings grouped by `(field, term)`, each entry a
     /// doc-ID-sorted list) -- the shape a postings writer wants. Term
-    /// vectors need the transpose: *per-document* `term -> (freq,
+    /// vectors need the transpose: *per-document, per-field* `term -> (freq,
     /// positions)`, so this regroups that same inverted index by doc ID
     /// rather than reimplementing tokenization a second time.
+    /// [`term_vectors::write_best_speed`] already accepts multiple
+    /// `TermVectorField` entries per [`TermVectorsDocument`], so a doc that
+    /// has indexable text for two or more of `configs`' fields gets a
+    /// `fields` list with one `TermVectorField` per such field, all built
+    /// and written in this single pass -- no per-field
+    /// `write_best_speed` call is needed the way postings previously needed
+    /// one `write_single_field` call per field.
     ///
-    /// Returns `Ok(None)` when no pending doc has any indexable text for this
-    /// field at all (mirrors [`IndexWriter::build_postings_output`]'s own
-    /// "nothing to write this commit" outcome). Otherwise returns exactly
-    /// `docs.len()` entries, one per doc ID -- a doc with no term-vector data
-    /// of its own still gets an entry with an empty `fields` list (a
+    /// Returns `Ok(None)` when no pending doc has any indexable text for
+    /// *any* field in `configs` (mirrors
+    /// [`IndexWriter::build_postings_output`]'s own "nothing to write this
+    /// commit" outcome). Otherwise returns exactly `docs.len()` entries, one
+    /// per doc ID -- a doc with no term-vector data of its own (for any
+    /// configured field) still gets an entry with an empty `fields` list (a
     /// legitimate, readable "no term vectors for this doc" shape; see
     /// [`term_vectors::write_best_speed`]'s own tests for this exact case),
     /// never a shorter vector, since [`term_vectors::write_best_speed`]
     /// derives `max_doc` directly from `docs.len()`.
     fn build_term_vectors_output(
         docs: &[Document],
-        config: &TermVectorFieldConfig,
+        configs: &[TermVectorFieldConfig],
     ) -> Option<Vec<TermVectorsDocument>> {
-        let mut triples: Vec<(i32, &str, &str)> = Vec::new();
-        for (doc_id, doc) in docs.iter().enumerate() {
-            let text = doc
-                .fields
-                .iter()
-                .find(|f| f.field_number == config.field_number)
-                .and_then(|f| match &f.value {
-                    FieldValue::String(s) => Some(s.as_str()),
-                    _ => None,
-                });
-            if let Some(text) = text {
-                triples.push((doc_id as i32, config.name.as_str(), text));
-            }
-        }
-        if triples.is_empty() {
-            return None;
-        }
-
         let analyzer = Analyzer::standard(None);
-        let inverted = invert_documents(&triples, &analyzer);
-        if inverted.terms.is_empty() {
-            // Every doc's text tokenized to zero terms (e.g. only
-            // whitespace) -- same "nothing to write this commit" outcome as
-            // an empty `triples`, not an error.
-            return None;
-        }
+        // `per_doc[doc_id]` accumulates every configured field's
+        // `TermVectorField` that has content for that doc, in `configs`
+        // order (a stable, caller-controlled field order within each doc).
+        let mut per_doc: Vec<Vec<TermVectorField>> = vec![Vec::new(); docs.len()];
+        let mut any_content = false;
 
-        // Regroup the term-keyed inverted index by doc ID: for each doc,
-        // collect every term it occurs in (ascending term-byte order, since
-        // `inverted.terms` -- a `BTreeMap` keyed only by this one field's
-        // `(field, term)` pairs here -- already iterates that way) into one
-        // `TermVectorField`.
-        let mut per_doc: Vec<Vec<TermVectorTerm>> = vec![Vec::new(); docs.len()];
-        for ((_, term), entries) in &inverted.terms {
-            for entry in entries {
-                per_doc[entry.doc_id as usize].push(TermVectorTerm {
-                    term: term.as_bytes().to_vec(),
-                    freq: entry.term_freq(),
-                    positions: Some(entry.positions()),
-                    start_offsets: None,
-                    end_offsets: None,
-                    payloads: None,
+        for config in configs {
+            let mut triples: Vec<(i32, &str, &str)> = Vec::new();
+            for (doc_id, doc) in docs.iter().enumerate() {
+                let text = doc
+                    .fields
+                    .iter()
+                    .find(|f| f.field_number == config.field_number)
+                    .and_then(|f| match &f.value {
+                        FieldValue::String(s) => Some(s.as_str()),
+                        _ => None,
+                    });
+                if let Some(text) = text {
+                    triples.push((doc_id as i32, config.name.as_str(), text));
+                }
+            }
+            if triples.is_empty() {
+                continue;
+            }
+
+            let inverted = invert_documents(&triples, &analyzer);
+            if inverted.terms.is_empty() {
+                // Every doc's text for this field tokenized to zero terms
+                // (e.g. only whitespace) -- skip this field, same as an
+                // empty `triples`, not an error.
+                continue;
+            }
+
+            // Regroup the term-keyed inverted index by doc ID: for each doc,
+            // collect every term it occurs in (ascending term-byte order,
+            // since `inverted.terms` -- a `BTreeMap` keyed only by this one
+            // field's `(field, term)` pairs here -- already iterates that
+            // way) into one `TermVectorField` for this field/doc.
+            let mut field_terms_per_doc: Vec<Vec<TermVectorTerm>> = vec![Vec::new(); docs.len()];
+            for ((_, term), entries) in &inverted.terms {
+                for entry in entries {
+                    field_terms_per_doc[entry.doc_id as usize].push(TermVectorTerm {
+                        term: term.as_bytes().to_vec(),
+                        freq: entry.term_freq(),
+                        positions: Some(entry.positions()),
+                        start_offsets: None,
+                        end_offsets: None,
+                        payloads: None,
+                    });
+                }
+            }
+
+            for (doc_id, terms) in field_terms_per_doc.into_iter().enumerate() {
+                if terms.is_empty() {
+                    continue;
+                }
+                any_content = true;
+                per_doc[doc_id].push(TermVectorField {
+                    field_number: config.field_number,
+                    has_positions: true,
+                    has_offsets: false,
+                    has_payloads: false,
+                    terms,
                 });
             }
+        }
+
+        if !any_content {
+            return None;
         }
 
         let tv_docs = per_doc
             .into_iter()
-            .map(|terms| TermVectorsDocument {
-                fields: if terms.is_empty() {
-                    Vec::new()
-                } else {
-                    vec![TermVectorField {
-                        field_number: config.field_number,
-                        has_positions: true,
-                        has_offsets: false,
-                        has_payloads: false,
-                        terms,
-                    }]
-                },
-            })
+            .map(|fields| TermVectorsDocument { fields })
             .collect();
         Some(tv_docs)
     }
@@ -2886,6 +3049,56 @@ mod tests {
     }
 
     #[test]
+    fn add_postings_field_rejects_an_unknown_field_name() {
+        let tmp = tempdir("unknown-add-postings-field");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), body_field(1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_postings_field(Some("body")).unwrap();
+
+        let err = writer.add_postings_field("nonexistent").unwrap_err();
+        assert!(matches!(err, Error::UnknownPostingsField(name) if name == "nonexistent"));
+    }
+
+    #[test]
+    fn add_postings_field_rejects_a_duplicate_field() {
+        let tmp = tempdir("duplicate-add-postings-field");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), body_field(1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_postings_field(Some("body")).unwrap();
+
+        let err = writer.add_postings_field("body").unwrap_err();
+        assert!(matches!(err, Error::DuplicatePostingsField(name) if name == "body"));
+    }
+
+    #[test]
+    fn add_postings_field_accumulates_on_top_of_set_postings_field() {
+        let tmp = tempdir("accumulate-add-postings-field");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![
+            stored_only_field("id", 0),
+            body_field(1),
+            FieldInfo {
+                index_options: IndexOptions::DocsAndFreqs,
+                ..stored_only_field("title", 2)
+            },
+        ];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_postings_field(Some("body")).unwrap();
+        writer.add_postings_field("title").unwrap();
+
+        assert_eq!(writer.postings_fields.len(), 2);
+        assert_eq!(writer.postings_fields[0].name, "body");
+        assert_eq!(writer.postings_fields[1].name, "title");
+
+        // `set_postings_field(None)` still clears the whole accumulated list,
+        // not just the last entry.
+        writer.set_postings_field(None).unwrap();
+        assert!(writer.postings_fields.is_empty());
+    }
+
+    #[test]
     fn commit_with_postings_field_writes_readable_postings_for_multiple_docs_and_terms() {
         let tmp = tempdir("postings-commit");
         let dir = FsDirectory::open(&tmp);
@@ -3184,6 +3397,30 @@ mod tests {
 
         let err = writer.set_term_vector_field(Some("body")).unwrap_err();
         assert!(matches!(err, Error::UnsupportedTermVectorField(name) if name == "body"));
+    }
+
+    #[test]
+    fn add_term_vector_field_rejects_an_unknown_field_name() {
+        let tmp = tempdir("unknown-add-tv-field");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), tv_body_field(1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_term_vector_field(Some("body")).unwrap();
+
+        let err = writer.add_term_vector_field("nonexistent").unwrap_err();
+        assert!(matches!(err, Error::UnknownTermVectorField(name) if name == "nonexistent"));
+    }
+
+    #[test]
+    fn add_term_vector_field_rejects_a_duplicate_field() {
+        let tmp = tempdir("duplicate-add-tv-field");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), tv_body_field(1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_term_vector_field(Some("body")).unwrap();
+
+        let err = writer.add_term_vector_field("body").unwrap_err();
+        assert!(matches!(err, Error::DuplicateTermVectorField(name) if name == "body"));
     }
 
     #[test]

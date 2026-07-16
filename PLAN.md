@@ -4319,3 +4319,60 @@ passes (104/104, up from 97); `cargo test -p lucene-codecs` (fixtures
 included) and `cargo test -p lucene-index` both pass unaffected. See
 `docs/parity.md`'s `Lucene90DocValuesConsumer` row for the parity-tracking
 update.
+
+**Progress (multiple postings/term-vector fields per `IndexWriter` commit):**
+`lucene-index/src/index_writer.rs`'s `commit()` could already reach the
+already-multi-field-capable `postings_writer::write_fields`/
+`term_vectors::write_best_speed` write primitives, but only ever called them
+with exactly one field's data: `postings_field`/`term_vector_field` were each
+a single `Option<...Config>`, and `set_postings_field`/`set_term_vector_field`
+replaced rather than accumulated. That's now lifted: both fields became
+`Vec<...Config>` (`postings_fields`/`term_vector_fields`), and two new
+methods, `IndexWriter::add_postings_field(field_name)`/
+`IndexWriter::add_term_vector_field(field_name)`, opt in additional fields on
+top of whatever `set_postings_field`/`set_term_vector_field` already
+established (which keep their original single-field "replace, don't
+accumulate" semantics for backward compatibility -- every existing caller,
+including the FFI layer in `lucene-ffi/src/writer.rs`, is unaffected).
+`add_*_field` rejects an unknown field name (same validation as `set_*_field`)
+or a field number already present (`Error::DuplicatePostingsField`/
+`Error::DuplicateTermVectorField`).
+
+`IndexWriter::build_postings_output` now tokenizes every configured field
+independently, then batches all of their `FieldPostingsInput`s into a single
+`postings_writer::write_fields` call -- matching exactly how
+`merge_postings` in `merge.rs` already consumed that same multi-field
+primitive, so a commit with two distinct indexed text fields produces one
+`.doc`/`.tim`/`.tip`/`.tmd` file set, not two.
+`IndexWriter::build_term_vectors_output` found a genuine (if smaller) sibling
+gap: `term_vectors::write_best_speed` already accepted multiple
+`TermVectorField` entries per `TermVectorsDocument` (confirmed by reading its
+signature and existing tests before touching anything), but
+`build_term_vectors_output` only ever built one `TermVectorField` per doc.
+Fixed the same way -- every configured field with content for a doc
+contributes its own `TermVectorField`, all folded into one
+`write_best_speed` call per commit.
+
+New tests: `crates/lucene-index/src/index_writer.rs` unit tests
+(`add_postings_field_rejects_an_unknown_field_name`,
+`add_postings_field_rejects_a_duplicate_field`,
+`add_postings_field_accumulates_on_top_of_set_postings_field`,
+`add_term_vector_field_rejects_an_unknown_field_name`,
+`add_term_vector_field_rejects_a_duplicate_field`), plus the required
+end-to-end proofs in `lucene-search`:
+`crates/lucene-search/tests/index_writer_postings_fixtures.rs::two_distinct_postings_fields_in_one_commit_are_both_searchable`
+(two fields committed via real `add_document`/`commit()`, reopened through
+the unmodified `blocktree::open`/`postings::DocInput`, queried via
+`search_term_query` against both fields, asserting exact doc-ID sets and
+that neither field's vocabulary leaks into the other's results) and
+`crates/lucene-search/tests/index_writer_term_vectors_fixtures.rs::two_distinct_term_vector_fields_in_one_commit_are_both_readable`
+(same shape, via `term_vector_for_doc`). All pre-existing single-field tests
+across `lucene-index`/`lucene-search`/`lucene-ffi` pass unchanged.
+**Still single-field-per-commit, intentionally not touched here:**
+`set_doc_values_field` (no `add_doc_values_field` -- the immediately
+preceding sibling task's own documented follow-up, unaffected by this one).
+`cargo fmt`/`clippy --workspace --all-targets -- -D warnings` clean; `cargo
+test -p lucene-index` passes (270/270, up from 265); `cargo test --workspace`
+passes unaffected. See `docs/parity.md`'s `index/IndexWriter` and
+`Lucene104PostingsWriter`/`Lucene90CompressingTermVectorsWriter` rows for the
+parity-tracking update.

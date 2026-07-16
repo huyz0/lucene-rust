@@ -281,3 +281,97 @@ fn a_field_with_both_postings_and_term_vectors_configured_together_produces_both
     terms0.sort();
     assert_eq!(terms0, vec!["fox", "quick", "the"]);
 }
+
+/// Multi-field term vectors in one commit: `IndexWriter::set_term_vector_field`
+/// together with `IndexWriter::add_term_vector_field` opts in `title` and
+/// `body` at once, so a single `term_vectors::write_best_speed` call (which
+/// already accepts multiple `TermVectorField` entries per
+/// `TermVectorsDocument`) must produce one `.tvd`/`.tvx`/`.tvm` file set where
+/// each doc's term vector correctly carries both fields' independent term
+/// data -- not just one, and not a mix of the two.
+#[test]
+fn two_distinct_term_vector_fields_in_one_commit_are_both_readable() {
+    let tmp = tempdir("two-tv-fields");
+    let dir = FsDirectory::open(&tmp);
+    let fields = vec![
+        field_info(0, "id", IndexOptions::None, false),
+        field_info(1, "title", IndexOptions::DocsAndFreqs, true),
+        field_info(2, "body", IndexOptions::DocsAndFreqs, true),
+    ];
+    let mut writer = IndexWriter::open(&dir, fields.clone(), "Lucene104", version()).unwrap();
+    writer.set_term_vector_field(Some("title")).unwrap();
+    writer.add_term_vector_field("body").unwrap();
+
+    let two_field_doc = |id: &str, title: &str, body: &str| Document {
+        fields: vec![
+            StoredField {
+                field_number: 0,
+                value: FieldValue::String(id.to_string()),
+            },
+            StoredField {
+                field_number: 1,
+                value: FieldValue::String(title.to_string()),
+            },
+            StoredField {
+                field_number: 2,
+                value: FieldValue::String(body.to_string()),
+            },
+        ],
+    };
+
+    writer.add_document(two_field_doc("a", "space exploration", "the quick fox"));
+    writer.add_document(two_field_doc("b", "deep sea diving", "the lazy fox"));
+    let sis = writer.commit().unwrap().clone();
+    assert_eq!(sis.segments.len(), 1);
+    let sci = &sis.segments[0];
+
+    let tvd = dir.open(&format!("{}.tvd", sci.segment_name)).unwrap();
+    let tvx = dir.open(&format!("{}.tvx", sci.segment_name)).unwrap();
+    let tvm = dir.open(&format!("{}.tvm", sci.segment_name)).unwrap();
+    let reader = tv::open(&tvd, &tvx, &tvm, &sci.segment_id, "")
+        .expect("term_vectors::open on IndexWriter-produced multi-field .tvd/.tvx/.tvm");
+    assert_eq!(reader.max_doc(), 2);
+
+    let field_infos = lucene_codecs::field_infos::FieldInfos {
+        fields: fields.clone(),
+    };
+
+    let sorted_terms = |field: &lucene_codecs::term_vectors::TermVectorField| {
+        let mut terms: Vec<String> = field
+            .terms
+            .iter()
+            .map(|t| String::from_utf8(t.term.clone()).unwrap())
+            .collect();
+        terms.sort();
+        terms
+    };
+
+    let doc0_title = term_vector_for_doc(&reader, &field_infos, 0, "title")
+        .unwrap()
+        .expect("doc 0 has a term vector for 'title'");
+    assert_eq!(sorted_terms(&doc0_title), vec!["exploration", "space"]);
+    let doc0_body = term_vector_for_doc(&reader, &field_infos, 0, "body")
+        .unwrap()
+        .expect("doc 0 has a term vector for 'body'");
+    assert_eq!(sorted_terms(&doc0_body), vec!["fox", "quick", "the"]);
+
+    let doc1_title = term_vector_for_doc(&reader, &field_infos, 1, "title")
+        .unwrap()
+        .expect("doc 1 has a term vector for 'title'");
+    assert_eq!(sorted_terms(&doc1_title), vec!["deep", "diving", "sea"]);
+    let doc1_body = term_vector_for_doc(&reader, &field_infos, 1, "body")
+        .unwrap()
+        .expect("doc 1 has a term vector for 'body'");
+    assert_eq!(sorted_terms(&doc1_body), vec!["fox", "lazy", "the"]);
+
+    // Cross-contamination check: `title`'s vocabulary must never leak into
+    // `body`'s term vector or vice versa.
+    assert!(!doc0_body
+        .terms
+        .iter()
+        .any(|t| t.term == b"space" || t.term == b"exploration"));
+    assert!(!doc0_title
+        .terms
+        .iter()
+        .any(|t| t.term == b"fox" || t.term == b"quick"));
+}

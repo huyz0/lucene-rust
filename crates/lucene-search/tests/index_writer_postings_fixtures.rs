@@ -1,9 +1,10 @@
 //! Required end-to-end proof that a document added through this port's own
 //! `IndexWriter::add_document` + `IndexWriter::commit()` -- not a hand-built
 //! fixture -- is genuinely searchable by term query, once
-//! `IndexWriter::set_postings_field` has opted a field into real postings
-//! (`crates/lucene-index/src/index_writer.rs`'s new wiring of
-//! `lucene_codecs::postings_writer::write_single_field` into `commit()`).
+//! `IndexWriter::set_postings_field`/`IndexWriter::add_postings_field` have
+//! opted one or more fields into real postings
+//! (`crates/lucene-index/src/index_writer.rs`'s wiring of
+//! `lucene_codecs::postings_writer::write_fields` into `commit()`).
 //!
 //! Lives in `lucene-search` (not `lucene-index`) for the same reason
 //! `postings_writer_round_trip.rs` does: `lucene-index` must not depend on
@@ -12,11 +13,13 @@
 //! `lucene-index`, so this is the natural home for an
 //! IndexWriter-then-query round trip.
 //!
-//! Scope proven here matches `postings_writer.rs`'s own documented scope
-//! exactly: one field indexed with postings at a time, one `.tim` block per
-//! commit (`docFreq < 256`), term-frequency only (no positions/phrase
-//! queries). This does **not** prove multi-field or multi-block indexing --
-//! neither exists yet.
+//! Scope proven here matches `postings_writer.rs`'s own documented scope: one
+//! `.tim` block per field per commit (`docFreq < 256`), term-frequency only
+//! (no positions/phrase queries). Multiple distinct postings fields *in one
+//! commit* are now proven end-to-end below
+//! (`two_distinct_postings_fields_in_one_commit_are_both_searchable`) --
+//! that's exactly the capability `IndexWriter::add_postings_field` +
+//! `postings_writer::write_fields` add.
 
 use lucene_codecs::field_infos::{
     DocValuesSkipIndexType, DocValuesType, FieldInfo, IndexOptions, VectorEncoding,
@@ -159,6 +162,123 @@ fn documents_added_via_index_writer_are_searchable_by_term_query() {
     case("hound", &[2]);
     // A term that was never indexed at all.
     case("nonexistent", &[]);
+}
+
+fn doc_with_title_and_body(id: &str, title: &str, body: &str) -> Document {
+    Document {
+        fields: vec![
+            StoredField {
+                field_number: 0,
+                value: FieldValue::String(id.to_string()),
+            },
+            StoredField {
+                field_number: 1,
+                value: FieldValue::String(title.to_string()),
+            },
+            StoredField {
+                field_number: 2,
+                value: FieldValue::String(body.to_string()),
+            },
+        ],
+    }
+}
+
+/// The critical regression-proof for this task: `IndexWriter::commit()`
+/// batching two distinct postings fields (`title`, `body`) into **one**
+/// `postings_writer::write_fields` call (via
+/// `IndexWriter::set_postings_field` + `IndexWriter::add_postings_field`)
+/// must not corrupt or drop either field's postings. Proven by reopening the
+/// single resulting `.doc`/`.tim`/`.tip`/`.tmd` file set through the real,
+/// unmodified `blocktree::open`/`postings::DocInput` read side and running
+/// real term queries against *both* fields, asserting the exact doc IDs each
+/// query returns -- not just "commit doesn't panic".
+#[test]
+fn two_distinct_postings_fields_in_one_commit_are_both_searchable() {
+    let tmp = tempdir("two-fields");
+    let dir = FsDirectory::open(&tmp);
+    let fields = vec![
+        field_info(0, "id", IndexOptions::None),
+        field_info(1, "title", IndexOptions::DocsAndFreqs),
+        field_info(2, "body", IndexOptions::DocsAndFreqs),
+    ];
+    let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+    writer.set_postings_field(Some("title")).unwrap();
+    writer.add_postings_field("body").unwrap();
+
+    writer.add_document(doc_with_title_and_body(
+        "a",
+        "space exploration",
+        "the quick fox jumps",
+    ));
+    writer.add_document(doc_with_title_and_body(
+        "b",
+        "deep sea diving",
+        "the lazy fox sleeps",
+    ));
+    writer.add_document(doc_with_title_and_body(
+        "c",
+        "space and sea",
+        "the fox and the hound",
+    ));
+    let sis = writer.commit().unwrap().clone();
+    assert_eq!(sis.segments.len(), 1);
+    let sci = &sis.segments[0];
+
+    // One shared file set for both fields -- not two separate ones.
+    let tim = dir.open(&format!("{}.tim", sci.segment_name)).unwrap();
+    let tip = dir.open(&format!("{}.tip", sci.segment_name)).unwrap();
+    let tmd = dir.open(&format!("{}.tmd", sci.segment_name)).unwrap();
+    let doc_bytes = dir.open(&format!("{}.doc", sci.segment_name)).unwrap();
+    let si_bytes = dir.open(&format!("{}.si", sci.segment_name)).unwrap();
+    let si = segment_info::parse(&si_bytes, &sci.segment_id).unwrap();
+
+    let field_infos = lucene_codecs::field_infos::FieldInfos {
+        fields: vec![
+            field_info(0, "id", IndexOptions::None),
+            field_info(1, "title", IndexOptions::DocsAndFreqs),
+            field_info(2, "body", IndexOptions::DocsAndFreqs),
+        ],
+    };
+    let opened_fields = lucene_codecs::blocktree::open(
+        &tim,
+        &tip,
+        &tmd,
+        &field_infos,
+        &sci.segment_id,
+        "",
+        si.doc_count,
+    )
+    .expect("blocktree::open on IndexWriter-produced multi-field .tim/.tip/.tmd");
+    let doc_in = DocInput::open(&doc_bytes, &sci.segment_id, "").expect("open .doc");
+
+    let case = |field: &str, term: &str, expected: &[i32]| {
+        let mut collector = VecCollector::default();
+        let query = TermQuery::new(field, term.as_bytes());
+        search_term_query(&opened_fields, Some(&doc_in), None, &query, &mut collector)
+            .unwrap_or_else(|e| panic!("search_term_query({field:?}, {term:?}) failed: {e}"));
+        assert_eq!(collector.docs, expected, "field {field:?} term {term:?}");
+    };
+
+    // `title` field: terms unique to `title`'s own vocabulary.
+    case("title", "space", &[0, 2]);
+    case("title", "sea", &[1, 2]);
+    case("title", "exploration", &[0]);
+    case("title", "diving", &[1]);
+    // A term that only exists in `body`, queried against `title`, must not
+    // spuriously match (proves the two fields' postings weren't merged or
+    // cross-contaminated by writing them in the same `write_fields` call).
+    case("title", "fox", &[]);
+
+    // `body` field: same "the"/"fox" vocabulary the single-field test above
+    // uses, now alongside `title`'s postings in the same file set.
+    case("body", "the", &[0, 1, 2]);
+    case("body", "fox", &[0, 1, 2]);
+    case("body", "quick", &[0]);
+    case("body", "lazy", &[1]);
+    case("body", "hound", &[2]);
+    // A term that only exists in `title`, queried against `body`, must not
+    // spuriously match.
+    case("body", "space", &[]);
 }
 
 // `postings_writer` now emits real full `ForUtil`/`PForUtil` blocks for
