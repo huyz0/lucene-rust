@@ -5508,3 +5508,53 @@ production-code changes), `docs/parity.md`, `PLAN.md`. `cargo test -p
 lucene-analysis` (54 lib tests, up from 53, all passing),
 `cargo clippy --workspace --all-targets -- -D warnings`, and
 `cargo fmt --all` all pass clean.
+
+## Stopword list completeness audit vs real Lucene defaults
+
+Task brief: audit this port's English stopword list against real Lucene's
+`EnglishAnalyzer.ENGLISH_STOP_WORDS_SET` (the classic, fixed 33-word
+Lucene/Snowball English stop list), checking for missing/extra/misspelled
+words, case mismatches, and whether `StopFilter`'s matching semantics are a
+plain exact match against already-lowercased terms (as real Lucene's
+`StopFilter`/`CharArraySet` do).
+
+**Finding: there was no default English stop list to audit the *content* of
+-- the actual gap was that one didn't exist.** `StopFilter::apply` (task
+#61) only ever accepted a caller-supplied `HashSet<String>`; nowhere in
+`lucene-analysis`, `lucene-index`, or `lucene-search` was there a built-in
+constant standing in for `EnglishAnalyzer.ENGLISH_STOP_WORDS_SET` -- every
+call site (tests, `query_parser.rs`, `indexing_chain.rs`) builds its own
+ad hoc one-or-two-word set. `StopFilter`'s matching mechanism itself was
+already correct (a plain `HashSet::contains` exact-string check against
+terms that have already passed through `LowerCaseFilter` earlier in the
+chain -- no accidental case-insensitivity or normalization quirks).
+
+**Fix**: added `pub const ENGLISH_STOP_WORDS: &[&str]` and `pub fn
+english_stop_words() -> HashSet<String>` to `crates/lucene-analysis/src/lib.rs`,
+reproducing real Lucene's exact 33-word list verbatim, stored lowercase:
+`a, an, and, are, as, at, be, but, by, for, if, in, into, is, it, no, not,
+of, on, or, such, that, the, their, then, there, these, they, this, to,
+was, will, with`. This is purely additive -- no existing `StopFilter`/
+`Analyzer` call site was touched, so every existing caller's behavior is
+unchanged; callers that want real Lucene's default English stop set now
+have `english_stop_words()` available instead of hand-rolling their own
+subset.
+
+New tests (in `crates/lucene-analysis/src/lib.rs`):
+`english_stop_words_matches_real_lucene_canonical_list` (independently
+re-transcribes the canonical 33 words -- deliberately not copy-pasted from
+`ENGLISH_STOP_WORDS` -- and asserts both directions: every canonical word
+present, and no extra/wrong entries beyond those 33);
+`english_stop_words_case_is_already_lowercase` (every entry is stored
+lowercase, matching `StopFilter`'s case-sensitive match against
+already-lowercased terms); `english_stop_words_does_not_false_positive_on_content_words`
+(representative non-stopwords -- `search`/`lucene`/`rust`/`document`/
+`index`/`query` -- survive `StopFilter` untouched, run through the real
+filter, not just asserted-not-in-set); `english_stop_words_used_via_analyzer_standard`
+(end-to-end through `Analyzer::standard` on a full sentence).
+
+Files touched: `crates/lucene-analysis/src/lib.rs` (new `ENGLISH_STOP_WORDS`
+constant, `english_stop_words()` function, four new tests), `docs/parity.md`,
+`PLAN.md`. `cargo test -p lucene-analysis` (58 lib tests, up from 54, all
+passing), `cargo clippy --workspace --all-targets -- -D warnings`, and
+`cargo fmt --all` all pass clean.

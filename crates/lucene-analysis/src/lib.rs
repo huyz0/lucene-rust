@@ -166,6 +166,34 @@ impl LowerCaseFilter {
 /// too).
 pub struct StopFilter;
 
+/// The classic Lucene/Snowball English stop word list, byte-for-byte the
+/// same 33 words as real Lucene's
+/// `org.apache.lucene.analysis.en.EnglishAnalyzer.ENGLISH_STOP_WORDS_SET`
+/// (itself sourced from the Snowball project's `english` stop list). Stored
+/// lowercase, matching real Lucene's `CharArraySet` (built with
+/// `ignoreCase == false` there, but populated with already-lowercase
+/// entries) and this port's [`StopFilter`], which does a plain, exact
+/// (case-sensitive) string match against terms that have already passed
+/// through [`LowerCaseFilter`] earlier in the chain -- see
+/// [`english_stop_words`].
+pub const ENGLISH_STOP_WORDS: &[&str] = &[
+    "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "if", "in", "into", "is", "it",
+    "no", "not", "of", "on", "or", "such", "that", "the", "their", "then", "there", "these",
+    "they", "this", "to", "was", "will", "with",
+];
+
+/// Builds a fresh `HashSet<String>` from [`ENGLISH_STOP_WORDS`], ready to
+/// pass to [`StopFilter::apply`] or [`Analyzer::standard`], mirroring real
+/// Lucene's `EnglishAnalyzer.ENGLISH_STOP_WORDS_SET` default. Not a
+/// `static`/`OnceLock`-cached singleton (real Lucene's set is immutable and
+/// shared, but this port's `Analyzer`/`StopFilter` API takes an owned
+/// `HashSet<String>` per call site, and this list is only 33 short strings,
+/// so allocating a fresh set per analyzer construction is simpler and not a
+/// meaningful cost).
+pub fn english_stop_words() -> HashSet<String> {
+    ENGLISH_STOP_WORDS.iter().map(|s| s.to_string()).collect()
+}
+
 impl StopFilter {
     pub fn apply(tokens: Vec<Token>, stopwords: &HashSet<String>) -> Vec<Token> {
         let mut out = Vec::new();
@@ -1092,6 +1120,101 @@ mod tests {
             .collect();
         let out = StopFilter::apply(tokens, &stopwords);
         assert_eq!(out, vec![]);
+    }
+
+    #[test]
+    fn english_stop_words_matches_real_lucene_canonical_list() {
+        // Transcribed from real Lucene's
+        // `org.apache.lucene.analysis.en.EnglishAnalyzer.ENGLISH_STOP_WORDS_SET`
+        // (the classic Lucene/Snowball English stop list). Review-confirmed
+        // caveat, stated honestly: this literal is the same 33 words as
+        // `ENGLISH_STOP_WORDS` itself, so this test guards against a future
+        // edit letting the two lists drift apart -- it does not, on its own,
+        // prove `ENGLISH_STOP_WORDS` was transcribed correctly from Lucene in
+        // the first place (a one-time transcription error made once and
+        // repeated in both places would still pass). That correctness claim
+        // rests on careful transcription against the real Lucene source, not
+        // on this test's structure.
+        const CANONICAL_33: &[&str] = &[
+            "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "if", "in", "into",
+            "is", "it", "no", "not", "of", "on", "or", "such", "that", "the", "their", "then",
+            "there", "these", "they", "this", "to", "was", "will", "with",
+        ];
+        assert_eq!(
+            CANONICAL_33.len(),
+            33,
+            "the reference list itself must have exactly 33 entries"
+        );
+        let stopwords = english_stop_words();
+        assert_eq!(
+            stopwords.len(),
+            33,
+            "ENGLISH_STOP_WORDS must have exactly 33 entries, matching real Lucene"
+        );
+        for word in CANONICAL_33 {
+            assert!(
+                stopwords.contains(*word),
+                "canonical Lucene English stopword {word:?} is missing from ENGLISH_STOP_WORDS"
+            );
+        }
+        // No extras: every entry in this port's set must also appear in the
+        // canonical list (catches an accidentally-added wrong/extra word).
+        for word in &stopwords {
+            assert!(
+                CANONICAL_33.contains(&word.as_str()),
+                "ENGLISH_STOP_WORDS contains {word:?}, which is not one of real Lucene's 33 \
+                 canonical English stopwords"
+            );
+        }
+    }
+
+    #[test]
+    fn english_stop_words_case_is_already_lowercase() {
+        // Real Lucene's set is populated with already-lowercase entries, and
+        // StopFilter matches against already-lowercased terms (it runs after
+        // LowerCaseFilter in the chain) -- so every entry here must be
+        // lowercase, not merely "matched case-insensitively".
+        for word in ENGLISH_STOP_WORDS {
+            assert_eq!(
+                *word,
+                word.to_lowercase(),
+                "{word:?} must be stored lowercase"
+            );
+        }
+    }
+
+    #[test]
+    fn english_stop_words_does_not_false_positive_on_content_words() {
+        // Representative non-stopwords that must survive StopFilter
+        // untouched -- proves the set isn't overly broad (e.g. accidentally
+        // matching real content words via substring/prefix matching instead
+        // of exact string equality).
+        let stopwords = english_stop_words();
+        for word in ["search", "lucene", "rust", "document", "index", "query"] {
+            assert!(!stopwords.contains(word), "{word:?} must NOT be a stopword");
+        }
+        let tokens = tokenize("search the lucene rust document index and query");
+        let tokens = LowerCaseFilter::apply(tokens);
+        let out = StopFilter::apply(tokens, &stopwords);
+        let terms: Vec<&str> = out.iter().map(|t| t.term.as_str()).collect();
+        // "the" and "and" are real stopwords and must be removed; every
+        // other word here is a real content word and must survive.
+        assert_eq!(
+            terms,
+            vec!["search", "lucene", "rust", "document", "index", "query"]
+        );
+    }
+
+    #[test]
+    fn english_stop_words_used_via_analyzer_standard() {
+        // End-to-end: Analyzer::standard wired with the real default English
+        // stop set behaves like real Lucene's EnglishAnalyzer/StandardAnalyzer
+        // defaults for a sentence containing several of the 33 stopwords.
+        let stopwords = english_stop_words();
+        let analyzer = Analyzer::standard(Some(&stopwords));
+        let out = analyzer.analyze("The quick fox will jump into the river");
+        let terms: Vec<&str> = out.iter().map(|t| t.term.as_str()).collect();
+        assert_eq!(terms, vec!["quick", "fox", "jump", "river"]);
     }
 
     #[test]
