@@ -271,23 +271,27 @@
 //! field, and [`lucene_codecs::points::write`]'s own documented
 //! `EmptyField` restriction).
 //!
-//! **Scope: `num_index_dims == num_dims` only, single packed-value shape per
-//! field across all sources.** [`lucene_codecs::points::write`] always
-//! treats `num_index_dims` as equal to `num_dims` (see its own doc comment)
-//! -- a source field with extra, non-indexed data-only dimensions
-//! (`num_index_dims != num_dims`) is rejected with
-//! [`Error::PointsIndexDimsNotSupported`] rather than silently dropping the
-//! non-indexed dimensions. And because field-number reconciliation only
-//! records the *first-seen* source's `FieldInfo` as the merged one, every
-//! other live-doc-contributing source's own BKD tree shape
-//! (`num_dims`/`bytes_per_dim`) is independently checked against the merged
-//! field's declared shape and rejected with
-//! [`Error::PointsShapeDisagreement`] on a mismatch -- otherwise a source
-//! using, say, 2 dimensions could have its points silently misinterpreted as
-//! 1-dimensional (or vice versa) whenever an earlier, differently-shaped
-//! source happened to be picked as canonical. Multi-dimension points (e.g.
-//! `LatLonPoint`-shaped 2D fields) and multi-valued points (multiple points
-//! per doc for the same field) are both supported -- this is exactly what
+//! **Scope: single packed-value shape per field across all sources,
+//! `num_index_dims` may be less than `num_dims`.**
+//! [`lucene_codecs::points::write`] supports fields whose `num_index_dims`
+//! is less than `num_dims` (data-only, non-indexed trailing dimensions --
+//! e.g. a `LatLonShape`-style bounding box), and this merge preserves that:
+//! every point's full `num_dims`-wide packed value (index dims plus any
+//! trailing data-only dims) is carried through unchanged. Because
+//! field-number reconciliation only records the *first-seen* source's
+//! `FieldInfo` as the merged one, every other live-doc-contributing source's
+//! own BKD tree shape (`num_dims`/`bytes_per_dim`/`num_index_dims`) is
+//! independently checked against the merged field's declared shape and
+//! rejected with [`Error::PointsShapeDisagreement`] (for `num_dims`/
+//! `bytes_per_dim`) or [`Error::PointsIndexDimsDisagreement`] (for
+//! `num_index_dims`) on a mismatch -- otherwise a source using, say, 2
+//! dimensions could have its points silently misinterpreted as
+//! 1-dimensional (or vice versa), or a source with a different index/data-
+//! dim boundary could have its data-only dims silently reinterpreted as
+//! index dims, whenever an earlier, differently-shaped source happened to be
+//! picked as canonical. Multi-dimension points (e.g. `LatLonPoint`-shaped 2D
+//! fields) and multi-valued points (multiple points per doc for the same
+//! field) are both supported -- this is exactly what
 //! [`lucene_codecs::points::write`] itself already handles, and the
 //! concatenation this merge performs preserves both.
 //!
@@ -530,19 +534,22 @@ pub enum Error {
         source_num_dims: i32,
         source_bytes_per_dim: i32,
     },
-    /// [`lucene_codecs::points::write`] always treats `num_index_dims` as
-    /// equal to `num_dims` (no support for extra, non-indexed data-only
-    /// dimensions) -- a source field whose own `num_index_dims != num_dims`
-    /// can't be re-encoded by this port's write side, so it's rejected
-    /// outright rather than silently dropping the non-indexed dimensions or
-    /// mis-encoding the tree.
+    /// [`lucene_codecs::points::write`] supports `num_index_dims <=
+    /// num_dims` (data-only, non-indexed trailing dimensions), but every
+    /// contributing source must agree on `num_index_dims` for a given merged
+    /// field -- same reasoning as [`Error::PointsShapeDisagreement`] for
+    /// `num_dims`/`bytes_per_dim`: field-number reconciliation only records
+    /// the first-seen source's `FieldInfo`, so a source with a different
+    /// `num_index_dims` would otherwise have its data-only/index-dim split
+    /// silently reinterpreted against the wrong boundary.
     #[error(
-        "merged field number {merged_field_number} has BKD points with num_index_dims ({num_index_dims}) != num_dims ({num_dims}) in a contributing source, which this port's points write side does not support"
+        "merged field number {merged_field_number} has disagreeing BKD points num_index_dims across sources: source has num_index_dims={source_num_index_dims} (num_dims={num_dims}), but the merged field is num_index_dims={merged_num_index_dims}"
     )]
-    PointsIndexDimsNotSupported {
+    PointsIndexDimsDisagreement {
         merged_field_number: i32,
         num_dims: i32,
-        num_index_dims: i32,
+        merged_num_index_dims: i32,
+        source_num_index_dims: i32,
     },
 }
 
@@ -641,14 +648,16 @@ pub struct SourcePostings<'a> {
 /// `lucene_search`'s points range query already uses, reused verbatim here
 /// rather than re-deriving points decoding.
 ///
-/// # Scope: one packed value per dimension count/width, no data-only dims
+/// # Scope: one packed value shape per merged field, `num_index_dims <= num_dims`
 ///
-/// [`lucene_codecs::points::write`] always treats `num_index_dims` as equal
-/// to `num_dims` (see its own doc comment) -- a field with extra, non-indexed
-/// data-only dimensions on the *read* side (`num_index_dims != num_dims`)
-/// can't be re-encoded by this port's write side, so [`merge_points`] rejects
-/// that shape with [`Error::PointsIndexDimsNotSupported`] rather than
-/// silently truncating or corrupting the merged tree.
+/// [`lucene_codecs::points::write`] supports `num_index_dims` less than
+/// `num_dims` (data-only, non-indexed trailing dimensions), and this reader
+/// hands back every point's full `num_dims`-wide packed value regardless --
+/// [`merge_points`] independently checks every contributing source's own
+/// `num_dims`/`bytes_per_dim`/`num_index_dims` against the merged field's
+/// declared shape and rejects a disagreement with
+/// [`Error::PointsShapeDisagreement`]/[`Error::PointsIndexDimsDisagreement`]
+/// rather than silently truncating or corrupting the merged tree.
 pub struct SourcePoints<'a> {
     pub field_number: i32,
     pub reader: &'a lucene_codecs::points::PointsReader<'a>,
@@ -1028,6 +1037,7 @@ pub fn merge_stored_only_segments(
             .map(|f| WritePointsField {
                 field_number: f.field_number,
                 num_dims: f.num_dims,
+                num_index_dims: f.num_index_dims,
                 bytes_per_dim: f.bytes_per_dim,
                 points: f.points.clone(),
             })
@@ -2151,6 +2161,7 @@ fn merge_postings(
 struct MergedPointsField {
     field_number: i32,
     num_dims: i32,
+    num_index_dims: i32,
     bytes_per_dim: i32,
     points: Vec<(i32, Vec<u8>)>,
 }
@@ -2198,9 +2209,9 @@ struct MergedPointsField {
 /// [`lucene_codecs::points::PointsField`]) is checked against the merged
 /// field's declared shape (`FieldInfo::point_dimension_count`/
 /// `point_num_bytes`) and rejected with [`Error::PointsShapeDisagreement`] on
-/// a mismatch, and any source field whose `num_index_dims != num_dims` is
-/// rejected with [`Error::PointsIndexDimsNotSupported`] (see [`SourcePoints`]
-/// for why).
+/// a mismatch, and any source field whose `num_index_dims` disagrees with
+/// the merged field's declared `point_index_dimension_count` is rejected
+/// with [`Error::PointsIndexDimsDisagreement`].
 fn merge_points(
     sources: &[MergeSource],
     per_source_maps: &[HashMap<i32, i32>],
@@ -2236,6 +2247,7 @@ fn merge_points(
             .find(|f| f.number == merged_field_number)
             .expect("merged_field_number came from reconcile_field_numbers over these same sources, so it must have an entry in merged_fields");
         let merged_num_dims = merged_field.point_dimension_count;
+        let merged_num_index_dims = merged_field.point_index_dimension_count;
         let merged_bytes_per_dim = merged_field.point_num_bytes;
 
         let mut points: Vec<(i32, Vec<u8>)> = Vec::new();
@@ -2271,13 +2283,6 @@ fn merge_points(
                     merged_field_number,
                 });
             };
-            if field_meta.num_index_dims != field_meta.num_dims {
-                return Err(Error::PointsIndexDimsNotSupported {
-                    merged_field_number,
-                    num_dims: field_meta.num_dims,
-                    num_index_dims: field_meta.num_index_dims,
-                });
-            }
             if field_meta.num_dims != merged_num_dims
                 || field_meta.bytes_per_dim != merged_bytes_per_dim
             {
@@ -2287,6 +2292,14 @@ fn merge_points(
                     merged_bytes_per_dim,
                     source_num_dims: field_meta.num_dims,
                     source_bytes_per_dim: field_meta.bytes_per_dim,
+                });
+            }
+            if field_meta.num_index_dims != merged_num_index_dims {
+                return Err(Error::PointsIndexDimsDisagreement {
+                    merged_field_number,
+                    num_dims: field_meta.num_dims,
+                    merged_num_index_dims,
+                    source_num_index_dims: field_meta.num_index_dims,
                 });
             }
 
@@ -2301,6 +2314,7 @@ fn merge_points(
         result.push(MergedPointsField {
             field_number: merged_field_number,
             num_dims: merged_num_dims,
+            num_index_dims: merged_num_index_dims,
             bytes_per_dim: merged_bytes_per_dim,
             points,
         });
@@ -7246,9 +7260,19 @@ mod tests {
     }
 
     fn points_field(name: &str, number: i32, num_dims: i32, bytes_per_dim: i32) -> FieldInfo {
+        points_field_with_index_dims(name, number, num_dims, num_dims, bytes_per_dim)
+    }
+
+    fn points_field_with_index_dims(
+        name: &str,
+        number: i32,
+        num_dims: i32,
+        num_index_dims: i32,
+        bytes_per_dim: i32,
+    ) -> FieldInfo {
         let mut f = field(name, number);
         f.point_dimension_count = num_dims;
-        f.point_index_dimension_count = num_dims;
+        f.point_index_dimension_count = num_index_dims;
         f.point_num_bytes = bytes_per_dim;
         f
     }
@@ -7264,9 +7288,28 @@ mod tests {
         points: Vec<(i32, Vec<u8>)>,
         segment_id: &[u8; ID_LENGTH],
     ) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        write_one_field_points_with_index_dims(
+            field_number,
+            num_dims,
+            num_dims,
+            bytes_per_dim,
+            points,
+            segment_id,
+        )
+    }
+
+    fn write_one_field_points_with_index_dims(
+        field_number: i32,
+        num_dims: i32,
+        num_index_dims: i32,
+        bytes_per_dim: i32,
+        points: Vec<(i32, Vec<u8>)>,
+        segment_id: &[u8; ID_LENGTH],
+    ) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
         let fields = vec![WritePointsField {
             field_number,
             num_dims,
+            num_index_dims,
             bytes_per_dim,
             points,
         }];
@@ -7702,92 +7745,64 @@ mod tests {
         assert!(matches!(result, Err(Error::PointsShapeDisagreement { .. })));
     }
 
-    /// Hand-builds a single-field, single-leaf `.kdm`/`.kdi`/`.kdd` triple
-    /// whose `num_index_dims` differs from `num_dims` -- a shape
-    /// [`lucene_codecs::points::write`] itself can never produce (it always
-    /// treats them as equal), but one the read side already tolerates, so
-    /// this exercises [`Error::PointsIndexDimsNotSupported`] without relying
-    /// on a write path that can't create the input in the first place.
-    fn build_index_dims_mismatch_points(
-        segment_id: &[u8; ID_LENGTH],
-    ) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-        use lucene_store::codec_util;
-
-        let num_dims: i32 = 2;
-        let num_index_dims: i32 = 1;
-        let bytes_per_dim: i32 = 4;
-        let field_number: i32 = 0;
-
-        // -- kdd (data): index header, then one leaf block, then footer.
-        let mut kdd: Vec<u8> = Vec::new();
-        codec_util::write_index_header(&mut kdd, "Lucene90PointsFormatData", 1, segment_id, "");
-        let leaf_fp = kdd.len() as i64;
-        kdd.write_vint(1); // count
-        kdd.write_byte((-2i8) as u8); // CONTINUOUS_IDS
-        kdd.write_vint(0); // start doc id
-        kdd.write_vint(0); // common prefix, dim 0
-        kdd.write_vint(0); // common prefix, dim 1
-        kdd.write_byte((-2i8) as u8); // compressedDim marker: sparse run encoding
-                                      // num_index_dims == 1, so no per-leaf bounding box is written/read.
-        kdd.write_vint(1); // sub-block run length
-        kdd.write_bytes(&[0, 0, 0, 11]); // dim 0 value
-        kdd.write_bytes(&[0, 0, 0, 22]); // dim 1 value
-        codec_util::write_footer(&mut kdd);
-
-        // -- kdi (index): index header, then this field's packed index (a
-        // single leaf needs only its own file-pointer delta, matching
-        // `pack_index`'s `num_leaves == 1` top-level case).
-        let mut kdi: Vec<u8> = Vec::new();
-        codec_util::write_index_header(&mut kdi, "Lucene90PointsFormatIndex", 1, segment_id, "");
-        let index_start_pointer = kdi.len() as i64;
-        kdi.write_vlong(leaf_fp);
-        let num_index_bytes = (kdi.len() as i64 - index_start_pointer) as i32;
-        codec_util::write_footer(&mut kdi);
-
-        // -- kdm (meta): index header, one field entry, terminator, lengths,
-        // footer.
-        let mut kdm: Vec<u8> = Vec::new();
-        codec_util::write_index_header(&mut kdm, "Lucene90PointsFormatMeta", 1, segment_id, "");
-        kdm.write_i32(field_number);
-        codec_util::write_header(&mut kdm, "BKD", 10);
-        kdm.write_vint(num_dims);
-        kdm.write_vint(num_index_dims);
-        kdm.write_vint(512); // max_points_in_leaf_node
-        kdm.write_vint(bytes_per_dim);
-        kdm.write_vint(1); // num_leaves
-        kdm.write_bytes(&[0, 0, 0, 11]); // min_packed_value (num_index_dims * bytes_per_dim)
-        kdm.write_bytes(&[0, 0, 0, 11]); // max_packed_value
-        kdm.write_vlong(1); // point_count
-        kdm.write_vint(1); // doc_count
-        kdm.write_vint(num_index_bytes);
-        kdm.write_i64(leaf_fp); // min_leaf_block_fp (discarded on read)
-        kdm.write_i64(index_start_pointer);
-        kdm.write_i32(-1); // field-loop terminator
-        kdm.write_i64(kdi.len() as i64);
-        kdm.write_i64(kdd.len() as i64);
-        codec_util::write_footer(&mut kdm);
-
-        (kdm, kdi, kdd)
-    }
-
+    /// Two sources, both `num_dims=3`/`num_index_dims=2` (a
+    /// `LatLonShape`-style bounding box shape with one trailing data-only
+    /// dimension), merge cleanly: every point's full 3-dimension packed
+    /// value -- including the non-indexed third dimension -- survives the
+    /// merge unchanged, and doc ids are renumbered into the merged id space
+    /// exactly like the `num_index_dims == num_dims` case already covered by
+    /// `two_sources_no_deletions_merge_points_correctly`.
     #[test]
-    fn points_index_dims_not_supported_is_rejected() {
+    fn two_sources_consistent_num_index_dims_less_than_num_dims_merge_correctly() {
         let seg0_id = [1u8; ID_LENGTH];
-        let (kdm0, kdi0, kdd0) = build_index_dims_mismatch_points(&seg0_id);
+        let seg1_id = [2u8; ID_LENGTH];
+
+        let packed12 = |a: u32, b: u32, c: u32| -> Vec<u8> {
+            [a.to_be_bytes(), b.to_be_bytes(), c.to_be_bytes()].concat()
+        };
+
+        let (kdm0, kdi0, kdd0) = write_one_field_points_with_index_dims(
+            0,
+            3,
+            2,
+            4,
+            vec![(0, packed12(1, 2, 100)), (1, packed12(3, 4, 200))],
+            &seg0_id,
+        );
         let points_reader0 = points::open(&kdm0, &kdi0, &kdd0, &seg0_id, "").unwrap();
 
-        // The field's FieldInfo declares 2 dims/2 index dims to match the
-        // hand-built data's `num_dims`; only the points data itself has the
-        // unsupported `num_index_dims != num_dims` shape.
-        let fields = vec![points_field("loc", 0, 2, 4)];
+        let (kdm1, kdi1, kdd1) = write_one_field_points_with_index_dims(
+            0,
+            3,
+            2,
+            4,
+            vec![(0, packed12(5, 6, 300))],
+            &seg1_id,
+        );
+        let points_reader1 = points::open(&kdm1, &kdi1, &kdd1, &seg1_id, "").unwrap();
+
+        let fields = vec![points_field_with_index_dims("loc", 0, 3, 2, 4)];
         let tmp = tempdir();
         let dir = FsDirectory::open(&tmp);
-        let stored0 = flush(&dir, &tmp, "_0", seg0_id, &fields, &[doc_with(0, "a")]);
+        let stored0 = flush(
+            &dir,
+            &tmp,
+            "_0",
+            seg0_id,
+            &fields,
+            &[doc_with(0, "a"), doc_with(0, "b")],
+        );
+        let stored1 = flush(&dir, &tmp, "_1", seg1_id, &fields, &[doc_with(0, "c")]);
         let reader0 = open_reader(&stored0);
+        let reader1 = open_reader(&stored1);
 
         let src_points0 = [SourcePoints {
             field_number: 0,
             reader: &points_reader0,
+        }];
+        let src_points1 = [SourcePoints {
+            field_number: 0,
+            reader: &points_reader1,
         }];
         let source0 = MergeSource {
             field_infos: &stored0.fields,
@@ -7803,18 +7818,151 @@ mod tests {
             postings: &[],
             points: &src_points0,
         };
+        let source1 = MergeSource {
+            field_infos: &stored1.fields,
+            reader: &reader1,
+            live_docs: None,
+            numeric_doc_values: &[],
+            binary_doc_values: &[],
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &[],
+            norms: &[],
+            term_vectors: None,
+            postings: &[],
+            points: &src_points1,
+        };
+
+        let sci = merge_stored_only_segments(
+            &dir,
+            &[source0, source1],
+            "_merged_points_index_dims_lt_dims",
+            [9u8; ID_LENGTH],
+            "Lucene104",
+            version(),
+        )
+        .unwrap();
+        assert_eq!(sci.segment_name, "_merged_points_index_dims_lt_dims");
+
+        let base = std::path::Path::new(&tmp).join("_merged_points_index_dims_lt_dims");
+        let kdm = std::fs::read(base.with_extension("kdm")).unwrap();
+        let kdi = std::fs::read(base.with_extension("kdi")).unwrap();
+        let kdd = std::fs::read(base.with_extension("kdd")).unwrap();
+        let merged_reader = points::open(&kdm, &kdi, &kdd, &[9u8; ID_LENGTH], "").unwrap();
+
+        let merged_field = merged_reader.field(0).unwrap();
+        assert_eq!(merged_field.num_dims, 3);
+        assert_eq!(merged_field.num_index_dims, 2);
+
+        let mut merged_points = merged_reader.decode_all_points(0).unwrap();
+        merged_points.sort_by_key(|p| p.doc_id);
+        assert_eq!(
+            merged_points
+                .iter()
+                .map(|p| (p.doc_id, p.packed_value.clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                (0, packed12(1, 2, 100)),
+                (1, packed12(3, 4, 200)),
+                // Source 1's only doc is renumbered to merged doc 2, after
+                // source 0's 2 docs.
+                (2, packed12(5, 6, 300)),
+            ]
+        );
+    }
+
+    /// Two sources whose points data agree on `num_dims`/`bytes_per_dim` but
+    /// disagree on `num_index_dims` (source 0 is `num_index_dims=1`, source 1
+    /// is `num_index_dims=2`, both `num_dims=2`) -- field-number
+    /// reconciliation records source 0's `FieldInfo` (`num_index_dims=1`) as
+    /// the merged field's declared shape, so source 1's own
+    /// `num_index_dims=2` disagrees and must be rejected rather than having
+    /// its second dimension silently reinterpreted as a data-only payload
+    /// dimension.
+    #[test]
+    fn points_index_dims_disagreement_across_sources_is_rejected() {
+        let seg0_id = [1u8; ID_LENGTH];
+        let seg1_id = [2u8; ID_LENGTH];
+
+        let packed8 = |a: u32, b: u32| -> Vec<u8> { [a.to_be_bytes(), b.to_be_bytes()].concat() };
+
+        let (kdm0, kdi0, kdd0) = write_one_field_points_with_index_dims(
+            0,
+            2,
+            1,
+            4,
+            vec![(0, packed8(10, 11))],
+            &seg0_id,
+        );
+        let points_reader0 = points::open(&kdm0, &kdi0, &kdd0, &seg0_id, "").unwrap();
+
+        let (kdm1, kdi1, kdd1) = write_one_field_points_with_index_dims(
+            0,
+            2,
+            2,
+            4,
+            vec![(0, packed8(20, 21))],
+            &seg1_id,
+        );
+        let points_reader1 = points::open(&kdm1, &kdi1, &kdd1, &seg1_id, "").unwrap();
+
+        let fields0 = vec![points_field_with_index_dims("loc", 0, 2, 1, 4)];
+        let fields1 = vec![points_field_with_index_dims("loc", 0, 2, 2, 4)];
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let stored0 = flush(&dir, &tmp, "_0", seg0_id, &fields0, &[doc_with(0, "a")]);
+        let stored1 = flush(&dir, &tmp, "_1", seg1_id, &fields1, &[doc_with(0, "b")]);
+        let reader0 = open_reader(&stored0);
+        let reader1 = open_reader(&stored1);
+
+        let src_points0 = [SourcePoints {
+            field_number: 0,
+            reader: &points_reader0,
+        }];
+        let src_points1 = [SourcePoints {
+            field_number: 0,
+            reader: &points_reader1,
+        }];
+        let source0 = MergeSource {
+            field_infos: &stored0.fields,
+            reader: &reader0,
+            live_docs: None,
+            numeric_doc_values: &[],
+            binary_doc_values: &[],
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &[],
+            norms: &[],
+            term_vectors: None,
+            postings: &[],
+            points: &src_points0,
+        };
+        let source1 = MergeSource {
+            field_infos: &stored1.fields,
+            reader: &reader1,
+            live_docs: None,
+            numeric_doc_values: &[],
+            binary_doc_values: &[],
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &[],
+            norms: &[],
+            term_vectors: None,
+            postings: &[],
+            points: &src_points1,
+        };
 
         let result = merge_stored_only_segments(
             &dir,
-            &[source0],
-            "_merged_points_index_dims",
+            &[source0, source1],
+            "_merged_points_index_dims_mismatch",
             [9u8; ID_LENGTH],
             "Lucene104",
             version(),
         );
         assert!(matches!(
             result,
-            Err(Error::PointsIndexDimsNotSupported { .. })
+            Err(Error::PointsIndexDimsDisagreement { .. })
         ));
     }
 }

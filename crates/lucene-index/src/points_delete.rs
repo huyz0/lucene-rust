@@ -243,6 +243,7 @@ mod tests {
         let field = WritePointsField {
             field_number: 1,
             num_dims: 1,
+            num_index_dims: 1,
             bytes_per_dim: 8,
             points,
         };
@@ -269,6 +270,7 @@ mod tests {
         let field = WritePointsField {
             field_number: 1,
             num_dims: 2,
+            num_index_dims: 2,
             bytes_per_dim: 8,
             points,
         };
