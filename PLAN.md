@@ -5867,3 +5867,91 @@ feature), `crates/lucene-ffi/src/query.rs` (new
 `docs/parity.md`, `PLAN.md`. `cargo test -p lucene-ffi`: 376 tests pass (up
 from 373). `cargo fmt --all` and `cargo clippy --workspace --all-targets --
 -D warnings` both clean.
+
+## Doc comments/parity.md consistency sweep
+
+Audit-only pass (no code behavior changes) across `docs/parity.md` and the
+in-code doc comments of crates touched this session, looking for stale
+claims one task's later work made incorrect but an earlier row/comment was
+never revisited to reflect.
+
+**Found and fixed:**
+
+1. **`docs/parity.md`'s blocktree row** (`codecs/lucene103/blocktree/...`)
+   contradicted itself: a sentence early in the row still said "**Still
+   deferred** (`Error::Unsupported`): a `.tim` block that is itself non-leaf
+   ... remains unhandled", left over from before the "Blocktree: multi-level
+   (`.tim` non-leaf blocks) support" task -- but a later paragraph in the
+   *same* row correctly says "Multi-level blocktree ... is now decoded, not
+   just deferred." The append-only nature of the row meant the earlier
+   sentence was never deleted once superseded. Fixed by rewriting the stale
+   sentence to drop the non-leaf-block claim and point at the paragraph that
+   superseded it, keeping only the still-true "no automaton intersection"
+   deferral.
+
+2. **`crates/lucene-index/src/merge.rs`'s module doc comment** (the "Term
+   vectors have no such constraint" paragraph) and its
+   `Error::TermVectorOffsetsOrPayloadsNotSupported` doc comment/error message
+   both still said `write_best_speed` "only supports fields with positions
+   (no offsets, no payloads)". That was true when `merge.rs` was written, but
+   the term-vectors write-side offsets/payloads task landed later in the same
+   session and gave `write_best_speed` full offsets/payloads support (see
+   `docs/parity.md`'s `Lucene90CompressingTermVectorsWriter` row and
+   `crates/lucene-codecs/src/term_vectors.rs`'s own round-trip tests). The
+   real, current gap is narrower: `write_best_speed` itself is fine with
+   offsets/payloads, but `merge.rs`'s own field-reprefixing/combination logic
+   for them has never been reviewed, so `merge_term_vectors` still rejects
+   them defensively. Reworded both the module doc and the error's doc
+   comment/message to state that gap accurately instead of blaming the
+   writer.
+
+3. **`crates/lucene-analysis/src/lib.rs`'s module doc comment** listed the
+   crate's filters (`LowerCaseFilter`, `StopFilter`, `AsciiFoldingFilter`,
+   `PorterStemFilter`, `SynonymFilter`) but never mentioned
+   `NGramTokenFilter`/`EdgeNGramTokenFilter`, added in this session's most
+   recent analysis task and already present in `docs/parity.md`'s row for
+   it. Not a contradiction, just a stale/incomplete summary list; added the
+   two filters to it.
+
+**Checked and confirmed already consistent (no fix needed)**, despite being
+prime suspects for the pattern this sweep looked for: the doc-values write
+row (task #77/#89/SORTED_SET/sparse-NUMERIC history, `docs/parity.md`'s
+`Lucene90DocValuesConsumer` row) already correctly layers each follow-up
+task's findings without contradiction, including its own "skip-index scope
+revisited, deferral confirmed unchanged" paragraph; the
+`NumericDocValuesFieldUpdates` and `DirectoryReader.openIfChanged` rows
+already carry the "merge-awareness audit" and "NRT reopen after sparse
+doc-values" findings correctly; the points read/write rows, the CheckIndex
+row (correctly narrates the task #57 postings-re-derivation revisit), the
+compound-format write row (already carries the write-side edge-case audit
+paragraph), and the FFI `.liv`-deferred row (still accurate -- the
+`live_docs` wiring that exists in `lucene-ffi/src/writer.rs` is a different,
+unrelated code path for `IndexWriter`-level deletion application, not the
+generic query FFI surface that row describes) were all read in full and
+found to already state the current, correct state of the code.
+
+**Real code observation, explicitly NOT fixed here (docs-only sweep,
+per this task's own instructions)**: none found. The `merge.rs` term-vector
+offsets/payloads rejection and the doc-values single-field-per-`IndexWriter`
+limitation are both intentional, already-documented scope boundaries, not
+bugs.
+
+Files changed: `docs/parity.md`, `crates/lucene-index/src/merge.rs`,
+`crates/lucene-analysis/src/lib.rs`, `PLAN.md`. No test changes (docs-only
+sweep, as scoped). `cargo fmt --all -- --check` and `cargo clippy
+--workspace --all-targets -- -D warnings` both clean.
+
+**Review-confirmed follow-up to this sweep**: the first pass fixed
+`merge.rs`'s own doc comment (the `write_best_speed` offsets/payloads
+claim) but missed two duplicate copies of the exact same stale claim
+living in `docs/parity.md` itself -- the `SegmentMerger` row's
+"Term-vectors content scope" paragraph still said `write_best_speed`
+"only supports fields with positions... trips an internal `assert!`",
+and the `IndexReader.getTermVector` row separately referenced "the write
+side's existing offsets/payloads gap (`write_best_speed` still only
+supports positions)". Both are now corrected to state that
+`write_best_speed` supports all three (a later task lifted the
+restriction) and that the real remaining gap is `merge_term_vectors`'s own
+unreviewed field-combination logic, not the writer itself -- the same
+correction already made in `merge.rs`, now consistent across all three
+locations instead of two out of three.

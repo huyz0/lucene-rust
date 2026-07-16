@@ -5,7 +5,8 @@
 //! `Analyzer`/`Tokenizer`/`TokenFilter` pipeline: a simplified word-boundary
 //! tokenizer (not full UAX#29 Unicode text segmentation -- see the module
 //! docs on [`tokenize`]), plus `LowerCaseFilter`, `StopFilter`,
-//! `AsciiFoldingFilter`, `PorterStemFilter`, and `SynonymFilter`.
+//! `AsciiFoldingFilter`, `PorterStemFilter`, `SynonymFilter`, and
+//! `NGramTokenFilter`/`EdgeNGramTokenFilter`.
 //!
 //! This crate sits below both `lucene-index` and `lucene-search` in the
 //! workspace's downward dependency graph (it depends on nothing else in the

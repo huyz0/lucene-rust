@@ -135,12 +135,14 @@
 //! [`lucene_codecs::term_vectors::TermVectorsDocument`] (matches the real
 //! per-doc "this doc has none" case `write_best_speed` already handles).
 //! Term vectors do have one different constraint, though: `write_best_speed`
-//! only supports fields with positions (no offsets, no payloads -- see its
-//! own doc comment), so [`merge_term_vectors`] validates every source's term-
-//! vector fields up front and returns
-//! [`Error::TermVectorOffsetsOrPayloadsNotSupported`] rather than letting an
-//! offsets/payloads field reach `write_best_speed`'s internal `assert!` and
-//! panic. Positions-only term vectors (with or without positions at all)
+//! itself now supports offsets and payloads as well as positions (a later
+//! task added that -- see its own doc comment), but this merge path has not
+//! been updated to pass them through, so [`merge_term_vectors`] still
+//! validates every source's term-vector fields up front and returns
+//! [`Error::TermVectorOffsetsOrPayloadsNotSupported`] for any offsets/
+//! payloads field rather than risk merging them incorrectly (the merge's own
+//! field-reprefixing/combination logic for offsets/payloads has not been
+//! reviewed). Positions-only term vectors (with or without positions at all)
 //! merge and round-trip correctly through the real reader/writer stack; this
 //! is otherwise the same "reuse the existing decoder/encoder verbatim" story
 //! as postings.
@@ -478,15 +480,13 @@ pub enum Error {
         merged_index_options: IndexOptions,
         source_index_options: IndexOptions,
     },
-    /// [`lucene_codecs::term_vectors::write_best_speed`] only supports
-    /// term-vector fields with positions (no offsets, no payloads) --
-    /// passing it a field with offsets or payloads trips an internal
-    /// `assert!`, not a `Result`. Without this check, a merge source whose
-    /// term vectors have offsets/payloads would panic deep inside the
-    /// writer instead of failing cleanly, so this validates every source's
-    /// term-vector fields up front and rejects the unsupported case loudly.
+    /// [`lucene_codecs::term_vectors::write_best_speed`] itself now supports
+    /// offsets and payloads (a later task added that), but this merge path's
+    /// own field-reprefixing/combination logic for them has not been
+    /// reviewed, so a merge source whose term vectors have offsets/payloads
+    /// is rejected here up front rather than merged unverified.
     #[error(
-        "merged field number {merged_field_number} has term vectors with offsets ({has_offsets}) or payloads ({has_payloads}), but this port's term-vectors write side (write_best_speed) only supports positions"
+        "merged field number {merged_field_number} has term vectors with offsets ({has_offsets}) or payloads ({has_payloads}), which this merge path does not yet pass through (write_best_speed itself supports them, but merge.rs's own combination logic for them is unreviewed)"
     )]
     TermVectorOffsetsOrPayloadsNotSupported {
         merged_field_number: i32,
