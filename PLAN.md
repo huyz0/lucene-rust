@@ -4495,3 +4495,64 @@ overlays into base values before constructing `MergeSource`s. `cargo fmt
 --all` clean; `cargo clippy --workspace --all-targets -- -D warnings` clean;
 `cargo test -p lucene-index` passes (272 lib tests, up from 271, plus all
 pre-existing integration-test binaries unaffected).
+
+**Progress (task: FST real `FSTCompiler` suffix-sharing/minimization).**
+Investigated whether `crates/lucene-codecs/src/fst.rs::build_fst` (the
+from-scratch, whole-trie construction path added in an earlier slice) does
+real Lucene `FSTCompiler`'s suffix-sharing/minimization, or builds a naive
+trie with no dedup. **Finding: it was a naive trie -- confirmed, not
+assumed.** The module's own doc comments explicitly said so ("two keys that
+happen to share a suffix ... get two independent copies of that suffix's
+nodes here"), and `build_node` had no hash-consing structure of any kind:
+every `TrieNode` in the in-memory trie got its own address in the byte
+store regardless of structural equivalence.
+
+**Implemented real minimization**, not just a proof test. `build_node` now
+threads a `NodeHash` (`HashMap<Vec<ArcSignature>, i64>`, `ArcSignature =
+(label, is_final, final_output, Option<child_target_addr>)`) through its
+post-order recursion: before writing any node's arc bytes, it builds that
+node's full ordered arc signature (which, since children are resolved
+depth-first, already reflects each child's *final* address) and checks
+`node_hash` for an existing node with the identical signature. If found, the
+existing address is returned and no new bytes are written; otherwise the
+node is serialized as before and its signature recorded. This is a
+different algorithmic strategy than real `FSTCompiler`'s incremental
+freeze-as-you-go `NodeHash` (which only ever holds the current key's
+not-yet-frozen path in memory) -- this builder still materializes the whole
+trie upfront -- but it performs the *same* dedup: any suffix reachable from
+two or more different prefixes collapses to one shared node in the byte
+store, discovered by hash-consing the whole tree at once instead of
+incrementally.
+
+**Proof, not just round-trip.** A round-trip test would have passed even
+with zero dedup, so three new tests in `fst.rs::tests` inspect actual
+compiled node addresses/sizes directly:
+`build_fst_shares_identical_suffix_node_across_two_prefixes` (`"bat"`/`"cat"`
+sharing `"at"`: asserts the node reached after `'b'` and after `'c'` are the
+literal same address, plus correctness of `get` on present/absent keys
+through the shared node); `build_fst_shares_classic_mop_pop_stop_top_suffix_node`
+(real Lucene's own canonical `FSTCompiler` suffix-sharing example --
+`mop`/`moth`/`pop`/`star`/`stop`/`top` -- asserts the nodes reached after
+`"po"`/`"sto"`/`"to"` are all identical while the node after `"mo"` is
+correctly distinct since it has an extra `"th"` child, plus full
+`get`/`seek_ceil`/`seek_floor`/`seek_exact`/`iter` regression coverage
+against that now-genuinely-shared-node FST -- a real stress test that seek
+and enumeration keep working when arcs from different paths land on one
+physically-shared target); and
+`build_fst_dedup_keeps_compiled_size_sublinear_in_repeated_suffix_count` (8
+distinct 2-byte prefixes sharing one 44-byte tail: asserts the compiled
+`num_bytes` is far below the naive no-sharing linear lower bound, that every
+key still resolves via `get`, and that every prefix's node address is
+identical). All pre-existing FST tests (unit tests plus the
+`fst_fixtures`/`fst_binary_search_fixtures`/`fst_direct_addressing_fixtures`/
+`fst_continuous_fixtures`/`fst_seek_fixtures` differential-test files against
+real-Lucene-written fixtures) continue to pass unmodified -- this change
+only affects `build_fst`'s output shape, not `Fst::read`'s parsing, which
+already handled shared-target arcs correctly (nothing in the read side
+assumes distinct nodes have distinct non-overlapping byte ranges). `cargo
+fmt --all` clean; `cargo clippy --workspace --all-targets -- -D warnings`
+clean; `cargo test -p lucene-codecs` passes (72 `fst::` unit tests, up from
+69, plus all fixture-based integration tests unaffected). See
+`docs/parity.md`'s FST row for the parity-tracking update -- the row now
+states minimization is done and only real `FSTCompiler`'s incremental/
+memory-bounded construction and output-pushing remain deferred.

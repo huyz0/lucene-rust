@@ -6,15 +6,18 @@
 //! format to look up a byte-sequence key in an already-built, on-disk FST and
 //! recover its accumulated output (`Util.get(fst, BytesRef)`). It does **not**
 //! port real Lucene's *incremental* construction algorithm
-//! (`FSTCompiler`/`Builder`'s node-freezing, suffix-sharing node hash table)
+//! (`FSTCompiler`/`Builder`'s node-freezing, streaming/memory-bounded build)
 //! -- that remains a separate, much larger undertaking (see `docs/parity.md`).
 //! Instead, `build_fst` (see the "FST construction" section near the bottom
-//! of this file) builds a full in-memory trie and serializes it directly to
-//! the same byte format `Fst::read`/`Fst::get` below already parse -- correct
-//! and round-trip-verified against this module's own unmodified reader, but
-//! without real `FSTCompiler`'s suffix sharing/minimization or fixed-length
-//! arc nodes. See that section's doc comment for the precise list of what's
-//! reproduced and what's deferred.
+//! of this file) builds a full in-memory trie upfront and serializes it
+//! bottom-up to the same byte format `Fst::read`/`Fst::get` below already
+//! parse -- correct and round-trip-verified against this module's own
+//! unmodified reader. It **does** reproduce real `FSTCompiler`'s suffix
+//! sharing / minimization (via a `NodeHash`-equivalent dedup table keyed on
+//! each node's fully-resolved arc signature -- see `NodeHash`/`build_node`),
+//! just via whole-tree hash-consing rather than incremental freezing; it does
+//! not reproduce fixed-length arc nodes or output pushing. See that section's
+//! doc comment for the precise list of what's reproduced and what's deferred.
 //!
 //! ## Scope of this slice
 //!
@@ -2254,13 +2257,17 @@ impl Iterator for FstEnum<'_, '_> {
 //
 // Deliberately **not** done, all deferred to a future slice along with real
 // `FSTCompiler` itself:
-// - **Suffix sharing / minimization.** Two keys that happen to share a
-//   *suffix* (not just a prefix) -- e.g. `"cat"` and `"bat"` sharing the
-//   final `"at"` -- get two independent copies of that suffix's nodes here,
-//   whereas real Lucene's node hash table would collapse them into one
-//   shared node reachable from both `'c'` and `'b'` arcs. This only affects
-//   output size/compactness, not correctness: `Fst::get` still resolves every
-//   key to its correct output either way.
+// - **Incremental/streaming construction.** Real `FSTCompiler` consumes keys
+//   one at a time and only ever holds the current key's path of
+//   not-yet-frozen nodes in memory, freezing (and dedup-checking) each node
+//   as soon as no further key can extend it. This builder instead
+//   materializes the entire trie in memory upfront and serializes it
+//   bottom-up in one pass. **Suffix sharing / minimization itself is done**
+//   (see `NodeHash`/`build_node` below): two keys that share a *suffix* (not
+//   just a prefix) -- e.g. `"cat"` and `"bat"` sharing the final `"at"` --
+//   get a single shared copy of that suffix's nodes in the byte store, same
+//   as real `FSTCompiler`'s node hash table would produce, just discovered by
+//   hash-consing the whole tree at once rather than incrementally.
 // - **Fixed-length arc nodes** (`ARCS_FOR_BINARY_SEARCH`/`_DIRECT_ADDRESSING`/
 //   `_CONTINUOUS`) and the `BIT_TARGET_NEXT` adjacent-node compaction: every
 //   arc here writes an explicit `vlong` target rather than relying on
@@ -2339,6 +2346,23 @@ fn append_arc_logical(bytes: &mut Vec<u8>, logical: &[u8]) -> i64 {
     (bytes.len() - 1) as i64
 }
 
+/// One arc's structural identity for node-hash-consing purposes: the exact
+/// fields that determine the bytes `build_node` would write for it (label,
+/// finality + final output, and -- for non-stop arcs -- the *already
+/// resolved* address of the target node). Two nodes whose full ordered arc
+/// list compares equal are guaranteed to serialize to byte-identical arcs
+/// (see `build_node`), so this doubles as the dedup key.
+type ArcSignature = (u8, bool, Vec<u8>, Option<i64>);
+
+/// Real `FSTCompiler`'s `NodeHash` maps a *frozen* node's arc signature to
+/// the address it was already written at, so that a later node with an
+/// identical signature (typically a shared suffix reached via a different
+/// prefix) reuses that address instead of re-serializing a duplicate copy.
+/// This is the same table, keyed on the whole-tree-at-once builder's
+/// equivalent of "frozen node": one whose subtree has already been fully
+/// recursively resolved to final addresses.
+type NodeHash = std::collections::HashMap<Vec<ArcSignature>, i64>;
+
 /// Serializes one trie node's children into the byte store, recursing into
 /// any child that itself has further children first (post-order: a child
 /// node's address must be known before the arc pointing at it can write its
@@ -2346,7 +2370,14 @@ fn append_arc_logical(bytes: &mut Vec<u8>, logical: &[u8]) -> i64 {
 /// for its *smallest*-labeled child -- see the module doc's node/arc address
 /// ordering contract). Panics only if called on a node with no children
 /// (callers only recurse into/start from non-empty nodes).
-fn build_node(node: &TrieNode, bytes: &mut Vec<u8>) -> i64 {
+///
+/// Before writing any new bytes for this node, checks `node_hash` for an
+/// already-frozen node with the exact same ordered arc signature (same
+/// labels, same finality/final-outputs, same child target addresses) and, if
+/// found, returns its existing address unchanged -- this is the suffix
+/// sharing / minimization step: any suffix reachable from two or more
+/// different paths in the trie collapses to a single copy in the byte store.
+fn build_node(node: &TrieNode, bytes: &mut Vec<u8>, node_hash: &mut NodeHash) -> i64 {
     let labels: Vec<u8> = node.children.keys().copied().collect();
     assert!(!labels.is_empty(), "build_node requires at least one arc");
 
@@ -2354,8 +2385,33 @@ fn build_node(node: &TrieNode, bytes: &mut Vec<u8>) -> i64 {
     for &label in &labels {
         let child = &node.children[&label];
         if !child.children.is_empty() {
-            child_addr.insert(label, build_node(child, bytes));
+            child_addr.insert(label, build_node(child, bytes, node_hash));
         }
+    }
+
+    // Signature in ascending label order (independent of the descending
+    // order arcs are physically appended in below) -- just a lookup key, so
+    // canonical ordering only needs to be consistent across calls.
+    let signature: Vec<ArcSignature> = labels
+        .iter()
+        .map(|&label| {
+            let child = &node.children[&label];
+            let has_children = !child.children.is_empty();
+            (
+                label,
+                child.is_final,
+                child.final_output.clone(),
+                if has_children {
+                    Some(child_addr[&label])
+                } else {
+                    None
+                },
+            )
+        })
+        .collect();
+
+    if let Some(&existing_addr) = node_hash.get(&signature) {
+        return existing_addr;
     }
 
     // Arcs must be appended in *descending* label order: the first one
@@ -2396,6 +2452,7 @@ fn build_node(node: &TrieNode, bytes: &mut Vec<u8>) -> i64 {
         node_addr = append_arc_logical(bytes, &logical);
     }
 
+    node_hash.insert(signature, node_addr);
     node_addr
 }
 
@@ -2440,7 +2497,8 @@ pub fn build_fst(entries: &[(Vec<u8>, Vec<u8>)]) -> std::result::Result<Fst<'sta
         // fails that check.
         0
     } else {
-        build_node(&root, &mut bytes)
+        let mut node_hash = NodeHash::new();
+        build_node(&root, &mut bytes, &mut node_hash)
     };
 
     Ok(Fst {
@@ -3993,5 +4051,174 @@ mod tests {
             e.next().unwrap().unwrap(),
             (b"band".to_vec(), b"5".to_vec())
         );
+    }
+
+    // --- Suffix sharing / minimization proof tests -------------------------
+    //
+    // These prove `build_node`'s `NodeHash` dedup actually collapses
+    // structurally-identical nodes reached via different prefixes into a
+    // single shared address, rather than merely producing a correct (but
+    // possibly non-minimal) FST. A "round-trips correctly" test alone would
+    // pass even for the old, pre-dedup naive trie builder -- these instead
+    // inspect the compiled node addresses directly.
+
+    /// Walks `prefix` from the FST's root and returns the address of the
+    /// node reached after consuming it (i.e. the `target()` of the arc for
+    /// `prefix`'s last byte) -- the same "which node did we land on" question
+    /// `Fst::get` answers per-byte, just exposed here instead of being
+    /// discarded after the final `is_final()` check.
+    fn node_after_prefix(fst: &Fst<'_>, prefix: &[u8]) -> i64 {
+        let mut r = fst.reader();
+        let mut arc = fst.first_arc();
+        for &b in prefix {
+            arc = fst
+                .find_target_arc(b as i32, &arc, &mut r)
+                .unwrap()
+                .unwrap_or_else(|| panic!("prefix {prefix:?} not found in FST"));
+        }
+        arc.target()
+    }
+
+    #[test]
+    fn build_fst_shares_identical_suffix_node_across_two_prefixes() {
+        // "bat" and "cat" share the final "at" suffix: the node reached
+        // after 'b' and the node reached after 'c' are structurally
+        // identical (single child arc 'a', itself leading to a single child
+        // arc 't', final, no output) and must be written to the byte store
+        // exactly once and reused, i.e. `node_after_prefix(.., b"b")` and
+        // `node_after_prefix(.., b"c")` must be the *same* address.
+        let entries = vec![(b"bat".to_vec(), Vec::new()), (b"cat".to_vec(), Vec::new())];
+        let fst = build_fst(&entries).unwrap();
+
+        let after_b = node_after_prefix(&fst, b"b");
+        let after_c = node_after_prefix(&fst, b"c");
+        assert_eq!(
+            after_b, after_c,
+            "the shared \"at\" suffix must compile to one shared node address, not two independent copies"
+        );
+
+        // Sharing a node must not corrupt lookups through either path.
+        assert_eq!(fst.get(b"bat").unwrap(), Some(Vec::new()));
+        assert_eq!(fst.get(b"cat").unwrap(), Some(Vec::new()));
+        assert_eq!(fst.get(b"at").unwrap(), None);
+        assert_eq!(fst.get(b"ba").unwrap(), None);
+    }
+
+    #[test]
+    fn build_fst_shares_classic_mop_pop_stop_top_suffix_node() {
+        // Real Lucene's own canonical `FSTCompiler` suffix-sharing example:
+        // "mop"/"moth"/"pop"/"star"/"stop"/"top". The nodes reached after
+        // "po", "sto", and "to" are each a single final 'p' arc (stop node,
+        // no output) and so must all three collapse to the identical shared
+        // address, while the node after "mo" (which additionally has a 'th'
+        // child) must NOT be that same address.
+        let entries = vec![
+            (b"mop".to_vec(), Vec::new()),
+            (b"moth".to_vec(), Vec::new()),
+            (b"pop".to_vec(), Vec::new()),
+            (b"star".to_vec(), Vec::new()),
+            (b"stop".to_vec(), Vec::new()),
+            (b"top".to_vec(), Vec::new()),
+        ];
+        let fst = build_fst(&entries).unwrap();
+
+        let after_po = node_after_prefix(&fst, b"po");
+        let after_sto = node_after_prefix(&fst, b"sto");
+        let after_to = node_after_prefix(&fst, b"to");
+        let after_mo = node_after_prefix(&fst, b"mo");
+
+        assert_eq!(
+            after_po, after_sto,
+            "\"po\" and \"sto\" both end in a bare final 'p' node and must share it"
+        );
+        assert_eq!(
+            after_sto, after_to,
+            "\"sto\" and \"to\" both end in a bare final 'p' node and must share it"
+        );
+        assert_ne!(
+            after_mo, after_po,
+            "\"mo\" has an extra 'th' child so its node must NOT be reused for the plain-'p' shared node"
+        );
+
+        // Regression: get/seek/enumerate all still correct against an FST
+        // that now has genuinely shared/multiply-referenced nodes.
+        for (key, _) in &entries {
+            assert_eq!(fst.get(key).unwrap(), Some(Vec::new()), "get({key:?})");
+        }
+        assert_eq!(collect_iter(&fst), entries);
+
+        let mut e = fst.iter().unwrap();
+        assert_eq!(
+            e.seek_ceil(b"mos").unwrap(),
+            Some((b"moth".to_vec(), Vec::new()))
+        );
+        let mut e = fst.iter().unwrap();
+        assert_eq!(
+            e.seek_floor(b"stoz").unwrap(),
+            Some((b"stop".to_vec(), Vec::new()))
+        );
+        let mut e = fst.iter().unwrap();
+        assert_eq!(
+            e.seek_exact(b"top").unwrap(),
+            Some((b"top".to_vec(), Vec::new()))
+        );
+    }
+
+    #[test]
+    fn build_fst_dedup_keeps_compiled_size_sublinear_in_repeated_suffix_count() {
+        // A naive (non-deduplicating) trie builder writes one independent
+        // copy of the shared tail's arcs per distinct prefix, so its total
+        // size grows linearly with `num_prefixes * tail.len()`. With
+        // suffix-sharing minimization, the tail's arcs are written once and
+        // every prefix's last arc just targets that single shared address,
+        // so total size grows roughly like `num_prefixes + tail.len()`
+        // instead. Assert the actual compiled size is well under the naive
+        // linear bound to prove sharing, not just correctness, occurred.
+        const TAIL: &[u8] = b"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"; // 44 bytes
+        let prefixes: &[&[u8]] = &[b"aa", b"bb", b"cc", b"dd", b"ee", b"ff", b"gg", b"hh"];
+
+        let mut entries: Vec<(Vec<u8>, Vec<u8>)> = prefixes
+            .iter()
+            .map(|p| {
+                let mut key = p.to_vec();
+                key.extend_from_slice(TAIL);
+                (key, Vec::new())
+            })
+            .collect();
+        entries.sort();
+
+        let fst = build_fst(&entries).unwrap();
+
+        // Naive bound: each of the 8 prefixes would need its own full,
+        // independent copy of every arc down the shared tail. Each arc here
+        // is at least 3 bytes (flags + label + 1-byte vlong target), so a
+        // fully-unshared build would need well over
+        // `prefixes.len() * TAIL.len() * 3` bytes for the tails alone.
+        let naive_unshared_lower_bound = prefixes.len() * TAIL.len() * 3;
+        assert!(
+            (fst.metadata.num_bytes as usize) < naive_unshared_lower_bound,
+            "compiled size {} should be far smaller than the naive no-sharing bound {} \
+             if suffix sharing actually collapsed the repeated tail to one copy",
+            fst.metadata.num_bytes,
+            naive_unshared_lower_bound
+        );
+
+        // And every key must still resolve correctly through the shared tail.
+        for (key, output) in &entries {
+            assert_eq!(fst.get(key).unwrap().as_ref(), Some(output));
+        }
+
+        // Direct structural check: the node reached after each distinct
+        // 2-byte prefix must be the *same* address (all of them lead into
+        // the one shared `TAIL` chain).
+        let first_addr = node_after_prefix(&fst, prefixes[0]);
+        for p in &prefixes[1..] {
+            assert_eq!(
+                node_after_prefix(&fst, p),
+                first_addr,
+                "prefix {p:?} should land on the same shared tail node as {:?}",
+                prefixes[0]
+            );
+        }
     }
 }
