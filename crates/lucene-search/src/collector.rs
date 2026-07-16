@@ -320,6 +320,130 @@ impl TopFieldCollector {
     }
 }
 
+/// `CollapsingTopDocsCollector`-equivalent (real Lucene/Solr's field-collapse
+/// mechanism, historically `org.apache.lucene.search.grouping.CollapsingTopDocsCollector`,
+/// now living in Solr as `CollapsingQParserPlugin`'s collector): as docs are
+/// scored, keep only the single highest-scoring doc for each distinct value
+/// of a collapse-key doc-values field, then select the final top `n` from
+/// those group-winners only.
+///
+/// **Algorithm**: single-pass, matching real `CollapsingTopDocsCollector`
+/// (not a two-phase collect-then-rerank design) — for every candidate
+/// `(doc_id, score, key)`, look up the current best doc for `key` in a
+/// `HashMap` and replace it only if the candidate outranks it (per
+/// [`rank_order`]'s score-desc/doc-id-asc convention, kept consistent with
+/// [`TopDocsCollector`]). Group winners accumulate in the map (and, for the
+/// null-group case, in a side `Vec` — see below) as collection proceeds;
+/// [`Self::top_docs`] does the final top-`n` reduction over just those
+/// winners on demand, not per-doc, since the winner set only shrinks in
+/// membership count (never grows past one entry per key) as collection
+/// proceeds.
+///
+/// **Scope**: NUMERIC doc-values collapse key only (an already-decoded
+/// `i64`), not real Lucene's more common SORTED-field ordinal key. A SORTED
+/// key needs an extra ordinal-to-value resolution step per doc (via the
+/// field's terms dictionary, as `facets.rs`'s `resolve_labels` already does
+/// for a different purpose) that this port doesn't add yet — NUMERIC-keyed
+/// collapsing is a valid, narrower starting point (real Lucene's own
+/// `CollapsingTopDocsCollector` special-cases `NUMERIC` vs `SORTED` keys
+/// internally, so this isn't an invented split). See `docs/parity.md`.
+///
+/// **Missing collapse-key value**: a doc with no value for the collapse
+/// field (`key: None`) is **not** discarded and **not** collapsed together
+/// with other missing-value docs — each survives as its own singleton group,
+/// i.e. this port's `null group` policy is "every null-key doc competes for
+/// top-`n` on its own", the `CollapsingQParserPlugin` `nullPolicy=EXPAND`
+/// behavior. Real Solr's *default* `nullPolicy` is `IGNORE` (drop null-key
+/// docs entirely), but `EXPAND` is itself a documented, real Solr policy
+/// value, not a fabricated behavior — this port picks it as the simpler
+/// single case to implement first (no separate "drop" code path needed
+/// alongside the "keep, uncollapsed" one) and documents the choice honestly
+/// rather than silently assuming `IGNORE`. See `docs/parity.md`.
+///
+/// **Design**: like [`TopFieldCollector`], not a [`Collector`]/
+/// [`ScoringCollector`] impl — the collapse key is a fallible doc-value
+/// decode (same reasoning as that struct's doc comment), so a caller decodes
+/// each candidate's key first and calls [`Self::offer`] with the
+/// already-decoded `Option<i64>`.
+#[derive(Debug, Clone)]
+pub struct CollapsingCollector {
+    top_n: usize,
+    /// One entry per distinct collapse-key value seen so far, holding that
+    /// key's current best-scoring doc.
+    groups: std::collections::HashMap<i64, ScoreDoc>,
+    /// Null-group docs (missing collapse-key value), each its own singleton
+    /// group per this struct's documented `EXPAND`-equivalent policy.
+    null_group: Vec<ScoreDoc>,
+}
+
+impl CollapsingCollector {
+    /// A collector that will ultimately keep at most `top_n` hits, selected
+    /// from group-winners. `top_n == 0` is a defined "keep nothing" edge
+    /// case: [`Self::top_docs`] returns an empty slice regardless of how many
+    /// groups were offered.
+    pub fn new(top_n: usize) -> Self {
+        Self {
+            top_n,
+            groups: std::collections::HashMap::new(),
+            null_group: Vec::new(),
+        }
+    }
+
+    /// Offers one already-scored, already-key-decoded candidate. `key` is
+    /// the doc's decoded NUMERIC collapse-value, or `None` if the doc has no
+    /// value for the collapse field (see this struct's doc comment for the
+    /// null-group policy). Replaces the current group winner only if the
+    /// candidate outranks it (or the group hasn't been seen yet); a `None`
+    /// key always inserts a new singleton group.
+    pub fn offer(&mut self, doc_id: i32, score: f32, key: Option<i64>) {
+        let candidate = ScoreDoc { doc_id, score };
+        match key {
+            None => self.null_group.push(candidate),
+            Some(k) => {
+                self.groups
+                    .entry(k)
+                    .and_modify(|current| {
+                        if rank_order(&candidate, current) == std::cmp::Ordering::Greater {
+                            *current = candidate;
+                        }
+                    })
+                    .or_insert(candidate);
+            }
+        }
+    }
+
+    /// The top `n` hits selected from group-winners only, best-first per
+    /// [`rank_order`] — real Lucene's `CollapsingTopDocsCollector.topDocs`-
+    /// equivalent final reduction. Every keyed group contributes at most one
+    /// hit (its winner); every null-group doc contributes its own hit (see
+    /// this struct's doc comment).
+    ///
+    /// Unlike [`TopDocsCollector::top_docs`]/[`TopFieldCollector::top_docs`]
+    /// (which return a borrowed `&[T]` into an already-sorted `Vec`
+    /// maintained incrementally on every `collect`/`offer` call), this
+    /// returns an **owned, freshly sorted `Vec`** computed on demand: group
+    /// winners live in a `HashMap` (see this struct's doc comment for why),
+    /// so there is no single running best-first order to borrow until this
+    /// reduction actually runs it. Calling this repeatedly re-sorts every
+    /// time — cheap at the query sizes this collector targets, but a real
+    /// difference from the other two collectors' O(1)/no-allocation
+    /// `top_docs()`, not an oversight.
+    pub fn top_docs(&self) -> Vec<ScoreDoc> {
+        if self.top_n == 0 {
+            return Vec::new();
+        }
+        let mut winners: Vec<ScoreDoc> = self
+            .groups
+            .values()
+            .copied()
+            .chain(self.null_group.iter().copied())
+            .collect();
+        winners.sort_by(|a, b| rank_order(a, b).reverse());
+        winners.truncate(self.top_n);
+        winners
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -533,5 +657,147 @@ mod tests {
             score: 6.0,
         };
         assert_eq!(rank_order(&c, &a), std::cmp::Ordering::Greater);
+    }
+
+    // --- CollapsingCollector ---
+
+    #[test]
+    fn collapsing_collector_empty_input_yields_no_hits() {
+        let c = CollapsingCollector::new(3);
+        assert!(c.top_docs().is_empty());
+    }
+
+    #[test]
+    fn collapsing_collector_top_n_zero_keeps_nothing() {
+        let mut c = CollapsingCollector::new(0);
+        c.offer(1, 5.0, Some(1));
+        c.offer(2, 9.0, Some(2));
+        assert!(c.top_docs().is_empty());
+    }
+
+    #[test]
+    fn collapsing_collector_keeps_only_highest_scoring_doc_per_key() {
+        let mut c = CollapsingCollector::new(10);
+        // Three docs share collapse-key 1; only the highest score (doc 2)
+        // should survive.
+        c.offer(1, 1.0, Some(1));
+        c.offer(2, 5.0, Some(1));
+        c.offer(3, 3.0, Some(1));
+        let docs = c.top_docs();
+        assert_eq!(
+            docs,
+            vec![ScoreDoc {
+                doc_id: 2,
+                score: 5.0
+            }]
+        );
+    }
+
+    #[test]
+    fn collapsing_collector_distinct_keys_all_appear_subject_to_top_n() {
+        let mut c = CollapsingCollector::new(10);
+        c.offer(1, 1.0, Some(1));
+        c.offer(2, 2.0, Some(2));
+        c.offer(3, 3.0, Some(3));
+        let docs = c.top_docs();
+        assert_eq!(
+            docs,
+            vec![
+                ScoreDoc {
+                    doc_id: 3,
+                    score: 3.0
+                },
+                ScoreDoc {
+                    doc_id: 2,
+                    score: 2.0
+                },
+                ScoreDoc {
+                    doc_id: 1,
+                    score: 1.0
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn collapsing_collector_truncates_group_winners_to_top_n() {
+        let mut c = CollapsingCollector::new(2);
+        c.offer(1, 1.0, Some(1));
+        c.offer(2, 2.0, Some(2));
+        c.offer(3, 3.0, Some(3));
+        let docs = c.top_docs();
+        assert_eq!(
+            docs,
+            vec![
+                ScoreDoc {
+                    doc_id: 3,
+                    score: 3.0
+                },
+                ScoreDoc {
+                    doc_id: 2,
+                    score: 2.0
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn collapsing_collector_missing_key_docs_each_survive_as_own_group() {
+        let mut c = CollapsingCollector::new(10);
+        // Two docs with no collapse-key value -- both must survive
+        // independently (this port's EXPAND-equivalent null-group policy),
+        // not collapse together.
+        c.offer(1, 1.0, None);
+        c.offer(2, 2.0, None);
+        c.offer(3, 3.0, Some(9));
+        let mut docs = c.top_docs();
+        docs.sort_by_key(|d| d.doc_id);
+        assert_eq!(
+            docs,
+            vec![
+                ScoreDoc {
+                    doc_id: 1,
+                    score: 1.0
+                },
+                ScoreDoc {
+                    doc_id: 2,
+                    score: 2.0
+                },
+                ScoreDoc {
+                    doc_id: 3,
+                    score: 3.0
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn collapsing_collector_replaces_group_winner_on_better_candidate() {
+        let mut c = CollapsingCollector::new(10);
+        c.offer(1, 5.0, Some(1));
+        c.offer(2, 1.0, Some(1)); // worse -- must not replace doc 1.
+        let docs = c.top_docs();
+        assert_eq!(
+            docs,
+            vec![ScoreDoc {
+                doc_id: 1,
+                score: 5.0
+            }]
+        );
+    }
+
+    #[test]
+    fn collapsing_collector_tie_break_prefers_lower_doc_id_within_group() {
+        let mut c = CollapsingCollector::new(10);
+        c.offer(9, 3.0, Some(1));
+        c.offer(2, 3.0, Some(1)); // ties on score -- lower doc id wins.
+        let docs = c.top_docs();
+        assert_eq!(
+            docs,
+            vec![ScoreDoc {
+                doc_id: 2,
+                score: 3.0
+            }]
+        );
     }
 }
