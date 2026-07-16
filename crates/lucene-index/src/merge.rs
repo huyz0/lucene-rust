@@ -806,6 +806,24 @@ pub fn reconcile_field_numbers(
     (merged_fields, per_source_maps)
 }
 
+/// Builds the "concatenate sources in order" doc-visit order every
+/// `merge_*_doc_values`/`merge_norms`/`merge_term_vectors` helper walks for
+/// [`merge_stored_only_segments`]: source 0's live docs (in ascending
+/// original-doc-id order), then source 1's, etc. -- exactly the order
+/// `merged_docs` itself is built in above. Factored out so the same
+/// `merge_*` helpers can also be driven by [`merge_sorted_stored_only_segments`]'s
+/// k-way-merge order instead, without duplicating each helper's field-
+/// resolution/candidate logic per call site.
+fn concat_doc_order(per_source_live_ids: &[Vec<i32>]) -> Vec<(usize, i32)> {
+    let mut order = Vec::new();
+    for (src_idx, live_ids) in per_source_live_ids.iter().enumerate() {
+        for &doc_id in live_ids {
+            order.push((src_idx, doc_id));
+        }
+    }
+    order
+}
+
 /// Merges `sources` (already-opened, in source order) into one brand-new
 /// stored-fields-only segment named `merged_segment_name` inside `dir`,
 /// exactly as [`crate::segment_writer::flush_stored_only_segment`] writes a
@@ -862,14 +880,22 @@ pub fn merge_stored_only_segments(
         per_source_live_ids.push(live_ids);
     }
     let doc_count = merged_docs.len() as i32;
+    let doc_order = concat_doc_order(&per_source_live_ids);
 
-    let numeric_dv = merge_numeric_doc_values(sources, &per_source_maps, &per_source_live_ids)?;
-    let binary_dv = merge_binary_doc_values(sources, &per_source_maps, &per_source_live_ids)?;
-    let sorted_dv = merge_sorted_doc_values(sources, &per_source_maps, &per_source_live_ids)?;
-    let sorted_numeric_dv =
-        merge_sorted_numeric_doc_values(sources, &per_source_maps, &per_source_live_ids)?;
+    let numeric_dv =
+        merge_numeric_doc_values(sources, &per_source_maps, &per_source_live_ids, &doc_order)?;
+    let binary_dv =
+        merge_binary_doc_values(sources, &per_source_maps, &per_source_live_ids, &doc_order)?;
+    let sorted_dv =
+        merge_sorted_doc_values(sources, &per_source_maps, &per_source_live_ids, &doc_order)?;
+    let sorted_numeric_dv = merge_sorted_numeric_doc_values(
+        sources,
+        &per_source_maps,
+        &per_source_live_ids,
+        &doc_order,
+    )?;
     let sorted_set_dv =
-        merge_sorted_set_doc_values(sources, &per_source_maps, &per_source_live_ids)?;
+        merge_sorted_set_doc_values(sources, &per_source_maps, &per_source_live_ids, &doc_order)?;
     let present_count = [
         numeric_dv.is_some(),
         binary_dv.is_some(),
@@ -889,8 +915,8 @@ pub fn merge_stored_only_segments(
             sorted_set_field_number: sorted_set_dv.as_ref().map(|(n, _)| *n),
         });
     }
-    let merged_norms = merge_norms(sources, &per_source_maps, &per_source_live_ids)?;
-    let tv_docs = merge_term_vectors(sources, &per_source_maps, &per_source_live_ids)?;
+    let merged_norms = merge_norms(sources, &per_source_maps, &per_source_live_ids, &doc_order)?;
+    let tv_docs = merge_term_vectors(sources, &per_source_maps, &per_source_live_ids, &doc_order)?;
     let merged_postings_fields = merge_postings(
         sources,
         &per_source_maps,
@@ -1182,15 +1208,23 @@ pub struct MergeSortKeySpec<'a> {
 ///
 /// # Scope
 ///
-/// Only stored fields are reordered by sort key here -- this port's write
-/// side has no path that reorders doc-values/norms/term-vectors/postings/
-/// points data during a merge (see this module's top doc comment). Any
-/// doc-values/norms/term-vectors/postings/points data attached to a
-/// `MergeSource` is silently ignored by this function; use
-/// [`merge_stored_only_segments`] instead if that data needs
-/// to be merged (concatenation order, no re-sort -- and no index-sort
-/// metadata in the resulting `.si`, since that merge doesn't preserve sort
-/// order).
+/// Stored fields, doc-values (NUMERIC/BINARY/SORTED/SORTED_NUMERIC/
+/// SORTED_SET), norms, and term vectors are all reordered by sort key here,
+/// via the same `doc_order` (source_index, original_doc_id) pairs the
+/// k-way merge above produces -- each is resolved through the exact same
+/// `merge_numeric_doc_values`/`merge_binary_doc_values`/
+/// `merge_sorted_doc_values`/`merge_sorted_numeric_doc_values`/
+/// `merge_sorted_set_doc_values`/`merge_norms`/`merge_term_vectors` helpers
+/// [`merge_stored_only_segments`] uses, just driven by this function's
+/// sorted `doc_order` instead of that function's per-source-concatenated
+/// one -- so the same single-field-per-type limits, "sparse across
+/// sources" errors, and per-source-dictionary-resolution scope notes on
+/// this module's top doc comment apply here too. **Postings and points are
+/// still not merged by this function** -- a `MergeSource`'s `postings`/
+/// `points` fields are silently ignored here, same as before; use
+/// [`merge_stored_only_segments`] if that data needs to be merged
+/// (concatenation order, no re-sort, and no index-sort metadata in the
+/// resulting `.si`, since that merge doesn't preserve sort order).
 pub fn merge_sorted_stored_only_segments(
     dir: &dyn Directory,
     sources: &[MergeSource],
@@ -1246,6 +1280,12 @@ pub fn merge_sorted_stored_only_segments(
 
     let mut cursors = vec![0usize; sources.len()];
     let mut merged_docs: Vec<Document> = Vec::new();
+    // Same (source_index, original_doc_id) pairs the k-way merge below
+    // visits stored fields in, kept around so doc-values/norms/term-vectors
+    // can be resolved in the exact same physical sort order rather than
+    // concatenated by source (see `merge_*_doc_values`/`merge_norms`/
+    // `merge_term_vectors`'s shared `doc_order` parameter).
+    let mut doc_order: Vec<(usize, i32)> = Vec::new();
     loop {
         // Find the source whose current head doc has the smallest sort key,
         // in `sort_fields` priority order -- a linear scan across sources
@@ -1292,8 +1332,48 @@ pub fn merge_sorted_stored_only_segments(
             )?;
         }
         merged_docs.push(doc);
+        doc_order.push((src_idx, doc_id));
     }
     let doc_count = merged_docs.len() as i32;
+
+    // Doc-values/norms/term-vectors, resolved in the same global sort order
+    // as `merged_docs` above (`doc_order`), not concatenated by source --
+    // see this function's updated "Scope" doc comment.
+    let numeric_dv =
+        merge_numeric_doc_values(sources, &per_source_maps, &per_source_live_ids, &doc_order)?;
+    let binary_dv =
+        merge_binary_doc_values(sources, &per_source_maps, &per_source_live_ids, &doc_order)?;
+    let sorted_dv =
+        merge_sorted_doc_values(sources, &per_source_maps, &per_source_live_ids, &doc_order)?;
+    let sorted_numeric_dv = merge_sorted_numeric_doc_values(
+        sources,
+        &per_source_maps,
+        &per_source_live_ids,
+        &doc_order,
+    )?;
+    let sorted_set_dv =
+        merge_sorted_set_doc_values(sources, &per_source_maps, &per_source_live_ids, &doc_order)?;
+    let present_count = [
+        numeric_dv.is_some(),
+        binary_dv.is_some(),
+        sorted_dv.is_some(),
+        sorted_numeric_dv.is_some(),
+        sorted_set_dv.is_some(),
+    ]
+    .into_iter()
+    .filter(|&present| present)
+    .count();
+    if present_count > 1 {
+        return Err(Error::MultipleDocValuesTypesInOneMerge {
+            numeric_field_number: numeric_dv.as_ref().map(|(n, _)| *n),
+            binary_field_number: binary_dv.as_ref().map(|(n, _)| *n),
+            sorted_field_number: sorted_dv.as_ref().map(|(n, _)| *n),
+            sorted_numeric_field_number: sorted_numeric_dv.as_ref().map(|(n, _)| *n),
+            sorted_set_field_number: sorted_set_dv.as_ref().map(|(n, _)| *n),
+        });
+    }
+    let merged_norms = merge_norms(sources, &per_source_maps, &per_source_live_ids, &doc_order)?;
+    let tv_docs = merge_term_vectors(sources, &per_source_maps, &per_source_live_ids, &doc_order)?;
 
     let mut files: Vec<String> = Vec::new();
 
@@ -1310,6 +1390,104 @@ pub fn merge_sorted_stored_only_segments(
     let fnm = field_infos::write(&merged_fields, &merged_segment_id, "");
     write_file(dir, &fnm_name, &fnm)?;
     files.push(fnm_name);
+
+    if let Some((field_number, values)) = numeric_dv {
+        let (dvm, dvd, dvs) = doc_values::write_single_dense_numeric_field(
+            field_number,
+            &values,
+            doc_count,
+            &merged_segment_id,
+            "",
+        )?;
+        for (ext, bytes) in [("dvm", &dvm), ("dvd", &dvd), ("dvs", &dvs)] {
+            let name = format!("{merged_segment_name}.{ext}");
+            write_file(dir, &name, bytes)?;
+            files.push(name);
+        }
+    }
+
+    if let Some((field_number, values)) = binary_dv {
+        let (dvm, dvd, dvs) = doc_values::write_single_dense_binary_field(
+            field_number,
+            &values,
+            doc_count,
+            &merged_segment_id,
+            "",
+        )?;
+        for (ext, bytes) in [("dvm", &dvm), ("dvd", &dvd), ("dvs", &dvs)] {
+            let name = format!("{merged_segment_name}.{ext}");
+            write_file(dir, &name, bytes)?;
+            files.push(name);
+        }
+    }
+
+    if let Some((field_number, values)) = sorted_dv {
+        let (dvm, dvd, dvs) = doc_values::write_single_dense_sorted_field(
+            field_number,
+            &values,
+            doc_count,
+            &merged_segment_id,
+            "",
+        )?;
+        for (ext, bytes) in [("dvm", &dvm), ("dvd", &dvd), ("dvs", &dvs)] {
+            let name = format!("{merged_segment_name}.{ext}");
+            write_file(dir, &name, bytes)?;
+            files.push(name);
+        }
+    }
+
+    if let Some((field_number, values)) = sorted_numeric_dv {
+        let (dvm, dvd, dvs) = doc_values::write_single_dense_sorted_numeric_field(
+            field_number,
+            &values,
+            &merged_segment_id,
+            "",
+        )?;
+        for (ext, bytes) in [("dvm", &dvm), ("dvd", &dvd), ("dvs", &dvs)] {
+            let name = format!("{merged_segment_name}.{ext}");
+            write_file(dir, &name, bytes)?;
+            files.push(name);
+        }
+    }
+
+    if let Some((field_number, values)) = sorted_set_dv {
+        let (dvm, dvd, dvs) = doc_values::write_single_dense_sorted_set_field(
+            field_number,
+            &values,
+            doc_count,
+            &merged_segment_id,
+            "",
+        )?;
+        for (ext, bytes) in [("dvm", &dvm), ("dvd", &dvd), ("dvs", &dvs)] {
+            let name = format!("{merged_segment_name}.{ext}");
+            write_file(dir, &name, bytes)?;
+            files.push(name);
+        }
+    }
+
+    if let Some((field_number, values)) = merged_norms {
+        let (nvm, nvd) = norms::write_single_dense_field(
+            field_number,
+            &values,
+            doc_count,
+            &merged_segment_id,
+            "",
+        )?;
+        for (ext, bytes) in [("nvm", &nvm), ("nvd", &nvd)] {
+            let name = format!("{merged_segment_name}.{ext}");
+            write_file(dir, &name, bytes)?;
+            files.push(name);
+        }
+    }
+
+    if let Some(tv_docs) = tv_docs {
+        let (tvd, tvx, tvm) = term_vectors::write_best_speed(&tv_docs, &merged_segment_id, "");
+        for (ext, bytes) in [("tvd", &tvd), ("tvx", &tvx), ("tvm", &tvm)] {
+            let name = format!("{merged_segment_name}.{ext}");
+            write_file(dir, &name, bytes)?;
+            files.push(name);
+        }
+    }
 
     let si = SegmentInfo {
         id: merged_segment_id,
@@ -1412,6 +1590,7 @@ fn merge_numeric_doc_values(
     sources: &[MergeSource],
     per_source_maps: &[HashMap<i32, i32>],
     per_source_live_ids: &[Vec<i32>],
+    doc_order: &[(usize, i32)],
 ) -> Result<Option<(i32, Vec<i64>)>> {
     let mut candidates: Vec<i32> = Vec::new();
     for ((source, map), live_ids) in sources.iter().zip(per_source_maps).zip(per_source_live_ids) {
@@ -1437,8 +1616,17 @@ fn merge_numeric_doc_values(
         return Ok(None);
     };
 
-    let mut values: Vec<i64> = Vec::new();
-    for ((source, map), live_ids) in sources.iter().zip(per_source_maps).zip(per_source_live_ids) {
+    // Resolve each contributing source's entry once, up front -- `doc_order`
+    // may interleave sources in any order (a k-way sorted merge does), so
+    // the per-source resolution can no longer be folded into a single linear
+    // pass over `per_source_live_ids` the way concatenation could.
+    let mut per_source_entry: Vec<Option<&SourceNumericDocValues>> = vec![None; sources.len()];
+    for (idx, ((source, map), live_ids)) in sources
+        .iter()
+        .zip(per_source_maps)
+        .zip(per_source_live_ids)
+        .enumerate()
+    {
         if live_ids.is_empty() {
             continue;
         }
@@ -1460,14 +1648,20 @@ fn merge_numeric_doc_values(
                 merged_field_number,
             });
         };
-        for &doc_id in live_ids {
-            let value = doc_values::numeric_value(entry.data, &entry.entry, doc_id)?.ok_or(
-                Error::DocValuesFieldMissingInSource {
-                    merged_field_number,
-                },
-            )?;
-            values.push(value);
-        }
+        per_source_entry[idx] = Some(entry);
+    }
+
+    let mut values: Vec<i64> = Vec::with_capacity(doc_order.len());
+    for &(src_idx, doc_id) in doc_order {
+        let entry = per_source_entry[src_idx].ok_or(Error::DocValuesFieldMissingInSource {
+            merged_field_number,
+        })?;
+        let value = doc_values::numeric_value(entry.data, &entry.entry, doc_id)?.ok_or(
+            Error::DocValuesFieldMissingInSource {
+                merged_field_number,
+            },
+        )?;
+        values.push(value);
     }
     Ok(Some((merged_field_number, values)))
 }
@@ -1481,6 +1675,7 @@ fn merge_binary_doc_values(
     sources: &[MergeSource],
     per_source_maps: &[HashMap<i32, i32>],
     per_source_live_ids: &[Vec<i32>],
+    doc_order: &[(usize, i32)],
 ) -> Result<Option<(i32, Vec<Vec<u8>>)>> {
     let mut candidates: Vec<i32> = Vec::new();
     for ((source, map), live_ids) in sources.iter().zip(per_source_maps).zip(per_source_live_ids) {
@@ -1504,8 +1699,13 @@ fn merge_binary_doc_values(
         return Ok(None);
     };
 
-    let mut values: Vec<Vec<u8>> = Vec::new();
-    for ((source, map), live_ids) in sources.iter().zip(per_source_maps).zip(per_source_live_ids) {
+    let mut per_source_entry: Vec<Option<&SourceBinaryDocValues>> = vec![None; sources.len()];
+    for (idx, ((source, map), live_ids)) in sources
+        .iter()
+        .zip(per_source_maps)
+        .zip(per_source_live_ids)
+        .enumerate()
+    {
         if live_ids.is_empty() {
             continue;
         }
@@ -1527,14 +1727,21 @@ fn merge_binary_doc_values(
                 merged_field_number,
             });
         };
-        for &doc_id in live_ids {
-            let value = doc_values::binary_value(entry.data, &entry.entry, doc_id)?.ok_or(
-                Error::BinaryDocValuesFieldMissingInSource {
-                    merged_field_number,
-                },
-            )?;
-            values.push(value.to_vec());
-        }
+        per_source_entry[idx] = Some(entry);
+    }
+
+    let mut values: Vec<Vec<u8>> = Vec::with_capacity(doc_order.len());
+    for &(src_idx, doc_id) in doc_order {
+        let entry =
+            per_source_entry[src_idx].ok_or(Error::BinaryDocValuesFieldMissingInSource {
+                merged_field_number,
+            })?;
+        let value = doc_values::binary_value(entry.data, &entry.entry, doc_id)?.ok_or(
+            Error::BinaryDocValuesFieldMissingInSource {
+                merged_field_number,
+            },
+        )?;
+        values.push(value.to_vec());
     }
     Ok(Some((merged_field_number, values)))
 }
@@ -1565,6 +1772,7 @@ fn merge_sorted_doc_values(
     sources: &[MergeSource],
     per_source_maps: &[HashMap<i32, i32>],
     per_source_live_ids: &[Vec<i32>],
+    doc_order: &[(usize, i32)],
 ) -> Result<Option<(i32, Vec<Vec<u8>>)>> {
     let mut candidates: Vec<i32> = Vec::new();
     for ((source, map), live_ids) in sources.iter().zip(per_source_maps).zip(per_source_live_ids) {
@@ -1588,9 +1796,16 @@ fn merge_sorted_doc_values(
         return Ok(None);
     };
 
-    let mut values: Vec<Vec<u8>> = Vec::new();
+    // This source's own dictionary, in ordinal order -- resolves this
+    // source's ordinals to term bytes without needing any other source's
+    // dictionary. Resolved once per source up front (see
+    // `merge_numeric_doc_values`'s `per_source_entry` for why `doc_order`
+    // rules out a single linear pass here).
+    type SortedDvResolved<'a> = Option<(&'a SourceSortedDocValues<'a>, Vec<Vec<u8>>)>;
+    let mut per_source_resolved: Vec<SortedDvResolved> = Vec::with_capacity(sources.len());
     for ((source, map), live_ids) in sources.iter().zip(per_source_maps).zip(per_source_live_ids) {
         if live_ids.is_empty() {
+            per_source_resolved.push(None);
             continue;
         }
         let original_number = map
@@ -1611,23 +1826,29 @@ fn merge_sorted_doc_values(
                 merged_field_number,
             });
         };
-        // This source's own dictionary, in ordinal order -- resolves this
-        // source's ordinals to term bytes without needing any other
-        // source's dictionary.
         let source_dict = terms_dict::decode_all_terms(sf.data, &sf.entry.terms)?;
-        for &doc_id in live_ids {
-            let ord = doc_values::sorted_ord(sf.data, &sf.entry, doc_id)?.ok_or(
-                Error::SortedDocValuesFieldMissingInSource {
+        per_source_resolved.push(Some((sf, source_dict)));
+    }
+
+    let mut values: Vec<Vec<u8>> = Vec::with_capacity(doc_order.len());
+    for &(src_idx, doc_id) in doc_order {
+        let (sf, source_dict) = per_source_resolved[src_idx].as_ref().ok_or(
+            Error::SortedDocValuesFieldMissingInSource {
+                merged_field_number,
+            },
+        )?;
+        let ord = doc_values::sorted_ord(sf.data, &sf.entry, doc_id)?.ok_or(
+            Error::SortedDocValuesFieldMissingInSource {
+                merged_field_number,
+            },
+        )?;
+        let term =
+            source_dict
+                .get(ord as usize)
+                .ok_or(Error::SortedDocValuesFieldMissingInSource {
                     merged_field_number,
-                },
-            )?;
-            let term = source_dict.get(ord as usize).ok_or(
-                Error::SortedDocValuesFieldMissingInSource {
-                    merged_field_number,
-                },
-            )?;
-            values.push(term.clone());
-        }
+                })?;
+        values.push(term.clone());
     }
     Ok(Some((merged_field_number, values)))
 }
@@ -1651,6 +1872,7 @@ fn merge_sorted_numeric_doc_values(
     sources: &[MergeSource],
     per_source_maps: &[HashMap<i32, i32>],
     per_source_live_ids: &[Vec<i32>],
+    doc_order: &[(usize, i32)],
 ) -> Result<Option<(i32, Vec<Vec<i64>>)>> {
     let mut candidates: Vec<i32> = Vec::new();
     for ((source, map), live_ids) in sources.iter().zip(per_source_maps).zip(per_source_live_ids) {
@@ -1674,8 +1896,14 @@ fn merge_sorted_numeric_doc_values(
         return Ok(None);
     };
 
-    let mut values: Vec<Vec<i64>> = Vec::new();
-    for ((source, map), live_ids) in sources.iter().zip(per_source_maps).zip(per_source_live_ids) {
+    let mut per_source_entry: Vec<Option<&SourceSortedNumericDocValues>> =
+        vec![None; sources.len()];
+    for (idx, ((source, map), live_ids)) in sources
+        .iter()
+        .zip(per_source_maps)
+        .zip(per_source_live_ids)
+        .enumerate()
+    {
         if live_ids.is_empty() {
             continue;
         }
@@ -1697,15 +1925,22 @@ fn merge_sorted_numeric_doc_values(
                 merged_field_number,
             });
         };
-        for &doc_id in live_ids {
-            let doc_values = doc_values::sorted_numeric_values(entry.data, &entry.entry, doc_id)?;
-            if doc_values.is_empty() {
-                return Err(Error::SortedNumericDocValuesFieldMissingInSource {
-                    merged_field_number,
-                });
-            }
-            values.push(doc_values);
+        per_source_entry[idx] = Some(entry);
+    }
+
+    let mut values: Vec<Vec<i64>> = Vec::with_capacity(doc_order.len());
+    for &(src_idx, doc_id) in doc_order {
+        let entry =
+            per_source_entry[src_idx].ok_or(Error::SortedNumericDocValuesFieldMissingInSource {
+                merged_field_number,
+            })?;
+        let doc_values = doc_values::sorted_numeric_values(entry.data, &entry.entry, doc_id)?;
+        if doc_values.is_empty() {
+            return Err(Error::SortedNumericDocValuesFieldMissingInSource {
+                merged_field_number,
+            });
         }
+        values.push(doc_values);
     }
     Ok(Some((merged_field_number, values)))
 }
@@ -1772,6 +2007,7 @@ fn merge_sorted_set_doc_values(
     sources: &[MergeSource],
     per_source_maps: &[HashMap<i32, i32>],
     per_source_live_ids: &[Vec<i32>],
+    doc_order: &[(usize, i32)],
 ) -> Result<SortedSetMergeResult> {
     let mut candidates: Vec<i32> = Vec::new();
     for ((source, map), live_ids) in sources.iter().zip(per_source_maps).zip(per_source_live_ids) {
@@ -1795,9 +2031,15 @@ fn merge_sorted_set_doc_values(
         return Ok(None);
     };
 
-    let mut values: Vec<Vec<Vec<u8>>> = Vec::new();
+    // This source's own dictionary, in ordinal order -- resolves this
+    // source's ordinals to term bytes without needing any other source's
+    // dictionary. Resolved once per source up front, same reason as
+    // `merge_sorted_doc_values`.
+    type SortedSetDvResolved<'a> = Option<(&'a SourceSortedSetDocValues<'a>, Vec<Vec<u8>>)>;
+    let mut per_source_resolved: Vec<SortedSetDvResolved> = Vec::with_capacity(sources.len());
     for ((source, map), live_ids) in sources.iter().zip(per_source_maps).zip(per_source_live_ids) {
         if live_ids.is_empty() {
+            per_source_resolved.push(None);
             continue;
         }
         let original_number = map
@@ -1818,28 +2060,33 @@ fn merge_sorted_set_doc_values(
                 merged_field_number,
             });
         };
-        // This source's own dictionary, in ordinal order -- resolves this
-        // source's ordinals to term bytes without needing any other
-        // source's dictionary.
         let source_dict = sorted_set_source_dict(ssf.data, &ssf.entry)?;
-        for &doc_id in live_ids {
-            let ords = sorted_set_doc_ordinals(ssf.data, &ssf.entry, doc_id)?;
-            if ords.is_empty() {
-                return Err(Error::SortedSetDocValuesFieldMissingInSource {
-                    merged_field_number,
-                });
-            }
-            let mut doc_values: Vec<Vec<u8>> = Vec::with_capacity(ords.len());
-            for ord in ords {
-                let term = source_dict.get(ord as usize).ok_or(
-                    Error::SortedSetDocValuesFieldMissingInSource {
-                        merged_field_number,
-                    },
-                )?;
-                doc_values.push(term.clone());
-            }
-            values.push(doc_values);
+        per_source_resolved.push(Some((ssf, source_dict)));
+    }
+
+    let mut values: Vec<Vec<Vec<u8>>> = Vec::with_capacity(doc_order.len());
+    for &(src_idx, doc_id) in doc_order {
+        let (ssf, source_dict) = per_source_resolved[src_idx].as_ref().ok_or(
+            Error::SortedSetDocValuesFieldMissingInSource {
+                merged_field_number,
+            },
+        )?;
+        let ords = sorted_set_doc_ordinals(ssf.data, &ssf.entry, doc_id)?;
+        if ords.is_empty() {
+            return Err(Error::SortedSetDocValuesFieldMissingInSource {
+                merged_field_number,
+            });
         }
+        let mut doc_values: Vec<Vec<u8>> = Vec::with_capacity(ords.len());
+        for ord in ords {
+            let term = source_dict.get(ord as usize).ok_or(
+                Error::SortedSetDocValuesFieldMissingInSource {
+                    merged_field_number,
+                },
+            )?;
+            doc_values.push(term.clone());
+        }
+        values.push(doc_values);
     }
     Ok(Some((merged_field_number, values)))
 }
@@ -1849,6 +2096,7 @@ fn merge_norms(
     sources: &[MergeSource],
     per_source_maps: &[HashMap<i32, i32>],
     per_source_live_ids: &[Vec<i32>],
+    doc_order: &[(usize, i32)],
 ) -> Result<Option<(i32, Vec<i64>)>> {
     let mut candidates: Vec<i32> = Vec::new();
     for ((source, map), live_ids) in sources.iter().zip(per_source_maps).zip(per_source_live_ids) {
@@ -1872,8 +2120,13 @@ fn merge_norms(
         return Ok(None);
     };
 
-    let mut values: Vec<i64> = Vec::new();
-    for ((source, map), live_ids) in sources.iter().zip(per_source_maps).zip(per_source_live_ids) {
+    let mut per_source_entry: Vec<Option<&SourceNorms>> = vec![None; sources.len()];
+    for (idx, ((source, map), live_ids)) in sources
+        .iter()
+        .zip(per_source_maps)
+        .zip(per_source_live_ids)
+        .enumerate()
+    {
         if live_ids.is_empty() {
             continue;
         }
@@ -1895,14 +2148,20 @@ fn merge_norms(
                 merged_field_number,
             });
         };
-        for &doc_id in live_ids {
-            let value = norms::norm_value(entry.data, &entry.entry, doc_id)?.ok_or(
-                Error::NormsFieldMissingInSource {
-                    merged_field_number,
-                },
-            )?;
-            values.push(value);
-        }
+        per_source_entry[idx] = Some(entry);
+    }
+
+    let mut values: Vec<i64> = Vec::with_capacity(doc_order.len());
+    for &(src_idx, doc_id) in doc_order {
+        let entry = per_source_entry[src_idx].ok_or(Error::NormsFieldMissingInSource {
+            merged_field_number,
+        })?;
+        let value = norms::norm_value(entry.data, &entry.entry, doc_id)?.ok_or(
+            Error::NormsFieldMissingInSource {
+                merged_field_number,
+            },
+        )?;
+        values.push(value);
     }
     Ok(Some((merged_field_number, values)))
 }
@@ -1917,28 +2176,29 @@ fn merge_norms(
 fn merge_term_vectors(
     sources: &[MergeSource],
     per_source_maps: &[HashMap<i32, i32>],
-    per_source_live_ids: &[Vec<i32>],
+    _per_source_live_ids: &[Vec<i32>],
+    doc_order: &[(usize, i32)],
 ) -> Result<Option<Vec<TermVectorsDocument>>> {
     if sources.iter().all(|s| s.term_vectors.is_none()) {
         return Ok(None);
     }
 
-    let mut merged_docs: Vec<TermVectorsDocument> = Vec::new();
-    for ((source, map), live_ids) in sources.iter().zip(per_source_maps).zip(per_source_live_ids) {
-        for &doc_id in live_ids {
-            let mut doc = match source.term_vectors {
-                Some(reader) => reader.document(doc_id)?.unwrap_or_default(),
-                None => TermVectorsDocument::default(),
-            };
-            for field in &mut doc.fields {
-                field.field_number =
-                    *map.get(&field.field_number)
-                        .ok_or(Error::UnknownSourceFieldNumber {
-                            field_number: field.field_number,
-                        })?;
-            }
-            merged_docs.push(doc);
+    let mut merged_docs: Vec<TermVectorsDocument> = Vec::with_capacity(doc_order.len());
+    for &(src_idx, doc_id) in doc_order {
+        let source = &sources[src_idx];
+        let map = &per_source_maps[src_idx];
+        let mut doc = match source.term_vectors {
+            Some(reader) => reader.document(doc_id)?.unwrap_or_default(),
+            None => TermVectorsDocument::default(),
+        };
+        for field in &mut doc.fields {
+            field.field_number =
+                *map.get(&field.field_number)
+                    .ok_or(Error::UnknownSourceFieldNumber {
+                        field_number: field.field_number,
+                    })?;
         }
+        merged_docs.push(doc);
     }
     Ok(Some(merged_docs))
 }
@@ -5545,6 +5805,478 @@ mod tests {
             assert_eq!(&got_key, key, "doc {i} key mismatch");
             assert_eq!(&got_payload, payload, "doc {i} payload mismatch");
         }
+    }
+
+    #[test]
+    fn doc_values_norms_and_term_vectors_follow_the_sort_key_not_source_concatenation() {
+        // Task #205 (the doc-values/norms/term-vectors long-tail item from
+        // PLAN.md's Phase 8 backlog): confirms `merge_sorted_stored_only_
+        // segments` physically reorders BINARY doc-values, norms, and term
+        // vectors by sort key -- not just stored fields -- exactly like
+        // `three_sources_k_way_merge_by_sort_key` proves for stored fields
+        // above. Interleaved sort keys mean naive source concatenation
+        // would produce a visibly wrong order at the first cross-source
+        // boundary; a real k-way merge must interleave.
+        //
+        // Source 0 (already sorted by "num"): docs with keys 10, 30.
+        // Source 1 (already sorted by "num"): docs with keys 20, 40.
+        // Correct global order: 10, 20, 30, 40 (source0/1/0/1 interleaved).
+        let seg0_id = [1u8; ID_LENGTH];
+        let seg1_id = [2u8; ID_LENGTH];
+
+        // BINARY doc-values: value encodes the key ("v10", "v30" / "v20",
+        // "v40") so the merged order can be read straight back off it.
+        let bin0 = flush_binary_dv(1, &[b"v10".to_vec(), b"v30".to_vec()], seg0_id);
+        let bin1 = flush_binary_dv(1, &[b"v20".to_vec(), b"v40".to_vec()], seg1_id);
+
+        // Norms: same encoding scheme, divided by 10 (1, 3 / 2, 4).
+        let norms0 = flush_norms(2, &[1, 3], seg0_id);
+        let norms1 = flush_norms(2, &[2, 4], seg1_id);
+
+        // Term vectors: one field, one term "t", whose position encodes the
+        // key divided by 10 (same scheme as norms) -- `tv_doc`'s second
+        // tuple element is a position, not a freq.
+        let tv0 = flush_term_vectors(&[tv_doc(3, &[("t", 1)]), tv_doc(3, &[("t", 3)])], seg0_id);
+        let tv1 = flush_term_vectors(&[tv_doc(3, &[("t", 2)]), tv_doc(3, &[("t", 4)])], seg1_id);
+
+        let fields = vec![
+            field("id", 0),
+            binary_field("bin", 1),
+            norms_field("nrm", 2),
+            tv_field("tv", 3),
+        ];
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let stored0 = flush(
+            &dir,
+            &tmp,
+            "_0",
+            seg0_id,
+            &fields,
+            &[doc_with(0, "10"), doc_with(0, "30")],
+        );
+        let stored1 = flush(
+            &dir,
+            &tmp,
+            "_1",
+            seg1_id,
+            &fields,
+            &[doc_with(0, "20"), doc_with(0, "40")],
+        );
+        let reader0 = open_reader(&stored0);
+        let reader1 = open_reader(&stored1);
+        let tv0_reader = tv0.reader();
+        let tv1_reader = tv1.reader();
+
+        let bin0_source = [bin0.source()];
+        let bin1_source = [bin1.source()];
+        let norms0_source = [norms0.source()];
+        let norms1_source = [norms1.source()];
+
+        let source0 = MergeSource {
+            field_infos: &stored0.fields,
+            reader: &reader0,
+            live_docs: None,
+            numeric_doc_values: &[],
+            binary_doc_values: &bin0_source,
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &[],
+            norms: &norms0_source,
+            term_vectors: Some(&tv0_reader),
+            postings: &[],
+            points: &[],
+        };
+        let source1 = MergeSource {
+            field_infos: &stored1.fields,
+            reader: &reader1,
+            live_docs: None,
+            numeric_doc_values: &[],
+            binary_doc_values: &bin1_source,
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &[],
+            norms: &norms1_source,
+            term_vectors: Some(&tv1_reader),
+            postings: &[],
+            points: &[],
+        };
+
+        let keys0: Vec<Option<i64>> = vec![Some(10), Some(30)];
+        let keys1: Vec<Option<i64>> = vec![Some(20), Some(40)];
+        let per_source_keys: Vec<&[Option<i64>]> = vec![&keys0, &keys1];
+        let sort_fields = vec![MergeSortKeySpec {
+            field: "num",
+            reverse: false,
+            missing: SortMissingValue::Last,
+            per_source_keys: &per_source_keys,
+        }];
+
+        let merged_id = [9u8; ID_LENGTH];
+        merge_sorted_stored_only_segments(
+            &dir,
+            &[source0, source1],
+            &sort_fields,
+            "_merged_dv_norms_tv_sorted",
+            merged_id,
+            "Lucene104",
+            version(),
+        )
+        .unwrap();
+
+        // Stored "id" field confirms the expected doc order up front.
+        let ids = read_merged_ids(&tmp, "_merged_dv_norms_tv_sorted", merged_id);
+        assert_eq!(ids, vec!["10", "20", "30", "40"]);
+
+        // BINARY doc-values: must read back "v10","v20","v30","v40" -- the
+        // sorted order -- not "v10","v30","v20","v40" (source concatenation).
+        let dvd = std::fs::read(std::path::Path::new(&tmp).join("_merged_dv_norms_tv_sorted.dvd"))
+            .unwrap();
+        let dvm = std::fs::read(std::path::Path::new(&tmp).join("_merged_dv_norms_tv_sorted.dvm"))
+            .unwrap();
+        let merged_field_infos = field_infos::FieldInfos {
+            fields: vec![binary_field("bin", 1)],
+        };
+        let (_v, meta) = doc_values::parse_meta(&dvm, &merged_id, "", &merged_field_infos).unwrap();
+        let entry = meta.binary_entry(1).unwrap();
+        let bin_values: Vec<Vec<u8>> = (0..4)
+            .map(|d| {
+                doc_values::binary_value(&dvd, entry, d)
+                    .unwrap()
+                    .unwrap()
+                    .to_vec()
+            })
+            .collect();
+        assert_eq!(
+            bin_values,
+            vec![
+                b"v10".to_vec(),
+                b"v20".to_vec(),
+                b"v30".to_vec(),
+                b"v40".to_vec(),
+            ]
+        );
+
+        // Norms: must read back 1,2,3,4 (sorted), not 1,3,2,4 (concatenated).
+        let nvd = std::fs::read(std::path::Path::new(&tmp).join("_merged_dv_norms_tv_sorted.nvd"))
+            .unwrap();
+        let nvm = std::fs::read(std::path::Path::new(&tmp).join("_merged_dv_norms_tv_sorted.nvm"))
+            .unwrap();
+        let (_v, parsed) = norms::parse_meta(&nvm, &merged_id, "").unwrap();
+        let norm_entry = parsed.entry(2).unwrap();
+        let norm_values: Vec<i64> = (0..4)
+            .map(|d| norms::norm_value(&nvd, norm_entry, d).unwrap().unwrap())
+            .collect();
+        assert_eq!(norm_values, vec![1, 2, 3, 4]);
+
+        // Term vectors: doc 0's term "t" must have position 1 (key 10),
+        // doc 1's position 2 (key 20), doc 2's position 3 (key 30), doc 3's
+        // position 4 (key 40) -- sorted order, not concatenation order
+        // (which would put position 3 at doc 1 and position 2 at doc 2).
+        let tvd = std::fs::read(std::path::Path::new(&tmp).join("_merged_dv_norms_tv_sorted.tvd"))
+            .unwrap();
+        let tvx = std::fs::read(std::path::Path::new(&tmp).join("_merged_dv_norms_tv_sorted.tvx"))
+            .unwrap();
+        let tvm = std::fs::read(std::path::Path::new(&tmp).join("_merged_dv_norms_tv_sorted.tvm"))
+            .unwrap();
+        let tv_reader = term_vectors::open(&tvd, &tvx, &tvm, &merged_id, "").unwrap();
+        let tv_positions: Vec<i32> = (0..4)
+            .map(|d| {
+                tv_reader.document(d).unwrap().unwrap().fields[0].terms[0]
+                    .positions
+                    .as_ref()
+                    .unwrap()[0]
+            })
+            .collect();
+        assert_eq!(tv_positions, vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn numeric_sorted_sorted_numeric_and_sorted_set_doc_values_follow_the_sort_key() {
+        // Sibling of `doc_values_norms_and_term_vectors_follow_the_sort_key_
+        // not_source_concatenation` above, covering the four doc-values
+        // types that test doesn't exercise (NUMERIC/SORTED/SORTED_NUMERIC/
+        // SORTED_SET) -- reusing the exact same interleaved-sort-key setup
+        // (source0: keys 10,30; source1: keys 20,40; correct order
+        // 10,20,30,40) so a reorder bug in any one of these four merge
+        // helpers specifically would fail here, not just leave them "not
+        // dropped" (which the pre-existing concatenation-merge tests for
+        // these types already prove, but can't catch a reorder bug since
+        // they merge via `merge_stored_only_segments`, not the sort-aware
+        // k-way path).
+        let seg0_id = [1u8; ID_LENGTH];
+        let seg1_id = [2u8; ID_LENGTH];
+
+        let num0 = flush_numeric_dv(1, &[10, 30], seg0_id);
+        let num1 = flush_numeric_dv(1, &[20, 40], seg1_id);
+        let sorted0 = flush_sorted_dv(2, &[b"v10".to_vec(), b"v30".to_vec()], seg0_id);
+        let sorted1 = flush_sorted_dv(2, &[b"v20".to_vec(), b"v40".to_vec()], seg1_id);
+        let sn0 = flush_sorted_numeric_dv(3, &[vec![10], vec![30]], seg0_id);
+        let sn1 = flush_sorted_numeric_dv(3, &[vec![20], vec![40]], seg1_id);
+        let ss0 = flush_sorted_set_dv(4, &[vec![b"v10".to_vec()], vec![b"v30".to_vec()]], seg0_id);
+        let ss1 = flush_sorted_set_dv(4, &[vec![b"v20".to_vec()], vec![b"v40".to_vec()]], seg1_id);
+
+        let fields = vec![
+            field("id", 0),
+            numeric_field("num", 1),
+            sorted_field("srt", 2),
+            sorted_numeric_field("sn", 3),
+            sorted_set_field("ss", 4),
+        ];
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let stored0 = flush(
+            &dir,
+            &tmp,
+            "_0",
+            seg0_id,
+            &fields,
+            &[doc_with(0, "10"), doc_with(0, "30")],
+        );
+        let stored1 = flush(
+            &dir,
+            &tmp,
+            "_1",
+            seg1_id,
+            &fields,
+            &[doc_with(0, "20"), doc_with(0, "40")],
+        );
+        let reader0 = open_reader(&stored0);
+        let reader1 = open_reader(&stored1);
+
+        let num0_source = [num0.source()];
+        let num1_source = [num1.source()];
+        let sorted0_source = [sorted0.source()];
+        let sorted1_source = [sorted1.source()];
+        let sn0_source = [sn0.source()];
+        let sn1_source = [sn1.source()];
+        let ss0_source = [ss0.source()];
+        let ss1_source = [ss1.source()];
+
+        let keys0: Vec<Option<i64>> = vec![Some(10), Some(30)];
+        let keys1: Vec<Option<i64>> = vec![Some(20), Some(40)];
+        let per_source_keys: Vec<&[Option<i64>]> = vec![&keys0, &keys1];
+        let sort_fields = vec![MergeSortKeySpec {
+            field: "id",
+            reverse: false,
+            missing: SortMissingValue::Last,
+            per_source_keys: &per_source_keys,
+        }];
+
+        // This port's doc-values merge is single-doc-values-type-per-merge
+        // (pre-existing limitation, unrelated to sorting -- see the
+        // `MultipleDocValuesTypesInOneMerge` error), so each type is merged
+        // in its own separate call rather than all four in one `MergeSource`
+        // pair; each still shares the same interleaved-sort-key setup.
+        let merged_id = [9u8; ID_LENGTH];
+
+        let source0_num = MergeSource {
+            field_infos: &stored0.fields,
+            reader: &reader0,
+            live_docs: None,
+            numeric_doc_values: &num0_source,
+            binary_doc_values: &[],
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &[],
+            norms: &[],
+            term_vectors: None,
+            postings: &[],
+            points: &[],
+        };
+        let source1_num = MergeSource {
+            field_infos: &stored1.fields,
+            reader: &reader1,
+            live_docs: None,
+            numeric_doc_values: &num1_source,
+            binary_doc_values: &[],
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &[],
+            norms: &[],
+            term_vectors: None,
+            postings: &[],
+            points: &[],
+        };
+        merge_sorted_stored_only_segments(
+            &dir,
+            &[source0_num, source1_num],
+            &sort_fields,
+            "_merged_num_sorted",
+            merged_id,
+            "Lucene104",
+            version(),
+        )
+        .unwrap();
+        let ids = read_merged_ids(&tmp, "_merged_num_sorted", merged_id);
+        assert_eq!(ids, vec!["10", "20", "30", "40"]);
+        let dvd = std::fs::read(std::path::Path::new(&tmp).join("_merged_num_sorted.dvd")).unwrap();
+        let dvm = std::fs::read(std::path::Path::new(&tmp).join("_merged_num_sorted.dvm")).unwrap();
+        let merged_numeric_field_infos = field_infos::FieldInfos {
+            fields: vec![numeric_field("x", 1)],
+        };
+        let (_v, meta) =
+            doc_values::parse_meta(&dvm, &merged_id, "", &merged_numeric_field_infos).unwrap();
+        let num_entry = meta.numeric_entry(1).unwrap();
+        let numeric_values: Vec<i64> = (0..4)
+            .map(|d| {
+                doc_values::numeric_value(&dvd, num_entry, d)
+                    .unwrap()
+                    .unwrap()
+            })
+            .collect();
+        // NUMERIC: 10,20,30,40 sorted, not 10,30,20,40 concatenated.
+        assert_eq!(numeric_values, vec![10, 20, 30, 40]);
+
+        let source0_sorted = MergeSource {
+            field_infos: &stored0.fields,
+            reader: &reader0,
+            live_docs: None,
+            numeric_doc_values: &[],
+            binary_doc_values: &[],
+            sorted_doc_values: &sorted0_source,
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &[],
+            norms: &[],
+            term_vectors: None,
+            postings: &[],
+            points: &[],
+        };
+        let source1_sorted = MergeSource {
+            field_infos: &stored1.fields,
+            reader: &reader1,
+            live_docs: None,
+            numeric_doc_values: &[],
+            binary_doc_values: &[],
+            sorted_doc_values: &sorted1_source,
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &[],
+            norms: &[],
+            term_vectors: None,
+            postings: &[],
+            points: &[],
+        };
+        merge_sorted_stored_only_segments(
+            &dir,
+            &[source0_sorted, source1_sorted],
+            &sort_fields,
+            "_merged_sorted_sorted",
+            merged_id,
+            "Lucene104",
+            version(),
+        )
+        .unwrap();
+        let dvd =
+            std::fs::read(std::path::Path::new(&tmp).join("_merged_sorted_sorted.dvd")).unwrap();
+        let dvm =
+            std::fs::read(std::path::Path::new(&tmp).join("_merged_sorted_sorted.dvm")).unwrap();
+        // SORTED: "v10","v20","v30","v40" sorted, not concatenated.
+        let sorted_terms = read_back_sorted_terms(&dvm, &dvd, 2, 4);
+        assert_eq!(
+            sorted_terms,
+            vec![
+                b"v10".to_vec(),
+                b"v20".to_vec(),
+                b"v30".to_vec(),
+                b"v40".to_vec(),
+            ]
+        );
+
+        let source0_sn = MergeSource {
+            field_infos: &stored0.fields,
+            reader: &reader0,
+            live_docs: None,
+            numeric_doc_values: &[],
+            binary_doc_values: &[],
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &sn0_source,
+            sorted_set_doc_values: &[],
+            norms: &[],
+            term_vectors: None,
+            postings: &[],
+            points: &[],
+        };
+        let source1_sn = MergeSource {
+            field_infos: &stored1.fields,
+            reader: &reader1,
+            live_docs: None,
+            numeric_doc_values: &[],
+            binary_doc_values: &[],
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &sn1_source,
+            sorted_set_doc_values: &[],
+            norms: &[],
+            term_vectors: None,
+            postings: &[],
+            points: &[],
+        };
+        merge_sorted_stored_only_segments(
+            &dir,
+            &[source0_sn, source1_sn],
+            &sort_fields,
+            "_merged_sn_sorted",
+            merged_id,
+            "Lucene104",
+            version(),
+        )
+        .unwrap();
+        let dvd = std::fs::read(std::path::Path::new(&tmp).join("_merged_sn_sorted.dvd")).unwrap();
+        let dvm = std::fs::read(std::path::Path::new(&tmp).join("_merged_sn_sorted.dvm")).unwrap();
+        // SORTED_NUMERIC: [10],[20],[30],[40] sorted, not concatenated.
+        let sn_values = read_back_sorted_numeric_values(&dvm, &dvd, 3, 4);
+        assert_eq!(sn_values, vec![vec![10], vec![20], vec![30], vec![40]]);
+
+        let source0_ss = MergeSource {
+            field_infos: &stored0.fields,
+            reader: &reader0,
+            live_docs: None,
+            numeric_doc_values: &[],
+            binary_doc_values: &[],
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &ss0_source,
+            norms: &[],
+            term_vectors: None,
+            postings: &[],
+            points: &[],
+        };
+        let source1_ss = MergeSource {
+            field_infos: &stored1.fields,
+            reader: &reader1,
+            live_docs: None,
+            numeric_doc_values: &[],
+            binary_doc_values: &[],
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &ss1_source,
+            norms: &[],
+            term_vectors: None,
+            postings: &[],
+            points: &[],
+        };
+        merge_sorted_stored_only_segments(
+            &dir,
+            &[source0_ss, source1_ss],
+            &sort_fields,
+            "_merged_ss_sorted",
+            merged_id,
+            "Lucene104",
+            version(),
+        )
+        .unwrap();
+        let dvd = std::fs::read(std::path::Path::new(&tmp).join("_merged_ss_sorted.dvd")).unwrap();
+        let dvm = std::fs::read(std::path::Path::new(&tmp).join("_merged_ss_sorted.dvm")).unwrap();
+        // SORTED_SET: ["v10"],["v20"],["v30"],["v40"] sorted, not concatenated.
+        let ss_values = read_back_sorted_set_values(&dvm, &dvd, 4, 4);
+        assert_eq!(
+            ss_values,
+            vec![
+                vec![b"v10".to_vec()],
+                vec![b"v20".to_vec()],
+                vec![b"v30".to_vec()],
+                vec![b"v40".to_vec()],
+            ]
+        );
     }
 
     #[test]

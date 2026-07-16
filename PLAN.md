@@ -3880,13 +3880,17 @@ supported feature matrix; multi-day soak test with random restarts, no index cor
 KNN/HNSW (if not done in P2), highlighting (needs term vectors — add `.tvd/.tvx` codec
 support), suggesters (FST-based, reuse P5 FST builder), join/grouping/facets (OpenSearch
 mostly reimplements these as aggs — likely never needed), backward-codecs. Merge-time
-re-sorting of already-sorted segments (stored fields only, via k-way merge) and
-multi-field NUMERIC index sort at flush time are both done, see `docs/parity.md`;
-reordering doc values/norms/term vectors during a merge remains a long-tail item.
-`merge.rs` now also merges postings (term dictionaries + `.doc` freq data) for
-`IndexOptions::Docs`/`DocsAndFreqs` fields, given per-source term dictionaries
-and `.doc` readers; positions/offsets/payloads and points merging are still not
-implemented (see `docs/parity.md`'s `SegmentMerger` row).
+re-sorting of already-sorted segments and multi-field NUMERIC index sort at flush time
+are both done, see `docs/parity.md`; task #205 closed the remaining piece of this item —
+`merge_sorted_stored_only_segments` now also reorders doc values (NUMERIC/BINARY/SORTED/
+SORTED_NUMERIC/SORTED_SET), norms, and term vectors by sort key during a merge (not just
+stored fields), reusing `merge_stored_only_segments`'s existing per-format merge helpers
+via a shared `doc_order` parameter rather than new sort machinery. Postings and points are
+still not reordered by that function (only reachable through `merge_stored_only_segments`'s
+concatenation-order merge), matching `merge.rs`'s existing scope: it merges postings (term
+dictionaries + `.doc` freq data, including positions/offsets/payloads) for
+`IndexOptions::Docs`/`DocsAndFreqs` fields and points, given per-source term dictionaries
+and `.doc`/BKD readers (see `docs/parity.md`'s `SegmentMerger` row).
 
 ---
 
