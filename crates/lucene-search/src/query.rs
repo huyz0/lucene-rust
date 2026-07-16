@@ -871,25 +871,75 @@ impl BooleanQuery {
     ///    single-clause only after its own child collapsed still collapses
     ///    correctly.
     ///
-    /// **Deliberately NOT implemented: duplicate-clause deduplication.** Task
-    /// #60 (see `PLAN.md`) already confirmed, against this port's real
-    /// executor code (not assumed), that a literal duplicate `should` clause
-    /// **double-counts** toward `minimum_should_match` and **double-scores**
-    /// in `search_boolean_query_scored` -- real Lucene's own actual
-    /// (non-deduping) `BooleanWeight` behavior, not a bug. The same is true
-    /// for a duplicate `must` clause: [`crate::clause_scores`] sums every
-    /// `must`/`should` clause's own per-doc score, so two identical `must`
-    /// clauses contribute that clause's score *twice*. Deduplicating either
-    /// would therefore silently change scores (and, for `should` clauses
-    /// under `minimum_should_match`, potentially change which docs match) --
-    /// the opposite of this function's "matching/scoring never changes"
-    /// contract. This rule is skipped rather than implemented incorrectly;
-    /// revisit only if a future task adds a scoring model where duplicate
-    /// clauses are provably inert.
+    /// 4. **`must_not` duplicate removal.** Exact duplicate `must_not`
+    ///    clauses collapse to one. This mirrors real `BooleanQuery`'s own
+    ///    "remove duplicate FILTER and MUST_NOT clauses" rewrite rule (see
+    ///    `BooleanQuery.java`'s `rewrite()`, the block starting `// remove
+    ///    duplicate FILTER and MUST_NOT clauses`, which stores `MUST_NOT`
+    ///    in a `HashSet` specifically so duplicates can never survive) and
+    ///    is provably safe here: [`crate::matched_boolean_docs`] only ever
+    ///    consumes `must_not` as a `Disjunction` used purely to *exclude*
+    ///    docs matched by `must`/`should` (`Excluding::new(base, excluded)`),
+    ///    and [`crate::clause_scores`] never iterates `must_not` at all --
+    ///    only `must.iter().chain(should.iter())`. A `must_not` clause
+    ///    therefore never contributes to score and never changes the
+    ///    "excluded if it matches at least one" test when repeated, so
+    ///    removing duplicates changes neither matched docs nor scores.
+    ///
+    /// **Deliberately NOT implemented: `must`/`should` duplicate
+    /// deduplication.** This is *not* symmetric with rule 4 above, and the
+    /// asymmetry is the point, not an oversight:
+    ///
+    /// - Real `BooleanQuery.rewrite()` *does* fold duplicate `MUST`/`SHOULD`
+    ///   clauses (see `BooleanQuery.java`'s `deduplicateClauses`), but it does
+    ///   so by replacing the repeated clause with **one** copy carrying a
+    ///   recombined boost computed from `IndexSearcher.getSimilarity()
+    ///   .computeQueryTermWeight(count)` for the common unweighted-duplicate
+    ///   case ("a a a"), falling back to a linear boost sum only when the
+    ///   query already carries explicit per-clause boosts. That
+    ///   `computeQueryTermWeight` call is `Similarity`-specific (BM25's
+    ///   implementation does *not* reduce to "sum each clause's score
+    ///   `count` times" -- it's a deliberately different combined weight
+    ///   meant to approximate how repeating a term would score if the
+    ///   analyzer had produced one token with `count`-times higher term
+    ///   frequency instead of `count` separate clauses).
+    /// - This port's [`Self::rewrite`] is a pure structural transform with
+    ///   **no `IndexSearcher`/`Similarity` in scope** -- it runs before any
+    ///   index is opened. There is no way to call an equivalent of
+    ///   `computeQueryTermWeight` here, so there is no way to replicate what
+    ///   real Lucene *actually* does for `MUST`/`SHOULD` dedup.
+    /// - A naive alternative (drop the duplicate outright, or sum linear
+    ///   boosts unconditionally) is *not* an approximation of real Lucene's
+    ///   behavior, it's a *different* rewrite that happens to also be called
+    ///   "dedup" -- it would silently change scores (confirmed against this
+    ///   port's own executor by task #60: [`crate::clause_scores`] sums
+    ///   every `must`/`should` clause's own per-doc score, so duplicates
+    ///   currently double-score exactly as real Lucene's *pre-rewrite*
+    ///   `BooleanWeight` would too) in a way that does not match what real
+    ///   `BooleanQuery.rewrite()` would have produced, which is a strictly
+    ///   worse outcome than leaving duplicates alone. Implementing it would
+    ///   therefore be a correctness regression dressed up as a feature, not
+    ///   a shortcut. This rule is skipped rather than implemented
+    ///   incorrectly; revisit only if a future task threads a `Similarity`
+    ///   (or equivalent term-weight function) into the rewrite path, making
+    ///   a faithful reproduction of `computeQueryTermWeight`-based
+    ///   combination possible.
     pub fn rewrite(self) -> Clause {
         let must: Vec<Clause> = self.must.into_iter().map(Clause::rewrite).collect();
         let should: Vec<Clause> = self.should.into_iter().map(Clause::rewrite).collect();
-        let must_not: Vec<Clause> = self.must_not.into_iter().map(Clause::rewrite).collect();
+        let mut must_not: Vec<Clause> = self.must_not.into_iter().map(Clause::rewrite).collect();
+        // Rule 4: drop exact duplicate `must_not` clauses (order-preserving,
+        // keeps the first occurrence) -- see the doc comment above for why
+        // this is safe unlike `must`/`should` dedup.
+        let mut seen: Vec<Clause> = Vec::with_capacity(must_not.len());
+        must_not.retain(|clause| {
+            if seen.contains(clause) {
+                false
+            } else {
+                seen.push(clause.clone());
+                true
+            }
+        });
         let minimum_should_match = self.minimum_should_match;
 
         if must_not.is_empty() && minimum_should_match == 0 && must.len() == 1 && should.is_empty()
@@ -1497,6 +1547,113 @@ mod tests {
                 must: vec![],
                 should: vec![],
                 must_not: vec![Clause::Term(TermQuery::new("body", "dog"))],
+                minimum_should_match: 0,
+            }))
+        );
+    }
+
+    #[test]
+    fn rewrite_removes_exact_duplicate_must_not_clauses() {
+        // Rule 4: duplicate `must_not` clauses collapse to one, mirroring real
+        // `BooleanQuery.rewrite()`'s "remove duplicate FILTER and MUST_NOT
+        // clauses" step (`MUST_NOT` is stored in a `HashSet` there). Provably
+        // safe: `must_not` only ever excludes docs (never scores), so
+        // repeating a clause changes neither which docs match nor scores.
+        let q = BooleanQuery::new()
+            .with_must([TermQuery::new("body", "cat")])
+            .with_must_not([
+                TermQuery::new("body", "dog"),
+                TermQuery::new("body", "dog"),
+                TermQuery::new("body", "dog"),
+            ]);
+        let rewritten = q.clone().rewrite();
+        assert_eq!(
+            rewritten,
+            Clause::Boolean(Box::new(BooleanQuery {
+                must: vec![Clause::Term(TermQuery::new("body", "cat"))],
+                should: vec![],
+                must_not: vec![Clause::Term(TermQuery::new("body", "dog"))],
+                minimum_should_match: 0,
+            }))
+        );
+    }
+
+    #[test]
+    fn rewrite_keeps_distinct_must_not_clauses_and_preserves_order() {
+        // Non-duplicate `must_not` clauses are untouched, and dedup keeps the
+        // *first* occurrence's position rather than reordering.
+        let q = BooleanQuery::new()
+            .with_must([TermQuery::new("body", "cat")])
+            .with_must_not([
+                TermQuery::new("body", "dog"),
+                TermQuery::new("body", "fox"),
+                TermQuery::new("body", "dog"),
+            ]);
+        let rewritten = q.clone().rewrite();
+        assert_eq!(
+            rewritten,
+            Clause::Boolean(Box::new(BooleanQuery {
+                must: vec![Clause::Term(TermQuery::new("body", "cat"))],
+                should: vec![],
+                must_not: vec![
+                    Clause::Term(TermQuery::new("body", "dog")),
+                    Clause::Term(TermQuery::new("body", "fox")),
+                ],
+                minimum_should_match: 0,
+            }))
+        );
+    }
+
+    #[test]
+    fn rewrite_does_not_deduplicate_must_not_clauses_inside_a_nested_boolean_clause() {
+        // Rule 4 is applied per-`BooleanQuery` level via the ordinary
+        // recursive rewrite of each clause (rule 3): a nested `must` clause
+        // that is itself a `BooleanQuery` gets its own `must_not` deduped too,
+        // proving this isn't accidentally shallow.
+        let inner = BooleanQuery::new()
+            .with_must([TermQuery::new("body", "cat")])
+            .with_must_not([TermQuery::new("body", "dog"), TermQuery::new("body", "dog")]);
+        let outer = BooleanQuery::new()
+            .with_must([Clause::from(inner)])
+            .with_should([TermQuery::new("body", "bird")]);
+        let rewritten = outer.clone().rewrite();
+        assert_eq!(
+            rewritten,
+            Clause::Boolean(Box::new(BooleanQuery {
+                must: vec![Clause::Boolean(Box::new(BooleanQuery {
+                    must: vec![Clause::Term(TermQuery::new("body", "cat"))],
+                    should: vec![],
+                    must_not: vec![Clause::Term(TermQuery::new("body", "dog"))],
+                    minimum_should_match: 0,
+                }))],
+                should: vec![Clause::Term(TermQuery::new("body", "bird"))],
+                must_not: vec![],
+                minimum_should_match: 0,
+            }))
+        );
+    }
+
+    #[test]
+    fn rewrite_deliberately_does_not_deduplicate_duplicate_must_clauses() {
+        // Documents the deferred decision: unlike `must_not` (rule 4), a
+        // duplicate `must`/`should` clause is left alone by `rewrite()`
+        // because this port has no `Similarity` in scope to reproduce real
+        // Lucene's `computeQueryTermWeight`-based combination faithfully (see
+        // this function's doc comment). This asserts `rewrite()` is a no-op
+        // (beyond recursion) on duplicate `must` clauses, i.e. we are not
+        // silently dropping them.
+        let q = BooleanQuery::new()
+            .with_must([TermQuery::new("body", "cat"), TermQuery::new("body", "cat")]);
+        let rewritten = q.clone().rewrite();
+        assert_eq!(
+            rewritten,
+            Clause::Boolean(Box::new(BooleanQuery {
+                must: vec![
+                    Clause::Term(TermQuery::new("body", "cat")),
+                    Clause::Term(TermQuery::new("body", "cat")),
+                ],
+                should: vec![],
+                must_not: vec![],
                 minimum_should_match: 0,
             }))
         );

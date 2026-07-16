@@ -569,6 +569,72 @@ fn rewrite_produces_identical_scored_results_for_nested_single_clause_boolean() 
     assert_eq!(before.top_docs(), after.top_docs());
 }
 
+/// Proves rule 4 (`must_not` duplicate removal, see `BooleanQuery::rewrite`'s
+/// doc comment) against the real fixture segment: a query with a literal
+/// duplicate `must_not` clause produces identical scored results before and
+/// after `rewrite()` collapses the duplicate to one. This is the
+/// scoring-equivalence half of the rule 4 justification -- the structural
+/// half (that dedup happens at all, and preserves order) is covered by the
+/// `rewrite_removes_exact_duplicate_must_not_clauses` unit test in `query.rs`.
+#[test]
+fn rewrite_produces_identical_scored_results_for_duplicate_must_not_clauses() {
+    let (fields, doc, id, suffix, _m) = open_segment();
+    let doc_in = DocInput::open(&doc, &id, &suffix).expect("open .doc");
+
+    let query = BooleanQuery::new()
+        .with_must([TermQuery::new("body", "cat")])
+        .with_must_not([
+            TermQuery::new("body", "dog"),
+            TermQuery::new("body", "dog"),
+            TermQuery::new("body", "dog"),
+        ]);
+    let rewritten_clause = query.clone().rewrite();
+    // Sanity: the rewrite actually deduped the `must_not` list down to one.
+    assert_eq!(
+        rewritten_clause,
+        Clause::Boolean(Box::new(BooleanQuery {
+            must: vec![Clause::Term(TermQuery::new("body", "cat"))],
+            should: vec![],
+            must_not: vec![Clause::Term(TermQuery::new("body", "dog"))],
+            minimum_should_match: 0,
+        }))
+    );
+    let Clause::Boolean(rewritten_query) = rewritten_clause else {
+        panic!("expected a Clause::Boolean");
+    };
+
+    let mut before = lucene_search::collector::TopDocsCollector::new(100);
+    search_boolean_query_scored(
+        &fields,
+        Some(&doc_in),
+        None,
+        None,
+        None,
+        None,
+        &query,
+        None,
+        &mut before,
+    )
+    .unwrap();
+
+    let mut after = lucene_search::collector::TopDocsCollector::new(100);
+    search_boolean_query_scored(
+        &fields,
+        Some(&doc_in),
+        None,
+        None,
+        None,
+        None,
+        &rewritten_query,
+        None,
+        &mut after,
+    )
+    .unwrap();
+
+    assert!(!before.top_docs().is_empty(), "fixture sanity: some hits");
+    assert_eq!(before.top_docs(), after.top_docs());
+}
+
 /// Three levels of nesting against the real fixture, confirming this port's
 /// recursion isn't hardcoded to exactly one extra level: `innermost` (`must=[cat,
 /// dog]`) sits inside `middle` (`should=[innermost]`), which sits inside `top`
