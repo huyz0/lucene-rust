@@ -120,6 +120,20 @@ pub struct Point {
     pub packed_value: Vec<u8>,
 }
 
+/// One decoded leaf block: every point it contains, plus (when present on
+/// disk) its own per-leaf bounding box over the index dimensions --
+/// `num_index_dims * bytes_per_dim` bytes each of `min_bound`/`max_bound`.
+/// [`read_leaf_block`] only writes/reads this box when `num_index_dims !=
+/// 1` (see that function's doc comment), so `bound` is `None` for
+/// single-index-dimension fields -- there is no independent on-disk value
+/// to cross-check a point against in that case beyond the field-wide
+/// `min_packed_value`/`max_packed_value` in `.kdm`.
+#[derive(Debug, Clone)]
+pub struct Leaf {
+    pub points: Vec<Point>,
+    pub bound: Option<(Vec<u8>, Vec<u8>)>,
+}
+
 pub struct PointsReader<'d> {
     kdi: &'d [u8],
     kdd: &'d [u8],
@@ -239,6 +253,19 @@ impl<'d> PointsReader<'d> {
     /// Decodes every point (doc id + full packed value) for `field_number`,
     /// across all its leaves, in leaf (left-to-right) order.
     pub fn decode_all_points(&self, field_number: i32) -> Result<Vec<Point>> {
+        Ok(self
+            .decode_leaves(field_number)?
+            .into_iter()
+            .flat_map(|leaf| leaf.points)
+            .collect())
+    }
+
+    /// Decodes every leaf block for `field_number` individually (in
+    /// left-to-right order), keeping each leaf's own points and (when
+    /// present) its own bounding box separate -- the structural-invariant
+    /// checker (`lucene_index::check_index`) needs per-leaf boundaries that
+    /// [`decode_all_points`]'s flattened view discards.
+    pub fn decode_leaves(&self, field_number: i32) -> Result<Vec<Leaf>> {
         let field = self
             .field(field_number)
             .ok_or(Error::IllegalFieldNumber(field_number))?;
@@ -252,13 +279,15 @@ impl<'d> PointsReader<'d> {
             .ok_or(lucene_store::Error::Eof { offset: 0 })?;
         let leaf_fps = decode_leaf_pointers(inner_nodes, field)?;
 
-        let mut points = Vec::with_capacity(field.point_count as usize);
+        let mut leaves = Vec::with_capacity(leaf_fps.len());
         let mut kdd_input = SliceInput::new(self.kdd);
         for &fp in &leaf_fps {
             kdd_input.seek(fp as usize)?;
-            read_leaf_block(&mut kdd_input, field, &mut points)?;
+            let mut points = Vec::new();
+            let bound = read_leaf_block(&mut kdd_input, field, &mut points)?;
+            leaves.push(Leaf { points, bound });
         }
-        Ok(points)
+        Ok(leaves)
     }
 }
 
@@ -323,7 +352,7 @@ fn read_leaf_block(
     input: &mut SliceInput,
     field: &PointsField,
     out: &mut Vec<Point>,
-) -> Result<()> {
+) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
     let count = input.read_vint()? as usize;
     let doc_ids = read_doc_ids(input, count)?;
 
@@ -371,17 +400,35 @@ fn read_leaf_block(
                 packed_value: scratch_value.clone(),
             });
         }
-        return Ok(());
+        return Ok(None);
     }
 
+    let mut bound: Option<(Vec<u8>, Vec<u8>)> = None;
     if num_index_dims != 1 {
         // The index gives a (possibly looser) per-leaf bounding box for the
-        // indexed dimensions when there's more than one; without a query to
-        // prune against, this port just reads past it to stay aligned.
-        for &prefix in common_prefix_lengths.iter().take(num_index_dims) {
-            input.skip(bytes_per_dim - prefix)?;
-            input.skip(bytes_per_dim - prefix)?;
+        // indexed dimensions when there's more than one; read it (rather
+        // than merely skipping past it) so callers -- notably
+        // `lucene_index::check_index`'s structural-invariant checker -- can
+        // cross-check every point's value against it independently of the
+        // field-wide box in `.kdm`.
+        let mut min_bound = vec![0u8; num_index_dims * bytes_per_dim];
+        let mut max_bound = vec![0u8; num_index_dims * bytes_per_dim];
+        for (dim, &prefix) in common_prefix_lengths
+            .iter()
+            .take(num_index_dims)
+            .enumerate()
+        {
+            let lo = dim * bytes_per_dim;
+            let hi = lo + bytes_per_dim;
+            // The leading `prefix` bytes of both min and max are the leaf's
+            // already-decoded common prefix (identical for every point in
+            // this leaf, hence not re-sent on the wire for the box either).
+            min_bound[lo..lo + prefix].copy_from_slice(&scratch_value[lo..lo + prefix]);
+            max_bound[lo..lo + prefix].copy_from_slice(&scratch_value[lo..lo + prefix]);
+            input.read_bytes(&mut min_bound[lo + prefix..hi])?;
+            input.read_bytes(&mut max_bound[lo + prefix..hi])?;
         }
+        bound = Some((min_bound, max_bound));
     }
 
     if compressed_dim == -2 {
@@ -441,7 +488,7 @@ fn read_leaf_block(
         debug_assert_eq!(i, count);
     }
 
-    Ok(())
+    Ok(bound)
 }
 
 const CONTINUOUS_IDS: i8 = -2;

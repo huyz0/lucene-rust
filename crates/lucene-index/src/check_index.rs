@@ -58,6 +58,20 @@
 //!   ID is also checked for being in-range and strictly increasing (see
 //!   "why not a plain docFreq recount" below for why this, not a `docFreq`
 //!   recount, is `docFreq`'s meaningful proxy here).
+//! - Points-tree (BKD) structural invariants (revisited; previously
+//!   deferred -- see below): for every field with points data (`.fnm`'s
+//!   `point_dimension_count != 0`), walks the field's actual BKD tree
+//!   leaf-by-leaf via [`lucene_codecs::points::PointsReader::decode_leaves`]
+//!   (reusing this port's existing `.kdm`/`.kdi`/`.kdd` decoder, not a new
+//!   parser) and checks: every point's packed value (over the index
+//!   dimensions) falls within the field's own `.kdm`-declared
+//!   `min_packed_value`/`max_packed_value`
+//!   (`points.value_within_field_bounds:<field>`); for fields with more
+//!   than one index dimension, each leaf's own embedded bounding box (see
+//!   [`lucene_codecs::points::Leaf::bound`]) is itself a subset of that
+//!   field-level bound (`points.leaf_bounds_subset_of_field:<field>`); and
+//!   the leaves' decoded point counts sum to `.kdm`'s declared field-level
+//!   `point_count` (`points.point_count_matches:<field>`).
 //!
 //! ## Revisited scope decision: postings re-derivation
 //!
@@ -125,12 +139,46 @@
 //! remains meaningful for such fields regardless, since it only depends on
 //! decoded doc IDs, not freqs.
 //!
-//! **Still out of scope** (unchanged from before, and for the reason
-//! originally given): doc-values value-range sanity, points-tree structural
-//! invariants, and vectors-graph structural invariants. Each of those checks
-//! a genuinely different per-format internal shape (points-tree traversal,
-//! HNSW graph traversal) that this task did not touch -- a separate task per
-//! format, not a natural extension of postings re-derivation.
+//! ## Revisited scope decision: points-tree structural invariants
+//!
+//! Also **deliberately deferred** in task #57 for the same "separate,
+//! per-format task" reason as postings, and closed here for the same
+//! reason that blocker no longer holds: [`lucene_codecs::points`]'s
+//! existing read-side decoder already does all the packed-index/leaf-block
+//! parsing (used today by `lucene-search`'s points range queries, task
+//! #199) -- only a per-leaf accessor
+//! ([`lucene_codecs::points::PointsReader::decode_leaves`], added by this
+//! task, alongside a small [`lucene_codecs::points::Leaf`] type) was
+//! missing, plus actually reading (rather than skip-decoding) the
+//! multi-index-dim per-leaf bounding box `read_leaf_block` had always
+//! parsed past but discarded. Nothing about this check requires new BKD
+//! parsing logic, the same precedent as postings re-derivation above.
+//!
+//! **What this catches**: a corrupted or buggy writer producing a `.kdd`
+//! point value outside the field's own declared `.kdm` bounds (a
+//! metadata/data disagreement across two separate files, exactly the class
+//! of bug `postings.total_term_freq` catches for postings), a leaf whose
+//! own embedded bounding box has grown looser than its parent field's
+//! bound (a tree-invariant violation a range query's pruning silently
+//! relies on being true), or a leaf whose actually-decoded point count
+//! disagrees with `.kdm`'s own declared field-level `point_count`.
+//!
+//! **Known scope note**: `points.leaf_bounds_subset_of_field` only runs for
+//! fields with more than one index dimension, since a single-index-dimension
+//! leaf has no embedded bounding box on disk at all (see `points.rs`'s
+//! `read_leaf_block` doc comment) -- there is nothing there to cross-check
+//! beyond the field-wide bound `points.value_within_field_bounds` already
+//! covers for every field regardless of dimensionality.
+//!
+//! **Still out of scope**: doc-values value-range sanity (a genuinely
+//! different per-format internal shape -- doc-values entry types/blocks --
+//! this task did not touch; a separate task, not a natural extension of
+//! points-tree work) and vectors-graph (HNSW) structural invariants. The
+//! latter is not merely deferred: this port has **no vector/HNSW write path
+//! at all** yet (confirmed elsewhere in this codebase), so there is no
+//! writer output to check in the first place -- a whole-feature gap tracked
+//! separately in `docs/parity.md`, not a checker gap this module could close
+//! on its own.
 
 use crate::deletes::liv_file_name;
 use crate::segment_info::{self, SegmentInfo};
@@ -138,6 +186,7 @@ use crate::segment_infos::{self, SegmentCommitInfo};
 use lucene_codecs::blocktree;
 use lucene_codecs::field_infos::{self, FieldInfos};
 use lucene_codecs::live_docs;
+use lucene_codecs::points;
 use lucene_codecs::postings::DocInput;
 use lucene_codecs::stored_fields;
 use lucene_store::codec_util;
@@ -256,6 +305,7 @@ pub fn check_segment(dir: &dyn Directory, commit: &SegmentCommitInfo) -> CheckRe
     check_stored_fields_doc_count(dir, commit, &si, &mut checks);
     if let Some(fi) = &field_infos {
         check_postings_term_stats(dir, commit, &si, fi, &mut checks);
+        check_points_structural_invariants(dir, commit, &si, fi, &mut checks);
     }
 
     CheckResult {
@@ -326,7 +376,19 @@ fn check_field_flags_vs_files(fields: &FieldInfos, files: &[String], checks: &mu
         .fields
         .iter()
         .any(|f| f.doc_values_type != field_infos::DocValuesType::None);
-    let any_field_claims_norms = fields.fields.iter().any(|f| !f.omit_norms);
+    // Norms only ever exist for an *indexed* field -- a non-indexed field's
+    // `omit_norms` flag is meaningless noise real Lucene doesn't act on
+    // (confirmed against a real fixture: `Lucene90PointsWriter`-backed,
+    // non-indexed numeric-point fields are written with `omit_norms=false`
+    // by default even though no norms file is ever produced for them, since
+    // `index_options == None` already means "no norms, full stop" -- see
+    // `Lucene94FieldInfosFormat`/`FieldInvertState`). Without the
+    // `index_options != None` guard this check would falsely flag every
+    // points-only (or doc-values-only) field as an orphaned norms claim.
+    let any_field_claims_norms = fields
+        .fields
+        .iter()
+        .any(|f| !f.omit_norms && f.index_options != field_infos::IndexOptions::None);
     let any_field_claims_tv = fields.fields.iter().any(|f| f.store_term_vectors);
     let any_field_claims_postings = fields
         .fields
@@ -565,7 +627,7 @@ fn check_stored_fields_doc_count(
 /// with a total count) -- shared by [`check_postings_term_stats`]'s two
 /// per-field checks so the "how many terms, show a few" reporting shape
 /// isn't duplicated.
-fn named_field_check(name: &str, problems: &[String], num_terms: i64) -> Check {
+fn named_field_check(name: &str, problems: &[String], num_units: i64, unit: &str) -> Check {
     if problems.is_empty() {
         Check::pass(name)
     } else {
@@ -573,7 +635,7 @@ fn named_field_check(name: &str, problems: &[String], num_terms: i64) -> Check {
         Check::fail(
             name,
             format!(
-                "{} of {num_terms} terms affected; first {shown}: {}",
+                "{} of {num_units} {unit} affected; first {shown}: {}",
                 problems.len(),
                 problems[..shown].join("; ")
             ),
@@ -706,11 +768,13 @@ fn check_postings_term_stats(
                 &format!("postings.total_term_freq:{field_name}"),
                 &freq_mismatches,
                 field_terms.num_terms,
+                "terms",
             ));
             field_checks.push(named_field_check(
                 &format!("postings.doc_ids_valid:{field_name}"),
                 &doc_id_problems,
                 field_terms.num_terms,
+                "terms",
             ));
         }
         if any_needs_doc_file {
@@ -725,6 +789,180 @@ fn check_postings_term_stats(
     match result {
         Ok(field_checks) => checks.extend(field_checks),
         Err(e) => checks.push(Check::fail("postings.open", e)),
+    }
+}
+
+/// For every field with points data (`.fnm`'s `point_dimension_count != 0`),
+/// walks the field's actual BKD tree leaf-by-leaf via
+/// [`lucene_codecs::points::PointsReader::decode_leaves`] -- reusing this
+/// port's existing BKD decoder rather than re-parsing `.kdm`/`.kdi`/`.kdd` --
+/// and verifies real structural invariants a corrupted or buggy writer could
+/// violate silently:
+///
+/// - every point's packed value (over the index dimensions) actually falls
+///   within the field's own `.kdm`-declared `min_packed_value`/
+///   `max_packed_value` (an unsigned, per-dimension byte-wise range check)
+///   -- `points.value_within_field_bounds:<field>`. This is the check a
+///   corrupted `.kdd` point value (or a writer that mis-tracked its own
+///   min/max) would fail, since the field-level bound comes from `.kdm`, a
+///   file entirely separate from the `.kdd` bytes a point's value is
+///   decoded from.
+/// - when a field has more than one index dimension, `.kdd` leaf blocks
+///   embed their own (tighter) per-leaf bounding box (see
+///   [`lucene_codecs::points::Leaf::bound`]); that box must itself be a
+///   subset of the field-level bound above -- `points.leaf_bounds_subset_of_field:<field>`.
+///   Skipped for single-index-dimension fields, since no such box exists on
+///   disk in that case (see `points.rs`'s `read_leaf_block` doc comment).
+/// - the leaves' decoded point counts must sum to `.kdm`'s own declared
+///   field-level `point_count` -- `points.point_count_matches:<field>`.
+///
+/// Skipped (not failed) when: the segment is compound (`.cfs`/`.cfe`,
+/// matching this module's existing compound-file scope, same as
+/// [`check_postings_term_stats`]); or no field in `.fnm` claims points at
+/// all. A field that *does* claim points but whose segment is missing one
+/// of `.kdm`/`.kdi`/`.kdd` is reported as a single `points.open` failure
+/// rather than silently skipped -- points files are optional at the
+/// segment level (most segments have none), but once one field commits to
+/// having them, all three must be present and parse.
+fn check_points_structural_invariants(
+    dir: &dyn Directory,
+    commit: &SegmentCommitInfo,
+    si: &SegmentInfo,
+    field_infos: &FieldInfos,
+    checks: &mut Vec<Check>,
+) {
+    if si.is_compound_file {
+        return;
+    }
+    let points_fields: Vec<&field_infos::FieldInfo> = field_infos
+        .fields
+        .iter()
+        .filter(|f| f.point_dimension_count != 0)
+        .collect();
+    if points_fields.is_empty() {
+        return;
+    }
+
+    let kdm_name = si.files.iter().find(|f| f.ends_with(".kdm"));
+    let kdi_name = si.files.iter().find(|f| f.ends_with(".kdi"));
+    let kdd_name = si.files.iter().find(|f| f.ends_with(".kdd"));
+    let (kdm_name, kdi_name, kdd_name) = match (kdm_name, kdi_name, kdd_name) {
+        (Some(m), Some(i), Some(d)) => (m, i, d),
+        _ => {
+            checks.push(Check::fail(
+                "points.open",
+                "a field claims points but the segment is missing one or more of .kdm/.kdi/.kdd",
+            ));
+            return;
+        }
+    };
+
+    let result = (|| -> Result<Vec<Check>, String> {
+        let kdm = dir.open(kdm_name).map_err(|e| e.to_string())?;
+        let kdi = dir.open(kdi_name).map_err(|e| e.to_string())?;
+        let kdd = dir.open(kdd_name).map_err(|e| e.to_string())?;
+        let reader =
+            points::open(&kdm, &kdi, &kdd, &commit.segment_id, "").map_err(|e| e.to_string())?;
+
+        let mut field_checks = Vec::new();
+        for field_info in &points_fields {
+            let field_name = &field_info.name;
+            let field = match reader.field(field_info.number) {
+                Some(f) => f,
+                None => {
+                    field_checks.push(Check::fail(
+                        format!("points.field_present:{field_name}"),
+                        "field claims points in .fnm but has no entry in .kdm",
+                    ));
+                    continue;
+                }
+            };
+
+            let leaves = match reader.decode_leaves(field_info.number) {
+                Ok(l) => l,
+                Err(e) => {
+                    field_checks.push(Check::fail(
+                        format!("points.decode:{field_name}"),
+                        e.to_string(),
+                    ));
+                    continue;
+                }
+            };
+
+            let num_index_dims = field.num_index_dims as usize;
+            let bytes_per_dim = field.bytes_per_dim as usize;
+
+            let mut value_problems: Vec<String> = Vec::new();
+            let mut bound_problems: Vec<String> = Vec::new();
+            let mut total_points = 0i64;
+            for (leaf_idx, leaf) in leaves.iter().enumerate() {
+                total_points += leaf.points.len() as i64;
+                for point in &leaf.points {
+                    for dim in 0..num_index_dims {
+                        let lo = dim * bytes_per_dim;
+                        let hi = lo + bytes_per_dim;
+                        let value = &point.packed_value[lo..hi];
+                        let field_min = &field.min_packed_value[lo..hi];
+                        let field_max = &field.max_packed_value[lo..hi];
+                        if value < field_min || value > field_max {
+                            value_problems.push(format!(
+                                "field {field_name:?} leaf {leaf_idx} doc {}: dim {dim} value is \
+                                 outside the field's declared min/max packed value",
+                                point.doc_id
+                            ));
+                        }
+                    }
+                }
+                if let Some((min_bound, max_bound)) = &leaf.bound {
+                    for dim in 0..num_index_dims {
+                        let lo = dim * bytes_per_dim;
+                        let hi = lo + bytes_per_dim;
+                        if min_bound[lo..hi] < field.min_packed_value[lo..hi]
+                            || max_bound[lo..hi] > field.max_packed_value[lo..hi]
+                        {
+                            bound_problems.push(format!(
+                                "field {field_name:?} leaf {leaf_idx}: leaf's own bounding box for \
+                                 dim {dim} is not a subset of the field's declared bounding box"
+                            ));
+                        }
+                    }
+                }
+            }
+
+            field_checks.push(named_field_check(
+                &format!("points.value_within_field_bounds:{field_name}"),
+                &value_problems,
+                leaves.len() as i64,
+                "leaves",
+            ));
+            if num_index_dims != 1 {
+                field_checks.push(named_field_check(
+                    &format!("points.leaf_bounds_subset_of_field:{field_name}"),
+                    &bound_problems,
+                    leaves.len() as i64,
+                    "leaves",
+                ));
+            }
+            if total_points == field.point_count {
+                field_checks.push(Check::pass(format!(
+                    "points.point_count_matches:{field_name}"
+                )));
+            } else {
+                field_checks.push(Check::fail(
+                    format!("points.point_count_matches:{field_name}"),
+                    format!(
+                        "field declares point_count={} but its leaves decoded {total_points} points",
+                        field.point_count
+                    ),
+                ));
+            }
+        }
+        Ok(field_checks)
+    })();
+
+    match result {
+        Ok(field_checks) => checks.extend(field_checks),
+        Err(e) => checks.push(Check::fail("points.open", e)),
     }
 }
 
@@ -1633,6 +1871,427 @@ mod tests {
             .find(|c| c.name == "postings.doc_open")
             .expect("postings.doc_open check must have run");
         assert!(!doc_open_check.passed);
+
+        std::fs::remove_dir_all(&dst_dir).ok();
+    }
+
+    // -- points-tree structural invariants --
+
+    /// The real `points_index` fixture (genuine Java-written BKD data with
+    /// a single-dimension field, a 2-dimension field, and a 4-dim/2-index-
+    /// dim "shape"-style field -- see `GenPoints.java`) must pass every
+    /// structural-invariant check cleanly, exercising both the plain
+    /// field-bounds check (all three fields) and the leaf-bounds-subset
+    /// check (the two multi-index-dim fields only) on real data -- the
+    /// "no false positives" baseline for this check, mirroring
+    /// `valid_blocktree_fixture_passes_postings_re_derivation`'s role for
+    /// postings.
+    #[test]
+    fn valid_points_fixture_passes_structural_invariants() {
+        let dir = FsDirectory::open(fixture_dir("points_index"));
+        let results = check_directory(&dir).expect("read segments_N");
+        assert_eq!(results.len(), 1);
+        let result = &results[0];
+        assert!(
+            result.all_passed(),
+            "unexpected failures: {:?}",
+            result.failures()
+        );
+        assert!(
+            result
+                .checks
+                .iter()
+                .any(|c| c.name.starts_with("points.value_within_field_bounds:") && c.passed),
+            "expected a passing points.value_within_field_bounds:<field> check, got: {:?}",
+            result.checks
+        );
+        assert!(
+            result
+                .checks
+                .iter()
+                .any(|c| c.name.starts_with("points.leaf_bounds_subset_of_field:") && c.passed),
+            "expected a passing points.leaf_bounds_subset_of_field:<field> check \
+             (the fixture has multi-index-dim fields), got: {:?}",
+            result.checks
+        );
+        assert!(
+            result
+                .checks
+                .iter()
+                .any(|c| c.name.starts_with("points.point_count_matches:") && c.passed),
+            "expected a passing points.point_count_matches:<field> check, got: {:?}",
+            result.checks
+        );
+    }
+
+    const POINTS_SEG_ID: [u8; ID_LENGTH] = [13u8; ID_LENGTH];
+
+    fn points_field_info() -> field_infos::FieldInfo {
+        field_infos::FieldInfo {
+            name: "loc".to_string(),
+            number: 5,
+            store_term_vectors: false,
+            omit_norms: false,
+            store_payloads: false,
+            soft_deletes_field: false,
+            parent_field: false,
+            index_options: field_infos::IndexOptions::None,
+            doc_values_type: field_infos::DocValuesType::None,
+            doc_values_skip_index_type: field_infos::DocValuesSkipIndexType::None,
+            doc_values_gen: -1,
+            attributes: vec![],
+            point_dimension_count: 1,
+            point_index_dimension_count: 1,
+            point_num_bytes: 8,
+            vector_dimension: 0,
+            vector_encoding: field_infos::VectorEncoding::Float32,
+            vector_similarity_function: field_infos::VectorSimilarityFunction::Euclidean,
+        }
+    }
+
+    /// Writes a minimal, self-contained, non-compound one-field segment
+    /// (`.si`/`.fnm`/`.kdm`/`.kdi`/`.kdd`) from
+    /// [`lucene_codecs::points::write`]'s output for a single-dimension,
+    /// 8-byte-per-value field with the given `(docID, packedValue)` pairs,
+    /// and returns the `SegmentCommitInfo` to open it with. `kdd_override`
+    /// lets a test substitute a *different* `.kdd` buffer than the one that
+    /// naturally matches `points` -- the same "swap the on-disk bytes for a
+    /// legitimately-decodable but wrong one" mechanism
+    /// `write_postings_fixture` uses for its own corruption tests, letting
+    /// this test hand-corrupt a decoded point value without any raw-offset
+    /// byte surgery.
+    fn write_points_fixture(
+        dst_dir: &std::path::Path,
+        points: &[(i32, Vec<u8>)],
+        max_doc: i32,
+        kdd_override: Option<&[u8]>,
+    ) -> segment_infos::SegmentCommitInfo {
+        use lucene_codecs::points::WritePointsField;
+
+        let field = WritePointsField {
+            field_number: 5,
+            num_dims: 1,
+            num_index_dims: 1,
+            bytes_per_dim: 8,
+            points: points.to_vec(),
+        };
+        let (kdm, kdi, kdd) = points::write(
+            &[field],
+            points::DEFAULT_MAX_POINTS_IN_LEAF_NODE,
+            &POINTS_SEG_ID,
+            "",
+        )
+        .expect("hand-built points must write cleanly");
+        let kdd = kdd_override.unwrap_or(&kdd);
+
+        let fields = field_infos::write(&[points_field_info()], &POINTS_SEG_ID, "");
+        std::fs::write(dst_dir.join("_0.fnm"), &fields).unwrap();
+        std::fs::write(dst_dir.join("_0.kdm"), &kdm).unwrap();
+        std::fs::write(dst_dir.join("_0.kdi"), &kdi).unwrap();
+        std::fs::write(dst_dir.join("_0.kdd"), kdd).unwrap();
+
+        let si = SegmentInfo {
+            id: POINTS_SEG_ID,
+            version: segment_info::LuceneVersion {
+                major: 10,
+                minor: 0,
+                bugfix: 0,
+            },
+            min_version: None,
+            doc_count: max_doc,
+            is_compound_file: false,
+            has_blocks: false,
+            diagnostics: vec![],
+            files: vec![
+                "_0.fnm".to_string(),
+                "_0.kdm".to_string(),
+                "_0.kdi".to_string(),
+                "_0.kdd".to_string(),
+            ],
+            attributes: vec![],
+            index_sort: None,
+        };
+        std::fs::write(dst_dir.join("_0.si"), segment_info::write(&si, "")).unwrap();
+
+        segment_infos::SegmentCommitInfo {
+            segment_name: "_0".to_string(),
+            segment_id: POINTS_SEG_ID,
+            codec_name: "Lucene104".to_string(),
+            del_gen: -1,
+            del_count: 0,
+            field_infos_gen: -1,
+            doc_values_gen: -1,
+            soft_del_count: 0,
+            sci_id: None,
+            field_infos_files: vec![],
+            dv_update_files: vec![],
+        }
+    }
+
+    /// A hand-built, genuinely self-consistent points segment (real writer
+    /// output, not raw-byte surgery) must pass the structural-invariant
+    /// checks -- proves the machinery works on this port's own writer
+    /// output too, not just the one real-Lucene fixture above.
+    #[test]
+    fn hand_built_consistent_points_pass_structural_invariants() {
+        let points = vec![
+            (0, vec![0, 0, 0, 0, 0, 0, 0, 1]),
+            (1, vec![0, 0, 0, 0, 0, 0, 0, 2]),
+            (2, vec![0, 0, 0, 0, 0, 0, 0, 3]),
+        ];
+        let dst_dir = tempdir();
+        let commit = write_points_fixture(&dst_dir, &points, 3, None);
+        let dir = FsDirectory::open(&dst_dir);
+
+        let result = check_segment(&dir, &commit);
+        assert!(
+            result.all_passed(),
+            "unexpected failures: {:?}",
+            result.failures()
+        );
+
+        std::fs::remove_dir_all(&dst_dir).ok();
+    }
+
+    /// The actual proof this check does something real: build a segment
+    /// whose `.kdm` field-level bounds are derived from the *real* points
+    /// `(0,...,1)`/`(1,...,2)`/`(2,...,3)` (so `min_packed_value`/
+    /// `max_packed_value` = `...01`/`...03`), but swap the `.kdd` bytes for
+    /// ones decoded from a *different* point set where the middle point's
+    /// value is `...FF` -- decoding still succeeds cleanly (same doc IDs,
+    /// same doc count, same leaf layout), so this is a genuine "declared
+    /// bound vs. actual decoded value" disagreement, not a truncated/corrupt
+    /// file. `points.value_within_field_bounds:loc` must fail and name the
+    /// offending doc, while `points.point_count_matches:loc` (an unrelated
+    /// dimension: the leaf still decodes exactly 3 points either way) must
+    /// still pass -- proving the two checks are independent, mirroring
+    /// `corrupted_total_term_freq_is_caught_by_re_derivation`'s structure
+    /// for postings.
+    #[test]
+    fn corrupted_point_value_is_caught_by_bounds_check() {
+        let real_points = vec![
+            (0, vec![0, 0, 0, 0, 0, 0, 0, 1]),
+            (1, vec![0, 0, 0, 0, 0, 0, 0, 2]),
+            (2, vec![0, 0, 0, 0, 0, 0, 0, 3]),
+        ];
+        let corrupted_points = vec![
+            (0, vec![0, 0, 0, 0, 0, 0, 0, 1]),
+            (1, vec![0xFF, 0, 0, 0, 0, 0, 0, 0xFF]), // wildly out of [..01, ..03]
+            (2, vec![0, 0, 0, 0, 0, 0, 0, 3]),
+        ];
+        let corrupted_field = lucene_codecs::points::WritePointsField {
+            field_number: 5,
+            num_dims: 1,
+            num_index_dims: 1,
+            bytes_per_dim: 8,
+            points: corrupted_points,
+        };
+        let (_, _, corrupted_kdd) = points::write(
+            &[corrupted_field],
+            points::DEFAULT_MAX_POINTS_IN_LEAF_NODE,
+            &POINTS_SEG_ID,
+            "",
+        )
+        .unwrap();
+
+        let dst_dir = tempdir();
+        let commit = write_points_fixture(&dst_dir, &real_points, 3, Some(&corrupted_kdd));
+        let dir = FsDirectory::open(&dst_dir);
+
+        let result = check_segment(&dir, &commit);
+        assert!(!result.all_passed());
+
+        let bounds_check = result
+            .checks
+            .iter()
+            .find(|c| c.name == "points.value_within_field_bounds:loc")
+            .expect("value_within_field_bounds check must have run");
+        assert!(!bounds_check.passed);
+        assert!(bounds_check.message.contains("doc 1"));
+
+        // Unrelated dimension: the corrupted leaf still decodes exactly 3
+        // points, same as the declared point_count, so this must still
+        // pass -- one wrong value must not suppress or corrupt an unrelated
+        // check.
+        let count_check = result
+            .checks
+            .iter()
+            .find(|c| c.name == "points.point_count_matches:loc")
+            .expect("point_count_matches check must have run");
+        assert!(count_check.passed);
+
+        std::fs::remove_dir_all(&dst_dir).ok();
+    }
+
+    /// A field claiming points in `.fnm` whose segment is missing one of
+    /// `.kdm`/`.kdi`/`.kdd` must be flagged as `points.open`, not panic --
+    /// the points analogue of
+    /// `missing_doc_file_for_multi_doc_term_fails_doc_open_check`.
+    #[test]
+    fn missing_points_file_fails_points_open_check() {
+        let points = vec![(0, vec![0, 0, 0, 0, 0, 0, 0, 1])];
+        let dst_dir = tempdir();
+        let commit = write_points_fixture(&dst_dir, &points, 1, None);
+
+        // Make the .kdd file genuinely absent, not just unlisted.
+        let dir_ro = FsDirectory::open(&dst_dir);
+        let mut si = open_si(&dir_ro, &commit).expect("hand-built .si parses");
+        si.files.retain(|f| !f.ends_with(".kdd"));
+        std::fs::write(dst_dir.join("_0.si"), segment_info::write(&si, "")).unwrap();
+        std::fs::remove_file(dst_dir.join("_0.kdd")).unwrap();
+
+        let dir = FsDirectory::open(&dst_dir);
+        let result = check_segment(&dir, &commit);
+        let points_open_check = result
+            .checks
+            .iter()
+            .find(|c| c.name == "points.open")
+            .expect("points.open check must have run");
+        assert!(!points_open_check.passed);
+
+        std::fs::remove_dir_all(&dst_dir).ok();
+    }
+
+    /// A segment where no field claims points at all must skip the points
+    /// checks entirely (not fail, not run vacuously) -- exercises the
+    /// early-return branch for a segment this check has nothing to verify
+    /// about, using the real `blocktree_index` fixture (postings only, no
+    /// points).
+    #[test]
+    fn segment_without_points_fields_skips_points_checks() {
+        let dir = FsDirectory::open(fixture_dir("blocktree_index"));
+        let results = check_directory(&dir).expect("read segments_N");
+        assert!(!results[0]
+            .checks
+            .iter()
+            .any(|c| c.name.starts_with("points.")));
+    }
+
+    /// A compound (`.cfs`/`.cfe`) segment must skip the points check
+    /// entirely, matching [`check_postings_term_stats`]'s own compound-file
+    /// scope -- this module has no compound-file support anywhere.
+    #[test]
+    fn compound_segment_skips_points_checks() {
+        let field = points_field_info();
+        let fields = FieldInfos {
+            fields: vec![field],
+        };
+        let si = SegmentInfo {
+            id: POINTS_SEG_ID,
+            version: segment_info::LuceneVersion {
+                major: 10,
+                minor: 0,
+                bugfix: 0,
+            },
+            min_version: None,
+            doc_count: 1,
+            is_compound_file: true,
+            has_blocks: false,
+            diagnostics: vec![],
+            files: vec![],
+            attributes: vec![],
+            index_sort: None,
+        };
+        let commit = segment_infos::SegmentCommitInfo {
+            segment_name: "_0".to_string(),
+            segment_id: POINTS_SEG_ID,
+            codec_name: "Lucene104".to_string(),
+            del_gen: -1,
+            del_count: 0,
+            field_infos_gen: -1,
+            doc_values_gen: -1,
+            soft_del_count: 0,
+            sci_id: None,
+            field_infos_files: vec![],
+            dv_update_files: vec![],
+        };
+        let dst_dir = tempdir();
+        let dir = FsDirectory::open(&dst_dir);
+        let mut checks = Vec::new();
+        check_points_structural_invariants(&dir, &commit, &si, &fields, &mut checks);
+        assert!(checks.is_empty());
+        std::fs::remove_dir_all(&dst_dir).ok();
+    }
+
+    /// A field whose `.fnm` entry claims points but whose field *number*
+    /// doesn't match any field actually recorded in `.kdm` must be flagged
+    /// as `points.field_present`, not panic or silently skip -- exercises
+    /// the "claimed but not actually present in the BKD tree" branch
+    /// distinctly from a missing-file `points.open` failure.
+    #[test]
+    fn mismatched_field_number_fails_field_present_check() {
+        let points = vec![(0, vec![0, 0, 0, 0, 0, 0, 0, 1])];
+        let dst_dir = tempdir();
+        // write_points_fixture always writes the .kdm field under number 5;
+        // overwrite .fnm afterwards with a field claiming a *different*
+        // number (99) so `reader.field(99)` finds nothing.
+        let commit = write_points_fixture(&dst_dir, &points, 1, None);
+        let mut mismatched_field = points_field_info();
+        mismatched_field.number = 99;
+        let fields = field_infos::write(&[mismatched_field], &POINTS_SEG_ID, "");
+        std::fs::write(dst_dir.join("_0.fnm"), &fields).unwrap();
+
+        let dir = FsDirectory::open(&dst_dir);
+        let result = check_segment(&dir, &commit);
+        let check = result
+            .checks
+            .iter()
+            .find(|c| c.name == "points.field_present:loc")
+            .expect("field_present check must have run");
+        assert!(!check.passed);
+
+        std::fs::remove_dir_all(&dst_dir).ok();
+    }
+
+    /// The leaf's own decoded point count must sum to `.kdm`'s declared
+    /// `point_count` for the field: build a segment whose `.kdm`/`.kdi`
+    /// claim 3 points (from `real_points`) but swap in `.kdd` bytes
+    /// re-encoded from only 2 points -- decoding still succeeds (same
+    /// field shape, one leaf), but the leaf actually yields 2 points, not
+    /// 3, so `points.point_count_matches:loc` must fail while
+    /// `points.value_within_field_bounds:loc` (checked against the
+    /// looser, real-points-derived field bounds) still passes.
+    #[test]
+    fn fewer_actual_points_than_declared_fails_point_count_check() {
+        let real_points = vec![
+            (0, vec![0, 0, 0, 0, 0, 0, 0, 1]),
+            (1, vec![0, 0, 0, 0, 0, 0, 0, 2]),
+            (2, vec![0, 0, 0, 0, 0, 0, 0, 3]),
+        ];
+        let fewer_points = vec![
+            (0, vec![0, 0, 0, 0, 0, 0, 0, 1]),
+            (1, vec![0, 0, 0, 0, 0, 0, 0, 2]),
+        ];
+        let fewer_field = lucene_codecs::points::WritePointsField {
+            field_number: 5,
+            num_dims: 1,
+            num_index_dims: 1,
+            bytes_per_dim: 8,
+            points: fewer_points,
+        };
+        let (_, _, fewer_kdd) = points::write(
+            &[fewer_field],
+            points::DEFAULT_MAX_POINTS_IN_LEAF_NODE,
+            &POINTS_SEG_ID,
+            "",
+        )
+        .unwrap();
+
+        let dst_dir = tempdir();
+        let commit = write_points_fixture(&dst_dir, &real_points, 3, Some(&fewer_kdd));
+        let dir = FsDirectory::open(&dst_dir);
+
+        let result = check_segment(&dir, &commit);
+        assert!(!result.all_passed());
+
+        let count_check = result
+            .checks
+            .iter()
+            .find(|c| c.name == "points.point_count_matches:loc")
+            .expect("point_count_matches check must have run");
+        assert!(!count_check.passed);
+        assert!(count_check.message.contains("point_count=3"));
+        assert!(count_check.message.contains("decoded 2"));
 
         std::fs::remove_dir_all(&dst_dir).ok();
     }
