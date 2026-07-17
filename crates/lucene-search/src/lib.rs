@@ -210,7 +210,8 @@ pub use explain::{explain_clause, Explanation};
 pub use field_norms::FieldNorms;
 pub use multi_segment::{
     merge_multi_segment_scored, search_boolean_query_multi_segment,
-    search_boolean_query_multi_segment_concurrent, search_term_query_multi_segment,
+    search_boolean_query_multi_segment_concurrent, search_boolean_query_multi_segment_maxscore,
+    search_boolean_query_multi_segment_maxscore_concurrent, search_term_query_multi_segment,
     search_term_query_multi_segment_concurrent, OpenSegment,
 };
 pub use points_query::{pack_i64, search_points_range, PointsInput};
