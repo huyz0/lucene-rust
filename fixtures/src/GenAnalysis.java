@@ -5,8 +5,10 @@ import org.apache.lucene.analysis.standard.StandardAnalyzer;
 import org.apache.lucene.analysis.standard.StandardTokenizer;
 import org.apache.lucene.analysis.core.KeywordAnalyzer;
 import org.apache.lucene.analysis.core.LowerCaseFilter;
+import org.apache.lucene.analysis.core.StopFilter;
 import org.apache.lucene.analysis.miscellaneous.ASCIIFoldingFilter;
 import org.apache.lucene.analysis.snowball.SnowballFilter;
+import org.apache.lucene.analysis.fr.FrenchAnalyzer;
 import org.tartarus.snowball.ext.EnglishStemmer;
 import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
 import org.apache.lucene.analysis.tokenattributes.OffsetAttribute;
@@ -166,6 +168,19 @@ public class GenAnalysis {
       analyze(m, "snowball_english", String.join(" ", words), snow);
     }
 
+    // Task #220 (French default stopword list): StandardTokenizer +
+    // LowerCaseFilter + real StopFilter fed FrenchAnalyzer.getDefaultStopSet()
+    // directly (NOT the full FrenchAnalyzer -- no elision, no French
+    // stemming, matching this port's deliberately narrower scope: just the
+    // stopword list, wired through this crate's existing language-agnostic
+    // StopFilter). Sentence contains several of the 154 default French
+    // stopwords ("le", "et", "la", "sont", "dans") plus non-stopword content
+    // words, to exercise removal + position-increment carry-over the same
+    // way the English case1-case6 cases do.
+    try (Analyzer frenchStop = new FrenchStopOnlyAnalyzer()) {
+      analyze(m, "french_stopwords", "Le chat et la souris sont dans la maison", frenchStop);
+    }
+
     Files.writeString(out.resolve("manifest.properties"), m.toString());
     System.out.println("wrote analysis/ fixture directory");
   }
@@ -232,6 +247,21 @@ public class GenAnalysis {
     protected TokenStreamComponents createComponents(String fieldName) {
       Tokenizer source = new StandardTokenizer();
       return new TokenStreamComponents(source);
+    }
+  }
+
+  /**
+   * StandardTokenizer + LowerCaseFilter + StopFilter(FrenchAnalyzer's default
+   * stop set) -- task #220's French default stopword list, deliberately
+   * *not* the full FrenchAnalyzer (no ElisionFilter, no French stemming).
+   */
+  static class FrenchStopOnlyAnalyzer extends Analyzer {
+    @Override
+    protected TokenStreamComponents createComponents(String fieldName) {
+      Tokenizer source = new StandardTokenizer();
+      TokenStream filter = new LowerCaseFilter(source);
+      filter = new StopFilter(filter, FrenchAnalyzer.getDefaultStopSet());
+      return new TokenStreamComponents(source, filter);
     }
   }
 

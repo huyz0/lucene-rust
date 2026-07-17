@@ -215,6 +215,64 @@ pub fn english_stop_words() -> HashSet<String> {
     ENGLISH_STOP_WORDS.iter().map(|s| s.to_string()).collect()
 }
 
+/// The default French stop word list, byte-for-byte the same 154 words as
+/// real Lucene's `org.apache.lucene.analysis.fr.FrenchAnalyzer.getDefaultStopSet()`
+/// (loaded there from `french_stop.txt`, a resource under
+/// `org/apache/lucene/analysis/snowball/` -- itself sourced verbatim from the
+/// Snowball project's French stop list, https://snowballstem.org/algorithms/french/stop.txt).
+/// This list was transcribed directly from that resource file as it exists in
+/// a real `/home/tuong/work/lucene` 10.5.0 checkout
+/// (`lucene/analysis/common/src/resources/org/apache/lucene/analysis/snowball/french_stop.txt`),
+/// stripping the file's `|`-delimited comments and blank lines the same way
+/// real Lucene's `WordlistLoader.getSnowballWordSet` does (split remaining
+/// text on whitespace, one word per surviving line) -- not reconstructed from
+/// memory. Stored lowercase, matching real Lucene's `CharArraySet` there
+/// (built with `ignoreCase == false`, populated with already-lowercase
+/// entries) and this port's [`StopFilter`], which does a plain, exact
+/// (case-sensitive) string match against terms that have already passed
+/// through [`LowerCaseFilter`] earlier in the chain -- see
+/// [`french_stop_words`].
+///
+/// **Scope boundary, stated explicitly**: this is *only* the default
+/// stopword list real `FrenchAnalyzer` uses, not a port of `FrenchAnalyzer`
+/// itself. Real Lucene's `FrenchAnalyzer` also performs French elision
+/// filtering (`ElisionFilter` with `DEFAULT_ARTICLES` -- stripping leading
+/// `l'`/`d'`/`qu'`/etc. from words like `l'homme` -> `homme`) and French
+/// stemming (`FrenchLightStemmer` via `SnowballFilter`/`FrenchLightStemFilter`).
+/// Neither elision nor stemming is ported here or anywhere else in this
+/// crate -- this constant and [`french_stop_words`] exist solely so a caller
+/// can feed this port's existing, language-agnostic [`StopFilter`] a real
+/// French default stopword set, the same way [`ENGLISH_STOP_WORDS`] feeds it
+/// an English one. A composed `Analyzer::french()`-style helper mirroring the
+/// full `FrenchAnalyzer` pipeline (tokenize -> elide -> lowercase -> stopword
+/// -> stem) is not provided.
+pub const FRENCH_STOP_WORDS: &[&str] = &[
+    "au", "aux", "avec", "ce", "ces", "dans", "de", "des", "du", "elle", "en", "et", "eux", "il",
+    "je", "la", "le", "leur", "lui", "ma", "mais", "me", "même", "mes", "moi", "mon", "ne", "nos",
+    "notre", "nous", "on", "ou", "par", "pas", "pour", "qu", "que", "qui", "sa", "se", "ses",
+    "sur", "ta", "te", "tes", "toi", "ton", "tu", "un", "une", "vos", "votre", "vous", "c", "d",
+    "j", "l", "à", "m", "n", "s", "t", "y", "étée", "étées", "étant", "suis", "es", "êtes", "sont",
+    "serai", "seras", "sera", "serons", "serez", "seront", "serais", "serait", "serions", "seriez",
+    "seraient", "étais", "était", "étions", "étiez", "étaient", "fus", "fut", "fûmes", "fûtes",
+    "furent", "sois", "soit", "soyons", "soyez", "soient", "fusse", "fusses", "fussions",
+    "fussiez", "fussent", "ayant", "eu", "eue", "eues", "eus", "ai", "avons", "avez", "ont",
+    "aurai", "aurons", "aurez", "auront", "aurais", "aurait", "aurions", "auriez", "auraient",
+    "avais", "avait", "aviez", "avaient", "eut", "eûmes", "eûtes", "eurent", "aie", "aies", "ait",
+    "ayons", "ayez", "aient", "eusse", "eusses", "eût", "eussions", "eussiez", "eussent", "ceci",
+    "cela", "celà", "cet", "cette", "ici", "ils", "les", "leurs", "quel", "quels", "quelle",
+    "quelles", "sans", "soi",
+];
+
+/// Builds a fresh `HashSet<String>` from [`FRENCH_STOP_WORDS`], ready to pass
+/// to [`StopFilter::apply`], mirroring real Lucene's
+/// `FrenchAnalyzer.getDefaultStopSet()` default. See [`FRENCH_STOP_WORDS`]'s
+/// doc comment for the sourcing and the explicit scope boundary (list only,
+/// no elision, no stemming). Not a `static`/`OnceLock`-cached singleton, for
+/// the same reason [`english_stop_words`] isn't.
+pub fn french_stop_words() -> HashSet<String> {
+    FRENCH_STOP_WORDS.iter().map(|s| s.to_string()).collect()
+}
+
 impl StopFilter {
     pub fn apply(tokens: Vec<Token>, stopwords: &HashSet<String>) -> Vec<Token> {
         let mut out = Vec::new();
@@ -2273,6 +2331,78 @@ mod tests {
         let out = analyzer.analyze("The quick fox will jump into the river");
         let terms: Vec<&str> = out.iter().map(|t| t.term.as_str()).collect();
         assert_eq!(terms, vec!["quick", "fox", "jump", "river"]);
+    }
+
+    #[test]
+    fn french_stop_words_has_exactly_154_entries_matching_real_lucene() {
+        // Real Lucene's FrenchAnalyzer.getDefaultStopSet() loads
+        // french_stop.txt (Snowball's French stop list) via
+        // WordlistLoader.getSnowballWordSet, which strips each line's `|`
+        // comment and splits the remainder on whitespace. Transcribing that
+        // file (org/apache/lucene/analysis/snowball/french_stop.txt in a
+        // real Lucene 10.5.0 checkout) the same way yields exactly 154
+        // surviving words -- several classic French stopwords (e.g. "son",
+        // "sommes", "été", "est", "avions", "auras", "aura", "as", "fût")
+        // are deliberately commented out of that file as homonyms of
+        // unrelated common words, so this is not simply "every French
+        // function word".
+        let stopwords = french_stop_words();
+        assert_eq!(
+            stopwords.len(),
+            154,
+            "FRENCH_STOP_WORDS must have exactly 154 entries, matching real \
+             Lucene's french_stop.txt after comment-stripping"
+        );
+        assert_eq!(FRENCH_STOP_WORDS.len(), 154);
+        // Spot-check a representative sample spanning every distinct source
+        // section of french_stop.txt: core articles/pronouns, single-letter
+        // elision remnants, and inflected forms of être/avoir.
+        for word in [
+            "le", "la", "les", "un", "une", "et", "de", "du", "des", "dans", "sur", "pour", "qu",
+            "que", "qui", "c", "d", "j", "l", "à", "m", "n", "s", "t", "y", "suis", "es", "sont",
+            "serai", "était", "avons", "avez", "ont", "aurai", "eusse", "ceci", "cela", "quel",
+            "sans", "soi",
+        ] {
+            assert!(
+                stopwords.contains(word),
+                "canonical French stopword {word:?} is missing from FRENCH_STOP_WORDS"
+            );
+        }
+        // Deliberately-omitted homonyms (real Lucene's own comments explain
+        // why): must NOT be present.
+        for word in [
+            "son", "sommes", "été", "étés", "est", "avions", "auras", "aura", "as", "fût",
+        ] {
+            assert!(
+                !stopwords.contains(word),
+                "{word:?} is a homonym real Lucene deliberately omits from its default \
+                 French stop set -- it must not be in FRENCH_STOP_WORDS either"
+            );
+        }
+    }
+
+    #[test]
+    fn french_stop_words_case_is_already_lowercase() {
+        for word in FRENCH_STOP_WORDS {
+            assert_eq!(
+                *word,
+                word.to_lowercase(),
+                "{word:?} must be stored lowercase"
+            );
+        }
+    }
+
+    #[test]
+    fn french_stop_words_does_not_false_positive_on_content_words() {
+        let stopwords = french_stop_words();
+        for word in ["chat", "souris", "maison", "recherche", "document"] {
+            assert!(!stopwords.contains(word), "{word:?} must NOT be a stopword");
+        }
+        let tokens = tokenize("Le chat et la souris sont dans la maison");
+        let tokens = LowerCaseFilter::apply(tokens);
+        let out = StopFilter::apply(tokens, &stopwords);
+        let terms: Vec<&str> = out.iter().map(|t| t.term.as_str()).collect();
+        assert_eq!(terms, vec!["chat", "souris", "maison"]);
     }
 
     #[test]
