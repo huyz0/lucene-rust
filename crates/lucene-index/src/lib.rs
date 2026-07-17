@@ -2,6 +2,7 @@
 //! lucene-index: see /PLAN.md for scope.
 
 pub mod check_index;
+pub mod checksum_verify;
 pub mod deletes;
 pub mod index_writer;
 pub mod indexing_chain;
