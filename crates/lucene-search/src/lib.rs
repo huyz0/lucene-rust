@@ -987,6 +987,89 @@ pub fn search_term_query_scored<C: ScoringCollector>(
     Ok(())
 }
 
+/// [`term_doc_scores`]'s sibling taking an explicit [`similarity::Bm25Params`]
+/// instead of always using [`similarity::DEFAULT_K1`]/[`similarity::DEFAULT_B`]
+/// (task #214). See [`similarity::Bm25Params`]'s doc comment for this task's
+/// scope.
+fn term_doc_scores_with_similarity(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    query: &TermQuery,
+    norms: Option<&FieldNorms<'_>>,
+    params: similarity::Bm25Params,
+) -> Result<Vec<(i32, f32)>> {
+    let Some(field_terms) = fields.field(&query.field) else {
+        return Ok(Vec::new());
+    };
+    let Some(stats) = field_terms.seek_exact(&query.term) else {
+        return Ok(Vec::new());
+    };
+    let doc_freqs = term_doc_freqs(fields, doc_in, live_docs, query)?;
+    let doc_count = field_terms.doc_count as i64;
+    doc_freqs
+        .into_iter()
+        .map(|(doc_id, freq)| {
+            let (field_length, avg_field_length) = match norms {
+                Some(fn_) => (fn_.field_length(doc_id)?, fn_.avg_field_length),
+                None => (
+                    similarity::UNNORMED_FIELD_LENGTH,
+                    similarity::UNNORMED_FIELD_LENGTH,
+                ),
+            };
+            let score = similarity::score_with_params(
+                stats.doc_freq as i64,
+                doc_count,
+                freq as f32,
+                field_length,
+                avg_field_length,
+                params,
+            );
+            Ok((doc_id, score))
+        })
+        .collect()
+}
+
+/// [`search_term_query_scored`]'s sibling taking an explicit
+/// [`similarity::Bm25Params`] (`k1`/`b`) instead of the hardcoded BM25
+/// defaults (task #214, "Configurable BM25 constant from FFI") — the narrowest
+/// useful surface this task adds: the single most fundamental scored search
+/// entry point (a plain `TermQuery`, no MAXSCORE pruning), left as a new
+/// sibling function rather than an added parameter on
+/// [`search_term_query_scored`] itself, so that function's signature and
+/// behavior stay byte-for-byte unchanged for its existing callers/tests.
+///
+/// `params: similarity::Bm25Params::default()` produces byte-for-byte the same
+/// scores as [`search_term_query_scored`] — see
+/// `similarity::score_with_params_using_defaults_matches_score_byte_for_byte`
+/// for the regression proof.
+///
+/// **Scope note** (see [`similarity::Bm25Params`]'s doc comment and
+/// `docs/parity.md`'s BM25/similarity row): only this function and its FFI
+/// counterpart (`lucene_ffi::query::ffi_search_term_query_scored_with_similarity`)
+/// honor a custom `k1`/`b` today. `search_boolean_query_scored`,
+/// `search_term_query_scored_maxscore`, `search_boolean_query_scored_maxscore`,
+/// phrase queries, and `explain`/`explain_boolean` are all deliberately left
+/// hardcoded to the defaults in this task — threading custom `k1`/`b` through
+/// MAXSCORE pruning, multi-segment fan-out, and phrase scoring is a
+/// materially larger, riskier change than this task's scope.
+pub fn search_term_query_scored_with_similarity<C: ScoringCollector>(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    query: &TermQuery,
+    norms: Option<&FieldNorms<'_>>,
+    params: similarity::Bm25Params,
+    collector: &mut C,
+) -> Result<()> {
+    for (doc_id, score) in
+        term_doc_scores_with_similarity(fields, doc_in, live_docs, query, norms, params)?
+    {
+        collector.collect(doc_id, score);
+    }
+    Ok(())
+}
+
 /// MAXSCORE-style sibling of [`search_term_query_scored`], scoped narrowly and
 /// honestly: single `TermQuery`, [`collector::TopDocsCollector`] only (the
 /// only collector this crate has that exposes a min-competitive-score
@@ -5955,5 +6038,164 @@ mod tests {
         if eager_result.is_ok() {
             assert_eq!(eager.top_docs(), lazy.top_docs());
         }
+    }
+
+    #[test]
+    fn search_term_query_scored_with_similarity_using_defaults_matches_hardcoded_path() {
+        // Task #214 regression proof: Bm25Params::default() through the new
+        // parameterized path must reproduce `search_term_query_scored`'s
+        // hardcoded-default scores byte-for-byte.
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+        let query = TermQuery::new("body", "cat");
+
+        let mut default_path = TopDocsCollector::new(10);
+        search_term_query_scored(
+            &fields,
+            Some(&doc_in),
+            None,
+            &query,
+            None,
+            &mut default_path,
+        )
+        .unwrap();
+
+        let mut with_similarity = TopDocsCollector::new(10);
+        search_term_query_scored_with_similarity(
+            &fields,
+            Some(&doc_in),
+            None,
+            &query,
+            None,
+            similarity::Bm25Params::default(),
+            &mut with_similarity,
+        )
+        .unwrap();
+
+        assert_eq!(default_path.top_docs(), with_similarity.top_docs());
+        assert!(
+            !default_path.top_docs().is_empty(),
+            "test fixture must actually produce hits for this proof to be meaningful"
+        );
+    }
+
+    #[test]
+    fn search_term_query_scored_with_similarity_using_different_k1_b_changes_scores() {
+        // A genuinely different k1/b must produce a measurably different,
+        // correctly-computed score -- computed by hand from the same BM25
+        // formula `similarity.rs`'s doc comment documents, not just "some
+        // different number".
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+        let query = TermQuery::new("body", "cat");
+
+        let mut default_path = TopDocsCollector::new(10);
+        search_term_query_scored(
+            &fields,
+            Some(&doc_in),
+            None,
+            &query,
+            None,
+            &mut default_path,
+        )
+        .unwrap();
+
+        let custom_params = similarity::Bm25Params { k1: 2.0, b: 0.5 };
+        let mut with_similarity = TopDocsCollector::new(10);
+        search_term_query_scored_with_similarity(
+            &fields,
+            Some(&doc_in),
+            None,
+            &query,
+            None,
+            custom_params,
+            &mut with_similarity,
+        )
+        .unwrap();
+
+        assert!(!default_path.top_docs().is_empty());
+        assert_eq!(
+            default_path.top_docs().len(),
+            with_similarity.top_docs().len()
+        );
+
+        for (default_hit, custom_hit) in default_path
+            .top_docs()
+            .iter()
+            .zip(with_similarity.top_docs().iter())
+        {
+            assert_eq!(default_hit.doc_id, custom_hit.doc_id);
+            // Hand-computed expected score using `similarity::score_with_params`
+            // directly (same formula the production path calls), with
+            // UNNORMED_FIELD_LENGTH for both field-length terms since this
+            // fixture is opened without norms (`None` passed above).
+            let field_terms = fields.field("body").unwrap();
+            let stats = field_terms.seek_exact(b"cat").unwrap();
+            let doc_freqs = term_doc_freqs(&fields, Some(&doc_in), None, &query).unwrap();
+            let freq = doc_freqs
+                .iter()
+                .find(|&&(d, _)| d == default_hit.doc_id)
+                .unwrap()
+                .1;
+            let expected = similarity::score_with_params(
+                stats.doc_freq as i64,
+                field_terms.doc_count as i64,
+                freq as f32,
+                similarity::UNNORMED_FIELD_LENGTH,
+                similarity::UNNORMED_FIELD_LENGTH,
+                custom_params,
+            );
+            assert!(
+                (custom_hit.score - expected).abs() < 1e-5,
+                "doc={} got={} expected={}",
+                custom_hit.doc_id,
+                custom_hit.score,
+                expected
+            );
+            assert!(
+                (custom_hit.score - default_hit.score).abs() > 1e-3,
+                "different k1/b must measurably change the score: default={} custom={}",
+                default_hit.score,
+                custom_hit.score
+            );
+        }
+    }
+
+    #[test]
+    fn search_term_query_scored_with_similarity_missing_field_yields_no_hits() {
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let mut collector = TopDocsCollector::new(10);
+        search_term_query_scored_with_similarity(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            &TermQuery::new("no_such_field", "cat"),
+            None,
+            similarity::Bm25Params { k1: 2.0, b: 0.5 },
+            &mut collector,
+        )
+        .unwrap();
+        assert!(collector.top_docs().is_empty());
+    }
+
+    #[test]
+    fn search_term_query_scored_with_similarity_missing_term_yields_no_hits() {
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let mut collector = TopDocsCollector::new(10);
+        search_term_query_scored_with_similarity(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            &TermQuery::new("body", "no_such_term_at_all"),
+            None,
+            similarity::Bm25Params { k1: 2.0, b: 0.5 },
+            &mut collector,
+        )
+        .unwrap();
+        assert!(collector.top_docs().is_empty());
     }
 }
