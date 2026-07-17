@@ -71,6 +71,30 @@ public class GenAnalysis {
       analyze(m, "fold_then_lower", "Café Naïve ÉCOLE", foldLower);
     }
 
+    // Task #207 (full UAX#29-style tokenizer): bare StandardTokenizer output
+    // (no stopwords/lowercasing) over strings exercising combining marks,
+    // CJK ideograph segmentation, and Hangul syllable clustering, to
+    // differentially confirm this port's unicode-segmentation-backed
+    // tokenize() agrees with real StandardTokenizer on these cases.
+    try (Analyzer plain = new PlainStandardAnalyzer()) {
+      // "e" + combining acute accent (U+0301), decomposed "café".
+      analyze(m, "uax29_combining_mark", "café today", plain);
+      // Four Han ideographs -- each its own token, unlike Latin clustering.
+      analyze(m, "uax29_cjk", "你好世界", plain);
+      // Precomposed Hangul syllables (single codepoints already).
+      analyze(m, "uax29_hangul_precomposed", "안녕하세요", plain);
+      // Conjoining Hangul Jamo (leading + vowel + trailing) forming one
+      // syllable block: U+1100 U+1161 U+11A8 = "각".
+      analyze(m, "uax29_hangul_jamo", "각", plain);
+      // Mixed CJK + Latin in one sentence.
+      analyze(m, "uax29_mixed_cjk_latin", "hello 世界 world", plain);
+      // Midword punctuation: numeric decimal/comma, acronym periods, and an
+      // apostrophe contraction, differentially confirmed against real
+      // StandardTokenizer's MidNum/MidNumLet/MidLetter rules rather than
+      // only this port's own hardcoded-expectation unit tests.
+      analyze(m, "uax29_midword_punct", "3.14 U.S.A. don't 1,000", plain);
+    }
+
     Files.writeString(out.resolve("manifest.properties"), m.toString());
     System.out.println("wrote analysis/ fixture directory");
   }
@@ -128,6 +152,15 @@ public class GenAnalysis {
       TokenStream filter = new ASCIIFoldingFilter(source);
       filter = new LowerCaseFilter(filter);
       return new TokenStreamComponents(source, filter);
+    }
+  }
+
+  /** Bare StandardTokenizer, no filters at all -- raw tokenizer output. */
+  static class PlainStandardAnalyzer extends Analyzer {
+    @Override
+    protected TokenStreamComponents createComponents(String fieldName) {
+      Tokenizer source = new StandardTokenizer();
+      return new TokenStreamComponents(source);
     }
   }
 }

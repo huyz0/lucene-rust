@@ -2,9 +2,10 @@
 //! lucene-analysis: see /PLAN.md for scope.
 //!
 //! A minimal, real analyzer chain mirroring Lucene's
-//! `Analyzer`/`Tokenizer`/`TokenFilter` pipeline: a simplified word-boundary
-//! tokenizer (not full UAX#29 Unicode text segmentation -- see the module
-//! docs on [`tokenize`]), plus `LowerCaseFilter`, `StopFilter`,
+//! `Analyzer`/`Tokenizer`/`TokenFilter` pipeline: a UAX#29 word-boundary
+//! tokenizer (see the module docs on [`tokenize`] for exactly what's covered
+//! vs. deliberately deferred relative to real Lucene's `StandardTokenizer`),
+//! plus `LowerCaseFilter`, `StopFilter`,
 //! `AsciiFoldingFilter`, `PorterStemFilter`, `SynonymFilter`, and
 //! `NGramTokenFilter`/`EdgeNGramTokenFilter`.
 //!
@@ -14,6 +15,8 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+
+use unicode_segmentation::UnicodeSegmentation;
 
 /// One analyzed token: term text plus the attributes real Lucene's
 /// `CharTermAttribute`/`OffsetAttribute`/`PositionIncrementAttribute` carry.
@@ -61,94 +64,97 @@ pub struct Token {
     pub position_length: i32,
 }
 
-/// True for characters this tokenizer treats as *internal word connectors*:
-/// kept as part of a token when they sit strictly between two alphanumeric
-/// characters (e.g. the `.` in `"3.14"`, the `,` in `"1,000"`, the `'`/`’` in
-/// `"don't"`/`"O'Brien"`), but still treated as a plain separator everywhere
-/// else (e.g. a sentence-ending `"sentence."` still splits off the period,
-/// since nothing alphanumeric follows it).
-fn is_word_connector(c: char) -> bool {
-    matches!(c, '.' | ',' | '\'' | '\u{2019}')
-}
-
-/// A simplified, real word-boundary tokenizer: splits on whitespace and
-/// punctuation boundaries, keeping maximal runs of alphanumeric characters
-/// (Unicode alphanumeric, via `char::is_alphanumeric`) as terms, plus three
-/// narrowly-scoped UAX#29-inspired extensions (see [`is_word_connector`]):
+/// A UAX#29-based word-boundary tokenizer, standing in for real Lucene's
+/// `StandardTokenizer` (which itself is a JFlex-generated implementation of
+/// [UAX #29, Unicode Text Segmentation](https://www.unicode.org/reports/tr29/)'s
+/// default word-boundary algorithm, extended with a handful of Lucene-specific
+/// rules for URLs/emails/host names that are out of scope here -- see below).
 ///
-/// - **Embedded numeric punctuation**: `.`/`,` between two alphanumeric
-///   characters stays part of the token, so `"3.14"` and `"1,000"` are each
-///   one token rather than splitting at the punctuation.
-/// - **Acronym-style internal periods**: the same rule means `"U.S.A."`
-///   tokenizes as `"U.S.A"` (the trailing period, followed by nothing
-///   alphanumeric, is still dropped) rather than three separate
-///   single-letter tokens.
-/// - **Internal apostrophes**: `'`/`’` between two alphanumeric characters
-///   stays part of the token, so `"don't"` and `"O'Brien"` survive as single
-///   tokens instead of splitting at the apostrophe.
+/// **Implementation**: this delegates word segmentation itself to the
+/// `unicode-segmentation` crate's [`UnicodeSegmentation::unicode_word_indices`]
+/// (already a workspace dependency -- no new crate was added for this), which
+/// is a compliant implementation of UAX#29's `Word_Break` property tables and
+/// rule set (WB1-WB999, per the current Unicode Character Database the crate
+/// ships). That single call is what gives this tokenizer real UAX#29
+/// semantics rather than the ad hoc hand-rolled rules a previous version of
+/// this function used:
 ///
-/// A connector followed by whitespace, end-of-text, or any other
-/// non-alphanumeric character is *not* absorbed -- e.g. a real
-/// sentence-ending period (`"end of sentence."`) still splits the trailing
-/// `.` off, since nothing alphanumeric follows it.
+/// - **Combining diacritical marks**: a base character followed by one or
+///   more `Grapheme_Extend`/combining-mark characters (e.g. a bare `e`
+///   followed by a combining acute accent, U+0301) is never split apart --
+///   UAX#29's `WB` rules never insert a boundary before an `Extend`/`ZWJ`
+///   character, so `"cafe\u{0301}"` tokenizes as the one token `"café"`
+///   (grapheme-equivalent), not two.
+/// - **CJK ideograph segmentation**: each Han ideograph is `Word_Break =
+///   Other`/`Ideographic` with no `ALetter`-style clustering rule joining
+///   adjacent ideographs, so a run of CJK text segments into one token *per
+///   character* (e.g. `"你好世界"` -> four separate one-character tokens),
+///   matching real `StandardTokenizer`'s behavior on unsegmented CJK (neither
+///   real Lucene nor this port does dictionary-based CJK word segmentation;
+///   that is a distinct, heavier feature -- see `CJKAnalyzer`'s bigram
+///   filter, which remains out of scope here).
+/// - **Hangul syllable clustering**: precomposed Hangul syllables (e.g. `안`)
+///   are single Unicode scalars already and naturally form single tokens;
+///   sequences of *conjoining* Hangul Jamo (leading/vowel/trailing consonant
+///   codepoints, U+1100-U+11FF) are clustered into one token per syllable
+///   block by UAX#29's dedicated Hangul `WB` rules (the same rules real
+///   Lucene's tokenizer relies on), rather than splitting at each Jamo
+///   codepoint.
+/// - **Midword punctuation**: UAX#29's `MidLetter`/`MidNumLet`/`MidNum` rules
+///   (WB6/WB7/WB11/WB12) are exactly what already produced this crate's
+///   previously hand-coded exceptions -- e.g. `.`/`,` embedded in a number
+///   (`"3.14"`, `"1,000"`), `.` between single letters in an acronym
+///   (`"U.S.A."` -> `"U.S.A"`, the trailing period still splits off since
+///   nothing alphanumeric follows), and `'`/`’` inside a contraction/name
+///   (`"don't"`, `"O'Brien"`) -- so this port's existing documented behavior
+///   for those cases is preserved (and is now backed by the real algorithm
+///   these rules come from, not a 4-character lookup table).
 ///
-/// This mirrors the *core algorithm* of real Lucene's `StandardTokenizer`/
-/// `WhitespaceTokenizer` -- split on non-alphanumeric boundaries, with a
-/// small set of hand-picked exceptions -- but is **not** a port of full
-/// UAX#29 Unicode Text Segmentation (which additionally handles combining
-/// marks, locale-specific word breaking, CJK/complex script segmentation,
-/// and full email/URL recognition). That's substantial, legitimately
-/// out-of-scope NLP machinery; see `docs/parity.md` for the explicit scope
-/// note.
+/// **What real UAX#29/`StandardTokenizer` includes that this does *not*
+/// port** (deliberately out of scope, not silently wrong -- see
+/// `docs/parity.md`):
+/// - **Emoji/ZWJ *sequence* grouping as a single visual glyph**: a bare ZWJ
+///   between two letters is itself `Extend`-like and does not split (see
+///   `"a\u{200D}b"` above), but a ZWJ emoji sequence (e.g. family emoji built
+///   from base emoji + ZWJ + modifiers) contains no alphanumeric codepoints
+///   at all, so -- like every other non-alphanumeric run -- it produces *no*
+///   token, same as a lone emoji. Grapheme-cluster-aware emoji tokenization
+///   (treating a whole ZWJ sequence as one indivisible unit for filters that
+///   *do* want to emit it as a term) is a distinct, heavier Unicode
+///   grapheme-segmentation feature this crate does not attempt; adding it
+///   would not require a new external crate (the workspace's
+///   `unicode-segmentation` dependency also implements UAX#29 grapheme
+///   clusters via `graphemes()`), but is out of scope for this task since
+///   this tokenizer -- like real `StandardTokenizer` -- only ever emits
+///   alphanumeric-containing segments as terms in the first place.
+/// - **Lucene's own URL/email/host-name JFlex extensions** to the base
+///   UAX#29 grammar (e.g. keeping `user@example.com` or
+///   `https://example.com/path` as a single token) are Lucene-specific
+///   additions layered on top of UAX#29, not part of UAX#29 itself, and
+///   remain unimplemented here -- an email/URL still gets split into its
+///   alphanumeric-run pieces (`user`, `example`, `com`, ...).
+/// - **Locale-specific tailoring** (UAX#29 §5.3's optional locale exceptions,
+///   e.g. Southeast Asian dictionary-based segmentation for Thai/Lao/Khmer/
+///   Myanmar) is not implemented -- the crate, like real Lucene's default
+///   `BreakIterator`-free tokenizer, applies the same rules regardless of
+///   detected script/language.
 ///
 /// Every token gets `position_increment == 1` (tokenizers never skip
 /// positions -- that only happens in filters, e.g. [`StopFilter`]).
 pub fn tokenize(text: &str) -> Vec<Token> {
-    let chars: Vec<(usize, char)> = text.char_indices().collect();
-    let n = chars.len();
-    let mut tokens = Vec::new();
-    let mut i = 0;
-    while i < n {
-        let (start, ch) = chars[i];
-        if !ch.is_alphanumeric() {
-            i += 1;
-            continue;
-        }
-        // `last_included` tracks the index of the last char absorbed into
-        // this token; it only ever advances over alphanumeric chars or
-        // connectors that are themselves followed by another alphanumeric
-        // char, so a token never ends on a bare connector.
-        let mut last_included = i;
-        let mut j = i + 1;
-        while j < n {
-            let (_, c) = chars[j];
-            if c.is_alphanumeric() {
-                last_included = j;
-                j += 1;
-                continue;
+    text.unicode_word_indices()
+        .map(|(start, word)| {
+            let start_offset = start as i32;
+            let end_offset = (start + word.len()) as i32;
+            Token {
+                term: word.to_string(),
+                start_offset,
+                end_offset,
+                position_increment: 1,
+                position_length: 1,
             }
-            if is_word_connector(c) && j + 1 < n && chars[j + 1].1.is_alphanumeric() {
-                // Absorb the connector provisionally; `last_included` is
-                // only bumped to it once the following alphanumeric char is
-                // also absorbed (next loop iteration), so a trailing
-                // connector at the very end of the run is never included.
-                j += 1;
-                continue;
-            }
-            break;
-        }
-        let (end_start, end_ch) = chars[last_included];
-        let end_offset = end_start + end_ch.len_utf8();
-        tokens.push(Token {
-            term: text[start..end_offset].to_string(),
-            start_offset: start as i32,
-            end_offset: end_offset as i32,
-            position_increment: 1,
-            position_length: 1,
-        });
-        i = last_included + 1;
-    }
-    tokens
+        })
+        .collect()
 }
 
 /// Real Lucene's `LowerCaseFilter`: lowercases each token's term text,
@@ -1426,6 +1432,88 @@ mod tests {
                 tok("season", 9, 15, 1),
             ]
         );
+    }
+
+    // -- UAX#29 extensions: combining marks, CJK, Hangul, ZWJ --
+
+    #[test]
+    fn tokenize_combining_mark_stays_attached_to_base_char() {
+        // "e" + combining acute accent (U+0301), decomposed form of "é".
+        // A naive per-char split would treat the combining mark as its own
+        // boundary; UAX#29 (via WB's Extend rule) keeps it fused to "cafe".
+        let tokens = tokenize("cafe\u{0301} today");
+        assert_eq!(tokens.len(), 2);
+        assert_eq!(tokens[0].term, "cafe\u{0301}");
+        assert_eq!(tokens[0].start_offset, 0);
+        assert_eq!(tokens[0].end_offset, "cafe\u{0301}".len() as i32);
+        assert_eq!(tokens[1].term, "today");
+    }
+
+    #[test]
+    fn tokenize_cjk_ideographs_split_one_per_character() {
+        // Each Han ideograph is its own token -- no word clustering across
+        // CJK text, unlike Latin script.
+        let tokens = tokenize("你好世界");
+        assert_eq!(
+            tokens,
+            vec![
+                tok("你", 0, 3, 1),
+                tok("好", 3, 6, 1),
+                tok("世", 6, 9, 1),
+                tok("界", 9, 12, 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn tokenize_precomposed_hangul_syllable_is_one_token() {
+        let tokens = tokenize("안녕하세요");
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].term, "안녕하세요");
+    }
+
+    #[test]
+    fn tokenize_conjoining_hangul_jamo_cluster_into_one_syllable_token() {
+        // Leading consonant + vowel + trailing consonant jamo (U+1100,
+        // U+1161, U+11A8) compose the syllable "각"; UAX#29's Hangul WB
+        // rules cluster them into one token, not three.
+        let jamo = "\u{1100}\u{1161}\u{11A8}";
+        let tokens = tokenize(jamo);
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].term, jamo);
+    }
+
+    #[test]
+    fn tokenize_mixed_cjk_and_latin() {
+        let tokens = tokenize("hello 世界 world");
+        assert_eq!(
+            tokens,
+            vec![
+                tok("hello", 0, 5, 1),
+                tok("世", 6, 9, 1),
+                tok("界", 9, 12, 1),
+                tok("world", 13, 18, 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn tokenize_zwj_between_letters_does_not_split() {
+        // A bare ZWJ (U+200D) between two letters is Extend-like and does
+        // not introduce a word boundary.
+        let joined = "a\u{200d}b";
+        let tokens = tokenize(joined);
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].term, joined);
+    }
+
+    #[test]
+    fn tokenize_emoji_produces_no_token() {
+        // Emoji contain no alphanumeric codepoints, so -- like any other
+        // non-alphanumeric run -- they produce no token at all, but do not
+        // corrupt tokenization of the surrounding text.
+        let tokens = tokenize("test\u{1F44D}emoji");
+        assert_eq!(tokens, vec![tok("test", 0, 4, 1), tok("emoji", 8, 13, 1)]);
     }
 
     #[test]

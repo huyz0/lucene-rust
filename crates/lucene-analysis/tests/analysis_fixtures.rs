@@ -149,6 +149,49 @@ fn ascii_folding_matches_real_ascii_folding_filter() {
     assert_eq!(actual, expected, "fold-only case diverged from real Lucene");
 }
 
+/// Task #207 (full UAX#29-style tokenizer) cross-engine check: bare real
+/// `StandardTokenizer` output (no filters) over strings exercising combining
+/// marks, CJK ideograph segmentation, precomposed and conjoining-Jamo Hangul
+/// syllables, mixed CJK/Latin text, and midword punctuation (numeric
+/// decimal/comma, acronym periods, apostrophe contraction) -- recorded by
+/// `fixtures/src/GenAnalysis.java`'s `uax29_*` cases. Confirms this port's
+/// `tokenize()` (now backed by the `unicode-segmentation` crate's UAX#29
+/// word-boundary implementation) agrees with real Lucene on all of these,
+/// after reconciling the char-vs-byte offset unit (see
+/// `char_offsets_to_byte_offsets`).
+#[test]
+fn tokenize_matches_real_standard_tokenizer_on_uax29_cases() {
+    let m = Manifest::load();
+    for case in [
+        "uax29_combining_mark",
+        "uax29_cjk",
+        "uax29_hangul_precomposed",
+        "uax29_hangul_jamo",
+        "uax29_mixed_cjk_latin",
+        "uax29_midword_punct",
+    ] {
+        let text = m.get(&format!("{case}.text"));
+        let expected_count: usize = m.get(&format!("{case}.count")).parse().unwrap();
+        let expected = expected_tokens(&m, case);
+        assert_eq!(
+            expected.len(),
+            expected_count,
+            "case {case}: count mismatch"
+        );
+        let expected = char_offsets_to_byte_offsets(text, expected);
+
+        let actual: Vec<(String, i32, i32, i32)> = lucene_analysis::tokenize(text)
+            .into_iter()
+            .map(|t| (t.term, t.position_increment, t.start_offset, t.end_offset))
+            .collect();
+
+        assert_eq!(
+            actual, expected,
+            "case {case} (text={text:?}) diverged from real Lucene"
+        );
+    }
+}
+
 /// Task #64 cross-engine check for the composed `Analyzer::with_ascii_folding`
 /// chain (fold, then lowercase): `fixtures/src/GenAnalysis.java`'s
 /// `fold_then_lower` case runs real `ASCIIFoldingFilter` followed by real
