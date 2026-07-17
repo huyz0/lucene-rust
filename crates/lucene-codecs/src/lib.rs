@@ -23,6 +23,7 @@ pub mod postings;
 pub mod postings_writer;
 pub mod regexp;
 pub mod stored_fields;
+pub mod suggest;
 pub mod term_vectors;
 pub mod terms_dict;
 pub mod wildcard;
