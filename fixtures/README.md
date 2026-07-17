@@ -570,4 +570,9 @@ read identically to one `FSTCompiler` would have produced. See
   removed. Records each surviving token's term, position increment, and
   char offsets via real `CharTermAttribute`/`PositionIncrementAttribute`/
   `OffsetAttribute`, which is what `lucene-analysis`'s `StopFilter`
-  position-increment-preservation rule is checked against.
+  position-increment-preservation rule is checked against. Also includes
+  `fold_only`/`fold_then_lower` (task #64, real `ASCIIFoldingFilter`) and
+  five `uax29_*` cases (task #207: bare `StandardTokenizer`, no filters,
+  over combining-mark, CJK-ideograph, precomposed-Hangul,
+  conjoining-Jamo-Hangul, and mixed-CJK/Latin text) checking
+  `lucene-analysis`'s `unicode-segmentation`-backed `tokenize()`.
