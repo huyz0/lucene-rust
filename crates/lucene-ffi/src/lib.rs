@@ -288,7 +288,7 @@ pub use query::{
     ffi_search_boolean_query, ffi_search_boolean_query_scored,
     ffi_search_boolean_query_scored_maxscore, ffi_search_phrase_query,
     ffi_search_phrase_query_scored, ffi_search_term_query, ffi_search_term_query_scored,
-    ffi_search_term_query_scored_maxscore,
+    ffi_search_term_query_scored_maxscore, ffi_search_term_query_scored_with_similarity,
 };
 pub use range_sort::{
     ffi_search_numeric_range_sorted_by_field,

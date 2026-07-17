@@ -76,6 +76,42 @@ pub const DEFAULT_K1: f32 = 1.2;
 /// `BM25Similarity`'s default `b` (field-length normalization parameter).
 pub const DEFAULT_B: f32 = 0.75;
 
+/// The two knobs real Lucene's `BM25Similarity(float k1, float b)` constructor
+/// exposes per-`Similarity`-instance (task #214, "Configurable BM25 constant
+/// from FFI") -- `k1` (term-frequency saturation) and `b` (field-length
+/// normalization). [`Default`] reproduces today's hardcoded [`DEFAULT_K1`]/
+/// [`DEFAULT_B`] byte-for-byte, so every existing call site that doesn't know
+/// about this struct keeps its exact current behavior.
+///
+/// **Scope note** (see `docs/parity.md`'s BM25/similarity row for the full,
+/// honest list): this struct only reaches
+/// [`crate::search_term_query_scored_with_similarity`] so far -- a single
+/// `TermQuery`, no MAXSCORE pruning. `search_boolean_query_scored`,
+/// the MAXSCORE-pruned variants (`search_term_query_scored_maxscore`,
+/// `search_boolean_query_scored_maxscore`), phrase queries, and
+/// `explain`/`explain_boolean` all remain hardcoded to [`DEFAULT_K1`]/
+/// [`DEFAULT_B`], unchanged. Threading custom `k1`/`b` through every scored
+/// path is a larger, separately-scoped change; this task deliberately covers
+/// only the single most fundamental scored entry point.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Bm25Params {
+    /// Term-frequency saturation parameter (`BM25Similarity`'s `k1`).
+    pub k1: f32,
+    /// Field-length normalization parameter (`BM25Similarity`'s `b`).
+    pub b: f32,
+}
+
+impl Default for Bm25Params {
+    /// Reproduces [`DEFAULT_K1`]/[`DEFAULT_B`] -- real Lucene's
+    /// `BM25Similarity()` no-arg constructor.
+    fn default() -> Self {
+        Bm25Params {
+            k1: DEFAULT_K1,
+            b: DEFAULT_B,
+        }
+    }
+}
+
 /// The constant `fieldLength`/`avgFieldLength` this port substitutes when a
 /// field has no opened norms (norms disabled for that field, or the caller
 /// didn't open a `.nvd`/`.nvm` pair for this search) — see this module's doc
@@ -134,6 +170,21 @@ pub fn score(
     avg_field_length: f32,
 ) -> f32 {
     idf(doc_freq, doc_count) * tf_norm(freq, field_length, avg_field_length, DEFAULT_K1, DEFAULT_B)
+}
+
+/// [`score`]'s sibling taking an explicit [`Bm25Params`] instead of the
+/// hardcoded [`DEFAULT_K1`]/[`DEFAULT_B`] -- see that struct's doc comment for
+/// this task's scope. `Bm25Params::default()` produces byte-for-byte the same
+/// result as [`score`] (same formula, same constants).
+pub fn score_with_params(
+    doc_freq: i64,
+    doc_count: i64,
+    freq: f32,
+    field_length: f32,
+    avg_field_length: f32,
+    params: Bm25Params,
+) -> f32 {
+    idf(doc_freq, doc_count) * tf_norm(freq, field_length, avg_field_length, params.k1, params.b)
 }
 
 /// Upper bound on the BM25 score any document covered by a single block/span
@@ -383,6 +434,66 @@ mod tests {
             "got {got}, expected {expected}"
         );
         assert!((got - 1.139_696).abs() < 1e-3, "got {got}");
+    }
+
+    #[test]
+    fn bm25_params_default_matches_lucene_default_constants() {
+        let params = Bm25Params::default();
+        assert_eq!(params.k1, DEFAULT_K1);
+        assert_eq!(params.b, DEFAULT_B);
+    }
+
+    #[test]
+    fn score_with_params_using_defaults_matches_score_byte_for_byte() {
+        // Regression proof (task #214): the new parameterized path must
+        // reproduce the existing hardcoded-default path exactly when given
+        // Bm25Params::default(), not just "close enough".
+        let got = score_with_params(
+            2,
+            10,
+            4.0,
+            UNNORMED_FIELD_LENGTH,
+            UNNORMED_FIELD_LENGTH,
+            Bm25Params::default(),
+        );
+        let expected = score(2, 10, 4.0, UNNORMED_FIELD_LENGTH, UNNORMED_FIELD_LENGTH);
+        assert_eq!(
+            got, expected,
+            "got {got}, expected byte-identical {expected}"
+        );
+    }
+
+    #[test]
+    fn score_with_params_using_different_k1_b_matches_hand_computed_value() {
+        // docFreq=2, docCount=10, freq=4, unnormed field length, but k1=2.0,
+        // b=0.5 instead of the 1.2/0.75 defaults.
+        // idf(2,10) = ln(4.4) = 1.481604... (same as `score_combines_idf_and_tf_norm`)
+        // tfNorm(4, 1, 1, 2.0, 0.5) = 4 / (4 + 2.0*(1 - 0.5 + 0.5*1/1))
+        //           = 4 / (4 + 2.0*1.0) = 4 / 6.0 = 0.666666...
+        // score = 1.481604 * 0.666666... = 0.987736...
+        let params = Bm25Params { k1: 2.0, b: 0.5 };
+        let got = score_with_params(
+            2,
+            10,
+            4.0,
+            UNNORMED_FIELD_LENGTH,
+            UNNORMED_FIELD_LENGTH,
+            params,
+        );
+        let expected_idf = 4.4f64.ln() as f32;
+        let expected_tf_norm = 4.0f32 / 6.0f32;
+        let expected = expected_idf * expected_tf_norm;
+        assert!(
+            (got - expected).abs() < 1e-4,
+            "got {got}, expected {expected}"
+        );
+        assert!((got - 0.987_736).abs() < 1e-3, "got {got}");
+        // And it must differ measurably from the default-params score.
+        let default_score = score(2, 10, 4.0, UNNORMED_FIELD_LENGTH, UNNORMED_FIELD_LENGTH);
+        assert!(
+            (got - default_score).abs() > 1e-3,
+            "different k1/b must produce a measurably different score: {got} vs {default_score}"
+        );
     }
 
     #[test]

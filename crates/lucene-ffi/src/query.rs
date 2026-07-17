@@ -86,7 +86,7 @@ use lucene_search::field_norms::FieldNorms;
 use lucene_search::{
     search_boolean_query, search_boolean_query_scored, search_boolean_query_scored_maxscore,
     search_phrase_query, search_phrase_query_scored, search_term_query, search_term_query_scored,
-    search_term_query_scored_maxscore,
+    search_term_query_scored_maxscore, search_term_query_scored_with_similarity,
 };
 use lucene_search::{BooleanQuery, Clause, PhraseQuery, TermQuery, TopDocsCollector, VecCollector};
 
@@ -575,6 +575,109 @@ pub unsafe extern "C" fn ffi_search_term_query_scored(
             None,
             &query,
             norms.as_ref(),
+            &mut collector,
+        )
+        .map_err(map_search_error)?;
+
+        let handle = lock_recovering(scored_results()).insert(ScoredResultsHandle {
+            hits: collector.top_docs().to_vec(),
+        });
+        // SAFETY: caller contract guarantees `out_scored_results_handle` is valid
+        // for one write.
+        unsafe {
+            *out_scored_results_handle = handle;
+        }
+        Ok(())
+    })
+}
+
+/// [`ffi_search_term_query_scored`]'s sibling taking explicit `k1`/`b`
+/// (task #214, "Configurable BM25 constant from FFI") instead of always
+/// using [`lucene_search::similarity::DEFAULT_K1`]/
+/// [`lucene_search::similarity::DEFAULT_B`] -- the one new FFI entry point
+/// this task adds, for the single most fundamental scored search path (a
+/// plain `TermQuery`, no MAXSCORE pruning). Runs
+/// [`lucene_search::search_term_query_scored_with_similarity`], otherwise
+/// identical to `ffi_search_term_query_scored`'s contract (same
+/// `(field, term)`/`top_n`/[`ScoredResultsHandle`] handling, same norms
+/// lookup via [`open_field_norms`]).
+///
+/// `k1 == lucene_search::similarity::DEFAULT_K1` and
+/// `b == lucene_search::similarity::DEFAULT_B` reproduce
+/// `ffi_search_term_query_scored`'s scores byte-for-byte (same underlying
+/// formula, same constants) -- see
+/// `ffi_search_term_query_scored_with_similarity_using_defaults_matches_hardcoded_path`
+/// below for the regression proof.
+///
+/// **Scope note** (see `lucene_search::similarity::Bm25Params`'s doc comment
+/// and `docs/parity.md`'s BM25/similarity row for the full, honest list):
+/// only this function and its Rust-level counterpart
+/// (`search_term_query_scored_with_similarity`) support configurable `k1`/`b`
+/// today. `ffi_search_term_query_scored_maxscore`,
+/// `ffi_search_boolean_query_scored`/`ffi_search_boolean_query_scored_maxscore`,
+/// and `ffi_search_phrase_query_scored` are all deliberately left hardcoded
+/// to the BM25 defaults -- threading custom `k1`/`b` through MAXSCORE
+/// pruning, multi-segment fan-out, and phrase scoring is a materially larger,
+/// riskier change than this task's scope.
+///
+/// # Safety
+/// `field` must be valid for `field_len` bytes, `term` for `term_len` bytes,
+/// `out_scored_results_handle` valid for one `u64` write.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn ffi_search_term_query_scored_with_similarity(
+    segment_handle: u64,
+    field: *const c_char,
+    field_len: usize,
+    term: *const u8,
+    term_len: usize,
+    k1: f32,
+    b: f32,
+    top_n: usize,
+    out_scored_results_handle: *mut u64,
+) -> i32 {
+    guard(|| {
+        if out_scored_results_handle.is_null() {
+            return Err(FfiStatus::NullPointer);
+        }
+        // SAFETY: caller contract guarantees `field`/`term` are valid for their
+        // paired lengths.
+        let (field, term) = unsafe {
+            (
+                str_from_raw(field as *const u8, field_len)?,
+                bytes_from_raw(term, term_len)?,
+            )
+        };
+        let query = TermQuery::new(field, term.to_vec());
+        let params = lucene_search::similarity::Bm25Params { k1, b };
+
+        let segments = lock_recovering(segments());
+        let segment = segments.get(segment_handle).ok_or_else(|| {
+            set_last_error(
+                "ffi_search_term_query_scored_with_similarity: unknown or already-closed segment handle",
+            );
+            FfiStatus::InvalidHandle
+        })?;
+
+        let doc_in = segment
+            .doc_bytes
+            .as_deref()
+            .map(|b| DocInput::open(b, &segment.segment_id, &segment.segment_suffix))
+            .transpose()
+            .map_err(|e| {
+                set_last_error(format!("reopening .doc: {e}"));
+                FfiStatus::Decode
+            })?;
+        let norms = open_field_norms(segment, &query.field)?;
+
+        let mut collector = TopDocsCollector::new(top_n);
+        search_term_query_scored_with_similarity(
+            &segment.fields,
+            doc_in.as_ref(),
+            None,
+            &query,
+            norms.as_ref(),
+            params,
             &mut collector,
         )
         .map_err(map_search_error)?;
@@ -2043,6 +2146,216 @@ mod tests {
         assert!((hits[1].1 - expected_doc2).abs() < 1e-4);
 
         ffi_close_scored_results(scored_handle);
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    #[test]
+    fn term_query_scored_with_similarity_using_defaults_matches_hardcoded_path() {
+        // Task #214 regression proof, at the FFI boundary: k1/b ==
+        // DEFAULT_K1/DEFAULT_B through the new entry point must reproduce
+        // `ffi_search_term_query_scored`'s scores byte-for-byte.
+        let dir_handle = open_dir();
+        let seg_handle = open_segment(dir_handle, false);
+
+        let field = "body";
+        let term = b"cat";
+
+        let mut default_handle: u64 = 0;
+        let rc = unsafe {
+            ffi_search_term_query_scored(
+                seg_handle,
+                field.as_ptr() as *const c_char,
+                field.len(),
+                term.as_ptr(),
+                term.len(),
+                10,
+                &mut default_handle as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::Ok.code());
+
+        let mut with_similarity_handle: u64 = 0;
+        let rc = unsafe {
+            ffi_search_term_query_scored_with_similarity(
+                seg_handle,
+                field.as_ptr() as *const c_char,
+                field.len(),
+                term.as_ptr(),
+                term.len(),
+                lucene_search::similarity::DEFAULT_K1,
+                lucene_search::similarity::DEFAULT_B,
+                10,
+                &mut with_similarity_handle as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::Ok.code());
+
+        let default_hits = read_scored_results(default_handle);
+        let with_similarity_hits = read_scored_results(with_similarity_handle);
+        assert_eq!(default_hits, with_similarity_hits);
+        assert!(!default_hits.is_empty());
+
+        ffi_close_scored_results(default_handle);
+        ffi_close_scored_results(with_similarity_handle);
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    #[test]
+    fn term_query_scored_with_similarity_using_different_k1_b_matches_hand_computed_value() {
+        let dir_handle = open_dir();
+        let seg_handle = open_segment(dir_handle, false);
+
+        let field = "body";
+        let term = b"cat";
+        let k1 = 2.0f32;
+        let b = 0.5f32;
+        let mut scored_handle: u64 = 0;
+        let rc = unsafe {
+            ffi_search_term_query_scored_with_similarity(
+                seg_handle,
+                field.as_ptr() as *const c_char,
+                field.len(),
+                term.as_ptr(),
+                term.len(),
+                k1,
+                b,
+                10,
+                &mut scored_handle as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::Ok.code());
+
+        let hits = read_scored_results(scored_handle);
+        // Same fixture facts as `term_query_scored_body_cat_returns_expected_docs_and_scores`
+        // (cat: docFreq=2, body.docCount=4; doc 0 freq=2, doc 2 freq=1), but with
+        // k1=2.0, b=0.5 instead of the 1.2/0.75 defaults:
+        // idf(2,4) = ln(1 + (4-2+0.5)/(2+0.5)) = ln(1 + 2.5/2.5) = ln(2) = 0.693147...
+        // tfNorm(freq, 1, 1, 2.0, 0.5) = freq / (freq + 2.0*(1-0.5+0.5*1/1))
+        //                              = freq / (freq + 2.0*1.0) = freq / (freq + 2.0)
+        // doc 0 (freq=2): tfNorm = 2/4 = 0.5, score = 0.693147 * 0.5 = 0.346574...
+        // doc 2 (freq=1): tfNorm = 1/3 = 0.333333..., score = 0.693147 * 0.333333... = 0.231049...
+        let idf = lucene_search::similarity::idf(2, 4);
+        let expected_doc0 = idf
+            * lucene_search::similarity::tf_norm(
+                2.0,
+                lucene_search::similarity::UNNORMED_FIELD_LENGTH,
+                lucene_search::similarity::UNNORMED_FIELD_LENGTH,
+                k1,
+                b,
+            );
+        let expected_doc2 = idf
+            * lucene_search::similarity::tf_norm(
+                1.0,
+                lucene_search::similarity::UNNORMED_FIELD_LENGTH,
+                lucene_search::similarity::UNNORMED_FIELD_LENGTH,
+                k1,
+                b,
+            );
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].0, 0);
+        assert!(
+            (hits[0].1 - expected_doc0).abs() < 1e-4,
+            "got {}",
+            hits[0].1
+        );
+        assert!(
+            (expected_doc0 - 0.346_574).abs() < 1e-3,
+            "hand-computed sanity check: {expected_doc0}"
+        );
+        assert_eq!(hits[1].0, 2);
+        assert!(
+            (hits[1].1 - expected_doc2).abs() < 1e-4,
+            "got {}",
+            hits[1].1
+        );
+        assert!(
+            (expected_doc2 - 0.231_049).abs() < 1e-3,
+            "hand-computed sanity check: {expected_doc2}"
+        );
+
+        // And it must measurably differ from the hardcoded-default path.
+        let expected_default_doc0 = expected_unnormed_bm25(2, 4, 2.0);
+        assert!((hits[0].1 - expected_default_doc0).abs() > 1e-3);
+
+        ffi_close_scored_results(scored_handle);
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    #[test]
+    fn term_query_scored_with_similarity_top_n_keeps_only_the_best_hit() {
+        let dir_handle = open_dir();
+        let seg_handle = open_segment(dir_handle, false);
+
+        let field = "body";
+        let term = b"cat";
+        let mut scored_handle: u64 = 0;
+        let rc = unsafe {
+            ffi_search_term_query_scored_with_similarity(
+                seg_handle,
+                field.as_ptr() as *const c_char,
+                field.len(),
+                term.as_ptr(),
+                term.len(),
+                lucene_search::similarity::DEFAULT_K1,
+                lucene_search::similarity::DEFAULT_B,
+                1,
+                &mut scored_handle as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::Ok.code());
+        let hits = read_scored_results(scored_handle);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].0, 0);
+
+        ffi_close_scored_results(scored_handle);
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    #[test]
+    fn term_query_scored_with_similarity_unknown_segment_handle_is_an_error() {
+        let field = "body";
+        let term = b"cat";
+        let mut scored_handle: u64 = 0;
+        let rc = unsafe {
+            ffi_search_term_query_scored_with_similarity(
+                999_999,
+                field.as_ptr() as *const c_char,
+                field.len(),
+                term.as_ptr(),
+                term.len(),
+                lucene_search::similarity::DEFAULT_K1,
+                lucene_search::similarity::DEFAULT_B,
+                10,
+                &mut scored_handle as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::InvalidHandle.code());
+    }
+
+    #[test]
+    fn term_query_scored_with_similarity_null_out_handle_is_an_error() {
+        let dir_handle = open_dir();
+        let seg_handle = open_segment(dir_handle, false);
+        let field = "body";
+        let term = b"cat";
+        let rc = unsafe {
+            ffi_search_term_query_scored_with_similarity(
+                seg_handle,
+                field.as_ptr() as *const c_char,
+                field.len(),
+                term.as_ptr(),
+                term.len(),
+                lucene_search::similarity::DEFAULT_K1,
+                lucene_search::similarity::DEFAULT_B,
+                10,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(rc, FfiStatus::NullPointer.code());
         ffi_close_segment(seg_handle);
         ffi_close_directory(dir_handle);
     }
