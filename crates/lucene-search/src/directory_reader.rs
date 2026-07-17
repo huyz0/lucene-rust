@@ -212,12 +212,21 @@ impl SegmentReader {
             // extension.
             let tim_file_name = find_segment_file_name(&si.files, compound.as_ref(), ".tim")
                 .expect("found == 3 implies a .tim entry exists");
-            let segment_suffix = tim_file_name
-                .strip_prefix(&format!("{segment_name}_"))
-                .or_else(|| tim_file_name.strip_prefix('_'))
-                .and_then(|s| s.strip_suffix(".tim"))
-                .unwrap_or_default()
-                .to_string();
+            // No-codec-suffix case first (this port's own writer, e.g. loose
+            // `_0.tim`): the generic strip-and-derive logic below would
+            // otherwise misparse the segment name's own trailing digit as a
+            // bogus suffix (`_0.tim` -> strip leading `_` -> `0.tim` ->
+            // suffix `"0"`, wrong) -- same fix as the `.dvm` case below.
+            let segment_suffix = if tim_file_name == format!("{segment_name}.tim") {
+                String::new()
+            } else {
+                tim_file_name
+                    .strip_prefix(&format!("{segment_name}_"))
+                    .or_else(|| tim_file_name.strip_prefix('_'))
+                    .and_then(|s| s.strip_suffix(".tim"))
+                    .unwrap_or_default()
+                    .to_string()
+            };
 
             let fields = blocktree::open(
                 tim_bytes.as_ref().unwrap(),
@@ -1683,48 +1692,19 @@ mod tests {
                 1,
                 "postings-carrying segments must merge down like any other"
             );
-            let merged = &segments_after[0];
+            drop(segments_after);
 
-            // Opened straight off disk with this port's own no-codec-suffix
+            // Opened through the real `DirectoryReader` -> `SegmentReader`
+            // stack -- now that `SegmentReader::open`'s `.tim`-suffix
+            // derivation special-cases this port's own no-codec-suffix
             // convention (segment_suffix == "", matching every write site in
-            // `index_writer.rs`/`merge.rs`) rather than through
-            // `DirectoryReader`/`SegmentReader::open`, which assumes real
-            // Lucene's `_<n>_<Codec>_<n>` suffixed sub-file names -- a
-            // separate, pre-existing gap in this port's own writer/reader
-            // naming convention, out of scope for this merge-wiring task.
-            let tim = dir.open(&format!("{}.tim", merged.segment_name)).unwrap();
-            let tip = dir.open(&format!("{}.tip", merged.segment_name)).unwrap();
-            let tmd = dir.open(&format!("{}.tmd", merged.segment_name)).unwrap();
-            let doc_bytes = dir.open(&format!("{}.doc", merged.segment_name)).unwrap();
-            let fdt = dir.open(&format!("{}.fdt", merged.segment_name)).unwrap();
-            let fdx = dir.open(&format!("{}.fdx", merged.segment_name)).unwrap();
-            let fdm = dir.open(&format!("{}.fdm", merged.segment_name)).unwrap();
-            let stored =
-                lucene_codecs::stored_fields::open(&fdt, &fdx, &fdm, &merged.segment_id, "")
-                    .unwrap();
-            let field_infos = lucene_codecs::field_infos::FieldInfos {
-                fields: vec![body_field(1)],
-            };
-            let block_tree = blocktree::open(
-                &tim,
-                &tip,
-                &tmd,
-                &field_infos,
-                &merged.segment_id,
-                "",
-                stored.max_doc(),
-            )
-            .unwrap();
-            let doc_in = DocInput::open(&doc_bytes, &merged.segment_id, "").unwrap();
-
-            let segments = vec![crate::multi_segment::OpenSegment {
-                fields: &block_tree,
-                doc_in: Some(&doc_in),
-                pos_in: None,
-                pay_in: None,
-                live_docs: None,
-                doc_base: 0,
-            }];
+            // `index_writer.rs`/`merge.rs`) the same way its `.dvm`-suffix
+            // derivation already did, this no longer needs a manual
+            // off-disk-file workaround.
+            let reader = DirectoryReader::open(&dir).unwrap();
+            assert_eq!(reader.segment_readers().len(), 1);
+            let opened = reader.open_segments().unwrap();
+            let segments = opened.as_open_segments();
             let norms = [None];
 
             // "fox" was indexed by docs "a" and "b" -- originally in two
