@@ -55,7 +55,9 @@ use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::{
     search_boolean_query_multi_segment, search_boolean_query_multi_segment_concurrent,
-    search_term_query_multi_segment, search_term_query_multi_segment_concurrent,
+    search_boolean_query_multi_segment_maxscore,
+    search_boolean_query_multi_segment_maxscore_concurrent, search_term_query_multi_segment,
+    search_term_query_multi_segment_concurrent,
 };
 use lucene_search::{BooleanQuery, TermQuery};
 use lucene_store::directory::FsDirectory;
@@ -454,6 +456,199 @@ pub unsafe extern "C" fn ffi_search_boolean_query_multi_segment_concurrent(
 
         let hits = search_boolean_query_multi_segment_concurrent(&segments, &query, &norms, top_n)
             .map_err(map_search_error)?;
+
+        let handle = lock_recovering(scored_results()).insert(ScoredResultsHandle { hits });
+        // SAFETY: caller contract guarantees `out_scored_results_handle` is valid
+        // for one write.
+        unsafe {
+            *out_scored_results_handle = handle;
+        }
+        Ok(())
+    })
+}
+
+/// MAXSCORE-pruned sibling of [`ffi_search_boolean_query_multi_segment`]
+/// (task #213): identical wire format, handle validation, and
+/// `ScoredResultsHandle` plumbing, but fans the per-segment search out via
+/// `search_boolean_query_multi_segment_maxscore` instead of the exhaustive
+/// `search_boolean_query_multi_segment` -- the multi-segment counterpart of
+/// [`crate::query::ffi_search_boolean_query_scored_maxscore`]'s single-segment
+/// exposure. Every precondition/fallback [`crate::query::ffi_search_boolean_query_scored_maxscore`]'s
+/// own doc comment documents applies unchanged, per segment: a segment whose
+/// query shape or term stats don't qualify for MAXSCORE pruning falls back to
+/// the exhaustive per-segment scorer for that segment alone (see
+/// `search_boolean_query_scored_maxscore`'s doc comment, `lucene-search/src/lib.rs`),
+/// with no effect on any other segment or on the final merged result.
+///
+/// # Safety
+/// Same contract as [`ffi_search_boolean_query_multi_segment`]: every
+/// `(pointer, len)` / `(array, count)` pair must be valid for the documented
+/// reads (see [`crate::query::ffi_search_boolean_query`]'s `# Safety`
+/// section, which this mirrors exactly); `out_scored_results_handle` must be
+/// valid for one `u64` write.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn ffi_search_boolean_query_multi_segment_maxscore(
+    reader_handle: u64,
+    must_fields: *const *const c_char,
+    must_field_lens: *const usize,
+    must_terms: *const *const u8,
+    must_term_lens: *const usize,
+    must_count: usize,
+    should_fields: *const *const c_char,
+    should_field_lens: *const usize,
+    should_terms: *const *const u8,
+    should_term_lens: *const usize,
+    should_count: usize,
+    must_not_fields: *const *const c_char,
+    must_not_field_lens: *const usize,
+    must_not_terms: *const *const u8,
+    must_not_term_lens: *const usize,
+    must_not_count: usize,
+    top_n: usize,
+    out_scored_results_handle: *mut u64,
+) -> i32 {
+    guard(|| {
+        if out_scored_results_handle.is_null() {
+            return Err(FfiStatus::NullPointer);
+        }
+        // SAFETY: see `read_term_clauses`'s contract; every array/count pair here
+        // matches it exactly.
+        let query = unsafe {
+            BooleanQuery::new()
+                .with_must(read_term_clauses(
+                    must_fields,
+                    must_field_lens,
+                    must_terms,
+                    must_term_lens,
+                    must_count,
+                )?)
+                .with_should(read_term_clauses(
+                    should_fields,
+                    should_field_lens,
+                    should_terms,
+                    should_term_lens,
+                    should_count,
+                )?)
+                .with_must_not(read_term_clauses(
+                    must_not_fields,
+                    must_not_field_lens,
+                    must_not_terms,
+                    must_not_term_lens,
+                    must_not_count,
+                )?)
+        };
+
+        let readers = lock_recovering(directory_readers());
+        let reader_handle_value = readers.get(reader_handle).ok_or_else(|| {
+            set_last_error(
+                "ffi_search_boolean_query_multi_segment_maxscore: unknown or already-closed reader handle",
+            );
+            FfiStatus::InvalidHandle
+        })?;
+
+        let opened = reader_handle_value.reader.open_segments().map_err(|e| {
+            set_last_error(format!("reopening segment postings: {e}"));
+            FfiStatus::Decode
+        })?;
+        let segments = opened.as_open_segments();
+        let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
+            vec![None; segments.len()];
+
+        let hits = search_boolean_query_multi_segment_maxscore(&segments, &query, &norms, top_n)
+            .map_err(map_search_error)?;
+
+        let handle = lock_recovering(scored_results()).insert(ScoredResultsHandle { hits });
+        // SAFETY: caller contract guarantees `out_scored_results_handle` is valid
+        // for one write.
+        unsafe {
+            *out_scored_results_handle = handle;
+        }
+        Ok(())
+    })
+}
+
+/// Concurrent sibling of [`ffi_search_boolean_query_multi_segment_maxscore`]
+/// -- same relationship [`ffi_search_boolean_query_multi_segment_concurrent`]
+/// has to [`ffi_search_boolean_query_multi_segment`]: fans the per-segment
+/// MAXSCORE search out via `search_boolean_query_multi_segment_maxscore_concurrent`
+/// instead of running segments one at a time.
+///
+/// # Safety
+/// Same contract as [`ffi_search_boolean_query_multi_segment_maxscore`].
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn ffi_search_boolean_query_multi_segment_maxscore_concurrent(
+    reader_handle: u64,
+    must_fields: *const *const c_char,
+    must_field_lens: *const usize,
+    must_terms: *const *const u8,
+    must_term_lens: *const usize,
+    must_count: usize,
+    should_fields: *const *const c_char,
+    should_field_lens: *const usize,
+    should_terms: *const *const u8,
+    should_term_lens: *const usize,
+    should_count: usize,
+    must_not_fields: *const *const c_char,
+    must_not_field_lens: *const usize,
+    must_not_terms: *const *const u8,
+    must_not_term_lens: *const usize,
+    must_not_count: usize,
+    top_n: usize,
+    out_scored_results_handle: *mut u64,
+) -> i32 {
+    guard(|| {
+        if out_scored_results_handle.is_null() {
+            return Err(FfiStatus::NullPointer);
+        }
+        // SAFETY: see `read_term_clauses`'s contract; every array/count pair here
+        // matches it exactly.
+        let query = unsafe {
+            BooleanQuery::new()
+                .with_must(read_term_clauses(
+                    must_fields,
+                    must_field_lens,
+                    must_terms,
+                    must_term_lens,
+                    must_count,
+                )?)
+                .with_should(read_term_clauses(
+                    should_fields,
+                    should_field_lens,
+                    should_terms,
+                    should_term_lens,
+                    should_count,
+                )?)
+                .with_must_not(read_term_clauses(
+                    must_not_fields,
+                    must_not_field_lens,
+                    must_not_terms,
+                    must_not_term_lens,
+                    must_not_count,
+                )?)
+        };
+
+        let readers = lock_recovering(directory_readers());
+        let reader_handle_value = readers.get(reader_handle).ok_or_else(|| {
+            set_last_error(
+                "ffi_search_boolean_query_multi_segment_maxscore_concurrent: unknown or already-closed reader handle",
+            );
+            FfiStatus::InvalidHandle
+        })?;
+
+        let opened = reader_handle_value.reader.open_segments().map_err(|e| {
+            set_last_error(format!("reopening segment postings: {e}"));
+            FfiStatus::Decode
+        })?;
+        let segments = opened.as_open_segments();
+        let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
+            vec![None; segments.len()];
+
+        let hits = search_boolean_query_multi_segment_maxscore_concurrent(
+            &segments, &query, &norms, top_n,
+        )
+        .map_err(map_search_error)?;
 
         let handle = lock_recovering(scored_results()).insert(ScoredResultsHandle { hits });
         // SAFETY: caller contract guarantees `out_scored_results_handle` is valid
@@ -1148,6 +1343,287 @@ mod tests {
         assert!(!read_scored_results(results_handle).is_empty());
 
         ffi_close_scored_results(results_handle);
+        ffi_close_directory_reader(handle);
+    }
+
+    /// Happy-path proof for [`ffi_search_boolean_query_multi_segment_maxscore`]
+    /// (task #213): the same three-clause query
+    /// (`big`/`"everywhere"` -- `docFreq == 300` in this fixture, spanning a
+    /// real level-0 block plus a tail -- and `body`/`"cat"`, `body`/`"dog"`)
+    /// `lucene-search`'s own differential tests use for the same fixture,
+    /// run through the FFI boundary and compared byte-for-byte against
+    /// [`ffi_search_boolean_query_multi_segment`] (the exhaustive path) over
+    /// the same real `fixtures/data/blocktree_index/` fixture -- proving
+    /// MAXSCORE pruning never changes the FFI-visible result, not just the
+    /// underlying `lucene-search` function (already covered by
+    /// `multi_segment.rs`'s own
+    /// `search_boolean_query_multi_segment_maxscore_matches_exhaustive_and_skips_blocks`).
+    #[test]
+    fn boolean_query_multi_segment_maxscore_matches_exhaustive_ffi_wrapper() {
+        let exhaustive_handle = open_reader();
+        let maxscore_handle = open_reader();
+
+        let big_field = "big";
+        let big_term = b"everywhere";
+        let body_field = "body";
+        let cat_term = b"cat";
+        let dog_term = b"dog";
+        let should_fields = [
+            big_field.as_ptr() as *const c_char,
+            body_field.as_ptr() as *const c_char,
+            body_field.as_ptr() as *const c_char,
+        ];
+        let should_field_lens = [big_field.len(), body_field.len(), body_field.len()];
+        let should_terms = [big_term.as_ptr(), cat_term.as_ptr(), dog_term.as_ptr()];
+        let should_term_lens = [big_term.len(), cat_term.len(), dog_term.len()];
+
+        let mut exhaustive_results: u64 = 0;
+        assert_eq!(
+            unsafe {
+                ffi_search_boolean_query_multi_segment(
+                    exhaustive_handle,
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    0,
+                    should_fields.as_ptr(),
+                    should_field_lens.as_ptr(),
+                    should_terms.as_ptr(),
+                    should_term_lens.as_ptr(),
+                    3,
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    0,
+                    5,
+                    &mut exhaustive_results as *mut _,
+                )
+            },
+            FfiStatus::Ok.code()
+        );
+
+        let mut maxscore_results: u64 = 0;
+        assert_eq!(
+            unsafe {
+                ffi_search_boolean_query_multi_segment_maxscore(
+                    maxscore_handle,
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    0,
+                    should_fields.as_ptr(),
+                    should_field_lens.as_ptr(),
+                    should_terms.as_ptr(),
+                    should_term_lens.as_ptr(),
+                    3,
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    0,
+                    5,
+                    &mut maxscore_results as *mut _,
+                )
+            },
+            FfiStatus::Ok.code()
+        );
+
+        let exhaustive_hits = read_scored_results(exhaustive_results);
+        let maxscore_hits = read_scored_results(maxscore_results);
+        assert!(!exhaustive_hits.is_empty());
+        assert_eq!(
+            exhaustive_hits, maxscore_hits,
+            "MAXSCORE FFI wrapper must match the exhaustive FFI wrapper byte-for-byte"
+        );
+        for pair in maxscore_hits.windows(2) {
+            assert!(pair[0].1 >= pair[1].1);
+        }
+
+        ffi_close_scored_results(exhaustive_results);
+        ffi_close_scored_results(maxscore_results);
+        ffi_close_directory_reader(exhaustive_handle);
+        ffi_close_directory_reader(maxscore_handle);
+    }
+
+    /// Same identical-output proof for the concurrent MAXSCORE wrapper,
+    /// mirroring `boolean_query_multi_segment_concurrent_matches_sequential_ffi_wrapper`
+    /// above.
+    #[test]
+    fn boolean_query_multi_segment_maxscore_concurrent_matches_sequential_ffi_wrapper() {
+        let seq_handle = open_reader();
+        let con_handle = open_reader();
+
+        let should_field = "body";
+        let should_term1 = b"cat";
+        let should_term2 = b"bird";
+        let should_fields = [
+            should_field.as_ptr() as *const c_char,
+            should_field.as_ptr() as *const c_char,
+        ];
+        let should_field_lens = [should_field.len(), should_field.len()];
+        let should_terms = [should_term1.as_ptr(), should_term2.as_ptr()];
+        let should_term_lens = [should_term1.len(), should_term2.len()];
+
+        let mut seq_results: u64 = 0;
+        assert_eq!(
+            unsafe {
+                ffi_search_boolean_query_multi_segment_maxscore(
+                    seq_handle,
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    0,
+                    should_fields.as_ptr(),
+                    should_field_lens.as_ptr(),
+                    should_terms.as_ptr(),
+                    should_term_lens.as_ptr(),
+                    2,
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    0,
+                    10,
+                    &mut seq_results as *mut _,
+                )
+            },
+            FfiStatus::Ok.code()
+        );
+
+        let mut con_results: u64 = 0;
+        assert_eq!(
+            unsafe {
+                ffi_search_boolean_query_multi_segment_maxscore_concurrent(
+                    con_handle,
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    0,
+                    should_fields.as_ptr(),
+                    should_field_lens.as_ptr(),
+                    should_terms.as_ptr(),
+                    should_term_lens.as_ptr(),
+                    2,
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    0,
+                    10,
+                    &mut con_results as *mut _,
+                )
+            },
+            FfiStatus::Ok.code()
+        );
+
+        let seq_hits = read_scored_results(seq_results);
+        let con_hits = read_scored_results(con_results);
+        assert!(!seq_hits.is_empty());
+        assert_eq!(
+            seq_hits, con_hits,
+            "concurrent MAXSCORE FFI wrapper must match sequential MAXSCORE FFI wrapper \
+             byte-for-byte"
+        );
+
+        ffi_close_scored_results(seq_results);
+        ffi_close_scored_results(con_results);
+        ffi_close_directory_reader(seq_handle);
+        ffi_close_directory_reader(con_handle);
+    }
+
+    #[test]
+    fn boolean_query_multi_segment_maxscore_unknown_reader_handle_is_invalid_handle() {
+        let mut results_handle: u64 = 0;
+        let rc = unsafe {
+            ffi_search_boolean_query_multi_segment_maxscore(
+                0xFFFF,
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                10,
+                &mut results_handle as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::InvalidHandle.code());
+    }
+
+    #[test]
+    fn boolean_query_multi_segment_maxscore_concurrent_unknown_reader_handle_is_invalid_handle() {
+        let mut results_handle: u64 = 0;
+        let rc = unsafe {
+            ffi_search_boolean_query_multi_segment_maxscore_concurrent(
+                0xFFFF,
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                10,
+                &mut results_handle as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::InvalidHandle.code());
+    }
+
+    #[test]
+    fn boolean_query_multi_segment_maxscore_null_out_handle_is_null_pointer_error() {
+        let handle = open_reader();
+        let should_field = "body";
+        let should_term = b"cat";
+        let should_fields = [should_field.as_ptr() as *const c_char];
+        let should_field_lens = [should_field.len()];
+        let should_terms = [should_term.as_ptr()];
+        let should_term_lens = [should_term.len()];
+        let rc = unsafe {
+            ffi_search_boolean_query_multi_segment_maxscore(
+                handle,
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                should_fields.as_ptr(),
+                should_field_lens.as_ptr(),
+                should_terms.as_ptr(),
+                should_term_lens.as_ptr(),
+                1,
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                10,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(rc, FfiStatus::NullPointer.code());
         ffi_close_directory_reader(handle);
     }
 }

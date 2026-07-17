@@ -477,6 +477,99 @@ pub fn search_boolean_query_multi_segment_concurrent(
     })
 }
 
+/// Multi-segment sibling of [`crate::search_boolean_query_scored_maxscore`]
+/// (task #213): identical fan-out/merge shape to
+/// [`search_boolean_query_multi_segment`] -- same [`merge_multi_segment_scored`]
+/// core, same per-segment bounded `TopDocsCollector`, same doc-base
+/// translation and cross-segment re-rank -- but each segment is searched with
+/// the MAXSCORE-pruned scorer instead of the exhaustive one. MAXSCORE pruning
+/// is a per-segment decision (`search_boolean_query_scored_maxscore` looks
+/// only at that one segment's own block bounds/`docFreq`/`docCount`), so
+/// fanning it out per-segment and merging with the exact same generic core
+/// already used for the exhaustive path is a correct, non-duplicated
+/// generalization: whatever `search_boolean_query_scored_maxscore` proves
+/// about a single segment (identical output to the eager path, strictly
+/// fewer blocks decoded when pruning fires) composes unchanged across
+/// segments, because the merge step never looks at *how* a segment's hits
+/// were produced, only at the resulting `Vec<ScoreDoc>` -- see this module's
+/// own doc comment for why "merge already-ranked per-segment output" is
+/// agnostic to the per-segment scorer used.
+///
+/// Falls back to the exhaustive scorer verbatim on any segment where
+/// `search_boolean_query_scored_maxscore`'s own preconditions aren't met
+/// (`must`/`must_not` non-empty, non-`Clause::Term` should-clauses, a term
+/// with `docFreq <= 1`, etc. -- see that function's doc comment for the full
+/// list); this is exactly `search_boolean_query_scored_maxscore`'s own
+/// documented fallback behavior, not a new one introduced here.
+///
+/// `norms`: per-segment, parallel to `segments` -- same meaning as
+/// [`search_boolean_query_multi_segment`]'s `norms` parameter.
+pub fn search_boolean_query_multi_segment_maxscore(
+    segments: &[OpenSegment<'_>],
+    query: &BooleanQuery,
+    norms: &[Option<&HashMap<String, FieldNorms<'_>>>],
+    top_n: usize,
+) -> Result<Vec<ScoreDoc>> {
+    debug_assert_eq!(
+        segments.len(),
+        norms.len(),
+        "one norms entry per segment expected"
+    );
+    let doc_bases: Vec<i32> = segments.iter().map(|s| s.doc_base).collect();
+    merge_multi_segment_scored(&doc_bases, top_n, |i, local| {
+        let seg = &segments[i];
+        let seg_norms = norms.get(i).copied().flatten();
+        crate::search_boolean_query_scored_maxscore(
+            seg.fields,
+            seg.doc_in,
+            seg.pos_in,
+            seg.pay_in,
+            seg.live_docs,
+            None,
+            query,
+            seg_norms,
+            local,
+        )
+    })
+}
+
+/// Concurrent sibling of [`search_boolean_query_multi_segment_maxscore`] --
+/// same relationship [`search_boolean_query_multi_segment_concurrent`] has to
+/// [`search_boolean_query_multi_segment`]: fans the per-segment MAXSCORE
+/// search out across `rayon`'s global pool via
+/// [`merge_multi_segment_scored_concurrent`] instead of running segments one
+/// at a time, merging with the identical sequential merge step -- see that
+/// function's doc comment for why this is provably byte-for-byte identical
+/// to the sequential path for the same input.
+pub fn search_boolean_query_multi_segment_maxscore_concurrent(
+    segments: &[OpenSegment<'_>],
+    query: &BooleanQuery,
+    norms: &[Option<&HashMap<String, FieldNorms<'_>>>],
+    top_n: usize,
+) -> Result<Vec<ScoreDoc>> {
+    debug_assert_eq!(
+        segments.len(),
+        norms.len(),
+        "one norms entry per segment expected"
+    );
+    let doc_bases: Vec<i32> = segments.iter().map(|s| s.doc_base).collect();
+    merge_multi_segment_scored_concurrent(&doc_bases, top_n, |i, local| {
+        let seg = &segments[i];
+        let seg_norms = norms.get(i).copied().flatten();
+        crate::search_boolean_query_scored_maxscore(
+            seg.fields,
+            seg.doc_in,
+            seg.pos_in,
+            seg.pay_in,
+            seg.live_docs,
+            None,
+            query,
+            seg_norms,
+            local,
+        )
+    })
+}
+
 // --- Sort-by-field multi-segment fan-out/merge ---
 //
 // Everything above this point merges *scored* (`ScoreDoc`) per-segment
@@ -718,6 +811,138 @@ mod tests {
         for pair in merged.windows(2) {
             assert!(pair[0].score >= pair[1].score);
         }
+    }
+
+    /// End-to-end exercise of [`search_boolean_query_multi_segment_maxscore`]
+    /// (task #213) against two real, `IndexWriter`-produced segment copies
+    /// (the same "open the one real fixture segment twice" two-segment
+    /// simulation `search_term_query_multi_segment_merges_two_real_segments`
+    /// and `search_boolean_query_multi_segment_merges_two_real_segments`
+    /// above already use, documented in this crate's `docs/parity.md` as the
+    /// documented next-best alternative to a genuine multi-segment Java
+    /// fixture). Uses the exact same three-clause query
+    /// (`big`/`"everywhere"` -- `docFreq == 300`, spanning a real level-0
+    /// block plus a tail -- and `body`/`"cat"`, `body`/`"dog"`) `lib.rs`'s own
+    /// `boolean_maxscore_lazy_path_matches_eager_path_on_real_fixture`/
+    /// `test_only_boolean_maxscore_block_skip_counter_records_real_skips`
+    /// tests use for the single-segment case, so this test can both prove
+    /// identical output *and* prove real per-clause block-decode skipping
+    /// happened, exactly like those two single-segment tests do individually.
+    ///
+    /// Asserts, for several `top_n` values:
+    /// - the merged, globally-ranked output of
+    ///   [`search_boolean_query_multi_segment_maxscore`] is byte-identical to
+    ///   [`search_boolean_query_multi_segment`] (the exhaustive multi-segment
+    ///   path) -- MAXSCORE pruning must never change the merged result, only
+    ///   skip unnecessary per-segment scoring work;
+    /// - [`test_only_maxscore_block_skip_counter`] recorded at least one real
+    ///   skip across the two segments for small `top_n`, ruling out a
+    ///   vacuously-passing test where the fast path is silently never taken
+    ///   (mirroring the single-segment skip-counter proof one level down).
+    #[test]
+    fn search_boolean_query_multi_segment_maxscore_matches_exhaustive_and_skips_blocks() {
+        let (fields0, doc0, id0, suffix0, max_doc0) = open_real_segment();
+        let (fields1, doc1, id1, suffix1, _) = open_real_segment();
+        let doc_in0 = lucene_codecs::postings::DocInput::open(&doc0, &id0, &suffix0).unwrap();
+        let doc_in1 = lucene_codecs::postings::DocInput::open(&doc1, &id1, &suffix1).unwrap();
+
+        let query = BooleanQuery::new().with_should([
+            TQ::new("big", b"everywhere".as_slice()),
+            TQ::new("body", "cat"),
+            TQ::new("body", "dog"),
+        ]);
+        let segments = [
+            OpenSegment {
+                fields: &fields0,
+                doc_in: Some(&doc_in0),
+                pos_in: None,
+                pay_in: None,
+                live_docs: None,
+                doc_base: 0,
+            },
+            OpenSegment {
+                fields: &fields1,
+                doc_in: Some(&doc_in1),
+                pos_in: None,
+                pay_in: None,
+                live_docs: None,
+                doc_base: max_doc0,
+            },
+        ];
+        let norms = [None, None];
+
+        for &top_n in &[1usize, 2, 5, 20, 300] {
+            let exhaustive =
+                search_boolean_query_multi_segment(&segments, &query, &norms, top_n).unwrap();
+
+            crate::test_only_maxscore_block_skip_counter::reset();
+            let maxscore =
+                search_boolean_query_multi_segment_maxscore(&segments, &query, &norms, top_n)
+                    .unwrap();
+            let skips = crate::test_only_maxscore_block_skip_counter::count();
+
+            assert_eq!(
+                exhaustive, maxscore,
+                "top_{top_n}: multi-segment MAXSCORE output must match the exhaustive \
+                 multi-segment path byte-for-byte"
+            );
+
+            if top_n < 300 {
+                assert!(
+                    skips > 0,
+                    "top_{top_n}: expected real per-clause block skipping across the two \
+                     segments (got {skips} skips)"
+                );
+            }
+        }
+    }
+
+    /// Concurrent sibling of the test above:
+    /// [`search_boolean_query_multi_segment_maxscore_concurrent`] must
+    /// produce byte-for-byte identical output to the sequential
+    /// [`search_boolean_query_multi_segment_maxscore`] for the same input --
+    /// same "merge already-ranked per-segment output is agnostic to fan-out
+    /// order" argument [`merge_multi_segment_scored_concurrent`]'s own doc
+    /// comment already makes.
+    #[test]
+    fn search_boolean_query_multi_segment_maxscore_concurrent_matches_sequential() {
+        let (fields0, doc0, id0, suffix0, max_doc0) = open_real_segment();
+        let (fields1, doc1, id1, suffix1, _) = open_real_segment();
+        let doc_in0 = lucene_codecs::postings::DocInput::open(&doc0, &id0, &suffix0).unwrap();
+        let doc_in1 = lucene_codecs::postings::DocInput::open(&doc1, &id1, &suffix1).unwrap();
+
+        let query = BooleanQuery::new().with_should([
+            TQ::new("big", b"everywhere".as_slice()),
+            TQ::new("body", "cat"),
+            TQ::new("body", "dog"),
+        ]);
+        let segments = [
+            OpenSegment {
+                fields: &fields0,
+                doc_in: Some(&doc_in0),
+                pos_in: None,
+                pay_in: None,
+                live_docs: None,
+                doc_base: 0,
+            },
+            OpenSegment {
+                fields: &fields1,
+                doc_in: Some(&doc_in1),
+                pos_in: None,
+                pay_in: None,
+                live_docs: None,
+                doc_base: max_doc0,
+            },
+        ];
+        let norms = [None, None];
+
+        let sequential =
+            search_boolean_query_multi_segment_maxscore(&segments, &query, &norms, 5).unwrap();
+        let concurrent =
+            search_boolean_query_multi_segment_maxscore_concurrent(&segments, &query, &norms, 5)
+                .unwrap();
+        assert!(!sequential.is_empty());
+        assert_eq!(sequential, concurrent);
     }
 
     /// Same end-to-end exercise for [`search_boolean_query_multi_segment`].
