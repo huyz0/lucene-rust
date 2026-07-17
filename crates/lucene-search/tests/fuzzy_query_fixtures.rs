@@ -201,3 +201,80 @@ fn fuzzy_composes_inside_boolean_query_must() {
     .unwrap();
     assert_eq!(c.docs, vec![1]);
 }
+
+/// `max_expansions` (task #221): with a generous `max_edits` (4, at least
+/// `max(len(term), len(candidate))` for every term in this fixture's `body`
+/// field, so every one of `bird`/`cat`/`dog` matches "cat" regardless of edit
+/// distance), the *unbounded* -- i.e. default `max_expansions = 50`, well
+/// above this fixture's 3 total matches -- union is every one of those three
+/// terms' postings: `bird` = {1, 4}, `cat` = {0, 2}, `dog` = {0, 1} ->
+/// {0, 1, 2, 4}. This is the "fewer matches than the limit" regression-safety
+/// case: capping at 50 must not change a result that never approaches 50
+/// matches.
+#[test]
+fn fuzzy_max_expansions_default_is_unaffected_when_matches_are_few() {
+    let (fields, doc, id, suffix) = open_segment();
+    let doc_in = DocInput::open(&doc, &id, &suffix).expect("open .doc");
+
+    let query = BooleanQuery::new().with_must([Clause::from(
+        FuzzyQuery::new("body", b"cat".to_vec()).with_max_edits(4),
+    )]);
+    let mut c = VecCollector::default();
+    search_boolean_query(
+        &fields,
+        Some(&doc_in),
+        None,
+        None,
+        None,
+        None,
+        &query,
+        &mut c,
+    )
+    .unwrap();
+    assert_eq!(c.docs, vec![0, 1, 2, 4]);
+}
+
+/// Same three-way match as above, but capped to `max_expansions = 1`: only
+/// the first matching term in sorted term-dictionary order survives. `body`'s
+/// sorted order among the three matches is `bird` < `cat` < `dog`, so only
+/// `bird`'s postings ({1, 4}) should appear -- proving the cap actually
+/// truncates the matched-term set down from 3 to 1, not just a no-op when
+/// the limit is never approached (the companion test above).
+#[test]
+fn fuzzy_max_expansions_caps_matched_terms_to_first_n_in_sorted_order() {
+    let (fields, doc, id, suffix) = open_segment();
+    let doc_in = DocInput::open(&doc, &id, &suffix).expect("open .doc");
+
+    let query = BooleanQuery::new().with_must([Clause::from(
+        FuzzyQuery::new("body", b"cat".to_vec())
+            .with_max_edits(4)
+            .with_max_expansions(1),
+    )]);
+    let mut c = VecCollector::default();
+    search_boolean_query(
+        &fields,
+        Some(&doc_in),
+        None,
+        None,
+        None,
+        None,
+        &query,
+        &mut c,
+    )
+    .unwrap();
+    assert_eq!(c.docs, vec![1, 4]);
+}
+
+/// [`FuzzyQuery::new`]'s default `max_expansions` is real Lucene's
+/// `FuzzyQuery.defaultMaxExpansions = 50`
+/// ([`FuzzyQuery::DEFAULT_MAX_EXPANSIONS`]), and [`FuzzyQuery::with_max_expansions`]
+/// overrides it.
+#[test]
+fn fuzzy_query_max_expansions_default_and_builder() {
+    let q = FuzzyQuery::new("body", b"cat".to_vec());
+    assert_eq!(q.max_expansions, 50);
+    assert_eq!(q.max_expansions, FuzzyQuery::DEFAULT_MAX_EXPANSIONS);
+
+    let q = q.with_max_expansions(3);
+    assert_eq!(q.max_expansions, 3);
+}

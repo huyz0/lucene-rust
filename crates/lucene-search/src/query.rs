@@ -161,6 +161,38 @@ impl PrefixQuery {
 /// **Scoring**: unscored/constant (flat `1.0` per match), same choice
 /// `WildcardQuery`/`PrefixQuery` make and for the same reason — see
 /// [`crate::clause_scores`]'s `Clause::Fuzzy` arm.
+///
+/// **`max_expansions` (task #221)**: real `FuzzyQuery`'s `maxExpansions`
+/// (`FuzzyQuery.defaultMaxExpansions = 50`) bounds how many matching terms
+/// from the field's term dictionary get expanded into the query's actual
+/// execution -- without this cap, a fuzzy query against a huge or adversarial
+/// term dictionary could match an unbounded number of terms (a real
+/// behavioral difference from Lucene, and a performance/DoS-shaped gap for a
+/// query whose target term can originate from untrusted input, the same
+/// class of concern task #198's regexp step-budget fix addressed). This
+/// port's [`crate::fuzzy_doc_ids`] enforces the cap by `take`ing only the
+/// first `max_expansions` terms off
+/// [`lucene_codecs::blocktree::FieldTerms::fuzzy_intersect`]'s iterator.
+/// Note that a segment's whole term dictionary is already decoded into an
+/// in-memory sorted `Vec` at open time (see `BlockTreeFields`'s own doc
+/// comment), so `take` doesn't skip any decode/IO work -- it does avoid
+/// running the fuzzy-match predicate and allocating a result for every
+/// entry in the (already prefix-narrowed) range past the cap.
+///
+/// **Selection policy when more than `max_expansions` terms match**: this
+/// port keeps the first `max_expansions` matching terms in **sorted
+/// term-dictionary order** (`fuzzy_intersect`'s natural iteration order,
+/// since `FieldTerms::entries` is stored sorted). This is a deliberate,
+/// disclosed scope reduction from real Lucene's default rewrite method,
+/// `TopTermsBlendedFreqScoringRewrite`, which instead keeps the
+/// highest-scoring/highest-docFreq terms via a priority queue over the *
+/// *whole** matching set. Replicating that scoring-based top-N selection
+/// would require scoring every match before truncating (defeating the
+/// early-exit this task targets) plus a `BooleanQuery`-of-scored-terms
+/// rewrite this port's unscored/constant multi-term-clause model (see this
+/// struct's "Scoring" note above) doesn't have; "first N in term-dictionary
+/// order" is simpler, deterministic, and honestly not the same selection
+/// real Lucene makes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FuzzyQuery {
     pub field: String,
@@ -168,11 +200,17 @@ pub struct FuzzyQuery {
     pub max_edits: u8,
     pub prefix_length: usize,
     pub transpositions: bool,
+    pub max_expansions: usize,
 }
 
 impl FuzzyQuery {
+    /// Real `FuzzyQuery.defaultMaxExpansions`: the default cap on how many
+    /// matching terms get expanded into the query's execution.
+    pub const DEFAULT_MAX_EXPANSIONS: usize = 50;
+
     /// Builds a `FuzzyQuery` with real `FuzzyQuery`'s own defaults:
-    /// `max_edits = 2`, `prefix_length = 0`, `transpositions = true`.
+    /// `max_edits = 2`, `prefix_length = 0`, `transpositions = true`,
+    /// `max_expansions = 50` ([`Self::DEFAULT_MAX_EXPANSIONS`]).
     pub fn new(field: impl Into<String>, term: impl Into<Vec<u8>>) -> Self {
         Self {
             field: field.into(),
@@ -180,7 +218,17 @@ impl FuzzyQuery {
             max_edits: 2,
             prefix_length: 0,
             transpositions: true,
+            max_expansions: Self::DEFAULT_MAX_EXPANSIONS,
         }
+    }
+
+    /// Builder method setting `max_expansions` (see this struct's doc comment
+    /// for the default, the early-termination mechanism, and the
+    /// term-dictionary-order selection policy used when more terms match
+    /// than this cap allows).
+    pub fn with_max_expansions(mut self, max_expansions: usize) -> Self {
+        self.max_expansions = max_expansions;
+        self
     }
 
     /// Builder method setting `max_edits` (see this struct's doc comment for
