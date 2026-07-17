@@ -1848,6 +1848,64 @@ mod tests {
         assert_eq!(got, vec![b"banana".as_slice(), b"band"]);
     }
 
+    /// Backs `FuzzyQuery::max_expansions`'s (task #221, `lucene-search`
+    /// crate) selection-policy claim: `fuzzy_intersect` returns a lazy
+    /// iterator over this field's already-fully-decoded, in-memory sorted
+    /// entries (the whole term dictionary is materialized once at segment
+    /// open, not decoded on demand here -- see this module's own doc
+    /// comment), filtering one candidate at a time as it's pulled. `.take(n)`
+    /// stops pulling once `n` matches are found, so it skips the fuzzy-match
+    /// predicate/allocation for every entry past the cap, but it does not
+    /// skip any term-dictionary decode work (that already happened). This
+    /// test builds a term dictionary with more than 50 terms that all match
+    /// the same fuzzy pattern (all single-byte substitutions of a
+    /// fixed-length target, so every one is within `max_edits` of it) and
+    /// checks that `.take(50)` yields exactly the first 50 in sorted order,
+    /// while the untruncated iterator yields every one of them.
+    #[test]
+    fn fuzzy_intersect_take_truncates_the_lazy_walk() {
+        let b = Builder::new();
+        // 60 five-byte terms "aaaaa".."aaaaz"-ish, each one substitution away
+        // from "aaaaa" in its last byte -- all within max_edits=1 of it, and
+        // already in sorted order since they differ only in their last byte.
+        // Offsets 0..60 land in ASCII 33..93 ('!'..']'), all single-byte
+        // printable characters, so the resulting `String`s stay valid UTF-8
+        // and byte-sort exactly like their trailing byte value.
+        let mut owned_terms: Vec<String> = (0u8..60)
+            .map(|i| format!("aaaa{}", (33 + i) as char))
+            .collect();
+        owned_terms.sort();
+        let terms: Vec<(&str, u32, u64)> = owned_terms.iter().map(|t| (t.as_str(), 1, 1)).collect();
+        let (tim, tip, tmd) = b.build(IndexOptions::DocsAndFreqs, &terms);
+        let fis = FieldInfos {
+            fields: vec![field_info(0, "text", IndexOptions::DocsAndFreqs)],
+        };
+        let fields = open(&tim, &tip, &tmd, &fis, &b.id, &b.suffix, 5).unwrap();
+        let field = fields.field("text").unwrap();
+
+        let pattern = FuzzyMatch::new(b"aaaaa", 1, 0, true);
+
+        // Untruncated: every one of the 60 terms matches.
+        assert_eq!(field.fuzzy_intersect(&pattern).count(), 60);
+
+        // Truncated to `max_expansions`-shaped 50: exactly 50 matches, and
+        // they are the first 50 in sorted term-dictionary order (not an
+        // arbitrary/unstable 50).
+        let capped: Vec<&[u8]> = field
+            .fuzzy_intersect(&pattern)
+            .take(50)
+            .map(|(t, _)| t)
+            .collect();
+        assert_eq!(capped.len(), 50);
+        let expected: Vec<&[u8]> = owned_terms[..50].iter().map(|t| t.as_bytes()).collect();
+        assert_eq!(capped, expected);
+
+        // A cap that never binds (more than the total match count) is a
+        // no-op, same "fewer matches than the limit" regression-safety shape
+        // the task requires.
+        assert_eq!(field.fuzzy_intersect(&pattern).take(1000).count(), 60);
+    }
+
     #[test]
     fn regexp_intersect_over_materialized_field() {
         let b = Builder::new();

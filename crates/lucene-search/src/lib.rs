@@ -444,14 +444,27 @@ fn wildcard_doc_ids(
     Ok(doc_ids)
 }
 
-/// [`Clause::Fuzzy`]'s matched doc-ID list (task #42): same
-/// union-across-matching-terms mechanism as [`wildcard_doc_ids`]/
-/// [`prefix_doc_ids`], built on
+/// [`Clause::Fuzzy`]'s matched doc-ID list (task #42, `max_expansions`
+/// bounded per task #221): same union-across-matching-terms mechanism as
+/// [`wildcard_doc_ids`]/[`prefix_doc_ids`], built on
 /// [`lucene_codecs::blocktree::FieldTerms::fuzzy_intersect`] and
 /// [`lucene_codecs::fuzzy::FuzzyMatch`] instead of a glob pattern. Returns an
 /// empty `Vec` -- not an error -- when `query.field` doesn't exist in this
 /// segment, same "missing field means no matches" convention every other
 /// clause follows.
+///
+/// **`max_expansions` cap**: `fuzzy_intersect` returns a lazy `Iterator` over
+/// this segment's field's already-fully-decoded, in-memory sorted term
+/// entries (`BlockTreeFields` merges a field's whole dictionary into one
+/// `Vec` at open time -- see that module's doc comment -- so there is no
+/// on-demand term-dictionary decode left to short-circuit by this point).
+/// `.take(query.max_expansions)` here stops pulling from that iterator once
+/// the cap is hit, which does avoid running the fuzzy-match predicate and
+/// allocating a result for every entry past the cap, but it does **not**
+/// skip any decode/IO work, since that already happened when the segment was
+/// opened. See [`FuzzyQuery`]'s doc comment for the exact selection-policy
+/// disclosure (first `max_expansions` matches in sorted term-dictionary
+/// order, not real Lucene's highest-scoring-first selection).
 fn fuzzy_doc_ids(
     fields: &BlockTreeFields,
     doc_in: Option<&DocInput<'_>>,
@@ -469,6 +482,7 @@ fn fuzzy_doc_ids(
     );
     let matching_terms: Vec<Vec<u8>> = field_terms
         .fuzzy_intersect(&pattern)
+        .take(query.max_expansions)
         .map(|(term, _stats)| term.to_vec())
         .collect();
     let mut doc_ids: Vec<i32> = Vec::new();
