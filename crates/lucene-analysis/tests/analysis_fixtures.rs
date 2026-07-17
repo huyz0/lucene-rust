@@ -6,7 +6,9 @@
 //! and stopword removal together ("The" is itself a stopword once
 //! lowercased). Regenerate with fixtures/src/GenAnalysis.java.
 
-use lucene_analysis::{Analyzer, AsciiFoldingFilter, SnowballEnglishStemFilter};
+use lucene_analysis::{
+    Analyzer, AsciiFoldingFilter, LowerCaseFilter, SnowballEnglishStemFilter, StopFilter,
+};
 use std::collections::HashSet;
 
 fn dir() -> String {
@@ -304,5 +306,43 @@ fn snowball_english_stemmer_matches_real_snowball_english_stemmer() {
     assert_eq!(
         actual, expected,
         "snowball_english case diverged from real Lucene"
+    );
+}
+
+/// Task #220 (French default stopword list) cross-engine check: real
+/// `StandardTokenizer` + `LowerCaseFilter` + `StopFilter` fed
+/// `FrenchAnalyzer.getDefaultStopSet()` directly -- deliberately *not* the
+/// full `FrenchAnalyzer` (no elision, no French stemming; see
+/// [`lucene_analysis::FRENCH_STOP_WORDS`]'s doc comment for that scope
+/// boundary) -- run over a French sentence containing five of the 154
+/// default French stopwords ("le", "et", "la", "sont", "dans") interleaved
+/// with three content words, recorded by `fixtures/src/GenAnalysis.java`'s
+/// `french_stopwords` case. Confirms this port's `french_stop_words()`, fed
+/// through the existing `StopFilter`, produces byte-identical (term,
+/// position_increment, offset-span) output to real Lucene -- i.e. that the
+/// 154-word list is not just a plausible-looking transcription but actually
+/// matches real Lucene's stopword-removal behavior end-to-end, including
+/// position-increment carry-over across the repeated consecutive stopwords.
+#[test]
+fn french_stop_words_match_real_french_analyzer_default_stop_set() {
+    let m = Manifest::load();
+    let case = "french_stopwords";
+    let text = m.get(&format!("{case}.text"));
+    let expected_count: usize = m.get(&format!("{case}.count")).parse().unwrap();
+    let expected = expected_tokens(&m, case);
+    assert_eq!(expected.len(), expected_count, "manifest count mismatch");
+    let expected = char_offsets_to_byte_offsets(text, expected);
+
+    let tokens = lucene_analysis::tokenize(text);
+    let tokens = LowerCaseFilter::apply(tokens);
+    let stopwords = lucene_analysis::french_stop_words();
+    let actual: Vec<(String, i32, i32, i32)> = StopFilter::apply(tokens, &stopwords)
+        .into_iter()
+        .map(|t| (t.term, t.position_increment, t.start_offset, t.end_offset))
+        .collect();
+
+    assert_eq!(
+        actual, expected,
+        "french_stopwords case diverged from real Lucene"
     );
 }
