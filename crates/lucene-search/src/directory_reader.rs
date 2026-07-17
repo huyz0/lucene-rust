@@ -1851,4 +1851,146 @@ mod tests {
             std::fs::remove_dir_all(&dir_path).ok();
         }
     }
+
+    /// Real end-to-end proof that positions survive
+    /// `IndexWriter::add_document` (real, automatically-tokenized text, no
+    /// hand-built `TermPostings`) -> `invert_documents` -> `commit` -> a real
+    /// `PhraseQuery` search against the resulting on-disk segment, closing
+    /// task #211's gap: before this task, `IndexWriter::build_postings_output`
+    /// dropped `invert_documents`'s positions/offsets and
+    /// `set_postings_field`/`resolve_postings_field` rejected
+    /// `IndexOptions::DocsAndFreqsAndPositions[AndOffsets]` fields outright, so
+    /// there was no way to reach `search_phrase_query` from the fully
+    /// automatic tokenization path -- every existing `PhraseQuery` test
+    /// (`phrase_query_fixtures.rs`, `explain.rs`) instead reads from a
+    /// hand-built `TermPostings`/`FieldPostingsInput` fixture or a real-Lucene
+    /// -written fixture, never from this crate's own `IndexWriter`.
+    mod phrase_query_e2e {
+        use super::*;
+        use crate::{search_phrase_query, PhraseQuery, VecCollector};
+        use lucene_codecs::field_infos::{
+            DocValuesSkipIndexType, DocValuesType, FieldInfo, IndexOptions, VectorEncoding,
+            VectorSimilarityFunction,
+        };
+        use lucene_codecs::stored_fields::{Document, FieldValue, StoredField};
+        use lucene_index::index_writer::IndexWriter;
+        use lucene_index::segment_info::LuceneVersion;
+
+        fn version() -> LuceneVersion {
+            LuceneVersion {
+                major: 10,
+                minor: 0,
+                bugfix: 0,
+            }
+        }
+
+        fn stored_only_field(name: &str, number: i32) -> FieldInfo {
+            FieldInfo {
+                name: name.to_string(),
+                number,
+                store_term_vectors: false,
+                omit_norms: false,
+                store_payloads: false,
+                soft_deletes_field: false,
+                parent_field: false,
+                index_options: IndexOptions::None,
+                doc_values_type: DocValuesType::None,
+                doc_values_skip_index_type: DocValuesSkipIndexType::None,
+                doc_values_gen: -1,
+                attributes: vec![],
+                point_dimension_count: 0,
+                point_index_dimension_count: 0,
+                point_num_bytes: 0,
+                vector_dimension: 0,
+                vector_encoding: VectorEncoding::Float32,
+                vector_similarity_function: VectorSimilarityFunction::Euclidean,
+            }
+        }
+
+        fn positions_field(number: i32) -> FieldInfo {
+            FieldInfo {
+                index_options: IndexOptions::DocsAndFreqsAndPositions,
+                ..stored_only_field("body", number)
+            }
+        }
+
+        fn doc_with_body(id: &str, body: &str) -> Document {
+            Document {
+                fields: vec![
+                    StoredField {
+                        field_number: 0,
+                        value: FieldValue::String(id.to_string()),
+                    },
+                    StoredField {
+                        field_number: 1,
+                        value: FieldValue::String(body.to_string()),
+                    },
+                ],
+            }
+        }
+
+        /// Flushes one real segment via `add_document`/`commit` with the
+        /// "body" field opted into `DocsAndFreqsAndPositions` postings, then
+        /// runs a real `PhraseQuery` against it through this crate's own
+        /// `DirectoryReader` -> `search_phrase_query` path: "quick fox" must
+        /// find doc "a" (an adjacent pair) but not doc "b" (same two terms,
+        /// but not adjacent), and a non-adjacent pair like "fox lazy" must
+        /// find nothing at all.
+        #[test]
+        fn phrase_query_finds_adjacent_terms_from_a_real_add_document_commit() {
+            let dir_path = tempdir();
+            let dir = FsDirectory::open(&dir_path);
+            let fields = vec![stored_only_field("id", 0), positions_field(1)];
+            let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+            writer.set_postings_field(Some("body")).unwrap();
+
+            writer.add_document(doc_with_body("a", "the quick fox jumps"));
+            writer.add_document(doc_with_body("b", "the fox is quick"));
+            writer.commit().unwrap();
+
+            let reader = DirectoryReader::open(&dir).unwrap();
+            assert_eq!(reader.segment_readers().len(), 1);
+            let opened = reader.open_segments().unwrap();
+            let segments = opened.as_open_segments();
+            let seg = &segments[0];
+
+            // "quick fox" is adjacent only in doc "a" (doc ID 0).
+            let mut collector = VecCollector::default();
+            search_phrase_query(
+                seg.fields,
+                seg.doc_in,
+                seg.pos_in,
+                seg.pay_in,
+                seg.live_docs,
+                &PhraseQuery::new("body", ["quick", "fox"]),
+                &mut collector,
+            )
+            .unwrap();
+            assert_eq!(
+                collector.docs,
+                vec![0],
+                "\"quick fox\" must match only the doc where they're adjacent"
+            );
+
+            // Same two terms, non-adjacent in every doc -- must match
+            // nothing.
+            let mut collector = VecCollector::default();
+            search_phrase_query(
+                seg.fields,
+                seg.doc_in,
+                seg.pos_in,
+                seg.pay_in,
+                seg.live_docs,
+                &PhraseQuery::new("body", ["fox", "quick"]),
+                &mut collector,
+            )
+            .unwrap();
+            assert!(
+                collector.docs.is_empty(),
+                "\"fox quick\" (reversed order) must not match either doc"
+            );
+
+            std::fs::remove_dir_all(&dir_path).ok();
+        }
+    }
 }
