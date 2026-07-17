@@ -103,6 +103,35 @@
 //! sub-block pointer is the *only* path to some terms (not also trie-indexed)
 //! would close that gap with a real differential proof; flagged here rather
 //! than silently overclaimed.
+//! **Deep-nesting audit (task #222): 4+-level-deep non-leaf `.tim` block
+//! chains are now fixture-proven, not just argued from the recursive
+//! structure of the code.** The fixture above only ever reaches one non-leaf
+//! layer (root block -> one internal block -> leaves) -- empirically, this
+//! plateaus at depth 3 no matter how many random-lowercase terms are added
+//! (verified up to 8000), because a 26-letter alphabet fans a large group out
+//! into many small children after just one extra prefix byte, shrinking
+//! every child below `maxItemsInBlock` almost immediately. Forcing deeper
+//! nesting needs two levers real Lucene exposes: a much narrower term
+//! alphabet (each extra prefix byte then only *halves* a group instead of
+//! dividing it by 26) and a smaller `minItemsInBlock`/`maxItemsInBlock` than
+//! the format's 25/48 defaults (wired through `Lucene104PostingsFormat`'s
+//! two-arg constructor via a custom `Codec.getPostingsFormatForField`
+//! override -- `IndexWriterConfig` itself has no direct knob for this).
+//! `fixtures/src/GenBlockTreeDeepNesting.java` (2000 terms over a `{a,b}`
+//! alphabet, 16 bytes each, `minItemsInBlock=2`/`maxItemsInBlock=4`) reaches
+//! a genuine depth of 6 chained non-leaf blocks. [`decode_block_at_depth`]'s
+//! own doc comment already establishes it recurses uniformly regardless of
+//! `depth` (bar the `depth > 10_000` cycle guard, identical to
+//! [`collect_leaf_blocks`]'s own bound for the *trie's* recursion) -- reading
+//! both functions confirms neither special-cases `depth` beyond that guard,
+//! so this fixture's depth-6 chain is a real differential proof of the exact
+//! same code path a depth-1 chain exercises, closing what was previously
+//! only a code-reading argument. See
+//! `deep_nesting_fixture_reaches_at_least_four_levels` (this module) for the
+//! structural proof (independently re-derived nesting depth, asserting a
+//! minimum, not just "some non-leaf block exists") and
+//! `crates/lucene-codecs/tests/blocktree_deep_nesting_fixture.rs` for the
+//! full public-API differential.
 //! **Ordered enumeration (`next()`) and
 //! nearest-match seeking (`seekCeil()`) are now ported** — see
 //! [`TermsEnum`]/[`FieldTerms::iter`] — as a thin cursor over the
@@ -3639,6 +3668,193 @@ mod tests {
                  sorted order even though the root block contributes none \
                  of its own"
             );
+        }
+    }
+
+    /// Structural proof that `fixtures/data/blocktree_deep_nesting_index/`
+    /// (2000 real-Lucene-written terms over a deliberately narrow `{a,b}`
+    /// alphabet, `minItemsInBlock=2`/`maxItemsInBlock=4` -- see
+    /// `fixtures/src/GenBlockTreeDeepNesting.java`'s module doc for why a
+    /// narrow alphabet plus small block-size thresholds is what actually
+    /// forces this, where `blocktree_multilevel_index`'s wide-alphabet/
+    /// default-thresholds fixture plateaus at a single non-leaf layer no
+    /// matter how many terms are added) forces real Lucene to write a
+    /// **chain of 4 or more nested non-leaf `.tim` blocks** -- i.e. the
+    /// `decode_block`/`decode_block_at_depth` sub-block recursion (see the
+    /// module doc's "Multi-level blocktree tries" section) is exercised at
+    /// real depth, not just depth 1 (root block -> one internal block ->
+    /// leaf, `multilevel_fixture_reaches_a_genuine_non_leaf_block`'s shape).
+    ///
+    /// This independently re-derives nesting depth via its own from-scratch
+    /// walk of each reachable physical block's own bytes (peeking
+    /// `isLeafBlock`/`subFP` exactly like [`decode_block_at_depth`] does, but
+    /// without calling it, so this test cannot pass merely because
+    /// `decode_block_at_depth`'s own bookkeeping is self-consistent) and
+    /// asserts a *minimum* depth was reached, not just "some non-leaf block
+    /// exists" -- the failure mode a weaker assertion would miss is exactly
+    /// a future fixture regen or upstream writer change collapsing back to
+    /// shallow nesting while still leaving *some* non-leaf block around.
+    #[test]
+    fn deep_nesting_fixture_reaches_at_least_four_levels() {
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/data/blocktree_deep_nesting_index/"
+        );
+        let manifest = std::fs::read_to_string(format!("{dir}manifest.properties"))
+            .expect("run fixtures generator first (GenBlockTreeDeepNesting)");
+        let kv: std::collections::HashMap<String, String> = manifest
+            .lines()
+            .filter_map(|l| l.split_once('='))
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let read_raw = |name: &str| {
+            std::fs::read(format!("{dir}{name}.raw"))
+                .unwrap_or_else(|_| panic!("missing {name}.raw"))
+        };
+
+        let tmd = read_raw(kv.get("tmd_file_name").unwrap());
+        let tip = read_raw(kv.get("tip_file_name").unwrap());
+        let tim = read_raw(kv.get("tim_file_name").unwrap());
+        let fnm = read_raw(kv.get("fnm_file_name").unwrap());
+        let id_hex = kv.get("id_hex").unwrap();
+        let mut id = [0u8; ID_LENGTH];
+        for (i, slot) in id.iter_mut().enumerate() {
+            *slot = u8::from_str_radix(&id_hex[i * 2..i * 2 + 2], 16).unwrap();
+        }
+        let suffix = kv.get("segment_suffix").unwrap();
+        let field_infos = crate::field_infos::parse(&fnm, &id, "").unwrap();
+
+        // Re-derive "many"'s index_start/root_fp/index_end the same way
+        // `open()` does, mirroring `multilevel_fixture_reaches_a_genuine_non_leaf_block`.
+        let mut tmd_input = SliceInput::new(&tmd);
+        codec_util::check_index_header(
+            &mut tmd_input,
+            TERMS_META_CODEC_NAME,
+            VERSION_START,
+            VERSION_CURRENT,
+            &id,
+            suffix,
+        )
+        .unwrap();
+        codec_util::check_index_header(
+            &mut tmd_input,
+            POSTINGS_TERMS_CODEC,
+            POSTINGS_VERSION_START,
+            POSTINGS_VERSION_CURRENT,
+            &id,
+            suffix,
+        )
+        .unwrap();
+        let _index_block_size = tmd_input.read_vint().unwrap();
+        let num_fields = tmd_input.read_vint().unwrap();
+        let mut field_index = None;
+        for _ in 0..num_fields {
+            let field_number = tmd_input.read_vint().unwrap();
+            let _num_terms = tmd_input.read_vlong().unwrap();
+            let fi = field_infos.field_by_number(field_number).unwrap();
+            read_freq_pair(&mut tmd_input, fi.index_options).unwrap();
+            let _doc_count = tmd_input.read_vint().unwrap();
+            let _min_term = read_bytes_ref(&mut tmd_input).unwrap();
+            let _max_term = read_bytes_ref(&mut tmd_input).unwrap();
+            let index_start = tmd_input.read_vlong().unwrap() as usize;
+            let root_fp = tmd_input.read_vlong().unwrap() as usize;
+            let index_end = tmd_input.read_vlong().unwrap() as usize;
+            if fi.name == "many" {
+                field_index = Some((index_start, root_fp, index_end));
+            }
+        }
+        let (index_start, root_fp, index_end) = field_index.expect("field \"many\" in .tmd");
+
+        let index_slice = &tip[index_start..index_end];
+        let root = load_node(index_slice, root_fp).unwrap();
+        let mut blocks = Vec::new();
+        let mut prefix = Vec::new();
+        collect_leaf_blocks(index_slice, &root, 0, &mut prefix, &mut blocks).unwrap();
+        assert!(
+            blocks.len() > 1,
+            "expected the trie to reach more than one physical block"
+        );
+
+        // Independently walks a chain of sub-block pointers starting at a
+        // trie-reachable block, returning the number of blocks chained
+        // (1 for a leaf block with no sub-block entries at all). Reads only
+        // the header + suffix-lengths stream (skipping stats/meta bytes
+        // wholesale, since sub-block-vs-term entry order and the subFP
+        // delta live entirely in the suffix-lengths stream) -- deliberately
+        // not sharing any code with `decode_block_at_depth`.
+        fn block_chain_depth(tim: &[u8], fp: usize) -> usize {
+            let mut r = SliceInput::new(tim);
+            r.seek(fp).unwrap();
+            let code = r.read_vint().unwrap();
+            let ent_count = (code as u32) >> 1;
+            let code_l = r.read_vlong().unwrap() as u64;
+            let is_leaf_block = (code_l & 0x04) != 0;
+            let num_suffix_bytes = (code_l >> 3) as usize;
+            let compression_alg = code_l & 0x03;
+            let mut suffix_bytes = vec![0u8; num_suffix_bytes];
+            match compression_alg {
+                0 => r.read_bytes(&mut suffix_bytes).unwrap(),
+                1 => decompress_lowercase_ascii(&mut r, &mut suffix_bytes).unwrap(),
+                2 => {
+                    crate::lz4::decompress(&mut r, num_suffix_bytes, &mut suffix_bytes, 0).unwrap();
+                }
+                _ => panic!("illegal compression code"),
+            }
+            let num_suffix_length_bytes_raw = r.read_vint().unwrap() as u32;
+            let all_equal = (num_suffix_length_bytes_raw & 1) != 0;
+            let num_suffix_length_bytes = (num_suffix_length_bytes_raw >> 1) as usize;
+            let mut suffix_length_bytes = vec![0u8; num_suffix_length_bytes];
+            if all_equal {
+                let b = r.read_byte().unwrap();
+                suffix_length_bytes.fill(b);
+            } else {
+                r.read_bytes(&mut suffix_length_bytes).unwrap();
+            }
+
+            if is_leaf_block {
+                return 1;
+            }
+            let mut suffix_lengths_reader = SliceInput::new(&suffix_length_bytes);
+            let mut max_child_depth = 0usize;
+            for _ in 0..ent_count {
+                let entry_code = suffix_lengths_reader.read_vint().unwrap() as u32;
+                let is_sub_block = (entry_code & 1) != 0;
+                if is_sub_block {
+                    let sub_code = suffix_lengths_reader.read_vlong().unwrap() as u64;
+                    let sub_fp = fp - sub_code as usize;
+                    max_child_depth = max_child_depth.max(block_chain_depth(tim, sub_fp));
+                }
+            }
+            1 + max_child_depth
+        }
+
+        let mut max_depth = 0usize;
+        for (block_fp, _prefix) in &blocks {
+            max_depth = max_depth.max(block_chain_depth(&tim, *block_fp as usize));
+        }
+        assert!(
+            max_depth >= 4,
+            "expected at least a 4-block-deep chain of nested non-leaf .tim \
+             blocks reachable from the \"many\" field's trie (root -> \
+             internal -> internal -> ... -> leaf), got max_depth={max_depth} \
+             -- if this fails, GenBlockTreeDeepNesting.java's term \
+             shape/block-size thresholds no longer force this, and either \
+             the fixture needs retuning or real Lucene's writer heuristics \
+             changed"
+        );
+
+        // And the full round trip through the *unmodified* public API must
+        // still recover every term correctly despite this much deeper
+        // nesting (this is the behavioral half; the fuller differential --
+        // matching real Lucene's own sorted term list -- lives in
+        // `tests/blocktree_deep_nesting_fixture.rs`).
+        let max_doc: i32 = kv.get("max_doc").unwrap().parse().unwrap();
+        let fields = open(&tim, &tip, &tmd, &field_infos, &id, suffix, max_doc).unwrap();
+        let field = fields.field("many").unwrap();
+        let num_terms: i64 = kv.get("field.many.numTerms").unwrap().parse().unwrap();
+        assert_eq!(field.num_terms, num_terms);
+        for (term, stats, _meta) in &field.entries {
+            assert_eq!(field.seek_exact(term).unwrap(), *stats);
         }
     }
 }
