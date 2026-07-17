@@ -218,3 +218,46 @@ fn ascii_folding_then_lowercase_matches_real_lucene() {
         "fold-then-lower case diverged from real Lucene"
     );
 }
+
+/// Task #208 (second analyzer-chain producer, `Analyzer::keyword`) cross-engine
+/// check: real `KeywordAnalyzer` (bare `KeywordTokenizer`, no filters) over a
+/// handful of representative inputs -- a plain id-like string, a mixed-case
+/// string with punctuation that would otherwise split under
+/// `StandardAnalyzer`, embedded whitespace, non-ASCII text, and the empty
+/// string -- recorded by `fixtures/src/GenAnalysis.java`'s `keyword_*` cases.
+/// Confirms `Analyzer::keyword` always emits exactly the whole input as a
+/// single unmodified token (case preserved, no splitting, no offset
+/// adjustment), including real Lucene's non-obvious empty-input behavior:
+/// `KeywordTokenizer` still emits one (empty) token rather than zero.
+#[test]
+fn keyword_analyzer_matches_real_keyword_analyzer() {
+    let m = Manifest::load();
+    for case in [
+        "keyword_simple",
+        "keyword_mixed_case_punct",
+        "keyword_whitespace",
+        "keyword_non_ascii",
+        "keyword_empty",
+    ] {
+        let text = m.get(&format!("{case}.text"));
+        let expected_count: usize = m.get(&format!("{case}.count")).parse().unwrap();
+        let expected = expected_tokens(&m, case);
+        assert_eq!(
+            expected.len(),
+            expected_count,
+            "case {case}: manifest count mismatch"
+        );
+        let expected = char_offsets_to_byte_offsets(text, expected);
+
+        let actual: Vec<(String, i32, i32, i32)> = Analyzer::keyword()
+            .analyze(text)
+            .into_iter()
+            .map(|t| (t.term, t.position_increment, t.start_offset, t.end_offset))
+            .collect();
+
+        assert_eq!(
+            actual, expected,
+            "case {case} (text={text:?}) diverged from real Lucene"
+        );
+    }
+}
