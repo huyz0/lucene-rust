@@ -495,11 +495,14 @@ pub enum Error {
         "term vectors are present in some merge sources but source index {source_index} (which contributes live docs) has no term-vectors reader"
     )]
     TermVectorsReaderMissingInSource { source_index: usize },
-    /// This port's postings merge only handles `IndexOptions::Docs` and
-    /// `IndexOptions::DocsAndFreqs` fields -- positions/offsets/payloads
-    /// merging isn't implemented yet (see this module's doc comment).
+    /// This port's postings merge handles `IndexOptions::Docs`,
+    /// `IndexOptions::DocsAndFreqs`, `IndexOptions::DocsAndCustomFreqs`
+    /// (wire-identical to `DocsAndFreqs` -- see `lucene_codecs::postings`'s
+    /// doc comment), `IndexOptions::DocsAndFreqsAndPositions`, and
+    /// `IndexOptions::DocsAndFreqsAndPositionsAndOffsets` -- any other
+    /// `IndexOptions` variant is rejected here.
     #[error(
-        "merging postings for merged field number {merged_field_number} isn't supported: index_options {index_options:?} indexes positions, but this port's postings merge only supports IndexOptions::Docs/DocsAndFreqs so far"
+        "merging postings for merged field number {merged_field_number} isn't supported: index_options {index_options:?} isn't one of IndexOptions::Docs/DocsAndFreqs/DocsAndCustomFreqs/DocsAndFreqsAndPositions/DocsAndFreqsAndPositionsAndOffsets"
     )]
     PostingsIndexOptionsNotSupported {
         merged_field_number: i32,
@@ -7311,6 +7314,175 @@ mod tests {
             .unwrap();
         assert_eq!(cherry.docs, vec![2]);
         assert_eq!(cherry.freqs, vec![3]);
+    }
+
+    /// Task #212's coverage/scope review flagged that `IndexOptions::
+    /// DocsAndCustomFreqs` -- accepted by `merge_postings`'s supported-list
+    /// alongside `Docs`/`DocsAndFreqs`, wire-identical to `DocsAndFreqs` --
+    /// had zero merge test coverage despite being a real, reachable field
+    /// type since `IndexWriter::set_custom_freq_postings_field`. This proves
+    /// merging preserves the caller's opaque custom-freq values verbatim
+    /// (not re-derived as an occurrence count), the same way
+    /// [`two_sources_no_deletions_merge_postings_correctly`] proves it for
+    /// `DocsAndFreqs`.
+    #[test]
+    fn two_sources_no_deletions_merge_docs_and_custom_freqs_correctly() {
+        let seg0_id = [1u8; ID_LENGTH];
+        let seg1_id = [2u8; ID_LENGTH];
+
+        // Source 0: 1 doc -- "score" with a custom freq of 50 (not an
+        // occurrence count; the term appears once in the doc's stored text
+        // below, so a bug that silently re-derived freq from occurrences
+        // would produce 1, not 50).
+        let terms0 = vec![TermPostings {
+            term: b"score".to_vec(),
+            docs: vec![(0, 50)],
+            ..Default::default()
+        }];
+        let input0 = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndCustomFreqs,
+            doc_count: 1,
+            has_payloads: false,
+            terms: &terms0,
+        };
+        let output0 = postings_writer::write_single_field(&input0, &seg0_id, "").unwrap();
+        let mut field0 = postings_field("body", 0);
+        field0.index_options = IndexOptions::DocsAndCustomFreqs;
+        let field_infos0 = field_infos::FieldInfos {
+            fields: vec![field0.clone()],
+        };
+        let fields0 = lucene_codecs::blocktree::open(
+            &output0.tim,
+            &output0.tip,
+            &output0.tmd,
+            &field_infos0,
+            &seg0_id,
+            "",
+            1,
+        )
+        .unwrap();
+        let doc_in0 = DocInput::open(&output0.doc, &seg0_id, "").unwrap();
+        let field_terms0 = fields0.field("body").unwrap();
+
+        // Source 1: 1 doc -- same term "score", custom freq of 5.
+        let terms1 = vec![TermPostings {
+            term: b"score".to_vec(),
+            docs: vec![(0, 5)],
+            ..Default::default()
+        }];
+        let input1 = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndCustomFreqs,
+            doc_count: 1,
+            has_payloads: false,
+            terms: &terms1,
+        };
+        let output1 = postings_writer::write_single_field(&input1, &seg1_id, "").unwrap();
+        let fields1 = lucene_codecs::blocktree::open(
+            &output1.tim,
+            &output1.tip,
+            &output1.tmd,
+            &field_infos0,
+            &seg1_id,
+            "",
+            1,
+        )
+        .unwrap();
+        let doc_in1 = DocInput::open(&output1.doc, &seg1_id, "").unwrap();
+        let field_terms1 = fields1.field("body").unwrap();
+
+        let fields = vec![field0];
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let stored0 = flush(&dir, &tmp, "_0", seg0_id, &fields, &[doc_with(0, "a")]);
+        let stored1 = flush(&dir, &tmp, "_1", seg1_id, &fields, &[doc_with(0, "b")]);
+        let reader0 = open_reader(&stored0);
+        let reader1 = open_reader(&stored1);
+
+        let src_postings0 = [SourcePostings {
+            field_number: 0,
+            field_terms: field_terms0,
+            doc_in: Some(&doc_in0),
+            pos_in: None,
+            pay_in: None,
+        }];
+        let src_postings1 = [SourcePostings {
+            field_number: 0,
+            field_terms: field_terms1,
+            doc_in: Some(&doc_in1),
+            pos_in: None,
+            pay_in: None,
+        }];
+        let source0 = MergeSource {
+            field_infos: &stored0.fields,
+            reader: &reader0,
+            live_docs: None,
+            numeric_doc_values: &[],
+            binary_doc_values: &[],
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &[],
+            norms: &[],
+            term_vectors: None,
+            postings: &src_postings0,
+            points: &[],
+        };
+        let source1 = MergeSource {
+            field_infos: &stored1.fields,
+            reader: &reader1,
+            live_docs: None,
+            numeric_doc_values: &[],
+            binary_doc_values: &[],
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &[],
+            norms: &[],
+            term_vectors: None,
+            postings: &src_postings1,
+            points: &[],
+        };
+
+        merge_stored_only_segments(
+            &dir,
+            &[source0, source1],
+            "_merged_custom_freqs",
+            [9u8; ID_LENGTH],
+            "Lucene104",
+            version(),
+        )
+        .unwrap();
+
+        let tim =
+            std::fs::read(std::path::Path::new(&tmp).join("_merged_custom_freqs.tim")).unwrap();
+        let tip =
+            std::fs::read(std::path::Path::new(&tmp).join("_merged_custom_freqs.tip")).unwrap();
+        let tmd =
+            std::fs::read(std::path::Path::new(&tmp).join("_merged_custom_freqs.tmd")).unwrap();
+        let doc =
+            std::fs::read(std::path::Path::new(&tmp).join("_merged_custom_freqs.doc")).unwrap();
+        let merged_fields = lucene_codecs::blocktree::open(
+            &tim,
+            &tip,
+            &tmd,
+            &field_infos0,
+            &[9u8; ID_LENGTH],
+            "",
+            2,
+        )
+        .unwrap();
+        let merged_doc_in = DocInput::open(&doc, &[9u8; ID_LENGTH], "").unwrap();
+        let merged_terms = merged_fields.field("body").unwrap();
+
+        let score = merged_terms
+            .postings(b"score", Some(&merged_doc_in))
+            .unwrap()
+            .unwrap();
+        assert_eq!(score.docs, vec![0, 1]);
+        // The merged freqs are the two sources' custom values verbatim, in
+        // merged-doc-id order -- not re-derived from occurrence counts
+        // (which would both be 1).
+        assert_eq!(score.freqs, vec![50, 5]);
     }
 
     #[test]

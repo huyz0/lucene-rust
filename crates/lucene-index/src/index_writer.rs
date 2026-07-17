@@ -61,6 +61,24 @@
 //! trigger this check (only [`IndexWriter::commit`] does, matching where
 //! this port's flush/commit work already lived before this feature).
 //!
+//! # `IndexOptions::DocsAndCustomFreqs` postings
+//!
+//! [`IndexWriter::set_custom_freq_postings_field`] +
+//! [`IndexWriter::add_document_with_custom_freq_terms`] are a second,
+//! separate postings entry point alongside
+//! [`IndexWriter::set_postings_field`]/[`IndexWriter::add_postings_field`]'s
+//! analyzed-text one: instead of tokenizing a stored field's text to derive
+//! term-occurrence-count freqs, a caller supplies each pending doc's exact
+//! `(term, custom_freq)` pairs directly, and those values are written
+//! verbatim as `IndexOptions::DocsAndCustomFreqs` postings (wire-identical to
+//! `DocsAndFreqs` -- see `crate::postings_writer`'s module doc comment). This
+//! exists because there is no way to derive a genuinely *arbitrary*
+//! per-doc-per-term similarity score from analyzed text -- it has to come
+//! from the caller. **Scope decision:** the two postings paths are mutually
+//! exclusive per writer (never both active in the same commit) -- see
+//! [`IndexWriter::set_custom_freq_postings_field`]'s doc comment for exactly
+//! why and what error a caller sees if they try to combine them.
+//!
 //! # What this deliberately is not
 //!
 //! - **No RAM-based flush triggering.** Real `IndexWriter` auto-flushes once
@@ -187,6 +205,22 @@ pub enum Error {
          may only be added once per commit"
     )]
     DuplicatePostingsField(String),
+    #[error("set_custom_freq_postings_field: no field named {0:?} in this writer's field list")]
+    UnknownCustomFreqPostingsField(String),
+    #[error(
+        "set_custom_freq_postings_field: field {0:?} has index_options {1:?}; only \
+         IndexOptions::DocsAndCustomFreqs is supported by this entry point -- use \
+         set_postings_field/add_postings_field for an analyzed-text postings field instead"
+    )]
+    UnsupportedCustomFreqPostingsIndexOptions(String, IndexOptions),
+    #[error(
+        "{0}: a writer cannot have both an analyzed-text postings field (set_postings_field/\
+         add_postings_field) and a custom-freq postings field (set_custom_freq_postings_field) \
+         active at the same time -- see IndexWriter's module doc comment for why this scope is \
+         deliberate; clear the other one first (set_postings_field(None) / \
+         set_custom_freq_postings_field(None))"
+    )]
+    PostingsAndCustomFreqPostingsMutuallyExclusive(&'static str),
     #[error("set_term_vector_field: no field named {0:?} in this writer's field list")]
     UnknownTermVectorField(String),
     #[error(
@@ -261,6 +295,24 @@ pub struct IndexWriter<'d> {
     /// carry postings for any number of distinct fields at once (see module
     /// doc comment).
     postings_fields: Vec<PostingsFieldConfig>,
+    /// The single field this writer is currently opted into building real
+    /// `IndexOptions::DocsAndCustomFreqs` postings for, driven by explicit
+    /// per-document caller-supplied `(term, custom_freq)` pairs (see
+    /// [`Self::pending_custom_freq_terms`]) rather than analyzed text -- see
+    /// [`IndexWriter::set_custom_freq_postings_field`]. **Mutually exclusive**
+    /// with [`Self::postings_fields`] (see that method's doc comment for why):
+    /// at most one of the two is ever non-empty/`Some` at a time.
+    custom_freq_postings_field: Option<CustomFreqPostingsFieldConfig>,
+    /// Per-pending-doc explicit `(term, custom_freq)` pairs for
+    /// [`Self::custom_freq_postings_field`], aligned 1:1 by index with
+    /// `pending_docs` (index `i` here is doc ID `i` in the next flush, same
+    /// convention [`flush_stored_only_segment`] already uses for
+    /// `pending_docs` itself) -- kept in lockstep by
+    /// [`IndexWriter::add_document`] (pushes an empty `Vec`) and
+    /// [`IndexWriter::add_document_with_custom_freq_terms`] (pushes the
+    /// caller's terms), and cleared together with `pending_docs` by
+    /// `commit`/`prepare_commit`/`rollback`.
+    pending_custom_freq_terms: Vec<Vec<(String, i32)>>,
     /// Every field this writer is currently opted into building real term
     /// vectors for -- same "batched into one write call per commit" shape as
     /// [`Self::postings_fields`], via [`term_vectors::write_best_speed`]
@@ -295,6 +347,21 @@ struct PostingsFieldConfig {
     name: String,
     field_number: i32,
     index_options: IndexOptions,
+}
+
+/// The single field this writer has been opted into building real
+/// `IndexOptions::DocsAndCustomFreqs` postings for, resolved once by
+/// [`IndexWriter::set_custom_freq_postings_field`] against this writer's
+/// fixed `fields` list -- see that method's doc comment for the exact
+/// contract (in particular, the "at most one of `postings_fields`/this field"
+/// mutual-exclusivity scope decision). Unlike [`PostingsFieldConfig`], only
+/// `field_number` is kept: [`IndexWriter::build_custom_freq_postings_output`]
+/// never needs the field's name (it never re-tokenizes any stored text, so
+/// there is no `crate::indexing_chain::invert_documents`-style `(doc_id,
+/// field_name, text)` triple to build).
+#[derive(Debug, Clone)]
+struct CustomFreqPostingsFieldConfig {
+    field_number: i32,
 }
 
 /// One field this writer has been opted into also building real term
@@ -368,6 +435,8 @@ impl<'d> IndexWriter<'d> {
             pending_docs: Vec::new(),
             merge_policy: None,
             postings_fields: Vec::new(),
+            custom_freq_postings_field: None,
+            pending_custom_freq_terms: Vec::new(),
             term_vector_fields: Vec::new(),
             doc_values_field: None,
             norms_field: None,
@@ -413,6 +482,11 @@ impl<'d> IndexWriter<'d> {
     /// effort per document" shape [`crate::indexing_chain::invert_documents`]
     /// already has for a missing `(doc_id, field, text)` triple).
     pub fn set_postings_field(&mut self, field_name: Option<&str>) -> Result<()> {
+        if field_name.is_some() && self.custom_freq_postings_field.is_some() {
+            return Err(Error::PostingsAndCustomFreqPostingsMutuallyExclusive(
+                "set_postings_field",
+            ));
+        }
         self.postings_fields = match field_name {
             None => Vec::new(),
             Some(name) => vec![Self::resolve_postings_field(&self.fields, name)?],
@@ -441,6 +515,11 @@ impl<'d> IndexWriter<'d> {
     /// in the list, since [`postings_writer::write_fields`] itself has no
     /// defined behavior for two inputs sharing one `field_number`).
     pub fn add_postings_field(&mut self, field_name: &str) -> Result<()> {
+        if self.custom_freq_postings_field.is_some() {
+            return Err(Error::PostingsAndCustomFreqPostingsMutuallyExclusive(
+                "add_postings_field",
+            ));
+        }
         let config = Self::resolve_postings_field(&self.fields, field_name)?;
         if self
             .postings_fields
@@ -478,6 +557,80 @@ impl<'d> IndexWriter<'d> {
             field_number: info.number,
             index_options: info.index_options,
         })
+    }
+
+    /// Opts this writer into building and writing real
+    /// `IndexOptions::DocsAndCustomFreqs` postings (`.doc`/`.tim`/`.tip`/
+    /// `.tmd`, wire-identical to `DocsAndFreqs` -- see
+    /// `crate::postings_writer`'s and `crate::postings`'s module doc
+    /// comments' `IndexOptions::DocsAndCustomFreqs` sections) for one field of
+    /// every segment [`IndexWriter::commit`] flushes from here on, driven by
+    /// **explicit caller-supplied per-doc-per-term `custom_freq` values**
+    /// (via [`IndexWriter::add_document_with_custom_freq_terms`]) instead of
+    /// [`IndexWriter::set_postings_field`]'s analyzed-text pipeline -- there
+    /// is no way to derive a genuinely arbitrary "opaque similarity score"
+    /// freq value from tokenized text, so this is a separate opt-in with its
+    /// own separate document-buffering entry point.
+    ///
+    /// `field_name` is looked up in this writer's fixed `fields` list (from
+    /// [`IndexWriter::open`]) and requires its `index_options` to already be
+    /// exactly `IndexOptions::DocsAndCustomFreqs` (an `Err` otherwise) --
+    /// unlike [`IndexWriter::set_postings_field`], this is single-field-only
+    /// (a single `Option`, not a list): there is no
+    /// `add_custom_freq_postings_field` multi-field entry point yet (see
+    /// `docs/parity.md`).
+    ///
+    /// # Scope decision: mutually exclusive with the analyzed-text postings path
+    ///
+    /// A writer may have **either** [`IndexWriter::set_postings_field`]/
+    /// [`IndexWriter::add_postings_field`]'s analyzed-text postings field(s)
+    /// **or** this custom-freq postings field active at a time, never both in
+    /// the same commit -- calling this with `Some(_)` while
+    /// `postings_fields` is non-empty (or calling `set_postings_field`/
+    /// `add_postings_field` with a field while this is `Some`) returns
+    /// [`Error::PostingsAndCustomFreqPostingsMutuallyExclusive`] rather than
+    /// silently combining them. This is a deliberate, honestly-scoped
+    /// simplification, not a fundamental limitation of the on-disk format
+    /// (real Lucene freely mixes fields with different `IndexOptions` in one
+    /// segment): the two paths buffer their per-document input differently
+    /// (`pending_docs`' stored `FieldValue::String` re-tokenized by
+    /// [`crate::indexing_chain::invert_documents`] vs.
+    /// [`Self::pending_custom_freq_terms`]' explicit pairs), and
+    /// [`IndexWriter::build_postings_output`]/
+    /// [`IndexWriter::build_custom_freq_postings_output`] each build their own
+    /// standalone [`postings_writer::write_fields`] input -- merging both
+    /// into a single call would need every `FieldPostingsInput` in one
+    /// `Vec`, which is possible in principle but not implemented here yet
+    /// (would need `commit()`'s postings-output selection to union rather
+    /// than branch, plus a test proving the merged multi-field write is
+    /// byte-correct). `None` (the default a freshly [`IndexWriter::open`]ed
+    /// writer starts with) turns this back off entirely.
+    pub fn set_custom_freq_postings_field(&mut self, field_name: Option<&str>) -> Result<()> {
+        if field_name.is_some() && !self.postings_fields.is_empty() {
+            return Err(Error::PostingsAndCustomFreqPostingsMutuallyExclusive(
+                "set_custom_freq_postings_field",
+            ));
+        }
+        self.custom_freq_postings_field = match field_name {
+            None => None,
+            Some(name) => {
+                let info = self
+                    .fields
+                    .iter()
+                    .find(|f| f.name == name)
+                    .ok_or_else(|| Error::UnknownCustomFreqPostingsField(name.to_string()))?;
+                if info.index_options != IndexOptions::DocsAndCustomFreqs {
+                    return Err(Error::UnsupportedCustomFreqPostingsIndexOptions(
+                        name.to_string(),
+                        info.index_options,
+                    ));
+                }
+                Some(CustomFreqPostingsFieldConfig {
+                    field_number: info.number,
+                })
+            }
+        };
+        Ok(())
     }
 
     /// Opts this writer into also building and writing real term vectors
@@ -745,6 +898,49 @@ impl<'d> IndexWriter<'d> {
     /// `dir` until `commit` is called.
     pub fn add_document(&mut self, doc: Document) {
         self.pending_docs.push(doc);
+        // Keeps `pending_custom_freq_terms` aligned 1:1 by index with
+        // `pending_docs` regardless of which entry point buffered any given
+        // doc -- see that field's own doc comment.
+        self.pending_custom_freq_terms.push(Vec::new());
+    }
+
+    /// Buffers `doc` for the next [`IndexWriter::commit`], same as
+    /// [`IndexWriter::add_document`], and additionally records `terms` -- a
+    /// list of `(term, custom_freq)` pairs -- as this doc's explicit input to
+    /// [`IndexWriter::set_custom_freq_postings_field`]'s opted-in field (if
+    /// any is configured; `terms` is ignored, harmlessly, if
+    /// `custom_freq_postings_field` is `None`, matching
+    /// [`IndexWriter::set_postings_field`]'s own "best effort per document"
+    /// convention of silently contributing nothing when nothing is opted
+    /// in).
+    ///
+    /// `custom_freq` is this port's port of real Lucene's opaque
+    /// `DocsAndCustomFreqs` "freq" value -- an arbitrary per-doc-per-term
+    /// integer a similarity implementation interprets however it likes,
+    /// **not** a literal term-occurrence count (see
+    /// `crate::postings_writer`'s module doc comment's
+    /// `IndexOptions::DocsAndCustomFreqs` section). It must be `>= 1`: the
+    /// underlying codec layer ([`postings_writer::write_fields`]) rejects
+    /// `freq < 1` for every `IndexOptions` variant that carries a freq at
+    /// all, `DocsAndCustomFreqs` included, since the wire encoding has no
+    /// representation for a zero-or-negative freq. A `term` repeated more
+    /// than once in `terms` for the same doc contributes one postings entry
+    /// per occurrence in this list (i.e. the *last* one wins for that
+    /// `(doc, term)` pair's freq, since the codec's per-term-per-doc map
+    /// only ever keeps one freq value per doc) -- callers should supply each
+    /// distinct term at most once per doc to avoid relying on that.
+    ///
+    /// A plain [`IndexWriter::add_document`] call is equivalent to calling
+    /// this with an empty `terms` list -- both keep
+    /// [`Self::pending_custom_freq_terms`] aligned with `pending_docs` by
+    /// index.
+    pub fn add_document_with_custom_freq_terms(
+        &mut self,
+        doc: Document,
+        terms: Vec<(String, i32)>,
+    ) {
+        self.pending_docs.push(doc);
+        self.pending_custom_freq_terms.push(terms);
     }
 
     /// The atomic delete-by-term + add-document real Lucene calls
@@ -969,10 +1165,22 @@ impl<'d> IndexWriter<'d> {
             // written to `dir` -- see this method's own doc comment on why
             // that ordering is what makes a docFreq-too-large rejection
             // atomic.
-            let postings_output = if self.postings_fields.is_empty() {
-                None
-            } else {
+            // `postings_fields`/`custom_freq_postings_field` are enforced
+            // mutually exclusive by `set_postings_field`/`add_postings_field`/
+            // `set_custom_freq_postings_field` (see those methods' doc
+            // comments), so at most one branch below ever produces `Some` --
+            // no ambiguity about which one "wins".
+            let postings_output = if !self.postings_fields.is_empty() {
                 Self::build_postings_output(&self.pending_docs, &self.postings_fields, &segment_id)?
+            } else if let Some(cfg) = &self.custom_freq_postings_field {
+                Self::build_custom_freq_postings_output(
+                    &self.pending_docs,
+                    &self.pending_custom_freq_terms,
+                    cfg,
+                    &segment_id,
+                )?
+            } else {
+                None
             };
             let term_vectors_output = if self.term_vector_fields.is_empty() {
                 None
@@ -1038,6 +1246,7 @@ impl<'d> IndexWriter<'d> {
             new_segment_infos.segments.push(sci);
             new_segment_infos.counter += 1;
             self.pending_docs.clear();
+            self.pending_custom_freq_terms.clear();
         }
 
         self.prepared_commit = Some(new_segment_infos);
@@ -1212,6 +1421,93 @@ impl<'d> IndexWriter<'d> {
                 terms: &f.terms,
             })
             .collect();
+        let output = postings_writer::write_fields(&inputs, segment_id, "")?;
+        Ok(Some(output))
+    }
+
+    /// [`Self::custom_freq_postings_field`]'s counterpart to
+    /// [`IndexWriter::build_postings_output`]: builds
+    /// [`postings_writer::write_fields`]'s input for `config`'s single field
+    /// straight from `custom_freq_terms`' explicit `(term, custom_freq)`
+    /// pairs -- **no** analyzer, no [`crate::indexing_chain::invert_documents`]
+    /// call, no re-tokenizing of any stored field text -- matching
+    /// [`IndexWriter::set_custom_freq_postings_field`]'s documented "explicit
+    /// caller-supplied freq, not a derived occurrence count" contract.
+    ///
+    /// `custom_freq_terms[i]` is doc `i`'s explicit term list (`docs[i]`'s
+    /// doc ID in the next flush), same 1:1-by-index alignment
+    /// [`Self::pending_custom_freq_terms`]'s own doc comment describes;
+    /// `docs` itself is only consulted for its length here (each pending doc
+    /// contributes whatever `custom_freq_terms` says for it, regardless of
+    /// its own stored-field values -- unlike the analyzed-text path, this one
+    /// never reads a `Document`'s `FieldValue`s at all). Terms are grouped
+    /// into one [`TermPostings`] per distinct term, in ascending byte order
+    /// (via a `BTreeMap`, matching [`postings_writer::write_fields`]'s
+    /// required per-field term ordering, same as
+    /// [`IndexWriter::build_postings_output`]'s own `BTreeMap`-ordering
+    /// argument). `IndexOptions::DocsAndCustomFreqs` carries no positions or
+    /// offsets (same false `subsumes_positions()`/`subsumes_offsets()` as
+    /// `DocsAndFreqs` -- see `crate::postings`'s module doc comment), so
+    /// `positions`/`offsets` are always empty and `has_payloads` is always
+    /// `false`, exactly like a `Docs`/`DocsAndFreqs` field on the analyzed
+    /// path.
+    ///
+    /// Returns `Ok(None)` when no pending doc has any term for this field
+    /// (nothing to write this commit, same "empty is not an error" shape as
+    /// [`IndexWriter::build_postings_output`]). Returns `Err` on
+    /// [`postings_writer::write_fields`]'s own validation failures -- in
+    /// particular, a `custom_freq < 1` anywhere in `custom_freq_terms`
+    /// surfaces as [`postings_writer::Error`]'s existing "freq < 1"
+    /// rejection (see [`IndexWriter::add_document_with_custom_freq_terms`]'s
+    /// doc comment).
+    fn build_custom_freq_postings_output(
+        docs: &[Document],
+        custom_freq_terms: &[Vec<(String, i32)>],
+        config: &CustomFreqPostingsFieldConfig,
+        segment_id: &[u8; ID_LENGTH],
+    ) -> Result<Option<postings_writer::Output>> {
+        let mut per_term: std::collections::BTreeMap<Vec<u8>, Vec<(i32, i32)>> =
+            std::collections::BTreeMap::new();
+        for doc_id in 0..docs.len() {
+            let Some(terms) = custom_freq_terms.get(doc_id) else {
+                continue;
+            };
+            for (term, custom_freq) in terms {
+                per_term
+                    .entry(term.as_bytes().to_vec())
+                    .or_default()
+                    .push((doc_id as i32, *custom_freq));
+            }
+        }
+
+        if per_term.is_empty() {
+            return Ok(None);
+        }
+
+        let mut doc_ids = std::collections::BTreeSet::new();
+        let terms: Vec<TermPostings> = per_term
+            .into_iter()
+            .map(|(term, term_docs)| {
+                for (doc_id, _) in &term_docs {
+                    doc_ids.insert(*doc_id);
+                }
+                TermPostings {
+                    term,
+                    docs: term_docs,
+                    positions: Vec::new(),
+                    offsets: Vec::new(),
+                    payloads: Vec::new(),
+                }
+            })
+            .collect();
+
+        let inputs = [FieldPostingsInput {
+            field_number: config.field_number,
+            index_options: IndexOptions::DocsAndCustomFreqs,
+            doc_count: doc_ids.len() as i32,
+            has_payloads: false,
+            terms: &terms,
+        }];
         let output = postings_writer::write_fields(&inputs, segment_id, "")?;
         Ok(Some(output))
     }
@@ -2327,6 +2623,7 @@ impl<'d> IndexWriter<'d> {
     /// this facade already made for having no `close()` method at all.
     pub fn rollback(&mut self) {
         self.pending_docs.clear();
+        self.pending_custom_freq_terms.clear();
         self.prepared_commit = None;
     }
 
@@ -3778,6 +4075,266 @@ mod tests {
         for ext in ["doc", "tim", "tip", "tmd"] {
             assert!(!files.contains(&format!("{}.{ext}", sci.segment_name)));
         }
+    }
+
+    fn custom_freq_field(number: i32) -> FieldInfo {
+        FieldInfo {
+            index_options: IndexOptions::DocsAndCustomFreqs,
+            ..stored_only_field("score", number)
+        }
+    }
+
+    #[test]
+    fn set_custom_freq_postings_field_rejects_an_unknown_field_name() {
+        let tmp = tempdir("unknown-custom-freq-field");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+
+        let err = writer
+            .set_custom_freq_postings_field(Some("nonexistent"))
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::UnknownCustomFreqPostingsField(name) if name == "nonexistent")
+        );
+    }
+
+    #[test]
+    fn set_custom_freq_postings_field_rejects_a_field_with_wrong_index_options() {
+        let tmp = tempdir("custom-freq-field-wrong-options");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), body_field(1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+
+        let err = writer
+            .set_custom_freq_postings_field(Some("body"))
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            Error::UnsupportedCustomFreqPostingsIndexOptions(name, IndexOptions::DocsAndFreqs)
+                if name == "body"
+        ));
+    }
+
+    #[test]
+    fn set_custom_freq_postings_field_accepts_a_docs_and_custom_freqs_field() {
+        let tmp = tempdir("custom-freq-field-accepted");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), custom_freq_field(1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+
+        writer
+            .set_custom_freq_postings_field(Some("score"))
+            .unwrap();
+        let cfg = writer.custom_freq_postings_field.as_ref().unwrap();
+        assert_eq!(cfg.field_number, 1);
+
+        writer.set_custom_freq_postings_field(None).unwrap();
+        assert!(writer.custom_freq_postings_field.is_none());
+    }
+
+    #[test]
+    fn set_custom_freq_postings_field_rejects_when_a_text_postings_field_is_already_set() {
+        let tmp = tempdir("mutual-exclusion-a");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![
+            stored_only_field("id", 0),
+            body_field(1),
+            custom_freq_field(2),
+        ];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_postings_field(Some("body")).unwrap();
+
+        let err = writer
+            .set_custom_freq_postings_field(Some("score"))
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            Error::PostingsAndCustomFreqPostingsMutuallyExclusive("set_custom_freq_postings_field")
+        ));
+    }
+
+    #[test]
+    fn set_postings_field_rejects_when_a_custom_freq_postings_field_is_already_set() {
+        let tmp = tempdir("mutual-exclusion-b");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![
+            stored_only_field("id", 0),
+            body_field(1),
+            custom_freq_field(2),
+        ];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer
+            .set_custom_freq_postings_field(Some("score"))
+            .unwrap();
+
+        let err = writer.set_postings_field(Some("body")).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::PostingsAndCustomFreqPostingsMutuallyExclusive("set_postings_field")
+        ));
+
+        let err = writer.add_postings_field("body").unwrap_err();
+        assert!(matches!(
+            err,
+            Error::PostingsAndCustomFreqPostingsMutuallyExclusive("add_postings_field")
+        ));
+    }
+
+    #[test]
+    fn commit_with_custom_freq_postings_field_writes_readable_postings_with_explicit_freqs() {
+        // The whole point of `DocsAndCustomFreqs`: the freq value written is
+        // exactly the caller's explicit `custom_freq`, not a derived
+        // occurrence count -- proven here by supplying a `custom_freq` that
+        // differs from "1 occurrence" for every doc/term pair and reading it
+        // back byte-for-byte through the existing, unmodified
+        // `blocktree`/`postings::DocInput` read side.
+        let tmp = tempdir("custom-freq-postings-commit");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), custom_freq_field(1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer
+            .set_custom_freq_postings_field(Some("score"))
+            .unwrap();
+
+        writer.add_document_with_custom_freq_terms(
+            doc("a"),
+            vec![("alpha".to_string(), 7), ("beta".to_string(), 3)],
+        );
+        writer.add_document_with_custom_freq_terms(doc("b"), vec![("alpha".to_string(), 42)]);
+        let sis = writer.commit().unwrap().clone();
+        assert_eq!(sis.segments.len(), 1);
+        let sci = &sis.segments[0];
+
+        let si_bytes = dir.open(&format!("{}.si", sci.segment_name)).unwrap();
+        let si = segment_info::parse(&si_bytes, &sci.segment_id).unwrap();
+        for ext in ["doc", "tim", "tip", "tmd"] {
+            let name = format!("{}.{ext}", sci.segment_name);
+            assert!(si.files.contains(&name), "missing {name} in .si files");
+        }
+
+        let tim = dir.open(&format!("{}.tim", sci.segment_name)).unwrap();
+        let tip = dir.open(&format!("{}.tip", sci.segment_name)).unwrap();
+        let tmd = dir.open(&format!("{}.tmd", sci.segment_name)).unwrap();
+        let doc_bytes = dir.open(&format!("{}.doc", sci.segment_name)).unwrap();
+        let field_infos = fi::FieldInfos {
+            fields: vec![
+                fi::FieldInfo {
+                    index_options: IndexOptions::None,
+                    ..stored_only_field("id", 0)
+                },
+                custom_freq_field(1),
+            ],
+        };
+        let block_fields = blocktree::open(&tim, &tip, &tmd, &field_infos, &sci.segment_id, "", 2)
+            .expect("blocktree::open on custom-freq .tim/.tip/.tmd");
+        let doc_in = DocInput::open(&doc_bytes, &sci.segment_id, "").expect("open .doc");
+        let field = block_fields.field("score").unwrap();
+
+        let postings = field.postings(b"alpha", Some(&doc_in)).unwrap().unwrap();
+        assert_eq!(postings.docs, vec![0, 1]);
+        assert_eq!(postings.freqs, vec![7, 42]);
+
+        let postings = field.postings(b"beta", Some(&doc_in)).unwrap().unwrap();
+        assert_eq!(postings.docs, vec![0]);
+        assert_eq!(postings.freqs, vec![3]);
+
+        assert!(field.seek_exact(b"missing").is_none());
+    }
+
+    #[test]
+    fn commit_with_custom_freq_postings_field_but_no_pending_docs_writes_no_postings_files() {
+        let tmp = tempdir("custom-freq-postings-empty-commit");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), custom_freq_field(1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer
+            .set_custom_freq_postings_field(Some("score"))
+            .unwrap();
+
+        let sis = writer.commit().unwrap().clone();
+        assert!(sis.segments.is_empty());
+    }
+
+    #[test]
+    fn commit_with_custom_freq_postings_field_and_no_doc_supplying_terms_skips_postings() {
+        // A doc added via plain `add_document` alongside custom-freq-terms
+        // docs contributes an empty term list (see `add_document`'s own doc
+        // comment on keeping `pending_custom_freq_terms` aligned) -- not an
+        // error, just nothing to index for that doc.
+        let tmp = tempdir("custom-freq-postings-no-terms");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), custom_freq_field(1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer
+            .set_custom_freq_postings_field(Some("score"))
+            .unwrap();
+
+        writer.add_document(doc("a")); // no custom-freq terms at all
+        let sis = writer.commit().unwrap().clone();
+        let sci = &sis.segments[0];
+
+        let files = dir.list_all().unwrap();
+        assert!(!files.contains(&format!("{}.tim", sci.segment_name)));
+    }
+
+    #[test]
+    fn commit_with_no_custom_freq_postings_field_configured_stays_stored_only() {
+        let tmp = tempdir("no-custom-freq-postings-field");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), custom_freq_field(1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+
+        writer.add_document_with_custom_freq_terms(doc("a"), vec![("alpha".to_string(), 5)]);
+        let sis = writer.commit().unwrap().clone();
+        let sci = &sis.segments[0];
+
+        let files = dir.list_all().unwrap();
+        for ext in ["doc", "tim", "tip", "tmd"] {
+            assert!(!files.contains(&format!("{}.{ext}", sci.segment_name)));
+        }
+    }
+
+    #[test]
+    fn commit_rejects_a_custom_freq_below_one_and_leaves_the_writer_unchanged() {
+        // The codec layer's own "freq < 1" validation
+        // (`postings_writer::write_fields`) applies unchanged to
+        // `DocsAndCustomFreqs` -- a caller-supplied `custom_freq` of `0` (or
+        // negative) surfaces as an `Err`, not a silently-clamped value.
+        let tmp = tempdir("custom-freq-below-one");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), custom_freq_field(1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer
+            .set_custom_freq_postings_field(Some("score"))
+            .unwrap();
+
+        writer.add_document_with_custom_freq_terms(doc("a"), vec![("alpha".to_string(), 0)]);
+        let err = writer.commit().unwrap_err();
+        assert!(matches!(err, Error::PostingsWriter(_)));
+        // Atomic failure: nothing committed, pending state untouched.
+        assert!(writer.segment_infos.segments.is_empty());
+        assert_eq!(writer.pending_doc_count(), 1);
+    }
+
+    #[test]
+    fn rollback_discards_pending_custom_freq_terms_too() {
+        let tmp = tempdir("custom-freq-rollback");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), custom_freq_field(1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer
+            .set_custom_freq_postings_field(Some("score"))
+            .unwrap();
+
+        writer.add_document_with_custom_freq_terms(doc("a"), vec![("alpha".to_string(), 5)]);
+        assert_eq!(writer.pending_custom_freq_terms.len(), 1);
+        writer.rollback();
+        assert!(writer.pending_custom_freq_terms.is_empty());
+
+        // Next commit sees nothing from the rolled-back doc.
+        let sis = writer.commit().unwrap().clone();
+        assert!(sis.segments.is_empty());
     }
 
     /// `postings_writer` now emits real full `ForUtil`/`PForUtil` blocks for
