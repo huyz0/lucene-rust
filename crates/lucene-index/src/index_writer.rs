@@ -390,15 +390,22 @@ impl<'d> IndexWriter<'d> {
     /// needed to establish or replace the first one / to disable postings
     /// entirely). `field_name` is looked up in this writer's fixed `fields`
     /// list (from [`IndexWriter::open`]) and requires its `index_options` to
-    /// already be `IndexOptions::Docs` or `IndexOptions::DocsAndFreqs` (an
-    /// `Err` otherwise) -- the same analyzed-field-text convention real
-    /// Lucene's own `FieldType` uses to mark a field indexable, and the same
-    /// `index_options` restriction [`postings_writer::write_fields`] itself
-    /// enforces (no positions/offsets/payloads yet). `None` (the default a
-    /// freshly [`IndexWriter::open`]ed writer starts with) turns this back
-    /// off entirely -- `commit()` then behaves exactly as it did before this
-    /// feature existed (stored fields only, matching every pre-existing
-    /// caller).
+    /// already be `IndexOptions::Docs`, `IndexOptions::DocsAndFreqs`,
+    /// `IndexOptions::DocsAndFreqsAndPositions`, or
+    /// `IndexOptions::DocsAndFreqsAndPositionsAndOffsets` (an `Err`
+    /// otherwise) -- the same analyzed-field-text convention real Lucene's
+    /// own `FieldType` uses to mark a field indexable. For the latter two,
+    /// [`IndexWriter::build_postings_output`] also feeds this writer's
+    /// [`crate::indexing_chain::invert_documents`] pass's per-occurrence
+    /// positions (and, for
+    /// `DocsAndFreqsAndPositionsAndOffsets`, offsets) into
+    /// [`postings_writer::write_fields`], producing a real `.pos` file (and,
+    /// for offsets, `.pay`) a `PhraseQuery` can search against -- payloads
+    /// are not wired up here yet (`has_payloads` is always `false`; see
+    /// `docs/parity.md`). `None` (the default a freshly [`IndexWriter::open`]ed
+    /// writer starts with) turns this back off entirely -- `commit()` then
+    /// behaves exactly as it did before this feature existed (stored fields
+    /// only, matching every pre-existing caller).
     ///
     /// Only [`FieldValue::String`] values contribute indexable text for an
     /// opted-in field -- a document with no value, or a non-`String` value,
@@ -426,8 +433,8 @@ impl<'d> IndexWriter<'d> {
     /// as separate per-field file sets).
     ///
     /// Same validation as [`IndexWriter::set_postings_field`] (`field_name`
-    /// must exist in this writer's fixed `fields` list and have
-    /// `index_options` of `IndexOptions::Docs`/`IndexOptions::DocsAndFreqs`),
+    /// must exist in this writer's fixed `fields` list and have a supported
+    /// `index_options`, see that method's doc comment for the accepted set),
     /// plus a new one: `field_name` must not already be opted in (an already
     /// -added field number returns
     /// [`Error::DuplicatePostingsField`] rather than silently duplicating it
@@ -456,7 +463,10 @@ impl<'d> IndexWriter<'d> {
             .ok_or_else(|| Error::UnknownPostingsField(name.to_string()))?;
         if !matches!(
             info.index_options,
-            IndexOptions::Docs | IndexOptions::DocsAndFreqs
+            IndexOptions::Docs
+                | IndexOptions::DocsAndFreqs
+                | IndexOptions::DocsAndFreqsAndPositions
+                | IndexOptions::DocsAndFreqsAndPositionsAndOffsets
         ) {
             return Err(Error::UnsupportedPostingsIndexOptions(
                 name.to_string(),
@@ -1135,6 +1145,14 @@ impl<'d> IndexWriter<'d> {
             // Its `BTreeMap` iteration order is therefore already ascending
             // by term bytes (the ordering `postings_writer::write_fields`
             // requires per field), so no separate sort is needed either.
+            let has_positions = matches!(
+                config.index_options,
+                IndexOptions::DocsAndFreqsAndPositions
+                    | IndexOptions::DocsAndFreqsAndPositionsAndOffsets
+            );
+            let has_offsets =
+                config.index_options == IndexOptions::DocsAndFreqsAndPositionsAndOffsets;
+
             let mut doc_ids = std::collections::BTreeSet::new();
             let mut terms: Vec<TermPostings> = Vec::new();
             for ((_, term), entries) in &inverted.terms {
@@ -1145,18 +1163,27 @@ impl<'d> IndexWriter<'d> {
                         (entry.doc_id, entry.term_freq())
                     })
                     .collect();
+                // `postings_writer::write_fields` only consults
+                // `positions`/`offsets` when this field's `index_options`
+                // indexes them (see `TermPostings`'s doc comment) -- leaving
+                // them empty for `Docs`/`DocsAndFreqs` fields matches that
+                // contract exactly, and is what keeps that path byte-for-byte
+                // unchanged from before this task.
+                let positions: Vec<Vec<i32>> = if has_positions {
+                    entries.iter().map(|entry| entry.positions()).collect()
+                } else {
+                    Vec::new()
+                };
+                let offsets: Vec<Vec<(i32, i32)>> = if has_offsets {
+                    entries.iter().map(|entry| entry.offsets()).collect()
+                } else {
+                    Vec::new()
+                };
                 terms.push(TermPostings {
                     term: term.as_bytes().to_vec(),
                     docs: term_docs,
-                    // `IndexWriter::build_postings_output` is intentionally
-                    // not wired up to positions yet (this task only adds the
-                    // write-side capability in `postings_writer`; see
-                    // `docs/parity.md` for the deferred-wiring note) --
-                    // `set_postings_field`/`add_postings_field` only ever
-                    // accept `IndexOptions::Docs`/`DocsAndFreqs` fields, so
-                    // `positions` is never consulted here.
-                    positions: Vec::new(),
-                    offsets: Vec::new(),
+                    positions,
+                    offsets,
                     payloads: Vec::new(),
                 });
             }
@@ -1851,29 +1878,50 @@ impl<'d> IndexWriter<'d> {
         let tim_name = format!("{segment_name}.tim");
         let tip_name = format!("{segment_name}.tip");
         let tmd_name = format!("{segment_name}.tmd");
+        let pos_name = format!("{segment_name}.pos");
+        let pay_name = format!("{segment_name}.pay");
 
-        for (name, bytes) in [
+        let mut written_names = vec![
+            doc_name.clone(),
+            tim_name.clone(),
+            tip_name.clone(),
+            tmd_name.clone(),
+        ];
+        let mut written_bytes: Vec<(&String, &Vec<u8>)> = vec![
             (&doc_name, &output.doc),
             (&tim_name, &output.tim),
             (&tip_name, &output.tip),
             (&tmd_name, &output.tmd),
-        ] {
+        ];
+        // `.pos`/`.pay` only exist when at least one field in this call
+        // indexes positions/offsets -- see `postings_writer::Output`'s doc
+        // comment ("`pos` is empty when `index_options` doesn't index
+        // positions ... no `.pos` file is needed in that case"). Registering
+        // an empty, never-written `.pos`/`.pay` name in `si.files` for a
+        // Docs/DocsAndFreqs-only commit would leave a dangling filename no
+        // reader could ever open.
+        if !output.pos.is_empty() {
+            written_names.push(pos_name.clone());
+            written_bytes.push((&pos_name, &output.pos));
+        }
+        if !output.pay.is_empty() {
+            written_names.push(pay_name.clone());
+            written_bytes.push((&pay_name, &output.pay));
+        }
+
+        for (name, bytes) in &written_bytes {
             write_file(dir, name, bytes)?;
         }
 
         let si_name = format!("{segment_name}.si");
         let si_bytes: Vec<u8> = dir.open(&si_name)?.to_vec();
         let mut si = segment_info::parse(&si_bytes, segment_id)?;
-        si.files.extend([
-            doc_name.clone(),
-            tim_name.clone(),
-            tip_name.clone(),
-            tmd_name.clone(),
-        ]);
+        si.files.extend(written_names.iter().cloned());
         let si_bytes = segment_info::write(&si, "");
         write_file(dir, &si_name, &si_bytes)?;
 
-        dir.sync(&[doc_name, tim_name, tip_name, tmd_name, si_name])?;
+        written_names.push(si_name);
+        dir.sync(&written_names)?;
         Ok(())
     }
 
@@ -3553,6 +3601,162 @@ mod tests {
         let postings = field.postings(b"runs", Some(&doc_in)).unwrap().unwrap();
         assert_eq!(postings.docs, vec![2]);
         assert!(field.seek_exact(b"missing").is_none());
+    }
+
+    /// Task #211's headline proof at the `lucene-index` level (the fuller
+    /// `PhraseQuery`-based proof lives in
+    /// `lucene-search/src/directory_reader.rs`'s `phrase_query_e2e` module,
+    /// since `lucene-index` can't depend on `lucene-search`): a field opted
+    /// into `IndexOptions::DocsAndFreqsAndPositions` postings via
+    /// `set_postings_field` produces a real `.pos` file (registered in `.si`,
+    /// present on disk), and `blocktree::FieldTerms::positions` -- the same
+    /// read path a query layer would use -- decodes each doc's occurrences
+    /// back out correctly, not just the doc-ID/freq shape
+    /// `commit_with_postings_field_writes_readable_postings_for_multiple_docs_and_terms`
+    /// already covers for `DocsAndFreqs`.
+    #[test]
+    fn commit_with_positions_index_options_writes_a_readable_pos_file() {
+        let tmp = tempdir("postings-positions-commit");
+        let dir = FsDirectory::open(&tmp);
+        let positions_body_field = fi::FieldInfo {
+            index_options: IndexOptions::DocsAndFreqsAndPositions,
+            ..stored_only_field("body", 1)
+        };
+        let fields = vec![stored_only_field("id", 0), positions_body_field.clone()];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_postings_field(Some("body")).unwrap();
+
+        writer.add_document(doc_with_body("a", "quick fox jumps"));
+        writer.add_document(doc_with_body("b", "the fox sleeps"));
+        let sis = writer.commit().unwrap().clone();
+        let sci = &sis.segments[0];
+
+        let si_bytes = dir.open(&format!("{}.si", sci.segment_name)).unwrap();
+        let si = segment_info::parse(&si_bytes, &sci.segment_id).unwrap();
+        let pos_name = format!("{}.pos", sci.segment_name);
+        assert!(
+            si.files.contains(&pos_name),
+            "missing {pos_name} in .si files"
+        );
+        assert!(
+            dir.list_all().unwrap().contains(&pos_name),
+            "missing {pos_name} on disk"
+        );
+        // No offsets were requested, so `.pay` must not exist at all.
+        assert!(!si.files.iter().any(|f| f.ends_with(".pay")));
+
+        let tim = dir.open(&format!("{}.tim", sci.segment_name)).unwrap();
+        let tip = dir.open(&format!("{}.tip", sci.segment_name)).unwrap();
+        let tmd = dir.open(&format!("{}.tmd", sci.segment_name)).unwrap();
+        let doc_bytes = dir.open(&format!("{}.doc", sci.segment_name)).unwrap();
+        let pos_bytes = dir.open(&pos_name).unwrap();
+        let field_infos = fi::FieldInfos {
+            fields: vec![
+                fi::FieldInfo {
+                    index_options: IndexOptions::None,
+                    ..stored_only_field("id", 0)
+                },
+                positions_body_field,
+            ],
+        };
+        let block_fields = blocktree::open(&tim, &tip, &tmd, &field_infos, &sci.segment_id, "", 2)
+            .expect("blocktree::open on IndexWriter-produced .tim/.tip/.tmd");
+        let doc_in = DocInput::open(&doc_bytes, &sci.segment_id, "").expect("open .doc");
+        let pos_in = lucene_codecs::postings::PosInput::open(&pos_bytes, &sci.segment_id, "")
+            .expect("open .pos");
+        let field = block_fields.field("body").unwrap();
+
+        // "fox" occurs in both docs: doc 0 at position 1 ("quick fox
+        // jumps"), doc 1 at position 1 ("the fox sleeps").
+        let fox_positions = field
+            .positions(b"fox", Some(&doc_in), &pos_in, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(fox_positions.len(), 2);
+        assert_eq!(fox_positions[0].len(), 1);
+        assert_eq!(fox_positions[0][0].position, 1);
+        assert_eq!(fox_positions[1].len(), 1);
+        assert_eq!(fox_positions[1][0].position, 1);
+
+        // "quick" is a doc-0-only singleton at position 0.
+        let quick_positions = field
+            .positions(b"quick", Some(&doc_in), &pos_in, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(quick_positions.len(), 1);
+        assert_eq!(
+            quick_positions[0],
+            vec![lucene_codecs::postings::Position {
+                position: 0,
+                start_offset: -1,
+                end_offset: -1,
+                payload: Vec::new(),
+            }]
+        );
+    }
+
+    /// Same shape as
+    /// `commit_with_positions_index_options_writes_a_readable_pos_file`, but
+    /// with `IndexOptions::DocsAndFreqsAndPositionsAndOffsets` -- proves the
+    /// `has_offsets` branch in `IndexWriter::build_postings_output` also
+    /// feeds real character offsets through to a readable `.pos`/`.si` file
+    /// set (small enough here to stay inline in `.pos` rather than needing a
+    /// `.pay` file at all -- see `blocktree::FieldTerms::positions`'s doc
+    /// comment on when `.pay` is actually required).
+    #[test]
+    fn commit_with_offsets_index_options_writes_readable_offsets() {
+        let tmp = tempdir("postings-offsets-commit");
+        let dir = FsDirectory::open(&tmp);
+        let offsets_body_field = fi::FieldInfo {
+            index_options: IndexOptions::DocsAndFreqsAndPositionsAndOffsets,
+            ..stored_only_field("body", 1)
+        };
+        let fields = vec![stored_only_field("id", 0), offsets_body_field.clone()];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_postings_field(Some("body")).unwrap();
+
+        writer.add_document(doc_with_body("a", "quick fox"));
+        let sis = writer.commit().unwrap().clone();
+        let sci = &sis.segments[0];
+
+        let si_bytes = dir.open(&format!("{}.si", sci.segment_name)).unwrap();
+        let si = segment_info::parse(&si_bytes, &sci.segment_id).unwrap();
+        assert!(si.files.iter().any(|f| f.ends_with(".pos")));
+
+        let tim = dir.open(&format!("{}.tim", sci.segment_name)).unwrap();
+        let tip = dir.open(&format!("{}.tip", sci.segment_name)).unwrap();
+        let tmd = dir.open(&format!("{}.tmd", sci.segment_name)).unwrap();
+        let doc_bytes = dir.open(&format!("{}.doc", sci.segment_name)).unwrap();
+        let pos_bytes = dir.open(&format!("{}.pos", sci.segment_name)).unwrap();
+        let field_infos = fi::FieldInfos {
+            fields: vec![
+                fi::FieldInfo {
+                    index_options: IndexOptions::None,
+                    ..stored_only_field("id", 0)
+                },
+                offsets_body_field,
+            ],
+        };
+        let block_fields = blocktree::open(&tim, &tip, &tmd, &field_infos, &sci.segment_id, "", 1)
+            .expect("blocktree::open on IndexWriter-produced .tim/.tip/.tmd");
+        let doc_in = DocInput::open(&doc_bytes, &sci.segment_id, "").expect("open .doc");
+        let pos_in = lucene_codecs::postings::PosInput::open(&pos_bytes, &sci.segment_id, "")
+            .expect("open .pos");
+        let field = block_fields.field("body").unwrap();
+
+        // "quick fox" -> "quick" spans bytes [0, 5), "fox" spans [6, 9).
+        let fox_positions = field
+            .positions(b"fox", Some(&doc_in), &pos_in, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(fox_positions[0][0].start_offset, 6);
+        assert_eq!(fox_positions[0][0].end_offset, 9);
+        let quick_positions = field
+            .positions(b"quick", Some(&doc_in), &pos_in, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(quick_positions[0][0].start_offset, 0);
+        assert_eq!(quick_positions[0][0].end_offset, 5);
     }
 
     #[test]

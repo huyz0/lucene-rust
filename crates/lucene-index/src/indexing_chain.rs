@@ -2,42 +2,35 @@
 //! `DocumentsWriterPerThread`/`IndexingChain`'s job of running each
 //! document's indexed field text through an [`Analyzer`] and building an
 //! in-memory inverted index (term -> per-doc positions/offsets), ready in
-//! *shape* to be handed to a postings encoder -- but with no such encoder to
-//! hand it to yet.
+//! *shape* to be handed to a postings encoder.
 //!
 //! # Scope reality (read this before assuming more than it says)
 //!
-//! This port's segment writer (`crate::segment_writer`) has **no write-side
-//! postings encoder at all** -- confirmed by that module's own "What this
-//! deliberately is not" doc comment, which states every flushed field is
-//! `IndexOptions::None` (stored-only), because there is no reusable
-//! write-side postings/doc-values/points/vectors format built yet. That
-//! means there is nowhere in this port to *persist* a real inverted index
-//! today.
+//! **This module is wired all the way through to a persisted, searchable
+//! index.** `crate::index_writer::IndexWriter`'s private
+//! `build_postings_output` helper calls [`invert_documents`] directly for
+//! every field opted into postings via
+//! `IndexWriter::set_postings_field`/`IndexWriter::add_postings_field`, then
+//! feeds its output into
+//! [`lucene_codecs::postings_writer::write_fields`], which produces real
+//! `.doc`/`.tim`/`.tip`/`.tmd` bytes (and, for a field whose `index_options`
+//! indexes positions/offsets, real `.pos`/`.pay` bytes too) that
+//! `IndexWriter::commit` writes to `dir` like any other segment file. A
+//! caller that adds real text via `IndexWriter::add_document`, opts a field
+//! into `IndexOptions::DocsAndFreqsAndPositions` (or
+//! `...AndPositionsAndOffsets`) postings, and commits ends up with a segment
+//! `lucene_search`'s `PhraseQuery` can search correctly -- this is a genuine
+//! add_document -> tokenize -> invert -> write -> commit -> search round
+//! trip, not just an in-memory data structure.
 //!
-//! Given that, this module is scoped down honestly to exactly what's
-//! buildable and valuable right now: an in-memory inverted-index **builder**
-//! that takes a batch of documents' indexed field text, runs each through an
-//! [`Analyzer`] (`lucene-analysis`, already wired into query-side analysis by
-//! a prior task), and produces the in-memory data structure real Lucene's
-//! `TermsHashPerField`/`FreqProxTermsWriterPerField` build while indexing a
-//! document -- a term dictionary grouping postings by `(field, term)`, each
-//! entry holding a doc-ID-sorted list of per-doc term frequency, positions,
-//! and offsets.
-//!
-//! **This is real, testable work** (it is the exact tokenize-and-invert
-//! logic a future postings writer will need as its input), but:
-//!
-//! - **Nothing downstream can consume it yet.** There is no code path from
-//!   [`InMemoryInvertedIndex`] to any file on disk. A future postings writer
-//!   (not yet built) is required before this becomes part of a real,
-//!   persisted, searchable index.
-//! - **This does NOT make documents indexed/searchable via analyzed text.**
-//!   Nothing in `crate::segment_writer` reads from or writes this structure;
-//!   flushing a segment today still only writes stored fields. Do not treat
-//!   this module's existence as closing that gap -- it narrows the *design*
-//!   gap (the shape of the eventual postings-writer input now exists and is
-//!   tested) but not the *persistence* gap.
+//! What's still not wired up from this module's output: payload bytes
+//! (`postings_writer`'s `has_payloads`/`TermPostings::payloads` support
+//! exists, but `IndexWriter::build_postings_output` never sets
+//! `has_payloads` or populates `payloads`) and term-vector-style
+//! per-document random access to positions/offsets outside of the postings
+//! path (see `crate::term_vectors` for that instead, which has its own,
+//! separate indexing pass) -- see `docs/parity.md` for the exact current
+//! line.
 //!
 //! # Why this output shape anticipates a future postings writer
 //!
