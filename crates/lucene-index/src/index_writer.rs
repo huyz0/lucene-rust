@@ -2575,6 +2575,39 @@ impl<'d> IndexWriter<'d> {
         self.pending_docs.len()
     }
 
+    /// Total number of documents actually committed to disk right now,
+    /// summed across every segment in [`IndexWriter::segment_infos`].
+    ///
+    /// **Semantics: total, not live.** This sums each segment's `doc_count`
+    /// as read from that segment's own `.si` file (via
+    /// [`segment_info::parse`], the same source [`IndexWriter::segment_stats`]
+    /// already uses for [`crate::merge_policy::find_merges`]) -- it does
+    /// **not** subtract `del_count`/soft deletes. A document that was
+    /// `delete_documents`/`update_document`-deleted after being committed is
+    /// still physically present in its segment's stored-fields file (this
+    /// facade never rewrites a segment in place to remove a deleted doc --
+    /// only a merge drops it, by omitting it from the merged output) and so
+    /// is still counted here. Callers that want the *live* (non-deleted)
+    /// count must subtract each [`SegmentCommitInfo::del_count`] themselves
+    /// (`self.segment_infos().segments.iter().map(|s| s.del_count as
+    /// usize).sum()`), or open each segment's `.liv` file (if any) via
+    /// [`lucene_codecs::live_docs::parse`] to count set bits directly.
+    ///
+    /// **Distinct from [`IndexWriter::pending_doc_count`]:** this method
+    /// only reflects documents durably written by a prior
+    /// [`IndexWriter::commit`] -- [`IndexWriter::add_document`] calls not
+    /// yet committed are never counted here, matching
+    /// [`IndexWriter::segment_infos`]'s own "most recently committed" scope.
+    pub fn committed_doc_count(&self) -> Result<usize> {
+        let mut total = 0usize;
+        for sci in &self.segment_infos.segments {
+            let si_bytes = self.dir.open(&format!("{}.si", sci.segment_name))?.to_vec();
+            let si = segment_info::parse(&si_bytes, &sci.segment_id)?;
+            total += si.doc_count as usize;
+        }
+        Ok(total)
+    }
+
     /// Discards every document buffered by [`IndexWriter::add_document`]
     /// since the last [`IndexWriter::commit`] -- real Lucene's
     /// `IndexWriter.rollback()`, scoped to what this facade actually has to
@@ -2904,6 +2937,57 @@ mod tests {
         let reopened = segment_infos::read_latest(&dir).unwrap();
         assert_eq!(reopened.generation, sis.generation);
         assert_eq!(read_all_docs(&dir, &reopened), vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn committed_doc_count_is_zero_on_a_fresh_directory() {
+        let tmp = tempdir("committed-doc-count-fresh");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0)];
+        let writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        assert_eq!(writer.committed_doc_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn committed_doc_count_sums_across_multiple_commits_and_segments_and_is_distinct_from_pending()
+    {
+        let tmp = tempdir("committed-doc-count-multi");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+
+        // First commit: 3 docs in one segment.
+        writer.add_document(doc("a"));
+        writer.add_document(doc("b"));
+        writer.add_document(doc("c"));
+        writer.commit().unwrap();
+        assert_eq!(writer.committed_doc_count().unwrap(), 3);
+        assert_eq!(writer.pending_doc_count(), 0);
+
+        // Second commit: 2 more docs, producing a second segment. Total
+        // committed count must now sum both segments' `.si` doc_count.
+        writer.add_document(doc("d"));
+        writer.add_document(doc("e"));
+        writer.commit().unwrap();
+        assert_eq!(writer.segment_infos().segments.len(), 2);
+        assert_eq!(writer.committed_doc_count().unwrap(), 5);
+        assert_eq!(writer.pending_doc_count(), 0);
+
+        // Buffer 2 more docs without committing: committed_doc_count must
+        // stay at 5 (untouched by uncommitted buffering) while
+        // pending_doc_count reports the 2 buffered docs -- the two accessors
+        // must never conflate committed-to-disk state with in-memory
+        // buffered state.
+        writer.add_document(doc("f"));
+        writer.add_document(doc("g"));
+        assert_eq!(writer.committed_doc_count().unwrap(), 5);
+        assert_eq!(writer.pending_doc_count(), 2);
+
+        // Committing the buffered pair brings committed_doc_count to 7 and
+        // drains pending back to 0.
+        writer.commit().unwrap();
+        assert_eq!(writer.committed_doc_count().unwrap(), 7);
+        assert_eq!(writer.pending_doc_count(), 0);
     }
 
     #[test]
@@ -3434,6 +3518,36 @@ mod tests {
         let fields = vec![stored_only_field("id", 0)];
         let mut writer = writer_seeded_with_fixture(&dir, &fx, fields);
 
+        // `writer_seeded_with_fixture` only seeds this writer's in-memory
+        // `SegmentCommitInfo` -- it never writes a real `_0.si` to `dir`
+        // (the fixture's real files are `.tim`/`.tip`/`.tmd`/`.doc` only).
+        // `committed_doc_count()` reads doc counts straight off each
+        // segment's `.si` file, so write a minimal one here for `_0` --
+        // same pattern `check_index.rs`'s own fixture setup uses.
+        std::fs::write(
+            tmp.join("_0.si"),
+            segment_info::write(
+                &segment_info::SegmentInfo {
+                    id: fx.segment_id,
+                    version: LuceneVersion {
+                        major: 10,
+                        minor: 0,
+                        bugfix: 0,
+                    },
+                    min_version: None,
+                    doc_count: fx.max_doc as i32,
+                    is_compound_file: false,
+                    has_blocks: false,
+                    diagnostics: vec![],
+                    files: vec![],
+                    attributes: vec![],
+                    index_sort: None,
+                },
+                "",
+            ),
+        )
+        .unwrap();
+
         let sources = [SegmentDeleteSource {
             segment_name: "_0",
             fields: &fx.fields,
@@ -3461,6 +3575,14 @@ mod tests {
         assert!(!parsed.get(0));
         assert!(parsed.get(1));
         assert!(!parsed.get(2));
+
+        // `committed_doc_count()` is total-including-deleted, not live: the
+        // segment's `.si` doc_count (the fixture's full `max_doc`) is
+        // unchanged by a delete -- only a merge ever actually drops a
+        // deleted doc from disk (see that method's doc comment) -- so the
+        // count stays at `fx.max_doc` even though 2 of those docs are now
+        // dead.
+        assert_eq!(writer.committed_doc_count().unwrap(), fx.max_doc);
     }
 
     #[test]
