@@ -6,6 +6,8 @@ import org.apache.lucene.analysis.standard.StandardTokenizer;
 import org.apache.lucene.analysis.core.KeywordAnalyzer;
 import org.apache.lucene.analysis.core.LowerCaseFilter;
 import org.apache.lucene.analysis.miscellaneous.ASCIIFoldingFilter;
+import org.apache.lucene.analysis.snowball.SnowballFilter;
+import org.tartarus.snowball.ext.EnglishStemmer;
 import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
 import org.apache.lucene.analysis.tokenattributes.OffsetAttribute;
 import org.apache.lucene.analysis.tokenattributes.PositionIncrementAttribute;
@@ -113,6 +115,57 @@ public class GenAnalysis {
       analyze(m, "keyword_empty", "", keyword);
     }
 
+    // Task #209 (Porter2/Snowball English stemmer): real Snowball
+    // `EnglishStemmer` (the actual `org.tartarus.snowball.ext.EnglishStemmer`
+    // generated from Snowball's english.sbl -- the algorithm real Lucene
+    // exposes via SnowballFilter(new EnglishStemmer()), a different filter
+    // than EnglishAnalyzer's default PorterStemFilter) over a representative
+    // word list: base Porter step 1a/1b/1c vocabulary, the full step 2/3/4
+    // suffix families (including cases where Porter2's replacement suffix
+    // differs from classic Porter's, e.g. "tional"->"tion" not "-tional"
+    // unchanged), R1/R2-region-sensitive words, the a_0 exceptional short
+    // prefixes ("gener"/"commun"/"arsen"/... that force R1 to start at
+    // position 5 rather than after the first vowel-consonant sequence),
+    // step 0 apostrophe handling ("don't", "cats'", "'tis", "o'clock"),
+    // Porter2's dedicated y/Y "vowel-or-consonant" bookkeeping (double
+    // y-initial-vowel words), doubled-consonant undoubling ("controll"->
+    // "control", "roll" unchanged since m(word) is not > 1), and the
+    // exception1 short-word table ("skis"->"ski", "skies"->"sky", "sky"
+    // unchanged, "idly"->"idl", "gently"->"gentl", "ugly"->"ugli",
+    // "early"->"earli", "only"->"onli", "singly"->"singl", plus a few
+    // invariant words: "andes", "atlas", "bias", "cosmos", "news", "howe").
+    try (Analyzer snow = new SnowballEnglishAnalyzer()) {
+      String[] words = {
+        "caresses", "ponies", "ties", "caress", "cats",
+        "feed", "agreed", "plastered", "bled", "motoring", "sing",
+        "conflated", "troubled", "sized", "hopping", "tanned", "falling",
+        "hissing", "fizzed", "failing", "filing",
+        "happy", "sky",
+        "relational", "conditional", "rational", "valenci", "hesitanci",
+        "digitizer", "conformabli", "radicalli", "differentli", "vileli",
+        "analogousli", "vietnamization", "predication", "operator",
+        "feudalism", "decisiveness", "hopefulness", "callousness",
+        "formaliti", "sensitiviti", "sensibiliti",
+        "triplicate", "formative", "formalize", "electriciti", "electrical",
+        "hopeful", "goodness",
+        "revival", "allowance", "inference", "airliner", "gyroscopic",
+        "adjustable", "defensible", "irritant", "replacement", "adjustment",
+        "dependent", "adoption", "homologous", "communism", "activate",
+        "angulariti", "effective", "bowdlerize", "probate",
+        "rate", "cease", "controll", "roll",
+        "generalization", "generalize", "generous",
+        "arsenal", "commune", "emergency", "lately", "organization",
+        "pastime", "universal",
+        "proceed", "exceed", "succeed",
+        "skis", "skies", "dying", "lying", "tying",
+        "idly", "gently", "ugly", "early", "only", "singly",
+        "atlas", "bias", "cosmos", "andes", "news", "howe",
+        "don't", "doesn't", "cats'", "o'clock", "'tis",
+        "syzygy", "toy", "cry"
+      };
+      analyze(m, "snowball_english", String.join(" ", words), snow);
+    }
+
     Files.writeString(out.resolve("manifest.properties"), m.toString());
     System.out.println("wrote analysis/ fixture directory");
   }
@@ -179,6 +232,21 @@ public class GenAnalysis {
     protected TokenStreamComponents createComponents(String fieldName) {
       Tokenizer source = new StandardTokenizer();
       return new TokenStreamComponents(source);
+    }
+  }
+
+  /**
+   * StandardTokenizer + LowerCaseFilter + SnowballFilter(EnglishStemmer) --
+   * task #209's Porter2/Snowball English stemmer, a different filter than
+   * EnglishAnalyzer's default (classic Porter) PorterStemFilter.
+   */
+  static class SnowballEnglishAnalyzer extends Analyzer {
+    @Override
+    protected TokenStreamComponents createComponents(String fieldName) {
+      Tokenizer source = new StandardTokenizer();
+      TokenStream filter = new LowerCaseFilter(source);
+      filter = new SnowballFilter(filter, new EnglishStemmer());
+      return new TokenStreamComponents(source, filter);
     }
   }
 }

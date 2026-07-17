@@ -6,7 +6,7 @@
 //! and stopword removal together ("The" is itself a stopword once
 //! lowercased). Regenerate with fixtures/src/GenAnalysis.java.
 
-use lucene_analysis::{Analyzer, AsciiFoldingFilter};
+use lucene_analysis::{Analyzer, AsciiFoldingFilter, SnowballEnglishStemFilter};
 use std::collections::HashSet;
 
 fn dir() -> String {
@@ -260,4 +260,49 @@ fn keyword_analyzer_matches_real_keyword_analyzer() {
             "case {case} (text={text:?}) diverged from real Lucene"
         );
     }
+}
+
+/// Task #209 (Porter2/Snowball English stemmer) cross-engine check: real
+/// `SnowballFilter` constructed with a real `EnglishStemmer`
+/// (`org.tartarus.snowball.ext.EnglishStemmer`, generated from Snowball's
+/// `english.sbl` -- the actual Porter2 algorithm, a different filter than
+/// `EnglishAnalyzer`'s default classic-Porter `PorterStemFilter`), run over
+/// `StandardTokenizer` + `LowerCaseFilter` output for a 112-word list
+/// covering: the full step 1a plural family (`sses`/`ied`/`ies`/`ss`/`us`/
+/// plain `s`), step 1b's `eed`/`eedly` protected-stem exceptions
+/// (`proceed`/`exceed`/`succeed` staying unchanged) and its `ing`-only
+/// special cases (`dying`/`lying`/`tying` -> `die`/`lie`/`tie`), the R1
+/// irregular-prefix words (`arsenal`/`commune`/`emergency`/
+/// `generalization`/`organization`/`pastime`/`university`/`generalize`/
+/// `generous`/`lately`), the whole-word exception table
+/// (`skis`/`skies`/`idly`/`gently`/`ugly`/`early`/`only`/`singly`/`sky`
+/// plus the untouched `andes`/`atlas`/`bias`/`cosmos`/`news`/`howe`), the
+/// full step 2/3/4 suffix families, step 5's `e`/`ll` handling
+/// (`controll`->`control` vs. `roll` staying unchanged), and step 0's
+/// apostrophe/possessive handling (`don't`/`doesn't`/`cats'`/`o'clock`/
+/// `'tis`) -- recorded by `fixtures/src/GenAnalysis.java`'s
+/// `snowball_english` case. Confirms this port's
+/// `SnowballEnglishStemFilter` produces byte-for-byte identical terms (and
+/// matching offsets/position-increments) to real Lucene's Porter2 stemmer.
+#[test]
+fn snowball_english_stemmer_matches_real_snowball_english_stemmer() {
+    let m = Manifest::load();
+    let case = "snowball_english";
+    let text = m.get(&format!("{case}.text"));
+    let expected_count: usize = m.get(&format!("{case}.count")).parse().unwrap();
+    let expected = expected_tokens(&m, case);
+    assert_eq!(expected.len(), expected_count, "manifest count mismatch");
+    let expected = char_offsets_to_byte_offsets(text, expected);
+
+    let tokens = lucene_analysis::tokenize(text);
+    let tokens = lucene_analysis::LowerCaseFilter::apply(tokens);
+    let actual: Vec<(String, i32, i32, i32)> = SnowballEnglishStemFilter::apply(tokens)
+        .into_iter()
+        .map(|t| (t.term, t.position_increment, t.start_offset, t.end_offset))
+        .collect();
+
+    assert_eq!(
+        actual, expected,
+        "snowball_english case diverged from real Lucene"
+    );
 }

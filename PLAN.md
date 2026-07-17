@@ -6096,3 +6096,84 @@ merge test, updated module doc comment), `crates/lucene-codecs/src/term_vectors.
 (updated `write_best_speed`'s doc comment to reflect the merge path no
 longer needing the guard), `docs/parity.md` (`SegmentMerger` and
 `Lucene90CompressingTermVectorsWriter` rows), `PLAN.md` (this entry).
+
+## Porter2/Snowball English stemmer (task #209)
+
+Task #175's revisit had already confirmed `PorterStemFilter` (task #65) is
+genuinely the classic 1980 Porter algorithm -- real Lucene's default
+`EnglishAnalyzer` path -- and that the real gap was a separate algorithm,
+Porter2/Snowball ("`org.tartarus.snowball.ext.EnglishStemmer`, generated
+from `english.sbl`"), exposed in real Lucene only via `SnowballFilter`
+constructed with an `EnglishStemmer`. That revisit weighed adding it as a
+new, separate, opt-in sibling filter and explicitly deferred it as its own
+task. This task did that: added `SnowballEnglishStemFilter` and
+`Analyzer::with_snowball_stemming()` in `crates/lucene-analysis/src/lib.rs`,
+leaving `PorterStemFilter` completely untouched.
+
+**A real, non-obvious discrepancy found and resolved while implementing**:
+the natural approach -- transcribe `EnglishStemmer.java` from the
+`/home/tuong/work/lucene` git checkout referenced by this repo's own
+instructions -- turned out to produce a stemmer that disagreed with real
+Lucene on real words (`"organization"` -> `"organiz"` instead of `"organ"`;
+`"emergency"` -> `"emergenc"` instead of `"emerg"`). Decompiling the actual
+class shipped in `lucene-analysis-common-10.5.0.jar` (via `javap`/CFR, since
+that jar -- not an arbitrary git checkout revision -- is what real code
+actually links against) revealed the checkout is a materially different,
+evidently newer/upstream regeneration of `english.sbl`: nine R1-override
+prefixes instead of three (`arsen`/`commun`/`gener` only), an additional
+whole-word `r_exception2` protected-stem step (`succeed`/`proceed`/`exceed`/
+`canning`/`inning`/`earring`/`herring`/`outing`, all left completely
+unchanged), and a different `-ing`-family special case (the checkout's
+version has a `y`-preceded-by-consonant/`even`/`cann`/`inn`/`earr`/`herr`/
+`out` sub-table; the actual 10.5.0 jar's `-ing` is just part of the shared
+`-ed`/`-edly`/`-ingly` deletion+cleanup family, with `dying`/`lying`/`tying`
+handled instead by the *other* whole-word exception table,
+`r_exception1`). This port matches the jar (confirmed both by the
+cross-engine fixture below and by directly instrumenting a decompiled copy
+of the jar's own class with debug prints to trace R1/R2 and per-step
+branching on the two disagreeing words).
+
+**Ported, itemized** (see `docs/parity.md`'s `PorterStemFilter` row, which
+now also documents this task, for the full per-step breakdown): step 0
+(apostrophe/possessive handling folded into step 1a exactly as the real
+generated code combines them), the `y`/`Y` consonant-bookkeeping prelude/
+postlude, R1/R2 region computation including the three irregular-prefix
+words, steps 1a through 5, the short-syllable test, and both whole-word
+exception tables.
+
+**Differential fixture**: extended `fixtures/src/GenAnalysis.java` with a
+`SnowballEnglishAnalyzer` (`StandardTokenizer` + `LowerCaseFilter` +
+`SnowballFilter(new EnglishStemmer())`) and a `snowball_english` case: a
+112-word list exercising every step/table above, including apostrophe/
+possessive forms, the R1-irregular-prefix words, both exception tables, and
+known multi-step chaining cases (`"emergency"`->`"emerg"`,
+`"organization"`->`"organ"`, `"generalization"`->`"general"`,
+`"trembly"`->`"trembl"`). Regenerated `fixtures/data/analysis/
+manifest.properties`. New Rust test
+`snowball_english_stemmer_matches_real_snowball_english_stemmer` in
+`crates/lucene-analysis/tests/analysis_fixtures.rs` asserts byte-identical
+(term, position_increment, offset) output against real Lucene across all
+112 words -- passed after the jar-vs-checkout correction above.
+
+**Unit tests**: 18 new tests directly exercising each branch (prelude
+apostrophe/leading-y marking, both exception tables, the `aeo`-doubled-
+consonant carve-out, the short-word append-`e` fallback, each suffix
+family, `Analyzer::with_snowball_stemming()` wiring and its precedence over
+`with_stemming()` when both are enabled, and non-domain/short-word
+passthrough). Coverage: `lucene-analysis/src/lib.rs` 99.59% lines (`cargo
+llvm-cov -p lucene-analysis`); the two remaining uncovered lines are
+pre-existing classic-Porter code and one step-3 `tional` table entry
+that's provably unreachable (step 2 already handles the identical,
+identically-R1-gated `tional`/`ational` suffixes first -- the same
+structural redundancy real Snowball's own generated code carries).
+`cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets --
+-D warnings` both clean.
+
+Files changed: `crates/lucene-analysis/src/lib.rs` (new
+`SnowballEnglishStemFilter`, `Analyzer::with_snowball_stemming()`, new
+private `snowball_english` module, new unit tests),
+`crates/lucene-analysis/tests/analysis_fixtures.rs` (new differential
+test), `fixtures/src/GenAnalysis.java` (new `SnowballEnglishAnalyzer` +
+`snowball_english` case), `fixtures/data/analysis/manifest.properties`
+(regenerated), `docs/parity.md` (`PorterStemFilter` row), `PLAN.md` (this
+entry).

@@ -409,6 +409,55 @@ impl PorterStemFilter {
     }
 }
 
+/// The Porter2/"Snowball English" stemmer -- real Lucene's
+/// `org.tartarus.snowball.ext.EnglishStemmer`, generated from Snowball's
+/// `english.sbl` and exposed via `org.apache.lucene.analysis.snowball.
+/// SnowballFilter` constructed with an `EnglishStemmer`. This is a
+/// **different, separate** algorithm from [`PorterStemFilter`] (the classic
+/// 1980 Porter algorithm, `org.tartarus.snowball.ext.PorterStemmer`, which is
+/// what real Lucene's `EnglishAnalyzer` actually wires up by default) -- see
+/// task #175's parity-check note on [`PorterStemFilter`] for why the two are
+/// not interchangeable. This filter is this crate's task #209 port of the
+/// Porter2/Snowball algorithm itself: step 0 (leading/trailing apostrophe
+/// and possessive `'s` removal), the y/Y consonant-vowel bookkeeping, R1/R2
+/// region computation (including the nine irregular-prefix words --
+/// `arsenal`, `commune`, `emergency`, `generalization`, `interest`,
+/// `lately`, `organization`, `pastime`, `university`, whose R1 is forced to
+/// start right after the fixed prefix rather than the usual computed
+/// position), steps 1a-1c, 2, 3, 4, 5, and the short-word/short-syllable
+/// (`r_shortv`) and whole-word exception tables (`skis`->`ski`,
+/// `skies`->`sky`, `idly`->`idl`, `gently`->`gentl`, `ugly`->`ugli`,
+/// `early`->`earli`, `only`->`onli`, `singly`->`singl`, plus `andes`/
+/// `atlas`/`bias`/`cosmos`/`howe`/`news`/`sky` left unchanged) -- a faithful,
+/// complete port of the algorithm, not a subset.
+///
+/// **Domain of definition**: like [`PorterStemFilter`], operates only on
+/// lowercase input; unlike it, this filter's own step 0 explicitly handles a
+/// leading/trailing/possessive apostrophe (`"don't"`, `"cats'"`, `"'tis"`),
+/// so the domain here is lowercase ASCII letters *plus* `'`. Anything
+/// outside that (uppercase, digits, other punctuation, non-ASCII) passes
+/// through **unchanged**, never a panic.
+///
+/// **Not wired into [`PorterStemFilter`] or `Analyzer::with_stemming`** --
+/// this is an additive, separate filter (`Analyzer::with_snowball_stemming`
+/// opts into it instead), matching real Lucene's own separation of
+/// `EnglishAnalyzer` (classic Porter) from `SnowballFilter`+`EnglishStemmer`
+/// (Porter2), which are two different, independently-selectable filters in
+/// real Lucene, not a superset/subset relationship.
+pub struct SnowballEnglishStemFilter;
+
+impl SnowballEnglishStemFilter {
+    pub fn apply(tokens: Vec<Token>) -> Vec<Token> {
+        tokens
+            .into_iter()
+            .map(|mut t| {
+                t.term = snowball_english::stem(&t.term);
+                t
+            })
+            .collect()
+    }
+}
+
 /// A scoped-down version of real Lucene's
 /// `org.apache.lucene.analysis.synonym.SynonymFilter`/`SynonymGraphFilter`:
 /// single-word-to-single-word synonym injection only.
@@ -894,6 +943,7 @@ pub struct Analyzer {
     stopwords: Option<HashSet<String>>,
     ascii_folding: bool,
     stemming: bool,
+    snowball_stemming: bool,
     synonyms: Option<HashMap<String, Vec<String>>>,
     synonyms_bidirectional: bool,
     /// When `true`, [`Analyzer::analyze`] short-circuits to
@@ -915,6 +965,7 @@ impl Analyzer {
             stopwords: stopwords.cloned(),
             ascii_folding: false,
             stemming: false,
+            snowball_stemming: false,
             synonyms: None,
             synonyms_bidirectional: false,
             keyword: false,
@@ -949,6 +1000,7 @@ impl Analyzer {
             stopwords: None,
             ascii_folding: false,
             stemming: false,
+            snowball_stemming: false,
             synonyms: None,
             synonyms_bidirectional: false,
             keyword: true,
@@ -977,6 +1029,21 @@ impl Analyzer {
     /// contains unstemmed words like `"the"`, not stems).
     pub fn with_stemming(mut self) -> Self {
         self.stemming = true;
+        self
+    }
+
+    /// Enables [`SnowballEnglishStemFilter`] (task #209's Porter2/Snowball
+    /// English stemmer) instead of [`PorterStemFilter`] in this analyzer's
+    /// chain. Filter order is otherwise identical to
+    /// [`Analyzer::with_stemming`]: tokenize -> fold -> lowercase ->
+    /// stopwords -> **stem**. Mutually exclusive with `with_stemming` in
+    /// effect (not in flag storage) -- if both are enabled on the same
+    /// `Analyzer`, this method's Snowball stemmer takes precedence and the
+    /// classic Porter stemmer is skipped, since running both in sequence
+    /// would double-stem and isn't a real Lucene configuration either
+    /// filter is meant to model.
+    pub fn with_snowball_stemming(mut self) -> Self {
+        self.snowball_stemming = true;
         self
     }
 
@@ -1031,7 +1098,9 @@ impl Analyzer {
             Some(stopwords) => StopFilter::apply(tokens, stopwords),
             None => tokens,
         };
-        let tokens = if self.stemming {
+        let tokens = if self.snowball_stemming {
+            SnowballEnglishStemFilter::apply(tokens)
+        } else if self.stemming {
             PorterStemFilter::apply(tokens)
         } else {
             tokens
@@ -1314,6 +1383,491 @@ mod porter {
         if n >= 2 && w[n - 1] == 'l' && w[n - 2] == 'l' && measure(w) > 1 {
             w.pop();
         }
+    }
+}
+
+/// The Porter2/"Snowball English" algorithm, operating on lowercase ASCII
+/// words that may also contain a literal `'` (apostrophe), which step 0
+/// explicitly strips/normalizes. See [`SnowballEnglishStemFilter`] for the
+/// documented scope.
+///
+/// This is a mechanical port of the actual generated
+/// `org.tartarus.snowball.ext.EnglishStemmer` bytecode shipped in real
+/// Lucene 10.5.0's `lucene-analysis-common-10.5.0.jar` -- reconstructed by
+/// decompiling that exact class (`javap`/CFR), **not** transcribed from the
+/// `EnglishStemmer.java` source file found in a `lucene` git checkout at an
+/// arbitrary revision, which turned out to implement a materially different
+/// (newer/upstream) generation of `english.sbl` than what the pinned
+/// 10.5.0 jar actually contains (extra `R1`-override prefixes, an
+/// additional `r_exception2` whole-word protected-stem step, and a
+/// different `-ing`-family special case) -- the two disagree on real words
+/// like `"organization"` (`"organ"` vs. `"organiz"`) and `"emergency"`
+/// (`"emerg"` vs. `"emergenc"`). The jar (what a real `EnglishAnalyzer`/
+/// `SnowballFilter` user actually links against) is authoritative here.
+mod snowball_english {
+    /// Is `c` a "vowel" for the algorithm's own grouping purposes? Matches
+    /// real Snowball's `g_v` grouping (`a`, `e`, `i`, `o`, `u`, `y`) --
+    /// note this deliberately does **not** include the uppercase `'Y'`
+    /// marker this module uses internally to mean "y acting as a
+    /// consonant here" (see [`prelude`]).
+    fn is_vowel(c: char) -> bool {
+        matches!(c, 'a' | 'e' | 'i' | 'o' | 'u' | 'y')
+    }
+
+    /// Does `w` end with the literal characters of `suffix`?
+    fn ends(w: &[char], suffix: &str) -> bool {
+        let suf_len = suffix.chars().count();
+        w.len() >= suf_len && w[w.len() - suf_len..].iter().copied().eq(suffix.chars())
+    }
+
+    /// Removes `tail_len` trailing characters from `w` and appends
+    /// `replacement` in their place.
+    fn replace_tail(w: &mut Vec<char>, tail_len: usize, replacement: &str) {
+        let keep = w.len() - tail_len;
+        w.truncate(keep);
+        w.extend(replacement.chars());
+    }
+
+    /// Real Snowball's `r_prelude`: strips a leading apostrophe, marks a
+    /// word-initial `y` as consonant (`'Y'`), and marks every `y`
+    /// immediately following a vowel as consonant (`'Y'`) too -- so the rest
+    /// of the algorithm can treat plain lowercase `'y'` as always a vowel
+    /// and `'Y'` as always a consonant.
+    fn prelude(w: &mut Vec<char>) {
+        if w.first() == Some(&'\'') {
+            w.remove(0);
+        }
+        if w.first() == Some(&'y') {
+            w[0] = 'Y';
+        }
+        let mut i = 0;
+        while i + 1 < w.len() {
+            if is_vowel(w[i]) && w[i + 1] == 'y' {
+                w[i + 1] = 'Y';
+            }
+            i += 1;
+        }
+    }
+
+    /// Real Snowball's region search used for both R1 and R2: starting at
+    /// `start`, finds the first vowel, then the first non-vowel following
+    /// it, and returns the index right after that non-vowel (or `w.len()`
+    /// if no such point exists).
+    fn find_region(w: &[char], start: usize) -> usize {
+        let n = w.len();
+        let mut i = start;
+        while i < n && !is_vowel(w[i]) {
+            i += 1;
+        }
+        if i >= n {
+            return n;
+        }
+        i += 1;
+        while i < n && is_vowel(w[i]) {
+            i += 1;
+        }
+        if i >= n {
+            return n;
+        }
+        i + 1
+    }
+
+    /// The three irregular prefixes real Snowball's `a_0` table forces R1
+    /// to start right after, instead of the normally-computed position (a
+    /// fix-up for otherwise-too-short words like `"generalization"`).
+    const R1_EXCEPTION_PREFIXES: &[&str] = &["arsen", "commun", "gener"];
+
+    /// Computes `(R1, R2)` -- the region-start indices real Snowball calls
+    /// `I_p1`/`I_p2` -- once per [`stem`] call, on the word as it stands
+    /// right after [`prelude`] and before any suffix stripping. Both
+    /// indices are absolute offsets into the original buffer and remain
+    /// valid for every later step's boundary checks, since every later step
+    /// only ever truncates the buffer's *tail* (suffix stripping), never
+    /// touching or shifting characters before either region's start. R2 is
+    /// always [`find_region`] starting from R1's own value (whether R1 came
+    /// from the exceptional-prefix override or the standard computation).
+    fn mark_regions(w: &[char]) -> (usize, usize) {
+        let s: String = w.iter().collect();
+        let p1 = R1_EXCEPTION_PREFIXES
+            .iter()
+            .find(|prefix| s.starts_with(**prefix))
+            .map(|prefix| prefix.chars().count())
+            .unwrap_or_else(|| find_region(w, 0));
+        let p2 = find_region(w, p1);
+        (p1, p2)
+    }
+
+    /// Real Snowball's `r_shortv`: does `w` end in a "short syllable" --
+    /// either a vowel-consonant pair that is the *entire* word (a vowel at
+    /// the very start followed immediately by a non-vowel), or a trailing
+    /// consonant/vowel/consonant run whose final consonant is not `w`, `x`,
+    /// or the internal `'Y'` marker?
+    fn ends_short_syllable(w: &[char]) -> bool {
+        let n = w.len();
+        if n == 2 && is_vowel(w[0]) && !is_vowel(w[1]) {
+            return true;
+        }
+        n >= 3
+            && !is_vowel(w[n - 3])
+            && is_vowel(w[n - 2])
+            && !is_vowel(w[n - 1])
+            && !matches!(w[n - 1], 'w' | 'x' | 'Y')
+    }
+
+    /// The whole-word exception table real Snowball checks *first*, before
+    /// anything else in `stem()` (its own `r_exception1`, table `a_10`): if
+    /// `word` matches one of these entries *exactly* (the entire word, not
+    /// just a suffix), stemming stops here and this mapping (verbatim,
+    /// including the no-op entries) is the final result.
+    fn exception1(word: &str) -> Option<&'static str> {
+        Some(match word {
+            "skis" => "ski",
+            "skies" => "sky",
+            "dying" => "die",
+            "lying" => "lie",
+            "tying" => "tie",
+            "idly" => "idl",
+            "gently" => "gentl",
+            "ugly" => "ugli",
+            "early" => "earli",
+            "only" => "onli",
+            "singly" => "singl",
+            "andes" => "andes",
+            "atlas" => "atlas",
+            "bias" => "bias",
+            "cosmos" => "cosmos",
+            "howe" => "howe",
+            "news" => "news",
+            "sky" => "sky",
+            _ => return None,
+        })
+    }
+
+    /// The second whole-word protected-stem table (real Snowball's
+    /// `r_exception2`, table `a_9`), checked *after* Step 1a but *before*
+    /// Step 1b: if the word (as it stands after Step 1a, which never
+    /// changes any of these eight) is exactly one of these, every step from
+    /// 1b through 5 is skipped entirely and the word is left as-is --
+    /// `"succeed"`/`"proceed"`/`"exceed"` never lose their `-eed`, and
+    /// `"canning"`/`"inning"`/`"earring"`/`"herring"`/`"outing"` are not
+    /// treated as gerunds.
+    fn is_exception2(w: &[char]) -> bool {
+        let s: String = w.iter().collect();
+        matches!(
+            s.as_str(),
+            "succeed"
+                | "proceed"
+                | "exceed"
+                | "canning"
+                | "inning"
+                | "earring"
+                | "herring"
+                | "outing"
+        )
+    }
+
+    /// Step 0 (apostrophe/possessive removal) + Step 1a (plural suffixes),
+    /// exactly as real Snowball's generated code combines both into a
+    /// single routine.
+    fn step0_and_1a(w: &mut Vec<char>) {
+        if ends(w, "'s'") {
+            w.truncate(w.len() - 3);
+        } else if ends(w, "'s") {
+            w.truncate(w.len() - 2);
+        } else if ends(w, "'") {
+            w.truncate(w.len() - 1);
+        }
+
+        if ends(w, "sses") {
+            replace_tail(w, 2, ""); // sses -> ss
+        } else if ends(w, "ied") || ends(w, "ies") {
+            let stem_len = w.len() - 3;
+            if stem_len > 1 {
+                replace_tail(w, 3, "i");
+            } else {
+                replace_tail(w, 3, "ie");
+            }
+        } else if ends(w, "ss") {
+            // Protected: "ss" is left unchanged.
+        } else if ends(w, "us") {
+            // Protected: "us" is left unchanged.
+        } else if ends(w, "s") {
+            let n = w.len();
+            if n >= 2 && w[..n - 2].iter().any(|&c| is_vowel(c)) {
+                w.truncate(n - 1);
+            }
+        }
+    }
+
+    /// The shared post-suffix-deletion cleanup real Snowball's `a_3` table
+    /// applies after Step 1b deletes `-ed`/`-edly`/`-ing`/`-ingly`: append
+    /// `e` after `at`/`bl`/`iz`; drop one letter of a trailing doubled
+    /// consonant from a fixed set, unless the word is *exactly* one of
+    /// those consonants preceded by a single `a`/`e`/`o` (real Snowball's
+    /// own narrow carve-out, e.g. a 3-letter word "aXX"); otherwise append
+    /// `e` if the word is now both "short" (R1 is empty, i.e. `p1` is
+    /// exactly the current length) and ends in a short syllable.
+    fn a3_cleanup(w: &mut Vec<char>, p1: usize) {
+        if ends(w, "at") || ends(w, "bl") || ends(w, "iz") {
+            w.push('e');
+            return;
+        }
+        let n = w.len();
+        if n >= 2
+            && w[n - 1] == w[n - 2]
+            && matches!(
+                w[n - 1],
+                'b' | 'd' | 'f' | 'g' | 'm' | 'n' | 'p' | 'r' | 't'
+            )
+        {
+            if n == 3 && matches!(w[0], 'a' | 'e' | 'o') {
+                // Exception: leave the doubled consonant untouched.
+            } else {
+                w.pop();
+            }
+            return;
+        }
+        if w.len() == p1 && ends_short_syllable(w) {
+            w.push('e');
+        }
+    }
+
+    /// Deletes a `suf_len`-character suffix (already confirmed present by
+    /// the caller) if the remaining stem contains a vowel, then runs
+    /// [`a3_cleanup`] -- shared by `-ed`/`-edly`/`-ing`/`-ingly` (real
+    /// Snowball's `among_var == 2` branch).
+    fn delete_and_cleanup(w: &mut Vec<char>, p1: usize, suf_len: usize) {
+        let stem_len = w.len() - suf_len;
+        if !w[..stem_len].iter().any(|&c| is_vowel(c)) {
+            return;
+        }
+        w.truncate(stem_len);
+        a3_cleanup(w, p1);
+    }
+
+    /// Step 1b: the `-eed`/`-eedly` family (real Snowball's
+    /// `among_var == 1`, R1-gated, always replaced with `"ee"` -- the
+    /// `succ`/`proc`/`exc` protection this used to need is handled earlier,
+    /// globally, by [`is_exception2`]) or the shared `-ed`/`-edly`/`-ing`/
+    /// `-ingly` deletion+cleanup path (`among_var == 2`), tried
+    /// longest-suffix-first (`"eedly"` before `"edly"` before `"eed"`
+    /// before `"ed"`, matching real Snowball's `Among`-table longest-match
+    /// semantics; `"ingly"`/`"ing"` don't overlap with the `-d` family).
+    fn step1b(w: &mut Vec<char>, p1: usize) {
+        if ends(w, "eedly") {
+            let stem_len = w.len() - 5;
+            if stem_len >= p1 {
+                replace_tail(w, 5, "ee");
+            }
+        } else if ends(w, "edly") {
+            delete_and_cleanup(w, p1, 4);
+        } else if ends(w, "eed") {
+            let stem_len = w.len() - 3;
+            if stem_len >= p1 {
+                replace_tail(w, 3, "ee");
+            }
+        } else if ends(w, "ed") {
+            delete_and_cleanup(w, p1, 2);
+        } else if ends(w, "ingly") {
+            delete_and_cleanup(w, p1, 5);
+        } else if ends(w, "ing") {
+            delete_and_cleanup(w, p1, 3);
+        }
+    }
+
+    /// Step 1c: a trailing `y`/`Y` becomes `i` if it's preceded by a
+    /// consonant and something precedes *that* (i.e. the word is at least
+    /// 3 characters -- a lone consonant+y is left alone).
+    fn step1c(w: &mut [char]) {
+        let n = w.len();
+        if n >= 3 && matches!(w[n - 1], 'y' | 'Y') && !is_vowel(w[n - 2]) {
+            w[n - 1] = 'i';
+        }
+    }
+
+    /// Replaces `w`'s trailing `suf_len` characters with `replacement`,
+    /// but only if the suffix boundary is at or past `p1` (R1) -- real
+    /// Snowball's ubiquitous `r_R1()` guard. Leaves `w` untouched
+    /// otherwise (no fallback to a shorter suffix -- matching real
+    /// Snowball's `Among`-table semantics, where failing the R1 check on
+    /// the longest matched suffix does not retry a shorter one).
+    fn apply_if_r1(w: &mut Vec<char>, p1: usize, suf_len: usize, replacement: &str) {
+        let stem_len = w.len() - suf_len;
+        if stem_len >= p1 {
+            replace_tail(w, suf_len, replacement);
+        }
+    }
+
+    /// Same as [`apply_if_r1`] but gated on R2 (`p2`) and always a
+    /// deletion (empty replacement) -- Step 4's shape.
+    fn apply_if_r2(w: &mut Vec<char>, p2: usize, suf_len: usize) {
+        let stem_len = w.len() - suf_len;
+        if stem_len >= p2 {
+            w.truncate(stem_len);
+        }
+    }
+
+    /// Step 2: the long suffix-family table (real Snowball's `a_5`), tried
+    /// longest-suffix-first. `"ogi"` additionally requires the character
+    /// right before it to be `l` (so only `"logi"` qualifies); `"li"`
+    /// additionally requires the character right before it to be one of
+    /// the fixed `valid_LI` set (`c`/`d`/`e`/`g`/`h`/`k`/`m`/`n`/`r`/`t`).
+    fn step2(w: &mut Vec<char>, p1: usize) {
+        const RULES: &[(&str, &str)] = &[
+            ("ational", "ate"),
+            ("ization", "ize"),
+            ("iveness", "ive"),
+            ("fulness", "ful"),
+            ("ousness", "ous"),
+            ("lessli", "less"),
+            ("biliti", "ble"),
+            ("tional", "tion"),
+            ("fulli", "ful"),
+            ("ousli", "ous"),
+            ("entli", "ent"),
+            ("aliti", "al"),
+            ("iviti", "ive"),
+            ("ation", "ate"),
+            ("alism", "al"),
+            ("anci", "ance"),
+            ("enci", "ence"),
+            ("abli", "able"),
+            ("alli", "al"),
+            ("izer", "ize"),
+            ("ator", "ate"),
+        ];
+        for (suf, rep) in RULES {
+            if ends(w, suf) {
+                apply_if_r1(w, p1, suf.chars().count(), rep);
+                return;
+            }
+        }
+        if ends(w, "ogi") {
+            let n = w.len();
+            if n >= 4 && w[n - 4] == 'l' {
+                apply_if_r1(w, p1, 3, "og");
+            }
+        } else if ends(w, "bli") {
+            apply_if_r1(w, p1, 3, "ble");
+        } else if ends(w, "li") {
+            let n = w.len();
+            if n >= 3
+                && matches!(
+                    w[n - 3],
+                    'c' | 'd' | 'e' | 'g' | 'h' | 'k' | 'm' | 'n' | 'r' | 't'
+                )
+            {
+                apply_if_r1(w, p1, 2, "");
+            }
+        }
+    }
+
+    /// Step 3: the smaller suffix-family table (real Snowball's `a_6`),
+    /// longest-suffix-first. `"ative"` is the one entry gated on R2 rather
+    /// than R1.
+    fn step3(w: &mut Vec<char>, p1: usize, p2: usize) {
+        if ends(w, "ative") {
+            apply_if_r2(w, p2, 5);
+            return;
+        }
+        const RULES: &[(&str, &str)] = &[
+            ("ational", "ate"),
+            ("tional", "tion"),
+            ("icate", "ic"),
+            ("alize", "al"),
+            ("iciti", "ic"),
+            ("ical", "ic"),
+            ("ness", ""),
+            ("ful", ""),
+        ];
+        for (suf, rep) in RULES {
+            if ends(w, suf) {
+                apply_if_r1(w, p1, suf.chars().count(), rep);
+                return;
+            }
+        }
+    }
+
+    /// Step 4: strips a suffix entirely, gated on R2 throughout (real
+    /// Snowball's `a_7`); `"ion"` additionally requires the preceding
+    /// character to be `s` or `t`.
+    fn step4(w: &mut Vec<char>, p2: usize) {
+        if ends(w, "ion") {
+            let n = w.len();
+            let stem_len = n - 3;
+            if stem_len >= p2 && stem_len >= 1 && matches!(w[stem_len - 1], 's' | 't') {
+                w.truncate(stem_len);
+            }
+            return;
+        }
+        const RULES: &[&str] = &[
+            "ement", "ance", "ence", "able", "ible", "ment", "ate", "ive", "ize", "iti", "ism",
+            "ous", "ant", "ent", "ic", "al", "er",
+        ];
+        for suf in RULES {
+            if ends(w, suf) {
+                apply_if_r2(w, p2, suf.chars().count());
+                return;
+            }
+        }
+    }
+
+    /// Step 5: a trailing `e` is deleted if R2 holds at its boundary, or
+    /// if R1 holds there and the remaining stem does *not* end in a short
+    /// syllable; a trailing `ll` collapses to a single `l` if R2 holds.
+    fn step5(w: &mut Vec<char>, p1: usize, p2: usize) {
+        if ends(w, "e") {
+            let stem_len = w.len() - 1;
+            let ok = if stem_len >= p2 {
+                true
+            } else if stem_len >= p1 {
+                !ends_short_syllable(&w[..stem_len])
+            } else {
+                false
+            };
+            if ok {
+                w.truncate(stem_len);
+            }
+        } else if ends(w, "ll") {
+            let stem_len = w.len() - 1;
+            if stem_len >= p2 {
+                w.truncate(stem_len);
+            }
+        }
+    }
+
+    /// Stems `term`, or returns it unchanged if it contains any character
+    /// outside the algorithm's own domain of definition: lowercase ASCII
+    /// letters plus a literal `'` (apostrophe), which step 0 explicitly
+    /// handles (`"don't"`, `"cats'"`, `"'tis"`).
+    pub(super) fn stem(term: &str) -> String {
+        if term.is_empty() || !term.chars().all(|c| c.is_ascii_lowercase() || c == '\'') {
+            return term.to_string();
+        }
+        if let Some(mapped) = exception1(term) {
+            return mapped.to_string();
+        }
+        if term.chars().count() < 3 {
+            return term.to_string();
+        }
+        let mut w: Vec<char> = term.chars().collect();
+        prelude(&mut w);
+        let (p1, p2) = mark_regions(&w);
+        step0_and_1a(&mut w);
+        if !is_exception2(&w) {
+            step1b(&mut w, p1);
+            step1c(&mut w);
+            step2(&mut w, p1);
+            step3(&mut w, p1, p2);
+            step4(&mut w, p2);
+            step5(&mut w, p1, p2);
+        }
+        for c in w.iter_mut() {
+            if *c == 'Y' {
+                *c = 'y';
+            }
+        }
+        w.into_iter().collect()
     }
 }
 
@@ -2803,5 +3357,225 @@ mod tests {
         // token's grams.
         let pos_incs: Vec<i32> = out.iter().map(|t| t.position_increment).collect();
         assert_eq!(pos_incs, vec![1, 0, 1, 0]);
+    }
+
+    // -- SnowballEnglishStemFilter (task #209, Porter2/Snowball) --
+
+    fn snowball(term: &str) -> String {
+        SnowballEnglishStemFilter::apply(vec![tok(term, 0, 1, 1)])[0]
+            .term
+            .clone()
+    }
+
+    #[test]
+    fn snowball_english_composed_via_analyzer_builder() {
+        // Analyzer::with_snowball_stemming wires SnowballEnglishStemFilter
+        // in as the analyzer's last stage, mirroring with_stemming's shape.
+        let tokens = Analyzer::standard(None)
+            .with_snowball_stemming()
+            .analyze("running dogs");
+        let terms: Vec<&str> = tokens.iter().map(|t| t.term.as_str()).collect();
+        assert_eq!(terms, vec!["run", "dog"]);
+    }
+
+    #[test]
+    fn snowball_english_snowball_stemming_takes_precedence_over_classic() {
+        // If both builders are enabled, the Snowball stemmer wins (no
+        // double-stemming) -- use a word where the two algorithms are known
+        // to diverge: classic Porter's step 1b cleanup only re-appends a
+        // trailing `e` when the 2-letter "CVC" check applies (which
+        // requires 3+ characters, so never fires for a 2-letter stem),
+        // giving "owed" -> "ow"; Snowball's own short-syllable definition
+        // explicitly covers the 2-letter vowel+consonant case, giving
+        // "owed" -> "owe" (see the dedicated
+        // `snowball_english_short_word_append_e_fallback` test).
+        let tokens = Analyzer::standard(None)
+            .with_stemming()
+            .with_snowball_stemming()
+            .analyze("owed");
+        assert_eq!(tokens[0].term, "owe");
+    }
+
+    #[test]
+    fn snowball_english_leading_apostrophe_stripped_by_prelude() {
+        // Real StandardTokenizer strips a bare leading apostrophe before
+        // the stemmer ever sees it (confirmed by this crate's own
+        // differential fixture, where "'tis" tokenizes to the term "tis"
+        // directly) -- so this exercises SnowballEnglishStemFilter's own
+        // prelude apostrophe-stripping directly, on a term a caller might
+        // construct without going through tokenize() first.
+        assert_eq!(snowball("'tis"), "tis");
+    }
+
+    #[test]
+    fn snowball_english_step0_apostrophe_suffix_variants() {
+        // Step 0's three apostrophe-suffix patterns, longest-match-first:
+        // trailing "'s'" (rare, but part of the real Among table), "'s"
+        // (possessive), and a bare trailing "'".
+        assert_eq!(snowball("ab's'"), "ab");
+        assert_eq!(snowball("dog's"), "dog");
+        assert_eq!(snowball("boys'"), "boy"); // "'" stripped, then plain "s" stripped too.
+    }
+
+    #[test]
+    fn snowball_english_step1a_suffix_family() {
+        assert_eq!(snowball("caresses"), "caress"); // sses -> ss
+        assert_eq!(snowball("ponies"), "poni"); // ies, stem len > 1 -> i
+        assert_eq!(snowball("ties"), "tie"); // ies, stem len <= 1 -> ie
+        assert_eq!(snowball("caress"), "caress"); // ss protected, no-op
+        assert_eq!(snowball("virus"), "virus"); // us protected, no-op
+        assert_eq!(snowball("cats"), "cat"); // plain s, vowel precedes
+        assert_eq!(snowball("gas"), "gas"); // plain s, no vowel before the "as" -> unchanged
+    }
+
+    #[test]
+    fn snowball_english_exception1_whole_word_table() {
+        // The whole-word exception table checked before anything else --
+        // some entries remap, some are explicitly left unchanged.
+        let cases: &[(&str, &str)] = &[
+            ("skis", "ski"),
+            ("skies", "sky"),
+            ("dying", "die"),
+            ("lying", "lie"),
+            ("tying", "tie"),
+            ("idly", "idl"),
+            ("gently", "gentl"),
+            ("ugly", "ugli"),
+            ("early", "earli"),
+            ("only", "onli"),
+            ("singly", "singl"),
+            ("andes", "andes"),
+            ("atlas", "atlas"),
+            ("bias", "bias"),
+            ("cosmos", "cosmos"),
+            ("howe", "howe"),
+            ("news", "news"),
+            ("sky", "sky"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(snowball(input), *expected, "stemming {input:?}");
+        }
+    }
+
+    #[test]
+    fn snowball_english_exception2_protected_stems() {
+        // The second whole-word protected-stem table -- checked after
+        // step 1a but before step 1b -- covers both the `-eed` family
+        // (succeed/proceed/exceed) and the `-ing`-as-not-a-gerund family
+        // (canning/inning/earring/herring/outing); all eight are left
+        // completely unchanged.
+        for word in [
+            "succeed", "proceed", "exceed", "canning", "inning", "earring", "herring", "outing",
+        ] {
+            assert_eq!(snowball(word), word, "stemming {word:?}");
+        }
+    }
+
+    #[test]
+    fn snowball_english_double_consonant_aeo_exception() {
+        // a3_cleanup's narrow carve-out: a doubled consonant immediately
+        // preceded by a/e/o is left alone when that's the *entire* stem
+        // (three letters total) -- "added" -> stem "add" (3 letters,
+        // starts with "a") keeps both d's, unlike "hopping"/"tanned" (the
+        // ordinary double-consonant-drop case, already covered by the
+        // cross-engine fixture).
+        assert_eq!(snowball("added"), "add");
+        assert_eq!(snowball("hopping"), "hop");
+        assert_eq!(snowball("tanned"), "tan");
+    }
+
+    #[test]
+    fn snowball_english_short_word_append_e_fallback() {
+        // a3_cleanup's "" fallback: append `e` back if the word is now
+        // both short (R1 empty) and ends in a short syllable -- "hoped"
+        // (stem "hop" after "-ed" deletion, itself CVC and exactly at R1's
+        // start) restores the `e` to "hope"; "owed" (stem "ow", the
+        // whole-word-is-vowel-then-consonant short-syllable case) restores
+        // to "owe".
+        assert_eq!(snowball("hoped"), "hope");
+        assert_eq!(snowball("owed"), "owe");
+    }
+
+    #[test]
+    fn snowball_english_eed_family_ee_replacement() {
+        // "-eed"/"-eedly", R1-gated, unconditionally replaced with "ee"
+        // (the succ/proc/exc protection this branch used to need in an
+        // older generation of the algorithm is now handled globally by
+        // the exception2 table, see the dedicated test above).
+        assert_eq!(snowball("agreed"), "agre");
+        assert_eq!(snowball("feed"), "feed"); // m(fe) == 0 at R1 -> R1 not yet reached, unchanged
+    }
+
+    #[test]
+    fn snowball_english_ed_ing_edly_ingly_shared_cleanup() {
+        assert_eq!(snowball("motoring"), "motor"); // plain -ing deletion + cleanup
+        assert_eq!(snowball("plastered"), "plaster"); // plain -ed deletion + cleanup
+        assert_eq!(snowball("sing"), "sing"); // no vowel before "-ing" -> unchanged
+        assert_eq!(snowball("bled"), "bled"); // no vowel before "-ed" -> unchanged
+    }
+
+    #[test]
+    fn snowball_english_step1c_trailing_y() {
+        assert_eq!(snowball("cry"), "cri"); // y preceded by consonant -> i
+        assert_eq!(snowball("toy"), "toy"); // y preceded by vowel -> unchanged
+    }
+
+    #[test]
+    fn snowball_english_step2_suffix_families() {
+        assert_eq!(snowball("carelessly"), "careless"); // lessli -> less
+                                                        // fulli -> ful (step2), then step3's own "ful" entry deletes it
+                                                        // entirely (same R1 boundary reached again) -> "care".
+        assert_eq!(snowball("carefully"), "care");
+        assert_eq!(snowball("analogy"), "analog"); // "logi" (preceded by l) -> "log"
+                                                   // bli (not abli) -> ble (step2), then step5 deletes the trailing
+                                                   // "e" it just added (R1 holds, R2 doesn't, and the resulting stem
+                                                   // is not a short syllable) -> "trembl".
+        assert_eq!(snowball("trembly"), "trembl");
+        assert_eq!(snowball("national"), "nation"); // tional -> tion
+    }
+
+    #[test]
+    fn snowball_english_step3_and_step4_and_step5() {
+        assert_eq!(snowball("triplicate"), "triplic"); // step3 icate -> ic
+        assert_eq!(snowball("hopefulness"), "hope"); // step2 fulness -> ful, then step3 ful -> deleted
+        assert_eq!(snowball("controll"), "control"); // step5 ll -> l (R2)
+        assert_eq!(snowball("roll"), "roll"); // step5 ll unchanged, R2 not reached
+        assert_eq!(snowball("rate"), "rate"); // step5 e kept: R1 holds, but ends in short syllable
+        assert_eq!(snowball("probate"), "probat"); // step5 e dropped: R2 holds
+    }
+
+    #[test]
+    fn snowball_english_eedly_edly_ingly_variants() {
+        // "eedly" (eed-family, replaced with "ee", then step5 deletes the
+        // trailing "e" it left since R1 holds but R2 doesn't and the
+        // result isn't a short syllable) -- "edly"/"ingly" (shared
+        // delete+cleanup family, same as plain "ed"/"ing").
+        assert_eq!(snowball("agreedly"), "agre");
+        assert_eq!(snowball("reportedly"), "report");
+        assert_eq!(snowball("lastingly"), "last");
+    }
+
+    #[test]
+    fn snowball_english_leading_y_marked_as_consonant() {
+        // prelude marks a word-initial "y" as the internal 'Y' consonant
+        // marker; postlude reverts it back to lowercase "y" in the output
+        // regardless of whether any step touched it.
+        assert_eq!(snowball("yellow"), "yellow");
+    }
+
+    #[test]
+    fn snowball_english_short_word_passes_through_unchanged() {
+        // Below the 3-character minimum, per the algorithm's own domain.
+        assert_eq!(snowball("at"), "at");
+    }
+
+    #[test]
+    fn snowball_english_non_domain_terms_pass_through_unchanged() {
+        // Uppercase, digits, and other non-ASCII-letter/apostrophe
+        // characters are outside the algorithm's domain of definition --
+        // passed through verbatim, never a panic.
+        for term in ["Running", "3.14", "café", "", "42"] {
+            assert_eq!(snowball(term), term, "term {term:?}");
+        }
     }
 }
