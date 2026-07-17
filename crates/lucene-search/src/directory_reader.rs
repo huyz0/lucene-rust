@@ -1639,6 +1639,13 @@ mod tests {
             }
         }
 
+        fn body_field_with_term_vectors(number: i32) -> FieldInfo {
+            FieldInfo {
+                store_term_vectors: true,
+                ..body_field(number)
+            }
+        }
+
         fn doc_with_body(id: &str, body: &str) -> Document {
             Document {
                 fields: vec![
@@ -1745,6 +1752,101 @@ mod tests {
             )
             .unwrap();
             assert_eq!(lazy_hits.len(), 1);
+
+            std::fs::remove_dir_all(&dir_path).ok();
+        }
+
+        /// Same shape as
+        /// `term_query_finds_docs_from_both_flushed_segments_after_automatic_merge`,
+        /// but with the "body" field also opted into term vectors -- proves
+        /// postings and term vectors merge correctly together through the
+        /// same automatic-merge path, and that the merged segment's term
+        /// vectors (verified through `lucene_codecs::term_vectors::open`
+        /// directly, since term vectors have no query/search surface to
+        /// exercise via `DirectoryReader`) still hold every source doc's own
+        /// content after the merge.
+        #[test]
+        fn term_vectors_survive_automatic_merge_alongside_postings() {
+            let dir_path = tempdir();
+            let dir = FsDirectory::open(&dir_path);
+            let fields = vec![stored_only_field("id", 0), body_field_with_term_vectors(1)];
+            let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+            writer.set_postings_field(Some("body")).unwrap();
+            writer.set_term_vector_field(Some("body")).unwrap();
+            writer.set_merge_policy(Some(tight_merge_policy()));
+
+            writer.add_document(doc_with_body("a", "quick fox"));
+            writer.commit().unwrap();
+            writer.add_document(doc_with_body("b", "lazy fox"));
+            writer.commit().unwrap();
+            // Crosses segments_per_tier (2) with a third one-doc commit,
+            // triggering a real automatic merge of all three segments.
+            writer.add_document(doc_with_body("c", "quick dog"));
+            writer.commit().unwrap();
+
+            let segments_after = writer.segment_infos().segments.clone();
+            assert_eq!(
+                segments_after.len(),
+                1,
+                "postings+term-vector-carrying segments must merge down like any other"
+            );
+            let sci = &segments_after[0];
+
+            // Postings still searchable through the real DirectoryReader.
+            let reader = DirectoryReader::open(&dir).unwrap();
+            assert_eq!(reader.segment_readers().len(), 1);
+            let opened = reader.open_segments().unwrap();
+            let segments = opened.as_open_segments();
+            let norms = [None];
+            let fox_hits = search_term_query_multi_segment(
+                &segments,
+                &TermQuery::new("body", "fox"),
+                &norms,
+                10,
+            )
+            .unwrap();
+            assert_eq!(
+                fox_hits.len(),
+                2,
+                "\"fox\" must resolve to both merged docs"
+            );
+
+            // Term vectors: every source doc's own distinct terms must
+            // survive the merge, checked as a set since automatic merging
+            // doesn't guarantee source-segment order in the merged segment.
+            let tvd = dir.open(&format!("{}.tvd", sci.segment_name)).unwrap();
+            let tvx = dir.open(&format!("{}.tvx", sci.segment_name)).unwrap();
+            let tvm = dir.open(&format!("{}.tvm", sci.segment_name)).unwrap();
+            let tv_reader =
+                lucene_codecs::term_vectors::open(&tvd, &tvx, &tvm, &sci.segment_id, "").unwrap();
+            assert_eq!(tv_reader.max_doc(), 3);
+
+            let mut actual_docs: Vec<Vec<String>> = (0..3)
+                .map(|doc_id| {
+                    let doc = tv_reader.document(doc_id).unwrap().unwrap();
+                    assert_eq!(doc.fields.len(), 1);
+                    let mut terms: Vec<String> = doc.fields[0]
+                        .terms
+                        .iter()
+                        .map(|t| String::from_utf8(t.term.clone()).unwrap())
+                        .collect();
+                    terms.sort();
+                    terms
+                })
+                .collect();
+            actual_docs.sort();
+
+            let mut expected_docs = vec![
+                vec!["fox".to_string(), "quick".to_string()],
+                vec!["fox".to_string(), "lazy".to_string()],
+                vec!["dog".to_string(), "quick".to_string()],
+            ];
+            expected_docs.sort();
+
+            assert_eq!(
+                actual_docs, expected_docs,
+                "every source doc's own term-vector content must survive the merge intact"
+            );
 
             std::fs::remove_dir_all(&dir_path).ok();
         }

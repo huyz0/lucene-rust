@@ -483,6 +483,18 @@ pub enum Error {
         merged_field_number: i32,
         source_index: usize,
     },
+    /// At least one source contributing live docs to this merge has a
+    /// term-vectors reader (`MergeSource::term_vectors`), but another
+    /// live-doc-contributing source does not -- same "sparse across
+    /// sources" philosophy as [`Error::PostingsFieldMissingInSource`]: a
+    /// whole source missing term vectors entirely, while a sibling source
+    /// has them, would otherwise be silently treated as "every doc in
+    /// that source has an empty term-vectors document" rather than
+    /// surfaced as the caller-side wiring mismatch it actually is.
+    #[error(
+        "term vectors are present in some merge sources but source index {source_index} (which contributes live docs) has no term-vectors reader"
+    )]
+    TermVectorsReaderMissingInSource { source_index: usize },
     /// This port's postings merge only handles `IndexOptions::Docs` and
     /// `IndexOptions::DocsAndFreqs` fields -- positions/offsets/payloads
     /// merging isn't implemented yet (see this module's doc comment).
@@ -2176,11 +2188,17 @@ fn merge_norms(
 fn merge_term_vectors(
     sources: &[MergeSource],
     per_source_maps: &[HashMap<i32, i32>],
-    _per_source_live_ids: &[Vec<i32>],
+    per_source_live_ids: &[Vec<i32>],
     doc_order: &[(usize, i32)],
 ) -> Result<Option<Vec<TermVectorsDocument>>> {
     if sources.iter().all(|s| s.term_vectors.is_none()) {
         return Ok(None);
+    }
+
+    for (source_index, (source, live_ids)) in sources.iter().zip(per_source_live_ids).enumerate() {
+        if !live_ids.is_empty() && source.term_vectors.is_none() {
+            return Err(Error::TermVectorsReaderMissingInSource { source_index });
+        }
     }
 
     let mut merged_docs: Vec<TermVectorsDocument> = Vec::with_capacity(doc_order.len());
@@ -4784,11 +4802,16 @@ mod tests {
 
     #[test]
     fn term_vectors_merge_across_two_sources_with_deletions_and_a_source_with_none() {
+        // Source 1 contributes a live doc but has no term-vectors reader at
+        // all, while source 0 does -- this is the same "sparse across
+        // sources" schema mismatch `merge_postings` rejects via
+        // `Error::PostingsFieldMissingInSource` rather than silently
+        // treating the missing source's docs as empty. Regression test for
+        // that: this must be `Error::TermVectorsReaderMissingInSource`, not
+        // a silently-empty merged document (see task #210's dual review).
         let seg0_id = [1u8; ID_LENGTH];
         // Source 0: 2 docs, both with a term-vectors field 0 ("id"->0).
         let tv0 = flush_term_vectors(&[tv_doc(0, &[("a", 0)]), tv_doc(0, &[("b", 0)])], seg0_id);
-        // Source 1: 1 doc, no term-vectors reader at all -- contributes an
-        // empty term-vectors document for its live doc.
         let fields0 = vec![tv_field("id", 0)];
         let fields1 = vec![tv_field("id", 0)];
         let tmp = tempdir();
@@ -4832,7 +4855,7 @@ mod tests {
         };
         let source1 = MergeSource::stored_only(&stored1.fields, &reader1, None);
 
-        merge_stored_only_segments(
+        let err = merge_stored_only_segments(
             &dir,
             &[source0, source1],
             "_merged_tv",
@@ -4840,19 +4863,11 @@ mod tests {
             "Lucene104",
             version(),
         )
-        .unwrap();
-
-        let tvd = std::fs::read(std::path::Path::new(&tmp).join("_merged_tv.tvd")).unwrap();
-        let tvx = std::fs::read(std::path::Path::new(&tmp).join("_merged_tv.tvx")).unwrap();
-        let tvm = std::fs::read(std::path::Path::new(&tmp).join("_merged_tv.tvm")).unwrap();
-        let merged_reader = term_vectors::open(&tvd, &tvx, &tvm, &[9u8; ID_LENGTH], "").unwrap();
-        assert_eq!(merged_reader.max_doc(), 2);
-
-        let doc0 = merged_reader.document(0).unwrap().unwrap();
-        assert_eq!(doc0.fields[0].terms[0].term, b"b");
-
-        // Source 1's doc contributed no term vectors at all.
-        assert!(merged_reader.document(1).unwrap().is_none());
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            Error::TermVectorsReaderMissingInSource { source_index: 1 }
+        ));
     }
 
     /// Builds a single-field, single-term term-vector document with
