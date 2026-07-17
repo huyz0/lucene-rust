@@ -1082,6 +1082,41 @@ pub unsafe extern "C" fn ffi_writer_pending_doc_count(
     })
 }
 
+/// Writes the total number of documents actually committed to disk right
+/// now (summed across every segment in [`IndexWriter::segment_infos`]) to
+/// `*out_len` -- see [`IndexWriter::committed_doc_count`] for the exact
+/// **total, not live** semantics (a deleted-but-not-yet-merged document is
+/// still counted). Distinct from [`ffi_writer_pending_doc_count`], which
+/// counts buffered-but-not-yet-`commit()`ed documents instead.
+///
+/// # Safety
+/// `out_len` must be valid for one `usize` write.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_writer_committed_doc_count(
+    writer_handle: u64,
+    out_len: *mut usize,
+) -> i32 {
+    guard(|| {
+        if out_len.is_null() {
+            return Err(FfiStatus::NullPointer);
+        }
+        let registry = lock_recovering(writers());
+        let handle = registry.get(writer_handle).ok_or_else(|| {
+            set_last_error("ffi_writer_committed_doc_count: unknown or already-closed handle");
+            FfiStatus::InvalidHandle
+        })?;
+        let count = handle
+            .writer
+            .committed_doc_count()
+            .map_err(|e| map_writer_error("ffi_writer_committed_doc_count", e))?;
+        // SAFETY: caller contract guarantees `out_len` is valid for one write.
+        unsafe {
+            *out_len = count;
+        }
+        Ok(())
+    })
+}
+
 /// Closes a writer handle opened by [`ffi_open_writer`]. Returns
 /// [`FfiStatus::InvalidHandle`] for an unknown/already-closed handle.
 #[no_mangle]
@@ -2850,6 +2885,87 @@ mod tests {
         let (_, handle) = open_test_writer(&tmp);
         let rc = unsafe { ffi_writer_pending_doc_count(handle, std::ptr::null_mut()) };
         assert_eq!(rc, FfiStatus::NullPointer.code());
+        ffi_close_writer(handle);
+    }
+
+    #[test]
+    fn committed_doc_count_unknown_handle_is_invalid_handle() {
+        let mut out_len: usize = 0;
+        let rc = unsafe { ffi_writer_committed_doc_count(0xDEAD_BEEF, &mut out_len as *mut _) };
+        assert_eq!(rc, FfiStatus::InvalidHandle.code());
+    }
+
+    #[test]
+    fn committed_doc_count_null_out_len_is_null_pointer_error() {
+        let tmp = tempdir("committed-doc-count-null");
+        let (_, handle) = open_test_writer(&tmp);
+        let rc = unsafe { ffi_writer_committed_doc_count(handle, std::ptr::null_mut()) };
+        assert_eq!(rc, FfiStatus::NullPointer.code());
+        ffi_close_writer(handle);
+    }
+
+    #[test]
+    fn committed_doc_count_is_distinct_from_pending_doc_count_across_commits() {
+        let tmp = tempdir("committed-doc-count-e2e");
+        let (rc, handle) = open_test_writer(&tmp);
+        assert_eq!(rc, FfiStatus::Ok.code());
+
+        let mut committed: usize = 0;
+        let mut pending: usize = 0;
+
+        // Fresh writer: nothing committed, nothing pending.
+        assert_eq!(
+            unsafe { ffi_writer_committed_doc_count(handle, &mut committed as *mut _) },
+            FfiStatus::Ok.code()
+        );
+        assert_eq!(committed, 0);
+
+        // Commit 3 docs.
+        assert_eq!(add_doc(handle, "a"), FfiStatus::Ok.code());
+        assert_eq!(add_doc(handle, "b"), FfiStatus::Ok.code());
+        assert_eq!(add_doc(handle, "c"), FfiStatus::Ok.code());
+        assert_eq!(ffi_writer_commit(handle), FfiStatus::Ok.code());
+        assert_eq!(
+            unsafe { ffi_writer_committed_doc_count(handle, &mut committed as *mut _) },
+            FfiStatus::Ok.code()
+        );
+        assert_eq!(committed, 3);
+        assert_eq!(
+            unsafe { ffi_writer_pending_doc_count(handle, &mut pending as *mut _) },
+            FfiStatus::Ok.code()
+        );
+        assert_eq!(pending, 0);
+
+        // Buffer 2 more docs without committing: committed_doc_count must
+        // stay at 3 (not conflated with the buffer) while
+        // pending_doc_count reports the 2 buffered docs.
+        assert_eq!(add_doc(handle, "d"), FfiStatus::Ok.code());
+        assert_eq!(add_doc(handle, "e"), FfiStatus::Ok.code());
+        assert_eq!(
+            unsafe { ffi_writer_committed_doc_count(handle, &mut committed as *mut _) },
+            FfiStatus::Ok.code()
+        );
+        assert_eq!(committed, 3);
+        assert_eq!(
+            unsafe { ffi_writer_pending_doc_count(handle, &mut pending as *mut _) },
+            FfiStatus::Ok.code()
+        );
+        assert_eq!(pending, 2);
+
+        // Commit the buffered pair: committed_doc_count now reflects both
+        // segments' worth of docs.
+        assert_eq!(ffi_writer_commit(handle), FfiStatus::Ok.code());
+        assert_eq!(
+            unsafe { ffi_writer_committed_doc_count(handle, &mut committed as *mut _) },
+            FfiStatus::Ok.code()
+        );
+        assert_eq!(committed, 5);
+        assert_eq!(
+            unsafe { ffi_writer_pending_doc_count(handle, &mut pending as *mut _) },
+            FfiStatus::Ok.code()
+        );
+        assert_eq!(pending, 0);
+
         ffi_close_writer(handle);
     }
 
