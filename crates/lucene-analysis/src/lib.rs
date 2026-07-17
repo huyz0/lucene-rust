@@ -886,12 +886,21 @@ impl EdgeNGramTokenFilter {
 /// [`Analyzer::with_synonyms`]. Additional real-Lucene filters (multi-word
 /// synonym phrases via `SynonymGraphFilter`, etc.) are out of scope for this
 /// MVP -- see `docs/parity.md`.
+///
+/// A second, entirely distinct producer, [`Analyzer::keyword`], mirrors real
+/// Lucene's `KeywordAnalyzer` instead: see that constructor's docs for its
+/// no-tokenization, single-token semantics.
 pub struct Analyzer {
     stopwords: Option<HashSet<String>>,
     ascii_folding: bool,
     stemming: bool,
     synonyms: Option<HashMap<String, Vec<String>>>,
     synonyms_bidirectional: bool,
+    /// When `true`, [`Analyzer::analyze`] short-circuits to
+    /// [`Analyzer::keyword`]'s single-token behavior and every other field
+    /// on this struct is inert (a keyword analyzer has no filter chain to
+    /// configure -- see that constructor's docs).
+    keyword: bool,
 }
 
 impl Analyzer {
@@ -908,6 +917,41 @@ impl Analyzer {
             stemming: false,
             synonyms: None,
             synonyms_bidirectional: false,
+            keyword: false,
+        }
+    }
+
+    /// Mirrors real Lucene's
+    /// `org.apache.lucene.analysis.core.KeywordAnalyzer`: the entire input
+    /// text becomes **exactly one token**, byte-for-byte as given -- no word
+    /// segmentation, no lowercasing, no stopword removal, no stemming, no
+    /// ASCII-folding, no synonym expansion. This is real Lucene's documented
+    /// behavior for `KeywordAnalyzer` (which wires up a bare
+    /// `KeywordTokenizer` with no filters at all), not a partial/deferred
+    /// version of [`Analyzer::standard`] -- it is the intentional, complete
+    /// scope of this producer, used for exact-match/sort fields (IDs, tags,
+    /// status codes) where any tokenization at all would be wrong.
+    ///
+    /// The one edge case worth calling out explicitly: **empty input still
+    /// produces exactly one token**, with an empty `term` and a zero-length
+    /// `0..0` offset span -- matching real Lucene's `KeywordTokenizer`,
+    /// whose `incrementToken()` unconditionally returns `true` (and reports
+    /// `done = true` so the *next* call returns `false`) regardless of how
+    /// many characters it read, including zero.
+    ///
+    /// Every other `Analyzer` builder method (`with_ascii_folding`,
+    /// `with_stemming`, `with_synonyms`, `with_bidirectional_synonyms`) is
+    /// meaningless on a keyword analyzer (there is no filter chain to
+    /// configure) and calling one on the result of `Analyzer::keyword()` has
+    /// no effect on [`Analyzer::analyze`]'s output.
+    pub fn keyword() -> Self {
+        Analyzer {
+            stopwords: None,
+            ascii_folding: false,
+            stemming: false,
+            synonyms: None,
+            synonyms_bidirectional: false,
+            keyword: true,
         }
     }
 
@@ -967,6 +1011,15 @@ impl Analyzer {
     }
 
     pub fn analyze(&self, text: &str) -> Vec<Token> {
+        if self.keyword {
+            return vec![Token {
+                term: text.to_string(),
+                start_offset: 0,
+                end_offset: text.len() as i32,
+                position_increment: 1,
+                position_length: 1,
+            }];
+        }
         let tokens = tokenize(text);
         let tokens = if self.ascii_folding {
             AsciiFoldingFilter::apply(tokens)
@@ -2559,6 +2612,68 @@ mod tests {
         let analyzer = Analyzer::standard(None);
         let out = analyzer.analyze("Café");
         assert_eq!(out, vec![tok("café", 0, 5, 1)]);
+    }
+
+    // -- Analyzer::keyword (task #208) --
+
+    #[test]
+    fn keyword_analyzer_emits_whole_text_as_one_unmodified_token() {
+        let analyzer = Analyzer::keyword();
+        let out = analyzer.analyze("Status: ACTIVE!");
+        assert_eq!(out, vec![tok("Status: ACTIVE!", 0, 15, 1)]);
+    }
+
+    #[test]
+    fn keyword_analyzer_does_not_split_on_whitespace() {
+        // Distinct from Analyzer::standard/tokenize -- whitespace-separated
+        // words are NOT split into separate tokens.
+        let analyzer = Analyzer::keyword();
+        let out = analyzer.analyze("the quick fox");
+        assert_eq!(out, vec![tok("the quick fox", 0, 13, 1)]);
+    }
+
+    #[test]
+    fn keyword_analyzer_does_not_lowercase() {
+        let analyzer = Analyzer::keyword();
+        let out = analyzer.analyze("UPPER");
+        assert_eq!(out, vec![tok("UPPER", 0, 5, 1)]);
+    }
+
+    #[test]
+    fn keyword_analyzer_ignores_stopwords_even_if_term_matches() {
+        // A term that would be a stopword under Analyzer::standard's
+        // pipeline is passed through untouched -- keyword semantics have no
+        // stopword filtering at all.
+        let analyzer = Analyzer::keyword();
+        let out = analyzer.analyze("the");
+        assert_eq!(out, vec![tok("the", 0, 3, 1)]);
+    }
+
+    #[test]
+    fn keyword_analyzer_empty_input_still_emits_one_empty_token() {
+        // Matches real Lucene's KeywordTokenizer: incrementToken()
+        // unconditionally succeeds once, even over zero characters.
+        let analyzer = Analyzer::keyword();
+        let out = analyzer.analyze("");
+        assert_eq!(out, vec![tok("", 0, 0, 1)]);
+    }
+
+    #[test]
+    fn keyword_analyzer_builder_methods_have_no_effect() {
+        // Calling any of Analyzer's filter-chain builders on a keyword
+        // analyzer doesn't change analyze()'s output -- keyword mode
+        // short-circuits before any of those fields are consulted.
+        let mut synonyms = HashMap::new();
+        synonyms.insert("the".to_string(), vec!["a".to_string()]);
+
+        let plain = Analyzer::keyword().analyze("the");
+        let with_everything = Analyzer::keyword()
+            .with_ascii_folding()
+            .with_stemming()
+            .with_synonyms(synonyms)
+            .analyze("the");
+        assert_eq!(plain, with_everything);
+        assert_eq!(plain, vec![tok("the", 0, 3, 1)]);
     }
 
     // -- NGramTokenFilter / EdgeNGramTokenFilter --

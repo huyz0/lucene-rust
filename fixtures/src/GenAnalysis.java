@@ -3,6 +3,7 @@ import org.apache.lucene.analysis.TokenStream;
 import org.apache.lucene.analysis.Tokenizer;
 import org.apache.lucene.analysis.standard.StandardAnalyzer;
 import org.apache.lucene.analysis.standard.StandardTokenizer;
+import org.apache.lucene.analysis.core.KeywordAnalyzer;
 import org.apache.lucene.analysis.core.LowerCaseFilter;
 import org.apache.lucene.analysis.miscellaneous.ASCIIFoldingFilter;
 import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
@@ -93,6 +94,23 @@ public class GenAnalysis {
       // StandardTokenizer's MidNum/MidNumLet/MidLetter rules rather than
       // only this port's own hardcoded-expectation unit tests.
       analyze(m, "uax29_midword_punct", "3.14 U.S.A. don't 1,000", plain);
+    }
+
+    // Task #208 (second analyzer-chain producer): real KeywordAnalyzer --
+    // whole-field-value-as-one-token, no tokenization/lowercasing/filtering
+    // at all -- over a handful of representative inputs (plain id-like
+    // string, mixed-case with punctuation that would otherwise split under
+    // StandardAnalyzer, a string with embedded whitespace, non-ASCII text,
+    // and the empty-string edge case, which KeywordTokenizer still turns
+    // into one empty token, not zero (it unconditionally sets its done
+    // flag and returns true on the first call regardless of characters
+    // read -- see KeywordTokenizer.incrementToken()).
+    try (Analyzer keyword = new KeywordAnalyzer()) {
+      analyze(m, "keyword_simple", "ID-12345", keyword);
+      analyze(m, "keyword_mixed_case_punct", "Status=ACTIVE!", keyword);
+      analyze(m, "keyword_whitespace", "  hello world  ", keyword);
+      analyze(m, "keyword_non_ascii", "café naïve", keyword);
+      analyze(m, "keyword_empty", "", keyword);
     }
 
     Files.writeString(out.resolve("manifest.properties"), m.toString());
