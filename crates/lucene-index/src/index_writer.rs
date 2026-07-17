@@ -1920,32 +1920,32 @@ impl<'d> IndexWriter<'d> {
     /// each source's postings (if present) and feeds them through
     /// [`crate::merge::merge_stored_only_segments`]'s existing
     /// [`crate::merge::merge_postings`] plumbing (see that function's doc
-    /// comment). Term-vector files (`.tvd`/`.tvx`/`.tvm`, written when
-    /// [`IndexWriter::set_term_vector_field`] is configured) and doc-values
+    /// comment). **Segments with term-vector files (`.tvd`/`.tvx`/`.tvm`,
+    /// written when [`IndexWriter::set_term_vector_field`]/
+    /// [`IndexWriter::add_term_vector_field`] is configured) are now
+    /// mergeable too**, the same way: `execute_merge` opens each source's
+    /// term vectors (if present) via [`lucene_codecs::term_vectors::open`]
+    /// and feeds them through [`crate::merge::merge_term_vectors`]. Doc-values
     /// files (`.dvd`/`.dvm`/`.dvs`, written when
     /// [`IndexWriter::set_doc_values_field`] is configured) are still
     /// excluded entirely -- `execute_merge` does not yet open a source's
-    /// term-vectors/doc-values data at all (only postings and, in principle,
-    /// points -- see [`execute_merge`](IndexWriter::execute_merge)'s doc
-    /// comment on why points never actually appears in practice yet).
-    /// Feeding a term-vector/doc-values-bearing segment into `find_merges`
-    /// would let an automatic merge silently drop that data (the merged
-    /// segment's `.si` would list only stored-fields/postings files, and the
-    /// source segment's real `.tvd`/`.tvx`/`.tvm`/`.dvd`/`.dvm`/`.dvs` would
-    /// become orphaned on disk) with no error surfaced -- excluding these
-    /// segments from consideration keeps them permanently un-mergeable
-    /// rather than mergeable-with-silent-data-loss, until term-vector/
-    /// doc-values-aware merging exists.
+    /// doc-values data at all (only postings, term vectors, and, in
+    /// principle, points -- see [`execute_merge`](IndexWriter::execute_merge)'s
+    /// doc comment on why points never actually appears in practice yet).
+    /// Feeding a doc-values-bearing segment into `find_merges` would let an
+    /// automatic merge silently drop that data (the merged segment's `.si`
+    /// would list only stored-fields/postings/term-vector files, and the
+    /// source segment's real `.dvd`/`.dvm`/`.dvs` would become orphaned on
+    /// disk) with no error surfaced -- excluding these segments from
+    /// consideration keeps them permanently un-mergeable rather than
+    /// mergeable-with-silent-data-loss, until doc-values-aware merging
+    /// exists.
     fn segment_stats(&self) -> Result<Vec<merge_policy::SegmentStat>> {
         let mut stats = Vec::with_capacity(self.segment_infos.segments.len());
         for sci in &self.segment_infos.segments {
             let si_bytes = self.dir.open(&format!("{}.si", sci.segment_name))?.to_vec();
             let si = segment_info::parse(&si_bytes, &sci.segment_id)?;
-            if si
-                .files
-                .iter()
-                .any(|f| f.ends_with(".tvd") || f.ends_with(".dvd"))
-            {
+            if si.files.iter().any(|f| f.ends_with(".dvd")) {
                 continue;
             }
             let size_bytes = merge_policy::segment_byte_size(self.dir, &si);
@@ -1986,6 +1986,22 @@ impl<'d> IndexWriter<'d> {
     /// `pay_in` are always `None` here -- consistent with every field this
     /// writer can produce.
     ///
+    /// **Term vectors.** If a source segment's `.si` lists a `.tvd` file
+    /// (written when [`IndexWriter::set_term_vector_field`]/
+    /// [`IndexWriter::add_term_vector_field`] was configured at flush time),
+    /// this opens that segment's `.tvd`/`.tvx`/`.tvm` via
+    /// [`lucene_codecs::term_vectors::open`] and sets the resulting
+    /// [`lucene_codecs::term_vectors::TermVectorsReader`] as
+    /// [`crate::merge::MergeSource::term_vectors`], which
+    /// [`crate::merge::merge_stored_only_segments`]'s existing
+    /// [`crate::merge::merge_term_vectors`] plumbing then reads per doc. Since
+    /// every segment this writer ever flushes shares this writer's own single
+    /// `self.fields` schema (field numbers are never reassigned per segment),
+    /// every source's term-vector field numbers already agree with the
+    /// merged field numbers -- the field-number remap
+    /// [`crate::merge::merge_term_vectors`] applies is the identity mapping
+    /// in practice here, same as it is for postings above.
+    ///
     /// **Points are not wired here.** [`crate::merge::SourcePoints`] exists
     /// and [`crate::merge::merge_stored_only_segments`] already merges it
     /// when populated (see that function's/[`crate::merge::merge_points`]'s
@@ -2001,6 +2017,9 @@ impl<'d> IndexWriter<'d> {
         /// Raw `.tim`/`.tip`/`.tmd`/`.doc` bytes for a source that has
         /// postings -- `None` when that source's `.si` lists no `.tim` file.
         type RawPostingsFiles = Option<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)>;
+        /// Raw `.tvd`/`.tvx`/`.tvm` bytes for a source that has term vectors
+        /// -- `None` when that source's `.si` lists no `.tvd` file.
+        type RawTermVectorFiles = Option<(Vec<u8>, Vec<u8>, Vec<u8>)>;
 
         struct OpenedSegment {
             sci: SegmentCommitInfo,
@@ -2009,6 +2028,7 @@ impl<'d> IndexWriter<'d> {
             fdm: Vec<u8>,
             live_docs: Option<FixedBitSet>,
             postings: RawPostingsFiles,
+            term_vectors: RawTermVectorFiles,
         }
 
         let mut opened = Vec::with_capacity(names.len());
@@ -2051,6 +2071,15 @@ impl<'d> IndexWriter<'d> {
                 None
             };
 
+            let term_vectors = if si.files.iter().any(|f| f.ends_with(".tvd")) {
+                let tvd = self.dir.open(&format!("{name}.tvd"))?.to_vec();
+                let tvx = self.dir.open(&format!("{name}.tvx"))?.to_vec();
+                let tvm = self.dir.open(&format!("{name}.tvm"))?.to_vec();
+                Some((tvd, tvx, tvm))
+            } else {
+                None
+            };
+
             opened.push(OpenedSegment {
                 sci,
                 fdt,
@@ -2058,6 +2087,7 @@ impl<'d> IndexWriter<'d> {
                 fdm,
                 live_docs,
                 postings,
+                term_vectors,
             });
         }
 
@@ -2135,24 +2165,38 @@ impl<'d> IndexWriter<'d> {
             })
             .collect();
 
+        let opened_term_vectors: Vec<Option<lucene_codecs::term_vectors::TermVectorsReader>> =
+            opened
+                .iter()
+                .map(|o| match &o.term_vectors {
+                    Some((tvd, tvx, tvm)) => Ok::<_, Error>(Some(
+                        lucene_codecs::term_vectors::open(tvd, tvx, tvm, &o.sci.segment_id, "")?,
+                    )),
+                    None => Ok(None),
+                })
+                .collect::<std::result::Result<Vec<_>, Error>>()?;
+
         let sources: Vec<merge::MergeSource> = opened
             .iter()
             .zip(readers.iter())
             .zip(per_source_postings.iter())
-            .map(|((o, reader), postings)| merge::MergeSource {
-                field_infos: &self.fields,
-                reader,
-                live_docs: o.live_docs.as_ref(),
-                numeric_doc_values: &[],
-                binary_doc_values: &[],
-                sorted_doc_values: &[],
-                sorted_numeric_doc_values: &[],
-                sorted_set_doc_values: &[],
-                norms: &[],
-                term_vectors: None,
-                postings,
-                points: &[],
-            })
+            .zip(opened_term_vectors.iter())
+            .map(
+                |(((o, reader), postings), term_vectors)| merge::MergeSource {
+                    field_infos: &self.fields,
+                    reader,
+                    live_docs: o.live_docs.as_ref(),
+                    numeric_doc_values: &[],
+                    binary_doc_values: &[],
+                    sorted_doc_values: &[],
+                    sorted_numeric_doc_values: &[],
+                    sorted_set_doc_values: &[],
+                    norms: &[],
+                    term_vectors: term_vectors.as_ref(),
+                    postings,
+                    points: &[],
+                },
+            )
             .collect();
 
         let merged_segment_name = self.next_segment_name();
@@ -4020,14 +4064,17 @@ mod tests {
     }
 
     #[test]
-    fn segments_with_term_vectors_are_never_automatically_merged_away() {
-        // Same class of bug as `segments_with_postings_are_never_...`, for
-        // term vectors instead of postings: enabling both
-        // `set_term_vector_field` and `set_merge_policy` at once must not
-        // let automatic merging silently drop a segment's term vectors --
-        // `execute_merge` only knows how to merge stored fields, so
-        // `segment_stats()` excludes any segment carrying `.tvd` from
-        // `find_merges`' candidate pool entirely.
+    fn segments_with_term_vectors_are_automatically_merged_with_term_vectors_preserved() {
+        // Same class of fix as `segments_with_postings_are_automatically_
+        // merged_with_postings_preserved`, for term vectors instead of
+        // postings: enabling both `set_term_vector_field` and
+        // `set_merge_policy` at once now merges term-vector-carrying
+        // segments for real -- `execute_merge` opens each source's real
+        // `.tvd`/`.tvx`/`.tvm` (when present) and feeds them through
+        // `crate::merge::merge_term_vectors` via `MergeSource::term_vectors`,
+        // so `segment_stats()` no longer needs to exclude term-vector-
+        // bearing segments from `find_merges`' candidate pool to avoid
+        // silent data loss.
         let tmp = tempdir("tv-and-merge-policy");
         let dir = FsDirectory::open(&tmp);
         let fields = vec![stored_only_field("id", 0), tv_body_field(1)];
@@ -4037,27 +4084,63 @@ mod tests {
 
         // tight_merge_policy's segments_per_tier is 2 -- three one-doc
         // commits, each producing a segment with real term vectors, must
-        // cross that threshold and would normally trigger a merge.
-        for id in ["a", "b", "c"] {
-            writer.add_document(doc_with_body(id, "shared text"));
+        // cross that threshold and trigger a merge down to one segment.
+        for (id, text) in [("a", "alpha one"), ("b", "beta two"), ("c", "gamma three")] {
+            writer.add_document(doc_with_body(id, text));
             writer.commit().unwrap();
         }
 
-        let final_count = writer.segment_infos().segments.len();
+        let segments = writer.segment_infos().segments.clone();
         assert_eq!(
-            final_count, 3,
-            "segments carrying term vectors must never be automatically merged"
+            segments.len(),
+            1,
+            "term-vector-carrying segments must now merge down like any other"
         );
+        let sci = &segments[0];
 
-        // Every segment's real term-vector files must still be present and
-        // correctly listed in its own .si -- nothing was silently dropped.
-        for sci in &writer.segment_infos().segments.clone() {
-            let files = dir.list_all().unwrap();
-            assert!(files.contains(&format!("{}.tvd", sci.segment_name)));
-            let si_bytes = dir.open(&format!("{}.si", sci.segment_name)).unwrap();
-            let si = segment_info::parse(&si_bytes, &sci.segment_id).unwrap();
-            assert!(si.files.iter().any(|f| f.ends_with(".tvd")));
-        }
+        let files = dir.list_all().unwrap();
+        assert!(files.contains(&format!("{}.tvd", sci.segment_name)));
+        let si_bytes = dir.open(&format!("{}.si", sci.segment_name)).unwrap();
+        let si = segment_info::parse(&si_bytes, &sci.segment_id).unwrap();
+        assert!(si.files.iter().any(|f| f.ends_with(".tvd")));
+
+        // The merged segment's term vectors must still hold every source
+        // doc's own distinct terms -- open the merged .tvd/.tvx/.tvm for real
+        // and check each doc's fields/terms. Automatic merging doesn't
+        // guarantee source-segment order in the merged segment, so this
+        // checks the *set* of per-doc term-vector contents survived intact
+        // rather than assuming a fixed doc-id assignment.
+        let tvd = dir.open(&format!("{}.tvd", sci.segment_name)).unwrap();
+        let tvx = dir.open(&format!("{}.tvx", sci.segment_name)).unwrap();
+        let tvm = dir.open(&format!("{}.tvm", sci.segment_name)).unwrap();
+        let reader =
+            lucene_codecs::term_vectors::open(&tvd, &tvx, &tvm, &sci.segment_id, "").unwrap();
+        assert_eq!(reader.max_doc(), 3);
+
+        let mut actual_docs: Vec<Vec<String>> = (0..3)
+            .map(|doc_id| {
+                let doc = reader.document(doc_id).unwrap().unwrap();
+                assert_eq!(doc.fields.len(), 1);
+                doc.fields[0]
+                    .terms
+                    .iter()
+                    .map(|t| std::str::from_utf8(&t.term).unwrap().to_string())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        actual_docs.sort();
+
+        let mut expected_docs = vec![
+            vec!["alpha".to_string(), "one".to_string()],
+            vec!["beta".to_string(), "two".to_string()],
+            vec!["gamma".to_string(), "three".to_string()],
+        ];
+        expected_docs.sort();
+
+        assert_eq!(
+            actual_docs, expected_docs,
+            "every source doc's own term-vector content must survive the merge intact"
+        );
     }
 
     #[test]
