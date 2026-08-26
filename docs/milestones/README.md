@@ -1,0 +1,51 @@
+# Milestones
+
+One file per milestone. Each is a self-contained work order: goal, scope
+boundaries, task breakdown, objectively checkable acceptance criteria, risks,
+and the artifacts that must exist before it can be called done.
+
+[`../roadmap.md`](../roadmap.md) is the executive summary of the same plan.
+[`../../PLAN.md`](../../PLAN.md) is the architectural source of truth.
+[`../parity.md`](../parity.md) is the per-Java-file status ledger.
+
+| | Milestone | Goal | Effort | Status |
+|---|---|---|---|---|
+| M0 | [Green tree, real CI](m0-ci-and-green-tree.md) | Every gate runs automatically, and HEAD passes them | S | not started |
+| M1 | [The performance gate](m1-performance-gate.md) | Decide go/no-go with data: is Rust search decisively faster? | M | not started |
+| M2 | [OpenSearch read path](m2-opensearch-read-path.md) | A node answers `_search` from Rust over JNI/FFM | M–L | not started |
+| M3 | [Write path proven](m3-write-path-proven.md) | Real Lucene reads a full Rust-written index | L | not started |
+| M4 | [Write path hardened](m4-write-path-hardened.md) | Crash-safe, concurrent, interoperable both directions | L | not started |
+| M5 | [Engine integration](m5-engine-integration.md) | A shard fully served by Rust — indexing and search | XL | not started |
+| M6 | [Production candidate](m6-production-candidate.md) | Soak-proven, perf-held, rollback-documented | M | not started |
+
+## Dependency structure
+
+```
+                         ┌──────────────── pass ────────────────┐
+                         │                                      │
+M0 ──────▶ M1 (GATE) ────┤          ┌──▶ M2  OpenSearch read ───┼──▶ M5 ──▶ M6
+CI green   benchmark     │          │                           │   engine   prod
+                         └──────────┴──▶ M3  write proof ──▶ M4 ┘
+                         │                                 harden
+                         └─ fail ─▶ stop, or ship as a standalone library
+```
+
+- **M0 unblocks everything.** The tree does not currently pass its own
+  pre-commit gate, so nothing can land cleanly until it does.
+- **M1 is the only branch point.** It decides whether M2–M6 are funded at all,
+  and it costs a benchmark rather than a Java plugin to answer.
+- **M2 and M3 are independent.** One is Java-writes/Rust-reads through
+  OpenSearch; the other is Rust-writes/Java-reads at the format level. Work
+  them in parallel or in either order. M5 needs both.
+
+## Conventions used in these files
+
+- **Task IDs** are `T<milestone>.<n>` — stable handles for commit messages and
+  cross-references.
+- **Acceptance criteria** are written as checkboxes and phrased so that a
+  reader can determine pass/fail without judgement. "Fast enough" is not an
+  acceptance criterion; "≥1.5× throughput on ≥80% of the query mix" is.
+- **Out of scope** sections are binding. Moving an item out of them is a scope
+  change that belongs in a commit, not a decision made mid-task.
+- Every milestone ends with **exit artifacts**: the files that must exist, so
+  "done" is checkable by `ls` rather than by memory.
