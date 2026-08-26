@@ -363,7 +363,7 @@ pub fn search_term_query_multi_segment(
     merge_multi_segment_scored(&doc_bases, top_n, |i, local| {
         let seg = &segments[i];
         let seg_norms = norms.get(i).copied().flatten();
-        crate::search_term_query_scored(
+        crate::search_term_query_scored_maxscore(
             seg.fields,
             seg.doc_in,
             seg.live_docs,
@@ -395,7 +395,7 @@ pub fn search_term_query_multi_segment_concurrent(
     merge_multi_segment_scored_concurrent(&doc_bases, top_n, |i, local| {
         let seg = &segments[i];
         let seg_norms = norms.get(i).copied().flatten();
-        crate::search_term_query_scored(
+        crate::search_term_query_scored_maxscore(
             seg.fields,
             seg.doc_in,
             seg.live_docs,
