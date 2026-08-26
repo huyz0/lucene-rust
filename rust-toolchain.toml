@@ -1,0 +1,14 @@
+# Pin the exact toolchain the gate is defined against.
+#
+# Why an exact patch version and not "stable": on 2026-07-14 the toolchain
+# moved 1.97.0 -> 1.97.1, two new clippy lints started firing, and 11 warnings
+# entered the tree unnoticed because different machines resolved "stable"
+# differently. Pinning makes a compiler bump a reviewable one-line diff that
+# CI evaluates, instead of a silent divergence.
+#
+# To bump: change `channel`, run the full gate (see AGENTS.md), fix whatever
+# new lints fire, and land it as one commit.
+
+[toolchain]
+channel = "1.97.1"
+components = ["rustfmt", "clippy", "llvm-tools"]
