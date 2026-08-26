@@ -1,0 +1,145 @@
+# The gate that AGENTS.md invariant #9 defines, run on every change.
+#
+# Until this existed, the gate lived only in .githooks/pre-commit and ran only
+# where someone had installed it. That is how 11 clippy warnings entered the
+# tree after the 1.97.0 -> 1.97.1 toolchain bump.
+#
+# Step order matches AGENTS.md's command table, so a CI failure maps onto a
+# local command the developer already knows.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # The Rust gate: fmt, clippy, tests + coverage. Both architectures we target.
+  # ---------------------------------------------------------------------------
+  gate:
+    name: gate (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      # No toolchain action: rust-toolchain.toml pins the version and its
+      # components, and rustup installs it on the first cargo invocation. That
+      # keeps CI honest -- if the pin is wrong, this is where it shows up.
+      - name: Show toolchain
+        run: |
+          rustup show active-toolchain
+          rustc --version
+          cargo clippy --version
+          cargo fmt --version
+
+      # Cargo.lock is gitignored in this repo, so key the cache on the manifests
+      # and the toolchain pin instead.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ matrix.arch }}-${{ hashFiles('**/Cargo.toml', 'rust-toolchain.toml') }}
+          restore-keys: cargo-${{ matrix.arch }}-
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov@0.8.7
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Lint
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # llvm-cov runs the tests, so there is no separate `cargo test` step.
+      # Output is captured so the per-file report below reuses this run rather
+      # than executing the whole suite a second time.
+      - name: Tests + coverage gate
+        run: |
+          set -o pipefail
+          cargo llvm-cov --workspace --summary-only --fail-under-lines 95 | tee coverage.txt
+
+      # AGENTS.md invariant #8 asks for >=95% line coverage *per file*, but the
+      # gate command above only enforces the workspace total. Report the
+      # per-file view so the difference stays visible rather than silent. This
+      # step is deliberately non-blocking: raising coverage is out of scope for
+      # the milestone that added this workflow.
+      # See docs/milestones/m0-ci-and-green-tree.md ("Findings").
+      - name: Per-file coverage report (non-blocking)
+        if: always()
+        run: |
+          awk 'NR>2 && $1 ~ /\.rs$/ { gsub(/%/,"",$4); if ($4+0 < 95) print "  " $4 "%  " $1 }' \
+            coverage.txt > below.txt || true
+          if [ -s below.txt ]; then
+            { echo "### Files below 95% line coverage"; echo '```'; cat below.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+            echo "Files below the per-file bar:"; cat below.txt
+          else
+            echo "All files at or above 95% line coverage." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  # ---------------------------------------------------------------------------
+  # The committed fixtures must still be what Lucene 10.5.0 actually produces.
+  # fixtures/data is load-bearing for every differential test in the repo.
+  # ---------------------------------------------------------------------------
+  fixtures:
+    name: fixtures are Java-produced
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - uses: actions/cache@v4
+        with:
+          path: fixtures/.jars
+          key: lucene-jars-10.5.0
+      - name: Regenerate and verify
+        run: ./scripts/gen-fixtures.sh --check
+
+  # ---------------------------------------------------------------------------
+  # Reverse direction: Rust writes real Lucene bytes, Lucene reads them back.
+  # The only automated evidence that this port's write path is spec-correct
+  # rather than merely self-consistent.
+  # ---------------------------------------------------------------------------
+  write-path:
+    name: Lucene reads Rust-written bytes
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-x64-${{ hashFiles('**/Cargo.toml', 'rust-toolchain.toml') }}
+          restore-keys: cargo-x64-
+      - uses: actions/cache@v4
+        with:
+          path: fixtures/.jars
+          key: lucene-jars-10.5.0
+      - name: Verify write path
+        run: ./scripts/verify-write-path.sh
