@@ -1,5 +1,8 @@
 [workspace]
 resolver = "2"
+# The benchmark runner is not part of the gate: it has no tests, so including
+# it would drag the workspace coverage gate down for a measurement tool.
+exclude = ["benchmarks/rust-runner"]
 members = [
     "crates/lucene-util",
     "crates/lucene-store",
