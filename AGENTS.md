@@ -72,10 +72,16 @@ check-only build, so it needs no cross C compiler and no linker. The toolchain i
 [`rust-toolchain.toml`](rust-toolchain.toml) — bump it deliberately, never
 implicitly.
 
-Two caveats worth knowing about the coverage gate: `--fail-under-lines`
-enforces the **workspace total**, not invariant #8's per-file bar, and two
-files currently sit below 95% (`fst.rs`, `terms_dict.rs`). CI reports the
-per-file view in its job summary without failing on it.
+Two caveats worth knowing about the coverage gate. `--fail-under-lines`
+enforces the **workspace total** (line coverage, currently 98.36%), not
+invariant #8's per-file bar; one file sits below that bar,
+`lucene-index/src/checksum_verify.rs` at 93.75%. CI reports the per-file view
+in its job summary without failing on it.
+
+When reading `cargo llvm-cov --summary-only` output, note that it prints three
+`Cover` columns — Regions, Functions, then **Lines**. Only the third is what
+`--fail-under-lines` and invariant #8 mean. Region coverage is always lower
+(97.59% vs 98.36% at the workspace level) and names different files.
 
 **Commits**: `commit-msg` allows only `feat|fix|docs|test|chore|refactor|
 perf|build|ci` + optional `(scope)` + lowercase description, and requires a
