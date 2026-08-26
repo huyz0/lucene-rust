@@ -28,7 +28,7 @@ pub unsafe extern "C" fn ffi_open_directory(
             return Err(FfiStatus::NullPointer);
         }
         // SAFETY: caller contract guarantees `path` is valid for `path_len` bytes.
-        let path_str = unsafe { str_from_raw(path as *const u8, path_len) }?;
+        let path_str = unsafe { str_from_raw(path, path_len) }?;
         let dir = FsDirectory::open(path_str);
         let handle = lock_recovering(directories()).insert(dir);
         // SAFETY: caller contract guarantees `out_handle` is valid for one write.

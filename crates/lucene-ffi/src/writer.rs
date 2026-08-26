@@ -110,7 +110,7 @@ unsafe fn decode_optional_field_name<'a>(
         return Ok(None);
     }
     // SAFETY: forwarded from this function's own caller contract.
-    let name = unsafe { str_from_raw(field_name as *const u8, field_name_len)? };
+    let name = unsafe { str_from_raw(field_name, field_name_len)? };
     Ok(Some(name))
 }
 
@@ -286,8 +286,8 @@ pub unsafe extern "C" fn ffi_open_writer(
         // their paired lengths.
         let (path_str, codec_name_str) = unsafe {
             (
-                str_from_raw(path as *const u8, path_len)?,
-                str_from_raw(codec_name as *const u8, codec_name_len)?,
+                str_from_raw(path, path_len)?,
+                str_from_raw(codec_name, codec_name_len)?,
             )
         };
 
@@ -320,7 +320,11 @@ pub unsafe extern "C" fn ffi_open_writer(
             for i in 0..field_count {
                 // SAFETY: caller contract guarantees `names[i]` is valid for
                 // `name_lens[i]` bytes.
-                let name = unsafe { str_from_raw(names[i], name_lens[i])? };
+                // `field_names` is declared `*const *const u8` rather than
+                // `*const *const c_char` like every other C-string parameter in
+                // this crate; `.cast()` bridges that without an `as` expression,
+                // which would be target-dependent (see `str_from_raw`).
+                let name = unsafe { str_from_raw(names[i].cast::<c_char>(), name_lens[i])? };
                 fields.push(FieldInfo {
                     name: name.to_string(),
                     number: numbers[i],
@@ -848,7 +852,7 @@ pub unsafe extern "C" fn ffi_writer_update_document(
     guard(|| {
         // SAFETY: caller contract guarantees `field_name` is valid for
         // `field_name_len` bytes.
-        let field = unsafe { str_from_raw(field_name as *const u8, field_name_len)? };
+        let field = unsafe { str_from_raw(field_name, field_name_len)? };
         // SAFETY: caller contract guarantees `term_ptr` is valid for
         // `term_len` bytes (or null iff `term_len == 0`).
         let term = unsafe { bytes_from_raw(term_ptr, term_len)? };
@@ -933,7 +937,7 @@ pub unsafe extern "C" fn ffi_writer_delete_documents(
     guard(|| {
         // SAFETY: caller contract guarantees `field_name` is valid for
         // `field_name_len` bytes.
-        let field = unsafe { str_from_raw(field_name as *const u8, field_name_len)? };
+        let field = unsafe { str_from_raw(field_name, field_name_len)? };
         // SAFETY: caller contract guarantees `term_ptr` is valid for
         // `term_len` bytes (or null iff `term_len == 0`).
         let term = unsafe { bytes_from_raw(term_ptr, term_len)? };

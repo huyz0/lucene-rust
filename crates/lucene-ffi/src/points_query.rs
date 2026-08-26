@@ -139,7 +139,7 @@ pub unsafe extern "C" fn ffi_search_points_range(
         // are valid for their paired lengths.
         let (field, min_packed, max_packed) = unsafe {
             (
-                str_from_raw(field as *const u8, field_len)?,
+                str_from_raw(field, field_len)?,
                 bytes_from_raw(min_packed, min_packed_len)?,
                 bytes_from_raw(max_packed, max_packed_len)?,
             )

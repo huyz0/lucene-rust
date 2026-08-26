@@ -133,11 +133,11 @@ pub unsafe extern "C" fn ffi_open_segment(
         // paired length, and `segment_id` is valid for 16 bytes.
         let (fnm_name, tim_name, tip_name, tmd_name, suffix) = unsafe {
             (
-                str_from_raw(fnm_name as *const u8, fnm_name_len)?,
-                str_from_raw(tim_name as *const u8, tim_name_len)?,
-                str_from_raw(tip_name as *const u8, tip_name_len)?,
-                str_from_raw(tmd_name as *const u8, tmd_name_len)?,
-                str_from_raw(segment_suffix as *const u8, segment_suffix_len)?,
+                str_from_raw(fnm_name, fnm_name_len)?,
+                str_from_raw(tim_name, tim_name_len)?,
+                str_from_raw(tip_name, tip_name_len)?,
+                str_from_raw(tmd_name, tmd_name_len)?,
+                str_from_raw(segment_suffix, segment_suffix_len)?,
             )
         };
         let mut id = [0u8; 16];
@@ -165,7 +165,7 @@ pub unsafe extern "C" fn ffi_open_segment(
             None
         } else {
             // SAFETY: caller contract guarantees `doc_name` is valid for `doc_name_len`.
-            let name = unsafe { str_from_raw(doc_name as *const u8, doc_name_len)? };
+            let name = unsafe { str_from_raw(doc_name, doc_name_len)? };
             let bytes = read_whole_file(dir_handle, name)?;
             DocInput::open(&bytes, &id, suffix).map_err(|e| {
                 set_last_error(format!("opening .doc: {e}"));
@@ -178,7 +178,7 @@ pub unsafe extern "C" fn ffi_open_segment(
             None
         } else {
             // SAFETY: caller contract guarantees `pos_name` is valid for `pos_name_len`.
-            let name = unsafe { str_from_raw(pos_name as *const u8, pos_name_len)? };
+            let name = unsafe { str_from_raw(pos_name, pos_name_len)? };
             let bytes = read_whole_file(dir_handle, name)?;
             PosInput::open(&bytes, &id, suffix).map_err(|e| {
                 set_last_error(format!("opening .pos: {e}"));
@@ -202,8 +202,8 @@ pub unsafe extern "C" fn ffi_open_segment(
             // for their paired lengths.
             let (nvm, nvd) = unsafe {
                 (
-                    str_from_raw(nvm_name as *const u8, nvm_name_len)?,
-                    str_from_raw(nvd_name as *const u8, nvd_name_len)?,
+                    str_from_raw(nvm_name, nvm_name_len)?,
+                    str_from_raw(nvd_name, nvd_name_len)?,
                 )
             };
             // Real Lucene's norms format (`Lucene90NormsFormat`) has no
@@ -236,9 +236,9 @@ pub unsafe extern "C" fn ffi_open_segment(
             // are valid for their paired lengths.
             let (dvm, dvd, dv_suffix) = unsafe {
                 (
-                    str_from_raw(dvm_name as *const u8, dvm_name_len)?,
-                    str_from_raw(dvd_name as *const u8, dvd_name_len)?,
-                    str_from_raw(dv_suffix as *const u8, dv_suffix_len)?,
+                    str_from_raw(dvm_name, dvm_name_len)?,
+                    str_from_raw(dvd_name, dvd_name_len)?,
+                    str_from_raw(dv_suffix, dv_suffix_len)?,
                 )
             };
             let meta_bytes = read_whole_file(dir_handle, dvm)?;
@@ -270,9 +270,9 @@ pub unsafe extern "C" fn ffi_open_segment(
             // are valid for their paired lengths.
             let (kdm, kdi, kdd) = unsafe {
                 (
-                    str_from_raw(kdm_name as *const u8, kdm_name_len)?,
-                    str_from_raw(kdi_name as *const u8, kdi_name_len)?,
-                    str_from_raw(kdd_name as *const u8, kdd_name_len)?,
+                    str_from_raw(kdm_name, kdm_name_len)?,
+                    str_from_raw(kdi_name, kdi_name_len)?,
+                    str_from_raw(kdd_name, kdd_name_len)?,
                 )
             };
             let kdm_bytes = read_whole_file(dir_handle, kdm)?;

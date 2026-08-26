@@ -116,7 +116,7 @@ pub unsafe extern "C" fn ffi_open_directory_reader(
             return Err(FfiStatus::NullPointer);
         }
         // SAFETY: caller contract guarantees `path` is valid for `path_len` bytes.
-        let path_str = unsafe { str_from_raw(path as *const u8, path_len) }?;
+        let path_str = unsafe { str_from_raw(path, path_len) }?;
         let dir = FsDirectory::open(path_str);
         let reader = DirectoryReader::open(&dir).map_err(map_open_error)?;
 
@@ -171,7 +171,7 @@ pub unsafe extern "C" fn ffi_search_term_query_multi_segment(
         // paired lengths.
         let (field, term) = unsafe {
             (
-                str_from_raw(field as *const u8, field_len)?,
+                str_from_raw(field, field_len)?,
                 bytes_from_raw(term, term_len)?,
             )
         };
@@ -338,7 +338,7 @@ pub unsafe extern "C" fn ffi_search_term_query_multi_segment_concurrent(
         // paired lengths.
         let (field, term) = unsafe {
             (
-                str_from_raw(field as *const u8, field_len)?,
+                str_from_raw(field, field_len)?,
                 bytes_from_raw(term, term_len)?,
             )
         };
