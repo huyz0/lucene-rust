@@ -1,0 +1,79 @@
+bench-compare: building runners
+warning: value assigned to `last` is never read
+   --> src/main.rs:114:24
+    |
+114 |         let mut last = Vec::new();
+    |                        ^^^^^^^^^^ this value is reassigned later and never used
+...
+118 |             last = run();
+    |             ---- `last` is overwritten here before the previous value is read
+    |
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+bench-compare: index=benchmarks/.corpus/merged warmup=2000ms measure=3000ms pinned=0,1
+query     rust qps    java qps   ratio   rust p99  java p99  recall
+----------------------------------------------------------------------------
+q01           13.8     1,015.1   0.01x      77404      1352  MISMATCH
+q02           13.7     1,285.5   0.01x      78887       992  MISMATCH
+q03           70.9     3,221.3   0.02x      15401       413  MISMATCH
+q04          208.2     5,096.6   0.04x       5285       276  MISMATCH
+q05        5,788.1    36,494.0   0.16x        248        38  MISMATCH
+q06            0.7       301.4   0.00x    1492161      4003  MISMATCH
+q07            1.3     1,105.3   0.00x     753945      1231  MISMATCH
+q08            8.8       564.2   0.02x     116679      2221  MISMATCH
+q09            0.5       110.5   0.00x    2092558     10001  MISMATCH
+q10            0.7       281.7   0.00x    1544787      4230  MISMATCH
+q11            5.6       541.8   0.01x     184353      2201  MISMATCH
+q12            0.4        51.1   0.01x    2736961     21487  MISMATCH
+q13            1.5       276.7   0.01x     655064      4156  MISMATCH
+q14            6.9       539.9   0.01x     147078      2135  MISMATCH
+q15            0.6        51.4   0.01x    1614576     20555  MISMATCH
+q16            0.1         2.8   0.04x   15795276    358420  MISMATCH
+q17            0.1         4.4   0.02x   11078717    228488  MISMATCH
+q18           27.5     2,587.4   0.01x      38050       499  MISMATCH
+q19          134.6    93,312.0   0.00x       8921        16  MISMATCH
+q20            2.6       144.4   0.02x     391607      7604  ok
+
+RECALL MISMATCH on 19 of 20 queries -- their timings are NOT comparable:
+  q01: topset
+    rust=82079,125822,204996,945440,959373,1134432,124813
+    java=82079,125822,204996,945440,959373,1134432,124813
+  q02: top1score
+    rust=0.015738
+    java=0.015750
+  q03: top1score
+    rust=1.314393
+    java=1.317220
+  q04: top1score
+    rust=2.047538
+    java=2.053846
+  q05: top1score
+    rust=3.869550
+    java=3.895010
+  q06: topset
+    rust=30458,229107,439916,474396,495996,531725,763787,
+    java=30458,229107,297271,439916,474396,495996,531725,
+  q07: top1score
+    rust=1.314922
+    java=1.317750
+  q08: topset
+    rust=107134,205065,230598,236938,243897,332052,547456
+    java=107134,205065,230598,236938,243897,332052,547456
+  q09: topset
+    rust=2045,12947,52768,100797,141532,176628,289064,562
+    java=2045,12947,52768,100797,141532,176628,289064,310
+  q10: topset
+    rust=30458,229107,439916,474396,495996,531725,763787,
+    java=30458,229107,297271,439916,474396,495996,531725,
+  q11: topset
+    rust=107134,205065,230598,236938,243897,332052,547456
+    java=107134,205065,230598,236938,243897,332052,547456
+  q12: topset
+    rust=51786,52833,173377,316594,385298,393784,720084,8
+    java=51786,52833,173377,316594,385298,393784,720084,8
+
+M1 gate:
+  >=1.5x on 0/20 queries (0%)   [criterion: >=80%]
+  slower than Java on 20 queries: q01, q02, q03, q04, q05, q06, q07, q08, q09, q10, q11, q12, q13, q14, q15, q16, q17, q18, q19, q20   [criterion: none]
+  recall mismatches: 19   [criterion: 0]
+  => FAIL

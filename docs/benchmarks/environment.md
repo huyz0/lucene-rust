@@ -4,7 +4,7 @@ Recorded automatically by `scripts/bench-env.sh`. A published ratio without
 the machine it was measured on is not reproducible.
 
 ```
-date            : 2026-08-26T21:36:05Z
+date            : 2026-08-26T21:40:13Z
 kernel          : Linux 6.18.33.2-microsoft-standard-WSL2
 cpu             : 13th Gen Intel(R) Core(TM) i5-13600KF
 cores/threads   : 10 cores / 20 threads

@@ -28,15 +28,16 @@ public final class BenchRunner {
 
     public static void main(String[] args) throws Exception {
         if (args.length < 4) {
-            System.err.println("usage: BenchRunner <index-dir> <queries.tsv> <warmup> <iters>");
+            System.err.println("usage: BenchRunner <index-dir> <queries.tsv> <warmup_ms> <measure_ms>");
             System.exit(2);
         }
         requireVectorApi();
 
         Path index = Paths.get(args[0]);
         List<String[]> queries = loadQueries(Paths.get(args[1]));
-        int warmup = Integer.parseInt(args[2]);
-        int iters = Integer.parseInt(args[3]);
+        // Time-boxed, not count-based -- see the Rust runner for why.
+        long warmupMs = Long.parseLong(args[2]);
+        long measureMs = Long.parseLong(args[3]);
 
         try (org.apache.lucene.store.Directory dir = MMapDirectory.open(index);
              DirectoryReader reader = DirectoryReader.open(dir)) {
@@ -47,18 +48,23 @@ public final class BenchRunner {
             for (String[] q : queries) {
                 Query query = build(q);
 
-                for (int i = 0; i < warmup; i++) searcher.search(query, TOP_N);
+                long w = System.nanoTime();
+                do { searcher.search(query, TOP_N); }
+                while ((System.nanoTime() - w) / 1_000_000 < warmupMs);
 
-                long[] samples = new long[iters];
+                List<Long> sampleList = new ArrayList<>();
                 TopDocs last = null;
                 long t0 = System.nanoTime();
-                for (int i = 0; i < iters; i++) {
+                do {
                     long s = System.nanoTime();
                     last = searcher.search(query, TOP_N);
-                    samples[i] = (System.nanoTime() - s) / 1000;
-                }
+                    sampleList.add((System.nanoTime() - s) / 1000);
+                } while ((System.nanoTime() - t0) / 1_000_000 < measureMs || sampleList.size() < 5);
                 double wallSec = (System.nanoTime() - t0) / 1e9;
+                int iters = sampleList.size();
 
+                long[] samples = new long[sampleList.size()];
+                for (int i = 0; i < samples.length; i++) samples[i] = sampleList.get(i);
                 Arrays.sort(samples);
                 // Set comparison, not ordered: ties may break differently.
                 int[] ids = new int[last.scoreDocs.length];

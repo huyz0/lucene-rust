@@ -13,8 +13,8 @@ cd "$(git rev-parse --show-toplevel)"
 
 INDEX="$PWD/benchmarks/.corpus/merged"
 QUERIES="$PWD/benchmarks/queries.tsv"
-WARMUP=200
-ITERS=200
+WARMUP=2000     # ms of warmup per query
+ITERS=3000      # ms of measurement per query
 JARS="$PWD/fixtures/.jars"
 # i5-13600KF is a hybrid part: P-cores 0-11 (SMT), E-cores 12-19. Pin to a
 # single P-core pair so the scheduler cannot migrate a run onto an E-core
@@ -25,8 +25,8 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --index)   INDEX="$2";   shift 2 ;;
     --queries) QUERIES="$2"; shift 2 ;;
-    --warmup)  WARMUP="$2";  shift 2 ;;
-    --iters)   ITERS="$2";   shift 2 ;;
+    --warmup-ms) WARMUP="$2"; shift 2 ;;
+    --measure-ms) ITERS="$2"; shift 2 ;;
     --pin)     PIN="$2";     shift 2 ;;
     --jars)    JARS="$2";    shift 2 ;;
     -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
@@ -46,7 +46,7 @@ javac -nowarn -cp "$CP" -d "$OUT/classes" benchmarks/java-runner/src/BenchRunner
 
 command -v taskset >/dev/null && PINCMD=(taskset -c "$PIN") || PINCMD=()
 
-echo "bench-compare: index=$INDEX warmup=$WARMUP iters=$ITERS pinned=${PIN:-none}"
+echo "bench-compare: index=$INDEX warmup=${WARMUP}ms measure=${ITERS}ms pinned=${PIN:-none}"
 "${PINCMD[@]}" ./benchmarks/rust-runner/target/release/bench-runner \
     "$INDEX" "$QUERIES" "$WARMUP" "$ITERS" > "$OUT/rust.tsv"
 "${PINCMD[@]}" java --enable-native-access=ALL-UNNAMED --add-modules jdk.incubator.vector \

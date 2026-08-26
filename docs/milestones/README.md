@@ -11,7 +11,7 @@ and the artifacts that must exist before it can be called done.
 | | Milestone | Goal | Effort | Status |
 |---|---|---|---|---|
 | M0 | [Green tree, real CI](m0-ci-and-green-tree.md) | Every gate runs automatically, and HEAD passes them | S | ✅ **complete** |
-| M1 | [The performance gate](m1-performance-gate.md) | Decide go/no-go with data: is Rust search decisively faster? | M | not started |
+| M1 | [The performance gate](m1-performance-gate.md) | Decide go/no-go with data: is Rust search decisively faster? | M | ✅ **delivered — verdict: FAIL** |
 | M2 | [OpenSearch read path](m2-opensearch-read-path.md) | A node answers `_search` from Rust over JNI/FFM | M–L | not started |
 | M3 | [Write path proven](m3-write-path-proven.md) | Real Lucene reads a full Rust-written index | L | not started |
 | M4 | [Write path hardened](m4-write-path-hardened.md) | Crash-safe, concurrent, interoperable both directions | L | not started |
@@ -32,8 +32,12 @@ CI green   benchmark     │          │                           │   engine
 
 - **M0 unblocks everything.** The tree does not currently pass its own
   pre-commit gate, so nothing can land cleanly until it does.
-- **M1 is the only branch point.** It decides whether M2–M6 are funded at all,
-  and it costs a benchmark rather than a Java plugin to answer.
+- **M1 is the only branch point.** It decided whether M2–M6 are funded at all,
+  and it cost a benchmark rather than a Java plugin to answer. **It returned
+  FAIL**: lucene-rust is 6×–1000× slower than Java Lucene, for a structural
+  reason (posting lists are materialized instead of skipped). See
+  [`docs/benchmarks/verdict.md`](../benchmarks/verdict.md). M2–M6 are on hold
+  pending the algorithmic fix the verdict recommends.
 - **M2 and M3 are independent.** One is Java-writes/Rust-reads through
   OpenSearch; the other is Rust-writes/Java-reads at the format level. Work
   them in parallel or in either order. M5 needs both.
