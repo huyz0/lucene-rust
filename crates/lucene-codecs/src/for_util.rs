@@ -275,12 +275,10 @@ fn decode6<R: DataInput>(
 ) -> Result<()> {
     split_ints(r, ints, tmp, 48, 2, 6, mask8_const!(6), 0, mask8_const!(2))?;
     let mut tmp_idx = 0;
-    let mut ints_idx = 48;
-    for _ in 0..16 {
+    for ints_idx in (48..).take(16) {
         let l0 = (tmp[tmp_idx] << 4) | (tmp[tmp_idx + 1] << 2) | tmp[tmp_idx + 2];
         ints[ints_idx] = l0;
         tmp_idx += 3;
-        ints_idx += 1;
     }
     Ok(())
 }
@@ -292,8 +290,7 @@ fn decode7<R: DataInput>(
 ) -> Result<()> {
     split_ints(r, ints, tmp, 56, 1, 7, mask8_const!(7), 0, mask8_const!(1))?;
     let mut tmp_idx = 0;
-    let mut ints_idx = 56;
-    for _ in 0..8 {
+    for ints_idx in (56..).take(8) {
         let mut l0 = tmp[tmp_idx] << 6;
         l0 |= tmp[tmp_idx + 1] << 5;
         l0 |= tmp[tmp_idx + 2] << 4;
@@ -303,7 +300,6 @@ fn decode7<R: DataInput>(
         l0 |= tmp[tmp_idx + 6];
         ints[ints_idx] = l0;
         tmp_idx += 7;
-        ints_idx += 1;
     }
     Ok(())
 }
@@ -476,12 +472,10 @@ fn decode12<R: DataInput>(
         mask16_const!(4),
     )?;
     let mut t = 0;
-    let mut ii = 96;
-    for _ in 0..32 {
+    for ii in (96..).take(32) {
         let l0 = (tmp[t] << 8) | (tmp[t + 1] << 4) | tmp[t + 2];
         ints[ii] = l0;
         t += 3;
-        ii += 1;
     }
     Ok(())
 }
@@ -547,8 +541,7 @@ fn decode14<R: DataInput>(
         mask16_const!(2),
     )?;
     let mut t = 0;
-    let mut ii = 112;
-    for _ in 0..16 {
+    for ii in (112..).take(16) {
         let mut l0 = tmp[t] << 12;
         l0 |= tmp[t + 1] << 10;
         l0 |= tmp[t + 2] << 8;
@@ -558,7 +551,6 @@ fn decode14<R: DataInput>(
         l0 |= tmp[t + 6];
         ints[ii] = l0;
         t += 7;
-        ii += 1;
     }
     Ok(())
 }
@@ -580,8 +572,7 @@ fn decode15<R: DataInput>(
         mask16_const!(1),
     )?;
     let mut t = 0;
-    let mut ii = 120;
-    for _ in 0..8 {
+    for ii in (120..).take(8) {
         let mut l0 = tmp[t] << 14;
         l0 |= tmp[t + 1] << 13;
         l0 |= tmp[t + 2] << 12;
@@ -599,7 +590,6 @@ fn decode15<R: DataInput>(
         l0 |= tmp[t + 14];
         ints[ii] = l0;
         t += 15;
-        ii += 1;
     }
     Ok(())
 }

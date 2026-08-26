@@ -3788,7 +3788,7 @@ mod tests {
 
     #[test]
     fn binary_search_node_finds_every_label() {
-        let labels = [b'a', b'c', b'f', b'm', b'z'];
+        let labels = *b"acfmz";
         let outputs = [1u8, 2, 3, 4, 5];
         let (bytes, start) = build_binary_search_node(&labels, &outputs);
         let fst = fst_from_body(bytes, start, InputType::Byte1, None);
@@ -3803,7 +3803,7 @@ mod tests {
 
     #[test]
     fn binary_search_node_rejects_absent_labels() {
-        let labels = [b'a', b'c', b'f', b'm', b'z'];
+        let labels = *b"acfmz";
         let outputs = [1u8, 2, 3, 4, 5];
         let (bytes, start) = build_binary_search_node(&labels, &outputs);
         let fst = fst_from_body(bytes, start, InputType::Byte1, None);
@@ -4559,7 +4559,7 @@ mod tests {
 
     #[test]
     fn iter_over_binary_search_root_node_yields_ascending_order() {
-        let labels = [b'a', b'c', b'f', b'm', b'z'];
+        let labels = *b"acfmz";
         let outputs = [1u8, 2, 3, 4, 5];
         let (bytes, start) = build_binary_search_node(&labels, &outputs);
         let fst = fst_from_body(bytes, start, InputType::Byte1, None);

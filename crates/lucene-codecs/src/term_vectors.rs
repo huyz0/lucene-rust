@@ -1456,7 +1456,7 @@ mod tests {
 
         // LZ4 (CompressionMode.FAST, no dictionary): literal-only unit
         // wrapping "cat" (the only term suffix; no payload bytes).
-        let payload = [b'c', b'a', b't'];
+        let payload = *b"cat";
         tvd.push((payload.len() as u8) << 4);
         tvd.extend_from_slice(&payload);
 

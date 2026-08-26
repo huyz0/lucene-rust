@@ -2417,7 +2417,7 @@ mod tests {
 
         let parent_fp = 8usize;
         let min_label = b'a';
-        let strategy_bytes_region = [b'd', b'b', b'c'];
+        let strategy_bytes_region = *b"dbc";
         let strategy_bytes = strategy_bytes_region.len();
         let term: u32 = SIGN_MULTI_CHILDREN
             | (CHILD_STRATEGY_REVERSE_ARRAY << 9)
@@ -2786,7 +2786,7 @@ mod tests {
         let mut slice = vec![0u8; 48];
         let parent_fp = 16usize;
         let min_label = b'a';
-        let strategy_bytes_region = [b'b']; // ARRAY: one extra label 'b'.
+        let strategy_bytes_region = *b"b"; // ARRAY: one extra label 'b'.
         let strategy_bytes = strategy_bytes_region.len();
         let encoded_bytes_minus1 = 0u32; // 1-byte encoded output fp.
                                          // childrenDeltaFpBytesMinus1 = 0 (1 byte)
