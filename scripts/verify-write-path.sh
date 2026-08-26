@@ -81,7 +81,7 @@ failed=0
 for case in "${CASES[@]}"; do
   IFS='|' read -r crate example subdir verifier <<<"$case"
   out="$WORK/$subdir"
-  if ! cargo run --quiet --release -p "$crate" --example "$example" -- "$out" >/dev/null; then
+  if ! cargo run --quiet -p "$crate" --example "$example" -- "$out" >/dev/null; then
     echo "  FAIL (rust write)   $example"; failed=$((failed+1)); continue
   fi
   if java --enable-native-access=ALL-UNNAMED -cp "$CLASSES:$CP" "$verifier" "$out" >/dev/null 2>&1; then
