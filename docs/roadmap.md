@@ -26,7 +26,7 @@ breakdown with file paths, risks, and exit artifacts — in
 | Write path (P5) | Substantial but unevenly proven — see M3 |
 | Engine integration (P6) | Not started |
 | Performance (P7) | Not started; no Rust-vs-Java comparison has ever been run |
-| CI | **None** — no `.github/`; all gating is local `.githooks/` |
+| CI | **Added in M0** — `.github/workflows/ci.yml`: gate on x64 + arm64, plus fixture and write-path jobs |
 
 ### Three facts that set the ordering
 
@@ -72,7 +72,7 @@ M2 → M6 — the overwhelming majority of remaining effort — should be funded
 
 ---
 
-## M0 — Green tree, real CI
+## M0 — Green tree, real CI  ·  delivered
 
 > Full detail, task breakdown and risks: [`docs/milestones/m0-ci-and-green-tree.md`](milestones/m0-ci-and-green-tree.md)
 

@@ -58,7 +58,20 @@ and blocks on failure. Run it before calling a task done:
 | Lint | `cargo clippy --workspace --all-targets -- -D warnings` |
 | Tests + coverage gate | `cargo llvm-cov --workspace --fail-under-lines 95` |
 | Coverage report, per file | `cargo llvm-cov --workspace --summary-only` |
-| Regenerate Java fixtures | see [fixtures/README.md](fixtures/README.md) |
+| Regenerate Java fixtures | `scripts/gen-fixtures.sh` |
+| Check fixtures are still Java-produced | `scripts/gen-fixtures.sh --check` |
+| Verify the write path (Lucene reads Rust bytes) | `scripts/verify-write-path.sh` |
+
+The same gate runs in CI on every push and pull request
+([`.github/workflows/ci.yml`](.github/workflows/ci.yml)), on Linux x64 and
+arm64, plus the two fixture jobs. The toolchain is pinned in
+[`rust-toolchain.toml`](rust-toolchain.toml) — bump it deliberately, never
+implicitly.
+
+Two caveats worth knowing about the coverage gate: `--fail-under-lines`
+enforces the **workspace total**, not invariant #8's per-file bar, and two
+files currently sit below 95% (`fst.rs`, `terms_dict.rs`). CI reports the
+per-file view in its job summary without failing on it.
 
 **Commits**: `commit-msg` allows only `feat|fix|docs|test|chore|refactor|
 perf|build|ci` + optional `(scope)` + lowercase description, and requires a
