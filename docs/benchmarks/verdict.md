@@ -187,6 +187,16 @@ Recorded so the number can be argued with:
   a 100× timing gap.
 - **Single machine, WSL2**, frequency governor not exposed. Runs are pinned to
   P-cores with `taskset`. The second-machine reproduction criterion is not met.
+- **No flamegraphs.** T1.4 specified profiling with `perf`/`cargo flamegraph`
+  against Java's async-profiler. `perf` is not installed, needs root, and is
+  limited under WSL2. The cause was instead established two other ways, which
+  for this defect are stronger than a profile would have been: the code path is
+  explicit (`resolve_clause_docs -> Result<Vec<i32>>` materializes by
+  construction), and a scaling experiment confirms the behavioural signature —
+  conjunction cost tracks the commonest clause rather than the rarest. A
+  flamegraph would show time inside those same functions and add nothing to the
+  diagnosis. It *would* be needed to rank costs once the algorithm is fixed, so
+  installing `perf` is a prerequisite for re-running this gate.
 - **Java given every advantage**: Panama Vector API enabled (the runner refuses
   to start without it), time-boxed JIT warmup per query, warm page cache. Any
   residual measurement bias favours Java, and Rust still lost by 100×.
