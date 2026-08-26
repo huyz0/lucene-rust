@@ -57,11 +57,7 @@ fn main() {
     // Norms, wired per segment. DirectoryReader does not load these itself (see
     // the M1 findings), so the runner reads .nvm/.nvd directly -- without them
     // BM25 loses length normalization and would not match Lucene's scores.
-    let norms_by_seg = load_norms(dir_path, &reader);
-    let term_norms: Vec<Option<&FieldNorms<'_>>> = norms_by_seg
-        .iter()
-        .map(|m| m.as_ref().and_then(|m| m.get("body")))
-        .collect();
+    let norms_by_seg = load_norms(dir_path, &reader, &segments);
     let bool_norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> =
         norms_by_seg.iter().map(|m| m.as_ref()).collect();
 
@@ -85,7 +81,15 @@ fn main() {
                 }
                 "term" => {
                     let tq = TermQuery { field: q.field.clone(), term: q.args[0].clone().into_bytes() };
-                    search_term_query_multi_segment(&segments, &tq, &term_norms, TOP_N).expect("term")
+                    // Per-query field, not a hardcoded one: scoring a `title` or
+                    // `keyword` query with `body`'s norms silently produces a
+                    // different ranking, which first showed up as a phantom
+                    // recall mismatch against Java.
+                    let tn: Vec<Option<&FieldNorms<'_>>> = norms_by_seg
+                        .iter()
+                        .map(|m| m.as_ref().and_then(|m| m.get(&q.field)))
+                        .collect();
+                    search_term_query_multi_segment(&segments, &tq, &tn, TOP_N).expect("term")
                 }
                 "and" | "or" | "or_maxscore" => {
                     let clauses: Vec<Clause> = q
@@ -186,6 +190,7 @@ fn load_queries(path: &str) -> Vec<Query> {
 fn load_norms<'a>(
     dir_path: &str,
     reader: &'a DirectoryReader,
+    segments: &[lucene_search::multi_segment::OpenSegment<'a>],
 ) -> Vec<Option<HashMap<String, FieldNorms<'a>>>> {
     // Buffers must outlive the FieldNorms borrowing them, so leak them: the
     // runner is a short-lived process measuring steady-state query cost, and a
@@ -194,7 +199,8 @@ fn load_norms<'a>(
         .segment_readers()
         .iter()
         .zip(reader.segment_infos.segments.iter())
-        .map(|(seg, commit)| {
+        .enumerate()
+        .map(|(i, (seg, commit))| {
             let base = std::path::Path::new(dir_path);
             let meta = std::fs::read(base.join(format!("{}.nvm", seg.segment_name))).ok()?;
             let data = std::fs::read(base.join(format!("{}.nvd", seg.segment_name))).ok()?;
@@ -203,8 +209,15 @@ fn load_norms<'a>(
             let mut out = HashMap::new();
             for fi in &seg.field_infos().fields {
                 if let Some(entry) = parsed.entry(fi.number) {
-                    if let Ok(fnorms) = FieldNorms::open(data, *entry, seg.max_doc, None) {
-                        out.insert(fi.name.clone(), fnorms);
+                    // Lucene-exact avgdl from the field's .tmd counters, not the
+                    // average of lossy decoded norms. See FieldNorms::from_field_stats.
+                    if let Some(ft) = segments[i].fields.field(&fi.name) {
+                        out.insert(
+                            fi.name.clone(),
+                            FieldNorms::from_field_stats(
+                                data, *entry, ft.sum_total_term_freq, ft.doc_count,
+                            ),
+                        );
                     }
                 }
             }

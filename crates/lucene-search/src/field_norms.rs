@@ -43,6 +43,45 @@ impl<'a> FieldNorms<'a> {
     /// field) real Lucene's own `avgdl = sumTotalTermFreq / docCount` would
     /// divide-by-zero on; this port's fallback keeps the length-
     /// normalization term at its "no-op" constant instead.
+    /// `avgFieldLength` exactly as real Lucene's `BM25Similarity` computes it:
+    /// `sumTotalTermFreq / docCount`, from the field's `.tmd` aggregate
+    /// counters ([`lucene_codecs::blocktree::FieldTerms`]).
+    ///
+    /// **Prefer this over [`FieldNorms::open`].** `open` derives the average by
+    /// decoding each doc's norm and averaging the results, and norms are lossy:
+    /// `SmallFloat`-quantized into a single byte. The average of the lossy
+    /// values is close to, but not equal to, the average of the true lengths,
+    /// so BM25 scores came out systematically 0.1-0.6% away from Lucene's --
+    /// enough to reorder documents at the top-k boundary. M1's benchmark
+    /// cross-check caught it: 19 of 20 queries disagreed with Java on hit sets
+    /// for this reason alone. See `docs/benchmarks/verdict.md`.
+    ///
+    /// It is also cheaper by an order of magnitude: `open` scans every doc in
+    /// the segment, which for a per-query call is O(maxDoc) of pure overhead.
+    /// This reads two integers.
+    ///
+    /// `doc_count == 0` (an empty field) would divide by zero in Lucene; this
+    /// port falls back to [`crate::similarity::UNNORMED_FIELD_LENGTH`], keeping
+    /// the length-normalization term at its no-op constant, matching
+    /// [`FieldNorms::open`]'s treatment of the same edge case.
+    pub fn from_field_stats(
+        data: &'a [u8],
+        entry: NormsEntry,
+        sum_total_term_freq: i64,
+        doc_count: i32,
+    ) -> Self {
+        let avg_field_length = if doc_count <= 0 {
+            crate::similarity::UNNORMED_FIELD_LENGTH
+        } else {
+            (sum_total_term_freq as f64 / doc_count as f64) as f32
+        };
+        Self {
+            data,
+            entry,
+            avg_field_length,
+        }
+    }
+
     pub fn open(
         data: &'a [u8],
         entry: NormsEntry,
@@ -88,6 +127,57 @@ impl<'a> FieldNorms<'a> {
 
 #[cfg(test)]
 mod tests {
+
+    /// `avgdl = sumTotalTermFreq / docCount`, real Lucene's formula.
+    #[test]
+    fn from_field_stats_divides_sum_by_doc_count() {
+        let n = FieldNorms::from_field_stats(&[], dense_entry(1, 1, 0), 1000, 40);
+        assert_eq!(n.avg_field_length, 25.0);
+    }
+
+    /// An empty field would divide by zero in Lucene; this port falls back to
+    /// the no-op constant, matching `open`'s treatment of the same edge case.
+    #[test]
+    fn from_field_stats_empty_field_falls_back_to_unnormed() {
+        let n = FieldNorms::from_field_stats(&[], dense_entry(1, 1, 0), 0, 0);
+        assert_eq!(n.avg_field_length, crate::similarity::UNNORMED_FIELD_LENGTH);
+        let n = FieldNorms::from_field_stats(&[], dense_entry(1, 1, 0), 500, -1);
+        assert_eq!(n.avg_field_length, crate::similarity::UNNORMED_FIELD_LENGTH);
+    }
+
+    /// Why the old averaging approach was wrong, pinned as a test rather than
+    /// left as prose.
+    ///
+    /// Norms are `SmallFloat`-quantized to one byte. Below 25 the encoding is
+    /// exact, so averaging decoded norms and dividing exact counters agree --
+    /// which is precisely why every existing fixture (whose documents are 1-3
+    /// terms long) passed with the wrong formula. Above that range the encoding
+    /// is lossy and the two diverge, which is what M1's 5M-document corpus,
+    /// with 40-160 term documents, exposed.
+    #[test]
+    fn small_float_encoding_is_exact_below_25_and_lossy_above() {
+        for len in 1u32..25 {
+            let decoded =
+                crate::similarity::decode_norm(lucene_util::small_float::int_to_byte4(len) as i64);
+            assert_eq!(
+                decoded, len as f32,
+                "length {len} should round-trip exactly"
+            );
+        }
+        // A realistic document length: the round trip no longer returns the
+        // input, so an average of decoded norms is not the average of lengths.
+        let lossy: Vec<u32> = (100..=160)
+            .filter(|&len| {
+                crate::similarity::decode_norm(lucene_util::small_float::int_to_byte4(len) as i64)
+                    != len as f32
+            })
+            .collect();
+        assert!(
+            !lossy.is_empty(),
+            "expected SmallFloat to be lossy for realistic document lengths"
+        );
+    }
+
     use super::*;
     use lucene_codecs::norms::NormsEntry;
 
