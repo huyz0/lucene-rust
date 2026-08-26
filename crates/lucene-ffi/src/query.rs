@@ -180,7 +180,7 @@ pub unsafe extern "C" fn ffi_search_term_query(
         // paired lengths.
         let (field, term) = unsafe {
             (
-                str_from_raw(field as *const u8, field_len)?,
+                str_from_raw(field, field_len)?,
                 bytes_from_raw(term, term_len)?,
             )
         };
@@ -264,7 +264,7 @@ pub(crate) unsafe fn read_term_clauses(
             let term_ptr = *terms.add(i);
             let term_len = *term_lens.add(i);
             (
-                str_from_raw(field_ptr as *const u8, field_len)?,
+                str_from_raw(field_ptr, field_len)?,
                 bytes_from_raw(term_ptr, term_len)?,
             )
         };
@@ -405,7 +405,7 @@ pub unsafe extern "C" fn ffi_search_phrase_query(
         // bytes, and (when `term_count > 0`) `terms`/`term_lens` are valid for
         // `term_count` elements with each element pair valid for its length.
         let (field, term_list) = unsafe {
-            let field = str_from_raw(field as *const u8, field_len)?;
+            let field = str_from_raw(field, field_len)?;
             let mut term_list = Vec::with_capacity(term_count);
             if term_count > 0 {
                 if terms.is_null() || term_lens.is_null() {
@@ -532,7 +532,7 @@ pub unsafe extern "C" fn ffi_search_term_query_scored(
         // paired lengths.
         let (field, term) = unsafe {
             (
-                str_from_raw(field as *const u8, field_len)?,
+                str_from_raw(field, field_len)?,
                 bytes_from_raw(term, term_len)?,
             )
         };
@@ -644,7 +644,7 @@ pub unsafe extern "C" fn ffi_search_term_query_scored_with_similarity(
         // paired lengths.
         let (field, term) = unsafe {
             (
-                str_from_raw(field as *const u8, field_len)?,
+                str_from_raw(field, field_len)?,
                 bytes_from_raw(term, term_len)?,
             )
         };
@@ -742,7 +742,7 @@ pub unsafe extern "C" fn ffi_search_term_query_scored_maxscore(
         // paired lengths.
         let (field, term) = unsafe {
             (
-                str_from_raw(field as *const u8, field_len)?,
+                str_from_raw(field, field_len)?,
                 bytes_from_raw(term, term_len)?,
             )
         };
@@ -1129,7 +1129,7 @@ pub unsafe extern "C" fn ffi_search_phrase_query_scored(
         // bytes, and (when `term_count > 0`) `terms`/`term_lens` are valid for
         // `term_count` elements with each element pair valid for its length.
         let (field, term_list) = unsafe {
-            let field = str_from_raw(field as *const u8, field_len)?;
+            let field = str_from_raw(field, field_len)?;
             let mut term_list = Vec::with_capacity(term_count);
             if term_count > 0 {
                 if terms.is_null() || term_lens.is_null() {

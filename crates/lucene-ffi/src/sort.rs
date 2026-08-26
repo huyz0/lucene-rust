@@ -179,7 +179,7 @@ pub unsafe extern "C" fn ffi_sort_by_doc_value(
         }
         // SAFETY: caller contract guarantees `field` is valid for `field_len`
         // bytes and `candidates` is valid for `candidates_len` `i32`s.
-        let field = unsafe { str_from_raw(field as *const u8, field_len)? };
+        let field = unsafe { str_from_raw(field, field_len)? };
         let candidates = unsafe { candidates_from_raw(candidates, candidates_len)? };
 
         let segments = lock_recovering(segments());
@@ -263,7 +263,7 @@ pub unsafe extern "C" fn ffi_sort_by_multi_valued_doc_value(
         };
         // SAFETY: caller contract guarantees `field` is valid for `field_len`
         // bytes and `candidates` is valid for `candidates_len` `i32`s.
-        let field = unsafe { str_from_raw(field as *const u8, field_len)? };
+        let field = unsafe { str_from_raw(field, field_len)? };
         let candidates = unsafe { candidates_from_raw(candidates, candidates_len)? };
 
         let segments = lock_recovering(segments());
@@ -349,7 +349,7 @@ pub unsafe extern "C" fn ffi_numeric_doc_value_for_doc(
         }
         // SAFETY: caller contract guarantees `field` is valid for `field_len`
         // bytes.
-        let field = unsafe { str_from_raw(field as *const u8, field_len)? };
+        let field = unsafe { str_from_raw(field, field_len)? };
 
         let segments = lock_recovering(segments());
         let segment = segments.get(segment_handle).ok_or_else(|| {

@@ -261,7 +261,7 @@ pub unsafe extern "C" fn ffi_facet_counts_sorted_set(
         }
         // SAFETY: caller contract guarantees `field` is valid for `field_len`
         // bytes and `candidates` is valid for `candidates_len` `i32`s.
-        let field = unsafe { str_from_raw(field as *const u8, field_len)? };
+        let field = unsafe { str_from_raw(field, field_len)? };
         let candidates = unsafe { candidates_from_raw(candidates, candidates_len)? };
 
         let segments = lock_recovering(segments());
@@ -337,7 +337,7 @@ pub unsafe extern "C" fn ffi_range_facet_counts(
         // SAFETY: caller contract guarantees `field` is valid for `field_len`
         // bytes, `candidates` is valid for `candidates_len` `i32`s, and the
         // range arrays are valid per this function's `# Safety` section.
-        let field = unsafe { str_from_raw(field as *const u8, field_len)? };
+        let field = unsafe { str_from_raw(field, field_len)? };
         let candidates = unsafe { candidates_from_raw(candidates, candidates_len)? };
         let ranges = unsafe {
             ranges_from_raw(

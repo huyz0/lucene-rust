@@ -157,9 +157,9 @@ pub unsafe extern "C" fn ffi_assemble_fragments(
         // SAFETY: caller contract guarantees `full_text` is valid for
         // `full_text_len` bytes and `pre`/`post` are valid for `pre_len`/
         // `post_len` bytes.
-        let full_text = unsafe { str_from_raw(full_text as *const u8, full_text_len)? };
-        let pre = unsafe { str_from_raw(pre as *const u8, pre_len)? };
-        let post = unsafe { str_from_raw(post as *const u8, post_len)? };
+        let full_text = unsafe { str_from_raw(full_text, full_text_len)? };
+        let pre = unsafe { str_from_raw(pre, pre_len)? };
+        let post = unsafe { str_from_raw(post, post_len)? };
         // SAFETY: caller contract guarantees the four span arrays are valid
         // per this function's `# Safety` section.
         let spans = unsafe {

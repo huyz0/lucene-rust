@@ -4,16 +4,23 @@
 //! `ffi-safety` skill: `unsafe` is scoped, not sprinkled).
 
 use crate::error::FfiStatus;
+use std::ffi::c_char;
 
 /// Reads `len` bytes at `ptr` as a UTF-8 `&str` borrowing from the caller's
 /// buffer -- no copy, no ownership transfer. `ptr` may be null only when
 /// `len == 0` (an empty string), matching a common C-ABI convention for
 /// "empty and possibly not backed by a real allocation".
 ///
+/// Takes `*const c_char` because every caller is converting a C string. The
+/// widening to `*const u8` happens here, once, via `.cast()` rather than an
+/// `as` expression: `c_char` is `i8` on x86_64 but `u8` on aarch64, so an
+/// `as *const u8` at each call site is a real cast on one target and a no-op
+/// the linter rejects on the other.
+///
 /// # Safety
 /// `ptr` must be valid for reads of `len` bytes for the duration of the
 /// borrow returned.
-pub unsafe fn str_from_raw<'a>(ptr: *const u8, len: usize) -> Result<&'a str, FfiStatus> {
+pub unsafe fn str_from_raw<'a>(ptr: *const c_char, len: usize) -> Result<&'a str, FfiStatus> {
     if ptr.is_null() {
         return if len == 0 {
             Ok("")
@@ -22,7 +29,7 @@ pub unsafe fn str_from_raw<'a>(ptr: *const u8, len: usize) -> Result<&'a str, Ff
         };
     }
     // SAFETY: caller contract guarantees `ptr` is valid for `len` bytes.
-    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    let bytes = unsafe { std::slice::from_raw_parts(ptr.cast::<u8>(), len) };
     std::str::from_utf8(bytes).map_err(|_| FfiStatus::InvalidUtf8)
 }
 
@@ -51,14 +58,14 @@ mod tests {
     #[test]
     fn str_from_raw_reads_valid_utf8() {
         let s = "hello";
-        let got = unsafe { str_from_raw(s.as_ptr(), s.len()) }.unwrap();
+        let got = unsafe { str_from_raw(s.as_ptr().cast::<c_char>(), s.len()) }.unwrap();
         assert_eq!(got, "hello");
     }
 
     #[test]
     fn str_from_raw_rejects_invalid_utf8() {
         let bytes = [0xFFu8, 0xFE];
-        let got = unsafe { str_from_raw(bytes.as_ptr(), bytes.len()) };
+        let got = unsafe { str_from_raw(bytes.as_ptr().cast::<c_char>(), bytes.len()) };
         assert_eq!(got, Err(FfiStatus::InvalidUtf8));
     }
 

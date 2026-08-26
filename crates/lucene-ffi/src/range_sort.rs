@@ -163,8 +163,8 @@ pub unsafe extern "C" fn ffi_search_numeric_range_sorted_by_field(
         // valid for their paired lengths.
         let (range_field, sort_field) = unsafe {
             (
-                str_from_raw(range_field as *const u8, range_field_len)?,
-                str_from_raw(sort_field as *const u8, sort_field_len)?,
+                str_from_raw(range_field, range_field_len)?,
+                str_from_raw(sort_field, sort_field_len)?,
             )
         };
 
@@ -254,8 +254,8 @@ pub unsafe extern "C" fn ffi_search_numeric_range_sorted_by_field_multi_segment(
         // Safety` section) `segment_handles`/`doc_bases` are valid for
         // `segment_count` elements each.
         let (range_field, sort_field, segment_handles, doc_bases) = unsafe {
-            let range_field = str_from_raw(range_field as *const u8, range_field_len)?;
-            let sort_field = str_from_raw(sort_field as *const u8, sort_field_len)?;
+            let range_field = str_from_raw(range_field, range_field_len)?;
+            let sort_field = str_from_raw(sort_field, sort_field_len)?;
             let segment_handles = u64_slice_from_raw(segment_handles, segment_count)?;
             let doc_bases = i32_slice_from_raw(doc_bases, segment_count)?;
             (range_field, sort_field, segment_handles, doc_bases)
