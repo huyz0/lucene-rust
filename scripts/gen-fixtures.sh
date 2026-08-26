@@ -41,12 +41,10 @@
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
-LUCENE_VERSION="10.5.0"
 # Modules the generators actually need. lucene-queries is required by
 # GenBlockTree (org.apache.lucene.queries.spans); the fixtures README used to
 # document only lucene-core + lucene-analysis-common, which no longer compiles.
 LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries)
-MAVEN_BASE="https://repo1.maven.org/maven2/org/apache/lucene"
 
 cd "$(git rev-parse --show-toplevel)"
 FIXTURES="$PWD/fixtures"
@@ -66,21 +64,9 @@ done
 
 # --- resolve the Lucene jars -------------------------------------------------
 # Prefer --jars, then the Gradle cache (fast, local), then Maven Central (CI).
-resolve_jar() {
-  local module="$1"
-  local jar="$module-$LUCENE_VERSION.jar"
-  local found=""
-  if [ -f "$JARS/$jar" ]; then echo "$JARS/$jar"; return; fi
-  found=$(find "$HOME/.gradle/caches" -name "$jar" ! -name '*sources*' ! -name '*javadoc*' 2>/dev/null | head -1 || true)
-  if [ -n "$found" ]; then echo "$found"; return; fi
-  mkdir -p "$JARS"
-  echo "gen-fixtures: downloading $jar from Maven Central" >&2
-  curl -fsSL -o "$JARS/$jar" "$MAVEN_BASE/$module/$LUCENE_VERSION/$jar"
-  echo "$JARS/$jar"
-}
-
-CP=""
-for m in "${LUCENE_MODULES[@]}"; do CP="$CP${CP:+:}$(resolve_jar "$m")"; done
+# shellcheck source=scripts/lib-lucene-jars.sh
+source "$(dirname "$0")/lib-lucene-jars.sh"
+CP=$(lucene_classpath "${LUCENE_MODULES[@]}")
 
 # --- compile -----------------------------------------------------------------
 CLASSES=$(mktemp -d)

@@ -11,3 +11,10 @@ fixtures/classes/
 
 # Lucene jars downloaded by scripts/gen-fixtures.sh and verify-write-path.sh
 fixtures/.jars/
+
+# Benchmark corpus (gigabytes) and runner build output. The corpus is
+# reproducible from scripts/bench-corpus.sh plus its manifest, so it is
+# regenerated rather than stored.
+benchmarks/.corpus/
+benchmarks/rust-runner/target/
+benchmarks/rust-runner/Cargo.lock

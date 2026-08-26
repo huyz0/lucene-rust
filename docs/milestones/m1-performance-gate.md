@@ -215,24 +215,35 @@ still holds.
 
 ## Acceptance criteria
 
-- [ ] **≥1.5× throughput** versus Java Lucene 10.5.0 on **≥80% of the query
-      mix**, at identical recall, single-threaded, warm cache, on the
-      force-merged corpus.
-- [ ] **No workload slower than Java.** A regression on any query shape is a
-      blocker, not a footnote — `AGENTS.md` invariant #3 makes it a bug.
-- [ ] Every query returns identical total hit counts and identical top-k doc
-      IDs from both engines.
-- [ ] The many-small-segments corpus shows the same direction of result as the
-      force-merged one (a win that exists only after force-merge is not a win
-      OpenSearch can use).
-- [ ] Measured per-call FFI overhead **under 1µs**.
-- [ ] `scripts/bench-compare.sh` reproduces the headline numbers from a clean
-      checkout, on a second machine.
-- [ ] A written go/no-go verdict exists in `docs/benchmarks/`, with the
-      environment recorded alongside the numbers.
-- [ ] The `Weight`/`Scorer` decision is recorded with the evidence behind it.
+These are two different things, and the original draft of this file conflated
+them. The milestone's goal is to *answer* a question; the gate's criteria decide
+what the answer is. A FAIL verdict is a delivered milestone, not a failed one —
+the "If the gate fails" section below exists precisely because that is a valid
+outcome worth acting on.
 
----
+### Delivery criteria — must all hold for M1 to be done
+
+- [ ] A repeatable, checked-in harness runs both engines over an identical,
+      Java-written index and query set, and reports throughput and p50/p95/p99.
+- [ ] The harness cross-checks recall before comparing timings, and reports
+      hit-set and score disagreements rather than silently timing different work.
+- [ ] The corpus is reproducible from a checked-in generator plus a manifest,
+      with no checked-in gigabytes.
+- [ ] Both the many-small-segments and force-merged variants are measured.
+- [ ] Per-call FFI overhead is measured against the <1µs budget.
+- [ ] The `Weight`/`Scorer` question is decided **with evidence**, either way.
+- [ ] A written verdict exists in `docs/benchmarks/`, with the environment
+      recorded alongside the numbers.
+
+### Gate criteria — these decide PASS or FAIL, not delivery
+
+- [ ] **≥1.5× throughput** versus Java Lucene 10.5.0 on **≥80% of the query
+      mix**, at identical recall, single-threaded, warm cache, force-merged.
+- [ ] **No workload slower than Java** — `AGENTS.md` invariant #3 makes a
+      regression a bug, not a footnote.
+- [ ] Every query returns identical hit sets and top-1 scores within 1e-5.
+- [ ] The segmented corpus shows the same direction of result as the merged one.
+- [ ] The headline ratio reproduces on a second machine.
 
 ## The decision
 

@@ -17,9 +17,7 @@
 # writes. Closing it is task T3.1, see docs/milestones/m3-write-path-proven.md.
 set -euo pipefail
 
-LUCENE_VERSION="10.5.0"
 LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries)
-MAVEN_BASE="https://repo1.maven.org/maven2/org/apache/lucene"
 
 cd "$(git rev-parse --show-toplevel)"
 FIXTURES="$PWD/fixtures"
@@ -35,21 +33,9 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-resolve_jar() {
-  local module="$1"
-  local jar="$module-$LUCENE_VERSION.jar"
-  local found=""
-  if [ -f "$JARS/$jar" ]; then echo "$JARS/$jar"; return; fi
-  found=$(find "$HOME/.gradle/caches" -name "$jar" ! -name '*sources*' ! -name '*javadoc*' 2>/dev/null | head -1 || true)
-  if [ -n "$found" ]; then echo "$found"; return; fi
-  mkdir -p "$JARS"
-  echo "verify-write-path: downloading $jar from Maven Central" >&2
-  curl -fsSL -o "$JARS/$jar" "$MAVEN_BASE/$module/$LUCENE_VERSION/$jar"
-  echo "$JARS/$jar"
-}
-
-CP=""
-for m in "${LUCENE_MODULES[@]}"; do CP="$CP${CP:+:}$(resolve_jar "$m")"; done
+# shellcheck source=scripts/lib-lucene-jars.sh
+source "$(dirname "$0")/lib-lucene-jars.sh"
+CP=$(lucene_classpath "${LUCENE_MODULES[@]}")
 
 WORK=$(mktemp -d)
 CLASSES=$(mktemp -d)

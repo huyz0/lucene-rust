@@ -1,0 +1,15 @@
+[package]
+name = "bench-runner"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+lucene-store = { path = "../../crates/lucene-store" }
+lucene-search = { path = "../../crates/lucene-search" }
+lucene-codecs = { path = "../../crates/lucene-codecs" }
+lucene-index = { path = "../../crates/lucene-index" }
+
+[profile.release]
+debug = true          # keep frame pointers/symbols for profiling (T1.4)

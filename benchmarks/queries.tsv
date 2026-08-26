@@ -1,0 +1,24 @@
+# M1 query mix. Columns: id <TAB> kind <TAB> field <TAB> args...
+# Vocabulary is Zipf-ranked: t0 is the most frequent term, rank grows with the
+# base-36 suffix, so t0/t1 are high-frequency, tz mid, t2s and beyond low.
+# Both runners read this file; ids join the two result sets.
+q01	term	body	t0
+q02	term	body	t1
+q03	term	body	tz
+q04	term	body	t2s
+q05	term	body	t1z4
+q06	and	body	t0	t1
+q07	and	body	t0	tz
+q08	and	body	tz	t2s
+q09	and	body	t0	t1	t2
+q10	or	body	t0	t1
+q11	or	body	tz	t2s
+q12	or	body	t0	t1	t2	t3
+q13	or_maxscore	body	t0	t1
+q14	or_maxscore	body	tz	t2s
+q15	or_maxscore	body	t0	t1	t2	t3
+q16	phrase	body	t0	t1
+q17	phrase	body	t1	t2
+q18	term	title	t0
+q19	term	keyword	t0
+q20	and	title	t0	t1
