@@ -10,7 +10,7 @@ and the artifacts that must exist before it can be called done.
 
 | | Milestone | Goal | Effort | Status |
 |---|---|---|---|---|
-| M0 | [Green tree, real CI](m0-ci-and-green-tree.md) | Every gate runs automatically, and HEAD passes them | S | not started |
+| M0 | [Green tree, real CI](m0-ci-and-green-tree.md) | Every gate runs automatically, and HEAD passes them | S | **delivered**, pending a CI run (see Findings) |
 | M1 | [The performance gate](m1-performance-gate.md) | Decide go/no-go with data: is Rust search decisively faster? | M | not started |
 | M2 | [OpenSearch read path](m2-opensearch-read-path.md) | A node answers `_search` from Rust over JNI/FFM | M–L | not started |
 | M3 | [Write path proven](m3-write-path-proven.md) | Real Lucene reads a full Rust-written index | L | not started |

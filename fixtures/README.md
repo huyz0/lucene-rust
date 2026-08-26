@@ -9,28 +9,41 @@ test time, only to regenerate fixtures after a Lucene version bump.
 ## Regenerating
 
 ```sh
-JAR=$(find ~/.gradle/caches/modules-2/files-2.1/org.apache.lucene/lucene-core/10.5.0 \
-  -name 'lucene-core-10.5.0.jar' ! -name '*sources*' ! -name '*javadoc*')
-mkdir -p classes data
-javac -nowarn -cp "$JAR" -d classes src/*.java
-for cls in GenPrimitives GenCodecUtil GenSegmentInfo GenSegmentInfos GenLiveDocs GenFieldInfos GenNorms GenDocValues GenDocValuesSkipIndex GenDocValuesVaryingBpv GenCompoundFormat GenStoredFields GenStoredFieldsBestCompression GenSortedDocValues GenMultiValuedDocValues GenTermVectors GenPoints GenFst GenBlockTree GenBlockTreeCompressed GenBlockTreeMultilevel GenBlockTreeChildStrategies GenBlockTreeDeepNesting GenFstBinarySearch GenFstDirectAddressing GenFstContinuous GenFstSeekNonRootArrayNode GenFstSeekBacktrackFloorArc GenFstDeepTrie GenFstWideInputTypes; do
-  java -cp "classes:$JAR" $cls data
-done
+scripts/gen-fixtures.sh
 ```
 
-`GenAnalysis.java` additionally needs `lucene-analysis-common` on the classpath
-(it exercises real `StandardAnalyzer`/`StopFilter`, not `lucene-core` alone):
+That compiles every program in `src/` and runs all `Gen*` generators followed by
+all `Append*Manifest` programs, in that order. The ordering is not incidental:
+the appenders open an already-generated index read-only and append cross-engine
+ground truth to its `manifest.properties` **without** regenerating the index
+(regenerating would perturb the segment ID that committed bytes depend on).
+Running only the generators leaves `blocktree_index/manifest.properties` with
+239 keys where the committed fixture has 402.
 
-```sh
-ANALYSIS_JAR=$(find ~/.gradle/caches/modules-2/files-2.1/org.apache.lucene/lucene-analysis-common/10.5.0 \
-  -name '*.jar' ! -name '*sources*' ! -name '*javadoc*')
-javac -nowarn -cp "$JAR:$ANALYSIS_JAR" -d classes src/GenAnalysis.java
-java -cp "classes:$JAR:$ANALYSIS_JAR" GenAnalysis data
-```
+The script resolves `lucene-core`, `lucene-analysis-common` and `lucene-queries`
+10.5.0 from `--jars`, then the Gradle cache, then Maven Central, so it also
+works on a machine with no `~/.gradle`. `lucene-queries` is required because
+`GenBlockTree` uses `org.apache.lucene.queries.spans`; `lucene-analysis-common`
+because `GenAnalysis` exercises real `StandardAnalyzer`/`StopFilter`.
 
 `data/` is checked in (small, deterministic) so `cargo test` works without Java
 installed; regenerate and re-commit whenever the pinned Lucene version changes.
 
+### Checking the committed fixtures
+
+```sh
+scripts/gen-fixtures.sh --check
+```
+
+Verifies that `data/` is still what Lucene 10.5.0 actually produces, without
+touching the tree. It cannot simply diff everything: Lucene stamps a random
+segment ID (`StringHelper.randomId()`) into every index header, so 366 of the
+406 generated files differ on every run **by design**. Instead it generates
+twice, treats a file as deterministic only if the two runs agree, asserts those
+40 files match the committed bytes exactly, and then compares the full file tree
+so a generator that silently stops emitting a file is still caught.
+
+CI runs this on every change (`.github/workflows/ci.yml`, job `fixtures`).
 ## Verifying the write path (reverse direction)
 
 Every generator above is Java-writes-Rust-reads. The write path (PLAN.md Phase 5)
@@ -43,36 +56,21 @@ can open and read them back. `VerifyStoredFields.java`, `VerifyFieldInfos.java`,
 verifiers so far:
 
 ```sh
-cargo run -p lucene-codecs --example write_stored_fields_fixture -- /tmp/rust-stored-fields
-cargo run -p lucene-codecs --example write_field_infos_fixture -- /tmp/rust-field-infos
-cargo run -p lucene-index --example write_segment_info_fixture -- /tmp/rust-segment-info
-cargo run -p lucene-index --example write_segment_infos_fixture -- /tmp/rust-segment-infos
-cargo run -p lucene-index --example write_multi_segment_commit_fixture -- /tmp/rust-multi-segment
-cargo run -p lucene-codecs --example write_points_fixture -- /tmp/rust-points
-cargo run -p lucene-codecs --example write_term_vectors_fixture -- /tmp/rust-term-vectors
-cargo run -p lucene-codecs --example write_doc_values_fixture -- /tmp/rust-doc-values
-cargo run -p lucene-codecs --example write_sparse_numeric_doc_values_fixture -- /tmp/rust-sparse-numeric-dv
-cargo run -p lucene-codecs --example write_norms_fixture -- /tmp/rust-norms
-cargo run -p lucene-codecs --example write_live_docs_fixture -- /tmp/rust-live-docs
-cargo run -p lucene-codecs --example write_compound_format_fixture -- /tmp/rust-compound-format
-cargo run -p lucene-codecs --example write_fst_fixture -- /tmp/rust-fst
-JAR=$(find ~/.gradle/caches/modules-2/files-2.1/org.apache.lucene/lucene-core/10.5.0 \
-  -name 'lucene-core-10.5.0.jar' ! -name '*sources*' ! -name '*javadoc*')
-javac -nowarn -cp "$JAR" -d classes src/VerifyStoredFields.java src/VerifyFieldInfos.java src/VerifySegmentInfo.java src/VerifySegmentInfos.java src/VerifyPoints.java src/VerifyTermVectors.java src/VerifyDocValues.java src/VerifySparseNumericDocValues.java src/VerifyNorms.java src/VerifyLiveDocs.java src/VerifyCompoundFormat.java src/VerifyFst.java
-java -cp "classes:$JAR" VerifyStoredFields /tmp/rust-stored-fields
-java -cp "classes:$JAR" VerifyFieldInfos /tmp/rust-field-infos
-java -cp "classes:$JAR" VerifySegmentInfo /tmp/rust-segment-info
-java -cp "classes:$JAR" VerifySegmentInfos /tmp/rust-segment-infos
-java -cp "classes:$JAR" VerifySegmentInfos /tmp/rust-multi-segment
-java -cp "classes:$JAR" VerifyPoints /tmp/rust-points
-java -cp "classes:$JAR" VerifyTermVectors /tmp/rust-term-vectors
-java -cp "classes:$JAR" VerifyDocValues /tmp/rust-doc-values
-java -cp "classes:$JAR" VerifySparseNumericDocValues /tmp/rust-sparse-numeric-dv
-java -cp "classes:$JAR" VerifyNorms /tmp/rust-norms
-java -cp "classes:$JAR" VerifyLiveDocs /tmp/rust-live-docs
-java -cp "classes:$JAR" VerifyCompoundFormat /tmp/rust-compound-format
-java -cp "classes:$JAR" VerifyFst /tmp/rust-fst
+scripts/verify-write-path.sh
 ```
+
+That runs all 13 Rust `write_*_fixture` examples into a temp directory and
+checks each with its verifier, resolving the Lucene jars the same way
+`gen-fixtures.sh` does. Pass `--keep` to retain the generated fixtures for
+inspection. CI runs it on every change (`.github/workflows/ci.yml`, job
+`write-path`).
+
+**Coverage gap, deliberate.** There is no verifier for the postings / term
+dictionary (`.doc`/`.tim`/`.tip`/`.tmd`) -- the format everything else hangs
+off, and the one whose writer is validated only by round-tripping through this
+port's own reader. That cannot catch a misreading of the spec shared by the
+reader and the writer. Closing it is task T3.1; see
+[`docs/milestones/m3-write-path-proven.md`](../docs/milestones/m3-write-path-proven.md).
 
 `VerifyStoredFields.java` opens each `.fdt`/`.fdx`/`.fdm` triple directly through
 `Lucene90StoredFieldsFormat.fieldsReader`, using a hand-built `SegmentInfo`/
