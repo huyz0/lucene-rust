@@ -242,6 +242,15 @@ outcome worth acting on.
 
 ### Gate criteria — these decide PASS or FAIL, not delivery
 
+**Result: FAIL.** Recorded here rather than left unticked, because an unticked
+box reads as "not yet measured" when in fact it was measured and missed.
+
+- [x] ~~**≥1.5× throughput**~~ — **FAILED: 0% of queries** (required ≥80%)
+- [x] ~~No workload slower~~ — **FAILED: 20 of 20 slower**
+- [x] ~~Identical hit sets and scores~~ — **FAILED: 19-20 of 20 mismatch**, all
+      traced to the BM25 `avgdl` bug
+- [x] ~~Same direction on both corpora~~ — **held**: both variants 0/20
+- [ ] Reproduced on a second machine — **not done**, only one machine available
 - [ ] **≥1.5× throughput** versus Java Lucene 10.5.0 on **≥80% of the query
       mix**, at identical recall, single-threaded, warm cache, force-merged.
 - [ ] **No workload slower than Java** — `AGENTS.md` invariant #3 makes a
