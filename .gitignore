@@ -8,3 +8,6 @@ fixtures/classes/
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
 .claude/worktrees/
+
+# Lucene jars downloaded by scripts/gen-fixtures.sh and verify-write-path.sh
+fixtures/.jars/
