@@ -72,7 +72,7 @@ M2 → M6 — the overwhelming majority of remaining effort — should be funded
 
 ---
 
-## M0 — Green tree, real CI  ·  delivered
+## M0 — Green tree, real CI  ·  complete
 
 > Full detail, task breakdown and risks: [`docs/milestones/m0-ci-and-green-tree.md`](milestones/m0-ci-and-green-tree.md)
 

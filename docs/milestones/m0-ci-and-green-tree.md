@@ -8,7 +8,7 @@
 | **Effort** | S — days |
 | **Depends on** | nothing |
 | **Unblocks** | everything |
-| **Status** | delivered, except T0.7's CI run — see Findings |
+| **Status** | **complete** — all criteria met and verified in CI |
 
 ---
 
@@ -212,8 +212,31 @@ controls, each of which must fail on its own.
 
 The tree was restored after each control and verified clean.
 
-**Still outstanding:** the same four controls exercised through GitHub Actions
-on a real pull request, with run URLs recorded. Blocked on Finding 7.
+**Run through CI, all four confirmed**, each isolated on its own commit on a
+throwaway branch (PR #2, closed without merging):
+
+| Control | Run | Failing job(s) / step |
+|---|---|---|
+| clippy | [32991071585](https://github.com/huyz0/lucene-rust/actions/runs/32991071585) | `gate (arm64)` — a **real** defect, not a planted one (Finding 10) |
+| fmt | [32992919601](https://github.com/huyz0/lucene-rust/actions/runs/32992919601) | `gate (x64)`, `gate (arm64)` |
+| coverage | [32995510901](https://github.com/huyz0/lucene-rust/actions/runs/32995510901) | `gate (x64)`, `gate (arm64)`, at step `Tests + coverage gate` |
+| fixture edit | [32994391949](https://github.com/huyz0/lucene-rust/actions/runs/32994391949) | `fixtures are Java-produced` |
+
+Two of these are worth more than a tick.
+
+The **clippy** control was never planted: the arm64 gate failed on its first
+real run against a genuine portability bug (Finding 10). A gate seen failing on
+a real defect is better evidence than one seen failing on a synthetic one.
+
+The **coverage** control took two attempts, and the first was invalid. Its
+mutation truncated a file at `#[cfg(test)]`, leaving a dangling doc comment, so
+CI failed at the *Format* step — re-proving the fmt gate, not the coverage
+gate. The valid control deletes all 50 integration test files and empties three
+large unit test modules, dropping line coverage 98.36% → 94.36% while fmt,
+clippy and every surviving test still pass, so the coverage gate is the only
+thing that can fail. It failed at exactly that step on both architectures.
+The first attempt is recorded rather than quietly discarded: a control that
+fails for the wrong reason proves nothing, and noticing that is the point.
 
 ---
 
@@ -248,12 +271,12 @@ on a real pull request, with run URLs recorded. Blocked on Finding 7.
       job failed on 46 `unnecessary_cast` errors that no local run could see
       (Finding 10). A gate nobody has seen fail is a gate nobody should trust —
       this one has now been seen failing, and correctly.
-- [ ] `gate (arm64)` green in CI. Fix pushed and **verified locally against the
-      aarch64 target** (Finding 11); awaiting platform recovery for the CI
-      confirmation. **Blocked — Finding 7b.**
-- [ ] The remaining three negative controls (fmt, coverage, fixture edit) turn
-      CI red, with run URLs recorded. All three are verified locally (T0.7).
-      **Blocked — Finding 7b.**
+- [x] All four jobs green in CI on both `ubuntu-24.04` and `ubuntu-24.04-arm` —
+      run [32992532196](https://github.com/huyz0/lucene-rust/actions/runs/32992532196),
+      conclusion `success`. This also confirms the arm64 `c_char` fix on real
+      hardware, matching the local cross-target verification.
+- [x] All four negative controls turn CI red, with run URLs recorded — see
+      T0.7.
 
 ## Risks and unknowns
 
