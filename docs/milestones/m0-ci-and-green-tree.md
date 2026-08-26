@@ -232,6 +232,13 @@ on a real pull request, with run URLs recorded. Blocked on Finding 7.
 - [x] `fixtures/README.md` and `AGENTS.md` reference the scripts, and no
       command exists in two places with two spellings.
 - [x] An in-place `scripts/gen-fixtures.sh` run leaves a git-clean tree.
+- [x] The Maven Central jar fallback works from a clean environment with no
+      Gradle cache — the path a CI runner actually takes. Verified by running
+      `--check` with `HOME` pointed at an empty directory and `fixtures/.jars`
+      removed: all three jars downloaded, check passed.
+- [x] `actionlint` reports `.github/workflows/ci.yml` clean, which validates the
+      runner labels (including `ubuntu-24.04-arm`), action references, shell and
+      expression syntax without needing the platform to be up.
 - [ ] A pull request shows all jobs green on both `ubuntu-24.04` and
       `ubuntu-24.04-arm`. **Blocked — Finding 7b (GitHub Actions outage).**
 - [ ] The four negative controls turn *CI* red, with run URLs recorded.
@@ -351,3 +358,15 @@ remaining acceptance criteria simply need Actions to come back.
 it, since raising coverage is explicitly out of this milestone's scope. Closing
 the gap is a decision for whoever owns the invariant: either enforce it and
 write the tests, or soften the invariant's wording to match the gate.
+
+**9. Two CI paths were verified without the platform.**
+While Actions was down, the two things that could still have been wrong were
+checked directly: the Maven Central jar fallback (never exercised locally,
+because the Gradle cache always hits first) and the workflow file itself
+(`actionlint`, which knows the valid hosted-runner labels). Both are clean, so
+the outage is the only thing between this milestone and its last two criteria.
+
+*Optional follow-up, deliberately not taken:* adding an `actionlint` step to CI
+would catch workflow errors before they cost a queue cycle. It is a **new**
+gate rather than one that already existed, so it falls outside this milestone's
+stated scope — worth doing, but as its own decision.
