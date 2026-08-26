@@ -69,6 +69,20 @@ fn main() {
     for q in &queries {
         let run = || -> Vec<lucene_search::collector::ScoreDoc> {
             match q.kind.as_str() {
+                // Probe: the existing impacts-pruned single-segment path, which
+                // search_term_query_multi_segment does NOT call. Single-segment
+                // only (the merged corpus), which is all the probe needs.
+                "term_ms" => {
+                    let tq = TermQuery { field: q.field.clone(), term: q.args[0].clone().into_bytes() };
+                    let seg = &segments[0];
+                    let mut c = lucene_search::collector::TopDocsCollector::new(TOP_N);
+                    lucene_search::search_term_query_scored_maxscore(
+                        seg.fields, seg.doc_in, seg.live_docs, &tq,
+                        norms_by_seg[0].as_ref().and_then(|m| m.get(&q.field)),
+                        &mut c,
+                    ).expect("term_ms");
+                    c.top_docs().to_vec()
+                }
                 "term" => {
                     let tq = TermQuery { field: q.field.clone(), term: q.args[0].clone().into_bytes() };
                     search_term_query_multi_segment(&segments, &tq, &term_norms, TOP_N).expect("term")
