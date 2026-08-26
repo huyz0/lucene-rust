@@ -387,8 +387,35 @@ hold and widens once internally via `.cast::<u8>()`, a method call rather than
 an `as` expression, so no lint fires on either target. All 46 call-site casts
 are gone. The rule is recorded in the `ffi-safety` skill.
 
-Worth noting for future work: this cannot currently be reproduced locally.
-`cargo clippy --target aarch64-unknown-linux-gnu` fails in `zstd-sys`'s build
-script for want of a cross C compiler (`gcc-aarch64-linux-gnu` is not
-installed). Until that is available, arm64 correctness is a CI-only guarantee
-— which is an argument for CI, not against it.
+It was initially not reproducible locally — `cargo clippy --target
+aarch64-unknown-linux-gnu` died in `zstd-sys`'s build script for want of a
+cross C compiler. Finding 11 removed that obstacle, so the arm64 lint now runs
+locally and is documented in `AGENTS.md`.
+
+Proof that the local check has the power to catch this, run against the
+pre-fix sources with only the `zstd` removal applied:
+
+| Command | Result on pre-fix code |
+|---|---|
+| `cargo clippy --workspace --all-targets -- -D warnings` | **passes** — which is exactly why the defect shipped |
+| the same with `--target aarch64-unknown-linux-gnu` | **fails, 47 `unnecessary_cast` hits** |
+
+A second control is worth recording: with `str_from_raw` now typed
+`*const c_char`, re-introducing `path as *const u8` is a **compile error on
+both targets**, not a lint on one. The fix does not merely satisfy the linter;
+it makes the mistake unwritable.
+
+**11. `zstd` was an unused dependency, and the only one with a C build script.**
+`crates/lucene-codecs/Cargo.toml` declared `zstd.workspace = true`, but no
+source, test, example or bench in the workspace referenced it. Lucene 10.5's
+stored fields use LZ4 (`BEST_SPEED`) and DEFLATE (`BEST_COMPRESSION`); zstd is
+not part of the pinned codec, so the dependency was speculative.
+
+It mattered beyond tidiness: `zstd-sys` builds C, so it needed a cross compiler
+that is not installed, and it was the sole reason
+`cargo clippy --target aarch64-unknown-linux-gnu` could not run. *Removed* —
+the workspace builds and all 2524 tests pass unchanged, and the arm64 lint now
+runs locally, which is what made Finding 10 verifiable without CI.
+
+If a future format needs zstd, restoring it is one line in each of two
+manifests — but it should come back when something uses it, not before.

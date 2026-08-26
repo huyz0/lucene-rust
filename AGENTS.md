@@ -56,6 +56,7 @@ and blocks on failure. Run it before calling a task done:
 |------|---------|
 | Format | `cargo fmt --all --check` |
 | Lint | `cargo clippy --workspace --all-targets -- -D warnings` |
+| Lint for arm64 (catches target-dependent defects) | `cargo clippy --workspace --all-targets --target aarch64-unknown-linux-gnu -- -D warnings` |
 | Tests + coverage gate | `cargo llvm-cov --workspace --fail-under-lines 95` |
 | Coverage report, per file | `cargo llvm-cov --workspace --summary-only` |
 | Regenerate Java fixtures | `scripts/gen-fixtures.sh` |
@@ -64,7 +65,10 @@ and blocks on failure. Run it before calling a task done:
 
 The same gate runs in CI on every push and pull request
 ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)), on Linux x64 and
-arm64, plus the two fixture jobs. The toolchain is pinned in
+arm64, plus the two fixture jobs. The arm64 lint is worth running locally before
+touching `lucene-ffi`: `c_char` signedness differs by target, so a whole class of
+defect is invisible on x86_64 alone (see the **ffi-safety** skill). It is a
+check-only build, so it needs no cross C compiler and no linker. The toolchain is pinned in
 [`rust-toolchain.toml`](rust-toolchain.toml) — bump it deliberately, never
 implicitly.
 

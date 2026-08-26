@@ -41,7 +41,9 @@ test. This boundary gets more scrutiny than anything else in the workspace.
 - `cargo clippy --workspace` (`forbid(unsafe_code)` outside the three allowed
   crates fails the build), run by CI on **both** `x86_64` and `aarch64` —
   target-dependent defects like `c_char` signedness are invisible on one
-  architecture alone.
+  architecture alone. Reproduce locally before touching this crate with
+  `cargo clippy --workspace --all-targets --target aarch64-unknown-linux-gnu
+  -- -D warnings` — a check-only build, so no cross C compiler is needed.
 - Miri on `lucene-util`/`lucene-store`'s `unsafe` blocks (`cargo +nightly miri
   test -p lucene-util -p lucene-store`) — run before landing any SIMD/mmap
   change.
