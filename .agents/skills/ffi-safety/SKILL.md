@@ -25,13 +25,23 @@ test. This boundary gets more scrutiny than anything else in the workspace.
 - **Validate handles before use.** A stale/unknown handle returns an error
   code, never a dereference — the slotmap's generation tag exists precisely
   to catch use-after-free/close races from the Java side.
+- **`c_char` signedness is target-dependent — never `as`-cast it.** It is `i8`
+  on `x86_64-unknown-linux-gnu` and `u8` on `aarch64-unknown-linux-gnu`, both
+  of which this port supports. `ptr as *const u8` on a `*const c_char` is a
+  genuine cast on x86_64 and a no-op on aarch64, so clippy's
+  `unnecessary_cast` fails the build on exactly one architecture. Convert once,
+  centrally, with `.cast::<u8>()` — a method call, not an `as` expression, so
+  it is correct on both. `raw.rs`'s `str_from_raw`/`bytes_from_raw` are that
+  central place; call sites pass their `*const c_char` through untouched.
 - **No callbacks from Rust into Java in v1.** Collectors run entirely in Rust;
   keep the boundary one-directional until there's a concrete need otherwise.
 
 ## Enforced by
 
 - `cargo clippy --workspace` (`forbid(unsafe_code)` outside the three allowed
-  crates fails the build).
+  crates fails the build), run by CI on **both** `x86_64` and `aarch64` —
+  target-dependent defects like `c_char` signedness are invisible on one
+  architecture alone.
 - Miri on `lucene-util`/`lucene-store`'s `unsafe` blocks (`cargo +nightly miri
   test -p lucene-util -p lucene-store`) — run before landing any SIMD/mmap
   change.

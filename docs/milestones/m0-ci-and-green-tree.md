@@ -370,3 +370,25 @@ the outage is the only thing between this milestone and its last two criteria.
 would catch workflow errors before they cost a queue cycle. It is a **new**
 gate rather than one that already existed, so it falls outside this milestone's
 stated scope — worth doing, but as its own decision.
+
+**10. CI caught a real portability bug on its first run.**
+The arm64 gate job failed immediately with 46 `unnecessary_cast` errors in
+`lucene-ffi` that do not reproduce on x86_64. `c_char` is `i8` on
+`x86_64-unknown-linux-gnu` and `u8` on `aarch64-unknown-linux-gnu`, so
+`str_from_raw(field_name as *const u8, len)` is a genuine cast on one target
+and a no-op the linter rejects on the other.
+
+This is the milestone's own premise landing on day one: the defect was
+invisible to every local run, had been in the tree since the FFI surface was
+written, and would have surfaced only when someone first built for arm64.
+
+*Fixed* — `str_from_raw` now takes the `*const c_char` its callers already
+hold and widens once internally via `.cast::<u8>()`, a method call rather than
+an `as` expression, so no lint fires on either target. All 46 call-site casts
+are gone. The rule is recorded in the `ffi-safety` skill.
+
+Worth noting for future work: this cannot currently be reproduced locally.
+`cargo clippy --target aarch64-unknown-linux-gnu` fails in `zstd-sys`'s build
+script for want of a cross C compiler (`gcc-aarch64-linux-gnu` is not
+installed). Until that is available, arm64 correctness is a CI-only guarantee
+— which is an argument for CI, not against it.
