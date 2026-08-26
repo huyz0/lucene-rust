@@ -86,7 +86,10 @@ jobs:
       - name: Per-file coverage report (non-blocking)
         if: always()
         run: |
-          awk 'NR>2 && $1 ~ /\.rs$/ { gsub(/%/,"",$4); if ($4+0 < 95) print "  " $4 "%  " $1 }' \
+          # Column 10 is Line coverage. Column 4 is Region coverage -- a
+          # different, always-lower metric. `--fail-under-lines` uses lines, and
+          # so must this report, or it names the wrong files.
+          awk 'NR>2 && $1 ~ /\.rs$/ { gsub(/%/,"",$10); if ($10+0 < 95) print "  " $10 "%  " $1 }' \
             coverage.txt > below.txt || true
           if [ -s below.txt ]; then
             { echo "### Files below 95% line coverage"; echo '```'; cat below.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

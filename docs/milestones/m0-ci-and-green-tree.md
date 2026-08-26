@@ -360,15 +360,33 @@ This is a platform outage, not a configuration fault — a misconfigured
 and a bad workflow file would fail to register. Nothing to fix here; the two
 remaining acceptance criteria simply need Actions to come back.
 
-**8. The coverage gate does not enforce the documented invariant.**
+**8. The coverage gate does not enforce the documented invariant, and my first
+report of which files miss it was wrong.**
 `AGENTS.md` invariant #8 asks for ≥95% line coverage *per file*;
 `cargo llvm-cov --workspace --fail-under-lines 95` enforces the workspace
-*total* (currently 97.59%). Two files sit below the per-file bar —
-`lucene-codecs/src/fst.rs` at 93.55% and `lucene-codecs/src/terms_dict.rs` at
-92.15%. CI now reports the per-file view in its job summary without failing on
-it, since raising coverage is explicitly out of this milestone's scope. Closing
-the gap is a decision for whoever owns the invariant: either enforce it and
-write the tests, or soften the invariant's wording to match the gate.
+*total*. That part stands. **One** file sits below the per-file bar:
+`lucene-index/src/checksum_verify.rs` at 93.75% line coverage.
+
+The correction: I originally reported `fst.rs` (93.55%) and `terms_dict.rs`
+(92.15%), and shipped a CI report step that printed them. Both numbers are
+**region** coverage, not line coverage. `cargo llvm-cov --summary-only` prints
+three `Cover` columns — Regions, Functions, Lines — and I read the first while
+labelling it the third. Region coverage is a stricter, always-lower metric that
+counts every branch of every expression; `--fail-under-lines` and invariant #8
+both mean lines. At workspace level the two differ by nearly a point: 97.59%
+regions versus 98.36% lines.
+
+*Fixed* — the CI report now reads column 10 with a comment explaining why, and
+`AGENTS.md` records the distinction so the next reader does not repeat it.
+
+This surfaced only because a negative control behaved unexpectedly: a mutation
+that dropped *region* coverage to 94.94% still exited 0, which made no sense
+until the columns were checked. Worth remembering as an argument for controls
+that are expected to fail — the surprise is the signal.
+
+Closing the per-file gap is still a decision for whoever owns the invariant:
+either enforce it and write the tests for `checksum_verify.rs`, or soften the
+invariant's wording to match the gate.
 
 **9. Two CI paths were verified without the platform.**
 While Actions was down, the two things that could still have been wrong were
