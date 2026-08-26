@@ -239,10 +239,21 @@ on a real pull request, with run URLs recorded. Blocked on Finding 7.
 - [x] `actionlint` reports `.github/workflows/ci.yml` clean, which validates the
       runner labels (including `ubuntu-24.04-arm`), action references, shell and
       expression syntax without needing the platform to be up.
-- [ ] A pull request shows all jobs green on both `ubuntu-24.04` and
-      `ubuntu-24.04-arm`. **Blocked — Finding 7b (GitHub Actions outage).**
-- [ ] The four negative controls turn *CI* red, with run URLs recorded.
-      **Blocked — Finding 7b (GitHub Actions outage).**
+- [x] Three of the four CI jobs verified green **in CI**, not merely locally:
+      `fixtures are Java-produced`, `Lucene reads Rust-written bytes`, and
+      `gate (x64)` — run
+      [32991071585](https://github.com/huyz0/lucene-rust/actions/runs/32991071585).
+- [x] The clippy gate is proven to turn CI red **on a real defect**, which is
+      stronger evidence than a synthetic control: the same run's `gate (arm64)`
+      job failed on 46 `unnecessary_cast` errors that no local run could see
+      (Finding 10). A gate nobody has seen fail is a gate nobody should trust —
+      this one has now been seen failing, and correctly.
+- [ ] `gate (arm64)` green in CI. Fix pushed and **verified locally against the
+      aarch64 target** (Finding 11); awaiting platform recovery for the CI
+      confirmation. **Blocked — Finding 7b.**
+- [ ] The remaining three negative controls (fmt, coverage, fixture edit) turn
+      CI red, with run URLs recorded. All three are verified locally (T0.7).
+      **Blocked — Finding 7b.**
 
 ## Risks and unknowns
 
