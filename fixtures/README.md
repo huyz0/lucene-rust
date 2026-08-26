@@ -26,8 +26,9 @@ works on a machine with no `~/.gradle`. `lucene-queries` is required because
 `GenBlockTree` uses `org.apache.lucene.queries.spans`; `lucene-analysis-common`
 because `GenAnalysis` exercises real `StandardAnalyzer`/`StopFilter`.
 
-`data/` is checked in (small, deterministic) so `cargo test` works without Java
-installed; regenerate and re-commit whenever the pinned Lucene version changes.
+`data/` is checked in so `cargo test` works without Java installed; regenerate
+and re-commit whenever the pinned Lucene version changes. Note that "checked in"
+is not the same as "reproducible" — see below.
 
 ### Checking the committed fixtures
 
@@ -44,6 +45,7 @@ twice, treats a file as deterministic only if the two runs agree, asserts those
 so a generator that silently stops emitting a file is still caught.
 
 CI runs this on every change (`.github/workflows/ci.yml`, job `fixtures`).
+
 ## Verifying the write path (reverse direction)
 
 Every generator above is Java-writes-Rust-reads. The write path (PLAN.md Phase 5)
