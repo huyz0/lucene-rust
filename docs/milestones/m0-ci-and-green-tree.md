@@ -233,9 +233,9 @@ on a real pull request, with run URLs recorded. Blocked on Finding 7.
       command exists in two places with two spellings.
 - [x] An in-place `scripts/gen-fixtures.sh` run leaves a git-clean tree.
 - [ ] A pull request shows all jobs green on both `ubuntu-24.04` and
-      `ubuntu-24.04-arm`. **Blocked — Finding 7.**
+      `ubuntu-24.04-arm`. **Blocked — Finding 7b (GitHub Actions outage).**
 - [ ] The four negative controls turn *CI* red, with run URLs recorded.
-      **Blocked — Finding 7.**
+      **Blocked — Finding 7b (GitHub Actions outage).**
 
 ## Risks and unknowns
 
@@ -318,22 +318,29 @@ then add a CI job that regenerates and runs the suite. Small, well-scoped, and
 it upgrades the fixture guarantee from "unedited" to "still correct". Not done
 here because it changes test code, which is outside this milestone's scope.
 
-**7. The GitHub token cannot push a workflow file.**
-The `gh` token carries `repo` but not `workflow` scope, so pushing
-`.github/workflows/ci.yml` is rejected:
+**7. Pushing a workflow file needs SSH, not the `gh` HTTPS token.**
+The `gh` OAuth token carries `repo` but not `workflow`, so pushing
+`.github/workflows/ci.yml` over HTTPS is rejected:
 
 > refusing to allow an OAuth App to create or update workflow
 > `.github/workflows/ci.yml` without `workflow` scope
 
-This blocks the two remaining acceptance criteria, both of which require CI to
-actually run. Unblock with:
+GitHub applies that restriction to OAuth tokens over HTTPS, not to SSH. *Fixed*
+— `origin` now uses `git@github.com:huyz0/lucene-rust.git`. The alternative,
+`gh auth refresh -s workflow`, needs an interactive browser confirmation. Worth
+knowing: this affects every future change under `.github/workflows/`.
 
-```sh
-gh auth refresh -s workflow
-```
+**7b. CI has not run yet — GitHub Actions is in a major outage.**
+PR [#1](https://github.com/huyz0/lucene-rust/pull/1) is open and workflow `ci`
+is registered and `active`, but run `32985384206` sat `queued` for over an hour
+with **zero jobs created**, and a second push to the branch produced no run at
+all. `githubstatus.com` reports Actions in `major_outage` while Git operations,
+the API and Pull Requests are all operational.
 
-which needs an interactive browser confirmation. Everything else in this
-milestone is complete and verified locally.
+This is a platform outage, not a configuration fault — a misconfigured
+`runs-on` label would still create the job and leave it queued individually,
+and a bad workflow file would fail to register. Nothing to fix here; the two
+remaining acceptance criteria simply need Actions to come back.
 
 **8. The coverage gate does not enforce the documented invariant.**
 `AGENTS.md` invariant #8 asks for ≥95% line coverage *per file*;
