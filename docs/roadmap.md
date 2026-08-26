@@ -25,7 +25,7 @@ breakdown with file paths, risks, and exit artifacts — in
 | FFI (P4, Java half) | **Does not exist** — `opensearch-plugin/` is a 2-line README |
 | Write path (P5) | Substantial but unevenly proven — see M3 |
 | Engine integration (P6) | Not started |
-| Performance (P7) | Not started; no Rust-vs-Java comparison has ever been run |
+| Performance (P7) | **Measured (M1)**: 6×–1000× slower than Java Lucene on a 5M-doc corpus. Cause: posting lists are materialized, not skipped. See `docs/benchmarks/verdict.md` |
 | CI | **Added in M0** — `.github/workflows/ci.yml`: gate on x64 + arm64, plus fixture and write-path jobs |
 
 ### Three facts that set the ordering
@@ -110,7 +110,7 @@ nothing currently proves it still matches what Lucene 10.5.0 generates.
 
 ---
 
-## M1 — The performance gate (go/no-go)
+## M1 — The performance gate (go/no-go)  ·  delivered, verdict FAIL
 
 > Full detail, task breakdown and risks: [`docs/milestones/m1-performance-gate.md`](milestones/m1-performance-gate.md)
 

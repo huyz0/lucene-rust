@@ -9,7 +9,7 @@
 | **Effort** | M — calendar-heavy, because profiling iterations are serial |
 | **Depends on** | [M0](m0-ci-and-green-tree.md) |
 | **Unblocks** | [M2](m2-opensearch-read-path.md), [M3](m3-write-path-proven.md) — or ends the project |
-| **Status** | not started |
+| **Status** | **delivered — gate verdict: FAIL** (see [`docs/benchmarks/verdict.md`](../benchmarks/verdict.md)) |
 
 ---
 
@@ -223,17 +223,22 @@ outcome worth acting on.
 
 ### Delivery criteria — must all hold for M1 to be done
 
-- [ ] A repeatable, checked-in harness runs both engines over an identical,
-      Java-written index and query set, and reports throughput and p50/p95/p99.
-- [ ] The harness cross-checks recall before comparing timings, and reports
-      hit-set and score disagreements rather than silently timing different work.
-- [ ] The corpus is reproducible from a checked-in generator plus a manifest,
-      with no checked-in gigabytes.
-- [ ] Both the many-small-segments and force-merged variants are measured.
-- [ ] Per-call FFI overhead is measured against the <1µs budget.
-- [ ] The `Weight`/`Scorer` question is decided **with evidence**, either way.
-- [ ] A written verdict exists in `docs/benchmarks/`, with the environment
-      recorded alongside the numbers.
+- [x] A repeatable, checked-in harness runs both engines over an identical,
+      Java-written index and query set, and reports throughput and p50/p95/p99 —
+      `scripts/bench-compare.sh`, `benchmarks/{rust,java}-runner`.
+- [x] The harness cross-checks recall before comparing timings, comparing hit
+      sets (order-insensitive) and top-1 scores within 1e-5, and reports
+      equal-score tie reordering separately from genuine mismatches.
+- [x] The corpus is reproducible from a checked-in generator plus a manifest,
+      with no checked-in gigabytes — `scripts/bench-corpus.sh`, 5M docs.
+- [x] Both the many-small-segments (15 segments) and force-merged (1 segment)
+      variants are measured.
+- [x] Per-call FFI overhead measured against the <1µs budget: **≈0 ns**, below
+      noise. The one gate criterion that passes.
+- [x] The `Weight`/`Scorer` question is decided **with evidence** — adopt a lazy
+      skippable iterator; see the verdict's T1.6 section.
+- [x] A written verdict exists in `docs/benchmarks/verdict.md`, with
+      `environment.md` recorded alongside the numbers.
 
 ### Gate criteria — these decide PASS or FAIL, not delivery
 

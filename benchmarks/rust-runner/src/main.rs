@@ -37,12 +37,16 @@ struct Query {
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     if a.len() < 5 {
-        eprintln!("usage: bench-runner <index-dir> <queries.tsv> <warmup> <iters>");
+        eprintln!("usage: bench-runner <index-dir> <queries.tsv> <warmup_ms> <measure_ms>");
         std::process::exit(2);
     }
     let (dir_path, queries_path) = (&a[1], &a[2]);
-    let warmup: usize = a[3].parse().expect("warmup");
-    let iters: usize = a[4].parse().expect("iters");
+    // Time-boxed, not count-based. A fixed iteration count cannot serve both a
+    // 5us query and a 15s one: low enough for the slow query leaves the JVM's
+    // JIT cold on the fast ones, which biases exactly the queries where Rust
+    // wins. Time-boxing gives every query the same warmup *duration*.
+    let warmup_ms: u128 = a[3].parse().expect("warmup_ms");
+    let measure_ms: u128 = a[4].parse().expect("measure_ms");
 
     let queries = load_queries(queries_path);
     let dir = MmapDirectory::open(dir_path.clone());
@@ -101,18 +105,24 @@ fn main() {
             }
         };
 
-        for _ in 0..warmup {
+        let w = Instant::now();
+        loop {
             std::hint::black_box(run());
+            if w.elapsed().as_millis() >= warmup_ms { break; }
         }
-        let mut samples = Vec::with_capacity(iters);
-        let mut last = Vec::new();
+        let mut samples = Vec::new();
+        let mut last;
         let t0 = Instant::now();
-        for _ in 0..iters {
+        loop {
             let s = Instant::now();
             last = run();
             samples.push(s.elapsed().as_micros() as u64);
+            // At least 5 samples so a percentile means something, even when a
+            // single execution already exceeds the measurement budget.
+            if t0.elapsed().as_millis() >= measure_ms && samples.len() >= 5 { break; }
         }
         let wall = t0.elapsed().as_secs_f64();
+        let iters = samples.len();
 
         samples.sort_unstable();
         let pct = |p: f64| samples[((samples.len() - 1) as f64 * p) as usize];
