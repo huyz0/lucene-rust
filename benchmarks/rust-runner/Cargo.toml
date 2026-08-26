@@ -10,6 +10,15 @@ lucene-store = { path = "../../crates/lucene-store" }
 lucene-search = { path = "../../crates/lucene-search" }
 lucene-codecs = { path = "../../crates/lucene-codecs" }
 lucene-index = { path = "../../crates/lucene-index" }
+lucene-ffi = { path = "../../crates/lucene-ffi" }
+
+[[bin]]
+name = "bench-runner"
+path = "src/main.rs"
+
+[[bin]]
+name = "ffi-overhead"
+path = "src/ffi_overhead.rs"
 
 [profile.release]
 debug = true          # keep frame pointers/symbols for profiling (T1.4)
