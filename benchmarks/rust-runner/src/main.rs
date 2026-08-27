@@ -17,6 +17,7 @@ use std::time::Instant;
 use lucene_codecs::norms;
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::field_norms::FieldNorms;
+use lucene_search::collector::ScoringCollector;
 use lucene_search::query::{BooleanQuery, Clause, PhraseQuery, TermQuery};
 use lucene_search::{
     search_boolean_query_multi_segment, search_boolean_query_multi_segment_maxscore,
@@ -61,6 +62,25 @@ fn main() {
     let bool_norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> =
         norms_by_seg.iter().map(|m| m.as_ref()).collect();
 
+    if std::env::var("BENCH_DUMP_STATS").is_ok() {
+        // Per-segment collection statistics, to show how far this port's
+        // per-segment idf drifts from Lucene's global one.
+        let mut tot_df = 0i64;
+        let mut tot_dc = 0i64;
+        for (i, seg) in segments.iter().enumerate() {
+            if let Some(ft) = seg.fields.field("body") {
+                let df = ft.seek_exact(b"t0").map(|s| s.doc_freq).unwrap_or(0) as i64;
+                let dc = ft.doc_count as i64;
+                tot_df += df;
+                tot_dc += dc;
+                let idf = ((dc as f64 - df as f64 + 0.5) / (df as f64 + 0.5) + 1.0).ln();
+                eprintln!("  seg {i:>2}: docCount={dc:>9} docFreq(t0)={df:>9} idf={idf:.6}");
+            }
+        }
+        let gidf = ((tot_dc as f64 - tot_df as f64 + 0.5) / (tot_df as f64 + 0.5) + 1.0).ln();
+        eprintln!("  GLOBAL: docCount={tot_dc} docFreq={tot_df} idf={gidf:.6}  <- what Lucene uses");
+        return;
+    }
     println!("id\thits\ttop1doc\ttop1score\ttopset\tqps\tp50_us\tp95_us\tp99_us");
     for q in &queries {
         let run = || -> Vec<lucene_search::collector::ScoreDoc> {
@@ -68,6 +88,26 @@ fn main() {
                 // Probe: the existing impacts-pruned single-segment path, which
                 // search_term_query_multi_segment does NOT call. Single-segment
                 // only (the merged corpus), which is all the probe needs.
+                // Diagnostic: the pre-M1.5 eager path, merged by hand exactly as
+                // merge_multi_segment_scored does, to isolate whether a
+                // multi-segment disagreement comes from the pruned path or was
+                // already there.
+                "term_eager" => {
+                    let tq = TermQuery { field: q.field.clone(), term: q.args[0].clone().into_bytes() };
+                    let mut merged = lucene_search::collector::TopDocsCollector::new(TOP_N);
+                    for (i, seg) in segments.iter().enumerate() {
+                        let mut local = lucene_search::collector::TopDocsCollector::new(TOP_N);
+                        lucene_search::search_term_query_scored(
+                            seg.fields, seg.doc_in, seg.live_docs, &tq,
+                            norms_by_seg[i].as_ref().and_then(|m| m.get(&q.field)),
+                            &mut local,
+                        ).expect("term_eager");
+                        for hit in local.top_docs() {
+                            merged.collect(hit.doc_id + seg.doc_base, hit.score);
+                        }
+                    }
+                    merged.top_docs().to_vec()
+                }
                 "term_ms" => {
                     let tq = TermQuery { field: q.field.clone(), term: q.args[0].clone().into_bytes() };
                     let seg = &segments[0];
