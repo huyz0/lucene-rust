@@ -1814,6 +1814,11 @@ fn try_disjunction_lazy<C: ScoringCollector>(
                 }
             };
             if sum_max.is_finite() && up_to >= candidate && sum_max <= threshold {
+                // A genuine block-level skip, recorded so the maxscore
+                // invariant test measures this path too now that it routes
+                // here.
+                #[cfg(any(test, feature = "test-support"))]
+                test_only_maxscore_block_skip_counter::record_skip();
                 // No document in the span can compete: advance every cursor past it.
                 let next = up_to.saturating_add(1);
                 for leg in legs.iter_mut() {
@@ -2234,6 +2239,20 @@ pub fn search_boolean_query_scored_maxscore(
             fields, doc_in, pos_in, pay_in, live_docs, points, query, norms, collector,
         )
     };
+
+    // The lazy union now does block-max pruning itself (see
+    // try_disjunction_lazy), and measured 32x faster than the machinery below
+    // on the same query -- `t0 OR t1` is 48.8 qps through the plain scored
+    // entry point against 1.5 qps here. Prefer it where it applies.
+    //
+    // This is the change I reverted earlier in M1.5, when the lazy union did no
+    // pruning at all and routing here would have silently disabled the block
+    // skipping this function's invariant test asserts. That objection is now
+    // answered: the lazy path skips spans and records them, so the test
+    // measures real skipping rather than passing by luck.
+    if try_disjunction_lazy(fields, doc_in, live_docs, query, norms, collector)? {
+        return Ok(());
+    }
 
     if !query.must.is_empty() || !query.must_not.is_empty() || query.minimum_should_match > 1 {
         return fallback(collector);
