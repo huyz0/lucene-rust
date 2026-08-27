@@ -135,13 +135,22 @@ fn split_ints<R: DataInput>(
     // `decode_slow`) still yields `maxIter == 0` (one iteration at shift 0),
     // matching `(-1)/dec == 0` in Java — hence the signed intermediate here.
     let max_iter = ((b_shift as i32 - 1) / dec as i32) as u32;
-    for i in 0..count {
-        let cv = c[c_index + i];
-        for j in 0..=max_iter {
-            let shift = b_shift.wrapping_sub(j * dec);
-            b[count * (j as usize) + i] = (cv >> shift) & b_mask;
+    // Shift level outer, element inner -- Lucene's order, and its own comment
+    // says why: "Process each shift level across all elements (better for
+    // vectorization)". The transposed nest this port had first gives the inner
+    // loop a variable trip count and a stride-`count` write, which is precisely
+    // what stops a vectorizer. Slice-and-zip rather than indexing so the bounds
+    // checks hoist out of the loop instead of repeating per element.
+    let src = &c[c_index..c_index + count];
+    for j in 0..=max_iter {
+        let shift = b_shift.wrapping_sub(j * dec);
+        let b_offset = count * j as usize;
+        for (dst, &cv) in b[b_offset..b_offset + count].iter_mut().zip(src) {
+            *dst = (cv >> shift) & b_mask;
         }
-        c[c_index + i] &= c_mask;
+    }
+    for v in c[c_index..c_index + count].iter_mut() {
+        *v &= c_mask;
     }
     Ok(())
 }
@@ -151,17 +160,17 @@ fn split_ints<R: DataInput>(
 fn decode_slow<R: DataInput>(
     bits_per_value: u32,
     r: &mut R,
+    tmp: &mut [u32; BLOCK_SIZE],
     ints: &mut [u32; BLOCK_SIZE],
 ) -> Result<()> {
     let num_ints = (bits_per_value as usize) * 8;
     let mask = mask32(bits_per_value);
-    let mut tmp = [0u32; BLOCK_SIZE];
     {
         let (b, _) = ints.split_at_mut(num_ints.max(1));
         split_ints(
             r,
             b,
-            &mut tmp,
+            tmp,
             num_ints,
             32 - bits_per_value,
             32,
@@ -601,82 +610,144 @@ fn decode16<R: DataInput>(r: &mut R, ints: &mut [u32; BLOCK_SIZE]) -> Result<()>
     Ok(())
 }
 
-/// `ForUtil.decode`: decode 256 packed integers of `bits_per_value` bits each
-/// (`1..=32`) from `r` into `ints`.
-pub fn for_decode<R: DataInput>(
-    bits_per_value: u32,
-    r: &mut R,
-    ints: &mut [u32; BLOCK_SIZE],
-) -> Result<()> {
-    let mut tmp = [0u32; BLOCK_SIZE];
-    match bits_per_value {
-        1 => {
-            decode1(r, ints)?;
-            expand8(ints);
-        }
-        2 => {
-            decode2(r, ints)?;
-            expand8(ints);
-        }
-        3 => {
-            decode3(r, &mut tmp, ints)?;
-            expand8(ints);
-        }
-        4 => {
-            decode4(r, ints)?;
-            expand8(ints);
-        }
-        5 => {
-            decode5(r, &mut tmp, ints)?;
-            expand8(ints);
-        }
-        6 => {
-            decode6(r, &mut tmp, ints)?;
-            expand8(ints);
-        }
-        7 => {
-            decode7(r, &mut tmp, ints)?;
-            expand8(ints);
-        }
-        8 => {
-            decode8(r, ints)?;
-            expand8(ints);
-        }
-        9 => {
-            decode9(r, &mut tmp, ints)?;
-            expand16(ints);
-        }
-        10 => {
-            decode10(r, &mut tmp, ints)?;
-            expand16(ints);
-        }
-        11 => {
-            decode11(r, &mut tmp, ints)?;
-            expand16(ints);
-        }
-        12 => {
-            decode12(r, &mut tmp, ints)?;
-            expand16(ints);
-        }
-        13 => {
-            decode13(r, &mut tmp, ints)?;
-            expand16(ints);
-        }
-        14 => {
-            decode14(r, &mut tmp, ints)?;
-            expand16(ints);
-        }
-        15 => {
-            decode15(r, &mut tmp, ints)?;
-            expand16(ints);
-        }
-        16 => {
-            decode16(r, ints)?;
-            expand16(ints);
-        }
-        _ => decode_slow(bits_per_value, r, ints)?,
+/// `ForUtil`, as an owner of the scratch buffer its decode paths need.
+///
+/// Lucene's `ForUtil` is an instance with `private final int[] tmp = new
+/// int[BLOCK_SIZE]`, allocated once and reused for every block it ever
+/// decodes. This port originally declared that buffer inside the decode
+/// function, so every 256-value block paid a 1 KiB zero-fill, and
+/// `decodeSlow` paid a second one -- roughly 9% of the measured cost at
+/// `bits_per_value = 31`, invisible to a profile because it is spread across
+/// every call. Holding it here restores Lucene's shape.
+///
+/// Callers that decode more than one block should keep one of these alive
+/// across them; [`for_decode`]/[`pfor_decode`] remain for one-shot callers
+/// (tests, the writer's round-trip checks) and construct one per call.
+#[derive(Clone)]
+pub struct ForUtil {
+    tmp: [u32; BLOCK_SIZE],
+}
+
+impl Default for ForUtil {
+    fn default() -> Self {
+        Self::new()
     }
-    Ok(())
+}
+
+impl ForUtil {
+    /// A decoder with a fresh scratch buffer.
+    pub fn new() -> Self {
+        Self {
+            tmp: [0u32; BLOCK_SIZE],
+        }
+    }
+
+    /// `ForUtil.decode`: decode 256 packed integers of `bits_per_value` bits
+    /// each (`1..=32`) from `r` into `ints`, reusing this instance's scratch
+    /// buffer.
+    pub fn decode<R: DataInput>(
+        &mut self,
+        bits_per_value: u32,
+        r: &mut R,
+        ints: &mut [u32; BLOCK_SIZE],
+    ) -> Result<()> {
+        let tmp = &mut self.tmp;
+        match bits_per_value {
+            1 => {
+                decode1(r, ints)?;
+                expand8(ints);
+            }
+            2 => {
+                decode2(r, ints)?;
+                expand8(ints);
+            }
+            3 => {
+                decode3(r, tmp, ints)?;
+                expand8(ints);
+            }
+            4 => {
+                decode4(r, ints)?;
+                expand8(ints);
+            }
+            5 => {
+                decode5(r, tmp, ints)?;
+                expand8(ints);
+            }
+            6 => {
+                decode6(r, tmp, ints)?;
+                expand8(ints);
+            }
+            7 => {
+                decode7(r, tmp, ints)?;
+                expand8(ints);
+            }
+            8 => {
+                decode8(r, ints)?;
+                expand8(ints);
+            }
+            9 => {
+                decode9(r, tmp, ints)?;
+                expand16(ints);
+            }
+            10 => {
+                decode10(r, tmp, ints)?;
+                expand16(ints);
+            }
+            11 => {
+                decode11(r, tmp, ints)?;
+                expand16(ints);
+            }
+            12 => {
+                decode12(r, tmp, ints)?;
+                expand16(ints);
+            }
+            13 => {
+                decode13(r, tmp, ints)?;
+                expand16(ints);
+            }
+            14 => {
+                decode14(r, tmp, ints)?;
+                expand16(ints);
+            }
+            15 => {
+                decode15(r, tmp, ints)?;
+                expand16(ints);
+            }
+            16 => {
+                decode16(r, ints)?;
+                expand16(ints);
+            }
+            _ => decode_slow(bits_per_value, r, tmp, ints)?,
+        }
+        Ok(())
+    }
+
+    /// `PForUtil.decode`: decode 256 patched-FOR-encoded integers (a 1-byte
+    /// token, an optional [`ForUtil::decode`] body, then `numExceptions`
+    /// `(index, high-byte)` patches applied as `ints[index] |= patch <<
+    /// bits_per_value`). Reuses this instance's scratch buffer.
+    pub fn pfor_decode<R: DataInput>(
+        &mut self,
+        r: &mut R,
+        ints: &mut [u32; BLOCK_SIZE],
+    ) -> Result<()> {
+        let token = r.read_byte()? as u32;
+        let bits_per_value = token & 0x1f;
+        if bits_per_value == 0 {
+            let v = r.read_vint()? as u32;
+            ints.fill(v);
+        } else {
+            self.decode(bits_per_value, r, ints)?;
+        }
+        let num_exceptions = (token >> 5) as usize;
+        debug_assert!(num_exceptions <= MAX_EXCEPTIONS);
+        for _ in 0..num_exceptions {
+            let idx = r.read_byte()? as usize;
+            let patch = r.read_byte()? as u32;
+            ints[idx] |= patch << bits_per_value;
+        }
+        Ok(())
+    }
 }
 
 /// `numBytes(bitsPerValue)`: number of bytes a `for_decode` call at this
@@ -691,26 +762,21 @@ pub fn num_bytes(bits_per_value: u32) -> usize {
     (bits_per_value as usize) << 5
 }
 
-/// `PForUtil.decode`: decode 256 patched-FOR-encoded integers (a 1-byte
-/// token, an optional [`for_decode`] body, then `numExceptions` `(index,
-/// high-byte)` patches applied as `ints[index] |= patch << bits_per_value`).
+/// One-shot [`ForUtil::pfor_decode`], for callers that decode a single block
+/// and have no instance to reuse. A caller in a loop should hold a
+/// [`ForUtil`], which is what makes its scratch buffer worth having.
 pub fn pfor_decode<R: DataInput>(r: &mut R, ints: &mut [u32; BLOCK_SIZE]) -> Result<()> {
-    let token = r.read_byte()? as u32;
-    let bits_per_value = token & 0x1f;
-    if bits_per_value == 0 {
-        let v = r.read_vint()? as u32;
-        ints.fill(v);
-    } else {
-        for_decode(bits_per_value, r, ints)?;
-    }
-    let num_exceptions = (token >> 5) as usize;
-    debug_assert!(num_exceptions <= MAX_EXCEPTIONS);
-    for _ in 0..num_exceptions {
-        let idx = r.read_byte()? as usize;
-        let patch = r.read_byte()? as u32;
-        ints[idx] |= patch << bits_per_value;
-    }
-    Ok(())
+    ForUtil::new().pfor_decode(r, ints)
+}
+
+/// One-shot [`ForUtil::decode`], for callers that decode a single block and
+/// have no instance to reuse. A caller in a loop should hold a [`ForUtil`].
+pub fn for_decode<R: DataInput>(
+    bits_per_value: u32,
+    r: &mut R,
+    ints: &mut [u32; BLOCK_SIZE],
+) -> Result<()> {
+    ForUtil::new().decode(bits_per_value, r, ints)
 }
 
 /// `ForUtil.collapse8`: interleave 4 consecutive values into one 32-bit int's
@@ -749,7 +815,7 @@ fn encode_generic<W: DataOutput>(
 ) {
     let num_ints = (BLOCK_SIZE * primitive_size as usize) / 32;
     let num_ints_per_shift = (bits_per_value * 8) as usize;
-    let mut tmp = vec![0u32; BLOCK_SIZE];
+    let mut tmp = [0u32; BLOCK_SIZE];
     let mut idx = 0usize;
     let mut shift: i32 = primitive_size as i32 - bits_per_value as i32;
     for slot in tmp.iter_mut().take(num_ints_per_shift) {
