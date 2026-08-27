@@ -17,6 +17,7 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
 BENCH=for_decode
+INDEX_ARG=""
 WARMUP=1500
 MEASURE=2000
 JARS="$PWD/fixtures/.jars"
@@ -27,6 +28,7 @@ PIN="0,1"
 while [ $# -gt 0 ]; do
   case "$1" in
     --bench)      BENCH="$2";   shift 2 ;;
+    --index)      INDEX_ARG="$2"; shift 2 ;;
     --warmup-ms)  WARMUP="$2";  shift 2 ;;
     --measure-ms) MEASURE="$2"; shift 2 ;;
     --pin)        PIN="$2";     shift 2 ;;
@@ -36,10 +38,16 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+INDEX="${INDEX_ARG:-$PWD/benchmarks/.corpus/merged}"
+NEEDS_INDEX=""
 case "$BENCH" in
   for_decode)
     MAIN=org.apache.lucene.codecs.lucene104.ForUtilMicro
     SRC=benchmarks/micro/java/org/apache/lucene/codecs/lucene104/ForUtilMicro.java ;;
+  postings_iter)
+    MAIN=PostingsIterMicro
+    SRC=benchmarks/micro/java/PostingsIterMicro.java
+    NEEDS_INDEX=1 ;;
   *) echo "bench-micro: no Java counterpart for $BENCH" >&2; exit 2 ;;
 esac
 
@@ -69,12 +77,13 @@ command -v taskset >/dev/null || PINCMD=()
 
 echo "bench-micro: rust ($BENCH)" >&2
 MICRO_WARMUP_MS="$WARMUP" MICRO_MEASURE_MS="$MEASURE" \
-  "${PINCMD[@]}" benchmarks/rust-runner/target/release/micro "$BENCH" > "$OUT/rust.tsv"
+  "${PINCMD[@]}" benchmarks/rust-runner/target/release/micro "$BENCH" ${NEEDS_INDEX:+"$INDEX"} \
+  > "$OUT/rust.tsv"
 
 echo "bench-micro: java ($BENCH)" >&2
 "${PINCMD[@]}" java --add-modules jdk.incubator.vector \
   -DwarmupMs="$WARMUP" -DmeasureMs="$MEASURE" \
-  -cp "$CP:$OUT/classes" "$MAIN" > "$OUT/java.tsv"
+  -cp "$CP:$OUT/classes" "$MAIN" ${NEEDS_INDEX:+"$INDEX"} > "$OUT/java.tsv"
 
 join -t $'\t' <(sort "$OUT/rust.tsv") <(sort "$OUT/java.tsv") > "$OUT/joined.tsv"
 if [ ! -s "$OUT/joined.tsv" ]; then

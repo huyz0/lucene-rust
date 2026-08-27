@@ -193,3 +193,105 @@ Revisit if a future finding shows postings decode back on the critical path. The
 honest reading of these numbers is that the original 0.75x was never a SIMD
 problem: it was a loop written in the order that prevents vectorisation, a buffer
 allocated in the wrong scope, and a missing bulk primitive.
+
+---
+
+## `crates/lucene-codecs/src/postings.rs`
+
+**Lucene counterpart:** `codecs/lucene104/Lucene104PostingsReader.java`
+(`BlockPostingsEnum`), `Lucene104PostingsWriter.java`.
+
+**Measurement:** `scripts/bench-micro.sh --bench postings_iter` — walk every
+segment's posting list for a term with `nextDoc()` until exhausted, reported as
+ns per document. Rust drives `LazyDocsCursor`; Java drives
+`Lucene104PostingsReader`'s `BlockPostingsEnum` through the public
+`TermsEnum.postings()` API, because unlike `ForUtil` nothing is package-private
+in the way and that is how a real query reads postings. Both sides ask for
+`PostingsEnum.NONE` (docs only) and both read the same `benchmarks/.corpus/merged`
+directory, so they walk identical on-disk bytes. Four terms spanning three orders
+of magnitude of list length, since a single term measures one block-encoding
+shape.
+
+### O5 — optimisation: `next_doc` binary-searched for an offset that is always 1
+
+**This is the M1 gap.**
+
+| term | before | after | Lucene | before | after |
+|---|---|---|---|---|---|
+| `t0`  | 14.48 ns | 1.86 ns | 2.90 ns | 0.20x | **1.56x** |
+| `t1`  | 14.68 ns | 2.16 ns | 3.00 ns | 0.20x | 1.39x |
+| `tz`  | 14.84 ns | 2.39 ns | 3.47 ns | 0.23x | 1.45x |
+| `t2s` | 14.17 ns | 1.76 ns | 1.84 ns | 0.11x | 1.05x |
+| median | | | | **0.20x** | **1.42x** |
+
+`LazyDocsCursor::next_doc` was implemented as `advance(doc_id + 1)`. That is
+correct, and it is how the contract reads, but `advance` begins with a
+`partition_point` over the remaining entries of the decoded block — a binary
+search over up to 256 elements, eight unpredictable branches — to compute an
+offset that in the `nextDoc` case is always exactly 1.
+
+Lucene's is three lines and no search:
+
+```java
+public int nextDoc() throws IOException {
+  if (doc == level0LastDocID) { moveToNextLevel0Block(); }
+  return this.doc = docBuffer[docBufferUpto++];
+}
+```
+
+Fixed by giving `next_doc` the same shape: take the next slot when the decoded
+block still has one, fall back to `advance` only at a block boundary and before
+the first call, where the state machine actually lives. The invariant this rests
+on — `block_docs[block_pos] == doc_id` whenever `block_pos < block_len` — is
+established by every path in `advance` that sets `doc_id` to a real document, and
+is now stated at the fast path.
+
+**7.8x on the operation M1 exists to measure**, and 0.20x -> 1.42x against Lucene.
+
+Worth recording how long this hid. M1 profiled the end-to-end query benchmark and
+got a flat profile — largest item 14.78% — and concluded no single mechanism was
+left. M1.5 rebuilt iteration around `LazyDocsCursor` specifically to stop
+materializing posting lists. Neither found this, because a profile attributes the
+cost to `advance`, which is a function that legitimately needs to be there and
+legitimately does a search. Only comparing *the same operation* against Lucene's
+number for it makes 14.5 ns against 2.9 ns visible as a defect rather than as
+what iteration costs.
+
+It is also why the `for_util.rs` work above, real as it is, moved the end-to-end
+benchmark far less than its 3x suggested: block decode was never where the time
+went.
+
+### O6 — optimisation: a full-block decode allocated ~8 KiB of scratch per block
+
+`decode_full_block_body` declared `docs`, `freqs`, `doc_deltas` and `freq_words`
+as locals and returned the first two **by value**, so every 256-document block
+paid for roughly 8 KiB of zeroed and copied stack to produce 2 KiB of output,
+plus a `vec![]` on the dense bit-set path and (after the `ForUtil` work above) two
+freshly zeroed `ForUtil` scratch buffers.
+
+Lucene's `BlockPostingsEnum` holds every one of these as an instance field for the
+life of the enumeration. Introduced `BlockScratch` and gave it the same lifetime:
+one per `LazyDocsCursor`, one per eager `read_postings` call rather than one per
+block. The dense path's bit set became a fixed `[u64; 128]` array — `-bitsPerValue`
+is read from an `i8`, so `numLongs` can never exceed 128 however corrupt the file
+is, which is also Lucene's own bound (`assert numBitSetLongs <= BLOCK_SIZE / 2`).
+
+Folded into the same measurement as O5 and not separately attributable; the
+`next_doc` fix dominates it by an order of magnitude.
+
+### P2 — parity: doc-delta encoding choice (fixed)
+
+Recorded under `for_util.rs` above as found. `postings_writer.rs::write_full_block`
+compared `numBitsNextBitsPerValue` against `num_bit_set_longs * 64` where Lucene
+compares against `docRange` itself; the former is the latter rounded up to whole
+words, so every block landing strictly between the two got packed FOR deltas where
+Lucene writes the unary bit set — the encoding Lucene's own comment says is chosen
+to make `advance()` and `intoBitSet()` faster.
+
+Fixed to Lucene's condition. The new test
+`full_block_encoding_choice_matches_lucene_in_the_disputed_band` constructs a block
+in the band (208 deltas of 3 and 48 of 2: `docRange == 720`,
+`numBitsNext == 768`, `bits2words(720) * 64 == 768`) and asserts the **chosen
+token**, not just that the bytes round-trip. Negative control run: with the old
+condition restored it fails with `left: 2, right: -12`, exactly the predicted
+divergence.

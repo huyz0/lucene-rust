@@ -615,7 +615,7 @@ fn decode16<R: DataInput>(r: &mut R, ints: &mut [u32; BLOCK_SIZE]) -> Result<()>
 /// Callers that decode more than one block should keep one of these alive
 /// across them; [`for_decode`]/[`pfor_decode`] remain for one-shot callers
 /// (tests, the writer's round-trip checks) and construct one per call.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ForUtil {
     tmp: [u32; BLOCK_SIZE],
 }
