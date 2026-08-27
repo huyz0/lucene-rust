@@ -59,6 +59,18 @@ pub trait Collector {
 /// rather than a breaking change to `Collector`).
 pub trait ScoringCollector {
     fn collect(&mut self, doc_id: i32, score: f32);
+
+    /// The score a document must beat to enter the results, once enough have
+    /// been collected for that to be knowable. `None` means "everything is
+    /// still competitive", which is the only safe answer for a collector that
+    /// keeps every hit.
+    ///
+    /// Exposed on the trait so block-max pruning can be written once against
+    /// any collector rather than only against [`TopDocsCollector`]. A collector
+    /// that returns `None` simply disables pruning, which is always correct.
+    fn min_competitive_score(&self) -> Option<f32> {
+        None
+    }
 }
 
 /// Collects every matching doc ID into a `Vec<i32>`, ascending — the
@@ -167,6 +179,10 @@ impl TopDocsCollector {
 }
 
 impl ScoringCollector for TopDocsCollector {
+    fn min_competitive_score(&self) -> Option<f32> {
+        TopDocsCollector::min_competitive_score(self)
+    }
+
     fn collect(&mut self, doc_id: i32, score: f32) {
         if self.top_n == 0 {
             return;
