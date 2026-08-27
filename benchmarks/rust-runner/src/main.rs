@@ -163,6 +163,21 @@ fn main() {
             }
         };
 
+        // How effective is block pruning actually? Counting skips answers
+        // whether the remaining gap is decode speed or blocks never skipped.
+        if std::env::var("BENCH_COUNT_SKIPS").is_ok() {
+            lucene_search::test_only_maxscore_block_skip_counter::reset();
+            let hits = run();
+            let skips = lucene_search::test_only_maxscore_block_skip_counter::count();
+            eprintln!(
+                "  {}: {} hits, {} blocks skipped",
+                q.id,
+                hits.len(),
+                skips
+            );
+            continue;
+        }
+
         let w = Instant::now();
         loop {
             std::hint::black_box(run());
