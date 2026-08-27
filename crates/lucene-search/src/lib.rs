@@ -1155,6 +1155,39 @@ pub fn search_term_query_scored_maxscore(
         None => similarity::UNNORMED_FIELD_LENGTH,
     };
 
+    // Bound for a slice of impacts. Shared by level 0 and level 1 so the
+    // `norms == None` rule below cannot be honoured at one level and forgotten
+    // at the other -- which is exactly the bug the first cut of level-1
+    // skipping had.
+    //
+    // When `norms` is `None` every doc is scored with
+    // `field_length == UNNORMED_FIELD_LENGTH`, NOT with whatever real norm byte
+    // the wire impacts carry. Feeding the real norms in would bound a
+    // *different* scoring formula than the one used, underestimating the bound
+    // and skipping docs that should have been collected.
+    let bound_for = |impacts: &[lucene_codecs::postings::Impact]| -> f32 {
+        match norms {
+            Some(_) => {
+                similarity::max_score_for_impacts(impacts, doc_freq, doc_count, avg_field_length)
+            }
+            None => {
+                let idf = similarity::idf(doc_freq, doc_count);
+                impacts
+                    .iter()
+                    .map(|impact| {
+                        idf * similarity::tf_norm(
+                            impact.freq as f32,
+                            similarity::UNNORMED_FIELD_LENGTH,
+                            similarity::UNNORMED_FIELD_LENGTH,
+                            similarity::DEFAULT_K1,
+                            similarity::DEFAULT_B,
+                        )
+                    })
+                    .fold(0.0f32, f32::max)
+            }
+        }
+    };
+
     // The impact bound is a property of the *block*, not of the doc: every doc
     // inside a block yields the identical bound from the identical impacts.
     // Computing it per doc recomputed it up to BLOCK_SIZE (256) times over, and
@@ -1186,29 +1219,7 @@ pub fn search_term_query_scored_maxscore(
                 let bound = match cached_bound {
                     Some((key, bound)) if key == block_key => bound,
                     _ => {
-                        let computed = match norms {
-                            Some(_) => similarity::max_score_for_impacts(
-                                impacts,
-                                doc_freq,
-                                doc_count,
-                                avg_field_length,
-                            ),
-                            None => {
-                                let idf = similarity::idf(doc_freq, doc_count);
-                                impacts
-                                    .iter()
-                                    .map(|impact| {
-                                        idf * similarity::tf_norm(
-                                            impact.freq as f32,
-                                            similarity::UNNORMED_FIELD_LENGTH,
-                                            similarity::UNNORMED_FIELD_LENGTH,
-                                            similarity::DEFAULT_K1,
-                                            similarity::DEFAULT_B,
-                                        )
-                                    })
-                                    .fold(0.0f32, f32::max)
-                            }
-                        };
+                        let computed = bound_for(impacts);
                         cached_bound = Some((block_key, computed));
                         computed
                     }
@@ -1216,7 +1227,25 @@ pub fn search_term_query_scored_maxscore(
                 if bound <= threshold {
                     #[cfg(any(test, feature = "test-support"))]
                     test_only_maxscore_block_skip_counter::record_skip();
-                    let skip_to = cursor.current_block_last_doc_id().saturating_add(1);
+
+                    // Skip at the highest level whose bound is still under the
+                    // threshold, not one block at a time. A level-1 span covers
+                    // 32 level-0 blocks, so when its merged impacts also fail
+                    // to beat the threshold the whole span goes at once. This
+                    // mirrors MaxScoreCache.getSkipLevel/getSkipUpTo, which
+                    // walk levels for exactly this reason: skipping per block
+                    // costs a header read and a bound evaluation per block,
+                    // and on a high-frequency term that is the dominant cost.
+                    let l1 = cursor.level1_impacts();
+                    let l1_last = cursor.level1_last_doc_id();
+                    let skip_to = if !l1.is_empty()
+                        && l1_last != lucene_codecs::postings::NO_MORE_DOCS
+                        && bound_for(l1) <= threshold
+                    {
+                        l1_last.saturating_add(1)
+                    } else {
+                        cursor.current_block_last_doc_id().saturating_add(1)
+                    };
                     doc_id = cursor.advance(skip_to).map_err(blocktree::Error::from)?;
                     continue;
                 }

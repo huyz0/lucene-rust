@@ -1635,6 +1635,20 @@ impl<'a> LazyDocsCursor<'a> {
     /// `advance(this value + 1)` to skip straight past the rest of the block
     /// without decoding any more of it (see `search_term_query_scored_maxscore`
     /// in `lucene-search` for the real caller).
+    /// The highest doc ID covered by the current level-1 span (32 level-0
+    /// blocks), or [`NO_MORE_DOCS`] when this term has no level-1 entries on
+    /// the wire (`docFreq < LEVEL1_NUM_DOCS`) or the cursor is past the last
+    /// one.
+    ///
+    /// Pairs with [`Self::level1_impacts`] to let a caller skip a whole span at
+    /// once instead of a block at a time -- real Lucene's
+    /// `MaxScoreCache.getSkipUpTo`/`getSkipLevel` walk levels and skip at the
+    /// highest level whose bound is still under the threshold, which is up to
+    /// 32x fewer skip decisions than level-0 skipping alone.
+    pub fn level1_last_doc_id(&self) -> i32 {
+        self.level1_last_doc_id
+    }
+
     pub fn current_block_last_doc_id(&self) -> i32 {
         self.prev_doc_id
     }
