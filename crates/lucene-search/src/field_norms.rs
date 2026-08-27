@@ -31,6 +31,32 @@ pub struct FieldNorms<'a> {
     /// `sum(decode_norm(doc)) / count(docs with a norm)` across every *live*
     /// doc in `0..max_doc`, computed once by [`FieldNorms::open`].
     pub avg_field_length: f32,
+    /// `1 / (k1 * ((1 - b) + b * length(i) / avgdl))` for every one of the 256
+    /// possible norm bytes, at the default BM25 constants.
+    ///
+    /// Norms are a single byte, so the whole domain fits in a table. Real
+    /// Lucene's `BM25Similarity` builds exactly this (`cache[]`) and scores with
+    /// `weight - weight / (1 + freq * normInverse)`, which is algebraically the
+    /// same as `idf * freq / (freq + k1 * ((1-b) + b*len/avgdl))` but performs
+    /// one division per document instead of two, and skips decoding the norm to
+    /// a length at all.
+    ///
+    /// Only valid for [`crate::similarity::DEFAULT_K1`]/[`DEFAULT_B`]; a caller
+    /// using custom parameters must take the arithmetic path.
+    norm_inverse: [f32; 256],
+}
+
+/// Builds [`FieldNorms::norm_inverse`] for one average field length.
+fn norm_inverse_table(avg_field_length: f32) -> [f32; 256] {
+    let mut t = [0.0f32; 256];
+    for (i, slot) in t.iter_mut().enumerate() {
+        let len = crate::similarity::decode_norm(i as i64);
+        *slot = 1.0
+            / (crate::similarity::DEFAULT_K1
+                * ((1.0 - crate::similarity::DEFAULT_B)
+                    + crate::similarity::DEFAULT_B * len / avg_field_length));
+    }
+    t
 }
 
 impl<'a> FieldNorms<'a> {
@@ -79,6 +105,7 @@ impl<'a> FieldNorms<'a> {
             data,
             entry,
             avg_field_length,
+            norm_inverse: norm_inverse_table(avg_field_length),
         }
     }
 
@@ -108,6 +135,7 @@ impl<'a> FieldNorms<'a> {
             data,
             entry,
             avg_field_length,
+            norm_inverse: norm_inverse_table(avg_field_length),
         })
     }
 
@@ -117,6 +145,24 @@ impl<'a> FieldNorms<'a> {
     /// zero-live-docs case — a sparse field's absent doc, scored anyway
     /// because it matched the term some other way `norms` doesn't
     /// second-guess here).
+    /// This doc's precomputed `1 / (k1 * ((1-b) + b*len/avgdl))`, for scoring
+    /// via `weight - weight / (1 + freq * normInverse)` -- see
+    /// [`FieldNorms::norm_inverse`]. Avoids decoding the norm to a length and
+    /// one of the two divisions the arithmetic form needs.
+    pub fn norm_inverse(&self, doc: i32) -> norms::Result<f32> {
+        Ok(match norms::norm_value(self.data, &self.entry, doc)? {
+            Some(norm) => self.norm_inverse[(norm as u8) as usize],
+            None => {
+                // Same fallback as `field_length`: a doc the field legitimately
+                // has no norm for is scored at the unnormed length.
+                1.0 / (crate::similarity::DEFAULT_K1
+                    * ((1.0 - crate::similarity::DEFAULT_B)
+                        + crate::similarity::DEFAULT_B * crate::similarity::UNNORMED_FIELD_LENGTH
+                            / self.avg_field_length))
+            }
+        })
+    }
+
     pub fn field_length(&self, doc: i32) -> norms::Result<f32> {
         Ok(match norms::norm_value(self.data, &self.entry, doc)? {
             Some(norm) => crate::similarity::decode_norm(norm),

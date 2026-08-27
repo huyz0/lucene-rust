@@ -19,8 +19,12 @@ and it is worth having. It is also not close to the bar.
 | Identical hit sets and top-1 scores | 0 mismatches | 19/20 mismatched | **0/20** ✅ |
 | FFI overhead <1µs/call | <1000 ns | ≈0 ns ✅ | ≈0 ns ✅ |
 
-**Best single query: 0.28× of Java. The bar is 1.50×.** The best-case query
-needs another **5.4×**; the median query needs **30×**.
+**One query now beats Lucene** — `keyword:t0` at **3.71×**, after a global score
+bound closed a hole where fields without frequencies were never pruned at all.
+It is 1 of 20; the bar is 80%. Every other query remains slower, the median by
+15×.
+
+Median total gain versus M1: **7.9×**, max **2,597×**.
 
 ---
 
@@ -93,6 +97,15 @@ itself is ~17%. Removing *all* decode would yield well under 1.5×.
 Reaching the bar means closing 5.4× on the best query and 30× at the median.
 Nothing in the current profile offers that. It requires work that is
 architectural rather than incremental:
+
+0. **A global score bound where impacts are absent — done, and it is the
+   template.** Fields indexed without frequencies carry no impacts, so pruning
+   never ran and the whole posting list was scanned. Bounding `maxFreq` by
+   `totalTermFreq - docFreq + 1` makes the bound exact for such fields:
+   `keyword:t0` went 114 -> 368,957 qps and now beats Lucene by 3.71x. This is
+   the one place where a missing *mechanism*, rather than a slower one,
+   explained the gap — and it is why the rest of this list is about mechanisms
+   too.
 
 1. **SIMD `ForUtil`.** Java's decode is Panama-vectorised; this port's is scalar.
    `PLAN.md` §3.5 called for "SIMD from the start"; it was never done.
