@@ -1838,6 +1838,40 @@ fn try_conjunction_lazy<C: ScoringCollector>(
         doc_count: i64,
         norms: Option<&'a FieldNorms<'a>>,
     }
+
+    impl Leg<'_> {
+        /// Upper bound on this clause's contribution over a block's impacts.
+        ///
+        /// Honours the same `norms == None` rule the term path documents: with
+        /// no norms every doc is scored at UNNORMED_FIELD_LENGTH, so bounding
+        /// with the wire norms would bound a different formula and could
+        /// underestimate -- skipping a document that should have been kept.
+        fn bound(&self, impacts: &[lucene_codecs::postings::Impact]) -> f32 {
+            match self.norms {
+                Some(n) => similarity::max_score_for_impacts(
+                    impacts,
+                    self.doc_freq,
+                    self.doc_count,
+                    n.avg_field_length,
+                ),
+                None => {
+                    let idf = similarity::idf(self.doc_freq, self.doc_count);
+                    impacts
+                        .iter()
+                        .map(|i| {
+                            idf * similarity::tf_norm(
+                                i.freq as f32,
+                                similarity::UNNORMED_FIELD_LENGTH,
+                                similarity::UNNORMED_FIELD_LENGTH,
+                                similarity::DEFAULT_K1,
+                                similarity::DEFAULT_B,
+                            )
+                        })
+                        .fold(0.0f32, f32::max)
+                }
+            }
+        }
+    }
     let mut legs: Vec<Leg<'_>> = Vec::with_capacity(terms.len());
     for t in &terms {
         let Some(field_terms) = fields.field(&t.field) else {
@@ -1873,7 +1907,57 @@ fn try_conjunction_lazy<C: ScoringCollector>(
         .cursor
         .next_doc()
         .map_err(blocktree::Error::Postings)?;
+    let mut conj_bound: Option<(i32, f32)> = None;
     'outer: while candidate != lucene_codecs::postings::NO_MORE_DOCS {
+        // Block-max conjunction pruning, as Lucene's BlockMaxConjunctionScorer
+        // does it. Every clause must match, so a document's score is at most the
+        // *sum* of the clauses' per-block maxima. Take the span all clauses
+        // currently cover (the smallest of their block ends) and, if that summed
+        // bound cannot beat the collector's threshold, no document in the span
+        // can qualify -- skip the whole span.
+        //
+        // Without this the leapfrog is lazy but blind: it visits every document
+        // in the intersection and scores it, however uncompetitive.
+        if let Some(threshold) = collector.min_competitive_score() {
+            // Recompute the summed bound only when the covered span changes.
+            // The span is identified by the smallest clause block end, which is
+            // cheap to read; the bound itself is not, and on a selective
+            // conjunction recomputing it per candidate costs more than the
+            // pruning saves -- measured as a 32% regression on `and tz t2s`
+            // before this cache existed.
+            let mut up_to = i32::MAX;
+            for leg in &legs {
+                up_to = up_to.min(leg.cursor.current_block_last_doc_id());
+            }
+            let sum_max = match conj_bound {
+                Some((key, v)) if key == up_to => v,
+                _ => {
+                    let mut acc = 0.0f32;
+                    let mut ok = true;
+                    for leg in &legs {
+                        let impacts = leg.cursor.level0_impacts();
+                        if impacts.is_empty() {
+                            ok = false;
+                            break;
+                        }
+                        acc += leg.bound(impacts);
+                    }
+                    let v = if ok { acc } else { f32::INFINITY };
+                    conj_bound = Some((up_to, v));
+                    v
+                }
+            };
+            let have_bounds = sum_max.is_finite();
+            if have_bounds && up_to >= candidate && sum_max <= threshold {
+                let next = up_to.saturating_add(1);
+                candidate = legs[0]
+                    .cursor
+                    .advance(next)
+                    .map_err(blocktree::Error::Postings)?;
+                continue 'outer;
+            }
+        }
+
         for i in 1..legs.len() {
             let d = legs[i]
                 .cursor
