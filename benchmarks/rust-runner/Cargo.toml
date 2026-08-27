@@ -22,3 +22,8 @@ path = "src/ffi_overhead.rs"
 
 [profile.release]
 debug = true          # keep frame pointers/symbols for profiling (T1.4)
+# The JVM's JIT inlines across the whole program; without LTO the Rust build
+# cannot inline across crate boundaries, which is most of this hot path
+# (lucene-search -> lucene-codecs -> lucene-store).
+lto = "fat"
+codegen-units = 1
