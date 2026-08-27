@@ -1,6 +1,6 @@
 # M1.6 — Lucene source sweep: parity gaps and hot-path optimisation
 
-**Status:** Stages A, B, C, D1, E1 and the search-layer part of F delivered 2026-08-28; D2 and E2 open, and the two milestone-sized findings (block-tree navigation, lazy positions) filed rather than fixed. Verdict: [`docs/benchmarks/verdict-m1.6.md`](../benchmarks/verdict-m1.6.md). Findings: [`docs/sweep/findings.md`](../sweep/findings.md).
+**Status:** delivered 2026-08-28. Every file named in Stages A-F was read against its Lucene 10.5.0 counterpart and has a findings row; nineteen findings, thirteen fixed and measured, one measured and reverted, five filed with a stated reason. Three of the five are milestone-sized (block-tree navigation, a lazy positions cursor, an `IndexedDISI` cursor) and carry forward. Verdict: [`docs/benchmarks/verdict-m1.6.md`](../benchmarks/verdict-m1.6.md). Findings: [`docs/sweep/findings.md`](../sweep/findings.md).
 **Reference:** Apache Lucene `releases/lucene/10.5.0`, extracted from the clone at
 `~/work/lucene` (that clone's checkout is `main`/11.0.0-SNAPSHOT — the sweep reads the
 10.5.0 tag via `git archive`, never the working tree, because 11.0 has already changed
