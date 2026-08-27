@@ -755,6 +755,16 @@ metadata decode — which is a milestone in its own right and touches the larges
 file in the codec crate. The sweep's contribution is the number: 135x, on an
 operation nobody had measured.
 
+### D2 — `fst.rs` is complete, fixture-verified, and unused by the read path
+
+Entailed by the above rather than a separate finding, but worth stating: this
+port has a full FST implementation, byte-compatible and differentially verified
+against Java (`write_fst_fixture` / `VerifyFst`), which **the term dictionary
+never calls**. The eager traversal replaced it. Today only `suggest.rs` uses it.
+
+Real block-tree navigation would route through it, so the work above is not a
+rewrite from nothing — the piece it needs already exists and is proven.
+
 This also reframes two things recorded earlier in this document. `FieldTerms`
 having every term in memory is why `seek_exact` never appears in any query
 profile — the work was already done, before the clock started. And it is why
