@@ -88,38 +88,52 @@ Copying a piece of a design without its selection logic made it worse.
 
 ## Why the remaining gap is not incremental
 
-`term t0` matches 4,997,130 of 5,000,000 documents and this port already skips
-98.4% of its blocks. The query costs ~3,500 µs; Java's costs ~1,000 µs. After
-five rounds of optimisation the profile has no single dominant cost left — the
-largest remaining item is ForUtil block decode at ~13–19%, and the search loop
-itself is ~17%. Removing *all* decode would yield well under 1.5×.
+This was checked rather than assumed, and the check changed my answer twice.
 
-Reaching the bar means closing 5.4× on the best query and 30× at the median.
-Nothing in the current profile offers that. It requires work that is
-architectural rather than incremental:
+Early on I concluded the ceiling was near, reasoning from profile percentages
+that at most 1.4x remained. That was wrong: `keyword:t0` then went **3,186x**
+faster from a single missing mechanism, because percentages assume the amount of
+work is fixed and a missing mechanism changes the amount of work. Every
+subsequent win -- block-max conjunction, block-max disjunction, the maxscore
+routing -- came from asking "is a mechanism absent?" rather than "is this code
+slow?".
 
-0. **A global score bound where impacts are absent — done, and it is the
-   template.** Fields indexed without frequencies carry no impacts, so pruning
-   never ran and the whole posting list was scanned. Bounding `maxFreq` by
-   `totalTermFreq - docFreq + 1` makes the bound exact for such fields:
-   `keyword:t0` went 114 -> 368,957 qps and now beats Lucene by 3.71x. This is
-   the one place where a missing *mechanism*, rather than a slower one,
-   explained the gap — and it is why the rest of this list is about mechanisms
-   too.
+That question is now exhausted. The final profile of `term t0`, on an idle
+machine, is **flat**:
 
-1. **SIMD `ForUtil`.** Java's decode is Panama-vectorised; this port's is scalar.
-   `PLAN.md` §3.5 called for "SIMD from the start"; it was never done.
-2. **Block-max WAND** for disjunctions, which still visit every doc in the union
-   — and which would also fix the MAXSCORE path that is currently *slower* than
-   a plain lazy union.
-3. **Phrase queries**, still materializing, at 11–17 s per query.
-4. **Multi-level skip selection** (`getSkipLevel`), the missing piece that made
-   the failed experiment fail.
+```
+  14.78%  LazyDocsCursor::advance
+  14.55%  search_term_query_scored_maxscore
+  11.43%  for_util::split_ints
+   7.85%  search_term_query_scored_maxscore::{closure}
+   5.99%  postings::decode_full_block_body
+   5.21%  postings::decode_impacts
+   4.60%  TopDocsCollector::collect
+   3.02%  for_util::for_decode
+```
 
-Each is a milestone-sized piece of work. Together they might close the gap;
-individually none of them will.
+No item exceeds 15%. Every earlier profile had one at 25% or more, and each of
+those was a missing mechanism. Block decode totals 20.4% -- removing *all* of it
+yields 1.26x. The search loop is 22.4% -- removing it entirely yields 1.29x. The
+gate needs **5.2x** on this query and **10x** at the median.
 
----
+A flat profile after the mechanisms are in place means the remaining difference
+is not one thing. It is that this port does uniformly more work per unit of
+progress than Lucene does, across decode, iteration, and collection. Closing
+that is not an optimisation; it is a rewrite of the execution layer against a
+decade of tuning.
+
+Specifically what is left, and why none of it is enough alone:
+
+1. **SIMD `ForUtil`** -- `PLAN.md` §3.5 asked for it and it was never built. But
+   decode is 20.4%, so even an infinitely fast decoder gives 1.26x.
+2. **WAND's essential/non-essential clause partitioning** -- the flat unions
+   (`or tz t2s`, `or x4`) do not move under a summed bound, because with a
+   common high-frequency term that bound stays above the threshold nearly
+   everywhere. This is the largest single remaining item.
+3. **Phrase queries** -- still materializing, 11-17 s per query, ~50x off.
+4. **Per-document cost across the board** -- collection, norms reads and cursor
+   advance together are ~25% and have no single fix.
 
 ## Recommendation
 
