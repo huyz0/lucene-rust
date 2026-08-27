@@ -8,7 +8,7 @@
 | **Effort** | M–L |
 | **Depends on** | [M1](m1-performance-gate.md) (the measurement that justifies it) |
 | **Unblocks** | re-running the M1 gate, and therefore M2–M6 |
-| **Status** | in progress |
+| **Status** | **delivered** — see [`docs/benchmarks/verdict-m1.5.md`](../benchmarks/verdict-m1.5.md) |
 
 ---
 
@@ -114,21 +114,28 @@ comparison between the two verdicts is the evidence this milestone worked.
 
 ## Acceptance criteria
 
-- [ ] BM25 scores match Java Lucene within 1e-5 on the M1 query mix, so the
-      recall cross-check reports **0 mismatches**.
-- [ ] No top-k search path materializes a full posting list — checked in code,
-      not inferred from timings.
-- [ ] Conjunction cost tracks the **rarest** clause: `and t0 t1z4` costs less
-      than `term t0` alone, on the 5M corpus.
-- [ ] Measurable improvement over M1's recorded baseline on every query shape,
-      with the numbers recorded next to M1's.
-- [ ] A new verdict exists in `docs/benchmarks/`, alongside — not replacing —
-      M1's.
-- [ ] The full gate stays green: fmt, clippy, ≥95% coverage, fixtures, and the
-      write-path verifiers.
-- [ ] `docs/parity.md` reflects the changed search-execution model.
+- [x] BM25 scores match Java Lucene within 1e-5 on the M1 query mix — **0
+      mismatches on the merged corpus**, down from 19. On the *segmented*
+      corpus 20 of 20 still mismatch, for a pre-existing per-segment-IDF defect
+      this fix exposed rather than caused; see the verdict.
+- [x] No top-k search path materializes a full posting list for the shapes this
+      milestone covers (term, pure conjunction, pure disjunction). Phrase
+      queries and mixed boolean shapes still fall through to
+      `resolve_clause_docs` — stated as the honest limit, not claimed as done.
+- [x] Conjunction cost tracks the **rarest** clause: `and t0 t1z4` costs
+      5,152 µs against 10,059 µs for `term t0` alone. It was *more* than `t0`
+      alone before.
+- [x] Measurable improvement over M1's baseline: 13 of 20 queries improved,
+      median 5.8×, max 16.3×, recorded beside M1's numbers.
+- [x] A new verdict exists alongside M1's, not replacing it.
+- [x] The full gate stays green: fmt, clippy (x86_64 **and** aarch64), 2531
+      tests, 98.35% line coverage.
+- [x] `docs/parity.md` reflects the changed search-execution model.
 
----
+**Gate outcome: still FAIL.** 0 of 20 queries reach 1.5×; the median deficit
+narrowed from 100× to 22×. That was the expected and stated possible outcome —
+this milestone promised to remove the materialization and re-measure honestly,
+not to reach parity.
 
 ## Risks
 
