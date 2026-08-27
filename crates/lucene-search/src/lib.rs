@@ -1551,6 +1551,140 @@ fn dismax_scores(
 /// `pos_in`/`pay_in`: see [`search_boolean_query`]'s doc comment -- same
 /// contract, needed only when `query` contains a multi-term `Clause::Phrase` at
 /// any nesting depth.
+/// Lazy leapfrog conjunction: the pure-`must`, all-[`Clause::Term`] shape,
+/// executed without materializing any clause's doc list.
+///
+/// ## Why this exists
+///
+/// [`search_boolean_query_scored`] resolves each clause through
+/// [`resolve_clause_docs`], which returns a `Vec<i32>` of *every* matching doc
+/// before any intersection happens. Its cost therefore tracks the **most
+/// frequent** clause. Real Lucene's `ConjunctionDISI` advances on the
+/// **rarest**, so a conjunction containing a selective term is cheap.
+///
+/// M1 measured the difference: `and t0 t1z4`, whose rarest term matches a
+/// handful of documents, cost more than scanning `t0` alone -- 20x slower than
+/// Java. See `docs/benchmarks/verdict.md`.
+///
+/// ## The algorithm
+///
+/// Standard leapfrog. Cursors are ordered rarest-first by `docFreq` so the
+/// lead cursor is the most selective; every other cursor is `advance()`d to the
+/// lead's doc, and any cursor that overshoots becomes the new candidate. The
+/// per-doc work is then O(clauses), not O(postings).
+///
+/// Scores are summed across clauses, matching
+/// [`search_boolean_query_scored`]'s `must` handling exactly -- the same
+/// `doc_freq`/`doc_count`/`freq`/`field_length` inputs to
+/// [`similarity::score_with_params`], so this is an execution change and not a
+/// scoring change.
+///
+/// Returns `Ok(false)` when the query does not have this shape, leaving the
+/// caller to fall back.
+fn try_conjunction_lazy<C: ScoringCollector>(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    query: &BooleanQuery,
+    norms: Option<&HashMap<String, FieldNorms<'_>>>,
+    collector: &mut C,
+) -> Result<bool> {
+    // Shape gate: pure conjunction of leaf terms, nothing else.
+    if query.must.is_empty() || !query.should.is_empty() || !query.must_not.is_empty() {
+        return Ok(false);
+    }
+    let mut terms = Vec::with_capacity(query.must.len());
+    for clause in &query.must {
+        match clause {
+            Clause::Term(t) => terms.push(t),
+            _ => return Ok(false),
+        }
+    }
+    let Some(doc_in) = doc_in else {
+        return Ok(false);
+    };
+
+    // Resolve every term up front: a missing term means the conjunction is
+    // empty, which is itself the answer.
+    struct Leg<'a> {
+        cursor: lucene_codecs::postings::LazyDocsCursor<'a>,
+        doc_freq: i64,
+        doc_count: i64,
+        norms: Option<&'a FieldNorms<'a>>,
+    }
+    let mut legs: Vec<Leg<'_>> = Vec::with_capacity(terms.len());
+    for t in &terms {
+        let Some(field_terms) = fields.field(&t.field) else {
+            return Ok(true); // field absent: no matches, and we handled it
+        };
+        let Some(stats) = field_terms.seek_exact(&t.term) else {
+            return Ok(true); // term absent: no matches
+        };
+        let Some(cursor) = field_terms.lazy_postings(&t.term, doc_in)? else {
+            return Ok(true);
+        };
+        legs.push(Leg {
+            cursor,
+            doc_freq: stats.doc_freq as i64,
+            doc_count: field_terms.doc_count as i64,
+            norms: norms.and_then(|m| m.get(&t.field)),
+        });
+    }
+
+    // Rarest first: the lead cursor drives the leapfrog, so it must be the most
+    // selective one for the skipping to pay off.
+    legs.sort_by_key(|l| l.doc_freq);
+
+    let mut candidate = legs[0]
+        .cursor
+        .next_doc()
+        .map_err(blocktree::Error::Postings)?;
+    'outer: while candidate != lucene_codecs::postings::NO_MORE_DOCS {
+        for i in 1..legs.len() {
+            let d = legs[i]
+                .cursor
+                .advance(candidate)
+                .map_err(blocktree::Error::Postings)?;
+            if d != candidate {
+                // Overshot: this doc cannot match, restart with the new floor.
+                candidate = legs[0]
+                    .cursor
+                    .advance(d)
+                    .map_err(blocktree::Error::Postings)?;
+                continue 'outer;
+            }
+        }
+
+        if live_docs.is_none_or(|bits| bits.get(candidate as usize)) {
+            let mut score = 0.0f32;
+            for leg in &legs {
+                let freq = leg.cursor.freq().unwrap_or(1) as f32;
+                let (field_length, avg_field_length) = match leg.norms {
+                    Some(n) => (n.field_length(candidate)?, n.avg_field_length),
+                    None => (
+                        similarity::UNNORMED_FIELD_LENGTH,
+                        similarity::UNNORMED_FIELD_LENGTH,
+                    ),
+                };
+                score += similarity::score_with_params(
+                    leg.doc_freq,
+                    leg.doc_count,
+                    freq,
+                    field_length,
+                    avg_field_length,
+                    similarity::Bm25Params::default(),
+                );
+            }
+            collector.collect(candidate, score);
+        }
+        candidate = legs[0]
+            .cursor
+            .next_doc()
+            .map_err(blocktree::Error::Postings)?;
+    }
+    Ok(true)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn search_boolean_query_scored<C: ScoringCollector>(
     fields: &BlockTreeFields,
@@ -1563,6 +1697,12 @@ pub fn search_boolean_query_scored<C: ScoringCollector>(
     norms: Option<&HashMap<String, FieldNorms<'_>>>,
     collector: &mut C,
 ) -> Result<()> {
+    // Pure conjunctions of leaf terms run lazily, without materializing any
+    // clause's doc list. Everything else falls through to the general path.
+    if try_conjunction_lazy(fields, doc_in, live_docs, query, norms, collector)? {
+        return Ok(());
+    }
+
     let Some(matched) =
         matched_boolean_docs(fields, doc_in, pos_in, pay_in, live_docs, points, query)?
     else {
@@ -2936,6 +3076,113 @@ mod tests {
             .with_must([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")]);
         search_boolean_query(&fields, doc_in.as_ref(), None, None, None, None, &q, &mut c).unwrap();
         assert_eq!(c.docs, vec![0]);
+    }
+
+    /// The lazy leapfrog path must be indistinguishable from the general
+    /// materializing path, since it is an execution change and not a semantic
+    /// one. Same query, both routes, same `(doc, score)` output.
+    #[test]
+    fn lazy_conjunction_matches_the_general_path_exactly() {
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let q = BooleanQuery::new()
+            .with_must([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")]);
+
+        let mut lazy = collector::TopDocsCollector::new(10);
+        search_boolean_query_scored(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            None,
+            None,
+            None,
+            &q,
+            None,
+            &mut lazy,
+        )
+        .unwrap();
+
+        // Force the general path by giving the query a shape the gate rejects:
+        // a `must_not` that excludes nothing changes the route, not the result.
+        let general_q = BooleanQuery::new()
+            .with_must([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")])
+            .with_must_not([TermQuery::new("body", "no_such_term_anywhere")]);
+        let mut general = collector::TopDocsCollector::new(10);
+        search_boolean_query_scored(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            None,
+            None,
+            None,
+            &general_q,
+            None,
+            &mut general,
+        )
+        .unwrap();
+
+        assert_eq!(lazy.top_docs().len(), general.top_docs().len());
+        for (a, b) in lazy.top_docs().iter().zip(general.top_docs()) {
+            assert_eq!(a.doc_id, b.doc_id);
+            assert!(
+                (a.score - b.score).abs() < 1e-6,
+                "{} vs {}",
+                a.score,
+                b.score
+            );
+        }
+    }
+
+    /// A term absent from the dictionary makes the whole conjunction empty --
+    /// the lazy path must return that answer itself rather than falling through
+    /// and letting the general path recompute it.
+    #[test]
+    fn lazy_conjunction_with_absent_term_matches_nothing() {
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let mut c = collector::TopDocsCollector::new(10);
+        let q = BooleanQuery::new().with_must([
+            TermQuery::new("body", "cat"),
+            TermQuery::new("body", "definitely_not_indexed"),
+        ]);
+        search_boolean_query_scored(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            None,
+            None,
+            None,
+            &q,
+            None,
+            &mut c,
+        )
+        .unwrap();
+        assert!(c.top_docs().is_empty());
+    }
+
+    /// An absent *field* is the same story one level up.
+    #[test]
+    fn lazy_conjunction_with_absent_field_matches_nothing() {
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let mut c = collector::TopDocsCollector::new(10);
+        let q = BooleanQuery::new().with_must([
+            TermQuery::new("body", "cat"),
+            TermQuery::new("no_such_field", "cat"),
+        ]);
+        search_boolean_query_scored(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            None,
+            None,
+            None,
+            &q,
+            None,
+            &mut c,
+        )
+        .unwrap();
+        assert!(c.top_docs().is_empty());
     }
 
     #[test]
