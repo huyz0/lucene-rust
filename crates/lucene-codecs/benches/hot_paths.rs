@@ -159,11 +159,47 @@ fn bench_doc_values_numeric_value(c: &mut Criterion) {
     });
 }
 
+/// Sparse doc-values lookup, at three field cardinalities.
+///
+/// This one is here to demonstrate a scaling defect rather than to track a
+/// speed. `norms::norm_value` and `doc_values`' sparse paths call
+/// `indexed_disi::decode_doc_ids`, which decodes the **entire** `IndexedDISI`
+/// region into a fresh `Vec<i32>` and then binary-searches it -- so one lookup
+/// is O(number of documents with the field) in both time and allocation.
+/// Lucene's `IndexedDISI` is a forward-only iterator with a jump table and
+/// answers `advance(target)` in roughly constant time.
+///
+/// If the per-lookup cost printed here grows in proportion to `n`, the defect
+/// is real; if it is flat, this benchmark is wrong. No Java counterpart: the
+/// point is the shape of the curve on this side, not a ratio.
+fn bench_sparse_doc_values_lookup(c: &mut Criterion) {
+    let mut group = c.benchmark_group("indexed_disi/sparse_lookup");
+    for n in [1_000usize, 10_000, 100_000] {
+        // Every 7th doc present, so the blocks are genuinely SPARSE rather
+        // than degenerating to ALL.
+        let doc_ids: Vec<i32> = (0..n).map(|i| (i * 7) as i32).collect();
+        let region = lucene_codecs::indexed_disi::write(&doc_ids);
+        let target = doc_ids[n / 2];
+        group.bench_function(format!("n{n}"), |b| {
+            b.iter(|| {
+                let decoded =
+                    lucene_codecs::indexed_disi::decode_doc_ids(black_box(&region), 0).unwrap();
+                black_box(lucene_codecs::indexed_disi::rank_of(
+                    &decoded,
+                    black_box(target),
+                ));
+            });
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_direct_monotonic_get,
     bench_stored_fields_document,
     bench_points_decode_all,
-    bench_doc_values_numeric_value
+    bench_doc_values_numeric_value,
+    bench_sparse_doc_values_lookup
 );
 criterion_main!(benches);

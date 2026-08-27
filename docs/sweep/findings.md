@@ -760,3 +760,61 @@ having every term in memory is why `seek_exact` never appears in any query
 profile — the work was already done, before the clock started. And it is why
 `positions_flat`/`postings` can hand back owned `Vec`s so freely: the type
 already owns everything.
+
+---
+
+## `crates/lucene-codecs/src/indexed_disi.rs`, `norms.rs`, `doc_values.rs`
+
+**Lucene counterpart:** `codecs/lucene90/IndexedDISI.java`,
+`Lucene90NormsProducer.java`, `Lucene90DocValuesProducer.java`.
+
+**Measurement:** `indexed_disi/sparse_lookup` in
+`crates/lucene-codecs/benches/hot_paths.rs`. Rust-only, deliberately: the point
+is the shape of the curve on this side, not a ratio.
+
+### A2 — architecture: a sparse lookup decodes the whole doc-id list, every time
+
+| documents with the field | one lookup |
+|---|---|
+| 1,000 | 874 ns |
+| 10,000 | 31.2 us |
+| 100,000 | **324 us** |
+
+Linear in the field's cardinality, which is the defect. `indexed_disi::
+decode_doc_ids` decodes the **entire** `IndexedDISI` region into a fresh
+`Vec<i32>` and the caller then binary-searches it — and every sparse lookup in
+the port calls it: `norms::norm_value`, and three sites in `doc_values.rs`.
+
+Lucene's `IndexedDISI` is a forward-only iterator with a jump table;
+`advance(target)` is roughly constant time and allocates nothing.
+
+So sorting or faceting on a sparse field is quadratic in this port. At 100,000
+present documents, one pass over them costs on the order of 30 seconds of pure
+DISI decoding. No test or benchmark here exercises that shape, which is why it
+had never been seen: M1's corpus fields are all dense.
+
+### O18 — fixed where there is an owner: `FieldNorms`
+
+`FieldNorms` is constructed once per field per segment per search and then asked
+for a norm per document, so it is exactly the place to decode once. It now holds
+`sparse_doc_ids: Option<Vec<i32>>`, decoded in the constructor, and
+`norm_inverse`/`field_length` resolve a sparse document through
+`rank_of` + `norms::read_value_at_ordinal` instead of re-decoding. A lookup goes
+from O(cardinality) to a binary search.
+
+Tested the same way as the dense fast path: the sparse branch is asserted to
+agree with `norms::norm_value` for every document, present and absent alike, and
+the values are additionally checked against the bytes actually written so the
+test cannot pass by both paths being wrong identically.
+
+**This is a fix at the caller, not at the defect.** The three `doc_values.rs`
+sites are free functions with no natural owner and are unchanged; sorting and
+faceting on a sparse field are still quadratic.
+
+### Still open
+
+A real `IndexedDISI` cursor — forward-only, jump-table-backed, allocation-free —
+which would remove both the decode and the binary search, and would let
+`doc_values.rs` be fixed at all. Smaller than the block-tree work above but the
+same kind of job: replace a materializing shortcut with the streaming structure
+Lucene actually uses.
