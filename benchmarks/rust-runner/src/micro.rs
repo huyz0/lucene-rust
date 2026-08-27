@@ -17,7 +17,9 @@ use std::hint::black_box;
 use std::time::{Duration, Instant};
 
 use lucene_codecs::for_util::{self, ForUtil, BLOCK_SIZE};
+use lucene_search::directory_reader::DirectoryReader;
 use lucene_store::data_input::SliceInput;
+use lucene_store::MmapDirectory;
 
 /// Deterministic values in `[0, 2^bits)`, bit for bit identical to
 /// `ForUtilMicro.blockFor` on the Java side. Both harnesses must decode the
@@ -95,6 +97,62 @@ fn bench_for_decode(warmup: Duration, measure: Duration) {
     }
 }
 
+/// Walk a whole posting list with `next_doc()`, the operation M1 is actually
+/// about. The Java counterpart is `PostingsIterMicro`, which drives
+/// `Lucene104PostingsReader`'s `BlockPostingsEnum` through the public
+/// `TermsEnum.postings()` API over the same index directory and the same terms,
+/// so both sides walk identical on-disk bytes.
+///
+/// Reports ns per *document* rather than per block: block counts differ between
+/// terms and a per-block number would not be comparable across the cases.
+fn bench_postings_iter(warmup: Duration, measure: Duration, index: &str) {
+    let dir = MmapDirectory::open(index.to_string());
+    let reader = DirectoryReader::open(&dir).expect("open index");
+    let opened = reader.open_segments().expect("open segments");
+    let segments = opened.as_open_segments();
+
+    // Zipf-ranked vocabulary, so this spans three orders of magnitude of
+    // posting-list length: t0 is the most frequent term, t2s is well down the
+    // tail. A single term would measure one block-encoding shape.
+    for term in ["t0", "t1", "tz", "t2s"] {
+        let mut total_docs = 0u64;
+        let mut run = |budget: Duration| {
+            timed_loop(budget, || {
+                let mut n = 0u64;
+                for seg in segments.iter() {
+                    let Some(field) = seg.fields.field("body") else {
+                        continue;
+                    };
+                    let Some(doc_in) = seg.doc_in else { continue };
+                    let Ok(Some(mut cursor)) = field.lazy_postings(term.as_bytes(), doc_in) else {
+                        continue;
+                    };
+                    loop {
+                        let doc = cursor.next_doc().expect("next_doc");
+                        if doc == i32::MAX {
+                            break;
+                        }
+                        n += 1;
+                        black_box(doc);
+                    }
+                }
+                total_docs = n;
+            })
+        };
+        run(warmup);
+        let (elapsed, iters) = run(measure);
+        if total_docs == 0 {
+            eprintln!("micro: term {term:?} has no postings in this index; skipping");
+            continue;
+        }
+        println!(
+            "{term}\t{:.3}\t{}",
+            elapsed.as_nanos() as f64 / (iters * total_docs) as f64,
+            iters * total_docs
+        );
+    }
+}
+
 fn main() {
     let ms = |name: &str, default: u64| -> Duration {
         Duration::from_millis(
@@ -110,6 +168,12 @@ fn main() {
     let which = std::env::args().nth(1).unwrap_or_else(|| "for_decode".into());
     match which.as_str() {
         "for_decode" => bench_for_decode(warmup, measure),
+        "postings_iter" => {
+            let index = std::env::args()
+                .nth(2)
+                .expect("postings_iter needs an index directory");
+            bench_postings_iter(warmup, measure, &index);
+        }
         other => {
             eprintln!("micro: unknown benchmark {other:?}");
             std::process::exit(2);

@@ -181,7 +181,7 @@ use lucene_store::data_input::{DataInput, SliceInput};
 use lucene_store::data_output::DataOutput;
 
 use crate::field_infos::IndexOptions;
-use crate::for_util;
+use crate::for_util::{self, ForUtil};
 
 /// `Lucene104PostingsFormat.DOC_CODEC`.
 pub(crate) const DOC_CODEC: &str = "Lucene104PostingsWriterDoc";
@@ -527,6 +527,12 @@ impl<'a> DocInput<'a> {
 
         let mut prev_doc_id: i32 = -1;
         let mut doc_count_left = doc_freq;
+        // One scratch and one pair of block buffers for the whole term, not
+        // one per block -- `Lucene104PostingsReader.BlockPostingsEnum` holds
+        // the equivalent as instance fields for the life of the enumeration.
+        let mut scratch = BlockScratch::new();
+        let mut block_docs = [0i32; BLOCK_SIZE as usize];
+        let mut block_freqs = [1i32; BLOCK_SIZE as usize];
         // Mirrors `LazyDocsCursor`'s `level1_last_doc_id` accumulator (starts
         // at -1, `+= doc_delta` per level-1 entry) purely to record each
         // span's covering doc-ID bound in `level1_impacts` above.
@@ -562,8 +568,14 @@ impl<'a> DocInput<'a> {
                     index_has_pos,
                     index_has_offsets_or_payloads,
                 )?;
-                let (block_docs, block_freqs) =
-                    decode_full_block_body(&mut r, prev_doc_id, index_has_freq)?;
+                decode_full_block_body(
+                    &mut r,
+                    prev_doc_id,
+                    index_has_freq,
+                    &mut scratch,
+                    &mut block_docs,
+                    &mut block_freqs,
+                )?;
                 debug_assert_eq!(r.position(), header.body_end);
                 prev_doc_id = header.last_doc_id;
                 if index_has_freq {
@@ -583,8 +595,14 @@ impl<'a> DocInput<'a> {
                 index_has_pos,
                 index_has_offsets_or_payloads,
             )?;
-            let (block_docs, block_freqs) =
-                decode_full_block_body(&mut r, prev_doc_id, index_has_freq)?;
+            decode_full_block_body(
+                &mut r,
+                prev_doc_id,
+                index_has_freq,
+                &mut scratch,
+                &mut block_docs,
+                &mut block_freqs,
+            )?;
             debug_assert_eq!(r.position(), header.body_end);
             prev_doc_id = header.last_doc_id;
             if index_has_freq {
@@ -679,6 +697,7 @@ impl<'a> DocInput<'a> {
             block_len: 0,
             block_pos: 0,
             doc_id: -1,
+            scratch: BlockScratch::new(),
             level0_impacts: Impacts::new(),
             level1_impacts: Impacts::new(),
         })
@@ -1158,6 +1177,36 @@ fn read_full_block_header(
     })
 }
 
+/// The buffers a full-block decode needs but does not produce: the packed
+/// word array `ForUtil` unpacks into, the bit-set words the dense doc encoding
+/// reads, and the `ForUtil` scratch itself.
+///
+/// These were locals inside `decode_full_block_body`, so a 256-doc block paid
+/// for roughly 8 KiB of zeroed and copied stack -- of which 2 KiB was the
+/// output -- plus a heap allocation on the dense path. Lucene's
+/// `BlockPostingsEnum` holds every one of these as an instance field and
+/// reuses them for the whole enumeration; a cursor walking a long posting list
+/// should do the same. Callers that decode one block still just construct one.
+#[derive(Debug)]
+struct BlockScratch {
+    for_util: ForUtil,
+    /// `ForUtil`/`PForUtil` output: doc deltas, then reused for freqs.
+    words: [u32; for_util::BLOCK_SIZE],
+    /// Dense doc-encoding bit set. `-bitsPerValue` is read from an `i8`, so
+    /// `numLongs` can never exceed 128 whatever the file says.
+    bitset: [u64; 128],
+}
+
+impl BlockScratch {
+    fn new() -> Self {
+        Self {
+            for_util: ForUtil::new(),
+            words: [0u32; for_util::BLOCK_SIZE],
+            bitset: [0u64; 128],
+        }
+    }
+}
+
 /// Decodes a full block's body (the `bitsPerValue` token onward) — `r` must
 /// already be positioned at [`FullBlockHeader::body_start`]. Shared by
 /// [`DocInput::read_postings`] (eager path) and [`LazyDocsCursor`] (lazy path) so
@@ -1167,12 +1216,16 @@ fn decode_full_block_body(
     r: &mut SliceInput,
     prev_doc_id: i32,
     index_has_freq: bool,
-) -> Result<([i32; BLOCK_SIZE as usize], [i32; BLOCK_SIZE as usize])> {
+    scratch: &mut BlockScratch,
+    docs: &mut [i32; BLOCK_SIZE as usize],
+    freqs: &mut [i32; BLOCK_SIZE as usize],
+) -> Result<()> {
     let bits_per_value_byte = r.read_byte()? as i8;
-    let mut docs = [0i32; BLOCK_SIZE as usize];
     if bits_per_value_byte > 0 {
-        let mut doc_deltas = [0u32; for_util::BLOCK_SIZE];
-        for_util::for_decode(bits_per_value_byte as u32, r, &mut doc_deltas)?;
+        let doc_deltas = &mut scratch.words;
+        scratch
+            .for_util
+            .decode(bits_per_value_byte as u32, r, doc_deltas)?;
         let mut sum: i64 = prev_doc_id as i64;
         for (d, &delta) in docs.iter_mut().zip(doc_deltas.iter()) {
             sum += delta as i64;
@@ -1198,7 +1251,11 @@ fn decode_full_block_body(
         // `big`/"everywhere" fixture) commonly take this path, so it isn't
         // an edge case to skip.
         let num_longs = (-(bits_per_value_byte as i32)) as usize;
-        let mut words = vec![0u64; num_longs];
+        // `bits_per_value_byte` is an `i8`, so `num_longs <= 128` however
+        // corrupt the file is -- which is also Lucene's own bound
+        // (`assert numBitSetLongs <= BLOCK_SIZE / 2`). A fixed scratch array
+        // is therefore always large enough, and this path stops allocating.
+        let words = &mut scratch.bitset[..num_longs];
         for w in words.iter_mut() {
             *w = r.read_i64()? as u64;
         }
@@ -1223,16 +1280,19 @@ fn decode_full_block_body(
         }
     }
 
-    let mut freqs = [1i32; BLOCK_SIZE as usize];
     if index_has_freq {
-        let mut freq_words = [0u32; for_util::BLOCK_SIZE];
-        for_util::pfor_decode(r, &mut freq_words)?;
+        let freq_words = &mut scratch.words;
+        scratch.for_util.pfor_decode(r, freq_words)?;
         for (f, &w) in freqs.iter_mut().zip(freq_words.iter()) {
             *f = w as i32;
         }
+    } else {
+        // A field without freqs scores every occurrence as 1. Lucene fills
+        // `freqBuffer` the same way rather than branching per doc downstream.
+        freqs.fill(1);
     }
 
-    Ok((docs, freqs))
+    Ok(())
 }
 
 /// The `docFreq % BLOCK_SIZE` remainder after zero or more full blocks
@@ -1586,6 +1646,9 @@ pub struct LazyDocsCursor<'a> {
     /// level `1`, conceptually) — empty below `LEVEL1_NUM_DOCS` docs (no
     /// level-1 entries on the wire) or for a field with no freqs.
     level1_impacts: Impacts,
+    /// Decode buffers, held for the life of the cursor rather than rebuilt per
+    /// block — see [`BlockScratch`].
+    scratch: BlockScratch,
 }
 
 impl<'a> LazyDocsCursor<'a> {
@@ -1654,16 +1717,41 @@ impl<'a> LazyDocsCursor<'a> {
     }
 
     /// `PostingsEnum.nextDoc()`: moves to the next doc, returning its ID (or
-    /// [`NO_MORE_DOCS`] if there isn't one). Implemented as `advance(doc_id +
-    /// 1)`, saturating rather than overflowing once already at
-    /// [`NO_MORE_DOCS`].
+    /// [`NO_MORE_DOCS`] if there isn't one).
+    ///
+    /// The common case is one slot along in the block already decoded, and it
+    /// is written that way. Lucene's is the same three lines:
+    ///
+    /// ```java
+    /// if (doc == level0LastDocID) { moveToNextLevel0Block(); }
+    /// return this.doc = docBuffer[docBufferUpto++];
+    /// ```
+    ///
+    /// This used to delegate to `advance(doc_id + 1)`, which is correct but
+    /// pays `advance`'s `partition_point` -- a binary search over up to 256
+    /// entries, eight unpredictable branches, to find an offset that is always
+    /// exactly 1. It measured 14.5 ns per document against Lucene's 2.9 ns,
+    /// a 5x gap that did not move when the `ForUtil` kernel underneath it got
+    /// 3x faster, because block decode was never where the time went.
+    ///
+    /// Falls back to `advance` at a block boundary and before the first call,
+    /// which is where the state machine actually lives.
+    #[inline]
     pub fn next_doc(&mut self) -> Result<i32> {
-        let target = if self.doc_id == NO_MORE_DOCS {
+        if self.doc_id == NO_MORE_DOCS {
             return Ok(NO_MORE_DOCS);
-        } else {
-            self.doc_id.saturating_add(1)
-        };
-        self.advance(target)
+        }
+        // Invariant, established by every path in `advance` that sets
+        // `doc_id` to a real doc: `block_docs[block_pos] == doc_id` whenever
+        // `block_pos < block_len`. So the next document, if this block still
+        // has one, is the next slot -- no search needed.
+        let next = self.block_pos + 1;
+        if next < self.block_len {
+            self.block_pos = next;
+            self.doc_id = self.block_docs[next];
+            return Ok(self.doc_id);
+        }
+        self.advance(self.doc_id.saturating_add(1))
     }
 
     /// `PostingsEnum.advance(target)`: moves forward to the first doc ID
@@ -1734,10 +1822,14 @@ impl<'a> LazyDocsCursor<'a> {
                 // Target lands inside this block (or the block's last doc
                 // is still < target is false, i.e. >= target): decode it.
                 debug_assert_eq!(self.r.position(), header.body_start);
-                let (docs, freqs) =
-                    decode_full_block_body(&mut self.r, self.prev_doc_id, self.index_has_freq)?;
-                self.block_docs = docs;
-                self.block_freqs = freqs;
+                decode_full_block_body(
+                    &mut self.r,
+                    self.prev_doc_id,
+                    self.index_has_freq,
+                    &mut self.scratch,
+                    &mut self.block_docs,
+                    &mut self.block_freqs,
+                )?;
                 self.block_len = BLOCK_SIZE as usize;
                 self.prev_doc_id = header.last_doc_id;
                 self.doc_count_left -= BLOCK_SIZE;

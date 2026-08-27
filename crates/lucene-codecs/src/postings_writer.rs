@@ -1074,7 +1074,26 @@ fn write_full_block(
     if doc_range == BLOCK_SIZE as u32 {
         // Every delta is 1: all 256 docs in the block are consecutive.
         rest.write_byte(0);
-    } else if num_bits_next_bits_per_value <= num_bit_set_longs * 64 {
+    // Lucene compares against `docRange` itself, not against the rounded-up
+    // storage size `numBitSetLongs * 64`, and the difference is not cosmetic.
+    // `Lucene104PostingsWriter` says why it leans the way it does:
+    //
+    //   we make the decision based on storage requirements, picking the bit
+    //   set approach whenever it's more storage-efficient than the next number
+    //   of bits per value (which effectively slightly biases towards the bit
+    //   set approach)
+    //
+    //   FOR makes #nextDoc() a bit faster while the bit set approach makes
+    //   #advance() usually faster and #intoBitSet() much faster
+    //
+    // Rounding the right-hand side up to whole words removed that bias, so
+    // every block with `doc_range < num_bits_next <= ceil(doc_range/64)*64`
+    // got packed deltas where Lucene writes the bit set -- the encoding that
+    // is slower for exactly the `advance()` this port spent M1 and M1.5 on.
+    // Both encodings are legal and this port's reader takes either, which is
+    // why nothing failed and why `block_encoding_choice_matches_lucene`
+    // asserts the choice rather than only the round-trip.
+    } else if num_bits_next_bits_per_value <= doc_range {
         rest.write_byte(bits_per_value as u8);
         for_util::for_encode(&deltas, bits_per_value, &mut rest);
     } else {
@@ -2940,6 +2959,72 @@ mod tests {
         block[last].0 += 1; // doc IDs 0..254, then 256 (skipping 255): docRange == 257.
         let token = full_block_bits_per_value_token(&block, -1);
         assert_eq!(token, -5);
+
+        let term = TermPostings {
+            term: b"a".to_vec(),
+            docs: block.clone(),
+            ..Default::default()
+        };
+        let max_doc = term.docs.last().unwrap().0 + 1;
+        let doc_count = term.docs.len() as i32;
+        let terms = vec![term.clone()];
+        let input = FieldPostingsInput {
+            has_payloads: false,
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqs,
+            doc_count,
+            terms: &terms,
+        };
+        let output = write_single_field(&input, &SEG_ID, SUFFIX).unwrap();
+        let fis = FieldInfos {
+            fields: vec![field_info(0, "f", IndexOptions::DocsAndFreqs)],
+        };
+        let (fields, doc_in) = open_written(&output, &fis, max_doc);
+        let field = fields.field("f").unwrap();
+        let postings = field.postings(b"a", Some(&doc_in)).unwrap().unwrap();
+        let expected_docs: Vec<i32> = term.docs.iter().map(|&(d, _)| d).collect();
+        assert_eq!(postings.docs, expected_docs);
+    }
+
+    /// The band where this port used to disagree with Lucene about which
+    /// doc-delta encoding to write.
+    ///
+    /// `Lucene104PostingsWriter` picks the bit set when
+    /// `numBitsNextBitsPerValue > docRange`; this port compared against the
+    /// bit set's *rounded-up storage size* `numBitSetLongs * 64` instead, which
+    /// is `>= docRange`, so it picked packed FOR deltas for every block landing
+    /// strictly between the two. Both shapes are legal and this port's reader
+    /// takes either, so the round-trip assertions in the tests around this one
+    /// passed either way -- only asserting the chosen token catches it.
+    ///
+    /// Construction: 208 deltas of 3 and 48 of 2, so `docRange == 720` and
+    /// `bitsRequired(3) == 2`, giving `numBitsNextBitsPerValue == 3 * 256 ==
+    /// 768`. Then `768 > 720` (Lucene: bit set) while
+    /// `768 <= bits2words(720) * 64 == 12 * 64 == 768` (this port, before the
+    /// fix: packed FOR). The band is real but narrow, which is why an
+    /// arbitrary block does not land in it.
+    #[test]
+    fn full_block_encoding_choice_matches_lucene_in_the_disputed_band() {
+        let deltas: Vec<i32> = std::iter::repeat_n(3, 208)
+            .chain(std::iter::repeat_n(2, 48))
+            .collect();
+        assert_eq!(deltas.len(), BLOCK_SIZE as usize);
+        let doc_range: i32 = deltas.iter().sum();
+        assert_eq!(doc_range, 720, "test construction");
+
+        let mut doc_id = -1;
+        let block: Vec<(i32, i32)> = deltas
+            .iter()
+            .map(|d| {
+                doc_id += d;
+                (doc_id, 1)
+            })
+            .collect();
+
+        // bits2words(720) == 12, so the bit set is 12 longs and the token is
+        // its negated word count. Before the fix this asserted 2 -- packed FOR
+        // at bitsPerValue 2.
+        assert_eq!(full_block_bits_per_value_token(&block, -1), -12);
 
         let term = TermPostings {
             term: b"a".to_vec(),
