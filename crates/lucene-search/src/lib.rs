@@ -2525,14 +2525,14 @@ pub fn search_disjunction_max_query_scored<C: ScoringCollector>(
 /// position always succeeds. A repeated term (e.g. "the the") works unmodified --
 /// the two position lists happen to be identical, but the check only ever compares
 /// `p + i` against list `i`, never compares lists against each other by identity.
-pub(crate) fn phrase_matches_in_doc(term_positions: &[Vec<i32>]) -> bool {
+pub(crate) fn phrase_matches_in_doc(term_positions: &[&[i32]]) -> bool {
     let Some((first, rest)) = term_positions.split_first() else {
         return false;
     };
     if rest.iter().any(|positions| positions.is_empty()) {
         return false;
     }
-    'candidate: for &p0 in first {
+    'candidate: for &p0 in first.iter() {
         for (i, positions) in rest.iter().enumerate() {
             let target = p0 + (i as i32 + 1);
             if positions.binary_search(&target).is_err() {
@@ -2594,7 +2594,7 @@ pub(crate) fn phrase_matches_in_doc(term_positions: &[Vec<i32>]) -> bool {
 /// `0`, i.e. exact adjacency) — [`search_phrase_query`] still calls the dedicated
 /// exact-match fast path for `slop == 0` rather than this function, but this
 /// function's own unit tests confirm the `slop == 0` case agrees.
-pub(crate) fn phrase_matches_in_doc_sloppy(term_positions: &[Vec<i32>], slop: u32) -> bool {
+pub(crate) fn phrase_matches_in_doc_sloppy(term_positions: &[&[i32]], slop: u32) -> bool {
     let Some((first, rest)) = term_positions.split_first() else {
         return false;
     };
@@ -2607,7 +2607,7 @@ pub(crate) fn phrase_matches_in_doc_sloppy(term_positions: &[Vec<i32>], slop: u3
         return !first.is_empty();
     }
     let slop = slop as i64;
-    'candidate: for &p0 in first {
+    'candidate: for &p0 in first.iter() {
         let mut prev = p0;
         let mut total_moves: i64 = 0;
         for positions in rest {
@@ -2655,7 +2655,7 @@ pub(crate) fn phrase_matches_in_doc_sloppy(term_positions: &[Vec<i32>], slop: u3
 /// `term_positions`, or any single empty position list, both yield `0`. A
 /// single-term phrase (`term_positions.len() == 1`) counts every occurrence of
 /// that lone term (the inner alignment loop is empty, so every `p0` counts).
-pub(crate) fn phrase_freq_exact(term_positions: &[Vec<i32>]) -> i32 {
+pub(crate) fn phrase_freq_exact(term_positions: &[&[i32]]) -> i32 {
     let Some((first, rest)) = term_positions.split_first() else {
         return 0;
     };
@@ -2663,7 +2663,7 @@ pub(crate) fn phrase_freq_exact(term_positions: &[Vec<i32>]) -> i32 {
         return 0;
     }
     let mut freq = 0;
-    'candidate: for &p0 in first {
+    'candidate: for &p0 in first.iter() {
         for (i, positions) in rest.iter().enumerate() {
             let target = p0 + (i as i32 + 1);
             if positions.binary_search(&target).is_err() {
@@ -2947,6 +2947,9 @@ fn span_doc_ids(
             // same way, so this leaf simply never adds candidate docs.
             continue;
         };
+        // Spans are not on the measured hot path: rebuild the map the span
+        // matcher expects from the aligned vectors.
+        let map: HashMap<i32, Vec<i32>> = docs.iter().copied().zip(map).collect();
         candidate_docs.extend(docs);
         per_leaf_maps.push(((field.clone(), term.clone()), map));
     }
@@ -2997,7 +3000,15 @@ pub fn search_span_query<C: Collector>(
 /// (rather than a `Vec` aligned to the doc list) is what [`search_phrase_query`]
 /// needs: after computing the doc-level conjunction across every term, it looks up
 /// each candidate doc's position list per term by doc ID, not by index.
-type TermDocPositions = (Vec<i32>, HashMap<i32, Vec<i32>>);
+/// A term's live matching docs and, index-aligned with them, each doc's
+/// positions.
+///
+/// Aligned vectors rather than a `HashMap<doc, positions>`: the phrase matcher
+/// walks candidates in ascending doc order, so a per-term cursor index finds
+/// each doc in amortised O(1) with no hashing and no per-doc clone. Building
+/// the map cost one hash insertion per matching document -- ~5M for a
+/// high-frequency term -- and looking a doc up then cloned its position vector.
+type TermDocPositions = (Vec<i32>, Vec<Vec<i32>>);
 
 fn term_doc_positions(
     fields: &BlockTreeFields,
@@ -3019,18 +3030,15 @@ fn term_doc_positions(
     };
 
     let mut docs = Vec::with_capacity(postings.docs.len());
-    let mut map = HashMap::with_capacity(postings.docs.len());
+    let mut per_doc: Vec<Vec<i32>> = Vec::with_capacity(postings.docs.len());
     for (doc_id, doc_positions) in postings.docs.into_iter().zip(positions) {
         if !live_docs.is_none_or(|bits| bits.get(doc_id as usize)) {
             continue;
         }
         docs.push(doc_id);
-        map.insert(
-            doc_id,
-            doc_positions.into_iter().map(|p| p.position).collect(),
-        );
+        per_doc.push(doc_positions.into_iter().map(|p| p.position).collect());
     }
-    Ok(Some((docs, map)))
+    Ok(Some((docs, per_doc)))
 }
 
 /// Executes `query` (see [`query::PhraseQuery`] for `slop`'s exact semantics)
@@ -3097,7 +3105,7 @@ pub fn search_phrase_query<C: Collector>(
     };
 
     let mut per_term_docs: Vec<Vec<i32>> = Vec::with_capacity(query.terms.len());
-    let mut per_term_maps: Vec<HashMap<i32, Vec<i32>>> = Vec::with_capacity(query.terms.len());
+    let mut per_term_maps: Vec<Vec<Vec<i32>>> = Vec::with_capacity(query.terms.len());
     for term in &query.terms {
         let Some((docs, map)) = term_doc_positions(
             fields,
@@ -3117,6 +3125,7 @@ pub fn search_phrase_query<C: Collector>(
         per_term_maps.push(map);
     }
 
+    let per_term_docs_snapshot = per_term_docs.clone();
     let candidate_docs: Vec<i32> = Conjunction::new(
         per_term_docs
             .into_iter()
@@ -3125,15 +3134,23 @@ pub fn search_phrase_query<C: Collector>(
     )
     .collect();
 
+    // One cursor per term, advanced in step with the ascending candidate order,
+    // so each doc's positions are found without hashing and without cloning.
+    let mut cursors = vec![0usize; per_term_docs_snapshot.len()];
+    let mut term_positions: Vec<&[i32]> = Vec::with_capacity(per_term_maps.len());
     for doc_id in candidate_docs {
-        let term_positions: Vec<Vec<i32>> = per_term_maps
-            .iter()
-            .map(|m| {
-                m.get(&doc_id)
-                    .cloned()
-                    .expect("doc_id came from the conjunction of every term's own doc list")
-            })
-            .collect();
+        term_positions.clear();
+        for (t, docs) in per_term_docs_snapshot.iter().enumerate() {
+            let i = &mut cursors[t];
+            while *i < docs.len() && docs[*i] < doc_id {
+                *i += 1;
+            }
+            debug_assert!(
+                *i < docs.len() && docs[*i] == doc_id,
+                "doc_id came from the conjunction of every term's own doc list"
+            );
+            term_positions.push(&per_term_maps[t][*i]);
+        }
         let is_match = if query.slop == 0 {
             phrase_matches_in_doc(&term_positions)
         } else {
@@ -3220,7 +3237,7 @@ pub fn search_phrase_query_scored<C: ScoringCollector>(
     }
 
     let mut per_term_docs: Vec<Vec<i32>> = Vec::with_capacity(query.terms.len());
-    let mut per_term_maps: Vec<HashMap<i32, Vec<i32>>> = Vec::with_capacity(query.terms.len());
+    let mut per_term_maps: Vec<Vec<Vec<i32>>> = Vec::with_capacity(query.terms.len());
     for term in &query.terms {
         let Some((docs, map)) = term_doc_positions(
             fields,
@@ -3238,6 +3255,7 @@ pub fn search_phrase_query_scored<C: ScoringCollector>(
         per_term_maps.push(map);
     }
 
+    let per_term_docs_snapshot = per_term_docs.clone();
     let candidate_docs: Vec<i32> = Conjunction::new(
         per_term_docs
             .into_iter()
@@ -3246,15 +3264,23 @@ pub fn search_phrase_query_scored<C: ScoringCollector>(
     )
     .collect();
 
+    // One cursor per term, advanced in step with the ascending candidate order,
+    // so each doc's positions are found without hashing and without cloning.
+    let mut cursors = vec![0usize; per_term_docs_snapshot.len()];
+    let mut term_positions: Vec<&[i32]> = Vec::with_capacity(per_term_maps.len());
     for doc_id in candidate_docs {
-        let term_positions: Vec<Vec<i32>> = per_term_maps
-            .iter()
-            .map(|m| {
-                m.get(&doc_id)
-                    .cloned()
-                    .expect("doc_id came from the conjunction of every term's own doc list")
-            })
-            .collect();
+        term_positions.clear();
+        for (t, docs) in per_term_docs_snapshot.iter().enumerate() {
+            let i = &mut cursors[t];
+            while *i < docs.len() && docs[*i] < doc_id {
+                *i += 1;
+            }
+            debug_assert!(
+                *i < docs.len() && docs[*i] == doc_id,
+                "doc_id came from the conjunction of every term's own doc list"
+            );
+            term_positions.push(&per_term_maps[t][*i]);
+        }
         let phrase_freq = if query.slop == 0 {
             phrase_freq_exact(&term_positions)
         } else if phrase_matches_in_doc_sloppy(&term_positions, query.slop) {
@@ -4494,36 +4520,44 @@ mod tests {
 
     #[test]
     fn phrase_matches_exact_alignment_at_position_zero() {
-        assert!(phrase_matches_in_doc(&[vec![0], vec![1], vec![2]]));
+        assert!(phrase_matches_in_doc(&[&[0][..], &[1][..], &[2][..]]));
     }
 
     #[test]
     fn phrase_matches_exact_alignment_at_a_later_position() {
-        assert!(phrase_matches_in_doc(&[vec![0, 5], vec![1, 6], vec![2, 7]]));
+        assert!(phrase_matches_in_doc(&[
+            &[0, 5][..],
+            &[1, 6][..],
+            &[2, 7][..]
+        ]));
     }
 
     #[test]
     fn phrase_no_match_despite_every_term_present() {
         // "cat" at 0 and 10, "sat" at 1, "mat" at 5: no base position aligns all three
         // (0 -> needs 1 at "sat" (ok) and 2 at "mat" (missing); 10 -> needs 11 (missing)).
-        assert!(!phrase_matches_in_doc(&[vec![0, 10], vec![1], vec![5]]));
+        assert!(!phrase_matches_in_doc(&[&[0, 10][..], &[1][..], &[5][..]]));
     }
 
     #[test]
     fn phrase_multiple_candidates_only_one_aligns() {
         // Base 0 fails (needs 2 at term index 2, only 5/7 present); base 3 succeeds
         // (needs 4 at term index 1 -- present -- and 5 at term index 2 -- present).
-        assert!(phrase_matches_in_doc(&[vec![0, 3], vec![1, 4], vec![5, 7]]));
+        assert!(phrase_matches_in_doc(&[
+            &[0, 3][..],
+            &[1, 4][..],
+            &[5, 7][..]
+        ]));
     }
 
     #[test]
     fn phrase_single_term_degenerates_to_any_occurrence() {
-        assert!(phrase_matches_in_doc(&[vec![2, 9]]));
+        assert!(phrase_matches_in_doc(&[&[2, 9][..]]));
     }
 
     #[test]
     fn phrase_single_term_with_no_occurrences_is_false() {
-        assert!(!phrase_matches_in_doc(&[vec![]]));
+        assert!(!phrase_matches_in_doc(&[&[][..]]));
     }
 
     #[test]
@@ -4533,20 +4567,20 @@ mod tests {
 
     #[test]
     fn phrase_a_term_with_no_occurrences_in_this_doc_is_false() {
-        assert!(!phrase_matches_in_doc(&[vec![0], vec![]]));
+        assert!(!phrase_matches_in_doc(&[&[0][..], &[][..]]));
     }
 
     #[test]
     fn phrase_repeated_term_with_consecutive_occurrences_matches() {
         // "the the": both occurrence lists are the term "the"'s own positions --
         // 0 and 1 are consecutive, so "the" at 0 followed by "the" at 1 is a match.
-        assert!(phrase_matches_in_doc(&[vec![0, 1, 2], vec![0, 1, 2]]));
+        assert!(phrase_matches_in_doc(&[&[0, 1, 2][..], &[0, 1, 2][..]]));
     }
 
     #[test]
     fn phrase_repeated_term_without_consecutive_occurrences_does_not_match() {
         // "the" only occurs at 0, 2, 4 -- no two consecutive occurrences exist.
-        assert!(!phrase_matches_in_doc(&[vec![0, 2, 4], vec![0, 2, 4]]));
+        assert!(!phrase_matches_in_doc(&[&[0, 2, 4][..], &[0, 2, 4][..]]));
     }
 
     // `phrase_matches_in_doc_sloppy` unit tests: hand-computed slop values against
@@ -4556,7 +4590,7 @@ mod tests {
     fn sloppy_exact_alignment_needs_zero_slop() {
         // positions 0,1,2: (2-0)-2 = 0 moves needed -- matches at slop=0.
         assert!(phrase_matches_in_doc_sloppy(
-            &[vec![0], vec![1], vec![2]],
+            &[&[0][..], &[1][..], &[2][..]],
             0
         ));
     }
@@ -4564,24 +4598,24 @@ mod tests {
     #[test]
     fn sloppy_agrees_with_exact_for_slop_zero_no_match_case() {
         // "cat" at 0, "sat" at 2: (2-0)-1 = 1 move needed, slop=0 is one short.
-        assert!(!phrase_matches_in_doc_sloppy(&[vec![0], vec![2]], 0));
-        assert!(!phrase_matches_in_doc(&[vec![0], vec![2]]));
+        assert!(!phrase_matches_in_doc_sloppy(&[&[0][..], &[2][..]], 0));
+        assert!(!phrase_matches_in_doc(&[&[0][..], &[2][..]]));
     }
 
     #[test]
     fn sloppy_gap_of_one_extra_word_needs_slop_one() {
         // "quick" at 0, "fox" at 2 (one word -- "brown" -- skipped in between):
         // (2-0)-1 = 1 move needed.
-        assert!(!phrase_matches_in_doc_sloppy(&[vec![0], vec![2]], 0));
-        assert!(phrase_matches_in_doc_sloppy(&[vec![0], vec![2]], 1));
+        assert!(!phrase_matches_in_doc_sloppy(&[&[0][..], &[2][..]], 0));
+        assert!(phrase_matches_in_doc_sloppy(&[&[0][..], &[2][..]], 1));
     }
 
     #[test]
     fn sloppy_boundary_exactly_enough_slop_matches() {
         // "a" at 0, "b" at 4: (4-0)-1 = 3 moves needed. slop=3 matches, slop=2 (one
         // less than enough) does not.
-        assert!(phrase_matches_in_doc_sloppy(&[vec![0], vec![4]], 3));
-        assert!(!phrase_matches_in_doc_sloppy(&[vec![0], vec![4]], 2));
+        assert!(phrase_matches_in_doc_sloppy(&[&[0][..], &[4][..]], 3));
+        assert!(!phrase_matches_in_doc_sloppy(&[&[0][..], &[4][..]], 2));
     }
 
     #[test]
@@ -4589,11 +4623,11 @@ mod tests {
         // "the" at 0, "quick" at 2 (gap 1), "fox" at 5 (gap 2): total moves =
         // (5-0)-2 = 3, matching the sum of per-interval gaps (1 + 2).
         assert!(phrase_matches_in_doc_sloppy(
-            &[vec![0], vec![2], vec![5]],
+            &[&[0][..], &[2][..], &[5][..]],
             3
         ));
         assert!(!phrase_matches_in_doc_sloppy(
-            &[vec![0], vec![2], vec![5]],
+            &[&[0][..], &[2][..], &[5][..]],
             2
         ));
     }
@@ -4603,14 +4637,20 @@ mod tests {
         // First term at {0, 10}; second term at {1, 11}. Base 0 -> 1 needs 0 moves;
         // base 10 -> 11 also needs 0 moves -- either way it should match at slop=0,
         // proving every base candidate is tried (not just the first).
-        assert!(phrase_matches_in_doc_sloppy(&[vec![0, 10], vec![1, 11]], 0));
+        assert!(phrase_matches_in_doc_sloppy(
+            &[&[0, 10][..], &[1, 11][..]],
+            0
+        ));
     }
 
     #[test]
     fn sloppy_greedy_finds_smallest_valid_next_position() {
         // First term at 0; second term's list has {1, 2, 100} -- greedy must pick 1
         // (smallest valid), needing 0 moves, not be confused by the far-away 100.
-        assert!(phrase_matches_in_doc_sloppy(&[vec![0], vec![1, 2, 100]], 0));
+        assert!(phrase_matches_in_doc_sloppy(
+            &[&[0][..], &[1, 2, 100][..]],
+            0
+        ));
     }
 
     #[test]
@@ -4618,18 +4658,18 @@ mod tests {
         // Second term's only occurrence (0) is not strictly after the first term's
         // only occurrence (0) -- no in-order alignment exists at any slop, since
         // this port's scope excludes reordering/ties.
-        assert!(!phrase_matches_in_doc_sloppy(&[vec![0], vec![0]], 100));
+        assert!(!phrase_matches_in_doc_sloppy(&[&[0][..], &[0][..]], 100));
     }
 
     #[test]
     fn sloppy_single_term_degenerates_to_any_occurrence_regardless_of_slop() {
-        assert!(phrase_matches_in_doc_sloppy(&[vec![2, 9]], 0));
-        assert!(phrase_matches_in_doc_sloppy(&[vec![2, 9]], 5));
+        assert!(phrase_matches_in_doc_sloppy(&[&[2, 9][..]], 0));
+        assert!(phrase_matches_in_doc_sloppy(&[&[2, 9][..]], 5));
     }
 
     #[test]
     fn sloppy_single_term_with_no_occurrences_is_false() {
-        assert!(!phrase_matches_in_doc_sloppy(&[vec![]], 5));
+        assert!(!phrase_matches_in_doc_sloppy(&[&[][..]], 5));
     }
 
     #[test]
@@ -4639,15 +4679,18 @@ mod tests {
 
     #[test]
     fn sloppy_a_term_with_no_occurrences_in_this_doc_is_false() {
-        assert!(!phrase_matches_in_doc_sloppy(&[vec![0], vec![]], 5));
+        assert!(!phrase_matches_in_doc_sloppy(&[&[0][..], &[][..]], 5));
     }
 
     #[test]
     fn sloppy_repeated_term_with_a_gap_matches_at_sufficient_slop() {
         // "the" at 0, 3 -- as a two-term "the the" phrase, base 0 needs the second
         // "the" strictly after 0: smallest is 3, (3-0)-1 = 2 moves.
-        assert!(phrase_matches_in_doc_sloppy(&[vec![0, 3], vec![0, 3]], 2));
-        assert!(!phrase_matches_in_doc_sloppy(&[vec![0, 3], vec![0, 3]], 1));
+        assert!(phrase_matches_in_doc_sloppy(&[&[0, 3][..], &[0, 3][..]], 2));
+        assert!(!phrase_matches_in_doc_sloppy(
+            &[&[0, 3][..], &[0, 3][..]],
+            1
+        ));
     }
 
     // Fixture-backed `search_phrase_query` tests: reuse the real-Lucene "pos" field
@@ -4884,20 +4927,23 @@ mod tests {
     #[test]
     fn phrase_freq_exact_counts_one_match_when_phrase_occurs_once() {
         // "quick fox" at position 0/1 only.
-        assert_eq!(phrase_freq_exact(&[vec![0], vec![1]]), 1);
+        assert_eq!(phrase_freq_exact(&[&[0][..], &[1][..]]), 1);
     }
 
     #[test]
     fn phrase_freq_exact_counts_every_repeated_occurrence() {
         // "the the": "the" at 0,1,2,3 -- valid starts at 0,1,2 (0+1=1 present,
         // 1+1=2 present, 2+1=3 present), 3 has no successor -- 3 matches, not 1.
-        let positions = vec![vec![0, 1, 2, 3], vec![0, 1, 2, 3]];
-        assert_eq!(phrase_freq_exact(&positions), 3);
+        let positions = [vec![0, 1, 2, 3], vec![0, 1, 2, 3]];
+        assert_eq!(
+            phrase_freq_exact(&positions.iter().map(|v| v.as_slice()).collect::<Vec<_>>()),
+            3
+        );
     }
 
     #[test]
     fn phrase_freq_exact_zero_when_no_alignment_exists() {
-        assert_eq!(phrase_freq_exact(&[vec![0], vec![5]]), 0);
+        assert_eq!(phrase_freq_exact(&[&[0][..], &[5][..]]), 0);
     }
 
     #[test]
@@ -4907,20 +4953,23 @@ mod tests {
 
     #[test]
     fn phrase_freq_exact_zero_when_any_term_has_no_occurrences() {
-        assert_eq!(phrase_freq_exact(&[vec![0], vec![]]), 0);
+        assert_eq!(phrase_freq_exact(&[&[0][..], &[][..]]), 0);
     }
 
     #[test]
     fn phrase_freq_exact_single_term_counts_every_occurrence() {
-        assert_eq!(phrase_freq_exact(&[vec![0, 3, 7]]), 3);
+        assert_eq!(phrase_freq_exact(&[&[0, 3, 7][..]]), 3);
     }
 
     #[test]
     fn phrase_freq_exact_non_overlapping_repeats_counts_two() {
         // "quick fox ... quick fox": two disjoint adjacent pairs, no overlap
         // possible between them.
-        let positions = vec![vec![0, 10], vec![1, 11]];
-        assert_eq!(phrase_freq_exact(&positions), 2);
+        let positions = [vec![0, 10], vec![1, 11]];
+        assert_eq!(
+            phrase_freq_exact(&positions.iter().map(|v| v.as_slice()).collect::<Vec<_>>()),
+            2
+        );
     }
 
     // `span_matches_in_doc` unit tests (task #55): synthetic per-leaf position
