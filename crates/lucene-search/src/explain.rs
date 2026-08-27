@@ -390,8 +390,16 @@ fn explain_phrase(
                 String::from_utf8_lossy(term)
             )));
         };
+        // Not a hot path (one document, on demand): rebuild the doc -> positions
+        // map the explain code expects from the aligned vectors the phrase
+        // reader now returns.
+        per_term_maps.push(
+            docs.iter()
+                .copied()
+                .zip(map)
+                .collect::<std::collections::HashMap<i32, Vec<i32>>>(),
+        );
         per_term_docs.push(docs);
-        per_term_maps.push(map);
     }
 
     if !per_term_docs.iter().all(|docs| docs.contains(&doc)) {
@@ -408,6 +416,7 @@ fn explain_phrase(
                 .expect("doc came from the conjunction of every term's own doc list")
         })
         .collect();
+    let term_positions: Vec<&[i32]> = term_positions.iter().map(|v| v.as_slice()).collect();
     let phrase_freq = if query.slop == 0 {
         crate::phrase_freq_exact(&term_positions)
     } else if crate::phrase_matches_in_doc_sloppy(&term_positions, query.slop) {
