@@ -1301,18 +1301,26 @@ pub fn search_term_query_scored_maxscore(
         }
 
         if live_docs.is_none_or(|bits| bits.get(doc_id as usize)) {
-            let freq = cursor.freq().expect("cursor started, doc_id in range");
-            let field_length = match norms {
-                Some(fn_) => fn_.field_length(doc_id)?,
-                None => similarity::UNNORMED_FIELD_LENGTH,
+            let freq = cursor.freq().expect("cursor started, doc_id in range") as f32;
+            // Table-driven scoring, as real Lucene's BM25Scorer does: one
+            // lookup and one division rather than decoding the norm to a length
+            // and dividing twice. Algebraically identical --
+            // `weight - weight/(1 + freq*normInverse)` expands to
+            // `idf * freq / (freq + k1*((1-b) + b*len/avgdl))`.
+            let score = match norms {
+                Some(fn_) => {
+                    let weight = similarity::idf(doc_freq, doc_count);
+                    let norm_inverse = fn_.norm_inverse(doc_id)?;
+                    weight - weight / (1.0 + freq * norm_inverse)
+                }
+                None => similarity::score(
+                    doc_freq,
+                    doc_count,
+                    freq,
+                    similarity::UNNORMED_FIELD_LENGTH,
+                    avg_field_length,
+                ),
             };
-            let score = similarity::score(
-                doc_freq,
-                doc_count,
-                freq as f32,
-                field_length,
-                avg_field_length,
-            );
             collector.collect(doc_id, score);
         }
         doc_id = cursor.next_doc().map_err(blocktree::Error::from)?;
