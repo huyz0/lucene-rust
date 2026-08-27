@@ -1708,6 +1708,37 @@ fn try_disjunction_lazy<C: ScoringCollector>(
         doc_count: i64,
         norms: Option<&'a FieldNorms<'a>>,
     }
+
+    impl Leg<'_> {
+        /// Upper bound on this clause's contribution over a block's impacts,
+        /// with the same `norms == None` rule the term and conjunction paths
+        /// carry.
+        fn bound(&self, impacts: &[lucene_codecs::postings::Impact]) -> f32 {
+            match self.norms {
+                Some(n) => similarity::max_score_for_impacts(
+                    impacts,
+                    self.doc_freq,
+                    self.doc_count,
+                    n.avg_field_length,
+                ),
+                None => {
+                    let idf = similarity::idf(self.doc_freq, self.doc_count);
+                    impacts
+                        .iter()
+                        .map(|i| {
+                            idf * similarity::tf_norm(
+                                i.freq as f32,
+                                similarity::UNNORMED_FIELD_LENGTH,
+                                similarity::UNNORMED_FIELD_LENGTH,
+                                similarity::DEFAULT_K1,
+                                similarity::DEFAULT_B,
+                            )
+                        })
+                        .fold(0.0f32, f32::max)
+                }
+            }
+        }
+    }
     let mut legs: Vec<Leg<'_>> = Vec::with_capacity(terms.len());
     for t in &terms {
         let Some(field_terms) = fields.field(&t.field) else {
@@ -1735,6 +1766,9 @@ fn try_disjunction_lazy<C: ScoringCollector>(
         });
     }
 
+    // Same span cache as the conjunction: recompute only when the covered span
+    // changes.
+    let mut disj_bound: Option<(i32, f32)> = None;
     loop {
         let Some(candidate) = legs
             .iter()
@@ -1744,6 +1778,55 @@ fn try_disjunction_lazy<C: ScoringCollector>(
         else {
             return Ok(true); // every cursor exhausted
         };
+
+        // Block-max pruning for a union. A document may match every clause, so
+        // the sum of the clauses' per-block maxima bounds any score in the span
+        // -- the same bound the conjunction uses, sound here for the same
+        // reason. This is the safe core of MAXSCORE/WAND; it does not yet
+        // partition clauses into essential and non-essential, which is where
+        // Lucene's WANDScorer gets its remaining power.
+        if let Some(threshold) = collector.min_competitive_score() {
+            let mut up_to = i32::MAX;
+            for leg in &legs {
+                if leg.doc != lucene_codecs::postings::NO_MORE_DOCS {
+                    up_to = up_to.min(leg.cursor.current_block_last_doc_id());
+                }
+            }
+            let sum_max = match disj_bound {
+                Some((key, v)) if key == up_to => v,
+                _ => {
+                    let mut acc = 0.0f32;
+                    let mut ok = true;
+                    for leg in &legs {
+                        if leg.doc == lucene_codecs::postings::NO_MORE_DOCS {
+                            continue;
+                        }
+                        let impacts = leg.cursor.level0_impacts();
+                        if impacts.is_empty() {
+                            ok = false;
+                            break;
+                        }
+                        acc += leg.bound(impacts);
+                    }
+                    let v = if ok { acc } else { f32::INFINITY };
+                    disj_bound = Some((up_to, v));
+                    v
+                }
+            };
+            if sum_max.is_finite() && up_to >= candidate && sum_max <= threshold {
+                // No document in the span can compete: advance every cursor past it.
+                let next = up_to.saturating_add(1);
+                for leg in legs.iter_mut() {
+                    if leg.doc != lucene_codecs::postings::NO_MORE_DOCS && leg.doc < next {
+                        leg.doc = leg
+                            .cursor
+                            .advance(next)
+                            .map_err(blocktree::Error::Postings)?;
+                    }
+                }
+                continue;
+            }
+        }
 
         let live = live_docs.is_none_or(|bits| bits.get(candidate as usize));
         let mut score = 0.0f32;
