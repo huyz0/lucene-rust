@@ -214,6 +214,18 @@ pub fn norm_value(data: &[u8], entry: &NormsEntry, doc: i32) -> Result<Option<i6
                 ..(entry.docs_with_field_offset + entry.docs_with_field_length) as usize,
         )
         .ok_or(lucene_store::Error::Eof { offset: 0 })?;
+    // NOTE: this decodes the *whole* `IndexedDISI` region on every call, so a
+    // lookup is O(number of documents with the field) in both time and
+    // allocation -- 874 ns at 1,000 documents, 324 us at 100,000, measured by
+    // `indexed_disi/sparse_lookup` in `benches/hot_paths.rs`. Lucene's
+    // `IndexedDISI` is a forward-only iterator with a jump table and answers
+    // `advance(target)` in roughly constant time.
+    //
+    // A caller doing more than one lookup on the same sparse field should
+    // decode once and use `indexed_disi::rank_of` + `read_value_at_ordinal`
+    // itself; `lucene_search::field_norms::FieldNorms` does exactly that.
+    // Making this function itself cheap needs a real `IndexedDISI` cursor,
+    // which is tracked in `docs/sweep/findings.md`.
     let doc_ids = indexed_disi::decode_doc_ids(region, entry.dense_rank_power)?;
     match indexed_disi::rank_of(&doc_ids, doc) {
         Some(ordinal) => Ok(Some(read_value_at_ordinal(data, entry, ordinal as i64)?)),
@@ -222,9 +234,13 @@ pub fn norm_value(data: &[u8], entry: &NormsEntry, doc: i32) -> Result<Option<i6
 }
 
 /// Reads the norm value at `ordinal` (either the doc id itself for a dense
-/// field, or the doc's rank among docs-with-a-value for a sparse one) — both
+/// field, or the doc's rank among docs-with-a-value for a sparse one).
+///
+/// Public so a caller holding a sparse field's doc-id list -- decoded once
+/// rather than per lookup, see [`norm_value`]'s own note -- can finish the
+/// lookup itself — both
 /// index the same flat `NormsOffset + ordinal * BytesPerNorm` array shape.
-fn read_value_at_ordinal(data: &[u8], entry: &NormsEntry, ordinal: i64) -> Result<i64> {
+pub fn read_value_at_ordinal(data: &[u8], entry: &NormsEntry, ordinal: i64) -> Result<i64> {
     if entry.bytes_per_norm == 0 {
         // A single constant value for every doc, encoded directly in the
         // offset field rather than a separate array.

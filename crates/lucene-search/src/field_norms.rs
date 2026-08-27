@@ -59,6 +59,33 @@ pub struct FieldNorms<'a> {
     /// as [`FieldNorms::norm_inverse`] and the same reason: the domain is one
     /// byte wide, so the decode is a table lookup, not a computation.
     norm_length: [f32; 256],
+    /// A sparse field's `IndexedDISI` doc-id list, decoded **once**.
+    ///
+    /// `norms::norm_value`'s sparse branch decodes the whole region on every
+    /// call, so a lookup is O(documents with the field): 874 ns at 1,000
+    /// documents and 324 us at 100,000, measured by `indexed_disi/sparse_lookup`
+    /// in `lucene-codecs`. Scoring a sparse-norms field document by document
+    /// through that is quadratic. Decoding once here makes each lookup a binary
+    /// search instead.
+    ///
+    /// This is a fix at the caller, not at the defect: `IndexedDISI` should be a
+    /// forward-only cursor with a jump table, as Lucene's is, and then neither
+    /// the decode nor the binary search would be needed. See
+    /// `docs/sweep/findings.md`.
+    sparse_doc_ids: Option<Vec<i32>>,
+}
+
+/// A sparse field's decoded `IndexedDISI` doc-id list, or `None` when the field
+/// is dense, empty, or the region cannot be read (in which case the general
+/// path re-raises the error per lookup).
+fn sparse_doc_ids(data: &[u8], entry: &NormsEntry) -> Option<Vec<i32>> {
+    if entry.is_empty_field() || entry.is_dense() {
+        return None;
+    }
+    let start = usize::try_from(entry.docs_with_field_offset).ok()?;
+    let len = usize::try_from(entry.docs_with_field_length).ok()?;
+    let region = data.get(start..start.checked_add(len)?)?;
+    lucene_codecs::indexed_disi::decode_doc_ids(region, entry.dense_rank_power).ok()
 }
 
 /// Builds [`FieldNorms::norm_length`]. Independent of `avgFieldLength`, unlike
@@ -144,6 +171,7 @@ impl<'a> FieldNorms<'a> {
             avg_field_length,
             norm_inverse: norm_inverse_table(avg_field_length),
             norm_length: norm_length_table(),
+            sparse_doc_ids: sparse_doc_ids(data, &entry),
         }
     }
 
@@ -176,6 +204,7 @@ impl<'a> FieldNorms<'a> {
             avg_field_length,
             norm_inverse: norm_inverse_table(avg_field_length),
             norm_length: norm_length_table(),
+            sparse_doc_ids: sparse_doc_ids(data, &entry),
         })
     }
 
@@ -189,6 +218,29 @@ impl<'a> FieldNorms<'a> {
     /// via `weight - weight / (1 + freq * normInverse)` -- see
     /// [`FieldNorms::norm_inverse`]. Avoids decoding the norm to a length and
     /// one of the two divisions the arithmetic form needs.
+    /// This doc's raw norm byte via the once-decoded sparse doc-id list, or
+    /// `None` when this field is not sparse (the general path handles it) or
+    /// the document has no norm here. Never `None` merely because the list is
+    /// absent-but-should-exist: `sparse_doc_ids` returns `None` only for a
+    /// dense or empty field, or a region that could not be read at all, and the
+    /// general path re-raises that error per lookup.
+    #[inline]
+    fn sparse_norm(&self, doc: i32) -> norms::Result<Option<i64>> {
+        let Some(doc_ids) = self.sparse_doc_ids.as_deref() else {
+            return Ok(None);
+        };
+        match lucene_codecs::indexed_disi::rank_of(doc_ids, doc) {
+            Some(ordinal) => Ok(Some(norms::read_value_at_ordinal(
+                self.data,
+                &self.entry,
+                ordinal as i64,
+            )?)),
+            // Sparse and genuinely absent: fall through so the general path
+            // returns its documented `UNNORMED_FIELD_LENGTH` fallback.
+            None => Ok(None),
+        }
+    }
+
     #[inline]
     pub fn norm_inverse(&self, doc: i32) -> norms::Result<f32> {
         // The whole point of the table: for the ordinary dense one-byte field
@@ -198,6 +250,9 @@ impl<'a> FieldNorms<'a> {
             if let Some(&b) = bytes.get(doc as usize) {
                 return Ok(self.norm_inverse[b as usize]);
             }
+        }
+        if let Some(norm) = self.sparse_norm(doc)? {
+            return Ok(self.norm_inverse[(norm as u8) as usize]);
         }
         Ok(match norms::norm_value(self.data, &self.entry, doc)? {
             Some(norm) => self.norm_inverse[(norm as u8) as usize],
@@ -223,6 +278,9 @@ impl<'a> FieldNorms<'a> {
             if let Some(&b) = bytes.get(doc as usize) {
                 return Ok(self.norm_length[b as usize]);
             }
+        }
+        if let Some(norm) = self.sparse_norm(doc)? {
+            return Ok(self.norm_length[(norm as u8) as usize]);
         }
         Ok(match norms::norm_value(self.data, &self.entry, doc)? {
             Some(norm) => crate::similarity::decode_norm(norm),
@@ -327,6 +385,58 @@ mod tests {
                 data[doc as usize]
             );
         }
+    }
+
+    /// The sparse fast path and the general `norms::norm_value` path must agree
+    /// for every document, present and absent alike -- the same argument as the
+    /// dense test above, for the branch that decodes the `IndexedDISI` list
+    /// once instead of per lookup.
+    #[test]
+    fn sparse_fast_path_agrees_with_the_general_norm_lookup() {
+        // Docs 0, 3, 6, 9 have a norm; 1, 2, 4, 5, 7, 8 do not.
+        let present: Vec<i32> = (0..4).map(|i| i * 3).collect();
+        let disi = lucene_codecs::indexed_disi::write(&present);
+        let norms_bytes = [7u8, 19, 31, 43];
+        let mut data = disi.clone();
+        let norms_offset = data.len() as i64;
+        data.extend_from_slice(&norms_bytes);
+
+        let entry = NormsEntry {
+            field_number: 0,
+            docs_with_field_offset: 0,
+            docs_with_field_length: disi.len() as i64,
+            jump_table_entry_count: 0,
+            dense_rank_power: 0,
+            num_docs_with_field: present.len() as i32,
+            bytes_per_norm: 1,
+            norms_offset,
+        };
+        let n = FieldNorms::from_field_stats(&data, entry, 400, 10);
+        assert!(
+            n.sparse_doc_ids.is_some(),
+            "this entry is exactly the shape the sparse path is for"
+        );
+        assert!(
+            n.dense_norm_bytes.is_none(),
+            "a sparse field must not take the dense path"
+        );
+
+        for doc in 0..10i32 {
+            let general = match norms::norm_value(n.data, &n.entry, doc).unwrap() {
+                Some(norm) => n.norm_inverse[(norm as u8) as usize],
+                None => n.norm_inverse(doc).unwrap(), // absent: both fall back identically
+            };
+            assert_eq!(
+                n.norm_inverse(doc).unwrap(),
+                general,
+                "fast and general paths disagree at doc {doc}"
+            );
+        }
+        // And the values are the ones actually written, not a coincidence of
+        // both paths being wrong the same way.
+        assert_eq!(n.norm_inverse(0).unwrap(), n.norm_inverse[7]);
+        assert_eq!(n.norm_inverse(9).unwrap(), n.norm_inverse[43]);
+        assert_eq!(n.field_length(3).unwrap(), n.norm_length[19]);
     }
 
     /// A doc past the end of a dense field must still be the error the general
