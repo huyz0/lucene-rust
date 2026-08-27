@@ -1155,6 +1155,15 @@ pub fn search_term_query_scored_maxscore(
         None => similarity::UNNORMED_FIELD_LENGTH,
     };
 
+    // The impact bound is a property of the *block*, not of the doc: every doc
+    // inside a block yields the identical bound from the identical impacts.
+    // Computing it per doc recomputed it up to BLOCK_SIZE (256) times over, and
+    // profiling put `max_score_for_impacts` at 25% of this query's entire
+    // runtime -- more than the ForUtil block decode it exists to avoid. Cache it
+    // per block, keyed on the block's last doc id (monotonic across blocks, so
+    // it identifies one uniquely).
+    let mut cached_bound: Option<(i32, f32)> = None;
+
     let mut doc_id = cursor.next_doc().map_err(blocktree::Error::from)?;
     while doc_id != lucene_codecs::postings::NO_MORE_DOCS {
         if let Some(threshold) = collector.min_competitive_score() {
@@ -1173,27 +1182,35 @@ pub fn search_term_query_scored_maxscore(
                 // norm byte decoding to a field length > 1.0 inflates the
                 // bound's denominator, making it too low relative to the
                 // UNNORMED_FIELD_LENGTH score actually computed downstream).
-                let bound = match norms {
-                    Some(_) => similarity::max_score_for_impacts(
-                        impacts,
-                        doc_freq,
-                        doc_count,
-                        avg_field_length,
-                    ),
-                    None => {
-                        let idf = similarity::idf(doc_freq, doc_count);
-                        impacts
-                            .iter()
-                            .map(|impact| {
-                                idf * similarity::tf_norm(
-                                    impact.freq as f32,
-                                    similarity::UNNORMED_FIELD_LENGTH,
-                                    similarity::UNNORMED_FIELD_LENGTH,
-                                    similarity::DEFAULT_K1,
-                                    similarity::DEFAULT_B,
-                                )
-                            })
-                            .fold(0.0f32, f32::max)
+                let block_key = cursor.current_block_last_doc_id();
+                let bound = match cached_bound {
+                    Some((key, bound)) if key == block_key => bound,
+                    _ => {
+                        let computed = match norms {
+                            Some(_) => similarity::max_score_for_impacts(
+                                impacts,
+                                doc_freq,
+                                doc_count,
+                                avg_field_length,
+                            ),
+                            None => {
+                                let idf = similarity::idf(doc_freq, doc_count);
+                                impacts
+                                    .iter()
+                                    .map(|impact| {
+                                        idf * similarity::tf_norm(
+                                            impact.freq as f32,
+                                            similarity::UNNORMED_FIELD_LENGTH,
+                                            similarity::UNNORMED_FIELD_LENGTH,
+                                            similarity::DEFAULT_K1,
+                                            similarity::DEFAULT_B,
+                                        )
+                                    })
+                                    .fold(0.0f32, f32::max)
+                            }
+                        };
+                        cached_bound = Some((block_key, computed));
+                        computed
                     }
                 };
                 if bound <= threshold {
