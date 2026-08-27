@@ -419,3 +419,105 @@ through `try_conjunction_lazy`/`try_disjunction_lazy` and the phrase scorer, non
 of which have had the `ImpactsDISI` treatment, and the phrase queries at 0.04-0.07x
 are their own problem in the positions reader. That is the next stage of the
 sweep, not a conclusion.
+
+---
+
+## `crates/lucene-search/src/lib.rs` (boolean lazy paths)
+
+**Lucene counterpart:** `search/BM25Similarity.java` (`BM25Scorer`),
+`search/ImpactsDISI.java`, `search/BlockMaxConjunctionScorer.java`,
+`search/WANDScorer.java`.
+
+**Measurement:** `scripts/bench-compare.sh`, plus `perf record -s srcline` on
+`q11` (`or body:tz body:t2s`, the worst non-phrase query at 0.08x).
+
+### O11 — `idf` was a `ln()` recomputed per document, per clause
+
+The disjunction and conjunction scoring loops both called
+`similarity::score_with_params(doc_freq, doc_count, ...)`, whose first act is
+`idf(doc_freq, doc_count)` — a `ln()`. `libm`'s `log` was **over 15% of a
+two-clause disjunction's entire profile**.
+
+Lucene computes idf once per term in `BM25Similarity.scorer` and carries it as
+the scorer's `weight`. Both `Leg` structs now do the same, and the score becomes
+`leg.weight * tf_norm(...)` — the same factors in the same order, so the result
+is bit-identical to what it produced, minus one `ln()` per document per clause.
+
+| query | before | after |
+|---|---|---|
+| `q11` `or tz t2s` | 44.4 qps | 73.4 qps |
+| `q12` `or t0 t1 t2 t3` | 5.8 qps | 12.1 qps |
+| `q06` `and t0 t1` | 79.3 qps | 92.0 qps |
+
+### O12 — `field_length` also went through the general doc-values decoder
+
+Same finding as O10 and the same fix, for the accessor the boolean scorers use.
+They sum per-clause contributions, so they keep the multiply form to stay
+bit-identical; that needs the decoded length rather than the reciprocal, so
+`FieldNorms` gained a `norm_length` table alongside `norm_inverse` and the same
+dense one-byte fast path in front of it.
+
+### O13 — the disjunction re-derived its span and bound per document
+
+Same `ImpactsDISI.upTo` treatment as the term path (O8): a pass over every leg
+to recompute `up_to`, then a cache probe, ran once per document to reach a
+decision that only changes when a leg crosses a block boundary or the threshold
+rises. Those two lines were 20% of `q11`'s profile.
+
+`q11` 73.4 -> 83.2 qps, `q12` 12.1 -> 13.4 qps.
+
+### O14 — the same treatment on the conjunction: **tried, measured slower, reverted**
+
+Applying the identical restructure to `try_conjunction_lazy` cost 9%:
+
+| query | span-keyed cache | `upTo`-keyed | |
+|---|---|---|---|
+| `q06` `and t0 t1` | 91.2 qps | 83.0 qps | -9% |
+| `q07` `and t0 tz` | 167.4 qps | 144.7 qps | -14% |
+| `q09` `and t0 t1 t2` | 24.1 qps | 22.8 qps | -5% |
+
+The reason is specific to the shape: a leapfrog's `candidate` regularly
+overshoots `up_to` — the skip is guarded on `up_to >= candidate` precisely
+because it can — so keying the "already decided" marker on the *document* rather
+than on the *span* invalidates it almost every iteration and loses the cache
+entirely. The span-keyed cache already there does the same job for this shape.
+
+Reverted, and the reason left in the code so the next reader does not re-derive
+it. This is the third measured revert in this project's performance work
+(header-only block skipping, WAND partitioning, this), and all three looked
+obviously right beforehand.
+
+### Where the boolean paths ended up
+
+| query | before sweep | after |
+|---|---|---|
+| `q06` `and t0 t1` | 0.22x | **0.31x** |
+| `q07` `and t0 tz` | 0.11x | 0.15x |
+| `q08` `and tz t2s` | 0.17x | 0.18x |
+| `q09` `and t0 t1 t2` | 0.14x | 0.22x |
+| `q10` `or t0 t1` | 0.27x | 0.37x |
+| `q11` `or tz t2s` | 0.08x | 0.16x |
+| `q12` `or t0 t1 t2 t3` | 0.11x | 0.26x |
+| `q20` `and title t0 t1` | 0.15x | 0.17x |
+
+Recall mismatches: **0**.
+
+### Still open, in priority order
+
+1. **Phrase queries `q16`/`q17` at 0.03-0.04x.** Untouched by this sweep and now
+   by far the worst thing in the benchmark — 25x slower than Java, where nothing
+   else is worse than 6x. The positions reader is Stage B2 and has not been read
+   against `Lucene104PostingsReader`'s `.pos`/`.pay` path at all yet.
+2. **`tf_norm` is 14% of a disjunction's profile.** It computes
+   `freq / (freq + k1*(1 - b + b*len/avgdl))` — two divisions. Lucene's
+   `BM25Scorer.doScore` is `weight - weight / (1 + freq * normInverse)`: one
+   division, with `normInverse` read from the table this port already builds.
+   The term path already uses that form. Switching the boolean paths would move
+   them *closer* to Lucene's arithmetic, not further, but it is not bit-identical
+   to what they produce today, so it needs its expected values re-derived against
+   `IndexSearcher.explain()` rather than against this port's own previous
+   output. Filed rather than rushed.
+3. **WAND essential/non-essential clause partitioning.** The disjunction's own
+   comment already says this is what it does not do. It is the remaining
+   structural difference from `WANDScorer` and is a milestone-sized piece of
+   work, not a sweep finding.
