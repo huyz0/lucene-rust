@@ -123,4 +123,44 @@ fn parses_real_varying_bpv_numeric_dv_and_matches_lucene_values() {
         let got = ndv::numeric_value(&data_buf, entry, doc as i32).unwrap();
         assert_eq!(got, want, "doc {doc}");
     }
+
+    // `NumericReader` caches the decoded block between calls, where
+    // `numeric_value` re-reads the jump table and block header every time.
+    // Two implementations of one lookup is the shape that silently diverges,
+    // so assert they agree against real Lucene-written data for every document
+    // -- and in three access orders, because a cache that is only exercised
+    // forwards can be wrong on the first two.
+    let mut reader = ndv::NumericReader::new(&data_buf, entry);
+    for (doc, &want) in expected.iter().enumerate() {
+        assert_eq!(
+            reader.value(doc as i32).unwrap(),
+            want,
+            "forward, doc {doc}"
+        );
+    }
+    let mut reader = ndv::NumericReader::new(&data_buf, entry);
+    for (doc, &want) in expected.iter().enumerate().rev() {
+        assert_eq!(
+            reader.value(doc as i32).unwrap(),
+            want,
+            "backward, doc {doc}"
+        );
+    }
+    // Strided, so consecutive calls land in different blocks and every one is a
+    // cache miss -- the path the forward walk above never takes.
+    let mut reader = ndv::NumericReader::new(&data_buf, entry);
+    let mut doc = 0usize;
+    for _ in 0..expected.len() {
+        assert_eq!(
+            reader.value(doc as i32).unwrap(),
+            expected[doc],
+            "strided, doc {doc}"
+        );
+        doc = (doc + 16_384 + 1) % expected.len();
+    }
+
+    // Out-of-range must be the same error the free function raises, not a
+    // silent read of whatever the cached block happens to hold.
+    assert!(reader.value(max_doc as i32).is_err());
+    assert!(reader.value(-1).is_err());
 }
