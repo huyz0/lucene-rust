@@ -56,36 +56,30 @@
 //! collector a second time reproduces the same global ranking a single
 //! flat collector over all segments' hits would have produced.
 //!
-//! ## Scope decision: per-segment BM25 idf, not index-wide idf
+//! ## Scope decision: reader-wide BM25 idf, matching Lucene
 //!
 //! Real Lucene's default `BM25Similarity` computes `idf` from
 //! `CollectionStatistics`/`TermStatistics` gathered **index-wide** across every
-//! segment (`IndexSearcher.termStatistics`/`collectionStatistics` sum
-//! `docFreq`/`docCount`/`sumTotalTermFreq` over every leaf before `Similarity
-//! .scorer` ever runs) -- not per-segment. This port's existing scored query
-//! functions (`term_doc_scores` in `lib.rs`, unchanged by this task) compute
-//! `idf` from `field_terms.doc_count`/`stats.doc_freq`, which are **that one
-//! segment's own** term dictionary statistics (`blocktree::FieldTerms`/
-//! `TermStats`, task #13's plumbing) -- there is no index-wide statistics
-//! aggregation anywhere in this port.
+//! segment: `IndexSearcher.termStatistics`/`collectionStatistics` sum
+//! `docFreq`/`docCount` over every leaf *before* `Similarity.scorer` ever runs,
+//! and the resulting `Scorer` is then reused unchanged on each leaf. A term's
+//! idf is therefore one number for the whole reader, not one per segment.
 //!
-//! This task deliberately does **not** add that aggregation. Each segment's
-//! own score, taken alone, is exactly what this crate's existing
-//! differentially-verified scoring already produces (correct for a
-//! single-segment index); this task's new code is additive fan-out/merge
-//! plumbing on top of already-correct per-segment scores, not a rewrite of
-//! the scoring formula itself. Concretely: **the merged, multi-segment
-//! `Vec<ScoreDoc>` this module returns is *not* claimed to be a byte-for-byte
-//! match of real multi-segment Lucene's BM25 scores** whenever a term's
-//! `docFreq`/`docCount` genuinely differ across segments (which is the common
-//! case for any index with more than one segment) -- only "correct matching +
-//! correct per-segment-relative scoring + correct global merge order" is
-//! claimed. This gap is the same one flagged as a known limitation in
-//! `docs/parity.md`; adding real index-wide `CollectionStatistics` would need
-//! a new aggregation step across every segment's term dictionary before any
-//! scoring starts (naturally a `DirectoryReader`-level concept this port
-//! doesn't have yet) and is out of scope for this task -- tracked as a
-//! follow-up in `docs/parity.md` rather than silently glossed over.
+//! This module reproduces that. [`global_term_stats`] does the summation for a
+//! single term and [`global_boolean_stats`] for every leaf term a boolean query
+//! mentions; the result is threaded into each per-segment search through the
+//! `_with_stats` entry points in `lib.rs`, so every segment scores from the same
+//! counters. `None` there means "use this segment's own counters", which is what
+//! the single-segment entry points still pass and is equivalent whenever there
+//! is only one segment.
+//!
+//! This was not always so, and the bug it caused is worth recording. Scoring
+//! each segment from its own term dictionary made `body:t0`'s idf range 0.000473
+//! to 0.000763 across M1's 15-segment corpus -- a 1.6x spread around the global
+//! 0.000574 -- so the merged top-k filled from whichever segment happened to
+//! make the term look rarest, and all 20 benchmark queries disagreed with Java
+//! on their hit sets. Every differential fixture is a single segment, where the
+//! two are identical, so nothing caught it until the multi-segment benchmark ran.
 
 use crate::collector::{
     FieldValueDoc, ScoreDoc, ScoringCollector, SortDirection, TopDocsCollector, TopFieldCollector,
@@ -330,24 +324,6 @@ where
     ))
 }
 
-/// Multi-segment sibling of [`crate::search_term_query_scored`]: runs `query`
-/// against every segment in `segments` (in the order given -- `doc_base`
-/// values are used exactly as supplied, see [`OpenSegment::doc_base`]'s doc
-/// comment), translates local doc IDs to global ones, and returns the
-/// globally top-`top_n` hits by score (ties broken by ascending global doc
-/// ID, matching [`crate::collector::TopDocsCollector`]'s own tie-break --
-/// see this module's doc comment for why reusing that collector for the
-/// merge step reproduces real Lucene's `HitQueue` tie-break globally, not
-/// just per segment).
-///
-/// `norms`: per-segment, parallel to `segments` (`norms[i]` is segment `i`'s
-/// opened norms for `query.field`, or `None` to fall back to the constant
-/// approximation -- same meaning as `search_term_query_scored`'s own `norms`
-/// parameter, just one per segment instead of one total).
-///
-/// See this module's doc comment for the explicit idf scope decision: each
-/// segment's own score is computed from *that segment's own* `docFreq`/
-/// `docCount`, not an index-wide aggregate.
 /// Sum `docFreq` and `docCount` for one term across every segment, as
 /// Lucene's `IndexSearcher` does before scoring any leaf.
 ///
@@ -377,6 +353,53 @@ fn global_term_stats(
     })
 }
 
+/// Reader-wide statistics for every leaf `Clause::Term` a boolean query
+/// mentions, so each segment scores with one idf per term -- see
+/// [`crate::CollectionStats`].
+fn global_boolean_stats(segments: &[OpenSegment<'_>], query: &BooleanQuery) -> crate::GlobalStats {
+    fn walk(q: &BooleanQuery, out: &mut Vec<(String, Vec<u8>)>) {
+        for c in q
+            .must
+            .iter()
+            .chain(q.should.iter())
+            .chain(q.must_not.iter())
+        {
+            match c {
+                crate::query::Clause::Term(t) => out.push((t.field.clone(), t.term.clone())),
+                crate::query::Clause::Boolean(inner) => walk(inner, out),
+                _ => {}
+            }
+        }
+    }
+    let mut terms = Vec::new();
+    walk(query, &mut terms);
+    let mut map = crate::GlobalStats::new();
+    for (field, term) in terms {
+        if let Some(stats) = global_term_stats(segments, &field, &term) {
+            map.insert((field, term), stats);
+        }
+    }
+    map
+}
+
+/// Multi-segment sibling of [`crate::search_term_query_scored`]: runs `query`
+/// against every segment in `segments` (in the order given -- `doc_base`
+/// values are used exactly as supplied, see [`OpenSegment::doc_base`]'s doc
+/// comment), translates local doc IDs to global ones, and returns the
+/// globally top-`top_n` hits by score (ties broken by ascending global doc
+/// ID, matching [`crate::collector::TopDocsCollector`]'s own tie-break --
+/// see this module's doc comment for why reusing that collector for the
+/// merge step reproduces real Lucene's `HitQueue` tie-break globally, not
+/// just per segment).
+///
+/// `norms`: per-segment, parallel to `segments` (`norms[i]` is segment `i`'s
+/// opened norms for `query.field`, or `None` to fall back to the constant
+/// approximation -- same meaning as `search_term_query_scored`'s own `norms`
+/// parameter, just one per segment instead of one total).
+///
+/// idf comes from [`global_term_stats`]: `docFreq`/`docCount` summed across
+/// every segment, so a term scores identically in each one -- see this
+/// module's doc comment.
 pub fn search_term_query_multi_segment(
     segments: &[OpenSegment<'_>],
     query: &TermQuery,
@@ -462,11 +485,12 @@ pub fn search_boolean_query_multi_segment(
         norms.len(),
         "one norms entry per segment expected"
     );
+    let global = global_boolean_stats(segments, query);
     let doc_bases: Vec<i32> = segments.iter().map(|s| s.doc_base).collect();
     merge_multi_segment_scored(&doc_bases, top_n, |i, local| {
         let seg = &segments[i];
         let seg_norms = norms.get(i).copied().flatten();
-        crate::search_boolean_query_scored(
+        crate::search_boolean_query_scored_with_stats(
             seg.fields,
             seg.doc_in,
             seg.pos_in,
@@ -475,6 +499,7 @@ pub fn search_boolean_query_multi_segment(
             None,
             query,
             seg_norms,
+            Some(&global),
             local,
         )
     })
@@ -494,11 +519,12 @@ pub fn search_boolean_query_multi_segment_concurrent(
         norms.len(),
         "one norms entry per segment expected"
     );
+    let global = global_boolean_stats(segments, query);
     let doc_bases: Vec<i32> = segments.iter().map(|s| s.doc_base).collect();
     merge_multi_segment_scored_concurrent(&doc_bases, top_n, |i, local| {
         let seg = &segments[i];
         let seg_norms = norms.get(i).copied().flatten();
-        crate::search_boolean_query_scored(
+        crate::search_boolean_query_scored_with_stats(
             seg.fields,
             seg.doc_in,
             seg.pos_in,
@@ -507,6 +533,7 @@ pub fn search_boolean_query_multi_segment_concurrent(
             None,
             query,
             seg_norms,
+            Some(&global),
             local,
         )
     })
@@ -550,11 +577,12 @@ pub fn search_boolean_query_multi_segment_maxscore(
         norms.len(),
         "one norms entry per segment expected"
     );
+    let global = global_boolean_stats(segments, query);
     let doc_bases: Vec<i32> = segments.iter().map(|s| s.doc_base).collect();
     merge_multi_segment_scored(&doc_bases, top_n, |i, local| {
         let seg = &segments[i];
         let seg_norms = norms.get(i).copied().flatten();
-        crate::search_boolean_query_scored_maxscore(
+        crate::search_boolean_query_scored_maxscore_with_stats(
             seg.fields,
             seg.doc_in,
             seg.pos_in,
@@ -563,6 +591,7 @@ pub fn search_boolean_query_multi_segment_maxscore(
             None,
             query,
             seg_norms,
+            Some(&global),
             local,
         )
     })
@@ -587,11 +616,12 @@ pub fn search_boolean_query_multi_segment_maxscore_concurrent(
         norms.len(),
         "one norms entry per segment expected"
     );
+    let global = global_boolean_stats(segments, query);
     let doc_bases: Vec<i32> = segments.iter().map(|s| s.doc_base).collect();
     merge_multi_segment_scored_concurrent(&doc_bases, top_n, |i, local| {
         let seg = &segments[i];
         let seg_norms = norms.get(i).copied().flatten();
-        crate::search_boolean_query_scored_maxscore(
+        crate::search_boolean_query_scored_maxscore_with_stats(
             seg.fields,
             seg.doc_in,
             seg.pos_in,
@@ -600,6 +630,7 @@ pub fn search_boolean_query_multi_segment_maxscore_concurrent(
             None,
             query,
             seg_norms,
+            Some(&global),
             local,
         )
     })

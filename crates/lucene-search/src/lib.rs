@@ -1709,6 +1709,7 @@ fn try_disjunction_lazy<C: ScoringCollector>(
     live_docs: Option<&FixedBitSet>,
     query: &BooleanQuery,
     norms: Option<&HashMap<String, FieldNorms<'_>>>,
+    global: Option<&GlobalStats>,
     collector: &mut C,
 ) -> Result<bool> {
     if query.should.is_empty()
@@ -1785,11 +1786,16 @@ fn try_disjunction_lazy<C: ScoringCollector>(
             continue;
         };
         let doc = cursor.next_doc().map_err(blocktree::Error::Postings)?;
+        let (doc_freq, doc_count) =
+            match global.and_then(|g| g.get(&(t.field.clone(), t.term.clone()))) {
+                Some(g) => (g.doc_freq, g.doc_count),
+                None => (stats.doc_freq as i64, field_terms.doc_count as i64),
+            };
         legs.push(Leg {
             cursor,
             doc,
-            doc_freq: stats.doc_freq as i64,
-            doc_count: field_terms.doc_count as i64,
+            doc_freq,
+            doc_count,
             norms: norms.and_then(|m| m.get(&t.field)),
         });
     }
@@ -1916,7 +1922,11 @@ pub struct CollectionStats {
     pub doc_count: i64,
 }
 
-// Lazy leapfrog conjunction: the pure-`must`, all-[`Clause::Term`] shape,
+/// Reader-wide statistics for every term a query mentions, keyed by
+/// `(field, term)`. Built once per search by the multi-segment layer.
+pub type GlobalStats = HashMap<(String, Vec<u8>), CollectionStats>;
+
+/// Lazy leapfrog conjunction: the pure-`must`, all-[`Clause::Term`] shape,
 /// executed without materializing any clause's doc list.
 ///
 /// ## Why this exists
@@ -1952,6 +1962,7 @@ fn try_conjunction_lazy<C: ScoringCollector>(
     live_docs: Option<&FixedBitSet>,
     query: &BooleanQuery,
     norms: Option<&HashMap<String, FieldNorms<'_>>>,
+    global: Option<&GlobalStats>,
     collector: &mut C,
 ) -> Result<bool> {
     // Shape gate: pure conjunction of leaf terms, nothing else.
@@ -2030,10 +2041,16 @@ fn try_conjunction_lazy<C: ScoringCollector>(
         let Some(cursor) = field_terms.lazy_postings(&t.term, doc_in)? else {
             return Ok(true);
         };
+        // Reader-wide idf where available, matching Lucene's per-leaf scoring.
+        let (doc_freq, doc_count) =
+            match global.and_then(|g| g.get(&(t.field.clone(), t.term.clone()))) {
+                Some(g) => (g.doc_freq, g.doc_count),
+                None => (stats.doc_freq as i64, field_terms.doc_count as i64),
+            };
         legs.push(Leg {
             cursor,
-            doc_freq: stats.doc_freq as i64,
-            doc_count: field_terms.doc_count as i64,
+            doc_freq,
+            doc_count,
             norms: norms.and_then(|m| m.get(&t.field)),
         });
     }
@@ -2154,10 +2171,31 @@ pub fn search_boolean_query_scored<C: ScoringCollector>(
     norms: Option<&HashMap<String, FieldNorms<'_>>>,
     collector: &mut C,
 ) -> Result<()> {
+    search_boolean_query_scored_with_stats(
+        fields, doc_in, pos_in, pay_in, live_docs, points, query, norms, None, collector,
+    )
+}
+
+/// [`search_boolean_query_scored`] taking reader-wide statistics, so a
+/// multi-segment boolean search scores every leaf with one idf per term -- see
+/// [`CollectionStats`]. `None` keeps each segment's own counters.
+#[allow(clippy::too_many_arguments)]
+pub fn search_boolean_query_scored_with_stats<C: ScoringCollector>(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    pos_in: Option<&PosInput<'_>>,
+    pay_in: Option<&PayInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    points: Option<&PointsInput<'_>>,
+    query: &BooleanQuery,
+    norms: Option<&HashMap<String, FieldNorms<'_>>>,
+    global: Option<&GlobalStats>,
+    collector: &mut C,
+) -> Result<()> {
     // Pure conjunctions of leaf terms run lazily, without materializing any
     // clause's doc list. Everything else falls through to the general path.
-    if try_conjunction_lazy(fields, doc_in, live_docs, query, norms, collector)?
-        || try_disjunction_lazy(fields, doc_in, live_docs, query, norms, collector)?
+    if try_conjunction_lazy(fields, doc_in, live_docs, query, norms, global, collector)?
+        || try_disjunction_lazy(fields, doc_in, live_docs, query, norms, global, collector)?
     {
         return Ok(());
     }
@@ -2273,6 +2311,28 @@ pub fn search_boolean_query_scored_maxscore(
     norms: Option<&HashMap<String, FieldNorms<'_>>>,
     collector: &mut collector::TopDocsCollector,
 ) -> Result<()> {
+    search_boolean_query_scored_maxscore_with_stats(
+        fields, doc_in, pos_in, pay_in, live_docs, points, query, norms, None, collector,
+    )
+}
+
+/// [`search_boolean_query_scored_maxscore`] taking reader-wide statistics, so
+/// it agrees with [`search_boolean_query_scored_with_stats`] on a multi-segment
+/// index -- the two must produce identical output, and they cannot if only one
+/// of them scores globally.
+#[allow(clippy::too_many_arguments)]
+pub fn search_boolean_query_scored_maxscore_with_stats(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    pos_in: Option<&PosInput<'_>>,
+    pay_in: Option<&PayInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    points: Option<&PointsInput<'_>>,
+    query: &BooleanQuery,
+    norms: Option<&HashMap<String, FieldNorms<'_>>>,
+    global: Option<&GlobalStats>,
+    collector: &mut collector::TopDocsCollector,
+) -> Result<()> {
     // M1.5 measurement, recorded here because it is counter-intuitive: on M1's
     // 5M-document corpus this MAXSCORE implementation is 4-5x *slower* than the
     // plain lazy union `search_boolean_query_scored` now uses -- 655ms vs 163ms
@@ -2286,8 +2346,8 @@ pub fn search_boolean_query_scored_maxscore(
     // exactly one call site reproducing `search_boolean_query_scored`'s exact
     // behavior -- no risk of the fast path silently diverging from it.
     let fallback = |collector: &mut collector::TopDocsCollector| {
-        search_boolean_query_scored(
-            fields, doc_in, pos_in, pay_in, live_docs, points, query, norms, collector,
+        search_boolean_query_scored_with_stats(
+            fields, doc_in, pos_in, pay_in, live_docs, points, query, norms, global, collector,
         )
     };
 
@@ -2301,7 +2361,7 @@ pub fn search_boolean_query_scored_maxscore(
     // skipping this function's invariant test asserts. That objection is now
     // answered: the lazy path skips spans and records them, so the test
     // measures real skipping rather than passing by luck.
-    if try_disjunction_lazy(fields, doc_in, live_docs, query, norms, collector)? {
+    if try_disjunction_lazy(fields, doc_in, live_docs, query, norms, global, collector)? {
         return Ok(());
     }
 
