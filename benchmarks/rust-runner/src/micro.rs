@@ -16,6 +16,7 @@
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
+use lucene_codecs::direct_reader;
 use lucene_codecs::for_util::{self, ForUtil, BLOCK_SIZE};
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_store::data_input::SliceInput;
@@ -153,6 +154,62 @@ fn bench_postings_iter(warmup: Duration, measure: Duration, index: &str) {
     }
 }
 
+/// `DirectReader.get(index)` -- the per-value read behind doc values and
+/// monotonic sequences. The Java counterpart is `DirectReaderMicro`, driving
+/// `DirectReader.getInstance(RandomAccessInput, bitsPerValue)` over the same
+/// bit-packed bytes.
+///
+/// Reads a fixed stride through a 1 MiB packed array rather than sequentially:
+/// this primitive exists to serve random per-document lookups, and a
+/// sequential sweep would measure the prefetcher instead.
+fn bench_direct_reader(warmup: Duration, measure: Duration) {
+    // Every width `DirectWriter` supports.
+    for bits in [1u8, 2, 4, 8, 12, 16, 20, 24, 28, 32, 40, 48, 56, 64] {
+        let count = 1 << 17;
+        let mask: i64 = if bits >= 64 { -1 } else { (1i64 << bits) - 1 };
+        let mut state: u64 = 0x243F_6A88_85A3_08D3 ^ bits as u64;
+        let values: Vec<i64> = (0..count)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                (state as i64) & mask
+            })
+            .collect();
+        let mut packed = direct_reader::encode(&values, bits);
+        // `DirectWriter` pads its output so a reader may always load a whole
+        // word; without it the tail elements take the slow path and the
+        // measurement is of the padding, not the read.
+        packed.resize(packed.len() + 8, 0);
+
+        // Guard the fixture, as the other cases do.
+        for i in [0usize, 1, count / 2, count - 1] {
+            assert_eq!(
+                direct_reader::get(&packed, bits, i as i64).unwrap(),
+                values[i],
+                "round-trip failed at bits={bits} i={i}"
+            );
+        }
+
+        // An odd stride, so consecutive reads land in different cache lines
+        // without ever repeating a value.
+        const STRIDE: usize = 4099;
+        let run = |budget| {
+            let mut i = 0usize;
+            timed_loop(budget, || {
+                i = (i + STRIDE) & (count - 1);
+                black_box(direct_reader::get(black_box(&packed), bits, i as i64).unwrap());
+            })
+        };
+        run(warmup);
+        let (elapsed, ops) = run(measure);
+        println!(
+            "bits{bits:02}\t{:.3}\t{ops}",
+            elapsed.as_nanos() as f64 / ops as f64
+        );
+    }
+}
+
 fn main() {
     let ms = |name: &str, default: u64| -> Duration {
         Duration::from_millis(
@@ -168,6 +225,7 @@ fn main() {
     let which = std::env::args().nth(1).unwrap_or_else(|| "for_decode".into());
     match which.as_str() {
         "for_decode" => bench_for_decode(warmup, measure),
+        "direct_reader" => bench_direct_reader(warmup, measure),
         "postings_iter" => {
             let index = std::env::args()
                 .nth(2)

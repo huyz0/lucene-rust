@@ -6,6 +6,10 @@ pub mod blocktree;
 pub mod compound_format;
 mod deflate;
 pub mod direct_monotonic;
+/// `DirectReader`/`DirectWriter` bit-packing. Public for the same reason
+/// [`for_util`] is: a per-value decode primitive on the doc-values and
+/// monotonic-sequence paths, and `DirectReader.getInstance` is public in
+/// Lucene, so the two can be benchmarked directly against each other.
 pub mod direct_reader;
 pub mod doc_values;
 pub mod doc_values_updates;

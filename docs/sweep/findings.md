@@ -629,3 +629,80 @@ What remains in the profile is `term_doc_positions` itself — decoding every
 position of every document containing each term, before any of them is known to
 be a phrase candidate. That is the part that needs the lazy cursor, and it is
 still open.
+
+---
+
+## `crates/lucene-codecs/src/direct_reader.rs`
+
+**Lucene counterpart:** `util/packed/DirectReader.java` (its fourteen
+`DirectPackedReaderNN` classes), `util/packed/DirectWriter.java`.
+
+**Measurement:** `scripts/bench-micro.sh --bench direct_reader` — a fixed odd
+stride through a packed array of 2^17 values, one `get(index)` per op, every
+width `DirectWriter` supports. Strided rather than sequential deliberately: this
+primitive serves random per-document lookups, and a sequential sweep would
+measure the hardware prefetcher.
+
+### O17 — `get` read one byte at a time
+
+`direct_reader::get` assembled its word with `for (i, &b) in bytes.iter()`: one
+load, one shift and one OR per byte. Lucene's `DirectPackedReaderNN` classes each
+issue a single `readInt`/`readLong`.
+
+The shape of the measurement is the finding — our cost rose linearly with the
+width while Lucene's stayed flat:
+
+| bits | rust before | java | | rust after | |
+|---|---|---|---|---|---|
+| 1 | 1.96 ns | 0.68 ns | 0.35x | 1.22 ns | 0.56x |
+| 8 | 1.98 ns | 2.21 ns | 1.12x | 1.24 ns | 1.79x |
+| 32 | 3.18 ns | 2.33 ns | 0.74x | 1.41 ns | 1.65x |
+| 64 | **5.25 ns** | 2.34 ns | 0.45x | **1.42 ns** | 1.64x |
+| median | | | **0.82x** | | **1.82x** |
+
+Fixed with a single 8-byte little-endian load whenever eight bytes are in range,
+falling back to the byte loop at the tail. Eight bytes always suffice for the
+supported widths: the non-byte-aligned ones stop at 28 bits (five bytes at
+worst) and the byte-aligned ones never carry a shift. This is also what
+`DirectWriter`'s output padding is *for* — `padding_bytes_needed` in this same
+file is already this port's copy of that rule, and `Lucene90DocValuesConsumer`
+writes the padding for exactly this reason.
+
+Now flat at ~1.23 ns across all fourteen widths, 3.7x faster than before at 64
+bits and 1.82x Lucene overall. `bits01`/`bits02` remain below 1.0x; Lucene's
+0.68 ns for a one-bit read is faster than a dependent load can be, so that
+column is measuring C2 folding the specialized reader away rather than measuring
+a read.
+
+This is not on the measured query path — doc values, sorting and facets use it,
+and none of M1's 20 queries do. It was found by reading, and it is recorded here
+with that caveat rather than being claimed as an end-to-end improvement.
+
+---
+
+## `crates/lucene-store/src/directory.rs`
+
+**Lucene counterpart:** `store/MMapDirectory.java`, `store/MemorySegmentIndexInput.java`.
+
+### Checked, no gap: `madvise`
+
+Lucene's `MMapDirectory` can call `madvise()` with per-file read advice, and
+codecs pass hints (`Lucene90CompressingStoredFieldsReader` asks for
+`DataAccessHint.RANDOM`, merges and flushes get `SEQUENTIAL`). This port calls
+none, which looked like a gap.
+
+It is not one at the default. `MMapDirectory.readAdvice` initialises to
+`(filename, context) -> Optional.empty()` — no advice at all unless a caller
+installs `ADVISE_BY_CONTEXT` or its own function. The hints the codecs pass are
+inert until someone does. So the out-of-the-box behaviour matches, and the
+honest finding is that per-file advice is a *feature* this port does not offer,
+not a performance defect it is suffering from.
+
+Recorded rather than acted on, and deliberately not guessed at: `MADV_RANDOM`
+disables kernel readahead, so applying it blind could easily cost more than it
+saves. Verifying it needs a cold-page-cache benchmark, which the current harness
+is not — every measurement in this milestone runs against a warm 1.6 GB index.
+
+Still open in this file: `IndexInput.prefetch` (Lucene 10's explicit
+`madvise(WILLNEED)`, used to overlap IO with decode) has no equivalent here.
+Same caveat — it cannot be measured warm.
