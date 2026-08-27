@@ -1551,6 +1551,130 @@ fn dismax_scores(
 /// `pos_in`/`pay_in`: see [`search_boolean_query`]'s doc comment -- same
 /// contract, needed only when `query` contains a multi-term `Clause::Phrase` at
 /// any nesting depth.
+/// Lazy disjunction: the pure-`should`, all-[`Clause::Term`] shape, executed
+/// without materializing any clause's doc list.
+///
+/// The conjunction sibling of this is [`try_conjunction_lazy`]; the same
+/// argument applies. [`resolve_clause_docs`] builds a `Vec<i32>` per clause and
+/// then unions them, so a disjunction pays for every posting of every clause
+/// plus a `HashMap` of every matching doc, for a query that wants the top 50.
+///
+/// Here every cursor advances in lock-step over the union: the smallest
+/// current doc across the cursors is the next candidate, every cursor sitting
+/// on it contributes its BM25 term, and only those cursors advance. Cursor
+/// selection is a linear scan rather than a heap on purpose -- real
+/// disjunctions have a handful of clauses, and a linear minimum over 2-4
+/// entries beats the heap's bookkeeping.
+///
+/// This does **not** prune: it still visits every doc in the union, so it is a
+/// smaller win than the conjunction's. Removing that visit needs block-max
+/// WAND, which is a larger change and is not in this milestone.
+///
+/// `minimum_should_match` is deliberately excluded from the gate: honouring it
+/// requires counting matching clauses per doc, which is the general path's job.
+/// Returns `Ok(false)` when the query does not have this shape.
+fn try_disjunction_lazy<C: ScoringCollector>(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    query: &BooleanQuery,
+    norms: Option<&HashMap<String, FieldNorms<'_>>>,
+    collector: &mut C,
+) -> Result<bool> {
+    if query.should.is_empty()
+        || !query.must.is_empty()
+        || !query.must_not.is_empty()
+        || query.minimum_should_match > 1
+    {
+        return Ok(false);
+    }
+    let mut terms = Vec::with_capacity(query.should.len());
+    for clause in &query.should {
+        match clause {
+            Clause::Term(t) => terms.push(t),
+            _ => return Ok(false),
+        }
+    }
+    let Some(doc_in) = doc_in else {
+        return Ok(false);
+    };
+
+    struct Leg<'a> {
+        cursor: lucene_codecs::postings::LazyDocsCursor<'a>,
+        doc: i32,
+        doc_freq: i64,
+        doc_count: i64,
+        norms: Option<&'a FieldNorms<'a>>,
+    }
+    let mut legs: Vec<Leg<'_>> = Vec::with_capacity(terms.len());
+    for t in &terms {
+        let Some(field_terms) = fields.field(&t.field) else {
+            continue; // absent field contributes nothing to a union
+        };
+        let Some(stats) = field_terms.seek_exact(&t.term) else {
+            continue; // absent term likewise
+        };
+        // Pulsed singleton (see try_conjunction_lazy): no .doc bytes exist for
+        // it. Unlike an absent term it *does* contribute to the union, so the
+        // clause cannot simply be skipped -- the whole query falls back.
+        if stats.doc_freq <= 1 {
+            return Ok(false);
+        }
+        let Some(mut cursor) = field_terms.lazy_postings(&t.term, doc_in)? else {
+            continue;
+        };
+        let doc = cursor.next_doc().map_err(blocktree::Error::Postings)?;
+        legs.push(Leg {
+            cursor,
+            doc,
+            doc_freq: stats.doc_freq as i64,
+            doc_count: field_terms.doc_count as i64,
+            norms: norms.and_then(|m| m.get(&t.field)),
+        });
+    }
+
+    loop {
+        let Some(candidate) = legs
+            .iter()
+            .map(|l| l.doc)
+            .filter(|&d| d != lucene_codecs::postings::NO_MORE_DOCS)
+            .min()
+        else {
+            return Ok(true); // every cursor exhausted
+        };
+
+        let live = live_docs.is_none_or(|bits| bits.get(candidate as usize));
+        let mut score = 0.0f32;
+        for leg in legs.iter_mut() {
+            if leg.doc != candidate {
+                continue;
+            }
+            if live {
+                let freq = leg.cursor.freq().unwrap_or(1) as f32;
+                let (field_length, avg_field_length) = match leg.norms {
+                    Some(n) => (n.field_length(candidate)?, n.avg_field_length),
+                    None => (
+                        similarity::UNNORMED_FIELD_LENGTH,
+                        similarity::UNNORMED_FIELD_LENGTH,
+                    ),
+                };
+                score += similarity::score_with_params(
+                    leg.doc_freq,
+                    leg.doc_count,
+                    freq,
+                    field_length,
+                    avg_field_length,
+                    similarity::Bm25Params::default(),
+                );
+            }
+            leg.doc = leg.cursor.next_doc().map_err(blocktree::Error::Postings)?;
+        }
+        if live {
+            collector.collect(candidate, score);
+        }
+    }
+}
+
 /// Lazy leapfrog conjunction: the pure-`must`, all-[`Clause::Term`] shape,
 /// executed without materializing any clause's doc list.
 ///
@@ -1620,6 +1744,14 @@ fn try_conjunction_lazy<C: ScoringCollector>(
         let Some(stats) = field_terms.seek_exact(&t.term) else {
             return Ok(true); // term absent: no matches
         };
+        // docFreq <= 1 is pulsed into the term dictionary: the term has no .doc
+        // bytes at all, so lazy_postings cannot open a cursor for it. Hand the
+        // whole query to the general path, which reads it from the term
+        // metadata. Cheap to give up on -- such a conjunction matches at most
+        // one document.
+        if stats.doc_freq <= 1 {
+            return Ok(false);
+        }
         let Some(cursor) = field_terms.lazy_postings(&t.term, doc_in)? else {
             return Ok(true);
         };
@@ -1699,7 +1831,9 @@ pub fn search_boolean_query_scored<C: ScoringCollector>(
 ) -> Result<()> {
     // Pure conjunctions of leaf terms run lazily, without materializing any
     // clause's doc list. Everything else falls through to the general path.
-    if try_conjunction_lazy(fields, doc_in, live_docs, query, norms, collector)? {
+    if try_conjunction_lazy(fields, doc_in, live_docs, query, norms, collector)?
+        || try_disjunction_lazy(fields, doc_in, live_docs, query, norms, collector)?
+    {
         return Ok(());
     }
 
@@ -1814,6 +1948,15 @@ pub fn search_boolean_query_scored_maxscore(
     norms: Option<&HashMap<String, FieldNorms<'_>>>,
     collector: &mut collector::TopDocsCollector,
 ) -> Result<()> {
+    // M1.5 measurement, recorded here because it is counter-intuitive: on M1's
+    // 5M-document corpus this MAXSCORE implementation is 4-5x *slower* than the
+    // plain lazy union `search_boolean_query_scored` now uses -- 655ms vs 163ms
+    // on `t0 OR t1`, 1,619ms vs 326ms on a four-clause disjunction. It is not
+    // failing to prune: `boolean_query_scored_maxscore_matches_eager_ffi_path_
+    // and_actually_skips_blocks` proves blocks are provably skipped. The
+    // per-doc bookkeeping simply costs more than the skipping saves at this
+    // top-k size. Reviving it means block-max WAND over the same cursors; until
+    // then, prefer the plain scored entry point. See docs/benchmarks/.
     // Every fallback path below routes through this closure so there is
     // exactly one call site reproducing `search_boolean_query_scored`'s exact
     // behavior -- no risk of the fast path silently diverging from it.
@@ -3130,6 +3273,42 @@ mod tests {
                 a.score,
                 b.score
             );
+        }
+    }
+
+    /// A `docFreq == 1` term is pulsed into the term dictionary and has no
+    /// `.doc` bytes, so `lazy_postings` cannot open a cursor for it. Both lazy
+    /// paths must hand such a query to the general path rather than erroring.
+    ///
+    /// Regression: the first cut of the lazy conjunction did not guard this and
+    /// would have propagated `Unsupported("docFreq <= 1")` to the caller. The
+    /// disjunction's version of the same bug is what the existing maxscore
+    /// singleton test caught; nothing covered the conjunction, hence this.
+    #[test]
+    fn lazy_paths_fall_back_for_pulsed_singleton_terms() {
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+
+        // "id"/"id2" has docFreq == 1 in this fixture.
+        for q in [
+            BooleanQuery::new()
+                .with_must([TermQuery::new("body", "cat"), TermQuery::new("id", "id2")]),
+            BooleanQuery::new()
+                .with_should([TermQuery::new("body", "cat"), TermQuery::new("id", "id2")]),
+        ] {
+            let mut c = collector::TopDocsCollector::new(10);
+            search_boolean_query_scored(
+                &fields,
+                doc_in.as_ref(),
+                None,
+                None,
+                None,
+                None,
+                &q,
+                None,
+                &mut c,
+            )
+            .expect("pulsed singleton must not error");
         }
     }
 
