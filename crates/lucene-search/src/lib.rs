@@ -1198,8 +1198,56 @@ pub fn search_term_query_scored_maxscore(
     let mut cached_bound: Option<(i32, f32)> = None;
 
     let mut doc_id = cursor.next_doc().map_err(blocktree::Error::from)?;
+
+    // A global upper bound on any document's score for this term, used for an
+    // early exit. Real Lucene's MaxScoreCache keeps `globalMaxScore` for exactly
+    // this and falls back to it whenever a level has no impacts
+    // (`getMaxScore` returns it when `getLevel` yields -1).
+    //
+    // This port previously pruned only when per-block impacts existed
+    // (`if !impacts.is_empty()`), so a field indexed without frequencies -- a
+    // StringField/keyword, which carries no impacts on the wire at all -- was
+    // never pruned and scanned its entire posting list. On the benchmark corpus
+    // that made `keyword:t0` (4,997,130 postings, all scoring identically)
+    // 866x slower than Lucene, which stops as soon as the top-k is full.
+    //
+    // Without frequencies every doc has freq 1, so the bound is tight -- with
+    // norms absent it is the exact, constant score every doc receives, and the
+    // early exit fires the moment the collector fills. With frequencies the
+    // supremum of `tf_norm` as freq grows is `k1 + 1`.
+    let global_bound = {
+        let idf = similarity::idf(doc_freq, doc_count);
+        // Highest frequency any single document can have: every occurrence
+        // beyond one-per-matching-document could sit in one doc. For a field
+        // indexed without frequencies `totalTermFreq` aliases `docFreq`, so
+        // this collapses to exactly 1 -- which is what makes the bound tight
+        // enough to fire on a keyword field. Deriving it from the term's own
+        // statistics beats special-casing index options, and it is tighter than
+        // `tf_norm`'s supremum of `k1 + 1` for ordinary fields too.
+        let max_freq = (stats.total_term_freq - doc_freq + 1).max(1) as f32;
+        let (len, avg) = match norms {
+            // Shortest possible document: the most favourable length norm.
+            Some(_) => (1.0, avg_field_length),
+            None => (
+                similarity::UNNORMED_FIELD_LENGTH,
+                similarity::UNNORMED_FIELD_LENGTH,
+            ),
+        };
+        idf * similarity::tf_norm(
+            max_freq,
+            len,
+            avg,
+            similarity::DEFAULT_K1,
+            similarity::DEFAULT_B,
+        )
+    };
+
     while doc_id != lucene_codecs::postings::NO_MORE_DOCS {
         if let Some(threshold) = collector.min_competitive_score() {
+            // Nothing left can be competitive, whatever the block impacts say.
+            if global_bound <= threshold {
+                break;
+            }
             let impacts = cursor.level0_impacts();
             if !impacts.is_empty() {
                 // When `norms` is `None`, every doc is actually scored below
