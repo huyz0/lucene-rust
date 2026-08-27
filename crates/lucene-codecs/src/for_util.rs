@@ -127,9 +127,7 @@ fn split_ints<R: DataInput>(
     c_index: usize,
     c_mask: u32,
 ) -> Result<()> {
-    for k in 0..count {
-        c[c_index + k] = r.read_u32_le()?;
-    }
+    r.read_u32s_le(&mut c[c_index..c_index + count])?;
     // Java: `(bShift - 1) / dec` using signed int division truncating toward
     // zero; `bShift == 0` (only reachable for `bits_per_value == 32` via
     // `decode_slow`) still yields `maxIter == 0` (one iteration at shift 0),
@@ -314,10 +312,7 @@ fn decode7<R: DataInput>(
 }
 
 fn decode8<R: DataInput>(r: &mut R, ints: &mut [u32; BLOCK_SIZE]) -> Result<()> {
-    for slot in ints[0..64].iter_mut() {
-        *slot = r.read_u32_le()?;
-    }
-    Ok(())
+    r.read_u32s_le(&mut ints[0..64])
 }
 
 fn decode9<R: DataInput>(
@@ -604,10 +599,7 @@ fn decode15<R: DataInput>(
 }
 
 fn decode16<R: DataInput>(r: &mut R, ints: &mut [u32; BLOCK_SIZE]) -> Result<()> {
-    for slot in ints[0..128].iter_mut() {
-        *slot = r.read_u32_le()?;
-    }
-    Ok(())
+    r.read_u32s_le(&mut ints[0..128])
 }
 
 /// `ForUtil`, as an owner of the scratch buffer its decode paths need.

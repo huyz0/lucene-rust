@@ -130,39 +130,66 @@ iterations, matching the Java harness's single `new ForUtil()` per case. Before
 that they charged the Rust side a zero-fill Lucene never pays — the comparison
 was measuring a workload the engine does not run.
 
-### O3 — optimisation: no bulk word read (open)
+### O3 — optimisation: no bulk word read
 
-`split_ints` reads its `count` words with `count` separate `read_u32_le()` calls,
-each with its own bounds check and `Result`. Lucene issues one
+`split_ints` read its `count` words with `count` separate `read_u32_le()` calls,
+each with its own bounds check and `Result`, where Lucene issues one
 `in.readInts(c, cIndex, count)`. `decode8`/`decode16`, which are *nothing but*
-that read, show the cost directly:
+that read, showed the cost directly: `bits08` at 0.48x was the one case that got
+*worse* across O1/O2 (19.9 -> 45.5 ns) while every other case improved. It does
+not call `split_ints` at all, so neither change touched it — the regression was
+codegen fallout from `split_ints` becoming vectorisable and inlining differently
+across the 30-arm dispatch, which is only possible because `decode8` was a
+64-iteration loop rather than a copy.
 
-| case | rust_ns | java_ns | ratio |
+Fixed by adding `DataInput::read_u32s_le`, the port's `readInts`: the default is
+the naive loop exactly as Lucene's default is, and `SliceInput` overrides it with
+one bounds check for the whole run followed by a `chunks_exact(4)` copy that LLVM
+lowers to a bulk move on a little-endian target. `split_ints`, `decode8` and
+`decode16` all use it.
+
+| | median | mean |
+|---|---|---|
+| after O2 | 1.62x | 1.75x |
+| after O3 | **2.26x** | 2.24x |
+
+`bits08` 45.5 -> 14.2 ns (0.48x -> 1.54x), `bits16` 19.5 -> 14.6 ns
+(0.89x -> 1.19x). **Every one of the 31 widths is now above 1.0x**, which was not
+true at any earlier point in the sweep.
+
+### Where `for_util.rs` ended up
+
+| stage | median | mean | widths below Lucene |
 |---|---|---|---|
-| `bits08` | 45.5 | 21.7 | **0.48x** |
-| `bits16` | 19.5 | 17.2 | 0.89x |
+| baseline | 0.75x | 0.76x | 29 of 31 |
+| O1 loop nest order | 1.47x | 1.64x | 5 |
+| O2 reusable scratch | 1.62x | 1.75x | 3 |
+| O3 bulk word read | **2.26x** | 2.24x | **0** |
 
-`bits08` is the one case that got *worse* across O1/O2 (19.9 -> 45.5 ns) while
-every other case improved. It does not call `split_ints` at all, so neither
-change touched it; the regression is codegen fallout from `split_ints` becoming
-vectorisable and inlining differently across the 30-arm dispatch. That makes it a
-symptom of the missing bulk primitive rather than of the reorder: with a real
-bulk read, `decode8` stops being a 64-iteration loop that inlining decisions can
-swing by 2x.
+3.0x faster than where this file started, and 2.26x faster than Lucene's
+Panama-vectorised decode, from three changes none of which is SIMD.
 
-**Status: open, next task (A4).**
+The weakest remaining widths are 17-19 at 1.04-1.12x — the start of the
+`decode_slow` range, whose tail loop stitches values across word boundaries one
+at a time and is inherently serial.
 
-### O4 — optimisation: no SIMD (open)
+### O4 — optimisation: no SIMD (deferred, with reason)
 
 Lucene ships `MemorySegmentPostingDecodingUtil`, which loads `IntVector`s
 straight out of the mapped segment and does the shift/mask lanewise, selected at
 runtime by `VectorizationProvider`. This port has no explicit SIMD and no
-dispatch layer to hang one on; it relies entirely on LLVM auto-vectorising the
-scalar loops.
+dispatch layer to hang one on; it relies on LLVM auto-vectorising the scalar
+loops.
 
-After O1 that auto-vectorisation is evidently working — a scalar Rust kernel is
-already ahead of Lucene's Panama one on 26 of 31 widths. Explicit SIMD is
-therefore **deferred until A4 closes**, and gated on the gap that remains then.
-It is not free: `lucene-codecs` is `#![forbid(unsafe_code)]`, and `core::arch`
-intrinsics are `unsafe`, so this would mean relaxing a crate-wide guarantee for a
-kernel that currently does not need it.
+**Deferred, and this is a measured decision rather than a punt.** After O1-O3 the
+scalar Rust kernel beats Lucene's vectorised one on all 31 widths by a median of
+2.26x. Adding explicit SIMD would mean relaxing `#![forbid(unsafe_code)]` on
+`lucene-codecs` — `core::arch` intrinsics are `unsafe` — plus a runtime feature
+dispatch and a second implementation of the kernel to keep in agreement with the
+first, forever. That is a real and permanent cost against a kernel that is
+already ahead.
+
+Revisit if a future finding shows postings decode back on the critical path. The
+honest reading of these numbers is that the original 0.75x was never a SIMD
+problem: it was a loop written in the order that prevents vectorisation, a buffer
+allocated in the wrong scope, and a missing bulk primitive.

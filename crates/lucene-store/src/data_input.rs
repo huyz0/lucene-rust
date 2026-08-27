@@ -28,6 +28,23 @@ pub trait DataInput {
         Ok(u32::from_le_bytes(b))
     }
 
+    /// Lucene `DataInput.readInts(int[], int, int)`: fill `dst` with
+    /// little-endian 32-bit words.
+    ///
+    /// The default is the naive loop, exactly as Lucene's default is; the point
+    /// is that a backend able to do better can. `MemorySegmentIndexInput`
+    /// overrides it with a bulk copy, and [`SliceInput`] does the same, which
+    /// matters because `ForUtil`'s decode kernel reads up to 128 words per
+    /// 256-value block and paid one bounds check and one `Result` per word
+    /// before this existed.
+    #[inline]
+    fn read_u32s_le(&mut self, dst: &mut [u32]) -> Result<()> {
+        for v in dst.iter_mut() {
+            *v = self.read_u32_le()?;
+        }
+        Ok(())
+    }
+
     /// Lucene `readVInt`. Negative Java ints occupy 5 bytes.
     #[inline]
     fn read_vint(&mut self) -> Result<i32> {
@@ -329,6 +346,20 @@ impl DataInput for SliceInput<'_> {
     }
 
     #[inline]
+    fn read_u32s_le(&mut self, dst: &mut [u32]) -> Result<()> {
+        // One bounds check for the whole run, then a straight-line copy: on a
+        // little-endian target LLVM lowers the `chunks_exact` loop to a bulk
+        // move rather than per-word loads.
+        let end = self.pos + dst.len() * 4;
+        let src = self.buf.get(self.pos..end).ok_or_else(|| self.eof())?;
+        for (d, c) in dst.iter_mut().zip(src.chunks_exact(4)) {
+            *d = u32::from_le_bytes(c.try_into().unwrap());
+        }
+        self.pos = end;
+        Ok(())
+    }
+
+    #[inline]
     fn peek_u32_le(&mut self) -> Result<u32> {
         let src = self
             .buf
@@ -351,6 +382,109 @@ impl DataInput for SliceInput<'_> {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    /// A backend that implements only the trait's required methods, so every
+    /// provided method runs in its *default* form. `SliceInput` overrides
+    /// `read_u32_le`/`read_u32s_le`/`peek_u32_le`; without a second backend
+    /// those defaults would never execute, and a default that disagrees with
+    /// its override is exactly the bug that would then ship. Every test below
+    /// that decodes through this type asserts the two agree.
+    struct PlainInput<'a> {
+        buf: &'a [u8],
+        pos: usize,
+    }
+
+    impl DataInput for PlainInput<'_> {
+        fn read_byte(&mut self) -> Result<u8> {
+            let b = *self
+                .buf
+                .get(self.pos)
+                .ok_or(Error::Eof { offset: self.pos })?;
+            self.pos += 1;
+            Ok(b)
+        }
+
+        fn read_bytes(&mut self, out: &mut [u8]) -> Result<()> {
+            let end = self.pos + out.len();
+            let src = self
+                .buf
+                .get(self.pos..end)
+                .ok_or(Error::Eof { offset: self.pos })?;
+            out.copy_from_slice(src);
+            self.pos = end;
+            Ok(())
+        }
+
+        fn remaining(&self) -> usize {
+            self.buf.len() - self.pos
+        }
+
+        /// Deliberately refuses: this is the documented way a backend that
+        /// cannot peek forces `read_group_vints` down its safe path.
+        fn peek_u32_le(&mut self) -> Result<u32> {
+            Err(Error::Eof { offset: self.pos })
+        }
+
+        fn skip(&mut self, n: usize) -> Result<()> {
+            if self.remaining() < n {
+                return Err(Error::Eof { offset: self.pos });
+            }
+            self.pos += n;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn read_u32s_le_matches_the_default_implementation_word_for_word() {
+        let bytes: Vec<u8> = (0..64u8).collect();
+        let mut fast = [0u32; 16];
+        SliceInput::new(&bytes).read_u32s_le(&mut fast).unwrap();
+        let mut slow = [0u32; 16];
+        PlainInput {
+            buf: &bytes,
+            pos: 0,
+        }
+        .read_u32s_le(&mut slow)
+        .unwrap();
+        assert_eq!(fast, slow);
+        assert_eq!(fast[0], u32::from_le_bytes([0, 1, 2, 3]));
+        assert_eq!(fast[15], u32::from_le_bytes([60, 61, 62, 63]));
+    }
+
+    #[test]
+    fn read_u32s_le_advances_by_exactly_four_bytes_per_word() {
+        let bytes: Vec<u8> = (0..12u8).collect();
+        let mut input = SliceInput::new(&bytes);
+        let mut words = [0u32; 2];
+        input.read_u32s_le(&mut words).unwrap();
+        assert_eq!(input.position(), 8);
+        assert_eq!(
+            input.read_u32_le().unwrap(),
+            u32::from_le_bytes([8, 9, 10, 11])
+        );
+    }
+
+    #[test]
+    fn read_u32s_le_past_the_end_is_eof_and_consumes_nothing() {
+        let bytes = [0u8; 7]; // one word plus a partial one
+        let mut input = SliceInput::new(&bytes);
+        let mut words = [0u32; 2];
+        assert!(matches!(
+            input.read_u32s_le(&mut words),
+            Err(Error::Eof { .. })
+        ));
+        // The whole run is rejected up front, so the cursor must not have moved
+        // -- a partially-consumed input would desynchronize every later read.
+        assert_eq!(input.position(), 0);
+    }
+
+    #[test]
+    fn read_u32s_le_of_nothing_is_a_no_op() {
+        let bytes = [1u8, 2, 3, 4];
+        let mut input = SliceInput::new(&bytes);
+        input.read_u32s_le(&mut []).unwrap();
+        assert_eq!(input.position(), 0);
+    }
 
     /// Local test-only encoders mirroring Lucene's `DataOutput.writeVInt/VLong`
     /// algorithm. These exist purely to generate inputs for round-tripping our
