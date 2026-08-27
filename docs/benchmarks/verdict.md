@@ -1,5 +1,11 @@
 # M1 performance gate — verdict
 
+> **Superseded in part.** This is the original measurement. After M1.5 and a
+> further optimisation round, search is 7.2x faster at the median and scoring is
+> exact, but the gate still fails. See
+> [`verdict-m1-e2e.md`](verdict-m1-e2e.md) for the final answer and
+> [`verdict-m1.5.md`](verdict-m1.5.md) for the intermediate step.
+
 **Date:** 2026-08-27 · **Corpus:** 5,000,000 docs, Lucene 10.5.0 ·
 **Environment:** [`environment.md`](environment.md) ·
 **Raw results:** [merged](results-merged-2026-08-27.txt) · [segmented](results-segmented-2026-08-27.txt)
