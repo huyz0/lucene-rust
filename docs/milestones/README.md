@@ -11,7 +11,7 @@ and the artifacts that must exist before it can be called done.
 | | Milestone | Goal | Effort | Status |
 |---|---|---|---|---|
 | M0 | [Green tree, real CI](m0-ci-and-green-tree.md) | Every gate runs automatically, and HEAD passes them | S | ✅ **complete** |
-| M1 | [The performance gate](m1-performance-gate.md) | Decide go/no-go with data: is Rust search decisively faster? | M | ✅ **delivered — verdict: FAIL** |
+| M1 | [The performance gate](m1-performance-gate.md) | Decide go/no-go with data: is Rust search decisively faster? | M | ✅ **answered: NO** — 7.2x median improvement, still 20x slower than Java ([final verdict](../benchmarks/verdict-m1-e2e.md)) |
 | M1.5 | [Lazy iteration on the hot paths](m1-5-lazy-iteration.md) | Stop materializing posting lists; re-run the gate | M–L | ✅ **delivered — 5.8× median, gate still FAIL** |
 | M2 | [OpenSearch read path](m2-opensearch-read-path.md) | A node answers `_search` from Rust over JNI/FFM | M–L | not started |
 | M3 | [Write path proven](m3-write-path-proven.md) | Real Lucene reads a full Rust-written index | L | not started |
