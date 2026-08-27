@@ -1749,6 +1749,14 @@ fn try_disjunction_lazy<C: ScoringCollector>(
         doc: i32,
         doc_freq: i64,
         doc_count: i64,
+        /// `idf(doc_freq, doc_count)`, computed once when the leg is built.
+        ///
+        /// `idf` is a `ln()`, and it was being recomputed for every document
+        /// this clause matched: `libm`'s `log` accounted for over 15% of a
+        /// two-clause disjunction's profile. Lucene computes it once per term
+        /// in `BM25Similarity.scorer` and carries it as the scorer's `weight`,
+        /// which is what this is.
+        weight: f32,
         norms: Option<&'a FieldNorms<'a>>,
     }
 
@@ -1810,13 +1818,24 @@ fn try_disjunction_lazy<C: ScoringCollector>(
             doc,
             doc_freq,
             doc_count,
+            weight: similarity::idf(doc_freq, doc_count),
             norms: norms.and_then(|m| m.get(&t.field)),
         });
     }
 
-    // Same span cache as the conjunction: recompute only when the covered span
-    // changes.
-    let mut disj_bound: Option<(i32, f32)> = None;
+    // `ImpactsDISI.upTo`, for a union: the highest doc for which the current
+    // span has already been judged competitive at the current threshold. Inside
+    // it there is nothing to re-decide, so the whole preamble below -- a pass
+    // over every leg to recompute `up_to`, then a cache probe -- is skipped
+    // entirely. Those two together were 20% of this query's profile, run once
+    // per document to reach a decision that only changes when a leg crosses a
+    // block boundary or the threshold rises.
+    //
+    // Invalidated on a threshold rise, exactly as
+    // `ImpactsDISI.setMinCompetitiveScore` sets `upTo = -1`. See the term path
+    // for what leaving that out costs: the skipping silently stops.
+    let mut checked_upto: i32 = -1;
+    let mut threshold = collector.min_competitive_score();
     loop {
         let Some(candidate) = legs
             .iter()
@@ -1833,16 +1852,15 @@ fn try_disjunction_lazy<C: ScoringCollector>(
         // reason. This is the safe core of MAXSCORE/WAND; it does not yet
         // partition clauses into essential and non-essential, which is where
         // Lucene's WANDScorer gets its remaining power.
-        if let Some(threshold) = collector.min_competitive_score() {
-            let mut up_to = i32::MAX;
-            for leg in &legs {
-                if leg.doc != lucene_codecs::postings::NO_MORE_DOCS {
-                    up_to = up_to.min(leg.cursor.current_block_last_doc_id());
+        if candidate > checked_upto {
+            if let Some(threshold) = threshold {
+                let mut up_to = i32::MAX;
+                for leg in &legs {
+                    if leg.doc != lucene_codecs::postings::NO_MORE_DOCS {
+                        up_to = up_to.min(leg.cursor.current_block_last_doc_id());
+                    }
                 }
-            }
-            let sum_max = match disj_bound {
-                Some((key, v)) if key == up_to => v,
-                _ => {
+                let sum_max = {
                     let mut acc = 0.0f32;
                     let mut ok = true;
                     for leg in &legs {
@@ -1856,28 +1874,39 @@ fn try_disjunction_lazy<C: ScoringCollector>(
                         }
                         acc += leg.bound(impacts);
                     }
-                    let v = if ok { acc } else { f32::INFINITY };
-                    disj_bound = Some((up_to, v));
-                    v
-                }
-            };
-            if sum_max.is_finite() && up_to >= candidate && sum_max <= threshold {
-                // A genuine block-level skip, recorded so the maxscore
-                // invariant test measures this path too now that it routes
-                // here.
-                #[cfg(any(test, feature = "test-support"))]
-                test_only_maxscore_block_skip_counter::record_skip();
-                // No document in the span can compete: advance every cursor past it.
-                let next = up_to.saturating_add(1);
-                for leg in legs.iter_mut() {
-                    if leg.doc != lucene_codecs::postings::NO_MORE_DOCS && leg.doc < next {
-                        leg.doc = leg
-                            .cursor
-                            .advance(next)
-                            .map_err(blocktree::Error::Postings)?;
+                    if ok {
+                        acc
+                    } else {
+                        f32::INFINITY
                     }
+                };
+                if sum_max.is_finite() && up_to >= candidate && sum_max <= threshold {
+                    // A genuine block-level skip, recorded so the maxscore
+                    // invariant test measures this path too now that it routes
+                    // here.
+                    #[cfg(any(test, feature = "test-support"))]
+                    test_only_maxscore_block_skip_counter::record_skip();
+                    // No document in the span can compete: advance every cursor past it.
+                    let next = up_to.saturating_add(1);
+                    for leg in legs.iter_mut() {
+                        if leg.doc != lucene_codecs::postings::NO_MORE_DOCS && leg.doc < next {
+                            leg.doc = leg
+                                .cursor
+                                .advance(next)
+                                .map_err(blocktree::Error::Postings)?;
+                        }
+                    }
+                    continue;
                 }
-                continue;
+                // Competitive: do not ask again until a leg leaves the span this
+                // decision covered. `up_to` can be i32::MAX when every leg is
+                // exhausted, which is the same "nothing left to re-decide" answer.
+                checked_upto = up_to;
+            } else {
+                // No threshold yet, so nothing can be pruned and nothing needs
+                // deciding until one appears -- which sets `checked_upto` back
+                // to -1 below.
+                checked_upto = i32::MAX;
             }
         }
 
@@ -1896,19 +1925,28 @@ fn try_disjunction_lazy<C: ScoringCollector>(
                         similarity::UNNORMED_FIELD_LENGTH,
                     ),
                 };
-                score += similarity::score_with_params(
-                    leg.doc_freq,
-                    leg.doc_count,
-                    freq,
-                    field_length,
-                    avg_field_length,
-                    similarity::Bm25Params::default(),
-                );
+                // `similarity::score_with_params` with the `idf` hoisted out:
+                // same factors in the same order, so this is bit-identical to
+                // what it produced, minus one `ln()` per document per clause.
+                score += leg.weight
+                    * similarity::tf_norm(
+                        freq,
+                        field_length,
+                        avg_field_length,
+                        similarity::DEFAULT_K1,
+                        similarity::DEFAULT_B,
+                    );
             }
             leg.doc = leg.cursor.next_doc().map_err(blocktree::Error::Postings)?;
         }
         if live {
             collector.collect(candidate, score);
+            // `ImpactsDISI.setMinCompetitiveScore`: a rise invalidates the span.
+            let now = collector.min_competitive_score();
+            if now != threshold {
+                threshold = now;
+                checked_upto = -1;
+            }
         }
     }
 }
@@ -2000,6 +2038,9 @@ fn try_conjunction_lazy<C: ScoringCollector>(
         cursor: lucene_codecs::postings::LazyDocsCursor<'a>,
         doc_freq: i64,
         doc_count: i64,
+        /// `idf(doc_freq, doc_count)`, computed once when the leg is built --
+        /// see the disjunction's `Leg::weight` for why that matters.
+        weight: f32,
         norms: Option<&'a FieldNorms<'a>>,
     }
 
@@ -2065,6 +2106,7 @@ fn try_conjunction_lazy<C: ScoringCollector>(
             cursor,
             doc_freq,
             doc_count,
+            weight: similarity::idf(doc_freq, doc_count),
             norms: norms.and_then(|m| m.get(&t.field)),
         });
     }
@@ -2077,6 +2119,14 @@ fn try_conjunction_lazy<C: ScoringCollector>(
         .cursor
         .next_doc()
         .map_err(blocktree::Error::Postings)?;
+    // Deliberately NOT the `ImpactsDISI.upTo` shape the term and disjunction
+    // paths use. It was tried here and measured slower -- `and t0 t1` 91.2 ->
+    // 83.0 qps, `and t0 tz` 167.4 -> 144.7. The reason is that a leapfrog's
+    // `candidate` regularly overshoots `up_to` (the code below only skips when
+    // `up_to >= candidate`), so keying the "already decided" marker on the
+    // document rather than on the span invalidates it almost every iteration
+    // and loses the cache entirely. The span-keyed cache below does the same
+    // job for this shape.
     let mut conj_bound: Option<(i32, f32)> = None;
     'outer: while candidate != lucene_codecs::postings::NO_MORE_DOCS {
         // Block-max conjunction pruning, as Lucene's BlockMaxConjunctionScorer
@@ -2154,14 +2204,17 @@ fn try_conjunction_lazy<C: ScoringCollector>(
                         similarity::UNNORMED_FIELD_LENGTH,
                     ),
                 };
-                score += similarity::score_with_params(
-                    leg.doc_freq,
-                    leg.doc_count,
-                    freq,
-                    field_length,
-                    avg_field_length,
-                    similarity::Bm25Params::default(),
-                );
+                // `similarity::score_with_params` with the `idf` hoisted out:
+                // same factors in the same order, so this is bit-identical to
+                // what it produced, minus one `ln()` per document per clause.
+                score += leg.weight
+                    * similarity::tf_norm(
+                        freq,
+                        field_length,
+                        avg_field_length,
+                        similarity::DEFAULT_K1,
+                        similarity::DEFAULT_B,
+                    );
             }
             collector.collect(candidate, score);
         }

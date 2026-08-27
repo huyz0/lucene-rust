@@ -55,6 +55,20 @@ pub struct FieldNorms<'a> {
     /// `None` for a sparse field, a wider norm, a constant-valued field or an
     /// empty one; those still take the general path.
     dense_norm_bytes: Option<&'a [u8]>,
+    /// `decode_norm(i)` for every one of the 256 possible norm bytes. Same idea
+    /// as [`FieldNorms::norm_inverse`] and the same reason: the domain is one
+    /// byte wide, so the decode is a table lookup, not a computation.
+    norm_length: [f32; 256],
+}
+
+/// Builds [`FieldNorms::norm_length`]. Independent of `avgFieldLength`, unlike
+/// the `norm_inverse` table, but built alongside it to keep the two in step.
+fn norm_length_table() -> [f32; 256] {
+    let mut t = [0.0f32; 256];
+    for (i, slot) in t.iter_mut().enumerate() {
+        *slot = crate::similarity::decode_norm(i as i64);
+    }
+    t
 }
 
 /// The flat norm array for a dense, one-byte-per-norm field, or `None` when
@@ -129,6 +143,7 @@ impl<'a> FieldNorms<'a> {
             entry,
             avg_field_length,
             norm_inverse: norm_inverse_table(avg_field_length),
+            norm_length: norm_length_table(),
         }
     }
 
@@ -160,6 +175,7 @@ impl<'a> FieldNorms<'a> {
             entry,
             avg_field_length,
             norm_inverse: norm_inverse_table(avg_field_length),
+            norm_length: norm_length_table(),
         })
     }
 
@@ -196,7 +212,18 @@ impl<'a> FieldNorms<'a> {
         })
     }
 
+    #[inline]
     pub fn field_length(&self, doc: i32) -> norms::Result<f32> {
+        // Same dense one-byte fast path as `norm_inverse`, for the callers that
+        // still want the decoded length rather than the reciprocal -- the
+        // boolean scorers, which sum per-clause contributions and so must keep
+        // using the multiply form to stay bit-identical to what they scored
+        // before.
+        if let Some(bytes) = self.dense_norm_bytes {
+            if let Some(&b) = bytes.get(doc as usize) {
+                return Ok(self.norm_length[b as usize]);
+            }
+        }
         Ok(match norms::norm_value(self.data, &self.entry, doc)? {
             Some(norm) => crate::similarity::decode_norm(norm),
             None => crate::similarity::UNNORMED_FIELD_LENGTH,
