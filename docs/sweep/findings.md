@@ -706,3 +706,57 @@ is not — every measurement in this milestone runs against a warm 1.6 GB index.
 Still open in this file: `IndexInput.prefetch` (Lucene 10's explicit
 `madvise(WILLNEED)`, used to overlap IO with decode) has no equivalent here.
 Same caveat — it cannot be measured warm.
+
+---
+
+## `crates/lucene-codecs/src/blocktree.rs`
+
+**Lucene counterpart:** `codecs/lucene90/blocktree/Lucene90BlockTreeTermsReader.java`,
+`SegmentTermsEnum.java`, `SegmentTermsEnumFrame.java`.
+
+**Measurement:** `scripts/bench-micro.sh --bench reader_open --index <dir>` —
+open a reader over the 15-segment, 5M-document corpus and count its segments,
+once per op. Rust runs `DirectoryReader::open` plus `open_segments`; Java runs
+`DirectoryReader.open`.
+
+### A1 — architecture: the whole term dictionary is materialized at open
+
+| | ns per open | |
+|---|---|---|
+| Java `DirectoryReader.open` | 4,153,560 | 4.2 ms |
+| this port | 559,656,637 | **560 ms** |
+| ratio | | **0.01x — 135x slower** |
+
+`blocktree::FieldTerms` holds
+`entries: Vec<(Vec<u8>, TermStats, TermMetadata)>` — **every term of the
+field**, each with its own heap allocation — built eagerly when the segment is
+opened. `seek_exact` is then a binary search over that vector.
+
+Lucene holds none of it. `SegmentTermsEnum` walks the `.tip` FST to locate the
+on-disk block that could contain a term, loads that one block's suffix bytes
+into a reusable frame, scans them in place, and decodes term metadata only for
+the term actually being sought. Its memory is O(1) in the vocabulary and its
+open cost is O(number of fields), not O(number of terms).
+
+**This is the largest architectural divergence left in the read path**, and no
+query benchmark could have found it: the reader is opened once, outside the
+timed region, in both `bench-compare.sh` and every fixture test. It took
+measuring an operation that is not a query.
+
+It is not an academic difference. A search engine reopens readers on every
+refresh — that is what a refresh *is* — so 560 ms of per-reopen cost is
+disqualifying for M2 and M5 regardless of how fast queries then run. The memory
+side is worse in a way this benchmark does not show at all: one `Vec<u8>` per
+term per field per segment, live for as long as the reader is.
+
+**Filed, not fixed.** Replacing it means implementing real block-tree
+navigation — FST arc walking to a block, frame-based suffix scanning, lazy
+metadata decode — which is a milestone in its own right and touches the largest
+file in the codec crate. The sweep's contribution is the number: 135x, on an
+operation nobody had measured.
+
+This also reframes two things recorded earlier in this document. `FieldTerms`
+having every term in memory is why `seek_exact` never appears in any query
+profile — the work was already done, before the clock started. And it is why
+`positions_flat`/`postings` can hand back owned `Vec`s so freely: the type
+already owns everything.

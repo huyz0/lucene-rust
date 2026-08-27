@@ -51,6 +51,10 @@ case "$BENCH" in
   direct_reader)
     MAIN=DirectReaderMicro
     SRC=benchmarks/micro/java/DirectReaderMicro.java ;;
+  reader_open)
+    MAIN=ReaderOpenMicro
+    SRC=benchmarks/micro/java/ReaderOpenMicro.java
+    NEEDS_INDEX=1 ;;
   *) echo "bench-micro: no Java counterpart for $BENCH" >&2; exit 2 ;;
 esac
 
