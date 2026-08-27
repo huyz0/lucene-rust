@@ -187,6 +187,18 @@ impl ScoringCollector for TopDocsCollector {
         if self.top_n == 0 {
             return;
         }
+        // Fast reject, which is also `TopScoreDocCollector.collect`'s own first
+        // line (`if (score <= pqTop.score) return;`). Once the queue is full,
+        // the overwhelming majority of documents lose to the worst kept hit,
+        // and deciding that takes one comparison; everything below only needs
+        // to run for a hit that will actually be kept. NaN falls through to the
+        // general path below, which orders it via `total_cmp`.
+        if self.hits.len() == self.top_n {
+            let worst = self.hits[self.top_n - 1];
+            if score < worst.score || (score == worst.score && doc_id >= worst.doc_id) {
+                return;
+            }
+        }
         let candidate = ScoreDoc { doc_id, score };
         if self.hits.len() < self.top_n {
             let pos = self

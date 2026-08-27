@@ -431,10 +431,20 @@ pub type Impacts = Vec<Impact>;
 /// any doc has been added — but the decoder doesn't assume it, matching
 /// Java's loop which is driven purely by `in.getPosition() < in.length()`).
 pub fn decode_impacts(bytes: &[u8]) -> Result<Impacts> {
+    let mut out = Impacts::new();
+    decode_impacts_into(bytes, &mut out)?;
+    Ok(out)
+}
+
+/// [`decode_impacts`] into a caller-owned buffer, so a cursor walking block
+/// after block reuses one allocation instead of making one per block. Lucene
+/// does the same, decoding `level0SerializedImpacts` into a reusable
+/// `FreqAndNormBuffer` (`Lucene104PostingsReader.readImpacts`).
+pub fn decode_impacts_into(bytes: &[u8], impacts: &mut Impacts) -> Result<()> {
     let mut r = SliceInput::new(bytes);
     let mut freq: i32 = 0;
     let mut norm: i64 = 0;
-    let mut impacts = Vec::new();
+    impacts.clear();
     while r.position() < bytes.len() {
         let freq_delta = r.read_vint()?;
         freq = freq.wrapping_add(1 + ((freq_delta as u32) >> 1) as i32);
@@ -445,7 +455,7 @@ pub fn decode_impacts(bytes: &[u8]) -> Result<Impacts> {
         }
         impacts.push(Impact { freq, norm });
     }
-    Ok(impacts)
+    Ok(())
 }
 
 /// An opened `.doc` file (header/footer validated once), ready for
@@ -579,7 +589,7 @@ impl<'a> DocInput<'a> {
                 debug_assert_eq!(r.position(), header.body_end);
                 prev_doc_id = header.last_doc_id;
                 if index_has_freq {
-                    level0_impacts.push((header.last_doc_id, header.impacts));
+                    level0_impacts.push((header.last_doc_id, decode_impacts(header.impact_bytes)?));
                 }
                 docs.extend_from_slice(&block_docs);
                 freqs.extend_from_slice(&block_freqs);
@@ -606,7 +616,7 @@ impl<'a> DocInput<'a> {
             debug_assert_eq!(r.position(), header.body_end);
             prev_doc_id = header.last_doc_id;
             if index_has_freq {
-                level0_impacts.push((header.last_doc_id, header.impacts));
+                level0_impacts.push((header.last_doc_id, decode_impacts(header.impact_bytes)?));
             }
             docs.extend_from_slice(&block_docs);
             freqs.extend_from_slice(&block_freqs);
@@ -1095,14 +1105,14 @@ fn read_level1_entry(
 ///
 /// **What is genuinely skippable vs. what must still be touched**: every
 /// field here is a small fixed-width or vint/vlong-prefixed value, including
-/// the impacts byte run (decoded into [`FullBlockHeader::impacts`] via
-/// [`decode_impacts`] — cheap relative to the body, just a handful of vints)
-/// — so determining `last_doc_id` and `body_start`/`body_len` never runs
+/// the impacts byte run (captured undecoded as
+/// [`FullBlockHeader::impact_bytes`], a borrow of the mapped file, and decoded
+/// only if a caller asks for a bound) — so determining `last_doc_id` and `body_start`/`body_len` never runs
 /// `ForUtil`/`PForUtil` decode, which is the expensive part of a block
 /// (bit-unpacking 256 values). That decode work is exactly what
 /// [`LazyDocsCursor`] avoids for a block this header proves is entirely
 /// before the caller's target.
-struct FullBlockHeader {
+struct FullBlockHeader<'a> {
     /// This block's last (highest) doc ID — `prev_doc_id + docDelta`, proven
     /// consistent with the body's own delta-decoded last entry by every
     /// existing fixture/unit test that decodes both (see `read_full_block_header`).
@@ -1118,18 +1128,25 @@ struct FullBlockHeader {
     /// `Lucene104PostingsWriter.java:397-402`) — reset to empty after every
     /// block is flushed, unlike the level-1 span's merged accumulator. Empty
     /// when the field has no freqs.
-    impacts: Impacts,
+    ///
+    /// Kept **undecoded**, as a zero-copy view into the mapped `.doc` bytes.
+    /// Lucene holds the same run as a `BytesRef` (`level0SerializedImpacts`)
+    /// and calls `readImpacts` only when `getImpacts()` asks for it. Decoding
+    /// it here instead cost 9.75% of a term query's profile plus its allocator
+    /// traffic, most of that on blocks the cursor went on to skip without ever
+    /// looking at a bound.
+    impact_bytes: &'a [u8],
 }
 
 /// Reads one full block's level-0 header (see [`FullBlockHeader`]) without
 /// touching the body. `r` is left positioned at `body_start` on return.
-fn read_full_block_header(
-    r: &mut SliceInput,
+fn read_full_block_header<'a>(
+    r: &mut SliceInput<'a>,
     prev_doc_id: i32,
     index_has_freq: bool,
     index_has_pos: bool,
     index_has_offsets_or_payloads: bool,
-) -> Result<FullBlockHeader> {
+) -> Result<FullBlockHeader<'a>> {
     let _level0_num_bytes = r.read_vlong()?;
     let doc_delta = read_vint15(r)?;
     let last_doc_id = prev_doc_id + doc_delta;
@@ -1142,7 +1159,7 @@ fn read_full_block_header(
     // includes the impacts-length-prefixed bytes and pos/pay skip fields,
     // not just the `bitsPerValue`-onward body.
     let body_end = r.position() + block_length as usize;
-    let mut impacts = Impacts::new();
+    let mut impact_bytes: &[u8] = &[];
     if index_has_freq {
         // Impacts byte-length is a plain vint here (`doMoveToNextLevel0Block`,
         // `Lucene104PostingsReader.java:746`), unlike level-1's vlong-prefixed
@@ -1150,9 +1167,8 @@ fn read_full_block_header(
         // assumed from the tail-block/level-1 shape.
         let impacts_len = r.read_vint()? as usize;
         let impacts_start = r.position();
-        let impact_bytes = r.slice(impacts_start, impacts_start + impacts_len)?;
+        impact_bytes = r.slice(impacts_start, impacts_start + impacts_len)?;
         r.skip(impacts_len)?;
-        impacts = decode_impacts(impact_bytes)?;
 
         // Level-0 pos/pay skip data (`Lucene104PostingsReader.java:754-761`):
         // parsed for wire-order correctness (this reader never skips ahead
@@ -1173,7 +1189,7 @@ fn read_full_block_header(
         last_doc_id,
         body_start,
         body_end,
-        impacts,
+        impact_bytes,
     })
 }
 
@@ -1833,7 +1849,11 @@ impl<'a> LazyDocsCursor<'a> {
                 self.block_len = BLOCK_SIZE as usize;
                 self.prev_doc_id = header.last_doc_id;
                 self.doc_count_left -= BLOCK_SIZE;
-                self.level0_impacts = header.impacts;
+                // Decoded here and nowhere else: only a block whose body we
+                // actually load can have its impacts asked for, so a block
+                // skipped by `last_doc_id < target` above never pays. Reuses
+                // this cursor's buffer rather than allocating per block.
+                decode_impacts_into(header.impact_bytes, &mut self.level0_impacts)?;
 
                 let offset = self.block_docs.partition_point(|&d| d < target);
                 self.block_pos = offset;
@@ -1862,7 +1882,7 @@ impl<'a> LazyDocsCursor<'a> {
             // .refillRemainder`'s non-singleton branch never touches
             // `level0SerializedImpacts`) — matches the real reader returning
             // whatever `level0LastDocID == NO_MORE_DOCS` state implies.
-            self.level0_impacts = Impacts::new();
+            self.level0_impacts.clear();
 
             let offset = self.block_docs[..count].partition_point(|&d| d < target);
             self.block_pos = offset;

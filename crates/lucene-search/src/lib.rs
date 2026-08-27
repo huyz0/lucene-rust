@@ -1209,15 +1209,6 @@ pub fn search_term_query_scored_maxscore_with_stats(
         }
     };
 
-    // The impact bound is a property of the *block*, not of the doc: every doc
-    // inside a block yields the identical bound from the identical impacts.
-    // Computing it per doc recomputed it up to BLOCK_SIZE (256) times over, and
-    // profiling put `max_score_for_impacts` at 25% of this query's entire
-    // runtime -- more than the ForUtil block decode it exists to avoid. Cache it
-    // per block, keyed on the block's last doc id (monotonic across blocks, so
-    // it identifies one uniquely).
-    let mut cached_bound: Option<(i32, f32)> = None;
-
     let mut doc_id = cursor.next_doc().map_err(blocktree::Error::from)?;
 
     // A global upper bound on any document's score for this term, used for an
@@ -1270,62 +1261,78 @@ pub fn search_term_query_scored_maxscore_with_stats(
         )
     };
 
-    while doc_id != lucene_codecs::postings::NO_MORE_DOCS {
-        if let Some(threshold) = collector.min_competitive_score() {
-            // Nothing left can be competitive, whatever the block impacts say.
-            if global_bound <= threshold {
-                break;
-            }
-            let impacts = cursor.level0_impacts();
-            if !impacts.is_empty() {
-                // When `norms` is `None`, every doc is actually scored below
-                // with `field_length == UNNORMED_FIELD_LENGTH ==
-                // avg_field_length` (the length-norm term collapses to
-                // 1.0), NOT with whatever real per-doc norm byte this
-                // block's impacts happen to carry on the wire. Feeding
-                // `max_score_for_impacts` the real wire norms here would
-                // compute a bound for a *different* scoring formula than the
-                // one actually used below -- an unsound mix that can
-                // underestimate the bound and skip a doc that should have
-                // been collected (see `similarity::decode_norm`: any real
-                // norm byte decoding to a field length > 1.0 inflates the
-                // bound's denominator, making it too low relative to the
-                // UNNORMED_FIELD_LENGTH score actually computed downstream).
-                let block_key = cursor.current_block_last_doc_id();
-                let bound = match cached_bound {
-                    Some((key, bound)) if key == block_key => bound,
-                    _ => {
-                        let computed = bound_for(impacts);
-                        cached_bound = Some((block_key, computed));
-                        computed
-                    }
-                };
-                if bound <= threshold {
-                    #[cfg(any(test, feature = "test-support"))]
-                    test_only_maxscore_block_skip_counter::record_skip();
+    // `ImpactsDISI.upTo`: the highest doc ID whose block has already been judged
+    // competitive *at the current threshold*. While the cursor is inside that
+    // block with that threshold there is nothing to re-decide, so the whole
+    // preamble below is skipped -- Lucene's
+    // `advanceTarget`: `if (target <= upTo) return target;`. That is the
+    // difference between evaluating an impact bound once per 256-document block
+    // and once per document.
+    //
+    // The invalidation is the other half of it, and is not optional:
+    // `ImpactsDISI.setMinCompetitiveScore` sets `upTo = -1` whenever the
+    // threshold actually rises, precisely so a block that was competitive
+    // against the old threshold gets re-judged against the new one. Leaving
+    // that out made this loop stop skipping entirely on a two-block fixture,
+    // caught by `maxscore_..._actually_skips_blocks`'s counter rather than by
+    // any result changing -- the results are identical either way, only the
+    // work done differs.
+    let mut checked_upto: i32 = -1;
+    let mut threshold = collector.min_competitive_score();
 
-                    // Skip at the highest level whose bound is still under the
-                    // threshold, not one block at a time. A level-1 span covers
-                    // 32 level-0 blocks, so when its merged impacts also fail
-                    // to beat the threshold the whole span goes at once. This
-                    // mirrors MaxScoreCache.getSkipLevel/getSkipUpTo, which
-                    // walk levels for exactly this reason: skipping per block
-                    // costs a header read and a bound evaluation per block,
-                    // and on a high-frequency term that is the dominant cost.
-                    let l1 = cursor.level1_impacts();
-                    let l1_last = cursor.level1_last_doc_id();
-                    let skip_to = if !l1.is_empty()
-                        && l1_last != lucene_codecs::postings::NO_MORE_DOCS
-                        && bound_for(l1) <= threshold
-                    {
-                        l1_last.saturating_add(1)
-                    } else {
-                        cursor.current_block_last_doc_id().saturating_add(1)
-                    };
-                    doc_id = cursor.advance(skip_to).map_err(blocktree::Error::from)?;
-                    continue;
+    while doc_id != lucene_codecs::postings::NO_MORE_DOCS {
+        if doc_id > checked_upto {
+            if let Some(threshold) = threshold {
+                // Nothing left can be competitive, whatever the block impacts say.
+                if global_bound <= threshold {
+                    break;
+                }
+                let impacts = cursor.level0_impacts();
+                if !impacts.is_empty() {
+                    // When `norms` is `None`, every doc is actually scored below
+                    // with `field_length == UNNORMED_FIELD_LENGTH ==
+                    // avg_field_length` (the length-norm term collapses to
+                    // 1.0), NOT with whatever real per-doc norm byte this
+                    // block's impacts happen to carry on the wire. Feeding
+                    // `max_score_for_impacts` the real wire norms here would
+                    // compute a bound for a *different* scoring formula than the
+                    // one actually used below -- an unsound mix that can
+                    // underestimate the bound and skip a doc that should have
+                    // been collected (see `similarity::decode_norm`: any real
+                    // norm byte decoding to a field length > 1.0 inflates the
+                    // bound's denominator, making it too low relative to the
+                    // UNNORMED_FIELD_LENGTH score actually computed downstream).
+                    let bound = bound_for(impacts);
+                    if bound <= threshold {
+                        #[cfg(any(test, feature = "test-support"))]
+                        test_only_maxscore_block_skip_counter::record_skip();
+
+                        // Skip at the highest level whose bound is still under the
+                        // threshold, not one block at a time. A level-1 span covers
+                        // 32 level-0 blocks, so when its merged impacts also fail
+                        // to beat the threshold the whole span goes at once. This
+                        // mirrors MaxScoreCache.getSkipLevel/getSkipUpTo, which
+                        // walk levels for exactly this reason: skipping per block
+                        // costs a header read and a bound evaluation per block,
+                        // and on a high-frequency term that is the dominant cost.
+                        let l1 = cursor.level1_impacts();
+                        let l1_last = cursor.level1_last_doc_id();
+                        let skip_to = if !l1.is_empty()
+                            && l1_last != lucene_codecs::postings::NO_MORE_DOCS
+                            && bound_for(l1) <= threshold
+                        {
+                            l1_last.saturating_add(1)
+                        } else {
+                            cursor.current_block_last_doc_id().saturating_add(1)
+                        };
+                        doc_id = cursor.advance(skip_to).map_err(blocktree::Error::from)?;
+                        continue;
+                    }
                 }
             }
+            // This block is competitive (or there was no threshold yet):
+            // do not ask again until the cursor leaves it.
+            checked_upto = cursor.current_block_last_doc_id();
         }
 
         if live_docs.is_none_or(|bits| bits.get(doc_id as usize)) {
@@ -1350,6 +1357,13 @@ pub fn search_term_query_scored_maxscore_with_stats(
                 ),
             };
             collector.collect(doc_id, score);
+            // `Scorer.setMinCompetitiveScore` -> `ImpactsDISI.upTo = -1`. The
+            // threshold only ever rises, and only a collected hit can raise it.
+            let now = collector.min_competitive_score();
+            if now != threshold {
+                threshold = now;
+                checked_upto = -1;
+            }
         }
         doc_id = cursor.next_doc().map_err(blocktree::Error::from)?;
     }

@@ -295,3 +295,127 @@ in the band (208 deltas of 3 and 48 of 2: `docRange == 720`,
 token**, not just that the bytes round-trip. Negative control run: with the old
 condition restored it fails with `left: 2, right: -12`, exactly the predicted
 divergence.
+
+---
+
+## `crates/lucene-search/src/lib.rs` (term MAXSCORE loop), `collector.rs`, `field_norms.rs`
+
+**Lucene counterpart:** `search/ImpactsDISI.java`, `search/MaxScoreCache.java`,
+`search/TopScoreDocCollector.java`, `search/similarities/BM25Similarity.java`.
+
+**Measurement:** `scripts/bench-compare.sh` on `q01` (`body:t0`, the most
+frequent term, top-50), plus `perf record` profiles between each change. The
+component benchmarks above could not have found any of these: they are all in the
+search layer, above the codec.
+
+### Why look here at all
+
+After the postings work the end-to-end benchmark had barely moved, which was
+itself the finding. A profile of `q01` put roughly half the runtime above the
+codec:
+
+| symbol | share |
+|---|---|
+| `search_term_query_scored_maxscore_with_stats` (+ its closure) | 26.2% |
+| `decode_full_block_body` | 10.0% |
+| `decode_impacts` | 9.8% |
+| `TopDocsCollector::collect` | 7.8% |
+| `ForUtil::decode` | 5.1% |
+| `norms::norm_value` + `read_value_at_ordinal` | 7.6% |
+
+### O7 — impacts were decoded eagerly, per block, into a fresh `Vec`
+
+`read_full_block_header` decoded the impacts byte run into a freshly allocated
+`Vec<Impact>` on **every** block header it read — including every block the
+cursor went on to skip without ever asking for a bound. Lucene keeps the run
+undecoded as a `BytesRef` (`level0SerializedImpacts`) and calls `readImpacts`
+into a reusable `FreqAndNormBuffer` only when `getImpacts()` asks.
+
+Fixed: `FullBlockHeader` carries `impact_bytes: &'a [u8]`, a zero-copy borrow of
+the mapped `.doc` file (better than Lucene, which copies into its `BytesRef`),
+and the cursor decodes into its own reused buffer at the one point a block is
+actually loaded. `decode_impacts_into` is the reusable-buffer form;
+`decode_impacts` remains for callers that want an owned list.
+
+`q01`: **525 -> 646 qps** (+23%).
+
+### O8 — the impact bound was evaluated once per document, not once per block
+
+The scoring loop asked `collector.min_competitive_score()`, fetched the block
+impacts and consulted a cached bound **for every document**. Lucene's
+`ImpactsDISI.advanceTarget` opens with:
+
+```java
+if (target <= upTo) {
+  // we are still in the current block, which is considered competitive
+  // according to impacts, no skipping
+  return target;
+}
+```
+
+so the bound is evaluated per *block*, not per document — 256x fewer times.
+
+The other half of that mechanism is not optional, and a test caught its absence.
+`ImpactsDISI.setMinCompetitiveScore` sets `upTo = -1` whenever the threshold
+actually rises, so a block judged competitive against an old threshold is
+re-judged against the new one. Implementing only the `upTo` check made the loop
+stop skipping blocks entirely on a two-block fixture — the *results* were
+unchanged, only the work done differed, and it was
+`maxscore_lazy_path_matches_eager_path_on_real_fixture_and_actually_skips_blocks`'s
+skip counter that failed rather than any assertion about output. That test exists
+because a skip branch can go dead without any result changing; this is the second
+time it has earned its keep.
+
+`q01`: **646 -> 708 qps**.
+
+### O9 — `TopDocsCollector::collect` had no fast reject
+
+`TopScoreDocCollector.collect` opens with one float comparison against the
+queue's worst hit and returns. This port built a `ScoreDoc`, then called
+`rank_order` twice through the general insert path, for every document.
+
+Added the same first line, keeping the general path (and its `total_cmp` NaN
+ordering) for anything that survives it. In the profile `collect` went 9.5% ->
+5.4%.
+
+Note what is *not* fixed: `TopDocsCollector` is still a sorted `Vec` with an
+`O(n)` insert where Lucene uses a binary heap. That is a documented decision in
+the type's own doc comment and it does not show in this profile, because with the
+fast reject in front of it an insert is rare. Left alone.
+
+### O10 — norm lookup went through the general doc-values decoder per document
+
+`FieldNorms::norm_inverse` called `norms::norm_value`, which re-tests denseness
+and norm width, then constructs a `SliceInput` and seeks it — to read one byte at
+a known offset. That is 9.5% of the profile to index an array.
+
+`Lucene90NormsConsumer` writes a flat one-byte-per-document array for any
+ordinary analyzed field. Resolve that slice once when the `FieldNorms` is built,
+and scoring a document becomes `table[bytes[doc]]`, which is what `BM25Scorer`
+reading `cache[norm]` is. Sparse fields, wider norms, constant-valued fields and
+empty fields decline the fast path and take the general one.
+
+Three tests pin it, because two implementations of one lookup is exactly the
+shape that silently diverges: agreement with the general path for all 256
+possible norm bytes, out-of-range documents still erroring rather than reading
+past the array, and the declined shapes actually declining.
+
+### Where the term path ended up
+
+| query | before | after |
+|---|---|---|
+| `q01` `body:t0` | 0.53x | **0.82x** |
+| `q02` `body:t1` | 0.37x | 0.53x |
+| `q03` `body:tz` | 0.29x | 0.35x |
+| `q04` `body:t2s` | 0.39x | 0.58x |
+| `q05` `body:t1z4` | 0.48x | 0.72x |
+| `q18` `title:t0` | 0.34x | 0.44x |
+| `q19` `keyword:t0` | 4.53x | 4.24x |
+
+Recall mismatches: **0**, across all 20 queries, both before and after.
+
+**Still open.** The boolean and phrase queries (q06-q17) barely moved: they run
+through `try_conjunction_lazy`/`try_disjunction_lazy` and the phrase scorer, none
+of which have had the `ImpactsDISI` treatment, and the phrase queries at 0.04-0.07x
+are their own problem in the positions reader. That is the next stage of the
+sweep, not a conclusion.

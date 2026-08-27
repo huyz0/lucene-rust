@@ -44,6 +44,28 @@ pub struct FieldNorms<'a> {
     /// Only valid for [`crate::similarity::DEFAULT_K1`]/[`DEFAULT_B`]; a caller
     /// using custom parameters must take the arithmetic path.
     norm_inverse: [f32; 256],
+    /// The flat one-byte-per-doc norm array, when this field's norms are dense
+    /// and one byte wide -- which is the shape `Lucene90NormsConsumer` writes
+    /// for any ordinary analyzed field, so it is the case that matters.
+    ///
+    /// Resolved once here so that scoring a document is `table[bytes[doc]]`.
+    /// Going through [`norms::norm_value`] per document instead cost 9.5% of a
+    /// term query's profile: it re-tests denseness and width, then builds a
+    /// `SliceInput` and seeks it, to read one byte at a known offset.
+    /// `None` for a sparse field, a wider norm, a constant-valued field or an
+    /// empty one; those still take the general path.
+    dense_norm_bytes: Option<&'a [u8]>,
+}
+
+/// The flat norm array for a dense, one-byte-per-norm field, or `None` when
+/// this field is not that shape.
+fn dense_norm_bytes<'a>(data: &'a [u8], entry: &NormsEntry) -> Option<&'a [u8]> {
+    if entry.is_empty_field() || !entry.is_dense() || entry.bytes_per_norm != 1 {
+        return None;
+    }
+    let start = usize::try_from(entry.norms_offset).ok()?;
+    let len = usize::try_from(entry.num_docs_with_field).ok()?;
+    data.get(start..start.checked_add(len)?)
 }
 
 /// Builds [`FieldNorms::norm_inverse`] for one average field length.
@@ -102,6 +124,7 @@ impl<'a> FieldNorms<'a> {
             (sum_total_term_freq as f64 / doc_count as f64) as f32
         };
         Self {
+            dense_norm_bytes: dense_norm_bytes(data, &entry),
             data,
             entry,
             avg_field_length,
@@ -132,6 +155,7 @@ impl<'a> FieldNorms<'a> {
             (sum / count as f64) as f32
         };
         Ok(Self {
+            dense_norm_bytes: dense_norm_bytes(data, &entry),
             data,
             entry,
             avg_field_length,
@@ -149,7 +173,16 @@ impl<'a> FieldNorms<'a> {
     /// via `weight - weight / (1 + freq * normInverse)` -- see
     /// [`FieldNorms::norm_inverse`]. Avoids decoding the norm to a length and
     /// one of the two divisions the arithmetic form needs.
+    #[inline]
     pub fn norm_inverse(&self, doc: i32) -> norms::Result<f32> {
+        // The whole point of the table: for the ordinary dense one-byte field
+        // this is a load and an index, as `BM25Scorer` reading `cache[norm]`
+        // is. Anything else falls through to the general decode below.
+        if let Some(bytes) = self.dense_norm_bytes {
+            if let Some(&b) = bytes.get(doc as usize) {
+                return Ok(self.norm_inverse[b as usize]);
+            }
+        }
         Ok(match norms::norm_value(self.data, &self.entry, doc)? {
             Some(norm) => self.norm_inverse[(norm as u8) as usize],
             None => {
@@ -238,6 +271,63 @@ mod tests {
             bytes_per_norm,
             norms_offset,
         }
+    }
+
+    /// The dense one-byte fast path and the general `norms::norm_value` path
+    /// must agree for every document and every possible norm byte, including
+    /// the ones that decode as negative `i8`. They are two implementations of
+    /// the same lookup, and the fast one exists only because it is faster --
+    /// so the only thing worth testing about it is that it is not also
+    /// different.
+    #[test]
+    fn dense_fast_path_agrees_with_the_general_norm_lookup_for_every_byte() {
+        let data: Vec<u8> = (0..=255u8).collect();
+        let entry = dense_entry(1, data.len() as i32, 0);
+        let n = FieldNorms::from_field_stats(&data, entry, 4000, 256);
+        assert!(
+            n.dense_norm_bytes.is_some(),
+            "this entry is exactly the shape the fast path is for"
+        );
+        for doc in 0..data.len() as i32 {
+            let general = match norms::norm_value(n.data, &n.entry, doc).unwrap() {
+                Some(norm) => n.norm_inverse[(norm as u8) as usize],
+                None => unreachable!("dense field, every doc has a norm"),
+            };
+            assert_eq!(
+                n.norm_inverse(doc).unwrap(),
+                general,
+                "fast and general paths disagree at doc {doc} (norm byte {})",
+                data[doc as usize]
+            );
+        }
+    }
+
+    /// A doc past the end of a dense field must still be the error the general
+    /// path raises, not a silent read of whatever byte follows the array.
+    #[test]
+    fn dense_fast_path_defers_out_of_range_docs_to_the_general_path() {
+        let data = vec![5u8, 15u8, 25u8];
+        let entry = dense_entry(1, 3, 0);
+        let n = FieldNorms::from_field_stats(&data, entry, 45, 3);
+        assert!(n.norm_inverse(3).is_err());
+        assert!(n.norm_inverse(-1).is_err());
+    }
+
+    /// Shapes the fast path must decline: a wider norm, and a constant-valued
+    /// field (`bytes_per_norm == 0`, the value carried in `norms_offset`).
+    /// Declining is what keeps them correct, so assert it rather than assume.
+    #[test]
+    fn fast_path_declines_shapes_it_cannot_serve() {
+        let data = vec![0u8; 16];
+        assert!(
+            FieldNorms::from_field_stats(&data, dense_entry(2, 4, 0), 40, 4)
+                .dense_norm_bytes
+                .is_none()
+        );
+        let constant = FieldNorms::from_field_stats(&data, dense_entry(0, 4, 7), 40, 4);
+        assert!(constant.dense_norm_bytes.is_none());
+        // ...and still scores, through the general path.
+        assert_eq!(constant.norm_inverse(0).unwrap(), constant.norm_inverse[7]);
     }
 
     #[test]
