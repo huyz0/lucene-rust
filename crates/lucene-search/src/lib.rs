@@ -1120,6 +1120,25 @@ pub fn search_term_query_scored_maxscore(
     norms: Option<&FieldNorms<'_>>,
     collector: &mut collector::TopDocsCollector,
 ) -> Result<()> {
+    search_term_query_scored_maxscore_with_stats(
+        fields, doc_in, live_docs, query, norms, None, collector,
+    )
+}
+
+/// [`search_term_query_scored_maxscore`] taking reader-wide statistics, so a
+/// multi-segment search scores every leaf with one idf -- see
+/// [`CollectionStats`]. `None` keeps this segment's own statistics, which is
+/// correct for a single-segment search and is what the plain entry point does.
+#[allow(clippy::too_many_arguments)]
+pub fn search_term_query_scored_maxscore_with_stats(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    query: &TermQuery,
+    norms: Option<&FieldNorms<'_>>,
+    global: Option<CollectionStats>,
+    collector: &mut collector::TopDocsCollector,
+) -> Result<()> {
     let Some(field_terms) = fields.field(&query.field) else {
         return Ok(());
     };
@@ -1148,8 +1167,10 @@ pub fn search_term_query_scored_maxscore(
         Err(e) => return Err(e.into()),
     };
 
-    let doc_freq = stats.doc_freq as i64;
-    let doc_count = field_terms.doc_count as i64;
+    let (doc_freq, doc_count) = match global {
+        Some(g) => (g.doc_freq, g.doc_count),
+        None => (stats.doc_freq as i64, field_terms.doc_count as i64),
+    };
     let avg_field_length = match norms {
         Some(fn_) => fn_.avg_field_length,
         None => similarity::UNNORMED_FIELD_LENGTH,
@@ -1224,7 +1245,14 @@ pub fn search_term_query_scored_maxscore(
         // enough to fire on a keyword field. Deriving it from the term's own
         // statistics beats special-casing index options, and it is tighter than
         // `tf_norm`'s supremum of `k1 + 1` for ordinary fields too.
-        let max_freq = (stats.total_term_freq - doc_freq + 1).max(1) as f32;
+        // Both terms of this bound must describe the SAME postings. `doc_freq`
+        // above may have been replaced by the reader-wide value, while
+        // `total_term_freq` is this segment's, and mixing them makes the
+        // difference negative -- clamped to 1, the bound collapses and the
+        // early exit fires on documents that should have been collected.
+        // Caught by the benchmark's recall cross-check as a 16x "speedup" on a
+        // query whose hit set had silently changed.
+        let max_freq = (stats.total_term_freq - stats.doc_freq as i64 + 1).max(1) as f32;
         let (len, avg) = match norms {
             // Shortest possible document: the most favourable length norm.
             Some(_) => (1.0, avg_field_length),
@@ -1865,7 +1893,30 @@ fn try_disjunction_lazy<C: ScoringCollector>(
     }
 }
 
-/// Lazy leapfrog conjunction: the pure-`must`, all-[`Clause::Term`] shape,
+/// Reader-wide term and collection statistics, for scoring a multi-segment
+/// search the way Lucene does.
+///
+/// Lucene's `IndexSearcher` computes `TermStatistics`/`CollectionStatistics`
+/// once across the whole reader and hands the same values to every leaf, so a
+/// term's idf is identical in every segment. This port scored each segment from
+/// its own `docFreq`/`docCount`, which is only equivalent when there is one
+/// segment.
+///
+/// On M1's 15-segment corpus that made `body:t0`'s idf range 0.000473 to
+/// 0.000763 -- a 1.6x spread against the global 0.000574 -- so the top-k filled
+/// from whichever segment happened to make the term look rarest, and every one
+/// of the 20 benchmark queries disagreed with Java on its hit set. It is
+/// invisible on a single segment, which is why the merged corpus agreed exactly
+/// and no fixture caught it: every fixture is one segment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CollectionStats {
+    /// Number of documents containing the term, summed across every segment.
+    pub doc_freq: i64,
+    /// Number of documents that have the field, summed across every segment.
+    pub doc_count: i64,
+}
+
+// Lazy leapfrog conjunction: the pure-`must`, all-[`Clause::Term`] shape,
 /// executed without materializing any clause's doc list.
 ///
 /// ## Why this exists

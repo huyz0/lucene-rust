@@ -348,6 +348,35 @@ where
 /// See this module's doc comment for the explicit idf scope decision: each
 /// segment's own score is computed from *that segment's own* `docFreq`/
 /// `docCount`, not an index-wide aggregate.
+/// Sum `docFreq` and `docCount` for one term across every segment, as
+/// Lucene's `IndexSearcher` does before scoring any leaf.
+///
+/// Returns `None` when no segment has the field, in which case the per-segment
+/// values (also nothing) are already correct.
+fn global_term_stats(
+    segments: &[OpenSegment<'_>],
+    field: &str,
+    term: &[u8],
+) -> Option<crate::CollectionStats> {
+    let mut doc_freq = 0i64;
+    let mut doc_count = 0i64;
+    let mut seen = false;
+    for seg in segments {
+        let Some(ft) = seg.fields.field(field) else {
+            continue;
+        };
+        seen = true;
+        doc_count += ft.doc_count as i64;
+        if let Some(stats) = ft.seek_exact(term) {
+            doc_freq += stats.doc_freq as i64;
+        }
+    }
+    seen.then_some(crate::CollectionStats {
+        doc_freq,
+        doc_count,
+    })
+}
+
 pub fn search_term_query_multi_segment(
     segments: &[OpenSegment<'_>],
     query: &TermQuery,
@@ -359,16 +388,22 @@ pub fn search_term_query_multi_segment(
         norms.len(),
         "one norms entry per segment expected"
     );
+    // Reader-wide statistics, summed once, so every leaf scores with the same
+    // idf -- what Lucene's IndexSearcher does via CollectionStatistics. Scoring
+    // each segment from its own counters silently reorders results across a
+    // multi-segment index; see CollectionStats.
+    let global = global_term_stats(segments, &query.field, &query.term);
     let doc_bases: Vec<i32> = segments.iter().map(|s| s.doc_base).collect();
     merge_multi_segment_scored(&doc_bases, top_n, |i, local| {
         let seg = &segments[i];
         let seg_norms = norms.get(i).copied().flatten();
-        crate::search_term_query_scored_maxscore(
+        crate::search_term_query_scored_maxscore_with_stats(
             seg.fields,
             seg.doc_in,
             seg.live_docs,
             query,
             seg_norms,
+            global,
             local,
         )
     })
