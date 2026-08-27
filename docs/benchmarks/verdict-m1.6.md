@@ -30,9 +30,16 @@ Lucene**.
 |---|---|---|
 | `ForUtil.decode`, median over `bitsPerValue` 1..=31 | 0.75x | **2.30x** |
 | posting-list `nextDoc()`, median over 4 terms | 0.20x | **1.69x** |
+| `DirectReader.get`, median over 14 widths | 0.82x | **1.82x** |
+| **reader open**, 15-segment corpus | 0.01x | **0.01x — unfixed** |
 
-Both kernels are now faster than Lucene's — the postings decode against Lucene's
-Panama-vectorised `MemorySegmentPostingDecodingUtil`, with no SIMD of our own.
+The three decode kernels are now faster than Lucene's — the postings decode
+against Lucene's Panama-vectorised `MemorySegmentPostingDecodingUtil`, with no
+SIMD of our own.
+
+Reader open is the opposite result and is left in the table because it is the
+most important number in this milestone: 560 ms against Lucene's 4.2 ms. See
+"What the remaining gap is" below.
 
 ## End-to-end results
 
@@ -41,10 +48,10 @@ Merged corpus (5M documents, one segment), against `verdict-m1-e2e.md`'s numbers
 | query | | M1-e2e | M1.6 |
 |---|---|---|---|
 | q01 | `term body:t0` | 0.53x | **0.84x** |
-| q02 | `term body:t1` | 0.37x | 0.56x |
+| q02 | `term body:t1` | 0.37x | 0.54x |
 | q03 | `term body:tz` | 0.29x | 0.37x |
 | q04 | `term body:t2s` | 0.39x | 0.59x |
-| q05 | `term body:t1z4` | 0.48x | 0.79x |
+| q05 | `term body:t1z4` | 0.48x | 0.71x |
 | q06 | `and t0 t1` | 0.22x | 0.31x |
 | q07 | `and t0 tz` | 0.11x | 0.15x |
 | q08 | `and tz t2s` | 0.17x | 0.18x |
@@ -55,10 +62,10 @@ Merged corpus (5M documents, one segment), against `verdict-m1-e2e.md`'s numbers
 | q13 | `or_maxscore t0 t1` | 0.26x | 0.38x |
 | q14 | `or_maxscore tz t2s` | 0.08x | 0.16x |
 | q15 | `or_maxscore t0..t3` | 0.11x | 0.27x |
-| q16 | `phrase t0 t1` | 0.04x | 0.04x |
-| q17 | `phrase t1 t2` | 0.04x | 0.07x |
-| q18 | `term title:t0` | 0.34x | 0.44x |
-| q19 | `term keyword:t0` | 4.53x | 3.90x |
+| q16 | `phrase t0 t1` | 0.04x | **0.31x** |
+| q17 | `phrase t1 t2` | 0.04x | **0.38x** |
+| q18 | `term title:t0` | 0.34x | 0.45x |
+| q19 | `term keyword:t0` | 4.53x | 4.46x |
 | q20 | `and title t0 t1` | 0.15x | 0.17x |
 
 **Recall mismatches: 0 of 20 on both corpus variants.** The 15-segment corpus
@@ -68,7 +75,7 @@ reached zero for the first time; it stood at 13 when M1.6 opened.
 
 `>= 1.5x on >= 80% of queries` — **FAIL**, 1 of 20, unchanged from M1.
 
-Median ratio moved 0.15x -> 0.27x. Every query improved or held; none regressed.
+Median ratio moved 0.15x -> 0.34x. Every query improved or held; none regressed.
 
 ---
 
@@ -102,6 +109,16 @@ side by side and then measuring the same operation on both.
 ## What the remaining gap is
 
 Named, measured, and not fixed here:
+
+0. **The whole term dictionary is materialized when a segment is opened.**
+   `DirectoryReader::open` + `open_segments` takes **560 ms** on the 15-segment
+   corpus against Lucene's **4.2 ms** — 135x. `blocktree::FieldTerms` holds a
+   `Vec<(Vec<u8>, TermStats, TermMetadata)>` of every term in the field, one
+   allocation each, where `SegmentTermsEnum` walks the `.tip` FST to a block and
+   scans it in place. No query benchmark could find this: the reader is opened
+   once, outside the timed region. It is the largest architectural divergence
+   left in the read path, and it blocks M2 and M5 independently of query speed,
+   because a search engine reopens readers on every refresh.
 
 1. **Phrase matching materializes every position of every document.** About 50%
    of a phrase query is `malloc`/`free`/`memcpy`: `term_doc_positions` builds a

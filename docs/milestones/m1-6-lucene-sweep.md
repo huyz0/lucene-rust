@@ -1,6 +1,6 @@
 # M1.6 — Lucene source sweep: parity gaps and hot-path optimisation
 
-**Status:** Stages A-B and the search-layer part of F delivered 2026-08-28; C-E and the phrase work open. Verdict: [`docs/benchmarks/verdict-m1.6.md`](../benchmarks/verdict-m1.6.md). Findings: [`docs/sweep/findings.md`](../sweep/findings.md).
+**Status:** Stages A, B, C, D1, E1 and the search-layer part of F delivered 2026-08-28; D2 and E2 open, and the two milestone-sized findings (block-tree navigation, lazy positions) filed rather than fixed. Verdict: [`docs/benchmarks/verdict-m1.6.md`](../benchmarks/verdict-m1.6.md). Findings: [`docs/sweep/findings.md`](../sweep/findings.md).
 **Reference:** Apache Lucene `releases/lucene/10.5.0`, extracted from the clone at
 `~/work/lucene` (that clone's checkout is `main`/11.0.0-SNAPSHOT — the sweep reads the
 10.5.0 tag via `git archive`, never the working tree, because 11.0 has already changed
@@ -188,30 +188,39 @@ delivered milestone.
 | A5 | (SIMD) | **Deferred with a measured reason** — the scalar kernel beats Lucene's Panama one on all 31 widths; explicit SIMD would mean relaxing `#![forbid(unsafe_code)]` and maintaining a second kernel forever. |
 | B1 | `lucene-codecs/src/postings.rs` | 0.20x -> **1.69x** of Lucene on `nextDoc()`. `next_doc` was binary-searching for an offset that is always 1. Plus per-block scratch and lazy impacts. |
 | C1 | `lucene-store/src/data_input.rs` | `read_u32s_le` added (Lucene's `readInts`), with a second `DataInput` backend in tests so the provided methods' default forms actually execute. |
+| C2 | `lucene-store/src/directory.rs` | **Checked, no gap at the default.** Lucene's `MMapDirectory.readAdvice` initialises to `Optional.empty()`, so its per-file `madvise` hints are inert unless a caller installs `ADVISE_BY_CONTEXT`. `IndexInput.prefetch` has no equivalent here; unmeasurable against a warm page cache. |
+| D1 | `lucene-codecs/src/blocktree.rs` | **Largest architectural divergence found.** Reader open is **135x slower than Lucene** (560 ms vs 4.2 ms on the 15-segment corpus) because the whole term dictionary is materialized at open. Filed, not fixed. |
+| E1 | `lucene-codecs/src/direct_reader.rs` | 0.82x -> **1.82x** of Lucene, flat across all fourteen widths. It read one byte at a time where `DirectPackedReaderNN` does one wide load. |
+| B2 | phrase positions | 0.04x -> **0.31x**. Per-document `Vec` allocation removed (`read_positions_flat`), and the redundant match pass for single-clause queries removed. Full laziness still open. |
 | F1 | `lucene-search/src/{lib,collector,field_norms}.rs` | `ImpactsDISI`'s per-block bound, `TopScoreDocCollector`'s fast reject, dense one-byte norm fast paths, idf hoisted out of both boolean scorers. |
 | — | `postings_writer.rs` | Doc-delta encoding choice corrected to Lucene's condition (P2). |
 | — | multi-segment statistics | Phrase, dismax and boost clauses now get reader-wide idf; segmented recall **13 -> 0** mismatches. |
 
 ### Open, in priority order
 
-1. **B2 — the positions reader.** Phrase queries sit at 0.04x and about half of a
-   phrase query is the allocator. Needs a `LazyPositionsCursor`. M1.5-sized.
-2. **`tf_norm`'s second division** in the boolean scorers (see the verdict).
-3. **D, E — blocktree/FST and the packed/doc-values readers.** Not yet read
-   against their Lucene counterparts at all. No evidence yet that they are hot;
-   that is itself only an absence of evidence.
-4. **WAND clause partitioning.** Milestone-sized.
+1. **D1 — real block-tree navigation.** Reader open at 135x Lucene, and O(vocabulary)
+   memory per segment. Blocks M2 and M5 independently of query speed, because a
+   search engine reopens readers on every refresh. Milestone-sized: FST arc
+   walking to a block, frame-based suffix scanning, lazy metadata decode.
+2. **B2 — a lazy positions cursor.** The allocation half is fixed; positions are
+   still all decoded before any document is known to be a phrase candidate.
+   M1.5-sized.
+3. **`tf_norm`'s second division** in the boolean scorers (see the verdict).
+4. **E2 — `norms.rs`, `indexed_disi.rs`, `doc_values.rs`** not yet read against
+   their Lucene counterparts. `norms` was partly covered via `field_norms`'s
+   fast path; the other two are untouched.
+5. **WAND clause partitioning.** Milestone-sized.
 
 ### Acceptance criteria, scored
 
 | # | criterion | status |
 |---|---|---|
-| 1 | Every Stage A-F file has a findings row naming the Lucene source read against it | **partial** — A, B1, C1 and the F files are covered; B2, D and E are not. |
+| 1 | Every Stage A-F file has a findings row naming the Lucene source read against it | **partial** — A, B1, B2, C1, C2, D1, E1 and the F files are covered; E2 (`norms`/`indexed_disi`/`doc_values`) and D2 (`fst.rs`) are not. |
 | 2 | Every swept file with a hot loop has a Rust microbenchmark and a Java counterpart | **met for what was swept** — `for_decode` and `postings_iter` both have paired harnesses in `scripts/bench-micro.sh`. The search-layer findings were measured end to end and by profile, not by a paired microbenchmark; there is no Lucene class to isolate for "the term scoring loop". |
 | 3 | Differential suite green at every commit | **met** — 2539 tests, `verify-write-path` 13/13, `gen-fixtures` ok, clippy clean, at every commit. |
 | 4 | `docs/parity.md` updated where the sweep changed a file's status | **met** |
 | 5 | Measured Rust-vs-Java ratio per component recorded before and after | **met** — see the verdict. |
-| 6 | M1's end-to-end benchmark re-run, reporting what moved | **met** — median 0.15x -> 0.27x, recall mismatches 13 -> 0 on the segmented corpus, gate still FAIL at 1/20. |
+| 6 | M1's end-to-end benchmark re-run, reporting what moved | **met** — median 0.15x -> 0.34x, recall mismatches 13 -> 0 on the segmented corpus, gate still FAIL at 1/20. |
 
 Criterion 1 is the one that is genuinely incomplete, and the milestone is not
 claimed as done on that account. What is delivered is the method, the harness,

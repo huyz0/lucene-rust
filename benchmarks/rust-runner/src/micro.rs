@@ -210,6 +210,34 @@ fn bench_direct_reader(warmup: Duration, measure: Duration) {
     }
 }
 
+/// Opening a reader: `DirectoryReader::open` plus `open_segments`, against
+/// Java's `DirectoryReader.open`.
+///
+/// This is not a query benchmark, and it is here because of an architectural
+/// difference the query benchmarks cannot see. `blocktree::FieldTerms` holds
+/// `Vec<(Vec<u8>, TermStats, TermMetadata)>` -- **every term in the field**,
+/// each with its own allocation -- built when the segment is opened. Lucene's
+/// `SegmentTermsEnum` holds none of that: it walks the `.tip` FST to a block,
+/// scans that block's suffix bytes in place, and decodes metadata only for the
+/// term actually sought. So this port pays O(vocabulary) time and memory per
+/// open where Lucene pays O(1), and a search benchmark never shows it because
+/// the reader is opened once, outside the timed region.
+///
+/// It matters anyway: a search engine reopens readers on every refresh.
+fn bench_reader_open(warmup: Duration, measure: Duration, index: &str) {
+    let dir = MmapDirectory::open(index.to_string());
+    let run = |budget| {
+        timed_loop(budget, || {
+            let reader = DirectoryReader::open(&dir).expect("open index");
+            let opened = reader.open_segments().expect("open segments");
+            black_box(opened.as_open_segments().len());
+        })
+    };
+    run(warmup);
+    let (elapsed, ops) = run(measure);
+    println!("open\t{:.3}\t{ops}", elapsed.as_nanos() as f64 / ops as f64);
+}
+
 fn main() {
     let ms = |name: &str, default: u64| -> Duration {
         Duration::from_millis(
@@ -226,6 +254,12 @@ fn main() {
     match which.as_str() {
         "for_decode" => bench_for_decode(warmup, measure),
         "direct_reader" => bench_direct_reader(warmup, measure),
+        "reader_open" => {
+            let index = std::env::args()
+                .nth(2)
+                .expect("reader_open needs an index directory");
+            bench_reader_open(warmup, measure, &index);
+        }
         "postings_iter" => {
             let index = std::env::args()
                 .nth(2)
