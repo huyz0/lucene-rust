@@ -950,6 +950,7 @@ fn term_doc_scores(
     live_docs: Option<&FixedBitSet>,
     query: &TermQuery,
     norms: Option<&FieldNorms<'_>>,
+    global: Option<&GlobalStats>,
 ) -> Result<Vec<(i32, f32)>> {
     let Some(field_terms) = fields.field(&query.field) else {
         return Ok(Vec::new());
@@ -958,7 +959,15 @@ fn term_doc_scores(
         return Ok(Vec::new());
     };
     let doc_freqs = term_doc_freqs(fields, doc_in, live_docs, query)?;
-    let doc_count = field_terms.doc_count as i64;
+    // Reader-wide idf where the caller supplied it, as the lazy paths already
+    // do -- see `CollectionStats`. Without this a boolean query whose shape
+    // does not fit a lazy path still scored every term from its own segment's
+    // counters, which is the multi-segment bug that fix was for.
+    let (term_doc_freq, doc_count) =
+        match global.and_then(|g| g.get(&(query.field.clone(), query.term.clone()))) {
+            Some(g) => (g.doc_freq, g.doc_count),
+            None => (stats.doc_freq as i64, field_terms.doc_count as i64),
+        };
     doc_freqs
         .into_iter()
         .map(|(doc_id, freq)| {
@@ -970,7 +979,7 @@ fn term_doc_scores(
                 ),
             };
             let score = similarity::score(
-                stats.doc_freq as i64,
+                term_doc_freq,
                 doc_count,
                 freq as f32,
                 field_length,
@@ -995,7 +1004,21 @@ pub fn search_term_query_scored<C: ScoringCollector>(
     norms: Option<&FieldNorms<'_>>,
     collector: &mut C,
 ) -> Result<()> {
-    for (doc_id, score) in term_doc_scores(fields, doc_in, live_docs, query, norms)? {
+    search_term_query_scored_with_stats(fields, doc_in, live_docs, query, norms, None, collector)
+}
+
+/// [`search_term_query_scored`] taking reader-wide statistics -- see
+/// [`CollectionStats`]. `None` keeps this segment's own counters.
+pub fn search_term_query_scored_with_stats<C: ScoringCollector>(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    query: &TermQuery,
+    norms: Option<&FieldNorms<'_>>,
+    global: Option<&GlobalStats>,
+    collector: &mut C,
+) -> Result<()> {
+    for (doc_id, score) in term_doc_scores(fields, doc_in, live_docs, query, norms, global)? {
         collector.collect(doc_id, score);
     }
     Ok(())
@@ -1445,12 +1468,14 @@ fn clause_scores(
     points: Option<&PointsInput<'_>>,
     clause: &Clause,
     norms: Option<&HashMap<String, FieldNorms<'_>>>,
+    global: Option<&GlobalStats>,
 ) -> Result<HashMap<i32, f32>> {
     match clause {
         Clause::Term(query) => {
             let clause_norms = norms.and_then(|m| m.get(&query.field));
             let mut scores = HashMap::new();
-            for (doc_id, score) in term_doc_scores(fields, doc_in, live_docs, query, clause_norms)?
+            for (doc_id, score) in
+                term_doc_scores(fields, doc_in, live_docs, query, clause_norms, global)?
             {
                 *scores.entry(doc_id).or_insert(0.0) += score;
             }
@@ -1466,7 +1491,7 @@ fn clause_scores(
                 }
             }
             let mut collector = SumCollector(&mut scores);
-            search_phrase_query_scored(
+            search_phrase_query_scored_with_stats(
                 fields,
                 doc_in,
                 pos_in,
@@ -1474,6 +1499,7 @@ fn clause_scores(
                 live_docs,
                 query,
                 clause_norms,
+                global,
                 &mut collector,
             )?;
             Ok(scores)
@@ -1489,7 +1515,7 @@ fn clause_scores(
             let mut scores: HashMap<i32, f32> = HashMap::new();
             for sub_clause in nested.must.iter().chain(nested.should.iter()) {
                 for (doc_id, score) in clause_scores(
-                    fields, doc_in, pos_in, pay_in, live_docs, points, sub_clause, norms,
+                    fields, doc_in, pos_in, pay_in, live_docs, points, sub_clause, norms, global,
                 )? {
                     if matched.contains(&doc_id) {
                         *scores.entry(doc_id).or_insert(0.0) += score;
@@ -1499,7 +1525,7 @@ fn clause_scores(
             Ok(scores)
         }
         Clause::DisjunctionMax(nested) => dismax_scores(
-            fields, doc_in, pos_in, pay_in, live_docs, points, nested, norms,
+            fields, doc_in, pos_in, pay_in, live_docs, points, nested, norms, global,
         ),
         Clause::ConstantScore(nested) => {
             let matched = resolve_clause_docs(
@@ -1526,6 +1552,7 @@ fn clause_scores(
                 points,
                 &nested.inner,
                 norms,
+                global,
             )?;
             Ok(inner_scores
                 .into_iter()
@@ -1638,13 +1665,14 @@ fn dismax_scores(
     points: Option<&PointsInput<'_>>,
     query: &DisjunctionMaxQuery,
     norms: Option<&HashMap<String, FieldNorms<'_>>>,
+    global: Option<&GlobalStats>,
 ) -> Result<HashMap<i32, f32>> {
     let per_disjunct: Vec<HashMap<i32, f32>> = query
         .disjuncts
         .iter()
         .map(|clause| {
             clause_scores(
-                fields, doc_in, pos_in, pay_in, live_docs, points, clause, norms,
+                fields, doc_in, pos_in, pay_in, live_docs, points, clause, norms, global,
             )
         })
         .collect::<Result<_>>()?;
@@ -2278,7 +2306,7 @@ pub fn search_boolean_query_scored_with_stats<C: ScoringCollector>(
     let mut scores: HashMap<i32, f32> = HashMap::new();
     for clause in query.must.iter().chain(query.should.iter()) {
         for (doc_id, score) in clause_scores(
-            fields, doc_in, pos_in, pay_in, live_docs, points, clause, norms,
+            fields, doc_in, pos_in, pay_in, live_docs, points, clause, norms, global,
         )? {
             *scores.entry(doc_id).or_insert(0.0) += score;
         }
@@ -2673,7 +2701,7 @@ pub fn search_disjunction_max_query_scored<C: ScoringCollector>(
     collector: &mut C,
 ) -> Result<()> {
     let scores = dismax_scores(
-        fields, doc_in, pos_in, pay_in, live_docs, points, query, norms,
+        fields, doc_in, pos_in, pay_in, live_docs, points, query, norms, None,
     )?;
     let mut docs: Vec<i32> = scores.keys().copied().collect();
     docs.sort_unstable();
@@ -3387,12 +3415,40 @@ pub fn search_phrase_query_scored<C: ScoringCollector>(
     norms: Option<&FieldNorms<'_>>,
     collector: &mut C,
 ) -> Result<()> {
+    search_phrase_query_scored_with_stats(
+        fields, doc_in, pos_in, pay_in, live_docs, query, norms, None, collector,
+    )
+}
+
+/// [`search_phrase_query_scored`] taking reader-wide statistics, so a phrase
+/// clause of a multi-segment search gets one idf per constituent term -- see
+/// [`CollectionStats`]. `None` keeps this segment's own counters.
+#[allow(clippy::too_many_arguments)]
+pub fn search_phrase_query_scored_with_stats<C: ScoringCollector>(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    pos_in: Option<&PosInput<'_>>,
+    pay_in: Option<&PayInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    query: &PhraseQuery,
+    norms: Option<&FieldNorms<'_>>,
+    global: Option<&GlobalStats>,
+    collector: &mut C,
+) -> Result<()> {
     if query.terms.is_empty() {
         return Ok(());
     }
     if query.terms.len() == 1 {
         let term_query = TermQuery::new(query.field.clone(), query.terms[0].clone());
-        return search_term_query_scored(fields, doc_in, live_docs, &term_query, norms, collector);
+        return search_term_query_scored_with_stats(
+            fields,
+            doc_in,
+            live_docs,
+            &term_query,
+            norms,
+            global,
+            collector,
+        );
     }
     let Some(pos_in) = pos_in else {
         return Err(Error::MissingPosInput);
@@ -3405,13 +3461,21 @@ pub fn search_phrase_query_scored<C: ScoringCollector>(
     // Real BM25's phrase idf is the sum of every constituent term's own idf --
     // see this function's doc comment. A missing term means the phrase can
     // never match, same convention as `search_phrase_query`.
-    let doc_count = field_terms.doc_count as i64;
     let mut idf_sum = 0.0f32;
     for term in &query.terms {
         let Some(stats) = field_terms.seek_exact(term) else {
             return Ok(());
         };
-        idf_sum += similarity::idf(stats.doc_freq as i64, doc_count);
+        // Reader-wide statistics where the caller has them, exactly as the term
+        // path does. A phrase's idf is the sum of its terms' idfs, so a
+        // per-segment idf here is wrong in the same way and for the same
+        // reason -- and it is what left two phrase queries disagreeing with
+        // Java on the segmented corpus after every other query agreed.
+        let (df, dc) = match global.and_then(|g| g.get(&(query.field.clone(), term.clone()))) {
+            Some(g) => (g.doc_freq, g.doc_count),
+            None => (stats.doc_freq as i64, field_terms.doc_count as i64),
+        };
+        idf_sum += similarity::idf(df, dc);
     }
 
     let mut per_term_docs: Vec<Vec<i32>> = Vec::with_capacity(query.terms.len());

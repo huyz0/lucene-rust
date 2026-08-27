@@ -357,6 +357,35 @@ fn global_term_stats(
 /// mentions, so each segment scores with one idf per term -- see
 /// [`crate::CollectionStats`].
 fn global_boolean_stats(segments: &[OpenSegment<'_>], query: &BooleanQuery) -> crate::GlobalStats {
+    fn walk_clause(c: &crate::query::Clause, out: &mut Vec<(String, Vec<u8>)>) {
+        use crate::query::Clause;
+        match c {
+            Clause::Term(t) => out.push((t.field.clone(), t.term.clone())),
+            // A phrase's idf is the sum of its constituent terms' idfs, so each
+            // of them needs the same reader-wide treatment. Missing this left
+            // two phrase queries disagreeing with Java on the 15-segment corpus
+            // after every other query had been fixed.
+            Clause::Phrase(p) => {
+                for term in &p.terms {
+                    out.push((p.field.clone(), term.clone()));
+                }
+            }
+            Clause::Boolean(inner) => walk(inner, out),
+            Clause::DisjunctionMax(d) => {
+                for inner in &d.disjuncts {
+                    walk_clause(inner, out);
+                }
+            }
+            Clause::Boost(b) => walk_clause(&b.inner, out),
+            // Everything else either does not score from term statistics
+            // (`ConstantScore`, points, doc-values ranges) or expands to terms
+            // this port resolves elsewhere (`Wildcard`, `Prefix`, `Fuzzy`,
+            // `Regexp`) -- those still score per segment, and are listed as
+            // open in `docs/sweep/findings.md` rather than silently skipped.
+            _ => {}
+        }
+    }
+
     fn walk(q: &BooleanQuery, out: &mut Vec<(String, Vec<u8>)>) {
         for c in q
             .must
@@ -364,11 +393,7 @@ fn global_boolean_stats(segments: &[OpenSegment<'_>], query: &BooleanQuery) -> c
             .chain(q.should.iter())
             .chain(q.must_not.iter())
         {
-            match c {
-                crate::query::Clause::Term(t) => out.push((t.field.clone(), t.term.clone())),
-                crate::query::Clause::Boolean(inner) => walk(inner, out),
-                _ => {}
-            }
+            walk_clause(c, out);
         }
     }
     let mut terms = Vec::new();
