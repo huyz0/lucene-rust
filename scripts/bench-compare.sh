@@ -44,6 +44,22 @@ echo "bench-compare: building runners"
 ( cd benchmarks/rust-runner && cargo build --release --quiet )
 javac -nowarn -cp "$CP" -d "$OUT/classes" benchmarks/java-runner/src/BenchRunner.java
 
+# Refuse to measure on a busy machine. M1's own risk section named "measuring
+# the wrong thing" as the dominant risk, and this has now bitten twice: a run
+# reporting 56.8 qps where three quiet runs gave 102-105, and an LTO comparison
+# spanning 59-131 qps, both with an unrelated build saturating the CPU. A
+# contaminated benchmark is worse than no benchmark, because it gets written
+# down.
+LOAD=$(cut -d' ' -f1 /proc/loadavg)
+MAXLOAD="${BENCH_MAX_LOAD:-1.5}"
+if awk "BEGIN{exit !($LOAD > $MAXLOAD)}"; then
+  echo "bench-compare: refusing to measure -- 1-minute load average is $LOAD (limit $MAXLOAD)." >&2
+  echo "  Something else is using the CPU; results would not be reproducible." >&2
+  ps -eo pcpu,comm --sort=-pcpu | head -4 | sed 's/^/    /' >&2
+  echo "  Wait for the machine to settle, or override with BENCH_MAX_LOAD=<n>." >&2
+  exit 3
+fi
+
 command -v taskset >/dev/null && PINCMD=(taskset -c "$PIN") || PINCMD=()
 
 echo "bench-compare: index=$INDEX warmup=${WARMUP}ms measure=${ITERS}ms pinned=${PIN:-none}"
