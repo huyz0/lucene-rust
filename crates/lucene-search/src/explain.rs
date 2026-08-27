@@ -375,7 +375,7 @@ fn explain_phrase(
     let mut per_term_docs: Vec<Vec<i32>> = Vec::with_capacity(query.terms.len());
     let mut per_term_maps: Vec<HashMap<i32, Vec<i32>>> = Vec::with_capacity(query.terms.len());
     for term in &query.terms {
-        let Some((docs, map)) = crate::term_doc_positions(
+        let Some((docs, positions, spans)) = crate::term_doc_positions(
             fields,
             doc_in,
             pos_in,
@@ -396,7 +396,8 @@ fn explain_phrase(
         per_term_maps.push(
             docs.iter()
                 .copied()
-                .zip(map)
+                .zip(spans.iter())
+                .map(|(d, &(start, end))| (d, positions[start as usize..end as usize].to_vec()))
                 .collect::<std::collections::HashMap<i32, Vec<i32>>>(),
         );
         per_term_docs.push(docs);

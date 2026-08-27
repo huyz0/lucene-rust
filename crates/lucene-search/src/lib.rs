@@ -2295,6 +2295,49 @@ pub fn search_boolean_query_scored_with_stats<C: ScoringCollector>(
         return Ok(());
     }
 
+    // One scoring clause and nothing to filter against: the clause's own score
+    // map *is* the matched set, so running `matched_boolean_docs` first would
+    // execute the clause a second time for an answer already in hand. On a
+    // two-term phrase query that second execution was 14% of the query in
+    // `resolve_clause_docs` alone, plus a full second pass of position decode
+    // -- the single-clause shape is exactly how `search_phrase_query_scored`
+    // reaches this function from the multi-segment layer.
+    //
+    // Restricted to `Term` and `Phrase`, the two clause kinds whose
+    // `clause_scores` output is *exactly* their matched set. It is not true in
+    // general: a nested `Boolean` can match documents its scoring sub-clauses
+    // never mention, and the wildcard family expands to terms elsewhere. Those
+    // keep the two-pass path. `minimum_should_match` must be 0, not merely
+    // `<= 1`: with no `should` clauses at all, a minimum of 1 means nothing
+    // matches, and the fast path would wrongly return the `must` clause's
+    // documents.
+    if query.must.len() == 1
+        && query.should.is_empty()
+        && query.must_not.is_empty()
+        && query.minimum_should_match == 0
+        && matches!(query.must[0], Clause::Term(_) | Clause::Phrase(_))
+    {
+        let scores = clause_scores(
+            fields,
+            doc_in,
+            pos_in,
+            pay_in,
+            live_docs,
+            points,
+            &query.must[0],
+            norms,
+            global,
+        )?;
+        // Ascending doc order, which every other path in this crate guarantees
+        // and `TopDocsCollector`'s tie-break assumes.
+        let mut docs: Vec<i32> = scores.keys().copied().collect();
+        docs.sort_unstable();
+        for doc_id in docs {
+            collector.collect(doc_id, scores[&doc_id]);
+        }
+        return Ok(());
+    }
+
     let Some(matched) =
         matched_boolean_docs(fields, doc_in, pos_in, pay_in, live_docs, points, query)?
     else {
@@ -3145,7 +3188,7 @@ fn span_doc_ids(
     let mut per_leaf_maps: Vec<(SpanLeafKey, HashMap<i32, Vec<i32>>)> =
         Vec::with_capacity(leaves.len());
     for (field, term) in &leaves {
-        let Some((docs, map)) =
+        let Some((docs, positions, spans)) =
             term_doc_positions(fields, doc_in, pos_in, pay_in, live_docs, field, term)?
         else {
             // A missing leaf term contributes no occurrences anywhere --
@@ -3154,8 +3197,13 @@ fn span_doc_ids(
             continue;
         };
         // Spans are not on the measured hot path: rebuild the map the span
-        // matcher expects from the aligned vectors.
-        let map: HashMap<i32, Vec<i32>> = docs.iter().copied().zip(map).collect();
+        // matcher expects from the flat positions and their per-doc spans.
+        let map: HashMap<i32, Vec<i32>> = docs
+            .iter()
+            .copied()
+            .zip(spans.iter())
+            .map(|(doc, &(start, end))| (doc, positions[start as usize..end as usize].to_vec()))
+            .collect();
         candidate_docs.extend(docs);
         per_leaf_maps.push(((field.clone(), term.clone()), map));
     }
@@ -3214,7 +3262,14 @@ pub fn search_span_query<C: Collector>(
 /// each doc in amortised O(1) with no hashing and no per-doc clone. Building
 /// the map cost one hash insertion per matching document -- ~5M for a
 /// high-frequency term -- and looking a doc up then cloned its position vector.
-type TermDocPositions = (Vec<i32>, Vec<Vec<i32>>);
+///
+/// Flat, not nested. The positions of every matching document live in one
+/// `Vec<i32>`, and `spans[i]` is document `i`'s `(start, end)` into it. The
+/// nested `Vec<Vec<i32>>` this replaced allocated once per matching document --
+/// roughly five million allocations for a phrase query on a high-frequency term
+/// -- and about half of such a query's runtime was in `malloc`/`free`/`memcpy`.
+/// Lucene's `ExactPhraseMatcher` allocates nothing per document at all.
+type TermDocPositions = (Vec<i32>, Vec<i32>, Vec<(u32, u32)>);
 
 fn term_doc_positions(
     fields: &BlockTreeFields,
@@ -3228,23 +3283,25 @@ fn term_doc_positions(
     let Some(field_terms) = fields.field(field) else {
         return Ok(None);
     };
-    let Some(postings) = field_terms.postings(term, doc_in)? else {
-        return Ok(None);
-    };
-    let Some(positions) = field_terms.positions(term, doc_in, pos_in, pay_in)? else {
+    let Some((postings, positions, doc_starts)) =
+        field_terms.positions_flat(term, doc_in, pos_in, pay_in)?
+    else {
         return Ok(None);
     };
 
     let mut docs = Vec::with_capacity(postings.docs.len());
-    let mut per_doc: Vec<Vec<i32>> = Vec::with_capacity(postings.docs.len());
-    for (doc_id, doc_positions) in postings.docs.into_iter().zip(positions) {
+    let mut spans: Vec<(u32, u32)> = Vec::with_capacity(postings.docs.len());
+    for (i, doc_id) in postings.docs.into_iter().enumerate() {
         if !live_docs.is_none_or(|bits| bits.get(doc_id as usize)) {
             continue;
         }
         docs.push(doc_id);
-        per_doc.push(doc_positions.into_iter().map(|p| p.position).collect());
+        // `doc_starts` is indexed by the *unfiltered* document position and has
+        // one extra entry, so the span is always in range and deleted documents
+        // simply never get one pushed.
+        spans.push((doc_starts[i], doc_starts[i + 1]));
     }
-    Ok(Some((docs, per_doc)))
+    Ok(Some((docs, positions, spans)))
 }
 
 /// Executes `query` (see [`query::PhraseQuery`] for `slop`'s exact semantics)
@@ -3311,9 +3368,10 @@ pub fn search_phrase_query<C: Collector>(
     };
 
     let mut per_term_docs: Vec<Vec<i32>> = Vec::with_capacity(query.terms.len());
-    let mut per_term_maps: Vec<Vec<Vec<i32>>> = Vec::with_capacity(query.terms.len());
+    let mut per_term_positions: Vec<Vec<i32>> = Vec::with_capacity(query.terms.len());
+    let mut per_term_spans: Vec<Vec<(u32, u32)>> = Vec::with_capacity(query.terms.len());
     for term in &query.terms {
-        let Some((docs, map)) = term_doc_positions(
+        let Some((docs, positions, spans)) = term_doc_positions(
             fields,
             doc_in,
             pos_in,
@@ -3328,7 +3386,8 @@ pub fn search_phrase_query<C: Collector>(
             return Ok(());
         };
         per_term_docs.push(docs);
-        per_term_maps.push(map);
+        per_term_positions.push(positions);
+        per_term_spans.push(spans);
     }
 
     let per_term_docs_snapshot = per_term_docs.clone();
@@ -3343,7 +3402,7 @@ pub fn search_phrase_query<C: Collector>(
     // One cursor per term, advanced in step with the ascending candidate order,
     // so each doc's positions are found without hashing and without cloning.
     let mut cursors = vec![0usize; per_term_docs_snapshot.len()];
-    let mut term_positions: Vec<&[i32]> = Vec::with_capacity(per_term_maps.len());
+    let mut term_positions: Vec<&[i32]> = Vec::with_capacity(per_term_positions.len());
     for doc_id in candidate_docs {
         term_positions.clear();
         for (t, docs) in per_term_docs_snapshot.iter().enumerate() {
@@ -3355,7 +3414,8 @@ pub fn search_phrase_query<C: Collector>(
                 *i < docs.len() && docs[*i] == doc_id,
                 "doc_id came from the conjunction of every term's own doc list"
             );
-            term_positions.push(&per_term_maps[t][*i]);
+            let (start, end) = per_term_spans[t][*i];
+            term_positions.push(&per_term_positions[t][start as usize..end as usize]);
         }
         let is_match = if query.slop == 0 {
             phrase_matches_in_doc(&term_positions)
@@ -3479,9 +3539,10 @@ pub fn search_phrase_query_scored_with_stats<C: ScoringCollector>(
     }
 
     let mut per_term_docs: Vec<Vec<i32>> = Vec::with_capacity(query.terms.len());
-    let mut per_term_maps: Vec<Vec<Vec<i32>>> = Vec::with_capacity(query.terms.len());
+    let mut per_term_positions: Vec<Vec<i32>> = Vec::with_capacity(query.terms.len());
+    let mut per_term_spans: Vec<Vec<(u32, u32)>> = Vec::with_capacity(query.terms.len());
     for term in &query.terms {
-        let Some((docs, map)) = term_doc_positions(
+        let Some((docs, positions, spans)) = term_doc_positions(
             fields,
             doc_in,
             pos_in,
@@ -3494,7 +3555,8 @@ pub fn search_phrase_query_scored_with_stats<C: ScoringCollector>(
             return Ok(());
         };
         per_term_docs.push(docs);
-        per_term_maps.push(map);
+        per_term_positions.push(positions);
+        per_term_spans.push(spans);
     }
 
     let per_term_docs_snapshot = per_term_docs.clone();
@@ -3509,7 +3571,7 @@ pub fn search_phrase_query_scored_with_stats<C: ScoringCollector>(
     // One cursor per term, advanced in step with the ascending candidate order,
     // so each doc's positions are found without hashing and without cloning.
     let mut cursors = vec![0usize; per_term_docs_snapshot.len()];
-    let mut term_positions: Vec<&[i32]> = Vec::with_capacity(per_term_maps.len());
+    let mut term_positions: Vec<&[i32]> = Vec::with_capacity(per_term_positions.len());
     for doc_id in candidate_docs {
         term_positions.clear();
         for (t, docs) in per_term_docs_snapshot.iter().enumerate() {
@@ -3521,7 +3583,8 @@ pub fn search_phrase_query_scored_with_stats<C: ScoringCollector>(
                 *i < docs.len() && docs[*i] == doc_id,
                 "doc_id came from the conjunction of every term's own doc list"
             );
-            term_positions.push(&per_term_maps[t][*i]);
+            let (start, end) = per_term_spans[t][*i];
+            term_positions.push(&per_term_positions[t][start as usize..end as usize]);
         }
         let phrase_freq = if query.slop == 0 {
             phrase_freq_exact(&term_positions)

@@ -579,7 +579,53 @@ This is exactly the defect M1 diagnosed and M1.5 fixed for the *doc* stream —
 Lucene's `ExactPhraseMatcher` walks `PostingsEnum.nextPosition()` lazily and
 allocates nothing per document.
 
-**Filed, not fixed.** It needs a `LazyPositionsCursor` in `lucene-codecs`
-mirroring `LazyDocsCursor`, plus a phrase matcher rewritten against it. That is
-M1.5-sized work — a milestone, not a sweep finding — and the sweep's job here is
-to have found it, measured it, and named the shape of the fix.
+**Fixed, in the cheaper half.** Full laziness — a `LazyPositionsCursor`
+mirroring `LazyDocsCursor`, so positions are never decoded for a document the
+phrase cannot match — is still M1.5-sized and still open. But the *allocation*
+half needed neither.
+
+`read_positions`'s decode already builds a flat `pos_deltas: Vec<i32>`; only its
+final assembly loop chopped that into a `Vec` per document. Split the wire-format
+half out as `decode_position_streams`, and add `read_positions_flat`, which
+assembles the same data as one positions array plus per-document start offsets:
+**two allocations regardless of how many documents match**, and no offset or
+payload fields the phrase matcher never reads. `FieldTerms::positions_flat` and
+`term_doc_positions` follow, the latter now returning
+`(docs, positions, spans)`.
+
+`q16` `phrase t0 t1`: **0.1 -> 0.5 qps**.
+
+### O16 — the phrase query was executed twice
+
+With the allocator out of the profile, two callers stood out:
+`resolve_clause_docs` at 14.2% and `clause_scores` at 17.6%. They are the two
+halves of `search_boolean_query_scored`'s general path — find the matching
+documents, then score them — and for a query that is a *single* scoring clause
+they do the same work twice, including a full second pass of position decode.
+The multi-segment layer reaches phrase queries exactly that way:
+`BooleanQuery { must: vec![Clause::Phrase(..)] }`.
+
+A single `Term` or `Phrase` `must` clause with nothing to filter against needs no
+matching pass at all: the clause's score map *is* its matched set. Restricted to
+those two clause kinds deliberately — a nested `Boolean` can match documents its
+scoring sub-clauses never mention, and the wildcard family expands to terms
+elsewhere, so both keep the two-pass path — and to `minimum_should_match == 0`
+rather than `<= 1`, because with no `should` clauses a minimum of 1 means nothing
+matches and the fast path would wrongly return the `must` clause's documents.
+
+`q16`: **0.5 -> 0.9 qps**.
+
+### Where the phrase path ended up
+
+| query | before | after | |
+|---|---|---|---|
+| `q16` `phrase t0 t1` | 0.1 qps (0.04x) | **0.9 qps (0.31x)** | 9x |
+| `q17` `phrase t1 t2` | 0.3 qps (0.07x) | **1.7 qps (0.38x)** | 5.7x |
+
+Phrase queries are no longer the outlier: at 0.31-0.38x they now sit above the
+boolean queries rather than an order of magnitude below everything.
+
+What remains in the profile is `term_doc_positions` itself — decoding every
+position of every document containing each term, before any of them is known to
+be a phrase candidate. That is the part that needs the lazy cursor, and it is
+still open.

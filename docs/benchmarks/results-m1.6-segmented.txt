@@ -1,0 +1,30 @@
+bench-compare: building runners
+bench-compare: index=benchmarks/.corpus/segmented warmup=1200ms measure=1500ms pinned=0,1
+query     rust qps    java qps   ratio   rust p99  java p99  recall
+----------------------------------------------------------------------------
+q01          214.7       941.1   0.23x       5061      1341  ok
+q02          179.5     1,208.7   0.15x       6051      1054  ok
+q03          400.0     2,743.4   0.15x       2758       490  ok
+q04          928.4     4,508.2   0.21x       1318       308  ok
+q05        6,689.3    15,114.9   0.44x        230       104  ok
+q06           45.7       291.8   0.16x      22473      4010  ok
+q07           89.7     1,003.4   0.09x      11757      1235  ok
+q08           93.2       530.4   0.18x      11637      2271  ok
+q09           12.0       105.7   0.11x      84208     10300  ok
+q10           64.7       263.5   0.25x      16456      4350  ok
+q11           76.5       487.0   0.16x      13719      3069  ok
+q12           11.7        51.7   0.23x      86738     20409  ok
+q13           64.8       264.2   0.25x      18006      4535  ok
+q14           77.0       486.7   0.16x      13524      2394  ok
+q15           11.8        51.3   0.23x      87699     20259  ok
+q16            1.3         2.9   0.45x     804726    342962  ok
+q17            2.0         4.6   0.43x     495444    218112  ok
+q18          316.2     2,490.5   0.13x       3526       524  ok
+q19       35,006.9    33,298.1   1.05x         60        43  ok
+q20           25.4       139.2   0.18x      39857      7529  ok
+
+M1 gate:
+  >=1.5x on 0/20 queries (0%)   [criterion: >=80%]
+  slower than Java on 19 queries: q01, q02, q03, q04, q05, q06, q07, q08, q09, q10, q11, q12, q13, q14, q15, q16, q17, q18, q20   [criterion: none]
+  recall mismatches: 0   [criterion: 0]
+  => FAIL

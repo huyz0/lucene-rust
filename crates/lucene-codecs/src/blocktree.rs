@@ -165,6 +165,12 @@ use lucene_store::data_input::{DataInput, SliceInput};
 use crate::field_infos::{FieldInfos, IndexOptions};
 use crate::fuzzy::FuzzyMatch;
 use crate::postings::{self, DocInput, Postings, TermMetadata};
+
+/// One term's postings plus its positions in flat form: `(postings, positions,
+/// doc_starts)`, where document `i`'s positions are
+/// `positions[doc_starts[i] as usize..doc_starts[i + 1] as usize]`. See
+/// [`FieldTerms::positions_flat`].
+pub type FlatPositions = (Postings, Vec<i32>, Vec<u32>);
 use crate::regexp::RegexpPattern;
 use crate::wildcard::WildcardPattern;
 
@@ -600,6 +606,39 @@ impl FieldTerms {
             self.index_options,
             self.has_payloads,
         )?))
+    }
+
+    /// [`FieldTerms::positions`] in the flat shape phrase matching wants: one
+    /// positions array plus per-document start offsets, rather than a `Vec` per
+    /// document. See [`postings::read_positions_flat`] for why that matters.
+    ///
+    /// Returns the postings alongside, because a caller needs the doc IDs and
+    /// this has already decoded them to get the freqs.
+    pub fn positions_flat(
+        &self,
+        term: &[u8],
+        doc_in: Option<&DocInput<'_>>,
+        pos_in: &postings::PosInput<'_>,
+        pay_in: Option<&postings::PayInput<'_>>,
+    ) -> Result<Option<FlatPositions>> {
+        let Some(doc_postings) = self.postings(term, doc_in)? else {
+            return Ok(None);
+        };
+        let idx = self
+            .entries
+            .binary_search_by(|(t, _, _)| t.as_slice().cmp(term))
+            .expect("found by self.postings() above, so seek_exact must succeed here too");
+        let (_, stats, meta) = &self.entries[idx];
+        let (positions, doc_starts) = postings::read_positions_flat(
+            pos_in,
+            pay_in,
+            *meta,
+            &doc_postings.freqs,
+            stats.total_term_freq,
+            self.index_options,
+            self.has_payloads,
+        )?;
+        Ok(Some((doc_postings, positions, doc_starts)))
     }
 }
 
