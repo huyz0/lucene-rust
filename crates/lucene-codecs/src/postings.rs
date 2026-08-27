@@ -782,39 +782,32 @@ impl<'a> PayInput<'a> {
     }
 }
 
-/// Decodes every position (and, if the field has them, offset/payload)
-/// occurrence for a term, in doc order — `PostingsEnum.nextPosition()`/
-/// `startOffset()`/`endOffset()`/`getPayload()` for every doc this term
-/// occurs in — given that term's already-decoded per-doc frequencies
-/// (`Postings::freqs`, in the same doc order [`DocInput::read_postings`] or
-/// [`singleton_postings`] produced) and per-term metadata.
+/// The flat, `total_term_freq`-long streams a term's `.pos`/`.pay` data
+/// decodes into, before they are re-chopped into per-document groups.
 ///
-/// Scoped like [`DocInput::read_postings`]: **sequential decode only** (no
-/// skip-ahead), any `total_term_freq` this port's fixtures or a realistic
-/// term would produce. Positions/payloads/offsets live in wholly separate
-/// `.pos`/`.pay` files from `.doc`, as **one flat sequence of
-/// `total_term_freq` occurrences**, not one block per doc — the writer
-/// buffers/flushes 256 occurrences at a time across doc boundaries
-/// (`Lucene104PostingsWriter.addPosition`'s `posBufferUpto == BLOCK_SIZE`
-/// flush), only resetting the position/offset accumulator to 0 at each
-/// doc's *first* occurrence (`Lucene104PostingsReader.java:1298-1304`,
-/// mirroring `Lucene104PostingsWriter.startDoc`'s `lastPosition = 0;
-/// lastStartOffset = 0;`). This decodes that whole flat sequence first
-/// (full `ForUtil`/`PForUtil` blocks of `BLOCK_SIZE`, i.e. `for_util::
-/// BLOCK_SIZE` == the same 256 as `.doc`'s block size — confirmed from
-/// `Lucene104PostingsFormat.BLOCK_SIZE = ForUtil.BLOCK_SIZE`, not a
-/// separate/older 128-wide position block size — then a `refillLastPositionBlock`-style
-/// vint tail for the `total_term_freq % BLOCK_SIZE` remainder), then
-/// re-chops it into per-doc groups using `freqs`.
-pub fn read_positions(
+/// Split out so a caller wanting only positions -- phrase matching, which is
+/// the caller that matters for speed -- can assemble them without building a
+/// `Vec<Position>` per document. See [`read_positions_flat`].
+struct PositionStreams {
+    pos_deltas: Vec<i32>,
+    payload_lengths: Vec<i32>,
+    payload_bytes: Vec<u8>,
+    offset_start_deltas: Vec<i32>,
+    offset_lengths: Vec<i32>,
+}
+
+/// Decodes a term's `.pos` (and `.pay`, where the field has offsets or
+/// payloads) into flat streams: the wire-format half of [`read_positions`].
+/// The re-chopping half lives in its callers, because they disagree about what
+/// shape they want it in.
+fn decode_position_streams(
     pos: &PosInput<'_>,
     pay: Option<&PayInput<'_>>,
     meta: TermMetadata,
-    freqs: &[i32],
     total_term_freq: i64,
     index_options: IndexOptions,
     has_payloads: bool,
-) -> Result<Vec<Vec<Position>>> {
+) -> Result<PositionStreams> {
     if !index_options.subsumes_positions() {
         return Err(Error::Unsupported(
             "read_positions needs a field with IndexOptions::DocsAndFreqsAndPositions or higher",
@@ -923,6 +916,121 @@ pub fn read_positions(
             }
         }
     }
+
+    Ok(PositionStreams {
+        pos_deltas,
+        payload_lengths,
+        payload_bytes,
+        offset_start_deltas,
+        offset_lengths,
+    })
+}
+
+/// Positions only, in one flat array with per-document start offsets, instead
+/// of a `Vec<Vec<Position>>`.
+///
+/// Returns `(positions, doc_starts)`: document `i`'s positions are
+/// `positions[doc_starts[i] as usize..doc_starts[i + 1] as usize]`, and
+/// `doc_starts` has `freqs.len() + 1` entries so the last document needs no
+/// special case.
+///
+/// Why it exists: phrase matching went through [`read_positions`], which
+/// allocates one `Vec<Position>` per matching document -- roughly five million
+/// allocations for a query on a high-frequency term -- and about half of a
+/// phrase query's runtime was in `malloc`/`free`/`memcpy` as a result. This
+/// makes two allocations regardless of how many documents match, and drops the
+/// offset and payload fields a phrase matcher never reads. Lucene does not
+/// materialize a per-document container at all: `BlockPostingsEnum` walks
+/// `nextPosition()` out of a reusable buffer, which is further still than this
+/// goes.
+pub fn read_positions_flat(
+    pos: &PosInput<'_>,
+    pay: Option<&PayInput<'_>>,
+    meta: TermMetadata,
+    freqs: &[i32],
+    total_term_freq: i64,
+    index_options: IndexOptions,
+    has_payloads: bool,
+) -> Result<(Vec<i32>, Vec<u32>)> {
+    let streams =
+        decode_position_streams(pos, pay, meta, total_term_freq, index_options, has_payloads)?;
+    let pos_deltas = streams.pos_deltas;
+    let n = total_term_freq as usize;
+
+    let mut positions: Vec<i32> = Vec::with_capacity(n);
+    let mut doc_starts: Vec<u32> = Vec::with_capacity(freqs.len() + 1);
+    let mut idx = 0usize;
+    for &freq in freqs {
+        doc_starts.push(positions.len() as u32);
+        // Deltas reset at each document's first occurrence: they are only ever
+        // relative to the previous occurrence of the *same* document.
+        let mut position = 0i32;
+        for _ in 0..freq {
+            // Same guard as `read_positions`: `freqs` comes from `.doc` and
+            // `total_term_freq` from the term dictionary, and nothing on the
+            // wire makes them agree, so a corrupt segment must surface a
+            // decode error rather than index past the end.
+            if idx >= pos_deltas.len() {
+                return Err(Error::Store(lucene_store::Error::Corrupted(
+                    "sum of per-doc freqs exceeds total_term_freq".into(),
+                )));
+            }
+            position += pos_deltas[idx];
+            positions.push(position);
+            idx += 1;
+        }
+    }
+    doc_starts.push(positions.len() as u32);
+    if idx != n {
+        return Err(Error::Store(lucene_store::Error::Corrupted(
+            "sum of per-doc freqs is less than total_term_freq".into(),
+        )));
+    }
+    Ok((positions, doc_starts))
+}
+
+/// Decodes every position (and, if the field has them, offset/payload)
+/// occurrence for a term, in doc order — `PostingsEnum.nextPosition()`/
+/// `startOffset()`/`endOffset()`/`getPayload()` for every doc this term
+/// occurs in — given that term's already-decoded per-doc frequencies
+/// (`Postings::freqs`, in the same doc order [`DocInput::read_postings`] or
+/// [`singleton_postings`] produced) and per-term metadata.
+///
+/// Scoped like [`DocInput::read_postings`]: **sequential decode only** (no
+/// skip-ahead), any `total_term_freq` this port's fixtures or a realistic
+/// term would produce. Positions/payloads/offsets live in wholly separate
+/// `.pos`/`.pay` files from `.doc`, as **one flat sequence of
+/// `total_term_freq` occurrences**, not one block per doc — the writer
+/// buffers/flushes 256 occurrences at a time across doc boundaries
+/// (`Lucene104PostingsWriter.addPosition`'s `posBufferUpto == BLOCK_SIZE`
+/// flush), only resetting the position/offset accumulator to 0 at each
+/// doc's *first* occurrence (`Lucene104PostingsReader.java:1298-1304`,
+/// mirroring `Lucene104PostingsWriter.startDoc`'s `lastPosition = 0;
+/// lastStartOffset = 0;`). This decodes that whole flat sequence first
+/// (full `ForUtil`/`PForUtil` blocks of `BLOCK_SIZE`, i.e. `for_util::
+/// BLOCK_SIZE` == the same 256 as `.doc`'s block size — confirmed from
+/// `Lucene104PostingsFormat.BLOCK_SIZE = ForUtil.BLOCK_SIZE`, not a
+/// separate/older 128-wide position block size — then a `refillLastPositionBlock`-style
+/// vint tail for the `total_term_freq % BLOCK_SIZE` remainder), then
+/// re-chops it into per-doc groups using `freqs`.
+pub fn read_positions(
+    pos: &PosInput<'_>,
+    pay: Option<&PayInput<'_>>,
+    meta: TermMetadata,
+    freqs: &[i32],
+    total_term_freq: i64,
+    index_options: IndexOptions,
+    has_payloads: bool,
+) -> Result<Vec<Vec<Position>>> {
+    let has_offsets = index_options.subsumes_offsets();
+    let n = total_term_freq as usize;
+    let PositionStreams {
+        pos_deltas,
+        payload_lengths,
+        payload_bytes,
+        offset_start_deltas,
+        offset_lengths,
+    } = decode_position_streams(pos, pay, meta, total_term_freq, index_options, has_payloads)?;
 
     // Re-chop the flat, `total_term_freq`-long sequence into per-doc groups
     // using `freqs`, resetting the position/offset accumulator to 0 at each
