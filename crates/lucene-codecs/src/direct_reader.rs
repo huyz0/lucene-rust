@@ -13,7 +13,7 @@ use lucene_store::Result;
 /// caller validates this at parse time). `index` addresses the `index`-th
 /// `bits_per_value`-wide value packed little-endian (LSB-first within each
 /// byte) starting at byte 0 of `slice`.
-pub(crate) fn get(slice: &[u8], bits_per_value: u8, index: i64) -> Result<i64> {
+pub fn get(slice: &[u8], bits_per_value: u8, index: i64) -> Result<i64> {
     // `index * bits_per_value` fits comfortably in u64: `index` addresses an
     // element of an in-memory-decoded array, itself bounded by `slice.len() *
     // 8` bits (a real allocated buffer, far under u64::MAX). A wide u128
@@ -25,14 +25,31 @@ pub(crate) fn get(slice: &[u8], bits_per_value: u8, index: i64) -> Result<i64> {
     let shift = (bit_pos & 7) as u32;
     let bytes_needed = (shift as usize + bits_per_value as usize).div_ceil(8);
 
-    let bytes = slice
-        .get(byte_pos..byte_pos + bytes_needed)
-        .ok_or(lucene_store::Error::Eof { offset: byte_pos })?;
-    let mut acc: u64 = 0;
-    for (i, &b) in bytes.iter().enumerate() {
-        acc |= (b as u64) << (8 * i);
-    }
-    acc >>= shift;
+    // One wide load whenever eight bytes are in range, which is what
+    // `DirectWriter` pads its output for -- `padding_bytes_needed` below is
+    // this port's copy of the same rule, and `Lucene90DocValuesConsumer` writes
+    // that padding for exactly this reason. Every width `DirectWriter` supports
+    // needs at most eight bytes: the non-byte-aligned ones stop at 28 bits
+    // (five bytes at worst), and the byte-aligned ones never carry a shift.
+    //
+    // The byte-at-a-time loop below is the tail fallback, and it used to be the
+    // only path. It cost one load, one shift and one OR per byte, so the read
+    // got linearly slower with the width: 1.96 ns at one bit rising to 5.25 ns
+    // at 64, against Lucene's flat 2.3 ns for all fourteen widths -- Lucene's
+    // `DirectPackedReaderNN` classes each do a single `readInt`/`readLong`.
+    let acc = if let Some(window) = slice.get(byte_pos..byte_pos + 8) {
+        u64::from_le_bytes(window.try_into().expect("exactly 8 bytes"))
+    } else {
+        let bytes = slice
+            .get(byte_pos..byte_pos + bytes_needed)
+            .ok_or(lucene_store::Error::Eof { offset: byte_pos })?;
+        let mut acc: u64 = 0;
+        for (i, &b) in bytes.iter().enumerate() {
+            acc |= (b as u64) << (8 * i);
+        }
+        acc
+    };
+    let acc = acc >> shift;
     let mask: u64 = if bits_per_value == 64 {
         u64::MAX
     } else {
@@ -46,7 +63,7 @@ pub(crate) fn get(slice: &[u8], bits_per_value: u8, index: i64) -> Result<i64> {
 /// one little-endian, LSB-first-within-byte bitstream -- the exact inverse
 /// of `get`'s formula, so this port doesn't need Java's thirteen
 /// width-specialized encoders either.
-pub(crate) fn encode(values: &[i64], bits_per_value: u8) -> Vec<u8> {
+pub fn encode(values: &[i64], bits_per_value: u8) -> Vec<u8> {
     let total_bits = values.len() as u128 * bits_per_value as u128;
     let n_bytes = total_bits.div_ceil(8) as usize;
     let mut out = vec![0u8; n_bytes];
