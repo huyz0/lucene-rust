@@ -129,23 +129,47 @@ fn multi_segment_merge_matches_real_lucene_scores_from_two_real_segment_copies()
     // already-fixture-verified single-segment scored search directly (this is
     // the ground truth this test cross-checks the multi-segment merge against,
     // not a re-implementation of the scoring math).
+    //
+    // Both are given the *reader-wide* statistics the multi-segment search now
+    // uses, because that is what real Lucene does: `IndexSearcher` aggregates
+    // TermStatistics/CollectionStatistics across every leaf and scores each one
+    // with the same idf. Segment 1 here is a byte-identical copy of segment 0,
+    // so the reader holds twice the documents and twice the postings.
+    //
+    // Before this, the expectation was each segment scored from its own
+    // counters -- which is what the multi-segment search used to do, and is why
+    // M1's benchmark found all 20 queries disagreeing with Java on a
+    // 15-segment index while agreeing exactly on a single-segment one. This
+    // test asserts the *merge* is correct, so it must not also pin the older
+    // per-segment idf.
+    let field_stats = fields0.field("big").expect("field present");
+    let global = lucene_search::CollectionStats {
+        doc_freq: field_stats
+            .seek_exact(b"everywhere")
+            .expect("term present")
+            .doc_freq as i64
+            * 2,
+        doc_count: field_stats.doc_count as i64 * 2,
+    };
     let mut local0 = TopDocsCollector::new(top_n);
-    lucene_search::search_term_query_scored(
+    lucene_search::search_term_query_scored_maxscore_with_stats(
         &fields0,
         Some(&doc_in0),
         None,
         &query,
         None,
+        Some(global),
         &mut local0,
     )
     .unwrap();
     let mut local1 = TopDocsCollector::new(top_n);
-    lucene_search::search_term_query_scored(
+    lucene_search::search_term_query_scored_maxscore_with_stats(
         &fields1,
         Some(&doc_in1),
         None,
         &query,
         None,
+        Some(global),
         &mut local1,
     )
     .unwrap();

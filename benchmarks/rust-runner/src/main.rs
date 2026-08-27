@@ -266,12 +266,21 @@ fn load_norms<'a>(
                 if let Some(entry) = parsed.entry(fi.number) {
                     // Lucene-exact avgdl from the field's .tmd counters, not the
                     // average of lossy decoded norms. See FieldNorms::from_field_stats.
-                    if let Some(ft) = segments[i].fields.field(&fi.name) {
+                    if segments[i].fields.field(&fi.name).is_some() {
+                        // Reader-wide avgdl, not this segment's. Lucene's
+                        // CollectionStatistics aggregates sumTotalTermFreq and
+                        // docCount across every leaf and scores each one with the
+                        // same average, so a per-segment average puts the ranking
+                        // out of step with Java on any multi-segment index.
+                        let (stf, dc) = segments.iter().fold((0i64, 0i64), |(a, b), sg| {
+                            match sg.fields.field(&fi.name) {
+                                Some(f) => (a + f.sum_total_term_freq, b + f.doc_count as i64),
+                                None => (a, b),
+                            }
+                        });
                         out.insert(
                             fi.name.clone(),
-                            FieldNorms::from_field_stats(
-                                data, *entry, ft.sum_total_term_freq, ft.doc_count,
-                            ),
+                            FieldNorms::from_field_stats(data, *entry, stf, dc as i32),
                         );
                     }
                 }
