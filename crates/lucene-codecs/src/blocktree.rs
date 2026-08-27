@@ -73,10 +73,29 @@
 //! with what its children cover), so collect-then-sort is simpler and
 //! provably correct where a hand-rolled single-path merge would need much
 //! more care to get right. The tradeoff is real: this eagerly decodes blocks
-//! a real `seekExact` for one term would never touch. That's an acceptable
-//! cost for this slice (no enumeration/streaming consumer exists yet to
-//! notice; `rust-performance`'s "correctness first, profile before the next
-//! phase" stance applies) and is flagged here rather than silently accepted.
+//! a real `seekExact` for one term would never touch.
+//!
+//! **M1.6 measured that tradeoff, and it is much larger than "acceptable for
+//! this slice" suggested.** Opening a reader over the 15-segment, 5M-document
+//! benchmark corpus takes **560 ms here against Lucene's 4.2 ms -- 135x**
+//! (`scripts/bench-micro.sh --bench reader_open`). Memory is the same story and
+//! this benchmark does not even show it: one `Vec<u8>` per term per field per
+//! segment, live for as long as the reader is, where `SegmentTermsEnum` holds
+//! one reusable frame.
+//!
+//! No query benchmark could find this, which is why it stood for so long: the
+//! reader is opened once, outside the timed region, in `bench-compare.sh` and in
+//! every fixture test alike. It also explains why `seek_exact` never appears in
+//! a query profile -- the work is already done before the clock starts.
+//!
+//! It is not an academic cost. A search engine reopens readers on every refresh,
+//! so 560 ms per reopen blocks M2 and M5 regardless of how fast queries run.
+//! Replacing this with real block-tree navigation -- FST arc walking to a block,
+//! frame-based suffix scanning, lazy metadata decode -- is tracked in
+//! `docs/sweep/findings.md` as the largest architectural item left in the read
+//! path. Note the consequence for `fst.rs`: this port has a complete, fixture-
+//! verified FST implementation that the term dictionary never calls, because
+//! this traversal replaced it. Only `suggest.rs` uses it today.
 //!
 //! **Multi-level blocktree tries (`.tim` blocks that are themselves
 //! non-leaf) are now decoded.** A `.tim` block can be `isLeafBlock == false`:
