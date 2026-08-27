@@ -521,3 +521,65 @@ Recall mismatches: **0**.
    comment already says this is what it does not do. It is the remaining
    structural difference from `WANDScorer` and is a milestone-sized piece of
    work, not a sweep finding.
+
+---
+
+## Phrase queries: `search_phrase_query_scored`, `term_doc_positions`
+
+**Lucene counterpart:** `search/ExactPhraseMatcher.java`, `search/PhraseScorer.java`,
+`codecs/lucene104/Lucene104PostingsReader.java` (the `.pos` reader).
+
+### P3 — parity: phrase clauses scored from per-segment idf (fixed)
+
+The 15-segment corpus was re-measured after the boolean work and came back with
+**2** recall mismatches out of 20 — down from 13, and both of them the phrase
+queries. Every other query agreed with Java exactly.
+
+Same bug as the one at the top of this milestone, for a clause type the fix
+missed. A phrase's idf is the sum of its constituent terms' idfs, and
+`search_phrase_query_scored` was computing each from `field_terms.doc_count` and
+that segment's own `docFreq`. `global_boolean_stats`'s walk only collected
+`Clause::Term`, so no phrase term ever got a reader-wide entry.
+
+Fixed on both sides: the walk now descends into `Clause::Phrase`,
+`Clause::DisjunctionMax` and `Clause::Boost` as well as nested booleans, and
+`search_phrase_query_scored_with_stats` / `term_doc_scores` take the map. That
+last one closed a second gap in passing: a boolean query whose shape does not fit
+a lazy path falls through to `clause_scores` -> `term_doc_scores`, which was
+*also* still scoring terms per segment. The benchmark's and/or queries all fit a
+lazy path, so nothing had caught it.
+
+**Segmented corpus recall mismatches: 2 -> 0.** Both corpus variants now agree
+with Java on every hit set, which is the first time that has been true.
+
+Still per-segment, and listed here rather than left implicit: `Clause::Wildcard`,
+`Prefix`, `Fuzzy` and `Regexp` expand to terms this port resolves elsewhere and
+do not get reader-wide statistics yet. No benchmark query exercises them.
+
+### O15 — phrase matching materializes every position of every document (open)
+
+Phrase queries are now by far the worst thing in the benchmark: 0.03-0.04x on
+the merged corpus, where nothing else is below 0.15x. A profile says why —
+**about 50% of the query is in `malloc`/`free`/`memcpy`**:
+
+| symbol | share |
+|---|---|
+| `libc` (allocator and `memcpy`) | ~52% |
+| `term_doc_positions` | 11.9% |
+| `clause_scores` | 4.3% |
+| `resolve_clause_docs` | 3.6% |
+| `Vec<Vec<Position>>::push` | 2.7% |
+
+`term_doc_positions` builds a `Vec<Vec<i32>>`: one heap allocation per matching
+document, for every document containing the term, before any phrase matching
+starts. On `body:t0` that is roughly five million allocations per query.
+
+This is exactly the defect M1 diagnosed and M1.5 fixed for the *doc* stream —
+"stop materializing posting lists" — never done for the *position* stream.
+Lucene's `ExactPhraseMatcher` walks `PostingsEnum.nextPosition()` lazily and
+allocates nothing per document.
+
+**Filed, not fixed.** It needs a `LazyPositionsCursor` in `lucene-codecs`
+mirroring `LazyDocsCursor`, plus a phrase matcher rewritten against it. That is
+M1.5-sized work — a milestone, not a sweep finding — and the sweep's job here is
+to have found it, measured it, and named the shape of the fix.
