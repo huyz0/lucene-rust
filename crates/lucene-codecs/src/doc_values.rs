@@ -771,6 +771,175 @@ pub fn numeric_value(data: &[u8], entry: &NumericEntry, doc: i32) -> Result<Opti
     }
 }
 
+/// A cursor over one NUMERIC field's values, holding the state Lucene's
+/// per-field readers hold.
+///
+/// [`numeric_value`] is a free function and so re-derives everything on every
+/// call: for a sparse field it decodes the whole `IndexedDISI` doc-id list
+/// (linear in the field's cardinality -- see `indexed_disi`'s note), and for a
+/// varying-bits-per-value field it re-reads the jump table and the block header
+/// even when the previous call was in the same block. Lucene's
+/// `Lucene90DocValuesProducer` does neither: `VaryingBPVReader.getLongValue`
+/// opens with `if (this.block != block)`, and `IndexedDISI` is a cursor.
+///
+/// Anything reading more than one value from a field -- a sort, a facet count,
+/// a range scan -- should hold one of these. `numeric_value` stays for
+/// single-lookup callers and for tests.
+///
+/// Both caches are transparent: the values returned are identical to
+/// [`numeric_value`]'s, which is asserted document-for-document in this
+/// module's tests.
+#[derive(Debug)]
+pub struct NumericReader<'a> {
+    data: &'a [u8],
+    entry: &'a NumericEntry,
+    /// Decoded once for a sparse field; `None` for a dense one.
+    sparse_doc_ids: Option<Vec<i32>>,
+    /// The currently decoded varying-bits-per-value block, if any:
+    /// `(block index, bits per value, delta, values slice range)`.
+    block: Option<VaryingBlock>,
+}
+
+/// One decoded varying-bits-per-value block header, cached by
+/// [`NumericReader`] so consecutive values in the same block cost one
+/// `direct_reader::get` and nothing else.
+#[derive(Debug, Clone, Copy)]
+struct VaryingBlock {
+    index: i64,
+    bits_per_value: u8,
+    delta: i64,
+    values_start: usize,
+    values_end: usize,
+}
+
+impl<'a> NumericReader<'a> {
+    /// Opens a cursor over `entry`'s values in `data` (the whole `.dvd` file).
+    ///
+    /// A sparse field's doc-id list is decoded here, once. A malformed region
+    /// is not reported here -- it leaves `sparse_doc_ids` empty and every
+    /// lookup falls through to [`numeric_value`], which raises the error.
+    pub fn new(data: &'a [u8], entry: &'a NumericEntry) -> Self {
+        let sparse_doc_ids = if entry.is_empty_field() || entry.is_dense() {
+            None
+        } else {
+            usize::try_from(entry.docs_with_field_offset)
+                .ok()
+                .zip(usize::try_from(entry.docs_with_field_length).ok())
+                .and_then(|(start, len)| data.get(start..start.checked_add(len)?))
+                .and_then(|region| {
+                    indexed_disi::decode_doc_ids(region, entry.dense_rank_power).ok()
+                })
+        };
+        Self {
+            data,
+            entry,
+            sparse_doc_ids,
+            block: None,
+        }
+    }
+
+    /// This document's value, or `None` when it legitimately has none.
+    /// Identical to `numeric_value(data, entry, doc)`, just without the
+    /// per-call rederivation.
+    pub fn value(&mut self, doc: i32) -> Result<Option<i64>> {
+        if doc < 0 {
+            return Err(Error::DocOutOfRange(doc, self.entry.num_values));
+        }
+        if self.entry.is_empty_field() {
+            return Ok(None);
+        }
+        let ordinal = if self.entry.is_dense() {
+            if doc as i64 >= self.entry.num_values {
+                return Err(Error::DocOutOfRange(doc, self.entry.num_values));
+            }
+            doc as i64
+        } else {
+            let Some(doc_ids) = self.sparse_doc_ids.as_deref() else {
+                // Unreadable region: let the general path raise the error.
+                return numeric_value(self.data, self.entry, doc);
+            };
+            match indexed_disi::rank_of(doc_ids, doc) {
+                Some(ordinal) => ordinal as i64,
+                None => return Ok(None),
+            }
+        };
+        match self.entry.block_shift {
+            Some(shift) => Ok(Some(self.decode_varying(shift, ordinal)?)),
+            None => Ok(Some(decode_value(self.data, self.entry, ordinal)?)),
+        }
+    }
+
+    /// [`decode_value_varying_bpv`] with the block header kept between calls --
+    /// `VaryingBPVReader.getLongValue`'s `if (this.block != block)`.
+    fn decode_varying(&mut self, shift: u32, ordinal: i64) -> Result<i64> {
+        let index = ordinal >> shift;
+        let block = match self.block {
+            Some(b) if b.index == index => b,
+            _ => {
+                let b = read_varying_block(self.data, self.entry, index)?;
+                self.block = Some(b);
+                b
+            }
+        };
+        if block.bits_per_value == 0 {
+            return Ok(block.delta);
+        }
+        let values = self
+            .data
+            .get(block.values_start..block.values_end)
+            .ok_or(lucene_store::Error::Eof { offset: 0 })?;
+        let mask = (1i64 << shift) - 1;
+        let raw = direct_reader::get(values, block.bits_per_value, ordinal & mask)?;
+        Ok(self.entry.gcd.wrapping_mul(raw).wrapping_add(block.delta))
+    }
+}
+
+/// Reads one varying-bits-per-value block's header via the per-field jump
+/// table. Shared by [`decode_value_varying_bpv`] and [`NumericReader`], so
+/// there is one parser of this header rather than two to keep in step.
+fn read_varying_block(data: &[u8], entry: &NumericEntry, index: i64) -> Result<VaryingBlock> {
+    let jump_table_pos = entry
+        .value_jump_table_offset
+        .checked_add(
+            index
+                .checked_mul(8)
+                .ok_or(lucene_store::Error::Eof { offset: 0 })?,
+        )
+        .ok_or(lucene_store::Error::Eof { offset: 0 })?;
+    let jump_table_pos =
+        usize::try_from(jump_table_pos).map_err(|_| lucene_store::Error::Eof { offset: 0 })?;
+    let mut input = SliceInput::new(data);
+    input.seek(jump_table_pos)?;
+    let block_start =
+        usize::try_from(input.read_i64()?).map_err(|_| lucene_store::Error::Eof { offset: 0 })?;
+
+    input.seek(block_start)?;
+    let bits_per_value = input.read_byte()?;
+    let delta = input.read_i64()?;
+    if bits_per_value == 0 {
+        return Ok(VaryingBlock {
+            index,
+            bits_per_value,
+            delta,
+            values_start: 0,
+            values_end: 0,
+        });
+    }
+    let length = input.read_i32()?;
+    let length = usize::try_from(length).map_err(|_| lucene_store::Error::Eof { offset: 0 })?;
+    let values_start = input.position();
+    let values_end = values_start
+        .checked_add(length)
+        .ok_or(lucene_store::Error::Eof { offset: 0 })?;
+    Ok(VaryingBlock {
+        index,
+        bits_per_value,
+        delta,
+        values_start,
+        values_end,
+    })
+}
+
 /// Decodes the raw bit-packed value at `ordinal` (doc id for dense fields,
 /// rank-among-present-docs for sparse ones) and applies the table or
 /// GCD-delta transform to get the final value.
@@ -816,37 +985,16 @@ fn decode_value_varying_bpv(
     shift: u32,
     ordinal: i64,
 ) -> Result<i64> {
-    let block = ordinal >> shift;
-    let jump_table_pos = entry
-        .value_jump_table_offset
-        .checked_add(
-            block
-                .checked_mul(8)
-                .ok_or(lucene_store::Error::Eof { offset: 0 })?,
-        )
-        .ok_or(lucene_store::Error::Eof { offset: 0 })?;
-    let jump_table_pos =
-        usize::try_from(jump_table_pos).map_err(|_| lucene_store::Error::Eof { offset: 0 })?;
-    let mut input = SliceInput::new(data);
-    input.seek(jump_table_pos)?;
-    let block_start =
-        usize::try_from(input.read_i64()?).map_err(|_| lucene_store::Error::Eof { offset: 0 })?;
-
-    input.seek(block_start)?;
-    let bits_per_value = input.read_byte()?;
-    let delta = input.read_i64()?;
-    if bits_per_value == 0 {
-        return Ok(delta);
+    let block = read_varying_block(data, entry, ordinal >> shift)?;
+    if block.bits_per_value == 0 {
+        return Ok(block.delta);
     }
-    let length = input.read_i32()?;
-    let length = usize::try_from(length).map_err(|_| lucene_store::Error::Eof { offset: 0 })?;
-    let values_start = input.position();
     let values = data
-        .get(values_start..values_start + length)
+        .get(block.values_start..block.values_end)
         .ok_or(lucene_store::Error::Eof { offset: 0 })?;
     let mask = (1i64 << shift) - 1;
-    let raw = direct_reader::get(values, bits_per_value, ordinal & mask)?;
-    Ok(entry.gcd.wrapping_mul(raw).wrapping_add(delta))
+    let raw = direct_reader::get(values, block.bits_per_value, ordinal & mask)?;
+    Ok(entry.gcd.wrapping_mul(raw).wrapping_add(block.delta))
 }
 
 /// Reads the binary doc-values value for `doc`, handling all three

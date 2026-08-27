@@ -194,12 +194,120 @@ fn bench_sparse_doc_values_lookup(c: &mut Criterion) {
     group.finish();
 }
 
+/// Sequential `numeric_value` over a real varying-bits-per-value NUMERIC field
+/// -- the access pattern a sort or a facet count has.
+///
+/// `numeric_value` re-reads the per-field jump table and the block header (one
+/// byte, one `i64`, one `i32`) for **every value**. Lucene's
+/// `VaryingBPVReader.getLongValue` opens with `if (this.block != block)` and
+/// keeps the decoded block, paying that once per 16,384-value block instead.
+///
+/// **The two cases coming out equal is the finding, not a failure of the
+/// benchmark.** `stride1` stays inside one block for 16,384 consecutive calls
+/// and `stride16k` crosses a block on every call; an implementation that caches
+/// the block is much faster on the first and no faster on the second. This
+/// port's free-function path is identical on both, because it caches nothing.
+/// [`ndv::NumericReader`] is the version that does, and is measured beside it.
+///
+/// Rust-only: what matters is the difference between access patterns on this
+/// side, not a ratio against Java.
+fn bench_varying_bpv_numeric(c: &mut Criterion) {
+    let dir = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/data/doc_values_varying_bpv/"
+    );
+    let text = match std::fs::read_to_string(format!("{dir}manifest.properties")) {
+        Ok(t) => t,
+        // The fixture is generated, not committed in every checkout; skip
+        // rather than fail the whole bench binary.
+        Err(_) => return,
+    };
+    let kv: Vec<(String, String)> = text
+        .lines()
+        .filter_map(|l| l.split_once('='))
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    let get = |key: &str| -> String {
+        kv.iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone())
+            .unwrap_or_else(|| panic!("manifest key {key} missing"))
+    };
+
+    let id = id_from_hex(&get("id_hex"));
+    let fnm = std::fs::read(format!("{dir}{}.raw", get("fnm_file_name"))).unwrap();
+    let fis = field_infos::parse(&fnm, &id, "").unwrap();
+    let meta = std::fs::read(format!("{dir}{}.raw", get("dvm_file_name"))).unwrap();
+    let data = std::fs::read(format!("{dir}{}.raw", get("dvd_file_name"))).unwrap();
+
+    let segment_name = get("segment_name");
+    let dvm = get("dvm_file_name");
+    let suffix = dvm
+        .strip_prefix(&format!("{segment_name}_"))
+        .and_then(|s| s.strip_suffix(".dvm"))
+        .expect("unexpected dvm file name shape")
+        .to_string();
+
+    let (_, parsed) = ndv::parse_meta(&meta, &id, &suffix, &fis).unwrap();
+    let field_number: i32 = get("field_numbers")
+        .split(',')
+        .find_map(|kv| {
+            let (name, num) = kv.split_once(':').unwrap();
+            (name == "varying_bpv").then(|| num.parse().unwrap())
+        })
+        .expect("varying_bpv field missing");
+    let entry = parsed.numeric_entry(field_number).unwrap().clone();
+    assert!(
+        entry.block_shift.is_some(),
+        "fixture is not a varying-bits-per-value field, so this measures nothing"
+    );
+    let max_doc: i32 = get("max_doc").parse().unwrap();
+
+    let mut group = c.benchmark_group("doc_values/varying_bpv");
+    // Sequential: thousands of consecutive reads land in one block.
+    group.bench_function("stride1", |b| {
+        let mut doc = 0i32;
+        b.iter(|| {
+            doc = (doc + 1) % max_doc;
+            black_box(ndv::numeric_value(black_box(&data), &entry, doc).unwrap());
+        });
+    });
+    // Control: one block crossing per call, so per-block setup is unavoidable
+    // for either implementation.
+    group.bench_function("stride16k", |b| {
+        let mut doc = 0i32;
+        b.iter(|| {
+            doc = (doc + 16384) % max_doc;
+            black_box(ndv::numeric_value(black_box(&data), &entry, doc).unwrap());
+        });
+    });
+    // The same two patterns through the block-caching reader.
+    group.bench_function("reader_stride1", |b| {
+        let mut reader = ndv::NumericReader::new(&data, &entry);
+        let mut doc = 0i32;
+        b.iter(|| {
+            doc = (doc + 1) % max_doc;
+            black_box(reader.value(doc).unwrap());
+        });
+    });
+    group.bench_function("reader_stride16k", |b| {
+        let mut reader = ndv::NumericReader::new(&data, &entry);
+        let mut doc = 0i32;
+        b.iter(|| {
+            doc = (doc + 16384) % max_doc;
+            black_box(reader.value(doc).unwrap());
+        });
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_direct_monotonic_get,
     bench_stored_fields_document,
     bench_points_decode_all,
     bench_doc_values_numeric_value,
-    bench_sparse_doc_values_lookup
+    bench_sparse_doc_values_lookup,
+    bench_varying_bpv_numeric
 );
 criterion_main!(benches);

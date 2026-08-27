@@ -192,7 +192,8 @@ delivered milestone.
 | D1 | `lucene-codecs/src/blocktree.rs` | **Largest architectural divergence found.** Reader open is **135x slower than Lucene** (560 ms vs 4.2 ms on the 15-segment corpus) because the whole term dictionary is materialized at open. Filed, not fixed. |
 | E1 | `lucene-codecs/src/direct_reader.rs` | 0.82x -> **1.82x** of Lucene, flat across all fourteen widths. It read one byte at a time where `DirectPackedReaderNN` does one wide load. |
 | D2 | `lucene-codecs/src/fst.rs` | **Complete, verified, and unused by the read path** — entailed by D1: the eager traversal replaced FST navigation. Only `suggest.rs` calls it. |
-| E2 | `indexed_disi.rs`, `norms.rs` | A sparse lookup decodes the whole doc-id list every time: **874 ns at 1k documents, 324 us at 100k** — linear where Lucene's jump-table cursor is constant. Fixed in `FieldNorms` (decode once); `doc_values.rs`'s three sites have no owner and remain quadratic. |
+| E2 | `indexed_disi.rs`, `norms.rs` | A sparse lookup decodes the whole doc-id list every time: **874 ns at 1k documents, 324 us at 100k** — linear where Lucene's jump-table cursor is constant. Fixed in `FieldNorms` (decode once). |
+| E2 | `lucene-codecs/src/doc_values.rs` | The varying-bits-per-value block header was re-read per value; `VaryingBPVReader` caches it. New `NumericReader` cursor: sequential access **13.08 -> 8.16 ns (1.60x)**, and 0.78x on an all-cache-miss pattern Lucene's forward-only `DocIdSetIterator` contract cannot express. |
 | B2 | phrase positions | 0.04x -> **0.31x**. Per-document `Vec` allocation removed (`read_positions_flat`), and the redundant match pass for single-clause queries removed. Full laziness still open. |
 | F1 | `lucene-search/src/{lib,collector,field_norms}.rs` | `ImpactsDISI`'s per-block bound, `TopScoreDocCollector`'s fast reject, dense one-byte norm fast paths, idf hoisted out of both boolean scorers. |
 | — | `postings_writer.rs` | Doc-delta encoding choice corrected to Lucene's condition (P2). |
@@ -212,14 +213,15 @@ delivered milestone.
    allocation-free. Would fix `doc_values.rs`'s three sparse sites, which are
    still quadratic in field cardinality. Smaller than D1, same kind of job.
 5. **WAND clause partitioning.** Milestone-sized.
-6. **`doc_values.rs`'s own decode paths** beyond those sparse sites — the one
-   Stage A-F file with no findings row at all.
+6. **`sorted_ord`, `sorted_numeric_values`, `binary_value`** still have the
+   free-function shape and the sparse-DISI cost. Deliberately not given owners
+   individually: the `IndexedDISI` cursor in item 4 removes the need.
 
 ### Acceptance criteria, scored
 
 | # | criterion | status |
 |---|---|---|
-| 1 | Every Stage A-F file has a findings row naming the Lucene source read against it | **partial** — A, B1, B2, C1, C2, D1, D2, E1 and the F files are covered, plus `indexed_disi.rs`/`norms.rs`. `doc_values.rs`'s own decode paths (beyond its three sparse-lookup sites) are the remaining gap. |
+| 1 | Every Stage A-F file has a findings row naming the Lucene source read against it | **met** — every file named in Stages A-F has a row: `for_util`, `postings`, `postings_writer`, `data_input`, `directory`, `blocktree`, `fst`, `direct_reader`, `indexed_disi`, `norms`, `doc_values`, and the search-layer trio. |
 | 2 | Every swept file with a hot loop has a Rust microbenchmark and a Java counterpart | **met for what was swept** — `for_decode` and `postings_iter` both have paired harnesses in `scripts/bench-micro.sh`. The search-layer findings were measured end to end and by profile, not by a paired microbenchmark; there is no Lucene class to isolate for "the term scoring loop". |
 | 3 | Differential suite green at every commit | **met** — 2539 tests, `verify-write-path` 13/13, `gen-fixtures` ok, clippy clean, at every commit. |
 | 4 | `docs/parity.md` updated where the sweep changed a file's status | **met** |

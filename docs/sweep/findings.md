@@ -773,7 +773,7 @@ already owns everything.
 
 ---
 
-## `crates/lucene-codecs/src/indexed_disi.rs`, `norms.rs`, `doc_values.rs`
+## `crates/lucene-codecs/src/indexed_disi.rs`, `norms.rs`
 
 **Lucene counterpart:** `codecs/lucene90/IndexedDISI.java`,
 `Lucene90NormsProducer.java`, `Lucene90DocValuesProducer.java`.
@@ -828,3 +828,67 @@ which would remove both the decode and the binary search, and would let
 `doc_values.rs` be fixed at all. Smaller than the block-tree work above but the
 same kind of job: replace a materializing shortcut with the streaming structure
 Lucene actually uses.
+
+---
+
+## `crates/lucene-codecs/src/doc_values.rs`
+
+**Lucene counterpart:** `codecs/lucene90/Lucene90DocValuesProducer.java`
+(`VaryingBPVReader`, `DenseNumericDocValues`, `SparseNumericDocValues`).
+
+**Measurement:** `doc_values/varying_bpv` in `benches/hot_paths.rs`, over the
+real `fixtures/data/doc_values_varying_bpv` segment — a Lucene-written NUMERIC
+field that trips `Lucene90DocValuesConsumer.writeValues`'s `doBlocks` split.
+Rust-only: what matters is the difference between access patterns on this side.
+
+### O19 — the varying-bits-per-value block header was re-read for every value
+
+`numeric_value` re-reads the per-field jump table and the block header (one
+byte, one `i64`, one `i32`) on every call. Lucene's
+`VaryingBPVReader.getLongValue` opens with `if (this.block != block)` and keeps
+the decoded block, paying that once per 16,384-value block.
+
+The first measurement was two numbers that were the same, and that was the
+finding:
+
+| access pattern | free function |
+|---|---|
+| `stride1` (16,384 consecutive calls per block) | 13.08 ns |
+| `stride16k` (a block crossing on every call) | 13.09 ns |
+
+An implementation that caches the block is much faster on the first and no
+faster on the second. Identical timings mean nothing is cached.
+
+Fixed by adding `NumericReader`, a cursor holding what Lucene's per-field
+readers hold: the decoded block, and (for a sparse field) the `IndexedDISI`
+doc-id list decoded once rather than per call. Same "give it an owner" fix as
+`FieldNorms` above.
+
+| access pattern | free function | `NumericReader` | |
+|---|---|---|---|
+| `stride1` | 13.08 ns | **8.16 ns** | 1.60x |
+| `stride16k` | 13.09 ns | 16.82 ns | 0.78x |
+
+**The second row is not hidden and is worth reading carefully.** When every
+single call crosses a block, the cursor pays a cache-miss check and an
+indirection for nothing, and is 29% slower. Lucene's reader has exactly the same
+property — the same branch, the same trade — and accepts it because Lucene's
+`NumericDocValues` is a `DocIdSetIterator`: forward-only by contract, so a
+consumer *cannot* express the pattern `stride16k` measures. `numeric_value`
+stays for single-lookup callers, and nothing is forced onto the cursor.
+
+`decode_value_varying_bpv` and `NumericReader` now share one block-header parser
+(`read_varying_block`), so there is one implementation of that wire format
+rather than two to keep in step. The fixture test asserts the two paths agree
+document-for-document against real Lucene-written data in three access orders —
+forward, backward, and strided so that every call is a cache miss — plus
+out-of-range behaviour, because a cache exercised only forwards can be wrong in
+the other two directions.
+
+### Not changed
+
+`sorted_ord`, `sorted_numeric_values` and `binary_value` have the same
+free-function shape and the same sparse-DISI cost. They are left alone: no
+benchmark here exercises them, and the fix is the same `IndexedDISI` cursor
+already filed above, which would remove the need to give each of them an owner
+individually.
