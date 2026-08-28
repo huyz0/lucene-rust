@@ -38,19 +38,35 @@ fn block_for(bits: u32) -> [u32; BLOCK_SIZE] {
     out
 }
 
-/// Run `op` in batches until `budget` elapses; returns (elapsed, ops).
-/// Batched so the clock read is amortized, exactly as the Java loop does.
+/// Run `op` in adaptively-sized batches until `budget` elapses; returns
+/// (elapsed, ops).
+///
+/// Batched so the clock read is amortized, but the batch **grows from one**
+/// rather than being fixed. A fixed batch must be sized for the cheapest case,
+/// and this harness spans nanoseconds (`for_decode`) to hundreds of
+/// milliseconds (`reader_open`): a hard-coded 1024 meant one batch of reader
+/// opens ran for twenty minutes past its budget before the clock was consulted
+/// at all. Doubling until a batch takes a measurable slice of the budget keeps
+/// the clock overhead negligible for fast operations without overshooting slow
+/// ones.
 fn timed_loop(budget: Duration, mut op: impl FnMut()) -> (Duration, u64) {
-    const BATCH: u64 = 1024;
     let start = Instant::now();
     let mut ops = 0u64;
+    let mut batch = 1u64;
     loop {
-        for _ in 0..BATCH {
+        let batch_start = Instant::now();
+        for _ in 0..batch {
             op();
         }
-        ops += BATCH;
-        if start.elapsed() >= budget {
-            return (start.elapsed(), ops);
+        ops += batch;
+        let elapsed = start.elapsed();
+        if elapsed >= budget {
+            return (elapsed, ops);
+        }
+        // Grow only while a whole batch is still short next to the budget, so
+        // the clock is read a bounded number of times either way.
+        if batch_start.elapsed() * 64 < budget {
+            batch = batch.saturating_mul(2);
         }
     }
 }
