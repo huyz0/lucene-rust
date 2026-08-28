@@ -104,6 +104,12 @@ fn main() {
     writer
         .set_postings_field(Some("body"))
         .expect("set postings field");
+    // Lucene writes norms for every indexed field whose omitNorms is false,
+    // which `body`'s is; without this the `.fnm` promises norms the segment
+    // does not contain and real Lucene refuses to open the index.
+    writer
+        .set_norms_field(Some("body"))
+        .expect("set norms field");
 
     let start = Instant::now();
     for d in docs {
