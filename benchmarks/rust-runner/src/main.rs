@@ -157,6 +157,58 @@ fn main() {
                 // Numeric doc-values range + sort. Never compared against
                 // Lucene before M1.6's hunt outside the benchmark's original
                 // four query shapes.
+                // Points range. Never measured before, and only reachable now
+                // that DirectoryReader opens .kdm/.kdi/.kdd at all -- note it
+                // still has to be run per segment, because `OpenSegment` has no
+                // points slot and the multi-segment boolean path passes `None`.
+                "points" => {
+                    let min: i64 = q.args[0].parse().expect("points min");
+                    let max: i64 = q.args[1].parse().expect("points max");
+                    let mut all: Vec<lucene_search::collector::ScoreDoc> = Vec::new();
+                    for (r, s) in reader.segment_readers().iter().zip(segments.iter()) {
+                        let Some((kdm, kdi, kdd)) = r.points_files() else {
+                            continue;
+                        };
+                        let pr = lucene_codecs::points::open(
+                            kdm,
+                            kdi,
+                            kdd,
+                            &r.segment_id(),
+                            "",
+                        )
+                        .expect("open points");
+                        let Some(fi) =
+                            r.field_infos().fields.iter().find(|f| f.name == q.field)
+                        else {
+                            continue;
+                        };
+                        struct DocSink(Vec<i32>);
+                        impl lucene_search::collector::Collector for DocSink {
+                            fn collect(&mut self, doc_id: i32) {
+                                self.0.push(doc_id);
+                            }
+                        }
+                        let mut docs = DocSink(Vec::new());
+                        lucene_search::points_query::search_points_range(
+                            &pr,
+                            s.live_docs,
+                            fi.number,
+                            &lucene_search::points_query::pack_i64(min),
+                            &lucene_search::points_query::pack_i64(max),
+                            &mut docs,
+                        )
+                        .expect("points range");
+                        all.extend(docs.0.into_iter().take(TOP_N).map(|d| {
+                            lucene_search::collector::ScoreDoc {
+                                doc_id: d + s.doc_base,
+                                score: 1.0,
+                            }
+                        }));
+                    }
+                    all.sort_by_key(|h| h.doc_id);
+                    all.truncate(TOP_N);
+                    all
+                }
                 "dv_sort" => {
                     let min: i64 = q.args[0].parse().expect("dv_sort min");
                     let max: i64 = q.args[1].parse().expect("dv_sort max");

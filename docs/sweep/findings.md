@@ -1604,3 +1604,63 @@ belongs at the start of the next one rather than the end of this.
 Points ranges (`DirectoryReader` does not open `.kdm`/`.kdi`/`.kdd` at all, so
 this needs reader plumbing before it can be measured), facets, highlighting,
 term vectors, and the entire write path.
+---
+
+## Points ranges: the largest algorithmic divergence in the project
+
+Two things had to happen before this could be measured at all, and the first is
+itself a finding.
+
+**`DirectoryReader` never opened `.kdm`/`.kdi`/`.kdd`.** Points queries were
+unreachable through the normal reader path, even though
+`points_query::search_points_range` has existed for some time and the M1 corpus
+indexes `num` as a `LongPoint`. Now opened, with a `points_files()` accessor.
+(`OpenSegment` still has no points slot and the multi-segment boolean path still
+passes `None` for points, so a points clause inside a `BooleanQuery` remains
+unreachable; the benchmark drives the per-segment API directly.)
+
+**Then the measurement**, hit counts matching:
+
+| query | this port | Lucene | ratio |
+|---|---|---|---|
+| `points num 0..1000` | 5.2 qps | 32,640 | **6,277x** |
+| `points num 0..1,000,000` | 3.7 qps | 136 | 37x |
+
+The cost is nearly independent of how wide the range is, which is the signature
+of a full scan. `resolve_points_range_doc_ids`:
+
+```rust
+reader.decode_all_points(field_number)?   // every point in the segment
+    .into_iter()
+    .filter(|point| packed_value_in_range(..))
+```
+
+**It decodes all five million points and filters.** There is no tree traversal
+at all. Lucene's `PointValues.intersect` compares each BKD node's bounding box
+against the query range and descends only into nodes that can match -- which is
+the entire reason the structure exists. O(n) against O(log n + matches), and the
+narrower the query the worse this port looks, which is exactly backwards.
+
+### Why this is not fixed here
+
+The obvious cheap fix -- prune per leaf using `Leaf::bound`, which this port
+already decodes -- does not work, because of where the bound sits in the leaf
+block. The layout is `count`, `docIDs`, common prefixes, compressed-dimension
+marker, *then* the bounding box, then the values. Reading a leaf's bound
+therefore requires reading its doc IDs first, so skipping a leaf still costs
+most of what decoding it costs. On this corpus that is ~10,000 leaves whose doc
+IDs would be read regardless.
+
+Real pruning has to happen in the `.kdi` inner nodes, using the split dimension
+and split value to reject whole subtrees without touching `.kdd`.
+`decode_leaf_pointers` currently walks that tree and keeps only the leaf file
+pointers, discarding the split information entirely -- so the fix is to make it
+a real traversal that carries a bounding box down and stops at nodes the query
+cannot reach.
+
+That is BKD navigation, and it is the same shape and size as the block-tree
+navigation item: replace a materializing shortcut with the streaming structure
+Lucene actually uses. Filed rather than attempted at the end of a milestone.
+
+**This is now the largest single divergence known**, ahead of the reader-open
+residue and the scored-document gap.

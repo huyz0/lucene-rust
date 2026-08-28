@@ -164,6 +164,9 @@ public final class BenchRunner {
                 return b.build();
             }
             // Query kinds the M1.6 sweep never measured.
+            case "points":
+                return org.apache.lucene.document.LongPoint.newRangeQuery(
+                        field, Long.parseLong(f[3]), Long.parseLong(f[4]));
             case "dv_sort":
                 // Same shape as the Rust side: a numeric doc-values range,
                 // ranked by that field ascending.
