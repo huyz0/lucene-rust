@@ -11,6 +11,12 @@ lucene-store = { path = "../lucene-store" }
 lz4_flex.workspace = true
 miniz_oxide.workspace = true
 
+[features]
+# Exposes a block-decode counter to the benchmark runner -- see
+# `postings::test_only_block_decode_counter`. Same rationale and gating as
+# `lucene-search`'s own test-support feature.
+test-support = []
+
 [dev-dependencies]
 crc32fast.workspace = true
 criterion.workspace = true

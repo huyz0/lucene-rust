@@ -8,7 +8,7 @@ publish = false
 [dependencies]
 lucene-store = { path = "../../crates/lucene-store" }
 lucene-search = { path = "../../crates/lucene-search", features = ["test-support"] }
-lucene-codecs = { path = "../../crates/lucene-codecs" }
+lucene-codecs = { path = "../../crates/lucene-codecs", features = ["test-support"] }
 lucene-index = { path = "../../crates/lucene-index" }
 lucene-ffi = { path = "../../crates/lucene-ffi" }
 

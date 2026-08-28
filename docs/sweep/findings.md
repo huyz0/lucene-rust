@@ -892,3 +892,121 @@ free-function shape and the same sparse-DISI cost. They are left alone: no
 benchmark here exercises them, and the fix is the same `IndexedDISI` cursor
 already filed above, which would remove the need to give each of them an owner
 individually.
+
+---
+
+# The headline finding: we decode blocks Lucene never touches
+
+Everything above is component work. This is the structural divergence the sweep
+was for, and it reframes the rest.
+
+**Method.** Timing could not settle this — see the noise-floor note below. Both
+engines were instrumented to *count* instead: documents the scorer produced
+(`collect()` per leaf), and, on this side, full block-body decodes
+(`ForUtil`/`PForUtil` unpack of 256 documents). Counts are immune to
+measurement noise and separate two very different defects: "we are slower" and
+"we do more work".
+
+## Documents scored, top-50 over 5M documents
+
+| query | this port | Lucene | ratio | time |
+|---|---|---|---|---|
+| `q12` `or t0 t1 t2 t3` | 4,121,444 | 1,625 | **2536x** | 0.23x |
+| `q09` `and t0 t1 t2` | 1,179,565 | 1,451 | **813x** | 0.23x |
+| `q11` `or tz t2s` | 1,334,994 | 11,505 | **116x** | 0.15x |
+| `q06` `and t0 t1` | 155,249 | 1,730 | **90x** | 0.31x |
+| `q01` `term body:t0` | 82,564 | 1,425 | **58x** | 0.89x |
+| `q20` `and title t0 t1` | 770,544 | 34,169 | 23x | 0.18x |
+
+Hit sets match on all 20 queries, so this is the same query answered two ways.
+
+**This reconciles the entire milestone.** Every per-document cost measured in
+this sweep is now *better* than Lucene's — `ForUtil.decode` 2.17x, posting-list
+`nextDoc()` 1.65x, `DirectReader.get` 1.81x. We are nonetheless 2-7x slower end
+to end, because we do 58x-2500x more of it. The port is not slow. It is doing
+work Lucene skips.
+
+One instrumentation trap, recorded because it inverted the result: the first
+run used `TopScoreDocCollectorManager(TOP_N, Integer.MAX_VALUE)`. That asks for
+exact hit counts, which switches Lucene's block-max pruning **off**, and Lucene's
+count came back as `maxDoc` for every term query -- making this port look 60x
+*better*. `IndexSearcher.search(query, n)` uses a threshold of 1000; the counted
+run has to use the same or it measures a different query than the timed one.
+
+## Where the wasted work is: no `advanceShallow`
+
+| query | blocks decoded | documents unpacked | documents actually scored | utilisation |
+|---|---|---|---|---|
+| `q07` `and t0 tz` | 23,702 | 6,067,712 | 80,226 | **1.3%** |
+| `q10` `or t0 t1` | 38,728 | 9,914,368 | 138,650 | **1.4%** |
+| `q06` `and t0 t1` | 38,728 | 9,914,368 | 155,249 | **1.6%** |
+| `q01` `term body:t0` | 5,561 | 1,423,616 | 82,564 | 5.8% |
+| `q09` `and t0 t1 t2` | 57,166 | 14,634,496 | 1,179,565 | 8.1% |
+
+**We bit-unpack up to 99% of documents for nothing.**
+
+Lucene separates the two operations explicitly. `Lucene104PostingsReader`:
+
+```java
+public void advanceShallow(int target) throws IOException {
+  doAdvanceShallow(target);
+  needsRefilling = true;          // impacts moved; block body NOT decoded
+}
+...
+if (needsRefilling) { refillDocs(); needsRefilling = false; }   // decode, later
+```
+
+`ImpactsDISI.advanceTarget` loops on `advanceShallow` + `getMaxScoreForLevelZero`,
+walking block after block on their *impacts alone*, and calls the underlying
+`advance` -- which is what triggers `refillDocs` -- only once a competitive block
+is found.
+
+`LazyDocsCursor::advance` has no such split. Reaching a block decodes it, so the
+scoring loop's "is this block competitive?" test is answered *after* paying the
+`ForUtil` unpack it was supposed to avoid. The block-max pruning this port added
+in M1.5 does skip blocks -- it just pays for them first.
+
+That also explains the M1-e2e profile that started this whole milestone.
+`decode_full_block_body` 9.5% + `decode_impacts` 9.2% + `ForUtil::decode` 6% was
+read as "decode is a quarter of the query, spread thin". It was really "a quarter
+of the query is decoding blocks we throw away".
+
+## The fix
+
+Give `LazyDocsCursor` the same split: an `advance_shallow(target)` that moves the
+block position and decodes impacts only, a `needs_refilling` flag, and a
+`refill()` at the point `next_doc`/`freq` first needs documents. Then the three
+scoring loops consult the bound before the unpack instead of after.
+
+Not attempted here. It restructures the cursor's state machine and every caller
+of `level0_impacts`/`freq`, and it deserves its own measured milestone rather
+than being bolted onto the end of this one. It is now the highest-value item
+open, ahead of the block-tree work: the counters say the prize is up to 70x less
+decode work on the conjunction and disjunction queries.
+
+The instrumentation stays: `postings::test_only_block_decode_counter`,
+`lucene_search::test_only_scored_docs_counter`, and the Java runner's counting
+`LeafCollector`. Both runners now emit `scored` and `blocks` columns.
+
+## Caveat on this milestone's smaller numbers
+
+Investigating whether SIMD was worth adding turned up a measurement problem
+worth recording. Running the **same binary against itself** three times, 2s
+warmup + 3s measure per case, `for_decode` varies by a median of **1.21x**,
+worst case 1.64x.
+
+So differences in the 1.1x-1.4x range are not resolvable by this harness, and
+two things in this document need reading with that in mind:
+
+- The large findings are safe: `next_doc` 7.8x, `DirectReader` 3.7x at 64 bits,
+  phrase 9x, the `IndexedDISI` scaling result (orders of magnitude), and the
+  cumulative `for_util` 0.75x -> 2.17x. Each is far above the floor and each was
+  reproduced across separate runs.
+- The **step-by-step attributions** are softer than they are written. "O2 moved
+  the median 1.47x -> 1.62x" and "O3 1.62x -> 2.26x" are at the edge of what the
+  harness resolves. The endpoints are real; the individual steps should not be
+  quoted as precise.
+
+`scripts/bench-micro.sh` should interleave both engines within a run, repeat,
+and refuse to report a difference smaller than the measured noise floor. Not
+done here.
