@@ -72,8 +72,9 @@ use lucene_index::deletes::liv_file_name;
 use lucene_index::segment_info::{self, SegmentInfo};
 use lucene_index::segment_infos::{self, SegmentInfos};
 use lucene_store::codec_util::ID_LENGTH;
-use lucene_store::directory::Directory;
+use lucene_store::directory::{Directory, Input};
 use lucene_util::fixed_bit_set::FixedBitSet;
+use std::sync::Arc;
 
 use crate::multi_segment::OpenSegment;
 
@@ -125,9 +126,24 @@ pub struct SegmentReader {
     del_gen: i64,
     segment_suffix: String,
     fields: BlockTreeFields,
-    doc_buf: Option<Vec<u8>>,
-    pos_buf: Option<Vec<u8>>,
-    pay_buf: Option<Vec<u8>>,
+    /// The segment's `.doc`/`.pos`/`.pay` bytes, held as the [`Input`] the
+    /// directory handed back rather than copied out of it.
+    ///
+    /// These used to be `Vec<u8>`, filled by `dir.open(name)?.to_vec()`. On the
+    /// M1 corpus that copied 1.57 GB per reader open -- `.doc` 540 MB, `.pay`
+    /// 521 MB, `.pos` 505 MB -- and was the whole of the 135x reader-open gap
+    /// against Lucene, which mmaps and reads in place. `Input` already had an
+    /// `Owned` variant for the compound-file case and already derefs to
+    /// `[u8]`, so holding it instead costs nothing and changes no reader.
+    ///
+    /// `Arc`, because `clone_reader` -- whose doc comment calls it "a cheap
+    /// in-memory copy ... a genuine no-disk-I/O reuse" -- was cloning those
+    /// `Vec`s, so reusing a segment across a reopen copied the same 1.57 GB
+    /// that opening it did. A refcount bump is what that comment always
+    /// described.
+    doc_buf: Option<Arc<Input>>,
+    pos_buf: Option<Arc<Input>>,
+    pay_buf: Option<Arc<Input>>,
     live_docs: Option<FixedBitSet>,
     field_infos: FieldInfos,
     /// The segment's doc-values data (`.dvd`), kept as raw bytes so the
@@ -137,7 +153,7 @@ pub struct SegmentReader {
     /// `None` when the segment has no `.dvm`/`.dvd` at all (e.g. no field is
     /// opted into doc values, matching `segment_writer.rs`'s "no pending
     /// values -> no `.dvm`/`.dvd`/`.dvs` files" contract).
-    dv_data: Option<Vec<u8>>,
+    dv_data: Option<Arc<Input>>,
     /// The segment's parsed `.dvm` (per-field entries -- `NumericEntry`,
     /// `SortedEntry`, etc., each already carrying whichever of the
     /// dense/sparse shapes `doc_values.rs`'s write side actually produced;
@@ -343,7 +359,8 @@ impl SegmentReader {
 
     /// The segment's `.dvd`, or `None` if it has no doc-values files at all.
     pub fn doc_values_data(&self) -> Option<&[u8]> {
-        self.dv_data.as_deref()
+        // Two derefs: `Option<Arc<Input>>` -> `&Arc<Input>` -> `&[u8]`.
+        self.dv_data.as_ref().map(|d| &***d)
     }
 }
 
@@ -417,18 +434,22 @@ fn open_segment_file(
     compound: Option<&CompoundArchive>,
     files: &[String],
     ext: &str,
-) -> Result<Option<Vec<u8>>> {
+) -> Result<Option<Arc<Input>>> {
     let name = match find_segment_file_name(files, compound, ext) {
         Some(name) => name,
         None => return Ok(None),
     };
     match compound {
-        Some(archive) => Ok(Some(
+        // A compound segment's archive is already one owned buffer, so its
+        // members have to be copied out of it; `Input::Owned` carries that.
+        // A loose file is handed back exactly as the directory produced it --
+        // for `MmapDirectory` that is the mapping itself, never a copy.
+        Some(archive) => Ok(Some(Arc::new(Input::Owned(
             compound_format::open_input(&archive.data, &archive.entries, &name)?
                 .as_slice()
                 .to_vec(),
-        )),
-        None => Ok(Some(dir.open(&name)?.to_vec())),
+        )))),
+        None => Ok(Some(Arc::new(dir.open(&name)?))),
     }
 }
 

@@ -1285,3 +1285,76 @@ The honest next step is not another variant. It is to instrument Lucene itself
 -- count `nextDoc`/`advance` calls inside its scorers rather than `collect` calls
 -- and find out what it actually iterates, which no measurement in this
 milestone has established.
+---
+
+## The 135x reader open was not the term dictionary — it was a 1.57 GB memcpy
+
+This milestone attributed the reader-open gap to `blocktree`'s eager term
+materialization, twice, in this document and in `blocktree.rs`'s module comment.
+**That was wrong**, and the correction is worth more than the original claim.
+
+Measured, on the merged corpus:
+
+```
+RSS at start:                        2 MB
+RSS after DirectoryReader::open:  1,690 MB     <- before anything is queried
+RSS after open_segments:          1,690 MB
+```
+
+`DirectoryReader::open` alone accounted for all of it, and the term dictionary
+cannot: 579,255 terms at 80 bytes a tuple is ~65 MB, and the whole `.tim` is
+4.5 MB.
+
+The cause was one line in `open_segment_file`:
+
+```rust
+None => Ok(Some(dir.open(&name)?.to_vec())),
+```
+
+`dir.open` hands back an `Input`, which for `MmapDirectory` *is* the mapping.
+`.to_vec()` copied it onto the heap. On this corpus that is `.doc` 540 MB,
+`.pay` 521 MB and `.pos` 505 MB -- **1.57 GB memcpy'd on every reader open**,
+for files that were already memory-mapped and are read by borrowing anyway.
+
+Lucene mmaps and reads in place. It never copies a postings file.
+
+### Fixed
+
+`SegmentReader` now holds `Option<Arc<Input>>` instead of `Option<Vec<u8>>`.
+`Input` already had an `Owned` variant (which the compound-file case still
+uses, since a `.cfs` member genuinely has to be copied out of the archive) and
+already derefs to `[u8]`, so every reader below is untouched and `as_deref()`
+call sites still compile unchanged.
+
+| | before | after | |
+|---|---|---|---|
+| reader open, merged corpus | 551.9 ms | **52.7 ms** | **10.5x** |
+| RSS after open | 1,690 MB | **70 MB** | **24x** |
+
+`Arc` rather than a bare `Input` because of a second instance of the same
+defect found next to it: `clone_reader`, whose doc comment calls it *"a cheap
+in-memory copy ... a genuine no-disk-I/O reuse"*, was cloning those `Vec`s -- so
+`open_if_changed` reusing an unchanged segment copied the same 1.57 GB that
+opening it did. A refcount bump is what that comment always described.
+
+### What is left of the reader-open gap
+
+52.7 ms against Lucene's 0.34 ms: still 155x, and *now* it is the eager term
+materialization this milestone originally blamed. That remains open and remains
+milestone-sized. The difference is that it is now 155x of a 52 ms operation
+rather than a claim about a 552 ms one, and the largest single contributor has
+been removed.
+
+The lesson is the same one the counting instrument taught earlier: the
+diagnosis that sounds structural is not automatically the one that is true.
+Both times the answer came from measuring something specific -- documents
+scored, resident bytes after open -- rather than from reading code and
+reasoning about it.
+
+### A harness bug found on the way
+
+`timed_loop` ran a fixed batch of 1024 iterations before consulting the clock.
+That is right for `for_decode` at nanoseconds an operation and catastrophic for
+`reader_open` at half a second: one batch ran twenty minutes past its budget.
+The batch now grows from one, doubling only while a whole batch is still short
+next to the budget.

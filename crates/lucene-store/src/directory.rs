@@ -32,6 +32,18 @@ pub enum Input {
     Mapped(memmap2::Mmap),
 }
 
+impl std::fmt::Debug for Input {
+    /// Length and provenance only. The alternative is dumping a
+    /// half-gigabyte mapping into a panic message.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let kind = match self {
+            Input::Owned(_) => "Owned",
+            Input::Mapped(_) => "Mapped",
+        };
+        write!(f, "Input::{kind}({} bytes)", self.len())
+    }
+}
+
 impl Deref for Input {
     type Target = [u8];
 
