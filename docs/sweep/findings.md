@@ -1033,9 +1033,38 @@ two things in this document need reading with that in mind:
   harness resolves. The endpoints are real; the individual steps should not be
   quoted as precise.
 
-`scripts/bench-micro.sh` should interleave both engines within a run, repeat,
-and refuse to report a difference smaller than the measured noise floor. Not
-done here.
+### The harness now measures its own noise (fixed)
+
+`scripts/bench-micro.sh` takes `--reps N` (default 3), **interleaves** the two
+engines rather than running all of one then all of the other -- a run takes
+minutes and this machine drifts over that, so alternating puts the drift on both
+sides instead of on whichever went second -- and reports through
+`scripts/bench-micro-report.py`, which measures the noise floor *from the same
+run* (how much each engine varied against itself) and marks any case whose ratio
+sits inside it with `~` instead of `x`. A `~` is not a small result; it is the
+absence of one.
+
+Interleaving and repetition also cut the noise itself, which was the surprise:
+
+| | noise floor |
+|---|---|
+| single run, one engine after the other (the SIMD investigation) | 1.21x, worst 1.64x |
+| 3 interleaved reps, `for_decode` | **1.09x** |
+| 3 interleaved reps, `postings_iter` | **1.03x** |
+
+Every component number in this document was then re-measured with it. They hold,
+and two improved because `advance_shallow` helped them too:
+
+| component | as first reported | re-measured, noise-aware |
+|---|---|---|
+| `ForUtil.decode` (31 widths) | 2.26x | **2.36x** (1 case marked `~`) |
+| posting-list `nextDoc()` | 1.65x | **1.91x** |
+| `DirectReader.get` (14 widths) | 1.82x | **1.86x** |
+
+So the caveat above narrows rather than disappears: the endpoints were right,
+and it is still true that the *step-by-step* attributions inside `for_util.rs`
+(O2 1.47x -> 1.62x, O3 1.62x -> 2.26x) were quoted more precisely than the
+instrument of the day could support.
 
 ---
 
