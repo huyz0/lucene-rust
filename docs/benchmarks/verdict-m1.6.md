@@ -174,7 +174,8 @@ the end-to-end numbers again.
 | M1 (milestone opened) | 0.15x | 19 of 20 | 13 (segmented) |
 | M1.6 first verdict | 0.34x | 19 | 0 |
 | after `advanceShallow` | 0.46x | 16 | 0 |
-| after the linear-scan `advance` and the score-map removal | **0.53x** | **16** | **0** |
+| after the linear-scan `advance` and the score-map removal | 0.53x | 16 | 0 |
+| after the mmap, flat-terms and streaming-positions fixes | **0.585x** | **16** | **0** |
 
 `q01 term body:t0` 1.16x, `q02` 1.04x, `q18 term title:t0` 1.09x -- faster than
 Lucene on their own queries. The M1 gate is still FAIL at 1/20.
@@ -207,3 +208,56 @@ decode waste is largely gone.
 The fix is a per-span clause partition. A static-maxima partition was built and
 measured and is a net regression; see `docs/sweep/findings.md`. That is the next
 milestone, and it now has both a target and a baseline.
+
+
+---
+
+## Final state
+
+| | M1 | M1.6 first verdict | final |
+|---|---|---|---|
+| median query ratio | 0.15x | 0.34x | **0.585x** |
+| queries slower than Java | 19 of 20 | 19 | **16** |
+| recall mismatches (segmented) | 13 | 0 | **0** |
+| reader open | 551.9 ms | 551.9 ms | **33.3 ms** |
+| RSS at reader open | 1,690 MB | 1,690 MB | **60 MB** |
+| `ForUtil.decode` | 0.75x | 2.26x | **2.36x** |
+| posting-list `nextDoc()` | 0.20x | 1.65x | **1.91x** |
+| `DirectReader.get` | 0.82x | 1.82x | **1.86x** |
+| sparse `IndexedDISI` lookup @100k | 326 us | 326 us | **178 ns** |
+| `phrase t0 t1` | 0.04x | 0.04x | **0.58x** |
+
+Faster than Lucene on `q01` (1.17x), `q02` (1.05x), `q18` (1.09x), `q19` (4.41x).
+The M1 gate is still FAIL at 1/20.
+
+## The one divergence that remains
+
+Documents *scored*, against Lucene, on the final tree:
+
+| query | this port | Lucene | ratio |
+|---|---|---|---|
+| `or t0 t1 t2 t3` | 4,121,444 | 1,625 | 2536x |
+| `and t0 t1 t2` | 1,151,317 | 1,451 | 793x |
+| `or tz t2s` | 1,334,994 | 11,505 | 116x |
+| `term body:t0` | 82,564 | 1,425 | 58x |
+
+Every query still slower than Lucene is slower for this reason and no other. The
+per-operation costs are all now faster than Lucene's, decode utilisation went
+from 1.3% to 14-92%, and a final counter sweep surfaced no new divergence.
+
+Six independent attempts at closing it are recorded in
+[`../sweep/findings.md`](../sweep/findings.md) -- MAXSCORE on static maxima, on
+per-span maxima, with WAND's early-out, WAND document-level pivoting, and
+per-document bounding. Every one reduced real work; none made queries faster.
+One cut documents scored by 14.9x for a median throughput change of 1.004x.
+
+That is now understood rather than merely observed: **the per-document cost of
+this scoring loop is low enough that any per-document test costs about what it
+saves.** `next_doc` is an array index, `advance` is a linear scan, the norm is a
+table lookup, the score is one multiply, the collector rejects in one compare --
+all of which this milestone made true. Closing the gap therefore requires not
+reaching the documents at all, at a granularity coarser than a document and
+cheaper than the current span machinery, and the honest next step is to
+instrument Lucene's own scorers -- counting `nextDoc`/`advance` rather than
+`collect` -- to find out what it actually iterates. No measurement here has
+established that.
