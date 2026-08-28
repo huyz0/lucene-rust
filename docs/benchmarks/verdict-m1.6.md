@@ -28,10 +28,15 @@ Lucene**.
 
 | component | before | after |
 |---|---|---|
-| `ForUtil.decode`, median over `bitsPerValue` 1..=31 | 0.75x | **2.30x** |
-| posting-list `nextDoc()`, median over 4 terms | 0.20x | **1.69x** |
-| `DirectReader.get`, median over 14 widths | 0.82x | **1.82x** |
+| `ForUtil.decode`, median over `bitsPerValue` 1..=31 | 0.75x | **2.36x** |
+| posting-list `nextDoc()`, median over 4 terms | 0.20x | **1.91x** |
+| `DirectReader.get`, median over 14 widths | 0.82x | **1.86x** |
+| sparse `IndexedDISI` lookup, 100k present docs | 326 us | **178 ns** |
 | **reader open**, 15-segment corpus | 0.01x | **0.01x — unfixed** |
+
+Re-measured with the noise-aware harness (`--reps 3`, interleaved engines,
+measured noise floor 1.03x-1.09x), not with the single-run instrument the
+earlier figures came from.
 
 The three decode kernels are now faster than Lucene's — the postings decode
 against Lucene's Panama-vectorised `MemorySegmentPostingDecodingUtil`, with no
@@ -148,3 +153,52 @@ Named, measured, and not fixed here:
 
 Each is milestone-sized. The sweep's job was to find them, measure them, and say
 what the fix looks like — not to do them.
+
+
+---
+
+## Addendum: after the counting instrument
+
+The verdict above was written before both engines were instrumented to count
+work. Doing that found the divergence the timings could not, and fixing it moved
+the end-to-end numbers again.
+
+### Final end-to-end, merged corpus
+
+| | median ratio | queries slower than Java | recall mismatches |
+|---|---|---|---|
+| M1 (milestone opened) | 0.15x | 19 of 20 | 13 (segmented) |
+| M1.6 first verdict | 0.34x | 19 | 0 |
+| after `advanceShallow` | **0.46x** | **16** | **0** |
+
+`q01 term body:t0` 1.16x, `q02` 1.04x, `q18 term title:t0` 1.09x -- faster than
+Lucene on their own queries. The M1 gate is still FAIL at 1/20.
+
+### Decode utilisation: documents unpacked that were actually scored
+
+| query | before | after |
+|---|---|---|
+| `and t0 tz` | 1.3% | 14% |
+| `or t0 t1` | 1.4% | 28% |
+| `term body:t0` | 5.8% | 56% |
+| `or tz t2s` | 92% | 92% |
+
+### The one remaining divergence, precisely stated
+
+Documents *scored*, against Lucene, on the final tree:
+
+| query | this port | Lucene | ratio |
+|---|---|---|---|
+| `or t0 t1 t2 t3` | 4,121,444 | 1,625 | 2536x |
+| `and t0 t1 t2` | 1,151,317 | 1,451 | 793x |
+| `or tz t2s` | 1,334,994 | 11,505 | 116x |
+| `term body:t0` | 82,564 | 1,425 | 58x |
+
+Unchanged by this work, because `advanceShallow` removes wasted *decoding*, not
+wasted *scoring*. Every query still slower than Lucene is slower for this reason
+and no other -- the per-document costs are all now faster than Lucene's, and the
+decode waste is largely gone.
+
+The fix is a per-span clause partition. A static-maxima partition was built and
+measured and is a net regression; see `docs/sweep/findings.md`. That is the next
+milestone, and it now has both a target and a baseline.
