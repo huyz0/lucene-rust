@@ -119,7 +119,14 @@ public class VerifyStoredFields {
 
       int failures = 0;
       for (int doc = 0; doc < maxDoc; doc++) {
-        String expectedLine = manifest.getOrDefault(seg + ".doc." + doc + ".fields", "");
+        // A segment large enough to span stored-fields chunks would need one
+        // manifest line per document; those declare a single `{i}`-templated
+        // line instead, expanded per doc here.
+        String pattern = manifest.get(seg + ".doc_pattern");
+        String expectedLine =
+            pattern != null
+                ? pattern.replace("{i}", Integer.toString(doc))
+                : manifest.getOrDefault(seg + ".doc." + doc + ".fields", "");
         DumpVisitor visitor = new DumpVisitor();
         reader.document(doc, visitor);
         String got = visitor.render();

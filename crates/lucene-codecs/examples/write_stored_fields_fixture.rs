@@ -19,6 +19,9 @@ use std::io::Write;
 
 const SEGMENT_ID_0: [u8; 16] = *b"rustwrittenseg01";
 const SEGMENT_ID_1: [u8; 16] = *b"rustwrittenseg02";
+const SEGMENT_ID_2: [u8; 16] = *b"rustwrittenseg03";
+/// Two full BEST_SPEED chunks plus a partial (dirty) third.
+const CHUNKED_DOCS: usize = 2 * 1024 + 37;
 
 fn main() {
     let out_dir = std::env::args()
@@ -131,7 +134,23 @@ fn main() {
         Document { fields: vec![] },
     ];
 
+    // A third segment whose only job is to be *big*: past BEST_SPEED's
+    // 1024-doc-per-chunk cap, so the writer must close several chunks, and
+    // past 128 docs per chunk, so each chunk's per-doc arrays exercise the
+    // bit-transposed block layout rather than only the scalar tail. Every
+    // other fixture here is a handful of documents, which is exactly why a
+    // writer that could not emit more than one chunk went unnoticed.
+    let docs_chunked: Vec<Document> = (0..CHUNKED_DOCS)
+        .map(|i| Document {
+            fields: vec![StoredField {
+                field_number: 0,
+                value: FieldValue::String(format!("doc-{i}")),
+            }],
+        })
+        .collect();
+
     let (fdt0, fdx0, fdm0) = stored_fields::write_best_speed(&docs_best_speed, &SEGMENT_ID_0, "");
+    let (fdt2, fdx2, fdm2) = stored_fields::write_best_speed(&docs_chunked, &SEGMENT_ID_2, "");
     let (fdt1, fdx1, fdm1) =
         stored_fields::write_best_compression(&docs_best_compression, &SEGMENT_ID_1, "");
 
@@ -147,6 +166,9 @@ fn main() {
         ("_1.fdt", &fdt1),
         ("_1.fdx", &fdx1),
         ("_1.fdm", &fdm1),
+        ("_2.fdt", &fdt2),
+        ("_2.fdx", &fdx2),
+        ("_2.fdm", &fdm2),
     ] {
         let mut out = dir.create_output(name).unwrap();
         out.write_bytes(bytes);
@@ -159,11 +181,14 @@ fn main() {
         "_1.fdt".to_string(),
         "_1.fdx".to_string(),
         "_1.fdm".to_string(),
+        "_2.fdt".to_string(),
+        "_2.fdx".to_string(),
+        "_2.fdm".to_string(),
     ])
     .unwrap();
 
     let mut manifest = std::fs::File::create(format!("{out_dir}/manifest.properties")).unwrap();
-    writeln!(manifest, "segments=_0,_1").unwrap();
+    writeln!(manifest, "segments=_0,_1,_2").unwrap();
     write_segment_manifest(
         &mut manifest,
         "_0",
@@ -178,6 +203,14 @@ fn main() {
         &SEGMENT_ID_1,
         &docs_best_compression,
     );
+
+    // Templated rather than one line per doc: the segment's whole point is
+    // its document count, and CHUNKED_DOCS manifest lines would swamp the file.
+    writeln!(manifest, "_2.mode=BEST_SPEED").unwrap();
+    writeln!(manifest, "_2.max_doc={CHUNKED_DOCS}").unwrap();
+    writeln!(manifest, "_2.id_hex={}", hex(&SEGMENT_ID_2)).unwrap();
+    writeln!(manifest, "_2.num_fields=7").unwrap();
+    writeln!(manifest, "_2.doc_pattern=0:string:doc-{{i}}").unwrap();
 
     println!("wrote stored-fields fixture to {out_dir}");
 }

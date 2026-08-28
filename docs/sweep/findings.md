@@ -1664,3 +1664,86 @@ Lucene actually uses. Filed rather than attempted at the end of a milestone.
 
 **This is now the largest single divergence known**, ahead of the reader-open
 residue and the scored-document gap.
+
+## The write path could not index 128 documents
+
+The read paths above were swept because they are what the benchmark measures.
+The benchmark measures them because the corpus it runs against was built by
+*Java*. Nothing in this project had ever asked this port's own `IndexWriter` to
+build an index of realistic size -- every fixture is a handful of documents, and
+`verify-write-path.sh`'s thirteen cross-engine checks were all under 128 docs.
+
+So the first indexing benchmark did not produce a ratio. It produced a panic:
+
+```
+write_best_speed's bulk per-doc arrays only implement the scalar-tail encoding
+(see write_bulk_ints); the 128-value transposed-block path isn't written yet,
+so chunks must stay under 128 docs
+```
+
+Bisected, the boundary was exact: **127 documents commit, 128 panic.** Java
+indexed 50,000 in the same run. The write path was not slow, it was unusable,
+and both `flush_stored_only_segment` and the two merge paths went through it.
+
+### O24 -- stored fields wrote exactly one chunk, and could not fill it
+
+Two separate gaps stacked:
+
+1. `write_bulk_ints` implemented only the scalar tail of
+   `StoredFieldsInts`. The *reader* had implemented the 128-value
+   bit-transposed block layout all along -- `read_bulk_ints` walks it
+   correctly -- so this was a write side that could not produce what its own
+   read side could consume.
+2. `write_best_speed`/`write_best_compression` emitted a single chunk covering
+   every document, with `write_index_and_meta` hardcoding `numChunks = 1` and a
+   two-entry `.fdx`. Lucene closes a chunk when it reaches `chunkSize` bytes
+   *or* `maxDocsPerChunk` documents, whichever comes first.
+
+Fixed together. `write_bulk_ints` is now the exact inverse of `read_bulk_ints`,
+and a shared `write_chunked` ports
+`Lucene90CompressingStoredFieldsWriter`'s buffer/`triggerFlush`/`flush` cycle
+with Lucene's real constants (`10*8*1024` bytes / 1024 docs for BEST_SPEED,
+`10*48*1024` / 4096 for BEST_COMPRESSION, `blockShift = 10`). The two modes
+differ only in payload framing, so that is the one piece passed in.
+
+Three details that were previously unreachable and are now written: the
+**dirty** token bit for a chunk that ran out of documents before either trigger
+fired, the `.fdm` dirty-chunk/dirty-doc tallies a merge policy reads, and the
+**sliced** path for a chunk holding a single outsized document.
+
+### The measurement, once it could run at all
+
+| | rust | java | ratio |
+|---|---|---|---|
+| indexing, 50k docs | 25708 ns/doc | 10299 ns/doc | **0.40x** |
+
+Noise floor 1.05x over 5 interleaved repetitions, so the 2.5x gap is real. That
+is inside the band this sweep set out to reach -- the point is that it was
+previously not a ratio at all.
+
+The first version of this benchmark reported the gap as *2.54x in our favour*,
+because both sides emitted docs/sec into a harness whose every other case
+reports nanoseconds and whose report script divides accordingly. Both sides now
+emit ns/doc. This is the third time in this sweep that an inverted metric read
+as a win; it remains the cheapest mistake to make and the most expensive to
+believe.
+
+### The gap in the checks that allowed this
+
+`verify-write-path.sh` passed 13/13 both before and after the fix, because
+every fixture was small enough to fit the one chunk the writer could produce.
+The stored-fields fixture now also writes a segment of `2*1024 + 37` documents
+-- two full chunks plus a dirty tail -- verified document by document by real
+Lucene. Confirmed to have teeth by mutating the expectation and watching it
+fail on doc 2072, inside the dirty chunk.
+
+Per-document manifest lines would have swamped the file for a segment whose
+whole point is its document count, so that segment declares one `{i}`-templated
+line instead.
+
+### Still unswept
+
+**Facets** remain the last surface with a measurable path on this corpus
+(`cat` is a `SortedSetDocValuesField`, and `facet_counts` exists). Highlighting
+and term vectors stay unmeasurable here: `GenCorpus` stores nothing
+(`Store.NO` throughout) and writes no term vectors.

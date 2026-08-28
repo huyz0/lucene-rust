@@ -63,12 +63,20 @@ case "$BENCH" in
     MAIN=ReaderOpenMicro
     SRC=benchmarks/micro/java/ReaderOpenMicro.java
     NEEDS_INDEX=1 ;;
+  index)
+    # The one write-path case: both sides build their own index from the same
+    # generated corpus, so there is no shared input index to point at.
+    MAIN=IndexMicro
+    SRC=benchmarks/micro/java/IndexMicro.java
+    JAR_MODULES="lucene-core lucene-analysis-common"
+    RUST_BIN=index-bench ;;
   *) echo "bench-micro: no Java counterpart for $BENCH" >&2; exit 2 ;;
 esac
 
 # shellcheck source=scripts/lib-lucene-jars.sh
 source "$(dirname "$0")/lib-lucene-jars.sh"
-CP=$(lucene_classpath lucene-core)
+# shellcheck disable=SC2086  # JAR_MODULES is a deliberate word list
+CP=$(lucene_classpath ${JAR_MODULES:-lucene-core})
 
 OUT=$(mktemp -d); trap 'rm -rf "$OUT"' EXIT
 
@@ -87,6 +95,12 @@ echo "bench-micro: building" >&2
 ( cd benchmarks/rust-runner && cargo build --release --quiet )
 javac -nowarn -cp "$CP" -d "$OUT/classes" "$SRC"
 
+# Every case but `index` measures a read path out of the shared `micro` binary,
+# selected by name and pointed at a prebuilt index; `index` has its own binary
+# because it builds an index rather than reading one, so it takes neither.
+RUST_ARGS=("$BENCH" ${NEEDS_INDEX:+"$INDEX"})
+if [ -n "${RUST_BIN:-}" ]; then RUST_ARGS=(); else RUST_BIN=micro; fi
+
 PINCMD=(taskset -c "$PIN")
 command -v taskset >/dev/null || PINCMD=()
 
@@ -97,7 +111,7 @@ command -v taskset >/dev/null || PINCMD=()
 for rep in $(seq 1 "$REPS"); do
   echo "bench-micro: rep $rep/$REPS rust ($BENCH)" >&2
   MICRO_WARMUP_MS="$WARMUP" MICRO_MEASURE_MS="$MEASURE" \
-    "${PINCMD[@]}" benchmarks/rust-runner/target/release/micro "$BENCH" ${NEEDS_INDEX:+"$INDEX"} \
+    "${PINCMD[@]}" "benchmarks/rust-runner/target/release/$RUST_BIN" "${RUST_ARGS[@]}" \
     > "$OUT/rust.$rep.tsv"
 
   echo "bench-micro: rep $rep/$REPS java ($BENCH)" >&2
