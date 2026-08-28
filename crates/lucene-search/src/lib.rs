@@ -2470,25 +2470,48 @@ pub fn search_boolean_query_scored_with_stats<C: ScoringCollector>(
         && query.minimum_should_match == 0
         && matches!(query.must[0], Clause::Term(_) | Clause::Phrase(_))
     {
-        let scores = clause_scores(
-            fields,
-            doc_in,
-            pos_in,
-            pay_in,
-            live_docs,
-            points,
-            &query.must[0],
-            norms,
-            global,
-        )?;
-        // Ascending doc order, which every other path in this crate guarantees
-        // and `TopDocsCollector`'s tie-break assumes.
-        let mut docs: Vec<i32> = scores.keys().copied().collect();
-        docs.sort_unstable();
-        for doc_id in docs {
-            collector.collect(doc_id, scores[&doc_id]);
+        // Straight to the collector, not through `clause_scores`. That function
+        // returns a `HashMap<i32, f32>` -- one hash insert per matching
+        // document, then a key collection, then a sort, then a hash lookup per
+        // document to read it back. On a two-term phrase over this corpus that
+        // machinery was **43% of the query**: `clause_scores` 29.9%,
+        // `SumCollector::collect` 10.3%, hashing 3.1%, and the sort 3.0%,
+        // against 23.4% for the position decode it exists to serve.
+        //
+        // Lucene never materializes a score map. A `Scorer` streams
+        // `(doc, score)` to the collector in ascending document order, which is
+        // exactly what both of these functions already do -- the map was pure
+        // overhead between two things that already agreed on shape.
+        match &query.must[0] {
+            Clause::Term(q) => {
+                let clause_norms = norms.and_then(|m| m.get(&q.field));
+                return search_term_query_scored_with_stats(
+                    fields,
+                    doc_in,
+                    live_docs,
+                    q,
+                    clause_norms,
+                    global,
+                    collector,
+                );
+            }
+            Clause::Phrase(q) => {
+                let clause_norms = norms.and_then(|m| m.get(&q.field));
+                return search_phrase_query_scored_with_stats(
+                    fields,
+                    doc_in,
+                    pos_in,
+                    pay_in,
+                    live_docs,
+                    q,
+                    clause_norms,
+                    global,
+                    collector,
+                );
+            }
+            // Unreachable: the guard above admits only these two.
+            _ => unreachable!("guarded by the matches! above"),
         }
-        return Ok(());
     }
 
     let Some(matched) =
