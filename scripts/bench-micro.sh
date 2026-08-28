@@ -18,6 +18,9 @@ cd "$(git rev-parse --show-toplevel)"
 
 BENCH=for_decode
 INDEX_ARG=""
+# Repetitions of the whole A/B pair. Three is the minimum that gives a median
+# and a spread; the spread is what decides whether a difference is reportable.
+REPS=3
 WARMUP=1500
 MEASURE=2000
 JARS="$PWD/fixtures/.jars"
@@ -29,6 +32,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --bench)      BENCH="$2";   shift 2 ;;
     --index)      INDEX_ARG="$2"; shift 2 ;;
+    --reps)       REPS="$2";    shift 2 ;;
     --warmup-ms)  WARMUP="$2";  shift 2 ;;
     --measure-ms) MEASURE="$2"; shift 2 ;;
     --pin)        PIN="$2";     shift 2 ;;
@@ -82,32 +86,20 @@ javac -nowarn -cp "$CP" -d "$OUT/classes" "$SRC"
 PINCMD=(taskset -c "$PIN")
 command -v taskset >/dev/null || PINCMD=()
 
-echo "bench-micro: rust ($BENCH)" >&2
-MICRO_WARMUP_MS="$WARMUP" MICRO_MEASURE_MS="$MEASURE" \
-  "${PINCMD[@]}" benchmarks/rust-runner/target/release/micro "$BENCH" ${NEEDS_INDEX:+"$INDEX"} \
-  > "$OUT/rust.tsv"
+# Interleave the two engines rather than running all of one then all of the
+# other. A run takes minutes and this machine drifts over that: whatever the
+# drift is, alternating makes it fall on both sides equally instead of biasing
+# whichever went second.
+for rep in $(seq 1 "$REPS"); do
+  echo "bench-micro: rep $rep/$REPS rust ($BENCH)" >&2
+  MICRO_WARMUP_MS="$WARMUP" MICRO_MEASURE_MS="$MEASURE" \
+    "${PINCMD[@]}" benchmarks/rust-runner/target/release/micro "$BENCH" ${NEEDS_INDEX:+"$INDEX"} \
+    > "$OUT/rust.$rep.tsv"
 
-echo "bench-micro: java ($BENCH)" >&2
-"${PINCMD[@]}" java --add-modules jdk.incubator.vector \
-  -DwarmupMs="$WARMUP" -DmeasureMs="$MEASURE" \
-  -cp "$CP:$OUT/classes" "$MAIN" ${NEEDS_INDEX:+"$INDEX"} > "$OUT/java.tsv"
+  echo "bench-micro: rep $rep/$REPS java ($BENCH)" >&2
+  "${PINCMD[@]}" java --add-modules jdk.incubator.vector \
+    -DwarmupMs="$WARMUP" -DmeasureMs="$MEASURE" \
+    -cp "$CP:$OUT/classes" "$MAIN" ${NEEDS_INDEX:+"$INDEX"} > "$OUT/java.$rep.tsv"
+done
 
-join -t $'\t' <(sort "$OUT/rust.tsv") <(sort "$OUT/java.tsv") > "$OUT/joined.tsv"
-if [ ! -s "$OUT/joined.tsv" ]; then
-  echo "bench-micro: no cases joined -- the harnesses disagree on case names" >&2
-  exit 1
-fi
-
-echo
-printf '%-10s %12s %12s %8s\n' case rust_ns java_ns ratio
-printf '%-10s %12s %12s %8s\n' ---- ------- ------- -----
-awk -F'\t' '{printf "%-10s %12.3f %12.3f %7.2fx\n", $1, $2, $4, ($2>0)?$4/$2:0}' "$OUT/joined.tsv"
-
-awk -F'\t' '{print ($2>0)?$4/$2:0}' "$OUT/joined.tsv" | sort -g > "$OUT/ratios"
-awk -v n="$(wc -l < "$OUT/ratios")" '
-  { sum+=$1; r[NR]=$1 }
-  END {
-    med = (n%2) ? r[int(n/2)+1] : (r[n/2]+r[n/2+1])/2
-    printf "\n%d cases   mean %.2fx   median %.2fx\n", n, sum/n, med
-    print "ratio > 1 means Rust is faster than Lucene on this case."
-  }' "$OUT/ratios"
+python3 scripts/bench-micro-report.py "$OUT" "$REPS"
