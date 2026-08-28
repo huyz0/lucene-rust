@@ -1857,3 +1857,98 @@ segment-level contracts, and nothing was checking segment level.
 The check that found all four was pointing `DirectoryReader.open` and
 `CheckIndex` at an index this port wrote end to end. That belongs in the
 verification script, and is filed as the next task.
+
+## The check that finds these, and the three more it found
+
+The previous section ended by filing the obvious next task: point
+`DirectoryReader.open` and `CheckIndex` at an index this port wrote end to end,
+because the thirteen single-format checks structurally could not see a
+segment-level defect. Built as `write_full_segment_fixture` +
+`VerifyFullSegment`, wired in as the fourteenth case.
+
+It failed immediately, three more times.
+
+### O29 -- the term dictionary could not survive a second leading byte
+
+The minimal reproducer is two terms: **`apple` and `banana`**. Any field whose
+terms did not all share a first byte produced a `.tim` real Lucene cannot
+iterate -- `SegmentTermsEnumFrame.loadBlock` handed `-1`.
+
+The writer split such a field into one leaf block per leading byte under a
+`SIGN_MULTI_CHILDREN` trie root, and left that root's "has own output" bit
+clear, since it holds no terms itself. But Lucene's terms enum begins by
+loading the root *block*, and with no output there is no root block to load.
+Modelling this properly needs non-leaf blocks whose entries are sub-block
+pointers, which this writer does not have.
+
+Every term now goes in one leaf block under a single-output root -- the shape
+every passing fixture here has always produced, and the one real Lucene
+validates. The 33-leading-byte cap the split path needed is gone with it.
+
+This is the finding that explains why the 50,000-document benchmark index
+passed CheckIndex while a 2,500-document one did not: that corpus's vocabulary
+is `t0`..`t19999`. Twenty thousand terms, one leading byte. The benchmark was
+never going to find this, and neither was any fixture in this repository.
+
+### O30 -- the level-0 skip pointer was written as zero
+
+`numSkipBytes` prefixes every level-0 block. This port's reader parses it and
+ignores it, deriving the same position from `blockLength`; the writer therefore
+wrote `0`, with a comment saying any valid vlong would do.
+
+Lucene's `skipLevel0To` seeks by it. A zero sends it *backwards*, to re-read the
+block header as block data, and then off the end of the file. It now spans the
+two header fields plus the impacts region, as Java's does.
+
+Only reachable for a term with `docFreq >= 256` -- more than one full block.
+The benchmark corpus's most frequent term appears in about a hundred documents.
+
+### O31 -- an empty impacts region is not the conservative choice
+
+With those fixed, Lucene rejected the segment: **"Got empty list of impacts on
+level 0"**. This writer emitted an empty impacts region at both levels, on the
+reasoning that computing competitive impacts was out of scope and an empty list
+promises nothing. Lucene requires at least one.
+
+Each block now carries a single impact, `(maxFreq, norm = 1)`: the highest
+frequency in the block paired with the shortest possible field length, which
+bounds any score the block can produce. Impacts bound scores for dynamic
+pruning, so a loose bound costs pruning opportunities while a low one would drop
+real hits. Level 1 carries the same, maximised across its whole 8192-doc span.
+
+`.psm`'s four maxima had to become real at the same time, and they are not
+bookkeeping: Lucene sizes its impact-decoding buffers from them before reading
+any block, so understating `maxImpactNumBytesAtLevel0` hands `readBytes` a
+buffer shorter than the region it is asked to fill.
+
+### One mistake of my own, worth recording
+
+The verifier first asserted on `TopDocs.totalHits` and reported `body:shared`
+matching 1001 of 2500. That is not a defect: past its hit threshold Lucene
+prunes and reports a *lower bound*. Asserting on a lower bound as though it
+were a count would have flagged correct behaviour as a bug -- the same class of
+error as the inverted metrics recorded earlier in this document, and in the
+same direction: reading a number without checking what it means. The verifier
+uses `IndexSearcher.count`.
+
+### Where the write path stands
+
+`verify-write-path.sh` is 14/14. The fourteenth case writes 2,500 documents
+through the real `IndexWriter` -- 501 terms spanning many leading bytes, one of
+them in every document and so spanning ten postings blocks -- and real Lucene
+opens it, counts it exactly, and passes `CheckIndex` at full level.
+
+| | rust | java | ratio |
+|---|---|---|---|
+| indexing, 50k docs | 47254 ns/doc | 9974 ns/doc | **0.21x** |
+
+Noise floor 1.05x. Unchanged from the previous section within noise: real
+impacts and skip pointers cost essentially nothing to write.
+
+**Seven defects, and the shape of all seven is the same.** Each is a place where
+this port's reader was more permissive than Lucene's -- resolving files by
+extension rather than exact name, ignoring a skip pointer it could re-derive,
+accepting an empty impacts list, tolerating a root with no output. Every one
+round-tripped perfectly through our own reader. A port cannot be verified
+against itself, and thirteen green single-format checks did not amount to one
+segment real Lucene could open.

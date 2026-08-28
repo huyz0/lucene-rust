@@ -179,12 +179,11 @@
 
 use lucene_store::codec_util::{self, ID_LENGTH};
 use lucene_store::data_output::DataOutput;
-use std::ops::Range;
 
 use crate::blocktree::{
-    CHILD_STRATEGY_ARRAY, LEAF_NODE_HAS_TERMS, POSTINGS_BLOCK_SIZE, POSTINGS_TERMS_CODEC,
-    POSTINGS_VERSION_CURRENT, SIGN_MULTI_CHILDREN, SIGN_NO_CHILDREN, TERMS_CODEC_NAME,
-    TERMS_INDEX_CODEC_NAME, TERMS_META_CODEC_NAME, VERSION_CURRENT as BLOCKTREE_VERSION_CURRENT,
+    LEAF_NODE_HAS_TERMS, POSTINGS_BLOCK_SIZE, POSTINGS_TERMS_CODEC, POSTINGS_VERSION_CURRENT,
+    SIGN_NO_CHILDREN, TERMS_CODEC_NAME, TERMS_INDEX_CODEC_NAME, TERMS_META_CODEC_NAME,
+    VERSION_CURRENT as BLOCKTREE_VERSION_CURRENT,
 };
 use crate::field_infos::IndexOptions;
 use crate::for_util;
@@ -238,11 +237,6 @@ pub enum Error {
          duplicate positions -- positions must strictly increase within a doc"
     )]
     PositionsNotAscending { index: usize, doc_index: usize },
-    #[error(
-        "write_fields: field has {0} distinct leading-byte groups, but this writer's multi-child \
-         trie root only supports 2..=33 children (ChildSaveStrategy::ARRAY's 5-bit strategy-byte-count field)"
-    )]
-    TooManyLeadingByteGroups(usize),
     #[error(
         "write_single_field: term at index {index}, doc index {doc_index} has no offsets but \
          index_options indexes offsets; every doc needs exactly `freq` (start, end) offset pairs"
@@ -418,6 +412,7 @@ pub fn write_fields(
     }
 
     // ---- .doc ----
+    let mut maxima = PostingsMaxima::default();
     let mut doc = Vec::new();
     codec_util::write_index_header(
         &mut doc,
@@ -535,12 +530,14 @@ pub fn write_fields(
                     prev_doc_id,
                     &mut level1_last_doc_id,
                     index_has_freq,
+                    &mut maxima,
                 );
                 start += LEVEL1_NUM_DOCS as usize;
             }
             while t.docs.len() - start >= BLOCK_SIZE as usize {
                 let block = &t.docs[start..start + BLOCK_SIZE as usize];
-                prev_doc_id = write_full_block(&mut doc, block, prev_doc_id, index_has_freq);
+                prev_doc_id =
+                    write_full_block(&mut doc, block, prev_doc_id, index_has_freq, &mut maxima);
                 start += BLOCK_SIZE as usize;
             }
             if start < t.docs.len() {
@@ -575,58 +572,40 @@ pub fn write_fields(
             }
         }
 
-        // ---- this field's .tim block(s) + .tip node(s) ----
-        // See the module doc's "Scope" section: a field whose terms span
-        // only one leading byte (or has a single term, or contains an
-        // empty-byte-string term) keeps the original single-block/
-        // single-`SIGN_NO_CHILDREN`-root shape; a field spanning 2..=33
-        // distinct leading bytes gets one leaf block per leading-byte group
-        // under a `SIGN_MULTI_CHILDREN` root (see [`write_multi_children_root`]).
-        let groups = group_terms_by_leading_byte(input.terms);
-        let (index_start, root_fp, index_end) = if groups.len() <= 1 {
-            let block_fp = write_tim_block(
-                &mut tim,
-                input.terms,
-                &doc_start_fp,
-                &pos_start_fp,
-                &pay_start_fp,
-                0,
-                input.index_options,
-                index_has_positions,
-                index_has_offsets_or_payloads,
-            );
-            let index_start = tip.len();
-            let root_fp_abs = write_leaf_node(&mut tip, block_fp as u64);
-            let index_end = tip.len();
-            (index_start, root_fp_abs - index_start, index_end)
-        } else {
-            if groups.len() > 33 {
-                return Err(Error::TooManyLeadingByteGroups(groups.len()));
-            }
-            let index_start = tip.len();
-            let mut labels = Vec::with_capacity(groups.len());
-            let mut child_fps_abs = Vec::with_capacity(groups.len());
-            for (label, range) in &groups {
-                let group_terms = &input.terms[range.clone()];
-                let block_fp = write_tim_block(
-                    &mut tim,
-                    group_terms,
-                    &doc_start_fp[range.clone()],
-                    &pos_start_fp[range.clone()],
-                    &pay_start_fp[range.clone()],
-                    1, // strip the shared leading byte (it's the trie label)
-                    input.index_options,
-                    index_has_positions,
-                    index_has_offsets_or_payloads,
-                );
-                let child_fp_abs = write_leaf_node(&mut tip, block_fp as u64);
-                labels.push(*label);
-                child_fps_abs.push(child_fp_abs);
-            }
-            let root_fp_abs = write_multi_children_root(&mut tip, &labels, &child_fps_abs);
-            let index_end = tip.len();
-            (index_start, root_fp_abs - index_start, index_end)
-        };
+        // ---- this field's .tim block + .tip node ----
+        // Every term goes in one leaf block under a single
+        // `SIGN_NO_CHILDREN` trie root, whatever leading bytes the terms
+        // span. This writer previously split a field spanning several
+        // leading bytes into one leaf block per byte under a
+        // `SIGN_MULTI_CHILDREN` root -- which real Lucene cannot read: its
+        // terms enum starts by loading the root *block*, and that root node
+        // carried children but no output of its own, so `loadBlock` was
+        // handed -1. Two terms differing in their first byte were enough
+        // (`docs/sweep/findings.md`, "The term dictionary could not survive
+        // a second leading byte").
+        //
+        // Modelling that properly means non-leaf blocks whose entries are
+        // sub-block pointers, which this writer does not have yet. Until it
+        // does, one block is both correct and what real Lucene already
+        // validates -- it is the shape every passing fixture here has always
+        // produced. The cost is that term lookup within a field is a scan of
+        // the single block rather than a trie descent, which is the
+        // block-tree navigation item already filed in the sweep findings.
+        let block_fp = write_tim_block(
+            &mut tim,
+            input.terms,
+            &doc_start_fp,
+            &pos_start_fp,
+            &pay_start_fp,
+            0,
+            input.index_options,
+            index_has_positions,
+            index_has_offsets_or_payloads,
+        );
+        let index_start = tip.len();
+        let root_fp_abs = write_leaf_node(&mut tip, block_fp as u64);
+        let index_end = tip.len();
+        let root_fp = root_fp_abs - index_start;
 
         // ---- this field's .tmd record ----
         tmd.write_vint(input.field_number);
@@ -679,9 +658,9 @@ pub fn write_fields(
 
     // `.psm`, mirroring `Lucene104PostingsWriter.close()`: the impact maxima
     // first, then each postings file's length *including* its footer (Java
-    // records `getFilePointer()` after writing the footer). This writer emits
-    // an empty impacts region at both levels (see the module doc comment), so
-    // all four maxima are honestly zero rather than merely unset.
+    // records `getFilePointer()` after writing the footer). Lucene sizes its
+    // impact-decoding buffers from these maxima before reading any block, so
+    // they must cover what was actually written.
     let mut psm = Vec::new();
     codec_util::write_index_header(
         &mut psm,
@@ -690,10 +669,10 @@ pub fn write_fields(
         segment_id,
         segment_suffix,
     );
-    psm.write_i32(0); // maxNumImpactsAtLevel0
-    psm.write_i32(0); // maxImpactNumBytesAtLevel0
-    psm.write_i32(0); // maxNumImpactsAtLevel1
-    psm.write_i32(0); // maxImpactNumBytesAtLevel1
+    psm.write_i32(maxima.num_impacts_level0);
+    psm.write_i32(maxima.impact_bytes_level0);
+    psm.write_i32(maxima.num_impacts_level1);
+    psm.write_i32(maxima.impact_bytes_level1);
     psm.write_i64(doc.len() as i64);
     if any_positions {
         psm.write_i64(pos.len() as i64);
@@ -712,29 +691,6 @@ pub fn write_fields(
         tip,
         tmd,
     })
-}
-
-/// Groups `terms` (already sorted ascending, per [`write_fields`]'s caller
-/// obligations) into maximal runs sharing the same first byte, returning
-/// `(label, range)` pairs in ascending label order — the splitting policy
-/// described in the module doc's "Scope" section. Falls back to a single
-/// group spanning every term (i.e. the caller takes the single-block path)
-/// whenever splitting wouldn't be safe: `terms` is empty, has only one term,
-/// contains an empty-byte-string term (no leading byte to strip/route on), or
-/// every term happens to share one leading byte already.
-fn group_terms_by_leading_byte(terms: &[TermPostings]) -> Vec<(u8, Range<usize>)> {
-    if terms.len() <= 1 || terms.iter().any(|t| t.term.is_empty()) {
-        return vec![(0, 0..terms.len())];
-    }
-    let mut groups = Vec::new();
-    let mut start = 0;
-    for i in 1..=terms.len() {
-        if i == terms.len() || terms[i].term[0] != terms[start].term[0] {
-            groups.push((terms[start].term[0], start..i));
-            start = i;
-        }
-    }
-    groups
 }
 
 /// Writes one physical `.tim` leaf block for `terms` (a contiguous,
@@ -826,68 +782,6 @@ fn write_leaf_node(tip: &mut Vec<u8>, block_fp: u64) -> usize {
     tip.extend_from_slice(&block_fp.to_le_bytes());
     tip.extend_from_slice(&0u64.to_le_bytes()); // 8-byte over-read pad, `load_node`'s SIGN_NO_CHILDREN reads up to fp+1..fp+9
     fp
-}
-
-/// Writes one `SIGN_MULTI_CHILDREN` root node (`ChildSaveStrategy::ARRAY`,
-/// no output of its own) whose children are exactly the leaf nodes at
-/// `child_fps_abs` (already written into `tip`, one per entry of `labels`, in
-/// the same ascending-label order), returning the root node's own absolute
-/// offset into `tip`.
-///
-/// Mirrors `TrieReader.loadMultiChildrenNode`'s read side
-/// (`crate::blocktree::load_node`) for the "no own output" branch
-/// (`term & 0x20 == 0`, so `strategy_fp = fp + 3` — a 3-byte header packing
-/// `sign`/`childrenDeltaFpBytes`/`hasOutput=0`/`childSaveStrategy`/
-/// `strategyBytes`/`minChildrenLabel`) followed by `ChildSaveStrategy::ARRAY`'s
-/// layout (`crate::blocktree::multi_children_labels_and_fps`'s `ARRAY` arm):
-/// `labels.len() - 1` raw label bytes (every label after `min_label`, which
-/// the header already carries) then `labels.len()` children-delta-fp entries,
-/// each `children_delta_fp_bytes` (fixed at 8 here, matching [`write_leaf_node`]'s
-/// own 8-byte output-fp convention) little-endian bytes encoding
-/// `this_root_fp - child_fp` (the read side's "delta from parent" convention;
-/// [`crate::blocktree::multi_children_labels_and_fps`] rejects a delta
-/// exceeding the parent's own fp, so every child must already be written
-/// — hence must be written to `tip` before this call).
-///
-/// `labels.len()` must be in `2..=33` (checked by the caller,
-/// `Error::TooManyLeadingByteGroups`) — the header's 5-bit
-/// `strategyBytes - 1` field can only address `labels.len() - 1` in `1..=32`.
-fn write_multi_children_root(tip: &mut Vec<u8>, labels: &[u8], child_fps_abs: &[usize]) -> usize {
-    debug_assert_eq!(labels.len(), child_fps_abs.len());
-    debug_assert!((2..=33).contains(&labels.len()));
-
-    let root_fp = tip.len();
-    let child_count = labels.len() as u32;
-    let children_delta_fp_bytes = 8u32; // field value; raw header bits are (this - 1)
-    let strategy_bytes = child_count - 1; // field value; raw header bits are (this - 1)
-    let min_label = labels[0];
-
-    let term_u32: u32 = SIGN_MULTI_CHILDREN
-        | ((children_delta_fp_bytes - 1) << 2)
-        // bit 5 (0x20, "has own output") deliberately left clear: this root
-        // has no terms of its own, only children.
-        | (CHILD_STRATEGY_ARRAY << 9)
-        | ((strategy_bytes - 1) << 11)
-        | ((min_label as u32) << 16);
-    let header_bytes = term_u32.to_le_bytes();
-    tip.push(header_bytes[0]);
-    tip.push(header_bytes[1]);
-    tip.push(header_bytes[2]);
-
-    // ChildSaveStrategy::ARRAY: `labels[1..]` written verbatim (ascending, one
-    // byte each) right after the header.
-    for &label in &labels[1..] {
-        tip.push(label);
-    }
-    // Then one children-delta-fp entry per label (including `labels[0]`),
-    // in the same order, each `this_root_fp - child_fp`, little-endian,
-    // `children_delta_fp_bytes` (8) bytes wide.
-    for &child_fp in child_fps_abs {
-        let delta = (root_fp - child_fp) as u64;
-        tip.extend_from_slice(&delta.to_le_bytes());
-    }
-
-    root_fp
 }
 
 /// Validates one field's structural invariants (sortedness, `docFreq`/
@@ -1031,6 +925,32 @@ fn write_vlong15(out: &mut Vec<u8>, value: i64) {
     }
 }
 
+/// The four figures `.psm` records, accumulated as blocks are written.
+///
+/// Lucene's reader sizes its impact-decoding buffers from these before it
+/// reads a single block, so they are not bookkeeping: understating
+/// `impact_bytes_level0` gives `readBytes` a buffer shorter than the region it
+/// is asked to fill.
+#[derive(Default)]
+struct PostingsMaxima {
+    num_impacts_level0: i32,
+    impact_bytes_level0: i32,
+    num_impacts_level1: i32,
+    impact_bytes_level1: i32,
+}
+
+impl PostingsMaxima {
+    fn observe_level0(&mut self, num_impacts: i32, num_bytes: usize) {
+        self.num_impacts_level0 = self.num_impacts_level0.max(num_impacts);
+        self.impact_bytes_level0 = self.impact_bytes_level0.max(num_bytes as i32);
+    }
+
+    fn observe_level1(&mut self, num_impacts: i32, num_bytes: usize) {
+        self.num_impacts_level1 = self.num_impacts_level1.max(num_impacts);
+        self.impact_bytes_level1 = self.impact_bytes_level1.max(num_bytes as i32);
+    }
+}
+
 /// Writes one full 256-doc `.doc` block — a level-0 skip header
 /// (`level0NumBytes` skip pointer, `docDelta`, `blockLength`, an always-empty
 /// impacts region) followed by the doc-delta/freq body — the exact
@@ -1075,6 +995,7 @@ fn write_full_block(
     block: &[(i32, i32)],
     prev_doc_id: i32,
     index_has_freq: bool,
+    maxima: &mut PostingsMaxima,
 ) -> i32 {
     debug_assert_eq!(block.len(), BLOCK_SIZE as usize);
 
@@ -1085,9 +1006,31 @@ fn write_full_block(
     // written.
     let mut rest = Vec::new();
     if index_has_freq {
-        rest.write_vint(0); // impacts byte-length: always an empty region
-                            // (no competitive-impact computation, see the module doc).
+        // One impact per block, `(maxFreq, norm = 1)`: the highest frequency
+        // this block contains paired with the shortest possible field length,
+        // which is an upper bound on any score the block can produce. Impacts
+        // bound scores for dynamic pruning, so a loose bound only costs
+        // pruning opportunities while a low one would drop real hits.
+        //
+        // An *empty* region is not the conservative choice it looks like:
+        // Lucene rejects the segment outright with "Got empty list of impacts
+        // on level 0".
+        //
+        // `Lucene104PostingsWriter.writeImpacts` encodes each impact against
+        // the previous one, starting from `(0, 0)`, so this single entry is
+        // `freqDelta = maxFreq - 1` and `normDelta = 0` -- the folded
+        // single-byte form, with no zig-zag long following.
+        let max_freq = block.iter().map(|&(_, f)| f).max().unwrap_or(1).max(1);
+        let mut impacts = Vec::new();
+        impacts.write_vint((max_freq - 1) << 1);
+        maxima.observe_level0(1, impacts.len());
+        rest.write_vint(impacts.len() as i32);
+        rest.write_bytes(&impacts);
     }
+    // Java's `numSkipBytes = level0Output.size()` is sampled exactly here --
+    // after the impacts region (and the pos/pay skip fields this path never
+    // writes), before the doc deltas and freqs are appended.
+    let impacts_region_len = rest.len() as i64;
 
     let mut deltas = [0u32; for_util::BLOCK_SIZE];
     let mut prev = prev_doc_id;
@@ -1158,11 +1101,18 @@ fn write_full_block(
         for_util::pfor_encode(&mut freqs, &mut rest);
     }
 
-    out.write_vlong(0); // level0NumBytes: a skip pointer this reader parses
-                        // but never uses (see read_full_block_header), so any
-                        // valid vlong is fine here.
-    write_vint15(out, last_doc_id - prev_doc_id);
-    write_vlong15(out, rest.len() as i64);
+    // `numSkipBytes` spans the two header fields below plus the impacts
+    // region -- landing a reader that skips this block on the first doc-delta
+    // byte. This port's own reader parses the field and ignores it, deriving
+    // the same position from `blockLength`; real Lucene's `skipLevel0To`
+    // seeks by it, and a zero here sends it *backwards* to re-read the header
+    // as block data and then off the end of the file. Measure the fields by
+    // building them first, as Java does with its `scratchOutput`.
+    let mut header = Vec::new();
+    write_vint15(&mut header, last_doc_id - prev_doc_id);
+    write_vlong15(&mut header, rest.len() as i64);
+    out.write_vlong(impacts_region_len + header.len() as i64);
+    out.write_bytes(&header);
     out.write_bytes(&rest);
 
     last_doc_id
@@ -1204,6 +1154,7 @@ fn write_level1_span(
     prev_doc_id: i32,
     level1_last_doc_id: &mut i32,
     index_has_freq: bool,
+    maxima: &mut PostingsMaxima,
 ) -> i32 {
     debug_assert_eq!(span.len(), LEVEL1_NUM_DOCS as usize);
 
@@ -1214,25 +1165,41 @@ fn write_level1_span(
     let mut span_bytes = Vec::new();
     let mut prev = prev_doc_id;
     for block in span.chunks(BLOCK_SIZE as usize) {
-        prev = write_full_block(&mut span_bytes, block, prev, index_has_freq);
+        prev = write_full_block(&mut span_bytes, block, prev, index_has_freq, maxima);
     }
     let last_doc_id = prev;
+
+    // This span's own single impact, on the same `(maxFreq, norm = 1)` basis
+    // as [`write_full_block`]'s -- the max is over the whole 8192-doc span, so
+    // it bounds every level-0 block beneath it, as a level-1 impact must.
+    let mut level1_impacts = Vec::new();
+    if index_has_freq {
+        let max_freq = span.iter().map(|&(_, f)| f).max().unwrap_or(1).max(1);
+        level1_impacts.write_vint((max_freq - 1) << 1);
+        maxima.observe_level1(1, level1_impacts.len());
+    }
 
     // `read_level1_entry` computes `doc_end_fp` as this vlong's value added
     // to `r.position()` measured right after the vlong itself -- i.e.
     // *before* the freq-gated `skip1EndFP`/`numImpactBytes` fields below are
     // read. So the vlong must span every byte from there through the end of
     // the whole entry+span, not just `span_bytes` alone: the freq-gated
-    // header contributes `2 (skip1EndFP) + 2 (numImpactBytes) + 0 (impact
-    // bytes, always empty)` extra bytes whenever `index_has_freq`.
-    let freq_header_len: usize = if index_has_freq { 4 } else { 0 };
+    // header contributes `2 (skip1EndFP) + 2 (numImpactBytes) + the impact
+    // bytes themselves` whenever `index_has_freq`.
+    let freq_header_len: usize = if index_has_freq {
+        4 + level1_impacts.len()
+    } else {
+        0
+    };
     let doc_delta = last_doc_id - *level1_last_doc_id;
     out.write_vint(doc_delta);
     out.write_vlong((freq_header_len + span_bytes.len()) as i64);
     if index_has_freq {
-        out.write_i16(2); // skip1EndFP delta: exactly `numImpactBytes`'s 2 bytes, since
-                          // no impact bytes and no pos/pay sub-fields follow (see doc comment).
-        out.write_i16(0); // numImpactBytes: always an empty impacts region.
+        // skip1EndFP delta: `numImpactBytes`'s own 2 bytes plus the impact
+        // bytes that follow it, since no pos/pay sub-fields come after.
+        out.write_i16((2 + level1_impacts.len()) as i16);
+        out.write_i16(level1_impacts.len() as i16);
+        out.write_bytes(&level1_impacts);
     }
     out.write_bytes(&span_bytes);
 
@@ -2332,33 +2299,6 @@ mod tests {
         assert!(field.seek_exact(b"zz").is_none());
     }
 
-    /// A field with 40 distinct leading bytes exceeds this writer's
-    /// multi-child root capacity (2..=33 children, see the module doc) and
-    /// must fail loudly rather than silently misencode the 5-bit
-    /// `strategyBytes` header field.
-    #[test]
-    fn rejects_field_needing_more_than_33_leading_byte_groups() {
-        let mut terms = Vec::new();
-        for i in 0..40u8 {
-            terms.push(TermPostings {
-                term: vec![i, b'x'],
-                docs: vec![(i as i32, 1)],
-                ..Default::default()
-            });
-        }
-        let input = FieldPostingsInput {
-            field_number: 0,
-            index_options: IndexOptions::DocsAndFreqs,
-            doc_count: 40,
-            has_payloads: false,
-            terms: &terms,
-        };
-        assert!(matches!(
-            write_single_field(&input, &SEG_ID, SUFFIX),
-            Err(Error::TooManyLeadingByteGroups(40))
-        ));
-    }
-
     fn leading_byte_group_terms(n: u8) -> Vec<TermPostings> {
         (0..n)
             .map(|i| TermPostings {
@@ -2369,49 +2309,47 @@ mod tests {
             .collect()
     }
 
+    /// Terms spanning many distinct leading bytes all land in the one block
+    /// this writer emits, with no per-byte grouping and so no upper bound on
+    /// how many distinct leading bytes a field may have. The previous
+    /// per-leading-byte split capped this at 33 *and* produced a `.tip` root
+    /// real Lucene could not follow -- see this module's `.tim`/`.tip`
+    /// comment. 40 is past that old cap on purpose.
     #[test]
-    fn exactly_33_leading_byte_groups_succeeds() {
-        let terms = leading_byte_group_terms(33);
-        let input = FieldPostingsInput {
-            field_number: 0,
-            index_options: IndexOptions::DocsAndFreqs,
-            doc_count: 33,
-            has_payloads: false,
-            terms: &terms,
-        };
-        let output =
-            write_single_field(&input, &SEG_ID, SUFFIX).expect("exactly 33 groups must succeed");
-        let fis = FieldInfos {
-            fields: vec![field_info(0, "f", IndexOptions::DocsAndFreqs)],
-        };
-        let fields = blocktree::open(
-            &output.tim,
-            &output.tip,
-            &output.tmd,
-            &fis,
-            &SEG_ID,
-            SUFFIX,
-            33,
-        )
-        .expect("33-group output must open cleanly");
-        let f = fields.field("f").unwrap();
-        assert_eq!(f.num_terms, 33);
-    }
-
-    #[test]
-    fn exactly_34_leading_byte_groups_is_rejected() {
-        let terms = leading_byte_group_terms(34);
-        let input = FieldPostingsInput {
-            field_number: 0,
-            index_options: IndexOptions::DocsAndFreqs,
-            doc_count: 34,
-            has_payloads: false,
-            terms: &terms,
-        };
-        assert!(matches!(
-            write_single_field(&input, &SEG_ID, SUFFIX),
-            Err(Error::TooManyLeadingByteGroups(34))
-        ));
+    fn many_distinct_leading_bytes_all_round_trip_through_one_block() {
+        for n in [2u8, 33, 34, 40] {
+            let terms = leading_byte_group_terms(n);
+            let input = FieldPostingsInput {
+                field_number: 0,
+                index_options: IndexOptions::DocsAndFreqs,
+                doc_count: n as i32,
+                has_payloads: false,
+                terms: &terms,
+            };
+            let output = write_single_field(&input, &SEG_ID, SUFFIX)
+                .unwrap_or_else(|e| panic!("{n} leading bytes must succeed: {e}"));
+            let fis = FieldInfos {
+                fields: vec![field_info(0, "f", IndexOptions::DocsAndFreqs)],
+            };
+            let fields = blocktree::open(
+                &output.tim,
+                &output.tip,
+                &output.tmd,
+                &fis,
+                &SEG_ID,
+                SUFFIX,
+                n as i32,
+            )
+            .unwrap_or_else(|e| panic!("{n}-leading-byte output must open: {e}"));
+            let f = fields.field("f").unwrap();
+            assert_eq!(f.num_terms, n as i64, "n={n}");
+            for i in 0..n {
+                let stats = f.seek_exact(&[i, b'x']).unwrap_or_else(|| {
+                    panic!("term {i} missing with n={n}");
+                });
+                assert_eq!(stats.doc_freq, 1, "term {i} with n={n}");
+            }
+        }
     }
 
     /// A field with an empty-byte-string term falls back to the single-block
@@ -2923,7 +2861,13 @@ mod tests {
     fn full_block_bits_per_value_token(block: &[(i32, i32)], prev_doc_id: i32) -> i8 {
         use lucene_store::data_input::{DataInput, SliceInput};
         let mut out = Vec::new();
-        write_full_block(&mut out, block, prev_doc_id, false);
+        write_full_block(
+            &mut out,
+            block,
+            prev_doc_id,
+            false,
+            &mut PostingsMaxima::default(),
+        );
         let mut r = SliceInput::new(&out);
         let _level0_num_bytes = r.read_vlong().unwrap();
         // vint15: i16, non-negative fast path or a following vint for the

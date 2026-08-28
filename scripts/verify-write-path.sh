@@ -57,6 +57,13 @@ CASES=(
   "lucene-codecs|write_live_docs_fixture|live-docs|VerifyLiveDocs"
   "lucene-codecs|write_compound_format_fixture|compound-format|VerifyCompoundFormat"
   "lucene-codecs|write_fst_fixture|fst|VerifyFst"
+  # Last, and unlike every case above: a whole index written by the real
+  # IndexWriter, opened by DirectoryReader and run through CheckIndex. The
+  # cases above each hand Lucene one codec file with a hand-built
+  # SegmentInfo/FieldInfos, which cannot see anything that binds those files
+  # into a segment -- four such defects were live at once while all thirteen
+  # passed.
+  "lucene-index|write_full_segment_fixture|full-segment|VerifyFullSegment"
 )
 
 echo "verify-write-path: compiling verifiers"
