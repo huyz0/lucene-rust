@@ -149,6 +149,30 @@ fn main() {
                         search_boolean_query_multi_segment(&segments, &bq, &bool_norms, TOP_N).expect("bool")
                     }
                 }
+                // Query kinds the M1.6 sweep never measured. `intersect`'s own
+                // doc comment says this port narrows by literal prefix and then
+                // linearly scans, where Lucene intersects a compiled automaton
+                // against the term dictionary -- an unquantified divergence
+                // until now.
+                "prefix" | "wildcard" => {
+                    let clause = if q.kind == "prefix" {
+                        Clause::Prefix(lucene_search::query::PrefixQuery::new(
+                            q.field.clone(),
+                            q.args[0].clone().into_bytes(),
+                        ))
+                    } else {
+                        Clause::Wildcard(lucene_search::query::WildcardQuery::new(
+                            q.field.clone(),
+                            q.args[0].clone().into_bytes(),
+                        ))
+                    };
+                    let bq = BooleanQuery {
+                        must: vec![clause],
+                        ..Default::default()
+                    };
+                    search_boolean_query_multi_segment(&segments, &bq, &bool_norms, TOP_N)
+                        .expect("prefix/wildcard")
+                }
                 "phrase" => {
                     let pq = PhraseQuery {
                         field: q.field.clone(),

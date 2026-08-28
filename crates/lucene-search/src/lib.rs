@@ -362,6 +362,59 @@ fn term_doc_ids(
         .collect())
 }
 
+/// Accumulates matched doc IDs from several terms' postings and returns them
+/// ascending and deduplicated -- Lucene's `DocIdSetBuilder`, which every
+/// `MultiTermQuery` rewrite goes through.
+///
+/// The wildcard family unions one posting list per matching term, and this port
+/// did that by concatenating them all into a `Vec<i32>` and calling
+/// `sort_unstable` + `dedup`. That is `O(n log n)` in the *total* number of
+/// postings, which for a prefix matching thousands of terms is tens of millions
+/// of entries: on `prefix body:t12` over the M1 corpus the sort alone was 67% of
+/// the query. A bit per document is `O(n + maxDoc/64)` and, incidentally,
+/// bounded memory rather than one `i32` per posting.
+///
+/// Grows on demand so no caller has to know `maxDoc` up front.
+#[derive(Default)]
+struct DocIdBitSet {
+    words: Vec<u64>,
+    max_set: i32,
+}
+
+impl DocIdBitSet {
+    #[inline]
+    fn set(&mut self, doc_id: i32) {
+        if doc_id < 0 {
+            return;
+        }
+        let idx = doc_id as usize;
+        let word = idx >> 6;
+        if word >= self.words.len() {
+            self.words.resize(word + 1, 0);
+        }
+        self.words[word] |= 1u64 << (idx & 63);
+        if doc_id > self.max_set {
+            self.max_set = doc_id;
+        }
+    }
+
+    /// The set documents, ascending. Iterating set bits word by word is what
+    /// makes this cheaper than sorting: each word yields its bits in order
+    /// already.
+    fn into_sorted_vec(self) -> Vec<i32> {
+        let mut out = Vec::new();
+        for (w, &word) in self.words.iter().enumerate() {
+            let mut bits = word;
+            while bits != 0 {
+                let bit = bits.trailing_zeros() as usize;
+                out.push(((w << 6) | bit) as i32);
+                bits &= bits - 1;
+            }
+        }
+        out
+    }
+}
+
 /// [`Clause::Prefix`]'s matched doc-ID list: same union-across-matching-terms
 /// mechanism as [`wildcard_doc_ids`], built on
 /// [`lucene_codecs::wildcard::WildcardPattern::prefix`] (a literal-bytes-only
@@ -384,21 +437,18 @@ fn prefix_doc_ids(
         .intersect(&pattern)
         .map(|(term, _stats)| term.to_vec())
         .collect();
-    let mut doc_ids: Vec<i32> = Vec::new();
+    let mut acc = DocIdBitSet::default();
     for term in &matching_terms {
         let Some(postings) = field_terms.postings(term, doc_in)? else {
             continue;
         };
-        doc_ids.extend(
-            postings
-                .docs
-                .iter()
-                .copied()
-                .filter(|&doc_id| live_docs.is_none_or(|bits| bits.get(doc_id as usize))),
-        );
+        for &doc_id in &postings.docs {
+            if live_docs.is_none_or(|bits| bits.get(doc_id as usize)) {
+                acc.set(doc_id);
+            }
+        }
     }
-    doc_ids.sort_unstable();
-    doc_ids.dedup();
+    let doc_ids = acc.into_sorted_vec();
     Ok(doc_ids)
 }
 
@@ -426,21 +476,18 @@ fn wildcard_doc_ids(
         .intersect(&pattern)
         .map(|(term, _stats)| term.to_vec())
         .collect();
-    let mut doc_ids: Vec<i32> = Vec::new();
+    let mut acc = DocIdBitSet::default();
     for term in &matching_terms {
         let Some(postings) = field_terms.postings(term, doc_in)? else {
             continue;
         };
-        doc_ids.extend(
-            postings
-                .docs
-                .iter()
-                .copied()
-                .filter(|&doc_id| live_docs.is_none_or(|bits| bits.get(doc_id as usize))),
-        );
+        for &doc_id in &postings.docs {
+            if live_docs.is_none_or(|bits| bits.get(doc_id as usize)) {
+                acc.set(doc_id);
+            }
+        }
     }
-    doc_ids.sort_unstable();
-    doc_ids.dedup();
+    let doc_ids = acc.into_sorted_vec();
     Ok(doc_ids)
 }
 
@@ -485,21 +532,18 @@ fn fuzzy_doc_ids(
         .take(query.max_expansions)
         .map(|(term, _stats)| term.to_vec())
         .collect();
-    let mut doc_ids: Vec<i32> = Vec::new();
+    let mut acc = DocIdBitSet::default();
     for term in &matching_terms {
         let Some(postings) = field_terms.postings(term, doc_in)? else {
             continue;
         };
-        doc_ids.extend(
-            postings
-                .docs
-                .iter()
-                .copied()
-                .filter(|&doc_id| live_docs.is_none_or(|bits| bits.get(doc_id as usize))),
-        );
+        for &doc_id in &postings.docs {
+            if live_docs.is_none_or(|bits| bits.get(doc_id as usize)) {
+                acc.set(doc_id);
+            }
+        }
     }
-    doc_ids.sort_unstable();
-    doc_ids.dedup();
+    let doc_ids = acc.into_sorted_vec();
     Ok(doc_ids)
 }
 
@@ -529,21 +573,18 @@ fn regexp_doc_ids(
         .regexp_intersect(&pattern)
         .map(|(term, _stats)| term.to_vec())
         .collect();
-    let mut doc_ids: Vec<i32> = Vec::new();
+    let mut acc = DocIdBitSet::default();
     for term in &matching_terms {
         let Some(postings) = field_terms.postings(term, doc_in)? else {
             continue;
         };
-        doc_ids.extend(
-            postings
-                .docs
-                .iter()
-                .copied()
-                .filter(|&doc_id| live_docs.is_none_or(|bits| bits.get(doc_id as usize))),
-        );
+        for &doc_id in &postings.docs {
+            if live_docs.is_none_or(|bits| bits.get(doc_id as usize)) {
+                acc.set(doc_id);
+            }
+        }
     }
-    doc_ids.sort_unstable();
-    doc_ids.dedup();
+    let doc_ids = acc.into_sorted_vec();
     Ok(doc_ids)
 }
 
@@ -567,21 +608,18 @@ fn term_in_set_doc_ids(
     let Some(field_terms) = fields.field(&query.field) else {
         return Ok(Vec::new());
     };
-    let mut doc_ids: Vec<i32> = Vec::new();
+    let mut acc = DocIdBitSet::default();
     for term in &query.terms {
         let Some(postings) = field_terms.postings(term, doc_in)? else {
             continue;
         };
-        doc_ids.extend(
-            postings
-                .docs
-                .iter()
-                .copied()
-                .filter(|&doc_id| live_docs.is_none_or(|bits| bits.get(doc_id as usize))),
-        );
+        for &doc_id in &postings.docs {
+            if live_docs.is_none_or(|bits| bits.get(doc_id as usize)) {
+                acc.set(doc_id);
+            }
+        }
     }
-    doc_ids.sort_unstable();
-    doc_ids.dedup();
+    let doc_ids = acc.into_sorted_vec();
     Ok(doc_ids)
 }
 
@@ -2468,7 +2506,15 @@ pub fn search_boolean_query_scored_with_stats<C: ScoringCollector>(
         && query.should.is_empty()
         && query.must_not.is_empty()
         && query.minimum_should_match == 0
-        && matches!(query.must[0], Clause::Term(_) | Clause::Phrase(_))
+        && matches!(
+            query.must[0],
+            Clause::Term(_)
+                | Clause::Phrase(_)
+                | Clause::Prefix(_)
+                | Clause::Wildcard(_)
+                | Clause::Fuzzy(_)
+                | Clause::Regexp(_)
+        )
     {
         // Straight to the collector, not through `clause_scores`. That function
         // returns a `HashMap<i32, f32>` -- one hash insert per matching
@@ -2509,7 +2555,36 @@ pub fn search_boolean_query_scored_with_stats<C: ScoringCollector>(
                     collector,
                 );
             }
-            // Unreachable: the guard above admits only these two.
+            // The wildcard family scores a flat 1.0 per matching document --
+            // see `PrefixQuery`'s doc comment -- so its "score map" was a
+            // `HashMap<i32, f32>` whose every value was the same constant, then
+            // a key collection, then a sort, then a lookup per document to read
+            // that constant back. On `prefix body:t12` over this corpus that
+            // machinery was 43% of the query: hash insert 11.8%, hashing 8.7%,
+            // rehash 4.3%, and the sort 17.7%, against 3.4% for finding the
+            // matching documents in the first place.
+            //
+            // These were excluded from this fast path when it was written, on
+            // the grounds that the wildcard family "expands to terms
+            // elsewhere". That is true and irrelevant: `resolve_clause_docs`
+            // returns exactly the matched set in ascending document order,
+            // which is precisely what the collector wants.
+            other @ (Clause::Prefix(_)
+            | Clause::Wildcard(_)
+            | Clause::Fuzzy(_)
+            | Clause::Regexp(_)) => {
+                let matched =
+                    resolve_clause_docs(fields, doc_in, pos_in, pay_in, live_docs, points, other)?;
+                debug_assert!(
+                    matched.windows(2).all(|w| w[0] < w[1]),
+                    "resolve_clause_docs must yield ascending, deduplicated doc ids"
+                );
+                for doc_id in matched {
+                    collector.collect(doc_id, 1.0);
+                }
+                return Ok(());
+            }
+            // Unreachable: the guard above admits only the arms handled here.
             _ => unreachable!("guarded by the matches! above"),
         }
     }
