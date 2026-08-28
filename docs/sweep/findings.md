@@ -1557,3 +1557,50 @@ has always said so; it now has a number.
 
 And still never compared at all: points ranges, doc-values sorting, facets,
 highlighting, stored-field retrieval, and the whole write path.
+---
+
+## Doc-values sorting and stored fields: one clean, one unmeasurable
+
+### Doc-values sorting — swept, no severe divergence
+
+`NumericDocValuesField.newSlowRangeQuery` on `num` with a `Sort` by that field,
+against `search_numeric_range_sorted_by_field_multi_segment`. Both engines
+scan every document (the query is "slow" by name in Lucene), so this compares
+per-document doc-values reads and the sort heap.
+
+| query | this port | Lucene | ratio |
+|---|---|---|---|
+| `dv_sort num 0..1,000,000` | 22.7 qps | 40.4 | 0.56x |
+| `dv_sort num 0..100,000,000` | 22.3 qps | 41.0 | 0.54x |
+
+Nothing pathological -- 1.8x, in line with the boolean queries and nowhere near
+the 43x-2845x the wildcard family turned out to be. **A negative result, and the
+first surface swept in this hunt that did not need fixing.** The
+`NumericReader` block cache and the sparse `DisiCursor` added earlier in this
+milestone are both on this path.
+
+### Stored-field retrieval — cannot be measured on this corpus
+
+`StoredFields.document(docId)` is done once per returned hit by every real
+search, and this project had never compared it. The harness is written on both
+sides (`scripts/bench-micro.sh --bench stored_fields`), and it cannot run:
+
+**`GenCorpus` stores nothing.** Every field is `Store.NO` or
+`TextField.TYPE_NOT_STORED`, so the 5M-document corpus has a **66 KB `.fdt`** --
+headers and nothing else. Both harnesses now detect this and say so rather than
+reporting a meaningless number.
+
+That is a finding about the benchmark, not the port: *a search benchmark that
+never fetches a document is not measuring a realistic workload.* Every query in
+`queries.tsv` returns doc IDs that a real caller would immediately turn into
+documents, and that step has never been timed on either side.
+
+Fixing it means adding a stored field to `benchmarks/corpus/src/GenCorpus.java`
+and regenerating -- which changes every recorded number in this milestone, so it
+belongs at the start of the next one rather than the end of this.
+
+### Surfaces still never compared
+
+Points ranges (`DirectoryReader` does not open `.kdm`/`.kdi`/`.kdd` at all, so
+this needs reader plumbing before it can be measured), facets, highlighting,
+term vectors, and the entire write path.

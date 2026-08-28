@@ -343,6 +343,13 @@ impl SegmentReader {
     /// The segment's `.fnm`-derived field metadata (field name/number
     /// mapping, doc-values type, etc.) -- callers use this to resolve a field
     /// name to the number [`Self::doc_values_meta`]'s entries are keyed by.
+    /// This segment's 16-byte id, needed by any codec reader opened directly
+    /// against its files (stored fields, term vectors) rather than through this
+    /// reader.
+    pub fn segment_id(&self) -> [u8; ID_LENGTH] {
+        self.segment_id
+    }
+
     pub fn field_infos(&self) -> &FieldInfos {
         &self.field_infos
     }

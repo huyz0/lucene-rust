@@ -55,6 +55,10 @@ case "$BENCH" in
   direct_reader)
     MAIN=DirectReaderMicro
     SRC=benchmarks/micro/java/DirectReaderMicro.java ;;
+  stored_fields)
+    MAIN=StoredFieldsMicro
+    SRC=benchmarks/micro/java/StoredFieldsMicro.java
+    NEEDS_INDEX=1 ;;
   reader_open)
     MAIN=ReaderOpenMicro
     SRC=benchmarks/micro/java/ReaderOpenMicro.java

@@ -84,7 +84,13 @@ public final class BenchRunner {
                 Query query = build(q);
 
                 long w = System.nanoTime();
-                do { searcher.search(query, TOP_N); }
+                do {
+                    if (q[1].equals("dv_sort")) {
+                        searcher.search(query, TOP_N, new Sort(new SortField(q[2], SortField.Type.LONG)));
+                    } else {
+                        searcher.search(query, TOP_N);
+                    }
+                }
                 while ((System.nanoTime() - w) / 1_000_000 < warmupMs);
 
                 List<Long> sampleList = new ArrayList<>();
@@ -93,7 +99,12 @@ public final class BenchRunner {
                 long t0 = System.nanoTime();
                 do {
                     long s = System.nanoTime();
-                    last = searcher.search(query, TOP_N);
+                    last = q[1].equals("dv_sort")
+                            ? searcher.search(
+                                    query,
+                                    TOP_N,
+                                    new Sort(new SortField(q[2], SortField.Type.LONG)))
+                            : searcher.search(query, TOP_N);
                     sampleList.add((System.nanoTime() - s) / 1000);
                 } while ((System.nanoTime() - t0) / 1_000_000 < measureMs || sampleList.size() < 5);
                 // One extra, untimed, instrumented run: the counting wrapper is
@@ -153,6 +164,11 @@ public final class BenchRunner {
                 return b.build();
             }
             // Query kinds the M1.6 sweep never measured.
+            case "dv_sort":
+                // Same shape as the Rust side: a numeric doc-values range,
+                // ranked by that field ascending.
+                return org.apache.lucene.document.NumericDocValuesField.newSlowRangeQuery(
+                        field, Long.parseLong(f[3]), Long.parseLong(f[4]));
             case "fuzzy":
                 // maxEdits 2, prefixLength 0, transpositions on -- the Rust
                 // side's settings, and Lucene's own defaults except maxEdits.
