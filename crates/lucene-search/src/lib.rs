@@ -1310,46 +1310,81 @@ pub fn search_term_query_scored_maxscore_with_stats(
                 if global_bound <= threshold {
                     break;
                 }
-                let impacts = cursor.level0_impacts();
-                if !impacts.is_empty() {
-                    // When `norms` is `None`, every doc is actually scored below
-                    // with `field_length == UNNORMED_FIELD_LENGTH ==
-                    // avg_field_length` (the length-norm term collapses to
-                    // 1.0), NOT with whatever real per-doc norm byte this
-                    // block's impacts happen to carry on the wire. Feeding
-                    // `max_score_for_impacts` the real wire norms here would
-                    // compute a bound for a *different* scoring formula than the
-                    // one actually used below -- an unsound mix that can
-                    // underestimate the bound and skip a doc that should have
-                    // been collected (see `similarity::decode_norm`: any real
-                    // norm byte decoding to a field length > 1.0 inflates the
-                    // bound's denominator, making it too low relative to the
-                    // UNNORMED_FIELD_LENGTH score actually computed downstream).
-                    let bound = bound_for(impacts);
-                    if bound <= threshold {
-                        #[cfg(any(test, feature = "test-support"))]
-                        test_only_maxscore_block_skip_counter::record_skip();
 
-                        // Skip at the highest level whose bound is still under the
-                        // threshold, not one block at a time. A level-1 span covers
-                        // 32 level-0 blocks, so when its merged impacts also fail
-                        // to beat the threshold the whole span goes at once. This
-                        // mirrors MaxScoreCache.getSkipLevel/getSkipUpTo, which
-                        // walk levels for exactly this reason: skipping per block
-                        // costs a header read and a bound evaluation per block,
-                        // and on a high-frequency term that is the dominant cost.
+                // `ImpactsDISI.advanceTarget`: walk forward over blocks on
+                // their *impacts alone*, skipping every one whose bound cannot
+                // beat the threshold, and stop at the first that can. Nothing
+                // here decodes a block body.
+                //
+                // This loop used to be a single test followed by
+                // `cursor.advance(skip_to)`, which is correct but decodes the
+                // block it lands on -- so the next iteration's "is this block
+                // competitive?" question was answered *after* paying the
+                // `ForUtil` unpack it exists to avoid. Counted on the M1
+                // corpus, `body:t0` unpacked 1,423,616 documents to score
+                // 82,564: 5.8% of the decode work was used, and the boolean
+                // queries were far worse at 1.3%.
+                //
+                // When `norms` is `None`, every doc is actually scored below
+                // with `field_length == UNNORMED_FIELD_LENGTH ==
+                // avg_field_length` (the length-norm term collapses to 1.0),
+                // NOT with whatever real per-doc norm byte this block's impacts
+                // happen to carry on the wire. Feeding `max_score_for_impacts`
+                // the real wire norms here would compute a bound for a
+                // *different* scoring formula than the one actually used below
+                // -- an unsound mix that can underestimate the bound and skip a
+                // doc that should have been collected. `bound_for` carries that
+                // rule; see its definition.
+                let mut target = doc_id;
+                loop {
+                    cursor
+                        .advance_shallow(target)
+                        .map_err(blocktree::Error::from)?;
+                    // Empty impacts mean no bound is available -- the tail
+                    // block, a field without freqs, or exhaustion. All three
+                    // are "cannot skip", so stop and let `advance` decide.
+                    let competitive = {
+                        let impacts = cursor.level0_impacts();
+                        impacts.is_empty() || bound_for(impacts) > threshold
+                    };
+                    if competitive {
+                        break;
+                    }
+                    #[cfg(any(test, feature = "test-support"))]
+                    test_only_maxscore_block_skip_counter::record_skip();
+
+                    // Skip at the highest level whose bound is still under the
+                    // threshold, not one block at a time. A level-1 span covers
+                    // 32 level-0 blocks, so when its merged impacts also fail
+                    // to beat the threshold the whole span goes at once --
+                    // `MaxScoreCache.getSkipLevel`/`getSkipUpTo`.
+                    let up_to = cursor.level0_last_doc_id();
+                    let l1_last = cursor.level1_last_doc_id();
+                    let span_skippable = {
                         let l1 = cursor.level1_impacts();
-                        let l1_last = cursor.level1_last_doc_id();
-                        let skip_to = if !l1.is_empty()
+                        !l1.is_empty()
                             && l1_last != lucene_codecs::postings::NO_MORE_DOCS
                             && bound_for(l1) <= threshold
-                        {
-                            l1_last.saturating_add(1)
-                        } else {
-                            cursor.current_block_last_doc_id().saturating_add(1)
-                        };
-                        doc_id = cursor.advance(skip_to).map_err(blocktree::Error::from)?;
-                        continue;
+                    };
+                    let next = if span_skippable {
+                        l1_last.saturating_add(1)
+                    } else {
+                        up_to.saturating_add(1)
+                    };
+                    // Guard against a non-advancing skip -- `up_to` is
+                    // `NO_MORE_DOCS` in states where the extent is unknown, and
+                    // saturating there would spin.
+                    if next <= target {
+                        break;
+                    }
+                    target = next;
+                }
+
+                if target != doc_id {
+                    // Exactly one block gets decoded: the one that survived.
+                    doc_id = cursor.advance(target).map_err(blocktree::Error::from)?;
+                    if doc_id == lucene_codecs::postings::NO_MORE_DOCS {
+                        break;
                     }
                 }
             }
@@ -1945,13 +1980,59 @@ fn try_disjunction_lazy<C: ScoringCollector>(
                     }
                 };
                 if sum_max.is_finite() && up_to >= candidate && sum_max <= threshold {
-                    // A genuine block-level skip, recorded so the maxscore
-                    // invariant test measures this path too now that it routes
-                    // here.
-                    #[cfg(any(test, feature = "test-support"))]
-                    test_only_maxscore_block_skip_counter::record_skip();
-                    // No document in the span can compete: advance every cursor past it.
-                    let next = up_to.saturating_add(1);
+                    // No document in this span can compete. Rather than
+                    // advancing the cursors -- which would decode the block each
+                    // one lands on, only for the next iteration to find that
+                    // span uncompetitive too -- walk spans forward on impacts
+                    // alone, and materialize once at the end.
+                    //
+                    // This is where the wasted decode was worst. Counted on the
+                    // M1 corpus before this loop existed, `or t0 t1` unpacked
+                    // 9,914,368 documents to score 138,650: 1.4% of the decode
+                    // work was used. `advance` skips *intervening* blocks
+                    // cheaply, but it always decodes the one it lands on, so a
+                    // skip-decode-skip-decode walk paid for every span it
+                    // rejected.
+                    let mut next = up_to.saturating_add(1);
+                    loop {
+                        #[cfg(any(test, feature = "test-support"))]
+                        test_only_maxscore_block_skip_counter::record_skip();
+
+                        for leg in legs.iter_mut() {
+                            if leg.doc != lucene_codecs::postings::NO_MORE_DOCS {
+                                leg.cursor
+                                    .advance_shallow(next)
+                                    .map_err(blocktree::Error::Postings)?;
+                            }
+                        }
+                        let mut span_end = i32::MAX;
+                        let mut acc = 0.0f32;
+                        let mut bounded = true;
+                        for leg in &legs {
+                            if leg.doc == lucene_codecs::postings::NO_MORE_DOCS {
+                                continue;
+                            }
+                            span_end = span_end.min(leg.cursor.level0_last_doc_id());
+                            let impacts = leg.cursor.level0_impacts();
+                            if impacts.is_empty() {
+                                bounded = false;
+                                break;
+                            }
+                            acc += leg.bound(impacts);
+                        }
+                        // Unbounded (a tail block, or exhaustion), competitive,
+                        // or not advancing: stop walking and let the cursors
+                        // materialize normally.
+                        if !bounded
+                            || acc > threshold
+                            || span_end == i32::MAX
+                            || span_end.saturating_add(1) <= next
+                        {
+                            break;
+                        }
+                        next = span_end.saturating_add(1);
+                    }
+                    // Exactly one block per leg gets decoded: the surviving one.
                     for leg in legs.iter_mut() {
                         if leg.doc != lucene_codecs::postings::NO_MORE_DOCS && leg.doc < next {
                             leg.doc = leg
@@ -2233,7 +2314,43 @@ fn try_conjunction_lazy<C: ScoringCollector>(
             };
             let have_bounds = sum_max.is_finite();
             if have_bounds && up_to >= candidate && sum_max <= threshold {
-                let next = up_to.saturating_add(1);
+                // Walk spans forward on impacts alone before materializing --
+                // same reason as the disjunction above. `advance` decodes the
+                // block it lands on, so advancing span by span paid an unpack
+                // for every span it then rejected.
+                //
+                // Every clause must match, so the lead cursor cannot move past
+                // a span until every clause has been shallow-positioned there:
+                // the summed bound is only meaningful when all of them describe
+                // the same span.
+                let mut next = up_to.saturating_add(1);
+                loop {
+                    for leg in legs.iter_mut() {
+                        leg.cursor
+                            .advance_shallow(next)
+                            .map_err(blocktree::Error::Postings)?;
+                    }
+                    let mut span_end = i32::MAX;
+                    let mut acc = 0.0f32;
+                    let mut bounded = true;
+                    for leg in &legs {
+                        span_end = span_end.min(leg.cursor.level0_last_doc_id());
+                        let impacts = leg.cursor.level0_impacts();
+                        if impacts.is_empty() {
+                            bounded = false;
+                            break;
+                        }
+                        acc += leg.bound(impacts);
+                    }
+                    if !bounded
+                        || acc > threshold
+                        || span_end == i32::MAX
+                        || span_end.saturating_add(1) <= next
+                    {
+                        break;
+                    }
+                    next = span_end.saturating_add(1);
+                }
                 candidate = legs[0]
                     .cursor
                     .advance(next)
