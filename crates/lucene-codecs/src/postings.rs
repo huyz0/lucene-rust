@@ -1331,6 +1331,37 @@ impl BlockScratch {
     }
 }
 
+/// Test-only instrumentation counting full block *body* decodes -- the
+/// `ForUtil`/`PForUtil` bit-unpack of 256 documents.
+///
+/// Exists to separate two things a profile conflates: blocks whose *header*
+/// was read to make a skip decision, and blocks whose body was actually
+/// unpacked. Lucene draws that line explicitly -- `advanceShallow` moves the
+/// impacts forward without touching the body, and only `advance` decodes -- so
+/// a port that decodes every block it merely considers is doing work Lucene
+/// never does, and this counter is how that shows up as a number rather than
+/// as a suspicion.
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_only_block_decode_counter {
+    use std::cell::Cell;
+
+    thread_local! {
+        static DECODES: Cell<u64> = const { Cell::new(0) };
+    }
+
+    pub fn record_decode() {
+        DECODES.with(|c| c.set(c.get() + 1));
+    }
+
+    pub fn reset() {
+        DECODES.with(|c| c.set(0));
+    }
+
+    pub fn count() -> u64 {
+        DECODES.with(|c| c.get())
+    }
+}
+
 /// Decodes a full block's body (the `bitsPerValue` token onward) — `r` must
 /// already be positioned at [`FullBlockHeader::body_start`]. Shared by
 /// [`DocInput::read_postings`] (eager path) and [`LazyDocsCursor`] (lazy path) so
@@ -1344,6 +1375,8 @@ fn decode_full_block_body(
     docs: &mut [i32; BLOCK_SIZE as usize],
     freqs: &mut [i32; BLOCK_SIZE as usize],
 ) -> Result<()> {
+    #[cfg(any(test, feature = "test-support"))]
+    test_only_block_decode_counter::record_decode();
     let bits_per_value_byte = r.read_byte()? as i8;
     if bits_per_value_byte > 0 {
         let doc_deltas = &mut scratch.words;

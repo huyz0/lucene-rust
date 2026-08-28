@@ -184,6 +184,11 @@ impl ScoringCollector for TopDocsCollector {
     }
 
     fn collect(&mut self, doc_id: i32, score: f32) {
+        // Counted before the fast reject, because the question this answers is
+        // "how many documents did the scorer produce", not "how many did the
+        // queue keep". See `crate::test_only_scored_docs_counter`.
+        #[cfg(any(test, feature = "test-support"))]
+        crate::test_only_scored_docs_counter::record_scored();
         if self.top_n == 0 {
             return;
         }

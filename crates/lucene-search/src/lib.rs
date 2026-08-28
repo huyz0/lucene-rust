@@ -1411,6 +1411,42 @@ pub fn search_term_query_scored_maxscore_with_stats(
 /// enables this feature (only its `[dev-dependencies]` edge does, per Cargo's
 /// resolver-2 feature unification, which scopes dev-dependency features to
 /// test/bench targets only), so this stays out of any production binary.
+/// Test-only instrumentation counting documents that reach a
+/// [`collector::TopDocsCollector`] -- i.e. documents a scorer actually
+/// produced and scored, as opposed to documents it skipped past.
+///
+/// This exists to answer a question timing cannot: when a query is slower than
+/// Lucene's while this port's per-document costs are *lower* than Lucene's,
+/// the two engines must be visiting different numbers of documents. Counting
+/// is immune to the measurement noise that makes small timing differences
+/// unreadable, and it localizes a divergence to "we do more work" rather than
+/// "we are slower", which are very different defects.
+///
+/// The Java counterpart is `BenchRunner`'s counting `LeafCollector` wrapper,
+/// which counts the same event (`collect(doc)` per leaf).
+///
+/// Same gating and rationale as [`test_only_maxscore_block_skip_counter`].
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_only_scored_docs_counter {
+    use std::cell::Cell;
+
+    thread_local! {
+        static SCORED: Cell<u64> = const { Cell::new(0) };
+    }
+
+    pub fn record_scored() {
+        SCORED.with(|c| c.set(c.get() + 1));
+    }
+
+    pub fn reset() {
+        SCORED.with(|c| c.set(0));
+    }
+
+    pub fn count() -> u64 {
+        SCORED.with(|c| c.get())
+    }
+}
+
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_only_maxscore_block_skip_counter {
     use std::cell::Cell;

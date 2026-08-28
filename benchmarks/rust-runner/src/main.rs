@@ -81,7 +81,7 @@ fn main() {
         eprintln!("  GLOBAL: docCount={tot_dc} docFreq={tot_df} idf={gidf:.6}  <- what Lucene uses");
         return;
     }
-    println!("id\thits\ttop1doc\ttop1score\ttopset\tqps\tp50_us\tp95_us\tp99_us");
+    println!("id\thits\ttop1doc\ttop1score\ttopset\tqps\tp50_us\tp95_us\tp99_us\tscored\tblocks");
     for q in &queries {
         let run = || -> Vec<lucene_search::collector::ScoreDoc> {
             match q.kind.as_str() {
@@ -197,6 +197,17 @@ fn main() {
         let wall = t0.elapsed().as_secs_f64();
         let iters = samples.len();
 
+        // One extra, untimed run with the counter armed. Kept out of the timed
+        // loop so the instrumentation cannot bias the timings, and matching the
+        // Java runner, which does the same. This counts documents the scorer
+        // produced -- the number that says whether a slower query is doing more
+        // work or doing the same work slower.
+        lucene_search::test_only_scored_docs_counter::reset();
+        lucene_codecs::postings::test_only_block_decode_counter::reset();
+        std::hint::black_box(run());
+        let scored = lucene_search::test_only_scored_docs_counter::count();
+        let decoded = lucene_codecs::postings::test_only_block_decode_counter::count();
+
         samples.sort_unstable();
         let pct = |p: f64| samples[((samples.len() - 1) as f64 * p) as usize];
         // Compare the top-k as a SET, not an ordered list: equal-scoring docs
@@ -210,7 +221,7 @@ fn main() {
             .map(|d| (d.doc_id, d.score))
             .unwrap_or((-1, 0.0));
         println!(
-            "{}\t{}\t{}\t{:.6}\t{}\t{:.1}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{:.6}\t{}\t{:.1}\t{}\t{}\t{}\t{}\t{}",
             q.id,
             last.len(),
             top1doc,
@@ -219,7 +230,9 @@ fn main() {
             iters as f64 / wall,
             pct(0.50),
             pct(0.95),
-            pct(0.99)
+            pct(0.99),
+            scored,
+            decoded
         );
     }
 }

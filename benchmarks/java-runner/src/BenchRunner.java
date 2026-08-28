@@ -26,6 +26,41 @@ public final class BenchRunner {
 
     private static final int TOP_N = 50;
 
+    /**
+     * Documents the scorer actually produced for the query being measured.
+     *
+     * Answers a question timing cannot: when this port's per-document costs are
+     * *lower* than Lucene's but its queries are slower, the two engines must be
+     * visiting different numbers of documents. A count is immune to measurement
+     * noise, and it separates "we do more work" from "we are slower" -- very
+     * different defects with very different fixes.
+     */
+    private static long scoredDocs;
+
+    /**
+     * Counts {@code collect(doc)} per leaf while changing nothing else.
+     *
+     * Extends {@link FilterLeafCollector} rather than implementing
+     * {@link LeafCollector} directly, specifically so {@code setScorer} is
+     * forwarded: that is what carries {@code setMinCompetitiveScore} down to
+     * the scorer, and a wrapper that dropped it would silently disable block-max
+     * pruning and count a completely different (much larger) number.
+     */
+    private static final class CountingCollector extends FilterCollector {
+        CountingCollector(Collector in) { super(in); }
+
+        @Override
+        public LeafCollector getLeafCollector(LeafReaderContext context) throws java.io.IOException {
+            return new FilterLeafCollector(super.getLeafCollector(context)) {
+                @Override
+                public void collect(int doc) throws java.io.IOException {
+                    scoredDocs++;
+                    in.collect(doc);
+                }
+            };
+        }
+    }
+
     public static void main(String[] args) throws Exception {
         if (args.length < 4) {
             System.err.println("usage: BenchRunner <index-dir> <queries.tsv> <warmup_ms> <measure_ms>");
@@ -44,7 +79,7 @@ public final class BenchRunner {
             IndexSearcher searcher = new IndexSearcher(reader);   // single-threaded, no executor
             searcher.setSimilarity(new org.apache.lucene.search.similarities.BM25Similarity());
 
-            System.out.println("id\thits\ttop1doc\ttop1score\ttopset\tqps\tp50_us\tp95_us\tp99_us");
+            System.out.println("id\thits\ttop1doc\ttop1score\ttopset\tqps\tp50_us\tp95_us\tp99_us\tscored");
             for (String[] q : queries) {
                 Query query = build(q);
 
@@ -54,12 +89,30 @@ public final class BenchRunner {
 
                 List<Long> sampleList = new ArrayList<>();
                 TopDocs last = null;
+                long scoredPerIter = 0;
                 long t0 = System.nanoTime();
                 do {
                     long s = System.nanoTime();
                     last = searcher.search(query, TOP_N);
                     sampleList.add((System.nanoTime() - s) / 1000);
                 } while ((System.nanoTime() - t0) / 1_000_000 < measureMs || sampleList.size() < 5);
+                // One extra, untimed, instrumented run: the counting wrapper is
+                // kept out of the timed loop so it cannot bias the timings.
+                {
+                    // 1000 is IndexSearcher.TOTAL_HITS_THRESHOLD, what
+                    // search(query, n) uses. Integer.MAX_VALUE here would ask
+                    // for exact hit counts, which switches OFF block-max
+                    // pruning -- the counted run would then execute a
+                    // different query from the timed one, and Lucene's count
+                    // came out at maxDoc for every term query, which is what
+                    // exposed it.
+                    TopScoreDocCollectorManager m =
+                            new TopScoreDocCollectorManager(TOP_N, 1000);
+                    TopScoreDocCollector c = m.newCollector();
+                    scoredDocs = 0;
+                    searcher.search(query, new CountingCollector(c));
+                    scoredPerIter = scoredDocs;
+                }
                 double wallSec = (System.nanoTime() - t0) / 1e9;
                 int iters = sampleList.size();
 
@@ -74,12 +127,13 @@ public final class BenchRunner {
                 for (int id : ids) top.add(Integer.toString(id));
                 int top1doc = last.scoreDocs.length > 0 ? last.scoreDocs[0].doc : -1;
                 float top1score = last.scoreDocs.length > 0 ? last.scoreDocs[0].score : 0f;
-                System.out.printf("%s\t%d\t%d\t%.6f\t%s\t%.1f\t%d\t%d\t%d%n",
+                System.out.printf("%s\t%d\t%d\t%.6f\t%s\t%.1f\t%d\t%d\t%d\t%d%n",
                         q[0], last.scoreDocs.length, top1doc, top1score, top.toString(),
                         iters / wallSec,
                         samples[(int) ((samples.length - 1) * 0.50)],
                         samples[(int) ((samples.length - 1) * 0.95)],
-                        samples[(int) ((samples.length - 1) * 0.99)]);
+                        samples[(int) ((samples.length - 1) * 0.99)],
+                        scoredPerIter);
             }
         }
     }
