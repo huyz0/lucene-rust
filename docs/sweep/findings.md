@@ -1165,3 +1165,70 @@ now has a measured baseline to beat rather than an assumption.
 Ahead of it in raw size, still: block-tree navigation (reader open at 135x
 Lucene) and a lazy positions cursor (phrase queries decode every position of
 every document before any of them is known to be a candidate).
+
+---
+
+## `advance` binary-searched where Lucene scans linearly — and it explains four failed attempts
+
+Four separate attempts at better pruning all skipped real work and all measured
+*slower*: MAXSCORE on static maxima (0.61x on `or t0 t1 t2 t3`), the same on
+per-span block maxima (0.59x), that plus WAND's `score + tail_sum` early-out (no
+change at all), and finally real WAND document-level pivoting (0.66x). Between
+them they cut documents scored by up to **10.8x** on `or tz t2s` and still lost
+throughput.
+
+Four results in the same shape is not four mistakes, it is one cause: **a skip
+cost more than the scoring it avoided.**
+
+`LazyDocsCursor::advance` located its target with `partition_point` -- a binary
+search over up to 256 block entries, eight unpredictable branches, on the order
+of 120 cycles once mispredictions are counted. Scoring a document costs about
+ten. Lucene's `VectorUtil.findNextGEQ`, which is what
+`Lucene104PostingsReader.advance` calls, is a **linear scan**:
+
+```java
+for (int i = from; i < to; ++i) {
+  if (buffer[i] >= target) return i;
+}
+return to;
+```
+
+Its branch is taken every iteration until the one that ends it, so it predicts
+perfectly and vectorizes, and the distances are short in practice.
+
+This is the same defect as the `next_doc` binary search fixed earlier in this
+milestone, in the function next door. Fixing `next_doc` and leaving `advance` is
+what made the pruning attempts look like algorithmic failures.
+
+### Fixed
+
+| query | before | after | |
+|---|---|---|---|
+| `and tz t2s` | 97.6 qps | 126.5 qps | **1.30x** |
+| `and title t0 t1` | 25.5 qps | 32.0 qps | **1.25x** |
+| `and t0 t1 t2` | 26.8 qps | 31.2 qps | 1.16x |
+| `and t0 t1` | 154.1 qps | 169.3 qps | 1.10x |
+| `and t0 tz` | 296.9 qps | 267.9 qps | 0.90x |
+
+Net positive, and it lands on the conjunctions -- which advance constantly by
+construction.
+
+### WAND, re-measured on top of it
+
+With skips now cheap, WAND was tried again. It improves where it always did and
+still loses where it always did:
+
+| query | linear scan | + WAND |
+|---|---|---|
+| `or tz t2s` | 73.3 qps | 84.3 qps (1.15x) |
+| `or t0 t1` | 180.1 qps | 157.0 qps (0.87x) |
+| `or t0 t1 t2 t3` | 11.5 qps | 8.1 qps (0.70x) |
+
+So the cheap-skip hypothesis was necessary but not sufficient, and WAND stays
+out. **Fifth measured revert.** What is now established, across four
+independent implementations, is that the remaining 58x-2536x scoring gap is not
+reachable by any clause-partition or pivot scheme layered on this iterator
+design. Something about how Lucene reaches 1,625 documents on
+`or t0 t1 t2 t3` is still not understood, and the next attempt should start by
+finding that out -- instrumenting Lucene's own skip decisions -- rather than by
+implementing another variant.
