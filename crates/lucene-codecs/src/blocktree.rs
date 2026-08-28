@@ -75,11 +75,14 @@
 //! more care to get right. The tradeoff is real: this eagerly decodes blocks
 //! a real `seekExact` for one term would never touch.
 //!
-//! **M1.6 measured that tradeoff, and it is much larger than "acceptable for
-//! this slice" suggested.** Opening a reader over the 15-segment, 5M-document
-//! benchmark corpus takes **560 ms here against Lucene's 4.2 ms -- 135x**
-//! (`scripts/bench-micro.sh --bench reader_open`). Memory is the same story and
-//! this benchmark does not even show it: one `Vec<u8>` per term per field per
+//! **M1.6 measured that tradeoff.** It is real, but smaller than the first
+//! measurement suggested, and the correction matters. Reader open was initially
+//! blamed entirely on this design: 560 ms against Lucene's 4.2 ms. Most of that
+//! turned out to be `DirectoryReader`'s `open_segment_file` copying every
+//! mmap'd postings file onto the heap -- 1.57 GB of memcpy per open, nothing to
+//! do with this module. With that fixed, opening the merged corpus costs
+//! **52.7 ms against Lucene's 0.34 ms, 155x**, and *that* residue is this
+//! design. Memory is the same story: one `Vec<u8>` per term per field per
 //! segment, live for as long as the reader is, where `SegmentTermsEnum` holds
 //! one reusable frame.
 //!

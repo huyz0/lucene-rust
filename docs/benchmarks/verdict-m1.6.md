@@ -32,7 +32,8 @@ Lucene**.
 | posting-list `nextDoc()`, median over 4 terms | 0.20x | **1.91x** |
 | `DirectReader.get`, median over 14 widths | 0.82x | **1.86x** |
 | sparse `IndexedDISI` lookup, 100k present docs | 326 us | **178 ns** |
-| **reader open**, 15-segment corpus | 0.01x | **0.01x — unfixed** |
+| reader open, merged corpus | 551.9 ms | **52.7 ms** (10.5x; still 155x Lucene) |
+| RSS after reader open | 1,690 MB | **70 MB** (24x) |
 
 Re-measured with the noise-aware harness (`--reps 3`, interleaved engines,
 measured noise floor 1.03x-1.09x), not with the single-run instrument the
@@ -115,15 +116,18 @@ side by side and then measuring the same operation on both.
 
 Named, measured, and not fixed here:
 
-0. **The whole term dictionary is materialized when a segment is opened.**
-   `DirectoryReader::open` + `open_segments` takes **560 ms** on the 15-segment
-   corpus against Lucene's **4.2 ms** — 135x. `blocktree::FieldTerms` holds a
-   `Vec<(Vec<u8>, TermStats, TermMetadata)>` of every term in the field, one
-   allocation each, where `SegmentTermsEnum` walks the `.tip` FST to a block and
-   scans it in place. No query benchmark could find this: the reader is opened
-   once, outside the timed region. It is the largest architectural divergence
-   left in the read path, and it blocks M2 and M5 independently of query speed,
-   because a search engine reopens readers on every refresh.
+0. **The term dictionary is materialized when a segment is opened.**
+   *Partly closed, and the original diagnosis was wrong.* Most of the 560 ms was
+   `DirectoryReader` copying every mmap'd postings file onto the heap -- 1.57 GB
+   of memcpy per open -- which is now fixed: 52.7 ms and 70 MB, from 551.9 ms
+   and 1,690 MB. The residue, 52.7 ms against Lucene's 0.34 ms, *is* the eager
+   materialization: `blocktree::FieldTerms` holds a
+   `Vec<(Vec<u8>, TermStats, TermMetadata)>` of every term, one allocation each,
+   where `SegmentTermsEnum` walks the `.tip` FST to a block and scans it in
+   place. A profile of what is left puts ~28% in allocation, sorting 579,255
+   heap-keyed tuples, and dropping them, and ~19% in the block decode itself.
+   Still milestone-sized, and it still blocks M2/M5 independently of query
+   speed, because a search engine reopens readers on every refresh.
 
 1. **Phrase matching materializes every position of every document.** About 50%
    of a phrase query is `malloc`/`free`/`memcpy`: `term_doc_positions` builds a
