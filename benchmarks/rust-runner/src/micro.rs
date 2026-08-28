@@ -254,6 +254,56 @@ fn bench_reader_open(warmup: Duration, measure: Duration, index: &str) {
     println!("open\t{:.3}\t{ops}", elapsed.as_nanos() as f64 / ops as f64);
 }
 
+/// Fetching stored fields for a document -- `StoredFields.document(docId)`,
+/// which every real search does once per returned hit and which this project
+/// had never compared against Lucene.
+///
+/// Reads a fixed odd stride through the segment so consecutive fetches land in
+/// different compressed blocks, which is what a top-k result set looks like.
+/// Sequential fetching would measure the block cache instead.
+fn bench_stored_fields(warmup: Duration, measure: Duration, index: &str) {
+    let dir = MmapDirectory::open(index.to_string());
+    let reader = DirectoryReader::open(&dir).expect("open index");
+    let seg = &reader.segment_readers()[0];
+    let name = &seg.segment_name;
+
+    let read = |ext: &str| -> Vec<u8> {
+        let path = format!("{index}/{name}{ext}");
+        std::fs::read(&path).unwrap_or_else(|e| panic!("read {path}: {e}"))
+    };
+    let (fdt, fdx, fdm) = (read(".fdt"), read(".fdx"), read(".fdm"));
+    let sr = lucene_codecs::stored_fields::open(&fdt, &fdx, &fdm, &seg.segment_id(), "")
+        .expect("open stored fields");
+
+    let max_doc = seg.max_doc;
+    const STRIDE: i32 = 4099;
+    // Guard the fixture: a benchmark over a reader that returns nothing would
+    // look extremely fast. `GenCorpus` currently indexes every field
+    // `Store.NO`, so the M1 corpus has a 66 KB `.fdt` for 5M documents and
+    // cannot exercise this at all -- see `docs/sweep/findings.md`.
+    if sr.document(0).expect("document 0").fields.is_empty() {
+        eprintln!(
+            "micro: this index stores no fields, so stored-field retrieval cannot be \
+             measured against it -- regenerate the corpus with a stored field first"
+        );
+        return;
+    }
+
+    let mut doc = 0i32;
+    let mut run = |budget| {
+        timed_loop(budget, || {
+            doc = (doc + STRIDE) % max_doc;
+            black_box(sr.document(doc).expect("document").fields.len());
+        })
+    };
+    run(warmup);
+    let (elapsed, ops) = run(measure);
+    println!(
+        "document\t{:.3}\t{ops}",
+        elapsed.as_nanos() as f64 / ops as f64
+    );
+}
+
 fn main() {
     let ms = |name: &str, default: u64| -> Duration {
         Duration::from_millis(
@@ -270,6 +320,12 @@ fn main() {
     match which.as_str() {
         "for_decode" => bench_for_decode(warmup, measure),
         "direct_reader" => bench_direct_reader(warmup, measure),
+        "stored_fields" => {
+            let index = std::env::args()
+                .nth(2)
+                .expect("stored_fields needs an index directory");
+            bench_stored_fields(warmup, measure, &index);
+        }
         "reader_open" => {
             let index = std::env::args()
                 .nth(2)

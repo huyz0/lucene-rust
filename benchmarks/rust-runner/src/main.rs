@@ -154,6 +154,54 @@ fn main() {
                 // linearly scans, where Lucene intersects a compiled automaton
                 // against the term dictionary -- an unquantified divergence
                 // until now.
+                // Numeric doc-values range + sort. Never compared against
+                // Lucene before M1.6's hunt outside the benchmark's original
+                // four query shapes.
+                "dv_sort" => {
+                    let min: i64 = q.args[0].parse().expect("dv_sort min");
+                    let max: i64 = q.args[1].parse().expect("dv_sort max");
+                    let dv_segments: Vec<lucene_search::multi_segment::DocValueSegment<'_>> =
+                        reader
+                            .segment_readers()
+                            .iter()
+                            .zip(segments.iter())
+                            .filter_map(|(r, s)| {
+                                let data = r.doc_values_data()?;
+                                let meta = r.doc_values_meta()?;
+                                let num = r
+                                    .field_infos()
+                                    .fields
+                                    .iter()
+                                    .find(|f| f.name == q.field)?;
+                                let entry = meta.numeric_entry(num.number)?;
+                                Some(lucene_search::multi_segment::DocValueSegment {
+                                    doc_values_data: data,
+                                    range_entry: entry,
+                                    sort_entry: entry,
+                                    live_docs: s.live_docs,
+                                    max_doc: r.max_doc,
+                                    doc_base: s.doc_base,
+                                })
+                            })
+                            .collect();
+                    let hits = lucene_search::multi_segment::search_numeric_range_sorted_by_field_multi_segment(
+                        &dv_segments,
+                        min,
+                        max,
+                        lucene_search::collector::SortDirection::Ascending,
+                        lucene_search::doc_value_query::MissingValue::Exclude,
+                        TOP_N,
+                    )
+                    .expect("dv_sort");
+                    // Reported through the same ScoreDoc shape as every other
+                    // kind; the sort value stands in for the score.
+                    hits.into_iter()
+                        .map(|h| lucene_search::collector::ScoreDoc {
+                            doc_id: h.doc_id,
+                            score: h.value as f32,
+                        })
+                        .collect()
+                }
                 "fuzzy" | "regexp" => {
                     let clause = if q.kind == "fuzzy" {
                         Clause::Fuzzy(lucene_search::query::FuzzyQuery {

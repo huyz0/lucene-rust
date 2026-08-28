@@ -32,3 +32,4 @@ q23	wildcard	body	t1*
 q24	wildcard	body	t?9
 q25	fuzzy	body	t123
 q26	regexp	body	t1[0-9]
+q27	dv_sort	num	0	100000000
