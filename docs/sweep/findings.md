@@ -1421,3 +1421,76 @@ decode; what this stops is the materialization.
 
 15x and 7x across the milestone; 1.25x and 1.17x from the streaming decode
 alone. Hit sets and top-1 scores are identical at every step.
+---
+
+# Hunting outside the benchmark: prefix and wildcard were the worst in the project
+
+The M1 query mix covers term, and, or and phrase. Nothing else had ever been
+compared against Lucene -- so "no new divergences" only ever meant "none in
+those four shapes". Adding `prefix` and `wildcard` to both runners found the
+largest gaps this project has measured.
+
+| query | before | Lucene | ratio |
+|---|---|---|---|
+| `prefix body:t1` | 0.3 qps | 12.8 | **43x** |
+| `prefix body:t12` | 3.1 qps | 564.2 | **182x** |
+| `wildcard body:t1*` | 0.3 qps | 12.8 | 43x |
+| `wildcard body:t?9` | 2.3 qps | 1286.9 | **560x** |
+
+Hit counts matched, so this was the same query answered two ways. Two defects,
+both already familiar from elsewhere in this milestone.
+
+### O21 — the score map again, in the path excluded from its fix
+
+43% of `prefix body:t12` was hash-map machinery: insert 11.8%, hashing 8.7%,
+rehash 4.3%, and a doc-id sort 17.7% -- against 3.4% for actually finding the
+matching documents.
+
+The wildcard family scores a flat 1.0 per document, so its "score map" was a
+`HashMap<i32, f32>` whose every value was the same constant, built, keyed,
+sorted, and then read back a constant at a time.
+
+The single-clause fast path added earlier in this milestone would have skipped
+all of it, and I had explicitly excluded these clause kinds from it on the
+grounds that "the wildcard family expands to terms elsewhere". True, and
+irrelevant: `resolve_clause_docs` returns exactly the matched set in ascending
+document order, which is what the collector wants. **2.7x-7.9x.**
+
+### O22 — unioning posting lists by concatenate-and-sort
+
+With the map gone, **67% of the query was `quicksort::<i32>`**.
+
+`prefix_doc_ids` and its four siblings unioned one posting list per matching
+term by extending a `Vec<i32>` with all of them and calling `sort_unstable` +
+`dedup`. That is `O(n log n)` in the *total* number of postings, which for a
+prefix matching thousands of terms is tens of millions of entries.
+
+Lucene unions through `DocIdSetBuilder`, which is a bit set. Replaced with the
+same: `DocIdBitSet`, growing on demand so no caller needs `maxDoc` up front,
+extracted ascending by iterating set bits word by word. `O(n + maxDoc/64)`, and
+bounded memory instead of one `i32` per posting.
+
+### Together
+
+| query | before | after | | vs Lucene |
+|---|---|---|---|---|
+| `prefix body:t1` | 0.3 qps | **5.6** | 18.7x | 43x -> 2.3x |
+| `prefix body:t12` | 3.1 qps | **93.8** | 30x | 182x -> 6.0x |
+| `wildcard body:t1*` | 0.3 qps | **5.7** | 19x | 43x -> 2.2x |
+| `wildcard body:t?9` | 2.3 qps | **70.6** | 31x | 560x -> 18x |
+
+`benchmarks/queries.tsv` now carries these four permanently, so the next sweep
+starts with them measured.
+
+### The lesson about "no more new things"
+
+Two rounds of this milestone ended by reporting that a final sweep found no new
+divergence. Both times that was true and both times it meant only "none in the
+four query shapes the benchmark happens to contain". The first query type looked
+at outside that set was 560x off.
+
+An absence of findings is evidence about the search, not about the code. The
+remaining unswept surfaces are named in the milestone doc: fuzzy and regexp
+(same `*_doc_ids` shape, so likely fixed by O22 but unmeasured), points ranges,
+doc-values sorting, facets, highlighting, stored-field retrieval, and the whole
+write path.

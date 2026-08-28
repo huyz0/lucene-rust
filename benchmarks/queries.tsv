@@ -22,3 +22,11 @@ q17	phrase	body	t1	t2
 q18	term	title	t0
 q19	term	keyword	t0
 q20	and	title	t0	t1
+# Query kinds the original M1 mix never covered. Added in M1.6 when sweeping
+# them for the first time turned up the worst divergences in the project:
+# prefix/wildcard were 43x-560x slower than Lucene, because the wildcard family
+# unioned its terms' postings by concatenating and sorting.
+q21	prefix	body	t1
+q22	prefix	body	t12
+q23	wildcard	body	t1*
+q24	wildcard	body	t?9

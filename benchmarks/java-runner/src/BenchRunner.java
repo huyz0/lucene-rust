@@ -152,6 +152,11 @@ public final class BenchRunner {
                 for (int i = 3; i < f.length; i++) b.add(new TermQuery(new Term(field, f[i])), occur);
                 return b.build();
             }
+            // Query kinds the M1.6 sweep never measured.
+            case "prefix":
+                return new org.apache.lucene.search.PrefixQuery(new Term(field, f[3]));
+            case "wildcard":
+                return new org.apache.lucene.search.WildcardQuery(new Term(field, f[3]));
             case "phrase": {
                 PhraseQuery.Builder b = new PhraseQuery.Builder();
                 for (int i = 3; i < f.length; i++) b.add(new Term(field, f[i]));
