@@ -21,6 +21,10 @@ name = "ffi-overhead"
 path = "src/ffi_overhead.rs"
 
 [[bin]]
+name = "index-bench"
+path = "src/index_bench.rs"
+
+[[bin]]
 name = "micro"
 path = "src/micro.rs"
 

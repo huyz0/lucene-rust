@@ -453,54 +453,137 @@ pub fn write_best_speed(
     segment_id: &[u8; ID_LENGTH],
     segment_suffix: &str,
 ) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-    assert!(
-        docs.len() < 128,
-        "write_best_speed's bulk per-doc arrays only implement the scalar-tail \
-         encoding (see write_bulk_ints); the 128-value transposed-block path \
-         isn't written yet, so chunks must stay under 128 docs"
-    );
+    write_chunked(
+        docs,
+        segment_id,
+        segment_suffix,
+        DATA_CODEC_BEST_SPEED,
+        BEST_SPEED_CHUNK_SIZE,
+        BEST_SPEED_MAX_DOCS_PER_CHUNK,
+        &|out: &mut Vec<u8>, payload: &[u8]| {
+            // One zero-length "dictionary" unit (a single LZ4 token byte, see
+            // `lz4::decompress`'s zero-length handling) followed by one
+            // literal-only block holding this unit's bytes verbatim.
+            let dict_unit = encode_literal_lz4(&[]);
+            let block_unit = lz4::compress(payload);
+            out.write_vint(0); // dictLength
+            out.write_vint(payload.len() as i32); // blockLength (one block covers the unit)
+            out.write_vint(dict_unit.len() as i32); // dict's compressed length
+            out.write_vint(block_unit.len() as i32); // this one block's compressed length
+            out.write_bytes(&dict_unit);
+            out.write_bytes(&block_unit);
+        },
+    )
+}
 
+/// Lucene's per-mode chunking parameters, from the two
+/// `Lucene90CompressingStoredFieldsFormat` constructions in
+/// `Lucene90StoredFieldsFormat.fieldsFormat`: a chunk closes as soon as its
+/// buffered bytes reach the chunk size *or* its doc count reaches the
+/// per-chunk doc cap, whichever comes first.
+const BEST_SPEED_CHUNK_SIZE: usize = 10 * 8 * 1024;
+const BEST_SPEED_MAX_DOCS_PER_CHUNK: usize = 1024;
+const BEST_COMPRESSION_CHUNK_SIZE: usize = 10 * 48 * 1024;
+const BEST_COMPRESSION_MAX_DOCS_PER_CHUNK: usize = 4096;
+/// `blockShift` for the `.fdx` monotonic arrays -- the `10` both modes pass.
+const INDEX_BLOCK_SHIFT: u32 = 10;
+
+/// The chunk loop shared by [`write_best_speed`] and
+/// [`write_best_compression`], a port of
+/// `Lucene90CompressingStoredFieldsWriter`'s buffer/`triggerFlush`/`flush`
+/// cycle. Only the *payload framing* differs between the two modes -- LZ4
+/// emits one zero-dictionary unit, DEFLATE a dictionary prefix plus fixed-size
+/// sub-blocks -- so that part is supplied as `write_unit`, which appends one
+/// self-contained compression unit for a given plaintext slice.
+///
+/// A chunk whose documents run out before either trigger fires is what Java
+/// calls a forced flush: a **dirty** chunk, flagged in its token and tallied
+/// in `.fdm` so a later merge can prefer rewriting it.
+fn write_chunked(
+    docs: &[Document],
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+    data_codec: &str,
+    chunk_size: usize,
+    max_docs_per_chunk: usize,
+    write_unit: &dyn Fn(&mut Vec<u8>, &[u8]),
+) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let payloads: Vec<Vec<u8>> = docs.iter().map(serialize_doc).collect();
-    let num_stored_fields: Vec<i64> = docs.iter().map(|d| d.fields.len() as i64).collect();
-    let lengths: Vec<i64> = payloads.iter().map(|p| p.len() as i64).collect();
-    let total_length: i64 = lengths.iter().sum();
-    let chunk_docs = docs.len() as i32;
-    let max_doc = chunk_docs;
 
     let mut fdt = Vec::new();
     codec_util::write_index_header(
         &mut fdt,
-        DATA_CODEC_BEST_SPEED,
+        data_codec,
         VERSION_CURRENT,
         segment_id,
         segment_suffix,
     );
-    let chunk_start = fdt.len() as i64;
 
-    fdt.write_vint(0); // docBase
-    fdt.write_vint(chunk_docs << 2); // token: sliced=0, dirty=0
+    // Both `.fdx` arrays hold one entry per chunk plus a trailing sentinel:
+    // cumulative doc counts (ending at `maxDoc`) and chunk start pointers
+    // (ending at `maxPointer`). Seeded here with the first chunk's start.
+    let mut docs_values: Vec<i64> = vec![0];
+    let mut start_pointers_values: Vec<i64> = vec![fdt.len() as i64];
+    let mut num_dirty_chunks = 0i64;
+    let mut num_dirty_docs = 0i64;
 
-    if chunk_docs == 1 {
-        fdt.write_vint(num_stored_fields[0] as i32);
-        fdt.write_vint(lengths[0] as i32);
-    } else if chunk_docs > 0 {
-        write_bulk_ints(&mut fdt, &num_stored_fields);
-        write_bulk_ints(&mut fdt, &lengths);
-    }
+    let mut start = 0usize;
+    while start < docs.len() {
+        let mut end = start;
+        let mut bytes = 0usize;
+        let mut triggered = false;
+        while end < docs.len() {
+            bytes += payloads[end].len();
+            end += 1;
+            if bytes >= chunk_size || end - start >= max_docs_per_chunk {
+                triggered = true;
+                break;
+            }
+        }
+        let chunk_docs = end - start;
+        let dirty = !triggered;
+        if dirty {
+            num_dirty_chunks += 1;
+            num_dirty_docs += chunk_docs as i64;
+        }
+        // Only a chunk holding a single outsized document can reach this, since
+        // every other chunk closes on the first doc that crosses `chunk_size`.
+        let sliced = bytes >= 2 * chunk_size;
 
-    if total_length > 0 {
-        let payload: Vec<u8> = payloads.concat();
-        // One zero-length "dictionary" unit (a single LZ4 token byte, see
-        // `lz4::decompress`'s zero-length handling) followed by one
-        // literal-only block holding every doc's bytes verbatim.
-        let dict_unit = encode_literal_lz4(&[]);
-        let block_unit = lz4::compress(&payload);
-        fdt.write_vint(0); // dictLength
-        fdt.write_vint(payload.len() as i32); // blockLength (one block covers everything)
-        fdt.write_vint(dict_unit.len() as i32); // dict's compressed length
-        fdt.write_vint(block_unit.len() as i32); // this one block's compressed length
-        fdt.write_bytes(&dict_unit);
-        fdt.write_bytes(&block_unit);
+        let num_stored_fields: Vec<i64> = docs[start..end]
+            .iter()
+            .map(|d| d.fields.len() as i64)
+            .collect();
+        let lengths: Vec<i64> = payloads[start..end]
+            .iter()
+            .map(|p| p.len() as i64)
+            .collect();
+
+        fdt.write_vint(start as i32); // docBase
+        fdt.write_vint(((chunk_docs as i32) << 2) | if dirty { 2 } else { 0 } | i32::from(sliced));
+
+        if chunk_docs == 1 {
+            fdt.write_vint(num_stored_fields[0] as i32);
+            fdt.write_vint(lengths[0] as i32);
+        } else {
+            write_bulk_ints(&mut fdt, &num_stored_fields);
+            write_bulk_ints(&mut fdt, &lengths);
+        }
+
+        if bytes > 0 {
+            let payload: Vec<u8> = payloads[start..end].concat();
+            if sliced {
+                for slice in payload.chunks(chunk_size) {
+                    write_unit(&mut fdt, slice);
+                }
+            } else {
+                write_unit(&mut fdt, &payload);
+            }
+        }
+
+        start = end;
+        docs_values.push(start as i64);
+        start_pointers_values.push(fdt.len() as i64);
     }
 
     let max_pointer = fdt.len() as i64;
@@ -509,33 +592,38 @@ pub fn write_best_speed(
     let (fdx, fdm) = write_index_and_meta(
         segment_id,
         segment_suffix,
-        max_doc,
-        chunk_start,
+        docs.len() as i32,
+        &docs_values,
+        &start_pointers_values,
         max_pointer,
-        80 * 1024,
+        chunk_size as i32,
+        num_dirty_chunks,
+        num_dirty_docs,
     );
 
     (fdt, fdx, fdm)
 }
 
-/// Shared `.fdx`/`.fdm` assembly for both [`write_best_speed`] and
-/// [`write_best_compression`]: both modes produce exactly the same
-/// single-chunk index/meta shape (one real chunk from doc 0 to `max_doc`,
-/// one sentinel), differing only in the `chunkSize` value recorded in
-/// `.fdm` (unused by this port's own reader when nothing is sliced, but
-/// still part of the on-disk contract real Lucene expects to be able to
-/// parse consistently).
+/// Shared `.fdx`/`.fdm` assembly for both modes: `docs_values` and
+/// `start_pointers_values` each hold one entry per chunk plus a trailing
+/// sentinel (`maxDoc` and `maxPointer` respectively), so the chunk count both
+/// files record is one less than their length. The two modes differ only in
+/// the `chunkSize` written to `.fdm`, which real Lucene needs in order to
+/// split a `sliced` chunk back into its compression units.
+#[allow(clippy::too_many_arguments)]
 fn write_index_and_meta(
     segment_id: &[u8; ID_LENGTH],
     segment_suffix: &str,
     max_doc: i32,
-    chunk_start: i64,
+    docs_values: &[i64],
+    start_pointers_values: &[i64],
     max_pointer: i64,
     chunk_size: i32,
+    num_dirty_chunks: i64,
+    num_dirty_docs: i64,
 ) -> (Vec<u8>, Vec<u8>) {
-    let block_shift = 0u32;
-    let docs_values = [0i64, max_doc as i64];
-    let start_pointers_values = [chunk_start, max_pointer];
+    debug_assert_eq!(docs_values.len(), start_pointers_values.len());
+    let block_shift = INDEX_BLOCK_SHIFT;
 
     let mut fdx = Vec::new();
     codec_util::write_index_header(
@@ -546,11 +634,11 @@ fn write_index_and_meta(
         segment_suffix,
     );
     let docs_start_pointer = fdx.len() as i64;
-    let (docs_meta_bytes, docs_data_bytes) = direct_monotonic::write(&docs_values, block_shift);
+    let (docs_meta_bytes, docs_data_bytes) = direct_monotonic::write(docs_values, block_shift);
     fdx.write_bytes(&docs_data_bytes);
     let docs_end_pointer = fdx.len() as i64;
     let (start_pointers_meta_bytes, start_pointers_data_bytes) =
-        direct_monotonic::write(&start_pointers_values, block_shift);
+        direct_monotonic::write(start_pointers_values, block_shift);
     fdx.write_bytes(&start_pointers_data_bytes);
     let start_pointers_end_pointer = fdx.len() as i64;
     codec_util::write_footer(&mut fdx);
@@ -563,19 +651,19 @@ fn write_index_and_meta(
         segment_id,
         segment_suffix,
     );
-    fdm.write_vint(chunk_size); // chunkSize (unused when nothing is sliced)
+    fdm.write_vint(chunk_size);
     fdm.write_i32(max_doc);
     fdm.write_i32(block_shift as i32);
-    fdm.write_i32(2); // index_num_chunks = 1 real chunk + 1 sentinel
+    fdm.write_i32(docs_values.len() as i32); // real chunks + 1 sentinel
     fdm.write_i64(docs_start_pointer);
     fdm.write_bytes(&docs_meta_bytes);
     fdm.write_i64(docs_end_pointer);
     fdm.write_bytes(&start_pointers_meta_bytes);
     fdm.write_i64(start_pointers_end_pointer);
     fdm.write_i64(max_pointer);
-    fdm.write_vlong(1); // numChunks (outer)
-    fdm.write_vlong(0); // numDirtyChunks
-    fdm.write_vlong(0); // numDirtyDocs
+    fdm.write_vlong(docs_values.len() as i64 - 1); // numChunks (outer)
+    fdm.write_vlong(num_dirty_chunks);
+    fdm.write_vlong(num_dirty_docs);
     codec_util::write_footer(&mut fdm);
 
     (fdx, fdm)
@@ -616,87 +704,43 @@ pub fn write_best_compression(
 ) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     const NUM_SUB_BLOCKS: usize = 10;
     const DICT_SIZE_FACTOR: usize = 6;
-    const BEST_COMPRESSION_BLOCK_LENGTH: i32 = 10 * 48 * 1024;
 
-    assert!(
-        docs.len() < 128,
-        "write_best_compression's bulk per-doc arrays only implement the scalar-tail \
-         encoding (see write_bulk_ints); the 128-value transposed-block path \
-         isn't written yet, so chunks must stay under 128 docs"
-    );
-
-    let payloads: Vec<Vec<u8>> = docs.iter().map(serialize_doc).collect();
-    let num_stored_fields: Vec<i64> = docs.iter().map(|d| d.fields.len() as i64).collect();
-    let lengths: Vec<i64> = payloads.iter().map(|p| p.len() as i64).collect();
-    let total_length: i64 = lengths.iter().sum();
-    let chunk_docs = docs.len() as i32;
-    let max_doc = chunk_docs;
-
-    let mut fdt = Vec::new();
-    codec_util::write_index_header(
-        &mut fdt,
+    write_chunked(
+        docs,
+        segment_id,
+        segment_suffix,
         DATA_CODEC_BEST_COMPRESSION,
-        VERSION_CURRENT,
-        segment_id,
-        segment_suffix,
-    );
-    let chunk_start = fdt.len() as i64;
+        BEST_COMPRESSION_CHUNK_SIZE,
+        BEST_COMPRESSION_MAX_DOCS_PER_CHUNK,
+        &|out: &mut Vec<u8>, payload: &[u8]| {
+            let len = payload.len();
+            let dict_length = len / (NUM_SUB_BLOCKS * DICT_SIZE_FACTOR);
+            let block_length = (len - dict_length).div_ceil(NUM_SUB_BLOCKS);
 
-    fdt.write_vint(0); // docBase
-    fdt.write_vint(chunk_docs << 2); // token: sliced=0, dirty=0
+            out.write_vint(dict_length as i32); // dictLength
+            out.write_vint(block_length as i32); // blockLength
 
-    if chunk_docs == 1 {
-        fdt.write_vint(num_stored_fields[0] as i32);
-        fdt.write_vint(lengths[0] as i32);
-    } else if chunk_docs > 0 {
-        write_bulk_ints(&mut fdt, &num_stored_fields);
-        write_bulk_ints(&mut fdt, &lengths);
-    }
+            let dict_compressed = deflate::compress(&payload[..dict_length]);
+            out.write_vint(dict_compressed.len() as i32); // dictionary's compressed length
+            out.write_bytes(&dict_compressed);
 
-    if total_length > 0 {
-        let payload: Vec<u8> = payloads.concat();
-        let len = payload.len();
-        let dict_length = len / (NUM_SUB_BLOCKS * DICT_SIZE_FACTOR);
-        let block_length = (len - dict_length).div_ceil(NUM_SUB_BLOCKS);
-
-        fdt.write_vint(dict_length as i32); // dictLength
-        fdt.write_vint(block_length as i32); // blockLength
-
-        let dict_compressed = deflate::compress(&payload[..dict_length]);
-        fdt.write_vint(dict_compressed.len() as i32); // dictionary's compressed length
-        fdt.write_bytes(&dict_compressed);
-
-        let mut start = dict_length;
-        while start < len {
-            let this_block = block_length.min(len - start);
-            let block_compressed = deflate::compress(&payload[start..start + this_block]);
-            fdt.write_vint(block_compressed.len() as i32); // this block's compressed length
-            fdt.write_bytes(&block_compressed);
-            start += this_block;
-        }
-    }
-
-    let max_pointer = fdt.len() as i64;
-    codec_util::write_footer(&mut fdt);
-
-    let (fdx, fdm) = write_index_and_meta(
-        segment_id,
-        segment_suffix,
-        max_doc,
-        chunk_start,
-        max_pointer,
-        BEST_COMPRESSION_BLOCK_LENGTH,
-    );
-
-    (fdt, fdx, fdm)
+            let mut start = dict_length;
+            while start < len {
+                let this_block = block_length.min(len - start);
+                let block_compressed = deflate::compress(&payload[start..start + this_block]);
+                out.write_vint(block_compressed.len() as i32); // this block's compressed length
+                out.write_bytes(&block_compressed);
+                start += this_block;
+            }
+        },
+    )
 }
 
-/// Port of `StoredFieldsInts`'s bulk per-doc array encode -- **scalar-tail
-/// path only** (see [`write_best_speed`]'s doc comment): correct only for
-/// `values.len() < 128`, since `read_bulk_ints`'s 128-value transposed-block
-/// decode path is unimplemented on the write side so far.
+/// Port of `StoredFieldsInts`'s bulk per-doc array encode, the exact inverse
+/// of [`read_bulk_ints`]: an all-equal constant shape, else a fixed 8/16/32-bit
+/// width in which every whole 128-value block is bit-transposed across i64
+/// words and only the remainder is written value-by-value.
 fn write_bulk_ints(out: &mut Vec<u8>, values: &[i64]) {
-    debug_assert!(values.len() < 128);
     if values.iter().all(|&v| v == values[0]) {
         out.push(0);
         out.write_vint(values[0] as i32);
@@ -711,7 +755,29 @@ fn write_bulk_ints(out: &mut Vec<u8>, values: &[i64]) {
         32
     };
     out.push(bpv);
-    for &v in values {
+
+    // Mirror of [`read_bulk_ints`]: every whole 128-value block is written in
+    // Java's transposed layout (`StoredFieldsInts.writeInts8/16/32`), where
+    // word `i`'s `lane`-th slot, MSB-first, holds value `i + lane*num_words`;
+    // only the remainder past the last whole block is written value-by-value.
+    const BLOCK_SIZE: usize = 128;
+    let bpv_usize = bpv as usize;
+    let values_per_word = 64 / bpv_usize;
+    let num_words = BLOCK_SIZE / values_per_word;
+
+    let mut k = 0usize;
+    while k + BLOCK_SIZE <= values.len() {
+        for i in 0..num_words {
+            let mut w = 0u64;
+            for lane in 0..values_per_word {
+                let shift = (values_per_word - 1 - lane) * bpv_usize;
+                w |= (values[k + i + lane * num_words] as u64) << shift;
+            }
+            out.write_i64(w as i64);
+        }
+        k += BLOCK_SIZE;
+    }
+    for &v in &values[k..] {
         match bpv {
             8 => out.push(v as u8),
             16 => out.extend_from_slice(&(v as u16).to_le_bytes()),
@@ -1839,6 +1905,73 @@ mod tests {
     }
 
     #[test]
+    fn write_best_speed_spans_many_chunks_and_every_doc_still_reads_back() {
+        // Past `BEST_SPEED_MAX_DOCS_PER_CHUNK`, so the doc-count trigger fires
+        // several times and the per-doc arrays cross whole transposed blocks.
+        // Docs are small enough that the byte trigger never fires, which pins
+        // the chunk boundaries at exact multiples of the doc cap.
+        const N: usize = BEST_SPEED_MAX_DOCS_PER_CHUNK * 2 + 37;
+        let docs: Vec<Document> = (0..N)
+            .map(|i| Document {
+                fields: vec![
+                    StoredField {
+                        field_number: 0,
+                        value: FieldValue::String(format!("doc-{i}")),
+                    },
+                    StoredField {
+                        field_number: 1,
+                        value: FieldValue::Long(i as i64 * -3),
+                    },
+                ],
+            })
+            .collect();
+
+        let (fdt, fdx, fdm) = write_best_speed(&docs, &id_write(), "seg");
+        let reader = open(&fdt, &fdx, &fdm, &id_write(), "seg").unwrap();
+        assert_eq!(reader.max_doc(), N as i32);
+
+        for i in 0..N {
+            let doc = reader.document(i as i32).unwrap();
+            assert_eq!(doc.fields.len(), 2, "doc {i}");
+            assert_eq!(
+                doc.fields[0].value,
+                FieldValue::String(format!("doc-{i}")),
+                "doc {i}"
+            );
+            assert_eq!(
+                doc.fields[1].value,
+                FieldValue::Long(i as i64 * -3),
+                "doc {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn write_best_speed_closes_a_chunk_on_the_byte_trigger_too() {
+        // Each doc carries more than a tenth of the chunk size, so the byte
+        // trigger closes chunks long before the doc cap is anywhere near.
+        let big = "x".repeat(BEST_SPEED_CHUNK_SIZE / 8);
+        let docs: Vec<Document> = (0..40)
+            .map(|i| Document {
+                fields: vec![StoredField {
+                    field_number: 0,
+                    value: FieldValue::String(format!("{i}-{big}")),
+                }],
+            })
+            .collect();
+
+        let (fdt, fdx, fdm) = write_best_speed(&docs, &id_write(), "seg");
+        let reader = open(&fdt, &fdx, &fdm, &id_write(), "seg").unwrap();
+        assert_eq!(reader.max_doc(), 40);
+        for i in 0..40 {
+            assert_eq!(
+                reader.document(i).unwrap().fields[0].value,
+                FieldValue::String(format!("{i}-{big}"))
+            );
+        }
+    }
+
+    #[test]
     fn write_best_speed_multi_doc_round_trips_with_varying_field_counts() {
         let docs = vec![
             Document {
@@ -2062,6 +2195,36 @@ mod tests {
             write_zdouble_full(&mut out, v);
             let mut input = SliceInput::new(&out);
             assert_eq!(read_zdouble(&mut input).unwrap(), v, "value {v}");
+        }
+    }
+
+    #[test]
+    fn write_bulk_ints_round_trips_across_whole_transposed_blocks() {
+        // Sizes that straddle the 128-value block boundary in every direction:
+        // just under one block, exactly one, one plus a tail, and several.
+        for count in [127usize, 128, 129, 200, 256, 300] {
+            for width_cap in [0xFFi64, 0xFFFF, 0xFFFF_FFFFu32 as i64] {
+                // Vary the values so the all-equal shortcut never fires, and
+                // make each position distinguishable so a transposition slip
+                // shows up as a mismatch rather than a coincidence.
+                let values: Vec<i64> = (0..count)
+                    .map(|k| {
+                        if k == 0 {
+                            width_cap
+                        } else {
+                            (k as i64) % width_cap
+                        }
+                    })
+                    .collect();
+                let mut out = Vec::new();
+                write_bulk_ints(&mut out, &values);
+                let mut input = SliceInput::new(&out);
+                assert_eq!(
+                    read_bulk_ints(&mut input, count).unwrap(),
+                    values,
+                    "count={count} width_cap={width_cap}"
+                );
+            }
         }
     }
 

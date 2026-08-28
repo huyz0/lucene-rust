@@ -4472,21 +4472,11 @@ mod tests {
     /// remains). There is deliberately no end-to-end `IndexWriter`-level test
     /// of the 8192 boundary here: reaching it requires >=8192 pending docs in
     /// one flush, which trips a wholly unrelated, pre-existing cap in
-    /// `flush_stored_only_segment`'s `write_best_speed` (`docs.len() < 128`
-    /// per flush chunk, see `commit_succeeds_below_the_doc_freq_boundary`'s
-    /// own doc comment) before the postings layer is ever reached. The
+    /// the postings layer is ever reached. The
     /// `LEVEL1_NUM_DOCS` boundary itself is exercised directly at the
     /// `postings_writer` unit level instead
     /// (`docfreq_at_level1_boundaries_round_trips`).
-    /// A term under the 256 boundary must still commit successfully.
-    /// Capped at 100 docs (well under 256) rather
-    /// than the tightest possible "255" case, because
-    /// `flush_stored_only_segment`'s own `write_best_speed` has a separate,
-    /// pre-existing, unrelated cap of `< 128` docs per flush (its bulk
-    /// per-doc-array encoding only implements the scalar-tail path, not the
-    /// 128-value transposed-block path -- see that assert's own message);
-    /// this test only needs to prove a term with a substantial (but
-    /// unremarkable) `docFreq` commits cleanly.
+    /// A term just under the 256 boundary must still commit successfully.
     #[test]
     fn commit_succeeds_below_the_doc_freq_boundary() {
         let tmp = tempdir("postings-docfreq-just-under");
@@ -4495,7 +4485,7 @@ mod tests {
         let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
         writer.set_postings_field(Some("body")).unwrap();
 
-        for i in 0..100 {
+        for i in 0..255 {
             writer.add_document(doc_with_body(&i.to_string(), "shared"));
         }
         let sis = writer.commit().unwrap().clone();
