@@ -154,6 +154,15 @@ pub struct SegmentReader {
     /// opted into doc values, matching `segment_writer.rs`'s "no pending
     /// values -> no `.dvm`/`.dvd`/`.dvs` files" contract).
     dv_data: Option<Arc<Input>>,
+    /// The segment's BKD point files, when it has any.
+    ///
+    /// Opened here so a caller can run a points range query at all: before
+    /// this, `DirectoryReader` never touched `.kdm`/`.kdi`/`.kdd`, which made
+    /// points queries unreachable through the normal reader path even though
+    /// `points_query::search_points_range` has existed for some time.
+    kdm_buf: Option<Arc<Input>>,
+    kdi_buf: Option<Arc<Input>>,
+    kdd_buf: Option<Arc<Input>>,
     /// The segment's parsed `.dvm` (per-field entries -- `NumericEntry`,
     /// `SortedEntry`, etc., each already carrying whichever of the
     /// dense/sparse shapes `doc_values.rs`'s write side actually produced;
@@ -294,6 +303,9 @@ impl SegmentReader {
         // tests in `index_writer.rs`), but a real Lucene-written segment
         // (e.g. `fixtures/data/compound_index/`) gives doc values their own
         // codec suffix (`Lucene90_<n>`), independent of the postings suffix.
+        let kdm_buf = open_segment_file(dir, compound.as_ref(), &si.files, ".kdm")?;
+        let kdi_buf = open_segment_file(dir, compound.as_ref(), &si.files, ".kdi")?;
+        let kdd_buf = open_segment_file(dir, compound.as_ref(), &si.files, ".kdd")?;
         let dvm_bytes = open_segment_file(dir, compound.as_ref(), &si.files, ".dvm")?;
         let dvd_bytes = open_segment_file(dir, compound.as_ref(), &si.files, ".dvd")?;
         let (dv_meta, dv_data) = match (dvm_bytes, dvd_bytes) {
@@ -336,6 +348,9 @@ impl SegmentReader {
             live_docs,
             field_infos,
             dv_data,
+            kdm_buf,
+            kdi_buf,
+            kdd_buf,
             dv_meta,
         })
     }
@@ -343,6 +358,16 @@ impl SegmentReader {
     /// The segment's `.fnm`-derived field metadata (field name/number
     /// mapping, doc-values type, etc.) -- callers use this to resolve a field
     /// name to the number [`Self::doc_values_meta`]'s entries are keyed by.
+    /// The segment's `.kdm`/`.kdi`/`.kdd` bytes, or `None` when it indexes no
+    /// points. All three are present together or not at all.
+    pub fn points_files(&self) -> Option<(&[u8], &[u8], &[u8])> {
+        Some((
+            &***self.kdm_buf.as_ref()?,
+            &***self.kdi_buf.as_ref()?,
+            &***self.kdd_buf.as_ref()?,
+        ))
+    }
+
     /// This segment's 16-byte id, needed by any codec reader opened directly
     /// against its files (stored fields, term vectors) rather than through this
     /// reader.
