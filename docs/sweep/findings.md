@@ -1358,3 +1358,34 @@ That is right for `for_decode` at nanoseconds an operation and catastrophic for
 `reader_open` at half a second: one batch ran twenty minutes past its budget.
 The batch now grows from one, doubling only while a whole batch is still short
 next to the budget.
+
+### Then the term dictionary itself: a flat layout
+
+With the memcpy gone, the 52.7 ms residue really was the eager materialization,
+and a profile of it put ~28% in allocating 579,255 `Vec<u8>` terms, sorting
+80-byte tuples whose ordering key sits behind a pointer, and dropping them
+again.
+
+`FieldTerms` now holds a `TermIndex`: one `Vec<u8>` with every term's bytes
+concatenated, and one `Vec<TermRec>` of fixed 64-byte records pointing into it.
+Two allocations for a field instead of one per term; the sort compares slices of
+a single buffer; the drop is two frees. `decode_block_at_depth` takes the block
+prefix and writes `prefix + suffix` straight into that buffer, so the
+per-term concatenation that used to allocate a `Vec` costs only its bytes, and
+sub-blocks allocate once per *block* rather than once per term.
+
+| | reader open | RSS |
+|---|---|---|
+| before both fixes | 551.9 ms | 1,690 MB |
+| after the mmap fix | 52.7 ms | 70 MB |
+| after the flat layout | **33.3 ms** | **60 MB** |
+| | **16.6x** | **28x** |
+
+No signature changed: `seek_exact`, `postings`, `positions`, `intersect`,
+`fuzzy_intersect`, `regexp_intersect` and `TermsEnum` all read the flat form
+through accessors, so the 103 call sites outside this file are untouched.
+
+Against Lucene's 0.34 ms this is still 98x, and the rest is the design itself --
+Lucene decodes *one block* per seek and holds nothing. That remains the open
+item, but it is now 98x of a 33 ms operation rather than 1,624x of a 552 ms one,
+and two of the three contributors have been removed.
