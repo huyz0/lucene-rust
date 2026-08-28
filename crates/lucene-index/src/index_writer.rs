@@ -1240,6 +1240,7 @@ impl<'d> IndexWriter<'d> {
             let fnm_fields = self.fields_with_per_field_attributes(
                 postings_output.is_some(),
                 doc_values_output.is_some(),
+                norms_output.is_some(),
             );
             let sci = flush_stored_only_segment(
                 self.dir,
@@ -2215,6 +2216,7 @@ impl<'d> IndexWriter<'d> {
         &self,
         wrote_postings: bool,
         wrote_doc_values: bool,
+        wrote_norms: bool,
     ) -> Vec<FieldInfo> {
         let postings_names: Vec<&str> = if wrote_postings {
             self.postings_fields
@@ -2230,10 +2232,30 @@ impl<'d> IndexWriter<'d> {
             None
         };
 
+        let norms_name = if wrote_norms {
+            self.norms_field.as_ref().map(|c| c.name.as_str())
+        } else {
+            None
+        };
+
         self.fields
             .iter()
             .map(|f| {
                 let mut f = f.clone();
+                // Lucene writes norms for every indexed field that does not
+                // omit them, and `DirectoryReader.open` throws on the missing
+                // `.nvm` rather than degrading if the `.fnm` claims norms the
+                // segment does not carry. This writer's norms are opt-in per
+                // field (`set_norms_field`), so a field that was not opted in
+                // must say so here: omitting norms is a legal Lucene
+                // configuration, promising norms that were never written is
+                // not. See `docs/parity.md` on closing the opt-in itself.
+                if f.index_options != IndexOptions::None
+                    && !f.omit_norms
+                    && norms_name != Some(f.name.as_str())
+                {
+                    f.omit_norms = true;
+                }
                 if postings_names.contains(&f.name.as_str()) {
                     f.attributes.push((
                         "PerFieldPostingsFormat.format".to_string(),
@@ -6656,6 +6678,59 @@ mod tests {
     /// norm bytes, proving the indexing chain is genuinely deriving the
     /// value from each document's actual tokenized field length rather than
     /// writing some fixed default.
+    /// The `.fnm` must describe what the segment actually contains. Real
+    /// Lucene writes norms for every indexed field that does not omit them and
+    /// throws `NoSuchFileException` on the missing `.nvm` if the field infos
+    /// claim norms the files do not carry -- so a field this writer was not
+    /// opted into writing norms for has to say it omits them.
+    #[test]
+    fn an_indexed_field_without_the_norms_opt_in_declares_that_it_omits_norms() {
+        let tmp = tempdir("norms-not-opted-in");
+        let dir = FsDirectory::open(&tmp);
+        // `body_field` is indexed with `omit_norms: false`, and no
+        // `set_norms_field` call follows.
+        let fields = vec![stored_only_field("id", 0), body_field(1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_postings_field(Some("body")).unwrap();
+        writer.add_document(doc_with_body("a", "fox"));
+        let sis = writer.commit().unwrap().clone();
+        let sci = &sis.segments[0];
+
+        let fnm = dir.open(&format!("{}.fnm", sci.segment_name)).unwrap();
+        let fis = lucene_codecs::field_infos::parse(&fnm, &sci.segment_id, "").unwrap();
+        let body = fis.fields.iter().find(|f| f.name == "body").unwrap();
+        assert!(
+            body.omit_norms,
+            "an indexed field with no norms written must declare omit_norms"
+        );
+
+        let si_bytes = dir.open(&format!("{}.si", sci.segment_name)).unwrap();
+        let si = segment_info::parse(&si_bytes, &sci.segment_id).unwrap();
+        assert!(
+            !si.files.iter().any(|f| f.ends_with(".nvm")),
+            "no norms files should have been written"
+        );
+    }
+
+    /// The opt-in path must be unaffected: a field norms *were* written for
+    /// keeps `omit_norms` false.
+    #[test]
+    fn the_norms_opt_in_field_still_declares_that_it_has_norms() {
+        let tmp = tempdir("norms-opted-in-fnm");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), body_field(1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_norms_field(Some("body")).unwrap();
+        writer.add_document(doc_with_body("a", "fox"));
+        let sis = writer.commit().unwrap().clone();
+        let sci = &sis.segments[0];
+
+        let fnm = dir.open(&format!("{}.fnm", sci.segment_name)).unwrap();
+        let fis = lucene_codecs::field_infos::parse(&fnm, &sci.segment_id, "").unwrap();
+        let body = fis.fields.iter().find(|f| f.name == "body").unwrap();
+        assert!(!body.omit_norms);
+    }
+
     #[test]
     fn commit_with_norms_field_writes_readable_length_dependent_norms_for_multiple_docs() {
         let tmp = tempdir("norms-commit");

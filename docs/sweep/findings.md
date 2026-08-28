@@ -1952,3 +1952,21 @@ accepting an empty impacts list, tolerating a root with no output. Every one
 round-tripped perfectly through our own reader. A port cannot be verified
 against itself, and thirteen green single-format checks did not amount to one
 segment real Lucene could open.
+
+### O25 revisited -- closing the norms divergence to the extent the writer can
+
+Recorded above as unfixed, with two acceptable resolutions: write norms
+automatically, or make the `.fnm` describe what was actually written.
+
+The first needs a multi-field norms writer -- `norms::write_single_dense_field`
+takes one field -- so the second is what is implemented. An indexed field this
+writer was not opted into writing norms for now declares `omit_norms: true`.
+Omitting norms is a legal Lucene configuration; promising norms that were never
+written is not, and that is the whole of the defect. `CheckIndex` reports such a
+segment as `field norms OK [0 fields]` and opens it cleanly, where before
+`DirectoryReader.open` threw on the missing `.nvm`.
+
+What remains is a scope limit rather than a corruption: a caller wanting
+Lucene's default scoring must still opt in per field. That is now stated in
+`docs/parity.md` instead of being discoverable only by handing an index to
+Lucene.
