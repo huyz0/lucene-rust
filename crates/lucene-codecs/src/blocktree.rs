@@ -304,6 +304,100 @@ pub enum SeekStatus {
     End,
 }
 
+/// One field's terms in a flat layout: every term's bytes concatenated once,
+/// with fixed-size records pointing into them.
+///
+/// Replaces `Vec<(Vec<u8>, TermStats, TermMetadata)>`, which cost one heap
+/// allocation per term -- 579,255 of them on the M1 corpus, all live for the
+/// reader's lifetime and all freed when it drops. A profile of reader open put
+/// roughly 28% of it in allocating those, sorting 80-byte tuples whose ordering
+/// key is behind a pointer, and dropping them again.
+///
+/// Two allocations total, records are 64 bytes and contiguous, and the sort
+/// compares slices of one buffer instead of chasing pointers.
+#[derive(Debug, Clone, Default)]
+struct TermIndex {
+    /// Every term's bytes, concatenated. Not sorted itself -- `recs` is.
+    bytes: Vec<u8>,
+    /// One record per term, sorted by the term bytes they point at.
+    recs: Vec<TermRec>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TermRec {
+    start: u32,
+    len: u32,
+    stats: TermStats,
+    meta: TermMetadata,
+}
+
+impl TermIndex {
+    fn with_capacity(terms: usize) -> Self {
+        Self {
+            // Terms in a real dictionary average well under 32 bytes; this is
+            // a starting point, not a bound.
+            bytes: Vec::with_capacity(terms * 8),
+            recs: Vec::with_capacity(terms),
+        }
+    }
+
+    /// Appends `prefix + suffix` as one term. The two halves are written
+    /// straight into the shared buffer, so the concatenation that used to
+    /// allocate a `Vec` per term costs nothing beyond the bytes themselves.
+    fn push(&mut self, prefix: &[u8], suffix: &[u8], stats: TermStats, meta: TermMetadata) {
+        let start = self.bytes.len() as u32;
+        self.bytes.extend_from_slice(prefix);
+        self.bytes.extend_from_slice(suffix);
+        let len = self.bytes.len() as u32 - start;
+        self.recs.push(TermRec {
+            start,
+            len,
+            stats,
+            meta,
+        });
+    }
+
+    fn len(&self) -> usize {
+        self.recs.len()
+    }
+
+    #[inline]
+    fn term(&self, i: usize) -> &[u8] {
+        let r = &self.recs[i];
+        &self.bytes[r.start as usize..(r.start + r.len) as usize]
+    }
+
+    #[inline]
+    fn rec_term(&self, r: &TermRec) -> &[u8] {
+        &self.bytes[r.start as usize..(r.start + r.len) as usize]
+    }
+
+    /// Blocks are decoded in trie-traversal order, not term order, so this is
+    /// called once after the whole field is read -- see `open`.
+    fn sort(&mut self) {
+        let bytes = std::mem::take(&mut self.bytes);
+        self.recs.sort_by(|a, b| {
+            bytes[a.start as usize..(a.start + a.len) as usize]
+                .cmp(&bytes[b.start as usize..(b.start + b.len) as usize])
+        });
+        self.bytes = bytes;
+    }
+
+    fn search(&self, target: &[u8]) -> std::result::Result<usize, usize> {
+        self.recs.binary_search_by(|r| self.rec_term(r).cmp(target))
+    }
+
+    /// Index of the first term not less than `target` -- the `partition_point`
+    /// the prefix-range scans use.
+    fn lower_bound(&self, target: &[u8]) -> usize {
+        self.recs.partition_point(|r| self.rec_term(r) < target)
+    }
+
+    fn range(&self, start: usize, end: usize) -> impl Iterator<Item = (&[u8], TermStats)> {
+        (start..end).map(move |i| (self.term(i), self.recs[i].stats))
+    }
+}
+
 /// `TermsEnum`-equivalent: ordered iteration (`next()`) and nearest-match
 /// seeking (`seekCeil()`) over one field's already-sorted term dictionary.
 ///
@@ -322,7 +416,7 @@ pub enum SeekStatus {
 /// internals when the underlying representation no longer matches Java's).
 #[derive(Debug, Clone)]
 pub struct TermsEnum<'a> {
-    entries: &'a [(Vec<u8>, TermStats, TermMetadata)],
+    entries: &'a TermIndex,
     /// Index of the last term returned by `next()`/positioned by
     /// `seek_ceil()`, or `None` before the first `next()` call. Once
     /// exhausted this holds `Some(entries.len())` (or higher), so repeated
@@ -332,7 +426,7 @@ pub struct TermsEnum<'a> {
 }
 
 impl<'a> TermsEnum<'a> {
-    fn new(entries: &'a [(Vec<u8>, TermStats, TermMetadata)]) -> Self {
+    fn new(entries: &'a TermIndex) -> Self {
         Self { entries, pos: None }
     }
 
@@ -354,8 +448,10 @@ impl<'a> TermsEnum<'a> {
             return None;
         }
         self.pos = Some(next_idx);
-        let (term, stats, _) = &self.entries[next_idx];
-        Some((term.as_slice(), *stats))
+        Some((
+            self.entries.term(next_idx),
+            self.entries.recs[next_idx].stats,
+        ))
     }
 
     /// `TermsEnum.seekCeil(BytesRef)`-equivalent: binary-search for the
@@ -363,10 +459,7 @@ impl<'a> TermsEnum<'a> {
     /// `next()` continues from that point), and report whether it was an
     /// exact match, a ceiling match, or that no such term exists.
     pub fn seek_ceil(&mut self, target: &[u8]) -> SeekStatus {
-        match self
-            .entries
-            .binary_search_by(|(t, _, _)| t.as_slice().cmp(target))
-        {
+        match self.entries.search(target) {
             Ok(idx) => {
                 self.pos = Some(idx);
                 SeekStatus::Found
@@ -387,7 +480,7 @@ impl<'a> TermsEnum<'a> {
     /// before the first `next()`/`seek_ceil()` call or past the end.
     pub fn current(&self) -> Option<(&'a [u8], TermStats)> {
         let idx = self.pos?;
-        self.entries.get(idx).map(|(t, s, _)| (t.as_slice(), *s))
+        (idx < self.entries.len()).then(|| (self.entries.term(idx), self.entries.recs[idx].stats))
     }
 }
 
@@ -404,7 +497,7 @@ pub struct FieldTerms {
     pub max_term: Vec<u8>,
     index_options: IndexOptions,
     has_payloads: bool,
-    entries: Vec<(Vec<u8>, TermStats, TermMetadata)>,
+    entries: TermIndex,
 }
 
 impl FieldTerms {
@@ -413,9 +506,9 @@ impl FieldTerms {
     /// binary search over the materialized block.
     pub fn seek_exact(&self, term: &[u8]) -> Option<TermStats> {
         self.entries
-            .binary_search_by(|(t, _, _)| t.as_slice().cmp(term))
+            .search(term)
             .ok()
-            .map(|idx| self.entries[idx].1)
+            .map(|idx| self.entries.recs[idx].stats)
     }
 
     /// `Terms.iterator()`-equivalent: a cursor positioned before the first
@@ -456,19 +549,14 @@ impl FieldTerms {
         // what real Lucene's own prefix-seek does one level below the
         // automaton, just expressed here as two `partition_point`s over
         // the materialized `Vec` instead of a trie walk).
-        let start = self
-            .entries
-            .partition_point(|(t, _, _)| t.as_slice() < prefix.as_slice());
+        let start = self.entries.lower_bound(&prefix);
         let end = match prefix_upper_bound(&prefix) {
-            Some(upper) => self
-                .entries
-                .partition_point(|(t, _, _)| t.as_slice() < upper.as_slice()),
+            Some(upper) => self.entries.lower_bound(&upper),
             None => self.entries.len(),
         };
-        self.entries[start..end]
-            .iter()
-            .filter(move |(t, _, _)| pattern.matches(t))
-            .map(|(t, s, _)| (t.as_slice(), *s))
+        self.entries
+            .range(start, end)
+            .filter(move |(t, _)| pattern.matches(t))
     }
 
     /// `FuzzyQuery`-equivalent term matching (task #42): every term (in
@@ -486,19 +574,14 @@ impl FieldTerms {
         pattern: &'a FuzzyMatch<'a>,
     ) -> impl Iterator<Item = (&'a [u8], TermStats)> + 'a {
         let prefix = pattern.literal_prefix();
-        let start = self
-            .entries
-            .partition_point(|(t, _, _)| t.as_slice() < prefix);
+        let start = self.entries.lower_bound(prefix);
         let end = match prefix_upper_bound(prefix) {
-            Some(upper) => self
-                .entries
-                .partition_point(|(t, _, _)| t.as_slice() < upper.as_slice()),
+            Some(upper) => self.entries.lower_bound(&upper),
             None => self.entries.len(),
         };
-        self.entries[start..end]
-            .iter()
-            .filter(move |(t, _, _)| pattern.matches(t))
-            .map(|(t, s, _)| (t.as_slice(), *s))
+        self.entries
+            .range(start, end)
+            .filter(move |(t, _)| pattern.matches(t))
     }
 
     /// `RegexpQuery`-equivalent term matching (task #43): every term (in
@@ -518,19 +601,14 @@ impl FieldTerms {
         pattern: &'a RegexpPattern,
     ) -> impl Iterator<Item = (&'a [u8], TermStats)> + 'a {
         let prefix = pattern.literal_prefix();
-        let start = self
-            .entries
-            .partition_point(|(t, _, _)| t.as_slice() < prefix.as_slice());
+        let start = self.entries.lower_bound(&prefix);
         let end = match prefix_upper_bound(&prefix) {
-            Some(upper) => self
-                .entries
-                .partition_point(|(t, _, _)| t.as_slice() < upper.as_slice()),
+            Some(upper) => self.entries.lower_bound(&upper),
             None => self.entries.len(),
         };
-        self.entries[start..end]
-            .iter()
-            .filter(move |(t, _, _)| pattern.matches(t))
-            .map(|(t, s, _)| (t.as_slice(), *s))
+        self.entries
+            .range(start, end)
+            .filter(move |(t, _)| pattern.matches(t))
     }
 
     /// `seekExact(term)` followed by `PostingsEnum` iteration
@@ -542,14 +620,11 @@ impl FieldTerms {
     /// found term whose `docFreq > 1` is an error, since that path needs
     /// `.doc` file bytes.
     pub fn postings(&self, term: &[u8], doc_in: Option<&DocInput<'_>>) -> Result<Option<Postings>> {
-        let Some(idx) = self
-            .entries
-            .binary_search_by(|(t, _, _)| t.as_slice().cmp(term))
-            .ok()
-        else {
+        let Some(idx) = self.entries.search(term).ok() else {
             return Ok(None);
         };
-        let (_, stats, meta) = &self.entries[idx];
+        let rec = &self.entries.recs[idx];
+        let (stats, meta) = (&rec.stats, &rec.meta);
         if stats.doc_freq == 1 {
             return Ok(Some(postings::singleton_postings(
                 *meta,
@@ -581,14 +656,11 @@ impl FieldTerms {
         term: &[u8],
         doc_in: &DocInput<'d>,
     ) -> Result<Option<postings::LazyDocsCursor<'d>>> {
-        let Some(idx) = self
-            .entries
-            .binary_search_by(|(t, _, _)| t.as_slice().cmp(term))
-            .ok()
-        else {
+        let Some(idx) = self.entries.search(term).ok() else {
             return Ok(None);
         };
-        let (_, stats, meta) = &self.entries[idx];
+        let rec = &self.entries.recs[idx];
+        let (stats, meta) = (&rec.stats, &rec.meta);
         Ok(Some(doc_in.lazy_cursor(
             *meta,
             stats.doc_freq,
@@ -616,9 +688,10 @@ impl FieldTerms {
         };
         let idx = self
             .entries
-            .binary_search_by(|(t, _, _)| t.as_slice().cmp(term))
+            .search(term)
             .expect("found by self.postings() above, so seek_exact must succeed here too");
-        let (_, stats, meta) = &self.entries[idx];
+        let rec = &self.entries.recs[idx];
+        let (stats, meta) = (&rec.stats, &rec.meta);
         Ok(Some(postings::read_positions(
             pos_in,
             pay_in,
@@ -648,9 +721,10 @@ impl FieldTerms {
         };
         let idx = self
             .entries
-            .binary_search_by(|(t, _, _)| t.as_slice().cmp(term))
+            .search(term)
             .expect("found by self.postings() above, so seek_exact must succeed here too");
-        let (_, stats, meta) = &self.entries[idx];
+        let rec = &self.entries.recs[idx];
+        let (stats, meta) = (&rec.stats, &rec.meta);
         let (positions, doc_starts) = postings::read_positions_flat(
             pos_in,
             pay_in,
@@ -1223,7 +1297,16 @@ fn decode_block(
     index_options: IndexOptions,
     has_payloads: bool,
 ) -> Result<Vec<(Vec<u8>, TermStats, TermMetadata)>> {
-    decode_block_at_depth(tim, fp, index_options, has_payloads, 0, None)
+    let mut out = TermIndex::default();
+    decode_block_at_depth(tim, fp, index_options, has_payloads, 0, None, &[], &mut out)?;
+    // The unit tests that call this compare against an owned tuple list; the
+    // flat form is an implementation detail of the reader, not of them.
+    Ok((0..out.len())
+        .map(|i| {
+            let r = out.recs[i];
+            (out.term(i).to_vec(), r.stats, r.meta)
+        })
+        .collect())
 }
 
 /// `decode_block`'s actual implementation, `depth`-tracked so a
@@ -1258,6 +1341,7 @@ fn decode_block(
 /// to cross-check against", so every sub-block pointer is followed — correct
 /// for decoding one block's own self-contained sub-tree in isolation, where
 /// this cross-cutting duplication with *other* top-level blocks cannot arise.
+#[allow(clippy::too_many_arguments)]
 fn decode_block_at_depth(
     tim: &[u8],
     fp: usize,
@@ -1265,7 +1349,9 @@ fn decode_block_at_depth(
     has_payloads: bool,
     depth: u32,
     already_trie_indexed: Option<&std::collections::HashSet<usize>>,
-) -> Result<Vec<(Vec<u8>, TermStats, TermMetadata)>> {
+    prefix: &[u8],
+    out: &mut TermIndex,
+) -> Result<()> {
     if depth > 10_000 {
         return Err(Error::Unsupported(
             "terms block sub-block nesting too deep (possible cycle)",
@@ -1357,7 +1443,6 @@ fn decode_block_at_depth(
     // `absolute` flag is true only for this block's first *term* (ordinal 0),
     // not merely the first entry (which could be a sub-block).
     let mut term_ord: u32 = 0;
-    let mut entries = Vec::with_capacity(ent_count as usize);
     for _ in 0..ent_count {
         // Leaf entries carry a plain suffix-length vint (every entry is a
         // term); non-leaf entries pack `suffixLength << 1 | isSubBlock` into
@@ -1388,19 +1473,21 @@ fn decode_block_at_depth(
                 // it here too would duplicate every one of its terms.
                 continue;
             }
-            let sub_entries = decode_block_at_depth(
+            // One allocation per *sub-block*, not per term: the child's terms
+            // are written flat by the recursive call.
+            let mut child_prefix = Vec::with_capacity(prefix.len() + suffix.len());
+            child_prefix.extend_from_slice(prefix);
+            child_prefix.extend_from_slice(&suffix);
+            decode_block_at_depth(
                 tim,
                 sub_fp,
                 index_options,
                 has_payloads,
                 depth + 1,
                 already_trie_indexed,
+                &child_prefix,
+                out,
             )?;
-            for (sub_suffix, stats, meta) in sub_entries {
-                let mut full = suffix.clone();
-                full.extend_from_slice(&sub_suffix);
-                entries.push((full, stats, meta));
-            }
             continue;
         }
 
@@ -1435,17 +1522,18 @@ fn decode_block_at_depth(
         prev_meta = meta;
         term_ord += 1;
 
-        entries.push((
-            suffix,
+        out.push(
+            prefix,
+            &suffix,
             TermStats {
                 doc_freq,
                 total_term_freq,
             },
             meta,
-        ));
+        );
     }
 
-    Ok(entries)
+    Ok(())
 }
 
 /// Opens a `.tim`/`.tip`/`.tmd` triple already read whole into memory,
@@ -1595,30 +1683,28 @@ pub fn open(
         let trie_block_fps: std::collections::HashSet<usize> =
             blocks.iter().map(|(fp, _)| *fp as usize).collect();
 
-        let mut entries = Vec::with_capacity(num_terms as usize);
+        let mut entries = TermIndex::with_capacity(num_terms as usize);
         for (block_fp, block_prefix) in blocks {
-            for (suffix, stats, meta) in decode_block_at_depth(
+            // `decode_block` only ever sees a block's suffix bytes (the writer
+            // strips the shared trie-path prefix); the prefix is handed down so
+            // the full term is written straight into the flat buffer, rather
+            // than each term being built in its own `Vec` and then moved.
+            decode_block_at_depth(
                 tim,
                 block_fp as usize,
                 field_info.index_options,
                 field_info.store_payloads,
                 0,
                 Some(&trie_block_fps),
-            )? {
-                // `decode_block` only ever sees a block's suffix bytes (the
-                // writer strips the shared trie-path prefix); re-attach it
-                // here to recover the full term (see `collect_leaf_blocks`'s
-                // doc comment).
-                let mut term = block_prefix.clone();
-                term.extend_from_slice(&suffix);
-                entries.push((term, stats, meta));
-            }
+                &block_prefix,
+                &mut entries,
+            )?;
         }
         // Blocks are decoded in trie-traversal order, not necessarily sorted
         // term order (see the module doc) -- re-sort once, here, so
         // `FieldTerms::seek_exact`'s binary search stays correct regardless
         // of how many blocks a field spans.
-        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        entries.sort();
         if entries.len() as i64 != num_terms {
             return Err(Error::Store(lucene_store::Error::Corrupted(format!(
                 "decoded {} terms but field metadata says numTerms={num_terms}",
@@ -2215,7 +2301,7 @@ mod tests {
             max_term: Vec::new(),
             index_options: IndexOptions::Docs,
             has_payloads: false,
-            entries: Vec::new(),
+            entries: TermIndex::default(),
         };
         let mut it = field.iter();
         assert_eq!(it.next(), None);
@@ -3423,8 +3509,8 @@ mod tests {
         let field = fields.field("many").unwrap();
         let num_terms: i64 = kv.get("field.many.numTerms").unwrap().parse().unwrap();
         assert_eq!(field.num_terms, num_terms);
-        for (term, stats, _meta) in &field.entries {
-            assert_eq!(field.seek_exact(term).unwrap(), *stats);
+        for (term, stats) in field.entries.range(0, field.entries.len()) {
+            assert_eq!(field.seek_exact(term).unwrap(), stats);
         }
     }
 
@@ -3562,8 +3648,8 @@ mod tests {
                 assert_eq!(stats.doc_freq, 1);
                 assert_eq!(stats.total_term_freq, 1);
             }
-            for (term, stats, _meta) in &field.entries {
-                assert_eq!(field.seek_exact(term).unwrap(), *stats);
+            for (term, stats) in field.entries.range(0, field.entries.len()) {
+                assert_eq!(field.seek_exact(term).unwrap(), stats);
             }
         }
     }
@@ -3914,8 +4000,8 @@ mod tests {
         let field = fields.field("many").unwrap();
         let num_terms: i64 = kv.get("field.many.numTerms").unwrap().parse().unwrap();
         assert_eq!(field.num_terms, num_terms);
-        for (term, stats, _meta) in &field.entries {
-            assert_eq!(field.seek_exact(term).unwrap(), *stats);
+        for (term, stats) in field.entries.range(0, field.entries.len()) {
+            assert_eq!(field.seek_exact(term).unwrap(), stats);
         }
     }
 }
