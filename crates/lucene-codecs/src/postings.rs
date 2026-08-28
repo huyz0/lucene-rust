@@ -708,6 +708,8 @@ impl<'a> DocInput<'a> {
             block_pos: 0,
             doc_id: -1,
             scratch: BlockScratch::new(),
+            pending: None,
+            level0_last_doc_id: -1,
             level0_impacts: Impacts::new(),
             level1_impacts: Impacts::new(),
         })
@@ -1806,6 +1808,35 @@ pub struct LazyDocsCursor<'a> {
     /// Decode buffers, held for the life of the cursor rather than rebuilt per
     /// block — see [`BlockScratch`].
     scratch: BlockScratch,
+    /// A block whose level-0 header and impacts have been read but whose body
+    /// has **not** been bit-unpacked — `Lucene104PostingsReader`'s
+    /// `needsRefilling` state, reached through
+    /// [`LazyDocsCursor::advance_shallow`].
+    pending: Option<PendingBlock>,
+    /// `level0LastDocID`: the highest doc ID of the block this cursor is
+    /// currently positioned on, whether that block is merely shallow-positioned
+    /// or fully decoded. [`NO_MORE_DOCS`] in the tail block (which carries no
+    /// header, so its extent is not known without decoding) and once exhausted;
+    /// `-1` before the first move.
+    level0_last_doc_id: i32,
+}
+
+/// A level-0 block positioned but not decoded: everything
+/// [`LazyDocsCursor::refill`] needs to unpack it later, and nothing more.
+///
+/// This is the whole point of `advanceShallow`. Deciding whether a block can
+/// contain a competitive document needs its header and its impacts, which are a
+/// handful of vints; unpacking its 256 documents costs orders of magnitude more
+/// and is pure waste if the block loses. Lucene keeps exactly this split.
+#[derive(Debug, Clone, Copy)]
+struct PendingBlock {
+    /// The previous block's last doc ID -- the delta base the body decodes
+    /// against. Held because `prev_doc_id` must not advance past this block
+    /// until the body is actually decoded.
+    base_doc_id: i32,
+    last_doc_id: i32,
+    body_start: usize,
+    body_end: usize,
 }
 
 impl<'a> LazyDocsCursor<'a> {
@@ -1869,8 +1900,33 @@ impl<'a> LazyDocsCursor<'a> {
         self.level1_last_doc_id
     }
 
+    /// Last doc ID of the most recently *decoded* block.
+    ///
+    /// Predates [`Self::advance_shallow`] and deliberately still means what it
+    /// always meant, because callers use it as a re-check watermark and a
+    /// shallow-aware value would poison that: in the tail block -- which has no
+    /// header, so no known extent -- the shallow answer is [`NO_MORE_DOCS`],
+    /// and a caller latching that as "already checked up to here" stops
+    /// re-evaluating its bound for the rest of the query. That regression was
+    /// caught by `boolean_query_scored_maxscore_matches_eager_ffi_path_and_actually_skips_blocks`,
+    /// whose skip counter went to zero while its results stayed correct.
+    ///
+    /// New code walking blocks on impacts alone wants
+    /// [`Self::level0_last_doc_id`] instead.
     pub fn current_block_last_doc_id(&self) -> i32 {
         self.prev_doc_id
+    }
+
+    /// `Impacts.getDocIdUpTo(0)`: the highest doc ID of the block the cursor is
+    /// positioned on, valid after a shallow move as well as a full one, and the
+    /// doc ID up to which [`Self::level0_impacts`] describes.
+    ///
+    /// [`NO_MORE_DOCS`] in the tail block and once exhausted; `-1` before the
+    /// first move. A caller must therefore treat `NO_MORE_DOCS` as "extent
+    /// unknown, cannot skip", not as "finished" -- which is also why
+    /// [`Self::level0_impacts`] is empty in exactly those states.
+    pub fn level0_last_doc_id(&self) -> i32 {
+        self.level0_last_doc_id
     }
 
     /// `PostingsEnum.nextDoc()`: moves to the next doc, returning its ID (or
@@ -1926,7 +1982,10 @@ impl<'a> LazyDocsCursor<'a> {
         // First, try the already-decoded current block (covers the common
         // "advance a little" and "nextDoc" cases without touching the wire
         // at all).
-        if self.block_pos < self.block_len {
+        // `pending.is_none()` matters: a shallow move positions past the
+        // decoded block without touching `block_docs`, so those documents are
+        // stale and must not answer an advance.
+        if self.pending.is_none() && self.block_pos < self.block_len {
             let offset =
                 self.block_docs[self.block_pos..self.block_len].partition_point(|&d| d < target);
             if self.block_pos + offset < self.block_len {
@@ -1939,21 +1998,108 @@ impl<'a> LazyDocsCursor<'a> {
             self.block_pos = self.block_len;
         }
 
+        // Position on the block that can contain `target`, reading headers and
+        // impacts only. This is where the block-at-a-time walking happens, and
+        // it no longer unpacks anything on the way.
+        self.advance_shallow(target)?;
+
+        if self.pending.is_some() {
+            // A full block, positioned but not decoded. Now it is genuinely
+            // needed, so pay for it.
+            self.refill()?;
+            let offset = self.block_docs.partition_point(|&d| d < target);
+            self.block_pos = offset;
+            self.doc_id = self.block_docs[offset];
+            return Ok(self.doc_id);
+        }
+
+        if self.doc_count_left == 0 {
+            self.block_len = 0;
+            self.block_pos = 0;
+            self.doc_id = NO_MORE_DOCS;
+            return Ok(NO_MORE_DOCS);
+        }
+
+        // The tail block: no skip data on the wire at all, so there is nothing
+        // to decide from and it must be decoded.
+        let count = self.doc_count_left as usize;
+        let mut docs = Vec::with_capacity(count);
+        let mut freqs = Vec::with_capacity(count);
+        read_tail_block(
+            &mut self.r,
+            self.prev_doc_id,
+            count,
+            self.index_has_freq,
+            &mut docs,
+            &mut freqs,
+        )?;
+        self.block_docs[..count].copy_from_slice(&docs);
+        self.block_freqs[..count].copy_from_slice(&freqs);
+        self.block_len = count;
+        self.doc_count_left = 0;
+        // The tail block has no level-0 skip header (and hence no impacts) on
+        // the wire at all (`Lucene104PostingsReader.refillRemainder`'s
+        // non-singleton branch never touches `level0SerializedImpacts`).
+        self.level0_impacts.clear();
+
+        let offset = self.block_docs[..count].partition_point(|&d| d < target);
+        self.block_pos = offset;
+        self.doc_id = if offset < count {
+            self.block_docs[offset]
+        } else {
+            NO_MORE_DOCS
+        };
+        Ok(self.doc_id)
+    }
+
+    /// `ImpactsEnum.advanceShallow(target)`: move to the first block that can
+    /// contain `target`, reading each candidate block's level-0 header and
+    /// impacts and **decoding no document bodies at all**. Returns that block's
+    /// `level0LastDocID` -- the doc ID up to which
+    /// [`Self::level0_impacts`] is valid -- or [`NO_MORE_DOCS`] when the cursor
+    /// has run into the tail block or past the end.
+    ///
+    /// ## Why this exists
+    ///
+    /// This is the single largest structural divergence the M1.6 sweep found.
+    /// Without it, deciding "can this block hold a competitive document?"
+    /// required [`Self::advance`], which decodes the block first -- so a
+    /// scoring loop paid the `ForUtil`/`PForUtil` unpack of 256 documents for
+    /// every block it then discarded. Counted on the M1 corpus, `and t0 tz`
+    /// unpacked 6,067,712 documents to score 80,226 of them: **1.3% of the
+    /// decode work was used.** Lucene never does that; `advanceShallow` sets
+    /// `needsRefilling` and `refillDocs()` runs only if the block survives.
+    ///
+    /// After this returns, [`Self::doc_id`] and [`Self::freq`] still describe
+    /// the *previous* position -- nothing about the new block is readable until
+    /// [`Self::advance`] or [`Self::next_doc`] materializes it. That is the same
+    /// contract Lucene's `ImpactsEnum` has, and it is what lets a caller walk
+    /// blocks on impacts alone.
+    pub fn advance_shallow(&mut self, target: i32) -> Result<i32> {
+        // Already positioned on a block that covers `target`, decoded or not.
+        if target <= self.level0_last_doc_id {
+            return Ok(self.level0_last_doc_id);
+        }
+
+        // A shallow block that `target` has moved past: skip it without ever
+        // decoding it. This is the case that saves the work.
+        if let Some(p) = self.pending.take() {
+            self.r.seek(p.body_end)?;
+            self.prev_doc_id = p.last_doc_id;
+            self.doc_count_left -= BLOCK_SIZE;
+        }
+
         loop {
-            // Level-1 skip: before touching any level-0 block, jump past whole
-            // 32-block spans that are entirely behind `target`
-            // (`Lucene104PostingsReader.moveToNextLevel0Block`/`doAdvanceShallow`
-            // both call `skipLevel1To(target)` first). For a
-            // `docFreq < LEVEL1_NUM_DOCS` term `level1_last_doc_id` is pinned
-            // at NO_MORE_DOCS, so this never fires.
+            // Level-1 skip: jump past whole 32-block spans that are entirely
+            // behind `target` before looking at any level-0 header, exactly as
+            // `doAdvanceShallow` does.
             if target > self.level1_last_doc_id {
                 self.skip_level1_to(target)?;
             }
 
             if self.doc_count_left == 0 {
-                self.block_len = 0;
-                self.block_pos = 0;
-                self.doc_id = NO_MORE_DOCS;
+                self.level0_impacts.clear();
+                self.level0_last_doc_id = NO_MORE_DOCS;
                 return Ok(NO_MORE_DOCS);
             }
 
@@ -1967,73 +2113,58 @@ impl<'a> LazyDocsCursor<'a> {
                 )?;
 
                 if header.last_doc_id < target {
-                    // The whole block is behind `target`: jump straight to
-                    // its end, never decoding the body (the actual `ForUtil`/
-                    // `PForUtil` bit-unpack this cursor avoids).
                     self.r.seek(header.body_end)?;
                     self.prev_doc_id = header.last_doc_id;
                     self.doc_count_left -= BLOCK_SIZE;
                     continue;
                 }
 
-                // Target lands inside this block (or the block's last doc
-                // is still < target is false, i.e. >= target): decode it.
-                debug_assert_eq!(self.r.position(), header.body_start);
-                decode_full_block_body(
-                    &mut self.r,
-                    self.prev_doc_id,
-                    self.index_has_freq,
-                    &mut self.scratch,
-                    &mut self.block_docs,
-                    &mut self.block_freqs,
-                )?;
-                self.block_len = BLOCK_SIZE as usize;
-                self.prev_doc_id = header.last_doc_id;
-                self.doc_count_left -= BLOCK_SIZE;
-                // Decoded here and nowhere else: only a block whose body we
-                // actually load can have its impacts asked for, so a block
-                // skipped by `last_doc_id < target` above never pays. Reuses
-                // this cursor's buffer rather than allocating per block.
+                // Impacts, yes -- a handful of vints, and the whole reason a
+                // caller is here. Body, no.
                 decode_impacts_into(header.impact_bytes, &mut self.level0_impacts)?;
-
-                let offset = self.block_docs.partition_point(|&d| d < target);
-                self.block_pos = offset;
-                self.doc_id = self.block_docs[offset];
-                return Ok(self.doc_id);
+                self.level0_last_doc_id = header.last_doc_id;
+                self.pending = Some(PendingBlock {
+                    base_doc_id: self.prev_doc_id,
+                    last_doc_id: header.last_doc_id,
+                    body_start: header.body_start,
+                    body_end: header.body_end,
+                });
+                return Ok(header.last_doc_id);
             }
 
-            // The tail block: no skip data on the wire at all, must decode.
-            let count = self.doc_count_left as usize;
-            let mut docs = Vec::with_capacity(count);
-            let mut freqs = Vec::with_capacity(count);
-            read_tail_block(
-                &mut self.r,
-                self.prev_doc_id,
-                count,
-                self.index_has_freq,
-                &mut docs,
-                &mut freqs,
-            )?;
-            self.block_docs[..count].copy_from_slice(&docs);
-            self.block_freqs[..count].copy_from_slice(&freqs);
-            self.block_len = count;
-            self.doc_count_left = 0;
-            // The tail block has no level-0 skip header (and hence no
-            // impacts) on the wire at all (`Lucene104PostingsReader
-            // .refillRemainder`'s non-singleton branch never touches
-            // `level0SerializedImpacts`) — matches the real reader returning
-            // whatever `level0LastDocID == NO_MORE_DOCS` state implies.
+            // The tail carries no header, so its extent and impacts are unknown
+            // without decoding it. Empty impacts mean "no bound available",
+            // which every caller in this port treats as "cannot skip" -- the
+            // same conservative answer Lucene reaches with its dummy
+            // `freq = Integer.MAX_VALUE` impact.
             self.level0_impacts.clear();
-
-            let offset = self.block_docs[..count].partition_point(|&d| d < target);
-            self.block_pos = offset;
-            self.doc_id = if offset < count {
-                self.block_docs[offset]
-            } else {
-                NO_MORE_DOCS
-            };
-            return Ok(self.doc_id);
+            self.level0_last_doc_id = NO_MORE_DOCS;
+            return Ok(NO_MORE_DOCS);
         }
+    }
+
+    /// `Lucene104PostingsReader.refillDocs`: unpack the block
+    /// [`Self::advance_shallow`] positioned on. A no-op when there is nothing
+    /// pending, so it is safe to call unconditionally before reading documents.
+    fn refill(&mut self) -> Result<()> {
+        let Some(p) = self.pending.take() else {
+            return Ok(());
+        };
+        self.r.seek(p.body_start)?;
+        decode_full_block_body(
+            &mut self.r,
+            p.base_doc_id,
+            self.index_has_freq,
+            &mut self.scratch,
+            &mut self.block_docs,
+            &mut self.block_freqs,
+        )?;
+        debug_assert_eq!(self.r.position(), p.body_end);
+        self.block_len = BLOCK_SIZE as usize;
+        self.block_pos = 0;
+        self.prev_doc_id = p.last_doc_id;
+        self.doc_count_left -= BLOCK_SIZE;
+        Ok(())
     }
 
     /// Port of `Lucene104PostingsReader.skipLevel1To`
