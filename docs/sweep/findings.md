@@ -1010,3 +1010,66 @@ two things in this document need reading with that in mind:
 `scripts/bench-micro.sh` should interleave both engines within a run, repeat,
 and refuse to report a difference smaller than the measured noise floor. Not
 done here.
+
+---
+
+## MAXSCORE clause partitioning: implemented, measured, reverted
+
+The `advanceShallow` fix removed the wasted *decoding*. It did not change how
+many documents get *scored*, and that remains the larger divergence:
+
+| query | this port | Lucene |
+|---|---|---|
+| `or t0 t1 t2 t3` | 4,121,444 | 1,625 |
+| `or tz t2s` | 1,334,994 | 11,505 |
+| `and t0 t1 t2` | 1,179,565 | 1,451 |
+
+The obvious candidate was the missing clause partition -- MAXSCORE (Turtle &
+Flood), which `WANDScorer` implements and which `try_disjunction_lazy`'s own
+comment named as the thing it did not do. Implemented in full: a static
+per-clause `max_score` from the term's statistics, clauses ordered by it, the
+longest prefix whose maxima sum below the threshold declared non-essential,
+candidates generated from essential clauses only, and non-essential clauses
+advanced *to* each candidate rather than iterated.
+
+**It is a net regression and is not in the tree.**
+
+| query | before | after | |
+|---|---|---|---|
+| `or tz t2s` | 73.3 qps | 111.8 qps | **1.53x** |
+| `or t0 t1` | 178.4 qps | 154.4 qps | 0.87x |
+| `or t0 t1 t2 t3` | 11.4 qps | 6.9 qps | **0.61x** |
+
+It wins exactly where the non-essential clauses can be *jumped over* and loses
+where they cannot. On `or t0 t1 t2 t3` every term is frequent, so candidates stay
+dense, and each one now costs a random `advance` into a huge posting list where
+it previously cost a sequential `next_doc`. Scoring 11% fewer documents did not
+pay for that.
+
+One sub-finding worth keeping, because it was measured separately. The first
+version bounded non-essential clauses by their *static* maxima -- sound, since a
+clause not positioned on the span cannot have its block impacts trusted. That is
+far looser than a block bound, the span skip stopped firing, and
+`or t0 t1 t2 t3` went to 6.2 qps while scoring *more* documents than before
+(4.5M against 4.1M). Shallow-advancing every clause to the candidate first --
+a header and a few vints, no body decode -- restores the tight bound and got it
+back to 6.9. Still a regression, but it isolates the two effects.
+
+### What this rules out, and what it points at
+
+Lucene scoring 1,625 documents where we score 4,121,444 is *not* explained by
+the clause partition alone. `WANDScorer` partitions on **per-span** maxima
+refreshed through `advanceShallow`, not on static ones, which makes the
+non-essential set much larger inside any given span and -- the part that
+matters -- makes the candidate stream sparse enough that advancing the
+non-essential clauses is cheap. A static partition gets the bookkeeping without
+the sparsity, which is the half that pays.
+
+So the remaining gap is a per-span partition, not a partition. That is a larger
+change than this attempt and it should not be started until there is a
+measurement that can tell a 1.2x regression from noise -- see the harness caveat
+above. Filed, with this attempt's numbers as the baseline to beat.
+
+This is the fourth measured revert in this project's performance work
+(header-only block skipping, the WAND attempt in M1.5, the `ImpactsDISI`-shaped
+conjunction, and this). All four looked obviously right beforehand.
