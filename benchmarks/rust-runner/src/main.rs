@@ -154,6 +154,31 @@ fn main() {
                 // linearly scans, where Lucene intersects a compiled automaton
                 // against the term dictionary -- an unquantified divergence
                 // until now.
+                "fuzzy" | "regexp" => {
+                    let clause = if q.kind == "fuzzy" {
+                        Clause::Fuzzy(lucene_search::query::FuzzyQuery {
+                            field: q.field.clone(),
+                            term: q.args[0].clone().into_bytes(),
+                            max_edits: 2,
+                            prefix_length: 0,
+                            transpositions: true,
+                            // Lucene's BooleanQuery.getMaxClauseCount default,
+                            // which is what FuzzyQuery's rewrite is bounded by.
+                            max_expansions: 1024,
+                        })
+                    } else {
+                        Clause::Regexp(lucene_search::query::RegexpQuery::new(
+                            q.field.clone(),
+                            q.args[0].clone(),
+                        ))
+                    };
+                    let bq = BooleanQuery {
+                        must: vec![clause],
+                        ..Default::default()
+                    };
+                    search_boolean_query_multi_segment(&segments, &bq, &bool_norms, TOP_N)
+                        .expect("fuzzy/regexp")
+                }
                 "prefix" | "wildcard" => {
                     let clause = if q.kind == "prefix" {
                         Clause::Prefix(lucene_search::query::PrefixQuery::new(

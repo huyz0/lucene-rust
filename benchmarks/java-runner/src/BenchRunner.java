@@ -153,6 +153,13 @@ public final class BenchRunner {
                 return b.build();
             }
             // Query kinds the M1.6 sweep never measured.
+            case "fuzzy":
+                // maxEdits 2, prefixLength 0, transpositions on -- the Rust
+                // side's settings, and Lucene's own defaults except maxEdits.
+                return new org.apache.lucene.search.FuzzyQuery(
+                        new Term(field, f[3]), 2, 0, 1024, true);
+            case "regexp":
+                return new org.apache.lucene.search.RegexpQuery(new Term(field, f[3]));
             case "prefix":
                 return new org.apache.lucene.search.PrefixQuery(new Term(field, f[3]));
             case "wildcard":

@@ -362,6 +362,154 @@ fn term_doc_ids(
         .collect())
 }
 
+/// A wildcard-family clause's expansion: the field it targets, the terms it
+/// matched, and the sum of their document frequencies.
+///
+/// The last is what [`stream_constant_score_clause`] weighs its setup cost
+/// against, so it is gathered during the term scan rather than by re-seeking
+/// each term afterwards.
+type Expansion = (String, Vec<Vec<u8>>, i64);
+
+/// The terms a wildcard-family clause expands to, or `None` when the clause is
+/// not one of that family (or its field is absent from this segment).
+fn expanded_terms(fields: &BlockTreeFields, clause: &Clause) -> Result<Option<Expansion>> {
+    let out = match clause {
+        Clause::Prefix(q) => {
+            let Some(ft) = fields.field(&q.field) else {
+                return Ok(None);
+            };
+            let pattern = WildcardPattern::prefix(&q.prefix);
+            let mut df = 0i64;
+            let terms: Vec<Vec<u8>> = ft
+                .intersect(&pattern)
+                .map(|(t, s)| {
+                    df += s.doc_freq as i64;
+                    t.to_vec()
+                })
+                .collect();
+            (q.field.clone(), terms, df)
+        }
+        Clause::Wildcard(q) => {
+            let Some(ft) = fields.field(&q.field) else {
+                return Ok(None);
+            };
+            let pattern = WildcardPattern::new(&q.pattern);
+            let mut df = 0i64;
+            let terms: Vec<Vec<u8>> = ft
+                .intersect(&pattern)
+                .map(|(t, s)| {
+                    df += s.doc_freq as i64;
+                    t.to_vec()
+                })
+                .collect();
+            (q.field.clone(), terms, df)
+        }
+        Clause::Regexp(q) => {
+            let Some(ft) = fields.field(&q.field) else {
+                return Ok(None);
+            };
+            let pattern = RegexpPattern::new(q.pattern.as_bytes())?;
+            let mut df = 0i64;
+            let terms: Vec<Vec<u8>> = ft
+                .regexp_intersect(&pattern)
+                .map(|(t, s)| {
+                    df += s.doc_freq as i64;
+                    t.to_vec()
+                })
+                .collect();
+            (q.field.clone(), terms, df)
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(out))
+}
+
+/// Streams a constant-scoring clause's matched documents in ascending order and
+/// stops as soon as the collector cannot be beaten.
+///
+/// The wildcard family scores a flat 1.0 for every match. With every score
+/// equal, `TopDocsCollector`'s tie-break -- lower doc ID wins -- makes the top
+/// `n` simply *the `n` lowest matching doc IDs*. So once the collector is full
+/// and its worst kept score is already 1.0, no later document can enter it and
+/// there is nothing to gain by finding the rest.
+///
+/// That matters because "the rest" can be enormous. `regexp body:t1[0-9]`
+/// matches ten terms, all of them frequent: unioning their postings is roughly
+/// 15 million documents to answer a top-50 query, and it measured **2,845x
+/// slower than Lucene**, which rewrites a small term set to a disjunction and
+/// prunes. Merging the terms' already-sorted postings lazily and stopping at 50
+/// does the same job without ever building the union.
+///
+/// Returns `false` when it cannot handle the clause -- an absent field, no
+/// `.doc` input, or a pulsed singleton term with no postings to open lazily --
+/// leaving the caller to fall back to the materializing path.
+fn stream_constant_score_clause<C: ScoringCollector>(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    clause: &Clause,
+    collector: &mut C,
+) -> Result<bool> {
+    let Some((field, terms, total_doc_freq)) = expanded_terms(fields, clause)? else {
+        return Ok(false);
+    };
+    let Some(field_terms) = fields.field(&field) else {
+        return Ok(false);
+    };
+    let Some(doc_in) = doc_in else {
+        return Ok(false);
+    };
+    // Choose by expected work rather than by term count.
+    //
+    // Setting up costs one lazy cursor per term, and opening a cursor decodes
+    // that term's first block -- about `BLOCK_SIZE` documents' worth of work
+    // each. The bit-set union it replaces costs one pass over *every* posting.
+    // So streaming wins when the union is much larger than the setup, and a
+    // fixed term-count threshold gets this wrong in both directions: 32 was
+    // tried and cost `prefix body:t12` a 12x win, because that clause expands
+    // to hundreds of terms whose postings are far larger still.
+    if total_doc_freq < (terms.len() as i64) * lucene_codecs::for_util::BLOCK_SIZE as i64 {
+        return Ok(false);
+    }
+
+    let mut cursors = Vec::with_capacity(terms.len());
+    for term in &terms {
+        let Some(mut cursor) = field_terms.lazy_postings(term, doc_in)? else {
+            return Ok(false);
+        };
+        let doc = cursor.next_doc().map_err(blocktree::Error::Postings)?;
+        cursors.push((cursor, doc));
+    }
+
+    loop {
+        // Smallest current doc across the cursors. Linear in the number of
+        // matched terms, which is affordable because this loop runs about
+        // `top_n` times, not once per matching document.
+        let mut best = lucene_codecs::postings::NO_MORE_DOCS;
+        for (_, doc) in &cursors {
+            if *doc < best {
+                best = *doc;
+            }
+        }
+        if best == lucene_codecs::postings::NO_MORE_DOCS {
+            return Ok(true);
+        }
+        if live_docs.is_none_or(|bits| bits.get(best as usize)) {
+            collector.collect(best, 1.0);
+            // Full, and its worst hit already scores what every remaining
+            // document would: nothing left can displace anything.
+            if collector.min_competitive_score().is_some_and(|s| s >= 1.0) {
+                return Ok(true);
+            }
+        }
+        for (cursor, doc) in cursors.iter_mut() {
+            if *doc == best {
+                *doc = cursor.next_doc().map_err(blocktree::Error::Postings)?;
+            }
+        }
+    }
+}
+
 /// Accumulates matched doc IDs from several terms' postings and returns them
 /// ascending and deduplicated -- Lucene's `DocIdSetBuilder`, which every
 /// `MultiTermQuery` rewrite goes through.
@@ -2573,6 +2721,11 @@ pub fn search_boolean_query_scored_with_stats<C: ScoringCollector>(
             | Clause::Wildcard(_)
             | Clause::Fuzzy(_)
             | Clause::Regexp(_)) => {
+                // Lazily merge the expanded terms' postings and stop at the
+                // collector's capacity -- see `stream_constant_score_clause`.
+                if stream_constant_score_clause(fields, doc_in, live_docs, other, collector)? {
+                    return Ok(());
+                }
                 let matched =
                     resolve_clause_docs(fields, doc_in, pos_in, pay_in, live_docs, points, other)?;
                 debug_assert!(

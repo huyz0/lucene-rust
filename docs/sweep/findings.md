@@ -1494,3 +1494,66 @@ remaining unswept surfaces are named in the milestone doc: fuzzy and regexp
 (same `*_doc_ids` shape, so likely fixed by O22 but unmeasured), points ranges,
 doc-values sorting, facets, highlighting, stored-field retrieval, and the whole
 write path.
+---
+
+## Fuzzy and regexp: one more fix, one genuine scoring divergence
+
+Continuing outside the benchmark's shapes. Both were measured against Lucene for
+the first time.
+
+### O23 — constant-score clauses do not need to find every match
+
+`regexp body:t1[0-9]` matches ten terms, all frequent. Unioning their postings is
+roughly 15 million documents to answer a top-50 query, and it measured **2,845x
+slower than Lucene**.
+
+But the wildcard family scores a flat 1.0 for every match, and with every score
+equal `TopDocsCollector`'s tie-break -- lower doc ID wins -- makes the top `n`
+simply *the `n` lowest matching doc IDs*. Once the collector is full and its
+worst kept score is 1.0, nothing later can enter it. Merging the terms'
+already-sorted postings lazily and stopping there answers the query without ever
+building the union.
+
+Which strategy to use is chosen by expected work, not by term count. Setting up
+costs one lazy cursor per term and each opens a block; the bit-set union costs
+one pass over every posting. So stream when the union is much larger than the
+setup -- concretely when `sum(docFreq) >= terms * BLOCK_SIZE`. A fixed threshold
+of 32 terms was tried first and cost `prefix body:t12` a 12x win, because that
+clause expands to hundreds of terms whose postings are far larger still.
+
+| query | before the sweep | now | Lucene | |
+|---|---|---|---|---|
+| `prefix body:t12` | 3.1 qps | **1,260** | 572 | **2.2x faster** |
+| `wildcard body:t?9` | 2.3 qps | **1,449** | 1,341 | **1.08x faster** |
+| `regexp body:t1[0-9]` | 25.7 qps | **1,978** | 98,494 | 0.02x |
+| `fuzzy body:t123` | 21.6 qps | 19.8 | 4.1 | **4.8x faster** |
+| `prefix body:t1` | 0.3 qps | 6.5 | 12.5 | 0.52x |
+| `wildcard body:t1*` | 0.3 qps | 6.5 | 14.0 | 0.46x |
+
+Top-50 doc sets match Java exactly for prefix, wildcard and regexp.
+
+### P4 — parity: `FuzzyQuery` scores are not Lucene's
+
+`fuzzy body:t123` is the one query whose hit set does **not** match. Lucene
+returns a top-1 score of 5.03; this port returns 1.0 for every match.
+
+That is not a bug introduced here -- `clause_scores`' fuzzy arm says
+*"Unscored: flat 1.0 per matching doc"* and has since it was written. But Lucene
+does not score fuzzy matches constantly: `MultiTermQuery.CONSTANT_SCORE_BLENDED_REWRITE`
+blends a per-term boost derived from edit distance, so a closer term contributes
+more. Different scores mean a different top-k, which is what the hit-set
+comparison shows.
+
+Recorded as a parity gap with a measurement attached rather than left as a
+scope note. `prefix`, `wildcard` and `regexp` are genuinely constant-scoring in
+both engines, so only fuzzy is affected.
+
+### Still unswept
+
+The term enumeration is a prefix-range scan where Lucene intersects a compiled
+automaton, which is why `regexp body:t1[0-9]` remains 49x off: Lucene visits ten
+terms, this port scans every term beginning `t1`. `intersect`'s own doc comment
+has always said so; it now has a number.
+
+And still never compared at all: points ranges, doc-values sorting, facets,
+highlighting, stored-field retrieval, and the whole write path.
