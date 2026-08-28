@@ -1389,3 +1389,35 @@ Against Lucene's 0.34 ms this is still 98x, and the rest is the design itself --
 Lucene decodes *one block* per seek and holds nothing. That remains the open
 item, but it is now 98x of a 33 ms operation rather than 1,624x of a 552 ms one,
 and two of the three contributors have been removed.
+
+### The lazy positions cursor (fixed)
+
+Phrase matching fetched every position of every term up front. For
+`phrase t0 t1` that materialized roughly 15 million occurrences of `t0` -- a
+60 MB `Vec<i32>`, twice over, since the flat assembler built its delta stream
+and then its position stream -- to look at the 2.2 million documents the
+intersection actually contains.
+
+Two changes, in the order Lucene does them.
+
+**Documents first, positions second.** `search_phrase_query_scored_with_stats`
+now intersects the (cheap) doc lists, then asks each term for only the
+documents in that intersection. Candidate `k` lands at index `k` in every
+term's positions, because the same candidate list drives every request, so the
+per-document cursor bookkeeping the matcher used to do is gone too.
+
+**Streaming decode.** `read_positions_for_docs` walks the `.pos` wire format one
+block at a time into a 256-entry buffer and keeps only the occurrences belonging
+to a wanted document. Payload and offset streams are still decoded -- they have
+to be, to stay aligned -- but discarded rather than stored, which is exactly what
+Lucene's `skipPositions` does. Positions are delta-coded per document with no way
+to find one without the running frequency sum, so neither engine can skip the
+decode; what this stops is the materialization.
+
+| query | before this milestone | after |
+|---|---|---|
+| `q16` `phrase t0 t1` | 0.1 qps (0.04x) | **1.5 qps** |
+| `q17` `phrase t1 t2` | 0.3 qps (0.07x) | **2.1 qps** |
+
+15x and 7x across the milestone; 1.25x and 1.17x from the streaming decode
+alone. Hit sets and top-1 scores are identical at every step.

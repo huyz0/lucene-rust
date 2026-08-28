@@ -3714,25 +3714,32 @@ pub fn search_phrase_query_scored_with_stats<C: ScoringCollector>(
         idf_sum += similarity::idf(df, dc);
     }
 
+    // Documents first, positions second.
+    //
+    // A phrase can only match where every term does, so positions are needed
+    // only for the intersection -- which for `phrase t0 t1` on the M1 corpus is
+    // 2.2M documents out of `t0`'s 5M. Fetching each term's positions up front
+    // materialized every one of them, roughly 15 million for `t0` alone, to
+    // look at less than half. Intersecting the (cheap) doc lists first and then
+    // asking only for those documents' positions is what `ExactPhraseMatcher`
+    // effectively does by advancing per candidate.
     let mut per_term_docs: Vec<Vec<i32>> = Vec::with_capacity(query.terms.len());
-    let mut per_term_positions: Vec<Vec<i32>> = Vec::with_capacity(query.terms.len());
-    let mut per_term_spans: Vec<Vec<(u32, u32)>> = Vec::with_capacity(query.terms.len());
+    let mut per_term_freqs: Vec<Vec<i32>> = Vec::with_capacity(query.terms.len());
     for term in &query.terms {
-        let Some((docs, positions, spans)) = term_doc_positions(
-            fields,
-            doc_in,
-            pos_in,
-            pay_in,
-            live_docs,
-            &query.field,
-            term,
-        )?
-        else {
+        let Some(postings) = field_terms.postings(term, doc_in)? else {
             return Ok(());
         };
+        let mut docs = Vec::with_capacity(postings.docs.len());
+        let mut freqs = Vec::with_capacity(postings.docs.len());
+        for (i, &doc_id) in postings.docs.iter().enumerate() {
+            if !live_docs.is_none_or(|bits| bits.get(doc_id as usize)) {
+                continue;
+            }
+            docs.push(doc_id);
+            freqs.push(postings.freqs[i]);
+        }
         per_term_docs.push(docs);
-        per_term_positions.push(positions);
-        per_term_spans.push(spans);
+        per_term_freqs.push(freqs);
     }
 
     let per_term_docs_snapshot = per_term_docs.clone();
@@ -3743,24 +3750,56 @@ pub fn search_phrase_query_scored_with_stats<C: ScoringCollector>(
             .collect(),
     )
     .collect();
+    if candidate_docs.is_empty() {
+        return Ok(());
+    }
+
+    // Each term's own indices for the candidates, ascending -- one walk per
+    // term, no searching, because both lists are sorted.
+    let mut per_term_positions: Vec<Vec<i32>> = Vec::with_capacity(query.terms.len());
+    let mut per_term_starts: Vec<Vec<u32>> = Vec::with_capacity(query.terms.len());
+    for (t, term) in query.terms.iter().enumerate() {
+        let docs = &per_term_docs_snapshot[t];
+        let mut wanted = Vec::with_capacity(candidate_docs.len());
+        let mut cursor = 0usize;
+        for &doc_id in &candidate_docs {
+            while cursor < docs.len() && docs[cursor] < doc_id {
+                cursor += 1;
+            }
+            debug_assert!(
+                cursor < docs.len() && docs[cursor] == doc_id,
+                "candidates come from the intersection of these very lists"
+            );
+            wanted.push(cursor);
+        }
+        let stats = field_terms
+            .seek_exact(term)
+            .expect("term presence was established above");
+        let (positions, starts) = field_terms.positions_for_docs(
+            term,
+            doc_in,
+            pos_in,
+            pay_in,
+            &per_term_freqs[t],
+            stats.total_term_freq,
+            &wanted,
+        )?;
+        per_term_positions.push(positions);
+        per_term_starts.push(starts);
+    }
 
     // One cursor per term, advanced in step with the ascending candidate order,
     // so each doc's positions are found without hashing and without cloning.
-    let mut cursors = vec![0usize; per_term_docs_snapshot.len()];
+    // Candidate `k` sits at index `k` in every term's positions, because
+    // `wanted` was built from the same candidate list for each term. No
+    // per-document cursor bookkeeping is left.
     let mut term_positions: Vec<&[i32]> = Vec::with_capacity(per_term_positions.len());
-    for doc_id in candidate_docs {
+    for (k, &doc_id) in candidate_docs.iter().enumerate() {
         term_positions.clear();
-        for (t, docs) in per_term_docs_snapshot.iter().enumerate() {
-            let i = &mut cursors[t];
-            while *i < docs.len() && docs[*i] < doc_id {
-                *i += 1;
-            }
-            debug_assert!(
-                *i < docs.len() && docs[*i] == doc_id,
-                "doc_id came from the conjunction of every term's own doc list"
-            );
-            let (start, end) = per_term_spans[t][*i];
-            term_positions.push(&per_term_positions[t][start as usize..end as usize]);
+        for t in 0..per_term_positions.len() {
+            let start = per_term_starts[t][k] as usize;
+            let end = per_term_starts[t][k + 1] as usize;
+            term_positions.push(&per_term_positions[t][start..end]);
         }
         let phrase_freq = if query.slop == 0 {
             phrase_freq_exact(&term_positions)

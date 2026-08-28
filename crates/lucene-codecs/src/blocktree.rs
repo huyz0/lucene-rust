@@ -703,6 +703,40 @@ impl FieldTerms {
         )?))
     }
 
+    /// Positions for just the documents `wanted` names, as indices into this
+    /// term's own doc list -- see [`postings::read_positions_for_docs`].
+    ///
+    /// `freqs` must be this term's per-document frequencies in the same order
+    /// and with the same live-document filtering the caller used to build
+    /// `wanted`, because the two index the same list.
+    #[allow(clippy::too_many_arguments)]
+    pub fn positions_for_docs(
+        &self,
+        term: &[u8],
+        doc_in: Option<&DocInput<'_>>,
+        pos_in: &postings::PosInput<'_>,
+        pay_in: Option<&postings::PayInput<'_>>,
+        freqs: &[i32],
+        total_term_freq: i64,
+        wanted: &[usize],
+    ) -> Result<(Vec<i32>, Vec<u32>)> {
+        let _ = doc_in;
+        let Some(idx) = self.entries.search(term).ok() else {
+            return Ok((Vec::new(), vec![0; wanted.len() + 1]));
+        };
+        let meta = self.entries.recs[idx].meta;
+        Ok(postings::read_positions_for_docs(
+            pos_in,
+            pay_in,
+            meta,
+            freqs,
+            total_term_freq,
+            self.index_options,
+            self.has_payloads,
+            wanted,
+        )?)
+    }
+
     /// [`FieldTerms::positions`] in the flat shape phrase matching wants: one
     /// positions array plus per-document start offsets, rather than a `Vec` per
     /// document. See [`postings::read_positions_flat`] for why that matters.

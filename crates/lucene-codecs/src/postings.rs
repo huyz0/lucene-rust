@@ -991,6 +991,221 @@ pub fn read_positions_flat(
     Ok((positions, doc_starts))
 }
 
+/// [`read_positions_flat`] restricted to the documents a caller will actually
+/// look at, given as sorted indices into `freqs`.
+///
+/// Phrase matching only ever needs positions for documents in the intersection
+/// of its terms' posting lists, which is a fraction of any one term's. Building
+/// them all is wasted: on the M1 corpus `phrase t0 t1` materialized every
+/// position of `t0` -- roughly 15 million, 60 MB -- to look at the 2.2 million
+/// documents the intersection actually contains.
+///
+/// `wanted` must be sorted and in range; out-of-range indices are ignored, and
+/// duplicates simply emit the same document twice. Returns `(positions,
+/// doc_starts)` addressed by position *within `wanted`*: `wanted[i]`'s
+/// positions are `positions[doc_starts[i]..doc_starts[i + 1]]`.
+///
+/// Still decodes the whole `.pos` stream -- positions are delta-coded per
+/// document with no way to find one without the running frequency sum, which is
+/// why Lucene's own `skipPositions` also decodes and discards. What this avoids
+/// is *materializing* them. A cursor that decodes block-at-a-time into a
+/// reusable buffer would avoid the intermediate too; that is the lazy positions
+/// cursor still filed in `docs/sweep/findings.md`.
+#[allow(clippy::too_many_arguments)]
+pub fn read_positions_for_docs(
+    pos: &PosInput<'_>,
+    pay: Option<&PayInput<'_>>,
+    meta: TermMetadata,
+    freqs: &[i32],
+    total_term_freq: i64,
+    index_options: IndexOptions,
+    has_payloads: bool,
+    wanted: &[usize],
+) -> Result<(Vec<i32>, Vec<u32>)> {
+    if !index_options.subsumes_positions() {
+        return Err(Error::Unsupported(
+            "read_positions_for_docs needs a field with IndexOptions::DocsAndFreqsAndPositions or higher",
+        ));
+    }
+    let has_offsets = index_options.subsumes_offsets();
+    let n = total_term_freq as usize;
+
+    // Where each document's occurrences start in the flat position stream.
+    let mut doc_start = vec![0u32; freqs.len() + 1];
+    let mut acc: u32 = 0;
+    for (i, &f) in freqs.iter().enumerate() {
+        doc_start[i] = acc;
+        acc = acc.saturating_add(f.max(0) as u32);
+    }
+    doc_start[freqs.len()] = acc;
+    if acc as usize != n {
+        return Err(Error::Store(lucene_store::Error::Corrupted(
+            "sum of per-doc freqs disagrees with total_term_freq".into(),
+        )));
+    }
+
+    let mut pos_r = SliceInput::new(pos.buf);
+    pos_r.seek(meta.pos_start_fp as usize)?;
+    let mut pay_r = pay.map(|p| SliceInput::new(p.buf));
+    if let Some(r) = pay_r.as_mut() {
+        r.seek(meta.pay_start_fp as usize)?;
+    }
+    let num_full_blocks = n / BLOCK_SIZE as usize;
+    let tail_count = n % BLOCK_SIZE as usize;
+    if num_full_blocks > 0 && (has_offsets || has_payloads) && pay.is_none() {
+        return Err(Error::Unsupported(
+            "read_positions_for_docs needs an opened .pay file: this field has offsets or \
+             payloads and total_term_freq spans at least one full 256-position block",
+        ));
+    }
+
+    let mut positions: Vec<i32> = Vec::new();
+    let mut doc_starts: Vec<u32> = Vec::with_capacity(wanted.len() + 1);
+    // Index into `wanted` of the document currently being collected, plus that
+    // document's occurrence range in the flat stream.
+    let mut w = 0usize;
+    let mut running = 0i32;
+    // Open the first wanted document, if there is one.
+    if wanted.is_empty() {
+        doc_starts.push(0);
+        return Ok((positions, doc_starts));
+    }
+    let (mut want_from, mut want_to) = {
+        let d = wanted[0];
+        let from = doc_start[d] as usize;
+        doc_starts.push(0);
+        (
+            from,
+            from + freqs.get(d).copied().unwrap_or(0).max(0) as usize,
+        )
+    };
+
+    // One position at a time through the wire format, keeping nothing. This is
+    // what makes the function worth having: the flat decoder it replaced built
+    // a `Vec<i32>` of every occurrence in the term -- 15 million, 60 MB, for
+    // `t0` on the M1 corpus -- and phrase matching reads a fraction of it.
+    // Lucene's `skipPositions` decodes and discards the same way.
+    let mut deltas = [0u32; for_util::BLOCK_SIZE];
+    let mut scratch = [0u32; for_util::BLOCK_SIZE];
+    let mut for_util_state = for_util::ForUtil::new();
+    let mut g = 0usize; // global occurrence index
+    for _ in 0..num_full_blocks {
+        for_util_state.pfor_decode(&mut pos_r, &mut deltas)?;
+        if has_payloads {
+            let pay_r = pay_r.as_mut().expect("checked above");
+            for_util_state.pfor_decode(pay_r, &mut scratch)?;
+            let num_bytes = pay_r.read_vint()? as usize;
+            pay_r.skip(num_bytes)?;
+        }
+        if has_offsets {
+            let pay_r = pay_r.as_mut().expect("checked above");
+            for_util_state.pfor_decode(pay_r, &mut scratch)?;
+            for_util_state.pfor_decode(pay_r, &mut scratch)?;
+        }
+        for &d in deltas.iter() {
+            collect_one(
+                d as i32,
+                g,
+                &mut w,
+                &mut want_from,
+                &mut want_to,
+                &mut running,
+                &mut positions,
+                &mut doc_starts,
+                wanted,
+                freqs,
+                &doc_start,
+            );
+            g += 1;
+        }
+    }
+
+    if tail_count > 0 {
+        let mut last_payload_length = 0i32;
+        for _ in 0..tail_count {
+            let code = pos_r.read_vint()?;
+            let delta = if has_payloads {
+                if code & 1 != 0 {
+                    last_payload_length = pos_r.read_vint()?;
+                }
+                let d = code >> 1;
+                if last_payload_length != 0 {
+                    pos_r.skip(last_payload_length as usize)?;
+                }
+                d
+            } else {
+                code
+            };
+            if has_offsets {
+                let delta_code = pos_r.read_vint()?;
+                if delta_code & 1 != 0 {
+                    let _last_offset_length = pos_r.read_vint()?;
+                }
+            }
+            collect_one(
+                delta,
+                g,
+                &mut w,
+                &mut want_from,
+                &mut want_to,
+                &mut running,
+                &mut positions,
+                &mut doc_starts,
+                wanted,
+                freqs,
+                &doc_start,
+            );
+            g += 1;
+        }
+    }
+
+    // Any wanted documents past the end of the stream contribute nothing.
+    while doc_starts.len() < wanted.len() {
+        doc_starts.push(positions.len() as u32);
+    }
+    doc_starts.push(positions.len() as u32);
+    Ok((positions, doc_starts))
+}
+
+/// Feeds one decoded delta to the collector: keeps it if it belongs to the
+/// document currently being gathered, and opens the next wanted document once
+/// this one's range is passed.
+#[allow(clippy::too_many_arguments)]
+#[inline]
+fn collect_one(
+    delta: i32,
+    g: usize,
+    w: &mut usize,
+    from: &mut usize,
+    to: &mut usize,
+    running: &mut i32,
+    positions: &mut Vec<i32>,
+    doc_starts: &mut Vec<u32>,
+    wanted: &[usize],
+    freqs: &[i32],
+    doc_start: &[u32],
+) {
+    // Past the current wanted document: open the following ones until one
+    // covers `g` or none is left.
+    while *w < wanted.len() && g >= *to {
+        *w += 1;
+        if *w >= wanted.len() {
+            return;
+        }
+        let d = wanted[*w];
+        let f = doc_start[d] as usize;
+        let t = f + freqs.get(d).copied().unwrap_or(0).max(0) as usize;
+        doc_starts.push(positions.len() as u32);
+        *from = f;
+        *to = t;
+        *running = 0;
+    }
+    if *w < wanted.len() && g >= *from && g < *to {
+        *running += delta;
+        positions.push(*running);
+    }
+}
+
 /// Decodes every position (and, if the field has them, offset/payload)
 /// occurrence for a term, in doc order — `PostingsEnum.nextPosition()`/
 /// `startOffset()`/`endOffset()`/`getPayload()` for every doc this term
