@@ -169,7 +169,8 @@ the end-to-end numbers again.
 |---|---|---|---|
 | M1 (milestone opened) | 0.15x | 19 of 20 | 13 (segmented) |
 | M1.6 first verdict | 0.34x | 19 | 0 |
-| after `advanceShallow` | **0.46x** | **16** | **0** |
+| after `advanceShallow` | 0.46x | 16 | 0 |
+| after the linear-scan `advance` and the score-map removal | **0.53x** | **16** | **0** |
 
 `q01 term body:t0` 1.16x, `q02` 1.04x, `q18 term title:t0` 1.09x -- faster than
 Lucene on their own queries. The M1 gate is still FAIL at 1/20.
