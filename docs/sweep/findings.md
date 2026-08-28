@@ -1232,3 +1232,56 @@ design. Something about how Lucene reaches 1,625 documents on
 `or t0 t1 t2 t3` is still not understood, and the next attempt should start by
 finding that out -- instrumenting Lucene's own skip decisions -- rather than by
 implementing another variant.
+
+
+### Sixth attempt: score fewer documents rather than visit fewer (also a wash)
+
+The four failures above all tried to stop *visiting* documents. That turned out
+to rest on a mis-framing of the counter: Lucene's `collect()` count is documents
+it **emits**, not documents it visits. `WANDScorer` iterates as many as anyone;
+it declines to *score* most of them.
+
+So the cheaper move is to bound each document individually -- the sum of the
+block maxima of the clauses actually matching it, which is usually a strict
+subset and so far tighter than the whole span's -- and step over the ones that
+cannot compete without a norm lookup, a division, or a collect.
+
+Implemented, and measured with three alternating A/B runs of each build (noise
+floor 1.009x, so these verdicts are resolvable):
+
+| query | without | with | |
+|---|---|---|---|
+| `or tz t2s` | 73.3 qps | 92.1 qps | **1.26x** |
+| `and t0 t1 t2` | 31.4 qps | 33.9 qps | 1.08x |
+| `and title t0 t1` | 31.5 qps | 32.7 qps | 1.04x |
+| `or t0 t1` | 180.5 qps | 173.7 qps | 0.96x |
+| `or t0 t1 t2 t3` | 11.5 qps | 10.8 qps | 0.94x |
+| **median change** | | | **1.004x** |
+
+It cuts documents scored on `or tz t2s` by **14.9x** (1,334,994 -> 89,411) and is
+still a wash overall, because the O(clauses) bound sum runs on every document and
+only pays on the fraction that get skipped.
+
+**Not shipped.** Median 1.004x is not an improvement, and this project's rule is
+that measured-and-not-better does not land.
+
+### The conclusion after six attempts
+
+Six independent implementations -- MAXSCORE twice, WAND twice, WAND's early-out,
+and per-document bounding -- all reduce real work and none makes queries faster.
+That is no longer a series of coding mistakes; it is a property of the code:
+
+**the per-document cost of this scoring loop is now low enough that any
+per-document test costs about as much as the work it avoids.**
+
+That is a good problem to have and it was created by this milestone -- `next_doc`
+is an array index, the norm is a table lookup, the score is one multiply, the
+collector rejects in one compare. But it means the remaining gap to Lucene
+cannot be closed by deciding *not* to do work at this granularity. It has to come
+from not reaching the documents at all, at a coarser granularity than a
+document and cheaper than the current span machinery.
+
+The honest next step is not another variant. It is to instrument Lucene itself
+-- count `nextDoc`/`advance` calls inside its scorers rather than `collect` calls
+-- and find out what it actually iterates, which no measurement in this
+milestone has established.
