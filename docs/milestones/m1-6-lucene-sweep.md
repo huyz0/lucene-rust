@@ -205,9 +205,17 @@ delivered milestone.
    memory per segment. Blocks M2 and M5 independently of query speed, because a
    search engine reopens readers on every refresh. Milestone-sized: FST arc
    walking to a block, frame-based suffix scanning, lazy metadata decode.
-2. **B2 — a lazy positions cursor.** The allocation half is fixed; positions are
-   still all decoded before any document is known to be a phrase candidate.
-   M1.5-sized.
+   **Note on a cheaper half-measure that was considered and rejected**: making
+   materialization lazy *per field* would cut open cost roughly by the field
+   count (5x on this corpus) rather than 135x, and it is not actually cheap --
+   `FieldTerms` owns its data and has no lifetime, so deferring the decode means
+   either holding owned copies of `.tim`/`.tip` (trading time for the memory
+   that is half the problem) or threading a lifetime through `BlockTreeFields`
+   and every one of its callers. Do the real thing instead.
+2. **B2 — a lazy positions cursor.** The allocation half is fixed and the score
+   map is gone; positions are still all decoded before any document is known to
+   be a phrase candidate. Now 23% of a phrase query, where it was competing with
+   43% of hash-map overhead that has since been removed. M1.5-sized.
 3. **`tf_norm`'s second division** in the boolean scorers (see the verdict).
 4. **A real `IndexedDISI` cursor** — forward-only, jump-table-backed,
    allocation-free. Would fix `doc_values.rs`'s three sparse sites, which are
