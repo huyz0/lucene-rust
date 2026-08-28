@@ -1128,3 +1128,40 @@ above. Filed, with this attempt's numbers as the baseline to beat.
 This is the fourth measured revert in this project's performance work
 (header-only block skipping, the WAND attempt in M1.5, the `ImpactsDISI`-shaped
 conjunction, and this). All four looked obviously right beforehand.
+
+---
+
+## Closing out: what this milestone fixed, and what it proved cannot be fixed cheaply
+
+The counting instrument found one structural divergence worth 20x and ruled out
+two fixes that looked obviously right. Recorded together because the negative
+results are the more useful half.
+
+### Fixed
+
+| finding | result |
+|---|---|
+| No `advanceShallow` split -- every considered block was decoded | `and t0 t1` 38,728 -> 1,924 block decodes; `q01` 0.84x -> **1.19x of Lucene** |
+| `IndexedDISI` decoded whole per lookup | flat instead of linear: **1,832x** at 100,000 present documents |
+| Harness could not resolve what it reported | noise floor 1.21x -> **1.09x**, and unresolvable cases now marked `~` |
+
+### Attempted, measured, reverted
+
+| attempt | why it failed |
+|---|---|
+| MAXSCORE clause partition (static maxima) | wins 1.53x on `or tz t2s`, loses **0.61x** on `or t0 t1 t2 t3` -- dense candidates make each non-essential `advance` cost more than the sequential `next_doc` it replaced |
+| Same, with static bounds for non-essential clauses | span skip stopped firing; scored *more* documents than before (4.5M vs 4.1M) at 6.2 qps |
+| `BM25Scorer.doScore`'s single division | not local -- `term_doc_scores` must move too, which means re-deriving every exact-score fixture against Lucene |
+
+### Still open, and now better characterised
+
+The scoring-count gap is **not** the clause partition. Lucene scores 1,625
+documents on `or t0 t1 t2 t3` where this port scores 4,121,444, and a static
+partition does not close it: `WANDScorer` partitions on **per-span** maxima
+refreshed through `advanceShallow`, which is what makes the candidate stream
+sparse enough for the partition to pay. That is the next thing to build, and it
+now has a measured baseline to beat rather than an assumption.
+
+Ahead of it in raw size, still: block-tree navigation (reader open at 135x
+Lucene) and a lazy positions cursor (phrase queries decode every position of
+every document before any of them is known to be a candidate).

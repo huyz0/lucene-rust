@@ -128,6 +128,16 @@ Named, measured, and not fixed here:
    `LazyPositionsCursor` in `lucene-codecs` and a phrase matcher rewritten
    against it.
 2. **`tf_norm` is two divisions where Lucene's `BM25Scorer.doScore` is one.**
+   *Attempted and reverted.* Switching the two boolean scoring loops to
+   `weight - weight / (1 + freq * normInverse)` breaks two cross-path
+   consistency tests immediately, because `clause_scores` -> `term_doc_scores`
+   -- the path a boolean query takes when its shape does not fit a lazy one --
+   still uses the multiply form, and the two must agree. The change is therefore
+   not local: it means moving *every* scoring path onto Lucene's expression at
+   once and re-deriving every exact-score fixture against
+   `IndexSearcher.explain()` rather than against this port's own previous
+   output. Worth doing as its own task with its own fixtures; the saving is one
+   division per document per clause.
    14% of a disjunction's profile. The term path already uses Lucene's form; the
    boolean paths cannot adopt it without re-deriving their expected values
    against `IndexSearcher.explain()`, since it is not bit-identical to what they
