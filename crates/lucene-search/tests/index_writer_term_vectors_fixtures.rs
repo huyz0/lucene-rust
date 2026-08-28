@@ -24,7 +24,9 @@ use lucene_codecs::field_infos::{
 };
 use lucene_codecs::stored_fields::{Document, FieldValue, StoredField};
 use lucene_codecs::term_vectors::{self as tv};
-use lucene_index::index_writer::IndexWriter;
+use lucene_index::index_writer::{
+    per_field_codec_suffix, per_field_segment, IndexWriter, POSTINGS_FORMAT_NAME,
+};
 use lucene_index::segment_info::{self, LuceneVersion};
 use lucene_search::term_vectors_query::term_vector_for_doc;
 use lucene_store::directory::{Directory, FsDirectory};
@@ -231,19 +233,48 @@ fn a_field_with_both_postings_and_term_vectors_configured_together_produces_both
 
     let si_bytes = dir.open(&format!("{}.si", sci.segment_name)).unwrap();
     let si = segment_info::parse(&si_bytes, &sci.segment_id).unwrap();
-    for ext in ["doc", "tim", "tip", "tmd", "tvd", "tvx", "tvm"] {
-        let name = format!("{}.{ext}", sci.segment_name);
-        assert!(si.files.contains(&name), "missing {name} in .si files");
-        assert!(
-            dir.list_all().unwrap().contains(&name),
-            "missing {name} on disk"
-        );
+    // Postings are a per-field format and carry the `_<format>_<suffix>`
+    // segment name; term vectors are not, and keep the plain one.
+    for (exts, per_field) in [
+        (["doc", "tim", "tip", "tmd"].as_slice(), true),
+        (["tvd", "tvx", "tvm"].as_slice(), false),
+    ] {
+        for ext in exts {
+            let name = if per_field {
+                format!(
+                    "{}.{ext}",
+                    per_field_segment(&sci.segment_name, POSTINGS_FORMAT_NAME)
+                )
+            } else {
+                format!("{}.{ext}", sci.segment_name)
+            };
+            assert!(si.files.contains(&name), "missing {name} in .si files");
+            assert!(
+                dir.list_all().unwrap().contains(&name),
+                "missing {name} on disk"
+            );
+        }
     }
 
     // Postings side: readable via blocktree exactly as before.
-    let tim = dir.open(&format!("{}.tim", sci.segment_name)).unwrap();
-    let tip = dir.open(&format!("{}.tip", sci.segment_name)).unwrap();
-    let tmd = dir.open(&format!("{}.tmd", sci.segment_name)).unwrap();
+    let tim = dir
+        .open(&format!(
+            "{}.tim",
+            per_field_segment(&sci.segment_name, POSTINGS_FORMAT_NAME)
+        ))
+        .unwrap();
+    let tip = dir
+        .open(&format!(
+            "{}.tip",
+            per_field_segment(&sci.segment_name, POSTINGS_FORMAT_NAME)
+        ))
+        .unwrap();
+    let tmd = dir
+        .open(&format!(
+            "{}.tmd",
+            per_field_segment(&sci.segment_name, POSTINGS_FORMAT_NAME)
+        ))
+        .unwrap();
     let field_infos_struct = lucene_codecs::field_infos::FieldInfos {
         fields: fields.clone(),
     };
@@ -253,14 +284,23 @@ fn a_field_with_both_postings_and_term_vectors_configured_together_produces_both
         &tmd,
         &field_infos_struct,
         &sci.segment_id,
-        "",
+        &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
         2,
     )
     .expect("blocktree::open on IndexWriter-produced .tim/.tip/.tmd");
     let field = block_fields.field("body").unwrap();
-    let doc_bytes = dir.open(&format!("{}.doc", sci.segment_name)).unwrap();
-    let doc_in = lucene_codecs::postings::DocInput::open(&doc_bytes, &sci.segment_id, "")
-        .expect("open .doc");
+    let doc_bytes = dir
+        .open(&format!(
+            "{}.doc",
+            per_field_segment(&sci.segment_name, POSTINGS_FORMAT_NAME)
+        ))
+        .unwrap();
+    let doc_in = lucene_codecs::postings::DocInput::open(
+        &doc_bytes,
+        &sci.segment_id,
+        &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+    )
+    .expect("open .doc");
     let postings = field.postings(b"fox", Some(&doc_in)).unwrap().unwrap();
     assert_eq!(postings.docs, vec![0, 1]);
 

@@ -185,6 +185,8 @@ use crate::for_util::{self, ForUtil};
 
 /// `Lucene104PostingsFormat.DOC_CODEC`.
 pub(crate) const DOC_CODEC: &str = "Lucene104PostingsWriterDoc";
+/// `Lucene104PostingsFormat.META_CODEC` -- the `.psm` metadata file's codec.
+pub(crate) const META_CODEC: &str = "Lucene104PostingsWriterMeta";
 const VERSION_START: i32 = 0;
 pub(crate) const VERSION_CURRENT: i32 = 0;
 /// `ForUtil.BLOCK_SIZE` (== `Lucene104PostingsFormat.BLOCK_SIZE`).

@@ -123,7 +123,14 @@ pub fn write(values: &[i64], block_shift: u32) -> (Vec<u8>, Vec<u8>) {
         let mut deltas: Vec<i64> = chunk
             .iter()
             .enumerate()
-            .map(|(i, &v)| v - (avg_inc as f64 * i as f64) as i64)
+            // `avg_inc * i` in **f32**, exactly as Java's
+            // `(long) (avgInc * (long) i)` does -- `avgInc` is a float there,
+            // so the product is computed at float precision before truncating.
+            // Widening this to f64 makes the writer disagree with both Lucene's
+            // reader and this port's own (which correctly uses f32) once a
+            // block holds enough values for the precision gap to move the
+            // truncated result by one.
+            .map(|(i, &v)| v - (avg_inc * i as f32) as i64)
             .collect();
         let min = *deltas.iter().min().unwrap();
         for d in &mut deltas {
@@ -262,6 +269,18 @@ mod tests {
         // Perfectly linear -> every block's maxDelta is 0 (bpv=0 path).
         let values: Vec<i64> = (0..37).map(|i| i * 3).collect();
         round_trip(&values, 2); // block size 4
+    }
+
+    #[test]
+    fn write_round_trips_a_full_block_whose_avg_inc_is_not_exact_in_f32() {
+        // The block-size-1024 case real formats use (`.fdx` chunk offsets, doc
+        // values), with an average increment that has no exact f32
+        // representation. `avgInc * i` then diverges between f32 and f64 well
+        // before the end of the block, so a writer computing the linear
+        // estimate at f64 disagrees with the f32 reader Lucene specifies --
+        // silently, and only for indices far enough into a block.
+        let values: Vec<i64> = (0..1024).map(|i| (i as i64 * 170) + i as i64 / 3).collect();
+        round_trip(&values, 10);
     }
 
     #[test]

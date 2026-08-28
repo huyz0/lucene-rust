@@ -189,7 +189,7 @@ use crate::blocktree::{
 use crate::field_infos::IndexOptions;
 use crate::for_util;
 use crate::postings::{
-    write_group_vints, BLOCK_SIZE, DOC_CODEC, LEVEL1_NUM_DOCS, PAY_CODEC, POS_CODEC,
+    write_group_vints, BLOCK_SIZE, DOC_CODEC, LEVEL1_NUM_DOCS, META_CODEC, PAY_CODEC, POS_CODEC,
     VERSION_CURRENT as DOC_VERSION_CURRENT,
 };
 
@@ -367,6 +367,12 @@ pub struct FieldPostingsInput<'a> {
 #[derive(Debug, Clone, Default)]
 pub struct Output {
     pub doc: Vec<u8>,
+    /// `.psm`, `Lucene104PostingsWriter`'s metadata file: the four
+    /// maximum-impact figures plus the final length of each postings file.
+    /// Real Lucene's reader opens this before anything else and fails the
+    /// whole segment if it is absent, even though this port's own reader
+    /// never needs it (it derives the same lengths from the buffers it holds).
+    pub psm: Vec<u8>,
     pub pos: Vec<u8>,
     /// Empty unless at least one field indexes offsets
     /// (`IndexOptions::DocsAndFreqsAndPositionsAndOffsets`) — same "no file
@@ -663,12 +669,43 @@ pub fn write_fields(
     codec_util::write_footer(&mut tim);
     codec_util::write_footer(&mut tip);
 
-    tmd.write_i64(tip.len() as i64 - codec_util::FOOTER_LENGTH as i64); // indexLength
-    tmd.write_i64(tim.len() as i64 - codec_util::FOOTER_LENGTH as i64); // termsLength
+    // Both lengths are the *whole* file, footer included: Java writes each
+    // footer and only then records `getFilePointer()`, and its reader feeds
+    // these straight to `CodecUtil.retrieveChecksum`, which rejects any file
+    // whose real length disagrees.
+    tmd.write_i64(tip.len() as i64); // indexLength
+    tmd.write_i64(tim.len() as i64); // termsLength
     codec_util::write_footer(&mut tmd);
+
+    // `.psm`, mirroring `Lucene104PostingsWriter.close()`: the impact maxima
+    // first, then each postings file's length *including* its footer (Java
+    // records `getFilePointer()` after writing the footer). This writer emits
+    // an empty impacts region at both levels (see the module doc comment), so
+    // all four maxima are honestly zero rather than merely unset.
+    let mut psm = Vec::new();
+    codec_util::write_index_header(
+        &mut psm,
+        META_CODEC,
+        DOC_VERSION_CURRENT,
+        segment_id,
+        segment_suffix,
+    );
+    psm.write_i32(0); // maxNumImpactsAtLevel0
+    psm.write_i32(0); // maxImpactNumBytesAtLevel0
+    psm.write_i32(0); // maxNumImpactsAtLevel1
+    psm.write_i32(0); // maxImpactNumBytesAtLevel1
+    psm.write_i64(doc.len() as i64);
+    if any_positions {
+        psm.write_i64(pos.len() as i64);
+        if any_offsets || any_payloads {
+            psm.write_i64(pay.len() as i64);
+        }
+    }
+    codec_util::write_footer(&mut psm);
 
     Ok(Output {
         doc,
+        psm,
         pos,
         pay,
         tim,

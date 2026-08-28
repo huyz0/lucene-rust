@@ -79,7 +79,10 @@ use lucene_codecs::field_infos::{
 use lucene_codecs::postings::DocInput;
 use lucene_codecs::stored_fields::{self, Document, FieldValue, StoredField};
 use lucene_index::deletes;
-use lucene_index::index_writer::{self, IndexWriter, MergePolicyConfig};
+use lucene_index::index_writer::{
+    self, per_field_codec_suffix, per_field_segment, IndexWriter, MergePolicyConfig,
+    POSTINGS_FORMAT_NAME,
+};
 use lucene_index::segment_info::LuceneVersion;
 use lucene_index::update_document::SegmentDeleteSource;
 use lucene_store::directory::{Directory, FsDirectory};
@@ -699,14 +702,15 @@ fn open_all_segment_sources(writer: &IndexWriter) -> Result<Vec<OpenedSegmentSou
 
     let mut out = Vec::new();
     for sci in &writer.segment_infos().segments {
-        let tim_name = format!("{}.tim", sci.segment_name);
+        let postings_seg = per_field_segment(&sci.segment_name, POSTINGS_FORMAT_NAME);
+        let tim_name = format!("{postings_seg}.tim");
         if !all_files.iter().any(|f| f == &tim_name) {
             continue;
         }
         let tim = read(&tim_name)?;
-        let tip = read(&format!("{}.tip", sci.segment_name))?;
-        let tmd = read(&format!("{}.tmd", sci.segment_name))?;
-        let doc = read(&format!("{}.doc", sci.segment_name))?;
+        let tip = read(&format!("{postings_seg}.tip"))?;
+        let tmd = read(&format!("{postings_seg}.tmd"))?;
+        let doc = read(&format!("{postings_seg}.doc"))?;
 
         let fdt = read(&format!("{}.fdt", sci.segment_name))?;
         let fdx = read(&format!("{}.fdx", sci.segment_name))?;
@@ -774,7 +778,7 @@ fn build_delete_sources<'a>(
             &seg.tmd,
             field_infos,
             &seg.segment_id,
-            "",
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
             seg.max_doc as i32,
         )
         .map_err(|e| {
@@ -786,7 +790,12 @@ fn build_delete_sources<'a>(
         })?;
         blocktree_fields.push(fields);
 
-        let doc_in = DocInput::open(&seg.doc, &seg.segment_id, "").map_err(|e| {
+        let doc_in = DocInput::open(
+            &seg.doc,
+            &seg.segment_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .map_err(|e| {
             set_last_error(format!(
                 "ffi_writer: opening doc input for {}: {e}",
                 seg.segment_name
@@ -1139,6 +1148,7 @@ pub extern "C" fn ffi_close_writer(writer_handle: u64) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lucene_index::index_writer::{per_field_codec_suffix, DOC_VALUES_FORMAT_NAME};
     use lucene_index::segment_infos;
 
     fn tempdir(tag: &str) -> std::path::PathBuf {
@@ -1531,10 +1541,30 @@ mod tests {
         let sis = segment_infos::read_latest(&dir).unwrap();
         assert_eq!(sis.segments.len(), 1);
         let sci = &sis.segments[0];
-        let tim = dir.open(&format!("{}.tim", sci.segment_name)).unwrap();
-        let tip = dir.open(&format!("{}.tip", sci.segment_name)).unwrap();
-        let tmd = dir.open(&format!("{}.tmd", sci.segment_name)).unwrap();
-        let doc_bytes = dir.open(&format!("{}.doc", sci.segment_name)).unwrap();
+        let tim = dir
+            .open(&format!(
+                "{}.tim",
+                per_field_segment(&sci.segment_name, POSTINGS_FORMAT_NAME)
+            ))
+            .unwrap();
+        let tip = dir
+            .open(&format!(
+                "{}.tip",
+                per_field_segment(&sci.segment_name, POSTINGS_FORMAT_NAME)
+            ))
+            .unwrap();
+        let tmd = dir
+            .open(&format!(
+                "{}.tmd",
+                per_field_segment(&sci.segment_name, POSTINGS_FORMAT_NAME)
+            ))
+            .unwrap();
+        let doc_bytes = dir
+            .open(&format!(
+                "{}.doc",
+                per_field_segment(&sci.segment_name, POSTINGS_FORMAT_NAME)
+            ))
+            .unwrap();
         let field_infos = lucene_codecs::field_infos::FieldInfos {
             fields: vec![
                 FieldInfo {
@@ -1579,11 +1609,22 @@ mod tests {
                 },
             ],
         };
-        let block_fields =
-            lucene_codecs::blocktree::open(&tim, &tip, &tmd, &field_infos, &sci.segment_id, "", 2)
-                .expect("blocktree::open on FFI-produced .tim/.tip/.tmd");
-        let doc_in = lucene_codecs::postings::DocInput::open(&doc_bytes, &sci.segment_id, "")
-            .expect("open .doc");
+        let block_fields = lucene_codecs::blocktree::open(
+            &tim,
+            &tip,
+            &tmd,
+            &field_infos,
+            &sci.segment_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+            2,
+        )
+        .expect("blocktree::open on FFI-produced .tim/.tip/.tmd");
+        let doc_in = lucene_codecs::postings::DocInput::open(
+            &doc_bytes,
+            &sci.segment_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .expect("open .doc");
         let field = block_fields.field("body").unwrap();
         let postings = field.postings(b"fox", Some(&doc_in)).unwrap().unwrap();
         assert_eq!(postings.docs, vec![0, 1]);
@@ -1696,8 +1737,18 @@ mod tests {
         let dir = FsDirectory::open(&tmp);
         let sis = segment_infos::read_latest(&dir).unwrap();
         let sci = &sis.segments[0];
-        let dvm = dir.open(&format!("{}.dvm", sci.segment_name)).unwrap();
-        let dvd = dir.open(&format!("{}.dvd", sci.segment_name)).unwrap();
+        let dvm = dir
+            .open(&format!(
+                "{}.dvm",
+                per_field_segment(&sci.segment_name, DOC_VALUES_FORMAT_NAME)
+            ))
+            .unwrap();
+        let dvd = dir
+            .open(&format!(
+                "{}.dvd",
+                per_field_segment(&sci.segment_name, DOC_VALUES_FORMAT_NAME)
+            ))
+            .unwrap();
         let field_infos = lucene_codecs::field_infos::FieldInfos {
             fields: vec![
                 FieldInfo {
@@ -1742,9 +1793,13 @@ mod tests {
                 },
             ],
         };
-        let (_, meta) =
-            lucene_codecs::doc_values::parse_meta(&dvm, &sci.segment_id, "", &field_infos)
-                .expect("parse_meta on FFI-produced .dvm");
+        let (_, meta) = lucene_codecs::doc_values::parse_meta(
+            &dvm,
+            &sci.segment_id,
+            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
+            &field_infos,
+        )
+        .expect("parse_meta on FFI-produced .dvm");
         let entry = meta.numeric_entry(1).unwrap();
         for (doc, want) in [(0, 5i64), (1, -7)] {
             assert_eq!(

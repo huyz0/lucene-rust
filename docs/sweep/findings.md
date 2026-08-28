@@ -1747,3 +1747,113 @@ line instead.
 (`cat` is a `SortedSetDocValuesField`, and `facet_counts` exists). Highlighting
 and term vectors stay unmeasurable here: `GenCorpus` stores nothing
 (`Store.NO` throughout) and writes no term vectors.
+
+## Then real Lucene tried to open what we wrote
+
+Fixing the chunk cap meant the writer could finally produce a 50,000-document
+index. That made a question askable for the first time: can real Lucene read it?
+
+It could not. Four separate defects, each hidden behind the one before it, and
+each invisible to every check this project had.
+
+### O25 -- the `.fnm` promised norms the segment did not contain
+
+`DirectoryReader.open` threw immediately: `NoSuchFileException: _0.nvm`. This
+port's `IndexWriter` treats norms as opt-in (`set_norms_field`), but writes
+`omit_norms: false` into the `.fnm` regardless. Lucene writes norms for every
+indexed field whose `omitNorms` is false, unconditionally, and refuses to open
+a segment whose field infos and files disagree.
+
+Not yet fixed in the writer -- the benchmark opts in explicitly, and the
+divergence is recorded in `docs/parity.md`. The writer should either write
+norms automatically for such fields or set `omit_norms` to match what it
+actually wrote; silently producing a segment real Lucene rejects is the one
+option that is wrong either way.
+
+### O26 -- the `DirectMonotonicWriter` estimate was computed at the wrong width
+
+With norms in place Lucene read document 0 and then failed on 49,999:
+`docBase=389, chunkDocs=94`. The `.fdx` lookup was landing on the wrong chunk.
+
+Java computes each block's linear estimate as `(long) (avgInc * (long) i)`
+where `avgInc` is a **float** -- so the product is float arithmetic. This port's
+writer used f64; its *reader* correctly used f32. Writer and reader therefore
+disagreed with each other, and the writer disagreed with Lucene, for indices far
+enough into a block that the two precisions truncate differently.
+
+This was latent, not new: with the old hardcoded `blockShift = 0` every block
+held one value, `i` was always 0, and the two agreed trivially. Setting the
+real `blockShift = 10` exposed it. Every existing round-trip test passed
+throughout, because they all used tiny blocks.
+
+Fixed to f32, with a test at the block size real formats use (1024) and an
+average increment with no exact f32 representation. Confirmed to catch the old
+behaviour by reverting the fix and watching it fail.
+
+### O27 -- postings and doc values were written where Lucene does not look
+
+Lucene then opened the index, checked it clean, and reported
+`terms, freq, prox...OK [0 terms; 0 terms/docs pairs; 0 tokens]` -- for a
+segment with a 4 MB `.doc` and a 229 KB `.tim`. **No error.** Our own reader
+found 50 hits for `body:t1` in the same index on the same run.
+
+`PerFieldPostingsFormat`/`PerFieldDocValuesFormat` route each field to a named
+format, segregate that format's files under `<segment>_<format>_<suffix>`, and
+record the format and suffix in the field's `.fnm` attributes. Java's fields
+carry `PerFieldPostingsFormat.format=Lucene104, suffix=0`; ours carried `{}`,
+and the files were plain `_0.tim`. With no format registered against the field,
+Lucene reports it as having no terms and raises nothing.
+
+This port's own reader resolves codec files by extension suffix, so it reads
+either naming -- which is precisely why the divergence stayed invisible from
+inside. Fixed: per-field naming for postings and doc values (norms, term
+vectors, points and stored fields are *not* per-field and keep plain names),
+the `.fnm` attributes stamped at flush time as Lucene's codec does, and the
+matching `segmentSuffix` -- which is `Lucene104_0`, the format name and suffix
+joined, not the suffix alone -- carried into every one of those files' headers.
+
+### O28 -- `.psm` was never written, and `.tmd` recorded lengths a footer short
+
+Two smaller gaps behind that one. `Lucene104PostingsWriter` writes a `.psm`
+metadata file (120 bytes for the whole 5M-doc corpus: four impact maxima and
+each postings file's length); this port never wrote one, and Lucene fails the
+segment without it. And `.tmd`'s `indexLength`/`termsLength` were written
+*minus* the footer, where Java writes each footer first and then records
+`getFilePointer()` -- feeding both straight to `CodecUtil.retrieveChecksum`,
+which rejects a file whose real length disagrees.
+
+### The result
+
+`CheckIndex -level 3` on a 50,000-document index written entirely by this port:
+
+```
+test: terms, freq, prox...OK [20000 terms; 1998037 terms/docs pairs; 2000000 tokens]
+test: stored fields.......OK [100000 total field count; avg 2.0 fields per doc]
+test: field norms.........OK [1 fields]
+No problems were detected with this index.
+```
+
+Real Lucene and this port's own engine also agree on the search: `body:t1`
+returns 96 hits, top document 669, score 2.8410249 against our 2.841025.
+
+| | rust | java | ratio |
+|---|---|---|---|
+| indexing, 50k docs | 46709 ns/doc | 10096 ns/doc | **0.22x** |
+
+Noise floor 1.07x. This supersedes the 0.40x recorded above: that number was
+measured against an index missing its norms and unreadable by Lucene. Writing
+the norms Lucene requires roughly doubled our per-document cost, and this is
+the first genuinely apples-to-apples indexing figure this project has had.
+
+### What this says about the verification
+
+`verify-write-path.sh` passed 13/13 before and after all four fixes. It hands
+each codec file to real Lucene with a **hand-built** `SegmentInfo`/`FieldInfos`,
+which is what let this port write files real Lucene could parse individually
+while assembling them into a segment it could not open at all. Per-field
+routing, `.fnm` attributes, `.psm`, and cross-file length agreement are all
+segment-level contracts, and nothing was checking segment level.
+
+The check that found all four was pointing `DirectoryReader.open` and
+`CheckIndex` at an index this port wrote end to end. That belongs in the
+verification script, and is filed as the next task.

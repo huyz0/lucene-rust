@@ -26,7 +26,9 @@ use lucene_codecs::field_infos::{
 };
 use lucene_codecs::postings::DocInput;
 use lucene_codecs::stored_fields::{Document, FieldValue, StoredField};
-use lucene_index::index_writer::IndexWriter;
+use lucene_index::index_writer::{
+    per_field_codec_suffix, per_field_segment, IndexWriter, POSTINGS_FORMAT_NAME,
+};
 use lucene_index::segment_info::{self, LuceneVersion};
 use lucene_search::collector::TopDocsCollector;
 use lucene_search::{search_term_query_scored, similarity, TermQuery};
@@ -114,10 +116,30 @@ fn custom_freq_postings_round_trip_and_drive_real_bm25_scoring() {
     assert_eq!(sis.segments.len(), 1);
     let sci = &sis.segments[0];
 
-    let tim = dir.open(&format!("{}.tim", sci.segment_name)).unwrap();
-    let tip = dir.open(&format!("{}.tip", sci.segment_name)).unwrap();
-    let tmd = dir.open(&format!("{}.tmd", sci.segment_name)).unwrap();
-    let doc_bytes = dir.open(&format!("{}.doc", sci.segment_name)).unwrap();
+    let tim = dir
+        .open(&format!(
+            "{}.tim",
+            per_field_segment(&sci.segment_name, POSTINGS_FORMAT_NAME)
+        ))
+        .unwrap();
+    let tip = dir
+        .open(&format!(
+            "{}.tip",
+            per_field_segment(&sci.segment_name, POSTINGS_FORMAT_NAME)
+        ))
+        .unwrap();
+    let tmd = dir
+        .open(&format!(
+            "{}.tmd",
+            per_field_segment(&sci.segment_name, POSTINGS_FORMAT_NAME)
+        ))
+        .unwrap();
+    let doc_bytes = dir
+        .open(&format!(
+            "{}.doc",
+            per_field_segment(&sci.segment_name, POSTINGS_FORMAT_NAME)
+        ))
+        .unwrap();
     let si_bytes = dir.open(&format!("{}.si", sci.segment_name)).unwrap();
     let si = segment_info::parse(&si_bytes, &sci.segment_id).unwrap();
 
@@ -133,11 +155,16 @@ fn custom_freq_postings_round_trip_and_drive_real_bm25_scoring() {
         &tmd,
         &field_infos,
         &sci.segment_id,
-        "",
+        &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
         si.doc_count,
     )
     .expect("blocktree::open on IndexWriter-produced DocsAndCustomFreqs .tim/.tip/.tmd");
-    let doc_in = DocInput::open(&doc_bytes, &sci.segment_id, "").expect("open .doc");
+    let doc_in = DocInput::open(
+        &doc_bytes,
+        &sci.segment_id,
+        &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+    )
+    .expect("open .doc");
 
     // First, the raw postings-level proof: the freq value read back for each
     // doc is exactly its custom_freq, not `1` (the real occurrence count of

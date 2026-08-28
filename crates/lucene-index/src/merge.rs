@@ -316,6 +316,9 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
+use crate::index_writer::{
+    per_field_codec_suffix, per_field_segment, DOC_VALUES_FORMAT_NAME, POSTINGS_FORMAT_NAME,
+};
 use crate::segment_info::{self, IndexSortField, LuceneVersion, SegmentInfo, SortMissingValue};
 use crate::segment_infos::SegmentCommitInfo;
 use lucene_codecs::blocktree::FieldTerms;
@@ -967,10 +970,13 @@ pub fn merge_stored_only_segments(
             &values,
             doc_count,
             &merged_segment_id,
-            "",
+            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
         )?;
         for (ext, bytes) in [("dvm", &dvm), ("dvd", &dvd), ("dvs", &dvs)] {
-            let name = format!("{merged_segment_name}.{ext}");
+            let name = format!(
+                "{}.{ext}",
+                per_field_segment(merged_segment_name, DOC_VALUES_FORMAT_NAME)
+            );
             write_file(dir, &name, bytes)?;
             files.push(name);
         }
@@ -982,10 +988,13 @@ pub fn merge_stored_only_segments(
             &values,
             doc_count,
             &merged_segment_id,
-            "",
+            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
         )?;
         for (ext, bytes) in [("dvm", &dvm), ("dvd", &dvd), ("dvs", &dvs)] {
-            let name = format!("{merged_segment_name}.{ext}");
+            let name = format!(
+                "{}.{ext}",
+                per_field_segment(merged_segment_name, DOC_VALUES_FORMAT_NAME)
+            );
             write_file(dir, &name, bytes)?;
             files.push(name);
         }
@@ -997,10 +1006,13 @@ pub fn merge_stored_only_segments(
             &values,
             doc_count,
             &merged_segment_id,
-            "",
+            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
         )?;
         for (ext, bytes) in [("dvm", &dvm), ("dvd", &dvd), ("dvs", &dvs)] {
-            let name = format!("{merged_segment_name}.{ext}");
+            let name = format!(
+                "{}.{ext}",
+                per_field_segment(merged_segment_name, DOC_VALUES_FORMAT_NAME)
+            );
             write_file(dir, &name, bytes)?;
             files.push(name);
         }
@@ -1011,10 +1023,13 @@ pub fn merge_stored_only_segments(
             field_number,
             &values,
             &merged_segment_id,
-            "",
+            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
         )?;
         for (ext, bytes) in [("dvm", &dvm), ("dvd", &dvd), ("dvs", &dvs)] {
-            let name = format!("{merged_segment_name}.{ext}");
+            let name = format!(
+                "{}.{ext}",
+                per_field_segment(merged_segment_name, DOC_VALUES_FORMAT_NAME)
+            );
             write_file(dir, &name, bytes)?;
             files.push(name);
         }
@@ -1026,10 +1041,13 @@ pub fn merge_stored_only_segments(
             &values,
             doc_count,
             &merged_segment_id,
-            "",
+            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
         )?;
         for (ext, bytes) in [("dvm", &dvm), ("dvd", &dvd), ("dvs", &dvs)] {
-            let name = format!("{merged_segment_name}.{ext}");
+            let name = format!(
+                "{}.{ext}",
+                per_field_segment(merged_segment_name, DOC_VALUES_FORMAT_NAME)
+            );
             write_file(dir, &name, bytes)?;
             files.push(name);
         }
@@ -1070,9 +1088,14 @@ pub fn merge_stored_only_segments(
                 terms: &f.terms,
             })
             .collect();
-        let output = postings_writer::write_fields(&inputs, &merged_segment_id, "")?;
+        let output = postings_writer::write_fields(
+            &inputs,
+            &merged_segment_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )?;
         let mut exts: Vec<(&str, &[u8])> = vec![
             ("doc", &output.doc),
+            ("psm", &output.psm),
             ("tim", &output.tim),
             ("tip", &output.tip),
             ("tmd", &output.tmd),
@@ -1084,7 +1107,10 @@ pub fn merge_stored_only_segments(
             exts.push(("pay", &output.pay));
         }
         for (ext, bytes) in exts {
-            let name = format!("{merged_segment_name}.{ext}");
+            let name = format!(
+                "{}.{ext}",
+                per_field_segment(merged_segment_name, POSTINGS_FORMAT_NAME)
+            );
             write_file(dir, &name, bytes)?;
             files.push(name);
         }
@@ -1412,10 +1438,13 @@ pub fn merge_sorted_stored_only_segments(
             &values,
             doc_count,
             &merged_segment_id,
-            "",
+            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
         )?;
         for (ext, bytes) in [("dvm", &dvm), ("dvd", &dvd), ("dvs", &dvs)] {
-            let name = format!("{merged_segment_name}.{ext}");
+            let name = format!(
+                "{}.{ext}",
+                per_field_segment(merged_segment_name, DOC_VALUES_FORMAT_NAME)
+            );
             write_file(dir, &name, bytes)?;
             files.push(name);
         }
@@ -1427,10 +1456,13 @@ pub fn merge_sorted_stored_only_segments(
             &values,
             doc_count,
             &merged_segment_id,
-            "",
+            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
         )?;
         for (ext, bytes) in [("dvm", &dvm), ("dvd", &dvd), ("dvs", &dvs)] {
-            let name = format!("{merged_segment_name}.{ext}");
+            let name = format!(
+                "{}.{ext}",
+                per_field_segment(merged_segment_name, DOC_VALUES_FORMAT_NAME)
+            );
             write_file(dir, &name, bytes)?;
             files.push(name);
         }
@@ -1442,10 +1474,13 @@ pub fn merge_sorted_stored_only_segments(
             &values,
             doc_count,
             &merged_segment_id,
-            "",
+            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
         )?;
         for (ext, bytes) in [("dvm", &dvm), ("dvd", &dvd), ("dvs", &dvs)] {
-            let name = format!("{merged_segment_name}.{ext}");
+            let name = format!(
+                "{}.{ext}",
+                per_field_segment(merged_segment_name, DOC_VALUES_FORMAT_NAME)
+            );
             write_file(dir, &name, bytes)?;
             files.push(name);
         }
@@ -1456,10 +1491,13 @@ pub fn merge_sorted_stored_only_segments(
             field_number,
             &values,
             &merged_segment_id,
-            "",
+            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
         )?;
         for (ext, bytes) in [("dvm", &dvm), ("dvd", &dvd), ("dvs", &dvs)] {
-            let name = format!("{merged_segment_name}.{ext}");
+            let name = format!(
+                "{}.{ext}",
+                per_field_segment(merged_segment_name, DOC_VALUES_FORMAT_NAME)
+            );
             write_file(dir, &name, bytes)?;
             files.push(name);
         }
@@ -1471,10 +1509,13 @@ pub fn merge_sorted_stored_only_segments(
             &values,
             doc_count,
             &merged_segment_id,
-            "",
+            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
         )?;
         for (ext, bytes) in [("dvm", &dvm), ("dvd", &dvd), ("dvs", &dvs)] {
-            let name = format!("{merged_segment_name}.{ext}");
+            let name = format!(
+                "{}.{ext}",
+                per_field_segment(merged_segment_name, DOC_VALUES_FORMAT_NAME)
+            );
             write_file(dir, &name, bytes)?;
             files.push(name);
         }
@@ -3348,14 +3389,19 @@ mod tests {
             values,
             max_doc,
             &segment_id,
-            "",
+            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
         )
         .unwrap();
         let field_infos = field_infos::FieldInfos {
             fields: vec![numeric_field("x", field_number)],
         };
-        let (_version, parsed) =
-            doc_values::parse_meta(&meta, &segment_id, "", &field_infos).unwrap();
+        let (_version, parsed) = doc_values::parse_meta(
+            &meta,
+            &segment_id,
+            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
+            &field_infos,
+        )
+        .unwrap();
         let entry = parsed.numeric_entry(field_number).unwrap().clone();
         FlushedNumericDv { data, entry }
     }
@@ -3392,14 +3438,19 @@ mod tests {
             values,
             max_doc,
             &segment_id,
-            "",
+            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
         )
         .unwrap();
         let field_infos = field_infos::FieldInfos {
             fields: vec![binary_field("x", field_number)],
         };
-        let (_version, parsed) =
-            doc_values::parse_meta(&meta, &segment_id, "", &field_infos).unwrap();
+        let (_version, parsed) = doc_values::parse_meta(
+            &meta,
+            &segment_id,
+            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
+            &field_infos,
+        )
+        .unwrap();
         let entry = parsed.binary_entry(field_number).unwrap().clone();
         FlushedBinaryDv { data, entry }
     }
@@ -3554,13 +3605,26 @@ mod tests {
         .unwrap();
         assert_eq!(sci.segment_name, "_merged_dv");
 
-        let dvd = std::fs::read(std::path::Path::new(&tmp).join("_merged_dv.dvd")).unwrap();
-        let dvm = std::fs::read(std::path::Path::new(&tmp).join("_merged_dv.dvm")).unwrap();
+        let dvd = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.dvd",
+            per_field_segment("_merged_dv", DOC_VALUES_FORMAT_NAME)
+        )))
+        .unwrap();
+        let dvm = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.dvm",
+            per_field_segment("_merged_dv", DOC_VALUES_FORMAT_NAME)
+        )))
+        .unwrap();
         let merged_field_infos = field_infos::FieldInfos {
             fields: vec![numeric_field("num", 0)],
         };
-        let (_v, meta) =
-            doc_values::parse_meta(&dvm, &[9u8; ID_LENGTH], "", &merged_field_infos).unwrap();
+        let (_v, meta) = doc_values::parse_meta(
+            &dvm,
+            &[9u8; ID_LENGTH],
+            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
+            &merged_field_infos,
+        )
+        .unwrap();
         let entry = meta.numeric_entry(0).unwrap();
         let values: Vec<i64> = (0..2)
             .map(|d| doc_values::numeric_value(&dvd, entry, d).unwrap().unwrap())
@@ -3670,13 +3734,26 @@ mod tests {
         .unwrap();
         assert_eq!(sci.segment_name, "_merged_dv_overlay");
 
-        let dvd = std::fs::read(std::path::Path::new(&tmp).join("_merged_dv_overlay.dvd")).unwrap();
-        let dvm = std::fs::read(std::path::Path::new(&tmp).join("_merged_dv_overlay.dvm")).unwrap();
+        let dvd = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.dvd",
+            per_field_segment("_merged_dv_overlay", DOC_VALUES_FORMAT_NAME)
+        )))
+        .unwrap();
+        let dvm = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.dvm",
+            per_field_segment("_merged_dv_overlay", DOC_VALUES_FORMAT_NAME)
+        )))
+        .unwrap();
         let merged_field_infos = field_infos::FieldInfos {
             fields: vec![numeric_field("num", 0)],
         };
-        let (_v, meta) =
-            doc_values::parse_meta(&dvm, &[9u8; ID_LENGTH], "", &merged_field_infos).unwrap();
+        let (_v, meta) = doc_values::parse_meta(
+            &dvm,
+            &[9u8; ID_LENGTH],
+            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
+            &merged_field_infos,
+        )
+        .unwrap();
         let entry = meta.numeric_entry(0).unwrap();
         let merged_values: Vec<i64> = (0..2)
             .map(|d| doc_values::numeric_value(&dvd, entry, d).unwrap().unwrap())
@@ -3885,13 +3962,26 @@ mod tests {
         .unwrap();
         assert_eq!(sci.segment_name, "_merged_bdv");
 
-        let dvd = std::fs::read(std::path::Path::new(&tmp).join("_merged_bdv.dvd")).unwrap();
-        let dvm = std::fs::read(std::path::Path::new(&tmp).join("_merged_bdv.dvm")).unwrap();
+        let dvd = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.dvd",
+            per_field_segment("_merged_bdv", DOC_VALUES_FORMAT_NAME)
+        )))
+        .unwrap();
+        let dvm = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.dvm",
+            per_field_segment("_merged_bdv", DOC_VALUES_FORMAT_NAME)
+        )))
+        .unwrap();
         let merged_field_infos = field_infos::FieldInfos {
             fields: vec![binary_field("bin", 0)],
         };
-        let (_v, meta) =
-            doc_values::parse_meta(&dvm, &[9u8; ID_LENGTH], "", &merged_field_infos).unwrap();
+        let (_v, meta) = doc_values::parse_meta(
+            &dvm,
+            &[9u8; ID_LENGTH],
+            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
+            &merged_field_infos,
+        )
+        .unwrap();
         let entry = meta.binary_entry(0).unwrap();
         let values: Vec<Vec<u8>> = (0..2)
             .map(|d| {
@@ -4055,14 +4145,19 @@ mod tests {
             values,
             max_doc,
             &segment_id,
-            "",
+            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
         )
         .unwrap();
         let field_infos = field_infos::FieldInfos {
             fields: vec![sorted_field("x", field_number)],
         };
-        let (_version, parsed) =
-            doc_values::parse_meta(&meta, &segment_id, "", &field_infos).unwrap();
+        let (_version, parsed) = doc_values::parse_meta(
+            &meta,
+            &segment_id,
+            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
+            &field_infos,
+        )
+        .unwrap();
         let entry = parsed.sorted_entry(field_number).unwrap().clone();
         FlushedSortedDv { data, entry }
     }
@@ -4090,8 +4185,13 @@ mod tests {
         let merged_field_infos = field_infos::FieldInfos {
             fields: vec![sorted_field("x", field_number)],
         };
-        let (_v, meta) =
-            doc_values::parse_meta(dvm, &[9u8; ID_LENGTH], "", &merged_field_infos).unwrap();
+        let (_v, meta) = doc_values::parse_meta(
+            dvm,
+            &[9u8; ID_LENGTH],
+            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
+            &merged_field_infos,
+        )
+        .unwrap();
         let entry = meta.sorted_entry(field_number).unwrap();
         let dict = terms_dict::decode_all_terms(dvd, &entry.terms).unwrap();
         (0..doc_count)
@@ -4182,15 +4282,26 @@ mod tests {
         )
         .unwrap();
 
-        let dvm =
-            std::fs::read(std::path::Path::new(&tmp).join("_merged_sorted_overlap.dvm")).unwrap();
-        let dvd =
-            std::fs::read(std::path::Path::new(&tmp).join("_merged_sorted_overlap.dvd")).unwrap();
+        let dvm = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.dvm",
+            per_field_segment("_merged_sorted_overlap", DOC_VALUES_FORMAT_NAME)
+        )))
+        .unwrap();
+        let dvd = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.dvd",
+            per_field_segment("_merged_sorted_overlap", DOC_VALUES_FORMAT_NAME)
+        )))
+        .unwrap();
         let merged_field_infos = field_infos::FieldInfos {
             fields: vec![sorted_field("color", 0)],
         };
-        let (_v, meta) =
-            doc_values::parse_meta(&dvm, &[9u8; ID_LENGTH], "", &merged_field_infos).unwrap();
+        let (_v, meta) = doc_values::parse_meta(
+            &dvm,
+            &[9u8; ID_LENGTH],
+            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
+            &merged_field_infos,
+        )
+        .unwrap();
         let entry = meta.sorted_entry(0).unwrap();
         // "red" is shared across both sources -- the merged dictionary must
         // dedupe it into exactly one entry, so the distinct dictionary size
@@ -4267,10 +4378,16 @@ mod tests {
         )
         .unwrap();
 
-        let dvm =
-            std::fs::read(std::path::Path::new(&tmp).join("_merged_sorted_disjoint.dvm")).unwrap();
-        let dvd =
-            std::fs::read(std::path::Path::new(&tmp).join("_merged_sorted_disjoint.dvd")).unwrap();
+        let dvm = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.dvm",
+            per_field_segment("_merged_sorted_disjoint", DOC_VALUES_FORMAT_NAME)
+        )))
+        .unwrap();
+        let dvd = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.dvd",
+            per_field_segment("_merged_sorted_disjoint", DOC_VALUES_FORMAT_NAME)
+        )))
+        .unwrap();
         let terms = read_back_sorted_terms(&dvm, &dvd, 0, 2);
         assert_eq!(terms, vec![b"apple".to_vec(), b"zebra".to_vec()]);
     }
@@ -5127,13 +5244,26 @@ mod tests {
         assert_eq!(vals, vec!["a", "b", "c"]);
 
         // Doc values.
-        let dvd = std::fs::read(std::path::Path::new(&tmp).join("_merged_all.dvd")).unwrap();
-        let dvm = std::fs::read(std::path::Path::new(&tmp).join("_merged_all.dvm")).unwrap();
+        let dvd = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.dvd",
+            per_field_segment("_merged_all", DOC_VALUES_FORMAT_NAME)
+        )))
+        .unwrap();
+        let dvm = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.dvm",
+            per_field_segment("_merged_all", DOC_VALUES_FORMAT_NAME)
+        )))
+        .unwrap();
         let merged_field_infos = field_infos::FieldInfos {
             fields: vec![numeric_field("body", 0)],
         };
-        let (_v, dv_meta) =
-            doc_values::parse_meta(&dvm, &merged_id, "", &merged_field_infos).unwrap();
+        let (_v, dv_meta) = doc_values::parse_meta(
+            &dvm,
+            &merged_id,
+            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
+            &merged_field_infos,
+        )
+        .unwrap();
         let dv_entry = dv_meta.numeric_entry(0).unwrap();
         let dv_values: Vec<i64> = (0..3)
             .map(|d| {
@@ -5173,9 +5303,18 @@ mod tests {
         let si_bytes = std::fs::read(std::path::Path::new(&tmp).join("_merged_all.si")).unwrap();
         let si = segment_info::parse(&si_bytes, &merged_id).unwrap();
         for ext in [
-            "fdt", "fdx", "fdm", "fnm", "dvm", "dvd", "dvs", "nvm", "nvd", "tvd", "tvx", "tvm",
+            "fdt", "fdx", "fdm", "fnm", "nvm", "nvd", "tvd", "tvx", "tvm",
         ] {
             let name = format!("_merged_all.{ext}");
+            assert!(si.files.contains(&name), "missing {name} in .si files list");
+        }
+        // Doc values are a per-field format, so their files carry the
+        // `_<format>_<suffix>` segment name real Lucene resolves them by.
+        for ext in ["dvm", "dvd", "dvs"] {
+            let name = format!(
+                "{}.{ext}",
+                per_field_segment("_merged_all", DOC_VALUES_FORMAT_NAME)
+            );
             assert!(si.files.contains(&name), "missing {name} in .si files list");
         }
     }
@@ -5283,13 +5422,26 @@ mod tests {
         assert_eq!(vals, vec!["a", "b", "c"]);
 
         // Doc values.
-        let dvd = std::fs::read(std::path::Path::new(&tmp).join("_merged_all_bin.dvd")).unwrap();
-        let dvm = std::fs::read(std::path::Path::new(&tmp).join("_merged_all_bin.dvm")).unwrap();
+        let dvd = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.dvd",
+            per_field_segment("_merged_all_bin", DOC_VALUES_FORMAT_NAME)
+        )))
+        .unwrap();
+        let dvm = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.dvm",
+            per_field_segment("_merged_all_bin", DOC_VALUES_FORMAT_NAME)
+        )))
+        .unwrap();
         let merged_field_infos = field_infos::FieldInfos {
             fields: vec![binary_field("body", 0)],
         };
-        let (_v, dv_meta) =
-            doc_values::parse_meta(&dvm, &merged_id, "", &merged_field_infos).unwrap();
+        let (_v, dv_meta) = doc_values::parse_meta(
+            &dvm,
+            &merged_id,
+            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
+            &merged_field_infos,
+        )
+        .unwrap();
         let dv_entry = dv_meta.binary_entry(0).unwrap();
         let dv_values: Vec<Vec<u8>> = (0..3)
             .map(|d| {
@@ -5334,9 +5486,18 @@ mod tests {
             std::fs::read(std::path::Path::new(&tmp).join("_merged_all_bin.si")).unwrap();
         let si = segment_info::parse(&si_bytes, &merged_id).unwrap();
         for ext in [
-            "fdt", "fdx", "fdm", "fnm", "dvm", "dvd", "dvs", "nvm", "nvd", "tvd", "tvx", "tvm",
+            "fdt", "fdx", "fdm", "fnm", "nvm", "nvd", "tvd", "tvx", "tvm",
         ] {
             let name = format!("_merged_all_bin.{ext}");
+            assert!(si.files.contains(&name), "missing {name} in .si files list");
+        }
+        // Doc values are a per-field format, so their files carry the
+        // `_<format>_<suffix>` segment name real Lucene resolves them by.
+        for ext in ["dvm", "dvd", "dvs"] {
+            let name = format!(
+                "{}.{ext}",
+                per_field_segment("_merged_all_bin", DOC_VALUES_FORMAT_NAME)
+            );
             assert!(si.files.contains(&name), "missing {name} in .si files list");
         }
     }
@@ -5447,8 +5608,16 @@ mod tests {
         // against the actual expected term per doc (not just ordinal shape)
         // -- "red" (docs 0 and 2, from different sources) must dedupe to the
         // same merged dictionary entry.
-        let dvd = std::fs::read(std::path::Path::new(&tmp).join("_merged_all_sorted.dvd")).unwrap();
-        let dvm = std::fs::read(std::path::Path::new(&tmp).join("_merged_all_sorted.dvm")).unwrap();
+        let dvd = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.dvd",
+            per_field_segment("_merged_all_sorted", DOC_VALUES_FORMAT_NAME)
+        )))
+        .unwrap();
+        let dvm = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.dvm",
+            per_field_segment("_merged_all_sorted", DOC_VALUES_FORMAT_NAME)
+        )))
+        .unwrap();
         let terms = read_back_sorted_terms(&dvm, &dvd, 0, 3);
         assert_eq!(
             terms,
@@ -5485,9 +5654,18 @@ mod tests {
             std::fs::read(std::path::Path::new(&tmp).join("_merged_all_sorted.si")).unwrap();
         let si = segment_info::parse(&si_bytes, &merged_id).unwrap();
         for ext in [
-            "fdt", "fdx", "fdm", "fnm", "dvm", "dvd", "dvs", "nvm", "nvd", "tvd", "tvx", "tvm",
+            "fdt", "fdx", "fdm", "fnm", "nvm", "nvd", "tvd", "tvx", "tvm",
         ] {
             let name = format!("_merged_all_sorted.{ext}");
+            assert!(si.files.contains(&name), "missing {name} in .si files list");
+        }
+        // Doc values are a per-field format, so their files carry the
+        // `_<format>_<suffix>` segment name real Lucene resolves them by.
+        for ext in ["dvm", "dvd", "dvs"] {
+            let name = format!(
+                "{}.{ext}",
+                per_field_segment("_merged_all_sorted", DOC_VALUES_FORMAT_NAME)
+            );
             assert!(si.files.contains(&name), "missing {name} in .si files list");
         }
     }
@@ -5948,14 +6126,26 @@ mod tests {
 
         // BINARY doc-values: must read back "v10","v20","v30","v40" -- the
         // sorted order -- not "v10","v30","v20","v40" (source concatenation).
-        let dvd = std::fs::read(std::path::Path::new(&tmp).join("_merged_dv_norms_tv_sorted.dvd"))
-            .unwrap();
-        let dvm = std::fs::read(std::path::Path::new(&tmp).join("_merged_dv_norms_tv_sorted.dvm"))
-            .unwrap();
+        let dvd = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.dvd",
+            per_field_segment("_merged_dv_norms_tv_sorted", DOC_VALUES_FORMAT_NAME)
+        )))
+        .unwrap();
+        let dvm = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.dvm",
+            per_field_segment("_merged_dv_norms_tv_sorted", DOC_VALUES_FORMAT_NAME)
+        )))
+        .unwrap();
         let merged_field_infos = field_infos::FieldInfos {
             fields: vec![binary_field("bin", 1)],
         };
-        let (_v, meta) = doc_values::parse_meta(&dvm, &merged_id, "", &merged_field_infos).unwrap();
+        let (_v, meta) = doc_values::parse_meta(
+            &dvm,
+            &merged_id,
+            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
+            &merged_field_infos,
+        )
+        .unwrap();
         let entry = meta.binary_entry(1).unwrap();
         let bin_values: Vec<Vec<u8>> = (0..4)
             .map(|d| {
@@ -6128,13 +6318,26 @@ mod tests {
         .unwrap();
         let ids = read_merged_ids(&tmp, "_merged_num_sorted", merged_id);
         assert_eq!(ids, vec!["10", "20", "30", "40"]);
-        let dvd = std::fs::read(std::path::Path::new(&tmp).join("_merged_num_sorted.dvd")).unwrap();
-        let dvm = std::fs::read(std::path::Path::new(&tmp).join("_merged_num_sorted.dvm")).unwrap();
+        let dvd = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.dvd",
+            per_field_segment("_merged_num_sorted", DOC_VALUES_FORMAT_NAME)
+        )))
+        .unwrap();
+        let dvm = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.dvm",
+            per_field_segment("_merged_num_sorted", DOC_VALUES_FORMAT_NAME)
+        )))
+        .unwrap();
         let merged_numeric_field_infos = field_infos::FieldInfos {
             fields: vec![numeric_field("x", 1)],
         };
-        let (_v, meta) =
-            doc_values::parse_meta(&dvm, &merged_id, "", &merged_numeric_field_infos).unwrap();
+        let (_v, meta) = doc_values::parse_meta(
+            &dvm,
+            &merged_id,
+            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
+            &merged_numeric_field_infos,
+        )
+        .unwrap();
         let num_entry = meta.numeric_entry(1).unwrap();
         let numeric_values: Vec<i64> = (0..4)
             .map(|d| {
@@ -6184,10 +6387,16 @@ mod tests {
             version(),
         )
         .unwrap();
-        let dvd =
-            std::fs::read(std::path::Path::new(&tmp).join("_merged_sorted_sorted.dvd")).unwrap();
-        let dvm =
-            std::fs::read(std::path::Path::new(&tmp).join("_merged_sorted_sorted.dvm")).unwrap();
+        let dvd = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.dvd",
+            per_field_segment("_merged_sorted_sorted", DOC_VALUES_FORMAT_NAME)
+        )))
+        .unwrap();
+        let dvm = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.dvm",
+            per_field_segment("_merged_sorted_sorted", DOC_VALUES_FORMAT_NAME)
+        )))
+        .unwrap();
         // SORTED: "v10","v20","v30","v40" sorted, not concatenated.
         let sorted_terms = read_back_sorted_terms(&dvm, &dvd, 2, 4);
         assert_eq!(
@@ -6238,8 +6447,16 @@ mod tests {
             version(),
         )
         .unwrap();
-        let dvd = std::fs::read(std::path::Path::new(&tmp).join("_merged_sn_sorted.dvd")).unwrap();
-        let dvm = std::fs::read(std::path::Path::new(&tmp).join("_merged_sn_sorted.dvm")).unwrap();
+        let dvd = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.dvd",
+            per_field_segment("_merged_sn_sorted", DOC_VALUES_FORMAT_NAME)
+        )))
+        .unwrap();
+        let dvm = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.dvm",
+            per_field_segment("_merged_sn_sorted", DOC_VALUES_FORMAT_NAME)
+        )))
+        .unwrap();
         // SORTED_NUMERIC: [10],[20],[30],[40] sorted, not concatenated.
         let sn_values = read_back_sorted_numeric_values(&dvm, &dvd, 3, 4);
         assert_eq!(sn_values, vec![vec![10], vec![20], vec![30], vec![40]]);
@@ -6282,8 +6499,16 @@ mod tests {
             version(),
         )
         .unwrap();
-        let dvd = std::fs::read(std::path::Path::new(&tmp).join("_merged_ss_sorted.dvd")).unwrap();
-        let dvm = std::fs::read(std::path::Path::new(&tmp).join("_merged_ss_sorted.dvm")).unwrap();
+        let dvd = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.dvd",
+            per_field_segment("_merged_ss_sorted", DOC_VALUES_FORMAT_NAME)
+        )))
+        .unwrap();
+        let dvm = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.dvm",
+            per_field_segment("_merged_ss_sorted", DOC_VALUES_FORMAT_NAME)
+        )))
+        .unwrap();
         // SORTED_SET: ["v10"],["v20"],["v30"],["v40"] sorted, not concatenated.
         let ss_values = read_back_sorted_set_values(&dvm, &dvd, 4, 4);
         assert_eq!(
@@ -6524,14 +6749,19 @@ mod tests {
             field_number,
             values,
             &segment_id,
-            "",
+            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
         )
         .unwrap();
         let field_infos = field_infos::FieldInfos {
             fields: vec![sorted_numeric_field("x", field_number)],
         };
-        let (_version, parsed) =
-            doc_values::parse_meta(&meta, &segment_id, "", &field_infos).unwrap();
+        let (_version, parsed) = doc_values::parse_meta(
+            &meta,
+            &segment_id,
+            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
+            &field_infos,
+        )
+        .unwrap();
         let entry = parsed.sorted_numeric_entry(field_number).unwrap().clone();
         FlushedSortedNumericDv { data, entry }
     }
@@ -6558,8 +6788,13 @@ mod tests {
         let merged_field_infos = field_infos::FieldInfos {
             fields: vec![sorted_numeric_field("x", field_number)],
         };
-        let (_v, meta) =
-            doc_values::parse_meta(dvm, &[9u8; ID_LENGTH], "", &merged_field_infos).unwrap();
+        let (_v, meta) = doc_values::parse_meta(
+            dvm,
+            &[9u8; ID_LENGTH],
+            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
+            &merged_field_infos,
+        )
+        .unwrap();
         let entry = meta.sorted_numeric_entry(field_number).unwrap();
         (0..doc_count)
             .map(|d| doc_values::sorted_numeric_values(dvd, entry, d).unwrap())
@@ -6636,10 +6871,16 @@ mod tests {
         )
         .unwrap();
 
-        let dvm =
-            std::fs::read(std::path::Path::new(&tmp).join("_merged_sorted_numeric.dvm")).unwrap();
-        let dvd =
-            std::fs::read(std::path::Path::new(&tmp).join("_merged_sorted_numeric.dvd")).unwrap();
+        let dvm = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.dvm",
+            per_field_segment("_merged_sorted_numeric", DOC_VALUES_FORMAT_NAME)
+        )))
+        .unwrap();
+        let dvd = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.dvd",
+            per_field_segment("_merged_sorted_numeric", DOC_VALUES_FORMAT_NAME)
+        )))
+        .unwrap();
         let values = read_back_sorted_numeric_values(&dvm, &dvd, 0, 2);
         assert_eq!(values, vec![vec![10, 11], vec![30]]);
     }
@@ -6785,14 +7026,19 @@ mod tests {
             values,
             max_doc,
             &segment_id,
-            "",
+            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
         )
         .unwrap();
         let field_infos = field_infos::FieldInfos {
             fields: vec![sorted_set_field("x", field_number)],
         };
-        let (_version, parsed) =
-            doc_values::parse_meta(&meta, &segment_id, "", &field_infos).unwrap();
+        let (_version, parsed) = doc_values::parse_meta(
+            &meta,
+            &segment_id,
+            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
+            &field_infos,
+        )
+        .unwrap();
         let entry = parsed.sorted_set_entry(field_number).unwrap().clone();
         FlushedSortedSetDv { data, entry }
     }
@@ -6822,8 +7068,13 @@ mod tests {
         let merged_field_infos = field_infos::FieldInfos {
             fields: vec![sorted_set_field("x", field_number)],
         };
-        let (_v, meta) =
-            doc_values::parse_meta(dvm, &[9u8; ID_LENGTH], "", &merged_field_infos).unwrap();
+        let (_v, meta) = doc_values::parse_meta(
+            dvm,
+            &[9u8; ID_LENGTH],
+            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
+            &merged_field_infos,
+        )
+        .unwrap();
         let entry = meta.sorted_set_entry(field_number).unwrap();
         let dict = sorted_set_source_dict(dvd, entry).unwrap();
         (0..doc_count)
@@ -6904,15 +7155,26 @@ mod tests {
         )
         .unwrap();
 
-        let dvm = std::fs::read(std::path::Path::new(&tmp).join("_merged_sorted_set_overlap.dvm"))
-            .unwrap();
-        let dvd = std::fs::read(std::path::Path::new(&tmp).join("_merged_sorted_set_overlap.dvd"))
-            .unwrap();
+        let dvm = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.dvm",
+            per_field_segment("_merged_sorted_set_overlap", DOC_VALUES_FORMAT_NAME)
+        )))
+        .unwrap();
+        let dvd = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.dvd",
+            per_field_segment("_merged_sorted_set_overlap", DOC_VALUES_FORMAT_NAME)
+        )))
+        .unwrap();
         let merged_field_infos = field_infos::FieldInfos {
             fields: vec![sorted_set_field("colors", 0)],
         };
-        let (_v, meta) =
-            doc_values::parse_meta(&dvm, &[9u8; ID_LENGTH], "", &merged_field_infos).unwrap();
+        let (_v, meta) = doc_values::parse_meta(
+            &dvm,
+            &[9u8; ID_LENGTH],
+            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
+            &merged_field_infos,
+        )
+        .unwrap();
         let entry = meta.sorted_set_entry(0).unwrap();
         let dict = sorted_set_source_dict(&dvd, entry).unwrap();
         // "red" is shared across both sources -- the merged dictionary must
@@ -6999,10 +7261,16 @@ mod tests {
         )
         .unwrap();
 
-        let dvm = std::fs::read(std::path::Path::new(&tmp).join("_merged_sorted_set_disjoint.dvm"))
-            .unwrap();
-        let dvd = std::fs::read(std::path::Path::new(&tmp).join("_merged_sorted_set_disjoint.dvd"))
-            .unwrap();
+        let dvm = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.dvm",
+            per_field_segment("_merged_sorted_set_disjoint", DOC_VALUES_FORMAT_NAME)
+        )))
+        .unwrap();
+        let dvd = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.dvd",
+            per_field_segment("_merged_sorted_set_disjoint", DOC_VALUES_FORMAT_NAME)
+        )))
+        .unwrap();
         let values = read_back_sorted_set_values(&dvm, &dvd, 0, 2);
         assert_eq!(
             values,
@@ -7156,7 +7424,12 @@ mod tests {
             has_payloads: false,
             terms: &terms0,
         };
-        let output0 = postings_writer::write_single_field(&input0, &seg0_id, "").unwrap();
+        let output0 = postings_writer::write_single_field(
+            &input0,
+            &seg0_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
         let field_infos0 = field_infos::FieldInfos {
             fields: vec![postings_field("body", 0)],
         };
@@ -7166,11 +7439,16 @@ mod tests {
             &output0.tmd,
             &field_infos0,
             &seg0_id,
-            "",
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
             2,
         )
         .unwrap();
-        let doc_in0 = DocInput::open(&output0.doc, &seg0_id, "").unwrap();
+        let doc_in0 = DocInput::open(
+            &output0.doc,
+            &seg0_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
         let field_terms0 = fields0.field("body").unwrap();
 
         // Source 1: 1 doc -- doc 0 has "cherry" (freq 3).
@@ -7186,7 +7464,12 @@ mod tests {
             has_payloads: false,
             terms: &terms1,
         };
-        let output1 = postings_writer::write_single_field(&input1, &seg1_id, "").unwrap();
+        let output1 = postings_writer::write_single_field(
+            &input1,
+            &seg1_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
         let field_infos1 = field_infos::FieldInfos {
             fields: vec![postings_field("body", 0)],
         };
@@ -7196,11 +7479,16 @@ mod tests {
             &output1.tmd,
             &field_infos1,
             &seg1_id,
-            "",
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
             1,
         )
         .unwrap();
-        let doc_in1 = DocInput::open(&output1.doc, &seg1_id, "").unwrap();
+        let doc_in1 = DocInput::open(
+            &output1.doc,
+            &seg1_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
         let field_terms1 = fields1.field("body").unwrap();
 
         let fields = vec![postings_field("body", 0)];
@@ -7272,10 +7560,26 @@ mod tests {
         .unwrap();
         assert_eq!(sci.segment_name, "_merged_postings");
 
-        let tim = std::fs::read(std::path::Path::new(&tmp).join("_merged_postings.tim")).unwrap();
-        let tip = std::fs::read(std::path::Path::new(&tmp).join("_merged_postings.tip")).unwrap();
-        let tmd = std::fs::read(std::path::Path::new(&tmp).join("_merged_postings.tmd")).unwrap();
-        let doc = std::fs::read(std::path::Path::new(&tmp).join("_merged_postings.doc")).unwrap();
+        let tim = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.tim",
+            per_field_segment("_merged_postings", POSTINGS_FORMAT_NAME)
+        )))
+        .unwrap();
+        let tip = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.tip",
+            per_field_segment("_merged_postings", POSTINGS_FORMAT_NAME)
+        )))
+        .unwrap();
+        let tmd = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.tmd",
+            per_field_segment("_merged_postings", POSTINGS_FORMAT_NAME)
+        )))
+        .unwrap();
+        let doc = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.doc",
+            per_field_segment("_merged_postings", POSTINGS_FORMAT_NAME)
+        )))
+        .unwrap();
         let merged_field_infos = field_infos::FieldInfos {
             fields: vec![postings_field("body", 0)],
         };
@@ -7285,11 +7589,16 @@ mod tests {
             &tmd,
             &merged_field_infos,
             &[9u8; ID_LENGTH],
-            "",
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
             3,
         )
         .unwrap();
-        let merged_doc_in = DocInput::open(&doc, &[9u8; ID_LENGTH], "").unwrap();
+        let merged_doc_in = DocInput::open(
+            &doc,
+            &[9u8; ID_LENGTH],
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
         let merged_terms = merged_fields.field("body").unwrap();
 
         let apple = merged_terms
@@ -7346,7 +7655,12 @@ mod tests {
             has_payloads: false,
             terms: &terms0,
         };
-        let output0 = postings_writer::write_single_field(&input0, &seg0_id, "").unwrap();
+        let output0 = postings_writer::write_single_field(
+            &input0,
+            &seg0_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
         let mut field0 = postings_field("body", 0);
         field0.index_options = IndexOptions::DocsAndCustomFreqs;
         let field_infos0 = field_infos::FieldInfos {
@@ -7358,11 +7672,16 @@ mod tests {
             &output0.tmd,
             &field_infos0,
             &seg0_id,
-            "",
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
             1,
         )
         .unwrap();
-        let doc_in0 = DocInput::open(&output0.doc, &seg0_id, "").unwrap();
+        let doc_in0 = DocInput::open(
+            &output0.doc,
+            &seg0_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
         let field_terms0 = fields0.field("body").unwrap();
 
         // Source 1: 1 doc -- same term "score", custom freq of 5.
@@ -7378,18 +7697,28 @@ mod tests {
             has_payloads: false,
             terms: &terms1,
         };
-        let output1 = postings_writer::write_single_field(&input1, &seg1_id, "").unwrap();
+        let output1 = postings_writer::write_single_field(
+            &input1,
+            &seg1_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
         let fields1 = lucene_codecs::blocktree::open(
             &output1.tim,
             &output1.tip,
             &output1.tmd,
             &field_infos0,
             &seg1_id,
-            "",
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
             1,
         )
         .unwrap();
-        let doc_in1 = DocInput::open(&output1.doc, &seg1_id, "").unwrap();
+        let doc_in1 = DocInput::open(
+            &output1.doc,
+            &seg1_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
         let field_terms1 = fields1.field("body").unwrap();
 
         let fields = vec![field0];
@@ -7453,25 +7782,42 @@ mod tests {
         )
         .unwrap();
 
-        let tim =
-            std::fs::read(std::path::Path::new(&tmp).join("_merged_custom_freqs.tim")).unwrap();
-        let tip =
-            std::fs::read(std::path::Path::new(&tmp).join("_merged_custom_freqs.tip")).unwrap();
-        let tmd =
-            std::fs::read(std::path::Path::new(&tmp).join("_merged_custom_freqs.tmd")).unwrap();
-        let doc =
-            std::fs::read(std::path::Path::new(&tmp).join("_merged_custom_freqs.doc")).unwrap();
+        let tim = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.tim",
+            per_field_segment("_merged_custom_freqs", POSTINGS_FORMAT_NAME)
+        )))
+        .unwrap();
+        let tip = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.tip",
+            per_field_segment("_merged_custom_freqs", POSTINGS_FORMAT_NAME)
+        )))
+        .unwrap();
+        let tmd = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.tmd",
+            per_field_segment("_merged_custom_freqs", POSTINGS_FORMAT_NAME)
+        )))
+        .unwrap();
+        let doc = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.doc",
+            per_field_segment("_merged_custom_freqs", POSTINGS_FORMAT_NAME)
+        )))
+        .unwrap();
         let merged_fields = lucene_codecs::blocktree::open(
             &tim,
             &tip,
             &tmd,
             &field_infos0,
             &[9u8; ID_LENGTH],
-            "",
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
             2,
         )
         .unwrap();
-        let merged_doc_in = DocInput::open(&doc, &[9u8; ID_LENGTH], "").unwrap();
+        let merged_doc_in = DocInput::open(
+            &doc,
+            &[9u8; ID_LENGTH],
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
         let merged_terms = merged_fields.field("body").unwrap();
 
         let score = merged_terms
@@ -7505,7 +7851,12 @@ mod tests {
             has_payloads: false,
             terms: &terms0,
         };
-        let output0 = postings_writer::write_single_field(&input0, &seg0_id, "").unwrap();
+        let output0 = postings_writer::write_single_field(
+            &input0,
+            &seg0_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
         let field_infos0 = field_infos::FieldInfos {
             fields: vec![postings_field("body", 0)],
         };
@@ -7515,11 +7866,16 @@ mod tests {
             &output0.tmd,
             &field_infos0,
             &seg0_id,
-            "",
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
             1,
         )
         .unwrap();
-        let doc_in0 = DocInput::open(&output0.doc, &seg0_id, "").unwrap();
+        let doc_in0 = DocInput::open(
+            &output0.doc,
+            &seg0_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
         let field_terms0 = fields0.field("body").unwrap();
 
         let terms1 = vec![TermPostings {
@@ -7534,7 +7890,12 @@ mod tests {
             has_payloads: false,
             terms: &terms1,
         };
-        let output1 = postings_writer::write_single_field(&input1, &seg1_id, "").unwrap();
+        let output1 = postings_writer::write_single_field(
+            &input1,
+            &seg1_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
         let field_infos1 = field_infos::FieldInfos {
             fields: vec![postings_field("body", 0)],
         };
@@ -7544,11 +7905,16 @@ mod tests {
             &output1.tmd,
             &field_infos1,
             &seg1_id,
-            "",
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
             1,
         )
         .unwrap();
-        let doc_in1 = DocInput::open(&output1.doc, &seg1_id, "").unwrap();
+        let doc_in1 = DocInput::open(
+            &output1.doc,
+            &seg1_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
         let field_terms1 = fields1.field("body").unwrap();
 
         let fields = vec![postings_field("body", 0)];
@@ -7613,10 +7979,26 @@ mod tests {
         )
         .unwrap();
 
-        let tim = std::fs::read(std::path::Path::new(&tmp2).join("_merged_the.tim")).unwrap();
-        let tip = std::fs::read(std::path::Path::new(&tmp2).join("_merged_the.tip")).unwrap();
-        let tmd = std::fs::read(std::path::Path::new(&tmp2).join("_merged_the.tmd")).unwrap();
-        let doc = std::fs::read(std::path::Path::new(&tmp2).join("_merged_the.doc")).unwrap();
+        let tim = std::fs::read(std::path::Path::new(&tmp2).join(format!(
+            "{}.tim",
+            per_field_segment("_merged_the", POSTINGS_FORMAT_NAME)
+        )))
+        .unwrap();
+        let tip = std::fs::read(std::path::Path::new(&tmp2).join(format!(
+            "{}.tip",
+            per_field_segment("_merged_the", POSTINGS_FORMAT_NAME)
+        )))
+        .unwrap();
+        let tmd = std::fs::read(std::path::Path::new(&tmp2).join(format!(
+            "{}.tmd",
+            per_field_segment("_merged_the", POSTINGS_FORMAT_NAME)
+        )))
+        .unwrap();
+        let doc = std::fs::read(std::path::Path::new(&tmp2).join(format!(
+            "{}.doc",
+            per_field_segment("_merged_the", POSTINGS_FORMAT_NAME)
+        )))
+        .unwrap();
         let merged_field_infos = field_infos::FieldInfos {
             fields: vec![postings_field("body", 0)],
         };
@@ -7626,11 +8008,16 @@ mod tests {
             &tmd,
             &merged_field_infos,
             &[9u8; ID_LENGTH],
-            "",
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
             2,
         )
         .unwrap();
-        let merged_doc_in = DocInput::open(&doc, &[9u8; ID_LENGTH], "").unwrap();
+        let merged_doc_in = DocInput::open(
+            &doc,
+            &[9u8; ID_LENGTH],
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
         let merged_terms = merged_fields.field("body").unwrap();
 
         let the = merged_terms
@@ -7666,7 +8053,12 @@ mod tests {
             has_payloads: false,
             terms: &terms0,
         };
-        let output0 = postings_writer::write_single_field(&input0, &seg0_id, "").unwrap();
+        let output0 = postings_writer::write_single_field(
+            &input0,
+            &seg0_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
         let field_infos0 = field_infos::FieldInfos {
             fields: vec![postings_field("body", 0)],
         };
@@ -7676,11 +8068,16 @@ mod tests {
             &output0.tmd,
             &field_infos0,
             &seg0_id,
-            "",
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
             2,
         )
         .unwrap();
-        let doc_in0 = DocInput::open(&output0.doc, &seg0_id, "").unwrap();
+        let doc_in0 = DocInput::open(
+            &output0.doc,
+            &seg0_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
         let field_terms0 = fields0.field("body").unwrap();
 
         let fields = vec![postings_field("body", 0)];
@@ -7731,10 +8128,26 @@ mod tests {
         )
         .unwrap();
 
-        let tim = std::fs::read(std::path::Path::new(&tmp).join("_merged_del.tim")).unwrap();
-        let tip = std::fs::read(std::path::Path::new(&tmp).join("_merged_del.tip")).unwrap();
-        let tmd = std::fs::read(std::path::Path::new(&tmp).join("_merged_del.tmd")).unwrap();
-        let doc = std::fs::read(std::path::Path::new(&tmp).join("_merged_del.doc")).unwrap();
+        let tim = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.tim",
+            per_field_segment("_merged_del", POSTINGS_FORMAT_NAME)
+        )))
+        .unwrap();
+        let tip = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.tip",
+            per_field_segment("_merged_del", POSTINGS_FORMAT_NAME)
+        )))
+        .unwrap();
+        let tmd = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.tmd",
+            per_field_segment("_merged_del", POSTINGS_FORMAT_NAME)
+        )))
+        .unwrap();
+        let doc = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.doc",
+            per_field_segment("_merged_del", POSTINGS_FORMAT_NAME)
+        )))
+        .unwrap();
         let merged_field_infos = field_infos::FieldInfos {
             fields: vec![postings_field("body", 0)],
         };
@@ -7744,11 +8157,16 @@ mod tests {
             &tmd,
             &merged_field_infos,
             &[9u8; ID_LENGTH],
-            "",
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
             1,
         )
         .unwrap();
-        let merged_doc_in = DocInput::open(&doc, &[9u8; ID_LENGTH], "").unwrap();
+        let merged_doc_in = DocInput::open(
+            &doc,
+            &[9u8; ID_LENGTH],
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
         let merged_terms = merged_fields.field("body").unwrap();
 
         let apple = merged_terms
@@ -7778,7 +8196,12 @@ mod tests {
             has_payloads: false,
             terms: &terms0,
         };
-        let output0 = postings_writer::write_single_field(&input0, &seg0_id, "").unwrap();
+        let output0 = postings_writer::write_single_field(
+            &input0,
+            &seg0_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
         let field_infos0 = field_infos::FieldInfos {
             fields: vec![postings_field("body", 0)],
         };
@@ -7788,11 +8211,16 @@ mod tests {
             &output0.tmd,
             &field_infos0,
             &seg0_id,
-            "",
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
             1,
         )
         .unwrap();
-        let doc_in0 = DocInput::open(&output0.doc, &seg0_id, "").unwrap();
+        let doc_in0 = DocInput::open(
+            &output0.doc,
+            &seg0_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
         let field_terms0 = fields0.field("body").unwrap();
 
         // Source 1: 1 doc, alive -- "alive" survives.
@@ -7808,7 +8236,12 @@ mod tests {
             has_payloads: false,
             terms: &terms1,
         };
-        let output1 = postings_writer::write_single_field(&input1, &seg1_id, "").unwrap();
+        let output1 = postings_writer::write_single_field(
+            &input1,
+            &seg1_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
         let field_infos1 = field_infos::FieldInfos {
             fields: vec![postings_field("body", 0)],
         };
@@ -7818,11 +8251,16 @@ mod tests {
             &output1.tmd,
             &field_infos1,
             &seg1_id,
-            "",
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
             1,
         )
         .unwrap();
-        let doc_in1 = DocInput::open(&output1.doc, &seg1_id, "").unwrap();
+        let doc_in1 = DocInput::open(
+            &output1.doc,
+            &seg1_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
         let field_terms1 = fields1.field("body").unwrap();
 
         let fields = vec![postings_field("body", 0)];
@@ -7888,14 +8326,26 @@ mod tests {
         )
         .unwrap();
 
-        let tim =
-            std::fs::read(std::path::Path::new(&tmp).join("_merged_fully_deleted.tim")).unwrap();
-        let tip =
-            std::fs::read(std::path::Path::new(&tmp).join("_merged_fully_deleted.tip")).unwrap();
-        let tmd =
-            std::fs::read(std::path::Path::new(&tmp).join("_merged_fully_deleted.tmd")).unwrap();
-        let doc =
-            std::fs::read(std::path::Path::new(&tmp).join("_merged_fully_deleted.doc")).unwrap();
+        let tim = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.tim",
+            per_field_segment("_merged_fully_deleted", POSTINGS_FORMAT_NAME)
+        )))
+        .unwrap();
+        let tip = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.tip",
+            per_field_segment("_merged_fully_deleted", POSTINGS_FORMAT_NAME)
+        )))
+        .unwrap();
+        let tmd = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.tmd",
+            per_field_segment("_merged_fully_deleted", POSTINGS_FORMAT_NAME)
+        )))
+        .unwrap();
+        let doc = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.doc",
+            per_field_segment("_merged_fully_deleted", POSTINGS_FORMAT_NAME)
+        )))
+        .unwrap();
         let merged_field_infos = field_infos::FieldInfos {
             fields: vec![postings_field("body", 0)],
         };
@@ -7905,11 +8355,16 @@ mod tests {
             &tmd,
             &merged_field_infos,
             &[9u8; ID_LENGTH],
-            "",
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
             1,
         )
         .unwrap();
-        let merged_doc_in = DocInput::open(&doc, &[9u8; ID_LENGTH], "").unwrap();
+        let merged_doc_in = DocInput::open(
+            &doc,
+            &[9u8; ID_LENGTH],
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
         let merged_terms = merged_fields.field("body").unwrap();
 
         assert!(merged_terms.seek_exact(b"ghost").is_none());
@@ -7936,7 +8391,12 @@ mod tests {
             has_payloads: false,
             terms: &terms0,
         };
-        let output0 = postings_writer::write_single_field(&input0, &seg0_id, "").unwrap();
+        let output0 = postings_writer::write_single_field(
+            &input0,
+            &seg0_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
         let field_infos0 = field_infos::FieldInfos {
             fields: vec![postings_field("body", 0)],
         };
@@ -7946,11 +8406,16 @@ mod tests {
             &output0.tmd,
             &field_infos0,
             &seg0_id,
-            "",
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
             1,
         )
         .unwrap();
-        let doc_in0 = DocInput::open(&output0.doc, &seg0_id, "").unwrap();
+        let doc_in0 = DocInput::open(
+            &output0.doc,
+            &seg0_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
         let field_terms0 = fields0.field("body").unwrap();
 
         let fields = vec![postings_field("body", 0)];
@@ -8049,7 +8514,12 @@ mod tests {
             has_payloads: true,
             terms: &terms0,
         };
-        let output0 = postings_writer::write_single_field(&input0, &seg0_id, "").unwrap();
+        let output0 = postings_writer::write_single_field(
+            &input0,
+            &seg0_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
         let mut field_with_positions = postings_field("body", 0);
         field_with_positions.index_options = IndexOptions::DocsAndFreqsAndPositionsAndOffsets;
         field_with_positions.store_payloads = true;
@@ -8062,13 +8532,28 @@ mod tests {
             &output0.tmd,
             &field_infos0,
             &seg0_id,
-            "",
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
             1,
         )
         .unwrap();
-        let doc_in0 = DocInput::open(&output0.doc, &seg0_id, "").unwrap();
-        let pos_in0 = lucene_codecs::postings::PosInput::open(&output0.pos, &seg0_id, "").unwrap();
-        let pay_in0 = lucene_codecs::postings::PayInput::open(&output0.pay, &seg0_id, "").unwrap();
+        let doc_in0 = DocInput::open(
+            &output0.doc,
+            &seg0_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
+        let pos_in0 = lucene_codecs::postings::PosInput::open(
+            &output0.pos,
+            &seg0_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
+        let pay_in0 = lucene_codecs::postings::PayInput::open(
+            &output0.pay,
+            &seg0_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
         let field_terms0 = fields0.field("body").unwrap();
 
         // Source 1: 1 doc -- doc 0 has "banana" at position 1, no payload.
@@ -8086,7 +8571,12 @@ mod tests {
             has_payloads: true,
             terms: &terms1,
         };
-        let output1 = postings_writer::write_single_field(&input1, &seg1_id, "").unwrap();
+        let output1 = postings_writer::write_single_field(
+            &input1,
+            &seg1_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
         let field_infos1 = field_infos::FieldInfos {
             fields: vec![field_with_positions.clone()],
         };
@@ -8096,13 +8586,28 @@ mod tests {
             &output1.tmd,
             &field_infos1,
             &seg1_id,
-            "",
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
             1,
         )
         .unwrap();
-        let doc_in1 = DocInput::open(&output1.doc, &seg1_id, "").unwrap();
-        let pos_in1 = lucene_codecs::postings::PosInput::open(&output1.pos, &seg1_id, "").unwrap();
-        let pay_in1 = lucene_codecs::postings::PayInput::open(&output1.pay, &seg1_id, "").unwrap();
+        let doc_in1 = DocInput::open(
+            &output1.doc,
+            &seg1_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
+        let pos_in1 = lucene_codecs::postings::PosInput::open(
+            &output1.pos,
+            &seg1_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
+        let pay_in1 = lucene_codecs::postings::PayInput::open(
+            &output1.pay,
+            &seg1_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
         let field_terms1 = fields1.field("body").unwrap();
 
         let fields = vec![field_with_positions.clone()];
@@ -8167,12 +8672,36 @@ mod tests {
         .unwrap();
         assert_eq!(sci.segment_name, "_merged_positions");
 
-        let tim = std::fs::read(std::path::Path::new(&tmp).join("_merged_positions.tim")).unwrap();
-        let tip = std::fs::read(std::path::Path::new(&tmp).join("_merged_positions.tip")).unwrap();
-        let tmd = std::fs::read(std::path::Path::new(&tmp).join("_merged_positions.tmd")).unwrap();
-        let doc = std::fs::read(std::path::Path::new(&tmp).join("_merged_positions.doc")).unwrap();
-        let pos = std::fs::read(std::path::Path::new(&tmp).join("_merged_positions.pos")).unwrap();
-        let pay = std::fs::read(std::path::Path::new(&tmp).join("_merged_positions.pay")).unwrap();
+        let tim = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.tim",
+            per_field_segment("_merged_positions", POSTINGS_FORMAT_NAME)
+        )))
+        .unwrap();
+        let tip = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.tip",
+            per_field_segment("_merged_positions", POSTINGS_FORMAT_NAME)
+        )))
+        .unwrap();
+        let tmd = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.tmd",
+            per_field_segment("_merged_positions", POSTINGS_FORMAT_NAME)
+        )))
+        .unwrap();
+        let doc = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.doc",
+            per_field_segment("_merged_positions", POSTINGS_FORMAT_NAME)
+        )))
+        .unwrap();
+        let pos = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.pos",
+            per_field_segment("_merged_positions", POSTINGS_FORMAT_NAME)
+        )))
+        .unwrap();
+        let pay = std::fs::read(std::path::Path::new(&tmp).join(format!(
+            "{}.pay",
+            per_field_segment("_merged_positions", POSTINGS_FORMAT_NAME)
+        )))
+        .unwrap();
         let merged_field_infos = field_infos::FieldInfos {
             fields: vec![field_with_positions],
         };
@@ -8182,15 +8711,28 @@ mod tests {
             &tmd,
             &merged_field_infos,
             &[9u8; ID_LENGTH],
-            "",
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
             2,
         )
         .unwrap();
-        let merged_doc_in = DocInput::open(&doc, &[9u8; ID_LENGTH], "").unwrap();
-        let merged_pos_in =
-            lucene_codecs::postings::PosInput::open(&pos, &[9u8; ID_LENGTH], "").unwrap();
-        let merged_pay_in =
-            lucene_codecs::postings::PayInput::open(&pay, &[9u8; ID_LENGTH], "").unwrap();
+        let merged_doc_in = DocInput::open(
+            &doc,
+            &[9u8; ID_LENGTH],
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
+        let merged_pos_in = lucene_codecs::postings::PosInput::open(
+            &pos,
+            &[9u8; ID_LENGTH],
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
+        let merged_pay_in = lucene_codecs::postings::PayInput::open(
+            &pay,
+            &[9u8; ID_LENGTH],
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
         let merged_terms = merged_fields.field("body").unwrap();
 
         let apple = merged_terms
@@ -8274,7 +8816,12 @@ mod tests {
             has_payloads: false,
             terms: &terms0,
         };
-        let output0 = postings_writer::write_single_field(&input0, &seg0_id, "").unwrap();
+        let output0 = postings_writer::write_single_field(
+            &input0,
+            &seg0_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
         let field_infos0 = field_infos::FieldInfos {
             fields: vec![postings_field("body", 0)],
         };
@@ -8284,11 +8831,16 @@ mod tests {
             &output0.tmd,
             &field_infos0,
             &seg0_id,
-            "",
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
             1,
         )
         .unwrap();
-        let doc_in0 = DocInput::open(&output0.doc, &seg0_id, "").unwrap();
+        let doc_in0 = DocInput::open(
+            &output0.doc,
+            &seg0_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
         let field_terms0 = fields0.field("body").unwrap();
 
         let terms1 = vec![TermPostings {
@@ -8304,7 +8856,12 @@ mod tests {
             has_payloads: false,
             terms: &terms1,
         };
-        let output1 = postings_writer::write_single_field(&input1, &seg1_id, "").unwrap();
+        let output1 = postings_writer::write_single_field(
+            &input1,
+            &seg1_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
         let mut field_with_positions = postings_field("body", 0);
         field_with_positions.index_options = IndexOptions::DocsAndFreqsAndPositions;
         let field_infos1 = field_infos::FieldInfos {
@@ -8316,11 +8873,16 @@ mod tests {
             &output1.tmd,
             &field_infos1,
             &seg1_id,
-            "",
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
             1,
         )
         .unwrap();
-        let doc_in1 = DocInput::open(&output1.doc, &seg1_id, "").unwrap();
+        let doc_in1 = DocInput::open(
+            &output1.doc,
+            &seg1_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
         let field_terms1 = fields1.field("body").unwrap();
 
         let tmp = tempdir();
@@ -8426,7 +8988,12 @@ mod tests {
             has_payloads: false,
             terms: &terms0,
         };
-        let output0 = postings_writer::write_single_field(&input0, &seg0_id, "").unwrap();
+        let output0 = postings_writer::write_single_field(
+            &input0,
+            &seg0_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
         let mut field0 = postings_field("body", 0);
         field0.index_options = IndexOptions::DocsAndFreqsAndPositions;
         let field_infos0 = field_infos::FieldInfos {
@@ -8438,12 +9005,22 @@ mod tests {
             &output0.tmd,
             &field_infos0,
             &seg0_id,
-            "",
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
             1,
         )
         .unwrap();
-        let doc_in0 = DocInput::open(&output0.doc, &seg0_id, "").unwrap();
-        let pos_in0 = lucene_codecs::postings::PosInput::open(&output0.pos, &seg0_id, "").unwrap();
+        let doc_in0 = DocInput::open(
+            &output0.doc,
+            &seg0_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
+        let pos_in0 = lucene_codecs::postings::PosInput::open(
+            &output0.pos,
+            &seg0_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
         let field_terms0 = fields0.field("body").unwrap();
 
         let terms1 = vec![TermPostings {
@@ -8460,7 +9037,12 @@ mod tests {
             has_payloads: true,
             terms: &terms1,
         };
-        let output1 = postings_writer::write_single_field(&input1, &seg1_id, "").unwrap();
+        let output1 = postings_writer::write_single_field(
+            &input1,
+            &seg1_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
         let mut field1 = postings_field("body", 0);
         field1.index_options = IndexOptions::DocsAndFreqsAndPositions;
         field1.store_payloads = true;
@@ -8473,12 +9055,22 @@ mod tests {
             &output1.tmd,
             &field_infos1,
             &seg1_id,
-            "",
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
             1,
         )
         .unwrap();
-        let doc_in1 = DocInput::open(&output1.doc, &seg1_id, "").unwrap();
-        let pos_in1 = lucene_codecs::postings::PosInput::open(&output1.pos, &seg1_id, "").unwrap();
+        let doc_in1 = DocInput::open(
+            &output1.doc,
+            &seg1_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
+        let pos_in1 = lucene_codecs::postings::PosInput::open(
+            &output1.pos,
+            &seg1_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
         let field_terms1 = fields1.field("body").unwrap();
 
         let tmp = tempdir();
@@ -8567,7 +9159,12 @@ mod tests {
             has_payloads: false,
             terms: &terms0,
         };
-        let output0 = postings_writer::write_single_field(&input0, &seg0_id, "").unwrap();
+        let output0 = postings_writer::write_single_field(
+            &input0,
+            &seg0_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
         let mut field0 = postings_field("body", 0);
         field0.index_options = IndexOptions::DocsAndFreqsAndPositions;
         let field_infos0 = field_infos::FieldInfos {
@@ -8579,11 +9176,16 @@ mod tests {
             &output0.tmd,
             &field_infos0,
             &seg0_id,
-            "",
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
             1,
         )
         .unwrap();
-        let doc_in0 = DocInput::open(&output0.doc, &seg0_id, "").unwrap();
+        let doc_in0 = DocInput::open(
+            &output0.doc,
+            &seg0_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )
+        .unwrap();
         let field_terms0 = fields0.field("body").unwrap();
 
         let tmp = tempdir();
