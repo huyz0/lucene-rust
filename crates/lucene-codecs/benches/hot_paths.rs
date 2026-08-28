@@ -169,9 +169,11 @@ fn bench_doc_values_numeric_value(c: &mut Criterion) {
 /// Lucene's `IndexedDISI` is a forward-only iterator with a jump table and
 /// answers `advance(target)` in roughly constant time.
 ///
-/// If the per-lookup cost printed here grows in proportion to `n`, the defect
-/// is real; if it is flat, this benchmark is wrong. No Java counterpart: the
-/// point is the shape of the curve on this side, not a ratio.
+/// Both shapes are measured. `decode_all` is what every sparse lookup used to
+/// do and is linear in `n`; `cursor` is `DisiCursor`, which walks at most one
+/// block header per 65,536 documents and should be flat. The contrast between
+/// the two curves is the finding and the fix in one chart. No Java counterpart:
+/// the point is the shape on this side, not a ratio.
 fn bench_sparse_doc_values_lookup(c: &mut Criterion) {
     let mut group = c.benchmark_group("indexed_disi/sparse_lookup");
     for n in [1_000usize, 10_000, 100_000] {
@@ -180,7 +182,8 @@ fn bench_sparse_doc_values_lookup(c: &mut Criterion) {
         let doc_ids: Vec<i32> = (0..n).map(|i| (i * 7) as i32).collect();
         let region = lucene_codecs::indexed_disi::write(&doc_ids);
         let target = doc_ids[n / 2];
-        group.bench_function(format!("n{n}"), |b| {
+        // The old shape: decode the whole region, then binary-search it.
+        group.bench_function(format!("decode_all/n{n}"), |b| {
             b.iter(|| {
                 let decoded =
                     lucene_codecs::indexed_disi::decode_doc_ids(black_box(&region), 0).unwrap();
@@ -188,6 +191,15 @@ fn bench_sparse_doc_values_lookup(c: &mut Criterion) {
                     &decoded,
                     black_box(target),
                 ));
+            });
+        });
+        // What the sparse doc-values and norms paths do now: a forward-only
+        // cursor that walks block headers. Flat in `n` where the above is
+        // linear -- that contrast is the finding and the fix in one chart.
+        group.bench_function(format!("cursor/n{n}"), |b| {
+            b.iter(|| {
+                let mut c = lucene_codecs::indexed_disi::DisiCursor::new(black_box(&region), 0);
+                black_box(c.advance_exact(black_box(target)).unwrap());
             });
         });
     }

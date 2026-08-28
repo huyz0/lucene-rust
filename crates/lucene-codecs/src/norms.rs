@@ -226,8 +226,13 @@ pub fn norm_value(data: &[u8], entry: &NormsEntry, doc: i32) -> Result<Option<i6
     // itself; `lucene_search::field_norms::FieldNorms` does exactly that.
     // Making this function itself cheap needs a real `IndexedDISI` cursor,
     // which is tracked in `docs/sweep/findings.md`.
-    let doc_ids = indexed_disi::decode_doc_ids(region, entry.dense_rank_power)?;
-    match indexed_disi::rank_of(&doc_ids, doc) {
+    // One forward-only pass over the block headers rather than decoding the
+    // whole region: `DisiCursor` walks at most one header per 65,536 documents
+    // and scans one block, where `decode_doc_ids` allocated and decoded every
+    // doc id in the field. A single lookup was linear in the field's
+    // cardinality -- 324 us at 100,000 present documents; see
+    // `indexed_disi::DisiCursor`.
+    match indexed_disi::DisiCursor::new(region, entry.dense_rank_power).advance_exact(doc)? {
         Some(ordinal) => Ok(Some(read_value_at_ordinal(data, entry, ordinal as i64)?)),
         None => Ok(None),
     }
