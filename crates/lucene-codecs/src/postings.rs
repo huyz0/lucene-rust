@@ -1821,6 +1821,26 @@ pub struct LazyDocsCursor<'a> {
     level0_last_doc_id: i32,
 }
 
+/// `VectorUtil.findNextGEQ`: index of the first entry `>= target` in an
+/// ascending buffer, or `buf.len()` if there is none.
+///
+/// A **linear scan**, which is what Lucene uses and is not the obvious choice --
+/// `partition_point` is a binary search over a sorted slice, which is what this
+/// port did. Over a 256-entry block that is eight unpredictable branches, on the
+/// order of 120 cycles once mispredictions are counted, where scoring the
+/// document costs about ten. The linear scan's branch is taken every iteration
+/// until the one that ends it, so it predicts perfectly and vectorizes, and the
+/// distances are short in practice.
+///
+/// It is why block-max pruning kept measuring as a *regression* here: three
+/// separate attempts at MAXSCORE and WAND all skipped real work and all came out
+/// slower, because every skip went through `advance` and paid more than the
+/// scoring it avoided.
+#[inline]
+fn find_next_geq(buf: &[i32], target: i32) -> usize {
+    buf.iter().position(|&d| d >= target).unwrap_or(buf.len())
+}
+
 /// A level-0 block positioned but not decoded: everything
 /// [`LazyDocsCursor::refill`] needs to unpack it later, and nothing more.
 ///
@@ -1986,8 +2006,7 @@ impl<'a> LazyDocsCursor<'a> {
         // decoded block without touching `block_docs`, so those documents are
         // stale and must not answer an advance.
         if self.pending.is_none() && self.block_pos < self.block_len {
-            let offset =
-                self.block_docs[self.block_pos..self.block_len].partition_point(|&d| d < target);
+            let offset = find_next_geq(&self.block_docs[self.block_pos..self.block_len], target);
             if self.block_pos + offset < self.block_len {
                 self.block_pos += offset;
                 self.doc_id = self.block_docs[self.block_pos];
@@ -2007,7 +2026,7 @@ impl<'a> LazyDocsCursor<'a> {
             // A full block, positioned but not decoded. Now it is genuinely
             // needed, so pay for it.
             self.refill()?;
-            let offset = self.block_docs.partition_point(|&d| d < target);
+            let offset = find_next_geq(&self.block_docs, target);
             self.block_pos = offset;
             self.doc_id = self.block_docs[offset];
             return Ok(self.doc_id);
@@ -2042,7 +2061,7 @@ impl<'a> LazyDocsCursor<'a> {
         // non-singleton branch never touches `level0SerializedImpacts`).
         self.level0_impacts.clear();
 
-        let offset = self.block_docs[..count].partition_point(|&d| d < target);
+        let offset = find_next_geq(&self.block_docs[..count], target);
         self.block_pos = offset;
         self.doc_id = if offset < count {
             self.block_docs[offset]
