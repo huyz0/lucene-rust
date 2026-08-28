@@ -67,7 +67,14 @@ fn main() {
     std::fs::create_dir_all(&out_dir).expect("create output dir");
 
     let dir = FsDirectory::open(&out_dir);
-    let fields = vec![field("id", 0, false), field("body", 1, true)];
+    let fields = vec![
+        field("id", 0, false),
+        field("body", 1, true),
+        FieldInfo {
+            doc_values_type: DocValuesType::Numeric,
+            ..field("score", 2, false)
+        },
+    ];
     let mut writer = IndexWriter::open(
         &dir,
         fields,
@@ -85,6 +92,11 @@ fn main() {
     writer
         .set_norms_field(Some("body"))
         .expect("set norms field");
+    // Doc values are the other per-field format, and so the other half of the
+    // file-naming and `.fnm`-attribute contract postings exercise above.
+    writer
+        .set_doc_values_field(Some("score"))
+        .expect("set doc values field");
 
     // A small vocabulary reused across documents, so terms carry real doc
     // frequencies (and so `shared` lands in every document, giving the
@@ -109,6 +121,10 @@ fn main() {
                 StoredField {
                     field_number: 1,
                     value: FieldValue::String(body),
+                },
+                StoredField {
+                    field_number: 2,
+                    value: FieldValue::Long(i as i64 * 3 - 1000),
                 },
             ],
         });

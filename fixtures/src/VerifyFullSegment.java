@@ -1,6 +1,8 @@
 import org.apache.lucene.index.CheckIndex;
 import org.apache.lucene.index.DirectoryReader;
+import org.apache.lucene.index.MultiDocValues;
 import org.apache.lucene.index.MultiTerms;
+import org.apache.lucene.index.NumericDocValues;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.index.Terms;
 import org.apache.lucene.search.IndexSearcher;
@@ -74,6 +76,34 @@ public class VerifyFullSegment {
         int matched = searcher.count(new TermQuery(new Term("body", "shared")));
         if (matched != NUM_DOCS) {
           System.out.println("MISMATCH body:shared matched " + matched + ", expected " + NUM_DOCS);
+          failures++;
+        }
+      }
+
+      // Doc values: the other per-field format, so the other half of the
+      // file-naming and .fnm-attribute contract the postings check above
+      // exercises. A field with no format registered reads back as absent
+      // rather than as an error, same silent shape as postings.
+      NumericDocValues dv = MultiDocValues.getNumericValues(reader, "score");
+      if (dv == null) {
+        System.out.println(
+            "MISMATCH field \"score\" has no numeric doc values -- typically a missing "
+                + "PerFieldDocValuesFormat.format/.suffix attribute in .fnm");
+        failures++;
+      } else {
+        int seen = 0;
+        for (int doc = dv.nextDoc(); doc != NumericDocValues.NO_MORE_DOCS; doc = dv.nextDoc()) {
+          long expected = (long) doc * 3 - 1000;
+          if (dv.longValue() != expected) {
+            System.out.println(
+                "MISMATCH score for doc " + doc + ": " + dv.longValue() + " != " + expected);
+            failures++;
+            break;
+          }
+          seen++;
+        }
+        if (seen != NUM_DOCS) {
+          System.out.println("MISMATCH score doc values covered " + seen + " of " + NUM_DOCS);
           failures++;
         }
       }

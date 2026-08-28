@@ -1970,3 +1970,22 @@ What remains is a scope limit rather than a corruption: a caller wanting
 Lucene's default scoring must still opt in per field. That is now stated in
 `docs/parity.md` instead of being discoverable only by handing an index to
 Lucene.
+
+### Extending the same probe to doc values
+
+Doc values are the other per-field format, and so the other half of the
+file-naming and `.fnm`-attribute contract that O27 broke -- and the half no
+check had exercised at segment level either. The full-segment fixture now
+writes a numeric doc-values field alongside the postings, and the verifier
+reads it back value by value through `MultiDocValues` (a field with no format
+registered reads back absent rather than erroring, the same silent shape as
+postings).
+
+It passed first time: `CheckIndex` reports
+`docvalues OK [1 docvalues fields; 1 NUMERIC]` and every value matches. The
+per-field fix in O27 covered both formats, and this confirms it rather than
+finding an eighth defect.
+
+The segment-level surface is now checked for stored fields, postings, the term
+dictionary, norms and doc values together. Points and term vectors are the two
+formats the fixture still does not write.
