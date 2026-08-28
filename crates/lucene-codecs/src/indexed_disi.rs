@@ -99,6 +99,179 @@ pub fn decode_doc_ids(data: &[u8], dense_rank_power: u8) -> Result<Vec<i32>> {
     Ok(docs)
 }
 
+/// A forward-only cursor over an `IndexedDISI` region: `advance_exact(doc)`
+/// answers "does this document have a value, and at what ordinal" in time
+/// proportional to the ground covered since the last call, not to the size of
+/// the field.
+///
+/// This is what Lucene's `IndexedDISI` is -- a `DocIdSetIterator`, with a jump
+/// table -- and what [`decode_doc_ids`] is not. That function decodes the whole
+/// region into a `Vec<i32>` on every call, so a caller looking documents up one
+/// at a time is quadratic in the field's cardinality: measured at 874 ns for a
+/// field present in 1,000 documents, 31.2 us at 10,000 and **324 us at
+/// 100,000** (`indexed_disi/sparse_lookup` in `benches/hot_paths.rs`).
+///
+/// Forward-only, deliberately, matching Lucene: `advance_exact` must be called
+/// with non-decreasing `doc`, and a smaller `doc` returns `None` rather than
+/// rewinding. Sorting, faceting and range scans all walk documents in ascending
+/// order, which is the access pattern this exists for. A caller that genuinely
+/// needs random access should decode once and keep the result, as
+/// `lucene_search::field_norms::FieldNorms` does.
+///
+/// The jump table and DENSE rank bytes this port writes as absent
+/// (`dense_rank_power == 0xFF`) are still not used; block headers are walked
+/// instead. That is O(blocks), not O(documents), and a block covers 65,536
+/// documents.
+#[derive(Debug)]
+pub struct DisiCursor<'a> {
+    data: &'a [u8],
+    dense_rank_power: u8,
+    /// Byte offset of the current block's header.
+    block_start: usize,
+    /// `doc >> 16` for the current block, or `None` before the first advance.
+    block: Option<i64>,
+    /// Ordinal of the current block's first present document.
+    ordinal_base: usize,
+    /// Present documents in the current block.
+    num_values: u32,
+    /// Byte offset of the current block's payload (past its header, and past a
+    /// DENSE block's rank bytes).
+    payload_start: usize,
+    /// Set once the SPARSE sentinel (`doc == i32::MAX`) has been seen; the
+    /// region has no further blocks.
+    exhausted: bool,
+    /// Highest doc ID passed to [`DisiCursor::advance_exact`] so far.
+    ///
+    /// Enforced rather than merely documented. Without it, going backwards
+    /// happens to work *within* a block -- a SPARSE block rescans from its
+    /// start, a DENSE one indexes by bit position -- and fails across one,
+    /// which is the worst kind of contract: correct in testing, wrong on the
+    /// data that spans two blocks.
+    last_doc: i32,
+}
+
+impl<'a> DisiCursor<'a> {
+    /// `data` must start exactly at the first block header -- the same offset a
+    /// `NormsEntry` or doc-values entry records.
+    pub fn new(data: &'a [u8], dense_rank_power: u8) -> Self {
+        Self {
+            data,
+            dense_rank_power,
+            block_start: 0,
+            block: None,
+            ordinal_base: 0,
+            num_values: 0,
+            payload_start: 0,
+            exhausted: false,
+            last_doc: -1,
+        }
+    }
+
+    /// The ordinal of `doc` among documents that have a value, or `None` when
+    /// `doc` has none (or is behind the cursor -- see the type's doc comment).
+    pub fn advance_exact(&mut self, doc: i32) -> Result<Option<usize>> {
+        if doc < 0 || self.exhausted || doc < self.last_doc {
+            return Ok(None);
+        }
+        self.last_doc = doc;
+        let want_block = (doc as i64) >> 16;
+        while self.block.is_none_or(|cur| cur < want_block) {
+            if !self.read_next_block_header()? {
+                return Ok(None);
+            }
+        }
+        if self.block != Some(want_block) {
+            // Walked past it: this block carries no values at all.
+            return Ok(None);
+        }
+        self.ordinal_within_block(doc)
+    }
+
+    /// Reads the next block's header and positions `payload_start`, skipping the
+    /// previous block's payload. Returns `false` at the end of the region.
+    fn read_next_block_header(&mut self) -> Result<bool> {
+        // Step over the block we are currently on, if any.
+        if self.block.is_some() {
+            self.block_start = self.payload_start + self.payload_len();
+            self.ordinal_base += self.num_values as usize;
+        }
+        if self.block_start + 4 > self.data.len() {
+            self.exhausted = true;
+            return Ok(false);
+        }
+        let mut input = SliceInput::new(self.data);
+        input.seek(self.block_start)?;
+        let block = input.read_u16()? as i64;
+        let num_values = 1u32 + input.read_u16()? as u32;
+        let mut payload_start = input.position();
+        if num_values > MAX_ARRAY_LENGTH
+            && num_values != BLOCK_SIZE
+            && self.dense_rank_power != NO_RANK
+        {
+            payload_start += (DENSE_BLOCK_LONGS >> (self.dense_rank_power - 7)) as usize;
+        }
+        self.block = Some(block);
+        self.num_values = num_values;
+        self.payload_start = payload_start;
+        Ok(true)
+    }
+
+    /// Byte length of the current block's payload.
+    fn payload_len(&self) -> usize {
+        if self.num_values <= MAX_ARRAY_LENGTH {
+            self.num_values as usize * 2
+        } else if self.num_values == BLOCK_SIZE {
+            0
+        } else {
+            DENSE_BLOCK_LONGS as usize * 8
+        }
+    }
+
+    /// `doc`'s ordinal within the block the cursor is positioned on.
+    fn ordinal_within_block(&mut self, doc: i32) -> Result<Option<usize>> {
+        let low = (doc as i64 & 0xFFFF) as u32;
+        if self.num_values == BLOCK_SIZE {
+            // ALL: every document in the range is present.
+            return Ok(Some(self.ordinal_base + low as usize));
+        }
+        let mut input = SliceInput::new(self.data);
+        input.seek(self.payload_start)?;
+        if self.num_values <= MAX_ARRAY_LENGTH {
+            // SPARSE: ascending 16-bit doc ids. Linear, bounded by 4095 and in
+            // practice far shorter; the sentinel ends the whole region.
+            for i in 0..self.num_values {
+                let v = input.read_u16()? as i64;
+                let full = ((*self.block.as_ref().expect("positioned")) << 16) | v;
+                if full == i32::MAX as i64 {
+                    self.exhausted = true;
+                    return Ok(None);
+                }
+                match (v as u32).cmp(&low) {
+                    std::cmp::Ordering::Equal => return Ok(Some(self.ordinal_base + i as usize)),
+                    std::cmp::Ordering::Greater => return Ok(None),
+                    std::cmp::Ordering::Less => {}
+                }
+            }
+            return Ok(None);
+        }
+        // DENSE: count set bits before `low`, then test `low` itself.
+        let word_idx = (low / 64) as usize;
+        input.seek(self.payload_start + word_idx * 8)?;
+        let word = input.read_i64()? as u64;
+        let bit = low % 64;
+        if (word >> bit) & 1 == 0 {
+            return Ok(None);
+        }
+        let mut rank = (word & ((1u64 << bit) - 1)).count_ones() as usize;
+        let mut before = SliceInput::new(self.data);
+        before.seek(self.payload_start)?;
+        for _ in 0..word_idx {
+            rank += (before.read_i64()? as u64).count_ones() as usize;
+        }
+        Ok(Some(self.ordinal_base + rank))
+    }
+}
+
 /// Convenience: whether `doc` has a value, and if so its ordinal (rank)
 /// among docs that do — the position doc-values/norms sparse arrays index
 /// by. `docs` must be the ascending list `decode_doc_ids` returns.
@@ -174,6 +347,70 @@ pub fn write(doc_ids: &[i32]) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+
+    /// The cursor and the decode-everything path must agree for every document
+    /// in range, across all three block shapes and across block boundaries.
+    ///
+    /// Two implementations of one lookup is the shape that diverges silently,
+    /// and this one has three encodings and a sentinel to get wrong. Checked
+    /// over the whole doc-id range rather than at sampled points, because the
+    /// interesting answers are the `None`s.
+    fn assert_cursor_matches(doc_ids: &[i32], max_doc: i32) {
+        let bytes = write(doc_ids);
+        let decoded = decode_doc_ids(&bytes, NO_RANK).unwrap();
+        assert_eq!(decoded, doc_ids, "fixture does not round-trip");
+
+        let mut cursor = DisiCursor::new(&bytes, NO_RANK);
+        for doc in 0..max_doc {
+            let want = rank_of(&decoded, doc);
+            let got = cursor.advance_exact(doc).unwrap();
+            assert_eq!(got, want, "disagreement at doc {doc}");
+        }
+    }
+
+    #[test]
+    fn cursor_matches_decode_for_a_sparse_block() {
+        let docs: Vec<i32> = (0..50).map(|i| i * 7).collect();
+        assert_cursor_matches(&docs, 400);
+    }
+
+    #[test]
+    fn cursor_matches_decode_for_a_dense_block() {
+        // Above MAX_ARRAY_LENGTH (4095) and below BLOCK_SIZE, so DENSE.
+        let docs: Vec<i32> = (0..10_000).map(|i| i * 6).collect();
+        assert_cursor_matches(&docs, 65_536);
+    }
+
+    #[test]
+    fn cursor_matches_decode_for_an_all_block() {
+        let docs: Vec<i32> = (0..65_536).collect();
+        assert_cursor_matches(&docs, 65_536);
+    }
+
+    #[test]
+    fn cursor_matches_decode_across_block_boundaries() {
+        // Block 0 sparse, block 1 entirely absent, block 2 dense: the cursor has
+        // to walk a block with no values at all, which is the case a
+        // "step to the next block" loop gets wrong.
+        let mut docs: Vec<i32> = (0..40).map(|i| i * 3).collect();
+        docs.extend((0..6_000).map(|i| 2 * 65_536 + i * 9));
+        docs.retain(|&d| d < 3 * 65_536);
+        docs.sort_unstable();
+        docs.dedup();
+        assert_cursor_matches(&docs, 3 * 65_536);
+    }
+
+    #[test]
+    fn cursor_is_forward_only_and_says_so_by_returning_none() {
+        let docs: Vec<i32> = (0..50).map(|i| i * 7).collect();
+        let bytes = write(&docs);
+        let mut cursor = DisiCursor::new(&bytes, NO_RANK);
+        assert_eq!(cursor.advance_exact(70).unwrap(), Some(10));
+        // Going backwards is not supported and must not silently answer wrongly.
+        assert_eq!(cursor.advance_exact(7).unwrap(), None);
+        // Forward still works afterwards.
+        assert_eq!(cursor.advance_exact(77).unwrap(), Some(11));
+    }
     use super::*;
 
     fn write_block_header(out: &mut Vec<u8>, block: u16, num_values: u32) {

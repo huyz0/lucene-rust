@@ -764,8 +764,13 @@ pub fn numeric_value(data: &[u8], entry: &NumericEntry, doc: i32) -> Result<Opti
                 ..(entry.docs_with_field_offset + entry.docs_with_field_length) as usize,
         )
         .ok_or(lucene_store::Error::Eof { offset: 0 })?;
-    let doc_ids = indexed_disi::decode_doc_ids(region, entry.dense_rank_power)?;
-    match indexed_disi::rank_of(&doc_ids, doc) {
+    // One forward-only pass over the block headers rather than decoding the
+    // whole region: `DisiCursor` walks at most one header per 65,536 documents
+    // and scans one block, where `decode_doc_ids` allocated and decoded every
+    // doc id in the field. A single lookup was linear in the field's
+    // cardinality -- 324 us at 100,000 present documents; see
+    // `indexed_disi::DisiCursor`.
+    match indexed_disi::DisiCursor::new(region, entry.dense_rank_power).advance_exact(doc)? {
         Some(ordinal) => Ok(Some(decode_value(data, entry, ordinal as i64)?)),
         None => Ok(None),
     }
@@ -1021,8 +1026,8 @@ pub fn binary_value<'d>(data: &'d [u8], entry: &BinaryEntry, doc: i32) -> Result
                     ..(entry.docs_with_field_offset + entry.docs_with_field_length) as usize,
             )
             .ok_or(lucene_store::Error::Eof { offset: 0 })?;
-        let doc_ids = indexed_disi::decode_doc_ids(region, entry.dense_rank_power)?;
-        match indexed_disi::rank_of(&doc_ids, doc) {
+        // See `numeric_value` for why this is a cursor and not a full decode.
+        match indexed_disi::DisiCursor::new(region, entry.dense_rank_power).advance_exact(doc)? {
             Some(ordinal) => ordinal as i64,
             None => return Ok(None),
         }
@@ -1086,8 +1091,10 @@ pub fn sorted_numeric_values(
                         as usize,
             )
             .ok_or(lucene_store::Error::Eof { offset: 0 })?;
-        let doc_ids = indexed_disi::decode_doc_ids(region, entry.numeric.dense_rank_power)?;
-        match indexed_disi::rank_of(&doc_ids, doc) {
+        // See `numeric_value` for why this is a cursor and not a full decode.
+        match indexed_disi::DisiCursor::new(region, entry.numeric.dense_rank_power)
+            .advance_exact(doc)?
+        {
             Some(r) => r as i64,
             None => return Ok(Vec::new()),
         }

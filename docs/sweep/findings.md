@@ -821,13 +821,39 @@ test cannot pass by both paths being wrong identically.
 sites are free functions with no natural owner and are unchanged; sorting and
 faceting on a sparse field are still quadratic.
 
-### Still open
+### O20 — the `IndexedDISI` cursor (fixed)
 
-A real `IndexedDISI` cursor — forward-only, jump-table-backed, allocation-free —
-which would remove both the decode and the binary search, and would let
-`doc_values.rs` be fixed at all. Smaller than the block-tree work above but the
-same kind of job: replace a materializing shortcut with the streaming structure
-Lucene actually uses.
+`indexed_disi::DisiCursor` is now the forward-only reader this finding asked
+for: it walks at most one block header per 65,536 documents and scans one block,
+allocating nothing. All four sparse sites use it -- `norms::norm_value`, and
+`doc_values`' `numeric_value`, `sorted_ord`/`binary_value` path and
+`sorted_numeric_values`.
+
+| documents with the field | decode-all | cursor | |
+|---|---|---|---|
+| 1,000 | 843 ns | 509 ns | 1.7x |
+| 10,000 | 31.4 us | 258 ns | **122x** |
+| 100,000 | 326 us | 178 ns | **1,832x** |
+
+Flat where the old path was linear, which is the whole claim; the benchmark
+measures both shapes side by side so the contrast is visible rather than
+asserted.
+
+Forward-only is **enforced**, not merely documented. Going backwards happened to
+work within a block -- a SPARSE block rescans from its start, a DENSE one indexes
+by bit position -- and failed across one. That is the worst kind of contract:
+correct in testing, wrong on the data that spans two blocks. A test that went
+backwards deliberately is what surfaced it.
+
+Correctness is pinned by asserting the cursor agrees with `decode_doc_ids` +
+`rank_of` for **every** document in range, not at sampled points, across all
+three block encodings (SPARSE, DENSE, ALL) and across a block that carries no
+values at all -- the case a "step to the next block" loop gets wrong. The
+interesting answers are the `None`s, which sampling would miss.
+
+`FieldNorms` keeps its decode-once `Vec`: it is built per field per segment and
+then asked for arbitrary documents, so random access matters more there than
+allocation, and the cursor's forward-only contract would not serve it.
 
 ---
 
