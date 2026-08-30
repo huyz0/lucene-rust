@@ -1770,8 +1770,16 @@ impl<'a> TermsEnum<'a> {
         Ok(Some((self.st.term.get(), stats)))
     }
 
-    /// [`Self::try_next`] for callers with no error channel: a corrupt block
-    /// reads as end-of-terms. New code should prefer `try_next`.
+    /// [`Self::try_next`] with the error dropped: a corrupt block reads as
+    /// end-of-terms.
+    ///
+    /// **Test convenience only.** No production caller in this workspace uses
+    /// this spelling any more (`c39-codecs-readpath` migrated the last of
+    /// them, and the migration is re-checkable by marking these four methods
+    /// `#[deprecated]` and building `--all-targets`). It survives because a
+    /// test that has just built its own bytes gains nothing from an error
+    /// channel; a decoder that degrades corruption to "no such term" is how a
+    /// corrupt index reads as an empty one.
     ///
     /// Named to mirror Java's `TermsEnum.next()` rather than
     /// `std::iter::Iterator::next`: a real `Iterator` impl would need `Item`
@@ -1788,8 +1796,9 @@ impl<'a> TermsEnum<'a> {
         self.ste().seek_ceil(target)
     }
 
-    /// [`Self::try_seek_ceil`] for callers with no error channel: a corrupt
-    /// block reads as [`SeekStatus::End`].
+    /// [`Self::try_seek_ceil`] with the error dropped: a corrupt block reads
+    /// as [`SeekStatus::End`]. **Test convenience only** -- see
+    /// [`Self::next`].
     pub fn seek_ceil(&mut self, target: &[u8]) -> SeekStatus {
         self.try_seek_ceil(target).unwrap_or(SeekStatus::End)
     }
@@ -1805,7 +1814,8 @@ impl<'a> TermsEnum<'a> {
         Ok(Some((self.st.term.get(), stats)))
     }
 
-    /// [`Self::try_current`] for callers with no error channel.
+    /// [`Self::try_current`] with the error dropped. **Test convenience
+    /// only** -- see [`Self::next`].
     pub fn current(&mut self) -> Option<(&[u8], TermStats)> {
         self.try_current().unwrap_or(None)
     }
@@ -2005,9 +2015,9 @@ impl FieldTerms {
         })
     }
 
-    /// [`Self::try_seek_exact`] for callers with no error channel: a corrupt
-    /// block reads as "no such term". New code should prefer
-    /// `try_seek_exact`.
+    /// [`Self::try_seek_exact`] with the error dropped: a corrupt block reads
+    /// as "no such term". **Test convenience only** -- see
+    /// [`TermsEnum::next`].
     pub fn seek_exact(&self, term: &[u8]) -> Option<TermStats> {
         self.try_seek_exact(term).unwrap_or(None)
     }
@@ -2054,7 +2064,7 @@ impl FieldTerms {
     pub fn intersect<'a>(
         &'a self,
         pattern: &'a WildcardPattern,
-    ) -> impl Iterator<Item = (Vec<u8>, TermStats)> + 'a {
+    ) -> impl Iterator<Item = Result<(Vec<u8>, TermStats)>> + 'a {
         Intersect::new(self, PrefixMatcher(pattern), pattern.literal_prefix())
     }
 
@@ -2062,12 +2072,19 @@ impl FieldTerms {
     /// edit-distance budget, in sorted order, with its stats. Same shape as
     /// [`Self::intersect`], with `pattern`'s required `prefixLength`-byte
     /// exact prefix as the seek target.
-    pub fn fuzzy_intersect<'a>(
-        &'a self,
-        pattern: &'a FuzzyMatch<'a>,
-    ) -> impl Iterator<Item = (Vec<u8>, TermStats)> + 'a {
+    pub fn fuzzy_intersect<'a>(&'a self, pattern: &'a FuzzyMatch<'a>) -> FuzzyIntersect<'a> {
         let prefix = pattern.literal_prefix().to_vec();
-        Intersect::new(self, FuzzyMatcher(pattern), prefix)
+        FuzzyIntersect {
+            inner: Intersect::new(
+                self,
+                FuzzyMatcher {
+                    pattern,
+                    max_edits: pattern.max_edits(),
+                    last_edits: 0,
+                },
+                prefix,
+            ),
+        }
     }
 
     /// `RegexpQuery`-equivalent term matching, with the dead-prefix **block
@@ -2080,7 +2097,7 @@ impl FieldTerms {
     pub fn regexp_intersect<'a>(
         &'a self,
         pattern: &'a RegexpPattern,
-    ) -> impl Iterator<Item = (Vec<u8>, TermStats)> + 'a {
+    ) -> impl Iterator<Item = Result<(Vec<u8>, TermStats)>> + 'a {
         Intersect::new(self, RegexpMatcher(pattern), pattern.literal_prefix())
     }
 
@@ -2406,7 +2423,7 @@ trait TermMatcher {
     /// re-evaluated per non-matching term to reach a compile-time constant.
     const CAN_SKIP: bool = false;
 
-    fn matches(&self, term: &[u8]) -> bool;
+    fn matches(&mut self, term: &[u8]) -> bool;
 
     /// `k` such that no term starting with `term[..k]` can match, or `None`.
     /// The [`IntersectTermsEnum`-equivalent](FieldTerms::regexp_intersect)
@@ -2418,15 +2435,98 @@ trait TermMatcher {
 
 struct PrefixMatcher<'a>(&'a WildcardPattern);
 impl TermMatcher for PrefixMatcher<'_> {
-    fn matches(&self, term: &[u8]) -> bool {
+    fn matches(&mut self, term: &[u8]) -> bool {
         self.0.matches(term)
     }
 }
 
-struct FuzzyMatcher<'a, 'b>(&'a FuzzyMatch<'b>);
+struct FuzzyMatcher<'a, 'b> {
+    pattern: &'a FuzzyMatch<'b>,
+    /// The budget **currently in force**, which starts at the pattern's own
+    /// `maxEdits` and can only fall -- see [`FuzzyIntersect::set_max_edits`].
+    max_edits: u8,
+    /// The exact edit distance of the last term this matcher **accepted**, so
+    /// a consumer scoring that term does not run the DP a second time for an
+    /// answer already computed -- see [`FuzzyIntersect::last_edits`]. Java gets
+    /// this for free: `FuzzyTermsEnum.next` computes `ed` and sets
+    /// `boostAtt` in the same method.
+    last_edits: usize,
+}
 impl TermMatcher for FuzzyMatcher<'_, '_> {
-    fn matches(&self, term: &[u8]) -> bool {
-        self.0.matches(term)
+    fn matches(&mut self, term: &[u8]) -> bool {
+        match self.pattern.edits_within(term, self.max_edits) {
+            Some(ed) => {
+                self.last_edits = ed;
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+/// [`FieldTerms::fuzzy_intersect`]'s walk, as a named type so a caller can
+/// tighten the edit budget **while it is running**.
+///
+/// That is `FuzzyTermsEnum`'s `MaxNonCompetitiveBoostAttribute` channel:
+/// `TopTermsRewrite.collectTerms` publishes the worst boost still in its
+/// size-`maxExpansions` queue, `FuzzyTermsEnum.next` notices it changed, and
+/// `bottomChanged` drops `maxEdits` for as long as no term at that distance
+/// could still compete --
+///
+/// ```java
+/// while (maxEdits > 0) {
+///   float maxBoost = 1.0f - ((float) maxEdits / (float) termLength);
+///   if (bottom < maxBoost || (bottom == maxBoost && termAfter == false)) break;
+///   maxEdits--;
+/// }
+/// ```
+///
+/// -- then swaps in `automata[maxEdits]`, seeked back to where it was
+/// (`getAutomatonEnum(maxEdits, lastTerm)`). This walk needs no re-seek: it is
+/// a forward scan over one sorted range, so tightening the predicate takes
+/// effect on the next term and the position is already correct. What it buys
+/// is the same thing Java's automaton swap buys -- every remaining term is
+/// tested against a narrower band, and the length filter rejects far more of
+/// them outright.
+pub struct FuzzyIntersect<'a> {
+    inner: Intersect<'a, FuzzyMatcher<'a, 'a>>,
+}
+
+impl FuzzyIntersect<'_> {
+    /// `bottomChanged`'s `actualEnum = getAutomatonEnum(maxEdits, lastTerm)`.
+    ///
+    /// Only ever lowers: a budget at or above the one in force is ignored,
+    /// because widening mid-scan would make the walk yield terms it had
+    /// already rejected further back, which no caller could interpret.
+    pub fn set_max_edits(&mut self, max_edits: u8) {
+        if max_edits < self.inner.matcher.max_edits {
+            self.inner.matcher.max_edits = max_edits;
+        }
+    }
+
+    /// The budget currently in force.
+    pub fn max_edits(&self) -> u8 {
+        self.inner.matcher.max_edits
+    }
+
+    /// The exact edit distance of the term this walk last yielded -- what
+    /// `FuzzyTermsEnum.next` has in hand when it sets `BoostAttribute`. Pair
+    /// it with [`crate::fuzzy::FuzzyMatch::boost_from_edits`] rather than
+    /// re-deriving the distance from the term.
+    ///
+    /// Meaningless before the first yielded term (it reads `0`, which is also
+    /// a legitimate distance), which is why it is not an `Option`: every
+    /// caller reads it immediately after a `Some` from [`Iterator::next`].
+    pub fn last_edits(&self) -> usize {
+        self.inner.matcher.last_edits
+    }
+}
+
+impl Iterator for FuzzyIntersect<'_> {
+    type Item = Result<(Vec<u8>, TermStats)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next()
     }
 }
 
@@ -2434,7 +2534,7 @@ struct RegexpMatcher<'a>(&'a RegexpPattern);
 impl TermMatcher for RegexpMatcher<'_> {
     const CAN_SKIP: bool = true;
 
-    fn matches(&self, term: &[u8]) -> bool {
+    fn matches(&mut self, term: &[u8]) -> bool {
         self.0.matches(term)
     }
     fn dead_prefix_len(&self, term: &[u8]) -> Option<usize> {
@@ -2493,52 +2593,50 @@ impl<'a, M: TermMatcher> Intersect<'a, M> {
     }
 
     /// Positions on the first candidate; `false` when there is none.
-    fn start(&mut self) -> bool {
+    fn start(&mut self) -> Result<bool> {
         self.started = true;
         if self.prefix.is_empty() {
-            return matches!(self.enum_.try_next(), Ok(Some(_)));
+            return Ok(self.enum_.try_next()?.is_some());
         }
-        match self.enum_.try_seek_ceil(&self.prefix) {
-            Ok(SeekStatus::Found) | Ok(SeekStatus::NotFound) => true,
-            Ok(SeekStatus::End) | Err(_) => false,
-        }
+        Ok(match self.enum_.try_seek_ceil(&self.prefix)? {
+            SeekStatus::Found | SeekStatus::NotFound => true,
+            SeekStatus::End => false,
+        })
     }
-}
 
-impl<M: TermMatcher> Iterator for Intersect<'_, M> {
-    type Item = (Vec<u8>, TermStats);
-
-    fn next(&mut self) -> Option<Self::Item> {
+    /// The body of [`Iterator::next`], with the error channel Java's
+    /// `IntersectTermsEnum.next()` has (it throws `IOException`).
+    fn next_result(&mut self) -> Result<Option<(Vec<u8>, TermStats)>> {
         if self.done {
-            return None;
+            return Ok(None);
         }
-        if !self.started && !self.start() {
+        if !self.started && !self.start()? {
             self.done = true;
-            return None;
+            return Ok(None);
         }
         loop {
-            let Some((term, stats)) = self.enum_.current() else {
+            let Some((term, stats)) = self.enum_.try_current()? else {
                 self.done = true;
-                return None;
+                return Ok(None);
             };
             if !term.starts_with(&self.prefix) {
                 self.done = true;
-                return None;
+                return Ok(None);
             }
             if self.matcher.matches(term) {
                 let item = (term.to_vec(), stats);
-                if !matches!(self.enum_.try_next(), Ok(Some(_))) {
+                if self.enum_.try_next()?.is_none() {
                     self.done = true;
                 }
-                return Some(item);
+                return Ok(Some(item));
             }
 
             // Not a match. Either step to the next term, or -- when the
             // pattern proves this whole prefix range is dead -- seek past it.
             if !M::CAN_SKIP || !self.skip_enabled {
-                if !matches!(self.enum_.try_next(), Ok(Some(_))) {
+                if self.enum_.try_next()?.is_none() {
                     self.done = true;
-                    return None;
+                    return Ok(None);
                 }
                 continue;
             }
@@ -2560,18 +2658,18 @@ impl<M: TermMatcher> Iterator for Intersect<'_, M> {
 
             match target {
                 None => {
-                    if !matches!(self.enum_.try_next(), Ok(Some(_))) {
+                    if self.enum_.try_next()?.is_none() {
                         self.done = true;
-                        return None;
+                        return Ok(None);
                     }
                 }
                 Some(upper) => {
                     let before = self.enum_.ste().position();
-                    match self.enum_.try_seek_ceil(&upper) {
-                        Ok(SeekStatus::Found) | Ok(SeekStatus::NotFound) => {}
-                        Ok(SeekStatus::End) | Err(_) => {
+                    match self.enum_.try_seek_ceil(&upper)? {
+                        SeekStatus::Found | SeekStatus::NotFound => {}
+                        SeekStatus::End => {
                             self.done = true;
-                            return None;
+                            return Ok(None);
                         }
                     }
                     let after = self.enum_.ste().position();
@@ -2601,6 +2699,29 @@ impl<M: TermMatcher> Iterator for Intersect<'_, M> {
 
             if self.skip_attempts == SKIP_WARMUP && self.skipped < SKIP_WARMUP_BUDGET {
                 self.skip_enabled = false;
+            }
+        }
+    }
+}
+
+impl<M: TermMatcher> Iterator for Intersect<'_, M> {
+    /// A corrupt `.tim` block ends the walk **with an error**, as
+    /// `IntersectTermsEnum.next()`'s `IOException` does, rather than by
+    /// quietly reporting fewer matching terms: a truncated term expansion is a
+    /// wrong hit set, and every consumer of these iterators is inside a
+    /// `Result`-returning function already.
+    type Item = Result<(Vec<u8>, TermStats)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.next_result() {
+            Ok(Some(item)) => Some(Ok(item)),
+            Ok(None) => None,
+            Err(e) => {
+                // One error per walk: the cursor's frame stack is not
+                // recoverable, and Java's enumeration is likewise dead once
+                // `loadBlock` has thrown.
+                self.done = true;
+                Some(Err(e))
             }
         }
     }
@@ -3840,7 +3961,7 @@ mod tests {
 
         // Prefix: "app*" -> apple, application, apply (in sorted order).
         let pattern = WildcardPattern::new(b"app*");
-        let got: Vec<Vec<u8>> = field.intersect(&pattern).map(|(t, _)| t).collect();
+        let got: Vec<Vec<u8>> = field.intersect(&pattern).map(|r| r.unwrap().0).collect();
         assert_eq!(
             got,
             vec![
@@ -3853,12 +3974,12 @@ mod tests {
         // "?" wildcard: "ban?" matches nothing here ("band" is 4 bytes so
         // "ban?" matches "band" exactly -- exercise it precisely).
         let pattern = WildcardPattern::new(b"ban?");
-        let got: Vec<Vec<u8>> = field.intersect(&pattern).map(|(t, _)| t).collect();
+        let got: Vec<Vec<u8>> = field.intersect(&pattern).map(|r| r.unwrap().0).collect();
         assert_eq!(got, vec![b"band".to_vec()]);
 
         // No literal prefix ("*" in the middle only): "*ana*" -> banana.
         let pattern = WildcardPattern::new(b"*ana*");
-        let got: Vec<Vec<u8>> = field.intersect(&pattern).map(|(t, _)| t).collect();
+        let got: Vec<Vec<u8>> = field.intersect(&pattern).map(|r| r.unwrap().0).collect();
         assert_eq!(got, vec![b"banana".to_vec()]);
 
         // Matches everything.
@@ -3877,12 +3998,12 @@ mod tests {
         // Exact-match pattern (no wildcard bytes at all) behaves like
         // seek_exact.
         let pattern = WildcardPattern::new(b"banana");
-        let got: Vec<Vec<u8>> = field.intersect(&pattern).map(|(t, _)| t).collect();
+        let got: Vec<Vec<u8>> = field.intersect(&pattern).map(|r| r.unwrap().0).collect();
         assert_eq!(got, vec![b"banana".to_vec()]);
 
         // PrefixQuery-shaped constructor.
         let pattern = WildcardPattern::prefix(b"ban");
-        let got: Vec<Vec<u8>> = field.intersect(&pattern).map(|(t, _)| t).collect();
+        let got: Vec<Vec<u8>> = field.intersect(&pattern).map(|r| r.unwrap().0).collect();
         assert_eq!(got, vec![b"banana".to_vec(), b"band".to_vec()]);
     }
 
@@ -3932,7 +4053,7 @@ mod tests {
         let capped: Vec<Vec<u8>> = field
             .fuzzy_intersect(&pattern)
             .take(50)
-            .map(|(t, _)| t)
+            .map(|r| r.unwrap().0)
             .collect();
         assert_eq!(capped.len(), 50);
         let expected: Vec<Vec<u8>> = owned_terms[..50]
@@ -3969,7 +4090,10 @@ mod tests {
         // Literal-prefix-narrowed range: "appl.*" -> apple, application,
         // apply (in sorted order).
         let pattern = RegexpPattern::new(b"appl.*").unwrap();
-        let got: Vec<Vec<u8>> = field.regexp_intersect(&pattern).map(|(t, _)| t).collect();
+        let got: Vec<Vec<u8>> = field
+            .regexp_intersect(&pattern)
+            .map(|r| r.unwrap().0)
+            .collect();
         assert_eq!(
             got,
             vec![
@@ -3982,7 +4106,10 @@ mod tests {
         // Alternation has no useful literal prefix (falls back to a full
         // scan) but still matches correctly.
         let pattern = RegexpPattern::new(b"banana|band").unwrap();
-        let got: Vec<Vec<u8>> = field.regexp_intersect(&pattern).map(|(t, _)| t).collect();
+        let got: Vec<Vec<u8>> = field
+            .regexp_intersect(&pattern)
+            .map(|r| r.unwrap().0)
+            .collect();
         assert_eq!(got, vec![b"banana".to_vec(), b"band".to_vec()]);
 
         // Whole-term-match: "ban" alone matches neither "banana" nor "band".
@@ -4033,7 +4160,7 @@ mod tests {
                 .collect();
             let got: Vec<String> = field
                 .regexp_intersect(&pattern)
-                .map(|(t, _)| String::from_utf8(t).unwrap())
+                .map(|r| String::from_utf8(r.unwrap().0).unwrap())
                 .collect();
             let expected: Vec<String> = expected.iter().map(|t| t.to_string()).collect();
             assert_eq!(got, expected, "pattern {src}");
@@ -4895,10 +5022,13 @@ mod tests {
         let mut it = field.iter();
         assert_eq!(it.seek_ceil(b"alpha"), SeekStatus::End);
 
-        // The intersect iterators run over the same enum, so they end rather
-        // than yielding a wrong term.
+        // The intersect iterators run over the same enum and now surface the
+        // same error rather than ending quietly: a truncated term expansion
+        // is a wrong hit set, not a smaller one.
         let pattern = WildcardPattern::new(b"a*");
-        assert_eq!(field.intersect(&pattern).count(), 0);
+        let items: Vec<_> = field.intersect(&pattern).collect();
+        assert_eq!(items.len(), 1, "one error, then the walk is over");
+        assert!(matches!(items[0], Err(Error::Store(_))), "{:?}", items[0]);
     }
 
     /// `SegmentTermsEnum.seekExact`'s "index exhausted and this frame has no
@@ -5700,7 +5830,7 @@ mod tests {
     fn a_matcher_that_cannot_skip_reports_no_dead_prefix() {
         struct NeverSkips;
         impl TermMatcher for NeverSkips {
-            fn matches(&self, term: &[u8]) -> bool {
+            fn matches(&mut self, term: &[u8]) -> bool {
                 term == b"yes"
             }
         }
@@ -5793,7 +5923,10 @@ mod tests {
         let (tim, tip, tmd) = b.build(IndexOptions::Docs, &[("z1", 1, 1), ("za", 1, 1)]);
         let fields = open(&tim, &tip, &tmd, &fis, &b.id, &b.suffix, 5).unwrap();
         let field = fields.field("text").unwrap();
-        let got: Vec<Vec<u8>> = field.regexp_intersect(&pattern).map(|(t, _)| t).collect();
+        let got: Vec<Vec<u8>> = field
+            .regexp_intersect(&pattern)
+            .map(|r| r.unwrap().0)
+            .collect();
         assert_eq!(got, vec![b"z1".to_vec()]);
     }
 

@@ -115,160 +115,249 @@ pub fn read_term_dict_entry(input: &mut SliceInput) -> Result<TermsDictEntry> {
     })
 }
 
-/// Decodes every term in the dictionary, in ordinal order. `data` is the
-/// whole `.dvd` file's bytes.
-pub fn decode_all_terms(data: &[u8], entry: &TermsDictEntry) -> Result<Vec<Vec<u8>>> {
-    // Both halves are `i64`s read straight off the `.dvm`, so their sum is as
-    // untrusted as either one: `offset + length` overflows before `data.get`
-    // ever sees a range, and a negative offset becomes a huge `usize` through
-    // the `as` cast. Same shape, same fix as `norms::sparse_region`.
-    let start = usize::try_from(entry.terms_data_offset)
-        .map_err(|_| lucene_store::Error::Eof { offset: 0 })?;
-    let end = entry
-        .terms_data_offset
-        .checked_add(entry.terms_data_length)
-        .and_then(|e| usize::try_from(e).ok())
-        .ok_or(lucene_store::Error::Eof { offset: 0 })?;
-    let region = data
-        .get(start..end)
-        .ok_or(lucene_store::Error::Eof { offset: 0 })?;
-    let mut input = SliceInput::new(region);
+/// A one-term-at-a-time cursor over a SORTED/SORTED_SET doc-values terms
+/// dictionary — this port's `TermsDict`, which is what
+/// `Lucene90DocValuesProducer.TermsDict` is: an enumerator, not a
+/// materializer.
+///
+/// [`decode_all_terms`] is this cursor collected, and stays the right call
+/// for a caller that genuinely needs the whole dictionary in memory
+/// (resolving a facet label by ordinal, comparing two dictionaries during a
+/// merge). What it is *not* right for is a caller that only walks the
+/// dictionary once in order: `OrdinalMap::build` merge-sorts every segment's
+/// terms and keeps none of them, and materializing its input cost **267 MB of
+/// a 319 MB peak** on a 5-segment x 1 M-term shape where the map itself is
+/// 51 MB (`docs/sweep/m2/c29-search-carryovers.md`). Java never pays it
+/// because `OrdinalMap.build` takes `TermsEnum[]`.
+///
+/// The current term is held in one buffer that is reused across calls, so a
+/// full walk allocates only as the longest term grows — the prefix-compressed
+/// format hands each term its predecessor's prefix, so the prefix never has
+/// to be copied at all. That is what Java does too: `TermsDict.next` keeps
+/// one `BytesRef term` sized at `maxTermLength`, sets `term.length =
+/// prefixLength + suffixLength` and reads the suffix in **at offset
+/// `prefixLength`**, leaving the prefix bytes exactly where the previous term
+/// left them.
+pub struct TermsCursor<'a> {
+    input: SliceInput<'a>,
+    terms_dict_size: i64,
+    max_block_length: i32,
+    /// The ordinal of the term [`Self::next_term`] will produce, i.e. how many it
+    /// has already produced.
+    ord: i64,
+    /// Decompressed body of the current block (everything after its first,
+    /// uncompressed term), plus a manual read cursor into it — not a
+    /// `SliceInput`, since that would borrow `block_body` across the call
+    /// that reassigns it.
+    block_body: Vec<u8>,
+    block_pos: usize,
+    /// The current term, and the previous one until it is overwritten: the
+    /// prefix a prefix-compressed term keeps is its own predecessor's, so
+    /// truncate-and-extend is both the cheapest and the most direct
+    /// expression of the format.
+    term: Vec<u8>,
+}
 
+impl<'a> TermsCursor<'a> {
+    /// Opens a cursor positioned before the first term. `data` is the whole
+    /// `.dvd` file's bytes; the entry names the region inside it.
+    pub fn open(data: &'a [u8], entry: &TermsDictEntry) -> Result<Self> {
+        // Both halves are `i64`s read straight off the `.dvm`, so their sum is
+        // as untrusted as either one: `offset + length` overflows before
+        // `data.get` ever sees a range, and a negative offset becomes a huge
+        // `usize` through the `as` cast. Same shape, same fix as
+        // `norms::sparse_region`.
+        let start = usize::try_from(entry.terms_data_offset)
+            .map_err(|_| lucene_store::Error::Eof { offset: 0 })?;
+        let end = entry
+            .terms_data_offset
+            .checked_add(entry.terms_data_length)
+            .and_then(|e| usize::try_from(e).ok())
+            .ok_or(lucene_store::Error::Eof { offset: 0 })?;
+        let region = data
+            .get(start..end)
+            .ok_or(lucene_store::Error::Eof { offset: 0 })?;
+        Ok(TermsCursor {
+            input: SliceInput::new(region),
+            terms_dict_size: entry.terms_dict_size,
+            max_block_length: entry.max_block_length,
+            ord: 0,
+            block_body: Vec::new(),
+            block_pos: 0,
+            term: Vec::new(),
+        })
+    }
+
+    /// `TermsDict.next()`: the next term in ordinal order, or `None` at the
+    /// end of the dictionary. The returned slice is valid until the next
+    /// call.
+    ///
+    /// Not spelled `next`, and not an [`Iterator`]: the returned slice
+    /// borrows the cursor's own reused buffer, which is exactly the shape
+    /// `Iterator` cannot express (a lending iterator) and exactly the shape
+    /// that makes a full walk allocation-free.
+    // ARITH: `terms_dict_size` is non-negative (`read_term_dict_entry`
+    // rejects a negative one), `ord` starts at 0 and advances by exactly 1 per
+    // call while `ord < terms_dict_size`, so `ord` stays in
+    // `0..=terms_dict_size` and `ord + 1` is at most `terms_dict_size <=
+    // i64::MAX`. `BLOCK_SIZE` is a non-zero constant.
+    #[allow(clippy::arithmetic_side_effects)]
+    pub fn next_term(&mut self) -> Result<Option<&[u8]>> {
+        if self.ord >= self.terms_dict_size {
+            return Ok(None);
+        }
+        if self.ord % BLOCK_SIZE == 0 {
+            self.read_block_first_term()?;
+        } else {
+            self.read_prefix_compressed_term()?;
+        }
+        self.ord += 1;
+        Ok(Some(&self.term))
+    }
+
+    /// A block's first term: stored uncompressed, and the preset dictionary
+    /// the rest of the block's LZ4 body decompresses against.
+    // ARITH: see [`Self::next_term`]; `ord + 1` cannot overflow.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn read_block_first_term(&mut self) -> Result<()> {
+        let first_len = self.input.read_vint()?;
+        // Java allocates `term.bytes` at `maxTermLength` once and would
+        // throw on an over-long length; `first_len as usize` on a
+        // negative vint is ~2^64 here, and `resize` aborts rather than
+        // erroring, which the FFI boundary cannot catch.
+        if first_len < 0 || first_len as usize > self.input.remaining() {
+            return Err(lucene_store::Error::Corrupted(format!(
+                "invalid terms dict first-term length {first_len}"
+            )));
+        }
+        let first_len = first_len as usize;
+        self.term.clear();
+        self.term.resize(first_len, 0);
+        let mut term = std::mem::take(&mut self.term);
+        let read = self.input.read_bytes(&mut term);
+        self.term = term;
+        read?;
+
+        // Only decompress a block body if more terms remain after this
+        // block's first term (mirrors Java's `decompressBlock`, which
+        // skips this when the first term is the very last one written).
+        if self.ord + 1 < self.terms_dict_size {
+            // `block_len` is the *decompressed* body length, a vint off
+            // disk that sizes an allocation directly. A negative one
+            // becomes ~2^64 through `as usize`, and `vec![0u8; n]`
+            // *aborts* on a failed allocation rather than erroring --
+            // `catch_unwind` cannot intercept that, so it takes the JVM
+            // down through the FFI. It cannot be bounded by the bytes left
+            // in the region (LZ4 expands), so bound it the way Java does:
+            // `TermsDict` sizes its `blockBuffer` from `maxBlockLength`,
+            // which the writer set to the longest body it emitted.
+            let block_len = self.input.read_vint()?;
+            if block_len < 0 || block_len > self.max_block_length {
+                return Err(lucene_store::Error::Corrupted(format!(
+                    "invalid terms dict block length {block_len} \
+                     (maxBlockLength={})",
+                    self.max_block_length
+                )));
+            }
+            // ARITH: `term.len()` is bounded by the terms region (the
+            // first-term length check above, itself at most `isize::MAX`)
+            // and `block_len` by `max_block_length`, an `i32`, so the sum
+            // cannot overflow `usize`.
+            let buffer_len = self.term.len() + block_len as usize;
+            let block_len = block_len as usize;
+            let mut buffer = vec![0u8; buffer_len];
+            buffer[..self.term.len()].copy_from_slice(&self.term);
+            lz4::decompress(&mut self.input, block_len, &mut buffer, self.term.len())?;
+            buffer.drain(..self.term.len());
+            self.block_body = buffer;
+        } else {
+            self.block_body.clear();
+        }
+        self.block_pos = 0;
+        Ok(())
+    }
+
+    /// Any term but a block's first: a prefix taken from its immediate
+    /// predecessor (already in `self.term`) plus a suffix out of the block
+    /// body.
+    fn read_prefix_compressed_term(&mut self) -> Result<()> {
+        let token = read_u8(&self.block_body, &mut self.block_pos)? as usize;
+        // ARITH: `token` is a single byte, so `token & 0x0F` is `0..=15`
+        // and `1 + (token >> 4)` is `1..=16`.
+        #[allow(clippy::arithmetic_side_effects)]
+        let (mut prefix_len, mut suffix_len) = (token & 0x0F, 1 + (token >> 4));
+        let previous_len = self.term.len();
+        // The two continuation vints are read off disk and size the term
+        // this call builds. A negative vint becomes ~2^64 through
+        // `as usize`, which overflows the `+=` (a debug-build panic) and
+        // otherwise reaches `Vec::with_capacity` as an aborting
+        // allocation. The prefix is copied out of the previous term and
+        // the suffix out of the block body, so each has its own limit --
+        // the first term of a block is stored outside the body and can be
+        // longer than it, so bounding the prefix by the body would reject
+        // files Lucene wrote.
+        if prefix_len == 15 {
+            prefix_len = bounded_extension(
+                prefix_len,
+                previous_len,
+                &self.block_body,
+                &mut self.block_pos,
+            )?;
+        }
+        if suffix_len == 16 {
+            suffix_len = bounded_extension(
+                suffix_len,
+                self.block_body.len(),
+                &self.block_body,
+                &mut self.block_pos,
+            )?;
+        }
+        // Java copies into a `term.bytes` buffer sized `maxTermLength` and
+        // lets the JVM throw on an over-long prefix; slicing here would
+        // panic instead, and a panic cannot cross the FFI boundary.
+        if prefix_len > previous_len {
+            return Err(lucene_store::Error::Corrupted(format!(
+                "terms dict prefix length {prefix_len} exceeds previous term length {previous_len}"
+            )));
+        }
+        // ARITH: `block_pos <= block_body.len()` is
+        // `read_u8`/`read_vint`'s invariant and `suffix_len <=
+        // block_body.len()` comes out of `bounded_extension`, so
+        // `block_pos + suffix_len` cannot overflow -- it is merely allowed
+        // to run past the end, which `get` reports.
+        #[allow(clippy::arithmetic_side_effects)]
+        let suffix_end = self.block_pos + suffix_len;
+        if suffix_end > self.block_body.len() {
+            return Err(lucene_store::Error::Eof {
+                offset: self.block_pos,
+            });
+        }
+        // The prefix this term keeps is its predecessor's, which is what
+        // `self.term` already holds -- so truncating is the copy.
+        self.term.truncate(prefix_len);
+        self.term
+            .extend_from_slice(&self.block_body[self.block_pos..suffix_end]);
+        self.block_pos = suffix_end;
+        Ok(())
+    }
+}
+
+/// Decodes every term in the dictionary, in ordinal order — [`TermsCursor`]
+/// collected. `data` is the whole `.dvd` file's bytes.
+///
+/// Right for a caller that needs random access to the dictionary by ordinal;
+/// see [`TermsCursor`] for what it costs a caller that only walks it once.
+pub fn decode_all_terms(data: &[u8], entry: &TermsDictEntry) -> Result<Vec<Vec<u8>>> {
+    let mut cursor = TermsCursor::open(data, entry)?;
     // `termsDictSize` comes straight off the wire, so it cannot be trusted to
     // size an allocation on its own: every term costs at least one byte in the
     // terms region, so the region's own length is a hard upper bound on how
     // many there can be. Java never faces this -- it does not preallocate.
     let capacity = entry.terms_dict_size.min(entry.terms_data_length).max(0) as usize;
     let mut terms: Vec<Vec<u8>> = Vec::with_capacity(capacity);
-    // Decompressed body of the current block (everything after its first,
-    // uncompressed term), plus a manual read cursor into it -- not a
-    // `SliceInput`, since that would borrow `block_body` across the loop
-    // iteration that reassigns it.
-    let mut block_body: Vec<u8> = Vec::new();
-    let mut block_pos: usize = 0;
-
-    let mut ord: i64 = 0;
-    // ARITH: `entry.terms_dict_size` is non-negative (`read_term_dict_entry`
-    // rejects a negative one), `ord` starts at 0 and advances by exactly 1 per
-    // iteration while `ord < terms_dict_size`, so `ord` stays in
-    // `0..=terms_dict_size` and `ord + 1` is at most `terms_dict_size <=
-    // i64::MAX`. `BLOCK_SIZE` is a non-zero constant.
-    #[allow(clippy::arithmetic_side_effects)]
-    while ord < entry.terms_dict_size {
-        if ord % BLOCK_SIZE == 0 {
-            let first_len = input.read_vint()?;
-            // Java allocates `term.bytes` at `maxTermLength` once and would
-            // throw on an over-long length; `first_len as usize` on a
-            // negative vint is ~2^64 here, and `vec![0u8; n]` aborts rather
-            // than erroring, which the FFI boundary cannot catch.
-            if first_len < 0 || first_len as usize > input.remaining() {
-                return Err(lucene_store::Error::Corrupted(format!(
-                    "invalid terms dict first-term length {first_len}"
-                )));
-            }
-            let first_len = first_len as usize;
-            let mut term = vec![0u8; first_len];
-            input.read_bytes(&mut term)?;
-
-            // Only decompress a block body if more terms remain after this
-            // block's first term (mirrors Java's `decompressBlock`, which
-            // skips this when the first term is the very last one written).
-            if ord + 1 < entry.terms_dict_size {
-                // `block_len` is the *decompressed* body length, a vint off
-                // disk that sizes an allocation directly. A negative one
-                // becomes ~2^64 through `as usize`, and `vec![0u8; n]`
-                // *aborts* on a failed allocation rather than erroring --
-                // `catch_unwind` cannot intercept that, so it takes the JVM
-                // down through the FFI. It cannot be bounded by the bytes left
-                // in the region (LZ4 expands), so bound it the way Java does:
-                // `TermsDict` sizes its `blockBuffer` from `maxBlockLength`,
-                // which the writer set to the longest body it emitted.
-                let block_len = input.read_vint()?;
-                if block_len < 0 || block_len > entry.max_block_length {
-                    return Err(lucene_store::Error::Corrupted(format!(
-                        "invalid terms dict block length {block_len} \
-                         (maxBlockLength={})",
-                        entry.max_block_length
-                    )));
-                }
-                // ARITH: `term.len()` is bounded by the terms region (the
-                // first-term length check above, itself at most `isize::MAX`)
-                // and `block_len` by `max_block_length`, an `i32`, so the sum
-                // cannot overflow `usize`.
-                #[allow(clippy::arithmetic_side_effects)]
-                let buffer_len = term.len() + block_len as usize;
-                let block_len = block_len as usize;
-                let mut buffer = vec![0u8; buffer_len];
-                buffer[..term.len()].copy_from_slice(&term);
-                lz4::decompress(&mut input, block_len, &mut buffer, term.len())?;
-                buffer.drain(..term.len());
-                block_body = buffer;
-            } else {
-                block_body.clear();
-            }
-            block_pos = 0;
-            terms.push(term);
-        } else {
-            let token = read_u8(&block_body, &mut block_pos)? as usize;
-            // ARITH: `token` is a single byte, so `token & 0x0F` is `0..=15`
-            // and `1 + (token >> 4)` is `1..=16`.
-            #[allow(clippy::arithmetic_side_effects)]
-            let (mut prefix_len, mut suffix_len) = (token & 0x0F, 1 + (token >> 4));
-            let previous_len = terms
-                .last()
-                .expect("a block always pushes its first term first")
-                .len();
-            // The two continuation vints are read off disk and size the term
-            // this iteration builds. A negative vint becomes ~2^64 through
-            // `as usize`, which overflows the `+=` (a debug-build panic) and
-            // otherwise reaches `Vec::with_capacity` as an aborting
-            // allocation. The prefix is copied out of the previous term and
-            // the suffix out of the block body, so each has its own limit --
-            // the first term of a block is stored outside the body and can be
-            // longer than it, so bounding the prefix by the body would reject
-            // files Lucene wrote.
-            if prefix_len == 15 {
-                prefix_len =
-                    bounded_extension(prefix_len, previous_len, &block_body, &mut block_pos)?;
-            }
-            if suffix_len == 16 {
-                suffix_len =
-                    bounded_extension(suffix_len, block_body.len(), &block_body, &mut block_pos)?;
-            }
-            let previous = terms
-                .last()
-                .expect("a block always pushes its first term first");
-            // Java copies into a `term.bytes` buffer sized `maxTermLength` and
-            // lets the JVM throw on an over-long prefix; slicing here would
-            // panic instead, and a panic cannot cross the FFI boundary.
-            if prefix_len > previous.len() {
-                return Err(lucene_store::Error::Corrupted(format!(
-                    "terms dict prefix length {prefix_len} exceeds previous term length {}",
-                    previous.len()
-                )));
-            }
-            // ARITH: `prefix_len <= previous.len()` was just checked and
-            // `suffix_len <= block_body.len()` comes out of
-            // `bounded_extension`; both are slice lengths, each at most
-            // `isize::MAX`, so their sum cannot overflow `usize`.
-            // `block_pos <= block_body.len()` is
-            // `read_u8`/`read_vint`'s invariant, so `block_pos + suffix_len`
-            // cannot overflow either -- it is merely allowed to run past the
-            // end, which `get` reports.
-            #[allow(clippy::arithmetic_side_effects)]
-            let (capacity, suffix_end) = (prefix_len + suffix_len, block_pos + suffix_len);
-            let mut term = Vec::with_capacity(capacity);
-            term.extend_from_slice(&previous[..prefix_len]);
-            let suffix = block_body
-                .get(block_pos..suffix_end)
-                .ok_or(lucene_store::Error::Eof { offset: block_pos })?;
-            term.extend_from_slice(suffix);
-            block_pos = suffix_end;
-            terms.push(term);
-        }
-        ord += 1;
+    while let Some(term) = cursor.next_term()? {
+        terms.push(term.to_vec());
     }
-
     Ok(terms)
 }
 
@@ -403,11 +492,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn decode_all_terms_prefix_compressed_block() {
-        // 3 terms sharing prefixes: "apple", "application", "apply".
-        // "application" vs "apple": common prefix "appl" (4), suffix "ication" (7).
-        // "apply" vs "application": common prefix "appl" (4), suffix "y" (1).
+    /// 3 terms sharing prefixes: "apple", "application", "apply".
+    /// "application" vs "apple": common prefix "appl" (4), suffix "ication" (7).
+    /// "apply" vs "application": common prefix "appl" (4), suffix "y" (1).
+    fn prefix_compressed_block_fixture() -> (Vec<u8>, TermsDictEntry) {
         let mut block_body = Vec::new();
         block_body.push((6u8 << 4) | 4); // suffixLen-1=6, prefixLen=4
         block_body.extend_from_slice(b"ication");
@@ -429,6 +517,12 @@ mod tests {
             terms_data_offset: 0,
             terms_data_length: data.len() as i64,
         };
+        (data, entry)
+    }
+
+    #[test]
+    fn decode_all_terms_prefix_compressed_block() {
+        let (data, entry) = prefix_compressed_block_fixture();
         assert_eq!(
             decode_all_terms(&data, &entry).unwrap(),
             vec![
@@ -437,6 +531,30 @@ mod tests {
                 b"apply".to_vec(),
             ]
         );
+    }
+
+    /// An exhausted cursor keeps saying so.
+    ///
+    /// This is the one thing about the cursor `decode_all_terms`' own tests
+    /// cannot cover: `decode_all_terms` *is* the cursor collected
+    /// (`while let Some(term) = cursor.next_term()?`), so comparing the two
+    /// would compare a function to itself. What actually pins the two
+    /// decoders together is that there is only one, and what pins the cursor
+    /// against Java is `tests/sorted_doc_values_fixtures.rs`, which walks it
+    /// over a real `.dvd` and compares against the manifest real Lucene
+    /// wrote. A caller merging several cursors stops calling the exhausted
+    /// ones, but must not have to know that.
+    #[test]
+    fn an_exhausted_terms_cursor_keeps_returning_none() {
+        let (data, entry) = prefix_compressed_block_fixture();
+        let mut cursor = TermsCursor::open(&data, &entry).unwrap();
+        let mut count = 0;
+        while cursor.next_term().unwrap().is_some() {
+            count += 1;
+        }
+        assert_eq!(count, entry.terms_dict_size, "the whole dictionary");
+        assert!(cursor.next_term().unwrap().is_none());
+        assert!(cursor.next_term().unwrap().is_none());
     }
 
     #[test]

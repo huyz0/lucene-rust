@@ -56,6 +56,10 @@ Checkbox legend: `- [ ]` open, `- [x]` done, `- [~]` obsolete.
 | c33-analysis-offsets | c23's F13 / c29's §2.2 handoff: the **producer** half of the offset unit -- `lucene-analysis/{src/lib.rs,tests/analysis_fixtures.rs}` + `fixtures/src/GenAnalysis.java`, with the consumer compensation and the codec-level consequence chased into `lucene-search/src/highlighter.rs`, `lucene-index/src/indexing_chain.rs` and `lucene-codecs/src/{block_packed,term_vectors}.rs` | swept (12 findings: 5 CORRECTNESS all fixed, 3 MISSING all fixed, 1 PERF measured, 1 INTENTIONAL, 2 recorded with named owners) -- `Token`'s offsets are now **UTF-16 code units** (Java `char`s, `OffsetAttribute`'s own unit) instead of UTF-8 bytes: `tokenize` converts the segmenter's byte indices in one running pass behind a whole-text `is_ascii` fast path, and `Analyzer::keyword` ends its token at the `char` count Java's `KeywordTokenizer` uses (`correctOffset(upto)`). Since c23 those offsets are written verbatim into `.pos`/`.pay`/`.tvd` and `CheckIndex` never compares an offset against the text it indexes, so a Rust-written index of non-ASCII text told real Lucene each term sat where it did not. **The double-fix check found a real compensation**: c29's boundary conversion in `offsets_from_analysis` is deleted (its test now asserts the two sides are *identical*, not merely that the highlight is right), and so is the `char_offsets_to_byte_offsets` reconciliation the fixture test applied to every Lucene-derived expectation -- a compensation inside the one file whose job is to catch this, and itself wrong for astral text. `GenAnalysis` gained **12 `utf16_*` cases** (Latin-1, CJK, combining mark, astral symbol, astral *letter*, emoji, all-units, plus one per filter: keyword, fold, porter, n-gram, edge-n-gram, synonym graph), each with negative controls asserting a byte-offset and (where astral) a scalar-offset producer would fail it; the manifest was regenerated from the real 10.5.0 jars this run and is **identical** to the committed copy. Two findings are new and codec-level: the unit change makes `block_packed::encode_all`'s negative-value path **live** (a term-vector length is `span - prefixLength - suffixLength`, so every multi-byte term is negative -- `caf\u{e9}` is -1), whose doc comment still claimed no caller fed it negatives; and no real-Lucene reader had ever seen a non-ASCII offset this port wrote, so `write_term_vectors_fixture`'s multi-chunk segment gained a non-ASCII document that `VerifyTermVectors` reads back offset-for-offset, with a negative control (the same line rewritten with byte offsets) failing. Also fixed: the interrupted attempt's own `indexing_chain` test asserted a position an untokenized astral symbol does not consume. **Measured** (interleaved A/B, min-of-25, against the pre-c33 producer): ASCII text pays **nothing** (delta negative in all three runs); non-ASCII pays **+0.17 us/doc, +1.8-2.0%** of tokenization and under 1% of the ~21 us/doc indexing cost. Coverage: `lucene-analysis/src/lib.rs` 99.27%. Recorded: real `StandardTokenizer` emits an emoji token this port does not (b8's F40, the `utf16_emoji` case pins the exact shape of the gap), and `IndexingChain`'s `invertState.offset` multi-value accumulation is unported but unreachable (`IndexWriter` indexes only a field's first value) |
 | c30-finish-index | the last two open `lucene-index` items: c25's residual `CheckIndex` failure arms, and the workspace's last three `TODO(arith-audit)` modules -- index/{check_index, checksum_verify, index_writer, merge, merge_policy}, cross-batch codecs/vectors, ffi/writer | swept (7 CORRECTNESS all fixed, 1 defensive, 1 arm deleted, 5 kept as unreachable *error handling* with the proof at the site) -- **`check_index.rs` 97.25% -> 98.58%** and **`docs/arithmetic-gate.md` 3 -> none: the whole workspace is now audited**. Item 1 closed c25's last open D-list question in both directions and drew the line c25's rule does not: *a `Check::fail` arm that cannot fire is a false claim of coverage; an `Err(e) =>` arm that cannot fire is total error handling* -- one arm deleted (`connected_nodes_on_level`'s entry-point guard, proved unreachable because `OffHeapHnswGraph::new` rejects the only shape that could produce it), five kept with proofs. Its own negative control found a `.vemf` region offset slicing the `.vec` behind `if a + b > len` where `a` came off disk -- the gate doc's named shape, a panic on the KNN query path. Item 2's two headline findings **both came from the hand-check of indexing/slicing/allocation, not from the lint**: `execute_merge` took `maxDoc` from the `.fdm` where Java's `SegmentMerger` takes it from the `.si`, and `stored_fields::open` checks only that it is non-negative -- a four-byte edit sizes two per-source `Vec`s at ~8.6 GB each, **verified SIGABRT** (`memory allocation of 4294967296 bytes failed`, `signal: 6`) under `ulimit -v`; and `merge_segments` indexed the `.liv` `FixedBitSet` with a bound off the `.fdm`, c28's crate rule for the third module running. `build_doc_id_maps` even carried an `// ARITH:` proof claiming that `max_doc` was "already-validated" -- the c19 failure mode (right conclusion, wrong reasoning), now naming the caller that supplies the bound. Three more in `merge_policy`, all from `as i64` on a `pub` unsigned config: `usize::MAX as i64 == -1` made `max_allowed_docs` return **-100** where Java's `Math.ceilDiv` returns 1 (a negative budget every merge exceeds, so the policy silently stops merging), and a `size_bytes` above `i64::MAX` became a *negative* byte count -- the largest segment in the index packed into every merge as if it cost nothing, and two of them overflowing `bytes_this_merge + seg_bytes` outright. Plus the norms field length wrapping a `u32` where `IndexingChain.PerField.invert` uses `Math.addExact` (a wrapped length encodes to a *small* norm: the longest document scoring as one of the shortest, in every BM25 query over the field). Every fix has a test that fails against the unfixed code except the last, whose reachable input needs a ~2 GB field value (c28-F7's precedent, stated rather than glossed). Verifier runtime **0.18 s** in release (c25 0.23, c19 0.28); `index-bench` **21.53 us/doc** and the stored-fields BULK merge **532x**, both unchanged; `verify-write-path.sh` **22/22**; **`scripts/docker-test.sh gate` -> `gate: ok`**, workspace lines 98.10%, no file below 95%. Answered a carry-over by measuring rather than assuming: `--lib --tests` gives *identical* `check_index.rs` coverage to `--lib`, so c23's integration tests were not silently covering the residual arms after all |
 | c36-merge-metadata | the last two wrong-answer findings (**1** `MergeSource`'s missing `min_version`/`has_blocks`, **2** `SegmentCommitInfo.sci_id` never regenerated) plus the two adjacent items in the same files (**11** zero-doc merges committed, **19** the `.si` rewritten five times per commit) -- index/{merge, index_writer, segment_infos, segment_writer, deletes}, new `GenMergeMetadata`/`VerifyMergedMetadata`/`write_merged_metadata_fixture` | swept (7 findings: 2 CORRECTNESS both fixed, 2 MISSING (1 fixed, 1 recorded with its blocker), 2 PERF (1 fixed, 1 recorded and now unblocked), 1 hygiene fixed) -- **`minVersion` was the live half of item 1**: the merged `.si` claimed the merging writer's version where `SegmentMerger`'s constructor takes the minimum over the readers (`null` if any reader has none); `has_blocks` was already correct via c22's `MergeOptions` and has been **moved onto `MergeSource`** so the two halves of Java's `LeafMetaData` record travel together -- 85 exhaustive struct literals, exactly c34's estimate. **The `sci_id` is a change token**: all four of Java's generation-advancing mutators call `generationAdvanced() -> id = randomId()`, and none of this port's did, so two commits of the same segment reported the same id and every NRT/replication/cache consumer keyed on it was told "unchanged" across a delete or a doc-values update; `deletes::apply_deletes` was the live site (it hand-rebuilt the `SegmentCommitInfo` and carried `sci_id` across) and now mutates through `advance_del_gen`. **Zero-doc merges** now take `mergeMiddle`'s `shouldMerge() == false` path -- the merge is skipped before a single file is written and the new `IndexWriter::drop_merge` (`commitMerge` with `dropSegment`) retires the sources with nothing published. **The `.si` is written once**, from an in-memory `SegmentInfo` (`segment_writer::FlushedSegment` + `seal_flushed_segment` = `sealFlushedSegment`), replacing up to **seven** writes / six `open`+`parse` round trips / seven fsyncs per commit; the wall-time saving is below this host's noise floor (`fsync` is effectively free on the container mount -- 20 000 extra read-modify-write cycles per flush produced no separation), so the result is stated as the I/O it removes, asserted by a counting `Directory` rather than timed. **Evidence**: `verify-write-path.sh` **22 -> 23** -- `GenMergeMetadata` writes three *real Lucene* segments whose `.si` files record `minVersion` 10.2.0/**10.0.0**/10.1.0 (oldest in the middle) with `hasBlocks` set by Lucene itself on one of them, this port merges them, and real Lucene reads both fields back off `LeafMetaData`; verified to fail both assertions against the unfixed code. Coverage: `merge.rs` 98.70%, `index_writer.rs` 98.37%, `segment_infos.rs` 98.50%, `segment_writer.rs` 99.49%, `deletes.rs` 98.48%; workspace 98.11% lines, no file below 95% |
+| c40-missing-behaviours | four tier-B "missing Lucene behaviour" items (**8** `FieldInfo`'s validating constructor, **10** the `TokenStream` lifecycle, **9** `FuzzyTermsEnum`'s `MaxNonCompetitiveBoostAttribute` loop, **7b** the highlighter's phrase enumeration) -- codecs/{field_infos,fuzzy,blocktree}, analysis/lib, index/{indexing_chain,index_writer}, search/{highlighter,lib}, new search/near_spans, ffi/{writer,registry,handle}, `GenAnalysis` + new `Append{Highlight,SpanNear}Manifest` | swept (13 findings: 4 CORRECTNESS all fixed, 4 MISSING all fixed, 3 PERF (2 fixed+measured, 1 recorded), 2 INTENTIONAL) -- **items 7b and 8 closed outright plus the takeable halves of 9 and 10**, raising **8b** (fixed in the same batch) and **8c**. **The transferable finding is that item 7b's recorded plan was wrong**: the highlighter does not use `SloppyPhraseMatcher` at all, it runs the `SpanNearQuery` `WeightedSpanTermExtractor` rewrites the phrase into, whose slop is a different quantity -- so Lucene highlights a reordered pair at slop 1 where the scorer needs slop 2, and highlights `"alpha alpha"~2` in a document the query does not match. Only running real `PhraseHelper` could show that. Two live wrong answers found on the way: `field_infos::parse` rejected a `.fnm` real Lucene opens (c23's defect from the other side), and the indexing chain restarted `position`/`offset` at every value of a **multi-valued field** while `IndexWriter` indexed only the first value at all. Measured: the fuzzy pruning loop **1.07x-2.03x** (min-of-40 alternating A/B on the 1M-term corpus), and `distance_chars`' `n + 2` `Vec`s per candidate -- eight million allocations for one query -- became three rolling rows, a further ~15-20% on both arms. Ground truth from real `PhraseHelper`, `SpanNearQuery` and a real multi-valued `IndexWriter`, no index regenerated. Coverage: workspace 98.13% lines, no file below 95% |
+| c37-search-behaviours | five "missing Lucene behaviour" items in one crate (**5** `searchAfter`/`MaxScoreAccumulator` and `Weight.count`, **6** `FieldExistsQuery.count`/`rewrite`, **7** sloppy phrase reordering, **23** filter-only pruning) -- search/{collector,multi_segment,lib,directory_reader,explain,query,highlighter}, new search/{sloppy_phrase,weight_count}, ffi/query, new `Append{Count,SearchAfter}Manifest` | swept (10 findings: 1 CORRECTNESS fixed, 4 MISSING all fixed, 2 PERF (1 fixed+measured, 1 recorded), 3 INTENTIONAL) -- **items 6, 7, 23 and 29 closed outright plus two of item 5's four sub-entries**, leaving item 5's `TwoPhaseIterator` milestone and its `Similarity` trait, and raising **7b** (the highlighter's phrase enumeration is now the only in-order-only phrase path). `sloppy_phrase.rs` is `SloppyPhraseMatcher` statement for statement, including the `rptGroups` machinery a `MultiPhraseQuery` can reach; `weight_count.rs` is `Weight.count`'s three arms plus `FieldExistsLeaf`, and turns a **13.93 ms** postings walk into **72.2 ns** on the 5M-document corpus. Filter-only pruning was a *guard removal*, not a port: Java skips the score tie too (`updateMinCompetitiveScore` publishes `Math.nextUp(topScore)`, which for a bottom of `0f` is `Float.MIN_VALUE`), measured **44.20 ms -> 2.00 ms (22x)** at top-50 on the merged corpus. **The transferable finding is procedural**: items 7 and 23 had both been carrying a "blocked on a fixture" note for several batches while the fixture sat in the tree, added for a different purpose (`GenBlockTree`'s reordered pair from task #55, its 300-document `big` field from the postings block tests) -- c34's stale-blocker class, one step earlier, where the blocker was never quite true rather than made untrue by someone else. Ground truth from real `IndexSearcher.searchAfter`/`count`/`rewrite` over seven committed indexes, no index regenerated. Coverage: workspace 98.12% lines, no file below 95% |
+| c39-codecs-readpath | the remaining `lucene-codecs` read-path items (**20** the blocktree `try_*` migration, **22** `IndexedDISI`'s block jump table, **13** `PointValues.estimatePointCount`'s BKD walk, **12** `Util.shortestPaths`) -- codecs/{blocktree,indexed_disi,points,doc_values,norms,vectors}, search/{lib,explain,weight_count,multi_segment,points_query,field_norms}, index/check_index, ffi/query, new `AppendPointEstimateManifest` + `examples/disi_jump_table` | swept (10 findings: 1 CORRECTNESS fixed, 4 MISSING all fixed, 3 PERF (2 fixed+measured, 1 sized and declined), 2 INTENTIONAL) -- **items 13, 20 and 22 closed; item 12 restated as a milestone.** The `try_*` count was dominated by tests: separating production from test callers (mark the four infallible methods `#[deprecated]`, build `--all-targets`) left **15** production sites, all already in `Result`-returning functions. The CORRECTNESS finding was met on the way -- `intersect`/`fuzzy_intersect`/`regexp_intersect` are `Iterator`s and so had *no* error channel, ending a wildcard/regexp term expansion early on a corrupt block, i.e. a **smaller hit set**; their `Item` is now `Result<(Vec<u8>, TermStats)>` as `IntersectTermsEnum.next()`'s `IOException` is. `IndexedDISI`'s jump table is now written *and* read, with `writeBitSet`'s `short` carried into the `.dvm`/`.nvm`/`.vem` entry and `docsWithFieldLength` spanning the table; real Lucene reads it (`VerifySparseNumericDocValues`' new block-jump pass, negative-controlled on the jump index and the jump offset *independently* -- the b4/b11 mirror-image trap ruled out in the only direction that can). Alternating min-of-40 A/B over one build: 2 000 cold seeks **3.1x / 12.2x / 2.4x** faster over 16/62/245-block regions, forward scan unchanged to 0.4%. `estimate_point_count` is Java's walk with no `.kdd` read on any path, checked against real `PointValues.estimatePointCount` over fourteen boxes chosen so the estimate and the exact count **differ** (768 vs 674, 256 vs 8, 744 vs 251). **Item 12's recorded blocker names the wrong thing**: `Util.shortestPaths`' pruning needs `FSTCompiler`'s output *pushing*, which this builder does not do, so porting `TopNSearcher` onto it would return the alphabetically-first N completions rather than the top-weighted N -- a wrong answer, not a speed-up. Measured the gap instead (76 ms per top-10 lookup at 500 000 entries) and stopped, as c38 did with item 15. `gen-fixtures.sh --append-only` added: adding ground truth to a committed fixture no longer requires regenerating an index or invoking `java` by hand. `verify-write-path.sh` **23/23** |
+| c38-allocation-shape | the three largest memory-shape divergences (**15** `indexing_chain`'s per-token/term/posting allocation, **16** the per-occurrence payload slot, **17** `OrdinalMap::build`'s materialized input) -- index/{indexing_chain,index_writer,merge}, codecs/{postings_writer,terms_dict}, search/{ordinal_map,facets} | swept (7 findings: 0 CORRECTNESS, 0 MISSING, 6 PERF (5 fixed+measured, 1 assessed as a milestone and stopped), 1 INTENTIONAL) -- **items 16 and 17 closed, item 15 sized and declined.** Payloads are now one flat `(payload_bytes, payload_lengths)` run per `(field, term)` on both sides of the `lucene-index`/`lucene-codecs` boundary, where they were `Vec<Vec<u8>>` per posting entry and `Vec<Vec<Vec<u8>>>` per term; `PostingEntry` carries no payload field at all, so the field that has no payloads got cheaper too. Alternating min-of-10 A/B between two binaries in one window (c24's method), 50 000 documents, in two independent windows -- every arm faster or level and smaller in both, with peak RSS stable to three digits: `freqs` **-18.6% peak RSS**, `offsets` -9.9%, `payloads` **-49.1%**, `payloads-empty` **-46.1%**, and `InMemoryInvertedIndex` 102.5 -> 75.8 MB on 4.90 MB of body text. `terms_dict::TermsCursor` is the streaming terms-dictionary cursor three batches had named as a blocker (`decode_all_terms` is now literally that cursor collected, so there is one decoder and not two), and `OrdinalMap::build_streaming` is Java's `build(TermsEnum[])` shape over it, with `TermsEnumPriorityQueue` ported as a min-heap of segment indices over caller-owned reused buffers: **318.2 MB -> 51.4 MB peak** and 290 -> 140 ms end to end on 5 segments x 1 M terms, with `OrdinalMap::build` kept for materialized callers and now running the *same* merge. `facets::resolve_labels` streams too. **Item 15 is a milestone**: 10 Java classes / 2 800 lines of pool machinery, all three consumers of `InMemoryInvertedIndex`, and a borrowed-token `Analyzer` API (`analyze` returns `Vec<Token>` with an owned `String` per token, so a heap object per token exists before the indexing chain sees it) -- the batch measured it, named the 36.8 MB + 36.6 MB that remain, and stopped rather than half-building a pool. `verify-write-path.sh` **23/23** (the bytes on disk are unchanged); shape asserted, not only timed |
 
 ## Open work, prioritised (reconciled by `c34-ledger-reconcile`)
 
@@ -81,7 +85,30 @@ ones it met on the way (**11b**, 100%-deleted segments not dropped;
 in the gate and had both gone quietly red), leaving **28**.
 **`c37-search-behaviours` then closed items 6, 7, 23 and 29 outright, plus two
 of item 5's four sub-entries** (`searchAfter`/`MaxScoreAccumulator` and
-`Weight.count`), leaving **24**. Two of the four it closed had been recorded as
+`Weight.count`), leaving **24**. **`c38-allocation-shape` then closed items 16
+and 17** -- the two takeable thirds of tier C's memory work -- and *declined*
+item 15 with a measurement and a sizing rather than half-building it, leaving
+**22**. **`c39-codecs-readpath` then closed items 13, 20 and 22** -- the
+`estimatePointCount` BKD walk, the blocktree `try_*` migration and
+`IndexedDISI`'s block jump table -- and *restated* item 12, whose recorded
+blocker (`Util.shortestPaths` is unported) turned out to name the wrong thing:
+porting it onto this builder's FSTs would be a **wrong answer**, not a
+speed-up. It raised three of its own (**23b**, the BKD walk's per-node
+allocation; **23c**, no Java-written jump table exists to read; and two more
+mechanical gates under item 27), leaving **21**.
+**`c40-missing-behaviours` then closed items 7b and 8 outright and the takeable
+half of 9 and 10** -- the whole of the tier-B backlog those four entries named
+-- leaving **17**, with item 9's `GlobalStats` half and item 10's
+`CharArraySet`/`maxTokenLength` half restated in place. It raised two of its
+own (**8b**, `SpanNearQuery(inOrder = false)` rejected overlapping sub-spans
+that real Lucene accepts -- **fixed in the same batch**, since it was a wrong
+hit set on a path this port exposes; and **8c**, `span_near_matches`' cartesian
+product reports span *extents* Java's priority-queue walk never visits). Its
+transferable finding is the same shape c39's was, one level up: **item 7b's
+recorded plan was wrong**, and only running real Lucene could show it -- the
+highlighter does not use the matcher the ledger told the next batch to reuse. Item 17 is the fourth entry in this sweep whose recorded blocker was
+the whole of the work: "needs a `TermsCursor`, which does not exist" was two
+functions, one of which `decode_all_terms` already contained. Two of the four it closed had been recorded as
 *blocked on a fixture* that already existed -- see item 29 -- so the batch's
 most transferable finding is procedural, not technical. Closed entries are
 struck through in place rather than deleted, and new ones take a lettered
@@ -236,42 +263,123 @@ worth knowing about the next entry that reads the same way.
    highlight fragment. That is now the only in-order-only phrase path, and it
    is recorded on the function.
 
-7b. **The highlighter's phrase match enumeration is still in-order only.**
-    `highlighter::phrase_match_offsets` walks one greedy in-order alignment per
-    starting position of the first slot; with item 7 closed it is now the only
-    in-order-only phrase path in the crate, so a reordered occurrence is
-    *scored* (`sloppy_phrase`) but is not offered a highlight fragment -- the
-    two halves of one query disagree about what matched. *Cost*: a missing
-    highlight, never a wrong hit set. *What it needs*: `phrase_match_offsets`
-    to enumerate through `sloppy_phrase`'s walk, which means the matcher
-    growing a "what were the raw positions of this match" accessor
-    (`SloppyPhraseMatcher.startPosition()`/`endPosition()`/`startOffset()`/
-    `endOffset()`, all of which Java has and this port skipped because nothing
-    consumed them). Contained; roughly the size of item 7's second half.
-    (Raised by c37.)
+7b. ~~**The highlighter's phrase match enumeration is still in-order only.**~~
+    **CLOSED by `c40-missing-behaviours`.** *The recorded plan was wrong*, and
+    only real Lucene could say so: the highlighter does **not** use
+    `SloppyPhraseMatcher`, so growing it a `startPosition()` accessor would
+    have produced a second wrong answer rather than a fix.
+    `PhraseHelper.createOffsetsEnumsForSpans` runs the `SpanQuery`
+    `WeightedSpanTermExtractor.extract` rewrites the phrase into --
+    `SpanNearQuery(clauses, slop + positionGaps, inOrder = slop == 0)` -- whose
+    budget (`maxEndPosition - top().startPosition() - totalSpanLength`) is a
+    *different quantity* from `matchLength` (`max(p_i - i) - min(p_i - i)`).
+    They differ by two positions on a transposition, and `SpanNearQuery` has no
+    `rptGroups`. So Lucene highlights a reordered pair at **slop 1** where the
+    scorer needs slop 2, and highlights `"alpha alpha"~2` in a document with a
+    single `alpha` that the query does not match. `lucene-search/src/
+    near_spans.rs` is `NearSpansUnordered` over decoded spans;
+    `phrase_match_offsets` uses the in-order walk at `slop == 0`
+    (`NearSpansOrdered`, unchanged) and that at `slop > 0`. Ground truth is
+    real `PhraseHelper` over thirteen cases on the committed
+    `blocktree_index` (`fixtures/src/AppendHighlightManifest.java`, no index
+    regenerated), verified to fail against the in-order enumeration.
 
-8. **`FieldInfo` is a plain struct where Java's is a validating constructor.**
-   `field_infos::write` applies the one coercion that was producing unreopenable
-   files, and `check_consistency` exists, but a caller can still build
-   combinations Java makes unrepresentable and find out at `parse` time or not
-   at all. A `FieldInfo::new -> Result` closes the class; it touches ~197
-   construction sites.
+8. ~~**`FieldInfo` is a plain struct where Java's is a validating
+   constructor.**~~ **CLOSED by `c40-missing-behaviours`**, without touching
+   any of the 213 struct literals. `FieldInfo::new(name, number)` + chained
+   `with_*` setters + **`FieldInfo::checked()`** is Java's constructor: the
+   non-indexed coercion (`storeTermVector`/`storePayloads`/`omitNorms` forced
+   off when `indexOptions == NONE`) followed by `checkConsistency()`, which is
+   now `pub` as Java's is. `FieldInfos::new(Vec<FieldInfo>)` is
+   `FieldInfos(FieldInfo[])`: every field `checked()`, then the cross-field
+   rules. **The two doors a caller reaches are shut**: `field_infos::parse`
+   routes every decoded field through `checked()`, and `IndexWriter::open`
+   routes its whole field list through `FieldInfos::new`. The `parse` half was
+   a live **wrong answer**: `Lucene94FieldInfosFormat.read` builds each entry
+   with the coercing constructor *before* `checkConsistency()`, so a `.fnm`
+   carrying those bits on a non-indexed field is a file real Lucene opens --
+   this port rejected it, which is how c23's writer produced a segment its own
+   reader could not open. Verified in both directions by a hand-patched `.fnm`
+   in `write_field_infos_fixture` that real Lucene reads with the three flags
+   cleared (`verify-write-path.sh`, `VerifyFieldInfos`'s `noindex_flags`
+   field). `IndexWriter::Error::PayloadsWithoutPositions` and its re-check in
+   `resolve_postings_field` are gone: no input can reach them now that `open`
+   validates.
 
-9. **`FuzzyTermsEnum`'s `MaxNonCompetitiveBoostAttribute` feedback loop** (swap
-   to a lower-edit automaton once the top-terms queue is full) is unported, and
+8b. ~~**`SpanNearQuery(clauses, slop, inOrder = false)` rejected overlapping
+    sub-spans.**~~ **Raised and CLOSED by `c40-missing-behaviours`.**
+    `NearSpansUnordered.atMatch()` is a pure width test --
+    `maxEndPosition - top().startPosition() - totalSpanLength <= slop` -- with
+    no non-overlap rule, so two clauses holding one term may settle on one
+    occurrence and give a *negative* width, which matches. This port required
+    non-overlap on both arms, so `SpanNear([alpha, alpha], 0, false)` returned
+    only documents with two occurrences where real Lucene returns every
+    document containing `alpha`. Fixed via `near_spans::unordered_width`; for a
+    non-overlapping arrangement the old formula and the new one are the same
+    number (`sum(next.start - prev.end)` telescopes to
+    `maxEnd - minStart - sum(lengths)`), so only the overlapping case moved.
+    Ground truth: `fixtures/src/AppendSpanNearManifest.java`'s nine
+    `spannear.*` hit sets, verified to fail against the old rule.
+
+8c. **`span_near_matches` reports span extents Java's walk never visits.**
+    It enumerates the whole cartesian product of one span per clause, where
+    `NearSpansOrdered`/`NearSpansUnordered` walk a priority queue and emit a
+    *sequence* of arrangements; a non-minimal arrangement that satisfies the
+    slop budget contributes an extent here that Lucene never produces. Java's
+    unordered `endPosition()` is additionally its *running* `maxEndPosition`,
+    which can exceed the current arrangement's own maximum end. *Cost*: none
+    for `span_doc_ids`, which only asks whether the span list is non-empty --
+    so no hit set is affected. It can only matter for a **nested**
+    `SpanNear`-of-`SpanNear`, where an outer clause consumes the inner one's
+    extents and could match on an extent Lucene would not have offered.
+    *What it needs*: `span_matches_in_doc` returning the walk's sequence rather
+    than a set, i.e. `near_spans`' iterator generalised to the ordered arm too
+    and `span_near_matches` rebuilt on it. Contained. (Raised by c40.)
+
+9. **`FuzzyTermsEnum`'s `MaxNonCompetitiveBoostAttribute` feedback loop**
+   ~~(swap to a lower-edit automaton once the top-terms queue is full) is
+   unported~~ **CLOSED by `c40-missing-behaviours`**, and
    `fuzzy_doc_scores` blends `docFreq` within one segment where
    `BlendedTermQuery` blends across the whole reader -- the fuzzy clause has no
-   `GlobalStats` plumbing.
+   `GlobalStats` plumbing (**still open**, and the only half of this entry that
+   is). `fuzzy_expanded_terms` now keeps `TopTermsRewrite`'s bounded queue
+   rather than collecting every match and sorting, publishes its worst boost
+   as `MaxNonCompetitiveBoost`, and runs `bottomChanged`'s
+   `while (maxEdits > 0) { if (bottom < 1 - maxEdits/termLength ...) break; maxEdits--; }`
+   against it; `blocktree::FuzzyIntersect::set_max_edits` is the automaton
+   swap's equivalent (a forward scan needs no re-seek, so tightening the
+   predicate is the whole of it). **Measured** on the 1 M-term corpus with the
+   min-of-40 alternating A/B (`crates/lucene-search/examples/fuzzy_pruning.rs`):
+   **1.07x to 2.03x**, the budget falling 2 -> 0 on every query long enough to
+   fill the queue with exact and distance-1 matches. On the way, `distance_chars`'
+   `Vec<Vec<usize>>` -- **`n + 2` heap allocations per candidate term**, i.e.
+   over eight million for one query on that corpus -- became three rolling rows
+   in one buffer, worth a further ~20% on both arms.
 
-10. **`lucene-analysis` has no `TokenStream` lifecycle.** `end()`'s trailing
-    position increment is dropped by `StopFilter` and both n-gram filters, so a
-    document whose last tokens were all filtered out does not advance the
-    position counter -- **the one gap here a caller can observe as a wrong
-    position**. Alongside it: no case-insensitive `CharArraySet` (the port
-    matches a lowercase set against already-lowercased terms, right for the
-    standard chain, wrong for a caller-supplied mixed-case set) and no
-    `maxTokenLength`. The UTF-16-offsets gap that used to lead this entry is
-    **closed** (c29 read side, c33/`tokenize` write side).
+10. **`lucene-analysis` has no `TokenStream` lifecycle.** ~~`end()`'s trailing
+    position increment is dropped by `StopFilter` and both n-gram filters~~
+    **CLOSED by `c40-missing-behaviours`.** `TokenStream { tokens,
+    final_position_increment, final_offset }` is the two attribute values
+    `IndexingChain.PerField.invertTokenStream` reads after `stream.end()`;
+    `Analyzer::analyze_stream`, `StopFilter::apply_to_stream` and both n-gram
+    filters' `apply_to_stream` produce them (n-gram `end()` **sets** rather than
+    adds, as Java's does). c40 found the gap was *bigger* than recorded: the
+    indexing chain also restarted `position` and `offset` at every **value of a
+    multi-valued field**, and `IndexWriter` indexed only the first value at all.
+    `invert_documents*` now groups consecutive `(doc, field)` tuples into one
+    `FieldInvertState`, carries both counters across values, and applies
+    `Analyzer.getPositionIncrementGap`/`getOffsetGap` (Java's defaults 0 and 1,
+    with `IndexWriter::set_position_increment_gap`/`set_offset_gap` as the
+    subclass hook's equivalent). Ground truth: four `mv_*` cases in
+    `fixtures/data/analysis/manifest.properties`, each a real `IndexWriter`
+    indexing a multi-valued field and the positions/offsets read back off the
+    postings plus `IndexSearcher.count` for phrases straddling the boundary;
+    all four verified to fail against the unfixed code. **Still open** in this
+    entry: no case-insensitive `CharArraySet` (the port matches a lowercase set
+    against already-lowercased terms, right for the standard chain, wrong for a
+    caller-supplied mixed-case set) and no `maxTokenLength`. The UTF-16-offsets
+    gap that used to lead this entry is **closed** (c29 read side, c33/`tokenize`
+    write side).
 
 11. ~~**Zero-doc merges are committed rather than dropped.**~~
     **CLOSED by `c36-merge-metadata`.** `execute_merge` sums the sources' live
@@ -305,20 +413,60 @@ worth knowing about the next entry that reads the same way.
     test, which had to hand-build fully-deleted segments precisely because of
     this. (Raised by c36.)
 
-12. **`Util.shortestPaths`/`TopNSearcher`/`readCeilArc` unported**, so
-    `top_n_completions` walks the prefix subtree with a bounded heap and cannot
-    skip a subtree that provably cannot beat the current worst candidate.
-    `SegmentTermsEnum` `TermState` seeking is likewise unported -- no
-    `TermStates` caller exists yet.
+12. **The suggester's top-N walk is linear in the prefix subtree, and the
+    blocker is not the one recorded.** *(Restated by `c39-codecs-readpath`.)*
+    `top_n_completions` is **correct** -- the bounded heap keeps the same top
+    N under the same `(cost ascending, input ascending)` order Java's
+    `TieBreakByInputComparator` imposes, and `WFSTCompletionLookup` never
+    overrides `acceptResult`, so `TopResults.isComplete` is always true and
+    there is nothing to lose. It is also **unreachable**: `lucene_codecs::
+    suggest` has no caller anywhere in this workspace (no FFI, no search, no
+    index), only an embedder using the crate directly. What a caller loses is
+    *cost*: measured (min of 20, release) over `term%07d` dictionaries, a
+    top-10 lookup with a short prefix takes **1.41 ms at 10 000 entries,
+    15.0 ms at 100 000, 75.8 ms at 500 000** -- linear in the subtree, against
+    Java's `O(topN x depth x out-degree)`.
+    **Porting `Util.shortestPaths`/`TopNSearcher` would not fix that and would
+    introduce a wrong answer.** Its pruning is admissible only because a
+    partial path's accumulated output lower-bounds every completion under it,
+    which holds only for an FST whose outputs `FSTCompiler` has *pushed*
+    toward the root via `Outputs.common`/`subtract`. This port's `build_fst`
+    puts the whole output on the accepting node (`TrieNode::final_output`) and
+    `output_add` is byte concatenation, so every partial path's accumulated
+    output is `NO_OUTPUT`; a `maxQueueDepth == topN` best-first search over an
+    all-zero-cost graph returns the **alphabetically first** N completions.
+    *What it actually needs*, in order: `Outputs::common`/`subtract`; output
+    pushing in `build_fst` (which changes the bytes it emits); and an
+    `Outputs`-aware `output_add` threaded through `Fst`/`Arc`/`FstEnum`/
+    `find_target_arc` and blocktree's `ByteSequenceOutputs` use of them -- the
+    "much larger change touching the reader too" `fst.rs`'s own `Outputs` doc
+    declines. **A milestone, not a batch**; sized in
+    `docs/sweep/m2/c39-codecs-readpath.md`. `Util.readCeilArc` stays unported
+    and has **no consumer in scope**: its only Java callers are
+    `FSTUtil.intersectPrefixPaths` (`AnalyzingSuggester`, unported) and
+    `FSTTermsReader` (the `memory` codec, unported), and `TopNSearcher` does
+    not use it. `SegmentTermsEnum` `TermState` seeking is likewise unported --
+    no `TermStates` caller exists yet.
 
-13. **`PointValues.estimatePointCount`'s BKD walk.** `estimate_doc_count`'s
-    arithmetic is ported and is what `IndexOrDocValuesQuery`'s planner consumes,
-    but the walk that produces its input is not: `IntersectVisitor::compare`
-    sees cell bounds but no subtree size, and the node-id walk is private.
-    *Owner*: `lucene-codecs` -- a `PointsReader::estimate_point_count(field,
-    &mut V)` beside `intersect`, reusing `IntersectCtx`/`intersect_node`'s
-    `node_id` bookkeeping plus `BKDReader.IndexTree.size()`. Nothing in
-    `lucene-search` moves.
+13. ~~**`PointValues.estimatePointCount`'s BKD walk.**~~ **CLOSED by
+    `c39-codecs-readpath`**, and the handoff c29 wrote was exactly right:
+    `PointsReader::estimate_point_count(field, &mut V)` beside `intersect`,
+    reusing the same `node_id` bookkeeping, plus `PointsField::subtree_size`
+    (`BKDPointTree.size()`). Only Java's *unbalanced* arm exists, and that is
+    complete rather than partial -- `isTreeBalanced()` returns `false`
+    outright for every BKD version this reader accepts. `intersect_node` and
+    `estimate_node` share one `read_inner_node`, so the descent cannot drift
+    between them; `estimate_point_count_bounded` is
+    `isEstimatedPointCountGreaterThanOrEqualTo`'s early stop and
+    `estimate_range_point_count` is `PointRangeQuery`'s own visitor. Nothing
+    in `lucene-search` moved except the test that had been standing an exact
+    match count in for the estimate. Evidence: real Lucene's own
+    `estimatePointCount`/`estimateDocCount` over fourteen boxes on the
+    committed `points_index` (`AppendPointEstimateManifest.java`, appended
+    without regenerating the index), chosen so the estimate and the exact
+    count differ -- 768 vs 674, 256 vs 8, 744 vs 251 -- because a test written
+    against the exact answer cannot tell a correct walk from a wrong one. Both
+    halves negative-controlled.
 
 ### C. Performance and memory divergence
 
@@ -329,35 +477,71 @@ worth knowing about the next entry that reads the same way.
     against -- `micro reader_open` builds and runs again, so that is cheap.
 
 15. **`indexing_chain` allocates per token/term/posting** where Java uses
-    `BytesRefHash` + `ByteBlockPool`/`IntBlockPool`/`ByteSlicePool`. Measured
-    by c3: 8.3 MB of document text becomes 78.5 MB of `InMemoryInvertedIndex`
-    (**9.4x**), and the single largest term is the `Vec<Occurrence>` whose
-    first `push` reserves capacity 4 -- 48 bytes of allocation for 12 bytes of
-    payload. `shrink_to_fit` was tried and reverted (structure drops to 5.98x,
-    indexing costs 25-60% more, peak RSS does not move: glibc keeps the freed
-    chunks). *Contained version*: an inline-capacity-1 occurrence
-    representation, which needs `PostingEntry`'s public shape to change.
+    `BytesRefHash` + `ByteBlockPool`/`IntBlockPool`/`ByteSlicePool`.
+    **c38 assessed this as a milestone, not a batch, and stopped** rather than
+    half-building a pool -- see `docs/sweep/m2/c38-allocation-shape.md` for the
+    sizing. Re-measured there on `index-bench`'s corpus (20k docs x 40 tokens,
+    4.90 MB of body text) with `crates/lucene-index/examples/invert_memory.rs`,
+    which is the instrument to re-run: **102.5 MB before c38, 75.8 MB after**
+    (c38 removed the payload slot, item 16). Of what is left, **36.8 MB is the
+    `Vec<PostingEntry>` slots and 36.6 MB the capacity-4 `Vec<Occurrence>`
+    first allocations** -- 97% of the structure, and exactly the two things a
+    slice-chained byte pool removes. `shrink_to_fit` was tried by c3 and
+    reverted (indexing costs 25-60% more, peak RSS does not move: glibc keeps
+    the freed chunks). *Why it is a milestone*: the design is ten Java classes
+    and 2 800 lines (`ByteBlockPool`, `IntBlockPool`, `ByteSlicePool`,
+    `ByteSliceReader`, `BytesRefHash`, `ParallelPostingsArray`, `TermsHash`,
+    `TermsHashPerField`, `FreqProxTermsWriterPerField`, `FreqProxFields`),
+    all three of `index_writer`'s consumers of `InMemoryInvertedIndex`
+    (postings, norms, term vectors) have to move onto a `TermsEnum`-shaped
+    read-back, and the win only lands fully with a **borrowed-token
+    `Analyzer` API**: `Analyzer::analyze` returns `Vec<Token>` with an owned
+    `String` per token, so a heap object per token exists before the indexing
+    chain sees it, and that is `lucene-analysis`'s API to change.
     This is also what keeps `ram_bytes_used()` measuring the arena rather than
     Java's inverted-form bytes.
 
-16. **Payload slots cost ~26 us/doc and ~190 MB per 50 000 documents, and the
-    cost is the slot, not the bytes** (c23 F9, measured with an
-    all-empty-payload control). The fix is a flat `(bytes, lengths)`
-    representation in **both** `postings_writer::TermPostings::payloads`
-    (still `Vec<Vec<Vec<u8>>>`, `postings_writer.rs:337`) and
-    `indexing_chain::PostingEntry::payloads` (still `Vec<Vec<u8>>`); doing only
-    the second is *slower*, because `build_postings_output` would
-    re-materialize the nested form. An instance of item 15 with a number on it.
+16. ~~**Payload slots cost ~26 us/doc and ~190 MB per 50 000 documents, and
+    the cost is the slot, not the bytes.**~~ **CLOSED by `c38-allocation-shape`.**
+    The flat `(bytes, lengths)` run exists on both sides, as c23 named it:
+    `postings_writer::TermPostings::{payload_bytes, payload_lengths}` and
+    `indexing_chain::TermPostingList`'s identical pair -- **once per
+    `(field, term)`, not once per posting entry**, which is the part c23 did
+    not specify and is where most of the win is. `PostingEntry` consequently
+    has no payload field at all, so every *non*-payload field got cheaper too;
+    `build_postings_output` moves the run across with `mem::take` instead of
+    re-materializing; `write_position_tail` borrows it instead of flattening
+    it, which is the shape it already built internally. Re-measured as an
+    alternating min-of-10 A/B between two binaries in one window (c24's
+    method), 50 000 documents, in two independent windows: **every arm is
+    faster or level and smaller in both**, with peak RSS stable to three
+    digits -- `freqs` **-18.6% peak** (-11.3% / -1.3% time), `offsets` -9.9%
+    (-7.5% / -4.0%), `payloads` **-49.1%** (-5.6% / -8.7%), `payloads-empty`
+    **-46.1%** (-24.5% / -16.1%); and `InMemoryInvertedIndex` itself
+    102.5 -> 75.8 MB.
+    Shape-asserted rather than only timed
+    (`a_posting_entry_carries_no_payload_slot`,
+    `an_all_empty_payload_field_costs_only_a_length_per_occurrence`), and
+    `verify-write-path.sh` stays 23/23 -- the bytes on disk are unchanged.
 
-17. **`OrdinalMap::build` materializes every segment's term list.** Java streams
-    `TermsEnum`s and never holds a dictionary. Measured by c29
-    (`lucene-search/examples/ordinal_map_memory.rs`, 17-byte terms): 5 segments
-    x 1 M terms costs **267 MB** for the term lists against **52 MB** for the
-    map, 319 MB peak -- the input is ~5x the output and ~84% of the peak.
-    *Blocked on*: `lucene-codecs/src/terms_dict.rs` exposing a `TermsCursor`
-    that yields one term at a time over the prefix-compressed blocks
-    `decode_all_terms` already walks; then `facets.rs` and `OrdinalMap::build`
-    take iterators.
+17. ~~**`OrdinalMap::build` materializes every segment's term list.**~~
+    **CLOSED by `c38-allocation-shape`.** The blocker was the whole of the
+    work and it was two functions: `terms_dict::TermsCursor::{open, next_term}`
+    walks the prefix-compressed blocks one term at a time into a reused buffer
+    (`decode_all_terms` is now that cursor collected, so there is one decoder
+    and not two), and `OrdinalMap::build_streaming(&mut [&mut dyn TermCursor])`
+    is Java's `build(owner, TermsEnum[], weights, ratio)` shape.
+    `OrdinalMap::build` keeps its materialized-list signature for a caller that
+    has the lists anyway and now runs **the same merge** over a slice-backed
+    cursor. Java's `TermsEnumPriorityQueue` is ported as a min-heap of segment
+    indices keyed by the caller's reused buffers, because a streaming cursor's
+    term is a borrow that dies at its next call. Re-measured one arm per
+    process (`examples/ordinal_map_memory.rs`, now taking the arm as an
+    argument), 5 segments x 1 M 17-byte terms: peak RSS **318.2 MB -> 51.4 MB**
+    (6.2x) and end-to-end **290 ms -> 140 ms**, because producing 5 M terms
+    into 5 M `Vec<u8>`s was itself most of the cost. `facets::resolve_labels`
+    -- the other caller c29 named -- now walks the cursor in ordinal order too,
+    so it no longer holds a second copy of every label beside its result.
 
 18. **Impacts are computed against norm 1.** `FieldPostingsInput` carries no
     norms, so every level-0 and level-1 impact this writer emits is
@@ -390,12 +574,24 @@ worth knowing about the next entry that reads the same way.
     maximum case. Asserted by `one_commit_writes_the_segments_si_exactly_once`,
     which runs the writer through a counting `Directory`.
 
-20. **Migrate the blocktree lookups to their `try_*` forms** (c1 F-11). A
-    corrupt `.tim` block is discovered at lookup time, as in Java, and
-    `try_seek_exact`/`try_next`/`try_seek_ceil`/`try_current` exist and are
-    tested -- but the infallible spellings are still what 136 call sites use
-    (against 61 `try_*` uses), and they degrade a corrupt block to "no such
-    term"/end-of-terms. *Cost*: a corrupt index reads as an empty one.
+20. ~~**Migrate the blocktree lookups to their `try_*` forms** (c1 F-11).~~
+    **CLOSED by `c39-codecs-readpath`.** The "136 call sites" count was
+    dominated by tests: separating them (by marking the four infallible
+    methods `#[deprecated]` and building `--all-targets`, which is also how
+    the migration stays checkable) left **15 production sites**, all already
+    inside `Result`-returning functions -- ten in `lucene-search/src/lib.rs`,
+    two in `explain.rs`, one each in `weight_count.rs` and `multi_segment.rs`,
+    and one in `blocktree.rs` itself. Two signatures widened
+    (`count_term_query_shortcut`, `global_term_stats`/`global_boolean_stats`,
+    which returned bare `Option`s). A further defect was found on the way and
+    fixed: `FieldTerms::{intersect,fuzzy_intersect,regexp_intersect}` are
+    `Iterator`s, so they had **no** error channel at all and ended a
+    wildcard/fuzzy/regexp term expansion early on a corrupt block -- a
+    *smaller hit set*, not an error. Their `Item` is now
+    `Result<(Vec<u8>, TermStats)>`, matching `IntersectTermsEnum.next()`'s
+    `IOException`. The infallible spellings survive as a **test-only**
+    convenience and say so on each method; 149 remaining call sites, every one
+    under `#[cfg(test)]`, `tests/` or `benches/`.
 
 21. **Split term iteration from stats in `TermsEnum`** (c1 F-14). Java's
     `next()` decodes only the term bytes and defers `decodeMetaData` to
@@ -403,13 +599,34 @@ worth knowing about the next entry that reads the same way.
     and so always decodes. Full-field enumeration is 27 ns/term against
     Lucene's 20.5 ns. Wants a `next_term()` + `stats()` split, which changes
     `check_index`'s and the intersect iterators' call shape.
+    *(`c39-codecs-readpath` note: half of the stated ripple is already paid --
+    the intersect iterators' `Item` changed to `Result<(Vec<u8>, TermStats)>`
+    and `check_index::compare_intersect_with_scan` moved with it, so their
+    call shape has just been touched for a different reason. The split itself
+    is untouched.)*
 
-22. **`highlighter`/postings read path aside**: `IndexedDISI`'s **block jump
-    table** is still not read (`createJumpTable`/`advanceBlock`'s
-    two-blocks-ahead shortcut). Cost is O(maxDoc/65536) four-byte header reads
-    -- 16 for a million documents -- and this port's writers emit
-    `jumpTableEntryCount = 0`/`-1`, so our own files have no table to read.
-    Worth revisiting only alongside a `nextDoc`-shaped iterator API.
+22. ~~`IndexedDISI`'s **block jump table** is still not read.~~
+    **CLOSED by `c39-codecs-readpath`, and the "worth revisiting only
+    alongside a `nextDoc`-shaped iterator API" note was wrong.** The table
+    pays on `advanceExact`, not on `nextDoc`: `Lucene90DocValuesProducer`'s
+    single-lookup shape opens a cursor and asks one question, and that is
+    where a seek several blocks in costs one header read per block skipped.
+    Both halves landed together, because the read half is worth nothing
+    without the write half: `add_jumps`/`flushBlockJumps` (including the
+    empty-block fill and the "a single real block plus the sentinel is wasted
+    space" exemption), `writeBitSet`'s `short` return value carried into the
+    `.dvm`/`.nvm`/`.vem` entry, and `advanceBlock`'s two-blocks-ahead
+    shortcut. Real Lucene reads what this port writes:
+    `VerifySparseNumericDocValues` gained a block-jump pass (the only access
+    pattern that makes Java's `advanceBlock` consult the table), verified to
+    fail on a perturbed jump *index* and on a perturbed jump *offset*
+    independently -- the b4/b11 mirror-image trap, ruled out in the one
+    direction that can rule it out. **Measured** (alternating min-of-40 A/B
+    over one build, both arms in one process): 2 000 cold seeks
+    **158 -> 51 us (3.1x)** over 16 blocks, **458 -> 38 us (12.2x)** over 62,
+    **2 020 -> 844 us (2.4x)** over 245; a forward scan, which never consults
+    the table, is unchanged to within 0.4%. Cost on disk: 8 bytes per logical
+    block, ~0.1% of a 1M-doc region.
 
 23. ~~**A filter-only query cannot prune under a top-`n` collector.**~~
     **CLOSED by `c37-search-behaviours`.** The guard was removable, and the
@@ -430,6 +647,36 @@ worth knowing about the next entry that reads the same way.
     against 7.02 ms for the all-`MUST` form -- so the filter shape is now the
     cheaper one under a top-`n` collector, as it already was without one.
     (Two ledger entries, one finding.)
+
+23b. **The BKD tree walk allocates four `Vec`s per inner node visited.**
+    `points::read_inner_node` returns an `InnerNode` holding owned
+    `saved_split_tail` and `split_value`, and both callers additionally
+    `to_vec()` the cell bound they are about to overwrite -- so `intersect`
+    and `estimate_point_count` each pay four heap allocations per inner node.
+    Java's `BKDPointTree` preallocates **per-level** stacks for exactly this
+    state (`splitValuesStack`, `splitDimValueStack`, `splitDimsPos`,
+    `negativeDeltas[numIndexDims * treeDepth]`), sized once from
+    `getTreeDepth`. Pre-existing in `intersect_node`, but c39 promoted it to a
+    shared path and hung `estimate_point_count` off it, whose whole
+    justification is being cheap -- it removes every `.kdd` read and keeps
+    100% of the allocation. *Contained*: depth is bounded at ~31 by
+    `child_ids`' `checked_mul`, so per-level scratch on `IntersectCtx` sizes
+    trivially and turns `InnerNode` into a `Copy` struct of offsets. (Raised
+    by c39's Tier-2 review.)
+
+23c. **No Java-written `IndexedDISI` block jump table is read by anything.**
+    c39 ported the jump table in both directions and proved the *write* side
+    against real Lucene (`VerifySparseNumericDocValues`' block-jump pass, two
+    independent negative controls). The read side has never run over bytes
+    Lucene wrote, for a reason that is a fixture gap rather than a design one:
+    the largest committed Java-written index is **36 000 documents**, and
+    Lucene emits `jumpTableEntryCount = 0` for anything under two blocks, so
+    there is no Java-written table in the tree to read. *What closes it*: one
+    `Gen*.java` writing a sparse numeric or norms field over more than 131 072
+    documents; the existing `crates/lucene-codecs/tests/*_fixtures.rs` shape
+    reads it unchanged. This is the only direction of the jump table not
+    covered by real bytes. (Raised by c39's Tier-2 review.)
+
 
 24. **`StoredFieldsReader::document()` materializes a whole `Document`** where
     Java's `StoredFieldVisitor` lets a caller take one field and skip the rest.
@@ -474,6 +721,13 @@ worth knowing about the next entry that reads the same way.
     stale binary. What is left is `gen-fixtures.sh --check`, which is expensive
     (it generates the whole tree twice) and probably belongs on a schedule
     rather than per-push. (Raised and half-closed by c36.)
+    *(`c39-codecs-readpath` note: `gen-fixtures.sh` grew `--append-only`, which
+    runs the `Append*Manifest` programs and no generator. Adding cross-engine
+    ground truth to a committed fixture previously meant either `--only
+    <Generator>`, which regenerates that index with a fresh segment id, or
+    invoking `javac`/`java` by hand outside the script -- which is what c37
+    did, and is why `blocktree_index/manifest.properties` had its `count.*`
+    block in a different position from the one a full run produces.)*
 
 27. **Mechanical gates for three defect shapes this sweep keeps re-finding.**
     (a) a clippy `disallowed_methods` entry on the free
@@ -489,7 +743,19 @@ worth knowing about the next entry that reads the same way.
     found `parity.md` describing two deleted functions in the present tense,
     and `check-parity.py` deliberately validates only the file *paths* in the
     Rust column, never identifiers in the prose. No false positives for
-    `pub(crate)`-and-above symbols. (Raised by c37.) There is no `clippy.toml` in the tree
+    `pub(crate)`-and-above symbols. (Raised by c37.) **Two more of the same
+    shape, one grep each, both raised by c39's Tier-2 review**: (d) zero
+    matches for `\.seek_exact\(|\.seek_ceil\(|\.current\(\)` on a
+    blocktree receiver under `crates/*/src/` outside `#[cfg(test)]` -- c39 did
+    that audit by hand (mark the four methods `#[deprecated]`, build
+    `--all-targets`) and `blocktree.rs`'s method docs *describe* it, but
+    nothing runs it, so the migration can silently regress; (e) every key an
+    `Append*Manifest`/`Gen*` program writes into a `manifest.properties`
+    should have a `manifest.get("...")` reading it somewhere under
+    `crates/*/tests/` -- which would have caught c39 shipping
+    `point_estimate.*.docs`/`.size`/`.doc_count` as unread "ground truth"
+    while `docs/parity.md` claimed `estimateDocCount` was pinned by them.
+    There is no `clippy.toml` in the tree
     today, so (a) starts from zero. Repo-wide tooling, not any one batch's
     files.
 
@@ -796,20 +1062,26 @@ now five).
       semantics (this port bounds matching instead and reports "no match").
       Neither is reachable from `RegexpQuery(Term)`. (Raised by b8.)
       **OBSOLETE (an intentional divergence, not outstanding work).** The `DEFAULT_DETERMINIZE_WORK_LIMIT` half is superseded: `regexp.rs`'s own gap list (`regexp.rs:45-52`) now names exactly two gaps and that is not one of them -- this port bounds *matching* instead, a different mechanism with the same visible contract. The `CASE_INSENSITIVE`/`CASE_INSENSITIVE_RANGE` half stands but is unreachable: `RegexpQuery(Term)` passes match flags `0` and this port exposes no constructor taking them, so no caller can observe it. It belongs in the module doc, where it is, not on a work list.
-- [ ] **Payload slots cost ~26 us/doc and ~190 MB per 50 000 documents, and the
+- [x] **Payload slots cost ~26 us/doc and ~190 MB per 50 000 documents, and the
       cost is the slot, not the bytes** (c23 F9, measured with an
-      all-empty-payload control). The fix is a flat `(bytes, lengths)`
-      representation in **both** `postings_writer::TermPostings::payloads` and
-      `indexing_chain::PostingEntry::payloads`; doing only the second is
-      slower, because `build_postings_output` would re-materialize the nested
-      form. An instance of the block-pool item above, now with a number.
-- [ ] **`FieldInfo` is a plain struct where Java's is a validating
-      constructor** (c23 F4). `field_infos::write` now applies the one coercion
-      that was producing files this port could not re-open, but a caller can
-      still build combinations Java makes unrepresentable and find out only at
-      `parse` time, or not at all. A `FieldInfo::new -> Result` would close the
-      class; it touches every construction site in the workspace.
-- [ ] `lucene-analysis` has no `TokenStream` lifecycle, so `end()`'s trailing
+      all-empty-payload control). **CLOSED by c38**: the flat
+      `(payload_bytes, payload_lengths)` run is on both
+      `postings_writer::TermPostings` and `indexing_chain::TermPostingList`,
+      held **once per `(field, term)`** rather than once per posting entry, so
+      `PostingEntry` carries no payload field at all. Measured A/B in one
+      window: `payloads` -49.1% peak RSS, `payloads-empty` -46.1%, and both
+      arms faster, plus -18.6% on the `freqs` arm that has no payloads.
+      See open-work item 16.
+- [x] **`FieldInfo` is a plain struct where Java's is a validating
+      constructor** (c23 F4). **CLOSED by c40-missing-behaviours** -- see open-work
+      item 8. `FieldInfo::new`/`with_*`/`checked` is Java's constructor,
+      `FieldInfos::new` is `FieldInfos(FieldInfo[])`, and the two doors a caller
+      reaches (`field_infos::parse`, `IndexWriter::open`) both route through
+      them; none of the 213 struct literals was touched. The `parse` half was a
+      live wrong answer, not just a missing guard: Java's reader *coerces*
+      through the constructor before `checkConsistency()` runs, so a `.fnm` this
+      port rejected is one real Lucene opens.
+- [x] `lucene-analysis` has no `TokenStream` lifecycle, so `end()`'s trailing
       position increment is dropped by `StopFilter` and both n-gram filters; no
       case-insensitive `CharArraySet`; `StandardTokenizer` emits no emoji tokens
       and has no `maxTokenLength`; `Token` offsets are UTF-8 byte offsets where
@@ -831,12 +1103,17 @@ now five).
       so wrong for astral text, `offsets_from_analysis`'s now-redundant
       conversion, and a non-ASCII case for `GenTermVectors`/the positions
       write-path verifier) are listed in `c29-search-carryovers.md` §2.2.
-      **c34 restated -- the offsets half is closed.** `lucene-analysis/src/lib.rs::tokenize` now emits **UTF-16 code-unit** offsets (`lib.rs:150-203`, `utf16_len`), so the unit matches Java's `char` indices end to end; `lucene-search`'s highlighter measures in the same unit and `offsets_from_analysis` no longer converts (`highlighter.rs:1754-1788` pins that it must not). Three structural gaps remain, all in `lucene-analysis`: (a) **no `TokenStream` lifecycle**, so `end()`'s trailing position increment is dropped by `StopFilter` and both n-gram filters (`lib.rs:2306-2310` records it at the site); (b) **no case-insensitive `CharArraySet`** -- the port matches a lowercase set against already-lowercased terms, which is right for the standard chain and wrong for a caller-supplied mixed-case set; (c) **no `maxTokenLength`** on `StandardTokenizer`, and no grapheme-cluster emoji tokenization (`lib.rs:121-126`). (a) is the one a caller can observe as a wrong position.
-- [ ] `FuzzyTermsEnum`'s `MaxNonCompetitiveBoostAttribute` feedback loop (swap
+      **c34 restated -- the offsets half is closed.** `lucene-analysis/src/lib.rs::tokenize` now emits **UTF-16 code-unit** offsets (`lib.rs:150-203`, `utf16_len`), so the unit matches Java's `char` indices end to end; `lucene-search`'s highlighter measures in the same unit and `offsets_from_analysis` no longer converts (`highlighter.rs:1754-1788` pins that it must not). Three structural gaps remain, all in `lucene-analysis`: (a) **no `TokenStream` lifecycle**, so `end()`'s trailing position increment is dropped by `StopFilter` and both n-gram filters (`lib.rs:2306-2310` records it at the site); (b) **no case-insensitive `CharArraySet`** -- the port matches a lowercase set against already-lowercased terms, which is right for the standard chain and wrong for a caller-supplied mixed-case set; (c) **no `maxTokenLength`** on `StandardTokenizer`, and no grapheme-cluster emoji tokenization (`lib.rs:121-126`). (a) is the one a caller can observe as a wrong position. **c40-missing-behaviours closed (a)** -- see open-work item 10 -- and found it was bigger than recorded: the indexing chain also restarted `position`/`offset` at every value of a **multi-valued** field, and `IndexWriter` indexed only the first value at all. (b) and (c) remain, and are what keeps this entry's *topic* alive even though its box is now ticked for the lifecycle itself.
+- [x] `FuzzyTermsEnum`'s `MaxNonCompetitiveBoostAttribute` feedback loop (swap
       to a lower-edit automaton once the top-terms queue is full) is unported,
       and `fuzzy_doc_scores` blends `docFreq` within one segment where
       `BlendedTermQuery` blends across the whole reader -- the fuzzy clause has
       no `GlobalStats` plumbing. (Raised by b8, owner b12/b13.)
+      **The feedback loop is CLOSED by c40-missing-behaviours** (open-work item
+      9): `TopTermsRewrite`'s bounded queue plus `bottomChanged`'s budget drop,
+      measured at **1.07x-2.03x** on the 1M-term corpus with a min-of-40
+      alternating A/B. The `GlobalStats` half is still open and is restated
+      there.
 - [x] **A1 is closed (c1-lazy-blocktree).** `blocktree.rs` now opens a segment
       by reading only the `.tmd` records and each field's root trie node, and
       navigates with a ported `SegmentTermsEnum`/`SegmentTermsEnumFrame` frame
@@ -1023,8 +1300,13 @@ now five).
       c3 tried `shrink_to_fit` on it: the structure drops to 5.98x but
       indexing costs 25-60% more time and peak RSS does not move at all
       (glibc keeps the freed 48-byte chunks in its arena), so it was reverted.
-      An inline-capacity-1 occurrence representation is the contained version
-      of the fix and needs `PostingEntry`'s public shape to change.
+      **c38 assessed it as a milestone and stopped** (10 Java classes,
+      2 800 lines, all three consumers of `InMemoryInvertedIndex`, plus the
+      `lucene-analysis` token API), after removing the payload slot from the
+      same structure: 102.5 -> 75.8 MB, of which 36.8 MB is now the
+      `Vec<PostingEntry>` slots and 36.6 MB the capacity-4 `Vec<Occurrence>`
+      allocations. See open-work item 15 and
+      `docs/sweep/m2/c38-allocation-shape.md`.
 - [x] `SegmentCommitInfo.sci_id` was written as absent (`marker 0`) by every
       construction site in the port. **Closed by c7** (F-20): the two sites that
       *create* a segment (`segment_writer::flush_stored_only_segment*` and
@@ -1410,19 +1692,17 @@ is proven still concurrent by a test in which two rayon tasks share one
       document's offsets are self-contained and nothing carried across the
       skipped documents is needed. That reset is also what makes skipping
       sound at all.
-- [ ] **`OrdinalMap::build` materializes every segment's term list**, where
+- [x] **`OrdinalMap::build` materializes every segment's term list**, where
       Java's `OrdinalMap.build(owner, TermsEnum[], weights, ratio)` streams
-      `TermsEnum`s and never holds a dictionary. Needs a cursor API over the
-      doc-values terms dictionary, which does not exist --
-      `terms_dict::decode_all_terms` reads it whole. (Raised by c12's Tier-2
+      `TermsEnum`s and never holds a dictionary. (Raised by c12's Tier-2
       review.) **Measured by c29** (`lucene-search/examples/ordinal_map_memory.rs`,
       17-byte terms): 5 segments x 1 M terms costs **267 MB** for the term
-      lists against **52 MB** for the map, 319 MB peak -- so the input is ~5x
-      the output and ~84% of the peak, i.e. this is the *larger* of c12's two
-      recorded `OrdinalMap` divergences, not the aside it was filed as. Owner
-      `lucene-codecs/src/terms_dict.rs`: a `TermsCursor` yielding one term at a
-      time over the prefix-compressed blocks `decode_all_terms` already walks,
-      then `facets.rs` and `OrdinalMap::build` take iterators.
+      lists against **52 MB** for the map, 319 MB peak. **CLOSED by c38**:
+      `terms_dict::TermsCursor` is the cursor c29 named, `decode_all_terms` is
+      it collected, `OrdinalMap::build_streaming` takes
+      `&mut [&mut dyn TermCursor]`, and `facets::resolve_labels` walks it too.
+      Peak RSS 318.2 -> 51.4 MB, end-to-end 290 -> 140 ms. See open-work
+      item 17.
 - [~] **`docs/parity.md` has no mechanical staleness check.** c12's review
       found three rows still declaring "still out of scope" for symbols a later
       row claimed as ported (`OrdinalMap`/`FacetsConfig`/hierarchical dims,

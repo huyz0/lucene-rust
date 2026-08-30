@@ -114,18 +114,33 @@ pub fn resolve_labels(
     terms: &TermsDictEntry,
     counts: &[u64],
 ) -> Result<Vec<FacetCount>> {
-    let labels = terms_dict::decode_all_terms(doc_values_data, terms)
+    // Streamed, not materialized: this walks the dictionary once in ordinal
+    // order and turns each term straight into its `FacetCount`, so the
+    // `Vec<Vec<u8>>` `decode_all_terms` would have built never exists beside
+    // the result. Same "stop at the shorter of the two" behaviour a `zip`
+    // over the whole dictionary had -- with one deliberate consequence:
+    // stopping means corruption *past* `counts.len()` is no longer decoded,
+    // so it is no longer reported here. That is the right trade (this
+    // function's job is to label the counts it was given, and `check_index`
+    // is what walks a dictionary to validate it), but it is a change in what
+    // this call detects, not only in what it allocates.
+    let mut cursor = terms_dict::TermsCursor::open(doc_values_data, terms)
         .map_err(lucene_codecs::doc_values::Error::from)?;
-    Ok(labels
-        .into_iter()
-        .zip(counts.iter().copied())
-        .enumerate()
-        .map(|(ord, (label_bytes, count))| FacetCount {
+    let mut labelled = Vec::with_capacity(counts.len());
+    for (ord, &count) in counts.iter().enumerate() {
+        let next = cursor
+            .next_term()
+            .map_err(lucene_codecs::doc_values::Error::from)?;
+        let Some(label_bytes) = next else {
+            break;
+        };
+        labelled.push(FacetCount {
             ord: ord as i64,
-            label: String::from_utf8_lossy(&label_bytes).into_owned(),
+            label: String::from_utf8_lossy(label_bytes).into_owned(),
             count,
-        })
-        .collect())
+        });
+    }
+    Ok(labelled)
 }
 
 /// Real `Facets.getTopChildren`'s return shape (`FacetResult`), for the
@@ -2893,6 +2908,24 @@ mod tests {
         let green = resolved.iter().find(|f| f.label == "green").unwrap();
         let green_full = resolved_full.iter().find(|f| f.label == "green").unwrap();
         assert_eq!(green.count, green_full.count - 1);
+    }
+
+    /// `counts` longer than the dictionary stops at the dictionary, which is
+    /// what the `zip` this loop replaced did. Reachable from a caller that
+    /// pairs one field's counts with another field's terms; the alternative
+    /// -- labelling a count with a term that does not exist -- is the wrong
+    /// answer rather than a shorter one.
+    #[test]
+    fn more_counts_than_terms_stops_at_the_last_term() {
+        let (manifest, data, meta) = load_dv_meta(&multi_dv_dir());
+        let field_num = field_number(&manifest, "tags");
+        let (_, terms) = tags_entry(&meta, field_num);
+        let size = terms.terms_dict_size as usize;
+
+        let counts = vec![7u64; size + 5];
+        let resolved = resolve_labels(&data, terms, &counts).unwrap();
+        assert_eq!(resolved.len(), size);
+        assert_eq!(resolved.last().unwrap().ord, size as i64 - 1);
     }
 
     #[test]

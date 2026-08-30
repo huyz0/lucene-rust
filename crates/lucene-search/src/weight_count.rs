@@ -55,27 +55,32 @@ use crate::Result;
 /// contract is used rather than a second, redundant flag.
 ///
 /// A field that is not in this segment, or a term that is not in its
-/// dictionary, is `Some(0)` -- Java's "the term cannot be found in the
-/// dictionary so the count is 0", not `None`. Nothing has to be iterated to
-/// know that nothing matches.
+/// dictionary, is `Ok(Some(0))` -- Java's "the term cannot be found in the
+/// dictionary so the count is 0", not `Ok(None)`. Nothing has to be iterated
+/// to know that nothing matches. `Ok(None)` means only "no shortcut applies".
+///
+/// A corrupt `.tim` block is an `Err`, not a count of zero: `getTermsEnum`
+/// throws `IOException` in Java and `count` propagates it, and "this term is
+/// absent" is a legitimate answer here, so degrading corruption to it would
+/// hand back a plausible wrong number.
 pub fn count_term_query_shortcut(
     fields: &BlockTreeFields,
     live_docs: Option<&FixedBitSet>,
     query: &TermQuery,
-) -> Option<i64> {
+) -> Result<Option<i64>> {
     if live_docs.is_some() {
         // `super.count(context)` -- the docFreq counts deleted documents, so it
         // is not the answer, and there is no cheaper one.
-        return None;
+        return Ok(None);
     }
     let Some(field_terms) = fields.field(&query.field) else {
-        return Some(0);
+        return Ok(Some(0));
     };
-    Some(
+    Ok(Some(
         field_terms
-            .seek_exact(&query.term)
+            .try_seek_exact(&query.term)?
             .map_or(0, |stats| i64::from(stats.doc_freq)),
-    )
+    ))
 }
 
 /// `IndexSearcher.count(new TermQuery(...))` for one leaf: the
@@ -90,7 +95,7 @@ pub fn count_term_query(
     live_docs: Option<&FixedBitSet>,
     query: &TermQuery,
 ) -> Result<i64> {
-    if let Some(n) = count_term_query_shortcut(fields, live_docs, query) {
+    if let Some(n) = count_term_query_shortcut(fields, live_docs, query)? {
         return Ok(n);
     }
     let mut counter = CountCollector::default();

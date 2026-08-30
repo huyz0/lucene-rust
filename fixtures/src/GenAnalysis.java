@@ -24,6 +24,21 @@ import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
 import org.apache.lucene.analysis.tokenattributes.OffsetAttribute;
 import org.apache.lucene.analysis.tokenattributes.PositionIncrementAttribute;
 import org.apache.lucene.analysis.CharArraySet;
+import org.apache.lucene.document.Document;
+import org.apache.lucene.document.Field;
+import org.apache.lucene.index.DirectoryReader;
+import org.apache.lucene.index.IndexOptions;
+import org.apache.lucene.index.IndexWriter;
+import org.apache.lucene.index.IndexWriterConfig;
+import org.apache.lucene.index.LeafReader;
+import org.apache.lucene.index.PostingsEnum;
+import org.apache.lucene.index.Term;
+import org.apache.lucene.index.Terms;
+import org.apache.lucene.index.TermsEnum;
+import org.apache.lucene.search.IndexSearcher;
+import org.apache.lucene.search.PhraseQuery;
+import org.apache.lucene.store.ByteBuffersDirectory;
+import org.apache.lucene.util.BytesRef;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -366,8 +381,236 @@ public class GenAnalysis {
         "\uD835\uDC00 wi fi \u4E16",
         new String[][] {{"wi fi", "wifi"}});
 
+    // ---- c40: the TokenStream lifecycle, i.e. what `end()` decides -------
+    //
+    // Everything above ends at `incrementToken()`. Two things only `end()`
+    // and `IndexingChain.PerField.invertTokenStream` produce, and neither is
+    // visible from a token list:
+    //
+    //   stream.end();
+    //   invertState.position += posIncrAttribute.getPositionIncrement();
+    //   invertState.offset   += offsetAttribute.endOffset();
+    //   ... if (analyzed) {
+    //     invertState.position += analyzer.getPositionIncrementGap(field);
+    //     invertState.offset   += analyzer.getOffsetGap(field);
+    //   }
+    //
+    // So these cases index a real multi-valued field through a real
+    // IndexWriter and read the positions and offsets back off the postings,
+    // plus the hit count of a phrase query straddling the value boundary --
+    // which is the only assertion that distinguishes "the second value
+    // restarts at position 0" from Lucene.
+    CharArraySet theOnly = new CharArraySet(Arrays.asList("the"), false);
+
+    // Java's base Analyzer returns 0 from getPositionIncrementGap, so with a
+    // stock StandardAnalyzer a phrase *does* match across a value boundary.
+    // Recorded because it is the surprising direction, and because a port
+    // that "fixed" this by always inserting a gap would fail here.
+    try (Analyzer plain = new PlainStandardAnalyzer()) {
+      multiValued(
+          m,
+          "mv_default_gap",
+          new String[] {"alpha beta", "gamma delta"},
+          plain,
+          new String[][] {
+            {"across0", "beta gamma", "0"},
+            {"within0", "alpha beta", "0"},
+            {"reversedacross2", "gamma beta", "2"},
+          });
+    }
+
+    // The same two values through an analyzer with a non-zero
+    // positionIncrementGap -- the override every Lucene consumer exposes
+    // (OpenSearch's `position_increment_gap`, default 100). Now the phrase
+    // must NOT match across the boundary, and the second value's positions
+    // are pushed out by exactly the gap.
+    try (Analyzer gapped = new GappedAnalyzer(100, 1)) {
+      multiValued(
+          m,
+          "mv_gap_100",
+          new String[] {"alpha beta", "gamma delta"},
+          gapped,
+          new String[][] {
+            {"across0", "beta gamma", "0"},
+            {"across99", "beta gamma", "99"},
+            {"across100", "beta gamma", "100"},
+            {"within0", "gamma delta", "0"},
+          });
+    }
+
+    // The one `end()` case a caller can observe as a wrong *position* even at
+    // gap 0: the first value ends in two stopwords, whose increments
+    // FilteringTokenFilter.end() hands to the field's position counter. Drop
+    // them and "dog" lands at position 1 instead of 3 -- and the phrase
+    // "fox dog" matches at slop 0, which in Lucene it does not.
+    try (Analyzer stopping = new StoppingAnalyzer(theOnly, 0, 1)) {
+      multiValued(
+          m,
+          "mv_trailing_stopwords",
+          new String[] {"fox the the", "dog"},
+          stopping,
+          new String[][] {
+            {"adjacent0", "fox dog", "0"},
+            {"slop1", "fox dog", "1"},
+            {"slop2", "fox dog", "2"},
+          });
+    }
+
+    // A trailing stopword *and* a gap, so the two additions compose, plus a
+    // three-value field so the accumulation is exercised more than once.
+    try (Analyzer stopping = new StoppingAnalyzer(theOnly, 5, 2)) {
+      multiValued(
+          m,
+          "mv_stopwords_and_gap",
+          new String[] {"fox the", "the dog", "bird"},
+          stopping,
+          new String[][] {
+            {"foxdog0", "fox dog", "0"},
+            {"foxdog7", "fox dog", "7"},
+            {"dogbird6", "dog bird", "6"},
+          });
+    }
+
     Files.writeString(out.resolve("manifest.properties"), m.toString());
     System.out.println("wrote analysis/ fixture directory");
+  }
+
+  /**
+   * Indexes {@code values} as repeated values of one field of one document,
+   * through a real {@link org.apache.lucene.index.IndexWriter} and {@code
+   * analyzer}, then records every indexed occurrence's (term, position,
+   * startOffset, endOffset) and the hit count of each phrase in {@code
+   * phrases} ({@code {name, "t1 t2", slop}}).
+   *
+   * <p>Read off the postings rather than off the TokenStream on purpose: the
+   * position/offset accumulation being pinned here happens in
+   * {@code IndexingChain}, downstream of every attribute a token list can
+   * show.
+   */
+  static void multiValued(
+      StringBuilder m, String caseName, String[] values, Analyzer analyzer, String[][] phrases)
+      throws IOException {
+    org.apache.lucene.document.FieldType ft = new org.apache.lucene.document.FieldType();
+    ft.setIndexOptions(IndexOptions.DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS);
+    ft.setTokenized(true);
+    ft.freeze();
+
+    StringBuilder postings = new StringBuilder();
+    StringBuilder hits = new StringBuilder();
+    try (org.apache.lucene.store.Directory dir = new ByteBuffersDirectory()) {
+      try (IndexWriter w = new IndexWriter(dir, new IndexWriterConfig(analyzer))) {
+        Document doc = new Document();
+        for (String v : values) {
+          doc.add(new Field("body", v, ft));
+        }
+        w.addDocument(doc);
+      }
+      try (DirectoryReader reader = DirectoryReader.open(dir)) {
+        LeafReader leaf = reader.leaves().get(0).reader();
+        Terms terms = leaf.terms("body");
+        // (position, term, start, end), ordered by position then term.
+        java.util.List<String> rows = new java.util.ArrayList<>();
+        TermsEnum te = terms.iterator();
+        BytesRef term;
+        while ((term = te.next()) != null) {
+          String text = term.utf8ToString();
+          PostingsEnum pe = te.postings(null, PostingsEnum.OFFSETS);
+          while (pe.nextDoc() != PostingsEnum.NO_MORE_DOCS) {
+            for (int i = 0; i < pe.freq(); i++) {
+              int pos = pe.nextPosition();
+              rows.add(
+                  String.format(
+                      "%08d\u0000%s:%d:%d,%d",
+                      pos, text, pos, pe.startOffset(), pe.endOffset()));
+            }
+          }
+        }
+        java.util.Collections.sort(rows);
+        for (String row : rows) {
+          if (postings.length() > 0) postings.append(';');
+          postings.append(row.substring(row.indexOf('\u0000') + 1));
+        }
+
+        IndexSearcher searcher = new IndexSearcher(reader);
+        for (String[] spec : phrases) {
+          String[] words = spec[1].split(" ");
+          PhraseQuery.Builder b = new PhraseQuery.Builder();
+          for (int i = 0; i < words.length; i++) {
+            b.add(new Term("body", words[i]), i);
+          }
+          b.setSlop(Integer.parseInt(spec[2]));
+          int hitCount = searcher.count(b.build());
+          if (hits.length() > 0) hits.append(';');
+          hits.append(spec[0]).append('=').append(hitCount);
+        }
+      }
+    }
+
+    m.append(caseName).append(".values=").append(String.join("|", values)).append('\n');
+    m.append(caseName)
+        .append(".position_increment_gap=")
+        .append(analyzer.getPositionIncrementGap("body"))
+        .append('\n');
+    m.append(caseName).append(".offset_gap=").append(analyzer.getOffsetGap("body")).append('\n');
+    m.append(caseName).append(".postings=").append(postings).append('\n');
+    m.append(caseName).append(".phrases=").append(hits).append('\n');
+  }
+
+  /** StandardTokenizer + LowerCaseFilter with configurable gaps, no stopwords. */
+  static class GappedAnalyzer extends Analyzer {
+    final int posGap;
+    final int offGap;
+
+    GappedAnalyzer(int posGap, int offGap) {
+      this.posGap = posGap;
+      this.offGap = offGap;
+    }
+
+    @Override
+    protected TokenStreamComponents createComponents(String fieldName) {
+      Tokenizer source = new StandardTokenizer();
+      return new TokenStreamComponents(source, new LowerCaseFilter(source));
+    }
+
+    @Override
+    public int getPositionIncrementGap(String fieldName) {
+      return posGap;
+    }
+
+    @Override
+    public int getOffsetGap(String fieldName) {
+      return offGap;
+    }
+  }
+
+  /** StandardTokenizer + LowerCaseFilter + StopFilter, with configurable gaps. */
+  static class StoppingAnalyzer extends Analyzer {
+    final CharArraySet stopwords;
+    final int posGap;
+    final int offGap;
+
+    StoppingAnalyzer(CharArraySet stopwords, int posGap, int offGap) {
+      this.stopwords = stopwords;
+      this.posGap = posGap;
+      this.offGap = offGap;
+    }
+
+    @Override
+    protected TokenStreamComponents createComponents(String fieldName) {
+      Tokenizer source = new StandardTokenizer();
+      return new TokenStreamComponents(
+          source, new StopFilter(new LowerCaseFilter(source), stopwords));
+    }
+
+    @Override
+    public int getPositionIncrementGap(String fieldName) {
+      return posGap;
+    }
+
+    @Override
+    public int getOffsetGap(String fieldName) {
+      return offGap;
+    }
   }
 
   static void analyze(StringBuilder m, String caseName, String text, CharArraySet stopwords)

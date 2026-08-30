@@ -67,7 +67,8 @@ fn synthetic_term(
 ) -> TermPostings {
     let mut positions = Vec::new();
     let mut offsets = Vec::new();
-    let mut payloads = Vec::new();
+    let mut payload_bytes = Vec::new();
+    let mut payload_lengths = Vec::new();
     for (d, &doc) in docs.iter().enumerate() {
         // Positions strictly increasing within a document, and different in
         // every document, so a walk that mixes documents up cannot pass.
@@ -82,17 +83,13 @@ fn synthetic_term(
             );
         }
         if with_payloads {
-            payloads.push(
-                doc_positions
-                    .iter()
-                    .map(|&p| {
-                        // Length varies (including empty), which is what makes
-                        // the per-block payload byte-run offsets non-trivial.
-                        let len = (p % 4) as usize;
-                        vec![(doc % 251) as u8; len]
-                    })
-                    .collect(),
-            );
+            for &p in &doc_positions {
+                // Length varies (including empty), which is what makes
+                // the per-block payload byte-run offsets non-trivial.
+                let len = (p % 4) as usize;
+                payload_lengths.push(len as u32);
+                payload_bytes.extend(std::iter::repeat_n((doc % 251) as u8, len));
+            }
         }
         positions.push(doc_positions);
     }
@@ -101,7 +98,8 @@ fn synthetic_term(
         docs: docs.iter().map(|&d| (d, freq)).collect(),
         positions,
         offsets,
-        payloads,
+        payload_bytes,
+        payload_lengths,
     }
 }
 

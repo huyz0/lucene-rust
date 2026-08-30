@@ -205,6 +205,7 @@ pub mod facets;
 pub mod field_norms;
 pub mod highlighter;
 pub mod multi_segment;
+pub mod near_spans;
 pub mod ordinal_map;
 pub mod points_query;
 pub mod query;
@@ -467,11 +468,12 @@ fn expanded_terms(fields: &BlockTreeFields, clause: &Clause) -> Result<Option<Ex
             let mut df = 0i64;
             let terms: Vec<Vec<u8>> = ft
                 .intersect(&pattern)
-                .map(|(t, s)| {
+                .map(|r| {
+                    let (t, s) = r?;
                     df += s.doc_freq as i64;
-                    t.to_vec()
+                    Ok(t)
                 })
-                .collect();
+                .collect::<lucene_codecs::blocktree::Result<_>>()?;
             (q.field.clone(), terms, df)
         }
         Clause::Wildcard(q) => {
@@ -482,11 +484,12 @@ fn expanded_terms(fields: &BlockTreeFields, clause: &Clause) -> Result<Option<Ex
             let mut df = 0i64;
             let terms: Vec<Vec<u8>> = ft
                 .intersect(&pattern)
-                .map(|(t, s)| {
+                .map(|r| {
+                    let (t, s) = r?;
                     df += s.doc_freq as i64;
-                    t.to_vec()
+                    Ok(t)
                 })
-                .collect();
+                .collect::<lucene_codecs::blocktree::Result<_>>()?;
             (q.field.clone(), terms, df)
         }
         Clause::Regexp(q) => {
@@ -497,11 +500,12 @@ fn expanded_terms(fields: &BlockTreeFields, clause: &Clause) -> Result<Option<Ex
             let mut df = 0i64;
             let terms: Vec<Vec<u8>> = ft
                 .regexp_intersect(&pattern)
-                .map(|(t, s)| {
+                .map(|r| {
+                    let (t, s) = r?;
                     df += s.doc_freq as i64;
-                    t.to_vec()
+                    Ok(t)
                 })
-                .collect();
+                .collect::<lucene_codecs::blocktree::Result<_>>()?;
             (q.field.clone(), terms, df)
         }
         _ => return Ok(None),
@@ -688,8 +692,8 @@ fn prefix_doc_ids(
     let pattern = WildcardPattern::prefix(&query.prefix);
     let matching_terms: Vec<Vec<u8>> = field_terms
         .intersect(&pattern)
-        .map(|(term, _stats)| term.to_vec())
-        .collect();
+        .map(|r| r.map(|(term, _stats)| term))
+        .collect::<lucene_codecs::blocktree::Result<_>>()?;
     let mut acc = DocIdBitSet::default();
     for term in &matching_terms {
         let Some(docs) = term_docs_only(field_terms, term, doc_in)? else {
@@ -727,8 +731,8 @@ fn wildcard_doc_ids(
     let pattern = WildcardPattern::new(&query.pattern);
     let matching_terms: Vec<Vec<u8>> = field_terms
         .intersect(&pattern)
-        .map(|(term, _stats)| term.to_vec())
-        .collect();
+        .map(|r| r.map(|(term, _stats)| term))
+        .collect::<lucene_codecs::blocktree::Result<_>>()?;
     let mut acc = DocIdBitSet::default();
     for term in &matching_terms {
         let Some(docs) = term_docs_only(field_terms, term, doc_in)? else {
@@ -786,43 +790,198 @@ struct FuzzyExpansion {
 ///    a size-`maxExpansions` priority queue whose worst element is the lowest
 ///    boost, with ties broken so the lexicographically **later** term is
 ///    dropped first (`boost == t.boost && bytes.compareTo(t.bytes.get()) > 0`
-///    skips the candidate). Sorting by `(boost desc, bytes asc)` and taking
-///    the first `maxExpansions` selects the same set.
+///    skips the candidate). [`fuzzy_expanded_terms_pruned`] keeps that queue
+///    as a sorted `Vec`, in the final `(boost desc, bytes asc)` order.
 /// 3. **Blended document frequency**, see [`FuzzyExpansion::blended_doc_freq`].
+/// 4. **The `MaxNonCompetitiveBoostAttribute` feedback loop** (c40): the worst
+///    boost still in that queue is fed *back* into the term enumeration, which
+///    drops its edit budget as soon as no term at the higher distance could
+///    still compete (`FuzzyTermsEnum.bottomChanged`). See
+///    [`lucene_codecs::blocktree::FuzzyIntersect::set_max_edits`].
 ///
-/// The whole matching set has to be visited to pick the top N, which is what
-/// Lucene does too -- `TopTermsRewrite.rewrite` runs `collectTerms` over
-/// every term the automaton accepts.
+/// The whole matching set is still *visited* -- `TopTermsRewrite.rewrite` runs
+/// `collectTerms` over every term the automaton accepts -- but from the point
+/// the queue fills, each remaining term is tested against a narrower band.
 fn fuzzy_expanded_terms(
     field_terms: &lucene_codecs::blocktree::FieldTerms,
     query: &FuzzyQuery,
-) -> FuzzyExpansion {
+) -> Result<FuzzyExpansion> {
+    fuzzy_expanded_terms_pruned(field_terms, query, true)
+}
+
+/// [`fuzzy_expanded_terms`] with the feedback loop switchable, so
+/// `examples/fuzzy_pruning.rs` can time both arms in one process from one
+/// build. Production always passes `true`; `false` is the pre-c40 behaviour
+/// (`FuzzyTermsEnum` with `MaxNonCompetitiveBoostAttribute` never consulted),
+/// and it must produce the **same expansion** -- which
+/// `pruning_never_changes_the_selected_expansion` asserts.
+fn fuzzy_expanded_terms_pruned(
+    field_terms: &lucene_codecs::blocktree::FieldTerms,
+    query: &FuzzyQuery,
+    prune: bool,
+) -> Result<FuzzyExpansion> {
+    Ok(fuzzy_expanded_terms_instrumented(field_terms, query, prune)?.0)
+}
+
+/// [`fuzzy_expanded_terms_pruned`] also reporting the edit budget the walk
+/// ended on -- `FuzzyTermsEnum.maxEdits` after the last `bottomChanged`. Only
+/// [`bench_only_fuzzy_expansion`] wants it; the search path takes the tuple's
+/// first half and drops it.
+fn fuzzy_expanded_terms_instrumented(
+    field_terms: &lucene_codecs::blocktree::FieldTerms,
+    query: &FuzzyQuery,
+    prune: bool,
+) -> Result<(FuzzyExpansion, u8)> {
     let pattern = FuzzyMatch::new(
         &query.term,
         query.max_edits,
         query.prefix_length,
         query.transpositions,
     );
-    let mut candidates: Vec<ExpandedTerm> = field_terms
-        .fuzzy_intersect(&pattern)
-        .map(|(term, stats)| ExpandedTerm {
-            boost: pattern.boost(&term).unwrap_or(0.0),
-            term,
-            doc_freq: stats.doc_freq as i64,
-        })
-        .collect();
-    candidates.sort_by(|a, b| {
-        b.boost
-            .partial_cmp(&a.boost)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.term.cmp(&b.term))
-    });
-    candidates.truncate(query.max_expansions);
-    let blended_doc_freq = candidates.iter().map(|t| t.doc_freq).max().unwrap_or(0);
-    FuzzyExpansion {
-        terms: candidates,
-        blended_doc_freq,
+    // `FuzzyAutomatonBuilder.getTermLength()`: the **whole** query term's
+    // codepoint count, which is `bottomChanged`'s denominator.
+    let term_length = pattern.term_length();
+    let max_size = query.max_expansions;
+
+    // `TopTermsRewrite`'s `stQueue`, as a sorted `Vec` of at most `maxSize`
+    // entries in the final order (boost descending, then term bytes
+    // ascending) rather than a binary heap keyed on its inverse. Java's
+    // `ScoreTerm.compareTo` -- "if the boosts are equal, `other.bytes
+    // .compareTo(this.bytes)`" -- makes `peek()` the lowest boost and, among
+    // equal boosts, the lexicographically *largest* term; that is exactly the
+    // last element here. A phrase-sized `maxExpansions` (50 by default) makes
+    // the sorted insert cheaper than a heap, and it removes the final sort.
+    let mut queue: Vec<ExpandedTerm> = Vec::new();
+    let mut effective_max_edits = query.max_edits;
+
+    let mut walk = field_terms.fuzzy_intersect(&pattern);
+    while let Some(next) = walk.next() {
+        let (term, stats) = next?;
+        // `FuzzyTermsEnum.next` sets `boostAtt` from the `ed` it has already
+        // computed; the walk carries the same distance out so this does not
+        // run the banded DP a second time per accepted term.
+        let boost = pattern.boost_from_edits(&term, walk.last_edits());
+
+        // `collectTerms`' own rejection: once the queue is full, a term that
+        // cannot beat the worst entry is dropped without being inserted.
+        // `maxSize == 0` makes the queue full from the start with no bottom to
+        // compare against, so nothing is ever competitive -- which is the same
+        // "select nothing" a truncate-to-zero gives.
+        let competitive = queue.len() < max_size
+            || match queue.last() {
+                None => false,
+                Some(bottom) => {
+                    boost > bottom.boost
+                        || (boost == bottom.boost && term.as_slice() < bottom.term.as_slice())
+                }
+            };
+        if competitive {
+            let at = queue.partition_point(|e| {
+                e.boost > boost || (e.boost == boost && e.term.as_slice() < term.as_slice())
+            });
+            queue.insert(
+                at,
+                ExpandedTerm {
+                    boost,
+                    term: term.clone(),
+                    doc_freq: stats.doc_freq as i64,
+                },
+            );
+            if queue.len() > max_size {
+                queue.pop();
+            }
+        }
+
+        // `maxBoostAtt.setMaxNonCompetitiveBoost(peek().boost)` +
+        // `setCompetitiveTerm(peek().bytes)`, then `FuzzyTermsEnum.next`
+        // noticing they changed and running `bottomChanged(lastTerm)`.
+        //
+        // Two details of *when* Java does this, both reproduced. It publishes
+        // only after an insert -- `collectTerms` returns before the publish
+        // block when the term was not competitive -- and `next()` acts only
+        // when the published pair actually *changed*, which is the same
+        // condition, since an insert into a full queue always moves the
+        // bottom. Without the `competitive` gate this loop would re-run on
+        // later, non-competitive terms and could decrement once more than Java
+        // does (`termAfter` flips to true as the walk passes the bottom term).
+        // That extra step is still result-preserving -- past the bottom term no
+        // equal-boost term can displace it -- but it is not what Java does, and
+        // "prunes a bit more than Lucene" is not a divergence worth having.
+        //
+        // Java also delays the swap to the *next* `next()` call so the current
+        // term's `docFreq()` stays valid; here the term has already been
+        // consumed, so "after this term" is the same point.
+        if prune && competitive && queue.len() == max_size && effective_max_edits > 0 {
+            let bottom = queue.last().expect("non-empty: len == max_size > 0");
+            // `boolean termAfter = bottomTerm == null
+            //     || (lastTerm != null && lastTerm.compareTo(bottomTerm) >= 0);`
+            let term_after = term.as_slice() >= bottom.term.as_slice();
+            let mut edits = effective_max_edits;
+            while edits > 0 {
+                // `1.0f - ((float) maxEdits / (float) termLength)`. A
+                // zero-length query term makes this `-inf`, which never breaks
+                // the loop -- the same answer Java's float division gives.
+                let max_boost = 1.0f32 - f32::from(edits) / (term_length as f32);
+                if bottom.boost < max_boost || (bottom.boost == max_boost && !term_after) {
+                    break;
+                }
+                edits = edits.saturating_sub(1);
+            }
+            if edits != effective_max_edits {
+                effective_max_edits = edits;
+                walk.set_max_edits(edits);
+            }
+        }
     }
+
+    let blended_doc_freq = queue.iter().map(|t| t.doc_freq).max().unwrap_or(0);
+    Ok((
+        FuzzyExpansion {
+            terms: queue,
+            blended_doc_freq,
+        },
+        effective_max_edits,
+    ))
+}
+
+/// One selected term as [`bench_only_fuzzy_expansion`] reports it:
+/// `(term bytes, FuzzyTermsEnum's BoostAttribute, docFreq)`.
+#[doc(hidden)]
+pub type BenchExpandedTerm = (Vec<u8>, f32, i64);
+
+/// Measurement-only entry point for `examples/fuzzy_pruning.rs`: the term
+/// expansion [`fuzzy_doc_ids`]/[`fuzzy_doc_scores`] run, with the
+/// `MaxNonCompetitiveBoostAttribute` feedback loop switchable so both arms are
+/// one build in one process (criterion is unusable on this project's machine
+/// -- see `docs/sweep/m2/c24-arith-codecs.md`). Returns the selected terms with
+/// their boosts, the blended document frequency, and the edit budget the walk
+/// ended on -- the last of which is the only *observable* of the feedback loop
+/// itself, so a test can require that it actually fired.
+///
+/// `#[doc(hidden)] pub` rather than `#[cfg(feature = "test-support")]`, and
+/// deliberately: a feature-gated example is one `cargo clippy --all-targets`
+/// cannot build, and this project has already been bitten twice by a
+/// measurement target left broken for several batches while a stale binary
+/// kept producing plausible numbers (see `scripts/gate.sh`'s note on
+/// `benchmarks/rust-runner`). The cost of the alternative is one hidden
+/// function that forwards to private code.
+#[doc(hidden)]
+pub fn bench_only_fuzzy_expansion(
+    field_terms: &lucene_codecs::blocktree::FieldTerms,
+    query: &FuzzyQuery,
+    prune: bool,
+) -> Result<(Vec<BenchExpandedTerm>, i64, u8)> {
+    let (expansion, final_max_edits) =
+        fuzzy_expanded_terms_instrumented(field_terms, query, prune)?;
+    Ok((
+        expansion
+            .terms
+            .iter()
+            .map(|t| (t.term.clone(), t.boost, t.doc_freq))
+            .collect(),
+        expansion.blended_doc_freq,
+        final_max_edits,
+    ))
 }
 
 /// [`Clause::Fuzzy`]'s matched doc-ID list (task #42, `max_expansions`
@@ -858,7 +1017,7 @@ fn fuzzy_doc_ids(
     let Some(field_terms) = fields.field(&query.field) else {
         return Ok(Vec::new());
     };
-    let expansion = fuzzy_expanded_terms(field_terms, query);
+    let expansion = fuzzy_expanded_terms(field_terms, query)?;
     let mut acc = DocIdBitSet::default();
     for ExpandedTerm { term, .. } in &expansion.terms {
         let Some(docs) = term_docs_only(field_terms, term, doc_in)? else {
@@ -914,7 +1073,7 @@ fn fuzzy_doc_scores(
     let Some(field_terms) = fields.field(&query.field) else {
         return Ok(scores);
     };
-    let expansion = fuzzy_expanded_terms(field_terms, query);
+    let expansion = fuzzy_expanded_terms(field_terms, query)?;
     let doc_count = field_terms.doc_count as i64;
 
     // Resolve every expanded term's live postings first, then score in one
@@ -999,8 +1158,8 @@ fn regexp_doc_ids(
     let pattern = RegexpPattern::new(query.pattern.as_bytes())?;
     let matching_terms: Vec<Vec<u8>> = field_terms
         .regexp_intersect(&pattern)
-        .map(|(term, _stats)| term.to_vec())
-        .collect();
+        .map(|r| r.map(|(term, _stats)| term))
+        .collect::<lucene_codecs::blocktree::Result<_>>()?;
     let mut acc = DocIdBitSet::default();
     for term in &matching_terms {
         let Some(docs) = term_docs_only(field_terms, term, doc_in)? else {
@@ -1471,7 +1630,7 @@ fn term_doc_scores_with_collection_stats(
     let Some(field_terms) = fields.field(&query.field) else {
         return Ok(Vec::new());
     };
-    let Some(stats) = field_terms.seek_exact(&query.term) else {
+    let Some(stats) = field_terms.try_seek_exact(&query.term)? else {
         return Ok(Vec::new());
     };
     let doc_freqs = term_doc_freqs(fields, doc_in, live_docs, query)?;
@@ -1578,7 +1737,7 @@ fn term_doc_scores_with_similarity(
     let Some(field_terms) = fields.field(&query.field) else {
         return Ok(Vec::new());
     };
-    let Some(stats) = field_terms.seek_exact(&query.term) else {
+    let Some(stats) = field_terms.try_seek_exact(&query.term)? else {
         return Ok(Vec::new());
     };
     let doc_freqs = term_doc_freqs(fields, doc_in, live_docs, query)?;
@@ -1712,7 +1871,7 @@ pub fn search_term_query_scored_maxscore_with_stats(
     let Some(field_terms) = fields.field(&query.field) else {
         return Ok(());
     };
-    let Some(stats) = field_terms.seek_exact(&query.term) else {
+    let Some(stats) = field_terms.try_seek_exact(&query.term)? else {
         return Ok(());
     };
     // Every fallback below forwards `global`. Calling the no-stats
@@ -2463,7 +2622,7 @@ fn try_disjunction_lazy<C: ScoringCollector>(
         let Some(field_terms) = fields.field(&t.field) else {
             continue; // absent field contributes nothing to a union
         };
-        let Some(stats) = field_terms.seek_exact(&t.term) else {
+        let Some(stats) = field_terms.try_seek_exact(&t.term)? else {
             continue; // absent term likewise
         };
         // Pulsed singleton (see try_conjunction_lazy): no .doc bytes exist for
@@ -2834,7 +2993,7 @@ fn try_conjunction_lazy<C: ScoringCollector>(
         let Some(field_terms) = fields.field(&t.field) else {
             return Ok(true); // field absent: no matches, and we handled it
         };
-        let Some(stats) = field_terms.seek_exact(&t.term) else {
+        let Some(stats) = field_terms.try_seek_exact(&t.term)? else {
             return Ok(true); // term absent: no matches
         };
         // docFreq <= 1 is pulsed into the term dictionary: the term has no .doc
@@ -3588,27 +3747,33 @@ pub(crate) fn span_matches_in_doc(
 /// satisfies it, at any slop -- exactly the case [`PhraseQuery`]'s own
 /// in-order sloppy matching also rejects.
 ///
-/// **`in_order == false`**: the chosen spans, **sorted by start position**
-/// (not by `clauses`' order), must satisfy that same non-overlapping,
-/// increasing condition -- any relative order among the clauses is accepted,
-/// provided the spans still fit together without overlapping. This is the
-/// capability [`PhraseQuery`]'s sloppy matching does *not* have (see that
-/// function's own doc comment) -- a reversed pair (clause 1's occurrence
-/// before clause 0's) matches here as long as the total slack fits `slop`,
-/// which is exactly what distinguishes `SpanNearQuery(slop, false)` from a
-/// sloppy phrase.
+/// **`in_order == false`**: `NearSpansUnordered.atMatch()`, which is a pure
+/// width test -- [`crate::near_spans::unordered_width`],
+/// `maxEndPosition - top().startPosition() - totalSpanLength` -- with **no**
+/// non-overlap requirement and no relative-order requirement at all. A
+/// reversed pair matches as long as the width fits `slop`, which is exactly
+/// what distinguishes `SpanNearQuery(slop, false)` from a sloppy phrase; and
+/// two clauses may settle on the *same* span, giving a negative width, which
+/// matches at any slop. Real Lucene returns doc 8555 -- a document with a
+/// single `alpha` -- for `SpanNearQuery([alpha, alpha], 0, false)`; this port
+/// rejected the overlap and dropped the hit until c40
+/// (`spannear.*` in `fixtures/data/blocktree_index/manifest.properties`).
 ///
-/// **Slop formula**, applied to the arranged (in-order or sorted, per above)
-/// spans: the total slack is `sum(next.start - prev.end)` over every adjacent
-/// pair -- `0` when spans touch exactly end-to-start with no gap, growing by
-/// one for every extra intervening position, the same "moves needed to line
-/// up" accounting `PhraseQuery`'s Javadoc describes for a phrase, generalized
-/// from single positions to `[start, end)` span ranges. It is **not** the same
-/// quantity as a sloppy phrase's `matchLength` (see [`sloppy_phrase`]), which
-/// is a window width over slot-shifted positions. A combination whose arranged
-/// spans overlap (`next.start < prev.end`) is rejected outright,
-/// regardless of `slop` -- overlapping
-/// sub-spans have no defined "gap" to charge against the budget.
+/// **Slop formula**: for a *non-overlapping* arrangement the two branches
+/// compute the same number -- `sum(next.start - prev.end)` telescopes to
+/// `maxEnd - minStart - sum(lengths)` -- so `slop` means the same thing on
+/// both arms wherever both accept. It is **not** the same quantity as a sloppy
+/// phrase's `matchLength` (see [`sloppy_phrase`]), which is a window width
+/// over slot-shifted positions.
+///
+/// **Two divergences that remain, both about the *extent* reported rather
+/// than the hit set** (recorded in `docs/sweep/m2/c40-missing-behaviours.md`):
+/// this enumerates the whole cartesian product where Java walks a priority
+/// queue, so a non-minimal arrangement Java never visits can contribute a
+/// span here; and Java's unordered `endPosition()` is its *running*
+/// `maxEndPosition`, which can exceed the current arrangement's own maximum
+/// end. Neither changes whether a document matches, and nothing outside a
+/// nested `SpanNear` reads the extents.
 ///
 /// The overall span reported for a matching combination is `(min start, max
 /// end)` across every chosen sub-span -- the smallest range containing every
@@ -3666,27 +3831,45 @@ fn combine_span_clauses(
     let Some((spans, rest)) = per_clause_spans.split_first() else {
         // Every clause has now contributed one span -- validate this
         // combination.
-        let mut arranged = chosen.clone();
-        if !in_order {
-            arranged.sort_unstable_by_key(|span| span.0);
-        }
-        let mut slack: i64 = 0;
-        for pair in arranged.windows(2) {
-            let (prev, next) = (pair[0], pair[1]);
-            if next.0 < prev.1 {
-                // Overlapping sub-spans have no defined gap -- invalid at any
-                // slop.
-                return;
+        let slack: i64 = if in_order {
+            // `NearSpansOrdered.stretchToOrder`: every later sub-span must
+            // start at or after the previous one's end, and
+            // `matchWidth += spans.startPosition() - prevSpans.endPosition()`.
+            // The non-overlap rule is that `advancePosition` loop, and it is
+            // real: an overlapping arrangement is not reachable there.
+            let mut slack: i64 = 0;
+            for pair in chosen.windows(2) {
+                let (prev, next) = (pair[0], pair[1]);
+                if next.0 < prev.1 {
+                    return;
+                }
+                slack = slack.saturating_add(i64::from(next.0) - i64::from(prev.1));
             }
-            slack += i64::from(next.0 - prev.1);
-        }
+            slack
+        } else {
+            // `NearSpansUnordered.atMatch()`:
+            // `maxEndPosition - top().startPosition() - totalSpanLength`, a
+            // pure width test with **no** non-overlap rule -- so two clauses
+            // holding one term may settle on one position and give a negative
+            // width, which matches. Real Lucene returns doc 8555 (a single
+            // `alpha`) for `SpanNearQuery([alpha, alpha], 0, false)`; this port
+            // rejected the overlap and dropped the hit
+            // (`spannear.repeat_unordered_slop0` in
+            // `fixtures/data/blocktree_index/manifest.properties`).
+            //
+            // For a non-overlapping arrangement this is the *same* number the
+            // in-order branch computes -- `sum(s_{i+1} - e_i)` telescopes to
+            // `maxEnd - minStart - sum(lengths)` -- so only the overlapping
+            // case changed.
+            crate::near_spans::unordered_width(chosen)
+        };
         if slack <= slop {
-            let start = arranged
+            let start = chosen
                 .iter()
                 .map(|span| span.0)
                 .min()
                 .expect("non-empty: at least one clause");
-            let end = arranged
+            let end = chosen
                 .iter()
                 .map(|span| span.1)
                 .max()
@@ -4006,7 +4189,7 @@ pub fn search_phrase_query<C: Collector>(
             wanted.push(cursor);
         }
         let stats = field_terms
-            .seek_exact(term)
+            .try_seek_exact(term)?
             .expect("term presence was established above");
         let (positions, starts) = field_terms.positions_for_docs(
             term,
@@ -4132,7 +4315,7 @@ pub fn search_phrase_query_scored_with_stats<C: ScoringCollector>(
     // never match, same convention as `search_phrase_query`.
     let mut idf_sum = 0.0f32;
     for term in &query.terms {
-        let Some(stats) = field_terms.seek_exact(term) else {
+        let Some(stats) = field_terms.try_seek_exact(term)? else {
             return Ok(());
         };
         // Reader-wide statistics where the caller has them, exactly as the term
@@ -4207,7 +4390,7 @@ pub fn search_phrase_query_scored_with_stats<C: ScoringCollector>(
             wanted.push(cursor);
         }
         let stats = field_terms
-            .seek_exact(term)
+            .try_seek_exact(term)?
             .expect("term presence was established above");
         let (positions, starts) = field_terms.positions_for_docs(
             term,
@@ -4317,7 +4500,7 @@ fn multi_phrase_slot_positions(
 ) -> Result<(Vec<i32>, Vec<u32>)> {
     let mut per_doc: Vec<Vec<i32>> = vec![Vec::new(); candidates.len()];
     for term in terms {
-        let Some(stats) = field_terms.seek_exact(term) else {
+        let Some(stats) = field_terms.try_seek_exact(term)? else {
             continue;
         };
         let Some(postings) = field_terms.postings(term, doc_in)? else {
@@ -4492,7 +4675,7 @@ fn multi_phrase_hits<C: ScoringCollector>(
     let mut any_term_present = false;
     for alternatives in &query.term_arrays {
         for term in alternatives {
-            let Some(stats) = field_terms.seek_exact(term) else {
+            let Some(stats) = field_terms.try_seek_exact(term)? else {
                 continue;
             };
             any_term_present = true;
@@ -5691,6 +5874,146 @@ mod tests {
             all.hits.windows(2).all(|w| w[0].0 < w[1].0),
             "the fallback must still emit ascending doc ids"
         );
+    }
+
+    // ---- `MaxNonCompetitiveBoostAttribute`'s feedback loop (c40) --------
+
+    /// The loop is a **pruning** channel, not a semantic one: whatever it
+    /// skips could not have entered the top-`maxExpansions` queue anyway. So
+    /// the two arms must agree term for term, boost for boost, and on the
+    /// blended document frequency -- and the pruned arm must actually have
+    /// dropped its edit budget, or this test proves only that a no-op is a
+    /// no-op.
+    ///
+    /// The corpus is the fixture's `many` field: 400 terms `term0000`..
+    /// `term0399`, all eight codepoints long. Against `term0000` at
+    /// `maxEdits = 2` that is 1 exact match, 21 terms at distance 1
+    /// (`boost = 1 - 1/8 = 0.875`) and a large tail at distance 2
+    /// (`boost = 0.75`), so a queue of 5 fills entirely with 0.875s and
+    /// `bottomChanged`'s `bottom >= 1 - maxEdits/termLength` (0.875 >= 0.75)
+    /// holds immediately.
+    #[test]
+    fn pruning_never_changes_the_selected_expansion() {
+        let (fields, _doc) = open_fixture();
+        let field = fields.field("many").expect("the `many` field");
+        let query = FuzzyQuery::new("many", b"term0000".to_vec())
+            .with_max_edits(2)
+            .with_max_expansions(5);
+
+        let (pruned, pruned_df, pruned_edits) =
+            bench_only_fuzzy_expansion(field, &query, true).unwrap();
+        let (whole, whole_df, whole_edits) =
+            bench_only_fuzzy_expansion(field, &query, false).unwrap();
+
+        assert_eq!(pruned, whole, "pruning changed the selected expansion");
+        assert_eq!(pruned_df, whole_df);
+        assert_eq!(pruned.len(), 5);
+        assert_eq!(
+            whole_edits, 2,
+            "the unpruned arm must keep the query's own budget"
+        );
+        assert!(
+            pruned_edits < 2,
+            "the feedback loop never fired: budget still {pruned_edits}"
+        );
+        // The queue is all exact/distance-1 terms, so their boosts are the two
+        // values `bottomChanged`'s arithmetic is about.
+        assert!(pruned.iter().all(|(_, boost, _)| *boost >= 0.875));
+
+        // The same equality over a spread of shapes, so this is a property
+        // rather than one case: different query-term lengths (which move
+        // `bottomChanged`'s `1 - maxEdits/termLength` threshold), different
+        // budgets, different caps, a query term that is not in the dictionary
+        // at all, and a non-zero `prefixLength`.
+        let mut ever_pruned = false;
+        for (term, max_edits, prefix_length, max_expansions) in [
+            (&b"term0000"[..], 2u8, 0usize, 1usize),
+            (b"term0000", 2, 0, 3),
+            (b"term0000", 2, 0, 400),
+            (b"term0000", 1, 0, 5),
+            (b"term0000", 0, 0, 5),
+            (b"term0199", 2, 0, 7),
+            (b"term0199", 2, 5, 7),
+            (b"zzzzzzzz", 2, 0, 5),
+            (b"term", 2, 0, 5),
+        ] {
+            let query = FuzzyQuery::new("many", term.to_vec())
+                .with_max_edits(max_edits)
+                .with_prefix_length(prefix_length)
+                .with_max_expansions(max_expansions);
+            let (pruned, pruned_df, pruned_edits) =
+                bench_only_fuzzy_expansion(field, &query, true).unwrap();
+            let (whole, whole_df, whole_edits) =
+                bench_only_fuzzy_expansion(field, &query, false).unwrap();
+            let described =
+                format!("{term:?} ed{max_edits} pfx{prefix_length} exp{max_expansions}");
+            assert_eq!(pruned, whole, "{described}: pruning changed the expansion");
+            assert_eq!(pruned_df, whole_df, "{described}: blended df changed");
+            assert_eq!(whole_edits, max_edits, "{described}");
+            assert!(pruned_edits <= max_edits, "{described}: budget widened");
+            ever_pruned |= pruned_edits < max_edits;
+        }
+        assert!(ever_pruned, "no case in the spread ever pruned");
+    }
+
+    /// The other direction: a query whose whole matching set fits inside
+    /// `maxExpansions` never fills the queue, so `MaxNonCompetitiveBoost` is
+    /// never published and the budget stays where the query put it. A pruner
+    /// that lowered it here would drop real hits.
+    #[test]
+    fn a_queue_that_never_fills_never_lowers_the_edit_budget() {
+        let (fields, _doc) = open_fixture();
+        let field = fields.field("body").expect("the `body` field");
+        let query = FuzzyQuery::new("body", b"cat".to_vec())
+            .with_max_edits(2)
+            .with_max_expansions(50);
+        let (pruned, _, pruned_edits) = bench_only_fuzzy_expansion(field, &query, true).unwrap();
+        let (whole, _, _) = bench_only_fuzzy_expansion(field, &query, false).unwrap();
+        assert_eq!(pruned, whole);
+        assert!(
+            pruned.len() < 50,
+            "this corpus must not fill the queue: {} terms",
+            pruned.len()
+        );
+        assert_eq!(pruned_edits, 2);
+    }
+
+    /// `maxExpansions = 0` is a queue that is "full" at size zero. Java never
+    /// reaches `bottomChanged` with a null bottom term (`TopTermsRewrite`'s
+    /// `peek()` would be null), so the guard is this port's, and it has to be
+    /// there: without it the bottom lookup is an unwrap on an empty queue.
+    #[test]
+    fn a_zero_expansion_cap_selects_nothing_and_does_not_prune() {
+        let (fields, _doc) = open_fixture();
+        let field = fields.field("many").expect("the `many` field");
+        let query = FuzzyQuery::new("many", b"term0000".to_vec())
+            .with_max_edits(2)
+            .with_max_expansions(0);
+        let (terms, df, edits) = bench_only_fuzzy_expansion(field, &query, true).unwrap();
+        assert!(terms.is_empty());
+        assert_eq!(df, 0);
+        assert_eq!(edits, 2);
+    }
+
+    /// `FuzzyIntersect::set_max_edits` only ever narrows: a walk that has
+    /// already rejected terms at a tighter budget cannot honestly widen.
+    #[test]
+    fn the_edit_budget_can_only_be_narrowed_mid_walk() {
+        let (fields, _doc) = open_fixture();
+        let field = fields.field("many").expect("the `many` field");
+        let pattern = FuzzyMatch::new(b"term0000", 2, 0, true);
+        let mut walk = field.fuzzy_intersect(&pattern);
+        assert_eq!(walk.max_edits(), 2);
+        walk.set_max_edits(1);
+        assert_eq!(walk.max_edits(), 1);
+        walk.set_max_edits(2);
+        assert_eq!(walk.max_edits(), 1, "widening must be ignored");
+        walk.set_max_edits(0);
+        assert_eq!(walk.max_edits(), 0);
+        // At budget 0 only the exact term survives -- asserted as the whole
+        // list, not `all(...)`, which an empty walk would satisfy vacuously.
+        let got: Vec<Vec<u8>> = walk.map(|r| r.unwrap().0).collect();
+        assert_eq!(got, vec![b"term0000".to_vec()]);
     }
 
     #[test]

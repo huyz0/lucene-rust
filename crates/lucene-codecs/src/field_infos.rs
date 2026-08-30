@@ -287,11 +287,166 @@ pub struct FieldInfo {
 }
 
 impl FieldInfo {
+    /// The starting point of Java's `FieldInfo` constructor: a field with a
+    /// name and a number and **no options at all** -- not indexed, no doc
+    /// values, no points, no vectors, `dvGen == -1`.
+    ///
+    /// This is the one `FieldInfo` shape that is trivially consistent, so it
+    /// is the only sound seed for the chained `with_*` setters below. Java has
+    /// no such staged constructor (it takes all eighteen parameters at once
+    /// and validates in the constructor body); the staging exists because
+    /// eighteen positional parameters is not a Rust API, and it is closed the
+    /// same way Java's is -- by [`Self::checked`], which applies the
+    /// constructor's coercion and then `checkConsistency()`.
+    ///
+    /// `vector_encoding`/`vector_similarity_function` have no "absent" state
+    /// on the wire, so a non-vector field carries the same pair
+    /// `IndexingChain`'s own non-vector `FieldInfo`s do: `FLOAT32` and
+    /// `EUCLIDEAN`.
+    pub fn new(name: impl Into<String>, number: i32) -> Self {
+        FieldInfo {
+            name: name.into(),
+            number,
+            store_term_vectors: false,
+            omit_norms: false,
+            store_payloads: false,
+            soft_deletes_field: false,
+            parent_field: false,
+            index_options: IndexOptions::None,
+            doc_values_type: DocValuesType::None,
+            doc_values_skip_index_type: DocValuesSkipIndexType::None,
+            doc_values_gen: -1,
+            attributes: Vec::new(),
+            point_dimension_count: 0,
+            point_index_dimension_count: 0,
+            point_num_bytes: 0,
+            vector_dimension: 0,
+            vector_encoding: VectorEncoding::Float32,
+            vector_similarity_function: VectorSimilarityFunction::Euclidean,
+        }
+    }
+
+    /// `IndexOptions` -- the `indexOptions` constructor parameter.
+    pub fn with_index_options(mut self, index_options: IndexOptions) -> Self {
+        self.index_options = index_options;
+        self
+    }
+
+    /// `storeTermVector`.
+    pub fn with_store_term_vectors(mut self, store_term_vectors: bool) -> Self {
+        self.store_term_vectors = store_term_vectors;
+        self
+    }
+
+    /// `omitNorms`.
+    pub fn with_omit_norms(mut self, omit_norms: bool) -> Self {
+        self.omit_norms = omit_norms;
+        self
+    }
+
+    /// `storePayloads`.
+    pub fn with_store_payloads(mut self, store_payloads: bool) -> Self {
+        self.store_payloads = store_payloads;
+        self
+    }
+
+    /// `docValues` + `docValuesSkipIndex` + `dvGen`, which Java validates
+    /// against each other (`isCompatibleWith`, and "cannot have a docvalues
+    /// update generation without having docvalues"), so they are set together.
+    pub fn with_doc_values(
+        mut self,
+        doc_values_type: DocValuesType,
+        skip_index: DocValuesSkipIndexType,
+        doc_values_gen: i64,
+    ) -> Self {
+        self.doc_values_type = doc_values_type;
+        self.doc_values_skip_index_type = skip_index;
+        self.doc_values_gen = doc_values_gen;
+        self
+    }
+
+    /// `attributes`.
+    pub fn with_attributes(mut self, attributes: Vec<(String, String)>) -> Self {
+        self.attributes = attributes;
+        self
+    }
+
+    /// `pointDimensionCount` + `pointIndexDimensionCount` + `pointNumBytes`,
+    /// the triple Java cross-checks (each is meaningless without the others).
+    pub fn with_points(
+        mut self,
+        dimension_count: i32,
+        index_dimension_count: i32,
+        num_bytes: i32,
+    ) -> Self {
+        self.point_dimension_count = dimension_count;
+        self.point_index_dimension_count = index_dimension_count;
+        self.point_num_bytes = num_bytes;
+        self
+    }
+
+    /// `vectorDimension` + `vectorEncoding` + `vectorSimilarityFunction`, set
+    /// together for the same reason [`Self::with_points`] takes a triple.
+    pub fn with_vectors(
+        mut self,
+        dimension: i32,
+        encoding: VectorEncoding,
+        similarity: VectorSimilarityFunction,
+    ) -> Self {
+        self.vector_dimension = dimension;
+        self.vector_encoding = encoding;
+        self.vector_similarity_function = similarity;
+        self
+    }
+
+    /// `softDeletesField`.
+    pub fn with_soft_deletes_field(mut self, soft_deletes_field: bool) -> Self {
+        self.soft_deletes_field = soft_deletes_field;
+        self
+    }
+
+    /// `isParentField`.
+    pub fn with_parent_field(mut self, parent_field: bool) -> Self {
+        self.parent_field = parent_field;
+        self
+    }
+
+    /// **The constructor**: `FieldInfo`'s constructor body, in order --
+    /// the non-indexed coercion ("for non-indexed fields, leave defaults":
+    /// `storeTermVector`/`storePayloads`/`omitNorms` are forced to `false`
+    /// when `indexOptions == NONE`), then `checkConsistency()`.
+    ///
+    /// This is what a `FieldInfo` struct literal skips. Java makes the
+    /// inconsistent combinations *unrepresentable*, because the only way to
+    /// obtain a `FieldInfo` is through a constructor that throws; a Rust
+    /// public-field struct cannot do that, so this method is the door, and
+    /// every place that accepts a caller-supplied `FieldInfo`
+    /// ([`FieldInfos::new`], `IndexWriter::open`) puts every field through it.
+    ///
+    /// The coercion is not a convenience: it is the behaviour real Lucene's
+    /// *reader* has (`Lucene94FieldInfosFormat.read` builds each `FieldInfo`
+    /// through this same constructor), so a `.fnm` whose bits carry
+    /// `storeTermVector` on a non-indexed field is a file Lucene opens with
+    /// the flag silently cleared -- not a corrupt one.
+    pub fn checked(mut self) -> Result<Self> {
+        if self.index_options == IndexOptions::None {
+            self.store_term_vectors = false;
+            self.store_payloads = false;
+            self.omit_norms = false;
+        }
+        self.check_consistency()?;
+        Ok(self)
+    }
+
     /// Port of `FieldInfo.checkConsistency` (the subset of invariants that
     /// don't require comparing against sibling fields, which is all Java
     /// checks here too — `verifySameSchema` is a separate, merge-time check
     /// out of scope for this read-only parser).
-    fn check_consistency(&self) -> Result<()> {
+    ///
+    /// Public, as Java's is: a caller that builds a [`FieldInfo`] by struct
+    /// literal can ask the same question the constructor asks. Prefer
+    /// [`Self::checked`], which also applies the constructor's coercion.
+    pub fn check_consistency(&self) -> Result<()> {
         let err = |msg: &'static str| Err(Error::Inconsistent(self.name.clone(), msg));
 
         if self.index_options != IndexOptions::None {
@@ -357,6 +512,24 @@ pub struct FieldInfos {
 }
 
 impl FieldInfos {
+    /// Port of the `FieldInfos(FieldInfo[])` constructor: every field goes
+    /// through [`FieldInfo::checked`] (Java's per-field constructor already
+    /// ran by the time this one does, so the invariants hold field by field),
+    /// then the cross-field checks in [`Self::check_consistency`].
+    ///
+    /// This is the door for a caller assembling a field list by hand -- the
+    /// gap the sweep recorded as "a caller can still build combinations Java
+    /// makes unrepresentable and find out at `parse` time or not at all".
+    pub fn new(fields: Vec<FieldInfo>) -> Result<Self> {
+        let fields = fields
+            .into_iter()
+            .map(FieldInfo::checked)
+            .collect::<Result<Vec<_>>>()?;
+        let infos = FieldInfos { fields };
+        infos.check_consistency()?;
+        Ok(infos)
+    }
+
     pub fn field_by_number(&self, number: i32) -> Option<&FieldInfo> {
         self.fields.iter().find(|f| f.number == number)
     }
@@ -523,8 +696,16 @@ pub fn parse(buf: &[u8], segment_id: &[u8; ID_LENGTH], segment_suffix: &str) -> 
             vector_encoding,
             vector_similarity_function,
         };
-        field.check_consistency()?;
-        fields.push(field);
+        // `Lucene94FieldInfosFormat.read` builds each entry with
+        // `new FieldInfo(...)` and only then calls `checkConsistency()`, so the
+        // constructor's "for non-indexed fields, leave defaults" coercion has
+        // already cleared `storeTermVector`/`storePayloads`/`omitNorms` before
+        // any check looks at them. A `.fnm` carrying those bits on a
+        // non-indexed field is therefore a file real Lucene **opens**, with the
+        // bits dropped -- not a corrupt one. This port used to reject it, which
+        // is how a writer-produced segment became unreadable to its own reader
+        // (c23) while real Lucene read it fine.
+        fields.push(field.checked()?);
     }
 
     codec_util::check_footer(&mut input, buf.len())?;
@@ -1027,43 +1208,221 @@ mod tests {
         assert!(fis.fields[0].store_payloads);
     }
 
+    /// A non-indexed field carrying any of the three indexed-only bits is a
+    /// file real Lucene **reads**: `Lucene94FieldInfosFormat.read` builds each
+    /// `FieldInfo` through the constructor, whose "for non-indexed fields,
+    /// leave defaults" branch clears all three *before* `checkConsistency()`
+    /// runs. This port rejected the file instead, which made a segment its own
+    /// writer had produced unopenable (c23). Real Lucene's own answer for the
+    /// same bytes is pinned by `fixtures/src/VerifyFieldInfos.java`'s
+    /// `noindex_flags` field.
     #[test]
-    fn non_indexed_field_cannot_store_term_vectors() {
-        let mut b = FnmBuilder::valid();
-        let mut f = FieldBuilder::valid("f", 0);
-        f.index_options = 0; // None
-        f.bits = STORE_TERMVECTOR;
-        b.fields.push(f);
-        assert!(matches!(
-            parse(&b.build(), &b.id, &b.suffix),
-            Err(Error::Inconsistent(_, _))
-        ));
+    fn non_indexed_field_has_its_indexed_only_bits_coerced_away_not_rejected() {
+        for bits in [
+            STORE_TERMVECTOR,
+            STORE_PAYLOADS,
+            OMIT_NORMS,
+            STORE_TERMVECTOR | STORE_PAYLOADS | OMIT_NORMS,
+        ] {
+            let mut b = FnmBuilder::valid();
+            let mut f = FieldBuilder::valid("f", 0);
+            f.index_options = 0; // None
+            f.bits = bits;
+            b.fields.push(f);
+            let fis = parse(&b.build(), &b.id, &b.suffix)
+                .unwrap_or_else(|e| panic!("bits {bits:#04x} must parse, got {e}"));
+            let f = &fis.fields[0];
+            assert!(!f.store_term_vectors, "bits {bits:#04x}");
+            assert!(!f.store_payloads, "bits {bits:#04x}");
+            assert!(!f.omit_norms, "bits {bits:#04x}");
+        }
+    }
+
+    // --- the constructor (`FieldInfo::new` / `with_*` / `checked`) ---
+
+    #[test]
+    fn the_constructor_seed_is_consistent_and_carries_javas_non_vector_defaults() {
+        let f = FieldInfo::new("f", 3).checked().unwrap();
+        assert_eq!(f.name, "f");
+        assert_eq!(f.number, 3);
+        assert_eq!(f.index_options, IndexOptions::None);
+        assert_eq!(f.doc_values_type, DocValuesType::None);
+        assert_eq!(f.doc_values_gen, -1);
+        assert_eq!(f.vector_encoding, VectorEncoding::Float32);
+        assert_eq!(
+            f.vector_similarity_function,
+            VectorSimilarityFunction::Euclidean
+        );
     }
 
     #[test]
-    fn non_indexed_field_cannot_store_payloads() {
-        let mut b = FnmBuilder::valid();
-        let mut f = FieldBuilder::valid("f", 0);
-        f.index_options = 0;
-        f.bits = STORE_PAYLOADS;
-        b.fields.push(f);
-        assert!(matches!(
-            parse(&b.build(), &b.id, &b.suffix),
-            Err(Error::Inconsistent(_, _))
-        ));
+    fn the_constructor_coerces_the_three_indexed_only_flags_off_a_non_indexed_field() {
+        let f = FieldInfo::new("f", 0)
+            .with_store_term_vectors(true)
+            .with_store_payloads(true)
+            .with_omit_norms(true)
+            .checked()
+            .expect("Java's constructor coerces rather than throwing here");
+        assert!(!f.store_term_vectors);
+        assert!(!f.store_payloads);
+        assert!(!f.omit_norms);
     }
 
     #[test]
-    fn non_indexed_field_cannot_omit_norms() {
-        let mut b = FnmBuilder::valid();
-        let mut f = FieldBuilder::valid("f", 0);
-        f.index_options = 0;
-        f.bits = OMIT_NORMS;
-        b.fields.push(f);
+    fn the_constructor_rejects_payloads_without_positions() {
+        // The one indexed-field combination the coercion does NOT rescue: the
+        // field *is* indexed, so `storePayloads` survives to `checkConsistency`.
+        let err = FieldInfo::new("f", 0)
+            .with_index_options(IndexOptions::DocsAndFreqs)
+            .with_store_payloads(true)
+            .checked()
+            .unwrap_err();
+        assert!(matches!(err, Error::Inconsistent(_, _)), "{err}");
+        // ... and accepts it once positions are indexed.
+        assert!(FieldInfo::new("f", 0)
+            .with_index_options(IndexOptions::DocsAndFreqsAndPositions)
+            .with_store_payloads(true)
+            .checked()
+            .is_ok());
+    }
+
+    #[test]
+    fn the_constructor_rejects_every_other_check_consistency_violation() {
+        let cases: Vec<FieldInfo> = vec![
+            // docValuesSkipIndex incompatible with the doc-values type
+            FieldInfo::new("f", 0).with_doc_values(
+                DocValuesType::None,
+                DocValuesSkipIndexType::Range,
+                -1,
+            ),
+            // a docvalues update generation without doc values
+            FieldInfo::new("f", 0).with_doc_values(
+                DocValuesType::None,
+                DocValuesSkipIndexType::None,
+                5,
+            ),
+            FieldInfo::new("f", 0).with_points(-1, 0, 0),
+            FieldInfo::new("f", 0).with_points(1, -1, 4),
+            FieldInfo::new("f", 0).with_points(1, 1, -1),
+            // pointNumBytes must be > 0 when pointDimensionCount != 0
+            FieldInfo::new("f", 0).with_points(1, 1, 0),
+            // pointIndexDimensionCount must be 0 when pointDimensionCount == 0
+            FieldInfo::new("f", 0).with_points(0, 1, 0),
+            // pointDimensionCount must be > 0 when pointNumBytes != 0
+            FieldInfo::new("f", 0).with_points(0, 0, 4),
+            FieldInfo::new("f", 0).with_vectors(
+                -1,
+                VectorEncoding::Float32,
+                VectorSimilarityFunction::Cosine,
+            ),
+            FieldInfo::new("f", 0)
+                .with_soft_deletes_field(true)
+                .with_parent_field(true),
+        ];
+        for case in cases {
+            let described = format!("{case:?}");
+            assert!(
+                matches!(case.checked(), Err(Error::Inconsistent(_, _))),
+                "must be rejected: {described}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_constructor_setters_each_reach_the_field_they_name() {
+        let f = FieldInfo::new("f", 7)
+            .with_index_options(IndexOptions::DocsAndFreqsAndPositionsAndOffsets)
+            .with_store_term_vectors(true)
+            .with_omit_norms(true)
+            .with_store_payloads(true)
+            .with_doc_values(
+                DocValuesType::SortedNumeric,
+                DocValuesSkipIndexType::Range,
+                4,
+            )
+            .with_attributes(vec![("k".to_string(), "v".to_string())])
+            .with_points(2, 1, 8)
+            .with_vectors(
+                16,
+                VectorEncoding::Byte,
+                VectorSimilarityFunction::MaximumInnerProduct,
+            )
+            .with_soft_deletes_field(true)
+            .checked()
+            .unwrap();
+        assert_eq!(
+            f.index_options,
+            IndexOptions::DocsAndFreqsAndPositionsAndOffsets
+        );
+        assert!(f.store_term_vectors && f.omit_norms && f.store_payloads);
+        assert_eq!(f.doc_values_type, DocValuesType::SortedNumeric);
+        assert_eq!(f.doc_values_skip_index_type, DocValuesSkipIndexType::Range);
+        assert_eq!(f.doc_values_gen, 4);
+        assert_eq!(f.attributes, vec![("k".to_string(), "v".to_string())]);
+        assert_eq!(
+            (
+                f.point_dimension_count,
+                f.point_index_dimension_count,
+                f.point_num_bytes
+            ),
+            (2, 1, 8)
+        );
+        assert_eq!(f.vector_dimension, 16);
+        assert_eq!(f.vector_encoding, VectorEncoding::Byte);
+        assert_eq!(
+            f.vector_similarity_function,
+            VectorSimilarityFunction::MaximumInnerProduct
+        );
+        assert!(f.soft_deletes_field);
+        assert!(
+            FieldInfo::new("f", 0)
+                .with_parent_field(true)
+                .checked()
+                .unwrap()
+                .parent_field
+        );
+    }
+
+    #[test]
+    fn field_infos_new_runs_both_the_per_field_and_the_cross_field_checks() {
+        // Per-field: the payloads-without-positions violation above.
         assert!(matches!(
-            parse(&b.build(), &b.id, &b.suffix),
+            FieldInfos::new(vec![FieldInfo::new("f", 0)
+                .with_index_options(IndexOptions::DocsAndFreqs)
+                .with_store_payloads(true)]),
             Err(Error::Inconsistent(_, _))
         ));
+        // Cross-field: duplicate names, duplicate numbers, two soft-deletes
+        // fields, two parent fields.
+        assert!(matches!(
+            FieldInfos::new(vec![FieldInfo::new("f", 0), FieldInfo::new("f", 1)]),
+            Err(Error::InvalidFieldInfos(_))
+        ));
+        assert!(matches!(
+            FieldInfos::new(vec![FieldInfo::new("a", 0), FieldInfo::new("b", 0)]),
+            Err(Error::InvalidFieldInfos(_))
+        ));
+        assert!(matches!(
+            FieldInfos::new(vec![
+                FieldInfo::new("a", 0).with_soft_deletes_field(true),
+                FieldInfo::new("b", 1).with_soft_deletes_field(true),
+            ]),
+            Err(Error::InvalidFieldInfos(_))
+        ));
+        assert!(matches!(
+            FieldInfos::new(vec![
+                FieldInfo::new("a", 0).with_parent_field(true),
+                FieldInfo::new("b", 1).with_parent_field(true),
+            ]),
+            Err(Error::InvalidFieldInfos(_))
+        ));
+        // ... and the coercion is applied on the way through.
+        let infos = FieldInfos::new(vec![FieldInfo::new("a", 0)
+            .with_omit_norms(true)
+            .with_store_term_vectors(true)])
+        .unwrap();
+        assert!(!infos.fields[0].omit_norms);
+        assert!(!infos.fields[0].store_term_vectors);
     }
 
     #[test]

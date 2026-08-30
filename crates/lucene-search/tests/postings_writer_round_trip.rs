@@ -188,21 +188,24 @@ fn term_query_respects_live_docs_filter() {
 fn phrase_query_finds_correct_docs_over_freshly_written_positions() {
     let terms = vec![
         TermPostings {
-            payloads: Vec::new(),
+            payload_bytes: Vec::new(),
+            payload_lengths: Vec::new(),
             term: b"fox".to_vec(),
             docs: vec![(0, 1), (1, 1)],
             positions: vec![vec![1], vec![2]],
             offsets: Vec::new(),
         },
         TermPostings {
-            payloads: Vec::new(),
+            payload_bytes: Vec::new(),
+            payload_lengths: Vec::new(),
             term: b"jumps".to_vec(),
             docs: vec![(0, 1), (1, 1)],
             positions: vec![vec![2], vec![1]],
             offsets: Vec::new(),
         },
         TermPostings {
-            payloads: Vec::new(),
+            payload_bytes: Vec::new(),
+            payload_lengths: Vec::new(),
             term: b"quick".to_vec(),
             docs: vec![(0, 1), (1, 1)],
             positions: vec![vec![0], vec![0]],
@@ -291,14 +294,16 @@ fn multi_field_segment_term_queries_are_isolated_per_field() {
     ];
     let body_terms = vec![
         TermPostings {
-            payloads: Vec::new(),
+            payload_bytes: Vec::new(),
+            payload_lengths: Vec::new(),
             term: b"crab".to_vec(),
             docs: vec![(1, 1)],
             positions: vec![vec![1]],
             offsets: Vec::new(),
         },
         TermPostings {
-            payloads: Vec::new(),
+            payload_bytes: Vec::new(),
+            payload_lengths: Vec::new(),
             term: b"rust".to_vec(), // same term bytes as "title", different field/postings
             docs: vec![(1, 1), (2, 2)],
             positions: vec![vec![0], vec![0, 4]],

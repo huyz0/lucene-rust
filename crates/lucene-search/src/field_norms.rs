@@ -320,7 +320,11 @@ impl<'a> FieldNorms<'a> {
         FieldNormsCursor {
             norms: self,
             disi: self.sparse_region.map(|region| {
-                lucene_codecs::indexed_disi::DisiCursor::new(region, self.entry.dense_rank_power)
+                lucene_codecs::indexed_disi::DisiCursor::new(
+                    region,
+                    self.entry.dense_rank_power,
+                    self.entry.jump_table_entry_count,
+                )
             }),
         }
     }
@@ -560,7 +564,7 @@ mod tests {
             field_number: 0,
             docs_with_field_offset: -1, // dense
             docs_with_field_length: 0,
-            jump_table_entry_count: 0,
+            jump_table_entry_count: -1,
             dense_rank_power: NO_RANK,
             num_docs_with_field: num_docs,
             bytes_per_norm,
@@ -605,7 +609,7 @@ mod tests {
     fn sparse_fast_path_agrees_with_the_general_norm_lookup() {
         // Docs 0, 3, 6, 9 have a norm; 1, 2, 4, 5, 7, 8 do not.
         let present: Vec<i32> = (0..4).map(|i| i * 3).collect();
-        let disi = lucene_codecs::indexed_disi::write(&present);
+        let (disi, disi_jumps) = lucene_codecs::indexed_disi::write(&present);
         let norms_bytes = [7u8, 19, 31, 43];
         let mut data = disi.clone();
         let norms_offset = data.len() as i64;
@@ -615,7 +619,7 @@ mod tests {
             field_number: 0,
             docs_with_field_offset: 0,
             docs_with_field_length: disi.len() as i64,
-            jump_table_entry_count: 0,
+            jump_table_entry_count: disi_jumps,
             dense_rank_power: NO_RANK,
             num_docs_with_field: present.len() as i32,
             bytes_per_norm: 1,
@@ -664,7 +668,7 @@ mod tests {
         // 5000 of the first 10000 docs have a norm: > 4095 in block 0, so
         // `indexed_disi::write` emits a DENSE block, not a SPARSE one.
         let present: Vec<i32> = (0..5000).map(|i| i * 2).collect();
-        let disi = lucene_codecs::indexed_disi::write(&present);
+        let (disi, disi_jumps) = lucene_codecs::indexed_disi::write(&present);
         let norms_bytes: Vec<u8> = (0..present.len()).map(|i| (i % 251 + 1) as u8).collect();
         let mut data = disi.clone();
         let norms_offset = data.len() as i64;
@@ -674,7 +678,7 @@ mod tests {
             field_number: 0,
             docs_with_field_offset: 0,
             docs_with_field_length: disi.len() as i64,
-            jump_table_entry_count: 0,
+            jump_table_entry_count: disi_jumps,
             dense_rank_power: NO_RANK,
             num_docs_with_field: present.len() as i32,
             bytes_per_norm: 1,
@@ -728,7 +732,7 @@ mod tests {
         // 5000 of the first 10000 docs: a DENSE `IndexedDISI` block, so the
         // rank table and the word walk are both exercised.
         let present: Vec<i32> = (0..5000).map(|i| i * 2).collect();
-        let disi = lucene_codecs::indexed_disi::write(&present);
+        let (disi, disi_jumps) = lucene_codecs::indexed_disi::write(&present);
         let norms_bytes: Vec<u8> = (0..present.len()).map(|i| (i % 251 + 1) as u8).collect();
         let mut data = disi.clone();
         let norms_offset = data.len() as i64;
@@ -738,7 +742,7 @@ mod tests {
             field_number: 0,
             docs_with_field_offset: 0,
             docs_with_field_length: disi.len() as i64,
-            jump_table_entry_count: 0,
+            jump_table_entry_count: disi_jumps,
             dense_rank_power: NO_RANK,
             num_docs_with_field: present.len() as i32,
             bytes_per_norm: 1,
@@ -786,7 +790,7 @@ mod tests {
         assert!(dense.cursor().field_length(-1).is_err());
 
         let present: Vec<i32> = (0..4).map(|i| i * 3).collect();
-        let disi = lucene_codecs::indexed_disi::write(&present);
+        let (disi, disi_jumps) = lucene_codecs::indexed_disi::write(&present);
         let mut data = disi.clone();
         let norms_offset = data.len() as i64;
         data.extend_from_slice(&[7u8, 19, 31, 43]);
@@ -796,7 +800,7 @@ mod tests {
                 field_number: 0,
                 docs_with_field_offset: 0,
                 docs_with_field_length: disi.len() as i64,
-                jump_table_entry_count: 0,
+                jump_table_entry_count: disi_jumps,
                 dense_rank_power: NO_RANK,
                 num_docs_with_field: present.len() as i32,
                 bytes_per_norm: 1,
@@ -841,7 +845,7 @@ mod tests {
         }
 
         let present: Vec<i32> = (0..5000).map(|i| i * 2).collect();
-        let disi = lucene_codecs::indexed_disi::write(&present);
+        let (disi, disi_jumps) = lucene_codecs::indexed_disi::write(&present);
         let mut data = disi.clone();
         let norms_offset = data.len() as i64;
         data.extend((0..present.len()).map(|i| (i % 251 + 1) as u8));
@@ -849,7 +853,7 @@ mod tests {
             field_number: 0,
             docs_with_field_offset: 0,
             docs_with_field_length: disi.len() as i64,
-            jump_table_entry_count: 0,
+            jump_table_entry_count: disi_jumps,
             dense_rank_power: NO_RANK,
             num_docs_with_field: present.len() as i32,
             bytes_per_norm: 1,
@@ -900,7 +904,7 @@ mod tests {
     #[test]
     fn an_illegal_dense_rank_power_is_rejected_rather_than_guessed() {
         let present: Vec<i32> = (0..5000).map(|i| i * 2).collect();
-        let disi = lucene_codecs::indexed_disi::write(&present);
+        let (disi, disi_jumps) = lucene_codecs::indexed_disi::write(&present);
         let mut data = disi.clone();
         let norms_offset = data.len() as i64;
         data.extend_from_slice(&vec![7u8; present.len()]);
@@ -909,7 +913,7 @@ mod tests {
             field_number: 0,
             docs_with_field_offset: 0,
             docs_with_field_length: disi.len() as i64,
-            jump_table_entry_count: 0,
+            jump_table_entry_count: disi_jumps,
             dense_rank_power: 0, // not 7..=15, not 0xFF
             num_docs_with_field: present.len() as i32,
             bytes_per_norm: 1,

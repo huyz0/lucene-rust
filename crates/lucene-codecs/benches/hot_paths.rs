@@ -280,7 +280,7 @@ fn bench_sparse_doc_values_lookup(c: &mut Criterion) {
         // Every 7th doc present, so the blocks are genuinely SPARSE rather
         // than degenerating to ALL.
         let doc_ids: Vec<i32> = (0..n).map(|i| (i * 7) as i32).collect();
-        let region = lucene_codecs::indexed_disi::write(&doc_ids);
+        let (region, jumps) = lucene_codecs::indexed_disi::write(&doc_ids);
         let target = doc_ids[n / 2];
         // The old shape: decode the whole region, then binary-search it.
         group.bench_function(format!("decode_all/n{n}"), |b| {
@@ -299,8 +299,11 @@ fn bench_sparse_doc_values_lookup(c: &mut Criterion) {
         // linear -- that contrast is the finding and the fix in one chart.
         group.bench_function(format!("cursor/n{n}"), |b| {
             b.iter(|| {
-                let mut c =
-                    lucene_codecs::indexed_disi::DisiCursor::new(black_box(&region), NO_RANK);
+                let mut c = lucene_codecs::indexed_disi::DisiCursor::new(
+                    black_box(&region),
+                    NO_RANK,
+                    jumps,
+                );
                 black_box(c.advance_exact(black_box(target)).unwrap());
             });
         });
@@ -676,10 +679,10 @@ fn bench_indexed_disi_cursor(c: &mut Criterion) {
     // 10,000 present docs inside one 65536-doc range: above MAX_ARRAY_LENGTH
     // (4095) and below BLOCK_SIZE, so genuinely DENSE.
     let dense_docs: Vec<i32> = (0..10_000).map(|i| i * 6).collect();
-    let dense_region = write(&dense_docs);
+    let (dense_region, dense_jumps) = write(&dense_docs);
     group.bench_function("dense_forward/n10000", |b| {
         b.iter(|| {
-            let mut cursor = DisiCursor::new(black_box(&dense_region), NO_RANK);
+            let mut cursor = DisiCursor::new(black_box(&dense_region), NO_RANK, dense_jumps);
             let mut sum = 0usize;
             for &doc in &dense_docs {
                 sum += cursor.advance_exact(black_box(doc)).unwrap().unwrap();
@@ -690,10 +693,10 @@ fn bench_indexed_disi_cursor(c: &mut Criterion) {
 
     // 4,000 present docs in one range: SPARSE (explicit 16-bit doc ids).
     let sparse_docs: Vec<i32> = (0..4_000).map(|i| i * 16).collect();
-    let sparse_region = write(&sparse_docs);
+    let (sparse_region, sparse_jumps) = write(&sparse_docs);
     group.bench_function("sparse_forward/n4000", |b| {
         b.iter(|| {
-            let mut cursor = DisiCursor::new(black_box(&sparse_region), NO_RANK);
+            let mut cursor = DisiCursor::new(black_box(&sparse_region), NO_RANK, sparse_jumps);
             let mut sum = 0usize;
             for &doc in &sparse_docs {
                 sum += cursor.advance_exact(black_box(doc)).unwrap().unwrap();
@@ -709,15 +712,20 @@ fn bench_indexed_disi_cursor(c: &mut Criterion) {
     group.bench_function("dense_random/n10000", |b| {
         let target = dense_docs[9_000];
         b.iter(|| {
-            let mut cursor = DisiCursor::new(black_box(&dense_region), NO_RANK);
+            let mut cursor = DisiCursor::new(black_box(&dense_region), NO_RANK, dense_jumps);
             black_box(cursor.advance_exact(black_box(target)).unwrap())
         })
     });
-    let ranked_region = write_with_dense_rank_power(&dense_docs, DEFAULT_DENSE_RANK_POWER);
+    let (ranked_region, ranked_jumps) =
+        write_with_dense_rank_power(&dense_docs, DEFAULT_DENSE_RANK_POWER);
     group.bench_function("dense_random_rank9/n10000", |b| {
         let target = dense_docs[9_000];
         b.iter(|| {
-            let mut cursor = DisiCursor::new(black_box(&ranked_region), DEFAULT_DENSE_RANK_POWER);
+            let mut cursor = DisiCursor::new(
+                black_box(&ranked_region),
+                DEFAULT_DENSE_RANK_POWER,
+                ranked_jumps,
+            );
             black_box(cursor.advance_exact(black_box(target)).unwrap())
         })
     });
@@ -741,12 +749,12 @@ fn bench_sparse_numeric_reader(c: &mut Criterion) {
     let mut group = c.benchmark_group("doc_values/sparse_numeric_reader");
     for n in [1_000i64, 10_000, 100_000] {
         let doc_ids: Vec<i32> = (0..n).map(|i| (i * 7) as i32).collect();
-        let data = lucene_codecs::indexed_disi::write(&doc_ids);
+        let (data, data_jumps) = lucene_codecs::indexed_disi::write(&doc_ids);
         let entry = ndv::NumericEntry {
             field_number: 0,
             docs_with_field_offset: 0,
             docs_with_field_length: data.len() as i64,
-            jump_table_entry_count: 0,
+            jump_table_entry_count: data_jumps,
             dense_rank_power: 0xFF,
             num_values: n,
             table: None,

@@ -438,13 +438,16 @@ where
 /// Sum `docFreq` and `docCount` for one term across every segment, as
 /// Lucene's `IndexSearcher` does before scoring any leaf.
 ///
-/// Returns `None` when no segment has the field, in which case the per-segment
-/// values (also nothing) are already correct.
+/// Returns `Ok(None)` when no segment has the field, in which case the
+/// per-segment values (also nothing) are already correct. A corrupt `.tim`
+/// block in *any* segment is an `Err`: silently dropping that segment's
+/// `docFreq` would change every other segment's idf, which is the
+/// wrong-answer shape reader-wide statistics exist to prevent.
 fn global_term_stats(
     segments: &[OpenSegment<'_>],
     field: &str,
     term: &[u8],
-) -> Option<crate::CollectionStats> {
+) -> crate::Result<Option<crate::CollectionStats>> {
     let mut doc_freq = 0i64;
     let mut doc_count = 0i64;
     let mut seen = false;
@@ -454,14 +457,14 @@ fn global_term_stats(
         };
         seen = true;
         doc_count += ft.doc_count as i64;
-        if let Some(stats) = ft.seek_exact(term) {
+        if let Some(stats) = ft.try_seek_exact(term)? {
             doc_freq += stats.doc_freq as i64;
         }
     }
-    seen.then_some(crate::CollectionStats {
+    Ok(seen.then_some(crate::CollectionStats {
         doc_freq,
         doc_count,
-    })
+    }))
 }
 
 /// Sum `sumTotalTermFreq` and `docCount` for one field across every segment and
@@ -496,7 +499,10 @@ pub fn global_avg_field_length(segments: &[OpenSegment<'_>], field: &str) -> Opt
 /// Reader-wide statistics for every leaf `Clause::Term` a boolean query
 /// mentions, so each segment scores with one idf per term -- see
 /// [`crate::CollectionStats`].
-fn global_boolean_stats(segments: &[OpenSegment<'_>], query: &BooleanQuery) -> crate::GlobalStats {
+fn global_boolean_stats(
+    segments: &[OpenSegment<'_>],
+    query: &BooleanQuery,
+) -> crate::Result<crate::GlobalStats> {
     fn walk_clause(c: &crate::query::Clause, out: &mut Vec<(String, Vec<u8>)>) {
         use crate::query::Clause;
         match c {
@@ -547,11 +553,11 @@ fn global_boolean_stats(segments: &[OpenSegment<'_>], query: &BooleanQuery) -> c
     walk(query, &mut terms);
     let mut map = crate::GlobalStats::new();
     for (field, term) in terms {
-        if let Some(stats) = global_term_stats(segments, &field, &term) {
+        if let Some(stats) = global_term_stats(segments, &field, &term)? {
             map.insert((field, term), stats);
         }
     }
-    map
+    Ok(map)
 }
 
 /// Multi-segment sibling of [`crate::search_term_query_scored`]: runs `query`
@@ -587,7 +593,7 @@ pub fn search_term_query_multi_segment(
     // idf -- what Lucene's IndexSearcher does via CollectionStatistics. Scoring
     // each segment from its own counters silently reorders results across a
     // multi-segment index; see CollectionStats.
-    let global = global_term_stats(segments, &query.field, &query.term);
+    let global = global_term_stats(segments, &query.field, &query.term)?;
     let doc_bases: Vec<i32> = segments.iter().map(|s| s.doc_base).collect();
     merge_multi_segment_scored(&doc_bases, top_n, |i, local| {
         let seg = &segments[i];
@@ -627,7 +633,7 @@ pub fn search_term_query_multi_segment_after(
         norms.len(),
         "one norms entry per segment expected"
     );
-    let global = global_term_stats(segments, &query.field, &query.term);
+    let global = global_term_stats(segments, &query.field, &query.term)?;
     let doc_bases: Vec<i32> = segments.iter().map(|s| s.doc_base).collect();
     merge_multi_segment_scored_after(&doc_bases, top_n, after, |i, local| {
         let seg = &segments[i];
@@ -669,7 +675,7 @@ pub fn search_term_query_multi_segment_concurrent(
     // the idf spread that causes is precisely the bug this module's doc comment
     // records (1.6x across M1's 15-segment corpus, all 20 benchmark queries
     // disagreeing with Java).
-    let global = global_term_stats(segments, &query.field, &query.term);
+    let global = global_term_stats(segments, &query.field, &query.term)?;
     let doc_bases: Vec<i32> = segments.iter().map(|s| s.doc_base).collect();
     merge_multi_segment_scored_concurrent(&doc_bases, top_n, |i, local| {
         let seg = &segments[i];
@@ -707,7 +713,7 @@ pub fn search_boolean_query_multi_segment(
         norms.len(),
         "one norms entry per segment expected"
     );
-    let global = global_boolean_stats(segments, query);
+    let global = global_boolean_stats(segments, query)?;
     let doc_bases: Vec<i32> = segments.iter().map(|s| s.doc_base).collect();
     merge_multi_segment_scored(&doc_bases, top_n, |i, local| {
         let seg = &segments[i];
@@ -741,7 +747,7 @@ pub fn search_boolean_query_multi_segment_concurrent(
         norms.len(),
         "one norms entry per segment expected"
     );
-    let global = global_boolean_stats(segments, query);
+    let global = global_boolean_stats(segments, query)?;
     let doc_bases: Vec<i32> = segments.iter().map(|s| s.doc_base).collect();
     merge_multi_segment_scored_concurrent(&doc_bases, top_n, |i, local| {
         let seg = &segments[i];
@@ -799,7 +805,7 @@ pub fn search_boolean_query_multi_segment_maxscore(
         norms.len(),
         "one norms entry per segment expected"
     );
-    let global = global_boolean_stats(segments, query);
+    let global = global_boolean_stats(segments, query)?;
     let doc_bases: Vec<i32> = segments.iter().map(|s| s.doc_base).collect();
     merge_multi_segment_scored(&doc_bases, top_n, |i, local| {
         let seg = &segments[i];
@@ -838,7 +844,7 @@ pub fn search_boolean_query_multi_segment_maxscore_concurrent(
         norms.len(),
         "one norms entry per segment expected"
     );
-    let global = global_boolean_stats(segments, query);
+    let global = global_boolean_stats(segments, query)?;
     let doc_bases: Vec<i32> = segments.iter().map(|s| s.doc_base).collect();
     merge_multi_segment_scored_concurrent(&doc_bases, top_n, |i, local| {
         let seg = &segments[i];

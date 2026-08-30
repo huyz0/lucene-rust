@@ -168,7 +168,9 @@ fn unpack(handle: u64) -> (u8, u8, u32, u32) {
 /// it -- [`crate::registry::Sharded`] uses this to pick which of its
 /// [`SHARDS`] locks to take *before* the handle is validated (the shard field
 /// is masked to [`SHARD_BITS`] bits, so every possible `u64` names a real
-/// shard; a wrong shard simply misses on the tag/generation check inside).
+/// shard, and the named shard's own tag/generation check then applies -- see
+/// [`crate::registry::Sharded`] on why that makes the field routing rather
+/// than authentication).
 pub fn shard_of(handle: u64) -> usize {
     ((handle >> (GENERATION_BITS + INDEX_BITS)) & SHARD_MASK) as usize
 }

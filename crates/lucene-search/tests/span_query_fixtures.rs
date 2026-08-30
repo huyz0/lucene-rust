@@ -200,6 +200,85 @@ fn span_near_in_order_and_out_of_order_agree_with_real_lucene() {
     );
 }
 
+/// Every `spannear.*` case real Lucene recorded
+/// (`fixtures/src/AppendSpanNearManifest.java`), as whole hit sets rather than
+/// one doc's verdict.
+///
+/// What this adds over the case above: **overlapping sub-spans**.
+/// `NearSpansUnordered.atMatch()` is a pure width test
+/// (`maxEndPosition - top().startPosition() - totalSpanLength <= slop`) with no
+/// non-overlap rule, so two clauses holding one term may settle on one
+/// occurrence and give a *negative* width, which matches --
+/// `SpanNearQuery([alpha, alpha], 0, false)` matches every document containing
+/// `alpha` at all, including doc 8555's single one. This port rejected the
+/// overlap on both arms and returned only doc 8556. `NearSpansOrdered` really
+/// does require non-overlap (`stretchToOrder` advances each sub-span to
+/// `>= prevSpans.endPosition()`), which is why the `in_order = true` cases
+/// here still return the narrower answer.
+#[test]
+fn span_near_hit_sets_match_real_lucene() {
+    let (fields, doc, pos, pay, id, suffix, m) = open_segment();
+    let doc_in = DocInput::open(&doc, &id, &suffix).expect("open .doc");
+    let pos_in = PosInput::open(&pos, &id, &suffix).expect("open .pos");
+    let pay_in = PayInput::open(&pay, &id, &suffix).expect("open .pay");
+
+    let cases = [
+        "repeat_unordered_slop0",
+        "repeat_unordered_slop2",
+        "repeat_ordered_slop2",
+        "transposed_unordered_slop0",
+        "transposed_ordered_slop0",
+        "inorder_slop0",
+        "inorder_slop2",
+        "inorder_unordered_slop2",
+        "triple_repeat_unordered_slop1",
+    ];
+    for case in cases {
+        let field = m.get(&format!("spannear.{case}.field")).to_string();
+        let terms: Vec<String> = m
+            .get(&format!("spannear.{case}.terms"))
+            .split(' ')
+            .map(str::to_string)
+            .collect();
+        let slop: u32 = m.get(&format!("spannear.{case}.slop")).parse().unwrap();
+        let in_order: bool = m.get(&format!("spannear.{case}.in_order")).parse().unwrap();
+        let expected: Vec<i32> = {
+            let raw = m.get(&format!("spannear.{case}.docs"));
+            if raw.is_empty() {
+                Vec::new()
+            } else {
+                raw.split(',').map(|d| d.parse().unwrap()).collect()
+            }
+        };
+
+        let query = SpanQuery::span_near(
+            terms
+                .iter()
+                .map(|t| SpanQuery::span_term(field.clone(), t.as_bytes()))
+                .collect::<Vec<_>>(),
+            slop,
+            in_order,
+        );
+        let mut collector = VecCollector::default();
+        search_span_query(
+            &fields,
+            Some(&doc_in),
+            Some(&pos_in),
+            Some(&pay_in),
+            None,
+            &query,
+            &mut collector,
+        )
+        .unwrap_or_else(|e| panic!("case {case}: {e}"));
+        let mut got = collector.docs.clone();
+        got.sort_unstable();
+        assert_eq!(
+            got, expected,
+            "case {case}: SpanNear({terms:?}, slop {slop}, in_order {in_order})"
+        );
+    }
+}
+
 /// Cross-engine differential test for `SpanOrQuery`: the union of "gamma"'s
 /// and "delta"'s own spans must match doc8, agreeing with real
 /// `SpanOrQuery`'s recorded verdict.

@@ -95,7 +95,7 @@ fn term_query_counts_match_real_lucene_without_deletions() {
             let query = TermQuery::new(field, term);
             // The shortcut fires -- `.doc` is never touched, which is what
             // makes this cheaper than collecting.
-            let shortcut = count_term_query_shortcut(open.fields, None, &query);
+            let shortcut = count_term_query_shortcut(open.fields, None, &query).unwrap();
             assert_eq!(
                 shortcut,
                 Some(m.num(key)),
@@ -136,7 +136,7 @@ fn term_query_counts_match_real_lucene_with_deletions() {
         for (key, term) in [("count.term.id.1", "1"), ("count.term.id.0", "0")] {
             let query = TermQuery::new("id", term);
             assert_eq!(
-                count_term_query_shortcut(open.fields, seg.live_docs(), &query),
+                count_term_query_shortcut(open.fields, seg.live_docs(), &query).unwrap(),
                 None,
                 "{key}: `hasDeletions()` forbids the docFreq shortcut"
             );
@@ -149,7 +149,7 @@ fn term_query_counts_match_real_lucene_with_deletions() {
             // deleted document -- which is the whole reason Java gates it.
             if term == "1" {
                 assert_eq!(
-                    count_term_query_shortcut(open.fields, None, &query),
+                    count_term_query_shortcut(open.fields, None, &query).unwrap(),
                     Some(1),
                     "docFreq counts the deleted document"
                 );

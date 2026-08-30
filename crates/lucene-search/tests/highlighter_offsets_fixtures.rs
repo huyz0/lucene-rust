@@ -167,6 +167,81 @@ fn postings_offset_strategy_matches_real_lucenes_offsets() {
     }
 }
 
+/// Every `highlight.*` case real Lucene's own `PhraseHelper` recorded
+/// (`fixtures/src/AppendHighlightManifest.java`), checked against
+/// `offsets_from_phrase`.
+///
+/// This is the only ground truth that can settle what the highlighter should
+/// do with a *reordered* sloppy phrase, because the answer is not the scorer's:
+/// `WeightedSpanTermExtractor` rewrites the phrase as
+/// `SpanNearQuery(clauses, slop, inOrder = slop == 0)`, whose budget is
+/// `maxEnd - minStart - totalSpanLength` rather than `SloppyPhraseMatcher`'s
+/// slot-shifted window width. The two disagree by two positions on a
+/// transposition, they disagree about whether two slots may share one
+/// occurrence, and only Lucene knows which one `PhraseHelper` runs. This port
+/// enumerated in order at every slop, so every one of the reordered cases
+/// below produced *no* highlight where Lucene produces one.
+#[test]
+fn phrase_helper_offsets_match_real_lucene() {
+    let (fields, doc, pos, pay, id, suffix, m) = open_segment();
+    let doc_in = DocInput::open(&doc, &id, &suffix).expect("open .doc");
+    let pos_in = PosInput::open(&pos, &id, &suffix).expect("open .pos");
+    let pay_in = PayInput::open(&pay, &id, &suffix).expect("open .pay");
+
+    let cases = [
+        "exact",
+        "reordered_slop0",
+        "reordered_slop1",
+        "reordered_slop2",
+        "reordered_gammadelta",
+        "gap_in_order_slop0",
+        "gap_in_order_slop2",
+        "gap_reordered_slop2",
+        "gap_reordered_slop4",
+        "repeat_two_occurrences",
+        "repeat_single_occurrence",
+        "absent_term",
+        "single_term",
+    ];
+    let mut saw_a_reordered_highlight = false;
+    for case in cases {
+        let doc_id: i32 = m.get(&format!("highlight.{case}.doc")).parse().unwrap();
+        let field = m.get(&format!("highlight.{case}.field")).to_string();
+        let phrase_text = m.get(&format!("highlight.{case}.phrase")).to_string();
+        let phrase: Vec<&str> = phrase_text.split(' ').collect();
+        let slop: u32 = m.get(&format!("highlight.{case}.slop")).parse().unwrap();
+        let expected = m.get(&format!("highlight.{case}.offsets")).to_string();
+
+        let spans = offsets_from_phrase(
+            &fields,
+            Some(&doc_in),
+            &pos_in,
+            Some(&pay_in),
+            &field,
+            &phrase,
+            slop,
+            doc_id,
+        )
+        .unwrap_or_else(|e| panic!("case {case}: {e}"));
+        let got = spans
+            .iter()
+            .map(|s| format!("{}:{},{}", s.term, s.start_offset, s.end_offset))
+            .collect::<Vec<_>>()
+            .join(";");
+        assert_eq!(
+            got, expected,
+            "case {case}: phrase {phrase:?} at slop {slop} on doc {doc_id}"
+        );
+        if case.contains("reordered") && !expected.is_empty() {
+            saw_a_reordered_highlight = true;
+        }
+    }
+    assert!(
+        saw_a_reordered_highlight,
+        "the reordered cases must actually produce highlights, or this test proves nothing"
+    );
+}
+
 #[test]
 fn a_term_absent_from_the_document_contributes_no_offsets() {
     let (fields, doc, pos, pay, id, suffix, _m) = open_segment();
@@ -301,6 +376,14 @@ fn phrase_offsets_drop_occurrences_that_are_not_in_a_phrase_match() {
 /// slop in the fixture. The offsets that come back once it matches are exactly
 /// the position-insensitive ones, since in this document every occurrence of
 /// each term takes part in the single match.
+///
+/// The recorded answer here is `PhraseQuery`'s (`IndexSearcher` over the real
+/// query), and it coincides with the *highlighter's* only because this case is
+/// in order: `SpanNearQuery`'s window and `SloppyPhraseMatcher`'s
+/// `matchLength` agree when the terms appear in phrase order and do not
+/// overlap. Where they disagree -- every reordered case, and a repeated term
+/// -- the highlighter's own answer is what `phrase_helper_offsets_match_real_lucene`
+/// records, from real Lucene's `PhraseHelper` rather than from `IndexSearcher`.
 #[test]
 fn phrase_offsets_appear_at_exactly_the_slops_real_lucene_matches_at() {
     let (fields, doc, pos, pay, id, suffix, m) = open_segment();

@@ -191,6 +191,15 @@ pub enum Error {
     LiveDocs(#[from] lucene_codecs::live_docs::Error),
     #[error(transparent)]
     PostingsWriter(#[from] postings_writer::Error),
+    /// `IndexWriter::open`'s field list did not survive Java's `FieldInfo`
+    /// constructor / `FieldInfos(FieldInfo[])` constructor. Java makes these
+    /// combinations unrepresentable by throwing from the constructor; a Rust
+    /// public-field struct cannot, so the writer -- the port's own
+    /// caller-facing door for a hand-built field list -- checks them at
+    /// `open`, rather than letting the mistake surface as an unreadable
+    /// `.fnm` several thousand documents later.
+    #[error(transparent)]
+    FieldInfos(#[from] lucene_codecs::field_infos::Error),
     /// A source segment's `.tim`/`.tip`/`.tmd` term dictionary couldn't be
     /// opened while [`IndexWriter::execute_merge`] was assembling that
     /// segment's [`crate::merge::SourcePostings`].
@@ -277,13 +286,6 @@ pub enum Error {
          writer's postings write-side"
     )]
     UnsupportedPostingsIndexOptions(String, IndexOptions),
-    #[error(
-        "set_postings_field: field {0:?} sets store_payloads but has index_options {1:?}, which \
-         does not index positions -- Java's FieldInfo.checkConsistency rejects the same shape \
-         (\"indexed field cannot have payloads without positions\"), because a payload is \
-         stored alongside a term position and there is nowhere to put one without positions"
-    )]
-    PayloadsWithoutPositions(String, IndexOptions),
     #[error(
         "set_payload_source: no field opted into postings has store_payloads set, so every \
          payload this source produced would be silently discarded -- set store_payloads on the \
@@ -639,6 +641,14 @@ pub struct IndexWriter<'d> {
     /// carry postings for any number of distinct fields at once (see module
     /// doc comment).
     postings_fields: Vec<PostingsFieldConfig>,
+
+    /// `Analyzer.getPositionIncrementGap(String)` for every field this writer
+    /// analyses -- see [`IndexWriter::set_position_increment_gap`]. Java's
+    /// default, `0`.
+    position_increment_gap: i32,
+    /// `Analyzer.getOffsetGap(String)` -- see
+    /// [`IndexWriter::set_offset_gap`]. Java's default, `1`.
+    offset_gap: i32,
     /// The token-payload supplier for the `store_payloads` fields among
     /// [`Self::postings_fields`] -- this port's stand-in for the
     /// `PayloadAttribute` a real Lucene `TokenFilter` sets, see
@@ -1114,6 +1124,12 @@ impl<'d> IndexWriter<'d> {
         codec_name: impl Into<String>,
         lucene_version: LuceneVersion,
     ) -> Result<Self> {
+        // `FieldInfos(FieldInfo[])` over `FieldInfo`'s own constructor: every
+        // field is coerced (the three indexed-only flags off a non-indexed
+        // field) and then checked, per field and across fields, before this
+        // writer will accept it. Java gets this for free -- there is no way to
+        // hold a `FieldInfo` that has not been through its constructor.
+        let fields = lucene_codecs::field_infos::FieldInfos::new(fields)?.fields;
         let files = dir.list_all()?;
         let generation = lucene_store::directory::last_commit_generation(&files)?;
         let mut segment_infos = if generation < 0 {
@@ -1158,6 +1174,8 @@ impl<'d> IndexWriter<'d> {
             ram_bytes_used: 0,
             merge_policy: None,
             postings_fields: Vec::new(),
+            position_increment_gap: 0,
+            offset_gap: 1,
             payload_source: None,
             custom_freq_postings_field: None,
             pending_custom_freq_terms: Vec::new(),
@@ -1225,6 +1243,28 @@ impl<'d> IndexWriter<'d> {
             Some(name) => vec![Self::resolve_postings_field(&self.fields, name)?],
         };
         Ok(())
+    }
+
+    /// `Analyzer.getPositionIncrementGap(String)` for every field this writer
+    /// analyses: the positions inserted **between two values of the same
+    /// multi-valued field**.
+    ///
+    /// Java's base `Analyzer` returns `0`, so by default a phrase query can
+    /// match across a value boundary -- real Lucene's own behaviour, pinned by
+    /// `fixtures/data/analysis/manifest.properties`' `mv_default_gap` case.
+    /// Every Lucene consumer exposes an override for it (OpenSearch's
+    /// `position_increment_gap`, default 100); Java's override is a subclass
+    /// hook, and this writer has no per-field analyzer configuration, so it is
+    /// one value for the whole writer.
+    pub fn set_position_increment_gap(&mut self, gap: i32) {
+        self.position_increment_gap = gap;
+    }
+
+    /// `Analyzer.getOffsetGap(String)`: the character offsets inserted between
+    /// two values of the same multi-valued field. Java's default is **`1`**,
+    /// which is this writer's default too.
+    pub fn set_offset_gap(&mut self, gap: i32) {
+        self.offset_gap = gap;
     }
 
     /// Opts this writer into building and writing real postings for
@@ -1328,6 +1368,19 @@ impl<'d> IndexWriter<'d> {
             .collect()
     }
 
+    /// The one `Analyzer` this writer analyses every field with -- Java's
+    /// `IndexWriterConfig.getAnalyzer()`. This facade has no per-field
+    /// analyzer configuration (see the module doc comment), so it is a plain
+    /// `Analyzer::standard` carrying the writer's two gap settings, which are
+    /// the only part of it a caller can configure
+    /// ([`IndexWriter::set_position_increment_gap`] /
+    /// [`IndexWriter::set_offset_gap`]).
+    fn analyzer(&self) -> Analyzer {
+        Analyzer::standard(None)
+            .with_position_increment_gap(self.position_increment_gap)
+            .with_offset_gap(self.offset_gap)
+    }
+
     /// Shared lookup/validation [`IndexWriter::set_postings_field`]/
     /// [`IndexWriter::add_postings_field`] both build a
     /// [`PostingsFieldConfig`] from.
@@ -1348,16 +1401,13 @@ impl<'d> IndexWriter<'d> {
                 info.index_options,
             ));
         }
-        // Java's `FieldInfo.checkConsistency`: "indexed field 'x' cannot have
-        // payloads without positions". `field_infos::write` rejects the same
-        // shape, but only once a commit is already half-built -- catching it
-        // where the field is opted in names the caller's actual mistake.
-        if info.store_payloads && !info.index_options.subsumes_positions() {
-            return Err(Error::PayloadsWithoutPositions(
-                name.to_string(),
-                info.index_options,
-            ));
-        }
+        // Java's `FieldInfo.checkConsistency`' "indexed field 'x' cannot have
+        // payloads without positions" used to be re-checked here. It is not
+        // any more: `IndexWriter::open` now puts the whole field list through
+        // `FieldInfos::new` (Java's constructor), so a `FieldInfo` this writer
+        // holds has already been through the check that makes the combination
+        // unrepresentable -- and a guard no input can trip is a guard nothing
+        // tests.
         Ok(PostingsFieldConfig {
             name: name.to_string(),
             field_number: info.number,
@@ -3176,6 +3226,7 @@ impl<'d> IndexWriter<'d> {
             &norms_configs,
             &self.payload_field_names(),
             self.payload_source.as_deref(),
+            &self.analyzer(),
         );
         // Norms and term vectors only *read* the shared invert pass; postings
         // **consumes** it. Ordering them this way means the whole inverted
@@ -3482,6 +3533,7 @@ impl<'d> IndexWriter<'d> {
         norms: &[NormsFieldConfig],
         payload_fields: &[&str],
         payload_source: Option<PayloadSourceRef<'_>>,
+        analyzer: &Analyzer,
     ) -> InMemoryInvertedIndex {
         // Union by field number: a field opted into two consumers at once
         // (e.g. postings *and* term vectors) must still be analyzed once, not
@@ -3499,26 +3551,29 @@ impl<'d> IndexWriter<'d> {
         wanted.sort_unstable();
         wanted.dedup();
 
+        // **Every** value of the field, not just the first: a document may
+        // carry the same field more than once (Java's `Document.add` appends,
+        // and `IndexingChain` inverts each value through one
+        // `FieldInvertState`), and `invert_documents_with_payloads` groups the
+        // consecutive tuples for one (doc, field) into one multi-valued field.
+        // `find` used to stop at the first value, so every later value of a
+        // multi-valued field was stored but never indexed.
         let mut triples: Vec<(i32, &str, &str)> = Vec::new();
         for (field_number, field_name) in wanted {
             for (doc_id, doc) in docs.iter().enumerate() {
-                let text = doc
-                    .fields
-                    .iter()
-                    .find(|f| f.field_number == field_number)
-                    .and_then(|f| match &f.value {
-                        FieldValue::String(s) => Some(s.as_str()),
-                        _ => None,
-                    });
-                if let Some(text) = text {
-                    triples.push((doc_id as i32, field_name, text));
+                for f in doc.fields.iter().filter(|f| f.field_number == field_number) {
+                    if let FieldValue::String(text) = &f.value {
+                        triples.push((doc_id as i32, field_name, text.as_str()));
+                    }
                 }
             }
         }
 
         // No per-field-analyzer configuration exists on this facade yet (see
-        // the module doc comment), so one plain `Analyzer::standard` covers
-        // every field -- which is also what makes a single shared pass sound.
+        // the module doc comment), so one `Analyzer` covers every field --
+        // which is also what makes a single shared pass sound. It carries the
+        // writer's `positionIncrementGap`/`offsetGap`, the two knobs Java puts
+        // on `Analyzer` and `IndexingChain` reads once per field value.
         // A writer with no payload source still has to allocate payload slots
         // for a `store_payloads` field: the `.fnm` bit is already written, so
         // the `.pay` payload-length stream has to exist for real Lucene's
@@ -3531,7 +3586,7 @@ impl<'d> IndexWriter<'d> {
             None => &no_payload,
         };
 
-        invert_documents_with_payloads(&triples, &Analyzer::standard(None), payload_fields, source)
+        invert_documents_with_payloads(&triples, analyzer, payload_fields, source)
     }
 
     /// Builds [`postings_writer::write_fields`]'s input from `docs`'
@@ -3608,7 +3663,7 @@ impl<'d> IndexWriter<'d> {
         // keyed by `(field, term)`, so each field's terms still arrive in
         // ascending byte order -- exactly the per-field ordering
         // `postings_writer::write_fields` requires, with no sort needed.
-        for ((field, term), entries) in inverted.terms {
+        for ((field, term), list) in inverted.terms {
             let Some(&idx) = by_name.get(field.as_str()) else {
                 continue;
             };
@@ -3627,6 +3682,7 @@ impl<'d> IndexWriter<'d> {
             // disagreeing if that guard is ever relaxed.
             let has_payloads = data.config.store_payloads && has_positions;
 
+            let entries = list.entries;
             let mut term_docs: Vec<(i32, i32)> = Vec::with_capacity(entries.len());
             // `postings_writer::write_fields` only consults
             // `positions`/`offsets` when this field's `index_options`
@@ -3636,17 +3692,13 @@ impl<'d> IndexWriter<'d> {
             // unchanged from before this task.
             let mut positions: Vec<Vec<i32>> = Vec::new();
             let mut offsets: Vec<Vec<(i32, i32)>> = Vec::new();
-            let mut payloads: Vec<Vec<Vec<u8>>> = Vec::new();
             if has_positions {
                 positions.reserve_exact(entries.len());
             }
             if has_offsets {
                 offsets.reserve_exact(entries.len());
             }
-            if has_payloads {
-                payloads.reserve_exact(entries.len());
-            }
-            for mut entry in entries {
+            for entry in entries {
                 data.doc_ids.insert(entry.doc_id);
                 term_docs.push((entry.doc_id, entry.term_freq()));
                 if has_positions {
@@ -3661,19 +3713,43 @@ impl<'d> IndexWriter<'d> {
                             .collect(),
                     );
                 }
-                if has_payloads {
-                    // Moved, not cloned: the payload bytes are the one part of
-                    // an inverted-index entry that can be arbitrarily large,
-                    // and this pass is already consuming the term dictionary.
-                    // `invert_documents_with_payloads` guarantees one slot per
-                    // occurrence for a listed field; the `resize` is what makes
-                    // the guarantee load-bearing rather than assumed, since
-                    // `write_fields` would otherwise reject the whole commit
-                    // with a `PayloadsFreqMismatch` naming a term rather than
-                    // the field that was mis-declared.
-                    let freq = entry.occurrences.len();
-                    entry.payloads.resize(freq, Vec::new());
-                    payloads.push(std::mem::take(&mut entry.payloads));
+            }
+            // Moved wholesale, not copied and not re-nested: the inverted
+            // index and `TermPostings` hold this term's payloads in the same
+            // flat `(bytes, lengths)` layout, so the run changes owner without
+            // touching a byte of it.
+            //
+            // `invert_documents_with_payloads` fills the run for every
+            // occurrence of a listed field or for none of them -- the gate is
+            // the field, never the token -- so the only mismatch it can
+            // produce is a **wholly absent** run, which the pad below turns
+            // into an all-zero-length one. That is what a `store_payloads`
+            // field with no source is supposed to write anyway
+            // (`a_payloads_field_with_no_source_still_writes_the_payload_length_stream`),
+            // and it is why the pad is at the end rather than per document:
+            // there is no per-document hole for it to fill. A run short in
+            // the *middle* would misalign every later document, and cannot
+            // arise here; `postings_writer::validate_field` is what would
+            // catch it, at the cost of naming a term rather than the field
+            // that was mis-declared.
+            let (mut payload_bytes, mut payload_lengths) = if has_payloads {
+                (list.payload_bytes, list.payload_lengths)
+            } else {
+                (Vec::new(), Vec::new())
+            };
+            if has_payloads {
+                let occurrences: usize = term_docs.iter().map(|&(_, freq)| freq as usize).sum();
+                // The equality is the fast path and the common one -- the
+                // invert pass produces exactly one length per occurrence --
+                // so the O(occurrences) repair below runs only for a run that
+                // is already known to be wrong.
+                if payload_lengths.len() != occurrences {
+                    payload_lengths.resize(occurrences, 0);
+                    let bytes: usize = payload_lengths.iter().map(|&l| l as usize).sum();
+                    // `resize` both pads and truncates, which is what a run
+                    // that is too long as well as one that is too short
+                    // needs.
+                    payload_bytes.resize(bytes, 0);
                 }
             }
             data.terms.push(TermPostings {
@@ -3681,7 +3757,8 @@ impl<'d> IndexWriter<'d> {
                 docs: term_docs,
                 positions,
                 offsets,
-                payloads,
+                payload_bytes,
+                payload_lengths,
             });
         }
 
@@ -3784,9 +3861,7 @@ impl<'d> IndexWriter<'d> {
                 TermPostings {
                     term,
                     docs: term_docs,
-                    positions: Vec::new(),
-                    offsets: Vec::new(),
-                    payloads: Vec::new(),
+                    ..Default::default()
                 }
             })
             .collect();
@@ -3879,7 +3954,8 @@ impl<'d> IndexWriter<'d> {
                             })
                     })
                     .collect();
-                for ((field, _term), entries) in &inverted.terms {
+                for ((field, _term), list) in &inverted.terms {
+                    let entries = &list.entries;
                     if field != &config.name {
                         continue;
                     }
@@ -4017,11 +4093,17 @@ impl<'d> IndexWriter<'d> {
             let has_payloads = config.store_payloads;
 
             let mut field_terms_per_doc: Vec<Vec<TermVectorTerm>> = vec![Vec::new(); docs.len()];
-            for ((field, term), entries) in &inverted.terms {
+            for ((field, term), list) in &inverted.terms {
                 if field != &config.name {
                     continue;
                 }
-                for entry in entries {
+                // Running cursors into this term's flat payload run: term
+                // vectors want the per-occurrence view, and the run stores
+                // lengths rather than offsets, so the only way to it is the
+                // in-order walk `Lucene104PostingsWriter` also does over its
+                // own `payloadBytes`.
+                let (mut byte_at, mut len_at) = (0usize, 0usize);
+                for entry in &list.entries {
                     let (start_offsets, end_offsets) = if has_offsets {
                         let mut starts = Vec::with_capacity(entry.occurrences.len());
                         let mut ends = Vec::with_capacity(entry.occurrences.len());
@@ -4034,13 +4116,27 @@ impl<'d> IndexWriter<'d> {
                         (None, None)
                     };
                     let payloads = if has_payloads {
-                        // The invert pass guarantees one slot per occurrence
-                        // for a `store_payloads` field; padding here is what
-                        // makes that a checked invariant rather than an
-                        // assumed one, since `write_best_speed` indexes these
-                        // by occurrence.
-                        let mut payloads = entry.payloads.clone();
-                        payloads.resize(entry.occurrences.len(), Vec::new());
+                        // The invert pass guarantees one length per occurrence
+                        // for a `store_payloads` field; the saturating walk
+                        // here is what makes that a checked invariant rather
+                        // than an assumed one, since `write_best_speed`
+                        // indexes these by occurrence -- a short run pads with
+                        // empty payloads instead of panicking on a slice.
+                        let mut payloads = Vec::with_capacity(entry.occurrences.len());
+                        for _ in 0..entry.occurrences.len() {
+                            let length = list
+                                .payload_lengths
+                                .get(len_at)
+                                .map_or(0usize, |&l| l as usize);
+                            let end = byte_at.saturating_add(length);
+                            payloads.push(
+                                list.payload_bytes
+                                    .get(byte_at..end)
+                                    .map_or_else(Vec::new, <[u8]>::to_vec),
+                            );
+                            byte_at = end;
+                            len_at = len_at.saturating_add(1);
+                        }
                         Some(payloads)
                     } else {
                         None
@@ -7098,6 +7194,63 @@ mod tests {
         assert_eq!(writer.pending_doc_count(), 0);
     }
 
+    /// `IndexWriter::open` is the port's caller-facing door for a hand-built
+    /// field list, and Java's is the one place a `FieldInfo` can come from --
+    /// its constructor, which throws. Before this, an inconsistent field was
+    /// only found much later, at `parse` time or (for the combinations
+    /// `field_infos::write` coerces) never.
+    #[test]
+    fn open_rejects_a_field_list_javas_fieldinfo_constructor_would_throw_on() {
+        let tmp = tempdir("open-validates-fields");
+        let dir = FsDirectory::open(&tmp);
+
+        // Payloads without positions: an *indexed* field, so no coercion
+        // rescues it -- `FieldInfo.checkConsistency` throws.
+        let bad = FieldInfo::new("body", 0)
+            .with_index_options(IndexOptions::DocsAndFreqs)
+            .with_store_payloads(true);
+        assert!(matches!(
+            IndexWriter::open(&dir, vec![bad], "Lucene104", version()).err(),
+            Some(Error::FieldInfos(fi::Error::Inconsistent(_, _)))
+        ));
+
+        // Cross-field: two fields sharing a number, which
+        // `FieldInfos(FieldInfo[])` rejects.
+        assert!(matches!(
+            IndexWriter::open(
+                &dir,
+                vec![stored_only_field("a", 0), stored_only_field("b", 0)],
+                "Lucene104",
+                version()
+            )
+            .err(),
+            Some(Error::FieldInfos(fi::Error::InvalidFieldInfos(_)))
+        ));
+    }
+
+    /// The other half of Java's constructor: a *non*-indexed field's
+    /// `omitNorms`/`storePayloads`/`storeTermVector` are coerced off rather
+    /// than rejected, so the writer's stored copy is the one Lucene would
+    /// hold -- and the `.fnm` it later writes cannot disagree with it.
+    #[test]
+    fn open_coerces_the_indexed_only_flags_off_a_non_indexed_field() {
+        let tmp = tempdir("open-coerces-fields");
+        let dir = FsDirectory::open(&tmp);
+        let writer = IndexWriter::open(
+            &dir,
+            vec![FieldInfo::new("id", 0)
+                .with_omit_norms(true)
+                .with_store_term_vectors(true)
+                .with_store_payloads(true)],
+            "Lucene104",
+            version(),
+        )
+        .unwrap();
+        assert!(!writer.fields[0].omit_norms);
+        assert!(!writer.fields[0].store_term_vectors);
+        assert!(!writer.fields[0].store_payloads);
+    }
+
     #[test]
     fn add_documents_then_commit_produces_one_readable_segment() {
         let tmp = tempdir("add-commit");
@@ -9295,9 +9448,10 @@ mod tests {
     }
 
     /// Java's `FieldInfo.checkConsistency`: "indexed field cannot have
-    /// payloads without positions".
+    /// payloads without positions". Caught at `open` since c40 -- the writer
+    /// can no longer *hold* the field, so `set_postings_field` never sees it.
     #[test]
-    fn set_postings_field_rejects_payloads_on_a_field_without_positions() {
+    fn open_rejects_payloads_on_a_field_without_positions() {
         let tmp = tempdir("payloads-without-positions");
         let dir = FsDirectory::open(&tmp);
         let fields = vec![
@@ -9308,21 +9462,14 @@ mod tests {
                 ..stored_only_field("body", 1)
             },
         ];
-        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
-        let err = writer.set_postings_field(Some("body")).unwrap_err();
+        let Err(err) = IndexWriter::open(&dir, fields, "Lucene104", version()) else {
+            panic!("a field with payloads but no positions must not open a writer");
+        };
         assert!(
-            matches!(err, Error::PayloadsWithoutPositions(ref name, opts)
-                if name == "body" && opts == IndexOptions::DocsAndFreqs),
+            matches!(err, Error::FieldInfos(fi::Error::Inconsistent(ref name, msg))
+                if name == "body" && msg.contains("payloads without positions")),
             "{err:?}"
         );
-        // The same rejection through `add_postings_field`, which shares the
-        // resolver.
-        let mut writer =
-            IndexWriter::open(&dir, writer.fields.clone(), "Lucene104", version()).unwrap();
-        assert!(matches!(
-            writer.add_postings_field("body").unwrap_err(),
-            Error::PayloadsWithoutPositions(_, _)
-        ));
     }
 
     /// Installing a payload source when no declared field stores payloads

@@ -21,7 +21,7 @@ use lucene_search::facets::{
     self, path_components_to_string, string_to_path, DrillDownTermsIndexing, FacetBuildError,
     FacetResult, FacetsConfig, FacetsState, NumericRange, SortedSetFacetCounts,
 };
-use lucene_search::ordinal_map::OrdinalMap;
+use lucene_search::ordinal_map::{OrdinalMap, TermCursor};
 
 const SEP: char = '\u{1}';
 
@@ -204,11 +204,39 @@ fn config() -> FacetsConfig {
 fn global_counts(m: &Manifest) -> (FacetsState, Vec<u64>, OrdinalMap, Vec<Vec<String>>) {
     let segments = open_segments(m);
     let per_segment_terms: Vec<Vec<String>> = segments.iter().map(Segment::facet_terms).collect();
+    // Built the way Java builds it -- `OrdinalMap.build(owner, TermsEnum[],
+    // weights, ratio)` -- straight off each segment's real `.dvd`, with no
+    // dictionary materialized for it. This is the only place the
+    // `TermCursor for terms_dict::TermsCursor` adapter is exercised, and the
+    // assertions below are against the `ordmap.seg.N.to_global` table real
+    // Lucene's own `MultiDocValues.getSortedSetValues(...).mapping` wrote, so
+    // the streaming path is pinned to Java's answer and not merely to
+    // `OrdinalMap::build`'s.
+    let mut cursors: Vec<terms_dict::TermsCursor<'_>> = segments
+        .iter()
+        .map(|seg| {
+            let (_, terms) = seg.facet_ords();
+            terms_dict::TermsCursor::open(&seg.data, terms).expect("open a $facets cursor")
+        })
+        .collect();
+    let mut refs: Vec<&mut dyn TermCursor> = cursors
+        .iter_mut()
+        .map(|c| c as &mut dyn TermCursor)
+        .collect();
+    let map = OrdinalMap::build_streaming(&mut refs).expect("build_streaming over real .dvd");
+
+    // ...and the materialized entry point over the same terms must agree, so
+    // a divergence between the two is a test failure here rather than a
+    // difference in what a caller happens to have called.
     let as_bytes: Vec<Vec<Vec<u8>>> = per_segment_terms
         .iter()
         .map(|ts| ts.iter().map(|t| t.as_bytes().to_vec()).collect())
         .collect();
-    let map = OrdinalMap::build(&as_bytes);
+    assert_eq!(
+        map,
+        OrdinalMap::build(&as_bytes),
+        "streaming and materialized OrdinalMap builds disagree"
+    );
 
     let per_segment_counts: Vec<Vec<u64>> = segments
         .iter()

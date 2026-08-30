@@ -166,8 +166,17 @@ pub(crate) fn read_recovering<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
 /// **Lookup and close take only the owning shard's lock**, read out of the
 /// handle with a shift and a mask. The shard field is masked to its four
 /// bits, so any `u64` -- including a garbage or hostile one -- names a real
-/// shard and is then rejected by that shard's ordinary tag/generation check;
+/// shard and is then subject to that shard's ordinary tag/generation check;
 /// there is no index-out-of-range path to reach.
+///
+/// The shard field is **routing, not authentication**: rewriting it sends the
+/// handle to a different shard, which accepts it if *that* shard holds a live
+/// slot at the same index and generation. Two shards can issue handles
+/// differing only in this field (each shard's slots start at index 0 and
+/// generation 1), so a caller that mangles a handle can reach a different live
+/// entry of the same registry -- the same class of confusion a mangled *index*
+/// already gives within one shard, and the reason handles are opaque tokens
+/// the JVM side must not synthesise.
 pub(crate) struct Sharded<T> {
     shards: Vec<RwLock<SlotMap<T>>>,
 }
@@ -800,11 +809,26 @@ mod tests {
     }
 
     /// A handle whose shard bits have been tampered with must miss, exactly
-    /// as a tampered generation or tag does -- never index out of range, and
-    /// never alias a live entry in another shard.
+    /// as a tampered generation or tag does, and must never index out of
+    /// range. It must **not** be read as "and never aliases a live entry in
+    /// another shard": that is not a property the design has, and the
+    /// paragraph below is why.
+    ///
+    /// **On its own registry, not the global `results()`.** The shard field is
+    /// *routing*: a tampered handle is served by the shard it names, and only
+    /// that shard's index/generation check rejects it -- so it aliases if that
+    /// other shard happens to hold a live slot at the same index and
+    /// generation. Every shard's generation counter starts at 1 and every
+    /// shard's first insert takes index 0, so any other test holding a
+    /// first-insert results handle at the same moment makes exactly that
+    /// collision, which is how this test failed intermittently in c40's run
+    /// (alongside `concurrent_inserts_spread_across_shards`, which holds eight
+    /// of them across eight shards). A private registry has nothing in any
+    /// other shard, so the property under test is the one being asserted.
     #[test]
     fn a_handle_with_the_wrong_shard_bits_is_rejected() {
-        let handle = results()
+        let registry: Sharded<ResultsHandle> = Sharded::new(RegistryTag::Results);
+        let handle = registry
             .insert_checked(ResultsHandle { docs: vec![1] })
             .unwrap();
         let real_shard = shard_of(handle);
@@ -815,14 +839,14 @@ mod tests {
             // Rewrite only the shard field.
             let tampered = (handle & !(0xF << 52)) | ((candidate as u64) << 52);
             assert!(
-                results().read(tampered).get(tampered).is_none(),
+                registry.read(tampered).get(tampered).is_none(),
                 "shard {candidate} accepted a handle issued by shard {real_shard}"
             );
         }
         // Every possible shard field names a real shard, so even a fully
         // garbage handle is a miss rather than a panic.
-        assert!(results().read(u64::MAX).get(u64::MAX).is_none());
-        assert!(results().write(handle).remove(handle).is_some());
+        assert!(registry.read(u64::MAX).get(u64::MAX).is_none());
+        assert!(registry.write(handle).remove(handle).is_some());
     }
 
     /// Two different sharded registries stay independent: a handle from one

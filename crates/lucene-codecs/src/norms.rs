@@ -260,7 +260,13 @@ pub fn norm_value(data: &[u8], entry: &NormsEntry, doc: i32) -> Result<Option<i6
     // A caller doing more than one lookup on the same sparse field should hold
     // its own `DisiCursor` and walk it forward, which is what this function
     // cannot do across calls -- see `doc_values::NumericReader` for the shape.
-    match indexed_disi::DisiCursor::new(region, entry.dense_rank_power).advance_exact(doc)? {
+    match indexed_disi::DisiCursor::new(
+        region,
+        entry.dense_rank_power,
+        entry.jump_table_entry_count,
+    )
+    .advance_exact(doc)?
+    {
         Some(ordinal) => Ok(Some(read_value_at_ordinal(data, entry, ordinal as i64)?)),
         None => Ok(None),
     }
@@ -501,19 +507,22 @@ pub fn write_fields(
                 // `Lucene90NormsConsumer.addNormsField` calls, defaults to
                 // `DEFAULT_DENSE_RANK_POWER`: 256 bytes per DENSE block for a
                 // ~26x faster cold lookup inside one.
-                let disi_bytes = indexed_disi::write_with_dense_rank_power(
-                    doc_ids,
-                    indexed_disi::DEFAULT_DENSE_RANK_POWER,
-                );
+                let (disi_bytes, jump_table_entry_count) =
+                    indexed_disi::write_with_dense_rank_power(
+                        doc_ids,
+                        indexed_disi::DEFAULT_DENSE_RANK_POWER,
+                    );
                 let offset = data.len() as i64;
                 data.extend_from_slice(&disi_bytes);
                 meta.write_i64(offset);
                 // ARITH: `offset` was `data.len()` immediately before the
                 // `extend_from_slice` above and a `Vec` only grows there.
+                // `docsWithFieldLength` spans the jump table too -- it is what
+                // the reader subtracts the table's bytes from.
                 #[allow(clippy::arithmetic_side_effects)]
                 let disi_len = data.len() as i64 - offset;
                 meta.write_i64(disi_len);
-                meta.write_i16(-1); // jumpTableEntryCount: no jump table written
+                meta.write_i16(jump_table_entry_count);
                 meta.push(indexed_disi::DEFAULT_DENSE_RANK_POWER); // denseRankPower
             }
         }

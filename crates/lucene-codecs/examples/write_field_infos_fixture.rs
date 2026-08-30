@@ -172,6 +172,34 @@ fn main() {
             vector_encoding: VectorEncoding::Float32,
             vector_similarity_function: VectorSimilarityFunction::Euclidean,
         },
+        // c40: the combination Java's `FieldInfo` constructor makes
+        // unrepresentable and its *reader* silently clears. Recorded here with
+        // the flags already coerced off, because that is what real Lucene
+        // reports for the bytes below -- `force_non_indexed` patches this
+        // field's IndexOptions byte to NONE *after* `write` has emitted the
+        // three indexed-only bits, which no writer path can otherwise produce
+        // (`field_infos::write` coerces them away, exactly as Java's writer
+        // never sees them).
+        FieldInfo {
+            name: "noindex_flags".to_string(),
+            number: 8,
+            store_term_vectors: false,
+            omit_norms: false,
+            store_payloads: false,
+            soft_deletes_field: false,
+            parent_field: false,
+            index_options: IndexOptions::None,
+            doc_values_type: DocValuesType::None,
+            doc_values_skip_index_type: DocValuesSkipIndexType::None,
+            doc_values_gen: -1,
+            attributes: vec![],
+            point_dimension_count: 0,
+            point_index_dimension_count: 0,
+            point_num_bytes: 0,
+            vector_dimension: 0,
+            vector_encoding: VectorEncoding::Float32,
+            vector_similarity_function: VectorSimilarityFunction::Euclidean,
+        },
         FieldInfo {
             name: "__parent".to_string(),
             number: 7,
@@ -194,7 +222,25 @@ fn main() {
         },
     ];
 
-    let bytes = field_infos::write(&fields, &SEGMENT_ID, "");
+    // Write the wire bytes from a copy in which `noindex_flags` *is* indexed
+    // and carries all three flags, so `write` emits bits 0x7 for it, then
+    // patch its IndexOptions byte back to NONE. The result is a `.fnm` that no
+    // writer -- this port's or Lucene's -- can produce, but that Lucene's
+    // reader accepts, clearing the three bits in `FieldInfo`'s constructor
+    // before `checkConsistency()` looks. `fields` above already records the
+    // coerced expectation, so the manifest is what both engines must report.
+    let mut wire = fields.clone();
+    for f in wire.iter_mut() {
+        if f.name == "noindex_flags" {
+            f.index_options = IndexOptions::DocsAndFreqsAndPositions;
+            f.store_term_vectors = true;
+            f.omit_norms = true;
+            f.store_payloads = true;
+        }
+    }
+    let mut bytes = field_infos::write(&wire, &SEGMENT_ID, "");
+    force_non_indexed(&mut bytes, "noindex_flags");
+
     let dir = FsDirectory::open(&out_dir);
     let mut out = dir.create_output("_0.fnm").unwrap();
     out.write_bytes(&bytes);
@@ -261,4 +307,40 @@ fn main() {
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Patches `field`'s `IndexOptions` byte in an already-written `.fnm` to
+/// `NONE`, leaving its FieldBits untouched.
+///
+/// The per-field record starts `FieldName(String) FieldNumber(vint)
+/// FieldBits(byte) IndexOptions(byte)`, so finding the encoded name locates
+/// the two bytes that follow the number. Only a hand-patched file can carry
+/// this combination: real Lucene's writer takes its bits from a `FieldInfo`
+/// whose constructor already cleared them, and so does this port's `write`.
+fn force_non_indexed(bytes: &mut [u8], field: &str) {
+    // `write_string` is a vint length then the UTF-8 bytes; every field name
+    // here is far under 128 bytes, so the length is a single byte.
+    assert!(field.len() < 128, "single-byte vint length assumed");
+    let mut needle = vec![field.len() as u8];
+    needle.extend_from_slice(field.as_bytes());
+    let at = bytes
+        .windows(needle.len())
+        .position(|w| w == needle.as_slice())
+        .expect("field name not found in the written .fnm");
+    let mut cursor = at + needle.len();
+    // FieldNumber, a vint: skip its continuation bytes.
+    while bytes[cursor] & 0x80 != 0 {
+        cursor += 1;
+    }
+    cursor += 1;
+    // FieldBits stays as written; IndexOptions becomes NONE (0).
+    assert_ne!(bytes[cursor], 0, "expected non-zero FieldBits to preserve");
+    bytes[cursor + 1] = 0;
+
+    // The footer's CRC covers every byte before it, so re-stamp it -- a
+    // hand-patched file has to stay a *valid* file, or the only thing the
+    // verifier proves is that Lucene checks checksums.
+    let checksum_at = bytes.len() - 8;
+    let checksum = crc32fast::hash(&bytes[..checksum_at]) as u64;
+    bytes[checksum_at..].copy_from_slice(&checksum.to_be_bytes());
 }
