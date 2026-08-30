@@ -209,7 +209,7 @@ pub fn decode_doc_ids(data: &[u8], dense_rank_power: u8) -> Result<Vec<i32>> {
 /// worst of the three options: "this document has no value" is a legitimate
 /// answer, so a caller that violated the contract got a plausible wrong number
 /// rather than a diagnosis. This file already panics on a violated writer
-/// contract ([`write`]'s ascending check), so a violated reader contract panics
+/// contract ([`write()`]'s ascending check), so a violated reader contract panics
 /// too; corrupt *data*, as always, is an `Err`.
 ///
 /// A caller that genuinely needs random access calls [`reset`](Self::reset)
@@ -709,7 +709,7 @@ pub fn write(doc_ids: &[i32]) -> (Vec<u8>, i16) {
     write_with_dense_rank_power(doc_ids, NO_RANK)
 }
 
-/// [`write`], with control over the DENSE rank table -- the full port of
+/// [`write()`], with control over the DENSE rank table -- the full port of
 /// `IndexedDISI.writeBitSet(it, out, denseRankPower)`.
 ///
 /// `dense_rank_power` must be [`NO_RANK`] (no table) or `7..=15`, the same

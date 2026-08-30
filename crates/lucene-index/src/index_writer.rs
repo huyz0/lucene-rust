@@ -57,7 +57,7 @@
 //! [`MergePolicyConfig`] itself exposes, no concurrent/background merging, no
 //! merge-scheduling across many tiers beyond what [`crate::merge_policy`]
 //! itself already does in one [`crate::merge_policy::find_merges`] call, and
-//! [`IndexWriter::update_document`]/[`IndexWriter::delete_documents`] do not
+//! [`IndexWriter::update_document`]/[`IndexWriter::delete_documents_by_term`] do not
 //! trigger this check (only [`IndexWriter::commit`] does, matching where
 //! this port's flush/commit work already lived before this feature).
 //!
@@ -671,7 +671,7 @@ pub struct IndexWriter<'d> {
     /// Per-pending-doc explicit `(term, custom_freq)` pairs for
     /// [`Self::custom_freq_postings_field`], aligned 1:1 by index with
     /// `pending_docs` (index `i` here is doc ID `i` in the next flush, same
-    /// convention [`flush_stored_only_segment`] already uses for
+    /// convention [`flush_stored_only_segment`](crate::segment_writer::flush_stored_only_segment) already uses for
     /// `pending_docs` itself) -- kept in lockstep by
     /// [`IndexWriter::add_document`] (pushes an empty `Vec`) and
     /// [`IndexWriter::add_document_with_custom_freq_terms`] (pushes the
@@ -874,15 +874,6 @@ struct DocValuesFieldConfig {
     doc_values_type: DocValuesType,
 }
 
-/// One field this writer has been opted into also automatically computing
-/// and writing real norms (`.nvm`/`.nvd`, via
-/// [`norms::write_single_dense_field`]) for, resolved once by
-/// [`IndexWriter::set_norms_field`] against this writer's fixed `fields`
-/// list -- same "resolve once, reuse every commit" shape as
-/// [`PostingsFieldConfig`]/[`DocValuesFieldConfig`], but single-field-only
-/// (a single `Option`, not a list) matching [`DocValuesFieldConfig`]'s own
-/// current scope rather than [`PostingsFieldConfig`]'s multi-field one.
-#[derive(Debug, Clone)]
 /// Every doc-values column a source segment currently has, resolved
 /// per field to the **newest** generation rather than to the base
 /// `.dvm`/`.dvd`.
@@ -903,11 +894,24 @@ struct DocValuesFieldConfig {
 /// field at the pair its current column lives in. The `.dvs` skip
 /// index is not opened: nothing in the merge consults it, and the
 /// merged one is rebuilt from the merged columns.
+#[derive(Debug, Clone)]
 struct SourceDocValueColumns {
     columns: Vec<(doc_values::DocValuesMeta, Vec<u8>)>,
     per_field: Vec<(i32, usize)>,
 }
 
+/// One field this writer computes and writes real norms (`.nvm`/`.nvd`, via
+/// [`lucene_codecs::norms::write_fields`]) for, derived once per flush by
+/// [`IndexWriter::norms_field_configs`] from this writer's fixed `fields`
+/// list -- same "resolve once, reuse every commit" shape as
+/// [`PostingsFieldConfig`]/[`DocValuesFieldConfig`].
+///
+/// There is no opt-*in* knob, because Lucene has none: every indexed field
+/// gets a norm column unless it says `omitNorms`, so the list is every field
+/// with `index_options != IndexOptions::None` that
+/// [`IndexWriter::omit_norms_field`] has not been called for, and it is a
+/// `Vec`, not the single `Option` this carried before norms stopped being
+/// opt-in.
 struct NormsFieldConfig {
     name: String,
     field_number: i32,
@@ -1115,9 +1119,9 @@ impl<'d> IndexWriter<'d> {
     /// no per-call schema reconciliation the way [`crate::merge`] does
     /// across sources -- every document flushed through one writer shares
     /// one fixed field list, same as every existing caller of
-    /// [`flush_stored_only_segment`]). `codec_name`/`lucene_version` are
+    /// [`flush_stored_only_segment`](crate::segment_writer::flush_stored_only_segment)). `codec_name`/`lucene_version` are
     /// recorded on every segment this writer flushes, same meaning as the
-    /// identically-named parameters on [`flush_stored_only_segment`].
+    /// identically-named parameters on [`flush_stored_only_segment`](crate::segment_writer::flush_stored_only_segment).
     pub fn open(
         dir: &'d dyn Directory,
         fields: Vec<FieldInfo>,
@@ -1950,7 +1954,7 @@ impl<'d> IndexWriter<'d> {
     /// no vector files and zeroes every `.fnm` dimension, and nothing reports
     /// it. That is the same timing every other opt-in here has
     /// ([`IndexWriter::set_postings_field`],
-    /// [`IndexWriter::set_doc_values_field`], [`IndexWriter::set_norms_field`]),
+    /// [`IndexWriter::set_doc_values_field`], [`IndexWriter::omit_norms_field`]),
     /// and is a consequence of buffering documents and encoding at flush; in
     /// Java the equivalent is fixed on the `FieldType` before the document
     /// exists. Reconfigure after a [`IndexWriter::flush`] or
@@ -2050,7 +2054,7 @@ impl<'d> IndexWriter<'d> {
 
     /// Read-only access to the directory this writer was opened over.
     /// Exists so a caller that wants to drive
-    /// [`IndexWriter::update_document`]/[`IndexWriter::delete_documents`]
+    /// [`IndexWriter::update_document`]/[`IndexWriter::delete_documents_by_term`]
     /// itself can reopen this writer's already-committed segments' files to
     /// build the [`update_document::SegmentDeleteSource`]s those two methods
     /// require (see `crates/lucene-ffi/src/writer.rs`'s
@@ -2846,7 +2850,7 @@ impl<'d> IndexWriter<'d> {
 
     /// Flushes every currently-buffered [`IndexWriter::add_document`] call
     /// (if any) to a brand-new segment via
-    /// [`flush_stored_only_segment`], appends it to this writer's segment
+    /// [`flush_stored_only_segment`](crate::segment_writer::flush_stored_only_segment), appends it to this writer's segment
     /// list, and writes the whole updated list as the next `segments_N`
     /// generation via [`crate::segment_infos::write`] -- real Lucene's
     /// `IndexWriter.commit()` after one or more buffered
@@ -2892,7 +2896,7 @@ impl<'d> IndexWriter<'d> {
     /// [`IndexWriter::commit`] used to do *except* the final
     /// [`crate::segment_infos::write`] call that actually produces the next
     /// `segments_N` -- flushes `pending_docs` (if any) to a brand-new
-    /// segment via [`flush_stored_only_segment`], builds and writes that
+    /// segment via [`flush_stored_only_segment`](crate::segment_writer::flush_stored_only_segment), builds and writes that
     /// segment's postings/term-vector/doc-values files exactly as
     /// [`IndexWriter::commit`] always has, and stashes the resulting
     /// in-memory [`SegmentInfos`] (bumped generation/version, new segment
@@ -3592,7 +3596,7 @@ impl<'d> IndexWriter<'d> {
     /// Builds [`postings_writer::write_fields`]'s input from `docs`'
     /// [`FieldValue::String`] values for **every** field in `configs` (each
     /// pending doc's index into `docs` becomes its doc ID in the new segment,
-    /// matching [`flush_stored_only_segment`]'s own doc-ordering), tokenizes
+    /// matching [`flush_stored_only_segment`](crate::segment_writer::flush_stored_only_segment)'s own doc-ordering), tokenizes
     /// each field independently via
     /// [`crate::indexing_chain::invert_documents`] with a plain
     /// [`Analyzer::standard`] (no stopwords -- this facade has no
@@ -4003,7 +4007,7 @@ impl<'d> IndexWriter<'d> {
     }
 
     /// Builds one [`TermVectorsDocument`] per entry in `docs` (in the same
-    /// doc-ID order [`flush_stored_only_segment`] uses -- index into `docs`
+    /// doc-ID order [`flush_stored_only_segment`](crate::segment_writer::flush_stored_only_segment) uses -- index into `docs`
     /// == doc ID in the new segment), sourced from **every** field in
     /// `configs`' [`FieldValue::String`] values, each tokenized independently
     /// via [`crate::indexing_chain::invert_documents`] with a plain
@@ -4183,7 +4187,7 @@ impl<'d> IndexWriter<'d> {
     /// [`doc_values::write_single_sparse_numeric_field`]'s) input from
     /// `docs`' values for `config.field_number` (each pending doc's index
     /// into `docs` becomes its doc ID in the new segment, matching
-    /// [`flush_stored_only_segment`]'s own doc-ordering) and calls the
+    /// [`flush_stored_only_segment`](crate::segment_writer::flush_stored_only_segment)'s own doc-ordering) and calls the
     /// appropriate one to actually encode the bytes.
     ///
     /// A pending doc with no value at all for `config.field_number` is no
@@ -4631,7 +4635,7 @@ impl<'d> IndexWriter<'d> {
     /// builds [`doc_values::write_single_dense_sorted_set_field`]'s input
     /// from `docs`' values for `config.field_number` -- unlike
     /// [`Self::build_sorted_doc_values_output`] (exactly one value per doc),
-    /// a doc's value-set here is *every* [`StoredField`] entry in that doc
+    /// a doc's value-set here is *every* [`lucene_codecs::stored_fields::StoredField`] entry in that doc
     /// carrying `config.field_number`, so a doc opts into multiple values by
     /// simply repeating the field (real Lucene's own multi-`add`-calls-per-
     /// doc convention for `SortedSetDocValuesField`). Each such value must be
@@ -6253,7 +6257,7 @@ impl<'d> IndexWriter<'d> {
     ///
     /// This is the slice of Java's `ReaderPool`/`ReadersAndUpdates` that
     /// buffered deletes actually use. A segment with no postings files opens
-    /// with an empty [`BlockTreeFields`], which resolves every term to zero
+    /// with an empty [`lucene_codecs::blocktree::BlockTreeFields`], which resolves every term to zero
     /// documents -- the same outcome as Java's `TermDocsIterator.nextTerm`
     /// returning null, and the reason a delete against a stored-fields-only
     /// segment is a legitimate no-op rather than an error.
@@ -6647,7 +6651,7 @@ impl<'d> IndexWriter<'d> {
     /// as unreferenced orphans no commit points at.
     ///
     /// Refused while a [`IndexWriter::prepare_commit`] is outstanding, for the
-    /// same reason [`IndexWriter::delete_documents`] is.
+    /// same reason [`IndexWriter::delete_documents_by_term`] is.
     pub fn delete_all(&mut self) -> Result<()> {
         if self.prepared_commit.is_some() {
             return Err(Error::PreparedCommitPending("delete_all"));
@@ -6894,7 +6898,7 @@ enum TermSpan {
     Stop,
 }
 
-/// The `docIDUpto` limit as a doc-space bound. [`MAX_DOC_ID_UPTO`] means "no
+/// The `docIDUpto` limit as a doc-space bound. [`crate::buffered_updates::MAX_DOC_ID_UPTO`] means "no
 /// limit", which is `usize::MAX` here and is then clamped to the segment's own
 /// `max_doc` by every caller.
 fn query_bound(limit: i32) -> usize {

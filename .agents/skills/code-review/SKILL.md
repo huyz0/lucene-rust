@@ -23,6 +23,17 @@ ready.
   aborts cross the FFI as a dead JVM. Enforced in the gated crates by
   `clippy::arithmetic_side_effects`; every `#[allow]` of it carries an
   `// ARITH:` proof. See [`docs/arithmetic-gate.md`](../../../docs/arithmetic-gate.md).
+- **Indexing a `FixedBitSet`, or returning a sentinel**: the bound comes from
+  *that bitset's* `len()`, and an out-of-domain `-1` is declared with
+  `// SENTINEL:` and tested at every call site. Enforced by
+  `python3 scripts/check-port-invariants.py`; the blind spots each rule leaves
+  are in [`docs/mechanical-gates.md`](../../../docs/mechanical-gates.md), and
+  reading them is part of this checklist, not optional colour.
+- **Doc links resolve**: `[`links`]` in doc comments are gated
+  (`rustdoc::broken_intra_doc_links`), but a symbol in *plain backticks* is
+  not. When a change removes a `fn` or a `struct`, grep `crates/`,
+  `docs/parity.md` and `PLAN.md` for its name -- three stale references were
+  found that way in c41.
 - **Not a dumb port**: the in-memory design was considered on its own merits,
   not transliterated field-for-field from the Java class (see
   `rust-performance`).
@@ -43,6 +54,9 @@ ready.
 - `cargo fmt --all --check`, `cargo clippy --workspace -- -D warnings`,
   `cargo llvm-cov --workspace --fail-under-lines 95` (see `git-workflow`,
   `test-coverage`).
+- `python3 scripts/check-port-invariants.py` and the gate's rustdoc pass, both
+  in `scripts/gate.sh` — see
+  [`docs/mechanical-gates.md`](../../../docs/mechanical-gates.md).
 - Nothing mechanical yet checks "new decoder has a fixture" or "parity.md
   updated" — self-review + the `quality-reviewer` subagent (`/quality-review`)
   cover it until this repo has an `xtask`-style gate worth building.

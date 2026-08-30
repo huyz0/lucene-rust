@@ -6,6 +6,11 @@
 //! yet (no hot per-doc-value loop). Shared by [`crate::doc_values`] (plain
 //! bit-packed value arrays) and [`crate::direct_monotonic`] (each block's
 //! deltas-from-expected-average array).
+//!
+//! `pub` for the same reason [`crate::for_util`] is: a per-value decode
+//! primitive on the doc-values and monotonic-sequence paths, and
+//! `DirectReader.getInstance` is public in Lucene, so the two can be
+//! benchmarked directly against each other.
 
 use lucene_store::Result;
 

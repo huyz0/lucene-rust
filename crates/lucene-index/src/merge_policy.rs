@@ -40,7 +40,7 @@
 //! - `SegmentCommitInfo.sizeInBytes()` -- the **raw** sum of the segment's
 //!   file lengths. That is [`SegmentStat::size_bytes`], filled either by
 //!   [`segment_byte_size`] (byte-accurate, needs a
-//!   [`Directory`](lucene_store::directory::Directory)) or by a caller's own
+//!   [`Directory`]) or by a caller's own
 //!   doc-count approximation ([`SegmentStat::from_segment_info`]).
 //! - `MergePolicy.size(info, ctx)` -- the raw size **pro-rated by the live-doc
 //!   fraction**, `bytes * (1 - delCount/maxDoc)`. That is [`prorated_size`],

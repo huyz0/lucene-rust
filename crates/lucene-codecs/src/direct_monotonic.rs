@@ -35,7 +35,7 @@ struct Block {
 }
 
 /// `DirectMonotonicWriter.MIN_BLOCK_SHIFT`/`MAX_BLOCK_SHIFT`. Java enforces
-/// both in the writer's constructor only; [`write`] does the same, and
+/// both in the writer's constructor only; [`write()`] does the same, and
 /// [`load_meta`] enforces the ceiling on the read side because that is what
 /// bounds every shift below.
 const MIN_BLOCK_SHIFT: u32 = 2;

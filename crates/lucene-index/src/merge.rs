@@ -25,7 +25,7 @@
 //! [`Document`](stored_fields::Document) reader
 //! (via this port's stored-fields reader, [`stored_fields::open`] +
 //! [`stored_fields::StoredFieldsReader::document`]), an optional per-source
-//! live-docs bitset (via [`live_docs::parse`], or `None` if the source has no
+//! live-docs bitset (via [`lucene_codecs::live_docs::parse`], or `None` if the source has no
 //! deletions), and optional per-source doc-values/norms/term-vectors data
 //! (see [`MergeSource`]), and:
 //! 1. reconciles field numbering across sources by field name (see
@@ -69,7 +69,7 @@
 //!
 //! # Doc values / norms / term vectors: mergeable, and now real flush callers exist
 //!
-//! [`segment_writer::flush_stored_only_segment`] itself still only ever
+//! [`crate::segment_writer::flush_stored_only_segment`] itself still only ever
 //! writes stored-fields-only segments. But `IndexWriter::commit`
 //! (`index_writer.rs`) is a real caller for postings, term vectors, doc
 //! values, and norms: postings and term vectors support multiple fields per
@@ -4000,6 +4000,14 @@ fn merge_postings(
                         docs.push((merged_doc_id, freq));
                         // Java's `docsSeen` bitset, not a `HashSet<i32>`: the
                         // merged doc id space is dense and known up front.
+                        //
+                        // FBS: `docs_seen` is
+                        // `FixedBitSet::new(merged_doc_count.max(1))` where
+                        // `merged_doc_count == doc_order.len()`, and
+                        // `build_doc_id_maps` writes only `doc_order`'s own
+                        // enumeration indices into every map -- so every
+                        // `mapped_doc_id` result is in `0..doc_order.len()`,
+                        // which is this bitset's `len()`.
                         docs_seen.set(merged_doc_id as usize);
                         if let Some(source_positions) = &source_positions {
                             let doc_positions = &source_positions[doc_idx];
@@ -4203,7 +4211,7 @@ fn merge_point_streams(
 /// One merged field's BKD points, ready to hand to
 /// [`lucene_codecs::points::write`] (via a [`WritePointsField`] built from
 /// `points`).
-struct MergedPointsField {
+pub(crate) struct MergedPointsField {
     field_number: i32,
     num_dims: i32,
     num_index_dims: i32,
@@ -4257,7 +4265,7 @@ struct MergedPointsField {
 /// a mismatch, and any source field whose `num_index_dims` disagrees with
 /// the merged field's declared `point_index_dimension_count` is rejected
 /// with [`Error::PointsIndexDimsDisagreement`].
-fn merge_points(
+pub(crate) fn merge_points(
     sources: &[MergeSource],
     per_source_maps: &[HashMap<i32, i32>],
     per_source_live_ids: &[Vec<i32>],
@@ -13682,11 +13690,10 @@ mod tests {
         // comes off the `.liv` -- two independent files.
         //
         // Both failure modes c28's rule names are covered:
-        //  * an **empty** bitset, where `words` itself is empty, so
-        //    `words[index >> 6]` is a real index panic in release as well as
-        //    debug (in a debug build `FixedBitSet::get`'s own bare
-        //    `debug_assert!(index < self.num_bits)` fires first) -- either
-        //    way this case aborts the test without the fix;
+        //  * an **empty** bitset, where every index is out of range, so
+        //    `FixedBitSet::get`'s own bound (checked in release as well as
+        //    debug since c41) panics -- this case aborts the test without
+        //    the fix;
         //  * a bitset a few bits **short**, where the index still lands
         //    inside `words` and reads a ghost bit: five documents silently
         //    dropped from the merged segment, with nothing reported.

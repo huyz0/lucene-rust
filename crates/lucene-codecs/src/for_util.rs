@@ -7,6 +7,13 @@
 //! the compatibility contract; a faster/SIMD re-expression of the same
 //! bit-layout is future work (see `docs/parity.md`).
 //!
+//! `pub` so that the decode kernel can be benchmarked against Lucene's own
+//! from outside the crate -- Lucene makes `PostingIndexInput` public for
+//! exactly this reason, and a kernel this hot with no external
+//! microbenchmark is how a 3x regression hides inside a flat profile. Not
+//! otherwise part of this crate's intended surface: callers want
+//! [`crate::postings`], which owns the framing these primitives sit inside.
+//!
 //! ## Encode side scope
 //!
 //! [`for_encode`]/[`pfor_encode`] are the production encoders (promoted from

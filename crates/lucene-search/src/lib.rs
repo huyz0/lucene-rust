@@ -351,6 +351,16 @@ pub enum Error {
     /// message. Never a sign of a damaged index.
     #[error("{0}")]
     InvalidKnnQuery(String),
+    /// [`query_cache::search_term_query_cached`] was handed a `num_docs` the
+    /// segment's own postings disagree with: a term's `.doc` file produced a
+    /// doc id at or past the bitset that `num_docs` sizes. Java has no
+    /// equivalent because its `LRUQueryCache` builds the set from a
+    /// `LeafReaderContext` that owns both numbers; here they are two
+    /// parameters, and the alternative to reporting the disagreement is
+    /// `FixedBitSet::set` writing a ghost bit or panicking (see
+    /// `docs/mechanical-gates.md`'s `fixed-bitset-bound` rule).
+    #[error("cached query produced docID={doc_id}, outside the segment's 0..{num_docs}")]
+    CachedDocOutOfRange { doc_id: i32, num_docs: usize },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -444,7 +454,7 @@ fn term_doc_ids(
     };
     Ok(docs
         .into_iter()
-        .filter(|&doc_id| live_docs.is_none_or(|bits| bits.get(doc_id as usize)))
+        .filter(|&doc_id| live_docs.is_none_or(|bits| bits.get_doc(doc_id)))
         .collect())
 }
 
@@ -603,7 +613,7 @@ fn stream_constant_score_clause<C: ScoringCollector>(
         if best == lucene_codecs::postings::NO_MORE_DOCS {
             return Ok(true);
         }
-        if live_docs.is_none_or(|bits| bits.get(best as usize)) {
+        if live_docs.is_none_or(|bits| bits.get_doc(best)) {
             collector.collect(best, 1.0);
             // Full, and its worst hit already scores what every remaining
             // document would: nothing left can displace anything.
@@ -700,7 +710,7 @@ fn prefix_doc_ids(
             continue;
         };
         for doc_id in docs {
-            if live_docs.is_none_or(|bits| bits.get(doc_id as usize)) {
+            if live_docs.is_none_or(|bits| bits.get_doc(doc_id)) {
                 acc.set(doc_id);
             }
         }
@@ -739,7 +749,7 @@ fn wildcard_doc_ids(
             continue;
         };
         for doc_id in docs {
-            if live_docs.is_none_or(|bits| bits.get(doc_id as usize)) {
+            if live_docs.is_none_or(|bits| bits.get_doc(doc_id)) {
                 acc.set(doc_id);
             }
         }
@@ -1024,7 +1034,7 @@ fn fuzzy_doc_ids(
             continue;
         };
         for doc_id in docs {
-            if live_docs.is_none_or(|bits| bits.get(doc_id as usize)) {
+            if live_docs.is_none_or(|bits| bits.get_doc(doc_id)) {
                 acc.set(doc_id);
             }
         }
@@ -1093,7 +1103,7 @@ fn fuzzy_doc_scores(
             continue;
         };
         for (&doc_id, &freq) in postings.docs.iter().zip(postings.freqs.iter()) {
-            if live_docs.is_none_or(|bits| bits.get(doc_id as usize)) {
+            if live_docs.is_none_or(|bits| bits.get_doc(doc_id)) {
                 contributions.push((doc_id, freq, boost));
             }
         }
@@ -1166,7 +1176,7 @@ fn regexp_doc_ids(
             continue;
         };
         for doc_id in docs {
-            if live_docs.is_none_or(|bits| bits.get(doc_id as usize)) {
+            if live_docs.is_none_or(|bits| bits.get_doc(doc_id)) {
                 acc.set(doc_id);
             }
         }
@@ -1201,7 +1211,7 @@ fn term_in_set_doc_ids(
             continue;
         };
         for doc_id in docs {
-            if live_docs.is_none_or(|bits| bits.get(doc_id as usize)) {
+            if live_docs.is_none_or(|bits| bits.get_doc(doc_id)) {
                 acc.set(doc_id);
             }
         }
@@ -1403,7 +1413,7 @@ fn points_range_doc_ids(
 /// [`doc_value_query::search_numeric_range`]'s own `[0, max_doc)` sweep uses.
 pub(crate) fn match_all_doc_ids(live_docs: Option<&FixedBitSet>, max_doc: i32) -> Vec<i32> {
     (0..max_doc)
-        .filter(|&doc_id| live_docs.is_none_or(|bits| bits.get(doc_id as usize)))
+        .filter(|&doc_id| live_docs.is_none_or(|bits| bits.get_doc(doc_id)))
         .collect()
 }
 
@@ -1587,7 +1597,7 @@ fn term_doc_freqs(
         .iter()
         .copied()
         .zip(postings.freqs.iter().copied())
-        .filter(|&(doc_id, _)| live_docs.is_none_or(|bits| bits.get(doc_id as usize)))
+        .filter(|&(doc_id, _)| live_docs.is_none_or(|bits| bits.get_doc(doc_id)))
         .collect())
 }
 
@@ -2104,7 +2114,7 @@ pub fn search_term_query_scored_maxscore_with_stats(
             checked_upto = cursor.current_block_last_doc_id();
         }
 
-        if live_docs.is_none_or(|bits| bits.get(doc_id as usize)) {
+        if live_docs.is_none_or(|bits| bits.get_doc(doc_id)) {
             let freq = cursor.freq().expect("cursor started, doc_id in range") as f32;
             // Table-driven scoring, as real Lucene's BM25Scorer does: one
             // lookup and one division rather than decoding the norm to a length
@@ -2783,7 +2793,7 @@ fn try_disjunction_lazy<C: ScoringCollector>(
             }
         }
 
-        let live = live_docs.is_none_or(|bits| bits.get(candidate as usize));
+        let live = live_docs.is_none_or(|bits| bits.get_doc(candidate));
         let mut score = 0.0f32;
         for leg in legs.iter_mut() {
             if leg.doc != candidate {
@@ -3188,7 +3198,7 @@ fn try_conjunction_lazy<C: ScoringCollector>(
             }
         }
 
-        if live_docs.is_none_or(|bits| bits.get(candidate as usize)) {
+        if live_docs.is_none_or(|bits| bits.get_doc(candidate)) {
             let mut score = 0.0f32;
             // `ConjunctionScorer.score()` iterates `scorers`, the scoring
             // subset of `required` -- a filter leg is skipped entirely, so its
@@ -4059,7 +4069,7 @@ fn term_doc_positions(
     let mut docs = Vec::with_capacity(postings.docs.len());
     let mut spans: Vec<(u32, u32)> = Vec::with_capacity(postings.docs.len());
     for (i, doc_id) in postings.docs.into_iter().enumerate() {
-        if !live_docs.is_none_or(|bits| bits.get(doc_id as usize)) {
+        if !live_docs.is_none_or(|bits| bits.get_doc(doc_id)) {
             continue;
         }
         docs.push(doc_id);
@@ -4164,7 +4174,7 @@ pub fn search_phrase_query<C: Collector>(
             .map(|v| Box::new(v.into_iter()) as BoxDocIter<'static>)
             .collect(),
     )
-    .filter(|&doc_id| live_docs.is_none_or(|bits| bits.get(doc_id as usize)))
+    .filter(|&doc_id| live_docs.is_none_or(|bits| bits.get_doc(doc_id)))
     .collect();
     if candidate_docs.is_empty() {
         return Ok(());
@@ -4365,7 +4375,7 @@ pub fn search_phrase_query_scored_with_stats<C: ScoringCollector>(
             .map(|v| Box::new(v.into_iter()) as BoxDocIter<'static>)
             .collect(),
     )
-    .filter(|&doc_id| live_docs.is_none_or(|bits| bits.get(doc_id as usize)))
+    .filter(|&doc_id| live_docs.is_none_or(|bits| bits.get_doc(doc_id)))
     .collect();
     if candidate_docs.is_empty() {
         return Ok(());
@@ -4740,7 +4750,7 @@ fn multi_phrase_hits<C: ScoringCollector>(
             .map(|docs| Box::new(docs.into_iter()) as BoxDocIter<'static>)
             .collect(),
     )
-    .filter(|&doc_id| live_docs.is_none_or(|bits| bits.get(doc_id as usize)))
+    .filter(|&doc_id| live_docs.is_none_or(|bits| bits.get_doc(doc_id)))
     .collect();
     if candidates.is_empty() {
         return Ok(());

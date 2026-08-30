@@ -1070,6 +1070,10 @@ impl HnswGraphSearcher {
     /// `HnswGraphSearcher.findBestEntryPoint`: greedy hill-climbing from the
     /// top level down to level 1. Returns `-1` for "no entry node, or the
     /// visit limit was hit" (Java's `UNK_EP`).
+    //
+    // SENTINEL: `-1` = Java's `UNK_EP`. Outside the domain of a node ordinal,
+    // and it reaches a `FixedBitSet` index one call away, so every call site
+    // has to test it.
     pub fn find_best_entry_point<G: HnswGraphView, S: VectorScorer>(
         &mut self,
         scorer: &mut S,
@@ -1084,12 +1088,12 @@ impl HnswGraphSearcher {
         self.prepare_scratch_state(size, Self::bulk_width(graph));
         // Java asserts `friendOrd < size` inside the loop below -- an
         // assertion, i.e. absent in production, where the same ordinal then
-        // indexes `visited`. `FixedBitSet::get`/`set` here index
-        // `words[index >> 6]` behind a `debug_assert`, so an out-of-range
-        // ordinal is a *ghost bit* in a release build (a silently wrong
-        // "already visited" answer) or an index panic 64 bits later. The bound
-        // is taken against the bitset's own length, per
-        // `docs/arithmetic-gate.md`, and hoisted out of both loops.
+        // indexes `visited`. Since c41 `FixedBitSet::get`/`set` check their
+        // bound in release too, so an out-of-range ordinal is a panic rather
+        // than a ghost bit -- but a panic on a hot search path is still an
+        // aborted query, and the bound belongs where the ordinal is decoded,
+        // not where it is used. It is taken against the bitset's own length,
+        // per `docs/mechanical-gates.md`, and hoisted out of both loops.
         let visited_len = self.visited.len();
         if current_ep < 0 || current_ep as usize >= visited_len {
             return Err(Error::CorruptMeta(format!(
@@ -1106,10 +1110,12 @@ impl HnswGraphSearcher {
                 graph.neighbors_into(level, current_ep, &mut self.neighbor_scratch)?;
                 // The neighbours just read off the `.vex` are file-derived
                 // ordinals, and both of the uses below index a fixed-size
-                // buffer with them: `visited` (a `FixedBitSet`, whose `get`
-                // only `debug_assert`s its bound) and `bulk_nodes`. Checking
-                // them here is what makes the two `#[allow]`s below sound --
-                // `check_neighbors` is the enforcer their proofs name.
+                // buffer with them: `visited` (a `FixedBitSet`, which panics
+                // on an out-of-range index) and `bulk_nodes` (a `Vec`, which
+                // also panics). Checking them here turns a corrupt `.vex` into
+                // a typed error instead of an aborted query, and is what makes
+                // the two `#[allow]`s below sound -- `check_neighbors` is the
+                // enforcer their proofs name.
                 check_neighbors(
                     &self.neighbor_scratch,
                     self.visited.len(),
@@ -1208,7 +1214,7 @@ impl HnswGraphSearcher {
             let score = self.bulk_scores[i];
             self.visited.set(ep as usize);
             self.candidates.add(ep, score);
-            if accept_ords.is_none_or(|b| b.get(ep as usize)) {
+            if accept_ords.is_none_or(|b| b.get_doc(ep)) {
                 results.collect(ep, score);
             }
         }
@@ -1233,10 +1239,12 @@ impl HnswGraphSearcher {
             graph.neighbors_into(level, top_candidate_node, &mut self.neighbor_scratch)?;
             // The neighbours just read off the `.vex` are file-derived
             // ordinals, and both of the uses below index a fixed-size
-            // buffer with them: `visited` (a `FixedBitSet`, whose `get`
-            // only `debug_assert`s its bound) and `bulk_nodes`. Checking
-            // them here is what makes the two `#[allow]`s below sound --
-            // `check_neighbors` is the enforcer their proofs name.
+            // buffer with them: `visited` (a `FixedBitSet`, which panics on an
+            // out-of-range index) and `bulk_nodes` (a `Vec`, which also
+            // panics). Checking them here turns a corrupt `.vex` into a typed
+            // error instead of an aborted query, and is what makes the two
+            // `#[allow]`s below sound -- `check_neighbors` is the enforcer
+            // their proofs name.
             check_neighbors(
                 &self.neighbor_scratch,
                 self.visited.len(),
@@ -1281,7 +1289,7 @@ impl HnswGraphSearcher {
                         let score = self.bulk_scores[i];
                         if score >= min_accepted_similarity {
                             self.candidates.add(node, score);
-                            if accept_ords.is_none_or(|b| b.get(node as usize))
+                            if accept_ords.is_none_or(|b| b.get_doc(node))
                                 && results.collect(node, score)
                             {
                                 let old = min_accepted_similarity;
@@ -3446,9 +3454,10 @@ mod tests {
     /// A graph whose neighbour lists name ordinals past its own `size()`.
     /// Every `HnswGraphView` in this crate rejects those when it decodes them,
     /// so this is the searcher's own bound: without it the ordinal indexes
-    /// `visited`, which is `FixedBitSet::set(words[i >> 6])` behind a
-    /// `debug_assert` -- a **ghost bit** in a release build (a silently wrong
-    /// "already visited") and an index panic 64 ordinals further out.
+    /// `visited` and the query dies on `FixedBitSet`'s own out-of-range panic
+    /// instead of returning `Error::InvalidGraphParameter`. Before c41 made
+    /// that bound unconditional it was worse -- a **ghost bit** in a release
+    /// build, a silently wrong "already visited".
     struct WildArcs {
         neighbour: i32,
         count: usize,

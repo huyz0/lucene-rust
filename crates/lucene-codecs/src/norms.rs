@@ -172,14 +172,35 @@ fn entries_to_norms(entries: Vec<NormsEntry>) -> Norms {
 /// that actually has norms.
 ///
 /// Java does this inside `readFields`, which takes `FieldInfos`; this port's
-/// [`parse_meta`] does not, so it is a separate call. That split is
-/// deliberate, not an oversight: `parse_meta` has 23 call sites across four
-/// crates, several of them in files other batches own, and threading a
-/// `&FieldInfos` through all of them buys nothing at the ones that are
-/// hand-built round-trip tests. The two call sites where the diagnostic
-/// actually matters -- `check_index`'s `norms.*` checks and the segment
-/// reader's open -- call this. See `docs/sweep/m2/c15-postings-api.md` for
-/// the decision (b6 #4, c7 F-23).
+/// [`parse_meta`] does not, so it is a separate call. **The split is settled
+/// and deliberate** -- recorded and deferred three times (b6 #4, c7 F-23, c15
+/// §F14) and closed as INTENTIONAL by `c41-gates-and-record`. Three things
+/// decide it, and none of them is the call-site count c15 reasoned from (23,
+/// of which only **four** are production code -- the rest are `#[cfg(test)]`
+/// round-trips and integration tests):
+///
+/// 1. **Norms do not need `FieldInfos` to parse.** Every `.nvm` entry is
+///    fixed-shape. `doc_values::parse_meta` *does* take a `&FieldInfos`, but
+///    for a structural reason norms have no analogue of: a doc-values entry
+///    carries a skip-index sub-record only when the field declares one, so
+///    the byte stream cannot be walked without the field's `FieldInfo`. The
+///    two signatures differ because the two formats do.
+/// 2. **One of the four production call sites cannot take a folded form.**
+///    `check_index::check_field_norms` needs the `.nvm` to parse *and then*
+///    reports a separately-named `norms.entries_name_real_norms_fields`
+///    check, so that a `.fnm`/`.nvm` disagreement is a named failure and the
+///    rest of the norms pass (`norms.entry_present`, the per-field norm
+///    values) still runs. Folding validation into `parse_meta` would abort
+///    that pass at the first problem and would still need a second,
+///    non-validating entry point -- it moves the split rather than removing
+///    it.
+/// 3. **Parse-then-validate is this port's shape, not a shortfall.** c40 put
+///    `field_infos::parse` behind the validating `FieldInfos::new`
+///    constructor for the same reason.
+///
+/// The *behaviour* gap Java's `readFields` covers is closed: the two places
+/// its diagnostic fires -- the segment reader's open
+/// (`lucene_search::directory_reader`) and `check_index` -- both call this.
 ///
 /// What it catches: a `.nvm` naming a field number the `.fnm` does not have
 /// (the entry is then unreachable, so every norm lookup for the *real* field

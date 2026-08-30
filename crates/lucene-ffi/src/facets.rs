@@ -11,7 +11,7 @@
 //! ## SortedSet facets: [`ffi_facet_counts_sorted_set`]
 //!
 //! Looks up `field`'s SORTED_SET doc-values entry in an already-opened
-//! [`crate::segment::SegmentHandle`] (via `segment.field_infos` +
+//! [`crate::registry::SegmentHandle`] (via `segment.field_infos` +
 //! `segment.dv_meta.sorted_set_entry`, the same field-name -> field-number
 //! lookup pattern `sort.rs`'s `numeric_entry_for`/`sorted_numeric_entry_for`
 //! already use), runs `lucene_search::facets::facet_counts` over the

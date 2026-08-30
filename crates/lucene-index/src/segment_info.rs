@@ -1,7 +1,7 @@
 //! Port of `org.apache.lucene.codecs.lucene99.Lucene99SegmentInfoFormat` (`.si` files).
 //!
 //! Both directions ported: [`parse`] (read path, PLAN.md Phase 2) and
-//! [`write`] (write path, PLAN.md Phase 5) are exact byte-level inverses of
+//! [`write()`] (write path, PLAN.md Phase 5) are exact byte-level inverses of
 //! each other.
 //!
 //! Wire format (all ints little-endian; header/footer per `codec_util`):
@@ -65,7 +65,7 @@
 //! `reverse`, and every form the missing value takes -- an arbitrary numeric
 //! sentinel, `STRING_FIRST`/`STRING_LAST`, or **no missing value at all**
 //! (which Java treats as `0` for a numeric sort and as the smallest ordinal
-//! for a string one). [`write`] is the exact byte-level inverse of [`parse`]
+//! for a string one). [`write()`] is the exact byte-level inverse of [`parse`]
 //! for every one of them.
 //!
 //! Until c35 it carried only `(field, reverse, missing-first-or-last)` -- the
@@ -204,7 +204,7 @@ impl NumericSortKey {
 /// `IndexSorter.StringSorter` reads it as `missingValue == STRING_LAST ?
 /// Integer.MAX_VALUE : Integer.MIN_VALUE`, so **`None` behaves like `First`**
 /// -- the two are distinguishable on disk (`hasMissing == 0` versus an
-/// explicit marker) but not in the comparator. Both are kept so [`write`]
+/// explicit marker) but not in the comparator. Both are kept so [`write()`]
 /// reproduces the bytes it read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StringMissingValue {
@@ -1660,7 +1660,7 @@ mod tests {
     }
 
     /// The exact provider byte streams Java writes, decoded -- hand-built
-    /// rather than produced by [`write`], so the two sides cannot agree on a
+    /// rather than produced by [`write()`], so the two sides cannot agree on a
     /// misreading of the format.
     #[test]
     fn sorted_numeric_sorted_set_and_binary_providers_all_decode() {

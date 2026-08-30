@@ -23,7 +23,7 @@
 //! this port) collapses back to the single-valued shape with no addresses
 //! array at all. A `SORTED_SET` field storing zero-or-one ordinal per doc
 //! is written as a plain `SORTED` field with a multi-valued flag byte
-//! (see [`SortedSetFieldEntry`]), not as a degenerate `SORTED_NUMERIC`.
+//! (see [`SortedSetEntry`]), not as a degenerate `SORTED_NUMERIC`.
 //!
 //! A NUMERIC field's values can also be split into "varying bits-per-value"
 //! blocks (`Lucene90DocValuesConsumer.writeValues`'s `doBlocks` path): rather
@@ -2386,7 +2386,7 @@ fn write_dense_numeric_entry_body(meta: &mut Vec<u8>, data: &mut Vec<u8>, values
 /// values". Written **instead of** an [`indexed_disi`] structure -- a
 /// zero-document DISI has no blocks at all, and a reader that took the sparse
 /// path over it would rank-index into an empty value array rather than
-/// short-circuiting on [`NumericEntry::is_empty`]/[`BinaryEntry::is_empty`].
+/// short-circuiting on [`NumericEntry::is_empty_field`]/[`BinaryEntry::is_empty_field`].
 ///
 /// `denseRankPower` is Java's `(byte) -1` here, not
 /// [`indexed_disi::DEFAULT_DENSE_RANK_POWER`]: there is no DISI to describe.

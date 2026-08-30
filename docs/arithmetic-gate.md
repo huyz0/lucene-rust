@@ -197,19 +197,44 @@ anything.
 
 ## Two hand-checked rules the lint cannot express
 
+**Both are now mechanically checked too** -- `c41-gates-and-record` turned them
+into `scripts/check-port-invariants.py`'s `fixed-bitset-bound` and
+`sentinel-callers` rules, both in `scripts/gate.sh` and CI. They stay written
+out here because a gate is only as good as the understanding behind it, and
+because **neither rule can check the thing that matters most**: whether an
+`// FBS:` proof is true, or whether the check at a sentinel call site is the
+*right* check. See [`docs/mechanical-gates.md`](mechanical-gates.md) for what
+each one does and does not catch. On their first run they found five live
+defects.
+
+
 ### Bound an index against the collection it indexes
 
 **Never index a `FixedBitSet` with an index bounded against anything other
 than that bitset's own `len()`.**
 
-`FixedBitSet::get`/`set`/`clear` do `words[index >> 6]` behind a bare
-`debug_assert!(index < self.num_bits)`. So an index that is out of range but
-still inside `words` reads or writes a **ghost bit** past `num_bits` in a
-release build -- a silently wrong live/dead answer -- and one 64 or more past
-the end is an index **panic**, in release as well as debug. Neither is an
-error the caller can catch, and `clippy::arithmetic_side_effects` sees none of
-it: this is the indexing row of the table above, which the lint does not
-cover.
+`FixedBitSet::get`/`set`/`clear` do `words[index >> 6]`, and until c41 the
+only bound on that was a bare `debug_assert!(index < self.num_bits)` -- Java's
+own `assert`, which is off in production. An index out of range but still
+inside `words` therefore read or wrote a **ghost bit** past `num_bits` in a
+release build: a silently wrong live/dead answer. **They now check the bound
+unconditionally and panic**, so the silent half of the class is gone; what is
+left is an aborted query where the answer should have been an error, and
+`clippy::arithmetic_side_effects` still sees none of it -- this is the indexing
+row of the table above, which the lint does not cover.
+
+Two consequences worth stating, because they are why the rule did not go away
+with the bound:
+
+- A **wrong-but-in-range** index is still a wrong answer, and no bound check
+  can see it. That is what the rule is for.
+- The panic is a containable failure (`lucene_ffi`'s `guard` catches it), but
+  on a search path it is still a dead query. **The bound belongs where the id
+  is decoded, not where it is used**, and
+  [`FixedBitSet::get_doc`](../crates/lucene-util/src/fixed_bit_set.rs) is the
+  one-line way to spell it for an id that came from somewhere else -- a
+  postings walk, a BKD leaf, a vector store's ordinal range. c41 migrated 30
+  hand-written copies of that bound onto it.
 
 The rule is deliberately mechanical rather than "bound your indices", because
 the defect always looks correct locally. c28 found it twice in one crate, in
@@ -225,10 +250,13 @@ both directions:
   correct; it was one caller away from not being, and the function's own doc
   comment promised `DocOutOfRange` "rather than ... panicking".
 
-Both are now `usize::try_from(doc_id)` filtered on `< bits.len()`, with the
-length hoisted out of the loop. Grep for `bits2words`, `FixedBitSet` and
-`.get(` when auditing a module: if the bound and the bitset do not come from
-the same place, it is this defect.
+Both are now bounded against the bitset's own length, with the length hoisted
+out of the loop. Grep for `bits2words`, `FixedBitSet` and `.get(` when auditing
+a module: if the bound and the bitset do not come from the same place, it is
+this defect. `scripts/check-port-invariants.py --only=fixed-bitset-bound` does
+that grep, and c41's Tier-2 review is the reason it also follows closure
+parameters and `if let Some(bits) = ..` bindings: the first version missed
+those, which is roughly half of the real index sites in `lucene-search`.
 
 ### Check an out-of-domain sentinel at every call site, and list them per site
 

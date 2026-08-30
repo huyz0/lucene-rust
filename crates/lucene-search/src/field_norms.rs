@@ -41,7 +41,7 @@ pub struct FieldNorms<'a> {
     /// one division per document instead of two, and skips decoding the norm to
     /// a length at all.
     ///
-    /// Only valid for [`crate::similarity::DEFAULT_K1`]/[`DEFAULT_B`]; a caller
+    /// Only valid for [`crate::similarity::DEFAULT_K1`]/[`crate::similarity::DEFAULT_B`]; a caller
     /// using custom parameters must take the arithmetic path.
     norm_inverse: [f32; 256],
     /// The flat one-byte-per-doc norm array, when this field's norms are dense
@@ -288,7 +288,7 @@ impl<'a> FieldNorms<'a> {
         {
             let mut cursor = scratch.cursor();
             for doc in 0..max_doc {
-                if !live_docs.is_none_or(|bits| bits.get(doc as usize)) {
+                if !live_docs.is_none_or(|bits| bits.get_doc(doc)) {
                     continue;
                 }
                 if let Some(norm) = cursor.norm_byte(doc)? {

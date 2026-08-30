@@ -597,9 +597,11 @@ impl RoaringDocIdSet {
             Some(Block::Sparse(docs)) => docs.binary_search(&local).is_ok(),
             Some(Block::InverseSparse(excluded)) => excluded.binary_search(&local).is_err(),
             // A trailing partial block's bitset is shorter than 65536, so the
-            // length check is load-bearing: `FixedBitSet::get` indexes its word
-            // array behind a `debug_assert!`, and a doc past `max_doc` inside
-            // the last block would reach it.
+            // length check is load-bearing: a doc past `max_doc` inside the
+            // last block would otherwise reach `FixedBitSet::get`, which
+            // panics on an out-of-range index (and, before c41, read a ghost
+            // bit in release). `local` is a `u16`-range offset, not a doc id,
+            // so this is the hand-written form rather than `get_doc`.
             Some(Block::Dense(bits)) => (local as usize) < bits.len() && bits.get(local as usize),
         }
     }
@@ -764,14 +766,28 @@ impl RoaringBuilder {
         }
     }
 
-    /// Adds one document. Panics on a non-ascending doc ID, matching Java's
-    /// `IllegalArgumentException` for the same misuse -- this is a programming
-    /// error in the producer, not a data condition a caller recovers from.
+    /// Adds one document. Panics on a non-ascending doc ID **or one at or past
+    /// the `max_doc` this builder was constructed with**, matching Java's
+    /// `IllegalArgumentException` for the same misuse -- a programming error in
+    /// the producer, not a data condition a caller recovers from.
+    ///
+    /// The `max_doc` bound is not decoration: a trailing partial block's dense
+    /// bitset is sized `min(BLOCK_SIZE, max_doc - offset)`, and
+    /// [`RoaringBuilder::append_in_current_block`]'s `// FBS:` proof
+    /// rests on every accepted doc id being below `max_doc`. Before c41 that
+    /// was a statement about callers the type did not enforce; a
+    /// `RoaringBuilder::new(100)` handed 4 097 documents built a
+    /// zero-bit bitset and then indexed it.
     pub fn add(&mut self, doc_id: i32) {
         assert!(
             i64::from(doc_id) > self.last_doc_id,
             "doc ids must be added in order, got {doc_id} after {}",
             self.last_doc_id
+        );
+        assert!(
+            doc_id >= 0 && (doc_id as usize) < self.max_doc,
+            "doc id {doc_id} is outside this builder's 0..{} range",
+            self.max_doc
         );
         let block = i64::from(doc_id) >> 16;
         if block != self.current_block {
@@ -791,10 +807,19 @@ impl RoaringBuilder {
                 let num_bits = BLOCK_SIZE.min(self.max_doc.saturating_sub(offset));
                 let mut bits = FixedBitSet::new(num_bits);
                 for &d in &self.buffer {
+                    // FBS: `d` is a `u16` in-block offset pushed by this same
+                    // method for a doc id this builder has already accepted,
+                    // i.e. `doc_id < self.max_doc` with `doc_id >> 16 ==
+                    // block`; so `d == doc_id - offset < max_doc - offset`,
+                    // and `num_bits` is `min(BLOCK_SIZE, max_doc - offset)`
+                    // -- the same bound, because `d` also fits 16 bits.
                     bits.set(d as usize);
                 }
                 bits
             });
+            // FBS: same bound as the seeding loop above -- `doc_id - offset`
+            // is this doc's in-block offset, below both `BLOCK_SIZE` and
+            // `max_doc - offset`, which are what `num_bits` is the min of.
             dense.set(doc_id as usize - offset);
         }
         self.last_doc_id = i64::from(doc_id as i32);
@@ -1034,6 +1059,31 @@ mod tests {
 
     /// The encoding actually chosen per block is Java's, not merely "something
     /// that round-trips": `RoaringDocIdSet.Builder.flush`'s five cases, pinned.
+    /// `add`'s `max_doc` bound is what
+    /// `append_in_current_block`'s `// FBS:` proof stands on: a trailing
+    /// partial block's dense bitset is sized `min(BLOCK_SIZE, max_doc -
+    /// offset)`, so a doc id past `max_doc` indexes a bitset that was never
+    /// sized for it. With `max_doc = 100` and a doc in block 1, `num_bits`
+    /// would be `0`.
+    #[test]
+    #[should_panic(expected = "doc id 70000 is outside this builder's 0..100 range")]
+    fn a_doc_id_past_max_doc_is_a_producer_error_not_a_zero_bit_bitset() {
+        let mut b = RoaringBuilder::new(100);
+        b.add(0);
+        b.add(70_000);
+    }
+
+    #[test]
+    #[should_panic(expected = "doc id -1 is outside this builder's 0..100 range")]
+    fn a_negative_doc_id_is_a_producer_error() {
+        // Ascending against `last_doc_id == -1` is not enough: `-1` is not
+        // ascending, but `-1 as u32` would have been `u32::MAX`.
+        let mut b = RoaringBuilder::new(100);
+        b.add(0);
+        b.last_doc_id = -2;
+        b.add(-1);
+    }
+
     #[test]
     fn builder_picks_javas_block_encoding_for_each_density() {
         assert_eq!(block_of(&roaring_of(&[], 70_000), 0), &Block::Empty);

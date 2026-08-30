@@ -74,8 +74,24 @@ jobs:
       # machines that had run scripts/setup-hooks.sh and only when nobody
       # passed --no-verify -- which is how batch c25 found check-arith-allows.py
       # failing for everyone on a stale table without CI noticing.
+      # `benchmarks/rust-runner` is outside the workspace, so `clippy
+      # --workspace` above never compiles it. It has been left broken for
+      # several batches twice, while a stale release binary kept producing
+      # plausible numbers from pre-change code. In scripts/gate.sh since c36;
+      # here since c41, because CI is the copy that actually runs everywhere.
+      - name: Type-check the out-of-workspace benchmarks
+        run: cargo check --manifest-path benchmarks/rust-runner/Cargo.toml --all-targets
+
       - name: "Arithmetic-gate #[allow] rule"
         run: python3 scripts/check-arith-allows.py
+
+      # The defect shapes clippy structurally cannot see: a FixedBitSet indexed
+      # by a bound that is not its own, an out-of-domain sentinel unchecked at a
+      # call site, a hardcoded per-field codec suffix, an infallible blocktree
+      # lookup, a per-document doc-values re-derivation.
+      # See docs/mechanical-gates.md.
+      - name: Port invariants clippy cannot express
+        run: python3 scripts/check-port-invariants.py
 
       - name: docs/parity.md consistency
         run: python3 scripts/check-parity.py
@@ -86,6 +102,16 @@ jobs:
       # drift out of scripts/gate.sh unnoticed.
       - name: Java citations resolve against the pinned tree
         run: python3 scripts/check-java-refs.py
+
+      # rustdoc's link lints are warn-by-default and reported by none of the
+      # steps above, so a broken doc link ships through a fully green gate --
+      # c4 did exactly that, and c22 recorded the pass as "blocked on
+      # pre-existing broken links" for four batches. c41 fixed the 65 broken
+      # links and turned it on. See docs/mechanical-gates.md#rustdoc.
+      - name: Rustdoc link lints
+        env:
+          RUSTDOCFLAGS: -D warnings -A rustdoc::private_intra_doc_links
+        run: cargo doc --workspace --no-deps --document-private-items
 
       # llvm-cov runs the tests, so there is no separate `cargo test` step.
       # Output is captured so the per-file report below reuses this run rather
@@ -125,10 +151,17 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      # JDK 21, matching docker/Dockerfile (`eclipse-temurin:21-jdk`) and
+      # AGENTS.md. Not cosmetic: `break_iterator/manifest.properties` records
+      # `java_version`, is byte-identical across runs, and is therefore
+      # byte-compared by `--check`. Under any other JDK this job fails on a
+      # fixture that is perfectly correct -- which is how a check goes red for
+      # a reason nobody reads, and then gets ignored. c36 fixed the fixture;
+      # this pins the runner that verifies it.
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '25'
+          java-version: '21'
       - uses: actions/cache@v4
         with:
           path: fixtures/.jars
@@ -146,10 +179,17 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      # JDK 21, matching docker/Dockerfile (`eclipse-temurin:21-jdk`) and
+      # AGENTS.md. Not cosmetic: `break_iterator/manifest.properties` records
+      # `java_version`, is byte-identical across runs, and is therefore
+      # byte-compared by `--check`. Under any other JDK this job fails on a
+      # fixture that is perfectly correct -- which is how a check goes red for
+      # a reason nobody reads, and then gets ignored. c36 fixed the fixture;
+      # this pins the runner that verifies it.
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '25'
+          java-version: '21'
       - uses: actions/cache@v4
         with:
           path: |

@@ -51,7 +51,7 @@
 //!   read-side API `lucene-search`'s `directory_reader.rs` uses for real
 //!   queries) and independently recomputes `totalTermFreq` (sum of decoded
 //!   per-doc freqs), cross-checking it against the `.tmd`/`.tim`-recorded
-//!   [`lucene_codecs::postings::TermStats`] for that exact term -- a
+//!   [`lucene_codecs::blocktree::TermStats`] for that exact term -- a
 //!   metadata/data consistency check, not a re-validation of already-checked
 //!   block encoding: it would catch a dictionary claiming `totalTermFreq=50`
 //!   for a term whose actual per-doc freqs only sum to 49. Each decoded doc
@@ -1168,9 +1168,9 @@ const LIV_FAMILIES: &[&str] = &[
 /// files, and exactly the pairing c28 found live twice in `deletes`/
 /// `term_delete`. They agree today only because [`check_live_docs`] hands
 /// `si.doc_count` to `live_docs::parse` as `max_doc`, which is one line away
-/// from not being true; `FixedBitSet::get` indexes `words[index >> 6]` behind
-/// a bare `debug_assert`, so the failure would be a ghost bit in release and
-/// an index panic in *both* profiles once the id is 64 or more past the end.
+/// from not being true. Since c41 `FixedBitSet::get` checks its bound in
+/// release as well as debug, so the failure would be a panic -- in a
+/// *verifier*, which is meant to report damage, not die on it.
 ///
 /// A doc id outside the bitset counts as **live**, deliberately: this is a
 /// verifier, an out-of-range doc id is already reported by the caller that
@@ -2301,6 +2301,10 @@ fn check_postings(
             let mut prev_doc_id = -1i32;
             let mut term_is_live = false;
             for (i, &doc_id) in postings_of_term.docs.iter().enumerate() {
+                // FBS: `visited_docs` is `FixedBitSet::new(si.doc_count.max(0))`
+                // in this same function, so `si.doc_count` *is* its `len()`
+                // whenever it is positive, and the guard is vacuous when it is
+                // not.
                 if doc_id >= 0 && doc_id < si.doc_count {
                     visited_docs.set(doc_id as usize);
                 }
@@ -2941,6 +2945,10 @@ fn check_doc_values(
                                          dictionary's 0..{value_count} range"
                                     ));
                                 } else {
+                                    // FBS: `seen` is
+                                    // `FixedBitSet::new(value_count.max(0))` in
+                                    // this same block, so `value_count` is its
+                                    // `len()`.
                                     seen.set(ord as usize);
                                 }
                             }
@@ -3037,6 +3045,10 @@ fn check_doc_values(
                                                  dictionary's 0..{value_count} range"
                                             ));
                                         } else {
+                                            // FBS: `seen` is
+                                            // `FixedBitSet::new(value_count.max(0))`
+                                            // in this same block, so `value_count`
+                                            // is its `len()`.
                                             seen.set(ord as usize);
                                         }
                                     }
@@ -3075,6 +3087,10 @@ fn check_doc_values(
                                                      increasing ({ord} after {prev})"
                                                 ));
                                             } else {
+                                                // FBS: `seen` is
+                                                // `FixedBitSet::new(value_count.max(0))`
+                                                // in this same block, so
+                                                // `value_count` is its `len()`.
                                                 seen.set(ord as usize);
                                             }
                                             prev = ord;
@@ -3726,7 +3742,7 @@ fn check_soft_deletes(
 ///
 /// Skipped (not failed) when: the segment is compound (`.cfs`/`.cfe`,
 /// matching this module's existing compound-file scope, same as
-/// [`check_postings_term_stats`]); or no field in `.fnm` claims points at
+/// [`check_postings`]); or no field in `.fnm` claims points at
 /// all. A field that *does* claim points but whose segment is missing one
 /// of `.kdm`/`.kdi`/`.kdd` is reported as a single `points.open` failure
 /// rather than silently skipped -- points files are optional at the
@@ -3840,6 +3856,9 @@ fn check_points_structural_invariants(
                             point.doc_id, si.doc_count
                         ));
                     } else {
+                        // FBS: `docs_seen` is
+                        // `FixedBitSet::new(si.doc_count.max(0))` in this same
+                        // function, so `si.doc_count` is its `len()`.
                         docs_seen.set(point.doc_id as usize);
                     }
                     // ARITH: `points::open` allocates the packed min/max
@@ -3998,7 +4017,7 @@ const POINTS_FAMILIES: &[&str] = &[
 ///   may only be out of sync with terms on deleted documents").
 ///
 /// A sparse norms field is walked with one forward-only
-/// [`indexed_disi::DisiCursor`] rather than `norms::norm_value` per doc:
+/// [`lucene_codecs::indexed_disi::DisiCursor`] rather than `norms::norm_value` per doc:
 /// that helper builds a fresh cursor per lookup, which would make this an
 /// O(maxDoc x blocks) scan instead of O(maxDoc).
 #[allow(clippy::too_many_arguments)]
@@ -4689,6 +4708,8 @@ fn check_hnsw_graphs(
                 // validates on the way in where Java validates on the way
                 // out), and level 0's node set is the implicit `0..size`.
                 // The guard that *can* fire is the neighbour one below.
+                // FBS: `on_this_level` is `FixedBitSet::new(size.max(0))` a few
+                // lines above, so `size` is its `len()`.
                 if n >= 0 && n < size {
                     on_this_level.set(n as usize);
                 }
@@ -4710,6 +4731,8 @@ fn check_hnsw_graphs(
                 }
                 let mut last = -1i32;
                 for &nbr in &neighbors {
+                    // FBS: `on_this_level` is `FixedBitSet::new(size.max(0))`
+                    // in this same function, so `size` is its `len()`.
                     if nbr < 0 || nbr >= size || !on_this_level.get(nbr as usize) {
                         level_problems.push(format!(
                             "field {name:?} has node {node} with a neighbor {nbr} which is not \
@@ -4818,6 +4841,8 @@ fn connected_nodes_on_level(
     let mut neighbors: Vec<i32> = Vec::new();
     let mut count = 0usize;
     while let Some(node) = stack.pop() {
+        // FBS: `seen` is `FixedBitSet::new(size.max(0))` at the top of this
+        // function, so `size` is its `len()`.
         if node < 0 || node >= size || seen.get(node as usize) {
             continue;
         }
@@ -7962,7 +7987,7 @@ mod tests {
     }
 
     /// A compound (`.cfs`/`.cfe`) segment must skip the points check
-    /// entirely, matching [`check_postings_term_stats`]'s own compound-file
+    /// entirely, matching [`check_postings`]'s own compound-file
     /// scope -- this module has no compound-file support anywhere.
     #[test]
     fn compound_segment_skips_points_checks() {

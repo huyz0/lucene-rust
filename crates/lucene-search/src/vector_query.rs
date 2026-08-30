@@ -441,10 +441,15 @@ fn accept_ords<'a>(
         if doc < 0 {
             continue;
         }
-        let doc = doc as usize;
-        let live = input.live_docs.is_none_or(|b| doc < b.len() && b.get(doc));
-        let passes = input.filter.is_none_or(|b| doc < b.len() && b.get(doc));
+        // `get_doc` is the sanctioned way to ask a bitset about an id that did
+        // not come from it -- here, a doc id the flat vector store's
+        // ordinal-to-doc map produced, against the caller's live-docs and
+        // filter bitsets. See `FixedBitSet::get_doc`.
+        let live = input.live_docs.is_none_or(|b| b.get_doc(doc));
+        let passes = input.filter.is_none_or(|b| b.get_doc(doc));
         if live && passes {
+            // FBS: `bits` is `FixedBitSet::new(size.max(0))` immediately above
+            // and `ord` runs `0..size`.
             bits.set(ord as usize);
         }
     }
@@ -496,8 +501,16 @@ fn exact_search<S: VectorScorer>(
     let mut ords = [0i32; EXHAUSTIVE_BULK_SCORE_ORDS];
     let mut scores = [0.0f32; EXHAUSTIVE_BULK_SCORE_ORDS];
     let mut num_ords = 0usize;
+    // `scorer.max_ord()` and `accept_ords` reach this function from two
+    // different places (the flat vector store's own count, and whatever
+    // `accept_ords` the leaf plan built), so the ordinal loop is bounded
+    // against the bitset that is actually indexed rather than against the
+    // scorer -- an ordinal the accept set does not cover is, by definition,
+    // not accepted. Hoisted out of the loop: one load, not one per ordinal.
+    let accepted_ords = accept_ords.len();
     for ord in 0..scorer.max_ord() {
-        if !accept_ords.get(ord as usize) {
+        let ord_idx = ord as usize;
+        if ord_idx >= accepted_ords || !accept_ords.get(ord_idx) {
             continue;
         }
         ords[num_ords] = ord;

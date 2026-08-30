@@ -148,12 +148,20 @@ fn present_docs(field: &SoftDeletesField<'_>) -> Result<PresentDocs> {
 /// A fully-live bitset over `0..max_doc`, or a clone of the caller's hard
 /// live-docs -- the starting point both `effective_live_docs` variants clear
 /// bits out of, matching `PendingDeletes.getMutableBits()`.
+///
+/// **The returned bitset's length is `live_docs`' when there is one, and
+/// `max_doc` only when there is not.** The two are the same number for every
+/// caller in this port, but they arrive as separate parameters, so everything
+/// downstream bounds against the *returned bitset's* own `len()` rather than
+/// against `max_doc` -- see [`clear_present`].
 fn hard_live_bits(live_docs: Option<&FixedBitSet>, max_doc: usize) -> FixedBitSet {
     match live_docs {
         Some(existing) => existing.clone(),
         None => {
             let mut all_live = FixedBitSet::new(max_doc);
             for i in 0..max_doc {
+                // FBS: `all_live` is `FixedBitSet::new(max_doc)` two lines
+                // above, so `max_doc` is its `len()`.
                 all_live.set(i);
             }
             all_live
@@ -170,10 +178,19 @@ fn clear_present(
     max_doc: usize,
     skip: &dyn Fn(i32) -> bool,
 ) {
+    // Bound every doc against **the bitset's own length**, not against
+    // `max_doc`. `bits` comes from [`hard_live_bits`], which clones the
+    // caller's `live_docs` when there is one -- a bitset whose length is the
+    // caller's, not `max_doc`. They agree for every caller in this port, and
+    // that is exactly the shape `docs/arithmetic-gate.md` names: an index
+    // bounded against something other than the bitset it indexes is one
+    // caller away from a ghost bit (a silently *live* document that should be
+    // dead) or an index panic. Hoisted: one load, not one per doc.
+    let num_bits = bits.len().min(max_doc);
     match present {
         PresentDocs::Nothing => {}
         PresentDocs::Every(count) => {
-            let end = max_doc.min(*count);
+            let end = num_bits.min(*count);
             for doc in 0..end {
                 if !skip(doc as i32) {
                     bits.clear(doc);
@@ -183,7 +200,7 @@ fn clear_present(
         PresentDocs::These(docs) => {
             for &doc in docs {
                 let doc_usize = doc as usize;
-                if doc >= 0 && doc_usize < max_doc && !skip(doc) {
+                if doc >= 0 && doc_usize < num_bits && !skip(doc) {
                     bits.clear(doc_usize);
                 }
             }
@@ -215,7 +232,14 @@ pub fn is_live(
     soft_deletes: Option<&SoftDeletesField<'_>>,
     doc: i32,
 ) -> Result<bool> {
-    let hard_live = live_docs.is_none_or(|bits| bits.get(doc as usize));
+    // `doc` is a caller-supplied `i32` and `live_docs` a caller-supplied
+    // bitset: nothing here relates the two. A negative `doc` sign-extends
+    // through `as usize` to `usize::MAX` (c28's `term_delete` defect), and a
+    // `doc` merely past the end reads a ghost bit -- a document reported
+    // *live* that the bitset never covered. A doc outside the live-docs
+    // bitset is not live, which is the same answer `vector_query`'s accept
+    // filter already gives.
+    let hard_live = live_docs.is_none_or(|bits| bits.get_doc(doc));
     if !hard_live {
         return Ok(false);
     }
@@ -327,8 +351,10 @@ pub fn effective_live_docs_with_overlay(
     clear_present(&mut bits, &present, max_doc, &|doc| {
         overlay.contains_key(&doc)
     });
+    // Same rule as `clear_present`: the bound is the bitset's, not `max_doc`.
+    let num_bits = bits.len().min(max_doc);
     for (&doc, value) in overlay {
-        if value.is_some() && doc >= 0 && (doc as usize) < max_doc {
+        if value.is_some() && doc >= 0 && (doc as usize) < num_bits {
             bits.clear(doc as usize);
         }
     }
@@ -984,5 +1010,73 @@ mod tests {
             entry,
         };
         assert!(effective_live_docs(None, Some(&fixture.field()), 5).is_err());
+    }
+
+    /// `is_live` takes a caller-supplied `doc` and a caller-supplied
+    /// `live_docs` and nothing relates the two. A negative `doc` sign-extends
+    /// through `as usize` into `usize::MAX` -- c28's `term_delete` defect,
+    /// which `FixedBitSet::get` turns into an index panic. This is the
+    /// `fixed-bitset-bound` rule's own regression test: without the bound it
+    /// panics rather than answering.
+    #[test]
+    fn a_negative_doc_id_is_not_live_rather_than_a_panic() {
+        let mut live = FixedBitSet::new(5);
+        for i in 0..5 {
+            live.set(i);
+        }
+        assert!(!is_live(Some(&live), None, -1).unwrap());
+        assert!(!is_live(Some(&live), None, i32::MIN).unwrap());
+        assert!(is_live(Some(&live), None, 4).unwrap());
+    }
+
+    /// A `doc` past the bitset but *inside its final word* is the ghost-bit
+    /// half of the same defect: `words[index >> 6]` succeeds and the answer is
+    /// whatever junk bit 5 of word 0 happens to hold. `live` has five bits, so
+    /// doc 7 is a ghost read, not an out-of-bounds one.
+    #[test]
+    fn a_doc_past_the_live_docs_bitset_is_not_live() {
+        let mut live = FixedBitSet::new(5);
+        for i in 0..5 {
+            live.set(i);
+        }
+        assert!(!is_live(Some(&live), None, 7).unwrap());
+        assert!(!is_live(Some(&live), None, 1_000_000).unwrap());
+    }
+
+    /// `hard_live_bits` clones the caller's `live_docs`, so the bitset
+    /// `clear_present` then indexes has the *caller's* length -- not
+    /// `max_doc`. Bounding on `max_doc` is c28's `deletes::mark_deleted`
+    /// shape exactly, and here the two genuinely can disagree because they are
+    /// separate parameters of a `pub fn`. With a 5-bit `live_docs` and a
+    /// `max_doc` of 64, the old bound let a soft-delete write a ghost bit.
+    #[test]
+    fn a_max_doc_larger_than_the_live_docs_bitset_does_not_write_a_ghost_bit() {
+        // A *dense* soft-deletes entry says "every one of `numValues`
+        // documents has a value", so `clear_present` walks `0..count`. With a
+        // 5-bit `live_docs` (the caller's) and a `max_doc`/`numValues` of 64
+        // (a separate parameter and a number off disk), bounding the loop on
+        // `max_doc` clears bits 5..64 of a five-bit set: ghost writes into
+        // word 0, then an index panic at bit 64. Bounding on `bits.len()`
+        // stops at the bitset.
+        let mut entry = load_sparse_fixture().entry;
+        entry.docs_with_field_offset = -1; // dense
+        entry.num_values = 64;
+        let fixture = SparseFixture {
+            data: Vec::new(),
+            entry,
+        };
+        let mut live = FixedBitSet::new(5);
+        for i in 0..5 {
+            live.set(i);
+        }
+        let out = effective_live_docs(Some(&live), Some(&fixture.field()), 64)
+            .unwrap()
+            .expect("a soft-deletes field is configured");
+        assert_eq!(out.len(), 5, "the result keeps the caller's bitset length");
+        assert_eq!(
+            out.cardinality(),
+            0,
+            "all five of its docs are soft-deleted"
+        );
     }
 }

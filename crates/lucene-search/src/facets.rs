@@ -735,7 +735,8 @@ impl FacetsConfig {
     /// This is the **write-side** counterpart of everything else in this
     /// module, and the reason the read side works at all: [`facet_counts`]
     /// counts doc-values ordinals, [`FacetsState`] finds a dim's children by
-    /// the `dim/child` prefix, and [`dim_count`] reads the bare-dim ordinal --
+    /// the `dim/child` prefix, and [`SortedSetFacetCounts::adjust_path_count`] reads the
+    /// bare-dim ordinal --
     /// all three are only correct because `build` indexed those exact values.
     /// Without it a caller had to re-derive the encoding by hand and any
     /// mistake showed up as quietly wrong counts.
@@ -753,8 +754,8 @@ impl FacetsConfig {
     /// - **flat** dims must have exactly one path component beside the dim
     ///   (Java's `facetLabel.length != 2` check), and index the one full path;
     /// - a flat dim that is both `multi_valued` and `require_dim_count` also
-    ///   indexes the **bare dimension**, which is the ordinal [`dim_count`]
-    ///   reads;
+    ///   indexes the **bare dimension**, which is the ordinal
+    ///   [`SortedSetFacetCounts::adjust_path_count`] reads;
     /// - then `indexDrillDownTerms` adds the searchable `StringField` terms
     ///   its [`DrillDownTermsIndexing`] selects.
     ///
@@ -1392,6 +1393,9 @@ impl<'a> SortedSetFacetCounts<'a> {
 
     /// `adjustPathCountIfNecessary` -- `-1` is Java's "no accurate count is
     /// obtainable for this dim", not a sentinel this port invented.
+    //
+    // SENTINEL: `-1` = "no accurate count obtainable", outside the domain of
+    // a count.
     fn adjust_path_count(&self, dim_config: &DimConfig, path_ord: i64, computed: i64) -> i64 {
         if dim_config.hierarchical || (dim_config.multi_valued && dim_config.require_dim_count) {
             self.count(path_ord) as i64
@@ -1531,6 +1535,9 @@ impl<'a> SortedSetFacetCounts<'a> {
     /// Java's `IllegalArgumentException` -- `"<dim> is not configured as
     /// hierarchical, path must be length=1"` -- for a non-hierarchical dim
     /// addressed with anything but a single path component.
+    //
+    // SENTINEL: `-1` = "this path was never indexed", outside the domain of a
+    // count. Java's own `Facets.getSpecificValue` contract.
     pub fn specific_value(&self, dim: &str, path: &[&str]) -> i64 {
         let dim_config = self.state.config().dim_config(dim);
         assert!(

@@ -4,7 +4,7 @@
 //! explain logic is reimplemented here -- every function below builds exactly
 //! the same [`lucene_search::Clause`] tree `query.rs`'s matching
 //! `ffi_search_*_query_scored` sibling builds (same wire formats, same
-//! [`crate::query::read_term_clauses`]/norms-map helpers, reused directly, not
+//! [`crate::query::read_boolean_query`]/norms-map helpers, reused directly, not
 //! duplicated), hands it straight to `explain_clause`, and marshals the
 //! resulting [`lucene_search::explain::Explanation`] tree back out. See
 //! `explain.rs` (the `lucene-search` crate's, not this one) for
@@ -441,7 +441,7 @@ pub unsafe extern "C" fn ffi_explain_boolean_query(
 
         // Same per-distinct-field norms map construction as
         // `ffi_search_boolean_query_scored` (see that function's own comment) --
-        // every clause here is `Clause::Term` by `read_term_clauses`'s own
+        // every clause here is `Clause::Term` by `read_boolean_query`'s own
         // contract, so the `Clause::Term(t) => ...` arm is the only reachable one.
         let field_names = crate::query::clause_field_names(&query);
         let mut norms_map: HashMap<String, FieldNorms<'_>> = HashMap::new();

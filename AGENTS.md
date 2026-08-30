@@ -44,8 +44,14 @@ plan — phases, crate layout, verification strategy, effort estimates — is
    not transliterated from them) prove the decoder's own boundary/error
    handling. See **test-coverage**.
 9. **Keep the gates green** — `cargo fmt --check`, `cargo clippy -- -D
-   warnings`, `cargo llvm-cov --fail-under-lines 95` must pass before a task
-   is done.
+   warnings`, `cargo llvm-cov --fail-under-lines 95`, the four checker scripts
+   and the rustdoc pass must all pass before a task is done. `scripts/gate.sh`
+   is the definition; run it as `scripts/docker-test.sh gate`.
+10. **A gate nobody has seen fail is a gate nobody should trust.** When you add
+   one, introduce the defect it targets, watch it fail, revert — and write down
+   what it *cannot* catch. This sweep found three checks that could not fail
+   and one that reported "pass" over a segment it had never opened. See
+   [`docs/mechanical-gates.md`](docs/mechanical-gates.md).
 
 ## Commands
 
@@ -80,6 +86,8 @@ the hook, the container and this table cannot drift apart:
 | Format | `cargo fmt --all --check` |
 | Lint | `cargo clippy --workspace --all-targets -- -D warnings` (includes the arithmetic gate — see [`docs/arithmetic-gate.md`](docs/arithmetic-gate.md)) |
 | Lint for arm64 (catches target-dependent defects) | `cargo clippy --workspace --all-targets --target aarch64-unknown-linux-gnu -- -D warnings` |
+| Port invariants clippy cannot express | `python3 scripts/check-port-invariants.py` (FixedBitSet bounds, sentinel call sites, codec-suffix literals, blocktree `try_*`, per-document doc-values, ledger drift — see [`docs/mechanical-gates.md`](docs/mechanical-gates.md)) |
+| Rustdoc link lints | `RUSTDOCFLAGS="-D warnings -A rustdoc::private_intra_doc_links" cargo doc --workspace --no-deps --document-private-items` |
 | Type-check the out-of-workspace benchmarks | `cargo check --manifest-path benchmarks/rust-runner/Cargo.toml --all-targets` |
 | Tests + coverage gate | `cargo llvm-cov --workspace --fail-under-lines 95` |
 | Coverage report, per file | `cargo llvm-cov --workspace --summary-only` |
@@ -94,7 +102,7 @@ same commands natively.
 
 The same gate runs in CI on every push and pull request
 ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)), on Linux x64 and
-arm64, plus the two fixture jobs. The arm64 lint is worth running locally before
+arm64, plus the two Java jobs (`fixtures`, `write-path`), both pinned to JDK 21 to match the container. The arm64 lint is worth running locally before
 touching `lucene-ffi`: `c_char` signedness differs by target, so a whole class of
 defect is invisible on x86_64 alone (see the **ffi-safety** skill). It is a
 check-only build, so it needs no cross C compiler and no linker. The toolchain is pinned in
@@ -102,15 +110,17 @@ check-only build, so it needs no cross C compiler and no linker. The toolchain i
 implicitly.
 
 Two caveats worth knowing about the coverage gate. `--fail-under-lines`
-enforces the **workspace total** (line coverage, currently 98.36%), not
-invariant #8's per-file bar; one file sits below that bar,
-`lucene-index/src/checksum_verify.rs` at 93.75%. CI reports the per-file view
-in its job summary without failing on it.
+enforces the **workspace total** (line coverage, currently 98.13%), not
+invariant #8's per-file bar. As of `c41-gates-and-record` **no file sits below
+that bar** -- `lucene-index/src/checksum_verify.rs`, which this note used to
+name at 93.75%, is at 97.03%. CI reports the per-file view in its job summary
+without failing on it, so the day one drops below 95% it is visible rather than
+enforced.
 
 When reading `cargo llvm-cov --summary-only` output, note that it prints three
 `Cover` columns — Regions, Functions, then **Lines**. Only the third is what
 `--fail-under-lines` and invariant #8 mean. Region coverage is always lower
-(97.59% vs 98.36% at the workspace level) and names different files.
+(97.56% vs 98.13% at the workspace level) and names different files.
 
 **Commits**: `commit-msg` allows only `feat|fix|docs|test|chore|refactor|
 perf|build|ci` + optional `(scope)` + lowercase description, and requires a
@@ -131,6 +141,7 @@ Skills are the process source of truth; `PLAN.md`/`docs/` are the deep-dives.
 | Committing / finishing a unit of work | `git-workflow`, `code-review` |
 | Writing tests for a new/changed module | `test-coverage` |
 | Arithmetic on a length/count read off disk | `code-review` + [`docs/arithmetic-gate.md`](docs/arithmetic-gate.md) |
+| Indexing a `FixedBitSet`, returning a `-1` sentinel, editing `docs/sweep/m2/LEDGER.md` | [`docs/mechanical-gates.md`](docs/mechanical-gates.md) |
 | Editing skills | `manage-skills` |
 
 ## Workflow

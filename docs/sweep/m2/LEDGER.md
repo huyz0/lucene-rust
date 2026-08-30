@@ -1,8 +1,49 @@
 # M2 sweep ledger
 
 Every ported source file, its batch, and its sweep status.
-Status: `pending` → `running` → `swept` (report written, gates green).
-Checkbox legend: `- [ ]` open, `- [x]` done, `- [~]` obsolete.
+
+## How to read this file (one rule)
+
+**Plan only from [Open work, prioritised](#open-work-prioritised-reconciled-by-c34-ledger-reconcile).**
+Everything below that section is a frozen archive of where each finding was
+first raised. The archive is *not* a to-do list, and it does not get a second
+vote.
+
+That rule is now mechanical, because prose did not hold it: c34 was run to
+remove exactly this drift and 16 duplicate open boxes survived it in the
+archive, misleading **six** later batches into re-planning work the
+prioritised list had already closed -- or into believing a blocker that had
+stopped being true.
+
+**The gate enforces one invariant: this file contains no `- [ ]`.**
+(`scripts/check-port-invariants.py --only=ledger-single-list`.) An archive
+entry is therefore always one of:
+
+| marker | meaning |
+|---|---|
+| `- [x]` | closed; the entry says which batch closed it **and the evidence in the tree**, never "see batch report" |
+| `- [~]` | obsolete; the premise stopped being true |
+| `- [->]` | still open, and **tracked as a numbered open-work item** -- the entry names the number and says nothing more about scheduling |
+
+Ticking a prioritised item without doing one of those three to its archive
+twin is the failure this whole preamble exists to prevent, and the gate now
+fails the commit that tries.
+
+Two habits the archive's own history argues for, neither of which a gate can
+check:
+
+- **Verify against the tree, never against a batch report.** c31's report
+  claimed a `debug_assert` conversion it never made; c30 found an earlier
+  attempt's report full of `PLACEHOLDER`s while its code was in fact landed;
+  c40's most transferable finding was that item 7b's *recorded plan* was
+  wrong. Read the code, grep the symbol, run the test.
+- **A recorded blocker is a claim with an expiry date.** Four entries claimed
+  a blocker that had stopped existing, usually because somebody else's work
+  removed it (see "What was actively misleading" below, and item 29). When an
+  entry says "blocked on X", check X before believing it.
+
+Status: `pending` -> `running` -> `swept` (report written, gates green).
+
 
 | Batch | Files | Status |
 |---|---|---|
@@ -60,6 +101,7 @@ Checkbox legend: `- [ ]` open, `- [x]` done, `- [~]` obsolete.
 | c37-search-behaviours | five "missing Lucene behaviour" items in one crate (**5** `searchAfter`/`MaxScoreAccumulator` and `Weight.count`, **6** `FieldExistsQuery.count`/`rewrite`, **7** sloppy phrase reordering, **23** filter-only pruning) -- search/{collector,multi_segment,lib,directory_reader,explain,query,highlighter}, new search/{sloppy_phrase,weight_count}, ffi/query, new `Append{Count,SearchAfter}Manifest` | swept (10 findings: 1 CORRECTNESS fixed, 4 MISSING all fixed, 2 PERF (1 fixed+measured, 1 recorded), 3 INTENTIONAL) -- **items 6, 7, 23 and 29 closed outright plus two of item 5's four sub-entries**, leaving item 5's `TwoPhaseIterator` milestone and its `Similarity` trait, and raising **7b** (the highlighter's phrase enumeration is now the only in-order-only phrase path). `sloppy_phrase.rs` is `SloppyPhraseMatcher` statement for statement, including the `rptGroups` machinery a `MultiPhraseQuery` can reach; `weight_count.rs` is `Weight.count`'s three arms plus `FieldExistsLeaf`, and turns a **13.93 ms** postings walk into **72.2 ns** on the 5M-document corpus. Filter-only pruning was a *guard removal*, not a port: Java skips the score tie too (`updateMinCompetitiveScore` publishes `Math.nextUp(topScore)`, which for a bottom of `0f` is `Float.MIN_VALUE`), measured **44.20 ms -> 2.00 ms (22x)** at top-50 on the merged corpus. **The transferable finding is procedural**: items 7 and 23 had both been carrying a "blocked on a fixture" note for several batches while the fixture sat in the tree, added for a different purpose (`GenBlockTree`'s reordered pair from task #55, its 300-document `big` field from the postings block tests) -- c34's stale-blocker class, one step earlier, where the blocker was never quite true rather than made untrue by someone else. Ground truth from real `IndexSearcher.searchAfter`/`count`/`rewrite` over seven committed indexes, no index regenerated. Coverage: workspace 98.12% lines, no file below 95% |
 | c39-codecs-readpath | the remaining `lucene-codecs` read-path items (**20** the blocktree `try_*` migration, **22** `IndexedDISI`'s block jump table, **13** `PointValues.estimatePointCount`'s BKD walk, **12** `Util.shortestPaths`) -- codecs/{blocktree,indexed_disi,points,doc_values,norms,vectors}, search/{lib,explain,weight_count,multi_segment,points_query,field_norms}, index/check_index, ffi/query, new `AppendPointEstimateManifest` + `examples/disi_jump_table` | swept (10 findings: 1 CORRECTNESS fixed, 4 MISSING all fixed, 3 PERF (2 fixed+measured, 1 sized and declined), 2 INTENTIONAL) -- **items 13, 20 and 22 closed; item 12 restated as a milestone.** The `try_*` count was dominated by tests: separating production from test callers (mark the four infallible methods `#[deprecated]`, build `--all-targets`) left **15** production sites, all already in `Result`-returning functions. The CORRECTNESS finding was met on the way -- `intersect`/`fuzzy_intersect`/`regexp_intersect` are `Iterator`s and so had *no* error channel, ending a wildcard/regexp term expansion early on a corrupt block, i.e. a **smaller hit set**; their `Item` is now `Result<(Vec<u8>, TermStats)>` as `IntersectTermsEnum.next()`'s `IOException` is. `IndexedDISI`'s jump table is now written *and* read, with `writeBitSet`'s `short` carried into the `.dvm`/`.nvm`/`.vem` entry and `docsWithFieldLength` spanning the table; real Lucene reads it (`VerifySparseNumericDocValues`' new block-jump pass, negative-controlled on the jump index and the jump offset *independently* -- the b4/b11 mirror-image trap ruled out in the only direction that can). Alternating min-of-40 A/B over one build: 2 000 cold seeks **3.1x / 12.2x / 2.4x** faster over 16/62/245-block regions, forward scan unchanged to 0.4%. `estimate_point_count` is Java's walk with no `.kdd` read on any path, checked against real `PointValues.estimatePointCount` over fourteen boxes chosen so the estimate and the exact count **differ** (768 vs 674, 256 vs 8, 744 vs 251). **Item 12's recorded blocker names the wrong thing**: `Util.shortestPaths`' pruning needs `FSTCompiler`'s output *pushing*, which this builder does not do, so porting `TopNSearcher` onto it would return the alphabetically-first N completions rather than the top-weighted N -- a wrong answer, not a speed-up. Measured the gap instead (76 ms per top-10 lookup at 500 000 entries) and stopped, as c38 did with item 15. `gen-fixtures.sh --append-only` added: adding ground truth to a committed fixture no longer requires regenerating an index or invoking `java` by hand. `verify-write-path.sh` **23/23** |
 | c38-allocation-shape | the three largest memory-shape divergences (**15** `indexing_chain`'s per-token/term/posting allocation, **16** the per-occurrence payload slot, **17** `OrdinalMap::build`'s materialized input) -- index/{indexing_chain,index_writer,merge}, codecs/{postings_writer,terms_dict}, search/{ordinal_map,facets} | swept (7 findings: 0 CORRECTNESS, 0 MISSING, 6 PERF (5 fixed+measured, 1 assessed as a milestone and stopped), 1 INTENTIONAL) -- **items 16 and 17 closed, item 15 sized and declined.** Payloads are now one flat `(payload_bytes, payload_lengths)` run per `(field, term)` on both sides of the `lucene-index`/`lucene-codecs` boundary, where they were `Vec<Vec<u8>>` per posting entry and `Vec<Vec<Vec<u8>>>` per term; `PostingEntry` carries no payload field at all, so the field that has no payloads got cheaper too. Alternating min-of-10 A/B between two binaries in one window (c24's method), 50 000 documents, in two independent windows -- every arm faster or level and smaller in both, with peak RSS stable to three digits: `freqs` **-18.6% peak RSS**, `offsets` -9.9%, `payloads` **-49.1%**, `payloads-empty` **-46.1%**, and `InMemoryInvertedIndex` 102.5 -> 75.8 MB on 4.90 MB of body text. `terms_dict::TermsCursor` is the streaming terms-dictionary cursor three batches had named as a blocker (`decode_all_terms` is now literally that cursor collected, so there is one decoder and not two), and `OrdinalMap::build_streaming` is Java's `build(TermsEnum[])` shape over it, with `TermsEnumPriorityQueue` ported as a min-heap of segment indices over caller-owned reused buffers: **318.2 MB -> 51.4 MB peak** and 290 -> 140 ms end to end on 5 segments x 1 M terms, with `OrdinalMap::build` kept for materialized callers and now running the *same* merge. `facets::resolve_labels` streams too. **Item 15 is a milestone**: 10 Java classes / 2 800 lines of pool machinery, all three consumers of `InMemoryInvertedIndex`, and a borrowed-token `Analyzer` API (`analyze` returns `Vec<Token>` with an owned `String` per token, so a heap object per token exists before the indexing chain sees it) -- the batch measured it, named the 36.8 MB + 36.6 MB that remain, and stopped rather than half-building a pool. `verify-write-path.sh` **23/23** (the bytes on disk are unchanged); shape asserted, not only timed |
+| c41-gates-and-record | repo-wide tooling and the record: **27** mechanical gates for the defect shapes this sweep kept re-finding by hand, **26** the rustdoc pass, **28** `norms::parse_meta`'s signature, and `LEDGER.md`'s 16 stale open boxes -- new `scripts/check-port-invariants.py` + `docs/mechanical-gates.md`, `scripts/{gate.sh,check-parity.py}`, `.github/workflows/ci.yml`, util/fixed_bit_set, codecs/{fst,postings_writer,lib,for_util,lz4,direct_reader,...}, search/{soft_deletes,query_cache,vector_query,...}, index/{check_index,merge,index_writer,...} | swept (12 findings: 6 CORRECTNESS all fixed, 4 MISSING all fixed, 1 PERF recorded as a burn-down, 1 INTENTIONAL) -- **items 26, 26b and 28 closed, and all of 27 except (c) and (e)**. Six new mechanical rules, each **watched to fail** by introducing the defect it targets, each with its blind spot written down first. They found **five live defects on their first run**: `fst::seek_floor_direct_addressing` passing `bit_table_previous_bit_set`'s `-1` into a decode -- **c31's exact defect in the sibling function**, where `read_arc_by_direct_addressing` derives `first_label - 1` and, for `first_label == 0`, exactly `END_LABEL`, a plausible wrong answer a byte-flip sweep cannot see; and four `FixedBitSet` sites in `soft_deletes`/`query_cache`/`vector_query` bounded against a caller-supplied parameter rather than the bitset they index, one sign-extending a negative doc id to `usize::MAX`. `FixedBitSet::get`/`set`/`clear` now check their bound in **release** too (Java's `assert` is off in production, and a ghost bit is a silently wrong live/dead answer no caller can catch), through a `#[cold]` helper so the hnsw hot loop pays one never-taken branch. The rustdoc clean-up was **65 links across seven files** -- c22's four-batch blocker, an afternoon -- and surfaced a trap nobody had named: an outer `///` doc on a `mod` declaration makes rustdoc resolve the module's own `//!` links in the crate-root scope, breaking every one with **no file and no line** in the diagnostic. CI's `fixtures` job was pinned to JDK 25 against JDK-21-built fixtures whose manifest records the JDK version; now 21. `LEDGER.md` contains **zero `- [ ]`**, and a gate keeps it that way. `verify-write-path.sh` **23/23**, `gen-fixtures.sh --check` clean, coverage 98.14% lines with no file below 95% |
 
 ## Open work, prioritised (reconciled by `c34-ledger-reconcile`)
 
@@ -110,9 +152,32 @@ highlighter does not use the matcher the ledger told the next batch to reuse. It
 the whole of the work: "needs a `TermsCursor`, which does not exist" was two
 functions, one of which `decode_all_terms` already contained. Two of the four it closed had been recorded as
 *blocked on a fixture* that already existed -- see item 29 -- so the batch's
-most transferable finding is procedural, not technical. Closed entries are
-struck through in place rather than deleted, and new ones take a lettered
-suffix, so the numbering below stays stable.
+most transferable finding is procedural, not technical.
+
+**`c41-gates-and-record` then closed items 26, 26b and 28, and all of item 27
+except its (c) and (e) sub-items**, leaving **14**. Two of the three it closed
+had been deferred on a recorded reason that had stopped being true or had never
+been measured: item 26's "needs the pre-existing broken links cleaned up first"
+was 65 links and one afternoon, carried for four batches; item 28's "23 call
+sites across four crates" was **4** once `#[cfg(test)]` code was excluded, and
+neither number was the reason to decline it anyway. That is the batch's
+transferable finding, and it generalises across the last four:
+**three of them found the recorded reason for deferring an item to be the whole
+of the work.** c41 raised two of its own, both found by the gates it built, on
+their first run: **8d**, `fst::seek_floor_direct_addressing` passing
+`bit_table_previous_bit_set`'s `-1` sentinel straight into a decode -- c31's
+exact defect in the sibling function, **fixed in the same batch**; and **8e**,
+**36** `FixedBitSet` sites bounded against a caller-supplied parameter rather
+than against the bitset they index, one of them sign-extending a negative doc
+id to `usize::MAX` (**all fixed**, 30 of them by migrating onto a new
+`FixedBitSet::get_doc` so the bound lives in one place). Thirty-one of those 36
+were found only because c41's **own Tier-2 review** noticed the first version
+of the rule could not see a closure parameter -- i.e. could not see the single
+most common way this codebase indexes a bitset. A gate's coverage needs the
+same scepticism as the code it checks.
+
+Closed entries are struck through in place rather than deleted, and new ones
+take a lettered suffix, so the numbering below stays stable.
 
 **Tier A is empty.** Every wrong answer this sweep found on a path this port
 exposes is now fixed.
@@ -700,73 +765,128 @@ worth knowing about the next entry that reads the same way.
 
 ### D. Tooling, gates and tidy-ups
 
-26. **A rustdoc pass belongs in the gate.** `rustdoc::broken_intra_doc_links`
-    is warn-by-default and caught by none of `cargo fmt`/`clippy`/`test`/
-    `llvm-cov`; c4 shipped a broken link that survived a green gate. Turning it
-    on needs the pre-existing broken links cleaned up first.
+26. ~~**A rustdoc pass belongs in the gate.**~~ **CLOSED by
+    `c41-gates-and-record`.** `rustdoc::broken_intra_doc_links` and friends now
+    run in `scripts/gate.sh` and in CI as
+    `RUSTDOCFLAGS="-D warnings -A rustdoc::private_intra_doc_links" cargo doc
+    --workspace --no-deps --document-private-items`, verified to fire by
+    introducing a broken link. c22's recorded blocker ("needs the pre-existing
+    broken links cleaned up first") was true and had been true for four
+    batches; the clean-up was **65 links across seven files**, an afternoon,
+    not a milestone -- and c34 should have re-measured it instead of carrying
+    the note forward. Two of the 65 named functions that no longer exist,
+    which is item 27(c)'s defect class showing up on its own.
+    `private_intra_doc_links` is deliberately *allowed*, with the count (166)
+    and the reason recorded in `docs/mechanical-gates.md#rustdoc`.
 
-26b. **Two checks that exist but are not in the gate, and had both gone
-    quietly red.** c36 found `scripts/gen-fixtures.sh --check` failing on a
-    committed fixture generated outside the container (`break_iterator`'s
-    manifest recorded `java_version=25` against the pinned JDK 21) and
-    `benchmarks/rust-runner` not compiling at all (two half-finished API
-    reshapes from an earlier batch), with a stale binary in
-    `target-docker/release/` still producing plausible benchmark numbers from
-    pre-change code. Both are fixed, but neither is *gated*: the benchmark
-    crate is outside the workspace so `clippy --workspace` never sees it, and
-    `--check` is run by hand. **The benchmark half is now closed**: c36 added
-    `cargo check --manifest-path benchmarks/rust-runner/Cargo.toml
-    --all-targets` to `scripts/gate.sh` (and to AGENTS.md's table), so the next
-    API reshape fails the gate instead of producing plausible numbers from a
-    stale binary. What is left is `gen-fixtures.sh --check`, which is expensive
-    (it generates the whole tree twice) and probably belongs on a schedule
-    rather than per-push. (Raised and half-closed by c36.)
-    *(`c39-codecs-readpath` note: `gen-fixtures.sh` grew `--append-only`, which
-    runs the `Append*Manifest` programs and no generator. Adding cross-engine
-    ground truth to a committed fixture previously meant either `--only
-    <Generator>`, which regenerates that index with a fresh segment id, or
-    invoking `javac`/`java` by hand outside the script -- which is what c37
-    did, and is why `blocktree_index/manifest.properties` had its `count.*`
-    block in a different position from the one a full run produces.)*
+26b. ~~**Two checks that exist but are not in the gate, and had both gone
+    quietly red.**~~ **CLOSED by `c41-gates-and-record`** (the benchmark half
+    by c36 before it). Final state, all verified by running them:
+    - `benchmarks/rust-runner`: `cargo check --manifest-path
+      benchmarks/rust-runner/Cargo.toml --all-targets` was in `scripts/gate.sh`
+      from c36 but **not in `.github/workflows/ci.yml`** -- so it ran only for
+      developers who had installed the hook, which is the same gap that let
+      11 clippy warnings in after a toolchain bump. Now in both.
+    - `gen-fixtures.sh --check`: it turns out this was **already a CI job**
+      (`fixtures`), so the entry's "run by hand" premise was stale. What was
+      wrong is subtler and is the transferable finding: that job pinned
+      `java-version: '25'` while the container, `docker/Dockerfile` and
+      AGENTS.md pin **JDK 21**, and `--check` byte-compares
+      `break_iterator/manifest.properties`, which *records the JDK version*.
+      c36 fixed the fixture by regenerating it under 21; the CI runner that
+      verifies it was still on 25. A check that fails for a reason nobody
+      reads is the same defect as a check that cannot fail -- it just takes
+      longer to be ignored. CI now pins 21, and `--check` is green in the
+      container: 48 deterministic files byte-identical, 0 mismatches.
 
-27. **Mechanical gates for three defect shapes this sweep keeps re-finding.**
-    (a) a clippy `disallowed_methods` entry on the free
-    `doc_values::numeric_value`/`binary_value`, naming
-    `NumericReader`/`BinaryReader` as the sanctioned multi-lookup API -- the
-    "call the re-deriving free function once per document" defect has appeared
-    twice (b13's `soft_deletes::effective_live_docs`, c14's column merge) and
-    is grep-able; (b) a gate on `Lucene90_\d`-shaped string literals outside
-    `index_writer::per_field_codec_suffix` and test modules, which is how c14's
-    hardcoded per-field suffix got in; (c) for every `fn`/`struct` a diff
-    *removes*, grep `crates/`, `docs/parity.md` and `PLAN.md` (excluding
-    `docs/sweep/`, which is an archive) and fail on a hit -- c37's Tier-2 review
-    found `parity.md` describing two deleted functions in the present tense,
-    and `check-parity.py` deliberately validates only the file *paths* in the
-    Rust column, never identifiers in the prose. No false positives for
-    `pub(crate)`-and-above symbols. (Raised by c37.) **Two more of the same
-    shape, one grep each, both raised by c39's Tier-2 review**: (d) zero
-    matches for `\.seek_exact\(|\.seek_ceil\(|\.current\(\)` on a
-    blocktree receiver under `crates/*/src/` outside `#[cfg(test)]` -- c39 did
-    that audit by hand (mark the four methods `#[deprecated]`, build
-    `--all-targets`) and `blocktree.rs`'s method docs *describe* it, but
-    nothing runs it, so the migration can silently regress; (e) every key an
-    `Append*Manifest`/`Gen*` program writes into a `manifest.properties`
-    should have a `manifest.get("...")` reading it somewhere under
-    `crates/*/tests/` -- which would have caught c39 shipping
-    `point_estimate.*.docs`/`.size`/`.doc_count` as unread "ground truth"
-    while `docs/parity.md` claimed `estimateDocCount` was pinned by them.
-    There is no `clippy.toml` in the tree
-    today, so (a) starts from zero. Repo-wide tooling, not any one batch's
-    files.
+27. **Mechanical gates for the defect shapes this sweep keeps re-finding.**
+    **Mostly CLOSED by `c41-gates-and-record`**, which built
+    `scripts/check-port-invariants.py` (in `scripts/gate.sh` and CI) with five
+    rules, each verified by introducing the defect it targets and watching it
+    fire, and each with its blind spot written down in
+    `docs/mechanical-gates.md` -- the reason c19's arithmetic gate was worth
+    having.
+    - ~~(a) the `doc_values::numeric_value`/`binary_value` per-document
+      re-derivation~~ -- **closed as `doc-values-per-doc`**, but *not* as the
+      `clippy::disallowed_methods` deny this entry proposed: that fires on
+      every single-document lookup too, and on all 66 test-code sites, which
+      is 60-plus `#[allow]`s whose proofs say nothing. It is a **burn-down**
+      instead, keyed by (file, enclosing fn), over the ten per-document call
+      sites that exist today. A new one fails; a migrated one fails too, and
+      asks for the count to come down.
+    - ~~(b) `Lucene90_\d`-shaped literals outside `per_field_codec_suffix`~~
+      -- **closed as `codec-suffix-literal`**.
+    - **(c) symbols a diff removes, still named in the record. Half closed,
+      and the open half is now measured.** `check-parity.py` validates the
+      `::item` suffix of every `docs/parity.md` row as of c41 (two rows were
+      wrong on its first run), and the rustdoc pass from item 26 covers every
+      `[`linked`]` symbol in Rust doc comments. What is **not** covered is a
+      symbol in *plain backticks* -- which is most of them, and all of
+      `PLAN.md`. c41 hit three live instances while fixing the links
+      (`check_postings_term_stats`, `write_multi_children_root` and a whole
+      `postings_writer` module-doc section describing a multi-block `.tip`
+      writer commit `6f4d20d` deleted), none of which any of these gates would
+      have caught on its own. The remaining shape needs a *diff*-driven check
+      (for every `fn`/`struct` a commit removes, grep `crates/`,
+      `docs/parity.md`, `PLAN.md`; `docs/sweep/` is an archive and is exempt),
+      which belongs in `.githooks/pre-commit` rather than in `gate.sh`,
+      because `gate.sh` runs in CI where there is no meaningful diff.
+    - ~~(d) the infallible blocktree lookups~~ -- **closed as
+      `blocktree-infallible`**. Zero production call sites remain, so the rule
+      is a pure regression guard; it was still verified by adding one and
+      watching it fail.
+    - **(e) manifest keys nobody reads. Restated, with a measurement that
+      changes the plan.** The proposed grep (every key an `Append*Manifest`/
+      `Gen*` program writes should have a literal `manifest.get("...")` under
+      `crates/*/tests/`) **cannot work**: of the 2 711 distinct keys in the
+      committed manifests, **2 468 never appear as a literal anywhere under
+      `crates/`**, because the tests build them with `format!("field.{name}.
+      number")`. A 91% false-positive rate is a gate that gets switched off.
+      The shape that would work is a *runtime* one -- have the fixture
+      helper record which keys a suite actually read and diff that against the
+      manifest at the end of the run -- which is a small piece of test
+      infrastructure, not a grep. Whoever takes it should also know that the
+      thing this was meant to catch (c39 shipping
+      `point_estimate.*.docs`/`.size`/`.doc_count` as unread "ground truth"
+      while `docs/parity.md` claimed `estimateDocCount` was pinned by them) is
+      now *also* reachable from item 27(c)'s parity check, from the other end.
+    - **Two further shapes c41 was asked for and built**, both named in
+      `docs/arithmetic-gate.md`'s "two hand-checked rules the lint cannot
+      express" and both previously enforced by nothing:
+      `fixed-bitset-bound` (a `FixedBitSet` indexed by a bound that is not its
+      own `len()` -- found by hand three times, by c28 twice and c30 once) and
+      `sentinel-callers` (an out-of-domain sentinel unchecked at a call site --
+      c31 shipped a fix claiming to close one while it still reached a decode
+      path one function over). Between them they found **five live defects** on
+      their first run; see `docs/sweep/m2/c41-gates-and-record.md`.
 
-28. **`norms::parse_meta`'s signature still differs from Java's
-    `readFields(meta, infos)`.** *Behaviour* is closed (c15's additive
-    `norms::validate_fields`, called from the segment reader's open and from
-    `check_index`). What is left is a pure tidy-up across 34 call sites in four
-    crates, and c7's reasoning still holds: the right moment is when a shared
-    `FieldInfos` open lands, at which point the parameter is free instead of
-    34 mechanical edits that refactor would rewrite. **Do not schedule this on
-    its own.**
+28. ~~**`norms::parse_meta`'s signature still differs from Java's
+    `readFields(meta, infos)`.**~~ **CLOSED as INTENTIONAL by
+    `c41-gates-and-record`**, after being recorded and deferred three times
+    (b6 #4, c7 F-23, c15 §F14). The decision is written into
+    `norms::validate_fields`' doc comment so the next reader inherits it
+    instead of re-opening it.
+
+    Both of this entry's own premises were wrong. The count is **4 production
+    call sites**, not 23 -- the other 30 are `#[cfg(test)]` round-trips and
+    integration tests, and c15 counted them as if a `&FieldInfos` had to be
+    threaded to each. And the "right moment" it named (a shared `FieldInfos`
+    open, which c40 landed) does not decide it either.
+
+    What decides it: **norms need no `FieldInfos` to parse.** Every `.nvm`
+    entry is fixed-shape. `doc_values::parse_meta` *does* take a
+    `&FieldInfos`, but for a structural reason norms have no analogue of -- a
+    doc-values entry carries a skip-index sub-record only when the field's own
+    `FieldInfo` says so, so the byte stream cannot be walked without it. The
+    two signatures differ because the two formats do. And one of the four call
+    sites cannot take the folded form regardless:
+    `check_index::check_field_norms` needs the parse to succeed and *then*
+    reports a separately-named `norms.entries_name_real_norms_fields` check,
+    so a `.fnm`/`.nvm` disagreement is a named failure with the rest of the
+    norms pass still running. Folding the validation in would move the split,
+    not remove it. The *behaviour* gap has been closed since c15:
+    `validate_fields` runs at both places Java's diagnostic fires.
+
 
 29. ~~**`lucene-analysis`/`lucene-search` fixture debt for items 7 and 23.**~~
     **CLOSED by `c37-search-behaviours`, and worth reading as a cautionary
@@ -856,13 +976,14 @@ now five).
       buckets. Highest-value untried item for the boolean queries. (Raised by
       b12, F-22.)
       **CLOSED by c6.** `crates/lucene-search/src/docid_set.rs:227::WindowedDisjunction`, chosen the way `BooleanScorerSupplier.booleanScorer` chooses it. c6 also corrected the premise: under `ScoreMode.TOP_SCORES` Lucene 10.5.0 picks `MaxScoreBulkScorer`, not `BooleanScorer`. The `[x]` c6 entry further down says the same thing; ticked here so the two agree.
-- [ ] **No `TwoPhaseIterator` / `matchCost` / `ScorerSupplier.cost()`** -- no
+- [->] **No `TwoPhaseIterator` / `matchCost` / `ScorerSupplier.cost()`** -- no
       cheap-approximation-then-verify split anywhere, so a conjunction verifies
       an expensive phrase clause on every candidate and clause order is the
       caller's problem. Needs a `Scorer`-shaped abstraction, so it should be
       weighed together with `Occur.FILTER` (F-16) as one milestone. The
       contained part -- ordering conjunction clauses by `docFreq` ascending --
       is b13-sized. (Raised by b12, F-20.)
+      **Tracked as open-work item 5** -- that entry is the live one, and it is the only one anybody should plan from. This box is the historical record of where the finding was raised. It is deliberately not a checkbox: six batches were misled by ticking the prioritised entry and leaving a duplicate open down here.
 - [x] **`Occur.FILTER` does not exist** (three clause lists, not four), which
       makes four of `BooleanQuery.rewrite`'s twelve rules unreachable and
       leaves no way to express "required but non-scoring". Wants
@@ -906,11 +1027,12 @@ now five).
       **CLOSED by c37-search-behaviours** (`lucene-search/src/weight_count.rs`,
       `ffi_count_term_query`). 13.93 ms -> 72.2 ns on the 5M-document corpus.
       See open item 5 above.
-- [ ] Only one `Similarity` exists (BM25), with no `Similarity`/`SimScorer`
+- [->] Only one `Similarity` exists (BM25), with no `Similarity`/`SimScorer`
       trait: `TFIDF`/`Classic`/`Boolean`/`LMDirichlet`/`IndependenceStandardized`
       are all unported, as are `k3`/`computeQueryTermWeight`. b12 split BM25
       into `idf`/`norm_inverse`/`do_score`, which are the three pieces a future
       trait needs. (Raised by b12, F-11/F-12.)
+      **Tracked as open-work item 5** -- that entry is the live one, and it is the only one anybody should plan from. This box is the historical record of where the finding was raised. It is deliberately not a checkbox: six batches were misled by ticking the prioritised entry and leaving a duplicate open down here.
 
 - [x] `segment_writer::flush_stored_only_segment` writes a `.si` whose `files`
       set omits `<segment>.si`. Real Lucene's
@@ -1001,11 +1123,12 @@ now five).
       already does for postings and term vectors. `index_writer.rs`.
       (Raised by c4.)
       **CLOSED by c22/c26.** `index_writer.rs:5107` carries `RawNormsFiles` ("Raw `.nvm`/`.nvd` bytes for a source that has norms") on the merge source, and `merge.rs:2022` writes them back through `norms::write_fields`. c26's `check_format_coverage` plus the `merge-format-completeness` test (`index_writer.rs:15409`) now mechanically refuse a merge that fails to open a format a source's `.si` lists, which is what stops this class recurring.
-- [ ] **A rustdoc pass belongs in the gate.**
+- [x] **A rustdoc pass belongs in the gate.**
       `rustdoc::broken_intra_doc_links` is warn-by-default and caught by none
       of `cargo fmt`/`clippy`/`test`; c4 shipped one broken link that survived
       a green Tier 1 gate. Turning it on needs the pre-existing broken links in
       `doc_values.rs`, `for_util.rs` and others cleaned up first. (Raised by c4.)
+      **CLOSED by `c41-gates-and-record`** (open-work item 26). 65 broken links fixed across seven files -- including a rustdoc trap nobody had named: an outer `///` doc on a `mod` declaration makes rustdoc resolve the module file's own `//!` links in the *crate-root* scope, silently breaking every one of them with no file or line in the diagnostic (`lucene-codecs`'s `direct_reader`, `for_util`, `lz4`). `scripts/gate.sh` and CI now run `RUSTDOCFLAGS="-D warnings -A rustdoc::private_intra_doc_links" cargo doc --workspace --no-deps --document-private-items`; verified to fire. Two of the links pointed at functions that no longer exist (`check_postings_term_stats`, `write_multi_children_root`), which is item 27(c)'s defect class. See `docs/mechanical-gates.md#rustdoc`.
 - [x] `MergeSource` carries no per-source `min_version`/`has_blocks`, so a merged
       `.si` claims the caller's version and `has_blocks = false` instead of
       Java's `min over readers` / propagated flag. Unreachable while this port
@@ -1032,14 +1155,16 @@ now five).
       `index_header_length` / `retrieve_checksum_with_expected_length`.
       Migrate the call sites. (Raised by b1; files are outside b1's scope.)
       **CLOSED by c34.** zigzag and group-varint *reading* had already moved (`block_packed.rs` uses `lucene_util::zigzag`, `postings.rs` reads through `DataInput::read_group_vints`). c34 removed the last two: `compound_format.rs`'s private `index_header_length`/`vint_len` pair now calls `lucene_store::codec_util::index_header_length(codec, "")` -- the two formulas agree for every codec name `write_index_header` accepts (ASCII under 128 bytes, so the length prefix is one byte), and the old `vint_len` unit test is replaced by one pinning the shared helper against the bytes `write_index_header` actually emits -- and `postings.rs`'s `write_group_vints` free function, a line-for-line copy of `DataOutput::write_group_vints`, is deleted with its 19 call sites moved onto the trait method (`hnsw_vectors.rs` already used it).
-- [ ] DEFLATE encoder has no preset dictionary (`miniz_oxide` exposes no
+- [->] DEFLATE encoder has no preset dictionary (`miniz_oxide` exposes no
       `deflateSetDictionary`): compression ratio only, decode side correct.
       Revisit if a raw-deflate crate with dictionary support is acceptable.
       (Raised by b3.)
-- [ ] Stored-fields writer API takes `&[Document]` rather than streaming, and
+      **Tracked as open-work item 25** -- that entry is the live one, and it is the only one anybody should plan from. This box is the historical record of where the finding was raised. It is deliberately not a checkbox: six batches were misled by ticking the prioritised entry and leaving a duplicate open down here.
+- [->] Stored-fields writer API takes `&[Document]` rather than streaming, and
       `document()` materializes a whole `Document` instead of Java's
       `StoredFieldVisitor`. Memory-shape divergence. (Raised by b3.)
       **c34 restated -- half of this is no longer true.** The *streaming* half was closed by c4: `stored_fields::StoredFieldsWriter` (`stored_fields.rs:1161`) is a real streaming object with `add_document(&Document)` (`:1373`) and `finish()` (`:1601`); `write_best_speed(&[Document])` survives as a convenience wrapper, not as the only API. What remains is the **read** side: `StoredFieldsReader::document()` (`stored_fields.rs:412`) materializes a whole `Document` where Java's `StoredFieldVisitor` lets a caller take one field and skip the rest. Memory-shape divergence, read path only.
+      **Tracked as open-work item 24** -- that entry is the live one, and it is the only one anybody should plan from. This box is the historical record of where the finding was raised. It is deliberately not a checkbox: six batches were misled by ticking the prioritised entry and leaving a duplicate open down here.
 - [x] `IntersectTermsEnum`'s **skipping** is ported for regexp (b8). Blocker
       (a) is gone: a full `Automaton`/`CompiledAutomaton` was assessed and not
       built, because what `IntersectTermsEnum` needs from one is a single bit --
@@ -1128,7 +1253,7 @@ now five).
       A/B on the same 2000 terms in the same order -- a cold hit 495 ns
       against Lucene's 440 ns (1.13x), a miss 215 ns against 263 ns (cheaper
       than Lucene's). See `docs/sweep/m2/c1-lazy-blocktree.md`.
-- [ ] **Migrate the blocktree lookups to their `try_*` forms** (c1, F-11).
+- [x] **Migrate the blocktree lookups to their `try_*` forms** (c1, F-11).
       A corrupt `.tim` block is now discovered at lookup time, as in Java, so
       `FieldTerms::try_seek_exact`/`TermsEnum::try_next`/`try_seek_ceil`/
       `try_current` exist and are tested; the pre-existing infallible
@@ -1137,6 +1262,7 @@ now five).
       `lucene-search`, `lucene-index`, `lucene-ffi` and `benchmarks/`, all of
       which were being edited by b13/b14/b15 while c1 ran, which is why the
       migration was not done there. (Raised by c1.)
+      **CLOSED by `c39-codecs-readpath`** (open-work item 20), and re-verified against the tree by c41 rather than against c39's report: `scripts/check-port-invariants.py --only=blocktree-infallible` finds **zero** `seek_exact`/`seek_ceil`/`current` call sites in production code in any module that consumes `blocktree`. c41 added that rule so the migration cannot silently regress.
 - [x] **`directory_reader` should call `blocktree::open_shared`** (c1, F-13).
       **Closed by c12, and the "three-line change" estimate was wrong for a
       reason worth recording**: `open_shared` took an `Arc<[u8]>`, which owns
@@ -1153,13 +1279,14 @@ now five).
       mapping. No measurable seek regression from the erasure's virtual
       `as_ref` (both accessors are hoisted per lookup; the machine's spread on
       those cases is +/-25%).
-- [ ] **Split term iteration from stats in `TermsEnum`** (c1, F-14). Java's
+- [->] **Split term iteration from stats in `TermsEnum`** (c1, F-14). Java's
       `next()` decodes only the term bytes and defers `decodeMetaData` to
       `docFreq()`; this port's `next()` returns `(term, TermStats)` so it
       always decodes. Full-field enumeration is 27 ns/term against Lucene's
       20.5 ns on the same field. Wants a `next_term()` + `stats()` split,
       which changes `check_index`'s and the intersect iterators' call shape.
       (Raised by c1.)
+      **Tracked as open-work item 21** -- that entry is the live one, and it is the only one anybody should plan from. This box is the historical record of where the finding was raised. It is deliberately not a checkbox: six batches were misled by ticking the prioritised entry and leaving a duplicate open down here.
 - [x] Re-take `cargo llvm-cov --workspace --summary-only` once the tree is
       quiet. c1 could only get a trustworthy per-file reading by pointing
       `CARGO_TARGET_DIR` at a scratch directory and restricting to
@@ -1176,11 +1303,12 @@ now five).
       `micro reader_open benchmarks/.corpus/merged` once fixed. Owner: whoever
       changed `for_encode` (b2/b5). (Raised by c1.)
       **CLOSED in the main session.** `benchmarks/rust-runner/src/micro.rs:93` encodes from a scratch copy (`for_util::for_encode(&mut scratch, bits, &mut bytes)`) so `values` stays the pristine round-trip expectation. The binary builds.
-- [ ] `DirectoryReader::open` is now dominated by everything *except* the term
+- [->] `DirectoryReader::open` is now dominated by everything *except* the term
       dictionary: ~2.0 ms of the ~2.2 ms is `open_segments`' file handling
       against Lucene's 0.310 ms for the whole open. That is the next
       reader-open item now that A1 is gone. Owner: b13. (Raised by c1.)
       **c34 restated -- the numbers here are three batches stale.** The 2.0 ms/2.2 ms figures predate c12 and the mmap work. Current state: c12's `open_shared`/`SharedBytes` change took `DirectoryReader::open` on the M1 fixture corpus **579 us -> 120.7 us (4.8x)**, and `88ebd47 perf(search): stop copying mmap'd postings files into the heap on reader open` landed after that. The standing whole-corpus number is `docs/benchmarks/verdict-m1.6.md`: reader open **52.7 ms** against Lucene's, i.e. **~155x**, with RSS 1,690 MB -> 70 MB. So this is still the largest single reader-side gap, but the diagnosis ("`open_segments`' file handling") needs re-measuring before anyone plans against it -- `benchmarks/rust-runner`'s `micro reader_open` now builds and runs (see the closed item above), so measuring it is cheap.
+      **Tracked as open-work item 14** -- that entry is the live one, and it is the only one anybody should plan from. This box is the historical record of where the finding was raised. It is deliberately not a checkbox: six batches were misled by ticking the prioritised entry and leaving a duplicate open down here.
 - [x] No `PostingsEnum`-flags plumbing: `DocInput::read_postings`/`lazy_cursor`
       always decode freqs, where Lucene's `needsFreq == false` path
       `PForUtil.skip`s the freq block entirely. Fixing it changes those
@@ -1190,7 +1318,7 @@ now five).
       `needsScores()`/`isExhaustive()` predicates, and `TopDocsCollector`
       reports its mode. What remains is entirely the codec-side flags path.
       **CLOSED.** The codec-side half landed: `postings::PostingsFlags` with `DocsOnly`/`Freqs`, `DocInput::read_postings_with_flags` (`postings.rs:566`) and `lazy_cursor_with_flags` (`:776`), surfaced as `blocktree::FieldTerms::postings_with_flags`/`lazy_postings_with_flags` (`blocktree.rs:2105/2145`) and actually *used* by the unscored search paths (`lucene-search/src/lib.rs:411`, `:575`, `:2849`). `lucene-search/benches/docs_only_postings.rs` measures what it buys. b12's search-side half (`collector::ScoreMode`) was already done.
-- [ ] `Lucene104PostingsWriter` takes a `NumericDocValues norms` per term and
+- [->] `Lucene104PostingsWriter` takes a `NumericDocValues norms` per term and
       feeds real per-doc norms into `CompetitiveImpactAccumulator`;
       `postings_writer::FieldPostingsInput` carries no norms, so impacts are
       computed against norm 1. Sound (norm 1 is the highest-scoring norm) but
@@ -1201,6 +1329,7 @@ now five).
       `FieldPostingsInput` plus a real `CompetitiveImpactAccumulator`), so the
       owner is whoever next owns `postings_writer.rs`, not b9.
       **c34 restated -- the "impacts are empty" premise is gone; the norms premise stands.** This writer *does* emit impacts now: `write_full_block` writes one `(maxFreq, norm = 1)` impact per level-0 block and `write_level1_span` (`postings_writer.rs:1283`) writes the span-wide maximum, because real Lucene rejects a segment with "Got empty list of impacts". What is still missing is the *norms input*: `FieldPostingsInput` (`postings_writer.rs:342-360`) has `field_number`/`index_options`/`doc_count`/`has_payloads`/`terms` and no norms, so every impact is computed against norm 1 where `Lucene104PostingsWriter` feeds real per-doc norms into `CompetitiveImpactAccumulator`. Norm 1 is the highest-scoring norm, so the bound is **sound but loose**: it costs query-time pruning, never a wrong answer. c34 also corrected `postings_writer.rs`'s module doc, which still claimed empty impacts and that positions can never co-occur with a full block -- both untrue since c20/c23.
+      **Tracked as open-work item 18** -- that entry is the live one, and it is the only one anybody should plan from. This box is the historical record of where the finding was raised. It is deliberately not a checkbox: six batches were misled by ticking the prioritised entry and leaving a duplicate open down here.
 - [x] Points: `lucene-search/src/points_query.rs` and
       `lucene-index/src/points_delete.rs` still decode every point and filter
       in memory. b7 ported `PointsReader::intersect`/`range_query` (the
@@ -1226,11 +1355,12 @@ now five).
       `checkFields` requires it sorted). Enforce in b9's flush path, where
       names are known. (Raised by b7.)
       **CLOSED by c34.** Enforced where the names are known: `IndexWriter::build_term_vectors_output` sorts its `TermVectorFieldConfig`s by name before building `per_doc`, so a document's `fields` list comes out ascending by field *name* whatever order `add_term_vector_field` was called in. Pinned by `term_vector_fields_are_written_in_ascending_field_name_order`, which declares `zeta` as field 1 and `alpha` as field 2, configures them in that (wrong) order and asserts the written field numbers are `[2, 1]` -- verified to fail (`left: [1, 2]`) with the sort removed. `write_best_speed`'s own caller contract is unchanged and still documented in `docs/parity.md`.
-- [ ] `Util.shortestPaths`/`TopNSearcher`/`readCeilArc` unported (b8 confirmed
+- [->] `Util.shortestPaths`/`TopNSearcher`/`readCeilArc` unported (b8 confirmed
       and left it: `top_n_completions` walks the prefix subtree with a bounded
       heap, which cannot skip a subtree that provably cannot beat the current
       worst candidate). `SegmentTermsEnum` `TermState` seeking unported (owner: the
       search batches -- no `TermStates` caller exists yet). (Raised by b4.)
+      **Tracked as open-work item 12** -- that entry is the live one, and it is the only one anybody should plan from. This box is the historical record of where the finding was raised. It is deliberately not a checkbox: six batches were misled by ticking the prioritised entry and leaving a duplicate open down here.
 - [~] `postings_writer` should hold one `ForUtil` across blocks rather than
       constructing one per block (b2 made `encode` in-place + scratch-by-ref;
       the caller side is b5/b9 territory).
@@ -1288,7 +1418,7 @@ now five).
       that corpus (`InMemoryInvertedIndex::ram_bytes_used()` measures it). The
       constant only comes down with the block-pool redesign below. (Raised by
       b9, F-10; closed by c3, F-5/F-6/F-8.)
-- [ ] `indexing_chain` still allocates per token/term/posting where Java uses
+- [->] `indexing_chain` still allocates per token/term/posting where Java uses
       `BytesRefHash` + `ByteBlockPool`/`IntBlockPool`/`ByteSlicePool`. b9
       removed the two worst constant factors (2.5x measured) but the shape is
       unchanged; closing it needs a borrowed-token `Analyzer` API
@@ -1307,6 +1437,7 @@ now five).
       `Vec<PostingEntry>` slots and 36.6 MB the capacity-4 `Vec<Occurrence>`
       allocations. See open-work item 15 and
       `docs/sweep/m2/c38-allocation-shape.md`.
+      **Tracked as open-work item 15** -- that entry is the live one, and it is the only one anybody should plan from. This box is the historical record of where the finding was raised. It is deliberately not a checkbox: six batches were misled by ticking the prioritised entry and leaving a duplicate open down here.
 - [x] `SegmentCommitInfo.sci_id` was written as absent (`marker 0`) by every
       construction site in the port. **Closed by c7** (F-20): the two sites that
       *create* a segment (`segment_writer::flush_stored_only_segment*` and
@@ -1362,18 +1493,19 @@ now five).
       `DisiCursor`, `reset()` when `doc < cursor.doc_id()`. Owner: b13.
       (Raised by c2.)
       **CLOSED by c6.** `field_norms.rs` has no `sparse_doc_ids` any more: `FieldNorms` keeps only the region slice and stays `Sync`, and `FieldNorms::cursor()` (`field_norms.rs:319`) hands each scan its own `FieldNormsCursor` wrapping a `lucene_codecs::indexed_disi::DisiCursor`. See the "NOT a two-line fix" section below for the design that made it work.
-- [ ] `IndexedDISI`'s **block jump table** is still not read
+- [x] `IndexedDISI`'s **block jump table** is still not read
       (`createJumpTable`/`advanceBlock`'s two-blocks-ahead shortcut). Cost is
       O(maxDoc/65536) four-byte header reads -- 16 for a million documents --
       and this port writes `jumpTableEntryCount = 0`, so our own files have no
       table to read. Worth revisiting only alongside a `nextDoc`-shaped
       iterator API. (Raised by c2.)
+      **CLOSED by `c39-codecs-readpath`** (open-work item 22). Verified against the tree: `indexed_disi.rs`'s `DisiCursor::new` splits `jump_table` off the data region (`:230`, `:317-326`) and `advance_block` uses it. What is *not* closed is open-work item 23c -- no Java-written jump table exists in the fixture corpus for it to be read against, because this port writes `jumpTableEntryCount = 0`.
 - [x] `lucene-search/src/explain.rs:1687` has an invalid `dense_rank_power: 0`
       test literal (`0` is not in Java's legal set). Unreachable -- the entry is
       dense -- but wrong data. One line; `lucene-search` was held by b13/b15.
       (Raised by c2, last of b2's finding-15 list.)
       **CLOSED by c6.** `explain.rs:1865` reads `dense_rank_power: 0xFF` (Java's "no rank table"), with a comment naming `field_norms.rs`'s deliberate `0` -- the input to `an_illegal_dense_rank_power_is_rejected_rather_than_guessed` -- so the two are not confused again.
-- [ ] `SegmentCommitInfo.sci_id` is not *regenerated* when a generation
+- [x] `SegmentCommitInfo.sci_id` is not *regenerated* when a generation
       advances. Java's `advanceDelGen`/`advanceDocValuesGen`/
       `advanceFieldInfosGen`/`setBufferedDeletesGen` all call
       `generationAdvanced()`, which does `id = StringHelper.randomId()`; the
@@ -1383,6 +1515,7 @@ now five).
       still report the same id. Nothing in Lucene validates it; what is lost is
       its use as a change token (segment replication). Wants one pass across
       every generation-advancing site. (Raised by c7's Tier-2 review, A4.)
+      **CLOSED by `c36-merge-metadata`** (open-work item 2). Verified against the tree: `segment_infos.rs`'s `advance_del_gen`/`advance_doc_values_gen`/`advance_field_infos_gen` (`:309`, `:318`, `:330`) each end in `generation_advanced()`, which is Java's `id = StringHelper.randomId()`.
 - [x] The sequence number does not cross the FFI boundary.
       `ffi_writer_add_document`/`ffi_writer_update_document`/
       `ffi_writer_delete_documents` all discard the `SeqNo` c7 gave them.
@@ -1599,7 +1732,7 @@ is proven still concurrent by a test in which two rayon tasks share one
       changes nothing here, and the blocker was never a `Clause` variant but
       `resolve_clause_docs`' signature carrying no doc-values/norms/vector
       input. See `docs/sweep/m2/c12-search-features-2.md`.
-- [ ] **Mechanical gates for two defect shapes this sweep keeps re-finding.**
+- [x] **Mechanical gates for two defect shapes this sweep keeps re-finding.**
       (a) A clippy `disallowed_methods` entry on the free
       `doc_values::numeric_value`/`binary_value`, naming
       `NumericReader`/`BinaryReader` as the sanctioned multi-lookup API: the
@@ -1610,6 +1743,7 @@ is proven still concurrent by a test in which two rayon tasks share one
       modules, which is how c14's hardcoded per-field suffix (F-12) got in.
       Repo-wide tooling, not any one batch's files. (Raised by c14's Tier-2
       review.)
+      **CLOSED by `c41-gates-and-record`** (open-work item 27). Both named shapes are now rules in `scripts/check-port-invariants.py`, in the gate and in CI: (a) is `doc-values-per-doc` (a *burn-down* on the ten per-document call sites that exist, keyed by (file, fn), so a new one fails and a migrated one asks for the count to come down -- not the `disallowed_methods` deny this entry proposed, which would have needed 60-plus empty `#[allow]`s); (b) is `codec-suffix-literal`. Both were verified by introducing the defect and watching them fire. Item 27's later sub-items (c) and (e) are restated there, not closed.
 - [x] **c14 -- the doc-values-update on-disk format.** Done. c7's F-15 is
       closed: the `.dvu` overlay this port invented is no longer written into
       any index, replaced by Lucene's own generational `.dvm`/`.dvd`/`.dvs` +
@@ -1658,13 +1792,14 @@ is proven still concurrent by a test in which two rayon tasks share one
       decode* (b5 F7, recorded there as "bounded and small") became the
       dominant residual, because reaching a late document crosses hundreds of
       spans. Both fixed. See `docs/sweep/m2/c20-postings-skip.md`.
-- [ ] **`norms::parse_meta`'s signature still differs from Java's**
+- [x] **`norms::parse_meta`'s signature still differs from Java's**
       `readFields(meta, infos)`. c15 closed the *behaviour* gap (b6 #4, c7
       F-23) with an additive `norms::validate_fields(&Norms, &FieldInfos)`,
       called from the segment reader's open and from `check_index` -- the two
       places Java's diagnostic fires. What is left is a pure tidy-up across 23
       call sites in four crates, worth doing when a shared `FieldInfos` open
       lands and not before. (Raised by c15, §F14.)
+      **CLOSED as INTENTIONAL by `c41-gates-and-record`** (open-work item 28), after being recorded and deferred three times. The decision is written into `norms::validate_fields`' doc comment so it is not re-opened a fifth time. Two corrections to this entry's own premises: the count is **4 production call sites**, not 23 (the other 30 are `#[cfg(test)]` round-trips and integration tests), so the cost was never what made it wait; and the shared-`FieldInfos` open c40 landed does not settle it either. What settles it: norms need no `FieldInfos` to *parse* (every `.nvm` entry is fixed-shape, unlike a doc-values entry whose skip-index sub-record is conditional on the field's own `FieldInfo`), and `check_index::check_field_norms` needs the non-validating parse so a `.fnm`/`.nvm` disagreement is a named failing check rather than an aborted norms pass. Folding the validation in would move the split, not remove it.
 
 ## Open items raised by c12
 
@@ -1715,7 +1850,7 @@ is proven still concurrent by a test in which two rayon tasks share one
 
 ## Open items raised by c29
 
-- [ ] **`PointValues.estimatePointCount`'s BKD walk.** `estimate_doc_count`'s
+- [x] **`PointValues.estimatePointCount`'s BKD walk.** `estimate_doc_count`'s
       arithmetic is ported (`lucene-search/src/points_query.rs`) and is what
       `IndexOrDocValuesQuery`'s planner consumes, but the walk that produces
       its input is not: it needs each node's subtree `size()` *mid-traversal*,
@@ -1729,6 +1864,7 @@ is proven still concurrent by a test in which two rayon tasks share one
       count derived from the node id, times `max_points_in_leaf_node`, clamped
       at `point_count`). Nothing in `lucene-search` moves. (Raised by c29;
       originally b14 §1.4, then c12 §5.4.)
+      **CLOSED by `c39-codecs-readpath`** (open-work item 13). Verified against the tree: `points.rs:647` is `PointsReader::estimate_point_count`, with `estimate_point_count_bounded` as Java's `estimatePointCount(visitor, upperBound)`. Open-work item 23b (the walk's four `Vec`s per inner node) is the residue and is tracked there.
 - [x] **`FieldExistsQuery.count`'s live-doc arithmetic, and `rewrite`'s
       whole-reader decision.** The per-leaf predicate is ported
       (`doc_value_query::field_exists_leaf_is_complete`); what is missing is

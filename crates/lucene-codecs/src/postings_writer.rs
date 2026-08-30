@@ -10,33 +10,22 @@
 //!
 //! - **One or more fields per call**, each independently written (`numFields`
 //!   in `.tmd` is `inputs.len()`).
-//! - **One physical `.tim` block per field, OR multiple sibling leaf blocks
-//!   under a single multi-child `.tip` root — never a deeper/floor-split
-//!   trie.** This is the load-bearing scope restriction, added in the
-//!   "multi-block writer" task after the single-block-only writer proved out.
-//!   The splitting policy is deliberately the simplest one that produces a
-//!   *valid* trie without floor blocks or a second trie level: **group a
-//!   field's (already-sorted) terms by their first byte.** If every term
-//!   shares one leading byte (or there's only one term), the field still gets
-//!   the original single-block/single-`SIGN_NO_CHILDREN`-root shape,
-//!   unchanged from before. If the terms span 2..=33 distinct leading bytes,
-//!   each group becomes its own leaf `.tim` block (storing only each term's
-//!   bytes *after* the shared leading byte — that byte is the trie label, not
-//!   stored twice) addressed by its own `SIGN_NO_CHILDREN` child node, and the
-//!   field's `.tip` root is a single `SIGN_MULTI_CHILDREN` node (always
-//!   `ChildSaveStrategy::ARRAY`, the simplest of the three label encodings to
-//!   emit) whose children are exactly those leaf nodes, with no output of its
-//!   own. **Explicitly still unimplemented**: floor sub-blocks (a single
-//!   leading-byte group too large for one block), a second/deeper trie level
-//!   (needed if 34+ distinct leading bytes appear, or if finer splitting
-//!   within one leading byte is ever needed), and the `BITS`/`REVERSE_ARRAY`
-//!   label-encoding strategies (read-side supports all three; this writer
-//!   only ever emits `ARRAY`). A field needing more than 33 leading-byte
-//!   groups is rejected with `Error::TooManyLeadingByteGroups` rather than
-//!   silently misencoding the 5-bit strategy-byte-count field. A field
-//!   containing an empty-byte-string term also falls back to the
-//!   single-block path unconditionally (there's no leading byte to
-//!   strip/route on for that term).
+//! - **Exactly one physical `.tim` block per field, under one
+//!   `SIGN_NO_CHILDREN` `.tip` root — never a split trie.** This is the
+//!   load-bearing scope restriction. A `SIGN_MULTI_CHILDREN` writer existed
+//!   briefly (one leaf block per leading byte, an `ARRAY`-strategy root with
+//!   no output of its own) and was removed: **real Lucene cannot read it.**
+//!   `SegmentTermsEnum` starts by loading the root *block*, and a root node
+//!   carrying children but no output hands `loadBlock` an `fp` of `-1`. Two
+//!   terms differing in their first byte were enough to trip it (see
+//!   `docs/sweep/findings.md`, "The term dictionary could not survive a
+//!   second leading byte"). **Explicitly still unimplemented**: non-leaf
+//!   blocks whose entries are sub-block pointers, floor sub-blocks, any
+//!   second trie level, and the `ARRAY`/`BITS`/`REVERSE_ARRAY` child-label
+//!   strategies (`crate::blocktree`'s read side supports all three; this
+//!   writer emits none of them). The cost is that a term lookup within a
+//!   field scans the field's single block instead of descending a trie —
+//!   the block-tree navigation item already filed in the sweep findings.
 //! - **`docFreq` of any size is now supported for the `.doc` doc-delta/freq
 //!   stream**: every complete 256-doc chunk of a term's postings is emitted
 //!   as a full `ForUtil`/`PForUtil`-encoded block ([`write_full_block`],
@@ -56,7 +45,7 @@
 //!   query-time pruning, never a wrong answer. (An empty impacts region is
 //!   not an option: real Lucene rejects the segment with "Got empty list of
 //!   impacts".) **`docFreq >= LEVEL1_NUM_DOCS` (8192) is now
-//!   supported too**: for every complete span of [`LEVEL1_FACTOR`] (32) full
+//!   supported too**: for every complete span of [`crate::postings::LEVEL1_FACTOR`] (32) full
 //!   level-0 blocks, a level-1 skip entry ([`write_level1_span`]) is emitted
 //!   immediately before them — the exact write-side inverse of
 //!   `crate::postings::read_level1_entry`/`LazyDocsCursor::skip_level1_to`.
@@ -157,19 +146,14 @@
 //!   payload-length/payload-bytes fields, since this writer never has
 //!   payloads) — see `crate::postings::read_positions`'s `has_offsets`
 //!   full-block branch for the exact inverse. `Footer`.
-//! - `.tim`: `IndexHeader(codec="BlockTreeTermsDict")`, then, per field, one
-//!   physical block (single-block case) or one physical block per
-//!   leading-byte group (multi-block case), each block being
-//!   (`entCount << 1 | 1` code, `isLeafBlock` + `NO_COMPRESSION` code, suffix
-//!   bytes, suffix lengths, per-term stats, per-term postings metadata — see
+//! - `.tim`: `IndexHeader(codec="BlockTreeTermsDict")`, then one physical
+//!   block per field, each block being (`entCount << 1 | 1` code,
+//!   `isLeafBlock` + `NO_COMPRESSION` code, suffix bytes, suffix lengths,
+//!   per-term stats, per-term postings metadata — see
 //!   [`write_term_metadata`]), `Footer`.
-//! - `.tip`: `IndexHeader(codec="BlockTreeTermsIndex")`, then, per field,
-//!   either one `SIGN_NO_CHILDREN`/`hasTerms`/no-floor root node pointing at
-//!   the field's single `.tim` block (single-block case), or one
-//!   `SIGN_NO_CHILDREN`/`hasTerms`/no-floor leaf node per leading-byte group
-//!   followed by one `SIGN_MULTI_CHILDREN`/`ChildSaveStrategy::ARRAY` root
-//!   node (no output of its own) whose children are exactly those leaf nodes
-//!   (multi-block case) — see [`write_multi_children_root`]. `Footer`.
+//! - `.tip`: `IndexHeader(codec="BlockTreeTermsIndex")`, then, per field, one
+//!   `SIGN_NO_CHILDREN`/`hasTerms`/no-floor root node pointing at that
+//!   field's single `.tim` block — see [`write_leaf_node`]. `Footer`.
 //! - `.tmd`: `IndexHeader(codec="BlockTreeTermsMeta")`, the postings writer's
 //!   own embedded header (`IndexHeader(codec="Lucene104PostingsWriterTerms")`,
 //!   `indexBlockSize = 256`), `numFields = inputs.len()`, then each field's
@@ -729,7 +713,6 @@ pub fn write_fields(
             &pos_start_fp,
             &pay_start_fp,
             &last_pos_block_offset,
-            0,
             input.index_options,
             index_has_positions,
             index_has_offsets_or_payloads,
@@ -830,23 +813,23 @@ pub fn write_fields(
     })
 }
 
-/// Writes one physical `.tim` leaf block for `terms` (a contiguous,
-/// already-sorted slice — either a whole field in the single-block case, or
-/// one leading-byte group in the multi-block case), returning the block's
-/// absolute byte offset into `tim`. `strip_prefix_len` is `0` for the
-/// single-block case (the block stores each term's full bytes as its
-/// "suffix", matching the trie root's empty path prefix) or `1` for a
-/// leading-byte group (the block stores only the bytes *after* the shared
-/// leading byte, which the enclosing `SIGN_MULTI_CHILDREN` trie node already
-/// encodes as that child's label — see [`crate::blocktree::collect_leaf_blocks`]'s
-/// doc comment for why a block only ever stores its own suffix). `doc_start_fp`/
-/// `pos_start_fp` must be the same length as `terms` and already sliced to
-/// line up with it; metadata deltas are threaded fresh starting from
-/// `TermMetadata::EMPTY` for this block alone (`write_term_metadata`'s
-/// `base_doc_start_fp`/`base_pos_start_fp` both start at 0 here), matching
-/// `SegmentTermsEnumFrame`'s per-frame reset the read side
-/// (`crate::blocktree::decode_block`) already assumes — blocks never share
-/// metadata-delta state across a floor split *or* across sibling leaf blocks.
+/// Writes the one physical `.tim` leaf block a field gets, for `terms` (the
+/// field's whole already-sorted term list), returning the block's absolute
+/// byte offset into `tim`.
+///
+/// Each term is stored with its **full** bytes as the block's "suffix",
+/// matching the empty path prefix of the `SIGN_NO_CHILDREN` root
+/// [`write_leaf_node`] writes. There is no prefix to strip because there is no
+/// enclosing trie node to have encoded one -- a `strip_prefix_len` parameter
+/// existed while this writer emitted `SIGN_MULTI_CHILDREN` roots and was
+/// removed with them (see this module's doc comment for why real Lucene cannot
+/// read that shape).
+///
+/// `doc_start_fp`/`pos_start_fp` must be the same length as `terms`; metadata
+/// deltas are threaded fresh starting from `TermMetadata::EMPTY`
+/// (`write_term_metadata`'s `base_doc_start_fp`/`base_pos_start_fp` both start
+/// at 0), matching `SegmentTermsEnumFrame`'s per-frame reset that the read side
+/// (`crate::blocktree::decode_block`) already assumes.
 #[allow(clippy::too_many_arguments)]
 fn write_tim_block(
     tim: &mut Vec<u8>,
@@ -855,7 +838,6 @@ fn write_tim_block(
     pos_start_fp: &[u64],
     pay_start_fp: &[u64],
     last_pos_block_offset: &[i64],
-    strip_prefix_len: usize,
     index_options: IndexOptions,
     index_has_positions: bool,
     index_has_offsets_or_payloads: bool,
@@ -869,7 +851,7 @@ fn write_tim_block(
     let mut suffix_lengths = Vec::new();
     let mut stats = Vec::new();
     for t in terms {
-        let suffix = &t.term[strip_prefix_len..];
+        let suffix = &t.term[..];
         suffix_bytes.write_bytes(suffix);
         suffix_lengths.write_vint(suffix.len() as i32);
         let doc_freq = t.docs.len() as u32;
@@ -915,9 +897,9 @@ fn write_tim_block(
 
 /// Writes one `SIGN_NO_CHILDREN`/`hasTerms`/no-floor `.tip` node pointing at
 /// `block_fp` (a `.tim` block's absolute offset), returning this node's own
-/// absolute offset into `tip` — shared by the single-block root and, in the
-/// multi-block case, every one of the `SIGN_MULTI_CHILDREN` root's leaf
-/// children (see [`write_multi_children_root`]).
+/// absolute offset into `tip`. It is the only node this writer emits per
+/// field: the field's `.tip` root and its single `.tim` block's index entry
+/// are the same node.
 fn write_leaf_node(tip: &mut Vec<u8>, block_fp: u64) -> usize {
     let fp = tip.len();
     // keep it simple: always 8 bytes, same as blocktree.rs's test Builder
@@ -2916,24 +2898,23 @@ mod tests {
         }
     }
 
-    /// Forces the multi-block/multi-child-trie path this task added: 26
-    /// terms, one per lowercase letter (`"a0".."z0"`), so every term is its
-    /// own leading-byte group -- 26 physical `.tim` blocks under one
-    /// `SIGN_MULTI_CHILDREN` `.tip` root, well above the "does it even split"
-    /// bar of 2 blocks. Every term is looked up independently (not just
-    /// first/last) through the existing, unmodified `blocktree::open`/
-    /// `postings::DocInput`, proving `group_terms_by_leading_byte`/
-    /// `write_multi_children_root`'s child ordering, per-block suffix
-    /// stripping, and per-block metadata-delta reset (each block restarts
-    /// `doc_start_fp`/`pos_start_fp` threading from zero -- see
-    /// `write_tim_block`'s doc comment) are all correct, not just the "it
-    /// happens to work for the first block" case. See
+    /// 26 terms, one per lowercase letter (`"a0".."z0"`), so the field spans
+    /// 26 distinct leading bytes.
+    ///
+    /// This test was written for a multi-block writer that split such a field
+    /// into one `.tim` block per leading byte under a `SIGN_MULTI_CHILDREN`
+    /// root; that writer was removed because real Lucene cannot read the shape
+    /// (see this module's doc comment). What it proves now is the property
+    /// that outlived it and is the reason the split was attempted: **a field
+    /// whose terms span many leading bytes still reads back term-for-term**,
+    /// through the unmodified `blocktree::open`/`postings::DocInput`, from the
+    /// single block this writer emits. Every term is looked up independently,
+    /// not just the first and last. See
     /// `crates/lucene-search/tests/postings_writer_round_trip.rs`'s
-    /// `term_query_finds_correct_docs_across_multiple_tim_blocks` for the
-    /// required real `search_term_query` end-to-end proof of the same
-    /// property.
+    /// `term_query_finds_correct_docs_across_multiple_tim_blocks` for the same
+    /// property through a real `search_term_query`.
     #[test]
-    fn many_leading_byte_groups_force_multi_child_trie_root() {
+    fn a_field_spanning_every_lowercase_leading_byte_reads_back_term_for_term() {
         let mut terms = Vec::new();
         for (i, c) in (b'a'..=b'z').enumerate() {
             let term = vec![c, b'0'];
@@ -3026,13 +3007,16 @@ mod tests {
         }
     }
 
-    /// A field with an empty-byte-string term falls back to the single-block
-    /// path even when the remaining terms would otherwise split into several
-    /// leading-byte groups -- there's no leading byte to strip/route on for
-    /// the empty term, so `group_terms_by_leading_byte` must not attempt to
-    /// split at all in that case.
+    /// A field whose first term is the empty byte string, alongside terms with
+    /// several distinct leading bytes.
+    ///
+    /// The empty term has no leading byte at all, which is what made the
+    /// removed multi-block writer fall back to a single block for such a
+    /// field. Every field now takes that path, so what this pins is the
+    /// remaining half: the empty term is a legal term, sorts first, and reads
+    /// back as itself rather than as the block's prefix.
     #[test]
-    fn empty_term_falls_back_to_single_block_even_with_other_distinct_leading_bytes() {
+    fn an_empty_term_alongside_distinct_leading_bytes_reads_back_as_itself() {
         let terms = vec![
             TermPostings {
                 term: b"".to_vec(),
