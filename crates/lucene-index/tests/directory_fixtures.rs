@@ -53,14 +53,36 @@ fn read_latest_commit_matches_raw_fixture_bytes() {
     assert_eq!(&*bytes, expected.as_slice());
 }
 
+/// The two backends must hand back identical bytes for the same file.
+///
+/// **`with_read_threshold(_, 0)`, and the variant is asserted.** `segments_2`
+/// is a few hundred bytes, i.e. under
+/// `lucene_store::directory::SMALL_FILE_READ_THRESHOLD`, so the default
+/// `MmapDirectory` now *reads* it -- which would leave this test comparing
+/// one `Input::Owned` against another and no longer checking the mapping
+/// backend at all. `c42-readpath-perf` introduced that threshold; this is
+/// where the comparison it silently disabled is put back.
 #[test]
 fn mmap_backend_reads_same_bytes_as_fs_backend() {
+    use lucene_store::Input;
+
     let fs = FsDirectory::open(dir_path());
-    let mmap = MmapDirectory::open(dir_path());
+    let mmap = MmapDirectory::with_read_threshold(dir_path(), 0);
 
     let fs_bytes = fs.open("segments_2").unwrap();
     let mmap_bytes = mmap.open("segments_2").unwrap();
+    assert!(matches!(fs_bytes, Input::Owned(_)), "{fs_bytes:?}");
+    assert!(matches!(mmap_bytes, Input::Mapped(_)), "{mmap_bytes:?}");
     assert_eq!(&*fs_bytes, &*mmap_bytes);
+
+    // And the default backend, whose small-file arm is what a real reader
+    // takes for this file, agrees with both.
+    let read_not_mapped = MmapDirectory::open(dir_path()).open("segments_2").unwrap();
+    assert!(
+        matches!(read_not_mapped, Input::Owned(_)),
+        "{read_not_mapped:?}"
+    );
+    assert_eq!(&*read_not_mapped, &*fs_bytes);
 }
 
 #[test]

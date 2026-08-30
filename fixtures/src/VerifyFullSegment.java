@@ -1,5 +1,11 @@
 import org.apache.lucene.index.CheckIndex;
 import org.apache.lucene.index.DirectoryReader;
+import org.apache.lucene.index.FreqAndNormBuffer;
+import org.apache.lucene.index.Impacts;
+import org.apache.lucene.index.ImpactsEnum;
+import org.apache.lucene.index.LeafReaderContext;
+import org.apache.lucene.index.PostingsEnum;
+import org.apache.lucene.index.TermsEnum;
 import org.apache.lucene.index.MultiDocValues;
 import org.apache.lucene.index.MultiTerms;
 import org.apache.lucene.index.NumericDocValues;
@@ -59,8 +65,60 @@ public class VerifyFullSegment {
     return n;
   }
 
-  /** {@code body}'s token count: "shared" plus two vocabulary terms. */
-  private static final int BODY_LENGTH = 3;
+  /**
+   * {@code body}'s token count: {@code shared} repeated {@code 1 + (i % 4)}
+   * times plus two vocabulary terms. Must match
+   * {@code write_full_segment_fixture.rs}. The repetition is what makes
+   * {@code body:shared}'s per-block competitive impacts a *frontier* of
+   * several {@code (freq, norm)} pairs -- see that file's comment.
+   */
+  private static int bodyLength(int i) {
+    return 1 + (i % 4) + 2;
+  }
+
+  /**
+   * Walks {@code body:shared}'s postings through real Lucene's own
+   * {@link ImpactsEnum} and requires that at least one level-0 block carries
+   * **more than one** competitive {@code (freq, norm)} pair.
+   *
+   * <p>Every rule impacts must obey is checked by {@code CheckIndex}
+   * ({@code checkImpacts}); what that cannot tell anyone is whether the
+   * segment under test contains a multi-impact block at all. Until item 18
+   * this port wrote exactly one {@code (maxFreq, 1)} pair per block, so every
+   * one of those rules was vacuously satisfied.
+   */
+  private static int checkImpactsHaveSeveralEntries(DirectoryReader reader) throws IOException {
+    int mostImpactsSeen = 0;
+    for (LeafReaderContext leaf : reader.leaves()) {
+      Terms terms = leaf.reader().terms("body");
+      if (terms == null) {
+        continue;
+      }
+      TermsEnum te = terms.iterator();
+      if (!te.seekExact(new org.apache.lucene.util.BytesRef("shared"))) {
+        continue;
+      }
+      ImpactsEnum impactsEnum = te.impacts(PostingsEnum.FREQS);
+      for (int doc = impactsEnum.nextDoc();
+          doc != PostingsEnum.NO_MORE_DOCS;
+          doc = impactsEnum.nextDoc()) {
+        impactsEnum.advanceShallow(doc);
+        Impacts impacts = impactsEnum.getImpacts();
+        for (int level = 0; level < impacts.numLevels(); ++level) {
+          FreqAndNormBuffer buf = impacts.getImpacts(level);
+          mostImpactsSeen = Math.max(mostImpactsSeen, buf.size);
+        }
+      }
+    }
+    if (mostImpactsSeen < 2) {
+      System.out.println(
+          "MISMATCH body:shared's richest impacts list had " + mostImpactsSeen
+              + " entry/entries -- the fixture no longer exercises multi-impact blocks, "
+              + "so CheckIndex's impact rules are being checked against nothing");
+      return 1;
+    }
+    return 0;
+  }
 
   /**
    * Reads {@code field}'s norm for every document through real Lucene and
@@ -83,7 +141,7 @@ public class VerifyFullSegment {
     }
     boolean[] seen = new boolean[NUM_DOCS];
     for (int doc = norms.nextDoc(); doc != NumericDocValues.NO_MORE_DOCS; doc = norms.nextDoc()) {
-      int length = field.equals("body") ? BODY_LENGTH : titleLength(doc);
+      int length = field.equals("body") ? bodyLength(doc) : titleLength(doc);
       if (length < 0) {
         System.out.println(
             "MISMATCH " + field + " doc " + doc + " has a norm but does not carry the field");
@@ -184,9 +242,16 @@ public class VerifyFullSegment {
       // constant length. Compared value by value rather than merely asserting
       // the column exists: a column of the wrong lengths reads back perfectly.
       failures += checkNorms(reader, "title");
-      // And the field that *was* configured, whose length is 3 in every
-      // document ("shared" plus two vocabulary terms).
+      // And the field that *was* configured, whose length varies per document
+      // (`shared` repeated 1..4 times plus two vocabulary terms).
       failures += checkNorms(reader, "body");
+      // The impacts this port now writes, read back through real Lucene's own
+      // `ImpactsEnum`. `CheckIndex` below validates their *rules* (ordering,
+      // non-empty, non-zero first norm, freq <= block max); this asserts the
+      // shape is actually exercised, so a future change that collapsed the
+      // frontier back to one pair would be visible rather than silently
+      // untested.
+      failures += checkImpactsHaveSeveralEntries(reader);
 
       // Stored fields must survive alongside the postings.
       String id = reader.storedFields().document(NUM_DOCS - 1).get("id");

@@ -136,8 +136,22 @@ fn main() {
         .map(|i| format!("{}{i:03}", (b'a' + (i % 26) as u8) as char))
         .collect();
     for i in 0..NUM_DOCS {
+        // `shared` is repeated a varying number of times, so its frequency
+        // *and* the document's length both vary -- and they vary together, so
+        // a longer document also has a higher frequency. That is the shape
+        // whose competitive impacts (`CompetitiveImpactAccumulator`) are a
+        // frontier of several `(freq, norm)` pairs rather than a single one,
+        // and it is the only shape that puts this port's multi-impact
+        // level-0/level-1 output in front of real Lucene's `CheckIndex` --
+        // which validates that impacts are non-empty, that the first has a
+        // non-zero norm, that freq and unsigned norm both strictly increase,
+        // and that no document's freq exceeds the block's maximum. Before
+        // item 18 every block carried exactly one `(maxFreq, 1)` impact, so
+        // none of those rules had anything to reject.
+        let repeat = 1 + (i % 4);
         let body = format!(
-            "shared {} {}",
+            "{}{} {}",
+            "shared ".repeat(repeat),
             vocab[i % vocab.len()],
             vocab[(i / 7) % vocab.len()]
         );

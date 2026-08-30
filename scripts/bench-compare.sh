@@ -63,7 +63,7 @@ fi
 command -v taskset >/dev/null && PINCMD=(taskset -c "$PIN") || PINCMD=()
 
 echo "bench-compare: index=$INDEX warmup=${WARMUP}ms measure=${ITERS}ms pinned=${PIN:-none}"
-"${PINCMD[@]}" ./benchmarks/rust-runner/target/release/bench-runner \
+"${PINCMD[@]}" "${CARGO_TARGET_DIR:-./benchmarks/rust-runner/target}/release/bench-runner" \
     "$INDEX" "$QUERIES" "$WARMUP" "$ITERS" > "$OUT/rust.tsv"
 "${PINCMD[@]}" java --enable-native-access=ALL-UNNAMED --add-modules jdk.incubator.vector \
     -Xmx4g -cp "$OUT/classes:$CP" BenchRunner \

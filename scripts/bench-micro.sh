@@ -93,6 +93,14 @@ fi
 
 echo "bench-micro: building" >&2
 ( cd benchmarks/rust-runner && cargo build --release --quiet )
+# Where cargo actually put it. `scripts/docker-test.sh` exports
+# CARGO_TARGET_DIR, so inside the container the build lands there and NOT in
+# `benchmarks/rust-runner/target` -- which, being a bind mount of the host
+# repo, may still hold a months-old host build. This script used to run that
+# stale binary and report its timings as the current engine's; `c42-readpath-perf`
+# found it doing exactly that, reporting a figure identical to three digits
+# across a change that moved the operation by 20%.
+RUST_TARGET_DIR="${CARGO_TARGET_DIR:-benchmarks/rust-runner/target}"
 javac -nowarn -cp "$CP" -d "$OUT/classes" "$SRC"
 
 # Every case but `index` measures a read path out of the shared `micro` binary,
@@ -111,7 +119,7 @@ command -v taskset >/dev/null || PINCMD=()
 for rep in $(seq 1 "$REPS"); do
   echo "bench-micro: rep $rep/$REPS rust ($BENCH)" >&2
   MICRO_WARMUP_MS="$WARMUP" MICRO_MEASURE_MS="$MEASURE" \
-    "${PINCMD[@]}" "benchmarks/rust-runner/target/release/$RUST_BIN" "${RUST_ARGS[@]}" \
+    "${PINCMD[@]}" "$RUST_TARGET_DIR/release/$RUST_BIN" "${RUST_ARGS[@]}" \
     > "$OUT/rust.$rep.tsv"
 
   echo "bench-micro: rep $rep/$REPS java ($BENCH)" >&2

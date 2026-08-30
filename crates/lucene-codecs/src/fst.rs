@@ -5462,9 +5462,18 @@ mod tests {
     /// buffer resolves keys correctly -- this is the concrete scenario the
     /// module doc on `FstBytes` describes: a large FST backed by mmap'd
     /// bytes, opened without a second full-size heap copy.
+    ///
+    /// **`with_read_threshold(_, 0)`, and the variant is asserted.** This
+    /// FST is a few hundred bytes, i.e. under
+    /// `lucene_store::directory::SMALL_FILE_READ_THRESHOLD`, so the default
+    /// backend hands back an `Input::Owned` and this test would go on passing
+    /// while proving nothing whatsoever about mmap. `c42-readpath-perf`
+    /// introduced that threshold and found this test (and its sibling in
+    /// `tests/fst_borrowed_seek_fixtures.rs`) already silently converted; the
+    /// assertion is what stops the next threshold change from doing it again.
     #[test]
     fn read_borrowed_over_a_real_mmap_directory_input() {
-        use lucene_store::directory::{Directory, MmapDirectory};
+        use lucene_store::directory::{Directory, Input, MmapDirectory};
         use lucene_store::DataOutput;
 
         let entries = seven_key_fixture();
@@ -5477,12 +5486,16 @@ mod tests {
         // `lucene_util::test_support`.
         let root = lucene_util::test_support::TempDir::new("fst-mmap");
 
-        let dir = MmapDirectory::open(&root);
+        let dir = MmapDirectory::with_read_threshold(&root, 0);
         let mut out = dir.create_output("fst.bin").unwrap();
         out.write_bytes(&file_bytes);
         out.close().unwrap();
 
         let mapped = dir.open("fst.bin").unwrap();
+        assert!(
+            matches!(mapped, Input::Mapped(_)),
+            "this test is about the mapped path; it read the file instead: {mapped:?}"
+        );
         let mut input = SliceInput::new(&mapped);
         let fst = Fst::read_borrowed(&mut input).unwrap();
         assert!(fst.is_borrowed());

@@ -797,6 +797,12 @@ pub type BoxedPayloadSource = Box<dyn Fn(&PayloadContext<'_>) -> Option<Vec<u8>>
 /// pass is handed.
 type PayloadSourceRef<'a> = &'a (dyn Fn(&PayloadContext<'_>) -> Option<Vec<u8>> + Send + Sync);
 
+/// [`IndexWriter::build_norms_output`]'s result: the `.nvm`/`.nvd` bytes,
+/// plus each norms field's per-document column as `(field number, norms by
+/// doc id)` -- the input the postings writer's impacts need. See that
+/// method's doc comment for why the columns come back at all.
+type NormsOutput = (Vec<u8>, Vec<u8>, Vec<(i32, Vec<i64>)>);
+
 /// for, resolved once by [`IndexWriter::set_postings_field`]/
 /// [`IndexWriter::add_postings_field`] against this writer's fixed `fields`
 /// list -- `self.postings_fields` may hold any number of these at once (see
@@ -922,9 +928,24 @@ struct NormsFieldConfig {
 /// it: `Dense` when every document carries the field, `Sparse` otherwise.
 /// This owns the values so [`IndexWriter::build_norms_output`] can build all
 /// of them before borrowing them into one `norms::write_fields` call.
-enum NormsColumn {
-    Dense(Vec<i64>),
-    Sparse(Vec<(i32, i64)>),
+struct NormsColumn {
+    /// The field's norm for **every** doc id, absent ones filled with `1`.
+    ///
+    /// One column, read twice: `norms::NormsField::Dense` borrows it as-is
+    /// (only taken when no doc is absent, so no filler is on the wire), and
+    /// `postings_writer::FieldNorms` needs exactly this dense-by-doc-id shape
+    /// for its impacts. Keeping one `Vec<i64>` rather than a dense column
+    /// plus a clone of it is what stops item 18 from costing 8 bytes per
+    /// document per normed field across the window
+    /// `build_and_write_segment`'s ordering exists to keep small.
+    ///
+    /// `1` for an absent doc is Java's own `advanceExact == false` fallback,
+    /// and is never read: a document with no norm for the field has no
+    /// posting for it either.
+    dense: Vec<i64>,
+    /// `Some` only when at least one doc is absent -- the sparse `.nvd` shape,
+    /// which lists just the present docs.
+    sparse: Option<Vec<(i32, i64)>>,
 }
 
 /// One field this writer has been opted into indexing vectors for, resolved
@@ -3248,6 +3269,12 @@ impl<'d> IndexWriter<'d> {
                 &segment_id,
             )?)
         };
+        // Borrowed out of `norms_output` before the postings consume
+        // `inverted`, because the postings writer needs them for its impacts.
+        let impact_norms: &[(i32, Vec<i64>)] = norms_output
+            .as_ref()
+            .map(|(_, _, columns)| columns.as_slice())
+            .unwrap_or(&[]);
         let term_vectors_output = if self.term_vector_fields.is_empty() {
             None
         } else {
@@ -3264,7 +3291,7 @@ impl<'d> IndexWriter<'d> {
             )?)
         };
         let postings_output = if !self.postings_fields.is_empty() {
-            Self::build_postings_output(&self.postings_fields, inverted, &segment_id)?
+            Self::build_postings_output(&self.postings_fields, inverted, impact_norms, &segment_id)?
         } else {
             drop(inverted);
             match &self.custom_freq_postings_field {
@@ -3356,7 +3383,7 @@ impl<'d> IndexWriter<'d> {
                 &dvs,
             )?);
         }
-        if let Some((nvm, nvd)) = norms_output {
+        if let Some((nvm, nvd, _)) = norms_output {
             record(Self::write_norms_files(self.dir, segment_name, &nvm, &nvd)?);
         }
         if let Some(output) = &vectors_output {
@@ -3636,6 +3663,7 @@ impl<'d> IndexWriter<'d> {
     fn build_postings_output(
         configs: &[PostingsFieldConfig],
         inverted: InMemoryInvertedIndex,
+        norms: &[(i32, Vec<i64>)],
         segment_id: &[u8; ID_LENGTH],
     ) -> Result<Option<postings_writer::Output>> {
         struct FieldData {
@@ -3788,8 +3816,19 @@ impl<'d> IndexWriter<'d> {
                 terms: &f.terms,
             })
             .collect();
-        let output = postings_writer::write_fields(
+        // The flush's own norms, so the impacts this writes are the real
+        // `(freq, norm)` frontier -- see `build_norms_output`'s return value
+        // and `postings_writer::write_fields_with_norms` (item 18).
+        let norms_for_impacts: Vec<postings_writer::FieldNorms<'_>> = norms
+            .iter()
+            .map(|(number, values)| postings_writer::FieldNorms {
+                field_number: *number,
+                values,
+            })
+            .collect();
+        let output = postings_writer::write_fields_with_norms(
             &inputs,
+            &norms_for_impacts,
             segment_id,
             &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
         )?;
@@ -3928,12 +3967,22 @@ impl<'d> IndexWriter<'d> {
     /// way `norms::norm_value`'s read side sign-extends a stored byte back
     /// (`byte as i8 as i64`) -- the exact inverse transformation
     /// `lucene_search::similarity::decode_norm` undoes.
+    /// Returns `(.nvm, .nvd, per-field norm columns)`. The third element is
+    /// the same per-document norm each column encodes, kept dense and
+    /// addressed by doc id, because [`Self::build_postings_output`] needs it:
+    /// `Lucene104PostingsWriter` accumulates its level-0/level-1 impacts
+    /// against the very norms `Lucene90NormsConsumer` is writing, and without
+    /// them every impact is `(maxFreq, 1)` -- sound, but too loose to prune
+    /// with (item 18). A document that carries no norm for the field reads as
+    /// `1`, Java's own `advanceExact == false` fallback; it is unreachable
+    /// through a posting, since a document with an occurrence of the field
+    /// has a norm for it.
     fn build_norms_output(
         docs: &[Document],
         configs: &[NormsFieldConfig],
         inverted: &InMemoryInvertedIndex,
         segment_id: &[u8; ID_LENGTH],
-    ) -> Result<(Vec<u8>, Vec<u8>)> {
+    ) -> Result<NormsOutput> {
         // One column per configured field, all into the same `.nvm`/`.nvd`
         // pair -- `Lucene90NormsConsumer` gets one `addNormsField` call per
         // field into one pair, and `norms::write_fields` is that shape.
@@ -3975,16 +4024,29 @@ impl<'d> IndexWriter<'d> {
                     }
                 }
                 let norm = |len: u32| small_float::int_to_byte4(len) as i8 as i64;
-                if lengths.iter().all(|l| l.is_some()) {
-                    NormsColumn::Dense(lengths.into_iter().flatten().map(norm).collect())
-                } else {
-                    NormsColumn::Sparse(
-                        lengths
-                            .into_iter()
-                            .enumerate()
-                            .filter_map(|(doc, len)| len.map(|len| (doc as i32, norm(len))))
-                            .collect(),
-                    )
+                let sparse = (!lengths.iter().all(|l| l.is_some())).then(|| {
+                    lengths
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(doc, len)| len.map(|len| (doc as i32, norm(len))))
+                        .collect()
+                });
+                NormsColumn {
+                    // The filler is the norm `1`, **not** `norm(0)`: an
+                    // absent doc has no norm at all, and `norm(0) == 0` is the
+                    // one value `CheckIndex.checkImpacts` rejects outright
+                    // ("First impact had a norm == 0"). A present-but-empty
+                    // doc still gets its legitimate explicit `norm(0)`, which
+                    // is what Lucene writes for it.
+                    //
+                    // The filler never fires for a column with no absent doc,
+                    // so the `Dense` arm below writes exactly the bytes it
+                    // wrote before this column grew its second reader.
+                    dense: lengths
+                        .into_iter()
+                        .map(|l| l.map(norm).unwrap_or(1))
+                        .collect(),
+                    sparse,
                 }
             })
             .collect();
@@ -3992,18 +4054,21 @@ impl<'d> IndexWriter<'d> {
         let fields: Vec<norms::NormsField<'_>> = configs
             .iter()
             .zip(&columns)
-            .map(|(config, column)| match column {
-                NormsColumn::Dense(values) => norms::NormsField::Dense(config.field_number, values),
-                NormsColumn::Sparse(pairs) => norms::NormsField::Sparse(config.field_number, pairs),
+            .map(|(config, column)| match &column.sparse {
+                None => norms::NormsField::Dense(config.field_number, &column.dense),
+                Some(pairs) => norms::NormsField::Sparse(config.field_number, pairs),
             })
             .collect();
 
-        Ok(norms::write_fields(
-            &fields,
-            docs.len() as i32,
-            segment_id,
-            "",
-        )?)
+        let (nvm, nvd) = norms::write_fields(&fields, docs.len() as i32, segment_id, "")?;
+        // The dense columns move out to the postings writer, which is the
+        // whole reason they are built dense -- no copy is made.
+        let impact_norms: Vec<(i32, Vec<i64>)> = configs
+            .iter()
+            .zip(columns)
+            .map(|(config, column)| (config.field_number, column.dense))
+            .collect();
+        Ok((nvm, nvd, impact_norms))
     }
 
     /// Builds one [`TermVectorsDocument`] per entry in `docs` (in the same
@@ -6450,7 +6515,10 @@ impl<'d> IndexWriter<'d> {
         };
         let mut matched_terms: Vec<Vec<u8>> = Vec::new();
         let mut terms = field_terms.iter();
-        while let Some((term, _)) = terms.try_next()? {
+        // `try_next_term`, not `try_next`: this walk classifies on the term
+        // bytes and never looks at `docFreq`/`totalTermFreq`, and
+        // `term_delete::resolve_term_doc_ids` re-seeks each kept term anyway.
+        while let Some(term) = terms.try_next_term()? {
             match classify(term) {
                 TermSpan::Take => matched_terms.push(term.to_vec()),
                 TermSpan::Skip => {}

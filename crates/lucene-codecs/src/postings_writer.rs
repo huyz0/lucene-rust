@@ -406,6 +406,236 @@ pub fn permute_payload_run(
     (bytes, lengths)
 }
 
+/// Port of `org.apache.lucene.codecs.CompetitiveImpactAccumulator`: the set
+/// of `(freq, norm)` pairs from a block (or a level-1 span) of documents that
+/// can possibly produce a competitive score.
+///
+/// The set is the **Pareto frontier** of the block's `(freq, norm)` pairs
+/// under "higher freq scores higher, higher norm scores lower": an entry is
+/// kept only if no other entry has both a higher-or-equal freq and a
+/// lower-or-equal norm. `get_competitive_freq_norm_pairs` returns it ordered
+/// by strictly increasing freq *and* strictly increasing (unsigned) norm,
+/// which is the invariant both [`write_impacts`] and
+/// `crate::postings::decode_impacts` rely on.
+///
+/// Why the frontier and not just `(maxFreq, minNorm)`: the pair
+/// `(maxFreq, minNorm)` need not occur in any single document. Emitting it
+/// would still be *sound* (it out-scores every real document), but it is
+/// looser than what Lucene writes, and the point of this type is to make the
+/// bound tight enough to prune with.
+///
+/// Structure follows Java's exactly: a 256-entry `max_freqs` table for norms
+/// in `-128..=127` (every norm the default similarity produces, since
+/// `Lucene90NormsConsumer` writes those as a single byte), plus a sorted
+/// overflow list for anything wider. The overflow list is a sorted `Vec`
+/// rather than Java's `TreeSet` because it holds at most a handful of
+/// entries in the only case that reaches it -- a segment whose `.nvd` stores
+/// more than one byte per norm -- and a `Vec` keeps the ordering invariant
+/// visible at the one place that maintains it.
+#[derive(Debug, Clone)]
+struct CompetitiveImpactAccumulator {
+    /// `maxFreqs[Byte.toUnsignedInt((byte) norm)]`: the highest freq seen for
+    /// each byte-valued norm. Index `i` stands for norm `i as u8 as i8`.
+    max_freqs: [i32; 256],
+    /// `otherFreqNormPairs`, kept sorted by Java's comparator: increasing
+    /// freq, and for equal freqs *decreasing* unsigned norm.
+    other: Vec<Impact>,
+}
+
+/// One competitive `(freq, norm)` pair -- Java's
+/// `org.apache.lucene.codecs.Impact`.
+///
+/// The read side's [`crate::postings::Impact`] *is* that type, so this is a
+/// local name for it rather than a second definition: the write side has to
+/// produce exactly what `decode_impacts` reads back, and two structs would be
+/// two chances to disagree.
+type Impact = crate::postings::Impact;
+
+impl Default for CompetitiveImpactAccumulator {
+    fn default() -> Self {
+        Self {
+            max_freqs: [0i32; 256],
+            other: Vec::new(),
+        }
+    }
+}
+
+impl CompetitiveImpactAccumulator {
+    /// `CompetitiveImpactAccumulator.add(int freq, long norm)`.
+    fn add(&mut self, freq: i32, norm: i64) {
+        if (i64::from(i8::MIN)..=i64::from(i8::MAX)).contains(&norm) {
+            let index = (norm as i8) as u8 as usize;
+            self.max_freqs[index] = self.max_freqs[index].max(freq);
+        } else {
+            let entry = Impact { freq, norm };
+            let mut other = std::mem::take(&mut self.other);
+            Self::add_to_set(entry, &mut other);
+            self.other = other;
+        }
+    }
+
+    /// Java's `getCompetitiveFreqNormPairs()`.
+    fn get_competitive_freq_norm_pairs(&self) -> Vec<Impact> {
+        let mut impacts: Vec<Impact> = Vec::new();
+        let mut max_freq_for_lower_norms = 0i32;
+        for (i, &max_freq) in self.max_freqs.iter().enumerate() {
+            if max_freq > max_freq_for_lower_norms {
+                impacts.push(Impact {
+                    freq: max_freq,
+                    norm: i64::from(i as u8 as i8),
+                });
+                max_freq_for_lower_norms = max_freq;
+            }
+        }
+        if self.other.is_empty() {
+            // Common case: every norm is a byte.
+            return impacts;
+        }
+        let mut merged = self.other.clone();
+        for impact in impacts {
+            Self::add_to_set(impact, &mut merged);
+        }
+        merged
+    }
+
+    /// Java's private `add(Impact, TreeSet<Impact>)`: insert unless something
+    /// already dominates `new_entry`, then drop everything `new_entry`
+    /// dominates.
+    ///
+    /// `set` is kept in the order Java's comparator defines -- increasing
+    /// freq, ties broken by *decreasing* unsigned norm -- so `ceiling` is a
+    /// binary search and `headSet(newEntry, false).descendingIterator()` is a
+    /// backwards walk from the insertion point.
+    fn add_to_set(new_entry: Impact, set: &mut Vec<Impact>) {
+        let key = |i: &Impact| (i.freq, std::cmp::Reverse(i.norm as u64));
+        let at = set.partition_point(|i| key(i) < key(&new_entry));
+        match set.get(at) {
+            // `ceiling` found an entry with at least this freq and a norm at
+            // least as competitive: nothing to do.
+            Some(next) if (next.norm as u64) <= (new_entry.norm as u64) => return,
+            _ => set.insert(at, new_entry),
+        }
+        // `headSet(newEntry, false).descendingIterator()`: walk back over the
+        // strictly-lesser entries, dropping the ones this entry dominates and
+        // stopping at the first that is not comparable.
+        let mut i = at;
+        while i > 0 {
+            // ARITH: guarded by `i > 0`.
+            #[allow(clippy::arithmetic_side_effects)]
+            let prev = i - 1;
+            if (set[prev].norm as u64) >= (new_entry.norm as u64) {
+                set.remove(prev);
+                i = prev;
+            } else {
+                break;
+            }
+        }
+    }
+}
+
+/// `Lucene104PostingsWriter.writeImpacts(Collection<Impact>, DataOutput)`.
+///
+/// Each entry is written as a delta against the previous one, starting from
+/// `(0, 0)`: a vint `freqDelta` whose low bit says whether an explicit
+/// zig-zag `normDelta` vlong follows. Both deltas are stored one *less* than
+/// the true delta, which is why `crate::postings::decode_impacts` adds one
+/// back to each. `impacts` must be ordered by strictly increasing freq and
+/// strictly increasing unsigned norm --
+/// [`CompetitiveImpactAccumulator::get_competitive_freq_norm_pairs`]
+/// guarantees exactly that.
+fn write_impacts(impacts: &[Impact], out: &mut Vec<u8>) {
+    let mut prev = Impact { freq: 0, norm: 0 };
+    for impact in impacts {
+        // Java's `impact.freq - previous.freq - 1` and
+        // `impact.norm - previous.norm - 1` are `int`/`long` arithmetic over
+        // a strictly increasing sequence, so both are non-negative; the
+        // wrapping spelling keeps a hypothetical out-of-order list producing
+        // Java's bytes rather than a panic, and the ordering itself is
+        // asserted below in debug builds.
+        debug_assert!(impact.freq > prev.freq);
+        // Unconditional, as Java's `assert Long.compareUnsigned(impact.norm,
+        // previous.norm) > 0` is. `prev` starts at `(0, 0)`, so on the first
+        // entry this *is* `CheckIndex.checkImpacts`' "First impact had a norm
+        // == 0" rule -- which is exactly the entry where the guard earns its
+        // keep, so it must not be excused. (A norm of 0 out-scores every other
+        // norm, so such an impact is a sound bound but an illegal byte; see
+        // `competitive_impacts`.)
+        debug_assert!((impact.norm as u64) > (prev.norm as u64));
+        let freq_delta = impact.freq.wrapping_sub(prev.freq).wrapping_sub(1);
+        let norm_delta = impact.norm.wrapping_sub(prev.norm).wrapping_sub(1);
+        if norm_delta == 0 {
+            // The common case -- norms increase by exactly one along the
+            // frontier -- folds into a single byte.
+            out.write_vint(freq_delta.wrapping_shl(1));
+        } else {
+            out.write_vint(freq_delta.wrapping_shl(1) | 1);
+            out.write_zlong(norm_delta);
+        }
+        prev = *impact;
+    }
+}
+
+/// The competitive impacts of one run of `(doc_id, freq)` pairs, against
+/// `norms`.
+///
+/// `norms` is the field's per-document norm column (see
+/// [`FieldNorms::values`]); `None`, or a doc id past its end, means norm `1`
+/// -- respectively Java's `fieldHasNorms == false` and its
+/// `norms.advanceExact(docID) == false` branch, both of which use `1L`.
+///
+/// Level-1 spans call this over the whole 8192-document span rather than
+/// merging the 32 level-0 accumulators as Java does. The two are the same
+/// set: the frontier of a union is the frontier of the union of the
+/// frontiers, and `CompetitiveImpactAccumulator::add` is what computes it
+/// either way.
+fn competitive_impacts(docs: &[(i32, i32)], norms: Option<&[i64]>) -> Vec<Impact> {
+    let mut acc = CompetitiveImpactAccumulator::default();
+    for &(doc_id, freq) in docs {
+        let norm = norm_of(norms, doc_id);
+        // Java's `assert norm != 0 : docID`. A norm of 0 decodes to a field
+        // length of 0, which out-scores every other norm -- so an impact
+        // carrying it is still a sound *bound*, but `CheckIndex.checkImpacts`
+        // rejects the segment ("First impact had a norm == 0"). It is
+        // unreachable by construction: a norm of 0 is what a document that
+        // carries the field with no tokens gets, and such a document has no
+        // posting for the field to be bounded.
+        debug_assert!(norm != 0, "doc {doc_id} has a posting but a norm of 0");
+        acc.add(freq, norm);
+    }
+    acc.get_competitive_freq_norm_pairs()
+}
+
+/// One document's norm, with both of Java's fallbacks folded in -- see
+/// [`competitive_impacts`].
+fn norm_of(norms: Option<&[i64]>, doc_id: i32) -> i64 {
+    let Some(values) = norms else { return 1 };
+    if doc_id < 0 {
+        return 1;
+    }
+    values.get(doc_id as usize).copied().unwrap_or(1)
+}
+
+/// One field's per-document norms, as `Lucene104PostingsWriter` receives them
+/// from `NormsProducer.getNorms(fieldInfo)` -- the input
+/// [`write_fields_with_norms`] needs to emit real impacts rather than
+/// `(maxFreq, 1)` ones.
+pub struct FieldNorms<'a> {
+    /// The field these norms belong to; matched against
+    /// [`FieldPostingsInput::field_number`].
+    pub field_number: i32,
+    /// The norm of document `d` at index `d` -- a **dense** column addressed
+    /// by doc id, which is what `NumericDocValues.advanceExact(docID)` /
+    /// `longValue()` amounts to for the writer's purposes.
+    ///
+    /// A doc id past the end reads as norm `1`, which is Java's
+    /// `advanceExact == false` branch ("this can happen if indexing hits a
+    /// problem after adding a doc to the postings but before buffering the
+    /// norm"). A document that carries no norm because it carries no
+    /// occurrence of the field never appears in that field's postings, so the
+    /// value stored for it is never read -- callers may put anything there.
+    pub values: &'a [i64],
+}
+
 /// Input to [`write_single_field`]: one field's whole term dictionary,
 /// already fully materialized and sorted.
 pub struct FieldPostingsInput<'a> {
@@ -463,6 +693,22 @@ pub fn write_single_field(
     write_fields(std::slice::from_ref(input), segment_id, segment_suffix)
 }
 
+/// [`write_single_field`] with the field's norms, so its impacts are real --
+/// see [`write_fields_with_norms`].
+pub fn write_single_field_with_norms(
+    input: &FieldPostingsInput<'_>,
+    norms: &[FieldNorms<'_>],
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+) -> Result<Output> {
+    write_fields_with_norms(
+        std::slice::from_ref(input),
+        norms,
+        segment_id,
+        segment_suffix,
+    )
+}
+
 /// Writes `.doc`/`.tim`/`.tip`/`.tmd` bytes for **one or more** fields in a
 /// single segment — see the module doc for the exact per-field scope and
 /// wire format, each of which applies independently to every field in
@@ -476,6 +722,31 @@ pub fn write_single_field(
 /// `postings::DocInput::open` both check them).
 pub fn write_fields(
     inputs: &[FieldPostingsInput<'_>],
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+) -> Result<Output> {
+    write_fields_with_norms(inputs, &[], segment_id, segment_suffix)
+}
+
+/// [`write_fields`] with each field's **per-document norms**, so the impacts
+/// it writes are `CompetitiveImpactAccumulator`'s real `(freq, norm)`
+/// frontier instead of the single `(maxFreq, 1)` pair a normless writer can
+/// prove.
+///
+/// `norms` names the fields it covers by number; a field of `inputs` with no
+/// entry here is written exactly as [`write_fields`] writes it, which is
+/// `Lucene104PostingsWriter`'s own `fieldHasNorms == false` path (`norm =
+/// 1L`) and is what a field with `FieldInfo.omitNorms` really is. Norm 1 is
+/// the shortest possible field, hence the highest-scoring one, so a normless
+/// bound is an over-estimate: **sound, and only ever loose**. Feeding real
+/// norms makes it tight, which is the whole of the win -- and getting it
+/// wrong in the other direction would make it an *under*-estimate, which
+/// silently drops hits under MAXSCORE. That is why the accumulator is a
+/// straight port of Java's rather than a shortcut, and why
+/// `bm25_scoring_fixtures.rs` compares hit *sets* and not just scores.
+pub fn write_fields_with_norms(
+    inputs: &[FieldPostingsInput<'_>],
+    norms: &[FieldNorms<'_>],
     segment_id: &[u8; ID_LENGTH],
     segment_suffix: &str,
 ) -> Result<Output> {
@@ -572,6 +843,13 @@ pub fn write_fields(
     for input in inputs {
         let index_has_positions = input.index_options.subsumes_positions();
         let index_has_freq = input.index_options != IndexOptions::Docs;
+        // `Lucene104PostingsWriter.setField`'s `fieldHasNorms`: this field's
+        // norms if the caller supplied them, `None` (norm 1 everywhere) if
+        // not. Resolved once per field, not once per document.
+        let field_norms: Option<&[i64]> = norms
+            .iter()
+            .find(|n| n.field_number == input.field_number)
+            .map(|n| n.values);
 
         // ---- `.pos`/`.pay` first ----
         //
@@ -662,9 +940,12 @@ pub fn write_fields(
                     span,
                     prev_doc_id,
                     &mut level1_last_doc_id,
-                    index_has_freq,
-                    &mut maxima,
-                    &mut skip,
+                    &mut BlockWriteCtx {
+                        index_has_freq,
+                        norms: field_norms,
+                        maxima: &mut maxima,
+                        skip: &mut skip,
+                    },
                 );
                 start += LEVEL1_NUM_DOCS as usize;
             }
@@ -676,9 +957,12 @@ pub fn write_fields(
                     &mut doc,
                     block,
                     prev_doc_id,
-                    index_has_freq,
-                    &mut maxima,
-                    &mut skip,
+                    &mut BlockWriteCtx {
+                        index_has_freq,
+                        norms: field_norms,
+                        maxima: &mut maxima,
+                        skip: &mut skip,
+                    },
                 );
                 start += BLOCK_SIZE as usize;
             }
@@ -1123,6 +1407,21 @@ impl PostingsMaxima {
     }
 }
 
+/// The per-term state both `.doc` block writers thread through: what the
+/// field indexes, its norms, the running `.psm` maxima, and the `.pos`/`.pay`
+/// skip writer.
+///
+/// `Lucene104PostingsWriter` holds all four as fields of itself and mutates
+/// them in place across `flushDocBlock`/`writeLevel1SkipData`. This writer
+/// builds each file whole rather than interleaving them, so the same state
+/// travels as one borrow instead of four parameters.
+struct BlockWriteCtx<'n, 'p> {
+    index_has_freq: bool,
+    norms: Option<&'n [i64]>,
+    maxima: &'n mut PostingsMaxima,
+    skip: &'n mut PosSkipWriter<'p>,
+}
+
 /// Writes one full 256-doc `.doc` block — a level-0 skip header
 /// (`level0NumBytes` skip pointer, `docDelta`, `blockLength`, an always-empty
 /// impacts region) followed by the doc-delta/freq body — the exact
@@ -1162,10 +1461,15 @@ fn write_full_block(
     out: &mut Vec<u8>,
     block: &[(i32, i32)],
     prev_doc_id: i32,
-    index_has_freq: bool,
-    maxima: &mut PostingsMaxima,
-    skip: &mut PosSkipWriter<'_>,
+    ctx: &mut BlockWriteCtx<'_, '_>,
 ) -> i32 {
+    let BlockWriteCtx {
+        index_has_freq,
+        norms,
+        maxima,
+        skip,
+    } = ctx;
+    let (index_has_freq, norms) = (*index_has_freq, *norms);
     debug_assert_eq!(block.len(), BLOCK_SIZE as usize);
     // `addPosition` has run for every occurrence of this block's documents by
     // the time `flushDocBlock` samples the `.pos`/`.pay` pointers.
@@ -1178,30 +1482,34 @@ fn write_full_block(
     // written.
     let mut rest = Vec::new();
     if index_has_freq {
-        // One impact per block, `(maxFreq, norm = 1)`: the highest frequency
-        // this block contains paired with the shortest possible field length,
-        // which is an upper bound on any score the block can produce. Impacts
-        // bound scores for dynamic pruning, so a loose bound only costs
-        // pruning opportunities while a low one would drop real hits.
+        // `flushDocBlock`'s level-0 impacts: the block's competitive
+        // `(freq, norm)` frontier, from `CompetitiveImpactAccumulator`. With
+        // no norms supplied every document's norm is `1`, and the frontier
+        // collapses to the single `(maxFreq, 1)` pair this writer emitted
+        // before item 18 -- so the normless path is byte-identical to what it
+        // always wrote.
+        //
+        // Impacts bound scores for dynamic pruning: a bound that is too high
+        // only costs pruning, while one that is too low **drops real hits**.
+        // Norm 1 is the shortest field and therefore the highest-scoring one,
+        // which is why the normless bound is safe; the accumulator is what
+        // keeps the with-norms bound safe, by taking the frontier rather than
+        // the (possibly unrealised) `(maxFreq, minNorm)` corner.
         //
         // An *empty* region is not the conservative choice it looks like:
         // Lucene rejects the segment outright with "Got empty list of impacts
         // on level 0".
-        //
-        // `Lucene104PostingsWriter.writeImpacts` encodes each impact against
-        // the previous one, starting from `(0, 0)`, so this single entry is
-        // `freqDelta = maxFreq - 1` and `normDelta = 0` -- the folded
-        // single-byte form, with no zig-zag long following.
-        let max_freq = block.iter().map(|&(_, f)| f).max().unwrap_or(1).max(1);
+        let block_impacts = competitive_impacts(block, norms);
+        // `validate_field` rejects `freq < 1`, so every block has at least one
+        // document and its frontier at least one pair. Asserted here rather
+        // than inferred from a validator several hundred lines up: an empty
+        // impacts region is what Lucene rejects outright, and the guard that
+        // prevents it is no longer local to this expression (it used to be a
+        // `.max(1)` on the line this replaced).
+        debug_assert!(!block_impacts.is_empty());
         let mut impacts = Vec::new();
-        // ARITH: `.max(1)` on the line above puts `max_freq` in `1..=i32::MAX`,
-        // so `max_freq - 1` is in `0..=i32::MAX - 1`. (Rust's `<<` checks the
-        // shift *amount*, not the value, so the `<< 1` is Java's `int` shift
-        // bit for bit.)
-        #[allow(clippy::arithmetic_side_effects)]
-        let freq_delta = max_freq - 1;
-        impacts.write_vint(freq_delta << 1);
-        maxima.observe_level0(1, impacts.len());
+        write_impacts(&block_impacts, &mut impacts);
+        maxima.observe_level0(block_impacts.len() as i32, impacts.len());
         rest.write_vint(impacts.len() as i32);
         rest.write_bytes(&impacts);
         // `.pos`/`.pay` skip pointers, immediately after the impacts run and
@@ -1373,10 +1681,9 @@ fn write_level1_span(
     span: &[(i32, i32)],
     prev_doc_id: i32,
     level1_last_doc_id: &mut i32,
-    index_has_freq: bool,
-    maxima: &mut PostingsMaxima,
-    skip: &mut PosSkipWriter<'_>,
+    ctx: &mut BlockWriteCtx<'_, '_>,
 ) -> i32 {
+    let (index_has_freq, norms) = (ctx.index_has_freq, ctx.norms);
     debug_assert_eq!(span.len(), LEVEL1_NUM_DOCS as usize);
 
     // Build the span's 32 full blocks into a scratch buffer first so the
@@ -1386,27 +1693,27 @@ fn write_level1_span(
     let mut span_bytes = Vec::new();
     let mut prev = prev_doc_id;
     for block in span.chunks(BLOCK_SIZE as usize) {
-        prev = write_full_block(&mut span_bytes, block, prev, index_has_freq, maxima, skip);
+        prev = write_full_block(&mut span_bytes, block, prev, ctx);
     }
     let last_doc_id = prev;
 
-    // This span's own single impact, on the same `(maxFreq, norm = 1)` basis
-    // as [`write_full_block`]'s -- the max is over the whole 8192-doc span, so
-    // it bounds every level-0 block beneath it, as a level-1 impact must.
+    // This span's own impacts, on the same basis as [`write_full_block`]'s --
+    // accumulated over the whole 8192-document span, so the frontier bounds
+    // every level-0 block beneath it, as a level-1 impact must.
     let mut level1_impacts = Vec::new();
     // `numImpactBytes` is sampled here, before the pos/pay sub-fields are
     // appended to the same scratch buffer (`Lucene104PostingsWriter.java:
     // 507-521`), so it counts the impact bytes only.
     let mut level1_scratch = Vec::new();
     if index_has_freq {
-        let max_freq = span.iter().map(|&(_, f)| f).max().unwrap_or(1).max(1);
-        // ARITH: as in `write_full_block` -- `.max(1)` bounds `max_freq` below.
-        #[allow(clippy::arithmetic_side_effects)]
-        let freq_delta = max_freq - 1;
-        level1_impacts.write_vint(freq_delta << 1);
-        maxima.observe_level1(1, level1_impacts.len());
+        let span_impacts = competitive_impacts(span, norms);
+        // See `write_full_block`'s identical assertion.
+        debug_assert!(!span_impacts.is_empty());
+        write_impacts(&span_impacts, &mut level1_impacts);
+        ctx.maxima
+            .observe_level1(span_impacts.len() as i32, level1_impacts.len());
         level1_scratch.extend_from_slice(&level1_impacts);
-        skip.write_level1(&mut level1_scratch);
+        ctx.skip.write_level1(&mut level1_scratch);
     }
 
     // `read_level1_entry` computes `doc_end_fp` as this vlong's value added
@@ -2089,6 +2396,171 @@ mod tests {
 
     const SEG_ID: [u8; ID_LENGTH] = [9u8; ID_LENGTH];
     const SUFFIX: &str = "";
+
+    /// `CompetitiveImpactAccumulator`'s core property: the result is the
+    /// Pareto frontier of the input pairs -- every input is dominated by some
+    /// entry (same-or-higher freq at same-or-lower norm), and no entry is
+    /// dominated by another.
+    fn assert_is_frontier(input: &[(i32, i64)], got: &[Impact]) {
+        for &(freq, norm) in input {
+            assert!(
+                got.iter()
+                    .any(|i| i.freq >= freq && (i.norm as u64) <= (norm as u64)),
+                "({freq}, {norm}) is not dominated by any of {got:?}"
+            );
+        }
+        for (a, b) in got.iter().zip(got.iter().skip(1)) {
+            assert!(
+                b.freq > a.freq && (b.norm as u64) > (a.norm as u64),
+                "impacts must strictly increase in both freq and unsigned norm: {a:?} then {b:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn competitive_impacts_keep_only_the_frontier_for_byte_norms() {
+        // (freq, norm): the middle pair is dominated by the first (higher
+        // freq, lower norm), so it must not survive.
+        let input = [(5i32, 3i64), (3, 7), (9, 40), (2, 2)];
+        let mut acc = CompetitiveImpactAccumulator::default();
+        for &(freq, norm) in &input {
+            acc.add(freq, norm);
+        }
+        let got = acc.get_competitive_freq_norm_pairs();
+        assert_eq!(
+            got,
+            vec![
+                Impact { freq: 2, norm: 2 },
+                Impact { freq: 5, norm: 3 },
+                Impact { freq: 9, norm: 40 },
+            ]
+        );
+        assert_is_frontier(&input, &got);
+    }
+
+    /// The `otherFreqNormPairs` branch: norms outside `-128..=127`, which is
+    /// what a `.nvd` storing more than one byte per norm produces and which
+    /// a merge of such a segment hands this writer. Java keeps them in a
+    /// `TreeSet` rather than the 256-entry table; this keeps them in a sorted
+    /// `Vec`, and the answer has to be the same frontier either way.
+    #[test]
+    fn competitive_impacts_handle_norms_wider_than_a_byte() {
+        let input = [
+            (4i32, 1_000i64),
+            (2, 500),
+            (7, 5_000),
+            (3, 900), // dominated by (4, 1000)? no -- lower norm, lower freq
+            (1, 100_000),
+        ];
+        let mut acc = CompetitiveImpactAccumulator::default();
+        for &(freq, norm) in &input {
+            acc.add(freq, norm);
+        }
+        let got = acc.get_competitive_freq_norm_pairs();
+        assert_is_frontier(&input, &got);
+        // (1, 100000) is dominated by (2, 500) and must be gone.
+        assert!(!got.iter().any(|i| i.freq == 1));
+        // And every entry came from the overflow list, not the byte table.
+        assert!(got.iter().all(|i| i.norm > 127));
+    }
+
+    /// Byte-valued and wide norms in the same block: Java merges the table's
+    /// derived impacts into the tree, and the frontier must span both.
+    #[test]
+    fn competitive_impacts_merge_byte_and_wide_norms() {
+        let input = [(10i32, 5i64), (3, 2), (12, 9_000), (2, 40_000)];
+        let mut acc = CompetitiveImpactAccumulator::default();
+        for &(freq, norm) in &input {
+            acc.add(freq, norm);
+        }
+        let got = acc.get_competitive_freq_norm_pairs();
+        assert_is_frontier(&input, &got);
+        assert!(got.iter().any(|i| i.norm <= 127));
+        assert!(got.iter().any(|i| i.norm > 127));
+        // (2, 40000) is dominated by (3, 2).
+        assert!(!got.iter().any(|i| i.norm == 40_000));
+    }
+
+    /// Java's norms are **sign-extended bytes**, so byte 200 arrives as
+    /// `-56`, and its ordering against byte 100 is `Long.compareUnsigned` --
+    /// under which `-56` is the larger (longer field, lower score). Getting
+    /// the comparison signed instead would order the frontier backwards and
+    /// `CheckIndex` would reject the segment.
+    #[test]
+    fn competitive_impacts_order_sign_extended_norms_unsigned() {
+        let mut acc = CompetitiveImpactAccumulator::default();
+        acc.add(3, i64::from(100i8)); // byte 100
+        acc.add(9, i64::from(200u8 as i8)); // byte 200 -> -56
+        let got = acc.get_competitive_freq_norm_pairs();
+        assert_eq!(
+            got,
+            vec![
+                Impact { freq: 3, norm: 100 },
+                Impact {
+                    freq: 9,
+                    norm: i64::from(200u8 as i8)
+                },
+            ],
+            "byte 200 must sort *after* byte 100"
+        );
+    }
+
+    /// With no norms every document is norm 1, so the frontier is the single
+    /// `(maxFreq, 1)` pair this writer emitted before item 18 -- which is what
+    /// keeps the normless path byte-identical.
+    #[test]
+    fn competitive_impacts_without_norms_are_a_single_max_freq_pair() {
+        let docs = [(0i32, 3i32), (1, 7), (2, 5)];
+        assert_eq!(
+            competitive_impacts(&docs, None),
+            vec![Impact { freq: 7, norm: 1 }]
+        );
+    }
+
+    /// A doc id past the end of the norms column reads as norm 1 -- Java's
+    /// `norms.advanceExact(docID) == false` branch.
+    #[test]
+    fn a_document_past_the_norms_column_reads_as_norm_one() {
+        let norms = [5i64, 6];
+        assert_eq!(norm_of(Some(&norms), 0), 5);
+        assert_eq!(norm_of(Some(&norms), 1), 6);
+        assert_eq!(norm_of(Some(&norms), 2), 1);
+        assert_eq!(norm_of(Some(&norms), -1), 1);
+        assert_eq!(norm_of(None, 0), 1);
+    }
+
+    /// [`write_impacts`] round-trips through the *read* side's
+    /// [`crate::postings::decode_impacts`], including the explicit
+    /// zig-zag `normDelta` branch (norm jumping by more than one) and the
+    /// folded single-byte branch (norm increasing by exactly one).
+    #[test]
+    fn write_impacts_round_trips_through_decode_impacts() {
+        for impacts in [
+            vec![Impact { freq: 1, norm: 1 }],
+            // Consecutive norms: every entry takes the folded one-byte form.
+            vec![
+                Impact { freq: 1, norm: 1 },
+                Impact { freq: 2, norm: 2 },
+                Impact { freq: 3, norm: 3 },
+            ],
+            // Gaps, and a sign-extended norm past 127.
+            vec![
+                Impact { freq: 2, norm: 4 },
+                Impact { freq: 40, norm: 90 },
+                Impact {
+                    freq: 900,
+                    norm: i64::from(250u8 as i8),
+                },
+            ],
+        ] {
+            let mut bytes = Vec::new();
+            write_impacts(&impacts, &mut bytes);
+            assert_eq!(
+                crate::postings::decode_impacts(&bytes).expect("decode"),
+                impacts
+            );
+        }
+    }
 
     /// Builds a [`TermPostings`] flat payload run from one occurrence's
     /// payload per element, in doc order and then occurrence order -- which
@@ -3550,9 +4022,12 @@ mod tests {
             &mut out,
             block,
             prev_doc_id,
-            false,
-            &mut PostingsMaxima::default(),
-            &mut PosSkipWriter::new(None, false),
+            &mut BlockWriteCtx {
+                index_has_freq: false,
+                norms: None,
+                maxima: &mut PostingsMaxima::default(),
+                skip: &mut PosSkipWriter::new(None, false),
+            },
         );
         let mut r = SliceInput::new(&out);
         let _level0_num_bytes = r.read_vlong().unwrap();
