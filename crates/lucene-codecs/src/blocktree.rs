@@ -1761,6 +1761,14 @@ impl<'a> TermsEnum<'a> {
     ///
     /// Loads at most one further `.tim` block per call, and only decodes the
     /// postings metadata of the term it lands on.
+    ///
+    /// **Java's `next()` is [`Self::try_next_term`], not this.** Real
+    /// `SegmentTermsEnum.next()` decodes only the term bytes and leaves
+    /// `decodeMetaData` to `docFreq()`/`totalTermFreq()`/`postings()`; this
+    /// spelling is the two fused, kept because most callers do want both and
+    /// fusing them saves them a second call. A caller that only needs the
+    /// term bytes should use [`Self::try_next_term`] and ask for
+    /// [`Self::try_stats`] on the terms it keeps.
     pub fn try_next(&mut self) -> Result<Option<(&[u8], TermStats)>> {
         let mut ste = self.ste();
         if !ste.next()? {
@@ -1768,6 +1776,52 @@ impl<'a> TermsEnum<'a> {
         }
         let stats = ste.stats()?;
         Ok(Some((self.st.term.get(), stats)))
+    }
+
+    /// `SegmentTermsEnum.next()` exactly: advance to the next term and hand
+    /// back **only its bytes**, leaving `decodeMetaData` undone.
+    ///
+    /// This is the split c1's F-14 asked for. A scan that filters on the term
+    /// bytes -- a wildcard/regexp/fuzzy intersection, a term-range delete, a
+    /// `CheckIndex` pass -- discards `docFreq`/`totalTermFreq` for every term
+    /// it rejects, and through [`Self::try_next`] it paid a stats vint and a
+    /// full [`TermMetadata`] decode (`.doc`/`.pos`/`.pay` file pointers,
+    /// singleton pulsing) to produce them. Java never does: `next()` returns a
+    /// `BytesRef` and the metadata is decoded lazily, at most once per frame
+    /// position, by whichever accessor first asks.
+    ///
+    /// Pair it with [`Self::try_stats`], which decodes on demand and is
+    /// idempotent per position -- so `try_next_term()` then `try_stats()` on
+    /// every term costs exactly what [`Self::try_next`] does, and the saving
+    /// is real only for the terms whose stats are never asked for.
+    pub fn try_next_term(&mut self) -> Result<Option<&[u8]>> {
+        if !self.ste().next()? {
+            return Ok(None);
+        }
+        Ok(Some(self.st.term.get()))
+    }
+
+    /// The bytes of the term the cursor is parked on, without decoding
+    /// anything -- `TermsEnum.term()`. `None` before the first advance, past
+    /// the end, or after a [`Self::try_seek_ceil`] that returned
+    /// [`SeekStatus::End`].
+    pub fn term(&self) -> Option<&[u8]> {
+        self.st.on_term.then(|| self.st.term.get())
+    }
+
+    /// `TermsEnum.docFreq()`/`totalTermFreq()`: the current term's stats,
+    /// decoded now. `None` in exactly the positions [`Self::term`] returns
+    /// `None` for.
+    ///
+    /// Decoding is memoised per frame position by
+    /// `SegmentTermsEnumFrame.metaDataUpto`, so calling this twice on one
+    /// term costs one decode, and calling it after [`Self::try_next`] (which
+    /// has already decoded) costs none.
+    pub fn try_stats(&mut self) -> Result<Option<TermStats>> {
+        if !self.st.on_term {
+            return Ok(None);
+        }
+        self.ste().stats().map(Some)
     }
 
     /// [`Self::try_next`] with the error dropped: a corrupt block reads as
@@ -2596,7 +2650,7 @@ impl<'a, M: TermMatcher> Intersect<'a, M> {
     fn start(&mut self) -> Result<bool> {
         self.started = true;
         if self.prefix.is_empty() {
-            return Ok(self.enum_.try_next()?.is_some());
+            return Ok(self.enum_.try_next_term()?.is_some());
         }
         Ok(match self.enum_.try_seek_ceil(&self.prefix)? {
             SeekStatus::Found | SeekStatus::NotFound => true,
@@ -2615,7 +2669,12 @@ impl<'a, M: TermMatcher> Intersect<'a, M> {
             return Ok(None);
         }
         loop {
-            let Some((term, stats)) = self.enum_.try_current()? else {
+            // `term()`, not `try_current()`: `IntersectTermsEnum` walks on the
+            // term bytes alone and only the terms it *yields* need stats, so
+            // decoding `docFreq`/`totalTermFreq`/`TermMetadata` here would
+            // charge every rejected term for numbers this loop throws away
+            // (item 21 / c1's F-14).
+            let Some(term) = self.enum_.term() else {
                 self.done = true;
                 return Ok(None);
             };
@@ -2624,17 +2683,31 @@ impl<'a, M: TermMatcher> Intersect<'a, M> {
                 return Ok(None);
             }
             if self.matcher.matches(term) {
-                let item = (term.to_vec(), stats);
-                if self.enum_.try_next()?.is_none() {
+                let bytes = term.to_vec();
+                // Only now, for a term that is actually being handed out.
+                //
+                // `term()` was `Some`, so `try_stats()` cannot be `None` --
+                // both gate on the same `st.on_term` and nothing between them
+                // moves the cursor. Written as an `else` rather than an
+                // `expect` anyway: this is a decode path reachable from the
+                // JVM through a wildcard/regexp/fuzzy expansion, and a panic
+                // must never cross that boundary (AGENTS.md invariant 5). The
+                // unreachable branch reads as end-of-terms, which is what the
+                // `term()` arm above already does.
+                let Some(stats) = self.enum_.try_stats()? else {
+                    self.done = true;
+                    return Ok(None);
+                };
+                if self.enum_.try_next_term()?.is_none() {
                     self.done = true;
                 }
-                return Ok(Some(item));
+                return Ok(Some((bytes, stats)));
             }
 
             // Not a match. Either step to the next term, or -- when the
             // pattern proves this whole prefix range is dead -- seek past it.
             if !M::CAN_SKIP || !self.skip_enabled {
-                if self.enum_.try_next()?.is_none() {
+                if self.enum_.try_next_term()?.is_none() {
                     self.done = true;
                     return Ok(None);
                 }
@@ -2658,7 +2731,7 @@ impl<'a, M: TermMatcher> Intersect<'a, M> {
 
             match target {
                 None => {
-                    if self.enum_.try_next()?.is_none() {
+                    if self.enum_.try_next_term()?.is_none() {
                         self.done = true;
                         return Ok(None);
                     }

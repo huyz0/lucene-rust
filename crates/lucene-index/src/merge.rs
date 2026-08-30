@@ -2133,6 +2133,28 @@ pub fn merge_segments(
     // one pair) -- and what `write_dense_fields` already did for doc values.
     // Until c26 this was one `write_single_dense_field` call, so a merge of
     // segments with norms on two fields was `Error::TooManyNormsFields`.
+    // One dense-by-doc-id column per norms field, read twice: by
+    // `NormsField::Dense` when the `.nvd` is written just below, and by the
+    // postings writer's impacts further down
+    // (`postings_writer::FieldNorms` wants exactly this shape). Built once
+    // rather than once each -- these used to be two separate `Vec<i64>`s over
+    // the same numbers, on top of `merged_norms` itself, and this merge holds
+    // every one of them live at the same time.
+    //
+    // A doc with no norm for the field reads as `1`, Java's own
+    // `advanceExact == false` fallback. It is never on the wire (the `Dense`
+    // arm is only taken when no doc is absent) and never read through an
+    // impact (a doc with an occurrence of the field has a norm for it);
+    // `norm == 0`, which `CheckIndex.checkImpacts` rejects outright, is
+    // deliberately not used as the filler.
+    //
+    // Declared out here rather than inside the `.nvd` block below because the
+    // postings write is its own block further down and borrows this.
+    let impact_norms: Vec<Vec<i64>> = merged_norms
+        .iter()
+        .map(|(_, values)| values.iter().map(|v| v.unwrap_or(1)).collect())
+        .collect();
+
     if !merged_norms.is_empty() {
         // `Dense` when every merged document has a norm, `Sparse` otherwise --
         // the same `numDocsWithValue == maxDoc` branch `Lucene90NormsConsumer`
@@ -2147,13 +2169,9 @@ pub fn merge_segments(
                     .collect()
             })
             .collect();
-        let dense_columns: Vec<Vec<i64>> = merged_norms
-            .iter()
-            .map(|(_, values)| values.iter().flatten().copied().collect())
-            .collect();
         let norms_fields: Vec<norms::NormsField<'_>> = merged_norms
             .iter()
-            .zip(&dense_columns)
+            .zip(&impact_norms)
             .zip(&sparse_columns)
             .map(|(((number, values), dense), sparse)| {
                 if values.iter().all(|v| v.is_some()) {
@@ -2190,8 +2208,23 @@ pub fn merge_segments(
                 terms: &f.terms,
             })
             .collect();
-        let output = postings_writer::write_fields(
+        // The very columns the `.nvd` above was written from, handed to the
+        // postings writer so its level-0/level-1 impacts are real
+        // `(freq, norm)` pairs rather than `(maxFreq, 1)` -- item 18.
+        // `Lucene104PostingsWriter` gets them the same way, from the
+        // `NormsProducer` its `FieldsConsumer.write` call is given. Borrowed,
+        // not rebuilt: see `impact_norms`' own comment above.
+        let norms_for_impacts: Vec<postings_writer::FieldNorms<'_>> = merged_norms
+            .iter()
+            .zip(&impact_norms)
+            .map(|((number, _), values)| postings_writer::FieldNorms {
+                field_number: *number,
+                values,
+            })
+            .collect();
+        let output = postings_writer::write_fields_with_norms(
             &inputs,
+            &norms_for_impacts,
             &merged_segment_id,
             &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
         )?;

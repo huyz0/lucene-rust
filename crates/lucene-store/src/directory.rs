@@ -15,6 +15,7 @@
 //! regardless of backend.
 
 use std::fs;
+use std::io::Read;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
@@ -163,14 +164,62 @@ impl Directory for FsDirectory {
     }
 }
 
+/// The size at or below which [`MmapDirectory`] reads a file instead of
+/// mapping it.
+///
+/// Mapping is only cheaper than reading once the mapping is large enough to
+/// amortise its own syscalls. Measured on this project's 5 M-document
+/// benchmark corpus (`crates/lucene-search/examples/reader_open_profile.rs`),
+/// a few-hundred-byte file costs **1.86 µs** to `open`+`mmap`+`munmap` and
+/// **1.19 µs** to `open`+`read`, before the mapping's first page fault --
+/// and every file this small in a segment (`.si`, `.fnm`, `.tmd`, `.dvm`,
+/// `.nvm`, `.kdm`, `segments_N`) is parsed whole at open, so it takes that
+/// fault immediately.
+///
+/// 16 KiB, not larger, because the files a reader *holds* and then accesses
+/// randomly -- `.tip`, `.kdi` -- are the ones a copy would pessimise, and
+/// they are above this on any index big enough for it to matter. The worst
+/// case the threshold can cost is one 16 KiB `memcpy`.
+///
+/// Real Lucene has no equivalent: `MMapDirectory.openInput` maps
+/// unconditionally. This is a Rust-side win, not a port divergence -- the
+/// bytes a caller sees are identical, and [`Input`] already had both
+/// representations because [`FsDirectory`] produces the owned one.
+pub const SMALL_FILE_READ_THRESHOLD: u64 = 16 * 1024;
+
 /// Zero-copy backend (`memmap2`), matching Lucene's default `MMapDirectory`.
 pub struct MmapDirectory {
     root: PathBuf,
+    /// Files of at most this many bytes are read rather than mapped -- see
+    /// [`SMALL_FILE_READ_THRESHOLD`]. `0` maps everything, which is what
+    /// this backend did before and what
+    /// [`MmapDirectory::with_read_threshold`] exists to reproduce.
+    read_threshold: u64,
 }
 
 impl MmapDirectory {
     pub fn open(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            read_threshold: SMALL_FILE_READ_THRESHOLD,
+        }
+    }
+
+    /// [`Self::open`] with an explicit small-file threshold: files of at most
+    /// `read_threshold` bytes are read into memory instead of mapped. `0`
+    /// maps every file.
+    ///
+    /// Exposed because it is the only way to measure the two arms in **one
+    /// process**, which is how this project measures anything (see
+    /// `docs/sweep/m2/c24-arith-codecs.md` on why criterion is not trusted
+    /// here) -- and because a caller with an unusual access pattern (a
+    /// long-lived reader over many small files it seeks in repeatedly) can
+    /// turn it off.
+    pub fn with_read_threshold(root: impl Into<PathBuf>, read_threshold: u64) -> Self {
+        Self {
+            root: root.into(),
+            read_threshold,
+        }
     }
 }
 
@@ -180,7 +229,23 @@ impl Directory for MmapDirectory {
     }
 
     fn open(&self, name: &str) -> Result<Input> {
-        let file = fs::File::open(self.root.join(name))?;
+        let mut file = fs::File::open(self.root.join(name))?;
+        // A small file is read, not mapped: see `SMALL_FILE_READ_THRESHOLD`.
+        // The `metadata` call is one `fstat` on an already-open descriptor,
+        // which is cheaper than the `munmap` it avoids.
+        let len = file.metadata()?.len();
+        if self.read_threshold > 0 && len <= self.read_threshold {
+            // Read from the descriptor already open, not `fs::read(path)`:
+            // that re-opens by name and re-`fstat`s for its own size hint, so
+            // the "cheaper than a mapping" arm would have paid *two*
+            // `open`+`fstat` pairs -- and would have reopened a path that can
+            // have changed underneath it in between. `len` is at most
+            // `read_threshold`, so the `usize` cast cannot truncate on any
+            // target this crate builds for.
+            let mut buf = Vec::with_capacity(len as usize);
+            file.read_to_end(&mut buf)?;
+            return Ok(Input::Owned(buf));
+        }
         // SAFETY: mapping is only unsound if another process truncates or
         // mutates this file while it's mapped, which we do not do ourselves and
         // which Lucene's own `MMapDirectory` accepts the same risk for (see its
@@ -404,10 +469,81 @@ mod tests {
         assert_eq!(format!("{owned:?}"), "Input::Owned(42 bytes)");
 
         let root = tempdir();
-        let dir = MmapDirectory::open(&root);
+        // `with_read_threshold(_, 0)`: a ten-byte file is below
+        // `SMALL_FILE_READ_THRESHOLD`, so the default backend would read it.
+        let dir = MmapDirectory::with_read_threshold(&root, 0);
         index_output::write_all_bytes(&root, "_0.si", b"0123456789").unwrap();
         let mapped = dir.open("_0.si").unwrap();
         assert_eq!(format!("{mapped:?}"), "Input::Mapped(10 bytes)");
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// [`SMALL_FILE_READ_THRESHOLD`] decides *how* a file is obtained and
+    /// nothing else: the bytes a caller sees are identical either way.
+    ///
+    /// Both sides are asserted, because the interesting failure is silent --
+    /// a threshold that never fires costs the syscalls it exists to remove
+    /// and nothing reports it, and one that fires on a large file copies a
+    /// mapping the reader meant to hold.
+    #[test]
+    fn small_files_are_read_and_large_ones_mapped() {
+        let root = tempdir();
+        let small = vec![3u8; 8];
+        let large = vec![4u8; (SMALL_FILE_READ_THRESHOLD as usize) + 1];
+        index_output::write_all_bytes(&root, "_0.nvm", &small).unwrap();
+        index_output::write_all_bytes(&root, "_0.doc", &large).unwrap();
+
+        let dir = MmapDirectory::open(&root);
+        let got_small = dir.open("_0.nvm").unwrap();
+        let got_large = dir.open("_0.doc").unwrap();
+        assert!(matches!(got_small, Input::Owned(_)), "{got_small:?}");
+        assert!(matches!(got_large, Input::Mapped(_)), "{got_large:?}");
+        assert_eq!(&*got_small, &small[..]);
+        assert_eq!(&*got_large, &large[..]);
+
+        // Exactly at the threshold is still read (`<=`).
+        let exact = vec![5u8; SMALL_FILE_READ_THRESHOLD as usize];
+        index_output::write_all_bytes(&root, "_0.dvm", &exact).unwrap();
+        assert!(matches!(dir.open("_0.dvm").unwrap(), Input::Owned(_)));
+
+        // And `0` turns the whole thing off, which is the A/B arm
+        // `reader_open_profile` measures against.
+        let mapping = MmapDirectory::with_read_threshold(&root, 0);
+        assert!(matches!(mapping.open("_0.nvm").unwrap(), Input::Mapped(_)));
+        assert_eq!(&*mapping.open("_0.nvm").unwrap(), &small[..]);
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// A **zero-length** file: the edge `SMALL_FILE_READ_THRESHOLD` moves
+    /// across a code path, checked to move nothing observable.
+    ///
+    /// `0 <= threshold` is always true, so an empty file now takes the read
+    /// arm where it used to be mapped. It is worth pinning because the
+    /// obvious guess about the old behaviour is wrong: `mmap(2)` rejects a
+    /// zero length, but `memmap2::Mmap::map` special-cases it and hands back
+    /// an empty mapping rather than an error -- so the two arms *already*
+    /// agreed and this change kept them agreeing. Asserted rather than
+    /// assumed, because a reviewer of this batch predicted the opposite and
+    /// only running it settled which.
+    #[test]
+    fn a_zero_length_file_reads_as_empty_on_every_backend() {
+        let root = tempdir();
+        index_output::write_all_bytes(&root, "_0.nvm", b"").unwrap();
+
+        // The read arm, which an empty file now takes.
+        let read = MmapDirectory::open(&root).open("_0.nvm").unwrap();
+        assert!(matches!(read, Input::Owned(_)), "{read:?}");
+        assert!(read.is_empty());
+
+        // The mapping arm, which it used to take -- still `Ok`, still empty.
+        let mapped = MmapDirectory::with_read_threshold(&root, 0)
+            .open("_0.nvm")
+            .expect("memmap2 maps a zero-length file rather than refusing it");
+        assert!(matches!(mapped, Input::Mapped(_)), "{mapped:?}");
+        assert!(mapped.is_empty());
+
+        // And the copying backend, unchanged throughout.
+        assert!(FsDirectory::open(&root).open("_0.nvm").unwrap().is_empty());
         fs::remove_dir_all(&root).ok();
     }
 

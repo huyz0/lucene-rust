@@ -2718,8 +2718,12 @@ fn compare_intersect_with_scan(
     let mut scan = field_terms.iter();
     loop {
         let expected = loop {
-            match scan.try_next() {
-                Ok(Some((t, _))) if matches(t) => break Some(t.to_vec()),
+            // The scan compares *term bytes* with the intersect walk's, so
+            // it takes the stats-free `next()` Java's own `TermsEnum` has --
+            // otherwise this check would decode every term's postings
+            // metadata to throw it away (item 21).
+            match scan.try_next_term() {
+                Ok(Some(t)) if matches(t) => break Some(t.to_vec()),
                 Ok(Some(_)) => continue,
                 Ok(None) => break None,
                 Err(e) => {

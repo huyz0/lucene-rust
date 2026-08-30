@@ -258,15 +258,22 @@ fn seek_floor_backtrack_scenarios_agree_between_owned_and_borrowed() {
 /// `read_borrowed_over_a_real_mmap_directory_input` pattern but drives the
 /// full seek/enumeration API surface (not just `get`) against the mapped
 /// bytes, including a backtracking `seek_floor` call.
+///
+/// **`with_read_threshold(_, 0)`, and the variant is asserted.**
+/// `fixtures/data/fst/fst.bin` is 78 bytes, far under
+/// `lucene_store::directory::SMALL_FILE_READ_THRESHOLD`, so the default
+/// backend returns an `Input::Owned` and this test would keep passing over a
+/// heap copy while its name and doc claimed a mapping -- see the same note on
+/// `fst.rs`'s `read_borrowed_over_a_real_mmap_directory_input`.
 #[test]
 fn seek_and_enumerate_over_a_real_mmap_directory_backed_borrowed_fst() {
-    use lucene_store::directory::{Directory, MmapDirectory};
+    use lucene_store::directory::{Directory, Input, MmapDirectory};
 
     let file_bytes = load_bytes("fst");
 
     let root = lucene_util::test_support::TempDir::new("fst-borrowed-seek-mmap");
 
-    let dir = MmapDirectory::open(&root);
+    let dir = MmapDirectory::with_read_threshold(&root, 0);
     {
         use lucene_store::DataOutput;
         let mut out = dir.create_output("fst.bin").unwrap();
@@ -275,6 +282,10 @@ fn seek_and_enumerate_over_a_real_mmap_directory_backed_borrowed_fst() {
     }
 
     let mapped = dir.open("fst.bin").unwrap();
+    assert!(
+        matches!(mapped, Input::Mapped(_)),
+        "this test is about the mapped path; it read the file instead: {mapped:?}"
+    );
     let mut input = SliceInput::new(&mapped);
     let fst = Fst::read_borrowed(&mut input).unwrap();
     assert!(fst.is_borrowed());

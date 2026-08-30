@@ -102,6 +102,7 @@ Status: `pending` -> `running` -> `swept` (report written, gates green).
 | c39-codecs-readpath | the remaining `lucene-codecs` read-path items (**20** the blocktree `try_*` migration, **22** `IndexedDISI`'s block jump table, **13** `PointValues.estimatePointCount`'s BKD walk, **12** `Util.shortestPaths`) -- codecs/{blocktree,indexed_disi,points,doc_values,norms,vectors}, search/{lib,explain,weight_count,multi_segment,points_query,field_norms}, index/check_index, ffi/query, new `AppendPointEstimateManifest` + `examples/disi_jump_table` | swept (10 findings: 1 CORRECTNESS fixed, 4 MISSING all fixed, 3 PERF (2 fixed+measured, 1 sized and declined), 2 INTENTIONAL) -- **items 13, 20 and 22 closed; item 12 restated as a milestone.** The `try_*` count was dominated by tests: separating production from test callers (mark the four infallible methods `#[deprecated]`, build `--all-targets`) left **15** production sites, all already in `Result`-returning functions. The CORRECTNESS finding was met on the way -- `intersect`/`fuzzy_intersect`/`regexp_intersect` are `Iterator`s and so had *no* error channel, ending a wildcard/regexp term expansion early on a corrupt block, i.e. a **smaller hit set**; their `Item` is now `Result<(Vec<u8>, TermStats)>` as `IntersectTermsEnum.next()`'s `IOException` is. `IndexedDISI`'s jump table is now written *and* read, with `writeBitSet`'s `short` carried into the `.dvm`/`.nvm`/`.vem` entry and `docsWithFieldLength` spanning the table; real Lucene reads it (`VerifySparseNumericDocValues`' new block-jump pass, negative-controlled on the jump index and the jump offset *independently* -- the b4/b11 mirror-image trap ruled out in the only direction that can). Alternating min-of-40 A/B over one build: 2 000 cold seeks **3.1x / 12.2x / 2.4x** faster over 16/62/245-block regions, forward scan unchanged to 0.4%. `estimate_point_count` is Java's walk with no `.kdd` read on any path, checked against real `PointValues.estimatePointCount` over fourteen boxes chosen so the estimate and the exact count **differ** (768 vs 674, 256 vs 8, 744 vs 251). **Item 12's recorded blocker names the wrong thing**: `Util.shortestPaths`' pruning needs `FSTCompiler`'s output *pushing*, which this builder does not do, so porting `TopNSearcher` onto it would return the alphabetically-first N completions rather than the top-weighted N -- a wrong answer, not a speed-up. Measured the gap instead (76 ms per top-10 lookup at 500 000 entries) and stopped, as c38 did with item 15. `gen-fixtures.sh --append-only` added: adding ground truth to a committed fixture no longer requires regenerating an index or invoking `java` by hand. `verify-write-path.sh` **23/23** |
 | c38-allocation-shape | the three largest memory-shape divergences (**15** `indexing_chain`'s per-token/term/posting allocation, **16** the per-occurrence payload slot, **17** `OrdinalMap::build`'s materialized input) -- index/{indexing_chain,index_writer,merge}, codecs/{postings_writer,terms_dict}, search/{ordinal_map,facets} | swept (7 findings: 0 CORRECTNESS, 0 MISSING, 6 PERF (5 fixed+measured, 1 assessed as a milestone and stopped), 1 INTENTIONAL) -- **items 16 and 17 closed, item 15 sized and declined.** Payloads are now one flat `(payload_bytes, payload_lengths)` run per `(field, term)` on both sides of the `lucene-index`/`lucene-codecs` boundary, where they were `Vec<Vec<u8>>` per posting entry and `Vec<Vec<Vec<u8>>>` per term; `PostingEntry` carries no payload field at all, so the field that has no payloads got cheaper too. Alternating min-of-10 A/B between two binaries in one window (c24's method), 50 000 documents, in two independent windows -- every arm faster or level and smaller in both, with peak RSS stable to three digits: `freqs` **-18.6% peak RSS**, `offsets` -9.9%, `payloads` **-49.1%**, `payloads-empty` **-46.1%**, and `InMemoryInvertedIndex` 102.5 -> 75.8 MB on 4.90 MB of body text. `terms_dict::TermsCursor` is the streaming terms-dictionary cursor three batches had named as a blocker (`decode_all_terms` is now literally that cursor collected, so there is one decoder and not two), and `OrdinalMap::build_streaming` is Java's `build(TermsEnum[])` shape over it, with `TermsEnumPriorityQueue` ported as a min-heap of segment indices over caller-owned reused buffers: **318.2 MB -> 51.4 MB peak** and 290 -> 140 ms end to end on 5 segments x 1 M terms, with `OrdinalMap::build` kept for materialized callers and now running the *same* merge. `facets::resolve_labels` streams too. **Item 15 is a milestone**: 10 Java classes / 2 800 lines of pool machinery, all three consumers of `InMemoryInvertedIndex`, and a borrowed-token `Analyzer` API (`analyze` returns `Vec<Token>` with an owned `String` per token, so a heap object per token exists before the indexing chain sees it) -- the batch measured it, named the 36.8 MB + 36.6 MB that remain, and stopped rather than half-building a pool. `verify-write-path.sh` **23/23** (the bytes on disk are unchanged); shape asserted, not only timed |
 | c41-gates-and-record | repo-wide tooling and the record: **27** mechanical gates for the defect shapes this sweep kept re-finding by hand, **26** the rustdoc pass, **28** `norms::parse_meta`'s signature, and `LEDGER.md`'s 16 stale open boxes -- new `scripts/check-port-invariants.py` + `docs/mechanical-gates.md`, `scripts/{gate.sh,check-parity.py}`, `.github/workflows/ci.yml`, util/fixed_bit_set, codecs/{fst,postings_writer,lib,for_util,lz4,direct_reader,...}, search/{soft_deletes,query_cache,vector_query,...}, index/{check_index,merge,index_writer,...} | swept (12 findings: 6 CORRECTNESS all fixed, 4 MISSING all fixed, 1 PERF recorded as a burn-down, 1 INTENTIONAL) -- **items 26, 26b and 28 closed, and all of 27 except (c) and (e)**. Six new mechanical rules, each **watched to fail** by introducing the defect it targets, each with its blind spot written down first. They found **five live defects on their first run**: `fst::seek_floor_direct_addressing` passing `bit_table_previous_bit_set`'s `-1` into a decode -- **c31's exact defect in the sibling function**, where `read_arc_by_direct_addressing` derives `first_label - 1` and, for `first_label == 0`, exactly `END_LABEL`, a plausible wrong answer a byte-flip sweep cannot see; and four `FixedBitSet` sites in `soft_deletes`/`query_cache`/`vector_query` bounded against a caller-supplied parameter rather than the bitset they index, one sign-extending a negative doc id to `usize::MAX`. `FixedBitSet::get`/`set`/`clear` now check their bound in **release** too (Java's `assert` is off in production, and a ghost bit is a silently wrong live/dead answer no caller can catch), through a `#[cold]` helper so the hnsw hot loop pays one never-taken branch. The rustdoc clean-up was **65 links across seven files** -- c22's four-batch blocker, an afternoon -- and surfaced a trap nobody had named: an outer `///` doc on a `mod` declaration makes rustdoc resolve the module's own `//!` links in the crate-root scope, breaking every one with **no file and no line** in the diagnostic. CI's `fixtures` job was pinned to JDK 25 against JDK-21-built fixtures whose manifest records the JDK version; now 21. `LEDGER.md` contains **zero `- [ ]`**, and a gate keeps it that way. `verify-write-path.sh` **23/23**, `gen-fixtures.sh --check` clean, coverage 98.14% lines with no file below 95% |
+| c42-readpath-perf | the remaining takeable read-path performance items (**14** `DirectoryReader::open`, **18** impacts against norm 1, **21** the `TermsEnum` term/stats split, **24** `StoredFieldsReader::document`'s whole-`Document` materialisation) -- store/directory, codecs/{blocktree,postings_writer,stored_fields}, index/{index_writer,merge,check_index}, search/{tests,examples}, fixtures/VerifyFullSegment, scripts/bench-{micro,compare}.sh | swept (**all four closed**; 1 CORRECTNESS-adjacent tooling defect fixed -- `bench-micro.sh` ran a stale host binary inside the container and reported 438 us for an 89 us operation). **14**: profiled phase by phase first -- the whole open is **48.9 us**, not the ledger's 52.7 ms, and **4.31x faster than Lucene**; the cost is now 14 `dir.open` syscalls and nothing else, and `SMALL_FILE_READ_THRESHOLD` (read a <=16 KiB file, don't map it) took it 61.9 -> 48.8 us min / 75.7 -> 55.1 us mean, measured as an in-process A/B. **18**: `CompetitiveImpactAccumulator` ported in the same change, as c8 insisted -- the frontier, never a corner -- with `impacts_soundness.rs` verified to fail on a `(maxFreq, maxNorm)` shortcut (it prints the *missing hits*), and `VerifyFullSegment` + `CheckIndex.checkImpacts` now reading multi-entry frontiers real Lucene had never been shown. **21**: 22.90 -> **10.42 ns/term** for a bytes-only scan, below Lucene's 20.5. **24**: `StoredFieldVisitor` ported; one field of a 64-field document **1.80x**, 1.00x at one field. `verify-write-path.sh` **23/23**, coverage 98.12% lines (was 98.14%; the new visitor and accumulator are at 97.18% and 99.37%). Tier-2 review cleared the accumulator against Java and raised **7** findings, all fixed -- the gating one being **three tests that write to an `MmapDirectory` and assert something about the mapping, which the new small-file threshold had silently converted to heap reads**, including the only end-to-end coverage of a borrowed FST over a real OS mapping; all three now pin the variant |
 
 ## Open work, prioritised (reconciled by `c34-ledger-reconcile`)
 
@@ -175,6 +176,21 @@ were found only because c41's **own Tier-2 review** noticed the first version
 of the rule could not see a closure parameter -- i.e. could not see the single
 most common way this codebase indexes a bitset. A gate's coverage needs the
 same scepticism as the code it checks.
+
+**`c42-readpath-perf` then closed items 14, 18, 21 and 24**, leaving **10**.
+Its transferable finding is the fifth in a row of the same shape, and this
+time it was a *measurement* rather than a plan: item 14's 52.7 ms was stale by
+**~550x**, and the harness that was supposed to re-measure it --
+`scripts/bench-micro.sh` -- had been running a **stale host binary** whenever
+it was invoked through `scripts/docker-test.sh`, because that script exports
+`CARGO_TARGET_DIR` and the benchmark hardcoded
+`benchmarks/rust-runner/target/release/`. It reported 438 µs for a reader open
+that actually takes 89 µs, i.e. "0.79x Lucene" for something that is **4.31x
+Lucene**, and it reported the same figure to three digits across a change that
+moved the operation by 20%. Both `bench-micro.sh` and `bench-compare.sh` now
+resolve the target directory. **A benchmark that cannot tell you it measured
+the wrong binary is a gate nobody should trust** -- `docs/mechanical-gates.md`'s
+rule, applied to a measurement instead of a check.
 
 Closed entries are struck through in place rather than deleted, and new ones
 take a lettered suffix, so the numbering below stays stable.
@@ -535,11 +551,40 @@ worth knowing about the next entry that reads the same way.
 
 ### C. Performance and memory divergence
 
-14. **`DirectoryReader::open` is still the largest reader-side gap.**
-    `verdict-m1.6.md`: **52.7 ms** on the merged corpus, ~155x Lucene, RSS
-    70 MB. c1's "2.0 ms of 2.2 ms is `open_segments`" diagnosis predates c12's
-    4.8x and the mmap change and must be re-measured before it is planned
-    against -- `micro reader_open` builds and runs again, so that is cheap.
+14. ~~**`DirectoryReader::open` is still the largest reader-side gap.**~~
+    **CLOSED by `c42-readpath-perf`, and the premise was three batches out of
+    date.** Profiled phase by phase before anything was changed
+    (`crates/lucene-search/examples/reader_open_profile.rs`, a replica of
+    `SegmentReader::open` whose phase sum is printed beside the real call so
+    drift is visible): on the 5 M-document merged corpus the whole open is
+    **48.9 µs** (min of 60) / 55.1 µs (mean), not 52.7 ms -- and **4.31x
+    faster than real Lucene's `DirectoryReader.open`** on the same index
+    (88.9 µs vs 383 µs through `scripts/bench-micro.sh`, once that script
+    stopped running a stale binary; see the preamble). The 155x is gone:
+    c1 took the dictionary lazy, c12's `open_shared` stopped copying
+    `.tim`/`.tip`, and b1's mmap change removed the 1.57 GB copy.
+    *Where the time goes now*: **entirely in opening files**, and nothing
+    else. `blocktree::open_shared` is 0.37 µs, `Doc/Pos/PayInput::open`
+    0.14 µs for all three, every `parse_meta` under a microsecond; the 14
+    `dir.open` calls are the whole cost. So the one lever left was the
+    syscall, and it was taken: `MmapDirectory` now `fs::read`s a file of at
+    most 16 KiB instead of mapping it
+    (`lucene_store::directory::SMALL_FILE_READ_THRESHOLD`), because
+    `open`+`mmap`+`munmap` of a 642-byte `.si` costs 1.86 µs against
+    `open`+`read`'s 1.19 µs *before* the mapping's first page fault, and
+    every file that small in a segment is parsed whole at open anyway.
+    **Measured as an alternating in-process A/B** (`with_read_threshold(_, 0)`
+    is the old behaviour, so both arms exist in one build): `DirectoryReader::open`
+    **61.9 -> 48.8 µs** min and **75.7 -> 55.1 µs** mean; `open` +
+    `open_segments` **71.1 -> 56.5 µs**. Real Lucene has no equivalent
+    (`MMapDirectory.openInput` maps unconditionally), so this is recorded in
+    `docs/parity.md` as a deliberate divergence, not a port gap.
+    *Not fixed, and reported anyway*: the remaining 48.8 µs is ~14 file opens
+    at 1.2-2.8 µs each, of which the three big postings mappings
+    (`.doc`/`.pos`/`.pay`, 1.6 GB) are 8.4 µs and dominate the min-vs-mean
+    spread; Lucene amortises its own by grouping a segment's files into one
+    `RefCountedSharedArena`, which this port has no equivalent of and which
+    would be the next thing to try.
 
 15. **`indexing_chain` allocates per token/term/posting** where Java uses
     `BytesRefHash` + `ByteBlockPool`/`IntBlockPool`/`ByteSlicePool`.
@@ -608,14 +653,41 @@ worth knowing about the next entry that reads the same way.
     -- the other caller c29 named -- now walks the cursor in ordinal order too,
     so it no longer holds a second copy of every label beside its result.
 
-18. **Impacts are computed against norm 1.** `FieldPostingsInput` carries no
-    norms, so every level-0 and level-1 impact this writer emits is
-    `(maxFreq, 1)` where `Lucene104PostingsWriter` feeds real per-doc norms
-    into `CompetitiveImpactAccumulator`. **Sound but loose** -- norm 1 is the
-    highest-scoring norm, so it costs pruning, never a wrong answer. The
-    `lucene-index` half is unblocked (one shared invert pass already computes
-    every document's field length at the `write_fields` call site); what
-    remains is entirely in `lucene-codecs`.
+18. ~~**Impacts are computed against norm 1.**~~ **CLOSED by
+    `c42-readpath-perf`, done properly rather than partially.** c8's warning
+    was right and was honoured: `CompetitiveImpactAccumulator` is ported in
+    the same change (`postings_writer::CompetitiveImpactAccumulator`,
+    including the `otherFreqNormPairs` overflow set for norms wider than a
+    byte and Java's unsigned norm ordering), so what is written is the
+    competitive **Pareto frontier** of a block's `(freq, norm)` pairs -- never
+    the `(maxFreq, minNorm)` corner, which no document need realise, and never
+    the `(maxFreq, maxNorm)` corner, which is *unsound*.
+    `postings_writer::write_fields_with_norms` takes each field's per-document
+    norm column the way `Lucene104PostingsWriter` gets it from the
+    `NormsProducer`; both production callers supply it
+    (`IndexWriter::build_norms_output` now returns its columns to
+    `build_postings_output`, and `merge.rs` hands over the same merged norms
+    it writes to `.nvd`). `write_fields` without norms stays, and is exactly
+    Java's `fieldHasNorms == false` path -- its frontier really is one
+    `(maxFreq, 1)` pair, so **every existing byte-level test still passes
+    unchanged**.
+    *The test that would catch a skipped document*:
+    `crates/lucene-search/tests/impacts_soundness.rs`, over postings this port
+    writes and reads back through the real decoder. It asserts (a) no level-0
+    block's or level-1 span's bound falls below any covered document's BM25
+    score, (b) a MAXSCORE-shaped block skip driven by those bounds returns the
+    same top-`n` as scoring every document, and (c) the bound is strictly
+    *tighter* than the norm-1 one. **Verified to fail** by emitting
+    `(maxFreq, maxNorm)` instead of the frontier: (a) and (b) both trip, and
+    (b) prints the missing hits.
+    *And real Lucene now validates it*: `CheckIndex.checkImpacts` requires
+    non-empty impacts, a non-zero first norm, and strictly increasing freq
+    **and** unsigned norm -- rules that were vacuous while every block carried
+    one pair. `write_full_segment_fixture` now varies `shared`'s frequency
+    with the document's length so its blocks carry a real multi-entry
+    frontier, and `VerifyFullSegment` asserts through Java's own `ImpactsEnum`
+    that at least one block has more than one impact (verified to fail by
+    flattening the fixture back). `verify-write-path.sh` stays 23/23.
 
 19. ~~**`IndexWriter` rewrites the `.si` once per file group -- five times, not
     four.**~~ **CLOSED by `c36-merge-metadata`.** It was seven, counting the
@@ -658,17 +730,26 @@ worth knowing about the next entry that reads the same way.
     convenience and say so on each method; 149 remaining call sites, every one
     under `#[cfg(test)]`, `tests/` or `benches/`.
 
-21. **Split term iteration from stats in `TermsEnum`** (c1 F-14). Java's
-    `next()` decodes only the term bytes and defers `decodeMetaData` to
-    `docFreq()`; `blocktree.rs:1780`'s `next()` returns `(&[u8], TermStats)`
-    and so always decodes. Full-field enumeration is 27 ns/term against
-    Lucene's 20.5 ns. Wants a `next_term()` + `stats()` split, which changes
-    `check_index`'s and the intersect iterators' call shape.
-    *(`c39-codecs-readpath` note: half of the stated ripple is already paid --
-    the intersect iterators' `Item` changed to `Result<(Vec<u8>, TermStats)>`
-    and `check_index::compare_intersect_with_scan` moved with it, so their
-    call shape has just been touched for a different reason. The split itself
-    is untouched.)*
+21. ~~**Split term iteration from stats in `TermsEnum`**~~ (c1 F-14).
+    **CLOSED by `c42-readpath-perf`.** `TermsEnum::try_next_term()` is
+    `SegmentTermsEnum.next()` (term bytes, no `decodeMetaData`), `term()` is
+    `TermsEnum.term()`, and `try_stats()` is `docFreq()`/`totalTermFreq()` --
+    memoised per frame position by `metaDataUpto`, exactly as Java's is, so
+    `try_next_term()` then `try_stats()` costs precisely what the fused
+    `try_next()` costs and the saving is real only for terms whose stats are
+    never asked for. `try_next()` stays for the callers that want both.
+    **Measured** (`crates/lucene-search/examples/terms_enum_split.rs`,
+    alternating min-of-N, both arms in one process, over the 200 000-term
+    `body` field of the merged corpus): **22.90 -> 10.42 ns/term, 2.2x** --
+    and now half Lucene's recorded 20.5 ns rather than above it.
+    The stated ripple was smaller than recorded: three production call sites
+    moved (`blocktree`'s `Intersect::next_result`, which had been decoding
+    metadata for **every rejected term** of a wildcard/regexp/fuzzy
+    expansion; `check_index::compare_intersect_with_scan`; and
+    `IndexWriter::resolve_term_span`'s term-range delete walk). One
+    behavioural consequence, and it matches Java: a corrupt stats blob on a
+    term the intersection *rejects* is no longer surfaced, because
+    `IntersectTermsEnum.next()` never decodes it either.
 
 22. ~~`IndexedDISI`'s **block jump table** is still not read.~~
     **CLOSED by `c39-codecs-readpath`, and the "worth revisiting only
@@ -743,9 +824,29 @@ worth knowing about the next entry that reads the same way.
     covered by real bytes. (Raised by c39's Tier-2 review.)
 
 
-24. **`StoredFieldsReader::document()` materializes a whole `Document`** where
-    Java's `StoredFieldVisitor` lets a caller take one field and skip the rest.
-    Read path only; the write side was made streaming by c4.
+24. ~~**`StoredFieldsReader::document()` materializes a whole `Document`**~~
+    **CLOSED by `c42-readpath-perf`.** `StoredFieldVisitor`,
+    `StoredFieldVisitor.Status` and `DocumentStoredFieldVisitor` are ported as
+    `stored_fields::{StoredFieldVisitor, VisitStatus, DocumentVisitor}`, and
+    `StoredFieldsReader::visit_document` is
+    `Lucene90CompressingStoredFieldsReader.document(int, StoredFieldVisitor)`
+    loop for loop -- `skipField` included, and its "don't `skipField` on the
+    last field value; treat like STOP" shortcut. Values reach the visitor
+    **borrowed** (`&str`/`&[u8]`), so a visitor that keeps none allocates
+    none. `parse_document`/`document` are now that same loop run with a
+    `DocumentVisitor::all`, so there is one field-decode path rather than two
+    (`read_field` is gone).
+    **Measured** (`crates/lucene-codecs/examples/stored_fields_visitor.rs`,
+    4096 documents, one field of each retrieved, min of N, both arms in one
+    process), retrieving the **last** field so every other one must be
+    skipped: 1 field/doc 1.00x (no regression), 4 fields 1.03x, 16 fields
+    **1.24x**, 64 fields **1.80x** (5.03 -> 2.79 us/doc). The residue is the
+    chunk decompression and the document's own byte copy, which a visitor does
+    not avoid on either side.
+    *Field identity is a number, not a `FieldInfo`*: this reader decodes
+    `.fdt` alone and has never been handed a `FieldInfos` (see
+    `stored_fields::open`'s signature); the number is what the wire format
+    carries.
 
 25. **DEFLATE encoder has no preset dictionary.** `miniz_oxide` exposes no
     `deflateSetDictionary`. Compression ratio only -- the decode side is
@@ -1160,11 +1261,11 @@ now five).
       Revisit if a raw-deflate crate with dictionary support is acceptable.
       (Raised by b3.)
       **Tracked as open-work item 25** -- that entry is the live one, and it is the only one anybody should plan from. This box is the historical record of where the finding was raised. It is deliberately not a checkbox: six batches were misled by ticking the prioritised entry and leaving a duplicate open down here.
-- [->] Stored-fields writer API takes `&[Document]` rather than streaming, and
+- [x] Stored-fields writer API takes `&[Document]` rather than streaming, and
       `document()` materializes a whole `Document` instead of Java's
       `StoredFieldVisitor`. Memory-shape divergence. (Raised by b3.)
       **c34 restated -- half of this is no longer true.** The *streaming* half was closed by c4: `stored_fields::StoredFieldsWriter` (`stored_fields.rs:1161`) is a real streaming object with `add_document(&Document)` (`:1373`) and `finish()` (`:1601`); `write_best_speed(&[Document])` survives as a convenience wrapper, not as the only API. What remains is the **read** side: `StoredFieldsReader::document()` (`stored_fields.rs:412`) materializes a whole `Document` where Java's `StoredFieldVisitor` lets a caller take one field and skip the rest. Memory-shape divergence, read path only.
-      **Tracked as open-work item 24** -- that entry is the live one, and it is the only one anybody should plan from. This box is the historical record of where the finding was raised. It is deliberately not a checkbox: six batches were misled by ticking the prioritised entry and leaving a duplicate open down here.
+      **CLOSED by `c42-readpath-perf`** (open-work item 24). `stored_fields::{StoredFieldVisitor, VisitStatus, DocumentVisitor}` and `StoredFieldsReader::visit_document` are the port of `StoredFieldVisitor`/`Status`/`DocumentStoredFieldVisitor` and of `Lucene90CompressingStoredFieldsReader.document(int, StoredFieldVisitor)`, `skipField` and the last-field shortcut included; `parse_document` is that loop with a `DocumentVisitor::all`, so `read_field` no longer exists.
 - [x] `IntersectTermsEnum`'s **skipping** is ported for regexp (b8). Blocker
       (a) is gone: a full `Automaton`/`CompiledAutomaton` was assessed and not
       built, because what `IntersectTermsEnum` needs from one is a single bit --
@@ -1279,14 +1380,14 @@ now five).
       mapping. No measurable seek regression from the erasure's virtual
       `as_ref` (both accessors are hoisted per lookup; the machine's spread on
       those cases is +/-25%).
-- [->] **Split term iteration from stats in `TermsEnum`** (c1, F-14). Java's
+- [x] **Split term iteration from stats in `TermsEnum`** (c1, F-14). Java's
       `next()` decodes only the term bytes and defers `decodeMetaData` to
       `docFreq()`; this port's `next()` returns `(term, TermStats)` so it
       always decodes. Full-field enumeration is 27 ns/term against Lucene's
       20.5 ns on the same field. Wants a `next_term()` + `stats()` split,
       which changes `check_index`'s and the intersect iterators' call shape.
       (Raised by c1.)
-      **Tracked as open-work item 21** -- that entry is the live one, and it is the only one anybody should plan from. This box is the historical record of where the finding was raised. It is deliberately not a checkbox: six batches were misled by ticking the prioritised entry and leaving a duplicate open down here.
+      **CLOSED by `c42-readpath-perf`** (open-work item 21). `TermsEnum::{try_next_term, term, try_stats}` in `blocktree.rs` are Java's `next()`/`term()`/`docFreq()`; a bytes-only full-field scan went 22.90 -> 10.42 ns/term, and `Intersect::next_result`, `check_index::compare_intersect_with_scan` and `IndexWriter::resolve_term_span` all moved onto it.
 - [x] Re-take `cargo llvm-cov --workspace --summary-only` once the tree is
       quiet. c1 could only get a trustworthy per-file reading by pointing
       `CARGO_TARGET_DIR` at a scratch directory and restricting to
@@ -1303,12 +1404,12 @@ now five).
       `micro reader_open benchmarks/.corpus/merged` once fixed. Owner: whoever
       changed `for_encode` (b2/b5). (Raised by c1.)
       **CLOSED in the main session.** `benchmarks/rust-runner/src/micro.rs:93` encodes from a scratch copy (`for_util::for_encode(&mut scratch, bits, &mut bytes)`) so `values` stays the pristine round-trip expectation. The binary builds.
-- [->] `DirectoryReader::open` is now dominated by everything *except* the term
+- [x] `DirectoryReader::open` is now dominated by everything *except* the term
       dictionary: ~2.0 ms of the ~2.2 ms is `open_segments`' file handling
       against Lucene's 0.310 ms for the whole open. That is the next
       reader-open item now that A1 is gone. Owner: b13. (Raised by c1.)
       **c34 restated -- the numbers here are three batches stale.** The 2.0 ms/2.2 ms figures predate c12 and the mmap work. Current state: c12's `open_shared`/`SharedBytes` change took `DirectoryReader::open` on the M1 fixture corpus **579 us -> 120.7 us (4.8x)**, and `88ebd47 perf(search): stop copying mmap'd postings files into the heap on reader open` landed after that. The standing whole-corpus number is `docs/benchmarks/verdict-m1.6.md`: reader open **52.7 ms** against Lucene's, i.e. **~155x**, with RSS 1,690 MB -> 70 MB. So this is still the largest single reader-side gap, but the diagnosis ("`open_segments`' file handling") needs re-measuring before anyone plans against it -- `benchmarks/rust-runner`'s `micro reader_open` now builds and runs (see the closed item above), so measuring it is cheap.
-      **Tracked as open-work item 14** -- that entry is the live one, and it is the only one anybody should plan from. This box is the historical record of where the finding was raised. It is deliberately not a checkbox: six batches were misled by ticking the prioritised entry and leaving a duplicate open down here.
+      **CLOSED by `c42-readpath-perf`** (open-work item 14), and every number in this box was wrong by the time it was read. Re-profiled with `crates/lucene-search/examples/reader_open_profile.rs`: the whole open is **48.9 us**, not 52.7 ms, and **4.31x faster than real Lucene's** on the same index. The cost is now entirely `dir.open` syscalls -- `blocktree::open_shared` is 0.37 us -- and `lucene_store::directory::SMALL_FILE_READ_THRESHOLD` took the one lever left (61.9 -> 48.8 us).
 - [x] No `PostingsEnum`-flags plumbing: `DocInput::read_postings`/`lazy_cursor`
       always decode freqs, where Lucene's `needsFreq == false` path
       `PForUtil.skip`s the freq block entirely. Fixing it changes those
@@ -1318,7 +1419,7 @@ now five).
       `needsScores()`/`isExhaustive()` predicates, and `TopDocsCollector`
       reports its mode. What remains is entirely the codec-side flags path.
       **CLOSED.** The codec-side half landed: `postings::PostingsFlags` with `DocsOnly`/`Freqs`, `DocInput::read_postings_with_flags` (`postings.rs:566`) and `lazy_cursor_with_flags` (`:776`), surfaced as `blocktree::FieldTerms::postings_with_flags`/`lazy_postings_with_flags` (`blocktree.rs:2105/2145`) and actually *used* by the unscored search paths (`lucene-search/src/lib.rs:411`, `:575`, `:2849`). `lucene-search/benches/docs_only_postings.rs` measures what it buys. b12's search-side half (`collector::ScoreMode`) was already done.
-- [->] `Lucene104PostingsWriter` takes a `NumericDocValues norms` per term and
+- [x] `Lucene104PostingsWriter` takes a `NumericDocValues norms` per term and
       feeds real per-doc norms into `CompetitiveImpactAccumulator`;
       `postings_writer::FieldPostingsInput` carries no norms, so impacts are
       computed against norm 1. Sound (norm 1 is the highest-scoring norm) but
@@ -1329,7 +1430,7 @@ now five).
       `FieldPostingsInput` plus a real `CompetitiveImpactAccumulator`), so the
       owner is whoever next owns `postings_writer.rs`, not b9.
       **c34 restated -- the "impacts are empty" premise is gone; the norms premise stands.** This writer *does* emit impacts now: `write_full_block` writes one `(maxFreq, norm = 1)` impact per level-0 block and `write_level1_span` (`postings_writer.rs:1283`) writes the span-wide maximum, because real Lucene rejects a segment with "Got empty list of impacts". What is still missing is the *norms input*: `FieldPostingsInput` (`postings_writer.rs:342-360`) has `field_number`/`index_options`/`doc_count`/`has_payloads`/`terms` and no norms, so every impact is computed against norm 1 where `Lucene104PostingsWriter` feeds real per-doc norms into `CompetitiveImpactAccumulator`. Norm 1 is the highest-scoring norm, so the bound is **sound but loose**: it costs query-time pruning, never a wrong answer. c34 also corrected `postings_writer.rs`'s module doc, which still claimed empty impacts and that positions can never co-occur with a full block -- both untrue since c20/c23.
-      **Tracked as open-work item 18** -- that entry is the live one, and it is the only one anybody should plan from. This box is the historical record of where the finding was raised. It is deliberately not a checkbox: six batches were misled by ticking the prioritised entry and leaving a duplicate open down here.
+      **CLOSED by `c42-readpath-perf`** (open-work item 18). `postings_writer::CompetitiveImpactAccumulator` is the port of Java's, and `write_fields_with_norms` takes the per-field norm column both production callers now supply; soundness is pinned by `crates/lucene-search/tests/impacts_soundness.rs` (verified to fail on a `(maxFreq, maxNorm)` shortcut) and by real Lucene's `CheckIndex.checkImpacts` over a fixture that now carries multi-entry frontiers.
 - [x] Points: `lucene-search/src/points_query.rs` and
       `lucene-index/src/points_delete.rs` still decode every point and filter
       in memory. b7 ported `PointsReader::intersect`/`range_query` (the

@@ -28,7 +28,7 @@
 //!
 //! Per-document payload (once decompressed): `numStoredFields` entries of
 //! `infoAndBits` (vlong: field number `<< 3 | type tag`) followed by the
-//! field's value in one of six encodings -- see [`read_field`].
+//! field's value in one of six encodings -- see [`visit_field`].
 
 use lucene_store::codec_util::{self, ID_LENGTH};
 use lucene_store::data_input::{DataInput, SliceInput};
@@ -414,6 +414,27 @@ impl<'d> StoredFieldsReader<'d> {
         parse_document(doc.num_stored_fields, &doc.bytes)
     }
 
+    /// `StoredFields.document(docID, StoredFieldVisitor)`: reads the given
+    /// document's stored fields, asking `visitor` about each one *before*
+    /// decoding it.
+    ///
+    /// This is the shape Java retrieves a hit's fields in, and the reason it
+    /// exists here is [`Self::document`]'s cost: that method allocates a
+    /// `String` or `Vec` for every field of the document, so pulling one
+    /// field out of a wide document pays for all the others. With a visitor,
+    /// an unwanted `STRING`/`BYTE_ARR` field costs its length vint and a
+    /// cursor bump ([`skip_field`]), and [`VisitStatus::Stop`] ends the
+    /// document early.
+    ///
+    /// The chunk containing `doc_id` is still decompressed (only over this
+    /// document's own byte range -- see [`Self::serialized_document`]); what
+    /// the visitor saves is the per-field decode and its allocations, not the
+    /// I/O.
+    pub fn visit_document(&self, doc_id: i32, visitor: &mut dyn StoredFieldVisitor) -> Result<()> {
+        let doc = self.serialized_document(doc_id)?;
+        visit_document(doc.num_stored_fields, &doc.bytes, visitor)
+    }
+
     /// Reads the chunk containing `doc_id`: its header (doc base, doc count,
     /// `sliced` flag, per-document field counts and payload offsets) plus an
     /// input positioned on the first compression unit.
@@ -793,24 +814,186 @@ impl<'d> StoredFieldsReader<'d> {
     }
 }
 
-/// Parses one document's serialized stored-field bytes (a
-/// `(fieldNumber << 3) | type` vlong plus the value, repeated
-/// `num_stored_fields` times) into [`StoredField`]s -- the half of
-/// [`StoredFieldsReader::document`] that is not I/O, split out so a
-/// sequential scan can parse straight out of a [`ChunkCursor`]'s
-/// already-decompressed chunk.
-pub fn parse_document(num_stored_fields: i64, bytes: &[u8]) -> Result<Document> {
+/// What a [`StoredFieldVisitor`] wants done with the field it was just asked
+/// about -- port of `StoredFieldVisitor.Status`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VisitStatus {
+    /// `Status.YES`: decode the value and call the matching `*_field` method.
+    Yes,
+    /// `Status.NO`: skip the value's bytes without decoding it.
+    No,
+    /// `Status.STOP`: stop reading this document entirely; every remaining
+    /// field is left undecoded.
+    Stop,
+}
+
+/// Port of `org.apache.lucene.index.StoredFieldVisitor`: the pull-free half
+/// of stored-field retrieval, where the reader hands the caller one field at
+/// a time and the caller decides -- *before the value is decoded* -- whether
+/// it wants it, does not want it, or is done.
+///
+/// [`StoredFieldsReader::document`] materialises every field of a document
+/// into an owned [`Document`], so retrieving one field of a wide document
+/// costs a `String`/`Vec` for every other field too. Java never pays that:
+/// `Lucene90CompressingStoredFieldsReader.document(docID, visitor)` asks
+/// `needsField` first and calls `skipField` (which only advances the cursor)
+/// for a `NO`, so an unwanted field costs its length vint and nothing else.
+///
+/// Every value method has a no-op default, exactly as Java's abstract class
+/// does -- a visitor that only wants strings overrides `string_field` and
+/// leaves the rest. `needs_field` has no default, because a visitor that does
+/// not answer it has not said what it is for.
+///
+/// **Fields are identified by number, not by `FieldInfo`.** This reader
+/// decodes `.fdt` alone and has never been handed a `FieldInfos` (see
+/// [`open`]'s signature); the field *number* is what the wire format
+/// actually carries, and a caller that wants names already has the `.fnm`
+/// mapping that [`crate::field_infos`] produced.
+pub trait StoredFieldVisitor {
+    /// `StoredFieldVisitor.needsField(FieldInfo)`.
+    fn needs_field(&mut self, field_number: i32) -> Result<VisitStatus>;
+
+    /// `StoredFieldVisitor.stringField(FieldInfo, String)`. Borrowed, not
+    /// owned: a visitor that only measures or matches the value never
+    /// allocates it.
+    fn string_field(&mut self, _field_number: i32, _value: &str) -> Result<()> {
+        Ok(())
+    }
+
+    /// `StoredFieldVisitor.binaryField(FieldInfo, byte[])`.
+    fn binary_field(&mut self, _field_number: i32, _value: &[u8]) -> Result<()> {
+        Ok(())
+    }
+
+    /// `StoredFieldVisitor.intField(FieldInfo, int)`.
+    fn int_field(&mut self, _field_number: i32, _value: i32) -> Result<()> {
+        Ok(())
+    }
+
+    /// `StoredFieldVisitor.longField(FieldInfo, long)`.
+    fn long_field(&mut self, _field_number: i32, _value: i64) -> Result<()> {
+        Ok(())
+    }
+
+    /// `StoredFieldVisitor.floatField(FieldInfo, float)`.
+    fn float_field(&mut self, _field_number: i32, _value: f32) -> Result<()> {
+        Ok(())
+    }
+
+    /// `StoredFieldVisitor.doubleField(FieldInfo, double)`.
+    fn double_field(&mut self, _field_number: i32, _value: f64) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// Port of `DocumentStoredFieldVisitor`: collects the fields it is asked for
+/// into a [`Document`], skipping every other field's bytes.
+///
+/// [`DocumentVisitor::all`] accepts everything and is exactly what
+/// [`parse_document`] runs; [`DocumentVisitor::for_fields`] accepts only the
+/// listed field numbers, which is the one-field-of-a-wide-document case.
+#[derive(Debug, Clone, Default)]
+pub struct DocumentVisitor {
+    /// `None` == accept every field (Java's no-argument constructor).
+    wanted: Option<Vec<i32>>,
+    doc: Document,
+}
+
+impl DocumentVisitor {
+    /// `new DocumentStoredFieldVisitor()`: takes every field.
+    pub fn all() -> Self {
+        Self {
+            wanted: None,
+            doc: Document::default(),
+        }
+    }
+
+    /// `new DocumentStoredFieldVisitor(Set<String> fieldsToLoad)`, by field
+    /// number: takes only these fields and skips the rest.
+    pub fn for_fields(field_numbers: &[i32]) -> Self {
+        Self {
+            wanted: Some(field_numbers.to_vec()),
+            doc: Document::default(),
+        }
+    }
+
+    /// `DocumentStoredFieldVisitor.getDocument()`.
+    pub fn into_document(self) -> Document {
+        self.doc
+    }
+
+    /// The fields collected so far, without consuming the visitor.
+    pub fn document(&self) -> &Document {
+        &self.doc
+    }
+
+    fn push(&mut self, field_number: i32, value: FieldValue) {
+        self.doc.fields.push(StoredField {
+            field_number,
+            value,
+        });
+    }
+}
+
+impl StoredFieldVisitor for DocumentVisitor {
+    fn needs_field(&mut self, field_number: i32) -> Result<VisitStatus> {
+        // Java's `DocumentStoredFieldVisitor` answers NO, never STOP, even
+        // once it has everything it asked for: the fields of a document are
+        // in no particular order, so a wanted field can still follow an
+        // unwanted one.
+        Ok(match &self.wanted {
+            None => VisitStatus::Yes,
+            Some(w) if w.contains(&field_number) => VisitStatus::Yes,
+            Some(_) => VisitStatus::No,
+        })
+    }
+
+    fn string_field(&mut self, field_number: i32, value: &str) -> Result<()> {
+        self.push(field_number, FieldValue::String(value.to_string()));
+        Ok(())
+    }
+
+    fn binary_field(&mut self, field_number: i32, value: &[u8]) -> Result<()> {
+        self.push(field_number, FieldValue::Binary(value.to_vec()));
+        Ok(())
+    }
+
+    fn int_field(&mut self, field_number: i32, value: i32) -> Result<()> {
+        self.push(field_number, FieldValue::Int(value));
+        Ok(())
+    }
+
+    fn long_field(&mut self, field_number: i32, value: i64) -> Result<()> {
+        self.push(field_number, FieldValue::Long(value));
+        Ok(())
+    }
+
+    fn float_field(&mut self, field_number: i32, value: f32) -> Result<()> {
+        self.push(field_number, FieldValue::Float(value));
+        Ok(())
+    }
+
+    fn double_field(&mut self, field_number: i32, value: f64) -> Result<()> {
+        self.push(field_number, FieldValue::Double(value));
+        Ok(())
+    }
+}
+
+/// Walks one document's serialized stored-field bytes, asking `visitor` about
+/// each field before decoding it -- the exact loop of
+/// `Lucene90CompressingStoredFieldsReader.document(int, StoredFieldVisitor)`,
+/// including its "don't `skipField` on the last field value; treat like STOP"
+/// shortcut.
+///
+/// This is the one decode path: [`parse_document`] is this function run with
+/// a [`DocumentVisitor::all`].
+pub fn visit_document(
+    num_stored_fields: i64,
+    bytes: &[u8],
+    visitor: &mut dyn StoredFieldVisitor,
+) -> Result<()> {
     let mut input = SliceInput::new(bytes);
-    // `num_stored_fields` comes off the chunk header's bulk int array, whose
-    // widest shape is 32-bit read unsigned -- so it reaches ~4.3e9, and a
-    // `StoredField` is 40-odd bytes. Reserving for the *claim* is the
-    // abort-not-unwind shape `docs/arithmetic-gate.md` names; reserving for
-    // what the bytes could hold is free, because every field costs at least
-    // its `infoAndBits` vlong byte and the loop below hits EOF at exactly the
-    // same point either way.
-    let mut fields =
-        Vec::with_capacity((num_stored_fields.max(0) as u64).min(bytes.len() as u64) as usize);
-    for _ in 0..num_stored_fields {
+    for field_idx in 0..num_stored_fields {
         let info_and_bits = input.read_vlong()?;
         // Java is `(int) (infoAndBits >>> TYPE_BITS)`. The unsigned shift is
         // written out here rather than left as a signed `>>`: the two agree
@@ -819,13 +1002,51 @@ pub fn parse_document(num_stored_fields: i64, bytes: &[u8]) -> Result<Document> 
         // that is true, and the reader should not have to re-derive it.
         let field_number = ((info_and_bits as u64) >> TYPE_BITS) as i32;
         let bits = info_and_bits & TYPE_MASK;
-        let value = read_field(&mut input, bits)?;
-        fields.push(StoredField {
-            field_number,
-            value,
-        });
+        match visitor.needs_field(field_number)? {
+            VisitStatus::Yes => visit_field(&mut input, field_number, bits, visitor)?,
+            VisitStatus::No => {
+                // ARITH: `field_idx` runs `0..num_stored_fields`, so
+                // `num_stored_fields >= 1` here and the decrement cannot
+                // underflow.
+                #[allow(clippy::arithmetic_side_effects)]
+                let is_last = field_idx == num_stored_fields - 1;
+                if is_last {
+                    return Ok(());
+                }
+                skip_field(&mut input, bits)?;
+            }
+            VisitStatus::Stop => return Ok(()),
+        }
     }
-    Ok(Document { fields })
+    Ok(())
+}
+
+/// Parses one document's serialized stored-field bytes (a
+/// `(fieldNumber << 3) | type` vlong plus the value, repeated
+/// `num_stored_fields` times) into [`StoredField`]s -- the half of
+/// [`StoredFieldsReader::document`] that is not I/O, split out so a
+/// sequential scan can parse straight out of a [`ChunkCursor`]'s
+/// already-decompressed chunk.
+///
+/// Equivalent to [`visit_document`] with a [`DocumentVisitor::all`], and
+/// implemented as exactly that so there is one field-decode loop and not two.
+/// A caller that wants a subset should say so -- [`DocumentVisitor::for_fields`]
+/// -- rather than take the whole document and drop most of it.
+pub fn parse_document(num_stored_fields: i64, bytes: &[u8]) -> Result<Document> {
+    let mut visitor = DocumentVisitor::all();
+    // `num_stored_fields` comes off the chunk header's bulk int array, whose
+    // widest shape is 32-bit read unsigned -- so it reaches ~4.3e9, and a
+    // `StoredField` is 40-odd bytes. Reserving for the *claim* is the
+    // abort-not-unwind shape `docs/arithmetic-gate.md` names; reserving for
+    // what the bytes could hold is free, because every field costs at least
+    // its `infoAndBits` vlong byte and the loop below hits EOF at exactly the
+    // same point either way.
+    visitor
+        .doc
+        .fields
+        .reserve((num_stored_fields.max(0) as u64).min(bytes.len() as u64) as usize);
+    visit_document(num_stored_fields, bytes, &mut visitor)?;
+    Ok(visitor.into_document())
 }
 
 /// One document's serialized stored-field bytes -- see
@@ -1826,7 +2047,7 @@ fn serialize_doc_into(doc: &Document, out: &mut Vec<u8>) {
 }
 
 /// Port of `Lucene90CompressingStoredFieldsWriter.writeField` (encode side
-/// of [`read_field`]).
+/// of [`visit_field`]).
 fn write_field(out: &mut Vec<u8>, value: &FieldValue) {
     match value {
         FieldValue::Binary(b) => {
@@ -1973,31 +2194,72 @@ fn encode_literal_lz4(bytes: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Port of `Lucene90CompressingStoredFieldsReader.readField` (the decode
-/// side of `StoredFieldsInts`'s sibling per-field value encoding).
-fn read_field(input: &mut SliceInput, bits: i64) -> Result<FieldValue> {
+/// Port of `Lucene90CompressingStoredFieldsReader.readField(DataInput,
+/// StoredFieldVisitor, FieldInfo, int)`: decodes one value and hands it to
+/// the visitor **borrowed**, so a visitor that does not keep it never
+/// allocates it.
+///
+/// The one exception is `BYTE_ARR`, where the length is read off the payload
+/// and the bytes are then borrowed straight out of the input rather than
+/// copied into a `Vec` first -- Java passes a `StoredFieldDataInput` view for
+/// the same reason.
+fn visit_field<'a>(
+    input: &mut SliceInput<'a>,
+    field_number: i32,
+    bits: i64,
+    visitor: &mut dyn StoredFieldVisitor,
+) -> Result<()> {
     match bits {
         TYPE_BYTE_ARR => {
-            // `read_length`, not a bare `read_vint() as usize`: the length is
-            // a vint out of the decompressed payload, so a negative one
-            // became ~2^64 and `vec![0u8; n]` **aborts** the process rather
-            // than returning the EOF the `read_bytes` below would have. Java
-            // does not allocate here at all -- `visitor.binaryField(info, new
-            // StoredFieldDataInput(in, length))` hands the visitor a lazy
-            // view -- so bounding by the bytes actually left is the closest
-            // this port's owning `Vec<u8>` can get to the same exposure.
+            // The length is a vint out of the
+            // decompressed payload, so an unbounded one is a `2^64` slice.
             let length = input.read_length("stored binary field")?;
-            let mut buf = vec![0u8; length];
-            input.read_bytes(&mut buf)?;
-            Ok(FieldValue::Binary(buf))
+            let start = input.position();
+            input.skip(length)?;
+            let bytes: &'a [u8] = input.slice(start, input.position())?;
+            visitor.binary_field(field_number, bytes)
         }
-        TYPE_STRING => Ok(FieldValue::String(input.read_string()?)),
-        TYPE_NUMERIC_INT => Ok(FieldValue::Int(read_zint(input)?)),
-        TYPE_NUMERIC_FLOAT => Ok(FieldValue::Float(read_zfloat(input)?)),
-        TYPE_NUMERIC_LONG => Ok(FieldValue::Long(read_tlong(input)?)),
-        TYPE_NUMERIC_DOUBLE => Ok(FieldValue::Double(read_zdouble(input)?)),
+        TYPE_STRING => {
+            let value = input.read_string()?;
+            visitor.string_field(field_number, &value)
+        }
+        TYPE_NUMERIC_INT => visitor.int_field(field_number, read_zint(input)?),
+        TYPE_NUMERIC_FLOAT => visitor.float_field(field_number, read_zfloat(input)?),
+        TYPE_NUMERIC_LONG => visitor.long_field(field_number, read_tlong(input)?),
+        TYPE_NUMERIC_DOUBLE => visitor.double_field(field_number, read_zdouble(input)?),
         other => Err(Error::UnknownTypeTag(other)),
     }
+}
+
+/// Port of `Lucene90CompressingStoredFieldsReader.skipField`: advances the
+/// cursor past one value without decoding it.
+///
+/// The numeric cases still *read* their bytes, because their encodings are
+/// variable-length and self-delimiting -- Java calls the very same
+/// `readZFloat`/`readTLong`/`readZDouble` here. What is saved is the
+/// `String`/`Vec` a `STRING`/`BYTE_ARR` value would have allocated, which is
+/// the whole of the cost for the wide documents this exists for.
+fn skip_field(input: &mut SliceInput, bits: i64) -> Result<()> {
+    match bits {
+        TYPE_BYTE_ARR | TYPE_STRING => {
+            let length = input.read_length("stored field")?;
+            input.skip(length)?;
+        }
+        TYPE_NUMERIC_INT => {
+            read_zint(input)?;
+        }
+        TYPE_NUMERIC_FLOAT => {
+            read_zfloat(input)?;
+        }
+        TYPE_NUMERIC_LONG => {
+            read_tlong(input)?;
+        }
+        TYPE_NUMERIC_DOUBLE => {
+            read_zdouble(input)?;
+        }
+        other => return Err(Error::UnknownTypeTag(other)),
+    }
+    Ok(())
 }
 
 /// Port of `DataInput.readZInt`: `BitUtil.zigZagDecode` applied to a 32-bit
@@ -3093,59 +3355,104 @@ mod tests {
         (fdx, fdm)
     }
 
+    /// Decodes one value through [`visit_field`] and hands back what the
+    /// visitor was given -- the shape `read_field` used to have, now that
+    /// there is one decode path and it is the visitor's.
+    fn visit_one(payload: &[u8], bits: i64) -> Result<FieldValue> {
+        let mut input = SliceInput::new(payload);
+        let mut visitor = DocumentVisitor::all();
+        visit_field(&mut input, 0, bits, &mut visitor)?;
+        let mut doc = visitor.into_document();
+        Ok(doc.fields.remove(0).value)
+    }
+
     #[test]
-    fn every_field_value_type_round_trips_through_read_field() {
+    fn every_field_value_type_round_trips_through_visit_field() {
         let mut int_payload = Vec::new();
         write_vint(&mut int_payload, lucene_util::zigzag::encode(-7) as i32);
-        let mut input = SliceInput::new(&int_payload);
         assert_eq!(
-            read_field(&mut input, TYPE_NUMERIC_INT).unwrap(),
+            visit_one(&int_payload, TYPE_NUMERIC_INT).unwrap(),
             FieldValue::Int(-7)
         );
 
         // zigzag(7) = 14, fits directly in the header's low 5 bits with no
         // continuation byte and no second/hour/day scale applied.
         let mut long_payload = vec![lucene_util::zigzag::encode(7) as u8];
-        let mut input = SliceInput::new(&long_payload);
         assert_eq!(
-            read_field(&mut input, TYPE_NUMERIC_LONG).unwrap(),
+            visit_one(&long_payload, TYPE_NUMERIC_LONG).unwrap(),
             FieldValue::Long(7)
         );
 
         let mut bin_payload = Vec::new();
         write_vint(&mut bin_payload, 3);
         bin_payload.extend_from_slice(b"xyz");
-        let mut input = SliceInput::new(&bin_payload);
         assert_eq!(
-            read_field(&mut input, TYPE_BYTE_ARR).unwrap(),
+            visit_one(&bin_payload, TYPE_BYTE_ARR).unwrap(),
             FieldValue::Binary(b"xyz".to_vec())
         );
 
         let mut str_payload = Vec::new();
         write_string(&mut str_payload, "hi");
-        let mut input = SliceInput::new(&str_payload);
         assert_eq!(
-            read_field(&mut input, TYPE_STRING).unwrap(),
+            visit_one(&str_payload, TYPE_STRING).unwrap(),
             FieldValue::String("hi".to_string())
         );
 
         long_payload = vec![((9i32 + 1) as u8) | 0x80];
-        let mut input = SliceInput::new(&long_payload);
         assert_eq!(
-            read_field(&mut input, TYPE_NUMERIC_FLOAT).unwrap(),
+            visit_one(&long_payload, TYPE_NUMERIC_FLOAT).unwrap(),
             FieldValue::Float(9.0)
         );
 
         long_payload = vec![((2i32 + 1) as u8) | 0x80];
-        let mut input = SliceInput::new(&long_payload);
         assert_eq!(
-            read_field(&mut input, TYPE_NUMERIC_DOUBLE).unwrap(),
+            visit_one(&long_payload, TYPE_NUMERIC_DOUBLE).unwrap(),
             FieldValue::Double(2.0)
         );
 
-        let mut input = SliceInput::new(&[]);
+        assert!(matches!(visit_one(&[], 6), Err(Error::UnknownTypeTag(6))));
+    }
+
+    /// [`skip_field`] must land the cursor exactly where [`visit_field`]
+    /// does, for every encoding -- a skip that stops one byte short or long
+    /// misreads every following field of the document rather than failing.
+    #[test]
+    fn skip_field_advances_exactly_as_far_as_visit_field() {
+        let mut int_payload = Vec::new();
+        write_vint(&mut int_payload, lucene_util::zigzag::encode(-7) as i32);
+        let mut bin_payload = Vec::new();
+        write_vint(&mut bin_payload, 3);
+        bin_payload.extend_from_slice(b"xyz");
+        let mut str_payload = Vec::new();
+        write_string(&mut str_payload, "hi");
+
+        let cases: [(Vec<u8>, i64); 6] = [
+            (int_payload, TYPE_NUMERIC_INT),
+            (
+                vec![lucene_util::zigzag::encode(7) as u8],
+                TYPE_NUMERIC_LONG,
+            ),
+            (bin_payload, TYPE_BYTE_ARR),
+            (str_payload, TYPE_STRING),
+            (vec![((9i32 + 1) as u8) | 0x80], TYPE_NUMERIC_FLOAT),
+            (vec![((2i32 + 1) as u8) | 0x80], TYPE_NUMERIC_DOUBLE),
+        ];
+        for (payload, bits) in cases {
+            let mut read = SliceInput::new(&payload);
+            let mut visitor = DocumentVisitor::all();
+            visit_field(&mut read, 0, bits, &mut visitor).unwrap();
+            let mut skipped = SliceInput::new(&payload);
+            skip_field(&mut skipped, bits).unwrap();
+            assert_eq!(
+                read.position(),
+                skipped.position(),
+                "skip_field disagreed with visit_field for bits={bits}"
+            );
+        }
+
+        let mut unknown = SliceInput::new(&[]);
         assert!(matches!(
-            read_field(&mut input, 6),
+            skip_field(&mut unknown, 6),
             Err(Error::UnknownTypeTag(6))
         ));
     }
@@ -3193,6 +3500,140 @@ mod tests {
         for (got_field, want_field) in got.fields.iter().zip(&docs[0].fields) {
             assert_eq!(got_field.field_number, want_field.field_number);
             assert_eq!(got_field.value, want_field.value);
+        }
+    }
+
+    /// A wide document, read one field at a time through the visitor: the
+    /// subset visitor must see exactly the field it asked for, and the
+    /// values must equal what the whole-document path produces.
+    #[test]
+    fn visit_document_takes_only_the_fields_it_asks_for() {
+        let docs = vec![wide_document()];
+        let (fdt, fdx, fdm) = write_best_speed(&docs, &id_write(), "");
+        let reader = open(&fdt, &fdx, &fdm, &id_write(), "").unwrap();
+        let whole = reader.document(0).unwrap();
+
+        for want in &whole.fields {
+            let mut visitor = DocumentVisitor::for_fields(&[want.field_number]);
+            reader.visit_document(0, &mut visitor).unwrap();
+            let got = visitor.into_document();
+            assert_eq!(got.fields.len(), 1, "field {}", want.field_number);
+            assert_eq!(got.fields[0].field_number, want.field_number);
+            assert_eq!(got.fields[0].value, want.value);
+        }
+
+        // And a subset spanning both a skipped-then-taken and a
+        // taken-then-skipped boundary.
+        let mut visitor = DocumentVisitor::for_fields(&[1, 4]);
+        reader.visit_document(0, &mut visitor).unwrap();
+        let got = visitor.into_document();
+        assert_eq!(
+            got.fields
+                .iter()
+                .map(|f| f.field_number)
+                .collect::<Vec<_>>(),
+            vec![1, 4]
+        );
+    }
+
+    /// `Status.STOP` must end the document where it is asked to, leaving
+    /// every later field undecoded -- and `Status.NO` on the *last* field
+    /// must take Java's "treat like STOP" shortcut rather than skipping into
+    /// the end of the buffer.
+    #[test]
+    fn visit_document_stops_early_and_skips_the_last_field_without_reading_it() {
+        struct StopAfter {
+            stop_at: i32,
+            seen: Vec<i32>,
+            taken: Vec<i32>,
+        }
+        impl StoredFieldVisitor for StopAfter {
+            fn needs_field(&mut self, field_number: i32) -> Result<VisitStatus> {
+                self.seen.push(field_number);
+                Ok(if field_number == self.stop_at {
+                    VisitStatus::Stop
+                } else {
+                    VisitStatus::Yes
+                })
+            }
+            fn string_field(&mut self, field_number: i32, _value: &str) -> Result<()> {
+                self.taken.push(field_number);
+                Ok(())
+            }
+            fn int_field(&mut self, field_number: i32, _value: i32) -> Result<()> {
+                self.taken.push(field_number);
+                Ok(())
+            }
+            fn long_field(&mut self, field_number: i32, _value: i64) -> Result<()> {
+                self.taken.push(field_number);
+                Ok(())
+            }
+            fn float_field(&mut self, field_number: i32, _value: f32) -> Result<()> {
+                self.taken.push(field_number);
+                Ok(())
+            }
+            fn double_field(&mut self, field_number: i32, _value: f64) -> Result<()> {
+                self.taken.push(field_number);
+                Ok(())
+            }
+            fn binary_field(&mut self, field_number: i32, _value: &[u8]) -> Result<()> {
+                self.taken.push(field_number);
+                Ok(())
+            }
+        }
+
+        let docs = vec![wide_document()];
+        let (fdt, fdx, fdm) = write_best_speed(&docs, &id_write(), "");
+        let reader = open(&fdt, &fdx, &fdm, &id_write(), "").unwrap();
+
+        let mut visitor = StopAfter {
+            stop_at: 2,
+            seen: Vec::new(),
+            taken: Vec::new(),
+        };
+        reader.visit_document(0, &mut visitor).unwrap();
+        assert_eq!(visitor.seen, vec![0, 1, 2], "STOP did not end the walk");
+        assert_eq!(visitor.taken, vec![0, 1]);
+
+        // `NO` on the final field: the loop returns instead of calling
+        // `skip_field`, so a truncated final value would not be noticed --
+        // which is exactly Java's documented behaviour, and what this pins.
+        let mut only_first = DocumentVisitor::for_fields(&[0]);
+        reader.visit_document(0, &mut only_first).unwrap();
+        assert_eq!(only_first.into_document().fields.len(), 1);
+    }
+
+    /// Six fields, one per encoding -- the shape a "wide document" test
+    /// needs so that every `skip_field` arm is exercised by a *reader*, not
+    /// only by the unit test that compares the two cursors.
+    fn wide_document() -> Document {
+        Document {
+            fields: vec![
+                StoredField {
+                    field_number: 0,
+                    value: FieldValue::String("a fairly long stored value".to_string()),
+                },
+                StoredField {
+                    field_number: 1,
+                    value: FieldValue::Int(-42),
+                },
+                StoredField {
+                    field_number: 2,
+                    value: FieldValue::Long(1_234_567_890_123),
+                },
+                StoredField {
+                    field_number: 3,
+                    value: FieldValue::Float(1.5),
+                },
+                StoredField {
+                    field_number: 4,
+                    value: FieldValue::Double(2.25),
+                },
+                StoredField {
+                    field_number: 5,
+                    value: FieldValue::Binary(vec![7u8; 64]),
+                },
+            ],
         }
     }
 
