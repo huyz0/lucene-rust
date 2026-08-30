@@ -20,7 +20,8 @@
 #![allow(clippy::arithmetic_side_effects)]
 
 use lucene_index::segment_info::{
-    self, IndexSortField, LuceneVersion, SegmentInfo, SortMissingValue,
+    self, IndexSortField, IndexSortKind, LuceneVersion, NumericSortKey, SegmentInfo,
+    SortedNumericSelector, SortedSetSelector, StringMissingValue,
 };
 use lucene_store::{DataOutput, Directory, FsDirectory};
 use std::io::Write;
@@ -119,15 +120,93 @@ fn main() {
             files: vec![],
             attributes: vec![],
             index_sort: Some(vec![
+                IndexSortField::long("timestamp", true, Some(i64::MAX)),
+                IndexSortField::long("price", false, Some(i64::MIN)),
+            ]),
+        },
+    );
+
+    // _3: **every** shape `SortFieldProvider` can round-trip, in one `.si`.
+    // `_2` above covers the sort this port's own sorted writers produce (two
+    // `LONG` tiers with the `Long.MIN_VALUE`/`Long.MAX_VALUE` sentinels),
+    // which was the whole of what `IndexSortField` could represent before
+    // c35. This is the widened model's encoder under test: all four
+    // providers, every `SortField.Type` that can be an index sort, both
+    // selector enums, and every missing-value form -- an arbitrary numeric
+    // sentinel, `STRING_FIRST`/`STRING_LAST`, and **no missing value at
+    // all**. `VerifySegmentInfo` reads it back through
+    // `SortFieldProvider.forName(...).readSortField(...)` and compares
+    // Lucene's own `Sort.toString()` against ours.
+    gen(
+        &out_dir,
+        "_3",
+        SegmentInfo {
+            id: *b"rustwrittensi333",
+            version: LuceneVersion {
+                major: 10,
+                minor: 0,
+                bugfix: 0,
+            },
+            min_version: None,
+            doc_count: 42,
+            is_compound_file: false,
+            has_blocks: false,
+            diagnostics: vec![],
+            files: vec![],
+            attributes: vec![],
+            index_sort: Some(vec![
+                // An arbitrary INT sentinel: neither first nor last.
                 IndexSortField {
-                    field: "timestamp".to_string(),
+                    field: "an_int".to_string(),
                     reverse: true,
-                    missing: SortMissingValue::Last,
+                    kind: IndexSortKind::Numeric(NumericSortKey::Int(Some(-7))),
+                },
+                // No missing value at all -- Java compares such a document
+                // as `0`, which is what made this unrepresentable before.
+                IndexSortField {
+                    field: "a_long".to_string(),
+                    reverse: false,
+                    kind: IndexSortKind::Numeric(NumericSortKey::Long(None)),
+                },
+                // FLOAT/DOUBLE go through `NumericUtils.floatToSortableInt`/
+                // `doubleToSortableLong` on the way to disk.
+                IndexSortField {
+                    field: "a_float".to_string(),
+                    reverse: false,
+                    kind: IndexSortKind::Numeric(NumericSortKey::Float(Some(-1.5))),
                 },
                 IndexSortField {
-                    field: "price".to_string(),
+                    field: "a_double".to_string(),
+                    reverse: true,
+                    kind: IndexSortKind::Numeric(NumericSortKey::Double(Some(2.25))),
+                },
+                // STRING's missing marker is `1 == FIRST, else LAST`, the
+                // opposite way round from the sorted-set/binary marker.
+                IndexSortField {
+                    field: "a_string".to_string(),
+                    reverse: true,
+                    kind: IndexSortKind::String(StringMissingValue::Last),
+                },
+                IndexSortField {
+                    field: "a_sorted_numeric".to_string(),
                     reverse: false,
-                    missing: SortMissingValue::First,
+                    kind: IndexSortKind::SortedNumeric {
+                        key: NumericSortKey::Int(Some(9)),
+                        selector: SortedNumericSelector::Max,
+                    },
+                },
+                IndexSortField {
+                    field: "a_sorted_set".to_string(),
+                    reverse: true,
+                    kind: IndexSortKind::SortedSet {
+                        selector: SortedSetSelector::MiddleMin,
+                        missing: StringMissingValue::First,
+                    },
+                },
+                IndexSortField {
+                    field: "a_binary".to_string(),
+                    reverse: false,
+                    kind: IndexSortKind::Binary(StringMissingValue::None),
                 },
             ]),
         },
@@ -176,24 +255,18 @@ fn gen(out_dir: &str, segment_name: &str, si: SegmentInfo) {
     writeln!(manifest, "files={}", si.files.join(",")).unwrap();
     // `field:reverse:missing` triples, in priority order; empty for an
     // unsorted segment.
+    // Lucene's own `Sort.toString()` rendering, produced by this port's
+    // `describe_index_sort`. `VerifySegmentInfo` compares it against
+    // `si.getIndexSort().toString()` on the `Sort` real Lucene reconstructed
+    // from these very bytes, so the check covers every field of every
+    // provider -- field name, direction, selector, type and missing value --
+    // in one string, and it is Java that decides what that string is.
     writeln!(
         manifest,
         "index_sort={}",
         si.index_sort
             .as_ref()
-            .map(|fields| fields
-                .iter()
-                .map(|f| format!(
-                    "{}:{}:{}",
-                    f.field,
-                    if f.reverse { 1 } else { 0 },
-                    match f.missing {
-                        SortMissingValue::First => "first",
-                        SortMissingValue::Last => "last",
-                    }
-                ))
-                .collect::<Vec<_>>()
-                .join(","))
+            .map(|fields| segment_info::describe_index_sort(Some(fields)))
             .unwrap_or_default()
     )
     .unwrap();

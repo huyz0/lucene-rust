@@ -178,7 +178,6 @@
 
 use lucene_store::codec_util::{self, ID_LENGTH};
 use lucene_store::data_input::{DataInput, SliceInput};
-use lucene_store::data_output::DataOutput;
 
 use crate::field_infos::IndexOptions;
 use crate::for_util::{self, ForUtil};
@@ -3100,49 +3099,6 @@ fn read_tail_block(
     Ok(())
 }
 
-/// `GroupVIntUtil.writeGroupVInts`'s wire format (groups of 4 values, one
-/// flag byte packing each value's byte-length minus one, then that many
-/// little-endian bytes per value; a final partial group of fewer than 4
-/// falls back to plain vints) — the write-side companion to
-/// [`DataInput::read_group_vints`], needed by [`crate::postings_writer`]'s
-/// tail-block encoder ([`read_tail_block`]'s exact inverse).
-// ARITH: `values` is a live slice, so `values.len() <= isize::MAX` and
-// `i <= values.len()` throughout (it only ever advances to a bound the loop
-// condition just proved), which keeps `i + 4` and `i + 1` inside a `usize`.
-// `v.leading_zeros() / 8 <= 3` on the `v != 0` branch, so `4 - ..` is `>= 1`
-// and `bytes - 1` is `>= 0`; `lens[j] <= 3`, so `lens[j] + 1 <= 4`. Nothing
-// here comes off disk -- this is the encoder `postings_writer` calls with
-// values it produced.
-#[allow(clippy::arithmetic_side_effects)]
-pub(crate) fn write_group_vints(out: &mut impl DataOutput, values: &[u32]) {
-    let mut i = 0;
-    while i + 4 <= values.len() {
-        let chunk = &values[i..i + 4];
-        let lens: Vec<u8> = chunk
-            .iter()
-            .map(|&v| {
-                let bytes = if v == 0 {
-                    1
-                } else {
-                    4 - (v.leading_zeros() / 8)
-                };
-                (bytes - 1) as u8
-            })
-            .collect();
-        let flag = (lens[0] << 6) | (lens[1] << 4) | (lens[2] << 2) | lens[3];
-        out.write_byte(flag);
-        for (j, &v) in chunk.iter().enumerate() {
-            let n = lens[j] as usize + 1;
-            out.write_bytes(&v.to_le_bytes()[..n]);
-        }
-        i += 4;
-    }
-    while i < values.len() {
-        out.write_vint(values[i] as i32);
-        i += 1;
-    }
-}
-
 /// `docFreq == 1`: the single doc/freq is reconstructed entirely from the
 /// term dictionary's metadata (`termState.singletonDocID`) and
 /// `totalTermFreq` (implicitly the one doc's freq) — no `.doc` file access,
@@ -4203,7 +4159,7 @@ mod tests {
         let doc_start_fp = doc.len() as u64;
         // docFreq=2: deltas [3, 2] (docIDs 2 and 4), freqs [2, 1].
         // group-varint packing: (delta<<1)|(freq==1?1:0)
-        write_group_vints(&mut doc, &[3 << 1, (2 << 1) | 1]);
+        doc.write_group_vints(&[3 << 1, (2 << 1) | 1]);
         doc.write_vint(2); // explicit freq for the first doc (freq != 1)
         doc.extend_from_slice(&footer);
 
@@ -4226,7 +4182,7 @@ mod tests {
         let (mut doc, footer) = header_and_footer(DOC_CODEC, &id);
         let doc_start_fp = doc.len() as u64;
         // docFreq=3, plain deltas (no freq bit-packing): docIDs 0,1,5 -> deltas 1,1,4
-        write_group_vints(&mut doc, &[1, 1, 4]);
+        doc.write_group_vints(&[1, 1, 4]);
         doc.extend_from_slice(&footer);
 
         let input = DocInput::open(&doc, &id, "").unwrap();
@@ -4251,7 +4207,7 @@ mod tests {
         let (mut doc, footer) = header_and_footer(DOC_CODEC, &id);
         let doc_start_fp = doc.len() as u64;
         // docIDs 0, 3, 4 (deltas 1, 3, 1), freq==1 for all -> bit always set.
-        write_group_vints(&mut doc, &[(1 << 1) | 1, (3 << 1) | 1, (1 << 1) | 1]);
+        doc.write_group_vints(&[(1 << 1) | 1, (3 << 1) | 1, (1 << 1) | 1]);
         doc.extend_from_slice(&footer);
 
         let input = DocInput::open(&doc, &id, "").unwrap();
@@ -4278,7 +4234,7 @@ mod tests {
         let id = [6u8; ID_LENGTH];
         let (mut doc, footer) = header_and_footer(DOC_CODEC, &id);
         let doc_start_fp = doc.len() as u64;
-        write_group_vints(&mut doc, &[(1 << 1) | 1, (3 << 1) | 1, (1 << 1) | 1]);
+        doc.write_group_vints(&[(1 << 1) | 1, (3 << 1) | 1, (1 << 1) | 1]);
         doc.extend_from_slice(&footer);
 
         let input = DocInput::open(&doc, &id, "").unwrap();
@@ -4345,7 +4301,7 @@ mod tests {
         // Consecutive doc IDs 0..n, delta=1 each, freq==2 for every doc (bit
         // clear) so every doc also needs a trailing freq vint.
         let deltas: Vec<u32> = (0..n).map(|_| 1u32 << 1).collect();
-        write_group_vints(&mut doc, &deltas);
+        doc.write_group_vints(&deltas);
         for _ in 0..n {
             doc.write_vint(2);
         }
@@ -4436,7 +4392,7 @@ mod tests {
         write_level1_entry_docs(&mut doc, LEVEL1_NUM_DOCS, &span);
         doc.extend_from_slice(&span);
         // Tail: 8 consecutive docs (deltas all 1) from prevDocID 8191.
-        write_group_vints(&mut doc, &[1; 8]);
+        doc.write_group_vints(&[1; 8]);
         doc.extend_from_slice(&footer);
 
         let input = DocInput::open(&doc, &id, "").unwrap();
@@ -4531,7 +4487,7 @@ mod tests {
         doc.extend_from_slice(&span);
         // Tail: 8 consecutive docs (deltas all 1) from prevDocID 8191, no
         // freq exceptions (freq==1 bit path).
-        write_group_vints(&mut doc, &[(1 << 1) | 1; 8]);
+        doc.write_group_vints(&[(1 << 1) | 1; 8]);
         doc.extend_from_slice(&footer);
 
         let input = DocInput::open(&doc, &id, "").unwrap();
@@ -4749,7 +4705,7 @@ mod tests {
         write_full_block(&mut doc, true, 3);
         // Tail: 1 doc, delta=5 from prevDocID=255 -> docID 260, freq=7 (bit
         // clear, explicit freq vint follows).
-        write_group_vints(&mut doc, &[5 << 1]);
+        doc.write_group_vints(&[5 << 1]);
         doc.write_vint(7);
         doc.extend_from_slice(&footer);
 
@@ -5079,7 +5035,7 @@ mod tests {
         }
         write_level1_entry_docs(&mut doc, LEVEL1_NUM_DOCS, &span);
         doc.extend_from_slice(&span);
-        write_group_vints(&mut doc, &[1; 8]);
+        doc.write_group_vints(&[1; 8]);
         doc.extend_from_slice(&footer);
 
         let input = DocInput::open(&doc, &id, "").unwrap();
@@ -5141,7 +5097,7 @@ mod tests {
         write_level1_entry_docs(&mut doc, LEVEL1_NUM_DOCS, &span);
         doc.extend_from_slice(&span);
         // Valid 8-doc tail (docs 8192..8199), chained from prevDocID 8191.
-        write_group_vints(&mut doc, &[1; 8]);
+        doc.write_group_vints(&[1; 8]);
         doc.extend_from_slice(&footer);
 
         let input = DocInput::open(&doc, &id, "").unwrap();
@@ -5182,7 +5138,7 @@ mod tests {
         let doc_start_fp = doc.len() as u64;
         write_full_block(&mut doc, true, 3);
         write_full_block(&mut doc, true, 4);
-        write_group_vints(&mut doc, &[5 << 1, 1 << 1, 2 << 1]);
+        doc.write_group_vints(&[5 << 1, 1 << 1, 2 << 1]);
         doc.extend_from_slice(&footer);
 
         let input = DocInput::open(&doc, &id, "").unwrap();
@@ -5721,7 +5677,7 @@ mod tests {
         let id = [24u8; ID_LENGTH];
         let (mut doc, footer) = header_and_footer(DOC_CODEC, &id);
         let doc_start_fp = doc.len() as u64;
-        write_group_vints(&mut doc, &[(3 << 1) | 1, (3 << 1) | 1]); // docs 2, 5 (deltas 3,3 from prev=-1), freq=1 each
+        doc.write_group_vints(&[(3 << 1) | 1, (3 << 1) | 1]); // docs 2, 5 (deltas 3,3 from prev=-1), freq=1 each
         doc.extend_from_slice(&footer);
 
         let input = DocInput::open(&doc, &id, "").unwrap();
@@ -5745,7 +5701,7 @@ mod tests {
         let id = [25u8; ID_LENGTH];
         let (mut doc, footer) = header_and_footer(DOC_CODEC, &id);
         let doc_start_fp = doc.len() as u64;
-        write_group_vints(&mut doc, &[(3 << 1) | 1, (3 << 1) | 1]); // docs 2, 5 (deltas 3,3 from prev=-1)
+        doc.write_group_vints(&[(3 << 1) | 1, (3 << 1) | 1]); // docs 2, 5 (deltas 3,3 from prev=-1)
         doc.extend_from_slice(&footer);
 
         let input = DocInput::open(&doc, &id, "").unwrap();
@@ -5770,7 +5726,7 @@ mod tests {
         let id = [26u8; ID_LENGTH];
         let (mut doc, footer) = header_and_footer(DOC_CODEC, &id);
         let doc_start_fp = doc.len() as u64;
-        write_group_vints(&mut doc, &[(3 << 1) | 1, (3 << 1) | 1]); // docs 2, 5 (deltas 3,3 from prev=-1)
+        doc.write_group_vints(&[(3 << 1) | 1, (3 << 1) | 1]); // docs 2, 5 (deltas 3,3 from prev=-1)
         doc.extend_from_slice(&footer);
 
         let input = DocInput::open(&doc, &id, "").unwrap();
@@ -6301,7 +6257,7 @@ mod tests {
         // Two docs in a group-varint tail block, deltas 3 and 4 (doc IDs 2
         // and 6) with freq 1 each -- `(delta << 1) | 1` is the freq-is-one
         // packing `read_tail_block` decodes.
-        write_group_vints(&mut doc, &[(3 << 1) | 1, (4 << 1) | 1]);
+        doc.write_group_vints(&[(3 << 1) | 1, (4 << 1) | 1]);
         doc.extend_from_slice(&doc_footer);
         let doc_in = DocInput::open(&doc, &id, "").unwrap();
         let meta = TermMetadata {
@@ -6784,7 +6740,7 @@ mod tests {
                 pay_block_len as i64,
             );
         }
-        write_group_vints(&mut doc, &[3; 2]); // tail: 2 docs, delta 1, freq 1
+        doc.write_group_vints(&[3; 2]); // tail: 2 docs, delta 1, freq 1
         doc.extend_from_slice(&doc_footer);
 
         let df = 2 * BLOCK_SIZE + 2;
@@ -6887,7 +6843,7 @@ mod tests {
         );
         doc.extend_from_slice(&span);
         // Tail: 8 documents, delta 1, freq 1 -- `(delta << 1) | 1`.
-        write_group_vints(&mut doc, &[3; 8]);
+        doc.write_group_vints(&[3; 8]);
         doc.extend_from_slice(&footer);
 
         let df = LEVEL1_NUM_DOCS + 8;
@@ -7066,7 +7022,7 @@ mod tests {
             &[Impact { freq: 9, norm: 4 }],
         );
         doc.extend_from_slice(&span);
-        write_group_vints(&mut doc, &[3; 8]);
+        doc.write_group_vints(&[3; 8]);
         doc.extend_from_slice(&footer);
         (doc, doc_start_fp, LEVEL1_NUM_DOCS + 8)
     }

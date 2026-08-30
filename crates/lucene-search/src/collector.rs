@@ -46,6 +46,8 @@
 //!   speculative generality (no shared supertrait, no `Collector: ScoringCollector`
 //!   blanket impl) is introduced beyond that.
 
+use std::sync::Arc;
+
 /// `org.apache.lucene.search.ScoreMode` -- what a collector needs from the
 /// scorers underneath it, and therefore what work those scorers are allowed to
 /// skip.
@@ -252,6 +254,142 @@ fn rank_order(a: &ScoreDoc, b: &ScoreDoc) -> std::cmp::Ordering {
     }
 }
 
+/// `DocScoreEncoder` (`org.apache.lucene.search.DocScoreEncoder`): a
+/// `(doc, score)` pair packed into one `i64` whose **natural integer order is
+/// the ranking order** -- higher score first, and on a score tie the lower doc
+/// id first. That is what lets [`MaxScoreAccumulator`] be a single atomic
+/// maximum rather than a lock around two fields.
+///
+/// ```text
+/// encode(doc, score) = (floatToSortableInt(score) as i64) << 32 | (i32::MAX - doc)
+/// ```
+///
+/// The score goes in the high half so it dominates the comparison, and the doc
+/// id is stored *complemented* so that a smaller doc id makes a larger code.
+mod doc_score_encoder {
+    /// `NumericUtils.sortableFloatBits`: flips the sign bit for a positive
+    /// float and every bit but the sign for a negative one, turning IEEE-754's
+    /// sign-magnitude order into two's-complement order. Its own inverse.
+    fn sortable_float_bits(bits: i32) -> i32 {
+        bits ^ ((bits >> 31) & 0x7fff_ffff)
+    }
+
+    pub(super) fn encode(doc_id: i32, score: f32) -> i64 {
+        let sortable = sortable_float_bits(score.to_bits() as i32);
+        // `(long) sortableInt << 32 | (Integer.MAX_VALUE - docId)`: the low
+        // half is masked to 32 bits by the `|`, exactly as Java's widening of
+        // an `int` operand does.
+        ((sortable as i64) << 32) | (i64::from(i32::MAX.wrapping_sub(doc_id)) & 0xffff_ffff)
+    }
+
+    pub(super) fn to_score(code: i64) -> f32 {
+        f32::from_bits(sortable_float_bits((code >> 32) as i32) as u32)
+    }
+
+    pub(super) fn doc_id(code: i64) -> i32 {
+        i32::MAX.wrapping_sub(code as i32)
+    }
+}
+
+/// `MaxScoreAccumulator` (`org.apache.lucene.search.MaxScoreAccumulator`): one
+/// min-competitive score shared by every leaf a query is searched across
+/// concurrently.
+///
+/// ## Why it exists
+///
+/// A per-leaf `TopScoreDocCollector` can only prune against **its own** queue,
+/// so a leaf that has seen nothing competitive yet visits every document even
+/// when another leaf has already filled its queue with far better hits. Sharing
+/// one "worst hit worth keeping" across the leaves lets each of them start
+/// pruning as soon as *any* of them can. Java creates one per
+/// `TopScoreDocCollectorManager` whenever the search is concurrent, and passes
+/// `null` when it is not.
+///
+/// ## Why a single atomic
+///
+/// Because [`doc_score_encoder`] packs the pair so that integer order *is*
+/// ranking order, "the best competitive hit any leaf has proved" is just a
+/// maximum, and a maximum over an `i64` is a compare-and-swap loop with no
+/// lock and no allocation -- Java's `LongAccumulator(Math::max, Long.MIN_VALUE)`.
+///
+/// ## What a reader gets
+///
+/// [`Self::threshold_for`] returns the value **this port's** pruning rule
+/// (`bound <= threshold` skips) needs, which is one ULP below the value Java's
+/// rule (`bound < minCompetitiveScore` skips) is given. The two are the same
+/// rule; see that method.
+#[derive(Debug)]
+pub struct MaxScoreAccumulator {
+    /// `LongAccumulator(Math::max, Long.MIN_VALUE)`.
+    acc: std::sync::atomic::AtomicI64,
+}
+
+impl Default for MaxScoreAccumulator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MaxScoreAccumulator {
+    pub fn new() -> Self {
+        Self {
+            acc: std::sync::atomic::AtomicI64::new(i64::MIN),
+        }
+    }
+
+    /// `accumulate(long code)`: fold `(doc_id, score)` into the running
+    /// maximum. `doc_id` is **global** (leaf-local plus `docBase`), because the
+    /// tie-break in [`Self::threshold_for`] compares it against another leaf's
+    /// `docBase`.
+    pub fn accumulate(&self, doc_id: i32, score: f32) {
+        let code = doc_score_encoder::encode(doc_id, score);
+        // `fetch_max` is `LongAccumulator`'s `Math::max` fold. `Relaxed` is
+        // enough: the value is a *hint* -- every leaf's own queue is still the
+        // authority on what it keeps, and a stale read can only cost pruning,
+        // never correctness. Java's `LongAccumulator` gives no stronger
+        // guarantee to its readers either (`get()` is explicitly documented as
+        // not an atomic snapshot).
+        self.acc
+            .fetch_max(code, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The threshold a leaf whose documents start at `doc_base` may prune
+    /// against, under this crate's `bound <= threshold` rule. `None` when
+    /// nothing has been accumulated yet (Java's `getRaw() == Long.MIN_VALUE`).
+    ///
+    /// **The doc-id test, and the ULP.** Java's
+    /// `updateGlobalMinCompetitiveScore` is
+    ///
+    /// ```java
+    /// float score = DocScoreEncoder.toScore(maxMinScore);
+    /// score = docBase >= DocScoreEncoder.docId(maxMinScore) ? Math.nextUp(score) : score;
+    /// scorer.setMinCompetitiveScore(score);   // skips when bound < score
+    /// ```
+    ///
+    /// -- if every document in this leaf sorts *after* the accumulated hit,
+    /// then a document merely *tying* its score loses the doc-id tie-break and
+    /// is not competitive, so the leaf may demand the next float up; otherwise
+    /// a tie could still win and it may not.
+    ///
+    /// This port's rule skips when `bound <= threshold`, so the threshold it
+    /// wants is the largest float Java's rule would still skip, i.e. the
+    /// predecessor of Java's published value. `next_down(next_up(x)) == x`, so
+    /// the two branches come out as `score` and `next_down(score)` -- the same
+    /// pair, shifted by the same ULP the two rules differ by.
+    pub fn threshold_for(&self, doc_base: i32) -> Option<f32> {
+        let code = self.acc.load(std::sync::atomic::Ordering::Relaxed);
+        if code == i64::MIN {
+            return None;
+        }
+        let score = doc_score_encoder::to_score(code);
+        Some(if doc_base >= doc_score_encoder::doc_id(code) {
+            score
+        } else {
+            score.next_down()
+        })
+    }
+}
+
 /// `TopScoreDocCollector`-equivalent: keeps the top `n` `(doc_id, score)` hits
 /// by score (ties broken by lower doc ID, matching real Lucene's `HitQueue` —
 /// see [`rank_order`]), discarding everything else.
@@ -281,6 +419,29 @@ pub struct TopDocsCollector {
     /// Set once a threshold has actually been handed out, i.e. once a scorer
     /// was allowed to skip -- `TopScoreDocCollector.totalHitsRelation`.
     total_hits_relation: TotalHitsRelation,
+    /// `TopScoreDocCollector.after`: the last hit of the previous page. Every
+    /// document that would have ranked at or above it is skipped, so a caller
+    /// gets page 2 without re-collecting page 1. `None` is Java's `after ==
+    /// null`.
+    ///
+    /// **In this collector's own doc-ID space**, i.e. whatever `collect` is
+    /// handed. Java stores a *global* `ScoreDoc` on the collector and subtracts
+    /// `context.docBase` when it builds each leaf's collector; a caller
+    /// federating segments here does the same subtraction -- see
+    /// [`Self::with_after`].
+    after: Option<ScoreDoc>,
+    /// `TopScoreDocCollector.minScoreAcc`: one min-competitive score shared
+    /// across every concurrently-searched leaf. `None` is Java's single-threaded
+    /// case, where the collector's own queue is the only source.
+    min_score_acc: Option<Arc<MaxScoreAccumulator>>,
+    /// `LeafReaderContext.docBase`, needed only to translate this leaf's hits
+    /// into the global doc-ID space [`Self::min_score_acc`] compares in.
+    doc_base: i32,
+    /// The highest threshold this collector has already published into
+    /// [`Self::min_score_acc`] -- Java's per-leaf `minCompetitiveScore`, which
+    /// gates `updateMinCompetitiveScore`'s work. Without it the accumulator's
+    /// atomic read-modify-write would run once per collected document.
+    published_min: f32,
 }
 
 impl TopDocsCollector {
@@ -302,6 +463,10 @@ impl TopDocsCollector {
             total_hits: 0,
             total_hits_threshold: 0,
             total_hits_relation: TotalHitsRelation::EqualTo,
+            after: None,
+            min_score_acc: None,
+            doc_base: 0,
+            published_min: f32::NEG_INFINITY,
         }
     }
 
@@ -318,7 +483,58 @@ impl TopDocsCollector {
             total_hits: 0,
             total_hits_threshold,
             total_hits_relation: TotalHitsRelation::EqualTo,
+            after: None,
+            min_score_acc: None,
+            doc_base: 0,
+            published_min: f32::NEG_INFINITY,
         }
+    }
+
+    /// `IndexSearcher.searchAfter(after, query, n)`: keep only hits that rank
+    /// **strictly below** `after`, so the caller gets the next page without
+    /// re-collecting the previous one.
+    ///
+    /// Java's test, verbatim (`TopScoreDocCollector.getLeafCollector`):
+    ///
+    /// ```java
+    /// if (after != null && (score > afterScore || (score == afterScore && doc <= afterDoc)))
+    ///   return;   // hit was collected on a previous page
+    /// ```
+    ///
+    /// which is exactly "`after` outranks or equals this hit under `HitQueue`'s
+    /// order" -- higher score first, lower doc id winning a tie. The document
+    /// is still **counted**: `totalHits` is incremented before the test, so
+    /// page 2 reports the same total page 1 did.
+    ///
+    /// **`after.doc_id` is in this collector's own doc-ID space.** Java holds a
+    /// global `ScoreDoc` and builds each leaf's collector with
+    /// `after.doc - context.docBase`; a multi-segment caller here does the same
+    /// (see [`crate::multi_segment::merge_multi_segment_scored_after`], which
+    /// does it for you). The subtraction is deliberately allowed to go
+    /// negative or past `maxDoc`: for a leaf *before* the one holding `after`,
+    /// every local doc id is `<= afterDoc` and only the score test can reject;
+    /// for a leaf after it, no doc id is, which is the correct answer in both
+    /// directions.
+    pub fn with_after(mut self, after: ScoreDoc) -> Self {
+        self.after = Some(after);
+        self
+    }
+
+    /// `TopScoreDocCollectorManager`'s shared `MaxScoreAccumulator`: every
+    /// concurrently-searched leaf publishes the score of its own worst kept hit
+    /// into `acc`, and every leaf may then prune against the best of them
+    /// instead of only against its own queue.
+    ///
+    /// `doc_base` is this leaf's `LeafReaderContext.docBase`, and it is not
+    /// decoration: the accumulator stores `(global doc id, score)` because the
+    /// tie-break is by doc id. A leaf whose documents all sort *after* the
+    /// accumulated hit may require the next float up (a tie loses); a leaf that
+    /// may contain smaller doc ids may not. See
+    /// [`Self::min_competitive_score`].
+    pub fn with_shared_max_score(mut self, acc: Arc<MaxScoreAccumulator>, doc_base: i32) -> Self {
+        self.min_score_acc = Some(acc);
+        self.doc_base = doc_base;
+        self
     }
 
     /// `TopDocs.totalHits`: how many documents matched, and whether that count
@@ -361,6 +577,27 @@ impl TopDocsCollector {
     /// remaining candidate still has a chance, so there is no safe threshold
     /// yet) or when `top_n == 0`.
     pub fn min_competitive_score(&self) -> Option<f32> {
+        let local = self.local_min_competitive_score();
+        // `updateGlobalMinCompetitiveScore`: what some other leaf has already
+        // proved, translated into this leaf's terms. Java pushes it into the
+        // scorer every `modInterval` documents to keep the atomic read off the
+        // per-document path; this port's threshold is *pulled*, once per block
+        // rather than once per document, so the interval has no work to do and
+        // the read happens where the pruning decision is made.
+        let global = self
+            .min_score_acc
+            .as_ref()
+            .and_then(|acc| acc.threshold_for(self.doc_base));
+        match (local, global) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    /// The half of [`Self::min_competitive_score`] this collector's own queue
+    /// knows: the worst kept hit's score, once the queue is full and the
+    /// caller's exact-count budget is spent.
+    fn local_min_competitive_score(&self) -> Option<f32> {
         // `TopScoreDocCollector.updateMinCompetitiveScore`: a threshold is only
         // published once `totalHits > totalHitsThreshold`, so a caller that
         // asked for an exact count up to N gets one.
@@ -378,8 +615,44 @@ impl TopDocsCollector {
     /// claiming to be exact. Called from the `&mut self` collect path; the
     /// read-only [`Self::min_competitive_score`] cannot do it itself.
     fn note_threshold_published(&mut self) {
-        if TopDocsCollector::min_competitive_score(self).is_some() {
-            self.total_hits_relation = TotalHitsRelation::GreaterThanOrEqualTo;
+        match self.local_min_competitive_score() {
+            Some(local) => {
+                self.total_hits_relation = TotalHitsRelation::GreaterThanOrEqualTo;
+                // `updateMinCompetitiveScore`'s `if (localMinScore >
+                // minCompetitiveScore)` gate, then its
+                // `minScoreAcc.accumulate(topCode)`. Two things are load-bearing
+                // here. The gate: without it the atomic read-modify-write below
+                // runs once per collected document, where Java runs it only when
+                // this leaf's own bar actually rises -- `fetch_max` makes a
+                // repeat write harmless, not free. And *what* is published: the
+                // **worst kept hit** (Java's `topCode`, the heap top after the
+                // insert), not the threshold derived from it, because the
+                // accumulator stores the raw `(doc, score)` pair so a reader can
+                // decide for itself whether a tie on that score is competitive
+                // in its own doc-id range.
+                if local > self.published_min {
+                    self.published_min = local;
+                    if let Some(acc) = &self.min_score_acc {
+                        if let Some(worst) = self.hits.last() {
+                            acc.accumulate(self.doc_base.saturating_add(worst.doc_id), worst.score);
+                        }
+                    }
+                }
+            }
+            None => {
+                // A *shared* threshold can authorize a skip before this
+                // collector has one of its own, and that makes the count a lower
+                // bound just the same -- Java's
+                // `updateGlobalMinCompetitiveScore` sets the relation too. Only
+                // reached while the relation is still `EqualTo`, so the atomic
+                // load stops once it has flipped.
+                if self.min_score_acc.is_some()
+                    && self.total_hits_relation == TotalHitsRelation::EqualTo
+                    && TopDocsCollector::min_competitive_score(self).is_some()
+                {
+                    self.total_hits_relation = TotalHitsRelation::GreaterThanOrEqualTo;
+                }
+            }
         }
     }
 }
@@ -403,6 +676,16 @@ impl ScoringCollector for TopDocsCollector {
         // before the fast reject, because this is "how many documents matched",
         // not "how many the queue kept".
         self.total_hits += 1;
+        // `searchAfter`: a hit that ranks at or above the previous page's last
+        // hit was already returned. Tested *before* the queue is consulted, as
+        // Java does, and after the count, so page 2's `totalHits` still
+        // includes page 1.
+        if let Some(after) = self.after {
+            if score > after.score || (score == after.score && doc_id <= after.doc_id) {
+                self.note_threshold_published();
+                return;
+            }
+        }
         if self.top_n == 0 {
             self.note_threshold_published();
             return;
@@ -1237,6 +1520,241 @@ mod tests {
         }
         assert!(c.top_docs().is_empty());
         assert_eq!(c.total_hits().value, 7);
+        assert_eq!(c.total_hits().relation, TotalHitsRelation::EqualTo);
+    }
+
+    // ---- `searchAfter` -------------------------------------------------
+
+    /// A page walk over a queue that is deliberately full of score ties, so
+    /// the boundary is decided by the doc-id half of the rule.
+    #[test]
+    fn after_pages_walk_the_ranking_without_repeating_or_losing_a_hit() {
+        let hits: Vec<(i32, f32)> = (0..9).map(|d| (d, if d < 4 { 2.0 } else { 1.0 })).collect();
+        let mut pages: Vec<Vec<ScoreDoc>> = Vec::new();
+        let mut after: Option<ScoreDoc> = None;
+        for _ in 0..3 {
+            let mut c = TopDocsCollector::new(3);
+            if let Some(a) = after {
+                c = c.with_after(a);
+            }
+            for &(doc, score) in &hits {
+                c.collect(doc, score);
+            }
+            let page = c.top_docs().to_vec();
+            after = page.last().copied();
+            pages.push(page);
+        }
+        let walked: Vec<i32> = pages.iter().flatten().map(|h| h.doc_id).collect();
+        assert_eq!(walked, (0..9).collect::<Vec<_>>());
+        // The score run boundary falls inside page 2, which is the case a
+        // score-only comparison gets wrong.
+        assert_eq!(
+            pages[1].iter().map(|h| h.score).collect::<Vec<_>>(),
+            vec![2.0, 1.0, 1.0]
+        );
+    }
+
+    #[test]
+    fn a_paged_hit_is_still_counted_in_total_hits() {
+        // `TopScoreDocCollector` increments `totalHits` *before* the `after`
+        // test, so page 2 reports the same total page 1 did.
+        let mut c = TopDocsCollector::new(2).with_after(ScoreDoc {
+            doc_id: 1,
+            score: 5.0,
+        });
+        for doc in 0..6 {
+            c.collect(doc, 5.0);
+        }
+        assert_eq!(c.total_hits().value, 6);
+        assert_eq!(
+            c.top_docs().iter().map(|h| h.doc_id).collect::<Vec<_>>(),
+            vec![2, 3]
+        );
+    }
+
+    #[test]
+    fn after_rejects_a_tie_on_a_lower_doc_id_and_keeps_a_higher_one() {
+        // The exact boundary: `score == afterScore && doc <= afterDoc`.
+        let mut c = TopDocsCollector::new(5).with_after(ScoreDoc {
+            doc_id: 3,
+            score: 1.0,
+        });
+        c.collect(3, 1.0); // the `after` hit itself
+        c.collect(2, 1.0); // ranked above it (tie, lower doc id)
+        c.collect(4, 1.0); // ranked below it
+        c.collect(0, 2.0); // outranks it on score
+        c.collect(9, 0.5); // below it on score
+        assert_eq!(
+            c.top_docs().iter().map(|h| h.doc_id).collect::<Vec<_>>(),
+            vec![4, 9]
+        );
+    }
+
+    // ---- `MaxScoreAccumulator` -----------------------------------------
+
+    #[test]
+    fn the_doc_score_code_orders_exactly_as_the_hit_queue_does() {
+        // The claim the whole single-atomic design rests on: integer order over
+        // the code is `rank_order` over the pair.
+        let pairs = [
+            (0i32, f32::NEG_INFINITY),
+            (0, 0.0f32),
+            (5, 0.0),
+            (i32::MAX, 0.0),
+            (0, 1.0),
+            (7, 1.0),
+            (3, 12.5),
+            (0, f32::MAX),
+        ];
+        for &(da, sa) in &pairs {
+            for &(db, sb) in &pairs {
+                let code_order =
+                    doc_score_encoder::encode(da, sa).cmp(&doc_score_encoder::encode(db, sb));
+                let rank = rank_order(
+                    &ScoreDoc {
+                        doc_id: da,
+                        score: sa,
+                    },
+                    &ScoreDoc {
+                        doc_id: db,
+                        score: sb,
+                    },
+                );
+                assert_eq!(code_order, rank, "({da},{sa}) vs ({db},{sb})");
+            }
+        }
+    }
+
+    #[test]
+    fn the_doc_score_code_round_trips_both_halves() {
+        for &(doc, score) in &[
+            (0i32, 0.0f32),
+            (1, 1.0),
+            (123_456, 0.25),
+            (i32::MAX, f32::MAX),
+            (0, f32::NEG_INFINITY),
+        ] {
+            let code = doc_score_encoder::encode(doc, score);
+            assert_eq!(doc_score_encoder::doc_id(code), doc, "doc {doc}");
+            assert_eq!(
+                doc_score_encoder::to_score(code).to_bits(),
+                score.to_bits(),
+                "score {score}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_accumulator_publishes_no_threshold() {
+        let acc = MaxScoreAccumulator::new();
+        assert_eq!(acc.threshold_for(0), None);
+        assert_eq!(MaxScoreAccumulator::default().threshold_for(0), None);
+    }
+
+    #[test]
+    fn the_accumulator_keeps_the_best_pair_and_tie_breaks_on_the_doc_base() {
+        let acc = MaxScoreAccumulator::new();
+        acc.accumulate(100, 1.0);
+        acc.accumulate(50, 0.5); // worse score: ignored
+                                 // Same score, higher doc id: also worse.
+        acc.accumulate(200, 1.0);
+        // A leaf starting at or after doc 100 cannot win a tie on 1.0, so it
+        // may demand strictly more -- expressed under this crate's
+        // `bound <= threshold` rule as the score itself.
+        assert_eq!(acc.threshold_for(100), Some(1.0));
+        assert_eq!(acc.threshold_for(1_000), Some(1.0));
+        // A leaf that may hold smaller doc ids could still win a tie, so its
+        // threshold is one ULP lower.
+        assert_eq!(acc.threshold_for(0), Some(1.0f32.next_down()));
+        assert_eq!(acc.threshold_for(99), Some(1.0f32.next_down()));
+    }
+
+    #[test]
+    fn a_shared_accumulator_raises_a_leafs_threshold_above_its_own_queue() {
+        let acc = std::sync::Arc::new(MaxScoreAccumulator::new());
+        // Another leaf has already proved 10.0 is competitive, at a doc id
+        // below this leaf's base.
+        acc.accumulate(0, 10.0);
+        let mut c = TopDocsCollector::new(2).with_shared_max_score(std::sync::Arc::clone(&acc), 50);
+        // Nothing collected yet: the local half has no answer, the shared half
+        // does.
+        assert_eq!(c.min_competitive_score(), Some(10.0));
+        c.collect(0, 1.0);
+        c.collect(1, 2.0);
+        // The local half now says 1.0; the shared half still wins.
+        assert_eq!(c.min_competitive_score(), Some(10.0));
+        // Once this leaf beats it, its own queue takes over -- and it has
+        // published its worst kept hit into the accumulator, at global doc ids.
+        c.collect(2, 20.0);
+        c.collect(3, 30.0);
+        assert_eq!(c.min_competitive_score(), Some(20.0));
+        assert_eq!(acc.threshold_for(0), Some(20.0f32.next_down()));
+        assert_eq!(
+            doc_score_encoder::doc_id(acc.acc.load(std::sync::atomic::Ordering::Relaxed)),
+            52,
+            "the accumulated doc id is global: doc 2 plus doc_base 50"
+        );
+    }
+
+    #[test]
+    fn the_accumulator_is_written_only_when_this_leafs_own_bar_rises() {
+        // Java gates `minScoreAcc.accumulate` on `localMinScore >
+        // minCompetitiveScore`; without that gate the atomic read-modify-write
+        // is on the per-document path. What must not happen is the gate
+        // *suppressing* a publish the accumulator needed.
+        let acc = std::sync::Arc::new(MaxScoreAccumulator::new());
+        let mut c = TopDocsCollector::new(2).with_shared_max_score(std::sync::Arc::clone(&acc), 0);
+        // Descending scores: the queue fills, then every later hit loses, so the
+        // bar rises exactly once.
+        for (doc, score) in [(0i32, 9.0f32), (1, 8.0), (2, 7.0), (3, 6.0), (4, 5.0)] {
+            c.collect(doc, score);
+        }
+        assert_eq!(c.min_competitive_score(), Some(8.0));
+        assert_eq!(acc.threshold_for(1), Some(8.0));
+
+        // Ascending scores: the bar rises on nearly every hit, and the
+        // accumulator must end on the last one, not the first.
+        let acc = std::sync::Arc::new(MaxScoreAccumulator::new());
+        let mut c = TopDocsCollector::new(2).with_shared_max_score(std::sync::Arc::clone(&acc), 0);
+        for (doc, score) in [(0i32, 1.0f32), (1, 2.0), (2, 3.0), (3, 4.0), (4, 5.0)] {
+            c.collect(doc, score);
+        }
+        assert_eq!(c.min_competitive_score(), Some(4.0));
+        assert_eq!(acc.threshold_for(4), Some(4.0));
+    }
+
+    #[test]
+    fn a_shared_threshold_alone_makes_the_hit_count_a_lower_bound() {
+        // The collector's own queue is not full, so it has published nothing --
+        // but another leaf has, and a scorer is allowed to skip against it, so
+        // `totalHits` can no longer claim to be exact. Java's
+        // `updateGlobalMinCompetitiveScore` sets the relation for exactly this
+        // reason.
+        let acc = std::sync::Arc::new(MaxScoreAccumulator::new());
+        acc.accumulate(0, 100.0);
+        let mut c = TopDocsCollector::new(5).with_shared_max_score(acc, 10);
+        c.collect(0, 1.0);
+        assert!(c.top_docs().len() < 5, "the queue is deliberately not full");
+        assert_eq!(c.local_min_competitive_score(), None);
+        assert_eq!(c.min_competitive_score(), Some(100.0));
+        assert_eq!(
+            c.total_hits().relation,
+            TotalHitsRelation::GreaterThanOrEqualTo
+        );
+    }
+
+    #[test]
+    fn an_exhaustive_collector_publishes_nothing_into_the_accumulator() {
+        // `total_hits_threshold == u64::MAX` is `ScoreMode::COMPLETE`, and a
+        // collector promising an exact count must not let any leaf skip.
+        let acc = std::sync::Arc::new(MaxScoreAccumulator::new());
+        let mut c = TopDocsCollector::with_total_hits_threshold(1, u64::MAX)
+            .with_shared_max_score(std::sync::Arc::clone(&acc), 0);
+        for doc in 0..5 {
+            c.collect(doc, 1.0);
+        }
+        assert_eq!(acc.threshold_for(0), None);
+        assert_eq!(c.pruning_threshold(), None);
         assert_eq!(c.total_hits().relation, TotalHitsRelation::EqualTo);
     }
 }

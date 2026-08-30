@@ -42,7 +42,9 @@ use lucene_codecs::stored_fields::{Document, FieldValue, StoredField};
 use lucene_index::buffered_updates::Term;
 use lucene_index::index_writer::{DocumentVector, IndexWriter};
 use lucene_index::merge_policy::MergePolicyConfig;
-use lucene_index::segment_info::{IndexSortField, LuceneVersion, SortMissingValue};
+use lucene_index::segment_info::{
+    IndexSortField, IndexSortKind, LuceneVersion, NumericSortKey, SortedNumericSelector,
+};
 use lucene_store::FsDirectory;
 
 /// Past a stored-fields chunk boundary and many postings blocks, and past
@@ -114,6 +116,29 @@ pub fn vector_of(i: usize) -> Vec<f32> {
     v
 }
 
+/// `rank`'s missing value: an **arbitrary** sentinel, deliberately inside the
+/// data's own range (`rank_of` spans -20..=29), not `Long.MIN_VALUE` or
+/// `Long.MAX_VALUE`.
+///
+/// It is the whole point of this fixture since c35. Before it,
+/// `segment_info::IndexSortField` could only say "missing first" or "missing
+/// last", so this sort was inexpressible -- and it is the case that
+/// discriminates: the documents with no `rank` do not land at either end of
+/// the order, they interleave with the documents whose `rank` is `0`, and
+/// only a comparator that substitutes the sentinel and *then* compares gets
+/// that right. Real `CheckIndex.testSort` rebuilds the comparator from the
+/// `.si` and walks adjacent doc ids, so a segment ordered any other way is
+/// rejected.
+const RANK_MISSING: i64 = 0;
+
+/// `multi`'s two values for document `i`, **descending**, so the writer has
+/// to sort them. `VerifySortedSegment` recomputes this same rule.
+fn multi_of(i: usize) -> [i64; 2] {
+    let a = ((i as i64) * 31) % 11;
+    let b = ((i as i64) * 17) % 5;
+    [a.max(b), a.min(b)]
+}
+
 fn main() {
     let out_dir = std::env::args()
         .nth(1)
@@ -138,6 +163,13 @@ fn main() {
         FieldInfo {
             vector_dimension: DIM as i32,
             ..base("v", 4)
+        },
+        // A multi-valued column, so the sort has a `SortedNumericSortField`
+        // tier -- a provider, a selector and a "no missing value" form the
+        // pre-c35 model could not express at all.
+        FieldInfo {
+            doc_values_type: DocValuesType::SortedNumeric,
+            ..base("multi", 5)
         },
     ];
     let mut writer = IndexWriter::open(
@@ -164,14 +196,14 @@ fn main() {
         .set_postings_field(Some("body"))
         .expect("set postings field");
     writer
-        .set_norms_field(Some("body"))
-        .expect("set norms field");
-    writer
         .set_doc_values_field(Some("rank"))
         .expect("set doc values field");
     writer
         .add_doc_values_field("tie")
         .expect("add second doc values field");
+    writer
+        .add_doc_values_field("multi")
+        .expect("add third doc values field");
     writer
         .set_vector_field(Some("v"))
         .expect("set vector field");
@@ -180,16 +212,21 @@ fn main() {
     // ties.
     writer
         .set_index_sort(Some(&[
+            IndexSortField::long("rank", true, Some(RANK_MISSING)),
+            // `SortedNumericSortField("multi", INT, false, MAX)` with **no**
+            // missing value. `rank` has only 50 distinct values over the
+            // corpus, so this tier really does break ties rather than being
+            // decorative, and every document carries `multi`, so the
+            // no-missing-value form is exercised without ever being reached.
             IndexSortField {
-                field: "rank".to_string(),
-                reverse: true,
-                missing: SortMissingValue::Last,
-            },
-            IndexSortField {
-                field: "tie".to_string(),
+                field: "multi".to_string(),
                 reverse: false,
-                missing: SortMissingValue::First,
+                kind: IndexSortKind::SortedNumeric {
+                    key: NumericSortKey::Int(None),
+                    selector: SortedNumericSelector::Max,
+                },
             },
+            IndexSortField::long("tie", false, Some(i64::MIN)),
         ]))
         .expect("set index sort");
 
@@ -202,6 +239,20 @@ fn main() {
             StoredField {
                 field_number: 2,
                 value: FieldValue::Long(tie_of(i)),
+            },
+            // Supplied **descending**: a document's SORTED_NUMERIC values are
+            // stored ascending (`SortedNumericDocValuesWriter.finishCurrentDoc`'s
+            // `Arrays.sort`, which real `CheckIndex` enforces), and the `MAX`
+            // selector is the *last* stored value -- so a writer that kept
+            // this order would both write a segment Lucene rejects and sort
+            // by the wrong value.
+            StoredField {
+                field_number: 5,
+                value: FieldValue::Long(multi_of(i)[0]),
+            },
+            StoredField {
+                field_number: 5,
+                value: FieldValue::Long(multi_of(i)[1]),
             },
             StoredField {
                 field_number: 3,

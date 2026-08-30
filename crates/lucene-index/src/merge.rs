@@ -353,7 +353,7 @@ use crate::index_writer::{
     per_field_codec_suffix, per_field_segment, DOC_VALUES_FORMAT_NAME, PER_FIELD_SUFFIX,
     POSTINGS_FORMAT_NAME,
 };
-use crate::segment_info::{self, IndexSortField, LuceneVersion, SegmentInfo, SortMissingValue};
+use crate::segment_info::{self, IndexSortField, LuceneVersion, SegmentInfo, SortKeyComparator};
 use crate::segment_infos::SegmentCommitInfo;
 use lucene_codecs::blocktree::{self, FieldTerms};
 use lucene_codecs::doc_values::{
@@ -830,17 +830,74 @@ pub struct MergeSource<'a> {
     /// segment, so unlike postings/points this is not a per-field list (see
     /// [`SourceVectors`]).
     pub vectors: Option<&'a SourceVectors<'a>>,
+    /// This source segment's `SegmentInfo.minVersion` -- Java's
+    /// `LeafMetaData.minVersion()`, which a `SegmentReader` reads straight
+    /// off the source's own `.si`.
+    ///
+    /// `SegmentMerger`'s constructor folds these into the merged segment's:
+    /// `minVersion = Version.LATEST; for each reader { if its minVersion is
+    /// null, the merged one is null; else keep the smaller }`. It is the
+    /// oldest version that ever wrote *any* of the data in the merged
+    /// segment, so a caller cannot recover it from the merge's own writer
+    /// version -- and getting it wrong makes a segment claim it was never
+    /// touched by the older Lucene whose bytes it is still carrying, which
+    /// is exactly the fact back-compat and upgrade tooling keys on.
+    ///
+    /// `None` is Java's `null`: a segment that records no minVersion at all
+    /// (written before Lucene 7). One such source makes the merged segment's
+    /// `minVersion` null too, by Java's rule -- and `check_index`'s
+    /// `commit.segment_records_min_version` then reports it for an index
+    /// created at major 7 or later, exactly as `SegmentInfos.applyMergeChanges`
+    /// refuses it in Java.
+    pub min_version: Option<LuceneVersion>,
+    /// This source segment's `SegmentInfo.getHasBlocks()` -- Java's
+    /// `LeafMetaData.hasBlocks()`, i.e. "this segment contains at least one
+    /// run of documents added together by `addDocuments`/`updateDocuments`
+    /// and guaranteed to occupy contiguous doc ids".
+    ///
+    /// The merged segment carries it iff **any** source does
+    /// (`IndexWriter.mergeMiddle`'s loop over `merge.segments`, and
+    /// `SlowCompositeCodecReaderWrapper`/`ParallelLeafReader`'s
+    /// `hasBlocks |= readerMeta.hasBlocks()`). Concatenation preserves each
+    /// source's own document order, so its blocks stay contiguous; a
+    /// *sorted* merge would shred them, which is why a block plus an index
+    /// sort is refused at flush (`IndexWriter::set_index_sort`, c17 finding
+    /// 8) and so cannot reach here.
+    ///
+    /// Losing the flag is silent: the merged segment reads back perfectly and
+    /// every parent/child join query against it is quietly invalid.
+    pub has_blocks: bool,
 }
 
 impl<'a> MergeSource<'a> {
     /// Convenience constructor for the common "stored fields only" case
     /// (matches this module's original, pre-doc-values/norms/term-vectors
-    /// shape) -- avoids every existing caller having to spell out three new
-    /// empty/`None` fields.
+    /// shape) -- avoids every existing caller having to spell out the
+    /// empty/`None` per-format fields.
+    ///
+    /// `min_version` is **not** defaulted, unlike everything else here, and
+    /// that is deliberate. It is this source's own
+    /// `SegmentInfo.minVersion`, and `merge_segments` propagates a `None`
+    /// straight into the merged `.si` (Java's rule -- see
+    /// [`MergeSource::min_version`]). A merged segment with no `minVersion` is
+    /// one **real Lucene refuses to open** for an index created at major 7 or
+    /// later: `SegmentInfos.readCommit` throws `CorruptIndexException`, and
+    /// both `SegmentInfos.write` and `applyMergeChanges` throw
+    /// `IllegalStateException`. Defaulting it would make "the caller said
+    /// nothing" produce an unopenable index by omission, so the caller has to
+    /// say. Pass `Some(v)` for a segment written at version `v` -- which is
+    /// what every segment this port flushes records -- and `None` only for a
+    /// genuine pre-Lucene-7 segment.
+    ///
+    /// `has_blocks` *is* defaulted, to `false`, because that is both Java's
+    /// default and the safe direction for it: the flag is viral and can only
+    /// be set, and a merge that has not been told about blocks has no way to
+    /// invent them.
     pub fn stored_only(
         field_infos: &'a [FieldInfo],
         reader: &'a lucene_codecs::stored_fields::StoredFieldsReader<'a>,
         live_docs: Option<&'a FixedBitSet>,
+        min_version: Option<LuceneVersion>,
     ) -> Self {
         Self {
             field_infos,
@@ -856,6 +913,8 @@ impl<'a> MergeSource<'a> {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version,
+            has_blocks: false,
         }
     }
 }
@@ -1387,7 +1446,6 @@ fn describe_written_files(
     merged_fields: &mut [FieldInfo],
     postings_field_numbers: &[i32],
     doc_values_field_numbers: &[i32],
-    norms_field_numbers: &[i32],
     wrote_term_vectors: bool,
     vector_field_numbers: &[i32],
 ) {
@@ -1429,9 +1487,6 @@ fn describe_written_files(
             // flush time.
             f.doc_values_type = lucene_codecs::field_infos::DocValuesType::None;
             f.doc_values_skip_index_type = lucene_codecs::field_infos::DocValuesSkipIndexType::None;
-        }
-        if f.index_options != IndexOptions::None && !norms_field_numbers.contains(&f.number) {
-            f.omit_norms = true;
         }
         if !wrote_term_vectors {
             f.store_term_vectors = false;
@@ -1671,6 +1726,68 @@ fn write_merged_stored_fields(
 /// [`MergeOptions`]; the merged `.si` therefore records no index sort, which
 /// is honest for what concatenation produces. To *preserve* an index sort,
 /// use [`merge_sorted_stored_only_segments`] (or [`merge_segments`] directly).
+/// `SegmentMerger`'s constructor: the merged segment's `minVersion` is the
+/// **smallest** `minVersion` among its readers, or `null` if any reader has
+/// none.
+///
+/// ```text
+/// Version minVersion = Version.LATEST;
+/// for (CodecReader reader : readers) {
+///   Version leafMinVersion = reader.getMetaData().minVersion();
+///   if (leafMinVersion == null) { minVersion = null; break; }
+///   if (minVersion.onOrAfter(leafMinVersion)) { minVersion = leafMinVersion; }
+/// }
+/// ```
+///
+/// `latest` stands for Java's `Version.LATEST` seed -- the version this
+/// writer is, which is also what an empty source list yields (Java would
+/// keep the seed too).
+///
+/// This port used to write the writer's own version here unconditionally. It
+/// is right only while every source was written by this writer at this
+/// version: the moment a merge takes in a segment another Lucene wrote, the
+/// merged `.si` claims a `minVersion` newer than the oldest bytes it
+/// actually carries, which is the one fact upgrade tooling and
+/// `IndexFormatTooOldException` are decided from.
+fn merged_min_version(sources: &[MergeSource], latest: LuceneVersion) -> Option<LuceneVersion> {
+    fold_min_version(latest, sources.iter().map(|s| s.min_version))
+}
+
+/// [`merged_min_version`]'s loop over anything that yields one reader's
+/// `minVersion` -- the fold itself, separated from where the versions come
+/// from so a test can drive it directly instead of restating it.
+fn fold_min_version(
+    latest: LuceneVersion,
+    mins: impl IntoIterator<Item = Option<LuceneVersion>>,
+) -> Option<LuceneVersion> {
+    let mut min = latest;
+    for leaf in mins {
+        // `if (leafMinVersion == null) { minVersion = null; break; }`
+        let leaf = leaf?;
+        // `if (minVersion.onOrAfter(leafMinVersion)) { minVersion = leafMinVersion; }`
+        if version_key(min) >= version_key(leaf) {
+            min = leaf;
+        }
+    }
+    Some(min)
+}
+
+/// A [`LuceneVersion`] as one comparable triple, so `onOrAfter` is a tuple
+/// compare rather than three nested branches. `LuceneVersion` derives only
+/// `PartialEq`/`Eq` (ordering a *version* is not meaningful outside this
+/// major-minor-bugfix rule, so it is spelled out where it is used rather
+/// than derived onto the type).
+///
+/// Exactly Java's comparison: `Version.onOrAfter` compares
+/// `encodedValue = major << 18 | minor << 10 | bugfix << 2 | prerelease`,
+/// whose fields do not overlap, so it *is* lexicographic on the triple. The
+/// `prerelease` component has no bearing here -- `Lucene99SegmentInfoFormat`
+/// writes only the three ints, so anything read back off a `.si` has
+/// `prerelease == 0`.
+fn version_key(v: LuceneVersion) -> (i32, i32, i32) {
+    (v.major, v.minor, v.bugfix)
+}
+
 pub fn merge_stored_only_segments(
     dir: &dyn Directory,
     sources: &[MergeSource],
@@ -1699,9 +1816,7 @@ pub fn merge_stored_only_segments(
 /// source, and each source's slice must have exactly one entry per doc in
 /// that source (`source.reader.max_doc()` entries).
 pub struct MergeSortKeySpec<'a> {
-    pub field: &'a str,
-    pub reverse: bool,
-    pub missing: SortMissingValue,
+    pub sort: &'a IndexSortField,
     pub per_source_keys: &'a [&'a [Option<i64>]],
 }
 
@@ -1810,7 +1925,7 @@ pub fn merge_segments(
         for spec in sort_fields {
             if spec.per_source_keys.len() != sources.len() {
                 return Err(Error::SortKeysWrongLength {
-                    field: spec.field.to_string(),
+                    field: spec.sort.field.clone(),
                     source_index: None,
                     expected: sources.len(),
                     found: spec.per_source_keys.len(),
@@ -1821,7 +1936,7 @@ pub fn merge_segments(
             {
                 if keys.len() != source.reader.max_doc().max(0) as usize {
                     return Err(Error::SortKeysWrongLength {
-                        field: spec.field.to_string(),
+                        field: spec.sort.field.clone(),
                         source_index: Some(source_index),
                         expected: source.reader.max_doc().max(0) as usize,
                         found: keys.len(),
@@ -1915,7 +2030,13 @@ pub fn merge_segments(
     )?);
     merged_doc_values.sort_by_key(|f| f.field_number());
 
-    let merged_norms = merge_norms(sources, &per_source_maps, &per_source_live_ids, &doc_order)?;
+    let merged_norms = merge_norms(
+        sources,
+        &merged_fields,
+        &per_source_maps,
+        &per_source_live_ids,
+        &doc_order,
+    )?;
     let tv_files =
         write_merged_term_vectors(sources, &per_source_maps, &doc_order, &merged_segment_id)?;
     let merged_postings_fields = merge_postings(
@@ -1955,7 +2076,6 @@ pub fn merge_segments(
         .as_ref()
         .map(|v| v.field_numbers.clone())
         .unwrap_or_default();
-    let norms_field_numbers: Vec<i32> = merged_norms.iter().map(|(n, _)| *n).collect();
     let wrote_term_vectors = tv_files.is_some();
 
     let mut files: Vec<String> = Vec::new();
@@ -1976,7 +2096,6 @@ pub fn merge_segments(
         &mut merged_fields,
         &postings_field_numbers,
         &doc_values_field_numbers,
-        &norms_field_numbers,
         wrote_term_vectors,
         &vector_field_numbers,
     );
@@ -2015,9 +2134,34 @@ pub fn merge_segments(
     // Until c26 this was one `write_single_dense_field` call, so a merge of
     // segments with norms on two fields was `Error::TooManyNormsFields`.
     if !merged_norms.is_empty() {
+        // `Dense` when every merged document has a norm, `Sparse` otherwise --
+        // the same `numDocsWithValue == maxDoc` branch `Lucene90NormsConsumer`
+        // takes, and the same choice the flush side makes.
+        let sparse_columns: Vec<Vec<(i32, i64)>> = merged_norms
+            .iter()
+            .map(|(_, values)| {
+                values
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(doc, v)| v.map(|v| (doc as i32, v)))
+                    .collect()
+            })
+            .collect();
+        let dense_columns: Vec<Vec<i64>> = merged_norms
+            .iter()
+            .map(|(_, values)| values.iter().flatten().copied().collect())
+            .collect();
         let norms_fields: Vec<norms::NormsField<'_>> = merged_norms
             .iter()
-            .map(|(number, values)| norms::NormsField::Dense(*number, values))
+            .zip(&dense_columns)
+            .zip(&sparse_columns)
+            .map(|(((number, values), dense), sparse)| {
+                if values.iter().all(|v| v.is_some()) {
+                    norms::NormsField::Dense(*number, dense)
+                } else {
+                    norms::NormsField::Sparse(*number, sparse)
+                }
+            })
             .collect();
         let (nvm, nvd) = norms::write_fields(&norms_fields, doc_count, &merged_segment_id, "")?;
         for (ext, bytes) in [("nvm", &nvm), ("nvd", &nvd)] {
@@ -2139,16 +2283,14 @@ pub fn merge_segments(
     let si = SegmentInfo {
         id: merged_segment_id,
         version: lucene_version,
-        min_version: Some(lucene_version),
+        // `SegmentMerger`'s constructor, not this writer's own version: see
+        // [`merged_min_version`].
+        min_version: merged_min_version(sources, lucene_version),
         doc_count,
         is_compound_file: false,
         // `IndexWriter.mergeMiddle`: the merged segment holds blocks iff any
-        // source did. Concatenation preserves each source's own document
-        // order, so its blocks stay contiguous; a *sorted* merge would shred
-        // them, which is why a block plus an index sort is refused at flush
-        // (`IndexWriter::set_index_sort`, c17 finding 8) and so cannot reach
-        // here.
-        has_blocks: options.has_blocks,
+        // source did -- see [`MergeSource::has_blocks`].
+        has_blocks: sources.iter().any(|s| s.has_blocks),
         diagnostics: vec![
             ("source".to_string(), "merge".to_string()),
             (
@@ -2168,16 +2310,8 @@ pub fn merge_segments(
         // it. A concatenating merge must not claim one (it would describe an
         // order the bytes do not have); the k-way merge genuinely preserves
         // the shared sort of its inputs, so it must.
-        index_sort: sort_fields.map(|sort_fields| {
-            sort_fields
-                .iter()
-                .map(|spec| IndexSortField {
-                    field: spec.field.to_string(),
-                    reverse: spec.reverse,
-                    missing: spec.missing,
-                })
-                .collect()
-        }),
+        index_sort: sort_fields
+            .map(|sort_fields| sort_fields.iter().map(|spec| spec.sort.clone()).collect()),
     };
     let si_bytes = segment_info::write(&si, "");
     write_file(dir, &si_name, &si_bytes)?;
@@ -2219,6 +2353,7 @@ fn sorted_doc_order(
     sort_fields: &[MergeSortKeySpec<'_>],
     per_source_live_ids: &[Vec<i32>],
 ) -> Vec<(usize, i32)> {
+    let cmps = merge_comparators(sort_fields);
     let mut cursors = vec![0usize; per_source_live_ids.len()];
     let mut doc_order: Vec<(usize, i32)> =
         Vec::with_capacity(per_source_live_ids.iter().map(|ids| ids.len()).sum());
@@ -2234,6 +2369,7 @@ fn sorted_doc_order(
                 Some(current_best) => {
                     let ord = compare_heads(
                         sort_fields,
+                        &cmps,
                         current_best,
                         per_source_live_ids[current_best][cursors[current_best]],
                         src_idx,
@@ -2264,13 +2400,18 @@ fn sorted_doc_order(
 }
 
 /// Multi-tier comparator for the k-way merge: folds `sort_fields` in
-/// priority order using [`crate::segment_writer::sort_key_rank`] (the exact
-/// same per-tier comparator [`crate::segment_writer::flush_sorted_stored_only_segment`]
-/// uses within one batch -- reused here, not reimplemented), then breaks any
+/// priority order using [`SortKeyComparator`] (the exact same per-tier
+/// comparator [`crate::segment_writer::flush_sorted_stored_only_segment`]
+/// uses within one batch -- reused, not reimplemented), then breaks any
 /// remaining tie first by source index and finally by original doc id,
 /// giving a fully deterministic total order.
+///
+/// `cmps` is resolved once by the caller, outside the O(n log k) comparison
+/// loop; see [`merge_comparators`] for why a sort with no comparator cannot
+/// reach here.
 fn compare_heads(
     sort_fields: &[MergeSortKeySpec<'_>],
+    cmps: &[SortKeyComparator],
     src_a: usize,
     doc_a: i32,
     src_b: usize,
@@ -2278,15 +2419,36 @@ fn compare_heads(
 ) -> std::cmp::Ordering {
     sort_fields
         .iter()
-        .fold(std::cmp::Ordering::Equal, |acc, spec| {
+        .zip(cmps)
+        .fold(std::cmp::Ordering::Equal, |acc, (spec, cmp)| {
             acc.then_with(|| {
                 let key_a = spec.per_source_keys[src_a][doc_a as usize];
                 let key_b = spec.per_source_keys[src_b][doc_b as usize];
-                crate::segment_writer::sort_key_rank(key_a, key_b, spec.reverse, spec.missing)
+                cmp.compare(key_a, key_b)
             })
         })
         .then_with(|| src_a.cmp(&src_b))
         .then_with(|| doc_a.cmp(&doc_b))
+}
+
+/// The comparators `sort_fields` induces, in priority order -- the merge's
+/// twin of `segment_writer`'s own, and it panics for the same reason: a
+/// `BinarySortField` has no single-`i64` key, `IndexWriter::set_index_sort`
+/// refuses one, and merging by "always equal" would produce a segment whose
+/// `.si` claims an order its bytes do not have.
+fn merge_comparators(sort_fields: &[MergeSortKeySpec<'_>]) -> Vec<SortKeyComparator> {
+    sort_fields
+        .iter()
+        .map(|spec| {
+            SortKeyComparator::new(spec.sort).unwrap_or_else(|| {
+                panic!(
+                    "sort field {:?} has no single-i64 comparator; \
+                     IndexWriter::set_index_sort must refuse it before a merge sees it",
+                    spec.sort.field
+                )
+            })
+        })
+        .collect()
 }
 
 fn write_file(dir: &dyn Directory, name: &str, bytes: &[u8]) -> Result<()> {
@@ -2901,37 +3063,46 @@ fn merge_sorted_set_doc_values(
 /// the merge side taking it up. `Lucene90NormsConsumer` has never had the
 /// limit: it gets one `addNormsField` call per field into one pair.
 ///
-/// Norms are dense by construction here: a norm exists for every document of
-/// every source that declares the field, so a source that declares it and a
-/// document that has no value for it is [`Error::NormsFieldMissingInSource`]
-/// rather than a sparse column. That is Java's invariant too --
-/// `NormsConsumer.mergeNormsField` reads `getNormValues(field)` for every
-/// live document and `FieldInfo.omitNorms` is what turns the field off, per
-/// field, for the whole segment.
+/// Which fields get a column, and what a document with no norm becomes, are
+/// both Java's:
+///
+/// ```java
+/// for (FieldInfo mergeFieldInfo : mergeState.mergeFieldInfos) {
+///   if (mergeFieldInfo.hasNorms()) {
+///     mergeNormsField(mergeFieldInfo, mergeState);
+///   }
+/// }
+/// ```
+///
+/// -- the candidate list comes from the **merged** field infos
+/// (`hasNorms() == !omitNorms && indexOptions != NONE`), not from which
+/// sources happen to carry norms files, and `mergeNormsField` then merges
+/// only the sources whose own `FieldInfo` says `hasNorms()`:
+/// a source that never declared the field, and a document inside a source
+/// whose norm column simply has no entry for it, both contribute *nothing*
+/// and appear as a gap in the merged column, which is written sparse.
+///
+/// Until c35 both of those were [`Error::NormsFieldMissingInSource`]: the
+/// merge assumed norms are dense across every source and every document,
+/// which held only because norms were opt-in per writer and the opt-in
+/// wrote a dense column. With norms on by default a segment whose documents
+/// do not all carry the field has a genuinely sparse column, and merging two
+/// segments that disagree about a field is the ordinary case for a schema
+/// that grew -- so both are now data, not errors.
 fn merge_norms(
     sources: &[MergeSource],
+    merged_fields: &[FieldInfo],
     per_source_maps: &[HashMap<i32, i32>],
     per_source_live_ids: &[Vec<i32>],
     doc_order: &[(usize, i32)],
-) -> Result<Vec<(i32, Vec<i64>)>> {
-    let mut candidates: Vec<i32> = Vec::new();
-    for ((source, map), live_ids) in sources.iter().zip(per_source_maps).zip(per_source_live_ids) {
-        if live_ids.is_empty() {
-            // Same "fully-deleted source can't affect the merged output"
-            // exemption as merge_numeric_doc_values.
-            continue;
-        }
-        for nf in source.norms {
-            if let Some(&merged_number) = map.get(&nf.entry.field_number) {
-                if !candidates.contains(&merged_number) {
-                    candidates.push(merged_number);
-                }
-            }
-        }
-    }
-    candidates.sort_unstable();
+) -> Result<Vec<(i32, Vec<Option<i64>>)>> {
+    let candidates: Vec<i32> = merged_fields
+        .iter()
+        .filter(|f| !f.omit_norms && f.index_options != IndexOptions::None)
+        .map(|f| f.number)
+        .collect();
 
-    let mut merged: Vec<(i32, Vec<i64>)> = Vec::with_capacity(candidates.len());
+    let mut merged: Vec<(i32, Vec<Option<i64>>)> = Vec::with_capacity(candidates.len());
     for merged_field_number in candidates {
         let mut per_source_entry: Vec<Option<&SourceNorms>> = vec![None; sources.len()];
         for (idx, ((source, map), live_ids)) in sources
@@ -2941,39 +3112,31 @@ fn merge_norms(
             .enumerate()
         {
             if live_ids.is_empty() {
+                // Same "fully-deleted source can't affect the merged output"
+                // exemption as merge_numeric_doc_values.
                 continue;
             }
-            let original_number = map
+            let Some(original_number) = map
                 .iter()
                 .find(|&(_, &merged)| merged == merged_field_number)
-                .map(|(&orig, _)| orig);
-            let Some(original_number) = original_number else {
-                return Err(Error::NormsFieldMissingInSource {
-                    merged_field_number,
-                });
+                .map(|(&orig, _)| orig)
+            else {
+                // `readerFieldInfo == null` in `mergeNormsField`: this source
+                // never declared the field, so it adds no sub.
+                continue;
             };
-            let Some(entry) = source
+            per_source_entry[idx] = source
                 .norms
                 .iter()
-                .find(|nf| nf.entry.field_number == original_number)
-            else {
-                return Err(Error::NormsFieldMissingInSource {
-                    merged_field_number,
-                });
-            };
-            per_source_entry[idx] = Some(entry);
+                .find(|nf| nf.entry.field_number == original_number);
         }
 
-        let mut values: Vec<i64> = Vec::with_capacity(doc_order.len());
+        let mut values: Vec<Option<i64>> = Vec::with_capacity(doc_order.len());
         for &(src_idx, doc_id) in doc_order {
-            let entry = per_source_entry[src_idx].ok_or(Error::NormsFieldMissingInSource {
-                merged_field_number,
-            })?;
-            let value = norms::norm_value(entry.data, &entry.entry, doc_id)?.ok_or(
-                Error::NormsFieldMissingInSource {
-                    merged_field_number,
-                },
-            )?;
+            let value = match per_source_entry[src_idx] {
+                Some(entry) => norms::norm_value(entry.data, &entry.entry, doc_id)?,
+                None => None,
+            };
             values.push(value);
         }
         merged.push((merged_field_number, values));
@@ -3152,22 +3315,6 @@ pub struct SourceVectors<'a> {
 pub struct MergeOptions {
     pub hnsw_m: i32,
     pub hnsw_beam_width: i32,
-    /// `IndexWriter.mergeMiddle`'s `hasBlocks`: true when **any** source
-    /// segment's `.si` says it holds document blocks, which is the flag the
-    /// merged `.si` must carry.
-    ///
-    /// It is an option rather than a per-[`MergeSource`] field because it is
-    /// read off each source's `SegmentInfo`, which this module deliberately
-    /// never opens (a `MergeSource` is a caller-supplied set of already-opened
-    /// readers). Java reads it the same way -- from `SegmentCommitInfo`, in
-    /// the writer, not in `SegmentMerger`.
-    ///
-    /// Defaulting to `false` is what every caller before this had, and it is
-    /// the *unsafe* default: a merged segment reporting `hasBlocks = false`
-    /// while holding blocks reads back perfectly and silently invalidates
-    /// every parent/child join query against it. `IndexWriter::execute_merge`
-    /// sets it.
-    pub has_blocks: bool,
 }
 
 impl Default for MergeOptions {
@@ -3175,7 +3322,6 @@ impl Default for MergeOptions {
         MergeOptions {
             hnsw_m: hnsw::DEFAULT_MAX_CONN,
             hnsw_beam_width: hnsw::DEFAULT_BEAM_WIDTH,
-            has_blocks: false,
         }
     }
 }
@@ -4725,7 +4871,7 @@ mod tests {
             &[doc_with(0, "a")],
         );
         let reader = open_reader(&seg);
-        let source = MergeSource::stored_only(&seg.fields, &reader, None);
+        let source = MergeSource::stored_only(&seg.fields, &reader, None, Some(version()));
 
         // Exactly what a norms-bearing flush puts in its `.si`.
         let files = vec![
@@ -4784,7 +4930,7 @@ mod tests {
             &[doc_with(0, "a")],
         );
         let reader = open_reader(&seg);
-        let source = MergeSource::stored_only(&seg.fields, &reader, None);
+        let source = MergeSource::stored_only(&seg.fields, &reader, None, Some(version()));
         let base = ["_0.fdt", "_0.fdx", "_0.fdm", "_0.fnm", "_0.si"];
 
         for format in SegmentFormat::ALL {
@@ -4829,7 +4975,7 @@ mod tests {
             &[doc_with(0, "a")],
         );
         let reader = open_reader(&seg);
-        let source = MergeSource::stored_only(&seg.fields, &reader, None);
+        let source = MergeSource::stored_only(&seg.fields, &reader, None, Some(version()));
 
         for bad in ["_0.brandnew", "_0.cfs", "_0_no_extension_at_all"] {
             let files = vec![
@@ -4877,8 +5023,8 @@ mod tests {
         let reader0 = open_reader(&seg0);
         let reader1 = open_reader(&seg1);
         let sources = vec![
-            MergeSource::stored_only(&seg0.fields, &reader0, None),
-            MergeSource::stored_only(&seg1.fields, &reader1, None),
+            MergeSource::stored_only(&seg0.fields, &reader0, None, Some(version())),
+            MergeSource::stored_only(&seg1.fields, &reader1, None, Some(version())),
         ];
         let plain: Vec<String> = ["fdt", "fdx", "fdm", "si"]
             .iter()
@@ -4930,8 +5076,8 @@ mod tests {
         let reader0 = open_reader(&seg0);
         let reader1 = open_reader(&seg1);
         let sources = vec![
-            MergeSource::stored_only(&seg0.fields, &reader0, None),
-            MergeSource::stored_only(&seg1.fields, &reader1, None),
+            MergeSource::stored_only(&seg0.fields, &reader0, None, Some(version())),
+            MergeSource::stored_only(&seg1.fields, &reader1, None, Some(version())),
         ];
 
         let sci = merge_stored_only_segments(
@@ -4995,8 +5141,8 @@ mod tests {
         live1.set(1); // drop "c", keep "d"
 
         let sources = vec![
-            MergeSource::stored_only(&seg0.fields, &reader0, Some(&live0)),
-            MergeSource::stored_only(&seg1.fields, &reader1, Some(&live1)),
+            MergeSource::stored_only(&seg0.fields, &reader0, Some(&live0), Some(version())),
+            MergeSource::stored_only(&seg1.fields, &reader1, Some(&live1), Some(version())),
         ];
 
         let dir2 = FsDirectory::open(&tmp);
@@ -5056,8 +5202,8 @@ mod tests {
         let live1 = FixedBitSet::new(2); // all deleted, nothing set
 
         let sources = vec![
-            MergeSource::stored_only(&seg0.fields, &reader0, None),
-            MergeSource::stored_only(&seg1.fields, &reader1, Some(&live1)),
+            MergeSource::stored_only(&seg0.fields, &reader0, None, Some(version())),
+            MergeSource::stored_only(&seg1.fields, &reader1, Some(&live1), Some(version())),
         ];
 
         merge_stored_only_segments(
@@ -5122,8 +5268,8 @@ mod tests {
         let reader0 = open_reader(&seg0);
         let reader1 = open_reader(&seg1);
         let sources = vec![
-            MergeSource::stored_only(&seg0.fields, &reader0, None),
-            MergeSource::stored_only(&seg1.fields, &reader1, None),
+            MergeSource::stored_only(&seg0.fields, &reader0, None, Some(version())),
+            MergeSource::stored_only(&seg1.fields, &reader1, None, Some(version())),
         ];
 
         merge_stored_only_segments(
@@ -5242,7 +5388,12 @@ mod tests {
         let seg = flush(&dir, &tmp, "_0", [1u8; ID_LENGTH], &fields, &docs);
         let reader = open_reader(&seg);
 
-        let sources = vec![MergeSource::stored_only(&seg.fields, &reader, None)];
+        let sources = vec![MergeSource::stored_only(
+            &seg.fields,
+            &reader,
+            None,
+            Some(version()),
+        )];
         let result = merge_stored_only_segments(
             &dir,
             &sources,
@@ -5296,8 +5447,8 @@ mod tests {
         let reader0 = open_reader(&seg0);
         let reader1 = open_reader(&seg1);
         let sources = vec![
-            MergeSource::stored_only(&seg0.fields, &reader0, Some(&parsed_live0)),
-            MergeSource::stored_only(&seg1.fields, &reader1, None),
+            MergeSource::stored_only(&seg0.fields, &reader0, Some(&parsed_live0), Some(version())),
+            MergeSource::stored_only(&seg1.fields, &reader1, None, Some(version())),
         ];
 
         merge_stored_only_segments(
@@ -5349,9 +5500,14 @@ mod tests {
         f
     }
 
+    /// A field that really can carry norms: `FieldInfo.hasNorms()` is
+    /// `indexOptions != NONE && !omitNorms`, and it is what
+    /// `NormsConsumer.merge` iterates -- so a field that is not indexed has
+    /// no norms to merge no matter what norms data a caller hands the merge.
     fn norms_field(name: &str, number: i32) -> FieldInfo {
         let mut f = field(name, number);
         f.omit_norms = false;
+        f.index_options = IndexOptions::DocsAndFreqs;
         f
     }
 
@@ -5572,6 +5728,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -5587,6 +5745,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
 
         let sci = merge_stored_only_segments(
@@ -5732,6 +5892,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
 
         let sci = merge_stored_only_segments(
@@ -5823,10 +5985,12 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
         // Source 1 has live docs but no numeric doc-values entry at all for
         // field "num": Java's `values == null` sub, i.e. all-missing.
-        let source1 = MergeSource::stored_only(&stored1.fields, &reader1, None);
+        let source1 = MergeSource::stored_only(&stored1.fields, &reader1, None, Some(version()));
 
         merge_stored_only_segments(
             &dir,
@@ -5916,6 +6080,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
 
         merge_stored_only_segments(
@@ -6023,6 +6189,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -6038,6 +6206,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
 
         let sci = merge_stored_only_segments(
@@ -6117,11 +6287,13 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
         // Source 1 has live docs but no binary doc-values entry at all for
         // field "bin" -- the sparse-across-sources case this port refuses to
         // silently drop.
-        let source1 = MergeSource::stored_only(&stored1.fields, &reader1, None);
+        let source1 = MergeSource::stored_only(&stored1.fields, &reader1, None, Some(version()));
 
         let result = merge_stored_only_segments(
             &dir,
@@ -6193,6 +6365,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
 
         merge_stored_only_segments(
@@ -6359,6 +6533,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -6374,6 +6550,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
 
         let tmp_dir = FsDirectory::open(&tmp);
@@ -6458,6 +6636,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -6473,6 +6653,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
 
         merge_stored_only_segments(
@@ -6533,10 +6715,12 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
         // Source 1 has live docs but no SORTED doc-values entry at all for
         // field "word".
-        let source1 = MergeSource::stored_only(&stored1.fields, &reader1, None);
+        let source1 = MergeSource::stored_only(&stored1.fields, &reader1, None, Some(version()));
 
         let result = merge_stored_only_segments(
             &dir,
@@ -6608,6 +6792,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
 
         merge_stored_only_segments(
@@ -6685,6 +6871,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
 
         merge_stored_only_segments(
@@ -6763,6 +6951,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
 
         merge_stored_only_segments(
@@ -6867,6 +7057,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -6882,6 +7074,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
 
         let sci = merge_stored_only_segments(
@@ -6968,6 +7162,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -6983,6 +7179,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
 
         let sci = merge_stored_only_segments(
@@ -7000,6 +7198,124 @@ mod tests {
             merged_reader.is_ok(),
             "merge should succeed, not reject on source 1's unrelated deleted-only binary field"
         );
+    }
+
+    /// A sparse norm column across sources: source 0 has a gap at one
+    /// document, and source 1 never declares the field at all.
+    ///
+    /// `NormsConsumer.merge` iterates the **merged** `FieldInfos` and
+    /// `mergeNormsField` adds a sub only for a source whose own `FieldInfo`
+    /// says `hasNorms()`, so both are gaps in the merged column, not errors.
+    /// Until c35 each was `Error::NormsFieldMissingInSource` -- which made
+    /// the ordinary "a schema grew" merge fail outright the moment the flush
+    /// started writing sparse columns.
+    #[test]
+    fn merged_norms_are_sparse_across_a_gap_and_a_source_that_never_declared_the_field() {
+        let seg0_id = [1u8; ID_LENGTH];
+        let seg1_id = [2u8; ID_LENGTH];
+        // Source 0: docs 0 and 2 have a norm, doc 1 does not.
+        let (meta0, data0) =
+            norms::write_single_sparse_field(0, &[(0, 11), (2, 13)], 3, &seg0_id, "").unwrap();
+        let (_v, parsed0) = norms::parse_meta(&meta0, &seg0_id, "").unwrap();
+        let norms0 = FlushedNorms {
+            data: data0,
+            entry: *parsed0.entry(0).unwrap(),
+        };
+
+        let with_norms = vec![norms_field("body", 0)];
+        // Source 1 never declares `body` at all -- `mergeNormsField`'s
+        // `readerFieldInfo == null` branch, and the ordinary shape of a
+        // schema that grew. (Two sources that *disagree* about `omitNorms`
+        // for the same field are a different thing and are refused by
+        // `verify_same_schema`, exactly as `FieldInfos.verifySameOmitNorms`
+        // refuses them.)
+        let without_norms = vec![field("other", 0)];
+
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let stored0 = flush(
+            &dir,
+            &tmp,
+            "_0",
+            seg0_id,
+            &with_norms,
+            &[doc_with(0, "a"), doc_with(0, "b"), doc_with(0, "c")],
+        );
+        let stored1 = flush(
+            &dir,
+            &tmp,
+            "_1",
+            seg1_id,
+            &without_norms,
+            &[doc_with(0, "d")],
+        );
+        let reader0 = open_reader(&stored0);
+        let reader1 = open_reader(&stored1);
+        let norms0_source = [norms0.source()];
+        let source0 = MergeSource {
+            field_infos: &stored0.fields,
+            reader: &reader0,
+            live_docs: None,
+            numeric_doc_values: &[],
+            binary_doc_values: &[],
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &[],
+            norms: &norms0_source,
+            term_vectors: None,
+            postings: &[],
+            points: &[],
+            vectors: None,
+            min_version: None,
+            has_blocks: false,
+        };
+        let source1 = MergeSource {
+            field_infos: &stored1.fields,
+            reader: &reader1,
+            live_docs: None,
+            numeric_doc_values: &[],
+            binary_doc_values: &[],
+            sorted_doc_values: &[],
+            sorted_numeric_doc_values: &[],
+            sorted_set_doc_values: &[],
+            norms: &[],
+            term_vectors: None,
+            postings: &[],
+            points: &[],
+            vectors: None,
+            min_version: None,
+            has_blocks: false,
+        };
+
+        merge_stored_only_segments(
+            &dir,
+            &[source0, source1],
+            "_merged_sparse_norms",
+            [9u8; ID_LENGTH],
+            "Lucene104",
+            version(),
+        )
+        .unwrap();
+
+        let nvd = std::fs::read(tmp.join("_merged_sparse_norms.nvd")).unwrap();
+        let nvm = std::fs::read(tmp.join("_merged_sparse_norms.nvm")).unwrap();
+        let (_v, parsed) = norms::parse_meta(&nvm, &[9u8; ID_LENGTH], "").unwrap();
+        let entry = parsed.entry(0).unwrap();
+        assert!(!entry.is_dense(), "the merged column must be sparse");
+        let values: Vec<Option<i64>> = (0..4)
+            .map(|d| norms::norm_value(&nvd, entry, d).unwrap())
+            .collect();
+        assert_eq!(
+            values,
+            vec![Some(11), None, Some(13), None],
+            "doc 1 is source 0's gap, doc 3 is the source that never declared the field"
+        );
+
+        // And the merged `.fnm` still claims the norms the column backs.
+        let fnm = std::fs::read(tmp.join("_merged_sparse_norms.fnm")).unwrap();
+        let merged = field_infos::parse(&fnm, &[9u8; ID_LENGTH], "").unwrap();
+        let body = merged.fields.iter().find(|f| f.name == "body").unwrap();
+        assert!(!body.omit_norms);
     }
 
     #[test]
@@ -7043,6 +7359,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -7058,6 +7376,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
 
         merge_stored_only_segments(
@@ -7134,8 +7454,10 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
-        let source1 = MergeSource::stored_only(&stored1.fields, &reader1, None);
+        let source1 = MergeSource::stored_only(&stored1.fields, &reader1, None, Some(version()));
 
         merge_stored_only_segments(
             &dir,
@@ -7250,11 +7572,11 @@ mod tests {
         let tv1_reader = tv1.reader();
         let source0 = MergeSource {
             term_vectors: Some(&tv0_reader),
-            ..MergeSource::stored_only(&stored0.fields, &reader0, None)
+            ..MergeSource::stored_only(&stored0.fields, &reader0, None, Some(version()))
         };
         let source1 = MergeSource {
             term_vectors: Some(&tv1_reader),
-            ..MergeSource::stored_only(&stored1.fields, &reader1, live1)
+            ..MergeSource::stored_only(&stored1.fields, &reader1, live1, Some(version()))
         };
         merge_stored_only_segments(
             &dir,
@@ -7390,7 +7712,7 @@ mod tests {
         let tv0_reader = tv0.reader();
         let source0 = MergeSource {
             term_vectors: Some(&tv0_reader),
-            ..MergeSource::stored_only(&stored0.fields, &reader0, None)
+            ..MergeSource::stored_only(&stored0.fields, &reader0, None, Some(version()))
         };
         let err = merge_stored_only_segments(
             &dir,
@@ -7474,6 +7796,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -7489,6 +7813,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
 
         merge_stored_only_segments(
@@ -7547,6 +7873,9 @@ mod tests {
         let mut field0 = numeric_field("body", 0);
         field0.store_term_vectors = true;
         field0.omit_norms = false;
+        // `hasNorms()` is `indexOptions != NONE && !omitNorms`, and that is
+        // what drives which fields the merge writes norms for.
+        field0.index_options = IndexOptions::DocsAndFreqs;
         let fields = vec![field0];
 
         let tmp = tempdir();
@@ -7583,6 +7912,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -7598,6 +7929,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
 
         let merged_id = [9u8; ID_LENGTH];
@@ -7724,6 +8057,9 @@ mod tests {
         let mut field0 = binary_field("body", 0);
         field0.store_term_vectors = true;
         field0.omit_norms = false;
+        // `hasNorms()` is `indexOptions != NONE && !omitNorms`, and that is
+        // what drives which fields the merge writes norms for.
+        field0.index_options = IndexOptions::DocsAndFreqs;
         let fields = vec![field0];
 
         let tmp = tempdir();
@@ -7760,6 +8096,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -7775,6 +8113,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
 
         let merged_id = [9u8; ID_LENGTH];
@@ -7905,6 +8245,9 @@ mod tests {
         let mut field0 = sorted_field("color", 0);
         field0.store_term_vectors = true;
         field0.omit_norms = false;
+        // `hasNorms()` is `indexOptions != NONE && !omitNorms`, and that is
+        // what drives which fields the merge writes norms for.
+        field0.index_options = IndexOptions::DocsAndFreqs;
         let fields = vec![field0];
 
         let tmp = tempdir();
@@ -7941,6 +8284,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -7956,6 +8301,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
 
         let merged_id = [9u8; ID_LENGTH];
@@ -8104,17 +8451,16 @@ mod tests {
         let reader0 = open_reader(&seg0);
         let reader1 = open_reader(&seg1);
         let sources = vec![
-            MergeSource::stored_only(&seg0.fields, &reader0, None),
-            MergeSource::stored_only(&seg1.fields, &reader1, None),
+            MergeSource::stored_only(&seg0.fields, &reader0, None, Some(version())),
+            MergeSource::stored_only(&seg1.fields, &reader1, None, Some(version())),
         ];
 
         let keys0: Vec<Option<i64>> = vec![Some(10), Some(30), Some(50)];
         let keys1: Vec<Option<i64>> = vec![Some(20), Some(40)];
         let per_source_keys: Vec<&[Option<i64>]> = vec![&keys0, &keys1];
+        let num_sort = IndexSortField::long("num", false, Some(i64::MAX));
         let sort_fields = vec![MergeSortKeySpec {
-            field: "num",
-            reverse: false,
-            missing: SortMissingValue::Last,
+            sort: &num_sort,
             per_source_keys: &per_source_keys,
         }];
 
@@ -8143,9 +8489,33 @@ mod tests {
         let si = segment_info::parse(&si_bytes, &merged_id).unwrap();
         let sort = si.index_sort.unwrap();
         assert_eq!(sort.len(), 1);
-        assert_eq!(sort[0].field, "num");
-        assert!(!sort[0].reverse);
-        assert_eq!(sort[0].missing, SortMissingValue::Last);
+        assert_eq!(sort[0], IndexSortField::long("num", false, Some(i64::MAX)));
+    }
+
+    /// `merge_comparators`' guard, the merge twin of `segment_writer`'s: a
+    /// `BinarySortField` has no single-`i64` key, so merging by "always
+    /// equal" would concatenate the sources while the merged `.si` claimed a
+    /// sort. `IndexWriter::set_index_sort` refuses such a sort, so this is
+    /// unreachable in practice and loud if that ever stops being true.
+    #[test]
+    #[should_panic(expected = "has no single-i64 comparator")]
+    fn a_merge_sort_with_no_comparator_panics_rather_than_concatenating() {
+        let sort = IndexSortField {
+            field: "bytes".to_string(),
+            reverse: false,
+            kind: crate::segment_info::IndexSortKind::Binary(
+                crate::segment_info::StringMissingValue::Last,
+            ),
+        };
+        let keys: Vec<Option<i64>> = vec![Some(1), Some(0)];
+        let per_source: Vec<&[Option<i64>]> = vec![&keys];
+        sorted_doc_order(
+            &[MergeSortKeySpec {
+                sort: &sort,
+                per_source_keys: &per_source,
+            }],
+            &[vec![0, 1]],
+        );
     }
 
     #[test]
@@ -8183,19 +8553,18 @@ mod tests {
         let reader1 = open_reader(&seg1);
         let reader2 = open_reader(&seg2);
         let sources = vec![
-            MergeSource::stored_only(&seg0.fields, &reader0, None),
-            MergeSource::stored_only(&seg1.fields, &reader1, None),
-            MergeSource::stored_only(&seg2.fields, &reader2, None),
+            MergeSource::stored_only(&seg0.fields, &reader0, None, Some(version())),
+            MergeSource::stored_only(&seg1.fields, &reader1, None, Some(version())),
+            MergeSource::stored_only(&seg2.fields, &reader2, None, Some(version())),
         ];
 
         let keys0: Vec<Option<i64>> = vec![Some(1), Some(9)];
         let keys1: Vec<Option<i64>> = vec![Some(4), Some(6)];
         let keys2: Vec<Option<i64>> = vec![Some(2), Some(5), Some(8)];
         let per_source_keys: Vec<&[Option<i64>]> = vec![&keys0, &keys1, &keys2];
+        let num_sort = IndexSortField::long("num", false, Some(i64::MAX));
         let sort_fields = vec![MergeSortKeySpec {
-            field: "num",
-            reverse: false,
-            missing: SortMissingValue::Last,
+            sort: &num_sort,
             per_source_keys: &per_source_keys,
         }];
 
@@ -8245,8 +8614,8 @@ mod tests {
         let reader0 = open_reader(&seg0);
         let reader1 = open_reader(&seg1);
         let sources = vec![
-            MergeSource::stored_only(&seg0.fields, &reader0, None),
-            MergeSource::stored_only(&seg1.fields, &reader1, None),
+            MergeSource::stored_only(&seg0.fields, &reader0, None, Some(version())),
+            MergeSource::stored_only(&seg1.fields, &reader1, None, Some(version())),
         ];
 
         // Primary "num": source0 = [5, 8], source1 = [5].
@@ -8259,17 +8628,15 @@ mod tests {
         let tie1: Vec<Option<i64>> = vec![Some(0)];
         let tie_keys: Vec<&[Option<i64>]> = vec![&tie0, &tie1];
 
+        let num_sort = IndexSortField::long("num", false, Some(i64::MAX));
+        let tie_sort = IndexSortField::long("tie", false, Some(i64::MAX));
         let sort_fields = vec![
             MergeSortKeySpec {
-                field: "num",
-                reverse: false,
-                missing: SortMissingValue::Last,
+                sort: &num_sort,
                 per_source_keys: &num_keys,
             },
             MergeSortKeySpec {
-                field: "tie",
-                reverse: false,
-                missing: SortMissingValue::Last,
+                sort: &tie_sort,
                 per_source_keys: &tie_keys,
             },
         ];
@@ -8337,17 +8704,16 @@ mod tests {
         let reader0 = open_reader(&seg0);
         let reader1 = open_reader(&seg1);
         let sources = vec![
-            MergeSource::stored_only(&seg0.fields, &reader0, None),
-            MergeSource::stored_only(&seg1.fields, &reader1, None),
+            MergeSource::stored_only(&seg0.fields, &reader0, None, Some(version())),
+            MergeSource::stored_only(&seg1.fields, &reader1, None, Some(version())),
         ];
 
         let keys0: Vec<Option<i64>> = vec![Some(3), Some(7)];
         let keys1: Vec<Option<i64>> = vec![Some(1), Some(5)];
         let per_source_keys: Vec<&[Option<i64>]> = vec![&keys0, &keys1];
+        let sort_key_1 = IndexSortField::long("key", false, Some(i64::MAX));
         let sort_fields = vec![MergeSortKeySpec {
-            field: "key",
-            reverse: false,
-            missing: SortMissingValue::Last,
+            sort: &sort_key_1,
             per_source_keys: &per_source_keys,
         }];
 
@@ -8465,6 +8831,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -8480,15 +8848,16 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
 
         let keys0: Vec<Option<i64>> = vec![Some(10), Some(30)];
         let keys1: Vec<Option<i64>> = vec![Some(20), Some(40)];
         let per_source_keys: Vec<&[Option<i64>]> = vec![&keys0, &keys1];
+        let num_sort = IndexSortField::long("num", false, Some(i64::MAX));
         let sort_fields = vec![MergeSortKeySpec {
-            field: "num",
-            reverse: false,
-            missing: SortMissingValue::Last,
+            sort: &num_sort,
             per_source_keys: &per_source_keys,
         }];
 
@@ -8643,10 +9012,9 @@ mod tests {
         let keys0: Vec<Option<i64>> = vec![Some(10), Some(30)];
         let keys1: Vec<Option<i64>> = vec![Some(20), Some(40)];
         let per_source_keys: Vec<&[Option<i64>]> = vec![&keys0, &keys1];
+        let sort_id_2 = IndexSortField::long("id", false, Some(i64::MAX));
         let sort_fields = vec![MergeSortKeySpec {
-            field: "id",
-            reverse: false,
-            missing: SortMissingValue::Last,
+            sort: &sort_id_2,
             per_source_keys: &per_source_keys,
         }];
 
@@ -8671,6 +9039,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
         let source1_num = MergeSource {
             field_infos: &stored1.fields,
@@ -8686,6 +9056,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
         merge_sorted_stored_only_segments(
             &dir,
@@ -8744,6 +9116,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
         let source1_sorted = MergeSource {
             field_infos: &stored1.fields,
@@ -8759,6 +9133,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
         merge_sorted_stored_only_segments(
             &dir,
@@ -8806,6 +9182,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
         let source1_sn = MergeSource {
             field_infos: &stored1.fields,
@@ -8821,6 +9199,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
         merge_sorted_stored_only_segments(
             &dir,
@@ -8860,6 +9240,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
         let source1_ss = MergeSource {
             field_infos: &stored1.fields,
@@ -8875,6 +9257,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
         merge_sorted_stored_only_segments(
             &dir,
@@ -8941,17 +9325,16 @@ mod tests {
         live0.set(2);
 
         let sources = vec![
-            MergeSource::stored_only(&seg0.fields, &reader0, Some(&live0)),
-            MergeSource::stored_only(&seg1.fields, &reader1, None),
+            MergeSource::stored_only(&seg0.fields, &reader0, Some(&live0), Some(version())),
+            MergeSource::stored_only(&seg1.fields, &reader1, None, Some(version())),
         ];
 
         let keys0: Vec<Option<i64>> = vec![Some(10), Some(20), Some(30)];
         let keys1: Vec<Option<i64>> = vec![Some(15)];
         let per_source_keys: Vec<&[Option<i64>]> = vec![&keys0, &keys1];
+        let num_sort = IndexSortField::long("num", false, Some(i64::MAX));
         let sort_fields = vec![MergeSortKeySpec {
-            field: "num",
-            reverse: false,
-            missing: SortMissingValue::Last,
+            sort: &num_sort,
             per_source_keys: &per_source_keys,
         }];
 
@@ -8977,10 +9360,9 @@ mod tests {
         let dir = FsDirectory::open(&tmp);
         let sources: Vec<MergeSource> = vec![];
         let per_source_keys: Vec<&[Option<i64>]> = vec![];
+        let num_sort = IndexSortField::long("num", false, Some(i64::MAX));
         let sort_fields = vec![MergeSortKeySpec {
-            field: "num",
-            reverse: false,
-            missing: SortMissingValue::Last,
+            sort: &num_sort,
             per_source_keys: &per_source_keys,
         }];
 
@@ -9045,17 +9427,16 @@ mod tests {
         let reader0 = open_reader(&seg0);
         let reader1 = open_reader(&seg1);
         let sources = vec![
-            MergeSource::stored_only(&seg0.fields, &reader0, None),
-            MergeSource::stored_only(&seg1.fields, &reader1, None),
+            MergeSource::stored_only(&seg0.fields, &reader0, None, Some(version())),
+            MergeSource::stored_only(&seg1.fields, &reader1, None, Some(version())),
         ];
 
         let keys0: Vec<Option<i64>> = vec![Some(10)];
         let keys1: Vec<Option<i64>> = vec![Some(5)];
         let per_source_keys: Vec<&[Option<i64>]> = vec![&keys0, &keys1];
+        let num_sort = IndexSortField::long("num", false, Some(i64::MAX));
         let sort_fields = vec![MergeSortKeySpec {
-            field: "num",
-            reverse: false,
-            missing: SortMissingValue::Last,
+            sort: &num_sort,
             per_source_keys: &per_source_keys,
         }];
 
@@ -9229,6 +9610,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -9244,6 +9627,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
 
         merge_stored_only_segments(
@@ -9304,10 +9689,12 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
         // Source 1 has live docs but no SORTED_NUMERIC doc-values entry at
         // all for field "nums".
-        let source1 = MergeSource::stored_only(&stored1.fields, &reader1, None);
+        let source1 = MergeSource::stored_only(&stored1.fields, &reader1, None, Some(version()));
 
         let result = merge_stored_only_segments(
             &dir,
@@ -9368,6 +9755,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
 
         merge_stored_only_segments(
@@ -9531,6 +9920,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -9546,6 +9937,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
 
         merge_stored_only_segments(
@@ -9639,6 +10032,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -9654,6 +10049,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
 
         merge_stored_only_segments(
@@ -9717,10 +10114,12 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
         // Source 1 has live docs but no SORTED_SET doc-values entry at all
         // for field "word".
-        let source1 = MergeSource::stored_only(&stored1.fields, &reader1, None);
+        let source1 = MergeSource::stored_only(&stored1.fields, &reader1, None, Some(version()));
 
         let result = merge_stored_only_segments(
             &dir,
@@ -9781,6 +10180,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
 
         merge_stored_only_segments(
@@ -9846,17 +10247,15 @@ mod tests {
         ];
         let rank_slices: Vec<&[Option<i64>]> = rank.iter().map(|v| v.as_slice()).collect();
         let tie_slices: Vec<&[Option<i64>]> = tie.iter().map(|v| v.as_slice()).collect();
+        let sort_rank = IndexSortField::long("rank", true, Some(i64::MAX));
+        let sort_tie = IndexSortField::long("tie", false, Some(i64::MIN));
         let specs = vec![
             MergeSortKeySpec {
-                field: "rank",
-                reverse: true,
-                missing: SortMissingValue::Last,
+                sort: &sort_rank,
                 per_source_keys: &rank_slices,
             },
             MergeSortKeySpec {
-                field: "tie",
-                reverse: false,
-                missing: SortMissingValue::First,
+                sort: &sort_tie,
                 per_source_keys: &tie_slices,
             },
         ];
@@ -9912,10 +10311,9 @@ mod tests {
         let live = vec![vec![0i32, 1], vec![0, 1]];
         let rank: Vec<Vec<Option<i64>>> = vec![vec![None, Some(5)], vec![Some(7), Some(5)]];
         let rank_slices: Vec<&[Option<i64>]> = rank.iter().map(|v| v.as_slice()).collect();
+        let sort_rank_5 = IndexSortField::long("rank", true, Some(i64::MAX));
         let specs = vec![MergeSortKeySpec {
-            field: "rank",
-            reverse: true,
-            missing: SortMissingValue::Last,
+            sort: &sort_rank_5,
             per_source_keys: &rank_slices,
         }];
         assert_eq!(
@@ -9945,7 +10343,12 @@ mod tests {
             &[doc_with(0, "a"), doc_with(0, "b")],
         );
         let reader0 = open_reader(&seg0);
-        let sources = vec![MergeSource::stored_only(&seg0.fields, &reader0, None)];
+        let sources = vec![MergeSource::stored_only(
+            &seg0.fields,
+            &reader0,
+            None,
+            Some(version()),
+        )];
 
         let merge = |specs: &[MergeSortKeySpec<'_>]| {
             merge_segments(
@@ -9963,12 +10366,11 @@ mod tests {
 
         // The outer list has no entry for the one source.
         let empty: Vec<&[Option<i64>]> = Vec::new();
+        let sort_rank = IndexSortField::long("rank", false, Some(i64::MAX));
         assert!(matches!(
             merge(&[MergeSortKeySpec {
-                field: "rank",
-                reverse: false,
-                missing: SortMissingValue::Last,
-                per_source_keys: &empty,
+                sort: &sort_rank,
+                per_source_keys: &empty
             }]),
             Err(Error::SortKeysWrongLength {
                 source_index: None,
@@ -9984,10 +10386,8 @@ mod tests {
         let short_slices: Vec<&[Option<i64>]> = vec![short.as_slice()];
         assert!(matches!(
             merge(&[MergeSortKeySpec {
-                field: "rank",
-                reverse: false,
-                missing: SortMissingValue::Last,
-                per_source_keys: &short_slices,
+                sort: &sort_rank,
+                per_source_keys: &short_slices
             }]),
             Err(Error::SortKeysWrongLength {
                 source_index: Some(0),
@@ -10155,6 +10555,8 @@ mod tests {
             postings: &src_postings0,
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -10170,6 +10572,8 @@ mod tests {
             postings: &src_postings1,
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
 
         let sci = merge_stored_only_segments(
@@ -10380,6 +10784,8 @@ mod tests {
             postings: &src_postings0,
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -10395,6 +10801,8 @@ mod tests {
             postings: &src_postings1,
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
 
         merge_stored_only_segments(
@@ -10578,6 +10986,8 @@ mod tests {
             postings: &src_postings0,
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -10593,6 +11003,8 @@ mod tests {
             postings: &src_postings1,
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
 
         let tmp2 = tmp.path().to_path_buf();
@@ -10744,6 +11156,8 @@ mod tests {
             postings: &src_postings0,
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
 
         merge_stored_only_segments(
@@ -10929,6 +11343,8 @@ mod tests {
             postings: &src_postings0,
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -10944,6 +11360,8 @@ mod tests {
             postings: &src_postings1,
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
 
         merge_stored_only_segments(
@@ -11084,9 +11502,9 @@ mod tests {
         }];
         let source0 = MergeSource {
             postings: &src_postings0,
-            ..MergeSource::stored_only(&stored0.fields, &reader0, None)
+            ..MergeSource::stored_only(&stored0.fields, &reader0, None, Some(version()))
         };
-        let source1 = MergeSource::stored_only(&stored1.fields, &reader1, None);
+        let source1 = MergeSource::stored_only(&stored1.fields, &reader1, None, Some(version()));
 
         merge_stored_only_segments(
             &dir,
@@ -11219,6 +11637,8 @@ mod tests {
             postings: &src_postings0,
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -11234,6 +11654,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
 
         let result = merge_stored_only_segments(
@@ -11410,6 +11832,8 @@ mod tests {
             postings: &src_postings0,
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -11425,6 +11849,8 @@ mod tests {
             postings: &src_postings1,
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
 
         let sci = merge_stored_only_segments(
@@ -11700,6 +12126,8 @@ mod tests {
             postings: &src_postings0,
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -11715,6 +12143,8 @@ mod tests {
             postings: &src_postings1,
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
 
         let result = merge_stored_only_segments(
@@ -11878,6 +12308,8 @@ mod tests {
             postings: &src_postings0,
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -11893,6 +12325,8 @@ mod tests {
             postings: &src_postings1,
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
 
         merge_stored_only_segments(
@@ -12079,6 +12513,8 @@ mod tests {
             postings: &src_postings0,
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
 
         let result = merge_stored_only_segments(
@@ -12207,6 +12643,8 @@ mod tests {
             postings: &[],
             points: &src_points0,
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -12222,6 +12660,8 @@ mod tests {
             postings: &[],
             points: &src_points1,
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
 
         let sci = merge_stored_only_segments(
@@ -12320,6 +12760,8 @@ mod tests {
             postings: &[],
             points: &src_points0,
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
 
         merge_stored_only_segments(
@@ -12389,6 +12831,8 @@ mod tests {
             postings: &[],
             points: &src_points0,
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -12404,6 +12848,8 @@ mod tests {
             postings: &[],
             points: &src_points1,
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
 
         merge_stored_only_segments(
@@ -12473,6 +12919,8 @@ mod tests {
             postings: &[],
             points: &src_points0,
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -12488,6 +12936,8 @@ mod tests {
             postings: &[],
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
 
         let result = merge_stored_only_segments(
@@ -12538,9 +12988,9 @@ mod tests {
         let source0 = MergeSource {
             points: &src_points0,
             vectors: None,
-            ..MergeSource::stored_only(&stored0.fields, &reader0, None)
+            ..MergeSource::stored_only(&stored0.fields, &reader0, None, Some(version()))
         };
-        let source1 = MergeSource::stored_only(&stored1.fields, &reader1, None);
+        let source1 = MergeSource::stored_only(&stored1.fields, &reader1, None, Some(version()));
 
         merge_stored_only_segments(
             &dir,
@@ -12615,6 +13065,8 @@ mod tests {
             postings: &[],
             points: &src_points0,
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -12630,6 +13082,8 @@ mod tests {
             postings: &[],
             points: &src_points1,
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
 
         let result = merge_stored_only_segments(
@@ -12716,6 +13170,8 @@ mod tests {
             postings: &[],
             points: &src_points0,
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -12731,6 +13187,8 @@ mod tests {
             postings: &[],
             points: &src_points1,
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
 
         let sci = merge_stored_only_segments(
@@ -12837,6 +13295,8 @@ mod tests {
             postings: &[],
             points: &src_points0,
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -12852,6 +13312,8 @@ mod tests {
             postings: &[],
             points: &src_points1,
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         };
 
         let result = merge_stored_only_segments(
@@ -12916,8 +13378,8 @@ mod tests {
         let reader0 = open_reader(&seg0);
         let reader1 = open_reader(&seg1);
         let sources = vec![
-            MergeSource::stored_only(&seg0.fields, &reader0, None),
-            MergeSource::stored_only(&seg1.fields, &reader1, None),
+            MergeSource::stored_only(&seg0.fields, &reader0, None, Some(version())),
+            MergeSource::stored_only(&seg1.fields, &reader1, None, Some(version())),
         ];
         assert_eq!(
             strategies_for(&sources),
@@ -12979,6 +13441,7 @@ mod tests {
             &seg0.fields,
             &reader0,
             Some(&live),
+            Some(version()),
         )];
         assert_eq!(
             strategies_for(&sources),
@@ -13047,8 +13510,8 @@ mod tests {
         let reader0 = open_reader(&seg0);
         let reader1 = open_reader(&seg1);
         let sources = vec![
-            MergeSource::stored_only(&seg0.fields, &reader0, None),
-            MergeSource::stored_only(&seg1.fields, &reader1, None),
+            MergeSource::stored_only(&seg0.fields, &reader0, None, Some(version())),
+            MergeSource::stored_only(&seg1.fields, &reader1, None, Some(version())),
         ];
         assert_eq!(
             strategies_for(&sources),
@@ -13118,9 +13581,9 @@ mod tests {
         );
         let (r0, r1, r2) = (open_reader(&seg0), open_reader(&seg1), open_reader(&seg2));
         let sources = vec![
-            MergeSource::stored_only(&seg0.fields, &r0, None),
-            MergeSource::stored_only(&seg1.fields, &r1, None),
-            MergeSource::stored_only(&seg2.fields, &r2, None),
+            MergeSource::stored_only(&seg0.fields, &r0, None, Some(version())),
+            MergeSource::stored_only(&seg1.fields, &r1, None, Some(version())),
+            MergeSource::stored_only(&seg2.fields, &r2, None, Some(version())),
         ];
         let sources_fields: Vec<&[FieldInfo]> = sources.iter().map(|s| s.field_infos).collect();
         let (_, maps) = reconcile_field_numbers(&sources_fields).unwrap();
@@ -13161,7 +13624,12 @@ mod tests {
         seg.fdt[mid] ^= 0xFF;
 
         let reader = open_reader(&seg);
-        let sources = vec![MergeSource::stored_only(&seg.fields, &reader, None)];
+        let sources = vec![MergeSource::stored_only(
+            &seg.fields,
+            &reader,
+            None,
+            Some(version()),
+        )];
         let result = merge_stored_only_segments(
             &dir,
             &sources,
@@ -13206,7 +13674,12 @@ mod tests {
             for d in 0..short_len {
                 bits.set(d);
             }
-            let sources = vec![MergeSource::stored_only(&seg.fields, &reader, Some(&bits))];
+            let sources = vec![MergeSource::stored_only(
+                &seg.fields,
+                &reader,
+                Some(&bits),
+                Some(version()),
+            )];
             let result = merge_stored_only_segments(
                 &dir,
                 &sources,
@@ -13236,7 +13709,12 @@ mod tests {
             exact.set(d);
         }
         exact.clear(7);
-        let sources = vec![MergeSource::stored_only(&seg.fields, &reader, Some(&exact))];
+        let sources = vec![MergeSource::stored_only(
+            &seg.fields,
+            &reader,
+            Some(&exact),
+            Some(version()),
+        )];
         let merged = merge_stored_only_segments(
             &dir,
             &sources,
@@ -13252,6 +13730,173 @@ mod tests {
         std::fs::remove_dir_all(&tmp).ok();
     }
 
+    // --- SegmentMerger's per-source metadata: minVersion and hasBlocks ---
+
+    fn v(major: i32, minor: i32, bugfix: i32) -> LuceneVersion {
+        LuceneVersion {
+            major,
+            minor,
+            bugfix,
+        }
+    }
+
+    /// `SegmentMerger`'s constructor, in isolation: the seed is
+    /// `Version.LATEST`, one `null` anywhere wins, and otherwise the smallest
+    /// reader version wins regardless of the order the readers arrive in.
+    #[test]
+    fn merged_min_version_is_the_smallest_source_version_or_none() {
+        let latest = v(10, 5, 0);
+
+        // No sources at all: Java keeps the `Version.LATEST` seed. Driven
+        // through `merged_min_version` itself, which is the only shape that
+        // takes `MergeSource`s.
+        assert_eq!(merged_min_version(&[], latest), Some(latest));
+
+        // Everything else drives `fold_min_version`, the function
+        // `merged_min_version` *is* -- not a restatement of it. (An earlier
+        // version of this test carried its own copy of the loop, which meant
+        // inverting the comparison or dropping the `None` short-circuit in the
+        // shipped code left it green.)
+        let fold = |mins: &[Option<LuceneVersion>]| fold_min_version(latest, mins.to_vec());
+
+        // Every ordering of the same three versions gives the same answer.
+        let a = v(10, 0, 0);
+        let b = v(10, 2, 1);
+        let c = v(10, 5, 0);
+        for order in [[a, b, c], [c, b, a], [b, c, a], [b, a, c]] {
+            assert_eq!(
+                fold(&order.map(Some)),
+                Some(a),
+                "order {order:?} did not give the oldest version"
+            );
+        }
+        // Bugfix and minor both participate, not just major.
+        assert_eq!(
+            fold(&[Some(v(10, 2, 3)), Some(v(10, 2, 1))]),
+            Some(v(10, 2, 1))
+        );
+        assert_eq!(
+            fold(&[Some(v(10, 3, 0)), Some(v(10, 2, 9))]),
+            Some(v(10, 2, 9))
+        );
+        // A source *newer* than this writer cannot raise the answer above the
+        // seed -- the fold only ever lowers it. This is the case that fails if
+        // `onOrAfter`'s direction is inverted.
+        assert_eq!(fold(&[Some(v(11, 0, 0))]), Some(latest));
+        // One `null` anywhere makes the whole thing null, wherever it sits.
+        assert_eq!(fold(&[Some(a), None, Some(b)]), None);
+        assert_eq!(fold(&[None, Some(a)]), None);
+        assert_eq!(fold(&[None]), None);
+    }
+
+    /// End to end through `merge_segments`: the merged `.si` records the
+    /// **oldest** source `minVersion`, not the merging writer's own version,
+    /// and `hasBlocks` is the disjunction of the sources'. Before this was
+    /// ported, `min_version` was hardcoded to the writer's version, so a
+    /// merge that took in a segment written by an older Lucene erased the
+    /// only record that older bytes were still present.
+    #[test]
+    fn a_merged_si_takes_the_oldest_source_min_version_and_any_sources_blocks() {
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![field("id", 0)];
+        let seg0 = flush(
+            &dir,
+            &tmp,
+            "_0",
+            [1u8; ID_LENGTH],
+            &fields,
+            &[doc_with(0, "a")],
+        );
+        let seg1 = flush(
+            &dir,
+            &tmp,
+            "_1",
+            [2u8; ID_LENGTH],
+            &fields,
+            &[doc_with(0, "b")],
+        );
+        let reader0 = open_reader(&seg0);
+        let reader1 = open_reader(&seg1);
+
+        let sources = vec![
+            MergeSource {
+                min_version: Some(v(10, 1, 0)),
+                has_blocks: false,
+                ..MergeSource::stored_only(&seg0.fields, &reader0, None, Some(version()))
+            },
+            MergeSource {
+                // Older than source 0 *and* older than the merging writer's
+                // own `version()`; blocks on this source only.
+                min_version: Some(v(9, 11, 2)),
+                has_blocks: true,
+                ..MergeSource::stored_only(&seg1.fields, &reader1, None, Some(version()))
+            },
+        ];
+        let merged = merge_stored_only_segments(
+            &dir,
+            &sources,
+            "_merged",
+            [9u8; ID_LENGTH],
+            "Lucene104",
+            version(),
+        )
+        .unwrap();
+        let si_bytes = dir.open("_merged.si").unwrap().to_vec();
+        let si = segment_info::parse(&si_bytes, &merged.segment_id).unwrap();
+        assert_eq!(si.min_version, Some(v(9, 11, 2)));
+        assert_eq!(
+            si.version,
+            version(),
+            "the writer's own version is unchanged"
+        );
+        assert!(si.has_blocks, "a block-carrying source must set the flag");
+
+        // The control: with no blocks anywhere and both sources at the
+        // writer's own version, the merged `.si` says exactly that -- so the
+        // assertions above are the fold doing work, not a constant.
+        let sources = vec![
+            MergeSource::stored_only(&seg0.fields, &reader0, None, Some(version())),
+            MergeSource::stored_only(&seg1.fields, &reader1, None, Some(version())),
+        ];
+        let merged = merge_stored_only_segments(
+            &dir,
+            &sources,
+            "_merged2",
+            [10u8; ID_LENGTH],
+            "Lucene104",
+            version(),
+        )
+        .unwrap();
+        let si_bytes = dir.open("_merged2.si").unwrap().to_vec();
+        let si = segment_info::parse(&si_bytes, &merged.segment_id).unwrap();
+        assert_eq!(si.min_version, Some(version()));
+        assert!(!si.has_blocks);
+
+        // And Java's `null` case: **one** source that records no `minVersion`
+        // at all (a pre-Lucene-7 segment) makes the merged segment's `null`
+        // too, however new the others are. `check_index`'s
+        // `commit.segment_records_min_version` is what then reports it, the
+        // way `SegmentInfos.applyMergeChanges` refuses it in Java.
+        let sources = vec![
+            MergeSource::stored_only(&seg0.fields, &reader0, None, None),
+            MergeSource::stored_only(&seg1.fields, &reader1, None, Some(version())),
+        ];
+        let merged = merge_stored_only_segments(
+            &dir,
+            &sources,
+            "_merged3",
+            [11u8; ID_LENGTH],
+            "Lucene104",
+            version(),
+        )
+        .unwrap();
+        let si_bytes = dir.open("_merged3.si").unwrap().to_vec();
+        let si = segment_info::parse(&si_bytes, &merged.segment_id).unwrap();
+        assert_eq!(si.min_version, None);
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
     // --- the merged `.fnm` must describe the files the merge wrote ---
 
     #[test]
@@ -13261,7 +13906,7 @@ mod tests {
         fields[0]
             .attributes
             .push(("keep".to_string(), "me".to_string()));
-        describe_written_files(&mut fields, &[0], &[], &[], false, &[]);
+        describe_written_files(&mut fields, &[0], &[], false, &[]);
         assert!(fields[0]
             .attributes
             .contains(&("keep".to_string(), "me".to_string())));
@@ -13290,23 +13935,28 @@ mod tests {
             "PerFieldDocValuesFormat.suffix".to_string(),
             "0".to_string(),
         ));
-        describe_written_files(&mut fields, &[], &[], &[], false, &[]);
+        describe_written_files(&mut fields, &[], &[], false, &[]);
         assert!(fields[0].attributes.is_empty());
     }
 
+    /// `describe_written_files` must **not** touch `omit_norms` any more.
+    /// Until c35 it forced `omit_norms = true` onto every indexed field the
+    /// merge had written no norms column for, because the merge only carried
+    /// norms a source happened to have; `merge_norms` now writes a column for
+    /// exactly the fields whose merged `.fnm` claims one (Java's
+    /// `mergeFieldInfos`-driven loop), so rewriting the schema here would
+    /// undo the claim the column was written for.
     #[test]
-    fn an_indexed_field_the_merge_wrote_no_norms_for_must_omit_them() {
-        // `DirectoryReader.open` throws on the missing `.nvm` rather than
-        // degrading, so this is the difference between an openable index and
-        // an unopenable one.
+    fn a_merged_indexed_field_keeps_the_norms_claim_its_column_backs() {
         let mut fields = vec![field("body", 0), field("title", 1)];
         for f in fields.iter_mut() {
             f.index_options = IndexOptions::DocsAndFreqs;
             f.omit_norms = false;
         }
-        describe_written_files(&mut fields, &[0, 1], &[], &[1], false, &[]);
-        assert!(fields[0].omit_norms, "no norms written for field 0");
-        assert!(!fields[1].omit_norms, "norms written for field 1");
+        fields[1].omit_norms = true;
+        describe_written_files(&mut fields, &[0, 1], &[], false, &[]);
+        assert!(!fields[0].omit_norms, "an indexed field keeps its norms");
+        assert!(fields[1].omit_norms, "an opted-out field keeps its opt-out");
     }
 
     #[test]
@@ -13314,13 +13964,13 @@ mod tests {
         let mut fields = vec![field("body", 0)];
         fields[0].index_options = IndexOptions::DocsAndFreqs;
         fields[0].store_term_vectors = true;
-        describe_written_files(&mut fields, &[], &[], &[], false, &[]);
+        describe_written_files(&mut fields, &[], &[], false, &[]);
         assert!(!fields[0].store_term_vectors);
 
         let mut fields = vec![field("body", 0)];
         fields[0].index_options = IndexOptions::DocsAndFreqs;
         fields[0].store_term_vectors = true;
-        describe_written_files(&mut fields, &[], &[], &[], true, &[]);
+        describe_written_files(&mut fields, &[], &[], true, &[]);
         assert!(fields[0].store_term_vectors);
     }
 
@@ -13328,7 +13978,7 @@ mod tests {
     fn a_merged_doc_values_field_gets_its_per_field_format_attributes() {
         let mut fields = vec![field("score", 0)];
         fields[0].doc_values_type = DocValuesType::Numeric;
-        describe_written_files(&mut fields, &[], &[0], &[], false, &[]);
+        describe_written_files(&mut fields, &[], &[0], false, &[]);
         assert!(fields[0].attributes.contains(&(
             "PerFieldDocValuesFormat.format".to_string(),
             DOC_VALUES_FORMAT_NAME.to_string()

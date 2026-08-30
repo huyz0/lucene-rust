@@ -70,7 +70,7 @@
 //! introducing it earlier would be state management with no real caller
 //! yet.
 
-use crate::segment_info::{self, IndexSortField, LuceneVersion, SegmentInfo, SortMissingValue};
+use crate::segment_info::{self, IndexSortField, LuceneVersion, SegmentInfo, SortKeyComparator};
 use crate::segment_infos::SegmentCommitInfo;
 use lucene_codecs::compound_format;
 use lucene_codecs::field_infos::{self, FieldInfo};
@@ -174,6 +174,76 @@ pub fn flush_stored_only_segment_with_blocks(
     use_compound_file: bool,
     has_blocks: bool,
 ) -> Result<SegmentCommitInfo> {
+    let flushed = write_stored_only_segment_files(
+        dir,
+        segment_name,
+        segment_id,
+        codec_name,
+        lucene_version,
+        fields,
+        docs,
+        use_compound_file,
+        has_blocks,
+    )?;
+    seal_flushed_segment(dir, segment_name, flushed)
+}
+
+/// A segment whose codec files are on disk but whose `.si` is **not yet
+/// written**: the in-memory `SegmentInfo` that will become it, the
+/// `SegmentCommitInfo` that will describe it in `segments_N`, and the file
+/// names still to be fsynced.
+///
+/// # Why this exists
+///
+/// Java's `IndexWriter.sealFlushedSegment` writes a segment's `.si` **once**,
+/// at the end, out of an in-memory `SegmentInfo` that every format's writer
+/// has already added its files to (`SegmentInfo.files` accumulates through
+/// the `TrackingDirectoryWrapper`). This port had no way to say "the segment
+/// is not finished yet", so each of
+/// [`crate::index_writer::IndexWriter`]'s five per-format file groups --
+/// postings, term vectors, doc values, norms, vectors -- plus the index-sort
+/// descriptor re-opened, re-parsed, extended and re-wrote the `.si` and
+/// fsynced it again: up to seven `.si` writes and six parses per commit, of
+/// a file whose whole content was already in memory.
+///
+/// A caller that writes more than stored fields therefore takes
+/// [`write_stored_only_segment_files`], pushes its own file names into
+/// [`Self::info`]`.files` and [`Self::pending_sync`], and finishes with
+/// [`seal_flushed_segment`].
+pub struct FlushedSegment {
+    /// The segment's `.si` content, still only in memory. A caller extends
+    /// `files` (and may set `index_sort`) before sealing.
+    pub info: SegmentInfo,
+    /// The `segments_N` entry for this segment.
+    pub commit: SegmentCommitInfo,
+    /// Every file written for this segment so far, to be fsynced together
+    /// with the `.si` by [`seal_flushed_segment`]. A caller appends the names
+    /// it writes itself.
+    pub pending_sync: Vec<String>,
+}
+
+/// [`flush_stored_only_segment_with_blocks`] up to but **not including** the
+/// `.si`: writes the stored fields and field infos (or the compound pair),
+/// and returns the [`FlushedSegment`] a caller extends with its own formats'
+/// files before calling [`seal_flushed_segment`].
+///
+/// The returned `info.files` already lists the stored-fields/field-infos
+/// files *and* the `.si` itself, because `Lucene99SegmentInfoFormat.write`
+/// does `si.addFile(fileName)` before encoding and every consumer that walks
+/// `SegmentInfo.files` -- `IndexFileDeleter`, `CheckIndex`,
+/// `checksum_verify` -- reference-counts from exactly that set.
+#[allow(clippy::too_many_arguments)]
+pub fn write_stored_only_segment_files(
+    dir: &dyn Directory,
+    segment_name: &str,
+    segment_id: [u8; ID_LENGTH],
+    codec_name: &str,
+    lucene_version: LuceneVersion,
+    fields: &[FieldInfo],
+    docs: &[Document],
+    use_compound_file: bool,
+    has_blocks: bool,
+) -> Result<FlushedSegment> {
     let doc_count = docs.len() as i32;
 
     let (fdt, fdx, fdm) = stored_fields::write_best_speed(docs, &segment_id, "");
@@ -249,32 +319,58 @@ pub fn flush_stored_only_segment_with_blocks(
         )],
         index_sort: None,
     };
-    let si_bytes = segment_info::write(&si, "");
-    write_file(dir, &si_name, &si_bytes)?;
-
-    let mut synced = written_names;
-    synced.push(si_name);
-    dir.sync(&synced)?;
-
-    Ok(SegmentCommitInfo {
-        segment_name: segment_name.to_string(),
-        segment_id,
-        codec_name: codec_name.to_string(),
-        del_gen: -1,
-        del_count: 0,
-        field_infos_gen: -1,
-        doc_values_gen: -1,
-        soft_del_count: 0,
-        // `DocumentsWriterPerThread.flush`: every freshly flushed segment
-        // gets its own `StringHelper.randomId()`. Derived from the segment id
-        // rather than drawn from a CSPRNG: distinctness is the only property
-        // anything reads it for, and the segment id is already distinct per
-        // segment.
-        sci_id: Some(derive_sci_id(&segment_id)),
-        field_infos_files: vec![],
-        dv_update_files: vec![],
-        ..Default::default()
+    Ok(FlushedSegment {
+        info: si,
+        commit: SegmentCommitInfo {
+            segment_name: segment_name.to_string(),
+            segment_id,
+            codec_name: codec_name.to_string(),
+            del_gen: -1,
+            del_count: 0,
+            field_infos_gen: -1,
+            doc_values_gen: -1,
+            soft_del_count: 0,
+            // `DocumentsWriterPerThread.flush`: every freshly flushed segment
+            // gets its own `StringHelper.randomId()`. Derived from the segment
+            // id rather than drawn from a CSPRNG: distinctness is the only
+            // property anything reads it for, and the segment id is already
+            // distinct per segment.
+            sci_id: Some(derive_sci_id(&segment_id)),
+            field_infos_files: vec![],
+            dv_update_files: vec![],
+            ..Default::default()
+        },
+        pending_sync: written_names,
     })
+}
+
+/// `IndexWriter.sealFlushedSegment`'s tail: writes the segment's `.si` from
+/// the in-memory [`SegmentInfo`] -- **once** -- and fsyncs it together with
+/// every file the segment's formats wrote.
+///
+/// `flushed.info.files` is the authority on what the `.si` records;
+/// `flushed.pending_sync` is what actually gets fsynced. They differ by
+/// exactly the `.si` itself, which is in the first (a `.si` lists itself) and
+/// is appended to the second here.
+pub fn seal_flushed_segment(
+    dir: &dyn Directory,
+    segment_name: &str,
+    flushed: FlushedSegment,
+) -> Result<SegmentCommitInfo> {
+    let FlushedSegment {
+        info,
+        commit,
+        mut pending_sync,
+    } = flushed;
+    let si_name = format!("{segment_name}.si");
+    debug_assert!(
+        info.files.contains(&si_name),
+        "a segment's own `.si` must be a member of the file set it records"
+    );
+    write_file(dir, &si_name, &segment_info::write(&info, ""))?;
+    pending_sync.push(si_name);
+    dir.sync(&pending_sync)?;
+    Ok(commit)
 }
 
 /// `StringHelper.randomId()`'s role for a freshly created
@@ -294,18 +390,22 @@ pub(crate) fn derive_sci_id(segment_id: &[u8; ID_LENGTH]) -> [u8; ID_LENGTH] {
 }
 
 /// One field of a multi-field index sort passed to
-/// [`flush_sorted_stored_only_segment`]: a field name, its per-doc sort key
-/// (parallel to the flush's `docs`), and that field's own `reverse`/
-/// `missing` policy. Real Lucene's `Sort` is an array of `SortField`s applied
-/// in priority order -- this struct is one array element.
+/// [`flush_sorted_stored_only_segment`]: the `SortField` itself, plus that
+/// field's per-doc sort key (parallel to the flush's `docs`). Real Lucene's
+/// `Sort` is an array of `SortField`s applied in priority order -- this
+/// struct is one array element together with the column it reads.
 #[derive(Debug, Clone)]
 pub struct SortKeySpec<'a> {
-    pub field: &'a str,
+    pub sort: &'a IndexSortField,
     /// `keys[i]` is doc `i`'s (pre-sort) value for this field, or `None` if
     /// doc `i` has no value for it. Must have exactly one entry per doc.
+    ///
+    /// One `i64` per document in the doc-values column's own encoding, which
+    /// is what every [`SortKeyComparator`]-supported sort reduces to: the raw
+    /// long for INT/LONG, the raw float/double bits for FLOAT/DOUBLE, the
+    /// selector's chosen value for a SORTED_NUMERIC column, the term ordinal
+    /// for a STRING or SORTED_SET one.
     pub keys: &'a [Option<i64>],
-    pub reverse: bool,
-    pub missing: SortMissingValue,
 }
 
 /// Like [`flush_stored_only_segment`], but physically reorders `docs` by a
@@ -316,32 +416,28 @@ pub struct SortKeySpec<'a> {
 ///
 /// # Scope (see `docs/parity.md` for the full write-up)
 ///
-/// - **One or more NUMERIC fields, priority-ordered.** `sort_fields[0]` is
-///   the primary sort key; `sort_fields[1]` breaks ties in `sort_fields[0]`,
-///   `sort_fields[2]` breaks ties in the first two, and so on -- mirroring
-///   real Lucene's `Sort` being an ordered array of `SortField`s. Each
-///   field's `reverse`/`missing` policy applies independently at its own
-///   tier: e.g. field 0 can sort descending with missing-last while field 1
-///   sorts ascending with missing-first. This port has no write-side
-///   doc-values format yet (see this module's own "What this deliberately is
-///   not" section), so each field's sort keys can't be read back from an
-///   already-written file the way real Lucene's `DocValuesConsumer`-fed sort
-///   does -- they must already be in memory, parallel to `docs`, which is
-///   exactly what [`SortKeySpec::keys`] is. `sort_fields` must be non-empty.
+/// - **One or more fields, priority-ordered.** `sort_fields[0]` is the
+///   primary sort key; `sort_fields[1]` breaks ties in `sort_fields[0]`, and
+///   so on -- mirroring real Lucene's `Sort` being an ordered array of
+///   `SortField`s. Each field's own `reverse`/missing-value policy applies
+///   independently at its own tier. This port has no write-side doc-values
+///   format that could feed the sort, so each field's keys must already be in
+///   memory, parallel to `docs`, which is exactly what [`SortKeySpec::keys`]
+///   is. `sort_fields` must be non-empty.
+/// - **Every sort a [`SortKeyComparator`] exists for**: the four numeric
+///   `SortField.Type`s with any missing value (or none), both
+///   `SortedNumericSelector`s, and term-ordinal sorts. A `BinarySortField`
+///   has no single-`i64` key and is rejected by `IndexWriter::set_index_sort`
+///   before it can reach here; this function asserts rather than silently
+///   sorting by nothing.
 /// - **Missing values**: `keys[i] == None` means doc `i` has no value for
-///   that sort field. It is substituted with that field's sentinel --
-///   `Long.MIN_VALUE` for [`SortMissingValue::First`], `Long.MAX_VALUE` for
-///   [`SortMissingValue::Last`], exactly the `missingValue` the `.si`
-///   records -- and then compared like any other value, so `reverse` applies
-///   to it too. With `reverse`, a `Last` doc therefore lands *first*. See
-///   `sort_key_rank` below, which cites Java's own comparator.
+///   that sort field. It is substituted with that field's sentinel and then
+///   compared like any other value, so `reverse` applies to it too -- see
+///   [`SortKeyComparator`], which cites Java's own comparator.
 /// - **Stable sort**: docs that compare equal across every field (including
 ///   both-missing at every tier) keep their original relative order,
 ///   matching `Vec::sort_by`'s stability guarantee and real Lucene's own
 ///   stable-merge-sort-based flush sort.
-/// - **No merge re-sort**: a later merge of two sorted segments in this port
-///   does NOT re-sort by this key (see `crate::merge` and `docs/parity.md`)
-///   -- only fresh single-segment flushes are sorted.
 #[allow(clippy::too_many_arguments)]
 pub fn flush_sorted_stored_only_segment(
     dir: &dyn Directory,
@@ -362,7 +458,7 @@ pub fn flush_sorted_stored_only_segment(
             docs.len(),
             spec.keys.len(),
             "sort_keys must have exactly one entry per doc for field {:?}",
-            spec.field
+            spec.sort.field
         );
     }
 
@@ -372,7 +468,12 @@ pub fn flush_sorted_stored_only_segment(
 
     let sorted_docs: Vec<Document> = order.iter().map(|&i| docs[i].clone()).collect();
 
-    let sci = flush_stored_only_segment(
+    // The index-sort descriptor goes into the `SegmentInfo` *before* the `.si`
+    // is written, not into a second copy of it afterwards:
+    // `write_stored_only_segment_files` hands back the in-memory
+    // `SegmentInfo`, so there is nothing to re-read, re-parse, rewrite and
+    // re-fsync.
+    let mut flushed = write_stored_only_segment_files(
         dir,
         segment_name,
         segment_id,
@@ -381,77 +482,33 @@ pub fn flush_sorted_stored_only_segment(
         fields,
         &sorted_docs,
         false,
+        false,
     )?;
-
-    // Patch the just-written `.si` to add the index-sort descriptor:
-    // `flush_stored_only_segment` always writes `index_sort: None`, and
-    // duplicating its whole file-writing sequence here just to plumb the
-    // extra fields through would be more surface area than re-reading and
-    // rewriting the one small `.si` file.
-    let si_name = format!("{segment_name}.si");
-    let si_bytes: Vec<u8> = dir.open(&si_name)?.to_vec();
-    let mut si = segment_info::parse(&si_bytes, &segment_id)?;
-    si.index_sort = Some(
-        sort_fields
-            .iter()
-            .map(|spec| IndexSortField {
-                field: spec.field.to_string(),
-                reverse: spec.reverse,
-                missing: spec.missing,
-            })
-            .collect(),
-    );
-    let si_bytes = segment_info::write(&si, "");
-    write_file(dir, &si_name, &si_bytes)?;
-    dir.sync(&[si_name])?;
-
-    Ok(sci)
+    flushed.info.index_sort = Some(sort_fields.iter().map(|spec| spec.sort.clone()).collect());
+    seal_flushed_segment(dir, segment_name, flushed)
 }
 
-/// Total-order comparator used to place two docs within the sorted layout,
-/// and the exact comparator real Lucene applies to the `.si` bytes
-/// [`crate::segment_info::write_sort_field`] emits for the same
-/// [`SortMissingValue`].
+/// The comparators `sort_fields` induces, in priority order.
 ///
-/// Those bytes are a `SortField(field, Type.LONG, reverse)` carrying an
-/// explicit `missingValue` of `Long.MIN_VALUE` ([`SortMissingValue::First`])
-/// or `Long.MAX_VALUE` ([`SortMissingValue::Last`]), and Java's reader-side
-/// comparator for them is `IndexSorter.LongSorter.getDocComparator`:
-///
-/// ```text
-/// long[] values = new long[maxDoc];
-/// Arrays.fill(values, missingValue);          // missing docs get the sentinel
-/// ... values[docID] = dvs.longValue(); ...
-/// return (d1, d2) -> reverseMul * Long.compare(values[d1], values[d2]);
-/// ```
-///
-/// The sentinel is an ordinary value inside that comparison, so **`reverseMul`
-/// applies to it too**: with `reverse == true`, a `Last`
-/// (`Long.MAX_VALUE`) doc sorts *first*, and a `First` (`Long.MIN_VALUE`) doc
-/// sorts *last*. `missing` therefore names which sentinel is substituted, not
-/// which end of the finished order the doc lands at -- the two coincide only
-/// for an ascending sort. This function reproduces that exactly: substitute,
-/// then compare, then reverse.
-///
-/// The comparison is done on `Ordering` rather than by negating a difference:
-/// negating `i64::MIN` would overflow, and `Long.compare` returning `-1/0/1`
-/// is what `reverseMul` multiplies in Java.
-pub(crate) fn sort_key_rank(
-    a: Option<i64>,
-    b: Option<i64>,
-    reverse: bool,
-    missing: SortMissingValue,
-) -> std::cmp::Ordering {
-    let sentinel = match missing {
-        SortMissingValue::First => i64::MIN,
-        SortMissingValue::Last => i64::MAX,
-    };
-    let ord = a.unwrap_or(sentinel).cmp(&b.unwrap_or(sentinel));
-    if reverse {
-        ord.reverse()
-    } else {
-        ord
-    }
+/// Panics if any of them has none ([`SortKeyComparator::new`] returning
+/// `None`, i.e. a `BinarySortField`). That is a programming error, not a
+/// data error: `IndexWriter::set_index_sort` refuses such a sort, so no
+/// buffer can be permuted by one. Sorting by "always equal" instead would
+/// produce a segment whose `.si` claims an order it does not have -- valid
+/// files, clean checksums, wrong index.
+fn comparators(sort_fields: &[SortKeySpec<'_>]) -> Vec<SortKeyComparator> {
+    sort_fields
+        .iter()
+        .map(|spec| {
+            SortKeyComparator::new(spec.sort).unwrap_or_else(|| {
+                panic!(
+                    "sort field {:?} has no single-i64 comparator; \
+                     IndexWriter::set_index_sort must refuse it before a flush sees it",
+                    spec.sort.field
+                )
+            })
+        })
+        .collect()
 }
 
 /// The permutation a (possibly multi-field) index sort imposes on a batch of
@@ -471,14 +528,16 @@ pub(crate) fn sort_key_rank(
 /// physically imposes and the order this module's own primitive imposes can
 /// never drift apart.
 pub fn sort_permutation(doc_count: usize, sort_fields: &[SortKeySpec<'_>]) -> Vec<usize> {
+    // Resolved once, outside the O(n log n) comparison loop, rather than
+    // re-derived from the `SortField` on every comparison.
+    let cmps = comparators(sort_fields);
     let mut order: Vec<usize> = (0..doc_count).collect();
     order.sort_by(|&a, &b| {
         sort_fields
             .iter()
-            .fold(std::cmp::Ordering::Equal, |acc, spec| {
-                acc.then_with(|| {
-                    sort_key_rank(spec.keys[a], spec.keys[b], spec.reverse, spec.missing)
-                })
+            .zip(&cmps)
+            .fold(std::cmp::Ordering::Equal, |acc, (spec, cmp)| {
+                acc.then_with(|| cmp.compare(spec.keys[a], spec.keys[b]))
             })
             .then(a.cmp(&b))
     });
@@ -808,6 +867,31 @@ mod tests {
         TempDir::new("segment-writer")
     }
 
+    /// `comparators`' guard, which is unreachable through `IndexWriter`
+    /// (`set_index_sort` refuses a `BinarySortField`) but is the difference
+    /// between a loud failure and a segment whose `.si` claims an order its
+    /// bytes do not have: with no comparator, every pair would compare equal
+    /// and the "sort" would be the identity permutation.
+    #[test]
+    #[should_panic(expected = "has no single-i64 comparator")]
+    fn a_sort_with_no_comparator_panics_rather_than_sorting_by_nothing() {
+        let sort = IndexSortField {
+            field: "bytes".to_string(),
+            reverse: false,
+            kind: crate::segment_info::IndexSortKind::Binary(
+                crate::segment_info::StringMissingValue::Last,
+            ),
+        };
+        let keys = [Some(1), Some(0)];
+        sort_permutation(
+            2,
+            &[SortKeySpec {
+                sort: &sort,
+                keys: &keys,
+            }],
+        );
+    }
+
     fn doc_ids(
         dir: &FsDirectory,
         segment_name: &str,
@@ -860,10 +944,8 @@ mod tests {
             &fields,
             &docs,
             &[SortKeySpec {
-                field: "num",
+                sort: &IndexSortField::long("num", false, Some(i64::MAX)),
                 keys: &sort_keys,
-                reverse: false,
-                missing: SortMissingValue::Last,
             }],
         )
         .unwrap();
@@ -871,10 +953,10 @@ mod tests {
         assert_eq!(doc_ids(&dir, "_0", segment_id, 3), vec!["a", "b", "c"]);
         let fields_sort = read_index_sort(&dir, "_0", segment_id).unwrap();
         assert_eq!(fields_sort.len(), 1);
-        let sf = &fields_sort[0];
-        assert_eq!(sf.field, "num");
-        assert!(!sf.reverse);
-        assert_eq!(sf.missing, SortMissingValue::Last);
+        assert_eq!(
+            fields_sort[0],
+            IndexSortField::long("num", false, Some(i64::MAX))
+        );
     }
 
     #[test]
@@ -895,10 +977,8 @@ mod tests {
             &fields,
             &docs,
             &[SortKeySpec {
-                field: "num",
+                sort: &IndexSortField::long("num", true, Some(i64::MIN)),
                 keys: &sort_keys,
-                reverse: true,
-                missing: SortMissingValue::First,
             }],
         )
         .unwrap();
@@ -928,10 +1008,8 @@ mod tests {
             &fields,
             &docs,
             &[SortKeySpec {
-                field: "num",
+                sort: &IndexSortField::long("num", false, Some(i64::MIN)),
                 keys: &sort_keys,
-                reverse: false,
-                missing: SortMissingValue::First,
             }],
         )
         .unwrap();
@@ -957,10 +1035,8 @@ mod tests {
             &fields,
             &docs,
             &[SortKeySpec {
-                field: "num",
+                sort: &IndexSortField::long("num", false, Some(i64::MAX)),
                 keys: &sort_keys,
-                reverse: false,
-                missing: SortMissingValue::Last,
             }],
         )
         .unwrap();
@@ -974,7 +1050,7 @@ mod tests {
     ///
     /// `segment_info::write_sort_field` emits `SortField(field, LONG,
     /// reverse)` with `missingValue = Long.MAX_VALUE` for
-    /// [`SortMissingValue::Last`], and Java's reader-side comparator for that
+    /// missing-last, and Java's reader-side comparator for that
     /// is `reverseMul * Long.compare(values[d1], values[d2])` over an array
     /// pre-filled with the sentinel (`IndexSorter.LongSorter`). So with
     /// `reverse: true` the `Long.MAX_VALUE` doc compares **greatest** and,
@@ -1002,10 +1078,9 @@ mod tests {
             &fields,
             &docs,
             &[SortKeySpec {
-                field: "num",
+                // descending, missing-last
+                sort: &IndexSortField::long("num", true, Some(i64::MAX)),
                 keys: &sort_keys,
-                reverse: true, // descending
-                missing: SortMissingValue::Last,
             }],
         )
         .unwrap();
@@ -1035,10 +1110,8 @@ mod tests {
             &fields,
             &docs,
             &[SortKeySpec {
-                field: "num",
+                sort: &IndexSortField::long("num", false, Some(i64::MAX)),
                 keys: &sort_keys,
-                reverse: false,
-                missing: SortMissingValue::Last,
             }],
         )
         .unwrap();
@@ -1062,10 +1135,8 @@ mod tests {
             &fields,
             &[doc("a"), doc("b")],
             &[SortKeySpec {
-                field: "num",
+                sort: &IndexSortField::long("num", false, Some(i64::MAX)),
                 keys: &[Some(1)],
-                reverse: false,
-                missing: SortMissingValue::Last,
             }],
         );
     }
@@ -1114,16 +1185,12 @@ mod tests {
             &docs,
             &[
                 SortKeySpec {
-                    field: "primary",
+                    sort: &IndexSortField::long("primary", false, Some(i64::MAX)),
                     keys: &primary,
-                    reverse: false,
-                    missing: SortMissingValue::Last,
                 },
                 SortKeySpec {
-                    field: "secondary",
+                    sort: &IndexSortField::long("secondary", false, Some(i64::MAX)),
                     keys: &secondary,
-                    reverse: false,
-                    missing: SortMissingValue::Last,
                 },
             ],
         )
@@ -1163,16 +1230,12 @@ mod tests {
             &docs,
             &[
                 SortKeySpec {
-                    field: "primary",
+                    sort: &IndexSortField::long("primary", false, Some(i64::MAX)),
                     keys: &primary,
-                    reverse: false,
-                    missing: SortMissingValue::Last,
                 },
                 SortKeySpec {
-                    field: "secondary",
+                    sort: &IndexSortField::long("secondary", false, Some(i64::MAX)),
                     keys: &secondary,
-                    reverse: false,
-                    missing: SortMissingValue::Last,
                 },
             ],
         )
@@ -1204,16 +1267,14 @@ mod tests {
             &docs,
             &[
                 SortKeySpec {
-                    field: "primary",
+                    // descending, but tied -- irrelevant here
+                    sort: &IndexSortField::long("primary", true, Some(i64::MAX)),
                     keys: &primary,
-                    reverse: true, // descending, but tied -- irrelevant here
-                    missing: SortMissingValue::Last,
                 },
                 SortKeySpec {
-                    field: "secondary",
+                    // descending: b(30), c(20), a(10)
+                    sort: &IndexSortField::long("secondary", true, Some(i64::MAX)),
                     keys: &secondary,
-                    reverse: true, // descending: b(30), c(20), a(10)
-                    missing: SortMissingValue::Last,
                 },
             ],
         )
@@ -1261,16 +1322,12 @@ mod tests {
             4,
             &[
                 SortKeySpec {
-                    field: "p",
+                    sort: &IndexSortField::long("p", false, Some(i64::MAX)),
                     keys: &primary,
-                    reverse: false,
-                    missing: SortMissingValue::Last,
                 },
                 SortKeySpec {
-                    field: "s",
+                    sort: &IndexSortField::long("s", false, Some(i64::MAX)),
                     keys: &secondary,
-                    reverse: false,
-                    missing: SortMissingValue::Last,
                 },
             ],
         );
@@ -1284,10 +1341,8 @@ mod tests {
         let order = sort_permutation(
             3,
             &[SortKeySpec {
-                field: "p",
+                sort: &IndexSortField::long("p", true, Some(i64::MAX)),
                 keys: &keys,
-                reverse: true,
-                missing: SortMissingValue::Last,
             }],
         );
         assert_eq!(order, vec![1, 2, 0]);

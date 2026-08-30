@@ -84,3 +84,9 @@ harness = false
 [[bench]]
 name = "knn_multi_segment"
 harness = false
+
+# Measures what `Weight.count`'s docFreq shortcut buys a counting caller
+# (c37-search-behaviours) -- see the bench's own module doc.
+[[bench]]
+name = "term_count"
+harness = false

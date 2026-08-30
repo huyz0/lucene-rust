@@ -365,13 +365,13 @@ pub use writer::{
     ffi_writer_committed_doc_count, ffi_writer_delete_all, ffi_writer_delete_documents,
     ffi_writer_delete_documents_by_query, ffi_writer_finish_commit,
     ffi_writer_live_commit_data_entry, ffi_writer_live_commit_data_len,
-    ffi_writer_pending_doc_count, ffi_writer_prepare_commit, ffi_writer_rollback,
-    ffi_writer_segment_info_name, ffi_writer_segment_infos_len,
+    ffi_writer_omit_norms_field, ffi_writer_pending_doc_count, ffi_writer_prepare_commit,
+    ffi_writer_rollback, ffi_writer_segment_info_name, ffi_writer_segment_infos_len,
     ffi_writer_set_custom_freq_postings_field, ffi_writer_set_doc_values_field,
-    ffi_writer_set_live_commit_data, ffi_writer_set_merge_policy, ffi_writer_set_norms_field,
-    ffi_writer_set_postings_field, ffi_writer_set_term_vector_field,
-    ffi_writer_soft_update_document, ffi_writer_update_binary_doc_value,
-    ffi_writer_update_document, ffi_writer_update_documents, ffi_writer_update_numeric_doc_value,
+    ffi_writer_set_live_commit_data, ffi_writer_set_merge_policy, ffi_writer_set_postings_field,
+    ffi_writer_set_term_vector_field, ffi_writer_soft_update_document,
+    ffi_writer_update_binary_doc_value, ffi_writer_update_document, ffi_writer_update_documents,
+    ffi_writer_update_numeric_doc_value,
 };
 
 use std::os::raw::c_char;

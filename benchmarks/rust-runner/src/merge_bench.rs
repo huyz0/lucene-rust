@@ -28,7 +28,7 @@ use lucene_index::merge::{
     merge_segments, merge_stored_only_segments, MergeOptions, MergeSortKeySpec, MergeSource,
     SourcePostings,
 };
-use lucene_index::segment_info::{LuceneVersion, SortMissingValue};
+use lucene_index::segment_info::{IndexSortField, LuceneVersion};
 use lucene_store::{Directory, FsDirectory};
 use lucene_util::fixed_bit_set::FixedBitSet;
 
@@ -254,7 +254,7 @@ fn stored_fields_scenarios(docs_per_segment: usize, num_segments: usize, vocab: 
     let clean: Vec<MergeSource> = flushed
         .iter()
         .zip(&readers)
-        .map(|(f, r)| MergeSource::stored_only(&f.fields, r, None))
+        .map(|(f, r)| MergeSource::stored_only(&f.fields, r, None, Some(version())))
         .collect();
     run_case("BULK (no deletions)", &clean, total_docs, total_bytes, &tmp);
 
@@ -274,7 +274,7 @@ fn stored_fields_scenarios(docs_per_segment: usize, num_segments: usize, vocab: 
         .iter()
         .zip(&readers)
         .zip(&live)
-        .map(|((f, r), l)| MergeSource::stored_only(&f.fields, r, Some(l)))
+        .map(|((f, r), l)| MergeSource::stored_only(&f.fields, r, Some(l), Some(version())))
         .collect();
     let surviving = total_docs - total_docs.div_ceil(3);
     run_case("DOC (1/3 deleted)", &deleted, surviving, total_bytes, &tmp);
@@ -283,7 +283,7 @@ fn stored_fields_scenarios(docs_per_segment: usize, num_segments: usize, vocab: 
     let renumbered: Vec<MergeSource> = permuted_flushed
         .iter()
         .zip(&permuted_readers)
-        .map(|(f, r)| MergeSource::stored_only(&f.fields, r, None))
+        .map(|(f, r)| MergeSource::stored_only(&f.fields, r, None, Some(version())))
         .collect();
     run_case(
         "VISITOR (renumbered fields)",
@@ -330,7 +330,7 @@ fn sorted_merge_scenario(docs_per_segment: usize, num_segments: usize, vocab: &[
     let sources: Vec<MergeSource> = flushed
         .iter()
         .zip(&readers)
-        .map(|(f, r)| MergeSource::stored_only(&f.fields, r, None))
+        .map(|(f, r)| MergeSource::stored_only(&f.fields, r, None, Some(version())))
         .collect();
 
     // Each source is internally sorted by its own key, and the sources'
@@ -341,10 +341,9 @@ fn sorted_merge_scenario(docs_per_segment: usize, num_segments: usize, vocab: &[
         .map(|_| (0..docs_per_segment).map(|n| Some(n as i64)).collect())
         .collect();
     let key_slices: Vec<&[Option<i64>]> = keys.iter().map(|k| k.as_slice()).collect();
+    let sort = IndexSortField::long("rank", false, Some(i64::MAX));
     let specs = vec![MergeSortKeySpec {
-        field: "rank",
-        reverse: false,
-        missing: SortMissingValue::Last,
+        sort: &sort,
         per_source_keys: &key_slices,
     }];
 
@@ -555,6 +554,8 @@ fn postings_scenario(docs_per_segment: usize, num_segments: usize, vocab: &[Stri
             postings: sp,
             points: &[],
             vectors: None,
+            min_version: None,
+            has_blocks: false,
         })
         .collect();
 
@@ -569,7 +570,7 @@ fn postings_scenario(docs_per_segment: usize, num_segments: usize, vocab: &[Stri
     let sources_no_postings: Vec<MergeSource> = opened
         .iter()
         .zip(&readers)
-        .map(|(_, r)| MergeSource::stored_only(&fields, r, None))
+        .map(|(_, r)| MergeSource::stored_only(&fields, r, None, Some(version())))
         .collect();
     let after_stored_only = time(3, || {
         merge_stored_only_segments(

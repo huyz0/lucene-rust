@@ -224,6 +224,34 @@ public class AppendScoringManifest {
               .add(new TermQuery(new Term("body", "cat")), BooleanClause.Occur.MUST)
               .build());
 
+      // ---- filter-only pruning (c37) ------------------------------------
+      // A filter-only query scores every hit 0, so under a top-`n` collector
+      // the queue fills with zeroes and the block-max bound (also 0) can never
+      // beat it -- Lucene prunes anyway, because
+      // `TopScoreDocCollector.updateMinCompetitiveScore` publishes
+      // `Math.nextUp(0f)` and a block whose max score is 0 is below that. These
+      // two entries are what a port's pruned run has to agree with: `big`'s
+      // term is in 300 documents, so a top-20 search fills the queue 15 times
+      // over, and the answer is the 20 lowest doc ids at score 0. The `dup`
+      // form is the same query with the clause repeated, which
+      // `BooleanQuery.rewrite` collapses -- recorded so a port that executes
+      // the *un*-rewritten two-leg conjunction has ground truth for it.
+      record(
+          out,
+          "scoring.boolean.filteronly.big",
+          searcher,
+          new BooleanQuery.Builder()
+              .add(new TermQuery(new Term("big", "everywhere")), BooleanClause.Occur.FILTER)
+              .build());
+      record(
+          out,
+          "scoring.boolean.filteronly.bigdup",
+          searcher,
+          new BooleanQuery.Builder()
+              .add(new TermQuery(new Term("big", "everywhere")), BooleanClause.Occur.FILTER)
+              .add(new TermQuery(new Term("big", "everywhere")), BooleanClause.Occur.FILTER)
+              .build());
+
       record(out, "scoring.phrase.exact", searcher, phrase(0));
       record(out, "scoring.phrase.slop2", searcher, phrase(2));
       record(out, "scoring.phrase.slop3", searcher, phrase(3));
@@ -278,6 +306,57 @@ public class AppendScoringManifest {
               .setSlop(2)
               .build());
 
+      // ---- reordered sloppy phrases (c37) --------------------------------
+      // `SloppyPhraseMatcher` shifts each slot's positions back by the slot's
+      // own index, so a match is a *window* over the shifted positions and the
+      // terms may appear in any order within it. This port was in-order only
+      // and silently under-matched every transposition; these entries are the
+      // ground truth that settles it, over documents the fixture already has:
+      //
+      //   doc 8555: alpha@0 beta@1     doc 8557: alpha@0 beta@3
+      //   doc 8556: alpha@0 alpha@1    doc 8558: delta@0 gamma@1
+      //
+      // Queried backwards, `"beta alpha"` shifts doc 8555 to beta=1, alpha=-1:
+      // a window of width 2, so it matches at slop 2 and not at slop 1, and
+      // weighs 1/(1+2). Doc 8557 shifts to beta=3, alpha=-1: width 4.
+      record(out, "scoring.phrase.reordered.slop1", searcher, reversedPhrase(1));
+      record(out, "scoring.phrase.reordered.slop2", searcher, reversedPhrase(2));
+      record(out, "scoring.phrase.reordered.slop4", searcher, reversedPhrase(4));
+      // The pair the SpanNearQuery fixture already uses for the same purpose,
+      // on terms nothing else touches.
+      record(
+          out,
+          "scoring.phrase.reordered.gammadelta",
+          searcher,
+          new PhraseQuery.Builder()
+              .add(new Term("pos", "gamma"), 0)
+              .add(new Term("pos", "delta"), 1)
+              .setSlop(2)
+              .build());
+      // A repeated term at slop 2: `rptGroups` must keep the two slots off one
+      // position, so doc 8555 (a single `alpha`) must NOT match however
+      // generous the budget, while doc 8556 (`alpha alpha`) must.
+      record(
+          out,
+          "scoring.phrase.repeat.slop2",
+          searcher,
+          new PhraseQuery.Builder()
+              .add(new Term("pos", "alpha"), 0)
+              .add(new Term("pos", "alpha"), 1)
+              .setSlop(2)
+              .build());
+      // The same transposition through `MultiPhraseQuery`, whose slots are term
+      // *sets* -- a different repeat-detection path in `SloppyPhraseMatcher`.
+      record(
+          out,
+          "scoring.multiphrase.reordered",
+          searcher,
+          new MultiPhraseQuery.Builder()
+              .add(new Term[] {new Term("pos", "beta")})
+              .add(new Term[] {new Term("pos", "alpha")})
+              .setSlop(2)
+              .build());
+
       // A phrase whose two slots are the SAME term, so the exact matcher's
       // frequency is a real count (doc 6 is "alpha alpha", one match) rather
       // than always 1.
@@ -306,6 +385,15 @@ public class AppendScoringManifest {
     Files.writeString(manifestPath, base + out);
 
     System.out.println("appended scoring.* ground truth to " + manifestPath);
+  }
+
+  /** {@code pos:"beta alpha"~slop} -- the fixture's `alpha beta` documents, backwards. */
+  private static PhraseQuery reversedPhrase(int slop) {
+    return new PhraseQuery.Builder()
+        .add(new Term("pos", "beta"), 0)
+        .add(new Term("pos", "alpha"), 1)
+        .setSlop(slop)
+        .build();
   }
 
   private static PhraseQuery phrase(int slop) {

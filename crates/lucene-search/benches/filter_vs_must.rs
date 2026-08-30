@@ -27,14 +27,19 @@
 //!   share of the total.
 //! - `filter_only_t0_t1` -- `#body:t0 #body:t1`: no scoring clause at all.
 //!
-//! The last one is not comparable to `and_t0_t1` under a top-`n` collector, and
-//! the bench says so by measuring both twice. A scoring conjunction *prunes*
-//! (its block-max bound beats the queue's bottom score and whole blocks are
-//! skipped); a filter-only conjunction has no score to bound and this port
-//! deliberately does not let a zero bound authorize a skip, so it visits the
-//! whole intersection. `*_exhaustive` re-runs both with a collector whose
+//! `*_exhaustive` re-runs the first and last shapes with a collector whose
 //! `ScoreMode` forbids pruning on either side, which is the like-for-like
-//! comparison of the *matching* work.
+//! comparison of the *matching* work with the skipping taken out.
+//!
+//! **c37 changed what the filter-only row measures.** c11 switched block-max
+//! pruning off for that shape, reading `0 <= 0` (a zero bound against a queue
+//! whose bottom is also zero) as "pruning on a tie"; Lucene prunes it, because
+//! `TopScoreDocCollector` publishes `Math.nextUp(0f)` and skips a block whose
+//! maximum is below that -- the same rule, one ULP apart. With the guard gone,
+//! `filter_only_t0_t1` went from **44.20 ms to 2.00 ms** on this corpus (both
+//! re-measured together, same session), against 7.02 ms for the all-`MUST`
+//! form of the same conjunction: the filter form is now the cheaper one under a
+//! top-`n` collector, as it already was without one.
 //!
 //! Run with `cargo bench -p lucene-search --bench filter_vs_must`.
 

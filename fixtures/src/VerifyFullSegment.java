@@ -9,6 +9,7 @@ import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
+import org.apache.lucene.util.SmallFloat;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -41,6 +42,73 @@ import java.nio.file.Path;
 public class VerifyFullSegment {
   /** Must match `write_full_segment_fixture.rs`. */
   private static final int NUM_DOCS = 2500;
+
+  /**
+   * `title`'s token count for document {@code i}, or {@code -1} when the
+   * document does not carry the field at all. Must match
+   * {@code write_full_segment_fixture.rs}'s {@code title_for}.
+   */
+  private static int titleLength(int i) {
+    int n = i % 7;
+    if (n == 0) {
+      return -1; // no `title` field on this document at all: no norm
+    }
+    if (n == 1) {
+      return 0; // present but empty: an explicit zero norm
+    }
+    return n;
+  }
+
+  /** {@code body}'s token count: "shared" plus two vocabulary terms. */
+  private static final int BODY_LENGTH = 3;
+
+  /**
+   * Reads {@code field}'s norm for every document through real Lucene and
+   * compares it to {@code SmallFloat.intToByte4(length)} -- the value
+   * {@code BM25Similarity.computeNorm} would have stored.
+   *
+   * <p>The absent-value case is checked too: {@code NumericDocValues} skips a
+   * document with no norm, which is what {@code NormValuesWriter}'s
+   * {@code DocsWithFieldSet} produces for a document that does not carry the
+   * field, and is distinguishable from the explicit {@code 0} a
+   * present-but-empty field gets.
+   */
+  private static int checkNorms(DirectoryReader reader, String field) throws IOException {
+    NumericDocValues norms = MultiDocValues.getNormValues(reader, field);
+    if (norms == null) {
+      System.out.println(
+          "MISMATCH field \"" + field + "\" has no norms -- typically an .fnm claiming "
+              + "omitNorms, or a missing .nvm/.nvd");
+      return 1;
+    }
+    boolean[] seen = new boolean[NUM_DOCS];
+    for (int doc = norms.nextDoc(); doc != NumericDocValues.NO_MORE_DOCS; doc = norms.nextDoc()) {
+      int length = field.equals("body") ? BODY_LENGTH : titleLength(doc);
+      if (length < 0) {
+        System.out.println(
+            "MISMATCH " + field + " doc " + doc + " has a norm but does not carry the field");
+        return 1;
+      }
+      long expected = SmallFloat.intToByte4(length);
+      if (norms.longValue() != expected) {
+        System.out.println(
+            "MISMATCH " + field + " norm for doc " + doc + ": " + norms.longValue()
+                + " != " + expected + " (length " + length + ")");
+        return 1;
+      }
+      seen[doc] = true;
+    }
+    for (int doc = 0; doc < NUM_DOCS; doc++) {
+      boolean expectNorm = field.equals("body") || titleLength(doc) >= 0;
+      if (seen[doc] != expectNorm) {
+        System.out.println(
+            "MISMATCH " + field + " doc " + doc + (expectNorm ? " is missing its norm"
+                : " has a norm it should not have"));
+        return 1;
+      }
+    }
+    return 0;
+  }
 
   public static void main(String[] args) throws IOException {
     Path path = Path.of(args[0]);
@@ -107,6 +175,18 @@ public class VerifyFullSegment {
           failures++;
         }
       }
+
+      // Norms, for a field NOTHING opted into them. Real Lucene writes a
+      // norm for every indexed field whose `omitNorms` is false; this port
+      // required an explicit per-field opt-in until c35 and forced
+      // `omit_norms: true` into the `.fnm` for every other indexed field, so
+      // a caller who indexed a text field and searched it got BM25 against a
+      // constant length. Compared value by value rather than merely asserting
+      // the column exists: a column of the wrong lengths reads back perfectly.
+      failures += checkNorms(reader, "title");
+      // And the field that *was* configured, whose length is 3 in every
+      // document ("shared" plus two vocabulary terms).
+      failures += checkNorms(reader, "body");
 
       // Stored fields must survive alongside the postings.
       String id = reader.storedFields().document(NUM_DOCS - 1).get("id");

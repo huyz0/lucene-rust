@@ -48,21 +48,23 @@
 //!   always take the plain positive-`bitsPerValue` `ForUtil` shape (never
 //!   the `bitsPerValue == 0` "all-256-consecutive" or `bitsPerValue < 0`
 //!   dense-bitset alternate encodings the real writer sometimes prefers for
-//!   space — see `docs/parity.md` for that scope cut) and impacts are always
-//!   an empty byte region (no competitive-impact computation) — the reader
-//!   accepts an empty impacts run and this writer never emits any queries
-//!   that need real ones. **`docFreq >= LEVEL1_NUM_DOCS` (8192) is now
+//!   space — see `docs/parity.md` for that scope cut). Each block carries
+//!   **one impact, `(maxFreq, norm = 1)`** rather than a real
+//!   `CompetitiveImpactAccumulator` run: [`FieldPostingsInput`] carries no
+//!   norms, so the accumulator has nothing to accumulate against. Norm 1 is
+//!   the highest-scoring norm, so the bound is *sound* but loose — it costs
+//!   query-time pruning, never a wrong answer. (An empty impacts region is
+//!   not an option: real Lucene rejects the segment with "Got empty list of
+//!   impacts".) **`docFreq >= LEVEL1_NUM_DOCS` (8192) is now
 //!   supported too**: for every complete span of [`LEVEL1_FACTOR`] (32) full
 //!   level-0 blocks, a level-1 skip entry ([`write_level1_span`]) is emitted
 //!   immediately before them — the exact write-side inverse of
 //!   `crate::postings::read_level1_entry`/`LazyDocsCursor::skip_level1_to`.
-//!   Like level-0, the level-1 entry's impacts region is always empty (no
-//!   competitive-impact computation at either level); since positions never
-//!   co-occur with a full block in the first place (`total_term_freq <
-//!   BLOCK_SIZE` is required whenever positions are indexed, and
-//!   `docFreq >= LEVEL1_NUM_DOCS` implies `total_term_freq >= 8192`), the
-//!   level-1 entry's `indexHasPos`-gated pos/pay sub-fields are never
-//!   reachable from this writer and are simply never written. **There is no
+//!   The level-1 entry carries the same single `(maxFreq, norm = 1)` impact,
+//!   maximised over the whole 8192-doc span so it bounds every level-0 block
+//!   beneath it, and — since `c20-postings-skip` — the `indexHasPos`-gated
+//!   `.pos`/`.pay` sub-fields too ([`PosSkipWriter::write_level1`]), which is
+//!   what lets a positions-indexing field exceed `BLOCK_SIZE` at all. **There is no
 //!   further per-term docFreq ceiling**: the reader has no level-2 skip
 //!   structure (`Lucene104` postings only ever have levels 0 and 1), so a
 //!   term spanning any number of level-1 spans plus a final partial span
@@ -185,7 +187,7 @@ use crate::blocktree::{
 use crate::field_infos::IndexOptions;
 use crate::for_util;
 use crate::postings::{
-    write_group_vints, BLOCK_SIZE, DOC_CODEC, LEVEL1_NUM_DOCS, META_CODEC, PAY_CODEC, POS_CODEC,
+    BLOCK_SIZE, DOC_CODEC, LEVEL1_NUM_DOCS, META_CODEC, PAY_CODEC, POS_CODEC,
     VERSION_CURRENT as DOC_VERSION_CURRENT,
 };
 
@@ -1386,7 +1388,7 @@ fn write_tail_block(
             raw.push(delta);
         }
     }
-    write_group_vints(out, &raw);
+    out.write_group_vints(&raw);
     if index_has_freq {
         for &(_, freq) in docs {
             if freq != 1 {

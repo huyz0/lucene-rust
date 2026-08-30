@@ -152,7 +152,7 @@ fn find_merges_output_feeds_directly_into_merge_execution() {
         .collect();
     let sources: Vec<MergeSource> = readers
         .iter()
-        .map(|r| MergeSource::stored_only(&fields, r, None))
+        .map(|r| MergeSource::stored_only(&fields, r, None, Some(version())))
         .collect();
 
     let sci = merge_stored_only_segments(

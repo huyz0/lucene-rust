@@ -197,6 +197,75 @@ fn multi_segment_term_query_scores_match_real_lucene_bit_for_bit() {
     }
 }
 
+/// `searchAfter` across segments -- the doc-base translation
+/// `TopScoreDocCollector.getLeafCollector` does with
+/// `afterDoc = after.doc - context.docBase`.
+///
+/// This is the half a single-segment fixture cannot see. `body:dog` matches in
+/// both segments and Lucene interleaves them (docs 7, 6 | 4, 3 | 1, 2), so
+/// every page boundary has one leaf being filtered against a global doc id that
+/// is not in its own range.
+///
+/// **What this test does and does not pin.** It pins that the pages partition
+/// real Lucene's ranking, across a segment boundary, bit for bit. It does *not*
+/// pin the doc-base subtraction on its own: this corpus has no two documents
+/// with equal scores, so the `score == afterScore && doc <= afterDoc` half of
+/// the rule -- the only half the translated doc id feeds -- is never reached,
+/// and dropping the subtraction still passes here. That half is pinned by
+/// `multi_segment::tests::the_after_fan_out_translates_the_global_doc_id_into_each_leafs_own_space`,
+/// whose synthetic hits are all ties (checked: it fails with the subtraction
+/// removed, this test does not).
+#[test]
+fn multi_segment_search_after_pages_match_real_lucene_bit_for_bit() {
+    let m = Manifest::load();
+    let reader = DirectoryReader::open(&FsDirectory::open(fixture_dir())).expect("open reader");
+    let opened = reader.open_segments().expect("open postings");
+    let segments = opened.as_open_segments();
+    let owned = reader.field_norms("body");
+    let norms: Vec<Option<&FieldNorms<'_>>> = owned.iter().map(Option::as_ref).collect();
+    let page_size: usize = m.get("after.dog.pageSize").parse().unwrap();
+    let query = TermQuery::new("body", "dog");
+
+    let mut hits = lucene_search::multi_segment::search_term_query_multi_segment(
+        &segments, &query, &norms, page_size,
+    )
+    .unwrap();
+    assert_same_as_lucene("after.dog.page1", &hits, &m.lucene_hits("after.dog.page1"));
+
+    let mut seen: Vec<i32> = hits.iter().map(|h| h.doc_id).collect();
+    for page in 2..=3 {
+        let key = format!("after.dog.page{page}");
+        let after = *hits.last().expect("a full page has a last hit");
+        hits = lucene_search::multi_segment::search_term_query_multi_segment_after(
+            &segments, &query, &norms, page_size, after,
+        )
+        .unwrap();
+        assert_same_as_lucene(&key, &hits, &m.lucene_hits(&key));
+        for hit in &hits {
+            assert!(
+                !seen.contains(&hit.doc_id),
+                "doc {} appeared on two pages",
+                hit.doc_id
+            );
+            seen.push(hit.doc_id);
+        }
+    }
+    // The three pages between them must be the whole result set, in order --
+    // otherwise a port could satisfy every page individually and still lose or
+    // repeat a document at a boundary.
+    let all = lucene_search::multi_segment::search_term_query_multi_segment(
+        &segments, &query, &norms, 20,
+    )
+    .unwrap();
+    assert_eq!(
+        seen,
+        all.iter().map(|h| h.doc_id).collect::<Vec<_>>(),
+        "paginating must walk the same ranking a single big page produces"
+    );
+    // And the fixture has to have enough hits for that to mean something.
+    assert_eq!(all.len(), page_size * 3);
+}
+
 /// The concurrent fan-out must be the sequential one's output, bit for bit --
 /// the module's own claim, now checked against real Lucene rather than against
 /// itself.

@@ -358,7 +358,7 @@ impl PointsRangeQuery {
 /// full port is out of scope here. This port instead computes span matches
 /// **directly against a doc's already-decoded position lists**, the same
 /// "compute matches directly against decoded data" shape
-/// [`crate::phrase_matches_in_doc`]/[`crate::phrase_matches_in_doc_sloppy`]
+/// [`crate::phrase_matches_in_doc`]/[`crate::sloppy_phrase`]
 /// already use for `PhraseQuery` — an honestly-scoped MVP: does a doc contain
 /// a valid span for this query, and what are its matching span ranges,
 /// computed eagerly rather than via a lazy iterator. Scoring is likewise flat
@@ -378,11 +378,13 @@ impl PointsRangeQuery {
 ///   `clauses`' own order (real `SpanNearQuery(clauses, slop, true)`);
 ///   `in_order == false` allows the sub-spans in **any** relative order,
 ///   provided they still fit within a `slop`-sized window (real
-///   `SpanNearQuery(clauses, slop, false)`) — this is the capability
-///   [`PhraseQuery`]'s own sloppy matching (task #28) deliberately does *not*
-///   support (that was explicitly scoped to in-order-only; see
-///   [`crate::phrase_matches_in_doc_sloppy`]'s doc comment), making
-///   `in_order == false` this type's key differentiator from a sloppy phrase.
+///   `SpanNearQuery(clauses, slop, false)`). Note that a sloppy
+///   [`PhraseQuery`] is **not** the same thing as `in_order == false`, even
+///   though both admit reordering: a phrase's budget is the width of the
+///   window covering every term's *slot-shifted* position
+///   (see [`crate::sloppy_phrase`]), while `SpanNearQuery`'s is the summed
+///   slack between adjacent spans. `in_order == true` is the arm with no
+///   phrase analogue at all.
 /// - `SpanOr { clauses }`: the union of every sub-`SpanQuery`'s own spans —
 ///   a doc/position matches iff **any** sub-query's spans match there (real
 ///   `SpanOrQuery`'s exact semantics, the same "pure union" contract
@@ -1559,12 +1561,12 @@ impl BooleanQuery {
 /// `PhraseQuery.Builder`'s default) is real `PhraseQuery`'s sloppy-matching budget:
 /// with `slop == 0` a doc matches iff every term occurs in the field *and* there's
 /// some base position `p` such that `terms[i]` occurs at position `p + i` for every
-/// `i` (exact adjacency); with `slop > 0`, terms may be spread apart by up to
-/// `slop` total positions while staying in phrase order — see
-/// [`crate::phrase_matches_in_doc_sloppy`]'s doc comment for the exact formula this
-/// port implements (an **in-order-only** subset of real Lucene's sloppy semantics;
-/// term reordering within the slop budget is not supported — see that function's
-/// doc comment and `docs/parity.md` for the precise scoping).
+/// `i` (exact adjacency); with `slop > 0` a doc matches iff some choice of one
+/// occurrence per slot fits in a window of width `slop` once each slot's
+/// positions are shifted back by the slot's own index — which admits terms
+/// appearing **out of phrase order**, exactly as real
+/// `SloppyPhraseMatcher` does. See [`crate::sloppy_phrase`] for the ported
+/// walk, and `docs/parity.md` for what is still out of scope.
 ///
 /// **Why `Vec<Vec<u8>>` instead of a `Vec<(Vec<u8>, i32)>` position-annotated list**:
 /// with positions always `0..terms.len()`, storing them explicitly would be
@@ -1618,9 +1620,10 @@ impl PhraseQuery {
 /// Scoped exactly like [`PhraseQuery`] is, and for the same reasons: positions
 /// are implicitly `0, 1, ..., term_arrays.len() - 1` (real
 /// `MultiPhraseQuery.Builder.add(Term[], int position)` allows explicit,
-/// non-consecutive positions), and `slop > 0` inherits
-/// [`crate::phrase_matches_in_doc_sloppy`]'s documented in-order-only sloppy
-/// semantics.
+/// non-consecutive positions), and `slop > 0` runs the same ported
+/// `SloppyPhraseMatcher` walk [`crate::sloppy_phrase`] documents -- including
+/// its `hasMultiTermRpts` repeat handling, which only a `MultiPhraseQuery` can
+/// reach.
 ///
 /// **Semantics, taken from `MultiPhraseWeight`, not guessed:**
 ///
@@ -1634,8 +1637,8 @@ impl PhraseQuery {
 ///   of **every** position and hands them all to `Similarity.scorer(...)`, so
 ///   the idf is the sum over all present terms -- not per position, and not the
 ///   max. The frequency is the merged-position phrase frequency, i.e. exactly
-///   what [`crate::phrase_freq_exact`]/[`crate::phrase_freq_sloppy`] compute
-///   over the unioned position lists.
+///   what [`crate::phrase_freq_exact`]/[`crate::sloppy_phrase::sloppy_phrase_freq`]
+///   compute over the unioned position lists.
 /// - **Degenerate shapes.** `MultiPhraseQuery.rewrite` turns an empty
 ///   `term_arrays` into a `MatchNoDocsQuery`, and a single-position one into a
 ///   `BooleanQuery` of `SHOULD` `TermQuery`s -- this port's executor reproduces

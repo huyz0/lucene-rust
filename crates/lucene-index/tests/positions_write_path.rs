@@ -123,7 +123,6 @@ fn write_index(tag: &str) -> (TempDir, usize) {
     writer.set_max_buffered_docs(NUM_DOCS as i32 + 1).unwrap();
     writer.set_ram_buffer_size_mb(4096.0).unwrap();
     writer.set_postings_field(Some("body")).unwrap();
-    writer.set_norms_field(Some("body")).unwrap();
     writer.set_term_vector_field(Some("body")).unwrap();
     writer
         .set_payload_source(Some(Box::new(|ctx| {

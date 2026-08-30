@@ -693,6 +693,98 @@ impl SegmentReader {
     pub fn soft_deletes_field(&self) -> Option<&str> {
         self.field_infos.soft_deletes_field()
     }
+
+    /// `SegmentReader.numDocs()`: `maxDoc()` minus this segment's deletions.
+    pub fn num_docs(&self) -> i32 {
+        match self.live_docs.as_deref() {
+            None => self.max_doc,
+            Some(bits) => bits.cardinality() as i32,
+        }
+    }
+
+    /// Everything `FieldExistsQuery`'s `count` and `rewrite` shortcuts read off
+    /// one `LeafReader`, gathered in one pass -- see
+    /// [`crate::weight_count::count_field_exists_leaf`] and
+    /// [`crate::weight_count::field_exists_rewrites_to_match_all_docs`], which
+    /// are the two rules that consume it.
+    ///
+    /// **`vector_size` is a parameter, not a lookup.** Java asks
+    /// `reader.getFloatVectorValues(field).size()`; in this port the vector
+    /// values are opened by the caller (`crate::vector_query`) rather than held
+    /// by the reader, so the one number this type cannot resolve is passed in.
+    /// It is only consulted for a field whose `FieldInfo` selects
+    /// [`crate::doc_value_query::FieldExistsSource::Vectors`]; pass `None` for
+    /// any other field.
+    ///
+    /// `Err(Error::FieldExistsUnsupported)` is Java's own `IllegalStateException`
+    /// for a field that exists and indexes none of norms, vectors or doc values.
+    /// A field that is not in this segment's `.fnm` at all is **not** an error:
+    /// it is Java's `fieldInfo == null`, and comes back with `source: None`.
+    pub fn field_exists_leaf(
+        &self,
+        field: &str,
+        vector_size: Option<i32>,
+    ) -> crate::Result<crate::weight_count::FieldExistsLeaf> {
+        let info = self.field_infos.fields.iter().find(|f| f.name == field);
+        let source = match info {
+            None => None,
+            Some(fi) => Some(crate::doc_value_query::field_exists_source(fi)?),
+        };
+        // Only the doc-values arm of Java's `count` ever reads `PointValues`,
+        // and parsing `.kdm` to find out costs a header check plus every
+        // field's metadata -- so it is not done for a norms- or vector-sourced
+        // field, which would never consult the answer.
+        let points_doc_count = match source {
+            Some(crate::doc_value_query::FieldExistsSource::DocValues) => {
+                info.and_then(|fi| self.points_doc_count(fi.number))
+            }
+            _ => None,
+        };
+        Ok(crate::weight_count::FieldExistsLeaf {
+            source,
+            max_doc: self.max_doc,
+            num_docs: self.num_docs(),
+            // `FieldInfo` bits, which is what Java's `count` selects its
+            // doc-count proxy by -- see `FieldExistsLeaf::raw_count`.
+            has_doc_values_skip_index: info.is_some_and(|fi| {
+                fi.doc_values_skip_index_type
+                    != lucene_codecs::field_infos::DocValuesSkipIndexType::None
+            }),
+            has_points: info.is_some_and(|fi| fi.point_dimension_count > 0),
+            is_indexed: info.is_some_and(|fi| {
+                fi.index_options != lucene_codecs::field_infos::IndexOptions::None
+            }),
+            terms_doc_count: self.field_stats(field).map(|(_, doc_count)| doc_count),
+            vector_size,
+            points_doc_count,
+            skipper_doc_count: info.and_then(|fi| {
+                self.doc_values_meta()
+                    .and_then(|meta| meta.skipper_meta(fi.number))
+                    .map(|skipper| skipper.doc_count)
+            }),
+        })
+    }
+
+    /// `PointValues.getDocCount()` for one field, `None` when this segment has
+    /// no BKD tree for it (or none at all).
+    ///
+    /// Its own function because the `.kdm`/`.kdi`/`.kdd` triple has to be
+    /// reopened to read a single counter -- the reader keeps the bytes, not a
+    /// parsed tree.
+    ///
+    /// **A `.kdm` that fails to decode is also `None`**, deliberately. The
+    /// caller is `field_exists_leaf`, whose only consumer treats this as a
+    /// doc-count *proxy*: an absent proxy costs a scan, which is always a
+    /// correct answer, while failing the whole query would refuse a count the
+    /// scan could still produce. Every other reader of this segment's points
+    /// still reports the corruption.
+    fn points_doc_count(&self, field_number: i32) -> Option<i32> {
+        let (kdm, kdi, kdd) = self.points_files()?;
+        let reader =
+            lucene_codecs::points::open(kdm, kdi, kdd, &self.segment_id, &self.segment_suffix)
+                .ok()?;
+        Some(reader.field(field_number)?.doc_count)
+    }
 }
 
 /// The per-format codec suffix embedded in a segment sub-file's own name.

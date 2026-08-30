@@ -663,11 +663,15 @@ fn explain_phrase(
     let term_positions: Vec<&[i32]> = term_positions.iter().map(|v| v.as_slice()).collect();
     // `PhraseScorer.score()`'s frequency: `ExactPhraseMatcher`'s match count
     // for `slop == 0`, `SloppyPhraseMatcher`'s summed `1/(1+matchLength)`
-    // otherwise -- see `crate::phrase_freq_sloppy`.
+    // otherwise -- see `crate::sloppy_phrase::sloppy_phrase_freq`.
     let phrase_freq = if query.slop == 0 {
         crate::phrase_freq_exact(&term_positions) as f32
     } else {
-        crate::phrase_freq_sloppy(&term_positions, query.slop)
+        crate::sloppy_phrase::sloppy_phrase_freq(
+            &term_positions,
+            &crate::sloppy_phrase::PhraseRepeats::for_phrase(&query.terms),
+            query.slop,
+        )
     };
     if phrase_freq == 0.0 {
         return Ok(Explanation::no_match("no matching phrase"));

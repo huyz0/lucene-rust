@@ -59,28 +59,39 @@
 //! All of those ints are `DataInput.readInt` (little-endian since Lucene 9),
 //! not vints.
 //!
-//! **What this port models.** [`IndexSortField`] carries only
-//! `(field, reverse, missing-first-or-last)` — the shape this port's
-//! sort-on-flush writer (`segment_writer::flush_sorted_stored_only_segment`)
-//! and merge-with-sort path actually produce, which is a single-valued
-//! `LONG` sort whose missing docs are pinned to `Long.MIN_VALUE`
-//! (missing-first) or `Long.MAX_VALUE` (missing-last). [`write`] therefore
-//! emits exactly that: provider `"SortField"`, type `"LONG"`, an explicit
-//! missing value of `i64::MIN`/`i64::MAX` — real, byte-compatible Lucene
-//! bytes a Java `SortFieldProvider.forName("SortField").readSortField` reads
-//! back as the identical `SortField`.
+//! **What this port models.** [`IndexSortField`] is Java's `SortField`
+//! as far as `SortFieldProvider` can round-trip it: all four providers, every
+//! `SortField.Type` that can legally be an index sort, both selector enums,
+//! `reverse`, and every form the missing value takes -- an arbitrary numeric
+//! sentinel, `STRING_FIRST`/`STRING_LAST`, or **no missing value at all**
+//! (which Java treats as `0` for a numeric sort and as the smallest ordinal
+//! for a string one). [`write`] is the exact byte-level inverse of [`parse`]
+//! for every one of them.
 //!
-//! [`parse`] is deliberately more permissive than [`write`]: it decodes every
-//! one of the four providers above and every `SortField.Type` Java can
-//! round-trip, and only then *lowers* the result onto [`IndexSortField`].
-//! An encoding that is valid Lucene but that `(field, reverse, first/last)`
-//! cannot represent faithfully — a numeric sort with no missing value (Java
-//! treats missing as `0`, which is neither first nor last), a numeric sort
-//! with an arbitrary missing sentinel, a non-`MIN` multi-value selector, or a
-//! `SCORE`/`DOC`/`CUSTOM`/`REWRITEABLE`/`STRING_VAL` type — is rejected as
-//! [`Error::UnsupportedSortField`] naming exactly what it was, rather than
-//! silently lowered onto a sort order this port would then get wrong. See
-//! `docs/parity.md` for the tracked gap.
+//! Until c35 it carried only `(field, reverse, missing-first-or-last)` -- the
+//! shape this port's own sort-on-flush writer produces -- and [`parse`]
+//! *rejected* everything else. That was honest but it meant an index a real
+//! `IndexWriter` wrote with an ordinary sort (a numeric sort with no missing
+//! value, an arbitrary sentinel, a `MAX` selector, a string sort) could not
+//! be **opened by this port at all**.
+//!
+//! Two things are still refused, and both are refused by Java too:
+//!
+//! - A `SortField.Type` that cannot be an index sort (`SCORE`, `DOC`,
+//!   `CUSTOM`, `STRING_VAL`, `REWRITEABLE`). `SortField.serialize` throws on
+//!   a missing value for them, and `IndexWriterConfig.setIndexSort` rejects
+//!   any `SortField` whose `getIndexSorter()` is `null` -- which is all five
+//!   -- so no `.si` real Lucene wrote can contain one.
+//! - A `SortedNumericSortField` whose type is `STRING`, which is an
+//!   `AssertionError` inside Java's own `serialize`.
+//!
+//! What this port cannot yet *act on* is narrower than what it can read, and
+//! is stated per consumer rather than by refusing the file:
+//! [`IndexSortField::key_comparison`] gives the comparator for every kind
+//! whose per-document key is a single `i64` (the four numeric types, both
+//! numeric selectors, and term ordinals for `STRING`/`SortedSetSortField`);
+//! a `BinarySortField` sorts on raw bytes and has none. See `docs/parity.md`
+//! for which consumer honours which.
 
 use lucene_store::codec_util::{self, ID_LENGTH};
 use lucene_store::data_input::{DataInput, SliceInput};
@@ -124,52 +135,375 @@ pub struct LuceneVersion {
     pub bugfix: i32,
 }
 
-/// Which **sentinel** real Lucene substitutes for a document that has no
-/// value for the index-sort field (`SortField.setMissingValue`), which
-/// [`write_sort_field`] emits verbatim into the `.si`.
+/// A `SortField.Type` that can be an index sort, paired with the missing
+/// value that goes with it -- Java's `SortField(field, type, reverse,
+/// missingValue)` for the four numeric types, where `None` means
+/// `setMissingValue` was never called.
 ///
-/// It names the sentinel, **not** the end of the finished order the document
-/// lands at. Lucene's comparator for a `LONG` sort is
-/// `reverseMul * Long.compare(values[d1], values[d2])` over an array
-/// pre-filled with the sentinel (`IndexSorter.LongSorter.getDocComparator`),
-/// so the sentinel is compared like any other value and `reverse` applies to
-/// it too. The two readings coincide only for an ascending sort:
+/// Type and missing value are **one** enum rather than two fields because
+/// Java's pairing of them is total: a `Type.INT` sort's missing value is an
+/// `Integer` that `serialize` writes with `writeInt`, a `Type.DOUBLE`'s is a
+/// `Double` written as `NumericUtils.doubleToSortableLong`. Two independent
+/// fields would make `(INT, Some(3.5))` representable and nothing on disk
+/// can hold it.
 ///
-/// | variant | sentinel | ascending | descending |
-/// |---|---|---|---|
-/// | `First` | `Long.MIN_VALUE` | missing docs first | missing docs **last** |
-/// | `Last` | `Long.MAX_VALUE` | missing docs last | missing docs **first** |
+/// `None` is not a synonym for any sentinel: `IndexSorter.LongSorter`
+/// pre-fills its comparison array with `missingValue` only when it is
+/// non-null, so a document with no value compares as **`0`**, which is
+/// neither first nor last. That case is exactly what this port used to
+/// refuse to open.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum NumericSortKey {
+    /// `SortField.Type.INT`; `IndexSorter.IntSorter`, `Integer.compare`.
+    Int(Option<i32>),
+    /// `SortField.Type.LONG`; `IndexSorter.LongSorter`, `Long.compare`.
+    Long(Option<i64>),
+    /// `SortField.Type.FLOAT`; `IndexSorter.FloatSorter`, `Float.compare`.
+    Float(Option<f32>),
+    /// `SortField.Type.DOUBLE`; `IndexSorter.DoubleSorter`, `Double.compare`.
+    Double(Option<f64>),
+}
+
+impl NumericSortKey {
+    /// The `SortField.Type` enum *name* this key serializes as -- what
+    /// `SortField.serialize` writes with `out.writeString(type.toString())`.
+    fn type_name(&self) -> &'static str {
+        match self {
+            NumericSortKey::Int(_) => TYPE_INT,
+            NumericSortKey::Long(_) => TYPE_LONG,
+            NumericSortKey::Float(_) => TYPE_FLOAT,
+            NumericSortKey::Double(_) => TYPE_DOUBLE,
+        }
+    }
+
+    /// How this key's per-document value is compared, and the value a
+    /// document with no value takes -- `IndexSorter.{Int,Long,Float,Double}
+    /// Sorter.getDocComparator`, whose array is pre-filled with
+    /// `missingValue` when it is non-null and with the JVM's zero default
+    /// otherwise.
+    ///
+    /// The sentinel is in the same encoding the doc-values column holds:
+    /// raw `Float.floatToRawIntBits`/`Double.doubleToRawLongBits`, matching
+    /// `FloatDocValuesField`/`DoubleDocValuesField` and the
+    /// `Float.intBitsToFloat((int) dvs.longValue())` those sorters apply.
+    fn key_comparison(&self) -> (SortKeyKind, i64) {
+        match *self {
+            NumericSortKey::Int(m) => (SortKeyKind::Int, m.unwrap_or(0) as i64),
+            NumericSortKey::Long(m) => (SortKeyKind::Long, m.unwrap_or(0)),
+            NumericSortKey::Float(m) => {
+                (SortKeyKind::Float, m.unwrap_or(0.0).to_bits() as i32 as i64)
+            }
+            NumericSortKey::Double(m) => (SortKeyKind::Double, m.unwrap_or(0.0).to_bits() as i64),
+        }
+    }
+}
+
+/// The missing value of a sort whose keys are *terms*: `SortField.STRING_FIRST`,
+/// `SortField.STRING_LAST`, or none at all.
 ///
-/// `crate::segment_writer::sort_key_rank` is the one place this is
-/// implemented, and `CheckIndex.testSort` -- Lucene's and this port's -- is
-/// what rejects a segment whose physical order disagrees with it.
+/// `IndexSorter.StringSorter` reads it as `missingValue == STRING_LAST ?
+/// Integer.MAX_VALUE : Integer.MIN_VALUE`, so **`None` behaves like `First`**
+/// -- the two are distinguishable on disk (`hasMissing == 0` versus an
+/// explicit marker) but not in the comparator. Both are kept so [`write`]
+/// reproduces the bytes it read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SortMissingValue {
-    /// `SortField.setMissingValue(Long.MIN_VALUE)`: a doc with no value
-    /// compares as the smallest possible value, so it sorts **first** under
-    /// an ascending sort and **last** under a reversed one.
+pub enum StringMissingValue {
+    /// `setMissingValue` was never called.
+    None,
+    /// `SortField.STRING_FIRST`.
     First,
-    /// `SortField.setMissingValue(Long.MAX_VALUE)`: a doc with no value
-    /// compares as the largest possible value, so it sorts **last** under an
-    /// ascending sort and **first** under a reversed one.
+    /// `SortField.STRING_LAST`.
     Last,
 }
 
-/// One field of an index sort descriptor (real Lucene's
-/// `SegmentInfo.indexSort` is a `Sort` of one or more `SortField`s -- this
+impl StringMissingValue {
+    /// `IndexSorter.StringSorter`'s `missingOrd`.
+    fn missing_ord(self) -> i64 {
+        match self {
+            StringMissingValue::Last => i32::MAX as i64,
+            StringMissingValue::None | StringMissingValue::First => i32::MIN as i64,
+        }
+    }
+}
+
+/// `SortedNumericSelector.Type` -- which of a multi-valued field's values a
+/// document sorts by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortedNumericSelector {
+    /// Ordinal 0.
+    Min,
+    /// Ordinal 1.
+    Max,
+}
+
+/// `SortedSetSelector.Type`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortedSetSelector {
+    /// Ordinal 0.
+    Min,
+    /// Ordinal 1.
+    Max,
+    /// Ordinal 2.
+    MiddleMin,
+    /// Ordinal 3.
+    MiddleMax,
+}
+
+/// Which `SortFieldProvider` wrote a sort field, and everything that provider
+/// carries beyond the field name and `reverse` -- the two every provider has.
+#[derive(Debug, Clone, PartialEq)]
+pub enum IndexSortKind {
+    /// `SortField` provider, one of the four numeric `SortField.Type`s, over
+    /// a single-valued NUMERIC doc-values column.
+    Numeric(NumericSortKey),
+    /// `SortField` provider with `SortField.Type.STRING`, over a SORTED
+    /// doc-values column, compared by term ordinal.
+    String(StringMissingValue),
+    /// `SortedNumericSortField` provider: a SORTED_NUMERIC column reduced to
+    /// one value per document by `selector`, then compared as `key` says.
+    SortedNumeric {
+        key: NumericSortKey,
+        selector: SortedNumericSelector,
+    },
+    /// `SortedSetSortField` provider: a SORTED_SET column reduced to one
+    /// ordinal per document by `selector`.
+    SortedSet {
+        selector: SortedSetSelector,
+        missing: StringMissingValue,
+    },
+    /// `BinarySortField` provider: a BINARY column compared as raw unsigned
+    /// bytes. The one kind whose per-document key is not a single `i64`, so
+    /// [`IndexSortField::key_comparison`] has none for it.
+    Binary(StringMissingValue),
+}
+
+/// How a per-document sort key that has been read out of doc values as one
+/// `i64` is compared. Each variant names the Java `compare` the corresponding
+/// `IndexSorter` applies, and they differ: `Long.compare` and
+/// `Float.compare` disagree on the same 64 bits, and `Integer.compare` over
+/// the low 32 disagrees with both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortKeyKind {
+    /// `Integer.compare` over `(int) value`, as `IntSorter` does after its
+    /// `values[docID] = (int) dvs.longValue()`.
+    Int,
+    /// `Long.compare`.
+    Long,
+    /// `Float.compare(Float.intBitsToFloat((int) value), ...)` over a value
+    /// holding `Float.floatToRawIntBits`, which is what a **NUMERIC** column
+    /// holds (`FloatDocValuesField`).
+    Float,
+    /// `Double.compare(Double.longBitsToDouble(value), ...)`, the NUMERIC
+    /// twin of [`SortKeyKind::Float`].
+    Double,
+    /// [`SortKeyKind::Float`] over a value holding
+    /// `NumericUtils.floatToSortableInt` instead, which is what a
+    /// **SORTED_NUMERIC** column holds (`FloatField` writes
+    /// `SortedNumericDocValuesField(name, floatToSortableInt(value))`).
+    /// `SortedNumericSelector.wrap` undoes it with
+    /// `NumericUtils.sortableFloatBits` before `FloatSorter` ever sees a
+    /// value; this variant is that `FilterNumericDocValues`.
+    SortableFloat,
+    /// The 64-bit twin of [`SortKeyKind::SortableFloat`]
+    /// (`NumericUtils.sortableDoubleBits`).
+    SortableDouble,
+    /// `Integer.compare` over term ordinals (`StringSorter`).
+    Ordinal,
+}
+
+/// One field of an index sort descriptor. Real Lucene's
+/// `SegmentInfo.indexSort` is a `Sort` of one or more `SortField`s; this
 /// port's [`SegmentInfo::index_sort`] is a priority-ordered, non-empty
-/// `Vec<IndexSortField>`). This carries only the `(field, reverse,
-/// missing-first-or-last)` triple this port's writers produce and its
-/// sorters act on -- see this module's "Index-sort encoding" doc section for
-/// exactly which real-Lucene encodings [`parse`] lowers onto it and which it
-/// rejects.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// `Vec<IndexSortField>` and this is one element of it.
+///
+/// `PartialEq` but not `Eq`: a `FLOAT`/`DOUBLE` missing value is a float, and
+/// `NaN != NaN`. Nothing keys a map on a sort field, and the one comparison
+/// that matters -- `IndexWriter::set_index_sort`'s congruence check against
+/// an existing segment's sort -- wants exactly `PartialEq`'s answer.
+#[derive(Debug, Clone, PartialEq)]
 pub struct IndexSortField {
     pub field: String,
     /// `false` == ascending, `true` == descending (real Lucene's
     /// `SortField.reverse`).
     pub reverse: bool,
-    pub missing: SortMissingValue,
+    pub kind: IndexSortKind,
+}
+
+impl IndexSortField {
+    /// The `SortField(field, Type.LONG, reverse)` with an explicit
+    /// `missingValue` that this port's own sort-on-flush and sort-preserving
+    /// merge writers produce -- the whole of what [`IndexSortField`] could
+    /// represent before c35, and still the common case.
+    pub fn long(field: impl Into<String>, reverse: bool, missing: Option<i64>) -> Self {
+        Self {
+            field: field.into(),
+            reverse,
+            kind: IndexSortKind::Numeric(NumericSortKey::Long(missing)),
+        }
+    }
+
+    /// How this sort's per-document key is compared and what a document with
+    /// no value compares as, or `None` when the key is not a single `i64` --
+    /// which is exactly `BinarySortField`, whose `IndexSorter.BinarySorter`
+    /// compares raw `BytesRef`s.
+    ///
+    /// This is the whole comparator contract: a consumer reads each
+    /// document's key out of the right doc-values column (applying the
+    /// selector for the multi-valued kinds), substitutes the sentinel for a
+    /// document that has none, compares as [`SortKeyKind`] says, and then
+    /// applies `reverse` -- **including to the sentinel**, which is an
+    /// ordinary value inside `reverseMul * X.compare(a, b)`.
+    pub fn key_comparison(&self) -> Option<(SortKeyKind, i64)> {
+        match &self.kind {
+            IndexSortKind::Numeric(key) => Some(key.key_comparison()),
+            // A SORTED_NUMERIC FLOAT/DOUBLE column holds
+            // `NumericUtils.floatToSortableInt`/`doubleToSortableLong`, not
+            // the raw bits a NUMERIC one holds, and
+            // `SortedNumericSelector.wrap` undoes that before the sorter sees
+            // a value. Comparing the stored form as raw bits instead would
+            // reverse the whole negative half of the ordering.
+            IndexSortKind::SortedNumeric { key, .. } => Some(match *key {
+                NumericSortKey::Float(m) => (
+                    SortKeyKind::SortableFloat,
+                    float_to_sortable_int(m.unwrap_or(0.0)) as i64,
+                ),
+                NumericSortKey::Double(m) => (
+                    SortKeyKind::SortableDouble,
+                    double_to_sortable_long(m.unwrap_or(0.0)),
+                ),
+                key => key.key_comparison(),
+            }),
+            IndexSortKind::String(missing) => Some((SortKeyKind::Ordinal, missing.missing_ord())),
+            IndexSortKind::SortedSet { missing, .. } => {
+                Some((SortKeyKind::Ordinal, missing.missing_ord()))
+            }
+            IndexSortKind::Binary(_) => None,
+        }
+    }
+}
+
+/// One sort field's comparator, resolved once out of an [`IndexSortField`].
+///
+/// Java rebuilds this per segment in `IndexSorter.*Sorter.getDocComparator`,
+/// which closes over `reverseMul`, the pre-filled sentinel and the type's own
+/// `compare`; resolving it once here is the same thing, and it makes the
+/// unsupportable case ([`IndexSortKind::Binary`], whose keys are raw bytes)
+/// *unconstructible* rather than a branch inside every comparison.
+///
+/// # The sentinel is an ordinary value
+///
+/// Lucene's comparator for a numeric sort is
+///
+/// ```text
+/// long[] values = new long[maxDoc];
+/// Arrays.fill(values, missingValue);          // missing docs get the sentinel
+/// ... values[docID] = dvs.longValue(); ...
+/// return (d1, d2) -> reverseMul * Long.compare(values[d1], values[d2]);
+/// ```
+///
+/// so **`reverse` applies to the sentinel too**: under a descending sort a
+/// document whose missing value is `Long.MAX_VALUE` sorts *first*. A missing
+/// value names which sentinel is substituted, not which end of the finished
+/// order the document lands at; the two coincide only for an ascending sort.
+/// `CheckIndex.testSort` -- Lucene's and this port's -- is what rejects a
+/// segment whose physical order disagrees.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SortKeyComparator {
+    kind: SortKeyKind,
+    sentinel: i64,
+    reverse: bool,
+}
+
+impl SortKeyComparator {
+    /// `None` for a sort whose per-document key is not a single `i64` --
+    /// see [`IndexSortField::key_comparison`].
+    pub fn new(sort: &IndexSortField) -> Option<Self> {
+        let (kind, sentinel) = sort.key_comparison()?;
+        Some(Self {
+            kind,
+            sentinel,
+            reverse: sort.reverse,
+        })
+    }
+
+    /// Compares two documents' keys, `None` meaning "this document has no
+    /// value for the sort field".
+    ///
+    /// The comparison is done on `Ordering` rather than by negating a
+    /// difference: negating `i64::MIN` overflows, and `Long.compare`
+    /// returning `-1/0/1` is what Java's `reverseMul` multiplies.
+    pub fn compare(&self, a: Option<i64>, b: Option<i64>) -> std::cmp::Ordering {
+        let (a, b) = (a.unwrap_or(self.sentinel), b.unwrap_or(self.sentinel));
+        let ord = match self.kind {
+            SortKeyKind::Int | SortKeyKind::Ordinal => (a as i32).cmp(&(b as i32)),
+            SortKeyKind::Long => a.cmp(&b),
+            SortKeyKind::Float => java_float_compare(
+                f32::from_bits(a as i32 as u32),
+                f32::from_bits(b as i32 as u32),
+            ),
+            SortKeyKind::Double => {
+                java_double_compare(f64::from_bits(a as u64), f64::from_bits(b as u64))
+            }
+            SortKeyKind::SortableFloat => java_float_compare(
+                sortable_int_to_float(a as i32),
+                sortable_int_to_float(b as i32),
+            ),
+            SortKeyKind::SortableDouble => {
+                java_double_compare(sortable_long_to_double(a), sortable_long_to_double(b))
+            }
+        };
+        if self.reverse {
+            ord.reverse()
+        } else {
+            ord
+        }
+    }
+}
+
+/// `java.lang.Float.compare`: `-0.0f < 0.0f`, every NaN is equal to every
+/// other NaN and greater than `+Infinity`.
+///
+/// Not `f32::total_cmp`, which orders a *negative* NaN below `-Infinity` --
+/// a real difference, because a FLOAT doc-values column holds whatever bits
+/// `Float.floatToRawIntBits` produced and Java compares them through
+/// `floatToIntBits`, which canonicalizes.
+fn java_float_compare(a: f32, b: f32) -> std::cmp::Ordering {
+    if a < b {
+        std::cmp::Ordering::Less
+    } else if a > b {
+        std::cmp::Ordering::Greater
+    } else {
+        canonical_float_bits(a).cmp(&canonical_float_bits(b))
+    }
+}
+
+/// `Float.floatToIntBits`.
+fn canonical_float_bits(v: f32) -> i32 {
+    if v.is_nan() {
+        0x7fc0_0000u32 as i32
+    } else {
+        v.to_bits() as i32
+    }
+}
+
+/// `java.lang.Double.compare`, the 64-bit twin of [`java_float_compare`].
+fn java_double_compare(a: f64, b: f64) -> std::cmp::Ordering {
+    if a < b {
+        std::cmp::Ordering::Less
+    } else if a > b {
+        std::cmp::Ordering::Greater
+    } else {
+        canonical_double_bits(a).cmp(&canonical_double_bits(b))
+    }
+}
+
+/// `Double.doubleToLongBits`.
+fn canonical_double_bits(v: f64) -> i64 {
+    if v.is_nan() {
+        0x7ff8_0000_0000_0000u64 as i64
+    } else {
+        v.to_bits() as i64
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -198,16 +532,6 @@ const PROVIDER_SORT_FIELD: &str = "SortField";
 const PROVIDER_SORTED_NUMERIC: &str = "SortedNumericSortField";
 const PROVIDER_SORTED_SET: &str = "SortedSetSortField";
 const PROVIDER_BINARY: &str = "BinarySortField";
-
-/// `SortedNumericSelector.Type.MIN` / `SortedSetSelector.Type.MIN` ordinal --
-/// the only multi-value selector [`IndexSortField`] can represent (it has no
-/// selector of its own, so anything else would silently change which value a
-/// doc sorts by).
-const SELECTOR_MIN: i32 = 0;
-/// `SortedNumericSelector.Type.values().length` (MIN, MAX).
-const SORTED_NUMERIC_SELECTOR_COUNT: i32 = 2;
-/// `SortedSetSelector.Type.values().length` (MIN, MAX, MIDDLE_MIN, MIDDLE_MAX).
-const SORTED_SET_SELECTOR_COUNT: i32 = 4;
 
 /// Parses a whole `.si` file already read into memory, verifying header, footer,
 /// and checksum. `segment_id` is the id Lucene stores alongside the segment in
@@ -296,17 +620,51 @@ pub fn parse(buf: &[u8], segment_id: &[u8; ID_LENGTH]) -> Result<SegmentInfo> {
 }
 
 /// `NumericUtils.floatToSortableInt` -- Java writes a FLOAT missing value in
-/// this sortable form, so the "is it +/-infinity" test has to be done in the
-/// same space.
+/// this sortable form, so a round trip has to go through the same space.
+///
+/// `Float.floatToIntBits` (which is what `NumericUtils` uses, not
+/// `floatToRawIntBits`) collapses every NaN to the canonical `0x7fc00000`,
+/// so this does too: without it a signalling NaN would write bytes Java
+/// never writes, and `write` would not be `parse`'s inverse for the value
+/// `parse` produced.
 fn float_to_sortable_int(v: f32) -> i32 {
-    let bits = v.to_bits() as i32;
+    let bits = if v.is_nan() {
+        0x7fc0_0000u32 as i32
+    } else {
+        v.to_bits() as i32
+    };
+    sortable_float_bits(bits)
+}
+
+/// `NumericUtils.sortableFloatBits` -- its own inverse.
+fn sortable_float_bits(bits: i32) -> i32 {
     bits ^ ((bits >> 31) & 0x7fff_ffff)
 }
 
-/// `NumericUtils.doubleToSortableLong`.
+/// `NumericUtils.sortableIntToFloat`.
+fn sortable_int_to_float(encoded: i32) -> f32 {
+    f32::from_bits(sortable_float_bits(encoded) as u32)
+}
+
+/// `NumericUtils.doubleToSortableLong`, with `Double.doubleToLongBits`'
+/// NaN canonicalization for the same reason as [`float_to_sortable_int`].
 fn double_to_sortable_long(v: f64) -> i64 {
-    let bits = v.to_bits() as i64;
+    let bits = if v.is_nan() {
+        0x7ff8_0000_0000_0000u64 as i64
+    } else {
+        v.to_bits() as i64
+    };
+    sortable_double_bits(bits)
+}
+
+/// `NumericUtils.sortableDoubleBits` -- its own inverse.
+fn sortable_double_bits(bits: i64) -> i64 {
     bits ^ ((bits >> 63) & 0x7fff_ffff_ffff_ffff)
+}
+
+/// `NumericUtils.sortableLongToDouble`.
+fn sortable_long_to_double(encoded: i64) -> f64 {
+    f64::from_bits(sortable_double_bits(encoded) as u64)
 }
 
 fn unsupported<T>(field: &str, reason: impl Into<String>) -> Result<T> {
@@ -323,48 +681,16 @@ fn read_reverse(input: &mut SliceInput) -> Result<bool> {
     Ok(input.read_i32()? == 1)
 }
 
-/// Lowers a decoded numeric missing value onto [`SortMissingValue`]. Only the
-/// two sentinels this port's own sorters mean by "first"/"last" are
-/// representable; anything else (including Java's default *absent* missing
-/// value, which it treats as `0`) is rejected rather than silently rounded to
-/// one of them.
-fn numeric_missing(field: &str, type_name: &str, raw: i64) -> Result<SortMissingValue> {
-    let (first, last) = match type_name {
-        TYPE_INT => (i32::MIN as i64, i32::MAX as i64),
-        TYPE_LONG => (i64::MIN, i64::MAX),
-        TYPE_FLOAT => (
-            float_to_sortable_int(f32::NEG_INFINITY) as i64,
-            float_to_sortable_int(f32::INFINITY) as i64,
-        ),
-        TYPE_DOUBLE => (
-            double_to_sortable_long(f64::NEG_INFINITY),
-            double_to_sortable_long(f64::INFINITY),
-        ),
-        _ => unreachable!("numeric_missing called with non-numeric type {type_name}"),
-    };
-    if raw == first {
-        Ok(SortMissingValue::First)
-    } else if raw == last {
-        Ok(SortMissingValue::Last)
-    } else {
-        unsupported(
-            field,
-            format!(
-                "{type_name} missing value {raw} is neither the sort-first nor the sort-last \
-                 sentinel; this port models only first/last placement"
-            ),
-        )
-    }
-}
-
 const TYPE_INT: &str = "INT";
 const TYPE_LONG: &str = "LONG";
 const TYPE_FLOAT: &str = "FLOAT";
 const TYPE_DOUBLE: &str = "DOUBLE";
 const TYPE_STRING: &str = "STRING";
 /// Every remaining `SortField.Type` constant. They are legal enum names (so
-/// `readType` accepts them), but Java's own `SortField.Provider` refuses to
-/// deserialize a missing value for them and none can be an index sort.
+/// `readType` accepts them), Java's own `SortField.Provider` refuses to
+/// deserialize a *missing value* for them, and
+/// `IndexWriterConfig.setIndexSort` refuses the `SortField` outright because
+/// `getIndexSorter()` is `null` -- so none can be an index sort.
 const TYPES_NOT_SORTABLE_ON_DISK: [&str; 5] =
     ["SCORE", "DOC", "CUSTOM", "STRING_VAL", "REWRITEABLE"];
 
@@ -386,24 +712,53 @@ fn read_type(input: &mut SliceInput) -> Result<String> {
     }
 }
 
-/// Reads the numeric missing value for `type_name` in Java's encoding
-/// (`SortField.serialize`'s `case INT/LONG/FLOAT/DOUBLE`).
-fn read_numeric_missing(
+/// The `hasMissing` int plus, when it is 1, that type's own missing-value
+/// encoding -- `SortField.Provider.readSortField`'s numeric cases and
+/// `SortedNumericSortField.Provider.readSortField`'s, which are the same
+/// four lines.
+fn read_numeric_key(
     input: &mut SliceInput,
     field: &str,
     type_name: &str,
-) -> Result<SortMissingValue> {
-    let raw = match type_name {
-        TYPE_INT | TYPE_FLOAT => input.read_i32()? as i64,
-        TYPE_LONG | TYPE_DOUBLE => input.read_i64()?,
+) -> Result<NumericSortKey> {
+    let has_missing = input.read_i32()? == 1;
+    Ok(match type_name {
+        TYPE_INT => NumericSortKey::Int(if has_missing {
+            Some(input.read_i32()?)
+        } else {
+            None
+        }),
+        TYPE_LONG => NumericSortKey::Long(if has_missing {
+            Some(input.read_i64()?)
+        } else {
+            None
+        }),
+        TYPE_FLOAT => NumericSortKey::Float(if has_missing {
+            Some(sortable_int_to_float(input.read_i32()?))
+        } else {
+            None
+        }),
+        TYPE_DOUBLE => NumericSortKey::Double(if has_missing {
+            Some(sortable_long_to_double(input.read_i64()?))
+        } else {
+            None
+        }),
         other => {
             return unsupported(
                 field,
-                format!("cannot deserialize a missing value for sort type {other}"),
+                format!(
+                    "sort type {other} cannot be an index sort: \
+                     IndexWriterConfig.setIndexSort refuses a SortField whose getIndexSorter() \
+                     is null, which is all of SCORE/DOC/CUSTOM/STRING_VAL/REWRITEABLE, and \
+                     SortedNumericSortField.getIndexSorter() likewise asserts on STRING \
+                     (SortedNumericSelector.wrap: \"numericType must be a numeric type\"). \
+                     Java can deserialize such a SortField when it carries no missing value, \
+                     and throws on one that does; either way no .si real Lucene wrote holds it \
+                     as an index sort"
+                ),
             )
         }
-    };
-    numeric_missing(field, type_name, raw)
+    })
 }
 
 /// `SortField.Provider.readSortField`.
@@ -411,108 +766,94 @@ fn read_plain_sort_field(input: &mut SliceInput) -> Result<IndexSortField> {
     let field = input.read_string()?;
     let type_name = read_type(input)?;
     let reverse = read_reverse(input)?;
-    let has_missing = input.read_i32()? == 1;
-    if !has_missing {
-        return unsupported(
-            &field,
-            format!(
-                "{type_name} sort has no missing value; Java sorts such docs as if they held \
-                 0/the empty ord, which is neither first nor last"
-            ),
-        );
-    }
-    let missing = if type_name == TYPE_STRING {
-        // Java: `missingString == 1` -> STRING_FIRST, else STRING_LAST.
-        if input.read_i32()? == 1 {
-            SortMissingValue::First
+    let kind = if type_name == TYPE_STRING {
+        // Java: `hasMissing == 0` -> null; else `missingString == 1` ->
+        // STRING_FIRST, anything else -> STRING_LAST.
+        IndexSortKind::String(if input.read_i32()? == 1 {
+            if input.read_i32()? == 1 {
+                StringMissingValue::First
+            } else {
+                StringMissingValue::Last
+            }
         } else {
-            SortMissingValue::Last
-        }
+            StringMissingValue::None
+        })
     } else {
-        read_numeric_missing(input, &field, &type_name)?
+        IndexSortKind::Numeric(read_numeric_key(input, &field, &type_name)?)
     };
     Ok(IndexSortField {
         field,
         reverse,
-        missing,
+        kind,
     })
 }
 
-/// `SortedNumericSortField.readSelectorType` / `SortedSetSortField.readSelectorType`:
-/// an out-of-range ordinal is a hard error, a valid non-`MIN` one is a
-/// representable-scope rejection.
-fn read_selector(
-    input: &mut SliceInput,
-    provider: &'static str,
-    count: i32,
-    field: &str,
-) -> Result<()> {
-    let selector = input.read_i32()?;
-    if selector >= count || selector < 0 {
-        return Err(Error::UnknownSortSelector { provider, selector });
+/// `SortedNumericSortField.readSelectorType`: an out-of-range ordinal is a
+/// hard error (Java throws, or indexes past the end of `values()`).
+fn read_sorted_numeric_selector(input: &mut SliceInput) -> Result<SortedNumericSelector> {
+    match input.read_i32()? {
+        0 => Ok(SortedNumericSelector::Min),
+        1 => Ok(SortedNumericSelector::Max),
+        selector => Err(Error::UnknownSortSelector {
+            provider: PROVIDER_SORTED_NUMERIC,
+            selector,
+        }),
     }
-    if selector != SELECTOR_MIN {
-        return unsupported(
-            field,
-            format!("{provider} selector ordinal {selector} is not MIN; this port has no selector"),
-        );
-    }
-    Ok(())
 }
 
-/// `SortedNumericSortField.Provider.readSortField`.
+/// `SortedSetSortField.readSelectorType`.
+fn read_sorted_set_selector(input: &mut SliceInput) -> Result<SortedSetSelector> {
+    match input.read_i32()? {
+        0 => Ok(SortedSetSelector::Min),
+        1 => Ok(SortedSetSelector::Max),
+        2 => Ok(SortedSetSelector::MiddleMin),
+        3 => Ok(SortedSetSelector::MiddleMax),
+        selector => Err(Error::UnknownSortSelector {
+            provider: PROVIDER_SORTED_SET,
+            selector,
+        }),
+    }
+}
+
+/// `SortedNumericSortField.Provider.readSortField`. Java's `default ->
+/// throw new AssertionError()` covers `STRING` and the five unsortable
+/// types; [`read_numeric_key`] is that `default`.
 fn read_sorted_numeric_sort_field(input: &mut SliceInput) -> Result<IndexSortField> {
     let field = input.read_string()?;
     let type_name = read_type(input)?;
     let reverse = read_reverse(input)?;
-    read_selector(
-        input,
-        PROVIDER_SORTED_NUMERIC,
-        SORTED_NUMERIC_SELECTOR_COUNT,
-        &field,
-    )?;
-    let has_missing = input.read_i32()? == 1;
-    if !has_missing {
-        return unsupported(
-            &field,
-            format!("{type_name} sorted-numeric sort has no missing value"),
-        );
-    }
-    let missing = read_numeric_missing(input, &field, &type_name)?;
+    let selector = read_sorted_numeric_selector(input)?;
+    let key = read_numeric_key(input, &field, &type_name)?;
     Ok(IndexSortField {
         field,
         reverse,
-        missing,
+        kind: IndexSortKind::SortedNumeric { key, selector },
     })
 }
 
 /// The shared tail of `SortedSetSortField.serialize` and
-/// `BinarySortField.serialize`: `0 == no missing value`, `1 == STRING_FIRST`,
-/// `2 == STRING_LAST`.
-fn read_string_missing_marker(input: &mut SliceInput, field: &str) -> Result<SortMissingValue> {
-    match input.read_i32()? {
-        1 => Ok(SortMissingValue::First),
-        2 => Ok(SortMissingValue::Last),
-        0 => unsupported(field, "sort has no missing value"),
-        other => unsupported(field, format!("unknown missing-value marker {other}")),
-    }
+/// `BinarySortField.serialize`: `1 == STRING_FIRST`, `2 == STRING_LAST`,
+/// **anything else == no missing value**. Java's two readers both fall
+/// through to the `null` constructor rather than validating, so this does
+/// too -- being stricter than the format would refuse a file Lucene reads.
+fn read_string_missing_marker(input: &mut SliceInput) -> Result<StringMissingValue> {
+    Ok(match input.read_i32()? {
+        1 => StringMissingValue::First,
+        2 => StringMissingValue::Last,
+        _ => StringMissingValue::None,
+    })
 }
 
 /// `SortedSetSortField.Provider.readSortField`.
 fn read_sorted_set_sort_field(input: &mut SliceInput) -> Result<IndexSortField> {
     let field = input.read_string()?;
     let reverse = read_reverse(input)?;
-    read_selector(
-        input,
-        PROVIDER_SORTED_SET,
-        SORTED_SET_SELECTOR_COUNT,
-        &field,
-    )?;
-    let missing = read_string_missing_marker(input, &field)?;
+    let selector = read_sorted_set_selector(input)?;
+    let missing = read_string_missing_marker(input)?;
     Ok(IndexSortField {
         field,
         reverse,
-        missing,
+        kind: IndexSortKind::SortedSet { selector, missing },
     })
 }
 
@@ -520,11 +861,11 @@ fn read_sorted_set_sort_field(input: &mut SliceInput) -> Result<IndexSortField> 
 fn read_binary_sort_field(input: &mut SliceInput) -> Result<IndexSortField> {
     let field = input.read_string()?;
     let reverse = read_reverse(input)?;
-    let missing = read_string_missing_marker(input, &field)?;
+    let missing = read_string_missing_marker(input)?;
     Ok(IndexSortField {
         field,
         reverse,
-        missing,
+        kind: IndexSortKind::Binary(missing),
     })
 }
 
@@ -541,21 +882,256 @@ fn read_sort_field(input: &mut SliceInput) -> Result<IndexSortField> {
     }
 }
 
-/// Writes one sort field as `SortField.Provider` + `SortField.serialize`
-/// would: a single-valued `LONG` sort whose missing docs are pinned to
-/// `Long.MIN_VALUE` (first) or `Long.MAX_VALUE` (last), which is exactly what
-/// this port's sort-on-flush/sort-on-merge writers produce (see
-/// `segment_writer::sort_key_rank`).
-fn write_sort_field(out: &mut Vec<u8>, sf: &IndexSortField) {
-    out.write_string(PROVIDER_SORT_FIELD);
-    out.write_string(&sf.field);
-    out.write_string(TYPE_LONG);
-    out.write_i32(if sf.reverse { 1 } else { 0 });
-    out.write_i32(1); // missing value present
-    out.write_i64(match sf.missing {
-        SortMissingValue::First => i64::MIN,
-        SortMissingValue::Last => i64::MAX,
+/// `SortField.serialize`'s missing-value tail for the four numeric types --
+/// `writeInt(0)` when there is none, otherwise `writeInt(1)` followed by that
+/// type's own encoding. Shared by the `SortField` and
+/// `SortedNumericSortField` providers, whose `serialize`s are the same four
+/// cases.
+fn write_numeric_missing(out: &mut Vec<u8>, key: &NumericSortKey) {
+    match *key {
+        NumericSortKey::Int(Some(v)) => {
+            out.write_i32(1);
+            out.write_i32(v);
+        }
+        NumericSortKey::Long(Some(v)) => {
+            out.write_i32(1);
+            out.write_i64(v);
+        }
+        NumericSortKey::Float(Some(v)) => {
+            out.write_i32(1);
+            out.write_i32(float_to_sortable_int(v));
+        }
+        NumericSortKey::Double(Some(v)) => {
+            out.write_i32(1);
+            out.write_i64(double_to_sortable_long(v));
+        }
+        NumericSortKey::Int(None)
+        | NumericSortKey::Long(None)
+        | NumericSortKey::Float(None)
+        | NumericSortKey::Double(None) => out.write_i32(0),
+    }
+}
+
+/// `SortedSetSortField.serialize`/`BinarySortField.serialize`'s trailing
+/// marker.
+fn write_string_missing_marker(out: &mut Vec<u8>, missing: StringMissingValue) {
+    out.write_i32(match missing {
+        StringMissingValue::First => 1,
+        StringMissingValue::Last => 2,
+        StringMissingValue::None => 0,
     });
+}
+
+/// Writes one sort field exactly as `SortFieldProvider.write` does: the
+/// provider's SPI name, then that provider's own `serialize` bytes. The
+/// byte-level inverse of [`read_sort_field`] for every [`IndexSortKind`].
+fn write_sort_field(out: &mut Vec<u8>, sf: &IndexSortField) {
+    let reverse = if sf.reverse { 1 } else { 0 };
+    match &sf.kind {
+        IndexSortKind::Numeric(key) => {
+            out.write_string(PROVIDER_SORT_FIELD);
+            out.write_string(&sf.field);
+            out.write_string(key.type_name());
+            out.write_i32(reverse);
+            write_numeric_missing(out, key);
+        }
+        IndexSortKind::String(missing) => {
+            out.write_string(PROVIDER_SORT_FIELD);
+            out.write_string(&sf.field);
+            out.write_string(TYPE_STRING);
+            out.write_i32(reverse);
+            match missing {
+                // `serialize`'s STRING case: STRING_LAST is `writeInt(0)`
+                // and STRING_FIRST is `writeInt(1)` -- the *opposite* way
+                // round from `SortedSetSortField`'s marker, which is why
+                // these two are written separately rather than shared.
+                StringMissingValue::None => out.write_i32(0),
+                StringMissingValue::First => {
+                    out.write_i32(1);
+                    out.write_i32(1);
+                }
+                StringMissingValue::Last => {
+                    out.write_i32(1);
+                    out.write_i32(0);
+                }
+            }
+        }
+        IndexSortKind::SortedNumeric { key, selector } => {
+            out.write_string(PROVIDER_SORTED_NUMERIC);
+            out.write_string(&sf.field);
+            out.write_string(key.type_name());
+            out.write_i32(reverse);
+            out.write_i32(match selector {
+                SortedNumericSelector::Min => 0,
+                SortedNumericSelector::Max => 1,
+            });
+            write_numeric_missing(out, key);
+        }
+        IndexSortKind::SortedSet { selector, missing } => {
+            out.write_string(PROVIDER_SORTED_SET);
+            out.write_string(&sf.field);
+            out.write_i32(reverse);
+            out.write_i32(match selector {
+                SortedSetSelector::Min => 0,
+                SortedSetSelector::Max => 1,
+                SortedSetSelector::MiddleMin => 2,
+                SortedSetSelector::MiddleMax => 3,
+            });
+            write_string_missing_marker(out, *missing);
+        }
+        IndexSortKind::Binary(missing) => {
+            out.write_string(PROVIDER_BINARY);
+            out.write_string(&sf.field);
+            out.write_i32(reverse);
+            write_string_missing_marker(out, *missing);
+        }
+    }
+}
+
+/// A `Sort` rendered exactly as Java's `Sort.toString()` renders it --
+/// `SortField.toString`/`SortedNumericSortField.toString`/
+/// `SortedSetSortField.toString` joined by commas, `<none>` for no sort.
+///
+/// It is what the `cannot change previous indexSort=` error quotes, and it is
+/// public because the fixture manifests carry Lucene's own `Sort.toString()`
+/// output: `tests/index_sort_wide_fixtures.rs` compares this against it, which
+/// is the only way the rendering is pinned to Java's rather than to a reading
+/// of it.
+pub fn describe_index_sort(sort: Option<&[IndexSortField]>) -> String {
+    /// `SortField.getMissingValue()`'s `toString()`, which is what
+    /// `SortField.toString` appends after ` missingValue=`.
+    fn numeric_missing(key: &NumericSortKey) -> Option<String> {
+        match *key {
+            NumericSortKey::Int(m) => m.map(|v| v.to_string()),
+            NumericSortKey::Long(m) => m.map(|v| v.to_string()),
+            // `Float.toString`/`Double.toString` always print a decimal
+            // point; Rust's `Display` prints `1` where Java prints `1.0`.
+            NumericSortKey::Float(m) => m.map(java_float_string),
+            NumericSortKey::Double(m) => m.map(java_double_string),
+        }
+    }
+
+    fn string_missing(missing: StringMissingValue) -> Option<&'static str> {
+        match missing {
+            StringMissingValue::None => None,
+            StringMissingValue::First => Some("SortField.STRING_FIRST"),
+            StringMissingValue::Last => Some("SortField.STRING_LAST"),
+        }
+    }
+
+    fn type_name(key: &NumericSortKey) -> &'static str {
+        match key {
+            NumericSortKey::Int(_) => "INT",
+            NumericSortKey::Long(_) => "LONG",
+            NumericSortKey::Float(_) => "FLOAT",
+            NumericSortKey::Double(_) => "DOUBLE",
+        }
+    }
+
+    match sort {
+        None => "<none>".to_string(),
+        Some(fields) => fields
+            .iter()
+            .map(|sf| {
+                // `SortField.toString`/`SortedNumericSortField.toString`/
+                // `SortedSetSortField.toString`, reproduced exactly: the
+                // fixture manifests carry Lucene's own `Sort.toString()` and
+                // `tests/index_sort_fixtures.rs` compares against it.
+                let (head, tail) = match &sf.kind {
+                    IndexSortKind::Numeric(key) => (
+                        format!(
+                            "<{}: \"{}\">",
+                            type_name(key).to_ascii_lowercase(),
+                            sf.field
+                        ),
+                        String::new(),
+                    ),
+                    IndexSortKind::String(_) => {
+                        (format!("<string: \"{}\">", sf.field), String::new())
+                    }
+                    IndexSortKind::SortedNumeric { key, selector } => (
+                        format!("<sortednumeric: \"{}\">", sf.field),
+                        format!(
+                            " selector={} type={}",
+                            match selector {
+                                SortedNumericSelector::Min => "MIN",
+                                SortedNumericSelector::Max => "MAX",
+                            },
+                            type_name(key)
+                        ),
+                    ),
+                    IndexSortKind::SortedSet { selector, .. } => (
+                        format!("<sortedset: \"{}\">", sf.field),
+                        format!(
+                            " selector={}",
+                            match selector {
+                                SortedSetSelector::Min => "MIN",
+                                SortedSetSelector::Max => "MAX",
+                                SortedSetSelector::MiddleMin => "MIDDLE_MIN",
+                                SortedSetSelector::MiddleMax => "MIDDLE_MAX",
+                            }
+                        ),
+                    ),
+                    // `BinarySortField.toString` -- its own, not the
+                    // `Type.CUSTOM` branch it would otherwise inherit from
+                    // `SortField`.
+                    IndexSortKind::Binary(_) => {
+                        (format!("<binary: \"{}\">", sf.field), String::new())
+                    }
+                };
+                let missing = match &sf.kind {
+                    IndexSortKind::Numeric(key) | IndexSortKind::SortedNumeric { key, .. } => {
+                        numeric_missing(key)
+                    }
+                    IndexSortKind::String(m)
+                    | IndexSortKind::SortedSet { missing: m, .. }
+                    | IndexSortKind::Binary(m) => string_missing(*m).map(str::to_string),
+                };
+                format!(
+                    "{head}{}{}{tail}",
+                    if sf.reverse { "!" } else { "" },
+                    missing
+                        .map(|m| format!(" missingValue={m}"))
+                        .unwrap_or_default(),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(","),
+    }
+}
+
+/// `Float.toString` for the values a `SortField` missing value can hold.
+///
+/// Three differences from Rust's `Display`, all of them real: Java always
+/// prints a decimal point (`1.0` where Rust prints `1`), spells the
+/// infinities `Infinity`/`-Infinity` where Rust prints `inf`/`-inf`, and
+/// agrees on `NaN`. Java also switches to scientific notation outside
+/// `1e-3 ..= 1e7` where Rust does not; that is *not* reproduced, and the
+/// only consumer of the difference would be an error message quoting a
+/// missing value of that magnitude.
+fn java_float_string(v: f32) -> String {
+    if v.is_infinite() {
+        return if v > 0.0 { "Infinity" } else { "-Infinity" }.to_string();
+    }
+    with_decimal_point(format!("{v}"))
+}
+
+/// `Double.toString`, the 64-bit twin of [`java_float_string`].
+fn java_double_string(v: f64) -> String {
+    if v.is_infinite() {
+        return if v > 0.0 { "Infinity" } else { "-Infinity" }.to_string();
+    }
+    with_decimal_point(format!("{v}"))
+}
+
+/// Java's "a float always prints a decimal point" rule, applied to a finite
+/// non-NaN rendering.
+fn with_decimal_point(s: String) -> String {
+    if s.contains(['.', 'e', 'E', 'N']) {
+        s
+    } else {
+        format!("{s}.0")
+    }
 }
 
 /// Port of `Lucene99SegmentInfoFormat.write`: the exact byte-level inverse of
@@ -819,6 +1395,16 @@ mod tests {
         ));
     }
 
+    /// A `SortField(field, LONG, reverse)` with the `Long.MIN_VALUE`/
+    /// `Long.MAX_VALUE` sentinel this port's own sorted writers emit.
+    fn long_sort(field: &str, reverse: bool, missing_last: bool) -> IndexSortField {
+        IndexSortField::long(
+            field,
+            reverse,
+            Some(if missing_last { i64::MAX } else { i64::MIN }),
+        )
+    }
+
     #[test]
     fn two_field_sort_count_parses_both_fields() {
         let mut b = SiBuilder::valid();
@@ -828,34 +1414,22 @@ mod tests {
         b.sort_field_bytes = bytes;
         let si = parse(&b.build(), &b.id).unwrap();
         let fields = si.index_sort.unwrap();
-        assert_eq!(fields.len(), 2);
-        assert_eq!(fields[0].field, "price");
-        assert!(!fields[0].reverse);
-        assert_eq!(fields[0].missing, SortMissingValue::Last);
-        assert_eq!(fields[1].field, "timestamp");
-        assert!(fields[1].reverse);
-        assert_eq!(fields[1].missing, SortMissingValue::First);
+        assert_eq!(
+            fields,
+            vec![
+                long_sort("price", false, true),
+                long_sort("timestamp", true, false)
+            ]
+        );
     }
 
     #[test]
     fn three_field_sort_round_trips_with_mixed_policies() {
         let mut si = sample_si();
         si.index_sort = Some(vec![
-            IndexSortField {
-                field: "a".to_string(),
-                reverse: false,
-                missing: SortMissingValue::First,
-            },
-            IndexSortField {
-                field: "b".to_string(),
-                reverse: true,
-                missing: SortMissingValue::Last,
-            },
-            IndexSortField {
-                field: "c".to_string(),
-                reverse: false,
-                missing: SortMissingValue::Last,
-            },
+            long_sort("a", false, false),
+            long_sort("b", true, true),
+            long_sort("c", false, true),
         ]);
         let bytes = write(&si, "");
         let parsed = parse(&bytes, &si.id).unwrap();
@@ -896,11 +1470,10 @@ mod tests {
         b.num_sort_fields = 1;
         b.sort_field_bytes = SiBuilder::long_sort_field_bytes("price", false, true);
         let si = parse(&b.build(), &b.id).unwrap();
-        let fields = si.index_sort.unwrap();
-        assert_eq!(fields.len(), 1);
-        assert_eq!(fields[0].field, "price");
-        assert!(!fields[0].reverse);
-        assert_eq!(fields[0].missing, SortMissingValue::Last);
+        assert_eq!(
+            si.index_sort.unwrap(),
+            vec![long_sort("price", false, true)]
+        );
     }
 
     #[test]
@@ -941,94 +1514,154 @@ mod tests {
         assert!(!si.index_sort.unwrap()[0].reverse);
     }
 
+    /// **The c35 fix, read direction.** A numeric sort with *no* missing
+    /// value is what `new SortField("f", Type.LONG)` produces when nobody
+    /// calls `setMissingValue` -- the most ordinary sort there is -- and
+    /// until c35 this port refused to open the index at all rather than
+    /// model it. Java sorts such a document as if it held `0`.
     #[test]
-    fn missing_less_numeric_sort_is_rejected_not_guessed() {
+    fn a_numeric_sort_with_no_missing_value_parses_and_compares_as_zero() {
         let mut b = SiBuilder::valid();
         b.num_sort_fields = 1;
         b.sort_field_bytes = SiBuilder::plain_sort_field_bytes("price", TYPE_LONG, 0, None);
-        let err = parse(&b.build(), &b.id).unwrap_err();
-        assert!(
-            matches!(&err, Error::UnsupportedSortField { field, .. } if field == "price"),
-            "unexpected error: {err}"
-        );
+        let sf = &parse(&b.build(), &b.id).unwrap().index_sort.unwrap()[0];
+        assert_eq!(sf.kind, IndexSortKind::Numeric(NumericSortKey::Long(None)));
+        let cmp = SortKeyComparator::new(sf).unwrap();
+        // A missing document compares as 0: above -1, below 1.
+        assert_eq!(cmp.compare(None, Some(-1)), std::cmp::Ordering::Greater);
+        assert_eq!(cmp.compare(None, Some(1)), std::cmp::Ordering::Less);
+        assert_eq!(cmp.compare(None, Some(0)), std::cmp::Ordering::Equal);
     }
 
-    /// An arbitrary numeric missing value (Java allows any long) is neither
-    /// "first" nor "last" -- rejecting is the only honest lowering.
+    /// An arbitrary numeric missing value (Java allows any long) is carried
+    /// through, sentinel and all -- it used to be rejected because
+    /// `(first|last)` could not hold it.
     #[test]
-    fn arbitrary_numeric_missing_value_is_rejected() {
-        let mut b = SiBuilder::valid();
-        b.num_sort_fields = 1;
-        b.sort_field_bytes =
-            SiBuilder::plain_sort_field_bytes("price", TYPE_LONG, 0, Some(&42i64.to_le_bytes()));
-        assert!(matches!(
-            parse(&b.build(), &b.id),
-            Err(Error::UnsupportedSortField { .. })
-        ));
+    fn an_arbitrary_numeric_missing_value_round_trips() {
+        let mut si = sample_si();
+        si.index_sort = Some(vec![IndexSortField::long("price", true, Some(42))]);
+        let bytes = write(&si, "");
+        let parsed = parse(&bytes, &si.id).unwrap();
+        assert_eq!(parsed.index_sort, si.index_sort);
+        let sf = &parsed.index_sort.unwrap()[0];
+        let cmp = SortKeyComparator::new(sf).unwrap();
+        // Descending, so a missing (42) document sorts *before* 100 and
+        // *after* 7 -- the sentinel is compared like any other value.
+        assert_eq!(cmp.compare(None, Some(100)), std::cmp::Ordering::Greater);
+        assert_eq!(cmp.compare(None, Some(7)), std::cmp::Ordering::Less);
     }
 
+    /// Every `SortField.Type`/missing-value combination the plain provider
+    /// can hold, round-tripped through `write` -> `parse` including the
+    /// no-missing-value form.
     #[test]
-    fn int_float_double_and_string_sentinels_all_lower() {
-        let cases: Vec<(&str, Vec<u8>, SortMissingValue)> = vec![
-            (
-                TYPE_INT,
-                i32::MIN.to_le_bytes().to_vec(),
-                SortMissingValue::First,
-            ),
-            (
-                TYPE_INT,
-                i32::MAX.to_le_bytes().to_vec(),
-                SortMissingValue::Last,
-            ),
-            (
-                TYPE_FLOAT,
-                float_to_sortable_int(f32::NEG_INFINITY)
-                    .to_le_bytes()
-                    .to_vec(),
-                SortMissingValue::First,
-            ),
-            (
-                TYPE_FLOAT,
-                float_to_sortable_int(f32::INFINITY).to_le_bytes().to_vec(),
-                SortMissingValue::Last,
-            ),
-            (
-                TYPE_DOUBLE,
-                double_to_sortable_long(f64::NEG_INFINITY)
-                    .to_le_bytes()
-                    .to_vec(),
-                SortMissingValue::First,
-            ),
-            (
-                TYPE_DOUBLE,
-                double_to_sortable_long(f64::INFINITY)
-                    .to_le_bytes()
-                    .to_vec(),
-                SortMissingValue::Last,
-            ),
-            // STRING: 1 == STRING_FIRST, anything else == STRING_LAST.
-            (
-                TYPE_STRING,
-                1i32.to_le_bytes().to_vec(),
-                SortMissingValue::First,
-            ),
-            (
-                TYPE_STRING,
-                0i32.to_le_bytes().to_vec(),
-                SortMissingValue::Last,
-            ),
+    fn every_numeric_type_and_missing_form_round_trips() {
+        let kinds = [
+            NumericSortKey::Int(None),
+            NumericSortKey::Int(Some(i32::MIN)),
+            NumericSortKey::Int(Some(-7)),
+            NumericSortKey::Int(Some(i32::MAX)),
+            NumericSortKey::Long(None),
+            NumericSortKey::Long(Some(i64::MIN)),
+            NumericSortKey::Long(Some(i64::MAX)),
+            NumericSortKey::Float(None),
+            NumericSortKey::Float(Some(f32::NEG_INFINITY)),
+            NumericSortKey::Float(Some(-1.5)),
+            NumericSortKey::Float(Some(f32::INFINITY)),
+            NumericSortKey::Double(None),
+            NumericSortKey::Double(Some(f64::NEG_INFINITY)),
+            NumericSortKey::Double(Some(2.25)),
+            NumericSortKey::Double(Some(f64::INFINITY)),
         ];
-        for (type_name, missing, expected) in cases {
-            let mut b = SiBuilder::valid();
-            b.num_sort_fields = 1;
-            b.sort_field_bytes =
-                SiBuilder::plain_sort_field_bytes("f", type_name, 0, Some(&missing));
-            let si = parse(&b.build(), &b.id)
-                .unwrap_or_else(|e| panic!("type {type_name} should parse: {e}"));
-            assert_eq!(si.index_sort.unwrap()[0].missing, expected, "{type_name}");
+        for kind in kinds {
+            for reverse in [false, true] {
+                let sf = IndexSortField {
+                    field: "f".to_string(),
+                    reverse,
+                    kind: IndexSortKind::Numeric(kind),
+                };
+                let mut si = sample_si();
+                si.index_sort = Some(vec![sf.clone()]);
+                let parsed = parse(&write(&si, ""), &si.id).unwrap();
+                assert_eq!(parsed.index_sort, Some(vec![sf]), "{kind:?}");
+            }
         }
     }
 
+    /// The STRING form of the plain provider, whose missing-value encoding
+    /// is `writeInt(1)` for `STRING_FIRST` and `writeInt(0)` for
+    /// `STRING_LAST` -- the *opposite* way round from the sorted-set marker,
+    /// which is exactly the kind of detail a shared helper would have got
+    /// wrong.
+    #[test]
+    fn the_string_sort_field_round_trips_all_three_missing_forms() {
+        for missing in [
+            StringMissingValue::None,
+            StringMissingValue::First,
+            StringMissingValue::Last,
+        ] {
+            let sf = IndexSortField {
+                field: "name".to_string(),
+                reverse: true,
+                kind: IndexSortKind::String(missing),
+            };
+            let mut si = sample_si();
+            si.index_sort = Some(vec![sf.clone()]);
+            let parsed = parse(&write(&si, ""), &si.id).unwrap();
+            assert_eq!(parsed.index_sort, Some(vec![sf]), "{missing:?}");
+        }
+    }
+
+    /// Both selector enums, every ordinal, both providers -- and the
+    /// `BinarySortField` provider, which has no selector at all.
+    #[test]
+    fn every_selector_and_provider_round_trips() {
+        let mut fields = Vec::new();
+        for selector in [SortedNumericSelector::Min, SortedNumericSelector::Max] {
+            fields.push(IndexSortField {
+                field: format!("sn{selector:?}"),
+                reverse: true,
+                kind: IndexSortKind::SortedNumeric {
+                    key: NumericSortKey::Int(Some(3)),
+                    selector,
+                },
+            });
+        }
+        for selector in [
+            SortedSetSelector::Min,
+            SortedSetSelector::Max,
+            SortedSetSelector::MiddleMin,
+            SortedSetSelector::MiddleMax,
+        ] {
+            fields.push(IndexSortField {
+                field: format!("ss{selector:?}"),
+                reverse: false,
+                kind: IndexSortKind::SortedSet {
+                    selector,
+                    missing: StringMissingValue::Last,
+                },
+            });
+        }
+        for missing in [
+            StringMissingValue::None,
+            StringMissingValue::First,
+            StringMissingValue::Last,
+        ] {
+            fields.push(IndexSortField {
+                field: format!("bin{missing:?}"),
+                reverse: true,
+                kind: IndexSortKind::Binary(missing),
+            });
+        }
+        let mut si = sample_si();
+        si.index_sort = Some(fields.clone());
+        let parsed = parse(&write(&si, ""), &si.id).unwrap();
+        assert_eq!(parsed.index_sort, Some(fields));
+    }
+
+    /// The exact provider byte streams Java writes, decoded -- hand-built
+    /// rather than produced by [`write`], so the two sides cannot agree on a
+    /// misreading of the format.
     #[test]
     fn sorted_numeric_sorted_set_and_binary_providers_all_decode() {
         // SortedNumericSortField: field, type, reverse, selector, hasMissing, value
@@ -1037,7 +1670,7 @@ mod tests {
         write_string(&mut sn, "sn");
         write_string(&mut sn, TYPE_LONG);
         sn.extend_from_slice(&1i32.to_le_bytes()); // reverse
-        sn.extend_from_slice(&0i32.to_le_bytes()); // selector MIN
+        sn.extend_from_slice(&1i32.to_le_bytes()); // selector MAX
         sn.extend_from_slice(&1i32.to_le_bytes()); // hasMissing
         sn.extend_from_slice(&i64::MAX.to_le_bytes());
 
@@ -1046,7 +1679,7 @@ mod tests {
         write_string(&mut ss, PROVIDER_SORTED_SET);
         write_string(&mut ss, "ss");
         ss.extend_from_slice(&0i32.to_le_bytes());
-        ss.extend_from_slice(&0i32.to_le_bytes()); // selector MIN
+        ss.extend_from_slice(&2i32.to_le_bytes()); // selector MIDDLE_MIN
         ss.extend_from_slice(&1i32.to_le_bytes()); // STRING_FIRST
 
         // BinarySortField: field, reverse, missing marker
@@ -1064,50 +1697,448 @@ mod tests {
         b.sort_field_bytes = bytes;
 
         let fields = parse(&b.build(), &b.id).unwrap().index_sort.unwrap();
-        assert_eq!(fields.len(), 3);
-        assert_eq!(fields[0].field, "sn");
-        assert!(fields[0].reverse);
-        assert_eq!(fields[0].missing, SortMissingValue::Last);
-        assert_eq!(fields[1].field, "ss");
-        assert_eq!(fields[1].missing, SortMissingValue::First);
-        assert_eq!(fields[2].field, "bin");
-        assert_eq!(fields[2].missing, SortMissingValue::Last);
+        assert_eq!(
+            fields,
+            vec![
+                IndexSortField {
+                    field: "sn".to_string(),
+                    reverse: true,
+                    kind: IndexSortKind::SortedNumeric {
+                        key: NumericSortKey::Long(Some(i64::MAX)),
+                        selector: SortedNumericSelector::Max,
+                    },
+                },
+                IndexSortField {
+                    field: "ss".to_string(),
+                    reverse: false,
+                    kind: IndexSortKind::SortedSet {
+                        selector: SortedSetSelector::MiddleMin,
+                        missing: StringMissingValue::First,
+                    },
+                },
+                IndexSortField {
+                    field: "bin".to_string(),
+                    reverse: false,
+                    kind: IndexSortKind::Binary(StringMissingValue::Last),
+                },
+            ]
+        );
     }
 
     #[test]
     fn out_of_range_selector_ordinal_rejected() {
-        let mut ss = Vec::new();
-        write_string(&mut ss, PROVIDER_SORTED_SET);
-        write_string(&mut ss, "ss");
-        ss.extend_from_slice(&0i32.to_le_bytes());
-        ss.extend_from_slice(&9i32.to_le_bytes()); // no such SortedSetSelector.Type
-        ss.extend_from_slice(&1i32.to_le_bytes());
-        let mut b = SiBuilder::valid();
-        b.num_sort_fields = 1;
-        b.sort_field_bytes = ss;
-        assert!(matches!(
-            parse(&b.build(), &b.id),
-            Err(Error::UnknownSortSelector { selector: 9, .. })
-        ));
+        for (provider, extra_int) in [
+            (PROVIDER_SORTED_SET, true),
+            (PROVIDER_SORTED_NUMERIC, false),
+        ] {
+            let mut bytes = Vec::new();
+            write_string(&mut bytes, provider);
+            write_string(&mut bytes, "f");
+            if provider == PROVIDER_SORTED_NUMERIC {
+                write_string(&mut bytes, TYPE_LONG);
+            }
+            bytes.extend_from_slice(&0i32.to_le_bytes()); // reverse
+            bytes.extend_from_slice(&9i32.to_le_bytes()); // no such selector
+            if extra_int {
+                bytes.extend_from_slice(&1i32.to_le_bytes());
+            }
+            let mut b = SiBuilder::valid();
+            b.num_sort_fields = 1;
+            b.sort_field_bytes = bytes;
+            assert!(
+                matches!(
+                    parse(&b.build(), &b.id),
+                    Err(Error::UnknownSortSelector { selector: 9, .. })
+                ),
+                "{provider}"
+            );
+        }
     }
 
-    /// A valid-but-unrepresentable selector (MAX) must be refused, not
-    /// silently treated as MIN -- it changes which value a doc sorts by.
+    /// A `SortField.Type` that cannot be an index sort at all -- Java's own
+    /// `IndexWriterConfig.setIndexSort` refuses it because
+    /// `getIndexSorter()` is null, so no real `.si` holds one, and
+    /// `SortField.serialize` throws on a missing value for it.
     #[test]
-    fn non_min_selector_rejected_rather_than_silently_downgraded() {
-        let mut ss = Vec::new();
-        write_string(&mut ss, PROVIDER_SORTED_SET);
-        write_string(&mut ss, "ss");
-        ss.extend_from_slice(&0i32.to_le_bytes());
-        ss.extend_from_slice(&1i32.to_le_bytes()); // MAX
-        ss.extend_from_slice(&1i32.to_le_bytes());
+    fn a_type_that_cannot_be_an_index_sort_is_rejected() {
+        for type_name in TYPES_NOT_SORTABLE_ON_DISK {
+            let mut b = SiBuilder::valid();
+            b.num_sort_fields = 1;
+            b.sort_field_bytes = SiBuilder::plain_sort_field_bytes(
+                "f",
+                type_name,
+                0,
+                Some(&0i64.to_le_bytes()[..4]),
+            );
+            assert!(
+                matches!(
+                    parse(&b.build(), &b.id),
+                    Err(Error::UnsupportedSortField { .. })
+                ),
+                "{type_name}"
+            );
+        }
+    }
+
+    /// A `SortedNumericSortField` whose type is `STRING` is an
+    /// `AssertionError` inside Java's own `serialize`, so it is refused here
+    /// too rather than lowered onto something.
+    #[test]
+    fn a_sorted_numeric_sort_field_with_a_string_type_is_rejected() {
+        let mut bytes = Vec::new();
+        write_string(&mut bytes, PROVIDER_SORTED_NUMERIC);
+        write_string(&mut bytes, "f");
+        write_string(&mut bytes, TYPE_STRING);
+        bytes.extend_from_slice(&0i32.to_le_bytes());
+        bytes.extend_from_slice(&0i32.to_le_bytes());
+        bytes.extend_from_slice(&0i32.to_le_bytes());
         let mut b = SiBuilder::valid();
         b.num_sort_fields = 1;
-        b.sort_field_bytes = ss;
+        b.sort_field_bytes = bytes;
         assert!(matches!(
             parse(&b.build(), &b.id),
             Err(Error::UnsupportedSortField { .. })
         ));
+    }
+
+    /// Java's two marker readers fall through to "no missing value" for any
+    /// int that is neither 1 nor 2, so being stricter would refuse a file
+    /// Lucene reads.
+    #[test]
+    fn an_unknown_string_missing_marker_reads_as_no_missing_value() {
+        let mut bytes = Vec::new();
+        write_string(&mut bytes, PROVIDER_BINARY);
+        write_string(&mut bytes, "bin");
+        bytes.extend_from_slice(&0i32.to_le_bytes());
+        bytes.extend_from_slice(&77i32.to_le_bytes());
+        let mut b = SiBuilder::valid();
+        b.num_sort_fields = 1;
+        b.sort_field_bytes = bytes;
+        let fields = parse(&b.build(), &b.id).unwrap().index_sort.unwrap();
+        assert_eq!(
+            fields[0].kind,
+            IndexSortKind::Binary(StringMissingValue::None)
+        );
+    }
+
+    /// `key_comparison` is the whole comparator contract, so every kind's
+    /// answer is pinned: which `compare` and which sentinel.
+    #[test]
+    fn key_comparison_names_the_right_compare_and_sentinel_per_kind() {
+        use std::cmp::Ordering;
+        let sf = |kind| IndexSortField {
+            field: "f".to_string(),
+            reverse: false,
+            kind,
+        };
+        assert_eq!(
+            sf(IndexSortKind::Numeric(NumericSortKey::Int(Some(5)))).key_comparison(),
+            Some((SortKeyKind::Int, 5))
+        );
+        assert_eq!(
+            sf(IndexSortKind::Numeric(NumericSortKey::Long(None))).key_comparison(),
+            Some((SortKeyKind::Long, 0))
+        );
+        assert_eq!(
+            sf(IndexSortKind::Numeric(NumericSortKey::Float(Some(1.0)))).key_comparison(),
+            Some((SortKeyKind::Float, 1.0f32.to_bits() as i32 as i64))
+        );
+        assert_eq!(
+            sf(IndexSortKind::Numeric(NumericSortKey::Double(Some(-1.0)))).key_comparison(),
+            Some((SortKeyKind::Double, (-1.0f64).to_bits() as i64))
+        );
+        // `None` behaves like `First` in the comparator even though the two
+        // are distinguishable on disk.
+        for missing in [StringMissingValue::None, StringMissingValue::First] {
+            assert_eq!(
+                sf(IndexSortKind::String(missing)).key_comparison(),
+                Some((SortKeyKind::Ordinal, i32::MIN as i64))
+            );
+        }
+        assert_eq!(
+            sf(IndexSortKind::SortedSet {
+                selector: SortedSetSelector::Max,
+                missing: StringMissingValue::Last,
+            })
+            .key_comparison(),
+            Some((SortKeyKind::Ordinal, i32::MAX as i64))
+        );
+        // The one kind with no single-`i64` key.
+        assert_eq!(
+            sf(IndexSortKind::Binary(StringMissingValue::Last)).key_comparison(),
+            None
+        );
+        assert!(
+            SortKeyComparator::new(&sf(IndexSortKind::Binary(StringMissingValue::Last))).is_none()
+        );
+
+        // INT compares the low 32 bits, so a value whose 64-bit form is
+        // larger can still be the smaller INT.
+        let int_cmp =
+            SortKeyComparator::new(&sf(IndexSortKind::Numeric(NumericSortKey::Int(None)))).unwrap();
+        assert_eq!(
+            int_cmp.compare(Some(0xFFFF_FFFF), Some(1)),
+            Ordering::Less,
+            "0xFFFFFFFF is -1 as an int"
+        );
+    }
+
+    /// `Float.compare`/`Double.compare`, not `f32::total_cmp`: every NaN is
+    /// equal and greater than `+Infinity`, and `-0.0 < 0.0`.
+    #[test]
+    fn float_and_double_sorts_use_javas_compare() {
+        use std::cmp::Ordering;
+        let f = IndexSortField {
+            field: "f".to_string(),
+            reverse: false,
+            kind: IndexSortKind::Numeric(NumericSortKey::Float(None)),
+        };
+        let cmp = SortKeyComparator::new(&f).unwrap();
+        let bits = |v: f32| Some(v.to_bits() as i32 as i64);
+        // The ordinary cases first: `Float.compare`'s `<` and `>` arms, which
+        // are the ones that make a FLOAT sort a *float* sort -- comparing the
+        // same 64 bits as longs would order -1.5 above 1.5.
+        assert_eq!(cmp.compare(bits(-1.5), bits(1.5)), Ordering::Less);
+        assert_eq!(cmp.compare(bits(1.5), bits(-1.5)), Ordering::Greater);
+        assert_eq!(cmp.compare(bits(1.5), bits(1.5)), Ordering::Equal);
+        assert_eq!(cmp.compare(bits(-0.0), bits(0.0)), Ordering::Less);
+        assert_eq!(
+            cmp.compare(bits(f32::NAN), bits(f32::INFINITY)),
+            Ordering::Greater
+        );
+        assert_eq!(
+            cmp.compare(bits(f32::NAN), bits(-f32::NAN)),
+            Ordering::Equal,
+            "Java canonicalizes every NaN"
+        );
+
+        let d = IndexSortField {
+            field: "d".to_string(),
+            reverse: true,
+            kind: IndexSortKind::Numeric(NumericSortKey::Double(None)),
+        };
+        let cmp = SortKeyComparator::new(&d).unwrap();
+        let dbits = |v: f64| Some(v.to_bits() as i64);
+        // Reversed, so `<` becomes `Greater`.
+        assert_eq!(cmp.compare(dbits(-2.5), dbits(2.5)), Ordering::Greater);
+        assert_eq!(cmp.compare(dbits(2.5), dbits(-2.5)), Ordering::Less);
+        assert_eq!(cmp.compare(dbits(-0.0), dbits(0.0)), Ordering::Greater);
+        assert_eq!(
+            cmp.compare(dbits(f64::NAN), dbits(-f64::NAN)),
+            Ordering::Equal
+        );
+        // The sentinel for a no-missing-value DOUBLE sort is `0.0`, and
+        // `reverse` applies to it.
+        assert_eq!(cmp.compare(None, dbits(1.0)), Ordering::Greater);
+    }
+
+    /// `describe_index_sort` is Java's `Sort.toString()`, and the fixture
+    /// manifests compare it against Lucene's own output
+    /// (`tests/index_sort_wide_fixtures.rs`,
+    /// `examples/write_segment_info_fixture.rs` -> `VerifySegmentInfo`). This
+    /// pins every branch of it -- including the ones no fixture happens to
+    /// use -- so a kind added later cannot render as something Java never
+    /// prints.
+    #[test]
+    fn describe_index_sort_renders_every_kind_the_way_java_does() {
+        let sf = |field: &str, reverse: bool, kind| IndexSortField {
+            field: field.to_string(),
+            reverse,
+            kind,
+        };
+        assert_eq!(describe_index_sort(None), "<none>");
+        let all = vec![
+            sf(
+                "i",
+                true,
+                IndexSortKind::Numeric(NumericSortKey::Int(Some(-7))),
+            ),
+            sf(
+                "l",
+                false,
+                IndexSortKind::Numeric(NumericSortKey::Long(None)),
+            ),
+            sf(
+                "f",
+                false,
+                IndexSortKind::Numeric(NumericSortKey::Float(Some(-1.5))),
+            ),
+            // An *integral* float, where Java prints `1.0` and Rust's
+            // `Display` prints `1`.
+            sf(
+                "f2",
+                false,
+                IndexSortKind::Numeric(NumericSortKey::Float(Some(1.0))),
+            ),
+            sf(
+                "d",
+                true,
+                IndexSortKind::Numeric(NumericSortKey::Double(Some(2.25))),
+            ),
+            sf(
+                "d2",
+                false,
+                IndexSortKind::Numeric(NumericSortKey::Double(Some(-3.0))),
+            ),
+            sf("s", true, IndexSortKind::String(StringMissingValue::Last)),
+            sf("s2", false, IndexSortKind::String(StringMissingValue::None)),
+            sf(
+                "sn",
+                false,
+                IndexSortKind::SortedNumeric {
+                    key: NumericSortKey::Int(Some(9)),
+                    selector: SortedNumericSelector::Max,
+                },
+            ),
+            sf(
+                "sn2",
+                false,
+                IndexSortKind::SortedNumeric {
+                    key: NumericSortKey::Double(None),
+                    selector: SortedNumericSelector::Min,
+                },
+            ),
+            sf(
+                "ss",
+                true,
+                IndexSortKind::SortedSet {
+                    selector: SortedSetSelector::MiddleMin,
+                    missing: StringMissingValue::First,
+                },
+            ),
+            sf(
+                "ss2",
+                false,
+                IndexSortKind::SortedSet {
+                    selector: SortedSetSelector::MiddleMax,
+                    missing: StringMissingValue::None,
+                },
+            ),
+            sf(
+                "ss3",
+                false,
+                IndexSortKind::SortedSet {
+                    selector: SortedSetSelector::Max,
+                    missing: StringMissingValue::Last,
+                },
+            ),
+            sf("b", false, IndexSortKind::Binary(StringMissingValue::None)),
+            sf("b2", true, IndexSortKind::Binary(StringMissingValue::First)),
+        ];
+        assert_eq!(
+            describe_index_sort(Some(&all)),
+            "<int: \"i\">! missingValue=-7,\
+             <long: \"l\">,\
+             <float: \"f\"> missingValue=-1.5,\
+             <float: \"f2\"> missingValue=1.0,\
+             <double: \"d\">! missingValue=2.25,\
+             <double: \"d2\"> missingValue=-3.0,\
+             <string: \"s\">! missingValue=SortField.STRING_LAST,\
+             <string: \"s2\">,\
+             <sortednumeric: \"sn\"> missingValue=9 selector=MAX type=INT,\
+             <sortednumeric: \"sn2\"> selector=MIN type=DOUBLE,\
+             <sortedset: \"ss\">! missingValue=SortField.STRING_FIRST selector=MIDDLE_MIN,\
+             <sortedset: \"ss2\"> selector=MIDDLE_MAX,\
+             <sortedset: \"ss3\"> missingValue=SortField.STRING_LAST selector=MAX,\
+             <binary: \"b\">,\
+             <binary: \"b2\">! missingValue=SortField.STRING_FIRST"
+        );
+        // `Float.toString`/`Double.toString` on the shapes Rust renders
+        // differently: infinities and NaN keep Java's spelling.
+        assert_eq!(java_float_string(f32::INFINITY), "Infinity");
+        assert_eq!(java_float_string(f32::NEG_INFINITY), "-Infinity");
+        assert_eq!(java_double_string(f64::NEG_INFINITY), "-Infinity");
+        assert_eq!(java_double_string(f64::INFINITY), "Infinity");
+        assert_eq!(java_double_string(f64::NAN), "NaN");
+    }
+
+    /// A **SORTED_NUMERIC** FLOAT/DOUBLE column holds
+    /// `NumericUtils.floatToSortableInt`, not the raw bits a NUMERIC one
+    /// holds, and `SortedNumericSelector.wrap` undoes that with
+    /// `sortableFloatBits` before `FloatSorter` ever sees a value.
+    ///
+    /// Comparing the stored form as raw bits instead reverses the whole
+    /// negative half of the ordering -- `-1.0f` is stored as `0xC07FFFFF`,
+    /// which reads back as `-3.99999` -- so this pins the two kinds against
+    /// each other on the same values.
+    #[test]
+    fn a_sorted_numeric_float_sort_undoes_the_sortable_encoding() {
+        use std::cmp::Ordering;
+        let sorted_numeric = |key| IndexSortField {
+            field: "f".to_string(),
+            reverse: false,
+            kind: IndexSortKind::SortedNumeric {
+                key,
+                selector: SortedNumericSelector::Min,
+            },
+        };
+
+        let cmp = SortKeyComparator::new(&sorted_numeric(NumericSortKey::Float(None))).unwrap();
+        // What `FloatField` stores: `floatToSortableInt`.
+        let stored = |v: f32| Some(float_to_sortable_int(v) as i64);
+        for (a, b) in [(-2.0f32, -1.0), (-1.0, 0.0), (0.0, 1.0), (1.0, 2.0)] {
+            assert_eq!(
+                cmp.compare(stored(a), stored(b)),
+                Ordering::Less,
+                "{a} < {b}"
+            );
+        }
+        // The sentinel is in the same space, and a no-missing-value sort
+        // compares a document with no value as `0.0`.
+        assert_eq!(cmp.compare(None, stored(-1.0)), Ordering::Greater);
+        assert_eq!(cmp.compare(None, stored(1.0)), Ordering::Less);
+        // With an explicit sentinel it lands where that sentinel does.
+        let cmp =
+            SortKeyComparator::new(&sorted_numeric(NumericSortKey::Float(Some(-5.0)))).unwrap();
+        assert_eq!(cmp.compare(None, stored(-1.0)), Ordering::Less);
+
+        let cmp =
+            SortKeyComparator::new(&sorted_numeric(NumericSortKey::Double(Some(-5.0)))).unwrap();
+        let stored = |v: f64| Some(double_to_sortable_long(v));
+        assert_eq!(cmp.compare(stored(-2.0), stored(-1.0)), Ordering::Less);
+        assert_eq!(cmp.compare(None, stored(-1.0)), Ordering::Less);
+
+        // And the NUMERIC kind over the *same* field is the other encoding:
+        // raw bits, so the sortable form would be read as a different value
+        // entirely. This is the assertion that fails if the two kinds are
+        // conflated.
+        let raw = SortKeyComparator::new(&IndexSortField {
+            field: "f".to_string(),
+            reverse: false,
+            kind: IndexSortKind::Numeric(NumericSortKey::Float(None)),
+        })
+        .unwrap();
+        assert_eq!(
+            raw.compare(
+                Some(float_to_sortable_int(-2.0) as i64),
+                Some(float_to_sortable_int(-1.0) as i64)
+            ),
+            Ordering::Greater,
+            "read as raw bits the sortable encoding of -2.0 is larger, which is the bug"
+        );
+    }
+
+    /// A FLOAT/DOUBLE missing value survives the `sortableInt`/`sortableLong`
+    /// encoding Java writes it in -- including a NaN, which Java
+    /// canonicalizes on the way out.
+    #[test]
+    fn float_missing_values_round_trip_through_the_sortable_encoding() {
+        for v in [0.0f32, -0.0, 1.5, -1.5, f32::MIN, f32::MAX, f32::EPSILON] {
+            assert_eq!(
+                sortable_int_to_float(float_to_sortable_int(v)).to_bits(),
+                v.to_bits(),
+                "{v}"
+            );
+        }
+        assert!(sortable_int_to_float(float_to_sortable_int(f32::NAN)).is_nan());
+        for v in [0.0f64, -0.0, 1.5, -1.5, f64::MIN, f64::MAX] {
+            assert_eq!(
+                sortable_long_to_double(double_to_sortable_long(v)).to_bits(),
+                v.to_bits(),
+                "{v}"
+            );
+        }
+        assert!(sortable_long_to_double(double_to_sortable_long(f64::NAN)).is_nan());
     }
 
     /// Illegal `Version.fromBits` components (each is encoded into one byte)
@@ -1258,34 +2289,16 @@ mod tests {
     #[test]
     fn write_ascending_index_sort_round_trips() {
         let mut si = sample_si();
-        si.index_sort = Some(vec![IndexSortField {
-            field: "timestamp".to_string(),
-            reverse: false,
-            missing: SortMissingValue::First,
-        }]);
-        let bytes = write(&si, "");
-        let parsed = parse(&bytes, &si.id).unwrap();
-        let fields = parsed.index_sort.unwrap();
-        let sf = &fields[0];
-        assert_eq!(sf.field, "timestamp");
-        assert!(!sf.reverse);
-        assert_eq!(sf.missing, SortMissingValue::First);
+        si.index_sort = Some(vec![long_sort("timestamp", false, false)]);
+        let parsed = parse(&write(&si, ""), &si.id).unwrap();
+        assert_eq!(parsed.index_sort, si.index_sort);
     }
 
     #[test]
     fn write_descending_index_sort_with_missing_last_round_trips() {
         let mut si = sample_si();
-        si.index_sort = Some(vec![IndexSortField {
-            field: "score".to_string(),
-            reverse: true,
-            missing: SortMissingValue::Last,
-        }]);
-        let bytes = write(&si, "");
-        let parsed = parse(&bytes, &si.id).unwrap();
-        let fields = parsed.index_sort.unwrap();
-        let sf = &fields[0];
-        assert_eq!(sf.field, "score");
-        assert!(sf.reverse);
-        assert_eq!(sf.missing, SortMissingValue::Last);
+        si.index_sort = Some(vec![long_sort("score", true, true)]);
+        let parsed = parse(&write(&si, ""), &si.id).unwrap();
+        assert_eq!(parsed.index_sort, si.index_sort);
     }
 }

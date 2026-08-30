@@ -193,7 +193,7 @@
 //!   `numDocsWithField`.
 //! - **`testSort`** (`sort.docs_in_index_sort_order`): a segment declaring an
 //!   `indexSort` really is in that order, verified by reading the sort
-//!   fields' doc values and applying `segment_writer::sort_key_rank` -- the
+//!   fields' doc values and applying `segment_info::SortKeyComparator` -- the
 //!   same comparator the sort-on-flush writer used to produce the order.
 //! - **`checkSoftDeletes`** (`soft_deletes.count_matches`): the number of
 //!   live docs carrying a value for `.fnm`'s soft-deletes field equals the
@@ -2967,6 +2967,26 @@ fn check_doc_values(
                                 if !values.is_empty() {
                                     docs_with_value = docs_with_value.saturating_add(1);
                                 }
+                                // `CheckIndex.checkSortedNumericDocValues`:
+                                // `if (value < previous) throw new
+                                // CheckIndexException("values out of order: "
+                                // + value + " < " + previous + " for doc: " +
+                                // docID)`. A document's values are written
+                                // ascending by
+                                // `SortedNumericDocValuesWriter.finishCurrentDoc`,
+                                // and `SortedNumericSelector.MIN`/`MAX` are
+                                // literally the first and the last stored
+                                // value -- so an unsorted column silently
+                                // makes an index sort over it pick the wrong
+                                // value, and nothing else here would notice.
+                                for pair in values.windows(2) {
+                                    if pair[1] < pair[0] {
+                                        problems.push(format!(
+                                            "docID={doc}: values out of order: {} < {}",
+                                            pair[1], pair[0]
+                                        ));
+                                    }
+                                }
                             }
                             Err(e) => problems.push(format!("docID={doc}: {e}")),
                         }
@@ -3344,26 +3364,32 @@ fn open_doc_values(
     })())
 }
 
-/// Reads one field's per-doc sort key as a single `Option<i64>`, the shape
-/// [`crate::segment_info::IndexSortField`] describes. NUMERIC reads
-/// directly; SORTED_NUMERIC takes the smallest value, which is
-/// `SortedNumericSelector.Type.MIN` -- the only selector this port's `.si`
-/// parser accepts (see `segment_info`'s index-sort doc section), so no other
-/// selector can reach here.
-fn sort_key_values(
+/// Which documents carry a value for `fi` -- `DocValuesIterator`'s
+/// "advanceExact returns true", which is what
+/// `PendingSoftDeletes.countSoftDeletes` counts over the soft-deletes field.
+///
+/// Only the two doc-values types a soft-deletes field can have. Until c35
+/// this shared [`sort_key_values`], which is now sort-field-shaped and reads
+/// three different columns depending on the `SortField` kind -- an argument
+/// the soft-deletes check has nothing to pass.
+fn doc_values_presence(
     dvd: &[u8],
     meta: &doc_values::DocValuesMeta,
     fi: &field_infos::FieldInfo,
     max_doc: i32,
-) -> Result<Vec<Option<i64>>, String> {
-    let mut keys = Vec::with_capacity(max_doc.max(0) as usize);
+) -> Result<Vec<bool>, String> {
+    let mut present = Vec::with_capacity(max_doc.max(0) as usize);
     match fi.doc_values_type {
         field_infos::DocValuesType::Numeric => {
             let entry = meta
                 .numeric_entry(fi.number)
                 .ok_or("no NUMERIC doc-values entry")?;
             for doc in 0..max_doc {
-                keys.push(doc_values::numeric_value(dvd, entry, doc).map_err(|e| e.to_string())?);
+                present.push(
+                    doc_values::numeric_value(dvd, entry, doc)
+                        .map_err(|e| e.to_string())?
+                        .is_some(),
+                );
             }
         }
         field_infos::DocValuesType::SortedNumeric => {
@@ -3371,27 +3397,121 @@ fn sort_key_values(
                 .sorted_numeric_entry(fi.number)
                 .ok_or("no SORTED_NUMERIC doc-values entry")?;
             for doc in 0..max_doc {
-                let values = doc_values::sorted_numeric_values(dvd, entry, doc)
-                    .map_err(|e| e.to_string())?;
-                keys.push(values.into_iter().min());
+                present.push(
+                    !doc_values::sorted_numeric_values(dvd, entry, doc)
+                        .map_err(|e| e.to_string())?
+                        .is_empty(),
+                );
             }
         }
-        other => return Err(format!("sort field has doc-values type {other:?}")),
+        other => return Err(format!("field has doc-values type {other:?}")),
+    }
+    Ok(present)
+}
+
+/// Reads one field's per-doc sort key as a single `Option<i64>` -- the shape
+/// [`segment_info::SortKeyComparator`] compares, and the shape every index
+/// sort whose key is not raw bytes reduces to.
+///
+/// Which doc-values column and which reduction is the sort field's own
+/// business, exactly as it is Java's: `SortField(field, LONG)` reads NUMERIC,
+/// `SortedNumericSortField` reads SORTED_NUMERIC and applies its selector
+/// (`SortedNumericSelector.Type.MIN`/`MAX`), and a STRING sort reads SORTED
+/// and yields the **term ordinal** (`IndexSorter.StringSorter` compares ords,
+/// not bytes). `Err` names the combination rather than guessing.
+///
+/// Deliberately not supported, and reported as such rather than silently
+/// mis-verified: a `SortedSetSortField` (its per-document reduction is
+/// `SortedSetSelector`, which needs a SORTED_SET ordinal reader this port's
+/// `doc_values` module does not expose) and a `BinarySortField` (whose keys
+/// are raw bytes, so there is no `Option<i64>` to return at all -- see
+/// [`segment_info::IndexSortField::key_comparison`]).
+fn sort_key_values(
+    dvd: &[u8],
+    meta: &doc_values::DocValuesMeta,
+    sf: &segment_info::IndexSortField,
+    fi: &field_infos::FieldInfo,
+    max_doc: i32,
+) -> Result<Vec<Option<i64>>, String> {
+    use segment_info::{IndexSortKind, SortedNumericSelector};
+    let mut keys = Vec::with_capacity(max_doc.max(0) as usize);
+    match (&sf.kind, fi.doc_values_type) {
+        (IndexSortKind::Numeric(_), field_infos::DocValuesType::Numeric) => {
+            let entry = meta
+                .numeric_entry(fi.number)
+                .ok_or("no NUMERIC doc-values entry")?;
+            for doc in 0..max_doc {
+                keys.push(doc_values::numeric_value(dvd, entry, doc).map_err(|e| e.to_string())?);
+            }
+        }
+        (
+            IndexSortKind::SortedNumeric { selector, .. },
+            field_infos::DocValuesType::SortedNumeric,
+        ) => {
+            let entry = meta
+                .sorted_numeric_entry(fi.number)
+                .ok_or("no SORTED_NUMERIC doc-values entry")?;
+            for doc in 0..max_doc {
+                let values = doc_values::sorted_numeric_values(dvd, entry, doc)
+                    .map_err(|e| e.to_string())?;
+                // `SortedNumericSelector.MinValue`/`MaxValue`: the *first*
+                // and the *last* stored value of the document, not its
+                // smallest and largest. The two coincide only for an
+                // ascending column, which is what
+                // `doc_values.sorted_numeric_ascending` separately checks --
+                // re-deriving min/max here would mask an unsorted column
+                // rather than expose it.
+                keys.push(match selector {
+                    SortedNumericSelector::Min => values.into_iter().next(),
+                    SortedNumericSelector::Max => values.into_iter().last(),
+                });
+            }
+        }
+        (IndexSortKind::String(_), field_infos::DocValuesType::Sorted) => {
+            let entry = meta
+                .sorted_entry(fi.number)
+                .ok_or("no SORTED doc-values entry")?;
+            for doc in 0..max_doc {
+                keys.push(doc_values::sorted_ord(dvd, entry, doc).map_err(|e| e.to_string())?);
+            }
+        }
+        (IndexSortKind::SortedSet { .. }, _) => {
+            return Err(
+                "a SortedSetSortField's per-document ordinal needs a SORTED_SET selector \
+                 reader this port does not expose"
+                    .to_string(),
+            )
+        }
+        (IndexSortKind::Binary(_), _) => {
+            return Err(
+                "a BinarySortField compares raw bytes, which is not a single-i64 sort key"
+                    .to_string(),
+            )
+        }
+        (kind, dv) => {
+            return Err(format!(
+                "sort kind {kind:?} does not match the field's doc-values type {dv:?}"
+            ))
+        }
     }
     Ok(keys)
 }
 
 /// `CheckIndex.testSort`: a segment that declares an index sort must
-/// actually *be* sorted by it. Java rebuilds the sort's comparators and
-/// walks adjacent doc ids asserting `cmp <= 0`; this port's index sorts are
-/// numeric-only (see `segment_info`), so the comparator is
-/// [`crate::segment_writer::sort_key_rank`] -- the exact function the
-/// sort-on-flush writer used to *produce* the order, applied in reverse as a
-/// verifier.
+/// actually *be* sorted by it. Java rebuilds the sort's comparators
+/// (`IndexSorter.getDocComparator` per `SortField`) and walks adjacent doc
+/// ids asserting `cmp <= 0`; this rebuilds them from the same `.si` via
+/// [`segment_info::SortKeyComparator`] -- the exact comparator the
+/// sort-on-flush writer and the sort-preserving merge use to *produce* the
+/// order, applied in reverse as a verifier.
 ///
-/// Skipped (not failed) for an unsorted segment, a compound segment, or a
-/// segment with no doc-values files (a sorted segment without the sort
-/// field's doc values is already reported by `fnm.doc_values_vs_files`).
+/// Skipped (not failed) for an unsorted segment, a compound segment, a
+/// segment with no doc-values files, or a sort this port can read but not
+/// compare (a `SortedSetSortField` or a `BinarySortField` -- see
+/// [`sort_key_values`]). "Skipped" is deliberate for the last of those: the
+/// index is openable and everything else about it is checked, but this one
+/// property is unverified and saying so is the difference between a check
+/// that passed and one that never ran.
 fn check_index_sort(
     dir: &dyn Directory,
     commit: &SegmentCommitInfo,
@@ -3403,6 +3523,32 @@ fn check_index_sort(
         return;
     };
     if si.is_compound_file {
+        return;
+    }
+    // A sort kind this port can read but not *verify* is unverifiable before
+    // any file is opened, and reporting it as a failure would call a
+    // perfectly good real-Lucene index corrupt. Skipped, with the reason and
+    // the field, so it is visible that the check did not run.
+    if let Some(sf) = sort_fields.iter().find(|sf| {
+        matches!(
+            sf.kind,
+            segment_info::IndexSortKind::SortedSet { .. } | segment_info::IndexSortKind::Binary(_)
+        )
+    }) {
+        checks.push(Check::skipped(
+            "sort.docs_in_index_sort_order",
+            &format!(
+                "a comparator for sort field {:?}, a {},",
+                sf.field,
+                match sf.kind {
+                    segment_info::IndexSortKind::Binary(_) =>
+                        "BinarySortField whose keys are raw bytes rather than one i64",
+                    _ =>
+                        "SortedSetSortField whose per-document ordinal needs a SORTED_SET \
+                          selector reader this port does not expose",
+                }
+            ),
+        ));
         return;
     }
     let Some(opened) = open_doc_values(dir, commit, si, field_infos) else {
@@ -3423,7 +3569,7 @@ fn check_index_sort(
     };
     let result = (|| -> Result<Vec<String>, String> {
         let (meta, dvd) = opened?;
-        let mut per_field: Vec<(Vec<Option<i64>>, bool, segment_info::SortMissingValue)> =
+        let mut per_field: Vec<(Vec<Option<i64>>, segment_info::SortKeyComparator)> =
             Vec::with_capacity(sort_fields.len());
         for sf in sort_fields {
             let fi = field_infos
@@ -3431,11 +3577,12 @@ fn check_index_sort(
                 .iter()
                 .find(|f| f.name == sf.field)
                 .ok_or_else(|| format!("sort field {:?} is not in .fnm", sf.field))?;
+            let cmp = segment_info::SortKeyComparator::new(sf)
+                .expect("the unsupported kinds returned above");
             per_field.push((
-                sort_key_values(&dvd, &meta, fi, si.doc_count)
+                sort_key_values(&dvd, &meta, sf, fi, si.doc_count)
                     .map_err(|e| format!("sort field {:?}: {e}", sf.field))?,
-                sf.reverse,
-                sf.missing,
+                cmp,
             ));
         }
 
@@ -3445,13 +3592,8 @@ fn check_index_sort(
             #[allow(clippy::arithmetic_side_effects)]
             let prev = doc - 1;
             let mut ordering = std::cmp::Ordering::Equal;
-            for (keys, reverse, missing) in &per_field {
-                ordering = crate::segment_writer::sort_key_rank(
-                    keys[prev as usize],
-                    keys[doc as usize],
-                    *reverse,
-                    *missing,
-                );
+            for (keys, cmp) in &per_field {
+                ordering = cmp.compare(keys[prev as usize], keys[doc as usize]);
                 if ordering != std::cmp::Ordering::Equal {
                     break;
                 }
@@ -3526,12 +3668,12 @@ fn check_soft_deletes(
                 .map_err(|e| e.to_string())?,
             )
         };
-        let keys = sort_key_values(&dvd, &meta, fi, si.doc_count)
+        let present = doc_values_presence(&dvd, &meta, fi, si.doc_count)
             .map_err(|e| format!("soft-deletes field {:?}: {e}", fi.name))?;
-        Ok(keys
+        Ok(present
             .iter()
             .enumerate()
-            .filter(|(doc, key)| key.is_some() && is_live_at(live.as_ref(), *doc))
+            .filter(|(doc, has_value)| **has_value && is_live_at(live.as_ref(), *doc))
             .count() as i32)
     })();
 
@@ -6211,10 +6353,28 @@ mod tests {
     }
 
     fn sort_asc() -> Option<Vec<segment_info::IndexSortField>> {
+        Some(vec![segment_info::IndexSortField::long(
+            "ts",
+            false,
+            Some(i64::MAX),
+        )])
+    }
+
+    /// The same ascending sort over a **multi-valued** column: a
+    /// `SortedNumericSortField` with the `MIN` selector, which is what Java's
+    /// `SortedNumericSortField` produces and the only kind whose
+    /// `getIndexSorter` reads a SORTED_NUMERIC column. A plain
+    /// `SortField(ts, LONG)` over the same field is what `DocValues.getNumeric`
+    /// throws on in Java, and what `sort_key_values` reports as a kind/type
+    /// mismatch here.
+    fn sorted_numeric_sort_asc() -> Option<Vec<segment_info::IndexSortField>> {
         Some(vec![segment_info::IndexSortField {
             field: "ts".to_string(),
             reverse: false,
-            missing: segment_info::SortMissingValue::Last,
+            kind: segment_info::IndexSortKind::SortedNumeric {
+                key: segment_info::NumericSortKey::Long(Some(i64::MAX)),
+                selector: segment_info::SortedNumericSelector::Min,
+            },
         }])
     }
 
@@ -9177,7 +9337,7 @@ mod tests {
                     "_0.dvs".to_string(),
                 ],
                 attributes: vec![],
-                index_sort: sort_asc(),
+                index_sort: sorted_numeric_sort_asc(),
             };
             std::fs::write(dst.join("_0.si"), segment_info::write(&si, "")).unwrap();
             segment_infos::SegmentCommitInfo {
@@ -9226,6 +9386,30 @@ mod tests {
             .expect("the sort check must run");
         assert!(!check.passed(), "{}", check.message);
         std::fs::remove_dir_all(&bad).ok();
+
+        // A document whose values are stored *descending*.
+        // `SortedNumericDocValuesWriter.finishCurrentDoc` sorts them, so real
+        // Lucene never writes this and real
+        // `CheckIndex.checkSortedNumericDocValues` throws `"values out of
+        // order"` on it; the column is also what makes
+        // `SortedNumericSelector.MIN`/`MAX` -- the first and the last stored
+        // value -- mean what they say.
+        let unsorted = tempdir();
+        let commit = write(&unsorted, &[vec![1, 50], vec![4, 3], vec![9], vec![9, 9]]);
+        let dir = FsDirectory::open(&unsorted);
+        let result = check_segment(&dir, &commit);
+        let check = result
+            .checks
+            .iter()
+            .find(|c| c.name == "doc_values.values_decode:ts")
+            .expect("the doc-values check must run");
+        assert!(!check.passed(), "{}", check.message);
+        assert!(
+            check.message.contains("values out of order: 3 < 4"),
+            "{}",
+            check.message
+        );
+        std::fs::remove_dir_all(&unsorted).ok();
     }
 
     // ---------------------------------------------------------------------
@@ -11921,52 +12105,88 @@ mod tests {
         }
     }
 
-    /// The three error paths of the two checks that read *per-document sort
-    /// keys* -- `sort.docs_in_index_sort_order` and
-    /// `soft_deletes.count_matches`. Both go through `open_doc_values` and
-    /// `sort_key_values`, and every failure arm of both was unfired: the only
-    /// segments that reached them were healthy ones.
+    /// The error and skip paths of the two checks that read *per-document
+    /// sort keys* -- `sort.docs_in_index_sort_order` and
+    /// `soft_deletes.count_matches`. Every failure arm of both was unfired:
+    /// the only segments that reached them were healthy ones.
     ///
-    /// 1. An index sort naming a field whose doc values are **not** numeric.
-    ///    `segment_info`'s `.si` parser accepts only numeric sort types, so
-    ///    this is a `.si` and a `.fnm` disagreeing -- and the consequence is
-    ///    the sharp one: the declared order that every merge and every
-    ///    early-terminating query trusts would be verified by nothing.
-    /// 2. The same for the soft-deletes field, whose `softDelCount` is then a
-    ///    claim about data that cannot be read.
+    /// 1. A `SortedSetSortField` sort. `segment_info` can *read* it (that is
+    ///    what lets this port open an index Lucene wrote with one), but
+    ///    reducing a SORTED_SET column by a `SortedSetSelector` needs an
+    ///    ordinal reader `doc_values` does not expose -- so the check must
+    ///    report itself **skipped**, naming the field. Failing it would call
+    ///    a healthy real-Lucene index corrupt.
+    /// 2. A sort whose *kind* disagrees with the field's doc-values type --
+    ///    a numeric `SortField` over a SORTED_SET column, which is what
+    ///    `DocValues.getNumeric` throws on in Java. A `.si` and a `.fnm`
+    ///    disagreeing, and the consequence is the sharp one: the declared
+    ///    order that every merge and every early-terminating query trusts
+    ///    would be verified by nothing.
     /// 3. A `.dvd` the `.si` lists and the directory does not have -- the
     ///    `dir.open` arm inside `open_doc_values`, distinct from the
     ///    `doc_values.open` one c30 drives elsewhere because this is the
     ///    *second*, independent open of the same pair.
+    /// 4. The same for the soft-deletes field, whose `softDelCount` is then a
+    ///    claim about data that cannot be read.
     #[test]
     fn a_sort_or_soft_deletes_field_whose_values_cannot_be_read_is_reported() {
-        let sort_on_tags = || {
+        let sorted_set_sort_on_tags = || {
             Some(vec![segment_info::IndexSortField {
                 field: "tags".to_string(),
                 reverse: false,
-                missing: segment_info::SortMissingValue::Last,
+                kind: segment_info::IndexSortKind::SortedSet {
+                    selector: segment_info::SortedSetSelector::Min,
+                    missing: segment_info::StringMissingValue::None,
+                },
             }])
         };
+        let numeric_sort_on_tags = || {
+            Some(vec![segment_info::IndexSortField::long(
+                "tags",
+                false,
+                Some(i64::MAX),
+            )])
+        };
+        let sort_check = |dir: &FsDirectory, commit: &segment_infos::SegmentCommitInfo| {
+            check_segment(dir, commit)
+                .checks
+                .into_iter()
+                .find(|c| c.name == "sort.docs_in_index_sort_order")
+                .expect("the sort check must run")
+        };
+        let restamp_sort =
+            |dst: &std::path::Path,
+             commit: &segment_infos::SegmentCommitInfo,
+             sort: Option<Vec<segment_info::IndexSortField>>| {
+                let si_path = dst.join("_0.si");
+                let mut si =
+                    segment_info::parse(&std::fs::read(&si_path).unwrap(), &commit.segment_id)
+                        .expect("the fixture's .si parses");
+                si.index_sort = sort;
+                std::fs::write(&si_path, segment_info::write(&si, "")).unwrap();
+            };
 
-        // (1) SORTED_SET sort field.
+        // (1) A SORTED_SET sort: skipped, not failed, and it says which field.
         let dst = tempdir();
         let commit = write_single_valued_sorted_set_fixture(&dst, &[b"a", b"b"]);
-        let si_path = dst.join("_0.si");
-        let mut si = segment_info::parse(&std::fs::read(&si_path).unwrap(), &commit.segment_id)
-            .expect("the fixture's .si parses");
-        si.index_sort = sort_on_tags();
-        std::fs::write(&si_path, segment_info::write(&si, "")).unwrap();
+        restamp_sort(&dst, &commit, sorted_set_sort_on_tags());
         let dir = FsDirectory::open(&dst);
-        let result = check_segment(&dir, &commit);
-        let sort = result
-            .checks
-            .iter()
-            .find(|c| c.name == "sort.docs_in_index_sort_order")
-            .expect("the sort check must run");
-        assert!(!sort.passed(), "{sort:?}");
+        let sort = sort_check(&dir, &commit);
         assert!(
-            sort.message
-                .contains("sort field has doc-values type SortedSet"),
+            sort.was_skipped(),
+            "a real-Lucene SortedSetSortField index must not be called corrupt: {sort:?}"
+        );
+        assert!(sort.message.contains("SortedSetSortField"), "{sort:?}");
+        assert!(sort.message.contains("\"tags\""), "{sort:?}");
+
+        // (2) A numeric sort over the same SORTED_SET column: a real
+        // `.si`/`.fnm` disagreement, and a failure.
+        restamp_sort(&dst, &commit, numeric_sort_on_tags());
+        let dir = FsDirectory::open(&dst);
+        let sort = sort_check(&dir, &commit);
+        assert!(!sort.passed() && !sort.was_skipped(), "{sort:?}");
+        assert!(
+            sort.message.contains("doc-values type SortedSet"),
             "{sort:?}"
         );
 
@@ -11974,12 +12194,7 @@ mod tests {
         // failure instead. (Same directory, one file removed.)
         std::fs::remove_file(dst.join("_0.dvd")).unwrap();
         let dir = FsDirectory::open(&dst);
-        let result = check_segment(&dir, &commit);
-        let sort = result
-            .checks
-            .iter()
-            .find(|c| c.name == "sort.docs_in_index_sort_order")
-            .expect("the sort check must still run");
+        let sort = sort_check(&dir, &commit);
         assert!(!sort.passed(), "{sort:?}");
         assert!(
             !sort.message.contains("doc-values type"),
@@ -12026,7 +12241,7 @@ mod tests {
         assert!(!soft.passed(), "{soft:?}");
         assert!(
             soft.message
-                .contains("soft-deletes field \"tags\": sort field has doc-values type SortedSet"),
+                .contains("soft-deletes field \"tags\": field has doc-values type SortedSet"),
             "{soft:?}"
         );
         std::fs::remove_dir_all(&dst).ok();

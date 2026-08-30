@@ -42,7 +42,7 @@ use lucene_codecs::field_infos::{
 };
 use lucene_codecs::stored_fields::{Document, FieldValue, StoredField};
 use lucene_index::index_writer::{DocumentVector, IndexWriter};
-use lucene_index::segment_info::{IndexSortField, LuceneVersion, SortMissingValue};
+use lucene_index::segment_info::{IndexSortField, LuceneVersion};
 use lucene_store::FsDirectory;
 
 fn text_field(name: &str, number: i32, indexed: bool) -> FieldInfo {
@@ -129,6 +129,9 @@ fn main() {
     // doc-values columns and do *not* sort, so the A/B delta is the sort
     // itself rather than the columns it is defined over.
     let dv_only = std::env::var("LUCENE_RUST_DOC_VALUES_ONLY").is_ok();
+    // See the `omit_norms_field` call below: the control arm for the cost of
+    // norms being on by default.
+    let omit_norms = std::env::var("LUCENE_RUST_OMIT_NORMS").is_ok();
     let columns = sort_tiers > 0 || dv_only;
 
     // `LUCENE_RUST_INDEX_OPTIONS` raises the `body` field's `IndexOptions`
@@ -239,12 +242,18 @@ fn main() {
     writer
         .set_postings_field(Some("body"))
         .expect("set postings field");
-    // Java's IndexMicro writes norms (Lucene does so for any indexed field
-    // that does not omit them), so measuring against it means writing them
-    // here too -- otherwise the two sides are not doing the same work.
-    writer
-        .set_norms_field(Some("body"))
-        .expect("set norms field");
+    // Norms need no configuration: Lucene writes them for any indexed field
+    // that does not omit them, and since c35 so does this writer -- so `body`
+    // is normed on both sides and the two are doing the same work.
+    // `LUCENE_RUST_OMIT_NORMS` is the control arm for that: it opts `body`
+    // out again (`FieldType.setOmitNorms(true)`), so the A/B prices what
+    // making norms the default costs per document
+    // (`docs/sweep/m2/c35-norms-and-sort.md`).
+    if omit_norms {
+        writer
+            .omit_norms_field("body")
+            .expect("omit norms for body");
+    }
     if body_payloads {
         // A four-byte payload on every token: enough to make the `.pay`
         // payload-byte run real work rather than an all-zero length stream,
@@ -274,17 +283,9 @@ fn main() {
             .expect("add doc values field");
     }
     if sort_tiers > 0 {
-        let mut sort = vec![IndexSortField {
-            field: "rank".to_string(),
-            reverse: true,
-            missing: SortMissingValue::Last,
-        }];
+        let mut sort = vec![IndexSortField::long("rank", true, Some(i64::MAX))];
         if sort_tiers > 1 {
-            sort.push(IndexSortField {
-                field: "tie".to_string(),
-                reverse: false,
-                missing: SortMissingValue::First,
-            });
+            sort.push(IndexSortField::long("tie", false, Some(i64::MIN)));
         }
         writer.set_index_sort(Some(&sort)).expect("set index sort");
     }
@@ -321,7 +322,8 @@ fn main() {
     // Nanoseconds per document, matching every other micro case's
     // lower-is-better convention -- the report script divides java by rust.
     println!(
-        "index[{index_options_arm}]\t{:.3}\t{}",
+        "index[{index_options_arm}{}]\t{:.3}\t{}",
+        if omit_norms { ",omit-norms" } else { "" },
         elapsed.as_nanos() as f64 / n_docs as f64,
         n_docs
     );

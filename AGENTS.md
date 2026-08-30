@@ -80,6 +80,7 @@ the hook, the container and this table cannot drift apart:
 | Format | `cargo fmt --all --check` |
 | Lint | `cargo clippy --workspace --all-targets -- -D warnings` (includes the arithmetic gate — see [`docs/arithmetic-gate.md`](docs/arithmetic-gate.md)) |
 | Lint for arm64 (catches target-dependent defects) | `cargo clippy --workspace --all-targets --target aarch64-unknown-linux-gnu -- -D warnings` |
+| Type-check the out-of-workspace benchmarks | `cargo check --manifest-path benchmarks/rust-runner/Cargo.toml --all-targets` |
 | Tests + coverage gate | `cargo llvm-cov --workspace --fail-under-lines 95` |
 | Coverage report, per file | `cargo llvm-cov --workspace --summary-only` |
 | Regenerate Java fixtures | `scripts/gen-fixtures.sh --only <Gen…>` (a full run rewrites every index with fresh segment ids — see [`fixtures/README.md`](fixtures/README.md)) |
