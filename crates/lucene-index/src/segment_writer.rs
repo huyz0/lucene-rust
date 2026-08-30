@@ -133,6 +133,47 @@ pub fn flush_stored_only_segment(
     docs: &[Document],
     use_compound_file: bool,
 ) -> Result<SegmentCommitInfo> {
+    flush_stored_only_segment_with_blocks(
+        dir,
+        segment_name,
+        segment_id,
+        codec_name,
+        lucene_version,
+        fields,
+        docs,
+        use_compound_file,
+        false,
+    )
+}
+
+/// [`flush_stored_only_segment`] plus real Lucene's
+/// `SegmentInfo.setHasBlocks()`.
+///
+/// `has_blocks` records that this segment contains at least one **document
+/// block** -- a run of documents added together by
+/// `IndexWriter.addDocuments`/`updateDocuments` and guaranteed to occupy
+/// contiguous doc IDs, which is what parent-field join queries rely on.
+/// `DocumentsWriterPerThread.updateDocuments` sets it whenever a single call
+/// indexed more than one document (`if (numDocs > 1) segmentInfo.setHasBlocks()`),
+/// and `IndexWriter.mergeMiddle` ORs it across the merged readers.
+///
+/// It is a separate entry point rather than a ninth parameter on
+/// [`flush_stored_only_segment`] because Java's is a *mutator* on an
+/// already-built `SegmentInfo`, and because every existing caller of this
+/// module writes single-document adds only -- they all mean `false`, and
+/// making them say so adds nothing.
+#[allow(clippy::too_many_arguments)]
+pub fn flush_stored_only_segment_with_blocks(
+    dir: &dyn Directory,
+    segment_name: &str,
+    segment_id: [u8; ID_LENGTH],
+    codec_name: &str,
+    lucene_version: LuceneVersion,
+    fields: &[FieldInfo],
+    docs: &[Document],
+    use_compound_file: bool,
+    has_blocks: bool,
+) -> Result<SegmentCommitInfo> {
     let doc_count = docs.len() as i32;
 
     let (fdt, fdx, fdm) = stored_fields::write_best_speed(docs, &segment_id, "");
@@ -175,13 +216,22 @@ pub fn flush_stored_only_segment(
         )
     };
 
+    // `Lucene99SegmentInfoFormat.write` calls `si.addFile(fileName)` before
+    // encoding, so a segment's own `.si` is always a member of the file set it
+    // records. Leaving it out makes every consumer that walks `SegmentInfo.files`
+    // -- `IndexFileDeleter`, `CheckIndex`, our own `checksum_verify` -- blind to
+    // the one file that names all the others.
+    let si_name = format!("{segment_name}.si");
+    let mut files = files;
+    files.push(si_name.clone());
+
     let si = SegmentInfo {
         id: segment_id,
         version: lucene_version,
         min_version: Some(lucene_version),
         doc_count,
         is_compound_file: use_compound_file,
-        has_blocks: false,
+        has_blocks,
         diagnostics: vec![
             ("source".to_string(), "flush".to_string()),
             (
@@ -192,14 +242,13 @@ pub fn flush_stored_only_segment(
                 ),
             ),
         ],
-        files: files.clone(),
+        files,
         attributes: vec![(
             "Lucene90StoredFieldsFormat.mode".to_string(),
             "BEST_SPEED".to_string(),
         )],
         index_sort: None,
     };
-    let si_name = format!("{segment_name}.si");
     let si_bytes = segment_info::write(&si, "");
     write_file(dir, &si_name, &si_bytes)?;
 
@@ -216,10 +265,32 @@ pub fn flush_stored_only_segment(
         field_infos_gen: -1,
         doc_values_gen: -1,
         soft_del_count: 0,
-        sci_id: None,
+        // `DocumentsWriterPerThread.flush`: every freshly flushed segment
+        // gets its own `StringHelper.randomId()`. Derived from the segment id
+        // rather than drawn from a CSPRNG: distinctness is the only property
+        // anything reads it for, and the segment id is already distinct per
+        // segment.
+        sci_id: Some(derive_sci_id(&segment_id)),
         field_infos_files: vec![],
         dv_update_files: vec![],
+        ..Default::default()
     })
+}
+
+/// `StringHelper.randomId()`'s role for a freshly created
+/// [`SegmentCommitInfo`]: an id that distinguishes this segment-commit from
+/// every other one. Java draws 16 random bytes; this derives them from the
+/// segment's own (already unique) id, which satisfies the only property any
+/// consumer relies on — `SegmentInfos.readCommit` accepts any 16 bytes and
+/// nothing in Lucene validates them — without pulling in a CSPRNG.
+pub(crate) fn derive_sci_id(segment_id: &[u8; ID_LENGTH]) -> [u8; ID_LENGTH] {
+    let mut out = [0u8; ID_LENGTH];
+    for (i, slot) in out.iter_mut().enumerate() {
+        // A byte-wise involution-free mix: distinct segment ids stay
+        // distinct, and the result never equals the segment id itself.
+        *slot = segment_id[i] ^ (0xA5u8.wrapping_add(i as u8));
+    }
+    out
 }
 
 /// One field of a multi-field index sort passed to
@@ -258,13 +329,12 @@ pub struct SortKeySpec<'a> {
 ///   does -- they must already be in memory, parallel to `docs`, which is
 ///   exactly what [`SortKeySpec::keys`] is. `sort_fields` must be non-empty.
 /// - **Missing values**: `keys[i] == None` means doc `i` has no value for
-///   that sort field; it's placed first or last per that field's `missing`
-///   ([`SortMissingValue`]), regardless of that field's `reverse`, matching
-///   real Lucene's `SortField.setMissingValue` convention (a missing value
-///   acts like `Long.MIN_VALUE`/`MAX_VALUE`, so `First`/ascending and
-///   `Last`/descending both put it at the same end of that tier; see the
-///   docstring on `sort_key_rank` below for the exact rule this function
-///   applies).
+///   that sort field. It is substituted with that field's sentinel --
+///   `Long.MIN_VALUE` for [`SortMissingValue::First`], `Long.MAX_VALUE` for
+///   [`SortMissingValue::Last`], exactly the `missingValue` the `.si`
+///   records -- and then compared like any other value, so `reverse` applies
+///   to it too. With `reverse`, a `Last` doc therefore lands *first*. See
+///   `sort_key_rank` below, which cites Java's own comparator.
 /// - **Stable sort**: docs that compare equal across every field (including
 ///   both-missing at every tier) keep their original relative order,
 ///   matching `Vec::sort_by`'s stability guarantee and real Lucene's own
@@ -296,22 +366,9 @@ pub fn flush_sorted_stored_only_segment(
         );
     }
 
-    // Stable sort by (priority-ordered rank, original index) so ties at
-    // every tier keep their original relative order (original index is the
-    // explicit final tie-breaker; `sort_by` is already stable, but pairing
-    // with the index makes that guarantee explicit and gives us the
-    // permutation for free).
-    let mut order: Vec<usize> = (0..docs.len()).collect();
-    order.sort_by(|&a, &b| {
-        sort_fields
-            .iter()
-            .fold(std::cmp::Ordering::Equal, |acc, spec| {
-                acc.then_with(|| {
-                    sort_key_rank(spec.keys[a], spec.keys[b], spec.reverse, spec.missing)
-                })
-            })
-            .then(a.cmp(&b))
-    });
+    // The one permutation `IndexWriter::flush`'s index-sorted path also uses
+    // (see [`sort_permutation`]), so the two orders cannot drift.
+    let order = sort_permutation(docs.len(), sort_fields);
 
     let sorted_docs: Vec<Document> = order.iter().map(|&i| docs[i].clone()).collect();
 
@@ -351,39 +408,111 @@ pub fn flush_sorted_stored_only_segment(
     Ok(sci)
 }
 
-/// Total-order comparator used to place two docs within the sorted layout:
-/// real Lucene's missing-value convention treats a missing value as
-/// `Long::MIN`/`Long::MAX` *before* applying `reverse`, so a `First`-missing
-/// doc sorts first whether the sort is ascending or descending, and likewise
-/// for `Last`. Present-value docs compare by their value, reversed when
-/// `reverse` is set (via `Ordering::reverse`, not negation -- negating
-/// `i64::MIN` would overflow/wrap).
+/// Total-order comparator used to place two docs within the sorted layout,
+/// and the exact comparator real Lucene applies to the `.si` bytes
+/// [`crate::segment_info::write_sort_field`] emits for the same
+/// [`SortMissingValue`].
+///
+/// Those bytes are a `SortField(field, Type.LONG, reverse)` carrying an
+/// explicit `missingValue` of `Long.MIN_VALUE` ([`SortMissingValue::First`])
+/// or `Long.MAX_VALUE` ([`SortMissingValue::Last`]), and Java's reader-side
+/// comparator for them is `IndexSorter.LongSorter.getDocComparator`:
+///
+/// ```text
+/// long[] values = new long[maxDoc];
+/// Arrays.fill(values, missingValue);          // missing docs get the sentinel
+/// ... values[docID] = dvs.longValue(); ...
+/// return (d1, d2) -> reverseMul * Long.compare(values[d1], values[d2]);
+/// ```
+///
+/// The sentinel is an ordinary value inside that comparison, so **`reverseMul`
+/// applies to it too**: with `reverse == true`, a `Last`
+/// (`Long.MAX_VALUE`) doc sorts *first*, and a `First` (`Long.MIN_VALUE`) doc
+/// sorts *last*. `missing` therefore names which sentinel is substituted, not
+/// which end of the finished order the doc lands at -- the two coincide only
+/// for an ascending sort. This function reproduces that exactly: substitute,
+/// then compare, then reverse.
+///
+/// The comparison is done on `Ordering` rather than by negating a difference:
+/// negating `i64::MIN` would overflow, and `Long.compare` returning `-1/0/1`
+/// is what `reverseMul` multiplies in Java.
 pub(crate) fn sort_key_rank(
     a: Option<i64>,
     b: Option<i64>,
     reverse: bool,
     missing: SortMissingValue,
 ) -> std::cmp::Ordering {
-    let bucket = |k: Option<i64>| -> i8 {
-        match k {
-            Some(_) => 0,
-            None => match missing {
-                SortMissingValue::First => -1,
-                SortMissingValue::Last => 1,
-            },
-        }
+    let sentinel = match missing {
+        SortMissingValue::First => i64::MIN,
+        SortMissingValue::Last => i64::MAX,
     };
-    bucket(a).cmp(&bucket(b)).then_with(|| match (a, b) {
-        (Some(x), Some(y)) => {
-            let ord = x.cmp(&y);
-            if reverse {
-                ord.reverse()
-            } else {
-                ord
-            }
+    let ord = a.unwrap_or(sentinel).cmp(&b.unwrap_or(sentinel));
+    if reverse {
+        ord.reverse()
+    } else {
+        ord
+    }
+}
+
+/// The permutation a (possibly multi-field) index sort imposes on a batch of
+/// `doc_count` buffered documents: entry `i` of the returned vector is the
+/// **pre-sort** index of the document that becomes doc id `i` in the flushed
+/// segment (real Lucene's `Sorter.DocMap.newToOld`).
+///
+/// `sort_fields` is applied in priority order -- `sort_fields[0]` is the
+/// primary key, `sort_fields[1]` breaks its ties, and so on -- and the final
+/// tie-break is the original index, so the permutation is a *stable* sort and
+/// therefore a deterministic function of its input (Java's
+/// `Sorter.sortAndLeaveUnpacked` likewise falls back to doc id, via
+/// `TimSorter` over a stable base order).
+///
+/// Shared by [`flush_sorted_stored_only_segment`] and by
+/// `IndexWriter::flush`'s index-sorted path, so that the order the writer
+/// physically imposes and the order this module's own primitive imposes can
+/// never drift apart.
+pub fn sort_permutation(doc_count: usize, sort_fields: &[SortKeySpec<'_>]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..doc_count).collect();
+    order.sort_by(|&a, &b| {
+        sort_fields
+            .iter()
+            .fold(std::cmp::Ordering::Equal, |acc, spec| {
+                acc.then_with(|| {
+                    sort_key_rank(spec.keys[a], spec.keys[b], spec.reverse, spec.missing)
+                })
+            })
+            .then(a.cmp(&b))
+    });
+    order
+}
+
+/// Applies `new_to_old` (a [`sort_permutation`] result) to `items` in place:
+/// afterwards `items[i]` is what `items[new_to_old[i]]` was.
+///
+/// Cycle-following rather than "build a permuted copy": a flush buffer holds
+/// whole `Document`s (and, in `IndexWriter`, parallel vectors of vectors), so
+/// the copy would clone or move every one of them into a second buffer that
+/// is live at the same time as the first -- doubling the peak footprint of
+/// exactly the structure a flush exists to get rid of. This moves each
+/// element at most twice and allocates one `u32` per document.
+pub fn permute_in_place<T>(items: &mut [T], new_to_old: &[usize]) {
+    debug_assert_eq!(items.len(), new_to_old.len());
+    // The cycle walk below moves "the element at `i` belongs at `dest[i]`",
+    // so it needs the *inverse* of `new_to_old` (`Sorter.DocMap.oldToNew`).
+    // Inverting is one pass over a `u32` array; getting the direction wrong
+    // is a permutation that is plausible, self-consistent and wrong (it
+    // applies the inverse ordering), which is exactly the kind of defect a
+    // sorted flush hides.
+    let mut dest: Vec<u32> = vec![0; items.len()];
+    for (new, &old) in new_to_old.iter().enumerate() {
+        dest[old] = new as u32;
+    }
+    for i in 0..items.len() {
+        while dest[i] as usize != i {
+            let j = dest[i] as usize;
+            items.swap(i, j);
+            dest.swap(i, j);
         }
-        _ => std::cmp::Ordering::Equal,
-    })
+    }
 }
 
 fn write_file(dir: &dyn Directory, name: &str, bytes: &[u8]) -> Result<()> {
@@ -477,7 +606,7 @@ mod tests {
 
         // The .si file must claim the same doc count we flushed -- cross-check
         // against segment_info::parse the same way the real fixture does.
-        let si_bytes = std::fs::read(std::path::Path::new(&tmp).join("_0.si")).unwrap();
+        let si_bytes = std::fs::read(tmp.join("_0.si")).unwrap();
         let si = segment_info::parse(&si_bytes, &sci.segment_id).unwrap();
         assert_eq!(si.doc_count, docs.len() as i32);
     }
@@ -588,10 +717,18 @@ mod tests {
             );
         }
 
-        let si_bytes = std::fs::read(std::path::Path::new(&tmp).join("_0.si")).unwrap();
+        let si_bytes = std::fs::read(tmp.join("_0.si")).unwrap();
         let si = segment_info::parse(&si_bytes, &sci.segment_id).unwrap();
         assert!(si.is_compound_file);
-        assert_eq!(si.files, vec!["_0.cfs".to_string(), "_0.cfe".to_string()]);
+        // The `.si` lists itself, as `Lucene99SegmentInfoFormat.write` does.
+        assert_eq!(
+            si.files,
+            vec![
+                "_0.cfs".to_string(),
+                "_0.cfe".to_string(),
+                "_0.si".to_string()
+            ]
+        );
     }
 
     /// The meaningful end-to-end check: flush with `use_compound_file: true`,
@@ -621,8 +758,8 @@ mod tests {
         )
         .unwrap();
 
-        let cfs = std::fs::read(std::path::Path::new(&tmp).join("_0.cfs")).unwrap();
-        let cfe = std::fs::read(std::path::Path::new(&tmp).join("_0.cfe")).unwrap();
+        let cfs = std::fs::read(tmp.join("_0.cfs")).unwrap();
+        let cfe = std::fs::read(tmp.join("_0.cfe")).unwrap();
 
         let entries = compound_format::parse_entries(&cfe, &segment_id).unwrap();
         compound_format::check_data_header_footer(&cfs, &segment_id, &entries).unwrap();
@@ -663,17 +800,12 @@ mod tests {
         }
     }
 
-    fn tempdir() -> String {
-        let dir = std::env::temp_dir().join(format!(
-            "lucene-rust-segment-writer-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir.to_str().unwrap().to_string()
+    use lucene_util::test_support::TempDir;
+
+    /// A scratch directory that removes itself when the test ends -- unless the
+    /// test is panicking, in which case its bytes stay for inspection.
+    fn tempdir() -> TempDir {
+        TempDir::new("segment-writer")
     }
 
     fn doc_ids(
@@ -836,17 +968,24 @@ mod tests {
         assert_eq!(doc_ids(&dir, "_0", segment_id, 3), vec!["a", "c", "b"]);
     }
 
-    /// Missing-value placement must be independent of `reverse` -- a missing
-    /// value sorts to the configured position (first/last) regardless of
-    /// ascending vs descending direction, matching real Lucene's
-    /// `SortField.setMissingValue` semantics. Neither `sorted_flush_places_
-    /// missing_values_first`/`_last` above exercises `reverse: true`, so
-    /// this closes that gap: with descending order AND missing-last
-    /// configured, the missing doc must still land last, not first (which
-    /// is what a bug leaking `reverse` into the missing-value bucket
-    /// ordering would produce).
+    /// The missing-value **sentinel is reversed along with every other
+    /// value**, which is what real Lucene does and what the `.si` this flush
+    /// writes actually says.
+    ///
+    /// `segment_info::write_sort_field` emits `SortField(field, LONG,
+    /// reverse)` with `missingValue = Long.MAX_VALUE` for
+    /// [`SortMissingValue::Last`], and Java's reader-side comparator for that
+    /// is `reverseMul * Long.compare(values[d1], values[d2])` over an array
+    /// pre-filled with the sentinel (`IndexSorter.LongSorter`). So with
+    /// `reverse: true` the `Long.MAX_VALUE` doc compares **greatest** and,
+    /// after `reverseMul`, lands **first**.
+    ///
+    /// This test used to assert the opposite ("missing-last stays last even
+    /// when reversed"), which made the physical order disagree with the `.si`
+    /// describing it -- a disagreement real Lucene's `CheckIndex.testSort`
+    /// rejects outright.
     #[test]
-    fn sorted_flush_missing_value_placement_is_independent_of_reverse() {
+    fn sorted_flush_missing_value_sentinel_is_reversed_like_any_other_value() {
         let tmp = tempdir();
         let dir = FsDirectory::open(&tmp);
         let fields = vec![stored_only_field("id", 0)];
@@ -871,9 +1010,9 @@ mod tests {
         )
         .unwrap();
 
-        // Descending by present value: c(20) then a(10); missing (b) still
-        // last regardless of the descending direction.
-        assert_eq!(doc_ids(&dir, "_0", segment_id, 3), vec!["c", "a", "b"]);
+        // Values as Lucene sees them: a=10, b=Long.MAX_VALUE (missing,
+        // `Last`), c=20. Ascending that is a, c, b; reversed it is b, c, a.
+        assert_eq!(doc_ids(&dir, "_0", segment_id, 3), vec!["b", "c", "a"]);
     }
 
     #[test]
@@ -1084,5 +1223,73 @@ mod tests {
         let fields_sort = read_index_sort(&dir, "_0", segment_id).unwrap();
         assert!(fields_sort[0].reverse);
         assert!(fields_sort[1].reverse);
+    }
+
+    /// `permute_in_place` must implement `newToOld` -- `items[i]` becomes
+    /// what `items[new_to_old[i]]` was. The inverse permutation is a
+    /// plausible, self-consistent, wrong answer (it is the same permutation
+    /// for every involution, so a two-element or reversed test cannot tell
+    /// them apart): this uses a 3-cycle, which can.
+    #[test]
+    fn permute_in_place_applies_new_to_old_not_its_inverse() {
+        let mut items = vec!["a", "b", "c"];
+        // doc 0 <- old 2, doc 1 <- old 0, doc 2 <- old 1.
+        permute_in_place(&mut items, &[2, 0, 1]);
+        assert_eq!(items, vec!["c", "a", "b"]);
+
+        // An involution, to show it is right there too, and the identity.
+        let mut items = vec![1, 2, 3, 4];
+        permute_in_place(&mut items, &[3, 1, 2, 0]);
+        assert_eq!(items, vec![4, 2, 3, 1]);
+        let mut items = vec![1, 2, 3];
+        permute_in_place(&mut items, &[0, 1, 2]);
+        assert_eq!(items, vec![1, 2, 3]);
+        let mut empty: Vec<u8> = Vec::new();
+        permute_in_place(&mut empty, &[]);
+        assert!(empty.is_empty());
+    }
+
+    /// The permutation is the same one `flush_sorted_stored_only_segment`
+    /// and `IndexWriter::flush` both apply, so it is worth pinning
+    /// separately: multi-tier priority, stability, and the missing-value
+    /// sentinel reversing with everything else.
+    #[test]
+    fn sort_permutation_is_priority_ordered_stable_and_sentinel_reversing() {
+        let primary = vec![Some(1), Some(1), Some(2), Some(1)];
+        let secondary = vec![Some(30), Some(10), Some(0), Some(10)];
+        let order = sort_permutation(
+            4,
+            &[
+                SortKeySpec {
+                    field: "p",
+                    keys: &primary,
+                    reverse: false,
+                    missing: SortMissingValue::Last,
+                },
+                SortKeySpec {
+                    field: "s",
+                    keys: &secondary,
+                    reverse: false,
+                    missing: SortMissingValue::Last,
+                },
+            ],
+        );
+        // p ascending: {1,3} tie at (1,10) -- kept in insertion order -- then
+        // 0 at (1,30), then 2 at p=2.
+        assert_eq!(order, vec![1, 3, 0, 2]);
+
+        // One tier, reversed, with a missing value: `Last` is Long.MAX_VALUE,
+        // so reversed it sorts first.
+        let keys = vec![Some(5), None, Some(9)];
+        let order = sort_permutation(
+            3,
+            &[SortKeySpec {
+                field: "p",
+                keys: &keys,
+                reverse: true,
+                missing: SortMissingValue::Last,
+            }],
+        );
+        assert_eq!(order, vec![1, 2, 0]);
     }
 }

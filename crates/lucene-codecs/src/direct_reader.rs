@@ -9,11 +9,24 @@
 
 use lucene_store::Result;
 
-/// `bits_per_value` must be one of the widths `DirectWriter` supports (the
-/// caller validates this at parse time). `index` addresses the `index`-th
-/// `bits_per_value`-wide value packed little-endian (LSB-first within each
-/// byte) starting at byte 0 of `slice`.
+/// `bits_per_value` must be one of the widths `DirectWriter` supports; anything
+/// else is rejected here, exactly where `DirectReader.getInstance`'s `switch`
+/// falls through to `IllegalArgumentException`. Java validates once per reader
+/// and this validates once per read, but the alternative is worse: several
+/// callers take `bits_per_value` straight off disk mid-lookup rather than at
+/// parse time (`doc_values`' varying-bits-per-value block header,
+/// `direct_monotonic`'s per-block `bpvs`), and an unsupported width reaches the
+/// mask below as `1u64 << bits_per_value` -- a debug-build panic and, worse, a
+/// silently masked shift returning a plausible wrong value in release.
+///
+/// `index` addresses the `index`-th `bits_per_value`-wide value packed
+/// little-endian (LSB-first within each byte) starting at byte 0 of `slice`.
 pub fn get(slice: &[u8], bits_per_value: u8, index: i64) -> Result<i64> {
+    if !is_supported_bits(bits_per_value) {
+        return Err(lucene_store::Error::Corrupted(format!(
+            "unsupported DirectReader bitsPerValue: {bits_per_value}"
+        )));
+    }
     // `index * bits_per_value` fits comfortably in u64: `index` addresses an
     // element of an in-memory-decoded array, itself bounded by `slice.len() *
     // 8` bits (a real allocated buffer, far under u64::MAX). A wide u128
@@ -23,7 +36,35 @@ pub fn get(slice: &[u8], bits_per_value: u8, index: i64) -> Result<i64> {
     let byte_pos =
         usize::try_from(bit_pos >> 3).map_err(|_| lucene_store::Error::Eof { offset: 0 })?;
     let shift = (bit_pos & 7) as u32;
+    // ARITH: `shift` is masked to `0..=7`, and `is_supported_bits` above caps
+    // `bits_per_value` at 64. Those two alone would allow `bytes_needed == 9`,
+    // which is *not* enough for the shift loop below -- `8 * 8 == 64` is
+    // already a shift overflow on a `u64`. The real bound is tighter and comes
+    // from `SUPPORTED_BITS`: `shift` is non-zero only when `bit_pos` is not a
+    // multiple of 8, which for a supported width means the width itself is not
+    // a multiple of 8, and those stop at 28. So either `shift == 0` and
+    // `bytes_needed <= 8`, or `bits_per_value <= 28` and `bytes_needed <=
+    // ceil(35 / 8) == 5`. Either way `bytes_needed <= 8` and `8 * i <= 56`.
+    #[allow(clippy::arithmetic_side_effects)]
     let bytes_needed = (shift as usize + bits_per_value as usize).div_ceil(8);
+    debug_assert!(
+        bytes_needed <= 8,
+        "bytes_needed={bytes_needed} would overflow the shift below"
+    );
+
+    // `index` reaches here from a doc-values ordinal or a monotonic-block
+    // index, both of which can come off disk. On a 64-bit target `bit_pos` is
+    // a `u64` and `bit_pos >> 3` therefore never exceeds `2^61 - 1`, so
+    // `byte_pos + 8` could not overflow there anyway -- but on a 32-bit target
+    // the `try_from` above admits anything up to `u32::MAX`, where it would.
+    // One comparison against the slice length, hoisted out of both reads
+    // below, makes every `byte_pos + n` here provably in range on every
+    // target, since a slice length is at most `isize::MAX`. It also turns a
+    // wildly out-of-range ordinal into an `Eof` before the two `slice.get`
+    // calls rather than after.
+    if byte_pos > slice.len() {
+        return Err(lucene_store::Error::Eof { offset: byte_pos });
+    }
 
     // One wide load whenever eight bytes are in range, which is what
     // `DirectWriter` pads its output for -- `padding_bytes_needed` below is
@@ -37,19 +78,29 @@ pub fn get(slice: &[u8], bits_per_value: u8, index: i64) -> Result<i64> {
     // got linearly slower with the width: 1.96 ns at one bit rising to 5.25 ns
     // at 64, against Lucene's flat 2.3 ns for all fourteen widths -- Lucene's
     // `DirectPackedReaderNN` classes each do a single `readInt`/`readLong`.
+    // ARITH: `byte_pos <= slice.len() <= isize::MAX` was just checked, and
+    // `bytes_needed <= 9`, so neither sum can overflow `usize`.
+    #[allow(clippy::arithmetic_side_effects)]
     let acc = if let Some(window) = slice.get(byte_pos..byte_pos + 8) {
         u64::from_le_bytes(window.try_into().expect("exactly 8 bytes"))
     } else {
-        let bytes = slice
-            .get(byte_pos..byte_pos + bytes_needed)
-            .ok_or(lucene_store::Error::Eof { offset: byte_pos })?;
+        let Some(bytes) = slice.get(byte_pos..byte_pos + bytes_needed) else {
+            return Err(lucene_store::Error::Eof { offset: byte_pos });
+        };
         let mut acc: u64 = 0;
+        // ARITH: `bytes.len() == bytes_needed <= 8` (see the bound above),
+        // so `i <= 7` and `8 * i <= 56`, a legal `u64` shift.
+        #[allow(clippy::arithmetic_side_effects)]
         for (i, &b) in bytes.iter().enumerate() {
             acc |= (b as u64) << (8 * i);
         }
         acc
     };
     let acc = acc >> shift;
+    // ARITH: the `else` arm has `bits_per_value < 64` (the `== 64` case is the
+    // arm above and `is_supported_bits` rejects everything over 64), so the
+    // shift is in range and its result is at least 1.
+    #[allow(clippy::arithmetic_side_effects)]
     let mask: u64 = if bits_per_value == 64 {
         u64::MAX
     } else {
@@ -63,6 +114,13 @@ pub fn get(slice: &[u8], bits_per_value: u8, index: i64) -> Result<i64> {
 /// one little-endian, LSB-first-within-byte bitstream -- the exact inverse
 /// of `get`'s formula, so this port doesn't need Java's thirteen
 /// width-specialized encoders either.
+// ARITH: every product is computed in `u128` from a slice length and a `u8`,
+// so it cannot overflow. Inside the loop `bit_off` is masked to `0..=7`,
+// `take = min(remaining, 8 - bit_off)` is in `0..=8`, `remaining` only ever
+// decreases by `take` (and the loop stops at 0), and `bit_pos` advances by
+// `take` a bounded number of times. This is the encode side: no operand here
+// comes off disk.
+#[allow(clippy::arithmetic_side_effects)]
 pub fn encode(values: &[i64], bits_per_value: u8) -> Vec<u8> {
     let total_bits = values.len() as u128 * bits_per_value as u128;
     let n_bytes = total_bits.div_ceil(8) as usize;
@@ -94,8 +152,38 @@ pub fn encode(values: &[i64], bits_per_value: u8) -> Vec<u8> {
 /// always round up to one of these (`DirectWriter.roundBits`).
 const SUPPORTED_BITS: [u32; 14] = [1, 2, 4, 8, 12, 16, 20, 24, 28, 32, 40, 48, 56, 64];
 
+/// [`SUPPORTED_BITS`] below 64, as a bit set, so the check in [`get`] is a
+/// shift and a test rather than a scan of the table. 64 is handled separately
+/// rather than widening this to `u128`: a 128-bit variable shift costs several
+/// instructions, and this sits on a per-value decode path.
+// ARITH: `i` indexes a 14-element array and the loop stops at its length.
+// Evaluated at compile time, so an overflow here would be a build error, not
+// a runtime panic.
+#[allow(clippy::arithmetic_side_effects)]
+const SUPPORTED_BITS_MASK: u64 = {
+    let mut mask = 0u64;
+    let mut i = 0;
+    while i < SUPPORTED_BITS.len() {
+        if SUPPORTED_BITS[i] < 64 {
+            mask |= 1u64 << SUPPORTED_BITS[i];
+        }
+        i += 1;
+    }
+    mask
+};
+
+/// Port of `DirectWriter.checkBitsPerValue`'s membership test: is
+/// `bits_per_value` one of the fourteen widths `DirectWriter` can emit?
+#[inline]
+pub(crate) fn is_supported_bits(bits_per_value: u8) -> bool {
+    bits_per_value == 64
+        || (bits_per_value < 64 && (SUPPORTED_BITS_MASK >> bits_per_value) & 1 != 0)
+}
+
 /// Port of `DirectWriter.unsignedBitsRequired`: the minimum bit width (among
 /// [`SUPPORTED_BITS`]) that can hold `max_value` interpreted as unsigned.
+// ARITH: `u64::leading_zeros()` returns `0..=64`, so `64 - lz` is in `0..=64`.
+#[allow(clippy::arithmetic_side_effects)]
 pub(crate) fn unsigned_bits_required(max_value: i64) -> u8 {
     let bits = if max_value == 0 {
         1
@@ -114,6 +202,14 @@ pub(crate) fn unsigned_bits_required(max_value: i64) -> u8 {
 /// port's own [`get`] is bounds-checked and never needs this, but the
 /// padding is part of the on-disk byte layout (it shifts every subsequent
 /// block's offset), so a writer must still emit it for wire compatibility.
+// ARITH: each subtraction sits under the branch that establishes it --
+// `64 - bits` only for `bits > 32`, and so on -- but that alone only bounds
+// the *lower* end. The upper end comes from the call sites: both of them
+// (`direct_monotonic::write`, `doc_values`' numeric writer) pass a
+// width that `unsigned_bits_required` returned, which is one of the fourteen
+// `SUPPORTED_BITS` and so never exceeds 64. A width read off disk must not be
+// passed here; `get` is the entry point that validates one.
+#[allow(clippy::arithmetic_side_effects)]
 pub(crate) fn padding_bytes_needed(bits_per_value: u8) -> usize {
     let padding_bits = if bits_per_value > 32 {
         64 - bits_per_value as u32
@@ -129,6 +225,10 @@ pub(crate) fn padding_bytes_needed(bits_per_value: u8) -> usize {
 
 #[cfg(test)]
 mod tests {
+    // The arithmetic gate is about values read off disk; a test's `i + 1` is
+    // not one. See docs/arithmetic-gate.md.
+    #![allow(clippy::arithmetic_side_effects)]
+
     use super::*;
 
     #[test]
@@ -172,6 +272,27 @@ mod tests {
     fn out_of_range_is_error() {
         let payload = [0u8; 1];
         assert!(get(&payload, 16, 5).is_err());
+    }
+
+    #[test]
+    fn unsupported_bit_width_is_rejected_not_a_shift_overflow() {
+        // Java's `DirectReader.getInstance` throws for anything outside the
+        // fourteen supported widths; `bits_per_value` reaches here straight off
+        // disk in the varying-bpv and monotonic-block paths.
+        let payload = [0xFFu8; 32];
+        for bits in [0u8, 3, 5, 7, 9, 33, 63, 65, 100, 255] {
+            assert!(
+                get(&payload, bits, 0).is_err(),
+                "bits_per_value={bits} must be rejected"
+            );
+        }
+        for &bits in &SUPPORTED_BITS {
+            assert!(is_supported_bits(bits as u8), "bits_per_value={bits}");
+            assert!(
+                get(&payload, bits as u8, 0).is_ok(),
+                "bits_per_value={bits}"
+            );
+        }
     }
 
     #[test]

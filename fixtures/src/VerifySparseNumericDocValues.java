@@ -179,6 +179,42 @@ public class VerifySparseNumericDocValues {
         }
       }
 
+      // Second pass: strided jumps, which is the only way real Lucene's
+      // `IndexedDISI` reaches `rankSkip`. Its DENSE branch only consults the
+      // rank table when the target is at least `2^(denseRankPower - 6)` words
+      // ahead -- 8 words / 512 doc ids at the power 9 this port now writes --
+      // so the doc-by-doc pass above never reads a single rank byte. A rank
+      // table of the right *length* but the wrong *content* passes that pass
+      // and fails this one, which is exactly the misreading a round-trip
+      // through this port's own reader cannot catch.
+      NumericDocValues jumped = producer.getNumeric(fieldInfo);
+      for (int stride : new int[] {701, 4096, 20011}) {
+        // A fresh iterator per stride: `advanceExact` is forward-only.
+        jumped = producer.getNumeric(fieldInfo);
+        for (int doc = 0; doc < maxDoc; doc += stride) {
+          boolean hasValue = jumped.advanceExact(doc);
+          Long want = expected.get(doc);
+          if (want == null) {
+            if (hasValue) {
+              System.out.println(
+                  "MISMATCH (stride " + stride + ") " + segment + " doc " + doc
+                      + ": expected absent, got present (" + jumped.longValue() + ")");
+              failures++;
+            }
+          } else if (!hasValue) {
+            System.out.println(
+                "MISMATCH (stride " + stride + ") " + segment + " doc " + doc
+                    + ": expected present (" + want + "), got absent");
+            failures++;
+          } else if (jumped.longValue() != want) {
+            System.out.println(
+                "MISMATCH (stride " + stride + ") " + segment + " doc " + doc
+                    + ": expected=" + want + " got=" + jumped.longValue());
+            failures++;
+          }
+        }
+      }
+
       producer.close();
       if (failures == 0) {
         System.out.println(
@@ -189,7 +225,7 @@ public class VerifySparseNumericDocValues {
                 + expected.size()
                 + " present, "
                 + (maxDoc - expected.size())
-                + " absent)");
+                + " absent), plus three strided passes through the DENSE rank table");
       }
       return failures;
     } catch (CorruptIndexException e) {

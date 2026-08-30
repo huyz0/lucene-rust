@@ -8,6 +8,16 @@ license.workspace = true
 thiserror.workspace = true
 crc32fast.workspace = true
 
+[features]
+# Exposes `test_support::TempDir` -- the shared RAII scratch-directory guard --
+# to *other* crates' test suites. `#[cfg(test)]` is scoped to this crate's own
+# `cargo test` build, so a downstream crate cannot see the module without a
+# feature. Enabled only via a `[dev-dependencies]` edge, which Cargo's
+# resolver-2 feature unification confines to test/bench targets; it never
+# reaches a production binary. Same rationale and gating as `lucene-search`'s
+# and `lucene-codecs`' own `test-support` features.
+test-support = []
+
 [dev-dependencies]
 proptest.workspace = true
 criterion.workspace = true

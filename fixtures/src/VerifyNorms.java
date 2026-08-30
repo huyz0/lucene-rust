@@ -27,16 +27,15 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Reverse-direction verifier (Rust writes, Java reads): opens a
- * `.nvm`/`.nvd` pair written by this port's `norms::write_single_dense_field`
- * (a single norms field, dense, at most 1 byte per doc -- see
+ * Reverse-direction verifier (Rust writes, Java reads): opens `.nvm`/`.nvd`
+ * pairs written by this port's `norms::write_fields` (see
  * `crates/lucene-codecs/examples/write_norms_fixture.rs`) directly through
  * real Lucene's {@link Lucene90NormsFormat}, using a hand-built
  * {@link SegmentInfo}/{@link FieldInfos} the same way
  * {@code VerifyDocValues.java} does -- this keeps the slice scoped to
  * exactly the norms format itself, no `.si`/`.fnm` writer needed.
  *
- * <p>Iterates the field via real {@link NumericDocValues} (the same API
+ * <p>Iterates each field via real {@link NumericDocValues} (the same API
  * {@link NormsProducer#getNorms} returns, and the production-facing way
  * scoring reads norms), and confirms every doc's value matches the
  * manifest.
@@ -44,17 +43,16 @@ import java.util.Map;
  * <p>Usage: {@code java VerifyNorms <fixture-dir>}, where
  * {@code <fixture-dir>} contains one {@code <segment>.nvm}/{@code
  * <segment>.nvd} pair per segment named in the manifest's {@code segments}
- * key, and a {@code manifest.properties} describing each segment's expected
- * per-doc values under {@code <segment>.max_doc}/{@code
- * <segment>.field_number}/{@code <segment>.values}. Exits nonzero and prints
- * a diff on any mismatch.
+ * key, and a {@code manifest.properties} describing each segment under
+ * {@code <segment>.max_doc}, {@code <segment>.field_numbers} (comma
+ * separated) and, per field, {@code <segment>.<number>.values} -- a
+ * {@code ;}-separated positional list where {@code -} means the doc has no
+ * norm. Exits nonzero and prints a diff on any mismatch.
  *
- * <p>Two segments are verified: {@code _0} (varying small signed values,
- * exercising the real {@code bytesPerNorm == 1} path) and {@code _1}
- * (all-equal values, the {@code bytesPerNorm == 0} constant encoding -- a
- * regression case for a branch the doc-values write-side review found was
- * previously verified only against this port's own reader, not real
- * Lucene).
+ * <p>The segments cover every shape {@code Lucene90NormsConsumer} can write:
+ * all five {@code numBytesPerValue} widths (constant, 1, 2, 4, 8 bytes per
+ * doc), the sparse {@code IndexedDISI} docs-with-field structure, and several
+ * fields interleaved into one {@code .nvm}/{@code .nvd} pair.
  */
 public class VerifyNorms {
   public static void main(String[] args) throws IOException {
@@ -76,45 +74,33 @@ public class VerifyNorms {
 
   /**
    * Opens one Rust-written `.nvm`/`.nvd` segment (named {@code segment},
-   * e.g. {@code "_0"}) through real Lucene and checks every doc's norm
-   * value against the manifest under {@code segment + ".max_doc"} /
-   * {@code segment + ".field_number"} / {@code segment + ".values"}.
-   * Returns the number of mismatches (0 on full success).
+   * e.g. {@code "_0"}) through real Lucene and checks every field listed in
+   * {@code segment + ".field_numbers"} against its expected per-doc values
+   * at {@code segment + "." + number + ".values"} ({@code -} for a doc with
+   * no norm). Returns the number of mismatches (0 on full success).
    */
   static int verifySegment(Path dir, byte[] id, String segment, Map<String, String> manifest)
       throws IOException {
     int maxDoc = Integer.parseInt(manifest.get(segment + ".max_doc"));
-    int fieldNumber = Integer.parseInt(manifest.get(segment + ".field_number"));
-    String valuesSpec = manifest.getOrDefault(segment + ".values", "");
+    String[] fieldNumbers = manifest.get(segment + ".field_numbers").split(",");
 
-    List<Long> expected = new ArrayList<>();
-    if (!valuesSpec.isEmpty()) {
-      for (String v : valuesSpec.split(";")) {
-        expected.add(Long.parseLong(v));
+    List<FieldInfo> fieldInfoList = new ArrayList<>();
+    Map<Integer, List<Long>> expectedByField = new HashMap<>();
+    for (String numberText : fieldNumbers) {
+      int fieldNumber = Integer.parseInt(numberText.trim());
+      fieldInfoList.add(normedField("field" + fieldNumber, fieldNumber));
+
+      List<Long> expected = new ArrayList<>();
+      String valuesSpec = manifest.getOrDefault(segment + "." + fieldNumber + ".values", "");
+      if (!valuesSpec.isEmpty()) {
+        for (String v : valuesSpec.split(";")) {
+          // `-` means the doc has no norm at all (the sparse shape).
+          expected.add(v.equals("-") ? null : Long.parseLong(v));
+        }
       }
+      expectedByField.put(fieldNumber, expected);
     }
-
-    FieldInfo fieldInfo =
-        new FieldInfo(
-            "body",
-            fieldNumber,
-            false, // storeTermVector
-            false, // omitNorms == false -> field DOES have norms
-            false, // storePayloads
-            IndexOptions.DOCS,
-            DocValuesType.NONE,
-            DocValuesSkipIndexType.NONE,
-            -1,
-            new HashMap<>(),
-            0,
-            0,
-            0,
-            0,
-            VectorEncoding.FLOAT32,
-            VectorSimilarityFunction.EUCLIDEAN,
-            false,
-            false);
-    FieldInfos fis = new FieldInfos(new FieldInfo[] {fieldInfo});
+    FieldInfos fis = new FieldInfos(fieldInfoList.toArray(new FieldInfo[0]));
 
     try (Directory directory = FSDirectory.open(dir)) {
       SegmentInfo si =
@@ -136,54 +122,103 @@ public class VerifyNorms {
       SegmentReadState readState = new SegmentReadState(directory, si, fis, IOContext.DEFAULT);
       NormsProducer producer = format.normsProducer(readState);
 
-      NumericDocValues values = producer.getNorms(fieldInfo);
       int failures = 0;
-      int seenDocs = 0;
-      for (int doc = values.nextDoc(); doc != DocIdSetIterator.NO_MORE_DOCS; doc = values.nextDoc()) {
-        seenDocs++;
-        long got = values.longValue();
-        if (doc >= expected.size()) {
+      for (FieldInfo fieldInfo : fieldInfoList) {
+        List<Long> expected = expectedByField.get(fieldInfo.number);
+        NumericDocValues values = producer.getNorms(fieldInfo);
+        int seenDocs = 0;
+        int expectedDocs = 0;
+        for (Long v : expected) {
+          if (v != null) {
+            expectedDocs++;
+          }
+        }
+        for (int doc = values.nextDoc();
+            doc != DocIdSetIterator.NO_MORE_DOCS;
+            doc = values.nextDoc()) {
+          seenDocs++;
+          long got = values.longValue();
+          if (doc >= expected.size() || expected.get(doc) == null) {
+            System.out.println(
+                "MISMATCH "
+                    + segment
+                    + " field "
+                    + fieldInfo.number
+                    + ": doc "
+                    + doc
+                    + " should have no norm, got "
+                    + got);
+            failures++;
+            continue;
+          }
+          long want = expected.get(doc);
+          if (want != got) {
+            System.out.println(
+                "MISMATCH "
+                    + segment
+                    + " field "
+                    + fieldInfo.number
+                    + " doc "
+                    + doc
+                    + ": expected="
+                    + want
+                    + " got="
+                    + got);
+            failures++;
+          }
+        }
+
+        if (seenDocs != expectedDocs) {
           System.out.println(
               "MISMATCH "
                   + segment
-                  + ": unexpected doc "
-                  + doc
-                  + " (expected only "
-                  + expected.size()
-                  + " docs)");
+                  + " field "
+                  + fieldInfo.number
+                  + " doc count: expected="
+                  + expectedDocs
+                  + " got="
+                  + seenDocs);
           failures++;
-          continue;
-        }
-        long want = expected.get(doc);
-        if (want != got) {
+        } else if (failures == 0) {
           System.out.println(
-              "MISMATCH " + segment + " doc " + doc + ": expected=" + want + " got=" + got);
-          failures++;
+              segment
+                  + " field "
+                  + fieldInfo.number
+                  + ": all "
+                  + expectedDocs
+                  + " doc norms verified against real Lucene");
         }
-      }
-
-      if (seenDocs != expected.size()) {
-        System.out.println(
-            "MISMATCH "
-                + segment
-                + " doc count: expected="
-                + expected.size()
-                + " got="
-                + seenDocs);
-        failures++;
       }
 
       producer.close();
-
-      if (failures == 0) {
-        System.out.println(
-            segment + ": all " + expected.size() + " doc norms verified against real Lucene");
-      }
       return failures;
     } catch (CorruptIndexException e) {
       System.out.println(segment + " FAILED TO OPEN: " + e);
       return 1;
     }
+  }
+
+  /** A {@link FieldInfo} for an indexed field that has norms (omitNorms == false). */
+  static FieldInfo normedField(String name, int number) {
+    return new FieldInfo(
+        name,
+        number,
+        false, // storeTermVector
+        false, // omitNorms == false -> field DOES have norms
+        false, // storePayloads
+        IndexOptions.DOCS,
+        DocValuesType.NONE,
+        DocValuesSkipIndexType.NONE,
+        -1,
+        new HashMap<>(),
+        0,
+        0,
+        0,
+        0,
+        VectorEncoding.FLOAT32,
+        VectorSimilarityFunction.EUCLIDEAN,
+        false,
+        false);
   }
 
   static Map<String, String> readManifest(Path path) throws IOException {

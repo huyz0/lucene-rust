@@ -13,34 +13,24 @@
 //! by reading both `Cargo.toml`s), so `lucene-index` depending back on
 //! `lucene-search` would invert that edge into a cycle.
 //!
-//! Unlike delete-by-term, though, there is *no* existing BKD range-query
-//! matcher to reuse at all: `lucene-search` has no `PointRangeQuery`
-//! equivalent (its only range-shaped queries are
+//! Unlike delete-by-term, there is no `PointRangeQuery` equivalent in
+//! `lucene-search` to reuse (its only range-shaped queries are
 //! `search_numeric_range`/`search_sorted_ord_range`/`search_multi_valued_range`
-//! in `doc_value_query.rs`, which all walk **doc-values** data, the "slow"
-//! `SortedNumericDocValuesField.newSlowRangeQuery` fallback path real Lucene
-//! uses when no BKD index exists for a field -- not the BKD tree at all).
-//! `lucene-codecs::points` itself has no intersection/range-query logic
-//! either: its only point-consuming reader entry point is
-//! `PointsReader::decode_all_points`, which decodes every point in a field
-//! unconditionally (see `crates/lucene-codecs/tests/points_fixtures.rs`).
+//! in `doc_value_query.rs`, which all walk **doc-values** data -- the "slow"
+//! `SortedNumericDocValuesField.newSlowRangeQuery` fallback real Lucene uses
+//! when no BKD index exists for a field, not the BKD tree at all).
 //!
-//! So this module reimplements the minimal range-matching logic locally:
-//! decode every point via `decode_all_points`, then compare each point's
-//! packed value against the caller's `[min, max]` packed byte range,
-//! per-dimension, unsigned byte-wise -- exactly the comparison
-//! `NumericUtils.longToSortableBytes`/`intToSortableBytes`'s encoding is
-//! designed for (matching `PointRangeQuery`'s own per-dimension
-//! `Arrays.compareUnsigned` bounds check). This is a real, deliberate
-//! reimplementation, not a port of `BKDReader`'s tree-pruning intersection
-//! (`BKDReader.intersect`/`visitCompressedDocValues`) -- that traversal is an
-//! optimization to *avoid* decoding every leaf; decoding everything via the
-//! already-ported `decode_all_points` and filtering in memory is correct
-//! (just not sublinear) and is the same kind of "linear scan over an
-//! already-ported primitive" tradeoff `term_delete.rs` documents it took
-//! nowhere in particular (there, the tradeoff was reuse of an *existing*
-//! primitive; here, no BKD range-matching primitive existed anywhere in the
-//! workspace to reuse, so this is new code, kept intentionally small).
+//! What this module *does* reuse is
+//! [`lucene_codecs::points::PointsReader::range_query`], the port of
+//! `PointValues.intersect` + `PointRangeQuery`'s `IntersectVisitor`: a real
+//! BKD tree traversal that compares the query box against each cell's bounds
+//! and prunes whole subtrees (`CELL_OUTSIDE_QUERY`), takes the doc-ids-only
+//! fast path for fully-contained cells (`CELL_INSIDE_QUERY`, no packed value
+//! decoded at all), and only decodes and per-point-checks the leaves that
+//! actually straddle the boundary. This module previously called
+//! `decode_all_points` and filtered in memory, which decoded every leaf of
+//! every tree regardless of selectivity; see `docs/sweep/m2/b11-index-meta.md`
+//! for the measured difference.
 //!
 //! # Scope
 //!
@@ -67,55 +57,21 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// Unsigned byte-wise compare of two same-length byte slices (matches
-/// `Arrays.compareUnsigned`'s ordering for the sortable big-endian encoding
-/// every packed dimension value uses).
-fn compare_unsigned(a: &[u8], b: &[u8]) -> std::cmp::Ordering {
-    a.cmp(b)
-}
-
-/// Does `packed_value` (`num_dims * bytes_per_dim` bytes) fall within
-/// `[min_packed, max_packed]` (same total length), inclusive on both ends,
-/// checked independently per dimension? Matches `PointRangeQuery`'s
-/// `matches` semantics: **every** dimension's slice must satisfy
-/// `min[dim] <= value[dim] <= max[dim]` (unsigned byte-wise) for the point to
-/// match -- a single out-of-range dimension excludes the whole point, even in
-/// a multi-dimension field like `LatLonPoint`.
-fn packed_value_in_range(
-    packed_value: &[u8],
-    min_packed: &[u8],
-    max_packed: &[u8],
-    num_dims: i32,
-    bytes_per_dim: i32,
-) -> bool {
-    let bytes_per_dim = bytes_per_dim as usize;
-    for dim in 0..num_dims as usize {
-        let lo = dim * bytes_per_dim;
-        let hi = lo + bytes_per_dim;
-        let v = &packed_value[lo..hi];
-        let min = &min_packed[lo..hi];
-        let max = &max_packed[lo..hi];
-        if compare_unsigned(v, min) == std::cmp::Ordering::Less
-            || compare_unsigned(v, max) == std::cmp::Ordering::Greater
-        {
-            return false;
-        }
-    }
-    true
-}
-
 /// Resolves a `field_number`'s BKD points to every **live** doc ID whose
 /// packed value falls within the inclusive `[min_packed, max_packed]` range,
 /// ascending, de-duplicated (a doc with several matching values in a
 /// multi-valued point field must only be deleted once).
 ///
-/// `min_packed`/`max_packed` must each be exactly `num_dims * bytes_per_dim`
-/// bytes for the field (the same packed encoding
-/// `PointsField::min_packed_value`/`max_packed_value` and every decoded
-/// `Point::packed_value` use) -- mismatched lengths are treated the same as
-/// "no match" per dimension pair examined (a caller passing the wrong length
-/// gets a panic from the slice index instead, same as a caller bug would
-/// surface in `term_delete`'s equivalent).
+/// `min_packed`/`max_packed` must each be exactly
+/// `num_index_dims * bytes_per_dim` bytes for the field -- the **index**
+/// dimensions, not the data dimensions, matching `PointRangeQuery`'s own
+/// contract (`PointRangeQuery.checkValidPointValues` rejects a values instance
+/// whose `getNumIndexDimensions()` differs from the query's `numDims`, and
+/// only the index dimensions have cell bounds in the BKD packed index at
+/// all). For every field this port writes today the two counts are equal;
+/// for a field with trailing non-indexed data dimensions they are not, and
+/// using the data-dimension count -- as this module did before -- would
+/// compare bytes the query box does not describe.
 ///
 /// An unknown `field_number` yields an empty `Vec`, not an error -- matches
 /// `term_delete::resolve_term_doc_ids`'s "no matches, not a caller bug"
@@ -130,27 +86,17 @@ pub fn resolve_points_range_doc_ids(
     min_packed: &[u8],
     max_packed: &[u8],
 ) -> Result<Vec<i32>> {
-    let Some(field) = reader.field(field_number) else {
+    if reader.field(field_number).is_none() {
         return Ok(Vec::new());
-    };
-    let num_dims = field.num_dims;
-    let bytes_per_dim = field.bytes_per_dim;
-
-    let mut doc_ids: Vec<i32> = reader
-        .decode_all_points(field_number)?
-        .into_iter()
-        .filter(|point| {
-            packed_value_in_range(
-                &point.packed_value,
-                min_packed,
-                max_packed,
-                num_dims,
-                bytes_per_dim,
-            )
-        })
-        .map(|point| point.doc_id)
-        .filter(|&doc_id| live_docs.is_none_or(|bits| bits.get(doc_id as usize)))
-        .collect();
+    }
+    // `range_query` returns doc ids in leaf order, possibly repeated when a
+    // doc has several matching points (exactly what Java's visitor sees
+    // before it folds them into a `DocIdSetBuilder`); the sort+dedup below is
+    // that fold.
+    let mut doc_ids = reader.range_query(field_number, min_packed, max_packed)?;
+    if let Some(bits) = live_docs {
+        doc_ids.retain(|&doc_id| bits.get(doc_id as usize));
+    }
     doc_ids.sort_unstable();
     doc_ids.dedup();
     Ok(doc_ids)
@@ -212,21 +158,16 @@ mod tests {
             sci_id: None,
             field_infos_files: vec![],
             dv_update_files: vec![],
+            ..Default::default()
         }
     }
 
-    fn tempdir() -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        p.push(format!(
-            "lucene-rust-points-delete-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&p).unwrap();
-        p
+    use lucene_util::test_support::TempDir;
+
+    /// A scratch directory that removes itself when the test ends -- unless
+    /// the test is panicking, in which case its bytes stay for inspection.
+    fn tempdir() -> TempDir {
+        TempDir::new("points-delete")
     }
 
     /// Builds a tiny in-memory single-dimension `LongPoint`-shaped segment:
@@ -357,6 +298,40 @@ mod tests {
         max.extend_from_slice(&long_bytes(15));
         let docs = resolve_points_range_doc_ids(&reader, None, 1, &min, &max).unwrap();
         assert_eq!(docs, vec![1]);
+    }
+
+    /// A field whose *data* dimensions outnumber its *index* dimensions (a
+    /// real shape: `LatLonShape`/`*RangeField` pack extra non-indexed bytes
+    /// after the indexed ones). The query box covers only the index
+    /// dimensions, exactly as `PointRangeQuery` requires; the old
+    /// `decode_all_points` implementation looped over `field.num_dims` and
+    /// would have indexed past the end of a correctly-sized box.
+    #[test]
+    fn query_box_covers_index_dimensions_only_not_data_dimensions() {
+        let segment_id = [9u8; ID_LENGTH];
+        let pack = |a: i64, b: i64| -> Vec<u8> {
+            let mut v = long_bytes(a).to_vec();
+            v.extend_from_slice(&long_bytes(b));
+            v
+        };
+        // dim 0 is indexed; dim 1 is a payload dimension the query never sees.
+        let points: Vec<(i32, Vec<u8>)> =
+            vec![(0, pack(10, 999)), (1, pack(20, -999)), (2, pack(30, 0))];
+        let field = WritePointsField {
+            field_number: 1,
+            num_dims: 2,
+            num_index_dims: 1,
+            bytes_per_dim: 8,
+            points,
+        };
+        let (kdm, kdi, kdd) = points::write(&[field], 512, &segment_id, "").unwrap();
+        let reader = points::open(&kdm, &kdi, &kdd, &segment_id, "").unwrap();
+
+        // One index dimension => an 8-byte box, not 16.
+        let min = long_bytes(15);
+        let max = long_bytes(35);
+        let docs = resolve_points_range_doc_ids(&reader, None, 1, &min, &max).unwrap();
+        assert_eq!(docs, vec![1, 2]);
     }
 
     // --- resolve_and_apply_points_range_delete: real Directory I/O ---

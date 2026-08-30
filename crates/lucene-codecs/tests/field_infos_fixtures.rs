@@ -1,6 +1,11 @@
 //! Differential test against a real `.fnm` file written by an actual
 //! IndexWriter (7 fields of varied shapes + a soft-deletes field introduced
 //! by a later doc-values update). Regenerate with fixtures/src/GenFieldInfos.java.
+// Test-support code opts out of the arithmetic gate at the file boundary:
+// the gate exists for values read off disk in production decode paths, not
+// for a fixture builder's own index arithmetic. See
+// `docs/arithmetic-gate.md`.
+#![allow(clippy::arithmetic_side_effects)]
 
 use lucene_codecs::field_infos::{self, DocValuesType, IndexOptions, VectorSimilarityFunction};
 

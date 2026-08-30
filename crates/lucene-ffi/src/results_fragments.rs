@@ -23,7 +23,7 @@
 use std::os::raw::c_char;
 
 use crate::error::{guard, set_last_error, FfiStatus};
-use crate::registry::{fragment_results, lock_recovering};
+use crate::registry::fragment_results;
 
 /// Writes the number of assembled fragments held by
 /// `fragment_results_handle` to `*out_len`.
@@ -39,7 +39,7 @@ pub unsafe extern "C" fn ffi_fragment_results_len(
         if out_len.is_null() {
             return Err(FfiStatus::NullPointer);
         }
-        let registry = lock_recovering(fragment_results());
+        let registry = fragment_results().read(fragment_results_handle);
         let handle = registry.get(fragment_results_handle).ok_or_else(|| {
             set_last_error("ffi_fragment_results_len: unknown or already-closed handle");
             FfiStatus::InvalidHandle
@@ -72,7 +72,7 @@ pub unsafe extern "C" fn ffi_fragment_result_text(
     out_written: *mut usize,
 ) -> i32 {
     guard(|| {
-        let registry = lock_recovering(fragment_results());
+        let registry = fragment_results().read(fragment_results_handle);
         let handle = registry.get(fragment_results_handle).ok_or_else(|| {
             set_last_error("ffi_fragment_result_text: unknown or already-closed handle");
             FfiStatus::InvalidHandle
@@ -126,7 +126,7 @@ pub unsafe extern "C" fn ffi_fragment_result_matched_terms_len(
         if out_len.is_null() {
             return Err(FfiStatus::NullPointer);
         }
-        let registry = lock_recovering(fragment_results());
+        let registry = fragment_results().read(fragment_results_handle);
         let handle = registry.get(fragment_results_handle).ok_or_else(|| {
             set_last_error(
                 "ffi_fragment_result_matched_terms_len: unknown or already-closed handle",
@@ -167,7 +167,7 @@ pub unsafe extern "C" fn ffi_fragment_result_matched_term(
     out_written: *mut usize,
 ) -> i32 {
     guard(|| {
-        let registry = lock_recovering(fragment_results());
+        let registry = fragment_results().read(fragment_results_handle);
         let handle = registry.get(fragment_results_handle).ok_or_else(|| {
             set_last_error("ffi_fragment_result_matched_term: unknown or already-closed handle");
             FfiStatus::InvalidHandle
@@ -215,13 +215,76 @@ pub unsafe extern "C" fn ffi_fragment_result_matched_term(
 #[no_mangle]
 pub extern "C" fn ffi_close_fragment_results(handle: u64) -> i32 {
     guard(|| {
-        lock_recovering(fragment_results())
+        fragment_results()
+            .write(handle)
             .remove(handle)
             .map(|_| ())
             .ok_or_else(|| {
                 set_last_error("ffi_close_fragment_results: unknown or already-closed handle");
                 FfiStatus::InvalidHandle
             })
+    })
+}
+
+/// Writes fragment `index`'s `Passage.getStartOffset()`/`getEndOffset()`
+/// (**UTF-16 code-unit** offsets into the original `full_text` -- Java `char`
+/// indices, exactly what `Passage.getStartOffset()` returns and what a JVM
+/// caller can pass straight to `String.substring`; the same unit
+/// [`crate::highlighter::ffi_assemble_fragments`]'s input spans use) and its
+/// `Passage.getScore()` to the three out-parameters.
+///
+/// Added by the M2 sweep alongside the `PassageScorer` knobs: a caller that
+/// can now *influence* which passages survive truncation needs to be able to
+/// see the score that decided it, and the offsets are what let a caller
+/// re-locate a fragment in the original text (to merge fragments, or to
+/// render its own markers instead of `pre`/`post`). Any out-parameter may be
+/// null to skip it.
+///
+/// Returns [`FfiStatus::IndexOutOfBounds`] for
+/// `index >= ` [`ffi_fragment_results_len`].
+///
+/// # Safety
+/// Each non-null out-parameter must be valid for one write of its type.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_fragment_result_span(
+    fragment_results_handle: u64,
+    index: usize,
+    out_start_offset: *mut usize,
+    out_end_offset: *mut usize,
+    out_score: *mut f32,
+) -> i32 {
+    guard(|| {
+        let registry = fragment_results().read(fragment_results_handle);
+        let handle = registry.get(fragment_results_handle).ok_or_else(|| {
+            set_last_error("ffi_fragment_result_span: unknown or already-closed handle");
+            FfiStatus::InvalidHandle
+        })?;
+        let fragment = handle.fragments.get(index).ok_or_else(|| {
+            set_last_error(format!(
+                "ffi_fragment_result_span: index {index} out of bounds (len {})",
+                handle.fragments.len()
+            ));
+            FfiStatus::IndexOutOfBounds
+        })?;
+        if !out_start_offset.is_null() {
+            // SAFETY: caller contract guarantees one valid `usize` write.
+            unsafe {
+                *out_start_offset = fragment.start_offset;
+            }
+        }
+        if !out_end_offset.is_null() {
+            // SAFETY: caller contract guarantees one valid `usize` write.
+            unsafe {
+                *out_end_offset = fragment.end_offset;
+            }
+        }
+        if !out_score.is_null() {
+            // SAFETY: caller contract guarantees one valid `f32` write.
+            unsafe {
+                *out_score = fragment.score;
+            }
+        }
+        Ok(())
     })
 }
 
@@ -232,7 +295,9 @@ mod tests {
     use lucene_search::highlighter::Fragment;
 
     fn insert(fragments: Vec<Fragment>) -> u64 {
-        lock_recovering(fragment_results()).insert(FragmentResultsHandle { fragments })
+        fragment_results()
+            .insert_checked(FragmentResultsHandle { fragments })
+            .unwrap()
     }
 
     fn sample() -> Vec<Fragment> {
@@ -240,10 +305,16 @@ mod tests {
             Fragment {
                 text: "<b>cat</b> runs".to_string(),
                 matched_terms: vec!["cat".to_string()],
+                start_offset: 0,
+                end_offset: 9,
+                score: 1.0,
             },
             Fragment {
                 text: "<b>car</b> and <b>cat</b>".to_string(),
                 matched_terms: vec!["car".to_string(), "cat".to_string()],
+                start_offset: 10,
+                end_offset: 21,
+                score: 0.5,
             },
         ]
     }
@@ -529,5 +600,102 @@ mod tests {
         };
         assert_eq!(rc, FfiStatus::Ok.code());
         ffi_close_fragment_results(h);
+    }
+}
+
+#[cfg(test)]
+mod span_tests {
+    use super::*;
+    use crate::registry::{fragment_results, FragmentResultsHandle};
+    use lucene_search::highlighter::Fragment;
+
+    fn insert_two() -> u64 {
+        fragment_results()
+            .insert_checked(FragmentResultsHandle {
+                fragments: vec![
+                    Fragment {
+                        text: "a".to_string(),
+                        matched_terms: vec![],
+                        start_offset: 3,
+                        end_offset: 11,
+                        score: 2.5,
+                    },
+                    Fragment {
+                        text: "b".to_string(),
+                        matched_terms: vec![],
+                        start_offset: 20,
+                        end_offset: 24,
+                        score: 0.25,
+                    },
+                ],
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn span_reports_offsets_and_score_per_fragment() {
+        let h = insert_two();
+        for (i, (start, end, score)) in [(3usize, 11usize, 2.5f32), (20, 24, 0.25)]
+            .into_iter()
+            .enumerate()
+        {
+            let (mut s, mut e, mut sc) = (0usize, 0usize, 0.0f32);
+            assert_eq!(
+                unsafe { ffi_fragment_result_span(h, i, &mut s, &mut e, &mut sc) },
+                FfiStatus::Ok.code()
+            );
+            assert_eq!((s, e, sc), (start, end, score));
+        }
+        assert_eq!(ffi_close_fragment_results(h), FfiStatus::Ok.code());
+    }
+
+    #[test]
+    fn span_allows_null_out_parameters() {
+        let h = insert_two();
+        let mut score = 0.0f32;
+        assert_eq!(
+            unsafe {
+                ffi_fragment_result_span(
+                    h,
+                    1,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    &mut score,
+                )
+            },
+            FfiStatus::Ok.code()
+        );
+        assert_eq!(score, 0.25);
+        assert_eq!(ffi_close_fragment_results(h), FfiStatus::Ok.code());
+    }
+
+    #[test]
+    fn span_rejects_bad_index_and_handle() {
+        let h = insert_two();
+        assert_eq!(
+            unsafe {
+                ffi_fragment_result_span(
+                    h,
+                    2,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                )
+            },
+            FfiStatus::IndexOutOfBounds.code()
+        );
+        assert_eq!(
+            unsafe {
+                ffi_fragment_result_span(
+                    0xDEAD_BEEF,
+                    0,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                )
+            },
+            FfiStatus::InvalidHandle.code()
+        );
+        assert_eq!(ffi_close_fragment_results(h), FfiStatus::Ok.code());
     }
 }

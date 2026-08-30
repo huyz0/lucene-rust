@@ -29,7 +29,7 @@
 use std::os::raw::c_char;
 
 use crate::error::{guard, set_last_error, FfiStatus};
-use crate::registry::{explain_results, lock_recovering};
+use crate::registry::explain_results;
 
 /// Writes the total number of flattened nodes held by
 /// `explain_results_handle` to `*out_len` -- every valid `node_index` passed
@@ -46,7 +46,7 @@ pub unsafe extern "C" fn ffi_explain_results_len(
         if out_len.is_null() {
             return Err(FfiStatus::NullPointer);
         }
-        let registry = lock_recovering(explain_results());
+        let registry = explain_results().read(explain_results_handle);
         let handle = registry.get(explain_results_handle).ok_or_else(|| {
             set_last_error("ffi_explain_results_len: unknown or already-closed handle");
             FfiStatus::InvalidHandle
@@ -74,7 +74,7 @@ pub unsafe extern "C" fn ffi_explain_node_value(
         if out_value.is_null() {
             return Err(FfiStatus::NullPointer);
         }
-        let registry = lock_recovering(explain_results());
+        let registry = explain_results().read(explain_results_handle);
         let handle = registry.get(explain_results_handle).ok_or_else(|| {
             set_last_error("ffi_explain_node_value: unknown or already-closed handle");
             FfiStatus::InvalidHandle
@@ -109,7 +109,7 @@ pub unsafe extern "C" fn ffi_explain_node_matched(
         if out_matched.is_null() {
             return Err(FfiStatus::NullPointer);
         }
-        let registry = lock_recovering(explain_results());
+        let registry = explain_results().read(explain_results_handle);
         let handle = registry.get(explain_results_handle).ok_or_else(|| {
             set_last_error("ffi_explain_node_matched: unknown or already-closed handle");
             FfiStatus::InvalidHandle
@@ -147,7 +147,7 @@ pub unsafe extern "C" fn ffi_explain_node_description(
     out_written: *mut usize,
 ) -> i32 {
     guard(|| {
-        let registry = lock_recovering(explain_results());
+        let registry = explain_results().read(explain_results_handle);
         let handle = registry.get(explain_results_handle).ok_or_else(|| {
             set_last_error("ffi_explain_node_description: unknown or already-closed handle");
             FfiStatus::InvalidHandle
@@ -200,7 +200,7 @@ pub unsafe extern "C" fn ffi_explain_node_child_count(
         if out_len.is_null() {
             return Err(FfiStatus::NullPointer);
         }
-        let registry = lock_recovering(explain_results());
+        let registry = explain_results().read(explain_results_handle);
         let handle = registry.get(explain_results_handle).ok_or_else(|| {
             set_last_error("ffi_explain_node_child_count: unknown or already-closed handle");
             FfiStatus::InvalidHandle
@@ -241,7 +241,7 @@ pub unsafe extern "C" fn ffi_explain_node_child_at(
         if out_child_node_index.is_null() {
             return Err(FfiStatus::NullPointer);
         }
-        let registry = lock_recovering(explain_results());
+        let registry = explain_results().read(explain_results_handle);
         let handle = registry.get(explain_results_handle).ok_or_else(|| {
             set_last_error("ffi_explain_node_child_at: unknown or already-closed handle");
             FfiStatus::InvalidHandle
@@ -274,7 +274,8 @@ pub unsafe extern "C" fn ffi_explain_node_child_at(
 #[no_mangle]
 pub extern "C" fn ffi_close_explain_results(handle: u64) -> i32 {
     guard(|| {
-        lock_recovering(explain_results())
+        explain_results()
+            .write(handle)
             .remove(handle)
             .map(|_| ())
             .ok_or_else(|| {
@@ -290,7 +291,9 @@ mod tests {
     use crate::registry::{ExplainNode, ExplainResultsHandle};
 
     fn insert(nodes: Vec<ExplainNode>) -> u64 {
-        lock_recovering(explain_results()).insert(ExplainResultsHandle { nodes })
+        explain_results()
+            .insert_checked(ExplainResultsHandle { nodes })
+            .unwrap()
     }
 
     /// A tiny two-level tree: root (value 3.0, matched, "sum of:") with two

@@ -4,6 +4,11 @@
 //! dictionary), across 5 docs -- some with zero values (IndexedDISI-sparse
 //! path) and others with more than one (DirectMonotonicReader address-range
 //! path). Regenerate with fixtures/src/GenMultiValuedDocValues.java.
+// Test-support code opts out of the arithmetic gate at the file boundary:
+// the gate exists for values read off disk in production decode paths, not
+// for a fixture builder's own index arithmetic. See
+// `docs/arithmetic-gate.md`.
+#![allow(clippy::arithmetic_side_effects)]
 
 use lucene_codecs::doc_values::{self, SortedSetKind};
 use lucene_codecs::{field_infos, terms_dict};

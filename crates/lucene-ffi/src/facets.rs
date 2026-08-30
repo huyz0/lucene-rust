@@ -61,9 +61,9 @@ use lucene_codecs::terms_dict::TermsDictEntry;
 use lucene_search::facets::{self, NumericRange};
 
 use crate::error::{guard, set_last_error, FfiStatus};
-use crate::raw::str_from_raw;
+use crate::raw::{str_from_raw, try_to_vec, try_with_capacity};
 use crate::registry::{
-    facet_results, lock_recovering, segments, FacetResultsHandle, SegmentHandle,
+    facet_results, read_recovering, segments, FacetResultsHandle, SegmentHandle,
 };
 
 fn map_facet_error(e: lucene_search::Error) -> FfiStatus {
@@ -88,72 +88,65 @@ unsafe fn candidates_from_raw(ptr: *const i32, len: usize) -> Result<Vec<i32>, F
         };
     }
     // SAFETY: caller contract guarantees `ptr` is valid for `len` `i32`s.
-    Ok(unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec())
+    try_to_vec(unsafe { std::slice::from_raw_parts(ptr, len) })
 }
 
 /// Looks up `field`'s field number in `segment`'s `.fnm`, then that number's
-/// [`NumericEntry`] in `segment`'s opened `.dvm` -- same shape as `sort.rs`'s
-/// `numeric_entry_for`, backing [`ffi_range_facet_counts`].
+/// [`NumericEntry`] and the `.dvd` bytes it belongs to -- same shape as
+/// `sort.rs`'s `numeric_entry_for` (and, like it, resolving the entry and the
+/// bytes *together* through [`SegmentHandle::doc_values_for_field`] so an
+/// updated field's entry can never be decoded against the superseded base
+/// column), backing [`ffi_range_facet_counts`].
 fn numeric_entry_for<'seg>(
     segment: &'seg SegmentHandle,
     field: &str,
-) -> Result<&'seg NumericEntry, FfiStatus> {
-    let dv_meta = segment.dv_meta.as_ref().ok_or_else(|| {
-        set_last_error("ffi_range_facet_counts: segment was opened without doc values");
-        FfiStatus::InvalidArgument
-    })?;
-    let field_info = segment
-        .field_infos
-        .fields
-        .iter()
-        .find(|f| f.name == field)
+) -> Result<(&'seg NumericEntry, &'seg [u8]), FfiStatus> {
+    let what = "ffi_range_facet_counts";
+    let field_info = crate::sort::field_info_for(segment, field, what)?;
+    let (meta, data) = segment
+        .doc_values_for_field(field_info.number)
         .ok_or_else(|| {
-            set_last_error(format!("ffi_range_facet_counts: unknown field {field}"));
+            set_last_error(format!("{what}: segment was opened without doc values"));
             FfiStatus::InvalidArgument
         })?;
-    dv_meta.numeric_entry(field_info.number).ok_or_else(|| {
+    let entry = meta.numeric_entry(field_info.number).ok_or_else(|| {
         set_last_error(format!(
-            "ffi_range_facet_counts: field {field} has no NUMERIC doc-values entry"
+            "{what}: field {field} has no NUMERIC doc-values entry"
         ));
         FfiStatus::InvalidArgument
-    })
+    })?;
+    Ok((entry, data))
 }
 
-/// Looks up `field`'s field number, then its SORTED_SET entry in `segment`'s
-/// opened `.dvm`, requiring the multi-valued
+/// Looks up `field`'s field number, then its SORTED_SET entry in whichever
+/// column currently serves that field (base or update generation, see
+/// [`SegmentHandle::doc_values_for_field`]), requiring the multi-valued
 /// [`SortedSetKind::Multi`] shape `lucene_search::facets::facet_counts`
 /// accepts -- see this module's doc comment for why `Single` is
 /// [`FfiStatus::InvalidArgument`] here.
 fn sorted_set_multi_entry_for<'seg>(
     segment: &'seg SegmentHandle,
     field: &str,
-) -> Result<(&'seg SortedNumericEntry, &'seg TermsDictEntry), FfiStatus> {
-    let dv_meta = segment.dv_meta.as_ref().ok_or_else(|| {
-        set_last_error("ffi_facet_counts_sorted_set: segment was opened without doc values");
-        FfiStatus::InvalidArgument
-    })?;
-    let field_info = segment
-        .field_infos
-        .fields
-        .iter()
-        .find(|f| f.name == field)
+) -> Result<(&'seg SortedNumericEntry, &'seg TermsDictEntry, &'seg [u8]), FfiStatus> {
+    let what = "ffi_facet_counts_sorted_set";
+    let field_info = crate::sort::field_info_for(segment, field, what)?;
+    let (meta, data) = segment
+        .doc_values_for_field(field_info.number)
         .ok_or_else(|| {
-            set_last_error(format!(
-                "ffi_facet_counts_sorted_set: unknown field {field}"
-            ));
+            set_last_error(format!("{what}: segment was opened without doc values"));
             FfiStatus::InvalidArgument
         })?;
-    let entry = dv_meta.sorted_set_entry(field_info.number).ok_or_else(|| {
+    let entry = meta.sorted_set_entry(field_info.number).ok_or_else(|| {
         set_last_error(format!(
-            "ffi_facet_counts_sorted_set: field {field} has no SORTED_SET doc-values entry"
+            "{what}: field {field} has no SORTED_SET doc-values entry"
         ));
         FfiStatus::InvalidArgument
     })?;
     match &entry.kind {
-        SortedSetKind::Multi { ords, terms } => Ok((ords, terms)),
+        SortedSetKind::Multi { ords, terms } => Ok((ords, terms, data)),
         SortedSetKind::Single(_) => {
             set_last_error(format!(
-                "ffi_facet_counts_sorted_set: field {field} is a single-valued SORTED_SET \
+                "{what}: field {field} is a single-valued SORTED_SET \
                  (SortedSetKind::Single), which lucene_search::facets::facet_counts does not \
                  accept -- see facets.rs's module doc"
             ));
@@ -201,7 +194,13 @@ unsafe fn ranges_from_raw(
     let max_incl = unsafe { std::slice::from_raw_parts(max_inclusive, count) };
     let lens = unsafe { std::slice::from_raw_parts(label_lens, count) };
 
-    let total_label_len: usize = lens.iter().sum();
+    // Checked, not `sum()`: these lengths come straight off the C ABI,
+    // and a wrapping overflow in release builds would produce a *shorter*
+    // backing slice than the per-element slicing below then indexes into.
+    let Some(total_label_len) = lens.iter().try_fold(0usize, |a, &b| a.checked_add(b)) else {
+        set_last_error("ffi_range_facet_counts: the supplied lengths overflow usize");
+        return Err(FfiStatus::InvalidArgument);
+    };
     let label_bytes: &[u8] = if total_label_len == 0 {
         &[]
     } else {
@@ -213,7 +212,7 @@ unsafe fn ranges_from_raw(
         unsafe { std::slice::from_raw_parts(label_data, total_label_len) }
     };
 
-    let mut ranges = Vec::with_capacity(count);
+    let mut ranges = try_with_capacity(count)?;
     let mut offset = 0usize;
     for i in 0..count {
         let len = lens[i];
@@ -264,17 +263,18 @@ pub unsafe extern "C" fn ffi_facet_counts_sorted_set(
         let field = unsafe { str_from_raw(field, field_len)? };
         let candidates = unsafe { candidates_from_raw(candidates, candidates_len)? };
 
-        let segments = lock_recovering(segments());
+        let segments = read_recovering(segments());
         let segment = segments.get(segment_handle).ok_or_else(|| {
             set_last_error("ffi_facet_counts_sorted_set: unknown or already-closed segment handle");
             FfiStatus::InvalidHandle
         })?;
 
-        let (ords, terms) = sorted_set_multi_entry_for(segment, field)?;
-        // `dv_meta` is `Some` whenever `dv_data` is (see `SegmentHandle`'s doc
-        // comment) -- `sorted_set_multi_entry_for` above already returned
-        // early if `dv_meta` was `None`, so this is always populated here.
-        let dv_data = segment.dv_data.as_deref().unwrap_or(&[]);
+        crate::sort::validate_candidates(
+            &candidates,
+            segment.max_doc,
+            "ffi_facet_counts_sorted_set",
+        )?;
+        let (ords, terms, dv_data) = sorted_set_multi_entry_for(segment, field)?;
 
         let counts =
             facets::facet_counts(dv_data, ords, terms, &candidates).map_err(map_facet_error)?;
@@ -285,8 +285,7 @@ pub unsafe extern "C" fn ffi_facet_counts_sorted_set(
             resolved
         };
 
-        let handle =
-            lock_recovering(facet_results()).insert(FacetResultsHandle { facets: facets_out });
+        let handle = facet_results().insert_checked(FacetResultsHandle { facets: facets_out })?;
         // SAFETY: caller contract guarantees `out_facet_results_handle` is
         // valid for one write.
         unsafe {
@@ -351,13 +350,13 @@ pub unsafe extern "C" fn ffi_range_facet_counts(
             )?
         };
 
-        let segments = lock_recovering(segments());
+        let segments = read_recovering(segments());
         let segment = segments.get(segment_handle).ok_or_else(|| {
             set_last_error("ffi_range_facet_counts: unknown or already-closed segment handle");
             FfiStatus::InvalidHandle
         })?;
-        let entry = numeric_entry_for(segment, field)?;
-        let dv_data = segment.dv_data.as_deref().unwrap_or(&[]);
+        crate::sort::validate_candidates(&candidates, segment.max_doc, "ffi_range_facet_counts")?;
+        let (entry, dv_data) = numeric_entry_for(segment, field)?;
 
         let counts = facets::range_facet_counts(dv_data, entry, &ranges, &candidates)
             .map_err(map_facet_error)?;
@@ -459,6 +458,8 @@ mod tests {
                 tip.len(),
                 tmd.as_ptr() as *const c_char,
                 tmd.len(),
+                std::ptr::null(),
+                0,
                 std::ptr::null(),
                 0,
                 std::ptr::null(),

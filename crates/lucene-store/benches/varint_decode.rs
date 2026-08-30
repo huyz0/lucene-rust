@@ -12,6 +12,11 @@
 //! data.
 //!
 //! Run with: `cargo bench -p lucene-store`
+// Test-support code opts out of the arithmetic gate at the file boundary:
+// the gate exists for values read off disk in production decode paths, not
+// for a fixture builder's own index arithmetic. See
+// `docs/arithmetic-gate.md`.
+#![allow(clippy::arithmetic_side_effects)]
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use lucene_store::{DataInput, SliceInput};
@@ -82,11 +87,31 @@ fn bench_read_group_vints(c: &mut Criterion) {
     });
 }
 
+/// `DataInput::read_i64s` (Java `DataInput.readLongs`) is how a `.liv`
+/// live-docs bitset, a BKD leaf's packed words and stored-fields' bitsets all
+/// come off disk -- always a whole run of words at once, never one. 2048
+/// words is a 16384-doc live-docs bitset, the same block granularity the
+/// `lucene-util` benches use.
+fn bench_read_i64s(c: &mut Criterion) {
+    let words: Vec<u8> = (0..2048u64)
+        .flat_map(|i| (i.wrapping_mul(0x9E37_79B9_7F4A_7C15)).to_le_bytes())
+        .collect();
+    let mut dst = vec![0i64; 2048];
+    c.bench_function("data_input/read_i64s_block", |b| {
+        b.iter(|| {
+            let mut input = SliceInput::new(&words);
+            input.read_i64s(&mut dst).unwrap();
+            black_box(&dst);
+        })
+    });
+}
+
 criterion_group!(
     benches,
     bench_read_vint,
     bench_read_vlong,
     bench_read_zlong,
-    bench_read_group_vints
+    bench_read_group_vints,
+    bench_read_i64s
 );
 criterion_main!(benches);

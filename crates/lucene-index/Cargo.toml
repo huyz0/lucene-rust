@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 thiserror.workspace = true
 lucene-util = { path = "../lucene-util" }
@@ -13,4 +16,8 @@ lucene-analysis = { path = "../lucene-analysis" }
 rayon.workspace = true
 
 [dev-dependencies]
+# The shared RAII scratch-directory guard (`lucene_util::test_support::TempDir`).
+# A `[dev-dependencies]` edge, so resolver-2 feature unification keeps the
+# module out of this crate's production build.
+lucene-util = { path = "../lucene-util", features = ["test-support"] }
 crc32fast.workspace = true

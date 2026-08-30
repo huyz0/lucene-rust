@@ -1,4 +1,9 @@
 target/
+# Isolated coverage/bench target dirs. `cargo llvm-cov` merges every
+# `*.profraw` under one target dir, so a batch measuring coverage while another
+# is running must use its own -- see docs/sweep/m2/c19-coverage-hardening.md.
+# They are build output and must never be staged (c25 review, G2).
+target-*/
 Cargo.lock
 
 # Java fixture generator build output (regenerated from fixtures/src/*.java)
@@ -18,3 +23,7 @@ fixtures/.jars/
 benchmarks/.corpus/
 benchmarks/rust-runner/target/
 benchmarks/rust-runner/Cargo.lock
+
+# Python bytecode from the scripts/ gate checkers.
+__pycache__/
+*.pyc

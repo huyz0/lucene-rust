@@ -45,9 +45,9 @@ use lucene_search::doc_value_query::{self, ValueSelector};
 use lucene_search::MissingValue;
 
 use crate::error::{guard, set_last_error, FfiStatus};
-use crate::raw::str_from_raw;
+use crate::raw::{str_from_raw, try_to_vec};
 use crate::registry::{
-    lock_recovering, segments, sorted_results, SegmentHandle, SortedResultsHandle,
+    read_recovering, segments, sorted_results, SegmentHandle, SortedResultsHandle,
 };
 
 pub(crate) fn map_sort_error(e: lucene_search::Error) -> FfiStatus {
@@ -78,43 +78,96 @@ unsafe fn candidates_from_raw(ptr: *const i32, len: usize) -> Result<Vec<i32>, F
         };
     }
     // SAFETY: caller contract guarantees `ptr` is valid for `len` `i32`s.
-    Ok(unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec())
+    try_to_vec(unsafe { std::slice::from_raw_parts(ptr, len) })
+}
+
+/// Rejects any candidate doc ID outside `0..max_doc` with
+/// [`FfiStatus::InvalidArgument`], naming `what` in the message.
+///
+/// **Why the caller-supplied candidate *list* needs the same check the
+/// single-doc [`ffi_numeric_doc_value_for_doc`] already does**: the doc-values
+/// decoders only bounds-check a doc against `max_doc` for DENSE entries. A
+/// SPARSE entry has no `max_doc` of its own, so an out-of-range doc ID falls
+/// through its docs-with-field bitset as "no value" -- which a
+/// `MissingValue::Default` sort then happily ranks as a real document that
+/// does not exist, and a facet count silently ignores. Both are wrong answers
+/// produced from bad caller input, exactly the class of missing validation
+/// this boundary exists to turn into a status code.
+///
+/// `pub(crate)` so `facets.rs` and `range_sort.rs` share this one check
+/// rather than each re-deriving it.
+pub(crate) fn validate_candidates(
+    candidates: &[i32],
+    max_doc: i32,
+    what: &str,
+) -> Result<(), FfiStatus> {
+    if let Some(bad) = candidates.iter().find(|&&d| d < 0 || d >= max_doc) {
+        set_last_error(format!(
+            "{what}: candidate doc {bad} is out of range 0..{max_doc}"
+        ));
+        return Err(FfiStatus::InvalidArgument);
+    }
+    Ok(())
 }
 
 /// Looks up `field`'s field number in `segment`'s `.fnm`, then that number's
-/// [`NumericEntry`] in `segment`'s opened `.dvm`. `Err(InvalidArgument)` when
-/// the segment has no doc values open, the field is unknown, or the field
-/// has no NUMERIC doc-values entry.
+/// [`NumericEntry`] **and the `.dvd` bytes that entry belongs to**.
+/// `Err(InvalidArgument)` when the segment has no doc values open, the field
+/// is unknown, or the field has no NUMERIC doc-values entry.
+///
+/// **The entry and the bytes are resolved together, from
+/// [`SegmentHandle::doc_values_for_field`].** They used to be resolved
+/// separately -- the entry from `segment.dv_meta`, the bytes from
+/// `segment.dv_data` -- which is correct only while a segment has exactly one
+/// doc-values column. It does not after a doc-values update: the updated
+/// field lives in its own generation's `.dvd` and every other field stays in
+/// the base one, so a field-by-field lookup that always returned the base
+/// bytes decoded an updated field's entry against the superseded file (c14's
+/// A1). Returning the pair makes that mismatch unrepresentable.
 ///
 /// `pub(crate)` (rather than private) so [`crate::range_sort`]'s
 /// range-then-sort-by-field entry points (TopFieldCollector FFI exposure)
-/// can reuse the exact same field-name -> `NumericEntry` lookup instead of
-/// duplicating it -- both `range_entry`/`sort_entry` there are NUMERIC
-/// entries looked up the same way `ffi_sort_by_doc_value`'s single sort key
-/// already is.
+/// can reuse the exact same field-name -> `(NumericEntry, bytes)` lookup
+/// instead of duplicating it -- both `range_entry`/`sort_entry` there are
+/// NUMERIC entries looked up the same way `ffi_sort_by_doc_value`'s single
+/// sort key already is, and each may sit in a different column.
 pub(crate) fn numeric_entry_for<'seg>(
     segment: &'seg SegmentHandle,
     field: &str,
-) -> Result<&'seg NumericEntry, FfiStatus> {
-    let dv_meta = segment.dv_meta.as_ref().ok_or_else(|| {
-        set_last_error("ffi_sort_by_doc_value: segment was opened without doc values");
+) -> Result<(&'seg NumericEntry, &'seg [u8]), FfiStatus> {
+    let field_info = field_info_for(segment, field, "ffi_sort_by_doc_value")?;
+    let (meta, data) = segment
+        .doc_values_for_field(field_info.number)
+        .ok_or_else(|| {
+            set_last_error("ffi_sort_by_doc_value: segment was opened without doc values");
+            FfiStatus::InvalidArgument
+        })?;
+    let entry = meta.numeric_entry(field_info.number).ok_or_else(|| {
+        set_last_error(format!(
+            "ffi_sort_by_doc_value: field {field} has no NUMERIC doc-values entry"
+        ));
         FfiStatus::InvalidArgument
     })?;
-    let field_info = segment
+    Ok((entry, data))
+}
+
+/// The `.fnm` entry for `field`, or [`FfiStatus::InvalidArgument`] naming
+/// `what`. Shared by every doc-values entry-point helper so the field-name ->
+/// field-number step is written once.
+pub(crate) fn field_info_for<'seg>(
+    segment: &'seg SegmentHandle,
+    field: &str,
+    what: &str,
+) -> Result<&'seg lucene_codecs::field_infos::FieldInfo, FfiStatus> {
+    segment
         .field_infos
         .fields
         .iter()
         .find(|f| f.name == field)
         .ok_or_else(|| {
-            set_last_error(format!("ffi_sort_by_doc_value: unknown field {field}"));
+            set_last_error(format!("{what}: unknown field {field}"));
             FfiStatus::InvalidArgument
-        })?;
-    dv_meta.numeric_entry(field_info.number).ok_or_else(|| {
-        set_last_error(format!(
-            "ffi_sort_by_doc_value: field {field} has no NUMERIC doc-values entry"
-        ));
-        FfiStatus::InvalidArgument
-    })
+        })
 }
 
 /// Same as [`numeric_entry_for`], but for a SORTED_NUMERIC entry (also used
@@ -123,30 +176,24 @@ pub(crate) fn numeric_entry_for<'seg>(
 fn sorted_numeric_entry_for<'seg>(
     segment: &'seg SegmentHandle,
     field: &str,
-) -> Result<&'seg SortedNumericEntry, FfiStatus> {
-    let dv_meta = segment.dv_meta.as_ref().ok_or_else(|| {
-        set_last_error("ffi_sort_by_multi_valued_doc_value: segment was opened without doc values");
-        FfiStatus::InvalidArgument
-    })?;
-    let field_info = segment
-        .field_infos
-        .fields
-        .iter()
-        .find(|f| f.name == field)
+) -> Result<(&'seg SortedNumericEntry, &'seg [u8]), FfiStatus> {
+    let what = "ffi_sort_by_multi_valued_doc_value";
+    let field_info = field_info_for(segment, field, what)?;
+    let (meta, data) = segment
+        .doc_values_for_field(field_info.number)
         .ok_or_else(|| {
-            set_last_error(format!(
-                "ffi_sort_by_multi_valued_doc_value: unknown field {field}"
-            ));
+            set_last_error(format!("{what}: segment was opened without doc values"));
             FfiStatus::InvalidArgument
         })?;
-    dv_meta
+    let entry = meta
         .sorted_numeric_entry(field_info.number)
         .ok_or_else(|| {
             set_last_error(format!(
-                "ffi_sort_by_multi_valued_doc_value: field {field} has no SORTED_NUMERIC doc-values entry"
+                "{what}: field {field} has no SORTED_NUMERIC doc-values entry"
             ));
             FfiStatus::InvalidArgument
-        })
+        })?;
+    Ok((entry, data))
 }
 
 /// Sorts `candidates` (`candidates_len` doc IDs at `candidates`) ascending by
@@ -182,7 +229,7 @@ pub unsafe extern "C" fn ffi_sort_by_doc_value(
         let field = unsafe { str_from_raw(field, field_len)? };
         let candidates = unsafe { candidates_from_raw(candidates, candidates_len)? };
 
-        let segments = lock_recovering(segments());
+        let segments = read_recovering(segments());
         let segment = segments.get(segment_handle).ok_or_else(|| {
             set_last_error("ffi_sort_by_doc_value: unknown or already-closed segment handle");
             FfiStatus::InvalidHandle
@@ -199,11 +246,8 @@ pub unsafe extern "C" fn ffi_sort_by_doc_value(
             );
         }
 
-        let entry = numeric_entry_for(segment, field)?;
-        // `dv_meta` is `Some` whenever `dv_data` is (see `SegmentHandle`'s doc
-        // comment) -- `numeric_entry_for` above already returned early if
-        // `dv_meta` was `None`, so this is always populated here.
-        let dv_data = segment.dv_data.as_deref().unwrap_or(&[]);
+        validate_candidates(&candidates, segment.max_doc, "ffi_sort_by_doc_value")?;
+        let (entry, dv_data) = numeric_entry_for(segment, field)?;
 
         let pairs = doc_value_query::sort_by_numeric_doc_value(
             dv_data,
@@ -213,7 +257,7 @@ pub unsafe extern "C" fn ffi_sort_by_doc_value(
         )
         .map_err(map_sort_error)?;
 
-        let handle = lock_recovering(sorted_results()).insert(SortedResultsHandle { pairs });
+        let handle = sorted_results().insert_checked(SortedResultsHandle { pairs })?;
         // SAFETY: caller contract guarantees `out_sorted_results_handle` is
         // valid for one write.
         unsafe {
@@ -266,15 +310,19 @@ pub unsafe extern "C" fn ffi_sort_by_multi_valued_doc_value(
         let field = unsafe { str_from_raw(field, field_len)? };
         let candidates = unsafe { candidates_from_raw(candidates, candidates_len)? };
 
-        let segments = lock_recovering(segments());
+        let segments = read_recovering(segments());
         let segment = segments.get(segment_handle).ok_or_else(|| {
             set_last_error(
                 "ffi_sort_by_multi_valued_doc_value: unknown or already-closed segment handle",
             );
             FfiStatus::InvalidHandle
         })?;
-        let entry = sorted_numeric_entry_for(segment, field)?;
-        let dv_data = segment.dv_data.as_deref().unwrap_or(&[]);
+        validate_candidates(
+            &candidates,
+            segment.max_doc,
+            "ffi_sort_by_multi_valued_doc_value",
+        )?;
+        let (entry, dv_data) = sorted_numeric_entry_for(segment, field)?;
 
         let pairs = doc_value_query::sort_by_multi_valued_doc_value(
             dv_data,
@@ -285,7 +333,7 @@ pub unsafe extern "C" fn ffi_sort_by_multi_valued_doc_value(
         )
         .map_err(map_sort_error)?;
 
-        let handle = lock_recovering(sorted_results()).insert(SortedResultsHandle { pairs });
+        let handle = sorted_results().insert_checked(SortedResultsHandle { pairs })?;
         // SAFETY: caller contract guarantees `out_sorted_results_handle` is
         // valid for one write.
         unsafe {
@@ -351,7 +399,7 @@ pub unsafe extern "C" fn ffi_numeric_doc_value_for_doc(
         // bytes.
         let field = unsafe { str_from_raw(field, field_len)? };
 
-        let segments = lock_recovering(segments());
+        let segments = read_recovering(segments());
         let segment = segments.get(segment_handle).ok_or_else(|| {
             set_last_error(
                 "ffi_numeric_doc_value_for_doc: unknown or already-closed segment handle",
@@ -377,11 +425,7 @@ pub unsafe extern "C" fn ffi_numeric_doc_value_for_doc(
             return Err(FfiStatus::InvalidArgument);
         }
 
-        let entry = numeric_entry_for(segment, field)?;
-        // `dv_meta` is `Some` whenever `dv_data` is (see `SegmentHandle`'s doc
-        // comment) -- `numeric_entry_for` above already returned early if
-        // `dv_meta` was `None`, so this is always populated here.
-        let dv_data = segment.dv_data.as_deref().unwrap_or(&[]);
+        let (entry, dv_data) = numeric_entry_for(segment, field)?;
 
         let value = lucene_codecs::doc_values::numeric_value(dv_data, entry, doc).map_err(|e| {
             set_last_error(format!("ffi_numeric_doc_value_for_doc: {e}"));
@@ -504,6 +548,8 @@ mod tests {
                 0,
                 std::ptr::null(),
                 0,
+                std::ptr::null(),
+                0,
                 dvm.as_ptr() as *const c_char,
                 dvm.len(),
                 dvd.as_ptr() as *const c_char,
@@ -611,6 +657,75 @@ mod tests {
         ffi_close_sorted_results(out);
         ffi_close_segment(seg_handle);
         ffi_close_directory(dir_handle);
+    }
+
+    /// A candidate doc ID outside the segment must be `InvalidArgument`, not
+    /// a silently "missing-valued" entry the `MissingValue::Default` policy
+    /// then ranks as if it were a real document -- the sparse-entry hole
+    /// `validate_candidates`'s doc comment describes.
+    #[test]
+    fn sort_by_doc_value_rejects_out_of_range_candidates() {
+        let dir = dv_dir();
+        let manifest = Manifest::load(&dir);
+        let dir_handle = open_dir(&dir);
+        let seg_handle = open_segment(dir_handle, &manifest);
+        let field = "sparse";
+
+        for candidates in [vec![0i32, 999_999], vec![-1i32, 0]] {
+            let mut out: u64 = 0;
+            let rc = unsafe {
+                ffi_sort_by_doc_value(
+                    seg_handle,
+                    field.as_ptr() as *const c_char,
+                    field.len(),
+                    candidates.as_ptr(),
+                    candidates.len(),
+                    true,
+                    1_000_000,
+                    &mut out as *mut _,
+                )
+            };
+            assert_eq!(rc, FfiStatus::InvalidArgument.code(), "{candidates:?}");
+            assert_eq!(out, 0, "{candidates:?}: no handle may be issued");
+
+            let mut out: u64 = 0;
+            let rc = unsafe {
+                ffi_sort_by_multi_valued_doc_value(
+                    seg_handle,
+                    field.as_ptr() as *const c_char,
+                    field.len(),
+                    candidates.as_ptr(),
+                    candidates.len(),
+                    0,
+                    true,
+                    0,
+                    &mut out as *mut _,
+                )
+            };
+            assert_eq!(rc, FfiStatus::InvalidArgument.code(), "{candidates:?}");
+        }
+
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    #[test]
+    fn validate_candidates_accepts_the_whole_valid_range_and_rejects_its_edges() {
+        assert!(validate_candidates(&[], 0, "t").is_ok());
+        assert!(validate_candidates(&[0, 4], 5, "t").is_ok());
+        assert_eq!(
+            validate_candidates(&[5], 5, "t"),
+            Err(FfiStatus::InvalidArgument)
+        );
+        assert_eq!(
+            validate_candidates(&[-1], 5, "t"),
+            Err(FfiStatus::InvalidArgument)
+        );
+        // An empty segment has no valid candidate at all.
+        assert_eq!(
+            validate_candidates(&[0], 0, "t"),
+            Err(FfiStatus::InvalidArgument)
+        );
     }
 
     #[test]
@@ -806,6 +921,8 @@ mod tests {
                 0,
                 std::ptr::null(),
                 0,
+                std::ptr::null(),
+                0,
                 std::ptr::null(), // kdm_name: no points data needed by this test/call
                 0,
                 std::ptr::null(), // kdi_name
@@ -920,7 +1037,7 @@ mod tests {
     /// mid-decode, reaching `map_sort_error`'s `FfiStatus::Decode` branch --
     /// mirrors `query.rs`'s `corrupt_doc_bytes` helper for the same purpose.
     fn corrupt_dv_data(seg_handle: u64) {
-        let mut segs = lock_recovering(segments_registry());
+        let mut segs = crate::registry::lock_recovering(segments_registry());
         let segment = segs.get_mut(seg_handle).expect("segment handle");
         // Truncated to zero bytes: any real decode of a NUMERIC entry needing
         // to read actual values bytes fails.

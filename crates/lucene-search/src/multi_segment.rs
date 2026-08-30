@@ -353,6 +353,35 @@ fn global_term_stats(
     })
 }
 
+/// Sum `sumTotalTermFreq` and `docCount` for one field across every segment and
+/// divide -- Java's `IndexSearcher.fieldStats(field)` feeding
+/// `BM25Similarity.avgFieldLength(FieldStats)`.
+///
+/// This is `avgdl`'s half of the reader-wide-statistics rule
+/// [`global_term_stats`] implements for `docFreq`/`docCount`. A
+/// `SegmentReader` cannot compute it -- it sees only itself -- so
+/// `SegmentReader::field_norms` used its own segment's counters, giving each
+/// leaf a different length-normalization curve for the same term. Reported as
+/// F-26 in `docs/sweep/m2/b13-search-readers.md`.
+///
+/// Returns `None` when no segment has the field, in which case there is
+/// nothing to normalize and the per-segment answer (also nothing) is already
+/// correct.
+pub fn global_avg_field_length(segments: &[OpenSegment<'_>], field: &str) -> Option<f32> {
+    let mut sum_total_term_freq = 0i64;
+    let mut doc_count = 0i64;
+    let mut seen = false;
+    for seg in segments {
+        let Some(ft) = seg.fields.field(field) else {
+            continue;
+        };
+        seen = true;
+        sum_total_term_freq += ft.sum_total_term_freq;
+        doc_count += ft.doc_count as i64;
+    }
+    seen.then(|| crate::field_norms::avg_field_length(sum_total_term_freq, doc_count))
+}
+
 /// Reader-wide statistics for every leaf `Clause::Term` a boolean query
 /// mentions, so each segment scores with one idf per term -- see
 /// [`crate::CollectionStats`].
@@ -387,6 +416,13 @@ fn global_boolean_stats(segments: &[OpenSegment<'_>], query: &BooleanQuery) -> c
     }
 
     fn walk(q: &BooleanQuery, out: &mut Vec<(String, Vec<u8>)>) {
+        // `filter` is deliberately not walked. `BooleanWeight`'s constructor
+        // builds a filter clause's `Weight` with `ScoreMode.COMPLETE_NO_SCORES`,
+        // and `TermQuery.TermWeight` then skips `searcher.termStatistics`
+        // entirely ("we do not need the actual stats, use fake stats"). A term
+        // reachable only through a filter clause therefore contributes no idf
+        // to anything, and collecting reader-wide statistics for it would be a
+        // cross-segment seek per term for a number nothing reads.
         for c in q
             .must
             .iter()
@@ -474,16 +510,26 @@ pub fn search_term_query_multi_segment_concurrent(
         norms.len(),
         "one norms entry per segment expected"
     );
+    // Reader-wide statistics, exactly as the sequential path computes them.
+    // This used to call `search_term_query_scored_maxscore` (no stats), so the
+    // concurrent path scored every segment from its *own* `docFreq`/`docCount`
+    // while the sequential path used the summed ones -- the two produced
+    // different rankings for the same query on any multi-segment index, and
+    // the idf spread that causes is precisely the bug this module's doc comment
+    // records (1.6x across M1's 15-segment corpus, all 20 benchmark queries
+    // disagreeing with Java).
+    let global = global_term_stats(segments, &query.field, &query.term);
     let doc_bases: Vec<i32> = segments.iter().map(|s| s.doc_base).collect();
     merge_multi_segment_scored_concurrent(&doc_bases, top_n, |i, local| {
         let seg = &segments[i];
         let seg_norms = norms.get(i).copied().flatten();
-        crate::search_term_query_scored_maxscore(
+        crate::search_term_query_scored_maxscore_with_stats(
             seg.fields,
             seg.doc_in,
             seg.live_docs,
             query,
             seg_norms,
+            global,
             local,
         )
     })
@@ -732,8 +778,17 @@ where
 /// `doc_base` carries the exact same meaning and caller responsibility as
 /// [`OpenSegment::doc_base`].
 pub struct DocValueSegment<'a> {
-    pub doc_values_data: &'a [u8],
+    /// The `.dvd` bytes `range_entry` is an entry *of*.
+    ///
+    /// Separate from [`Self::sort_data`] because a segment's two fields do
+    /// not always share one column: after a doc-values update the updated
+    /// field is served from its own generation's `.dvd` and the other from
+    /// the base one (`SegmentDocValuesProducer.dvProducersByField`). Pass the
+    /// same slice twice when they do share one.
+    pub range_data: &'a [u8],
     pub range_entry: &'a NumericEntry,
+    /// The `.dvd` bytes `sort_entry` is an entry of -- see [`Self::range_data`].
+    pub sort_data: &'a [u8],
     pub sort_entry: &'a NumericEntry,
     pub live_docs: Option<&'a lucene_util::fixed_bit_set::FixedBitSet>,
     pub max_doc: i32,
@@ -770,12 +825,13 @@ pub fn search_numeric_range_sorted_by_field_multi_segment(
     merge_multi_segment_by_field(&doc_bases, top_n, direction, |i, local| {
         let seg = &segments[i];
         let hits = doc_value_query::search_numeric_range_sorted_by_field(
-            seg.doc_values_data,
+            seg.range_data,
             seg.range_entry,
             seg.live_docs,
             seg.max_doc,
             min,
             max,
+            seg.sort_data,
             seg.sort_entry,
             direction,
             missing,
@@ -1498,16 +1554,18 @@ mod tests {
 
         let segments = [
             DocValueSegment {
-                doc_values_data: &dvd0,
+                range_data: &dvd0,
                 range_entry: &entry0,
+                sort_data: &dvd0,
                 sort_entry: &entry0,
                 live_docs: None,
                 max_doc: 3,
                 doc_base: 0,
             },
             DocValueSegment {
-                doc_values_data: &dvd1,
+                range_data: &dvd1,
                 range_entry: &entry1,
+                sort_data: &dvd1,
                 sort_entry: &entry1,
                 live_docs: None,
                 max_doc: 2,
@@ -1554,16 +1612,18 @@ mod tests {
 
         let segments = [
             DocValueSegment {
-                doc_values_data: &dvd0,
+                range_data: &dvd0,
                 range_entry: &entry0,
+                sort_data: &dvd0,
                 sort_entry: &entry0,
                 live_docs: None,
                 max_doc: 2,
                 doc_base: 0,
             },
             DocValueSegment {
-                doc_values_data: &dvd1,
+                range_data: &dvd1,
                 range_entry: &entry1,
+                sort_data: &dvd1,
                 sort_entry: &entry1,
                 live_docs: None,
                 max_doc: 1,
@@ -1590,16 +1650,18 @@ mod tests {
         let (dvd1, entry1) = write_numeric_segment(&[5, 25]);
         let segments = [
             DocValueSegment {
-                doc_values_data: &dvd0,
+                range_data: &dvd0,
                 range_entry: &entry0,
+                sort_data: &dvd0,
                 sort_entry: &entry0,
                 live_docs: None,
                 max_doc: 3,
                 doc_base: 0,
             },
             DocValueSegment {
-                doc_values_data: &dvd1,
+                range_data: &dvd1,
                 range_entry: &entry1,
+                sort_data: &dvd1,
                 sort_entry: &entry1,
                 live_docs: None,
                 max_doc: 2,
@@ -1638,8 +1700,9 @@ mod tests {
     fn sort_by_field_multi_segment_top_n_zero_returns_nothing() {
         let (dvd0, entry0) = write_numeric_segment(&[30, 10, 20]);
         let segments = [DocValueSegment {
-            doc_values_data: &dvd0,
+            range_data: &dvd0,
             range_entry: &entry0,
+            sort_data: &dvd0,
             sort_entry: &entry0,
             live_docs: None,
             max_doc: 3,
@@ -1666,16 +1729,18 @@ mod tests {
         let (dvd1, entry1) = write_numeric_segment(&[150, 175]);
         let segments = [
             DocValueSegment {
-                doc_values_data: &dvd0,
+                range_data: &dvd0,
                 range_entry: &entry0,
+                sort_data: &dvd0,
                 sort_entry: &entry0,
                 live_docs: None,
                 max_doc: 3,
                 doc_base: 0,
             },
             DocValueSegment {
-                doc_values_data: &dvd1,
+                range_data: &dvd1,
                 range_entry: &entry1,
+                sort_data: &dvd1,
                 sort_entry: &entry1,
                 live_docs: None,
                 max_doc: 2,
@@ -1840,8 +1905,9 @@ mod tests {
         // multi-segment wrapper, not be swallowed or panic.
         let (dvd, entry) = write_numeric_segment(&[1, 2, 3]);
         let segments = [DocValueSegment {
-            doc_values_data: &dvd,
+            range_data: &dvd,
             range_entry: &entry,
+            sort_data: &dvd,
             sort_entry: &entry,
             live_docs: None,
             max_doc: 10, // beyond the entry's real 3 values
@@ -1857,5 +1923,261 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, crate::Error::DocValues(_)));
+    }
+    /// The concurrent fan-out must score from **reader-wide** term statistics,
+    /// exactly as the sequential one does.
+    ///
+    /// It did not: `search_term_query_multi_segment_concurrent` called the
+    /// no-stats scorer, so every segment computed idf from its own
+    /// `docFreq`/`docCount` while the sequential path used the summed pair.
+    /// That is the very bug this module's doc comment records (a 1.6x idf spread
+    /// across M1's 15-segment corpus, every benchmark query disagreeing with
+    /// Java), reintroduced on the concurrent path alone.
+    ///
+    /// The existing "concurrent matches sequential" test cannot catch it: it
+    /// duplicates one fixture segment whose `docFreq` is exactly half its
+    /// `docCount`, and `idf(d, 2d) == idf(2d, 4d) == ln 2`, so summing the
+    /// counters is numerically invisible there. This test therefore builds two
+    /// deliberately *lopsided* segments -- "fox" in 1 of 1 documents in one and
+    /// 1 of 4 in the other -- where the three candidate idfs (0.288 per segment
+    /// A, 1.204 per segment B, 0.876 reader-wide) are far apart.
+    mod global_stats_across_concurrent_leaves {
+        use super::*;
+        use lucene_codecs::field_infos::{
+            DocValuesSkipIndexType, DocValuesType, FieldInfo, IndexOptions, VectorEncoding,
+            VectorSimilarityFunction,
+        };
+        use lucene_codecs::stored_fields::{Document, FieldValue, StoredField};
+        use lucene_index::index_writer::IndexWriter;
+        use lucene_index::segment_info::LuceneVersion;
+        use lucene_store::FsDirectory;
+
+        fn body_field(number: i32) -> FieldInfo {
+            FieldInfo {
+                name: "body".to_string(),
+                number,
+                store_term_vectors: false,
+                omit_norms: false,
+                store_payloads: false,
+                soft_deletes_field: false,
+                parent_field: false,
+                index_options: IndexOptions::DocsAndFreqs,
+                doc_values_type: DocValuesType::None,
+                doc_values_skip_index_type: DocValuesSkipIndexType::None,
+                doc_values_gen: -1,
+                attributes: vec![],
+                point_dimension_count: 0,
+                point_index_dimension_count: 0,
+                point_num_bytes: 0,
+                vector_dimension: 0,
+                vector_encoding: VectorEncoding::Float32,
+                vector_similarity_function: VectorSimilarityFunction::Euclidean,
+            }
+        }
+
+        fn doc(body: &str) -> Document {
+            Document {
+                fields: vec![StoredField {
+                    field_number: 0,
+                    value: FieldValue::String(body.to_string()),
+                }],
+            }
+        }
+
+        use lucene_util::test_support::TempDir;
+
+        /// A scratch directory that removes itself when the test ends -- unless
+        /// the test is panicking, in which case its bytes stay for inspection.
+        fn tempdir() -> TempDir {
+            TempDir::new("multi-segment-stats")
+        }
+
+        #[test]
+        fn concurrent_term_query_uses_reader_wide_idf_like_the_sequential_path() {
+            let dir_path = tempdir();
+            let dir = FsDirectory::open(&dir_path);
+            let mut writer = IndexWriter::open(
+                &dir,
+                vec![body_field(0)],
+                "Lucene104",
+                LuceneVersion {
+                    major: 10,
+                    minor: 0,
+                    bugfix: 0,
+                },
+            )
+            .unwrap();
+            writer.set_postings_field(Some("body")).unwrap();
+
+            // Segment 0: one document, and it contains "fox".
+            writer.add_document(doc("fox")).unwrap();
+            writer.commit().unwrap();
+            // Segment 1: four documents, only one of which contains "fox".
+            for body in ["fox", "cat", "dog", "bird"] {
+                writer.add_document(doc(body)).unwrap();
+            }
+            writer.commit().unwrap();
+
+            let reader = crate::directory_reader::DirectoryReader::open(&dir).unwrap();
+            assert_eq!(
+                reader.segment_readers().len(),
+                2,
+                "the two commits must stay two segments for this test to mean anything"
+            );
+            let opened = reader.open_segments().unwrap();
+            let segments = opened.as_open_segments();
+            let query = TermQuery::new("body", "fox");
+            let norms = [None, None];
+
+            let seq = search_term_query_multi_segment(&segments, &query, &norms, 10).unwrap();
+            let con =
+                search_term_query_multi_segment_concurrent(&segments, &query, &norms, 10).unwrap();
+            assert_eq!(seq.len(), 2, "both segments contribute a \"fox\" document");
+            assert_identical(&seq, &con);
+
+            // And the score really is the reader-wide idf, not either segment's
+            // own -- otherwise "sequential == concurrent" could be satisfied by
+            // both being wrong the same way.
+            let reader_wide = crate::similarity::idf(2, 5);
+            let segment_a_only = crate::similarity::idf(1, 1);
+            let segment_b_only = crate::similarity::idf(1, 4);
+            let tf = crate::similarity::tf_norm(
+                1.0,
+                crate::similarity::UNNORMED_FIELD_LENGTH,
+                crate::similarity::UNNORMED_FIELD_LENGTH,
+                crate::similarity::DEFAULT_K1,
+                crate::similarity::DEFAULT_B,
+            );
+            for hit in &con {
+                assert!(
+                    (hit.score - reader_wide * tf).abs() < 1e-5,
+                    "doc {} scored {}, reader-wide idf predicts {} (segment-local \
+                     alternatives would be {} and {})",
+                    hit.doc_id,
+                    hit.score,
+                    reader_wide * tf,
+                    segment_a_only * tf,
+                    segment_b_only * tf
+                );
+            }
+
+            std::fs::remove_dir_all(&dir_path).ok();
+        }
+
+        /// Tripwire for `search_term_query_scored_maxscore_with_stats`'
+        /// fallback paths.
+        ///
+        /// That function declines the pruned MAXSCORE loop on three conditions
+        /// -- no `.doc` input, `docFreq <= 1`, and an index option
+        /// `LazyDocsCursor` rejects -- and used to answer each of them by
+        /// calling the *no-stats* `search_term_query_scored`, silently
+        /// reverting the leaf to its own `docFreq`/`docCount`. b13 could not
+        /// fix `lib.rs` mid-sweep and worked around it with a caller-side
+        /// guard (`maxscore_keeps_global_stats`) plus this tripwire, which
+        /// then pinned the *broken* behaviour so the guard could not rot
+        /// unnoticed. c6 fixed the defect and deleted the guard; the tripwire
+        /// stays, inverted: every reachable fallback must now score with the
+        /// `global` it was handed, bit for bit, exactly as the pruned path
+        /// does.
+        ///
+        /// The third fallback is unreachable for a scored term query --
+        /// `LazyDocsCursor` rejects only `IndexOptions::None`, which carries no
+        /// postings to score in the first place -- so it is asserted by
+        /// inspection, not here.
+        #[test]
+        fn every_maxscore_fallback_honours_the_global_stats_it_is_handed() {
+            let dir_path = tempdir();
+            let dir = FsDirectory::open(&dir_path);
+            let mut writer = IndexWriter::open(
+                &dir,
+                vec![body_field(0)],
+                "Lucene104",
+                LuceneVersion {
+                    major: 10,
+                    minor: 0,
+                    bugfix: 0,
+                },
+            )
+            .unwrap();
+            writer.set_postings_field(Some("body")).unwrap();
+            // "fox" is a singleton (fallback 2); "cat" is in three documents,
+            // so it takes the pruned loop and acts as the control.
+            for body in ["fox", "cat", "cat dog", "cat bird"] {
+                writer.add_document(doc(body)).unwrap();
+            }
+            writer.commit().unwrap();
+
+            let reader = crate::directory_reader::DirectoryReader::open(&dir).unwrap();
+            let opened = reader.open_segments().unwrap();
+            let segments = opened.as_open_segments();
+            let seg = &segments[0];
+
+            // A `global` that is nothing like this segment's own counters, so
+            // "used the segment's own" and "used the reader-wide" cannot
+            // coincide numerically.
+            let global = crate::CollectionStats {
+                doc_freq: 1,
+                doc_count: 1_000_000,
+            };
+            let expected = |freq: f32| {
+                crate::similarity::score(
+                    global.doc_freq,
+                    global.doc_count,
+                    freq,
+                    crate::similarity::UNNORMED_FIELD_LENGTH,
+                    crate::similarity::UNNORMED_FIELD_LENGTH,
+                )
+            };
+
+            let fox = TermQuery::new("body", "fox");
+            let cat = TermQuery::new("body", "cat");
+            let run = |query: &TermQuery, doc_in| {
+                let mut collector = TopDocsCollector::new(10);
+                crate::search_term_query_scored_maxscore_with_stats(
+                    seg.fields,
+                    doc_in,
+                    seg.live_docs,
+                    query,
+                    None,
+                    Some(global),
+                    &mut collector,
+                )
+                .unwrap();
+                collector.top_docs().to_vec()
+            };
+
+            // Fallback 1: no `.doc` input at all. (`fox` again, because the
+            // eager path can only resolve a `docFreq > 1` term through an
+            // opened `.doc` -- so this fallback is only ever reachable for a
+            // singleton term, which is what makes it the *first* check.)
+            let hits = run(&fox, None);
+            assert_eq!(hits.len(), 1);
+            assert_eq!(
+                hits[0].score.to_bits(),
+                expected(1.0).to_bits(),
+                "the no-`.doc`-input fallback must score with the \
+                 reader-wide idf it was handed, not this segment's own"
+            );
+
+            // Fallback 2: `docFreq <= 1`.
+            let hits = run(&fox, seg.doc_in);
+            assert_eq!(hits.len(), 1);
+            assert_eq!(
+                hits[0].score.to_bits(),
+                expected(1.0).to_bits(),
+                "the `docFreq <= 1` fallback must score with the reader-wide \
+                 idf it was handed, not this segment's own idf(1, 4)"
+            );
+
+            // Control: the pruned path, which always honoured `global`, must
+            // agree with the fallbacks to the bit.
+            let hits = run(&cat, seg.doc_in);
+            assert_eq!(hits.len(), 3);
+            for hit in &hits {
+                assert_eq!(hit.score.to_bits(), expected(1.0).to_bits());
+            }
+
+            std::fs::remove_dir_all(&dir_path).ok();
+        }
     }
 }

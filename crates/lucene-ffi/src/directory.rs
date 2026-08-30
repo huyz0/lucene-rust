@@ -9,7 +9,7 @@ use lucene_store::directory::{Directory, FsDirectory};
 
 use crate::error::{guard, set_last_error, FfiStatus};
 use crate::raw::str_from_raw;
-use crate::registry::{directories, lock_recovering};
+use crate::registry::{directories, lock_recovering, read_recovering};
 
 /// Opens an `FsDirectory` rooted at the `path_len`-byte UTF-8 path at
 /// `path`, writing the new handle to `*out_handle` on success.
@@ -30,7 +30,7 @@ pub unsafe extern "C" fn ffi_open_directory(
         // SAFETY: caller contract guarantees `path` is valid for `path_len` bytes.
         let path_str = unsafe { str_from_raw(path, path_len) }?;
         let dir = FsDirectory::open(path_str);
-        let handle = lock_recovering(directories()).insert(dir);
+        let handle = lock_recovering(directories()).insert_checked(dir)?;
         // SAFETY: caller contract guarantees `out_handle` is valid for one write.
         unsafe {
             *out_handle = handle;
@@ -57,7 +57,7 @@ pub extern "C" fn ffi_close_directory(handle: u64) -> i32 {
 /// Reads a whole file named `name` from the directory identified by
 /// `dir_handle`. Shared by every "open a segment file" call in `segment.rs`.
 pub(crate) fn read_whole_file(dir_handle: u64, name: &str) -> Result<Vec<u8>, FfiStatus> {
-    let directories = lock_recovering(directories());
+    let directories = read_recovering(directories());
     let dir = directories.get(dir_handle).ok_or_else(|| {
         set_last_error("unknown or already-closed directory handle");
         FfiStatus::InvalidHandle

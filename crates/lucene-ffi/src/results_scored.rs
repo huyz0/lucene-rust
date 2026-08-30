@@ -21,7 +21,7 @@
 //! reasoning for choosing one shape over another.
 
 use crate::error::{guard, set_last_error, FfiStatus};
-use crate::registry::{lock_recovering, scored_results};
+use crate::registry::scored_results;
 
 /// Writes the number of `(doc_id, score)` hits held by `scored_results_handle`
 /// to `*out_len`.
@@ -37,7 +37,7 @@ pub unsafe extern "C" fn ffi_scored_results_len(
         if out_len.is_null() {
             return Err(FfiStatus::NullPointer);
         }
-        let registry = lock_recovering(scored_results());
+        let registry = scored_results().read(scored_results_handle);
         let handle = registry.get(scored_results_handle).ok_or_else(|| {
             set_last_error("ffi_scored_results_len: unknown or already-closed handle");
             FfiStatus::InvalidHandle
@@ -68,7 +68,7 @@ pub unsafe extern "C" fn ffi_scored_results_copy(
     buf_len: usize,
 ) -> i32 {
     guard(|| {
-        let registry = lock_recovering(scored_results());
+        let registry = scored_results().read(scored_results_handle);
         let handle = registry.get(scored_results_handle).ok_or_else(|| {
             set_last_error("ffi_scored_results_copy: unknown or already-closed handle");
             FfiStatus::InvalidHandle
@@ -102,7 +102,8 @@ pub unsafe extern "C" fn ffi_scored_results_copy(
 #[no_mangle]
 pub extern "C" fn ffi_close_scored_results(handle: u64) -> i32 {
     guard(|| {
-        lock_recovering(scored_results())
+        scored_results()
+            .write(handle)
             .remove(handle)
             .map(|_| ())
             .ok_or_else(|| {
@@ -119,12 +120,14 @@ mod tests {
     use lucene_search::ScoreDoc;
 
     fn insert(hits: Vec<(i32, f32)>) -> u64 {
-        lock_recovering(scored_results()).insert(ScoredResultsHandle {
-            hits: hits
-                .into_iter()
-                .map(|(doc_id, score)| ScoreDoc { doc_id, score })
-                .collect(),
-        })
+        scored_results()
+            .insert_checked(ScoredResultsHandle {
+                hits: hits
+                    .into_iter()
+                    .map(|(doc_id, score)| ScoreDoc { doc_id, score })
+                    .collect(),
+            })
+            .unwrap()
     }
 
     #[test]

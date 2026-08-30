@@ -140,7 +140,11 @@ pub fn update_document(
     // this returns `Err` partway through (the `.liv` files already written
     // for earlier segments in this loop are orphaned, not referenced by any
     // `segments_N` — see module doc).
-    let mut updated_segments = Vec::with_capacity(segment_infos.segments.len() + 1);
+    // ARITH: an in-memory `Vec` length plus the one new segment this call
+    // flushes; `segments.len()` is at most `isize::MAX`.
+    #[allow(clippy::arithmetic_side_effects)]
+    let capacity = segment_infos.segments.len() + 1;
+    let mut updated_segments = Vec::with_capacity(capacity);
     for sci in &segment_infos.segments {
         match delete_sources
             .iter()
@@ -188,8 +192,18 @@ pub fn update_document(
     // succeeded, so this is the only write that can make the update visible
     // -- and it makes both halves visible together, in one fsync'd file.
     let mut new_segment_infos = segment_infos.clone();
-    new_segment_infos.generation += 1;
-    new_segment_infos.version += 1;
+    // ARITH: both counters are capped at `segment_infos::MAX_GENERATION`
+    // (`i64::MAX / 2`) on the way in (`segment_infos::parse`) and on the way
+    // out (`check_writable_generations`), precisely so this one-per-commit
+    // step cannot overflow -- see that constant. Without the cap a flipped
+    // byte in the 8-byte `version` field turns the *next* commit into a panic
+    // (debug) or a negative commit version (release), which a reader would
+    // then rank below every older commit.
+    #[allow(clippy::arithmetic_side_effects)]
+    {
+        new_segment_infos.generation += 1;
+        new_segment_infos.version += 1;
+    }
     new_segment_infos.segments = updated_segments;
 
     segment_infos::write(&new_segment_infos, dir)?;
@@ -199,6 +213,10 @@ pub fn update_document(
 
 #[cfg(test)]
 mod tests {
+    // The arithmetic gate is about values read off disk; a fixture builder's
+    // `i * 2` is not one (see `docs/arithmetic-gate.md`).
+    #![allow(clippy::arithmetic_side_effects)]
+
     use super::*;
     use lucene_codecs::blocktree;
     use lucene_codecs::field_infos::{
@@ -281,18 +299,12 @@ mod tests {
         }
     }
 
-    fn tempdir() -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        p.push(format!(
-            "lucene-rust-update-document-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&p).unwrap();
-        p
+    use lucene_util::test_support::TempDir;
+
+    /// A scratch directory that removes itself when the test ends -- unless
+    /// the test is panicking, in which case its bytes stay for inspection.
+    fn tempdir() -> TempDir {
+        TempDir::new("update-document")
     }
 
     fn version() -> LV {
@@ -324,6 +336,7 @@ mod tests {
             sci_id: None,
             field_infos_files: vec![],
             dv_update_files: vec![],
+            ..Default::default()
         }
     }
 

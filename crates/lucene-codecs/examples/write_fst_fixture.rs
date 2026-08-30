@@ -25,6 +25,11 @@
 //! small to reach that encoding path.
 //!
 //! Run: `cargo run -p lucene-codecs --example write_fst_fixture -- <dir>`
+// Test-support code opts out of the arithmetic gate at the file boundary:
+// the gate exists for values read off disk in production decode paths, not
+// for a fixture builder's own index arithmetic. See
+// `docs/arithmetic-gate.md`.
+#![allow(clippy::arithmetic_side_effects)]
 
 use lucene_codecs::fst::{build_fst, write_fst};
 use std::io::Write;
@@ -85,6 +90,24 @@ fn main() {
         .collect();
     let large_absent: Vec<&[u8]> = vec![b"key9999", b"key0200", b""];
     write_fixture(&format!("{out_dir}/large"), &large_entries, &large_absent);
+
+    // A third fixture whose *first* key is the empty string, so `build_fst`
+    // stores it as `FSTMetadata.emptyOutput` rather than as an arc. That
+    // metadata field has its own serialization -- the value is run through
+    // `writeFinalOutput` (a `vint` length plus the payload) and only *then*
+    // reversed and length-prefixed -- which this port's own reader would
+    // round-trip happily even if both halves got the framing wrong. Only a
+    // real Lucene reader can tell the difference, which is what this
+    // fixture asks it to do.
+    let empty_entries: Vec<(Vec<u8>, Vec<u8>)> = vec![
+        (b"".to_vec(), b"ROOT-OUTPUT".to_vec()),
+        (b"app".to_vec(), b"1".to_vec()),
+        (b"apple".to_vec(), b"2".to_vec()),
+        (b"banana".to_vec(), b"4".to_vec()),
+        (b"z".to_vec(), b"26".to_vec()),
+    ];
+    let empty_absent: Vec<&[u8]> = vec![b"a", b"appl", b"apples", b"ban", b"cat", b"zz"];
+    write_fixture(&format!("{out_dir}/empty"), &empty_entries, &empty_absent);
 }
 
 fn hex(bytes: &[u8]) -> String {

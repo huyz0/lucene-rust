@@ -12,6 +12,11 @@
 //! slice scoped to exactly the stored-fields format itself.
 //!
 //! Run: `cargo run -p lucene-codecs --example write_stored_fields_fixture -- <dir>`
+// Test-support code opts out of the arithmetic gate at the file boundary:
+// the gate exists for values read off disk in production decode paths, not
+// for a fixture builder's own index arithmetic. See
+// `docs/arithmetic-gate.md`.
+#![allow(clippy::arithmetic_side_effects)]
 
 use lucene_codecs::stored_fields::{self, Document, FieldValue, StoredField};
 use lucene_store::{DataOutput, Directory, FsDirectory};
@@ -20,6 +25,7 @@ use std::io::Write;
 const SEGMENT_ID_0: [u8; 16] = *b"rustwrittenseg01";
 const SEGMENT_ID_1: [u8; 16] = *b"rustwrittenseg02";
 const SEGMENT_ID_2: [u8; 16] = *b"rustwrittenseg03";
+const SEGMENT_ID_3: [u8; 16] = *b"rustwrittenseg04";
 /// Two full BEST_SPEED chunks plus a partial (dirty) third.
 const CHUNKED_DOCS: usize = 2 * 1024 + 37;
 
@@ -149,10 +155,35 @@ fn main() {
         })
         .collect();
 
+    // A BEST_COMPRESSION segment small enough that
+    // `dictLength = len / (NUM_SUB_BLOCKS * DICT_SIZE_FACTOR)` rounds to
+    // **zero**. Real Lucene's writer emits a bare `vInt(0)` for such a
+    // dictionary and its reader returns without touching the inflater; a
+    // writer that instead emits a real (empty) DEFLATE stream hands that
+    // reader a nonzero length and it fails with "Invalid decoder state".
+    // Every other BEST_COMPRESSION fixture here is ~90KB, so nothing else
+    // covers this -- which is exactly how the defect survived.
+    let docs_tiny_compression = vec![
+        Document {
+            fields: vec![StoredField {
+                field_number: 0,
+                value: FieldValue::String("tiny".to_string()),
+            }],
+        },
+        Document {
+            fields: vec![StoredField {
+                field_number: 1,
+                value: FieldValue::Int(7),
+            }],
+        },
+    ];
+
     let (fdt0, fdx0, fdm0) = stored_fields::write_best_speed(&docs_best_speed, &SEGMENT_ID_0, "");
     let (fdt2, fdx2, fdm2) = stored_fields::write_best_speed(&docs_chunked, &SEGMENT_ID_2, "");
     let (fdt1, fdx1, fdm1) =
         stored_fields::write_best_compression(&docs_best_compression, &SEGMENT_ID_1, "");
+    let (fdt3, fdx3, fdm3) =
+        stored_fields::write_best_compression(&docs_tiny_compression, &SEGMENT_ID_3, "");
 
     // Route the encoded bytes through the real on-disk Directory/IndexOutput
     // primitive (rather than a hand-rolled `std::fs::write`), then fsync
@@ -169,6 +200,9 @@ fn main() {
         ("_2.fdt", &fdt2),
         ("_2.fdx", &fdx2),
         ("_2.fdm", &fdm2),
+        ("_3.fdt", &fdt3),
+        ("_3.fdx", &fdx3),
+        ("_3.fdm", &fdm3),
     ] {
         let mut out = dir.create_output(name).unwrap();
         out.write_bytes(bytes);
@@ -184,11 +218,14 @@ fn main() {
         "_2.fdt".to_string(),
         "_2.fdx".to_string(),
         "_2.fdm".to_string(),
+        "_3.fdt".to_string(),
+        "_3.fdx".to_string(),
+        "_3.fdm".to_string(),
     ])
     .unwrap();
 
     let mut manifest = std::fs::File::create(format!("{out_dir}/manifest.properties")).unwrap();
-    writeln!(manifest, "segments=_0,_1,_2").unwrap();
+    writeln!(manifest, "segments=_0,_1,_2,_3").unwrap();
     write_segment_manifest(
         &mut manifest,
         "_0",
@@ -211,6 +248,14 @@ fn main() {
     writeln!(manifest, "_2.id_hex={}", hex(&SEGMENT_ID_2)).unwrap();
     writeln!(manifest, "_2.num_fields=7").unwrap();
     writeln!(manifest, "_2.doc_pattern=0:string:doc-{{i}}").unwrap();
+
+    write_segment_manifest(
+        &mut manifest,
+        "_3",
+        "BEST_COMPRESSION",
+        &SEGMENT_ID_3,
+        &docs_tiny_compression,
+    );
 
     println!("wrote stored-fields fixture to {out_dir}");
 }

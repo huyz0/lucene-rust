@@ -66,16 +66,16 @@
 use std::collections::HashMap;
 use std::os::raw::c_char;
 
-use lucene_codecs::postings::{DocInput, PosInput};
+use lucene_codecs::postings::{DocInput, PayInput, PosInput};
 use lucene_search::explain::{explain_clause, Explanation};
 use lucene_search::field_norms::FieldNorms;
-use lucene_search::{BooleanQuery, Clause, PhraseQuery, TermQuery};
+use lucene_search::{Clause, PhraseQuery, TermQuery};
 
 use crate::error::{guard, set_last_error, FfiStatus};
-use crate::query::{map_search_error, open_field_norms, read_term_clauses};
-use crate::raw::{bytes_from_raw, str_from_raw};
+use crate::query::{check_clause_count, map_search_error, open_field_norms, read_boolean_query};
+use crate::raw::{bytes_from_raw, str_from_raw, try_with_capacity};
 use crate::registry::{
-    explain_results, lock_recovering, segments, ExplainNode, ExplainResultsHandle,
+    explain_results, read_recovering, segments, ExplainNode, ExplainResultsHandle, SegmentHandle,
 };
 
 /// Flattens `exp` into `out` depth-first, pre-order (self pushed before any
@@ -99,10 +99,55 @@ fn flatten_explanation(exp: &Explanation, out: &mut Vec<ExplainNode>) -> usize {
     idx
 }
 
-fn insert_explanation(exp: &Explanation) -> u64 {
+/// Rejects a doc ID outside `0..max_doc` with
+/// [`FfiStatus::InvalidArgument`]. `explain_clause` treats an out-of-range
+/// doc as simply "not matched" and returns a no-match explanation, which
+/// reads as a legitimate answer about a real document rather than the caller
+/// error it is -- the same reasoning `sort.rs`'s
+/// `ffi_numeric_doc_value_for_doc`/`validate_candidates` already apply to
+/// caller-supplied doc IDs.
+fn validate_doc(doc: i32, max_doc: i32) -> Result<(), FfiStatus> {
+    if doc < 0 || doc >= max_doc {
+        set_last_error(format!("explain: doc {doc} is out of range 0..{max_doc}"));
+        return Err(FfiStatus::InvalidArgument);
+    }
+    Ok(())
+}
+
+/// Port of `IndexSearcher.explain(Weight, int)`'s deleted-document branch:
+///
+/// ```java
+/// final Bits liveDocs = ctx.reader().getLiveDocs();
+/// if (liveDocs != null && liveDocs.get(deBasedDoc) == false) {
+///   return Explanation.noMatch("Document " + doc + " is deleted");
+/// }
+/// ```
+///
+/// **Why this lives here rather than falling out of `explain_clause`'s
+/// `live_docs` argument.** Passing the segment's live docs down into
+/// `explain_clause` does produce the right *verdict* (no match) for a deleted
+/// document -- but the wrong *reason*: the doc drops out at the postings
+/// lookup and the tree comes back saying `no matching term`, indistinguishable
+/// from a document that simply does not contain the term. Java deliberately
+/// answers this one layer up, at the same layer this module is, so the caller
+/// can tell "deleted" from "absent". `ffi_explain_node_description` is exactly
+/// the string an OpenSearch `_explain` response renders, so the distinction is
+/// the whole point of the call.
+///
+/// Returns `Some(explanation)` when `doc` is deleted, `None` when it is live
+/// (or the segment has no live docs attached, i.e. no deletions).
+fn deleted_doc_explanation(segment: &SegmentHandle, doc: i32) -> Option<Explanation> {
+    let live = segment.live_docs.as_ref()?;
+    if live.get(doc as usize) {
+        return None;
+    }
+    Some(Explanation::no_match(format!("Document {doc} is deleted")))
+}
+
+fn insert_explanation(exp: &Explanation) -> Result<u64, FfiStatus> {
     let mut nodes = Vec::new();
     flatten_explanation(exp, &mut nodes);
-    lock_recovering(explain_results()).insert(ExplainResultsHandle { nodes })
+    explain_results().insert_checked(ExplainResultsHandle { nodes })
 }
 
 /// Explains `search_term_query_scored`'s equivalent `(field, term)` match for
@@ -141,11 +186,23 @@ pub unsafe extern "C" fn ffi_explain_term_query(
         };
         let query = TermQuery::new(field, term.to_vec());
 
-        let segments = lock_recovering(segments());
+        let segments = read_recovering(segments());
         let segment = segments.get(segment_handle).ok_or_else(|| {
             set_last_error("ffi_explain_term_query: unknown or already-closed segment handle");
             FfiStatus::InvalidHandle
         })?;
+        validate_doc(doc, segment.max_doc)?;
+        // `IndexSearcher.explain`'s deleted-document branch, before any
+        // weight is consulted -- see `deleted_doc_explanation`.
+        if let Some(explanation) = deleted_doc_explanation(segment, doc) {
+            let handle = insert_explanation(&explanation)?;
+            // SAFETY: caller contract guarantees the out-parameter is valid
+            // for one write; it was null-checked at the top of this function.
+            unsafe {
+                *out_explain_results_handle = handle;
+            }
+            return Ok(());
+        }
         let doc_in = segment
             .doc_bytes
             .as_deref()
@@ -162,7 +219,7 @@ pub unsafe extern "C" fn ffi_explain_term_query(
             doc_in.as_ref(),
             None,
             None,
-            None,
+            segment.live_docs.as_ref(),
             &Clause::Term(query),
             doc,
             norms
@@ -172,7 +229,7 @@ pub unsafe extern "C" fn ffi_explain_term_query(
         )
         .map_err(map_search_error)?;
 
-        let handle = insert_explanation(&explanation);
+        let handle = insert_explanation(&explanation)?;
         // SAFETY: caller contract guarantees `out_explain_results_handle` is
         // valid for one write.
         unsafe {
@@ -218,7 +275,7 @@ pub unsafe extern "C" fn ffi_explain_phrase_query(
         // `term_count` elements with each element pair valid for its length.
         let (field, term_list) = unsafe {
             let field = str_from_raw(field, field_len)?;
-            let mut term_list = Vec::with_capacity(term_count);
+            let mut term_list = try_with_capacity(term_count)?;
             if term_count > 0 {
                 if terms.is_null() || term_lens.is_null() {
                     return Err(FfiStatus::NullPointer);
@@ -233,11 +290,23 @@ pub unsafe extern "C" fn ffi_explain_phrase_query(
         };
         let query = PhraseQuery::new(field, term_list);
 
-        let segments = lock_recovering(segments());
+        let segments = read_recovering(segments());
         let segment = segments.get(segment_handle).ok_or_else(|| {
             set_last_error("ffi_explain_phrase_query: unknown or already-closed segment handle");
             FfiStatus::InvalidHandle
         })?;
+        validate_doc(doc, segment.max_doc)?;
+        // `IndexSearcher.explain`'s deleted-document branch, before any
+        // weight is consulted -- see `deleted_doc_explanation`.
+        if let Some(explanation) = deleted_doc_explanation(segment, doc) {
+            let handle = insert_explanation(&explanation)?;
+            // SAFETY: caller contract guarantees the out-parameter is valid
+            // for one write; it was null-checked at the top of this function.
+            unsafe {
+                *out_explain_results_handle = handle;
+            }
+            return Ok(());
+        }
         let doc_in = segment
             .doc_bytes
             .as_deref()
@@ -256,14 +325,23 @@ pub unsafe extern "C" fn ffi_explain_phrase_query(
                 set_last_error(format!("reopening .pos: {e}"));
                 FfiStatus::Decode
             })?;
+        let pay_in = segment
+            .pay_bytes
+            .as_deref()
+            .map(|b| PayInput::open(b, &segment.segment_id, &segment.segment_suffix))
+            .transpose()
+            .map_err(|e| {
+                set_last_error(format!("reopening .pay: {e}"));
+                FfiStatus::Decode
+            })?;
         let norms = open_field_norms(segment, &query.field)?;
 
         let explanation = explain_clause(
             &segment.fields,
             doc_in.as_ref(),
             pos_in.as_ref(),
-            None,
-            None,
+            pay_in.as_ref(),
+            segment.live_docs.as_ref(),
             &Clause::Phrase(query),
             doc,
             norms
@@ -273,7 +351,7 @@ pub unsafe extern "C" fn ffi_explain_phrase_query(
         )
         .map_err(map_search_error)?;
 
-        let handle = insert_explanation(&explanation);
+        let handle = insert_explanation(&explanation)?;
         // SAFETY: caller contract guarantees `out_explain_results_handle` is
         // valid for one write.
         unsafe {
@@ -284,7 +362,7 @@ pub unsafe extern "C" fn ffi_explain_phrase_query(
 }
 
 /// Explains `search_boolean_query_scored`'s equivalent match for `doc` --
-/// same flat, `Clause::Term`-only four-parallel-array clause wire format as
+/// same occur-tagged clause-array wire format as
 /// [`crate::query::ffi_search_boolean_query`]/`ffi_search_boolean_query_scored`
 /// (see that module's doc comment), and the same per-distinct-field norms map
 /// construction `ffi_search_boolean_query_scored` uses.
@@ -296,21 +374,16 @@ pub unsafe extern "C" fn ffi_explain_phrase_query(
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "C" fn ffi_explain_boolean_query(
     segment_handle: u64,
-    must_fields: *const *const c_char,
-    must_field_lens: *const usize,
-    must_terms: *const *const u8,
-    must_term_lens: *const usize,
-    must_count: usize,
-    should_fields: *const *const c_char,
-    should_field_lens: *const usize,
-    should_terms: *const *const u8,
-    should_term_lens: *const usize,
-    should_count: usize,
-    must_not_fields: *const *const c_char,
-    must_not_field_lens: *const usize,
-    must_not_terms: *const *const u8,
-    must_not_term_lens: *const usize,
-    must_not_count: usize,
+    clause_occurs: *const u8,
+    clause_kinds: *const u8,
+    clause_fields: *const *const c_char,
+    clause_field_lens: *const usize,
+    clause_terms: *const *const u8,
+    clause_term_lens: *const usize,
+    clause_parents: *const i32,
+    clause_params: *const i32,
+    clause_count: usize,
+    minimum_should_match: i32,
     doc: i32,
     out_explain_results_handle: *mut u64,
 ) -> i32 {
@@ -318,38 +391,44 @@ pub unsafe extern "C" fn ffi_explain_boolean_query(
         if out_explain_results_handle.is_null() {
             return Err(FfiStatus::NullPointer);
         }
-        // SAFETY: see `read_term_clauses`'s contract; every array/count pair here
-        // matches it exactly.
+        // Per-query clause cap, before any decoding -- see
+        // `query::check_clause_count`: one array, one length, so the
+        // three-separately-capped-lists hazard cannot recur.
+        check_clause_count(clause_count)?;
+        // SAFETY: see `read_boolean_query`'s contract; every array/count pair
+        // here matches it exactly.
         let query = unsafe {
-            BooleanQuery::new()
-                .with_must(read_term_clauses(
-                    must_fields,
-                    must_field_lens,
-                    must_terms,
-                    must_term_lens,
-                    must_count,
-                )?)
-                .with_should(read_term_clauses(
-                    should_fields,
-                    should_field_lens,
-                    should_terms,
-                    should_term_lens,
-                    should_count,
-                )?)
-                .with_must_not(read_term_clauses(
-                    must_not_fields,
-                    must_not_field_lens,
-                    must_not_terms,
-                    must_not_term_lens,
-                    must_not_count,
-                )?)
+            read_boolean_query(
+                clause_occurs,
+                clause_kinds,
+                clause_fields,
+                clause_field_lens,
+                clause_terms,
+                clause_term_lens,
+                clause_parents,
+                clause_params,
+                clause_count,
+                minimum_should_match,
+            )?
         };
 
-        let segments = lock_recovering(segments());
+        let segments = read_recovering(segments());
         let segment = segments.get(segment_handle).ok_or_else(|| {
             set_last_error("ffi_explain_boolean_query: unknown or already-closed segment handle");
             FfiStatus::InvalidHandle
         })?;
+        validate_doc(doc, segment.max_doc)?;
+        // `IndexSearcher.explain`'s deleted-document branch, before any
+        // weight is consulted -- see `deleted_doc_explanation`.
+        if let Some(explanation) = deleted_doc_explanation(segment, doc) {
+            let handle = insert_explanation(&explanation)?;
+            // SAFETY: caller contract guarantees the out-parameter is valid
+            // for one write; it was null-checked at the top of this function.
+            unsafe {
+                *out_explain_results_handle = handle;
+            }
+            return Ok(());
+        }
         let doc_in = segment
             .doc_bytes
             .as_deref()
@@ -364,31 +443,7 @@ pub unsafe extern "C" fn ffi_explain_boolean_query(
         // `ffi_search_boolean_query_scored` (see that function's own comment) --
         // every clause here is `Clause::Term` by `read_term_clauses`'s own
         // contract, so the `Clause::Term(t) => ...` arm is the only reachable one.
-        let mut field_names: Vec<&str> = query
-            .must
-            .iter()
-            .chain(query.should.iter())
-            .chain(query.must_not.iter())
-            .filter_map(|c| match c {
-                Clause::Term(t) => Some(t.field.as_str()),
-                Clause::Phrase(_)
-                | Clause::Boolean(_)
-                | Clause::DisjunctionMax(_)
-                | Clause::ConstantScore(_)
-                | Clause::Boost(_)
-                | Clause::Wildcard(_)
-                | Clause::Prefix(_)
-                | Clause::Fuzzy(_)
-                | Clause::Regexp(_)
-                | Clause::Span(_)
-                | Clause::PointsRange(_)
-                | Clause::MatchAllDocs(_)
-                | Clause::MatchNoDocs(_)
-                | Clause::TermInSet(_) => None,
-            })
-            .collect();
-        field_names.sort_unstable();
-        field_names.dedup();
+        let field_names = crate::query::clause_field_names(&query);
         let mut norms_map: HashMap<String, FieldNorms<'_>> = HashMap::new();
         for name in field_names {
             if let Some(field_norms) = open_field_norms(segment, name)? {
@@ -402,14 +457,14 @@ pub unsafe extern "C" fn ffi_explain_boolean_query(
             doc_in.as_ref(),
             None,
             None,
-            None,
+            segment.live_docs.as_ref(),
             &Clause::Boolean(Box::new(query)),
             doc,
             norms_arg,
         )
         .map_err(map_search_error)?;
 
-        let handle = insert_explanation(&explanation);
+        let handle = insert_explanation(&explanation)?;
         // SAFETY: caller contract guarantees `out_explain_results_handle` is
         // valid for one write.
         unsafe {
@@ -505,6 +560,8 @@ mod tests {
                     std::ptr::null()
                 },
                 if with_pos { pos.len() } else { 0 },
+                std::ptr::null(),
+                0,
                 std::ptr::null(), // nvm_name
                 0,
                 std::ptr::null(), // nvd_name
@@ -642,7 +699,7 @@ mod tests {
         let term = b"cat";
 
         let target_doc = {
-            let segs = crate::registry::lock_recovering(crate::registry::segments());
+            let segs = crate::registry::read_recovering(crate::registry::segments());
             let seg = segs.get(seg_handle).unwrap();
             let doc_in = seg
                 .doc_bytes
@@ -683,7 +740,7 @@ mod tests {
 
         // Direct call to `lucene_search::explain::explain_clause`, per this
         // task's required differential-test shape.
-        let segs = crate::registry::lock_recovering(crate::registry::segments());
+        let segs = crate::registry::read_recovering(crate::registry::segments());
         let seg = segs.get(seg_handle).unwrap();
         let doc_in = seg
             .doc_bytes
@@ -722,6 +779,11 @@ mod tests {
         let dir_handle = open_dir();
         let seg_handle = open_segment(dir_handle, false);
 
+        // Doc 1 is a real document in this segment that `body:cat` does not
+        // match (the term matches docs 0 and 2 -- see `query.rs`'s
+        // `term_query_matches_expected_docs`). Deliberately in range: an
+        // out-of-range doc is a caller error, not a no-match answer -- see
+        // `explain_rejects_a_doc_outside_the_segment` below.
         let field = "body";
         let term = b"cat";
         let mut out: u64 = 0;
@@ -732,7 +794,7 @@ mod tests {
                 field.len(),
                 term.as_ptr(),
                 term.len(),
-                999_999,
+                1,
                 &mut out as *mut _,
             )
         };
@@ -743,6 +805,37 @@ mod tests {
         assert_eq!(got[0].0, 0.0);
 
         ffi_close_explain_results(out);
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    /// A doc ID outside the segment must be `InvalidArgument`, not a
+    /// plausible-looking "this document did not match" explanation of a
+    /// document that does not exist.
+    #[test]
+    fn explain_rejects_a_doc_outside_the_segment() {
+        let dir_handle = open_dir();
+        let seg_handle = open_segment(dir_handle, false);
+        let field = "body";
+        let term = b"cat";
+
+        for doc in [-1i32, 999_999] {
+            let mut out: u64 = 0;
+            let rc = unsafe {
+                ffi_explain_term_query(
+                    seg_handle,
+                    field.as_ptr() as *const c_char,
+                    field.len(),
+                    term.as_ptr(),
+                    term.len(),
+                    doc,
+                    &mut out as *mut _,
+                )
+            };
+            assert_eq!(rc, FfiStatus::InvalidArgument.code(), "doc {doc}");
+            assert_eq!(out, 0, "doc {doc}: no handle may be issued");
+        }
+
         ffi_close_segment(seg_handle);
         ffi_close_directory(dir_handle);
     }
@@ -862,7 +955,7 @@ mod tests {
         assert_eq!(rc, FfiStatus::Ok.code());
         let got = walk_tree(out);
 
-        let segs = crate::registry::lock_recovering(crate::registry::segments());
+        let segs = crate::registry::read_recovering(crate::registry::segments());
         let seg = segs.get(seg_handle).unwrap();
         let doc_in = seg
             .doc_bytes
@@ -1069,7 +1162,7 @@ mod tests {
 
         // First find a matching doc via the existing scored boolean search FFI
         // path.
-        let segs = crate::registry::lock_recovering(crate::registry::segments());
+        let segs = crate::registry::read_recovering(crate::registry::segments());
         let seg = segs.get(seg_handle).unwrap();
         let doc_in = seg
             .doc_bytes
@@ -1079,7 +1172,7 @@ mod tests {
             })
             .transpose()
             .unwrap();
-        let query = BooleanQuery::new()
+        let query = lucene_search::BooleanQuery::new()
             .with_must([TermQuery::new(must_field, must_term.to_vec())])
             .with_should([TermQuery::new(should_field, should_term.to_vec())]);
         let mut capture = ScoreCapture::default();
@@ -1112,7 +1205,7 @@ mod tests {
 
         let mut out: u64 = 0;
         let rc = unsafe {
-            ffi_explain_boolean_query(
+            crate::legacy_boolean_abi::legacy_explain_boolean_query(
                 seg_handle,
                 must_fields.as_ptr(),
                 must_field_lens.as_ptr(),
@@ -1152,7 +1245,7 @@ mod tests {
 
         let mut out: u64 = 0;
         let rc = unsafe {
-            ffi_explain_boolean_query(
+            crate::legacy_boolean_abi::legacy_explain_boolean_query(
                 seg_handle,
                 std::ptr::null(),
                 std::ptr::null(),
@@ -1188,7 +1281,7 @@ mod tests {
         let dir_handle = open_dir();
         let seg_handle = open_segment(dir_handle, false);
         let rc = unsafe {
-            ffi_explain_boolean_query(
+            crate::legacy_boolean_abi::legacy_explain_boolean_query(
                 seg_handle,
                 std::ptr::null(),
                 std::ptr::null(),
@@ -1220,7 +1313,7 @@ mod tests {
         let seg_handle = open_segment(dir_handle, false);
         let mut out: u64 = 0;
         let rc = unsafe {
-            ffi_explain_boolean_query(
+            crate::legacy_boolean_abi::legacy_explain_boolean_query(
                 seg_handle,
                 std::ptr::null(),
                 std::ptr::null(),
@@ -1250,7 +1343,7 @@ mod tests {
     fn explain_boolean_query_unknown_segment_handle_is_invalid_handle() {
         let mut out: u64 = 0;
         let rc = unsafe {
-            ffi_explain_boolean_query(
+            crate::legacy_boolean_abi::legacy_explain_boolean_query(
                 0xFFFF,
                 std::ptr::null(),
                 std::ptr::null(),
@@ -1272,5 +1365,174 @@ mod tests {
             )
         };
         assert_eq!(rc, FfiStatus::InvalidHandle.code());
+    }
+}
+
+/// `IndexSearcher.explain`'s deleted-document branch, end to end against the
+/// real Java-written `fixtures/data/live_docs_index/` fixture (5 docs,
+/// `id:0..4`, docs 1 and 3 deleted at `del_gen == 1`).
+#[cfg(test)]
+mod deleted_doc_tests {
+    use super::*;
+    use crate::directory::{ffi_close_directory, ffi_open_directory};
+    use crate::results_explain::{
+        ffi_close_explain_results, ffi_explain_node_description, ffi_explain_node_matched,
+    };
+    use crate::segment::{ffi_close_segment, ffi_open_segment, ffi_segment_set_live_docs};
+
+    fn open_dir() -> u64 {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/data/live_docs_index/"
+        );
+        let mut handle: u64 = 0;
+        assert_eq!(
+            unsafe { ffi_open_directory(path.as_ptr().cast::<c_char>(), path.len(), &mut handle) },
+            FfiStatus::Ok.code()
+        );
+        handle
+    }
+
+    fn open_segment(dir_handle: u64) -> u64 {
+        let hex = "e0811e4220a8e70d1ad3e053cc6f8ee7";
+        let mut id = [0u8; 16];
+        for (i, slot) in id.iter_mut().enumerate() {
+            *slot = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap();
+        }
+        let (fnm, tim, tip, tmd, doc) = (
+            "_0.fnm",
+            "_0_Lucene104_0.tim",
+            "_0_Lucene104_0.tip",
+            "_0_Lucene104_0.tmd",
+            "_0_Lucene104_0.doc",
+        );
+        let suffix = "Lucene104_0";
+        let mut handle: u64 = 0;
+        let rc = unsafe {
+            ffi_open_segment(
+                dir_handle,
+                fnm.as_ptr().cast::<c_char>(),
+                fnm.len(),
+                tim.as_ptr().cast::<c_char>(),
+                tim.len(),
+                tip.as_ptr().cast::<c_char>(),
+                tip.len(),
+                tmd.as_ptr().cast::<c_char>(),
+                tmd.len(),
+                doc.as_ptr().cast::<c_char>(),
+                doc.len(),
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                id.as_ptr(),
+                suffix.as_ptr().cast::<c_char>(),
+                suffix.len(),
+                5,
+                &mut handle,
+            )
+        };
+        assert_eq!(rc, FfiStatus::Ok.code());
+        handle
+    }
+
+    fn explain(seg: u64, term: &str, doc: i32) -> (bool, String) {
+        let field = "id";
+        let mut out: u64 = 0;
+        let rc = unsafe {
+            ffi_explain_term_query(
+                seg,
+                field.as_ptr().cast::<c_char>(),
+                field.len(),
+                term.as_ptr(),
+                term.len(),
+                doc,
+                &mut out,
+            )
+        };
+        assert_eq!(rc, FfiStatus::Ok.code());
+        let mut matched: u8 = 0;
+        assert_eq!(
+            unsafe { ffi_explain_node_matched(out, 0, &mut matched) },
+            FfiStatus::Ok.code()
+        );
+        let matched = matched != 0;
+        let mut buf = [0 as c_char; 512];
+        let mut written: usize = 0;
+        assert_eq!(
+            unsafe {
+                ffi_explain_node_description(out, 0, buf.as_mut_ptr(), buf.len(), &mut written)
+            },
+            FfiStatus::Ok.code()
+        );
+        let description = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) }
+            .to_str()
+            .unwrap()
+            .to_string();
+        ffi_close_explain_results(out);
+        (matched, description)
+    }
+
+    /// Java answers "Document N is deleted" at the `IndexSearcher.explain`
+    /// layer, *not* "no matching term" from inside the weight -- the caller
+    /// must be able to tell a deleted document from one that simply lacks the
+    /// term. This is exactly what pushing `live_docs` down into
+    /// `explain_clause` alone would get wrong.
+    #[test]
+    fn a_deleted_doc_explains_as_deleted_not_as_a_missing_term() {
+        let dir = open_dir();
+        let seg = open_segment(dir);
+
+        // Before live docs are attached the segment has no deletions to know
+        // about, so doc 1 explains as the match it structurally is.
+        let (matched, _) = explain(seg, "1", 1);
+        assert!(matched, "doc 1 really does contain id:1");
+
+        let liv = "_0_1.liv";
+        assert_eq!(
+            unsafe {
+                ffi_segment_set_live_docs(seg, dir, liv.as_ptr().cast::<c_char>(), liv.len(), 1, 2)
+            },
+            FfiStatus::Ok.code()
+        );
+
+        for doc in [1i32, 3] {
+            let (matched, description) = explain(seg, &doc.to_string(), doc);
+            assert!(!matched, "deleted doc {doc} must not match");
+            assert_eq!(
+                description,
+                format!("Document {doc} is deleted"),
+                "must be Java's own wording, not `no matching term`"
+            );
+        }
+
+        // A live document that does not contain the term still gets the
+        // ordinary no-match reason -- the two cases stay distinguishable.
+        let (matched, description) = explain(seg, "1", 0);
+        assert!(!matched);
+        assert_ne!(description, "Document 0 is deleted");
+
+        // ...and a live matching document is unaffected.
+        let (matched, _) = explain(seg, "0", 0);
+        assert!(matched);
+
+        assert_eq!(ffi_close_segment(seg), FfiStatus::Ok.code());
+        ffi_close_directory(dir);
     }
 }

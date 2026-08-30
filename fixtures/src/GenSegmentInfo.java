@@ -4,6 +4,8 @@ import org.apache.lucene.index.SegmentInfo;
 import org.apache.lucene.store.ByteBuffersDirectory;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.IOContext;
+import org.apache.lucene.search.Sort;
+import org.apache.lucene.search.SortField;
 import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.util.StringHelper;
 import org.apache.lucene.util.Version;
@@ -27,6 +29,78 @@ public class GenSegmentInfo {
 
     gen(out, "_0", true);
     gen(out, "_1", false);
+    genSorted(out, "_2");
+  }
+
+  /**
+   * An index-sorted segment: the `.si` variant whose sort-field bytes are written by
+   * `SortFieldProvider` (provider name + that provider's own bytestream), which is a
+   * completely different layout from the rest of the file. Two sort fields, so the
+   * fixture also pins the multi-field priority order, and a mix of
+   * reverse/missing-first/missing-last so neither flag can be silently dropped.
+   */
+  static void genSorted(Path out, String segmentName) throws IOException {
+    byte[] id = StringHelper.randomId();
+    Version version = Version.LUCENE_10_0_0;
+
+    SortField primary = new SortField("timestamp", SortField.Type.LONG, true);
+    primary.setMissingValue(Long.MAX_VALUE); // missing sorts last
+    SortField secondary = new SortField("price", SortField.Type.LONG, false);
+    secondary.setMissingValue(Long.MIN_VALUE); // missing sorts first
+    Sort indexSort = new Sort(primary, secondary);
+
+    SegmentInfo si =
+        new SegmentInfo(
+            new ByteBuffersDirectory(),
+            version,
+            version,
+            segmentName,
+            100,
+            false,
+            false,
+            null,
+            new LinkedHashMap<>(),
+            id,
+            new LinkedHashMap<>(),
+            indexSort);
+    si.setFiles(new TreeSet<>());
+
+    Directory dir = new ByteBuffersDirectory();
+    Lucene99SegmentInfoFormat format = new Lucene99SegmentInfoFormat();
+    format.write(dir, si, IOContext.DEFAULT);
+
+    SegmentInfo readBack = format.read(dir, segmentName, id, IOContext.DEFAULT);
+    if (!indexSort.equals(readBack.getIndexSort())) throw new AssertionError("sort round-trip mismatch");
+
+    String fileName = IndexFileNames.segmentFileName(segmentName, "", "si");
+    try (IndexInput in = dir.openInput(fileName, IOContext.DEFAULT)) {
+      byte[] bytes = new byte[(int) in.length()];
+      in.readBytes(bytes, 0, bytes.length);
+      Files.write(out.resolve(segmentName + ".si"), bytes);
+    }
+
+    StringBuilder m = new StringBuilder();
+    m.append("segment_name=").append(segmentName).append('\n');
+    m.append("id_hex=").append(hex(id)).append('\n');
+    m.append("version_major=").append(version.major).append('\n');
+    m.append("version_minor=").append(version.minor).append('\n');
+    m.append("version_bugfix=").append(version.bugfix).append('\n');
+    m.append("has_min_version=1\n");
+    m.append("min_version_major=").append(version.major).append('\n');
+    m.append("min_version_minor=").append(version.minor).append('\n');
+    m.append("min_version_bugfix=").append(version.bugfix).append('\n');
+    m.append("doc_count=").append(si.maxDoc()).append('\n');
+    m.append("is_compound_file=0\n");
+    m.append("has_blocks=0\n");
+    m.append("diagnostics=\n");
+    m.append("attributes=\n");
+    m.append("files=\n");
+    // `field:reverse:missing` triples in priority order, the same rendering
+    // `crates/lucene-index/examples/write_segment_info_fixture.rs` emits.
+    m.append("index_sort=timestamp:1:last,price:0:first\n");
+    Files.writeString(out.resolve(segmentName + ".manifest.properties"), m.toString());
+
+    System.out.println("wrote " + segmentName + ".si (" + Files.size(out.resolve(segmentName + ".si")) + " bytes)");
   }
 
   static void gen(Path out, String segmentName, boolean withMinVersion) throws IOException {

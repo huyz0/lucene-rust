@@ -182,8 +182,15 @@ impl<'a> BytesReader<'a> {
         self.pos = pos;
     }
 
+    /// `ReverseBytesReader.skipBytes`. Java's `pos` is an `int` and the
+    /// subtraction silently wraps; here it saturates instead, which is not a
+    /// "make it fit" reflex but the only outcome that stays *wrong in the
+    /// same direction*: `i64::MIN`/`i64::MAX` are both outside
+    /// `0..bytes.len()`, so the very next `read_byte` reports corruption. A
+    /// wrap could land the cursor back inside the body and decode a
+    /// plausible arc from the wrong offset.
     fn skip_bytes(&mut self, count: i64) {
-        self.pos -= count;
+        self.pos = self.pos.saturating_sub(count);
     }
 
     fn read_byte(&mut self) -> Result<u8> {
@@ -194,7 +201,13 @@ impl<'a> BytesReader<'a> {
                 self.bytes.len()
             )));
         }
-        self.pos -= 1;
+        // ARITH: the guard above established `0 <= idx < bytes.len()`, so
+        // `pos - 1` is at worst -1 -- which the same guard rejects on the
+        // next call.
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            self.pos -= 1;
+        }
         Ok(self.bytes[idx as usize])
     }
 
@@ -208,11 +221,33 @@ impl<'a> BytesReader<'a> {
     /// `DataInput.readVInt`: identical varint algorithm regardless of the
     /// direction bytes are physically stored in, since it only ever calls
     /// `read_byte()` in sequence.
+    // ARITH: `shift` is compared against 28 before every increment, so it
+    // never leaves 7..=35.
+    #[allow(clippy::arithmetic_side_effects)]
     fn read_vint(&mut self) -> Result<i32> {
         let mut b = self.read_byte()?;
         let mut v = (b & 0x7f) as i32;
         let mut shift = 7;
         while b & 0x80 != 0 {
+            // `DataOutput.writeVInt` emits "between one and five bytes"
+            // (its javadoc; the loop is `i >>>= 7` on an `int`, so it cannot
+            // emit more), and this bound is exactly that -- so it cannot
+            // reject a `vint` any writer produced.
+            //
+            // It is *stricter* than 10.5.0's reader, deliberately.
+            // `DataInput.readVInt` there is a bare unchecked `for` loop with
+            // no length limit at all (the "Invalid vInt detected (too many
+            // bits)" exception is a later addition and is **not** in the
+            // pinned tree -- `grep` it and you will only find `CHANGES.txt`).
+            // Without a bound the loop keeps consuming continuation bytes off
+            // a corrupt body, silently returning a value assembled from bits
+            // no encoder wrote, and `shift` itself overflows on a long enough
+            // run. `lucene_store::data_input` already makes the same choice.
+            if shift > 28 {
+                return Err(Error::Corrupt(
+                    "invalid FST vInt detected (too many bits)".to_string(),
+                ));
+            }
             b = self.read_byte()?;
             v |= ((b & 0x7f) as i32).wrapping_shl(shift);
             shift += 7;
@@ -220,11 +255,28 @@ impl<'a> BytesReader<'a> {
         Ok(v)
     }
 
+    // ARITH: `shift` is compared against 64 before every increment, so it
+    // never leaves 7..=70.
+    #[allow(clippy::arithmetic_side_effects)]
     fn read_vlong(&mut self) -> Result<i64> {
         let mut b = self.read_byte()?;
         let mut v = (b & 0x7f) as i64;
         let mut shift = 7;
         while b & 0x80 != 0 {
+            // `DataOutput.writeVLong` emits "between one and nine bytes" and
+            // rejects a negative value outright
+            // (`IllegalArgumentException("cannot write negative vLong")`), so
+            // nine bytes is the most any writer produces. This bound admits
+            // ten, i.e. it is one byte *looser* than the writer -- which is
+            // what makes it unable to reject a real file. It exists to stop
+            // the `shift` accumulator and the unbounded scan, not to police
+            // the encoding; see `read_vint` on why 10.5.0's own reader has no
+            // such bound.
+            if shift >= 64 {
+                return Err(Error::Corrupt(
+                    "invalid FST vLong detected (too many bits)".to_string(),
+                ));
+            }
             b = self.read_byte()?;
             v |= ((b & 0x7f) as i64).wrapping_shl(shift);
             shift += 7;
@@ -233,7 +285,7 @@ impl<'a> BytesReader<'a> {
     }
 
     fn skip_output(&mut self) -> Result<()> {
-        let len = self.read_vint()?;
+        let len = self.checked_output_len()?;
         if len != 0 {
             self.skip_bytes(len as i64);
         }
@@ -241,7 +293,7 @@ impl<'a> BytesReader<'a> {
     }
 
     fn read_output(&mut self) -> Result<Vec<u8>> {
-        let len = self.read_vint()?;
+        let len = self.checked_output_len()?;
         if len == 0 {
             return Ok(Vec::new());
         }
@@ -249,12 +301,42 @@ impl<'a> BytesReader<'a> {
         self.read_bytes(&mut out)?;
         Ok(out)
     }
+
+    /// `ByteSequenceOutputs.read`'s `int len = in.readVInt()`, bounded before
+    /// it reaches a `vec![0u8; len]`.
+    ///
+    /// A `vint` decodes to any `i32`, and the reverse cursor consumes the
+    /// output's bytes *downward* from the current position -- so a valid
+    /// length is at most `pos + 1`. Without that bound a negative length
+    /// sign-extends through `as usize` to ~2^64 and a positive one reaches
+    /// 2 GB: both are `Vec` allocations sized by a number just read off disk,
+    /// which abort the process rather than returning an error `catch_unwind`
+    /// could turn into a JVM exception.
+    fn checked_output_len(&mut self) -> Result<i32> {
+        let len = self.read_vint()?;
+        if len < 0 || len as i64 > self.pos.saturating_add(1) {
+            return Err(Error::Corrupt(format!(
+                "FST output length {len} does not fit below cursor position {} (len={})",
+                self.pos,
+                self.bytes.len()
+            )));
+        }
+        Ok(len)
+    }
 }
 
 /// `FST.getNumPresenceBytes`: number of bytes needed to hold one presence bit
 /// per label in a range of `label_range` labels.
 fn num_presence_bytes(label_range: i32) -> i32 {
-    (label_range + 7) >> 3
+    // Java is `(labelRange + 7) >> 3` on an `int`, which overflows for a
+    // `labelRange` off disk within 7 of `Integer.MAX_VALUE`. Widening to
+    // `i64` for the one add makes the result exact for every `i32` input and
+    // still fits back in an `i32` (the shift divides by 8).
+    // ARITH: `label_range as i64 + 7` cannot overflow an `i64`, and the
+    // result of `>> 3` on a value below 2^31 fits an `i32`.
+    #[allow(clippy::arithmetic_side_effects)]
+    let bytes = (label_range as i64 + 7) >> 3;
+    bytes as i32
 }
 
 /// `BitTableUtil.isBitSet`, pre-positioned via `arc.bit_table_start`
@@ -275,11 +357,22 @@ fn bit_table_count_bits(arc: &Arc, r: &mut BytesReader) -> Result<i32> {
     debug_assert_eq!(arc.node_flags, ARCS_FOR_DIRECT_ADDRESSING);
     r.set_position(arc.bit_table_start);
     let num_bytes = num_presence_bytes(arc.num_arcs);
-    let mut count = 0i32;
+    // The accumulator is an `i64` because an `i32` one is *exactly* one short:
+    // `num_arcs` is an unbounded `vint` for a `BYTE4` FST (`check_label_range`
+    // only caps it at `i32::MAX` there), so `num_presence_bytes` reaches
+    // 2^28 and eight bits per byte reaches 2^31 -- one past `i32::MAX`. The
+    // `try_from` below is what a table that large would fail on; a real one is
+    // at most `(0x110000 + 7) >> 3` bytes, since a node's labels are distinct
+    // and drawn from the `INPUT_TYPE`'s alphabet.
+    let mut count = 0i64;
+    // ARITH: `num_bytes` is at most 2^28 and each byte contributes at most 8,
+    // so `count` stays at or below 2^31 -- four billion times short of
+    // `i64::MAX`.
+    #[allow(clippy::arithmetic_side_effects)]
     for _ in 0..num_bytes {
-        count += r.read_byte()?.count_ones() as i32;
+        count += i64::from(r.read_byte()?.count_ones());
     }
-    Ok(count)
+    i32::try_from(count).map_err(|_| Error::Corrupt(format!("FST bit table too large: {count}")))
 }
 
 /// `BitTableUtil.countBitsUpTo`, pre-positioned via `arc.bit_table_start`:
@@ -289,17 +382,25 @@ fn bit_table_count_bits_up_to(bit_index: i32, arc: &Arc, r: &mut BytesReader) ->
     debug_assert_eq!(arc.node_flags, ARCS_FOR_DIRECT_ADDRESSING);
     r.set_position(arc.bit_table_start);
     let full_bytes = bit_index >> 3;
-    let mut count = 0i32;
-    for _ in 0..full_bytes {
-        count += r.read_byte()?.count_ones() as i32;
+    // `i64`, for the same reason as `bit_table_count_bits`.
+    let mut count = 0i64;
+    // ARITH: `full_bytes` is `bit_index >> 3`, so at most 2^28, and each byte
+    // contributes at most 8 -- `count` stays at or below 2^31. `rem_bits` is
+    // `bit_index & 7`, i.e. 1..=7 inside the branch, so `1u8 << rem_bits` is
+    // at most 128 and the `- 1` cannot underflow.
+    #[allow(clippy::arithmetic_side_effects)]
+    {
+        for _ in 0..full_bytes {
+            count += i64::from(r.read_byte()?.count_ones());
+        }
+        let rem_bits = bit_index & 7;
+        if rem_bits != 0 {
+            let b = r.read_byte()?;
+            let mask = (1u8 << rem_bits) - 1;
+            count += i64::from((b & mask).count_ones());
+        }
     }
-    let rem_bits = bit_index & 7;
-    if rem_bits != 0 {
-        let b = r.read_byte()?;
-        let mask = (1u8 << rem_bits) - 1;
-        count += (b & mask).count_ones() as i32;
-    }
-    Ok(count)
+    i32::try_from(count).map_err(|_| Error::Corrupt(format!("FST bit table too large: {count}")))
 }
 
 /// `BitTableUtil.nextBitSet`, pre-positioned via `arc.bit_table_start`: the
@@ -309,26 +410,47 @@ fn bit_table_next_bit_set(bit_index: i32, arc: &Arc, r: &mut BytesReader) -> Res
     debug_assert_eq!(arc.node_flags, ARCS_FOR_DIRECT_ADDRESSING);
     r.set_position(arc.bit_table_start);
     let bit_table_bytes = num_presence_bytes(arc.num_arcs);
-    let mut byte_index = bit_index / 8;
-    let shift = ((bit_index + 1) & 7) as u32;
-    let mask: i32 = -1i32 << shift;
-    let mut i: i32;
-    if mask == -1 && bit_index != -1 {
-        r.skip_bytes((byte_index + 1) as i64);
-        i = 0;
-    } else {
-        r.skip_bytes(byte_index as i64);
-        let b = r.read_byte()? as i32;
-        i = (b & 0xff) & mask;
-    }
-    while i == 0 {
-        byte_index += 1;
-        if byte_index == bit_table_bytes {
+    // ARITH: taken at the boundary, because every term here sits near one.
+    // `bit_index` is `-1` or an `arc_idx`, which `read_next_real_arc` bounds
+    // to `0..num_arcs`, so `bit_index <= i32::MAX - 1` and `bit_index + 1`
+    // cannot overflow. `bit_table_bytes = (num_arcs + 7) >> 3 <= 2^28`, and
+    // the loop returns before `byte_index` reaches it, so
+    // `byte_index <= 2^28 - 1`, `byte_index + 1 <= 2^28`, and
+    // `byte_index << 3 <= 2^31 - 8`; adding `trailing_zeros() <= 7` gives at
+    // most `i32::MAX` exactly. `shift` is `& 7`, so the `-1i32 << shift`
+    // shift amount is 0..=7.
+    #[allow(clippy::arithmetic_side_effects)]
+    {
+        let mut byte_index = bit_index / 8;
+        let shift = ((bit_index + 1) & 7) as u32;
+        let mask: i32 = -1i32 << shift;
+        let mut i: i32;
+        if mask == -1 && bit_index != -1 {
+            r.skip_bytes((byte_index + 1) as i64);
+            i = 0;
+        } else {
+            r.skip_bytes(byte_index as i64);
+            let b = r.read_byte()? as i32;
+            i = (b & 0xff) & mask;
+        }
+        while i == 0 {
+            byte_index += 1;
+            if byte_index >= bit_table_bytes {
+                return Ok(-1);
+            }
+            i = (r.read_byte()? as i32) & 0xff;
+        }
+        let index = i.trailing_zeros() as i32 + (byte_index << 3);
+        // The bit table is rounded up to whole bytes, so its last byte has up
+        // to seven bits *past* the label range. `FSTCompiler` writes those as
+        // zero; a set one is corruption, and returning it would hand
+        // `read_arc` an `arcIdx` outside `0..numArcs` and therefore an implied
+        // label outside the alphabet `check_label_range` just bounded.
+        if index >= arc.num_arcs {
             return Ok(-1);
         }
-        i = (r.read_byte()? as i32) & 0xff;
+        Ok(index)
     }
-    Ok(i.trailing_zeros() as i32 + (byte_index << 3))
 }
 
 /// `BitTableUtil.previousBitSet`, pre-positioned via `arc.bit_table_start`:
@@ -340,19 +462,29 @@ fn bit_table_previous_bit_set(bit_index: i32, arc: &Arc, r: &mut BytesReader) ->
     debug_assert_eq!(arc.node_flags, ARCS_FOR_DIRECT_ADDRESSING);
     debug_assert!(bit_index >= 0);
     r.set_position(arc.bit_table_start);
-    let mut byte_index = bit_index >> 3;
-    r.skip_bytes(byte_index as i64);
-    let mask = (1i32 << (bit_index & 7)) - 1;
-    let mut i = (r.read_byte()? as i32) & mask;
-    while i == 0 {
-        if byte_index == 0 {
-            return Ok(-1);
+    // ARITH: again at the boundary. `bit_index >= 0`, so
+    // `byte_index = bit_index >> 3 <= 2^28 - 1` and `byte_index << 3 <=
+    // 2^31 - 8`; `byte_index` only decreases from there and stops at 0.
+    // `i` is a single byte, so `1 <= i <= 255` when the loop exits and
+    // `31 - leading_zeros()` is in `0..=7` -- the sum is at most `i32::MAX`.
+    // `bit_index & 7` is 0..=7, so `1i32 << (bit_index & 7)` is at most 128
+    // and the `- 1` cannot underflow.
+    #[allow(clippy::arithmetic_side_effects)]
+    {
+        let mut byte_index = bit_index >> 3;
+        r.skip_bytes(byte_index as i64);
+        let mask = (1i32 << (bit_index & 7)) - 1;
+        let mut i = (r.read_byte()? as i32) & mask;
+        while i == 0 {
+            if byte_index == 0 {
+                return Ok(-1);
+            }
+            byte_index -= 1;
+            r.skip_bytes(-2);
+            i = r.read_byte()? as i32;
         }
-        byte_index -= 1;
-        r.skip_bytes(-2);
-        i = r.read_byte()? as i32;
+        Ok(31 - i.leading_zeros() as i32 + (byte_index << 3))
     }
-    Ok(31 - i.leading_zeros() as i32 + (byte_index << 3))
 }
 
 /// `ByteSequenceOutputs.add`: concatenate prefix output with an arc's own
@@ -364,6 +496,10 @@ fn output_add(prefix: &[u8], output: &[u8]) -> Vec<u8> {
     if output.is_empty() {
         return prefix.to_vec();
     }
+    // ARITH: two in-memory slice lengths, each at most `isize::MAX`; the sum
+    // is what the `Vec` about to hold both of them needs, so an overflow here
+    // would mean the concatenation itself cannot exist.
+    #[allow(clippy::arithmetic_side_effects)]
     let mut out = Vec::with_capacity(prefix.len() + output.len());
     out.extend_from_slice(prefix);
     out.extend_from_slice(output);
@@ -457,6 +593,18 @@ impl Arc {
 
 fn target_has_arcs(arc: &Arc) -> bool {
     arc.target > 0
+}
+
+/// The invariants below all hold for any FST a `FSTCompiler` produced, and
+/// Java states each of them as an `assert` -- i.e. a check that is *off* in
+/// production. Ported as `debug_assert!` they were worse than that: a debug
+/// build panics and a release build walks on with a nonsense arc, so the two
+/// disagree on corrupt input and neither rejects it. They are typed errors
+/// here instead. (The byte-flip sweep in
+/// `tests/fst_byte_flip_sweep.rs` reaches five of them from a single flipped
+/// byte.)
+fn corrupt_fst<T>(what: &str) -> Result<T> {
+    Err(Error::Corrupt(format!("malformed FST node: {what}")))
 }
 
 /// Parsed `FST.FSTMetadata`.
@@ -555,17 +703,48 @@ fn read_fst_metadata_prefix(input: &mut SliceInput) -> Result<ParsedMetadata> {
     let version = header.version;
 
     let empty_output = if input.read_byte()? == 1 {
-        let num_bytes = input.read_vint()? as usize;
-        let mut reversed = vec![0u8; num_bytes];
-        input.read_bytes(&mut reversed)?;
-        // FSTMetadata.save writes the empty output's bytes reversed so
-        // that reading them back with a reverse BytesReader (starting
-        // at the last byte) reproduces `outputs.readFinalOutput` in the
-        // original order. We only need the plain byte sequence, so
-        // reverse it back here instead of building a one-shot reverse
-        // reader.
-        reversed.reverse();
-        Some(reversed)
+        let num_bytes = input.read_vint()?;
+        if num_bytes < 0 {
+            return Err(Error::Corrupt(format!(
+                "negative FST empty-output length {num_bytes}"
+            )));
+        }
+        // The length is a `vint` off disk sizing a `Vec`: unbounded it is a
+        // 2 GB reservation the process aborts on rather than an error the FFI
+        // can report. Bound it by what is actually left in the file first.
+        let remaining = input.len().saturating_sub(input.position());
+        let num_bytes = num_bytes as usize;
+        if num_bytes > remaining {
+            return Err(Error::Corrupt(format!(
+                "FST empty-output length {num_bytes} exceeds the {remaining} bytes left in the file"
+            )));
+        }
+        let mut raw = vec![0u8; num_bytes];
+        input.read_bytes(&mut raw)?;
+        // `FSTMetadata.save` does *not* write the empty output's raw bytes
+        // reversed: it first serializes the value through
+        // `outputs.writeFinalOutput` -- for `ByteSequenceOutputs`, a `vint`
+        // length followed by the payload -- and reverses *that* whole
+        // buffer, so that a reverse `BytesReader` starting at its last byte
+        // decodes it with exactly the same `readFinalOutput` call every arc
+        // output goes through. So the length prefix is part of the reversed
+        // blob and must be consumed, not kept: reversing the buffer and
+        // taking it verbatim leaves a spurious leading length byte on every
+        // empty output (see
+        // `crates/lucene-codecs/tests/fst_empty_key_fixtures.rs`).
+        //
+        // `num_bytes == 0` is `NoOutputs`, whose `writeFinalOutput` emits
+        // nothing at all; Java skips the `setPosition` in that case and its
+        // `readFinalOutput` reads no bytes, so the decoded value is empty.
+        if num_bytes == 0 {
+            Some(Vec::new())
+        } else {
+            let mut r = BytesReader::new(&raw);
+            // ARITH: the `num_bytes == 0` branch above returned already.
+            #[allow(clippy::arithmetic_side_effects)]
+            r.set_position(num_bytes as i64 - 1);
+            Some(r.read_output()?)
+        }
     } else {
         None
     };
@@ -603,6 +782,19 @@ impl Fst<'static> {
     /// mmap'd (or otherwise already-owned) bytes.
     pub fn read(input: &mut SliceInput) -> Result<Fst<'static>> {
         let meta = read_fst_metadata_prefix(input)?;
+        // `numBytes` is a `vlong` off disk, validated non-negative but
+        // otherwise unbounded, and it sizes a `Vec` -- so a corrupt FST
+        // header reserves up to 2^63 bytes and *aborts* the process, which
+        // `catch_unwind` cannot intercept and which therefore takes the JVM
+        // with it. `read_borrowed` already bounds the same field through
+        // `SliceInput::slice`; this is the owning path's equivalent.
+        let remaining = input.len().saturating_sub(input.position());
+        if meta.num_bytes as u64 > remaining as u64 {
+            return Err(Error::Corrupt(format!(
+                "FST numBytes {} exceeds the {remaining} bytes left in the file",
+                meta.num_bytes
+            )));
+        }
         let mut bytes = vec![0u8; meta.num_bytes as usize];
         input.read_bytes(&mut bytes)?;
 
@@ -699,8 +891,97 @@ impl<'a> Fst<'a> {
                 };
                 Ok(v as i32)
             }
-            InputType::Byte4 => r.read_vint(),
+            InputType::Byte4 => {
+                // `FST.readLabel`'s BYTE4 branch is a bare `readVInt()`, which
+                // decodes to any `i32`. Every label a `FSTCompiler` writes is
+                // non-negative (labels come from an `IntsRef` of code points
+                // or byte values, and `END_LABEL == -1` is synthetic and never
+                // stored), so rejecting a negative one cannot reject a file
+                // real Lucene wrote -- and it is what bounds
+                // `first_label + arc_idx` and `target_label - first_label`
+                // below to an `i32`.
+                let label = r.read_vint()?;
+                if label < 0 {
+                    return Err(Error::Corrupt(format!("negative FST arc label {label}")));
+                }
+                Ok(label)
+            }
         }
+    }
+
+    /// Reads and validates an array-node header's `numArcs`/`bytesPerArc`
+    /// pair (`FST.readArcByIndex` and friends read both as plain `vint`s and
+    /// then trust them).
+    ///
+    /// Both are `vint`s off disk, so both can arrive negative or absurd.
+    /// `FSTCompiler` never emits an array node with fewer than one arc or a
+    /// zero-width arc slot -- `ARCS_FOR_BINARY_SEARCH` needs at least
+    /// `FIXED_LENGTH_ARC_SHALLOW_NUM_ARCS` arcs to be chosen at all -- so
+    /// this rejects nothing a real writer produces, and it is the single
+    /// bound that makes `numArcs - 1`, `numArcs - 2`, `firstLabel + arcIdx`
+    /// and `getNumPresenceBytes(numArcs)` provably in range downstream.
+    fn read_array_node_header(&self, r: &mut BytesReader) -> Result<(i32, i32)> {
+        let num_arcs = r.read_vint()?;
+        let bytes_per_arc = r.read_vint()?;
+        if num_arcs < 1 || bytes_per_arc < 1 {
+            return Err(Error::Corrupt(format!(
+                "FST array node with numArcs={num_arcs}, bytesPerArc={bytes_per_arc}"
+            )));
+        }
+        Ok((num_arcs, bytes_per_arc))
+    }
+
+    /// The fixed-size arc array of an `ARCS_FOR_BINARY_SEARCH` or
+    /// `ARCS_FOR_CONTINUOUS` node occupies `bytesPerArc * numArcs` bytes
+    /// ending at `pos_arcs_start`, and the reverse cursor walks it downward
+    /// -- so it must physically fit below that position. (Direct addressing
+    /// is deliberately excluded: its array holds only the *present* arcs,
+    /// which is fewer than the `numArcs` label range. Its own bound is the
+    /// presence bit-table's, applied in `read_presence_bytes`.)
+    fn check_arc_array_fits(num_arcs: i32, bytes_per_arc: i32, pos_arcs_start: i64) -> Result<()> {
+        // ARITH: both factors are validated `1..=i32::MAX` by
+        // `read_array_node_header`, so the `i64` product is below 2^62;
+        // `pos_arcs_start` is a cursor position below `bytes.len()`.
+        #[allow(clippy::arithmetic_side_effects)]
+        let (span, limit) = (
+            bytes_per_arc as i64 * num_arcs as i64,
+            pos_arcs_start.saturating_add(1),
+        );
+        if span > limit {
+            return Err(Error::Corrupt(format!(
+                "FST array node of {num_arcs} x {bytes_per_arc} bytes does not fit below \
+                 position {pos_arcs_start}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// The label range of a direct-addressing or continuous node is
+    /// `[firstLabel, firstLabel + numArcs)`, and those nodes do not store
+    /// their labels at all -- `read_arc` derives each one as
+    /// `firstLabel + arcIdx`. So the range must fit the alphabet the
+    /// `INPUT_TYPE` declares: a `BYTE1` FST's labels are single bytes, a
+    /// `BYTE2` FST's unsigned shorts. A real writer cannot emit a wider
+    /// range (there are no such labels to put in it), and this bound plus
+    /// `bit_table_next_bit_set`'s own is what makes `labels_to_bytes`'
+    /// narrowing a proof rather than a runtime check on every emitted key.
+    fn check_label_range(&self, first_label: i32, num_arcs: i32) -> Result<()> {
+        // ARITH: `first_label >= 0` (`read_label`) and `num_arcs >= 1`
+        // (`read_array_node_header`), both `i32`, so the `i64` sum is exact.
+        #[allow(clippy::arithmetic_side_effects)]
+        let end = first_label as i64 + num_arcs as i64;
+        let limit = match self.metadata.input_type {
+            InputType::Byte1 => 256,
+            InputType::Byte2 => 65_536,
+            InputType::Byte4 => i32::MAX as i64,
+        };
+        if end > limit {
+            return Err(Error::Corrupt(format!(
+                "FST label range [{first_label}, +{num_arcs}) is outside the {:?} alphabet",
+                self.metadata.input_type
+            )));
+        }
+        Ok(())
     }
 
     /// `FST.getFirstArc`: the virtual incoming arc to the start node.
@@ -731,7 +1012,15 @@ impl<'a> Fst<'a> {
             // explicitly -- it's implied by the arc's position in the label
             // range (`FST.readArc`'s `arc.label = arc.firstLabel() +
             // arc.arcIdx()` branch, shared by both encodings).
-            arc.first_label + arc.arc_idx
+            // ARITH: `check_label_range` bounded `first_label + num_arcs` to
+            // the `INPUT_TYPE`'s alphabet (at most `i32::MAX`) when this
+            // node's header was read, and `arc_idx` is an index into
+            // `0..num_arcs` -- `read_next_real_arc` range-checks it and
+            // `bit_table_next_bit_set` refuses an index past `num_arcs`. So
+            // the sum is at most `first_label + num_arcs - 1`.
+            #[allow(clippy::arithmetic_side_effects)]
+            let implied = arc.first_label + arc.arc_idx;
+            implied
         } else {
             self.read_label(r)?
         };
@@ -776,7 +1065,13 @@ impl<'a> Fst<'a> {
                     } else {
                         arc.num_arcs
                     };
-                    r.set_position(arc.pos_arcs_start - arc.bytes_per_arc as i64 * num_arcs as i64);
+                    // ARITH: `bytes_per_arc` and `num_arcs` are both
+                    // validated `1..=i32::MAX` (`read_array_node_header`), so
+                    // the `i64` product is below 2^62 and the difference from
+                    // a cursor position cannot overflow.
+                    #[allow(clippy::arithmetic_side_effects)]
+                    let arcs_end = arc.pos_arcs_start - arc.bytes_per_arc as i64 * num_arcs as i64;
+                    r.set_position(arcs_end);
                 }
             }
             arc.target = r.get_position();
@@ -817,7 +1112,19 @@ impl<'a> Fst<'a> {
         debug_assert!(arc.bytes_per_arc > 0);
         debug_assert_eq!(arc.node_flags, ARCS_FOR_DIRECT_ADDRESSING);
         arc.bit_table_start = r.get_position();
-        r.skip_bytes(num_presence_bytes(arc.num_arcs) as i64);
+        let table_bytes = num_presence_bytes(arc.num_arcs) as i64;
+        // The presence bit-table is read downward from `bit_table_start`, so
+        // it must physically fit below it. This is direct addressing's
+        // counterpart to `check_arc_array_fits`, and it is what bounds
+        // `num_arcs` (a *label range*, not an arc count) for every
+        // `bit_table_*` helper.
+        if table_bytes > arc.bit_table_start.saturating_add(1) {
+            return Err(Error::Corrupt(format!(
+                "FST presence table of {table_bytes} bytes does not fit below position {}",
+                arc.bit_table_start
+            )));
+        }
+        r.skip_bytes(table_bytes);
         Ok(())
     }
 
@@ -831,7 +1138,18 @@ impl<'a> Fst<'a> {
         range_index: i32,
         presence_index: i32,
     ) -> Result<()> {
-        r.set_position(arc.pos_arcs_start - presence_index as i64 * arc.bytes_per_arc as i64);
+        // ARITH: `presence_index` is a set-bit count in a bit table bounded by
+        // the body, minus at most one, and every caller has established it is
+        // non-negative (`read_next_real_arc` and
+        // `read_last_arc_by_direct_addressing` reject the `-1` sentinel;
+        // `bit_table_count_bits_up_to` cannot return a negative). With
+        // `bytes_per_arc` validated `1..=i32::MAX` the `i64` product is below
+        // 2^62, and it is subtracted from `pos_arcs_start` rather than added
+        // to it -- an unrejected `-1` would address *above* the arc array,
+        // which `read_byte` would not catch.
+        #[allow(clippy::arithmetic_side_effects)]
+        let slot = arc.pos_arcs_start - presence_index as i64 * arc.bytes_per_arc as i64;
+        r.set_position(slot);
         arc.arc_idx = range_index;
         arc.presence_index = presence_index;
         arc.flags = r.read_byte()?;
@@ -853,33 +1171,59 @@ impl<'a> Fst<'a> {
         label_to_match: i32,
         r: &mut BytesReader,
     ) -> Result<Option<Arc>> {
-        let num_arcs = r.read_vint()?;
-        let bytes_per_arc = r.read_vint()?;
+        let (num_arcs, bytes_per_arc) = self.read_array_node_header(r)?;
         let pos_arcs_start = r.get_position();
+        Self::check_arc_array_fits(num_arcs, bytes_per_arc, pos_arcs_start)?;
 
         let mut low = 0i32;
+        // ARITH: `num_arcs >= 1` (`read_array_node_header`), so `high >= 0`;
+        // `mid` is in `low..=high`, so `mid + 1` and `mid - 1` stay inside
+        // `-1..=num_arcs` and the `i64` slot product is below 2^62.
+        #[allow(clippy::arithmetic_side_effects)]
         let mut high = num_arcs - 1;
         while low <= high {
-            let mid = (low + high) >> 1;
+            // `FST.findTargetArc` is `(low + high) >>> 1` -- an *unsigned*
+            // shift, because `low + high` overflows an `int` once `numArcs`
+            // (off disk, so unbounded) is near `Integer.MAX_VALUE`. A signed
+            // `>>` there yields a negative midpoint and searches the wrong
+            // side of the array; the `u32` round-trip below is Java's shift
+            // bit for bit.
+            let mid = (low.wrapping_add(high) as u32 >> 1) as i32;
             // +1 to skip over the mid arc's flags byte, matching
             // `FST.java`'s `posArcsStart - (bytesPerArc * mid + 1)`.
-            r.set_position(pos_arcs_start - (bytes_per_arc as i64 * mid as i64 + 1));
+            // ARITH: `bytes_per_arc` and `mid` are `i32`s widened to `i64`, so the
+            // product is below 2^62 and the `+ 1` and the subtraction from a
+            // cursor position cannot overflow.
+            #[allow(clippy::arithmetic_side_effects)]
+            let mid_pos = pos_arcs_start - (bytes_per_arc as i64 * mid as i64 + 1);
+            r.set_position(mid_pos);
             let mid_label = self.read_label(r)?;
+            // ARITH: `mid` is in `low..=high` with `high <= num_arcs - 1`, so
+            // `mid + 1` and `mid - 1` stay inside `-1..=num_arcs`.
+            #[allow(clippy::arithmetic_side_effects)]
             match mid_label.cmp(&label_to_match) {
                 std::cmp::Ordering::Less => low = mid + 1,
                 std::cmp::Ordering::Greater => high = mid - 1,
                 std::cmp::Ordering::Equal => {
-                    r.set_position(pos_arcs_start - bytes_per_arc as i64 * mid as i64);
-                    let flags = r.read_byte()?;
+                    // `arc_idx` must end up at `mid`: it is what
+                    // `read_next_real_arc`/`read_next_arc_label` use to find
+                    // the *following* slot, so a `find_target_arc` hit that
+                    // left it at its default would make any subsequent
+                    // enumeration from this arc (e.g. `FstEnum::seek_exact`
+                    // then `next()`) resume from the wrong slot. Setting it
+                    // to `mid - 1` and going through `read_next_real_arc` is
+                    // `FST.findTargetArc`'s own `arc.arcIdx = mid - 1;
+                    // return readNextRealArc(arc, in);`, which does the
+                    // increment, the seek and the flags read in one place.
                     let mut arc = Arc {
-                        flags,
                         node_flags: ARCS_FOR_BINARY_SEARCH,
                         bytes_per_arc,
                         num_arcs,
                         pos_arcs_start,
+                        arc_idx: mid - 1,
                         ..Default::default()
                     };
-                    self.read_arc(&mut arc, r)?;
+                    self.read_next_real_arc(&mut arc, r)?;
                     return Ok(Some(arc));
                 }
             }
@@ -903,8 +1247,8 @@ impl<'a> Fst<'a> {
         label_to_match: i32,
         r: &mut BytesReader,
     ) -> Result<Option<Arc>> {
-        let num_arcs = r.read_vint()?; // Label range.
-        let bytes_per_arc = r.read_vint()?;
+        // `num_arcs` is the label range here, not an arc count.
+        let (num_arcs, bytes_per_arc) = self.read_array_node_header(r)?;
         let mut arc = Arc {
             node_flags: ARCS_FOR_DIRECT_ADDRESSING,
             num_arcs,
@@ -913,8 +1257,14 @@ impl<'a> Fst<'a> {
         };
         self.read_presence_bytes(&mut arc, r)?;
         arc.first_label = self.read_label(r)?;
+        self.check_label_range(arc.first_label, num_arcs)?;
         arc.pos_arcs_start = r.get_position();
 
+        // ARITH: `label_to_match` is a key label (`0..=i32::MAX`) or
+        // `END_LABEL` (-1), and `first_label` is non-negative
+        // (`read_label`), so the difference is in
+        // `i32::MIN..=i32::MAX` -- `-1 - i32::MAX` is exactly `i32::MIN`.
+        #[allow(clippy::arithmetic_side_effects)]
         let arc_index = label_to_match - arc.first_label;
         if arc_index < 0 || arc_index >= arc.num_arcs {
             return Ok(None); // Before or after the label range.
@@ -947,23 +1297,29 @@ impl<'a> Fst<'a> {
         label_to_match: i32,
         r: &mut BytesReader,
     ) -> Result<Option<Arc>> {
-        let num_arcs = r.read_vint()?;
-        let bytes_per_arc = r.read_vint()?;
+        let (num_arcs, bytes_per_arc) = self.read_array_node_header(r)?;
         let first_label = self.read_label(r)?;
+        self.check_label_range(first_label, num_arcs)?;
         let pos_arcs_start = r.get_position();
+        Self::check_arc_array_fits(num_arcs, bytes_per_arc, pos_arcs_start)?;
 
+        // ARITH: as in the direct-addressing branch above.
+        #[allow(clippy::arithmetic_side_effects)]
         let arc_index = label_to_match - first_label;
         if arc_index < 0 || arc_index >= num_arcs {
             return Ok(None); // Before or after the label range.
         }
 
+        // ARITH: `arc_index >= 0` was just established.
+        #[allow(clippy::arithmetic_side_effects)]
+        let start_idx = arc_index - 1;
         let mut arc = Arc {
             node_flags: ARCS_FOR_CONTINUOUS,
             num_arcs,
             bytes_per_arc,
             first_label,
             pos_arcs_start,
-            arc_idx: arc_index - 1,
+            arc_idx: start_idx,
             ..Default::default()
         };
         self.read_next_real_arc(&mut arc, r)?;
@@ -1084,7 +1440,10 @@ impl<'a> Fst<'a> {
         debug_assert!(arc.bytes_per_arc > 0);
         debug_assert_eq!(arc.node_flags, ARCS_FOR_BINARY_SEARCH);
         debug_assert!(idx >= 0 && idx < arc.num_arcs);
-        r.set_position(arc.pos_arcs_start - idx as i64 * arc.bytes_per_arc as i64);
+        // ARITH: two `i32`s widened to `i64`; the product is below 2^62.
+        #[allow(clippy::arithmetic_side_effects)]
+        let slot = arc.pos_arcs_start - idx as i64 * arc.bytes_per_arc as i64;
+        r.set_position(slot);
         arc.arc_idx = idx;
         arc.flags = r.read_byte()?;
         self.read_arc(arc, r)
@@ -1099,7 +1458,10 @@ impl<'a> Fst<'a> {
         range_index: i32,
     ) -> Result<()> {
         debug_assert!(range_index >= 0 && range_index < arc.num_arcs);
-        r.set_position(arc.pos_arcs_start - range_index as i64 * arc.bytes_per_arc as i64);
+        // ARITH: two `i32`s widened to `i64`; the product is below 2^62.
+        #[allow(clippy::arithmetic_side_effects)]
+        let slot = arc.pos_arcs_start - range_index as i64 * arc.bytes_per_arc as i64;
+        r.set_position(slot);
         arc.arc_idx = range_index;
         arc.flags = r.read_byte()?;
         self.read_arc(arc, r)
@@ -1109,14 +1471,33 @@ impl<'a> Fst<'a> {
     /// node's last (highest-labeled) present arc directly, without scanning
     /// through the whole bit-table arc by arc.
     fn read_last_arc_by_direct_addressing(&self, arc: &mut Arc, r: &mut BytesReader) -> Result<()> {
-        let presence_index = bit_table_count_bits(arc, r)? - 1;
-        let range_index = arc.num_arcs - 1;
+        // An all-zero bit table makes Java's
+        // `BitTable.countBits(arc, in) - 1` produce `-1`, and a `-1`
+        // `presence_index` addresses `pos_arcs_start + bytes_per_arc` -- which
+        // is *above* the arc array's start and normally well inside the body,
+        // so `read_byte` accepts it and decodes a garbage arc. It is the same
+        // out-of-domain-sentinel shape as `bit_table_next_bit_set`'s `-1`, so
+        // it is rejected here rather than propagated:
+        // `FSTCompiler.writeNodeForDirectAddressing` only emits a
+        // direct-addressing node for a run of arcs it has already written, and
+        // every one of them sets its presence bit, so a real file never has a
+        // node with no present arc at all.
+        let present = bit_table_count_bits(arc, r)?;
+        if present < 1 {
+            return corrupt_fst("a direct-addressing node whose bit table has no set bit");
+        }
+        // ARITH: `present >= 1` was just established and `num_arcs >= 1` comes
+        // from `read_array_node_header`, so neither subtraction underflows.
+        #[allow(clippy::arithmetic_side_effects)]
+        let (presence_index, range_index) = (present - 1, arc.num_arcs - 1);
         self.read_arc_by_direct_addressing(arc, r, range_index, presence_index)
     }
 
     /// `FST.readLastArcByContinuous`: read an `ARCS_FOR_CONTINUOUS` node's
     /// last arc.
     fn read_last_arc_by_continuous(&self, arc: &mut Arc, r: &mut BytesReader) -> Result<()> {
+        // ARITH: `num_arcs >= 1` (`read_array_node_header`).
+        #[allow(clippy::arithmetic_side_effects)]
         let range_index = arc.num_arcs - 1;
         self.read_arc_by_continuous(arc, r, range_index)
     }
@@ -1127,7 +1508,9 @@ impl<'a> Fst<'a> {
     /// last arc of this range" cases.
     fn read_last_target_arc(&self, follow: &Arc, r: &mut BytesReader) -> Result<Arc> {
         if !target_has_arcs(follow) {
-            debug_assert!(follow.is_final());
+            if !follow.is_final() {
+                return corrupt_fst("an arc with no target that is not final");
+            }
             return Ok(Arc {
                 label: END_LABEL,
                 target: FINAL_END_NODE,
@@ -1148,20 +1531,31 @@ impl<'a> Fst<'a> {
             || flags == ARCS_FOR_DIRECT_ADDRESSING
             || flags == ARCS_FOR_CONTINUOUS
         {
-            arc.num_arcs = r.read_vint()?;
-            arc.bytes_per_arc = r.read_vint()?;
+            let (num_arcs, bytes_per_arc) = self.read_array_node_header(r)?;
+            arc.num_arcs = num_arcs;
+            arc.bytes_per_arc = bytes_per_arc;
             if flags == ARCS_FOR_DIRECT_ADDRESSING {
                 self.read_presence_bytes(&mut arc, r)?;
                 arc.first_label = self.read_label(r)?;
+                self.check_label_range(arc.first_label, num_arcs)?;
                 arc.pos_arcs_start = r.get_position();
                 self.read_last_arc_by_direct_addressing(&mut arc, r)?;
             } else if flags == ARCS_FOR_BINARY_SEARCH {
-                arc.arc_idx = arc.num_arcs - 2;
+                // ARITH: `num_arcs >= 1`, so this is at worst -1 -- which is
+                // what `read_next_real_arc`'s `arc_idx += 1` then turns into
+                // slot 0, exactly as `FST.readLastTargetArc` does.
+                #[allow(clippy::arithmetic_side_effects)]
+                {
+                    arc.arc_idx = arc.num_arcs - 2;
+                }
                 arc.pos_arcs_start = r.get_position();
+                Self::check_arc_array_fits(num_arcs, bytes_per_arc, arc.pos_arcs_start)?;
                 self.read_next_real_arc(&mut arc, r)?;
             } else {
                 arc.first_label = self.read_label(r)?;
+                self.check_label_range(arc.first_label, num_arcs)?;
                 arc.pos_arcs_start = r.get_position();
+                Self::check_arc_array_fits(num_arcs, bytes_per_arc, arc.pos_arcs_start)?;
                 self.read_last_arc_by_continuous(&mut arc, r)?;
             }
         } else {
@@ -1185,7 +1579,9 @@ impl<'a> Fst<'a> {
             arc.next_arc = r.get_position();
             self.read_next_real_arc(&mut arc, r)?;
         }
-        debug_assert!(arc.is_last());
+        if !arc.is_last() {
+            return corrupt_fst("a node whose last arc is not flagged BIT_LAST_ARC");
+        }
         Ok(arc)
     }
 
@@ -1193,7 +1589,9 @@ impl<'a> Fst<'a> {
     /// following `arc` (which must not be the node's last arc) without
     /// mutating `arc` itself.
     fn read_next_arc_label(&self, arc: &Arc, r: &mut BytesReader) -> Result<i32> {
-        debug_assert!(!arc.is_last());
+        if arc.is_last() {
+            return corrupt_fst("no arc follows the node's last arc");
+        }
         if arc.label == END_LABEL {
             r.set_position(arc.next_arc);
             let flags = r.read_byte()?;
@@ -1201,8 +1599,7 @@ impl<'a> Fst<'a> {
                 || flags == ARCS_FOR_DIRECT_ADDRESSING
                 || flags == ARCS_FOR_CONTINUOUS
             {
-                let num_arcs = r.read_vint()?;
-                r.read_vint()?; // bytes_per_arc, unused here.
+                let (num_arcs, _bytes_per_arc) = self.read_array_node_header(r)?;
                 if flags == ARCS_FOR_BINARY_SEARCH {
                     r.read_byte()?; // Skip the arc's own flags byte.
                 } else if flags == ARCS_FOR_DIRECT_ADDRESSING {
@@ -1212,23 +1609,42 @@ impl<'a> Fst<'a> {
         } else {
             match arc.node_flags {
                 ARCS_FOR_BINARY_SEARCH => {
-                    r.set_position(
-                        arc.pos_arcs_start
-                            - (1 + arc.arc_idx) as i64 * arc.bytes_per_arc as i64
-                            - 1,
-                    );
+                    // ARITH: `arc_idx` is an arc index and `bytes_per_arc` is
+                    // validated `1..=i32::MAX`, so `(1 + arc_idx)` fits an
+                    // `i64` and the product is below 2^62.
+                    #[allow(clippy::arithmetic_side_effects)]
+                    let next_slot = arc.pos_arcs_start
+                        - (1 + arc.arc_idx as i64) * arc.bytes_per_arc as i64
+                        - 1;
+                    r.set_position(next_slot);
                 }
                 ARCS_FOR_DIRECT_ADDRESSING => {
                     let next_index = bit_table_next_bit_set(arc.arc_idx, arc, r)?;
-                    debug_assert!(next_index != -1);
+                    if next_index == -1 {
+                        return corrupt_fst("no present arc follows this one in the bit table");
+                    }
+                    // ARITH: `check_label_range` bounded
+                    // `first_label + num_arcs` to the `INPUT_TYPE`'s alphabet,
+                    // and `bit_table_next_bit_set` returns an index below
+                    // `num_arcs` or -1 (rejected above).
+                    #[allow(clippy::arithmetic_side_effects)]
                     return Ok(arc.first_label + next_index);
                 }
                 ARCS_FOR_CONTINUOUS => {
+                    // ARITH: as above, and this arm is only reached for an arc
+                    // that is not its node's last (`read_next_arc_label`'s own
+                    // precondition), so `arc_idx + 1 < num_arcs`.
+                    #[allow(clippy::arithmetic_side_effects)]
                     return Ok(arc.first_label + arc.arc_idx + 1);
                 }
                 _ => {
                     debug_assert_eq!(arc.bytes_per_arc, 0);
-                    r.set_position(arc.next_arc - 1);
+                    // ARITH: `next_arc` is a cursor position below
+                    // `bytes.len()`; `- 1` at worst makes it `-1`, which
+                    // `read_byte` rejects.
+                    #[allow(clippy::arithmetic_side_effects)]
+                    let prev = arc.next_arc - 1;
+                    r.set_position(prev);
                 }
             }
         }
@@ -1249,18 +1665,35 @@ impl<'a> Fst<'a> {
     ) -> Result<i32> {
         debug_assert_eq!(arc.node_flags, ARCS_FOR_BINARY_SEARCH);
         let mut low = arc.arc_idx;
+        // ARITH: `num_arcs >= 1` (`read_array_node_header`), so `high >= 0`;
+        // `mid` stays in `low..=high` and the `i64` slot product is below
+        // 2^62. `low <= num_arcs`, so `-1 - low` cannot underflow.
+        #[allow(clippy::arithmetic_side_effects)]
         let mut high = arc.num_arcs - 1;
         while low <= high {
-            let mid = (low + high) >> 1;
+            // `Util.binarySearch` is `(low + high) >>> 1`; see
+            // `find_target_arc_binary_search` for why the unsigned shift is
+            // load-bearing.
+            let mid = (low.wrapping_add(high) as u32 >> 1) as i32;
             r.set_position(arc.pos_arcs_start);
-            r.skip_bytes(arc.bytes_per_arc as i64 * mid as i64 + 1);
+            // ARITH: as in `find_target_arc_binary_search` -- two `i32`s widened
+            // to `i64`.
+            #[allow(clippy::arithmetic_side_effects)]
+            let skip = arc.bytes_per_arc as i64 * mid as i64 + 1;
+            r.skip_bytes(skip);
             let mid_label = self.read_label(r)?;
+            // ARITH: `mid` is in `low..=high`, so `mid + 1`/`mid - 1` stay inside
+            // `-1..=num_arcs`.
+            #[allow(clippy::arithmetic_side_effects)]
             match mid_label.cmp(&target_label) {
                 std::cmp::Ordering::Less => low = mid + 1,
                 std::cmp::Ordering::Greater => high = mid - 1,
                 std::cmp::Ordering::Equal => return Ok(mid),
             }
         }
+        // ARITH: `low` is in `0..=num_arcs`, so `-1 - low` is in
+        // `-num_arcs - 1 ..= -1`.
+        #[allow(clippy::arithmetic_side_effects)]
         Ok(-1 - low)
     }
 
@@ -1278,7 +1711,15 @@ impl<'a> Fst<'a> {
         debug_assert_eq!(arc.arc_idx, 0);
         if arc.num_arcs > 1 {
             let idx = self.find_arc_binary_search(arc, target_label, r)?;
-            debug_assert!(idx != -1);
+            if idx == -1 {
+                return corrupt_fst("binary search returned an impossible insertion point");
+            }
+            // ARITH: `find_arc_binary_search` returns either a slot index in
+            // `0..num_arcs` or `-1 - insertion_point` with the insertion
+            // point in `0..=num_arcs`, i.e. a value in
+            // `-num_arcs - 1 ..= num_arcs - 1`. `idx - 1` and `-2 - idx` are
+            // therefore both within `i32` under the branch guards.
+            #[allow(clippy::arithmetic_side_effects)]
             if idx > 1 {
                 self.read_arc_by_index(arc, r, idx - 1)?;
             } else if idx < -2 {
@@ -1299,8 +1740,14 @@ impl<'a> Fst<'a> {
         debug_assert_eq!(arc.node_flags, ARCS_FOR_DIRECT_ADDRESSING);
         debug_assert_eq!(arc.label, arc.first_label);
         if arc.num_arcs > 1 {
+            // ARITH: `first_label` is non-negative and `target_label` is a
+            // key label or `END_LABEL`; see
+            // `find_target_arc_direct_addressing`.
+            #[allow(clippy::arithmetic_side_effects)]
             let target_index = target_label - arc.first_label;
-            debug_assert!(target_index >= 0);
+            if target_index < 0 {
+                return corrupt_fst("a label range starting above the label being sought");
+            }
             if target_index >= arc.num_arcs {
                 self.read_last_arc_by_direct_addressing(arc, r)?;
             } else {
@@ -1325,12 +1772,20 @@ impl<'a> Fst<'a> {
         debug_assert_eq!(arc.node_flags, ARCS_FOR_CONTINUOUS);
         debug_assert_eq!(arc.label, arc.first_label);
         if arc.num_arcs > 1 {
+            // ARITH: as in the direct-addressing sibling above; and
+            // `target_index >= 0` on the branch that decrements it.
+            #[allow(clippy::arithmetic_side_effects)]
             let target_index = target_label - arc.first_label;
-            debug_assert!(target_index >= 0);
+            if target_index < 0 {
+                return corrupt_fst("a label range starting above the label being sought");
+            }
             if target_index >= arc.num_arcs {
                 self.read_last_arc_by_continuous(arc, r)?;
             } else {
-                self.read_arc_by_continuous(arc, r, target_index - 1)?;
+                // ARITH: this branch has `0 <= target_index < num_arcs`.
+                #[allow(clippy::arithmetic_side_effects)]
+                let floor_index = target_index - 1;
+                self.read_arc_by_continuous(arc, r, floor_index)?;
             }
         }
         Ok(())
@@ -1359,16 +1814,49 @@ impl<'a> Fst<'a> {
             // the range (the bit-table's next set bit after `arc_idx`, which
             // is `-1` on the very first call).
             let next_index = bit_table_next_bit_set(arc.arc_idx, arc, r)?;
-            return self.read_arc_by_direct_addressing(arc, r, next_index, arc.presence_index + 1);
+            // `bit_table_next_bit_set` returns `-1` for "no next set bit", and
+            // `-1` is as far outside `0..num_arcs` as an index past the end
+            // is: passed on as an `arcIdx` it makes `read_arc` compute
+            // `first_label - 1`, a decoded arc one label *below* the range the
+            // node declared -- and, for `first_label == 0`, exactly
+            // `END_LABEL`. A single flipped bit in an all-but-one-zero
+            // presence byte reaches it, and the slot address it produces
+            // (`pos_arcs_start`, since `presence_index` goes -1 -> 0) is
+            // perfectly valid, so nothing downstream catches it.
+            // `read_next_arc_label` already guards the same sentinel; Java
+            // states it as `assert nextIndex != -1`.
+            if next_index == -1 {
+                return corrupt_fst("no present arc follows this one in the bit table");
+            }
+            // ARITH: `presence_index` counts set bits in a bit table whose
+            // byte count is bounded by the body (`read_presence_bytes`), so
+            // it is far below `i32::MAX`.
+            #[allow(clippy::arithmetic_side_effects)]
+            let next_presence = arc.presence_index + 1;
+            return self.read_arc_by_direct_addressing(arc, r, next_index, next_presence);
         } else if arc.bytes_per_arc != 0 {
             // `ARCS_FOR_BINARY_SEARCH` or `ARCS_FOR_CONTINUOUS` fixed-length-arc
             // node: advance to the next fixed-size slot by index (identical
             // arithmetic for both -- `ARCS_FOR_CONTINUOUS` never needs to
             // consult a presence bit-table since every slot in its range is
             // present).
-            arc.arc_idx += 1;
-            debug_assert!(arc.arc_idx >= 0 && arc.arc_idx < arc.num_arcs);
-            r.set_position(arc.pos_arcs_start - arc.bytes_per_arc as i64 * arc.arc_idx as i64);
+            // ARITH: `arc_idx` starts at -1 or -2 and advances by one per
+            // arc of a node whose arc count is validated `>= 1` and bounded
+            // by the body (`check_arc_array_fits`), so it stays far below
+            // `i32::MAX`; the `i64` slot product is below 2^62.
+            #[allow(clippy::arithmetic_side_effects)]
+            {
+                arc.arc_idx += 1;
+            }
+            if arc.arc_idx < 0 || arc.arc_idx >= arc.num_arcs {
+                return corrupt_fst("an arc index past the end of its node's arc array");
+            }
+            // ARITH: `arc_idx` is an arc index bounded by the node's arc count
+            // and `bytes_per_arc` is validated `1..=i32::MAX`, so the `i64`
+            // product is below 2^62.
+            #[allow(clippy::arithmetic_side_effects)]
+            let slot = arc.pos_arcs_start - arc.bytes_per_arc as i64 * arc.arc_idx as i64;
+            r.set_position(slot);
             arc.flags = r.read_byte()?;
         } else {
             // List-encoded node: `arc.next_arc` is the position `read_arc`
@@ -1391,29 +1879,31 @@ impl<'a> Fst<'a> {
             ..Default::default()
         };
         if flags == ARCS_FOR_BINARY_SEARCH {
-            let num_arcs = r.read_vint()?;
-            let bytes_per_arc = r.read_vint()?;
+            let (num_arcs, bytes_per_arc) = self.read_array_node_header(r)?;
             arc.num_arcs = num_arcs;
             arc.bytes_per_arc = bytes_per_arc;
             arc.pos_arcs_start = r.get_position();
+            Self::check_arc_array_fits(num_arcs, bytes_per_arc, arc.pos_arcs_start)?;
             arc.arc_idx = -1;
         } else if flags == ARCS_FOR_DIRECT_ADDRESSING {
-            let num_arcs = r.read_vint()?; // Label range.
-            let bytes_per_arc = r.read_vint()?;
+            // `num_arcs` is the label range here, not an arc count.
+            let (num_arcs, bytes_per_arc) = self.read_array_node_header(r)?;
             arc.num_arcs = num_arcs;
             arc.bytes_per_arc = bytes_per_arc;
             self.read_presence_bytes(&mut arc, r)?;
             arc.first_label = self.read_label(r)?;
+            self.check_label_range(arc.first_label, num_arcs)?;
             arc.presence_index = -1;
             arc.pos_arcs_start = r.get_position();
             arc.arc_idx = -1;
         } else if flags == ARCS_FOR_CONTINUOUS {
-            let num_arcs = r.read_vint()?;
-            let bytes_per_arc = r.read_vint()?;
+            let (num_arcs, bytes_per_arc) = self.read_array_node_header(r)?;
             arc.num_arcs = num_arcs;
             arc.bytes_per_arc = bytes_per_arc;
             arc.first_label = self.read_label(r)?;
+            self.check_label_range(arc.first_label, num_arcs)?;
             arc.pos_arcs_start = r.get_position();
+            Self::check_arc_array_fits(num_arcs, bytes_per_arc, arc.pos_arcs_start)?;
             arc.arc_idx = -1;
         } else {
             // List-encoded node: `next_arc` re-anchors `read_next_real_arc`
@@ -1656,8 +2146,49 @@ impl<'f, 'a> FstEnum<'f, 'a> {
         }
     }
 
+    /// Guards the one loop in this enum that a corrupt body can make
+    /// non-terminating: descending from an arc into its target node.
+    ///
+    /// `FSTCompiler` writes nodes bottom-up into a forward-growing byte
+    /// store, so a node's address is always **greater** than every address
+    /// its arcs point at -- an FST is a DAG and its arcs run strictly
+    /// downward through the body. A body whose targets do not strictly
+    /// decrease therefore contains a cycle, and a cycle turns `push_first`/
+    /// `push_last`/`do_seek_exact` into an unbounded descent that grows
+    /// `arcs`, `outputs` and `labels` one level per step until the process is
+    /// killed by the OOM killer. That is worse than an abort: nothing catches
+    /// it and no timeout fires.
+    ///
+    /// Not hypothetical -- a single flipped target byte in
+    /// `tests/fst_byte_flip_sweep.rs` produces exactly that, which is how
+    /// this was found.
+    ///
+    /// The check cannot reject anything a real writer produced: every FST
+    /// fixture in `fixtures/data/fst*` (all four node encodings, both
+    /// multi-level tries and array roots) walks fully with it in place.
+    fn check_descent(&self, arc: &Arc) -> Result<()> {
+        // `arcs[upto - 1].target()` is the address of the node `arc` was read
+        // out of.
+        let containing_node = match self.upto.checked_sub(1) {
+            Some(i) => self.arcs[i].target(),
+            None => return Ok(()),
+        };
+        if arc.target() >= containing_node {
+            return Err(Error::Corrupt(format!(
+                "FST arc target {} does not precede its own node at {containing_node}: the body \
+                 is cyclic",
+                arc.target()
+            )));
+        }
+        Ok(())
+    }
+
     fn set_arc(&mut self, idx: usize, arc: Arc) {
         if self.arcs.len() <= idx {
+            // ARITH: `idx` is a depth into the enum's own stacks, bounded by
+            // the FST's longest key; `idx + 1` cannot overflow a `usize`
+            // without the `Vec` it sizes being impossible to allocate.
+            #[allow(clippy::arithmetic_side_effects)]
             self.arcs.resize(idx + 1, Arc::default());
         }
         self.arcs[idx] = arc;
@@ -1665,6 +2196,10 @@ impl<'f, 'a> FstEnum<'f, 'a> {
 
     fn set_output(&mut self, idx: usize, output: Vec<u8>) {
         if self.outputs.len() <= idx {
+            // ARITH: `idx` is a depth into the enum's own stacks, bounded by
+            // the FST's longest key; `idx + 1` cannot overflow a `usize`
+            // without the `Vec` it sizes being impossible to allocate.
+            #[allow(clippy::arithmetic_side_effects)]
             self.outputs.resize(idx + 1, Vec::new());
         }
         self.outputs[idx] = output;
@@ -1672,6 +2207,10 @@ impl<'f, 'a> FstEnum<'f, 'a> {
 
     fn set_label(&mut self, idx: usize, label: i32) {
         if self.labels.len() <= idx {
+            // ARITH: `idx` is a depth into the enum's own stacks, bounded by
+            // the FST's longest key; `idx + 1` cannot overflow a `usize`
+            // without the `Vec` it sizes being impossible to allocate.
+            #[allow(clippy::arithmetic_side_effects)]
             self.labels.resize(idx + 1, 0i32);
         }
         self.labels[idx] = label;
@@ -1681,6 +2220,13 @@ impl<'f, 'a> FstEnum<'f, 'a> {
     /// via `read_first_target_arc` until landing on an accepting (synthetic
     /// `END_LABEL`) arc -- the smallest-keyed accepted descendant of the
     /// node `self.upto` started at.
+    // ARITH: every caller enters with `upto >= 1` (`advance` and
+    // `rewind_prefix` set it to 1 before descending; the seek helpers only
+    // reach here after `finish_seek_*` at depth >= 1), and `set_output` grows
+    // `outputs` to `upto + 1` before `upto` is incremented -- so
+    // `outputs[upto - 1]` is always in range. `upto` counts one level per arc
+    // descended, so it is bounded by the FST's longest key.
+    #[allow(clippy::arithmetic_side_effects)]
     fn push_first(&mut self) -> Result<()> {
         loop {
             let arc = self.arcs[self.upto].clone();
@@ -1690,6 +2236,7 @@ impl<'f, 'a> FstEnum<'f, 'a> {
                 break;
             }
             self.set_label(self.upto, arc.label());
+            self.check_descent(&arc)?;
             self.upto += 1;
             let next = self.fst.read_first_target_arc(&arc, &mut self.r)?;
             self.set_arc(self.upto, next);
@@ -1703,6 +2250,8 @@ impl<'f, 'a> FstEnum<'f, 'a> {
     /// `self.upto` started at. `push_first`'s mirror image, needed by
     /// `seek_floor`'s "target falls strictly between two sibling arcs, or
     /// past the last one" cases.
+    // ARITH: same invariant as `push_first`.
+    #[allow(clippy::arithmetic_side_effects)]
     fn push_last(&mut self) -> Result<()> {
         loop {
             let arc = self.arcs[self.upto].clone();
@@ -1712,6 +2261,7 @@ impl<'f, 'a> FstEnum<'f, 'a> {
             if arc.label() == END_LABEL {
                 break;
             }
+            self.check_descent(&arc)?;
             self.upto += 1;
             let next = self.fst.read_last_target_arc(&arc, &mut self.r)?;
             self.set_arc(self.upto, next);
@@ -1722,17 +2272,27 @@ impl<'f, 'a> FstEnum<'f, 'a> {
     // --- getTargetLabel/getCurrentLabel/setCurrentLabel/incr -------------
 
     /// `BytesRefFSTEnum.getTargetLabel`.
+    /// `BytesRefFSTEnum.getTargetLabel`.
+    ///
+    /// Java indexes `target.bytes[upto - 1]` behind the invariant
+    /// `1 <= upto <= targetLength + 1`. Spelled here as a `checked_sub` plus
+    /// a `get`, which is the same answer whenever that invariant holds
+    /// (`upto - 1 == target_length` is exactly the out-of-range index) and a
+    /// typed `END_LABEL` rather than an index panic if a future seek path
+    /// ever breaks it.
     fn get_target_label(&self) -> i32 {
-        if self.upto - 1 == self.target_length {
-            END_LABEL
-        } else {
-            self.target[self.upto - 1]
+        match self.upto.checked_sub(1) {
+            None => END_LABEL,
+            Some(i) => self.target.get(i).copied().unwrap_or(END_LABEL),
         }
     }
 
     /// `BytesRefFSTEnum.getCurrentLabel`.
     fn get_current_label(&self) -> i32 {
-        self.labels[self.upto]
+        // `labels` is grown to `upto + 1` by `set_label` at every depth the
+        // enum has visited; `get` rather than `[..]` so a depth it has not
+        // cannot panic.
+        self.labels.get(self.upto).copied().unwrap_or(END_LABEL)
     }
 
     /// `FSTEnum.rewindPrefix`: rewind `self.upto` back to the end of the
@@ -1757,20 +2317,30 @@ impl<'f, 'a> FstEnum<'f, 'a> {
 
         let current_limit = self.upto;
         self.upto = 1;
+        // ARITH: `upto` starts at 1 and only increases, so `upto - 1` is in
+        // range; `target_length` is `target.len()`, so `+ 1` cannot overflow
+        // a `usize`. Java's `int cmp = getCurrentLabel() - getTargetLabel();`
+        // is an `int` subtraction that can overflow for a `BYTE4` label near
+        // `Integer.MAX_VALUE` against `END_LABEL`; only its sign is ever
+        // tested, so an `Ord::cmp` is the same answer with no subtraction at
+        // all.
+        #[allow(clippy::arithmetic_side_effects)]
         while self.upto < current_limit && self.upto <= self.target_length + 1 {
-            let cmp = self.get_current_label() - self.get_target_label();
-            if cmp < 0 {
-                // Seek forward: the shared prefix ends here.
-                break;
-            } else if cmp > 0 {
-                // Seek backwards -- reset this arc to the first arc of its
-                // parent node.
-                let parent = self.arcs[self.upto - 1].clone();
-                let first = self.fst.read_first_target_arc(&parent, &mut self.r)?;
-                self.set_arc(self.upto, first);
-                break;
+            match self.get_current_label().cmp(&self.get_target_label()) {
+                std::cmp::Ordering::Less => {
+                    // Seek forward: the shared prefix ends here.
+                    break;
+                }
+                std::cmp::Ordering::Greater => {
+                    // Seek backwards -- reset this arc to the first arc of its
+                    // parent node.
+                    let parent = self.arcs[self.upto - 1].clone();
+                    let first = self.fst.read_first_target_arc(&parent, &mut self.r)?;
+                    self.set_arc(self.upto, first);
+                    break;
+                }
+                std::cmp::Ordering::Equal => self.upto += 1,
             }
-            self.upto += 1;
         }
         Ok(())
     }
@@ -1781,6 +2351,9 @@ impl<'f, 'a> FstEnum<'f, 'a> {
     /// sibling, then `push_first` from there (the smallest-keyed accepted
     /// descendant of that sibling). If no such node exists (`self.upto`
     /// reaches `0`), there is no key `>=` the target anywhere in the FST.
+    // ARITH: the guard below establishes `upto >= 1` before every decrement,
+    // and the loop returns as soon as it reaches 0.
+    #[allow(clippy::arithmetic_side_effects)]
     fn rollback_to_last_fork_then_push(&mut self) -> Result<()> {
         if self.upto == 0 {
             return Ok(());
@@ -1806,6 +2379,9 @@ impl<'f, 'a> FstEnum<'f, 'a> {
     /// target label, then on that node finds the arc just before the target
     /// label and `push_last`s from there. If `self.upto` reaches `0`, there
     /// is no key `<=` the target anywhere in the FST.
+    // ARITH: every caller enters with `upto >= 1`, and the loop returns as
+    // soon as the decrement reaches 0 -- so `upto - 1` never underflows.
+    #[allow(clippy::arithmetic_side_effects)]
     fn backtrack_to_floor_arc(&mut self) -> Result<()> {
         loop {
             let target_label = self.get_target_label();
@@ -1860,6 +2436,9 @@ impl<'f, 'a> FstEnum<'f, 'a> {
     /// matched arc/output, then either stops (if it's the synthetic
     /// `END_LABEL` acceptance arc) or descends one level and continues the
     /// seek loop from the newly matched arc's target's first arc.
+    // ARITH: reached only from a seek loop at depth `upto >= 1`, with
+    // `set_output` having grown `outputs` past `upto - 1`.
+    #[allow(clippy::arithmetic_side_effects)]
     fn finish_seek_match(&mut self, arc: Arc, target_label: i32) -> Result<bool> {
         let cum_output = output_add(&self.outputs[self.upto - 1], arc.output());
         self.set_output(self.upto, cum_output);
@@ -1868,6 +2447,7 @@ impl<'f, 'a> FstEnum<'f, 'a> {
             return Ok(false);
         }
         self.set_label(self.upto, arc.label());
+        self.check_descent(&arc)?;
         self.upto += 1;
         let next = self.fst.read_first_target_arc(&arc, &mut self.r)?;
         self.set_arc(self.upto, next);
@@ -1916,11 +2496,18 @@ impl<'f, 'a> FstEnum<'f, 'a> {
             self.fst.read_arc_by_index(&mut arc, &mut self.r, idx)?;
             self.finish_seek_match(arc, target_label)
         } else {
+            // ARITH: `find_arc_binary_search` returns `-1 - insertion_point`
+            // with the insertion point in `0..=num_arcs`, so `idx` is now in
+            // `0..=num_arcs` and `idx - 1` is taken only when it equals
+            // `num_arcs >= 1`.
+            #[allow(clippy::arithmetic_side_effects)]
             let idx = -1 - idx;
+            // ARITH: `idx` is now in `0..=num_arcs`, and this branch takes
+            // `idx - 1` only when it equals `num_arcs >= 1`.
+            #[allow(clippy::arithmetic_side_effects)]
             if idx == arc.num_arcs {
                 // Dead end: target is after the last arc.
                 self.fst.read_arc_by_index(&mut arc, &mut self.r, idx - 1)?;
-                debug_assert!(arc.is_last());
                 self.rollback_to_last_fork_then_push()?;
             } else {
                 self.fst.read_arc_by_index(&mut arc, &mut self.r, idx)?;
@@ -1932,6 +2519,10 @@ impl<'f, 'a> FstEnum<'f, 'a> {
 
     fn seek_ceil_direct_addressing(&mut self, target_label: i32) -> Result<bool> {
         let mut arc = self.arcs[self.upto].clone();
+        // ARITH: `first_label` is non-negative (`read_label`) and
+        // `target_label` is a key label or `END_LABEL` (-1), so the
+        // difference is at worst `-1 - i32::MAX == i32::MIN`.
+        #[allow(clippy::arithmetic_side_effects)]
         let target_index = target_label - arc.first_label;
         if target_index >= arc.num_arcs {
             self.rollback_to_last_fork_then_push()?;
@@ -1949,7 +2540,9 @@ impl<'f, 'a> FstEnum<'f, 'a> {
                 self.finish_seek_match(arc, target_label)
             } else {
                 let ceil_index = bit_table_next_bit_set(clamped_index, &arc, &mut self.r)?;
-                debug_assert!(ceil_index != -1);
+                if ceil_index == -1 {
+                    return corrupt_fst("a direct-addressing node with no present arc at all");
+                }
                 let presence_index = bit_table_count_bits_up_to(ceil_index, &arc, &mut self.r)?;
                 self.fst.read_arc_by_direct_addressing(
                     &mut arc,
@@ -1965,13 +2558,16 @@ impl<'f, 'a> FstEnum<'f, 'a> {
 
     fn seek_ceil_continuous(&mut self, target_label: i32) -> Result<bool> {
         let mut arc = self.arcs[self.upto].clone();
+        // ARITH: `first_label` is non-negative (`read_label`) and
+        // `target_label` is a key label or `END_LABEL` (-1), so the
+        // difference is at worst `-1 - i32::MAX == i32::MIN`.
+        #[allow(clippy::arithmetic_side_effects)]
         let target_index = target_label - arc.first_label;
         if target_index >= arc.num_arcs {
             self.rollback_to_last_fork_then_push()?;
             Ok(false)
         } else if target_index < 0 {
             self.fst.read_arc_by_continuous(&mut arc, &mut self.r, 0)?;
-            debug_assert!(arc.label() > target_label);
             self.finish_seek_push_first(arc)?;
             Ok(false)
         } else {
@@ -2041,6 +2637,8 @@ impl<'f, 'a> FstEnum<'f, 'a> {
     /// entirely through the generic `read_next_arc`/`read_next_arc_label`
     /// dispatchers rather than an encoding-specific fast path -- just
     /// potentially slower.
+    // ARITH: same invariant as `backtrack_to_floor_arc`.
+    #[allow(clippy::arithmetic_side_effects)]
     fn seek_floor_list_backtrack(&mut self) -> Result<()> {
         loop {
             let target_label = self.get_target_label();
@@ -2075,8 +2673,13 @@ impl<'f, 'a> FstEnum<'f, 'a> {
             self.backtrack_to_floor_arc()?;
             Ok(false)
         } else {
+            // ARITH: this branch has `idx < -1`, i.e. `idx <= -2`, and
+            // `find_arc_binary_search` never returns below `-num_arcs - 1`
+            // -- so `-2 - idx` is in `0..=num_arcs - 1`.
+            #[allow(clippy::arithmetic_side_effects)]
+            let floor_slot = -2 - idx;
             self.fst
-                .read_arc_by_index(&mut arc, &mut self.r, -2 - idx)?;
+                .read_arc_by_index(&mut arc, &mut self.r, floor_slot)?;
             self.finish_seek_push_last(arc)?;
             Ok(false)
         }
@@ -2084,6 +2687,10 @@ impl<'f, 'a> FstEnum<'f, 'a> {
 
     fn seek_floor_direct_addressing(&mut self, target_label: i32) -> Result<bool> {
         let mut arc = self.arcs[self.upto].clone();
+        // ARITH: `first_label` is non-negative (`read_label`) and
+        // `target_label` is a key label or `END_LABEL` (-1), so the
+        // difference is at worst `-1 - i32::MAX == i32::MIN`.
+        #[allow(clippy::arithmetic_side_effects)]
         let target_index = target_label - arc.first_label;
         if target_index < 0 {
             self.backtrack_to_floor_arc()?;
@@ -2118,6 +2725,10 @@ impl<'f, 'a> FstEnum<'f, 'a> {
 
     fn seek_floor_continuous(&mut self, target_label: i32) -> Result<bool> {
         let mut arc = self.arcs[self.upto].clone();
+        // ARITH: `first_label` is non-negative (`read_label`) and
+        // `target_label` is a key label or `END_LABEL` (-1), so the
+        // difference is at worst `-1 - i32::MAX == i32::MIN`.
+        #[allow(clippy::arithmetic_side_effects)]
         let target_index = target_label - arc.first_label;
         if target_index < 0 {
             self.backtrack_to_floor_arc()?;
@@ -2172,6 +2783,9 @@ impl<'f, 'a> FstEnum<'f, 'a> {
     /// whether it was found -- unlike `seek_ceil`/`seek_floor`, short-circuits
     /// as soon as a byte fails to match rather than continuing to search for
     /// a nearby key.
+    // ARITH: `rewind_prefix` leaves `upto` at 0 (handled by the early return
+    // below) or at least 1, and it only ever increases from there.
+    #[allow(clippy::arithmetic_side_effects)]
     fn do_seek_exact(&mut self) -> Result<bool> {
         self.rewind_prefix()?;
         if self.upto == 0 {
@@ -2195,6 +2809,7 @@ impl<'f, 'a> FstEnum<'f, 'a> {
                         return Ok(true);
                     }
                     self.set_label(self.upto, target_label);
+                    self.check_descent(&next_arc)?;
                     self.upto += 1;
                     target_label = self.get_target_label();
                     arc = next_arc;
@@ -2243,7 +2858,12 @@ impl<'f, 'a> FstEnum<'f, 'a> {
             let first = self.fst.read_first_target_arc(&root, &mut self.r)?;
             self.set_arc(1, first);
         } else {
+            // ARITH: see the comment inside the loop -- `upto >= 1` before every
+            // decrement.
+            #[allow(clippy::arithmetic_side_effects)]
             loop {
+                // ARITH: `upto >= 1` on entry (the `upto == 0` branch above
+                // returned), and the loop returns the moment it hits 0.
                 if self.arcs[self.upto].is_last() {
                     self.upto -= 1;
                     if self.upto == 0 {
@@ -2267,6 +2887,15 @@ impl<'f, 'a> FstEnum<'f, 'a> {
     // --- Label-domain public API (any `INPUT_TYPE`) -------------------------
 
     /// Label-domain equivalent of `seek_ceil`, usable for any `INPUT_TYPE`.
+    ///
+    /// **One deliberate divergence from `BytesRefFSTEnum`**, shared by
+    /// `seek_floor_labels`/`seek_exact_labels`: a seek that finds nothing
+    /// leaves this enum *exhausted*, so a following `next()` returns `None`.
+    /// Java leaves `upto == 0` instead, which `doNext` reads as "not started
+    /// yet" and so restarts enumeration from the very first key. Restarting
+    /// is a surprising thing for a Rust `Iterator` to do after yielding
+    /// `None`, and no caller here wants it; the fused behaviour is the
+    /// intentional choice, not an oversight.
     pub fn seek_ceil_labels(&mut self, target: &[i32]) -> Result<Option<(Vec<i32>, Vec<u8>)>> {
         self.target = target.to_vec();
         self.target_length = target.len();
@@ -2353,18 +2982,24 @@ impl<'f, 'a> FstEnum<'f, 'a> {
     }
 }
 
-/// Narrows a label-domain key back to bytes -- only ever called from the
-/// `BYTE1`-only public API (`FstEnum::seek_ceil`/`seek_floor`/`seek_exact`,
-/// `Iterator for FstEnum`), which `Fst::iter`'s guard ensures never sees a
-/// label outside `0..=255` in the first place.
+/// Narrows a label-domain key back to bytes for the `BYTE1`-only public API
+/// (`FstEnum::seek_ceil`/`seek_floor`/`seek_exact`, `Iterator for FstEnum`).
+///
+/// This used to be an `as u8` behind a `debug_assert`, and the assert was not
+/// idle: a `BYTE1` FST's *stored* labels are single bytes, but a
+/// direct-addressing or continuous node's labels are **not stored** -- they
+/// are `firstLabel + arcIdx` -- and a corrupt label range made that exceed
+/// 255, which a release build silently truncated (260 -> 4) into a plausible
+/// wrong key. The fix is at the two places the label is formed rather than
+/// here: `check_label_range` bounds `firstLabel + numArcs` by the
+/// `INPUT_TYPE`'s alphabet, and `bit_table_next_bit_set` refuses an index
+/// past `numArcs`. Every `arcIdx` is then in `0..numArcs`, so every label of a
+/// `BYTE1` FST is in `0..=255` and this narrowing is total -- and free, which
+/// a per-key check on this path is not (c31 measured one at 7% of a full
+/// enumeration).
 fn labels_to_bytes(labels: &[i32]) -> Vec<u8> {
-    labels
-        .iter()
-        .map(|&l| {
-            debug_assert!((0..=255).contains(&l), "label {l} does not fit in a byte");
-            l as u8
-        })
-        .collect()
+    debug_assert!(labels.iter().all(|&l| (0..=255).contains(&l)));
+    labels.iter().map(|&l| l as u8).collect()
 }
 
 impl Iterator for FstEnum<'_, '_> {
@@ -2492,7 +3127,11 @@ fn append_arc_logical(bytes: &mut Vec<u8>, logical: &[u8]) -> i64 {
     for &b in logical.iter().rev() {
         bytes.push(b);
     }
-    (bytes.len() - 1) as i64
+    // ARITH: `build_node` never appends an empty `logical` (every arc carries
+    // at least a flags byte), so `bytes` is non-empty here.
+    #[allow(clippy::arithmetic_side_effects)]
+    let addr = (bytes.len() - 1) as i64;
+    addr
 }
 
 /// One arc's structural identity for node-hash-consing purposes: the exact
@@ -2622,6 +3261,8 @@ pub enum BuildError {
 /// `FSTCompiler.add` requires of its caller) -- checked, not silently
 /// tolerated.
 pub fn build_fst(entries: &[(Vec<u8>, Vec<u8>)]) -> std::result::Result<Fst<'static>, BuildError> {
+    // ARITH: `i` starts at 1.
+    #[allow(clippy::arithmetic_side_effects)]
     for i in 1..entries.len() {
         if entries[i - 1].0 >= entries[i].0 {
             return Err(BuildError::NotSorted { index: i });
@@ -2674,10 +3315,19 @@ pub fn write_fst(fst: &Fst<'_>) -> Vec<u8> {
     match &fst.metadata.empty_output {
         Some(output) => {
             out.push(1);
-            let mut reversed = output.clone();
-            reversed.reverse();
-            write_vint(&mut out, reversed.len() as i32);
-            out.extend_from_slice(&reversed);
+            // Mirror of `read_fst_metadata_prefix`'s decode (and of
+            // `FSTMetadata.save`): serialize through `writeFinalOutput`'s
+            // framing -- `vint(len)` then the payload -- reverse the whole
+            // serialized buffer, then length-prefix *that*.
+            // ARITH: an in-memory output plus the five bytes of its longest
+            // possible `vint` length prefix.
+            #[allow(clippy::arithmetic_side_effects)]
+            let mut serialized = Vec::with_capacity(output.len() + 5);
+            write_vint(&mut serialized, output.len() as i32);
+            serialized.extend_from_slice(output);
+            serialized.reverse();
+            write_vint(&mut out, serialized.len() as i32);
+            out.extend_from_slice(&serialized);
         }
         None => out.push(0),
     }
@@ -2733,7 +3383,25 @@ pub fn write_fst(fst: &Fst<'_>) -> Vec<u8> {
 // are omitted rather than stubbed out dishonestly.
 
 /// A typed FST output value, encoded to/from the raw `Vec<u8>` this module's
-/// `Fst`/`build_fst` already store on the wire. `Self::Value` mirrors real
+/// `Fst`/`build_fst` already store on the wire.
+///
+/// **Scope, stated plainly: this layer is not wire-compatible with real
+/// Lucene's `Outputs<T>` implementations, and is not meant to be.** Lucene
+/// writes each arc's output through the `Outputs<T>` in force for that FST,
+/// so a `PositiveIntOutputs` FST stores a bare `vlong` per arc and a
+/// `PairOutputs<A, B>` FST stores `A`'s encoding immediately followed by
+/// `B`'s. This port's reader is hardcoded to `ByteSequenceOutputs`' framing
+/// (a `vint` length then the payload) at the arc level, and the codecs below
+/// encode *inside* that payload -- so an FST built here with
+/// `build_fst_typed::<PositiveIntOutputs>` is a valid `FST<BytesRef>`, not a
+/// valid `FST<Long>`, and real Lucene would have to read it as the former.
+/// That is fine for the only consumer, `suggest.rs`, which both writes and
+/// reads its own FSTs; it would not be fine for reading a real Lucene
+/// suggester file, which nothing here does. Making the reader generic over
+/// `Outputs` is the prerequisite for that, and is deliberately not done
+/// here.
+///
+/// `Self::Value` mirrors real
 /// Lucene's `T` type parameter of `Outputs<T>`; `Self` itself is a
 /// zero-sized marker type selecting *which* codec applies (matching real
 /// Lucene's `Outputs<T>` being a singleton descriptor object distinct from
@@ -2756,10 +3424,15 @@ pub trait Outputs {
     /// return respectively.
     fn encode(value: &Self::Value) -> Vec<u8>;
 
-    /// Decode a byte sequence previously produced by `encode` (only ever
-    /// called on bytes this same `Outputs` impl produced, never validated
-    /// against a foreign encoding).
-    fn decode(bytes: &[u8]) -> Self::Value;
+    /// Decode a byte sequence that `encode` is *supposed* to have produced.
+    ///
+    /// Fallible, because the bytes reach here off disk: `Fst::get_typed`
+    /// hands over whatever payload the arc it walked carried, and a corrupt
+    /// (or simply truncated) FST body can name a length or a continuation
+    /// run that no `encode` would ever emit. Returning `Result` is what lets
+    /// those become a typed `Error::Corrupt` instead of a slice-index or
+    /// shift panic crossing the FFI boundary.
+    fn decode(bytes: &[u8]) -> Result<Self::Value>;
 }
 
 /// Forward (non-reversed) `vint` reader over a plain slice -- the encode
@@ -2770,36 +3443,55 @@ pub trait Outputs {
 /// ordinary forward byte order, since they're just the payload `build_node`
 /// copies verbatim into an arc's final-output bytes. Returns `(value,
 /// bytes_consumed)`.
-fn read_vint_forward(bytes: &[u8]) -> (i32, usize) {
+// ARITH: `idx` counts bytes consumed from `bytes` and is bounded by its
+// length (every read goes through `get`); `shift` is compared against 28
+// before every increment, so it never leaves 7..=35 and the `wrapping_shl`
+// never sees an out-of-range amount.
+#[allow(clippy::arithmetic_side_effects)]
+fn read_vint_forward(bytes: &[u8]) -> Result<(i32, usize)> {
     let mut idx = 0usize;
-    let mut b = bytes[idx];
+    let mut b = *bytes.first().ok_or_else(|| malformed_output("vInt"))?;
     idx += 1;
     let mut v = (b & 0x7f) as i32;
     let mut shift = 7;
     while b & 0x80 != 0 {
-        b = bytes[idx];
+        if shift > 28 {
+            return Err(malformed_output("vInt"));
+        }
+        b = *bytes.get(idx).ok_or_else(|| malformed_output("vInt"))?;
         idx += 1;
-        v |= ((b & 0x7f) as i32) << shift;
+        v |= ((b & 0x7f) as i32).wrapping_shl(shift);
         shift += 7;
     }
-    (v, idx)
+    Ok((v, idx))
+}
+
+/// The one error every typed-output decoder reports: the payload is not
+/// something this module's `encode` could have produced.
+fn malformed_output(kind: &str) -> Error {
+    Error::Corrupt(format!("malformed {kind} in FST output payload"))
 }
 
 /// Forward `vlong` reader, `read_vint_forward`'s 64-bit counterpart (used by
 /// `PositiveIntOutputs::decode`).
-fn read_vlong_forward(bytes: &[u8]) -> (i64, usize) {
+// ARITH: as `read_vint_forward`, with `shift` bounded at 64.
+#[allow(clippy::arithmetic_side_effects)]
+fn read_vlong_forward(bytes: &[u8]) -> Result<(i64, usize)> {
     let mut idx = 0usize;
-    let mut b = bytes[idx];
+    let mut b = *bytes.first().ok_or_else(|| malformed_output("vLong"))?;
     idx += 1;
     let mut v = (b & 0x7f) as i64;
     let mut shift = 7;
     while b & 0x80 != 0 {
-        b = bytes[idx];
+        if shift >= 64 {
+            return Err(malformed_output("vLong"));
+        }
+        b = *bytes.get(idx).ok_or_else(|| malformed_output("vLong"))?;
         idx += 1;
-        v |= ((b & 0x7f) as i64) << shift;
+        v |= ((b & 0x7f) as i64).wrapping_shl(shift);
         shift += 7;
     }
-    (v, idx)
+    Ok((v, idx))
 }
 
 /// Port of `PositiveIntOutputs`: an FST output type whose value is a single
@@ -2830,17 +3522,15 @@ impl Outputs for PositiveIntOutputs {
         out
     }
 
-    fn decode(bytes: &[u8]) -> i64 {
+    fn decode(bytes: &[u8]) -> Result<i64> {
         if bytes.is_empty() {
-            return 0;
+            return Ok(0);
         }
-        let (value, consumed) = read_vlong_forward(bytes);
-        debug_assert_eq!(
-            consumed,
-            bytes.len(),
-            "PositiveIntOutputs::decode: trailing bytes"
-        );
-        value
+        let (value, consumed) = read_vlong_forward(bytes)?;
+        if consumed != bytes.len() {
+            return Err(malformed_output("vLong"));
+        }
+        Ok(value)
     }
 }
 
@@ -2863,8 +3553,8 @@ impl Outputs for ByteSequenceOutputs {
         value.clone()
     }
 
-    fn decode(bytes: &[u8]) -> Vec<u8> {
-        bytes.to_vec()
+    fn decode(bytes: &[u8]) -> Result<Vec<u8>> {
+        Ok(bytes.to_vec())
     }
 }
 
@@ -2915,18 +3605,29 @@ impl<A: Outputs, B: Outputs> Outputs for PairOutputs<A, B> {
         out
     }
 
-    fn decode(bytes: &[u8]) -> Self::Value {
+    fn decode(bytes: &[u8]) -> Result<Self::Value> {
         if bytes.is_empty() {
-            return Self::zero();
+            return Ok(Self::zero());
         }
-        let (first_len, header_len) = read_vint_forward(bytes);
-        let first_len = first_len as usize;
-        let first_bytes = &bytes[header_len..header_len + first_len];
-        let second_bytes = &bytes[header_len + first_len..];
-        Pair {
-            first: A::decode(first_bytes),
-            second: B::decode(second_bytes),
-        }
+        let (first_len, header_len) = read_vint_forward(bytes)?;
+        // `first_len` is a `vint` off disk indexing the payload: negative
+        // through `as usize` it becomes ~2^64, and positive it can simply run
+        // past the end. Both are slice-index panics, so the split point is
+        // formed with `checked_add` and taken with `get`.
+        let split = usize::try_from(first_len)
+            .ok()
+            .and_then(|n| header_len.checked_add(n))
+            .ok_or_else(|| malformed_output("pair output length"))?;
+        let first_bytes = bytes
+            .get(header_len..split)
+            .ok_or_else(|| malformed_output("pair output length"))?;
+        let second_bytes = bytes
+            .get(split..)
+            .ok_or_else(|| malformed_output("pair output length"))?;
+        Ok(Pair {
+            first: A::decode(first_bytes)?,
+            second: B::decode(second_bytes)?,
+        })
     }
 }
 
@@ -2948,7 +3649,10 @@ impl<'a> Fst<'a> {
     /// Typed equivalent of `Fst::get`: looks up `key` and decodes its
     /// accumulated output bytes via `O::decode`.
     pub fn get_typed<O: Outputs>(&self, key: &[u8]) -> Result<Option<O::Value>> {
-        Ok(self.get(key)?.map(|bytes| O::decode(&bytes)))
+        match self.get(key)? {
+            None => Ok(None),
+            Some(bytes) => Ok(Some(O::decode(&bytes)?)),
+        }
     }
 }
 
@@ -3024,6 +3728,10 @@ impl<'a> Fst<'a> {
 /// corrupting the ordering invariant the whole `IntsRefFstEnum` scoping
 /// depends on. Rejected loudly instead.
 pub fn encode_ints_key(key: &[i32]) -> Vec<u8> {
+    // ARITH: four bytes per `i32` element of an in-memory key; the product
+    // is the size of the `Vec` about to hold them, so an overflow here would
+    // mean the encoded key cannot exist.
+    #[allow(clippy::arithmetic_side_effects)]
     let mut out = Vec::with_capacity(key.len() * 4);
     for &v in key {
         assert!(
@@ -3039,17 +3747,24 @@ pub fn encode_ints_key(key: &[i32]) -> Vec<u8> {
 /// original `i32` sequence. `bytes.len()` must be a multiple of 4 (true of
 /// any key produced by `encode_ints_key`, or read back out of an FST built by
 /// `build_fst_from_ints`).
-pub fn decode_ints_key(bytes: &[u8]) -> Vec<i32> {
-    debug_assert_eq!(
-        bytes.len() % 4,
-        0,
-        "decode_ints_key: key length {} is not a multiple of 4",
-        bytes.len()
-    );
-    bytes
+///
+/// Fallible, because the key is assembled from arc labels walked out of an
+/// FST body: enumerating a `BYTE1` FST (or a corrupt one) as `IntsRef` keys
+/// produces lengths that are not multiples of four. This used to be a
+/// `debug_assert`, which meant a release build silently dropped the trailing
+/// one to three bytes and returned a shorter key that looks entirely
+/// plausible -- a wrong answer, not a rejection.
+pub fn decode_ints_key(bytes: &[u8]) -> Result<Vec<i32>> {
+    if !bytes.len().is_multiple_of(4) {
+        return Err(Error::Corrupt(format!(
+            "IntsRef key length {} is not a multiple of 4",
+            bytes.len()
+        )));
+    }
+    Ok(bytes
         .chunks_exact(4)
         .map(|c| i32::from_be_bytes([c[0], c[1], c[2], c[3]]))
-        .collect()
+        .collect())
 }
 
 /// `IntsRef`-keyed equivalent of `build_fst_typed`: each entry's key is a
@@ -3084,28 +3799,28 @@ impl<'f, 'a> IntsRefFstEnum<'f, 'a> {
     /// `FSTEnum.doSeekCeil`): seeks to the smallest accepted key `>=`
     /// `target`, returning `(key, output)` if one exists.
     pub fn seek_ceil(&mut self, target: &[i32]) -> Result<Option<(Vec<i32>, Vec<u8>)>> {
-        Ok(self
-            .inner
-            .seek_ceil(&encode_ints_key(target))?
-            .map(|(key, output)| (decode_ints_key(&key), output)))
+        match self.inner.seek_ceil(&encode_ints_key(target))? {
+            None => Ok(None),
+            Some((key, output)) => Ok(Some((decode_ints_key(&key)?, output))),
+        }
     }
 
     /// Port of `IntsRefFSTEnum.seekFloor`: seeks to the largest accepted key
     /// `<=` `target`, returning `(key, output)` if one exists.
     pub fn seek_floor(&mut self, target: &[i32]) -> Result<Option<(Vec<i32>, Vec<u8>)>> {
-        Ok(self
-            .inner
-            .seek_floor(&encode_ints_key(target))?
-            .map(|(key, output)| (decode_ints_key(&key), output)))
+        match self.inner.seek_floor(&encode_ints_key(target))? {
+            None => Ok(None),
+            Some((key, output)) => Ok(Some((decode_ints_key(&key)?, output))),
+        }
     }
 
     /// Port of `IntsRefFSTEnum.seekExact`: seeks to exactly `target`,
     /// returning `(target, output)` if the FST accepts it, else `None`.
     pub fn seek_exact(&mut self, target: &[i32]) -> Result<Option<(Vec<i32>, Vec<u8>)>> {
-        Ok(self
-            .inner
-            .seek_exact(&encode_ints_key(target))?
-            .map(|(key, output)| (decode_ints_key(&key), output)))
+        match self.inner.seek_exact(&encode_ints_key(target))? {
+            None => Ok(None),
+            Some((key, output)) => Ok(Some((decode_ints_key(&key)?, output))),
+        }
     }
 }
 
@@ -3114,7 +3829,7 @@ impl Iterator for IntsRefFstEnum<'_, '_> {
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.inner.next()? {
-            Ok((key, output)) => Some(Ok((decode_ints_key(&key), output))),
+            Ok((key, output)) => Some(decode_ints_key(&key).map(|k| (k, output))),
             Err(e) => Some(Err(e)),
         }
     }
@@ -3122,6 +3837,10 @@ impl Iterator for IntsRefFstEnum<'_, '_> {
 
 #[cfg(test)]
 mod tests {
+    // A test's `i + 1` is not a length read off disk; see
+    // `docs/arithmetic-gate.md`'s "Test code" section.
+    #![allow(clippy::arithmetic_side_effects)]
+
     use super::*;
 
     // --- Hand-built FST bytes ---------------------------------------------
@@ -3560,6 +4279,169 @@ mod tests {
         (bytes, node_addr)
     }
 
+    /// A node header's `numArcs`/`bytesPerArc` are plain `vint`s off disk and
+    /// `FST.java` trusts both. `numArcs <= 0` then makes `numArcs - 1` and
+    /// `numArcs - 2` underflow (a debug panic; in release, a negative
+    /// midpoint that binary-searches the wrong side of the array), and
+    /// `bytesPerArc == 0` makes every slot address collapse onto one arc.
+    /// Neither is a header `FSTCompiler` can emit.
+    #[test]
+    fn an_array_node_header_with_no_arcs_or_zero_width_slots_is_rejected() {
+        for (num_arcs, bpa) in [(0i32, 4i32), (-7, 4), (5, 0), (5, -3)] {
+            let mut logical = vec![ARCS_FOR_BINARY_SEARCH];
+            write_vint(&mut logical, num_arcs);
+            write_vint(&mut logical, bpa);
+            logical.extend_from_slice(&[0u8; 64]);
+            let mut bytes = Vec::new();
+            let addr = append_arc_logical(&mut bytes, &logical);
+            let fst = fst_from_body(bytes, addr, InputType::Byte1, None);
+            assert!(
+                matches!(fst.get(b"a"), Err(Error::Corrupt(_))),
+                "numArcs={num_arcs} bytesPerArc={bpa}"
+            );
+        }
+    }
+
+    /// A fixed-length arc array of `numArcs` slots physically precedes
+    /// `posArcsStart` in the body, so a header naming more than the bytes
+    /// below it cannot describe a real node. Without the check the reverse
+    /// cursor walks to a negative position on every probe -- caught by
+    /// `read_byte`, but only after the binary search has been driven entirely
+    /// by garbage.
+    #[test]
+    fn an_arc_array_larger_than_the_body_below_it_is_rejected() {
+        let mut logical = vec![ARCS_FOR_BINARY_SEARCH];
+        write_vint(&mut logical, 1_000_000);
+        write_vint(&mut logical, 64);
+        let mut bytes = Vec::new();
+        let addr = append_arc_logical(&mut bytes, &logical);
+        let fst = fst_from_body(bytes, addr, InputType::Byte1, None);
+        assert!(matches!(fst.get(b"a"), Err(Error::Corrupt(_))));
+    }
+
+    /// A direct-addressing or continuous node stores no labels: `read_arc`
+    /// derives each one as `firstLabel + arcIdx`. A `BYTE1` FST whose label
+    /// range runs past 255 therefore produces a label no byte key can hold --
+    /// which `labels_to_bytes` used to narrow with a bare `as u8`, turning
+    /// 260 into 4 and returning a plausible wrong key in release builds.
+    #[test]
+    fn a_label_range_outside_the_input_types_alphabet_is_rejected() {
+        // `firstLabel = 250`, a 200-wide range: labels up to 449.
+        let (bytes, addr) = build_direct_addressing_node(250, 200, &[(250, 7), (255, 9)]);
+        let fst = fst_from_body(bytes, addr, InputType::Byte1, None);
+        let err = fst.get(&[250]).unwrap_err();
+        assert!(
+            format!("{err}").contains("alphabet"),
+            "expected the label range to be rejected, got {err}"
+        );
+    }
+
+    /// The bit table is rounded up to whole bytes, so its last byte carries up
+    /// to seven bits past the label range. `FSTCompiler` writes those as zero;
+    /// a set one would otherwise be returned as an `arcIdx` outside
+    /// `0..numArcs`, i.e. a label outside the range the header declared.
+    #[test]
+    fn a_presence_bit_set_past_the_label_range_is_not_returned_as_an_arc() {
+        // Range of 3 labels ('a'..='c') in a one-byte table; bit 5 is padding.
+        let (mut bytes, addr) = build_direct_addressing_node(b'a', 3, &[(b'a', 1), (b'c', 2)]);
+        // The presence byte is the one holding bits 0 and 2 (value 0b101).
+        let at = bytes
+            .iter()
+            .position(|&b| b == 0b0000_0101)
+            .expect("presence byte");
+        bytes[at] |= 1 << 5;
+        let fst = fst_from_body(bytes, addr, InputType::Byte1, None);
+        // Enumeration must stop at the real arcs rather than walking into the
+        // padding bit and reporting a fourth, non-existent label.
+        let keys: Vec<Vec<u8>> = fst.iter().unwrap().map(|r| r.unwrap().0).collect();
+        assert_eq!(keys, vec![b"a".to_vec(), b"c".to_vec()]);
+    }
+
+    /// `BitTableUtil.nextBitSet` returns `-1` for "no next set bit", and `-1`
+    /// is as far outside `0..numArcs` as an index past the end is. Passed on
+    /// as an `arcIdx` it makes `read_arc` derive `firstLabel - 1`: an arc one
+    /// label *below* the range the node declared, and for `firstLabel == 0`
+    /// exactly `END_LABEL`, i.e. a spurious acceptance of the empty
+    /// continuation. Nothing downstream catches it -- `presence_index` goes
+    /// `-1 -> 0`, so the slot address is the perfectly valid `pos_arcs_start`.
+    ///
+    /// `firstLabel == 0` is the case that makes the consequence loudest, and
+    /// it is why the byte-flip sweep could not find this: every FST fixture's
+    /// `firstLabel` is an ASCII letter, and the sweep only asserts "a typed
+    /// error or a clean decode", which `firstLabel - 1` is.
+    #[test]
+    fn an_all_zero_presence_table_does_not_decode_an_arc_below_the_label_range() {
+        let (mut bytes, addr) = build_direct_addressing_node(0, 3, &[(0, 1), (2, 2)]);
+        let at = bytes
+            .iter()
+            .position(|&b| b == 0b0000_0101)
+            .expect("presence byte");
+        bytes[at] = 0;
+        let fst = fst_from_body(bytes, addr, InputType::Byte1, None);
+        let mut it = fst.iter().unwrap();
+        assert!(matches!(it.next(), Some(Err(Error::Corrupt(_)))));
+    }
+
+    /// The same out-of-domain sentinel through `readLastArcByDirectAddressing`:
+    /// `countBits - 1` is `-1` for an all-zero table, and a `-1`
+    /// `presence_index` addresses *above* the arc array, which `read_byte`
+    /// accepts.
+    #[test]
+    fn an_all_zero_presence_table_is_rejected_by_the_last_arc_path_too() {
+        let (mut bytes, addr) = build_direct_addressing_node(b'a', 3, &[(b'a', 1), (b'c', 2)]);
+        let at = bytes
+            .iter()
+            .position(|&b| b == 0b0000_0101)
+            .expect("presence byte");
+        bytes[at] = 0;
+        let fst = fst_from_body(bytes, addr, InputType::Byte1, None);
+        let mut it = fst.iter_labels();
+        assert!(matches!(
+            it.seek_floor_labels(&[b'z' as i32]),
+            Err(Error::Corrupt(_))
+        ));
+    }
+
+    /// An FST body is written bottom-up, so every arc target precedes the node
+    /// that holds the arc. A body whose targets do not strictly decrease is
+    /// cyclic, and the enum's descent then never terminates: it grows `arcs`,
+    /// `outputs` and `labels` one level per step until the OOM killer stops
+    /// the process. Reproduced from the byte-flip sweep, which took a SIGKILL
+    /// before this check existed.
+    #[test]
+    fn a_cyclic_arc_target_is_rejected_rather_than_descended_forever() {
+        // One node, one arc labelled 'a', whose explicit target is the node
+        // itself.
+        let mut logical = vec![BIT_LAST_ARC];
+        logical.push(b'a');
+        // The node's own address is `logical.len() - 1` once appended.
+        write_vlong(&mut logical, 0);
+        let self_addr = (logical.len() - 1) as i64;
+        let mut logical = vec![BIT_LAST_ARC];
+        logical.push(b'a');
+        write_vlong(&mut logical, self_addr);
+        let mut bytes = Vec::new();
+        let addr = append_arc_logical(&mut bytes, &logical);
+        assert_eq!(addr, self_addr, "the arc must point at its own node");
+        let fst = fst_from_body(bytes, addr, InputType::Byte1, None);
+        let mut it = fst.iter().unwrap();
+        assert!(matches!(it.next(), Some(Err(Error::Corrupt(_)))));
+    }
+
+    /// `FST.readLabel`'s `BYTE4` branch is a bare `readVInt()`, which decodes
+    /// to any `i32`. Every label a writer emits is non-negative; a negative
+    /// one makes `targetLabel - firstLabel` and `firstLabel + arcIdx`
+    /// unbounded subtractions on both ends.
+    #[test]
+    fn a_negative_byte4_label_is_rejected() {
+        let mut logical = vec![BIT_LAST_ARC | BIT_FINAL_ARC | BIT_STOP_NODE];
+        write_vint(&mut logical, -5);
+        let mut bytes = Vec::new();
+        let addr = append_arc_logical(&mut bytes, &logical);
+        let fst = fst_from_body(bytes, addr, InputType::Byte4, None);
+        assert!(matches!(fst.get_labels(&[5]), Err(Error::Corrupt(_))));
+    }
+
     #[test]
     fn direct_addressing_node_finds_every_present_label() {
         let first_label = b'a';
@@ -3858,9 +4740,11 @@ mod tests {
 
     #[test]
     fn read_rejects_truncated_body() {
-        // A numBytes claiming more body than actually follows must fail
-        // (as an Eof from the shared SliceInput), not silently succeed with
-        // a short/garbage body.
+        // A numBytes claiming more body than actually follows must fail, not
+        // silently succeed with a short/garbage body. It is rejected against
+        // the bytes actually left in the file *before* the body `Vec` is
+        // sized -- see `read_rejects_a_body_length_no_allocation_could_hold`
+        // for why that ordering is the point.
         let mut file = Vec::new();
         codec_util::write_header(&mut file, FILE_FORMAT_NAME, VERSION_CURRENT);
         file.push(0);
@@ -3868,7 +4752,95 @@ mod tests {
         write_vlong(&mut file, 0);
         write_vlong(&mut file, 1000); // claims 1000 body bytes, none follow
         let mut input = SliceInput::new(&file);
-        assert!(matches!(Fst::read(&mut input), Err(Error::Store(_))));
+        assert!(matches!(Fst::read(&mut input), Err(Error::Corrupt(_))));
+    }
+
+    #[test]
+    fn read_rejects_a_body_length_no_allocation_could_hold() {
+        // `numBytes` is a vlong off disk that sizes `vec![0u8; numBytes]`.
+        // Unbounded, this is not a recoverable error: the allocation fails
+        // and the process *aborts*, which `catch_unwind` cannot intercept and
+        // which therefore takes the embedding JVM down with it. Before the
+        // bound this reserved ~4 EB; it must now be a typed error.
+        let mut file = Vec::new();
+        codec_util::write_header(&mut file, FILE_FORMAT_NAME, VERSION_CURRENT);
+        file.push(0); // no empty output
+        file.push(0); // BYTE1
+        write_vlong(&mut file, 0); // startNode
+        write_vlong(&mut file, i64::MAX / 2);
+        let mut input = SliceInput::new(&file);
+        assert!(matches!(Fst::read(&mut input), Err(Error::Corrupt(_))));
+    }
+
+    #[test]
+    fn read_rejects_an_empty_output_length_no_allocation_could_hold() {
+        // Same shape one field earlier: the accepts-empty flag's own vint
+        // length sized a `vec![0u8; n]` with nothing bounding it but the
+        // `read_bytes` that came after the allocation.
+        let mut file = Vec::new();
+        codec_util::write_header(&mut file, FILE_FORMAT_NAME, VERSION_CURRENT);
+        file.push(1); // accepts the empty string
+        write_vint(&mut file, i32::MAX); // ... with a 2 GB output
+        let mut input = SliceInput::new(&file);
+        assert!(matches!(Fst::read(&mut input), Err(Error::Corrupt(_))));
+    }
+
+    #[test]
+    fn arc_output_length_is_bounded_by_the_body_below_the_cursor() {
+        // `ByteSequenceOutputs.read`'s `int len = in.readVInt()` sizing
+        // `vec![0u8; len]`: a negative length sign-extends through `as usize`
+        // to ~2^64 and aborts, and a large positive one reserves 2 GB. Both
+        // must be a decode error instead.
+        for len in [-1i32, i32::MAX] {
+            let mut encoded = Vec::new();
+            write_vint(&mut encoded, len);
+            encoded.reverse();
+            let mut r = BytesReader::new(&encoded);
+            r.set_position(encoded.len() as i64 - 1);
+            assert!(
+                matches!(r.read_output(), Err(Error::Corrupt(_))),
+                "len={len}"
+            );
+        }
+        // A length that does fit below the cursor still decodes.
+        let mut encoded = vec![b'x'; 3];
+        write_vint(&mut encoded, 3);
+        let mut r = BytesReader::new(&encoded);
+        r.set_position(encoded.len() as i64 - 1);
+        assert_eq!(r.read_output().unwrap(), vec![b'x'; 3]);
+    }
+
+    #[test]
+    fn a_vint_longer_than_five_bytes_is_rejected_not_silently_truncated() {
+        // `DataInput.readVInt`'s "Invalid vInt detected (too many bits)".
+        // Without the bound the loop keeps consuming continuation bytes,
+        // returning a value built from bits Java rejects outright -- and the
+        // `shift` accumulator itself overflows on a long enough run.
+        let encoded = vec![0x80u8; 32];
+        let mut r = BytesReader::new(&encoded);
+        r.set_position(encoded.len() as i64 - 1);
+        assert!(matches!(r.read_vint(), Err(Error::Corrupt(_))));
+        let mut r = BytesReader::new(&encoded);
+        r.set_position(encoded.len() as i64 - 1);
+        assert!(matches!(r.read_vlong(), Err(Error::Corrupt(_))));
+    }
+
+    #[test]
+    fn typed_output_decoders_reject_a_corrupt_payload_instead_of_panicking() {
+        // `PositiveIntOutputs::decode`/`PairOutputs::decode` read a payload
+        // that came off the FST body, so a truncated or corrupt one reaches
+        // them. Before this they indexed the slice directly (`bytes[idx]`)
+        // and shifted by an unbounded amount -- both panics.
+        assert!(PositiveIntOutputs::decode(&[0x80]).is_err());
+        assert!(PositiveIntOutputs::decode(&[0x80; 32]).is_err());
+        type Pairs = PairOutputs<PositiveIntOutputs, ByteSequenceOutputs>;
+        // A first-component length past the end of the payload.
+        assert!(Pairs::decode(&[9, 1, 2]).is_err());
+        // ... and a negative one, which `as usize` turned into ~2^64.
+        let mut bytes = Vec::new();
+        write_vint(&mut bytes, -1);
+        bytes.push(7);
+        assert!(Pairs::decode(&bytes).is_err());
     }
 
     #[test]
@@ -3909,13 +4881,19 @@ mod tests {
 
     #[test]
     fn read_accepts_empty_string_via_empty_output() {
-        // Full `Fst::read` path for the `acceptsEmpty == 1` branch: the
-        // empty-string output is stored length-prefixed and *reversed* on
-        // disk (`FSTMetadata.save`), matching what a real Lucene FST with a
-        // key equal to the empty string would produce.
+        // Full `Fst::read` path for the `acceptsEmpty == 1` branch. The
+        // empty-string output is `writeFinalOutput`-serialized first
+        // (`vint(len)` + payload), *then* the whole serialized buffer is
+        // reversed, and *that* is length-prefixed -- see
+        // `read_fst_metadata_prefix`. Byte-for-byte identical to what
+        // `fixtures/data/fst_empty_key` (a real Lucene `FST.save`) contains;
+        // this test pins the layout in isolation, the fixture proves it
+        // against Lucene itself.
         let (body, start_node) = build_single_key_fst(b"x", b"ignored");
         let empty_output = b"root-output".to_vec();
-        let mut reversed = empty_output.clone();
+        let mut reversed = Vec::new();
+        write_vint(&mut reversed, empty_output.len() as i32);
+        reversed.extend_from_slice(&empty_output);
         reversed.reverse();
 
         let mut file = Vec::new();
@@ -4436,16 +5414,11 @@ mod tests {
         let built = build_fst(&entries).unwrap();
         let file_bytes = write_fst(&built);
 
-        let mut root = std::env::temp_dir();
-        root.push(format!(
-            "lucene-rust-fst-mmap-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
+        // A guard, not a bare path: the manual `remove_dir_all` at the end of
+        // this test is skipped whenever an assertion above it fires, and a
+        // leaked directory here lands in a tmpfs -- i.e. in RAM. See
+        // `lucene_util::test_support`.
+        let root = lucene_util::test_support::TempDir::new("fst-mmap");
 
         let dir = MmapDirectory::open(&root);
         let mut out = dir.create_output("fst.bin").unwrap();
@@ -4460,7 +5433,7 @@ mod tests {
         assert_eq!(fst.get(b"bandana").unwrap(), Some(b"6".to_vec()));
         assert_eq!(fst.get(b"missing").unwrap(), None);
 
-        std::fs::remove_dir_all(&root).ok();
+        // `root` removes itself here (kept if this test is unwinding).
     }
 
     #[test]
@@ -5123,7 +6096,7 @@ mod tests {
         type IntPair = PairOutputs<PositiveIntOutputs, PositiveIntOutputs>;
         let zero = <IntPair as Outputs>::zero();
         assert_eq!(IntPair::encode(&zero), Vec::<u8>::new());
-        assert_eq!(IntPair::decode(&[]), zero);
+        assert_eq!(IntPair::decode(&[]).unwrap(), zero);
     }
 
     // --- `IntsRefFstEnum` (`IntsRefFSTEnum`-equivalent) --------------------
@@ -5133,7 +6106,12 @@ mod tests {
         let key = vec![0, 1, 255, 256, 65536, i32::MAX];
         let encoded = encode_ints_key(&key);
         assert_eq!(encoded.len(), key.len() * 4);
-        assert_eq!(decode_ints_key(&encoded), key);
+        assert_eq!(decode_ints_key(&encoded).unwrap(), key);
+        // A key whose length is not a multiple of four cannot have come from
+        // `encode_ints_key`; it is what enumerating a `BYTE1` FST as
+        // `IntsRef` keys produces, and it used to be a `debug_assert` plus a
+        // `chunks_exact` that silently dropped the tail in release builds.
+        assert!(decode_ints_key(&encoded[..encoded.len() - 1]).is_err());
     }
 
     #[test]
@@ -5205,7 +6183,7 @@ mod tests {
             .unwrap()
             .map(|r| {
                 let (key, output) = r.unwrap();
-                (key, PositiveIntOutputs::decode(&output))
+                (key, PositiveIntOutputs::decode(&output).unwrap())
             })
             .collect();
         assert_eq!(results, entries);

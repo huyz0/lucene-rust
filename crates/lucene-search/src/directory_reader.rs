@@ -67,13 +67,16 @@ use lucene_codecs::compound_format;
 use lucene_codecs::doc_values::{self, DocValuesMeta};
 use lucene_codecs::field_infos::{self, FieldInfos};
 use lucene_codecs::live_docs;
+use lucene_codecs::norms::{self, Norms, NormsEntry};
 use lucene_codecs::postings::{self, DocInput, PayInput, PosInput};
 use lucene_index::deletes::liv_file_name;
+use lucene_index::field_updates;
 use lucene_index::segment_info::{self, SegmentInfo};
 use lucene_index::segment_infos::{self, SegmentInfos};
 use lucene_store::codec_util::ID_LENGTH;
 use lucene_store::directory::{Directory, Input};
 use lucene_util::fixed_bit_set::FixedBitSet;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::multi_segment::OpenSegment;
@@ -98,8 +101,12 @@ pub enum Error {
     CompoundFormat(#[from] compound_format::Error),
     #[error(transparent)]
     DocValues(#[from] doc_values::Error),
+    #[error(transparent)]
+    Norms(#[from] norms::Error),
     #[error("segment {segment} has {found} of .tim/.tip/.tmd (need all three or none)")]
     PartialBlockTreeFiles { segment: String, found: usize },
+    #[error("segment {segment} has one of .nvm/.nvd (need both or neither)")]
+    PartialNormsFiles { segment: String },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -124,8 +131,22 @@ pub struct SegmentReader {
     /// deletions" (safe to reuse) apart from "same segment, new deletions"
     /// (must reopen to pick up the new `.liv`/`live_docs`).
     del_gen: i64,
+    /// The generation of this segment's generational `.fnm`/doc-values files
+    /// at the time this reader was opened. Java's reuse test is
+    /// `delGen == commitInfo.getDelGen() && fieldInfosGen ==
+    /// commitInfo.getFieldInfosGen()` (`StandardDirectoryReader
+    /// .createOrReuseSegmentReader`); leaving these out meant a doc-values
+    /// update commit -- which bumps both of them and *not* `del_gen` -- was
+    /// served from the previous reader's stale doc values.
+    field_infos_gen: i64,
+    doc_values_gen: i64,
     segment_suffix: String,
-    fields: BlockTreeFields,
+    /// The segment's term dictionary. `Arc`, not owned: this is
+    /// `SegmentCoreReaders`, the part of a `SegmentReader` Java shares by
+    /// reference count across every reopen that keeps the segment. Deep-copying
+    /// a decoded `BlockTreeFields` (its FST, every field's term metadata) on
+    /// every reopen is exactly the cost `incRef` exists to avoid.
+    fields: Arc<BlockTreeFields>,
     /// The segment's `.doc`/`.pos`/`.pay` bytes, held as the [`Input`] the
     /// directory handed back rather than copied out of it.
     ///
@@ -144,8 +165,9 @@ pub struct SegmentReader {
     doc_buf: Option<Arc<Input>>,
     pos_buf: Option<Arc<Input>>,
     pay_buf: Option<Arc<Input>>,
-    live_docs: Option<FixedBitSet>,
-    field_infos: FieldInfos,
+    live_docs: Option<Arc<FixedBitSet>>,
+    /// Part of the shared core, same as [`Self::fields`] -- see its comment.
+    field_infos: Arc<FieldInfos>,
     /// The segment's doc-values data (`.dvd`), kept as raw bytes so the
     /// dense/sparse-agnostic `doc_values::{numeric_value, binary_value,
     /// sorted_ord, sorted_numeric_values}` readers (unchanged, no new
@@ -170,15 +192,61 @@ pub struct SegmentReader {
     /// every entry type already self-describes dense vs.
     /// `IndexedDISI`-backed sparse, and the existing value readers dispatch
     /// on that internally).
-    dv_meta: Option<DocValuesMeta>,
+    dv_meta: Option<Arc<DocValuesMeta>>,
+    /// Per-field doc-values **update generations**
+    /// (`SegmentDocValuesProducer`). A field whose newest `FieldInfo` records
+    /// a `docValuesGen` other than `-1` is served from the generation-suffixed
+    /// `.dvm`/`.dvd` named here, not from the base pair above -- the base is
+    /// still correct for every field the update did not touch, which is why
+    /// both are kept rather than one replacing the other.
+    dv_generations: Vec<DocValuesGeneration>,
+    /// The segment's `.nvm`-parsed norms entries and `.nvd` bytes, when it has
+    /// them.
+    ///
+    /// Without these a caller that opened its index through this reader had no
+    /// way to reach real norms at all, so every scored query run through
+    /// `multi_segment` had to pass `None` and score every document at
+    /// `UNNORMED_FIELD_LENGTH` -- a silently wrong BM25 length-normalization
+    /// term, not merely a missing feature. `SegmentCoreReaders` opens the
+    /// segment's `NormsProducer` in exactly the same place.
+    norms_meta: Option<Arc<Norms>>,
+    norms_data: Option<Arc<Input>>,
+}
+
+/// One field's doc-values **update generation** -- the rewritten column
+/// `SegmentCommitInfo.docValuesGen`/`FieldInfo.docValuesGen` point at, held
+/// exactly like the base pair (`Arc`, so a reader reuse is a refcount bump).
+#[derive(Debug, Clone)]
+struct DocValuesGeneration {
+    field_number: i32,
+    meta: Arc<DocValuesMeta>,
+    data: Arc<Input>,
+}
+
+/// `PerFieldDocValuesFormat.getSuffix(formatName, suffix)`, read back out of a
+/// field's `.fnm` attributes: `("Lucene90", "0")` -> `"Lucene90_0"`, the
+/// component every one of that field's doc-values file names carries.
+/// `None` when the field records no format at all.
+fn dv_per_field_suffix(field: &lucene_codecs::field_infos::FieldInfo) -> Option<String> {
+    let attr = |key: &str| {
+        field
+            .attributes
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+    };
+    let format = attr("PerFieldDocValuesFormat.format")?;
+    let suffix = attr("PerFieldDocValuesFormat.suffix")?;
+    Some(format!("{format}_{suffix}"))
 }
 
 impl SegmentReader {
     /// A cheap in-memory copy of an already-open reader, used by
     /// [`DirectoryReader::open_at_reusing`] to reuse a segment without
-    /// re-reading any files -- `Clone` derives from `BlockTreeFields`/
-    /// `FixedBitSet` already being `Clone`, so this is a genuine "no disk
-    /// I/O" reuse, not a relabeled fresh open.
+    /// re-reading any files. Every heavyweight member -- the term dictionary,
+    /// field infos, live docs, doc-values metadata, and the raw file buffers --
+    /// is behind an `Arc`, so this is a handful of refcount bumps: Java's
+    /// `oldReader.incRef()`, not a copy of the segment's decoded state.
     fn clone_reader(&self) -> Self {
         self.clone()
     }
@@ -211,13 +279,26 @@ impl SegmentReader {
             None
         };
 
-        let fnm_bytes =
-            open_segment_file(dir, compound.as_ref(), &si.files, ".fnm")?.ok_or_else(|| {
-                Error::Store(lucene_store::Error::Corrupted(format!(
-                    "segment {segment_name} has no .fnm file"
-                )))
-            })?;
-        let field_infos = field_infos::parse(&fnm_bytes, &segment_id, "")?;
+        // `IndexWriter.readFieldInfos`: a segment that has taken doc-values
+        // updates has a *generational* `.fnm` (always outside any compound
+        // file), and it is the only one recording the updated fields'
+        // `FieldInfo.docValuesGen`. Reading the base one instead reports every
+        // field at generation -1 and serves superseded values.
+        let field_infos = if commit.field_infos_gen != -1 {
+            let name =
+                field_updates::field_infos_gen_file_name(&segment_name, commit.field_infos_gen);
+            let bytes = dir.open(&name)?;
+            let suffix = lucene_util::base36::to_base36(commit.field_infos_gen);
+            Arc::new(field_infos::parse(&bytes, &segment_id, &suffix)?)
+        } else {
+            let fnm_bytes = open_segment_file(dir, compound.as_ref(), &si.files, ".fnm")?
+                .ok_or_else(|| {
+                    Error::Store(lucene_store::Error::Corrupted(format!(
+                        "segment {segment_name} has no .fnm file"
+                    )))
+                })?;
+            Arc::new(field_infos::parse(&fnm_bytes, &segment_id, "")?)
+        };
 
         let tim_bytes = open_segment_file(dir, compound.as_ref(), &si.files, ".tim")?;
         let tip_bytes = open_segment_file(dir, compound.as_ref(), &si.files, ".tip")?;
@@ -242,20 +323,26 @@ impl SegmentReader {
             // otherwise misparse the segment name's own trailing digit as a
             // bogus suffix (`_0.tim` -> strip leading `_` -> `0.tim` ->
             // suffix `"0"`, wrong) -- same fix as the `.dvm` case below.
-            let segment_suffix = if tim_file_name == format!("{segment_name}.tim") {
-                String::new()
-            } else {
-                tim_file_name
-                    .strip_prefix(&format!("{segment_name}_"))
-                    .or_else(|| tim_file_name.strip_prefix('_'))
-                    .and_then(|s| s.strip_suffix(".tim"))
-                    .unwrap_or_default()
-                    .to_string()
-            };
+            let segment_suffix = codec_suffix_of(&tim_file_name, &segment_name, ".tim");
 
-            let fields = blocktree::open(
-                tim_bytes.as_ref().unwrap(),
-                tip_bytes.as_ref().unwrap(),
+            // `open_shared`, not `open`: `open` copies the whole
+            // `.tim`/`.tip` into fresh allocations because the returned
+            // `BlockTreeFields` navigates them for its whole life. On the M1
+            // benchmark corpus that copy is 4.7 MB and 199 us -- 34% of a
+            // 579 us `DirectoryReader::open`, and the single largest thing
+            // left in it after c1 made the dictionary lazy. `open_shared`
+            // takes a [`blocktree::SharedBytes`] (a type-erased shared
+            // owner), and `open_segment_file` already hands back an
+            // `Arc<Input>` -- for a `MmapDirectory` that *is* the mapping, so
+            // the bytes are never copied at all. Measured in
+            // `benches/directory_reader_open.rs`: 199 us -> 0.5 us for the
+            // dictionary open, and **579 us -> 121 us (4.8x)** for the whole
+            // reader -- more than the copy alone, because the copy also
+            // first-touched 4.7 MB of the mapping that the lazy dictionary now
+            // never faults in.
+            let fields = blocktree::open_shared(
+                tim_bytes.clone().unwrap() as blocktree::SharedBytes,
+                tip_bytes.clone().unwrap() as blocktree::SharedBytes,
                 tmd_bytes.as_ref().unwrap(),
                 &field_infos,
                 &segment_id,
@@ -267,9 +354,15 @@ impl SegmentReader {
             let pos_buf = open_segment_file(dir, compound.as_ref(), &si.files, ".pos")?;
             let pay_buf = open_segment_file(dir, compound.as_ref(), &si.files, ".pay")?;
 
-            (fields, segment_suffix, doc_buf, pos_buf, pay_buf)
+            (Arc::new(fields), segment_suffix, doc_buf, pos_buf, pay_buf)
         } else if found == 0 {
-            (BlockTreeFields::empty(), String::new(), None, None, None)
+            (
+                Arc::new(BlockTreeFields::empty()),
+                String::new(),
+                None,
+                None,
+                None,
+            )
         } else {
             return Err(Error::PartialBlockTreeFiles {
                 segment: segment_name,
@@ -282,13 +375,13 @@ impl SegmentReader {
         let live_docs = if commit.del_gen != -1 {
             let liv_name = liv_file_name(&segment_name, commit.del_gen);
             let liv_bytes = dir.open(&liv_name)?;
-            Some(live_docs::parse(
+            Some(Arc::new(live_docs::parse(
                 &liv_bytes,
                 &segment_id,
                 commit.del_gen,
                 si.doc_count as usize,
                 commit.del_count as usize,
-            )?)
+            )?))
         } else {
             None
         };
@@ -317,21 +410,82 @@ impl SegmentReader {
                 // would otherwise misparse the segment name's own trailing
                 // digit as a bogus suffix (`_0.dvm` -> strip leading `_` ->
                 // `0.dvm` -> suffix `"0"`, wrong).
-                let dv_suffix = if dvm_file_name == format!("{segment_name}.dvm") {
-                    String::new()
-                } else {
-                    dvm_file_name
-                        .strip_prefix(&format!("{segment_name}_"))
-                        .or_else(|| dvm_file_name.strip_prefix('_'))
-                        .and_then(|s| s.strip_suffix(".dvm"))
-                        .unwrap_or_default()
-                        .to_string()
-                };
+                let dv_suffix = codec_suffix_of(&dvm_file_name, &segment_name, ".dvm");
                 let (_, meta) =
                     doc_values::parse_meta(&dvm, &segment_id, &dv_suffix, &field_infos)?;
-                (Some(meta), Some(dvd))
+                (Some(Arc::new(meta)), Some(dvd))
             }
             _ => (None, None),
+        };
+
+        // `SegmentDocValuesProducer`: one producer per distinct
+        // `FieldInfo.docValuesGen`, over a one-field `FieldInfos` -- the
+        // generation's `.dvm` describes exactly that field, so handing it the
+        // whole list would accept a `.dvm` naming a field it is not for.
+        let mut dv_generations: Vec<DocValuesGeneration> = Vec::new();
+        for field in &field_infos.fields {
+            if field.doc_values_gen == -1 {
+                continue;
+            }
+            let gen = field.doc_values_gen;
+            // No format attributes means no producer is registered for the
+            // field at all -- `PerFieldDocValuesFormat.FieldsReader` skips it
+            // ("null formatName means the field is in fieldInfos, but has no
+            // docvalues"), and so does this.
+            let Some(per_field) = dv_per_field_suffix(field) else {
+                continue;
+            };
+            let suffix = field_updates::generation_segment_suffix(gen, &per_field);
+            let meta_name =
+                field_updates::generation_file_name(&segment_name, gen, &per_field, "dvm");
+            let data_name =
+                field_updates::generation_file_name(&segment_name, gen, &per_field, "dvd");
+            let meta_bytes = dir.open(&meta_name)?;
+            let data_bytes = dir.open(&data_name)?;
+            let only = FieldInfos {
+                fields: vec![field.clone()],
+            };
+            let (_, meta) = doc_values::parse_meta(&meta_bytes, &segment_id, &suffix, &only)?;
+            dv_generations.push(DocValuesGeneration {
+                field_number: field.number,
+                meta: Arc::new(meta),
+                data: Arc::new(data_bytes),
+            });
+        }
+
+        // `.nvm`/`.nvd`: present together or not at all, like `.tim`/`.tip`/
+        // `.tmd` and `.dvm`/`.dvd` above. The codec suffix is derived the same
+        // way theirs is -- this port's own writer uses `""`, a real
+        // Lucene-written segment gives norms their own `Lucene90_<n>` suffix.
+        let nvm_bytes = open_segment_file(dir, compound.as_ref(), &si.files, ".nvm")?;
+        let nvd_bytes = open_segment_file(dir, compound.as_ref(), &si.files, ".nvd")?;
+        let (norms_meta, norms_data) = match (nvm_bytes, nvd_bytes) {
+            (Some(nvm), Some(nvd)) => {
+                let nvm_file_name = find_segment_file_name(&si.files, compound.as_ref(), ".nvm")
+                    .expect("nvm_bytes.is_some() implies a .nvm entry exists");
+                let norms_suffix = codec_suffix_of(&nvm_file_name, &segment_name, ".nvm");
+                let (_, meta) = norms::parse_meta(&nvm, &segment_id, &norms_suffix)?;
+                // `Lucene90NormsProducer.readFields` validates every entry
+                // against `FieldInfos` as it reads them and fails the segment
+                // open. This port's `norms::parse_meta` takes no
+                // `FieldInfos` (see `norms::validate_fields`), so the check
+                // is the next line rather than part of the parse -- but it
+                // happens at the same moment, on the same path, with the same
+                // consequence.
+                norms::validate_fields(&meta, &field_infos)?;
+                norms::check_data_header_footer(&nvd, &segment_id, &norms_suffix)?;
+                (Some(Arc::new(meta)), Some(nvd))
+            }
+            (None, None) => (None, None),
+            // Unlike `.dvm`/`.dvd`, a half-present pair here is not degraded to
+            // "no norms": scoring without norms is silently wrong (every
+            // document at `UNNORMED_FIELD_LENGTH`), not merely absent, so a
+            // corrupt pair must surface the way `.tim`/`.tip`/`.tmd`'s does.
+            _ => {
+                return Err(Error::PartialNormsFiles {
+                    segment: segment_name,
+                })
+            }
         };
 
         Ok(SegmentReader {
@@ -340,6 +494,8 @@ impl SegmentReader {
             doc_base,
             segment_id,
             del_gen: commit.del_gen,
+            field_infos_gen: commit.field_infos_gen,
+            doc_values_gen: commit.doc_values_gen,
             segment_suffix,
             fields,
             doc_buf,
@@ -352,7 +508,43 @@ impl SegmentReader {
             kdi_buf,
             kdd_buf,
             dv_meta,
+            dv_generations,
+            norms_meta,
+            norms_data,
         })
+    }
+
+    /// Java's "only liveDocs changed" reopen branch
+    /// (`new SegmentReader(commitInfo, oldReader, liveDocs, ...)`): the segment
+    /// itself is byte-identical, only its `.liv` file moved on, so the shared
+    /// core -- term dictionary, field infos, postings buffers, doc values,
+    /// norms -- is carried over by reference and *only* the new `.liv` is read.
+    ///
+    /// Without this, a delete-only commit re-read and re-decoded every one of
+    /// the segment's files (`.tim`/`.tip`/`.tmd` FST decode included) to change
+    /// one bitset, which is the whole cost `openIfChanged` exists to avoid.
+    fn reopen_with_new_live_docs(
+        &self,
+        dir: &dyn Directory,
+        commit: &segment_infos::SegmentCommitInfo,
+    ) -> Result<Self> {
+        let live_docs = if commit.del_gen != -1 {
+            let liv_name = liv_file_name(&self.segment_name, commit.del_gen);
+            let liv_bytes = dir.open(&liv_name)?;
+            Some(Arc::new(live_docs::parse(
+                &liv_bytes,
+                &self.segment_id,
+                commit.del_gen,
+                self.max_doc as usize,
+                commit.del_count as usize,
+            )?))
+        } else {
+            None
+        };
+        let mut reader = self.clone_reader();
+        reader.del_gen = commit.del_gen;
+        reader.live_docs = live_docs;
+        Ok(reader)
     }
 
     /// The segment's `.fnm`-derived field metadata (field name/number
@@ -386,7 +578,7 @@ impl SegmentReader {
     /// `lucene_codecs::doc_values::{numeric_value, binary_value, sorted_ord,
     /// sorted_numeric_values}` readers, unchanged.
     pub fn doc_values_meta(&self) -> Option<&DocValuesMeta> {
-        self.dv_meta.as_ref()
+        self.dv_meta.as_deref()
     }
 
     /// The segment's `.dvd`, or `None` if it has no doc-values files at all.
@@ -394,6 +586,134 @@ impl SegmentReader {
         // Two derefs: `Option<Arc<Input>>` -> `&Arc<Input>` -> `&[u8]`.
         self.dv_data.as_ref().map(|d| &***d)
     }
+
+    /// The `(meta, data)` pair holding **`field_number`'s current column**:
+    /// `SegmentDocValuesProducer.dvProducersByField`. A field that has taken a
+    /// doc-values update is served from the generation its newest `FieldInfo`
+    /// names; every other field falls through to the base `.dvm`/`.dvd`.
+    ///
+    /// [`Self::doc_values_meta`]/[`Self::doc_values_data`] are the *base* pair
+    /// and stay that way: a caller that has not been taught about generations
+    /// keeps working for un-updated fields rather than silently reading a
+    /// column that has been superseded for one field and not another.
+    pub fn doc_values_for_field(&self, field_number: i32) -> Option<(&DocValuesMeta, &[u8])> {
+        if let Some(gen) = self
+            .dv_generations
+            .iter()
+            .find(|g| g.field_number == field_number)
+        {
+            return Some((&gen.meta, &gen.data));
+        }
+        match (self.dv_meta.as_deref(), self.dv_data.as_ref()) {
+            (Some(meta), Some(data)) => Some((meta, &***data)),
+            _ => None,
+        }
+    }
+
+    /// This segment's hard-deletions bitset (`.liv`), or `None` when it has no
+    /// deletions -- `SegmentReader.getLiveDocs()`, whose `null` means the same
+    /// thing.
+    pub fn live_docs(&self) -> Option<&FixedBitSet> {
+        self.live_docs.as_deref()
+    }
+
+    /// One field's norms entry from this segment's `.nvm`, or `None` when the
+    /// segment has no norms at all or this field omits them
+    /// (`FieldInfo.omitNorms`).
+    pub fn norms_entry(&self, field_number: i32) -> Option<&NormsEntry> {
+        self.norms_meta.as_ref()?.entry(field_number)
+    }
+
+    /// The segment's `.nvd` bytes, or `None` when it has no norms files --
+    /// pair with [`Self::norms_entry`] to build a [`crate::field_norms::FieldNorms`].
+    pub fn norms_data(&self) -> Option<&[u8]> {
+        self.norms_data.as_ref().map(|d| &***d)
+    }
+
+    /// This segment's real BM25 norms for `field`, ready to hand to any
+    /// `*_scored` search function -- `None` when the segment has no norms, the
+    /// field is unknown or omits norms, or the term dictionary has no
+    /// aggregate counters for it.
+    ///
+    /// `avgFieldLength` comes from the field's `.tmd` `sumTotalTermFreq`/
+    /// `docCount` counters, which is `BM25Similarity`'s own formula -- see
+    /// [`crate::field_norms::FieldNorms::from_field_stats`] for why deriving it
+    /// by averaging decoded norms instead is measurably wrong.
+    ///
+    /// **Single-segment only.** Those counters are *this segment's*, where
+    /// `IndexSearcher.fieldStats` sums `getSumTotalTermFreq()`/`getDocCount()`
+    /// across every leaf, so Java's `avgdl` is reader-wide the same way its
+    /// `docFreq`/`docCount` are. A `SegmentReader` cannot sum them -- it sees
+    /// only itself -- so a multi-segment search must call
+    /// [`DirectoryReader::field_norms`], which does the sum once and builds
+    /// every leaf's norms with the one reader-wide value. (b13's F-26.)
+    pub fn field_norms(&self, field: &str) -> Option<crate::field_norms::FieldNorms<'_>> {
+        let (sum_total_term_freq, doc_count) = self.field_stats(field)?;
+        self.field_norms_with_avg_field_length(
+            field,
+            crate::field_norms::avg_field_length(sum_total_term_freq, doc_count as i64),
+        )
+    }
+
+    /// [`SegmentReader::field_norms`] with `avgFieldLength` supplied instead of
+    /// derived from this segment alone -- see
+    /// [`crate::field_norms::FieldNorms::with_avg_field_length`].
+    pub fn field_norms_with_avg_field_length(
+        &self,
+        field: &str,
+        avg_field_length: f32,
+    ) -> Option<crate::field_norms::FieldNorms<'_>> {
+        let info = self.field_infos.field_by_name(field)?;
+        let entry = self.norms_entry(info.number)?;
+        let data = self.norms_data()?;
+        // A field with no term dictionary entry has no counters, and therefore
+        // no norms this port will score with -- same precondition
+        // `field_norms` has always had.
+        self.fields.field(field)?;
+        Some(crate::field_norms::FieldNorms::with_avg_field_length(
+            data,
+            *entry,
+            avg_field_length,
+        ))
+    }
+
+    /// This segment's `.tmd` aggregate counters for `field`:
+    /// `(sumTotalTermFreq, docCount)`, Java's `Terms.getSumTotalTermFreq()` /
+    /// `Terms.getDocCount()` -- the two numbers `IndexSearcher.fieldStats`
+    /// sums across leaves. `None` when the field has no term dictionary entry
+    /// here.
+    pub fn field_stats(&self, field: &str) -> Option<(i64, i32)> {
+        let terms = self.fields.field(field)?;
+        Some((terms.sum_total_term_freq, terms.doc_count))
+    }
+
+    /// The name of this segment's soft-deletes field, if its `.fnm` marks one
+    /// (`FieldInfos.getSoftDeletesField()`) -- the field
+    /// [`crate::soft_deletes`] resolves a document's soft-delete state through.
+    pub fn soft_deletes_field(&self) -> Option<&str> {
+        self.field_infos.soft_deletes_field()
+    }
+}
+
+/// The per-format codec suffix embedded in a segment sub-file's own name.
+///
+/// Loose files are `<segment>_<suffix><ext>` (`_0_Lucene90_0.nvm` ->
+/// `Lucene90_0`); compound entries have already had the segment-name prefix
+/// stripped by the writer (`IndexFileNames.stripSegmentName`), leaving
+/// `_<suffix><ext>`. A file with no suffix at all (`_0.nvm`, what this port's
+/// own writer produces) must come back as `""` -- the generic strip-and-derive
+/// path would otherwise mistake the segment name's own trailing digit for a
+/// suffix (`_0.nvm` -> `0`).
+fn codec_suffix_of(file_name: &str, segment_name: &str, ext: &str) -> String {
+    if file_name == format!("{segment_name}{ext}") {
+        return String::new();
+    }
+    file_name
+        .strip_prefix(&format!("{segment_name}_"))
+        .or_else(|| file_name.strip_prefix('_'))
+        .and_then(|s| s.strip_suffix(ext))
+        .unwrap_or_default()
+        .to_string()
 }
 
 fn find_file_ending(files: &[String], ext: &str) -> Option<String> {
@@ -528,14 +848,33 @@ impl DirectoryReader {
         let mut segments = Vec::with_capacity(segment_infos.segments.len());
         let mut doc_base = 0i32;
         for commit in &segment_infos.segments {
-            let reused = reusable.iter().find(|r| {
-                r.segment_name == commit.segment_name
-                    && r.segment_id == commit.segment_id
-                    && r.del_gen == commit.del_gen
+            // Java's `mapPreviousReaders` + `getOldSegmentReader`: a candidate
+            // is the same *segment*, matched on name and id.
+            let candidate = reusable.iter().find(|r| {
+                r.segment_name == commit.segment_name && r.segment_id == commit.segment_id
             });
-            let mut reader = match reused {
-                Some(r) => r.clone_reader(),
-                None => SegmentReader::open(dir, commit, doc_base)?,
+            let mut reader = match candidate {
+                // `createOrReuseSegmentReader`'s "no change" branch: same
+                // deletions *and* same generational field-infos/doc-values, so
+                // the whole reader is shared.
+                Some(r)
+                    if r.del_gen == commit.del_gen
+                        && r.field_infos_gen == commit.field_infos_gen
+                        && r.doc_values_gen == commit.doc_values_gen =>
+                {
+                    r.clone_reader()
+                }
+                // "both DV and liveDocs have changed" reduces here to "only
+                // liveDocs changed", since a doc-values generation bump means
+                // the `.dvm`/`.dvd` this port reads must be re-parsed and it
+                // does that through a full open below.
+                Some(r)
+                    if r.field_infos_gen == commit.field_infos_gen
+                        && r.doc_values_gen == commit.doc_values_gen =>
+                {
+                    r.reopen_with_new_live_docs(dir, commit)?
+                }
+                _ => SegmentReader::open(dir, commit, doc_base)?,
             };
             reader.doc_base = doc_base;
             doc_base += reader.max_doc;
@@ -585,6 +924,80 @@ impl DirectoryReader {
     /// Every opened segment's own reader, in commit order.
     pub fn segment_readers(&self) -> &[SegmentReader] {
         &self.segments
+    }
+
+    /// Java's `IndexSearcher.fieldStats(field)`: `sumTotalTermFreq` and
+    /// `docCount` summed over **every leaf**, then divided --
+    /// `BM25Similarity.avgFieldLength`. `None` when no segment has the field.
+    ///
+    /// This is `avgdl`'s half of the reader-wide statistics rule; the other
+    /// half (`docFreq`/`docCount` for a term) is
+    /// [`crate::multi_segment::global_term_stats`], computed inside the search
+    /// functions because they hold the query. `avgdl` cannot be: it is baked
+    /// into a [`crate::field_norms::FieldNorms`]'s 256-entry `cache[]` table
+    /// when that is *constructed*, which happens here, before any search
+    /// function sees it.
+    pub fn avg_field_length(&self, field: &str) -> Option<f32> {
+        let mut sum_total_term_freq = 0i64;
+        let mut doc_count = 0i64;
+        let mut seen = false;
+        for seg in &self.segments {
+            let Some((stf, dc)) = seg.field_stats(field) else {
+                continue;
+            };
+            seen = true;
+            sum_total_term_freq += stf;
+            doc_count += dc as i64;
+        }
+        seen.then(|| crate::field_norms::avg_field_length(sum_total_term_freq, doc_count))
+    }
+
+    /// Every segment's norms for `field`, in commit order, **all built with the
+    /// one reader-wide `avgFieldLength`** -- the `Vec` a multi-segment search
+    /// function's `norms` parameter wants, with b13's F-26 fixed at the point
+    /// where it can be.
+    ///
+    /// An entry is `None` when that segment has no norms for the field (norms
+    /// omitted, field absent, or no `.nvd`/`.nvm` pair), which the search
+    /// functions already treat as "score this leaf unnormed".
+    pub fn field_norms(&self, field: &str) -> Vec<Option<crate::field_norms::FieldNorms<'_>>> {
+        let avg = match self.avg_field_length(field) {
+            Some(avg) => avg,
+            // No leaf has the field: no leaf will produce norms for it either,
+            // so the value is never read.
+            None => crate::similarity::UNNORMED_FIELD_LENGTH,
+        };
+        self.segments
+            .iter()
+            .map(|seg| seg.field_norms_with_avg_field_length(field, avg))
+            .collect()
+    }
+
+    /// [`DirectoryReader::field_norms`] for several fields at once, as the
+    /// per-segment `HashMap<String, FieldNorms>` the boolean search functions
+    /// take. Each field's `avgFieldLength` is its own reader-wide value.
+    ///
+    /// A field with no norms in a given segment is simply absent from that
+    /// segment's map, which those functions already read as "unnormed".
+    pub fn field_norms_by_field(
+        &self,
+        fields: &[String],
+    ) -> Vec<HashMap<String, crate::field_norms::FieldNorms<'_>>> {
+        let avgs: Vec<(&String, f32)> = fields
+            .iter()
+            .filter_map(|f| self.avg_field_length(f).map(|avg| (f, avg)))
+            .collect();
+        self.segments
+            .iter()
+            .map(|seg| {
+                avgs.iter()
+                    .filter_map(|(field, avg)| {
+                        seg.field_norms_with_avg_field_length(field, *avg)
+                            .map(|n| ((*field).clone(), n))
+                    })
+                    .collect()
+            })
+            .collect()
     }
 
     /// Opens the per-segment `DocInput`/`PosInput`/`PayInput` values needed
@@ -643,7 +1056,7 @@ impl<'a> OpenedSegments<'a> {
                 doc_in: self.doc_ins[i].as_ref(),
                 pos_in: self.pos_ins[i].as_ref(),
                 pay_in: self.pay_ins[i].as_ref(),
-                live_docs: r.live_docs.as_ref(),
+                live_docs: r.live_docs.as_deref(),
                 doc_base: r.doc_base,
             })
             .collect()
@@ -1158,6 +1571,7 @@ mod tests {
             sci_id: None,
             field_infos_files: vec![],
             dv_update_files: vec![],
+            ..Default::default()
         };
         let err = SegmentReader::open(&dir, &commit, 0).expect_err("missing .fnm must error");
         assert!(matches!(err, Error::Store(_)));
@@ -1230,6 +1644,7 @@ mod tests {
             sci_id: None,
             field_infos_files: vec![],
             dv_update_files: vec![],
+            ..Default::default()
         };
         let err = SegmentReader::open(&dir, &commit, 0).expect_err("partial postings must error");
         assert!(matches!(err, Error::PartialBlockTreeFiles { found: 1, .. }));
@@ -1409,18 +1824,279 @@ mod tests {
         std::fs::remove_dir_all(&dir_path).ok();
     }
 
-    fn tempdir() -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        p.push(format!(
-            "lucene-rust-directory-reader-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&p).unwrap();
-        p
+    /// A doc-values update commit bumps `fieldInfosGen`/`docValuesGen` and
+    /// leaves `delGen` alone. Java's reuse test is `delGen == ... &&
+    /// fieldInfosGen == ...` (`StandardDirectoryReader
+    /// .createOrReuseSegmentReader`); matching on `del_gen` alone, as this used
+    /// to, silently served the *previous* commit's doc values forever after a
+    /// numeric doc-values update.
+    ///
+    /// Proof mechanism is the mirror of the reuse test above: the segment's
+    /// `.fnm` is deleted before reopening, so a genuine re-open of `_0` must
+    /// fail. Failure is therefore the assertion -- it is only reachable if the
+    /// reader declined to reuse.
+    #[test]
+    fn open_if_changed_reopens_a_segment_whose_doc_values_gen_changed() {
+        let dir_path = tempdir();
+        let dir = FsDirectory::open(&dir_path);
+        let commit0 = flush_stored_only(&dir, "_0", [1u8; ID_LENGTH], "hello");
+        write_commit(&dir, 1, vec![commit0.clone()]);
+
+        let reader = DirectoryReader::open(&dir).expect("open segments_1");
+        assert_eq!(reader.segment_readers()[0].doc_values_gen, -1);
+
+        let mut updated = commit0.clone();
+        updated.doc_values_gen = 0;
+        updated.field_infos_gen = 0;
+        write_commit(&dir, 2, vec![updated]);
+
+        std::fs::remove_file(dir_path.join("_0.fnm")).expect("remove .fnm");
+        let err = reader.open_if_changed(&dir);
+        assert!(
+            err.is_err(),
+            "a doc-values generation bump must force a fresh open, not reuse a \
+             reader holding the previous generation's doc values"
+        );
+
+        std::fs::remove_dir_all(&dir_path).ok();
+    }
+
+    /// A commit that changes nothing about a segment -- same name, id, and all
+    /// three generations -- reuses the whole reader, `.fnm` gone or not. The
+    /// companion to the test above: together they pin *both* directions of
+    /// Java's reuse condition, so neither can regress into "always reuse" or
+    /// "never reuse".
+    #[test]
+    fn open_if_changed_reuses_a_segment_whose_generations_all_match() {
+        let dir_path = tempdir();
+        let dir = FsDirectory::open(&dir_path);
+        let commit0 = flush_stored_only(&dir, "_0", [1u8; ID_LENGTH], "hello");
+        write_commit(&dir, 1, vec![commit0.clone()]);
+        let reader = DirectoryReader::open(&dir).expect("open segments_1");
+
+        // A new commit generation, but `_0` itself is untouched.
+        write_commit(&dir, 2, vec![commit0]);
+        std::fs::remove_file(dir_path.join("_0.fnm")).expect("remove .fnm");
+
+        let reopened = reader
+            .open_if_changed(&dir)
+            .expect("open_if_changed")
+            .expect("segments_2 differs from segments_1");
+        assert_eq!(reopened.segment_readers().len(), 1);
+        assert_eq!(reopened.segment_readers()[0].max_doc, 1);
+
+        std::fs::remove_dir_all(&dir_path).ok();
+    }
+
+    /// The delete-only reopen must be Java's "only liveDocs changed" branch:
+    /// the shared core (`SegmentCoreReaders` -- term dictionary, field infos,
+    /// postings buffers) is carried over and *only* the new `.liv` is read.
+    ///
+    /// Every one of the segment's own files is deleted before reopening, so a
+    /// full re-open would fail; success plus refreshed live docs proves the
+    /// core was shared and the `.liv` re-read, rather than the whole segment
+    /// being decoded again to change one bitset.
+    #[test]
+    fn a_delete_only_reopen_shares_the_core_and_rereads_only_the_liv_file() {
+        let dir_path = tempdir();
+        let dir = FsDirectory::open(&dir_path);
+        let commit0 = flush_stored_only(&dir, "_0", [1u8; ID_LENGTH], "hello");
+        write_commit(&dir, 1, vec![commit0.clone()]);
+
+        let reader = DirectoryReader::open(&dir).expect("open segments_1");
+        assert!(reader.segment_readers()[0].live_docs().is_none());
+
+        let commit0_deleted = lucene_index::deletes::apply_deletes(&dir, &commit0, None, 1, [0i32])
+            .expect("apply delete");
+        write_commit(&dir, 2, vec![commit0_deleted]);
+
+        // Everything except the freshly written `.liv` and `segments_2`.
+        for ext in [".fdt", ".fdx", ".fdm", ".fnm", ".si"] {
+            std::fs::remove_file(dir_path.join(format!("_0{ext}"))).ok();
+        }
+
+        let reopened = reader
+            .open_if_changed(&dir)
+            .expect("a delete-only reopen must not re-read the segment's own files")
+            .expect("segments_2 differs from segments_1");
+        let live = reopened.segment_readers()[0]
+            .live_docs()
+            .expect("the new .liv must have been read");
+        assert!(!live.get(0), "doc 0 must now be marked deleted");
+        assert_eq!(reopened.segment_readers()[0].del_gen, 1);
+
+        std::fs::remove_dir_all(&dir_path).ok();
+    }
+
+    /// Reusing a segment must be a refcount bump, not a copy of its decoded
+    /// state. `Arc::ptr_eq` on the term dictionary is the observable form of
+    /// Java's `oldReader.incRef()`; without it, every reopen deep-copied the
+    /// segment's FST and field metadata.
+    #[test]
+    fn a_reused_segment_shares_its_core_rather_than_copying_it() {
+        let dir_path = tempdir();
+        let dir = FsDirectory::open(&dir_path);
+        let commit0 = flush_stored_only(&dir, "_0", [1u8; ID_LENGTH], "hello");
+        write_commit(&dir, 1, vec![commit0.clone()]);
+        let reader = DirectoryReader::open(&dir).expect("open segments_1");
+
+        let commit1 = flush_stored_only(&dir, "_1", [2u8; ID_LENGTH], "world");
+        write_commit(&dir, 2, vec![commit0, commit1]);
+        let reopened = reader
+            .open_if_changed(&dir)
+            .expect("open_if_changed")
+            .expect("segments_2 differs from segments_1");
+
+        let before = &reader.segment_readers()[0];
+        let after = &reopened.segment_readers()[0];
+        assert!(Arc::ptr_eq(&before.fields, &after.fields));
+        assert!(Arc::ptr_eq(&before.field_infos, &after.field_infos));
+
+        std::fs::remove_dir_all(&dir_path).ok();
+    }
+
+    /// Norms must be reachable through the reader. Before this they were not
+    /// opened at all, so a caller who opened an index the normal way could only
+    /// pass `None` for norms and score every document at
+    /// `UNNORMED_FIELD_LENGTH` -- a wrong BM25 length-normalization term, not
+    /// just a missing feature.
+    ///
+    /// Checked against the real Java-written `blocktree_index` fixture, whose
+    /// `body` field has real `.nvm`/`.nvd` files.
+    #[test]
+    fn opens_real_norms_and_scores_differently_from_the_no_norms_fallback() {
+        let dir = FsDirectory::open(fixture_dir());
+        let reader = DirectoryReader::open(&dir).expect("open real segments_1");
+        let seg = &reader.segment_readers()[0];
+
+        assert!(
+            seg.norms_data().is_some(),
+            "the fixture has real .nvd norms"
+        );
+        let body = seg
+            .field_infos()
+            .field_by_name("body")
+            .expect("fixture has a body field");
+        assert!(seg.norms_entry(body.number).is_some());
+        // A field the segment does not have has no norms entry.
+        assert!(seg.norms_entry(9999).is_none());
+
+        let norms = seg.field_norms("body").expect("body has norms");
+        assert!(
+            norms.avg_field_length > 0.0,
+            "avgFieldLength must come from the field's real .tmd counters"
+        );
+        assert!(seg.field_norms("no_such_field").is_none());
+
+        // Scoring with real norms must actually differ from the no-norms
+        // fallback -- otherwise wiring them in would be decoration.
+        let opened = reader.open_segments().unwrap();
+        let segments = opened.as_open_segments();
+        let query = TermQuery::new("body", "cat");
+        let scored = search_term_query_multi_segment(&segments, &query, &[Some(&norms)], 10)
+            .expect("scored with norms");
+        let unnormed = search_term_query_multi_segment(&segments, &query, &[None], 10)
+            .expect("scored without");
+        let mut scored_docs: Vec<i32> = scored.iter().map(|h| h.doc_id).collect();
+        let mut unnormed_docs: Vec<i32> = unnormed.iter().map(|h| h.doc_id).collect();
+        scored_docs.sort_unstable();
+        unnormed_docs.sort_unstable();
+        assert_eq!(
+            scored_docs, unnormed_docs,
+            "the same documents match either way -- norms change ranking, not matching"
+        );
+        // And they genuinely re-rank: the fixture's `body:cat` documents have
+        // different lengths, so the shorter one outranks the longer one only
+        // once real norms are in play.
+        assert_ne!(
+            scored.iter().map(|h| h.doc_id).collect::<Vec<_>>(),
+            unnormed.iter().map(|h| h.doc_id).collect::<Vec<_>>(),
+            "real norms must actually affect the ranking"
+        );
+    }
+
+    /// A segment with no `.nvm`/`.nvd` at all (this port's stored-fields-only
+    /// flush) must report no norms rather than erroring -- the same
+    /// "missing is not an error" contract `.tim`/`.dvm` already have.
+    #[test]
+    fn a_segment_without_norms_files_reports_none() {
+        let dir_path = tempdir();
+        let dir = FsDirectory::open(&dir_path);
+        let commit0 = flush_stored_only(&dir, "_0", [1u8; ID_LENGTH], "hello");
+        write_commit(&dir, 1, vec![commit0]);
+        let reader = DirectoryReader::open(&dir).expect("open segments_1");
+        let seg = &reader.segment_readers()[0];
+        assert!(seg.norms_data().is_none());
+        assert!(seg.norms_entry(0).is_none());
+        assert!(seg.field_norms("title").is_none());
+        assert!(seg.soft_deletes_field().is_none());
+
+        std::fs::remove_dir_all(&dir_path).ok();
+    }
+
+    /// `codec_suffix_of`'s doc comment describes a trap (a segment name ending
+    /// in a digit) and two on-disk shapes; three call sites now depend on it
+    /// getting both right, and the compound-stripped case reaches `""` through
+    /// `unwrap_or_default()` -- correct by fallback rather than by
+    /// construction, which is exactly the kind of thing to pin.
+    #[test]
+    fn codec_suffix_is_derived_for_every_on_disk_file_name_shape() {
+        // Loose files: `<segment>_<suffix><ext>`.
+        assert_eq!(
+            codec_suffix_of("_0_Lucene104_0.tim", "_0", ".tim"),
+            "Lucene104_0"
+        );
+        assert_eq!(
+            codec_suffix_of("_0_Lucene90_0.dvm", "_0", ".dvm"),
+            "Lucene90_0"
+        );
+        // No suffix at all -- this port's own writer. The generic path would
+        // read the segment name's trailing digit as the suffix.
+        assert_eq!(codec_suffix_of("_0.nvm", "_0", ".nvm"), "");
+        assert_eq!(codec_suffix_of("_10.tim", "_10", ".tim"), "");
+        // Compound entries: the writer already stripped the segment name
+        // (`IndexFileNames.stripSegmentName`).
+        assert_eq!(
+            codec_suffix_of("_Lucene104_0.tim", "_0", ".tim"),
+            "Lucene104_0"
+        );
+        assert_eq!(codec_suffix_of(".nvm", "_0", ".nvm"), "");
+    }
+
+    /// A segment carrying one of `.nvm`/`.nvd` is corrupt, and must say so
+    /// rather than degrading to "this field has no norms" -- scoring without
+    /// norms is silently wrong, which is the whole reason norms are opened.
+    #[test]
+    fn a_segment_with_only_half_a_norms_pair_is_an_error() {
+        let dir_path = tempdir();
+        let dir = FsDirectory::open(&dir_path);
+        let commit0 = flush_stored_only(&dir, "_0", [1u8; ID_LENGTH], "hello");
+        write_commit(&dir, 1, vec![commit0.clone()]);
+
+        // Fabricate a `.nvm` with no `.nvd` beside it, and list it in the `.si`
+        // the reader consults.
+        std::fs::write(dir_path.join("_0.nvm"), b"not really norms").unwrap();
+        let si_bytes = dir.open("_0.si").unwrap();
+        let mut si = segment_info::parse(&si_bytes, &commit0.segment_id).unwrap();
+        si.files.push("_0.nvm".to_string());
+        si.files.sort();
+        std::fs::write(dir_path.join("_0.si"), segment_info::write(&si, "")).unwrap();
+
+        let err = DirectoryReader::open(&dir).unwrap_err();
+        assert!(
+            matches!(err, Error::PartialNormsFiles { .. }),
+            "expected PartialNormsFiles, got {err:?}"
+        );
+
+        std::fs::remove_dir_all(&dir_path).ok();
+    }
+
+    use lucene_util::test_support::TempDir;
+
+    /// A scratch directory that removes itself when the test ends -- unless
+    /// the test is panicking, in which case its bytes stay for inspection.
+    fn tempdir() -> TempDir {
+        TempDir::new("directory-reader")
     }
 
     // -- "NRT reopen after sparse doc-values commits" (docs/parity.md) --
@@ -1521,9 +2197,9 @@ mod tests {
             let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
             writer.set_doc_values_field(Some("score")).unwrap();
 
-            writer.add_document(doc_with_score("a", 5));
-            writer.add_document(doc_without_score("b"));
-            writer.add_document(doc_with_score("c", 7));
+            writer.add_document(doc_with_score("a", 5)).unwrap();
+            writer.add_document(doc_without_score("b")).unwrap();
+            writer.add_document(doc_with_score("c", 7)).unwrap();
             writer.commit().unwrap();
 
             let reader = DirectoryReader::open(&dir).expect("open segments_1");
@@ -1567,8 +2243,8 @@ mod tests {
             let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
             writer.set_doc_values_field(Some("score")).unwrap();
 
-            writer.add_document(doc_with_score("a", 5));
-            writer.add_document(doc_without_score("b"));
+            writer.add_document(doc_with_score("a", 5)).unwrap();
+            writer.add_document(doc_without_score("b")).unwrap();
             writer.commit().unwrap();
 
             let reader = DirectoryReader::open(&dir).expect("open segments_1");
@@ -1577,9 +2253,9 @@ mod tests {
             // Second commit: a new segment, sparse in the opposite pattern
             // (present, absent, present) so this is not just re-reading the
             // first segment's bytes.
-            writer.add_document(doc_without_score("x"));
-            writer.add_document(doc_with_score("y", 42));
-            writer.add_document(doc_without_score("z"));
+            writer.add_document(doc_without_score("x")).unwrap();
+            writer.add_document(doc_with_score("y", 42)).unwrap();
+            writer.add_document(doc_without_score("z")).unwrap();
             writer.commit().unwrap();
 
             let reopened = reader
@@ -1737,13 +2413,17 @@ mod tests {
             writer.set_postings_field(Some("body")).unwrap();
             writer.set_merge_policy(Some(tight_merge_policy()));
 
-            writer.add_document(doc_with_body("a", "quick fox"));
+            writer
+                .add_document(doc_with_body("a", "quick fox"))
+                .unwrap();
             writer.commit().unwrap();
-            writer.add_document(doc_with_body("b", "lazy fox"));
+            writer.add_document(doc_with_body("b", "lazy fox")).unwrap();
             writer.commit().unwrap();
             // Crosses segments_per_tier (2) with a third one-doc commit,
             // triggering `auto_merge` to fold all three segments into one.
-            writer.add_document(doc_with_body("c", "quick dog"));
+            writer
+                .add_document(doc_with_body("c", "quick dog"))
+                .unwrap();
             writer.commit().unwrap();
 
             let segments_after = writer.segment_infos().segments.clone();
@@ -1828,13 +2508,17 @@ mod tests {
             writer.set_term_vector_field(Some("body")).unwrap();
             writer.set_merge_policy(Some(tight_merge_policy()));
 
-            writer.add_document(doc_with_body("a", "quick fox"));
+            writer
+                .add_document(doc_with_body("a", "quick fox"))
+                .unwrap();
             writer.commit().unwrap();
-            writer.add_document(doc_with_body("b", "lazy fox"));
+            writer.add_document(doc_with_body("b", "lazy fox")).unwrap();
             writer.commit().unwrap();
             // Crosses segments_per_tier (2) with a third one-doc commit,
             // triggering a real automatic merge of all three segments.
-            writer.add_document(doc_with_body("c", "quick dog"));
+            writer
+                .add_document(doc_with_body("c", "quick dog"))
+                .unwrap();
             writer.commit().unwrap();
 
             let segments_after = writer.segment_infos().segments.clone();
@@ -1997,8 +2681,12 @@ mod tests {
             let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
             writer.set_postings_field(Some("body")).unwrap();
 
-            writer.add_document(doc_with_body("a", "the quick fox jumps"));
-            writer.add_document(doc_with_body("b", "the fox is quick"));
+            writer
+                .add_document(doc_with_body("a", "the quick fox jumps"))
+                .unwrap();
+            writer
+                .add_document(doc_with_body("b", "the fox is quick"))
+                .unwrap();
             writer.commit().unwrap();
 
             let reader = DirectoryReader::open(&dir).unwrap();

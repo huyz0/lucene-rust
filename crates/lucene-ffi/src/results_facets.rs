@@ -25,7 +25,7 @@
 use std::os::raw::c_char;
 
 use crate::error::{guard, set_last_error, FfiStatus};
-use crate::registry::{facet_results, lock_recovering};
+use crate::registry::facet_results;
 
 /// Writes the number of `(ord, label, count)` triples held by
 /// `facet_results_handle` to `*out_len`.
@@ -41,7 +41,7 @@ pub unsafe extern "C" fn ffi_facet_results_len(
         if out_len.is_null() {
             return Err(FfiStatus::NullPointer);
         }
-        let registry = lock_recovering(facet_results());
+        let registry = facet_results().read(facet_results_handle);
         let handle = registry.get(facet_results_handle).ok_or_else(|| {
             set_last_error("ffi_facet_results_len: unknown or already-closed handle");
             FfiStatus::InvalidHandle
@@ -72,7 +72,7 @@ pub unsafe extern "C" fn ffi_facet_results_copy(
     buf_len: usize,
 ) -> i32 {
     guard(|| {
-        let registry = lock_recovering(facet_results());
+        let registry = facet_results().read(facet_results_handle);
         let handle = registry.get(facet_results_handle).ok_or_else(|| {
             set_last_error("ffi_facet_results_copy: unknown or already-closed handle");
             FfiStatus::InvalidHandle
@@ -118,7 +118,7 @@ pub unsafe extern "C" fn ffi_facet_result_label(
     out_written: *mut usize,
 ) -> i32 {
     guard(|| {
-        let registry = lock_recovering(facet_results());
+        let registry = facet_results().read(facet_results_handle);
         let handle = registry.get(facet_results_handle).ok_or_else(|| {
             set_last_error("ffi_facet_result_label: unknown or already-closed handle");
             FfiStatus::InvalidHandle
@@ -159,7 +159,8 @@ pub unsafe extern "C" fn ffi_facet_result_label(
 #[no_mangle]
 pub extern "C" fn ffi_close_facet_results(handle: u64) -> i32 {
     guard(|| {
-        lock_recovering(facet_results())
+        facet_results()
+            .write(handle)
             .remove(handle)
             .map(|_| ())
             .ok_or_else(|| {
@@ -176,7 +177,9 @@ mod tests {
     use lucene_search::facets::FacetCount;
 
     fn insert(facets: Vec<FacetCount>) -> u64 {
-        lock_recovering(facet_results()).insert(FacetResultsHandle { facets })
+        facet_results()
+            .insert_checked(FacetResultsHandle { facets })
+            .unwrap()
     }
 
     fn sample() -> Vec<FacetCount> {

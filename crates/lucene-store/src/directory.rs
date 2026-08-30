@@ -25,6 +25,12 @@ use crate::index_output::{self, FsIndexOutput};
 /// pre-4.0 `segments.gen` pointer file, which is not a valid commit file name.
 const SEGMENTS_PREFIX: &str = "segments";
 const OLD_SEGMENTS_GEN: &str = "segments.gen";
+/// `IndexFileNames.PENDING_SEGMENTS`: the name a `segments_N` is written
+/// under before it is renamed into place. Deliberately *not* prefixed with
+/// [`SEGMENTS_PREFIX`], so a half-written commit file can never be picked up
+/// by [`last_commit_generation`] -- that invisibility is the whole point of
+/// Java's two-phase `prepareCommit`/`finishCommit` protocol.
+const PENDING_SEGMENTS_PREFIX: &str = "pending_segments";
 
 /// A file's bytes, however the backend obtained them.
 pub enum Input {
@@ -55,12 +61,31 @@ impl Deref for Input {
     }
 }
 
+/// The same bytes as [`Deref`], as an `AsRef` — the bound a type-erased
+/// shared buffer needs.
+///
+/// `Deref` alone cannot be used behind `dyn`: `Arc<dyn Deref<Target = [u8]>>`
+/// is legal but every consumer would have to name the associated type, and
+/// `Arc<[u8]>` (the obvious alternative) cannot alias a mapping — it owns its
+/// allocation, so handing an `Input` to one always costs a full copy. With
+/// this impl an `Arc<Input>` coerces straight to
+/// `Arc<dyn AsRef<[u8]> + Send + Sync>`, which is how
+/// `lucene_codecs::blocktree::open_shared` takes a `.tim`/`.tip` mapping
+/// without copying it (c12, ~199 µs on a 4.7 MB `.tim`).
+impl AsRef<[u8]> for Input {
+    fn as_ref(&self) -> &[u8] {
+        self
+    }
+}
+
 /// Directory abstraction covering both Lucene's read path (`listAll`, `open`
 /// a whole file's bytes) and the write-path primitives this crate now
-/// supports: `createOutput` (a real on-disk [`FsIndexOutput`]) and `sync`
-/// (the fsync-before-durable contract). Locking (`NativeFSLockFactory`) and
-/// the `segments_N` commit lifecycle (rename/generation bookkeeping) are
-/// still deferred — see `docs/parity.md`.
+/// supports: `createOutput` (a real on-disk [`FsIndexOutput`]), `sync` (the
+/// fsync-before-durable contract), and `rename`/`deleteFile`/`syncMetaData`
+/// (what `SegmentInfos.prepareCommit`/`finishCommit`/`rollbackCommit` need to
+/// publish a commit atomically). Locking (`NativeFSLockFactory`) and file
+/// reference-counting (`IndexFileDeleter`) are still deferred — see
+/// `docs/parity.md`.
 pub trait Directory {
     /// Port of `Directory.listAll()`: every file name in the directory, sorted.
     fn list_all(&self) -> Result<Vec<String>>;
@@ -78,6 +103,22 @@ pub trait Directory {
     /// Callers must sync a new segment's files before referencing them from
     /// a commit file — that's Lucene's actual durability contract.
     fn sync(&self, names: &[String]) -> Result<()>;
+
+    /// Port of `Directory.rename(source, dest)`: atomically makes `source`'s
+    /// contents visible under `dest`. This is the operation Lucene's
+    /// `SegmentInfos.finishCommit` relies on to publish a commit — the
+    /// `pending_segments_N` file is fully written and fsynced first, then a
+    /// single rename makes it the new `segments_N`, so no crash can ever
+    /// expose a half-written commit file under a name a reader scans for.
+    fn rename(&self, source: &str, dest: &str) -> Result<()>;
+
+    /// Port of `Directory.deleteFile(name)`.
+    fn delete_file(&self, name: &str) -> Result<()>;
+
+    /// Port of `Directory.syncMetaData()`: fsyncs the directory itself, so a
+    /// rename/create of a *name* (not just a file's contents) survives a
+    /// crash. Lucene calls this on both sides of the commit rename.
+    fn sync_meta_data(&self) -> Result<()>;
 }
 
 /// Safe, copying backend (`std::fs::read`). No `unsafe` anywhere in this crate
@@ -107,6 +148,18 @@ impl Directory for FsDirectory {
 
     fn sync(&self, names: &[String]) -> Result<()> {
         index_output::sync(&self.root, names)
+    }
+
+    fn rename(&self, source: &str, dest: &str) -> Result<()> {
+        index_output::rename(&self.root, source, dest)
+    }
+
+    fn delete_file(&self, name: &str) -> Result<()> {
+        index_output::delete_file(&self.root, name)
+    }
+
+    fn sync_meta_data(&self) -> Result<()> {
+        index_output::sync_meta_data(&self.root)
     }
 }
 
@@ -144,6 +197,18 @@ impl Directory for MmapDirectory {
     fn sync(&self, names: &[String]) -> Result<()> {
         index_output::sync(&self.root, names)
     }
+
+    fn rename(&self, source: &str, dest: &str) -> Result<()> {
+        index_output::rename(&self.root, source, dest)
+    }
+
+    fn delete_file(&self, name: &str) -> Result<()> {
+        index_output::delete_file(&self.root, name)
+    }
+
+    fn sync_meta_data(&self) -> Result<()> {
+        index_output::sync_meta_data(&self.root)
+    }
 }
 
 fn list_all(root: &Path) -> Result<Vec<String>> {
@@ -177,13 +242,28 @@ pub fn generation_from_segments_file_name(file_name: &str) -> Result<i64> {
 /// Port of `SegmentInfos.getLastCommitGeneration(String[])`: the highest
 /// generation among `segments`/`segments_N` file names (excluding the legacy
 /// `segments.gen` pointer), or -1 if none exist.
-pub fn last_commit_generation(files: &[String]) -> i64 {
-    files
-        .iter()
-        .filter(|f| f.starts_with(SEGMENTS_PREFIX) && f.as_str() != OLD_SEGMENTS_GEN)
-        .filter_map(|f| generation_from_segments_file_name(f).ok())
-        .max()
-        .unwrap_or(-1)
+///
+/// Strict, like Java: an unparsable `segments*` name aborts the scan rather
+/// than being skipped. Skipping it is not a safe simplification in either
+/// direction — a reader would silently open the *previous* commit and hide
+/// every document committed since, and a writer would read -1 from a
+/// directory that does have a commit and create a fresh index over it.
+pub fn last_commit_generation(files: &[String]) -> Result<i64> {
+    let mut generation = -1i64;
+    for file in files {
+        if is_segments_candidate(file) {
+            generation = generation.max(generation_from_segments_file_name(file)?);
+        }
+    }
+    Ok(generation)
+}
+
+/// The `startsWith(SEGMENTS) && startsWith(OLD_SEGMENTS_GEN) == false` guard
+/// Java applies before calling `generationFromSegmentsFileName`. Note the
+/// second test is a prefix test in Java, not equality: `segments.gen_1` is
+/// skipped too, not treated as a corrupt generation.
+fn is_segments_candidate(file_name: &str) -> bool {
+    file_name.starts_with(SEGMENTS_PREFIX) && !file_name.starts_with(OLD_SEGMENTS_GEN)
 }
 
 /// Port of `IndexFileNames.fileNameFromGeneration("segments", "", gen)`.
@@ -198,11 +278,31 @@ pub fn segments_file_name(generation: i64) -> Option<String> {
     }
 }
 
+/// Port of `IndexFileNames.fileNameFromGeneration("pending_segments", "",
+/// gen)`: the name a commit file is written under before
+/// `SegmentInfos.finishCommit` renames it to [`segments_file_name`]'s name.
+///
+/// Same `gen == -1 -> null`, `gen == 0 -> bare base name` shape
+/// [`segments_file_name`] has, since both go through the same Java helper.
+/// Generation 0 is unreachable in practice (`getNextPendingGeneration()`
+/// returns `1` for a never-committed index and `generation + 1` otherwise),
+/// but the mapping is kept total and exact rather than special-cased away.
+pub fn pending_segments_file_name(generation: i64) -> Option<String> {
+    match generation {
+        g if g < 0 => None,
+        0 => Some(PENDING_SEGMENTS_PREFIX.to_string()),
+        gen => Some(format!(
+            "{PENDING_SEGMENTS_PREFIX}_{}",
+            lucene_util::base36::to_base36(gen)
+        )),
+    }
+}
+
 /// Finds and reads the most recent `segments_N` commit file in `dir`.
 /// Returns `(generation, bytes)`; callers pass both to `segment_infos::parse`.
 pub fn read_latest_commit(dir: &(impl Directory + ?Sized)) -> Result<(i64, Input)> {
     let files = dir.list_all()?;
-    let generation = last_commit_generation(&files);
+    let generation = last_commit_generation(&files)?;
     let name = segments_file_name(generation)
         .ok_or_else(|| Error::Corrupted("no segments_N commit file found".to_string()))?;
     let bytes = dir.open(&name)?;
@@ -256,7 +356,7 @@ mod tests {
             "segments_3".to_string(),
             "segments_2".to_string(),
         ];
-        assert_eq!(last_commit_generation(&files), 3);
+        assert_eq!(last_commit_generation(&files).unwrap(), 3);
     }
 
     #[test]
@@ -267,18 +367,123 @@ mod tests {
         assert_eq!(segments_file_name(10), Some("segments_a".to_string()));
     }
 
-    fn tempdir() -> PathBuf {
-        let mut p = std::env::temp_dir();
-        p.push(format!(
-            "lucene-rust-directory-write-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+    /// A `Directory` that can only be listed: every test using it asserts
+    /// that `read_latest_commit` fails during the *scan*, before any file is
+    /// opened, so the remaining methods must never be called.
+    struct ListingOnlyDir(Vec<String>);
+
+    impl Directory for ListingOnlyDir {
+        fn list_all(&self) -> Result<Vec<String>> {
+            Ok(self.0.clone())
+        }
+        fn open(&self, name: &str) -> Result<Input> {
+            panic!("open({name}) must not be reached: the generation scan should have failed")
+        }
+        fn create_output(&self, name: &str) -> Result<FsIndexOutput> {
+            panic!("create_output({name}) is not part of the read path under test")
+        }
+        fn sync(&self, _names: &[String]) -> Result<()> {
+            panic!("sync() is not part of the read path under test")
+        }
+        fn rename(&self, source: &str, dest: &str) -> Result<()> {
+            panic!("rename({source}, {dest}) is not part of the read path under test")
+        }
+        fn delete_file(&self, name: &str) -> Result<()> {
+            panic!("delete_file({name}) is not part of the read path under test")
+        }
+        fn sync_meta_data(&self) -> Result<()> {
+            panic!("sync_meta_data() is not part of the read path under test")
+        }
+    }
+
+    #[test]
+    fn input_debug_reports_provenance_and_length_not_contents() {
+        // The Debug impl exists so a panic message can't dump a mapped
+        // half-gigabyte file; assert it stays that way.
+        let owned = Input::Owned(vec![7u8; 42]);
+        assert_eq!(format!("{owned:?}"), "Input::Owned(42 bytes)");
+
+        let root = tempdir();
+        let dir = MmapDirectory::open(&root);
+        index_output::write_all_bytes(&root, "_0.si", b"0123456789").unwrap();
+        let mapped = dir.open("_0.si").unwrap();
+        assert_eq!(format!("{mapped:?}"), "Input::Mapped(10 bytes)");
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn pending_segments_file_name_matches_file_name_from_generation() {
+        assert_eq!(pending_segments_file_name(-1), None);
+        assert_eq!(
+            pending_segments_file_name(0),
+            Some("pending_segments".to_string())
+        );
+        assert_eq!(
+            pending_segments_file_name(1),
+            Some("pending_segments_1".to_string())
+        );
+        // base-36, same radix as `segments_N`.
+        assert_eq!(
+            pending_segments_file_name(10),
+            Some("pending_segments_a".to_string())
+        );
+    }
+
+    /// The whole point of the pending name: `getLastCommitGeneration` must not
+    /// see it, so a half-written commit can never become the current one.
+    #[test]
+    fn a_pending_segments_file_is_invisible_to_the_commit_generation_scan() {
+        let files = vec![
+            "segments_1".to_string(),
+            "pending_segments_2".to_string(),
+            "_0.si".to_string(),
+        ];
+        assert_eq!(last_commit_generation(&files).unwrap(), 1);
+    }
+
+    #[test]
+    fn rename_publishes_a_file_under_a_new_name_and_delete_file_removes_it() {
+        let root = tempdir();
+        let dir = FsDirectory::open(&root);
+
+        index_output::write_all_bytes(&root, "pending_segments_1", b"commit").unwrap();
+        assert!(dir
+            .list_all()
+            .unwrap()
+            .contains(&"pending_segments_1".to_string()));
+
+        dir.rename("pending_segments_1", "segments_1").unwrap();
+        dir.sync_meta_data().unwrap();
+        let listed = dir.list_all().unwrap();
+        assert!(!listed.contains(&"pending_segments_1".to_string()));
+        assert_eq!(&*dir.open("segments_1").unwrap(), b"commit");
+
+        dir.delete_file("segments_1").unwrap();
+        assert!(dir.list_all().unwrap().is_empty());
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn rename_and_delete_file_surface_io_errors_for_a_missing_source() {
+        let root = tempdir();
+        let dir = MmapDirectory::open(&root);
+        assert!(matches!(
+            dir.rename("nope", "segments_1"),
+            Err(Error::Io(_))
         ));
-        fs::create_dir_all(&p).unwrap();
-        p
+        assert!(matches!(dir.delete_file("nope"), Err(Error::Io(_))));
+        // `sync_meta_data` is best-effort by design (not every platform lets a
+        // directory be fsynced) -- it reports success either way.
+        dir.sync_meta_data().unwrap();
+        fs::remove_dir_all(&root).ok();
+    }
+
+    use lucene_util::test_support::TempDir;
+
+    /// A scratch directory that removes itself when the test ends -- unless
+    /// the test is panicking, in which case its bytes stay for inspection.
+    fn tempdir() -> TempDir {
+        TempDir::new("directory-write")
     }
 
     #[test]
@@ -396,24 +601,43 @@ mod tests {
     }
 
     #[test]
-    fn read_latest_commit_no_segments_file_is_corrupted_error() {
-        struct EmptyDir;
-        impl Directory for EmptyDir {
-            fn list_all(&self) -> Result<Vec<String>> {
-                Ok(vec!["_0.si".to_string()])
-            }
-            fn open(&self, _name: &str) -> Result<Input> {
-                unreachable!("no segments_N file should be found, so open() is never called")
-            }
-            fn create_output(&self, _name: &str) -> Result<FsIndexOutput> {
-                unreachable!("not used by this test")
-            }
-            fn sync(&self, _names: &[String]) -> Result<()> {
-                unreachable!("not used by this test")
-            }
-        }
+    fn read_latest_commit_rejects_an_unparsable_segments_file_name() {
+        // Java's getLastCommitGeneration lets generationFromSegmentsFileName's
+        // exception escape here. Skipping the bad name instead would open
+        // segments_1 and silently drop whatever segments_2 committed.
+        let files = vec![
+            "segments_1".to_string(),
+            "segments_zzzzzzzzzzzzz".to_string(),
+        ];
         assert!(matches!(
-            read_latest_commit(&EmptyDir),
+            read_latest_commit(&ListingOnlyDir(files.clone())),
+            Err(Error::Corrupted(_))
+        ));
+        // ... and the scan the write path shares with it is equally strict:
+        // reporting generation 1 here would let `IndexWriter` create a fresh
+        // index over a directory that does hold a commit.
+        assert!(matches!(
+            last_commit_generation(&files),
+            Err(Error::Corrupted(_))
+        ));
+    }
+
+    #[test]
+    fn read_latest_commit_ignores_the_legacy_pointer_file() {
+        let root = tempdir();
+        let dir = FsDirectory::open(&root);
+        index_output::write_all_bytes(&root, "segments.gen", b"legacy").unwrap();
+        index_output::write_all_bytes(&root, "segments_1", b"real").unwrap();
+        let (generation, bytes) = read_latest_commit(&dir).unwrap();
+        assert_eq!(generation, 1);
+        assert_eq!(&*bytes, b"real");
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn read_latest_commit_no_segments_file_is_corrupted_error() {
+        assert!(matches!(
+            read_latest_commit(&ListingOnlyDir(vec!["_0.si".to_string()])),
             Err(Error::Corrupted(_))
         ));
     }

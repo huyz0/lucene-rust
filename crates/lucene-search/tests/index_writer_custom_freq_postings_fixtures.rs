@@ -74,18 +74,12 @@ fn doc(id: &str) -> Document {
     }
 }
 
-fn tempdir(tag: &str) -> std::path::PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!(
-        "lucene-rust-index-writer-custom-freq-postings-fixture-{tag}-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&p).unwrap();
-    p
+use lucene_util::test_support::TempDir;
+
+/// A scratch directory that removes itself when the test ends -- unless
+/// the test is panicking, in which case its bytes stay for inspection.
+fn tempdir(tag: &str) -> TempDir {
+    TempDir::new(&format!("index-writer-custom-freq-postings-fixture-{tag}"))
 }
 
 #[test]
@@ -109,9 +103,15 @@ fn custom_freq_postings_round_trip_and_drive_real_bm25_scoring() {
     // too), so any score difference across docs can only be explained by the
     // real custom_freq value actually reaching the scorer, not a silent
     // fallback to counting.
-    writer.add_document_with_custom_freq_terms(doc("a"), vec![("score".to_string(), 5)]);
-    writer.add_document_with_custom_freq_terms(doc("b"), vec![("score".to_string(), 50)]);
-    writer.add_document_with_custom_freq_terms(doc("c"), vec![("score".to_string(), 1)]);
+    writer
+        .add_document_with_custom_freq_terms(doc("a"), vec![("score".to_string(), 5)])
+        .unwrap();
+    writer
+        .add_document_with_custom_freq_terms(doc("b"), vec![("score".to_string(), 50)])
+        .unwrap();
+    writer
+        .add_document_with_custom_freq_terms(doc("c"), vec![("score".to_string(), 1)])
+        .unwrap();
     let sis = writer.commit().unwrap().clone();
     assert_eq!(sis.segments.len(), 1);
     let sci = &sis.segments[0];
@@ -258,6 +258,8 @@ fn custom_freq_postings_field_rejects_a_zero_custom_freq() {
         .set_custom_freq_postings_field(Some("score"))
         .unwrap();
 
-    writer.add_document_with_custom_freq_terms(doc("a"), vec![("score".to_string(), 0)]);
+    writer
+        .add_document_with_custom_freq_terms(doc("a"), vec![("score".to_string(), 0)])
+        .unwrap();
     assert!(writer.commit().is_err());
 }

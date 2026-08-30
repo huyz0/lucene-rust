@@ -15,34 +15,48 @@
 //! ## Supported grammar (the exact subset this module parses)
 //!
 //! ```text
-//! query      := clause*
-//! clause     := modifier? atom boost?
-//! modifier   := '+' | '-'                  (absence => SHOULD)
-//! atom       := group | term
-//! group      := '(' query ')'
-//! term       := (field ':')? termbody
-//! field      := identifier (ASCII letters/digits/'_'/'-'/'.', 1+ chars)
-//! termbody   := phrase | regexp | wordterm
-//! phrase     := '"' char* '"'              => Clause::Phrase
-//! regexp     := '/' char* '/'              => Clause::Regexp
-//! wordterm   := bareword ('~' digit*)?     => Clause::Fuzzy (if '~' present)
-//!             | bareword                  => Clause::Wildcard / Clause::Prefix / Clause::Term
-//! boost      := '^' float
+//! query       := (modifier? atom suffix?) (conjunction modifier? atom suffix?)*
+//! conjunction := 'AND' | '&&' | 'OR' | '||'        (absence => default operator)
+//! modifier    := '+' | '-' | 'NOT' | '!'           (absence => MOD_NONE)
+//! atom        := group | term
+//! group       := '(' query ')'
+//! term        := (field ':')? termbody
+//! field       := identifier (ASCII letters/digits/'_'/'-'/'.', 1+ chars)
+//! termbody    := phrase | regexp | range | wordterm
+//! phrase      := '"' char* '"'                     => Clause::Phrase
+//! regexp      := '/' char* '/'                     => Clause::Regexp
+//! range       := ('['|'{') bound 'TO' bound (']'|'}')  => Clause::PointsRange
+//! wordterm    := bareword                          => Clause::Wildcard / Prefix / Term
+//! suffix      := '^' float ('~' number)? | '~' number ('^' float)?
 //! ```
 //!
-//! **Boolean-operator style: `+`/`-` prefixes, not `AND`/`OR`/`NOT`.** Real
-//! Lucene's classic `QueryParser` actually supports *both* styles
-//! simultaneously with configurable default-operator precedence rules --
-//! exactly the "half-supported mix" the task description called out to
-//! avoid. This module supports **only** the `+`/`-`/bare-is-SHOULD style**:
-//! a bare clause is optional (`Occur::SHOULD`), a `+`-prefixed clause is
-//! required (`Occur::MUST`), a `-`-prefixed clause is excluded
-//! (`Occur::MUST_NOT`). `AND`/`OR`/`NOT` tokens are treated as ordinary bare
-//! terms (or field names), never as operators -- this is unambiguous to
-//! parse (no precedence table needed: every clause's role is determined by
-//! its own leading character, not by what comes between clauses) and maps
-//! directly onto [`crate::query::BooleanQuery`]'s existing
-//! `must`/`should`/`must_not` buckets with no translation layer.
+//! **Boolean operators: `+`/`-` *and* `AND`/`OR`/`NOT`, with real Lucene's
+//! precedence rules.** This module is a port of
+//! `QueryParserBase.addClause`'s truth table, `&&`/`||`/`!` aliases included:
+//!
+//! - `AND` (`&&`) retroactively makes the **preceding** clause required as
+//!   well as the following one, unless that preceding clause was prohibited
+//!   -- which is what makes `a AND b` come out as `+a +b` rather than
+//!   `a +b`.
+//! - `OR` (`||`) under the `And` default operator retroactively makes the
+//!   preceding clause optional, so `a OR b` is `a b`, not `+a b`.
+//! - `NOT` (`!`) is a *modifier*, identical to `-`; `a AND NOT b` is
+//!   therefore `+a -b`.
+//! - `+`/`-` are the same modifiers they always were, and win over the
+//!   conjunction.
+//! - The default operator (what an absent conjunction means) is
+//!   [`DefaultOperator::Or`] -- real Lucene's default -- unless the caller
+//!   uses [`parse_query_with_operator`] to select
+//!   [`DefaultOperator::And`].
+//!
+//! `AND`/`OR`/`NOT` are recognized only as a **whole** uppercase bareword
+//! token, exactly as JavaCC's tokenizer does with `<AND: ("AND"|"&&")>`
+//! declared ahead of `<TERM>`: `ANDROID` and `NOTHING` are ordinary terms,
+//! `and` is an ordinary term, and only a standalone `AND` is the operator.
+//!
+//! **A query whose clause list collapses to one entry with no modifier is
+//! returned unwrapped**, not as a one-clause [`crate::query::BooleanQuery`] --
+//! Java's `clauses.size() == 1 && firstQuery != null` shortcut.
 //!
 //! **Default field.** `parse_query`'s `default_field` parameter supplies the
 //! field for a bare (no `field:` prefix) term/phrase/wildcard/etc. If a bare
@@ -71,7 +85,21 @@
 //! for `N` in `0..=2` requests that many edits explicitly (matching real
 //! `FuzzyQuery`'s supported range --
 //! `LevenshteinAutomata.MAXIMUM_SUPPORTED_DISTANCE == 2`); `N > 2` is a
-//! [`ParseError::InvalidFuzziness`], not silently clamped.
+//! [`ParseError::InvalidFuzziness`], not silently clamped. A `~` after a
+//! wildcard or prefix bareword is **ignored**, because real
+//! `QueryParserBase.handleBareTokenQuery` tests `wildcard`/`prefix` before
+//! `fuzzy`. The fuzzy term is never run through the analyzer, matching
+//! `getFuzzyQuery`.
+//!
+//! **Phrase slop**: `"a b"~N` sets the phrase's slop, real
+//! `QueryParserBase.handleQuotedTerm`'s `(int) Float.parseFloat(...)` --
+//! so a fractional `~1.7` truncates to `1` and a bare `~` leaves the default
+//! slop of `0`. (This module used to reject `"a b"~N` outright, since `~` was
+//! only ever a fuzzy marker.)
+//!
+//! **Boost and slop in either order**: `term^2~1` and `term~1^2` both parse,
+//! matching real Lucene's `[ <CARAT> boost [ fuzzySlop ] | fuzzySlop
+//! [ <CARAT> boost ] ]` production. At most one of each.
 //!
 //! **Regexp**: `/pattern/` (Lucene's own regexp delimiter convention) builds
 //! a [`crate::query::RegexpQuery`] from the text between the slashes
@@ -126,16 +154,24 @@
 //!   bounds don't parse as a plain (optionally negative) decimal integer or
 //!   `*` is a [`ParseError::InvalidRangeBound`], not a fallback to string
 //!   comparison.
-//! - **`AND`/`OR`/`NOT` as real operators with precedence rules** -- not
-//!   implemented at all (see above); those words parse as ordinary terms.
 //! - **Boosting a group's boost multiplying inner boosts / any boost
 //!   algebra beyond one flat `^N` per atom** -- a `^` after a `)` applies
 //!   exactly the same single [`crate::query::BoostQuery`] wrap a term/phrase
 //!   boost gets, nothing fancier.
 //! - **Fuzziness `~` with a fractional similarity (e.g. `term~0.8`, the
-//!   `StandardQueryParser` float-similarity convention)** -- only bare `~`
-//!   or `~` followed by an integer `0..=2` is accepted; a `~` followed by a
-//!   decimal point is a [`ParseError::InvalidFuzziness`].
+//!   pre-4.0 float-similarity convention real Lucene still lexes and then
+//!   rejects with "Fractional edit distances are not allowed!" for values
+//!   `>= 1.0`)** -- only bare `~` or `~` followed by an integer `0..=2` is
+//!   accepted on a *bareword*; a `~` followed by a decimal point is a
+//!   [`ParseError::InvalidFuzziness`]. A fractional *phrase* slop is accepted
+//!   and truncated, as Java does.
+//! - **`MultiFieldQueryParser`** -- one default field only; no
+//!   fan-out-across-fields rewriting.
+//! - **A leading `*`/`?` guard.** Real `QueryParserBase` throws
+//!   `"'*' or '?' not allowed as first character in WildcardQuery"` unless
+//!   `setAllowLeadingWildcard(true)`; this module always allows it, since
+//!   [`lucene_codecs::wildcard::WildcardPattern`] has no
+//!   pathological-cost cliff that guard exists to protect against here.
 //! - **Any escaping edge case beyond the single `\`-then-any-byte rule
 //!   above** (e.g. Unicode `\uXXXX` escapes, which real
 //!   `QueryParserBase.escape` doesn't even round-trip for parsing).
@@ -202,12 +238,49 @@ pub enum ParseError {
 }
 
 /// How a top-level clause combines into the enclosing [`BooleanQuery`] --
-/// this module's `+`/`-`/bare syntax mapped straight onto real `Occur`.
+/// real `BooleanClause.Occur`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Occur {
     Must,
     Should,
     MustNot,
+}
+
+/// `QueryParser.Modifiers()`'s result: the `+`/`-`/`NOT`/`!` prefix (or its
+/// absence) on one clause.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Modifier {
+    /// `MOD_NONE`.
+    None,
+    /// `MOD_REQ` (`+`).
+    Required,
+    /// `MOD_NOT` (`-`, `NOT`, `!`).
+    Not,
+}
+
+/// `QueryParser.Conjunction()`'s result: the `AND`/`&&`/`OR`/`||` token (or
+/// its absence) *between* two clauses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Conjunction {
+    /// `CONJ_NONE`.
+    None,
+    /// `CONJ_AND`.
+    And,
+    /// `CONJ_OR`.
+    Or,
+}
+
+/// `QueryParserBase.setDefaultOperator` — how two adjacent clauses with no
+/// explicit `AND`/`OR` between them combine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DefaultOperator {
+    /// `QueryParserBase.OR_OPERATOR`, real Lucene's default: a bare clause is
+    /// optional (`SHOULD`).
+    #[default]
+    Or,
+    /// `QueryParserBase.AND_OPERATOR`: a bare clause is required (`MUST`)
+    /// unless introduced by `OR`.
+    And,
 }
 
 /// Parses `input` (classic-Lucene-inspired query-string syntax -- see this
@@ -251,12 +324,29 @@ pub fn parse_query_with_analyzer(
     default_field: Option<&str>,
     analyzer: Option<&Analyzer>,
 ) -> Result<Clause, ParseError> {
+    parse_query_with_operator(input, default_field, analyzer, DefaultOperator::Or)
+}
+
+/// Same as [`parse_query_with_analyzer`], but with an explicit
+/// [`DefaultOperator`] — real `QueryParserBase.setDefaultOperator`. `Or` (real
+/// Lucene's default, what the other two entry points use) makes a clause with
+/// no `+`/`-`/`AND`/`OR` optional; `And` makes it required unless an `OR`
+/// introduces it.
+pub fn parse_query_with_operator(
+    input: &str,
+    default_field: Option<&str>,
+    analyzer: Option<&Analyzer>,
+    default_operator: DefaultOperator,
+) -> Result<Clause, ParseError> {
     let bytes: Vec<char> = input.chars().collect();
     let mut parser = Parser {
         chars: &bytes,
         pos: 0,
         default_field,
         analyzer,
+        default_operator,
+        multi_fields: &[],
+        used_default_field: false,
     };
     parser.skip_ws();
     if parser.pos >= parser.chars.len() {
@@ -268,6 +358,79 @@ pub fn parse_query_with_analyzer(
     // ever returning `Ok`) -- so there is no "trailing unparsed input" case
     // to check for here.
     parser.parse_clause_list(false)
+}
+
+/// `MultiFieldQueryParser(fields, analyzer)` -- parses `input` fanning every
+/// **bare** (unqualified) atom out across `fields` as a `SHOULD` disjunction.
+///
+/// An atom that names its own field (`title:cat`) is left alone, exactly as
+/// Java's `field != null` branch does. `title:cat dog` over
+/// `["title", "body"]` is `title:cat (title:dog body:dog)`.
+///
+/// # Errors
+///
+/// [`ParseError::MissingField`] never fires in multi-field mode (there is
+/// always a field), but `fields` must be non-empty -- an empty `fields` is
+/// [`ParseError::MissingField`] at byte 0, since every bare atom would then
+/// have nowhere to go. A single-element `fields` is exactly
+/// [`parse_query_with_analyzer`] with that default field.
+pub fn parse_multi_field_query(
+    input: &str,
+    fields: &[&str],
+    analyzer: Option<&Analyzer>,
+) -> Result<Clause, ParseError> {
+    let with_boosts: Vec<(&str, f32)> = fields.iter().map(|f| (*f, 1.0)).collect();
+    parse_multi_field_query_with_boosts(input, &with_boosts, analyzer, DefaultOperator::Or)
+}
+
+/// `MultiFieldQueryParser(fields, analyzer, boosts)` plus
+/// `setDefaultOperator` -- the full form.
+///
+/// Each `(field, boost)` pair fans a bare atom out to `field`, wrapping that
+/// field's clause in a [`BoostQuery`] when `boost != 1.0` (Java looks the
+/// boost up in its `Map<String, Float>` and skips the wrap when the map has
+/// no entry; a `1.0` here is the same no-op, since a `BoostQuery` of `1.0`
+/// multiplies every score by one).
+///
+/// With [`DefaultOperator::And`], `cat dog` over `title`/`body` with boosts
+/// `title => 5, body => 10` is Java's documented
+/// `+(title:cat^5.0 body:cat^10.0) +(title:dog^5.0 body:dog^10.0)`.
+pub fn parse_multi_field_query_with_boosts(
+    input: &str,
+    fields: &[(&str, f32)],
+    analyzer: Option<&Analyzer>,
+    default_operator: DefaultOperator,
+) -> Result<Clause, ParseError> {
+    if fields.is_empty() {
+        return Err(ParseError::MissingField(0));
+    }
+    let owned: Vec<(String, f32)> = fields.iter().map(|(f, b)| ((*f).to_string(), *b)).collect();
+    let chars: Vec<char> = input.chars().collect();
+    let mut parser = Parser {
+        chars: &chars,
+        pos: 0,
+        default_field: Some(&owned[0].0),
+        analyzer,
+        default_operator,
+        multi_fields: &owned,
+        used_default_field: false,
+    };
+    parser.skip_ws();
+    if parser.pos >= parser.chars.len() {
+        return Err(ParseError::EmptyQuery);
+    }
+    parser.parse_clause_list(false)
+}
+
+/// `MultiFieldQueryParser.applyBoost`: wraps `clause` in a [`BoostQuery`]
+/// when this field has a boost configured. `1.0` is Java's "no entry in the
+/// boosts map" -- left unwrapped, since the query is identical either way.
+fn apply_field_boost(clause: Clause, boost: f32) -> Clause {
+    if boost == 1.0 {
+        clause
+    } else {
+        Clause::Boost(Box::new(BoostQuery::new(clause, boost)))
+    }
 }
 
 /// Runs `text` through `analyzer` (if any), returning the resulting term
@@ -289,6 +452,7 @@ fn analyze_term_text(analyzer: Option<&Analyzer>, text: &str) -> Vec<String> {
 fn no_match_clause() -> Clause {
     Clause::Boolean(Box::new(BooleanQuery {
         must: Vec::new(),
+        filter: Vec::new(),
         should: Vec::new(),
         must_not: Vec::new(),
         minimum_should_match: 0,
@@ -312,6 +476,16 @@ struct Parser<'a> {
     pos: usize,
     default_field: Option<&'a str>,
     analyzer: Option<&'a Analyzer>,
+    default_operator: DefaultOperator,
+    /// `MultiFieldQueryParser.fields` + `.boosts`, or empty for the
+    /// single-field parser. See [`parse_multi_field_query_with_boosts`].
+    multi_fields: &'a [(String, f32)],
+    /// Set by [`Self::parse_term`]/[`Self::parse_atom`] whenever an atom fell
+    /// back to `default_field` -- i.e. Java's `field == null` condition inside
+    /// `MultiFieldQueryParser.getFieldQuery`. Cleared by
+    /// [`Self::parse_boosted_atom`] once it has expanded that atom, so an
+    /// enclosing group never expands a second time.
+    used_default_field: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -331,17 +505,20 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Parses a sequence of `modifier? atom boost?` clauses until end of
-    /// input or (when `inside_group`) a closing `)`, combining them into a
-    /// single [`Clause`]: if exactly one clause was found with the default
-    /// (`Should`) modifier, that clause is returned unwrapped; otherwise
-    /// they're grouped into a [`Clause::Boolean`] by `Occur` bucket.
+    /// `QueryParser.Query(field)`: `(Modifiers Clause) (Conjunction Modifiers
+    /// Clause)*`, folded into a [`Clause`] by [`Self::add_clause`] --
+    /// `QueryParserBase.addClause`'s exact `conj`/`mods`/`defaultOperator`
+    /// truth table, including its retroactive rewrite of the *previous*
+    /// clause when an `AND`/`OR` follows it.
+    ///
+    /// As in Java, a query whose clause list collapsed to exactly one entry
+    /// that carried no modifier is returned unwrapped rather than as a
+    /// one-clause [`BooleanQuery`] (`clauses.size() == 1 && firstQuery !=
+    /// null`).
     fn parse_clause_list(&mut self, inside_group: bool) -> Result<Clause, ParseError> {
-        let mut must = Vec::new();
-        let mut should = Vec::new();
-        let mut must_not = Vec::new();
-        let mut only_clause: Option<Clause> = None;
-        let mut count = 0usize;
+        let mut clauses: Vec<(Occur, Clause)> = Vec::new();
+        let mut first_query: Option<Clause> = None;
+        let mut first = true;
 
         loop {
             self.skip_ws();
@@ -352,97 +529,421 @@ impl<'a> Parser<'a> {
                 _ => {}
             }
 
-            let occur = match self.peek() {
-                Some('+') => {
-                    self.advance();
-                    Occur::Must
-                }
-                Some('-') => {
-                    self.advance();
-                    Occur::MustNot
-                }
-                _ => Occur::Should,
-            };
-
-            let clause = self.parse_boosted_atom()?;
-            count += 1;
-            match occur {
-                Occur::Must => must.push(clause.clone()),
-                Occur::Should => should.push(clause.clone()),
-                Occur::MustNot => must_not.push(clause.clone()),
-            }
-            if count == 1 && occur == Occur::Should {
-                only_clause = Some(clause);
+            // `Conjunction()` -- never consumed before the first clause
+            // (Java's grammar only allows one from the second iteration on).
+            let conj = if first {
+                Conjunction::None
             } else {
-                only_clause = None;
+                self.parse_conjunction()
+            };
+            self.skip_ws();
+            if self.peek().is_none() {
+                return Err(ParseError::UnexpectedEnd("a clause after a conjunction"));
             }
+
+            let mods = self.parse_modifiers();
+            self.skip_ws();
+            let clause = self.parse_boosted_atom()?;
+
+            if first && mods == Modifier::None {
+                first_query = Some(clause.clone());
+            }
+            if !first && first_query.is_some() {
+                first_query = None;
+            }
+            self.add_clause(&mut clauses, conj, mods, clause);
+            first = false;
         }
 
-        if count == 0 {
+        if clauses.is_empty() {
             return Err(ParseError::EmptyQuery);
         }
-        if count == 1 {
-            if let Some(clause) = only_clause {
+        if clauses.len() == 1 {
+            if let Some(clause) = first_query {
                 return Ok(clause);
+            }
+        }
+
+        let mut must = Vec::new();
+        let mut should = Vec::new();
+        let mut must_not = Vec::new();
+        for (occur, clause) in clauses {
+            match occur {
+                Occur::Must => must.push(clause),
+                Occur::Should => should.push(clause),
+                Occur::MustNot => must_not.push(clause),
             }
         }
         Ok(Clause::Boolean(Box::new(BooleanQuery {
             must,
+            // `QueryParserBase.addClause` never produces `Occur.FILTER`: its
+            // three outcomes are MUST (`+`/`AND`), SHOULD and MUST_NOT
+            // (`-`/`NOT`). Classic query syntax has no filter operator.
+            filter: Vec::new(),
             should,
             must_not,
             minimum_should_match: 0,
         })))
     }
 
-    /// `atom boost?` -- parses one atom (a group or a term) then an optional
-    /// trailing `^number`.
+    /// `QueryParserBase.addClause`, verbatim -- including the two retroactive
+    /// rewrites of the previous clause that make `a AND b` and (under
+    /// `AND_OPERATOR`) `a OR b` come out right, and the operator-dependent
+    /// `required`/`prohibited` derivation.
+    fn add_clause(
+        &self,
+        clauses: &mut Vec<(Occur, Clause)>,
+        conj: Conjunction,
+        mods: Modifier,
+        query: Clause,
+    ) {
+        // "If this term is introduced by AND, make the preceding term
+        // required, unless it's already prohibited."
+        if conj == Conjunction::And {
+            if let Some(last) = clauses.last_mut() {
+                if last.0 != Occur::MustNot {
+                    last.0 = Occur::Must;
+                }
+            }
+        }
+        // "If this term is introduced by OR, make the preceding term
+        // optional, unless it's prohibited" -- only under AND_OPERATOR, where
+        // the preceding term would otherwise already be required.
+        if self.default_operator == DefaultOperator::And && conj == Conjunction::Or {
+            if let Some(last) = clauses.last_mut() {
+                if last.0 != Occur::MustNot {
+                    last.0 = Occur::Should;
+                }
+            }
+        }
+
+        let (required, prohibited) = match self.default_operator {
+            DefaultOperator::Or => {
+                let prohibited = mods == Modifier::Not;
+                let required =
+                    mods == Modifier::Required || (conj == Conjunction::And && !prohibited);
+                (required, prohibited)
+            }
+            DefaultOperator::And => {
+                let prohibited = mods == Modifier::Not;
+                let required = !prohibited && conj != Conjunction::Or;
+                (required, prohibited)
+            }
+        };
+        let occur = match (required, prohibited) {
+            (true, false) => Occur::Must,
+            (false, false) => Occur::Should,
+            // `required && prohibited` is unreachable: `required` is only ever
+            // set when `prohibited` is false in both branches above, exactly
+            // as Java's `throw new RuntimeException("Clause cannot be both
+            // required and prohibited")` is unreachable there.
+            (_, true) => Occur::MustNot,
+        };
+        clauses.push((occur, query));
+    }
+
+    /// `QueryParser.Conjunction()`: `AND` / `&&` / `OR` / `||`, or nothing.
+    ///
+    /// The word forms are recognized only when the whole bareword token is
+    /// exactly `AND`/`OR` (uppercase, and not a prefix of a longer word) --
+    /// the same thing JavaCC's longest-match-then-first-rule tokenizer does
+    /// with `<AND: ("AND"|"&&")>` declared ahead of `<TERM>`, which is why
+    /// `ANDROID` is a term and `AND` is an operator.
+    fn parse_conjunction(&mut self) -> Conjunction {
+        if self.try_consume_symbol("&&") {
+            return Conjunction::And;
+        }
+        if self.try_consume_symbol("||") {
+            return Conjunction::Or;
+        }
+        if self.try_consume_keyword("AND") {
+            return Conjunction::And;
+        }
+        if self.try_consume_keyword("OR") {
+            return Conjunction::Or;
+        }
+        Conjunction::None
+    }
+
+    /// `QueryParser.Modifiers()`: `+` / `-` / `NOT` / `!`, or nothing.
+    fn parse_modifiers(&mut self) -> Modifier {
+        match self.peek() {
+            Some('+') => {
+                self.advance();
+                Modifier::Required
+            }
+            Some('-') => {
+                self.advance();
+                Modifier::Not
+            }
+            Some('!') => {
+                self.advance();
+                Modifier::Not
+            }
+            _ => {
+                if self.try_consume_keyword("NOT") {
+                    Modifier::Not
+                } else {
+                    Modifier::None
+                }
+            }
+        }
+    }
+
+    /// Consumes `symbol` if it sits at the cursor. Used for `&&`/`||`, which
+    /// -- unlike `AND`/`OR` -- need no word boundary after them.
+    fn try_consume_symbol(&mut self, symbol: &str) -> bool {
+        let chars: Vec<char> = symbol.chars().collect();
+        if self.chars[self.pos..].starts_with(&chars) {
+            self.pos += chars.len();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Consumes `keyword` if the *whole* bareword token at the cursor is
+    /// exactly it -- i.e. the next character after it is not another bareword
+    /// character. `AND`/`OR`/`NOT` are matched case-sensitively, as real
+    /// `QueryParser`'s grammar does.
+    fn try_consume_keyword(&mut self, keyword: &str) -> bool {
+        let chars: Vec<char> = keyword.chars().collect();
+        if !self.chars[self.pos..].starts_with(&chars) {
+            return false;
+        }
+        let after = self.chars.get(self.pos + chars.len()).copied();
+        // A bareword character right after means this is a longer term
+        // ("ANDROID", "NOTHING"), not the operator.
+        if let Some(c) = after {
+            if !is_term_stop_char(c) || c == ':' {
+                return false;
+            }
+        }
+        self.pos += chars.len();
+        true
+    }
+
+    /// `QueryParser.Term`'s suffix rule, applied to any atom:
+    /// `[ '^' boost [ '~' n ] | '~' n [ '^' boost ] ]` -- real Lucene accepts
+    /// the fuzziness/phrase-slop marker and the boost in **either** order, and
+    /// at most one of each.
     fn parse_boosted_atom(&mut self) -> Result<Clause, ParseError> {
-        let clause = self.parse_atom()?;
-        self.skip_ws_within_atom();
+        let atom_start = self.pos;
+        self.used_default_field = false;
+        let clause = self.parse_atom_with_suffixes()?;
+        if self.multi_fields.len() > 1 && self.used_default_field {
+            self.used_default_field = false;
+            return self.expand_across_fields(atom_start, clause);
+        }
+        self.used_default_field = false;
+        Ok(clause)
+    }
+
+    /// `MultiFieldQueryParser.getMultiFieldQuery(queries)`: the same atom,
+    /// once per configured field, joined as `SHOULD` clauses.
+    ///
+    /// Java expands inside `getFieldQuery(null, ...)` -- calling
+    /// `super.getFieldQuery(fields[i], queryText, quoted)` per field and
+    /// `builder.add(sub, Occur.SHOULD)` -- so the disjunction sits at the
+    /// *leaf*, under the outer query's own conjunctions and modifiers.
+    /// `cat AND dog` over `title`/`body` is therefore
+    /// `+(title:cat body:cat) +(title:dog body:dog)`, which requires each term
+    /// in *some* field, and not `+(title:cat title:dog) +(body:cat body:dog)`,
+    /// which would require both terms in the same field. Re-parsing the atom's
+    /// own span once per field reproduces that placement exactly.
+    ///
+    /// Two things about doing it by re-parsing rather than by rewriting the
+    /// built clause:
+    ///
+    /// - **The precondition that makes it faithful is that a bare term never
+    ///   becomes a multi-clause `BooleanQuery` here.** Java's `maxTerms` loop
+    ///   zips per *analyzed token* -- `(title:t1 body:t1) (title:t2 body:t2)`
+    ///   -- whereas re-parsing a span per field groups per *field*:
+    ///   `(title:(t1 t2)) (body:(t1 t2))`. Those are different queries. They
+    ///   coincide here only because [`clause_from_analyzed_terms`] turns
+    ///   a multi-token bareword into a single [`Clause::Phrase`], never a
+    ///   multi-clause `BooleanQuery`, which is Java's `else if (termNum == 0)`
+    ///   branch with `maxTerms == 1` -- one sub-query per field, zipped
+    ///   trivially. **If `clause_from_analyzed_terms` ever gains a `Boolean`
+    ///   shape, this expansion silently produces the wrong query and must be
+    ///   changed to zip.** (A single `Analyzer` for all fields is a separate,
+    ///   smaller point: Java calls `super.getFieldQuery(fields[i], ...)` per
+    ///   field so a *per-field* analyzer can differ, and this parser has
+    ///   none, so every field's parse of the same span is identical.)
+    /// - **Nested groups expand once, not twice.** `used_default_field` is
+    ///   cleared here, so `(cat dog)` has each of `cat`/`dog` expanded by its
+    ///   own `parse_boosted_atom` and the enclosing group sees no bare field
+    ///   left to expand. The re-parse also runs with `multi_fields` disabled
+    ///   for the same reason.
+    ///
+    /// A per-field boost wraps that field's clause in a [`BoostQuery`], as
+    /// Java's `new BoostQuery(q, boost)` does. A `^n` written in the query
+    /// text is *inside* each expansion here and *outside* the disjunction in
+    /// Java; the two score identically, because a `SHOULD` `BooleanQuery`
+    /// sums its clauses' scores and `sum(b * s_i) == b * sum(s_i)`.
+    fn expand_across_fields(
+        &mut self,
+        atom_start: usize,
+        first: Clause,
+    ) -> Result<Clause, ParseError> {
+        let atom_end = self.pos;
+        let fields = self.multi_fields;
+        let mut should = Vec::with_capacity(fields.len());
+        should.push(apply_field_boost(first, fields[0].1));
+        for (field, boost) in &fields[1..] {
+            let mut sub = Parser {
+                chars: self.chars,
+                pos: atom_start,
+                default_field: Some(field),
+                analyzer: self.analyzer,
+                default_operator: self.default_operator,
+                multi_fields: &[],
+                used_default_field: false,
+            };
+            let clause = sub.parse_atom_with_suffixes()?;
+            debug_assert_eq!(
+                sub.pos, atom_end,
+                "re-parsing the same span must consume the same characters"
+            );
+            should.push(apply_field_boost(clause, *boost));
+        }
+        self.pos = atom_end;
+        Ok(Clause::Boolean(Box::new(
+            BooleanQuery::new().with_should(should),
+        )))
+    }
+
+    /// The body of what used to be `parse_boosted_atom`: one atom plus its
+    /// `^boost` / `~slop` suffixes, in either order.
+    fn parse_atom_with_suffixes(&mut self) -> Result<Clause, ParseError> {
+        let atom = self.parse_atom()?;
+        let (mut clause, bare) = atom;
+
+        let mut boost: Option<f32> = None;
         if self.peek() == Some('^') {
-            let start = self.pos;
-            self.advance();
-            let num_start = self.pos;
-            while matches!(self.peek(), Some(c) if c.is_ascii_digit() || c == '.') {
-                self.pos += 1;
+            boost = Some(self.parse_boost()?);
+            if self.peek() == Some('~') {
+                clause = self.parse_tilde_suffix(clause, bare)?;
             }
-            let text: String = self.chars[num_start..self.pos].iter().collect();
-            let boost: f32 = text
-                .parse()
-                .map_err(|_| ParseError::InvalidBoost(start, text.clone()))?;
-            if !boost.is_finite() {
-                return Err(ParseError::InvalidBoost(start, text));
+        } else if self.peek() == Some('~') {
+            clause = self.parse_tilde_suffix(clause, bare)?;
+            if self.peek() == Some('^') {
+                boost = Some(self.parse_boost()?);
             }
+        }
+
+        if let Some(boost) = boost {
             return Ok(Clause::Boost(Box::new(BoostQuery::new(clause, boost))));
         }
         Ok(clause)
     }
 
-    /// No whitespace is actually permitted between an atom and its `^boost`
-    /// in this grammar (real Lucene doesn't allow it either) -- this is a
-    /// no-op placeholder kept so `parse_boosted_atom`'s intent (look for `^`
-    /// immediately after the atom) reads clearly at the call site.
-    fn skip_ws_within_atom(&mut self) {}
+    /// `<CARAT> <NUMBER>`.
+    fn parse_boost(&mut self) -> Result<f32, ParseError> {
+        let start = self.pos;
+        self.advance(); // consume '^'
+        let num_start = self.pos;
+        while matches!(self.peek(), Some(c) if c.is_ascii_digit() || c == '.') {
+            self.pos += 1;
+        }
+        let text: String = self.chars[num_start..self.pos].iter().collect();
+        let boost: f32 = text
+            .parse()
+            .map_err(|_| ParseError::InvalidBoost(start, text.clone()))?;
+        if !boost.is_finite() {
+            return Err(ParseError::InvalidBoost(start, text));
+        }
+        Ok(boost)
+    }
 
-    fn parse_atom(&mut self) -> Result<Clause, ParseError> {
+    /// `<FUZZY_SLOP>` (`'~' [digits ['.' digits]]`) applied to an already-built
+    /// atom -- real Lucene's one token serving two purposes:
+    ///
+    /// - after a quoted phrase it is the **phrase slop**
+    ///   (`handleQuotedTerm`: `(int) Float.parseFloat(...)`, so a fractional
+    ///   value truncates, and a bare `~` leaves the default slop of 0);
+    /// - after a bareword it is the **fuzzy edit distance**
+    ///   (`handleBareFuzzy`), rejected when fractional and `>= 1.0`
+    ///   ("Fractional edit distances are not allowed!") and capped at
+    ///   `LevenshteinAutomata.MAXIMUM_SUPPORTED_DISTANCE == 2` here;
+    /// - after a wildcard/prefix bareword it is **ignored**, because
+    ///   `handleBareTokenQuery` checks `wildcard`/`prefix` *before* `fuzzy`;
+    /// - after anything else (a group, a range) real Lucene's grammar has no
+    ///   production for it at all, so it is a
+    ///   [`ParseError::UnsupportedSyntax`] rather than a silent no-op.
+    fn parse_tilde_suffix(
+        &mut self,
+        clause: Clause,
+        bare: Option<BareToken>,
+    ) -> Result<Clause, ParseError> {
+        let tilde_pos = self.pos;
+        self.advance(); // consume '~'
+        let digits_start = self.pos;
+        while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
+            self.pos += 1;
+        }
+        let integer_part: String = self.chars[digits_start..self.pos].iter().collect();
+        let mut fractional = false;
+        if self.peek() == Some('.') {
+            fractional = true;
+            self.pos += 1;
+            while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
+                self.pos += 1;
+            }
+        }
+        let text: String = self.chars[digits_start..self.pos].iter().collect();
+
+        match clause {
+            Clause::Phrase(phrase) => {
+                // `handleQuotedTerm`: `(int) Float.parseFloat(image)`, i.e. a
+                // fractional slop truncates toward zero; an unparsable value
+                // silently keeps the default (Java swallows the exception).
+                let slop = text.parse::<f32>().map(|v| v as u32).unwrap_or(0);
+                Ok(Clause::Phrase(phrase.with_slop(slop)))
+            }
+            // `handleBareTokenQuery` checks wildcard/prefix before fuzzy.
+            other @ (Clause::Wildcard(_) | Clause::Prefix(_)) => Ok(other),
+            _ => {
+                let Some(BareToken::Text { field, text: term }) = bare else {
+                    return Err(ParseError::UnsupportedSyntax(
+                        tilde_pos,
+                        "'~' is only meaningful after a quoted phrase or a bareword".to_string(),
+                    ));
+                };
+                if fractional {
+                    return Err(ParseError::InvalidFuzziness(tilde_pos, text));
+                }
+                let mut fuzzy = FuzzyQuery::new(field, term);
+                if !integer_part.is_empty() {
+                    let edits: u32 = integer_part.parse().map_err(|_| {
+                        ParseError::InvalidFuzziness(tilde_pos, integer_part.clone())
+                    })?;
+                    if edits > 2 {
+                        return Err(ParseError::InvalidFuzziness(tilde_pos, integer_part));
+                    }
+                    fuzzy = fuzzy.with_max_edits(edits as u8);
+                }
+                Ok(Clause::Fuzzy(fuzzy))
+            }
+        }
+    }
+
+    /// One atom, plus (when it was a plain bareword) the raw token it came
+    /// from -- [`Self::parse_tilde_suffix`] needs the *unanalyzed* term text
+    /// to build a `FuzzyQuery`, since real Lucene's `getFuzzyQuery` never runs
+    /// the analyzer over a fuzzy term.
+    fn parse_atom(&mut self) -> Result<(Clause, Option<BareToken>), ParseError> {
         match self.peek() {
             None => Err(ParseError::UnexpectedEnd("an atom")),
-            Some('(') => self.parse_group(),
-            Some('[') => {
+            Some('(') => Ok((self.parse_group()?, None)),
+            Some('[') | Some('{') => {
                 let start = self.pos;
                 let field = self
                     .default_field
                     .map(str::to_string)
                     .ok_or(ParseError::MissingField(start))?;
-                self.parse_range(&field)
-            }
-            Some('{') => {
-                let start = self.pos;
-                let field = self
-                    .default_field
-                    .map(str::to_string)
-                    .ok_or(ParseError::MissingField(start))?;
-                self.parse_range(&field)
+                self.used_default_field = true;
+                Ok((self.parse_range(&field)?, None))
             }
             Some(')') => Err(ParseError::UnexpectedChar(self.pos, ')')),
             _ => self.parse_term(),
@@ -467,21 +968,23 @@ impl<'a> Parser<'a> {
     }
 
     /// `(field ':')? termbody`
-    fn parse_term(&mut self) -> Result<Clause, ParseError> {
+    fn parse_term(&mut self) -> Result<(Clause, Option<BareToken>), ParseError> {
         let start = self.pos;
         let field = self.try_parse_field()?;
         let field = match field {
             Some(f) => f,
-            None => self
-                .default_field
-                .map(str::to_string)
-                .ok_or(ParseError::MissingField(start))?,
+            None => {
+                self.used_default_field = true;
+                self.default_field
+                    .map(str::to_string)
+                    .ok_or(ParseError::MissingField(start))?
+            }
         };
 
         match self.peek() {
-            Some('"') => self.parse_phrase(&field),
-            Some('/') => self.parse_regexp(&field),
-            Some('[') | Some('{') => self.parse_range(&field),
+            Some('"') => Ok((self.parse_phrase(&field)?, None)),
+            Some('/') => Ok((self.parse_regexp(&field)?, None)),
+            Some('[') | Some('{') => Ok((self.parse_range(&field)?, None)),
             None => Err(ParseError::UnexpectedEnd("a term after ':'")),
             _ => self.parse_wordterm(&field),
         }
@@ -680,11 +1183,12 @@ impl<'a> Parser<'a> {
         Ok(Clause::Regexp(RegexpQuery::new(field, text)))
     }
 
-    /// A bareword: runs of non-whitespace, non-`"/():^` characters (with
-    /// `\`-escaping of any byte), optionally followed by `~digits?` (fuzzy).
-    /// Decides between `Term`/`Wildcard`/`Prefix`/`Fuzzy` per the module
-    /// doc's disambiguation rules.
-    fn parse_wordterm(&mut self, field: &str) -> Result<Clause, ParseError> {
+    /// A bareword: runs of non-whitespace, non-`"/():^~` characters (with
+    /// `\`-escaping of any byte). Decides between `Term`/`Wildcard`/`Prefix`
+    /// per the module doc's disambiguation rules; a trailing `~` (fuzzy) is
+    /// [`Self::parse_tilde_suffix`]'s job, which is why a plain bareword also
+    /// returns its raw, *unanalyzed* text as a [`BareToken`].
+    fn parse_wordterm(&mut self, field: &str) -> Result<(Clause, Option<BareToken>), ParseError> {
         // `text` is the fully-unescaped bareword, used for Term/Fuzzy/Prefix
         // (none of which re-interpret `\` at resolve time -- `PrefixQuery`
         // never does, and Term/Fuzzy match byte-for-byte). `wildcard_text`
@@ -748,39 +1252,6 @@ impl<'a> Parser<'a> {
             ));
         }
 
-        // Fuzzy suffix: '~' immediately followed by an optional plain
-        // integer (no decimal point -- see module doc's deferred list).
-        if self.peek() == Some('~') {
-            let tilde_pos = self.pos;
-            self.advance();
-            let digit_start = self.pos;
-            while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
-                self.pos += 1;
-            }
-            let digits: String = self.chars[digit_start..self.pos].iter().collect();
-            // A following '.' means a fractional similarity was requested,
-            // which this module doesn't support (see module doc).
-            if self.peek() == Some('.') {
-                let bad_start = digit_start;
-                while matches!(self.peek(), Some(c) if c.is_ascii_digit() || c == '.') {
-                    self.pos += 1;
-                }
-                let text: String = self.chars[bad_start..self.pos].iter().collect();
-                return Err(ParseError::InvalidFuzziness(tilde_pos, text));
-            }
-            let mut fuzzy = FuzzyQuery::new(field, text);
-            if !digits.is_empty() {
-                let edits: u32 = digits
-                    .parse()
-                    .map_err(|_| ParseError::InvalidFuzziness(tilde_pos, digits.clone()))?;
-                if edits > 2 {
-                    return Err(ParseError::InvalidFuzziness(tilde_pos, digits));
-                }
-                fuzzy = fuzzy.with_max_edits(edits as u8);
-            }
-            return Ok(Clause::Fuzzy(fuzzy));
-        }
-
         if has_wildcard_char {
             // A prefix query is exactly "one genuine, unescaped trailing
             // star, no genuine `?` anywhere" -- checked against the counts
@@ -796,14 +1267,31 @@ impl<'a> Parser<'a> {
                 // for the prefix literal: PrefixQuery never re-interprets
                 // backslashes, so the fully-unescaped `text` is correct here.
                 let prefix = text[..text.len() - 1].to_string();
-                return Ok(Clause::Prefix(PrefixQuery::new(field, prefix)));
+                return Ok((Clause::Prefix(PrefixQuery::new(field, prefix)), None));
             }
-            return Ok(Clause::Wildcard(WildcardQuery::new(field, wildcard_text)));
+            return Ok((
+                Clause::Wildcard(WildcardQuery::new(field, wildcard_text)),
+                None,
+            ));
         }
 
         let terms = analyze_term_text(self.analyzer, &text);
-        Ok(clause_from_analyzed_terms(field, terms))
+        Ok((
+            clause_from_analyzed_terms(field, terms),
+            Some(BareToken::Text {
+                field: field.to_string(),
+                text,
+            }),
+        ))
     }
+}
+
+/// The raw bareword one atom was built from, carried alongside the built
+/// [`Clause`] so a following `~` can build a `FuzzyQuery` from the
+/// *unanalyzed* term -- real Lucene's `getFuzzyQuery` never runs the analyzer
+/// over a fuzzy term either.
+enum BareToken {
+    Text { field: String, text: String },
 }
 
 fn is_field_char(c: char) -> bool {
@@ -821,6 +1309,457 @@ fn is_term_stop_char(c: char) -> bool {
 mod tests {
     use super::*;
     use crate::query::{BooleanQuery, PrefixQuery, WildcardQuery};
+
+    // --- `AND`/`OR`/`NOT` operators (`QueryParserBase.addClause`) ---
+
+    fn boolean(clause: &Clause) -> &BooleanQuery {
+        match clause {
+            Clause::Boolean(b) => b,
+            other => panic!("expected a BooleanQuery, got {other:?}"),
+        }
+    }
+
+    // --- `MultiFieldQueryParser` -------------------------------------------
+
+    fn term(field: &str, t: &str) -> Clause {
+        Clause::Term(TermQuery::new(field, t))
+    }
+
+    fn should_over(clauses: Vec<Clause>) -> Clause {
+        Clause::Boolean(Box::new(BooleanQuery::new().with_should(clauses)))
+    }
+
+    #[test]
+    fn a_bare_term_fans_out_across_every_field_as_should() {
+        // `getMultiFieldQuery` adds each field's sub-query with Occur.SHOULD.
+        assert_eq!(
+            parse_multi_field_query("cat", &["title", "body"], None).unwrap(),
+            should_over(vec![term("title", "cat"), term("body", "cat")])
+        );
+    }
+
+    #[test]
+    fn an_explicitly_fielded_term_is_left_alone() {
+        // Java's `field != null` branch: no fan-out, no boost lookup.
+        let clause = parse_multi_field_query("title:cat dog", &["title", "body"], None).unwrap();
+        let b = boolean(&clause);
+        assert_eq!(
+            b.should,
+            vec![
+                term("title", "cat"),
+                should_over(vec![term("title", "dog"), term("body", "dog")]),
+            ]
+        );
+    }
+
+    /// The reason the disjunction has to sit at the *leaf*: with
+    /// `AND_OPERATOR`, Java documents `+(title:t1 body:t1) +(title:t2 body:t2)`
+    /// -- each term required in *some* field. Expanding at the top instead
+    /// (`+(title:t1 title:t2) +(body:t1 body:t2)`) would require both terms in
+    /// the same field, a different query.
+    #[test]
+    fn the_disjunction_sits_under_the_conjunction_not_over_it() {
+        let clause = parse_multi_field_query_with_boosts(
+            "cat dog",
+            &[("title", 1.0), ("body", 1.0)],
+            None,
+            DefaultOperator::And,
+        )
+        .unwrap();
+        let b = boolean(&clause);
+        assert!(b.should.is_empty());
+        assert_eq!(
+            b.must,
+            vec![
+                should_over(vec![term("title", "cat"), term("body", "cat")]),
+                should_over(vec![term("title", "dog"), term("body", "dog")]),
+            ]
+        );
+    }
+
+    #[test]
+    fn per_field_boosts_wrap_each_fields_own_clause() {
+        // Java's documented example: `+(title:t^5.0 body:t^10.0)`.
+        let clause = parse_multi_field_query_with_boosts(
+            "cat",
+            &[("title", 5.0), ("body", 10.0)],
+            None,
+            DefaultOperator::Or,
+        )
+        .unwrap();
+        assert_eq!(
+            clause,
+            should_over(vec![
+                Clause::Boost(Box::new(BoostQuery::new(term("title", "cat"), 5.0))),
+                Clause::Boost(Box::new(BoostQuery::new(term("body", "cat"), 10.0))),
+            ])
+        );
+        // A boost of 1.0 is Java's "no entry in the boosts map": unwrapped.
+        assert_eq!(
+            parse_multi_field_query_with_boosts(
+                "cat",
+                &[("title", 1.0), ("body", 2.0)],
+                None,
+                DefaultOperator::Or
+            )
+            .unwrap(),
+            should_over(vec![
+                term("title", "cat"),
+                Clause::Boost(Box::new(BoostQuery::new(term("body", "cat"), 2.0))),
+            ])
+        );
+    }
+
+    #[test]
+    fn every_bare_atom_shape_fans_out_not_just_plain_terms() {
+        // `getPrefixQuery`/`getWildcardQuery`/`getFuzzyQuery`/`getRegexpQuery`/
+        // `getRangeQuery` all have the same `field == null` fan-out.
+        let fields = ["title", "body"];
+        assert_eq!(
+            parse_multi_field_query("ca*", &fields, None).unwrap(),
+            should_over(vec![
+                Clause::Prefix(PrefixQuery::new("title", "ca")),
+                Clause::Prefix(PrefixQuery::new("body", "ca")),
+            ])
+        );
+        let wild = parse_multi_field_query("c?t", &fields, None).unwrap();
+        assert_eq!(
+            wild,
+            should_over(vec![
+                Clause::Wildcard(WildcardQuery::new("title", "c?t")),
+                Clause::Wildcard(WildcardQuery::new("body", "c?t")),
+            ])
+        );
+        // A quoted phrase, and a phrase with slop.
+        let phrase = parse_multi_field_query("\"a b\"~2", &fields, None).unwrap();
+        let b = boolean(&phrase);
+        assert_eq!(b.should.len(), 2);
+        // And a range, whose bare form uses the default field in Java too.
+        let range = parse_multi_field_query("[1 TO 9]", &fields, None).unwrap();
+        assert_eq!(boolean(&range).should.len(), 2);
+    }
+
+    #[test]
+    fn a_group_expands_its_members_once_each_not_the_whole_group_again() {
+        // `(cat dog)` must be `((title:cat body:cat) (title:dog body:dog))`,
+        // not a group duplicated per field.
+        let clause = parse_multi_field_query("(cat dog)", &["title", "body"], None).unwrap();
+        let b = boolean(&clause);
+        assert_eq!(
+            b.should,
+            vec![
+                should_over(vec![term("title", "cat"), term("body", "cat")]),
+                should_over(vec![term("title", "dog"), term("body", "dog")]),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_query_text_boost_over_a_fanned_out_atom_keeps_working() {
+        // `cat^2` over two fields: the boost lands inside each expansion here
+        // and outside the disjunction in Java. A SHOULD BooleanQuery sums its
+        // clauses' scores, so `sum(b * s_i) == b * sum(s_i)` -- the same query.
+        let clause = parse_multi_field_query("cat^2", &["title", "body"], None).unwrap();
+        assert_eq!(
+            clause,
+            should_over(vec![
+                Clause::Boost(Box::new(BoostQuery::new(term("title", "cat"), 2.0))),
+                Clause::Boost(Box::new(BoostQuery::new(term("body", "cat"), 2.0))),
+            ])
+        );
+    }
+
+    #[test]
+    fn one_field_is_exactly_the_single_field_parser() {
+        assert_eq!(
+            parse_multi_field_query("cat AND dog", &["body"], None).unwrap(),
+            parse_query("cat AND dog", Some("body")).unwrap()
+        );
+    }
+
+    #[test]
+    fn no_fields_and_empty_input_are_clean_errors() {
+        assert!(matches!(
+            parse_multi_field_query("cat", &[], None),
+            Err(ParseError::MissingField(0))
+        ));
+        assert!(matches!(
+            parse_multi_field_query("   ", &["body"], None),
+            Err(ParseError::EmptyQuery)
+        ));
+    }
+
+    #[test]
+    fn a_parse_error_inside_a_fanned_out_atom_still_surfaces() {
+        // The re-parse must propagate its error, not swallow it.
+        assert!(parse_multi_field_query("cat^bad", &["title", "body"], None).is_err());
+    }
+
+    #[test]
+    fn multi_field_parsing_runs_the_analyzer_the_same_way_for_every_field() {
+        let analyzer = lucene_analysis::Analyzer::standard(None);
+        let clause = parse_multi_field_query("Cats", &["title", "body"], Some(&analyzer)).unwrap();
+        let b = boolean(&clause);
+        assert_eq!(b.should.len(), 2);
+        // Whatever the analyzer produced, both fields got the same term.
+        let terms: Vec<String> = b
+            .should
+            .iter()
+            .map(|c| match c {
+                Clause::Term(t) => String::from_utf8(t.term.clone()).unwrap(),
+                other => panic!("expected a term, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(terms[0], terms[1]);
+    }
+
+    #[test]
+    fn and_makes_both_sides_required() {
+        // Java's retroactive rewrite: the clause *before* an AND becomes MUST
+        // too, so `a AND b` is `+a +b`, not `a +b`.
+        let clause = parse_query("cat AND dog", Some("body")).unwrap();
+        let b = boolean(&clause);
+        assert_eq!(
+            b.must,
+            vec![
+                Clause::Term(TermQuery::new("body", "cat")),
+                Clause::Term(TermQuery::new("body", "dog")),
+            ]
+        );
+        assert!(b.should.is_empty() && b.must_not.is_empty());
+    }
+
+    #[test]
+    fn ampersand_ampersand_is_an_alias_for_and() {
+        assert_eq!(
+            parse_query("cat && dog", Some("body")).unwrap(),
+            parse_query("cat AND dog", Some("body")).unwrap()
+        );
+        assert_eq!(
+            parse_query("cat || dog", Some("body")).unwrap(),
+            parse_query("cat OR dog", Some("body")).unwrap()
+        );
+        assert_eq!(
+            parse_query("cat AND !dog", Some("body")).unwrap(),
+            parse_query("cat AND NOT dog", Some("body")).unwrap()
+        );
+    }
+
+    #[test]
+    fn or_under_the_default_or_operator_leaves_both_sides_optional() {
+        let clause = parse_query("cat OR dog", Some("body")).unwrap();
+        let b = boolean(&clause);
+        assert_eq!(
+            b.should,
+            vec![
+                Clause::Term(TermQuery::new("body", "cat")),
+                Clause::Term(TermQuery::new("body", "dog")),
+            ]
+        );
+        assert!(b.must.is_empty());
+        // Adjacent clauses with no conjunction mean the same thing under OR.
+        assert_eq!(clause, parse_query("cat dog", Some("body")).unwrap());
+    }
+
+    #[test]
+    fn not_is_a_modifier_identical_to_minus() {
+        let with_not = parse_query("cat AND NOT dog", Some("body")).unwrap();
+        let with_minus = parse_query("cat AND -dog", Some("body")).unwrap();
+        assert_eq!(with_not, with_minus);
+        let b = boolean(&with_not);
+        assert_eq!(b.must, vec![Clause::Term(TermQuery::new("body", "cat"))]);
+        assert_eq!(
+            b.must_not,
+            vec![Clause::Term(TermQuery::new("body", "dog"))]
+        );
+    }
+
+    #[test]
+    fn and_does_not_promote_a_prohibited_preceding_clause() {
+        // "unless it's already prohibited": `-a AND b` keeps `a` as MUST_NOT.
+        let clause = parse_query("-cat AND dog", Some("body")).unwrap();
+        let b = boolean(&clause);
+        assert_eq!(
+            b.must_not,
+            vec![Clause::Term(TermQuery::new("body", "cat"))]
+        );
+        assert_eq!(b.must, vec![Clause::Term(TermQuery::new("body", "dog"))]);
+        assert!(b.should.is_empty());
+    }
+
+    #[test]
+    fn default_and_operator_makes_adjacent_clauses_required() {
+        let clause =
+            parse_query_with_operator("cat dog", Some("body"), None, DefaultOperator::And).unwrap();
+        let b = boolean(&clause);
+        assert_eq!(
+            b.must,
+            vec![
+                Clause::Term(TermQuery::new("body", "cat")),
+                Clause::Term(TermQuery::new("body", "dog")),
+            ]
+        );
+        assert!(b.should.is_empty());
+    }
+
+    #[test]
+    fn default_and_operator_or_demotes_the_preceding_clause() {
+        // The second retroactive rewrite: under AND_OPERATOR, `a OR b` must
+        // come out `a b`, not `+a b`.
+        let clause =
+            parse_query_with_operator("cat OR dog", Some("body"), None, DefaultOperator::And)
+                .unwrap();
+        let b = boolean(&clause);
+        assert_eq!(
+            b.should,
+            vec![
+                Clause::Term(TermQuery::new("body", "cat")),
+                Clause::Term(TermQuery::new("body", "dog")),
+            ]
+        );
+        assert!(b.must.is_empty());
+    }
+
+    #[test]
+    fn default_and_operator_keeps_an_explicit_plus_required() {
+        let clause =
+            parse_query_with_operator("+cat OR dog", Some("body"), None, DefaultOperator::And)
+                .unwrap();
+        let b = boolean(&clause);
+        // `+cat` is demoted by the following OR exactly as a bare `cat` would
+        // be -- Java's rewrite only skips *prohibited* clauses.
+        assert_eq!(b.should.len(), 2);
+    }
+
+    #[test]
+    fn and_or_not_are_only_operators_as_whole_uppercase_tokens() {
+        // "ANDROID"/"NOTHING" are longer tokens, "and" is lowercase: all
+        // ordinary terms, exactly as JavaCC's tokenizer decides.
+        assert_eq!(
+            parse_query("ANDROID", Some("body")).unwrap(),
+            Clause::Term(TermQuery::new("body", "ANDROID"))
+        );
+        assert_eq!(
+            parse_query("NOTHING", Some("body")).unwrap(),
+            Clause::Term(TermQuery::new("body", "NOTHING"))
+        );
+        let lowercase = parse_query("cat and dog", Some("body")).unwrap();
+        let b = boolean(&lowercase);
+        assert_eq!(b.should.len(), 3, "lowercase \"and\" is a term");
+        assert!(b.must.is_empty());
+    }
+
+    #[test]
+    fn operators_apply_inside_a_group_independently() {
+        let clause = parse_query("(cat AND dog) OR bird", Some("body")).unwrap();
+        let b = boolean(&clause);
+        assert_eq!(b.should.len(), 2);
+        let inner = boolean(&b.should[0]);
+        assert_eq!(inner.must.len(), 2);
+    }
+
+    #[test]
+    fn a_trailing_conjunction_is_an_error_not_a_silent_drop() {
+        assert_eq!(
+            parse_query("cat AND", Some("body")).unwrap_err(),
+            ParseError::UnexpectedEnd("a clause after a conjunction")
+        );
+    }
+
+    #[test]
+    fn a_leading_conjunction_is_parsed_as_a_term_like_javas_grammar() {
+        // Java's `Query()` production only allows a conjunction from the
+        // second clause on, so a leading `AND` is not a conjunction at all;
+        // here it falls through to `Modifiers()`/`Clause()` and lexes as the
+        // bareword it is, giving two SHOULD clauses.
+        let clause = parse_query("AND cat", Some("body")).unwrap();
+        let b = boolean(&clause);
+        assert_eq!(
+            b.should,
+            vec![
+                Clause::Term(TermQuery::new("body", "AND")),
+                Clause::Term(TermQuery::new("body", "cat")),
+            ]
+        );
+    }
+
+    // --- Phrase slop ---
+
+    #[test]
+    fn phrase_slop_sets_the_phrase_querys_slop() {
+        let clause = parse_query(r#"body:"quick fox"~3"#, None).unwrap();
+        assert_eq!(
+            clause,
+            Clause::Phrase(PhraseQuery::new("body", ["quick", "fox"]).with_slop(3))
+        );
+    }
+
+    #[test]
+    fn bare_tilde_after_a_phrase_leaves_the_default_slop() {
+        let clause = parse_query(r#"body:"quick fox"~"#, None).unwrap();
+        assert_eq!(
+            clause,
+            Clause::Phrase(PhraseQuery::new("body", ["quick", "fox"]))
+        );
+    }
+
+    #[test]
+    fn fractional_phrase_slop_truncates_like_javas_int_cast() {
+        let clause = parse_query(r#"body:"quick fox"~1.9"#, None).unwrap();
+        assert_eq!(
+            clause,
+            Clause::Phrase(PhraseQuery::new("body", ["quick", "fox"]).with_slop(1))
+        );
+    }
+
+    #[test]
+    fn phrase_slop_and_boost_parse_in_either_order() {
+        let slop_first = parse_query(r#"body:"quick fox"~2^3"#, None).unwrap();
+        let boost_first = parse_query(r#"body:"quick fox"^3~2"#, None).unwrap();
+        assert_eq!(slop_first, boost_first);
+        assert_eq!(
+            slop_first,
+            Clause::Boost(Box::new(BoostQuery::new(
+                Clause::Phrase(PhraseQuery::new("body", ["quick", "fox"]).with_slop(2)),
+                3.0,
+            )))
+        );
+    }
+
+    #[test]
+    fn fuzzy_and_boost_parse_in_either_order() {
+        let fuzzy_first = parse_query("body:cat~1^2", None).unwrap();
+        let boost_first = parse_query("body:cat^2~1", None).unwrap();
+        assert_eq!(fuzzy_first, boost_first);
+        assert_eq!(
+            fuzzy_first,
+            Clause::Boost(Box::new(BoostQuery::new(
+                Clause::Fuzzy(FuzzyQuery::new("body", "cat").with_max_edits(1)),
+                2.0,
+            )))
+        );
+    }
+
+    #[test]
+    fn tilde_after_a_wildcard_or_prefix_is_ignored_like_javas_precedence() {
+        // `handleBareTokenQuery` checks wildcard/prefix before fuzzy.
+        assert_eq!(
+            parse_query("body:ca*~2", None).unwrap(),
+            Clause::Prefix(PrefixQuery::new("body", "ca"))
+        );
+        assert_eq!(
+            parse_query("body:c*t~2", None).unwrap(),
+            Clause::Wildcard(WildcardQuery::new("body", "c*t"))
+        );
+    }
+
+    #[test]
+    fn tilde_after_a_group_is_unsupported_syntax_not_silently_dropped() {
+        assert!(matches!(
+            parse_query("(cat dog)~2", Some("body")).unwrap_err(),
+            ParseError::UnsupportedSyntax(_, _)
+        ));
+    }
 
     #[test]
     fn single_bare_term_uses_default_field() {
@@ -1411,6 +2350,7 @@ mod tests {
             clause,
             Clause::Boolean(Box::new(BooleanQuery {
                 must: vec![],
+                filter: Vec::new(),
                 should: vec![],
                 must_not: vec![],
                 minimum_should_match: 0,
@@ -1490,6 +2430,7 @@ mod tests {
             clause,
             Clause::Boolean(Box::new(BooleanQuery {
                 must: vec![],
+                filter: Vec::new(),
                 should: vec![],
                 must_not: vec![],
                 minimum_should_match: 0,

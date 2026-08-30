@@ -57,6 +57,115 @@ pub enum Error {
     InvalidDeletionCount(i32, String),
     #[error("invalid SegmentCommitInfo ID marker: {0}")]
     InvalidSciIdMarker(u8),
+    #[error("invalid doc-values field count: {0} (segment={1})")]
+    InvalidDocValuesFieldCount(i32, String),
+    #[error(
+        "creation version [{created}.x] can't be greater than the version that wrote the segment \
+         infos: [{major}.{minor}.{bugfix}]"
+    )]
+    CreatedVersionAheadOfWriter {
+        created: i32,
+        major: i32,
+        minor: i32,
+        bugfix: i32,
+    },
+    #[error("illegal {which} version: {value}")]
+    IllegalVersion { which: &'static str, value: i32 },
+    /// A generation (`delGen`, `fieldInfosGen`, `docValuesGen`) or a
+    /// commit-wide counter (`version`, `counter`) outside the range this port
+    /// will accept. See [`MAX_GENERATION`].
+    #[error("invalid {which}: {value} (segment={segment:?})")]
+    InvalidGeneration {
+        which: &'static str,
+        value: i64,
+        segment: String,
+    },
+}
+
+/// The largest generation (or commit counter) [`parse`] will accept off disk.
+///
+/// Lucene has no such cap: Java reads every generation as a bare `long` and
+/// derives the next one with `gen + 1`, which in Java silently wraps and in
+/// Rust **panics** in a debug build. Every generation in this module is on the
+/// receiving end of exactly that shape --
+/// [`SegmentCommitInfo::next_write_del_gen`] and its two twins,
+/// [`SegmentCommitInfo::advance_del_gen`] and its twins,
+/// [`crate::index_file_deleter::IndexFileDeleter::inflate_gens`], and
+/// `update_document`'s `generation`/`version` bumps -- so a single 8-byte flip
+/// in a `segments_N` turns every later commit into a panic.
+///
+/// Capping the value on the way *in* is what makes all of those `+ 1`s
+/// provably safe, and half the `i64` range is the cap that needs no
+/// justification: a generation is advanced at most once per file this port
+/// writes, so reaching `i64::MAX` from `MAX_GENERATION` would take 2^62 more
+/// index writes -- while any value a real Lucene index can carry is smaller
+/// than 2^62 by a factor no machine will close.
+pub const MAX_GENERATION: i64 = i64::MAX / 2;
+
+/// Bounds-checks one generation read off `segments_N`. `-1` is Lucene's "no
+/// such file" sentinel (`IndexFileNames.fileNameFromGeneration` returns `null`
+/// for it); `0` means "no generation suffix"; anything positive is a real
+/// generation. Anything below `-1` would produce a `_-5.liv`-shaped file name
+/// no Lucene can read, and anything above [`MAX_GENERATION`] is corruption by
+/// construction.
+fn check_generation(which: &'static str, value: i64, segment: &str) -> Result<i64> {
+    if !(-1..=MAX_GENERATION).contains(&value) {
+        return Err(Error::InvalidGeneration {
+            which,
+            value,
+            segment: segment.to_string(),
+        });
+    }
+    Ok(value)
+}
+
+/// The in-process counterpart of [`check_generation`], for the three
+/// `set_next_write_*_gen` setters.
+///
+/// Those setters take a bare `i64` from a caller, and their fields are `pub`
+/// on a `pub` type -- so nothing in the type system re-establishes the
+/// [`MAX_GENERATION`] bound between an `lucene-ffi` caller and
+/// [`SegmentCommitInfo::advance_del_gen`]. A `debug_assert` is the honest
+/// enforcer for that: an in-process value is a *caller* contract, not a
+/// disk-corruption one, and the write path
+/// ([`check_writable_generations`]) is what stops a violated contract from
+/// ever reaching a file.
+fn debug_assert_generation(which: &'static str, value: i64) {
+    debug_assert!(
+        (-1..=MAX_GENERATION).contains(&value),
+        "{which} = {value} is outside -1..={MAX_GENERATION}; a generation this \
+         large cannot be advanced or written"
+    );
+}
+
+/// The write half of [`check_generation`], applied to every generation and
+/// counter a commit is about to serialize.
+///
+/// This is what closes the round trip, and it is not belt-and-braces: the
+/// derivations this module performs are all `+ 1`, so a commit read back at
+/// exactly [`MAX_GENERATION`] would derive `MAX_GENERATION + 1`, serialize it,
+/// and produce a `segments_N` that [`parse`] then **refuses** -- an index this
+/// port wrote and can no longer open. Refusing the *commit* is the honest
+/// failure: nothing is written, the previous `segments_N` stays current, and
+/// the caller is told which counter ran out rather than discovering it on the
+/// next open.
+///
+/// Reaching it requires a generation within 1 of `i64::MAX / 2`, which no
+/// sequence of real index writes can produce -- see [`MAX_GENERATION`]. What
+/// makes the check worth its two comparisons per segment is that a *file name*
+/// can carry an arbitrary value into these fields
+/// ([`crate::index_file_deleter::IndexFileDeleter::inflate_gens`]), so
+/// "unreachable by writing" is not the same as "unreachable".
+fn check_writable_generations(segment_infos: &SegmentInfos) -> Result<()> {
+    check_generation("generation", segment_infos.generation, "")?;
+    check_generation("version", segment_infos.version, "")?;
+    check_generation("counter", segment_infos.counter, "")?;
+    for sci in &segment_infos.segments {
+        check_generation("delGen", sci.del_gen, &sci.segment_name)?;
+        check_generation("fieldInfosGen", sci.field_infos_gen, &sci.segment_name)?;
+        check_generation("docValuesGen", sci.doc_values_gen, &sci.segment_name)?;
+    }
+    Ok(())
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -85,6 +194,279 @@ pub struct SegmentCommitInfo {
     pub field_infos_files: Vec<String>,
     /// field number -> doc-values update files for that field.
     pub dv_update_files: Vec<(i32, Vec<String>)>,
+    /// `SegmentCommitInfo.nextWriteDelGen`: the generation the *next* `.liv`
+    /// this segment produces will be written at. Java's constructor derives
+    /// it as `delGen == -1 ? 1 : delGen + 1` and
+    /// `SegmentInfos.inflateGens` then pushes it past any higher-generation
+    /// file a crashed session left in the directory, so a name that session
+    /// may already have written is never handed out again.
+    ///
+    /// **Not serialized** — neither here nor in Java (`segments_N` records
+    /// only `delGen` itself). `0` is this port's "not explicitly set"
+    /// sentinel: [`SegmentCommitInfo::next_write_del_gen`] then returns
+    /// Java's derived value. Keeping the sentinel rather than eagerly
+    /// deriving means every construction site that does not care can write
+    /// `..Default::default()` and still get Java's constructor semantics.
+    pub next_write_del_gen: i64,
+    /// `SegmentCommitInfo.nextWriteFieldInfosGen`, same `0`-means-derive
+    /// convention as [`Self::next_write_del_gen`].
+    pub next_write_field_infos_gen: i64,
+    /// `SegmentCommitInfo.nextWriteDocValuesGen`, same `0`-means-derive
+    /// convention as [`Self::next_write_del_gen`].
+    pub next_write_doc_values_gen: i64,
+    /// `SegmentCommitInfo.bufferedDeletesGen`: the
+    /// [`crate::buffered_updates::BufferedUpdatesStream`] generation this
+    /// segment was published at. A frozen delete packet applies to this
+    /// segment iff this value is `<=` the packet's `delGen`, which is the
+    /// single rule that makes a delete reach the segments that existed when
+    /// it was issued and no others (see
+    /// [`crate::buffered_updates::FrozenBufferedUpdates::applies_to`]).
+    ///
+    /// **Not serialized**, exactly as in Java. `-1` is Java's default, for a
+    /// segment read back from a commit: everything in a commit predates every
+    /// delete a fresh writer session can issue.
+    pub buffered_deletes_gen: i64,
+}
+
+impl Default for SegmentCommitInfo {
+    /// Java's `SegmentCommitInfo` constructor defaults for a segment with no
+    /// generational files yet: every generation `-1` ("none"), no counts, no
+    /// id. The three `next_write_*_gen` fields default to the `0` sentinel
+    /// (see [`SegmentCommitInfo::next_write_del_gen`]), which derives to
+    /// Java's `1`.
+    fn default() -> Self {
+        SegmentCommitInfo {
+            segment_name: String::new(),
+            segment_id: [0u8; ID_LENGTH],
+            codec_name: String::new(),
+            del_gen: -1,
+            del_count: 0,
+            field_infos_gen: -1,
+            doc_values_gen: -1,
+            soft_del_count: 0,
+            sci_id: None,
+            field_infos_files: Vec::new(),
+            dv_update_files: Vec::new(),
+            next_write_del_gen: 0,
+            next_write_field_infos_gen: 0,
+            next_write_doc_values_gen: 0,
+            buffered_deletes_gen: -1,
+        }
+    }
+}
+
+impl SegmentCommitInfo {
+    /// `SegmentCommitInfo.getNextDelGen()`: the generation the next `.liv`
+    /// for this segment gets. Java's constructor sets it to
+    /// `delGen == -1 ? 1 : delGen + 1`; `inflateGens` may raise it.
+    pub fn next_write_del_gen(&self) -> i64 {
+        derive_next_gen(self.next_write_del_gen, self.del_gen)
+    }
+
+    /// `SegmentCommitInfo.getNextFieldInfosGen()`.
+    pub fn next_write_field_infos_gen(&self) -> i64 {
+        derive_next_gen(self.next_write_field_infos_gen, self.field_infos_gen)
+    }
+
+    /// `SegmentCommitInfo.getNextDocValuesGen()`.
+    pub fn next_write_doc_values_gen(&self) -> i64 {
+        derive_next_gen(self.next_write_doc_values_gen, self.doc_values_gen)
+    }
+
+    /// `SegmentCommitInfo.setNextWriteDelGen(long)` — used by
+    /// `SegmentInfos.inflateGens` to push past a crashed session's leftovers.
+    pub fn set_next_write_del_gen(&mut self, v: i64) {
+        debug_assert_generation("nextWriteDelGen", v);
+        self.next_write_del_gen = v;
+    }
+
+    /// `SegmentCommitInfo.setNextWriteFieldInfosGen(long)`.
+    pub fn set_next_write_field_infos_gen(&mut self, v: i64) {
+        debug_assert_generation("nextWriteFieldInfosGen", v);
+        self.next_write_field_infos_gen = v;
+    }
+
+    /// `SegmentCommitInfo.setNextWriteDocValuesGen(long)`.
+    pub fn set_next_write_doc_values_gen(&mut self, v: i64) {
+        debug_assert_generation("nextWriteDocValuesGen", v);
+        self.next_write_doc_values_gen = v;
+    }
+
+    /// `SegmentCommitInfo.advanceDelGen()`: take the next-write generation as
+    /// the current one and step the next-write generation past it.
+    // ARITH: three independent gates keep `del_gen` at or below
+    // `MAX_GENERATION` (`i64::MAX / 2`), which leaves this `+ 1` 2^62 of
+    // headroom: `parse` rejects a larger one off disk, `usable_generation`
+    // rejects one carried in by a file *name*, and `check_writable_generations`
+    // refuses to serialize one. Note what is deliberately *not* claimed: the
+    // fields are `pub` on a `pub` type, so an in-process caller can still set
+    // one directly -- `debug_assert_generation` on the three setters is the
+    // enforcer for that half, and the write gate is what stops a violated
+    // caller contract from reaching a file. Every legitimate step is `+ 1`
+    // after a real file has been written, so reaching `i64::MAX` from the cap
+    // would take 2^62 further `.liv` writes.
+    #[allow(clippy::arithmetic_side_effects)]
+    pub fn advance_del_gen(&mut self) {
+        self.del_gen = self.next_write_del_gen();
+        self.next_write_del_gen = self.del_gen + 1;
+    }
+
+    /// `SegmentCommitInfo.advanceDocValuesGen()`.
+    // ARITH: as `advance_del_gen`, for the `.dvd`/`.dvm` generation.
+    #[allow(clippy::arithmetic_side_effects)]
+    pub fn advance_doc_values_gen(&mut self) {
+        self.doc_values_gen = self.next_write_doc_values_gen();
+        self.next_write_doc_values_gen = self.doc_values_gen + 1;
+    }
+
+    /// `SegmentCommitInfo.advanceFieldInfosGen()`: a doc-values update round
+    /// changes `FieldInfo.docValuesGen` for the fields it touched, so the
+    /// segment's `FieldInfos` are rewritten at a new generation alongside the
+    /// doc-values files themselves (`ReadersAndUpdates.writeFieldInfosGen`).
+    // ARITH: as `advance_del_gen`, for the generational `.fnm`.
+    #[allow(clippy::arithmetic_side_effects)]
+    pub fn advance_field_infos_gen(&mut self) {
+        self.field_infos_gen = self.next_write_field_infos_gen();
+        self.next_write_field_infos_gen = self.field_infos_gen + 1;
+    }
+
+    /// `SegmentCommitInfo.advanceNextWriteFieldInfosGen()`: step *only* the
+    /// next-write counter, leaving `field_infos_gen` where it is. Java calls
+    /// this (with its doc-values twin) from `writeFieldUpdates`' failure path,
+    /// so a second attempt writes to a name the failed one cannot have left a
+    /// partial file under.
+    // ARITH: as `advance_del_gen` -- one step per failed write attempt, from a
+    // value `parse` capped at `MAX_GENERATION`.
+    #[allow(clippy::arithmetic_side_effects)]
+    pub fn advance_next_write_field_infos_gen(&mut self) {
+        self.next_write_field_infos_gen = self.next_write_field_infos_gen() + 1;
+    }
+
+    /// `SegmentCommitInfo.advanceNextWriteDocValuesGen()`, the twin of
+    /// [`Self::advance_next_write_field_infos_gen`].
+    // ARITH: as `advance_next_write_field_infos_gen`.
+    #[allow(clippy::arithmetic_side_effects)]
+    pub fn advance_next_write_doc_values_gen(&mut self) {
+        self.next_write_doc_values_gen = self.next_write_doc_values_gen() + 1;
+    }
+
+    /// `SegmentCommitInfo.setDocValuesUpdatesFiles(Map)`: install `field`'s
+    /// doc-values-update files, **replacing** whatever generation was recorded
+    /// for it before.
+    ///
+    /// Replacement, not accumulation, is the whole point of the format: a
+    /// generation is the field's *complete* rewritten column, so the previous
+    /// generation's files are dead the moment this one lands. Java gets the
+    /// same result from `newDVFiles.put(fieldInfo.number, ...)` overwriting the
+    /// carried-over entry in `writeFieldUpdates`. Accumulating instead would
+    /// keep every superseded generation referenced forever -- unreadable by a
+    /// reader that resolves only `FieldInfo.docValuesGen`, and never reclaimed
+    /// by [`crate::index_file_deleter`].
+    pub fn set_doc_values_updates_files(&mut self, field_number: i32, files: Vec<String>) {
+        match self
+            .dv_update_files
+            .iter_mut()
+            .find(|(n, _)| *n == field_number)
+        {
+            Some(slot) => slot.1 = files,
+            None => self.dv_update_files.push((field_number, files)),
+        }
+    }
+
+    /// `SegmentCommitInfo.setBufferedDeletesGen(long)`. Java only sets it
+    /// while it is still `-1` (a segment is published exactly once), and this
+    /// keeps that guard so a re-published segment cannot silently move out of
+    /// the delete packets that target it.
+    pub fn set_buffered_deletes_gen(&mut self, v: i64) {
+        // Java throws `IllegalStateException("buffered deletes gen should only
+        // be set once")` here. Silently ignoring a second call is the safer
+        // production behaviour -- moving a published segment's generation
+        // would change which delete packets reach it -- but the second call is
+        // still a caller bug, so make it visible where bugs are cheap to see.
+        debug_assert_eq!(
+            self.buffered_deletes_gen, -1,
+            "buffered deletes gen should only be set once (segment {:?})",
+            self.segment_name
+        );
+        if self.buffered_deletes_gen == -1 {
+            self.buffered_deletes_gen = v;
+        }
+    }
+}
+
+/// Java's `SegmentCommitInfo` constructor lines 113-117: the next generation
+/// of a generational file group starts one past whatever the commit records,
+/// `1` when the commit records none. `0` here is this port's "no explicit
+/// value has been set" sentinel (see
+/// [`SegmentCommitInfo::next_write_del_gen`]) — `0` is never a legal Lucene
+/// generation, which is what makes it usable as one.
+// ARITH: `current_gen` is one of the three generations bounded to
+// `-1..=MAX_GENERATION` (`i64::MAX / 2`) on the way in from disk (`parse`),
+// on the way in from a file name (`usable_generation`) and on the way out
+// (`check_writable_generations`), so `+ 1` has 2^62 of headroom. See
+// `advance_del_gen` for the one hole that leaves -- a `pub` field set
+// in-process -- and what enforces it.
+#[allow(clippy::arithmetic_side_effects)]
+fn derive_next_gen(explicit: i64, current_gen: i64) -> i64 {
+    if explicit != 0 {
+        explicit
+    } else if current_gen == -1 {
+        1
+    } else {
+        current_gen + 1
+    }
+}
+
+impl SegmentCommitInfo {
+    /// Port of `SegmentCommitInfo.files()`: the segment's own `.si`-declared
+    /// files (passed in as `si_files`, since this type deliberately does not
+    /// own the parsed `.si`) **plus** the three groups only the commit knows
+    /// about -- the current-generation `.liv` file when `del_gen != -1`
+    /// (Java: `liveDocsFormat().files(this, files)`), every
+    /// `field_infos_files` entry, and every per-field doc-values update file.
+    ///
+    /// Anything that walks "every file this segment owns" -- reference
+    /// counting, checksum verification, a corruption check -- must use this,
+    /// not `SegmentInfo.files` alone: a `.liv` or a generational `.fnm`/`.dvd`
+    /// is never listed in the `.si` (it did not exist when the `.si` was
+    /// written), so a tool that only reads `.si` silently skips exactly the
+    /// files a delete/update round produced.
+    ///
+    /// Order is deterministic (`.si` files first, then `.liv`, then field
+    /// infos, then doc-values updates in field-number order); duplicates are
+    /// removed, matching Java's `HashSet` semantics without its arbitrary
+    /// iteration order.
+    pub fn files(&self, si_files: &[String]) -> Vec<String> {
+        // ARITH: `si_files` is an in-memory slice, so its length is at most
+        // `isize::MAX` and `+ 4` (one `.liv` plus a little slack for the
+        // generational groups) cannot overflow `usize`.
+        #[allow(clippy::arithmetic_side_effects)]
+        let capacity = si_files.len() + 4;
+        let mut files: Vec<String> = Vec::with_capacity(capacity);
+        let push = |name: String, files: &mut Vec<String>| {
+            if !files.contains(&name) {
+                files.push(name);
+            }
+        };
+        for f in si_files {
+            push(f.clone(), &mut files);
+        }
+        if self.del_gen != -1 {
+            push(
+                crate::deletes::liv_file_name(&self.segment_name, self.del_gen),
+                &mut files,
+            );
+        }
+        for f in &self.field_infos_files {
+            push(f.clone(), &mut files);
+        }
+        for (_, dv_files) in &self.dv_update_files {
+            for f in dv_files {
+                push(f.clone(), &mut files);
+            }
+        }
+        files
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -112,6 +494,12 @@ pub struct SegmentInfos {
 pub fn parse(buf: &[u8], generation: i64) -> Result<SegmentInfos> {
     let mut input = SliceInput::new(buf);
 
+    // `generation` is the `N` parsed out of the `segments_N` *file name*, in
+    // base 36 -- so a directory entry named `segments_1y2p0ij32e8e7` hands
+    // this a perfectly well-formed `i64::MAX`, and every later commit's
+    // `generation + 1` would then panic. Bound it with the rest.
+    let generation = check_generation("generation", generation, "")?;
+
     let suffix = lucene_util::base36::to_base36(generation);
     // We don't yet know `id` (it's inside the file), so check the header without
     // the id/suffix-bound convenience wrapper and validate the suffix by hand —
@@ -123,11 +511,36 @@ pub fn parse(buf: &[u8], generation: i64) -> Result<SegmentInfos> {
 
     let lucene_version = read_vint_version(&mut input)?;
     let index_created_version_major = input.read_vint()?;
+    // `SegmentInfos.readCommit`: a commit can't claim it was created by a
+    // *newer* major than the version that wrote it. Without this a corrupt
+    // (or forward-dated) commit silently skews every later
+    // `indexCreatedVersionMajor >= 7` gate.
+    if lucene_version.major < index_created_version_major {
+        return Err(Error::CreatedVersionAheadOfWriter {
+            created: index_created_version_major,
+            major: lucene_version.major,
+            minor: lucene_version.minor,
+            bugfix: lucene_version.bugfix,
+        });
+    }
 
-    let version = input.read_be_u64()? as i64;
-    let counter = input.read_vlong()?;
+    // `version` and `counter` are both stepped by `+ 1` on every commit
+    // (`update_document`, `index_writer`), so they get the same cap the
+    // per-segment generations get -- see `MAX_GENERATION`.
+    let version = check_generation("version", input.read_be_u64()? as i64, "")?;
+    let counter = check_generation("counter", input.read_vlong()?, "")?;
     let num_segments = input.read_be_i32()?;
     if num_segments < 0 {
+        return Err(Error::InvalidSegmentCount(num_segments));
+    }
+    // A `SegmentCommitInfo` costs well over one byte on the wire (a name, a
+    // 16-byte id, a codec name, three 8-byte generations, two counts, two
+    // string sets), so a count above the bytes still in the file is corrupt by
+    // construction. Checking it *before* reserving is the point: a
+    // `SegmentCommitInfo` is ~150 bytes of `String`s and `Vec`s, so an
+    // unbounded `i32` count reserves up to 300 GB and **aborts** the process --
+    // and an abort is not something `catch_unwind` can keep out of the JVM.
+    if num_segments as usize > input.remaining() {
         return Err(Error::InvalidSegmentCount(num_segments));
     }
 
@@ -144,13 +557,15 @@ pub fn parse(buf: &[u8], generation: i64) -> Result<SegmentInfos> {
         input.read_bytes(&mut segment_id)?;
         let codec_name = input.read_string()?;
 
-        let del_gen = input.read_be_u64()? as i64;
+        let del_gen = check_generation("delGen", input.read_be_u64()? as i64, &segment_name)?;
         let del_count = input.read_be_i32()?;
         if del_count < 0 {
             return Err(Error::InvalidDeletionCount(del_count, segment_name));
         }
-        let field_infos_gen = input.read_be_u64()? as i64;
-        let doc_values_gen = input.read_be_u64()? as i64;
+        let field_infos_gen =
+            check_generation("fieldInfosGen", input.read_be_u64()? as i64, &segment_name)?;
+        let doc_values_gen =
+            check_generation("docValuesGen", input.read_be_u64()? as i64, &segment_name)?;
         let soft_del_count = input.read_be_i32()?;
         if soft_del_count < 0 {
             return Err(Error::InvalidDeletionCount(soft_del_count, segment_name));
@@ -172,7 +587,17 @@ pub fn parse(buf: &[u8], generation: i64) -> Result<SegmentInfos> {
 
         let field_infos_files = input.read_set_of_strings()?;
         let num_dv_fields = input.read_be_i32()?;
-        let mut dv_update_files = Vec::with_capacity(num_dv_fields.max(0) as usize);
+        // Same shape as `num_segments`: each entry is a 4-byte field number
+        // plus a string set, so a count past the remaining bytes is corrupt --
+        // and reserving for an unbounded one aborts. Java sizes a `HashMap`
+        // from this value with the same lack of a bound.
+        if num_dv_fields < 0 || num_dv_fields as usize > input.remaining() {
+            return Err(Error::InvalidDocValuesFieldCount(
+                num_dv_fields,
+                segment_name,
+            ));
+        }
+        let mut dv_update_files = Vec::with_capacity(num_dv_fields as usize);
         for _ in 0..num_dv_fields {
             let field_number = input.read_be_i32()?;
             let files = input.read_set_of_strings()?;
@@ -191,6 +616,10 @@ pub fn parse(buf: &[u8], generation: i64) -> Result<SegmentInfos> {
             sci_id,
             field_infos_files,
             dv_update_files,
+            // Java's `SegmentCommitInfo` constructor derives all three from
+            // the generations it just read; the `0` sentinel does that
+            // lazily (see `SegmentCommitInfo::next_write_del_gen`).
+            ..Default::default()
         });
     }
 
@@ -251,14 +680,107 @@ pub fn read_latest(dir: &dyn Directory) -> Result<SegmentInfos> {
 ///
 /// Returns the written file's name (`segments_N`) on success.
 pub fn write(segment_infos: &SegmentInfos, dir: &dyn Directory) -> Result<String> {
-    let file_name = lucene_store::directory::segments_file_name(segment_infos.generation)
-        .ok_or_else(|| {
-            Error::Store(lucene_store::Error::Corrupted(format!(
-                "invalid generation for a segments_N file name: {}",
-                segment_infos.generation
-            )))
-        })?;
+    write_pending(segment_infos, dir)?;
+    finish_pending(segment_infos, dir)
+}
 
+/// Phase one of `SegmentInfos.prepareCommit(Directory)`: serialize the whole
+/// commit and write it to `pending_segments_N`, then fsync it.
+///
+/// The pending name is deliberately not a name
+/// [`lucene_store::directory::last_commit_generation`] scans for, so a crash
+/// anywhere inside this function leaves the *previous* `segments_N` as the
+/// current commit and the half-written pending file as an inert orphan.
+/// That is the entire reason Java never creates a `segments_N` by writing to
+/// it directly.
+///
+/// Returns the written `pending_segments_N` file name.
+pub fn write_pending(segment_infos: &SegmentInfos, dir: &dyn Directory) -> Result<String> {
+    // Every generation this commit is about to serialize must be one `parse`
+    // will accept back, or the write produces an index this port cannot open
+    // -- see `check_writable_generations`.
+    check_writable_generations(segment_infos)?;
+    // `pending_segments_file_name` and `segments_file_name` refuse exactly the
+    // same generations (both only reject a negative one), so validating here
+    // also guarantees `finish_pending` can name the file it has to rename to.
+    let pending_name = pending_segments_name(segment_infos)?;
+
+    // Java syncs the directory's metadata before creating the pending file
+    // (`SegmentInfos.prepareCommit` -> `dir.syncMetaData()`), so that every
+    // file name the segments file is about to reference is itself durable.
+    dir.sync_meta_data()?;
+
+    let bytes = to_bytes(segment_infos);
+
+    let mut output = dir.create_output(&pending_name)?;
+    output.write_bytes(&bytes);
+    // Java deletes a truncated pending file rather than leaving it behind;
+    // errors from that cleanup are suppressed in favour of the original.
+    if let Err(e) = output.close() {
+        let _ = dir.delete_file(&pending_name);
+        return Err(e.into());
+    }
+    if let Err(e) = dir.sync(std::slice::from_ref(&pending_name)) {
+        let _ = dir.delete_file(&pending_name);
+        return Err(e.into());
+    }
+
+    Ok(pending_name)
+}
+
+/// Phase two of the commit, `SegmentInfos.finishCommit(Directory)`: rename
+/// the already-synced `pending_segments_N` written by [`write_pending`] onto
+/// its final `segments_N` name and fsync the directory, which is the single
+/// instant the new generation becomes visible to
+/// [`lucene_store::directory::read_latest_commit`].
+///
+/// Returns the committed `segments_N` file name.
+pub fn finish_pending(segment_infos: &SegmentInfos, dir: &dyn Directory) -> Result<String> {
+    let pending_name = pending_segments_name(segment_infos)?;
+    let file_name = segments_file_name(segment_infos)?;
+
+    dir.rename(&pending_name, &file_name)?;
+    if let Err(e) = dir.sync_meta_data() {
+        // The rename landed but the directory entry is not durable; Java
+        // deletes the renamed file rather than leave a commit that might
+        // vanish under a crash.
+        let _ = dir.delete_file(&file_name);
+        return Err(e.into());
+    }
+
+    Ok(file_name)
+}
+
+/// `SegmentInfos.rollbackCommit(Directory)`: drop the `pending_segments_N`
+/// [`write_pending`] left behind, ignoring any failure exactly as Java's
+/// `IOUtils.deleteFilesIgnoringExceptions` does.
+pub fn rollback_pending(segment_infos: &SegmentInfos, dir: &dyn Directory) {
+    if let Some(pending_name) =
+        lucene_store::directory::pending_segments_file_name(segment_infos.generation)
+    {
+        let _ = dir.delete_file(&pending_name);
+    }
+}
+
+fn pending_segments_name(segment_infos: &SegmentInfos) -> Result<String> {
+    lucene_store::directory::pending_segments_file_name(segment_infos.generation).ok_or_else(|| {
+        Error::Store(lucene_store::Error::Corrupted(format!(
+            "invalid generation for a segments_N file name: {}",
+            segment_infos.generation
+        )))
+    })
+}
+
+fn segments_file_name(segment_infos: &SegmentInfos) -> Result<String> {
+    lucene_store::directory::segments_file_name(segment_infos.generation).ok_or_else(|| {
+        Error::Store(lucene_store::Error::Corrupted(format!(
+            "invalid generation for a segments_N file name: {}",
+            segment_infos.generation
+        )))
+    })
+}
+
+fn to_bytes(segment_infos: &SegmentInfos) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::new();
     let suffix = lucene_util::base36::to_base36(segment_infos.generation);
     codec_util::write_index_header(
@@ -316,13 +838,7 @@ pub fn write(segment_infos: &SegmentInfos, dir: &dyn Directory) -> Result<String
 
     out.write_map_of_strings(&segment_infos.user_data);
     codec_util::write_footer(&mut out);
-
-    let mut output = dir.create_output(&file_name)?;
-    output.write_bytes(&out);
-    output.close()?;
-    dir.sync(std::slice::from_ref(&file_name))?;
-
-    Ok(file_name)
+    out
 }
 
 fn write_vint_version(out: &mut Vec<u8>, v: LuceneVersion) {
@@ -331,10 +847,21 @@ fn write_vint_version(out: &mut Vec<u8>, v: LuceneVersion) {
     out.write_vint(v.bugfix);
 }
 
+/// `Version.fromBits`: every component is packed into one byte, so anything
+/// outside `0..=255` is an `IllegalArgumentException` in Java. Mirrored here
+/// so a corrupt vint can't produce a version later comparisons silently
+/// trust.
+fn check_version_component(which: &'static str, value: i32) -> Result<i32> {
+    if !(0..=255).contains(&value) {
+        return Err(Error::IllegalVersion { which, value });
+    }
+    Ok(value)
+}
+
 fn read_vint_version(input: &mut SliceInput) -> Result<LuceneVersion> {
-    let major = input.read_vint()?;
-    let minor = input.read_vint()?;
-    let bugfix = input.read_vint()?;
+    let major = check_version_component("major", input.read_vint()?)?;
+    let minor = check_version_component("minor", input.read_vint()?)?;
+    let bugfix = check_version_component("bugfix", input.read_vint()?)?;
     Ok(LuceneVersion {
         major,
         minor,
@@ -362,6 +889,7 @@ mod tests {
         soft_del_count: i32,
         sci_marker: Option<u8>, // None => omit entirely (format <= VERSION_74)
         dv_fields: Vec<(i32, Vec<String>)>,
+        num_dv_fields_override: Option<i32>,
     }
 
     impl SegBuilder {
@@ -377,6 +905,7 @@ mod tests {
                 soft_del_count: 0,
                 sci_marker: Some(0),
                 dv_fields: vec![],
+                num_dv_fields_override: None,
             }
         }
     }
@@ -387,7 +916,12 @@ mod tests {
         id: [u8; ID_LENGTH],
         segments: Vec<SegBuilder>,
         num_segments_override: Option<i32>,
+        commit_version: i64,
+        counter: i64,
         user_data: Vec<(String, String)>,
+        lucene_version_major: i32,
+        lucene_version_minor: i32,
+        index_created_version_major: i32,
     }
 
     impl SisBuilder {
@@ -398,7 +932,12 @@ mod tests {
                 id: [3u8; ID_LENGTH],
                 segments: vec![],
                 num_segments_override: None,
+                commit_version: 1,
+                counter: 1,
                 user_data: vec![],
+                lucene_version_major: 10,
+                lucene_version_minor: 0,
+                index_created_version_major: 10,
             }
         }
 
@@ -412,13 +951,13 @@ mod tests {
             out.push(suffix.len() as u8);
             out.extend_from_slice(suffix.as_bytes());
 
-            write_vint(&mut out, 10); // lucene_version major
-            write_vint(&mut out, 0); // minor
+            write_vint(&mut out, self.lucene_version_major);
+            write_vint(&mut out, self.lucene_version_minor);
             write_vint(&mut out, 0); // bugfix
-            write_vint(&mut out, 10); // indexCreatedVersionMajor
+            write_vint(&mut out, self.index_created_version_major);
 
-            out.extend_from_slice(&1u64.to_be_bytes()); // commit version
-            write_vlong(&mut out, 1); // counter
+            out.extend_from_slice(&(self.commit_version as u64).to_be_bytes());
+            write_vlong(&mut out, self.counter);
 
             let num_segments = self
                 .num_segments_override
@@ -449,7 +988,10 @@ mod tests {
                     }
                 }
                 write_vint(&mut out, 0); // fieldInfosFiles: empty set
-                out.extend_from_slice(&(seg.dv_fields.len() as u32).to_be_bytes());
+                let num_dv_fields = seg
+                    .num_dv_fields_override
+                    .unwrap_or(seg.dv_fields.len() as i32);
+                out.extend_from_slice(&(num_dv_fields as u32).to_be_bytes());
                 for (field_number, files) in &seg.dv_fields {
                     out.extend_from_slice(&(*field_number as u32).to_be_bytes());
                     write_vint(&mut out, files.len() as i32);
@@ -586,6 +1128,48 @@ mod tests {
         ));
     }
 
+    /// `SegmentInfos.readCommit`: a commit that claims to have been created
+    /// by a newer major than the one that wrote it is corrupt -- Java throws,
+    /// and so must we, since every later `indexCreatedVersionMajor` gate
+    /// trusts this value.
+    #[test]
+    fn created_version_newer_than_writer_version_rejected() {
+        let mut b = SisBuilder::valid(1);
+        b.lucene_version_major = 9;
+        b.index_created_version_major = 10;
+        assert!(matches!(
+            parse(&b.build(), 1),
+            Err(Error::CreatedVersionAheadOfWriter {
+                created: 10,
+                major: 9,
+                ..
+            })
+        ));
+    }
+
+    /// Equal majors are legal (an index created by 10.x and written by 10.x).
+    #[test]
+    fn created_version_equal_to_writer_version_accepted() {
+        let mut b = SisBuilder::valid(1);
+        b.lucene_version_major = 10;
+        b.index_created_version_major = 10;
+        assert!(parse(&b.build(), 1).is_ok());
+    }
+
+    /// `Version.fromBits` packs each component into one byte.
+    #[test]
+    fn out_of_range_lucene_version_component_rejected() {
+        let mut b = SisBuilder::valid(1);
+        b.lucene_version_minor = 300;
+        assert!(matches!(
+            parse(&b.build(), 1),
+            Err(Error::IllegalVersion {
+                which: "minor",
+                value: 300
+            })
+        ));
+    }
+
     #[test]
     fn negative_del_count_rejected() {
         let mut b = SisBuilder::valid(1);
@@ -630,18 +1214,12 @@ mod tests {
 
     // --- write() round-trips through parse(), via a real on-disk Directory ---
 
-    fn tempdir() -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        p.push(format!(
-            "lucene-rust-segment-infos-write-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&p).unwrap();
-        p
+    use lucene_util::test_support::TempDir;
+
+    /// A scratch directory that removes itself when the test ends -- unless
+    /// the test is panicking, in which case its bytes stay for inspection.
+    fn tempdir() -> TempDir {
+        TempDir::new("segment-infos-write")
     }
 
     fn sample_sis(generation: i64) -> SegmentInfos {
@@ -676,6 +1254,7 @@ mod tests {
             sci_id: None,
             field_infos_files: vec![],
             dv_update_files: vec![],
+            ..Default::default()
         }
     }
 
@@ -814,6 +1393,331 @@ mod tests {
         let dir = lucene_store::FsDirectory::open(&dir_path);
         let sis = sample_sis(-1);
         assert!(matches!(write(&sis, &dir), Err(Error::Store(_))));
+        assert!(matches!(write_pending(&sis, &dir), Err(Error::Store(_))));
+        assert!(matches!(finish_pending(&sis, &dir), Err(Error::Store(_))));
+        // `rollback_pending` is infallible by contract and must simply do
+        // nothing for a generation that has no pending file name at all.
+        rollback_pending(&sis, &dir);
         std::fs::remove_dir_all(&dir_path).ok();
+    }
+
+    /// A `Directory` that delegates everything to a real `FsDirectory` but can
+    /// be told to fail `sync` or `sync_meta_data`, so the two "clean up the
+    /// file we just created" paths in `write_pending`/`finish_pending` can be
+    /// exercised. Both mirror Java (`IOUtils.deleteFilesSuppressingExceptions`
+    /// in `SegmentInfos.write`/`finishCommit`), and both are unreachable
+    /// through `FsDirectory` alone -- its `sync_meta_data` is best-effort and
+    /// never reports failure.
+    struct FailingDir {
+        inner: lucene_store::FsDirectory,
+        fail_sync: bool,
+        fail_sync_meta_data: bool,
+    }
+
+    impl Directory for FailingDir {
+        fn list_all(&self) -> lucene_store::Result<Vec<String>> {
+            self.inner.list_all()
+        }
+        fn open(&self, name: &str) -> lucene_store::Result<lucene_store::directory::Input> {
+            self.inner.open(name)
+        }
+        fn create_output(
+            &self,
+            name: &str,
+        ) -> lucene_store::Result<lucene_store::index_output::FsIndexOutput> {
+            self.inner.create_output(name)
+        }
+        fn sync(&self, names: &[String]) -> lucene_store::Result<()> {
+            if self.fail_sync {
+                return Err(lucene_store::Error::Corrupted("sync failed".to_string()));
+            }
+            self.inner.sync(names)
+        }
+        fn rename(&self, source: &str, dest: &str) -> lucene_store::Result<()> {
+            self.inner.rename(source, dest)
+        }
+        fn delete_file(&self, name: &str) -> lucene_store::Result<()> {
+            self.inner.delete_file(name)
+        }
+        fn sync_meta_data(&self) -> lucene_store::Result<()> {
+            if self.fail_sync_meta_data {
+                return Err(lucene_store::Error::Corrupted(
+                    "syncMetaData failed".to_string(),
+                ));
+            }
+            self.inner.sync_meta_data()
+        }
+    }
+
+    #[test]
+    fn a_pending_commit_file_that_cannot_be_synced_is_deleted_not_left_behind() {
+        let dir_path = tempdir();
+        let dir = FailingDir {
+            inner: lucene_store::FsDirectory::open(&dir_path),
+            fail_sync: true,
+            fail_sync_meta_data: false,
+        };
+        let sis = sample_sis(3);
+        assert!(write_pending(&sis, &dir).is_err());
+        assert!(
+            dir.list_all().unwrap().is_empty(),
+            "a pending commit file that could not be fsynced must not survive: {:?}",
+            dir.list_all().unwrap()
+        );
+        std::fs::remove_dir_all(&dir_path).ok();
+    }
+
+    #[test]
+    fn a_renamed_commit_file_whose_directory_cannot_be_synced_is_deleted() {
+        let dir_path = tempdir();
+        let write_dir = FailingDir {
+            inner: lucene_store::FsDirectory::open(&dir_path),
+            fail_sync: false,
+            fail_sync_meta_data: false,
+        };
+        let sis = sample_sis(3);
+        write_pending(&sis, &write_dir).unwrap();
+
+        let finish_dir = FailingDir {
+            inner: lucene_store::FsDirectory::open(&dir_path),
+            fail_sync: false,
+            fail_sync_meta_data: true,
+        };
+        assert!(finish_pending(&sis, &finish_dir).is_err());
+        let listed = finish_dir.list_all().unwrap();
+        assert!(
+            !listed.iter().any(|f| f == "segments_3"),
+            "a commit whose directory entry is not durable must not stay visible: {listed:?}"
+        );
+        std::fs::remove_dir_all(&dir_path).ok();
+    }
+
+    /// `write_pending` leaves the previous commit current: the pending file is
+    /// not a name `read_latest` can find.
+    #[test]
+    fn write_pending_alone_does_not_publish_a_commit() {
+        let dir_path = tempdir();
+        let dir = lucene_store::FsDirectory::open(&dir_path);
+        write(&sample_sis(1), &dir).unwrap();
+        write_pending(&sample_sis(2), &dir).unwrap();
+
+        assert_eq!(read_latest(&dir).unwrap().generation, 1);
+        assert!(dir
+            .list_all()
+            .unwrap()
+            .iter()
+            .any(|f| f == "pending_segments_2"));
+
+        finish_pending(&sample_sis(2), &dir).unwrap();
+        assert_eq!(read_latest(&dir).unwrap().generation, 2);
+
+        // ...and `rollback_pending` on a generation with no pending file is a
+        // no-op rather than an error.
+        rollback_pending(&sample_sis(9), &dir);
+        std::fs::remove_dir_all(&dir_path).ok();
+    }
+
+    // --- the arithmetic gate (c28) ---
+
+    /// Eight flipped bytes in `delGen` are enough to make every *later* commit
+    /// panic: `getNextDelGen()` is `delGen + 1`, which Java wraps and Rust
+    /// does not. Before the cap, `parse` accepted `i64::MAX` here and
+    /// `next_write_del_gen()` overflowed on the first call.
+    #[test]
+    fn absurd_generations_are_decode_errors_not_overflowing_next_gens() {
+        for (label, mutate) in [
+            (
+                "delGen",
+                Box::new(|s: &mut SegBuilder| s.del_gen = i64::MAX) as Box<dyn Fn(&mut SegBuilder)>,
+            ),
+            (
+                "fieldInfosGen",
+                Box::new(|s: &mut SegBuilder| s.field_infos_gen = MAX_GENERATION + 1),
+            ),
+            (
+                "docValuesGen",
+                Box::new(|s: &mut SegBuilder| s.doc_values_gen = i64::MIN),
+            ),
+            // Below `-1`: `IndexFileNames.fileNameFromGeneration` asserts
+            // `gen > 0` before it emits a suffix, so a `-5` would name a
+            // `_0_-5.liv` no Lucene can read.
+            (
+                "negative delGen",
+                Box::new(|s: &mut SegBuilder| s.del_gen = -5),
+            ),
+        ] {
+            let mut b = SisBuilder::valid(1);
+            let mut seg = SegBuilder::valid("_0");
+            mutate(&mut seg);
+            b.segments.push(seg);
+            assert!(
+                matches!(parse(&b.build(), 1), Err(Error::InvalidGeneration { .. })),
+                "{label} should be rejected"
+            );
+        }
+    }
+
+    /// A generation exactly at the cap still parses, and the `+ 1` derivation
+    /// that follows it stays representable — the cap is not off by one.
+    ///
+    /// Note what this does *not* bless: `MAX_GENERATION + 1` is a legal
+    /// in-memory next-write generation but **not** a legal thing to serialize,
+    /// which is what `a_commit_this_port_writes_is_always_one_it_can_read_back`
+    /// pins down.
+    #[test]
+    fn generation_at_the_cap_parses_and_still_derives_a_next_gen() {
+        let mut b = SisBuilder::valid(1);
+        let mut seg = SegBuilder::valid("_0");
+        seg.del_gen = MAX_GENERATION;
+        b.segments.push(seg);
+        let sis = parse(&b.build(), 1).unwrap();
+        assert_eq!(sis.segments[0].next_write_del_gen(), MAX_GENERATION + 1);
+    }
+
+    /// The round-trip property the cap has to satisfy: **anything this crate
+    /// can write is something `parse` accepts back**. Without the write-side
+    /// gate, a commit read at exactly `MAX_GENERATION` derives
+    /// `MAX_GENERATION + 1`, serializes it, and produces a `segments_N` this
+    /// port then refuses — an index it wrote and can no longer open. Refusing
+    /// the *commit* is the honest failure, and it leaves the previous
+    /// `segments_N` current.
+    #[test]
+    fn a_commit_this_port_writes_is_always_one_it_can_read_back() {
+        let dir_path = tempdir();
+        let dir = lucene_store::FsDirectory::open(&dir_path);
+
+        let at_cap = |generation: i64| {
+            let mut sis = sample_sis(generation);
+            sis.min_segment_lucene_version = Some(sis.lucene_version);
+            sis.segments.push(sample_segment("_0"));
+            sis
+        };
+
+        // The boundary itself round-trips.
+        let mut sis = at_cap(1);
+        sis.version = MAX_GENERATION;
+        sis.counter = MAX_GENERATION;
+        sis.segments[0].del_gen = MAX_GENERATION;
+        let name = write(&sis, &dir).unwrap();
+        let bytes = std::fs::read(dir_path.join(&name)).unwrap();
+        let back = parse(&bytes, 1).unwrap();
+        assert_eq!(back.version, MAX_GENERATION);
+        assert_eq!(back.counter, MAX_GENERATION);
+        assert_eq!(back.segments[0].del_gen, MAX_GENERATION);
+
+        // One past it is refused at write time, by every counter in turn,
+        // rather than written and discovered unreadable on the next open.
+        for (which, mutate) in [
+            (
+                "version",
+                Box::new(|s: &mut SegmentInfos| s.version = MAX_GENERATION + 1)
+                    as Box<dyn Fn(&mut SegmentInfos)>,
+            ),
+            (
+                "counter",
+                Box::new(|s: &mut SegmentInfos| s.counter = MAX_GENERATION + 1),
+            ),
+            (
+                "delGen",
+                Box::new(|s: &mut SegmentInfos| s.segments[0].del_gen = MAX_GENERATION + 1),
+            ),
+            (
+                "docValuesGen",
+                Box::new(|s: &mut SegmentInfos| s.segments[0].doc_values_gen = MAX_GENERATION + 1),
+            ),
+            (
+                "fieldInfosGen",
+                Box::new(|s: &mut SegmentInfos| s.segments[0].field_infos_gen = MAX_GENERATION + 1),
+            ),
+        ] {
+            let mut sis = at_cap(2);
+            mutate(&mut sis);
+            let err = write(&sis, &dir).unwrap_err();
+            assert!(
+                matches!(&err, Error::InvalidGeneration { which: w, .. } if *w == which),
+                "{which}: unexpected error {err}"
+            );
+            // Nothing was published, and no pending file was left behind.
+            assert_eq!(read_latest(&dir).unwrap().generation, 1);
+            assert!(
+                !dir.list_all().unwrap().iter().any(|f| f == "segments_2"),
+                "{which}: an unreadable commit was published"
+            );
+        }
+        std::fs::remove_dir_all(&dir_path).ok();
+    }
+
+    /// `version` and `counter` are stepped by `+ 1` on every commit
+    /// (`update_document`), so they carry the same cap.
+    #[test]
+    fn absurd_commit_version_and_counter_are_decode_errors() {
+        let mut b = SisBuilder::valid(1);
+        b.commit_version = i64::MAX;
+        assert!(matches!(
+            parse(&b.build(), 1),
+            Err(Error::InvalidGeneration {
+                which: "version",
+                ..
+            })
+        ));
+
+        let mut b = SisBuilder::valid(1);
+        b.counter = MAX_GENERATION + 1;
+        assert!(matches!(
+            parse(&b.build(), 1),
+            Err(Error::InvalidGeneration {
+                which: "counter",
+                ..
+            })
+        ));
+    }
+
+    /// The `N` in `segments_N` is base 36, so a directory entry named
+    /// `segments_1y2p0ij32e8e7` hands `parse` a well-formed `i64::MAX` — and
+    /// `update_document` then does `generation += 1` on it.
+    #[test]
+    fn absurd_file_name_generation_is_a_decode_error() {
+        let b = SisBuilder::valid(i64::MAX);
+        assert!(matches!(
+            parse(&b.build(), i64::MAX),
+            Err(Error::InvalidGeneration {
+                which: "generation",
+                ..
+            })
+        ));
+    }
+
+    /// `numSegments` sized a `Vec<SegmentCommitInfo>` — ~150 bytes of `String`s
+    /// and `Vec`s each — straight off a 4-byte header field. `i32::MAX` of them
+    /// is a ~300 GB reservation, and an allocation failure is an **abort**,
+    /// which `catch_unwind` cannot keep out of the JVM. Only the reservation
+    /// was unbounded: the loop itself would have hit EOF immediately.
+    #[test]
+    fn absurd_segment_count_errors_instead_of_reserving_for_it() {
+        let mut b = SisBuilder::valid(1);
+        b.num_segments_override = Some(i32::MAX);
+        assert!(matches!(
+            parse(&b.build(), 1),
+            Err(Error::InvalidSegmentCount(i32::MAX))
+        ));
+    }
+
+    /// The same shape one level down: `numDVFields` sizes a `Vec<(i32,
+    /// Vec<String>)>`. Java sizes a `HashMap` from it with no bound either.
+    #[test]
+    fn absurd_doc_values_field_count_errors_instead_of_reserving_for_it() {
+        for count in [i32::MAX, -1] {
+            let mut b = SisBuilder::valid(1);
+            let mut seg = SegBuilder::valid("_0");
+            seg.num_dv_fields_override = Some(count);
+            b.segments.push(seg);
+            assert!(
+                matches!(
+                    parse(&b.build(), 1),
+                    Err(Error::InvalidDocValuesFieldCount(..))
+                ),
+                "numDVFields={count}"
+            );
+        }
     }
 }

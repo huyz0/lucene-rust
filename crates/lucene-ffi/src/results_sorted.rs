@@ -11,7 +11,7 @@
 //! rather than one interleaved buffer).
 
 use crate::error::{guard, set_last_error, FfiStatus};
-use crate::registry::{lock_recovering, sorted_results};
+use crate::registry::sorted_results;
 
 /// Writes the number of `(doc_id, value)` pairs held by
 /// `sorted_results_handle` to `*out_len`.
@@ -27,7 +27,7 @@ pub unsafe extern "C" fn ffi_sorted_results_len(
         if out_len.is_null() {
             return Err(FfiStatus::NullPointer);
         }
-        let registry = lock_recovering(sorted_results());
+        let registry = sorted_results().read(sorted_results_handle);
         let handle = registry.get(sorted_results_handle).ok_or_else(|| {
             set_last_error("ffi_sorted_results_len: unknown or already-closed handle");
             FfiStatus::InvalidHandle
@@ -58,7 +58,7 @@ pub unsafe extern "C" fn ffi_sorted_results_copy(
     buf_len: usize,
 ) -> i32 {
     guard(|| {
-        let registry = lock_recovering(sorted_results());
+        let registry = sorted_results().read(sorted_results_handle);
         let handle = registry.get(sorted_results_handle).ok_or_else(|| {
             set_last_error("ffi_sorted_results_copy: unknown or already-closed handle");
             FfiStatus::InvalidHandle
@@ -93,7 +93,8 @@ pub unsafe extern "C" fn ffi_sorted_results_copy(
 #[no_mangle]
 pub extern "C" fn ffi_close_sorted_results(handle: u64) -> i32 {
     guard(|| {
-        lock_recovering(sorted_results())
+        sorted_results()
+            .write(handle)
             .remove(handle)
             .map(|_| ())
             .ok_or_else(|| {
@@ -109,7 +110,9 @@ mod tests {
     use crate::registry::SortedResultsHandle;
 
     fn insert(pairs: Vec<(i32, i64)>) -> u64 {
-        lock_recovering(sorted_results()).insert(SortedResultsHandle { pairs })
+        sorted_results()
+            .insert_checked(SortedResultsHandle { pairs })
+            .unwrap()
     }
 
     #[test]

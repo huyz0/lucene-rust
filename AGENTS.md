@@ -49,19 +49,47 @@ plan — phases, crate layout, verification strategy, effort estimates — is
 
 ## Commands
 
+**Run tests in the container.** `scripts/docker-test.sh` is the official local
+way to run anything that builds or tests this workspace:
+
+```
+scripts/docker-test.sh gate                     # the whole gate
+scripts/docker-test.sh cargo test -p lucene-codecs
+scripts/docker-test.sh scripts/verify-write-path.sh
+scripts/docker-test.sh bash                     # a shell inside it
+```
+
+It caps memory (8 GiB, swap disabled), CPUs, pids and `/tmp`, and pins both
+toolchains the gate is defined against (Rust 1.97.1, JDK 21) with the Lucene
+10.5.0 jars baked in — so fixture generation and write-path verification are
+reproducible and offline. The cap is not bureaucracy: an unbounded local build
+has repeatedly exhausted this project's WSL2 VM and killed the running session,
+which only a manual `wsl --shutdown` recovers. Inside the container the kernel
+kills the build instead, and the host never notices.
+
 `.githooks/pre-commit` (install via `scripts/setup-hooks.sh`) runs the gate
-and blocks on failure. Run it before calling a task done:
+through the container automatically, falling back to a native run when Docker
+is unavailable. Run it before calling a task done.
+
+The gate itself is defined once, in [`scripts/gate.sh`](scripts/gate.sh), so
+the hook, the container and this table cannot drift apart:
 
 | Step | Command |
 |------|---------|
+| **The gate** | `scripts/docker-test.sh gate` |
 | Format | `cargo fmt --all --check` |
-| Lint | `cargo clippy --workspace --all-targets -- -D warnings` |
+| Lint | `cargo clippy --workspace --all-targets -- -D warnings` (includes the arithmetic gate — see [`docs/arithmetic-gate.md`](docs/arithmetic-gate.md)) |
 | Lint for arm64 (catches target-dependent defects) | `cargo clippy --workspace --all-targets --target aarch64-unknown-linux-gnu -- -D warnings` |
 | Tests + coverage gate | `cargo llvm-cov --workspace --fail-under-lines 95` |
 | Coverage report, per file | `cargo llvm-cov --workspace --summary-only` |
-| Regenerate Java fixtures | `scripts/gen-fixtures.sh` |
+| Regenerate Java fixtures | `scripts/gen-fixtures.sh --only <Gen…>` (a full run rewrites every index with fresh segment ids — see [`fixtures/README.md`](fixtures/README.md)) |
 | Check fixtures are still Java-produced | `scripts/gen-fixtures.sh --check` |
 | Verify the write path (Lucene reads Rust bytes) | `scripts/verify-write-path.sh` |
+
+Prefix any of the individual commands with `scripts/docker-test.sh` to run it
+capped. **CI does not use the container** — GitHub Actions runners are already
+isolated VMs, so containing them again would only cost build time; CI runs the
+same commands natively.
 
 The same gate runs in CI on every push and pull request
 ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)), on Linux x64 and
@@ -101,6 +129,7 @@ Skills are the process source of truth; `PLAN.md`/`docs/` are the deep-dives.
 | Finished a format, need to record it | `parity-tracking` |
 | Committing / finishing a unit of work | `git-workflow`, `code-review` |
 | Writing tests for a new/changed module | `test-coverage` |
+| Arithmetic on a length/count read off disk | `code-review` + [`docs/arithmetic-gate.md`](docs/arithmetic-gate.md) |
 | Editing skills | `manage-skills` |
 
 ## Workflow

@@ -31,3 +31,23 @@ rayon = "1"
 jni = "0.21"
 proptest = "1"
 criterion = "0.5"
+
+# The "arithmetic on a value read off disk" gate.
+#
+# A length, count, offset or width read out of an index file that reaches an
+# `+`/`-`/`*`/`<<` without a bound is a *panic* in a debug build and a silent
+# wrap in a release one. Through the FFI a panic is at best an error code and
+# at worst a dead JVM, and the same value reaching `Vec::with_capacity` is an
+# **abort**, which no `catch_unwind` can intercept. The M2 sweep found this
+# class by hand nine separate times (b1, b2, b4, b6, b7, c8, c15 x3) and c15's
+# own deliberate audit still missed eight sites that its Tier-2 review caught
+# -- which is the argument for a mechanical gate rather than more auditing.
+#
+# `clippy::arithmetic_side_effects` is that gate. It is opted into per crate
+# (`[lints] workspace = true`) rather than switched on everywhere at once: a
+# workspace-wide deny fires on 2 063 sites today, most of them `i + 1` in a
+# loop, and a lint that has to be `#[allow]`-ed 2 000 times means nothing.
+# See `docs/arithmetic-gate.md` for the adoption list, the burn-down, and the
+# rule for writing an `#[allow]` that is allowed to stay.
+[workspace.lints.clippy]
+arithmetic_side_effects = "deny"

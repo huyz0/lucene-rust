@@ -31,7 +31,17 @@
 //! compares an absolute BM25 score against real Lucene's own recorded output
 //! rather than a hand-rederivation of this module's own formula.
 //!
-//! `score = idf * tfNorm`.
+//! `score = idf * tfNorm` **algebraically**, but the expression this module
+//! actually evaluates is real Lucene's own `BM25Scorer.doScore`,
+//! `weight - weight / (1 + freq * normInverse)` (see [`do_score`]). The two
+//! agree in exact arithmetic and disagree in `f32`: they round at different
+//! points, so the gap is *a few* ULP in general (see
+//! `do_score_reproduces_the_algebraic_form_to_within_rounding`, which allows
+//! four), and was exactly one ULP on every hit of the fixture that caught this.
+//! Every scored path in this crate used the multiply form until the b12 sweep;
+//! `tests/bm25_scoring_fixtures.rs` now pins term, boolean, phrase and
+//! multi-phrase scores against real Lucene's own recorded `TopDocs` output
+//! **bit for bit**.
 //!
 //! Defaults `k1 = 1.2`, `b = 0.75` match `BM25Similarity()`'s no-arg constructor,
 //! which is what every field in this port's fixtures implicitly uses (no
@@ -61,15 +71,18 @@
 //! byte value 24.
 //!
 //! [`crate::field_norms::FieldNorms`] computes `avgFieldLength` once per field
-//! per query (summing every live doc's decoded length, mirroring `avgFieldLength
-//! = sumTotalTermFreq / docCount` — this port has no separately tracked
-//! `sumTotalTermFreq`, but a field's `sumTotalTermFreq` *is* the sum of its
-//! per-doc lengths by definition) and [`crate::search_term_query_scored`]/
+//! per query, and [`crate::search_term_query_scored`]/
 //! [`crate::search_boolean_query_scored`] use it, falling back to
-//! [`UNNORMED_FIELD_LENGTH`]/[`UNNORMED_FIELD_LENGTH`] only when the field has no
-//! opened norms at all (norms disabled for that field, or the caller didn't open
-//! a `.nvd`/`.nvm` pair) — a documented, deliberate fallback, not silently wrong
+//! [`UNNORMED_FIELD_LENGTH`] for both lengths only when the field has no opened
+//! norms at all (norms disabled for that field, or the caller didn't open a
+//! `.nvd`/`.nvm` pair) — a documented, deliberate fallback, not silently wrong
 //! data; see [`crate::field_norms`] for exactly when that applies.
+//!
+//! **`FieldNorms` has two constructors and they do not compute the same
+//! `avgFieldLength`**; only `from_field_stats` matches Java, and it is not the
+//! one the production callers use. That is a live divergence, not a note about
+//! this module: see `docs/sweep/m2/LEDGER.md`'s carry-over row and
+//! `docs/sweep/m2/b12-search-core.md` F-7, owned by b13 and b15.
 
 /// `BM25Similarity`'s default `k1` (term-frequency saturation parameter).
 pub const DEFAULT_K1: f32 = 1.2;
@@ -93,12 +106,23 @@ pub const DEFAULT_B: f32 = 0.75;
 /// [`DEFAULT_B`], unchanged. Threading custom `k1`/`b` through every scored
 /// path is a larger, separately-scoped change; this task deliberately covers
 /// only the single most fundamental scored entry point.
+///
+/// **The fields are private and [`Bm25Params::new`] is the only way to build a
+/// non-default one.** Real Lucene validates `k1`/`b` in its constructor and has
+/// no setters, and the validation is load-bearing rather than decorative here:
+/// `b` outside `0..=1` makes the length-normalization term non-monotonic in the
+/// norm, which invalidates every impacts-derived upper bound
+/// ([`max_score_for_impacts`]) and turns MAXSCORE block skipping into a source
+/// of *missing hits*. Public fields plus a validating constructor would leave
+/// `Bm25Params { k1, b }` as an unchecked back door, which is exactly what the
+/// FFI entry point -- taking two floats straight off the C ABI -- would have
+/// gone through.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Bm25Params {
     /// Term-frequency saturation parameter (`BM25Similarity`'s `k1`).
-    pub k1: f32,
+    k1: f32,
     /// Field-length normalization parameter (`BM25Similarity`'s `b`).
-    pub b: f32,
+    b: f32,
 }
 
 impl Default for Bm25Params {
@@ -112,6 +136,45 @@ impl Default for Bm25Params {
     }
 }
 
+impl Bm25Params {
+    /// `BM25Similarity(float k1, float b)`'s **validating** constructor.
+    ///
+    /// Real Lucene rejects out-of-range parameters at construction, and the
+    /// rejections are not decorative -- they are what keeps the score
+    /// monotonic. `b > 1` or `b < 0` makes the length-normalization term
+    /// non-monotonic in the norm, which silently invalidates every
+    /// impacts-derived upper bound this crate computes
+    /// ([`max_score_for_impacts`]), turning MAXSCORE block skipping from an
+    /// optimization into a source of missing hits. A negative `k1` can make
+    /// the denominator zero or negative and produce infinities. This port had
+    /// no validation at all before the b12 sweep: [`Bm25Params`]'s fields are
+    /// public and a caller (including the FFI one) could set any float.
+    ///
+    /// The error messages are Lucene's own, verbatim, so a caller diagnosing a
+    /// rejection finds the same string in either engine.
+    pub fn new(k1: f32, b: f32) -> std::result::Result<Self, String> {
+        if !k1.is_finite() || k1 < 0.0 {
+            return Err(format!(
+                "illegal k1 value: {k1}, must be a non-negative finite value"
+            ));
+        }
+        if b.is_nan() || !(0.0..=1.0).contains(&b) {
+            return Err(format!("illegal b value: {b}, must be between 0 and 1"));
+        }
+        Ok(Bm25Params { k1, b })
+    }
+
+    /// `BM25Similarity.getK1()`.
+    pub fn k1(self) -> f32 {
+        self.k1
+    }
+
+    /// `BM25Similarity.getB()`.
+    pub fn b(self) -> f32 {
+        self.b
+    }
+}
+
 /// The constant `fieldLength`/`avgFieldLength` this port substitutes when a
 /// field has no opened norms (norms disabled for that field, or the caller
 /// didn't open a `.nvd`/`.nvm` pair for this search) — see this module's doc
@@ -119,6 +182,15 @@ impl Default for Bm25Params {
 /// "no-op" substitution: it makes the length-normalization term collapse to a
 /// constant instead of silently zeroing or exploding it.
 pub const UNNORMED_FIELD_LENGTH: f32 = 1.0;
+
+/// [`norm_inverse`] evaluated at [`UNNORMED_FIELD_LENGTH`] for both lengths and
+/// the default `k1`/`b` -- the length-normalization reciprocal every scoring
+/// path uses for a document whose field has no opened norms. Spelled as a
+/// constant so the no-norms branch of a per-document scoring loop is a load,
+/// not a divide.
+pub const UNNORMED_NORM_INVERSE: f32 = 1.0
+    / (DEFAULT_K1
+        * ((1.0 - DEFAULT_B) + DEFAULT_B * UNNORMED_FIELD_LENGTH / UNNORMED_FIELD_LENGTH));
 
 /// `SmallFloat.byte4ToInt`-equivalent decode of one real Lucene norm byte back
 /// to an approximate field length, mirroring `BM25Similarity.LENGTH_TABLE[i] =
@@ -154,14 +226,53 @@ pub fn tf_norm(freq: f32, field_length: f32, avg_field_length: f32, k1: f32, b: 
     freq / (freq + k1 * (1.0 - b + b * field_length / avg_field_length))
 }
 
-/// The full per-document BM25 score: `idf * tf_norm`, using the default `k1`/`b`
-/// and the given collection/document statistics.
+/// `BM25Similarity.scorer`'s per-norm-byte cache entry, `cache[i] = 1f / (k1 *
+/// ((1 - b) + b * LENGTH_TABLE[i] / avgdl))` -- the *reciprocal* of the
+/// length-normalization denominator, which is the only form real Lucene's
+/// scorer ever holds. [`crate::field_norms::FieldNorms`] precomputes all 256 of
+/// these once per field; this function is the single-value form, for the paths
+/// that have a field length rather than a norm byte.
+pub fn norm_inverse(field_length: f32, avg_field_length: f32, k1: f32, b: f32) -> f32 {
+    1.0 / (k1 * ((1.0 - b) + b * field_length / avg_field_length))
+}
+
+/// `BM25Scorer.doScore(float freq, float normInverse)` **verbatim**:
+/// `weight - weight / (1 + freq * normInverse)`, where `weight` is
+/// `boost * idf`.
+///
+/// This is not a stylistic choice, and it is not interchangeable with the
+/// algebraically-equal `weight * freq / (freq + k1 * (1 - b + b * dl / avgdl))`
+/// that [`tf_norm`] spells out. Two reasons, both from `BM25Similarity.java`'s
+/// own comment on this method:
+///
+/// 1. **Bit-for-bit agreement with real Lucene.** Every scored path in this
+///    port used the multiply form until the b12 sweep, and every one of them
+///    came out exactly one ULP away from real Lucene's own recorded `TopDocs`
+///    scores on a real fixture segment (see
+///    `crates/lucene-search/tests/bm25_scoring_fixtures.rs`). Float addition,
+///    subtraction and division do not commute across the rewrite; only this
+///    expression reproduces Lucene's bits.
+/// 2. **Monotonicity, which block-max pruning depends on.** Lucene rewrites
+///    `freq / (freq + norm)` to `1 - 1 / (1 + freq * (1/norm))` precisely
+///    because the latter is guaranteed monotonic in both `freq` and `norm`
+///    without promoting to `double`. An impacts-derived upper bound
+///    ([`max_score_for_impacts`]) is only sound if it is computed by the same
+///    expression the per-document score is; mixing the two forms can put the
+///    bound one ULP *below* a real document's score, and MAXSCORE will then
+///    skip a document that belonged in the top-`n`.
+pub fn do_score(weight: f32, freq: f32, norm_inverse: f32) -> f32 {
+    weight - weight / (1.0 + freq * norm_inverse)
+}
+
+/// The full per-document BM25 score, using the default `k1`/`b` and the given
+/// collection/document statistics -- real Lucene's `BM25Scorer.score(freq,
+/// encodedNorm)`, i.e. [`do_score`] over [`idf`] and [`norm_inverse`].
 ///
 /// - `doc_freq`: the term's document frequency in `field`.
 /// - `doc_count`: the field's document count (see [`idf`]).
 /// - `freq`: the term's frequency in the matched document.
-/// - `field_length`/`avg_field_length`: see this module's doc comment for why
-///   this port currently always passes [`UNNORMED_FIELD_LENGTH`] for both.
+/// - `field_length`/`avg_field_length`: [`UNNORMED_FIELD_LENGTH`] for both when
+///   the field has no opened norms; see this module's doc comment.
 pub fn score(
     doc_freq: i64,
     doc_count: i64,
@@ -169,7 +280,14 @@ pub fn score(
     field_length: f32,
     avg_field_length: f32,
 ) -> f32 {
-    idf(doc_freq, doc_count) * tf_norm(freq, field_length, avg_field_length, DEFAULT_K1, DEFAULT_B)
+    score_with_params(
+        doc_freq,
+        doc_count,
+        freq,
+        field_length,
+        avg_field_length,
+        Bm25Params::default(),
+    )
 }
 
 /// [`score`]'s sibling taking an explicit [`Bm25Params`] instead of the
@@ -184,7 +302,11 @@ pub fn score_with_params(
     avg_field_length: f32,
     params: Bm25Params,
 ) -> f32 {
-    idf(doc_freq, doc_count) * tf_norm(freq, field_length, avg_field_length, params.k1, params.b)
+    do_score(
+        idf(doc_freq, doc_count),
+        freq,
+        norm_inverse(field_length, avg_field_length, params.k1(), params.b()),
+    )
 }
 
 /// Upper bound on the BM25 score any document covered by a single block/span
@@ -228,19 +350,48 @@ pub fn max_score_for_impacts(
     doc_count: i64,
     avg_field_length: f32,
 ) -> f32 {
-    let idf = idf(doc_freq, doc_count);
+    let weight = idf(doc_freq, doc_count);
     impacts
         .iter()
         .map(|impact| {
             let field_length = decode_norm(impact.norm);
-            idf * tf_norm(
+            // Deliberately `do_score`, not `idf * tf_norm`: the bound and the
+            // per-document score it gates must be the *same* float expression,
+            // or the bound can land one ULP under a real score and skip a
+            // document that belonged in the top-`n`. See [`do_score`].
+            do_score(
+                weight,
                 impact.freq as f32,
-                field_length,
-                avg_field_length,
-                DEFAULT_K1,
-                DEFAULT_B,
+                norm_inverse(field_length, avg_field_length, DEFAULT_K1, DEFAULT_B),
             )
         })
+        .fold(0.0f32, f32::max)
+}
+
+/// [`max_score_for_impacts`]'s sibling for the `norms == None` scoring path.
+///
+/// When a search runs without opened norms every document is scored with
+/// `field_length == avg_field_length == `[`UNNORMED_FIELD_LENGTH`], **not** with
+/// whatever real norm byte the wire impacts happen to carry. Bounding with the
+/// wire norms there would bound a different scoring formula than the one
+/// actually applied, which can underestimate the bound and skip a document that
+/// should have been collected. Four call sites in `lib.rs` open-coded this and
+/// had to keep the rule in step; it lives here once instead.
+pub fn max_score_for_impacts_unnormed(
+    impacts: &[lucene_codecs::postings::Impact],
+    doc_freq: i64,
+    doc_count: i64,
+) -> f32 {
+    let weight = idf(doc_freq, doc_count);
+    let norm_inverse = norm_inverse(
+        UNNORMED_FIELD_LENGTH,
+        UNNORMED_FIELD_LENGTH,
+        DEFAULT_K1,
+        DEFAULT_B,
+    );
+    impacts
+        .iter()
+        .map(|impact| do_score(weight, impact.freq as f32, norm_inverse))
         .fold(0.0f32, f32::max)
 }
 
@@ -437,10 +588,121 @@ mod tests {
     }
 
     #[test]
+    fn bm25_params_new_rejects_exactly_what_lucene_rejects() {
+        // `BM25Similarity(float k1, float b, boolean, float)`'s own guards,
+        // with its own messages.
+        assert_eq!(
+            Bm25Params::new(-0.1, 0.5).unwrap_err(),
+            "illegal k1 value: -0.1, must be a non-negative finite value"
+        );
+        assert!(Bm25Params::new(f32::NAN, 0.5).is_err());
+        assert!(Bm25Params::new(f32::INFINITY, 0.5).is_err());
+        assert_eq!(
+            Bm25Params::new(1.2, 1.5).unwrap_err(),
+            "illegal b value: 1.5, must be between 0 and 1"
+        );
+        assert!(Bm25Params::new(1.2, -0.001).is_err());
+        assert!(Bm25Params::new(1.2, f32::NAN).is_err());
+        // The boundaries Lucene accepts.
+        assert_eq!(
+            Bm25Params::new(0.0, 0.0).unwrap(),
+            Bm25Params { k1: 0.0, b: 0.0 }
+        );
+        assert_eq!(
+            Bm25Params::new(1.2, 1.0).unwrap(),
+            Bm25Params { k1: 1.2, b: 1.0 }
+        );
+        assert_eq!(
+            Bm25Params::new(DEFAULT_K1, DEFAULT_B).unwrap(),
+            Bm25Params::default()
+        );
+    }
+
+    #[test]
+    fn do_score_reproduces_the_algebraic_form_to_within_rounding() {
+        // The two expressions are equal in exact arithmetic; the point of
+        // `do_score` is that it is the one real Lucene evaluates. Pin both
+        // facts: close, and not always identical.
+        let mut differed = false;
+        for freq in [1.0f32, 2.0, 3.0, 7.0, 41.0] {
+            for len in [1.0f32, 2.0, 5.0, 17.0, 96.0] {
+                let weight = idf(3, 97);
+                let got = do_score(weight, freq, norm_inverse(len, 12.5, DEFAULT_K1, DEFAULT_B));
+                let algebraic = weight * tf_norm(freq, len, 12.5, DEFAULT_K1, DEFAULT_B);
+                // A few ULP, not one: the two expressions differ in *where*
+                // they round (one division and a subtraction versus two
+                // divisions and a multiplication), so the gap compounds.
+                assert!(
+                    (got - algebraic).abs() <= 4.0 * f32::EPSILON * got.abs().max(1.0),
+                    "freq={freq} len={len}: {got} vs {algebraic}"
+                );
+                differed |= got.to_bits() != algebraic.to_bits();
+            }
+        }
+        assert!(
+            differed,
+            "if the two forms never differ, this crate's insistence on `do_score` \
+             would be pointless -- they do differ, and Lucene's bits are do_score's"
+        );
+    }
+
+    #[test]
+    fn norm_inverse_matches_lucenes_scorer_cache_entry() {
+        // `cache[i] = 1f / (k1 * ((1 - b) + b * LENGTH_TABLE[i] / avgdl))`.
+        let avgdl = 4.0f32;
+        for byte in [0u8, 1, 23, 40, 100, 255] {
+            let len = decode_norm(byte as i64);
+            let expected = 1.0f32 / (DEFAULT_K1 * ((1.0 - DEFAULT_B) + DEFAULT_B * len / avgdl));
+            assert_eq!(norm_inverse(len, avgdl, DEFAULT_K1, DEFAULT_B), expected);
+        }
+        // And the constant the no-norms path uses is the same function at
+        // `UNNORMED_FIELD_LENGTH`.
+        assert_eq!(
+            UNNORMED_NORM_INVERSE,
+            norm_inverse(
+                UNNORMED_FIELD_LENGTH,
+                UNNORMED_FIELD_LENGTH,
+                DEFAULT_K1,
+                DEFAULT_B
+            )
+        );
+    }
+
+    #[test]
+    fn max_score_for_impacts_is_never_below_a_real_scored_document() {
+        // The soundness property MAXSCORE rests on, and the reason the bound
+        // and the score must be the same float expression: for every
+        // (freq, norm) pair the bound covers, the bound must be >= the score
+        // that pair actually produces. One ULP the wrong way here drops hits.
+        let impacts: Vec<lucene_codecs::postings::Impact> = [(1i32, 0i64), (3, 40), (9, 100)]
+            .iter()
+            .map(|&(freq, norm)| lucene_codecs::postings::Impact { freq, norm })
+            .collect();
+        let avgdl = 7.5f32;
+        let bound = max_score_for_impacts(&impacts, 5, 200, avgdl);
+        for impact in &impacts {
+            let actual = score(5, 200, impact.freq as f32, decode_norm(impact.norm), avgdl);
+            assert!(actual <= bound, "{actual} > bound {bound} for {impact:?}");
+        }
+        // Unnormed sibling, same property against the unnormed scoring path.
+        let unnormed = max_score_for_impacts_unnormed(&impacts, 5, 200);
+        for impact in &impacts {
+            let actual = score(
+                5,
+                200,
+                impact.freq as f32,
+                UNNORMED_FIELD_LENGTH,
+                UNNORMED_FIELD_LENGTH,
+            );
+            assert!(actual <= unnormed, "{actual} > bound {unnormed}");
+        }
+    }
+
+    #[test]
     fn bm25_params_default_matches_lucene_default_constants() {
         let params = Bm25Params::default();
-        assert_eq!(params.k1, DEFAULT_K1);
-        assert_eq!(params.b, DEFAULT_B);
+        assert_eq!(params.k1(), DEFAULT_K1);
+        assert_eq!(params.b(), DEFAULT_B);
     }
 
     #[test]
@@ -471,7 +733,7 @@ mod tests {
         // tfNorm(4, 1, 1, 2.0, 0.5) = 4 / (4 + 2.0*(1 - 0.5 + 0.5*1/1))
         //           = 4 / (4 + 2.0*1.0) = 4 / 6.0 = 0.666666...
         // score = 1.481604 * 0.666666... = 0.987736...
-        let params = Bm25Params { k1: 2.0, b: 0.5 };
+        let params = Bm25Params::new(2.0, 0.5).expect("in range");
         let got = score_with_params(
             2,
             10,

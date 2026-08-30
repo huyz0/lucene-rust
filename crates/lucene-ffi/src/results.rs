@@ -13,7 +13,7 @@
 //! documented, supported bulk path.
 
 use crate::error::{guard, set_last_error, FfiStatus};
-use crate::registry::{lock_recovering, results};
+use crate::registry::results;
 
 /// Writes the number of doc IDs held by `results_handle` to `*out_len`.
 ///
@@ -25,7 +25,7 @@ pub unsafe extern "C" fn ffi_results_len(results_handle: u64, out_len: *mut usiz
         if out_len.is_null() {
             return Err(FfiStatus::NullPointer);
         }
-        let registry = lock_recovering(results());
+        let registry = results().read(results_handle);
         let handle = registry.get(results_handle).ok_or_else(|| {
             set_last_error("ffi_results_len: unknown or already-closed handle");
             FfiStatus::InvalidHandle
@@ -52,7 +52,7 @@ pub unsafe extern "C" fn ffi_results_copy(
     buf_len: usize,
 ) -> i32 {
     guard(|| {
-        let registry = lock_recovering(results());
+        let registry = results().read(results_handle);
         let handle = registry.get(results_handle).ok_or_else(|| {
             set_last_error("ffi_results_copy: unknown or already-closed handle");
             FfiStatus::InvalidHandle
@@ -79,7 +79,8 @@ pub unsafe extern "C" fn ffi_results_copy(
 #[no_mangle]
 pub extern "C" fn ffi_close_results(handle: u64) -> i32 {
     guard(|| {
-        lock_recovering(results())
+        results()
+            .write(handle)
             .remove(handle)
             .map(|_| ())
             .ok_or_else(|| {
@@ -95,7 +96,7 @@ mod tests {
     use crate::registry::ResultsHandle;
 
     fn insert(docs: Vec<i32>) -> u64 {
-        lock_recovering(results()).insert(ResultsHandle { docs })
+        results().insert_checked(ResultsHandle { docs }).unwrap()
     }
 
     #[test]

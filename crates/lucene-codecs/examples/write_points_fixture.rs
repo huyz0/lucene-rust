@@ -33,6 +33,11 @@
 //!   (see `fixtures/src/VerifyPoints.java`'s `verifyPruningQuery2D`).
 //!
 //! Run: `cargo run -p lucene-codecs --example write_points_fixture -- <dir>`
+// Test-support code opts out of the arithmetic gate at the file boundary:
+// the gate exists for values read off disk in production decode paths, not
+// for a fixture builder's own index arithmetic. See
+// `docs/arithmetic-gate.md`.
+#![allow(clippy::arithmetic_side_effects)]
 
 use lucene_codecs::points::{self, WritePointsField};
 use lucene_store::{DataOutput, Directory, FsDirectory};

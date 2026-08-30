@@ -3,6 +3,11 @@
 //! type (string, binary, int, long, float, double), and varying string
 //! lengths so the chunk uses the bulk (non-single-doc) length framing.
 //! Regenerate with fixtures/src/GenStoredFields.java.
+// Test-support code opts out of the arithmetic gate at the file boundary:
+// the gate exists for values read off disk in production decode paths, not
+// for a fixture builder's own index arithmetic. See
+// `docs/arithmetic-gate.md`.
+#![allow(clippy::arithmetic_side_effects)]
 
 use lucene_codecs::stored_fields::{self, FieldValue};
 

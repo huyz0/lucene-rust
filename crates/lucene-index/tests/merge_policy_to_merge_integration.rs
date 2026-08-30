@@ -5,6 +5,11 @@
 //! machinery without any shape mismatch. Not a full automatic
 //! merge-triggering pipeline (out of scope per this task's brief), just the
 //! "decide, then execute" handoff.
+// Test-support code opts out of the arithmetic gate at the file boundary:
+// the gate exists for values read off disk in production decode paths, not
+// for a fixture builder's own index arithmetic. See
+// `docs/arithmetic-gate.md`.
+#![allow(clippy::arithmetic_side_effects)]
 
 use lucene_codecs::field_infos::{
     DocValuesSkipIndexType, DocValuesType, FieldInfo, IndexOptions, VectorEncoding,
@@ -58,17 +63,12 @@ fn doc_with(field_number: i32, value: &str) -> Document {
     }
 }
 
-fn tempdir() -> String {
-    let dir = std::env::temp_dir().join(format!(
-        "lucene-rust-merge-policy-integration-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir.to_str().unwrap().to_string()
+use lucene_util::test_support::TempDir;
+
+/// A scratch directory that removes itself when the test ends -- unless the
+/// test is panicking, in which case its bytes stay for inspection.
+fn tempdir() -> TempDir {
+    TempDir::new("merge-policy-integration")
 }
 
 #[test]
@@ -111,8 +111,13 @@ fn find_merges_output_feeds_directly_into_merge_execution() {
         segments_per_tier: 1,
         max_merged_segment_size: 1_000_000,
         reclaim_weight: 1.0,
-        floor_segment_size: 0,
+        // Above every one of these synthetic segments, mirroring real
+        // Lucene's 16MB floorSegmentBytes vs a freshly-flushed tiny segment:
+        // the level walk then budgets a single level, so segments_per_tier
+        // alone decides when a merge fires.
+        floor_segment_size: 1000,
         force_merge_deletes_pct_allowed: 10.0,
+        ..MergePolicyConfig::default()
     };
     let groups = find_merges(&stats, &config);
     assert_eq!(groups.len(), 1, "expected one merge group proposed");
@@ -126,9 +131,9 @@ fn find_merges_output_feeds_directly_into_merge_execution() {
     let mut fdxs = Vec::new();
     let mut fdms = Vec::new();
     for name in chosen.iter() {
-        fdts.push(std::fs::read(std::path::Path::new(&tmp).join(format!("{name}.fdt"))).unwrap());
-        fdxs.push(std::fs::read(std::path::Path::new(&tmp).join(format!("{name}.fdx"))).unwrap());
-        fdms.push(std::fs::read(std::path::Path::new(&tmp).join(format!("{name}.fdm"))).unwrap());
+        fdts.push(std::fs::read(tmp.join(format!("{name}.fdt"))).unwrap());
+        fdxs.push(std::fs::read(tmp.join(format!("{name}.fdx"))).unwrap());
+        fdms.push(std::fs::read(tmp.join(format!("{name}.fdm"))).unwrap());
     }
     let readers: Vec<stored_fields::StoredFieldsReader> = chosen
         .iter()
@@ -161,9 +166,9 @@ fn find_merges_output_feeds_directly_into_merge_execution() {
     .unwrap();
     assert_eq!(sci.segment_name, "_merged");
 
-    let merged_fdt = std::fs::read(std::path::Path::new(&tmp).join("_merged.fdt")).unwrap();
-    let merged_fdx = std::fs::read(std::path::Path::new(&tmp).join("_merged.fdx")).unwrap();
-    let merged_fdm = std::fs::read(std::path::Path::new(&tmp).join("_merged.fdm")).unwrap();
+    let merged_fdt = std::fs::read(tmp.join("_merged.fdt")).unwrap();
+    let merged_fdx = std::fs::read(tmp.join("_merged.fdx")).unwrap();
+    let merged_fdm = std::fs::read(tmp.join("_merged.fdm")).unwrap();
     let merged_reader = stored_fields::open(
         &merged_fdt,
         &merged_fdx,

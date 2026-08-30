@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
 # Pre-commit gate: the tree must be green before a commit lands.
 # Bypass in genuine emergencies with `git commit --no-verify`.
+#
+# Runs inside the capped container when Docker is available, because an
+# unbounded local build has repeatedly exhausted this project's WSL2 VM and
+# killed the session -- recovering that needs a manual `wsl --shutdown`, which
+# a commit hook has no business costing you. Falls back to running natively
+# when Docker is absent (and CI, whose runners are already isolated VMs, runs
+# the same steps natively by design).
 set -euo pipefail
 
-echo "pre-commit: cargo fmt --check ..."
-cargo fmt --all --check
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+  echo "pre-commit: running the gate in the capped container"
+  exec scripts/docker-test.sh gate
+fi
 
-echo "pre-commit: cargo clippy -D warnings ..."
-cargo clippy --workspace --all-targets -- -D warnings
-
-echo "pre-commit: cargo llvm-cov (tests + >=95% line coverage) ..."
-cargo llvm-cov --workspace --fail-under-lines 95
-
-echo "pre-commit: ok"
+echo "pre-commit: docker unavailable, running the gate natively"
+exec scripts/gate.sh

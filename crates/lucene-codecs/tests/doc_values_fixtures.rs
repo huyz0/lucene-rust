@@ -4,6 +4,11 @@
 //! ("bin_fixed" dense fixed-length, "bin_var" dense variable-length via
 //! DirectMonotonicReader, "bin_sparse" variable-length + IndexedDISI).
 //! Regenerate with fixtures/src/GenDocValues.java.
+// Test-support code opts out of the arithmetic gate at the file boundary:
+// the gate exists for values read off disk in production decode paths, not
+// for a fixture builder's own index arithmetic. See
+// `docs/arithmetic-gate.md`.
+#![allow(clippy::arithmetic_side_effects)]
 
 use lucene_codecs::{doc_values as ndv, field_infos};
 

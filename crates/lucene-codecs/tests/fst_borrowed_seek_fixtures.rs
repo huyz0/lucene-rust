@@ -23,6 +23,11 @@
 //! `read_borrowed_over_a_real_mmap_directory_input`'s pattern) and performs
 //! seek/enumeration against that mmap-backed slice, not just an in-memory
 //! byte buffer.
+// Test-support code opts out of the arithmetic gate at the file boundary:
+// the gate exists for values read off disk in production decode paths, not
+// for a fixture builder's own index arithmetic. See
+// `docs/arithmetic-gate.md`.
+#![allow(clippy::arithmetic_side_effects)]
 
 use lucene_codecs::fst::Fst;
 use lucene_store::data_input::SliceInput;
@@ -259,16 +264,7 @@ fn seek_and_enumerate_over_a_real_mmap_directory_backed_borrowed_fst() {
 
     let file_bytes = load_bytes("fst");
 
-    let mut root = std::env::temp_dir();
-    root.push(format!(
-        "lucene-rust-fst-borrowed-seek-mmap-test-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&root).unwrap();
+    let root = lucene_util::test_support::TempDir::new("fst-borrowed-seek-mmap");
 
     let dir = MmapDirectory::open(&root);
     {

@@ -140,13 +140,18 @@ pub fn check_data_header_footer(
     )?;
     codec_util::retrieve_checksum(buf)?;
 
+    // Saturating, not plain `+`: `offset`/`length` come straight off a `.cfe`
+    // whose contents may be corrupt, and `i64 + i64` would panic on overflow
+    // in a debug build (Java's `long` addition silently wraps and then fails
+    // the comparison below). A saturated extent can never equal a real file
+    // length, so it lands in the same `WrongLength` error either way.
     let max_extent = entries
         .entries
         .iter()
-        .map(|(_, e)| (e.offset + e.length) as usize)
+        .map(|(_, e)| usize::try_from(e.offset.saturating_add(e.length)).unwrap_or(usize::MAX))
         .max()
         .unwrap_or_else(|| index_header_length(DATA_CODEC));
-    let expected_length = max_extent + codec_util::FOOTER_LENGTH;
+    let expected_length = max_extent.saturating_add(codec_util::FOOTER_LENGTH);
     if buf.len() != expected_length {
         return Err(Error::WrongLength {
             expected: expected_length,
@@ -193,8 +198,15 @@ pub fn open_input<'d>(
 /// [`parse_entries`]/[`open_input`] expect) with that sub-file's complete
 /// bytes. Mirrors Java's `Lucene90CompoundFormat.writeCompoundFile`:
 ///
-/// - Sub-files are packed smallest-first (`Comparator.comparingLong(length)`)
-///   so small files are more likely to land within one page.
+/// - Sub-files are packed smallest-first so small files are more likely to
+///   land within one page. Lucene 10.5.0 does this by draining a
+///   `PriorityQueue<SizedFile>` ordered by `length` (Lucene `main` later
+///   replaced it with `List.sort(Comparator.comparingLong(length))`); this
+///   port uses Rust's stable sort by length. The two agree whenever the
+///   lengths are distinct; for equal-length sub-files 10.5.0's binary-heap
+///   pop order is unspecified, so the resulting `.cfs` packing order can
+///   differ. Nothing in the format depends on it -- `.cfe` maps names to
+///   `(offset, length)` and the reader looks up by name.
 /// - Each sub-file's start offset in `.cfs` is padded up to a 64-byte
 ///   boundary ([`ALIGNMENT_BYTES`]).
 /// - Java "verifies and copies" each sub-file's header (checking its object
@@ -231,6 +243,11 @@ pub fn write(
         }
         let start_offset = cfs.len() as i64;
         cfs.extend_from_slice(bytes);
+        // ARITH: `start_offset` was `cfs.len()` immediately before the
+        // `extend_from_slice` above, and a `Vec` only grows there, so
+        // `cfs.len() >= start_offset`. Both fit `i64` because a `Vec`'s
+        // length is bounded by `isize::MAX`.
+        #[allow(clippy::arithmetic_side_effects)]
         let length = cfs.len() as i64 - start_offset;
 
         cfe.write_string(name);
@@ -277,10 +294,17 @@ fn verify_sub_file(name: &str, bytes: &[u8], segment_id: &[u8; ID_LENGTH]) -> Re
 /// `header_length(codec) + ID_LENGTH + 1` (the vint-encoded empty-suffix
 /// length byte) -- Java's `CodecUtil.indexHeaderLength(codec, "")`, used as
 /// the minimum expected `.cfs` length when the entries table is empty.
+// ARITH: `codec` is one of this module's two `&'static str` codec-name
+// constants (`ENTRY_CODEC`/`DATA_CODEC`, both under 32 bytes), never a name
+// read off disk, so the sum is a small constant well under `usize::MAX`.
+#[allow(clippy::arithmetic_side_effects)]
 fn index_header_length(codec: &str) -> usize {
     4 + vint_len(codec.len() as i32) + codec.len() + 4 + ID_LENGTH + 1
 }
 
+// ARITH: each iteration shifts `v` right by 7 as an unsigned value, so the
+// loop runs at most 5 times for a 32-bit `v` and `n` never exceeds 5.
+#[allow(clippy::arithmetic_side_effects)]
 fn vint_len(mut v: i32) -> usize {
     let mut n = 1;
     while (v as u32) >= 0x80 {
@@ -469,6 +493,33 @@ mod tests {
             open_input(&cfs, &entries, ".fnm"),
             Err(Error::Store(_))
         ));
+    }
+
+    /// `.cfe` offsets/lengths are `i64` straight off disk. A corrupt pair
+    /// whose sum overflows must land in `WrongLength`, not panic on the
+    /// `offset + length` addition (which is a debug-build panic in Rust
+    /// where Java's `long` silently wraps).
+    #[test]
+    fn overflowing_entry_extent_is_a_length_error_not_a_panic() {
+        let id = [3u8; ID_LENGTH];
+        let cfe = build_cfe(&id, &[("f", i64::MAX, i64::MAX)]);
+        let entries = parse_entries(&cfe, &id).unwrap();
+        let cfs = build_cfs(&id, VERSION_CURRENT, &[]);
+        assert!(matches!(
+            check_data_header_footer(&cfs, &id, &entries),
+            Err(Error::WrongLength { .. })
+        ));
+    }
+
+    /// The mirror case: a negative offset (only reachable from a corrupt
+    /// `.cfe`) must not slice anything out of the `.cfs`.
+    #[test]
+    fn negative_entry_offset_is_rejected_by_open_input() {
+        let id = [4u8; ID_LENGTH];
+        let cfe = build_cfe(&id, &[("f", -8, 4)]);
+        let entries = parse_entries(&cfe, &id).unwrap();
+        let cfs = build_cfs(&id, VERSION_CURRENT, &[]);
+        assert!(open_input(&cfs, &entries, "f").is_err());
     }
 
     #[test]

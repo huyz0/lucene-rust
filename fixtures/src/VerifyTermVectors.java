@@ -38,9 +38,15 @@ import java.util.Map;
  * requiring Rust to write {@code .si}/{@code .fnm} -- same pattern as
  * {@code VerifyStoredFields.java}.
  *
- * <p>The Rust writer only supports positions (no offsets/payloads, no
- * prefix sharing, single chunk -- see its doc comment), so this verifier
- * only checks term text, freq, and positions.
+ * <p>Segments {@code _0} and {@code _1} are positions-only, so they are
+ * checked for term text, freq and positions. Segment {@code _2} -- added by
+ * batch {@code c8-tv-chunking} -- spans many 4 096-byte / 128-document chunks
+ * and carries offsets and payloads on one of its two fields, so it is checked
+ * for all five. It is the segment that proves real Lucene can find a document
+ * in a chunk other than the first through {@code .tvx}, and that
+ * {@code flushOffsets}' derived {@code charsPerTerm} correction, the
+ * per-field-number flags encoding and {@code startTerm}'s prefix compression
+ * all invert exactly.
  *
  * <p>Usage: {@code java VerifyTermVectors <fixture-dir>}, where
  * {@code <fixture-dir>} contains {@code _0.tvd}/{@code _0.tvx}/
@@ -66,6 +72,9 @@ public class VerifyTermVectors {
     // are prefixed with "all_zero." (e.g. "all_zero.max_doc").
     failures += verifySegment(dir, id, "_1", manifest, "all_zero.");
 
+    // "_2": a multi-chunk segment with offsets and payloads.
+    failures += verifySegment(dir, id, "_2", manifest, "chunked.", true);
+
     if (failures > 0) {
       System.out.println(failures + " document(s) mismatched overall");
       System.exit(1);
@@ -83,6 +92,17 @@ public class VerifyTermVectors {
    */
   static int verifySegment(
       Path dir, byte[] id, String segmentName, Map<String, String> manifest, String keyPrefix)
+      throws IOException {
+    return verifySegment(dir, id, segmentName, manifest, keyPrefix, false);
+  }
+
+  static int verifySegment(
+      Path dir,
+      byte[] id,
+      String segmentName,
+      Map<String, String> manifest,
+      String keyPrefix,
+      boolean full)
       throws IOException {
     int maxDoc = Integer.parseInt(manifest.get(keyPrefix + "max_doc"));
     int numFields = Integer.parseInt(manifest.get(keyPrefix + "num_fields"));
@@ -134,7 +154,7 @@ public class VerifyTermVectors {
       int failures = 0;
       for (int doc = 0; doc < maxDoc; doc++) {
         String expectedLine = manifest.getOrDefault(keyPrefix + "doc." + doc + ".fields", "");
-        String got = renderDoc(reader, doc, fis);
+        String got = full ? renderDocFull(reader, doc, fis) : renderDoc(reader, doc, fis);
         if (!got.equals(expectedLine)) {
           System.out.println(
               "MISMATCH "
@@ -147,7 +167,7 @@ public class VerifyTermVectors {
                   + got
                   + "]");
           failures++;
-        } else {
+        } else if (maxDoc <= 8) {
           System.out.println(segmentName + " doc " + doc + " OK: " + got);
         }
       }
@@ -190,6 +210,71 @@ public class VerifyTermVectors {
           }
         }
         sb.append(term.utf8ToString()).append(':').append(freq).append(':').append(positions);
+      }
+      sb.append(']');
+    }
+    return sb.toString();
+  }
+
+  /**
+   * Renders a doc's fields/terms including each occurrence's start/end offsets
+   * and payload bytes, matching the Rust example's {@code render_doc_full}.
+   */
+  static String renderDocFull(TermVectorsReader reader, int doc, FieldInfos fis)
+      throws IOException {
+    Fields fields = reader.get(doc);
+    if (fields == null) {
+      return "";
+    }
+    StringBuilder sb = new StringBuilder();
+    for (String fieldName : fields) {
+      FieldInfo fi = fis.fieldInfo(fieldName);
+      Terms terms = fields.terms(fieldName);
+      if (sb.length() > 0) sb.append(';');
+      sb.append(fi.number).append('[');
+      TermsEnum te = terms.iterator();
+      boolean firstTerm = true;
+      PostingsEnum pe = null;
+      BytesRef term;
+      while ((term = te.next()) != null) {
+        if (!firstTerm) sb.append(',');
+        firstTerm = false;
+        pe = te.postings(pe, PostingsEnum.ALL);
+        pe.nextDoc();
+        int freq = pe.freq();
+        StringBuilder positions = new StringBuilder();
+        StringBuilder starts = new StringBuilder();
+        StringBuilder ends = new StringBuilder();
+        StringBuilder payloads = new StringBuilder();
+        for (int i = 0; i < freq; i++) {
+          int pos = pe.nextPosition();
+          if (i > 0) {
+            positions.append(',');
+            starts.append(',');
+            ends.append(',');
+            payloads.append(',');
+          }
+          positions.append(pos);
+          starts.append(pe.startOffset());
+          ends.append(pe.endOffset());
+          BytesRef payload = pe.getPayload();
+          if (payload != null) {
+            for (int b = 0; b < payload.length; b++) {
+              payloads.append(String.format("%02x", payload.bytes[payload.offset + b]));
+            }
+          }
+        }
+        sb.append(term.utf8ToString())
+            .append(':')
+            .append(freq)
+            .append(':')
+            .append(positions)
+            .append(':')
+            .append(starts)
+            .append(':')
+            .append(ends)
+            .append(':')
+            .append(payloads);
       }
       sb.append(']');
     }

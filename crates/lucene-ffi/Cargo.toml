@@ -15,6 +15,10 @@ lucene-util = { path = "../lucene-util" }
 jni.workspace = true
 
 [dev-dependencies]
+# The shared RAII scratch-directory guard (`lucene_util::test_support::TempDir`).
+# A `[dev-dependencies]` edge, so resolver-2 feature unification keeps the
+# module out of this crate's production build.
+lucene-util = { path = "../lucene-util", features = ["test-support"] }
 # Enables `lucene-search`'s `test-support` feature only for this crate's own
 # test/bench targets (resolver-2 feature unification confines a
 # `[dev-dependencies]` edge's features to those targets) -- this is what lets

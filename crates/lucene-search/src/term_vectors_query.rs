@@ -29,20 +29,29 @@
 //! `has_offsets` flag) -- offsets are per-field, not always present, exactly
 //! like real Lucene. There is no fragmenting, scoring of fragments, or
 //! `PassageFormatter`-equivalent here: this is the offset-lookup primitive a
-//! real highlighter is built on top of, not a highlighter itself. Building
-//! an actual `UnifiedHighlighter`-equivalent (fragment selection, snippet
-//! assembly, `BreakIterator`-style boundary snapping) is out of scope for
-//! this task and left for a follow-up slice.
+//! real highlighter is built on top of, not a highlighter itself.
+//! [`crate::highlighter`] is the layer above -- it takes these spans plus the
+//! original field text and does the passage assembly, `PassageScorer`-based
+//! selection and `DefaultPassageFormatter` rendering (only the
+//! `BreakIterator`-based boundary chooser stays a documented simplification
+//! there).
 
 use lucene_codecs::field_infos::FieldInfos;
 use lucene_codecs::term_vectors::{TermVectorField, TermVectorsReader};
 
 use crate::Result;
 
-/// One matched term's character-offset span within a document's field, as
-/// computed by [`matched_term_offsets`] -- a named struct rather than a
+/// One matched term's offset span within a document's field, as computed by
+/// [`matched_term_offsets`] -- a named struct rather than a
 /// `(String, i32, i32)` tuple, matching this crate's convention for
 /// multi-field result items (e.g. [`crate::collector::ScoreDoc`]).
+///
+/// **Unit: UTF-16 code units (Java `char`s).** These are `OffsetAttribute`'s
+/// own numbers, decoded verbatim off the `.tvd`/`.pos` by `lucene-codecs`
+/// and never reinterpreted here, and they are indices into the original
+/// `String` the indexing-time analyzer saw -- which is what makes them UTF-16
+/// rather than bytes or Unicode scalars. [`crate::highlighter`] slices the
+/// stored text with them in that unit; see its module doc.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TermOffsetSpan {
     pub term: String,
@@ -97,9 +106,12 @@ pub fn term_vector_for_doc(
 /// When offsets are available, returns one [`TermOffsetSpan`] per occurrence
 /// of any term in `matched_terms` (case-sensitive, matched against the
 /// term's raw UTF-8 bytes), across all of that term's occurrences (a
-/// repeated matched term contributes multiple spans), sorted ascending by
-/// `start_offset` -- the order a highlighter walking a document
-/// left-to-right wants.
+/// repeated matched term contributes multiple spans), in real Lucene's
+/// `OffsetsEnum.compareTo` order: ascending `start_offset`, then ascending
+/// `end_offset`, then ascending term. That full ordering (not just the
+/// `start_offset` key this used to sort on) is what makes the result
+/// deterministic when two different terms start at the same offset -- the
+/// synonym/overlapping-token case a highlighter has to render consistently.
 pub fn matched_term_offsets(
     field: &TermVectorField,
     matched_terms: &[String],
@@ -123,7 +135,12 @@ pub fn matched_term_offsets(
             });
         }
     }
-    spans.sort_by_key(|s| s.start_offset);
+    spans.sort_by(|a, b| {
+        a.start_offset
+            .cmp(&b.start_offset)
+            .then_with(|| a.end_offset.cmp(&b.end_offset))
+            .then_with(|| a.term.cmp(&b.term))
+    });
     Some(spans)
 }
 
@@ -302,6 +319,58 @@ mod tests {
             term_vector_for_doc(&reader, &fis, 999, "text"),
             Err(crate::Error::TermVectors(_))
         ));
+    }
+
+    #[test]
+    fn spans_starting_at_the_same_offset_are_ordered_by_end_then_term() {
+        // Real Lucene's `OffsetsEnum.compareTo` breaks a start-offset tie on
+        // end offset, then on the term itself -- the ordering an
+        // overlapping-token (synonym) field produces. Built directly, since
+        // the checked-in fixture has no overlapping tokens.
+        let field = TermVectorField {
+            field_number: 0,
+            has_positions: true,
+            has_offsets: true,
+            has_payloads: false,
+            terms: vec![
+                lucene_codecs::term_vectors::TermVectorTerm {
+                    term: b"zebra".to_vec(),
+                    freq: 1,
+                    positions: None,
+                    start_offsets: Some(vec![0]),
+                    end_offsets: Some(vec![5]),
+                    payloads: None,
+                },
+                lucene_codecs::term_vectors::TermVectorTerm {
+                    term: b"alpha".to_vec(),
+                    freq: 1,
+                    positions: None,
+                    start_offsets: Some(vec![0]),
+                    end_offsets: Some(vec![5]),
+                    payloads: None,
+                },
+                lucene_codecs::term_vectors::TermVectorTerm {
+                    term: b"mid".to_vec(),
+                    freq: 1,
+                    positions: None,
+                    start_offsets: Some(vec![0]),
+                    end_offsets: Some(vec![3]),
+                    payloads: None,
+                },
+            ],
+        };
+        let spans = matched_term_offsets(
+            &field,
+            &["zebra".to_string(), "alpha".to_string(), "mid".to_string()],
+        )
+        .unwrap();
+        assert_eq!(
+            spans
+                .iter()
+                .map(|s| (s.term.as_str(), s.start_offset, s.end_offset))
+                .collect::<Vec<_>>(),
+            vec![("mid", 0, 3), ("alpha", 0, 5), ("zebra", 0, 5)]
+        );
     }
 
     #[test]

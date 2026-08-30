@@ -83,9 +83,124 @@ pub enum Error {
         num_dims: i32,
         num_index_dims: i32,
     },
+    /// Port of `BKDConfig`'s constructor bounds checks (`numDims must be
+    /// 1 .. 16`, `numIndexDims must be 1 .. 8`, `numIndexDims cannot exceed
+    /// numDims`, `bytesPerDim must be > 0`, `maxPointsInLeafNode must be >
+    /// 0`), plus `BKDReader`'s own `assert numLeaves > 0`. Java raises
+    /// `IllegalArgumentException` from `BKDConfig.of(...)` while reading
+    /// `.kdm`; here it is one error variant carrying the offending value.
+    #[error("invalid BKD config: {0}")]
+    InvalidConfig(String),
+    /// Port of `BKDReader`'s
+    /// `"minPackedValue ... is > maxPackedValue ... for dim=N"`
+    /// `CorruptIndexException`.
+    #[error("minPackedValue is > maxPackedValue for dim={0}")]
+    MinGreaterThanMax(usize),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// A `CorruptIndexException`-shaped failure: something the `.kdm`/`.kdi`/`.kdd`
+/// bytes claim that no writer could have produced. Java raises
+/// `CorruptIndexException`; here it rides in on `lucene_store`'s own
+/// `Corrupted` so callers that already match on it keep working.
+fn corrupt(message: String) -> Error {
+    Error::Store(lucene_store::Error::Corrupted(message))
+}
+
+/// `BKDConfig.MAX_DIMS` -- the most data dimensions a BKD tree may carry.
+pub const MAX_DIMS: i32 = 16;
+/// `BKDConfig.MAX_INDEX_DIMS` -- the most dimensions that may take part in
+/// the tree's split structure.
+pub const MAX_INDEX_DIMS: i32 = 8;
+
+/// `ArrayUtil.MAX_ARRAY_LENGTH`, the ceiling `BKDConfig`'s constructor puts on
+/// `maxPointsInLeafNode`. Java's value is `Integer.MAX_VALUE -
+/// RamUsageEstimator.NUM_BYTES_ARRAY_HEADER` (= `i32::MAX - 16`), a JVM
+/// array-header allowance; the number is reproduced rather than reinterpreted
+/// so this port rejects exactly the values Java rejects.
+pub const MAX_POINTS_IN_LEAF_NODE: i32 = i32::MAX - 16;
+
+/// `PointValues.MAX_NUM_BYTES`, the ceiling `FieldInfo`'s constructor and
+/// `FieldType.setDimensions` put on a point field's `bytesPerDim`. It is a
+/// **write-side** bound: `BKDConfig` itself never checks it, so a `.kdm` Java
+/// would happily read can in principle carry more, and the read path here does
+/// not enforce it either (see [`check_config`]). What it does establish is that
+/// every value this port *writes* has a `bytesPerDim` small enough for
+/// [`pack_index`]'s split-descriptor vint to be formed in an `i32` without
+/// overflowing -- the same guarantee real `BKDWriter` gets for free by only
+/// ever being handed a `FieldInfo`-validated width.
+pub const MAX_NUM_BYTES: i32 = 16;
+
+/// Port of `BKDConfig`'s canonical constructor validation, shared by the
+/// read side (`.kdm` per-field header, where Java calls `BKDConfig.of` and
+/// lets its `IllegalArgumentException` escape) and the write side (where
+/// Java's `BKDWriter` constructs the same config up front). Without this a
+/// corrupt/hostile `.kdm` reaches `vec![0u8; (num_index_dims *
+/// bytes_per_dim) as usize]` with an attacker-chosen (possibly negative,
+/// hence huge-when-cast) length, and `write` reaches
+/// `count.div_ceil(max_points_in_leaf_node)` with a zero divisor.
+///
+/// All five of `BKDConfig`'s constructor guards are reproduced, plus one Java
+/// does not have: `numDims * bytesPerDim` overflowing. Java lets that wrap and
+/// surface as `NegativeArraySizeException` from `new byte[...]`; in Rust it is
+/// a panic, which is not an outcome a caller can handle. See
+/// `docs/arithmetic-gate.md`.
+fn check_config(
+    num_dims: i32,
+    num_index_dims: i32,
+    bytes_per_dim: i32,
+    max_points_in_leaf_node: i32,
+) -> Result<()> {
+    if !(1..=MAX_DIMS).contains(&num_dims) {
+        return Err(Error::InvalidConfig(format!(
+            "numDims must be 1 .. {MAX_DIMS} (got: {num_dims})"
+        )));
+    }
+    if !(1..=MAX_INDEX_DIMS).contains(&num_index_dims) {
+        return Err(Error::InvalidConfig(format!(
+            "numIndexDims must be 1 .. {MAX_INDEX_DIMS} (got: {num_index_dims})"
+        )));
+    }
+    if num_index_dims > num_dims {
+        return Err(Error::InvalidConfig(format!(
+            "numIndexDims cannot exceed numDims ({num_dims}) (got: {num_index_dims})"
+        )));
+    }
+    if bytes_per_dim <= 0 {
+        return Err(Error::InvalidConfig(format!(
+            "bytesPerDim must be > 0; got {bytes_per_dim}"
+        )));
+    }
+    // Java stops at `bytesPerDim > 0` and lets `numDims * bytesPerDim`
+    // silently wrap an `int`, which surfaces one step later as
+    // `NegativeArraySizeException` from `new byte[...]` -- a caught,
+    // reportable corruption. In Rust the same product *panics* on overflow in
+    // a debug build (and a large-but-not-overflowing one is an aborting
+    // allocation), neither of which a caller can catch: a `.kdm` claiming
+    // `numDims=8, bytesPerDim=2^30` is enough. Rejecting the product here
+    // reproduces Java's outcome without Java's mechanism.
+    if num_dims.checked_mul(bytes_per_dim).is_none() {
+        return Err(Error::InvalidConfig(format!(
+            "numDims ({num_dims}) x bytesPerDim ({bytes_per_dim}) overflows"
+        )));
+    }
+    if max_points_in_leaf_node <= 0 {
+        return Err(Error::InvalidConfig(format!(
+            "maxPointsInLeafNode must be > 0; got {max_points_in_leaf_node}"
+        )));
+    }
+    // `BKDConfig`'s last guard, `maxPointsInLeafNode > ArrayUtil.MAX_ARRAY_LENGTH`,
+    // reproduced with Java's exact ceiling so this port rejects exactly the
+    // values Java rejects -- 16 of them.
+    if max_points_in_leaf_node > MAX_POINTS_IN_LEAF_NODE {
+        return Err(Error::InvalidConfig(format!(
+            "maxPointsInLeafNode must be <= {MAX_POINTS_IN_LEAF_NODE}; got \
+             {max_points_in_leaf_node}"
+        )));
+    }
+    Ok(())
+}
 
 /// One field's BKD tree shape and root-level bounds, plus enough to locate
 /// its packed index slice in `.kdi` and walk its leaves in `.kdd`.
@@ -105,8 +220,28 @@ pub struct PointsField {
 }
 
 impl PointsField {
+    /// ARITH: every `PointsField` is built by [`read_field_meta`], which runs
+    /// [`check_config`] first; that rejects the field unless `num_dims >= 1`,
+    /// `bytes_per_dim >= 1` and `num_dims.checked_mul(bytes_per_dim)` is
+    /// `Some`. So the product is in `1..=i32::MAX` and the widening cast is
+    /// exact. The `debug_assert` re-states the `check_config` postcondition so
+    /// `cargo test` exercises it on every leaf decode rather than trusting the
+    /// prose.
+    #[allow(clippy::arithmetic_side_effects)]
     fn packed_bytes_length(&self) -> usize {
+        debug_assert!(self.num_dims.checked_mul(self.bytes_per_dim).is_some());
         (self.num_dims * self.bytes_per_dim) as usize
+    }
+
+    /// `num_index_dims * bytes_per_dim`, the length of every cell-bounds and
+    /// split-value buffer.
+    ///
+    /// ARITH: `check_config` establishes `num_index_dims <= num_dims`, so this
+    /// product is bounded by [`packed_bytes_length`](Self::packed_bytes_length)'s.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn packed_index_bytes_length(&self) -> usize {
+        debug_assert!(self.num_index_dims <= self.num_dims);
+        (self.num_index_dims * self.bytes_per_dim) as usize
     }
 }
 
@@ -213,13 +348,60 @@ fn read_field_meta(meta_input: &mut SliceInput) -> Result<PointsField> {
     let num_index_dims = meta_input.read_vint()?;
     let max_points_in_leaf_node = meta_input.read_vint()?;
     let bytes_per_dim = meta_input.read_vint()?;
+    // `BKDReader`'s constructor funnels these four through `BKDConfig.of`,
+    // which throws on out-of-range values; do the same before any of them is
+    // used as an allocation length or a divisor.
+    check_config(
+        num_dims,
+        num_index_dims,
+        bytes_per_dim,
+        max_points_in_leaf_node,
+    )?;
     let num_leaves = meta_input.read_vint()?;
+    if num_leaves <= 0 {
+        return Err(Error::InvalidConfig(format!(
+            "numLeaves must be > 0; got {num_leaves}"
+        )));
+    }
 
+    // ARITH: `check_config` proved `num_dims * bytes_per_dim` fits an `i32`
+    // and `num_index_dims <= num_dims`, so this product is bounded by that one
+    // and lands in `1..=i32::MAX`.
+    #[allow(clippy::arithmetic_side_effects)]
     let packed_index_bytes_length = (num_index_dims * bytes_per_dim) as usize;
+    // Two allocations sized by a value read off disk. `bytesPerDim` has no
+    // upper bound in Lucene either, so `numIndexDims=1, bytesPerDim=2^30` is
+    // a legal-looking `.kdm` that asks for two 1 GB buffers -- in Java an
+    // `OutOfMemoryError` the caller can catch, here an **abort** no
+    // `catch_unwind` at the FFI boundary can. The bytes have to be in the
+    // `.kdm` for the read to succeed anyway, so requiring them up front
+    // costs nothing and turns the abort into a decode error.
+    if meta_input.remaining() < packed_index_bytes_length.saturating_mul(2) {
+        return Err(Error::InvalidConfig(format!(
+            "numIndexDims ({num_index_dims}) x bytesPerDim ({bytes_per_dim}) needs \
+             {packed_index_bytes_length} bytes of min and max packed value but only {} \
+             bytes of .kdm remain",
+            meta_input.remaining()
+        )));
+    }
     let mut min_packed_value = vec![0u8; packed_index_bytes_length];
     let mut max_packed_value = vec![0u8; packed_index_bytes_length];
     meta_input.read_bytes(&mut min_packed_value)?;
     meta_input.read_bytes(&mut max_packed_value)?;
+    // `BKDReader`: "minPackedValue ... is > maxPackedValue ... for dim=N".
+    // Compared per dimension (unsigned byte-wise), not as one whole value.
+    let bpd = bytes_per_dim as usize;
+    for dim in 0..num_index_dims as usize {
+        // ARITH: `dim < num_index_dims`, so `(dim + 1) * bpd <=
+        // num_index_dims * bytes_per_dim = packed_index_bytes_length`, which
+        // `check_config` already proved fits an `i32`. Both buffers are
+        // exactly that long.
+        #[allow(clippy::arithmetic_side_effects)]
+        let (lo, hi) = (dim * bpd, (dim + 1) * bpd);
+        if min_packed_value[lo..hi] > max_packed_value[lo..hi] {
+            return Err(Error::MinGreaterThanMax(dim));
+        }
+    }
 
     let point_count = meta_input.read_vlong()?;
     let doc_count = meta_input.read_vint()?;
@@ -243,6 +425,32 @@ fn read_field_meta(meta_input: &mut SliceInput) -> Result<PointsField> {
 }
 
 impl<'d> PointsReader<'d> {
+    /// The `.kdi` byte range holding `field`'s packed index.
+    ///
+    /// Both bounds come straight off the `.kdm`: `indexStartPointer` is a raw
+    /// `i64` and `numIndexBytes` a vint, neither bounded by anything Java
+    /// checks (`BKDReader` just seeks and lets the read fail). Adding them as
+    /// `i64` overflows for a hostile pair -- a panic in a debug build, and in a
+    /// release build a wrap to a *plausible in-range* end offset that hands the
+    /// tree walker somebody else's field's bytes. Both conversions and the sum
+    /// are therefore checked, and the range is resolved against `.kdi`'s actual
+    /// length exactly once, before the walk.
+    fn inner_nodes(&self, field: &PointsField) -> Result<&'d [u8]> {
+        let range = usize::try_from(field.index_start_pointer)
+            .ok()
+            .zip(usize::try_from(field.num_index_bytes).ok())
+            .and_then(|(start, len)| Some(start..start.checked_add(len)?));
+        let Some(range) = range else {
+            return Err(corrupt(format!(
+                "field's packed index is out of range: indexStartPointer={}, numIndexBytes={}",
+                field.index_start_pointer, field.num_index_bytes
+            )));
+        };
+        self.kdi
+            .get(range)
+            .ok_or_else(|| lucene_store::Error::Eof { offset: 0 }.into())
+    }
+
     pub fn field(&self, field_number: i32) -> Option<&PointsField> {
         self.fields
             .iter()
@@ -270,24 +478,483 @@ impl<'d> PointsReader<'d> {
             .field(field_number)
             .ok_or(Error::IllegalFieldNumber(field_number))?;
 
-        let inner_nodes = self
-            .kdi
-            .get(
-                field.index_start_pointer as usize
-                    ..(field.index_start_pointer + field.num_index_bytes as i64) as usize,
-            )
-            .ok_or(lucene_store::Error::Eof { offset: 0 })?;
+        let inner_nodes = self.inner_nodes(field)?;
         let leaf_fps = decode_leaf_pointers(inner_nodes, field)?;
 
         let mut leaves = Vec::with_capacity(leaf_fps.len());
         let mut kdd_input = SliceInput::new(self.kdd);
         for &fp in &leaf_fps {
-            kdd_input.seek(fp as usize)?;
+            seek_leaf_block(&mut kdd_input, fp)?;
             let mut points = Vec::new();
             let bound = read_leaf_block(&mut kdd_input, field, &mut points)?;
             leaves.push(Leaf { points, bound });
         }
         Ok(leaves)
+    }
+
+    /// Port of `PointValues.intersect(IntersectVisitor)` on top of
+    /// `BKDReader.BKDPointTree` -- the *pruning* traversal, as opposed to
+    /// [`decode_all_points`](Self::decode_all_points)'s
+    /// decode-every-leaf scan.
+    ///
+    /// Reproduces Java's exact three-way dispatch on
+    /// [`IntersectVisitor::compare`]:
+    /// - [`Relation::CellOutsideQuery`] -- the whole subtree is skipped
+    ///   without reading a single one of its `.kdd` bytes (and, for a left
+    ///   child, without parsing its packed-index bytes either: the
+    ///   `leftNumBytes` skip-ahead vint this port previously read and threw
+    ///   away is what makes the seek to the right sibling possible, exactly
+    ///   as `BKDPointTree.pushRight`'s `rightNodePositions[level]` does).
+    /// - [`Relation::CellInsideQuery`] -- only the leaf's doc-id block is
+    ///   decoded (`visitDocIDs`/`addAll`); the packed values are never
+    ///   touched, so [`IntersectVisitor::visit`] is called instead of
+    ///   [`IntersectVisitor::visit_with_value`].
+    /// - [`Relation::CellCrossesQuery`] -- descend; at a leaf, decode the
+    ///   full block and hand every point to
+    ///   [`IntersectVisitor::visit_with_value`] for per-point filtering
+    ///   (`visitDocValues`).
+    ///
+    /// The cell bounds handed to `compare` are maintained the way
+    /// `pushBoundsLeft`/`pushBoundsRight`/`popBounds` maintain them: start
+    /// from the field-wide `minPackedValue`/`maxPackedValue`, and at each
+    /// inner node replace exactly one dimension's `bytes_per_dim` slice with
+    /// the node's reconstructed split value (the max for the left child, the
+    /// min for the right), restoring it on the way back up. The split value
+    /// itself is reconstructed from the packed index's prefix/first-diff-byte
+    /// coding against the last split value seen *in that dimension* along the
+    /// current root path, with `negative_deltas` tracking left-vs-right
+    /// exactly like `BKDReader.readNodeData` -- i.e. this is the read-side
+    /// inverse of [`pack_index`], and the first thing in this module that
+    /// actually *uses* the reconstructed split values rather than skipping
+    /// past them.
+    ///
+    /// Both bounds slices passed to `compare` are `num_index_dims *
+    /// bytes_per_dim` long (the non-indexed trailing data dimensions have no
+    /// cell bounds, matching Java).
+    pub fn intersect<V: IntersectVisitor>(&self, field_number: i32, visitor: &mut V) -> Result<()> {
+        let field = self
+            .field(field_number)
+            .ok_or(Error::IllegalFieldNumber(field_number))?;
+        let inner_nodes = self.inner_nodes(field)?;
+        let mut input = SliceInput::new(inner_nodes);
+        let mut ctx = IntersectCtx {
+            field,
+            kdd: self.kdd,
+            min: field.min_packed_value.clone(),
+            max: field.max_packed_value.clone(),
+            split_values: vec![0u8; field.min_packed_value.len()],
+            negative_deltas: vec![false; field.num_index_dims as usize],
+        };
+        // The root's leading FP-delta vlong, same as `decode_leaf_pointers`.
+        let root_fp = input.read_vlong()?;
+        intersect_node(&mut input, 1, root_fp, &mut ctx, visitor)
+    }
+
+    /// Convenience wrapper over [`intersect`](Self::intersect) implementing
+    /// `PointRangeQuery`'s visitor: every doc whose packed value falls inside
+    /// the inclusive per-dimension box `[lower, upper]` (compared unsigned
+    /// byte-wise per dimension, the ordering
+    /// `NumericUtils.intToSortableBytes`/`longToSortableBytes` produce).
+    /// `lower`/`upper` are `num_index_dims * bytes_per_dim` bytes.
+    ///
+    /// Returned doc ids are in leaf order and may repeat when a document has
+    /// several matching points for the field -- exactly what Java's
+    /// `PointRangeQuery` visitor sees before it folds them into a bitset.
+    pub fn range_query(&self, field_number: i32, lower: &[u8], upper: &[u8]) -> Result<Vec<i32>> {
+        let field = self
+            .field(field_number)
+            .ok_or(Error::IllegalFieldNumber(field_number))?;
+        // `RangeVisitor` slices `lower`/`upper` per index dimension against
+        // the *field's* shape, so a caller-supplied box of the wrong width
+        // would index out of bounds mid-traversal. Java's `PointRangeQuery`
+        // constructor makes the same check up front
+        // (`checkArgs`/`Arrays.equals` on `numDims * bytesPerDim`); this is
+        // the one place it can be made here.
+        let expected = field.packed_index_bytes_length();
+        if lower.len() != expected || upper.len() != expected {
+            return Err(Error::InvalidConfig(format!(
+                "range query bounds must be {expected} bytes (numIndexDims x bytesPerDim); \
+                 got lower={}, upper={}",
+                lower.len(),
+                upper.len()
+            )));
+        }
+        let mut visitor = RangeVisitor {
+            lower: lower.to_vec(),
+            upper: upper.to_vec(),
+            num_index_dims: field.num_index_dims as usize,
+            bytes_per_dim: field.bytes_per_dim as usize,
+            docs: Vec::new(),
+        };
+        self.intersect(field_number, &mut visitor)?;
+        Ok(visitor.docs)
+    }
+}
+
+/// Port of `org.apache.lucene.index.PointValues.Relation`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Relation {
+    /// Every point in the cell matches -- no per-point check needed.
+    CellInsideQuery,
+    /// No point in the cell can match -- the whole subtree is skipped.
+    CellOutsideQuery,
+    /// The cell straddles the query boundary -- descend / check per point.
+    CellCrossesQuery,
+}
+
+/// Port of `org.apache.lucene.index.PointValues.IntersectVisitor`.
+///
+/// Java's `grow(int)` hint has no counterpart here: it exists to pre-size a
+/// `DocIdSetBuilder`, and a Rust visitor that wants the same can size its own
+/// storage from [`PointsField::point_count`].
+pub trait IntersectVisitor {
+    /// `IntersectVisitor.compare` -- how the query relates to the cell
+    /// `[min_packed, max_packed]` (both `num_index_dims * bytes_per_dim`).
+    fn compare(&mut self, min_packed: &[u8], max_packed: &[u8]) -> Relation;
+    /// `IntersectVisitor.visit(int)` -- called for every doc in a cell that
+    /// is entirely inside the query; the packed value is not decoded at all.
+    fn visit(&mut self, doc_id: i32);
+    /// `IntersectVisitor.visit(int, byte[])` -- called for every point in a
+    /// cell that crosses the query boundary; the visitor must do its own
+    /// per-point check.
+    fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]);
+}
+
+/// One inner node's split descriptor, decoded the way
+/// `BKDReader.readNodeData` decodes it: `BKDWriter.recursePackIndex` packs
+/// `splitDim`, the common-prefix length against the last split value seen in
+/// that dimension, and the signed first-differing-byte delta into a single
+/// vint as `(firstDiffByteDelta * (1 + bytesPerDim) + prefix) * numIndexDims
+/// + splitDim`.
+///
+/// The three fields carry the invariants every caller's indexing rests on:
+/// `split_dim < num_index_dims`, `prefix <= bytes_per_dim`, and
+/// `first_diff_byte_delta >= 0` (the `negativeDeltas` sign flip is the
+/// caller's, since only the pruning walk tracks it).
+struct SplitDescriptor {
+    split_dim: usize,
+    prefix: usize,
+    first_diff_byte_delta: i32,
+}
+
+/// Reads and unpacks one inner node's split descriptor.
+///
+/// The vint is attacker-shaped. Java's `code % numIndexDims` on a negative
+/// `code` yields a negative `splitDim`, which indexes `splitValuesStack` out
+/// of bounds one line later; the same value cast to `usize` here would be
+/// astronomically large. Rejecting a negative `code` up front is what makes
+/// the struct's three invariants true rather than assumed -- and it costs one
+/// predictable branch per *inner node*, not per point.
+fn read_split_descriptor(input: &mut SliceInput, field: &PointsField) -> Result<SplitDescriptor> {
+    let code = input.read_vint()?;
+    if code < 0 {
+        return Err(corrupt(format!(
+            "negative BKD split descriptor in .kdi: code={code}"
+        )));
+    }
+    // ARITH: done in `i64` because `bytes_per_dim` is only bounded by
+    // `num_dims * bytes_per_dim <= i32::MAX` (`check_config`), so
+    // `1 + bytes_per_dim` can overflow an `i32` -- Java lets it wrap and
+    // derives a nonsense prefix from the result. Widened, every operand is
+    // non-negative (`code >= 0` by the guard above) and both divisors are
+    // >= 1 (`num_index_dims >= 1` and `bytes_per_dim >= 1`, both from
+    // `check_config`), so neither division can trap and no product is formed
+    // at all. `code <= i32::MAX` bounds every quotient, so the casts back are
+    // exact.
+    #[allow(clippy::arithmetic_side_effects)]
+    let descriptor = {
+        let num_index_dims = i64::from(field.num_index_dims);
+        let bytes_per_dim_plus_one = i64::from(field.bytes_per_dim) + 1;
+        let code = i64::from(code);
+        let split_dim = code % num_index_dims;
+        let code = code / num_index_dims;
+        SplitDescriptor {
+            split_dim: split_dim as usize,
+            prefix: (code % bytes_per_dim_plus_one) as usize,
+            first_diff_byte_delta: (code / bytes_per_dim_plus_one) as i32,
+        }
+    };
+    debug_assert!(descriptor.split_dim < field.num_index_dims as usize);
+    debug_assert!(descriptor.prefix <= field.bytes_per_dim as usize);
+    Ok(descriptor)
+}
+
+/// `nodeID * 2` and `nodeID * 2 + 1`, the packed tree's child ids.
+///
+/// Java lets both wrap an `int`. A wrap is not just a debug-build panic here:
+/// a wrapped id compares `< numLeaves` all over again, and since the walk only
+/// stops when it reaches a leaf, the recursion would keep descending -- the
+/// depth is then bounded by nothing but the `.kdi` slice's length, i.e. a
+/// large enough packed index overflows the *stack*. Checking the multiply caps
+/// the depth at 31 levels instead, because `node_id` at least doubles per
+/// level and has to stay below `num_leaves <= i32::MAX` to recurse at all.
+fn child_ids(node_id: i32) -> Result<(i32, i32)> {
+    let children = node_id
+        .checked_mul(2)
+        .and_then(|left| Some((left, left.checked_add(1)?)));
+    children.ok_or_else(|| corrupt(format!("BKD node id overflows an i32: nodeID={node_id}")))
+}
+
+/// A leaf block's `.kdd` file pointer: the parent's baseline plus the right
+/// child's delta. Both halves are `.kdi` values, and Java lets the `long` add
+/// wrap before failing at `seek`.
+fn child_block_fp(fp: i64, delta: i64) -> Result<i64> {
+    fp.checked_add(delta).ok_or_else(|| {
+        corrupt(format!(
+            "BKD leaf block pointer overflows: fp={fp}, delta={delta}"
+        ))
+    })
+}
+
+/// Positions `.kdd` at a leaf block's file pointer. `fp` is reconstructed from
+/// `.kdi` deltas, so a negative one is reachable; `as usize` would turn it into
+/// a huge offset that merely looks like EOF.
+fn seek_leaf_block(input: &mut SliceInput, fp: i64) -> Result<()> {
+    let offset = usize::try_from(fp)
+        .map_err(|_| corrupt(format!("negative BKD leaf block pointer: fp={fp}")))?;
+    input.seek(offset)?;
+    Ok(())
+}
+
+struct IntersectCtx<'a> {
+    field: &'a PointsField,
+    kdd: &'a [u8],
+    min: Vec<u8>,
+    max: Vec<u8>,
+    split_values: Vec<u8>,
+    negative_deltas: Vec<bool>,
+}
+
+/// One node of [`PointsReader::intersect`]'s traversal. `input` is
+/// positioned at this node's own packed-index data (the caller has already
+/// consumed the FP-delta vlong, if any, and passes the resulting `fp`).
+/// Returning early on [`Relation::CellOutsideQuery`] deliberately leaves
+/// `input` where it was: the caller always seeks to the right sibling's
+/// recorded position before descending into it, so an unconsumed left
+/// subtree costs nothing.
+fn intersect_node<V: IntersectVisitor>(
+    input: &mut SliceInput,
+    node_id: i32,
+    fp: i64,
+    ctx: &mut IntersectCtx,
+    visitor: &mut V,
+) -> Result<()> {
+    let relation = visitor.compare(&ctx.min, &ctx.max);
+    if relation == Relation::CellOutsideQuery {
+        return Ok(());
+    }
+
+    if relation == Relation::CellInsideQuery {
+        // `PointValues.intersect`: an entirely-inside cell short-circuits to
+        // `visitDocIDs`, which never calls `compare` again and never decodes
+        // a packed value anywhere in the subtree.
+        return add_all(input, node_id, fp, ctx, visitor);
+    }
+
+    if node_id >= ctx.field.num_leaves {
+        // Leaf reached with CELL_CROSSES_QUERY: `visitDocValues`, i.e. decode
+        // the block and let the visitor filter point by point.
+        let mut kdd_input = SliceInput::new(ctx.kdd);
+        seek_leaf_block(&mut kdd_input, fp)?;
+        let mut points = Vec::new();
+        read_leaf_block(&mut kdd_input, ctx.field, &mut points)?;
+        for point in &points {
+            visitor.visit_with_value(point.doc_id, &point.packed_value);
+        }
+        return Ok(());
+    }
+
+    let bytes_per_dim = ctx.field.bytes_per_dim as usize;
+
+    // `BKDReader.readNodeData`: split dim, prefix and first-diff-byte delta
+    // packed into one vint, then the split value's raw suffix.
+    let SplitDescriptor {
+        split_dim,
+        prefix,
+        first_diff_byte_delta,
+    } = read_split_descriptor(input, ctx.field)?;
+    // ARITH: `read_split_descriptor` guarantees `prefix <= bytes_per_dim` and
+    // `split_dim < num_index_dims`, so `suffix` cannot underflow and
+    // `dim_pos + bytes_per_dim <= num_index_dims * bytes_per_dim`, which is
+    // exactly `ctx.split_values.len()` (it is cloned from
+    // `field.min_packed_value`). `check_config` proved that product fits an
+    // `i32`.
+    #[allow(clippy::arithmetic_side_effects)]
+    let (suffix, dim_pos) = (bytes_per_dim - prefix, split_dim * bytes_per_dim);
+    // ARITH: same bounds -- `prefix <= bytes_per_dim` keeps the range
+    // non-inverted and inside the buffer.
+    #[allow(clippy::arithmetic_side_effects)]
+    let (dim_prefix_pos, dim_end) = (dim_pos + prefix, dim_pos + bytes_per_dim);
+    debug_assert!(dim_prefix_pos <= dim_end && dim_end <= ctx.split_values.len());
+    // Saved so the caller's (parent's) split-value state is restored on the
+    // way back up -- `recursePackIndex`'s `savSplitValue`, read side.
+    let saved_split_tail = ctx.split_values[dim_prefix_pos..dim_end].to_vec();
+    if suffix > 0 {
+        // ARITH: `first_diff_byte_delta >= 0` (`read_split_descriptor`
+        // rejects a negative `code`), so the negation cannot overflow -- only
+        // `i32::MIN` does. The `wrapping_add` is Java's own semantics: it
+        // writes `(byte) (oldByte + firstDiffByteDelta)`, so an out-of-range
+        // delta truncates rather than trapping, and truncating is what
+        // reproduces the split value a real `.kdi` encodes.
+        let mut delta = first_diff_byte_delta;
+        if ctx.negative_deltas[split_dim] {
+            // ARITH: `read_split_descriptor` rejects a negative `code`, so
+            // `first_diff_byte_delta >= 0` and the negation cannot overflow --
+            // only `i32::MIN` does.
+            #[allow(clippy::arithmetic_side_effects)]
+            {
+                delta = -delta;
+            }
+        }
+        let old = i32::from(ctx.split_values[dim_prefix_pos]);
+        ctx.split_values[dim_prefix_pos] = old.wrapping_add(delta) as u8;
+        // ARITH: `suffix > 0` means `prefix < bytes_per_dim`, so
+        // `dim_prefix_pos + 1 <= dim_end`.
+        #[allow(clippy::arithmetic_side_effects)]
+        let tail_start = dim_prefix_pos + 1;
+        input.read_bytes(&mut ctx.split_values[tail_start..dim_end])?;
+    }
+    // else: this node's split value is byte-identical to the last one seen in
+    // this dimension (many duplicate values) -- nothing to read or change.
+
+    let (left_child, right_child) = child_ids(node_id)?;
+    let left_num_bytes = if left_child < ctx.field.num_leaves {
+        let left_num_bytes = input.read_vint()?;
+        usize::try_from(left_num_bytes).map_err(|_| {
+            corrupt(format!(
+                "negative leftNumBytes in .kdi: nodeID={node_id}, leftNumBytes={left_num_bytes}"
+            ))
+        })?
+    } else {
+        0
+    };
+    // `leftNumBytes` is a `.kdi` vint; the sum is what the seek to the right
+    // sibling uses, so an overflow here would silently land the walk on the
+    // wrong node in a release build.
+    let Some(right_node_position) = input.position().checked_add(left_num_bytes) else {
+        return Err(corrupt(format!(
+            "leftNumBytes overruns .kdi: nodeID={node_id}, leftNumBytes={left_num_bytes}"
+        )));
+    };
+    let split_value = ctx.split_values[dim_pos..dim_end].to_vec();
+    let saved_negative_delta = ctx.negative_deltas[split_dim];
+
+    // Left child: cell max is clamped down to the split value.
+    let saved_max = ctx.max[dim_pos..dim_end].to_vec();
+    ctx.max[dim_pos..dim_end].copy_from_slice(&split_value);
+    ctx.negative_deltas[split_dim] = true;
+    intersect_node(input, left_child, fp, ctx, visitor)?;
+    ctx.max[dim_pos..dim_end].copy_from_slice(&saved_max);
+
+    // Right child: cell min is clamped up to the split value. Its own
+    // packed-index bytes start at `right_node_position` whether or not the
+    // left subtree was actually parsed.
+    input.seek(right_node_position)?;
+    let right_delta = input.read_vlong()?;
+    let right_fp = child_block_fp(fp, right_delta)?;
+    let saved_min = ctx.min[dim_pos..dim_end].to_vec();
+    ctx.min[dim_pos..dim_end].copy_from_slice(&split_value);
+    ctx.negative_deltas[split_dim] = false;
+    intersect_node(input, right_child, right_fp, ctx, visitor)?;
+    ctx.min[dim_pos..dim_end].copy_from_slice(&saved_min);
+
+    ctx.negative_deltas[split_dim] = saved_negative_delta;
+    ctx.split_values[dim_prefix_pos..dim_end].copy_from_slice(&saved_split_tail);
+    Ok(())
+}
+
+/// Port of `BKDReader.BKDPointTree.addAll` (reached from `visitDocIDs`):
+/// every leaf under `node_id` contributes its doc ids and nothing else --
+/// no `compare`, no packed values, no per-leaf bounding box. Consumes the
+/// whole subtree's packed-index bytes, exactly like [`walk_node`], so the
+/// caller's cursor arithmetic is unaffected by which branch it took.
+fn add_all<V: IntersectVisitor>(
+    input: &mut SliceInput,
+    node_id: i32,
+    fp: i64,
+    ctx: &mut IntersectCtx,
+    visitor: &mut V,
+) -> Result<()> {
+    if node_id >= ctx.field.num_leaves {
+        let mut kdd_input = SliceInput::new(ctx.kdd);
+        seek_leaf_block(&mut kdd_input, fp)?;
+        let count = read_leaf_count(&mut kdd_input, ctx.field)?;
+        for doc_id in read_doc_ids(&mut kdd_input, count)? {
+            visitor.visit(doc_id);
+        }
+        return Ok(());
+    }
+
+    // Same split-descriptor skip as `walk_node`: the split value itself is
+    // irrelevant once the whole subtree is known to match.
+    let descriptor = read_split_descriptor(input, ctx.field)?;
+    skip_split_value_suffix(input, ctx.field, &descriptor)?;
+    let (left_child, right_child) = child_ids(node_id)?;
+    if left_child < ctx.field.num_leaves {
+        input.read_vint()?; // leftNumBytes: not needed, we visit both halves
+    }
+    add_all(input, left_child, fp, ctx, visitor)?;
+    let right_delta = input.read_vlong()?;
+    add_all(
+        input,
+        right_child,
+        child_block_fp(fp, right_delta)?,
+        ctx,
+        visitor,
+    )
+}
+
+/// `PointRangeQuery`'s `IntersectVisitor`, inclusive on both ends.
+struct RangeVisitor {
+    lower: Vec<u8>,
+    upper: Vec<u8>,
+    num_index_dims: usize,
+    bytes_per_dim: usize,
+    docs: Vec<i32>,
+}
+
+impl IntersectVisitor for RangeVisitor {
+    fn compare(&mut self, min_packed: &[u8], max_packed: &[u8]) -> Relation {
+        let mut crosses = false;
+        for dim in 0..self.num_index_dims {
+            // ARITH: `dim < num_index_dims`, so `hi <= num_index_dims *
+            // bytes_per_dim` -- the length `range_query` verified for
+            // `lower`/`upper`, the length `PointsReader::intersect` gives the
+            // cell bounds it passes in, and a product `check_config` proved
+            // fits an `i32`.
+            #[allow(clippy::arithmetic_side_effects)]
+            let (lo, hi) = (dim * self.bytes_per_dim, (dim + 1) * self.bytes_per_dim);
+            if max_packed[lo..hi] < self.lower[lo..hi] || min_packed[lo..hi] > self.upper[lo..hi] {
+                return Relation::CellOutsideQuery;
+            }
+            crosses |=
+                min_packed[lo..hi] < self.lower[lo..hi] || max_packed[lo..hi] > self.upper[lo..hi];
+        }
+        if crosses {
+            Relation::CellCrossesQuery
+        } else {
+            Relation::CellInsideQuery
+        }
+    }
+
+    fn visit(&mut self, doc_id: i32) {
+        self.docs.push(doc_id);
+    }
+
+    fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]) {
+        for dim in 0..self.num_index_dims {
+            // ARITH: same bound as `compare`; `packed_value` is
+            // `num_dims * bytes_per_dim` long, which is at least as long as
+            // the `num_index_dims * bytes_per_dim` scanned here.
+            #[allow(clippy::arithmetic_side_effects)]
+            let (lo, hi) = (dim * self.bytes_per_dim, (dim + 1) * self.bytes_per_dim);
+            if packed_value[lo..hi] < self.lower[lo..hi]
+                || packed_value[lo..hi] > self.upper[lo..hi]
+            {
+                return;
+            }
+        }
+        self.docs.push(doc_id);
     }
 }
 
@@ -297,7 +964,7 @@ impl<'d> PointsReader<'d> {
 /// (`leafNodeOffset`), and the tree's root is node 1.
 fn decode_leaf_pointers(inner_nodes: &[u8], field: &PointsField) -> Result<Vec<i64>> {
     let mut input = SliceInput::new(inner_nodes);
-    let mut leaves = Vec::with_capacity(field.num_leaves as usize);
+    let mut leaves = Vec::with_capacity(leaf_pointer_capacity(field.num_leaves, inner_nodes.len()));
     // The root is always reached as if it were a "right" child of an
     // implicit level 0 baseline of 0 -- `BKDReader`'s constructor calls
     // `readNodeData(false)` for the root, which always reads one leading
@@ -305,6 +972,29 @@ fn decode_leaf_pointers(inner_nodes: &[u8], field: &PointsField) -> Result<Vec<i
     let root_fp = input.read_vlong()?;
     walk_node(&mut input, 1, root_fp, field, &mut leaves)?;
     Ok(leaves)
+}
+
+/// How many leaf pointers to reserve up front for a `.kdm` claiming
+/// `num_leaves` leaves against a `.kdi` slice of `inner_nodes_len` bytes.
+///
+/// `numLeaves` is a `.kdm` vint bounded only by `> 0`, and eight bytes per
+/// leaf of `i32::MAX` leaves is a 17 GB reservation -- an allocation failure,
+/// which **aborts**, and no `catch_unwind` at the FFI boundary can intercept
+/// an abort. (Batch b7 found the sibling of this defect in the same header.)
+///
+/// The packed index itself is the ceiling. Every leaf but the leftmost is
+/// reached through a right-child FP-delta vlong of at least one byte, and the
+/// root costs one such vlong too, so a `.kdi` slice of `b` bytes can describe
+/// at most `b + 1` leaves. That looser bound is used rather than the tighter
+/// `b / 2 + 1` (each of the `n - 1` inner nodes also costs a split-descriptor
+/// vint) so an off-by-one in the accounting can only cost a reallocation,
+/// never reject a real file: for a well-formed `.kdi` the `min` always picks
+/// `num_leaves` and the reservation is exactly what it was before.
+fn leaf_pointer_capacity(num_leaves: i32, inner_nodes_len: usize) -> usize {
+    // `read_field_meta` rejects `num_leaves <= 0`, so the `max(0)` is only
+    // belt-and-braces for a hand-built `PointsField` in a test.
+    debug_assert!(num_leaves > 0);
+    (num_leaves.max(0) as usize).min(inner_nodes_len.saturating_add(1))
 }
 
 fn walk_node(
@@ -324,15 +1014,10 @@ fn walk_node(
     // modulo/division -- we only need to consume the right number of
     // trailing raw bytes, not the actual split value, since we visit every
     // node regardless of any query bound.
-    let code = input.read_vint()?;
-    let code = code / field.num_index_dims;
-    let prefix = code % (1 + field.bytes_per_dim);
-    let suffix = field.bytes_per_dim - prefix;
-    if suffix > 0 {
-        input.skip((suffix - 1) as usize)?;
-    }
+    let descriptor = read_split_descriptor(input, field)?;
+    skip_split_value_suffix(input, field, &descriptor)?;
 
-    let left_child = node_id * 2;
+    let (left_child, right_child) = child_ids(node_id)?;
     if left_child < field.num_leaves {
         input.read_vint()?; // leftNumBytes: a skip-ahead hint, unused (see module doc)
     }
@@ -342,18 +1027,94 @@ fn walk_node(
     // Right child's FP is a delta from this node's baseline, read
     // immediately after the (fully consumed) left subtree.
     let right_delta = input.read_vlong()?;
-    walk_node(input, node_id * 2 + 1, fp + right_delta, field, leaves)?;
+    walk_node(
+        input,
+        right_child,
+        child_block_fp(fp, right_delta)?,
+        field,
+        leaves,
+    )?;
+    Ok(())
+}
+
+/// Steps past the raw bytes of a split value without reconstructing it -- what
+/// both non-pruning walks ([`walk_node`] and [`add_all`]) need. The first
+/// differing byte is carried in the descriptor's delta rather than written, so
+/// only `suffix - 1` bytes are on the wire.
+fn skip_split_value_suffix(
+    input: &mut SliceInput,
+    field: &PointsField,
+    descriptor: &SplitDescriptor,
+) -> Result<()> {
+    // ARITH: `read_split_descriptor` guarantees `prefix <= bytes_per_dim`, so
+    // `suffix` cannot underflow, and the `suffix > 0` guard makes
+    // `suffix - 1` safe in turn.
+    #[allow(clippy::arithmetic_side_effects)]
+    let suffix = field.bytes_per_dim as usize - descriptor.prefix;
+    if suffix > 0 {
+        // ARITH: `suffix > 0` is the guard, so `suffix - 1` cannot underflow.
+        #[allow(clippy::arithmetic_side_effects)]
+        input.skip(suffix - 1)?;
+    }
     Ok(())
 }
 
 /// Decodes one leaf block (doc ids + packed values) at the data input's
 /// current position, appending every point to `out`.
+/// A leaf block's leading point count.
+///
+/// Java bounds this implicitly but absolutely: `DocIdsWriter.readInts` decodes
+/// into `BKDReaderDocIDSetIterator.docIDs`, a `new int[maxPointsInLeafNode]`
+/// allocated once when the point tree is built, so a `count` past
+/// `maxPointsInLeafNode` throws `ArrayIndexOutOfBoundsException` before a
+/// single doc id lands. This port allocates per leaf instead, so the same
+/// `.kdd` vint sizes a fresh `Vec` -- and a count of `i32::MAX` is a multi-GB
+/// reservation whose failure **aborts**, which `catch_unwind` at the FFI
+/// boundary cannot intercept. Restating Java's invariant explicitly costs one
+/// comparison per leaf and cannot reject a file any writer produced.
+fn read_leaf_count(input: &mut SliceInput, field: &PointsField) -> Result<usize> {
+    let count = input.read_vint()?;
+    if count < 0 || count > field.max_points_in_leaf_node {
+        return Err(corrupt(format!(
+            "leaf block claims {count} points, outside 0..={} (maxPointsInLeafNode)",
+            field.max_points_in_leaf_node
+        )));
+    }
+    Ok(count as usize)
+}
+
+/// Reads one point's non-prefix suffix bytes into `scratch_value`, dimension by
+/// dimension -- the inner `readBytes` loop shared by
+/// `visitSparseRawDocValues` and `visitCompressedDocValues`.
+#[inline]
+fn read_suffix_bytes(
+    input: &mut SliceInput,
+    common_prefix_lengths: &[usize],
+    bytes_per_dim: usize,
+    scratch_value: &mut [u8],
+) -> Result<()> {
+    for (dim, &prefix) in common_prefix_lengths.iter().enumerate() {
+        // ARITH: `read_leaf_block` bounds every entry of
+        // `common_prefix_lengths` by `bytes_per_dim` before this runs (and the
+        // one `+= 1` it applies is guarded by a `prefix < bytes_per_dim`
+        // check), and `dim < num_dims` because the slice is `num_dims` long.
+        // So `dim * bytes_per_dim + prefix <= (dim + 1) * bytes_per_dim <=
+        // num_dims * bytes_per_dim`, which `check_config` proved fits an `i32`
+        // and which is exactly `scratch_value.len()`.
+        #[allow(clippy::arithmetic_side_effects)]
+        let (lo, hi) = (dim * bytes_per_dim + prefix, (dim + 1) * bytes_per_dim);
+        debug_assert!(lo <= hi && hi <= scratch_value.len());
+        input.read_bytes(&mut scratch_value[lo..hi])?;
+    }
+    Ok(())
+}
+
 fn read_leaf_block(
     input: &mut SliceInput,
     field: &PointsField,
     out: &mut Vec<Point>,
 ) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
-    let count = input.read_vint()? as usize;
+    let count = read_leaf_count(input, field)?;
     let doc_ids = read_doc_ids(input, count)?;
 
     let num_dims = field.num_dims as usize;
@@ -364,12 +1125,31 @@ fn read_leaf_block(
     let mut common_prefix_lengths = vec![0usize; num_dims];
     let mut scratch_value = vec![0u8; packed_bytes_length];
     for (dim, prefix_len) in common_prefix_lengths.iter_mut().enumerate() {
-        let prefix = input.read_vint()? as usize;
+        let prefix = input.read_vint()?;
+        // A common prefix longer than the dimension it belongs to is not
+        // something `BKDWriter` can emit (it is the length of a byte-wise
+        // common prefix of that dimension's `bytesPerDim` bytes). Java lets it
+        // through and `readBytes` spills into the *next* dimension's bytes --
+        // silently decoding wrong point values for an all-equal leaf, and
+        // throwing on `bytesPerDim - prefix` later otherwise. Here the same
+        // spill inverts every later suffix range, which panics. One
+        // comparison per dimension per leaf turns both into a decode error.
+        if prefix < 0 || prefix > field.bytes_per_dim {
+            return Err(corrupt(format!(
+                "leaf common prefix for dim={dim} is {prefix} bytes, past bytesPerDim={}",
+                field.bytes_per_dim
+            )));
+        }
+        let prefix = prefix as usize;
         *prefix_len = prefix;
         if prefix > 0 {
-            input.read_bytes(
-                &mut scratch_value[dim * bytes_per_dim..dim * bytes_per_dim + prefix],
-            )?;
+            // ARITH: `dim < num_dims` and `prefix <= bytes_per_dim` (just
+            // checked), so `dim * bytes_per_dim + prefix <= num_dims *
+            // bytes_per_dim = scratch_value.len()`, a product `check_config`
+            // proved fits an `i32`.
+            #[allow(clippy::arithmetic_side_effects)]
+            let (lo, hi) = (dim * bytes_per_dim, dim * bytes_per_dim + prefix);
+            input.read_bytes(&mut scratch_value[lo..hi])?;
         }
     }
 
@@ -387,7 +1167,7 @@ fn read_leaf_block(
     // (real Lucene's `visitDocValuesWithCardinality` only calls
     // `readMinMax` inside the non-`-1` branch).
     let compressed_dim = input.read_byte()? as i8;
-    if compressed_dim < -2 || compressed_dim as i32 >= field.num_dims {
+    if compressed_dim < -2 || i32::from(compressed_dim) >= field.num_dims {
         return Err(Error::UnsupportedCompressedDim(compressed_dim));
     }
 
@@ -411,22 +1191,31 @@ fn read_leaf_block(
         // `lucene_index::check_index`'s structural-invariant checker -- can
         // cross-check every point's value against it independently of the
         // field-wide box in `.kdm`.
-        let mut min_bound = vec![0u8; num_index_dims * bytes_per_dim];
-        let mut max_bound = vec![0u8; num_index_dims * bytes_per_dim];
+        let mut min_bound = vec![0u8; field.packed_index_bytes_length()];
+        let mut max_bound = vec![0u8; field.packed_index_bytes_length()];
         for (dim, &prefix) in common_prefix_lengths
             .iter()
             .take(num_index_dims)
             .enumerate()
         {
-            let lo = dim * bytes_per_dim;
-            let hi = lo + bytes_per_dim;
+            // ARITH: `dim < num_index_dims`, so `hi <= num_index_dims *
+            // bytes_per_dim`, the exact length of both bound buffers and a
+            // product bounded by `check_config`'s `num_dims * bytes_per_dim`.
+            // `prefix <= bytes_per_dim` was established when the prefix was
+            // read, so `mid` sits inside `lo..=hi`.
+            #[allow(clippy::arithmetic_side_effects)]
+            let (lo, mid, hi) = (
+                dim * bytes_per_dim,
+                dim * bytes_per_dim + prefix,
+                (dim + 1) * bytes_per_dim,
+            );
             // The leading `prefix` bytes of both min and max are the leaf's
             // already-decoded common prefix (identical for every point in
             // this leaf, hence not re-sent on the wire for the box either).
-            min_bound[lo..lo + prefix].copy_from_slice(&scratch_value[lo..lo + prefix]);
-            max_bound[lo..lo + prefix].copy_from_slice(&scratch_value[lo..lo + prefix]);
-            input.read_bytes(&mut min_bound[lo + prefix..hi])?;
-            input.read_bytes(&mut max_bound[lo + prefix..hi])?;
+            min_bound[lo..mid].copy_from_slice(&scratch_value[lo..mid]);
+            max_bound[lo..mid].copy_from_slice(&scratch_value[lo..mid]);
+            input.read_bytes(&mut min_bound[mid..hi])?;
+            input.read_bytes(&mut max_bound[mid..hi])?;
         }
         bound = Some((min_bound, max_bound));
     }
@@ -434,56 +1223,99 @@ fn read_leaf_block(
     if compressed_dim == -2 {
         let mut i = 0usize;
         while i < count {
-            let length = input.read_vint()? as usize;
-            if i + length > count {
+            let length = input.read_vint()?;
+            let Ok(length) = usize::try_from(length) else {
+                return Err(corrupt(format!(
+                    "negative low-cardinality run length in .kdd leaf: {length}"
+                )));
+            };
+            // ARITH: `i < count` is the loop condition, so `count - i` cannot
+            // underflow. Comparing against the remainder rather than forming
+            // `i + length` is what keeps a hostile vint from overflowing the
+            // sum before the check that would have caught it.
+            #[allow(clippy::arithmetic_side_effects)]
+            let remaining_points = count - i;
+            if length > remaining_points {
                 return Err(Error::SubBlockCountMismatch {
                     expected: count,
-                    actual: i + length,
+                    actual: i.saturating_add(length),
                 });
             }
-            for dim in 0..num_dims {
-                let prefix = common_prefix_lengths[dim];
-                input.read_bytes(
-                    &mut scratch_value[dim * bytes_per_dim + prefix..(dim + 1) * bytes_per_dim],
-                )?;
-            }
-            for &doc_id in &doc_ids[i..i + length] {
+            read_suffix_bytes(
+                input,
+                &common_prefix_lengths,
+                bytes_per_dim,
+                &mut scratch_value,
+            )?;
+            // ARITH: `length <= count - i`, so `end <= count`.
+            #[allow(clippy::arithmetic_side_effects)]
+            let end = i + length;
+            for &doc_id in &doc_ids[i..end] {
                 out.push(Point {
                     doc_id,
                     packed_value: scratch_value.clone(),
                 });
             }
-            i += length;
+            i = end;
         }
         debug_assert_eq!(i, count);
     } else {
         let compressed_dim = compressed_dim as usize;
-        let compressed_byte_offset =
-            compressed_dim * bytes_per_dim + common_prefix_lengths[compressed_dim];
-        common_prefix_lengths[compressed_dim] += 1;
+        let prefix = common_prefix_lengths[compressed_dim];
+        // `BKDWriter.writeLeafBlockPackedValues` asserts
+        // `commonPrefixLengths[sortedDim] < bytesPerDim` before it can pick a
+        // non-negative compressed dimension: the run-length-compressed byte is
+        // the first byte *after* that dimension's common prefix, so a
+        // full-width prefix means there is no such byte. Java reads on
+        // regardless -- addressing the next dimension's bytes and then asking
+        // `readBytes` for a negative length; here the `+= 1` below would invert
+        // every later suffix range instead.
+        if prefix >= bytes_per_dim {
+            return Err(corrupt(format!(
+                "compressed dim {compressed_dim} has a full-width common prefix of {prefix} bytes"
+            )));
+        }
+        // ARITH: `compressed_dim < num_dims` (checked when the marker was
+        // read) and `prefix < bytes_per_dim`, so the offset is strictly inside
+        // `scratch_value` and `prefix + 1 <= bytes_per_dim` keeps every later
+        // suffix range non-inverted.
+        #[allow(clippy::arithmetic_side_effects)]
+        let compressed_byte_offset = compressed_dim * bytes_per_dim + prefix;
+        // ARITH: `prefix < bytes_per_dim` was just checked, so `prefix + 1`
+        // is at most `bytes_per_dim` and cannot overflow.
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            common_prefix_lengths[compressed_dim] = prefix + 1;
+        }
         let mut i = 0usize;
         while i < count {
             scratch_value[compressed_byte_offset] = input.read_byte()?;
-            let run_len = input.read_byte()? as usize;
-            if i + run_len > count {
+            let run_len = usize::from(input.read_byte()?);
+            // ARITH: `i < count` is the loop condition (see the `-2` branch).
+            #[allow(clippy::arithmetic_side_effects)]
+            let remaining_points = count - i;
+            if run_len > remaining_points {
                 return Err(Error::SubBlockCountMismatch {
                     expected: count,
-                    actual: i + run_len,
+                    actual: i.saturating_add(run_len),
                 });
             }
-            for j in 0..run_len {
-                for dim in 0..num_dims {
-                    let prefix = common_prefix_lengths[dim];
-                    input.read_bytes(
-                        &mut scratch_value[dim * bytes_per_dim + prefix..(dim + 1) * bytes_per_dim],
-                    )?;
-                }
+            // ARITH: `run_len <= count - i`, so `end <= count`.
+            #[allow(clippy::arithmetic_side_effects)]
+            let end = i + run_len;
+            for &doc_id in &doc_ids[i..end] {
+                read_suffix_bytes(
+                    input,
+                    &common_prefix_lengths,
+                    bytes_per_dim,
+                    &mut scratch_value,
+                )?;
                 out.push(Point {
-                    doc_id: doc_ids[i + j],
+                    doc_id,
                     packed_value: scratch_value.clone(),
                 });
             }
-            i += run_len;
+            i = end;
         }
         debug_assert_eq!(i, count);
     }
@@ -504,20 +1336,51 @@ const BPV_32: i8 = 32;
 /// versions, so this port mirrors that read path.
 const LEGACY_DELTA_VINT: i8 = 0;
 
+/// Refuses a leaf's doc-id block *before* its buffer is reserved, when the
+/// encoding's own fixed cost already exceeds the bytes left in `.kdd`.
+///
+/// Each of these encodings spends a known (or known-minimum) number of bytes
+/// per doc id, so this is exactly the EOF the decode loop would hit a moment
+/// later -- except that it happens before `Vec::with_capacity(count)` /
+/// `vec![0i32; count]` turns a large count into a multi-gigabyte reservation
+/// whose failure **aborts** rather than unwinding. A saturated `needed` (only
+/// reachable on a 32-bit target, and only for a count no real leaf carries)
+/// always fails the comparison, which is the right answer for such a count.
+fn require_bytes(input: &SliceInput, needed: usize, what: &str) -> Result<()> {
+    if input.remaining() < needed {
+        return Err(corrupt(format!(
+            "{what}: {needed} bytes needed but only {} remain",
+            input.remaining()
+        )));
+    }
+    Ok(())
+}
+
 /// Port of `DocIdsWriter.readInts` -- decodes `count` doc ids using
 /// whichever encoding the leaf's leading marker byte selects.
+///
+/// `count` must have come from [`read_leaf_count`], i.e. be bounded by the
+/// field's `maxPointsInLeafNode`; that is what Java's fixed
+/// `int[maxPointsInLeafNode]` decode buffer enforces implicitly.
 fn read_doc_ids(input: &mut SliceInput, count: usize) -> Result<Vec<i32>> {
     let bpv = input.read_byte()? as i8;
     match bpv {
         CONTINUOUS_IDS => {
             let start = input.read_vint()?;
-            Ok((0..count as i32).map(|i| start + i).collect())
+            // `wrapping_add` is Java's own `docIDs[i] = start + i`, plain
+            // `int` arithmetic: a `start` near `i32::MAX` yields wrapped
+            // (garbage) doc ids there too, and wrapping is what reproduces
+            // them instead of trapping. `count as i32` is exact --
+            // `read_leaf_count` bounds `count` by `maxPointsInLeafNode`,
+            // itself `<= i32::MAX - 16`.
+            Ok((0..count as i32).map(|i| start.wrapping_add(i)).collect())
         }
         BITSET_IDS => read_bitset_ids(input, count),
         DELTA_BPV_16 => read_delta_bpv16(input, count),
         BPV_21 => read_bpv21(input, count),
         BPV_24 => read_bpv24(input, count),
         BPV_32 => {
+            require_bytes(input, count.saturating_mul(4), "BPV_32 doc ids")?;
             let mut out = Vec::with_capacity(count);
             for _ in 0..count {
                 out.push(input.read_i32()?);
@@ -535,10 +1398,15 @@ fn read_doc_ids(input: &mut SliceInput, count: usize) -> Result<Vec<i32>> {
 /// current writer in this port (or in Lucene 10.5.0) produces this, so it
 /// is exercised only by hand-built unit tests, not a real-Lucene fixture.
 fn read_legacy_delta_vint(input: &mut SliceInput, count: usize) -> Result<Vec<i32>> {
+    // Every doc id costs at least one vint byte, so this is a true lower
+    // bound: it caps the reservation without rejecting anything the decode
+    // loop would have accepted.
+    require_bytes(input, count, "legacy delta-vint doc ids")?;
     let mut out = Vec::with_capacity(count);
     let mut doc = 0i32;
     for _ in 0..count {
-        doc += input.read_vint()?;
+        // Java: `doc += in.readVInt()`, `int` arithmetic that wraps.
+        doc = doc.wrapping_add(input.read_vint()?);
         out.push(doc);
     }
     Ok(out)
@@ -546,18 +1414,61 @@ fn read_legacy_delta_vint(input: &mut SliceInput, count: usize) -> Result<Vec<i3
 
 fn read_bitset_ids(input: &mut SliceInput, count: usize) -> Result<Vec<i32>> {
     let offset_words = input.read_vint()?;
-    let long_len = input.read_vint()? as usize;
+    let long_len = input.read_vint()?;
+    if offset_words < 0 || long_len < 0 {
+        return Err(corrupt(format!(
+            "negative bitset doc-id header: offsetWords={offset_words}, longLen={long_len}"
+        )));
+    }
+    // `vec![0i64; long_len]` on an `i32::MAX` vint is a 17 GB reservation --
+    // Java grows a reusable `long[]` here and merely risks an
+    // `OutOfMemoryError` the caller can catch. `read_i64s` needs exactly
+    // eight bytes per word, so the stream itself is the ceiling.
+    let long_len = long_len as usize;
+    require_bytes(input, long_len.saturating_mul(8), "bitset doc ids")?;
+    // The largest doc id this block could name, established once so that the
+    // per-set-bit arithmetic below needs no checks at all. Java computes the
+    // same base as `offsetWords << 6` and lets it wrap into a negative doc
+    // base; `DocIdsWriter.writeIdsAsBitSet` derives `offsetWords` from a real
+    // doc id, so no writer can reach past `i32::MAX`, and a wrapped value
+    // would reach the visitor looking like a valid document number.
+    let doc_base = i64::from(offset_words).saturating_mul(64);
+    let past_end = doc_base.saturating_add(i64::from(long_len as i32).saturating_mul(64));
+    if past_end > i64::from(i32::MAX) {
+        return Err(corrupt(format!(
+            "bitset doc ids run to {past_end}, past i32::MAX: \
+             offsetWords={offset_words}, longLen={long_len}"
+        )));
+    }
+    let doc_base = doc_base as i32;
+
     let mut words = vec![0i64; long_len];
     input.read_i64s(&mut words)?;
 
-    let doc_base = offset_words * 64;
-    let mut out = Vec::with_capacity(count);
+    // `count` is the writer's own set-bit count, so a well-formed block
+    // reserves exactly what it needs; a corrupt one is capped by the number of
+    // bits that actually exist.
+    let mut out = Vec::with_capacity(count.min(long_len.saturating_mul(64)));
     for (word_idx, &word) in words.iter().enumerate() {
+        // ARITH: the guard above established `doc_base + long_len * 64 <=
+        // i32::MAX` with `doc_base >= 0`, so `long_len * 64 <= i32::MAX` and
+        // `word_idx < long_len` makes `word_idx * 64` fit an `i32`; the sum
+        // with `doc_base` is bounded by the same inequality.
+        #[allow(clippy::arithmetic_side_effects)]
+        let word_base = doc_base + (word_idx as i32) * 64;
         let mut w = word as u64;
         while w != 0 {
             let bit = w.trailing_zeros();
-            out.push(doc_base + (word_idx as i32) * 64 + bit as i32);
-            w &= w - 1;
+            // ARITH: `bit <= 63` and `word_base + 64 <= i32::MAX` by the same
+            // bound, so this stays inside `0..=i32::MAX`.
+            #[allow(clippy::arithmetic_side_effects)]
+            out.push(word_base + bit as i32);
+            // ARITH: `w != 0` is the loop condition, so `w - 1` cannot
+            // underflow.
+            #[allow(clippy::arithmetic_side_effects)]
+            {
+                w &= w - 1;
+            }
         }
     }
     if out.len() != count {
@@ -571,15 +1482,31 @@ fn read_bitset_ids(input: &mut SliceInput, count: usize) -> Result<Vec<i32>> {
 
 fn read_delta_bpv16(input: &mut SliceInput, count: usize) -> Result<Vec<i32>> {
     let min = input.read_vint()?;
-    let half = count / 2;
+    // ARITH: `count <= maxPointsInLeafNode <= i32::MAX - 16`
+    // (`read_leaf_count`), so neither the halving nor the remainder can
+    // overflow. The byte cost is exact: one four-byte word per pair, two more
+    // bytes for an odd tail.
+    #[allow(clippy::arithmetic_side_effects)]
+    let (half, odd) = (count / 2, count % 2);
+    let needed = half.saturating_mul(4).saturating_add(odd.saturating_mul(2));
+    require_bytes(input, needed, "delta-16 doc ids")?;
     let mut out = vec![0i32; count];
     for i in 0..half {
         let word = input.read_i32()?;
-        out[i] = ((word as u32) >> 16) as i32 + min;
-        out[i + half] = (word & 0xFFFF) + min;
+        // ARITH: `i < half`, so `i + half < 2 * half <= count = out.len()`.
+        // The `wrapping_add`s are Java's `(docId >>> 16) + min` / `(docId &
+        // 0xFFFF) + min`, plain `int` arithmetic.
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            out[i] = (((word as u32) >> 16) as i32).wrapping_add(min);
+            out[i + half] = (word & 0xFFFF).wrapping_add(min);
+        }
     }
-    if count % 2 == 1 {
-        out[count - 1] = input.read_u16()? as i32 + min;
+    if odd == 1 {
+        // ARITH: an odd `count` is at least 1.
+        #[allow(clippy::arithmetic_side_effects)]
+        let last = count - 1;
+        out[last] = i32::from(input.read_u16()?).wrapping_add(min);
     }
     Ok(out)
 }
@@ -589,8 +1516,28 @@ fn floor_to_multiple_of_16(n: usize) -> usize {
 }
 
 fn read_bpv21(input: &mut SliceInput, count: usize) -> Result<Vec<i32>> {
-    let one_third = floor_to_multiple_of_16(count / 3);
-    let num_ints = one_third * 2;
+    // ARITH: `one_third <= count / 3` (rounding *down* to a multiple of 16),
+    // so `num_ints <= 2 * (count / 3) < count` and `tail_start <= count`;
+    // `count <= maxPointsInLeafNode <= i32::MAX - 16` by `read_leaf_count`, so
+    // no product here comes near `usize`'s ceiling.
+    #[allow(clippy::arithmetic_side_effects)]
+    let (one_third, num_ints, tail_start) = {
+        let one_third = floor_to_multiple_of_16(count / 3);
+        (one_third, one_third * 2, one_third * 3)
+    };
+    // The `num_ints` scratch words are read verbatim, and each of the
+    // remaining `count - tail_start` ids costs at least one further byte -- a
+    // true lower bound, so a well-formed block is never rejected. It is enough
+    // to bound `count` itself by the bytes left, since `num_ints * 4` alone is
+    // already ~2.6 bytes per id.
+    //
+    // ARITH: `tail_start = 3 * one_third <= 3 * (count / 3) <= count`, so the
+    // subtraction cannot underflow; the two saturating operations cannot.
+    #[allow(clippy::arithmetic_side_effects)]
+    let needed = num_ints
+        .saturating_mul(4)
+        .saturating_add(count - tail_start);
+    require_bytes(input, needed, "BPV_21 doc ids")?;
     let mut scratch = vec![0i32; num_ints];
     for slot in scratch.iter_mut() {
         *slot = input.read_i32()?;
@@ -600,20 +1547,39 @@ fn read_bpv21(input: &mut SliceInput, count: usize) -> Result<Vec<i32>> {
         out[i] = ((scratch[i] as u32) >> 11) as i32;
     }
     for i in 0..one_third {
-        out[i + num_ints] = (scratch[i] & 0x7FF) | ((scratch[i + one_third] & 0x7FF) << 11);
+        // ARITH: `i < one_third`, so `i + one_third < num_ints =
+        // scratch.len()` and `i + num_ints < 3 * one_third = tail_start <=
+        // count = out.len()` (and `num_ints <= count` covers the plain
+        // `out[i]` loop above). `<< 11` is applied to a value masked to 11
+        // bits, so it cannot leave `i32`.
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            out[i + num_ints] = (scratch[i] & 0x7FF) | ((scratch[i + one_third] & 0x7FF) << 11);
+        }
     }
 
-    let mut i = one_third * 3;
+    let mut i = tail_start;
+    // ARITH: the loop only runs while `i + 2 < count`, so `i + 2` indexes
+    // `out` in range and `i += 3` lands at most on `count + 2`, far below
+    // `usize::MAX` for a `count` bounded by `i32::MAX`.
+    #[allow(clippy::arithmetic_side_effects)]
     while i + 2 < count {
         let l = input.read_i64()?;
         out[i] = (l & 0x1FFFFF) as i32;
         out[i + 1] = ((l >> 21) & 0x1FFFFF) as i32;
-        out[i + 2] = (l >> 42) as i32;
+        // Java is `(int) (l >>> 42)`, an *unsigned* shift: the top field is
+        // 22 bits wide and zero-extended. A signed `>>` here would turn a
+        // corrupt block's negative word into a negative doc id instead of the
+        // in-range one Java produces.
+        out[i + 2] = ((l as u64) >> 42) as i32;
         i += 3;
     }
+    // ARITH: `i < count <= i32::MAX` bounds the increment.
+    #[allow(clippy::arithmetic_side_effects)]
     while i < count {
-        let lo = input.read_u16()? as i32;
-        let hi = input.read_byte()? as i32;
+        let lo = i32::from(input.read_u16()?);
+        let hi = i32::from(input.read_byte()?);
+        // `hi` is a byte, so `hi << 16` is at most 0x00FF_0000.
         out[i] = lo | (hi << 16);
         i += 1;
     }
@@ -621,8 +1587,24 @@ fn read_bpv21(input: &mut SliceInput, count: usize) -> Result<Vec<i32>> {
 }
 
 fn read_bpv24(input: &mut SliceInput, count: usize) -> Result<Vec<i32>> {
-    let quarter = count / 4;
-    let num_ints = quarter * 3;
+    // ARITH: `quarter = count / 4`, so `num_ints = 3 * quarter < count` and
+    // `tail_start = 4 * quarter <= count`; `count <= maxPointsInLeafNode <=
+    // i32::MAX - 16` by `read_leaf_count`.
+    #[allow(clippy::arithmetic_side_effects)]
+    let (quarter, num_ints, tail_start) = {
+        let quarter = count / 4;
+        (quarter, quarter * 3, quarter * 4)
+    };
+    // Exact: `num_ints` four-byte words, then three bytes for each remaining
+    // id.
+    //
+    // ARITH: `tail_start = 4 * (count / 4) <= count`, so the subtraction
+    // cannot underflow; the saturating operations cannot.
+    #[allow(clippy::arithmetic_side_effects)]
+    let needed = num_ints
+        .saturating_mul(4)
+        .saturating_add((count - tail_start).saturating_mul(3));
+    require_bytes(input, needed, "BPV_24 doc ids")?;
     let mut scratch = vec![0i32; num_ints];
     for slot in scratch.iter_mut() {
         *slot = input.read_i32()?;
@@ -632,15 +1614,25 @@ fn read_bpv24(input: &mut SliceInput, count: usize) -> Result<Vec<i32>> {
         out[i] = ((scratch[i] as u32) >> 8) as i32;
     }
     for i in 0..quarter {
-        out[i + num_ints] = (scratch[i] & 0xFF)
-            | ((scratch[i + quarter] & 0xFF) << 8)
-            | ((scratch[i + quarter * 2] & 0xFF) << 16);
+        // ARITH: `i < quarter`, so `i + quarter * 2 < 3 * quarter = num_ints =
+        // scratch.len()` and `i + num_ints < 4 * quarter = tail_start <=
+        // count = out.len()`. Every shifted operand is masked to eight bits
+        // first, so no shift can leave `i32`.
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            out[i + num_ints] = (scratch[i] & 0xFF)
+                | ((scratch[i + quarter] & 0xFF) << 8)
+                | ((scratch[i + quarter * 2] & 0xFF) << 16);
+        }
     }
 
-    let mut i = quarter * 4;
+    let mut i = tail_start;
+    // ARITH: `i < count <= i32::MAX` bounds the increment.
+    #[allow(clippy::arithmetic_side_effects)]
     while i < count {
-        let lo = input.read_u16()? as i32;
-        let hi = input.read_byte()? as i32;
+        let lo = i32::from(input.read_u16()?);
+        let hi = i32::from(input.read_byte()?);
+        // `hi` is a byte, so `hi << 16` is at most 0x00FF_0000.
         out[i] = lo | (hi << 16);
         i += 1;
     }
@@ -826,10 +1818,19 @@ pub fn write(
 /// Real `BKDWriter.getNumLeftLeafNodes`: fill the deepest full level of a
 /// perfect binary tree with `numLeaves` leaves, put half of that level on
 /// the left, then push any leftover (unbalanced) leaves left too.
+// ARITH: `num_leaves > 1` (asserted, and every call site derives it from a
+// `num_leaves == 1` early return), so `leading_zeros() <= usize::BITS - 2` and
+// `last_full_level` lands in `1..=usize::BITS - 1` -- never the panicking
+// shift width `usize::BITS`. `leaves_full_level` is then the largest power of
+// two `<= num_leaves`, so the subtraction cannot underflow, and `num_left`
+// ends at most at `leaves_full_level <= num_leaves`.
+#[allow(clippy::arithmetic_side_effects)]
 fn get_num_left_leaf_nodes(num_leaves: usize) -> usize {
     debug_assert!(num_leaves > 1);
     let last_full_level = usize::BITS - 1 - num_leaves.leading_zeros();
+    debug_assert!(last_full_level < usize::BITS);
     let leaves_full_level = 1usize << last_full_level;
+    debug_assert!(leaves_full_level <= num_leaves);
     let mut num_left = leaves_full_level / 2;
     let unbalanced = num_leaves - leaves_full_level;
     num_left += unbalanced.min(num_left);
@@ -844,11 +1845,15 @@ fn get_num_left_leaf_nodes(num_leaves: usize) -> usize {
 /// nonnegative, equal-length differences byte-wise (unsigned) orders them
 /// the same way comparing the underlying numeric widths would, for any
 /// `bytes_per_dim`, not just lengths that fit in a native integer.
+// ARITH: both operands are bytes widened to `i32` and `borrow` is 0 or 1, so
+// `diff` stays in `-256..=255`; `diff + 256` is therefore in `0..=255` on the
+// only branch that forms it.
+#[allow(clippy::arithmetic_side_effects)]
 fn unsigned_byte_sub(a: &[u8], b: &[u8]) -> Vec<u8> {
     let mut out = vec![0u8; a.len()];
     let mut borrow = 0i32;
     for i in (0..a.len()).rev() {
-        let diff = a[i] as i32 - b[i] as i32 - borrow;
+        let diff = i32::from(a[i]) - i32::from(b[i]) - borrow;
         if diff < 0 {
             out[i] = (diff + 256) as u8;
             borrow = 1;
@@ -869,11 +1874,21 @@ fn unsigned_byte_sub(a: &[u8], b: &[u8]) -> Vec<u8> {
 /// considers a data-only, non-indexed dimension as a split candidate.
 fn widest_dim(points: &[(i32, Vec<u8>)], num_index_dims: usize, bytes_per_dim: usize) -> usize {
     debug_assert!(!points.is_empty());
+    // Real `BKDWriter.split` ranges over `config.numIndexDims()`, so with one
+    // index dimension there is nothing to choose -- and the min/max scan below
+    // would be a whole extra pass over every point at every split node.
+    if num_index_dims == 1 {
+        return 0;
+    }
     let mut best_dim = 0usize;
     let mut best_range: Option<Vec<u8>> = None;
     for dim in 0..num_index_dims {
-        let lo = dim * bytes_per_dim;
-        let hi = lo + bytes_per_dim;
+        // ARITH: `dim < num_index_dims <= num_dims` and `write_field` has
+        // already rejected the field unless every point's packed value is
+        // exactly `num_dims * bytes_per_dim` bytes long, so
+        // `(dim + 1) * bytes_per_dim` is within each of them.
+        #[allow(clippy::arithmetic_side_effects)]
+        let (lo, hi) = (dim * bytes_per_dim, (dim + 1) * bytes_per_dim);
         let mut min = &points[0].1[lo..hi];
         let mut max = min;
         for (_, v) in &points[1..] {
@@ -896,6 +1911,76 @@ fn widest_dim(points: &[(i32, Vec<u8>)], num_index_dims: usize, bytes_per_dim: u
         }
     }
     best_dim
+}
+
+/// The one-pass leaf plan `BKDWriter.merge`'s `OneDimensionBKDWriter` builds:
+/// for a **single index dimension** whose points are **already sorted by
+/// value**, the leaves are simply consecutive `max_points_in_leaf_node`-sized
+/// chunks, and each internal node's split value is the first value of its
+/// right subtree. No sort, no per-node `widest_dim` scan, and -- because the
+/// leaves are slices of the caller's own vector -- no copy of the points
+/// either.
+///
+/// This is exactly what [`compute_leaf_plan`] computes for such an input, and
+/// `presorted_plan_matches_the_general_plan_byte_for_byte` pins that: the
+/// general path's `sort_by` is stable, so it leaves an already-sorted vector
+/// untouched, [`widest_dim`] returns dimension 0, and `mid = num_left *
+/// max_points_in_leaf_node` makes every leaf boundary a multiple of
+/// `max_points_in_leaf_node`. So node `[leaves_offset, leaves_offset +
+/// num_leaves)` covers exactly `points[leaves_offset * max .. ]`, and its
+/// split value is `points[right_offset * max]`.
+///
+/// Java restricts the same optimization to `numDims == 1`
+/// (`Lucene90PointsWriter.merge` falls back to `mergeOneField` otherwise);
+/// this port keys off `num_index_dims == 1` instead, which is the weaker and
+/// actually load-bearing condition -- the trailing data-only dimensions never
+/// participate in a split or a bound, so they cannot affect the plan.
+fn presorted_leaf_plan(
+    points: &[(i32, Vec<u8>)],
+    leaves_offset: usize,
+    num_leaves: usize,
+    max_points_in_leaf_node: usize,
+    bytes_per_dim: usize,
+    split_values: &mut [Vec<u8>],
+) {
+    if num_leaves == 1 {
+        return;
+    }
+    let num_left = get_num_left_leaf_nodes(num_leaves);
+    // ARITH: `1 <= num_left < num_leaves` (`get_num_left_leaf_nodes` returns
+    // at least 1 and at most `num_leaves - 1` for `num_leaves > 1`), so
+    // `right_offset` is in `leaves_offset + 1 ..= leaves_offset + num_leaves -
+    // 1` and `right_offset - 1` cannot underflow. `write_field` sizes
+    // `split_values` at `num_leaves` for the whole tree and this recursion
+    // only ever narrows `[leaves_offset, leaves_offset + num_leaves)`, so the
+    // index is in range; `right_offset * max_points_in_leaf_node` is likewise
+    // below `points.len()`, because the tree's leaf count is
+    // `ceil(points.len() / max_points_in_leaf_node)`.
+    #[allow(clippy::arithmetic_side_effects)]
+    let (right_offset, num_right) = (leaves_offset + num_left, num_leaves - num_left);
+    // ARITH: same bounds -- `num_left >= 1` makes `right_offset >=
+    // leaves_offset + 1`, so `right_offset - 1` cannot underflow, and
+    // `right_offset < leaves_offset + num_leaves` keeps
+    // `right_offset * max_points_in_leaf_node` inside `points`.
+    #[allow(clippy::arithmetic_side_effects)]
+    let (split_index, mid) = (right_offset - 1, right_offset * max_points_in_leaf_node);
+    split_values[split_index] = points[mid].1[..bytes_per_dim].to_vec();
+    presorted_leaf_plan(
+        points,
+        leaves_offset,
+        num_left,
+        max_points_in_leaf_node,
+        bytes_per_dim,
+        split_values,
+    );
+    presorted_leaf_plan(
+        points,
+        right_offset,
+        num_right,
+        max_points_in_leaf_node,
+        bytes_per_dim,
+        split_values,
+    );
 }
 
 /// Recursively computes this field's leaves (each leaf's own point
@@ -927,16 +2012,31 @@ fn compute_leaf_plan(
         return;
     }
     let dim = widest_dim(&points, num_index_dims, bytes_per_dim);
-    let lo = dim * bytes_per_dim;
-    let hi = lo + bytes_per_dim;
+    // ARITH: `dim < num_index_dims <= num_dims` and every packed value is
+    // `num_dims * bytes_per_dim` bytes (`write_field` checked it), so the
+    // slice range is inside each of them.
+    #[allow(clippy::arithmetic_side_effects)]
+    let (lo, hi) = (dim * bytes_per_dim, (dim + 1) * bytes_per_dim);
     let mut points = points;
     points.sort_by(|a, b| a.1[lo..hi].cmp(&b.1[lo..hi]));
 
     let num_left = get_num_left_leaf_nodes(num_leaves);
-    let mid = num_left * max_points_in_leaf_node;
-    let right_offset = leaves_offset + num_left;
-    split_values[right_offset - 1] = points[mid].1[lo..hi].to_vec();
-    split_dims[right_offset - 1] = dim;
+    // ARITH: identical bounds to `presorted_leaf_plan` -- `1 <= num_left <
+    // num_leaves`, so `right_offset - 1` cannot underflow and `mid` is a
+    // strictly interior split of `points`, whose length is at least
+    // `(num_leaves - 1) * max_points_in_leaf_node + 1`.
+    #[allow(clippy::arithmetic_side_effects)]
+    let (mid, right_offset, num_right) = (
+        num_left * max_points_in_leaf_node,
+        leaves_offset + num_left,
+        num_leaves - num_left,
+    );
+    // ARITH: `num_left >= 1`, so `right_offset >= leaves_offset + 1` and the
+    // decrement cannot underflow.
+    #[allow(clippy::arithmetic_side_effects)]
+    let split_index = right_offset - 1;
+    split_values[split_index] = points[mid].1[lo..hi].to_vec();
+    split_dims[split_index] = dim;
 
     let right_points = points.split_off(mid);
     compute_leaf_plan(
@@ -953,7 +2053,7 @@ fn compute_leaf_plan(
     compute_leaf_plan(
         right_points,
         right_offset,
-        num_leaves - num_left,
+        num_right,
         max_points_in_leaf_node,
         num_index_dims,
         bytes_per_dim,
@@ -1002,6 +2102,12 @@ fn pack_index(
     let mut out = Vec::new();
     if num_leaves == 1 {
         if !is_left {
+            // ARITH: both are `.kdd` offsets this writer produced in
+            // increasing order (`leaf_fps` is filled as the leaves are
+            // appended), and `min_block_fp` is the first leaf pointer of the
+            // subtree containing `leaves_offset`, so the difference is a
+            // non-negative `i64` well below `data_out.len()`.
+            #[allow(clippy::arithmetic_side_effects)]
             let delta = leaf_fps[leaves_offset] - min_block_fp;
             out.write_vlong(delta);
         }
@@ -1012,28 +2118,50 @@ fn pack_index(
         min_block_fp
     } else {
         let left_fp = leaf_fps[leaves_offset];
-        out.write_vlong(left_fp - min_block_fp);
+        // ARITH: same bound as above.
+        #[allow(clippy::arithmetic_side_effects)]
+        let delta = left_fp - min_block_fp;
+        out.write_vlong(delta);
         left_fp
     };
 
     let num_left = get_num_left_leaf_nodes(num_leaves);
-    let right_offset = leaves_offset + num_left;
-    let split_value = &split_values[right_offset - 1];
-    let dim = split_dims[right_offset - 1];
+    // ARITH: `1 <= num_left < num_leaves`, so `right_offset - 1` cannot
+    // underflow and stays inside the `num_leaves`-long `split_values` /
+    // `split_dims` that `write_field` allocated.
+    #[allow(clippy::arithmetic_side_effects)]
+    let (right_offset, num_right, split_index) = (
+        leaves_offset + num_left,
+        num_leaves - num_left,
+        leaves_offset + num_left - 1,
+    );
+    let split_value = &split_values[split_index];
+    let dim = split_dims[split_index];
     let last_split_value = &last_split_values[dim];
 
     // Find the common prefix length with the last split value seen in this
     // dimension (real Lucene's `commonPrefixComparator.compare`, a byte-wise
     // mismatch scan capped at `bytesPerDim`).
     let mut prefix = 0usize;
+    // ARITH: the loop condition caps `prefix` at `bytes_per_dim`, which
+    // `write_field` bounds by `MAX_NUM_BYTES`.
+    #[allow(clippy::arithmetic_side_effects)]
     while prefix < bytes_per_dim && split_value[prefix] == last_split_value[prefix] {
         prefix += 1;
     }
 
     let first_diff_byte_delta = if prefix < bytes_per_dim {
-        let mut delta = split_value[prefix] as i32 - last_split_value[prefix] as i32;
+        // ARITH: both operands are bytes widened to `i32`, so the difference
+        // is in `-255..=255` and its negation cannot overflow.
+        #[allow(clippy::arithmetic_side_effects)]
+        let mut delta = i32::from(split_value[prefix]) - i32::from(last_split_value[prefix]);
         if negative_deltas[dim] {
-            delta = -delta;
+            // ARITH: `delta` is in `-255..=255`, so its negation cannot
+            // overflow -- only `i32::MIN` does.
+            #[allow(clippy::arithmetic_side_effects)]
+            {
+                delta = -delta;
+            }
         }
         delta
     } else {
@@ -1045,6 +2173,13 @@ fn pack_index(
     // numIndexDims + splitDim` -- real `BKDWriter.recursePackIndex`'s exact
     // formula (for `numIndexDims == 1` this collapses to the single-
     // dimension path's old `... * 1 + 0`).
+    // ARITH: `|first_diff_byte_delta| <= 255`, `prefix <= bytes_per_dim <=
+    // MAX_NUM_BYTES` (16, enforced by `write_field`), `dim < num_index_dims <=
+    // MAX_INDEX_DIMS` (8). So `|code| <= (255 * 17 + 16) * 8 + 8 = 34 816`,
+    // four orders of magnitude inside `i32`. Real `BKDWriter` relies on the
+    // same bound without stating it -- `FieldInfo` never hands it a wider
+    // `bytesPerDim`.
+    #[allow(clippy::arithmetic_side_effects)]
     let code = (first_diff_byte_delta * (1 + bytes_per_dim as i32) + prefix as i32)
         * num_index_dims as i32
         + dim as i32;
@@ -1053,9 +2188,16 @@ fn pack_index(
     // Write the split value's suffix, prefix-coded vs. the parent's split
     // value: the first differing byte itself is never written raw (it's
     // recovered from `firstDiffByteDelta`), only the bytes after it.
+    // ARITH: `prefix <= bytes_per_dim` (loop bound above), and `suffix > 1`
+    // means `prefix + 1 < bytes_per_dim`.
+    #[allow(clippy::arithmetic_side_effects)]
     let suffix = bytes_per_dim - prefix;
     if suffix > 1 {
-        out.write_bytes(&split_value[prefix + 1..bytes_per_dim]);
+        // ARITH: `suffix > 1` means `prefix + 1 < bytes_per_dim`, so the
+        // increment cannot overflow and the slice range stays non-inverted.
+        #[allow(clippy::arithmetic_side_effects)]
+        let from = prefix + 1;
+        out.write_bytes(&split_value[from..bytes_per_dim]);
     }
 
     // Save the parent's tail before overwriting it so it can be restored
@@ -1088,7 +2230,7 @@ fn pack_index(
     negative_deltas[dim] = false;
     let right_bytes = pack_index(
         right_offset,
-        num_leaves - num_left,
+        num_right,
         left_block_fp,
         false,
         leaf_fps,
@@ -1120,8 +2262,6 @@ fn write_field(
             field_number: field.field_number,
         });
     }
-    let num_dims = field.num_dims as usize;
-    let num_index_dims = field.num_index_dims as usize;
     if field.num_index_dims < 1 || field.num_index_dims > field.num_dims {
         return Err(Error::InvalidNumIndexDims {
             field_number: field.field_number,
@@ -1129,14 +2269,41 @@ fn write_field(
             num_index_dims: field.num_index_dims,
         });
     }
+    // The rest of `BKDConfig`'s bounds (dimension caps, positive
+    // `bytesPerDim`/`maxPointsInLeafNode`). Notably `max_points_in_leaf_node
+    // == 0` would otherwise reach `count.div_ceil(0)` and panic.
+    check_config(
+        field.num_dims,
+        field.num_index_dims,
+        field.bytes_per_dim,
+        max_points_in_leaf_node,
+    )?;
+    // `FieldInfo`'s and `FieldType.setDimensions`'s ceiling, which every
+    // `BKDWriter` in Java sits behind. `BKDConfig` itself does not check it,
+    // so `check_config` (shared with the read side, which must accept exactly
+    // what Java's `BKDReader` accepts) does not either -- but on the write
+    // side it is what keeps `pack_index`'s split-descriptor vint inside an
+    // `i32` for a `bytesPerDim` a caller chose.
+    if field.bytes_per_dim > MAX_NUM_BYTES {
+        return Err(Error::InvalidConfig(format!(
+            "bytesPerDim must be <= PointValues.MAX_NUM_BYTES (= {MAX_NUM_BYTES}); got {}",
+            field.bytes_per_dim
+        )));
+    }
+    let num_dims = field.num_dims as usize;
+    let num_index_dims = field.num_index_dims as usize;
     let bytes_per_dim = field.bytes_per_dim as usize;
+    // ARITH: `check_config` proved `num_dims * bytes_per_dim` fits an `i32`
+    // (and `bytes_per_dim <= 16` on this side), so the `usize` product and the
+    // cast back are both exact.
+    #[allow(clippy::arithmetic_side_effects)]
     let packed_bytes_length = num_dims * bytes_per_dim;
     for (i, (_, value)) in field.points.iter().enumerate() {
         if value.len() != packed_bytes_length {
             return Err(Error::WrongPackedValueLength {
                 field_number: field.field_number,
                 index: i,
-                expected: (num_dims * bytes_per_dim) as i32,
+                expected: packed_bytes_length as i32,
                 actual: value.len(),
             });
         }
@@ -1148,11 +2315,17 @@ fn write_field(
     // `minPackedValue`/`maxPackedValue` -- for `num_dims == 1` this is the
     // same single-dimension whole-value compare the old code did. Computed
     // over caller order, independent of the split-planning sort below.
-    let mut min_packed_value = vec![0u8; num_index_dims * bytes_per_dim];
-    let mut max_packed_value = vec![0u8; num_index_dims * bytes_per_dim];
+    // ARITH: `num_index_dims <= num_dims`, so this product is bounded by
+    // `packed_bytes_length`.
+    #[allow(clippy::arithmetic_side_effects)]
+    let packed_index_bytes_length = num_index_dims * bytes_per_dim;
+    let mut min_packed_value = vec![0u8; packed_index_bytes_length];
+    let mut max_packed_value = vec![0u8; packed_index_bytes_length];
     for dim in 0..num_index_dims {
-        let lo = dim * bytes_per_dim;
-        let hi = lo + bytes_per_dim;
+        // ARITH: `dim < num_index_dims <= num_dims`, and every packed value is
+        // exactly `packed_bytes_length` bytes (checked above).
+        #[allow(clippy::arithmetic_side_effects)]
+        let (lo, hi) = (dim * bytes_per_dim, (dim + 1) * bytes_per_dim);
         let mut min = &field.points[0].1[lo..hi];
         let mut max = min;
         for (_, value) in &field.points[1..] {
@@ -1177,20 +2350,49 @@ fn write_field(
     let max = max_points_in_leaf_node as usize;
     let num_leaves = count.div_ceil(max);
 
-    let mut leaves: Vec<Vec<(i32, Vec<u8>)>> = Vec::with_capacity(num_leaves);
     let mut split_values: Vec<Vec<u8>> = vec![Vec::new(); num_leaves];
     let mut split_dims: Vec<usize> = vec![0; num_leaves];
-    compute_leaf_plan(
-        field.points.clone(),
-        0,
-        num_leaves,
-        max,
-        num_index_dims,
-        bytes_per_dim,
-        &mut leaves,
-        &mut split_values,
-        &mut split_dims,
-    );
+
+    // `BKDWriter.merge`'s one-pass path: a single index dimension whose points
+    // already arrive sorted by value needs no sort and no copy at all -- the
+    // leaves are consecutive slices of the caller's own vector. Real Lucene
+    // takes it on the caller's word (`Lucene90PointsWriter.merge` only calls
+    // `BKDWriter.merge` for readers it knows are sorted); this port *verifies*
+    // it in one linear scan of cheap slice comparisons, so a caller that hands
+    // over unsorted points gets the general path and correct output rather
+    // than a silently corrupt tree.
+    let presorted = num_index_dims == 1
+        && field
+            .points
+            .windows(2)
+            .all(|w| w[0].1[..bytes_per_dim] <= w[1].1[..bytes_per_dim]);
+
+    let mut owned_leaves: Vec<Vec<(i32, Vec<u8>)>> = Vec::new();
+    let leaves: Vec<&[(i32, Vec<u8>)]> = if presorted {
+        presorted_leaf_plan(
+            &field.points,
+            0,
+            num_leaves,
+            max,
+            bytes_per_dim,
+            &mut split_values,
+        );
+        field.points.chunks(max).collect()
+    } else {
+        owned_leaves.reserve(num_leaves);
+        compute_leaf_plan(
+            field.points.clone(),
+            0,
+            num_leaves,
+            max,
+            num_index_dims,
+            bytes_per_dim,
+            &mut owned_leaves,
+            &mut split_values,
+            &mut split_dims,
+        );
+        owned_leaves.iter().map(|v| v.as_slice()).collect()
+    };
     debug_assert_eq!(leaves.len(), num_leaves);
 
     let mut leaf_fps: Vec<i64> = Vec::with_capacity(num_leaves);
@@ -1224,7 +2426,17 @@ fn write_field(
         &mut negative_deltas,
     );
     index_out.write_bytes(&packed);
-    let num_index_bytes = (index_out.len() as i64 - index_start_pointer) as i32;
+    // `numIndexBytes` is an `i32` on disk. In Java the packed index is a
+    // `byte[]`, so its length is an `int` by construction; here it is a `Vec`,
+    // and truncating a >2 GB one would write a `.kdm` whose index slice is
+    // meaningless. It is unreachable in practice -- record it as corruption
+    // rather than silently truncating.
+    let num_index_bytes = i32::try_from(packed.len()).map_err(|_| {
+        Error::InvalidConfig(format!(
+            "packed index is {} bytes, past the i32 numIndexBytes field",
+            packed.len()
+        ))
+    })?;
 
     // -- per-field meta (meta_out) --
     meta_out.write_i32(field.field_number);
@@ -1279,8 +2491,11 @@ fn write_leaf(
         // `bytes_per_dim`-byte values per index dimension (common prefix is
         // always 0 above, so nothing is elided here).
         for dim in 0..num_index_dims {
-            let lo = dim * bytes_per_dim;
-            let hi = lo + bytes_per_dim;
+            // ARITH: `dim < num_index_dims <= num_dims` and `write_field`
+            // verified every packed value is `num_dims * bytes_per_dim` bytes,
+            // a product `check_config` proved fits an `i32`.
+            #[allow(clippy::arithmetic_side_effects)]
+            let (lo, hi) = (dim * bytes_per_dim, (dim + 1) * bytes_per_dim);
             let mut min = &points[0].1[lo..hi];
             let mut max = min;
             for (_, value) in &points[1..] {
@@ -1309,7 +2524,11 @@ fn write_leaf(
 /// packed encodings this port doesn't bother choosing between on write.
 fn write_leaf_doc_ids(data_out: &mut Vec<u8>, points: &[(i32, Vec<u8>)]) {
     let ids: Vec<i32> = points.iter().map(|(d, _)| *d).collect();
-    let is_continuous = ids.windows(2).all(|w| w[1] == w[0] + 1);
+    // `checked_add` rather than `w[0] + 1`: the doc ids are the caller's, and
+    // a run ending at `i32::MAX` would overflow. `None` simply means "not
+    // continuous", which is the correct answer -- `i32::MAX` has no successor
+    // to be continuous with.
+    let is_continuous = ids.windows(2).all(|w| w[0].checked_add(1) == Some(w[1]));
     if is_continuous {
         data_out.write_byte(CONTINUOUS_IDS as u8);
         data_out.write_vint(ids[0]);
@@ -1323,6 +2542,10 @@ fn write_leaf_doc_ids(data_out: &mut Vec<u8>, points: &[(i32, Vec<u8>)]) {
 
 #[cfg(test)]
 mod tests {
+    // The arithmetic gate is about values read off disk; a test's `i + 1` is
+    // not one. See docs/arithmetic-gate.md.
+    #![allow(clippy::arithmetic_side_effects)]
+
     use super::*;
 
     fn write_vint(out: &mut Vec<u8>, mut v: i32) {
@@ -3050,5 +4273,1334 @@ mod tests {
             split_dims,
             out,
         );
+    }
+
+    // ------------------------------------------------------------------
+    // Arithmetic-gate controls: values off a `.kdd` leaf block.
+    // ------------------------------------------------------------------
+
+    /// Java's `DocIdsWriter.readInts` decodes into
+    /// `BKDReaderDocIDSetIterator.docIDs`, a `new int[maxPointsInLeafNode]`
+    /// allocated once, so a larger `count` throws there before a doc id lands.
+    /// This port allocates per leaf, so the same vint sized a fresh `Vec`: a
+    /// *negative* one became `usize::MAX` and `Vec::with_capacity` panicked
+    /// with "capacity overflow", and a merely huge one is the abort shape.
+    #[test]
+    fn leaf_count_outside_max_points_in_leaf_node_is_a_decode_error() {
+        let field = field_1d(1);
+        for count in [-1i32, field.max_points_in_leaf_node + 1, i32::MAX] {
+            let mut bytes = Vec::new();
+            write_vint(&mut bytes, count);
+            bytes.push(BPV_32 as u8);
+            let mut input = SliceInput::new(&bytes);
+            let mut out = Vec::new();
+            let err = read_leaf_block(&mut input, &field, &mut out).unwrap_err();
+            assert!(
+                format!("{err}").contains("maxPointsInLeafNode"),
+                "count={count}: {err}"
+            );
+        }
+    }
+
+    /// A leaf common prefix wider than the dimension it belongs to.
+    /// `BKDWriter` computes it as the common prefix of that dimension's
+    /// `bytesPerDim` bytes, so no writer emits one; Java's `readBytes` spills
+    /// into the *next* dimension's bytes, and here the slice bound leaves
+    /// `scratch_value` outright.
+    #[test]
+    fn leaf_common_prefix_outside_bytes_per_dim_is_a_decode_error() {
+        let field = field_1d(2);
+        for prefix in [3i32, -1] {
+            let mut bytes = Vec::new();
+            write_vint(&mut bytes, 1); // count
+            bytes.push(CONTINUOUS_IDS as u8);
+            write_vint(&mut bytes, 0); // docBase
+            write_vint(&mut bytes, prefix);
+            bytes.extend_from_slice(&[0u8; 8]);
+            let mut input = SliceInput::new(&bytes);
+            let mut out = Vec::new();
+            let err = read_leaf_block(&mut input, &field, &mut out).unwrap_err();
+            assert!(
+                format!("{err}").contains("past bytesPerDim"),
+                "prefix={prefix}: {err}"
+            );
+        }
+    }
+
+    /// `BKDWriter.writeLeafBlockPackedValues` asserts
+    /// `commonPrefixLengths[sortedDim] < bytesPerDim` before it can pick a
+    /// non-negative compressed dimension -- the run-length-compressed byte is
+    /// the first byte *after* that prefix, so a full-width prefix means there
+    /// is no such byte. Without the check `compressed_byte_offset` addressed
+    /// one past `scratch_value`.
+    #[test]
+    fn full_width_common_prefix_on_the_compressed_dim_is_a_decode_error() {
+        let field = field_1d(2);
+        let mut bytes = Vec::new();
+        write_vint(&mut bytes, 1); // count
+        bytes.push(CONTINUOUS_IDS as u8);
+        write_vint(&mut bytes, 0); // docBase
+        write_vint(&mut bytes, 2); // common prefix == bytesPerDim
+        bytes.extend_from_slice(&[0xAA, 0xBB]);
+        bytes.push(0x00); // compressedDim = 0
+        bytes.push(0x01); // run byte
+        bytes.push(1); // runLen
+        let mut input = SliceInput::new(&bytes);
+        let mut out = Vec::new();
+        let err = read_leaf_block(&mut input, &field, &mut out).unwrap_err();
+        assert!(
+            format!("{err}").contains("full-width common prefix"),
+            "{err}"
+        );
+    }
+
+    /// A negative sub-block length in the low-cardinality (`-2`) layout. The
+    /// `i + length > count` guard was supposed to catch it, but `i + length`
+    /// overflowed first once `i` had advanced past the first run.
+    #[test]
+    fn negative_low_cardinality_run_length_is_a_decode_error() {
+        let field = field_1d(1);
+        let mut bytes = Vec::new();
+        write_vint(&mut bytes, 4); // count
+        bytes.push(CONTINUOUS_IDS as u8);
+        write_vint(&mut bytes, 0); // docBase
+        write_vint(&mut bytes, 0); // common prefix
+        bytes.push(0xFE); // compressedDim = -2
+        write_vint(&mut bytes, 2); // first run: length 2
+        bytes.push(0xAA);
+        write_vint(&mut bytes, -1); // second run: negative length
+        let mut input = SliceInput::new(&bytes);
+        let mut out = Vec::new();
+        let err = read_leaf_block(&mut input, &field, &mut out).unwrap_err();
+        assert!(
+            format!("{err}").contains("negative low-cardinality run length"),
+            "{err}"
+        );
+    }
+
+    /// `read_bitset_ids`' three unbounded header values: `longLen` sized
+    /// `vec![0i64; n]` with nothing between it and the allocator, and
+    /// `offsetWords * 64` overflowed an `i32` on the way to the doc base.
+    #[test]
+    fn corrupt_bitset_doc_id_header_is_a_decode_error() {
+        // Negative `longLen` -> `vec![0i64; usize::MAX]`.
+        let mut bytes = Vec::new();
+        bytes.push(BITSET_IDS as u8);
+        write_vint(&mut bytes, 0);
+        write_vint(&mut bytes, -1);
+        let err = read_doc_ids(&mut SliceInput::new(&bytes), 1).unwrap_err();
+        assert!(
+            format!("{err}").contains("negative bitset doc-id header"),
+            "{err}"
+        );
+
+        // A plausible-but-absurd `longLen`: 2^28 words is a 2 GB reservation
+        // out of a nine-byte block.
+        let mut bytes = Vec::new();
+        bytes.push(BITSET_IDS as u8);
+        write_vint(&mut bytes, 0);
+        write_vint(&mut bytes, 1 << 28);
+        let err = read_doc_ids(&mut SliceInput::new(&bytes), 1).unwrap_err();
+        assert!(format!("{err}").contains("bitset doc ids"), "{err}");
+
+        // `offsetWords * 64` past `i32::MAX`.
+        let mut bytes = Vec::new();
+        bytes.push(BITSET_IDS as u8);
+        write_vint(&mut bytes, i32::MAX);
+        write_vint(&mut bytes, 1);
+        bytes.extend_from_slice(&1i64.to_le_bytes());
+        let err = read_doc_ids(&mut SliceInput::new(&bytes), 1).unwrap_err();
+        assert!(format!("{err}").contains("past i32::MAX"), "{err}");
+    }
+
+    /// Java decodes BPV_21's top field as `(int) (l >>> 42)`, an *unsigned*
+    /// shift over a 22-bit field. A signed `>>` turned a corrupt block's
+    /// negative word into a negative doc id instead of the in-range value
+    /// Java produces -- a silently different answer, not a rejected one.
+    #[test]
+    fn bpv21_top_field_is_zero_extended_like_java() {
+        let mut bytes = Vec::new();
+        bytes.push(BPV_21 as u8);
+        bytes.extend_from_slice(&(-1i64).to_le_bytes());
+        let ids = read_doc_ids(&mut SliceInput::new(&bytes), 3).unwrap();
+        assert_eq!(ids, vec![0x1F_FFFF, 0x1F_FFFF, 0x3F_FFFF]);
+    }
+
+    /// A doc-id block whose fixed per-id cost already exceeds the bytes left
+    /// is refused before its buffer is reserved, not after.
+    #[test]
+    fn doc_id_blocks_are_bounded_by_the_bytes_that_remain() {
+        for (marker, needle) in [
+            (BPV_32, "BPV_32 doc ids"),
+            (BPV_24, "BPV_24 doc ids"),
+            (BPV_21, "BPV_21 doc ids"),
+            (DELTA_BPV_16, "delta-16 doc ids"),
+            (LEGACY_DELTA_VINT, "legacy delta-vint doc ids"),
+        ] {
+            let mut bytes = vec![marker as u8];
+            bytes.extend_from_slice(&[0u8; 8]);
+            let err = read_doc_ids(&mut SliceInput::new(&bytes), 100_000).unwrap_err();
+            assert!(format!("{err}").contains(needle), "{marker}: {err}");
+        }
+    }
+
+    /// The reservation cap that keeps a `.kdm`'s `numLeaves` from asking for
+    /// 17 GB. A well-formed file is unaffected: the `min` picks `numLeaves`.
+    #[test]
+    fn leaf_pointer_reservation_is_capped_by_the_packed_index_length() {
+        assert_eq!(leaf_pointer_capacity(3, 64), 3);
+        assert_eq!(leaf_pointer_capacity(1, 1), 1);
+        // 2^31 leaves x 8 bytes = 17 GB, out of a 40-byte packed index.
+        assert_eq!(leaf_pointer_capacity(i32::MAX, 40), 41);
+    }
+
+    /// The packed tree's node ids double at every level, so an `i32` runs out
+    /// after 31 of them. Java lets `nodeID * 2` wrap; a wrapped id compares
+    /// `< numLeaves` again, and since the walk only stops at a leaf the
+    /// recursion is then bounded by nothing but the `.kdi`'s length -- i.e. a
+    /// large enough packed index overflows the *stack*. Checking the multiply
+    /// caps the depth at 31 instead.
+    #[test]
+    fn a_packed_index_deeper_than_the_node_id_space_is_a_decode_error() {
+        let mut field = field_1d(1);
+        field.num_leaves = i32::MAX;
+        // Root FP-delta vlong, then a chain of `(code=0, leftNumBytes=0)`
+        // inner nodes at two bytes each -- 63 levels' worth, twice what it
+        // takes to drive `node_id` past 2^30.
+        let inner_nodes = vec![0u8; 128];
+        let err = decode_leaf_pointers(&inner_nodes, &field).unwrap_err();
+        assert!(format!("{err}").contains("node id overflows"), "{err}");
+    }
+
+    /// `w[0] + 1` while probing a leaf's doc ids for the `CONTINUOUS_IDS`
+    /// encoding: a run ending at `i32::MAX` overflowed on the write side.
+    #[test]
+    fn write_handles_a_doc_id_run_ending_at_i32_max() {
+        let field = WritePointsField {
+            field_number: 0,
+            num_dims: 1,
+            num_index_dims: 1,
+            bytes_per_dim: 8,
+            points: vec![
+                (i32::MAX, long_sortable_bytes(1)),
+                (0, long_sortable_bytes(2)),
+            ],
+        };
+        let (kdm, kdi, kdd) = write(&[field], 512, &id(), "").unwrap();
+        let reader = open(&kdm, &kdi, &kdd, &id(), "").unwrap();
+        let docs: Vec<i32> = reader
+            .decode_all_points(0)
+            .unwrap()
+            .iter()
+            .map(|p| p.doc_id)
+            .collect();
+        assert_eq!(docs, vec![i32::MAX, 0]);
+    }
+
+    /// `PointValues.MAX_NUM_BYTES`, the ceiling `FieldInfo` and
+    /// `FieldType.setDimensions` put on every point field Java can index.
+    /// `BKDConfig` does not check it, so the read side does not either -- but
+    /// on the write side it is what bounds [`pack_index`]'s split-descriptor
+    /// vint inside an `i32`.
+    #[test]
+    fn write_rejects_bytes_per_dim_past_max_num_bytes() {
+        let field = WritePointsField {
+            field_number: 0,
+            num_dims: 1,
+            num_index_dims: 1,
+            bytes_per_dim: MAX_NUM_BYTES + 1,
+            points: vec![(0, vec![0u8; (MAX_NUM_BYTES + 1) as usize])],
+        };
+        match write(&[field], 512, &id(), "") {
+            Err(Error::InvalidConfig(msg)) => {
+                assert!(msg.contains("MAX_NUM_BYTES"), "{msg}")
+            }
+            other => panic!("expected InvalidConfig, got {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod config_validation_tests {
+    // The arithmetic gate is about values read off disk; a test's `i + 1` is
+    // not one. See docs/arithmetic-gate.md.
+    #![allow(clippy::arithmetic_side_effects)]
+
+    use super::*;
+
+    fn id() -> [u8; codec_util::ID_LENGTH] {
+        [3u8; codec_util::ID_LENGTH]
+    }
+
+    fn long_sortable_bytes(v: i64) -> Vec<u8> {
+        ((v as u64) ^ 0x8000_0000_0000_0000).to_be_bytes().to_vec()
+    }
+
+    /// A valid 1-dim / 8-bytes-per-dim / 4-points-per-leaf index, plus the
+    /// `.kdm` offset of its per-field BKD shape (`numDims`), so a test can
+    /// corrupt exactly one field of it. Every shape value is small enough to
+    /// be a one-byte vint, so the layout after that offset is
+    /// `numDims, numIndexDims, maxPointsInLeafNode, bytesPerDim, numLeaves,
+    /// minPackedValue[8], maxPackedValue[8]`.
+    fn valid_index_and_shape_offset() -> (Vec<u8>, Vec<u8>, Vec<u8>, usize) {
+        let points: Vec<(i32, Vec<u8>)> = (0..9)
+            .map(|i| (i, long_sortable_bytes(i as i64 * 100)))
+            .collect();
+        let field = WritePointsField {
+            field_number: 0,
+            num_dims: 1,
+            num_index_dims: 1,
+            bytes_per_dim: 8,
+            points,
+        };
+        let (kdm, kdi, kdd) = write(&[field], 4, &id(), "").unwrap();
+        // Locate the BKD plain header (`write_header`: magic + "BKD" +
+        // version) and step past it.
+        let mut needle = Vec::new();
+        codec_util::write_header(&mut needle, BKD_CODEC_NAME, BKD_VERSION_CURRENT);
+        let pos = kdm
+            .windows(needle.len())
+            .position(|w| w == needle.as_slice())
+            .expect("BKD header present in .kdm");
+        (kdm, kdi, kdd, pos + needle.len())
+    }
+
+    fn expect_config_error(kdm: Vec<u8>, kdi: Vec<u8>, kdd: Vec<u8>, needle: &str) {
+        match open(&kdm, &kdi, &kdd, &id(), "") {
+            Err(Error::InvalidConfig(msg)) => {
+                assert!(msg.contains(needle), "unexpected message: {msg}")
+            }
+            Err(other) => panic!("expected InvalidConfig containing {needle:?}, got {other:?}"),
+            Ok(_) => panic!("expected InvalidConfig containing {needle:?}, got Ok"),
+        }
+    }
+
+    #[test]
+    fn sanity_baseline_index_opens() {
+        let (kdm, kdi, kdd, _) = valid_index_and_shape_offset();
+        let reader = open(&kdm, &kdi, &kdd, &id(), "").unwrap();
+        assert_eq!(reader.field(0).unwrap().num_leaves, 3);
+    }
+
+    #[test]
+    fn num_dims_zero_rejected() {
+        let (mut kdm, kdi, kdd, off) = valid_index_and_shape_offset();
+        kdm[off] = 0;
+        expect_config_error(kdm, kdi, kdd, "numDims must be 1 .. 16");
+    }
+
+    #[test]
+    fn num_dims_above_max_rejected() {
+        let (mut kdm, kdi, kdd, off) = valid_index_and_shape_offset();
+        kdm[off] = 17;
+        expect_config_error(kdm, kdi, kdd, "numDims must be 1 .. 16");
+    }
+
+    #[test]
+    fn num_index_dims_above_max_rejected() {
+        let (mut kdm, kdi, kdd, off) = valid_index_and_shape_offset();
+        kdm[off] = 16; // numDims = 16, so numIndexDims = 9 is only capped by MAX_INDEX_DIMS
+        kdm[off + 1] = 9;
+        expect_config_error(kdm, kdi, kdd, "numIndexDims must be 1 .. 8");
+    }
+
+    #[test]
+    fn num_index_dims_exceeding_num_dims_rejected() {
+        let (mut kdm, kdi, kdd, off) = valid_index_and_shape_offset();
+        kdm[off] = 2;
+        kdm[off + 1] = 3;
+        expect_config_error(kdm, kdi, kdd, "numIndexDims cannot exceed numDims");
+    }
+
+    #[test]
+    fn max_points_in_leaf_node_zero_rejected() {
+        let (mut kdm, kdi, kdd, off) = valid_index_and_shape_offset();
+        kdm[off + 2] = 0;
+        expect_config_error(kdm, kdi, kdd, "maxPointsInLeafNode must be > 0");
+    }
+
+    #[test]
+    fn bytes_per_dim_zero_rejected() {
+        let (mut kdm, kdi, kdd, off) = valid_index_and_shape_offset();
+        kdm[off + 3] = 0;
+        expect_config_error(kdm, kdi, kdd, "bytesPerDim must be > 0");
+    }
+
+    /// A five-byte vint for `bytesPerDim`, spliced in place of the one-byte
+    /// one the writer emits. Everything before it is unchanged and
+    /// `check_config` runs before the next field is read, so the rest of the
+    /// `.kdm` never matters.
+    fn splice_huge_bytes_per_dim(kdm: &mut Vec<u8>, off: usize) {
+        // vint(2^30) = 0x80 0x80 0x80 0x80 0x04.
+        kdm.splice(
+            off + 3..off + 4,
+            [0x80u8, 0x80, 0x80, 0x80, 0x04].iter().copied(),
+        );
+    }
+
+    /// `numDims x bytesPerDim` overflowing an `i32`.
+    ///
+    /// Lucene bounds `numDims` (1..=16) and `numIndexDims` (1..=8) but puts
+    /// **no upper bound at all** on `bytesPerDim` -- `BKDConfig`'s constructor
+    /// checks only `bytesPerDim > 0`. In Java the product then wraps an `int`
+    /// and `new byte[negative]` throws `NegativeArraySizeException`, which is
+    /// caught and reported as corruption. In Rust the same multiplication is
+    /// a **panic** in a debug build, which through the FFI is not a reported
+    /// corruption but a dead JVM.
+    #[test]
+    fn num_dims_times_bytes_per_dim_overflowing_is_rejected() {
+        let (mut kdm, kdi, kdd, off) = valid_index_and_shape_offset();
+        kdm[off] = 8; // numDims
+        kdm[off + 1] = 8; // numIndexDims
+        splice_huge_bytes_per_dim(&mut kdm, off);
+        expect_config_error(kdm, kdi, kdd, "overflows");
+    }
+
+    /// The same field read off disk, one step further out: a product that
+    /// does *not* overflow but is far larger than the file. `numIndexDims=1,
+    /// bytesPerDim=2^30` asks `vec![0u8; n]` for two 1 GB buffers out of a
+    /// few hundred bytes of `.kdm`. A failed allocation **aborts**, and no
+    /// `catch_unwind` at the FFI boundary can intercept an abort -- so this
+    /// has to be refused before the allocation, not after.
+    #[test]
+    fn a_packed_value_length_larger_than_the_kdm_is_rejected_before_allocating() {
+        let (mut kdm, kdi, kdd, off) = valid_index_and_shape_offset();
+        splice_huge_bytes_per_dim(&mut kdm, off);
+        expect_config_error(kdm, kdi, kdd, "bytes of .kdm remain");
+    }
+
+    /// `BKDConfig`'s `maxPointsInLeafNode > ArrayUtil.MAX_ARRAY_LENGTH` guard,
+    /// the one this port had not reproduced. `maxPointsInLeafNode` sizes the
+    /// per-leaf point buffer, so an absurd value is an allocation request the
+    /// `.kdm` has no bytes to back.
+    #[test]
+    fn max_points_in_leaf_node_above_the_array_ceiling_is_rejected() {
+        let (mut kdm, kdi, kdd, off) = valid_index_and_shape_offset();
+        // vint(i32::MAX) = 0xFF 0xFF 0xFF 0xFF 0x07, spliced over the
+        // one-byte `maxPointsInLeafNode` the writer emitted.
+        kdm.splice(
+            off + 2..off + 3,
+            [0xFFu8, 0xFF, 0xFF, 0xFF, 0x07].iter().copied(),
+        );
+        expect_config_error(kdm, kdi, kdd, "maxPointsInLeafNode must be <=");
+    }
+
+    #[test]
+    fn num_leaves_zero_rejected() {
+        let (mut kdm, kdi, kdd, off) = valid_index_and_shape_offset();
+        kdm[off + 4] = 0;
+        expect_config_error(kdm, kdi, kdd, "numLeaves must be > 0");
+    }
+
+    /// `BKDReader`: "minPackedValue ... is > maxPackedValue ... for dim=N".
+    /// Without this check the field would open and every query bound would
+    /// be nonsense.
+    #[test]
+    fn min_packed_value_greater_than_max_rejected() {
+        let (mut kdm, kdi, kdd, off) = valid_index_and_shape_offset();
+        for b in kdm.iter_mut().skip(off + 5).take(8) {
+            *b = 0xFF;
+        }
+        assert!(matches!(
+            open(&kdm, &kdi, &kdd, &id(), ""),
+            Err(Error::MinGreaterThanMax(0))
+        ));
+    }
+
+    /// A shape that would previously have divided by zero
+    /// (`count.div_ceil(0)`) inside `write_field`.
+    #[test]
+    fn write_rejects_zero_max_points_in_leaf_node() {
+        let field = WritePointsField {
+            field_number: 0,
+            num_dims: 1,
+            num_index_dims: 1,
+            bytes_per_dim: 8,
+            points: vec![(0, long_sortable_bytes(1))],
+        };
+        assert!(matches!(
+            write(&[field], 0, &id(), ""),
+            Err(Error::InvalidConfig(_))
+        ));
+    }
+
+    #[test]
+    fn write_rejects_zero_bytes_per_dim() {
+        let field = WritePointsField {
+            field_number: 0,
+            num_dims: 1,
+            num_index_dims: 1,
+            bytes_per_dim: 0,
+            points: vec![(0, Vec::new())],
+        };
+        assert!(matches!(
+            write(&[field], 4, &id(), ""),
+            Err(Error::InvalidConfig(_))
+        ));
+    }
+
+    #[test]
+    fn write_rejects_too_many_dims() {
+        let field = WritePointsField {
+            field_number: 0,
+            num_dims: 17,
+            num_index_dims: 1,
+            bytes_per_dim: 1,
+            points: vec![(0, vec![0u8; 17])],
+        };
+        assert!(matches!(
+            write(&[field], 4, &id(), ""),
+            Err(Error::InvalidConfig(_))
+        ));
+    }
+
+    #[test]
+    fn write_rejects_too_many_index_dims() {
+        let field = WritePointsField {
+            field_number: 0,
+            num_dims: 12,
+            num_index_dims: 9,
+            bytes_per_dim: 1,
+            points: vec![(0, vec![0u8; 12])],
+        };
+        assert!(matches!(
+            write(&[field], 4, &id(), ""),
+            Err(Error::InvalidConfig(_))
+        ));
+    }
+
+    // ------------------------------------------------------------------
+    // Arithmetic-gate controls: the `.kdm` header's file-pointer fields, and
+    // a re-signed byte-flip sweep over all three files.
+    // ------------------------------------------------------------------
+
+    /// The `.kdm`'s per-field record, laid out from `off` (the first byte
+    /// after the plain BKD header). Every shape value in
+    /// [`valid_index_and_shape_offset`]'s index is a one-byte vint, so the
+    /// fixed offsets below are exact -- the asserts pin that.
+    const POINT_COUNT: usize = 21;
+    const NUM_INDEX_BYTES: usize = 23;
+    const INDEX_START_POINTER: usize = 32;
+
+    fn assert_meta_layout(kdm: &[u8], off: usize) {
+        assert_eq!(kdm[off], 1, "numDims");
+        assert_eq!(kdm[off + 1], 1, "numIndexDims");
+        assert_eq!(kdm[off + 2], 4, "maxPointsInLeafNode");
+        assert_eq!(kdm[off + 3], 8, "bytesPerDim");
+        assert_eq!(kdm[off + 4], 3, "numLeaves");
+        assert_eq!(kdm[off + POINT_COUNT], 9, "pointCount");
+        assert_eq!(kdm[off + POINT_COUNT + 1], 9, "docCount");
+        assert!(
+            kdm[off + NUM_INDEX_BYTES] < 0x80,
+            "numIndexBytes is one vint byte"
+        );
+    }
+
+    /// `indexStartPointer + numIndexBytes` is the `.kdi` range every traversal
+    /// starts from, and both halves are unbounded values off the `.kdm`
+    /// (`BKDReader` just seeks and lets the read fail). Adding them as `i64`
+    /// overflows: a panic in a debug build, and in a release build a wrap to a
+    /// *plausible in-range* end offset that hands the tree walker some other
+    /// field's bytes.
+    #[test]
+    fn a_packed_index_range_that_overflows_is_a_decode_error() {
+        let (kdm, kdi, kdd, off) = valid_index_and_shape_offset();
+        assert_meta_layout(&kdm, off);
+        for (start, num_index_bytes) in [(i64::MAX, 0x7Fu8), (-1i64, 0x7F), (0, 0x7F)] {
+            let mut kdm = kdm.clone();
+            kdm[off + NUM_INDEX_BYTES] = num_index_bytes;
+            kdm[off + INDEX_START_POINTER..off + INDEX_START_POINTER + 8]
+                .copy_from_slice(&start.to_le_bytes()); // DataInput.readLong is little-endian
+            resign(&mut kdm);
+            let reader = open(&kdm, &kdi, &kdd, &id(), "").unwrap();
+            assert!(
+                reader.decode_all_points(0).is_err(),
+                "start={start} numIndexBytes={num_index_bytes} decoded instead of failing"
+            );
+            assert!(reader
+                .intersect(0, &mut CountingVisitor::default())
+                .is_err());
+        }
+    }
+
+    #[derive(Default)]
+    struct CountingVisitor {
+        seen: usize,
+    }
+
+    impl IntersectVisitor for CountingVisitor {
+        fn compare(&mut self, _min: &[u8], _max: &[u8]) -> Relation {
+            Relation::CellCrossesQuery
+        }
+        fn visit(&mut self, _doc_id: i32) {
+            self.seen += 1;
+        }
+        fn visit_with_value(&mut self, _doc_id: i32, _packed_value: &[u8]) {
+            self.seen += 1;
+        }
+    }
+
+    /// Rewrites the codec footer so a mutated file still passes its CRC. The
+    /// `.kdm` is checksum-verified on open, so without this a byte flip would
+    /// be caught by the checksum and no semantic invariant would ever run.
+    fn resign(buf: &mut Vec<u8>) {
+        buf.truncate(buf.len() - codec_util::FOOTER_LENGTH);
+        codec_util::write_footer(buf);
+    }
+
+    /// Re-signed byte-flip sweep over `.kdm`, `.kdi` and `.kdd`.
+    ///
+    /// For every payload byte of each file in turn, flip one bit, re-sign the
+    /// footer, and drive the whole read surface -- `open`, `decode_leaves`,
+    /// `decode_all_points` and a `range_query`. The bar is that every outcome
+    /// is either a decoded result or a typed error: never a panic, never a
+    /// reservation big enough to abort, never a hang.
+    ///
+    /// The rejection *rate* is reported rather than asserted exactly: most
+    /// `.kdd` payload bytes are packed point values, and flipping one of those
+    /// yields a different but perfectly well-formed point, which is not
+    /// corruption the reader can or should detect.
+    #[test]
+    fn resigned_byte_flip_sweep_never_panics() {
+        let (kdm, kdi, kdd) = {
+            let (kdm, kdi, kdd, _) = valid_index_and_shape_offset();
+            (kdm, kdi, kdd)
+        };
+        let names = ["kdm", "kdi", "kdd"];
+        let previous_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let mut rejected = [0usize; 3];
+        let mut total = [0usize; 3];
+        let mut panics: Vec<String> = Vec::new();
+        for which in 0..3 {
+            let len = [kdm.len(), kdi.len(), kdd.len()][which];
+            for offset in 0..len - codec_util::FOOTER_LENGTH {
+                for bit in [0u8, 3, 7] {
+                    let mut files = [kdm.clone(), kdi.clone(), kdd.clone()];
+                    files[which][offset] ^= 1 << bit;
+                    resign(&mut files[which]);
+                    total[which] += 1;
+                    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let reader = open(&files[0], &files[1], &files[2], &id(), "")?;
+                        reader.decode_leaves(0)?;
+                        reader.decode_all_points(0)?;
+                        reader.range_query(
+                            0,
+                            &long_sortable_bytes(100),
+                            &long_sortable_bytes(700),
+                        )?;
+                        reader.intersect(0, &mut CountingVisitor::default())?;
+                        Ok::<(), Error>(())
+                    }));
+                    match outcome {
+                        Ok(Ok(())) => {}
+                        Ok(Err(_)) => rejected[which] += 1,
+                        Err(_) => {
+                            panics.push(format!("{}: offset={offset} bit={bit}", names[which]))
+                        }
+                    }
+                }
+            }
+        }
+        std::panic::set_hook(previous_hook);
+        assert!(
+            panics.is_empty(),
+            "{} of {} flips panicked, e.g. {:?}",
+            panics.len(),
+            total.iter().sum::<usize>(),
+            &panics[..panics.len().min(8)]
+        );
+        // Printed under `cargo test -- --nocapture`; the assertions below are
+        // the regression guard (a rate collapsing to zero means the reader has
+        // started accepting corruption silently).
+        println!(
+            "re-signed byte-flip rejection rate: kdm {}/{}, kdi {}/{}, kdd {}/{}",
+            rejected[0], total[0], rejected[1], total[1], rejected[2], total[2]
+        );
+        assert!(
+            rejected[0] * 2 > total[0],
+            "kdm: {}/{}",
+            rejected[0],
+            total[0]
+        );
+        assert!(rejected[1] > 0, "kdi: {}/{}", rejected[1], total[1]);
+        assert!(rejected[2] > 0, "kdd: {}/{}", rejected[2], total[2]);
+    }
+}
+
+#[cfg(test)]
+mod intersect_tests {
+    // The arithmetic gate is about values read off disk; a test's `i + 1` is
+    // not one. See docs/arithmetic-gate.md.
+    #![allow(clippy::arithmetic_side_effects)]
+
+    use super::*;
+
+    fn id() -> [u8; codec_util::ID_LENGTH] {
+        [9u8; codec_util::ID_LENGTH]
+    }
+
+    /// `NumericUtils.longToSortableBytes`: flip the sign bit so unsigned
+    /// big-endian byte order matches signed numeric order.
+    fn long_sortable_bytes(v: i64) -> Vec<u8> {
+        ((v as u64) ^ 0x8000_0000_0000_0000).to_be_bytes().to_vec()
+    }
+
+    /// Records which relations `intersect` saw, so a test can prove that
+    /// pruning really happened rather than just that the answer was right.
+    struct CountingRange {
+        inner: RangeVisitor,
+        cells_compared: usize,
+        leaves_fully_inside: usize,
+        points_examined: usize,
+    }
+
+    impl IntersectVisitor for CountingRange {
+        fn compare(&mut self, min_packed: &[u8], max_packed: &[u8]) -> Relation {
+            self.cells_compared += 1;
+            self.inner.compare(min_packed, max_packed)
+        }
+        fn visit(&mut self, doc_id: i32) {
+            self.leaves_fully_inside += 1;
+            self.inner.visit(doc_id);
+        }
+        fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]) {
+            self.points_examined += 1;
+            self.inner.visit_with_value(doc_id, packed_value);
+        }
+    }
+
+    fn counting(field: &PointsField, lower: &[u8], upper: &[u8]) -> CountingRange {
+        CountingRange {
+            inner: RangeVisitor {
+                lower: lower.to_vec(),
+                upper: upper.to_vec(),
+                num_index_dims: field.num_index_dims as usize,
+                bytes_per_dim: field.bytes_per_dim as usize,
+                docs: Vec::new(),
+            },
+            cells_compared: 0,
+            leaves_fully_inside: 0,
+            points_examined: 0,
+        }
+    }
+
+    /// Brute-force reference: exactly what `decode_all_points` + an in-memory
+    /// filter would return, which is what `lucene-search`'s points query does
+    /// today. `intersect` must agree with it on every box.
+    fn brute_force(
+        reader: &PointsReader<'_>,
+        field_number: i32,
+        lower: &[u8],
+        upper: &[u8],
+    ) -> Vec<i32> {
+        let field = reader.field(field_number).unwrap();
+        let bpd = field.bytes_per_dim as usize;
+        reader
+            .decode_all_points(field_number)
+            .unwrap()
+            .into_iter()
+            .filter(|p| {
+                (0..field.num_index_dims as usize).all(|dim| {
+                    let r = dim * bpd..(dim + 1) * bpd;
+                    p.packed_value[r.clone()] >= lower[r.clone()]
+                        && p.packed_value[r.clone()] <= upper[r]
+                })
+            })
+            .map(|p| p.doc_id)
+            .collect()
+    }
+
+    #[test]
+    fn intersect_1d_matches_brute_force_on_every_boundary_box() {
+        // 173 points across 44 leaves (same shape as
+        // `write_then_read_many_leaves_round_trips`), so the traversal has
+        // several levels and an unbalanced deepest level.
+        let points: Vec<(i32, Vec<u8>)> = (0..300)
+            .filter(|i| i % 3 != 0)
+            .map(|i| (i, long_sortable_bytes((i as i64) * 7919 - 1_000_000)))
+            .collect();
+        let field = WritePointsField {
+            field_number: 0,
+            num_dims: 1,
+            num_index_dims: 1,
+            bytes_per_dim: 8,
+            points,
+        };
+        let (kdm, kdi, kdd) = write(&[field], 4, &id(), "").unwrap();
+        let reader = open(&kdm, &kdi, &kdd, &id(), "").unwrap();
+        let meta = reader.field(0).unwrap().clone();
+
+        // Boxes chosen to straddle every interesting case: empty below the
+        // whole range, empty above it, exactly the whole range, a single
+        // value, and several interior windows.
+        let bounds = [
+            (-5_000_000i64, -2_000_000i64),
+            (10_000_000, 20_000_000),
+            (-1_000_000, 1_400_000),
+            (0, 0),
+            (-1_000_000, -1_000_000),
+            (-500_000, 500_000),
+            (123_456, 987_654),
+            (-1_000_000 + 7919, -1_000_000 + 7919 * 5),
+        ];
+        for (lo, hi) in bounds {
+            let lower = long_sortable_bytes(lo);
+            let upper = long_sortable_bytes(hi);
+            let mut expected = brute_force(&reader, 0, &lower, &upper);
+            expected.sort_unstable();
+            let mut got = reader.range_query(0, &lower, &upper).unwrap();
+            got.sort_unstable();
+            assert_eq!(got, expected, "range [{lo}, {hi}]");
+        }
+
+        // Pruning really happens: a narrow interior window must not compare
+        // (let alone decode) anything close to all 44 leaves' cells, and a
+        // whole-range query must take the CELL_INSIDE_QUERY shortcut for
+        // every point (no packed value decoded at all).
+        let lower = long_sortable_bytes(-1_000_000 + 7919);
+        let upper = long_sortable_bytes(-1_000_000 + 7919 * 5);
+        let mut narrow = counting(&meta, &lower, &upper);
+        reader.intersect(0, &mut narrow).unwrap();
+        assert!(
+            narrow.cells_compared < 2 * meta.num_leaves as usize,
+            "narrow query compared {} cells for {} leaves -- no pruning?",
+            narrow.cells_compared,
+            meta.num_leaves
+        );
+        assert!(narrow.points_examined < 40, "{}", narrow.points_examined);
+
+        let lower = long_sortable_bytes(i64::MIN);
+        let upper = long_sortable_bytes(i64::MAX);
+        let mut everything = counting(&meta, &lower, &upper);
+        reader.intersect(0, &mut everything).unwrap();
+        assert_eq!(everything.points_examined, 0);
+        assert_eq!(everything.leaves_fully_inside, meta.point_count as usize);
+        assert_eq!(everything.cells_compared, 1, "root alone should be INSIDE");
+    }
+
+    #[test]
+    fn intersect_2d_matches_brute_force() {
+        // Multi-index-dimension: split dimension alternates, so the
+        // per-dimension bound clamping and the split-value reconstruction's
+        // per-dimension `last_split_values`/`negative_deltas` state both get
+        // exercised (a single-dimension tree can't tell them apart).
+        fn int_sortable_bytes(v: i32) -> [u8; 4] {
+            ((v as u32) ^ 0x8000_0000).to_be_bytes()
+        }
+        let mut points: Vec<(i32, Vec<u8>)> = Vec::new();
+        for i in 0..120i32 {
+            let mut packed = Vec::new();
+            packed.extend_from_slice(&int_sortable_bytes(i * 13 % 97 - 40));
+            packed.extend_from_slice(&int_sortable_bytes(i * 31 % 71 - 30));
+            points.push((i, packed));
+        }
+        let field = WritePointsField {
+            field_number: 3,
+            num_dims: 2,
+            num_index_dims: 2,
+            bytes_per_dim: 4,
+            points,
+        };
+        let (kdm, kdi, kdd) = write(&[field], 5, &id(), "").unwrap();
+        let reader = open(&kdm, &kdi, &kdd, &id(), "").unwrap();
+
+        for (x0, x1, y0, y1) in [
+            (-40i32, 60i32, -30i32, 45i32),
+            (0, 10, 0, 10),
+            (-100, 100, -100, 100),
+            (1000, 2000, 0, 5),
+            (-5, -5, -5, 40),
+        ] {
+            let mut lower = Vec::new();
+            lower.extend_from_slice(&int_sortable_bytes(x0));
+            lower.extend_from_slice(&int_sortable_bytes(y0));
+            let mut upper = Vec::new();
+            upper.extend_from_slice(&int_sortable_bytes(x1));
+            upper.extend_from_slice(&int_sortable_bytes(y1));
+
+            let mut expected = brute_force(&reader, 3, &lower, &upper);
+            expected.sort_unstable();
+            let mut got = reader.range_query(3, &lower, &upper).unwrap();
+            got.sort_unstable();
+            assert_eq!(got, expected, "box ({x0}..{x1}, {y0}..{y1})");
+        }
+    }
+
+    #[test]
+    fn intersect_single_leaf_tree_still_works() {
+        // `num_leaves == 1`: the root *is* a leaf, so `intersect_node` takes
+        // the leaf branch on its very first call with no packed-index inner
+        // node bytes to parse at all.
+        let points: Vec<(i32, Vec<u8>)> = (0..5)
+            .map(|i| (i, long_sortable_bytes(i as i64 * 10)))
+            .collect();
+        let field = WritePointsField {
+            field_number: 0,
+            num_dims: 1,
+            num_index_dims: 1,
+            bytes_per_dim: 8,
+            points,
+        };
+        let (kdm, kdi, kdd) = write(&[field], 512, &id(), "").unwrap();
+        let reader = open(&kdm, &kdi, &kdd, &id(), "").unwrap();
+        assert_eq!(reader.field(0).unwrap().num_leaves, 1);
+
+        let got = reader
+            .range_query(0, &long_sortable_bytes(10), &long_sortable_bytes(30))
+            .unwrap();
+        assert_eq!(got, vec![1, 2, 3]);
+        // Fully-outside box: the single leaf is never decoded.
+        let got = reader
+            .range_query(0, &long_sortable_bytes(1000), &long_sortable_bytes(2000))
+            .unwrap();
+        assert!(got.is_empty());
+    }
+
+    /// Exercises the packed index's `suffix == 0` branch: when many points
+    /// share a value, consecutive splits in the same dimension can produce a
+    /// split value byte-identical to the previous one, and
+    /// `recursePackIndex` then writes `prefix == bytesPerDim` with no suffix
+    /// bytes at all ("our split value is == last split value in this dim,
+    /// which can happen when there are many duplicate values", per
+    /// `BKDReader.readNodeData`'s own comment). The reconstruction must leave
+    /// the running split value untouched in that case.
+    #[test]
+    fn intersect_with_heavy_duplicate_values_matches_brute_force() {
+        // 400 points over only 5 distinct values, 4 per leaf => 100 leaves,
+        // so most splits land inside a run of equal values.
+        let points: Vec<(i32, Vec<u8>)> = (0..400)
+            .map(|i| (i, long_sortable_bytes((i % 5) as i64)))
+            .collect();
+        let field = WritePointsField {
+            field_number: 0,
+            num_dims: 1,
+            num_index_dims: 1,
+            bytes_per_dim: 8,
+            points: points.clone(),
+        };
+        let (kdm, kdi, kdd) = write(&[field], 4, &id(), "").unwrap();
+        let reader = open(&kdm, &kdi, &kdd, &id(), "").unwrap();
+        assert_eq!(reader.field(0).unwrap().num_leaves, 100);
+
+        for (lo, hi) in [(0i64, 4i64), (2, 2), (1, 3), (5, 10), (-1, 0)] {
+            let lower = long_sortable_bytes(lo);
+            let upper = long_sortable_bytes(hi);
+            let mut expected: Vec<i32> = points
+                .iter()
+                .filter(|(_, v)| *v >= lower && *v <= upper)
+                .map(|(d, _)| *d)
+                .collect();
+            expected.sort_unstable();
+            let mut got = reader.range_query(0, &lower, &upper).unwrap();
+            got.sort_unstable();
+            assert_eq!(got, expected, "duplicate-heavy range [{lo}, {hi}]");
+        }
+    }
+
+    #[test]
+    fn intersect_unknown_field_rejected() {
+        let points = vec![(0, long_sortable_bytes(1))];
+        let field = WritePointsField {
+            field_number: 0,
+            num_dims: 1,
+            num_index_dims: 1,
+            bytes_per_dim: 8,
+            points,
+        };
+        let (kdm, kdi, kdd) = write(&[field], 512, &id(), "").unwrap();
+        let reader = open(&kdm, &kdi, &kdd, &id(), "").unwrap();
+        assert!(matches!(
+            reader.range_query(7, &long_sortable_bytes(0), &long_sortable_bytes(1)),
+            Err(Error::IllegalFieldNumber(7))
+        ));
+    }
+
+    // --- BKDWriter.merge's one-pass path ---
+
+    /// `n` single-dimension points with distinct 4-byte values, in ascending
+    /// value order -- the shape an already-merged 1-D points stream has.
+    fn sorted_1d_points(n: usize) -> Vec<(i32, Vec<u8>)> {
+        (0..n)
+            .map(|i| {
+                let v = i as u32 * 37 + 11;
+                (i as i32, v.to_be_bytes().to_vec())
+            })
+            .collect()
+    }
+
+    /// `n` single-dimension points in ascending value order with **runs of
+    /// equal values** `run` long -- ties are where the equivalence argument is
+    /// load-bearing, since it rests on `compute_leaf_plan`'s `sort_by` being
+    /// stable and therefore a no-op on an already-sorted vector. Distinct
+    /// values alone would let an *unstable* sort pass too.
+    fn sorted_1d_points_with_ties(n: usize, run: usize) -> Vec<(i32, Vec<u8>)> {
+        (0..n)
+            .map(|i| (i as i32, ((i / run) as u32).to_be_bytes().to_vec()))
+            .collect()
+    }
+
+    #[test]
+    fn presorted_plan_matches_the_general_plan_with_duplicate_values() {
+        // Leaf boundaries deliberately fall *inside* runs of equal values
+        // (run 3 against a leaf size of 8), plus an all-equal field.
+        for (n, run, max) in [
+            (64usize, 8usize, 8usize),
+            (100, 3, 8),
+            (50, 50, 7),
+            (17, 4, 4),
+        ] {
+            let sorted = sorted_1d_points_with_ties(n, run);
+            let field = |points: Vec<(i32, Vec<u8>)>| WritePointsField {
+                field_number: 0,
+                num_dims: 1,
+                num_index_dims: 1,
+                bytes_per_dim: 4,
+                points,
+            };
+            let id = [2u8; codec_util::ID_LENGTH];
+            let a = write(&[field(sorted.clone())], max as i32, &id, "").unwrap();
+
+            // The general path, reached by handing over the same points in an
+            // order a *stable* sort restores to exactly `sorted`: equal values
+            // must stay in ascending doc-id order, so only the runs' relative
+            // order may differ going in -- reverse whole runs, which a stable
+            // sort by value alone would *not* undo, and assert it agrees
+            // anyway because `merge_point_streams` orders ties by doc id.
+            let mut shuffled = sorted.clone();
+            let len = shuffled.len();
+            for i in 0..len {
+                let j = (i * 7919 + 13) % len;
+                if shuffled[i].1 == shuffled[j].1 {
+                    shuffled.swap(i, j);
+                }
+            }
+            shuffled.sort_by(|x, y| (x.1.as_slice(), x.0).cmp(&(y.1.as_slice(), y.0)));
+            assert_eq!(
+                shuffled, sorted,
+                "n={n} run={run}: tie order must be by doc id"
+            );
+
+            // And the plans themselves agree.
+            let num_leaves = n.div_ceil(max);
+            let mut fast = vec![Vec::new(); num_leaves];
+            presorted_leaf_plan(&sorted, 0, num_leaves, max, 4, &mut fast);
+            let mut leaves = Vec::new();
+            let mut general = vec![Vec::new(); num_leaves];
+            let mut dims = vec![0usize; num_leaves];
+            compute_leaf_plan(
+                sorted.clone(),
+                0,
+                num_leaves,
+                max,
+                1,
+                4,
+                &mut leaves,
+                &mut general,
+                &mut dims,
+            );
+            assert_eq!(fast, general, "n={n} run={run} max={max}");
+            let chunked: Vec<Vec<(i32, Vec<u8>)>> =
+                sorted.chunks(max).map(|c| c.to_vec()).collect();
+            assert_eq!(leaves, chunked, "n={n} run={run} max={max}");
+
+            let b = write(&[field(sorted)], max as i32, &id, "").unwrap();
+            assert_eq!(a, b);
+        }
+    }
+
+    #[test]
+    fn presorted_plan_matches_the_general_plan_byte_for_byte() {
+        // The whole safety argument for skipping the sort: for a
+        // single-index-dimension field whose points are already sorted, the
+        // one-pass plan and the general recursive plan must be the *same*
+        // plan. Distinct values make the general path's stable sort produce
+        // exactly the ascending order, whatever order it is handed.
+        for n in [1usize, 2, 8, 9, 16, 17, 100, 1_000, 4_097] {
+            let sorted = sorted_1d_points(n);
+            // A deterministic shuffle, so the general (sorting) path runs.
+            let mut shuffled = sorted.clone();
+            let len = shuffled.len();
+            for i in 0..len {
+                let j = (i * 7919 + 13) % len;
+                shuffled.swap(i, j);
+            }
+
+            let field = |points: Vec<(i32, Vec<u8>)>| WritePointsField {
+                field_number: 3,
+                num_dims: 1,
+                num_index_dims: 1,
+                bytes_per_dim: 4,
+                points,
+            };
+            let a = write(&[field(sorted)], 16, &[5u8; codec_util::ID_LENGTH], "").unwrap();
+            let b = write(&[field(shuffled)], 16, &[5u8; codec_util::ID_LENGTH], "").unwrap();
+            assert_eq!(a.0, b.0, "n={n}: .kdm differs");
+            assert_eq!(a.1, b.1, "n={n}: .kdi differs");
+            assert_eq!(a.2, b.2, "n={n}: .kdd differs");
+        }
+    }
+
+    #[test]
+    fn a_presorted_one_dimension_field_round_trips_through_the_reader() {
+        const N: usize = 5_000;
+        let points = sorted_1d_points(N);
+        let field = WritePointsField {
+            field_number: 0,
+            num_dims: 1,
+            num_index_dims: 1,
+            bytes_per_dim: 4,
+            points: points.clone(),
+        };
+        let id = [6u8; codec_util::ID_LENGTH];
+        let (kdm, kdi, kdd) = write(&[field], 64, &id, "").unwrap();
+        let reader = open(&kdm, &kdi, &kdd, &id, "").unwrap();
+        let got = reader.decode_all_points(0).unwrap();
+        assert_eq!(got.len(), N);
+        for (i, point) in got.iter().enumerate() {
+            assert_eq!(point.doc_id, points[i].0, "point {i}");
+            assert_eq!(point.packed_value, points[i].1, "point {i}");
+        }
+        let meta = reader.field(0).unwrap();
+        assert_eq!(meta.point_count, N as i64);
+        assert_eq!(meta.min_packed_value, points[0].1);
+        assert_eq!(meta.max_packed_value, points[N - 1].1);
+    }
+
+    #[test]
+    fn a_presorted_field_with_trailing_data_only_dimensions_still_takes_the_one_pass_path() {
+        // `num_index_dims == 1 < num_dims`: the trailing dimension rides along
+        // in every packed value but never splits, so sortedness of dimension 0
+        // is all the one-pass plan needs. Same byte-for-byte equivalence test.
+        let n = 300usize;
+        let sorted: Vec<(i32, Vec<u8>)> = (0..n)
+            .map(|i| {
+                let mut v = (i as u16).to_be_bytes().to_vec();
+                v.extend_from_slice(&((n - i) as u16).to_be_bytes());
+                (i as i32, v)
+            })
+            .collect();
+        let mut shuffled = sorted.clone();
+        for i in 0..n {
+            let j = (i * 131 + 5) % n;
+            shuffled.swap(i, j);
+        }
+        let field = |points: Vec<(i32, Vec<u8>)>| WritePointsField {
+            field_number: 1,
+            num_dims: 2,
+            num_index_dims: 1,
+            bytes_per_dim: 2,
+            points,
+        };
+        let id = [4u8; codec_util::ID_LENGTH];
+        let a = write(&[field(sorted)], 32, &id, "").unwrap();
+        let b = write(&[field(shuffled)], 32, &id, "").unwrap();
+        assert_eq!((a.0, a.1, a.2), (b.0, b.1, b.2));
+    }
+
+    #[test]
+    fn points_with_equal_values_keep_their_input_order_on_both_paths() {
+        // Ties are where a stable sort and a plain chunking could diverge:
+        // the one-pass path preserves input order by construction, and the
+        // general path's `sort_by` is stable, so they agree.
+        let points: Vec<(i32, Vec<u8>)> = (0..64)
+            .map(|i| (i, ((i / 8) as u32).to_be_bytes().to_vec()))
+            .collect();
+        let field = WritePointsField {
+            field_number: 0,
+            num_dims: 1,
+            num_index_dims: 1,
+            bytes_per_dim: 4,
+            points: points.clone(),
+        };
+        let id = [3u8; codec_util::ID_LENGTH];
+        let (kdm, kdi, kdd) = write(&[field], 8, &id, "").unwrap();
+        let reader = open(&kdm, &kdi, &kdd, &id, "").unwrap();
+        let got = reader.decode_all_points(0).unwrap();
+        let doc_ids: Vec<i32> = got.iter().map(|p| p.doc_id).collect();
+        assert_eq!(doc_ids, (0..64).collect::<Vec<i32>>());
+    }
+
+    #[test]
+    fn presorted_leaf_plan_agrees_with_compute_leaf_plan_on_split_values() {
+        // The plans compared directly, not just their serialized output.
+        for (n, max) in [(17usize, 4usize), (1000, 64), (4097, 512), (5, 5)] {
+            let points = sorted_1d_points(n);
+            let num_leaves = n.div_ceil(max);
+            let mut fast = vec![Vec::new(); num_leaves];
+            presorted_leaf_plan(&points, 0, num_leaves, max, 4, &mut fast);
+
+            let mut leaves = Vec::new();
+            let mut general = vec![Vec::new(); num_leaves];
+            let mut dims = vec![0usize; num_leaves];
+            compute_leaf_plan(
+                points.clone(),
+                0,
+                num_leaves,
+                max,
+                1,
+                4,
+                &mut leaves,
+                &mut general,
+                &mut dims,
+            );
+            assert_eq!(fast, general, "n={n} max={max}");
+            assert!(dims.iter().all(|&d| d == 0));
+            let chunked: Vec<Vec<(i32, Vec<u8>)>> =
+                points.chunks(max).map(|c| c.to_vec()).collect();
+            assert_eq!(leaves, chunked, "n={n} max={max}");
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Arithmetic-gate controls: the packed-index (`.kdi`) walk. These build a
+    // `PointsReader` over a hand-written packed index, which is the only way
+    // to reach the pruning traversal with values no writer emits.
+    // ------------------------------------------------------------------
+
+    fn hand_built_field(num_leaves: i32, num_index_bytes: i32) -> PointsField {
+        PointsField {
+            num_dims: 1,
+            num_index_dims: 1,
+            bytes_per_dim: 1,
+            max_points_in_leaf_node: 512,
+            num_leaves,
+            min_packed_value: vec![0x00],
+            max_packed_value: vec![0xFF],
+            point_count: 2,
+            doc_count: 2,
+            index_start_pointer: 0,
+            num_index_bytes,
+        }
+    }
+
+    fn negative_vint(out: &mut Vec<u8>, v: i32) {
+        let mut u = v as u32;
+        loop {
+            let b = (u & 0x7F) as u8;
+            u >>= 7;
+            if u != 0 {
+                out.push(b | 0x80);
+            } else {
+                out.push(b);
+                break;
+            }
+        }
+    }
+
+    /// A negative split-descriptor vint. Java's `code % numIndexDims` yields a
+    /// negative `splitDim` that indexes `splitValuesStack` out of bounds one
+    /// line later; here the same value cast to `usize` indexed
+    /// `negative_deltas` with an astronomic offset -- a panic, not a decode
+    /// error. The `0x10..=0x20` query box forces `CELL_CROSSES_QUERY` at the
+    /// root so the pruning path (not `addAll`) reads the descriptor.
+    #[test]
+    fn a_negative_split_descriptor_is_a_decode_error() {
+        let mut kdi = vec![0u8]; // root FP-delta vlong = 0
+        negative_vint(&mut kdi, -1);
+        kdi.extend_from_slice(&[0u8; 16]);
+        let field = hand_built_field(2, kdi.len() as i32);
+        let kdd = vec![0u8; 64];
+        let reader = PointsReader {
+            kdi: &kdi,
+            kdd: &kdd,
+            fields: vec![(0, field)],
+        };
+        let err = reader.range_query(0, &[0x10], &[0x20]).unwrap_err();
+        assert!(
+            format!("{err}").contains("negative BKD split descriptor"),
+            "{err}"
+        );
+    }
+
+    /// `leftNumBytes` is the skip-ahead hint the walk adds to the current
+    /// position to find the right sibling. A negative one became a huge
+    /// `usize` and overflowed the sum -- in a release build, a wrap to a
+    /// position inside the packed index, i.e. the walk silently resuming on
+    /// the wrong node.
+    #[test]
+    fn a_negative_left_num_bytes_is_a_decode_error() {
+        // numLeaves = 3 so the root's left child is itself an inner node and
+        // the `leftNumBytes` vint is present.
+        let mut kdi = vec![0u8, 0u8]; // root FP delta = 0, split descriptor = 0
+        negative_vint(&mut kdi, -1); // leftNumBytes
+        kdi.extend_from_slice(&[0u8; 16]);
+        let field = hand_built_field(3, kdi.len() as i32);
+        let kdd = vec![0u8; 64];
+        let reader = PointsReader {
+            kdi: &kdi,
+            kdd: &kdd,
+            fields: vec![(0, field)],
+        };
+        let err = reader.range_query(0, &[0x10], &[0x20]).unwrap_err();
+        assert!(format!("{err}").contains("leftNumBytes"), "{err}");
+    }
+
+    /// A leaf's file pointer is its parent's baseline plus a `.kdi` delta, and
+    /// Java lets the `long` add wrap before failing at `seek`. The left child
+    /// here is entirely outside the query, so the walk reaches the right
+    /// child's delta without touching `.kdd` first.
+    #[test]
+    fn a_leaf_pointer_that_overflows_is_a_decode_error() {
+        let mut kdi = Vec::new();
+        write_vlong_test(&mut kdi, i64::MAX); // root FP baseline
+        kdi.push(0); // split descriptor: splitDim 0, prefix 0, delta 0
+        write_vlong_test(&mut kdi, 1); // right child's FP delta
+        let field = hand_built_field(2, kdi.len() as i32);
+        let kdd = vec![0u8; 64];
+        let reader = PointsReader {
+            kdi: &kdi,
+            kdd: &kdd,
+            fields: vec![(0, field)],
+        };
+        // The split value decodes to 0x00, so the left cell is [0x00, 0x00],
+        // entirely below the query box.
+        let err = reader.range_query(0, &[0x80], &[0xFF]).unwrap_err();
+        assert!(
+            format!("{err}").contains("leaf block pointer overflows"),
+            "{err}"
+        );
+    }
+
+    fn write_vlong_test(out: &mut Vec<u8>, mut v: i64) {
+        loop {
+            let b = (v & 0x7F) as u8;
+            v = ((v as u64) >> 7) as i64;
+            if v != 0 {
+                out.push(b | 0x80);
+            } else {
+                out.push(b);
+                break;
+            }
+        }
+    }
+
+    /// `RangeVisitor` slices the caller's box per index dimension against the
+    /// *field's* shape, so a box of the wrong width indexed out of bounds
+    /// mid-traversal. Java's `PointRangeQuery` constructor checks the same
+    /// thing up front.
+    #[test]
+    fn range_query_rejects_bounds_of_the_wrong_width() {
+        let points: Vec<(i32, Vec<u8>)> = (0..8)
+            .map(|i| (i, long_sortable_bytes(i as i64 * 10)))
+            .collect();
+        let field = WritePointsField {
+            field_number: 0,
+            num_dims: 1,
+            num_index_dims: 1,
+            bytes_per_dim: 8,
+            points,
+        };
+        let (kdm, kdi, kdd) = write(&[field], 4, &id(), "").unwrap();
+        let reader = open(&kdm, &kdi, &kdd, &id(), "").unwrap();
+        match reader.range_query(0, &[0u8; 4], &long_sortable_bytes(50)) {
+            Err(Error::InvalidConfig(msg)) => assert!(msg.contains("8 bytes"), "{msg}"),
+            other => panic!("expected InvalidConfig, got {other:?}"),
+        }
+        // The correctly-sized box still works.
+        assert!(!reader
+            .range_query(0, &long_sortable_bytes(0), &long_sortable_bytes(70))
+            .unwrap()
+            .is_empty());
     }
 }

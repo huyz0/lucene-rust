@@ -18,6 +18,11 @@ ready.
 - **Structure**: dependency direction intact (see `architecture`); no `unsafe`
   outside `lucene-util`/`lucene-store`/`lucene-ffi` (see `ffi-safety`); one
   Java format/concept per module.
+- **Arithmetic on values read off disk**: a length/count/offset/width from a
+  file never reaches `+`/`<<`/an index/an allocation unbounded — panics and
+  aborts cross the FFI as a dead JVM. Enforced in the gated crates by
+  `clippy::arithmetic_side_effects`; every `#[allow]` of it carries an
+  `// ARITH:` proof. See [`docs/arithmetic-gate.md`](../../../docs/arithmetic-gate.md).
 - **Not a dumb port**: the in-memory design was considered on its own merits,
   not transliterated field-for-field from the Java class (see
   `rust-performance`).

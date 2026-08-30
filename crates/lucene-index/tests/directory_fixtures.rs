@@ -1,6 +1,11 @@
 //! Differential test: open the real two-commit index directory (from
 //! fixtures/src/GenSegmentInfos.java) through both Directory backends and
 //! confirm they agree on the listing and on locating the latest commit.
+// Test-support code opts out of the arithmetic gate at the file boundary:
+// the gate exists for values read off disk in production decode paths, not
+// for a fixture builder's own index arithmetic. See
+// `docs/arithmetic-gate.md`.
+#![allow(clippy::arithmetic_side_effects)]
 
 use lucene_store::directory::{self, Directory};
 use lucene_store::{FsDirectory, MmapDirectory};
@@ -31,7 +36,7 @@ fn fs_and_mmap_agree_on_listing() {
 fn locates_latest_commit_generation() {
     let fs = FsDirectory::open(dir_path());
     let files = fs.list_all().unwrap();
-    assert_eq!(directory::last_commit_generation(&files), 2);
+    assert_eq!(directory::last_commit_generation(&files).unwrap(), 2);
     assert_eq!(
         directory::segments_file_name(2),
         Some("segments_2".to_string())
@@ -44,7 +49,7 @@ fn read_latest_commit_matches_raw_fixture_bytes() {
     let (generation, bytes) = directory::read_latest_commit(&fs).unwrap();
     assert_eq!(generation, 2);
 
-    let expected = std::fs::read(format!("{}/segments_2.raw", dir_path())).unwrap();
+    let expected = std::fs::read(format!("{}/expected_segments_2.bin", dir_path())).unwrap();
     assert_eq!(&*bytes, expected.as_slice());
 }
 
@@ -75,5 +80,5 @@ fn generation_zero_and_missing_cases() {
         directory::segments_file_name(0),
         Some("segments".to_string())
     );
-    assert_eq!(directory::last_commit_generation(&[]), -1);
+    assert_eq!(directory::last_commit_generation(&[]).unwrap(), -1);
 }

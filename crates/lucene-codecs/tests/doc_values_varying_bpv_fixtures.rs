@@ -4,6 +4,11 @@
 //! different value ranges (so per-block widths differ sharply from the
 //! whole-field width) plus a trailing partial block.
 //! Regenerate with `fixtures/src/GenDocValuesVaryingBpv.java`.
+// Test-support code opts out of the arithmetic gate at the file boundary:
+// the gate exists for values read off disk in production decode paths, not
+// for a fixture builder's own index arithmetic. See
+// `docs/arithmetic-gate.md`.
+#![allow(clippy::arithmetic_side_effects)]
 
 use lucene_codecs::{doc_values as ndv, field_infos};
 

@@ -1,0 +1,633 @@
+import org.apache.lucene.codecs.Codec;
+import org.apache.lucene.index.MergePolicy;
+import org.apache.lucene.index.MergeTrigger;
+import org.apache.lucene.index.SegmentCommitInfo;
+import org.apache.lucene.index.SegmentInfo;
+import org.apache.lucene.index.SegmentInfos;
+import org.apache.lucene.index.TieredMergePolicy;
+import org.apache.lucene.store.ByteBuffersDirectory;
+import org.apache.lucene.store.Directory;
+import org.apache.lucene.store.IOContext;
+import org.apache.lucene.store.IndexOutput;
+import org.apache.lucene.util.InfoStream;
+import org.apache.lucene.util.StringHelper;
+import org.apache.lucene.util.Version;
+
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+/**
+ * Cross-engine ground truth for {@code lucene-index/src/merge_policy.rs}, the Rust port of {@link
+ * TieredMergePolicy}'s three decision entry points.
+ *
+ * <p>Unlike the other generators here this one emits no index: a merge policy is a pure function of
+ * segment <em>statistics</em>, so the fixture is a plain text manifest of
+ * {@code (config, segments, currently-merging set) -> chosen merge groups} decided by real Lucene.
+ * The Rust differential test ({@code crates/lucene-index/tests/merge_policy_fixtures.rs}) replays
+ * every scenario through {@code find_merges} / {@code find_forced_merges} /
+ * {@code find_forced_delete_merges} and asserts the identical grouping, in the identical order.
+ *
+ * <p>Segment sizes are real: each scenario builds a {@link ByteBuffersDirectory} and writes one file
+ * per segment of exactly the requested byte length, so {@code SegmentCommitInfo.sizeInBytes()} — and
+ * therefore {@code MergePolicy.size()}'s deletion pro-rating — is genuinely exercised rather than
+ * stubbed. Sizes are kept in the KB range so the whole table fits in RAM; every size is converted to
+ * the {@code setMaxMergedSegmentMB}/{@code setFloorSegmentMB} MB unit by dividing by 2^20, which is
+ * exact in binary floating point and round-trips back through Lucene's own
+ * {@code (long)(v * 1024 * 1024)} without loss.
+ *
+ * <p>Deterministic by construction (fixed segment ids, no {@code IndexWriter}), so
+ * {@code scripts/gen-fixtures.sh --check} compares it byte for byte.
+ */
+public class GenMergePolicy {
+
+  /** One segment's statistics: what the policy is allowed to see about it. */
+  private record Seg(String name, int maxDoc, int delCount, long bytes) {}
+
+  /** A policy configuration, in the units {@code TieredMergePolicy}'s setters take. */
+  private record Cfg(
+      long maxMergedSegmentBytes,
+      long floorSegmentBytes,
+      double segsPerTier,
+      double deletesPctAllowed,
+      double forceMergeDeletesPctAllowed,
+      int targetSearchConcurrency) {
+
+    static Cfg of(long maxMergedSegmentBytes, long floorSegmentBytes, double segsPerTier) {
+      return new Cfg(maxMergedSegmentBytes, floorSegmentBytes, segsPerTier, 20.0, 10.0, 1);
+    }
+
+    Cfg withDeletesPctAllowed(double v) {
+      return new Cfg(
+          maxMergedSegmentBytes,
+          floorSegmentBytes,
+          segsPerTier,
+          v,
+          forceMergeDeletesPctAllowed,
+          targetSearchConcurrency);
+    }
+
+    Cfg withForceMergeDeletesPctAllowed(double v) {
+      return new Cfg(
+          maxMergedSegmentBytes,
+          floorSegmentBytes,
+          segsPerTier,
+          deletesPctAllowed,
+          v,
+          targetSearchConcurrency);
+    }
+
+    Cfg withTargetSearchConcurrency(int v) {
+      return new Cfg(
+          maxMergedSegmentBytes,
+          floorSegmentBytes,
+          segsPerTier,
+          deletesPctAllowed,
+          forceMergeDeletesPctAllowed,
+          v);
+    }
+
+    TieredMergePolicy build() {
+      TieredMergePolicy p = new TieredMergePolicy();
+      p.setMaxMergedSegmentMB(maxMergedSegmentBytes / (double) (1024 * 1024));
+      p.setFloorSegmentMB(floorSegmentBytes / (double) (1024 * 1024));
+      p.setSegmentsPerTier(segsPerTier);
+      p.setDeletesPctAllowed(deletesPctAllowed);
+      p.setForceMergeDeletesPctAllowed(forceMergeDeletesPctAllowed);
+      p.setTargetSearchConcurrency(targetSearchConcurrency);
+      return p;
+    }
+  }
+
+  /** Which entry point a scenario exercises. */
+  private sealed interface Op {
+    record Natural() implements Op {}
+
+    record Forced(int maxSegmentCount) implements Op {}
+
+    record ForcedDeletes() implements Op {}
+  }
+
+  private record Scenario(String name, Op op, Cfg cfg, List<Seg> segments, Set<String> merging) {}
+
+  public static void main(String[] args) throws IOException {
+    Path out = Path.of(args[0]).resolve("merge_policy");
+    Files.createDirectories(out);
+
+    List<Scenario> scenarios = scenarios();
+    StringBuilder sb = new StringBuilder();
+    sb.append("# Generated by fixtures/src/GenMergePolicy.java against Lucene ")
+        .append(Version.LATEST)
+        .append('\n');
+    sb.append("# Ground truth for crates/lucene-index/src/merge_policy.rs.\n");
+    sb.append("# Fields per scenario, one key per line:\n");
+    sb.append("#   name, op, config, segments, merging, expected\n");
+    sb.append("# config = maxMergedSegmentBytes,floorSegmentBytes,segsPerTier,")
+        .append("deletesPctAllowed,forceMergeDeletesPctAllowed,targetSearchConcurrency\n");
+    sb.append("# segments = name:maxDoc:delCount:bytes;...  (index order, as handed to the policy)\n");
+    sb.append("# expected = group|group|...  where group = name,name,...  (empty = no merges)\n");
+    sb.append("scenarios=").append(scenarios.size()).append('\n');
+
+    for (int i = 0; i < scenarios.size(); i++) {
+      Scenario s = scenarios.get(i);
+      String prefix = "scenario." + i + ".";
+      sb.append(prefix).append("name=").append(s.name).append('\n');
+      sb.append(prefix).append("op=").append(opKey(s.op)).append('\n');
+      sb.append(prefix)
+          .append("config=")
+          .append(s.cfg.maxMergedSegmentBytes)
+          .append(',')
+          .append(s.cfg.floorSegmentBytes)
+          .append(',')
+          .append(fmt(s.cfg.segsPerTier))
+          .append(',')
+          .append(fmt(s.cfg.deletesPctAllowed))
+          .append(',')
+          .append(fmt(s.cfg.forceMergeDeletesPctAllowed))
+          .append(',')
+          .append(s.cfg.targetSearchConcurrency)
+          .append('\n');
+      StringBuilder segs = new StringBuilder();
+      for (Seg seg : s.segments) {
+        if (segs.length() > 0) {
+          segs.append(';');
+        }
+        segs.append(seg.name)
+            .append(':')
+            .append(seg.maxDoc)
+            .append(':')
+            .append(seg.delCount)
+            .append(':')
+            .append(seg.bytes);
+      }
+      sb.append(prefix).append("segments=").append(segs).append('\n');
+      sb.append(prefix).append("merging=").append(String.join(",", sorted(s.merging))).append('\n');
+      sb.append(prefix).append("expected=").append(run(s)).append('\n');
+    }
+
+    Files.writeString(
+        out.resolve("merge_policy.manifest.properties"), sb.toString(), StandardCharsets.UTF_8);
+  }
+
+  private static List<String> sorted(Set<String> set) {
+    List<String> l = new ArrayList<>(set);
+    Collections.sort(l);
+    return l;
+  }
+
+  private static String opKey(Op op) {
+    if (op instanceof Op.Natural) {
+      return "findMerges";
+    }
+    if (op instanceof Op.Forced f) {
+      return "findForcedMerges:" + f.maxSegmentCount();
+    }
+    return "findForcedDeletesMerges";
+  }
+
+  /** Java's own answer, rendered as `group|group|...`. */
+  private static String run(Scenario s) throws IOException {
+    try (Directory dir = new ByteBuffersDirectory()) {
+      SegmentInfos infos = new SegmentInfos(Version.LATEST.major);
+      Map<String, SegmentCommitInfo> byName = new HashMap<>();
+      for (Seg seg : s.segments) {
+        SegmentCommitInfo sci = commitInfo(dir, seg);
+        infos.add(sci);
+        byName.put(seg.name, sci);
+      }
+
+      Set<SegmentCommitInfo> merging = new LinkedHashSet<>();
+      for (String name : s.merging) {
+        merging.add(byName.get(name));
+      }
+      MergePolicy.MergeContext ctx =
+          new MergePolicy.MergeContext() {
+            @Override
+            public int numDeletesToMerge(SegmentCommitInfo info) {
+              return info.getDelCount();
+            }
+
+            @Override
+            public int numDeletedDocs(SegmentCommitInfo info) {
+              return info.getDelCount();
+            }
+
+            @Override
+            public InfoStream getInfoStream() {
+              return InfoStream.NO_OUTPUT;
+            }
+
+            @Override
+            public Set<SegmentCommitInfo> getMergingSegments() {
+              return Collections.unmodifiableSet(merging);
+            }
+          };
+
+      TieredMergePolicy policy = s.cfg.build();
+      MergePolicy.MergeSpecification spec;
+      if (s.op instanceof Op.Natural) {
+        spec = policy.findMerges(MergeTrigger.EXPLICIT, infos, ctx);
+      } else if (s.op instanceof Op.Forced f) {
+        Map<SegmentCommitInfo, Boolean> toMerge = new HashMap<>();
+        for (SegmentCommitInfo sci : infos) {
+          // Every supplied segment is "original", which is what
+          // IndexWriter.forceMerge passes on its first pass, and what the
+          // Rust port models.
+          toMerge.put(sci, Boolean.TRUE);
+        }
+        spec = policy.findForcedMerges(infos, f.maxSegmentCount(), toMerge, ctx);
+      } else {
+        spec = policy.findForcedDeletesMerges(infos, ctx);
+      }
+
+      if (spec == null || spec.merges.isEmpty()) {
+        return "";
+      }
+      StringBuilder sb = new StringBuilder();
+      for (MergePolicy.OneMerge merge : spec.merges) {
+        if (sb.length() > 0) {
+          sb.append('|');
+        }
+        StringBuilder group = new StringBuilder();
+        for (SegmentCommitInfo sci : merge.segments) {
+          if (group.length() > 0) {
+            group.append(',');
+          }
+          group.append(sci.info.name);
+        }
+        sb.append(group);
+      }
+      return sb.toString();
+    }
+  }
+
+  /**
+   * A {@link SegmentCommitInfo} whose {@code sizeInBytes()} really is {@code seg.bytes}: one file of
+   * exactly that length is written into {@code dir} and listed on the {@link SegmentInfo}.
+   */
+  private static SegmentCommitInfo commitInfo(Directory dir, Seg seg) throws IOException {
+    String fileName = seg.name + ".dat";
+    if (!fileExists(dir, fileName)) {
+      try (IndexOutput o = dir.createOutput(fileName, IOContext.DEFAULT)) {
+        byte[] chunk = new byte[1024];
+        long remaining = seg.bytes;
+        while (remaining > 0) {
+          int n = (int) Math.min(chunk.length, remaining);
+          o.writeBytes(chunk, 0, n);
+          remaining -= n;
+        }
+      }
+    }
+    // Deterministic ids: the fixture must be byte-identical across runs, so no
+    // StringHelper.randomId() here.
+    byte[] id = new byte[StringHelper.ID_LENGTH];
+    for (int i = 0; i < id.length; i++) {
+      id[i] = (byte) (seg.name.hashCode() >>> (i % 4) * 8);
+    }
+    SegmentInfo info =
+        new SegmentInfo(
+            dir,
+            Version.LATEST,
+            Version.LATEST,
+            seg.name,
+            seg.maxDoc,
+            false,
+            false,
+            Codec.getDefault(),
+            Map.of(),
+            id,
+            Map.of(),
+            null);
+    info.setFiles(Set.of(fileName));
+    // delGen stays -1 even for a deleted segment: a non-negative delGen would
+    // make SegmentCommitInfo.files() list a `.liv` that this fixture has no
+    // reason to materialise, and sizeInBytes() would then fail. The policy
+    // only ever reads delCount (through MergeContext.numDeletesToMerge) and
+    // sizeInBytes(), neither of which consults delGen.
+    return new SegmentCommitInfo(info, seg.delCount, 0, -1, -1, -1, id);
+  }
+
+  private static boolean fileExists(Directory dir, String name) {
+    try {
+      for (String f : dir.listAll()) {
+        if (f.equals(name)) {
+          return true;
+        }
+      }
+      return false;
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    }
+  }
+
+  /** Stable decimal rendering so the manifest is byte-reproducible. */
+  private static String fmt(double v) {
+    if (v == Math.rint(v)) {
+      return Long.toString((long) v);
+    }
+    return Double.toString(v);
+  }
+
+  private static List<Seg> uniform(String prefix, int count, int maxDoc, int delCount, long bytes) {
+    List<Seg> l = new ArrayList<>();
+    for (int i = 0; i < count; i++) {
+      l.add(new Seg(String.format("%s%02d", prefix, i), maxDoc, delCount, bytes));
+    }
+    return l;
+  }
+
+  private static List<Seg> concat(List<Seg>... parts) {
+    List<Seg> l = new ArrayList<>();
+    for (List<Seg> p : parts) {
+      l.addAll(p);
+    }
+    return l;
+  }
+
+  @SafeVarargs
+  private static Set<String> merging(String... names) {
+    return new HashSet<>(List.of(names));
+  }
+
+  private static List<Scenario> scenarios() {
+    List<Scenario> s = new ArrayList<>();
+    long kb = 1024;
+    // A deliberately small max-merged size and floor, so the byte-level rules
+    // (the >max/2 exclusion, the cap inside candidate building, the floor's
+    // effect on skew and on the "keep packing below the floor" escape hatch)
+    // all bind at sizes a fixture can hold in RAM.
+    Cfg small = Cfg.of(64 * kb, 4 * kb, 4.0);
+    Cfg noFloor = Cfg.of(64 * kb, 1, 4.0);
+    Cfg tiered = Cfg.of(256 * kb, 8 * kb, 8.0);
+
+    // --- findMerges -------------------------------------------------------
+    s.add(new Scenario("empty", new Op.Natural(), small, List.of(), Set.of()));
+    s.add(
+        new Scenario(
+            "single_segment", new Op.Natural(), small, uniform("_s", 1, 100, 0, 2 * kb), Set.of()));
+    s.add(
+        new Scenario(
+            "two_tiny_segments_within_budget",
+            new Op.Natural(),
+            small,
+            uniform("_s", 2, 100, 0, 2 * kb),
+            Set.of()));
+    s.add(
+        new Scenario(
+            "many_tiny_segments_below_floor",
+            new Op.Natural(),
+            small,
+            uniform("_s", 20, 100, 0, 512),
+            Set.of()));
+    s.add(
+        new Scenario(
+            "many_equal_segments_above_floor",
+            new Op.Natural(),
+            small,
+            uniform("_s", 20, 100, 0, 8 * kb),
+            Set.of()));
+    s.add(
+        new Scenario(
+            "many_equal_segments_no_floor",
+            new Op.Natural(),
+            noFloor,
+            uniform("_s", 20, 100, 0, 8 * kb),
+            Set.of()));
+    s.add(
+        new Scenario(
+            "default_tier_count_many_segments",
+            new Op.Natural(),
+            tiered,
+            uniform("_s", 40, 100, 0, 4 * kb),
+            Set.of()));
+    s.add(
+        new Scenario(
+            "mixed_sizes_geometric",
+            new Op.Natural(),
+            small,
+            concat(
+                uniform("_big", 2, 1000, 0, 24 * kb),
+                uniform("_mid", 4, 400, 0, 6 * kb),
+                uniform("_small", 12, 100, 0, kb)),
+            Set.of()));
+    s.add(
+        new Scenario(
+            "oversized_segment_excluded",
+            new Op.Natural(),
+            small,
+            concat(
+                List.of(new Seg("_huge", 5000, 0, 60 * kb)), uniform("_s", 12, 100, 0, 2 * kb)),
+            Set.of()));
+    s.add(
+        new Scenario(
+            "oversized_but_delete_heavy_segment",
+            new Op.Natural(),
+            small,
+            concat(
+                List.of(new Seg("_huge", 5000, 3000, 60 * kb)),
+                uniform("_s", 12, 100, 50, 2 * kb)),
+            Set.of()));
+    s.add(
+        new Scenario(
+            "deletes_over_budget_within_segment_count",
+            new Op.Natural(),
+            small,
+            uniform("_s", 3, 100, 60, 8 * kb),
+            Set.of()));
+    s.add(
+        new Scenario(
+            "deletes_under_budget_within_segment_count",
+            new Op.Natural(),
+            small,
+            uniform("_s", 3, 100, 5, 8 * kb),
+            Set.of()));
+    s.add(
+        new Scenario(
+            "deletes_pct_allowed_lowered",
+            new Op.Natural(),
+            small.withDeletesPctAllowed(5.0),
+            uniform("_s", 3, 100, 10, 8 * kb),
+            Set.of()));
+    s.add(
+        new Scenario(
+            "growth_guard_dominant_segment",
+            new Op.Natural(),
+            noFloor,
+            concat(
+                List.of(new Seg("_dominant", 1000, 0, 32 * kb)),
+                uniform("_s", 10, 100, 0, 3 * kb)),
+            Set.of()));
+    s.add(
+        new Scenario(
+            "growth_guard_bypassed_by_deletes",
+            new Op.Natural(),
+            noFloor,
+            concat(
+                List.of(new Seg("_dominant", 1000, 500, 32 * kb)),
+                uniform("_s", 10, 100, 0, 3 * kb)),
+            Set.of()));
+    s.add(
+        new Scenario(
+            "merging_segments_excluded",
+            new Op.Natural(),
+            small,
+            uniform("_s", 20, 100, 0, 8 * kb),
+            merging("_s00", "_s01", "_s02", "_s03")));
+    s.add(
+        new Scenario(
+            "target_search_concurrency_4",
+            new Op.Natural(),
+            noFloor.withTargetSearchConcurrency(4),
+            uniform("_s", 24, 100, 0, 2 * kb),
+            Set.of()));
+    s.add(
+        new Scenario(
+            "target_search_concurrency_8",
+            new Op.Natural(),
+            tiered.withTargetSearchConcurrency(8),
+            uniform("_s", 40, 100, 0, 2 * kb),
+            Set.of()));
+    s.add(
+        new Scenario(
+            "varying_delete_ratios",
+            new Op.Natural(),
+            noFloor,
+            List.of(
+                new Seg("_a", 1000, 0, 16 * kb),
+                new Seg("_b", 1000, 250, 16 * kb),
+                new Seg("_c", 1000, 500, 16 * kb),
+                new Seg("_d", 1000, 750, 16 * kb),
+                new Seg("_e", 1000, 900, 16 * kb),
+                new Seg("_f", 1000, 100, 16 * kb),
+                new Seg("_g", 1000, 0, 16 * kb),
+                new Seg("_h", 1000, 0, 16 * kb)),
+            Set.of()));
+    s.add(
+        new Scenario(
+            "byte_cap_binds_before_merge_factor",
+            new Op.Natural(),
+            noFloor,
+            uniform("_s", 30, 100, 0, 20 * kb),
+            Set.of()));
+    s.add(
+        new Scenario(
+            "equal_sizes_tie_break_by_name",
+            new Op.Natural(),
+            noFloor,
+            List.of(
+                new Seg("_zz", 100, 0, 4 * kb),
+                new Seg("_aa", 100, 0, 4 * kb),
+                new Seg("_mm", 100, 0, 4 * kb),
+                new Seg("_bb", 100, 0, 4 * kb),
+                new Seg("_yy", 100, 0, 4 * kb),
+                new Seg("_cc", 100, 0, 4 * kb)),
+            Set.of()));
+
+    // --- findForcedMerges --------------------------------------------------
+    s.add(
+        new Scenario(
+            "forced_to_one", new Op.Forced(1), small, uniform("_s", 8, 100, 0, 2 * kb), Set.of()));
+    s.add(
+        new Scenario(
+            "forced_to_one_already_single",
+            new Op.Forced(1),
+            small,
+            uniform("_s", 1, 100, 0, 2 * kb),
+            Set.of()));
+    s.add(
+        new Scenario(
+            "forced_to_one_single_with_deletes",
+            new Op.Forced(1),
+            small,
+            List.of(new Seg("_s00", 100, 40, 2 * kb)),
+            Set.of()));
+    s.add(
+        new Scenario(
+            "forced_to_three_mixed_sizes",
+            new Op.Forced(3),
+            small,
+            concat(
+                uniform("_big", 2, 1000, 0, 24 * kb),
+                uniform("_mid", 3, 400, 0, 6 * kb),
+                uniform("_small", 6, 100, 0, kb)),
+            Set.of()));
+    s.add(
+        new Scenario(
+            "forced_to_two_already_within_target",
+            new Op.Forced(2),
+            small,
+            uniform("_s", 2, 100, 0, 2 * kb),
+            Set.of()));
+    s.add(
+        new Scenario(
+            "forced_to_two_within_target_but_deleted",
+            new Op.Forced(2),
+            small,
+            uniform("_s", 2, 100, 40, 2 * kb),
+            Set.of()));
+    s.add(
+        new Scenario(
+            "forced_to_four_many_small",
+            new Op.Forced(4),
+            small,
+            uniform("_s", 16, 100, 0, kb),
+            Set.of()));
+
+    // --- findForcedDeletesMerges ------------------------------------------
+    s.add(
+        new Scenario(
+            "forced_deletes_none",
+            new Op.ForcedDeletes(),
+            small,
+            uniform("_s", 6, 100, 0, 2 * kb),
+            Set.of()));
+    s.add(
+        new Scenario(
+            "forced_deletes_mixed_thresholds",
+            new Op.ForcedDeletes(),
+            small,
+            List.of(
+                new Seg("_clean", 100, 0, 2 * kb),
+                new Seg("_light", 100, 5, 2 * kb),
+                new Seg("_at", 100, 10, 2 * kb),
+                new Seg("_over", 100, 11, 2 * kb),
+                new Seg("_heavy", 100, 50, 2 * kb),
+                new Seg("_gone", 100, 90, 2 * kb)),
+            Set.of()));
+    s.add(
+        new Scenario(
+            "forced_deletes_bounded_by_max_size",
+            new Op.ForcedDeletes(),
+            small,
+            uniform("_s", 12, 1000, 500, 24 * kb),
+            Set.of()));
+    s.add(
+        new Scenario(
+            "forced_deletes_excludes_merging",
+            new Op.ForcedDeletes(),
+            small,
+            uniform("_s", 6, 100, 50, 2 * kb),
+            merging("_s00", "_s01")));
+    s.add(
+        new Scenario(
+            "forced_deletes_threshold_raised",
+            new Op.ForcedDeletes(),
+            small.withForceMergeDeletesPctAllowed(60.0),
+            List.of(
+                new Seg("_a", 100, 50, 2 * kb),
+                new Seg("_b", 100, 70, 2 * kb),
+                new Seg("_c", 100, 90, 2 * kb)),
+            Set.of()));
+    return s;
+  }
+}

@@ -76,6 +76,14 @@ pub enum Error {
     /// message) rather than one enum case per Java throw site.
     #[error("invalid fieldinfo for field '{0}': {1}")]
     Inconsistent(String, &'static str),
+    /// Port of the `FieldInfos(FieldInfo[])` constructor's cross-field
+    /// `IllegalArgumentException`s -- duplicate names/numbers and more than
+    /// one soft-deletes or parent field. Java raises these while *reading*
+    /// a `.fnm` (the format's `read` hands the decoded array straight to
+    /// that constructor), so a `.fnm` that trips one of them is rejected by
+    /// real Lucene and must be rejected here too.
+    #[error("invalid fieldinfos: {0}")]
+    InvalidFieldInfos(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -107,7 +115,7 @@ impl IndexOptions {
     /// this option indexes positions (and therefore may store payloads).
     /// `DocsAndCustomFreqs` is special-cased in Java to subsume as if it were
     /// `DocsAndFreqs` — i.e. it does NOT subsume positions.
-    pub(crate) fn subsumes_positions(self) -> bool {
+    pub fn subsumes_positions(self) -> bool {
         matches!(
             self,
             Self::DocsAndFreqsAndPositions | Self::DocsAndFreqsAndPositionsAndOffsets
@@ -116,7 +124,7 @@ impl IndexOptions {
 
     /// Port of `IndexOptions.subsumes(DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS)`:
     /// whether this option indexes character offsets.
-    pub(crate) fn subsumes_offsets(self) -> bool {
+    pub fn subsumes_offsets(self) -> bool {
         matches!(self, Self::DocsAndFreqsAndPositionsAndOffsets)
     }
 
@@ -352,6 +360,85 @@ impl FieldInfos {
     pub fn field_by_number(&self, number: i32) -> Option<&FieldInfo> {
         self.fields.iter().find(|f| f.number == number)
     }
+
+    /// Port of `FieldInfos.fieldInfo(String)`.
+    pub fn field_by_name(&self, name: &str) -> Option<&FieldInfo> {
+        self.fields.iter().find(|f| f.name == name)
+    }
+
+    /// Port of `FieldInfos.getSoftDeletesField()`: the name of the single
+    /// field flagged as the soft-deletes field, if any.
+    pub fn soft_deletes_field(&self) -> Option<&str> {
+        self.fields
+            .iter()
+            .find(|f| f.soft_deletes_field)
+            .map(|f| f.name.as_str())
+    }
+
+    /// Port of `FieldInfos.getParentField()` (Lucene 9.10+).
+    pub fn parent_field(&self) -> Option<&str> {
+        self.fields
+            .iter()
+            .find(|f| f.parent_field)
+            .map(|f| f.name.as_str())
+    }
+
+    /// Port of the cross-field half of the `FieldInfos(FieldInfo[])`
+    /// constructor: every check it makes that `FieldInfo.checkConsistency`
+    /// (per-field) cannot. Java performs these *during* `.fnm` reading,
+    /// since `Lucene94FieldInfosFormat.read` returns
+    /// `new FieldInfos(infos)`; this port therefore runs them at the end of
+    /// [`parse`] rather than leaving a `.fnm` real Lucene would reject
+    /// silently accepted.
+    ///
+    /// Java's `hasVectors`/`hasNorms`/... aggregate flags and its
+    /// `byNumber`/`byName` lookup arrays are computed in the same pass; they
+    /// are omitted here because nothing in this port consumes them (the
+    /// accessors above answer the same questions by scanning), which is a
+    /// deliberate scope call, not an oversight.
+    fn check_consistency(&self) -> Result<()> {
+        let mut soft_deletes: Option<&str> = None;
+        let mut parent: Option<&str> = None;
+        for (i, f) in self.fields.iter().enumerate() {
+            for previous in &self.fields[..i] {
+                if previous.name == f.name {
+                    return Err(Error::InvalidFieldInfos(format!(
+                        "duplicate field names: {} and {} have: {}",
+                        previous.number, f.number, f.name
+                    )));
+                }
+                if previous.number == f.number {
+                    return Err(Error::InvalidFieldInfos(format!(
+                        "duplicate field numbers: {} and {} have: {}",
+                        previous.name, f.name, f.number
+                    )));
+                }
+            }
+            if f.soft_deletes_field {
+                if let Some(existing) = soft_deletes {
+                    if existing != f.name {
+                        return Err(Error::InvalidFieldInfos(format!(
+                            "multiple soft-deletes fields [{}, {existing}]",
+                            f.name
+                        )));
+                    }
+                }
+                soft_deletes = Some(&f.name);
+            }
+            if f.parent_field {
+                if let Some(existing) = parent {
+                    if existing != f.name {
+                        return Err(Error::InvalidFieldInfos(format!(
+                            "multiple parent fields [{}, {existing}]",
+                            f.name
+                        )));
+                    }
+                }
+                parent = Some(&f.name);
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Parses a whole `.fnm` file already read into memory.
@@ -442,7 +529,9 @@ pub fn parse(buf: &[u8], segment_id: &[u8; ID_LENGTH], segment_suffix: &str) -> 
 
     codec_util::check_footer(&mut input, buf.len())?;
 
-    Ok(FieldInfos { fields })
+    let infos = FieldInfos { fields };
+    infos.check_consistency()?;
+    Ok(infos)
 }
 
 /// Port of `Lucene94FieldInfosFormat.write`: the exact byte-level inverse of
@@ -470,14 +559,30 @@ pub fn write(fields: &[FieldInfo], segment_id: &[u8; ID_LENGTH], segment_suffix:
         out.write_string(&f.name);
         out.write_vint(f.number);
 
+        // Java's `FieldInfo` constructor coerces all three of these to `false`
+        // for a non-indexed field before anything can read them
+        // (`FieldInfo.java:110-114`), which is why `checkConsistency`'s
+        // "non-indexed field cannot store term vectors / store payloads /
+        // omit norms" can never fire on a `FieldInfo` Java built. A Rust
+        // `FieldInfo` is a plain struct with no constructor, so a caller can
+        // hand `write` the combination Java makes unrepresentable -- and the
+        // bits then land on the wire, where Java's reader coerces them away
+        // again but this port's own `parse` rejects them outright
+        // (`check_consistency`). The result was an `IndexWriter` able to write
+        // a `.fnm` it could not itself re-open, found by c23 running
+        // `check_index` over a writer-produced segment. Coercing here rather
+        // than erroring is what Java does, and it is the behaviour that keeps
+        // `write` -> `parse` total.
+        let indexed = f.index_options != IndexOptions::None;
+
         let mut bits = 0u8;
-        if f.store_term_vectors {
+        if f.store_term_vectors && indexed {
             bits |= STORE_TERMVECTOR;
         }
-        if f.omit_norms {
+        if f.omit_norms && indexed {
             bits |= OMIT_NORMS;
         }
-        if f.store_payloads {
+        if f.store_payloads && indexed {
             bits |= STORE_PAYLOADS;
         }
         if f.soft_deletes_field {
@@ -651,6 +756,90 @@ mod tests {
         assert_eq!(fis.fields.len(), 1);
         assert_eq!(fis.fields[0].name, "id");
         assert_eq!(fis.fields[0].index_options, IndexOptions::Docs);
+    }
+
+    /// Port of `FieldInfos`' constructor checks -- Java reaches these from
+    /// `Lucene94FieldInfosFormat.read` itself (`return new
+    /// FieldInfos(infos)`), so a `.fnm` tripping one of them is rejected by
+    /// real Lucene, not merely frowned upon.
+    #[test]
+    fn duplicate_field_names_rejected() {
+        let mut b = FnmBuilder::valid();
+        b.fields.push(FieldBuilder::valid("dup", 0));
+        b.fields.push(FieldBuilder::valid("dup", 1));
+        assert!(matches!(
+            parse(&b.build(), &b.id, &b.suffix),
+            Err(Error::InvalidFieldInfos(msg)) if msg.contains("duplicate field names")
+        ));
+    }
+
+    #[test]
+    fn duplicate_field_numbers_rejected() {
+        let mut b = FnmBuilder::valid();
+        b.fields.push(FieldBuilder::valid("a", 4));
+        b.fields.push(FieldBuilder::valid("b", 4));
+        assert!(matches!(
+            parse(&b.build(), &b.id, &b.suffix),
+            Err(Error::InvalidFieldInfos(msg)) if msg.contains("duplicate field numbers")
+        ));
+    }
+
+    #[test]
+    fn multiple_soft_deletes_fields_rejected() {
+        let mut b = FnmBuilder::valid();
+        let mut a = FieldBuilder::valid("a", 0);
+        a.bits = SOFT_DELETES_FIELD;
+        let mut c = FieldBuilder::valid("c", 1);
+        c.bits = SOFT_DELETES_FIELD;
+        b.fields.push(a);
+        b.fields.push(c);
+        assert!(matches!(
+            parse(&b.build(), &b.id, &b.suffix),
+            Err(Error::InvalidFieldInfos(msg)) if msg.contains("multiple soft-deletes fields")
+        ));
+    }
+
+    #[test]
+    fn multiple_parent_fields_rejected() {
+        let mut b = FnmBuilder::valid();
+        let mut a = FieldBuilder::valid("a", 0);
+        a.bits = PARENT_FIELD_FIELD;
+        let mut c = FieldBuilder::valid("c", 1);
+        c.bits = PARENT_FIELD_FIELD;
+        b.fields.push(a);
+        b.fields.push(c);
+        assert!(matches!(
+            parse(&b.build(), &b.id, &b.suffix),
+            Err(Error::InvalidFieldInfos(msg)) if msg.contains("multiple parent fields")
+        ));
+    }
+
+    /// One soft-deletes field and one parent field on *different* fields is
+    /// legal (only the same field being both is not -- see
+    /// `FieldInfo.checkConsistency`); the accessors report each one.
+    #[test]
+    fn distinct_soft_deletes_and_parent_fields_accepted() {
+        let mut b = FnmBuilder::valid();
+        let mut a = FieldBuilder::valid("__soft_deletes", 0);
+        a.bits = SOFT_DELETES_FIELD;
+        let mut c = FieldBuilder::valid("_parent", 1);
+        c.bits = PARENT_FIELD_FIELD;
+        b.fields.push(a);
+        b.fields.push(c);
+        let fis = parse(&b.build(), &b.id, &b.suffix).unwrap();
+        assert_eq!(fis.soft_deletes_field(), Some("__soft_deletes"));
+        assert_eq!(fis.parent_field(), Some("_parent"));
+        assert_eq!(fis.field_by_name("_parent").unwrap().number, 1);
+        assert!(fis.field_by_name("nope").is_none());
+    }
+
+    #[test]
+    fn no_soft_deletes_or_parent_field_reports_none() {
+        let mut b = FnmBuilder::valid();
+        b.fields.push(FieldBuilder::valid("id", 0));
+        let fis = parse(&b.build(), &b.id, &b.suffix).unwrap();
+        assert_eq!(fis.soft_deletes_field(), None);
+        assert_eq!(fis.parent_field(), None);
     }
 
     #[test]

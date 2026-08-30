@@ -22,6 +22,11 @@
 //! for why a narrow alphabet plus small block-size thresholds is what
 //! actually forces deep chained non-leaf nesting, where a wide alphabet at
 //! any term count plateaus at a single non-leaf layer.
+// Test-support code opts out of the arithmetic gate at the file boundary:
+// the gate exists for values read off disk in production decode paths, not
+// for a fixture builder's own index arithmetic. See
+// `docs/arithmetic-gate.md`.
+#![allow(clippy::arithmetic_side_effects)]
 
 use lucene_codecs::blocktree;
 use lucene_codecs::field_infos;
@@ -146,4 +151,164 @@ fn deep_nesting_field_enumeration_matches_real_lucene_terms_enum_next() {
         got.push(String::from_utf8(term.to_vec()).unwrap());
     }
     assert_eq!(got, expected);
+}
+
+/// Exhaustive `seekCeil` differential over the deepest block chain this port
+/// has real Lucene bytes for.
+///
+/// `SegmentTermsEnum.seekCeil` is the hardest of the lazy navigator's entry
+/// points: the trie descent can run out mid-target, the scan can end past a
+/// block's last entry (in which case Java falls through to `next()`, which
+/// pops the frame stack and may re-descend into a *deeper* sub-block to find
+/// the true ceiling), and a non-leaf scan can stop on a sub-block pointer
+/// that sorts after the target, which has to be descended into rather than
+/// returned. None of those are visible from `seek_exact`.
+///
+/// So this checks `seek_ceil` against a brute-force answer computed from the
+/// real Lucene term list, for four target families per term: the term itself
+/// (`FOUND`), the term with a byte appended (a target strictly between two
+/// real terms, or past the last one), the term with its last byte dropped,
+/// and the term with its last byte incremented. Then it checks that `next()`
+/// after a ceiling seek continues from where the seek landed.
+#[test]
+fn deep_nesting_field_seek_ceil_matches_a_brute_force_ceiling() {
+    let (fields, m) = open_fixture();
+    let many = fields.field("many").expect("expected field \"many\"");
+    let terms = expected_terms(&m);
+    assert!(terms.windows(2).all(|w| w[0] < w[1]), "terms are sorted");
+
+    let mut targets: Vec<Vec<u8>> = Vec::new();
+    for t in &terms {
+        let b = t.as_bytes();
+        targets.push(b.to_vec());
+        let mut appended = b.to_vec();
+        appended.push(b'a');
+        targets.push(appended);
+        if b.len() > 1 {
+            targets.push(b[..b.len() - 1].to_vec());
+            let mut bumped = b.to_vec();
+            *bumped.last_mut().unwrap() += 1;
+            targets.push(bumped);
+        }
+    }
+    targets.push(Vec::new());
+    targets.push(b"\xff".to_vec());
+
+    // Deliberately *not* in sorted order, and deliberately down **one reused
+    // enum**: the batch's single intentional divergence from Java is that
+    // `SegmentTermsEnumFrame::rewind` resets a loaded frame's cursors in place
+    // where Java forces a block reload, and that path is only reachable on the
+    // second and later seek against the same frame stack -- most of all on a
+    // *backwards* seek, which is what `rewind` exists for. A fresh
+    // `many.iter()` per target would never touch it.
+    let mut state = 0x243F_6A88_85A3_08D3u64;
+    for i in (1..targets.len()).rev() {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        targets.swap(i, (state % (i as u64 + 1)) as usize);
+    }
+    let mut reused = many.iter();
+
+    for target in &targets {
+        // Brute force: the first term >= target, if any.
+        let at = terms.partition_point(|t| t.as_bytes() < target.as_slice());
+        let expected = terms.get(at);
+
+        // Both spellings must agree: a fresh enum, and the reused one whose
+        // frames still hold the previous target's blocks.
+        let mut it = many.iter();
+        let status = it.seek_ceil(target);
+        assert_eq!(
+            reused.seek_ceil(target),
+            status,
+            "reused enum disagreed on target={target:?}"
+        );
+        assert_eq!(
+            reused.current().map(|(t, _)| t.to_vec()),
+            it.current().map(|(t, _)| t.to_vec()),
+            "reused enum landed elsewhere on target={target:?}"
+        );
+        match expected {
+            None => {
+                assert_eq!(
+                    status,
+                    blocktree::SeekStatus::End,
+                    "target={target:?} is past the last term"
+                );
+                assert!(it.current().is_none());
+                assert!(it.next().is_none());
+            }
+            Some(want) => {
+                let expected_status = if want.as_bytes() == target.as_slice() {
+                    blocktree::SeekStatus::Found
+                } else {
+                    blocktree::SeekStatus::NotFound
+                };
+                assert_eq!(status, expected_status, "target={target:?}");
+                let (got, stats) = it
+                    .current()
+                    .unwrap_or_else(|| panic!("target={target:?} left the enum unpositioned"));
+                assert_eq!(
+                    std::str::from_utf8(got).unwrap(),
+                    want.as_str(),
+                    "target={target:?}"
+                );
+                assert_eq!(stats.doc_freq, 1);
+
+                // `next()` must continue from the landed-on term, not restart.
+                if let Some(after) = terms.get(at + 1) {
+                    let (nxt, _) = it.next().expect("a term follows the ceiling");
+                    assert_eq!(
+                        std::str::from_utf8(nxt).unwrap(),
+                        after.as_str(),
+                        "next() after seek_ceil({target:?})"
+                    );
+                } else {
+                    assert!(it.next().is_none());
+                }
+            }
+        }
+    }
+}
+
+/// The infallible lookups have `Result`-returning twins, and on intact bytes
+/// the two must agree everywhere -- `try_seek_exact`/`try_next`/
+/// `try_seek_ceil` are the spellings new callers are meant to use, so they
+/// need the same fixture proof the older ones have.
+#[test]
+fn deep_nesting_field_fallible_lookups_agree_with_the_infallible_ones() {
+    let (fields, m) = open_fixture();
+    let many = fields.field("many").expect("expected field \"many\"");
+    let terms = expected_terms(&m);
+
+    for term in terms.iter().step_by(37) {
+        assert_eq!(
+            many.try_seek_exact(term.as_bytes()).expect("intact bytes"),
+            many.seek_exact(term.as_bytes()),
+            "term={term:?}"
+        );
+    }
+    assert_eq!(many.try_seek_exact(b"zzzz").expect("intact bytes"), None);
+
+    let mut a = many.iter();
+    let mut b = many.iter();
+    loop {
+        let want = a
+            .try_next()
+            .expect("intact bytes")
+            .map(|(t, s)| (t.to_vec(), s));
+        let got = b.next().map(|(t, s)| (t.to_vec(), s));
+        assert_eq!(want, got);
+        if want.is_none() {
+            break;
+        }
+    }
+
+    let mut it = many.iter();
+    assert_eq!(
+        it.try_seek_ceil(terms[10].as_bytes())
+            .expect("intact bytes"),
+        blocktree::SeekStatus::Found
+    );
 }

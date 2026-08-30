@@ -12,6 +12,11 @@
 //! `Fst::get`'s doc comment. This test instead exercises the label-domain
 //! API (`Fst::get_labels`, `Fst::iter_labels`/`FstEnum::next_labels`) that
 //! widens lookup/enumeration to any `INPUT_TYPE`.
+// Test-support code opts out of the arithmetic gate at the file boundary:
+// the gate exists for values read off disk in production decode paths, not
+// for a fixture builder's own index arithmetic. See
+// `docs/arithmetic-gate.md`.
+#![allow(clippy::arithmetic_side_effects)]
 
 use lucene_codecs::fst::{Fst, InputType};
 use lucene_store::data_input::SliceInput;

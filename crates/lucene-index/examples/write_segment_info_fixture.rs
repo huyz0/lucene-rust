@@ -13,8 +13,15 @@
 //! `lucene-index` to reuse its types.
 //!
 //! Run: `cargo run -p lucene-index --example write_segment_info_fixture -- <dir>`
+// Test-support code opts out of the arithmetic gate at the file boundary:
+// the gate exists for values read off disk in production decode paths, not
+// for a fixture builder's own index arithmetic. See
+// `docs/arithmetic-gate.md`.
+#![allow(clippy::arithmetic_side_effects)]
 
-use lucene_index::segment_info::{self, LuceneVersion, SegmentInfo};
+use lucene_index::segment_info::{
+    self, IndexSortField, LuceneVersion, SegmentInfo, SortMissingValue,
+};
 use lucene_store::{DataOutput, Directory, FsDirectory};
 use std::io::Write;
 
@@ -84,6 +91,48 @@ fn main() {
         },
     );
 
+    // _2: an index-sorted segment. This is the case real Lucene's
+    // `SortFieldProvider` byte layout governs, and the only automated proof
+    // that `segment_info::write`'s sort-field encoding is the real one and
+    // not this port's own invention: `VerifySegmentInfo` reads it back with
+    // `SortFieldProvider.forName(...).readSortField(...)` and compares field
+    // name / reverse / missing value against the manifest.
+    gen(
+        &out_dir,
+        "_2",
+        SegmentInfo {
+            id: *b"rustwrittensi222",
+            version: LuceneVersion {
+                major: 10,
+                minor: 0,
+                bugfix: 0,
+            },
+            min_version: Some(LuceneVersion {
+                major: 10,
+                minor: 0,
+                bugfix: 0,
+            }),
+            doc_count: 100,
+            is_compound_file: false,
+            has_blocks: false,
+            diagnostics: vec![],
+            files: vec![],
+            attributes: vec![],
+            index_sort: Some(vec![
+                IndexSortField {
+                    field: "timestamp".to_string(),
+                    reverse: true,
+                    missing: SortMissingValue::Last,
+                },
+                IndexSortField {
+                    field: "price".to_string(),
+                    reverse: false,
+                    missing: SortMissingValue::First,
+                },
+            ]),
+        },
+    );
+
     println!("wrote segment-info fixtures to {out_dir}");
 }
 
@@ -125,6 +174,29 @@ fn gen(out_dir: &str, segment_name: &str, si: SegmentInfo) {
     writeln!(manifest, "diagnostics={}", join_map(&si.diagnostics)).unwrap();
     writeln!(manifest, "attributes={}", join_map(&si.attributes)).unwrap();
     writeln!(manifest, "files={}", si.files.join(",")).unwrap();
+    // `field:reverse:missing` triples, in priority order; empty for an
+    // unsorted segment.
+    writeln!(
+        manifest,
+        "index_sort={}",
+        si.index_sort
+            .as_ref()
+            .map(|fields| fields
+                .iter()
+                .map(|f| format!(
+                    "{}:{}:{}",
+                    f.field,
+                    if f.reverse { 1 } else { 0 },
+                    match f.missing {
+                        SortMissingValue::First => "first",
+                        SortMissingValue::Last => "last",
+                    }
+                ))
+                .collect::<Vec<_>>()
+                .join(","))
+            .unwrap_or_default()
+    )
+    .unwrap();
 
     println!(
         "wrote {segment_name}.si ({} bytes)",
