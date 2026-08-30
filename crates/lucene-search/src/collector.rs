@@ -36,7 +36,7 @@
 //!   giving them different trait names (as opposed to one trait with both
 //!   methods, one of them defaulted to a no-op) keeps each collector's impl
 //!   exactly as small as the contract it actually fulfills, and keeps
-//!   [`search_term_query`]/[`search_boolean_query`]'s existing generic bound
+//!   [`crate::search_term_query`]/[`crate::search_boolean_query`]'s existing generic bound
 //!   (`C: Collector`) untouched — no existing caller's code breaks.
 //! - **The cost is one more trait, not a hierarchy.** With exactly two shapes
 //!   (unscored / scored) and no third on the horizon, this is the same
@@ -247,7 +247,7 @@ pub struct ScoreDoc {
 /// i.e. on an exact score tie the *lower* doc ID is considered the better hit)
 /// — **lower doc ID wins a score tie**. Returns `Ordering::Greater` when `a`
 /// should rank ahead of `b`.
-fn rank_order(a: &ScoreDoc, b: &ScoreDoc) -> std::cmp::Ordering {
+pub(crate) fn rank_order(a: &ScoreDoc, b: &ScoreDoc) -> std::cmp::Ordering {
     match a.score.total_cmp(&b.score) {
         std::cmp::Ordering::Equal => b.doc_id.cmp(&a.doc_id),
         other => other,

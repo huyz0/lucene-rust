@@ -9,25 +9,22 @@
 // a `#[allow(clippy::arithmetic_side_effects)] // TODO(arith-audit)` on its
 // `mod` declaration, and `scripts/check-arith-allows.py` cross-checks the
 // count against that table.
+
+// `direct_reader`, `for_util` and `lz4` are `pub` for a reason that is
+// recorded in each module's own `//!` header, not here: an outer `///` doc
+// on a `mod` declaration makes rustdoc resolve *the whole merged doc* --
+// including the module file's own `//!` lines -- in the crate-root scope,
+// which silently breaks every intra-doc link the module writes to its own
+// items. See `docs/rustdoc-gate.md`.
 mod block_packed;
 pub mod blocktree;
 pub mod compound_format;
 mod deflate;
 pub mod direct_monotonic;
-/// `DirectReader`/`DirectWriter` bit-packing. Public for the same reason
-/// [`for_util`] is: a per-value decode primitive on the doc-values and
-/// monotonic-sequence paths, and `DirectReader.getInstance` is public in
-/// Lucene, so the two can be benchmarked directly against each other.
 pub mod direct_reader;
 pub mod doc_values;
 pub mod doc_values_updates;
 pub mod field_infos;
-/// `ForUtil`/`PForUtil` bit-packing. Public so that the decode kernel can be
-/// benchmarked against Lucene's own from outside the crate -- Lucene makes
-/// `PostingIndexInput` public for exactly this reason, and a kernel this hot
-/// with no external microbenchmark is how a 3x regression hides inside a flat
-/// profile. Not otherwise part of this crate's intended surface: callers want
-/// `postings`, which owns the framing these primitives sit inside.
 pub mod for_util;
 pub mod fst;
 pub mod fuzzy;
@@ -35,11 +32,6 @@ pub mod hnsw;
 pub mod hnsw_vectors;
 pub mod indexed_disi;
 pub mod live_docs;
-/// LZ4 block compression/decompression (`org.apache.lucene.util.compress.LZ4`).
-/// Public for the same reason [`for_util`] is: `LZ4` is a public class in
-/// Lucene, both hash-table strategies are part of its contract, and a
-/// compressor this hot deserves a microbenchmark that can call it from
-/// outside the crate.
 pub mod lz4;
 pub mod norms;
 mod packed_ints;

@@ -3149,6 +3149,9 @@ fn lookup_child(slice: &[u8], parent: &TrieNode, target_label: u8) -> Result<Opt
 // most 32 to `strategy_fp <= slice.len() + 3`. The `BITS` accumulator sums at
 // most 31 byte popcounts plus 7, so `pos <= 255`; `mask - 1` is safe because
 // `mask = 1 << (bit_index & 7) >= 1`.
+// SENTINEL: `-1` = "this node has no child with `target_label`". Outside the
+// domain of the result (a child position is `>= 0`), so every call site has
+// to test it -- see `docs/mechanical-gates.md`'s `sentinel-callers` rule.
 #[allow(clippy::arithmetic_side_effects)]
 fn child_position(slice: &[u8], node: &TrieNode, target_label: u8) -> Result<i32> {
     let fp = node.strategy_fp;

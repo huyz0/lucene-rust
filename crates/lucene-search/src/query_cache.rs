@@ -47,7 +47,7 @@
 //!   estimate on its iterators to compare against.
 //!
 //! **Cache key**: a query type usable as a key needs `Eq + Hash + Clone` --
-//! [`query::TermQuery`] already derives all three. [`QueryCache`] is generic
+//! [`crate::query::TermQuery`] already derives all three. [`QueryCache`] is generic
 //! over any `Q: Eq + Hash + Clone` and any segment identifier `S: Eq + Hash +
 //! Clone`.
 //!
@@ -73,6 +73,7 @@ use lucene_util::fixed_bit_set::FixedBitSet;
 use crate::collector::{Collector, VecCollector};
 use crate::docid_set::CachedDocIdSet;
 use crate::query::TermQuery;
+use crate::Error;
 
 /// A `(segment, query)` compound cache key. Two keys are equal iff both their
 /// segment identifier and their query are equal -- the same query against a
@@ -635,8 +636,19 @@ where
         let mut vec_collector = VecCollector::default();
         crate::search_term_query(fields, doc_in, None, query, &mut vec_collector)?;
         let mut bits = FixedBitSet::new(num_docs);
+        // `num_docs` and the doc ids the postings walk produced arrive from
+        // two different places -- the caller's claim about the segment, and
+        // the segment's own `.doc` file. A doc id past the bitset is a ghost
+        // bit or an index panic, so the bound is the bitset's own length and
+        // a disagreement is reported rather than absorbed. Hoisted: one load,
+        // not one per hit.
+        let num_bits = bits.len();
         for doc_id in vec_collector.docs {
-            bits.set(doc_id as usize);
+            let idx = usize::try_from(doc_id).ok().filter(|&i| i < num_bits);
+            match idx {
+                Some(idx) => bits.set(idx),
+                None => return Err(Error::CachedDocOutOfRange { doc_id, num_docs }),
+            }
         }
         Ok(bits)
     })?;
@@ -646,7 +658,12 @@ where
     // scan this used to do, which made a 3-hit query on a 10M-document
     // segment walk 10M bits per cache hit.
     for doc_id in set.iter() {
-        if live_docs.is_none_or(|bits| bits.get(doc_id as usize)) {
+        // `live_docs` is a *separate* caller-supplied bitset from the cached
+        // set being iterated; nothing here makes their lengths equal. A doc
+        // the live-docs bitset does not cover is not live -- the same answer
+        // `soft_deletes::is_live` and `vector_query`'s accept filter give.
+        let live = live_docs.is_none_or(|bits| bits.get_doc(doc_id));
+        if live {
             collector.collect(doc_id);
         }
     }
@@ -1535,6 +1552,71 @@ mod tests {
             &mut collector,
         )?;
         Ok(collector.docs)
+    }
+
+    /// `num_docs` and the doc ids the postings walk yields are two
+    /// independent inputs to this `pub fn`: the caller's claim about the
+    /// segment, and the segment's own `.doc` file. `FixedBitSet::new(num_docs)`
+    /// then gets indexed by a doc id nothing relates to it -- c28's
+    /// `deletes::mark_deleted` shape, on a public API. With `num_docs = 1` and
+    /// a term whose postings name doc 2, the old code wrote a ghost bit into
+    /// word 0 of a one-bit set; the doc it claimed to cache was never
+    /// recoverable, and a `num_docs` of 0 panicked outright.
+    #[test]
+    fn a_num_docs_below_the_segments_own_doc_ids_is_reported_not_absorbed() {
+        let segment = open_fixture();
+        let query = TermQuery::new("body", "cat");
+        assert_eq!(
+            uncached_docs(&segment, &query),
+            vec![0, 2],
+            "the fixture's own postings name doc 2"
+        );
+
+        let mut cache: QueryCache<&'static str, TermQuery> = QueryCache::new(4);
+        let mut collector = VecCollector::default();
+        let doc_in = segment.doc_input();
+        let err = search_term_query_cached(
+            &mut cache,
+            "seg-a",
+            &segment.fields,
+            Some(&doc_in),
+            None,
+            1, // the caller says the segment has one document; it has three
+            &query,
+            &mut collector,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                Error::CachedDocOutOfRange {
+                    doc_id: 2,
+                    num_docs: 1
+                }
+            ),
+            "expected a typed out-of-range report, got: {err}"
+        );
+        assert_eq!(cache.len(), 0, "a failed compute must not be cached");
+    }
+
+    /// The other half: `live_docs` is a *separate* caller-supplied bitset from
+    /// the cached set being iterated, so a shorter one used to be indexed by a
+    /// doc id it does not cover. A doc outside the live-docs bitset is not
+    /// live -- the same answer `soft_deletes::is_live` and `vector_query`'s
+    /// accept filter give.
+    #[test]
+    fn a_live_docs_bitset_shorter_than_the_cached_set_hides_the_docs_it_does_not_cover() {
+        let segment = open_fixture();
+        let query = TermQuery::new("body", "cat");
+        let mut cache: QueryCache<&'static str, TermQuery> = QueryCache::new(4);
+
+        // One bit long: it covers doc 0 (live) and says nothing about doc 2.
+        let mut live = FixedBitSet::new(1);
+        live.set(0);
+        let docs =
+            call_cached_with_live_docs(&mut cache, &segment, "seg-a", &query, true, Some(&live))
+                .expect("a short live-docs bitset must not panic");
+        assert_eq!(docs, vec![0]);
     }
 
     #[test]

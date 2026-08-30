@@ -26,6 +26,16 @@ fn ghost_bits_clear(words: &[u64], num_bits: usize) -> bool {
     words[bits2words(num_bits) - 1] & mask == 0
 }
 
+/// Out of line and `#[cold]` so the bound check above costs a single
+/// never-taken branch in the hot loops that index a bitset per document or
+/// per graph node, rather than inlining a panic's formatting machinery into
+/// each of them.
+#[cold]
+#[inline(never)]
+fn out_of_range(index: usize, num_bits: usize) -> ! {
+    panic!("FixedBitSet index {index} is out of range for a bitset of {num_bits} bits");
+}
+
 #[derive(Debug, Clone)]
 pub struct FixedBitSet {
     words: Vec<u64>,
@@ -66,22 +76,87 @@ impl FixedBitSet {
         self.num_bits == 0
     }
 
+    /// `FixedBitSet.get(index)`.
+    ///
+    /// # Panics
+    ///
+    /// If `index >= len()`. Java's `FixedBitSet` carries the same bound as an
+    /// `assert`, which is off in production; this one is **not** a
+    /// `debug_assert!`, and the difference matters. `words[index >> 6]` alone
+    /// only catches an index 64 or more past the end: one merely past
+    /// `num_bits` still lands inside the final word and reads a *ghost bit* --
+    /// a silently wrong live/dead answer no caller can detect, which is the
+    /// half of this defect class that costs a wrong answer rather than a
+    /// crash (see `docs/arithmetic-gate.md`). A panic is containable
+    /// (`lucene_ffi`'s `guard` catches it and reports `FfiStatus::Panic`); a
+    /// ghost bit is not. Callers bound the index against **this bitset's own
+    /// `len()`** -- see `docs/mechanical-gates.md`'s `fixed-bitset-bound`
+    /// rule, which is what checks that they do.
     #[inline]
     pub fn get(&self, index: usize) -> bool {
-        debug_assert!(index < self.num_bits);
+        if index >= self.num_bits {
+            out_of_range(index, self.num_bits);
+        }
         let word = self.words[index >> 6];
         (word >> (index & 63)) & 1 != 0
     }
 
+    /// Is the bit for `doc` set, where `doc` is a **doc id or ordinal that did
+    /// not come from this bitset**?
+    ///
+    /// This is the sanctioned way to ask a live-docs / accept-ords bitset
+    /// about an id produced somewhere else -- a postings walk, a BKD leaf, a
+    /// vector store's ordinal range -- and it exists because writing the bound
+    /// by hand at each of those call sites is the defect
+    /// `docs/mechanical-gates.md`'s `fixed-bitset-bound` rule was built to
+    /// catch, found by hand three times (c28 twice, c30 once) and mechanically
+    /// thirty more.
+    ///
+    /// Two things it gets right that `get(doc as usize)` does not:
+    ///
+    /// - **A negative `doc` is not live.** `as usize` sign-extends, so a
+    ///   negative id off a corrupt `.doc`/`.kdd` becomes `usize::MAX`.
+    /// - **A `doc` past this bitset is not live**, rather than a ghost bit or
+    ///   a panic. Java's `Bits.get` throws for both; answering "not live" is
+    ///   what every caller in this port wants and what `Bits` means when the
+    ///   two sides disagree about `maxDoc`.
+    ///
+    /// Use [`FixedBitSet::get`] when the index provably came from this
+    /// bitset's own `len()` -- it is the cheaper call and the one the gate
+    /// asks you to prove.
+    #[inline]
+    pub fn get_doc(&self, doc: i32) -> bool {
+        match usize::try_from(doc) {
+            Ok(index) => index < self.num_bits && self.get(index),
+            Err(_) => false,
+        }
+    }
+
+    /// `FixedBitSet.set(index)`.
+    ///
+    /// # Panics
+    ///
+    /// If `index >= len()` -- see [`FixedBitSet::get`]. A write past
+    /// `num_bits` is worse than a read: it leaves a set ghost bit behind, and
+    /// `cardinality()` counts whole words, so every later count is wrong too.
     #[inline]
     pub fn set(&mut self, index: usize) {
-        debug_assert!(index < self.num_bits);
+        if index >= self.num_bits {
+            out_of_range(index, self.num_bits);
+        }
         self.words[index >> 6] |= 1u64 << (index & 63);
     }
 
+    /// `FixedBitSet.clear(index)`.
+    ///
+    /// # Panics
+    ///
+    /// If `index >= len()` -- see [`FixedBitSet::get`].
     #[inline]
     pub fn clear(&mut self, index: usize) {
-        debug_assert!(index < self.num_bits);
+        if index >= self.num_bits {
+            out_of_range(index, self.num_bits);
+        }
         self.words[index >> 6] &= !(1u64 << (index & 63));
     }
 
@@ -198,5 +273,40 @@ mod tests {
         bs.clear(64);
         assert!(!bs.get(64));
         assert_eq!(bs.cardinality(), 3);
+    }
+
+    /// The bound is checked in **release** as well as debug, so the three
+    /// tests below would still fail if the check were weakened back to a
+    /// `debug_assert!`. Each uses an index that is past `num_bits` but still
+    /// inside the backing word -- the *ghost bit* range, where `words[index >>
+    /// 6]` on its own catches nothing.
+    #[test]
+    #[should_panic(expected = "index 5 is out of range for a bitset of 4 bits")]
+    fn get_past_num_bits_but_inside_the_word_panics() {
+        FixedBitSet::from_words(vec![0b1011], 4).get(5);
+    }
+
+    #[test]
+    #[should_panic(expected = "index 5 is out of range for a bitset of 4 bits")]
+    fn set_past_num_bits_but_inside_the_word_panics() {
+        // A write here would leave a set bit above `num_bits`, which
+        // `cardinality()` (a whole-word popcount, as Java's is) would then
+        // count forever after.
+        FixedBitSet::new(4).set(5);
+    }
+
+    #[test]
+    #[should_panic(expected = "index 5 is out of range for a bitset of 4 bits")]
+    fn clear_past_num_bits_but_inside_the_word_panics() {
+        FixedBitSet::new(4).clear(5);
+    }
+
+    #[test]
+    #[should_panic(expected = "index 0 is out of range for a bitset of 0 bits")]
+    fn an_empty_bitset_has_no_index_at_all() {
+        // `bits2words(0) == 0`, so `words` is empty and `words[0]` would panic
+        // on its own -- but with the message of a slice index, not of a
+        // bitset bound.
+        FixedBitSet::new(0).get(0);
     }
 }

@@ -535,7 +535,7 @@ pub unsafe extern "C" fn ffi_knn_byte_vector_search(
 /// segment's `.tim`/`.tip`/`.tmd`/`.doc`. Rather than widen the vectors
 /// handle (which would make a vectors-only segment unopenable again, the very
 /// thing that handle exists to allow), the filtered entry points take the
-/// **same segment's** [`crate::segment::SegmentHandle`] as a second argument.
+/// **same segment's** [`crate::registry::SegmentHandle`] as a second argument.
 /// Java has no equivalent choice: its `LeafReader` is one object with both.
 ///
 /// The two handles must describe the same segment, and `max_doc` is the check

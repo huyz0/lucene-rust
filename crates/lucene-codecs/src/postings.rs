@@ -197,7 +197,7 @@ pub(crate) const LEVEL1_NUM_DOCS: i32 = 32 * BLOCK_SIZE;
 /// `Lucene104PostingsFormat.LEVEL1_FACTOR`: one level-1 skip entry precedes a
 /// span of exactly this many consecutive full level-0 blocks
 /// (`32 * BLOCK_SIZE == LEVEL1_NUM_DOCS` docs).
-const LEVEL1_FACTOR: usize = 32;
+pub(crate) const LEVEL1_FACTOR: usize = 32;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -751,7 +751,7 @@ impl<'a> DocInput<'a> {
     /// [`Self::read_postings`] exactly — same scope, different decode
     /// strategy. `docFreq >= LEVEL1_NUM_DOCS` is supported by both: this
     /// cursor additionally jumps whole 32-block level-1 spans (see
-    /// [`Self::skip_level1_to`]).
+    /// [`LazyDocsCursor::skip_level1_to`]).
     pub fn lazy_cursor(
         &self,
         meta: TermMetadata,
@@ -2499,7 +2499,7 @@ struct PosSkip {
 /// and `doc_end_fp` to decide whether to jump the whole span).
 ///
 /// The impacts bytes (competitive-scoring metadata for the whole span) are
-/// decoded into [`Level1Entry::impacts`] via [`decode_impacts`]. The pos/pay
+/// decoded into [`Level1Entry::impact_bytes`] via [`decode_impacts`]. The pos/pay
 /// sub-fields are parsed for wire-order correctness even though this reader
 /// never uses them to seek `.pos`/`.pay`.
 fn read_level1_entry<'a>(
@@ -3184,6 +3184,9 @@ impl<'p> PostingsCursor<'p> {
     /// The current doc ID: `-1` before the first `next_doc()`/`advance()`
     /// call, [`NO_MORE_DOCS`] once exhausted, otherwise the doc ID at the
     /// cursor's position.
+    //
+    // SENTINEL: `-1` = "not started" and `NO_MORE_DOCS` = "exhausted", both
+    // outside the doc-id domain -- Java's `DocIdSetIterator` contract.
     pub fn doc_id(&self) -> i32 {
         if !self.started {
             -1

@@ -45,6 +45,16 @@ PARITY = os.path.join(ROOT, "docs", "parity.md")
 
 # A Rust path: `crate/src/path.rs`, optionally followed by `::item`.
 RUST_PATH = re.compile(r"`(lucene-[a-z]+/(?:src|tests|benches|examples)/[A-Za-z0-9_/]+\.rs)(?:::[^`]*)?`")
+# The same, capturing the `::item` suffix -- a single item, or a
+# `::{a, b, C::d}` group. Validated since c41: c37's Tier-2 review found
+# `parity.md` describing two *deleted* functions in the present tense, and
+# this script pointedly checked only the file path.
+RUST_ITEMS = re.compile(
+    r"`(lucene-[a-z]+/(?:src|tests|benches|examples)/[A-Za-z0-9_/]+\.rs)::([^`]+)`"
+)
+# What an item name may look like once the `Type::method` and generic noise is
+# stripped: the last path segment is what has to exist in the file.
+ITEM_SPLIT = re.compile(r"[,\s]+")
 # A Java class reference: `pkg/Class` or `pkg/Class.method`, inside backticks.
 JAVA_REF = re.compile(r"`((?:[a-z0-9]+/)+[A-Z][A-Za-z0-9]*)")
 
@@ -60,6 +70,61 @@ def rows(text):
         yield lineno, cells
 
 
+def item_names(suffix):
+    """The identifiers a row's `::item` suffix names.
+
+    `::write`, `::{a, b}`, `::Directory::create_output` and
+    `::SliceInput::slice_input` all reduce to the *last* segment of each
+    comma-separated entry -- the name that has to be defined in the file. A
+    `Type::{a, b}` group expands to both.
+    """
+    suffix = suffix.strip()
+    if suffix.startswith("{") and suffix.endswith("}"):
+        suffix = suffix[1:-1]
+    # `Directory::{create_output, sync}` -> `create_output, sync`
+    suffix = re.sub(r"\w+::\{", "", suffix).replace("}", "")
+    for part in ITEM_SPLIT.split(suffix):
+        part = part.strip().strip(",")
+        if not part:
+            continue
+        name = part.split("::")[-1]
+        if re.fullmatch(r"[A-Za-z_]\w*", name):
+            yield name
+
+
+DEFINITION = (
+    "fn {0}",
+    "struct {0}",
+    "enum {0}",
+    "trait {0}",
+    "type {0}",
+    "const {0}",
+    "static {0}",
+    "mod {0}",
+    "union {0}",
+    "macro_rules! {0}",
+)
+
+
+def defines(source, name):
+    """Whether `source` defines an item called `name`.
+
+    Textual, deliberately: a real resolver would need the whole crate graph,
+    and the failure this catches -- a row naming something a diff deleted --
+    shows up as *no occurrence at all*. A `use` re-export counts, because a
+    row may legitimately point at the module that publishes the name.
+    """
+    for shape in DEFINITION:
+        if re.search(r"\b" + shape.format(re.escape(name)) + r"\b", source):
+            return True
+    # A re-export (`pub use foo::Bar;`) or an enum variant / struct field the
+    # row names.
+    return bool(
+        re.search(r"pub use [^;]*\b" + re.escape(name) + r"\b", source)
+        or re.search(r"^\s*" + re.escape(name) + r"\s*[,({]", source, re.M)
+    )
+
+
 def main():
     text = open(PARITY, encoding="utf-8").read()
     errors = []
@@ -73,6 +138,18 @@ def main():
                 errors.append(
                     f"{PARITY}:{lineno}: Rust path does not exist: {path}"
                 )
+
+        for path, items in RUST_ITEMS.findall(rust_cell):
+            full = os.path.join(ROOT, "crates", path)
+            if not os.path.exists(full):
+                continue  # already reported above
+            source = open(full, encoding="utf-8").read()
+            for item in item_names(items):
+                if not defines(source, item):
+                    errors.append(
+                        f"{PARITY}:{lineno}: {path} does not define `{item}` "
+                        f"(the row's Rust column names it)"
+                    )
 
         for ref in JAVA_REF.findall(java_cell):
             java_to_rows[ref].append((lineno, status))

@@ -1,7 +1,7 @@
 //! `ffi_sort_by_doc_value`/`ffi_sort_by_multi_valued_doc_value` (task #40):
 //! runs this port's existing `lucene_search::sort_by_numeric_doc_value`/
 //! `lucene_search::doc_value_query::sort_by_multi_valued_doc_value` against
-//! an already-opened [`crate::segment::SegmentHandle`]'s doc-values data
+//! an already-opened [`crate::registry::SegmentHandle`]'s doc-values data
 //! (opened by [`crate::segment::ffi_open_segment`]'s `dvm_name`/`dvd_name`/
 //! `dv_suffix` parameters), collecting the resulting ascending
 //! `(doc_id, value)` pairs into a new [`crate::registry::SortedResultsHandle`]

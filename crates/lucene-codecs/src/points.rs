@@ -41,7 +41,7 @@ use lucene_store::data_input::{DataInput, SliceInput};
 use lucene_store::data_output::DataOutput;
 
 /// Default `BKDConfig`/`Lucene90PointsWriter` leaf size -- the only leaf size
-/// this port's write side has been verified against (see [`write`]'s module
+/// this port's write side has been verified against (see [`write()`]'s module
 /// doc for the single-leaf scope).
 pub const DEFAULT_MAX_POINTS_IN_LEAF_NODE: i32 = 512;
 
@@ -546,7 +546,7 @@ impl<'d> PointsReader<'d> {
     /// left-to-right order), keeping each leaf's own points and (when
     /// present) its own bounding box separate -- the structural-invariant
     /// checker (`lucene_index::check_index`) needs per-leaf boundaries that
-    /// [`decode_all_points`]'s flattened view discards.
+    /// [`decode_all_points`](Self::decode_all_points)'s flattened view discards.
     pub fn decode_leaves(&self, field_number: i32) -> Result<Vec<Leaf>> {
         let field = self
             .field(field_number)
@@ -709,7 +709,7 @@ impl<'d> PointsReader<'d> {
     ///
     /// The result is an *estimate*, deliberately: it over-counts a leaf the
     /// query only partly covers and never decodes one. Compare
-    /// [`range_query`], which answers exactly and costs a full intersect.
+    /// [`range_query`](Self::range_query), which answers exactly and costs a full intersect.
     pub fn estimate_range_point_count(
         &self,
         field_number: i32,
@@ -1930,7 +1930,7 @@ fn read_bpv24(input: &mut SliceInput, count: usize) -> Result<Vec<i32>> {
     Ok(out)
 }
 
-/// One field's input to [`write`]: `(docID, packedValue)` pairs for a field
+/// One field's input to [`write()`]: `(docID, packedValue)` pairs for a field
 /// with `num_dims` dimensions of `bytes_per_dim` bytes each (`packedValue`
 /// is `num_dims * bytes_per_dim` bytes, each dimension's slice the sortable
 /// big-endian encoding `NumericUtils.longToSortableBytes`/
@@ -1938,11 +1938,11 @@ fn read_bpv24(input: &mut SliceInput, count: usize) -> Result<Vec<i32>> {
 /// conversion itself, same division of labor as the read side, which also
 /// just hands back raw packed bytes). `num_dims == 1` is `LongPoint`/
 /// `IntPoint`'s shape; `num_dims > 1` (e.g. 2 for `LatLonPoint`) is also
-/// supported -- see [`write`]'s doc comment for the scope of that support.
+/// supported -- see [`write()`]'s doc comment for the scope of that support.
 /// `num_index_dims` may be less than `num_dims` (e.g. 4/2 for a
 /// `LatLonShape`-style bounding box, where the trailing 2 dimensions ride
 /// along in every leaf's per-doc values but never participate in a split or
-/// a common-prefix computation) -- see [`write`]'s doc comment.
+/// a common-prefix computation) -- see [`write()`]'s doc comment.
 #[derive(Debug, Clone)]
 pub struct WritePointsField {
     pub field_number: i32,
@@ -1954,7 +1954,7 @@ pub struct WritePointsField {
     /// split dimension and never part of the per-leaf/per-field bounding box.
     pub num_index_dims: i32,
     pub bytes_per_dim: i32,
-    /// `(docID, packedValue)`, in any order -- [`write`] sorts (recursively,
+    /// `(docID, packedValue)`, in any order -- [`write()`] sorts (recursively,
     /// per split node -- see [`compute_leaf_plan`]) a local copy before
     /// splitting into leaves, so caller order never affects correctness.
     pub points: Vec<(i32, Vec<u8>)>,
@@ -2156,7 +2156,7 @@ fn unsigned_byte_sub(a: &[u8], b: &[u8]) -> Vec<u8> {
     out
 }
 
-/// This port's split-dimension heuristic (see [`write`]'s doc comment for
+/// This port's split-dimension heuristic (see [`write()`]'s doc comment for
 /// how it compares to real `BKDWriter`'s own choice): the dimension with the
 /// widest value range (`max - min`, unsigned byte-wise, via
 /// [`unsigned_byte_sub`]) across `points`, ties broken toward the lowest
@@ -2280,7 +2280,7 @@ fn presorted_leaf_plan(
 /// `BKDWriter` indexes `splitDimensionValues`/`splitValues`: at
 /// `rightOffset - 1`, where `rightOffset = leavesOffset + numLeftLeafNodes`).
 /// Mirrors real `BKDWriter.build`'s `mid = numLeftLeafNodes *
-/// maxPointsInLeafNode` exactly -- see [`write`]'s doc comment. Unlike the
+/// maxPointsInLeafNode` exactly -- see [`write()`]'s doc comment. Unlike the
 /// single-dimension predecessor of this function, `points` is consumed by
 /// value and split with `Vec::split_off` at each node rather than indexing
 /// into one shared, globally-presorted array, since a different call to

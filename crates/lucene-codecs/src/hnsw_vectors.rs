@@ -480,6 +480,12 @@ fn new_ord_mapping<G: HnswGraphView>(
             if let Some(&old_ord) = new_doc_to_old_ord[i].get(doc) {
                 old_to_new[i][old_ord as usize] = new_ord as i32;
                 if let Some(bits) = initialized.as_deref_mut() {
+                    // FBS: `initialized` is the caller's
+                    // `FixedBitSet::new(total_vector_count)` and
+                    // `total_vector_count` is `merged_ord_to_doc.len()`
+                    // (`:285`) -- the very slice `new_ord` enumerates. The two
+                    // reach this function as separate parameters, so the proof
+                    // is the caller's; `write_hnsw_merged` is its only caller.
                     bits.set(new_ord);
                 }
                 break;
@@ -2193,6 +2199,66 @@ mod tests {
                 "merged graph lost ordinal {target}: {found:?}"
             );
         }
+    }
+
+    /// The **mixed** case, and the only one that reaches `new_ord_mapping`'s
+    /// `initialized` bitset: one source has a reusable graph and one does not,
+    /// so `order.len() != sources.len()` and Java's
+    /// `graphReaders.size() == numReaders ? null : new FixedBitSet(maxOrd)`
+    /// allocates the set that records which merged ordinals a reused graph
+    /// already covers. Every ordinal the graphless source contributes must be
+    /// left for insertion from scratch, and every ordinal the reused graph
+    /// covers must be marked -- so the merged graph has to end up complete,
+    /// with both sources' vectors reachable.
+    #[test]
+    fn a_source_without_a_graph_leaves_its_ordinals_to_be_inserted_from_scratch() {
+        let reusable = 600usize;
+        let graphless = 300usize;
+        let total = reusable + graphless;
+        let big_graph = build(reusable);
+        let docs_a = identity(reusable);
+        let docs_b = identity(graphless);
+        let map_a = identity(reusable);
+        let map_b: Vec<i32> = (0..graphless as i32).map(|d| d + reusable as i32).collect();
+        let merged_ord_to_doc = identity(total);
+        let sources = [
+            GraphMergeSource {
+                graph: Some(&big_graph),
+                ord_to_doc: &docs_a,
+                doc_map: &map_a,
+            },
+            GraphMergeSource {
+                graph: None,
+                ord_to_doc: &docs_b,
+                doc_map: &map_b,
+            },
+        ];
+        let merged = merge_one_field(
+            line(total),
+            8,
+            32,
+            crate::hnsw::DEFAULT_RAND_SEED,
+            &merged_ord_to_doc,
+            &sources,
+        )
+        .unwrap()
+        .expect("900 vectors is past the graph threshold");
+
+        // Completeness is the property the `initialized` bookkeeping exists
+        // for: an ordinal marked when it should not be is never inserted and
+        // vanishes from the graph; one left unmarked is inserted twice.
+        assert_eq!(merged.sorted_nodes_on_level(0).unwrap().len(), total);
+        let mut seen = std::collections::HashSet::new();
+        for node in merged.sorted_nodes_on_level(0).unwrap() {
+            assert!(seen.insert(node), "ordinal {node} appears twice on level 0");
+        }
+        assert_eq!(seen.len(), total);
+        // The reused graph's own ordinals and the graphless source's are both
+        // present, which is what says the bitset covered the right half.
+        assert!(seen.contains(&0));
+        assert!(seen.contains(&(reusable as i32 - 1)));
+        assert!(seen.contains(&(reusable as i32)));
+        assert!(seen.contains(&(total as i32 - 1)));
     }
 
     /// No source has a graph (every segment was below the threshold), so

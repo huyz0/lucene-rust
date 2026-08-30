@@ -1,5 +1,10 @@
 //! Port of `org.apache.lucene.util.compress.LZ4` — both halves.
 //!
+//! `pub` for the same reason [`crate::for_util`] is: `LZ4` is a public class
+//! in Lucene, both hash-table strategies are part of its contract, and a
+//! compressor this hot deserves a microbenchmark that can call it from
+//! outside the crate.
+//!
 //! [`decompress`] handles the standard LZ4 block format (token byte,
 //! optional extended literal/match lengths, 16-bit little-endian match
 //! offset), self-terminating once `decompressed_len` bytes have been

@@ -95,7 +95,7 @@ pub fn resolve_points_range_doc_ids(
     // that fold.
     let mut doc_ids = reader.range_query(field_number, min_packed, max_packed)?;
     if let Some(bits) = live_docs {
-        doc_ids.retain(|&doc_id| bits.get(doc_id as usize));
+        doc_ids.retain(|&doc_id| bits.get_doc(doc_id));
     }
     doc_ids.sort_unstable();
     doc_ids.dedup();

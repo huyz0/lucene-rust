@@ -122,7 +122,7 @@ pub fn search_numeric_range<C: Collector>(
     collector: &mut C,
 ) -> Result<()> {
     for doc_id in 0..max_doc {
-        if !live_docs.is_none_or(|bits| bits.get(doc_id as usize)) {
+        if !live_docs.is_none_or(|bits| bits.get_doc(doc_id)) {
             continue;
         }
         if let Some(value) = doc_values::numeric_value(doc_values_data, entry, doc_id)? {
@@ -193,7 +193,7 @@ pub fn search_numeric_range_with_skip_index<C: Collector>(
         let start = finest.min_doc_id.max(0);
         let end = finest.max_doc_id.min(max_doc - 1);
         for doc_id in start..=end {
-            if !live_docs.is_none_or(|bits| bits.get(doc_id as usize)) {
+            if !live_docs.is_none_or(|bits| bits.get_doc(doc_id)) {
                 continue;
             }
             if let Some(value) = doc_values::numeric_value(doc_values_data, entry, doc_id)? {
@@ -223,7 +223,7 @@ pub fn search_sorted_ord_range<C: Collector>(
     collector: &mut C,
 ) -> Result<()> {
     for doc_id in 0..max_doc {
-        if !live_docs.is_none_or(|bits| bits.get(doc_id as usize)) {
+        if !live_docs.is_none_or(|bits| bits.get_doc(doc_id)) {
             continue;
         }
         if let Some(ord) = doc_values::sorted_ord(doc_values_data, entry, doc_id)? {
@@ -458,7 +458,7 @@ pub fn search_multi_valued_range<C: Collector>(
     collector: &mut C,
 ) -> Result<()> {
     for doc_id in 0..max_doc {
-        if !live_docs.is_none_or(|bits| bits.get(doc_id as usize)) {
+        if !live_docs.is_none_or(|bits| bits.get_doc(doc_id)) {
             continue;
         }
         let values = doc_values::sorted_numeric_values(doc_values_data, entry, doc_id)?;
@@ -512,7 +512,7 @@ pub fn search_sorted_numeric_range<C: Collector>(
         return Ok(());
     }
     for doc_id in 0..max_doc {
-        if !live_docs.is_none_or(|bits| bits.get(doc_id as usize)) {
+        if !live_docs.is_none_or(|bits| bits.get_doc(doc_id)) {
             continue;
         }
         let values = doc_values::sorted_numeric_values(doc_values_data, entry, doc_id)?;
@@ -657,7 +657,7 @@ pub fn search_field_exists<C: Collector>(
     collector: &mut C,
 ) -> Result<()> {
     for doc_id in 0..max_doc {
-        if !live_docs.is_none_or(|bits| bits.get(doc_id as usize)) {
+        if !live_docs.is_none_or(|bits| bits.get_doc(doc_id)) {
             continue;
         }
         if doc_has_value(doc_values_data, field, doc_id)? {
@@ -731,7 +731,7 @@ pub fn search_field_exists_norms<C: Collector>(
 ) -> Result<()> {
     let mut cursor = norms.cursor();
     for doc_id in 0..max_doc {
-        if !live_docs.is_none_or(|bits| bits.get(doc_id as usize)) {
+        if !live_docs.is_none_or(|bits| bits.get_doc(doc_id)) {
             continue;
         }
         if cursor.has_norm(doc_id)? {
@@ -782,7 +782,7 @@ pub fn search_field_exists_vectors<C: Collector>(
                 )),
             ));
         }
-        if !live_docs.is_none_or(|bits| bits.get(doc as usize)) {
+        if !live_docs.is_none_or(|bits| bits.get_doc(doc)) {
             continue;
         }
         collector.collect(doc);

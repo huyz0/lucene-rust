@@ -204,7 +204,7 @@ pub struct SlotMap<T> {
     slots: Vec<Slot<T>>,
     free: Vec<u32>,
     /// Always [`MAX_SLOTS`] in production; a field rather than a hardcoded
-    /// constant purely so [`SlotMap::set_max_slots_for_test`] can drive the
+    /// constant purely so `SlotMap::set_max_slots_for_test` can drive the
     /// exhaustion path without allocating 16.7M slots in a unit test.
     max_slots: usize,
 }

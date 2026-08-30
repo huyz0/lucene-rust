@@ -10,16 +10,16 @@
 //! (`.fdt`/`.fdx`/`.fdm` stored fields + `.fnm` field infos + `.si` segment
 //! info, all written and synced through a real [`Directory`]), and returns
 //! the [`SegmentCommitInfo`] that describes it -- ready to push into a
-//! [`SegmentInfos::segments`] list. Call it more than once against the same
+//! [`crate::segment_infos::SegmentInfos::segments`] list. Call it more than once against the same
 //! `Directory` with distinct segment names, collect the resulting
-//! [`SegmentCommitInfo`]s, and pass all of them to one [`segment_infos::write`]
+//! [`SegmentCommitInfo`]s, and pass all of them to one [`crate::segment_infos::write()`]
 //! call: that produces a single commit (`segments_N`) that lists multiple,
 //! independently-flushed segments -- exactly what `IndexWriter.commit()`
 //! does after several `DocumentsWriterPerThread.flush()` calls, minus
 //! everything this port hasn't earned yet (see "What this deliberately is
 //! not" below).
 //!
-//! [`segment_infos::write`] itself already generalizes to any number of
+//! [`crate::segment_infos::write()`] itself already generalizes to any number of
 //! segments (`SegmentInfos::segments: Vec<SegmentCommitInfo>`, with a plain
 //! loop over them in both `parse` and `write`) -- that part of a
 //! multi-segment commit was *already* mechanical, not new work. What was

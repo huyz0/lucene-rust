@@ -406,6 +406,11 @@ fn bit_table_count_bits_up_to(bit_index: i32, arc: &Arc, r: &mut BytesReader) ->
 /// `BitTableUtil.nextBitSet`, pre-positioned via `arc.bit_table_start`: the
 /// index of the next set bit strictly after `bit_index` (which may be `-1`,
 /// meaning "the first set bit"), or `-1` if none.
+//
+// SENTINEL: `-1` = "no next present arc". c31 left exactly this unchecked one
+// function over, where `-1` flowed on as an `arcIdx` and `read_arc` derived
+// `firstLabel - 1` -- for `firstLabel == 0`, exactly `END_LABEL`. A byte-flip
+// sweep cannot find it: a plausible wrong label is a clean decode.
 fn bit_table_next_bit_set(bit_index: i32, arc: &Arc, r: &mut BytesReader) -> Result<i32> {
     debug_assert_eq!(arc.node_flags, ARCS_FOR_DIRECT_ADDRESSING);
     r.set_position(arc.bit_table_start);
@@ -458,6 +463,10 @@ fn bit_table_next_bit_set(bit_index: i32, arc: &Arc, r: &mut BytesReader) -> Res
 /// none. Needed by `FstEnum`'s `seek_floor` support (`FSTEnum`'s
 /// `findNextFloorArcDirectAddressing`/`doSeekFloorArrayDirectAddressing`) --
 /// `bit_table_next_bit_set`'s mirror-image counterpart.
+//
+// SENTINEL: `-1` = "no previous present arc", the mirror of
+// `bit_table_next_bit_set`'s and outside the domain of an arc index the same
+// way.
 fn bit_table_previous_bit_set(bit_index: i32, arc: &Arc, r: &mut BytesReader) -> Result<i32> {
     debug_assert_eq!(arc.node_flags, ARCS_FOR_DIRECT_ADDRESSING);
     debug_assert!(bit_index >= 0);
@@ -1752,6 +1761,12 @@ impl<'a> Fst<'a> {
                 self.read_last_arc_by_direct_addressing(arc, r)?;
             } else {
                 let floor_index = bit_table_previous_bit_set(target_index, arc, r)?;
+                // SENTINEL-OK: `> 0`, not `>= 0`, is Java's own test
+                // (`findNextFloorArcDirectAddressing`): `arc` is already
+                // standing on index 0 (`arc.label() == arc.firstLabel()` is
+                // asserted on entry), so both `0` (the floor *is* index 0) and
+                // the `-1` sentinel mean "stay where we are". The sentinel
+                // therefore never reaches `read_arc_by_direct_addressing`.
                 if floor_index > 0 {
                     let presence_index = bit_table_count_bits_up_to(floor_index, arc, r)?;
                     self.read_arc_by_direct_addressing(arc, r, floor_index, presence_index)?;
@@ -2711,6 +2726,21 @@ impl<'f, 'a> FstEnum<'f, 'a> {
             self.finish_seek_match(arc, target_label)
         } else {
             let floor_index = bit_table_previous_bit_set(target_index, &arc, &mut self.r)?;
+            // Java is `assert floorIndex != -1;` -- off in production, so
+            // porting it as a `debug_assert!` would port the *absence* of the
+            // check. It holds only for a well-formed bit table: bit 0 of a
+            // direct-addressing node is `first_label` and is always present,
+            // so a `target_index` that reached this branch is at least 1 and
+            // has a set bit below it. A `.tip`/FST byte with that bit cleared
+            // makes `previous_bit_set` answer `-1`, and `-1` here is the exact
+            // shape c31 found one function over in `read_next_real_arc`:
+            // `read_arc_by_direct_addressing` derives `first_label - 1`, an
+            // arc one label below the range the node declared, and for
+            // `first_label == 0` exactly `END_LABEL` -- a *plausible wrong
+            // answer*, which is why a byte-flip sweep passes over it.
+            if floor_index == -1 {
+                return corrupt_fst("no present arc precedes this label in the bit table");
+            }
             let presence_index = bit_table_count_bits_up_to(floor_index, &arc, &mut self.r)?;
             self.fst.read_arc_by_direct_addressing(
                 &mut arc,
@@ -4380,6 +4410,33 @@ mod tests {
         let fst = fst_from_body(bytes, addr, InputType::Byte1, None);
         let mut it = fst.iter().unwrap();
         assert!(matches!(it.next(), Some(Err(Error::Corrupt(_)))));
+    }
+
+    /// The **third** call site of the same out-of-domain sentinel, and the one
+    /// c31 left. `seek_floor_direct_addressing`'s in-range-but-absent branch
+    /// passes `bit_table_previous_bit_set`'s result straight into
+    /// `read_arc_by_direct_addressing`, where Java has only
+    /// `assert floorIndex != -1;` -- off in production. A presence table whose
+    /// bit 0 is clear makes it `-1`, and with `first_label == 0` the arc that
+    /// decodes carries label `-1`, which **is `END_LABEL`**: a plausible,
+    /// perfectly well-formed wrong answer, which is why a byte-flip sweep
+    /// walks past it. `first_label == 0` is deliberate here -- every FST
+    /// fixture in the tree starts at an ASCII letter, where the same bug is
+    /// merely an off-by-one label and nothing looks wrong.
+    #[test]
+    fn a_floor_seek_into_a_gap_with_no_arc_below_it_is_rejected() {
+        let (mut bytes, addr) = build_direct_addressing_node(0, 3, &[(0, 1), (2, 2)]);
+        let at = bytes
+            .iter()
+            .position(|&b| b == 0b0000_0101)
+            .expect("presence byte");
+        // Clear bit 0 only: label 2 is still present, so the node is not
+        // empty and the seek reaches the in-range branch rather than the
+        // last-arc one the test below covers.
+        bytes[at] = 0b0000_0100;
+        let fst = fst_from_body(bytes, addr, InputType::Byte1, None);
+        let mut it = fst.iter_labels();
+        assert!(matches!(it.seek_floor_labels(&[1]), Err(Error::Corrupt(_))));
     }
 
     /// The same out-of-domain sentinel through `readLastArcByDirectAddressing`:

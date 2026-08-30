@@ -47,7 +47,7 @@
 //! [`SortDirection::Ascending`], `1` = [`SortDirection::Descending`], any
 //! other value is [`FfiStatus::InvalidArgument`] -- the same
 //! `0`/`1`-selector convention `sort.rs`'s `ffi_sort_by_multi_valued_doc_value`
-//! already established for [`ValueSelector`].
+//! already established for [`lucene_search::doc_value_query::ValueSelector`].
 //!
 //! **Missing-value policy and field lookup**: identical wire shape and
 //! semantics to `sort.rs`'s existing `missing_is_default`/`missing_default`
@@ -130,7 +130,7 @@ unsafe fn i32_slice_from_raw(ptr: *const i32, len: usize) -> Result<Vec<i32>, Ff
 /// `*out_sorted_results_handle`. `range_field` and `sort_field` may name the
 /// same field or different ones (see the wrapped function's own doc
 /// comment). `missing_is_default`/`missing_default` select
-/// [`MissingValue::Exclude`] (`false`) or [`MissingValue::Default`] (`true`)
+/// [`lucene_search::doc_value_query::MissingValue::Exclude`] (`false`) or [`lucene_search::doc_value_query::MissingValue::Default`] (`true`)
 /// for a candidate with no value for `sort_field` -- same convention as
 /// `sort.rs`'s functions.
 ///

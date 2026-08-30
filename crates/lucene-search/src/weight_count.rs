@@ -192,6 +192,9 @@ impl FieldExistsLeaf {
     /// the case; this answers `-1`, "go and scan", because the alternative --
     /// reading it as `0` -- would turn a caller's omission into "no document
     /// has this field", a wrong count with no signal.
+    //
+    // SENTINEL: `-1` = Java's "no shortcut, run the query", outside the domain
+    // of a document count.
     fn raw_count(&self) -> i32 {
         match self.source {
             Some(FieldExistsSource::Vectors) => self.vector_size.unwrap_or(-1),

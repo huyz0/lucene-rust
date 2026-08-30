@@ -25,7 +25,7 @@
 //! FFI plumbing.
 //!
 //! `ffi_writer_update_document`/`ffi_writer_delete_documents` wrap
-//! [`IndexWriter::update_document`]/[`IndexWriter::delete_documents`]. Both
+//! [`IndexWriter::update_document`]/[`IndexWriter::delete_documents_by_term`]. Both
 //! identify their delete term as raw, already-analyzed `(field_name, term)`
 //! bytes -- no analysis happens at this FFI boundary, same stance this
 //! crate's `query.rs` already takes for its own raw-bytes terms.

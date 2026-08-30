@@ -46,7 +46,7 @@
 //! ranked, doc-base-translated hits through one more fresh
 //! [`crate::collector::TopDocsCollector`] -- reusing that type's existing
 //! score-descending/doc-ID-ascending-tie-break comparator
-//! ([`crate::collector::rank_order`], private to `collector.rs`) instead of
+//! ([`crate::collector::rank_order`], `pub(crate)` so this link is checked) instead of
 //! reimplementing the comparator a second time here. This is exactly real
 //! Lucene's `TopDocs.merge`/`HitQueue` tie-break rule (verified against
 //! `HitQueue.lessThan` in `collector.rs`'s own doc comment already) applied
@@ -198,7 +198,7 @@ where
 }
 
 /// [`merge_multi_segment_scored_concurrent`] with one
-/// [`MaxScoreAccumulator`] shared across the leaves -- what
+/// [`crate::collector::MaxScoreAccumulator`] shared across the leaves -- what
 /// `TopScoreDocCollectorManager` builds whenever the search is concurrent, and
 /// what its `null` stands in for when it is not.
 ///
@@ -443,7 +443,7 @@ where
 /// block in *any* segment is an `Err`: silently dropping that segment's
 /// `docFreq` would change every other segment's idf, which is the
 /// wrong-answer shape reader-wide statistics exist to prevent.
-fn global_term_stats(
+pub(crate) fn global_term_stats(
     segments: &[OpenSegment<'_>],
     field: &str,
     term: &[u8],

@@ -1,6 +1,6 @@
 //! `ffi_search_term_query`/`ffi_search_boolean_query`/`ffi_search_phrase_query`:
 //! runs this port's existing `lucene_search::search_*_query` functions
-//! against an already-opened [`crate::segment::SegmentHandle`], collecting
+//! against an already-opened [`crate::registry::SegmentHandle`], collecting
 //! every matching, live doc ID into a new [`crate::registry::ResultsHandle`]
 //! entirely Rust-side (a plain [`lucene_search::VecCollector`] -- no
 //! callback ever crosses back into the caller, per the `ffi-safety` skill).

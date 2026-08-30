@@ -384,23 +384,21 @@ fn multi_field_segment_term_queries_are_isolated_per_field() {
     assert_eq!(collector.docs, vec![1, 2]);
 }
 
-/// Required end-to-end capstone for the multi-block writer task
-/// (`write_fields`'s leading-byte-group splitting into a `SIGN_MULTI_CHILDREN`
-/// `.tip` root, see `lucene-codecs/src/postings_writer.rs`'s module doc's
-/// "Scope" section and `postings_writer.rs`'s own
-/// `many_leading_byte_groups_force_multi_child_trie_root` unit test for the
-/// byte/decode-level proof). This test is the query-layer proof the task
-/// requires: 26 terms, one per lowercase letter (so 26 distinct leading
-/// bytes -- 26 physical `.tim` blocks under one multi-child trie root, well
-/// past the "does 2 blocks work" bar), written by the real
-/// `write_single_field`, opened by the existing unmodified `blocktree::open`,
-/// and queried via the existing unmodified `search_term_query` for terms
-/// from the first block, a middle block, and the last block -- not just the
-/// first/last term, so the multi-child trie's child ordering and per-block
-/// suffix-stripping are proven correct across the whole span, not just at
-/// the edges.
+/// The query-layer half of `postings_writer.rs`'s
+/// `a_field_spanning_every_lowercase_leading_byte_reads_back_term_for_term`:
+/// 26 terms, one per lowercase letter, so the field spans 26 distinct leading
+/// bytes -- written by the real writer, opened by the unmodified
+/// `blocktree::open`, and queried through the unmodified `search_term_query`
+/// for terms at the start, the middle and the end of the span.
+///
+/// It was written as the capstone for a multi-block writer that split such a
+/// field into one `.tim` block per leading byte; that writer was removed
+/// because real Lucene cannot read a `SIGN_MULTI_CHILDREN` root with no output
+/// of its own (see `postings_writer.rs`'s module doc). The property it proves
+/// is the one that outlived it: a wide leading-byte span is queryable, from
+/// the single block this writer emits.
 #[test]
-fn term_query_finds_correct_docs_across_multiple_tim_blocks() {
+fn term_query_finds_correct_docs_across_a_wide_leading_byte_span() {
     let mut terms = Vec::new();
     for (i, c) in (b'a'..=b'z').enumerate() {
         let term = vec![c, b'0'];

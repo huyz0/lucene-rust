@@ -315,7 +315,7 @@ pub fn score_with_params(
 /// `ImpactsEnum.getMaxScore` (see `docs/parity.md`'s postings row for the
 /// full `ImpactsEnum` hierarchy this port does *not* implement).
 ///
-/// [`crate::postings`]'s impacts invariant (`Postings::level0_impacts`'s doc
+/// [`lucene_codecs::postings`]'s impacts invariant (`Postings::level0_impacts`'s doc
 /// comment, mirroring `CompetitiveImpactAccumulator.getCompetitiveFreqNormPairs`)
 /// guarantees `impacts` is ordered by strictly increasing `freq` *and*
 /// strictly increasing (unsigned) `norm` — but that does **not** mean the
