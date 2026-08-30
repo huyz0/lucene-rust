@@ -279,6 +279,7 @@ fn map_writer_error(context: &str, e: index_writer::Error) -> FfiStatus {
         | index_writer::Error::EmptyIndexSort
         | index_writer::Error::UnknownIndexSortField(_)
         | index_writer::Error::UnsupportedIndexSortField(_, _)
+        | index_writer::Error::UnsupportedIndexSortKind(_)
         | index_writer::Error::IndexSortFieldWithoutDocValues(_)
         | index_writer::Error::IncongruentIndexSort { .. }
         | index_writer::Error::IndexSortChangedMidBuffer(_)
@@ -1434,37 +1435,40 @@ pub unsafe extern "C" fn ffi_writer_set_custom_freq_postings_field(
     })
 }
 
-/// Opts (`enabled != 0`) or out (`enabled == 0`) of writing one field's
-/// norms (`.nvm`/`.nvd`), wrapping [`IndexWriter::set_norms_field`].
+/// `FieldType.setOmitNorms(true)` for one field: no segment this writer
+/// flushes from here on carries a norm column for it, and its `.fnm` says so.
+/// Wraps [`IndexWriter::omit_norms_field`].
 ///
-/// Without this the writer produced no norms at all, so an index it built
-/// could only ever be scored with `lucene_search`'s
-/// `UNNORMED_FIELD_LENGTH` approximation -- and the read side
-/// ([`crate::segment::ffi_open_segment`]'s `nvm_name`/`nvd_name`) had nothing
-/// to open. Recorded as unexposed by `b15-ffi-core`.
+/// This replaced `ffi_writer_set_norms_field` in c35. That call was an
+/// opt-*in*, which is not a knob Lucene has: Java writes norms for every
+/// indexed field whose `omitNorms` is false, so a caller that did not name a
+/// field got length-unnormalised BM25 for it. Norms are now on by default and
+/// this is the only norms call, in the direction Lucene actually offers.
 ///
 /// # Safety
-/// `field_name` must be valid for reads of `field_name_len` bytes (or null
-/// iff `field_name_len == 0`). Ignored entirely when `enabled == 0`.
+/// `field_name` must be valid for reads of `field_name_len` bytes.
 #[no_mangle]
-pub unsafe extern "C" fn ffi_writer_set_norms_field(
+pub unsafe extern "C" fn ffi_writer_omit_norms_field(
     writer_handle: u64,
-    enabled: u8,
     field_name: *const c_char,
     field_name_len: usize,
 ) -> i32 {
     guard(|| {
         // SAFETY: forwarded from this function's own caller contract.
-        let name = unsafe { decode_optional_field_name(enabled, field_name, field_name_len)? };
+        let name = unsafe { decode_optional_field_name(1, field_name, field_name_len)? };
+        let name = name.ok_or_else(|| {
+            set_last_error("ffi_writer_omit_norms_field: field_name must not be null");
+            FfiStatus::InvalidArgument
+        })?;
         let mut registry = lock_recovering(writers());
         let handle = registry.get_mut(writer_handle).ok_or_else(|| {
-            set_last_error("ffi_writer_set_norms_field: unknown or already-closed handle");
+            set_last_error("ffi_writer_omit_norms_field: unknown or already-closed handle");
             FfiStatus::InvalidHandle
         })?;
         handle
             .writer
-            .set_norms_field(name)
-            .map_err(|e| map_writer_error("ffi_writer_set_norms_field", e))
+            .omit_norms_field(name)
+            .map_err(|e| map_writer_error("ffi_writer_omit_norms_field", e))
     })
 }
 
@@ -5498,7 +5502,7 @@ mod tests {
     }
 
     #[test]
-    fn add_term_vector_field_and_set_norms_field_are_wired_through() {
+    fn add_term_vector_field_and_omit_norms_field_are_wired_through() {
         let tmp = tempdir("add-tv-norms");
         // `body` with DocsAndFreqs + stored term vectors.
         let (rc, handle) = open_test_writer_with_extra_field(&tmp, "body", 2, 0, 1);
@@ -5512,21 +5516,19 @@ mod tests {
         );
         assert_eq!(
             unsafe {
-                ffi_writer_set_norms_field(handle, 1, body.as_ptr() as *const c_char, body.len())
+                ffi_writer_omit_norms_field(handle, body.as_ptr() as *const c_char, body.len())
             },
             FfiStatus::Ok.code()
         );
-        // Disabling is a no-op that clears.
+        // A null field name is a caller error, not "all fields".
         assert_eq!(
-            unsafe { ffi_writer_set_norms_field(handle, 0, std::ptr::null(), 0) },
-            FfiStatus::Ok.code()
+            unsafe { ffi_writer_omit_norms_field(handle, std::ptr::null(), 0) },
+            FfiStatus::InvalidArgument.code()
         );
-        // A field with no index options cannot carry norms.
+        // A field with no index options has no norms to omit.
         let id = "id";
         assert_eq!(
-            unsafe {
-                ffi_writer_set_norms_field(handle, 1, id.as_ptr() as *const c_char, id.len())
-            },
+            unsafe { ffi_writer_omit_norms_field(handle, id.as_ptr() as *const c_char, id.len()) },
             FfiStatus::InvalidArgument.code()
         );
         // Unknown handles.
@@ -5541,53 +5543,75 @@ mod tests {
             FfiStatus::InvalidHandle.code()
         );
         assert_eq!(
-            unsafe { ffi_writer_set_norms_field(0xDEAD_BEEF, 0, std::ptr::null(), 0) },
+            unsafe {
+                ffi_writer_omit_norms_field(0xDEAD_BEEF, body.as_ptr() as *const c_char, body.len())
+            },
             FfiStatus::InvalidHandle.code()
         );
         assert_eq!(ffi_close_writer(handle), FfiStatus::Ok.code());
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    /// Norms written through `ffi_writer_set_norms_field` must be readable
-    /// back through this crate's own read side -- the round trip that proves
-    /// the setter is more than a no-op.
+    /// Norms are written for an indexed field with no norms call at all --
+    /// Lucene's default -- and `ffi_writer_omit_norms_field` is what takes
+    /// them away again. Before c35 the FFI had only the opt-*in*, so a caller
+    /// that never made the call got a segment whose `body` field scored
+    /// against a constant length.
     #[test]
-    fn set_norms_field_end_to_end_writes_readable_norms() {
-        let tmp = tempdir("norms-e2e");
-        let (rc, handle) = open_test_writer_with_extra_field(&tmp, "body", 2, 0, 0);
-        assert_eq!(rc, FfiStatus::Ok.code());
-        let body = "body";
-        assert_eq!(
-            unsafe {
-                ffi_writer_set_postings_field(handle, 1, body.as_ptr() as *const c_char, body.len())
-            },
-            FfiStatus::Ok.code()
-        );
-        assert_eq!(
-            unsafe {
-                ffi_writer_set_norms_field(handle, 1, body.as_ptr() as *const c_char, body.len())
-            },
-            FfiStatus::Ok.code()
-        );
-        for (id, text) in [("1", "a b c"), ("2", "a")] {
-            assert_eq!(add_doc_id_and_extra(handle, id, text), FfiStatus::Ok.code());
-        }
-        assert_eq!(ffi_writer_commit(handle), FfiStatus::Ok.code());
-        assert_eq!(ffi_close_writer(handle), FfiStatus::Ok.code());
+    fn norms_are_written_by_default_and_omit_norms_field_removes_them() {
+        for omit in [false, true] {
+            let tmp = tempdir(if omit { "norms-omit" } else { "norms-default" });
+            let (rc, handle) = open_test_writer_with_extra_field(&tmp, "body", 2, 0, 0);
+            assert_eq!(rc, FfiStatus::Ok.code());
+            let body = "body";
+            assert_eq!(
+                unsafe {
+                    ffi_writer_set_postings_field(
+                        handle,
+                        1,
+                        body.as_ptr() as *const c_char,
+                        body.len(),
+                    )
+                },
+                FfiStatus::Ok.code()
+            );
+            if omit {
+                assert_eq!(
+                    unsafe {
+                        ffi_writer_omit_norms_field(
+                            handle,
+                            body.as_ptr() as *const c_char,
+                            body.len(),
+                        )
+                    },
+                    FfiStatus::Ok.code()
+                );
+            }
+            for (id, text) in [("1", "a b c"), ("2", "a")] {
+                assert_eq!(add_doc_id_and_extra(handle, id, text), FfiStatus::Ok.code());
+            }
+            assert_eq!(ffi_writer_commit(handle), FfiStatus::Ok.code());
+            assert_eq!(ffi_close_writer(handle), FfiStatus::Ok.code());
 
-        let dir = FsDirectory::open(tmp.to_str().unwrap());
-        let sis = segment_infos::read_latest(&dir).unwrap();
-        let sci = &sis.segments[0];
-        let nvm = dir.open(&format!("{}.nvm", sci.segment_name)).unwrap();
-        let nvd = dir.open(&format!("{}.nvd", sci.segment_name)).unwrap();
-        let (_version, norms) =
-            lucene_codecs::norms::parse_meta(&nvm, &sci.segment_id, "").unwrap();
-        assert!(
-            norms.entry(1).is_some(),
-            "field 1 (`body`) must have a norms entry"
-        );
-        assert!(!nvd.is_empty());
-        let _ = std::fs::remove_dir_all(&tmp);
+            let dir = FsDirectory::open(tmp.to_str().unwrap());
+            let sis = segment_infos::read_latest(&dir).unwrap();
+            let sci = &sis.segments[0];
+            let nvm = dir.open(&format!("{}.nvm", sci.segment_name));
+            if omit {
+                assert!(nvm.is_err(), "an omitted field writes no norms at all");
+            } else {
+                let nvm = nvm.unwrap();
+                let nvd = dir.open(&format!("{}.nvd", sci.segment_name)).unwrap();
+                let (_version, norms) =
+                    lucene_codecs::norms::parse_meta(&nvm, &sci.segment_id, "").unwrap();
+                assert!(
+                    norms.entry(1).is_some(),
+                    "field 1 (`body`) must have a norms entry with no norms call at all"
+                );
+                assert!(!nvd.is_empty());
+            }
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
     }
 
     /// The custom-freq postings surface: opting a field in and supplying

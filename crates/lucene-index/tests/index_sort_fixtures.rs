@@ -20,7 +20,7 @@
 //! 2. this port's stored-fields reader returns the documents in the physical
 //!    order Lucene put them in;
 //! 3. **this port's own comparator reproduces that order** from the same
-//!    doc-values columns a reader sees -- `segment_writer::sort_key_rank`, via
+//!    doc-values columns a reader sees -- `segment_info::SortKeyComparator`, via
 //!    `check_index`'s `sort.docs_in_index_sort_order` check, which is the
 //!    function the sort-on-flush writer uses to *produce* an order. A
 //!    comparator that disagrees with Lucene's is a writer that produces
@@ -93,10 +93,16 @@ fn a_real_index_writers_sorted_si_parses_back_to_its_sort() {
     assert!(sort[0].reverse, "rank is descending");
     // `missingValue=Long.MAX_VALUE` -- which the manifest's
     // `segment.<n>.sort` line spells out as 9223372036854775807.
-    assert_eq!(sort[0].missing, segment_info::SortMissingValue::Last);
+    assert_eq!(
+        sort[0].kind,
+        segment_info::IndexSortKind::Numeric(segment_info::NumericSortKey::Long(Some(i64::MAX)))
+    );
     assert_eq!(sort[1].field, "tie");
     assert!(!sort[1].reverse, "tie is ascending");
-    assert_eq!(sort[1].missing, segment_info::SortMissingValue::First);
+    assert_eq!(
+        sort[1].kind,
+        segment_info::IndexSortKind::Numeric(segment_info::NumericSortKey::Long(Some(i64::MIN)))
+    );
 
     // Cross-check against Lucene's own `Sort.toString()`, so the assertions
     // above cannot drift from what the generator configured.

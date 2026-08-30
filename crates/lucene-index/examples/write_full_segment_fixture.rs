@@ -65,6 +65,21 @@ fn field(name: &str, number: i32, indexed: bool) -> FieldInfo {
     }
 }
 
+/// `title`'s text for document `i`, or `None` when the document does not
+/// carry the field at all. `VerifyFullSegment` recomputes this same rule.
+fn title_for(i: usize) -> Option<String> {
+    match i % 7 {
+        0 => None,
+        1 => Some(String::new()),
+        n => Some(
+            (0..n)
+                .map(|w| format!("t{w}"))
+                .collect::<Vec<_>>()
+                .join(" "),
+        ),
+    }
+}
+
 fn main() {
     let out_dir = std::env::args()
         .nth(1)
@@ -79,6 +94,15 @@ fn main() {
             doc_values_type: DocValuesType::Numeric,
             ..field("score", 2, false)
         },
+        // A second indexed field, whose only purpose is that **nothing here
+        // opts it into norms**. Lucene writes norms for every indexed field
+        // that does not omit them; before c35 this port required a
+        // `set_norms_field` call per field and rewrote every other indexed
+        // field's `.fnm` entry as `omit_norms: true`, so BM25 scored it
+        // against a constant length. `VerifyFullSegment` reads this field's
+        // norm for every document back through real Lucene and compares it
+        // to `SmallFloat.intToByte4(tokenCount)`.
+        field("title", 3, true),
     ];
     let mut writer = IndexWriter::open(
         &dir,
@@ -95,8 +119,8 @@ fn main() {
         .set_postings_field(Some("body"))
         .expect("set postings field");
     writer
-        .set_norms_field(Some("body"))
-        .expect("set norms field");
+        .add_postings_field("title")
+        .expect("add postings field");
     // Doc values are the other per-field format, and so the other half of the
     // file-naming and `.fnm`-attribute contract postings exercise above.
     writer
@@ -117,24 +141,32 @@ fn main() {
             vocab[i % vocab.len()],
             vocab[(i / 7) % vocab.len()]
         );
-        writer
-            .add_document(Document {
-                fields: vec![
-                    StoredField {
-                        field_number: 0,
-                        value: FieldValue::String(format!("doc{i}")),
-                    },
-                    StoredField {
-                        field_number: 1,
-                        value: FieldValue::String(body),
-                    },
-                    StoredField {
-                        field_number: 2,
-                        value: FieldValue::Long(i as i64 * 3 - 1000),
-                    },
-                ],
-            })
-            .unwrap();
+        let mut fields = vec![
+            StoredField {
+                field_number: 0,
+                value: FieldValue::String(format!("doc{i}")),
+            },
+            StoredField {
+                field_number: 1,
+                value: FieldValue::String(body),
+            },
+            StoredField {
+                field_number: 2,
+                value: FieldValue::Long(i as i64 * 3 - 1000),
+            },
+        ];
+        // `title` covers all three cases `NormValuesWriter` distinguishes and
+        // that a dense-only writer collapses into one: a document that does
+        // not carry the field at all (no norm), one that carries it but
+        // tokenizes to nothing (an explicit `0`), and one with a real,
+        // varying length.
+        if let Some(title) = title_for(i) {
+            fields.push(StoredField {
+                field_number: 3,
+                value: FieldValue::String(title),
+            });
+        }
+        writer.add_document(Document { fields }).unwrap();
     }
     writer.commit().expect("commit");
 

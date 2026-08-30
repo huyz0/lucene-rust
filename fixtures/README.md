@@ -113,25 +113,30 @@ can open and read them back. `VerifyStoredFields.java`, `VerifyFieldInfos.java`,
 `VerifyLiveDocs.java`, `VerifyCompoundFormat.java`, `VerifyFst.java`,
 `VerifyVectors.java`, `VerifyFullSegment.java`, `VerifyMergedSegment.java`,
 `VerifyVectorSegment.java`, `VerifyBlockSegment.java`,
-`VerifyDocValuesUpdates.java` and `VerifySortedSegment.java` are these
+`VerifyDocValuesUpdates.java`, `VerifySortedSegment.java` (used twice -- once
+over a flushed segment and once over a merged one),
+`VerifyPositionsSegment.java` and `VerifyMergedMetadata.java` are these
 verifiers so far:
 
 ```sh
 scripts/verify-write-path.sh
 ```
 
-That runs all 20 Rust `write_*_fixture` examples into a temp directory and
+That runs all 23 Rust `write_*_fixture` examples into a temp directory and
 checks each with its verifier, resolving the Lucene jars the same way
 `gen-fixtures.sh` does. Pass `--keep` to retain the generated fixtures for
 inspection. CI runs it on every change (`.github/workflows/ci.yml`, job
 `write-path`).
 
-**Coverage gap, deliberate.** There is no verifier for the postings / term
-dictionary (`.doc`/`.tim`/`.tip`/`.tmd`) -- the format everything else hangs
-off, and the one whose writer is validated only by round-tripping through this
-port's own reader. That cannot catch a misreading of the spec shared by the
-reader and the writer. Closing it is task T3.1; see
-[`docs/milestones/m3-write-path-proven.md`](../docs/milestones/m3-write-path-proven.md).
+**One case reads a committed fixture rather than writing everything itself.**
+`write_merged_metadata_fixture` copies `fixtures/data/merge_metadata/` (three
+segments a real `IndexWriter` wrote, whose `.si` files were then rewritten
+through the codec with differing `minVersion`s) into its output directory and
+merges them. It has to: the two facts it checks -- `SegmentMerger`'s
+`minVersion` fold and `IndexWriter.mergeMiddle`'s `hasBlocks` disjunction --
+are only observable when the sources disagree with the merging writer, which
+segments this port wrote itself never do. Regenerate its sources with
+`scripts/gen-fixtures.sh --only GenMergeMetadata`.
 
 `VerifyStoredFields.java` opens each `.fdt`/`.fdx`/`.fdm` triple directly through
 `Lucene90StoredFieldsFormat.fieldsReader`, using a hand-built `SegmentInfo`/
@@ -432,6 +437,18 @@ outright.
 - `GenSegmentInfos.java` — a real two-commit `IndexWriter` session (`segments_index/`
   subdirectory: full index dir + `segments_2.raw` copy + manifest), exercising real
   segment names/generations/counters/user-data rather than hand-built bytes.
+- `GenMergeMetadata.java` — three segments (`merge_metadata/` subdirectory)
+  written by a real `IndexWriter` under `NoMergePolicy`, then given **differing
+  `minVersion`s** (10.2.0, 10.0.0, 10.1.0 — oldest in the middle) by rewriting
+  each `.si` through `codec.segmentInfoFormat().write` with everything else
+  carried across unchanged. `hasBlocks` is not synthesised: segment `_1` is
+  built with `addDocuments`, which is what makes Lucene set it. This is the
+  only fixture whose *sources* exist so a **merge** can be checked: it feeds
+  `write_merged_metadata_fixture` (see "Verifying the write path" above), which
+  merges the three through this port and lets real Lucene read the merged
+  `minVersion`/`hasBlocks` back off `LeafMetaData`. A merge of segments this
+  port wrote itself cannot see either field, because they would agree with the
+  merging writer's own version by construction.
 - `GenLiveDocs.java` — a real single-segment `IndexWriter` session with 2 of 5 docs
   deleted by term after the first commit (`live_docs_index/` subdirectory:
   `NoMergePolicy` keeps the segment from being merged away, so the fixture's `.liv`

@@ -123,13 +123,19 @@ public class VerifySegmentInfo {
           .append("] got=[").append(gotFiles).append("]; ");
     }
 
-    // Index sort: the manifest holds `field:reverse:missing` triples in
-    // priority order. Rendering Lucene's own parsed Sort the same way proves
-    // the `.si` sort-field bytes went through
-    // `SortFieldProvider.forName(name).readSortField(in)` -- i.e. that this
-    // port writes the real provider layout, not an invented one. The missing
-    // value is checked as the Long.MIN_VALUE/Long.MAX_VALUE sentinel the Rust
-    // side means by "first"/"last".
+    // Index sort: the manifest holds the Rust side's rendering of the sort in
+    // Lucene's own `Sort.toString()` format, and this compares it against
+    // `toString()` on the `Sort` real Lucene reconstructed from these bytes
+    // via `SortFieldProvider.forName(name).readSortField(in)`.
+    //
+    // Comparing the whole `toString()` rather than a reduced
+    // `field:reverse:first|last` triple is what lets `_3` cover the entire
+    // model: `SortField.toString`, `SortedNumericSortField.toString` and
+    // `SortedSetSortField.toString` each print the type, the selector and the
+    // missing value, so a wrong `SortField.Type` byte, a wrong selector
+    // ordinal, a missing value written into the wrong encoding, or a
+    // missing-value marker written the sorted-set way round instead of the
+    // STRING way round all show up as a different string.
     String expectedSort = manifest.getOrDefault("index_sort", "");
     String gotSort = renderSort(si.getIndexSort());
     if (!expectedSort.equals(gotSort)) {
@@ -147,25 +153,7 @@ public class VerifySegmentInfo {
   }
 
   static String renderSort(org.apache.lucene.search.Sort sort) {
-    if (sort == null) return "";
-    StringBuilder sb = new StringBuilder();
-    for (org.apache.lucene.search.SortField sf : sort.getSort()) {
-      if (sb.length() > 0) sb.append(',');
-      if (sf.getType() != org.apache.lucene.search.SortField.Type.LONG) {
-        return "UNEXPECTED_TYPE:" + sf.getType();
-      }
-      Object missing = sf.getMissingValue();
-      String missingLabel;
-      if (Long.valueOf(Long.MIN_VALUE).equals(missing)) {
-        missingLabel = "first";
-      } else if (Long.valueOf(Long.MAX_VALUE).equals(missing)) {
-        missingLabel = "last";
-      } else {
-        missingLabel = "UNEXPECTED_MISSING:" + missing;
-      }
-      sb.append(sf.getField()).append(':').append(sf.getReverse() ? 1 : 0).append(':').append(missingLabel);
-    }
-    return sb.toString();
+    return sort == null ? "" : sort.toString();
   }
 
   static java.util.List<Path> findManifests(Path dir) throws IOException {

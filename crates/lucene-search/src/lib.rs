@@ -211,13 +211,16 @@ pub mod query;
 pub mod query_cache;
 pub mod query_parser;
 pub mod similarity;
+pub mod sloppy_phrase;
 pub mod soft_deletes;
 pub mod term_vectors_query;
 pub mod vector_query;
+pub mod weight_count;
 
 pub use collector::{
-    Collector, CountCollector, FieldValueDoc, ScoreDoc, ScoreMode, ScoringCollector, SortDirection,
-    TopDocsCollector, TopFieldCollector, TotalHits, TotalHitsRelation, VecCollector,
+    Collector, CountCollector, FieldValueDoc, MaxScoreAccumulator, ScoreDoc, ScoreMode,
+    ScoringCollector, SortDirection, TopDocsCollector, TopFieldCollector, TotalHits,
+    TotalHitsRelation, VecCollector,
 };
 pub use doc_value_query::{
     search_numeric_range, search_numeric_range_sorted_by_field, search_sorted_ord_range,
@@ -226,10 +229,11 @@ pub use doc_value_query::{
 pub use explain::{explain_clause, Explanation};
 pub use field_norms::FieldNorms;
 pub use multi_segment::{
-    merge_multi_segment_scored, search_boolean_query_multi_segment,
+    merge_multi_segment_scored, merge_multi_segment_scored_after,
+    merge_multi_segment_scored_concurrent_shared_max_score, search_boolean_query_multi_segment,
     search_boolean_query_multi_segment_concurrent, search_boolean_query_multi_segment_maxscore,
     search_boolean_query_multi_segment_maxscore_concurrent, search_term_query_multi_segment,
-    search_term_query_multi_segment_concurrent, OpenSegment,
+    search_term_query_multi_segment_after, search_term_query_multi_segment_concurrent, OpenSegment,
 };
 pub use points_query::{pack_i64, search_points_range, PointsInput};
 pub use query::{
@@ -2895,16 +2899,25 @@ fn try_conjunction_lazy<C: ScoringCollector>(
     // and loses the cache entirely. The span-keyed cache below does the same
     // job for this shape.
     let mut conj_bound: Option<(i32, f32)> = None;
-    // Block-max pruning needs a scoring clause to bound. With none, every
-    // document scores 0, so the summed bound would be 0 and would authorize
-    // skipping the whole segment the moment a top-`n` queue filled -- which is
-    // what Lucene's `FilterScorer` wrapper (`getMaxScore() == 0`) lets
-    // `TOP_SCORES` do, but only under `TopScoreDocCollector`'s
-    // `Math.nextUp(bottom)` threshold. This port's `pruning_threshold` is the
-    // bottom score itself, so `0 <= 0` would prune on a *tie*, dropping
-    // documents Lucene keeps. Pruning is therefore switched off for the
-    // filter-only shape; the leapfrog itself is the win here.
-    let prunable = legs.iter().any(Leg::scoring);
+    // A **filter-only** conjunction prunes too, and c11's reason for switching
+    // it off was wrong. Every document scores 0, so the summed bound is 0 and
+    // `bound <= threshold` authorizes a skip the moment the queue fills on a
+    // bottom score of 0 -- c11 read that as "pruning on a tie, dropping
+    // documents Lucene keeps". Lucene drops them as well:
+    // `TopScoreDocCollector.updateMinCompetitiveScore` publishes
+    // `Math.nextUp(topScore)`, which for a bottom of `0f` is
+    // `Float.MIN_VALUE`, and `MaxScoreBulkScorer`/`BlockMaxConjunctionScorer`
+    // skip a block whose max score is `< minCompetitiveScore` -- so `0 <
+    // 1.4e-45` skips. The two rules are the same rule: Java's
+    // `bound < nextUp(bottom)` is this port's `bound <= bottom`, for every
+    // finite bottom, because `nextUp` is the immediate successor.
+    //
+    // It is also *correct*, independently of Java: documents arrive ascending,
+    // `HitQueue` breaks a score tie in favour of the **lower** doc id, and the
+    // queue is full -- so no later document with score 0 can displace a kept
+    // one. Verified against real Lucene by
+    // `filter_only_top_n_prunes_and_still_matches_real_lucene` and measured in
+    // `benches/filter_vs_must.rs`.
     'outer: while candidate != lucene_codecs::postings::NO_MORE_DOCS {
         // Block-max conjunction pruning, as Lucene's BlockMaxConjunctionScorer
         // does it. Every clause must match, so a document's score is at most the
@@ -2915,7 +2928,7 @@ fn try_conjunction_lazy<C: ScoringCollector>(
         //
         // Without this the leapfrog is lazy but blind: it visits every document
         // in the intersection and scores it, however uncompetitive.
-        if let Some(threshold) = collector.pruning_threshold().filter(|_| prunable) {
+        if let Some(threshold) = collector.pruning_threshold() {
             // Recompute the summed bound only when the covered span changes.
             // The span is identified by the smallest clause block end, which is
             // cheap to read; the bound itself is not, and on a selective
@@ -3463,91 +3476,6 @@ fn phrase_freq_exact_impl(term_positions: &[&[i32]], stop_at_first: bool) -> i32
     freq
 }
 
-/// Sloppy (`slop > 0`) sibling of [`phrase_matches_in_doc`]: checks whether
-/// `term_positions` (same shape/contract as `phrase_matches_in_doc` — one sorted,
-/// ascending position list per phrase term, in phrase order, all for the same doc)
-/// has some strictly-increasing, in-order alignment `p_0 < p_1 < ... <
-/// p_{n-1}` (one position per term, `p_i` drawn from `term_positions[i]`) whose
-/// **total "move" distance** is at most `slop`.
-///
-/// **Exact formula implemented, and where it comes from**: real Lucene's
-/// `PhraseQuery` Javadoc (`org.apache.lucene.search.PhraseQuery`, "the slop
-/// parameter") describes slop as "the number of positions all words need to move
-/// to line up in order" — a term one word away from its expected adjacent slot
-/// costs one "move", two words away costs two, and so on. For an alignment
-/// `p_0 < p_1 < ... < p_{n-1}` in that order, the total moves needed is the sum of
-/// each adjacent gap's slack: `sum_{i=1}^{n-1} (p_i - p_{i-1} - 1)`, which
-/// telescopes to `(p_{n-1} - p_0) - (n - 1)` regardless of the intermediate
-/// positions chosen. A doc matches iff some such alignment has
-/// `(p_{n-1} - p_0) - (n - 1) <= slop`.
-///
-/// **Scope, stated precisely (see `docs/parity.md`)**: this is an **in-order-only**
-/// implementation of real Lucene's sloppy matching — it requires
-/// `p_0 < p_1 < ... < p_{n-1}` strictly increasing in phrase order, matching real
-/// Lucene's common case (phrase terms found in their query order, just spread
-/// apart by up to `slop` extra words). Real Lucene's general `SloppyPhraseMatcher`
-/// (`org.apache.lucene.search.SloppyPhraseMatcher`) additionally allows term
-/// **reordering** within the slop budget (e.g. "quick fox" matching "fox... quick"
-/// at a high enough slop, via a priority-queue-based edit-distance computation over
-/// `PhrasePositions`) — that general algorithm is *not* implemented here; this
-/// port could not confidently re-derive/verify its exact edit-distance formula
-/// against real Lucene's source within this task's scope, so reordering is
-/// deliberately out of scope rather than guessed at. Every test below proves only
-/// this function's own stated in-order formula, not full Lucene byte-for-byte
-/// parity for the reordering case.
-///
-/// For a fixed starting position `p_0`, the smallest valid alignment (and hence
-/// the minimum possible `p_{n-1}`, and thus the minimum possible move count for
-/// that `p_0`) is found by a simple greedy scan: for each subsequent term, pick
-/// the smallest position in its list that's strictly greater than the previous
-/// term's chosen position. Picking any larger position could only increase (never
-/// decrease) the running total, so greedy is optimal for a fixed `p_0`; every
-/// `p_0` in the first term's own position list is tried in turn (same
-/// candidate-and-check structure as `phrase_matches_in_doc`).
-///
-/// **Edge cases** (matching `phrase_matches_in_doc`'s own contract): an empty
-/// `term_positions` or any single empty position list both yield `false`. A
-/// single-term phrase (`term_positions.len() == 1`) degenerates to "does this term
-/// occur at all" regardless of `slop`. `slop == 0` is equivalent to
-/// `phrase_matches_in_doc` (a zero move budget forces every gap to be exactly
-/// `0`, i.e. exact adjacency) — [`search_phrase_query`] still calls the dedicated
-/// exact-match fast path for `slop == 0` rather than this function, but this
-/// function's own unit tests confirm the `slop == 0` case agrees.
-pub(crate) fn phrase_matches_in_doc_sloppy(term_positions: &[&[i32]], slop: u32) -> bool {
-    let Some((first, rest)) = term_positions.split_first() else {
-        return false;
-    };
-    if rest.iter().any(|positions| positions.is_empty()) {
-        return false;
-    }
-    if rest.is_empty() {
-        // Single-term phrase: any occurrence at all is a match, same as
-        // `phrase_matches_in_doc`.
-        return !first.is_empty();
-    }
-    let slop = slop as i64;
-    'candidate: for &p0 in first.iter() {
-        let mut prev = p0;
-        let mut total_moves: i64 = 0;
-        for positions in rest {
-            // Smallest position strictly greater than `prev` -- `partition_point`
-            // finds the first index where `positions[idx] > prev` since the list is
-            // sorted ascending.
-            let idx = positions.partition_point(|&x| x <= prev);
-            let Some(&pos) = positions.get(idx) else {
-                continue 'candidate;
-            };
-            total_moves += i64::from(pos - prev - 1);
-            if total_moves > slop {
-                continue 'candidate;
-            }
-            prev = pos;
-        }
-        return true;
-    }
-    false
-}
-
 /// `ExactPhraseScorer`'s per-doc `phraseFreq`-equivalent: counts every valid base
 /// position `p0` in `term_positions[0]` for which the rest of `term_positions`
 /// align exactly (`term_positions[i]` contains `p0 + i` for every `i`) — the
@@ -3578,69 +3506,6 @@ pub(crate) fn phrase_freq_exact(term_positions: &[&[i32]]) -> i32 {
     phrase_freq_exact_impl(term_positions, false)
 }
 
-/// `SloppyPhraseMatcher`'s contribution to `PhraseScorer.score()`, for a phrase
-/// with `slop > 0`: **not** a match count, but the sum of
-/// `sloppyWeight() == 1f / (1f + matchLength)` over every match in the document
-/// (`PhraseScorer.score()`: `freq = matcher.sloppyWeight(); while
-/// (matcher.nextMatch()) freq += matcher.sloppyWeight();`), where `matchLength`
-/// is the alignment's total slack -- the same
-/// `(p_last - p_first) - (n - 1)` quantity [`phrase_matches_in_doc_sloppy`]
-/// already computes and compares against `slop`.
-///
-/// This is what separates a tightly-packed sloppy match from a loose one: on
-/// this crate's own fixture segment, real Lucene scores an adjacent
-/// `alpha beta` at weight `1` and an `alpha _ _ beta` two positions apart at
-/// weight `1/3`, a 2x difference in the final BM25 score. Returning a flat `1`
-/// for "this document matched somehow" -- which this port did until the b12
-/// sweep -- collapses that distinction and also loses the frequency signal
-/// entirely for a document containing several sloppy occurrences.
-///
-/// **Scope, stated as precisely as [`phrase_matches_in_doc_sloppy`]'s**: this
-/// enumerates one match per starting position of the phrase's first term
-/// (exactly [`phrase_freq_exact`]'s granularity) and takes that start's
-/// *minimum* achievable `matchLength` via the same greedy scan, which is
-/// optimal for a fixed start. Real `SloppyPhraseMatcher` instead enumerates
-/// matches by repeatedly advancing whichever `PhrasePositions` is currently
-/// minimal, which additionally admits **reordered** terms -- the same
-/// documented in-order-only restriction this port's sloppy matcher already
-/// carries, now inherited by its frequency. For `slop == 0` the two agree
-/// exactly (every gap is forced to zero, so every match weighs `1` and the sum
-/// is [`phrase_freq_exact`]'s count), which is what
-/// `sloppy_phrase_freq_at_slop_zero_equals_the_exact_count` pins.
-pub(crate) fn phrase_freq_sloppy(term_positions: &[&[i32]], slop: u32) -> f32 {
-    let Some((first, rest)) = term_positions.split_first() else {
-        return 0.0;
-    };
-    if rest.iter().any(|positions| positions.is_empty()) {
-        return 0.0;
-    }
-    if rest.is_empty() {
-        // Single-term phrase: real `PhraseQuery.Builder.build()` rewrites this
-        // to a `TermQuery`, whose frequency is the term's own -- every
-        // occurrence is a zero-slack match.
-        return first.len() as f32;
-    }
-    let slop = i64::from(slop);
-    let mut freq = 0.0f32;
-    'candidate: for &p0 in first.iter() {
-        let mut prev = p0;
-        let mut match_length: i64 = 0;
-        for positions in rest {
-            let idx = positions.partition_point(|&x| x <= prev);
-            let Some(&pos) = positions.get(idx) else {
-                continue 'candidate;
-            };
-            match_length += i64::from(pos - prev - 1);
-            if match_length > slop {
-                continue 'candidate;
-            }
-            prev = pos;
-        }
-        freq += 1.0 / (1.0 + match_length as f32);
-    }
-    freq
-}
-
 /// Key type for [`span_matches_in_doc`]'s `doc_positions` map: one leaf
 /// `SpanQuery::SpanTerm`'s `(field, term)` pair, the finest granularity a span
 /// query ever needs a position list for (unlike `PhraseQuery`, a `SpanQuery`'s
@@ -3660,7 +3525,7 @@ type SpanLeafKey = (String, Vec<u8>);
 /// **Scope**: this is the direct, in-memory span computation
 /// [`SpanQuery`]'s own doc comment describes (not a lazy `Spans` iterator) --
 /// callers needing every matching span range for a doc call this once per
-/// doc, the same shape `phrase_matches_in_doc`/`phrase_matches_in_doc_sloppy`
+/// doc, the same shape `phrase_matches_in_doc`/[`sloppy_phrase`]
 /// already use for `PhraseQuery`.
 ///
 /// - `SpanQuery::SpanTerm`: every occurrence in `doc_positions` becomes exactly
@@ -3737,10 +3602,12 @@ pub(crate) fn span_matches_in_doc(
 /// spans: the total slack is `sum(next.start - prev.end)` over every adjacent
 /// pair -- `0` when spans touch exactly end-to-start with no gap, growing by
 /// one for every extra intervening position, the same "moves needed to line
-/// up" accounting [`phrase_matches_in_doc_sloppy`]'s doc comment derives for
-/// `PhraseQuery`, generalized from single positions to `[start, end)` span
-/// ranges. A combination whose arranged spans overlap (`next.start <
-/// prev.end`) is rejected outright, regardless of `slop` -- overlapping
+/// up" accounting `PhraseQuery`'s Javadoc describes for a phrase, generalized
+/// from single positions to `[start, end)` span ranges. It is **not** the same
+/// quantity as a sloppy phrase's `matchLength` (see [`sloppy_phrase`]), which
+/// is a window width over slot-shifted positions. A combination whose arranged
+/// spans overlap (`next.start < prev.end`) is rejected outright,
+/// regardless of `slop` -- overlapping
 /// sub-spans have no defined "gap" to charge against the budget.
 ///
 /// The overall span reported for a matching combination is `(min start, max
@@ -4046,9 +3913,9 @@ fn term_doc_positions(
 /// possibly qualify) *and* an alignment check finds a valid alignment for that
 /// doc's per-term position lists: `query.slop == 0` uses
 /// [`phrase_matches_in_doc`]'s exact-adjacency fast path (unchanged from before
-/// `slop` existed), `query.slop > 0` uses
-/// [`phrase_matches_in_doc_sloppy`]'s in-order sloppy check -- see that
-/// function's doc comment for the precise formula and its in-order-only scope.
+/// `slop` existed), `query.slop > 0` runs
+/// [`sloppy_phrase::sloppy_phrase_matches`], the ported `SloppyPhraseMatcher`
+/// -- which admits terms appearing out of phrase order within the budget.
 ///
 /// **Edge cases** (see `query::PhraseQuery`'s doc comment and this port's
 /// `docs/parity.md` for the full accounting):
@@ -4154,6 +4021,11 @@ pub fn search_phrase_query<C: Collector>(
         per_term_starts.push(starts);
     }
 
+    // Which slots hold the same term -- `SloppyPhraseMatcher`'s `rptGroups`,
+    // which Java computes once per scorer and this port computes once per
+    // query. Unused at `slop == 0`, where the exact matcher runs instead.
+    let repeats = sloppy_phrase::PhraseRepeats::for_phrase(&query.terms);
+
     // Candidate `k` sits at index `k` in every term's positions, because
     // every term's `wanted` was built from the same candidate list.
     let mut term_positions: Vec<&[i32]> = Vec::with_capacity(per_term_positions.len());
@@ -4167,7 +4039,7 @@ pub fn search_phrase_query<C: Collector>(
         let is_match = if query.slop == 0 {
             phrase_matches_in_doc(&term_positions)
         } else {
-            phrase_matches_in_doc_sloppy(&term_positions, query.slop)
+            sloppy_phrase::sloppy_phrase_matches(&term_positions, &repeats, query.slop)
         };
         if is_match {
             collector.collect(doc_id);
@@ -4193,22 +4065,12 @@ pub fn search_phrase_query<C: Collector>(
 ///   valid alignments (`ExactPhraseScorer`'s real `phraseFreq` accumulation —
 ///   see that function's doc comment for the exact counting rule and why it
 ///   doesn't double-count).
-/// - `query.slop > 0`: phrase frequency is simplified to `1` if
-///   [`phrase_matches_in_doc_sloppy`] finds any valid alignment, `0`
-///   otherwise — **a deliberate, honestly-scoped simplification**, not a
-///   verified port of real Lucene's `SloppyPhraseMatcher` scoring. Real
-///   Lucene's sloppy scorer accumulates a graduated per-match contribution of
-///   `1.0 / (matchLength + 1)` (favoring tighter alignments) summed across
-///   every valid alignment its priority-queue-based algorithm finds — this
-///   port could not confidently re-derive/verify that exact per-match
-///   weighting formula (or the surrounding alignment-enumeration algorithm,
-///   already scoped down to in-order-only by
-///   [`phrase_matches_in_doc_sloppy`]'s own doc comment) within this task's
-///   scope, so graduated sloppy match-quality scoring is deliberately
-///   deferred (see `docs/parity.md`) in favor of this simpler matches-or-not
-///   boolean signal, consistent with this port's established "scope down
-///   honestly rather than guess at unverified Lucene internals" practice (see
-///   BKD's split heuristic, `phrase_matches_in_doc_sloppy` itself).
+/// - `query.slop > 0`: phrase frequency is
+///   [`sloppy_phrase::sloppy_phrase_freq`], which is `PhraseScorer.score()`'s
+///   own `freq = sloppyWeight(); while (nextMatch()) freq += sloppyWeight();`
+///   over the ported `SloppyPhraseMatcher` walk -- a graduated
+///   `1 / (1 + matchLength)` per match, summed in Lucene's own emission order
+///   (`f32` addition is not associative, so the order is part of the answer).
 ///
 /// `norms`/`collector`: same contract as [`search_term_query_scored`]'s.
 #[allow(clippy::too_many_arguments)]
@@ -4366,6 +4228,9 @@ pub fn search_phrase_query_scored_with_stats<C: ScoringCollector>(
     // `wanted` was built from the same candidate list for each term. No
     // per-document cursor bookkeeping is left.
     let mut term_positions: Vec<&[i32]> = Vec::with_capacity(per_term_positions.len());
+    // `SloppyPhraseMatcher`'s `rptGroups`, computed once per query -- see
+    // `search_phrase_query`. Unused at `slop == 0`.
+    let repeats = sloppy_phrase::PhraseRepeats::for_phrase(&query.terms);
     // One norms cursor for this scan; `candidate_docs` ascends, so a sparse
     // field's `IndexedDISI` region is walked once, not once per document.
     let mut norms_cursor = norms.map(|n| n.cursor());
@@ -4379,11 +4244,11 @@ pub fn search_phrase_query_scored_with_stats<C: ScoringCollector>(
         // `PhraseScorer.score()`: the frequency fed to the similarity is
         // `ExactPhraseMatcher`'s match count for `slop == 0`, and
         // `SloppyPhraseMatcher`'s summed `1/(1+matchLength)` otherwise -- not
-        // a flat `1` for "matched". See `phrase_freq_sloppy`.
+        // a flat `1` for "matched". See `sloppy_phrase::sloppy_phrase_freq`.
         let phrase_freq = if query.slop == 0 {
             phrase_freq_exact(&term_positions) as f32
         } else {
-            phrase_freq_sloppy(&term_positions, query.slop)
+            sloppy_phrase::sloppy_phrase_freq(&term_positions, &repeats, query.slop)
         };
         if phrase_freq == 0.0 {
             continue;
@@ -4713,6 +4578,11 @@ fn multi_phrase_hits<C: ScoringCollector>(
         per_slot_starts.push(starts);
     }
 
+    // See `search_phrase_query`'s own binding: `MultiPhraseQuery` slots hold a
+    // *set* of terms each, which is the `hasMultiTermRpts` case of Java's
+    // repeat detection.
+    let repeats = sloppy_phrase::PhraseRepeats::for_multi_phrase(&query.term_arrays);
+
     let mut slot_positions: Vec<&[i32]> = Vec::with_capacity(slot_count);
     // `candidates` ascends, so one cursor covers the whole scan.
     let mut norms_cursor = norms.map(|n| n.cursor());
@@ -4726,7 +4596,7 @@ fn multi_phrase_hits<C: ScoringCollector>(
         let freq = if query.slop == 0 {
             phrase_freq_exact(&slot_positions) as f32
         } else {
-            phrase_freq_sloppy(&slot_positions, query.slop)
+            sloppy_phrase::sloppy_phrase_freq(&slot_positions, &repeats, query.slop)
         };
         if freq == 0.0 {
             continue;
@@ -5555,8 +5425,8 @@ mod tests {
         // Not taking it cost 129.5ms against 8.8ms for the same conjunction
         // written with `MUST` clauses, because the general path materializes
         // each clause's whole doc list first -- see `benches/filter_vs_must.rs`.
-        // Pruning is off for this shape (no scoring clause to bound), but the
-        // leapfrog is not.
+        // The leapfrog takes it, and (since c37) so does block-max pruning --
+        // see `a_filter_only_conjunction_prunes_against_a_full_top_n_queue`.
         let q = BooleanQuery::new()
             .with_filter([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")]);
         let (fields, doc) = open_fixture();
@@ -5571,33 +5441,71 @@ mod tests {
     }
 
     #[test]
-    fn a_filter_only_conjunction_does_not_prune_against_a_full_top_n_queue() {
-        // Every document scores 0, so the block-max bound would be 0 and
-        // `0 <= threshold` would authorize skipping the rest of the segment the
-        // moment the queue filled -- silently truncating the hit set on a tie.
-        // `prunable` exists to stop that. `cat`={0,2} and `dog`={0,1} give only
-        // one hit here, so the check that bites is the wider one: a top-1 queue
-        // over a filter-only query must still see every match.
-        let q = BooleanQuery::new().with_filter([TermQuery::new("body", "cat")]);
+    fn a_filter_only_conjunction_prunes_against_a_full_top_n_queue() {
+        // Every document scores 0, so the block-max bound is 0 and the
+        // threshold a full queue publishes is 0 -- `0 <= 0` authorizes the
+        // skip. c11 switched that off, reading it as "pruning on a tie";
+        // `TopScoreDocCollector` publishes `Math.nextUp(0f)` and Lucene's own
+        // `bound < minCompetitiveScore` test skips exactly the same blocks.
+        // The answer is unchanged because documents arrive ascending and
+        // `HitQueue` gives a score tie to the lower doc id, so nothing skipped
+        // could have entered the queue.
+        //
+        // On `big` (`everywhere` in 300 documents), not on `body`: the
+        // pruning branch needs a decoded block to bound, and `body`'s two-doc
+        // postings live in the vint tail, where `current_block_last_doc_id()`
+        // is still `-1`. That is what "the fixture segment is too small" meant
+        // in c11's note.
+        let q = BooleanQuery::new().with_filter([
+            TermQuery::new("big", "everywhere"),
+            TermQuery::new("big", "everywhere"),
+        ]);
         let (fields, doc) = open_fixture();
         let doc_in = doc.as_ref().map(|d| d.open());
-        let mut top = collector::TopDocsCollector::new(1);
-        search_boolean_query_scored(
-            &fields,
-            doc_in.as_ref(),
-            None,
-            None,
-            None,
-            None,
-            &q,
-            None,
-            &mut top,
-        )
-        .unwrap();
+        let run = |threshold: u64| {
+            let mut top = collector::TopDocsCollector::with_total_hits_threshold(20, threshold);
+            search_boolean_query_scored(
+                &fields,
+                doc_in.as_ref(),
+                None,
+                None,
+                None,
+                None,
+                &q,
+                None,
+                &mut top,
+            )
+            .unwrap();
+            (top.top_docs().to_vec(), top.total_hits())
+        };
+        // `u64::MAX` is `ScoreMode::COMPLETE`, i.e. pruning forbidden.
+        let (exhaustive_hits, exhaustive_total) = run(u64::MAX);
+        assert_eq!(exhaustive_total.value, 300);
         assert_eq!(
-            top.total_hits().value,
-            2,
-            "both docs must have been visited"
+            exhaustive_total.relation,
+            collector::TotalHitsRelation::EqualTo
+        );
+        // With pruning allowed most of the segment is skipped -- and the kept
+        // hits are bit-identical, which is the property that makes it legal.
+        let (pruned_hits, pruned_total) = run(0);
+        assert!(
+            pruned_total.value < 300,
+            "documents must have been skipped, saw {}",
+            pruned_total.value
+        );
+        assert_eq!(
+            pruned_total.relation,
+            collector::TotalHitsRelation::GreaterThanOrEqualTo,
+            "a skipped document makes the count a lower bound"
+        );
+        assert_eq!(pruned_hits, exhaustive_hits);
+        // `big`'s postings start at doc 5, every score is 0, and a score tie
+        // goes to the lower doc id: the answer is the 20 lowest doc ids.
+        assert_eq!(
+            pruned_hits,
+            (5..25)
+                .map(|doc_id| collector::ScoreDoc { doc_id, score: 0.0 })
+                .collect::<Vec<_>>()
         );
     }
 
@@ -6811,116 +6719,6 @@ mod tests {
         assert!(!phrase_matches_in_doc(&[&[0, 2, 4][..], &[0, 2, 4][..]]));
     }
 
-    // `phrase_matches_in_doc_sloppy` unit tests: hand-computed slop values against
-    // the formula documented on that function -- `(p_last - p_first) - (n - 1)`.
-
-    #[test]
-    fn sloppy_exact_alignment_needs_zero_slop() {
-        // positions 0,1,2: (2-0)-2 = 0 moves needed -- matches at slop=0.
-        assert!(phrase_matches_in_doc_sloppy(
-            &[&[0][..], &[1][..], &[2][..]],
-            0
-        ));
-    }
-
-    #[test]
-    fn sloppy_agrees_with_exact_for_slop_zero_no_match_case() {
-        // "cat" at 0, "sat" at 2: (2-0)-1 = 1 move needed, slop=0 is one short.
-        assert!(!phrase_matches_in_doc_sloppy(&[&[0][..], &[2][..]], 0));
-        assert!(!phrase_matches_in_doc(&[&[0][..], &[2][..]]));
-    }
-
-    #[test]
-    fn sloppy_gap_of_one_extra_word_needs_slop_one() {
-        // "quick" at 0, "fox" at 2 (one word -- "brown" -- skipped in between):
-        // (2-0)-1 = 1 move needed.
-        assert!(!phrase_matches_in_doc_sloppy(&[&[0][..], &[2][..]], 0));
-        assert!(phrase_matches_in_doc_sloppy(&[&[0][..], &[2][..]], 1));
-    }
-
-    #[test]
-    fn sloppy_boundary_exactly_enough_slop_matches() {
-        // "a" at 0, "b" at 4: (4-0)-1 = 3 moves needed. slop=3 matches, slop=2 (one
-        // less than enough) does not.
-        assert!(phrase_matches_in_doc_sloppy(&[&[0][..], &[4][..]], 3));
-        assert!(!phrase_matches_in_doc_sloppy(&[&[0][..], &[4][..]], 2));
-    }
-
-    #[test]
-    fn sloppy_three_term_gap_sums_across_both_intervals() {
-        // "the" at 0, "quick" at 2 (gap 1), "fox" at 5 (gap 2): total moves =
-        // (5-0)-2 = 3, matching the sum of per-interval gaps (1 + 2).
-        assert!(phrase_matches_in_doc_sloppy(
-            &[&[0][..], &[2][..], &[5][..]],
-            3
-        ));
-        assert!(!phrase_matches_in_doc_sloppy(
-            &[&[0][..], &[2][..], &[5][..]],
-            2
-        ));
-    }
-
-    #[test]
-    fn sloppy_picks_the_best_of_multiple_candidate_base_positions() {
-        // First term at {0, 10}; second term at {1, 11}. Base 0 -> 1 needs 0 moves;
-        // base 10 -> 11 also needs 0 moves -- either way it should match at slop=0,
-        // proving every base candidate is tried (not just the first).
-        assert!(phrase_matches_in_doc_sloppy(
-            &[&[0, 10][..], &[1, 11][..]],
-            0
-        ));
-    }
-
-    #[test]
-    fn sloppy_greedy_finds_smallest_valid_next_position() {
-        // First term at 0; second term's list has {1, 2, 100} -- greedy must pick 1
-        // (smallest valid), needing 0 moves, not be confused by the far-away 100.
-        assert!(phrase_matches_in_doc_sloppy(
-            &[&[0][..], &[1, 2, 100][..]],
-            0
-        ));
-    }
-
-    #[test]
-    fn sloppy_no_increasing_alignment_exists_still_fails_at_high_slop() {
-        // Second term's only occurrence (0) is not strictly after the first term's
-        // only occurrence (0) -- no in-order alignment exists at any slop, since
-        // this port's scope excludes reordering/ties.
-        assert!(!phrase_matches_in_doc_sloppy(&[&[0][..], &[0][..]], 100));
-    }
-
-    #[test]
-    fn sloppy_single_term_degenerates_to_any_occurrence_regardless_of_slop() {
-        assert!(phrase_matches_in_doc_sloppy(&[&[2, 9][..]], 0));
-        assert!(phrase_matches_in_doc_sloppy(&[&[2, 9][..]], 5));
-    }
-
-    #[test]
-    fn sloppy_single_term_with_no_occurrences_is_false() {
-        assert!(!phrase_matches_in_doc_sloppy(&[&[][..]], 5));
-    }
-
-    #[test]
-    fn sloppy_no_terms_at_all_is_false() {
-        assert!(!phrase_matches_in_doc_sloppy(&[], 5));
-    }
-
-    #[test]
-    fn sloppy_a_term_with_no_occurrences_in_this_doc_is_false() {
-        assert!(!phrase_matches_in_doc_sloppy(&[&[0][..], &[][..]], 5));
-    }
-
-    #[test]
-    fn sloppy_repeated_term_with_a_gap_matches_at_sufficient_slop() {
-        // "the" at 0, 3 -- as a two-term "the the" phrase, base 0 needs the second
-        // "the" strictly after 0: smallest is 3, (3-0)-1 = 2 moves.
-        assert!(phrase_matches_in_doc_sloppy(&[&[0, 3][..], &[0, 3][..]], 2));
-        assert!(!phrase_matches_in_doc_sloppy(
-            &[&[0, 3][..], &[0, 3][..]],
-            1
-        ));
-    }
-
     // Fixture-backed `search_phrase_query` tests: reuse the real-Lucene "pos" field
     // (`IndexOptions.DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS`) already checked into
     // `fixtures/data/blocktree_index/` for `crates/lucene-codecs/tests/
@@ -7065,7 +6863,7 @@ mod tests {
         // verified against real Lucene's actual `PhraseQuery.setSlop(n)` results
         // recorded by `GenBlockTree.java` -- see `docs/parity.md`. This test
         // instead proves `search_phrase_query` itself correctly routes `slop > 0`
-        // to the sloppy path end-to-end (not just `phrase_matches_in_doc_sloppy`
+        // to the sloppy path end-to-end (not just the sloppy matcher
         // in isolation, which the unit tests above
         // already cover exhaustively): a generous slop must still find exactly the
         // same match as `slop == 0` for data that's already exact-adjacent.
@@ -7226,7 +7024,28 @@ mod tests {
         }
     }
 
-    // ---- `phrase_freq_sloppy` (`SloppyPhraseMatcher.sloppyWeight()` summed) ----
+    // ---- `sloppy_phrase::sloppy_phrase_freq` at slop 0 vs the exact count ----
+    //
+    // These live here, beside `phrase_freq_exact`, because what they pin is the
+    // *agreement* between the two matchers; the sloppy walk's own behaviour is
+    // unit-tested in `sloppy_phrase`.
+
+    /// Every slot a distinct term, i.e. `SloppyPhraseMatcher`'s no-repeats case.
+    fn sloppy_freq(term_positions: &[&[i32]], slop: u32) -> f32 {
+        sloppy_phrase::sloppy_phrase_freq(
+            term_positions,
+            &sloppy_phrase::PhraseRepeats::none(term_positions.len()),
+            slop,
+        )
+    }
+
+    fn sloppy_matches(term_positions: &[&[i32]], slop: u32) -> bool {
+        sloppy_phrase::sloppy_phrase_matches(
+            term_positions,
+            &sloppy_phrase::PhraseRepeats::none(term_positions.len()),
+            slop,
+        )
+    }
 
     #[test]
     fn sloppy_phrase_freq_at_slop_zero_equals_the_exact_count() {
@@ -7244,7 +7063,7 @@ mod tests {
             let refs: Vec<&[i32]> = positions.iter().map(|v| v.as_slice()).collect();
             assert_eq!(phrase_freq_exact(&refs), expected as i32, "{positions:?}");
             assert_eq!(
-                phrase_freq_sloppy(&refs, 0),
+                sloppy_freq(&refs, 0),
                 expected as f32,
                 "slop-0 sloppy freq must equal the exact count for {positions:?}"
             );
@@ -7254,11 +7073,11 @@ mod tests {
     #[test]
     fn sloppy_phrase_freq_weights_a_loose_match_below_a_tight_one() {
         // `alpha`@0 with `beta`@1 is `matchLength == 0` -> weight 1.
-        let tight = phrase_freq_sloppy(&[&[0], &[1]], 3);
+        let tight = sloppy_freq(&[&[0], &[1]], 3);
         // `alpha`@0 with `beta`@3 is `matchLength == 2` -> weight 1/3, the
         // exact case `fixtures/data/blocktree_index`'s doc 7 records against
         // real Lucene (see `tests/bm25_scoring_fixtures.rs`).
-        let loose = phrase_freq_sloppy(&[&[0], &[3]], 3);
+        let loose = sloppy_freq(&[&[0], &[3]], 3);
         assert_eq!(tight, 1.0);
         assert_eq!(loose, 1.0 / 3.0);
         assert!(loose < tight);
@@ -7268,7 +7087,7 @@ mod tests {
     fn sloppy_phrase_freq_sums_every_starting_position() {
         // Two starts: 0 (pairs with 1, matchLength 0) and 4 (pairs with 7,
         // matchLength 2). Sum = 1 + 1/3.
-        let got = phrase_freq_sloppy(&[&[0, 4], &[1, 7]], 3);
+        let got = sloppy_freq(&[&[0, 4], &[1, 7]], 3);
         assert_eq!(got, 1.0 + 1.0 / 3.0);
     }
 
@@ -7276,18 +7095,18 @@ mod tests {
     fn sloppy_phrase_freq_skips_starts_over_the_slop_budget() {
         // Start 0 needs 4 moves to reach `beta`@5, over a budget of 2; start 6
         // reaches `beta`@7 with 0. Only the second contributes.
-        let got = phrase_freq_sloppy(&[&[0, 6], &[5, 7]], 2);
+        let got = sloppy_freq(&[&[0, 6], &[5, 7]], 2);
         assert_eq!(got, 1.0);
     }
 
     #[test]
     fn sloppy_phrase_freq_edge_cases_match_the_matchers_own_contract() {
         // Empty phrase, an empty position list, and a single-term phrase --
-        // the same three edge cases `phrase_matches_in_doc_sloppy` documents.
-        assert_eq!(phrase_freq_sloppy(&[], 5), 0.0);
-        assert_eq!(phrase_freq_sloppy(&[&[1, 2], &[]], 5), 0.0);
-        assert_eq!(phrase_freq_sloppy(&[&[1, 2, 9]], 5), 3.0);
-        assert_eq!(phrase_freq_sloppy(&[&[]], 5), 0.0);
+        // the same three edge cases the sloppy matcher documents.
+        assert_eq!(sloppy_freq(&[], 5), 0.0);
+        assert_eq!(sloppy_freq(&[&[1, 2], &[]], 5), 0.0);
+        assert_eq!(sloppy_freq(&[&[1, 2, 9]], 5), 3.0);
+        assert_eq!(sloppy_freq(&[&[]], 5), 0.0);
     }
 
     #[test]
@@ -7307,8 +7126,8 @@ mod tests {
             for shape in &shapes {
                 let refs: Vec<&[i32]> = shape.iter().map(|v| v.as_slice()).collect();
                 assert_eq!(
-                    phrase_freq_sloppy(&refs, slop) > 0.0,
-                    phrase_matches_in_doc_sloppy(&refs, slop),
+                    sloppy_freq(&refs, slop) > 0.0,
+                    sloppy_matches(&refs, slop),
                     "slop={slop} shape={shape:?}"
                 );
             }

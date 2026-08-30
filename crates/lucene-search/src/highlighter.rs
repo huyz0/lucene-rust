@@ -1042,14 +1042,17 @@ pub fn offsets_from_analysis(
 ///
 /// # Scope
 ///
-/// Match enumeration is [`crate::phrase_matches_in_doc_sloppy`]'s **in-order**
-/// greedy alignment -- one alignment per starting position of the first slot,
-/// choosing the smallest still-legal position for each later slot -- not
-/// Java's general `SpanNearQuery`, which additionally allows the terms to
-/// appear reordered within the slop budget. That is the same scope, and the
-/// same reason, this crate's sloppy phrase *scoring* already documents; for
-/// `slop == 0` (the case `PhraseHelper` is overwhelmingly used for) the two
-/// coincide exactly. `PhraseHelper`'s other half -- walking a whole `Query`
+/// Match enumeration is an **in-order** greedy alignment -- one alignment per
+/// starting position of the first slot, choosing the smallest still-legal
+/// position for each later slot -- not Java's general `SpanNearQuery`, which
+/// additionally allows the terms to appear reordered within the slop budget.
+/// For `slop == 0` (the case `PhraseHelper` is overwhelmingly used for) the two
+/// coincide exactly. Note this is now *narrower* than this crate's sloppy
+/// phrase **matching**, which is `SloppyPhraseMatcher` in full
+/// ([`crate::sloppy_phrase`]): a reordered occurrence is scored but is not
+/// offered a highlight fragment. Recorded in `docs/sweep/m2/LEDGER.md`.
+///
+/// `PhraseHelper`'s other half -- walking a whole `Query`
 /// tree to *discover* which sub-queries are position-sensitive
 /// (`WeightedSpanTermExtractor`) -- is the caller's job here: this function is
 /// told the phrase.

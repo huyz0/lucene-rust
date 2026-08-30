@@ -17,6 +17,18 @@ cargo clippy --workspace --all-targets -- -D warnings
 echo "gate: cargo clippy for aarch64 (c_char signedness differs by target)"
 cargo clippy --workspace --all-targets --target aarch64-unknown-linux-gnu -- -D warnings
 
+# `benchmarks/rust-runner` is deliberately outside the workspace (it depends on
+# `test-support` features the shipped crates must not carry), so
+# `clippy --workspace` above never compiles it. Twice now it has been left
+# broken for several batches by an API reshape in a crate it consumes, while a
+# stale binary under `target-docker/release/` kept producing plausible numbers
+# from pre-change code -- which is worse than a red build, because a benchmark
+# nobody can compile is at least obviously untrustworthy. `check`, not `build`:
+# this is about the crate still type-checking against the current APIs, and a
+# release build with fat LTO would cost minutes.
+echo "gate: cargo check (benchmarks/rust-runner, outside the workspace)"
+cargo check --manifest-path benchmarks/rust-runner/Cargo.toml --all-targets
+
 echo "gate: check-arith-allows (every #[allow] carries an // ARITH: proof)"
 python3 scripts/check-arith-allows.py
 

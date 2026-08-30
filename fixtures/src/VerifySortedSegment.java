@@ -4,6 +4,7 @@ import org.apache.lucene.index.FloatVectorValues;
 import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.NumericDocValues;
+import org.apache.lucene.index.SortedNumericDocValues;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.index.Terms;
 import org.apache.lucene.index.TermsEnum;
@@ -12,6 +13,8 @@ import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.KnnFloatVectorQuery;
 import org.apache.lucene.search.Sort;
 import org.apache.lucene.search.SortField;
+import org.apache.lucene.search.SortedNumericSelector;
+import org.apache.lucene.search.SortedNumericSortField;
 import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
@@ -23,6 +26,7 @@ import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
 
@@ -78,6 +82,21 @@ public class VerifySortedSegment {
   private static final int NUM_DOCS = 2_000;
 
   private static final int MISSING_EVERY = 37;
+
+  /**
+   * The {@code rank} tier's missing value, which the Rust fixture sets to an
+   * <b>arbitrary</b> sentinel inside the data's own range ({@code rankOf}
+   * spans -20..=29) rather than {@code Long.MIN_VALUE}/{@code Long.MAX_VALUE}.
+   *
+   * <p>That is the case this fixture exists to discriminate since {@code c35}:
+   * the documents with no {@code rank} do not land at either end of the order,
+   * they interleave with the documents whose {@code rank} is {@code 0}. A
+   * comparator that pins missing values to one end -- or a model that can only
+   * *say* "first" or "last" -- produces a different physical order, and
+   * {@code CheckIndex.testSort} rebuilds the comparator from the {@code .si}
+   * and rejects it.
+   */
+  private static final long RANK_MISSING = 0L;
   private static final int DIM = 8;
 
   private static boolean hasRank(int i) {
@@ -90,6 +109,25 @@ public class VerifySortedSegment {
 
   private static long tieOf(int i) {
     return ((long) i * 104_729) % NUM_DOCS;
+  }
+
+  /**
+   * {@code multi}'s two values for document {@code i}, <b>descending</b> --
+   * the order the Rust fixture supplies them in, which the writer has to sort
+   * ascending before storing (`SortedNumericDocValuesWriter.finishCurrentDoc`).
+   */
+  private static long[] multiOf(int i) {
+    long a = ((long) i * 31) % 11;
+    long b = ((long) i * 17) % 5;
+    return new long[] {Math.max(a, b), Math.min(a, b)};
+  }
+
+  /**
+   * What {@code SortedNumericSelector.Type.MAX} selects: the <i>last</i>
+   * stored value, i.e. the larger of the two.
+   */
+  private static long multiMaxOf(int i) {
+    return multiOf(i)[0];
   }
 
   private static float[] vectorOf(int i) {
@@ -115,8 +153,9 @@ public class VerifySortedSegment {
     int failures = 0;
 
     // The order Lucene's own semantics say the documents must be in: rank
-    // descending with missing == Long.MAX_VALUE (so missing docs come FIRST
-    // once reversed), then tie ascending.
+    // descending with missing == RANK_MISSING (so the missing documents
+    // interleave with the rank-0 ones and `tie` breaks those ties), then tie
+    // ascending.
     List<Integer> expected = new ArrayList<>();
     for (int i = 0; i < NUM_DOCS; i++) {
       if (deletedEvery > 0 && i % deletedEvery == 0) {
@@ -125,8 +164,9 @@ public class VerifySortedSegment {
       expected.add(i);
     }
     expected.sort(
-        Comparator.<Integer>comparingLong(i -> hasRank(i) ? rankOf(i) : Long.MAX_VALUE)
+        Comparator.<Integer>comparingLong(i -> hasRank(i) ? rankOf(i) : RANK_MISSING)
             .reversed()
+            .thenComparingLong(VerifySortedSegment::multiMaxOf)
             .thenComparingLong(VerifySortedSegment::tieOf));
 
     try (Directory dir = FSDirectory.open(path);
@@ -159,12 +199,13 @@ public class VerifySortedSegment {
         failures++;
       } else {
         SortField[] tiers = sort.getSort();
-        if (tiers.length != 2) {
-          System.out.println("MISMATCH sort has " + tiers.length + " tiers, expected 2");
+        if (tiers.length != 3) {
+          System.out.println("MISMATCH sort has " + tiers.length + " tiers, expected 3");
           failures++;
         } else {
-          failures += checkTier(tiers[0], "rank", true, Long.MAX_VALUE);
-          failures += checkTier(tiers[1], "tie", false, Long.MIN_VALUE);
+          failures += checkTier(tiers[0], "rank", true, RANK_MISSING);
+          failures += checkSortedNumericTier(tiers[1], "multi");
+          failures += checkTier(tiers[2], "tie", false, Long.MIN_VALUE);
         }
       }
 
@@ -189,6 +230,44 @@ public class VerifySortedSegment {
       } else {
         failures += checkColumn(ranks, expected, true);
         failures += checkColumn(ties, expected, false);
+      }
+
+      // `multi`: the whole multi-valued column, per doc id. Real
+      // `CheckIndex` (run at the end) separately rejects a document whose
+      // values are not ascending, so this checks the values themselves and
+      // that they belong to the document that landed at this doc id.
+      SortedNumericDocValues multi = leaf.getSortedNumericDocValues("multi");
+      if (multi == null) {
+        System.out.println("MISMATCH the SORTED_NUMERIC column \"multi\" is missing");
+        failures++;
+      } else {
+        int bad = 0;
+        for (int d = 0; d < expected.size() && bad < 5; d++) {
+          long[] want = multiOf(expected.get(d));
+          Arrays.sort(want);
+          if (!multi.advanceExact(d)) {
+            System.out.println("MISMATCH multi missing at docID=" + d);
+            bad++;
+            failures++;
+            continue;
+          }
+          if (multi.docValueCount() != want.length) {
+            System.out.println(
+                "MISMATCH multi count at docID=" + d + ": " + multi.docValueCount());
+            bad++;
+            failures++;
+            continue;
+          }
+          for (long w : want) {
+            long got = multi.nextValue();
+            if (got != w) {
+              System.out.println("MISMATCH multi at docID=" + d + ": " + got + " != " + w);
+              bad++;
+              failures++;
+              break;
+            }
+          }
+        }
       }
 
       NumericDocValues norms = leaf.getNormValues("body");
@@ -336,6 +415,44 @@ public class VerifySortedSegment {
       System.exit(1);
     }
     System.out.println("Sorted segment verified against real Lucene. PASS");
+  }
+
+  /**
+   * The {@code SortedNumericSortField} tier: provider, field, direction,
+   * numeric type, selector, and the absence of a missing value. Every one of
+   * those is a separate byte in the {@code .si} that only this can catch.
+   */
+  private static int checkSortedNumericTier(SortField tier, String field) {
+    int failures = 0;
+    if (!(tier instanceof SortedNumericSortField sn)) {
+      System.out.println(
+          "MISMATCH sort tier " + field + " is a " + tier.getClass().getSimpleName()
+              + ", expected SortedNumericSortField");
+      return 1;
+    }
+    if (!field.equals(sn.getField())) {
+      System.out.println("MISMATCH sort tier field=" + sn.getField() + ", expected " + field);
+      failures++;
+    }
+    if (sn.getNumericType() != SortField.Type.INT) {
+      System.out.println("MISMATCH sort tier " + field + " numericType=" + sn.getNumericType());
+      failures++;
+    }
+    if (sn.getSelector() != SortedNumericSelector.Type.MAX) {
+      System.out.println("MISMATCH sort tier " + field + " selector=" + sn.getSelector());
+      failures++;
+    }
+    if (sn.getReverse()) {
+      System.out.println("MISMATCH sort tier " + field + " is reversed");
+      failures++;
+    }
+    if (sn.getMissingValue() != null) {
+      System.out.println(
+          "MISMATCH sort tier " + field + " missingValue=" + sn.getMissingValue()
+              + ", expected none");
+      failures++;
+    }
+    return failures;
   }
 
   private static int checkTier(SortField tier, String field, boolean reverse, long missing) {

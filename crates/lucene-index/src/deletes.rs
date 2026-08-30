@@ -252,32 +252,19 @@ pub fn apply_deletes(
     out.close()?;
     dir.sync(std::slice::from_ref(&file_name))?;
 
-    Ok(SegmentCommitInfo {
-        segment_name: sci.segment_name.clone(),
-        segment_id: sci.segment_id,
-        codec_name: sci.codec_name.clone(),
-        del_gen: next_del_gen,
-        del_count: new_del_count,
-        field_infos_gen: sci.field_infos_gen,
-        doc_values_gen: sci.doc_values_gen,
-        soft_del_count: sci.soft_del_count,
-        sci_id: sci.sci_id,
-        field_infos_files: sci.field_infos_files.clone(),
-        dv_update_files: sci.dv_update_files.clone(),
-        // `SegmentCommitInfo.advanceDelGen()`: the generation just consumed is
-        // now the current one, and the next write goes one past it.
-        // ARITH: `next_del_gen` is derived from `del_gen`, which is capped at
-        // `segment_infos::MAX_GENERATION` (`i64::MAX / 2`) on every path that
-        // can set it from outside this process -- `segment_infos::parse`, and
-        // `index_file_deleter`'s `usable_generation` for a value carried in by
-        // a file name -- and which `segment_infos::check_writable_generations`
-        // refuses to serialize above the cap. See that constant.
-        #[allow(clippy::arithmetic_side_effects)]
-        next_write_del_gen: next_del_gen + 1,
-        next_write_field_infos_gen: sci.next_write_field_infos_gen,
-        next_write_doc_values_gen: sci.next_write_doc_values_gen,
-        buffered_deletes_gen: sci.buffered_deletes_gen,
-    })
+    // `ReadersAndUpdates.writeLiveDocs`: the same `SegmentCommitInfo`, with
+    // its delete count raised and `advanceDelGen()` called on it -- not a
+    // hand-rebuilt copy. Going through the mutator is what keeps this path
+    // on Java's `generationAdvanced()`, which re-derives
+    // `SegmentCommitInfo.id`: the id is documented as a change token
+    // ("changes each time the segment changes due to a delete, doc-value or
+    // field update"), so a delete round that left it alone would tell every
+    // reader that keys reuse or replication off it that nothing changed.
+    let mut updated = sci.clone();
+    updated.del_count = new_del_count;
+    updated.advance_del_gen();
+    debug_assert_eq!(updated.del_gen, next_del_gen);
+    Ok(updated)
 }
 
 #[cfg(test)]
@@ -325,6 +312,40 @@ mod tests {
             assert_eq!(bits.cardinality(), max_doc, "max_doc={max_doc}");
             assert!((0..max_doc).all(|i| bits.get(i)), "max_doc={max_doc}");
         }
+    }
+
+    /// `ReadersAndUpdates.writeLiveDocs` ends in `advanceDelGen()`, whose
+    /// `generationAdvanced()` re-derives `SegmentCommitInfo.id`. Two rounds
+    /// of deletes against one segment therefore give three distinct ids.
+    /// This port used to carry `sci_id` straight across, so a replication or
+    /// NRT consumer keying on the id was told the segment had not changed.
+    #[test]
+    fn each_round_of_deletes_gives_the_segment_commit_a_new_id() {
+        let tmp = lucene_util::test_support::TempDir::new("deletes-sci-id-advances");
+        let dir = FsDirectory::open(&tmp);
+        let mut info = sci("_0", -1, 0);
+        info.sci_id = Some([1u8; ID_LENGTH]);
+
+        let mut live = FixedBitSet::new(8);
+        for i in 0..8 {
+            live.set(i);
+        }
+
+        let after_first = apply_deletes(&dir, &info, Some(&live), 8, [0]).unwrap();
+        assert_ne!(after_first.sci_id, info.sci_id);
+        assert_eq!(after_first.del_gen, 1);
+        assert_eq!(after_first.del_count, 1);
+        assert_eq!(after_first.next_write_del_gen(), 2);
+
+        let mut live = FixedBitSet::new(8);
+        for i in 1..8 {
+            live.set(i);
+        }
+        let after_second = apply_deletes(&dir, &after_first, Some(&live), 8, [1]).unwrap();
+        assert_ne!(after_second.sci_id, after_first.sci_id);
+        assert_ne!(after_second.sci_id, info.sci_id);
+        assert_eq!(after_second.del_gen, 2);
+        assert_eq!(after_second.del_count, 2);
     }
 
     /// A commit can never record more deletions than the segment has docs --

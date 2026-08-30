@@ -91,12 +91,15 @@ use std::os::raw::c_char;
 
 use lucene_codecs::postings::{DocInput, PayInput, PosInput};
 use lucene_search::field_norms::FieldNorms;
+use lucene_search::weight_count::{count_term_query, count_term_query_shortcut};
 use lucene_search::{
     search_boolean_query, search_boolean_query_scored, search_boolean_query_scored_maxscore,
     search_phrase_query, search_phrase_query_scored, search_term_query, search_term_query_scored,
     search_term_query_scored_maxscore, search_term_query_scored_with_similarity,
 };
-use lucene_search::{BooleanQuery, Clause, PhraseQuery, TermQuery, TopDocsCollector, VecCollector};
+use lucene_search::{
+    BooleanQuery, Clause, PhraseQuery, ScoreDoc, TermQuery, TopDocsCollector, VecCollector,
+};
 
 use crate::error::{guard, set_last_error, FfiStatus};
 use crate::raw::{bytes_from_raw, str_from_raw, try_with_capacity};
@@ -879,6 +882,181 @@ pub(crate) fn open_field_norms<'seg>(
         field_terms.sum_total_term_freq,
         field_terms.doc_count,
     )))
+}
+
+/// `IndexSearcher.count(new TermQuery(field, term))` for one segment, written
+/// to `*out_count`.
+///
+/// **Why this is not `ffi_search_term_query` plus a length.** Java's
+/// `TotalHitCountCollector` asks `Weight.count(context)` before it opens
+/// anything, and `TermWeight.count` answers from the terms dictionary's own
+/// `docFreq` whenever the segment has no deletions -- no `.doc` file, no block
+/// decode, no per-document loop. This entry point is that shortcut; a caller
+/// that wanted a count and got a results handle paid for the postings walk it
+/// then threw away. See
+/// [`lucene_search::weight_count::count_term_query`] for the fallback when the
+/// segment *does* have deletions, where the docFreq counts documents that are
+/// no longer live and a scan is the only correct answer.
+///
+/// A field or term that is not in this segment counts `0`, as Java's "the term
+/// cannot be found in the dictionary so the count is 0" does -- not an error.
+///
+/// # Safety
+/// `field` must be valid for `field_len` bytes, `term` for `term_len` bytes,
+/// `out_count` valid for one `i64` write.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_count_term_query(
+    segment_handle: u64,
+    field: *const c_char,
+    field_len: usize,
+    term: *const u8,
+    term_len: usize,
+    out_count: *mut i64,
+) -> i32 {
+    guard(|| {
+        if out_count.is_null() {
+            return Err(FfiStatus::NullPointer);
+        }
+        // SAFETY: caller contract guarantees `field`/`term` are valid for their
+        // paired lengths.
+        let (field, term) = unsafe {
+            (
+                str_from_raw(field, field_len)?,
+                bytes_from_raw(term, term_len)?,
+            )
+        };
+        let query = TermQuery::new(field, term.to_vec());
+
+        let segments = read_recovering(segments());
+        let segment = segments.get(segment_handle).ok_or_else(|| {
+            set_last_error("ffi_count_term_query: unknown or already-closed segment handle");
+            FfiStatus::InvalidHandle
+        })?;
+
+        // The whole point: with no deletions the answer is in the terms
+        // dictionary, so `.doc` is never opened.
+        let count =
+            match count_term_query_shortcut(&segment.fields, segment.live_docs.as_ref(), &query) {
+                Some(n) => n,
+                None => {
+                    let doc_in = segment
+                        .doc_bytes
+                        .as_deref()
+                        .map(|b| DocInput::open(b, &segment.segment_id, &segment.segment_suffix))
+                        .transpose()
+                        .map_err(|e| {
+                            set_last_error(format!("reopening .doc: {e}"));
+                            FfiStatus::Decode
+                        })?;
+                    count_term_query(
+                        &segment.fields,
+                        doc_in.as_ref(),
+                        segment.live_docs.as_ref(),
+                        &query,
+                    )
+                    .map_err(map_search_error)?
+                }
+            };
+        // SAFETY: caller contract guarantees `out_count` is valid for one write.
+        unsafe {
+            *out_count = count;
+        }
+        Ok(())
+    })
+}
+
+/// [`ffi_search_term_query_scored`]'s paginating sibling:
+/// `IndexSearcher.searchAfter(new ScoreDoc(after_doc, after_score), query,
+/// top_n)`, i.e. the page that follows the one ending at
+/// `(after_doc, after_score)`.
+///
+/// `after_doc`/`after_score` must be a hit a previous call returned, unmodified
+/// -- the boundary is "ranks at or below this exact `(score, doc)` pair" under
+/// `HitQueue`'s order, so a rounded score or a doc id from a different query
+/// moves the page. This entry point is single-segment, so the doc id needs no
+/// `docBase` translation; the multi-segment equivalent
+/// (`lucene_search::multi_segment::search_term_query_multi_segment_after`) does
+/// it internally.
+///
+/// Kept as its own function rather than as extra parameters on
+/// [`ffi_search_term_query_scored`]: there is no `after` value that means "no
+/// `after`" (`(NO_MORE_DOCS, +inf)` would, but only by convention), and a
+/// sentinel a caller can get subtly wrong is exactly how a paginating caller
+/// silently re-reads page 1.
+///
+/// # Safety
+/// `field` must be valid for `field_len` bytes, `term` for `term_len` bytes,
+/// `out_scored_results_handle` valid for one `u64` write.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn ffi_search_term_query_scored_after(
+    segment_handle: u64,
+    field: *const c_char,
+    field_len: usize,
+    term: *const u8,
+    term_len: usize,
+    top_n: usize,
+    after_doc: i32,
+    after_score: f32,
+    out_scored_results_handle: *mut u64,
+) -> i32 {
+    guard(|| {
+        if out_scored_results_handle.is_null() {
+            return Err(FfiStatus::NullPointer);
+        }
+        // SAFETY: caller contract guarantees `field`/`term` are valid for their
+        // paired lengths.
+        let (field, term) = unsafe {
+            (
+                str_from_raw(field, field_len)?,
+                bytes_from_raw(term, term_len)?,
+            )
+        };
+        let query = TermQuery::new(field, term.to_vec());
+
+        let segments = read_recovering(segments());
+        let segment = segments.get(segment_handle).ok_or_else(|| {
+            set_last_error(
+                "ffi_search_term_query_scored_after: unknown or already-closed segment handle",
+            );
+            FfiStatus::InvalidHandle
+        })?;
+
+        let doc_in = segment
+            .doc_bytes
+            .as_deref()
+            .map(|b| DocInput::open(b, &segment.segment_id, &segment.segment_suffix))
+            .transpose()
+            .map_err(|e| {
+                set_last_error(format!("reopening .doc: {e}"));
+                FfiStatus::Decode
+            })?;
+        let norms = open_field_norms(segment, &query.field)?;
+
+        let mut collector = TopDocsCollector::new(top_n).with_after(ScoreDoc {
+            doc_id: after_doc,
+            score: after_score,
+        });
+        search_term_query_scored(
+            &segment.fields,
+            doc_in.as_ref(),
+            segment.live_docs.as_ref(),
+            &query,
+            norms.as_ref(),
+            &mut collector,
+        )
+        .map_err(map_search_error)?;
+
+        let handle = scored_results().insert_checked(ScoredResultsHandle {
+            hits: collector.top_docs().to_vec(),
+        })?;
+        // SAFETY: caller contract guarantees `out_scored_results_handle` is valid
+        // for one write.
+        unsafe {
+            *out_scored_results_handle = handle;
+        }
+        Ok(())
+    })
 }
 
 /// Scored sibling of [`ffi_search_term_query`]: runs `search_term_query_scored`
@@ -1755,6 +1933,333 @@ mod tests {
         assert!(read_results(results_handle).is_empty());
 
         ffi_close_results(results_handle);
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    fn count_term(seg_handle: u64, field: &str, term: &[u8]) -> (i32, i64) {
+        let mut count: i64 = -7;
+        let rc = unsafe {
+            ffi_count_term_query(
+                seg_handle,
+                field.as_ptr() as *const c_char,
+                field.len(),
+                term.as_ptr(),
+                term.len(),
+                &mut count as *mut _,
+            )
+        };
+        (rc, count)
+    }
+
+    /// `Weight.count`'s shortcut over the C ABI. The segment is opened
+    /// **without** `.doc`, so the count can only come from the terms
+    /// dictionary -- which is the entire claim.
+    #[test]
+    fn count_term_query_answers_from_the_terms_dictionary_without_a_doc_file() {
+        let dir_handle = open_dir();
+        let seg_handle = open_segment(dir_handle, false);
+
+        // `body:cat` is in 2 of the fixture's documents, `body:dog` in 2,
+        // `big:everywhere` in 300 -- all straight off `docFreq`.
+        assert_eq!(
+            count_term(seg_handle, "body", b"cat"),
+            (FfiStatus::Ok.code(), 2)
+        );
+        assert_eq!(
+            count_term(seg_handle, "big", b"everywhere"),
+            (FfiStatus::Ok.code(), 300)
+        );
+        // A missing term, and a missing field, both count 0 rather than
+        // erroring -- Java's "the term cannot be found in the dictionary".
+        assert_eq!(
+            count_term(seg_handle, "body", b"zzz-missing"),
+            (FfiStatus::Ok.code(), 0)
+        );
+        assert_eq!(
+            count_term(seg_handle, "no-such-field", b"cat"),
+            (FfiStatus::Ok.code(), 0)
+        );
+        // And it agrees with actually running the query.
+        let mut results_handle: u64 = 0;
+        let field = "body";
+        let term = b"cat";
+        assert_eq!(
+            unsafe {
+                ffi_search_term_query(
+                    seg_handle,
+                    field.as_ptr() as *const c_char,
+                    field.len(),
+                    term.as_ptr(),
+                    term.len(),
+                    &mut results_handle as *mut _,
+                )
+            },
+            FfiStatus::Ok.code()
+        );
+        assert_eq!(read_results(results_handle).len(), 2);
+
+        ffi_close_results(results_handle);
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    /// The deletions half: with a `.liv` attached the `docFreq` shortcut must
+    /// stand down, because `docFreq` counts documents that are no longer live.
+    /// `live_docs_index` deletes documents 1 and 3, so `id:1` has `docFreq == 1`
+    /// and a true count of 0 -- the number real Lucene's
+    /// `IndexSearcher.count` returns (`count.term.id.1=0` in that fixture's
+    /// manifest).
+    ///
+    /// Its own fixture directory, opened here rather than shared: the
+    /// blocktree fixture this module's other tests use has no deletions at all.
+    /// (Same per-module duplication `explain.rs`'s own `open_segment` helper
+    /// documents.)
+    #[test]
+    fn count_term_query_does_not_take_the_shortcut_when_the_segment_has_deletions() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/data/live_docs_index/"
+        );
+        let mut dir_handle: u64 = 0;
+        assert_eq!(
+            unsafe {
+                crate::directory::ffi_open_directory(
+                    path.as_ptr().cast::<c_char>(),
+                    path.len(),
+                    &mut dir_handle,
+                )
+            },
+            FfiStatus::Ok.code()
+        );
+        let hex = "e0811e4220a8e70d1ad3e053cc6f8ee7";
+        let mut id = [0u8; 16];
+        for (i, slot) in id.iter_mut().enumerate() {
+            *slot = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap();
+        }
+        let (fnm, tim, tip, tmd, doc) = (
+            "_0.fnm",
+            "_0_Lucene104_0.tim",
+            "_0_Lucene104_0.tip",
+            "_0_Lucene104_0.tmd",
+            "_0_Lucene104_0.doc",
+        );
+        let suffix = "Lucene104_0";
+        let mut seg_handle: u64 = 0;
+        let rc = unsafe {
+            crate::segment::ffi_open_segment(
+                dir_handle,
+                fnm.as_ptr().cast::<c_char>(),
+                fnm.len(),
+                tim.as_ptr().cast::<c_char>(),
+                tim.len(),
+                tip.as_ptr().cast::<c_char>(),
+                tip.len(),
+                tmd.as_ptr().cast::<c_char>(),
+                tmd.len(),
+                doc.as_ptr().cast::<c_char>(),
+                doc.len(),
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                id.as_ptr(),
+                suffix.as_ptr().cast::<c_char>(),
+                suffix.len(),
+                5,
+                &mut seg_handle,
+            )
+        };
+        assert_eq!(rc, FfiStatus::Ok.code());
+
+        // Before the `.liv` is attached the segment looks deletion-free, so the
+        // shortcut answers `docFreq` -- 1 -- which is the wrong answer for a
+        // reader that has the deletions.
+        assert_eq!(
+            count_term(seg_handle, "id", b"1"),
+            (FfiStatus::Ok.code(), 1)
+        );
+
+        let liv = "_0_1.liv";
+        assert_eq!(
+            unsafe {
+                crate::segment::ffi_segment_set_live_docs(
+                    seg_handle,
+                    dir_handle,
+                    liv.as_ptr().cast::<c_char>(),
+                    liv.len(),
+                    1,
+                    2,
+                )
+            },
+            FfiStatus::Ok.code()
+        );
+
+        // Real Lucene: `count.term.id.1=0`, `count.term.id.0=1`.
+        assert_eq!(
+            count_term(seg_handle, "id", b"1"),
+            (FfiStatus::Ok.code(), 0)
+        );
+        assert_eq!(
+            count_term(seg_handle, "id", b"0"),
+            (FfiStatus::Ok.code(), 1)
+        );
+
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    /// `searchAfter` over the C ABI: three pages that partition the ranking.
+    #[test]
+    fn search_term_query_scored_after_pages_the_ranking_without_repeats() {
+        let dir_handle = open_dir();
+        let seg_handle = open_segment_with_norms(dir_handle, false, true);
+        let field = "big";
+        let term = b"everywhere";
+
+        let mut page1: u64 = 0;
+        assert_eq!(
+            unsafe {
+                ffi_search_term_query_scored(
+                    seg_handle,
+                    field.as_ptr() as *const c_char,
+                    field.len(),
+                    term.as_ptr(),
+                    term.len(),
+                    3,
+                    &mut page1 as *mut _,
+                )
+            },
+            FfiStatus::Ok.code()
+        );
+        let hits1 = read_scored_results(page1);
+        assert_eq!(hits1.len(), 3);
+
+        let (after_doc, after_score) = *hits1.last().expect("a full page");
+        let mut page2: u64 = 0;
+        assert_eq!(
+            unsafe {
+                ffi_search_term_query_scored_after(
+                    seg_handle,
+                    field.as_ptr() as *const c_char,
+                    field.len(),
+                    term.as_ptr(),
+                    term.len(),
+                    3,
+                    after_doc,
+                    after_score,
+                    &mut page2 as *mut _,
+                )
+            },
+            FfiStatus::Ok.code()
+        );
+        let hits2 = read_scored_results(page2);
+        assert_eq!(hits2.len(), 3);
+        for (doc, _) in &hits2 {
+            assert!(
+                !hits1.iter().any(|(d, _)| d == doc),
+                "doc {doc} appeared on both pages"
+            );
+        }
+
+        // The two pages together must be the top 6, in order.
+        let mut six: u64 = 0;
+        assert_eq!(
+            unsafe {
+                ffi_search_term_query_scored(
+                    seg_handle,
+                    field.as_ptr() as *const c_char,
+                    field.len(),
+                    term.as_ptr(),
+                    term.len(),
+                    6,
+                    &mut six as *mut _,
+                )
+            },
+            FfiStatus::Ok.code()
+        );
+        let expected = read_scored_results(six);
+        let walked: Vec<(i32, f32)> = hits1.iter().chain(hits2.iter()).copied().collect();
+        assert_eq!(walked, expected);
+
+        // A null out-pointer is still rejected before anything is opened.
+        assert_eq!(
+            unsafe {
+                ffi_search_term_query_scored_after(
+                    seg_handle,
+                    field.as_ptr() as *const c_char,
+                    field.len(),
+                    term.as_ptr(),
+                    term.len(),
+                    3,
+                    after_doc,
+                    after_score,
+                    std::ptr::null_mut(),
+                )
+            },
+            FfiStatus::NullPointer.code()
+        );
+        assert_eq!(
+            unsafe {
+                ffi_search_term_query_scored_after(
+                    0xFFFF,
+                    field.as_ptr() as *const c_char,
+                    field.len(),
+                    term.as_ptr(),
+                    term.len(),
+                    3,
+                    after_doc,
+                    after_score,
+                    &mut page2 as *mut _,
+                )
+            },
+            FfiStatus::InvalidHandle.code()
+        );
+
+        ffi_close_scored_results(page1);
+        ffi_close_scored_results(page2);
+        ffi_close_scored_results(six);
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    #[test]
+    fn count_term_query_rejects_a_bad_handle_and_a_null_out_pointer() {
+        assert_eq!(
+            count_term(0xFFFF, "body", b"cat").0,
+            FfiStatus::InvalidHandle.code()
+        );
+        let dir_handle = open_dir();
+        let seg_handle = open_segment(dir_handle, false);
+        let field = "body";
+        let term = b"cat";
+        let rc = unsafe {
+            ffi_count_term_query(
+                seg_handle,
+                field.as_ptr() as *const c_char,
+                field.len(),
+                term.as_ptr(),
+                term.len(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(rc, FfiStatus::NullPointer.code());
         ffi_close_segment(seg_handle);
         ffi_close_directory(dir_handle);
     }

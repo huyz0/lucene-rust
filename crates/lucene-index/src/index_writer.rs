@@ -371,12 +371,12 @@ pub enum Error {
          every pending doc, but doc {1} has a {2} value"
     )]
     NonBinaryDocValue(String, usize, &'static str),
-    #[error("set_norms_field: no field named {0:?} in this writer's field list")]
+    #[error("omit_norms_field: no field named {0:?} in this writer's field list")]
     UnknownNormsField(String),
     #[error(
-        "set_norms_field: field {0:?} has omit_norms set (or index_options == None); norms \
-         are only computable for an indexed field that has not opted out of them, matching \
-         real Lucene's FieldInfo.omitsNorms()/IndexOptions.NONE gates on Similarity.computeNorm"
+        "omit_norms_field: field {0:?} is not indexed (index_options == None); norms only \
+         exist for an indexed field, matching real Lucene's IndexOptions.NONE gate on \
+         Similarity.computeNorm"
     )]
     UnsupportedNormsField(String),
     #[error(
@@ -472,6 +472,13 @@ pub enum Error {
          Lucene reads through DocValues.getNumeric)"
     )]
     UnsupportedIndexSortField(String, DocValuesType),
+    #[error(
+        "set_index_sort: sort field {0:?} sorts by term ordinal or by raw bytes; this writer \
+         assigns ordinals after it permutes the buffer, so the key would not exist when the \
+         sort runs, and a BinarySortField has no single-i64 key at all. Such a sort can be \
+         read (segment_info parses every SortFieldProvider encoding) but not produced"
+    )]
+    UnsupportedIndexSortKind(String),
     /// A sort field with no doc values written for it makes every
     /// sort-order check downstream vacuous: real Lucene's
     /// `DocValues.getNumeric` returns an all-missing instance rather than
@@ -699,11 +706,6 @@ pub struct IndexWriter<'d> {
     /// `flush()` that created the segment, so this port can scope the map to
     /// that call instead of pooling a reader for the writer's lifetime.
     pending_sort_map: Option<(String, Vec<usize>)>,
-    /// The single field this writer is currently opted into automatically
-    /// computing and writing real norms for -- see
-    /// [`IndexWriter::set_norms_field`] for the exact opt-in contract and
-    /// module doc comment / `docs/parity.md` for what "automatic" covers.
-    norms_fields: Vec<NormsFieldConfig>,
     /// Set by [`IndexWriter::prepare_commit`], consumed by
     /// [`IndexWriter::finish_commit`] -- see [`IndexWriter::prepare_commit`]'s
     /// doc comment for exactly what "prepared" does and does not mean on
@@ -899,6 +901,16 @@ struct SourceDocValueColumns {
 struct NormsFieldConfig {
     name: String,
     field_number: i32,
+}
+
+/// One field's finished norm column, in whichever of
+/// [`norms::NormsField`]'s two shapes `Lucene90NormsConsumer` would pick for
+/// it: `Dense` when every document carries the field, `Sparse` otherwise.
+/// This owns the values so [`IndexWriter::build_norms_output`] can build all
+/// of them before borrowing them into one `norms::write_fields` call.
+enum NormsColumn {
+    Dense(Vec<i64>),
+    Sparse(Vec<(i32, i64)>),
 }
 
 /// One field this writer has been opted into indexing vectors for, resolved
@@ -1153,7 +1165,6 @@ impl<'d> IndexWriter<'d> {
             doc_values_fields: Vec::new(),
             index_sort: None,
             pending_sort_map: None,
-            norms_fields: Vec::new(),
             prepared_commit: None,
             delete_queue: DeleteQueue::new(),
             updates_stream: BufferedUpdatesStream::new(),
@@ -1643,11 +1654,32 @@ impl<'d> IndexWriter<'d> {
     /// - **Every sort field exists** in this writer's fixed `fields` list
     ///   ([`Error::UnknownIndexSortField`]). Java creates the field on
     ///   demand; this port's schema is fixed at [`IndexWriter::open`].
-    /// - **Every sort field is NUMERIC doc values**
+    /// - **Every sort field's doc-values type matches the kind of sort**
     ///   ([`Error::UnsupportedIndexSortField`]) --
-    ///   `IndexingChain.validateIndexSortDVType`, narrowed to the one
-    ///   `SortField.Type` this port's `.si` encoder emits (`LONG`; see
-    ///   `segment_info`'s index-sort doc section for the deliberate scope).
+    ///   `IndexingChain.validateIndexSortDVType`, which asks the
+    ///   `SortField`'s own `IndexSorter` which column it reads: a numeric
+    ///   `SortField` needs NUMERIC, a `SortedNumericSortField` needs
+    ///   SORTED_NUMERIC.
+    /// - **The kind of sort is one this writer can produce**
+    ///   ([`Error::UnsupportedIndexSortKind`]). `segment_info` can now *read*
+    ///   every sort `SortFieldProvider` round-trips, which is what lets this
+    ///   port open an index someone else wrote; producing one is narrower.
+    ///   A `SortField.Type.STRING` or `SortedSetSortField` sorts by **term
+    ///   ordinal**, and this writer assigns ordinals inside
+    ///   `build_sorted_doc_values_output` *after* the buffer is permuted, so
+    ///   the key the sort needs does not exist when the sort runs; a
+    ///   `BinarySortField` has no single-`i64` key at all
+    ///   ([`segment_info::IndexSortField::key_comparison`]). Both are
+    ///   refused here rather than mis-ordered.
+    ///
+    ///   A `FLOAT`/`DOUBLE` sort *is* supported: Lucene's own
+    ///   `FloatDocValuesField`/`DoubleDocValuesField` store
+    ///   `Float.floatToRawIntBits`/`Double.doubleToRawLongBits` in a NUMERIC
+    ///   column, and `FloatField`/`DoubleField` store
+    ///   `NumericUtils.floatToSortableInt` in a SORTED_NUMERIC one --
+    ///   [`segment_info::SortKeyComparator`] knows which encoding each kind
+    ///   reads, so the caller stores what Lucene stores and nothing else
+    ///   changes.
     /// - **Every sort field is actually opted into doc values**
     ///   ([`Error::IndexSortFieldWithoutDocValues`]). Java gets this for
     ///   free -- a field with a `DocValuesType` always gets a
@@ -1693,7 +1725,16 @@ impl<'d> IndexWriter<'d> {
                 .iter()
                 .find(|f| f.name == sf.field)
                 .ok_or_else(|| Error::UnknownIndexSortField(sf.field.clone()))?;
-            if info.doc_values_type != DocValuesType::Numeric {
+            let wanted = match &sf.kind {
+                segment_info::IndexSortKind::Numeric(_) => DocValuesType::Numeric,
+                segment_info::IndexSortKind::SortedNumeric { .. } => DocValuesType::SortedNumeric,
+                segment_info::IndexSortKind::String(_)
+                | segment_info::IndexSortKind::SortedSet { .. }
+                | segment_info::IndexSortKind::Binary(_) => {
+                    return Err(Error::UnsupportedIndexSortKind(sf.field.clone()))
+                }
+            };
+            if info.doc_values_type != wanted {
                 return Err(Error::UnsupportedIndexSortField(
                     sf.field.clone(),
                     info.doc_values_type,
@@ -1740,104 +1781,95 @@ impl<'d> IndexWriter<'d> {
             if !congruent {
                 return Err(Error::IncongruentIndexSort {
                     segment: sci.segment_name.clone(),
-                    existing: describe_sort(si.index_sort.as_deref()),
-                    incoming: describe_sort(Some(incoming)),
+                    existing: segment_info::describe_index_sort(si.index_sort.as_deref()),
+                    incoming: segment_info::describe_index_sort(Some(incoming)),
                 });
             }
         }
         Ok(())
     }
 
-    /// Opts this writer into **automatically** computing and writing real
-    /// norms (`.nvm`/`.nvd`, via [`norms::write_single_dense_field`]) for one
-    /// field of every segment [`IndexWriter::commit`] flushes from here on --
-    /// matching real Lucene's default behavior for an indexed, non-
-    /// `omitNorms` field: `IndexWriter.commit()`'s indexing chain there
-    /// computes `Similarity.computeNorm` automatically from each document's
-    /// actual field length, without any caller-supplied norm value. This
-    /// writer's own indexing chain ([`Self::build_norms_output`]) does the
-    /// same: it re-tokenizes `field_name`'s text via
-    /// [`crate::indexing_chain::invert_documents`] (same analyzer/scope as
-    /// [`IndexWriter::set_postings_field`]), sums every term's occurrence
-    /// count per doc into that document's field length (real Lucene's
-    /// `FieldInvertState.length`, i.e. total indexed token count, not
-    /// distinct-term count), and encodes each doc's length into a norm byte
-    /// via [`lucene_util::small_float::int_to_byte4`] -- the exact inverse of
-    /// `lucene_search::similarity::decode_norm` (this port's BM25 read-side),
-    /// which decodes a stored norm byte back with
-    /// `lucene_util::small_float::byte4_to_int`. No caller
-    /// ever supplies a norm value directly; it is always derived from actual
-    /// indexed field length.
+    /// Every field this writer writes a norm column for, ascending by field
+    /// number -- this port's `IndexingChain.writeNorms` loop condition.
     ///
-    /// `Some(field_name)` looks `field_name` up in this writer's fixed
-    /// `fields` list and requires `index_options != IndexOptions::None` (the
-    /// field must actually be indexed -- a norm without indexed terms is
-    /// meaningless) and `omit_norms == false` (an `Err` otherwise, mirroring
-    /// real Lucene's `FieldInfo.omitsNorms()` gate on
-    /// `Similarity.computeNorm`). `None` (the default a freshly
-    /// [`IndexWriter::open`]ed writer starts with) turns this back off --
-    /// `commit()` then behaves exactly as it did before this feature
-    /// existed (no `.nvm`/`.nvd` files at all).
+    /// Java writes norms for **every** indexed field whose `omitNorms` is
+    /// false, with no per-writer opt-in anywhere:
     ///
-    /// `Some(field_name)` **replaces** this writer's whole norms-field list
-    /// with just `field_name` (the same "reassign, don't accumulate" shape
-    /// [`IndexWriter::set_postings_field`] and
-    /// [`IndexWriter::set_doc_values_field`] have); use
-    /// [`IndexWriter::add_norms_field`] to write norms for more than one
-    /// field in the same segment, which c26 made possible on both the flush
-    /// and the merge side (one `.nvm`/`.nvd` pair holding every field, via
-    /// [`lucene_codecs::norms::write_fields`] -- what a real
-    /// `Lucene90NormsConsumer` segment is).
+    /// ```java
+    /// for (FieldInfo fi : state.fieldInfos) {
+    ///   if (fi.omitsNorms() == false && fi.getIndexOptions() != IndexOptions.NONE) {
+    ///     perField.norms.finish(state.segmentInfo.maxDoc());
+    ///     perField.norms.flush(state, sortMap, normsConsumer);
+    ///   }
+    /// }
+    /// ```
     ///
-    /// A document with no [`FieldValue::String`] value for a configured
-    /// field gets a length of `0` (norm byte `0`), rather than being
-    /// omitted -- this writer's norms output is always dense (one value per
-    /// doc per field), so every pending doc must get *some* norm value for
-    /// every configured field.
-    pub fn set_norms_field(&mut self, field_name: Option<&str>) -> Result<()> {
-        self.norms_fields.clear();
-        match field_name {
-            None => Ok(()),
-            Some(name) => self.add_norms_field(name),
-        }
-    }
-
-    /// Adds one more field to this writer's norms-field list, leaving the
-    /// existing entries in place -- the accumulating counterpart of
-    /// [`IndexWriter::set_norms_field`], matching
-    /// [`IndexWriter::add_postings_field`]/[`IndexWriter::add_doc_values_field`].
+    /// -- so that is what this returns. Until c35 this port required a
+    /// `set_norms_field`/`add_norms_field` call per field and forced
+    /// `omit_norms = true` into the `.fnm` for every other indexed field,
+    /// which made BM25 score every un-named field against a constant length
+    /// instead of the document's own. [`IndexWriter::omit_norms_field`] is
+    /// the opt-*out* (`FieldType.setOmitNorms(true)`); there is no opt-in
+    /// because Lucene has none.
     ///
-    /// Real Lucene has no per-segment norms-field limit at all: every indexed
-    /// field whose `FieldInfo.omitNorms` is `false` gets a norm, and
-    /// `Lucene90NormsConsumer` writes them all into one `.nvm`/`.nvd` pair.
-    /// This port was capped at one field until c26, on both sides -- the
-    /// flush because [`lucene_codecs::norms::write_single_dense_field`] writes
-    /// a whole pair, and the merge because `merge_norms` inherited the same
-    /// cap (`Error::TooManyNormsFields`, now gone).
-    ///
-    /// The same two gates as [`IndexWriter::set_norms_field`] apply: the
-    /// field must exist in this writer's fixed list, must be indexed
-    /// (`index_options != IndexOptions::None`) and must not set `omit_norms`.
-    /// Naming a field already in the list is a no-op rather than a duplicate
-    /// entry -- [`lucene_codecs::norms::write_fields`] rejects a duplicate
-    /// field number, and silently writing the same column twice is not a
-    /// better outcome than not adding it twice.
-    pub fn add_norms_field(&mut self, field_name: &str) -> Result<()> {
-        let info = self
+    /// Ascending field number, because that is the order
+    /// [`lucene_codecs::norms::write_fields`] wants its meta entries in and
+    /// it makes the `.nvm` a function of the schema rather than of the
+    /// order the caller declared the fields.
+    fn norms_field_configs(&self) -> Vec<NormsFieldConfig> {
+        let mut configs: Vec<NormsFieldConfig> = self
             .fields
             .iter()
+            .filter(|f| !f.omit_norms && !matches!(f.index_options, IndexOptions::None))
+            .map(|f| NormsFieldConfig {
+                name: f.name.clone(),
+                field_number: f.number,
+            })
+            .collect();
+        configs.sort_by_key(|c| c.field_number);
+        configs
+    }
+
+    /// `FieldType.setOmitNorms(true)` for one field of this writer's fixed
+    /// field list: from here on no segment this writer flushes carries a norm
+    /// column for it, and its `.fnm` says `omitNorms` so a reader never looks
+    /// for one.
+    ///
+    /// This is the **only** norms knob, and it is an opt-out, matching
+    /// Lucene: an indexed field gets norms unless it says otherwise (see
+    /// [`Self::norms_field_configs`]). A field that is not indexed
+    /// (`index_options == IndexOptions::None`) has no norms to omit and is
+    /// rejected rather than silently accepted, so a caller that names the
+    /// wrong field hears about it.
+    ///
+    /// Norms are computed, never supplied: [`Self::build_norms_output`]
+    /// derives each document's field length from the one shared invert pass
+    /// (real Lucene's `FieldInvertState.length` -- total indexed token count,
+    /// not distinct-term count) and encodes it with
+    /// [`lucene_util::small_float::int_to_byte4`], the exact inverse of
+    /// `lucene_search::similarity::decode_norm`.
+    ///
+    /// Naming a field twice is a no-op.
+    ///
+    /// Calling this **between two commits** is allowed and takes effect for
+    /// every segment flushed after it -- but the two segments then disagree
+    /// about the field's schema, and a merge across them is
+    /// `merge::Error::FieldSchemaDisagreement { attribute: "omit_norms" }`,
+    /// which is Java's `FieldInfos.verifySameOmitNorms` refusing the same
+    /// pair. Set it before the first document unless that is what you want.
+    /// (A *document* that simply does not carry the field is a different
+    /// thing entirely and needs no configuration: the norm column is
+    /// per-document sparse -- see [`Self::build_norms_output`].)
+    pub fn omit_norms_field(&mut self, field_name: &str) -> Result<()> {
+        let info = self
+            .fields
+            .iter_mut()
             .find(|f| f.name == field_name)
             .ok_or_else(|| Error::UnknownNormsField(field_name.to_string()))?;
-        if info.omit_norms || matches!(info.index_options, IndexOptions::None) {
+        if matches!(info.index_options, IndexOptions::None) {
             return Err(Error::UnsupportedNormsField(field_name.to_string()));
         }
-        if self.norms_fields.iter().any(|c| c.name == field_name) {
-            return Ok(());
-        }
-        self.norms_fields.push(NormsFieldConfig {
-            name: field_name.to_string(),
-            field_number: info.number,
-        });
+        info.omit_norms = true;
         Ok(())
     }
 
@@ -2613,7 +2645,7 @@ impl<'d> IndexWriter<'d> {
             if sort.iter().any(|sf| sf.field == update.field()) {
                 return Err(Error::DocValuesUpdateOnIndexSortField {
                     field: update.field().to_string(),
-                    sort: describe_sort(Some(sort)),
+                    sort: segment_info::describe_index_sort(Some(sort)),
                 });
             }
         }
@@ -3133,11 +3165,15 @@ impl<'d> IndexWriter<'d> {
         segment_name: &str,
         segment_id: [u8; ID_LENGTH],
     ) -> Result<SegmentCommitInfo> {
+        // `IndexingChain.writeNorms`' loop condition, resolved once: every
+        // indexed field that has not opted out gets a norm column, and the
+        // shared invert pass has to analyze all of them.
+        let norms_configs = self.norms_field_configs();
         let inverted = Self::invert_pending_fields(
             &self.pending_docs,
             &self.postings_fields,
             &self.term_vector_fields,
-            &self.norms_fields,
+            &norms_configs,
             &self.payload_field_names(),
             self.payload_source.as_deref(),
         );
@@ -3147,12 +3183,12 @@ impl<'d> IndexWriter<'d> {
         // freed term by term as the postings are built, instead of staying
         // live alongside the postings copy, the stored-fields copy and every
         // output file's byte buffer.
-        let norms_output = if self.norms_fields.is_empty() {
+        let norms_output = if norms_configs.is_empty() {
             None
         } else {
             Some(Self::build_norms_output(
                 &self.pending_docs,
-                &self.norms_fields,
+                &norms_configs,
                 &inverted,
                 &segment_id,
             )?)
@@ -3212,7 +3248,20 @@ impl<'d> IndexWriter<'d> {
 
         // The inner closure the previous shape needed to collect `?`s is
         // gone: this whole method is that scope now.
-        let sci = segment_writer::flush_stored_only_segment_with_blocks(
+        // `IndexWriter.sealFlushedSegment`: every format writes its own files
+        // into the segment, each one adding them to the *in-memory*
+        // `SegmentInfo.files`, and the `.si` is written once at the end from
+        // that accumulated set.
+        //
+        // This used to be a `.si` write per file group: the stored-fields
+        // flush wrote one, then postings, term vectors, doc values, norms,
+        // vectors and the index-sort descriptor each re-opened it, re-parsed
+        // it, extended `files` and rewrote and re-fsynced it -- up to seven
+        // writes, six parses and seven fsyncs of a file whose entire content
+        // was already in memory, for a segment whose *data* files were written
+        // exactly once. Only the last write survived; the six before it were
+        // pure I/O.
+        let mut flushed = segment_writer::write_stored_only_segment_files(
             self.dir,
             segment_name,
             segment_id,
@@ -3227,30 +3276,45 @@ impl<'d> IndexWriter<'d> {
             self.pending_has_blocks,
         )?;
 
+        let mut record = |names: Vec<String>| {
+            flushed.info.files.extend(names.iter().cloned());
+            flushed.pending_sync.extend(names);
+        };
         if let Some(output) = postings_output {
-            Self::write_postings_files(self.dir, segment_name, &segment_id, &output)?;
+            record(Self::write_postings_files(self.dir, segment_name, &output)?);
         }
         if let Some((tvd, tvx, tvm)) = term_vectors_output {
-            Self::write_term_vector_files(self.dir, segment_name, &segment_id, &tvd, &tvx, &tvm)?;
+            record(Self::write_term_vector_files(
+                self.dir,
+                segment_name,
+                &tvd,
+                &tvx,
+                &tvm,
+            )?);
         }
         if let Some((dvm, dvd, dvs)) = doc_values_output {
-            Self::write_doc_values_files(self.dir, segment_name, &segment_id, &dvm, &dvd, &dvs)?;
+            record(Self::write_doc_values_files(
+                self.dir,
+                segment_name,
+                &dvm,
+                &dvd,
+                &dvs,
+            )?);
         }
         if let Some((nvm, nvd)) = norms_output {
-            Self::write_norms_files(self.dir, segment_name, &segment_id, &nvm, &nvd)?;
+            record(Self::write_norms_files(self.dir, segment_name, &nvm, &nvd)?);
         }
         if let Some(output) = &vectors_output {
-            Self::write_vector_files(self.dir, segment_name, &segment_id, output)?;
+            record(Self::write_vector_files(self.dir, segment_name, output)?);
         }
-        // Last, so it is written over the `.si` every `write_*_files`
-        // call above already read back and extended. `SegmentInfo`'s
-        // `numSortFields` block is what a reader surfaces as
-        // `LeafMetaData.getSort()`, and what `CheckIndex.testSort`
-        // re-derives its comparators from.
+        // `SegmentInfo`'s `numSortFields` block is what a reader surfaces as
+        // `LeafMetaData.getSort()`, and what `CheckIndex.testSort` re-derives
+        // its comparators from. It goes into the same in-memory `SegmentInfo`
+        // as the file names, so it costs nothing extra.
         if let Some(sort) = &self.index_sort {
-            Self::write_index_sort_to_si(self.dir, segment_name, &segment_id, sort)?;
+            flushed.info.index_sort = Some(sort.clone());
         }
-        Ok(sci)
+        segment_writer::seal_flushed_segment(self.dir, segment_name, flushed).map_err(Error::from)
     }
 
     /// `IndexingChain.maybeSortSegment` for this port's buffer-shaped flush:
@@ -3300,13 +3364,33 @@ impl<'d> IndexWriter<'d> {
                     .find(|f| f.name == sf.field)
                     .map(|f| f.number)
                     .expect("set_index_sort resolved every sort field against this fixed list");
+                let selector = match &sf.kind {
+                    segment_info::IndexSortKind::SortedNumeric { selector, .. } => Some(*selector),
+                    // Single-valued NUMERIC: the first (and only) value.
+                    // `set_index_sort` has already refused every kind that
+                    // is neither of these two.
+                    _ => None,
+                };
                 self.pending_docs
                     .iter()
                     .map(|doc| {
-                        doc.fields
+                        // A SORTED_NUMERIC column is "repeat the field on the
+                        // document" here (see
+                        // `build_sorted_numeric_doc_values_output`), and the
+                        // values are stored **sorted**
+                        // (`SortedNumericDocValuesWriter.finishCurrentDoc`),
+                        // so the selector has to be applied to the sorted
+                        // form -- `SortedNumericSelector.MIN`/`MAX` are the
+                        // first and the last *stored* value, not the first
+                        // and last the caller happened to write. Sorting
+                        // here rather than reading the column keeps the sort
+                        // key and the column one fact, which is what stops
+                        // the two from drifting.
+                        let mut values: Vec<i64> = doc
+                            .fields
                             .iter()
-                            .find(|f| f.field_number == field_number)
-                            .and_then(|f| match &f.value {
+                            .filter(|f| f.field_number == field_number)
+                            .filter_map(|f| match &f.value {
                                 FieldValue::Int(v) => Some(*v as i64),
                                 FieldValue::Long(v) => Some(*v),
                                 // Not numeric: `build_doc_values_output` is
@@ -3316,6 +3400,19 @@ impl<'d> IndexWriter<'d> {
                                 // raise. Treated as missing until then.
                                 _ => None,
                             })
+                            .collect();
+                        match selector {
+                            // Single-valued NUMERIC: the document's one value.
+                            None => values.into_iter().next(),
+                            Some(segment_info::SortedNumericSelector::Min) => {
+                                values.sort_unstable();
+                                values.into_iter().next()
+                            }
+                            Some(segment_info::SortedNumericSelector::Max) => {
+                                values.sort_unstable();
+                                values.into_iter().last()
+                            }
+                        }
                     })
                     .collect()
             })
@@ -3324,12 +3421,7 @@ impl<'d> IndexWriter<'d> {
         let specs: Vec<segment_writer::SortKeySpec<'_>> = sort
             .iter()
             .zip(keys.iter())
-            .map(|(sf, k)| segment_writer::SortKeySpec {
-                field: &sf.field,
-                keys: k,
-                reverse: sf.reverse,
-                missing: sf.missing,
-            })
+            .map(|(sf, k)| segment_writer::SortKeySpec { sort: sf, keys: k })
             .collect();
         let new_to_old = segment_writer::sort_permutation(self.pending_docs.len(), &specs);
         drop(specs);
@@ -3361,26 +3453,6 @@ impl<'d> IndexWriter<'d> {
         segment_writer::permute_in_place(&mut self.pending_docs, &old_to_new);
         segment_writer::permute_in_place(&mut self.pending_custom_freq_terms, &old_to_new);
         segment_writer::permute_in_place(&mut self.pending_vectors, &old_to_new);
-    }
-
-    /// Records this writer's index sort in an already-written `.si`, the
-    /// same read-modify-write-then-resync patch
-    /// [`Self::write_postings_files`] and friends use to add their files to
-    /// it -- so a segment carrying postings *and* doc values *and* a sort
-    /// ends up with one `.si` holding all three, whichever write ran last.
-    fn write_index_sort_to_si(
-        dir: &dyn Directory,
-        segment_name: &str,
-        segment_id: &[u8; ID_LENGTH],
-        sort: &[segment_info::IndexSortField],
-    ) -> Result<()> {
-        let si_name = format!("{segment_name}.si");
-        let si_bytes = dir.open(&si_name)?.to_vec();
-        let mut si = segment_info::parse(&si_bytes, segment_id)?;
-        si.index_sort = Some(sort.to_vec());
-        write_file(dir, &si_name, &segment_info::write(&si, ""))?;
-        dir.sync(&[si_name])?;
-        Ok(())
     }
 
     /// Tokenizes every pending document's text **once** for the union of the
@@ -3734,51 +3806,79 @@ impl<'d> IndexWriter<'d> {
         Ok(Some(output))
     }
 
-    /// Builds [`norms::write_single_dense_field`]'s input for `config`'s
-    /// field, automatically, from `docs`' own indexed text -- this is the
-    /// method [`IndexWriter::set_norms_field`]'s doc comment describes as
-    /// this writer's automatic norm computation.
+    /// Builds [`norms::write_fields`]' input for every field in `configs`,
+    /// automatically, from `docs`' own indexed text -- this port's
+    /// `NormValuesWriter`.
     ///
-    /// Re-tokenizes `config`'s field via
-    /// [`crate::indexing_chain::invert_documents`] (same plain
-    /// [`Analyzer::standard`] as [`IndexWriter::build_postings_output`]) and,
-    /// for each pending doc (index into `docs` == doc ID, matching
-    /// [`flush_stored_only_segment`]'s own doc-ordering), sums every
-    /// matching term's occurrence count into that doc's field length --
-    /// real Lucene's `FieldInvertState.length` (total indexed token count,
-    /// *not* distinct-term count: a doc with "fox fox fox" has length 3, one
-    /// distinct term). A doc with no [`FieldValue::String`] value for the
-    /// field (or whose text tokenizes to nothing) gets length `0`, so every
-    /// doc always gets *some* value -- `norms::write_single_dense_field`
-    /// requires exactly `docs.len()` values (dense-only, no sparse/missing
-    /// encoding).
+    /// Real Lucene's `IndexingChain.PerField.finish(docID)` runs for each
+    /// document that *contains* the field, and:
     ///
-    /// Each doc's length is then encoded into a single norm byte via
-    /// [`small_float::int_to_byte4`], sign-extended into an `i64` the same
-    /// way `norms::norm_value`'s own read-side sign-extends a stored byte
-    /// back (`byte as i8 as i64`) -- this is the exact inverse
-    /// transformation `lucene_search::similarity::decode_norm` undoes when
-    /// reading a norm back (`byte4_to_int(norm as u8)`, discarding the sign
-    /// extension this write side adds and this read side later strips via
-    /// `as u8`).
+    /// ```java
+    /// if (fi.omitsNorms() == false) {
+    ///   long normValue;
+    ///   if (invertState.length == 0) {
+    ///     // the field exists in this document, but it did not have
+    ///     // any indexed tokens, so we assign a default value of zero
+    ///     normValue = 0;
+    ///   } else {
+    ///     normValue = similarity.computeNorm(invertState);
+    ///   }
+    ///   norms.addValue(docID, normValue);
+    /// }
+    /// ```
+    ///
+    /// so the column is **sparse**: a document that carries the field but
+    /// tokenizes to nothing gets an explicit `0`, and a document that does
+    /// not carry the field at all gets *no entry* (`NormValuesWriter`'s
+    /// `DocsWithFieldSet`). This reproduces both: a field's per-doc value is
+    /// `Some(length)` exactly when that doc has a [`FieldValue::String`] for
+    /// it -- the same presence test the shared invert pass
+    /// ([`Self::invert_pending_fields`]) uses to decide what to analyze --
+    /// and the column is written [`norms::NormsField::Dense`] when every doc
+    /// has one and [`norms::NormsField::Sparse`] otherwise, which is the
+    /// same `numDocsWithValue == maxDoc` branch `Lucene90NormsConsumer`
+    /// takes. Before c35 every doc got a dense `0`, which is the byte a
+    /// present-but-empty field has: an absent field and an empty one were
+    /// indistinguishable in the file.
+    ///
+    /// A doc's length is the sum of every matching term's occurrence count
+    /// (real Lucene's `FieldInvertState.length` -- total indexed token
+    /// count, *not* distinct-term count: "fox fox fox" has length 3, one
+    /// distinct term), encoded into a single norm byte via
+    /// [`small_float::int_to_byte4`] and sign-extended into an `i64` the same
+    /// way `norms::norm_value`'s read side sign-extends a stored byte back
+    /// (`byte as i8 as i64`) -- the exact inverse transformation
+    /// `lucene_search::similarity::decode_norm` undoes.
     fn build_norms_output(
         docs: &[Document],
         configs: &[NormsFieldConfig],
         inverted: &InMemoryInvertedIndex,
         segment_id: &[u8; ID_LENGTH],
     ) -> Result<(Vec<u8>, Vec<u8>)> {
-        // One dense column per configured field, all into the same
-        // `.nvm`/`.nvd` pair -- `Lucene90NormsConsumer` gets one
-        // `addNormsField` call per field into one pair, and
-        // `norms::write_fields` is that shape. Field numbers ascending, so
-        // the meta entry order is a function of the schema rather than of
-        // `add_norms_field` call order.
-        let mut ordered: Vec<&NormsFieldConfig> = configs.iter().collect();
-        ordered.sort_by_key(|c| c.field_number);
-        let per_field: Vec<Vec<i64>> = ordered
+        // One column per configured field, all into the same `.nvm`/`.nvd`
+        // pair -- `Lucene90NormsConsumer` gets one `addNormsField` call per
+        // field into one pair, and `norms::write_fields` is that shape.
+        // `configs` is already ascending by field number
+        // ([`Self::norms_field_configs`]), so the meta entry order is a
+        // function of the schema.
+        let columns: Vec<NormsColumn> = configs
             .iter()
             .map(|config| {
-                let mut lengths = vec![0u32; docs.len()];
+                // `None` == this doc does not carry the field at all, so it
+                // gets no norm; `Some(0)` == it carries it but produced no
+                // tokens, which is Java's explicit zero.
+                let mut lengths: Vec<Option<u32>> = docs
+                    .iter()
+                    .map(|doc| {
+                        doc.fields
+                            .iter()
+                            .find(|f| f.field_number == config.field_number)
+                            .and_then(|f| match &f.value {
+                                FieldValue::String(_) => Some(0u32),
+                                _ => None,
+                            })
+                    })
+                    .collect();
                 for ((field, _term), entries) in &inverted.terms {
                     if field != &config.name {
                         continue;
@@ -3787,21 +3887,35 @@ impl<'d> IndexWriter<'d> {
                         // `entry.doc_id` is an index into `docs` that this
                         // writer's own inversion produced, so it addresses
                         // `lengths` (which is `docs.len()` long) by
-                        // construction.
-                        let slot = &mut lengths[entry.doc_id as usize];
-                        *slot = accumulate_field_length(*slot, entry.term_freq());
+                        // construction -- and only ever for a doc whose
+                        // presence test above already said `Some`.
+                        if let Some(slot) = lengths[entry.doc_id as usize].as_mut() {
+                            *slot = accumulate_field_length(*slot, entry.term_freq());
+                        }
                     }
                 }
-                lengths
-                    .iter()
-                    .map(|&len| small_float::int_to_byte4(len) as i8 as i64)
-                    .collect()
+                let norm = |len: u32| small_float::int_to_byte4(len) as i8 as i64;
+                if lengths.iter().all(|l| l.is_some()) {
+                    NormsColumn::Dense(lengths.into_iter().flatten().map(norm).collect())
+                } else {
+                    NormsColumn::Sparse(
+                        lengths
+                            .into_iter()
+                            .enumerate()
+                            .filter_map(|(doc, len)| len.map(|len| (doc as i32, norm(len))))
+                            .collect(),
+                    )
+                }
             })
             .collect();
-        let fields: Vec<norms::NormsField<'_>> = ordered
+
+        let fields: Vec<norms::NormsField<'_>> = configs
             .iter()
-            .zip(&per_field)
-            .map(|(config, values)| norms::NormsField::Dense(config.field_number, values))
+            .zip(&columns)
+            .map(|(config, column)| match column {
+                NormsColumn::Dense(values) => norms::NormsField::Dense(config.field_number, values),
+                NormsColumn::Sparse(pairs) => norms::NormsField::Sparse(config.field_number, pairs),
+            })
             .collect();
 
         Ok(norms::write_fields(
@@ -3850,12 +3964,31 @@ impl<'d> IndexWriter<'d> {
         inverted: &InMemoryInvertedIndex,
     ) -> Option<Vec<TermVectorsDocument>> {
         // `per_doc[doc_id]` accumulates every configured field's
-        // `TermVectorField` that has content for that doc, in `configs`
-        // order (a stable, caller-controlled field order within each doc).
+        // `TermVectorField` that has content for that doc, in ascending
+        // field-**name** order.
+        //
+        // The order is not cosmetic and is not the caller's to choose. Real
+        // Lucene's `CheckIndex.checkTermVectors` walks `TVFields.iterator()`,
+        // which yields a document's term-vector fields in the order they were
+        // written, and `checkFields` requires that iteration to be sorted by
+        // field name (`if (lastField != null && field.compareTo(lastField) <=
+        // 0) throw new CheckIndexException(...)`). The write side stores field
+        // *numbers*, and this writer's numbers come from the caller's field
+        // list, so number order and name order need not agree -- and
+        // `add_term_vector_field` appends in call order, so before this sort a
+        // caller who named "title" after "body" produced a segment real
+        // `CheckIndex` rejects. Sorting `configs` here is what makes the
+        // per-doc `fields` list ascending by name, because `per_doc` is
+        // appended to in this loop's order. (Raised by b7; the fix belongs
+        // here, where names are known -- `term_vectors::write_best_speed` sees
+        // only numbers.)
+        let mut ordered_configs: Vec<&TermVectorFieldConfig> = configs.iter().collect();
+        ordered_configs.sort_by(|a, b| a.name.cmp(&b.name));
+
         let mut per_doc: Vec<Vec<TermVectorField>> = vec![Vec::new(); docs.len()];
         let mut any_content = false;
 
-        for config in configs {
+        for config in ordered_configs {
             // Regroup the shared term-keyed inverted index by doc ID: for each
             // doc, collect every term it occurs in *for this field* (ascending
             // term-byte order, since `inverted.terms` is a `BTreeMap` keyed by
@@ -4161,7 +4294,18 @@ impl<'d> IndexWriter<'d> {
     }
 
     /// `(doc_id, values)` for every doc carrying at least one SORTED_NUMERIC
-    /// value for `config`, in doc order.
+    /// value for `config`, in doc order, **each document's values sorted
+    /// ascending**.
+    ///
+    /// The sort is `SortedNumericDocValuesWriter.finishCurrentDoc`'s
+    /// `Arrays.sort(currentValues, 0, currentUpto)`, and it is not cosmetic:
+    /// `Lucene90DocValuesConsumer` assumes it, real
+    /// `CheckIndex.checkSortedNumericDocValues` rejects a column without it
+    /// (`"values out of order: ... for doc: ..."`), and
+    /// `SortedNumericSelector.MIN`/`MAX` are literally "the first stored
+    /// value" and "the last stored value" -- so an unsorted column makes a
+    /// selector pick the wrong one rather than merely looking untidy. This
+    /// port used to keep the caller's order.
     fn collect_sorted_numeric_values(
         docs: &[Document],
         config: &DocValuesFieldConfig,
@@ -4188,6 +4332,7 @@ impl<'d> IndexWriter<'d> {
                 per_doc.push(value);
             }
             if !per_doc.is_empty() {
+                per_doc.sort_unstable();
                 present.push((doc_id as i32, per_doc));
             }
         }
@@ -4594,18 +4739,16 @@ impl<'d> IndexWriter<'d> {
     }
 
     /// Writes [`IndexWriter::build_vectors_output`]'s four files into `dir`
-    /// under `PerFieldKnnVectorsFormat`'s suffixed segment name and patches
-    /// the already-written `<segment_name>.si` to list them -- the same
-    /// read-modify-write-then-resync pattern
-    /// [`IndexWriter::write_doc_values_files`] uses.
+    /// under `PerFieldKnnVectorsFormat`'s suffixed segment name and returns
+    /// their names for the caller to record in the segment's still-unwritten
+    /// `.si` -- see [`crate::segment_writer::FlushedSegment`].
     fn write_vector_files(
         dir: &dyn Directory,
         segment_name: &str,
-        segment_id: &[u8; ID_LENGTH],
         output: &VectorsOutput,
-    ) -> Result<()> {
+    ) -> Result<Vec<String>> {
         let seg = per_field_segment(segment_name, KNN_VECTORS_FORMAT_NAME);
-        let names = [
+        let names = vec![
             format!("{seg}.vec"),
             format!("{seg}.vemf"),
             format!("{seg}.vex"),
@@ -4615,121 +4758,66 @@ impl<'d> IndexWriter<'d> {
         for (name, data) in names.iter().zip(bytes) {
             write_file(dir, name, data)?;
         }
-
-        let si_name = format!("{segment_name}.si");
-        let si_bytes: Vec<u8> = dir.open(&si_name)?.to_vec();
-        let mut si = segment_info::parse(&si_bytes, segment_id)?;
-        si.files.extend(names.iter().cloned());
-        let si_bytes = segment_info::write(&si, "");
-        write_file(dir, &si_name, &si_bytes)?;
-
-        let mut synced: Vec<String> = names.to_vec();
-        synced.push(si_name);
-        dir.sync(&synced)?;
-        Ok(())
+        Ok(names)
     }
 
     /// Writes [`IndexWriter::build_doc_values_output`]'s three files
-    /// (`<segment_name>.dvm`/`.dvd`/`.dvs`) into `dir` and patches the
-    /// already-written `<segment_name>.si` to list them -- same
-    /// read-modify-write-then-resync pattern
-    /// [`IndexWriter::write_term_vector_files`]/
-    /// [`IndexWriter::write_postings_files`] already use.
+    /// (`<segment_name>.dvm`/`.dvd`/`.dvs`) into `dir` and returns their
+    /// names for the segment's still-unwritten `.si`.
     fn write_doc_values_files(
         dir: &dyn Directory,
         segment_name: &str,
-        segment_id: &[u8; ID_LENGTH],
         dvm: &[u8],
         dvd: &[u8],
         dvs: &[u8],
-    ) -> Result<()> {
+    ) -> Result<Vec<String>> {
         let seg = per_field_segment(segment_name, DOC_VALUES_FORMAT_NAME);
-        let dvm_name = format!("{seg}.dvm");
-        let dvd_name = format!("{seg}.dvd");
-        let dvs_name = format!("{seg}.dvs");
-
-        for (name, bytes) in [(&dvm_name, dvm), (&dvd_name, dvd), (&dvs_name, dvs)] {
+        let names = vec![
+            format!("{seg}.dvm"),
+            format!("{seg}.dvd"),
+            format!("{seg}.dvs"),
+        ];
+        for (name, bytes) in names.iter().zip([dvm, dvd, dvs]) {
             write_file(dir, name, bytes)?;
         }
-
-        let si_name = format!("{segment_name}.si");
-        let si_bytes: Vec<u8> = dir.open(&si_name)?.to_vec();
-        let mut si = segment_info::parse(&si_bytes, segment_id)?;
-        si.files
-            .extend([dvm_name.clone(), dvd_name.clone(), dvs_name.clone()]);
-        let si_bytes = segment_info::write(&si, "");
-        write_file(dir, &si_name, &si_bytes)?;
-
-        dir.sync(&[dvm_name, dvd_name, dvs_name, si_name])?;
-        Ok(())
+        Ok(names)
     }
 
     /// Writes [`IndexWriter::build_norms_output`]'s two files
-    /// (`<segment_name>.nvm`/`.nvd`) into `dir` and patches the already-
-    /// written `<segment_name>.si` to list them -- same read-modify-write-
-    /// then-resync pattern [`IndexWriter::write_doc_values_files`]/
-    /// [`IndexWriter::write_term_vector_files`]/
-    /// [`IndexWriter::write_postings_files`] already use.
+    /// (`<segment_name>.nvm`/`.nvd`) into `dir` and returns their names for
+    /// the segment's still-unwritten `.si`.
     fn write_norms_files(
         dir: &dyn Directory,
         segment_name: &str,
-        segment_id: &[u8; ID_LENGTH],
         nvm: &[u8],
         nvd: &[u8],
-    ) -> Result<()> {
-        let nvm_name = format!("{segment_name}.nvm");
-        let nvd_name = format!("{segment_name}.nvd");
-
-        for (name, bytes) in [(&nvm_name, nvm), (&nvd_name, nvd)] {
+    ) -> Result<Vec<String>> {
+        let names = vec![format!("{segment_name}.nvm"), format!("{segment_name}.nvd")];
+        for (name, bytes) in names.iter().zip([nvm, nvd]) {
             write_file(dir, name, bytes)?;
         }
-
-        let si_name = format!("{segment_name}.si");
-        let si_bytes: Vec<u8> = dir.open(&si_name)?.to_vec();
-        let mut si = segment_info::parse(&si_bytes, segment_id)?;
-        si.files.extend([nvm_name.clone(), nvd_name.clone()]);
-        let si_bytes = segment_info::write(&si, "");
-        write_file(dir, &si_name, &si_bytes)?;
-
-        dir.sync(&[nvm_name, nvd_name, si_name])?;
-        Ok(())
+        Ok(names)
     }
 
     /// Writes [`IndexWriter::build_term_vectors_output`]'s three files
-    /// (`<segment_name>.tvd`/`.tvx`/`.tvm`) into `dir` and patches the
-    /// already-written `<segment_name>.si` to list them -- same
-    /// read-modify-write-then-resync pattern
-    /// [`IndexWriter::write_postings_files`] already uses, reused rather than
-    /// duplicated here so a segment with both postings and term vectors
-    /// configured ends up with one `.si` correctly listing all seven files
-    /// (whichever write happened first is read back and extended by the
-    /// second, not overwritten).
+    /// (`<segment_name>.tvd`/`.tvx`/`.tvm`) into `dir` and returns their
+    /// names for the segment's still-unwritten `.si`.
     fn write_term_vector_files(
         dir: &dyn Directory,
         segment_name: &str,
-        segment_id: &[u8; ID_LENGTH],
         tvd: &[u8],
         tvx: &[u8],
         tvm: &[u8],
-    ) -> Result<()> {
-        let tvd_name = format!("{segment_name}.tvd");
-        let tvx_name = format!("{segment_name}.tvx");
-        let tvm_name = format!("{segment_name}.tvm");
-
-        for (name, bytes) in [(&tvd_name, tvd), (&tvx_name, tvx), (&tvm_name, tvm)] {
+    ) -> Result<Vec<String>> {
+        let names = vec![
+            format!("{segment_name}.tvd"),
+            format!("{segment_name}.tvx"),
+            format!("{segment_name}.tvm"),
+        ];
+        for (name, bytes) in names.iter().zip([tvd, tvx, tvm]) {
             write_file(dir, name, bytes)?;
         }
-
-        let si_name = format!("{segment_name}.si");
-        let si_bytes: Vec<u8> = dir.open(&si_name)?.to_vec();
-        let mut si = segment_info::parse(&si_bytes, segment_id)?;
-        si.files
-            .extend([tvd_name.clone(), tvx_name.clone(), tvm_name.clone()]);
-        let si_bytes = segment_info::write(&si, "");
-        write_file(dir, &si_name, &si_bytes)?;
-
-        dir.sync(&[tvd_name, tvx_name, tvm_name, si_name])?;
-        Ok(())
+        Ok(names)
     }
 
     /// Stamp the `PerField*Format` attributes real Lucene's codec writes at
@@ -4767,30 +4855,27 @@ impl<'d> IndexWriter<'d> {
             Vec::new()
         };
 
-        let norms_names: Vec<&str> = if wrote_norms {
-            self.norms_fields.iter().map(|c| c.name.as_str()).collect()
-        } else {
-            Vec::new()
-        };
-
         self.fields
             .iter()
             .map(|f| {
                 let mut f = f.clone();
-                // Lucene writes norms for every indexed field that does not
-                // omit them, and `DirectoryReader.open` throws on the missing
-                // `.nvm` rather than degrading if the `.fnm` claims norms the
-                // segment does not carry. This writer's norms are opt-in per
-                // field (`set_norms_field`), so a field that was not opted in
-                // must say so here: omitting norms is a legal Lucene
-                // configuration, promising norms that were never written is
-                // not. See `docs/parity.md` on closing the opt-in itself.
-                if f.index_options != IndexOptions::None
-                    && !f.omit_norms
-                    && !norms_names.contains(&f.name.as_str())
-                {
-                    f.omit_norms = true;
-                }
+                // No norms coercion here any more. Until c35 this writer's
+                // norms were opt-in per field, so every indexed field the
+                // caller had not named had to be rewritten as
+                // `omit_norms: true` -- a `.fnm` describing a different
+                // schema than the caller asked for, because
+                // `DirectoryReader.open` throws on the missing `.nvm` rather
+                // than degrading when the `.fnm` claims norms the segment
+                // does not carry. `norms_field_configs` now writes a column
+                // for exactly the fields whose `.fnm` claims one, so the two
+                // cannot disagree and there is nothing to coerce.
+                debug_assert!(
+                    !wrote_norms
+                        || f.omit_norms
+                        || f.index_options == IndexOptions::None
+                        || self.norms_field_configs().iter().any(|c| c.name == f.name),
+                    "every indexed non-omitNorms field must have a norm column"
+                );
                 if postings_names.contains(&f.name.as_str()) {
                     f.attributes.push((
                         "PerFieldPostingsFormat.format".to_string(),
@@ -4858,21 +4943,16 @@ impl<'d> IndexWriter<'d> {
             .collect()
     }
 
-    /// Writes [`IndexWriter::build_postings_output`]'s four files
-    /// (`<segment_name>.doc`/`.tim`/`.tip`/`.tmd`) into `dir` and patches the
-    /// already-written `<segment_name>.si` (from
-    /// [`flush_stored_only_segment`], called just before this) to list them
-    /// in [`crate::segment_info::SegmentInfo::files`] -- same
-    /// read-modify-write-then-resync pattern
-    /// [`crate::segment_writer::flush_sorted_stored_only_segment`] already
-    /// uses to patch a `.si` after the fact, rather than duplicating
-    /// [`flush_stored_only_segment`]'s own file-writing sequence here.
+    /// Writes [`IndexWriter::build_postings_output`]'s files
+    /// (`<segment_name>.doc`/`.psm`/`.tim`/`.tip`/`.tmd`, plus `.pos`/`.pay`
+    /// when the fields index them) into `dir` and returns their names for the
+    /// segment's still-unwritten `.si` -- see
+    /// [`crate::segment_writer::FlushedSegment`].
     fn write_postings_files(
         dir: &dyn Directory,
         segment_name: &str,
-        segment_id: &[u8; ID_LENGTH],
         output: &postings_writer::Output,
-    ) -> Result<()> {
+    ) -> Result<Vec<String>> {
         let seg = per_field_segment(segment_name, POSTINGS_FORMAT_NAME);
         let doc_name = format!("{seg}.doc");
         let tim_name = format!("{seg}.tim");
@@ -4915,17 +4995,7 @@ impl<'d> IndexWriter<'d> {
         for (name, bytes) in &written_bytes {
             write_file(dir, name, bytes)?;
         }
-
-        let si_name = format!("{segment_name}.si");
-        let si_bytes: Vec<u8> = dir.open(&si_name)?.to_vec();
-        let mut si = segment_info::parse(&si_bytes, segment_id)?;
-        si.files.extend(written_names.iter().cloned());
-        let si_bytes = segment_info::write(&si, "");
-        write_file(dir, &si_name, &si_bytes)?;
-
-        written_names.push(si_name);
-        dir.sync(&written_names)?;
-        Ok(())
+        Ok(written_names)
     }
 
     /// The automatic-merge-triggering step [`IndexWriter::commit`] runs when
@@ -5123,6 +5193,10 @@ impl<'d> IndexWriter<'d> {
             vectors: RawVectorFiles,
             index_sort: Option<Vec<segment_info::IndexSortField>>,
             has_blocks: bool,
+            /// This source's `SegmentInfo.minVersion` -- Java's
+            /// `LeafMetaData.minVersion()`, which `SegmentMerger` folds into
+            /// the merged segment's.
+            min_version: Option<LuceneVersion>,
             /// This source's own `SegmentInfo::files`, for
             /// [`merge::check_format_coverage`] -- the segment's own claim
             /// about which formats it has, which is the same set
@@ -5311,6 +5385,7 @@ impl<'d> IndexWriter<'d> {
                 vectors,
                 index_sort: si.index_sort.clone(),
                 has_blocks: si.has_blocks,
+                min_version: si.min_version,
                 // `SegmentCommitInfo::files`, not `si.files`: a generational
                 // `.dvm`/`.dvd` is never listed in the `.si` (it did not
                 // exist when the `.si` was written), so a gate reading the
@@ -5329,8 +5404,8 @@ impl<'d> IndexWriter<'d> {
             .find(|o| o.index_sort.as_deref() != merge_sort.as_deref())
         {
             return Err(Error::MergeSortDisagreement {
-                expected: describe_sort(merge_sort.as_deref()),
-                found: describe_sort(bad.index_sort.as_deref()),
+                expected: segment_info::describe_index_sort(merge_sort.as_deref()),
+                found: segment_info::describe_index_sort(bad.index_sort.as_deref()),
                 segment: bad.sci.segment_name.clone(),
             });
         }
@@ -5339,6 +5414,43 @@ impl<'d> IndexWriter<'d> {
             .iter()
             .map(|o| stored_fields::open(&o.fdt, &o.fdx, &o.fdm, &o.sci.segment_id, ""))
             .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        // `IndexWriter.mergeMiddle`: `if (merger.shouldMerge()) merger.merge();`
+        // -- `SegmentMerger.shouldMerge()` is `segmentInfo.maxDoc() > 0`, and
+        // that `maxDoc` is the sum of the readers' *live* document counts.
+        // When it is zero, Java writes **nothing at all** and goes straight to
+        // `commitMerge`, whose `allDeleted` branch drops the merged segment and
+        // still removes every source from the commit ("Merge would produce a
+        // 0-doc segment, so we do nothing except commit the merge to remove all
+        // the 0-doc segments that we merged").
+        //
+        // This port used to run the merge and publish the empty result: a real
+        // zero-document segment that every later open, merge and `CheckIndex`
+        // then pays for, and a `.si`/`.fnm`/`.fdt` set nothing will ever read.
+        // Placed exactly where Java's is: after the readers exist and before
+        // the merge writes anything. It is deliberately *not* hoisted above
+        // the `opened` loop, even though each source's live count is
+        // `si.doc_count - sci.del_count` and both are known there. Hoisting it
+        // would skip the loop's cross-checks -- the `.fdm`-against-`.si`
+        // `maxDoc` agreement, the `.liv` parse, `validate_index_sort` and
+        // `check_format_coverage` -- so a corrupt or unmergeable source would
+        // be *silently dropped from the commit* instead of reported. Refusing
+        // to look before deciding to throw the sources away is the wrong
+        // trade; the cost is reading files for a merge that will not happen,
+        // which only occurs when every source is fully deleted.
+        let live_doc_count: usize = opened
+            .iter()
+            .zip(readers.iter())
+            .map(|(o, reader)| match &o.live_docs {
+                Some(bits) => bits.cardinality(),
+                None => usize::try_from(reader.max_doc()).unwrap_or(0),
+            })
+            .sum();
+        if live_doc_count == 0 {
+            let source_names: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+            self.drop_merge(&source_names)?;
+            return Ok(());
+        }
 
         // Fields this writer's fixed schema marks as postings-eligible --
         // exactly the `IndexOptions` `set_postings_field`/`add_postings_field`
@@ -5619,6 +5731,10 @@ impl<'d> IndexWriter<'d> {
                 postings: &per_source_postings[i],
                 points: &[],
                 vectors: per_source_vectors[i].as_ref(),
+                // Both read straight off this source's own `.si`, exactly as
+                // `SegmentReader.getMetaData()` builds its `LeafMetaData`.
+                min_version: opened[i].min_version,
+                has_blocks: opened[i].has_blocks,
             })
             .collect();
 
@@ -5661,7 +5777,7 @@ impl<'d> IndexWriter<'d> {
                             Self::read_sort_keys(
                                 &o.doc_values,
                                 &self.fields,
-                                &tier.field,
+                                tier,
                                 reader.max_doc(),
                             )
                         })
@@ -5678,9 +5794,7 @@ impl<'d> IndexWriter<'d> {
             .flatten()
             .zip(&per_tier_key_slices)
             .map(|(tier, keys)| merge::MergeSortKeySpec {
-                field: &tier.field,
-                reverse: tier.reverse,
-                missing: tier.missing,
+                sort: tier,
                 per_source_keys: keys,
             })
             .collect();
@@ -5692,11 +5806,6 @@ impl<'d> IndexWriter<'d> {
             &merge::MergeOptions {
                 hnsw_m: self.hnsw_m,
                 hnsw_beam_width: self.hnsw_beam_width,
-                // `IndexWriter.mergeMiddle`'s `hasBlocks` loop over
-                // `merge.segments`: the merged segment holds blocks iff any
-                // source did. Dropping the flag reads back perfectly and
-                // silently invalidates every parent/child join query.
-                has_blocks: opened.iter().any(|o| o.has_blocks),
             },
             &merged_segment_name,
             merged_segment_id,
@@ -5735,9 +5844,10 @@ impl<'d> IndexWriter<'d> {
     fn read_sort_keys(
         columns: &SourceDocValueColumns,
         fields: &[FieldInfo],
-        field_name: &str,
+        sort: &segment_info::IndexSortField,
         max_doc: i32,
     ) -> Result<Vec<Option<i64>>> {
+        let field_name = sort.field.as_str();
         let field_number = fields
             .iter()
             .find(|f| f.name == field_name)
@@ -5750,16 +5860,40 @@ impl<'d> IndexWriter<'d> {
             .map(|&(_, at)| at)
             .ok_or_else(|| Error::MergeSortColumnMissing(field_name.to_string()))?;
         let (meta, dvd) = &columns.columns[at];
-        let entry = meta
-            .numeric_entry(field_number)
-            .ok_or_else(|| Error::MergeSortColumnMissing(field_name.to_string()))?;
-        // One `NumericReader` for the whole column, not a `numeric_value`
-        // call per document: that free function re-walks the sparse
-        // docs-with-field region from its start on every lookup, and this
-        // walks `0..max_doc` once per sort tier per source. `NumericReader`'s
-        // own doc comment names a sort as the caller that must hold one.
-        let mut reader = doc_values::NumericReader::new(dvd, entry);
-        (0..max_doc).map(|doc| Ok(reader.value(doc)?)).collect()
+        let missing = || Error::MergeSortColumnMissing(field_name.to_string());
+        match &sort.kind {
+            segment_info::IndexSortKind::SortedNumeric { selector, .. } => {
+                let entry = meta
+                    .sorted_numeric_entry(field_number)
+                    .ok_or_else(missing)?;
+                // `SortedNumericSelector.MinValue`/`MaxValue`: the first and
+                // the last stored value of the document, the column being
+                // ascending by construction.
+                (0..max_doc)
+                    .map(|doc| {
+                        let values = doc_values::sorted_numeric_values(dvd, entry, doc)?;
+                        Ok(match selector {
+                            segment_info::SortedNumericSelector::Min => values.into_iter().next(),
+                            segment_info::SortedNumericSelector::Max => values.into_iter().last(),
+                        })
+                    })
+                    .collect()
+            }
+            // Everything else `set_index_sort` allows reads a single-valued
+            // NUMERIC column; the ordinal and byte kinds it refuses cannot
+            // reach a merge this writer runs.
+            _ => {
+                let entry = meta.numeric_entry(field_number).ok_or_else(missing)?;
+                // One `NumericReader` for the whole column, not a
+                // `numeric_value` call per document: that free function
+                // re-walks the sparse docs-with-field region from its start on
+                // every lookup, and this walks `0..max_doc` once per sort tier
+                // per source. `NumericReader`'s own doc comment names a sort
+                // as the caller that must hold one.
+                let mut reader = doc_values::NumericReader::new(dvd, entry);
+                (0..max_doc).map(|doc| Ok(reader.value(doc)?)).collect()
+            }
+        }
     }
 
     /// `IndexWriter.applyAllDeletesAndUpdates()`: freeze whatever the global
@@ -6493,8 +6627,41 @@ impl<'d> IndexWriter<'d> {
         source_segment_names: &[&str],
         merged: SegmentCommitInfo,
     ) -> Result<&SegmentInfos> {
+        self.commit_merge("apply_merge", source_segment_names, Some(merged))
+    }
+
+    /// `IndexWriter.commitMerge`'s `dropSegment == true` branch: retire
+    /// `source_segment_names` **without** publishing anything in their place.
+    ///
+    /// Java reaches it when the merge's result holds no live document
+    /// (`allDeleted`), and its comment says exactly what the call is for --
+    /// "Merge would produce a 0-doc segment, so we do nothing except commit
+    /// the merge to remove all the 0-doc segments that we merged". The
+    /// sources really are removed: `SegmentInfos.applyMergeChanges` deletes
+    /// every merged-away entry from the segment list and, because
+    /// `dropSegment` is set, inserts nothing, so the commit that follows
+    /// names neither the sources nor a merged segment.
+    ///
+    /// There is nothing to delete on this side that Java's
+    /// `deleteNewFiles(merge.info.files())` would delete, because
+    /// [`IndexWriter::execute_merge`] takes this path *before* the merge
+    /// writes a single file -- the same order `mergeMiddle` uses when it
+    /// skips `merger.merge()`.
+    pub fn drop_merge(&mut self, source_segment_names: &[&str]) -> Result<&SegmentInfos> {
+        self.commit_merge("drop_merge", source_segment_names, None)
+    }
+
+    /// The body both [`IndexWriter::apply_merge`] and
+    /// [`IndexWriter::drop_merge`] share -- `IndexWriter.commitMerge` with
+    /// `merged == None` standing for its `dropSegment` flag.
+    fn commit_merge(
+        &mut self,
+        caller: &'static str,
+        source_segment_names: &[&str],
+        merged: Option<SegmentCommitInfo>,
+    ) -> Result<&SegmentInfos> {
         if self.prepared_commit.is_some() {
-            return Err(Error::PreparedCommitPending("apply_merge"));
+            return Err(Error::PreparedCommitPending(caller));
         }
         // Same invariant `execute_merge` asserts: a merged segment is
         // published open to every packet, which is only safe while there are
@@ -6520,7 +6687,12 @@ impl<'d> IndexWriter<'d> {
         new_segment_infos
             .segments
             .retain(|s| !source_segment_names.contains(&s.segment_name.as_str()));
-        new_segment_infos.segments.push(merged);
+        // `SegmentInfos.applyMergeChanges(merge, dropSegment)`: the sources go
+        // either way; the merged segment is inserted only when it was not
+        // dropped.
+        if let Some(merged) = merged {
+            new_segment_infos.segments.push(merged);
+        }
 
         segment_infos::write(&new_segment_infos, self.dir)?;
         // The merge's source segments are no longer named by any live commit
@@ -6779,30 +6951,6 @@ fn field_value_kind(value: &FieldValue) -> &'static str {
     }
 }
 
-/// A `Sort` rendered for an error message, close enough to Java's
-/// `Sort.toString()` (`<long: "field">!` for a reversed field) to be
-/// recognisable in a message quoting `cannot change previous indexSort=`.
-fn describe_sort(sort: Option<&[segment_info::IndexSortField]>) -> String {
-    match sort {
-        None => "<none>".to_string(),
-        Some(fields) => fields
-            .iter()
-            .map(|sf| {
-                format!(
-                    "<long: \"{}\">{}{}",
-                    sf.field,
-                    if sf.reverse { "!" } else { "" },
-                    match sf.missing {
-                        segment_info::SortMissingValue::First => " missingValue=MIN",
-                        segment_info::SortMissingValue::Last => " missingValue=MAX",
-                    }
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(","),
-    }
-}
-
 fn generate_segment_id(salt: i64) -> [u8; ID_LENGTH] {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -6831,7 +6979,7 @@ mod tests {
     #![allow(clippy::arithmetic_side_effects)]
 
     use super::*;
-    use crate::segment_info::{IndexSortField, SortMissingValue};
+    use crate::segment_info::IndexSortField;
     use lucene_codecs::blocktree;
     use lucene_codecs::field_infos::{
         self as fi, DocValuesSkipIndexType, DocValuesType, IndexOptions, VectorEncoding,
@@ -8216,6 +8364,220 @@ mod tests {
         assert_eq!(docs, vec!["b", "c", "d"]);
     }
 
+    /// A [`Directory`] that records every `create_output`, `open` and `sync`
+    /// by name -- the only way to see how many times one commit rewrites the
+    /// same file, which no assertion on the resulting bytes can.
+    struct CountingDirectory<'a> {
+        inner: &'a FsDirectory,
+        created: std::cell::RefCell<Vec<String>>,
+        opened: std::cell::RefCell<Vec<String>>,
+        synced: std::cell::RefCell<Vec<String>>,
+    }
+
+    impl<'a> CountingDirectory<'a> {
+        fn new(inner: &'a FsDirectory) -> Self {
+            CountingDirectory {
+                inner,
+                created: std::cell::RefCell::new(Vec::new()),
+                opened: std::cell::RefCell::new(Vec::new()),
+                synced: std::cell::RefCell::new(Vec::new()),
+            }
+        }
+        fn count(list: &std::cell::RefCell<Vec<String>>, name: &str) -> usize {
+            list.borrow().iter().filter(|n| n.as_str() == name).count()
+        }
+    }
+
+    impl Directory for CountingDirectory<'_> {
+        fn list_all(&self) -> lucene_store::Result<Vec<String>> {
+            self.inner.list_all()
+        }
+        fn open(&self, name: &str) -> lucene_store::Result<lucene_store::directory::Input> {
+            self.opened.borrow_mut().push(name.to_string());
+            self.inner.open(name)
+        }
+        fn create_output(&self, name: &str) -> lucene_store::Result<lucene_store::FsIndexOutput> {
+            self.created.borrow_mut().push(name.to_string());
+            self.inner.create_output(name)
+        }
+        fn sync(&self, names: &[String]) -> lucene_store::Result<()> {
+            self.synced.borrow_mut().extend(names.iter().cloned());
+            self.inner.sync(names)
+        }
+        fn rename(&self, source: &str, dest: &str) -> lucene_store::Result<()> {
+            self.inner.rename(source, dest)
+        }
+        fn delete_file(&self, name: &str) -> lucene_store::Result<()> {
+            self.inner.delete_file(name)
+        }
+        fn sync_meta_data(&self) -> lucene_store::Result<()> {
+            self.inner.sync_meta_data()
+        }
+    }
+
+    /// `IndexWriter.sealFlushedSegment` writes a segment's `.si` **once**,
+    /// from the in-memory `SegmentInfo` every format's writer has added its
+    /// files to. This port used to write it once per file group: the
+    /// stored-fields flush, then postings, then term vectors, then doc
+    /// values, then norms, then the index-sort descriptor each re-opened,
+    /// re-parsed, extended, rewrote and re-fsynced it. Only the last write
+    /// survived.
+    ///
+    /// Counted rather than inferred: every intermediate rewrite produces the
+    /// same final bytes, so nothing about the resulting segment can see them.
+    #[test]
+    fn one_commit_writes_the_segments_si_exactly_once() {
+        let tmp = tempdir("si-written-once");
+        let fs = FsDirectory::open(&tmp);
+        let dir = CountingDirectory::new(&fs);
+        let fields = vec![
+            stored_only_field("id", 0),
+            // Indexed, not omitting norms, and advertising term vectors ->
+            // postings *and* norms *and* term vectors; the numeric column
+            // below adds doc values. Four of the five per-format file groups
+            // in one commit, on top of the stored-fields flush itself.
+            FieldInfo {
+                store_term_vectors: true,
+                ..body_field(1)
+            },
+            numeric_dv_field("num", 2),
+        ];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_postings_field(Some("body")).unwrap();
+        writer.set_term_vector_field(Some("body")).unwrap();
+        writer.set_doc_values_field(Some("num")).unwrap();
+
+        for i in 0..8 {
+            writer
+                .add_document(Document {
+                    fields: vec![
+                        StoredField {
+                            field_number: 0,
+                            value: FieldValue::String(format!("d{i}")),
+                        },
+                        StoredField {
+                            field_number: 1,
+                            value: FieldValue::String(format!("term{i} shared")),
+                        },
+                        StoredField {
+                            field_number: 2,
+                            value: FieldValue::Long(i as i64),
+                        },
+                    ],
+                })
+                .unwrap();
+        }
+        writer.commit().unwrap();
+
+        // Every format really did run, so the count below is over the full
+        // set of writers, not a degenerate stored-fields-only flush.
+        let created = dir.created.borrow().clone();
+        for ext in [".fdt", ".tim", ".tvd", ".dvd", ".nvd"] {
+            assert!(
+                created.iter().any(|n| n.ends_with(ext)),
+                "no {ext} written; the counted commit did not exercise every format: {created:?}"
+            );
+        }
+
+        assert_eq!(
+            CountingDirectory::count(&dir.created, "_0.si"),
+            1,
+            "the segment's .si was written more than once: {created:?}"
+        );
+        // One read, not six: `IndexFileDeleter`'s checkpoint re-reads the
+        // finished `.si` to reference-count the segment's files (Java takes
+        // them off the in-memory `SegmentInfo` instead -- a separate,
+        // recorded divergence). What is gone is the read-modify-write per
+        // file group during the flush itself.
+        assert_eq!(
+            CountingDirectory::count(&dir.opened, "_0.si"),
+            1,
+            "the segment's .si was re-read during its own flush: {:?}",
+            dir.opened.borrow()
+        );
+        assert_eq!(
+            CountingDirectory::count(&dir.synced, "_0.si"),
+            1,
+            "the segment's .si was fsynced more than once"
+        );
+
+        // ...and the one `.si` that was written still lists every file.
+        let sci = &writer.segment_infos().segments[0];
+        let si_bytes = fs.open("_0.si").unwrap().to_vec();
+        let si = segment_info::parse(&si_bytes, &sci.segment_id).unwrap();
+        for ext in [
+            ".fdt", ".fdx", ".fdm", ".fnm", ".si", ".tim", ".tvd", ".dvd", ".nvd",
+        ] {
+            assert!(
+                si.files.iter().any(|f| f.ends_with(ext)),
+                "the single .si write lost {ext}: {:?}",
+                si.files
+            );
+        }
+    }
+
+    /// `IndexWriter.mergeMiddle`: a merge whose result holds no live
+    /// document writes nothing and drops both the result and its sources
+    /// ("Merge would produce a 0-doc segment, so we do nothing except commit
+    /// the merge to remove all the 0-doc segments that we merged"). This port
+    /// used to run the merge and publish the empty segment, so the commit
+    /// carried a real zero-document segment that every later open, merge and
+    /// `CheckIndex` had to pay for.
+    #[test]
+    fn a_merge_whose_sources_are_all_deleted_is_dropped_not_committed() {
+        let tmp = tempdir("zero-doc-merge-dropped");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0)];
+        let mut writer = IndexWriter::open(&dir, fields.clone(), "Lucene104", version()).unwrap();
+
+        // Three one-document segments, then every document deleted through
+        // `deletes::apply_deletes` (the field is stored-only, so a term
+        // delete has no postings to resolve against). All three `.liv` files
+        // are on disk and all three segments are 100% deleted before any
+        // merge is proposed.
+        for id in ["a", "b", "c"] {
+            writer.add_document(doc(id)).unwrap();
+            writer.commit().unwrap();
+        }
+        let mut infos = writer.segment_infos().clone();
+        assert_eq!(infos.segments.len(), 3);
+        for i in 0..infos.segments.len() {
+            let sci = infos.segments[i].clone();
+            infos.segments[i] = deletes::apply_deletes(&dir, &sci, None, 1, [0]).unwrap();
+        }
+        infos.generation += 1;
+        infos.version += 1;
+        segment_infos::write(&infos, &dir).unwrap();
+
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_merge_policy(Some(tight_merge_policy()));
+        writer.commit().unwrap();
+
+        let committed = segment_infos::read_latest(&dir).unwrap();
+        // Nothing is left: the sources were retired and no empty segment took
+        // their place. Before the fix the commit named one brand-new
+        // zero-document segment instead.
+        assert!(
+            committed.segments.is_empty(),
+            "expected the fully-deleted sources to be dropped with nothing published, got {:?}",
+            committed
+                .segments
+                .iter()
+                .map(|s| s.segment_name.clone())
+                .collect::<Vec<_>>()
+        );
+        assert!(read_all_docs(&dir, &committed).is_empty());
+        // And no files were written for the merge that did not happen.
+        let leftovers: Vec<String> = index_files(&dir)
+            .into_iter()
+            .filter(|f| !f.starts_with("segments"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "a dropped merge left files behind: {leftovers:?}"
+        );
+    }
+
     #[test]
     fn apply_merge_folds_a_merge_result_into_the_writers_committed_state() {
         let tmp = tempdir("apply-merge");
@@ -8247,8 +8609,8 @@ mod tests {
         let reader1 = stored_fields::open(&fdt1, &fdx1, &fdm1, &seg1_id, "").unwrap();
 
         let sources = vec![
-            merge::MergeSource::stored_only(&fields, &reader0, None),
-            merge::MergeSource::stored_only(&fields, &reader1, None),
+            merge::MergeSource::stored_only(&fields, &reader0, None, Some(version())),
+            merge::MergeSource::stored_only(&fields, &reader1, None, Some(version())),
         ];
         let merged_sci = merge::merge_stored_only_segments(
             &dir,
@@ -9111,6 +9473,81 @@ mod tests {
         assert!(!title_vec.has_payloads, "title stores no payloads");
         assert!(title_vec.terms[0].start_offsets.is_none());
         assert!(title_vec.terms[0].payloads.is_none());
+    }
+
+    /// A document's term-vector fields must come out in ascending field-**name**
+    /// order, whatever order the caller configured them in.
+    ///
+    /// Real Lucene's `CheckIndex.checkTermVectors` iterates `TVFields`, which
+    /// yields the order the fields were written, and `checkFields` throws
+    /// unless that order is sorted by name. The wire format carries field
+    /// *numbers*, and this writer's numbers come from the caller's field list,
+    /// so a caller who declares `zeta` as field 1 and `alpha` as field 2 --
+    /// and calls `set_term_vector_field("zeta")` before
+    /// `add_term_vector_field("alpha")` -- used to get a segment written in
+    /// call order, i.e. `zeta` then `alpha`, which real `CheckIndex` rejects.
+    ///
+    /// The negative control is the field *numbers*: they must stay 1 and 2
+    /// (the caller's own numbering), so this is a reordering of the per-doc
+    /// field list, not a renumbering of the schema.
+    #[test]
+    fn term_vector_fields_are_written_in_ascending_field_name_order() {
+        let tmp = tempdir("tv-field-order");
+        let dir = FsDirectory::open(&tmp);
+        // Name order and number order deliberately disagree: `zeta` is field
+        // 1, `alpha` is field 2.
+        let zeta = fi::FieldInfo {
+            index_options: IndexOptions::DocsAndFreqsAndPositions,
+            store_term_vectors: true,
+            ..stored_only_field("zeta", 1)
+        };
+        let alpha = fi::FieldInfo {
+            index_options: IndexOptions::DocsAndFreqsAndPositions,
+            store_term_vectors: true,
+            ..stored_only_field("alpha", 2)
+        };
+        let fields = vec![stored_only_field("id", 0), zeta, alpha];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        // Configured in the *wrong* order on purpose.
+        writer.set_term_vector_field(Some("zeta")).unwrap();
+        writer.add_term_vector_field("alpha").unwrap();
+        writer
+            .add_document(Document {
+                fields: vec![
+                    StoredField {
+                        field_number: 0,
+                        value: FieldValue::String("a".to_string()),
+                    },
+                    StoredField {
+                        field_number: 1,
+                        value: FieldValue::String("quick".to_string()),
+                    },
+                    StoredField {
+                        field_number: 2,
+                        value: FieldValue::String("fox".to_string()),
+                    },
+                ],
+            })
+            .unwrap();
+        let sis = writer.commit().unwrap().clone();
+        let sci = &sis.segments[0];
+
+        let tvd = dir.open(&format!("{}.tvd", sci.segment_name)).unwrap();
+        let tvx = dir.open(&format!("{}.tvx", sci.segment_name)).unwrap();
+        let tvm = dir.open(&format!("{}.tvm", sci.segment_name)).unwrap();
+        let reader =
+            lucene_codecs::term_vectors::open(&tvd, &tvx, &tvm, &sci.segment_id, "").unwrap();
+        let doc0 = reader.document(0).unwrap().unwrap();
+
+        let numbers: Vec<i32> = doc0.fields.iter().map(|f| f.field_number).collect();
+        assert_eq!(
+            numbers,
+            vec![2, 1],
+            "the document's vectors must be ordered by field name (alpha=2, zeta=1), \
+             not by configuration order"
+        );
+        assert_eq!(doc0.fields[0].terms[0].term, b"fox", "alpha's only term");
+        assert_eq!(doc0.fields[1].terms[0].term, b"quick", "zeta's only term");
     }
 
     /// A `.fnm` this port writes must be one this port can re-open. Java makes
@@ -11480,30 +11917,33 @@ mod tests {
     }
 
     #[test]
-    fn set_norms_field_rejects_an_unknown_field_name() {
+    fn omit_norms_field_rejects_an_unknown_field_name() {
         let tmp = tempdir("unknown-norms-field");
         let dir = FsDirectory::open(&tmp);
         let fields = vec![stored_only_field("id", 0)];
         let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
 
-        let err = writer.set_norms_field(Some("nonexistent")).unwrap_err();
+        let err = writer.omit_norms_field("nonexistent").unwrap_err();
         assert!(matches!(err, Error::UnknownNormsField(name) if name == "nonexistent"));
     }
 
     #[test]
-    fn set_norms_field_rejects_a_field_with_no_index_options() {
+    fn omit_norms_field_rejects_a_field_with_no_index_options() {
         let tmp = tempdir("unindexed-norms-field");
         let dir = FsDirectory::open(&tmp);
         let fields = vec![stored_only_field("id", 0)];
         let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
 
-        let err = writer.set_norms_field(Some("id")).unwrap_err();
+        let err = writer.omit_norms_field("id").unwrap_err();
         assert!(matches!(err, Error::UnsupportedNormsField(name) if name == "id"));
     }
 
+    /// Naming the same field twice is a no-op, and a field that already
+    /// declares `omit_norms` is accepted (Java's `setOmitNorms(true)` is
+    /// idempotent), so neither leaves a second column or an error behind.
     #[test]
-    fn set_norms_field_rejects_a_field_with_omit_norms_set() {
-        let tmp = tempdir("omit-norms-field");
+    fn omit_norms_field_is_idempotent() {
+        let tmp = tempdir("omit-norms-idempotent");
         let dir = FsDirectory::open(&tmp);
         let omitted = FieldInfo {
             omit_norms: true,
@@ -11511,35 +11951,31 @@ mod tests {
         };
         let fields = vec![stored_only_field("id", 0), omitted];
         let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
-
-        let err = writer.set_norms_field(Some("body")).unwrap_err();
-        assert!(matches!(err, Error::UnsupportedNormsField(name) if name == "body"));
+        assert!(writer.norms_field_configs().is_empty());
+        writer.omit_norms_field("body").unwrap();
+        writer.omit_norms_field("body").unwrap();
+        assert!(writer.norms_field_configs().is_empty());
     }
 
-    /// End-to-end: add real documents with different `body` field lengths
-    /// via `add_document`/`commit()`, *without* supplying any norm data
-    /// ourselves, then read the norm back through the unmodified
-    /// `lucene_codecs::norms` read side and confirm it is a real,
-    /// length-dependent value -- not a placeholder/constant. Two docs with
-    /// different token counts in the same field must decode to different
-    /// norm bytes, proving the indexing chain is genuinely deriving the
-    /// value from each document's actual tokenized field length rather than
-    /// writing some fixed default.
-    /// The `.fnm` must describe what the segment actually contains. Real
-    /// Lucene writes norms for every indexed field that does not omit them and
-    /// throws `NoSuchFileException` on the missing `.nvm` if the field infos
-    /// claim norms the files do not carry -- so a field this writer was not
-    /// opted into writing norms for has to say it omits them.
+    /// **This is the c35 fix.** An indexed field the caller never named gets
+    /// norms, because that is what Lucene does
+    /// (`IndexingChain.writeNorms`: every `FieldInfo` with
+    /// `omitsNorms() == false && indexOptions != NONE`). Before c35 the
+    /// writer forced `omit_norms = true` into the `.fnm` for it and wrote no
+    /// column, so BM25 scored the field against a constant length instead of
+    /// each document's own -- a wrong score reachable by indexing a text
+    /// field and searching it.
     #[test]
-    fn an_indexed_field_without_the_norms_opt_in_declares_that_it_omits_norms() {
-        let tmp = tempdir("norms-not-opted-in");
+    fn an_indexed_field_gets_norms_with_no_opt_in_at_all() {
+        let tmp = tempdir("norms-by-default");
         let dir = FsDirectory::open(&tmp);
-        // `body_field` is indexed with `omit_norms: false`, and no
-        // `set_norms_field` call follows.
         let fields = vec![stored_only_field("id", 0), body_field(1)];
         let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
         writer.set_postings_field(Some("body")).unwrap();
         writer.add_document(doc_with_body("a", "fox")).unwrap();
+        writer
+            .add_document(doc_with_body("b", "the quick brown fox"))
+            .unwrap();
         let sis = writer.commit().unwrap().clone();
         let sci = &sis.segments[0];
 
@@ -11547,9 +11983,47 @@ mod tests {
         let fis = lucene_codecs::field_infos::parse(&fnm, &sci.segment_id, "").unwrap();
         let body = fis.fields.iter().find(|f| f.name == "body").unwrap();
         assert!(
-            body.omit_norms,
-            "an indexed field with no norms written must declare omit_norms"
+            !body.omit_norms,
+            "an indexed field keeps the norms its caller asked for"
         );
+
+        let si_bytes = dir.open(&format!("{}.si", sci.segment_name)).unwrap();
+        let si = segment_info::parse(&si_bytes, &sci.segment_id).unwrap();
+        assert!(
+            si.files.iter().any(|f| f.ends_with(".nvm")),
+            "norms files must have been written: {:?}",
+            si.files
+        );
+
+        // And the values are the documents' own lengths, not a constant.
+        let nvm = dir.open(&format!("{}.nvm", sci.segment_name)).unwrap();
+        let nvd = dir.open(&format!("{}.nvd", sci.segment_name)).unwrap();
+        let (_v, meta) = norms::parse_meta(&nvm, &sci.segment_id, "").unwrap();
+        let entry = meta.entry(1).unwrap();
+        let d0 = norms::norm_value(&nvd, entry, 0).unwrap().unwrap();
+        let d1 = norms::norm_value(&nvd, entry, 1).unwrap().unwrap();
+        assert_ne!(d0, d1, "norms must vary with field length");
+        assert_eq!(small_float::byte4_to_int(d0 as u8), 1);
+        assert_eq!(small_float::byte4_to_int(d1 as u8), 4);
+    }
+
+    /// `omit_norms_field` is the opt-out, and it is the only norms knob.
+    #[test]
+    fn omit_norms_field_removes_the_column_and_says_so_in_the_fnm() {
+        let tmp = tempdir("norms-opted-out");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), body_field(1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_postings_field(Some("body")).unwrap();
+        writer.omit_norms_field("body").unwrap();
+        writer.add_document(doc_with_body("a", "fox")).unwrap();
+        let sis = writer.commit().unwrap().clone();
+        let sci = &sis.segments[0];
+
+        let fnm = dir.open(&format!("{}.fnm", sci.segment_name)).unwrap();
+        let fis = lucene_codecs::field_infos::parse(&fnm, &sci.segment_id, "").unwrap();
+        let body = fis.fields.iter().find(|f| f.name == "body").unwrap();
+        assert!(body.omit_norms);
 
         let si_bytes = dir.open(&format!("{}.si", sci.segment_name)).unwrap();
         let si = segment_info::parse(&si_bytes, &sci.segment_id).unwrap();
@@ -11559,32 +12033,55 @@ mod tests {
         );
     }
 
-    /// The opt-in path must be unaffected: a field norms *were* written for
-    /// keeps `omit_norms` false.
+    /// A document that does **not** carry an indexed field gets no norm at
+    /// all, and one that carries it but tokenizes to nothing gets an
+    /// explicit `0` -- Java's `PerField.finish`, which runs only for a field
+    /// the document actually has and writes `0` for `invertState.length == 0`.
+    /// Before c35 both were a dense `0`, so an absent field and an empty one
+    /// were indistinguishable in the `.nvd`.
     #[test]
-    fn the_norms_opt_in_field_still_declares_that_it_has_norms() {
-        let tmp = tempdir("norms-opted-in-fnm");
+    fn a_document_without_the_field_gets_no_norm_and_an_empty_one_gets_zero() {
+        let tmp = tempdir("norms-sparse");
         let dir = FsDirectory::open(&tmp);
         let fields = vec![stored_only_field("id", 0), body_field(1)];
         let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
-        writer.set_norms_field(Some("body")).unwrap();
-        writer.add_document(doc_with_body("a", "fox")).unwrap();
+        writer.set_postings_field(Some("body")).unwrap();
+        // doc 0 has `body`; doc 1 has no `body` field at all; doc 2 has an
+        // empty `body`.
+        writer
+            .add_document(doc_with_body("a", "fox jumps"))
+            .unwrap();
+        writer.add_document(doc("b")).unwrap();
+        writer.add_document(doc_with_body("c", "")).unwrap();
         let sis = writer.commit().unwrap().clone();
         let sci = &sis.segments[0];
 
-        let fnm = dir.open(&format!("{}.fnm", sci.segment_name)).unwrap();
-        let fis = lucene_codecs::field_infos::parse(&fnm, &sci.segment_id, "").unwrap();
-        let body = fis.fields.iter().find(|f| f.name == "body").unwrap();
-        assert!(!body.omit_norms);
+        let nvm = dir.open(&format!("{}.nvm", sci.segment_name)).unwrap();
+        let nvd = dir.open(&format!("{}.nvd", sci.segment_name)).unwrap();
+        let (_v, meta) = norms::parse_meta(&nvm, &sci.segment_id, "").unwrap();
+        let entry = meta.entry(1).unwrap();
+        assert_eq!(
+            norms::norm_value(&nvd, entry, 0).unwrap().map(|v| v as u8),
+            Some(small_float::int_to_byte4(2))
+        );
+        assert_eq!(
+            norms::norm_value(&nvd, entry, 1).unwrap(),
+            None,
+            "a doc that does not carry the field has no norm"
+        );
+        assert_eq!(
+            norms::norm_value(&nvd, entry, 2).unwrap(),
+            Some(0),
+            "a doc that carries an empty field has an explicit zero norm"
+        );
     }
 
     #[test]
-    fn commit_with_norms_field_writes_readable_length_dependent_norms_for_multiple_docs() {
+    fn commit_writes_readable_length_dependent_norms_for_multiple_docs() {
         let tmp = tempdir("norms-commit");
         let dir = FsDirectory::open(&tmp);
         let fields = vec![stored_only_field("id", 0), body_field(1)];
         let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
-        writer.set_norms_field(Some("body")).unwrap();
 
         // doc 0: "fox" -> length 1; doc 1: "the quick brown fox jumps" ->
         // length 5; doc 2: "fox fox fox" -> length 3 (repeated term still
@@ -11649,12 +12146,16 @@ mod tests {
         assert_ne!(norm_a, norm_c);
     }
 
+    /// The inverse of `an_indexed_field_gets_norms_with_no_opt_in_at_all`:
+    /// once every indexed field has opted out, the commit is stored-only
+    /// again and writes no `.nvm`/`.nvd` at all.
     #[test]
-    fn commit_with_no_norms_field_configured_stays_stored_only() {
+    fn commit_with_every_field_opted_out_of_norms_stays_stored_only() {
         let tmp = tempdir("no-norms-commit");
         let dir = FsDirectory::open(&tmp);
         let fields = vec![stored_only_field("id", 0), body_field(1)];
         let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.omit_norms_field("body").unwrap();
 
         writer.add_document(doc_with_body("a", "fox")).unwrap();
         let sis = writer.commit().unwrap().clone();
@@ -11671,12 +12172,11 @@ mod tests {
     }
 
     #[test]
-    fn commit_with_norms_field_but_no_pending_docs_writes_no_norms_files() {
+    fn commit_with_norms_but_no_pending_docs_writes_no_norms_files() {
         let tmp = tempdir("norms-commit-no-docs");
         let dir = FsDirectory::open(&tmp);
         let fields = vec![stored_only_field("id", 0), body_field(1)];
         let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
-        writer.set_norms_field(Some("body")).unwrap();
 
         writer.commit().unwrap();
         assert!(dir
@@ -11684,42 +12184,6 @@ mod tests {
             .unwrap()
             .iter()
             .all(|f| !f.ends_with(".nvm") && !f.ends_with(".nvd")));
-    }
-
-    /// A doc with no text (or a non-`String` value) for the configured norms
-    /// field still gets a dense entry -- length `0`, norm byte `0` -- rather
-    /// than making the whole commit fail or producing a sparse encoding
-    /// `norms::write_single_dense_field` doesn't support.
-    #[test]
-    fn commit_with_norms_field_gives_docs_missing_the_field_a_zero_length_norm() {
-        let tmp = tempdir("norms-commit-missing-field");
-        let dir = FsDirectory::open(&tmp);
-        let fields = vec![stored_only_field("id", 0), body_field(1)];
-        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
-        writer.set_norms_field(Some("body")).unwrap();
-
-        writer.add_document(doc_with_body("a", "fox")).unwrap();
-        // doc 1 has no `body` field at all.
-        writer
-            .add_document(Document {
-                fields: vec![StoredField {
-                    field_number: 0,
-                    value: FieldValue::String("b".to_string()),
-                }],
-            })
-            .unwrap();
-        let sis = writer.commit().unwrap().clone();
-        let sci = &sis.segments[0];
-
-        let nvm = dir.open(&format!("{}.nvm", sci.segment_name)).unwrap();
-        let nvd = dir.open(&format!("{}.nvd", sci.segment_name)).unwrap();
-        let (_version, parsed) =
-            lucene_codecs::norms::parse_meta(&nvm, &sci.segment_id, "").unwrap();
-        let entry = parsed.entry(1).unwrap();
-        let norm_b = lucene_codecs::norms::norm_value(&nvd, entry, 1)
-            .unwrap()
-            .unwrap();
-        assert_eq!(lucene_util::small_float::byte4_to_int(norm_b as u8), 0);
     }
 
     // ---------------------------------------------------------------------
@@ -12608,6 +13072,36 @@ mod tests {
             }
         }
         assert_eq!(visible_ids(&dir, &infos), vec!["a"]);
+    }
+
+    /// End to end for `SegmentCommitInfo.generationAdvanced()`: the id a
+    /// commit records for a segment must change when that segment changes.
+    /// Read back out of `segments_N`, not off the in-memory writer, because
+    /// the commit file is what a replication or NRT consumer actually
+    /// compares.
+    #[test]
+    fn a_delete_changes_the_segment_commit_id_the_next_commit_records() {
+        let tmp = tempdir("sci-id-changes-across-commits");
+        let dir = FsDirectory::open(&tmp);
+        let mut writer = seq_writer(&dir);
+        writer.add_document(doc_with_body("a", "keep")).unwrap();
+        writer.add_document(doc_with_body("b", "doomed")).unwrap();
+        writer.commit().unwrap();
+
+        let before = segment_infos::read_latest(&dir).unwrap().segments[0].sci_id;
+        assert!(before.is_some());
+
+        writer
+            .delete_documents_by_term(&[body_term("doomed")])
+            .unwrap();
+        writer.commit().unwrap();
+
+        let after = segment_infos::read_latest(&dir).unwrap().segments[0].sci_id;
+        assert!(after.is_some());
+        assert_ne!(
+            after, before,
+            "a deleted document left the segment-commit id unchanged"
+        );
     }
 
     #[test]
@@ -14735,12 +15229,28 @@ mod tests {
     // Index sorting (`IndexWriterConfig.setIndexSort`)
     // ---------------------------------------------------------------
 
+    /// The two `Long.MIN_VALUE`/`Long.MAX_VALUE` sentinels this port's own
+    /// sorted flush and sorted merge write, as a test-local shorthand.
+    /// `IndexSortField` models Java's whole missing-value space now (any
+    /// numeric sentinel, or none), so this names the two the tests below
+    /// care about rather than pretending they are all there is.
+    #[derive(Debug, Clone, Copy)]
+    enum SortMissingValue {
+        /// `SortField.setMissingValue(Long.MIN_VALUE)`.
+        First,
+        /// `SortField.setMissingValue(Long.MAX_VALUE)`.
+        Last,
+    }
+
     fn sort_field(name: &str, reverse: bool, missing: SortMissingValue) -> IndexSortField {
-        IndexSortField {
-            field: name.to_string(),
+        IndexSortField::long(
+            name,
             reverse,
-            missing,
-        }
+            Some(match missing {
+                SortMissingValue::First => i64::MIN,
+                SortMissingValue::Last => i64::MAX,
+            }),
+        )
     }
 
     /// A writer over `id` (stored), `rank`/`tie` (NUMERIC doc values, also
@@ -15080,7 +15590,6 @@ mod tests {
         .unwrap();
         writer.set_doc_values_field(Some("rank")).unwrap();
         writer.set_postings_field(Some("body")).unwrap();
-        writer.set_norms_field(Some("body")).unwrap();
         writer.set_term_vector_field(Some("body")).unwrap();
         writer.set_vector_field(Some("v")).unwrap();
         writer
@@ -15434,8 +15943,6 @@ mod tests {
         writer.set_term_vector_field(Some("body")).unwrap();
         writer.set_doc_values_field(Some("rank")).unwrap();
         writer.add_doc_values_field("tie").unwrap();
-        writer.set_norms_field(Some("body")).unwrap();
-        writer.add_norms_field("id").unwrap();
         writer.set_vector_field(Some("v")).unwrap();
         // No merging for the first three commits, so every source segment is
         // observable before anything folds it away.
@@ -15514,8 +16021,9 @@ mod tests {
     /// pair, so two of them in one merge overwrote each other -- exactly the
     /// limitation `doc_values::write_dense_fields` had already removed for
     /// doc values. `norms::write_fields` is the norms analogue, and this is
-    /// both sides taking it up: `IndexWriter::add_norms_field` on the flush,
-    /// the widened `merge_norms` on the merge.
+    /// both sides taking it up: the flush's per-field column loop, and the
+    /// widened `merge_norms` on the merge. Since c35 neither side needs an
+    /// opt-in at all -- both `id` and `body` are indexed, so both get norms.
     ///
     /// Asserted on the *values*, per document per field, rather than on the
     /// merge having happened: a merge that carried only the first field
@@ -15529,8 +16037,6 @@ mod tests {
         let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
         writer.set_postings_field(Some("body")).unwrap();
         writer.add_postings_field("id").unwrap();
-        writer.set_norms_field(Some("body")).unwrap();
-        writer.add_norms_field("id").unwrap();
         writer.set_merge_policy(Some(tight_merge_policy()));
 
         // `id` is one token, `body` is `rank / 10` of them -- so the two
@@ -15601,40 +16107,35 @@ mod tests {
         }
     }
 
-    /// `add_norms_field`'s three refusals, which are `set_norms_field`'s:
-    /// an unknown field, an unindexed one, and one that sets `omit_norms`.
-    /// Plus the "naming the same field twice is a no-op" rule --
-    /// `norms::write_fields` rejects a duplicate field number, so an
-    /// accumulating entry point that let one through would fail the flush
-    /// rather than the call.
+    /// The norms field set is derived from the schema, not accumulated: every
+    /// indexed field that has not opted out gets exactly one column, and
+    /// `omit_norms_field` takes one away. Before c35 this was an
+    /// accumulating opt-in whose duplicate-entry and clear-the-list rules had
+    /// to be tested; the rule now is simply "the `.fnm` and the `.nvm` say the
+    /// same thing".
     #[test]
-    fn add_norms_field_gates_and_deduplicates() {
-        let tmp = tempdir("add-norms-field-gates");
+    fn the_norms_columns_are_exactly_the_indexed_non_omitting_fields() {
+        let tmp = tempdir("norms-column-set");
         let dir = FsDirectory::open(&tmp);
         let mut fields = sortable_fields_with(true, false);
+        // `id` and `body` are indexed; `tie` is indexed but opts out; `rank`
+        // is a plain numeric field (`index_options == None`).
         fields[0].index_options = IndexOptions::DocsAndFreqs;
         fields[2].omit_norms = true;
         fields[2].index_options = IndexOptions::DocsAndFreqs;
         let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
 
         assert!(matches!(
-            writer.add_norms_field("nonexistent"),
+            writer.omit_norms_field("nonexistent"),
             Err(Error::UnknownNormsField(_))
         ));
-        // `rank` is a plain numeric field: `index_options == None`.
+        // `rank` is a plain numeric field: `index_options == None`, so there
+        // are no norms to omit.
         assert!(matches!(
-            writer.add_norms_field("rank"),
-            Err(Error::UnsupportedNormsField(_))
-        ));
-        // `tie` is indexed but sets `omit_norms`.
-        assert!(matches!(
-            writer.add_norms_field("tie"),
+            writer.omit_norms_field("rank"),
             Err(Error::UnsupportedNormsField(_))
         ));
 
-        writer.add_norms_field("body").unwrap();
-        writer.add_norms_field("body").unwrap();
-        writer.add_norms_field("id").unwrap();
         writer.set_postings_field(Some("body")).unwrap();
         writer.add_postings_field("id").unwrap();
         writer
@@ -15648,12 +16149,14 @@ mod tests {
         assert_eq!(
             meta.entries.len(),
             2,
-            "`body` added twice must not produce two columns"
+            "`id` and `body` each get exactly one column; `tie` opted out and \
+             `rank` is not indexed"
         );
 
-        // And `set_norms_field(None)` clears the whole accumulated list, not
-        // just the last entry.
-        writer.set_norms_field(None).unwrap();
+        // Opting the remaining two out writes no norms at all for the next
+        // segment.
+        writer.omit_norms_field("body").unwrap();
+        writer.omit_norms_field("id").unwrap();
         writer
             .add_document(sortable_doc("b", 20, 0, "tb tb"))
             .unwrap();
@@ -15668,8 +16171,212 @@ mod tests {
             !dir.list_all()
                 .unwrap()
                 .contains(&format!("{}.nvm", names[1])),
-            "clearing the list must write no norms at all"
+            "opting every field out must write no norms at all"
         );
+    }
+
+    /// **The c35 widening, write side.** A `SortedNumericSortField` with the
+    /// `MAX` selector and **no missing value** was doubly inexpressible
+    /// before: the old `IndexSortField` had no selector at all (so `parse`
+    /// refused anything but `MIN`) and no way to say "no missing value" (Java
+    /// compares such a document as `0`).
+    ///
+    /// Asserted through this port's own `CheckIndex`, which re-derives the
+    /// comparator from the written `.si` and re-reads the keys out of the
+    /// segment's SORTED_NUMERIC column -- so a flush that picked the wrong
+    /// value out of the multi-valued column, or that ignored the selector,
+    /// fails here rather than producing a plausible segment.
+    #[test]
+    fn a_sorted_numeric_max_selector_sort_orders_the_flush_and_survives_a_merge() {
+        let tmp = tempdir("sorted-numeric-max-sort");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![
+            stored_only_field("id", 0),
+            FieldInfo {
+                doc_values_type: DocValuesType::SortedNumeric,
+                ..stored_only_field("multi", 1)
+            },
+        ];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_doc_values_field(Some("multi")).unwrap();
+        let sort = IndexSortField {
+            field: "multi".to_string(),
+            reverse: false,
+            kind: crate::segment_info::IndexSortKind::SortedNumeric {
+                key: crate::segment_info::NumericSortKey::Int(None),
+                selector: crate::segment_info::SortedNumericSelector::Max,
+            },
+        };
+        writer
+            .set_index_sort(Some(std::slice::from_ref(&sort)))
+            .unwrap();
+        // No merging while the flushes are being observed.
+        writer.set_merge_policy(None);
+
+        // `(id, values)`. The MIN of each document is deliberately in the
+        // *opposite* order from the MAX, so a flush that took the wrong end
+        // of the column produces a different physical order.
+        // `f`'s values are supplied *descending* on purpose: a document's
+        // SORTED_NUMERIC values must be stored ascending
+        // (`SortedNumericDocValuesWriter.finishCurrentDoc`'s `Arrays.sort`,
+        // which real `CheckIndex.checkSortedNumericDocValues` enforces), and
+        // MAX is then the *last* stored value. A writer that kept the
+        // caller's order would both write a segment real Lucene rejects and
+        // make the selector pick `3` instead of `6`.
+        let corpus: [(&str, &[i64]); 6] = [
+            ("a", &[1, 9]),
+            ("b", &[8, 8]),
+            ("c", &[0, 5]),
+            ("d", &[7, 7]),
+            ("e", &[2, 2]),
+            ("f", &[6, 3]),
+        ];
+        for batch in [&corpus[..2], &corpus[2..4], &corpus[4..]] {
+            for (id, values) in batch {
+                let mut doc_fields = vec![StoredField {
+                    field_number: 0,
+                    value: FieldValue::String(id.to_string()),
+                }];
+                for v in *values {
+                    doc_fields.push(StoredField {
+                        field_number: 1,
+                        value: FieldValue::Long(*v),
+                    });
+                }
+                writer
+                    .add_document(Document { fields: doc_fields })
+                    .unwrap();
+            }
+            writer.commit().unwrap();
+        }
+
+        // Ascending by MAX: b(8), a(9) in the first flush and c(5), d(7) in
+        // the second; ascending by MIN it would have been a(1), b(8) and
+        // c(0), d(7) -- so the first flush's order alone discriminates.
+        let sis = writer.segment_infos().clone();
+        assert_eq!(
+            read_all_docs(&dir, &sis),
+            vec!["b", "a", "c", "d", "e", "f"],
+            "each flush is MAX-ordered on its own: b(8) before a(9), c(5) before \
+             d(7), e(2) before f(6) -- by MIN it would have been a(1) before b(8)"
+        );
+
+        writer.set_merge_policy(Some(tight_merge_policy()));
+        writer.commit().unwrap();
+        let sis = writer.segment_infos().clone();
+        assert_eq!(sis.segments.len(), 1, "the two flushes merged into one");
+        assert_eq!(
+            read_all_docs(&dir, &sis),
+            vec!["e", "c", "f", "d", "b", "a"],
+            "the sort-preserving merge is MAX-ordered across sources too: \
+             e(2), c(5), f(6), d(7), b(8), a(9)"
+        );
+
+        // The merged `.si` still describes the widened sort, verbatim.
+        let sci = &sis.segments[0];
+        let si_bytes = dir.open(&format!("{}.si", sci.segment_name)).unwrap();
+        let si = segment_info::parse(&si_bytes, &sci.segment_id).unwrap();
+        assert_eq!(si.index_sort, Some(vec![sort]));
+
+        // The column real Lucene requires: every document's values ascending,
+        // so `f` came back as `[3, 6]` and not the `[6, 3]` it was given.
+        let dvm = dir
+            .open(&format!(
+                "{}.dvm",
+                per_field_segment(&sci.segment_name, DOC_VALUES_FORMAT_NAME)
+            ))
+            .unwrap();
+        let dvd = dir
+            .open(&format!(
+                "{}.dvd",
+                per_field_segment(&sci.segment_name, DOC_VALUES_FORMAT_NAME)
+            ))
+            .unwrap();
+        let infos = lucene_codecs::field_infos::parse(
+            &dir.open(&format!("{}.fnm", sci.segment_name)).unwrap(),
+            &sci.segment_id,
+            "",
+        )
+        .unwrap();
+        let (_v, dv_meta) = doc_values::parse_meta(
+            &dvm,
+            &sci.segment_id,
+            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
+            &infos,
+        )
+        .unwrap();
+        let entry = dv_meta.sorted_numeric_entry(1).unwrap();
+        for doc in 0..6 {
+            let values = doc_values::sorted_numeric_values(&dvd, entry, doc).unwrap();
+            assert!(
+                values.windows(2).all(|w| w[0] <= w[1]),
+                "doc {doc} values are not ascending: {values:?}"
+            );
+        }
+        assert_eq!(
+            doc_values::sorted_numeric_values(&dvd, entry, 2).unwrap(),
+            vec![3, 6],
+            "`f` is the third document in the merged order and its values were sorted"
+        );
+
+        for result in crate::check_index::check_directory(&dir).unwrap() {
+            assert!(result.all_passed(), "{:?}", result.failures());
+        }
+    }
+
+    /// `set_index_sort` accepts every kind whose key this writer can produce
+    /// and names the ones it cannot, rather than mis-ordering them. Reading
+    /// them is a separate question -- `segment_info::parse` handles all four
+    /// providers, which is what lets this port open an index Lucene wrote.
+    #[test]
+    fn set_index_sort_refuses_the_ordinal_and_byte_sort_kinds() {
+        use crate::segment_info::{IndexSortKind, SortedSetSelector, StringMissingValue};
+        let tmp = tempdir("sort-kind-gate");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![
+            stored_only_field("id", 0),
+            numeric_field("rank", 1),
+            sorted_field("name", 2),
+        ];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_doc_values_field(Some("name")).unwrap();
+        for kind in [
+            IndexSortKind::String(StringMissingValue::First),
+            IndexSortKind::SortedSet {
+                selector: SortedSetSelector::Min,
+                missing: StringMissingValue::None,
+            },
+            IndexSortKind::Binary(StringMissingValue::Last),
+        ] {
+            let sf = IndexSortField {
+                field: "name".to_string(),
+                reverse: false,
+                kind: kind.clone(),
+            };
+            assert!(
+                matches!(
+                    writer.set_index_sort(Some(&[sf])),
+                    Err(Error::UnsupportedIndexSortKind(f)) if f == "name"
+                ),
+                "{kind:?}"
+            );
+        }
+        // And the doc-values type still has to match the kind: a
+        // SortedNumeric sort over a NUMERIC column is refused by
+        // `validateIndexSortDVType`'s rule, not silently read as NUMERIC.
+        writer.set_doc_values_field(Some("rank")).unwrap();
+        let sf = IndexSortField {
+            field: "rank".to_string(),
+            reverse: false,
+            kind: IndexSortKind::SortedNumeric {
+                key: crate::segment_info::NumericSortKey::Long(None),
+                selector: crate::segment_info::SortedNumericSelector::Min,
+            },
+        };
+        assert!(matches!(
+            writer.set_index_sort(Some(&[sf])),
+            Err(Error::UnsupportedIndexSortField(f, DocValuesType::Numeric)) if f == "rank"
+        ));
     }
 
     /// A writer configured exactly the way the merge tests below need it.
@@ -15684,7 +16391,6 @@ mod tests {
         writer.set_doc_values_field(Some("rank")).unwrap();
         writer.add_doc_values_field("tie").unwrap();
         writer.set_postings_field(Some("body")).unwrap();
-        writer.set_norms_field(Some("body")).unwrap();
         writer.set_term_vector_field(Some("body")).unwrap();
         writer.set_vector_field(Some("v")).unwrap();
         writer.set_index_sort(Some(sort)).unwrap();

@@ -218,9 +218,6 @@ fn main() {
         .set_postings_field(Some("body"))
         .expect("set postings field");
     writer
-        .set_norms_field(Some("body"))
-        .expect("set norms field");
-    writer
         .set_vector_field(Some("never_written"))
         .expect("set vector field");
     for spec in &specs {

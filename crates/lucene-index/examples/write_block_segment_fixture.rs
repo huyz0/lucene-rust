@@ -122,9 +122,6 @@ fn main() {
     writer
         .set_postings_field(Some("body"))
         .expect("set postings field");
-    writer
-        .set_norms_field(Some("body"))
-        .expect("set norms field");
 
     for b in 0..NUM_BLOCKS {
         let mut block = Vec::with_capacity(BLOCK_SIZE);

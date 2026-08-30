@@ -149,6 +149,117 @@ where
     Ok(merged.top_docs().to_vec())
 }
 
+/// `IndexSearcher.searchAfter(after, query, n)` over several segments: the same
+/// fan-out and merge as [`merge_multi_segment_scored`], with every leaf's
+/// collector told to drop the hits the previous page already returned.
+///
+/// **The doc-base translation is the whole of it.** `after.doc_id` is a
+/// *global* doc id (that is what the caller was handed on page 1), and each
+/// leaf's collector compares against *local* ones, so each gets
+/// `after.doc_id - doc_base` -- exactly `TopScoreDocCollector.getLeafCollector`'s
+/// `afterDoc = after.doc - context.docBase`. The result is deliberately allowed
+/// to leave `[0, maxDoc)`:
+///
+/// - for a leaf **before** the one holding `after`, it is large and positive,
+///   so every local doc id ties out and only the score test rejects -- correct,
+///   since every one of those documents outranks `after` on a tie;
+/// - for a leaf **after** it, it is negative, so no doc id can tie out -- also
+///   correct, since none of those documents was on the previous page.
+///
+/// The merge collector is **not** given `after`: each leaf has already dropped
+/// the previous page, so a second filter would drop nothing and could only
+/// disagree.
+///
+/// `after`'s score must be the score that leaf's own search produces, or the
+/// page boundary lands in the wrong place -- so a caller paginating must feed
+/// back the `ScoreDoc` this function returned, unmodified, and must not change
+/// the query between pages. That is Java's contract too.
+pub fn merge_multi_segment_scored_after<F>(
+    doc_bases: &[i32],
+    top_n: usize,
+    after: ScoreDoc,
+    mut per_segment_search: F,
+) -> Result<Vec<ScoreDoc>>
+where
+    F: FnMut(usize, &mut TopDocsCollector) -> Result<()>,
+{
+    let mut merged = TopDocsCollector::new(top_n);
+    for (i, &doc_base) in doc_bases.iter().enumerate() {
+        let mut local = TopDocsCollector::new(top_n).with_after(ScoreDoc {
+            doc_id: after.doc_id.saturating_sub(doc_base),
+            score: after.score,
+        });
+        per_segment_search(i, &mut local)?;
+        for hit in local.top_docs() {
+            merged.collect(hit.doc_id.saturating_add(doc_base), hit.score);
+        }
+    }
+    Ok(merged.top_docs().to_vec())
+}
+
+/// [`merge_multi_segment_scored_concurrent`] with one
+/// [`MaxScoreAccumulator`] shared across the leaves -- what
+/// `TopScoreDocCollectorManager` builds whenever the search is concurrent, and
+/// what its `null` stands in for when it is not.
+///
+/// Without it every leaf prunes only against its own queue, so a leaf that has
+/// not yet found anything competitive scans all of its documents even though
+/// another leaf has already proved a much higher bar. With it, each leaf
+/// publishes the `(global doc id, score)` of its own worst kept hit and may
+/// prune against the best pair any leaf has published.
+///
+/// `total_hits_threshold` is `TopScoreDocCollectorManager`'s: no leaf publishes
+/// a threshold, into the accumulator or otherwise, until it has seen more than
+/// that many hits, which is what keeps a caller's exact-count budget honest.
+/// `u64::MAX` disables pruning entirely (`ScoreMode::COMPLETE`), which also
+/// makes the accumulator inert -- correct rather than merely harmless, since an
+/// exhaustive collector must not skip.
+///
+/// **The result does not depend on the scheduling.** The accumulator only ever
+/// *raises* a leaf's pruning threshold to one another leaf has already proved
+/// competitive, so a leaf that reads it late merely does more work; the hits it
+/// keeps are the same. That is why the merge below is still the sequential,
+/// input-ordered one [`merge_multi_segment_scored_concurrent`] uses.
+pub fn merge_multi_segment_scored_concurrent_shared_max_score<F>(
+    doc_bases: &[i32],
+    top_n: usize,
+    total_hits_threshold: u64,
+    per_segment_search: F,
+) -> Result<Vec<ScoreDoc>>
+where
+    F: Fn(usize, &mut TopDocsCollector) -> Result<()> + Sync,
+{
+    use rayon::prelude::*;
+
+    let acc = std::sync::Arc::new(crate::collector::MaxScoreAccumulator::new());
+    let per_segment_hits: Vec<Result<Vec<ScoreDoc>>> = doc_bases
+        .par_iter()
+        .enumerate()
+        .map(|(i, &doc_base)| {
+            let mut local =
+                TopDocsCollector::with_total_hits_threshold(top_n, total_hits_threshold)
+                    .with_shared_max_score(std::sync::Arc::clone(&acc), doc_base);
+            per_segment_search(i, &mut local)?;
+            Ok(local
+                .top_docs()
+                .iter()
+                .map(|hit| ScoreDoc {
+                    doc_id: hit.doc_id.saturating_add(doc_base),
+                    score: hit.score,
+                })
+                .collect())
+        })
+        .collect();
+
+    let mut merged = TopDocsCollector::new(top_n);
+    for hits in per_segment_hits {
+        for hit in hits? {
+            merged.collect(hit.doc_id, hit.score);
+        }
+    }
+    Ok(merged.top_docs().to_vec())
+}
+
 /// Deadline-aware sibling of [`merge_multi_segment_scored`] -- real Lucene's
 /// `TimeLimitingBulkScorer`/`IndexSearcher.search`'s `queryTimeout` param stop
 /// scoring early once a caller-supplied clock expires, returning whatever
@@ -479,6 +590,46 @@ pub fn search_term_query_multi_segment(
     let global = global_term_stats(segments, &query.field, &query.term);
     let doc_bases: Vec<i32> = segments.iter().map(|s| s.doc_base).collect();
     merge_multi_segment_scored(&doc_bases, top_n, |i, local| {
+        let seg = &segments[i];
+        let seg_norms = norms.get(i).copied().flatten();
+        crate::search_term_query_scored_maxscore_with_stats(
+            seg.fields,
+            seg.doc_in,
+            seg.live_docs,
+            query,
+            seg_norms,
+            global,
+            local,
+        )
+    })
+}
+
+/// `IndexSearcher.searchAfter(after, new TermQuery(...), n)` across segments:
+/// [`search_term_query_multi_segment`]'s next page.
+///
+/// `after` is a hit this function (or [`search_term_query_multi_segment`])
+/// previously returned, in **global** doc-ID space and with the score it was
+/// returned with -- see [`merge_multi_segment_scored_after`] for why both
+/// halves matter and how the doc id is translated per leaf.
+///
+/// Reader-wide statistics are recomputed, which is what keeps the pages
+/// consistent: page 2 must score with the same idf page 1 did, or the boundary
+/// moves under the caller.
+pub fn search_term_query_multi_segment_after(
+    segments: &[OpenSegment<'_>],
+    query: &TermQuery,
+    norms: &[Option<&FieldNorms<'_>>],
+    top_n: usize,
+    after: ScoreDoc,
+) -> Result<Vec<ScoreDoc>> {
+    debug_assert_eq!(
+        segments.len(),
+        norms.len(),
+        "one norms entry per segment expected"
+    );
+    let global = global_term_stats(segments, &query.field, &query.term);
+    let doc_bases: Vec<i32> = segments.iter().map(|s| s.doc_base).collect();
+    merge_multi_segment_scored_after(&doc_bases, top_n, after, |i, local| {
         let seg = &segments[i];
         let seg_norms = norms.get(i).copied().flatten();
         crate::search_term_query_scored_maxscore_with_stats(
@@ -857,6 +1008,153 @@ mod tests {
             "/../../fixtures/data/blocktree_index/"
         )
         .to_string()
+    }
+
+    /// The fan-out functions are collector plumbing; these two tests drive them
+    /// with a synthetic per-segment closure so the merge, the doc-base
+    /// translation and the shared accumulator are exercised without an index.
+    fn stub_segments(hits: &[Vec<(i32, f32)>]) -> Vec<i32> {
+        // Doc bases 0, 100, 200, ...: wide enough that a global doc id can only
+        // come out right if the translation happened.
+        (0..hits.len() as i32)
+            .map(|i| i.saturating_mul(100))
+            .collect()
+    }
+
+    #[test]
+    fn the_after_fan_out_translates_the_global_doc_id_into_each_leafs_own_space() {
+        // Two leaves, all scores tied, so the page boundary is decided purely
+        // by the doc-id half of the rule -- which is the half the doc-base
+        // subtraction feeds.
+        let per_leaf = vec![
+            vec![(0i32, 1.0f32), (1, 1.0), (2, 1.0)],
+            vec![(0i32, 1.0f32), (1, 1.0), (2, 1.0)],
+        ];
+        let doc_bases = stub_segments(&per_leaf);
+        let run = |after: Option<ScoreDoc>| {
+            let search = |i: usize, local: &mut TopDocsCollector| {
+                for &(doc, score) in &per_leaf[i] {
+                    local.collect(doc, score);
+                }
+                Ok(())
+            };
+            match after {
+                None => merge_multi_segment_scored(&doc_bases, 2, search).unwrap(),
+                Some(a) => merge_multi_segment_scored_after(&doc_bases, 2, a, search).unwrap(),
+            }
+        };
+        let page1 = run(None);
+        assert_eq!(
+            page1.iter().map(|h| h.doc_id).collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+        let page2 = run(Some(page1[1]));
+        assert_eq!(
+            page2.iter().map(|h| h.doc_id).collect::<Vec<_>>(),
+            vec![2, 100]
+        );
+        // Page 3 straddles the boundary the other way: `after` is now in the
+        // second leaf, so the first leaf's translated `afterDoc` is 100 and
+        // every one of its documents is correctly dropped.
+        let page3 = run(Some(page2[1]));
+        assert_eq!(
+            page3.iter().map(|h| h.doc_id).collect::<Vec<_>>(),
+            vec![101, 102]
+        );
+    }
+
+    #[test]
+    fn the_shared_max_score_fan_out_returns_what_the_plain_one_does() {
+        // The accumulator may only *raise* a leaf's pruning threshold to one
+        // another leaf has already proved competitive, so it can change how much
+        // work is done and never which hits come back.
+        //
+        // Leaf 1's own hits top out at 3.0, so a threshold of 8.0 is a value its
+        // own queue can never produce -- observing it is the only evidence that
+        // the accumulator was consulted at all. The two runs record into
+        // **separate** buffers on purpose: sharing one would let the plain run's
+        // own local thresholds satisfy the assertion, and an inert
+        // `with_shared_max_score` would pass.
+        let per_leaf = vec![
+            vec![(0i32, 9.0f32), (1, 8.0), (2, 7.0)],
+            vec![(0i32, 3.0f32), (1, 2.0), (2, 1.0)],
+        ];
+        let doc_bases = stub_segments(&per_leaf);
+        // `(leaf, threshold)`: leaf 0's *own* queue settles on 8.0, so the bare
+        // value proves nothing -- it has to be leaf **1** that saw it.
+        let run = |seen: &std::sync::Mutex<Vec<(usize, Option<f32>)>>, shared: bool| {
+            let search = |i: usize, local: &mut TopDocsCollector| {
+                for &(doc, score) in &per_leaf[i] {
+                    local.collect(doc, score);
+                    seen.lock()
+                        .expect("no test thread panics while holding this")
+                        .push((i, local.min_competitive_score()));
+                }
+                Ok(())
+            };
+            if shared {
+                merge_multi_segment_scored_concurrent_shared_max_score(&doc_bases, 2, 0, search)
+                    .unwrap()
+            } else {
+                merge_multi_segment_scored_concurrent(&doc_bases, 2, search).unwrap()
+            }
+        };
+        let shared_seen = std::sync::Mutex::new(Vec::<(usize, Option<f32>)>::new());
+        let plain_seen = std::sync::Mutex::new(Vec::<(usize, Option<f32>)>::new());
+        let shared = run(&shared_seen, true);
+        let plain = run(&plain_seen, false);
+
+        assert_eq!(shared, plain);
+        assert_eq!(
+            shared.iter().map(|h| h.doc_id).collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+        let shared_seen = shared_seen
+            .lock()
+            .expect("no test thread panics while holding this");
+        let plain_seen = plain_seen
+            .lock()
+            .expect("no test thread panics while holding this");
+        assert!(
+            shared_seen
+                .iter()
+                .any(|&(leaf, t)| leaf == 1 && t == Some(8.0)),
+            "the low-scoring leaf must have seen the other leaf's bar, got {shared_seen:?}"
+        );
+        assert!(
+            !plain_seen
+                .iter()
+                .any(|&(leaf, t)| leaf == 1 && t == Some(8.0)),
+            "without the accumulator leaf 1 can never see 8.0, got {plain_seen:?}"
+        );
+    }
+
+    #[test]
+    fn an_exhaustive_shared_fan_out_publishes_no_threshold_at_all() {
+        let per_leaf = vec![vec![(0i32, 5.0f32), (1, 4.0)]];
+        let doc_bases = stub_segments(&per_leaf);
+        let seen = std::sync::Mutex::new(Vec::<Option<f32>>::new());
+        let hits = merge_multi_segment_scored_concurrent_shared_max_score(
+            &doc_bases,
+            1,
+            u64::MAX,
+            |i, local| {
+                for &(doc, score) in &per_leaf[i] {
+                    local.collect(doc, score);
+                    seen.lock()
+                        .expect("no test thread panics while holding this")
+                        .push(local.pruning_threshold());
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(seen
+            .lock()
+            .expect("no test thread panics while holding this")
+            .iter()
+            .all(Option::is_none));
     }
 
     struct Manifest {

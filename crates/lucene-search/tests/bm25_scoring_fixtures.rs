@@ -397,6 +397,216 @@ fn sloppy_phrase_scores_match_real_lucene_bit_for_bit() {
     }
 }
 
+/// **Reordered** sloppy matches -- the half of `SloppyPhraseMatcher` this port
+/// did not have until c37, and the reason it silently under-matched every
+/// transposition.
+///
+/// `SloppyPhraseMatcher` shifts each slot's positions back by the slot's own
+/// index, so a match is a *window* over the shifted positions and phrase order
+/// is not a constraint at all. Queried backwards, `pos:"beta alpha"` shifts doc
+/// 8555 (`alpha`@0 `beta`@1) to `beta = 1`, `alpha = -1`: a window of width 2.
+/// The old in-order matcher could not produce a match at any slop.
+///
+/// The three slop values are the whole claim: **not** at 1 (so the port cannot
+/// pass by matching everything), at 2 with `matchLength == 2` (so the weight is
+/// `1/3`, not `1`), and at 4 picking up doc 8557 as well at a *lower* score
+/// (`matchLength == 4`, weight `1/5`) -- an ordering that only comes out right
+/// if the window width, not the gap count, is what feeds `sloppyWeight`.
+#[test]
+fn reordered_sloppy_phrase_scores_match_real_lucene_bit_for_bit() {
+    let seg = open_segment();
+    let doc_in = DocInput::open(seg.doc, &seg.id, &seg.suffix).expect("open .doc");
+    let pos_in = PosInput::open(seg.pos, &seg.id, &seg.suffix).expect("open .pos");
+    let pay_in = PayInput::open(seg.pay, &seg.id, &seg.suffix).expect("open .pay");
+    let norms = seg.field_norms("pos");
+
+    let cases: [(&str, PhraseQuery); 5] = [
+        (
+            "scoring.phrase.reordered.slop1",
+            PhraseQuery::new("pos", ["beta", "alpha"]).with_slop(1),
+        ),
+        (
+            "scoring.phrase.reordered.slop2",
+            PhraseQuery::new("pos", ["beta", "alpha"]).with_slop(2),
+        ),
+        (
+            "scoring.phrase.reordered.slop4",
+            PhraseQuery::new("pos", ["beta", "alpha"]).with_slop(4),
+        ),
+        (
+            "scoring.phrase.reordered.gammadelta",
+            PhraseQuery::new("pos", ["gamma", "delta"]).with_slop(2),
+        ),
+        // A repeated term: `rptGroups` has to keep the two slots off one
+        // position, so the documents with a single `alpha` must not match
+        // however generous the budget.
+        (
+            "scoring.phrase.repeat.slop2",
+            PhraseQuery::new("pos", ["alpha", "alpha"]).with_slop(2),
+        ),
+    ];
+
+    for (key, query) in cases {
+        let mut top = TopDocsCollector::new(20);
+        search_phrase_query_scored(
+            &seg.fields,
+            Some(&doc_in),
+            Some(&pos_in),
+            Some(&pay_in),
+            None,
+            &query,
+            Some(&norms),
+            &mut top,
+        )
+        .unwrap();
+        assert_same_as_lucene(key, top.top_docs(), &seg.manifest.lucene_hits(key));
+    }
+}
+
+/// The same transposition through `MultiPhraseQuery`, whose slots are term
+/// *sets*: a different entry into the same matcher (the union of each slot's
+/// alternatives is one position list, and repeat detection runs over the term
+/// sets rather than single terms).
+#[test]
+fn reordered_sloppy_multi_phrase_scores_match_real_lucene_bit_for_bit() {
+    let seg = open_segment();
+    let doc_in = DocInput::open(seg.doc, &seg.id, &seg.suffix).expect("open .doc");
+    let pos_in = PosInput::open(seg.pos, &seg.id, &seg.suffix).expect("open .pos");
+    let pay_in = PayInput::open(seg.pay, &seg.id, &seg.suffix).expect("open .pay");
+    let norms = seg.field_norms("pos");
+
+    let key = "scoring.multiphrase.reordered";
+    let mut top = TopDocsCollector::new(20);
+    search_multi_phrase_query_scored(
+        &seg.fields,
+        Some(&doc_in),
+        Some(&pos_in),
+        Some(&pay_in),
+        None,
+        &MultiPhraseQuery::new("pos", [vec!["beta"], vec!["alpha"]]).with_slop(2),
+        Some(&norms),
+        &mut top,
+    )
+    .unwrap();
+    assert_same_as_lucene(key, top.top_docs(), &seg.manifest.lucene_hits(key));
+}
+
+/// `searchAfter` on one segment: `TopScoreDocCollector`'s `after` parameter,
+/// which is how every paginating caller gets page 2 without re-collecting the
+/// prefix.
+///
+/// `big:everywhere` is the right query for it: its 300 documents take only four
+/// distinct scores, so a page boundary lands *inside* a run of ties and the
+/// doc-id half of the rule -- `score == afterScore && doc <= afterDoc` -- is
+/// what decides the page, not the score half. A port that compares scores only
+/// would return page 1 again, forever.
+///
+/// Three consecutive pages, each fed the previous page's last hit, so a port
+/// cannot pass by getting only the first boundary right.
+#[test]
+fn search_after_pages_match_real_lucene_bit_for_bit() {
+    let seg = open_segment();
+    let doc_in = DocInput::open(seg.doc, &seg.id, &seg.suffix).expect("open .doc");
+    let norms = seg.field_norms("big");
+    let page_size: usize = seg.manifest.get("after.big.pageSize").parse().unwrap();
+
+    let mut after: Option<lucene_search::collector::ScoreDoc> = None;
+    for page in 1..=3 {
+        let key = format!("after.big.page{page}");
+        let mut top = TopDocsCollector::new(page_size);
+        if let Some(after) = after {
+            top = top.with_after(after);
+        }
+        search_term_query_scored(
+            &seg.fields,
+            Some(&doc_in),
+            None,
+            &TermQuery::new("big", "everywhere"),
+            Some(&norms),
+            &mut top,
+        )
+        .unwrap();
+        assert_same_as_lucene(&key, top.top_docs(), &seg.manifest.lucene_hits(&key));
+        after = top.top_docs().last().copied();
+    }
+    // The pages must not overlap, which is the property the caller actually
+    // wants and which "each page equals Lucene's" only implies given Lucene is
+    // right. Stated separately so a fixture regenerated into a degenerate shape
+    // (one document, say) cannot make this test vacuous.
+    assert_eq!(
+        seg.manifest.lucene_hits("after.big.page1").len(),
+        page_size,
+        "the fixture must produce full pages, or pagination proves nothing"
+    );
+    let mut seen: Vec<i32> = Vec::new();
+    for page in 1..=3 {
+        for (doc, _) in seg.manifest.lucene_hits(&format!("after.big.page{page}")) {
+            assert!(!seen.contains(&doc), "doc {doc} appeared on two pages");
+            seen.push(doc);
+        }
+    }
+}
+
+/// A filter-only query under a top-`n` collector: every hit scores 0, so the
+/// block-max bound is 0 and the threshold a full queue publishes is 0. c11 read
+/// `0 <= 0` as "pruning on a tie" and switched pruning off for this shape; real
+/// Lucene prunes it (`TopScoreDocCollector` publishes `Math.nextUp(0f)` and a
+/// block whose maximum is 0 is below that), and these are its own answers.
+///
+/// `big:everywhere` is in 300 documents, so a top-20 search fills the queue
+/// long before the postings end -- which is exactly what the 5-document `body`
+/// field could not do, and why c11 recorded this as blocked on a fixture. The
+/// fixture was already there.
+///
+/// Both shapes are checked: the single filter clause, and the duplicated one
+/// that `BooleanQuery.rewrite` collapses (this port executes the un-rewritten
+/// two-leg conjunction, so its answer has to survive the collapse).
+#[test]
+fn filter_only_top_n_prunes_and_still_matches_real_lucene() {
+    let seg = open_segment();
+    let doc_in = DocInput::open(seg.doc, &seg.id, &seg.suffix).expect("open .doc");
+
+    let cases: [(&str, BooleanQuery); 2] = [
+        (
+            "scoring.boolean.filteronly.big",
+            BooleanQuery::new().with_filter([TermQuery::new("big", "everywhere")]),
+        ),
+        (
+            "scoring.boolean.filteronly.bigdup",
+            BooleanQuery::new().with_filter([
+                TermQuery::new("big", "everywhere"),
+                TermQuery::new("big", "everywhere"),
+            ]),
+        ),
+    ];
+
+    for (key, query) in cases {
+        // `total_hits_threshold == 0`: pruning is authorized the moment the
+        // queue fills, which is `TopScoreDocCollectorManager`'s behaviour once
+        // its own threshold is passed.
+        let mut top = TopDocsCollector::with_total_hits_threshold(20, 0);
+        search_boolean_query_scored(
+            &seg.fields,
+            Some(&doc_in),
+            None,
+            None,
+            None,
+            None,
+            &query,
+            None,
+            &mut top,
+        )
+        .unwrap();
+        assert_same_as_lucene(key, top.top_docs(), &seg.manifest.lucene_hits(key));
+        // The point of the exercise: it did not visit all 300.
+        assert!(
+            top.total_hits().value < 300,
+            "{key}: pruning did not fire -- visited {} of 300 documents",
+            top.total_hits().value
+        );
+    }
+}
+
 /// A `Clause::Phrase` inside a `BooleanQuery` must score identically to the
 /// standalone phrase search -- the boolean path reaches
 /// `search_phrase_query_scored_with_stats` through `clause_scores`, a second

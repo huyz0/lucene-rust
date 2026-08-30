@@ -331,9 +331,6 @@ fn main() {
         .set_term_vector_field(Some("body"))
         .expect("set term vector field");
     writer
-        .set_norms_field(Some("body"))
-        .expect("set norms field");
-    writer
         .set_payload_source(Some(Box::new(|ctx| {
             let payload = match ctx.field {
                 "body" => payload_for(ctx.doc_id as usize, ctx.position as usize),

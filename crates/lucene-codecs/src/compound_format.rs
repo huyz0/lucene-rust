@@ -150,7 +150,7 @@ pub fn check_data_header_footer(
         .iter()
         .map(|(_, e)| usize::try_from(e.offset.saturating_add(e.length)).unwrap_or(usize::MAX))
         .max()
-        .unwrap_or_else(|| index_header_length(DATA_CODEC));
+        .unwrap_or_else(|| codec_util::index_header_length(DATA_CODEC, ""));
     let expected_length = max_extent.saturating_add(codec_util::FOOTER_LENGTH);
     if buf.len() != expected_length {
         return Err(Error::WrongLength {
@@ -291,29 +291,6 @@ fn verify_sub_file(name: &str, bytes: &[u8], segment_id: &[u8; ID_LENGTH]) -> Re
     Ok(())
 }
 
-/// `header_length(codec) + ID_LENGTH + 1` (the vint-encoded empty-suffix
-/// length byte) -- Java's `CodecUtil.indexHeaderLength(codec, "")`, used as
-/// the minimum expected `.cfs` length when the entries table is empty.
-// ARITH: `codec` is one of this module's two `&'static str` codec-name
-// constants (`ENTRY_CODEC`/`DATA_CODEC`, both under 32 bytes), never a name
-// read off disk, so the sum is a small constant well under `usize::MAX`.
-#[allow(clippy::arithmetic_side_effects)]
-fn index_header_length(codec: &str) -> usize {
-    4 + vint_len(codec.len() as i32) + codec.len() + 4 + ID_LENGTH + 1
-}
-
-// ARITH: each iteration shifts `v` right by 7 as an unsigned value, so the
-// loop runs at most 5 times for a 32-bit `v` and `n` never exceeds 5.
-#[allow(clippy::arithmetic_side_effects)]
-fn vint_len(mut v: i32) -> usize {
-    let mut n = 1;
-    while (v as u32) >= 0x80 {
-        v = ((v as u32) >> 7) as i32;
-        n += 1;
-    }
-    n
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -405,7 +382,7 @@ mod tests {
     #[test]
     fn open_input_slices_correct_bytes() {
         let id = [1u8; ID_LENGTH];
-        let header_len = index_header_length(DATA_CODEC);
+        let header_len = codec_util::index_header_length(DATA_CODEC, "");
         let payload = b"hello world!";
         let cfe = build_cfe(
             &id,
@@ -441,7 +418,7 @@ mod tests {
     #[test]
     fn check_data_header_footer_valid_with_entries() {
         let id = [1u8; ID_LENGTH];
-        let header_len = index_header_length(DATA_CODEC);
+        let header_len = codec_util::index_header_length(DATA_CODEC, "");
         let payload = b"abcdefg";
         let cfe = build_cfe(&id, &[(".fnm", header_len as i64, payload.len() as i64)]);
         let entries = parse_entries(&cfe, &id).unwrap();
@@ -460,7 +437,7 @@ mod tests {
     #[test]
     fn check_data_header_footer_wrong_length_rejected() {
         let id = [1u8; ID_LENGTH];
-        let header_len = index_header_length(DATA_CODEC);
+        let header_len = codec_util::index_header_length(DATA_CODEC, "");
         let cfe = build_cfe(&id, &[(".fnm", header_len as i64, 100)]); // implies far more data than exists
         let entries = parse_entries(&cfe, &id).unwrap();
         let cfs = build_cfs(&id, VERSION_CURRENT, b"short");
@@ -522,16 +499,28 @@ mod tests {
         assert!(open_input(&cfs, &entries, "f").is_err());
     }
 
+    /// This module used to carry its own `index_header_length`/`vint_len`
+    /// pair, computed a different way (`4 + vint_len(name) + name + 4 +
+    /// ID_LENGTH + 1`) from `lucene_store::codec_util::index_header_length`'s
+    /// (`9 + name + ID_LENGTH + 1 + suffix`). They agree for every codec name
+    /// `write_index_header` accepts -- ASCII shorter than 128 bytes, so the
+    /// name's length prefix is exactly one byte -- which is what made
+    /// replacing the private copy with the shared one safe. Pinned here
+    /// against the bytes `write_index_header` actually emits, so the shared
+    /// helper is checked against the writer rather than against a second
+    /// hand-derived formula.
     #[test]
-    fn vint_len_multi_byte_codec_name() {
-        // Widths for a few known vint boundaries: 127 fits in 1 byte, 128
-        // needs 2, 16384 needs 3 -- exercises `vint_len`'s continuation loop,
-        // which real codec names (all short ASCII constants) never trigger.
-        assert_eq!(vint_len(0), 1);
-        assert_eq!(vint_len(127), 1);
-        assert_eq!(vint_len(128), 2);
-        assert_eq!(vint_len(16_383), 2);
-        assert_eq!(vint_len(16_384), 3);
+    fn index_header_length_matches_the_bytes_write_index_header_emits() {
+        let id = [7u8; ID_LENGTH];
+        for codec in [DATA_CODEC, ENTRY_CODEC, "A", &"x".repeat(127)] {
+            let mut out = Vec::new();
+            codec_util::write_index_header(&mut out, codec, VERSION_CURRENT, &id, "");
+            assert_eq!(
+                out.len(),
+                codec_util::index_header_length(codec, ""),
+                "index_header_length disagrees with write_index_header for {codec:?}"
+            );
+        }
     }
 
     /// Builds a standalone codec file (header + body + footer) as a real

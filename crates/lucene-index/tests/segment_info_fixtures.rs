@@ -174,14 +174,30 @@ fn index_sorted_segment_matches_real_lucene_sort_field_provider_bytes() {
                 "{}:{}:{}",
                 f.field,
                 if f.reverse { 1 } else { 0 },
-                match f.missing {
-                    segment_info::SortMissingValue::First => "first",
-                    segment_info::SortMissingValue::Last => "last",
-                }
+                render_long_sentinel(f)
             )
         })
         .collect();
     assert_eq!(rendered.join(","), manifest.get("index_sort"));
+}
+
+/// `GenSegmentInfo`'s manifest spells the two `LONG` sentinels as
+/// `first`/`last`, which is all it needs: both sort fields are
+/// `SortField(field, LONG, reverse)` with `Long.MIN_VALUE`/`Long.MAX_VALUE`.
+/// Anything else is a fixture/model mismatch worth failing loudly on.
+fn render_long_sentinel(f: &segment_info::IndexSortField) -> &'static str {
+    match &f.kind {
+        segment_info::IndexSortKind::Numeric(segment_info::NumericSortKey::Long(Some(v))) => {
+            if *v == i64::MIN {
+                "first"
+            } else if *v == i64::MAX {
+                "last"
+            } else {
+                panic!("unexpected LONG missing value {v}")
+            }
+        }
+        other => panic!("unexpected sort kind {other:?}"),
+    }
 }
 
 /// The bytes this port *writes* for the same sort must be byte-identical to

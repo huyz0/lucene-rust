@@ -309,6 +309,7 @@ impl SegmentCommitInfo {
     pub fn advance_del_gen(&mut self) {
         self.del_gen = self.next_write_del_gen();
         self.next_write_del_gen = self.del_gen + 1;
+        self.generation_advanced();
     }
 
     /// `SegmentCommitInfo.advanceDocValuesGen()`.
@@ -317,6 +318,7 @@ impl SegmentCommitInfo {
     pub fn advance_doc_values_gen(&mut self) {
         self.doc_values_gen = self.next_write_doc_values_gen();
         self.next_write_doc_values_gen = self.doc_values_gen + 1;
+        self.generation_advanced();
     }
 
     /// `SegmentCommitInfo.advanceFieldInfosGen()`: a doc-values update round
@@ -328,6 +330,7 @@ impl SegmentCommitInfo {
     pub fn advance_field_infos_gen(&mut self) {
         self.field_infos_gen = self.next_write_field_infos_gen();
         self.next_write_field_infos_gen = self.field_infos_gen + 1;
+        self.generation_advanced();
     }
 
     /// `SegmentCommitInfo.advanceNextWriteFieldInfosGen()`: step *only* the
@@ -390,7 +393,81 @@ impl SegmentCommitInfo {
         );
         if self.buffered_deletes_gen == -1 {
             self.buffered_deletes_gen = v;
+            self.generation_advanced();
         }
+    }
+
+    /// `SegmentCommitInfo.generationAdvanced()`: every generation-advancing
+    /// mutator ends here, and its whole job is to give the segment-commit a
+    /// **new id**. Java draws a fresh `StringHelper.randomId()`; the field is
+    /// documented as "an Id that uniquely identifies this segment commit ...
+    /// This ID changes each time the segment changes due to a delete,
+    /// doc-value or field update", i.e. it is a *change token*, not a name.
+    ///
+    /// Nothing in Lucene validates it on read (`SegmentInfos.readCommit`
+    /// accepts any 16 bytes, and `.si` ids are checked against
+    /// `SegmentInfo.id`, never against this one), so leaving it frozen breaks
+    /// no read. What it breaks is every consumer that compares two commits'
+    /// ids to decide whether a segment changed -- `DirectoryReader.openIfChanged`'s
+    /// per-segment reuse, an NRT/replication client's "do I need to fetch this
+    /// segment again", and any cache keyed on it -- all of which would be told
+    /// "unchanged" across a delete or a doc-values update.
+    ///
+    /// Derived rather than random, for the same reason
+    /// [`crate::segment_writer::derive_sci_id`] is: this workspace carries no
+    /// CSPRNG dependency, and the only property a consumer reads the id for is
+    /// **"different whenever the segment-commit is different"**. Hashing the
+    /// segment's own (unique) id together with all four generations gives
+    /// that: the generations only ever increase, so no two states of one
+    /// segment share an *input*, and two different segments differ in the
+    /// segment id. Distinct inputs give distinct *outputs* only with the
+    /// probability a 128-bit digest affords, which is the same bound Java's
+    /// 128 random bits give and far beyond what a change token needs. The
+    /// hasher is `DefaultHasher`, whose algorithm is explicitly unspecified
+    /// across Rust releases -- irrelevant here, because nothing compares an id
+    /// against a value computed by a different build: they are compared
+    /// against ids read back out of `segments_N`.
+    ///
+    /// The converse ("same state, same id") deliberately is **not** claimed
+    /// across sessions: `buffered_deletes_gen` is not serialized (neither here
+    /// nor in Java), so a segment that reaches `delGen = 1` in a fresh writer
+    /// session gets a different token than the same segment did in the session
+    /// that first deleted from it. That is the safe direction -- a consumer is
+    /// told "changed" and re-fetches -- and it is strictly better than Java,
+    /// whose random draw makes *every* re-derivation look changed.
+    ///
+    /// This is the second id derivation in the crate, and the one that wins:
+    /// [`crate::segment_writer::derive_sci_id`] gives a freshly flushed
+    /// segment its first id, and `IndexWriter`'s publish step immediately
+    /// calls `set_buffered_deletes_gen` on it, so every segment an
+    /// `IndexWriter` flushes reaches its commit carrying *this* value.
+    /// `derive_sci_id` still earns its place for a caller using
+    /// `segment_writer`/`merge` directly, and Java has the same two-step
+    /// (`StringHelper.randomId()` in the constructor, re-drawn by
+    /// `setBufferedDeletesGen`).
+    ///
+    /// Java also resets its cached `sizeInBytes` here. This port has no such
+    /// cache (`merge_policy::segment_byte_size` sizes a segment from the
+    /// directory on demand), so there is nothing to invalidate.
+    fn generation_advanced(&mut self) {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut id = [0u8; ID_LENGTH];
+        for (half, chunk) in id.chunks_mut(8).enumerate() {
+            let mut hasher = DefaultHasher::new();
+            (
+                self.segment_id,
+                self.del_gen,
+                self.field_infos_gen,
+                self.doc_values_gen,
+                self.buffered_deletes_gen,
+                half as u8,
+            )
+                .hash(&mut hasher);
+            chunk.copy_from_slice(&hasher.finish().to_le_bytes());
+        }
+        self.sci_id = Some(id);
     }
 }
 
@@ -1085,6 +1162,82 @@ mod tests {
         b.segments.push(seg);
         let sis = parse(&b.build(), 1).unwrap();
         assert!(sis.segments[0].sci_id.is_none());
+    }
+
+    /// `SegmentCommitInfo.generationAdvanced()` -> `id = randomId()`: every
+    /// generation-advancing mutator must give the segment-commit a new id,
+    /// because the id is the only change token a replication/NRT consumer
+    /// has. Before this was ported, all four left the id frozen.
+    #[test]
+    fn every_generation_advance_gives_the_segment_commit_a_new_id() {
+        type Advance = fn(&mut SegmentCommitInfo);
+        let advancers: Vec<(&str, Advance)> = vec![
+            ("advance_del_gen", |s| s.advance_del_gen()),
+            ("advance_doc_values_gen", |s| s.advance_doc_values_gen()),
+            ("advance_field_infos_gen", |s| s.advance_field_infos_gen()),
+            ("set_buffered_deletes_gen", |s| {
+                s.set_buffered_deletes_gen(7)
+            }),
+        ];
+        for (name, advance) in advancers {
+            let mut sci = SegmentCommitInfo {
+                segment_name: "_0".to_string(),
+                segment_id: [3u8; ID_LENGTH],
+                codec_name: "Lucene104".to_string(),
+                sci_id: Some([1u8; ID_LENGTH]),
+                ..Default::default()
+            };
+            let before = sci.sci_id;
+            advance(&mut sci);
+            assert_ne!(sci.sci_id, before, "{name} left the id unchanged");
+            assert!(sci.sci_id.is_some(), "{name} cleared the id");
+        }
+    }
+
+    /// The *counters* that do not advance a generation (Java's
+    /// `advanceNextWrite*Gen`, which exist for the failed-write retry path)
+    /// deliberately do **not** call `generationAdvanced()`.
+    #[test]
+    fn stepping_only_the_next_write_counter_keeps_the_id() {
+        let mut sci = SegmentCommitInfo {
+            sci_id: Some([1u8; ID_LENGTH]),
+            ..Default::default()
+        };
+        sci.advance_next_write_field_infos_gen();
+        sci.advance_next_write_doc_values_gen();
+        assert_eq!(sci.sci_id, Some([1u8; ID_LENGTH]));
+    }
+
+    /// Two commits that differ have different ids -- the property the whole
+    /// field exists for. A frozen id passes every read, so this is the only
+    /// shape of test that can see the defect.
+    #[test]
+    fn successive_generations_of_one_segment_get_distinct_ids() {
+        let base = SegmentCommitInfo {
+            segment_name: "_0".to_string(),
+            segment_id: [9u8; ID_LENGTH],
+            sci_id: Some([0u8; ID_LENGTH]),
+            ..Default::default()
+        };
+        let mut sci = base.clone();
+        let mut seen = vec![sci.sci_id];
+        for _ in 0..8 {
+            sci.advance_del_gen();
+            assert!(!seen.contains(&sci.sci_id), "id repeated across a delete");
+            seen.push(sci.sci_id);
+            sci.advance_doc_values_gen();
+            assert!(!seen.contains(&sci.sci_id), "id repeated across a DV round");
+            seen.push(sci.sci_id);
+        }
+
+        // Two *different segments* at the same generations differ too: the
+        // segment's own id is mixed in.
+        let mut other = base.clone();
+        other.segment_id = [10u8; ID_LENGTH];
+        other.advance_del_gen();
+        let mut same = base;
+        same.advance_del_gen();
+        assert_ne!(other.sci_id, same.sci_id);
     }
 
     #[test]

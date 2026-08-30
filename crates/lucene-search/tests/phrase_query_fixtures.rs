@@ -336,10 +336,12 @@ fn phrase_with_a_missing_term_matches_nothing() {
 }
 
 /// Cross-engine differential test for sloppy phrase matching, closing the gap
-/// flagged in code review: the `phrase_matches_in_doc_sloppy` unit tests in
-/// `lib.rs` only checked this port's own formula for self-consistency (hand-
-/// computed "moves needed" arithmetic), never against real Lucene's actual
-/// `PhraseQuery.setSlop(n)` behavior. `GenBlockTree.java`'s doc7 (`"pos"`
+/// flagged in code review: the sloppy matcher's unit tests only checked this
+/// port's own formula for self-consistency (hand-computed arithmetic), never
+/// against real Lucene's actual `PhraseQuery.setSlop(n)` behavior. (The matcher
+/// itself is now `sloppy_phrase.rs`; this test is unchanged and still passes,
+/// which is part of the evidence that c37's rewrite is a strict superset --
+/// it pins the *in-order* gap case at five slop values.) `GenBlockTree.java`'s doc7 (`"pos"`
 /// field: `alpha`@0, `beta`@3, a real, non-adjacent, manifest-recorded gap)
 /// plus its own `field.pos.sloppyGap.realLuceneSlopResults` manifest key
 /// (written by *actually running* `IndexSearcher.search` with a real

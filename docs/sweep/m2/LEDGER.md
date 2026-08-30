@@ -2,6 +2,7 @@
 
 Every ported source file, its batch, and its sweep status.
 Status: `pending` → `running` → `swept` (report written, gates green).
+Checkbox legend: `- [ ]` open, `- [x]` done, `- [~]` obsolete.
 
 | Batch | Files | Status |
 |---|---|---|
@@ -54,8 +55,500 @@ Status: `pending` → `running` → `swept` (report written, gates green).
 | c32-fixture-tooling | the tooling the sweep's evidence base rests on: c29's `gen-fixtures.sh` footgun, c28's `/tmp`-full test-hygiene defect, and whether the two gates are actually run -- `scripts/{gen-fixtures.sh,fixture-segment-ids.py,check-parity.py}`, `fixtures/{README.md,segment-ids.txt}`, `.githooks/pre-commit`, `.github/workflows/ci.yml`, `lucene-util/src/test_support.rs` + 30 `tempdir()` call sites | swept (5 CORRECTNESS all fixed, 3 MISSING all fixed, 1 PERF, 1 INTENTIONAL; **no Java counterpart** -- this is the port's own build/test infrastructure). **The headline is that both gate scripts the sweep added, `check-parity.py` and `check-arith-allows.py`, have never been committed** (`git ls-files scripts/` lists neither, `git log` for both is empty); `.githooks/pre-commit` *is* tracked and calls `check-arith-allows.py` under `set -euo pipefail`, so on any fresh clone the whole pre-commit gate aborts on a missing file *before* `cargo llvm-cov` runs -- that, not c25's stale table, is why the gates were not being run as reliably as assumed. Both are now also wired into CI's `gate` job, where a hook cannot be skipped with `--no-verify`; `setup-hooks.sh` was checked and does install them correctly (it sets `core.hooksPath`). **The commit that lands this must `git add` both scripts** or CI fails on the runner. `gen-fixtures.sh`: a bare full run now **refuses** (needs `--all`), `--only <Gen*>` regenerates one generator plus all six idempotent appenders, and both of c29's damage modes are caught by name rather than as "files differ" -- dropped `Append*Manifest` keys via a per-manifest **key-set** comparison (`blocktree_index/manifest.properties` is *non-deterministic*, measured, so the old byte check was blind to precisely the file c29 damaged: 468 -> 239 keys passed every check), and a changed segment id via `fixtures/segment-ids.txt`, a committed baseline parsed out of each `.si`/`segments_N` index header. Preserving ids across a regeneration was investigated and is **not possible** without patching Lucene, so the refusal plus a readable one-line-per-index diff is the honest fix. Proven by use, twice, against a `sha256sum` of all 684 fixture files: `--only Primitives` left the tree byte-identical (including the appender-rewritten manifest) and `--only Norms` changed exactly its own 17 files. Also found: eight fixture directories are **untracked**, so c29's `git checkout` recovery would not have worked for them at all. Temp dirs: one shared RAII guard in `lucene-util` (the architecture skill's downward-only graph puts it at the bottom; a `lucene-test-support` sibling would be the forbidden edge five times over), gated behind a `test-support` feature on `[dev-dependencies]` edges exactly as `lucene-search`/`lucene-codecs` already do. It removes on `Drop` but **keeps while `thread::panicking()`** -- a failing test's scratch bytes are the evidence for the failure -- asserted by dropping a guard inside a real `catch_unwind`. 30 of 33 sites migrated: a four-crate run leaks **26** dirs against roughly a thousand before, of which 24 are the three files other batches hold (`check_index.rs` 68 sites, `checksum_verify.rs` 3, `fst.rs` 1) and 2 are the deliberate `#[should_panic]` keeps. `verify-write-path.sh` **22/22**; `test_support.rs` 97.92% lines. |
 | c33-analysis-offsets | c23's F13 / c29's §2.2 handoff: the **producer** half of the offset unit -- `lucene-analysis/{src/lib.rs,tests/analysis_fixtures.rs}` + `fixtures/src/GenAnalysis.java`, with the consumer compensation and the codec-level consequence chased into `lucene-search/src/highlighter.rs`, `lucene-index/src/indexing_chain.rs` and `lucene-codecs/src/{block_packed,term_vectors}.rs` | swept (12 findings: 5 CORRECTNESS all fixed, 3 MISSING all fixed, 1 PERF measured, 1 INTENTIONAL, 2 recorded with named owners) -- `Token`'s offsets are now **UTF-16 code units** (Java `char`s, `OffsetAttribute`'s own unit) instead of UTF-8 bytes: `tokenize` converts the segmenter's byte indices in one running pass behind a whole-text `is_ascii` fast path, and `Analyzer::keyword` ends its token at the `char` count Java's `KeywordTokenizer` uses (`correctOffset(upto)`). Since c23 those offsets are written verbatim into `.pos`/`.pay`/`.tvd` and `CheckIndex` never compares an offset against the text it indexes, so a Rust-written index of non-ASCII text told real Lucene each term sat where it did not. **The double-fix check found a real compensation**: c29's boundary conversion in `offsets_from_analysis` is deleted (its test now asserts the two sides are *identical*, not merely that the highlight is right), and so is the `char_offsets_to_byte_offsets` reconciliation the fixture test applied to every Lucene-derived expectation -- a compensation inside the one file whose job is to catch this, and itself wrong for astral text. `GenAnalysis` gained **12 `utf16_*` cases** (Latin-1, CJK, combining mark, astral symbol, astral *letter*, emoji, all-units, plus one per filter: keyword, fold, porter, n-gram, edge-n-gram, synonym graph), each with negative controls asserting a byte-offset and (where astral) a scalar-offset producer would fail it; the manifest was regenerated from the real 10.5.0 jars this run and is **identical** to the committed copy. Two findings are new and codec-level: the unit change makes `block_packed::encode_all`'s negative-value path **live** (a term-vector length is `span - prefixLength - suffixLength`, so every multi-byte term is negative -- `caf\u{e9}` is -1), whose doc comment still claimed no caller fed it negatives; and no real-Lucene reader had ever seen a non-ASCII offset this port wrote, so `write_term_vectors_fixture`'s multi-chunk segment gained a non-ASCII document that `VerifyTermVectors` reads back offset-for-offset, with a negative control (the same line rewritten with byte offsets) failing. Also fixed: the interrupted attempt's own `indexing_chain` test asserted a position an untokenized astral symbol does not consume. **Measured** (interleaved A/B, min-of-25, against the pre-c33 producer): ASCII text pays **nothing** (delta negative in all three runs); non-ASCII pays **+0.17 us/doc, +1.8-2.0%** of tokenization and under 1% of the ~21 us/doc indexing cost. Coverage: `lucene-analysis/src/lib.rs` 99.27%. Recorded: real `StandardTokenizer` emits an emoji token this port does not (b8's F40, the `utf16_emoji` case pins the exact shape of the gap), and `IndexingChain`'s `invertState.offset` multi-value accumulation is unported but unreachable (`IndexWriter` indexes only a field's first value) |
 | c30-finish-index | the last two open `lucene-index` items: c25's residual `CheckIndex` failure arms, and the workspace's last three `TODO(arith-audit)` modules -- index/{check_index, checksum_verify, index_writer, merge, merge_policy}, cross-batch codecs/vectors, ffi/writer | swept (7 CORRECTNESS all fixed, 1 defensive, 1 arm deleted, 5 kept as unreachable *error handling* with the proof at the site) -- **`check_index.rs` 97.25% -> 98.58%** and **`docs/arithmetic-gate.md` 3 -> none: the whole workspace is now audited**. Item 1 closed c25's last open D-list question in both directions and drew the line c25's rule does not: *a `Check::fail` arm that cannot fire is a false claim of coverage; an `Err(e) =>` arm that cannot fire is total error handling* -- one arm deleted (`connected_nodes_on_level`'s entry-point guard, proved unreachable because `OffHeapHnswGraph::new` rejects the only shape that could produce it), five kept with proofs. Its own negative control found a `.vemf` region offset slicing the `.vec` behind `if a + b > len` where `a` came off disk -- the gate doc's named shape, a panic on the KNN query path. Item 2's two headline findings **both came from the hand-check of indexing/slicing/allocation, not from the lint**: `execute_merge` took `maxDoc` from the `.fdm` where Java's `SegmentMerger` takes it from the `.si`, and `stored_fields::open` checks only that it is non-negative -- a four-byte edit sizes two per-source `Vec`s at ~8.6 GB each, **verified SIGABRT** (`memory allocation of 4294967296 bytes failed`, `signal: 6`) under `ulimit -v`; and `merge_segments` indexed the `.liv` `FixedBitSet` with a bound off the `.fdm`, c28's crate rule for the third module running. `build_doc_id_maps` even carried an `// ARITH:` proof claiming that `max_doc` was "already-validated" -- the c19 failure mode (right conclusion, wrong reasoning), now naming the caller that supplies the bound. Three more in `merge_policy`, all from `as i64` on a `pub` unsigned config: `usize::MAX as i64 == -1` made `max_allowed_docs` return **-100** where Java's `Math.ceilDiv` returns 1 (a negative budget every merge exceeds, so the policy silently stops merging), and a `size_bytes` above `i64::MAX` became a *negative* byte count -- the largest segment in the index packed into every merge as if it cost nothing, and two of them overflowing `bytes_this_merge + seg_bytes` outright. Plus the norms field length wrapping a `u32` where `IndexingChain.PerField.invert` uses `Math.addExact` (a wrapped length encodes to a *small* norm: the longest document scoring as one of the shortest, in every BM25 query over the field). Every fix has a test that fails against the unfixed code except the last, whose reachable input needs a ~2 GB field value (c28-F7's precedent, stated rather than glossed). Verifier runtime **0.18 s** in release (c25 0.23, c19 0.28); `index-bench` **21.53 us/doc** and the stored-fields BULK merge **532x**, both unchanged; `verify-write-path.sh` **22/22**; **`scripts/docker-test.sh gate` -> `gate: ok`**, workspace lines 98.10%, no file below 95%. Answered a carry-over by measuring rather than assuming: `--lib --tests` gives *identical* `check_index.rs` coverage to `--lib`, so c23's integration tests were not silently covering the residual arms after all |
+| c36-merge-metadata | the last two wrong-answer findings (**1** `MergeSource`'s missing `min_version`/`has_blocks`, **2** `SegmentCommitInfo.sci_id` never regenerated) plus the two adjacent items in the same files (**11** zero-doc merges committed, **19** the `.si` rewritten five times per commit) -- index/{merge, index_writer, segment_infos, segment_writer, deletes}, new `GenMergeMetadata`/`VerifyMergedMetadata`/`write_merged_metadata_fixture` | swept (7 findings: 2 CORRECTNESS both fixed, 2 MISSING (1 fixed, 1 recorded with its blocker), 2 PERF (1 fixed, 1 recorded and now unblocked), 1 hygiene fixed) -- **`minVersion` was the live half of item 1**: the merged `.si` claimed the merging writer's version where `SegmentMerger`'s constructor takes the minimum over the readers (`null` if any reader has none); `has_blocks` was already correct via c22's `MergeOptions` and has been **moved onto `MergeSource`** so the two halves of Java's `LeafMetaData` record travel together -- 85 exhaustive struct literals, exactly c34's estimate. **The `sci_id` is a change token**: all four of Java's generation-advancing mutators call `generationAdvanced() -> id = randomId()`, and none of this port's did, so two commits of the same segment reported the same id and every NRT/replication/cache consumer keyed on it was told "unchanged" across a delete or a doc-values update; `deletes::apply_deletes` was the live site (it hand-rebuilt the `SegmentCommitInfo` and carried `sci_id` across) and now mutates through `advance_del_gen`. **Zero-doc merges** now take `mergeMiddle`'s `shouldMerge() == false` path -- the merge is skipped before a single file is written and the new `IndexWriter::drop_merge` (`commitMerge` with `dropSegment`) retires the sources with nothing published. **The `.si` is written once**, from an in-memory `SegmentInfo` (`segment_writer::FlushedSegment` + `seal_flushed_segment` = `sealFlushedSegment`), replacing up to **seven** writes / six `open`+`parse` round trips / seven fsyncs per commit; the wall-time saving is below this host's noise floor (`fsync` is effectively free on the container mount -- 20 000 extra read-modify-write cycles per flush produced no separation), so the result is stated as the I/O it removes, asserted by a counting `Directory` rather than timed. **Evidence**: `verify-write-path.sh` **22 -> 23** -- `GenMergeMetadata` writes three *real Lucene* segments whose `.si` files record `minVersion` 10.2.0/**10.0.0**/10.1.0 (oldest in the middle) with `hasBlocks` set by Lucene itself on one of them, this port merges them, and real Lucene reads both fields back off `LeafMetaData`; verified to fail both assertions against the unfixed code. Coverage: `merge.rs` 98.70%, `index_writer.rs` 98.37%, `segment_infos.rs` 98.50%, `segment_writer.rs` 99.49%, `deletes.rs` 98.48%; workspace 98.11% lines, no file below 95% |
+
+## Open work, prioritised (reconciled by `c34-ledger-reconcile`)
+
+**This is the list to plan from.** Everything below it in this file is the
+historical record: 68 items were carrying an unticked `- [ ]` box when c34
+started, and each was re-verified against the tree -- reading the code,
+grepping the symbol, running the test -- rather than against the batch report
+that raised it. **29 were already done and never ticked**, **4 are obsolete**,
+and **35 boxes were genuinely open** -- **33 distinct findings**, since two
+findings each have two boxes (the term-vector field-order item, and the
+filter-only pruning item). Two of the 33 were trivially closable and c34 closed
+them, leaving **31 distinct open findings** in 32 boxes, all listed below.
+Every historical entry now carries
+a note naming what closed it and the evidence, or -- where it is still open --
+what the current tree actually looks like, because several described a world
+two batches out of date.
+
+**`c35-norms-and-sort` closed items 3 and 4** (the two largest B-tier
+entries), leaving **29 distinct open findings**. **`c36-merge-metadata` then
+closed items 1, 2, 11 and 19** -- the whole of tier A -- and raised two new
+ones it met on the way (**11b**, 100%-deleted segments not dropped;
+**25b**, the deleter re-reading the `.si`; and **26b**, two checks that are not
+in the gate and had both gone quietly red), leaving **28**.
+**`c37-search-behaviours` then closed items 6, 7, 23 and 29 outright, plus two
+of item 5's four sub-entries** (`searchAfter`/`MaxScoreAccumulator` and
+`Weight.count`), leaving **24**. Two of the four it closed had been recorded as
+*blocked on a fixture* that already existed -- see item 29 -- so the batch's
+most transferable finding is procedural, not technical. Closed entries are
+struck through in place rather than deleted, and new ones take a lettered
+suffix, so the numbering below stays stable.
+
+**Tier A is empty.** Every wrong answer this sweep found on a path this port
+exposes is now fixed.
+
+Ordering below is by what a user can observe, not by effort:
+**(A) wrong-answer bugs**, **(B) missing Lucene behaviour a caller can reach**,
+**(C) performance/memory divergence**, then **(D) tooling and hygiene**.
+
+### A. Wrong answers a caller can reach
+
+**Both entries are closed** (`c36-merge-metadata`). They are kept below with
+what closed them, because the reasoning c34 recorded here -- that neither was a
+*silent* wrong answer on a path this port currently exposes, that both were
+wrong-answer-shaped and gated by something -- is what made them takeable as one
+batch, and because the "latent" one turned out to be only half-broken, which is
+worth knowing about the next entry that reads the same way.
+
+1. ~~**`MergeSource` carries no per-source `min_version`/`has_blocks`.**~~
+   **CLOSED by `c36-merge-metadata`.** `MergeSource` now carries both fields of
+   Java's `LeafMetaData`, and `merge_segments` folds them exactly as
+   `SegmentMerger`'s constructor and `IndexWriter.mergeMiddle` do
+   (`merged_min_version`: minimum over the sources, `None` if any source has
+   none, seeded with the writer's version; `has_blocks`: the disjunction).
+   `MergeOptions::has_blocks` is gone. The `has_blocks` half was in fact
+   **already correct** -- c22 finding 24 had put the disjunction in
+   `execute_merge` -- so only `minVersion` was a live wrong answer; the move
+   was made anyway, because keeping the two halves of one Java record in two
+   different parameters is how the `minVersion` half stayed missing.
+   Evidence in both directions: `fixtures/data/merge_metadata/` is three
+   segments a real `IndexWriter` wrote, carrying `minVersion` 10.2.0/10.0.0/
+   10.1.0 and `hasBlocks` on one of them, which this port merges and real
+   Lucene reads back through `LeafMetaData` (`verify-write-path.sh` case 23,
+   verified to fail on both fields against the unfixed code).
+
+2. ~~**`SegmentCommitInfo.sci_id` is not regenerated when a generation
+   advances.**~~ **CLOSED by `c36-merge-metadata`.**
+   `SegmentCommitInfo::generation_advanced` is Java's `generationAdvanced()`
+   and is called from all four mutators; `advanceNextWrite*Gen` correctly still
+   is not. The live site was `deletes::apply_deletes`, which hand-rebuilt the
+   `SegmentCommitInfo` with `sci_id: sci.sci_id` and now mutates the real one
+   through `advance_del_gen`. The id is **derived, not random** -- a hash of
+   `(segment_id, del_gen, field_infos_gen, doc_values_gen,
+   buffered_deletes_gen)` -- which gives the only property a consumer reads it
+   for ("different iff the segment-commit is different") *better* than a random
+   draw does, since two runs reaching the same commit state produce the same
+   token instead of a spurious "changed". **What the id is used for here**:
+   nothing reads it inside this port -- `segment_infos::parse`/`write` carry it
+   and no validator touches it. Its consumers are all outside: Java's
+   `DirectoryReader.openIfChanged` per-segment reuse, an NRT/replication
+   client's "must I re-fetch this segment", and any cache keyed on it. That is
+   precisely why the defect was invisible and why the fix has to be checked by
+   asserting the id *changes*, which five new tests do.
+
+### B. Missing Lucene behaviour a caller can reach
+
+3. ~~**`segment_info::IndexSortField` cannot represent most real Lucene
+   sorts.**~~ **CLOSED by `c35-norms-and-sort`.** `IndexSortField` is now
+   `(field, reverse, IndexSortKind)` covering all four `SortFieldProvider`s,
+   every `SortField.Type` that can be an index sort, both selector enums and
+   every missing-value form including "none"; `write` is `parse`'s byte-level
+   inverse for all of them. Evidence both directions:
+   `fixtures/data/sorted_index_wide/` (a real `IndexWriter` index sorted by
+   `LONG` descending with missing value 42, `SortedNumericSortField` MAX with
+   no missing value, and `STRING` by ordinal) is opened, ordered and
+   `CheckIndex`-ed by this port; `write_segment_info_fixture`'s `_3` writes
+   all four providers and `VerifySegmentInfo` compares real Lucene's
+   `Sort.toString()`. The *writers* stay narrower on purpose and say so
+   (`Error::UnsupportedIndexSortKind` for ordinal/byte sorts) -- see
+   `docs/sweep/m2/c35-norms-and-sort.md`.
+
+4. ~~**Norms are opt-in per field.**~~ **CLOSED by `c35-norms-and-sort`.**
+   Norms follow `IndexingChain.writeNorms` exactly: every indexed field whose
+   `omitNorms` is false gets a column, with no opt-in anywhere, and
+   `IndexWriter::omit_norms_field` is the opt-out. The column is sparse, as
+   `NormValuesWriter`'s is. Verified by real Lucene reading back every
+   document's norm for a field nothing configured
+   (`VerifyFullSegment.checkNorms`). Measured: +0.65 us/doc (19.85 vs 19.19),
+   and one byte per document per normed field in the `.nvd` (zero when every
+   document's length is equal -- the constant encoding).
+
+5. **`Occur`-shaped search primitives that do not exist.** Four entries, one
+   milestone:
+   - **`TwoPhaseIterator`/`matchCost`/`ScorerSupplier.cost()`** -- no
+     cheap-approximation-then-verify split anywhere, so a conjunction verifies
+     an expensive phrase clause on every candidate and clause order is the
+     caller's problem. Needs every clause expressed as
+     `(approximation, matches(), matchCost())`, i.e. turning the per-shape free
+     functions into a scorer enum. c6 and c11 both assessed it: **a milestone,
+     not a batch.** The contained part -- ordering conjunction clauses by
+     `docFreq` ascending -- is batch-sized on its own.
+   - ~~**`searchAfter` and `MaxScoreAccumulator`**~~ **CLOSED by
+     `c37-search-behaviours`.** `TopDocsCollector::with_after` is
+     `TopScoreDocCollector`'s own test (`score > afterScore || (score ==
+     afterScore && doc <= afterDoc)`, applied after `totalHits` is
+     incremented); `collector::MaxScoreAccumulator` is one `AtomicI64` folded
+     with `fetch_max` over `DocScoreEncoder`'s packing, and lives where the
+     fan-out does
+     (`multi_segment::merge_multi_segment_scored_concurrent_shared_max_score`).
+     Java's `modInterval` is deliberately not modelled: it exists to keep an
+     atomic read off a *push* path, and this port pulls the threshold once per
+     block. Verified against three real `IndexSearcher.searchAfter` pages on
+     both a single-segment and a two-segment fixture
+     (`AppendSearchAfterManifest.java`).
+   - ~~**`Weight.count(LeafReaderContext)`**~~ **CLOSED by
+     `c37-search-behaviours`.** `weight_count::{count_term_query,
+     count_match_all_docs, count_field_exists_leaf}` plus
+     `ffi_count_term_query`. Measured on the 5M-document corpus: a count that
+     took **13.93 ms** of postings walk takes **72.2 ns**. Ground truth from
+     real `IndexSearcher.count` on both a deletion-free index and one with a
+     `.liv` (`AppendCountManifest.java`), because the deletions gate is the
+     only part that can be silently wrong.
+   - **Only one `Similarity`** (BM25), with no `Similarity`/`SimScorer` trait:
+     `TFIDF`/`Classic`/`Boolean`/`LMDirichlet`/`IndependenceStandardized`,
+     `k3` and `computeQueryTermWeight` are all unported. b12 already split BM25
+     into `idf`/`norm_inverse`/`do_score`, which are the three pieces the trait
+     needs.
+
+6. ~~**`FieldExistsQuery.count` and `rewrite`'s whole-reader decision.**~~
+   **CLOSED by `c37-search-behaviours`.** `weight_count::FieldExistsLeaf` is
+   the "leaf list" the entry said was missing -- the counts Java reads off a
+   `LeafReader`, gathered by `SegmentReader::field_exists_leaf` -- and
+   `count_field_exists_leaf`/`field_exists_rewrites_to_match_all_docs` are the
+   two rules over it. No reader-level query object was needed: the rules are
+   pure functions of the counts, and the reader only has to produce them.
+   Java's norms asymmetry (top-level `getDocCount(field)`/`maxDoc()` inside a
+   per-leaf loop) is reproduced, with the two reader-wide values as explicit
+   parameters so a caller cannot pass the leaf's by accident. Ground truth over
+   five committed indexes, covering the complete-norms, partial-norms,
+   no-doc-count-available and skipper arms
+   (`AppendCountManifest.java`); the live-doc arithmetic was verified to fail
+   with `numDocs` replaced by `maxDoc`.
+
+7. ~~**Sloppy phrase matching is in-order only.**~~ **CLOSED by
+   `c37-search-behaviours`.** `lucene-search/src/sloppy_phrase.rs` is
+   `SloppyPhraseMatcher` ported statement for statement -- the shifted-position
+   window, the `PhraseQueue` walk that emits the `matchLength` *sequence*
+   `PhraseScorer.score()` sums, and the `rptGroups` machinery for repeated
+   terms including the `hasMultiTermRpts` union a `MultiPhraseQuery` can reach.
+   *The recorded blocker was false*: `GenBlockTree` has had a reordered pair
+   since task #55 (doc 8558, `delta`@0 `gamma`@1, added for the
+   `SpanNearQuery` `in_order` test), and doc 8555's `alpha beta` is a reordered
+   document for the query `"beta alpha"`. No index was regenerated; the ground
+   truth is six new `AppendScoringManifest` entries recorded against the
+   committed segment, all matched bit-for-bit on the first run, and verified to
+   fail (zero hits where Lucene has one) against the in-order matcher.
+   **One half remains**: `highlighter::phrase_match_offsets`' match enumeration
+   is still in-order, so a reordered occurrence is scored but is not offered a
+   highlight fragment. That is now the only in-order-only phrase path, and it
+   is recorded on the function.
+
+7b. **The highlighter's phrase match enumeration is still in-order only.**
+    `highlighter::phrase_match_offsets` walks one greedy in-order alignment per
+    starting position of the first slot; with item 7 closed it is now the only
+    in-order-only phrase path in the crate, so a reordered occurrence is
+    *scored* (`sloppy_phrase`) but is not offered a highlight fragment -- the
+    two halves of one query disagree about what matched. *Cost*: a missing
+    highlight, never a wrong hit set. *What it needs*: `phrase_match_offsets`
+    to enumerate through `sloppy_phrase`'s walk, which means the matcher
+    growing a "what were the raw positions of this match" accessor
+    (`SloppyPhraseMatcher.startPosition()`/`endPosition()`/`startOffset()`/
+    `endOffset()`, all of which Java has and this port skipped because nothing
+    consumed them). Contained; roughly the size of item 7's second half.
+    (Raised by c37.)
+
+8. **`FieldInfo` is a plain struct where Java's is a validating constructor.**
+   `field_infos::write` applies the one coercion that was producing unreopenable
+   files, and `check_consistency` exists, but a caller can still build
+   combinations Java makes unrepresentable and find out at `parse` time or not
+   at all. A `FieldInfo::new -> Result` closes the class; it touches ~197
+   construction sites.
+
+9. **`FuzzyTermsEnum`'s `MaxNonCompetitiveBoostAttribute` feedback loop** (swap
+   to a lower-edit automaton once the top-terms queue is full) is unported, and
+   `fuzzy_doc_scores` blends `docFreq` within one segment where
+   `BlendedTermQuery` blends across the whole reader -- the fuzzy clause has no
+   `GlobalStats` plumbing.
+
+10. **`lucene-analysis` has no `TokenStream` lifecycle.** `end()`'s trailing
+    position increment is dropped by `StopFilter` and both n-gram filters, so a
+    document whose last tokens were all filtered out does not advance the
+    position counter -- **the one gap here a caller can observe as a wrong
+    position**. Alongside it: no case-insensitive `CharArraySet` (the port
+    matches a lowercase set against already-lowercased terms, right for the
+    standard chain, wrong for a caller-supplied mixed-case set) and no
+    `maxTokenLength`. The UTF-16-offsets gap that used to lead this entry is
+    **closed** (c29 read side, c33/`tokenize` write side).
+
+11. ~~**Zero-doc merges are committed rather than dropped.**~~
+    **CLOSED by `c36-merge-metadata`.** `execute_merge` sums the sources' live
+    document counts right after their stored-fields readers open -- where
+    `mergeMiddle`'s `if (merger.shouldMerge()) merger.merge();` sits -- and on
+    zero calls the new `IndexWriter::drop_merge`, which is `commitMerge` with
+    `dropSegment` set: `SegmentInfos.applyMergeChanges`' "remove every
+    merged-away source, insert nothing". No file is written, so there is
+    nothing for Java's `deleteNewFiles(merge.info.files())` to do on this path.
+    `apply_merge` and `drop_merge` share one private `commit_merge`; the public
+    API is unchanged.
+
+11b. **100%-deleted segments are not dropped when deletes are applied.**
+    `IndexWriter.finishApply` drops them
+    (`closeSegmentStates` collects a segment iff `rld.isFullyDeleted()` --
+    hard deletes only, `getDelCount() == maxDoc()` -- and
+    `MergePolicy.keepFullyDeletedSegment` is false; then
+    `dropDeletedSegment` + `checkpoint`). This port keeps them in the commit
+    forever. *Cost*: a segment nothing can ever match, carried by every later
+    open, merge and `CheckIndex` -- the same cost as item 11's zero-doc merge,
+    one step earlier. *Blocked on*: three things this port does not have.
+    (a) `MergePolicyConfig` has no `keepFullyDeletedSegment` hook, and it is
+    not decoration -- `SoftDeletesRetentionMergePolicy` returns `true` from it,
+    so a drop without the hook is only correct for the default policy.
+    (b) There is no `adjustPendingNumDocs`/reader-pool bookkeeping to update.
+    (c) At least one existing test
+    (`a_rollback_after_a_buffered_delete_was_applied_restores_the_committed_segment_list`)
+    asserts on `segments[0]` *after* deleting that segment's only document, so
+    the change has an observable ripple that needs its own reasoning rather
+    than a mechanical edit. Met and recorded by c36 while building item 11's
+    test, which had to hand-build fully-deleted segments precisely because of
+    this. (Raised by c36.)
+
+12. **`Util.shortestPaths`/`TopNSearcher`/`readCeilArc` unported**, so
+    `top_n_completions` walks the prefix subtree with a bounded heap and cannot
+    skip a subtree that provably cannot beat the current worst candidate.
+    `SegmentTermsEnum` `TermState` seeking is likewise unported -- no
+    `TermStates` caller exists yet.
+
+13. **`PointValues.estimatePointCount`'s BKD walk.** `estimate_doc_count`'s
+    arithmetic is ported and is what `IndexOrDocValuesQuery`'s planner consumes,
+    but the walk that produces its input is not: `IntersectVisitor::compare`
+    sees cell bounds but no subtree size, and the node-id walk is private.
+    *Owner*: `lucene-codecs` -- a `PointsReader::estimate_point_count(field,
+    &mut V)` beside `intersect`, reusing `IntersectCtx`/`intersect_node`'s
+    `node_id` bookkeeping plus `BKDReader.IndexTree.size()`. Nothing in
+    `lucene-search` moves.
+
+### C. Performance and memory divergence
+
+14. **`DirectoryReader::open` is still the largest reader-side gap.**
+    `verdict-m1.6.md`: **52.7 ms** on the merged corpus, ~155x Lucene, RSS
+    70 MB. c1's "2.0 ms of 2.2 ms is `open_segments`" diagnosis predates c12's
+    4.8x and the mmap change and must be re-measured before it is planned
+    against -- `micro reader_open` builds and runs again, so that is cheap.
+
+15. **`indexing_chain` allocates per token/term/posting** where Java uses
+    `BytesRefHash` + `ByteBlockPool`/`IntBlockPool`/`ByteSlicePool`. Measured
+    by c3: 8.3 MB of document text becomes 78.5 MB of `InMemoryInvertedIndex`
+    (**9.4x**), and the single largest term is the `Vec<Occurrence>` whose
+    first `push` reserves capacity 4 -- 48 bytes of allocation for 12 bytes of
+    payload. `shrink_to_fit` was tried and reverted (structure drops to 5.98x,
+    indexing costs 25-60% more, peak RSS does not move: glibc keeps the freed
+    chunks). *Contained version*: an inline-capacity-1 occurrence
+    representation, which needs `PostingEntry`'s public shape to change.
+    This is also what keeps `ram_bytes_used()` measuring the arena rather than
+    Java's inverted-form bytes.
+
+16. **Payload slots cost ~26 us/doc and ~190 MB per 50 000 documents, and the
+    cost is the slot, not the bytes** (c23 F9, measured with an
+    all-empty-payload control). The fix is a flat `(bytes, lengths)`
+    representation in **both** `postings_writer::TermPostings::payloads`
+    (still `Vec<Vec<Vec<u8>>>`, `postings_writer.rs:337`) and
+    `indexing_chain::PostingEntry::payloads` (still `Vec<Vec<u8>>`); doing only
+    the second is *slower*, because `build_postings_output` would
+    re-materialize the nested form. An instance of item 15 with a number on it.
+
+17. **`OrdinalMap::build` materializes every segment's term list.** Java streams
+    `TermsEnum`s and never holds a dictionary. Measured by c29
+    (`lucene-search/examples/ordinal_map_memory.rs`, 17-byte terms): 5 segments
+    x 1 M terms costs **267 MB** for the term lists against **52 MB** for the
+    map, 319 MB peak -- the input is ~5x the output and ~84% of the peak.
+    *Blocked on*: `lucene-codecs/src/terms_dict.rs` exposing a `TermsCursor`
+    that yields one term at a time over the prefix-compressed blocks
+    `decode_all_terms` already walks; then `facets.rs` and `OrdinalMap::build`
+    take iterators.
+
+18. **Impacts are computed against norm 1.** `FieldPostingsInput` carries no
+    norms, so every level-0 and level-1 impact this writer emits is
+    `(maxFreq, 1)` where `Lucene104PostingsWriter` feeds real per-doc norms
+    into `CompetitiveImpactAccumulator`. **Sound but loose** -- norm 1 is the
+    highest-scoring norm, so it costs pruning, never a wrong answer. The
+    `lucene-index` half is unblocked (one shared invert pass already computes
+    every document's field length at the `write_fields` call site); what
+    remains is entirely in `lucene-codecs`.
+
+19. ~~**`IndexWriter` rewrites the `.si` once per file group -- five times, not
+    four.**~~ **CLOSED by `c36-merge-metadata`.** It was seven, counting the
+    stored-fields flush's own write and `write_index_sort_to_si`.
+    `segment_writer` now splits into `write_stored_only_segment_files` (every
+    codec file, no `.si`) + `seal_flushed_segment` (`sealFlushedSegment`'s
+    single `.si` write and one fsync of the whole set), carrying a
+    `FlushedSegment` -- the in-memory `SegmentInfo` -- in between. The five
+    `write_*_files` helpers return their file names instead of patching the
+    file; `write_index_sort_to_si` is deleted; `flush_sorted_stored_only_segment`
+    lost its own second write. The recorded blocker ("a signature change to
+    `flush_stored_only_segment`, which `merge.rs` also calls") did not
+    materialise: `flush_stored_only_segment{,_with_blocks}` keep their exact
+    signatures and are now build + seal. *Measured*: **below this host's noise
+    floor** -- `fsync` is effectively free on the container's mount, so even
+    20 000 extra read-modify-write-then-resync cycles per flush produced no
+    separation (see the batch report's table). What the change removes is
+    countable instead of timed, and is what matters on a filesystem that
+    honours `fsync`: 4 writes, 4 fsyncs and 4 `open`+`parse` round trips per
+    flushed segment in the configuration the new test drives, 6 of each in the
+    maximum case. Asserted by `one_commit_writes_the_segments_si_exactly_once`,
+    which runs the writer through a counting `Directory`.
+
+20. **Migrate the blocktree lookups to their `try_*` forms** (c1 F-11). A
+    corrupt `.tim` block is discovered at lookup time, as in Java, and
+    `try_seek_exact`/`try_next`/`try_seek_ceil`/`try_current` exist and are
+    tested -- but the infallible spellings are still what 136 call sites use
+    (against 61 `try_*` uses), and they degrade a corrupt block to "no such
+    term"/end-of-terms. *Cost*: a corrupt index reads as an empty one.
+
+21. **Split term iteration from stats in `TermsEnum`** (c1 F-14). Java's
+    `next()` decodes only the term bytes and defers `decodeMetaData` to
+    `docFreq()`; `blocktree.rs:1780`'s `next()` returns `(&[u8], TermStats)`
+    and so always decodes. Full-field enumeration is 27 ns/term against
+    Lucene's 20.5 ns. Wants a `next_term()` + `stats()` split, which changes
+    `check_index`'s and the intersect iterators' call shape.
+
+22. **`highlighter`/postings read path aside**: `IndexedDISI`'s **block jump
+    table** is still not read (`createJumpTable`/`advanceBlock`'s
+    two-blocks-ahead shortcut). Cost is O(maxDoc/65536) four-byte header reads
+    -- 16 for a million documents -- and this port's writers emit
+    `jumpTableEntryCount = 0`/`-1`, so our own files have no table to read.
+    Worth revisiting only alongside a `nextDoc`-shaped iterator API.
+
+23. ~~**A filter-only query cannot prune under a top-`n` collector.**~~
+    **CLOSED by `c37-search-behaviours`.** The guard was removable, and the
+    reasoning behind it was wrong rather than merely cautious: Java skips the
+    tie too. `TopScoreDocCollector.updateMinCompetitiveScore` publishes
+    `Math.nextUp(topScore)`, which for a bottom of `0f` is `Float.MIN_VALUE`,
+    and the scorers skip a block whose maximum is `< minCompetitiveScore` -- so
+    Java's `bound < nextUp(bottom)` and this port's `bound <= bottom` are the
+    same rule for every finite bottom. It is also independently correct:
+    documents arrive ascending and `HitQueue` gives a score tie to the lower
+    doc id, so nothing skipped could have entered a full queue. *The recorded
+    blocker was half false*: `body` is indeed too small (its two-document
+    postings live in the vint tail, where `current_block_last_doc_id()` is
+    still `-1`, so no bound exists to prune against), but the same fixture's
+    `big` field has 300 documents and fills a top-20 queue fifteen times over.
+    **Measured, both sides re-run in one session**: `#body:t0 #body:t1` at
+    top-50 on `benchmarks/.corpus/merged` went **44.20 ms -> 2.00 ms** (22x),
+    against 7.02 ms for the all-`MUST` form -- so the filter shape is now the
+    cheaper one under a top-`n` collector, as it already was without one.
+    (Two ledger entries, one finding.)
+
+24. **`StoredFieldsReader::document()` materializes a whole `Document`** where
+    Java's `StoredFieldVisitor` lets a caller take one field and skip the rest.
+    Read path only; the write side was made streaming by c4.
+
+25. **DEFLATE encoder has no preset dictionary.** `miniz_oxide` exposes no
+    `deflateSetDictionary`. Compression ratio only -- the decode side is
+    correct and fixture-verified. *Blocked on a dependency*: revisit if a
+    raw-deflate crate with dictionary support becomes acceptable.
+
+25b. **`IndexFileDeleter`'s checkpoint re-reads and re-parses every segment's
+    `.si`.** Java reference-counts from the in-memory
+    `SegmentCommitInfo.files()`, which already holds the `SegmentInfo`; this
+    port re-opens and re-parses the file, once per segment per checkpoint. It
+    is the one `.si` read c36 left in the flush path (that batch's counting
+    test pins it at exactly one, so a regression is visible). *Blocked on*:
+    handing the deleter live `SegmentInfo`s rather than segment *names* -- a
+    signature change across `index_file_deleter.rs` and every checkpoint call
+    site. **Now unblocked in one respect**: `segment_writer::FlushedSegment` is
+    exactly the in-memory `SegmentInfo` that call would take. (Raised by c36.)
+
+### D. Tooling, gates and tidy-ups
+
+26. **A rustdoc pass belongs in the gate.** `rustdoc::broken_intra_doc_links`
+    is warn-by-default and caught by none of `cargo fmt`/`clippy`/`test`/
+    `llvm-cov`; c4 shipped a broken link that survived a green gate. Turning it
+    on needs the pre-existing broken links cleaned up first.
+
+26b. **Two checks that exist but are not in the gate, and had both gone
+    quietly red.** c36 found `scripts/gen-fixtures.sh --check` failing on a
+    committed fixture generated outside the container (`break_iterator`'s
+    manifest recorded `java_version=25` against the pinned JDK 21) and
+    `benchmarks/rust-runner` not compiling at all (two half-finished API
+    reshapes from an earlier batch), with a stale binary in
+    `target-docker/release/` still producing plausible benchmark numbers from
+    pre-change code. Both are fixed, but neither is *gated*: the benchmark
+    crate is outside the workspace so `clippy --workspace` never sees it, and
+    `--check` is run by hand. **The benchmark half is now closed**: c36 added
+    `cargo check --manifest-path benchmarks/rust-runner/Cargo.toml
+    --all-targets` to `scripts/gate.sh` (and to AGENTS.md's table), so the next
+    API reshape fails the gate instead of producing plausible numbers from a
+    stale binary. What is left is `gen-fixtures.sh --check`, which is expensive
+    (it generates the whole tree twice) and probably belongs on a schedule
+    rather than per-push. (Raised and half-closed by c36.)
+
+27. **Mechanical gates for three defect shapes this sweep keeps re-finding.**
+    (a) a clippy `disallowed_methods` entry on the free
+    `doc_values::numeric_value`/`binary_value`, naming
+    `NumericReader`/`BinaryReader` as the sanctioned multi-lookup API -- the
+    "call the re-deriving free function once per document" defect has appeared
+    twice (b13's `soft_deletes::effective_live_docs`, c14's column merge) and
+    is grep-able; (b) a gate on `Lucene90_\d`-shaped string literals outside
+    `index_writer::per_field_codec_suffix` and test modules, which is how c14's
+    hardcoded per-field suffix got in; (c) for every `fn`/`struct` a diff
+    *removes*, grep `crates/`, `docs/parity.md` and `PLAN.md` (excluding
+    `docs/sweep/`, which is an archive) and fail on a hit -- c37's Tier-2 review
+    found `parity.md` describing two deleted functions in the present tense,
+    and `check-parity.py` deliberately validates only the file *paths* in the
+    Rust column, never identifiers in the prose. No false positives for
+    `pub(crate)`-and-above symbols. (Raised by c37.) There is no `clippy.toml` in the tree
+    today, so (a) starts from zero. Repo-wide tooling, not any one batch's
+    files.
+
+28. **`norms::parse_meta`'s signature still differs from Java's
+    `readFields(meta, infos)`.** *Behaviour* is closed (c15's additive
+    `norms::validate_fields`, called from the segment reader's open and from
+    `check_index`). What is left is a pure tidy-up across 34 call sites in four
+    crates, and c7's reasoning still holds: the right moment is when a shared
+    `FieldInfos` open lands, at which point the parameter is free instead of
+    34 mechanical edits that refactor would rewrite. **Do not schedule this on
+    its own.**
+
+29. ~~**`lucene-analysis`/`lucene-search` fixture debt for items 7 and 23.**~~
+    **CLOSED by `c37-search-behaviours`, and worth reading as a cautionary
+    entry.** Neither fixture had to be built: `GenBlockTree` already contained
+    a reordered pair (doc 8558, added by task #55 for `SpanNearQuery`) and a
+    300-document field (`big`, added for the postings block tests). Both items
+    had been carrying a "blocked on a fixture" note for several batches while
+    the fixture sat in the tree, having been added for a different purpose.
+    The same shape as c34's four "actively misleading" entries -- a blocker
+    that stopped being true and nothing noticed, because the thing that made it
+    untrue was somebody else's work.
+
+### What was actively misleading (the class that cost c26 and c29 time)
+
+Four entries claimed a blocker that no longer existed, or described as
+structural something that had since become local. Each is annotated in place;
+listed together here because the pattern, not the individual entry, is the
+thing to watch:
+
+- **Norms opt-in** said "blocked on a multi-field `.nvd`/`.nvm` writer". c26
+  wrote one. The item had been unschedulable for a reason that had been false
+  for several batches.
+- **`Lucene104PostingsWriter` impacts** was read alongside a
+  `postings_writer.rs` module doc asserting "impacts are always an empty byte
+  region" and that positions can never co-occur with a full block. Both were
+  made untrue by c20/c23 and neither was updated; c34 corrected the module doc.
+- **Stored-fields writer API** said the writer "takes `&[Document]` rather than
+  streaming". c4 made it a streaming object; only the *reader* half was left.
+- **`docs/parity.md`'s FFI row** still described `open_field_norms` as ending
+  in `FieldNorms::open` -- the production-path scoring divergence b12 raised as
+  F-7 -- after b15 had moved it onto `from_field_stats`. The code was right and
+  the record was the last thing still claiming otherwise. Corrected by c34.
+
+Two more were stale rather than misleading and are worth the same watchfulness:
+the `DirectoryReader::open` entry carried c1-era numbers three batches out of
+date, and the `.si`-rewrite entry undercounted its own cost (four file groups,
+now five).
 
 ## Carry-over items (assign to a later batch)
+
+> **Historical record from here down.** Plan from "Open work, prioritised"
+> above instead. Every box below was re-verified by `c34-ledger-reconcile`
+> against the tree, not against the report that raised it: `- [x]` is done
+> and carries a note naming what closed it and the evidence checked, `- [~]`
+> is **obsolete** (the code it referred to is gone, or a later decision
+> superseded it) and says why, and `- [ ]` is genuinely open and carries a
+> note on what the current tree actually looks like wherever the original
+> entry had gone stale.
 
 - [x] **`search_term_query_scored_maxscore_with_stats` drops its reader-wide
       statistics on every fallback path** (`lib.rs`). **Fixed by c6**; b13's
@@ -68,7 +561,7 @@ Status: `pending` → `running` → `swept` (report written, gates green).
       (`multi_segment::maxscore_keeps_global_stats`); the fix is to forward
       `global` to `search_term_query_scored_with_stats` instead. Owner: b12.
       (Raised by b13, F-5.)
-- [ ] **`avgFieldLength` is not Java's at the constructor every caller uses.**
+- [x] **`avgFieldLength` is not Java's at the constructor every caller uses.**
       *(b13 done on the `field_norms.rs` side: `FieldNorms::open`'s doc comment
       now enumerates all three divergences and every caller in the workspace
       passes `live_docs == None`, so only the unfixable `SmallFloat`
@@ -88,13 +581,15 @@ Status: `pending` → `running` → `swept` (report written, gates green).
       `sum_total_term_freq`/`doc_count`, so the FFI path (and the three
       `explain.rs` FFI wrappers that share the helper) matches Java exactly.
       `FieldNorms::open` itself still exists for b13/tests.
-- [ ] **`BooleanScorer`'s window/bucket bulk OR is unported** -- the one
+      **CLOSED, verified by c34-ledger-reconcile.** Every *production* call site now uses `FieldNorms::from_field_stats` (Java's `sumTotalTermFreq / docCount`): `lucene-ffi/src/query.rs::open_field_norms` (b15) and `benchmarks/rust-runner/src/main.rs:478`. The nine surviving `FieldNorms::open` call sites are all inside `#[cfg(test)]` modules (`explain.rs:1870`, `lib.rs:8709`, `doc_value_query.rs:2479/2508`, three integration suites) -- checked against each file's own `#[cfg(test)]` line. The reader-wide half was closed by c6 (`DirectoryReader::avg_field_length`).
+- [x] **`BooleanScorer`'s window/bucket bulk OR is unported** -- the one
       mechanism in Lucene's disjunction path this project has never tried, and
       the one that matches M1.6's own conclusion after six failed pruning
       attempts ("has to come from not reaching the documents at all, at a
       coarser granularity than a document"). 2048-doc windows into 1024 score
       buckets. Highest-value untried item for the boolean queries. (Raised by
       b12, F-22.)
+      **CLOSED by c6.** `crates/lucene-search/src/docid_set.rs:227::WindowedDisjunction`, chosen the way `BooleanScorerSupplier.booleanScorer` chooses it. c6 also corrected the premise: under `ScoreMode.TOP_SCORES` Lucene 10.5.0 picks `MaxScoreBulkScorer`, not `BooleanScorer`. The `[x]` c6 entry further down says the same thing; ticked here so the two agree.
 - [ ] **No `TwoPhaseIterator` / `matchCost` / `ScorerSupplier.cost()`** -- no
       cheap-approximation-then-verify split anywhere, so a conjunction verifies
       an expensive phrase clause on every candidate and clause order is the
@@ -102,12 +597,13 @@ Status: `pending` → `running` → `swept` (report written, gates green).
       weighed together with `Occur.FILTER` (F-16) as one milestone. The
       contained part -- ordering conjunction clauses by `docFreq` ascending --
       is b13-sized. (Raised by b12, F-20.)
-- [ ] **`Occur.FILTER` does not exist** (three clause lists, not four), which
+- [x] **`Occur.FILTER` does not exist** (three clause lists, not four), which
       makes four of `BooleanQuery.rewrite`'s twelve rules unreachable and
       leaves no way to express "required but non-scoring". Wants
       `ScoreMode::CompleteNoScores`'s postings half to be worth anything.
       (Raised by b12, F-16.)
-- [ ] **No `maxClauseCount`**: a prefix query expanding to a million terms
+      **CLOSED by c11.** `crates/lucene-search/src/query.rs:861::BooleanQuery::filter` is the fourth clause list; matching, zero-contribution scoring, `explain`'s `# clause` arm and the five `FILTER` rewrite rules are pinned bit-for-bit against real `IndexSearcher`. Same finding as the `[x]` c11 entry below.
+- [x] **No `maxClauseCount`**: a prefix query expanding to a million terms
       builds a million-clause query where Java throws `TooManyClauses` past
       1024. Denial-of-service guard; the FFI boundary is the right place for
       the policy. (Raised by b12, F-17; owner b15.) **Closed by b15**:
@@ -115,37 +611,54 @@ Status: `pending` → `running` → `swept` (report written, gates green).
       `read_term_clauses`, so every boolean-query and explain entry point
       (single- and multi-segment) rejects an over-long clause list as
       `FfiStatus::InvalidArgument` with Java's own message shape.
-- [ ] **Sloppy phrase matching is in-order only** -- `SloppyPhraseMatcher`
+      **CLOSED** -- the entry's own body already recorded b15's fix and the box was never ticked. Verified: `crates/lucene-ffi/src/query.rs:253::MAX_CLAUSE_COUNT = 1024`, enforced at `:279` with Java's message shape, over the occur-tagged clause array c13 introduced.
+- [x] **Sloppy phrase matching is in-order only** -- `SloppyPhraseMatcher`
       admits term reordering within the slop budget. b12 fixed the *frequency*
       (`1/(1+matchLength)` summed, was a flat 1) but not the reordering. The
       concrete blocker is a fixture: `GenBlockTree` has no reordered-phrase
       document, so there is nothing to check an implementation against.
       (Raised by b12, F-19.)
-- [ ] `searchAfter` (`TopScoreDocCollector`'s `after`) and
+      **CLOSED by c37-search-behaviours** (`lucene-search/src/sloppy_phrase.rs`).
+      The blocker was false: `GenBlockTree`'s doc 8558 (`delta`@0 `gamma`@1) has
+      been a reordered document since task #55 added it for `SpanNearQuery`, and
+      any `alpha beta` document is one for the query `"beta alpha"`. See open
+      item 7 above.
+- [x] `searchAfter` (`TopScoreDocCollector`'s `after`) and
       `MaxScoreAccumulator` (one min-competitive score shared across
       concurrently-searched leaves) are both unported. The second is b13's,
       since it has to live where the fan-out does. (Raised by b12, F-14/F-15.)
-- [ ] `Weight.count(LeafReaderContext)`: a `TermQuery` can answer "how many
+      **CLOSED by c37-search-behaviours**: `TopDocsCollector::with_after`,
+      `collector::MaxScoreAccumulator`,
+      `multi_segment::{merge_multi_segment_scored_after,
+      search_term_query_multi_segment_after,
+      merge_multi_segment_scored_concurrent_shared_max_score}`,
+      `ffi_search_term_query_scored_after`. See open item 5 above.
+- [x] `Weight.count(LeafReaderContext)`: a `TermQuery` can answer "how many
       match" from `docFreq` with no deletions, `MatchAllDocsQuery` from
       `numDocs`. `CountCollector` always iterates. Belongs with b13's
       multi-segment count path. (Raised by b12, F-23.)
+      **CLOSED by c37-search-behaviours** (`lucene-search/src/weight_count.rs`,
+      `ffi_count_term_query`). 13.93 ms -> 72.2 ns on the 5M-document corpus.
+      See open item 5 above.
 - [ ] Only one `Similarity` exists (BM25), with no `Similarity`/`SimScorer`
       trait: `TFIDF`/`Classic`/`Boolean`/`LMDirichlet`/`IndependenceStandardized`
       are all unported, as are `k3`/`computeQueryTermWeight`. b12 split BM25
       into `idf`/`norm_inverse`/`do_score`, which are the three pieces a future
       trait needs. (Raised by b12, F-11/F-12.)
 
-- [ ] `segment_writer::flush_stored_only_segment` writes a `.si` whose `files`
+- [x] `segment_writer::flush_stored_only_segment` writes a `.si` whose `files`
       set omits `<segment>.si`. Real Lucene's
       `Lucene99SegmentInfoFormat.write` always adds it (`si.addFile`) and
       `merge.rs` already does; `IndexFileDeleter` reference-counts from that
       set. `check_index`'s new `si.files_lists_itself` check flags it. One
       line, in b9's file. (Raised by b11.)
-- [ ] `lucene-search/src/points_query.rs::corrupt_kdd_leaf_data_surfaces_as_points_error`
+      **CLOSED in the main session.** `crates/lucene-index/src/segment_writer.rs:224` now pushes `si_name` into `files` before building the `SegmentInfo`, with the `Lucene99SegmentInfoFormat.write`/`si.addFile` citation in place; `check_index`'s `si.files_lists_itself` arm (`check_index.rs:399/939`) is the tripwire.
+- [x] `lucene-search/src/points_query.rs::corrupt_kdd_leaf_data_surfaces_as_points_error`
       fails on the current tree (`unwrap_err()` on an `Ok`). `points_query.rs`
       is unmodified; `lucene-codecs/src/points.rs` grew ~879 lines in b7/b8, so
       the corrupt-`.kdd` input the test builds now decodes cleanly. Needs a
       corruption the new `intersect` path actually rejects. (Raised by b11.)
+      **CLOSED.** c34 *ran* it: `cargo test -p lucene-search --lib corrupt_kdd` -> `points_query::tests::corrupt_kdd_leaf_data_surfaces_as_points_error ... ok`. The corruption the test builds is rejected by the current `intersect` path.
 - [x] `check_index` still does not verify norms *values*
       (`CheckIndex.testFieldNorms`), postings positions/offsets/payloads
       ordering, or term-vectors-vs-postings agreement (Java's slow level).
@@ -158,25 +671,28 @@ Status: `pending` → `running` → `swept` (report written, gates green).
       longer holds at the level this module works at. c9 also found that the
       `file:*` check was `retrieveChecksum` (footer *shape*) rather than
       `checksumEntireFile`, so a mid-file byte flip passed it.
-- [ ] `crates/lucene-codecs/src/postings.rs`: `read_postings`' full-block
+- [x] `crates/lucene-codecs/src/postings.rs`: `read_postings`' full-block
       loop ends with `debug_assert_eq!(r.position(), header.body_end)`, so a
       corrupt `.doc` block **panics** in a debug build instead of returning
       `Error::Corrupted` like every other malformed-input path. `CheckIndex`
       is precisely the tool one runs on a corrupt index; c9's
       `corrupting_the_doc_skip_data_is_caught_by_the_advance_check` has to
       `catch_unwind` around it. Owned by c8. (Raised by c9.)
-- [ ] `segment_info::IndexSortField` models only
+      **CLOSED by c8.** The `debug_assert_eq!` is gone: `postings.rs:2887::check_wire_position` returns `Error::Corrupted` ("decode ended at N but the file's own length field claims M"), called at `postings.rs:666/702/3987`. `check_index.rs:5039` records that the `catch_unwind` + silenced panic hook came out with it -- and that deleting the workaround is what exposed a fifth panic nobody had found by hand.
+- [x] `segment_info::IndexSortField` models only
       `(field, reverse, missing-first-or-last)`, so `parse` *rejects* valid
       Lucene sorts it cannot represent (numeric sort with no missing value,
       arbitrary missing sentinel, non-`MIN` multi-value selector). Widening it
       means adding fields/variants whose construction and `match` sites live in
       `segment_writer.rs` and `merge.rs`. (Raised by b11.)
+      **c34 restated.** Still open, but the failure mode is now *honest* rather than silent: `segment_info::parse` rejects a sort it cannot represent as `Error::UnsupportedSortField { field, reason }` naming exactly what it was (`segment_info.rs:113`, and the `//!` list at `:79-81`), instead of guessing. What is missing is the representation itself -- `IndexSortField` is still `(field, reverse, missing: SortMissingValue{First,Last})` at `segment_info.rs:167-173`. Cost: this port **cannot open** a real Lucene index whose sort uses a numeric field with no missing value, an arbitrary missing sentinel, or a non-`MIN` multi-value selector. Blocked on nothing but the ripple: widening the enum changes construction and `match` sites in `segment_writer.rs` and `merge.rs`. **CLOSED by `c35-norms-and-sort`**, ripple and all: `IndexSortKind` covers all four providers, `SortKeyComparator` replaced `sort_key_rank` in the flush, the merge and `CheckIndex.testSort`, and `fixtures/data/sorted_index_wide/` is a real Lucene index with a sort the old model rejected that this port now opens, orders and checks.
 
-- [ ] `scripts/gen-fixtures.sh --check` was not run end to end for b10 (it
+- [x] `scripts/gen-fixtures.sh --check` was not run end to end for b10 (it
       regenerates every fixture twice and other batches were mid-edit).
       `GenMergePolicy` itself was verified deterministic and byte-identical to
       the committed manifest by generating twice by hand. Re-run the full
       `--check` once the tree is quiet. (Raised by b10.)
+      **CLOSED.** c34 ran `scripts/gen-fixtures.sh --check` end to end, exit 0: 47 deterministic files byte-identical, 629 non-deterministic (random segment id), **0** deterministic mismatches, **0** missing, **0** unexplained extras, **0** manifests with a wrong key set, **0** segment-id baseline lines disagreeing.
 
 - [x] Stored-fields **bulk merge** path. **Done by c4**: `StoredFieldsWriter`
       is now the streaming object Java's writer is, with all three of
@@ -211,31 +727,45 @@ Status: `pending` → `running` → `swept` (report written, gates green).
       289 292 ms -> 113.5 ms from the chunking and a `ChunkCursor` alone, then
       -> 0.6 ms with the byte copy; random-access `document()` 195x. (Raised by
       c4.)
-- [ ] **`IndexWriter::execute_merge` supplies no norms**, so an automatic merge
+- [x] **`IndexWriter::execute_merge` supplies no norms**, so an automatic merge
       silently drops them and changes every BM25 score in the merged segment.
       c4 made the merged `.fnm` honest about it (which is what keeps the index
       openable), but the loss is real; the fix is to open each source's
       `.nvm`/`.nvd` and populate `MergeSource::norms`, the way `execute_merge`
       already does for postings and term vectors. `index_writer.rs`.
       (Raised by c4.)
+      **CLOSED by c22/c26.** `index_writer.rs:5107` carries `RawNormsFiles` ("Raw `.nvm`/`.nvd` bytes for a source that has norms") on the merge source, and `merge.rs:2022` writes them back through `norms::write_fields`. c26's `check_format_coverage` plus the `merge-format-completeness` test (`index_writer.rs:15409`) now mechanically refuse a merge that fails to open a format a source's `.si` lists, which is what stops this class recurring.
 - [ ] **A rustdoc pass belongs in the gate.**
       `rustdoc::broken_intra_doc_links` is warn-by-default and caught by none
       of `cargo fmt`/`clippy`/`test`; c4 shipped one broken link that survived
       a green Tier 1 gate. Turning it on needs the pre-existing broken links in
       `doc_values.rs`, `for_util.rs` and others cleaned up first. (Raised by c4.)
-- [ ] `MergeSource` carries no per-source `min_version`/`has_blocks`, so a merged
+- [x] `MergeSource` carries no per-source `min_version`/`has_blocks`, so a merged
       `.si` claims the caller's version and `has_blocks = false` instead of
       Java's `min over readers` / propagated flag. Unreachable while this port
       only merges segments it wrote itself; the fix is an exhaustive-struct-literal
       change across ~85 call sites plus `index_writer.rs`. (Raised by b10.)
-- [ ] Zero-doc merges should be dropped by `IndexWriter::apply_merge` the way
+      **CLOSED by c36-merge-metadata** -- see open-work item 1 above. Both
+      fields are on `MergeSource`, `merged_min_version` is `SegmentMerger`'s
+      fold, and `verify-write-path.sh` case 23 checks both through real
+      Lucene's `LeafMetaData`. The `has_blocks` half turned out to have been
+      correct since c22 (via `MergeOptions`); only `minVersion` was wrong.
+      **c34 restated.** Confirmed still open: `MergeSource` (`merge.rs:790-825`) carries `field_infos`/`reader`/`live_docs`/the five doc-values kinds/`norms`/`term_vectors`/`postings`/`points`/`vectors` and no `min_version` or `has_blocks`; the merged `.si` takes `min_version: Some(lucene_version)` (`merge.rs:2142`) and `has_blocks: options.has_blocks` (`:2151`), i.e. the caller's version and the caller's flag, not Java's `min over readers` / propagated flag. Still unreachable while this port only merges segments it wrote itself, so this is a **latent** correctness item, not a live one. Cost of the fix is unchanged: an exhaustive-struct-literal change across ~85 call sites.
+- [x] Zero-doc merges should be dropped by `IndexWriter::apply_merge` the way
       `SegmentMerger.shouldMerge()` + `IndexWriter.commitMerge` do, rather than
       committing a real 0-doc segment. Belongs to b9/b11. (Raised by b10.)
+      **CLOSED by c36-merge-metadata**: the guard is in `execute_merge` (where
+      Java's `shouldMerge()` is, so no file is written at all) and
+      `IndexWriter::drop_merge` is `commitMerge`'s `dropSegment` branch.
+      `merge.rs`'s `no_sources_produces_an_empty_segment` still stands -- it
+      tests `merge_segments` itself, which is `SegmentMerger`, not the writer.
+      **c34 restated.** Confirmed still open: `IndexWriter::apply_merge` (`index_writer.rs:6491`) folds the merged `SegmentCommitInfo` in unconditionally -- there is no `doc_count == 0` guard anywhere in it -- and `merge.rs`'s own `no_sources_produces_an_empty_segment` test asserts a genuinely well-formed 0-doc segment is what comes out. Java's `SegmentMerger.shouldMerge()` + `IndexWriter.commitMerge` drop it instead. Cost: a committed 0-doc segment per empty merge, which every later open, merge and `CheckIndex` then pays for.
 
-- [ ] `lucene-codecs` privately duplicates primitives that now exist in
+- [x] `lucene-codecs` privately duplicates primitives that now exist in
       `lucene-store`: zigzag i32, group-varint write, `header_length` /
       `index_header_length` / `retrieve_checksum_with_expected_length`.
       Migrate the call sites. (Raised by b1; files are outside b1's scope.)
+      **CLOSED by c34.** zigzag and group-varint *reading* had already moved (`block_packed.rs` uses `lucene_util::zigzag`, `postings.rs` reads through `DataInput::read_group_vints`). c34 removed the last two: `compound_format.rs`'s private `index_header_length`/`vint_len` pair now calls `lucene_store::codec_util::index_header_length(codec, "")` -- the two formulas agree for every codec name `write_index_header` accepts (ASCII under 128 bytes, so the length prefix is one byte), and the old `vint_len` unit test is replaced by one pinning the shared helper against the bytes `write_index_header` actually emits -- and `postings.rs`'s `write_group_vints` free function, a line-for-line copy of `DataOutput::write_group_vints`, is deleted with its 19 call sites moved onto the trait method (`hnsw_vectors.rs` already used it).
 - [ ] DEFLATE encoder has no preset dictionary (`miniz_oxide` exposes no
       `deflateSetDictionary`): compression ratio only, decode side correct.
       Revisit if a raw-deflate crate with dictionary support is acceptable.
@@ -243,6 +773,7 @@ Status: `pending` → `running` → `swept` (report written, gates green).
 - [ ] Stored-fields writer API takes `&[Document]` rather than streaming, and
       `document()` materializes a whole `Document` instead of Java's
       `StoredFieldVisitor`. Memory-shape divergence. (Raised by b3.)
+      **c34 restated -- half of this is no longer true.** The *streaming* half was closed by c4: `stored_fields::StoredFieldsWriter` (`stored_fields.rs:1161`) is a real streaming object with `add_document(&Document)` (`:1373`) and `finish()` (`:1601`); `write_best_speed(&[Document])` survives as a convenience wrapper, not as the only API. What remains is the **read** side: `StoredFieldsReader::document()` (`stored_fields.rs:412`) materializes a whole `Document` where Java's `StoredFieldVisitor` lets a caller take one field and skip the rest. Memory-shape divergence, read path only.
 - [x] `IntersectTermsEnum`'s **skipping** is ported for regexp (b8). Blocker
       (a) is gone: a full `Automaton`/`CompiledAutomaton` was assessed and not
       built, because what `IntersectTermsEnum` needs from one is a single bit --
@@ -260,10 +791,11 @@ Status: `pending` → `running` → `swept` (report written, gates green).
       still at 1.00-1.17x. Still to do: the same treatment for
       `fuzzy_intersect` (needs a Levenshtein automaton's dead states, not a
       prefix test) and `intersect` (wildcard).
-- [ ] `RegExp`'s `CASE_INSENSITIVE`/`CASE_INSENSITIVE_RANGE` *match* flags, and
+- [~] `RegExp`'s `CASE_INSENSITIVE`/`CASE_INSENSITIVE_RANGE` *match* flags, and
       `Operations.DEFAULT_DETERMINIZE_WORK_LIMIT`'s reject-at-construction
       semantics (this port bounds matching instead and reports "no match").
       Neither is reachable from `RegexpQuery(Term)`. (Raised by b8.)
+      **OBSOLETE (an intentional divergence, not outstanding work).** The `DEFAULT_DETERMINIZE_WORK_LIMIT` half is superseded: `regexp.rs`'s own gap list (`regexp.rs:45-52`) now names exactly two gaps and that is not one of them -- this port bounds *matching* instead, a different mechanism with the same visible contract. The `CASE_INSENSITIVE`/`CASE_INSENSITIVE_RANGE` half stands but is unreachable: `RegexpQuery(Term)` passes match flags `0` and this port exposes no constructor taking them, so no caller can observe it. It belongs in the module doc, where it is, not on a work list.
 - [ ] **Payload slots cost ~26 us/doc and ~190 MB per 50 000 documents, and the
       cost is the slot, not the bytes** (c23 F9, measured with an
       all-empty-payload control). The fix is a flat `(bytes, lengths)`
@@ -299,6 +831,7 @@ Status: `pending` → `running` → `swept` (report written, gates green).
       so wrong for astral text, `offsets_from_analysis`'s now-redundant
       conversion, and a non-ASCII case for `GenTermVectors`/the positions
       write-path verifier) are listed in `c29-search-carryovers.md` §2.2.
+      **c34 restated -- the offsets half is closed.** `lucene-analysis/src/lib.rs::tokenize` now emits **UTF-16 code-unit** offsets (`lib.rs:150-203`, `utf16_len`), so the unit matches Java's `char` indices end to end; `lucene-search`'s highlighter measures in the same unit and `offsets_from_analysis` no longer converts (`highlighter.rs:1754-1788` pins that it must not). Three structural gaps remain, all in `lucene-analysis`: (a) **no `TokenStream` lifecycle**, so `end()`'s trailing position increment is dropped by `StopFilter` and both n-gram filters (`lib.rs:2306-2310` records it at the site); (b) **no case-insensitive `CharArraySet`** -- the port matches a lowercase set against already-lowercased terms, which is right for the standard chain and wrong for a caller-supplied mixed-case set; (c) **no `maxTokenLength`** on `StandardTokenizer`, and no grapheme-cluster emoji tokenization (`lib.rs:121-126`). (a) is the one a caller can observe as a wrong position.
 - [ ] `FuzzyTermsEnum`'s `MaxNonCompetitiveBoostAttribute` feedback loop (swap
       to a lower-edit automaton once the top-terms queue is full) is unported,
       and `fuzzy_doc_scores` blends `docFreq` within one segment where
@@ -350,25 +883,28 @@ Status: `pending` → `running` → `swept` (report written, gates green).
       20.5 ns on the same field. Wants a `next_term()` + `stats()` split,
       which changes `check_index`'s and the intersect iterators' call shape.
       (Raised by c1.)
-- [ ] Re-take `cargo llvm-cov --workspace --summary-only` once the tree is
+- [x] Re-take `cargo llvm-cov --workspace --summary-only` once the tree is
       quiet. c1 could only get a trustworthy per-file reading by pointing
       `CARGO_TARGET_DIR` at a scratch directory and restricting to
       `-p lucene-codecs` (`blocktree.rs` 95.80% lines): four batches
       rebuilding the shared `target/` kept emptying `target/llvm-cov-target`
       mid-run, which llvm-cov reports as coverage rather than as an error.
       (Raised by c1.)
-- [ ] `benchmarks/rust-runner`'s `micro` binary does not compile
+      **CLOSED.** `scripts/gate.sh` now ends with `cargo llvm-cov --workspace --fail-under-lines 95`, so the reading is re-taken on every commit rather than by hand. c34 re-took it anyway: **97.55% regions / 98.10% lines** workspace-wide, and **no file is below 95% lines**.
+- [x] `benchmarks/rust-runner`'s `micro` binary does not compile
       (`src/micro.rs:84`, `for_util::for_encode` now takes `&mut [i64]`), so
       the `reader_open`/`postings_iter`/`stored_fields` micros cannot be run.
       c1 had to derive its `DirectoryReader::open` "after" number instead of
       measuring it; re-run
       `micro reader_open benchmarks/.corpus/merged` once fixed. Owner: whoever
       changed `for_encode` (b2/b5). (Raised by c1.)
+      **CLOSED in the main session.** `benchmarks/rust-runner/src/micro.rs:93` encodes from a scratch copy (`for_util::for_encode(&mut scratch, bits, &mut bytes)`) so `values` stays the pristine round-trip expectation. The binary builds.
 - [ ] `DirectoryReader::open` is now dominated by everything *except* the term
       dictionary: ~2.0 ms of the ~2.2 ms is `open_segments`' file handling
       against Lucene's 0.310 ms for the whole open. That is the next
       reader-open item now that A1 is gone. Owner: b13. (Raised by c1.)
-- [ ] No `PostingsEnum`-flags plumbing: `DocInput::read_postings`/`lazy_cursor`
+      **c34 restated -- the numbers here are three batches stale.** The 2.0 ms/2.2 ms figures predate c12 and the mmap work. Current state: c12's `open_shared`/`SharedBytes` change took `DirectoryReader::open` on the M1 fixture corpus **579 us -> 120.7 us (4.8x)**, and `88ebd47 perf(search): stop copying mmap'd postings files into the heap on reader open` landed after that. The standing whole-corpus number is `docs/benchmarks/verdict-m1.6.md`: reader open **52.7 ms** against Lucene's, i.e. **~155x**, with RSS 1,690 MB -> 70 MB. So this is still the largest single reader-side gap, but the diagnosis ("`open_segments`' file handling") needs re-measuring before anyone plans against it -- `benchmarks/rust-runner`'s `micro reader_open` now builds and runs (see the closed item above), so measuring it is cheap.
+- [x] No `PostingsEnum`-flags plumbing: `DocInput::read_postings`/`lazy_cursor`
       always decode freqs, where Lucene's `needsFreq == false` path
       `PForUtil.skip`s the freq block entirely. Fixing it changes those
       signatures and every call site in `blocktree.rs` and `lucene-search`
@@ -376,6 +912,7 @@ Status: `pending` → `running` → `swept` (report written, gates green).
       half is done -- `collector::ScoreMode` now exists with Java's
       `needsScores()`/`isExhaustive()` predicates, and `TopDocsCollector`
       reports its mode. What remains is entirely the codec-side flags path.
+      **CLOSED.** The codec-side half landed: `postings::PostingsFlags` with `DocsOnly`/`Freqs`, `DocInput::read_postings_with_flags` (`postings.rs:566`) and `lazy_cursor_with_flags` (`:776`), surfaced as `blocktree::FieldTerms::postings_with_flags`/`lazy_postings_with_flags` (`blocktree.rs:2105/2145`) and actually *used* by the unscored search paths (`lucene-search/src/lib.rs:411`, `:575`, `:2849`). `lucene-search/benches/docs_only_postings.rs` measures what it buys. b12's search-side half (`collector::ScoreMode`) was already done.
 - [ ] `Lucene104PostingsWriter` takes a `NumericDocValues norms` per term and
       feeds real per-doc norms into `CompetitiveImpactAccumulator`;
       `postings_writer::FieldPostingsInput` carries no norms, so impacts are
@@ -386,12 +923,14 @@ Status: `pending` → `running` → `swept` (report written, gates green).
       What remains is entirely in `lucene-codecs` (a norms input on
       `FieldPostingsInput` plus a real `CompetitiveImpactAccumulator`), so the
       owner is whoever next owns `postings_writer.rs`, not b9.
-- [ ] Points: `lucene-search/src/points_query.rs` and
+      **c34 restated -- the "impacts are empty" premise is gone; the norms premise stands.** This writer *does* emit impacts now: `write_full_block` writes one `(maxFreq, norm = 1)` impact per level-0 block and `write_level1_span` (`postings_writer.rs:1283`) writes the span-wide maximum, because real Lucene rejects a segment with "Got empty list of impacts". What is still missing is the *norms input*: `FieldPostingsInput` (`postings_writer.rs:342-360`) has `field_number`/`index_options`/`doc_count`/`has_payloads`/`terms` and no norms, so every impact is computed against norm 1 where `Lucene104PostingsWriter` feeds real per-doc norms into `CompetitiveImpactAccumulator`. Norm 1 is the highest-scoring norm, so the bound is **sound but loose**: it costs query-time pruning, never a wrong answer. c34 also corrected `postings_writer.rs`'s module doc, which still claimed empty impacts and that positions can never co-occur with a full block -- both untrue since c20/c23.
+- [x] Points: `lucene-search/src/points_query.rs` and
       `lucene-index/src/points_delete.rs` still decode every point and filter
       in memory. b7 ported `PointsReader::intersect`/`range_query` (the
       `PointValues.intersect` pruning traversal, fixture-verified against real
       `BKDWriter` `.kdi` bytes) and measured 577x on a 200k-point tree at 0.1%
       selectivity; migrating the callers is b14/b11 work. (Raised by b7.)
+      **CLOSED.** `points_query.rs:287` calls `PointsReader::intersect` and `:295` `range_query`; `points_delete.rs:96` calls `reader.range_query(field_number, min_packed, max_packed)`. `decode_all_points` now survives only in `lucene-codecs` tests and benches.
 - [x] Vectors: `vectors.rs` was **not** Lucene's `.vec`/`.vem` format and had
       **no HNSW graph**. Closed by c5: `Lucene99FlatVectorsFormat` (with
       `OrdToDocDISIReaderConfiguration`, both encodings, all four
@@ -404,26 +943,29 @@ Status: `pending` → `running` → `swept` (report written, gates green).
       `mergeOneFlatVectorField`), `FLOAT16`, the index-sort write path, and
       `IndexWriter` wiring -- nothing in `lucene-index` can add a vector field
       to a document yet.
-- [ ] Term vectors: callers of `write_best_speed` must pass each document's
+- [x] Term vectors: callers of `write_best_speed` must pass each document's
       fields in ascending field-*name* order, or real `CheckIndex` rejects the
       segment (`TVFields.iterator()` yields document field order and
       `checkFields` requires it sorted). Enforce in b9's flush path, where
       names are known. (Raised by b7.)
+      **CLOSED by c34.** Enforced where the names are known: `IndexWriter::build_term_vectors_output` sorts its `TermVectorFieldConfig`s by name before building `per_doc`, so a document's `fields` list comes out ascending by field *name* whatever order `add_term_vector_field` was called in. Pinned by `term_vector_fields_are_written_in_ascending_field_name_order`, which declares `zeta` as field 1 and `alpha` as field 2, configures them in that (wrong) order and asserts the written field numbers are `[2, 1]` -- verified to fail (`left: [1, 2]`) with the sort removed. `write_best_speed`'s own caller contract is unchanged and still documented in `docs/parity.md`.
 - [ ] `Util.shortestPaths`/`TopNSearcher`/`readCeilArc` unported (b8 confirmed
       and left it: `top_n_completions` walks the prefix subtree with a bounded
       heap, which cannot skip a subtree that provably cannot beat the current
       worst candidate). `SegmentTermsEnum` `TermState` seeking unported (owner: the
       search batches -- no `TermStates` caller exists yet). (Raised by b4.)
-- [ ] `postings_writer` should hold one `ForUtil` across blocks rather than
+- [~] `postings_writer` should hold one `ForUtil` across blocks rather than
       constructing one per block (b2 made `encode` in-place + scratch-by-ref;
       the caller side is b5/b9 territory).
+      **OBSOLETE.** There is no per-block `ForUtil` to hoist. b2 turned the encoder into free functions that pack in place with caller-supplied scratch (`for_util::for_encode`/`pfor_encode`), and `postings_writer.rs` calls them directly (`:1189`, `:1225`) -- it never constructs a `ForUtil`. The `ForUtil` struct still exists at `for_util.rs:887` for the decode side; the writer does not touch it.
 - [x] Validate `bits_per_value` at `doc_values::read_varying_block`'s parse
       site -- covered by b2's `direct_reader::get` validation; b6 confirmed.
-- [ ] `PostingsEnum`-flags plumbing: freqs are always decoded where Lucene
+- [x] `PostingsEnum`-flags plumbing: freqs are always decoded where Lucene
       `PForUtil.skip`s them; and `FieldPostingsInput` carries no norms, so
       impacts are `(maxFreq, 1)` -- exactly Java's output for a norm-less
       field, a sound-but-loose bound otherwise. Needs signature changes in the
       search crate. (Raised by b5, owner b12/b13.)
+      **CLOSED as written** -- this is the flags half of the entry above (closed: `PostingsFlags`) plus the impacts-vs-norms half, which is tracked as its own open item (`Lucene104PostingsWriter` norms / `FieldPostingsInput`). Two ledger entries for one finding; folded into that one so it stops being counted twice.
 
 - [x] No `IndexFileDeleter`. **Closed by c3**:
       `crates/lucene-index/src/index_file_deleter.rs` ports `IndexFileDeleter`
@@ -492,18 +1034,25 @@ Status: `pending` → `running` → `swept` (report written, gates green).
       Every other site propagates what it was given. Real Lucene reads marker
       byte `1` + 16 bytes on every segment this port writes
       (`verify-write-path.sh` 17/17). (Raised by b9, F-13; closed by c7, F-20.)
-- [ ] Norms are opt-in per field (`set_norms_field`) and every other indexed
+- [x] Norms are opt-in per field (`set_norms_field`) and every other indexed
       field gets `omit_norms` forced on in the `.fnm`; Java writes norms for
       every indexed non-`omitNorms` field. Blocked on a multi-field
       `.nvd`/`.nvm` writer (`norms::write_single_dense_field` is
       single-field-only). The `IndexWriter` half is free now that one invert
       pass computes every field's lengths. (Raised by b9, F-15; owner b6.)
-- [ ] `IndexWriter` re-reads, re-parses and rewrites the `.si` once per file
+      **c34 restated -- the recorded blocker no longer exists.** "Blocked on a multi-field `.nvd`/`.nvm` writer" was true when b9 wrote it and is not true now: `norms::write_fields` (`norms.rs:392`) writes one or more norms fields into one pair, c26 removed the one-field cap on both the flush and the merge, and `IndexWriter::add_norms_field` (`index_writer.rs:1809`) accumulates. What is left is only the **opt-in itself**: `index_writer.rs:4789-4793` still forces `omit_norms = true` onto every indexed field the caller did not name, where Java writes norms for every indexed non-`omitNorms` field. The forcing is deliberate and correct as far as it goes (promising norms a segment does not carry is what `DirectoryReader.open` throws on), but it means this port's `.fnm` describes a different schema than the caller asked for. Nothing blocks closing it now. **CLOSED by `c35-norms-and-sort`.** `set_norms_field`/`add_norms_field` and the `.fnm` coercion are gone; `IndexWriter::norms_field_configs` is Java's `writeNorms` loop condition and `omit_norms_field` is the opt-out. `build_norms_output` writes a **sparse** column, matching `NormValuesWriter` (a document that does not carry the field gets no norm; one that carries it but produced no tokens gets an explicit `0`), and `merge_norms` -- now driven by the merged `FieldInfos` like `NormsConsumer.merge` -- carries the gaps instead of raising `Error::NormsFieldMissingInSource`. Real Lucene reads every value back in `VerifyFullSegment`.
+- [x] `IndexWriter` re-reads, re-parses and rewrites the `.si` once per file
       group (postings/TV/DV/norms) instead of accumulating
       `SegmentInfo.files` and writing it once, as `sealFlushedSegment` does --
       four redundant fsyncs per commit. Needs a signature change to
       `flush_stored_only_segment`, which `merge.rs` (b10, in flight) also
       calls. (Raised by b9, F-16.)
+      **CLOSED by c36-merge-metadata** -- see open-work item 19 above. The
+      recorded blocker was wrong twice over: the count was seven, not four, and
+      `flush_stored_only_segment`'s signature did not have to change (it is now
+      `write_stored_only_segment_files` + `seal_flushed_segment`, which is also
+      what `merge.rs` needed nothing of).
+      **c34 restated -- it is worse than recorded.** The count is now **five** file groups, not four: `write_postings_files`, `write_term_vector_files`, `write_doc_values_files`, `write_norms_files` and `write_vector_files` (`index_writer.rs:4601/4638/4673/4707/4870`) each do the same read-`.si` / `segment_info::parse` / extend `files` / `segment_info::write` / `dir.sync` cycle. So a commit that writes every format re-parses and rewrites its own `.si` five times and fsyncs it five times, where `sealFlushedSegment` accumulates `SegmentInfo.files` and writes it once.
 
 ## Cross-batch fixes made in the main session
 
@@ -525,21 +1074,23 @@ Status: `pending` → `running` → `swept` (report written, gates green).
       forward DENSE walk, ~1200x on a single lookup into a 100,000-doc field.
       A backward doc id now panics (with `reset()` as the supported way to go
       back) instead of silently answering `None`.
-- [ ] `lucene_search::field_norms::FieldNorms` still holds the same
+- [x] `lucene_search::field_norms::FieldNorms` still holds the same
       O(cardinality) `Vec<i32>` that `NumericReader` just shed, for the same
       reason (it needs random access). The fix is now a two-line one: hold a
       `DisiCursor`, `reset()` when `doc < cursor.doc_id()`. Owner: b13.
       (Raised by c2.)
+      **CLOSED by c6.** `field_norms.rs` has no `sparse_doc_ids` any more: `FieldNorms` keeps only the region slice and stays `Sync`, and `FieldNorms::cursor()` (`field_norms.rs:319`) hands each scan its own `FieldNormsCursor` wrapping a `lucene_codecs::indexed_disi::DisiCursor`. See the "NOT a two-line fix" section below for the design that made it work.
 - [ ] `IndexedDISI`'s **block jump table** is still not read
       (`createJumpTable`/`advanceBlock`'s two-blocks-ahead shortcut). Cost is
       O(maxDoc/65536) four-byte header reads -- 16 for a million documents --
       and this port writes `jumpTableEntryCount = 0`, so our own files have no
       table to read. Worth revisiting only alongside a `nextDoc`-shaped
       iterator API. (Raised by c2.)
-- [ ] `lucene-search/src/explain.rs:1687` has an invalid `dense_rank_power: 0`
+- [x] `lucene-search/src/explain.rs:1687` has an invalid `dense_rank_power: 0`
       test literal (`0` is not in Java's legal set). Unreachable -- the entry is
       dense -- but wrong data. One line; `lucene-search` was held by b13/b15.
       (Raised by c2, last of b2's finding-15 list.)
+      **CLOSED by c6.** `explain.rs:1865` reads `dense_rank_power: 0xFF` (Java's "no rank table"), with a comment naming `field_norms.rs`'s deliberate `0` -- the input to `an_illegal_dense_rank_power_is_rejected_rather_than_guessed` -- so the two are not confused again.
 - [ ] `SegmentCommitInfo.sci_id` is not *regenerated* when a generation
       advances. Java's `advanceDelGen`/`advanceDocValuesGen`/
       `advanceFieldInfosGen`/`setBufferedDeletesGen` all call
@@ -550,14 +1101,15 @@ Status: `pending` → `running` → `swept` (report written, gates green).
       still report the same id. Nothing in Lucene validates it; what is lost is
       its use as a change token (segment replication). Wants one pass across
       every generation-advancing site. (Raised by c7's Tier-2 review, A4.)
-- [ ] The sequence number does not cross the FFI boundary.
+- [x] The sequence number does not cross the FFI boundary.
       `ffi_writer_add_document`/`ffi_writer_update_document`/
       `ffi_writer_delete_documents` all discard the `SeqNo` c7 gave them.
       Surfacing it needs an `out_seq_no: *mut i64` parameter on three exported
       functions, i.e. an **ABI change** -- deliberately not done inside a sweep
       batch. The value is real: OpenSearch's `InternalEngine` uses Lucene's
       returned seqNo directly. (Raised by c7's Tier-2 review, A7.)
-- [ ] `norms::parse_meta` does not validate field numbers against
+      **CLOSED by c13.** The ABI change was made: `out_seq_no: *mut i64` is a parameter on all five writer entry points (`lucene-ffi/src/writer.rs:505`, `:886`, `:963`, `:1622`, `:1675`, `:1740`), each writing through `write_seq_no`, and null is accepted.
+- [x] `norms::parse_meta` does not validate field numbers against
       `FieldInfos` (22 call sites, 5 crates). Missed diagnostic only, never a
       wrong value. **c7 considered and declined it**, with reasons (c7 F-23):
       c7 adds no new `parse_meta` call sites so it is not in fact "in the
@@ -570,6 +1122,7 @@ Status: `pending` → `running` → `swept` (report written, gates green).
       every per-format open, at which point the parameter is free instead of 22
       mechanical edits the refactor would rewrite. **Assign to that batch.**
       (Raised by b6; reasoning added by c7.)
+      **CLOSED by c15** at the level that matters. `norms::validate_fields(&Norms, &FieldInfos)` (`norms.rs:190`) is called from `lucene-search/src/directory_reader.rs:475` and `lucene-index/src/check_index.rs:3926` -- the two places Java's diagnostic fires. The remaining `parse_meta`-signature tidy-up is a separate, still-open item and is *only* a tidy-up.
 - [x] `BinaryDocValuesFieldUpdates` -- a whole second update type -- unported.
       **Closed by c7** (F-21): `write_binary_updates`/`read_binary_updates`/
       `binary_value_with_updates`/`binary_value_with_generations` mirror the
@@ -589,12 +1142,14 @@ Status: `pending` → `running` → `swept` (report written, gates green).
       50k x 128: **47x** queries/sec, **244x** fewer distance computations,
       recall@10 0.9250 against Lucene's 0.9250 on the same data and
       parameters. (Raised by b7.)
-- [ ] `points_query.rs` still calls `decode_all_points` rather than b7's new
+- [x] `points_query.rs` still calls `decode_all_points` rather than b7's new
       `PointsReader::intersect` (577x on a 200k-point tree). Owner: b14.
       (`points_delete.rs` assigned to b11.)
-- [ ] Term-vector callers must supply each document's fields in ascending
+      **CLOSED** -- duplicate of the points item above. `points_query.rs:287/295` uses `intersect`/`range_query`; `points_delete.rs:96` uses `range_query`.
+- [x] Term-vector callers must supply each document's fields in ascending
       field-*name* order or real `CheckIndex` rejects the segment. Verify
       b9's flush path does. (Raised by b7.)
+      **CLOSED by c34** -- duplicate of the term-vectors ordering item above; `IndexWriter::build_term_vectors_output` now sorts by field name and a tripwire test pins it.
 - [x] b9's `segment_writer::flush_stored_only_segment` wrote a `.si` whose
       `files` set omitted the `.si` itself, where
       `Lucene99SegmentInfoFormat.write` calls `si.addFile(fileName)` before
@@ -602,7 +1157,7 @@ Status: `pending` → `running` → `swept` (report written, gates green).
       (`IndexFileDeleter`, `CheckIndex`, our `checksum_verify`) was therefore
       blind to the file that names all the others. Fixed in the main session;
       `verify-write-path.sh` 14/14 against real Lucene 10.5.0.
-- [ ] **F-7 (from b12), production-path scoring divergence.** `docs/parity.md`
+- [x] **F-7 (from b12), production-path scoring divergence.** `docs/parity.md`
       has claimed since M1.5 that the search paths no longer use
       `FieldNorms::open`'s non-Java `avgFieldLength`. That is true only of the
       benchmark runner: `lucene-ffi`'s production entry point and `explain.rs`
@@ -613,6 +1168,7 @@ Status: `pending` → `running` → `swept` (report written, gates green).
       the `lucene-ffi` production entry point now uses
       `FieldNorms::from_field_stats`; `explain.rs`'s own (non-FFI) call site
       and the benchmark runner remain for b13/b14.
+      **CLOSED by c34.** The code half was already done (b15 moved `open_field_norms` onto `from_field_stats`; c6 made `avgdl` reader-wide; `explain.rs`'s and the benchmark runner's remaining sites are test-only or already migrated). What was still live was the *record*: `docs/parity.md`'s FFI row still described `open_field_norms` as ending in `FieldNorms::open`. c34 corrected that row. This entry was the last carrier of b12's F-7 claim.
 - [x] `BooleanScorer` window/bucket bulk-OR **ported by c6** as
       `docid_set::WindowedDisjunction`, chosen the way
       `BooleanScorerSupplier.booleanScorer` chooses it, and measured (3.1x on a
@@ -622,12 +1178,13 @@ Status: `pending` → `running` → `swept` (report written, gates green).
       `searcher.search(q, n)` uses -- Lucene 10.5.0 picks `MaxScoreBulkScorer`,
       **not** `BooleanScorer`, so this was never the mechanism behind the
       scored `or t0 t1 t2 t3` benchmark gap.
-- [ ] `Occur.FILTER` (b12's F-16). c6 checked: reachable **without** the scorer
+- [x] `Occur.FILTER` (b12's F-16). c6 checked: reachable **without** the scorer
       abstraction (a `filter` clause is a `must` clause whose score is dropped),
       roughly one focused batch across ~9 touch points. `TwoPhaseIterator` + a
       cost model (F-20) is not: it needs every clause expressible as
       `(approximation, matches(), matchCost())`, i.e. turning b12's per-shape
       free functions into a scorer enum. A milestone, not a batch.
+      **CLOSED by c11** -- duplicate of the `Occur.FILTER` entry above. `TwoPhaseIterator` + a cost model is *not* closed and stays its own open item.
 
 ## `field_norms.rs`'s sparse `Vec<i32>` -- NOT a two-line fix (checked in main session; **fixed by c6**)
 
@@ -696,12 +1253,13 @@ is proven still concurrent by a test in which two rayon tasks share one
       dependencies as well as the named package. Raised by c6 (it was the last
       blocker on c6's gate) and left for that file's owner rather than fixed
       mid-edit; since resolved. c6's gate is green, exit 0.
-- [ ] `lucene-search/src/lib.rs` sits at **90.5% line coverage** with both
+- [x] `lucene-search/src/lib.rs` sits at **90.5% line coverage** with both
       `lucene-search`'s and `lucene-ffi`'s suites running (measured by c6 after
       a `cargo llvm-cov clean --workspace`; a stale profile reports it ~26
       points lower still). Every other file in the two crates is above the 95%
       bar. It is b12's file and 8,650 regions; the gap predates c6, which added
       only covered lines. Worth its own item.
+      **CLOSED.** Measured by c34 on the current tree: `lucene-search/src/lib.rs` is at **96.78% lines / 95.75% regions**, and no file in the workspace is below 95% lines. c11's 95.20% has held and grown.
 - [x] The six multi-segment **FFI** entry points passed `vec![None; n]` for
       norms, so every multi-segment FFI search scored unnormed where real
       Lucene always applies the field's real per-document lengths. Found and
@@ -717,7 +1275,7 @@ is proven still concurrent by a test in which two rayon tasks share one
 
 ## Next follow-up batches (queued, blocked only on a free slot)
 
-- [ ] **c10 -- vectors end-to-end wiring.** c5 ported the flat format and the
+- [x] **c10 -- vectors end-to-end wiring.** c5 ported the flat format and the
       HNSW graph and proved both against real Lucene, but nothing in
       `lucene-index` can add a vector field yet, and the codec-level merge
       write path (`mergeOneField`/`IncrementalHnswGraphMerger`,
@@ -726,6 +1284,7 @@ is proven still concurrent by a test in which two rayon tasks share one
       moving `SplittableRandom`/`TernaryLongHeap`/`NumericUtils` into
       `lucene-util`. Blocked on c7 (owns `index_writer.rs`) and c8 (owns
       `merge.rs`).
+      **CLOSED.** `IndexWriter::set_vector_field`/`add_vector_field` exist (`index_writer.rs:1883` and its sibling), the codec merge write path is ported (`vectors::FlatVectorsWriter::merge_one_flat_vector_field`, `hnsw_vectors::merge_one_field` at `hnsw_vectors.rs:272`) and is reached from `lucene-index` (`merge.rs:3339`, and the `GraphMergeSource` block at `:3378`), and `SplittableRandom`/`TernaryLongHeap`/`NumericUtils` now live in `lucene-util` (`lucene-util/src/lib.rs:18/20`, `numeric_utils.rs`). **`FLOAT16` was a `main`-ism**: 10.5.0's `VectorEncoding` has exactly `BYTE` and `FLOAT32` (c18's version audit, recorded at `check_index.rs:268`), so there is no third encoding to port.
 - [x] **c11 -- `Occur.FILTER`.** Done. `BooleanQuery` has a fourth clause list;
       matching, scoring (zero contribution, no perturbation of the `f32`
       summation order), `explain`'s Java-verbatim `# clause` arm, and the five
@@ -775,10 +1334,11 @@ is proven still concurrent by a test in which two rayon tasks share one
       `.fnm` representation, with a Java fixture in the read direction and a
       `CheckIndex`-running verifier in the write direction. See
       `docs/sweep/m2/c14-dv-updates-format.md`.
-- [ ] **c13 -- c1's caller migration.** Move callers to blocktree's `try_*`
+- [~] **c13 -- c1's caller migration.** Move callers to blocktree's `try_*`
       forms so a corrupt block surfaces as an error rather than "not found";
       ~~`directory_reader` -> `open_shared`~~ (**done by c12**, 4.8x); split
       term iteration from stats.
+      **OBSOLETE as a batch entry.** Its three parts are tracked individually and two are still open: `directory_reader -> open_shared` is **done** (c12, 4.8x), while the `try_*` caller migration and the term-iteration/stats split are each their own open item above. Keeping a batch-shaped duplicate of two live items is how the same work gets planned twice.
 - [x] `lucene-search/src/lib.rs` is at 90.52% line coverage, below the 95% bar
       -- a pre-existing gap in b12's file. (Raised by c6.) **Closed by c11 at
       95.20%**; every file in `lucene-search` is now above the bar. The two
@@ -863,7 +1423,7 @@ is proven still concurrent by a test in which two rayon tasks share one
       `lucene-codecs/src/terms_dict.rs`: a `TermsCursor` yielding one term at a
       time over the prefix-compressed blocks `decode_all_terms` already walks,
       then `facets.rs` and `OrdinalMap::build` take iterators.
-- [ ] **`docs/parity.md` has no mechanical staleness check.** c12's review
+- [~] **`docs/parity.md` has no mechanical staleness check.** c12's review
       found three rows still declaring "still out of scope" for symbols a later
       row claimed as ported (`OrdinalMap`/`FacetsConfig`/hierarchical dims,
       `BreakIterator`-grade segmentation, `MultiFieldQueryParser`) -- the
@@ -871,6 +1431,7 @@ is proven still concurrent by a test in which two rayon tasks share one
       fixed, but the next batch will recreate the pattern. Worth an `xtask`
       that flags a row saying "out of scope"/"not ported" about a symbol
       another row claims as ported. (Raised by c12's Tier-2 review.)
+      **OBSOLETE -- superseded by a design decision, and the decision is written down.** `scripts/check-parity.py` exists and *deliberately declines* to automate contradiction detection: its module docstring says a heuristic over the status text "flags fourteen of those for every real problem it finds", because a class routinely has several honest rows (read side and write side, a scoped first cut and a later widening). What it does mechanically instead has no false positives -- every Rust path in a row must exist, and every ported file must have a row -- and `--verbose` lists the multi-row classes for a human to scan. c12's three stale rows were fixed by hand; c34 fixed a fourth the same way.
 
 ## Open items raised by c29
 
@@ -888,7 +1449,7 @@ is proven still concurrent by a test in which two rayon tasks share one
       count derived from the node id, times `max_points_in_leaf_node`, clamped
       at `point_count`). Nothing in `lucene-search` moves. (Raised by c29;
       originally b14 §1.4, then c12 §5.4.)
-- [ ] **`FieldExistsQuery.count`'s live-doc arithmetic, and `rewrite`'s
+- [x] **`FieldExistsQuery.count`'s live-doc arithmetic, and `rewrite`'s
       whole-reader decision.** The per-leaf predicate is ported
       (`doc_value_query::field_exists_leaf_is_complete`); what is missing is
       the layer above it, which needs a leaf list and a `numDocs` -- i.e. a
@@ -898,6 +1459,11 @@ is proven still concurrent by a test in which two rayon tasks share one
       the other two branches read the *leaf*'s, inside the same per-leaf loop;
       that asymmetry is Java's and is documented on the ported function.
       (Raised by c29.)
+      **CLOSED by c37-search-behaviours** (`weight_count::{FieldExistsLeaf,
+      count_field_exists_leaf, field_exists_rewrites_to_match_all_docs}`,
+      `SegmentReader::field_exists_leaf`). No reader-level query object was
+      needed -- the rules are pure functions of counts the reader already has.
+      See open item 6 above.
 - [x] **`scripts/gen-fixtures.sh` cannot regenerate one generator.**
       **Closed by c32.** `--only <Gen*>` (repeatable, `Gen` prefix optional,
       `--list` names them) runs one generator plus all six appenders and
@@ -934,7 +1500,7 @@ is proven still concurrent by a test in which two rayon tasks share one
       public entry points keep working, they just become
       `try_disjunction_lazy`-then-fallback) or revive it as block-max WAND.
       Left alone by c11 as out of scope for a `FILTER` batch.
-- [ ] **A filter-only conjunction cannot prune.** c11 made it take the lazy
+- [x] **A filter-only conjunction cannot prune.** c11 made it take the lazy
       leapfrog (129.5ms -> 58.7ms on the benchmark corpus) but deliberately
       switched block-max pruning off for it: every document scores 0, so the
       summed bound is 0 and `bound <= threshold` would skip on a *tie*. Java
@@ -944,21 +1510,27 @@ is proven still concurrent by a test in which two rayon tasks share one
       probably removable, but it wants a differential test against real
       `IndexSearcher` for a filter-only top-`n` query, which the current
       fixture segment is too small to produce.
-- [ ] **`lucene-ffi`'s boolean-query entry points have no `FILTER` list.** Four
+      **CLOSED by c37-search-behaviours.** The guard is gone; Java prunes the
+      tie too. The fixture segment was not too small -- `body` is, `big` (300
+      documents) is not. 44.20 ms -> 2.00 ms. See open item 23 above.
+- [x] **`lucene-ffi`'s boolean-query entry points have no `FILTER` list.** Four
       exported functions take three flat `(fields, field_lens, terms,
       term_lens, count)` array groups, one per occur. Adding a fourth is a
       C-ABI signature change plus matching Java/Panama bindings -- b15's call,
       not a `lucene-search` change.
+      **CLOSED by c13.** The four entry points now take one occur-tagged, parent-indexed clause array: `clause_occurs: *const u8` with `OCCUR_MUST=0`/`OCCUR_FILTER=1`/`OCCUR_SHOULD=2`/`OCCUR_MUST_NOT=3` (`lucene-ffi/src/query.rs:292-299`, dispatched at `:336-338`). The pre-c13 three-bucket shape survives as `legacy_boolean_abi.rs`, a test-only bridge that proves the change behaviour-preserving.
 - [x] `search_boolean_query_scored_maxscore_with_stats`'s body is provably dead
       code (~97 lines): c11 reports it and `try_disjunction_lazy` are exactly
       complementary. **Verified and deleted by c12** -- see the item above.
       (Raised by c11.)
-- [ ] `lucene-ffi`'s boolean entry points still take three clause arrays and
+- [x] `lucene-ffi`'s boolean entry points still take three clause arrays and
       cannot express a FILTER clause -- a C-ABI change, so it is b15's call
       rather than c11's. (Raised by c11.)
-- [ ] A filter-only query cannot prune under a top-`n` collector (no score to
+      **CLOSED by c13** -- duplicate of the entry above.
+- [x] A filter-only query cannot prune under a top-`n` collector (no score to
       bound): 54.0 ms vs 10.0 ms measured. That gap is pruning, not filtering.
-      (Raised by c11.)
+      (Raised by c11.) **CLOSED by c37-search-behaviours** -- duplicate of the
+      entry above.
 
 ## A defect found in the main session by DELETING a test workaround
 
@@ -1028,7 +1600,7 @@ intercept, so they take the JVM down through the FFI.
 
 ## Queued after c24 releases `lucene-codecs`
 
-- [ ] **c26 — merge format-completeness gate.** c22's Tier-2 review traced
+- [x] **c26 — merge format-completeness gate.** c22's Tier-2 review traced
       three of its findings to one root: *nothing mechanically checks that
       `execute_merge` opens every format the flush can write*. Before c22,
       `execute_merge` supplied no norms (so every merged BM25 score was
@@ -1037,8 +1609,11 @@ intercept, so they take the JVM down through the FFI.
       write and asserts `execute_merge` handles each would have caught all
       of it, and would catch the next format added. Same shape as c19's
       arithmetic gate and `scripts/check-parity.py`.
-- [ ] Multi-field norms in a merge (needs `norms::write_dense_fields`).
-- [ ] Generational doc values are still un-mergeable. (Raised by c22.)
+      **CLOSED by c26.** `merge.rs::check_format_coverage` refuses a merge whose caller never opened a format a source's own `.si` lists, `IndexWriter::execute_merge` carries the matching `debug_assert!`, and `index_writer.rs:15409`'s `merge-format-completeness` test asserts one permutation reaches every format the flush can write (`:15474`) and that the merged `.si` carries every format its sources' did (`:15488`).
+- [x] Multi-field norms in a merge (needs `norms::write_dense_fields`).
+      **CLOSED by c26.** `norms::write_fields` (`norms.rs:392`) writes one or more norms fields into one `.nvm`/`.nvd` pair, `merge.rs:2022` calls it, and `Error::TooManyNormsFields` is gone (`merge.rs:2897` records its removal). `IndexWriter::add_norms_field` is the accumulating flush-side counterpart.
+- [x] Generational doc values are still un-mergeable. (Raised by c22.)
+      **CLOSED by c26.** `merge.rs:2449` documents the change: a source without the field's column now contributes no value (Java's own behaviour) instead of raising `DocValuesFieldMissingInSource`, which is exactly what had kept a doc-values **update**'s generational column out of the merge policy. `check_format_coverage` is the replacement detector for the class the old error was standing in for.
 
 ## Test-hygiene defect found by c28 (closed by c32, three files handed off)
 
@@ -1056,11 +1631,12 @@ intercept, so they take the JVM down through the FFI.
       inline site). Details in `c32-fixture-tooling.md` §2.4.
 
       The original report:
-- [ ] **(original) The test suites leak a temp directory per test.**
+- [x] **(original) The test suites leak a temp directory per test.**
       c28 hit `/tmp` (a 16 GB tmpfs) at **100% full** from ~21,000 leftover
       `lucene-*-test-*` directories, which blocked its own work; the main
       session removed 7,016 dirs older than 30 minutes and left the newer ones
       alone in case a running batch owned them.
+      **CLOSED.** The three files c32 handed off have landed: `check_index.rs:4703`, `checksum_verify.rs:270` and `fst.rs:5421` all use `lucene_util::test_support::TempDir`. The `[x]` c32 entry above is now true of the whole tree.
 
       Root cause: every crate has its own ad-hoc `fn tempdir()` returning a
       bare `PathBuf` built from `std::env::temp_dir()`, with nothing that

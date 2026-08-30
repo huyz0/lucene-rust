@@ -253,8 +253,13 @@ fn main() {
                                     r.field_infos().fields.iter().find(|f| f.name == q.field)?;
                                 let entry = meta.numeric_entry(num.number)?;
                                 Some(lucene_search::multi_segment::DocValueSegment {
-                                    doc_values_data: data,
+                                    // One column serves both the range and the
+                                    // sort here: this corpus has no doc-values
+                                    // update, so no field is served from its own
+                                    // generation (see `DocValueSegment::range_data`).
+                                    range_data: data,
                                     range_entry: entry,
+                                    sort_data: data,
                                     sort_entry: entry,
                                     live_docs: s.live_docs,
                                     max_doc: r.max_doc,

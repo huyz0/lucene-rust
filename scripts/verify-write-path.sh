@@ -159,6 +159,20 @@ CASES=(
   # doc 8192, the level-0 one at doc 256, and dropping the payload-length
   # stream while the `.fnm` still claims payloads mis-frames every offset.
   "lucene-index|write_positions_segment_fixture|positions-segment|VerifyPositionsSegment"
+  # And a merge whose *sources real Lucene wrote*, disagreeing about the two
+  # facts `SegmentMerger` derives from its readers rather than from the merging
+  # writer: `minVersion` (the minimum across the sources) and `hasBlocks` (their
+  # disjunction). Every other merge case above merges segments this port
+  # flushed, all stamped with this port's own version -- which is precisely the
+  # blind spot, because "the minimum over the sources" and "the writer's
+  # version" are then the same number. `fixtures/data/merge_metadata` supplies
+  # three genuine 10.5.0 segments carrying minVersion 10.2.0/10.0.0/10.1.0 with
+  # `hasBlocks` on one of them, and the verifier reads both fields back through
+  # `LeafMetaData`. Neither affects a checksum, a document or a query: getting
+  # them wrong yields an index that opens cleanly, reads every document and
+  # passes CheckIndex while claiming it never held older bytes and while
+  # silently invalidating every parent/child join against it.
+  "lucene-index|write_merged_metadata_fixture|merged-metadata|VerifyMergedMetadata|fixtures/data/merge_metadata"
 )
 
 echo "verify-write-path: compiling verifiers"

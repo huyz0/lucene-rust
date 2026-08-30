@@ -12,7 +12,14 @@ real review time:
   * A ported source file has no row at all, so its status cannot be looked
     up.
 
-Both are mechanical and have no false positives. Detecting two rows that
+Both are mechanical and have no false positives.
+
+Verifying that a row's *Java* side names something real is deliberately not
+done here: `scripts/check-java-refs.py` does it for the whole tree, against
+the pinned 10.5.0 checkout, and resolves that checkout in both the host and
+container layouts. This script used to print a warning about a
+Java-counterpart check it never performed, which was its own small instance
+of the defect both scripts exist to catch. Detecting two rows that
 genuinely *contradict* each other is deliberately NOT automated: a class
 routinely has several rows (read side and write side, a scoped-down first
 cut and a later widening), and a heuristic over the status text flags
@@ -35,7 +42,6 @@ EXEMPT = {
     "lucene-util/src/test_support.rs": "shared test scratch-directory guard; compiled only under cfg(test)/the test-support feature",
 }
 PARITY = os.path.join(ROOT, "docs", "parity.md")
-JAVA_ROOT = "/home/tuong/work/lucene-10.5.0"
 
 # A Rust path: `crate/src/path.rs`, optionally followed by `::item`.
 RUST_PATH = re.compile(r"`(lucene-[a-z]+/(?:src|tests|benches|examples)/[A-Za-z0-9_/]+\.rs)(?:::[^`]*)?`")
@@ -104,10 +110,6 @@ def main():
         print("classes with multiple rows (review by hand, not an error):")
         for ref, entries in sorted(multi.items()):
             print(f"  {ref}: lines {', '.join(str(ln) for ln, _ in entries)}")
-
-    if not os.path.isdir(JAVA_ROOT):
-        print(f"warning: pinned Lucene tree missing at {JAVA_ROOT}; "
-              f"skipping the Java-counterpart check", file=sys.stderr)
 
     if errors:
         for e in errors:
