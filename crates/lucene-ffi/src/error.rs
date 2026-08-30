@@ -10,6 +10,19 @@
 //! 3. On a caught panic, records a message in a thread-local slot (read
 //!    back via [`crate::ffi_get_last_error_message`]) and returns
 //!    [`FfiStatus::Panic`] instead of propagating the unwind.
+//! 4. On *any* non-`Ok` return, guarantees the thread-local message slot
+//!    describes **this** call: a body that returned a status without
+//!    calling [`set_last_error`] itself (a bare null-pointer or
+//!    buffer-too-small check, say) gets [`FfiStatus::default_message`]
+//!    written for it. Without that backfill,
+//!    [`crate::ffi_get_last_error_message`] would hand the caller a
+//!    *previous*, unrelated failure's text -- a stale message read as a
+//!    diagnosis of the call that just failed, which is worse than an
+//!    uninformative one. The one exported function outside this invariant
+//!    is [`crate::ffi_get_last_error_message`] itself, which bypasses
+//!    [`guard`] deliberately: its own `BufferTooSmall`/`NullPointer`
+//!    returns must *not* overwrite the message the caller is retrying to
+//!    read, so it records nothing and leaves the slot intact for the retry.
 //!
 //! `catch_unwind`'s closure must be [`std::panic::UnwindSafe`]; every raw
 //! pointer this crate receives is `*const`/`*mut`, and raw pointers are
@@ -42,11 +55,41 @@ pub enum FfiStatus {
     BufferTooSmall = 8,
     Panic = 9,
     InvalidArgument = 10,
+    /// A registry cannot issue any more handles of that kind -- see
+    /// [`crate::handle::MAX_SLOTS`]. Only reachable by leaking handles
+    /// (never closing them); the fix is on the caller's side, so this is a
+    /// distinct code rather than a generic failure.
+    HandleLimit = 11,
 }
 
 impl FfiStatus {
     pub fn code(self) -> i32 {
         self as i32
+    }
+
+    /// The message [`guard`] records when a failing body returned this
+    /// status without calling [`set_last_error`] itself -- see `guard`'s doc
+    /// comment for why no error path may leave the thread-local slot holding
+    /// an *older*, unrelated failure's text.
+    fn default_message(self) -> &'static str {
+        match self {
+            FfiStatus::Ok => "ok",
+            FfiStatus::NullPointer => {
+                "null pointer: a required pointer argument was null (no further detail recorded)"
+            }
+            FfiStatus::InvalidUtf8 => "invalid UTF-8 in a caller-supplied string argument",
+            FfiStatus::InvalidHandle => "unknown, already-closed, or wrong-kind handle",
+            FfiStatus::Io => "I/O error",
+            FfiStatus::Decode => "decode error",
+            FfiStatus::Search => "search failed",
+            FfiStatus::IndexOutOfBounds => "index out of bounds",
+            FfiStatus::BufferTooSmall => {
+                "caller-allocated buffer too small: call the matching `*_len` accessor first"
+            }
+            FfiStatus::Panic => "a Rust panic was caught at the FFI boundary",
+            FfiStatus::InvalidArgument => "invalid argument",
+            FfiStatus::HandleLimit => "handle registry exhausted: too many open handles",
+        }
     }
 }
 
@@ -59,6 +102,12 @@ thread_local! {
     /// comment for why the hook, not `Any` downcasting, is this module's
     /// message-capture mechanism).
     static CAPTURING_PANIC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Set by [`set_last_error`], cleared by [`guard`] before each body runs.
+    /// Lets `guard` tell "this call recorded its own message" from "this call
+    /// failed but left the slot holding a *previous* call's message", so the
+    /// second case can be backfilled with [`FfiStatus::default_message`]
+    /// rather than reported as if it were this call's diagnosis.
+    static ERROR_RECORDED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 static INSTALL_PANIC_HOOK: Once = Once::new();
@@ -91,6 +140,7 @@ fn install_panic_hook() {
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info: &std::panic::PanicHookInfo<'_>| {
             if CAPTURING_PANIC.with(|c| c.get()) {
+                ERROR_RECORDED.with(|c| c.set(true));
                 LAST_ERROR.with(|slot| *slot.borrow_mut() = format!("panic: {info}"));
             } else {
                 previous(info);
@@ -106,6 +156,7 @@ fn install_panic_hook() {
 /// status code and only then, if non-zero, fetch the message — matching a
 /// plain `errno`-style contract).
 pub fn set_last_error(message: impl Into<String>) {
+    ERROR_RECORDED.with(|c| c.set(true));
     LAST_ERROR.with(|slot| *slot.borrow_mut() = message.into());
 }
 
@@ -159,17 +210,33 @@ pub unsafe fn get_last_error_message(
 /// [`FfiStatus::Panic`] plus a last-error message instead of letting the
 /// unwind cross into the JVM (see this module's doc comment). Every
 /// exported function's implementation is this one call.
+///
+/// Also guarantees the "every non-`Ok` status leaves a retrievable message
+/// about *this* call" invariant, backfilling
+/// [`FfiStatus::default_message`] when `body` returned an error without
+/// recording one -- see step 4 of this module's doc comment.
 pub fn guard<F>(body: F) -> i32
 where
     F: FnOnce() -> Result<(), FfiStatus> + std::panic::UnwindSafe,
 {
     install_panic_hook();
+    ERROR_RECORDED.with(|c| c.set(false));
     CAPTURING_PANIC.with(|c| c.set(true));
     let outcome = std::panic::catch_unwind(body);
     CAPTURING_PANIC.with(|c| c.set(false));
     match outcome {
         Ok(Ok(())) => FfiStatus::Ok.code(),
-        Ok(Err(status)) => status.code(),
+        Ok(Err(status)) => {
+            // Every non-`Ok` return must leave a message describing *this*
+            // call -- a body that returned early without calling
+            // `set_last_error` (e.g. a bare null-pointer or buffer-too-small
+            // check) would otherwise leave the slot holding an older,
+            // unrelated failure, which is worse than no message at all.
+            if !ERROR_RECORDED.with(|c| c.get()) {
+                set_last_error(status.default_message());
+            }
+            status.code()
+        }
         Err(_payload) => {
             // The installed panic hook (see `install_panic_hook`) already wrote
             // this thread's formatted panic message into `LAST_ERROR` while
@@ -235,6 +302,58 @@ mod tests {
         let code = guard(|| panic!("{}", String::from("owned message")));
         assert_eq!(code, FfiStatus::Panic.code());
         assert!(last_error().contains("owned message"));
+    }
+
+    #[test]
+    fn guard_backfills_a_message_when_the_body_records_none() {
+        // A previous, unrelated failure leaves its message in the slot...
+        assert_eq!(
+            guard(|| {
+                set_last_error("an older, unrelated failure");
+                Err(FfiStatus::Decode)
+            }),
+            FfiStatus::Decode.code()
+        );
+        // ...and the next failing call, which records nothing itself, must
+        // not let that stale text be read back as its own diagnosis.
+        let code = guard(|| Err(FfiStatus::NullPointer));
+        assert_eq!(code, FfiStatus::NullPointer.code());
+        let msg = last_error();
+        assert!(
+            !msg.contains("older, unrelated"),
+            "stale message leaked: {msg}"
+        );
+        assert_eq!(msg, FfiStatus::NullPointer.default_message());
+    }
+
+    #[test]
+    fn guard_keeps_the_bodys_own_message_when_it_recorded_one() {
+        let code = guard(|| {
+            set_last_error("specific detail from the body");
+            Err(FfiStatus::InvalidArgument)
+        });
+        assert_eq!(code, FfiStatus::InvalidArgument.code());
+        assert_eq!(last_error(), "specific detail from the body");
+    }
+
+    #[test]
+    fn every_status_has_a_nonempty_default_message() {
+        for status in [
+            FfiStatus::Ok,
+            FfiStatus::NullPointer,
+            FfiStatus::InvalidUtf8,
+            FfiStatus::InvalidHandle,
+            FfiStatus::Io,
+            FfiStatus::Decode,
+            FfiStatus::Search,
+            FfiStatus::IndexOutOfBounds,
+            FfiStatus::BufferTooSmall,
+            FfiStatus::Panic,
+            FfiStatus::InvalidArgument,
+            FfiStatus::HandleLimit,
+        ] {
+            assert!(!status.default_message().is_empty(), "{status:?}");
+        }
     }
 
     #[test]

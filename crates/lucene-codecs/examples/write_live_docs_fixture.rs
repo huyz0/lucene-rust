@@ -12,6 +12,11 @@
 //! multiple of 64 (the bitset's last-word partial-bits edge case).
 //!
 //! Run: `cargo run -p lucene-codecs --example write_live_docs_fixture -- <dir>`
+// Test-support code opts out of the arithmetic gate at the file boundary:
+// the gate exists for values read off disk in production decode paths, not
+// for a fixture builder's own index arithmetic. See
+// `docs/arithmetic-gate.md`.
+#![allow(clippy::arithmetic_side_effects)]
 
 use lucene_codecs::live_docs;
 use lucene_store::{DataOutput, Directory, FsDirectory};

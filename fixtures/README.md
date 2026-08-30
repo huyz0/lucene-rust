@@ -8,23 +8,60 @@ test time, only to regenerate fixtures after a Lucene version bump.
 
 ## Regenerating
 
+**Regenerate one generator at a time.**
+
 ```sh
-scripts/gen-fixtures.sh
+scripts/gen-fixtures.sh --list             # the generator names
+scripts/gen-fixtures.sh --only GenNorms    # regenerate just norms_index
 ```
 
-That compiles every program in `src/` and runs all `Gen*` generators followed by
-all `Append*Manifest` programs, in that order. The ordering is not incidental:
-the appenders open an already-generated index read-only and append cross-engine
-ground truth to its `manifest.properties` **without** regenerating the index
-(regenerating would perturb the segment ID that committed bytes depend on).
-Running only the generators leaves `blocktree_index/manifest.properties` with
-239 keys where the committed fixture has 402.
+`--only` runs that generator (the `Gen` prefix is optional) and then all the
+`Append*Manifest` programs, and touches nothing else: after `--only GenNorms`
+the other 60-odd fixture directories are byte-for-byte what they were.
+
+A bare `scripts/gen-fixtures.sh` **refuses to run** and prints the above. That
+refusal is deliberate. A full regeneration does not refresh the fixtures, it
+*replaces* them: Lucene stamps a fresh random segment ID
+(`StringHelper.randomId()`) into every index it writes, so 366 of the 406
+generated files change on every run, the suite stays green over evidence that is
+no longer the evidence the findings were written against, and the diff is
+hundreds of binary files no reviewer can read. Batch c29 triggered exactly this
+and had to revert 366 tracked files by hand — and several fixture directories
+are not tracked yet, so `git checkout` would not have restored those at all.
+
+If you really do mean all of them — a Lucene version bump is the usual reason —
+pass `--all`. Expect `segment-ids.txt` (below) to change; that diff is the
+readable record that every index was replaced, and it belongs in the commit
+message.
+
+A run compiles every program in `src/` and runs the selected `Gen*` generators
+followed by all `Append*Manifest` programs, in that order. The ordering is not
+incidental: the appenders open an already-generated index read-only and append
+cross-engine ground truth to its `manifest.properties` **without** regenerating
+the index (regenerating would perturb the segment ID that committed bytes depend
+on). Running only the generators leaves `blocktree_index/manifest.properties`
+with 239 keys where the committed fixture has 468. `--only` therefore always
+runs the appenders afterwards; each strips its own key prefix before
+re-appending, so re-running one over an index the invocation did not touch
+rewrites the same bytes.
+
+`--out DIR` writes somewhere else entirely and needs no flag — it cannot clobber
+the evidence base.
 
 The script resolves `lucene-core`, `lucene-analysis-common` and `lucene-queries`
 10.5.0 from `--jars`, then the Gradle cache, then Maven Central, so it also
 works on a machine with no `~/.gradle`. `lucene-queries` is required because
 `GenBlockTree` uses `org.apache.lucene.queries.spans`; `lucene-analysis-common`
 because `GenAnalysis` exercises real `StandardAnalyzer`/`StopFilter`.
+
+`GenRegexp.java` is the odd one out among the generators: it writes no index at
+all. It runs real `RegExp` + `Operations.determinize` + `ByteRunAutomaton` over a
+pattern/term matrix and records the accept/reject decision as two plain text
+files (`regexp/terms.txt`, `regexp/cases.tsv`), which is what
+`crates/lucene-codecs/tests/regexp_fixtures.rs` compares this port's hand-written
+`RegExp` parser against. Lucene's regexp grammar is not PCRE, and the failure
+mode a fixture has to catch there is not "fails to parse" but "parses and
+quietly means something else".
 
 `data/` is checked in so `cargo test` works without Java installed; regenerate
 and re-commit whenever the pinned Lucene version changes. Note that "checked in"
@@ -38,13 +75,32 @@ scripts/gen-fixtures.sh --check
 
 Verifies that `data/` is still what Lucene 10.5.0 actually produces, without
 touching the tree. It cannot simply diff everything: Lucene stamps a random
-segment ID (`StringHelper.randomId()`) into every index header, so 366 of the
-406 generated files differ on every run **by design**. Instead it generates
-twice, treats a file as deterministic only if the two runs agree, asserts those
-40 files match the committed bytes exactly, and then compares the full file tree
-so a generator that silently stops emitting a file is still caught.
+segment ID (`StringHelper.randomId()`) into every index header, so 629 of the
+675 generated files differ on every run **by design**. So it runs five checks:
 
-CI runs this on every change (`.github/workflows/ci.yml`, job `fixtures`).
+1. generates twice, and calls a file *deterministic* only if the two runs agree;
+2. asserts the 46 deterministic files match the committed bytes exactly — this
+   is what catches a hand-edit;
+3. compares the full file tree, so a generator that silently stops emitting a
+   file is caught even where the bytes cannot be compared;
+4. compares every manifest's **key set** against a full generate-then-append
+   run. `blocktree_index/manifest.properties` is itself non-deterministic, so
+   check 2 is blind to it — a tree regenerated with the `Gen*` programs alone
+   loses 229 keys there and passes every byte comparison. This check names the
+   dropped keys.
+5. re-derives every index's segment ID and diffs it against the committed
+   `segment-ids.txt`. This is the only check that can see an index having been
+   *regenerated*: fresh bytes are indistinguishable from correct bytes, same
+   generator, same Lucene, only a new `randomId()`.
+
+`segment-ids.txt` is produced by `scripts/fixture-segment-ids.py` (which parses
+the id straight out of each `.si`/`segments_N` `CodecUtil.writeIndexHeader`
+prologue) and is refreshed automatically by any write-mode run into `data/`.
+It matters beyond `--check`: `crates/lucene-ffi/src/segment.rs` hardcodes the
+committed `blocktree_index` segment ID, so a regeneration breaks those tests,
+and the baseline is where that coupling is now written down.
+
+CI runs `--check` on every change (`.github/workflows/ci.yml`, job `fixtures`).
 
 ## Verifying the write path (reverse direction)
 
@@ -54,14 +110,17 @@ can open and read them back. `VerifyStoredFields.java`, `VerifyFieldInfos.java`,
 `VerifySegmentInfo.java`, `VerifySegmentInfos.java`, `VerifyPoints.java`,
 `VerifyTermVectors.java`, `VerifyDocValues.java`,
 `VerifySparseNumericDocValues.java`, `VerifyNorms.java`,
-`VerifyLiveDocs.java`, `VerifyCompoundFormat.java`, and `VerifyFst.java` are these
+`VerifyLiveDocs.java`, `VerifyCompoundFormat.java`, `VerifyFst.java`,
+`VerifyVectors.java`, `VerifyFullSegment.java`, `VerifyMergedSegment.java`,
+`VerifyVectorSegment.java`, `VerifyBlockSegment.java`,
+`VerifyDocValuesUpdates.java` and `VerifySortedSegment.java` are these
 verifiers so far:
 
 ```sh
 scripts/verify-write-path.sh
 ```
 
-That runs all 13 Rust `write_*_fixture` examples into a temp directory and
+That runs all 20 Rust `write_*_fixture` examples into a temp directory and
 checks each with its verifier, resolving the Lucene jars the same way
 `gen-fixtures.sh` does. Pass `--keep` to retain the generated fixtures for
 inspection. CI runs it on every change (`.github/workflows/ci.yml`, job
@@ -297,6 +356,71 @@ uses is self-consistent, so a structurally simpler but format-valid FST is
 read identically to one `FSTCompiler` would have produced. See
 `docs/parity.md`'s FST row for the full detail.
 
+`VerifyVectors.java` verifies `vectors::write_flat_vectors` and
+`hnsw_vectors::write_hnsw_vectors` (`crates/lucene-codecs/src/vectors.rs`,
+`hnsw.rs`, `hnsw_vectors.rs`) -- the `.vec`/`.vemf` flat store *and* the
+`.vem`/`.vex` HNSW graph. The Rust example (`write_vectors_fixture.rs`) writes
+four fields covering the dense, sparse, BYTE and no-graph cases, and Lucene
+opens all four through its own `Lucene99HnswVectorsFormat` with a hand-built
+`SegmentInfo`/`FieldInfos` (same division of labour as `VerifyPoints.java`).
+
+Four things are checked, because a vector segment can be wrong in four
+independent ways: every ordinal's components (an order-sensitive hash over raw
+float bits, so float summation order cannot hide a difference); every
+ordinal's document id (where a mis-written `IndexedDISI` bitset or
+`DirectMonotonicWriter` block shows up); the graph's level count, entry node,
+max conn and a per-level arc hash (which is what proves the `.vex` node offsets
+and group-varint neighbour deltas are what *Lucene* expects, not merely what
+this port's own reader expects); and finally a real `TopKnnCollector` search
+over the Rust-built graph, whose recall against the exact top-k must clear a
+floor. That last one is the only check a graph which decodes cleanly but is
+*built* wrong will fail -- it passes all three structural checks. Observed:
+recall@10 of 0.91-1.00 across the four fields.
+
+`VerifyDocValuesUpdates.java` verifies the doc-values **field update** path --
+`IndexWriter.updateNumericDocValue`/`updateBinaryDocValue`, written by
+`crates/lucene-index/src/field_updates.rs`. Unlike the codec-level verifiers
+above it opens two whole Rust-written indices through `DirectoryReader`, because
+what has to be right is not one file but four things agreeing: the
+generation-suffixed `.dvm`/`.dvd`/`.dvs` (the updated field's whole rewritten
+column), the `FieldInfos` generation recording that field's
+`FieldInfo.docValuesGen`, and `segments_N`'s `docValuesGen` +
+`dvUpdatesFiles`. Every way of getting one of them wrong -- a suffix that
+disagrees between the file name and the file's own index header, a
+`fieldInfosGen` written but not recorded, a `dvUpdatesFiles` entry that
+accumulates instead of replacing, a merged column that dropped the documents
+the update did not touch -- reads back fine through this port's own reader.
+
+So the verifier reads *every* document's value back and compares it to the
+value the last update round set (the numeric index is updated three times, so a
+generation is itself read back as the base of the next one), asserts the
+superseded generations were reclaimed from the directory, and runs `CheckIndex`
+at `MIN_LEVEL_FOR_SLOW_CHECKS`. Before this existed, an index carrying a
+doc-values update used a delta format of this port's own invention and could
+not be opened by real Lucene at all -- and no verifier case wrote one, so
+nothing said so.
+
+`VerifySortedSegment.java` verifies the **index-sorted flush** --
+`IndexWriter::set_index_sort`, written by
+`crates/lucene-index/src/index_writer.rs`. An index sort is unlike every other
+property checked here, because violating it leaves every file *valid*: correct
+checksums, in-range doc ids, a decodable term dictionary. Only the association
+between the files is wrong. So the verifier re-derives the expected
+permutation itself, with its own comparator, from the fixture's generator
+functions, and then checks -- per doc id -- the stored `id`, both NUMERIC
+doc-values columns (including `rank`'s *absence* on the documents that have
+none), the postings term unique to that document, the norm, and every
+component of the vector, plus `LeafMetaData.sort()` tier for tier and a real
+`KnnFloatVectorQuery` over the Rust-built graph. Then `CheckIndex` at
+`MIN_LEVEL_FOR_SLOW_CHECKS`, which runs Lucene's own `testSort`.
+
+Two negative controls were run by hand while it was written, and both are the
+reason it asserts on the association rather than on `CheckIndex` alone: a
+flush that permutes the documents but *not* the vectors attaches every vector
+to the wrong document and is **`CheckIndex`-clean**, and a missing-value
+comparator that disagrees with the sort it wrote fails Lucene's `testSort`
+outright.
+
 ## Generators
 
 - `GenPrimitives.java` — vint/vlong/zlong/group-varint wire encodings.
@@ -312,6 +436,38 @@ read identically to one `FSTCompiler` would have produced. See
   deleted by term after the first commit (`live_docs_index/` subdirectory:
   `NoMergePolicy` keeps the segment from being merged away, so the fixture's `.liv`
   file is a real post-deletion commit, not hand-built bits).
+- `GenMultiSegmentScoring.java` — the only genuinely **two-segment** scoring
+  fixture in this tree (`multi_segment_scoring_index/`): `NoMergePolicy` plus a
+  `commit()` between two deliberately lopsided batches, so segment 0 holds four
+  1–3-term documents and segment 1 four 40-term ones. Their own `avgdl` values
+  are 1.75 and 40.0 against a reader-wide 20.875, and `fox` has `docFreq`
+  1-of-4 in one leaf and 3-of-4 in the other. That spread is the point: real
+  Lucene's `IndexSearcher` computes `TermStats`/`FieldStats` once for the whole
+  reader, so a port that derives either per leaf scores the same document
+  differently — and every *other* scoring fixture here is one segment, where the
+  two are the same number by construction and the divergence is invisible. The
+  manifest records real `IndexSearcher` `TopDocs` as `Float.floatToIntBits` in
+  **global** doc-id space, plus each leaf's counters and the reader-wide sums, so
+  the Rust side can assert both the scores and the statistics they came from.
+  Consumed by `crates/lucene-search/tests/multi_segment_scoring_fixtures.rs`
+  (bit-for-bit, with a negative control asserting per-leaf `avgdl` does *not*
+  reproduce them). The index bytes carry a random segment id and are therefore
+  non-deterministic, but `manifest.properties` is byte-stable, so `--check`
+  compares it.
+- `GenMergePolicy.java` — cross-engine ground truth for the `TieredMergePolicy`
+  port (`merge_policy/merge_policy.manifest.properties`). Emits **no index**: a
+  merge policy is a pure function of segment *statistics*, so the fixture is a
+  manifest of 33 `(config, segments, currently-merging set) -> chosen merge
+  groups` scenarios decided by running real `findMerges`,
+  `findForcedMerges(n)` and `findForcedDeletesMerges` over hand-built
+  `SegmentInfos`. Sizes are real (one file per segment of exactly the requested
+  byte length, in a `ByteBuffersDirectory`, so `SegmentCommitInfo.sizeInBytes()`
+  and `MergePolicy.size()`'s deletion pro-rating are genuinely exercised) and
+  every size converts to `setMaxMergedSegmentMB`/`setFloorSegmentMB`'s MB unit
+  by dividing by 2^20, which is exact in binary floating point. Deterministic
+  (fixed segment ids, no `IndexWriter`), so `--check` compares it byte for byte.
+  Consumed by `crates/lucene-index/tests/merge_policy_fixtures.rs`, which
+  asserts the identical grouping **in the identical order**.
 - `GenFieldInfos.java` — a real two-doc `IndexWriter` session (`field_infos_index/`
   subdirectory) with fields of every notable shape (plain indexed, term vectors,
   numeric/sorted doc values, a point field, a KNN vector field) plus a
@@ -341,6 +497,40 @@ read identically to one `FSTCompiler` would have produced. See
   Expected values come from reading them back through Lucene's own
   `Lucene90DocValuesProducer.getNumeric`/`getBinary`, not our own
   arithmetic.
+- `GenDocValuesUpdates.java` — a real single-segment `IndexWriter` session
+  (`doc_values_updates_index/` subdirectory) whose doc-values are then
+  **updated in place** across three rounds
+  (`updateNumericDocValue`/`updateBinaryDocValue`). Lucene answers a
+  doc-values update by rewriting the updated field's *whole column* into a
+  new generation of ordinary `Lucene90DocValuesFormat` files
+  (`_0_<base36 gen>_Lucene90_0.dvm/.dvd/.dvs`), plus a `FieldInfos`
+  generation (`_0_<base36 gen>.fnm`) recording that field's
+  `FieldInfo.docValuesGen`, plus `docValuesGen` and a per-field
+  `dvUpdatesFiles` map in `segments_N`. Three doc-values fields, in the three
+  states a reader has to tell apart: `val` (NUMERIC, updated twice — so an
+  earlier generation is itself read back as the base of a later one, and the
+  superseded generation's files are gone), `tag` (BINARY, updated once, at a
+  *different* generation number than `val`), and `keep` (NUMERIC, never
+  updated — still on the base column at generation -1, the case a reader gets
+  wrong by resolving every field to `SegmentCommitInfo.docValuesGen`).
+  Expected values are every document's value as Lucene's own
+  `DirectoryReader` reads it back, so the Rust test asserts against Lucene's
+  answers rather than a second derivation of the format.
+- `GenSortedIndex.java` — a real **index-sorted** `IndexWriter` session
+  (`sorted_index/` subdirectory) configured with
+  `IndexWriterConfig.setIndexSort(new Sort(rank DESC missingValue=Long.MAX_VALUE,
+  tie ASC missingValue=Long.MIN_VALUE))`, two commits force-merged into one
+  segment. Two things it pins that nothing else does: the `.si`'s
+  `numSortFields`/`SortFieldProvider` block for a sort a *real* `IndexWriter`
+  chose (rather than one handed to `SegmentInfo` directly, which is what
+  `GenSegmentInfo.genSorted` covers), and — more importantly — **what the sort
+  means**. A missing value is an ordinary sentinel inside Lucene's comparator,
+  so `reverse` applies to it too and the six documents with no `rank` are
+  Lucene's *first* six under a missing-**last** descending sort. The manifest
+  records the physical order Lucene produced plus both doc-values columns as a
+  reader sees them, so `crates/lucene-index/tests/index_sort_fixtures.rs`
+  checks this port's own comparator against Lucene's behaviour rather than
+  against a reading of its source.
 - `GenCompoundFormat.java` — a real single-segment `IndexWriter` session
   (`compound_index/` subdirectory) with `useCompoundFile=true` forced on the
   writer config, so the segment's sub-files (`.fnm`, `.fdt`/`.fdx`/`.fdm`,
@@ -435,6 +625,111 @@ read identically to one `FSTCompiler` would have produced. See
   decoder, and fails the build if no leaf ever has `compressedDim >= 1`;
   the observed value is also recorded in the `multi_leaf_compressed_dims`
   manifest key so the Rust differential test can assert on it directly.
+- `GenVectors.java` — a real single-segment `IndexWriter` session
+  (`vectors_index/` subdirectory) with 4000 documents and **five**
+  `Lucene99HnswVectorsFormat` fields, chosen so that every branch a
+  `Lucene99FlatVectorsReader`/`Lucene99HnswVectorsReader` has is on the
+  disk somewhere: a *dense* FLOAT32/EUCLIDEAN field (every document has a
+  value, so `OrdToDocDISIReaderConfiguration` writes the `-1` marker and
+  no ord↔doc structures at all), two *sparse* FLOAT32 fields
+  (COSINE and MAXIMUM_INNER_PRODUCT — an `IndexedDISI` bitset plus a
+  `DirectMonotonicWriter` mapping appended to `.vec`), a BYTE/DOT_PRODUCT
+  field (4-byte alignment instead of 64, and Java's *different*
+  `dotProductScore` transform), and a 5-vector field. Two of the five are
+  small enough that Lucene skips graph construction entirely
+  (`numLevels == 0`, a zero-length `.vex` region) — the branch a reader is
+  most likely to get wrong precisely because no ordinary fixture reaches
+  it.
+
+  The manifest records three independent layers of ground truth: per-field
+  metadata and spot ordinals as raw float bits; per graph level, the node
+  count, node ids, eight neighbour samples and an **order-sensitive hash
+  over every node's neighbour list** (so a mis-decoded `.vex` node offset
+  or a dropped group-varint group cannot pass); and, for twenty queries per
+  field, both Lucene's own HNSW top-10 (through a real
+  `KnnFloatVectorQuery`/`KnnByteVectorQuery`, i.e. the actual
+  `Lucene99HnswVectorsReader.search`) and the exact brute-force top-10 over
+  the same vectors. The first is what a faithful port must reproduce
+  doc-for-doc; the second is the denominator of the recall figure both
+  engines are measured on in `docs/sweep/m2/c5-vectors.md`.
+
+  It also records the first ten `new SplittableRandom(42).nextDouble()`
+  draws. HNSW level assignment is `(int)(-ln(U) * ml)` over exactly that
+  stream, so a port whose generator drifts builds a differently-shaped
+  graph for a reason that would otherwise look like an algorithmic
+  difference — and with the stream matched, this port picks the same entry
+  node as Lucene does (171 here, 46601 at 50k x 128).
+- `GenVectorsMulti.java` — the **multi-segment** counterpart
+  (`vectors_multi_index/` subdirectory): the same four vector field shapes
+  over 4000 documents split across four deliberately *unequal* segments
+  (2000/1000/960/40), plus two `StringField`s used as KNN filters. It exists
+  because three things about `AbstractKnnVectorQuery.rewrite` are invisible
+  to a single-segment fixture:
+
+  1. **Per-leaf `k` is pro-rata, not `k`.** `TopKnnCollectorManager` is
+     optimistic, so each leaf is searched with a collector of
+     `perLeafTopKCalculation(k, leafMaxDoc/indexMaxDoc)` — 24, 30, 23 and 5
+     for these four leaves at `k = 10`. Unequal segments put four different
+     collector sizes into one query.
+  2. **The optimistic re-entry pass.** A leaf whose worst phase-1 hit is
+     still at or above the merged top-`k`'s worst is searched again with a
+     full-`k` collector. That needs a leaf whose `perLeafTopK` is *below*
+     `k` and whose vectors are genuinely competitive, so the 40-document
+     segment's `dense_f32` vectors are a tight cluster near the origin and
+     every fifth query target is pulled toward it. Five of the twenty dense
+     queries then return more than five hits from that leaf — which only a
+     second pass can produce.
+  3. **Filtered KNN.** A *selective* filter (`bucket:b0`, 20 documents in
+     the whole index, fewer per leaf than `perLeafTopK`, so every leaf takes
+     `exactSearch`) and a *permissive* one (`group:g0`, a quarter of the
+     index, so the graph is walked with `acceptOrds` and
+     `visitedLimit = cost + 1`). The accepted **local** doc ids are recorded
+     per leaf straight out of Lucene's own postings, so the Rust side is
+     checked on the KNN policy rather than on its own term-query resolution.
+
+  The 40-document segment carries no HNSW graph at all, so the fan-out also
+  has to merge one exact leaf with three approximate ones. Consumed by
+  `crates/lucene-search/tests/vector_query_fixtures.rs`.
+- `GenVectorsSeeded.java` — the one thing `GenVectorsMulti`'s index cannot
+  reach (`vectors_seeded_index/` subdirectory): the optimistic re-entry pass
+  firing on a leaf that **has a graph**, so that
+  `ReentrantKnnCollectorManager`'s `KnnSearchStrategy.Seeded` and therefore
+  `SeededHnswGraphSearcher` are actually exercised. Two constraints have to
+  hold at once and 4000 documents cannot satisfy both: a leaf is only
+  re-enterable when `perLeafTopK < k` (`k*p + 16*sqrt(k*p*(1-p)) < k`, i.e.
+  `p < 0.039` at `k = 10`, under ~156 documents of a 4000-document index),
+  while `shouldCreateGraph` needs about 660 vectors. They are compatible at a
+  larger `k`, so this index is **1400/700/700/40** and is queried at
+  `k = 100`, where the four `perLeafTopK` values are 129, 93, 93 and 20 — and
+  the second 700-document segment holds a tight cluster every query target
+  sits next to, which is what makes its 93 phase-1 hits dominate the merged
+  top 100 and its re-entry condition true. `k = 10` over the same index is
+  recorded as the no-re-entry control, and the per-leaf `perLeafTopK` values
+  are recorded so the Rust test can assert the fixture still has the shape it
+  was built for. `GenVectorsMulti`'s index *does* reach the re-entry pass, but
+  only on its 40-document segment, which is below `shouldCreateGraph` and so
+  takes the exhaustive branch — where Java ignores the search strategy
+  entirely. Vector generation is `GenVectorsMulti`'s, reused rather than
+  copied.
+- `GenVectorsFiltered.java` — a **single-segment** index that also carries a
+  term dictionary (`vectors_filter_index/` subdirectory): 1200 documents with
+  a FLOAT32 and a BYTE vector field plus `bucket`/`group` `StringField`s. It
+  exists for the C ABI, which opens one segment's vector files per handle and
+  therefore needs ground truth from a *one-leaf* index — where
+  `leafProportion == 1` makes `perLeafTopK == k` and no re-entry pass runs.
+  Running the same query against one leaf of the four-leaf index is a
+  different search (that leaf's collector is pro-rata sized), so
+  `vectors_multi_index`'s recorded results are not usable as single-segment
+  ground truth. Both of Java's filtered branches are reached: `bucket:b0`
+  accepts 6 documents against `k = 10` (`cost <= perLeafTopK`, so
+  `exactSearch`) and `group:g0` accepts a quarter of the index (the graph walk
+  with `acceptOrds` and `visitedLimit = cost + 1`). The accepted local doc ids
+  are recorded straight out of Lucene's own postings, so a test can either
+  supply them directly or — as `crates/lucene-ffi/src/vectors.rs` does —
+  resolve the same term through this port's block-tree reader and check it
+  arrives at the same set. Consumed by
+  `crates/lucene-search/tests/vector_query_fixtures.rs` and
+  `crates/lucene-ffi/src/vectors.rs`.
 - `GenFst.java` — a real `FST<BytesRef>` (`fst/` subdirectory) built via
   real `FSTCompiler` with `ByteSequenceOutputs` (the output type real
   Lucene's term index FST uses) and `allowFixedLengthArcs(false)` (so it
@@ -561,6 +856,48 @@ read identically to one `FSTCompiler` would have produced. See
   manifest also dumps real `PostingsEnum.advance(target)` ground truth
   (including at the exact level-1 span boundary for "l1") and
   `TermsEnum.next()`/`seekCeil()` output.
+- `GenPostingsSkip.java` — a real `IndexWriter` session
+  (`postings_skip_index/` subdirectory) whose one field ("pskip",
+  `DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS` with payloads) holds
+  `skipterm` in **all 8 500 documents** (25 500 occurrences) and `gapterm`
+  in 3 400 of them. 8 500 is past `LEVEL1_NUM_DOCS` (8 192), so real
+  `Lucene104PostingsWriter` emits one level-1 skip entry, 33 level-0 block
+  headers and a group-varint tail -- and, because the field indexes
+  positions, **every one of those skip records carries the `.pos`/`.pay`
+  file pointer and in-block offset its documents' occurrences start at**. No
+  other fixture here contains those sub-fields at all: `blocktree_index`'s
+  "pos" field has `docFreq = 3` and lives entirely in the vint tail, and its
+  "l1" field (which does have skip data) indexes no positions.
+
+  Two properties are load-bearing and were got wrong in this generator's
+  first revision, so they are asserted by the test rather than assumed:
+
+  - Per-document frequencies cycle 1..5, a period **coprime with 256**, so
+    no `.pos` block boundary lines up with a `.doc` block boundary and
+    `posBufferUpto` is non-zero in nearly every record — including the
+    level-1 one, which is 253. With the period-4 cycle this generator
+    started with, `sum(1 + d % 4)` over the first 8 192 documents was
+    exactly 80 whole `.pos` blocks, so *every* level-1 `posBufferUpto` was
+    `0` and a reader that never read the field would have passed. The
+    manifest carries `level1_pos_buffer_upto` so the Rust test can pin it.
+  - `gapterm` exists because `skipterm` is in every document, which makes
+    all 33 of its level-0 blocks take Lucene's degenerate
+    `docRange == BLOCK_SIZE` doc-delta encoding. `gapterm`'s blocks are
+    packed-FOR or unary bit sets, and most sampled document ids are not in
+    it, so it is what covers a skip-driven walk that must actually
+    bit-unpack a block, and an `advance(doc)` for a document the term does
+    not contain.
+
+  Payload lengths vary including zero. Ground truth is Java's own
+  `PostingsEnum.advance(doc)` +
+  `nextPosition()`/`startOffset()`/`endOffset()`/`getPayload()` taken with a
+  **fresh enum per sampled document**, so every sample is reached through
+  the skip data rather than by sequential iteration -- the exact shape
+  `postings::read_occurrences_for_doc` implements. Documents are sampled to
+  bracket every structural boundary (either side of the level-1 span end and
+  of each level-0 block end, the first document of the tail, first and
+  last), plus an irregular stride. Exercised by
+  `crates/lucene-codecs/tests/postings_skip_fixture.rs`.
 - `GenAnalysis.java` — runs real `StandardAnalyzer` (`StandardTokenizer` +
   `LowerCaseFilter` + `StopFilter`) with a real stopword set (`the`, `a`,
   `of`) over six strings (`analysis/` subdirectory, no `IndexWriter`
@@ -575,4 +912,17 @@ read identically to one `FSTCompiler` would have produced. See
   five `uax29_*` cases (task #207: bare `StandardTokenizer`, no filters,
   over combining-mark, CJK-ideograph, precomposed-Hangul,
   conjoining-Jamo-Hangul, and mixed-CJK/Latin text) checking
-  `lucene-analysis`'s `unicode-segmentation`-backed `tokenize()`.
+  `lucene-analysis`'s `unicode-segmentation`-backed `tokenize()`. Batch c33
+  added twelve `utf16_*` cases recording the **offset unit**: every string
+  mixes an ASCII word, a Latin-1 accented letter (1 `char`, 2 UTF-8 bytes), a
+  CJK ideograph (1, 3), a decomposed combining mark (2, 3) and/or a
+  supplementary-plane character (2 `char`s, 1 Unicode scalar, 4 bytes), so
+  UTF-8 byte offsets, Unicode scalar counts and Java `char` indices all
+  disagree. They run real `StandardTokenizer`, `KeywordAnalyzer`,
+  `ASCIIFoldingFilter`, `PorterStemFilter`, `NGramTokenFilter`,
+  `EdgeNGramTokenFilter` and `SynonymGraphFilter`, and are what pins
+  `OffsetAttribute`'s unit on the **write** side (the offsets `IndexWriter`
+  puts in `.pos`/`.pay`/`.tvd`). All are plain-text manifest keys, so this
+  generator is fully deterministic: `scripts/gen-fixtures.sh --only
+  GenAnalysis --out <scratch>` reproduces `analysis/manifest.properties`
+  byte for byte.

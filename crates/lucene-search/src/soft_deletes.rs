@@ -81,6 +81,116 @@ pub struct SoftDeletesField<'a> {
     pub entry: &'a NumericEntry,
 }
 
+/// Every document the soft-deletes field carries a value for, resolved in a
+/// **single pass** over the field's presence encoding.
+///
+/// This is `FieldExistsQuery.getDocValuesDocIdSetIterator(field, reader)`, the
+/// iterator `PendingSoftDeletes.applySoftDeletes` drains exactly once. Asking
+/// [`is_soft_deleted`] per document instead re-derives that presence encoding
+/// from the start of the region on every call -- for a sparse field that is a
+/// fresh `IndexedDISI` walk per document, so building a live-docs bitset that
+/// way costs `O(maxDoc * blocks)` where Java pays `O(maxDoc + cardinality)`.
+enum PresentDocs {
+    /// The field has no values at all (`docsWithFieldOffset == -2`).
+    Nothing,
+    /// Every document in `0..count` has a value (`docsWithFieldOffset == -1`).
+    Every(usize),
+    /// Exactly these documents, ascending (`IndexedDISI`).
+    These(Vec<i32>),
+}
+
+fn corrupt(what: &str) -> doc_values::Error {
+    doc_values::Error::Store(lucene_store::Error::Corrupted(format!(
+        "soft-deletes field: {what}"
+    )))
+}
+
+fn present_docs(field: &SoftDeletesField<'_>) -> Result<PresentDocs> {
+    let entry = field.entry;
+    if entry.is_empty_field() {
+        return Ok(PresentDocs::Nothing);
+    }
+    if entry.is_dense() {
+        // A dense entry's `numValues` is the field's document count. A negative
+        // one is corrupt metadata, and must not silently become "every document
+        // is soft-deleted" -- that would empty the segment.
+        let count = usize::try_from(entry.num_values)
+            .map_err(|_| corrupt(&format!("negative numValues {}", entry.num_values)))?;
+        return Ok(PresentDocs::Every(count));
+    }
+    let start = usize::try_from(entry.docs_with_field_offset).map_err(|_| {
+        corrupt(&format!(
+            "negative docsWithFieldOffset {}",
+            entry.docs_with_field_offset
+        ))
+    })?;
+    let len = usize::try_from(entry.docs_with_field_length).map_err(|_| {
+        corrupt(&format!(
+            "negative docsWithFieldLength {}",
+            entry.docs_with_field_length
+        ))
+    })?;
+    let region = field
+        .data
+        .get(start..start.saturating_add(len))
+        .ok_or_else(|| {
+            corrupt(&format!(
+                "presence region {start}..{} runs past the end of the {}-byte .dvd",
+                start.saturating_add(len),
+                field.data.len()
+            ))
+        })?;
+    Ok(PresentDocs::These(
+        lucene_codecs::indexed_disi::decode_doc_ids(region, entry.dense_rank_power)?,
+    ))
+}
+
+/// A fully-live bitset over `0..max_doc`, or a clone of the caller's hard
+/// live-docs -- the starting point both `effective_live_docs` variants clear
+/// bits out of, matching `PendingDeletes.getMutableBits()`.
+fn hard_live_bits(live_docs: Option<&FixedBitSet>, max_doc: usize) -> FixedBitSet {
+    match live_docs {
+        Some(existing) => existing.clone(),
+        None => {
+            let mut all_live = FixedBitSet::new(max_doc);
+            for i in 0..max_doc {
+                all_live.set(i);
+            }
+            all_live
+        }
+    }
+}
+
+/// Clears every document `present` covers, skipping any the caller says is
+/// shadowed by an update overlay. `PendingSoftDeletes.applySoftDeletes`'s
+/// `bits.getAndClear(docID)` loop.
+fn clear_present(
+    bits: &mut FixedBitSet,
+    present: &PresentDocs,
+    max_doc: usize,
+    skip: &dyn Fn(i32) -> bool,
+) {
+    match present {
+        PresentDocs::Nothing => {}
+        PresentDocs::Every(count) => {
+            let end = max_doc.min(*count);
+            for doc in 0..end {
+                if !skip(doc as i32) {
+                    bits.clear(doc);
+                }
+            }
+        }
+        PresentDocs::These(docs) => {
+            for &doc in docs {
+                let doc_usize = doc as usize;
+                if doc >= 0 && doc_usize < max_doc && !skip(doc) {
+                    bits.clear(doc_usize);
+                }
+            }
+        }
+    }
+}
+
 /// A single doc's soft-delete state: real Lucene's rule is *presence*, not
 /// value equality — `DocValuesFieldExistsQuery`, not a marker-value compare.
 /// A doc the field has no value for at all (sparse encoding, `numeric_value`
@@ -135,23 +245,9 @@ pub fn effective_live_docs(
         return Ok(live_docs.cloned());
     };
 
-    let mut bits = match live_docs {
-        Some(existing) => existing.clone(),
-        None => {
-            let mut all_live = FixedBitSet::new(max_doc);
-            for i in 0..max_doc {
-                all_live.set(i);
-            }
-            all_live
-        }
-    };
-
-    for doc in 0..max_doc {
-        if bits.get(doc) && is_soft_deleted(field, doc as i32)? {
-            bits.clear(doc);
-        }
-    }
-
+    let present = present_docs(field)?;
+    let mut bits = hard_live_bits(live_docs, max_doc);
+    clear_present(&mut bits, &present, max_doc, &|_| false);
     Ok(Some(bits))
 }
 
@@ -173,7 +269,7 @@ pub fn mark_soft_deleted_via_overlay(
     segment_id: &[u8; ID_LENGTH],
     segment_suffix: &str,
 ) -> Vec<u8> {
-    let updates: Vec<(i32, i64)> = docs.iter().map(|&doc| (doc, 0i64)).collect();
+    let updates: Vec<(i32, Option<i64>)> = docs.iter().map(|&doc| (doc, Some(0i64))).collect();
     doc_values_updates::write_numeric_updates(&updates, segment_id, segment_suffix)
 }
 
@@ -185,11 +281,18 @@ pub fn mark_soft_deleted_via_overlay(
 /// presence to check first.
 pub fn is_soft_deleted_with_overlay(
     field: &SoftDeletesField<'_>,
-    overlay: &HashMap<i32, i64>,
+    overlay: &HashMap<i32, Option<i64>>,
     doc: i32,
 ) -> Result<bool> {
-    if overlay.contains_key(&doc) {
-        return Ok(true);
+    match overlay.get(&doc) {
+        // A value in the overlay means "soft-deleted", same presence-based
+        // rule the base check uses.
+        Some(Some(_)) => return Ok(true),
+        // A `reset` entry (`DocValuesFieldUpdates.reset`) removes the doc's
+        // soft-deletes value, so the doc is *not* soft-deleted -- and the
+        // removal shadows whatever the base holds, so don't fall through.
+        Some(None) => return Ok(false),
+        None => {}
     }
     is_soft_deleted(field, doc)
 }
@@ -204,49 +307,29 @@ pub fn is_soft_deleted_with_overlay(
 pub fn effective_live_docs_with_overlay(
     live_docs: Option<&FixedBitSet>,
     soft_deletes: Option<&SoftDeletesField<'_>>,
-    overlay: &HashMap<i32, i64>,
+    overlay: &HashMap<i32, Option<i64>>,
     max_doc: usize,
 ) -> Result<Option<FixedBitSet>> {
-    let Some(field) = soft_deletes else {
-        if overlay.is_empty() {
-            return Ok(live_docs.cloned());
-        }
+    let present = match soft_deletes {
+        Some(field) => present_docs(field)?,
+        None if overlay.is_empty() => return Ok(live_docs.cloned()),
         // No base soft-deletes field configured, but the overlay itself
         // carries soft-delete marks (e.g. a soft-deletes field introduced
         // only via updates, never present in the base segment) -- still
         // apply them.
-        let mut bits = match live_docs {
-            Some(existing) => existing.clone(),
-            None => {
-                let mut all_live = FixedBitSet::new(max_doc);
-                for i in 0..max_doc {
-                    all_live.set(i);
-                }
-                all_live
-            }
-        };
-        for doc in 0..max_doc {
-            if bits.get(doc) && overlay.contains_key(&(doc as i32)) {
-                bits.clear(doc);
-            }
-        }
-        return Ok(Some(bits));
+        None => PresentDocs::Nothing,
     };
 
-    let mut bits = match live_docs {
-        Some(existing) => existing.clone(),
-        None => {
-            let mut all_live = FixedBitSet::new(max_doc);
-            for i in 0..max_doc {
-                all_live.set(i);
-            }
-            all_live
-        }
-    };
-
-    for doc in 0..max_doc {
-        if bits.get(doc) && is_soft_deleted_with_overlay(field, overlay, doc as i32)? {
-            bits.clear(doc);
+    let mut bits = hard_live_bits(live_docs, max_doc);
+    // The base pass skips any document the overlay speaks for: an overlay
+    // entry -- a value *or* a `reset` removal -- shadows the base entirely,
+    // matching [`is_soft_deleted_with_overlay`].
+    clear_present(&mut bits, &present, max_doc, &|doc| {
+        overlay.contains_key(&doc)
+    });
+    for (&doc, value) in overlay {
+        if value.is_some() && doc >= 0 && (doc as usize) < max_doc {
+            bits.clear(doc as usize);
         }
     }
 
@@ -708,5 +791,198 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+    /// The bulk one-pass build and the per-document check are two
+    /// implementations of the same rule, so the only thing worth asserting
+    /// about the fast one is that it is not also different -- for every
+    /// hard-delete pattern and every overlay shape, including `reset` entries.
+    #[test]
+    fn one_pass_live_docs_agree_with_the_per_document_check() {
+        let fixture = load_sparse_fixture();
+        let field = fixture.field();
+        let max_doc = 5usize;
+
+        let hard_delete_patterns: Vec<Option<Vec<usize>>> = vec![
+            None,
+            Some(vec![]),
+            Some(vec![0]),
+            Some(vec![1, 4]),
+            Some(vec![0, 1, 2, 3, 4]),
+        ];
+        let overlays: Vec<HashMap<i32, Option<i64>>> = vec![
+            HashMap::new(),
+            HashMap::from([(1, Some(0))]),
+            HashMap::from([(0, None)]),
+            HashMap::from([(0, None), (3, Some(7))]),
+            HashMap::from([(2, None), (4, None)]),
+        ];
+
+        for pattern in &hard_delete_patterns {
+            let hard = pattern.as_ref().map(|deleted| {
+                let mut bits = FixedBitSet::new(max_doc);
+                for doc in 0..max_doc {
+                    if !deleted.contains(&doc) {
+                        bits.set(doc);
+                    }
+                }
+                bits
+            });
+            for overlay in &overlays {
+                let bulk =
+                    effective_live_docs_with_overlay(hard.as_ref(), Some(&field), overlay, max_doc)
+                        .unwrap()
+                        .expect("a configured soft-deletes field always yields a bitset");
+                for doc in 0..max_doc {
+                    let hard_live = hard.as_ref().is_none_or(|b| b.get(doc));
+                    let expected = hard_live
+                        && !is_soft_deleted_with_overlay(&field, overlay, doc as i32).unwrap();
+                    assert_eq!(
+                        bulk.get(doc),
+                        expected,
+                        "doc {doc} with hard={pattern:?} overlay={overlay:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// `DocValuesFieldUpdates.reset` removes a document's soft-deletes value,
+    /// so an overlay `None` un-deletes a document the base marked -- Java's
+    /// `applySoftDeletes` `bits.getAndSet(docID)` branch.
+    #[test]
+    fn an_overlay_reset_undeletes_a_doc_the_base_marked_soft_deleted() {
+        let fixture = load_sparse_fixture();
+        let field = fixture.field();
+        // Docs 0, 2, 4 have a base value (soft-deleted); 1 and 3 do not.
+        let plain = effective_live_docs(None, Some(&field), 5).unwrap().unwrap();
+        assert!(!plain.get(0) && !plain.get(2) && !plain.get(4));
+
+        let overlay = HashMap::from([(0i32, None)]);
+        let with_reset = effective_live_docs_with_overlay(None, Some(&field), &overlay, 5)
+            .unwrap()
+            .unwrap();
+        assert!(with_reset.get(0), "the reset must make doc 0 live again");
+        assert!(!with_reset.get(2), "other docs are unaffected");
+    }
+
+    /// Deliberate divergence from Java, pinned rather than left to chance.
+    ///
+    /// `PendingSoftDeletes.applySoftDeletes` reacts to a value removal with
+    /// `bits.getAndSet(docID)` against the *combined* live-docs bitset, so in
+    /// Java a `reset` on a hard-deleted document resurrects it. A hard delete
+    /// is not recoverable through a doc-values update in any real writer flow
+    /// (`IndexWriter` never emits that pair), so this port keeps the stronger
+    /// invariant instead: a `.liv`-deleted document stays deleted whatever the
+    /// soft-deletes field says.
+    #[test]
+    fn an_overlay_reset_never_resurrects_a_hard_deleted_doc() {
+        let fixture = load_sparse_fixture();
+        let field = fixture.field();
+        let mut hard = FixedBitSet::new(5);
+        for doc in [1usize, 2, 3, 4] {
+            hard.set(doc); // doc 0 is hard-deleted
+        }
+        let overlay = HashMap::from([(0i32, None)]);
+        let live = effective_live_docs_with_overlay(Some(&hard), Some(&field), &overlay, 5)
+            .unwrap()
+            .unwrap();
+        assert!(
+            !live.get(0),
+            "a hard-deleted doc must stay deleted through a soft-delete reset"
+        );
+    }
+
+    /// A *dense* soft-deletes field has a value for every document, so every
+    /// document is soft-deleted -- the degenerate "fully deleted segment"
+    /// `PendingSoftDeletes.isFullyDeleted` exists to recognise. The sparse
+    /// fixture can't express this shape, so it is built directly.
+    #[test]
+    fn a_dense_soft_deletes_field_marks_every_doc() {
+        let mut entry = load_sparse_fixture().entry;
+        entry.docs_with_field_offset = -1; // dense
+        entry.docs_with_field_length = 0;
+        entry.num_values = 5;
+        let fixture = SparseFixture {
+            data: load_sparse_fixture().data,
+            entry,
+        };
+        let field = fixture.field();
+        let live = effective_live_docs(None, Some(&field), 5).unwrap().unwrap();
+        for doc in 0..5 {
+            assert!(!live.get(doc), "doc {doc} must be soft-deleted");
+        }
+        // An overlay reset still wins over a dense base value.
+        let overlay = HashMap::from([(3i32, None)]);
+        let with_reset = effective_live_docs_with_overlay(None, Some(&field), &overlay, 5)
+            .unwrap()
+            .unwrap();
+        assert!(with_reset.get(3));
+    }
+
+    /// An empty soft-deletes field (`docsWithFieldOffset == -2`: the field
+    /// exists in the metadata but no document has a value) deletes nothing.
+    #[test]
+    fn an_empty_soft_deletes_field_marks_nothing() {
+        let mut entry = load_sparse_fixture().entry;
+        entry.docs_with_field_offset = -2; // empty
+        entry.docs_with_field_length = 0;
+        let fixture = SparseFixture {
+            data: Vec::new(),
+            entry,
+        };
+        let live = effective_live_docs(None, Some(&fixture.field()), 5)
+            .unwrap()
+            .unwrap();
+        for doc in 0..5 {
+            assert!(live.get(doc));
+        }
+    }
+
+    /// An overlay entry outside `0..max_doc` is ignored rather than panicking
+    /// on an out-of-range bitset index -- a caller can hold overlay records for
+    /// a segment it later reopened at a smaller `max_doc`.
+    #[test]
+    fn overlay_entries_outside_the_doc_range_are_ignored() {
+        let fixture = load_sparse_fixture();
+        let overlay = HashMap::from([(99i32, Some(1i64)), (-1i32, Some(1i64))]);
+        let live = effective_live_docs_with_overlay(None, Some(&fixture.field()), &overlay, 5)
+            .unwrap()
+            .unwrap();
+        assert_eq!(live.len(), 5);
+    }
+
+    /// A corrupt `docsWithFieldOffset`/`length` pair (pointing past the end of
+    /// the `.dvd`) must be a typed error, not a panic or a silently empty
+    /// live-docs set.
+    /// A negative `numValues` on a dense entry is corrupt metadata. It must be
+    /// a typed error, not "every document is soft-deleted" -- that turn of a
+    /// bad byte into an empty segment is exactly the silent data loss the
+    /// `Corrupted` error exists to prevent.
+    #[test]
+    fn a_negative_dense_doc_count_is_an_error_not_a_fully_deleted_segment() {
+        let mut entry = load_sparse_fixture().entry;
+        entry.docs_with_field_offset = -1; // dense
+        entry.num_values = -7;
+        let fixture = SparseFixture {
+            data: Vec::new(),
+            entry,
+        };
+        let err = effective_live_docs(None, Some(&fixture.field()), 5).unwrap_err();
+        assert!(
+            format!("{err}").contains("numValues"),
+            "expected a corruption error naming the field, got: {err}"
+        );
+    }
+
+    #[test]
+    fn a_presence_region_past_the_end_of_the_data_is_an_error() {
+        let mut entry = load_sparse_fixture().entry;
+        entry.docs_with_field_offset = 1 << 40;
+        entry.docs_with_field_length = 16;
+        let fixture = SparseFixture {
+            data: vec![0u8; 8],
+            entry,
+        };
+        assert!(effective_live_docs(None, Some(&fixture.field()), 5).is_err());
     }
 }

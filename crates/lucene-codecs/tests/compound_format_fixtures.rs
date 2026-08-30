@@ -1,6 +1,11 @@
 //! Differential test against a real `.cfs`/`.cfe` pair written by an actual
 //! IndexWriter with `useCompoundFile=true`. Regenerate with
 //! fixtures/src/GenCompoundFormat.java.
+// Test-support code opts out of the arithmetic gate at the file boundary:
+// the gate exists for values read off disk in production decode paths, not
+// for a fixture builder's own index arithmetic. See
+// `docs/arithmetic-gate.md`.
+#![allow(clippy::arithmetic_side_effects)]
 
 use lucene_codecs::compound_format;
 use lucene_store::codec_util::ID_LENGTH;

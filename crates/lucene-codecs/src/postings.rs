@@ -297,10 +297,14 @@ pub fn decode_term_metadata(
         if prev.singleton_doc_id == -1 {
             return Err(Error::NoPreviousSingleton);
         }
+        // Zigzag-decoded off disk, so the addition itself can overflow `i64`
+        // on a corrupt `.tim`: wrap rather than panic in a debug build, the
+        // same rule the `doc_start_fp`/`pos_start_fp` accumulators above
+        // already follow.
         let delta = lucene_util::zigzag::decode(l >> 1);
         (
             prev.doc_start_fp,
-            (prev.singleton_doc_id as i64 + delta) as i32,
+            (prev.singleton_doc_id as i64).wrapping_add(delta) as i32,
         )
     };
 
@@ -449,7 +453,11 @@ pub fn decode_impacts_into(bytes: &[u8], impacts: &mut Impacts) -> Result<()> {
     impacts.clear();
     while r.position() < bytes.len() {
         let freq_delta = r.read_vint()?;
-        freq = freq.wrapping_add(1 + ((freq_delta as u32) >> 1) as i32);
+        // `1 + (freqDelta >>> 1)` is `int` arithmetic in Java's `readImpacts`
+        // and wraps; `(freq_delta as u32) >> 1` reaches `i32::MAX` from a
+        // five-byte varint with the sign bit set, so the `1 +` itself is an
+        // overflow on a corrupt `.doc` before the accumulator even sees it.
+        freq = freq.wrapping_add(1i32.wrapping_add(((freq_delta as u32) >> 1) as i32));
         if freq_delta & 1 != 0 {
             norm = norm.wrapping_add(1i64.wrapping_add(r.read_zlong()?));
         } else {
@@ -458,6 +466,41 @@ pub fn decode_impacts_into(bytes: &[u8], impacts: &mut Impacts) -> Result<()> {
         impacts.push(Impact { freq, norm });
     }
     Ok(())
+}
+
+/// The part of `PostingsEnum`'s feature-flag mask a `.doc` decoder can act
+/// on.
+///
+/// Java's `PostingsEnum` exposes six constants -- `NONE`, `FREQS`,
+/// `POSITIONS`, `OFFSETS`, `PAYLOADS`, `ALL` -- but they form a chain:
+/// `POSITIONS` subsumes `FREQS`, `OFFSETS` and `PAYLOADS` subsume
+/// `POSITIONS`, and `NONE` is `DOCS`. `Lucene104PostingsReader` derives
+/// exactly one boolean from that mask before it touches `.doc`
+/// (`needsFreq = indexHasFreq && featureRequested(flags, FREQS)`); the rest
+/// gate `.pos`/`.pay`, which in this port are a separate call
+/// ([`read_positions`]) a docs-only caller simply does not make. So this
+/// enum is that one boolean, named after the flags it stands for rather
+/// than after its implementation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PostingsFlags {
+    /// `PostingsEnum.NONE` / `PostingsEnum.DOCS`: doc ids only. Every
+    /// returned frequency is `1`, and the `.doc` file's frequency blocks are
+    /// stepped over (`PForUtil.skip`) instead of unpacked.
+    ///
+    /// This is what a constant-score query, an `Occur::FILTER`-shaped clause,
+    /// a `TermInSetQuery` and a delete-by-term resolution all want: they read
+    /// doc ids and never call `freq()`.
+    DocsOnly,
+    /// `PostingsEnum.FREQS` and every flag above it: frequencies are decoded.
+    #[default]
+    Freqs,
+}
+
+impl PostingsFlags {
+    /// `PostingsEnum.featureRequested(flags, PostingsEnum.FREQS)`.
+    fn needs_freq(self) -> bool {
+        matches!(self, PostingsFlags::Freqs)
+    }
 }
 
 /// An opened `.doc` file (header/footer validated once), ready for
@@ -507,6 +550,28 @@ impl<'a> DocInput<'a> {
         index_options: IndexOptions,
         has_payloads: bool,
     ) -> Result<Postings> {
+        self.read_postings_with_flags(
+            meta,
+            doc_freq,
+            index_options,
+            has_payloads,
+            PostingsFlags::Freqs,
+        )
+    }
+
+    /// [`Self::read_postings`] with the consumer's `PostingsEnum` flags:
+    /// [`PostingsFlags::DocsOnly`] makes every frequency block on the wire a
+    /// `PForUtil.skip` instead of a 256-value unpack, and leaves
+    /// [`Postings::freqs`] filled with `1`.
+    pub fn read_postings_with_flags(
+        &self,
+        meta: TermMetadata,
+        doc_freq: i32,
+        index_options: IndexOptions,
+        has_payloads: bool,
+        flags: PostingsFlags,
+    ) -> Result<Postings> {
+        let needs_freq = flags.needs_freq();
         if doc_freq <= 1 {
             return Err(Error::Unsupported(
                 "docFreq <= 1: use singleton_postings instead (no .doc bytes are written)",
@@ -531,7 +596,15 @@ impl<'a> DocInput<'a> {
         let mut r = SliceInput::new(self.buf);
         r.seek(meta.doc_start_fp as usize)?;
 
-        let n = doc_freq as usize;
+        // `doc_freq` is read out of the term dictionary, so it must not size
+        // an allocation on its own (the `doc_freq <= 1` guard above is what
+        // makes the `as usize` cast itself non-negative): a corrupt one turns `with_capacity` into
+        // an abort (allocation failure is not a catchable error), which
+        // through the FFI is a dead JVM. Capping the reservation at the
+        // `.doc` file's own length keeps every real term a single allocation
+        // -- a document never costs less than a byte outside a packed block
+        // -- and a dense block simply grows the `Vec` once.
+        let n = (doc_freq as usize).min(self.buf.len());
         let mut docs = Vec::with_capacity(n);
         let mut freqs = Vec::with_capacity(n);
         let mut level0_impacts: Vec<(i32, Impacts)> = Vec::new();
@@ -568,9 +641,10 @@ impl<'a> DocInput<'a> {
                 index_has_pos,
                 index_has_offsets_or_payloads,
             )?;
-            level1_last_doc_id += entry.doc_delta;
+            // Off disk; see `read_full_block_header`'s `doc_delta`.
+            level1_last_doc_id = level1_last_doc_id.wrapping_add(entry.doc_delta);
             if index_has_freq {
-                level1_impacts.push((level1_last_doc_id, entry.impacts));
+                level1_impacts.push((level1_last_doc_id, decode_impacts(entry.impact_bytes)?));
             }
             for _ in 0..LEVEL1_FACTOR {
                 let header = read_full_block_header(
@@ -584,18 +658,27 @@ impl<'a> DocInput<'a> {
                     &mut r,
                     prev_doc_id,
                     index_has_freq,
+                    needs_freq,
                     &mut scratch,
                     &mut block_docs,
                     &mut block_freqs,
                 )?;
-                debug_assert_eq!(r.position(), header.body_end);
+                check_wire_position(r.position(), header.body_end, "full block body")?;
                 prev_doc_id = header.last_doc_id;
                 if index_has_freq {
                     level0_impacts.push((header.last_doc_id, decode_impacts(header.impact_bytes)?));
                 }
                 docs.extend_from_slice(&block_docs);
                 freqs.extend_from_slice(&block_freqs);
-                doc_count_left -= BLOCK_SIZE;
+                // ARITH: the enclosing `while` runs only while
+                // `doc_count_left >= LEVEL1_NUM_DOCS`, and `LEVEL1_NUM_DOCS ==
+                // LEVEL1_FACTOR * BLOCK_SIZE` is exactly what this inner
+                // `for _ in 0..LEVEL1_FACTOR` subtracts, so the counter is
+                // still `>= 0` after the last of the 32 iterations.
+                #[allow(clippy::arithmetic_side_effects)]
+                {
+                    doc_count_left -= BLOCK_SIZE;
+                }
             }
         }
 
@@ -611,27 +694,44 @@ impl<'a> DocInput<'a> {
                 &mut r,
                 prev_doc_id,
                 index_has_freq,
+                needs_freq,
                 &mut scratch,
                 &mut block_docs,
                 &mut block_freqs,
             )?;
-            debug_assert_eq!(r.position(), header.body_end);
+            check_wire_position(r.position(), header.body_end, "full block body")?;
             prev_doc_id = header.last_doc_id;
             if index_has_freq {
                 level0_impacts.push((header.last_doc_id, decode_impacts(header.impact_bytes)?));
             }
             docs.extend_from_slice(&block_docs);
             freqs.extend_from_slice(&block_freqs);
-            doc_count_left -= BLOCK_SIZE;
+            // ARITH: the enclosing `while` runs only while
+            // `doc_count_left >= BLOCK_SIZE`.
+            #[allow(clippy::arithmetic_side_effects)]
+            {
+                doc_count_left -= BLOCK_SIZE;
+            }
         }
         if doc_count_left > 0 {
+            let start = docs.len();
+            let count = doc_count_left as usize;
+            // ARITH: both loops above ran until `doc_count_left < BLOCK_SIZE`,
+            // so `count < 256`; `start` is the length of a live `Vec<i32>`,
+            // which is at most `isize::MAX / 4`. The sum cannot reach
+            // `usize::MAX`.
+            #[allow(clippy::arithmetic_side_effects)]
+            let end = start + count;
+            debug_assert!(count < BLOCK_SIZE as usize);
+            docs.resize(end, 0);
+            freqs.resize(end, 1);
             read_tail_block(
                 &mut r,
                 prev_doc_id,
-                doc_count_left as usize,
                 index_has_freq,
-                &mut docs,
-                &mut freqs,
+                needs_freq,
+                &mut docs[start..],
+                &mut freqs[start..],
             )?;
         }
 
@@ -659,6 +759,27 @@ impl<'a> DocInput<'a> {
         doc_freq: i32,
         index_options: IndexOptions,
         has_payloads: bool,
+    ) -> Result<LazyDocsCursor<'a>> {
+        self.lazy_cursor_with_flags(
+            meta,
+            doc_freq,
+            index_options,
+            has_payloads,
+            PostingsFlags::Freqs,
+        )
+    }
+
+    /// [`Self::lazy_cursor`] with the consumer's `PostingsEnum` flags: with
+    /// [`PostingsFlags::DocsOnly`] every refilled block skips its frequency
+    /// block instead of unpacking it, and [`LazyDocsCursor::freq`] always
+    /// answers `1`.
+    pub fn lazy_cursor_with_flags(
+        &self,
+        meta: TermMetadata,
+        doc_freq: i32,
+        index_options: IndexOptions,
+        has_payloads: bool,
+        flags: PostingsFlags,
     ) -> Result<LazyDocsCursor<'a>> {
         if doc_freq <= 1 {
             return Err(Error::Unsupported(
@@ -696,6 +817,7 @@ impl<'a> DocInput<'a> {
         Ok(LazyDocsCursor {
             r,
             index_has_freq: index_options != IndexOptions::Docs,
+            needs_freq: flags.needs_freq(),
             index_has_pos: index_options.subsumes_positions(),
             index_has_offsets_or_payloads: index_options.subsumes_offsets() || has_payloads,
             doc_freq,
@@ -714,6 +836,24 @@ impl<'a> DocInput<'a> {
             level0_last_doc_id: -1,
             level0_impacts: Impacts::new(),
             level1_impacts: Impacts::new(),
+            // `BlockPostingsEnum.reset` (`Lucene104PostingsReader.java:
+            // 517-525`): both levels start at the term's own `.pos`/`.pay`
+            // start, with nothing consumed.
+            level0_pos: PosCursorState {
+                pos_fp: meta.pos_start_fp,
+                pay_fp: meta.pay_start_fp,
+                pos_buffer_upto: 0,
+            },
+            level1_pos: PosCursorState {
+                pos_fp: meta.pos_start_fp,
+                pay_fp: meta.pay_start_fp,
+                pos_buffer_upto: 0,
+            },
+            block_pos_origin: PosCursorState {
+                pos_fp: meta.pos_start_fp,
+                pay_fp: meta.pay_start_fp,
+                pos_buffer_upto: 0,
+            },
         })
     }
 }
@@ -826,12 +966,22 @@ fn decode_position_streams(
         r.seek(meta.pay_start_fp as usize)?;
     }
 
-    let n = total_term_freq as usize;
-    let mut pos_deltas: Vec<i32> = Vec::with_capacity(n);
-    let mut payload_lengths: Vec<i32> = Vec::with_capacity(if has_payloads { n } else { 0 });
+    let n = wire_count(total_term_freq, "total_term_freq")?;
+    // `total_term_freq` comes off disk, so it sizes nothing directly:
+    // `with_capacity(n)` on a corrupt term dictionary is an allocation of
+    // arbitrary size, which fails by *aborting* the process rather than by
+    // returning an error -- through the FFI, a dead JVM with no exception.
+    // Reserving at most one entry per byte of `.pos` keeps the real case a
+    // single allocation (a position never costs less than a byte in the vint
+    // tail) and the corrupt case bounded by a file that actually exists; a
+    // genuinely denser packed block just grows the `Vec` once more.
+    let reserve = n.min(pos.buf.len());
+    let mut pos_deltas: Vec<i32> = Vec::with_capacity(reserve);
+    let mut payload_lengths: Vec<i32> = Vec::with_capacity(if has_payloads { reserve } else { 0 });
     let mut payload_bytes: Vec<u8> = Vec::new();
-    let mut offset_start_deltas: Vec<i32> = Vec::with_capacity(if has_offsets { n } else { 0 });
-    let mut offset_lengths: Vec<i32> = Vec::with_capacity(if has_offsets { n } else { 0 });
+    let mut offset_start_deltas: Vec<i32> =
+        Vec::with_capacity(if has_offsets { reserve } else { 0 });
+    let mut offset_lengths: Vec<i32> = Vec::with_capacity(if has_offsets { reserve } else { 0 });
 
     // `meta.last_pos_block_offset` (already decoded by `decode_term_metadata`)
     // tells us exactly where the vint tail block begins on the wire, which is
@@ -839,8 +989,7 @@ fn decode_position_streams(
     // real reader's `posIn.getFilePointer() == lastPosBlockFP` check) simply
     // computing how many full 256-position blocks precede it from
     // `total_term_freq` itself.
-    let num_full_blocks = n / BLOCK_SIZE as usize;
-    let tail_count = n % BLOCK_SIZE as usize;
+    let (num_full_blocks, tail_count) = full_blocks_and_tail(n);
 
     // `.pay` is only ever touched by full PForUtil blocks (the vint tail's
     // payload bytes live inline in `.pos`, see below) -- so a term whose
@@ -864,9 +1013,12 @@ fn decode_position_streams(
                 .expect("checked above: has_payloads implies pay.is_some()");
             let mut lens = [0u32; for_util::BLOCK_SIZE];
             for_util::pfor_decode(pay_r, &mut lens)?;
-            let num_bytes = pay_r.read_vint()? as usize;
+            // `read_length`, not `read_vint as usize`: a negative or
+            // longer-than-the-file byte count would otherwise size the
+            // `resize` below straight off disk.
+            let num_bytes = pay_r.read_length("payload block")?;
             let start = payload_bytes.len();
-            payload_bytes.resize(start + num_bytes, 0);
+            payload_bytes.resize(add_wire_offset(start, num_bytes)?, 0);
             pay_r.read_bytes(&mut payload_bytes[start..])?;
             payload_lengths.extend(lens.iter().map(|&l| l as i32));
         }
@@ -899,10 +1051,23 @@ fn decode_position_streams(
                 if code & 1 != 0 {
                     last_payload_length = pos_r.read_vint()?;
                 }
-                pos_deltas.push(code >> 1);
+                // `code >>> 1`; see `refill_last_position_block`. The two
+                // decoders are asserted equivalent by
+                // `postings_wanted_docs.rs`, so they must agree here too.
+                pos_deltas.push(((code as u32) >> 1) as i32);
                 if last_payload_length != 0 {
+                    // Read off disk as a plain vint, so negative and absurd
+                    // are both reachable: bound it by the bytes that are
+                    // actually there before it sizes an allocation.
+                    let len = wire_length(last_payload_length as i64, "tail payload")?;
+                    if len > pos_r.remaining() {
+                        return Err(corrupted(format!(
+                            "tail payload length {len} exceeds {} remaining .pos bytes",
+                            pos_r.remaining()
+                        )));
+                    }
                     let start = payload_bytes.len();
-                    payload_bytes.resize(start + last_payload_length as usize, 0);
+                    payload_bytes.resize(add_wire_offset(start, len)?, 0);
                     pos_r.read_bytes(&mut payload_bytes[start..])?;
                 }
                 payload_lengths.push(last_payload_length);
@@ -915,7 +1080,7 @@ fn decode_position_streams(
                 if delta_code & 1 != 0 {
                     last_offset_length = pos_r.read_vint()?;
                 }
-                offset_start_deltas.push(delta_code >> 1);
+                offset_start_deltas.push(((delta_code as u32) >> 1) as i32);
                 offset_lengths.push(last_offset_length);
             }
         }
@@ -959,9 +1124,21 @@ pub fn read_positions_flat(
     let streams =
         decode_position_streams(pos, pay, meta, total_term_freq, index_options, has_payloads)?;
     let pos_deltas = streams.pos_deltas;
-    let n = total_term_freq as usize;
+    // `wire_count`, not `as usize`: a negative `totalTermFreq` sign-extends to
+    // ~2^64 and would make the `idx != n` reconciliation below unsatisfiable
+    // in a way that reads as "fewer occurrences than claimed" rather than as
+    // the corrupt term dictionary it is. `decode_position_streams` rejects it
+    // too, but this file's rule is that the check lives where the value is
+    // used, not two calls away.
+    let n = wire_count(total_term_freq, "total_term_freq")?;
 
-    let mut positions: Vec<i32> = Vec::with_capacity(n);
+    // Capped for the same reason [`decode_position_streams`] caps its own
+    // reservations: `n` is `total_term_freq` off disk.
+    let mut positions: Vec<i32> = Vec::with_capacity(n.min(pos_deltas.len()));
+    // ARITH: `freqs` is a live slice, so `freqs.len() <= isize::MAX` and the
+    // `+ 1` cannot reach `usize::MAX`. `freqs` is this port's own decoded
+    // `Postings::freqs`, not a length read off disk.
+    #[allow(clippy::arithmetic_side_effects)]
     let mut doc_starts: Vec<u32> = Vec::with_capacity(freqs.len() + 1);
     let mut idx = 0usize;
     for &freq in freqs {
@@ -979,9 +1156,20 @@ pub fn read_positions_flat(
                     "sum of per-doc freqs exceeds total_term_freq".into(),
                 )));
             }
-            position += pos_deltas[idx];
+            // `wrapping_add`, like [`SinkCursor::emit`]: the delta is a
+            // `.pos` file value widened from `u32`, so a corrupt block
+            // overflows the accumulator, and an overflow panic in a debug
+            // build of the FFI takes the JVM down. Java accumulates in an
+            // `int` and wraps.
+            position = position.wrapping_add(pos_deltas[idx]);
             positions.push(position);
-            idx += 1;
+            // ARITH: the guard three lines up returned unless
+            // `idx < pos_deltas.len()`, and a live slice's length is at most
+            // `isize::MAX`.
+            #[allow(clippy::arithmetic_side_effects)]
+            {
+                idx += 1;
+            }
         }
     }
     doc_starts.push(positions.len() as u32);
@@ -993,26 +1181,917 @@ pub fn read_positions_flat(
     Ok((positions, doc_starts))
 }
 
-/// [`read_positions_flat`] restricted to the documents a caller will actually
-/// look at, given as sorted indices into `freqs`.
+/// Where one wanted document's occurrences sit in a term's flat,
+/// `total_term_freq`-long occurrence stream: `[from, to)`.
+type OccurrenceRange = (usize, usize);
+
+/// What a [`walk_wanted_occurrences`] pass keeps of each occurrence it reaches.
 ///
-/// Phrase matching only ever needs positions for documents in the intersection
-/// of its terms' posting lists, which is a fraction of any one term's. Building
-/// them all is wasted: on the M1 corpus `phrase t0 t1` materialized every
-/// position of `t0` -- roughly 15 million, 60 MB -- to look at the 2.2 million
-/// documents the intersection actually contains.
+/// Two implementations, monomorphized so neither pays for the other's work:
+/// [`PositionsOnly`] for phrase matching, [`FullOccurrences`] for
+/// highlighting. `NEEDS_EXTRAS` decides whether `.pay`'s offset and payload
+/// blocks are unpacked or stepped over with `PForUtil.skip`, which is the same
+/// job `PostingsEnum`'s flag mask does one level up in Java.
+trait OccurrenceSink {
+    /// Whether this sink reads offsets and payloads at all.
+    const NEEDS_EXTRAS: bool;
+
+    /// A wanted document is starting. Issued exactly once per entry in
+    /// `wanted`, in `wanted` order, before any of that document's
+    /// occurrences -- including for entries that turn out to have none, so
+    /// the per-document index stays aligned with `wanted`.
+    fn open_doc(&mut self);
+
+    /// One occurrence of the document currently open. `start_offset`/
+    /// `end_offset` are `-1` and `payload` is empty where the field does not
+    /// index them (or the sink did not ask), matching
+    /// `PostingsEnum.startOffset`'s and `getPayload`'s own no-data contracts.
+    fn push(&mut self, position: i32, start_offset: i32, end_offset: i32, payload: &[u8]);
+}
+
+/// [`OccurrenceSink`] for phrase matching: positions in one flat `Vec`, with
+/// per-document start indices. No offsets, no payloads, no per-document
+/// container.
+#[derive(Debug)]
+struct PositionsOnly {
+    positions: Vec<i32>,
+    doc_starts: Vec<u32>,
+}
+
+impl OccurrenceSink for PositionsOnly {
+    const NEEDS_EXTRAS: bool = false;
+
+    #[inline]
+    fn open_doc(&mut self) {
+        self.doc_starts.push(self.positions.len() as u32);
+    }
+
+    #[inline]
+    fn push(&mut self, position: i32, _start_offset: i32, _end_offset: i32, _payload: &[u8]) {
+        self.positions.push(position);
+    }
+}
+
+/// [`OccurrenceSink`] for highlighting: whole [`Position`] records --
+/// `nextPosition()`, `startOffset()`, `endOffset()`, `getPayload()` -- in the
+/// same flat shape.
+#[derive(Debug)]
+struct FullOccurrences {
+    occurrences: Vec<Position>,
+    doc_starts: Vec<u32>,
+}
+
+impl OccurrenceSink for FullOccurrences {
+    const NEEDS_EXTRAS: bool = true;
+
+    #[inline]
+    fn open_doc(&mut self) {
+        self.doc_starts.push(self.occurrences.len() as u32);
+    }
+
+    #[inline]
+    fn push(&mut self, position: i32, start_offset: i32, end_offset: i32, payload: &[u8]) {
+        self.occurrences.push(Position {
+            position,
+            start_offset,
+            end_offset,
+            payload: payload.to_vec(),
+        });
+    }
+}
+
+/// The walk's position within `wanted`: which range is being collected,
+/// whether its [`OccurrenceSink::open_doc`] has been issued yet, and the
+/// per-document position/offset accumulators.
 ///
-/// `wanted` must be sorted and in range; out-of-range indices are ignored, and
-/// duplicates simply emit the same document twice. Returns `(positions,
-/// doc_starts)` addressed by position *within `wanted`*: `wanted[i]`'s
-/// positions are `positions[doc_starts[i]..doc_starts[i + 1]]`.
+/// Both accumulators reset at each document's *first* occurrence, never
+/// across a document boundary -- the read-side mirror of
+/// `Lucene104PostingsWriter.startDoc`'s `lastPosition = 0; lastStartOffset =
+/// 0;`. That reset is also what makes skipping documents sound: a document's
+/// positions and offsets are self-contained, so nothing carried over from the
+/// documents this pass skipped is needed to decode the ones it keeps.
+struct SinkCursor {
+    /// Index into the range list of the document being collected.
+    w: usize,
+    /// Whether `open_doc` has already been issued for `w`.
+    open: bool,
+    position: i32,
+    offset: i32,
+}
+
+impl SinkCursor {
+    fn new() -> Self {
+        SinkCursor {
+            w: 0,
+            open: false,
+            position: 0,
+            offset: 0,
+        }
+    }
+
+    /// Brings the cursor to occurrence `g`: closes every range that ends at
+    /// or before it (issuing the `open_doc` of any that never got one, so a
+    /// wanted document with no occurrences still takes its slot), then opens
+    /// the next range once `g` reaches its first occurrence.
+    #[inline]
+    fn sync<S: OccurrenceSink>(&mut self, sink: &mut S, ranges: &[OccurrenceRange], g: usize) {
+        while self.w < ranges.len() && ranges[self.w].1 <= g {
+            if !self.open {
+                sink.open_doc();
+            }
+            // ARITH: the loop condition established `self.w < ranges.len()`,
+            // and a live slice's length is at most `isize::MAX`.
+            #[allow(clippy::arithmetic_side_effects)]
+            {
+                self.w += 1;
+            }
+            self.open = false;
+        }
+        if self.w < ranges.len() && !self.open && g >= ranges[self.w].0 {
+            sink.open_doc();
+            self.open = true;
+            self.position = 0;
+            self.offset = 0;
+        }
+    }
+
+    /// Accumulates one occurrence's deltas and hands the absolute values to
+    /// the sink. `offsets` is `None` when the field has no offsets or the
+    /// sink did not ask for them.
+    #[inline]
+    fn emit<S: OccurrenceSink>(
+        &mut self,
+        sink: &mut S,
+        position_delta: i32,
+        offsets: Option<(i32, i32)>,
+        payload: &[u8],
+    ) {
+        // `wrapping_add`, not `+`: every one of these deltas is a file value,
+        // so a corrupt `.pos`/`.pay` can overflow the accumulator, and an
+        // overflow panic in a debug build of the FFI takes the JVM down.
+        // Java accumulates in an `int` and wraps silently; a wrapped position
+        // is a wrong answer for a corrupt file, not a crash.
+        self.position = self.position.wrapping_add(position_delta);
+        let (start_offset, end_offset) = match offsets {
+            Some((start_delta, length)) => {
+                self.offset = self.offset.wrapping_add(start_delta);
+                (self.offset, self.offset.wrapping_add(length))
+            }
+            None => (-1, -1),
+        };
+        sink.push(self.position, start_offset, end_offset, payload);
+    }
+
+    /// Issues the `open_doc` of every range the stream never reached, so the
+    /// per-document index always has one entry per `wanted` entry.
+    fn finish<S: OccurrenceSink>(&mut self, sink: &mut S, ranges: &[OccurrenceRange]) {
+        while self.w < ranges.len() {
+            if !self.open {
+                sink.open_doc();
+            }
+            // ARITH: the loop condition established `self.w < ranges.len()`,
+            // and a live slice's length is at most `isize::MAX`.
+            #[allow(clippy::arithmetic_side_effects)]
+            {
+                self.w += 1;
+            }
+            self.open = false;
+        }
+    }
+}
+
+/// Each `wanted` entry's occurrence range, in `wanted` order, plus the
+/// validation that `freqs` and `total_term_freq` agree.
 ///
-/// Still decodes the whole `.pos` stream -- positions are delta-coded per
-/// document with no way to find one without the running frequency sum, which is
-/// why Lucene's own `skipPositions` also decodes and discards. What this avoids
-/// is *materializing* them. A cursor that decodes block-at-a-time into a
-/// reusable buffer would avoid the intermediate too; that is the lazy positions
-/// cursor still filed in `docs/sweep/findings.md`.
+/// One pass over `freqs`, accumulating as it goes and emitting a range each
+/// time it reaches the next `wanted` index. The prefix-sum array this
+/// replaced was `docFreq + 1` entries long whatever the caller asked for --
+/// 20 MB for a five-million-document term, to answer a question about one
+/// document. Java needs neither: `.doc`'s skip data carries the `.pos` file
+/// pointers, so `advance` never sums a frequency at all (see
+/// [`walk_wanted_occurrences`]).
+///
+/// An entry the doc list does not have, or one that is not strictly after the
+/// entry before it (an unsorted or repeated `wanted`), gets an empty range at
+/// the current watermark: it keeps its slot in the result and contributes
+/// nothing. The alternative -- indexing a prefix-sum array by whatever the
+/// caller passed -- is an out-of-bounds panic on a caller's mistake, which is
+/// what this used to be.
+///
+/// `freqs` is decoded from `.doc` and `n` comes from the term dictionary;
+/// nothing on the wire makes them agree, so their disagreement is a decode
+/// error rather than an index past the end of something.
+fn wanted_ranges(wanted: &[usize], freqs: &[i32], n: usize) -> Result<Vec<OccurrenceRange>> {
+    #[inline]
+    fn add(acc: &mut u64, freq: i32, n: usize) -> Result<()> {
+        if freq < 0 {
+            return Err(corrupted(format!("negative per-doc frequency {freq}")));
+        }
+        // ARITH: on entry `*acc <= n <= u32::MAX` (the check below returned
+        // otherwise, and `n` came through `wire_count`), and `freq` is a
+        // non-negative `i32`, so the sum is under 2^33.
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            *acc += freq as u64;
+        }
+        if *acc > n as u64 {
+            return Err(corrupted(
+                "sum of per-doc freqs disagrees with total_term_freq",
+            ));
+        }
+        Ok(())
+    }
+
+    let mut ranges = Vec::with_capacity(wanted.len());
+    // Frequencies of `freqs[..next]` are already in `acc`.
+    let mut acc: u64 = 0;
+    let mut next = 0usize;
+    let mut watermark = 0usize;
+    for &d in wanted {
+        let range = if d < freqs.len() && d >= next {
+            for &freq in &freqs[next..d] {
+                add(&mut acc, freq, n)?;
+            }
+            next = d;
+            let freq = freqs[d];
+            if freq < 0 {
+                return Err(corrupted(format!("negative per-doc frequency {freq}")));
+            }
+            // `acc + freq` is where this document's occurrences end. It is
+            // checked against `n` here rather than only later, when the
+            // running sum reaches `freqs[d]` -- both because a `usize` on a
+            // 32-bit target has no room to spare above `n` (`wire_count` caps
+            // `n` at `u32::MAX`, which is `usize::MAX` there), and because a
+            // wrapped end is a silently wrong occurrence range rather than a
+            // crash.
+            let from = acc as usize;
+            let to = acc
+                .checked_add(freq as u64)
+                .filter(|&to| to <= n as u64)
+                .ok_or_else(|| corrupted("sum of per-doc freqs disagrees with total_term_freq"))?;
+            (from, to as usize)
+        } else {
+            (watermark, watermark)
+        };
+        let range = if range.0 >= watermark {
+            range
+        } else {
+            (watermark, watermark)
+        };
+        watermark = range.1;
+        ranges.push(range);
+    }
+    // Finish the sum, so a frequency list that disagrees with
+    // `total_term_freq` is still rejected even when nothing after the last
+    // wanted document was needed.
+    for &freq in &freqs[next..] {
+        add(&mut acc, freq, n)?;
+    }
+    if acc != n as u64 {
+        return Err(corrupted(
+            "sum of per-doc freqs disagrees with total_term_freq",
+        ));
+    }
+    Ok(ranges)
+}
+
+/// Steps over one full 256-occurrence block of `.pos` (and its `.pay`
+/// companions) without unpacking anything: `PForUtil.skip` reads the token
+/// byte and seeks past the packed body, where a decode would bit-unpack 256
+/// values.
+///
+/// This is the block-level half of what makes a wanted-documents walk cheap.
+/// The occurrence-level half is that a skipped block's positions are never
+/// needed: positions and offsets restart at every document's first
+/// occurrence, so nothing decoded here would have been carried forward.
+fn skip_position_block(
+    pos_r: &mut SliceInput,
+    pay_r: Option<&mut SliceInput>,
+    has_payloads: bool,
+    has_offsets: bool,
+) -> Result<()> {
+    for_util::pfor_skip(pos_r)?;
+    if !has_payloads && !has_offsets {
+        return Ok(());
+    }
+    let r = pay_r.expect("checked by the caller: .pay is opened for offsets or payloads");
+    if has_payloads {
+        for_util::pfor_skip(r)?;
+        let num_bytes = r.read_length("payload block")?;
+        r.skip(num_bytes)?;
+    }
+    if has_offsets {
+        for_util::pfor_skip(r)?;
+        for_util::pfor_skip(r)?;
+    }
+    Ok(())
+}
+
+/// What a position walk asks of each block: which of `.pos`/`.pay`'s streams
+/// exist on the wire, and which of them this walk actually unpacks.
+///
+/// The `has_*`/`want_*` split is `Lucene104PostingsReader`'s
+/// `indexHasOffsets`/`needsOffsets` pair: a stream that exists but is not
+/// wanted is still *stepped over*, because the streams are interleaved and
+/// nothing else gives their length.
+#[derive(Debug, Clone, Copy)]
+struct PositionWants {
+    has_offsets: bool,
+    has_payloads: bool,
+    want_offsets: bool,
+    want_payloads: bool,
+}
+
+/// `BlockPostingsEnum`'s position buffers: the fixed 256-entry arrays
+/// `refillPositions` fills, plus the block's payload byte run.
+///
+/// Held by the walker for the length of a walk and refilled in place, which is
+/// what Lucene does with its `posDeltaBuffer`/`payloadLengthBuffer`/
+/// `offsetStartDeltaBuffer`/`offsetLengthBuffer`/`payloadBytes` instance
+/// fields. `len` is `BLOCK_SIZE` for a full block and
+/// `totalTermFreq % BLOCK_SIZE` for the vint tail.
+struct PositionBlock {
+    pos_deltas: [u32; for_util::BLOCK_SIZE],
+    offset_start_deltas: [u32; for_util::BLOCK_SIZE],
+    offset_lengths: [u32; for_util::BLOCK_SIZE],
+    payload_lengths: [u32; for_util::BLOCK_SIZE],
+    /// The block's payloads, concatenated; occurrence `i`'s payload is the
+    /// `payload_lengths[i]` bytes at `sum(payload_lengths[..i])`. Empty
+    /// unless `want_payloads`.
+    payload_bytes: Vec<u8>,
+    len: usize,
+}
+
+impl PositionBlock {
+    fn new() -> Self {
+        PositionBlock {
+            pos_deltas: [0; for_util::BLOCK_SIZE],
+            offset_start_deltas: [0; for_util::BLOCK_SIZE],
+            offset_lengths: [0; for_util::BLOCK_SIZE],
+            payload_lengths: [0; for_util::BLOCK_SIZE],
+            payload_bytes: Vec::new(),
+            len: 0,
+        }
+    }
+
+    /// Occurrence `i`'s payload, or `&[]` when payloads are not being read.
+    ///
+    /// `payload_upto` is the caller's running byte offset; every bound is
+    /// checked because the lengths come off `.pay`/`.pos` and nothing on the
+    /// wire ties them to the byte run's actual length.
+    #[inline]
+    fn payload(&self, payload_upto: usize, length: usize) -> Result<&[u8]> {
+        payload_upto
+            .checked_add(length)
+            .and_then(|end| self.payload_bytes.get(payload_upto..end))
+            .ok_or_else(|| corrupted("payload lengths overrun the block's payload byte run"))
+    }
+}
+
+/// `Lucene104PostingsReader.refillPositions`' full-block branch plus
+/// `refillOffsetsOrPayloads`: one 256-occurrence `PForUtil` block of `.pos`,
+/// and the `.pay` blocks that go with it.
+fn refill_full_position_block(
+    pos_r: &mut SliceInput,
+    pay_r: Option<&mut SliceInput>,
+    wants: PositionWants,
+    for_util_state: &mut for_util::ForUtil,
+    block: &mut PositionBlock,
+) -> Result<()> {
+    for_util_state.pfor_decode(pos_r, &mut block.pos_deltas)?;
+    block.len = for_util::BLOCK_SIZE;
+    block.payload_bytes.clear();
+    if !wants.has_offsets && !wants.has_payloads {
+        return Ok(());
+    }
+    let r = pay_r.expect("checked by the caller: .pay is opened for offsets or payloads");
+    if wants.has_payloads {
+        if wants.want_payloads {
+            for_util_state.pfor_decode(r, &mut block.payload_lengths)?;
+        } else {
+            for_util::pfor_skip(r)?;
+        }
+        // `read_length`, not `read_vint() as usize`: a negative or
+        // longer-than-the-file byte count would otherwise size the `resize`
+        // below straight off disk.
+        let num_bytes = r.read_length("payload block")?;
+        if wants.want_payloads {
+            block.payload_bytes.resize(num_bytes, 0);
+            r.read_bytes(&mut block.payload_bytes)?;
+        } else {
+            r.skip(num_bytes)?;
+        }
+    }
+    if wants.has_offsets {
+        if wants.want_offsets {
+            for_util_state.pfor_decode(r, &mut block.offset_start_deltas)?;
+            for_util_state.pfor_decode(r, &mut block.offset_lengths)?;
+        } else {
+            for_util::pfor_skip(r)?;
+            for_util::pfor_skip(r)?;
+        }
+    }
+    Ok(())
+}
+
+/// `Lucene104PostingsReader.refillLastPositionBlock`: the trailing
+/// `totalTermFreq % BLOCK_SIZE` occurrences, vint-coded in `.pos` alone --
+/// payload bytes inlined right after their length, and a payload/offset
+/// length written only when it *changes* from the previous occurrence's (bit
+/// 0 of the vint code), reusing the last value otherwise. `.pay` is not
+/// touched at all.
+fn refill_last_position_block(
+    pos_r: &mut SliceInput,
+    wants: PositionWants,
+    count: usize,
+    block: &mut PositionBlock,
+) -> Result<()> {
+    debug_assert!(count <= for_util::BLOCK_SIZE);
+    block.len = count;
+    block.payload_bytes.clear();
+    let mut last_payload_length = 0i32;
+    let mut last_offset_length = 0i32;
+    for i in 0..count {
+        let code = pos_r.read_vint()?;
+        if wants.has_payloads {
+            if code & 1 != 0 {
+                last_payload_length = pos_r.read_vint()?;
+            }
+            // `code >>> 1` in Java, not `>>`: `code` is a signed vint and
+            // `(delta << 1) | 1` is negative for a delta at or above 2^30,
+            // which `IndexWriter.MAX_POSITION` permits. An arithmetic shift
+            // would sign-extend and recover the wrong delta.
+            block.pos_deltas[i] = (code as u32) >> 1;
+            // Read off disk as a plain vint, so negative and absurd are both
+            // reachable: bound it by the bytes that are actually there before
+            // it sizes a copy.
+            let length = wire_length(last_payload_length as i64, "tail payload")?;
+            if length > pos_r.remaining() {
+                return Err(corrupted(format!(
+                    "tail payload length {length} exceeds {} remaining .pos bytes",
+                    pos_r.remaining()
+                )));
+            }
+            if wants.want_payloads {
+                block.payload_lengths[i] = length as u32;
+                let start = block.payload_bytes.len();
+                block
+                    .payload_bytes
+                    .resize(add_wire_offset(start, length)?, 0);
+                pos_r.read_bytes(&mut block.payload_bytes[start..])?;
+            } else {
+                pos_r.skip(length)?;
+            }
+        } else {
+            block.pos_deltas[i] = code as u32;
+        }
+
+        if wants.has_offsets {
+            let delta_code = pos_r.read_vint()?;
+            if delta_code & 1 != 0 {
+                last_offset_length = pos_r.read_vint()?;
+            }
+            if wants.want_offsets {
+                // `deltaCode >>> 1`, for the same reason as `code` above.
+                block.offset_start_deltas[i] = (delta_code as u32) >> 1;
+                block.offset_lengths[i] = last_offset_length as u32;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Where a term's vint position tail begins, as
+/// `Lucene104PostingsReader.reset` computes `lastPosBlockFP`
+/// (`Lucene104PostingsReader.java:526-532`).
+///
+/// `None` means "this term has no vint tail": `totalTermFreq == BLOCK_SIZE`
+/// exactly, so its `.pos` is one full block and nothing else. Java writes
+/// `-1`, a file pointer no `.pos` position can equal, for the same reason.
+///
+/// This is the field `b5` found being written as a constant `0`
+/// (`docs/sweep/m2/b5-postings.md` F4). Nothing in this port read it back
+/// then, because every position walk started at the term's `posStartFP` and
+/// counted occurrences. A walk that *jumps into the middle* of `.pos` has no
+/// occurrence count to derive the split from, so this is now the only thing
+/// that tells a full block from the tail -- exactly the role it has in
+/// `refillPositions`.
+fn last_pos_block_fp(meta: TermMetadata, total_term_freq: i64) -> Option<u64> {
+    match total_term_freq.cmp(&(BLOCK_SIZE as i64)) {
+        std::cmp::Ordering::Less => Some(meta.pos_start_fp),
+        std::cmp::Ordering::Equal => None,
+        std::cmp::Ordering::Greater => Some(
+            meta.pos_start_fp
+                .wrapping_add(meta.last_pos_block_offset as u64),
+        ),
+    }
+}
+
+/// `PostingsEnum.advance(doc)` followed by that document's `nextPosition()` /
+/// `startOffset()` / `endOffset()` / `getPayload()`, starting from the
+/// `.pos`/`.pay` origin `.doc`'s own skip data gave us rather than from the
+/// term's first occurrence.
+///
+/// This is `Lucene104PostingsReader`'s `seekPosData` + `skipPositions` +
+/// `nextPosition` trio. The difference from [`walk_wanted_occurrences`] is
+/// entirely in where it starts: that one addresses `.pos` by a running
+/// frequency sum over the whole doc list, this one is handed a file pointer.
+///
+/// Every value it trusts comes off disk, so: the block-skipping loop is
+/// bounded by the `.pos` file itself (a `PForUtil` block is never zero bytes,
+/// and `pfor_skip` fails at EOF), `to_skip` is checked against the landing
+/// block's own length rather than indexing it, and `freq` is checked against
+/// the occurrences the streams actually yield.
+#[allow(clippy::too_many_arguments)]
+fn walk_document_occurrences<S: OccurrenceSink>(
+    pos: &PosInput<'_>,
+    pay: Option<&PayInput<'_>>,
+    origin: PositionOrigin,
+    freq: usize,
+    last_pos_block: Option<u64>,
+    tail_count: usize,
+    wants: PositionWants,
+    sink: &mut S,
+) -> Result<()> {
+    if (wants.has_offsets || wants.has_payloads) && pay.is_none() {
+        return Err(Error::Unsupported(
+            "positions need an opened .pay file: this field has offsets or payloads",
+        ));
+    }
+    // `usize::MAX` on a 32-bit target where the pointer does not fit: the
+    // seek then fails as the out-of-range read it is, rather than silently
+    // truncating to an in-range address.
+    let mut pos_r = SliceInput::new(pos.buf);
+    pos_r.seek(usize::try_from(origin.pos_fp).unwrap_or(usize::MAX))?;
+    let mut pay_r = pay.map(|p| SliceInput::new(p.buf));
+    if let Some(r) = pay_r.as_mut() {
+        r.seek(usize::try_from(origin.pay_fp).unwrap_or(usize::MAX))?;
+    }
+
+    // `skipPositions`' whole-block loop: step over the blocks entirely behind
+    // the target document, one token byte and a seek per stream.
+    let mut to_skip = origin.skip;
+    while to_skip >= for_util::BLOCK_SIZE as u64 {
+        // `assert posIn.getFilePointer() != lastPosBlockFP` in Java: the vint
+        // tail is the last block there is, so a skip that reaches it and
+        // still wants to step past it means the skip data and the term's
+        // `totalTermFreq` disagree.
+        if last_pos_block == Some(pos_r.position() as u64) {
+            return Err(corrupted(
+                "the .doc skip data asks to step past the last .pos block",
+            ));
+        }
+        skip_position_block(
+            &mut pos_r,
+            pay_r.as_mut(),
+            wants.has_payloads,
+            wants.has_offsets,
+        )?;
+        // ARITH: the loop condition is `to_skip >= for_util::BLOCK_SIZE`.
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            to_skip -= for_util::BLOCK_SIZE as u64;
+        }
+    }
+
+    let mut for_util_state = for_util::ForUtil::new();
+    let mut block = PositionBlock::new();
+    // `refillPositions`' one-line dispatch: the vint tail is recognised by
+    // the file pointer alone. It is also the *last* block, so once it has
+    // been decoded there is nothing after it -- a walk still wanting
+    // occurrences at that point has been handed a frequency the term does not
+    // have, and must say so rather than decoding the footer as a `PForUtil`
+    // block.
+    let mut tail_decoded = false;
+    let mut refill = |pos_r: &mut SliceInput,
+                      pay_r: Option<&mut SliceInput>,
+                      block: &mut PositionBlock,
+                      tail_decoded: &mut bool|
+     -> Result<()> {
+        if *tail_decoded {
+            return Err(corrupted(
+                "a document's frequency outruns the occurrences .pos holds for the term",
+            ));
+        }
+        if last_pos_block == Some(pos_r.position() as u64) {
+            *tail_decoded = true;
+            refill_last_position_block(pos_r, wants, tail_count, block)
+        } else {
+            refill_full_position_block(pos_r, pay_r, wants, &mut for_util_state, block)
+        }
+    };
+    refill(&mut pos_r, pay_r.as_mut(), &mut block, &mut tail_decoded)?;
+
+    let mut upto = to_skip as usize;
+    if upto > block.len {
+        return Err(corrupted(format!(
+            "the .doc skip data lands {upto} occurrences into a {}-occurrence .pos block",
+            block.len
+        )));
+    }
+    // `skipPositions`' `payloadByteUpto = sumOverRange(payloadLengthBuffer, 0,
+    // toSkip)`. Saturating, because the lengths are `.pay` values: an
+    // overflowed offset then fails `PositionBlock::payload`'s bounds check
+    // rather than panicking in a debug build.
+    let mut payload_upto = 0usize;
+    if wants.want_payloads {
+        for &l in &block.payload_lengths[..upto] {
+            payload_upto = payload_upto.saturating_add(l as usize);
+        }
+    }
+
+    // The occurrence budget. `freq` reaches here from `.doc` and is checked
+    // against `total_term_freq`, but `total_term_freq` is itself an
+    // unvalidated `.tim` vlong -- so a corrupt segment where the two *agree*
+    // has nothing stopping the loop below except `.pos` running out. That is
+    // not a panic, it is worse: a minimal `PForUtil` block is a couple of
+    // bytes for 256 values, so the walk can produce on the order of a hundred
+    // `Position` records (each with its own payload `Vec`) per byte of `.pos`
+    // before it EOFs -- an allocation blow-up, and an allocation failure
+    // *aborts*, which no `catch_unwind` at the FFI boundary can intercept.
+    //
+    // The batch walker has no such exposure: `wanted_ranges` rejects unless
+    // the frequency list sums to `total_term_freq` exactly. A single-document
+    // walk cannot have that invariant, so it gets an explicit ceiling
+    // instead: `BLOCK_SIZE` occurrences per byte of `.pos` after the origin
+    // is the densest any block can be (a 256-value `PForUtil` block is at
+    // least its own token byte).
+    let pos_bytes_left = pos.buf.len().saturating_sub(pos_r.position());
+    let max_occurrences = pos_bytes_left.saturating_mul(for_util::BLOCK_SIZE);
+    if freq > max_occurrences {
+        return Err(corrupted(format!(
+            "document frequency {freq} cannot fit in the {pos_bytes_left} .pos bytes that \
+             follow this document's first occurrence"
+        )));
+    }
+
+    let ranges = [(0usize, freq)];
+    let mut cursor = SinkCursor::new();
+    for g in 0..freq {
+        if upto == block.len {
+            refill(&mut pos_r, pay_r.as_mut(), &mut block, &mut tail_decoded)?;
+            upto = 0;
+            payload_upto = 0;
+            if block.len == 0 {
+                // An empty vint tail (`totalTermFreq % BLOCK_SIZE == 0` with a
+                // `lastPosBlockOffset` that points at it anyway).
+                return Err(corrupted(
+                    "a document's frequency outruns the occurrences .pos holds for the term",
+                ));
+            }
+        }
+        cursor.sync(sink, &ranges, g);
+        // Pins the invariant the `upto += 1` below rests on, and with it the
+        // in-bounds-ness of every fixed-256-entry index in this loop body.
+        debug_assert!(upto < block.len && block.len <= for_util::BLOCK_SIZE);
+        let payload_length = if wants.want_payloads {
+            block.payload_lengths[upto] as usize
+        } else {
+            0
+        };
+        let payload = if wants.want_payloads {
+            block.payload(payload_upto, payload_length)?
+        } else {
+            &[][..]
+        };
+        let offsets = wants.want_offsets.then(|| {
+            (
+                block.offset_start_deltas[upto] as i32,
+                block.offset_lengths[upto] as i32,
+            )
+        });
+        cursor.emit(sink, block.pos_deltas[upto] as i32, offsets, payload);
+        payload_upto = payload_upto.saturating_add(payload_length);
+        // ARITH: `upto <= block.len` on entry to the loop body (checked once
+        // before the loop, and restored to 0 by the refill above whenever it
+        // reaches `block.len`), and `block.len` is `for_util::BLOCK_SIZE` for
+        // a full block or `tail_count < BLOCK_SIZE` for the vint tail -- so
+        // `upto <= 256` here and the increment stays inside a `usize`. This
+        // is also what makes the fixed-256-entry indexing above in-bounds.
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            upto += 1;
+        }
+    }
+    cursor.finish(sink, &ranges);
+    Ok(())
+}
+
+/// One forward pass over a term's `.pos`/`.pay` streams that materializes only
+/// the documents `wanted` names, as indices into the term's own doc list.
+///
+/// This is `PostingsEnum.advance(doc)` followed by `nextPosition()` /
+/// `startOffset()` / `endOffset()` / `getPayload()`, for a batch of documents
+/// instead of one -- the shape both callers actually want, and the shape that
+/// lets the batch be walked in a single pass.
+///
+/// # What it skips, and what it cannot
+///
+/// A full block that holds no wanted occurrence is stepped over with
+/// [`skip_position_block`]: one token byte and a seek per stream, instead of
+/// three `PForUtil` unpacks of 256 values each. Once the last wanted document
+/// is behind it the pass returns immediately, leaving the rest of the term's
+/// `.pos`/`.pay` untouched -- so highlighting the first document of a
+/// million-document postings list reads a handful of blocks, not all of them.
+///
+/// What it still pays is one token byte and a seek per intervening block,
+/// because a `PForUtil` block's length is only knowable from its own header --
+/// and, before that, the caller's whole `freqs` list, because this addresses
+/// `.pos` by a running frequency sum.
+///
+/// [`read_occurrences_for_doc`] pays neither: `.doc`'s level-0/level-1 skip
+/// data carries the `.pos`/`.pay` file pointers, so it jumps straight to the
+/// block it needs. It answers about *one* document, which is what the
+/// highlighter asks and what the skip data can address; this batch form is
+/// still what phrase matching wants, because its `wanted` set is a large
+/// fraction of the term's doc list and it has already decoded that list to
+/// intersect it. See `docs/sweep/m2/c20-postings-skip.md`.
+#[allow(clippy::too_many_arguments)]
+fn walk_wanted_occurrences<S: OccurrenceSink>(
+    pos: &PosInput<'_>,
+    pay: Option<&PayInput<'_>>,
+    meta: TermMetadata,
+    freqs: &[i32],
+    total_term_freq: i64,
+    index_options: IndexOptions,
+    has_payloads: bool,
+    wanted: &[usize],
+    sink: &mut S,
+) -> Result<()> {
+    if !index_options.subsumes_positions() {
+        return Err(Error::Unsupported(
+            "positions need a field with IndexOptions::DocsAndFreqsAndPositions or higher",
+        ));
+    }
+    let has_offsets = index_options.subsumes_offsets();
+    let want_offsets = S::NEEDS_EXTRAS && has_offsets;
+    let want_payloads = S::NEEDS_EXTRAS && has_payloads;
+    let n = wire_count(total_term_freq, "total_term_freq")?;
+
+    let ranges = wanted_ranges(wanted, freqs, n)?;
+
+    let (num_full_blocks, tail_count) = full_blocks_and_tail(n);
+    // `.pay` is only ever touched by full `PForUtil` blocks (the vint tail's
+    // payload bytes live inline in `.pos`), so a term whose whole
+    // `total_term_freq` fits in the tail never needs it, even for a field
+    // with offsets or payloads.
+    if num_full_blocks > 0 && (has_offsets || has_payloads) && pay.is_none() {
+        return Err(Error::Unsupported(
+            "positions need an opened .pay file: this field has offsets or payloads and \
+             total_term_freq spans at least one full 256-position block",
+        ));
+    }
+
+    let mut pos_r = SliceInput::new(pos.buf);
+    pos_r.seek(meta.pos_start_fp as usize)?;
+    let mut pay_r = pay.map(|p| SliceInput::new(p.buf));
+    if let Some(r) = pay_r.as_mut() {
+        r.seek(meta.pay_start_fp as usize)?;
+    }
+
+    let wants = PositionWants {
+        has_offsets,
+        has_payloads,
+        want_offsets,
+        want_payloads,
+    };
+    let mut for_util_state = for_util::ForUtil::new();
+    let mut block = PositionBlock::new();
+    let mut cursor = SinkCursor::new();
+    let mut g = 0usize;
+
+    'stream: {
+        for _ in 0..num_full_blocks {
+            cursor.sync(sink, &ranges, g);
+            if cursor.w == ranges.len() {
+                break 'stream;
+            }
+            // ARITH: `g` is `k * BLOCK_SIZE` on the `k`-th (0-based) iteration
+            // of a `for _ in 0..num_full_blocks`, so `block_end` here is
+            // `(k + 1) * BLOCK_SIZE <= num_full_blocks * BLOCK_SIZE`, which
+            // `full_blocks_and_tail` makes `<= n` -- and `n` is a `usize`.
+            #[allow(clippy::arithmetic_side_effects)]
+            let block_end = g + for_util::BLOCK_SIZE;
+            debug_assert!(block_end <= n);
+            if ranges[cursor.w].0 >= block_end {
+                skip_position_block(&mut pos_r, pay_r.as_mut(), has_payloads, has_offsets)?;
+                g = block_end;
+                continue;
+            }
+
+            refill_full_position_block(
+                &mut pos_r,
+                pay_r.as_mut(),
+                wants,
+                &mut for_util_state,
+                &mut block,
+            )?;
+            let mut payload_upto = 0usize;
+            for i in 0..for_util::BLOCK_SIZE {
+                // ARITH: `i < BLOCK_SIZE` and `g + BLOCK_SIZE == block_end`,
+                // which the `debug_assert` above bounds by `n`, so this sum is
+                // `< n` and cannot overflow a `usize`.
+                #[allow(clippy::arithmetic_side_effects)]
+                let occurrence = g + i;
+                cursor.sync(sink, &ranges, occurrence);
+                let payload_length = if want_payloads {
+                    block.payload_lengths[i] as usize
+                } else {
+                    0
+                };
+                if cursor.open {
+                    let payload = if want_payloads {
+                        block.payload(payload_upto, payload_length)?
+                    } else {
+                        &[][..]
+                    };
+                    let offsets = want_offsets.then(|| {
+                        (
+                            block.offset_start_deltas[i] as i32,
+                            block.offset_lengths[i] as i32,
+                        )
+                    });
+                    cursor.emit(sink, block.pos_deltas[i] as i32, offsets, payload);
+                }
+                payload_upto = payload_upto.saturating_add(payload_length);
+            }
+            g = block_end;
+        }
+
+        // Vint tail block (`refillLastPositionBlock`): decoded whole, because
+        // payload bytes are inlined in `.pos` right after their length and a
+        // payload/offset length is only written when it *changes* from the
+        // previous occurrence's (bit 0 of the vint code) -- so every
+        // occurrence has to be walked even where none of them is wanted. It
+        // is at most `BLOCK_SIZE - 1` occurrences, so decoding it whole
+        // rather than streaming it costs nothing worth a second decoder.
+        if tail_count > 0 {
+            // The early exit c15 established: if every wanted document is
+            // already behind us, the tail is never touched at all. Checked
+            // before the refill, not after, so a walk that ends on the last
+            // full block reads none of it.
+            cursor.sync(sink, &ranges, g);
+            if cursor.w == ranges.len() {
+                break 'stream;
+            }
+            refill_last_position_block(&mut pos_r, wants, tail_count, &mut block)?;
+            let mut payload_upto = 0usize;
+            for i in 0..tail_count {
+                // ARITH: after the full-block loop `g == num_full_blocks *
+                // BLOCK_SIZE` and `i < tail_count == n % BLOCK_SIZE`, so this
+                // sum is `< n` and cannot overflow a `usize`.
+                #[allow(clippy::arithmetic_side_effects)]
+                let occurrence = g + i;
+                cursor.sync(sink, &ranges, occurrence);
+                if cursor.w == ranges.len() {
+                    break 'stream;
+                }
+                let payload_length = if want_payloads {
+                    block.payload_lengths[i] as usize
+                } else {
+                    0
+                };
+                if cursor.open {
+                    let payload = if want_payloads {
+                        block.payload(payload_upto, payload_length)?
+                    } else {
+                        &[][..]
+                    };
+                    let offsets = want_offsets.then(|| {
+                        (
+                            block.offset_start_deltas[i] as i32,
+                            block.offset_lengths[i] as i32,
+                        )
+                    });
+                    cursor.emit(sink, block.pos_deltas[i] as i32, offsets, payload);
+                }
+                payload_upto = payload_upto.saturating_add(payload_length);
+            }
+        }
+    }
+
+    cursor.finish(sink, &ranges);
+    Ok(())
+}
+
+/// The positions of just the documents `wanted` names, given as sorted indices
+/// into the term's own doc list (i.e. into `freqs`).
+///
+/// Phrase matching only ever needs positions for documents in the
+/// intersection of its terms' postings lists, which is a fraction of any one
+/// term's. Building them all is wasted: on the M1 corpus `phrase t0 t1`
+/// materialized every position of `t0` -- roughly 15 million, 60 MB -- to look
+/// at the 2.2 million documents the intersection actually contains.
+///
+/// Returns `(positions, doc_starts)` addressed by position *within `wanted`*:
+/// `wanted[i]`'s positions are `positions[doc_starts[i]..doc_starts[i + 1]]`,
+/// and `doc_starts` has `wanted.len() + 1` entries so the last document needs
+/// no special case. A `wanted` entry the doc list does not have, or one that
+/// is not strictly after the entry before it, keeps its slot and yields no
+/// positions (see [`wanted_ranges`]).
+///
+/// See [`walk_wanted_occurrences`] for what this does and does not skip on
+/// the wire.
 #[allow(clippy::too_many_arguments)]
 pub fn read_positions_for_docs(
     pos: &PosInput<'_>,
@@ -1024,188 +2103,166 @@ pub fn read_positions_for_docs(
     has_payloads: bool,
     wanted: &[usize],
 ) -> Result<(Vec<i32>, Vec<u32>)> {
+    // ARITH: `wanted` is a live slice, so `wanted.len() <= isize::MAX` and
+    // the `+ 1` cannot reach `usize::MAX`. It is the caller's own document
+    // list, not a count read off disk.
+    #[allow(clippy::arithmetic_side_effects)]
+    let doc_starts = Vec::with_capacity(wanted.len() + 1);
+    let mut sink = PositionsOnly {
+        positions: Vec::new(),
+        doc_starts,
+    };
+    walk_wanted_occurrences(
+        pos,
+        pay,
+        meta,
+        freqs,
+        total_term_freq,
+        index_options,
+        has_payloads,
+        wanted,
+        &mut sink,
+    )?;
+    sink.doc_starts.push(sink.positions.len() as u32);
+    Ok((sink.positions, sink.doc_starts))
+}
+
+/// [`read_positions_for_docs`]'s offsets- and payloads-carrying sibling:
+/// whole [`Position`] records for just the documents `wanted` names.
+///
+/// This is what `PostingsEnum.advance(doc)` + `nextPosition()` /
+/// `startOffset()` / `endOffset()` / `getPayload()` gives Java's
+/// `PostingsOffsetStrategy`, and it exists because the only offset-carrying
+/// accessor this port had ([`read_positions`]) returns every document's
+/// offsets, so highlighting one document cost a full postings sweep plus a
+/// `Vec<Position>` per document in the term.
+///
+/// Same result shape and same `wanted` contract as
+/// [`read_positions_for_docs`]: `wanted[i]`'s occurrences are
+/// `occurrences[doc_starts[i]..doc_starts[i + 1]]`.
+/// `start_offset`/`end_offset` are `-1` for a field that does not index
+/// offsets, and `payload` is empty where an occurrence has none -- the same
+/// values [`read_positions`] reports.
+#[allow(clippy::too_many_arguments)]
+pub fn read_occurrences_for_docs(
+    pos: &PosInput<'_>,
+    pay: Option<&PayInput<'_>>,
+    meta: TermMetadata,
+    freqs: &[i32],
+    total_term_freq: i64,
+    index_options: IndexOptions,
+    has_payloads: bool,
+    wanted: &[usize],
+) -> Result<(Vec<Position>, Vec<u32>)> {
+    // ARITH: `wanted` is a live slice, so `wanted.len() <= isize::MAX` and
+    // the `+ 1` cannot reach `usize::MAX`. It is the caller's own document
+    // list, not a count read off disk.
+    #[allow(clippy::arithmetic_side_effects)]
+    let doc_starts = Vec::with_capacity(wanted.len() + 1);
+    let mut sink = FullOccurrences {
+        occurrences: Vec::new(),
+        doc_starts,
+    };
+    walk_wanted_occurrences(
+        pos,
+        pay,
+        meta,
+        freqs,
+        total_term_freq,
+        index_options,
+        has_payloads,
+        wanted,
+        &mut sink,
+    )?;
+    sink.doc_starts.push(sink.occurrences.len() as u32);
+    Ok((sink.occurrences, sink.doc_starts))
+}
+
+/// One document's occurrences, reached by `advance(doc_id)` over `.doc`'s
+/// skip data -- Java's `PostingsOffsetStrategy.getOffsetsEnum` shape, and the
+/// accessor a highlighter wants.
+///
+/// `Ok(None)` when the term's postings do not contain `doc_id`.
+///
+/// # What this costs, and why it is not what [`read_occurrences_for_docs`]
+/// costs
+///
+/// [`read_occurrences_for_docs`] takes the term's whole frequency list and
+/// addresses `.pos` by a running sum over it, so it pays a full doc-list
+/// decode however few documents it is asked for. This pays neither: `.doc`'s
+/// level-1 entries jump 8 192 documents at a time and its level-0 headers 256,
+/// and each of those records carries the `.pos`/`.pay` file pointer its
+/// documents' occurrences start at ([`LazyDocsCursor::position_origin`]). The
+/// only frequencies summed are the ones in the target's own 256-document
+/// block, and the only `.pos`/`.pay` bytes read are the blocks holding its
+/// occurrences.
+///
+/// Requires `doc_freq > 1`: a singleton term has no `.doc` bytes at all
+/// (`Lucene104PostingsWriter.finishTerm` pulses it into the term dictionary),
+/// so there is no skip data to walk -- use [`read_occurrences_for_docs`] with
+/// `wanted = [0]` for those, which is what `blocktree` does.
+#[allow(clippy::too_many_arguments)]
+pub fn read_occurrences_for_doc(
+    doc: &DocInput<'_>,
+    pos: &PosInput<'_>,
+    pay: Option<&PayInput<'_>>,
+    meta: TermMetadata,
+    doc_freq: i32,
+    total_term_freq: i64,
+    index_options: IndexOptions,
+    has_payloads: bool,
+    doc_id: i32,
+) -> Result<Option<Vec<Position>>> {
     if !index_options.subsumes_positions() {
         return Err(Error::Unsupported(
-            "read_positions_for_docs needs a field with IndexOptions::DocsAndFreqsAndPositions or higher",
+            "positions need a field with IndexOptions::DocsAndFreqsAndPositions or higher",
         ));
     }
-    let has_offsets = index_options.subsumes_offsets();
-    let n = total_term_freq as usize;
-
-    // Where each document's occurrences start in the flat position stream.
-    let mut doc_start = vec![0u32; freqs.len() + 1];
-    let mut acc: u32 = 0;
-    for (i, &f) in freqs.iter().enumerate() {
-        doc_start[i] = acc;
-        acc = acc.saturating_add(f.max(0) as u32);
+    let n = wire_count(total_term_freq, "total_term_freq")?;
+    let mut cursor = doc.lazy_cursor(meta, doc_freq, index_options, has_payloads)?;
+    if cursor.advance(doc_id)? != doc_id {
+        return Ok(None);
     }
-    doc_start[freqs.len()] = acc;
-    if acc as usize != n {
-        return Err(Error::Store(lucene_store::Error::Corrupted(
-            "sum of per-doc freqs disagrees with total_term_freq".into(),
+    let freq = cursor.freq().unwrap_or(0);
+    if freq < 0 || freq as i64 > total_term_freq {
+        return Err(corrupted(format!(
+            "document {doc_id} claims frequency {freq}, which is not in \
+             0..={total_term_freq} (the term's totalTermFreq)"
+        )));
+    }
+    let origin = cursor
+        .position_origin()?
+        .expect("advance landed on a real document, so the cursor is positioned");
+    if origin.skip > n as u64 {
+        return Err(corrupted(format!(
+            "the .doc skip data places document {doc_id}'s occurrences {} past a term with \
+             only {n} of them",
+            origin.skip
         )));
     }
 
-    let mut pos_r = SliceInput::new(pos.buf);
-    pos_r.seek(meta.pos_start_fp as usize)?;
-    let mut pay_r = pay.map(|p| SliceInput::new(p.buf));
-    if let Some(r) = pay_r.as_mut() {
-        r.seek(meta.pay_start_fp as usize)?;
-    }
-    let num_full_blocks = n / BLOCK_SIZE as usize;
-    let tail_count = n % BLOCK_SIZE as usize;
-    if num_full_blocks > 0 && (has_offsets || has_payloads) && pay.is_none() {
-        return Err(Error::Unsupported(
-            "read_positions_for_docs needs an opened .pay file: this field has offsets or \
-             payloads and total_term_freq spans at least one full 256-position block",
-        ));
-    }
-
-    let mut positions: Vec<i32> = Vec::new();
-    let mut doc_starts: Vec<u32> = Vec::with_capacity(wanted.len() + 1);
-    // Index into `wanted` of the document currently being collected, plus that
-    // document's occurrence range in the flat stream.
-    let mut w = 0usize;
-    let mut running = 0i32;
-    // Open the first wanted document, if there is one.
-    if wanted.is_empty() {
-        doc_starts.push(0);
-        return Ok((positions, doc_starts));
-    }
-    let (mut want_from, mut want_to) = {
-        let d = wanted[0];
-        let from = doc_start[d] as usize;
-        doc_starts.push(0);
-        (
-            from,
-            from + freqs.get(d).copied().unwrap_or(0).max(0) as usize,
-        )
+    let has_offsets = index_options.subsumes_offsets();
+    let wants = PositionWants {
+        has_offsets,
+        has_payloads,
+        want_offsets: has_offsets,
+        want_payloads: has_payloads,
     };
-
-    // One position at a time through the wire format, keeping nothing. This is
-    // what makes the function worth having: the flat decoder it replaced built
-    // a `Vec<i32>` of every occurrence in the term -- 15 million, 60 MB, for
-    // `t0` on the M1 corpus -- and phrase matching reads a fraction of it.
-    // Lucene's `skipPositions` decodes and discards the same way.
-    let mut deltas = [0u32; for_util::BLOCK_SIZE];
-    let mut scratch = [0u32; for_util::BLOCK_SIZE];
-    let mut for_util_state = for_util::ForUtil::new();
-    let mut g = 0usize; // global occurrence index
-    for _ in 0..num_full_blocks {
-        for_util_state.pfor_decode(&mut pos_r, &mut deltas)?;
-        if has_payloads {
-            let pay_r = pay_r.as_mut().expect("checked above");
-            for_util_state.pfor_decode(pay_r, &mut scratch)?;
-            let num_bytes = pay_r.read_vint()? as usize;
-            pay_r.skip(num_bytes)?;
-        }
-        if has_offsets {
-            let pay_r = pay_r.as_mut().expect("checked above");
-            for_util_state.pfor_decode(pay_r, &mut scratch)?;
-            for_util_state.pfor_decode(pay_r, &mut scratch)?;
-        }
-        for &d in deltas.iter() {
-            collect_one(
-                d as i32,
-                g,
-                &mut w,
-                &mut want_from,
-                &mut want_to,
-                &mut running,
-                &mut positions,
-                &mut doc_starts,
-                wanted,
-                freqs,
-                &doc_start,
-            );
-            g += 1;
-        }
-    }
-
-    if tail_count > 0 {
-        let mut last_payload_length = 0i32;
-        for _ in 0..tail_count {
-            let code = pos_r.read_vint()?;
-            let delta = if has_payloads {
-                if code & 1 != 0 {
-                    last_payload_length = pos_r.read_vint()?;
-                }
-                let d = code >> 1;
-                if last_payload_length != 0 {
-                    pos_r.skip(last_payload_length as usize)?;
-                }
-                d
-            } else {
-                code
-            };
-            if has_offsets {
-                let delta_code = pos_r.read_vint()?;
-                if delta_code & 1 != 0 {
-                    let _last_offset_length = pos_r.read_vint()?;
-                }
-            }
-            collect_one(
-                delta,
-                g,
-                &mut w,
-                &mut want_from,
-                &mut want_to,
-                &mut running,
-                &mut positions,
-                &mut doc_starts,
-                wanted,
-                freqs,
-                &doc_start,
-            );
-            g += 1;
-        }
-    }
-
-    // Any wanted documents past the end of the stream contribute nothing.
-    while doc_starts.len() < wanted.len() {
-        doc_starts.push(positions.len() as u32);
-    }
-    doc_starts.push(positions.len() as u32);
-    Ok((positions, doc_starts))
-}
-
-/// Feeds one decoded delta to the collector: keeps it if it belongs to the
-/// document currently being gathered, and opens the next wanted document once
-/// this one's range is passed.
-#[allow(clippy::too_many_arguments)]
-#[inline]
-fn collect_one(
-    delta: i32,
-    g: usize,
-    w: &mut usize,
-    from: &mut usize,
-    to: &mut usize,
-    running: &mut i32,
-    positions: &mut Vec<i32>,
-    doc_starts: &mut Vec<u32>,
-    wanted: &[usize],
-    freqs: &[i32],
-    doc_start: &[u32],
-) {
-    // Past the current wanted document: open the following ones until one
-    // covers `g` or none is left.
-    while *w < wanted.len() && g >= *to {
-        *w += 1;
-        if *w >= wanted.len() {
-            return;
-        }
-        let d = wanted[*w];
-        let f = doc_start[d] as usize;
-        let t = f + freqs.get(d).copied().unwrap_or(0).max(0) as usize;
-        doc_starts.push(positions.len() as u32);
-        *from = f;
-        *to = t;
-        *running = 0;
-    }
-    if *w < wanted.len() && g >= *from && g < *to {
-        *running += delta;
-        positions.push(*running);
-    }
+    let mut sink = FullOccurrences {
+        occurrences: Vec::new(),
+        doc_starts: Vec::with_capacity(2),
+    };
+    walk_document_occurrences(
+        pos,
+        pay,
+        origin,
+        freq as usize,
+        last_pos_block_fp(meta, total_term_freq),
+        n % for_util::BLOCK_SIZE,
+        wants,
+        &mut sink,
+    )?;
+    Ok(Some(sink.occurrences))
 }
 
 /// Decodes every position (and, if the field has them, offset/payload)
@@ -1242,7 +2299,8 @@ pub fn read_positions(
     has_payloads: bool,
 ) -> Result<Vec<Vec<Position>>> {
     let has_offsets = index_options.subsumes_offsets();
-    let n = total_term_freq as usize;
+    // `wire_count`, not `as usize`; see [`read_positions_flat`].
+    let n = wire_count(total_term_freq, "total_term_freq")?;
     let PositionStreams {
         pos_deltas,
         payload_lengths,
@@ -1262,7 +2320,10 @@ pub fn read_positions(
     for &freq in freqs {
         let mut position = 0i32;
         let mut start_offset_acc = 0i32;
-        let mut doc_positions = Vec::with_capacity(freq.max(0) as usize);
+        // `freq` is a `.doc` value: cap the reservation at the occurrences
+        // that actually decoded, so a corrupt frequency cannot ask the
+        // allocator for an arbitrary amount before the loop below rejects it.
+        let mut doc_positions = Vec::with_capacity((freq.max(0) as usize).min(pos_deltas.len()));
         for _ in 0..freq {
             // `freqs` is decoded independently (from `.doc`) of `n =
             // total_term_freq` (from the term dictionary): nothing on the
@@ -1275,24 +2336,42 @@ pub fn read_positions(
                     "sum of per-doc freqs exceeds total_term_freq".into(),
                 )));
             }
-            position += pos_deltas[idx];
+            // Same `wrapping_add` rule as [`read_positions_flat`] and
+            // [`SinkCursor::emit`] -- and it must be the same, or the two
+            // readers disagree on exactly the corrupt segment where
+            // `postings_wanted_docs.rs` asserts they agree.
+            position = position.wrapping_add(pos_deltas[idx]);
             let payload = if has_payloads {
-                let len = payload_lengths[idx] as usize;
-                let start = payload_upto;
-                let end = start + len;
-                if end > payload_bytes.len() {
-                    return Err(Error::Store(lucene_store::Error::Corrupted(
-                        "payload length exceeds decoded payload bytes".into(),
+                // `payload_lengths` holds a full block's `.pay` payload-length
+                // stream, `PForUtil`-decoded as `u32` and stored as `i32`: a
+                // corrupt block yields a *negative* length here, and
+                // `negative as usize` sign-extends to ~2^64. The old
+                // `start + len` then wrapped to a value *below* `start`,
+                // passed the `end > payload_bytes.len()` check, and panicked
+                // in `payload_bytes[start..end]` with "slice index starts at
+                // .. but ends at ..". Reject the length itself, and fold the
+                // addition and the bound into the same `get`, exactly as
+                // `PositionBlock::payload` already does for the walkers.
+                let end = usize::try_from(payload_lengths[idx])
+                    .ok()
+                    .and_then(|len| payload_upto.checked_add(len));
+                let Some(bytes) = end.and_then(|end| payload_bytes.get(payload_upto..end)) else {
+                    return Err(corrupted(format!(
+                        "payload length {} at occurrence {idx} exceeds the {} decoded \
+                         payload bytes from offset {payload_upto}",
+                        payload_lengths[idx],
+                        payload_bytes.len()
                     )));
-                }
-                payload_upto = end;
-                payload_bytes[start..end].to_vec()
+                };
+                let payload = bytes.to_vec();
+                payload_upto = end.expect("Some: the `get` above only ran on a Some end");
+                payload
             } else {
                 Vec::new()
             };
             let (start_offset, end_offset) = if has_offsets {
-                let s = start_offset_acc + offset_start_deltas[idx];
-                let e = s + offset_lengths[idx];
+                let s = start_offset_acc.wrapping_add(offset_start_deltas[idx]);
+                let e = s.wrapping_add(offset_lengths[idx]);
                 start_offset_acc = s;
                 (s, e)
             } else {
@@ -1304,7 +2383,13 @@ pub fn read_positions(
                 end_offset,
                 payload,
             });
-            idx += 1;
+            // ARITH: the guard at the top of this loop body returned unless
+            // `idx < pos_deltas.len()`, and a live slice's length is at most
+            // `isize::MAX`.
+            #[allow(clippy::arithmetic_side_effects)]
+            {
+                idx += 1;
+            }
         }
         result.push(doc_positions);
     }
@@ -1347,7 +2432,7 @@ fn read_vlong15(r: &mut SliceInput) -> Result<i64> {
 /// `LEVEL1_NUM_DOCS` docs remain). Mirrors the fields
 /// `Lucene104PostingsReader.skipLevel1To` reads
 /// (`Lucene104PostingsReader.java:691-713`).
-struct Level1Entry {
+struct Level1Entry<'a> {
     /// vInt delta added to the running `level1LastDocID` (starts at `-1`),
     /// giving this span's last (max) doc ID across its 32 blocks.
     doc_delta: i32,
@@ -1364,7 +2449,47 @@ struct Level1Entry {
     /// within the span, not just the first or last block's. Empty when the
     /// field has no freqs (`index_has_freq == false`, in which case no
     /// impacts field exists on the wire at all).
-    impacts: Impacts,
+    ///
+    /// Kept **undecoded**, as a zero-copy view into the mapped `.doc` bytes,
+    /// exactly as [`FullBlockHeader::impact_bytes`] is and for the same
+    /// reason: `skipLevel1To` decodes the run only when
+    /// `needsImpacts && level1LastDocID >= target` and `skipBytes` past it
+    /// otherwise, so a walk crossing 610 spans to reach a document does not
+    /// decode -- or allocate -- 610 impact lists it never looks at. (b5 F7,
+    /// recorded there as bounded; c20 measured it as the dominant residual of
+    /// a skip-driven `advance` on a five-million-document term.)
+    impact_bytes: &'a [u8],
+    /// The span's `.pos`/`.pay` skip pointers, or `None` when the field does
+    /// not index positions (in which case the sub-fields do not exist on the
+    /// wire). See [`PosSkip`].
+    pos_skip: Option<PosSkip>,
+}
+
+/// One level-0 or level-1 record's `.pos`/`.pay` skip pointers:
+/// `posEndFPDelta`/`posBufferUpto` and, when the field also has offsets or
+/// payloads, `payEndFPDelta`/`payloadByteUpto`
+/// (`Lucene104PostingsReader.readLevel0PosData` and the identical block
+/// inside `skipLevel1To`).
+///
+/// Every field is a delta or an in-block offset, never an absolute position:
+/// a reader accumulates `pos_end_fp_delta` across every record it passes from
+/// the term's `posStartFP` onward, which is why a skip that jumps a level-1
+/// span has to take the span's own accumulated value rather than re-deriving
+/// one.
+#[derive(Debug, Clone, Copy, Default)]
+struct PosSkip {
+    /// Added to the running `.pos` pointer. A vlong off disk, so it is
+    /// accumulated with `wrapping_add` and only validated when the resulting
+    /// pointer is actually seeked to.
+    pos_end_fp_delta: u64,
+    /// `posBufferUpto`: how many occurrences of the 256-wide `.pos` block at
+    /// the new pointer belong to *earlier* documents. A single byte on the
+    /// wire, so it is `0..=255` however corrupt the file is -- it can never
+    /// index past a 256-entry block.
+    pos_buffer_upto: u8,
+    /// Added to the running `.pay` pointer; `0` when the field has neither
+    /// offsets nor payloads (the sub-field does not exist on the wire).
+    pay_end_fp_delta: u64,
 }
 
 /// Reads one level-1 skip entry at `r`'s current position (which must be a
@@ -1378,12 +2503,12 @@ struct Level1Entry {
 /// decoded into [`Level1Entry::impacts`] via [`decode_impacts`]. The pos/pay
 /// sub-fields are parsed for wire-order correctness even though this reader
 /// never uses them to seek `.pos`/`.pay`.
-fn read_level1_entry(
-    r: &mut SliceInput,
+fn read_level1_entry<'a>(
+    r: &mut SliceInput<'a>,
     index_has_freq: bool,
     index_has_pos: bool,
     index_has_offsets_or_payloads: bool,
-) -> Result<Level1Entry> {
+) -> Result<Level1Entry<'a>> {
     // Steps 1-2 are always present, even for `IndexOptions::Docs` (no freqs):
     // `skipLevel1To` calls `readVInt`/`readVLong` unconditionally before the
     // `indexHasFreq` gate — plain vint/vlong, NOT `readVInt15`/`readVLong15`.
@@ -1391,34 +2516,86 @@ fn read_level1_entry(
     let delta = r.read_vlong()? as usize;
     let doc_end_fp = delta.wrapping_add(r.position());
 
-    let mut impacts = Impacts::new();
+    let mut impact_bytes: &[u8] = &[];
+    let mut pos_skip: Option<PosSkip> = None;
     if index_has_freq {
         // `skip1EndFP` (step 3a): a plain 2-byte `readShort`, the byte length
         // from right here to the end of this entry's metadata. Only used as a
         // consistency check (Java asserts `getFilePointer() == skip1EndFP`).
-        let skip1_end_fp = (r.read_i16()? as i64 + r.position() as i64) as usize;
+        //
+        // A negative `short` (or a position near the end of a huge file) is
+        // reachable off disk, so this is folded through `checked_add` and
+        // `usize::try_from` rather than `as usize`, which would turn a
+        // negative offset into ~2^64 and merely *look* like a mismatch.
+        let Some(skip1_end_fp) = (r.read_i16()? as i64)
+            .checked_add(r.position() as i64)
+            .and_then(|fp| usize::try_from(fp).ok())
+        else {
+            return Err(corrupted(
+                "level-1 skip entry: skip1EndFP is not a representable file offset",
+            ));
+        };
         // `numImpactBytes` (step 3b): another plain `readShort`, non-negative
         // (a length). Then decode that many raw impact bytes (step 3c).
-        let num_impact_bytes = r.read_i16()? as usize;
+        //
+        // Signed on the wire, so a corrupt `.doc` can put a negative here.
+        // `as usize` would sign-extend that to ~2^64 and the `impact_start +`
+        // below would overflow -- a panic in a debug build, which through the
+        // FFI is a dead JVM. Java gets a `NegativeArraySizeException`; this
+        // port reports the corruption it is.
+        let num_impact_bytes = wire_length(r.read_i16()? as i64, "level-1 impacts")?;
         let impact_start = r.position();
-        let impact_bytes = r.slice(impact_start, impact_start + num_impact_bytes)?;
+        impact_bytes = r.slice(
+            impact_start,
+            add_wire_offset(impact_start, num_impact_bytes)?,
+        )?;
         r.skip(num_impact_bytes)?;
-        impacts = decode_impacts(impact_bytes)?;
         if index_has_pos {
-            let _pos_end_fp_delta = r.read_vlong()?;
-            let _pos_buffer_upto = r.read_byte()?;
-            if index_has_offsets_or_payloads {
-                let _pay_end_fp_delta = r.read_vlong()?;
-                let _pay_buffer_upto = r.read_vint()?;
-            }
+            pos_skip = Some(read_pos_skip(r, index_has_offsets_or_payloads)?);
         }
-        debug_assert_eq!(r.position(), skip1_end_fp);
+        check_wire_position(r.position(), skip1_end_fp, "level-1 skip entry")?;
     }
 
     Ok(Level1Entry {
         doc_delta,
         doc_end_fp,
-        impacts,
+        impact_bytes,
+        pos_skip,
+    })
+}
+
+/// `Lucene104PostingsReader.readLevel0PosData` (and the byte-identical block
+/// inside `skipLevel1To`): the `.pos`/`.pay` skip sub-fields of one level-0
+/// header or level-1 entry.
+///
+/// `payloadByteUpto` is read and discarded on purpose, and it is the one
+/// field here that is genuinely not needed -- **on every path**, not just
+/// most. Java stores it (`seekPosData`'s `payloadByteUpto = payUpto`) and
+/// then overwrites it before it can be read:
+///
+/// - `seekPosData` also sets `posBufferUpto = BLOCK_SIZE`, so `skipPositions`'
+///   `leftInBlock` is `0` and it always takes the `else` branch, which ends
+///   `payloadByteUpto = sumOverRange(payloadLengthBuffer, 0, toSkip)`;
+/// - and when `toSkip == 0` `skipPositions` does not run at all, but
+///   `nextPosition` then refills, and both `refillOffsetsOrPayloads` and
+///   `refillLastPositionBlock` assign `payloadByteUpto = 0`.
+///
+/// So recomputing it from the landing block's own decoded lengths is not an
+/// approximation of Java, it is the same number by a route that does not let
+/// a file-derived value index a byte run. It is still *parsed*, because the
+/// bytes are there and nothing after them is self-delimiting.
+fn read_pos_skip(r: &mut SliceInput, index_has_offsets_or_payloads: bool) -> Result<PosSkip> {
+    let pos_end_fp_delta = r.read_vlong()? as u64;
+    let pos_buffer_upto = r.read_byte()?;
+    let mut pay_end_fp_delta = 0u64;
+    if index_has_offsets_or_payloads {
+        pay_end_fp_delta = r.read_vlong()? as u64;
+        let _pay_buffer_upto = r.read_vint()?;
+    }
+    Ok(PosSkip {
+        pos_end_fp_delta,
+        pos_buffer_upto,
+        pay_end_fp_delta,
     })
 }
 
@@ -1463,6 +2640,10 @@ struct FullBlockHeader<'a> {
     /// traffic, most of that on blocks the cursor went on to skip without ever
     /// looking at a bound.
     impact_bytes: &'a [u8],
+    /// This block's `.pos`/`.pay` skip pointers, or `None` when the field
+    /// does not index positions (or has no freqs, in which case the whole
+    /// freq-gated region including these is absent). See [`PosSkip`].
+    pos_skip: Option<PosSkip>,
 }
 
 /// Reads one full block's level-0 header (see [`FullBlockHeader`]) without
@@ -1474,9 +2655,32 @@ fn read_full_block_header<'a>(
     index_has_pos: bool,
     index_has_offsets_or_payloads: bool,
 ) -> Result<FullBlockHeader<'a>> {
-    let _level0_num_bytes = r.read_vlong()?;
+    // `level0NumBytes` (`numSkipBytes` on the write side): the byte length,
+    // from right here, of everything up to the block *body* -- the two
+    // `vint15`/`vlong15` header fields, the impacts run, and the pos/pay skip
+    // sub-fields. `skipLevel0To` uses it to `seek` straight past a block's
+    // metadata when it wants neither impacts nor positions; this reader
+    // computes the same position by parsing, and so can *check* the two
+    // agree.
+    //
+    // That check earns its keep now that the region it spans contains two
+    // variable-width sub-fields whose very presence is decided by
+    // `index_has_pos`/`index_has_offsets_or_payloads` -- values that come from
+    // `FieldInfos`, not from this stream. A field opened with the wrong
+    // `has_payloads`, or a corrupt vlong, otherwise mis-frames `body_start`
+    // and the body decodes plausible garbage with no error at all. It is the
+    // level-0 twin of `read_level1_entry`'s `skip1EndFP` check.
+    let level0_num_bytes = r.read_vlong()?;
+    let skip0_end = add_wire_offset(
+        r.position(),
+        wire_length(level0_num_bytes, "level-0 skip header")?,
+    )?;
     let doc_delta = read_vint15(r)?;
-    let last_doc_id = prev_doc_id + doc_delta;
+    // `read_vint15` off disk: a corrupt `.doc` overflows the running doc id,
+    // which is a debug-build panic. The claim is checked against the block
+    // body anyway (`advance`'s post-refill search, and `check_wire_position`),
+    // so a wrapped value is caught there rather than here.
+    let last_doc_id = prev_doc_id.wrapping_add(doc_delta);
     let block_length = read_vlong15(r)?;
     // `level0DocEndFP` in `Lucene104PostingsReader.doMoveToNextLevel0Block`
     // (`Lucene104PostingsReader.java:743-744`) is computed *immediately*
@@ -1485,38 +2689,47 @@ fn read_full_block_header<'a>(
     // `body_start` below) through the end of the whole block, so it
     // includes the impacts-length-prefixed bytes and pos/pay skip fields,
     // not just the `bitsPerValue`-onward body.
-    let body_end = r.position() + block_length as usize;
+    // `block_length` is a `vlong15` off disk: negative or absurd values are
+    // reachable on a corrupt `.doc`, and `position() + (negative as usize)`
+    // overflows -- a panic in a debug build. A bad-but-representable value
+    // still ends up out of range, and the `seek`/`slice` that uses `body_end`
+    // reports that as EOF.
+    let body_end = add_wire_offset(r.position(), wire_length(block_length, "level-0 block")?)?;
     let mut impact_bytes: &[u8] = &[];
+    let mut pos_skip: Option<PosSkip> = None;
     if index_has_freq {
         // Impacts byte-length is a plain vint here (`doMoveToNextLevel0Block`,
         // `Lucene104PostingsReader.java:746`), unlike level-1's vlong-prefixed
         // `numSkipBytes` -- confirmed against the reader source rather than
         // assumed from the tail-block/level-1 shape.
-        let impacts_len = r.read_vint()? as usize;
+        // `read_vint` decodes a negative value from a five-byte varint with
+        // the sign bit set, so this length is not trustworthy without a
+        // check: `read_length` rejects negatives and anything longer than the
+        // bytes actually left, which is what keeps `impacts_start +` below
+        // from overflowing (a debug-build panic) on a corrupt `.doc`.
+        let impacts_len = r.read_length("level-0 impacts")?;
         let impacts_start = r.position();
-        impact_bytes = r.slice(impacts_start, impacts_start + impacts_len)?;
+        impact_bytes = r.slice(impacts_start, add_wire_offset(impacts_start, impacts_len)?)?;
         r.skip(impacts_len)?;
 
-        // Level-0 pos/pay skip data (`Lucene104PostingsReader.java:754-761`):
-        // parsed for wire-order correctness (this reader never skips ahead
-        // with it for `.pos`/`.pay` themselves, only for `.doc`) only when
-        // the field indexes positions.
+        // Level-0 pos/pay skip data (`Lucene104PostingsReader.java:754-761`,
+        // `readLevel0PosData`): where in `.pos`/`.pay` this block's documents'
+        // occurrences begin. [`LazyDocsCursor`] accumulates it so a
+        // positional walk can seek straight there instead of summing every
+        // preceding document's frequency.
         if index_has_pos {
-            let _pos_end_fp_delta = r.read_vlong()?;
-            let _pos_buffer_upto = r.read_byte()?;
-            if index_has_offsets_or_payloads {
-                let _pay_end_fp_delta = r.read_vlong()?;
-                let _pay_buffer_upto = r.read_vint()?;
-            }
+            pos_skip = Some(read_pos_skip(r, index_has_offsets_or_payloads)?);
         }
     }
 
     let body_start = r.position();
+    check_wire_position(body_start, skip0_end, "level-0 skip header")?;
     Ok(FullBlockHeader {
         last_doc_id,
         body_start,
         body_end,
         impact_bytes,
+        pos_skip,
     })
 }
 
@@ -1569,7 +2782,7 @@ pub mod test_only_block_decode_counter {
     }
 
     pub fn record_decode() {
-        DECODES.with(|c| c.set(c.get() + 1));
+        DECODES.with(|c| c.set(c.get().wrapping_add(1)));
     }
 
     pub fn reset() {
@@ -1581,6 +2794,103 @@ pub mod test_only_block_decode_counter {
     }
 }
 
+/// `Error::Store(Corrupted)` with `msg` -- the one thing every wire-level
+/// disagreement in this module returns, spelled once.
+fn corrupted(msg: impl Into<String>) -> Error {
+    Error::Store(lucene_store::Error::Corrupted(msg.into()))
+}
+
+/// A byte length read off disk, validated before it is used to size or offset
+/// anything.
+///
+/// The `.doc`/`.pos`/`.pay` streams write lengths as `readShort`, `readVInt`
+/// and `readVLong15`, all of which can decode to a **negative** number from
+/// corrupt bytes. `negative as usize` sign-extends to roughly `2^64`, and the
+/// `base + len` that follows then overflows -- which in a debug build is a
+/// panic, and a panic in a debug build of the FFI takes the JVM down with it
+/// (`c8`'s finding 16 and the lazy-cursor tail block are the same class).
+/// Java's readers get an exception out of the negative array size instead.
+fn wire_length(value: i64, what: &str) -> Result<usize> {
+    if value < 0 {
+        return Err(corrupted(format!("{what}: negative byte length {value}")));
+    }
+    Ok(value as usize)
+}
+
+/// `base + len` where `len` came off disk: an overflow is corruption, not an
+/// arithmetic bug of ours, so it is reported rather than panicked on. The
+/// resulting offset is still bounds-checked by whatever `slice`/`seek` uses
+/// it -- this only guarantees the addition itself is answerable.
+fn add_wire_offset(base: usize, len: usize) -> Result<usize> {
+    base.checked_add(len).ok_or_else(|| {
+        corrupted(format!(
+            "byte length {len} overflows the file offset {base}"
+        ))
+    })
+}
+
+/// A count of documents or occurrences read off disk, as a `usize` that is
+/// safe to compare, divide and size with.
+///
+/// The two rejections are different in kind and are reported as such. A
+/// negative count is corruption: no writer emits one. A count above
+/// `u32::MAX` is merely past **this port's** ceiling -- `totalTermFreq` is a
+/// `long` in Lucene, and a stop-word in a segment of hundreds of millions of
+/// documents really can exceed 2^32 occurrences -- because the flat position
+/// streams here index with `u32`. That is a limitation to name, not a damaged
+/// file to report.
+fn wire_count(value: i64, what: &str) -> Result<usize> {
+    if value < 0 {
+        return Err(corrupted(format!("{what}: negative count {value}")));
+    }
+    if value > u32::MAX as i64 {
+        return Err(Error::Unsupported(
+            "total_term_freq exceeds u32::MAX: this port's flat position streams are indexed \
+             with u32, so a term with more than 2^32 occurrences cannot be walked",
+        ));
+    }
+    Ok(value as usize)
+}
+
+/// Splits `n` occurrences into whole 256-wide `PForUtil` blocks plus the
+/// `refillLastPositionBlock` vint tail -- `totalTermFreq / BLOCK_SIZE` and
+/// `totalTermFreq % BLOCK_SIZE`, the two numbers every `.pos` walk starts
+/// from.
+// ARITH: `BLOCK_SIZE` is the compile-time constant 256, so neither the
+// division nor the remainder can divide by zero, and neither can overflow
+// (`usize / c` and `usize % c` are both bounded by `n`).
+#[allow(clippy::arithmetic_side_effects)]
+#[inline]
+fn full_blocks_and_tail(n: usize) -> (usize, usize) {
+    (n / BLOCK_SIZE as usize, n % BLOCK_SIZE as usize)
+}
+
+/// Checks that a decode landed exactly where a **length field read off the
+/// same file** said it would, and returns a decode error if it did not.
+///
+/// The `.doc` stream records two such lengths redundantly: a level-0 header's
+/// `level0NumBytes` (the byte length of the block body that follows) and a
+/// level-1 entry's `skip1EndFP` (the byte length of that entry's own
+/// metadata). Neither is derivable from the data it measures, so on a corrupt
+/// file the decode ends somewhere else, and every byte after it is garbage.
+///
+/// Java asserts both (`assert docIn.getFilePointer() == blockEndFP`,
+/// `assert docIn.getFilePointer() == skip1EndFP`), which is a no-op without
+/// `-ea`. This port had `debug_assert_eq!`, which is a no-op in release and a
+/// *panic* in debug — neither is what the rest of this module does with a
+/// corrupt file, and a panic in a debug build of the FFI takes the JVM down.
+/// `debug_assert` is for invariants this code's own arithmetic guarantees;
+/// these are values read off disk. Both are hard decode errors now.
+/// (`c9-check-index`'s byte-flipping sweep reaches the first one.)
+fn check_wire_position(position: usize, expected: usize, what: &str) -> Result<()> {
+    if position != expected {
+        return Err(corrupted(format!(
+            "{what}: decode ended at {position} but the file's own length field claims {expected}"
+        )));
+    }
+    Ok(())
+}
+
 /// Decodes a full block's body (the `bitsPerValue` token onward) — `r` must
 /// already be positioned at [`FullBlockHeader::body_start`]. Shared by
 /// [`DocInput::read_postings`] (eager path) and [`LazyDocsCursor`] (lazy path) so
@@ -1590,6 +2900,7 @@ fn decode_full_block_body(
     r: &mut SliceInput,
     prev_doc_id: i32,
     index_has_freq: bool,
+    needs_freq: bool,
     scratch: &mut BlockScratch,
     docs: &mut [i32; BLOCK_SIZE as usize],
     freqs: &mut [i32; BLOCK_SIZE as usize],
@@ -1602,17 +2913,31 @@ fn decode_full_block_body(
         scratch
             .for_util
             .decode(bits_per_value_byte as u32, r, doc_deltas)?;
-        let mut sum: i64 = prev_doc_id as i64;
-        for (d, &delta) in docs.iter_mut().zip(doc_deltas.iter()) {
-            sum += delta as i64;
-            *d = sum as i32;
+        // ARITH: `sum` starts inside `i32`'s range and gains at most
+        // `u32::MAX` per iteration over the fixed 256-entry `doc_deltas`, so
+        // `|sum| < 2^31 + 256 * 2^32 < 2^41` -- three orders of magnitude
+        // inside `i64`. The hottest loop in the file; no per-doc check.
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            let mut sum: i64 = prev_doc_id as i64;
+            for (d, &delta) in docs.iter_mut().zip(doc_deltas.iter()) {
+                sum += delta as i64;
+                *d = sum as i32;
+            }
         }
     } else if bits_per_value_byte == 0 {
         // "0 is used to record that all 256 docs in the block are
         // consecutive" (`Lucene104PostingsReader.refillFullBlock`): every
         // delta is 1, no bytes follow.
         for (i, d) in docs.iter_mut().enumerate() {
-            *d = prev_doc_id + 1 + i as i32;
+            // `prev_doc_id` descends from file deltas; `wrapping_add` for the
+            // same reason every other accumulator in this file uses it.
+            //
+            // ARITH: `docs` is `[i32; BLOCK_SIZE]`, so `i < 256` and
+            // `1 + i as i32 <= 256`.
+            #[allow(clippy::arithmetic_side_effects)]
+            let delta = 1 + i as i32;
+            *d = prev_doc_id.wrapping_add(delta);
         }
     } else {
         // Dense/unary bit-set encoding of doc deltas (`bitsPerValue < 0`,
@@ -1626,6 +2951,10 @@ fn decode_full_block_body(
         // term present in every document of a run, e.g. this port's own
         // `big`/"everywhere" fixture) commonly take this path, so it isn't
         // an edge case to skip.
+        // ARITH: this branch is `bits_per_value_byte < 0` on an `i8`, so the
+        // widened value is in `-128..=-1` and its negation in `1..=128` --
+        // `i32::MIN`, the one input unary `-` cannot answer, is unreachable.
+        #[allow(clippy::arithmetic_side_effects)]
         let num_longs = (-(bits_per_value_byte as i32)) as usize;
         // `bits_per_value_byte` is an `i8`, so `num_longs <= 128` however
         // corrupt the file is -- which is also Lucene's own bound
@@ -1635,20 +2964,30 @@ fn decode_full_block_body(
         for w in words.iter_mut() {
             *w = r.read_i64()? as u64;
         }
-        let doc_bit_set_base = prev_doc_id as i64 + 1;
-        let mut found = 0usize;
-        'words: for (word_idx, &word) in words.iter().enumerate() {
-            let mut bits = word;
-            while bits != 0 {
-                let bit = bits.trailing_zeros() as i64;
-                docs[found] = (doc_bit_set_base + (word_idx as i64) * 64 + bit) as i32;
-                found += 1;
-                if found == BLOCK_SIZE as usize {
-                    break 'words;
+        // ARITH: `prev_doc_id` is an `i32`, so `+ 1` is exact in `i64`;
+        // `word_idx < num_longs <= 128` so `word_idx * 64 <= 8128`; `bit` is
+        // a `trailing_zeros` of a non-zero `u64`, so `0..=63`; and the
+        // running sum stays under `2^31 + 8191 < 2^32`. `found` is capped at
+        // `BLOCK_SIZE` by the check inside the loop, which is also what keeps
+        // `docs[found]` in bounds. `bits - 1` is guarded by `bits != 0`.
+        #[allow(clippy::arithmetic_side_effects)]
+        let found = {
+            let doc_bit_set_base = prev_doc_id as i64 + 1;
+            let mut found = 0usize;
+            'words: for (word_idx, &word) in words.iter().enumerate() {
+                let mut bits = word;
+                while bits != 0 {
+                    let bit = bits.trailing_zeros() as i64;
+                    docs[found] = (doc_bit_set_base + (word_idx as i64) * 64 + bit) as i32;
+                    found += 1;
+                    if found == BLOCK_SIZE as usize {
+                        break 'words;
+                    }
+                    bits &= bits - 1; // clear lowest set bit
                 }
-                bits &= bits - 1; // clear lowest set bit
             }
-        }
+            found
+        };
         if found != BLOCK_SIZE as usize {
             return Err(Error::Store(lucene_store::Error::Corrupted(
                 "full-block doc bit-set has fewer than BLOCK_SIZE set bits".into(),
@@ -1656,15 +2995,26 @@ fn decode_full_block_body(
         }
     }
 
-    if index_has_freq {
+    if index_has_freq && needs_freq {
         let freq_words = &mut scratch.words;
         scratch.for_util.pfor_decode(r, freq_words)?;
         for (f, &w) in freqs.iter_mut().zip(freq_words.iter()) {
             *f = w as i32;
         }
     } else {
-        // A field without freqs scores every occurrence as 1. Lucene fills
-        // `freqBuffer` the same way rather than branching per doc downstream.
+        if index_has_freq {
+            // `Lucene104PostingsReader.refillFullBlock`'s `needsFreq ==
+            // false` branch: the freq block is still *there* on the wire, so
+            // it has to be stepped over -- one token byte and a seek, versus
+            // a 256-value `PForUtil` unpack.
+            for_util::pfor_skip(r)?;
+        }
+        // A field without freqs -- or a consumer that did not ask for them
+        // ([`PostingsFlags::DocsOnly`]) -- scores every occurrence as 1.
+        // Lucene fills `freqBuffer` the same way rather than branching per
+        // doc downstream; where it instead defers via `freqFP`, this port
+        // makes "not requested" mean "not available", which is exactly the
+        // `PostingsEnum.NONE`/`DOCS` contract.
         freqs.fill(1);
     }
 
@@ -1676,45 +3026,75 @@ fn decode_full_block_body(
 /// group-varint + trailing-vint-freq-exceptions scheme the pre-existing
 /// single-block (`docFreq < BLOCK_SIZE`) path already implements, just with
 /// `prev_doc_id` seeded from the last full block instead of always `-1`.
-#[allow(clippy::too_many_arguments)]
+/// Decodes into caller-owned `docs`/`freqs` slices, whose common length is
+/// the block's doc count. Writing straight into the destination is what
+/// `Lucene104PostingsReader.refillRemainder` does too -- it decodes into the
+/// enumeration's own `docBuffer`/`freqBuffer` -- and it matters here because a
+/// term with `docFreq < BLOCK_SIZE` is *entirely* a tail block, so a cursor
+/// over one of those (the common shape by a wide margin) used to pay two
+/// `Vec` allocations plus two 256-entry copies to hand the result back into
+/// the buffers it already owned.
 fn read_tail_block(
     r: &mut SliceInput,
     prev_doc_id: i32,
-    count: usize,
     index_has_freq: bool,
-    docs: &mut Vec<i32>,
-    freqs: &mut Vec<i32>,
+    needs_freq: bool,
+    docs: &mut [i32],
+    freqs: &mut [i32],
 ) -> Result<()> {
-    let mut raw = vec![0u64; count];
-    r.read_group_vints(&mut raw)?;
+    let count = docs.len();
+    debug_assert_eq!(freqs.len(), count);
+    if count >= BLOCK_SIZE as usize {
+        return Err(Error::Store(lucene_store::Error::Corrupted(
+            "tail block must hold fewer than BLOCK_SIZE docs".into(),
+        )));
+    }
+    // On the stack, not the heap: a tail block is by definition shorter than
+    // `BLOCK_SIZE`, and this is the only decode a `docFreq < BLOCK_SIZE` term
+    // ever does, so a per-call allocation here is a per-*term* allocation.
+    // Lucene reads group-varints straight into its long-lived `docBuffer`.
+    let mut raw = [0u64; BLOCK_SIZE as usize];
+    let raw = &mut raw[..count];
+    r.read_group_vints(raw)?;
 
-    let start = docs.len();
-    docs.resize(start + count, 0);
-    freqs.resize(start + count, 1);
-    if index_has_freq {
-        for ((d, f), &v) in docs[start..]
-            .iter_mut()
-            .zip(freqs[start..].iter_mut())
-            .zip(raw.iter())
-        {
+    if index_has_freq && needs_freq {
+        for ((d, f), &v) in docs.iter_mut().zip(freqs.iter_mut()).zip(raw.iter()) {
             *f = (v & 1) as i32;
             *d = (v >> 1) as i32;
         }
-        for f in freqs[start..].iter_mut() {
+        for f in freqs.iter_mut() {
             if *f == 0 {
                 *f = r.read_vint()?;
             }
         }
+    } else if index_has_freq {
+        // `PostingsUtil.readVIntBlock`'s `decodeFreq == false` branch: the
+        // low bit is still the freq flag, so the doc deltas need shifting,
+        // but the trailing freq-exception vints are never read. Safe because
+        // the tail block is the last thing a term writes to `.doc`.
+        for (d, &v) in docs.iter_mut().zip(raw.iter()) {
+            *d = (v >> 1) as i32;
+        }
+        freqs.fill(1);
     } else {
-        for (d, &v) in docs[start..].iter_mut().zip(raw.iter()) {
+        for (d, &v) in docs.iter_mut().zip(raw.iter()) {
             *d = v as i32;
         }
+        // A field without freqs scores every occurrence as 1, same as
+        // `decode_full_block_body`'s own no-freq branch.
+        freqs.fill(1);
     }
 
-    let mut sum: i64 = prev_doc_id as i64;
-    for d in docs[start..].iter_mut() {
-        sum += *d as i64;
-        *d = sum as i32;
+    // ARITH: `sum` starts inside `i32`'s range and gains an `i32` per
+    // iteration over a slice the `count >= BLOCK_SIZE` guard above caps at
+    // 255 entries, so `|sum| < 2^31 * 256 < 2^39`.
+    #[allow(clippy::arithmetic_side_effects)]
+    {
+        let mut sum: i64 = prev_doc_id as i64;
+        for d in docs.iter_mut() {
+            sum += *d as i64;
+            *d = sum as i32;
+        }
     }
 
     Ok(())
@@ -1726,6 +3106,14 @@ fn read_tail_block(
 /// falls back to plain vints) — the write-side companion to
 /// [`DataInput::read_group_vints`], needed by [`crate::postings_writer`]'s
 /// tail-block encoder ([`read_tail_block`]'s exact inverse).
+// ARITH: `values` is a live slice, so `values.len() <= isize::MAX` and
+// `i <= values.len()` throughout (it only ever advances to a bound the loop
+// condition just proved), which keeps `i + 4` and `i + 1` inside a `usize`.
+// `v.leading_zeros() / 8 <= 3` on the `v != 0` branch, so `4 - ..` is `>= 1`
+// and `bytes - 1` is `>= 0`; `lens[j] <= 3`, so `lens[j] + 1 <= 4`. Nothing
+// here comes off disk -- this is the encoder `postings_writer` calls with
+// values it produced.
+#[allow(clippy::arithmetic_side_effects)]
 pub(crate) fn write_group_vints(out: &mut impl DataOutput, values: &[u32]) {
     let mut i = 0;
     while i + 4 <= values.len() {
@@ -1898,7 +3286,12 @@ impl<'p> PostingsCursor<'p> {
             self.started = true;
             // idx is already 0 (the first doc, if any).
         } else if self.idx < self.postings.docs.len() {
-            self.idx += 1;
+            // ARITH: guarded by the `else if` -- a live `Vec`'s length is at
+            // most `isize::MAX`.
+            #[allow(clippy::arithmetic_side_effects)]
+            {
+                self.idx += 1;
+            }
         }
         self.doc_id()
     }
@@ -1913,7 +3306,12 @@ impl<'p> PostingsCursor<'p> {
         self.started = true;
         let start = self.idx.min(self.postings.docs.len());
         let offset = self.postings.docs[start..].partition_point(|&d| d < target);
-        self.idx = start + offset;
+        // ARITH: `partition_point` over `docs[start..]` returns at most that
+        // sub-slice's length, so `start + offset <= docs.len()`.
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            self.idx = start + offset;
+        }
         self.doc_id()
     }
 }
@@ -1976,6 +3374,11 @@ impl<'p> PostingsCursor<'p> {
 pub struct LazyDocsCursor<'a> {
     r: SliceInput<'a>,
     index_has_freq: bool,
+    /// `needsFreq`: whether the consumer asked for frequencies
+    /// ([`PostingsFlags`]). When false the frequency block of every refilled
+    /// level-0 block is stepped over rather than unpacked, and every
+    /// [`Self::freq`] answers `1`.
+    needs_freq: bool,
     index_has_pos: bool,
     index_has_offsets_or_payloads: bool,
     /// This term's total `docFreq` — needed to recompute `doc_count_left` at
@@ -2036,6 +3439,72 @@ pub struct LazyDocsCursor<'a> {
     /// header, so its extent is not known without decoding) and once exhausted;
     /// `-1` before the first move.
     level0_last_doc_id: i32,
+    /// `level0PosEndFP`/`level0BlockPosUpto`/`level0PayEndFP`: the running
+    /// `.pos`/`.pay` state at the *end* of the last level-0 header this
+    /// cursor read, i.e. at the start of the block after it. Seeded from the
+    /// term's `posStartFP`/`payStartFP`, which is the state at the start of
+    /// block 0.
+    level0_pos: PosCursorState,
+    /// `level1PosEndFP`/`level1BlockPosUpto`/`level1PayEndFP`: the same at
+    /// the end of the last level-1 span entry read.
+    /// [`Self::skip_level1_to`] copies it into `level0_pos` at the top of
+    /// every iteration, exactly as `skipLevel1To` does.
+    level1_pos: PosCursorState,
+    /// The snapshot of `level0_pos` taken *before* the header of the block
+    /// the cursor is currently positioned on -- Java's `posFP`/`posUpto`/
+    /// `payFP` locals in `skipLevel0To`, which is what `seekPosData` is then
+    /// handed. This is the `.pos`/`.pay` origin of the current block's
+    /// documents.
+    block_pos_origin: PosCursorState,
+}
+
+/// A running `.pos`/`.pay` position: the absolute file pointers plus how many
+/// occurrences of the `.pos` block at `pos_fp` belong to earlier documents.
+///
+/// The `.doc` file carries these as deltas at every level-0 block header and
+/// level-1 span entry; a cursor accumulates them. `pos_fp`/`pay_fp` are
+/// `wrapping_add`ed from file values and only validated when a seek actually
+/// uses them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct PosCursorState {
+    pos_fp: u64,
+    pay_fp: u64,
+    /// `0..=255`: a single wire byte, so it can never index past a block.
+    pos_buffer_upto: u8,
+}
+
+impl PosCursorState {
+    /// `level0PosEndFP += docIn.readVLong(); level0BlockPosUpto =
+    /// docIn.readByte() & 0xFF;` and the `.pay` pair -- one skip record's
+    /// worth of movement.
+    ///
+    /// `wrapping_add`: both deltas are file values, and the only thing that
+    /// can be said about a corrupt one is that the seek it eventually feeds
+    /// will fail. Adding them with `+` would instead panic in a debug build,
+    /// which through the FFI is a dead JVM with no exception to catch.
+    #[inline]
+    fn advance(&mut self, skip: PosSkip) {
+        self.pos_fp = self.pos_fp.wrapping_add(skip.pos_end_fp_delta);
+        self.pay_fp = self.pay_fp.wrapping_add(skip.pay_end_fp_delta);
+        self.pos_buffer_upto = skip.pos_buffer_upto;
+    }
+}
+
+/// Where in `.pos`/`.pay` one document's occurrences begin, as
+/// `PostingsEnum.advance(doc)` leaves it.
+///
+/// This is `Lucene104PostingsReader`'s post-`seekPosData` state for one
+/// document: seek `.pos` to `pos_fp` and `.pay` to `pay_fp`, step over `skip`
+/// occurrences, and the next occurrence read is the document's first. `skip`
+/// is `posBufferUpto` from the skip data plus the frequencies of the
+/// documents ahead of the target *within its own level-0 block* -- Java's
+/// `accumulatePendingPositions`/`skipPositions` pair, which never looks at a
+/// frequency outside the current block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PositionOrigin {
+    pub pos_fp: u64,
+    pub pay_fp: u64,
+    pub skip: u64,
 }
 
 /// `VectorUtil.findNextGEQ`: index of the first entry `>= target` in an
@@ -2166,6 +3635,50 @@ impl<'a> LazyDocsCursor<'a> {
         self.level0_last_doc_id
     }
 
+    /// Where the current document's occurrences begin in `.pos`/`.pay`, from
+    /// `.doc`'s own skip data -- `Lucene104PostingsReader`'s `seekPosData`
+    /// arguments plus `accumulatePendingPositions`' in-block frequency sum,
+    /// bundled into one value.
+    ///
+    /// This is what makes a positional `advance(doc)` cost a skip rather than
+    /// a walk: `.doc`'s level-0 header and level-1 entry each carry the
+    /// `.pos`/`.pay` pointer their documents' occurrences start at, so the
+    /// only frequencies that have to be summed are the ones in the current
+    /// 256-document block. Nothing before it is read.
+    ///
+    /// `None` before the first `next_doc()`/`advance()` and once exhausted.
+    /// `Err` when the cursor was opened with [`PostingsFlags::DocsOnly`]
+    /// (the frequencies the sum needs were skipped, not decoded) or when a
+    /// decoded frequency is negative.
+    pub fn position_origin(&self) -> Result<Option<PositionOrigin>> {
+        if self.doc_id == -1 || self.doc_id == NO_MORE_DOCS {
+            return Ok(None);
+        }
+        if !self.needs_freq {
+            return Err(Error::Unsupported(
+                "position_origin needs a cursor opened with PostingsFlags::Freqs: the \
+                 in-block frequency sum it adds to the skip data was never decoded",
+            ));
+        }
+        // `posBufferUpto` is one wire byte, so at most 255; each frequency is
+        // bounded below by the check just under this, and there are at most
+        // `BLOCK_SIZE` of them, so the sum cannot overflow a `u64`.
+        let mut skip = self.block_pos_origin.pos_buffer_upto as u64;
+        for &freq in &self.block_freqs[..self.block_pos] {
+            let freq = u64::try_from(freq).map_err(|_| {
+                corrupted(format!(
+                    "negative per-doc frequency {freq} in the current .doc block"
+                ))
+            })?;
+            skip = skip.wrapping_add(freq);
+        }
+        Ok(Some(PositionOrigin {
+            pos_fp: self.block_pos_origin.pos_fp,
+            pay_fp: self.block_pos_origin.pay_fp,
+            skip,
+        }))
+    }
+
     /// `PostingsEnum.nextDoc()`: moves to the next doc, returning its ID (or
     /// [`NO_MORE_DOCS`] if there isn't one).
     ///
@@ -2186,6 +3699,16 @@ impl<'a> LazyDocsCursor<'a> {
     ///
     /// Falls back to `advance` at a block boundary and before the first call,
     /// which is where the state machine actually lives.
+    ///
+    /// `pending.is_some()` is the `needsRefilling` case, and it takes the same
+    /// fallback: a shallow move ([`Self::advance_shallow`]) leaves the cursor
+    /// positioned on a block whose body has not been unpacked, so
+    /// `block_docs`/`block_len` still describe the *previous* block and every
+    /// document left in them is behind the shallow position. Answering from
+    /// them would hand back a document the cursor has already moved past --
+    /// a backwards `nextDoc()`, which `DocIdSetIterator` forbids. Lucene's
+    /// `nextDoc` gates on exactly this (`if (doc == level0LastDocID ||
+    /// needsRefilling)`), and `advance` here already carried the same guard.
     #[inline]
     pub fn next_doc(&mut self) -> Result<i32> {
         if self.doc_id == NO_MORE_DOCS {
@@ -2195,8 +3718,14 @@ impl<'a> LazyDocsCursor<'a> {
         // `doc_id` to a real doc: `block_docs[block_pos] == doc_id` whenever
         // `block_pos < block_len`. So the next document, if this block still
         // has one, is the next slot -- no search needed.
+        // ARITH: `block_pos` is only ever assigned `0`, an offset strictly
+        // inside the current block, or `block_len` itself, and `block_len` is
+        // `BLOCK_SIZE` or the tail's `count < BLOCK_SIZE` -- so
+        // `block_pos <= 256` and the `+ 1` cannot overflow.
+        #[allow(clippy::arithmetic_side_effects)]
         let next = self.block_pos + 1;
-        if next < self.block_len {
+        debug_assert!(self.block_pos <= self.block_len && self.block_len <= BLOCK_SIZE as usize);
+        if self.pending.is_none() && next < self.block_len {
             self.block_pos = next;
             self.doc_id = self.block_docs[next];
             return Ok(self.doc_id);
@@ -2224,8 +3753,13 @@ impl<'a> LazyDocsCursor<'a> {
         // stale and must not answer an advance.
         if self.pending.is_none() && self.block_pos < self.block_len {
             let offset = find_next_geq(&self.block_docs[self.block_pos..self.block_len], target);
-            if self.block_pos + offset < self.block_len {
-                self.block_pos += offset;
+            // ARITH: `find_next_geq` returns at most the length of the slice
+            // it was given, so `block_pos + offset <= block_len <=
+            // BLOCK_SIZE`.
+            #[allow(clippy::arithmetic_side_effects)]
+            let landing = self.block_pos + offset;
+            if landing < self.block_len {
+                self.block_pos = landing;
                 self.doc_id = self.block_docs[self.block_pos];
                 return Ok(self.doc_id);
             }
@@ -2244,6 +3778,18 @@ impl<'a> LazyDocsCursor<'a> {
             // needed, so pay for it.
             self.refill()?;
             let offset = find_next_geq(&self.block_docs, target);
+            // `advance_shallow` only stops on a block whose header claims
+            // `last_doc_id >= target`, so a well-formed block always has a
+            // match. A corrupt `.doc` can claim one and then decode a body
+            // whose last doc is smaller -- nothing on the wire ties the
+            // level-0 header's `docDelta` to the body's own deltas -- and
+            // indexing at `BLOCK_SIZE` would panic instead of surfacing that.
+            if offset >= self.block_len {
+                return Err(corrupted(
+                    "full block's decoded doc IDs do not reach the last doc ID its level-0 \
+                     header claims",
+                ));
+            }
             self.block_pos = offset;
             self.doc_id = self.block_docs[offset];
             return Ok(self.doc_id);
@@ -2258,19 +3804,28 @@ impl<'a> LazyDocsCursor<'a> {
 
         // The tail block: no skip data on the wire at all, so there is nothing
         // to decide from and it must be decoded.
+        //
+        // `Lucene104PostingsReader.refillRemainder` asserts
+        // `docCountLeft >= 0 && docCountLeft < BLOCK_SIZE`. Here that is not an
+        // invariant of our own arithmetic: `doc_count_left` starts from the
+        // term's `docFreq`, which is read off disk, so a corrupt `.tim` can
+        // leave a remainder at or past `BLOCK_SIZE` and slicing the fixed-size
+        // block array by it panics instead of reporting the corruption.
+        if self.doc_count_left < 0 || self.doc_count_left >= BLOCK_SIZE {
+            return Err(Error::Store(lucene_store::Error::Corrupted(format!(
+                "tail block claims {} remaining documents, which is not in 0..{BLOCK_SIZE}",
+                self.doc_count_left
+            ))));
+        }
         let count = self.doc_count_left as usize;
-        let mut docs = Vec::with_capacity(count);
-        let mut freqs = Vec::with_capacity(count);
         read_tail_block(
             &mut self.r,
             self.prev_doc_id,
-            count,
             self.index_has_freq,
-            &mut docs,
-            &mut freqs,
+            self.needs_freq,
+            &mut self.block_docs[..count],
+            &mut self.block_freqs[..count],
         )?;
-        self.block_docs[..count].copy_from_slice(&docs);
-        self.block_freqs[..count].copy_from_slice(&freqs);
         self.block_len = count;
         self.doc_count_left = 0;
         // The tail block has no level-0 skip header (and hence no impacts) on
@@ -2322,7 +3877,16 @@ impl<'a> LazyDocsCursor<'a> {
         if let Some(p) = self.pending.take() {
             self.r.seek(p.body_end)?;
             self.prev_doc_id = p.last_doc_id;
-            self.doc_count_left -= BLOCK_SIZE;
+            // ARITH: a `PendingBlock` is only ever created on the
+            // `doc_count_left >= BLOCK_SIZE` branch of the loop below, and
+            // nothing reassigns or decrements `doc_count_left` while one is
+            // pending (`refill` is the only other consumer and it takes the
+            // same `pending`), so the counter is still `>= BLOCK_SIZE` here.
+            #[allow(clippy::arithmetic_side_effects)]
+            {
+                debug_assert!(self.doc_count_left >= BLOCK_SIZE);
+                self.doc_count_left -= BLOCK_SIZE;
+            }
         }
 
         loop {
@@ -2339,6 +3903,12 @@ impl<'a> LazyDocsCursor<'a> {
                 return Ok(NO_MORE_DOCS);
             }
 
+            // Sampled here, at the top of the iteration, exactly as
+            // `skipLevel0To` samples its `posFP`/`posUpto`/`payFP` locals:
+            // this is the `.pos`/`.pay` state at the start of whichever block
+            // the loop is about to look at.
+            let origin = self.level0_pos;
+
             if self.doc_count_left >= BLOCK_SIZE {
                 let header = read_full_block_header(
                     &mut self.r,
@@ -2348,12 +3918,27 @@ impl<'a> LazyDocsCursor<'a> {
                     self.index_has_offsets_or_payloads,
                 )?;
 
+                if let Some(skip) = header.pos_skip {
+                    self.level0_pos.advance(skip);
+                }
+
                 if header.last_doc_id < target {
                     self.r.seek(header.body_end)?;
                     self.prev_doc_id = header.last_doc_id;
-                    self.doc_count_left -= BLOCK_SIZE;
+                    // ARITH: guarded by the enclosing
+                    // `if self.doc_count_left >= BLOCK_SIZE`.
+                    #[allow(clippy::arithmetic_side_effects)]
+                    {
+                        self.doc_count_left -= BLOCK_SIZE;
+                    }
                     continue;
                 }
+
+                // `skipLevel0To`'s `posFP`/`posUpto`/`payFP` locals, handed
+                // to `seekPosData` once the loop settles: the state sampled
+                // *before* this block's own header advanced it, which is
+                // where this block's documents' occurrences begin.
+                self.block_pos_origin = origin;
 
                 // Impacts, yes -- a handful of vints, and the whole reason a
                 // caller is here. Body, no.
@@ -2372,7 +3957,10 @@ impl<'a> LazyDocsCursor<'a> {
             // without decoding it. Empty impacts mean "no bound available",
             // which every caller in this port treats as "cannot skip" -- the
             // same conservative answer Lucene reaches with its dummy
-            // `freq = Integer.MAX_VALUE` impact.
+            // `freq = Integer.MAX_VALUE` impact. Its `.pos`/`.pay` origin is
+            // known, though: `skipLevel0To`'s `else` branch breaks with the
+            // same snapshot every other exit uses.
+            self.block_pos_origin = origin;
             self.level0_impacts.clear();
             self.level0_last_doc_id = NO_MORE_DOCS;
             return Ok(NO_MORE_DOCS);
@@ -2391,15 +3979,24 @@ impl<'a> LazyDocsCursor<'a> {
             &mut self.r,
             p.base_doc_id,
             self.index_has_freq,
+            self.needs_freq,
             &mut self.scratch,
             &mut self.block_docs,
             &mut self.block_freqs,
         )?;
-        debug_assert_eq!(self.r.position(), p.body_end);
+        check_wire_position(self.r.position(), p.body_end, "full block body")?;
         self.block_len = BLOCK_SIZE as usize;
         self.block_pos = 0;
         self.prev_doc_id = p.last_doc_id;
-        self.doc_count_left -= BLOCK_SIZE;
+        // ARITH: same invariant as `advance_shallow`'s own `pending.take()`
+        // -- a `PendingBlock` exists only for a block `advance_shallow`
+        // reached with `doc_count_left >= BLOCK_SIZE`, and this is the only
+        // other place that consumes one.
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            debug_assert!(self.doc_count_left >= BLOCK_SIZE);
+            self.doc_count_left -= BLOCK_SIZE;
+        }
         Ok(())
     }
 
@@ -2423,8 +4020,18 @@ impl<'a> LazyDocsCursor<'a> {
         loop {
             self.prev_doc_id = self.level1_last_doc_id;
             self.r.seek(self.level1_doc_end_fp)?;
-            self.doc_count_left = self.doc_freq - self.level1_doc_count_upto;
-            self.level1_doc_count_upto += LEVEL1_NUM_DOCS;
+            // `skipLevel1To`'s `level0PosEndFP = level1PosEndFP` and friends:
+            // jumping to a span boundary resets the level-0 `.pos`/`.pay`
+            // state to the span's own, which is the whole reason the level-1
+            // entry carries it. Without this a positional walk after a
+            // level-1 jump would address `.pos` from wherever the last
+            // level-0 header left it, i.e. from the wrong span.
+            self.level0_pos = self.level1_pos;
+            // Both operands descend from `docFreq`, a term-dictionary value:
+            // `wrapping_*`, so a corrupt one produces a wrong (and then
+            // rejected) span rather than a debug-build panic.
+            self.doc_count_left = self.doc_freq.wrapping_sub(self.level1_doc_count_upto);
+            self.level1_doc_count_upto = self.level1_doc_count_upto.wrapping_add(LEVEL1_NUM_DOCS);
 
             if self.doc_count_left < LEVEL1_NUM_DOCS {
                 // Fewer than a full span remains: no level-1 entry precedes it.
@@ -2440,13 +4047,20 @@ impl<'a> LazyDocsCursor<'a> {
                 self.index_has_pos,
                 self.index_has_offsets_or_payloads,
             )?;
-            self.level1_last_doc_id += entry.doc_delta;
+            // Off disk; see `read_full_block_header`'s `doc_delta`.
+            self.level1_last_doc_id = self.level1_last_doc_id.wrapping_add(entry.doc_delta);
             self.level1_doc_end_fp = entry.doc_end_fp;
-            self.level1_impacts = entry.impacts;
+            if let Some(skip) = entry.pos_skip {
+                self.level1_pos.advance(skip);
+            }
 
             if self.level1_last_doc_id >= target {
                 // `target` is within this span: `r` is positioned at the
-                // span's first level-0 block header.
+                // span's first level-0 block header. This is also
+                // `skipLevel1To`'s `needsImpacts && level1LastDocID >= target`
+                // gate -- the impacts of a span being jumped over are never
+                // decoded, and on a long postings list that is most of them.
+                decode_impacts_into(entry.impact_bytes, &mut self.level1_impacts)?;
                 break;
             }
             // The whole span is behind `target`: loop again, which re-seeks to
@@ -2459,6 +4073,10 @@ impl<'a> LazyDocsCursor<'a> {
 
 #[cfg(test)]
 mod tests {
+    // The arithmetic gate is about values read off disk; a test's `i + 1` is
+    // not one (`docs/arithmetic-gate.md`, "Test code").
+    #![allow(clippy::arithmetic_side_effects)]
+
     use super::*;
     use lucene_store::data_output::DataOutput;
 
@@ -2537,6 +4155,28 @@ mod tests {
         bytes.write_vint(1); // freqDelta << 1 | 1, i.e. freqDelta=0, explicit flag
                              // no zlong bytes follow
         assert!(decode_impacts(&bytes).is_err());
+    }
+
+    #[test]
+    fn an_impacts_freq_delta_at_the_top_of_i32_wraps_rather_than_panicking() {
+        // `readImpacts` accumulates `freq += 1 + (freqDelta >>> 1)` in a Java
+        // `int`, which wraps. `freqDelta` is a `readVInt`, and a five-byte
+        // varint with the sign bit set decodes to a negative `i32`, so
+        // `(freqDelta as u32) >> 1` reaches `i32::MAX` -- and the `1 +` in
+        // front of it overflowed *before* the accumulator's `wrapping_add`
+        // ever saw it. That is a debug-build panic, which through the FFI is
+        // a dead JVM, for an impacts run a corrupt `.doc` can carry.
+        //
+        // A single-bit flip cannot produce this five-byte pattern, which is
+        // why the byte-flip sweeps do not reach it.
+        let mut bytes = Vec::new();
+        bytes.write_vint(-2); // freqDelta == -2: (0xFFFF_FFFE >> 1) == i32::MAX,
+                              // and the low bit is clear so no zlong follows
+        let impacts = decode_impacts(&bytes).expect("a wrapped freq, not a panic");
+        assert_eq!(impacts.len(), 1);
+        // 0 + 1 + i32::MAX, wrapped: exactly what Java's `int` produces.
+        assert_eq!(impacts[0].freq, i32::MIN);
+        assert_eq!(impacts[0].norm, 1); // low bit clear -> implicit +1
     }
 
     fn header_and_footer(codec: &str, id: &[u8; ID_LENGTH]) -> (Vec<u8>, Vec<u8>) {
@@ -2958,10 +4598,11 @@ mod tests {
                             // 3 valid impact bytes: freqDelta=0, normDelta=0 (implicit +1 each)
                             // three times over, decoding to (freq=1,norm=1), (2,2), (3,3).
         bytes.write_bytes(&[0x00, 0x00, 0x00]);
-        bytes.write_vlong(50); // posEndFP delta (discarded)
-        bytes.write_byte(7); // posBufferUpto (discarded)
-        bytes.write_vlong(60); // payEndFP delta (discarded)
-        bytes.write_vint(9); // payBufferUpto (discarded)
+        bytes.write_vlong(50); // posEndFP delta
+        bytes.write_byte(7); // posBufferUpto
+        bytes.write_vlong(60); // payEndFP delta
+        bytes.write_vint(9); // payloadByteUpto (parsed, then recomputed -- see
+                             // `read_pos_skip`)
         let metadata_end = bytes.len();
 
         let mut r = SliceInput::new(&bytes);
@@ -2971,13 +4612,18 @@ mod tests {
         // r is left at the start of the span's first level-0 block header.
         assert_eq!(r.position(), metadata_end);
         assert_eq!(
-            entry.impacts,
+            decode_impacts(entry.impact_bytes).unwrap(),
             vec![
                 Impact { freq: 1, norm: 1 },
                 Impact { freq: 2, norm: 2 },
                 Impact { freq: 3, norm: 3 },
             ]
         );
+        // The `.pos`/`.pay` skip pointers are retained now, not discarded.
+        let skip = entry.pos_skip.expect("a positions-indexing field has them");
+        assert_eq!(skip.pos_end_fp_delta, 50);
+        assert_eq!(skip.pos_buffer_upto, 7);
+        assert_eq!(skip.pay_end_fp_delta, 60);
     }
 
     #[test]
@@ -3027,7 +4673,11 @@ mod tests {
         freq_value: i32,
         impacts: &[Impact],
     ) {
-        let mut body = Vec::new();
+        // The metadata region (impacts, and the pos/pay skip fields this
+        // helper's fields never have) is measured separately from the block
+        // body, because `level0NumBytes` spans the former plus the two header
+        // fields while `blockLength` spans the former plus the latter.
+        let mut meta_region = Vec::new();
         if index_has_freq {
             let mut impact_bytes = Vec::new();
             write_impacts(&mut impact_bytes, impacts);
@@ -3035,25 +4685,34 @@ mod tests {
             // (`read_full_block_header`'s doc comment) — `write_vint` matches
             // that (not `write_vlong`, even though the two happen to agree
             // byte-for-byte for any value small enough to fit both).
-            body.write_vint(impact_bytes.len() as i32);
-            body.write_bytes(&impact_bytes);
+            meta_region.write_vint(impact_bytes.len() as i32);
+            meta_region.write_bytes(&impact_bytes);
         }
-        body.write_byte(0); // bitsPerValue == 0: all 256 deltas are 1.
+        let mut block_body = Vec::new();
+        block_body.write_byte(0); // bitsPerValue == 0: all 256 deltas are 1.
         if index_has_freq {
-            body.write_byte(0); // PForUtil token: bitsPerValue=0, numExceptions=0
-            body.write_vint(freq_value);
+            block_body.write_byte(0); // PForUtil token: bitsPerValue=0, numExceptions=0
+            block_body.write_vint(freq_value);
         }
 
         // `blockLength` is measured from right after this field (i.e. from
         // right here) through the end of the whole block -- see
-        // `read_full_block_header`'s doc comment -- so it equals `body.len()`
-        // exactly, since this helper writes no impacts/pos/pay bytes before
-        // `body` starts recording (`index_has_freq`'s impacts-length vint
-        // above is itself part of `body`).
-        out.write_vlong(body.len() as i64); // level0NumBytes (not used to skip in these tests)
+        // `read_full_block_header`'s doc comment.
+        //
+        // `level0NumBytes` (`numSkipBytes`) is measured from right after
+        // *itself* through the start of the block body, i.e. the two
+        // fixed-width header fields plus the metadata region --
+        // `Lucene104PostingsWriter.flushDocBlock`'s `numSkipBytes =
+        // level0Output.size()` sampled after the impacts/pos/pay region, then
+        // `+= scratchOutput.size()`. This helper used to write `body.len()`
+        // here, which is neither, and no reader noticed until
+        // `read_full_block_header` started checking the two agree.
+        let header_fields_len = 4; // vint15 docDelta + vlong15 blockLength
+        out.write_vlong((meta_region.len() + header_fields_len) as i64);
         out.write_i16(BLOCK_SIZE as i16); // docDelta via writeVInt15
-        out.write_i16(body.len() as i16); // blockLength via writeVLong15
-        out.write_bytes(&body);
+        out.write_i16((meta_region.len() + block_body.len()) as i16); // blockLength via writeVLong15
+        out.write_bytes(&meta_region);
+        out.write_bytes(&block_body);
     }
 
     #[test]
@@ -3155,7 +4814,7 @@ mod tests {
         for _ in 0..num_longs {
             body.write_bytes(&0x5555_5555_5555_5555u64.to_le_bytes());
         }
-        doc.write_vlong(body.len() as i64);
+        doc.write_vlong(4); // level0NumBytes: the two header fields, no metadata region
         doc.write_i16(1);
         doc.write_i16(body.len() as i16);
         doc.write_bytes(&body);
@@ -3185,7 +4844,7 @@ mod tests {
         let mut body = Vec::new();
         body.write_byte((-4i8) as u8); // 4 longs = 256 bits, but none set
         body.extend_from_slice(&[0u8; 32]);
-        doc.write_vlong(body.len() as i64);
+        doc.write_vlong(4); // level0NumBytes: the two header fields, no metadata region
         doc.write_i16(1);
         doc.write_i16(body.len() as i16);
         doc.write_bytes(&body);
@@ -3222,14 +4881,17 @@ mod tests {
         for (i, d) in deltas.iter_mut().enumerate() {
             *d = if i % 2 == 0 { 1 } else { 3 };
         }
+        let mut source = deltas;
         let bits_per_value = 2u32;
         let mut packed = Vec::new();
-        for_util::for_encode(&deltas, bits_per_value, &mut packed);
+        // `for_encode` collapses lanes in place (as Java's `ForUtil.encode`
+        // does), so hand it a scratch copy -- `deltas` is the expectation below.
+        for_util::for_encode(&mut source, bits_per_value, &mut packed);
 
         let mut body = Vec::new();
         body.write_byte(bits_per_value as u8);
         body.write_bytes(&packed);
-        doc.write_vlong(body.len() as i64);
+        doc.write_vlong(4); // level0NumBytes: the two header fields, no metadata region
         doc.write_i16(1);
         doc.write_i16(body.len() as i16);
         doc.write_bytes(&body);
@@ -3468,7 +5130,7 @@ mod tests {
         let mut body0 = Vec::new();
         body0.write_byte((-4i8) as u8); // 4 longs = 256 bits, none set -> corrupt
         body0.extend_from_slice(&[0u8; 32]);
-        span.write_vlong(body0.len() as i64); // level0NumBytes
+        span.write_vlong(4); // level0NumBytes: the two header fields, no metadata region
         span.write_i16(BLOCK_SIZE as i16); // docDelta = 256
         span.write_i16(body0.len() as i16); // blockLength
         span.write_bytes(&body0);
@@ -3552,6 +5214,449 @@ mod tests {
     }
 
     #[test]
+    fn lazy_cursor_next_doc_after_advance_shallow_moves_to_the_shallow_block() {
+        // Two full blocks (docs 0..255 and 256..511). Walk into block 0, then
+        // shallow-advance into block 1 and call `next_doc()`.
+        //
+        // `advance_shallow` reads block 1's header and impacts but leaves its
+        // body unpacked, so `block_docs` still holds *block 0*. Answering
+        // `next_doc()` out of that buffer hands back doc 1 -- behind the
+        // position the shallow move just established, and described by block
+        // 1's impacts rather than its own block's. Lucene gates its `nextDoc`
+        // on exactly this (`if (doc == level0LastDocID || needsRefilling)`)
+        // and lands on the shallow block's first doc, 256.
+        let id = [41u8; ID_LENGTH];
+        let (mut doc, footer) = header_and_footer(DOC_CODEC, &id);
+        let doc_start_fp = doc.len() as u64;
+        write_full_block(&mut doc, false, 0);
+        write_full_block(&mut doc, false, 0);
+        doc.extend_from_slice(&footer);
+
+        let input = DocInput::open(&doc, &id, "").unwrap();
+        let meta = TermMetadata {
+            doc_start_fp,
+            singleton_doc_id: -1,
+            ..TermMetadata::EMPTY
+        };
+        let mut cursor = input
+            .lazy_cursor(meta, 2 * BLOCK_SIZE, IndexOptions::Docs, false)
+            .unwrap();
+
+        assert_eq!(cursor.next_doc().unwrap(), 0);
+        assert_eq!(cursor.advance_shallow(300).unwrap(), 2 * BLOCK_SIZE - 1);
+        assert_eq!(
+            cursor.next_doc().unwrap(),
+            BLOCK_SIZE,
+            "next_doc must materialize the shallow-positioned block, not answer \
+             from the stale previous one"
+        );
+        // And the walk continues from there, still in order.
+        assert_eq!(cursor.next_doc().unwrap(), BLOCK_SIZE + 1);
+    }
+
+    #[test]
+    fn a_level1_entry_that_disagrees_with_its_own_skip1_end_fp_is_rejected() {
+        // The level-1 entry's `skip1EndFP` short is the byte length of that
+        // entry's own metadata, read off the same file as the metadata it
+        // measures. Java asserts it; this port used to `debug_assert_eq!` it,
+        // i.e. panic in a debug build on a corrupt `.doc`. Build a valid
+        // `docFreq >= LEVEL1_NUM_DOCS` term's first level-1 entry, then
+        // corrupt only that short.
+        let id = [42u8; ID_LENGTH];
+        let (mut doc, footer) = header_and_footer(DOC_CODEC, &id);
+        let doc_start_fp = doc.len() as u64;
+
+        // Level-1 entry: docDelta, span length, then (freqs) skip1EndFP,
+        // numImpactBytes, impact bytes.
+        doc.write_vint(1000); // docDelta
+        doc.write_vlong(0); // span byte length (unused by this path)
+        let skip1_pos = doc.len();
+        doc.write_i16(0); // skip1EndFP placeholder -- patched below
+        doc.write_i16(0); // numImpactBytes = 0
+        let after = doc.len();
+        doc.extend_from_slice(&footer);
+        // Honest value first: from just after the skip1EndFP short to `after`.
+        let honest = (after - (skip1_pos + 2)) as i16;
+        doc[skip1_pos..skip1_pos + 2].copy_from_slice(&honest.to_le_bytes());
+
+        let input = DocInput::open(&doc, &id, "").unwrap();
+        let meta = TermMetadata {
+            doc_start_fp,
+            singleton_doc_id: -1,
+            ..TermMetadata::EMPTY
+        };
+        // Sanity: with the honest length the entry parses (it fails later, on
+        // the blocks that are not there, but not on this check).
+        let honest_err = input
+            .read_postings(meta, LEVEL1_NUM_DOCS, IndexOptions::DocsAndFreqs, false)
+            .unwrap_err();
+        assert!(
+            !format!("{honest_err}").contains("level-1 skip entry"),
+            "the honest entry must not trip the skip1EndFP check: {honest_err}"
+        );
+
+        // Now lie about it by one byte.
+        doc[skip1_pos..skip1_pos + 2].copy_from_slice(&(honest + 1).to_le_bytes());
+        let input = DocInput::open(&doc, &id, "").unwrap();
+        let err = input
+            .read_postings(meta, LEVEL1_NUM_DOCS, IndexOptions::DocsAndFreqs, false)
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::Store(lucene_store::Error::Corrupted(_)))
+                && format!("{err}").contains("level-1 skip entry"),
+            "expected a Corrupted decode error naming the level-1 entry, got {err:?}"
+        );
+    }
+
+    /// A length read off disk must never become an unchecked `as usize`.
+    ///
+    /// `numImpactBytes` in a level-1 entry is a signed `readShort`; a corrupt
+    /// `.doc` can put a negative there, and `negative as usize` sign-extends
+    /// to ~2^64, so the `impact_start + len` that follows overflows -- which
+    /// in a debug build is a panic, and a panic in a debug build of the FFI
+    /// takes the JVM down. Java throws instead. Same class as the four
+    /// `debug_assert` sites c8 converted and the lazy-cursor tail block.
+    #[test]
+    fn a_level1_entry_with_a_negative_impacts_length_is_rejected() {
+        let id = [70u8; ID_LENGTH];
+        let (mut doc, footer) = header_and_footer(DOC_CODEC, &id);
+        let doc_start_fp = doc.len() as u64;
+        doc.write_vint(1000); // docDelta
+        doc.write_vlong(0); // span byte length
+        doc.write_i16(0); // skip1EndFP (never reached)
+        doc.write_i16(-1); // numImpactBytes: impossible
+        doc.extend_from_slice(&footer);
+
+        let input = DocInput::open(&doc, &id, "").unwrap();
+        let meta = TermMetadata {
+            doc_start_fp,
+            singleton_doc_id: -1,
+            ..TermMetadata::EMPTY
+        };
+        let err = input
+            .read_postings(meta, LEVEL1_NUM_DOCS, IndexOptions::DocsAndFreqs, false)
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::Store(lucene_store::Error::Corrupted(_)))
+                && format!("{err}").contains("level-1 impacts"),
+            "expected a Corrupted decode error naming the impacts length, got {err:?}"
+        );
+    }
+
+    /// The level-0 header's impacts length is a `vint`, which decodes to a
+    /// negative from a five-byte varint with the sign bit set -- the same
+    /// overflow-into-panic shape as the level-1 short above.
+    #[test]
+    fn a_level0_header_with_a_negative_impacts_length_is_rejected() {
+        let id = [71u8; ID_LENGTH];
+        let (mut doc, footer) = header_and_footer(DOC_CODEC, &id);
+        let doc_start_fp = doc.len() as u64;
+        doc.write_vlong(4); // level0NumBytes
+        doc.write_i16(256); // docDelta
+        doc.write_i16(4); // blockLength
+        doc.write_vint(-1); // impacts byte length: impossible
+        doc.extend_from_slice(&footer);
+
+        let input = DocInput::open(&doc, &id, "").unwrap();
+        let meta = TermMetadata {
+            doc_start_fp,
+            singleton_doc_id: -1,
+            ..TermMetadata::EMPTY
+        };
+        let err = input
+            .read_postings(meta, BLOCK_SIZE, IndexOptions::DocsAndFreqs, false)
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::Store(lucene_store::Error::Corrupted(_))),
+            "expected a Corrupted decode error, got {err:?}"
+        );
+    }
+
+    /// `blockLength` is a `vlong15`: a corrupt one can be negative, and
+    /// `position() + (negative as usize)` overflows.
+    #[test]
+    fn a_level0_header_with_a_negative_block_length_is_rejected() {
+        let id = [72u8; ID_LENGTH];
+        let (mut doc, footer) = header_and_footer(DOC_CODEC, &id);
+        let doc_start_fp = doc.len() as u64;
+        doc.write_vlong(4); // level0NumBytes
+        doc.write_i16(256); // docDelta
+                            // `read_vlong15`: a negative short means "the low 15 bits, plus a
+                            // vlong of high bits shifted up by 15". `1 << 48` shifted by 15 sets
+                            // the sign bit of the i64.
+        doc.write_i16(-32768i16); // 0x8000: low 15 bits are 0, more follows
+        doc.write_vlong(1i64 << 48);
+        doc.extend_from_slice(&footer);
+
+        let input = DocInput::open(&doc, &id, "").unwrap();
+        let meta = TermMetadata {
+            doc_start_fp,
+            singleton_doc_id: -1,
+            ..TermMetadata::EMPTY
+        };
+        let err = input
+            .read_postings(meta, BLOCK_SIZE, IndexOptions::Docs, false)
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::Store(lucene_store::Error::Corrupted(_)))
+                && format!("{err}").contains("level-0 block"),
+            "expected a Corrupted decode error naming the block length, got {err:?}"
+        );
+    }
+
+    /// The lazy cursor can reach its tail block with a `doc_count_left` that
+    /// is not a legal tail size, because that number descends from `docFreq`
+    /// -- a term-dictionary value, not one of our own.
+    ///
+    /// The route: a level-0 header whose `docDelta` overshoots what its body
+    /// decodes (nothing on the wire ties the two together). `advance` walks
+    /// off the end of the decoded block, `advance_shallow` returns early
+    /// because the target is still within the *claimed* extent, and the tail
+    /// path is entered with a whole block's worth of documents still
+    /// outstanding. Slicing the fixed 256-entry block array by that used to
+    /// panic; `Lucene104PostingsReader.refillRemainder` asserts the same
+    /// bound.
+    #[test]
+    fn a_tail_block_larger_than_block_size_is_rejected_rather_than_panicking() {
+        let id = [73u8; ID_LENGTH];
+        let (mut doc, footer) = header_and_footer(DOC_CODEC, &id);
+        let doc_start_fp = doc.len() as u64;
+
+        let mut body = Vec::new();
+        body.write_byte(0); // bitsPerValue == 0: docs 0..255
+        doc.write_vlong(4); // level0NumBytes: the two header fields, no metadata region
+        doc.write_i16(1000); // docDelta: claims the block reaches doc 999
+        doc.write_i16(body.len() as i16);
+        doc.write_bytes(&body);
+        doc.extend_from_slice(&footer);
+
+        let input = DocInput::open(&doc, &id, "").unwrap();
+        let meta = TermMetadata {
+            doc_start_fp,
+            singleton_doc_id: -1,
+            ..TermMetadata::EMPTY
+        };
+        // 600 documents: one full block, leaving 344 -- more than a tail can
+        // hold -- once the block is consumed.
+        let mut cursor = input
+            .lazy_cursor(meta, 600, IndexOptions::Docs, false)
+            .unwrap();
+        assert_eq!(cursor.next_doc().unwrap(), 0);
+        assert_eq!(cursor.advance(255).unwrap(), 255);
+        let err = cursor.advance(500).unwrap_err();
+        assert!(
+            matches!(err, Error::Store(lucene_store::Error::Corrupted(_)))
+                && format!("{err}").contains("tail block"),
+            "expected a Corrupted decode error naming the tail block, got {err:?}"
+        );
+    }
+
+    /// A `total_term_freq` that no file could hold is rejected before it sizes
+    /// or divides anything -- and the two rejections are different in kind:
+    /// negative is a corrupt term dictionary, while above `u32::MAX` is a
+    /// real value this port's `u32`-indexed flat streams cannot address.
+    #[test]
+    fn an_impossible_total_term_freq_is_rejected() {
+        let id = [74u8; ID_LENGTH];
+        let (mut pos, pos_footer) = pos_header_and_footer(&id);
+        let pos_start_fp = pos.len() as u64;
+        pos.write_vint(1);
+        pos.extend_from_slice(&pos_footer);
+        let pos_in = PosInput::open(&pos, &id, "").unwrap();
+        let meta = TermMetadata {
+            pos_start_fp,
+            ..TermMetadata::EMPTY
+        };
+        for total_term_freq in [-1i64, u32::MAX as i64 + 1, i64::MAX] {
+            let err = read_positions_for_docs(
+                &pos_in,
+                None,
+                meta,
+                &[1],
+                total_term_freq,
+                IndexOptions::DocsAndFreqsAndPositions,
+                false,
+                &[0],
+            )
+            .unwrap_err();
+            if total_term_freq < 0 {
+                assert!(
+                    matches!(err, Error::Store(lucene_store::Error::Corrupted(_)))
+                        && format!("{err}").contains("negative count"),
+                    "a negative total_term_freq is corruption, got {err:?}"
+                );
+            } else {
+                assert!(
+                    matches!(err, Error::Unsupported(_)) && format!("{err}").contains("u32::MAX"),
+                    "a total_term_freq past this port's ceiling is unsupported, not \
+                     corrupt, got {err:?}"
+                );
+            }
+            // The whole-term reader guards the same value the same way.
+            assert!(read_positions(
+                &pos_in,
+                None,
+                meta,
+                &[1],
+                total_term_freq,
+                IndexOptions::DocsAndFreqsAndPositions,
+                false,
+            )
+            .is_err());
+        }
+    }
+
+    /// A tail payload whose length runs past the end of `.pos` must be a
+    /// decode error, not a multi-gigabyte `resize` driven straight off disk.
+    #[test]
+    fn a_tail_payload_longer_than_the_file_is_rejected() {
+        let id = [75u8; ID_LENGTH];
+        let (mut pos, pos_footer) = pos_header_and_footer(&id);
+        let pos_start_fp = pos.len() as u64;
+        pos.write_vint((3 << 1) | 1); // posDelta=3, payload length follows
+        pos.write_vint(1_000_000); // ... and it is longer than the whole file
+        pos.extend_from_slice(&pos_footer);
+        let pos_in = PosInput::open(&pos, &id, "").unwrap();
+        let meta = TermMetadata {
+            pos_start_fp,
+            ..TermMetadata::EMPTY
+        };
+        // Both the whole-term reader and the wanted-documents walk.
+        assert!(read_positions(
+            &pos_in,
+            None,
+            meta,
+            &[1],
+            1,
+            IndexOptions::DocsAndFreqsAndPositions,
+            true,
+        )
+        .is_err());
+        assert!(read_occurrences_for_docs(
+            &pos_in,
+            None,
+            meta,
+            &[1],
+            1,
+            IndexOptions::DocsAndFreqsAndPositions,
+            true,
+            &[0],
+        )
+        .is_err());
+    }
+
+    /// A field that does not index positions has no `.pos` data to walk, in
+    /// either shape.
+    #[test]
+    fn wanted_documents_need_a_positions_indexing_field() {
+        let id = [76u8; ID_LENGTH];
+        let (mut pos, pos_footer) = pos_header_and_footer(&id);
+        let pos_start_fp = pos.len() as u64;
+        pos.write_vint(1);
+        pos.extend_from_slice(&pos_footer);
+        let pos_in = PosInput::open(&pos, &id, "").unwrap();
+        let meta = TermMetadata {
+            pos_start_fp,
+            ..TermMetadata::EMPTY
+        };
+        for options in [IndexOptions::Docs, IndexOptions::DocsAndFreqs] {
+            assert!(matches!(
+                read_positions_for_docs(&pos_in, None, meta, &[1], 1, options, false, &[0]),
+                Err(Error::Unsupported(_))
+            ));
+            assert!(matches!(
+                read_occurrences_for_docs(&pos_in, None, meta, &[1], 1, options, false, &[0]),
+                Err(Error::Unsupported(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn a_block_body_that_disagrees_with_its_headers_byte_length_is_rejected() {
+        // A level-0 header records the body's byte length (`level0NumBytes`);
+        // the body's own encoding records nothing that ties it to that. Here
+        // the header claims one byte more than the body actually occupies, so
+        // after decoding it the reader sits one byte short of where the header
+        // says the block ends -- and every following block would decode as
+        // garbage. Java only `assert`s this; this port used to
+        // `debug_assert_eq!` it, i.e. panic in debug and silently continue in
+        // release. Both paths that decode a full block must now return a
+        // decode error instead.
+        let id = [42u8; ID_LENGTH];
+        let (mut doc, footer) = header_and_footer(DOC_CODEC, &id);
+        let doc_start_fp = doc.len() as u64;
+
+        let mut body = Vec::new();
+        body.write_byte(0); // bitsPerValue == 0: 256 consecutive docs, 0..255.
+        doc.write_vlong(4); // level0NumBytes (honest -- the lie under test is blockLength)
+        doc.write_i16(256); // docDelta (honest)
+        doc.write_i16(body.len() as i16 + 1); // blockLength, matching the lie
+        doc.write_bytes(&body);
+        doc.write_byte(0); // the extra byte the header accounts for
+        doc.extend_from_slice(&footer);
+
+        let input = DocInput::open(&doc, &id, "").unwrap();
+        let meta = TermMetadata {
+            doc_start_fp,
+            singleton_doc_id: -1,
+            ..TermMetadata::EMPTY
+        };
+        // Eager path.
+        let err = input
+            .read_postings(meta, BLOCK_SIZE, IndexOptions::Docs, false)
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::Store(lucene_store::Error::Corrupted(_))),
+            "expected a Corrupted decode error from read_postings, got {err:?}"
+        );
+        // Lazy path: `advance` refills the block through the same check.
+        let mut cursor = input
+            .lazy_cursor(meta, BLOCK_SIZE, IndexOptions::Docs, false)
+            .unwrap();
+        let err = cursor.advance(10).unwrap_err();
+        assert!(
+            matches!(err, Error::Store(lucene_store::Error::Corrupted(_))),
+            "expected a Corrupted decode error from the cursor, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn lazy_cursor_advance_rejects_a_block_body_that_undershoots_its_header() {
+        // A level-0 header's `docDelta` and the block body's own deltas are
+        // independent on the wire: nothing forces them to agree. Here the
+        // header claims the block's last doc is 999 while the body decodes to
+        // docs 0..255, so `advance_shallow` stops on the block (999 >= 500)
+        // and the post-refill search for the first doc >= 500 finds nothing.
+        // That used to index one past the block buffer and panic.
+        let id = [42u8; ID_LENGTH];
+        let (mut doc, footer) = header_and_footer(DOC_CODEC, &id);
+        let doc_start_fp = doc.len() as u64;
+
+        let mut body = Vec::new();
+        body.write_byte(0); // bitsPerValue == 0: 256 consecutive docs, 0..255.
+        doc.write_vlong(4); // level0NumBytes: the two header fields, no metadata region
+        doc.write_i16(1000); // docDelta -- a lie: the body only reaches 255.
+        doc.write_i16(body.len() as i16); // blockLength (honest, so the seek lands right)
+        doc.write_bytes(&body);
+        doc.extend_from_slice(&footer);
+
+        let input = DocInput::open(&doc, &id, "").unwrap();
+        let meta = TermMetadata {
+            doc_start_fp,
+            singleton_doc_id: -1,
+            ..TermMetadata::EMPTY
+        };
+        let mut cursor = input
+            .lazy_cursor(meta, BLOCK_SIZE, IndexOptions::Docs, false)
+            .unwrap();
+        let err = cursor.advance(500).unwrap_err();
+        assert!(
+            matches!(err, Error::Store(lucene_store::Error::Corrupted(_))),
+            "expected a Corrupted decode error, got {err:?}"
+        );
+    }
+
+    #[test]
     fn lazy_cursor_advance_skips_corrupted_earlier_block_without_decoding_it() {
         // Block 0 (docs 0..256) is deliberately corrupt: a dense bit-set
         // encoding (`bitsPerValue == -4`) with zero bits actually set, which
@@ -3574,7 +5679,7 @@ mod tests {
         let mut corrupt_body = Vec::new();
         corrupt_body.write_byte((-4i8) as u8); // 4 longs = 256 bits
         corrupt_body.extend_from_slice(&[0u8; 32]); // none set -- corrupt
-        doc.write_vlong(corrupt_body.len() as i64); // level0NumBytes (unused)
+        doc.write_vlong(4); // level0NumBytes: the two header fields, no metadata region
         doc.write_i16(BLOCK_SIZE as i16); // docDelta = 256
         doc.write_i16(corrupt_body.len() as i16); // blockLength
         doc.write_bytes(&corrupt_body);
@@ -3923,6 +6028,307 @@ mod tests {
         (before, after)
     }
 
+    /// `level0NumBytes` is the level-0 header's own self-description: the
+    /// byte length from just after it to the start of the block body. This
+    /// reader reaches the same position by parsing the fields in between, so
+    /// a disagreement means the two do not describe the same block -- a
+    /// corrupt vlong, or a `FieldInfos` whose `has_payloads` does not match
+    /// the bytes, which decides whether two of those fields are there at all.
+    ///
+    /// Without the check the block body decodes from the wrong offset and
+    /// produces plausible garbage silently. `read_level1_entry` has always
+    /// had the equivalent check (`skip1EndFP`); this is its level-0 twin.
+    #[test]
+    fn a_level0_header_whose_num_skip_bytes_disagrees_with_its_fields_is_rejected() {
+        let id = [76u8; ID_LENGTH];
+        let (mut doc, footer) = header_and_footer(DOC_CODEC, &id);
+        let doc_start_fp = doc.len() as u64;
+        let mut body = Vec::new();
+        body.write_byte(0); // bitsPerValue == 0: 256 consecutive docs.
+                            // The two header fields are 4 bytes and there is no metadata region
+                            // (IndexOptions::Docs), so the honest value is 4.
+        doc.write_vlong(5);
+        doc.write_i16(BLOCK_SIZE as i16);
+        doc.write_i16(body.len() as i16);
+        doc.write_bytes(&body);
+        doc.extend_from_slice(&footer);
+
+        let input = DocInput::open(&doc, &id, "").unwrap();
+        let meta = TermMetadata {
+            doc_start_fp,
+            singleton_doc_id: -1,
+            ..TermMetadata::EMPTY
+        };
+        let err = input
+            .read_postings(meta, BLOCK_SIZE, IndexOptions::Docs, false)
+            .expect_err("the header does not describe its own fields");
+        assert!(
+            format!("{err}").contains("level-0 skip header"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// A frequency big enough to outrun `.pos` many times over must be
+    /// rejected up front, not walked until the file EOFs.
+    ///
+    /// It is not a panic that is at stake -- every index is bounded -- but an
+    /// allocation blow-up: each refill yields up to 256 more `Position`
+    /// records, each with its own payload `Vec`, and a `PForUtil` block can be
+    /// as little as its own token byte. An allocation failure *aborts*, which
+    /// no `catch_unwind` at the FFI boundary can intercept, so the ceiling has
+    /// to be checked before the loop rather than discovered inside it.
+    #[test]
+    fn a_frequency_that_dwarfs_the_pos_file_is_rejected_before_the_walk() {
+        let id = [77u8; ID_LENGTH];
+        let (pos, pos_start_fp) = tail_only_pos(&id, &[1, 2, 3]);
+        let pos_in = PosInput::open(&pos, &id, "").unwrap();
+        let err = walk_one(
+            &pos_in,
+            PositionOrigin {
+                pos_fp: pos_start_fp,
+                pay_fp: 0,
+                skip: 0,
+            },
+            10_000_000,
+            Some(pos_start_fp),
+            3,
+        )
+        .expect_err("ten million occurrences do not fit in a handful of bytes");
+        assert!(
+            format!("{err}").contains("cannot fit in the"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// `Lucene104PostingsReader.reset`'s three-way `lastPosBlockFP` rule
+    /// (`Lucene104PostingsReader.java:526-532`), which is the only thing that
+    /// separates a full `PForUtil` block from the vint tail once a walk has
+    /// jumped into the middle of `.pos`.
+    #[test]
+    fn last_pos_block_fp_matches_lucene_reset() {
+        let meta = TermMetadata {
+            pos_start_fp: 1000,
+            last_pos_block_offset: 77,
+            ..TermMetadata::EMPTY
+        };
+        // Below one full block: everything is the tail, which therefore
+        // starts at the term's own posStartFP.
+        assert_eq!(last_pos_block_fp(meta, 5), Some(1000));
+        assert_eq!(last_pos_block_fp(meta, BLOCK_SIZE as i64 - 1), Some(1000));
+        // Exactly one full block: no tail at all, and Java's `-1` sentinel
+        // (a pointer nothing can equal) becomes `None` here.
+        assert_eq!(last_pos_block_fp(meta, BLOCK_SIZE as i64), None);
+        // Past a full block: posStartFP + lastPosBlockOffset.
+        assert_eq!(last_pos_block_fp(meta, BLOCK_SIZE as i64 + 1), Some(1077));
+    }
+
+    /// A `.pos` stream holding `count` single-vint occurrences with no
+    /// offsets or payloads, plus the term's `posStartFP`.
+    fn tail_only_pos(id: &[u8; ID_LENGTH], deltas: &[i32]) -> (Vec<u8>, u64) {
+        let (mut pos, footer) = pos_header_and_footer(id);
+        let pos_start_fp = pos.len() as u64;
+        for &d in deltas {
+            pos.write_vint(d);
+        }
+        pos.extend_from_slice(&footer);
+        (pos, pos_start_fp)
+    }
+
+    fn positions_only_wants() -> PositionWants {
+        PositionWants {
+            has_offsets: false,
+            has_payloads: false,
+            want_offsets: false,
+            want_payloads: false,
+        }
+    }
+
+    fn walk_one(
+        pos_in: &PosInput<'_>,
+        origin: PositionOrigin,
+        freq: usize,
+        last_pos_block: Option<u64>,
+        tail_count: usize,
+    ) -> Result<Vec<Position>> {
+        let mut sink = FullOccurrences {
+            occurrences: Vec::new(),
+            doc_starts: Vec::new(),
+        };
+        walk_document_occurrences(
+            pos_in,
+            None,
+            origin,
+            freq,
+            last_pos_block,
+            tail_count,
+            positions_only_wants(),
+            &mut sink,
+        )?;
+        Ok(sink.occurrences)
+    }
+
+    /// The honest case, so the three rejections below cannot pass for the
+    /// wrong reason: a skip of two occurrences into a five-occurrence tail
+    /// yields the third and fourth, with the position accumulator restarting
+    /// at the document's first occurrence.
+    #[test]
+    fn a_skip_driven_walk_starts_at_the_occurrence_the_origin_names() {
+        let id = [70u8; ID_LENGTH];
+        let (pos, pos_start_fp) = tail_only_pos(&id, &[1, 2, 3, 4, 5]);
+        let pos_in = PosInput::open(&pos, &id, "").unwrap();
+        let got = walk_one(
+            &pos_in,
+            PositionOrigin {
+                pos_fp: pos_start_fp,
+                pay_fp: 0,
+                skip: 2,
+            },
+            2,
+            Some(pos_start_fp),
+            5,
+        )
+        .unwrap();
+        assert_eq!(got.iter().map(|p| p.position).collect::<Vec<_>>(), [3, 7]);
+    }
+
+    /// `skipPositions`' `assert posIn.getFilePointer() != lastPosBlockFP`:
+    /// the vint tail is the last block there is, so skip data asking to step
+    /// a whole block past it is a disagreement between `.doc` and the term's
+    /// `totalTermFreq`, not something to seek blindly on.
+    #[test]
+    fn a_skip_that_steps_past_the_vint_tail_is_rejected() {
+        let id = [71u8; ID_LENGTH];
+        let (pos, pos_start_fp) = tail_only_pos(&id, &[1, 2, 3]);
+        let pos_in = PosInput::open(&pos, &id, "").unwrap();
+        let err = walk_one(
+            &pos_in,
+            PositionOrigin {
+                pos_fp: pos_start_fp,
+                pay_fp: 0,
+                skip: BLOCK_SIZE as u64,
+            },
+            1,
+            Some(pos_start_fp),
+            3,
+        )
+        .expect_err("the tail is the last block");
+        assert!(
+            format!("{err}").contains("step past the last .pos block"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// The landing offset inside the block is a file-derived value too: it
+    /// must be checked against the block's own length, not used to index it.
+    #[test]
+    fn a_skip_landing_past_the_blocks_own_length_is_rejected() {
+        let id = [72u8; ID_LENGTH];
+        let (pos, pos_start_fp) = tail_only_pos(&id, &[1, 2, 3]);
+        let pos_in = PosInput::open(&pos, &id, "").unwrap();
+        let err = walk_one(
+            &pos_in,
+            PositionOrigin {
+                pos_fp: pos_start_fp,
+                pay_fp: 0,
+                skip: 5,
+            },
+            1,
+            Some(pos_start_fp),
+            3,
+        )
+        .expect_err("5 occurrences into a 3-occurrence block");
+        assert!(
+            format!("{err}").contains("occurrences into a 3-occurrence"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// A frequency that outruns the occurrences `.pos` actually holds must
+    /// stop, not spin: the empty tail block is reached, refilled to zero
+    /// occurrences, and the walk reports the disagreement.
+    #[test]
+    fn a_frequency_longer_than_the_position_stream_is_rejected() {
+        let id = [73u8; ID_LENGTH];
+        let (pos, pos_start_fp) = tail_only_pos(&id, &[1, 2]);
+        let pos_in = PosInput::open(&pos, &id, "").unwrap();
+        let err = walk_one(
+            &pos_in,
+            PositionOrigin {
+                pos_fp: pos_start_fp,
+                pay_fp: 0,
+                skip: 0,
+            },
+            3,
+            Some(pos_start_fp),
+            2,
+        )
+        .expect_err("only two occurrences exist");
+        assert!(
+            format!("{err}").contains("outruns the occurrences"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// A `.pos` pointer beyond the file is an EOF, not a panic or a silently
+    /// truncated address.
+    #[test]
+    fn a_position_origin_past_the_end_of_the_pos_file_is_an_error() {
+        let id = [74u8; ID_LENGTH];
+        let (pos, _pos_start_fp) = tail_only_pos(&id, &[1, 2]);
+        let pos_in = PosInput::open(&pos, &id, "").unwrap();
+        assert!(walk_one(
+            &pos_in,
+            PositionOrigin {
+                pos_fp: u64::MAX,
+                pay_fp: 0,
+                skip: 0,
+            },
+            1,
+            None,
+            0,
+        )
+        .is_err());
+    }
+
+    /// `position_origin` adds the current `.doc` block's frequencies to the
+    /// skip data, so it needs frequencies: a `DocsOnly` cursor skipped them
+    /// on the wire and must say so rather than summing the `1`s it filled in.
+    #[test]
+    fn position_origin_needs_a_freqs_cursor() {
+        let id = [75u8; ID_LENGTH];
+        let (mut doc, doc_footer) = header_and_footer(DOC_CODEC, &id);
+        let doc_start_fp = doc.len() as u64;
+        // Two docs in a group-varint tail block, deltas 3 and 4 (doc IDs 2
+        // and 6) with freq 1 each -- `(delta << 1) | 1` is the freq-is-one
+        // packing `read_tail_block` decodes.
+        write_group_vints(&mut doc, &[(3 << 1) | 1, (4 << 1) | 1]);
+        doc.extend_from_slice(&doc_footer);
+        let doc_in = DocInput::open(&doc, &id, "").unwrap();
+        let meta = TermMetadata {
+            doc_start_fp,
+            ..TermMetadata::EMPTY
+        };
+        let mut cursor = doc_in
+            .lazy_cursor_with_flags(
+                meta,
+                2,
+                IndexOptions::DocsAndFreqsAndPositions,
+                false,
+                PostingsFlags::DocsOnly,
+            )
+            .unwrap();
+        // Before the first move there is no position to report at all.
+        assert!(cursor.position_origin().unwrap().is_none());
+        assert_eq!(cursor.next_doc().unwrap(), 2);
+        let err = cursor
+            .position_origin()
+            .expect_err("DocsOnly skipped the frequencies the sum needs");
+        assert!(
+            format!("{err}").contains("PostingsFlags::Freqs"),
+            "unexpected error: {err}"
+        );
+    }
+
     #[test]
     fn read_positions_single_position_no_offsets_no_payloads() {
         // One doc, one occurrence: total_term_freq=1 < BLOCK_SIZE, so it's
@@ -4215,6 +6621,374 @@ mod tests {
         assert!(result[0].iter().all(|p| p.payload.is_empty()));
     }
 
+    /// Recomputes the trailing 8-byte CRC32 of a codec-footer-terminated
+    /// buffer in place, so a byte flip in the body is not simply "caught" by
+    /// the checksum -- c15/c19/c25's shape, and `blocktree.rs`'s
+    /// `resign_footer` twin.
+    fn resign_footer(buf: &mut [u8]) {
+        let len = buf.len();
+        let checksum = crc32fast::hash(&buf[..len - 8]) as u64;
+        buf[len - 8..].copy_from_slice(&checksum.to_be_bytes());
+    }
+
+    /// Drives every `.doc`-only reader in this module over one term and
+    /// reports whether any of them refused the bytes. Deliberately does *not*
+    /// require the three to agree: on a corrupt file they legitimately can
+    /// disagree, and the point of the sweep is that none of them panics or
+    /// aborts.
+    fn exercise_doc_readers(doc: &[u8], id: &[u8; ID_LENGTH], meta: TermMetadata, df: i32) -> bool {
+        let Ok(input) = DocInput::open(doc, id, "") else {
+            return true;
+        };
+        let opts = IndexOptions::DocsAndFreqs;
+        let mut rejected = false;
+        if input.read_postings(meta, df, opts, false).is_err() {
+            rejected = true;
+        }
+        if input
+            .read_postings_with_flags(meta, df, opts, false, PostingsFlags::DocsOnly)
+            .is_err()
+        {
+            rejected = true;
+        }
+        // A full sequential walk of the lazy cursor, then a skipping one --
+        // the two reach different code (`refill` vs `advance_shallow`'s
+        // seek-past, and `skip_level1_to`'s span jump).
+        match input.lazy_cursor(meta, df, opts, false) {
+            Err(_) => rejected = true,
+            Ok(mut c) => {
+                // `df + 1` steps is a bound, not a heuristic: every step
+                // either moves within a decoded block or consumes wire, and
+                // the term claims `df` documents.
+                for _ in 0..=df {
+                    match c.next_doc() {
+                        Ok(NO_MORE_DOCS) => break,
+                        Ok(_) => {
+                            let _ = c.freq();
+                            let _ = c.level0_impacts();
+                            let _ = c.level1_impacts();
+                        }
+                        Err(_) => {
+                            rejected = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        match input.lazy_cursor(meta, df, opts, false) {
+            Err(_) => rejected = true,
+            Ok(mut c) => {
+                let mut target = 0i32;
+                while target < df {
+                    match c.advance_shallow(target) {
+                        Ok(_) => {}
+                        Err(_) => {
+                            rejected = true;
+                            break;
+                        }
+                    }
+                    match c.advance(target) {
+                        Ok(NO_MORE_DOCS) => break,
+                        Ok(_) => {}
+                        Err(_) => {
+                            rejected = true;
+                            break;
+                        }
+                    }
+                    target = target.saturating_add(700);
+                }
+            }
+        }
+        rejected
+    }
+
+    /// A `.doc` level-0 header for a positions-indexing field: the same
+    /// shape [`write_full_block_with_impacts`] writes, plus
+    /// `readLevel0PosData`'s four sub-fields (`posEndFPDelta`,
+    /// `posBufferUpto`, `payEndFPDelta`, `payloadByteUpto`) inside the
+    /// freq-gated region. Needed so a corruption sweep can reach
+    /// [`read_pos_skip`] and [`LazyDocsCursor::position_origin`], which the
+    /// no-positions helper never emits a byte of.
+    fn write_full_block_with_pos_skip(
+        out: &mut Vec<u8>,
+        pos_end_fp_delta: i64,
+        pos_buffer_upto: u8,
+        pay_end_fp_delta: i64,
+    ) {
+        let mut meta_region = Vec::new();
+        let mut impact_bytes = Vec::new();
+        write_impacts(&mut impact_bytes, &[Impact { freq: 1, norm: 1 }]);
+        meta_region.write_vint(impact_bytes.len() as i32);
+        meta_region.write_bytes(&impact_bytes);
+        meta_region.write_vlong(pos_end_fp_delta);
+        meta_region.write_byte(pos_buffer_upto);
+        meta_region.write_vlong(pay_end_fp_delta);
+        meta_region.write_vint(0); // payloadByteUpto
+
+        let mut block_body = Vec::new();
+        block_body.write_byte(0); // bitsPerValue == 0: all 256 deltas are 1.
+        block_body.write_byte(0); // PForUtil freq token: all-equal
+        block_body.write_vint(1); // every freq is 1
+
+        out.write_vlong((meta_region.len() + 4) as i64);
+        out.write_i16(BLOCK_SIZE as i16); // docDelta via writeVInt15
+        out.write_i16((meta_region.len() + block_body.len()) as i16); // blockLength
+        out.write_bytes(&meta_region);
+        out.write_bytes(&block_body);
+    }
+
+    /// Re-signed single-byte corruption sweep over the `.doc` of a
+    /// *positions-indexing* term, driven through
+    /// [`read_occurrences_for_doc`] -- the skip-data path, which is the half
+    /// [`every_resigned_single_byte_doc_corruption_is_an_error_or_a_clean_decode`]
+    /// cannot reach because its field indexes no positions.
+    ///
+    /// Every value this reaches comes off the flipped `.doc`: the level-0
+    /// header's `posEndFPDelta`/`posBufferUpto`/`payEndFPDelta`, the
+    /// frequencies the in-block sum adds up, and the `docDelta`/`blockLength`
+    /// that frame them. `.pos`/`.pay` are left intact so a rejection is
+    /// attributable to the `.doc` bytes alone.
+    #[test]
+    fn every_resigned_single_byte_positional_doc_corruption_is_an_error_or_a_clean_decode() {
+        let id = [42u8; ID_LENGTH];
+        let (mut pos, pos_footer) = pos_header_and_footer(&id);
+        let pos_start_fp = pos.len() as u64;
+        for _ in 0..2 {
+            pos.write_byte(0); // full block: all 256 posDeltas are 1
+            pos.write_vint(1);
+        }
+        let pos_blocks_len = pos.len() as u64 - pos_start_fp;
+        for _ in 0..2 {
+            pos.write_vint(2); // vint tail: (posDelta 1 << 1) | keep-length
+        }
+        pos.extend_from_slice(&pos_footer);
+
+        let (mut pay, pay_footer) = pay_header_and_footer(&id);
+        let pay_start_fp = pay.len() as u64;
+        for _ in 0..2 {
+            pay.write_byte(0); // payloadLengthBuffer: all zero
+            pay.write_vint(0);
+            pay.write_vint(0); // numBytes == 0
+        }
+        let pay_block_len = (pay.len() as u64 - pay_start_fp) / 2;
+        pay.extend_from_slice(&pay_footer);
+
+        let (mut doc, doc_footer) = header_and_footer(DOC_CODEC, &id);
+        let doc_start_fp = doc.len() as u64;
+        for _ in 0..2 {
+            write_full_block_with_pos_skip(
+                &mut doc,
+                (pos_blocks_len / 2) as i64,
+                0,
+                pay_block_len as i64,
+            );
+        }
+        write_group_vints(&mut doc, &[3; 2]); // tail: 2 docs, delta 1, freq 1
+        doc.extend_from_slice(&doc_footer);
+
+        let df = 2 * BLOCK_SIZE + 2;
+        let ttf = df as i64; // every document has exactly one occurrence
+        let meta = TermMetadata {
+            doc_start_fp,
+            singleton_doc_id: -1,
+            pos_start_fp,
+            pay_start_fp,
+            last_pos_block_offset: pos_blocks_len as i64,
+        };
+        let opts = IndexOptions::DocsAndFreqsAndPositions;
+        let pos_in = PosInput::open(&pos, &id, "").unwrap();
+        let pay_in = PayInput::open(&pay, &id, "").unwrap();
+
+        let exercise = |doc: &[u8]| -> bool {
+            let Ok(doc_in) = DocInput::open(doc, &id, "") else {
+                return true;
+            };
+            let mut rejected = doc_in.read_postings(meta, df, opts, true).is_err();
+            for target in [0, 1, 7, 255, 256, 300, 511, 512, 513] {
+                match read_occurrences_for_doc(
+                    &doc_in,
+                    &pos_in,
+                    Some(&pay_in),
+                    meta,
+                    df,
+                    ttf,
+                    opts,
+                    true,
+                    target,
+                ) {
+                    Ok(_) => {}
+                    Err(_) => rejected = true,
+                }
+            }
+            rejected
+        };
+        assert!(!exercise(&doc));
+
+        let body = doc_start_fp as usize..doc.len() - codec_util::FOOTER_LENGTH;
+        let mut total = 0usize;
+        let mut rejected = 0usize;
+        for off in body {
+            for mask in [0x01u8, 0x80] {
+                let mut corrupt = doc.clone();
+                corrupt[off] ^= mask;
+                resign_footer(&mut corrupt);
+                total += 1;
+                if exercise(&corrupt) {
+                    rejected += 1;
+                }
+            }
+        }
+        // Measured when this was written: 49 of 60 (81.7%). As with the
+        // sibling sweep, the bar is "no panic, no abort" plus a floor -- the
+        // eleven accepted flips all land in a `posEndFPDelta`/`payEndFPDelta`
+        // or an impacts byte, where a different-but-in-range value produces a
+        // different-but-well-formed answer the format cannot contradict.
+        assert_eq!(total, 60);
+        assert!(
+            rejected >= 45,
+            "only {rejected} of {total} re-signed positional .doc corruptions were rejected"
+        );
+    }
+
+    /// Re-signed single-byte corruption sweep over a whole `.doc` term body:
+    /// flip one bit, **re-sign the codec footer so the checksum still
+    /// passes**, and require a typed error or a clean decode from every
+    /// `.doc` reader -- never a panic, and never an allocation abort
+    /// `catch_unwind` cannot intercept, which through the FFI is a dead JVM.
+    ///
+    /// The term is deliberately the richest shape this format has: one
+    /// level-1 skip entry with a real impacts run, the 32 full level-0 blocks
+    /// it spans (each with its own impacts and its own `PForUtil` freq
+    /// block), and a group-varint tail. So the sweep reaches
+    /// `read_level1_entry`'s `skip1EndFP`/`numImpactBytes`, every level-0
+    /// header field including `level0NumBytes`/`docDelta`/`blockLength`, all
+    /// three `bitsPerValue` body encodings (a flip of the token byte reaches
+    /// the packed and bit-set branches as well as the all-consecutive one),
+    /// and the tail block's own doc-count bound.
+    #[test]
+    fn every_resigned_single_byte_doc_corruption_is_an_error_or_a_clean_decode() {
+        let id = [41u8; ID_LENGTH];
+        let (mut doc, footer) = header_and_footer(DOC_CODEC, &id);
+        let doc_start_fp = doc.len() as u64;
+        let mut span = Vec::new();
+        for i in 0..LEVEL1_FACTOR {
+            let impacts = vec![Impact {
+                freq: 1 + i as i32,
+                norm: 2 + i as i64,
+            }];
+            write_full_block_with_impacts(&mut span, true, 1 + (i as i32 % 5), &impacts);
+        }
+        write_level1_entry_with_impacts(
+            &mut doc,
+            LEVEL1_NUM_DOCS,
+            &span,
+            &[Impact { freq: 9, norm: 4 }],
+        );
+        doc.extend_from_slice(&span);
+        // Tail: 8 documents, delta 1, freq 1 -- `(delta << 1) | 1`.
+        write_group_vints(&mut doc, &[3; 8]);
+        doc.extend_from_slice(&footer);
+
+        let df = LEVEL1_NUM_DOCS + 8;
+        let meta = TermMetadata {
+            doc_start_fp,
+            singleton_doc_id: -1,
+            ..TermMetadata::EMPTY
+        };
+        // The clean file must decode, or the sweep proves nothing.
+        assert!(!exercise_doc_readers(&doc, &id, meta, df));
+
+        let body = doc_start_fp as usize..doc.len() - codec_util::FOOTER_LENGTH;
+        let mut total = 0usize;
+        let mut rejected = 0usize;
+        for off in body {
+            for mask in [0x01u8, 0x80] {
+                let mut corrupt = doc.clone();
+                corrupt[off] ^= mask;
+                resign_footer(&mut corrupt);
+                total += 1;
+                if exercise_doc_readers(&corrupt, &id, meta, df) {
+                    rejected += 1;
+                }
+            }
+        }
+
+        // Measured when this was written: 589 of 744 (79.2%). The rest decode
+        // to a different but self-consistent postings list -- flipping a
+        // freq's fill value, or an impacts delta, is a wrong answer the
+        // format has no way to notice, which is exactly what the checksum
+        // this sweep defeats exists for. c19/c25 measured 44/99 on `.tip`,
+        // 85/99 on `.nvm`, 18/99 on `.dvd` and 15/43 on `.tvd`, so a rate
+        // below 100% is the norm.
+        //
+        // What this pins is that nothing *panics or aborts*, plus a floor so
+        // a future change that stops bounding something fails loudly.
+        assert_eq!(total, 744);
+        assert!(
+            rejected >= 570,
+            "only {rejected} of {total} re-signed .doc corruptions were rejected"
+        );
+    }
+
+    #[test]
+    fn a_payload_length_block_claiming_a_negative_length_is_rejected_not_a_panic() {
+        // `.pay`'s payload-length stream is `PForUtil`-decoded as `u32` and
+        // kept as `i32`, so a corrupt block can hand `read_positions` a
+        // *negative* length. `negative as usize` sign-extends to ~2^64 and
+        // the old `payload_upto + len` either panicked outright ("attempt to
+        // add with overflow", debug) or wrapped to a value *below*
+        // `payload_upto`, slipped past the `end > payload_bytes.len()` check
+        // and panicked in `payload_bytes[start..end]` ("slice index starts at
+        // 256 but ends at 255", release). Two full blocks, because the first
+        // one has to move `payload_upto` off zero for the wrap to be the
+        // interesting case rather than a plain "longer than the file".
+        let id = [40u8; ID_LENGTH];
+        let (mut pos, pos_footer) = pos_header_and_footer(&id);
+        let pos_start_fp = pos.len() as u64;
+        for _ in 0..2 {
+            pos.write_byte(0); // PForUtil token: all 256 posDeltas equal
+            pos.write_vint(1);
+        }
+        pos.extend_from_slice(&pos_footer);
+
+        let (mut pay, pay_footer) = pay_header_and_footer(&id);
+        let pay_start_fp = pay.len() as u64;
+        // Block 0: every payload one byte long, 256 payload bytes.
+        pay.write_byte(0);
+        pay.write_vint(1);
+        pay.write_vint(BLOCK_SIZE);
+        pay.write_bytes(&[7u8; BLOCK_SIZE as usize]);
+        // Block 1: every payload length is 0xFFFF_FFFF, i.e. `-1` as an
+        // `i32`, with no payload bytes at all behind it.
+        pay.write_byte(0);
+        pay.write_vint(-1);
+        pay.write_vint(0);
+        pay.extend_from_slice(&pay_footer);
+
+        let pos_in = PosInput::open(&pos, &id, "").unwrap();
+        let pay_in = PayInput::open(&pay, &id, "").unwrap();
+        let meta = TermMetadata {
+            pos_start_fp,
+            pay_start_fp,
+            ..TermMetadata::EMPTY
+        };
+        let err = read_positions(
+            &pos_in,
+            Some(&pay_in),
+            meta,
+            &[2 * BLOCK_SIZE],
+            2 * BLOCK_SIZE as i64,
+            IndexOptions::DocsAndFreqsAndPositions,
+            true,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, Error::Store(lucene_store::Error::Corrupted(ref m)) if m.contains("payload length")),
+            "expected a corruption report, got {err:?}"
+        );
+    }
+
     #[test]
     fn read_positions_full_block_with_offsets_no_payloads() {
         // Same full-PForUtil-block shape as
@@ -4265,5 +7039,157 @@ mod tests {
             assert_eq!(p.end_offset, expected_start + 5, "occurrence {i}");
             assert!(p.payload.is_empty());
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // Min-of-N A/B harness (see `docs/sweep/m2/c27-*`). Criterion is unusable
+    // on this machine -- c24 measured the same code at 83/91/129 us across
+    // three consecutive runs -- so this reports the **minimum** of 40 timed
+    // repetitions, which is the statistic a noisy shared machine does not
+    // corrupt upward. Run with:
+    //
+    //   ARITH_PERF_REPS=40 cargo test --release -p lucene-codecs --lib \
+    //       arith_gate_perf -- --nocapture
+    // ---------------------------------------------------------------------
+
+    fn perf_doc_file(id: &[u8; ID_LENGTH]) -> (Vec<u8>, u64, i32) {
+        let (mut doc, footer) = header_and_footer(DOC_CODEC, id);
+        let doc_start_fp = doc.len() as u64;
+        let mut span = Vec::new();
+        for _ in 0..LEVEL1_FACTOR {
+            write_full_block_with_impacts(&mut span, true, 3, &[Impact { freq: 2, norm: 5 }]);
+        }
+        write_level1_entry_with_impacts(
+            &mut doc,
+            LEVEL1_NUM_DOCS,
+            &span,
+            &[Impact { freq: 9, norm: 4 }],
+        );
+        doc.extend_from_slice(&span);
+        write_group_vints(&mut doc, &[3; 8]);
+        doc.extend_from_slice(&footer);
+        (doc, doc_start_fp, LEVEL1_NUM_DOCS + 8)
+    }
+
+    /// 16 full `.pos` blocks (4 096 occurrences, one per document) with a
+    /// one-byte payload each, plus the matching `.pay`.
+    fn perf_pos_pay(id: &[u8; ID_LENGTH]) -> (Vec<u8>, u64, Vec<u8>, u64, usize) {
+        const BLOCKS: usize = 16;
+        let (mut pos, pos_footer) = pos_header_and_footer(id);
+        let pos_start_fp = pos.len() as u64;
+        for _ in 0..BLOCKS {
+            pos.write_byte(0);
+            pos.write_vint(1);
+        }
+        pos.extend_from_slice(&pos_footer);
+
+        let (mut pay, pay_footer) = pay_header_and_footer(id);
+        let pay_start_fp = pay.len() as u64;
+        for _ in 0..BLOCKS {
+            pay.write_byte(0);
+            pay.write_vint(1); // every payload one byte long
+            pay.write_vint(BLOCK_SIZE);
+            pay.write_bytes(&[9u8; BLOCK_SIZE as usize]);
+        }
+        pay.extend_from_slice(&pay_footer);
+        (
+            pos,
+            pos_start_fp,
+            pay,
+            pay_start_fp,
+            BLOCKS * BLOCK_SIZE as usize,
+        )
+    }
+
+    fn min_of<F: FnMut()>(reps: usize, mut f: F) -> std::time::Duration {
+        let mut best = std::time::Duration::MAX;
+        for _ in 0..reps {
+            let t = std::time::Instant::now();
+            f();
+            best = best.min(t.elapsed());
+        }
+        best
+    }
+
+    /// Runs one repetition of each arm under `cargo test` -- enough to keep
+    /// the harness itself exercised and honest -- and a real measurement when
+    /// `ARITH_PERF_REPS` asks for one.
+    #[test]
+    fn arith_gate_perf() {
+        let id = [90u8; ID_LENGTH];
+        let (doc, doc_start_fp, df) = perf_doc_file(&id);
+        let doc_in = DocInput::open(&doc, &id, "").unwrap();
+        let doc_meta = TermMetadata {
+            doc_start_fp,
+            singleton_doc_id: -1,
+            ..TermMetadata::EMPTY
+        };
+        let opts = IndexOptions::DocsAndFreqs;
+
+        let (pos, pos_start_fp, pay, pay_start_fp, ttf) = perf_pos_pay(&id);
+        let pos_in = PosInput::open(&pos, &id, "").unwrap();
+        let pay_in = PayInput::open(&pay, &id, "").unwrap();
+        let pos_meta = TermMetadata {
+            pos_start_fp,
+            pay_start_fp,
+            ..TermMetadata::EMPTY
+        };
+        let freqs = vec![1i32; ttf];
+        let wanted: Vec<usize> = (0..ttf).step_by(4).collect();
+        let popts = IndexOptions::DocsAndFreqsAndPositions;
+
+        // 1 under `cargo test`; set `ARITH_PERF_REPS=40` for a measurement.
+        let reps: usize = std::env::var("ARITH_PERF_REPS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1);
+
+        let read_postings = min_of(reps, || {
+            let p = doc_in.read_postings(doc_meta, df, opts, false).unwrap();
+            std::hint::black_box(&p);
+        });
+        let lazy_walk = min_of(reps, || {
+            let mut c = doc_in.lazy_cursor(doc_meta, df, opts, false).unwrap();
+            let mut sum = 0i64;
+            loop {
+                match c.next_doc().unwrap() {
+                    NO_MORE_DOCS => break,
+                    d => sum += d as i64,
+                }
+            }
+            std::hint::black_box(sum);
+        });
+        let wanted_walk = min_of(reps, || {
+            let r = read_positions_for_docs(
+                &pos_in,
+                Some(&pay_in),
+                pos_meta,
+                &freqs,
+                ttf as i64,
+                popts,
+                true,
+                &wanted,
+            )
+            .unwrap();
+            std::hint::black_box(&r);
+        });
+        let whole_term_positions = min_of(reps, || {
+            let r = read_positions(
+                &pos_in,
+                Some(&pay_in),
+                pos_meta,
+                &freqs,
+                ttf as i64,
+                popts,
+                true,
+            )
+            .unwrap();
+            std::hint::black_box(&r);
+        });
+
+        println!(
+            "ARITHPERF read_postings={:?} lazy_walk={:?} wanted_walk={:?} whole_term_positions={:?}",
+            read_postings, lazy_walk, wanted_walk, whole_term_positions
+        );
     }
 }

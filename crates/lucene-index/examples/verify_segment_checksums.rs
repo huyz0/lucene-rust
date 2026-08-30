@@ -13,6 +13,11 @@
 //! usable directly in a pre-flight/CI script (e.g. `... && echo clean`).
 //!
 //! Run: `cargo run -p lucene-index --example verify_segment_checksums -- <dir>`
+// Test-support code opts out of the arithmetic gate at the file boundary:
+// the gate exists for values read off disk in production decode paths, not
+// for a fixture builder's own index arithmetic. See
+// `docs/arithmetic-gate.md`.
+#![allow(clippy::arithmetic_side_effects)]
 
 use lucene_index::checksum_verify::verify_directory;
 use lucene_store::FsDirectory;

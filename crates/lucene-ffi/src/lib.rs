@@ -177,23 +177,49 @@
 //!   same convention `segment.rs`/`query.rs` already use) and exactly which
 //!   `IndexWriter` methods/`MergePolicyConfig` knobs are and are not
 //!   exposed.
+//! - [`segment::ffi_segment_set_live_docs`] (M2 sweep b15): attaches one
+//!   segment's `.liv` (live docs / deletions) bitset to an already-open
+//!   segment handle, so every subsequent single-segment query, explain and
+//!   range-sort call skips deleted documents. The multi-segment
+//!   [`directory_reader`] entry points need no equivalent -- task #45's
+//!   `DirectoryReader::open` already reads each segment's `.liv` from the
+//!   commit itself and `OpenedSegments::as_open_segments` already passes it
+//!   through, so those have honoured deletions since they landed.
+//! - [`segment::ffi_segment_add_doc_values_generation`] (M2 sweep
+//!   `c29-search-carryovers`, closing c14's A1): attaches one field's
+//!   doc-values **update generation** to an already-open segment handle, so
+//!   every subsequent sort, facet count and per-doc doc-values lookup on that
+//!   field reads the column `IndexWriter.updateNumericDocValue` actually
+//!   wrote instead of the superseded base one. Without it those calls return
+//!   pre-update values -- a wrong answer, not a missing feature. The
+//!   multi-segment [`directory_reader`] entry points need no equivalent, for
+//!   the same reason `.liv` needs none there: `DirectoryReader::open` reads
+//!   each field's `docValuesGen` from the commit itself.
 //! - [`error::guard`]/[`ffi_get_last_error_message`]: every exported
 //!   function's panic-safety wrapper and the thread-local last-error
-//!   message accessor.
+//!   message accessor. `guard` also guarantees every non-`Ok` status leaves
+//!   a message describing *that* call (see `error.rs`'s module doc, step 4).
+//!
+//! - [`vectors::ffi_open_vectors`]/[`vectors::ffi_knn_float_vector_search`]/
+//!   [`vectors::ffi_knn_byte_vector_search`]/[`vectors::ffi_vectors_set_live_docs`]/
+//!   [`vectors::ffi_close_vectors`] (M2 sweep `c13-ffi-surface`): KNN search
+//!   over one segment's `Lucene99FlatVectorsFormat` store and
+//!   `Lucene99HnswVectorsFormat` graph (both ported and verified against real
+//!   Lucene by `c5-vectors`), mirroring `KnnFloatVectorQuery`/
+//!   `KnnByteVectorQuery` for both FLOAT32 and BYTE encodings and all four
+//!   similarity functions. Hits come back through the existing
+//!   [`registry::ScoredResultsHandle`]. Its own handle rather than a
+//!   [`segment::ffi_open_segment`] one, because a vector field needs no term
+//!   dictionary -- see `vectors.rs`'s module doc.
 //!
 //! **Deliberately deferred, tracked in `docs/parity.md`:**
-//! - **`.liv` (live docs / deletions) support** — every query call here
-//!   passes `live_docs: None` to `lucene_search`'s functions (this port's
-//!   fixture segment has no deletions, and `lucene_search`'s own contract
-//!   already treats `None` as "no deletions" as its documented, correct
-//!   behavior — not a shortcut on top of it). Wiring a `.liv` file open
-//!   into `SegmentHandle` and threading `Option<&FixedBitSet>` through is a
-//!   small, mechanical follow-up once needed.
-//! - **`.pay` (payloads) for phrase queries** — `ffi_open_segment` has no
-//!   `pay_name` parameter yet; `search_phrase_query` accepts `pay_in:
-//!   Option<&PayInput>` and this crate always passes `None`, which is
-//!   correct for a field with no payloads and a hard error surfaced as
-//!   [`error::FfiStatus::Search`] for one that needs it.
+//! - ~~**`.pay` (payloads) for phrase queries**~~ — closed by the M2 sweep
+//!   batch `c13-ffi-surface`: [`segment::ffi_open_segment`] now takes
+//!   `pay_name`/`pay_name_len`, and `query.rs`'s two phrase entry points and
+//!   `explain.rs`'s phrase explain pass the opened `PayInput` through. It was
+//!   reachable by then -- `lucene_search`'s `DirectoryReader` had started
+//!   opening `.pay` per segment, so the multi-segment path already honoured
+//!   payloads while the single-segment one structurally could not.
 //! - ~~**Multi-segment search / a unified `.si`-driven "open everything"
 //!   entry point**~~ — closed by task #51: [`directory_reader::ffi_open_directory_reader`]
 //!   parses `segments_N`/every listed segment's `.si` itself (via task #45's
@@ -214,15 +240,17 @@
 //!   separate, mechanical follow-up wrapping a different `lucene-search`
 //!   module, not part of this task's scope.
 //! - **`explain_clause`'s `DisjunctionMax`/`ConstantScore`/`Boost`/`Wildcard`/
-//!   `Prefix`/`Fuzzy`/`Regexp`/`Span`/truly-nested-`Boolean` explanations have
-//!   no FFI wrapper** — none of those `Clause` variants are constructible
-//!   from FFI input anywhere in this crate yet (`query.rs` only ever builds
-//!   `Clause::Term`/`Clause::Phrase`/flat-`Clause::Term`-only `Clause::Boolean`
-//!   from wire input), so there is nothing for an explain wrapper to explain
-//!   for them either — not a gap this task introduced, since those clause
-//!   shapes can't be *searched* through this ABI at all yet. Exposing them
-//!   (for both search and explain) is a follow-up to `query.rs`'s own wire
-//!   format, not to `explain.rs`.
+//!   `Prefix`/`Fuzzy`/`Regexp`/`Span`/`MultiPhrase` explanations have no FFI
+//!   wrapper** — none of those `Clause` variants are constructible from FFI
+//!   input anywhere in this crate yet, so there is nothing for an explain
+//!   wrapper to explain for them either. `c13-ffi-surface` closed the
+//!   *nested-`Boolean`* half of this: [`query::read_boolean_query`]'s
+//!   parent-indexed clause array builds arbitrarily nested
+//!   `Clause::Boolean` trees, and `ffi_explain_boolean_query` shares that
+//!   decoder, so a nested boolean query now explains. Each remaining variant
+//!   is a new `clause_kinds` tag value plus, for the ones carrying an `f32`
+//!   or a term *list*, one more parallel array -- see `read_boolean_query`'s
+//!   doc comment for exactly where the wire format's edge is.
 //! - **The JNI wrapper class itself** — out of scope for this Rust repo;
 //!   this crate only needs to expose a stable C ABI a JNI class can bind to.
 //!
@@ -258,6 +286,8 @@ mod explain;
 mod facets;
 mod handle;
 mod highlighter;
+#[cfg(test)]
+mod legacy_boolean_abi;
 mod points_query;
 mod query;
 mod range_sort;
@@ -271,13 +301,16 @@ mod results_scored;
 mod results_sorted;
 mod segment;
 mod sort;
+mod vectors;
 mod writer;
 
 pub use directory::{ffi_close_directory, ffi_open_directory};
 pub use directory_reader::{
     ffi_close_directory_reader, ffi_open_directory_reader, ffi_search_boolean_query_multi_segment,
-    ffi_search_boolean_query_multi_segment_concurrent, ffi_search_term_query_multi_segment,
-    ffi_search_term_query_multi_segment_concurrent,
+    ffi_search_boolean_query_multi_segment_concurrent,
+    ffi_search_boolean_query_multi_segment_maxscore,
+    ffi_search_boolean_query_multi_segment_maxscore_concurrent,
+    ffi_search_term_query_multi_segment, ffi_search_term_query_multi_segment_concurrent,
 };
 pub use error::FfiStatus;
 pub use explain::{ffi_explain_boolean_query, ffi_explain_phrase_query, ffi_explain_term_query};
@@ -305,7 +338,8 @@ pub use results_facets::{
 };
 pub use results_fragments::{
     ffi_close_fragment_results, ffi_fragment_result_matched_term,
-    ffi_fragment_result_matched_terms_len, ffi_fragment_result_text, ffi_fragment_results_len,
+    ffi_fragment_result_matched_terms_len, ffi_fragment_result_span, ffi_fragment_result_text,
+    ffi_fragment_results_len,
 };
 pub use results_scored::{
     ffi_close_scored_results, ffi_scored_results_copy, ffi_scored_results_len,
@@ -313,15 +347,31 @@ pub use results_scored::{
 pub use results_sorted::{
     ffi_close_sorted_results, ffi_sorted_results_copy, ffi_sorted_results_len,
 };
-pub use segment::{ffi_close_segment, ffi_open_segment};
+pub use segment::{
+    ffi_close_segment, ffi_open_segment, ffi_segment_add_doc_values_generation,
+    ffi_segment_set_live_docs,
+};
 pub use sort::{
     ffi_numeric_doc_value_for_doc, ffi_sort_by_doc_value, ffi_sort_by_multi_valued_doc_value,
 };
+pub use vectors::{
+    ffi_close_vectors, ffi_knn_byte_vector_search, ffi_knn_float_vector_search, ffi_open_vectors,
+    ffi_vectors_set_live_docs, SIMILARITY_FROM_FIELD,
+};
 pub use writer::{
-    ffi_close_writer, ffi_open_writer, ffi_writer_add_document, ffi_writer_commit,
-    ffi_writer_finish_commit, ffi_writer_pending_doc_count, ffi_writer_prepare_commit,
-    ffi_writer_rollback, ffi_writer_segment_info_name, ffi_writer_segment_infos_len,
-    ffi_writer_set_merge_policy,
+    ffi_close_writer, ffi_open_writer, ffi_writer_add_document,
+    ffi_writer_add_document_with_custom_freq_terms, ffi_writer_add_documents,
+    ffi_writer_add_postings_field, ffi_writer_add_term_vector_field, ffi_writer_commit,
+    ffi_writer_committed_doc_count, ffi_writer_delete_all, ffi_writer_delete_documents,
+    ffi_writer_delete_documents_by_query, ffi_writer_finish_commit,
+    ffi_writer_live_commit_data_entry, ffi_writer_live_commit_data_len,
+    ffi_writer_pending_doc_count, ffi_writer_prepare_commit, ffi_writer_rollback,
+    ffi_writer_segment_info_name, ffi_writer_segment_infos_len,
+    ffi_writer_set_custom_freq_postings_field, ffi_writer_set_doc_values_field,
+    ffi_writer_set_live_commit_data, ffi_writer_set_merge_policy, ffi_writer_set_norms_field,
+    ffi_writer_set_postings_field, ffi_writer_set_term_vector_field,
+    ffi_writer_soft_update_document, ffi_writer_update_binary_doc_value,
+    ffi_writer_update_document, ffi_writer_update_documents, ffi_writer_update_numeric_doc_value,
 };
 
 use std::os::raw::c_char;

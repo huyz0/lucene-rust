@@ -128,8 +128,43 @@ pub fn check_index_header_suffix(input: &mut SliceInput, expected_suffix: &str) 
     Ok(suffix)
 }
 
+/// Port of `CodecUtil.headerLength`: `9 + codec.length()` — 4 magic bytes,
+/// the codec name's 1-byte vint length plus its bytes, and 4 version bytes.
+/// Only valid because [`write_header`] restricts the codec name to ASCII
+/// shorter than 128 bytes, which is exactly why Java enforces that.
+// ARITH: `str::len()` is bounded by `isize::MAX`, so `9 + len` cannot wrap
+// for *any* `&str`. (Separately, and not what makes the `+` safe: this is
+// only a correct byte *count* because `write_header` restricts the codec name
+// to ASCII shorter than 128 bytes, which is what keeps its length prefix one
+// byte.) Kept as a plain `+` because every codec's seek arithmetic folds
+// through this.
+#[allow(clippy::arithmetic_side_effects)]
+pub fn header_length(codec: &str) -> usize {
+    9 + codec.len()
+}
+
+/// Port of `CodecUtil.indexHeaderLength`: [`header_length`] plus the 16-byte
+/// object id, the suffix's 1-byte length, and the suffix bytes.
+// ARITH: as [`header_length`] -- every term is a `str::len()` or a small
+// constant, all bounded by `isize::MAX`.
+#[allow(clippy::arithmetic_side_effects)]
+pub fn index_header_length(codec: &str, suffix: &str) -> usize {
+    header_length(codec) + ID_LENGTH + 1 + suffix.len()
+}
+
 /// Port of `CodecUtil.writeHeader`: `Magic(BEi32), CodecName(String), Version(BEi32)`.
+///
+/// Java throws `IllegalArgumentException` unless the codec name is simple
+/// ASCII shorter than 128 characters; that bound is what makes
+/// [`header_length`] (and every codec that seeks by it) correct, since a
+/// longer or non-ASCII name would take a 2-byte vint or more bytes than
+/// characters. Codec names are compile-time constants, so this is a caller
+/// bug rather than a corrupt-input case: debug-asserted here.
 pub fn write_header(out: &mut impl DataOutput, codec: &str, version: i32) {
+    debug_assert!(
+        codec.is_ascii() && codec.len() < 128,
+        "codec must be simple ASCII, less than 128 characters in length [got {codec}]"
+    );
     out.write_be_u32(CODEC_MAGIC);
     out.write_string(codec);
     out.write_be_u32(version as u32);
@@ -146,6 +181,10 @@ pub fn write_index_header(
     id: &[u8; ID_LENGTH],
     suffix: &str,
 ) {
+    debug_assert!(
+        suffix.is_ascii() && suffix.len() < 256,
+        "suffix must be simple ASCII, less than 256 characters in length [got {suffix}]"
+    );
     write_header(out, codec, version);
     out.write_bytes(id);
     out.write_byte(suffix.len() as u8);
@@ -173,12 +212,14 @@ pub fn write_footer(buf: &mut Vec<u8>) {
 ///
 /// Returns the verified checksum on success.
 pub fn check_footer(input: &mut SliceInput, total_len: usize) -> Result<u64> {
-    if total_len < FOOTER_LENGTH {
+    // The guard and the subtraction are the same operation: a `total_len`
+    // shorter than a footer is exactly the case where `- FOOTER_LENGTH`
+    // would wrap.
+    let Some(footer_start) = total_len.checked_sub(FOOTER_LENGTH) else {
         return Err(corrupt(format!(
             "misplaced codec footer (file truncated?): length={total_len} but footerLength=={FOOTER_LENGTH}"
         )));
-    }
-    let footer_start = total_len - FOOTER_LENGTH;
+    };
     if input.position() != footer_start {
         return Err(corrupt(format!(
             "did not read all bytes from file: read {} vs size {total_len} (resource=...)",
@@ -201,6 +242,9 @@ pub fn check_footer(input: &mut SliceInput, total_len: usize) -> Result<u64> {
 
     // CRC covers [0, footer_start + 8) i.e. everything up to and including the
     // footer's magic+algorithmID, matching Lucene's running-checksum semantics.
+    // ARITH: `footer_start == total_len - FOOTER_LENGTH` and
+    // `FOOTER_LENGTH == 16`, so `+ 8` cannot reach `usize::MAX`.
+    #[allow(clippy::arithmetic_side_effects)]
     let covered = input.slice(0, footer_start + 8)?;
     let actual_checksum = crc32fast::hash(covered) as u64;
 
@@ -247,13 +291,12 @@ pub fn check_whole_file_footer(buf: &[u8], payload_end: usize) -> Result<u64> {
 /// a forward-only access pattern (e.g. norms data) but truncation/gross
 /// corruption should still be caught on open.
 pub fn retrieve_checksum(buf: &[u8]) -> Result<u64> {
-    if buf.len() < FOOTER_LENGTH {
+    let Some(footer_start) = buf.len().checked_sub(FOOTER_LENGTH) else {
         return Err(corrupt(format!(
             "misplaced codec footer (file truncated?): length={} but footerLength=={FOOTER_LENGTH}",
             buf.len()
         )));
-    }
-    let footer_start = buf.len() - FOOTER_LENGTH;
+    };
     let mut input = SliceInput::new(buf);
     input.seek(footer_start)?;
 
@@ -274,6 +317,32 @@ pub fn retrieve_checksum(buf: &[u8]) -> Result<u64> {
         return Err(corrupt(format!("Illegal CRC-32 checksum: {checksum}")));
     }
     Ok(checksum)
+}
+
+/// Port of `CodecUtil.retrieveChecksum(IndexInput, long expectedLength)`: the
+/// same structural footer check as [`retrieve_checksum`], plus the file-length
+/// assertion Lucene makes when a caller already knows how long the file must
+/// be (a truncated *or* over-long file is corrupt, and a truncated file whose
+/// tail happens to look like a footer would otherwise slip through).
+pub fn retrieve_checksum_with_expected_length(buf: &[u8], expected_length: usize) -> Result<u64> {
+    if expected_length < FOOTER_LENGTH {
+        return Err(corrupt(format!(
+            "expectedLength cannot be less than the footer length: {expected_length}"
+        )));
+    }
+    if buf.len() < expected_length {
+        return Err(corrupt(format!(
+            "truncated file: length={} but expectedLength=={expected_length}",
+            buf.len()
+        )));
+    }
+    if buf.len() > expected_length {
+        return Err(corrupt(format!(
+            "file too long: length={} but expectedLength=={expected_length}",
+            buf.len()
+        )));
+    }
+    retrieve_checksum(buf)
 }
 
 #[cfg(test)]
@@ -507,6 +576,75 @@ mod tests {
         check_index_header_id(&mut input, &id).unwrap();
         assert!(matches!(
             check_index_header_suffix(&mut input, "b"),
+            Err(Error::Corrupted(_))
+        ));
+    }
+
+    #[test]
+    fn header_length_matches_the_bytes_write_header_emits() {
+        for codec in ["Test", "Lucene90SegmentInfo", "X"] {
+            let mut out = Vec::new();
+            write_header(&mut out, codec, 7);
+            assert_eq!(out.len(), header_length(codec), "codec {codec}");
+        }
+    }
+
+    #[test]
+    fn index_header_length_matches_the_bytes_write_index_header_emits() {
+        for (codec, suffix) in [("Test", ""), ("Lucene90Postings", "0"), ("C", "abcdef")] {
+            let mut out = Vec::new();
+            write_index_header(&mut out, codec, 7, &[0xAB; ID_LENGTH], suffix);
+            assert_eq!(
+                out.len(),
+                index_header_length(codec, suffix),
+                "codec {codec} suffix {suffix}"
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "codec must be simple ASCII")]
+    fn write_header_rejects_a_non_ascii_codec_name_in_debug() {
+        // A multi-byte name would make header_length() -- and every codec that
+        // seeks past the header by it -- wrong.
+        let mut out = Vec::new();
+        write_header(&mut out, "Lucene\u{e9}", 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "suffix must be simple ASCII")]
+    fn write_index_header_rejects_an_over_long_suffix_in_debug() {
+        // The suffix length is a single byte: 256 would be written as 0 and
+        // silently produce a file no reader can parse.
+        let mut out = Vec::new();
+        write_index_header(&mut out, "Test", 1, &[0u8; ID_LENGTH], &"x".repeat(256));
+    }
+
+    #[test]
+    fn retrieve_checksum_with_expected_length_accepts_the_exact_length() {
+        let buf = valid_file("Test", 1, b"payload");
+        let expected = crc32fast::hash(&buf[..buf.len() - 8]) as u64;
+        assert_eq!(
+            retrieve_checksum_with_expected_length(&buf, buf.len()).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn retrieve_checksum_with_expected_length_rejects_wrong_lengths() {
+        let buf = valid_file("Test", 1, b"payload");
+        // Truncated (file shorter than promised), extended (longer), and an
+        // expectedLength that cannot hold a footer at all.
+        assert!(matches!(
+            retrieve_checksum_with_expected_length(&buf, buf.len() + 1),
+            Err(Error::Corrupted(_))
+        ));
+        assert!(matches!(
+            retrieve_checksum_with_expected_length(&buf, buf.len() - 1),
+            Err(Error::Corrupted(_))
+        ));
+        assert!(matches!(
+            retrieve_checksum_with_expected_length(&buf, FOOTER_LENGTH - 1),
             Err(Error::Corrupted(_))
         ));
     }

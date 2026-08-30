@@ -528,6 +528,7 @@ fn rewrite_produces_identical_scored_results_for_nested_single_clause_boolean() 
                 Clause::Term(TermQuery::new("body", "dog")),
                 Clause::Term(TermQuery::new("body", "cat")),
             ],
+            filter: Vec::new(),
             should: vec![],
             must_not: vec![],
             minimum_should_match: 0,
@@ -594,6 +595,7 @@ fn rewrite_produces_identical_scored_results_for_duplicate_must_not_clauses() {
         rewritten_clause,
         Clause::Boolean(Box::new(BooleanQuery {
             must: vec![Clause::Term(TermQuery::new("body", "cat"))],
+            filter: Vec::new(),
             should: vec![],
             must_not: vec![Clause::Term(TermQuery::new("body", "dog"))],
             minimum_should_match: 0,
@@ -669,4 +671,110 @@ fn three_levels_of_nested_boolean_clauses_match_real_lucene() {
     )
     .unwrap();
     assert_eq!(collector.docs, sorted_vec(expected));
+}
+
+/// Rules 6 (flatten a nested pure disjunction out of `should`), 7 (inline a
+/// required nested `BooleanQuery`) and 9 (every `should` required -> `must`)
+/// **restructure the clause list** `clause_scores` folds over, where rules 1-5
+/// and 8 only remove or replace whole queries. `f32` addition is not
+/// associative, so bit-identical scores are not something these three can be
+/// argued into in general -- they have to be measured.
+///
+/// This test measures them on the real fixture segment, and asserts both
+/// halves separately: the matched-doc **set** must be identical (that *is*
+/// guaranteed), and the scores are compared bit-for-bit with the actual
+/// outcome recorded rather than assumed. If a future change to `clause_scores`
+/// makes a reordering visible in the last bit, this fails and the person
+/// making it gets to decide deliberately, instead of a doc comment quietly
+/// over-claiming.
+#[test]
+fn rewrite_flattening_and_inlining_preserve_scores_bit_for_bit() {
+    let (fields, doc, id, suffix, _m) = open_segment();
+    let doc_in = DocInput::open(&doc, &id, &suffix).expect("open .doc");
+
+    let run = |query: &BooleanQuery| {
+        let mut top = lucene_search::collector::TopDocsCollector::new(100);
+        search_boolean_query_scored(
+            &fields,
+            Some(&doc_in),
+            None,
+            None,
+            None,
+            None,
+            query,
+            None,
+            &mut top,
+        )
+        .unwrap();
+        top.top_docs().to_vec()
+    };
+
+    // Rule 6: a nested pure disjunction under `should`, flattened into the
+    // parent's `should` list.
+    let flattenable = BooleanQuery::new()
+        .with_must([TermQuery::new("body", "cat")])
+        .with_should([
+            Clause::Term(TermQuery::new("body", "bird")),
+            Clause::from(
+                BooleanQuery::new()
+                    .with_should([TermQuery::new("body", "dog"), TermQuery::new("body", "cat")]),
+            ),
+        ]);
+    // Rule 7: a required nested `BooleanQuery` with no `should` list, whose
+    // `must`/`must_not` clauses lift into the parent.
+    let inlinable = BooleanQuery::new()
+        .with_must([
+            Clause::Term(TermQuery::new("body", "cat")),
+            Clause::from(
+                BooleanQuery::new()
+                    .with_must([TermQuery::new("body", "dog")])
+                    .with_must_not([TermQuery::new("body", "bird")]),
+            ),
+        ])
+        .with_should([TermQuery::new("body", "bird")]);
+    // Rule 9: `should.len() == minimum_should_match`, so every `should`
+    // becomes a `must`.
+    let all_required = BooleanQuery::new()
+        .with_should([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")])
+        .with_minimum_should_match(2);
+
+    for (name, query) in [
+        ("rule 6 (flatten)", flattenable),
+        ("rule 7 (inline)", inlinable),
+        ("rule 9 (should -> must)", all_required),
+    ] {
+        let rewritten = query.clone().rewrite();
+        // Sanity: the rule under test actually fired. Without this the test
+        // could pass by comparing a query to itself.
+        assert_ne!(
+            rewritten,
+            Clause::Boolean(Box::new(query.clone())),
+            "{name}: rewrite was a no-op, so this proves nothing"
+        );
+        let Clause::Boolean(rewritten_query) = rewritten else {
+            panic!("{name}: expected the rewrite to stay a BooleanQuery");
+        };
+
+        let before = run(&query);
+        let after = run(&rewritten_query);
+        assert!(!before.is_empty(), "{name}: fixture sanity, some hits");
+
+        let before_docs: Vec<i32> = before.iter().map(|h| h.doc_id).collect();
+        let after_docs: Vec<i32> = after.iter().map(|h| h.doc_id).collect();
+        assert_eq!(
+            before_docs, after_docs,
+            "{name}: matched set must not change"
+        );
+
+        for (b, a) in before.iter().zip(after.iter()) {
+            assert_eq!(
+                b.score.to_bits(),
+                a.score.to_bits(),
+                "{name}: doc {} scored {} before the rewrite and {} after",
+                b.doc_id,
+                b.score,
+                a.score
+            );
+        }
+    }
 }

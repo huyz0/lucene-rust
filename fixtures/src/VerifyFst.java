@@ -25,16 +25,20 @@ import java.util.Properties;
  * output pushing, no fixed-length-arc nodes -- see {@code fst.rs}'s module
  * doc) is still a wire-format-valid FST that unmodified Lucene code accepts.
  *
- * <p>Verifies two fixtures: the small 7-key set in {@code args[0]} (same
- * shape as {@code GenFst.java}'s read-side fixture), and a larger 200-key
- * set in {@code args[0]/large} that forces multi-byte {@code vlong}
- * node-address targets -- a shape only previously self-round-tripped
- * through this port's own reader, never checked against real Lucene.
+ * <p>Verifies three fixtures: the small 7-key set in {@code args[0]} (same
+ * shape as {@code GenFst.java}'s read-side fixture), a larger 200-key set in
+ * {@code args[0]/large} that forces multi-byte {@code vlong} node-address
+ * targets, and {@code args[0]/empty}, whose first key is the empty string so
+ * that {@code FSTMetadata.emptyOutput} -- which has its own
+ * {@code writeFinalOutput}-then-reverse serialization -- is exercised. That
+ * last one cannot be checked by a self-round-trip: a reader and writer that
+ * both get the framing wrong agree with each other perfectly.
  */
 public class VerifyFst {
   public static void main(String[] args) throws IOException {
     verifyOne(Path.of(args[0]));
     verifyOne(Path.of(args[0]).resolve("large"));
+    verifyOne(Path.of(args[0]).resolve("empty"));
   }
 
   private static void verifyOne(Path dir) throws IOException {

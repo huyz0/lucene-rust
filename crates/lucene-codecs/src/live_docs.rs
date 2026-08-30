@@ -30,6 +30,8 @@ pub enum Error {
     Store(#[from] lucene_store::Error),
     #[error("bits.deleted={actual} info.delcount={expected}")]
     DelCountMismatch { actual: usize, expected: usize },
+    #[error("live docs bitset has ghost bits set past maxDoc={max_doc} in its last word")]
+    GhostBitsSet { max_doc: usize },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -62,10 +64,32 @@ pub fn parse(
 
     let mut words = vec![0i64; bits2words(max_doc)];
     input.read_i64s(&mut words)?;
+    // `Lucene90LiveDocsFormat.writeBits` clears the ghost bits (the bits of
+    // the last word past `maxDoc`) before writing, and Java's
+    // `new FixedBitSet(long[], int)` asserts they are clear on the way back
+    // in. This port's `FixedBitSet::from_words` carries the same
+    // `debug_assert`, which would turn a corrupt `.liv` into a panic in a
+    // debug build and, in a release build, into a `usize` underflow in the
+    // `max_doc - cardinality()` below. Check it here instead and report it
+    // the way every other decode failure in this crate is reported.
+    if let Some(&last) = words.last() {
+        let bits_in_last_word = max_doc % 64;
+        if bits_in_last_word != 0 && (last as u64) >> bits_in_last_word != 0 {
+            return Err(Error::GhostBitsSet { max_doc });
+        }
+    }
     let live_docs = FixedBitSet::from_words(words.into_iter().map(|w| w as u64).collect(), max_doc);
 
     codec_util::check_footer(&mut input, buf.len())?;
 
+    // ARITH: `words` is exactly `bits2words(max_doc)` long (it was allocated
+    // that way above and `read_i64s` fills it without resizing), and the
+    // ghost-bit check immediately above rejects, at runtime, any set bit past
+    // `max_doc` in the final word. So every set bit counted by
+    // `cardinality()` sits at an index `< max_doc`, giving
+    // `cardinality() <= max_doc`. This is a runtime-enforced bound, not the
+    // `debug_assert` inside `FixedBitSet::from_words`.
+    #[allow(clippy::arithmetic_side_effects)]
     let actual_del_count = max_doc - live_docs.cardinality();
     if actual_del_count != expected_del_count {
         return Err(Error::DelCountMismatch {
@@ -113,7 +137,16 @@ pub fn write(
 
     codec_util::write_footer(&mut buf);
 
-    let actual_del_count = live_docs.len() - live_docs.cardinality();
+    // `cardinality()` counts every set bit in every word, including any past
+    // `len()` in the final word. A caller that handed us a `FixedBitSet` with
+    // such ghost bits set would underflow this subtraction; report it as the
+    // same corruption the read side names rather than panicking (debug) or
+    // wrapping to a nonsense count (release).
+    let Some(actual_del_count) = live_docs.len().checked_sub(live_docs.cardinality()) else {
+        return Err(Error::GhostBitsSet {
+            max_doc: live_docs.len(),
+        });
+    };
     if actual_del_count != expected_del_count {
         return Err(Error::DelCountMismatch {
             actual: actual_del_count,
@@ -207,6 +240,43 @@ mod write_tests {
                 expected: 0
             }
         ));
+    }
+
+    /// A `.liv` whose last word has bits set past `maxDoc` is corrupt --
+    /// Java's `FixedBitSet` constructor asserts they are clear. Report it as a
+    /// decode error rather than panicking (which is what the `debug_assert` in
+    /// `FixedBitSet::from_words` would do) or silently miscounting deletions.
+    #[test]
+    fn ghost_bits_past_max_doc_are_rejected() {
+        let max_doc = 3;
+        let mut buf: Vec<u8> = Vec::new();
+        codec_util::write_index_header(
+            &mut buf,
+            CODEC_NAME,
+            VERSION_CURRENT,
+            &SEGMENT_ID,
+            &lucene_util::base36::to_base36(1),
+        );
+        // Docs 0..2 live, plus a ghost bit at position 5 (>= maxDoc).
+        buf.write_i64(0b100_111);
+        codec_util::write_footer(&mut buf);
+        assert!(matches!(
+            parse(&buf, &SEGMENT_ID, 1, max_doc, 0),
+            Err(Error::GhostBitsSet { max_doc: 3 })
+        ));
+    }
+
+    /// A `maxDoc` that is an exact multiple of 64 has no ghost-bit positions
+    /// at all, so a full last word is legitimate.
+    #[test]
+    fn a_full_last_word_is_fine_when_max_doc_is_a_multiple_of_64() {
+        let max_doc = 64;
+        let mut bs = FixedBitSet::new(max_doc);
+        for i in 0..max_doc {
+            bs.set(i);
+        }
+        let decoded = round_trip(&bs, 1, 0);
+        assert_eq!(decoded.cardinality(), max_doc);
     }
 
     #[test]

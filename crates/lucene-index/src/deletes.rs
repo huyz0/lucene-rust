@@ -55,6 +55,12 @@ pub enum Error {
     LiveDocs(#[from] live_docs::Error),
     #[error("doc id {doc_id} out of range for max_doc={max_doc}")]
     DocOutOfRange { doc_id: i32, max_doc: usize },
+    #[error("invalid deletion count: {del_count} vs maxDoc={max_doc} (segment={segment})")]
+    DelCountExceedsMaxDoc {
+        segment: String,
+        del_count: i32,
+        max_doc: usize,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -73,6 +79,15 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// `segment_infos.rs`/`segment_info.rs`, both of which read/write `del_gen`
 /// as an integer with no filename derived from it).
 pub fn liv_file_name(segment_name: &str, del_gen: i64) -> String {
+    if del_gen == 0 {
+        // `IndexFileNames.fileNameFromGeneration`'s generation-0 branch:
+        // `segmentFileName(base, "", ext)`, i.e. no generation suffix at all.
+        // Real Lucene never reaches it for `.liv` (`getNextDelGen()` goes
+        // -1 -> 1), but the naming rule is the naming rule: emitting
+        // `_0_0.liv` here would send every caller looking for a file no
+        // Lucene writer would ever produce.
+        return format!("{segment_name}.liv");
+    }
     format!(
         "{segment_name}_{}.liv",
         lucene_util::base36::to_base36(del_gen)
@@ -98,24 +113,58 @@ pub fn mark_deleted(
 ) -> Result<(FixedBitSet, usize)> {
     let mut bits = match live_docs {
         Some(existing) => existing.clone(),
+        // `FixedBitSet.set(0, numBits)` -- fill whole words at once instead
+        // of `max_doc` individual read-modify-write bit sets (which is what
+        // a per-bit loop compiles to). The final partial word is masked so
+        // no bit past `max_doc` is ever set, matching `FixedBitSet`'s
+        // invariant that trailing bits stay zero (`cardinality` counts raw
+        // words).
         None => {
-            let mut all_live = FixedBitSet::new(max_doc);
-            for i in 0..max_doc {
-                all_live.set(i);
+            let words = lucene_util::fixed_bit_set::bits2words(max_doc);
+            let mut all_ones = vec![u64::MAX; words];
+            let tail = max_doc & 63;
+            if tail != 0 {
+                if let Some(last) = all_ones.last_mut() {
+                    // ARITH: `tail` is `max_doc & 63`, so `1..=63` inside this
+                    // branch; `1u64 << 63` is `2^63` and `- 1` cannot
+                    // underflow (the shift result is at least 2).
+                    #[allow(clippy::arithmetic_side_effects)]
+                    let mask = (1u64 << tail) - 1;
+                    *last = mask;
+                }
             }
-            all_live
+            FixedBitSet::from_words(all_ones, max_doc)
         }
     };
 
+    // Bound every doc ID against **the bitset's own length**, never against
+    // `max_doc`. The two are the same number for every caller in this port,
+    // but `live_docs` is a caller-supplied `&FixedBitSet` and `max_doc` a
+    // separate caller-supplied `usize`: if they ever disagree, bounding on
+    // `max_doc` and then indexing `bits` is precisely the shape
+    // `FixedBitSet::get` turns into a panic (it indexes `words[index >> 6]`
+    // and only `debug_assert`s the bound, so a release build either panics or
+    // silently reads a ghost bit past `num_bits`). This function's own doc
+    // comment promises `DocOutOfRange` "rather than ... panicking", so the
+    // bound has to be the one that actually governs the indexing. Hoisted:
+    // one load, not one per doc ID.
+    let num_bits = bits.len();
     let mut newly_deleted = 0usize;
     for doc_id in doc_ids {
-        if doc_id < 0 || doc_id as usize >= max_doc {
-            return Err(Error::DocOutOfRange { doc_id, max_doc });
-        }
-        let idx = doc_id as usize;
+        let idx = match usize::try_from(doc_id) {
+            Ok(idx) if idx < num_bits && idx < max_doc => idx,
+            _ => return Err(Error::DocOutOfRange { doc_id, max_doc }),
+        };
         if bits.get(idx) {
             bits.clear(idx);
-            newly_deleted += 1;
+            // ARITH: the bit is cleared in the same breath, so each of the
+            // `max_doc` doc IDs can increment this at most once however many
+            // times `doc_ids` repeats it -- `newly_deleted <= max_doc`, and
+            // `max_doc` is a `usize` this bitset was sized from.
+            #[allow(clippy::arithmetic_side_effects)]
+            {
+                newly_deleted += 1;
+            }
         }
         // Already-deleted: idempotent no-op, not double-counted.
     }
@@ -152,8 +201,41 @@ pub fn apply_deletes(
 ) -> Result<SegmentCommitInfo> {
     let (new_bits, newly_deleted) = mark_deleted(current_live_docs, max_doc, doc_ids)?;
 
-    let next_del_gen = if sci.del_gen < 0 { 1 } else { sci.del_gen + 1 };
-    let new_del_count = sci.del_count + newly_deleted as i32;
+    // `SegmentCommitInfo.getNextDelGen()`, not a fresh `del_gen + 1`
+    // derivation: after a crash, `SegmentInfos.inflateGens` pushes
+    // `next_write_del_gen` past every `.liv` generation left in the directory,
+    // and honouring that is the whole point of the field (see
+    // `crate::index_file_deleter::inflate_gens`).
+    let next_del_gen = sci.next_write_del_gen();
+    // `SegmentInfos.write` throws `IllegalStateException` for a `delCount`
+    // past `maxDoc`, so producing one here would build a commit this port's
+    // own writer would then have to reject (and real Lucene's reader would
+    // reject on the way back in). Catching it at the source names the
+    // segment; catching it at write time would not.
+    //
+    // The addition is checked because `sci.del_count` came off `segments_N`,
+    // where the only bound this layer can apply is `>= 0` (the `maxDoc` half
+    // of Java's check lives in the `.si`, which `segment_infos` deliberately
+    // does not read). A `del_count` near `i32::MAX` plus one newly deleted doc
+    // overflows -- a panic in a debug build, and in a release build a *negative*
+    // `del_count` that sails past the `> max_doc` test below and gets written
+    // into the commit.
+    let computed = i32::try_from(newly_deleted)
+        .ok()
+        .and_then(|n| sci.del_count.checked_add(n));
+    let new_del_count = match computed {
+        Some(n) if n >= 0 && n as usize <= max_doc => n,
+        // On overflow there is no representable count to name, so report the
+        // saturated one: a `delCount` of `i32::MAX` against any real `maxDoc`
+        // is a visible absurdity, which is what the caller needs to see.
+        other => {
+            return Err(Error::DelCountExceedsMaxDoc {
+                segment: sci.segment_name.clone(),
+                del_count: other.unwrap_or(i32::MAX),
+                max_doc,
+            })
+        }
+    };
 
     let liv_bytes = live_docs::write(
         &new_bits,
@@ -182,6 +264,19 @@ pub fn apply_deletes(
         sci_id: sci.sci_id,
         field_infos_files: sci.field_infos_files.clone(),
         dv_update_files: sci.dv_update_files.clone(),
+        // `SegmentCommitInfo.advanceDelGen()`: the generation just consumed is
+        // now the current one, and the next write goes one past it.
+        // ARITH: `next_del_gen` is derived from `del_gen`, which is capped at
+        // `segment_infos::MAX_GENERATION` (`i64::MAX / 2`) on every path that
+        // can set it from outside this process -- `segment_infos::parse`, and
+        // `index_file_deleter`'s `usable_generation` for a value carried in by
+        // a file name -- and which `segment_infos::check_writable_generations`
+        // refuses to serialize above the cap. See that constant.
+        #[allow(clippy::arithmetic_side_effects)]
+        next_write_del_gen: next_del_gen + 1,
+        next_write_field_infos_gen: sci.next_write_field_infos_gen,
+        next_write_doc_values_gen: sci.next_write_doc_values_gen,
+        buffered_deletes_gen: sci.buffered_deletes_gen,
     })
 }
 
@@ -198,12 +293,7 @@ mod tests {
             codec_name: "Lucene104".to_string(),
             del_gen,
             del_count,
-            field_infos_gen: -1,
-            doc_values_gen: -1,
-            soft_del_count: 0,
-            sci_id: None,
-            field_infos_files: vec![],
-            dv_update_files: vec![],
+            ..Default::default()
         }
     }
 
@@ -212,11 +302,84 @@ mod tests {
     #[test]
     fn liv_file_name_matches_ifn_convention() {
         assert_eq!(liv_file_name("_0", 1), "_0_1.liv");
-        assert_eq!(liv_file_name("_3", 0), "_3_0.liv");
+        // Generation 0 has no suffix at all -- `IndexFileNames
+        // .fileNameFromGeneration`'s dedicated `gen == 0` branch, which
+        // returns `segmentFileName(base, "", ext)`.
+        assert_eq!(liv_file_name("_3", 0), "_3.liv");
         // Generation is base-36, not decimal -- this is the case decimal and
         // base36 diverge, so it's the one that actually proves the encoding.
         assert_eq!(liv_file_name("_0", 36), "_0_10.liv");
         assert_eq!(liv_file_name("_0", 100), "_0_2s.liv");
+    }
+
+    /// The all-live bitset is built by filling whole `u64` words and masking
+    /// the tail, not by setting `max_doc` bits one at a time. A `max_doc`
+    /// that is not a multiple of 64 is the case that catches a wrong mask --
+    /// `cardinality()` counts raw words, so a stray set bit past `max_doc`
+    /// would show up as a live doc that does not exist.
+    #[test]
+    fn all_live_bitset_masks_bits_past_max_doc() {
+        for max_doc in [1usize, 63, 64, 65, 130, 256] {
+            let (bits, newly) = mark_deleted(None, max_doc, []).unwrap();
+            assert_eq!(newly, 0);
+            assert_eq!(bits.cardinality(), max_doc, "max_doc={max_doc}");
+            assert!((0..max_doc).all(|i| bits.get(i)), "max_doc={max_doc}");
+        }
+    }
+
+    /// A commit can never record more deletions than the segment has docs --
+    /// `SegmentInfos.write` refuses to serialize one, so building it is a
+    /// bug worth surfacing where it happens.
+    #[test]
+    fn del_count_past_max_doc_is_rejected() {
+        let tmp = lucene_util::test_support::TempDir::new("deletes-del-count-past-max-doc");
+        let dir = FsDirectory::open(&tmp);
+        // A segment of 3 docs that already claims 3 deletions; deleting one
+        // more would make 4.
+        let info = sci("_0", 1, 3);
+        let mut live = FixedBitSet::new(3);
+        live.set(0);
+        let err = apply_deletes(&dir, &info, Some(&live), 3, [0]).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                Error::DelCountExceedsMaxDoc {
+                    del_count: 4,
+                    max_doc: 3,
+                    ..
+                }
+            ),
+            "unexpected error: {err}"
+        );
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// `del_count` comes off `segments_N`, where the only bound this port can
+    /// apply is `>= 0` — the `maxDoc` half of Java's check lives in the `.si`,
+    /// which `segment_infos` deliberately does not read. So `del_count +
+    /// newly_deleted` can overflow `i32`: a **panic** in a debug build, and in
+    /// a release build a *negative* count that sails straight past the
+    /// `> max_doc` test and into the commit.
+    #[test]
+    fn del_count_overflow_is_an_error_not_a_wrap() {
+        let tmp = lucene_util::test_support::TempDir::new("deletes-del-count-overflow");
+        let dir = FsDirectory::open(&tmp);
+        let info = sci("_0", 1, i32::MAX);
+        let mut live = FixedBitSet::new(3);
+        live.set(0);
+        let err = apply_deletes(&dir, &info, Some(&live), 3, [0]).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                Error::DelCountExceedsMaxDoc {
+                    del_count: i32::MAX,
+                    max_doc: 3,
+                    ..
+                }
+            ),
+            "unexpected error: {err}"
+        );
+        std::fs::remove_dir_all(&tmp).ok();
     }
 
     // --- mark_deleted ---
@@ -305,18 +468,12 @@ mod tests {
 
     // --- apply_deletes: full round-trip via real Directory I/O ---
 
-    fn tempdir() -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        p.push(format!(
-            "lucene-rust-deletes-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&p).unwrap();
-        p
+    use lucene_util::test_support::TempDir;
+
+    /// A scratch directory that removes itself when the test ends -- unless
+    /// the test is panicking, in which case its bytes stay for inspection.
+    fn tempdir() -> TempDir {
+        TempDir::new("deletes")
     }
 
     #[test]

@@ -3,6 +3,11 @@
 //! "apple", "cherry", "apple", "banana") across 5 docs, so the terms
 //! dictionary has 3 unique alphabetically-ordered terms and the ordinal
 //! array has repeats. Regenerate with fixtures/src/GenSortedDocValues.java.
+// Test-support code opts out of the arithmetic gate at the file boundary:
+// the gate exists for values read off disk in production decode paths, not
+// for a fixture builder's own index arithmetic. See
+// `docs/arithmetic-gate.md`.
+#![allow(clippy::arithmetic_side_effects)]
 
 use lucene_codecs::{doc_values, field_infos, terms_dict};
 

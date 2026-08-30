@@ -89,12 +89,27 @@
 //!
 //! Matching semantics follow real `BooleanQuery.rewrite()`/`BooleanWeight`
 //! (`org.apache.lucene.search.BooleanQuery`/`BooleanWeight`, verified against that
-//! source rather than guessed): a query with **no `must` and no `should` clauses
-//! matches nothing**, regardless of `must_not` — real Lucene rewrites both "no
-//! clauses at all" (`clauses.isEmpty()`) and "only `MUST_NOT` clauses"
-//! (`clauses.size() == clauseSets.get(MUST_NOT).size()`) to a `MatchNoDocsQuery`,
-//! i.e. a **pure negative query does not mean "match every doc except the excluded
-//! ones"** — it means match nothing.
+//! source rather than guessed): a query with **no `must`, no `filter` and no
+//! `should` clauses matches nothing**, regardless of `must_not` — real Lucene
+//! rewrites both "no clauses at all" (`clauses.isEmpty()`) and "only `MUST_NOT`
+//! clauses" (`clauses.size() == clauseSets.get(MUST_NOT).size()`) to a
+//! `MatchNoDocsQuery`, i.e. a **pure negative query does not mean "match every doc
+//! except the excluded ones"** — it means match nothing.
+//!
+//! **`Occur.FILTER`** (`query.filter`) is `MUST` with the score dropped: a filter
+//! clause is a leg of the same conjunction as `must`, but contributes exactly `0`
+//! to the score and is never summed. Three consequences the executor here relies
+//! on, all of them Java's:
+//! - A filter clause **does not count toward `minimum_should_match`** — only
+//!   `Occur.SHOULD` increments `shouldMatchCount` in `BooleanWeight`.
+//! - A **filter-only query matches**, at score `0`. It is a positive query
+//!   (`BooleanClause.isRequired()`), so the pure-negative rewrite above does not
+//!   apply to it.
+//! - A filter clause **cannot perturb the scoring clauses' float summation
+//!   order**, because it never enters the sum at all: `ConjunctionScorer.score()`
+//!   iterates `scorers` (the `MUST` subset), not `required`. `f32` addition is not
+//!   associative, so this is a bit-level property, not a stylistic one, and
+//!   `tests/bm25_scoring_fixtures.rs` asserts it against real `IndexSearcher`.
 //!
 //! `query.minimum_should_match` (task #24's addition; `query::BooleanQuery`'s doc
 //! comment has the full field-level accounting) gates `should` **regardless of
@@ -103,12 +118,12 @@
 //! `bulkScorer`/`explain` all compute `shouldMatchCount` and reject a doc with
 //! `shouldMatchCount < minShouldMatch` unconditionally, not just when `must` is
 //! empty. Concretely:
-//! - `minimum_should_match == 0` (the default): when `must` is non-empty, `should`
-//!   clauses do **not** narrow the matched set at all (scoring-only once a
-//!   `MUST`/`FILTER` clause exists); the matched set is `must`'s conjunction alone.
-//!   When `must` is empty, the matched set is `should`'s disjunction (a doc needs at
-//!   least one `should` hit — `minimum_should_match`'s implicit floor of 1 in that
-//!   case).
+//! - `minimum_should_match == 0` (the default): when `must`/`filter` is non-empty,
+//!   `should` clauses do **not** narrow the matched set at all (scoring-only once a
+//!   `MUST`/`FILTER` clause exists); the matched set is the required conjunction
+//!   alone. When there are no required clauses, the matched set is `should`'s
+//!   disjunction (a doc needs at least one `should` hit —
+//!   `minimum_should_match`'s implicit floor of 1 in that case).
 //! - `minimum_should_match > 0`: **this is a real behavior change from the
 //!   `must`-present case above** — a doc drawn from `must`'s conjunction (or, when
 //!   `must` is empty, from `should`'s disjunction) is only kept if it *also* matches
@@ -190,6 +205,7 @@ pub mod facets;
 pub mod field_norms;
 pub mod highlighter;
 pub mod multi_segment;
+pub mod ordinal_map;
 pub mod points_query;
 pub mod query;
 pub mod query_cache;
@@ -197,10 +213,11 @@ pub mod query_parser;
 pub mod similarity;
 pub mod soft_deletes;
 pub mod term_vectors_query;
+pub mod vector_query;
 
 pub use collector::{
-    Collector, CountCollector, FieldValueDoc, ScoreDoc, ScoringCollector, SortDirection,
-    TopDocsCollector, TopFieldCollector, VecCollector,
+    Collector, CountCollector, FieldValueDoc, ScoreDoc, ScoreMode, ScoringCollector, SortDirection,
+    TopDocsCollector, TopFieldCollector, TotalHits, TotalHitsRelation, VecCollector,
 };
 pub use doc_value_query::{
     search_numeric_range, search_numeric_range_sorted_by_field, search_sorted_ord_range,
@@ -217,15 +234,23 @@ pub use multi_segment::{
 pub use points_query::{pack_i64, search_points_range, PointsInput};
 pub use query::{
     BooleanQuery, BoostQuery, Clause, ConstantScoreQuery, DisjunctionMaxQuery, FuzzyQuery,
-    MatchAllDocsQuery, MatchNoDocsQuery, PhraseQuery, PrefixQuery, RegexpQuery, SpanQuery,
-    TermInSetQuery, TermQuery, WildcardQuery,
+    MatchAllDocsQuery, MatchNoDocsQuery, MultiPhraseQuery, PhraseQuery, PrefixQuery, RegexpQuery,
+    SpanQuery, TermInSetQuery, TermQuery, WildcardQuery,
 };
 pub use query_cache::{search_term_query_cached, QueryCache};
 pub use term_vectors_query::{matched_term_offsets, term_vector_for_doc};
+pub use vector_query::{
+    accept_bitset, per_leaf_top_k, search_knn_byte_vector_query,
+    search_knn_byte_vector_query_multi_segment,
+    search_knn_byte_vector_query_multi_segment_concurrent, search_knn_float_vector_query,
+    search_knn_float_vector_query_multi_segment,
+    search_knn_float_vector_query_multi_segment_concurrent, similarity_from_ordinal,
+    similarity_ordinal, KnnByteVectorQuery, KnnFloatVectorQuery, KnnSegment, VectorsInput,
+};
 
 use std::collections::HashMap;
 
-use docid_set::{BoxDocIter, Conjunction, Disjunction, Excluding};
+use docid_set::{BoxDocIter, Conjunction, Disjunction, Excluding, WindowedDisjunction};
 
 use lucene_codecs::blocktree::{self, BlockTreeFields};
 use lucene_codecs::fuzzy::FuzzyMatch;
@@ -272,6 +297,17 @@ pub enum Error {
     /// decode is an [`Error::BlockTree`] rather than an empty result.
     #[error(transparent)]
     Regexp(#[from] lucene_codecs::regexp::RegexpError),
+    /// [`doc_value_query::field_exists_source`] was asked about a field that
+    /// indexes none of norms, vectors or doc values -- Java's own
+    /// `IllegalStateException` from `FieldExistsQuery`, whose message this
+    /// reproduces. A field *name* that is simply not in `FieldInfos` is not
+    /// this case: that is Java's `fieldInfo == null`, a `null` scorer, and no
+    /// matches without an error.
+    #[error(
+        "FieldExistsQuery requires that the field indexes doc values, norms or vectors, but \
+         field {0:?} exists and indexes neither of these data structures"
+    )]
+    FieldExistsUnsupported(String),
     /// Surfaced by [`points_query::search_points_range`] when the underlying
     /// `.kdd`/`.kdi`/`.kdm` decode fails (a truncated/corrupt BKD points
     /// region) -- the points-range analog of [`Error::DocValues`].
@@ -295,6 +331,21 @@ pub enum Error {
          (field {0:?})"
     )]
     MissingPointsInput(String),
+    /// Surfaced by [`vector_query`] when the underlying `.vemf`/`.vec`/
+    /// `.vem`/`.vex` decode fails -- the vector analog of [`Error::Points`].
+    /// A *caller* mistake (an unknown field, a wrong-length query vector, a
+    /// `k` below 1) is [`Error::InvalidKnnQuery`] instead, deliberately: the
+    /// two are indistinguishable to a caller that only sees one error type,
+    /// and "the index is corrupt" is the wrong thing to tell a JNI caller
+    /// who sent a bad request (see `lucene_ffi::vectors`).
+    #[error(transparent)]
+    Vectors(#[from] lucene_codecs::vectors::Error),
+    /// A KNN query this segment cannot answer as asked -- Java's
+    /// `IllegalArgumentException` from `AbstractKnnVectorQuery`'s constructor
+    /// and its two subclasses' `approximateSearch`, carrying Java's own
+    /// message. Never a sign of a damaged index.
+    #[error("{0}")]
+    InvalidKnnQuery(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -334,14 +385,46 @@ pub fn search_term_query<C: Collector>(
     Ok(())
 }
 
-/// Shared per-clause lookup: `seekExact`s `query`'s term via
-/// `blocktree::FieldTerms::postings`, then returns every matching doc ID (ascending,
-/// per `Postings`' own contract), filtered by `live_docs` the same way
-/// `search_term_query` always has. Returns an empty `Vec` — not an error — when the
-/// query's field doesn't exist in this segment or the term isn't in that field's
-/// dictionary, matching `TermQuery.createWeight`'s `null`-`Scorer` "no matches"
-/// outcome. Used by both `search_term_query` and `search_boolean_query` so the
-/// field-lookup/`postings`/`live_docs`-filter sequence lives in exactly one place.
+/// `TermsEnum.postings(reuse, PostingsEnum.NONE)`: one term's matching doc IDs
+/// with the `.doc` file's **frequency blocks skipped** rather than unpacked
+/// (`PForUtil.skip`, c8's addition to `lucene-codecs`).
+///
+/// **This returns the doc list only, deliberately.** `PostingsFlags::DocsOnly`
+/// fills `Postings::freqs` with `1`s, so a caller that took the whole
+/// `Postings` and later read a frequency would get a plausible, silently wrong
+/// number. Handing back a bare `Vec<i32>` makes that impossible rather than
+/// merely untested: there is no frequency in scope to read. Every unscored
+/// matching path in this module goes through here; anything that scores calls
+/// [`blocktree::FieldTerms::postings`] and keeps the frequencies.
+///
+/// `None` is "this term is not in this field's dictionary" (Java's `null`
+/// `PostingsEnum`), distinct from `Some(vec![])`.
+fn term_docs_only(
+    field_terms: &blocktree::FieldTerms,
+    term: &[u8],
+    doc_in: Option<&DocInput<'_>>,
+) -> Result<Option<Vec<i32>>> {
+    Ok(field_terms
+        .postings_with_flags(
+            term,
+            doc_in,
+            lucene_codecs::postings::PostingsFlags::DocsOnly,
+        )?
+        .map(|p| p.docs))
+}
+
+/// Shared per-clause lookup: `seekExact`s `query`'s term, then returns every
+/// matching doc ID (ascending, per `Postings`' own contract), filtered by
+/// `live_docs` the same way `search_term_query` always has. Returns an empty
+/// `Vec` — not an error — when the query's field doesn't exist in this segment
+/// or the term isn't in that field's dictionary, matching
+/// `TermQuery.createWeight`'s `null`-`Scorer` "no matches" outcome. Used by
+/// both `search_term_query` and `search_boolean_query` so the
+/// field-lookup/postings/`live_docs`-filter sequence lives in exactly one
+/// place.
+///
+/// Goes through [`term_docs_only`]: this is a *matching* path and never reads a
+/// frequency.
 fn term_doc_ids(
     fields: &BlockTreeFields,
     doc_in: Option<&DocInput<'_>>,
@@ -351,13 +434,11 @@ fn term_doc_ids(
     let Some(field_terms) = fields.field(&query.field) else {
         return Ok(Vec::new());
     };
-    let Some(postings) = field_terms.postings(&query.term, doc_in)? else {
+    let Some(docs) = term_docs_only(field_terms, &query.term, doc_in)? else {
         return Ok(Vec::new());
     };
-    Ok(postings
-        .docs
-        .iter()
-        .copied()
+    Ok(docs
+        .into_iter()
         .filter(|&doc_id| live_docs.is_none_or(|bits| bits.get(doc_id as usize)))
         .collect())
 }
@@ -472,12 +553,32 @@ fn stream_constant_score_clause<C: ScoringCollector>(
         return Ok(false);
     }
 
+    // `TermsEnum.postings(reuse, PostingsEnum.NONE)`: this is a *constant*-score
+    // union -- every hit is collected at `1.0` below, and no frequency, norm or
+    // impact is ever consulted -- so the `.doc` file's frequency blocks are
+    // skipped (`PForUtil.skip`) instead of unpacked. The cursors are wrapped so
+    // that stays true by construction: `DocsOnlyCursor` exposes `next_doc` and
+    // nothing else, so the `1`-filled frequencies `PostingsFlags::DocsOnly`
+    // produces cannot be read from here even by mistake.
+    struct DocsOnlyCursor<'a>(lucene_codecs::postings::LazyDocsCursor<'a>);
+    impl DocsOnlyCursor<'_> {
+        fn next_doc(&mut self) -> Result<i32> {
+            Ok(self.0.next_doc().map_err(blocktree::Error::Postings)?)
+        }
+    }
+
     let mut cursors = Vec::with_capacity(terms.len());
     for term in &terms {
-        let Some(mut cursor) = field_terms.lazy_postings(term, doc_in)? else {
+        let Some(cursor) = field_terms.lazy_postings_with_flags(
+            term,
+            doc_in,
+            lucene_codecs::postings::PostingsFlags::DocsOnly,
+        )?
+        else {
             return Ok(false);
         };
-        let doc = cursor.next_doc().map_err(blocktree::Error::Postings)?;
+        let mut cursor = DocsOnlyCursor(cursor);
+        let doc = cursor.next_doc()?;
         cursors.push((cursor, doc));
     }
 
@@ -498,13 +599,13 @@ fn stream_constant_score_clause<C: ScoringCollector>(
             collector.collect(best, 1.0);
             // Full, and its worst hit already scores what every remaining
             // document would: nothing left can displace anything.
-            if collector.min_competitive_score().is_some_and(|s| s >= 1.0) {
+            if collector.pruning_threshold().is_some_and(|s| s >= 1.0) {
                 return Ok(true);
             }
         }
         for (cursor, doc) in cursors.iter_mut() {
             if *doc == best {
-                *doc = cursor.next_doc().map_err(blocktree::Error::Postings)?;
+                *doc = cursor.next_doc()?;
             }
         }
     }
@@ -587,10 +688,10 @@ fn prefix_doc_ids(
         .collect();
     let mut acc = DocIdBitSet::default();
     for term in &matching_terms {
-        let Some(postings) = field_terms.postings(term, doc_in)? else {
+        let Some(docs) = term_docs_only(field_terms, term, doc_in)? else {
             continue;
         };
-        for &doc_id in &postings.docs {
+        for doc_id in docs {
             if live_docs.is_none_or(|bits| bits.get(doc_id as usize)) {
                 acc.set(doc_id);
             }
@@ -626,10 +727,10 @@ fn wildcard_doc_ids(
         .collect();
     let mut acc = DocIdBitSet::default();
     for term in &matching_terms {
-        let Some(postings) = field_terms.postings(term, doc_in)? else {
+        let Some(docs) = term_docs_only(field_terms, term, doc_in)? else {
             continue;
         };
-        for &doc_id in &postings.docs {
+        for doc_id in docs {
             if live_docs.is_none_or(|bits| bits.get(doc_id as usize)) {
                 acc.set(doc_id);
             }
@@ -637,6 +738,87 @@ fn wildcard_doc_ids(
     }
     let doc_ids = acc.into_sorted_vec();
     Ok(doc_ids)
+}
+
+/// One term a [`FuzzyQuery`] expanded to, with the per-term boost real
+/// Lucene's `FuzzyTermsEnum` publishes through its `BoostAttribute` and the
+/// term's own document frequency.
+#[derive(Debug, Clone)]
+struct ExpandedTerm {
+    term: Vec<u8>,
+    /// `FuzzyTermsEnum`'s similarity, **not** clamped -- `TopTermsRewrite
+    /// .build` does the `Math.max(0.0f, st.boost)` truncation when it turns
+    /// the queue into clauses, and [`fuzzy_doc_scores`] does it there too.
+    boost: f32,
+    doc_freq: i64,
+}
+
+/// The result of expanding a [`FuzzyQuery`] against one segment's field: the
+/// selected terms plus the **blended** document frequency every one of them
+/// is scored with.
+#[derive(Debug, Clone, Default)]
+struct FuzzyExpansion {
+    terms: Vec<ExpandedTerm>,
+    /// `BlendedTermQuery.rewrite`: `df = Math.max(df, ctx.docFreq())` across
+    /// every selected term, then every term's `TermStates` is rebuilt with
+    /// that artificial frequency. Blending is the whole point of
+    /// `TopTermsBlendedFreqScoringRewrite`: without it "the rarest term
+    /// typically ranks highest (often not useful eg in the set of expanded
+    /// terms in a FuzzyQuery)".
+    blended_doc_freq: i64,
+}
+
+/// Expands `query` over `field_terms` exactly the way
+/// `MultiTermQuery.TopTermsBlendedFreqScoringRewrite` does.
+///
+/// Three Lucene behaviours live here, and this port previously had none of
+/// them (it kept the first `max_expansions` terms in term-dictionary order
+/// and scored every match a flat `1.0`):
+///
+/// 1. **Per-term boost.** `FuzzyTermsEnum.next` sets `BoostAttribute` to
+///    `1.0` for an exact match and `1 - ed/min(len(term), len(query term))`
+///    otherwise -- see [`lucene_codecs::fuzzy::FuzzyMatch::boost`].
+/// 2. **Top-N by boost, not by term order.** `TopTermsRewrite.collect` keeps
+///    a size-`maxExpansions` priority queue whose worst element is the lowest
+///    boost, with ties broken so the lexicographically **later** term is
+///    dropped first (`boost == t.boost && bytes.compareTo(t.bytes.get()) > 0`
+///    skips the candidate). Sorting by `(boost desc, bytes asc)` and taking
+///    the first `maxExpansions` selects the same set.
+/// 3. **Blended document frequency**, see [`FuzzyExpansion::blended_doc_freq`].
+///
+/// The whole matching set has to be visited to pick the top N, which is what
+/// Lucene does too -- `TopTermsRewrite.rewrite` runs `collectTerms` over
+/// every term the automaton accepts.
+fn fuzzy_expanded_terms(
+    field_terms: &lucene_codecs::blocktree::FieldTerms,
+    query: &FuzzyQuery,
+) -> FuzzyExpansion {
+    let pattern = FuzzyMatch::new(
+        &query.term,
+        query.max_edits,
+        query.prefix_length,
+        query.transpositions,
+    );
+    let mut candidates: Vec<ExpandedTerm> = field_terms
+        .fuzzy_intersect(&pattern)
+        .map(|(term, stats)| ExpandedTerm {
+            boost: pattern.boost(&term).unwrap_or(0.0),
+            term,
+            doc_freq: stats.doc_freq as i64,
+        })
+        .collect();
+    candidates.sort_by(|a, b| {
+        b.boost
+            .partial_cmp(&a.boost)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.term.cmp(&b.term))
+    });
+    candidates.truncate(query.max_expansions);
+    let blended_doc_freq = candidates.iter().map(|t| t.doc_freq).max().unwrap_or(0);
+    FuzzyExpansion {
+        terms: candidates,
+        blended_doc_freq,
+    }
 }
 
 /// [`Clause::Fuzzy`]'s matched doc-ID list (task #42, `max_expansions`
@@ -657,9 +839,12 @@ fn wildcard_doc_ids(
 /// the cap is hit, which does avoid running the fuzzy-match predicate and
 /// allocating a result for every entry past the cap, but it does **not**
 /// skip any decode/IO work, since that already happened when the segment was
-/// opened. See [`FuzzyQuery`]'s doc comment for the exact selection-policy
-/// disclosure (first `max_expansions` matches in sorted term-dictionary
-/// order, not real Lucene's highest-scoring-first selection).
+/// opened.
+///
+/// **Selection when more terms match than `max_expansions` allows** is
+/// [`fuzzy_expanded_terms`]'s, i.e. real Lucene's `TopTermsRewrite` priority
+/// queue: highest `FuzzyTermsEnum` boost first, ties broken by ascending term
+/// bytes.
 fn fuzzy_doc_ids(
     fields: &BlockTreeFields,
     doc_in: Option<&DocInput<'_>>,
@@ -669,23 +854,13 @@ fn fuzzy_doc_ids(
     let Some(field_terms) = fields.field(&query.field) else {
         return Ok(Vec::new());
     };
-    let pattern = FuzzyMatch::new(
-        &query.term,
-        query.max_edits,
-        query.prefix_length,
-        query.transpositions,
-    );
-    let matching_terms: Vec<Vec<u8>> = field_terms
-        .fuzzy_intersect(&pattern)
-        .take(query.max_expansions)
-        .map(|(term, _stats)| term.to_vec())
-        .collect();
+    let expansion = fuzzy_expanded_terms(field_terms, query);
     let mut acc = DocIdBitSet::default();
-    for term in &matching_terms {
-        let Some(postings) = field_terms.postings(term, doc_in)? else {
+    for ExpandedTerm { term, .. } in &expansion.terms {
+        let Some(docs) = term_docs_only(field_terms, term, doc_in)? else {
             continue;
         };
-        for &doc_id in &postings.docs {
+        for doc_id in docs {
             if live_docs.is_none_or(|bits| bits.get(doc_id as usize)) {
                 acc.set(doc_id);
             }
@@ -693,6 +868,107 @@ fn fuzzy_doc_ids(
     }
     let doc_ids = acc.into_sorted_vec();
     Ok(doc_ids)
+}
+
+/// [`Clause::Fuzzy`]'s BM25 score per matching, live doc.
+///
+/// Real `FuzzyQuery` is **not** a constant-scoring query: its default rewrite
+/// method is `MultiTermQuery.TopTermsBlendedFreqScoringRewrite`, which turns
+/// the expanded terms into a `BlendedTermQuery` -- a `BooleanQuery` of
+/// `SHOULD` `BoostQuery(TermQuery(t), boost_t)` clauses whose `TermStates`
+/// have all been rewritten to one blended document frequency. So a doc's
+/// score is
+///
+/// ```text
+/// sum over selected terms t of  max(0, boost_t) * BM25(df_blended, tf(t, doc), norm(doc))
+/// ```
+///
+/// with `boost_t` from [`lucene_codecs::fuzzy::FuzzyMatch::boost`] and
+/// `df_blended` from [`fuzzy_expanded_terms`]. `max(0, boost)` is
+/// `TopTermsRewrite.build`'s own truncation ("we allow negative term scores
+/// while collecting ... but truncate such boosts to 0.0f when building the
+/// query"), which matters for one-and-two-character query terms whose
+/// similarity really can go negative.
+///
+/// This port previously returned a flat `1.0` for every fuzzy hit, which
+/// changed the top-k of every fuzzy query -- recorded as finding P4 in
+/// `docs/sweep/findings.md` and fixed here.
+///
+/// The blended `df` is a *reader-wide* statistic in Lucene (`TermStates
+/// .build` walks every leaf). This function blends within one segment, the
+/// same limitation `term_doc_scores` works around with its `GlobalStats`
+/// parameter; a fuzzy clause has no such plumbing yet, so a multi-segment
+/// fuzzy score can differ from Lucene's by the usual per-segment-idf amount.
+fn fuzzy_doc_scores(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    query: &FuzzyQuery,
+    norms: Option<&FieldNorms<'_>>,
+) -> Result<HashMap<i32, f32>> {
+    let mut scores: HashMap<i32, f32> = HashMap::new();
+    let Some(field_terms) = fields.field(&query.field) else {
+        return Ok(scores);
+    };
+    let expansion = fuzzy_expanded_terms(field_terms, query);
+    let doc_count = field_terms.doc_count as i64;
+
+    // Resolve every expanded term's live postings first, then score in one
+    // pass, rather than scoring inside the per-term loop.
+    //
+    // Why: the norms lookup wants **ascending** documents. Each expanded term's
+    // own postings ascend, but the next term restarts near doc 0, so scoring
+    // term-by-term makes a `FieldNormsCursor` rewind once per expansion -- and
+    // on a sparse field a rewind is a fresh `IndexedDISI` walk from the first
+    // block header, turning O(region) into O(expansions x region). At the
+    // measured 677 us per 100,000-document walk, a 50-term expansion would
+    // spend ~34 ms in norms alone.
+    let mut contributions: Vec<(i32, i32, f32)> = Vec::new(); // (doc, freq, boost)
+    for expanded in &expansion.terms {
+        let boost = expanded.boost.max(0.0);
+        let Some(postings) = field_terms.postings(&expanded.term, doc_in)? else {
+            continue;
+        };
+        for (&doc_id, &freq) in postings.docs.iter().zip(postings.freqs.iter()) {
+            if live_docs.is_none_or(|bits| bits.get(doc_id as usize)) {
+                contributions.push((doc_id, freq, boost));
+            }
+        }
+    }
+
+    // Sorting is what makes the cursor monotonic, and it is **stable**, which
+    // is what keeps this bit-for-bit identical to the per-term loop it
+    // replaces: a document's contributions keep their expansion-term order, so
+    // the sequence of `+=` into `scores` -- and therefore every float bit --
+    // is unchanged. `f32` addition is not associative, so that is a real
+    // requirement, not a nicety.
+    //
+    // Only worth it when a lookup is actually order-sensitive. For the ordinary
+    // dense one-byte field the lookup is an array index, so the sort would buy
+    // nothing and is skipped.
+    if norms.is_some_and(|n| n.prefers_ascending_lookups()) {
+        contributions.sort_by_key(|&(doc_id, _, _)| doc_id);
+    }
+
+    let mut norms_cursor = norms.map(|n| n.cursor());
+    for (doc_id, freq, boost) in contributions {
+        let (field_length, avg_field_length) = match norms_cursor.as_mut() {
+            Some(nc) => (nc.field_length(doc_id)?, nc.avg_field_length()),
+            None => (
+                similarity::UNNORMED_FIELD_LENGTH,
+                similarity::UNNORMED_FIELD_LENGTH,
+            ),
+        };
+        let score = similarity::score(
+            expansion.blended_doc_freq,
+            doc_count,
+            freq as f32,
+            field_length,
+            avg_field_length,
+        );
+        *scores.entry(doc_id).or_insert(0.0) += boost * score;
+    }
+    Ok(scores)
 }
 
 /// [`Clause::Regexp`]'s matched doc-ID list (task #43): same
@@ -723,10 +999,10 @@ fn regexp_doc_ids(
         .collect();
     let mut acc = DocIdBitSet::default();
     for term in &matching_terms {
-        let Some(postings) = field_terms.postings(term, doc_in)? else {
+        let Some(docs) = term_docs_only(field_terms, term, doc_in)? else {
             continue;
         };
-        for &doc_id in &postings.docs {
+        for doc_id in docs {
             if live_docs.is_none_or(|bits| bits.get(doc_id as usize)) {
                 acc.set(doc_id);
             }
@@ -758,10 +1034,10 @@ fn term_in_set_doc_ids(
     };
     let mut acc = DocIdBitSet::default();
     for term in &query.terms {
-        let Some(postings) = field_terms.postings(term, doc_in)? else {
+        let Some(docs) = term_docs_only(field_terms, term, doc_in)? else {
             continue;
         };
-        for &doc_id in &postings.docs {
+        for doc_id in docs {
             if live_docs.is_none_or(|bits| bits.get(doc_id as usize)) {
                 acc.set(doc_id);
             }
@@ -909,6 +1185,9 @@ fn resolve_clause_docs(
         Clause::PointsRange(query) => points_range_doc_ids(points, live_docs, query),
         Clause::MatchAllDocs(query) => Ok(match_all_doc_ids(live_docs, query.max_doc)),
         Clause::MatchNoDocs(_) => Ok(Vec::new()),
+        Clause::MultiPhrase(query) => {
+            multi_phrase_doc_ids(fields, doc_in, pos_in, pay_in, live_docs, query)
+        }
         Clause::TermInSet(query) => term_in_set_doc_ids(fields, doc_in, live_docs, query),
     }
 }
@@ -1026,10 +1305,12 @@ fn matched_boolean_docs(
     points: Option<&PointsInput<'_>>,
     query: &BooleanQuery,
 ) -> Result<Option<BoxDocIter<'static>>> {
-    if query.must.is_empty() && query.should.is_empty() {
+    if query.must.is_empty() && query.filter.is_empty() && query.should.is_empty() {
         // Real `BooleanQuery.rewrite()` turns both "no clauses at all" and "only
         // MUST_NOT clauses" into a `MatchNoDocsQuery` -- see this module's doc
-        // comment. Neither case reaches the merge machinery below.
+        // comment. Neither case reaches the merge machinery below. A `filter`
+        // clause is a *positive* clause (Java: `BooleanClause.isRequired()` is
+        // true for `FILTER`), so a filter-only query is not one of these.
         return Ok(None);
     }
 
@@ -1049,20 +1330,26 @@ fn matched_boolean_docs(
     };
 
     let min_should_match = query.minimum_should_match;
+    // Java's `BooleanClause.isRequired()`: `MUST` or `FILTER`. Both are legs of
+    // the same conjunction; the only difference is that a `FILTER` leg never
+    // reaches `clause_scores` (see `search_boolean_query_scored_with_stats`).
+    let has_required = !query.must.is_empty() || !query.filter.is_empty();
     // `should_docs` is only needed when `should` actually participates in matching:
-    // either as the base set (`must` empty) or as a `minimum_should_match` gate on
-    // top of `must`'s conjunction. When `must` is non-empty and
+    // either as the base set (no required clauses) or as a `minimum_should_match`
+    // gate on top of the required conjunction. With required clauses present and
     // `minimum_should_match == 0`, `should` stays purely score-only (matching
     // pre-task-#24 behavior exactly) and this never touches it.
-    let should_docs = if query.must.is_empty() || min_should_match > 0 {
+    let should_docs = if !has_required || min_should_match > 0 {
         Some(clause_docs(&query.should)?)
     } else {
         None
     };
 
     let base: BoxDocIter<'static> =
-        if !query.must.is_empty() {
-            let conjunction = Conjunction::new(to_iters(clause_docs(&query.must)?));
+        if has_required {
+            let mut required = clause_docs(&query.must)?;
+            required.extend(clause_docs(&query.filter)?);
+            let conjunction = Conjunction::new(to_iters(required));
             if min_should_match > 0 {
                 let counts = should_match_counts(should_docs.as_ref().expect("computed above"));
                 Box::new(conjunction.filter(move |doc_id| {
@@ -1072,8 +1359,17 @@ fn matched_boolean_docs(
                 Box::new(conjunction)
             }
         } else {
-            let should_docs = should_docs.expect("computed above (must is empty)");
-            if min_should_match > 1 {
+            let should_docs = should_docs.expect("computed above (no required clauses)");
+            // No required clauses and more than one optional clause is exactly
+            // the shape `BooleanScorerSupplier.booleanScorer` hands to
+            // `BooleanScorer`: a 4,096-document window ORed into a bitset (plus
+            // a per-document clause count when `minimum_should_match > 1`),
+            // rather than a per-document merge across every clause. See
+            // `WindowedDisjunction`. A single clause keeps the plain path --
+            // `BooleanScorer`'s own constructor refuses one clause too.
+            if WindowedDisjunction::is_applicable(should_docs.len()) {
+                Box::new(WindowedDisjunction::new(should_docs, min_should_match))
+            } else if min_should_match > 1 {
                 let counts = should_match_counts(&should_docs);
                 let disjunction = Disjunction::new(to_iters(should_docs));
                 Box::new(disjunction.filter(move |doc_id| {
@@ -1089,8 +1385,17 @@ fn matched_boolean_docs(
     let matched: BoxDocIter<'static> = if query.must_not.is_empty() {
         base
     } else {
+        // The prohibited set is a pure OR, so it takes the same windowed path
+        // (Java hands it a `DisjunctionSumScorer`, whose *scores* it then throws
+        // away -- the union is all that is used, and this computes the same
+        // union more cheaply).
+        let must_not_docs = clause_docs(&query.must_not)?;
         let excluded: BoxDocIter<'static> =
-            Box::new(Disjunction::new(to_iters(clause_docs(&query.must_not)?)));
+            if WindowedDisjunction::is_applicable(must_not_docs.len()) {
+                Box::new(WindowedDisjunction::new(must_not_docs, 1))
+            } else {
+                Box::new(Disjunction::new(to_iters(must_not_docs)))
+            };
         Box::new(Excluding::new(base, excluded))
     };
 
@@ -1138,6 +1443,27 @@ fn term_doc_scores(
     norms: Option<&FieldNorms<'_>>,
     global: Option<&GlobalStats>,
 ) -> Result<Vec<(i32, f32)>> {
+    // Reader-wide idf where the caller supplied it, as the lazy paths already
+    // do -- see `CollectionStats`. Without this a boolean query whose shape
+    // does not fit a lazy path still scored every term from its own segment's
+    // counters, which is the multi-segment bug that fix was for.
+    let resolved = global
+        .and_then(|g| g.get(&(query.field.clone(), query.term.clone())))
+        .copied();
+    term_doc_scores_with_collection_stats(fields, doc_in, live_docs, query, norms, resolved)
+}
+
+/// [`term_doc_scores`] with this term's reader-wide counters already resolved
+/// out of the [`GlobalStats`] map -- the shape the MAXSCORE entry point holds
+/// them in, since a `TermQuery` mentions exactly one term.
+fn term_doc_scores_with_collection_stats(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    query: &TermQuery,
+    norms: Option<&FieldNorms<'_>>,
+    global: Option<CollectionStats>,
+) -> Result<Vec<(i32, f32)>> {
     let Some(field_terms) = fields.field(&query.field) else {
         return Ok(Vec::new());
     };
@@ -1145,20 +1471,21 @@ fn term_doc_scores(
         return Ok(Vec::new());
     };
     let doc_freqs = term_doc_freqs(fields, doc_in, live_docs, query)?;
-    // Reader-wide idf where the caller supplied it, as the lazy paths already
-    // do -- see `CollectionStats`. Without this a boolean query whose shape
-    // does not fit a lazy path still scored every term from its own segment's
-    // counters, which is the multi-segment bug that fix was for.
-    let (term_doc_freq, doc_count) =
-        match global.and_then(|g| g.get(&(query.field.clone(), query.term.clone()))) {
-            Some(g) => (g.doc_freq, g.doc_count),
-            None => (stats.doc_freq as i64, field_terms.doc_count as i64),
-        };
+    let (term_doc_freq, doc_count) = match global {
+        Some(g) => (g.doc_freq, g.doc_count),
+        None => (stats.doc_freq as i64, field_terms.doc_count as i64),
+    };
+    // One `FieldNormsCursor` per scan, as Lucene takes one `NumericDocValues`
+    // per scorer: `FieldNorms` stays the immutable, `Sync` per-segment entry
+    // (so `multi_segment.rs` can share it across rayon leaves) and the mutable
+    // `IndexedDISI` position lives here, where it can walk forward across
+    // documents instead of restarting per lookup.
+    let mut norms_cursor = norms.map(|n| n.cursor());
     doc_freqs
         .into_iter()
         .map(|(doc_id, freq)| {
-            let (field_length, avg_field_length) = match norms {
-                Some(fn_) => (fn_.field_length(doc_id)?, fn_.avg_field_length),
+            let (field_length, avg_field_length) = match norms_cursor.as_mut() {
+                Some(nc) => (nc.field_length(doc_id)?, nc.avg_field_length()),
                 None => (
                     similarity::UNNORMED_FIELD_LENGTH,
                     similarity::UNNORMED_FIELD_LENGTH,
@@ -1210,6 +1537,28 @@ pub fn search_term_query_scored_with_stats<C: ScoringCollector>(
     Ok(())
 }
 
+/// [`search_term_query_scored_with_stats`] with this term's reader-wide
+/// counters already resolved to a bare [`CollectionStats`] -- the shape
+/// [`search_term_query_scored_maxscore_with_stats`] holds them in, so its
+/// fallback paths can forward them instead of silently reverting the leaf to
+/// its own `docFreq`/`docCount`.
+fn search_term_query_scored_with_collection_stats<C: ScoringCollector>(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    query: &TermQuery,
+    norms: Option<&FieldNorms<'_>>,
+    global: Option<CollectionStats>,
+    collector: &mut C,
+) -> Result<()> {
+    for (doc_id, score) in
+        term_doc_scores_with_collection_stats(fields, doc_in, live_docs, query, norms, global)?
+    {
+        collector.collect(doc_id, score);
+    }
+    Ok(())
+}
+
 /// [`term_doc_scores`]'s sibling taking an explicit [`similarity::Bm25Params`]
 /// instead of always using [`similarity::DEFAULT_K1`]/[`similarity::DEFAULT_B`]
 /// (task #214). See [`similarity::Bm25Params`]'s doc comment for this task's
@@ -1230,11 +1579,17 @@ fn term_doc_scores_with_similarity(
     };
     let doc_freqs = term_doc_freqs(fields, doc_in, live_docs, query)?;
     let doc_count = field_terms.doc_count as i64;
+    // One `FieldNormsCursor` per scan, as Lucene takes one `NumericDocValues`
+    // per scorer: `FieldNorms` stays the immutable, `Sync` per-segment entry
+    // (so `multi_segment.rs` can share it across rayon leaves) and the mutable
+    // `IndexedDISI` position lives here, where it can walk forward across
+    // documents instead of restarting per lookup.
+    let mut norms_cursor = norms.map(|n| n.cursor());
     doc_freqs
         .into_iter()
         .map(|(doc_id, freq)| {
-            let (field_length, avg_field_length) = match norms {
-                Some(fn_) => (fn_.field_length(doc_id)?, fn_.avg_field_length),
+            let (field_length, avg_field_length) = match norms_cursor.as_mut() {
+                Some(nc) => (nc.field_length(doc_id)?, nc.avg_field_length()),
                 None => (
                     similarity::UNNORMED_FIELD_LENGTH,
                     similarity::UNNORMED_FIELD_LENGTH,
@@ -1309,7 +1664,9 @@ pub fn search_term_query_scored_with_similarity<C: ScoringCollector>(
 /// test harness (`similarity.rs`) already established for the bound in
 /// isolation, now wired into a real collector loop.
 ///
-/// Falls back to calling [`search_term_query_scored`] verbatim whenever the
+/// Falls back to the eager [`search_term_query_scored`] path (carrying any
+/// reader-wide [`CollectionStats`] straight through, so the fallback scores
+/// with the same idf the pruned path would have) whenever the
 /// fast path isn't available — no `.doc` file opened (`doc_in == None`),
 /// `docFreq <= 1` (no `.doc` bytes are even written for a singleton term, so
 /// there's nothing to stream lazily), or an index option
@@ -1354,22 +1711,38 @@ pub fn search_term_query_scored_maxscore_with_stats(
     let Some(stats) = field_terms.seek_exact(&query.term) else {
         return Ok(());
     };
+    // Every fallback below forwards `global`. Calling the no-stats
+    // `search_term_query_scored` here (which is what this function did) let a
+    // leaf silently revert to its own `docFreq`/`docCount` -- the cross-segment
+    // idf bug `CollectionStats` documents, alive on exactly the paths the
+    // MAXSCORE loop declines to take.
     let Some(doc_in) = doc_in else {
-        return search_term_query_scored(fields, None, live_docs, query, norms, collector);
+        return search_term_query_scored_with_collection_stats(
+            fields, None, live_docs, query, norms, global, collector,
+        );
     };
     if stats.doc_freq <= 1 {
-        return search_term_query_scored(fields, Some(doc_in), live_docs, query, norms, collector);
+        return search_term_query_scored_with_collection_stats(
+            fields,
+            Some(doc_in),
+            live_docs,
+            query,
+            norms,
+            global,
+            collector,
+        );
     }
     let mut cursor = match field_terms.lazy_postings(&query.term, doc_in) {
         Ok(Some(c)) => c,
         Ok(None) => return Ok(()),
         Err(blocktree::Error::Postings(lucene_codecs::postings::Error::Unsupported(_))) => {
-            return search_term_query_scored(
+            return search_term_query_scored_with_collection_stats(
                 fields,
                 Some(doc_in),
                 live_docs,
                 query,
                 norms,
+                global,
                 collector,
             );
         }
@@ -1384,6 +1757,9 @@ pub fn search_term_query_scored_maxscore_with_stats(
         Some(fn_) => fn_.avg_field_length,
         None => similarity::UNNORMED_FIELD_LENGTH,
     };
+    // One norms cursor for this leaf's whole scan -- the MAXSCORE loop only
+    // ever moves forward, so a sparse field costs one `IndexedDISI` walk.
+    let mut norms_cursor = norms.map(|n| n.cursor());
 
     // Bound for a slice of impacts. Shared by level 0 and level 1 so the
     // `norms == None` rule below cannot be honoured at one level and forgotten
@@ -1400,21 +1776,7 @@ pub fn search_term_query_scored_maxscore_with_stats(
             Some(_) => {
                 similarity::max_score_for_impacts(impacts, doc_freq, doc_count, avg_field_length)
             }
-            None => {
-                let idf = similarity::idf(doc_freq, doc_count);
-                impacts
-                    .iter()
-                    .map(|impact| {
-                        idf * similarity::tf_norm(
-                            impact.freq as f32,
-                            similarity::UNNORMED_FIELD_LENGTH,
-                            similarity::UNNORMED_FIELD_LENGTH,
-                            similarity::DEFAULT_K1,
-                            similarity::DEFAULT_B,
-                        )
-                    })
-                    .fold(0.0f32, f32::max)
-            }
+            None => similarity::max_score_for_impacts_unnormed(impacts, doc_freq, doc_count),
         }
     };
 
@@ -1487,7 +1849,7 @@ pub fn search_term_query_scored_maxscore_with_stats(
     // any result changing -- the results are identical either way, only the
     // work done differs.
     let mut checked_upto: i32 = -1;
-    let mut threshold = collector.min_competitive_score();
+    let mut threshold = collector.pruning_threshold();
 
     while doc_id != lucene_codecs::postings::NO_MORE_DOCS {
         if doc_id > checked_upto {
@@ -1586,10 +1948,10 @@ pub fn search_term_query_scored_maxscore_with_stats(
             // and dividing twice. Algebraically identical --
             // `weight - weight/(1 + freq*normInverse)` expands to
             // `idf * freq / (freq + k1*((1-b) + b*len/avgdl))`.
-            let score = match norms {
-                Some(fn_) => {
+            let score = match norms_cursor.as_mut() {
+                Some(nc) => {
                     let weight = similarity::idf(doc_freq, doc_count);
-                    let norm_inverse = fn_.norm_inverse(doc_id)?;
+                    let norm_inverse = nc.norm_inverse(doc_id)?;
                     weight - weight / (1.0 + freq * norm_inverse)
                 }
                 None => similarity::score(
@@ -1603,7 +1965,7 @@ pub fn search_term_query_scored_maxscore_with_stats(
             collector.collect(doc_id, score);
             // `Scorer.setMinCompetitiveScore` -> `ImpactsDISI.upTo = -1`. The
             // threshold only ever rises, and only a collected hit can raise it.
-            let now = collector.min_competitive_score();
+            let now = collector.pruning_threshold();
             if now != threshold {
                 threshold = now;
                 checked_upto = -1;
@@ -1837,14 +2199,12 @@ fn clause_scores(
                 .collect())
         }
         Clause::Fuzzy(query) => {
-            // Unscored: flat 1.0 per matching doc -- see `FuzzyQuery`'s doc
-            // comment for why (same rationale as `Clause::Wildcard`'s arm
-            // above).
-            let matched = fuzzy_doc_ids(fields, doc_in, live_docs, query)?;
-            Ok(matched
-                .into_iter()
-                .map(|doc_id| (doc_id, 1.0_f32))
-                .collect())
+            // Scored, unlike the rest of the multi-term family: real
+            // `FuzzyQuery`'s default rewrite is
+            // `TopTermsBlendedFreqScoringRewrite`, not a constant-score one.
+            // See `fuzzy_doc_scores`.
+            let clause_norms = norms.and_then(|m| m.get(&query.field));
+            fuzzy_doc_scores(fields, doc_in, live_docs, query, clause_norms)
         }
         Clause::Regexp(query) => {
             // Unscored: flat 1.0 per matching doc -- see `RegexpQuery`'s doc
@@ -1887,6 +2247,29 @@ fn clause_scores(
                 .collect())
         }
         Clause::MatchNoDocs(_) => Ok(HashMap::new()),
+        Clause::MultiPhrase(query) => {
+            let clause_norms = norms.and_then(|m| m.get(&query.field));
+            let mut scores: HashMap<i32, f32> = HashMap::new();
+            struct SumCollector<'a>(&'a mut HashMap<i32, f32>);
+            impl collector::ScoringCollector for SumCollector<'_> {
+                fn collect(&mut self, doc_id: i32, score: f32) {
+                    *self.0.entry(doc_id).or_insert(0.0) += score;
+                }
+            }
+            let mut sink = SumCollector(&mut scores);
+            search_multi_phrase_query_scored_with_stats(
+                fields,
+                doc_in,
+                pos_in,
+                pay_in,
+                live_docs,
+                query,
+                clause_norms,
+                global,
+                &mut sink,
+            )?;
+            Ok(scores)
+        }
         Clause::TermInSet(query) => {
             // Unscored: flat 1.0 per matching doc -- see `TermInSetQuery`'s
             // doc comment for why (verified against real `TermInSetQuery`'s
@@ -2013,6 +2396,7 @@ fn try_disjunction_lazy<C: ScoringCollector>(
 ) -> Result<bool> {
     if query.should.is_empty()
         || !query.must.is_empty()
+        || !query.filter.is_empty()
         || !query.must_not.is_empty()
         || query.minimum_should_match > 1
     {
@@ -2042,7 +2426,12 @@ fn try_disjunction_lazy<C: ScoringCollector>(
         /// in `BM25Similarity.scorer` and carries it as the scorer's `weight`,
         /// which is what this is.
         weight: f32,
-        norms: Option<&'a FieldNorms<'a>>,
+        /// This leg's own norms position -- Lucene's per-scorer
+        /// `NumericDocValues`. The shared `&FieldNorms` stays immutable and
+        /// `Sync`; the mutable `IndexedDISI` walk lives here, per leg, so a
+        /// sparse field is traversed once per scan rather than re-resolved per
+        /// document. See `field_norms::FieldNormsCursor`.
+        norms: Option<crate::field_norms::FieldNormsCursor<'a, 'a>>,
     }
 
     impl Leg<'_> {
@@ -2050,28 +2439,18 @@ fn try_disjunction_lazy<C: ScoringCollector>(
         /// with the same `norms == None` rule the term and conjunction paths
         /// carry.
         fn bound(&self, impacts: &[lucene_codecs::postings::Impact]) -> f32 {
-            match self.norms {
+            match &self.norms {
                 Some(n) => similarity::max_score_for_impacts(
                     impacts,
                     self.doc_freq,
                     self.doc_count,
-                    n.avg_field_length,
+                    n.avg_field_length(),
                 ),
-                None => {
-                    let idf = similarity::idf(self.doc_freq, self.doc_count);
-                    impacts
-                        .iter()
-                        .map(|i| {
-                            idf * similarity::tf_norm(
-                                i.freq as f32,
-                                similarity::UNNORMED_FIELD_LENGTH,
-                                similarity::UNNORMED_FIELD_LENGTH,
-                                similarity::DEFAULT_K1,
-                                similarity::DEFAULT_B,
-                            )
-                        })
-                        .fold(0.0f32, f32::max)
-                }
+                None => similarity::max_score_for_impacts_unnormed(
+                    impacts,
+                    self.doc_freq,
+                    self.doc_count,
+                ),
             }
         }
     }
@@ -2104,7 +2483,7 @@ fn try_disjunction_lazy<C: ScoringCollector>(
             doc_freq,
             doc_count,
             weight: similarity::idf(doc_freq, doc_count),
-            norms: norms.and_then(|m| m.get(&t.field)),
+            norms: norms.and_then(|m| m.get(&t.field)).map(|fn_| fn_.cursor()),
         });
     }
 
@@ -2120,7 +2499,7 @@ fn try_disjunction_lazy<C: ScoringCollector>(
     // `ImpactsDISI.setMinCompetitiveScore` sets `upTo = -1`. See the term path
     // for what leaving that out costs: the skipping silently stops.
     let mut checked_upto: i32 = -1;
-    let mut threshold = collector.min_competitive_score();
+    let mut threshold = collector.pruning_threshold();
     loop {
         let Some(candidate) = legs
             .iter()
@@ -2249,31 +2628,25 @@ fn try_disjunction_lazy<C: ScoringCollector>(
             }
             if live {
                 let freq = leg.cursor.freq().unwrap_or(1) as f32;
-                let (field_length, avg_field_length) = match leg.norms {
-                    Some(n) => (n.field_length(candidate)?, n.avg_field_length),
-                    None => (
-                        similarity::UNNORMED_FIELD_LENGTH,
-                        similarity::UNNORMED_FIELD_LENGTH,
-                    ),
+                // `BM25Scorer.score(freq, encodedNorm)` verbatim: the idf is
+                // hoisted into `leg.weight` once per clause (not one `ln()` per
+                // document), and the length normalization is the precomputed
+                // `cache[norm]` reciprocal, so this is one table load, one
+                // multiply, one divide -- and, unlike the `idf * tf_norm`
+                // multiply form it replaces, bit-for-bit what real Lucene
+                // produces. See `similarity::do_score`.
+                let norm_inverse = match leg.norms.as_mut() {
+                    Some(n) => n.norm_inverse(candidate)?,
+                    None => similarity::UNNORMED_NORM_INVERSE,
                 };
-                // `similarity::score_with_params` with the `idf` hoisted out:
-                // same factors in the same order, so this is bit-identical to
-                // what it produced, minus one `ln()` per document per clause.
-                score += leg.weight
-                    * similarity::tf_norm(
-                        freq,
-                        field_length,
-                        avg_field_length,
-                        similarity::DEFAULT_K1,
-                        similarity::DEFAULT_B,
-                    );
+                score += similarity::do_score(leg.weight, freq, norm_inverse);
             }
             leg.doc = leg.cursor.next_doc().map_err(blocktree::Error::Postings)?;
         }
         if live {
             collector.collect(candidate, score);
             // `ImpactsDISI.setMinCompetitiveScore`: a rise invalidates the span.
-            let now = collector.min_competitive_score();
+            let now = collector.pruning_threshold();
             if now != threshold {
                 threshold = now;
                 checked_upto = -1;
@@ -2348,14 +2721,32 @@ fn try_conjunction_lazy<C: ScoringCollector>(
     global: Option<&GlobalStats>,
     collector: &mut C,
 ) -> Result<bool> {
-    // Shape gate: pure conjunction of leaf terms, nothing else.
-    if query.must.is_empty() || !query.should.is_empty() || !query.must_not.is_empty() {
+    // Shape gate: pure conjunction of leaf terms, nothing else. `filter`
+    // clauses are admitted -- they are legs of the same conjunction, just
+    // non-scoring ones (Java: `BooleanScorerSupplier.req(FILTER, MUST)` puts
+    // both in `required` and only the `MUST` legs in `requiredScoring`).
+    //
+    // A **filter-only** conjunction is admitted too, and must be: without it,
+    // `#body:t0 #body:t1` fell to the general path, which materializes every
+    // clause's whole doc list before intersecting -- 129.5ms against 8.8ms for
+    // the all-`MUST` form of the same query on the benchmark corpus, i.e. the
+    // clause that is supposed to be *cheaper* was 15x dearer
+    // (`benches/filter_vs_must.rs`).
+    if (query.must.is_empty() && query.filter.is_empty())
+        || !query.should.is_empty()
+        || !query.must_not.is_empty()
+    {
         return Ok(false);
     }
-    let mut terms = Vec::with_capacity(query.must.len());
-    for clause in &query.must {
+    let mut terms = Vec::with_capacity(query.must.len() + query.filter.len());
+    for (clause, scoring) in query
+        .must
+        .iter()
+        .map(|c| (c, true))
+        .chain(query.filter.iter().map(|c| (c, false)))
+    {
         match clause {
-            Clause::Term(t) => terms.push(t),
+            Clause::Term(t) => terms.push((t, scoring)),
             _ => return Ok(false),
         }
     }
@@ -2365,14 +2756,44 @@ fn try_conjunction_lazy<C: ScoringCollector>(
 
     // Resolve every term up front: a missing term means the conjunction is
     // empty, which is itself the answer.
+    /// `BooleanClause.isScoring()`, as a type rather than a flag.
+    ///
+    /// A `FILTER` leg gates the intersection and nothing else -- it is never
+    /// asked for its frequency, its norm or its impacts, exactly as
+    /// `ConjunctionScorer.score()` iterates `scorers` (the scoring subset)
+    /// rather than `required`. c12 made that structural instead of
+    /// conventional: a filter leg's cursor is opened with
+    /// `PostingsFlags::DocsOnly`, which fills every frequency with `1`, so
+    /// reading one would be silently wrong rather than merely wasteful. The
+    /// scoring inputs (`weight`, `norms`) live *inside* the `Scoring` variant,
+    /// so the only way to reach the code that calls `freq()` is to have
+    /// matched a leg that decoded frequencies.
+    enum LegRole<'a> {
+        Scoring {
+            /// `idf(doc_freq, doc_count)`, computed once when the leg is built
+            /// -- see the disjunction's `Leg::weight` for why that matters.
+            weight: f32,
+            /// This leg's own norms position -- Lucene's per-scorer
+            /// `NumericDocValues`. The shared `&FieldNorms` stays immutable
+            /// and `Sync`; the mutable `IndexedDISI` walk lives here, per leg,
+            /// so a sparse field is traversed once per scan rather than
+            /// re-resolved per document. See `field_norms::FieldNormsCursor`.
+            norms: Option<crate::field_norms::FieldNormsCursor<'a, 'a>>,
+        },
+        Filter,
+    }
+
     struct Leg<'a> {
         cursor: lucene_codecs::postings::LazyDocsCursor<'a>,
         doc_freq: i64,
         doc_count: i64,
-        /// `idf(doc_freq, doc_count)`, computed once when the leg is built --
-        /// see the disjunction's `Leg::weight` for why that matters.
-        weight: f32,
-        norms: Option<&'a FieldNorms<'a>>,
+        role: LegRole<'a>,
+    }
+
+    impl Leg<'_> {
+        fn scoring(&self) -> bool {
+            matches!(self.role, LegRole::Scoring { .. })
+        }
     }
 
     impl Leg<'_> {
@@ -2383,33 +2804,29 @@ fn try_conjunction_lazy<C: ScoringCollector>(
         /// with the wire norms would bound a different formula and could
         /// underestimate -- skipping a document that should have been kept.
         fn bound(&self, impacts: &[lucene_codecs::postings::Impact]) -> f32 {
-            match self.norms {
-                Some(n) => similarity::max_score_for_impacts(
+            match &self.role {
+                LegRole::Scoring { norms: Some(n), .. } => similarity::max_score_for_impacts(
                     impacts,
                     self.doc_freq,
                     self.doc_count,
-                    n.avg_field_length,
+                    n.avg_field_length(),
                 ),
-                None => {
-                    let idf = similarity::idf(self.doc_freq, self.doc_count);
-                    impacts
-                        .iter()
-                        .map(|i| {
-                            idf * similarity::tf_norm(
-                                i.freq as f32,
-                                similarity::UNNORMED_FIELD_LENGTH,
-                                similarity::UNNORMED_FIELD_LENGTH,
-                                similarity::DEFAULT_K1,
-                                similarity::DEFAULT_B,
-                            )
-                        })
-                        .fold(0.0f32, f32::max)
-                }
+                LegRole::Scoring { norms: None, .. } => similarity::max_score_for_impacts_unnormed(
+                    impacts,
+                    self.doc_freq,
+                    self.doc_count,
+                ),
+                // A filter leg contributes nothing to any score, so its bound
+                // is 0. It is never asked for one -- every call site goes
+                // through `filter(Leg::scoring)` -- and this arm keeps that
+                // sound rather than merely unreached.
+                LegRole::Filter => 0.0,
             }
         }
     }
     let mut legs: Vec<Leg<'_>> = Vec::with_capacity(terms.len());
-    for t in &terms {
+    for (t, scoring) in &terms {
+        let scoring = *scoring;
         let Some(field_terms) = fields.field(&t.field) else {
             return Ok(true); // field absent: no matches, and we handled it
         };
@@ -2424,7 +2841,16 @@ fn try_conjunction_lazy<C: ScoringCollector>(
         if stats.doc_freq <= 1 {
             return Ok(false);
         }
-        let Some(cursor) = field_terms.lazy_postings(&t.term, doc_in)? else {
+        // `TermsEnum.postings(reuse, flags)`: a filter leg reads doc ids and
+        // nothing else, so the `.doc` file's frequency blocks are skipped
+        // (`PForUtil.skip`) rather than unpacked. See `LegRole` for why the
+        // scoring inputs live inside the `Scoring` variant.
+        let flags = if scoring {
+            lucene_codecs::postings::PostingsFlags::Freqs
+        } else {
+            lucene_codecs::postings::PostingsFlags::DocsOnly
+        };
+        let Some(cursor) = field_terms.lazy_postings_with_flags(&t.term, doc_in, flags)? else {
             return Ok(true);
         };
         // Reader-wide idf where available, matching Lucene's per-leaf scoring.
@@ -2437,8 +2863,18 @@ fn try_conjunction_lazy<C: ScoringCollector>(
             cursor,
             doc_freq,
             doc_count,
-            weight: similarity::idf(doc_freq, doc_count),
-            norms: norms.and_then(|m| m.get(&t.field)),
+            role: if scoring {
+                LegRole::Scoring {
+                    weight: similarity::idf(doc_freq, doc_count),
+                    // A filter leg never scores, so it never needs a norms
+                    // cursor -- and skipping it also skips the sparse-field
+                    // `IndexedDISI` walk that cursor would perform across the
+                    // scan.
+                    norms: norms.and_then(|m| m.get(&t.field)).map(|fn_| fn_.cursor()),
+                }
+            } else {
+                LegRole::Filter
+            },
         });
     }
 
@@ -2459,6 +2895,16 @@ fn try_conjunction_lazy<C: ScoringCollector>(
     // and loses the cache entirely. The span-keyed cache below does the same
     // job for this shape.
     let mut conj_bound: Option<(i32, f32)> = None;
+    // Block-max pruning needs a scoring clause to bound. With none, every
+    // document scores 0, so the summed bound would be 0 and would authorize
+    // skipping the whole segment the moment a top-`n` queue filled -- which is
+    // what Lucene's `FilterScorer` wrapper (`getMaxScore() == 0`) lets
+    // `TOP_SCORES` do, but only under `TopScoreDocCollector`'s
+    // `Math.nextUp(bottom)` threshold. This port's `pruning_threshold` is the
+    // bottom score itself, so `0 <= 0` would prune on a *tie*, dropping
+    // documents Lucene keeps. Pruning is therefore switched off for the
+    // filter-only shape; the leapfrog itself is the win here.
+    let prunable = legs.iter().any(Leg::scoring);
     'outer: while candidate != lucene_codecs::postings::NO_MORE_DOCS {
         // Block-max conjunction pruning, as Lucene's BlockMaxConjunctionScorer
         // does it. Every clause must match, so a document's score is at most the
@@ -2469,7 +2915,7 @@ fn try_conjunction_lazy<C: ScoringCollector>(
         //
         // Without this the leapfrog is lazy but blind: it visits every document
         // in the intersection and scores it, however uncompetitive.
-        if let Some(threshold) = collector.min_competitive_score() {
+        if let Some(threshold) = collector.pruning_threshold().filter(|_| prunable) {
             // Recompute the summed bound only when the covered span changes.
             // The span is identified by the smallest clause block end, which is
             // cheap to read; the bound itself is not, and on a selective
@@ -2485,7 +2931,14 @@ fn try_conjunction_lazy<C: ScoringCollector>(
                 _ => {
                     let mut acc = 0.0f32;
                     let mut ok = true;
-                    for leg in &legs {
+                    // Only the *scoring* legs contribute to the bound: a
+                    // filter leg's score is 0, so summing over `must` alone is
+                    // still a real upper bound (Java builds its
+                    // `BlockMaxConjunctionScorer` from `scoringScorers`, never
+                    // from the filters). The span the bound covers still
+                    // narrows to every leg, filters included, which only makes
+                    // the bound tighter-scoped and therefore safe.
+                    for leg in legs.iter().filter(|l| l.scoring()) {
                         let impacts = leg.cursor.level0_impacts();
                         if impacts.is_empty() {
                             ok = false;
@@ -2521,6 +2974,9 @@ fn try_conjunction_lazy<C: ScoringCollector>(
                     let mut bounded = true;
                     for leg in &legs {
                         span_end = span_end.min(leg.cursor.level0_last_doc_id());
+                        if !leg.scoring() {
+                            continue;
+                        }
                         let impacts = leg.cursor.level0_impacts();
                         if impacts.is_empty() {
                             bounded = false;
@@ -2562,26 +3018,32 @@ fn try_conjunction_lazy<C: ScoringCollector>(
 
         if live_docs.is_none_or(|bits| bits.get(candidate as usize)) {
             let mut score = 0.0f32;
-            for leg in &legs {
-                let freq = leg.cursor.freq().unwrap_or(1) as f32;
-                let (field_length, avg_field_length) = match leg.norms {
-                    Some(n) => (n.field_length(candidate)?, n.avg_field_length),
-                    None => (
-                        similarity::UNNORMED_FIELD_LENGTH,
-                        similarity::UNNORMED_FIELD_LENGTH,
-                    ),
+            // `ConjunctionScorer.score()` iterates `scorers`, the scoring
+            // subset of `required` -- a filter leg is skipped entirely, so its
+            // frequency is never decoded and its norm never read. That is the
+            // whole cost difference between `#body:dog` and `+body:dog`.
+            for leg in legs.iter_mut() {
+                // Destructuring the role is what makes reading a frequency
+                // legitimate here: only a `Scoring` leg's cursor decoded
+                // frequencies at all, and only this arm can see its
+                // `weight`/`norms`. A `Filter` leg has no scoring inputs to
+                // reach and no real frequency to misread.
+                let LegRole::Scoring { weight, norms } = &mut leg.role else {
+                    continue;
                 };
-                // `similarity::score_with_params` with the `idf` hoisted out:
-                // same factors in the same order, so this is bit-identical to
-                // what it produced, minus one `ln()` per document per clause.
-                score += leg.weight
-                    * similarity::tf_norm(
-                        freq,
-                        field_length,
-                        avg_field_length,
-                        similarity::DEFAULT_K1,
-                        similarity::DEFAULT_B,
-                    );
+                let freq = leg.cursor.freq().unwrap_or(1) as f32;
+                // `BM25Scorer.score(freq, encodedNorm)` verbatim: the idf is
+                // hoisted into `weight` once per clause (not one `ln()` per
+                // document), and the length normalization is the precomputed
+                // `cache[norm]` reciprocal, so this is one table load, one
+                // multiply, one divide -- and, unlike the `idf * tf_norm`
+                // multiply form it replaces, bit-for-bit what real Lucene
+                // produces. See `similarity::do_score`.
+                let norm_inverse = match norms.as_mut() {
+                    Some(n) => n.norm_inverse(candidate)?,
+                    None => similarity::UNNORMED_NORM_INVERSE,
+                };
+                score += similarity::do_score(*weight, freq, norm_inverse);
             }
             collector.collect(candidate, score);
         }
@@ -2651,6 +3113,7 @@ pub fn search_boolean_query_scored_with_stats<C: ScoringCollector>(
     // matches, and the fast path would wrongly return the `must` clause's
     // documents.
     if query.must.len() == 1
+        && query.filter.is_empty()
         && query.should.is_empty()
         && query.must_not.is_empty()
         && query.minimum_should_match == 0
@@ -2765,82 +3228,53 @@ pub fn search_boolean_query_scored_with_stats<C: ScoringCollector>(
     Ok(())
 }
 
-/// MAXSCORE-style sibling of [`search_boolean_query_scored`], scoped narrowly
-/// and honestly, mirroring [`search_term_query_scored_maxscore`]'s own scope
-/// decisions one level up (pure SHOULD-disjunction of terms instead of a
-/// single term):
+/// MAXSCORE-style sibling of [`search_boolean_query_scored`], kept as a
+/// distinct entry point because `lucene-ffi`
+/// (`ffi_search_boolean_query_scored_maxscore`,
+/// `ffi_search_boolean_query_multi_segment_maxscore`) and
+/// [`multi_segment::search_boolean_query_multi_segment_maxscore`] name it.
 ///
-/// **Fast-path preconditions** (falls back to calling
-/// [`search_boolean_query_scored`] verbatim the moment any of these doesn't
-/// hold, so this function never changes matching/scoring semantics, only
-/// performance):
-/// - `query.must` and `query.must_not` are both empty (pure SHOULD
-///   disjunction — no conjunction/exclusion gating to reason about).
-/// - `query.minimum_should_match <= 1` (so every `should` hit independently
-///   qualifies a doc, same as an unconstrained disjunction).
-/// - `query.should` is non-empty and every clause is `Clause::Term` (no
-///   nested `Boolean`/`Phrase`/`DisjunctionMax`/wildcard-family/points
-///   clause — this fast path only streams postings for plain terms).
-/// - `doc_in` is `Some`, and every clause's term exists (`seek_exact`
-///   succeeds), has `doc_freq > 1`, and its field supports
-///   [`blocktree::FieldTerms::lazy_postings`] (same per-term fallback
-///   conditions [`search_term_query_scored_maxscore`] already checks).
+/// **This is a delegate; the MAXSCORE machinery lives in
+/// [`try_disjunction_lazy`].** Until batch c12 this function carried its own
+/// two-tier essential/non-essential MAXSCORE implementation over
+/// [`lucene_codecs::postings::LazyDocsCursor`]s -- ~180 lines whose body was
+/// provably unreachable. The function's first act is to try
+/// [`try_disjunction_lazy`] and return if it succeeded, and the two are
+/// *exactly complementary*:
 ///
-/// **Algorithm — simplified two-tier essential/non-essential MAXSCORE, not
-/// full multi-way WAND pivot selection** (an explicit, documented scope
-/// narrowing from a "real" `WANDScorer`/`MaxScoreSumPropagator`, permitted by
-/// this task's own scope note when full pivot selection would be unsafe to
-/// rush): each clause gets one lazy postings cursor
-/// ([`lucene_codecs::postings::LazyDocsCursor`]), merged into the disjunction
-/// candidate set by taking, each round, the minimum current doc ID across
-/// every still-active cursor (same shape as [`Disjunction`], just streamed
-/// instead of eagerly materialized). What makes this MAXSCORE rather than a
-/// plain lazy disjunction is the skip check run before each round: for every
-/// clause still positioned inside a real (non-tail) level-0 block, this
-/// function compares that one clause's own current-block upper bound (real
-/// [`similarity::max_score_for_impacts`], the exact bound
-/// [`search_term_query_scored_maxscore`] already established block-skip
-/// soundness for) against `threshold - sum(every OTHER clause's *global*
-/// upper bound)`. Every other clause's contribution is bounded not by its own
-/// current block (which would go stale the moment that clause's cursor falls
-/// behind and stops being re-checked — a real correctness trap this function
-/// deliberately avoids) but by a per-clause bound that holds for its *entire*
-/// remaining postings list, computed once, cheaply, and reused forever:
-/// `idf(doc_freq, doc_count)` — [`similarity::tf_norm`]'s formula (this
-/// port's actual BM25 formula, see that function's own doc comment on why
-/// there is no textbook `(k1 + 1)` numerator) has `freq / (freq + k1 * ...)`
-/// strictly less than `1.0` for any finite `freq`, approaching but never
-/// reaching `1.0` as `freq -> infinity` regardless of field length, so
-/// `idf * 1.0 == idf` is a real, always-valid, never-stale ceiling on any
-/// document this clause could ever score — not an approximation of one, and
-/// not dependent on which block (if any) is currently loaded. A clause whose
-/// cursor has already reached [`lucene_codecs::postings::NO_MORE_DOCS`]
-/// contributes `0.0` instead (it provably can never match another doc, a
-/// tighter and equally sound bound than its own already-computed `idf`).
-/// When one clause's own current block can't push the sum over threshold
-/// even granting every other still-active clause its absolute best case,
-/// that whole block is skipped outright — `advance()`d straight past its
-/// last doc, exactly like `search_term_query_scored_maxscore`'s own skip,
-/// and counted by the same [`test_only_maxscore_block_skip_counter`] this
-/// function shares.
+/// - every shape the old body could handle (pure `should`, all
+///   [`Clause::Term`], `doc_in` present, `minimum_should_match <= 1`, no
+///   pulsed `docFreq <= 1` term) [`try_disjunction_lazy`] handles first;
+/// - every shape [`try_disjunction_lazy`] declines
+///   (`must`/`filter`/`must_not` present, `should` empty,
+///   `minimum_should_match > 1`, a non-`Clause::Term` clause, `doc_in` absent,
+///   a pulsed term) the old body also declined, falling straight back;
+/// - the two cases where the old body was *stricter* -- an absent field and an
+///   absent term, which [`try_disjunction_lazy`] simply drops from the union --
+///   are shapes [`try_disjunction_lazy`] therefore *accepts*, so control never
+///   reached the body for them either;
+/// - the old body's `Err(Unsupported)` fallback arm was unreachable for the
+///   same reason: [`try_disjunction_lazy`] propagates that error with `?`
+///   before the body is entered.
 ///
-/// This scheme is intentionally coarser than real Lucene's per-clause
-/// block-level bound propagation (which keeps every clause's block-level
-/// bound continuously fresh via a shared priority queue over block
-/// boundaries) — here, only the clause actually being considered for a skip
-/// uses its own fresh block bound; every other still-active clause is
-/// charged its worst-possible-ever score. That's strictly more conservative
-/// (skips less than a fully-refreshed multi-way WAND would), never
-/// incorrect: since the substitute bound only ever overstates another
-/// clause's true contribution, a block this function proves skippable
-/// really is skippable, and
-/// [`boolean_maxscore_lazy_path_matches_eager_path_on_real_fixture`] below
-/// checks exactly that (byte-identical `TopDocsCollector` output to the
-/// eager path) across many `top_n`/clause-frequency combinations, while
-/// [`test_only_boolean_maxscore_block_skip_counter_records_real_skips`]
-/// proves real per-clause block decode is actually skipped for a genuine
-/// multi-clause query, not merely that the (necessarily identical) end
-/// result matches.
+/// Verified for c12 two ways: by reading both predicates, and by a line
+/// coverage report (`cargo llvm-cov -p lucene-search`) in which every one of
+/// the body's 78 executable lines was uncovered by all 899 tests, including
+/// the six `boolean_maxscore_falls_back_*` tests written to drive its own
+/// fallback arms.
+///
+/// Deleted rather than revived. The old body's own doc comment already
+/// recorded it as 4-5x *slower* than the lazy union on M1's 5M-document
+/// corpus (655 ms vs 163 ms on `t0 OR t1`) and said "prefer the plain scored
+/// entry point"; [`try_disjunction_lazy`] has since grown real block-max
+/// pruning of its own, so reviving the body would mean routing queries to the
+/// slower of two pruning implementations. The entry point keeps its name, its
+/// signature and its behaviour -- unchanged, since the behaviour was already
+/// "[`try_disjunction_lazy`], else the exhaustive path", which is precisely
+/// what [`search_boolean_query_scored_with_stats`] does (its
+/// [`try_conjunction_lazy`] attempt declines every shape
+/// [`try_disjunction_lazy`] accepts and vice versa -- the two gates are
+/// mutually exclusive on `query.should.is_empty()`).
 #[allow(clippy::too_many_arguments)]
 pub fn search_boolean_query_scored_maxscore(
     fields: &BlockTreeFields,
@@ -2862,6 +3296,8 @@ pub fn search_boolean_query_scored_maxscore(
 /// it agrees with [`search_boolean_query_scored_with_stats`] on a multi-segment
 /// index -- the two must produce identical output, and they cannot if only one
 /// of them scores globally.
+///
+/// See [`search_boolean_query_scored_maxscore`] for why this is a delegate.
 #[allow(clippy::too_many_arguments)]
 pub fn search_boolean_query_scored_maxscore_with_stats(
     fields: &BlockTreeFields,
@@ -2875,232 +3311,9 @@ pub fn search_boolean_query_scored_maxscore_with_stats(
     global: Option<&GlobalStats>,
     collector: &mut collector::TopDocsCollector,
 ) -> Result<()> {
-    // M1.5 measurement, recorded here because it is counter-intuitive: on M1's
-    // 5M-document corpus this MAXSCORE implementation is 4-5x *slower* than the
-    // plain lazy union `search_boolean_query_scored` now uses -- 655ms vs 163ms
-    // on `t0 OR t1`, 1,619ms vs 326ms on a four-clause disjunction. It is not
-    // failing to prune: `boolean_query_scored_maxscore_matches_eager_ffi_path_
-    // and_actually_skips_blocks` proves blocks are provably skipped. The
-    // per-doc bookkeeping simply costs more than the skipping saves at this
-    // top-k size. Reviving it means block-max WAND over the same cursors; until
-    // then, prefer the plain scored entry point. See docs/benchmarks/.
-    // Every fallback path below routes through this closure so there is
-    // exactly one call site reproducing `search_boolean_query_scored`'s exact
-    // behavior -- no risk of the fast path silently diverging from it.
-    let fallback = |collector: &mut collector::TopDocsCollector| {
-        search_boolean_query_scored_with_stats(
-            fields, doc_in, pos_in, pay_in, live_docs, points, query, norms, global, collector,
-        )
-    };
-
-    // The lazy union now does block-max pruning itself (see
-    // try_disjunction_lazy), and measured 32x faster than the machinery below
-    // on the same query -- `t0 OR t1` is 48.8 qps through the plain scored
-    // entry point against 1.5 qps here. Prefer it where it applies.
-    //
-    // This is the change I reverted earlier in M1.5, when the lazy union did no
-    // pruning at all and routing here would have silently disabled the block
-    // skipping this function's invariant test asserts. That objection is now
-    // answered: the lazy path skips spans and records them, so the test
-    // measures real skipping rather than passing by luck.
-    if try_disjunction_lazy(fields, doc_in, live_docs, query, norms, global, collector)? {
-        return Ok(());
-    }
-
-    if !query.must.is_empty() || !query.must_not.is_empty() || query.minimum_should_match > 1 {
-        return fallback(collector);
-    }
-    if query.should.is_empty() {
-        return fallback(collector);
-    }
-    let Some(doc_in) = doc_in else {
-        return fallback(collector);
-    };
-
-    struct ClauseCursor<'a> {
-        cursor: lucene_codecs::postings::LazyDocsCursor<'a>,
-        doc_id: i32,
-        doc_freq: i64,
-        doc_count: i64,
-        /// This clause's own field name, used to look up its real norms
-        /// entry (a `BooleanQuery`'s `should` clauses can span multiple
-        /// fields, unlike a single `TermQuery`).
-        field: String,
-        /// `idf(doc_freq, doc_count)` -- see this function's doc comment: a
-        /// real, always-valid (never block-stale) upper bound on any score
-        /// this clause could ever contribute, computed once up front. Used
-        /// as-is while this clause is still active; treated as `0.0` once
-        /// its cursor reaches `NO_MORE_DOCS` (see the skip loop below).
-        global_bound: f32,
-    }
-
-    let mut clauses: Vec<ClauseCursor<'_>> = Vec::with_capacity(query.should.len());
-    for clause in &query.should {
-        let Clause::Term(tq) = clause else {
-            return fallback(collector);
-        };
-        let Some(field_terms) = fields.field(&tq.field) else {
-            return fallback(collector);
-        };
-        let Some(stats) = field_terms.seek_exact(&tq.term) else {
-            return fallback(collector);
-        };
-        if stats.doc_freq <= 1 {
-            return fallback(collector);
-        }
-        let cursor = match field_terms.lazy_postings(&tq.term, doc_in) {
-            Ok(Some(c)) => c,
-            Ok(None) => return fallback(collector),
-            Err(blocktree::Error::Postings(lucene_codecs::postings::Error::Unsupported(_))) => {
-                return fallback(collector);
-            }
-            Err(e) => return Err(e.into()),
-        };
-        let doc_freq = stats.doc_freq as i64;
-        let doc_count = field_terms.doc_count as i64;
-        let global_bound = similarity::idf(doc_freq, doc_count);
-        clauses.push(ClauseCursor {
-            cursor,
-            doc_id: -1,
-            doc_freq,
-            doc_count,
-            field: tq.field.clone(),
-            global_bound,
-        });
-    }
-
-    for c in clauses.iter_mut() {
-        c.doc_id = c.cursor.next_doc().map_err(blocktree::Error::from)?;
-    }
-
-    loop {
-        // Skip pass: whenever the collector is full, check every clause
-        // still sitting in a real (non-tail) level-0 block against
-        // "threshold - sum(every OTHER clause's global bound)"; repeat for a
-        // clause whose next block is *also* skippable, so a long run of
-        // uncompetitive blocks for one clause is skipped block-by-block, not
-        // just once.
-        if let Some(threshold) = collector.min_competitive_score() {
-            for i in 0..clauses.len() {
-                loop {
-                    if clauses[i].doc_id == lucene_codecs::postings::NO_MORE_DOCS {
-                        break;
-                    }
-                    let impacts = clauses[i].cursor.level0_impacts();
-                    if impacts.is_empty() {
-                        // Tail block (or a field with no freqs): no bound
-                        // available to prove a skip, so this clause must be
-                        // decoded doc-by-doc from here on.
-                        break;
-                    }
-                    let avg_field_length =
-                        match norms.and_then(|m| m.get(clauses[i].field.as_str())) {
-                            Some(fn_) => fn_.avg_field_length,
-                            None => similarity::UNNORMED_FIELD_LENGTH,
-                        };
-                    let own_bound = match norms.and_then(|m| m.get(clauses[i].field.as_str())) {
-                        Some(_) => similarity::max_score_for_impacts(
-                            impacts,
-                            clauses[i].doc_freq,
-                            clauses[i].doc_count,
-                            avg_field_length,
-                        ),
-                        None => {
-                            let idf = similarity::idf(clauses[i].doc_freq, clauses[i].doc_count);
-                            impacts
-                                .iter()
-                                .map(|impact| {
-                                    idf * similarity::tf_norm(
-                                        impact.freq as f32,
-                                        similarity::UNNORMED_FIELD_LENGTH,
-                                        similarity::UNNORMED_FIELD_LENGTH,
-                                        similarity::DEFAULT_K1,
-                                        similarity::DEFAULT_B,
-                                    )
-                                })
-                                .fold(0.0f32, f32::max)
-                        }
-                    };
-                    // A clause that has already reached `NO_MORE_DOCS` can
-                    // never contribute to any future candidate, so it's
-                    // charged `0.0` here rather than its (looser) global
-                    // bound -- exhausted `should` clauses are common once a
-                    // low-`docFreq` clause runs out well before a
-                    // high-`docFreq` one, and without this the sum could
-                    // never tighten enough to prove a skip.
-                    let others_bound: f32 = clauses
-                        .iter()
-                        .enumerate()
-                        .filter(|&(j, _)| j != i)
-                        .map(|(_, c)| {
-                            if c.doc_id == lucene_codecs::postings::NO_MORE_DOCS {
-                                0.0
-                            } else {
-                                c.global_bound
-                            }
-                        })
-                        .sum();
-                    if own_bound + others_bound <= threshold {
-                        #[cfg(any(test, feature = "test-support"))]
-                        test_only_maxscore_block_skip_counter::record_skip();
-                        let skip_to = clauses[i]
-                            .cursor
-                            .current_block_last_doc_id()
-                            .saturating_add(1);
-                        clauses[i].doc_id = clauses[i]
-                            .cursor
-                            .advance(skip_to)
-                            .map_err(blocktree::Error::from)?;
-                        continue;
-                    }
-                    break;
-                }
-            }
-        }
-
-        let candidate = clauses
-            .iter()
-            .map(|c| c.doc_id)
-            .filter(|&d| d != lucene_codecs::postings::NO_MORE_DOCS)
-            .min();
-        let Some(candidate) = candidate else {
-            break;
-        };
-
-        let mut score = 0.0f32;
-        for c in clauses.iter() {
-            if c.doc_id == candidate {
-                let freq = c.cursor.freq().expect("cursor positioned at candidate");
-                let field_length = match norms.and_then(|m| m.get(c.field.as_str())) {
-                    Some(fn_) => fn_.field_length(candidate)?,
-                    None => similarity::UNNORMED_FIELD_LENGTH,
-                };
-                let avg_field_length = match norms.and_then(|m| m.get(c.field.as_str())) {
-                    Some(fn_) => fn_.avg_field_length,
-                    None => similarity::UNNORMED_FIELD_LENGTH,
-                };
-                score += similarity::score(
-                    c.doc_freq,
-                    c.doc_count,
-                    freq as f32,
-                    field_length,
-                    avg_field_length,
-                );
-            }
-        }
-
-        if live_docs.is_none_or(|bits| bits.get(candidate as usize)) {
-            collector.collect(candidate, score);
-        }
-
-        for c in clauses.iter_mut() {
-            if c.doc_id == candidate {
-                c.doc_id = c.cursor.next_doc().map_err(blocktree::Error::from)?;
-            }
-        }
-    }
-
-    Ok(())
+    search_boolean_query_scored_with_stats(
+        fields, doc_in, pos_in, pay_in, live_docs, points, query, norms, global, collector,
+    )
 }
 
 /// `DisjunctionMaxQuery`-equivalent (task #32): reports every doc matching at
@@ -3179,22 +3392,75 @@ pub fn search_disjunction_max_query_scored<C: ScoringCollector>(
 /// the two position lists happen to be identical, but the check only ever compares
 /// `p + i` against list `i`, never compares lists against each other by identity.
 pub(crate) fn phrase_matches_in_doc(term_positions: &[&[i32]]) -> bool {
+    phrase_freq_exact_impl(term_positions, true) != 0
+}
+
+/// Scratch cursors for the alignment walk, one per non-leading phrase term.
+/// Stack-resident for any phrase this port can realistically be handed
+/// (`MAX_INLINE_PHRASE_TERMS` slots), heap only past that -- the walk runs once
+/// per candidate *document*, so a `Vec` here would be one allocation per
+/// document, which is the exact shape finding #O15 spent a milestone removing
+/// from the position stream.
+const MAX_INLINE_PHRASE_TERMS: usize = 32;
+
+/// The one alignment walk behind [`phrase_matches_in_doc`] and
+/// [`phrase_freq_exact`]. `stop_at_first` returns as soon as one alignment is
+/// found (the boolean question) instead of counting them all.
+///
+/// **`ExactPhraseMatcher`'s shape, not a binary search.** `p0` walks the first
+/// term's positions in ascending order, so every target `p0 + i` ascends too,
+/// so a cursor per subsequent term never rewinds: the whole walk is one merge
+/// pass over all the lists, `O(sum of list lengths)`, which is what
+/// `ExactPhraseMatcher.nextMatch` does by advancing its `PostingsEnum`s
+/// together.
+///
+/// This replaced a `binary_search` per term per candidate
+/// (`O(|p0| · (n-1) · log|list|)`). Measured by
+/// `benches/phrase_freq.rs` on 4096-position lists: **5.0x-6.8x** faster
+/// (26.8 -> 4.9 µs at a 50% hit rate, 39.6 -> 5.8 µs for a three-term phrase),
+/// and 6.8% slower on an 8-position list where both are ~18 ns. The same
+/// finding as M1.6's `next_doc`/`advance` binary searches, in the function
+/// those two never reached (b12 finding F-21).
+fn phrase_freq_exact_impl(term_positions: &[&[i32]], stop_at_first: bool) -> i32 {
     let Some((first, rest)) = term_positions.split_first() else {
-        return false;
+        return 0;
     };
     if rest.iter().any(|positions| positions.is_empty()) {
-        return false;
+        return 0;
     }
+    let mut inline = [0usize; MAX_INLINE_PHRASE_TERMS];
+    let mut spilled;
+    let cursors: &mut [usize] = if rest.len() <= MAX_INLINE_PHRASE_TERMS {
+        &mut inline[..rest.len()]
+    } else {
+        spilled = vec![0usize; rest.len()];
+        &mut spilled
+    };
+
+    let mut freq = 0;
     'candidate: for &p0 in first.iter() {
         for (i, positions) in rest.iter().enumerate() {
             let target = p0 + (i as i32 + 1);
-            if positions.binary_search(&target).is_err() {
+            let mut c = cursors[i];
+            while c < positions.len() && positions[c] < target {
+                c += 1;
+            }
+            cursors[i] = c;
+            if c == positions.len() {
+                // This term is exhausted, and every later `p0` needs a strictly
+                // larger target, so no later alignment can succeed either.
+                break 'candidate;
+            }
+            if positions[c] != target {
                 continue 'candidate;
             }
         }
-        return true;
+        freq += 1;
+        if stop_at_first {
+            break;
+        }
     }
-    false
+    freq
 }
 
 /// Sloppy (`slop > 0`) sibling of [`phrase_matches_in_doc`]: checks whether
@@ -3309,21 +3575,68 @@ pub(crate) fn phrase_matches_in_doc_sloppy(term_positions: &[&[i32]], slop: u32)
 /// single-term phrase (`term_positions.len() == 1`) counts every occurrence of
 /// that lone term (the inner alignment loop is empty, so every `p0` counts).
 pub(crate) fn phrase_freq_exact(term_positions: &[&[i32]]) -> i32 {
+    phrase_freq_exact_impl(term_positions, false)
+}
+
+/// `SloppyPhraseMatcher`'s contribution to `PhraseScorer.score()`, for a phrase
+/// with `slop > 0`: **not** a match count, but the sum of
+/// `sloppyWeight() == 1f / (1f + matchLength)` over every match in the document
+/// (`PhraseScorer.score()`: `freq = matcher.sloppyWeight(); while
+/// (matcher.nextMatch()) freq += matcher.sloppyWeight();`), where `matchLength`
+/// is the alignment's total slack -- the same
+/// `(p_last - p_first) - (n - 1)` quantity [`phrase_matches_in_doc_sloppy`]
+/// already computes and compares against `slop`.
+///
+/// This is what separates a tightly-packed sloppy match from a loose one: on
+/// this crate's own fixture segment, real Lucene scores an adjacent
+/// `alpha beta` at weight `1` and an `alpha _ _ beta` two positions apart at
+/// weight `1/3`, a 2x difference in the final BM25 score. Returning a flat `1`
+/// for "this document matched somehow" -- which this port did until the b12
+/// sweep -- collapses that distinction and also loses the frequency signal
+/// entirely for a document containing several sloppy occurrences.
+///
+/// **Scope, stated as precisely as [`phrase_matches_in_doc_sloppy`]'s**: this
+/// enumerates one match per starting position of the phrase's first term
+/// (exactly [`phrase_freq_exact`]'s granularity) and takes that start's
+/// *minimum* achievable `matchLength` via the same greedy scan, which is
+/// optimal for a fixed start. Real `SloppyPhraseMatcher` instead enumerates
+/// matches by repeatedly advancing whichever `PhrasePositions` is currently
+/// minimal, which additionally admits **reordered** terms -- the same
+/// documented in-order-only restriction this port's sloppy matcher already
+/// carries, now inherited by its frequency. For `slop == 0` the two agree
+/// exactly (every gap is forced to zero, so every match weighs `1` and the sum
+/// is [`phrase_freq_exact`]'s count), which is what
+/// `sloppy_phrase_freq_at_slop_zero_equals_the_exact_count` pins.
+pub(crate) fn phrase_freq_sloppy(term_positions: &[&[i32]], slop: u32) -> f32 {
     let Some((first, rest)) = term_positions.split_first() else {
-        return 0;
+        return 0.0;
     };
     if rest.iter().any(|positions| positions.is_empty()) {
-        return 0;
+        return 0.0;
     }
-    let mut freq = 0;
+    if rest.is_empty() {
+        // Single-term phrase: real `PhraseQuery.Builder.build()` rewrites this
+        // to a `TermQuery`, whose frequency is the term's own -- every
+        // occurrence is a zero-slack match.
+        return first.len() as f32;
+    }
+    let slop = i64::from(slop);
+    let mut freq = 0.0f32;
     'candidate: for &p0 in first.iter() {
-        for (i, positions) in rest.iter().enumerate() {
-            let target = p0 + (i as i32 + 1);
-            if positions.binary_search(&target).is_err() {
+        let mut prev = p0;
+        let mut match_length: i64 = 0;
+        for positions in rest {
+            let idx = positions.partition_point(|&x| x <= prev);
+            let Some(&pos) = positions.get(idx) else {
+                continue 'candidate;
+            };
+            match_length += i64::from(pos - prev - 1);
+            if match_length > slop {
                 continue 'candidate;
             }
+            prev = pos;
         }
-        freq += 1;
+        freq += 1.0 / (1.0 + match_length as f32);
     }
     freq
 }
@@ -3771,27 +4084,27 @@ pub fn search_phrase_query<C: Collector>(
         return Err(Error::MissingPosInput);
     };
 
+    let Some(field_terms) = fields.field(&query.field) else {
+        return Ok(());
+    };
+
+    // Documents first, positions second -- the same order (and for the same
+    // reason) as `search_phrase_query_scored_with_stats`: a phrase can only
+    // match where every term does, so positions are needed only for the
+    // intersection. Deliberately **unfiltered** by `live_docs` here, because
+    // `positions_for_docs` indexes the wire stream by each document's running
+    // frequency sum and needs the term's whole doc list; deletions are applied
+    // to the candidate list below instead.
     let mut per_term_docs: Vec<Vec<i32>> = Vec::with_capacity(query.terms.len());
-    let mut per_term_positions: Vec<Vec<i32>> = Vec::with_capacity(query.terms.len());
-    let mut per_term_spans: Vec<Vec<(u32, u32)>> = Vec::with_capacity(query.terms.len());
+    let mut per_term_freqs: Vec<Vec<i32>> = Vec::with_capacity(query.terms.len());
     for term in &query.terms {
-        let Some((docs, positions, spans)) = term_doc_positions(
-            fields,
-            doc_in,
-            pos_in,
-            pay_in,
-            live_docs,
-            &query.field,
-            term,
-        )?
-        else {
+        let Some(postings) = field_terms.postings(term, doc_in)? else {
             // A missing term means the phrase can never match -- same convention
             // as `term_doc_ids`/`search_term_query`.
             return Ok(());
         };
-        per_term_docs.push(docs);
-        per_term_positions.push(positions);
-        per_term_spans.push(spans);
+        per_term_docs.push(postings.docs);
+        per_term_freqs.push(postings.freqs);
     }
 
     let per_term_docs_snapshot = per_term_docs.clone();
@@ -3801,25 +4114,55 @@ pub fn search_phrase_query<C: Collector>(
             .map(|v| Box::new(v.into_iter()) as BoxDocIter<'static>)
             .collect(),
     )
+    .filter(|&doc_id| live_docs.is_none_or(|bits| bits.get(doc_id as usize)))
     .collect();
+    if candidate_docs.is_empty() {
+        return Ok(());
+    }
 
-    // One cursor per term, advanced in step with the ascending candidate order,
-    // so each doc's positions are found without hashing and without cloning.
-    let mut cursors = vec![0usize; per_term_docs_snapshot.len()];
-    let mut term_positions: Vec<&[i32]> = Vec::with_capacity(per_term_positions.len());
-    for doc_id in candidate_docs {
-        term_positions.clear();
-        for (t, docs) in per_term_docs_snapshot.iter().enumerate() {
-            let i = &mut cursors[t];
-            while *i < docs.len() && docs[*i] < doc_id {
-                *i += 1;
+    // Each term's own indices for the candidates, ascending -- one walk per
+    // term, no searching, because both lists are sorted.
+    let mut per_term_positions: Vec<Vec<i32>> = Vec::with_capacity(query.terms.len());
+    let mut per_term_starts: Vec<Vec<u32>> = Vec::with_capacity(query.terms.len());
+    for (t, term) in query.terms.iter().enumerate() {
+        let docs = &per_term_docs_snapshot[t];
+        let mut wanted = Vec::with_capacity(candidate_docs.len());
+        let mut cursor = 0usize;
+        for &doc_id in &candidate_docs {
+            while cursor < docs.len() && docs[cursor] < doc_id {
+                cursor += 1;
             }
             debug_assert!(
-                *i < docs.len() && docs[*i] == doc_id,
-                "doc_id came from the conjunction of every term's own doc list"
+                cursor < docs.len() && docs[cursor] == doc_id,
+                "candidates come from the intersection of these very lists"
             );
-            let (start, end) = per_term_spans[t][*i];
-            term_positions.push(&per_term_positions[t][start as usize..end as usize]);
+            wanted.push(cursor);
+        }
+        let stats = field_terms
+            .seek_exact(term)
+            .expect("term presence was established above");
+        let (positions, starts) = field_terms.positions_for_docs(
+            term,
+            doc_in,
+            pos_in,
+            pay_in,
+            &per_term_freqs[t],
+            stats.total_term_freq,
+            &wanted,
+        )?;
+        per_term_positions.push(positions);
+        per_term_starts.push(starts);
+    }
+
+    // Candidate `k` sits at index `k` in every term's positions, because
+    // every term's `wanted` was built from the same candidate list.
+    let mut term_positions: Vec<&[i32]> = Vec::with_capacity(per_term_positions.len());
+    for (k, doc_id) in candidate_docs.into_iter().enumerate() {
+        term_positions.clear();
+        for t in 0..per_term_positions.len() {
+            let start = per_term_starts[t][k] as usize;
+            let end = per_term_starts[t][k + 1] as usize;
+            term_positions.push(&per_term_positions[t][start..end]);
         }
         let is_match = if query.slop == 0 {
             phrase_matches_in_doc(&term_positions)
@@ -3951,23 +4294,23 @@ pub fn search_phrase_query_scored_with_stats<C: ScoringCollector>(
     // look at less than half. Intersecting the (cheap) doc lists first and then
     // asking only for those documents' positions is what `ExactPhraseMatcher`
     // effectively does by advancing per candidate.
+    // Deliberately **unfiltered** by `live_docs`: `positions_for_docs` indexes
+    // the wire position stream by each document's running frequency sum and
+    // rejects a frequency list whose total disagrees with the term's
+    // `totalTermFreq`, so dropping deleted documents here makes every scored
+    // phrase query on a segment with deletions fail outright
+    // ("sum of per-doc freqs disagrees with total_term_freq"). Deletions are
+    // applied to the candidate list below instead, which is where they belong:
+    // a deleted document is not a hit, but it still occupies its slot in the
+    // term's postings.
     let mut per_term_docs: Vec<Vec<i32>> = Vec::with_capacity(query.terms.len());
     let mut per_term_freqs: Vec<Vec<i32>> = Vec::with_capacity(query.terms.len());
     for term in &query.terms {
         let Some(postings) = field_terms.postings(term, doc_in)? else {
             return Ok(());
         };
-        let mut docs = Vec::with_capacity(postings.docs.len());
-        let mut freqs = Vec::with_capacity(postings.docs.len());
-        for (i, &doc_id) in postings.docs.iter().enumerate() {
-            if !live_docs.is_none_or(|bits| bits.get(doc_id as usize)) {
-                continue;
-            }
-            docs.push(doc_id);
-            freqs.push(postings.freqs[i]);
-        }
-        per_term_docs.push(docs);
-        per_term_freqs.push(freqs);
+        per_term_docs.push(postings.docs.clone());
+        per_term_freqs.push(postings.freqs.clone());
     }
 
     let per_term_docs_snapshot = per_term_docs.clone();
@@ -3977,6 +4320,7 @@ pub fn search_phrase_query_scored_with_stats<C: ScoringCollector>(
             .map(|v| Box::new(v.into_iter()) as BoxDocIter<'static>)
             .collect(),
     )
+    .filter(|&doc_id| live_docs.is_none_or(|bits| bits.get(doc_id as usize)))
     .collect();
     if candidate_docs.is_empty() {
         return Ok(());
@@ -4022,6 +4366,9 @@ pub fn search_phrase_query_scored_with_stats<C: ScoringCollector>(
     // `wanted` was built from the same candidate list for each term. No
     // per-document cursor bookkeeping is left.
     let mut term_positions: Vec<&[i32]> = Vec::with_capacity(per_term_positions.len());
+    // One norms cursor for this scan; `candidate_docs` ascends, so a sparse
+    // field's `IndexedDISI` region is walked once, not once per document.
+    let mut norms_cursor = norms.map(|n| n.cursor());
     for (k, &doc_id) in candidate_docs.iter().enumerate() {
         term_positions.clear();
         for t in 0..per_term_positions.len() {
@@ -4029,31 +4376,366 @@ pub fn search_phrase_query_scored_with_stats<C: ScoringCollector>(
             let end = per_term_starts[t][k + 1] as usize;
             term_positions.push(&per_term_positions[t][start..end]);
         }
+        // `PhraseScorer.score()`: the frequency fed to the similarity is
+        // `ExactPhraseMatcher`'s match count for `slop == 0`, and
+        // `SloppyPhraseMatcher`'s summed `1/(1+matchLength)` otherwise -- not
+        // a flat `1` for "matched". See `phrase_freq_sloppy`.
         let phrase_freq = if query.slop == 0 {
-            phrase_freq_exact(&term_positions)
-        } else if phrase_matches_in_doc_sloppy(&term_positions, query.slop) {
-            1
+            phrase_freq_exact(&term_positions) as f32
         } else {
-            0
+            phrase_freq_sloppy(&term_positions, query.slop)
         };
-        if phrase_freq == 0 {
+        if phrase_freq == 0.0 {
             continue;
         }
-        let (field_length, avg_field_length) = match norms {
-            Some(fn_) => (fn_.field_length(doc_id)?, fn_.avg_field_length),
+        let (field_length, avg_field_length) = match norms_cursor.as_mut() {
+            Some(nc) => (nc.field_length(doc_id)?, nc.avg_field_length()),
             None => (
                 similarity::UNNORMED_FIELD_LENGTH,
                 similarity::UNNORMED_FIELD_LENGTH,
             ),
         };
-        let tf_norm = similarity::tf_norm(
-            phrase_freq as f32,
-            field_length,
-            avg_field_length,
-            similarity::DEFAULT_K1,
-            similarity::DEFAULT_B,
+        collector.collect(
+            doc_id,
+            similarity::do_score(
+                idf_sum,
+                phrase_freq,
+                similarity::norm_inverse(
+                    field_length,
+                    avg_field_length,
+                    similarity::DEFAULT_K1,
+                    similarity::DEFAULT_B,
+                ),
+            ),
         );
-        collector.collect(doc_id, idf_sum * tf_norm);
+    }
+    Ok(())
+}
+
+/// The documents containing at least one of `terms`, ascending -- one
+/// position's `UnionFullPostingsEnum` doc stream. Absent terms contribute
+/// nothing; an entirely absent set yields an empty list, which makes the whole
+/// phrase match nothing.
+///
+/// **Not** filtered by `live_docs`: the caller applies deletions to the
+/// candidate list, for the same reason `search_phrase_query_scored_with_stats`
+/// does (`positions_for_docs` indexes the wire stream by a running frequency
+/// sum that must total the term's `totalTermFreq`).
+fn multi_phrase_slot_docs(
+    field_terms: &blocktree::FieldTerms,
+    doc_in: Option<&DocInput<'_>>,
+    terms: &[Vec<u8>],
+) -> Result<Vec<i32>> {
+    let mut merged = DocIdBitSet::default();
+    for term in terms {
+        let Some(docs) = term_docs_only(field_terms, term, doc_in)? else {
+            continue;
+        };
+        for doc_id in docs {
+            merged.set(doc_id);
+        }
+    }
+    Ok(merged.into_sorted_vec())
+}
+
+/// One position's merged, sorted, deduplicated positions for each document in
+/// `candidates` (which must be ascending). Returns `(positions, starts)` with
+/// `starts.len() == candidates.len() + 1`, the same flat shape
+/// `FieldTerms::positions_for_docs` returns for a single term.
+fn multi_phrase_slot_positions(
+    field_terms: &blocktree::FieldTerms,
+    doc_in: Option<&DocInput<'_>>,
+    pos_in: &PosInput<'_>,
+    pay_in: Option<&PayInput<'_>>,
+    terms: &[Vec<u8>],
+    candidates: &[i32],
+) -> Result<(Vec<i32>, Vec<u32>)> {
+    let mut per_doc: Vec<Vec<i32>> = vec![Vec::new(); candidates.len()];
+    for term in terms {
+        let Some(stats) = field_terms.seek_exact(term) else {
+            continue;
+        };
+        let Some(postings) = field_terms.postings(term, doc_in)? else {
+            continue;
+        };
+        // `positions_for_docs` wants indices into the term's own **unfiltered**
+        // doc sequence, and a frequency list totalling its `totalTermFreq` --
+        // see `multi_phrase_slot_docs` on why deletions are not applied here.
+        let term_docs = &postings.docs;
+        let freqs = &postings.freqs;
+        let mut wanted = Vec::new();
+        let mut wanted_slots = Vec::new();
+        let mut cursor = 0usize;
+        for (slot, &doc_id) in candidates.iter().enumerate() {
+            while cursor < term_docs.len() && term_docs[cursor] < doc_id {
+                cursor += 1;
+            }
+            if cursor < term_docs.len() && term_docs[cursor] == doc_id {
+                wanted.push(cursor);
+                wanted_slots.push(slot);
+            }
+        }
+        if wanted.is_empty() {
+            continue;
+        }
+        let (positions, starts) = field_terms.positions_for_docs(
+            term,
+            doc_in,
+            pos_in,
+            pay_in,
+            freqs,
+            stats.total_term_freq,
+            &wanted,
+        )?;
+        for (k, &slot) in wanted_slots.iter().enumerate() {
+            let from = starts[k] as usize;
+            let to = starts[k + 1] as usize;
+            per_doc[slot].extend_from_slice(&positions[from..to]);
+        }
+    }
+
+    let mut flat = Vec::new();
+    let mut starts = Vec::with_capacity(candidates.len() + 1);
+    starts.push(0u32);
+    for doc_positions in &mut per_doc {
+        // Sorted, and **not** deduplicated. `UnionPostingsEnum.freq()` builds
+        // its `PositionsQueue` by draining every sub's positions and calling
+        // `sort()` -- there is no dedup step, so a position reached by two
+        // alternatives (the same term listed twice, or two terms the analyzer
+        // stacked at one position) is yielded twice and the matcher counts the
+        // alignment twice. Deduplicating here looks obviously right and is
+        // wrong: real Lucene scores `pos:"(alpha alpha) beta"` at 0.87906057 on
+        // this crate's fixture where the deduplicated form gives 0.6393168.
+        // Recorded as `scoring.multiphrase.dup` and pinned by
+        // `multi_phrase_query_scores_match_real_lucene_bit_for_bit`.
+        doc_positions.sort_unstable();
+        flat.extend_from_slice(doc_positions);
+        starts.push(flat.len() as u32);
+    }
+    Ok((flat, starts))
+}
+
+/// [`search_phrase_query`]'s sibling for [`query::MultiPhraseQuery`]: matching
+/// only, no scores. See that struct's doc comment for the exact semantics this
+/// implements (and which parts of real `MultiPhraseQuery` are out of scope).
+pub fn search_multi_phrase_query<C: Collector>(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    pos_in: Option<&PosInput<'_>>,
+    pay_in: Option<&PayInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    query: &query::MultiPhraseQuery,
+    collector: &mut C,
+) -> Result<()> {
+    for doc_id in multi_phrase_doc_ids(fields, doc_in, pos_in, pay_in, live_docs, query)? {
+        collector.collect(doc_id);
+    }
+    Ok(())
+}
+
+/// The matching-only half of [`search_multi_phrase_query`], shared with
+/// [`resolve_clause_docs`].
+fn multi_phrase_doc_ids(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    pos_in: Option<&PosInput<'_>>,
+    pay_in: Option<&PayInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    query: &query::MultiPhraseQuery,
+) -> Result<Vec<i32>> {
+    let mut docs = Vec::new();
+    struct Collect<'a>(&'a mut Vec<i32>);
+    impl collector::ScoringCollector for Collect<'_> {
+        fn collect(&mut self, doc_id: i32, _score: f32) {
+            self.0.push(doc_id);
+        }
+    }
+    let mut sink = Collect(&mut docs);
+    multi_phrase_hits(
+        fields, doc_in, pos_in, pay_in, live_docs, query, None, None, &mut sink,
+    )?;
+    Ok(docs)
+}
+
+/// Scored [`query::MultiPhraseQuery`] execution -- see that struct's doc
+/// comment for the idf-over-every-term and merged-frequency rules taken from
+/// `MultiPhraseWeight`.
+#[allow(clippy::too_many_arguments)]
+pub fn search_multi_phrase_query_scored<C: ScoringCollector>(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    pos_in: Option<&PosInput<'_>>,
+    pay_in: Option<&PayInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    query: &query::MultiPhraseQuery,
+    norms: Option<&FieldNorms<'_>>,
+    collector: &mut C,
+) -> Result<()> {
+    search_multi_phrase_query_scored_with_stats(
+        fields, doc_in, pos_in, pay_in, live_docs, query, norms, None, collector,
+    )
+}
+
+/// [`search_multi_phrase_query_scored`] taking reader-wide statistics -- see
+/// [`CollectionStats`].
+#[allow(clippy::too_many_arguments)]
+pub fn search_multi_phrase_query_scored_with_stats<C: ScoringCollector>(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    pos_in: Option<&PosInput<'_>>,
+    pay_in: Option<&PayInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    query: &query::MultiPhraseQuery,
+    norms: Option<&FieldNorms<'_>>,
+    global: Option<&GlobalStats>,
+    collector: &mut C,
+) -> Result<()> {
+    multi_phrase_hits(
+        fields, doc_in, pos_in, pay_in, live_docs, query, norms, global, collector,
+    )
+}
+
+/// The one implementation both [`search_multi_phrase_query`] and
+/// [`search_multi_phrase_query_scored_with_stats`] run, so matching and scoring
+/// can never disagree about which documents match (the defect
+/// `search_boolean_query_scored`'s two-pass general path used to have, see
+/// finding #O16 in `docs/sweep/findings.md`).
+#[allow(clippy::too_many_arguments)]
+fn multi_phrase_hits<C: ScoringCollector>(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    pos_in: Option<&PosInput<'_>>,
+    pay_in: Option<&PayInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    query: &query::MultiPhraseQuery,
+    norms: Option<&FieldNorms<'_>>,
+    global: Option<&GlobalStats>,
+    collector: &mut C,
+) -> Result<()> {
+    // `MultiPhraseQuery.rewrite`: an empty `termArrays` is a
+    // `MatchNoDocsQuery`.
+    if query.term_arrays.is_empty() {
+        return Ok(());
+    }
+    let Some(field_terms) = fields.field(&query.field) else {
+        return Ok(());
+    };
+
+    // `MultiPhraseWeight`: the idf is summed over every term of every
+    // position, and a term absent from this segment contributes nothing.
+    let mut idf_sum = 0.0f32;
+    let mut any_term_present = false;
+    for alternatives in &query.term_arrays {
+        for term in alternatives {
+            let Some(stats) = field_terms.seek_exact(term) else {
+                continue;
+            };
+            any_term_present = true;
+            let (df, dc) = match global.and_then(|g| g.get(&(query.field.clone(), term.clone()))) {
+                Some(g) => (g.doc_freq, g.doc_count),
+                None => (stats.doc_freq as i64, field_terms.doc_count as i64),
+            };
+            idf_sum += similarity::idf(df, dc);
+        }
+    }
+    if !any_term_present {
+        return Ok(());
+    }
+
+    // `MultiPhraseQuery.rewrite`'s "optimize one-term case": a single position
+    // rewrites to a `BooleanQuery` of `SHOULD` `TermQuery`s. That is **not**
+    // the same thing as a one-slot phrase over the merged union -- a
+    // `BooleanQuery` scores each term with its *own* idf and its *own*
+    // frequency and adds them, where the phrase path would use the summed idf
+    // once against the merged frequency. Real Lucene's recorded scores for
+    // this shape (`scoring.multiphrase.single` in the blocktree fixture's
+    // manifest) are the boolean ones, which is what caught the difference.
+    if query.term_arrays.len() == 1 {
+        let mut summed: HashMap<i32, f32> = HashMap::new();
+        for term in &query.term_arrays[0] {
+            let term_query = TermQuery::new(query.field.clone(), term.clone());
+            for (doc_id, score) in
+                term_doc_scores(fields, doc_in, live_docs, &term_query, norms, global)?
+            {
+                *summed.entry(doc_id).or_insert(0.0) += score;
+            }
+        }
+        let mut hits: Vec<(i32, f32)> = summed.into_iter().collect();
+        hits.sort_unstable_by_key(|&(doc_id, _)| doc_id);
+        for (doc_id, score) in hits {
+            collector.collect(doc_id, score);
+        }
+        return Ok(());
+    }
+
+    let Some(pos_in) = pos_in else {
+        return Err(Error::MissingPosInput);
+    };
+
+    // One merged doc stream per position (`UnionFullPostingsEnum`'s doc side).
+    let slot_docs: Vec<Vec<i32>> = query
+        .term_arrays
+        .iter()
+        .map(|alts| multi_phrase_slot_docs(field_terms, doc_in, alts))
+        .collect::<Result<Vec<_>>>()?;
+    if slot_docs.iter().any(|docs| docs.is_empty()) {
+        return Ok(());
+    }
+
+    // Documents first, positions second -- the same order `ExactPhraseMatcher`
+    // effectively works in, and the reason the phrase path stopped decoding
+    // every position of every document (finding #O15).
+    let slot_count = slot_docs.len();
+    let candidates: Vec<i32> = Conjunction::new(
+        slot_docs
+            .into_iter()
+            .map(|docs| Box::new(docs.into_iter()) as BoxDocIter<'static>)
+            .collect(),
+    )
+    .filter(|&doc_id| live_docs.is_none_or(|bits| bits.get(doc_id as usize)))
+    .collect();
+    if candidates.is_empty() {
+        return Ok(());
+    }
+
+    let mut per_slot_positions = Vec::with_capacity(slot_count);
+    let mut per_slot_starts = Vec::with_capacity(slot_count);
+    for alternatives in &query.term_arrays {
+        let (positions, starts) = multi_phrase_slot_positions(
+            field_terms,
+            doc_in,
+            pos_in,
+            pay_in,
+            alternatives,
+            &candidates,
+        )?;
+        per_slot_positions.push(positions);
+        per_slot_starts.push(starts);
+    }
+
+    let mut slot_positions: Vec<&[i32]> = Vec::with_capacity(slot_count);
+    // `candidates` ascends, so one cursor covers the whole scan.
+    let mut norms_cursor = norms.map(|n| n.cursor());
+    for (k, &doc_id) in candidates.iter().enumerate() {
+        slot_positions.clear();
+        for t in 0..per_slot_positions.len() {
+            let from = per_slot_starts[t][k] as usize;
+            let to = per_slot_starts[t][k + 1] as usize;
+            slot_positions.push(&per_slot_positions[t][from..to]);
+        }
+        let freq = if query.slop == 0 {
+            phrase_freq_exact(&slot_positions) as f32
+        } else {
+            phrase_freq_sloppy(&slot_positions, query.slop)
+        };
+        if freq == 0.0 {
+            continue;
+        }
+        let norm_inverse = match norms_cursor.as_mut() {
+            Some(nc) => nc.norm_inverse(doc_id)?,
+            None => similarity::UNNORMED_NORM_INVERSE,
+        };
+        collector.collect(doc_id, similarity::do_score(idf_sum, freq, norm_inverse));
     }
     Ok(())
 }
@@ -4651,6 +5333,804 @@ mod tests {
         let q = BooleanQuery::new();
         search_boolean_query(&fields, doc_in.as_ref(), None, None, None, None, &q, &mut c).unwrap();
         assert!(c.docs.is_empty());
+    }
+
+    // ---- `Occur.FILTER` ---------------------------------------------------
+    //
+    // Matching-side unit tests. The scoring side is pinned bit-for-bit against
+    // real `IndexSearcher` in `tests/bm25_scoring_fixtures.rs`; these cover the
+    // branches of `matched_boolean_docs`/`try_conjunction_lazy` that a filter
+    // clause reaches, using the same fixture segment
+    // (cat={0,2}, dog={0,1}, bird={1,4}).
+
+    /// Collects every `(doc, score)` the scorer emits, in emission order --
+    /// the scored analogue of [`VecCollector`], kept local to the tests because
+    /// production callers all want a top-`n` queue instead.
+    #[derive(Default)]
+    struct ScoreVecCollector {
+        hits: Vec<(i32, f32)>,
+    }
+
+    impl collector::ScoringCollector for ScoreVecCollector {
+        fn collect(&mut self, doc_id: i32, score: f32) {
+            self.hits.push((doc_id, score));
+        }
+    }
+
+    /// Helper: matched doc IDs for `query`, unscored.
+    fn boolean_docs(query: &BooleanQuery) -> Vec<i32> {
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let mut c = VecCollector::default();
+        search_boolean_query(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            None,
+            None,
+            None,
+            query,
+            &mut c,
+        )
+        .unwrap();
+        c.docs
+    }
+
+    /// Helper: `(doc, score)` pairs for `query`, ascending by doc, no norms.
+    fn boolean_scores(query: &BooleanQuery) -> Vec<(i32, f32)> {
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let mut c = ScoreVecCollector::default();
+        search_boolean_query_scored(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            None,
+            None,
+            None,
+            query,
+            None,
+            &mut c,
+        )
+        .unwrap();
+        c.hits
+    }
+
+    #[test]
+    fn filter_only_query_matches_the_conjunction_it_describes() {
+        // Java's pure-negative rewrite is `clauses.size() ==
+        // clauseSets.get(MUST_NOT).size()`, which a FILTER clause fails -- so a
+        // filter-only query is a *positive* query and matches, unlike the
+        // must_not-only query tested above.
+        let q = BooleanQuery::new()
+            .with_filter([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")]);
+        assert_eq!(boolean_docs(&q), vec![0]);
+    }
+
+    #[test]
+    fn filter_only_query_scores_every_match_zero() {
+        let q = BooleanQuery::new().with_filter([TermQuery::new("body", "cat")]);
+        assert_eq!(boolean_scores(&q), vec![(0, 0.0), (2, 0.0)]);
+    }
+
+    #[test]
+    fn a_filter_clause_selects_exactly_what_the_same_must_clause_would() {
+        let must = BooleanQuery::new()
+            .with_must([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")]);
+        let filter = BooleanQuery::new()
+            .with_filter([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")]);
+        let mixed = BooleanQuery::new()
+            .with_must([TermQuery::new("body", "cat")])
+            .with_filter([TermQuery::new("body", "dog")]);
+        assert_eq!(boolean_docs(&must), vec![0]);
+        assert_eq!(boolean_docs(&filter), boolean_docs(&must));
+        assert_eq!(boolean_docs(&mixed), boolean_docs(&must));
+    }
+
+    #[test]
+    fn a_filter_clause_contributes_exactly_zero_to_the_score() {
+        // The difference between `+cat +dog` and `+cat #dog` must be exactly the
+        // `dog` clause's own score, with the `cat` clause's contribution
+        // bit-identical between the two -- which is what "does not perturb the
+        // summation order" means when `f32` addition is not associative.
+        let cat_only =
+            boolean_scores(&BooleanQuery::new().with_must([TermQuery::new("body", "cat")]));
+        let cat_and_dog = boolean_scores(
+            &BooleanQuery::new()
+                .with_must([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")]),
+        );
+        let cat_filter_dog = boolean_scores(
+            &BooleanQuery::new()
+                .with_must([TermQuery::new("body", "cat")])
+                .with_filter([TermQuery::new("body", "dog")]),
+        );
+        assert_eq!(cat_filter_dog.len(), 1);
+        assert_eq!(cat_filter_dog[0].0, 0);
+        // Same matched set as the all-MUST form...
+        assert_eq!(
+            cat_and_dog.iter().map(|h| h.0).collect::<Vec<_>>(),
+            cat_filter_dog.iter().map(|h| h.0).collect::<Vec<_>>()
+        );
+        // ... and the score is bit-for-bit the `cat` clause's alone.
+        let cat_on_doc0 = cat_only
+            .iter()
+            .find(|h| h.0 == 0)
+            .expect("cat matches doc 0")
+            .1;
+        assert_eq!(
+            cat_filter_dog[0].1.to_bits(),
+            cat_on_doc0.to_bits(),
+            "filter contributed {} to the score",
+            cat_filter_dog[0].1 - cat_on_doc0
+        );
+        assert!(cat_and_dog[0].1 > cat_filter_dog[0].1);
+    }
+
+    #[test]
+    fn filter_clauses_do_not_count_toward_minimum_should_match() {
+        // filter=[cat]={0,2}; should=[dog,bird] with minimum_should_match=1.
+        // Doc 2 matches the filter and neither optional clause. If a filter
+        // counted toward the threshold it would survive; Java increments
+        // `shouldMatchCount` only for `Occur.SHOULD`, so it must not.
+        let q = BooleanQuery::new()
+            .with_filter([TermQuery::new("body", "cat")])
+            .with_should([
+                TermQuery::new("body", "dog"),
+                TermQuery::new("body", "bird"),
+            ])
+            .with_minimum_should_match(1);
+        assert_eq!(boolean_docs(&q), vec![0]);
+
+        // With the threshold off, doc 2 comes back -- proving the exclusion
+        // above was the threshold and not the filter.
+        let q = BooleanQuery::new()
+            .with_filter([TermQuery::new("body", "cat")])
+            .with_should([
+                TermQuery::new("body", "dog"),
+                TermQuery::new("body", "bird"),
+            ]);
+        assert_eq!(boolean_docs(&q), vec![0, 2]);
+    }
+
+    #[test]
+    fn a_filter_only_query_with_a_positive_minimum_should_match_matches_nothing() {
+        // No `should` clauses at all, so no document can ever reach a positive
+        // threshold -- the same rule as the `must`-only case, and the reason
+        // `BooleanQuery::rewrite`'s single-clause unwrap excludes it.
+        let q = BooleanQuery::new()
+            .with_filter([TermQuery::new("body", "cat")])
+            .with_minimum_should_match(1);
+        assert!(boolean_docs(&q).is_empty());
+    }
+
+    #[test]
+    fn filter_combines_with_must_not() {
+        // filter=[cat]={0,2}, must_not=[dog]={0,1} -> {2}.
+        let q = BooleanQuery::new()
+            .with_filter([TermQuery::new("body", "cat")])
+            .with_must_not([TermQuery::new("body", "dog")]);
+        assert_eq!(boolean_docs(&q), vec![2]);
+    }
+
+    #[test]
+    fn a_nested_boolean_query_works_as_a_filter_clause_and_still_scores_zero() {
+        // filter=[nested], nested = should=[dog, bird] -> {0,1,4}; must=[cat]
+        // -> {0,2}. Intersection {0}, scored as `cat` alone.
+        let nested = BooleanQuery::new().with_should([
+            TermQuery::new("body", "dog"),
+            TermQuery::new("body", "bird"),
+        ]);
+        let q = BooleanQuery::new()
+            .with_must([TermQuery::new("body", "cat")])
+            .with_filter([Clause::from(nested)]);
+        assert_eq!(boolean_docs(&q), vec![0]);
+
+        let cat_only =
+            boolean_scores(&BooleanQuery::new().with_must([TermQuery::new("body", "cat")]));
+        let scored = boolean_scores(&q);
+        assert_eq!(scored.len(), 1);
+        assert_eq!(
+            scored[0].1.to_bits(),
+            cat_only
+                .iter()
+                .find(|h| h.0 == 0)
+                .expect("cat matches doc 0")
+                .1
+                .to_bits(),
+            "a nested boolean filter must contribute nothing either"
+        );
+    }
+
+    #[test]
+    fn a_filter_clause_that_matches_nothing_empties_the_conjunction() {
+        let q = BooleanQuery::new()
+            .with_must([TermQuery::new("body", "cat")])
+            .with_filter([TermQuery::new("body", "no_such_term_anywhere")]);
+        assert!(boolean_docs(&q).is_empty());
+        assert!(boolean_scores(&q).is_empty());
+    }
+
+    #[test]
+    fn a_filter_only_conjunction_takes_the_lazy_leapfrog_path_and_scores_zero() {
+        // Not taking it cost 129.5ms against 8.8ms for the same conjunction
+        // written with `MUST` clauses, because the general path materializes
+        // each clause's whole doc list first -- see `benches/filter_vs_must.rs`.
+        // Pruning is off for this shape (no scoring clause to bound), but the
+        // leapfrog is not.
+        let q = BooleanQuery::new()
+            .with_filter([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")]);
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let mut c = ScoreVecCollector::default();
+        assert!(
+            try_conjunction_lazy(&fields, doc_in.as_ref(), None, &q, None, None, &mut c).unwrap(),
+            "the lazy path must take a filter-only conjunction"
+        );
+        assert_eq!(c.hits, vec![(0, 0.0)]);
+        assert_eq!(boolean_scores(&q), vec![(0, 0.0)]);
+    }
+
+    #[test]
+    fn a_filter_only_conjunction_does_not_prune_against_a_full_top_n_queue() {
+        // Every document scores 0, so the block-max bound would be 0 and
+        // `0 <= threshold` would authorize skipping the rest of the segment the
+        // moment the queue filled -- silently truncating the hit set on a tie.
+        // `prunable` exists to stop that. `cat`={0,2} and `dog`={0,1} give only
+        // one hit here, so the check that bites is the wider one: a top-1 queue
+        // over a filter-only query must still see every match.
+        let q = BooleanQuery::new().with_filter([TermQuery::new("body", "cat")]);
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let mut top = collector::TopDocsCollector::new(1);
+        search_boolean_query_scored(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            None,
+            None,
+            None,
+            &q,
+            None,
+            &mut top,
+        )
+        .unwrap();
+        assert_eq!(
+            top.total_hits().value,
+            2,
+            "both docs must have been visited"
+        );
+    }
+
+    #[test]
+    fn the_lazy_conjunction_path_handles_a_filter_leg() {
+        // must=[cat], filter=[dog]: both are `Clause::Term`, so this *is* the
+        // lazy leapfrog's shape, with one scoring leg and one non-scoring one.
+        let q = BooleanQuery::new()
+            .with_must([TermQuery::new("body", "cat")])
+            .with_filter([TermQuery::new("body", "dog")]);
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let mut c = ScoreVecCollector::default();
+        assert!(
+            try_conjunction_lazy(&fields, doc_in.as_ref(), None, &q, None, None, &mut c).unwrap(),
+            "the lazy path must take a conjunction with a filter leg"
+        );
+        assert_eq!(c.hits.iter().map(|h| h.0).collect::<Vec<_>>(), vec![0]);
+        // Same score as `+body:cat` alone, through the same lazy path.
+        let mut cat = ScoreVecCollector::default();
+        try_conjunction_lazy(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            &BooleanQuery::new().with_must([TermQuery::new("body", "cat")]),
+            None,
+            None,
+            &mut cat,
+        )
+        .unwrap();
+        assert_eq!(
+            c.hits[0].1.to_bits(),
+            cat.hits
+                .iter()
+                .find(|h| h.0 == 0)
+                .expect("cat matches doc 0")
+                .1
+                .to_bits()
+        );
+    }
+
+    #[test]
+    fn the_lazy_disjunction_and_maxscore_paths_decline_a_query_with_filters() {
+        // Both are pure-SHOULD fast paths; a filter clause is a required
+        // clause, so neither shape applies and both must fall back rather than
+        // silently ignore it.
+        let q = BooleanQuery::new()
+            .with_filter([TermQuery::new("body", "cat")])
+            .with_should([
+                TermQuery::new("body", "dog"),
+                TermQuery::new("body", "bird"),
+            ]);
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let mut c = ScoreVecCollector::default();
+        assert!(
+            !try_disjunction_lazy(&fields, doc_in.as_ref(), None, &q, None, None, &mut c).unwrap()
+        );
+        assert!(c.hits.is_empty());
+
+        // The MAXSCORE entry point falls back to the general path, which does
+        // honour the filter: `cat` = {0,2}, so doc 1 and doc 4 are excluded
+        // even though they match `dog`/`bird`.
+        let mut top = collector::TopDocsCollector::new(10);
+        search_boolean_query_scored_maxscore(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            None,
+            None,
+            None,
+            &q,
+            None,
+            &mut top,
+        )
+        .unwrap();
+        let mut docs: Vec<i32> = top.top_docs().iter().map(|h| h.doc_id).collect();
+        docs.sort_unstable();
+        assert_eq!(docs, vec![0, 2]);
+    }
+
+    // ---- single-scoring-clause fast path + constant-score streaming --------
+    //
+    // c6 recorded `lib.rs` at 90.52% line coverage, below this repo's 95% bar.
+    // The largest single hole was this pair: `search_boolean_query_scored`'s
+    // one-clause shortcut and the `stream_constant_score_clause` /
+    // `expanded_terms` machinery it is the only caller of. Nothing reached them
+    // because the wildcard-family fixture suites all call
+    // `search_prefix_query_scored` and friends *directly*, never through a
+    // `BooleanQuery` -- so the whole shortcut, the streaming union, and its
+    // early exit were untested. Fixture fields used below: `big` holds one term
+    // `everywhere` in 300 documents, `many` holds 400 terms `term0000`..
+    // `term0399` at one document each.
+
+    #[test]
+    fn a_single_prefix_clause_streams_through_the_constant_score_path() {
+        // 1 expanded term at docFreq 300, so
+        // `total_doc_freq >= terms * BLOCK_SIZE` and the streaming union runs
+        // instead of materializing the postings. Every match scores a flat 1.0,
+        // so a full top-`n` queue's bottom is already 1.0 and the stream stops
+        // early -- `pruning_threshold().is_some_and(|s| s >= 1.0)`.
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let q = BooleanQuery::new().with_must([Clause::Prefix(PrefixQuery::new("big", "every"))]);
+        let mut top = collector::TopDocsCollector::new(3);
+        search_boolean_query_scored(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            None,
+            None,
+            None,
+            &q,
+            None,
+            &mut top,
+        )
+        .unwrap();
+        assert_eq!(top.top_docs().len(), 3);
+        assert!(top.top_docs().iter().all(|h| h.score == 1.0));
+        // Stopped early: the stream returned before visiting all 300.
+        assert!(
+            top.total_hits().value < 300,
+            "the early exit did not fire: {} hits visited",
+            top.total_hits().value
+        );
+    }
+
+    #[test]
+    fn a_single_wildcard_or_regexp_clause_streams_the_same_way() {
+        // The other two `expanded_terms` arms. `e*e` and `ever.*` both select
+        // the single term `everywhere`.
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        for clause in [
+            Clause::Wildcard(WildcardQuery::new("big", "e*e")),
+            Clause::Regexp(RegexpQuery::new("big", "ever.*")),
+        ] {
+            let q = BooleanQuery::new().with_must([clause.clone()]);
+            let mut top = collector::TopDocsCollector::new(2);
+            search_boolean_query_scored(
+                &fields,
+                doc_in.as_ref(),
+                None,
+                None,
+                None,
+                None,
+                &q,
+                None,
+                &mut top,
+            )
+            .unwrap();
+            assert_eq!(top.top_docs().len(), 2, "{clause:?}");
+            assert!(top.top_docs().iter().all(|h| h.score == 1.0));
+        }
+    }
+
+    #[test]
+    fn the_streaming_path_declines_when_the_expansion_is_wider_than_it_is_deep() {
+        // 400 terms at docFreq 1 each: `total_doc_freq (400) < terms (400) *
+        // BLOCK_SIZE (128)`, so opening a lazy cursor per term would decode far
+        // more than the whole union is worth. The clause falls back to
+        // `resolve_clause_docs` and is collected at a flat 1.0 -- the other half
+        // of the fast path's wildcard arm.
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let q = BooleanQuery::new().with_must([Clause::Prefix(PrefixQuery::new("many", "term00"))]);
+        let mut all = ScoreVecCollector::default();
+        search_boolean_query_scored(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            None,
+            None,
+            None,
+            &q,
+            None,
+            &mut all,
+        )
+        .unwrap();
+        assert_eq!(all.hits.len(), 100, "term0000..term0099");
+        assert!(all.hits.iter().all(|h| h.1 == 1.0));
+        assert!(
+            all.hits.windows(2).all(|w| w[0].0 < w[1].0),
+            "the fallback must still emit ascending doc ids"
+        );
+    }
+
+    #[test]
+    fn a_single_fuzzy_clause_takes_the_fast_path_without_streaming() {
+        // `expanded_terms` returns `None` for `Clause::Fuzzy` (its expansion is
+        // edit-distance driven, not a term-dictionary prefix scan), so the
+        // stream declines immediately and the fallback collects.
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let q = BooleanQuery::new().with_must([Clause::Fuzzy(
+            FuzzyQuery::new("body", "cat").with_max_edits(1),
+        )]);
+        let mut all = ScoreVecCollector::default();
+        search_boolean_query_scored(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            None,
+            None,
+            None,
+            &q,
+            None,
+            &mut all,
+        )
+        .unwrap();
+        assert!(!all.hits.is_empty());
+        assert!(all.hits.iter().all(|h| h.1 == 1.0));
+    }
+
+    #[test]
+    fn a_single_phrase_clause_takes_the_fast_path_straight_to_the_collector() {
+        // The `Clause::Phrase` arm: scored by `search_phrase_query_scored`
+        // directly, with no intermediate `HashMap<i32, f32>`. It must agree
+        // exactly with the standalone phrase search.
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let pos_in = doc.as_ref().map(|d| d.open_pos());
+        let pay_in = doc.as_ref().map(|d| d.open_pay());
+        let phrase = PhraseQuery::new("pos", ["alpha", "beta"]);
+
+        let mut direct = ScoreVecCollector::default();
+        search_phrase_query_scored(
+            &fields,
+            doc_in.as_ref(),
+            pos_in.as_ref(),
+            pay_in.as_ref(),
+            None,
+            &phrase,
+            None,
+            &mut direct,
+        )
+        .unwrap();
+
+        let mut boxed = ScoreVecCollector::default();
+        search_boolean_query_scored(
+            &fields,
+            doc_in.as_ref(),
+            pos_in.as_ref(),
+            pay_in.as_ref(),
+            None,
+            None,
+            &BooleanQuery::new().with_must([Clause::Phrase(phrase.clone())]),
+            None,
+            &mut boxed,
+        )
+        .unwrap();
+
+        assert!(!direct.hits.is_empty());
+        assert_eq!(direct.hits.len(), boxed.hits.len());
+        for (a, b) in direct.hits.iter().zip(&boxed.hits) {
+            assert_eq!(a.0, b.0);
+            assert_eq!(a.1.to_bits(), b.1.to_bits());
+        }
+    }
+
+    #[test]
+    fn a_single_pulsed_term_clause_reaches_the_fast_paths_term_arm() {
+        // `try_conjunction_lazy` handles every other single-`Clause::Term`
+        // conjunction, so the fast path's `Term` arm is only reachable for a
+        // *pulsed* term -- docFreq <= 1, whose postings live in the term
+        // dictionary and have no `.doc` bytes for a lazy cursor to open. The
+        // `many` field is 400 such terms.
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let q = BooleanQuery::new().with_must([TermQuery::new("many", "term0123")]);
+        let mut boxed = ScoreVecCollector::default();
+        search_boolean_query_scored(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            None,
+            None,
+            None,
+            &q,
+            None,
+            &mut boxed,
+        )
+        .unwrap();
+        let mut direct = ScoreVecCollector::default();
+        search_term_query_scored(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            &TermQuery::new("many", "term0123"),
+            None,
+            &mut direct,
+        )
+        .unwrap();
+        assert_eq!(boxed.hits.len(), 1);
+        assert_eq!(boxed.hits[0].0, direct.hits[0].0);
+        assert_eq!(boxed.hits[0].1.to_bits(), direct.hits[0].1.to_bits());
+    }
+
+    // ---- `clause_scores`' wildcard-family and fuzzy arms -------------------
+    //
+    // Reached only when the clause is *not* alone in the query (otherwise the
+    // fast path above takes it), which is why nothing exercised them.
+
+    #[test]
+    fn the_wildcard_family_scores_a_flat_one_as_a_non_solo_boolean_clause() {
+        // `should = [term, prefix|wildcard|regexp]`: the disjunction's lazy path
+        // declines (not every clause is a `Clause::Term`), so this runs through
+        // `clause_scores`, whose wildcard-family arms all score a flat 1.0 --
+        // the port's stand-in for `ConstantScoreQuery`'s constant.
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        for clause in [
+            Clause::Prefix(PrefixQuery::new("big", "every")),
+            Clause::Wildcard(WildcardQuery::new("big", "e*e")),
+            Clause::Regexp(RegexpQuery::new("big", "ever.*")),
+        ] {
+            let q = BooleanQuery::new()
+                .with_should([Clause::Term(TermQuery::new("body", "cat")), clause.clone()]);
+            let mut all = ScoreVecCollector::default();
+            search_boolean_query_scored(
+                &fields,
+                doc_in.as_ref(),
+                None,
+                None,
+                None,
+                None,
+                &q,
+                None,
+                &mut all,
+            )
+            .unwrap();
+            // 300 `big` documents at 1.0 plus the two `body:cat` documents.
+            assert_eq!(all.hits.len(), 302, "{clause:?}");
+            assert_eq!(
+                all.hits.iter().filter(|h| h.1 == 1.0).count(),
+                300,
+                "{clause:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_fuzzy_clause_scores_through_blended_term_statistics_as_a_boolean_clause() {
+        // `clause_scores`' `Clause::Fuzzy` arm is the only caller of
+        // `fuzzy_doc_scores`, which -- unlike the flat-1.0 wildcard family --
+        // computes a real BM25 score per expanded term against the *blended*
+        // doc frequency (`FuzzyQuery`'s `BlendedTermQuery` behaviour) and
+        // weights it by that term's edit-distance boost.
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let q = BooleanQuery::new().with_should([
+            Clause::Term(TermQuery::new("body", "bird")),
+            Clause::Fuzzy(FuzzyQuery::new("body", "cat").with_max_edits(1)),
+        ]);
+        let mut all = ScoreVecCollector::default();
+        search_boolean_query_scored(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            None,
+            None,
+            None,
+            &q,
+            None,
+            &mut all,
+        )
+        .unwrap();
+        assert!(!all.hits.is_empty());
+        assert!(
+            all.hits.iter().any(|h| h.1 > 0.0 && h.1 != 1.0),
+            "a fuzzy clause must score, not contribute a flat constant: {:?}",
+            all.hits
+        );
+    }
+
+    #[test]
+    fn a_fuzzy_clause_with_a_missing_field_scores_nothing() {
+        // `fuzzy_doc_scores`' early return, and the only branch of it a
+        // caller can trip without a term-dictionary walk.
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let q = BooleanQuery::new().with_should([
+            Clause::Term(TermQuery::new("body", "cat")),
+            Clause::Fuzzy(FuzzyQuery::new("no_such_field", "cat")),
+        ]);
+        let mut all = ScoreVecCollector::default();
+        search_boolean_query_scored(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            None,
+            None,
+            None,
+            &q,
+            None,
+            &mut all,
+        )
+        .unwrap();
+        assert_eq!(all.hits.len(), 2, "only body:cat's documents");
+    }
+
+    // ---- block-max pruning in the two lazy paths --------------------------
+    //
+    // The other half of c6's coverage gap. Both lazy paths prune against the
+    // collector's bottom score, and neither pruning branch was reachable from
+    // the fixture's 5-document `body` field: the queue has to *fill* before a
+    // threshold exists at all. The `big` field (one term, 300 documents, term
+    // frequencies cycling 1..4) is the fixture's only field wide enough.
+
+    #[test]
+    fn the_lazy_conjunction_prunes_blocks_against_a_full_queue() {
+        // Two legs over the same 300-document term, so the conjunction is the
+        // whole postings list and the summed block-max bound is exactly twice
+        // one leg's. Once the top-2 queue holds two maximum-frequency
+        // documents, no later block can beat it and the leapfrog skips whole
+        // spans on impacts alone.
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let q = BooleanQuery::new().with_must([
+            TermQuery::new("big", "everywhere"),
+            TermQuery::new("big", "everywhere"),
+        ]);
+
+        let mut pruned = collector::TopDocsCollector::new(2);
+        search_boolean_query_scored(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            None,
+            None,
+            None,
+            &q,
+            None,
+            &mut pruned,
+        )
+        .unwrap();
+
+        // The same query with pruning forbidden (`ScoreMode::Complete`), as the
+        // reference: pruning may not change which documents come back on top.
+        let mut exhaustive = collector::TopDocsCollector::with_total_hits_threshold(2, u64::MAX);
+        search_boolean_query_scored(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            None,
+            None,
+            None,
+            &q,
+            None,
+            &mut exhaustive,
+        )
+        .unwrap();
+
+        assert_eq!(exhaustive.total_hits().value, 300);
+        assert_eq!(
+            pruned
+                .top_docs()
+                .iter()
+                .map(|h| h.score.to_bits())
+                .collect::<Vec<_>>(),
+            exhaustive
+                .top_docs()
+                .iter()
+                .map(|h| h.score.to_bits())
+                .collect::<Vec<_>>(),
+            "pruning changed the top-2 scores"
+        );
+        assert!(
+            pruned.total_hits().value < 300,
+            "no block was skipped: {} of 300 documents visited",
+            pruned.total_hits().value
+        );
+    }
+
+    #[test]
+    fn the_lazy_disjunction_prunes_blocks_against_a_full_queue() {
+        // Same idea one shape over: a two-clause union whose second clause is
+        // the fixture's 8,250-document `l1` term, so there are many blocks for
+        // the skip loop to walk forward over on impacts alone.
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let q = BooleanQuery::new().with_should([
+            TermQuery::new("big", "everywhere"),
+            TermQuery::new("l1", "l1term"),
+        ]);
+
+        let mut pruned = collector::TopDocsCollector::new(3);
+        search_boolean_query_scored(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            None,
+            None,
+            None,
+            &q,
+            None,
+            &mut pruned,
+        )
+        .unwrap();
+
+        let mut exhaustive = collector::TopDocsCollector::with_total_hits_threshold(3, u64::MAX);
+        search_boolean_query_scored(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            None,
+            None,
+            None,
+            &q,
+            None,
+            &mut exhaustive,
+        )
+        .unwrap();
+
+        assert_eq!(exhaustive.total_hits().value, 8550, "300 `big` + 8250 `l1`");
+        assert_eq!(
+            pruned
+                .top_docs()
+                .iter()
+                .map(|h| h.score.to_bits())
+                .collect::<Vec<_>>(),
+            exhaustive
+                .top_docs()
+                .iter()
+                .map(|h| h.score.to_bits())
+                .collect::<Vec<_>>(),
+            "pruning changed the top-3 scores"
+        );
+        assert!(
+            pruned.total_hits().value < 8550,
+            "no block was skipped: {} of 8550 documents visited",
+            pruned.total_hits().value
+        );
     }
 
     // `minimum_should_match` tests: cat={0,2}, dog={0,1}, bird={1,4} (see above).
@@ -5671,6 +7151,169 @@ mod tests {
 
     // `phrase_freq_exact` unit tests (task #29): pure counting logic against
     // hand-built position lists, no fixture needed.
+
+    #[test]
+    fn phrase_alignment_walk_handles_a_phrase_longer_than_the_inline_cursor_array() {
+        // `phrase_freq_exact_impl` keeps its cursors on the stack for up to
+        // `MAX_INLINE_PHRASE_TERMS` non-leading terms and spills to a `Vec`
+        // past that. Both sides of that branch must behave identically, and
+        // the spill side has no other caller in this crate's tests.
+        let n = MAX_INLINE_PHRASE_TERMS + 5;
+        // A phrase of `n + 1` terms that aligns exactly once, at p0 == 0.
+        let lists: Vec<Vec<i32>> = (0..=n).map(|i| vec![i as i32, 500 + i as i32]).collect();
+        let refs: Vec<&[i32]> = lists.iter().map(|v| v.as_slice()).collect();
+        assert!(phrase_matches_in_doc(&refs));
+        // Both the p0 == 0 and the p0 == 500 alignments are valid.
+        assert_eq!(phrase_freq_exact(&refs), 2);
+
+        // Break one position in the middle and it must stop matching.
+        let mut broken = lists.clone();
+        broken[n / 2] = vec![9999];
+        let broken_refs: Vec<&[i32]> = broken.iter().map(|v| v.as_slice()).collect();
+        assert!(!phrase_matches_in_doc(&broken_refs));
+        assert_eq!(phrase_freq_exact(&broken_refs), 0);
+    }
+
+    #[test]
+    fn phrase_alignment_walk_agrees_with_a_brute_force_check() {
+        // The merge walk's early exits (an exhausted cursor breaks out of the
+        // whole scan, a mismatch only skips this `p0`) are the parts most
+        // likely to be subtly wrong, and no fixture exercises them densely.
+        // Compare against an independent O(n^2) definition over many shapes.
+        fn brute(term_positions: &[&[i32]]) -> i32 {
+            let Some((first, rest)) = term_positions.split_first() else {
+                return 0;
+            };
+            let mut freq = 0;
+            for &p0 in first.iter() {
+                if rest
+                    .iter()
+                    .enumerate()
+                    .all(|(i, ps)| ps.contains(&(p0 + i as i32 + 1)))
+                {
+                    freq += 1;
+                }
+            }
+            freq
+        }
+
+        // A deterministic pseudo-random spread of positions, several widths.
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for terms in 1..=4usize {
+            for _ in 0..200 {
+                let lists: Vec<Vec<i32>> = (0..terms)
+                    .map(|_| {
+                        let mut v: Vec<i32> = (0i32..24).filter(|_| next() % 3 != 0).collect();
+                        v.dedup();
+                        v
+                    })
+                    .collect();
+                let refs: Vec<&[i32]> = lists.iter().map(|v| v.as_slice()).collect();
+                let expected = if lists.iter().any(|l| l.is_empty()) {
+                    0
+                } else {
+                    brute(&refs)
+                };
+                assert_eq!(phrase_freq_exact(&refs), expected, "{lists:?}");
+                assert_eq!(phrase_matches_in_doc(&refs), expected > 0, "{lists:?}");
+            }
+        }
+    }
+
+    // ---- `phrase_freq_sloppy` (`SloppyPhraseMatcher.sloppyWeight()` summed) ----
+
+    #[test]
+    fn sloppy_phrase_freq_at_slop_zero_equals_the_exact_count() {
+        // The defining agreement: with a zero move budget every match has
+        // `matchLength == 0`, so each weighs `1/(1+0) == 1` and the sum is
+        // exactly `phrase_freq_exact`'s count. Checked over several shapes,
+        // including a repeated-term phrase and a non-matching one.
+        let cases: [(Vec<Vec<i32>>, u32); 4] = [
+            (vec![vec![0, 5], vec![1, 6]], 2),
+            (vec![vec![0, 1, 2], vec![1, 2, 3]], 3),
+            (vec![vec![0, 4], vec![9]], 0),
+            (vec![vec![7], vec![3]], 0),
+        ];
+        for (positions, expected) in cases {
+            let refs: Vec<&[i32]> = positions.iter().map(|v| v.as_slice()).collect();
+            assert_eq!(phrase_freq_exact(&refs), expected as i32, "{positions:?}");
+            assert_eq!(
+                phrase_freq_sloppy(&refs, 0),
+                expected as f32,
+                "slop-0 sloppy freq must equal the exact count for {positions:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn sloppy_phrase_freq_weights_a_loose_match_below_a_tight_one() {
+        // `alpha`@0 with `beta`@1 is `matchLength == 0` -> weight 1.
+        let tight = phrase_freq_sloppy(&[&[0], &[1]], 3);
+        // `alpha`@0 with `beta`@3 is `matchLength == 2` -> weight 1/3, the
+        // exact case `fixtures/data/blocktree_index`'s doc 7 records against
+        // real Lucene (see `tests/bm25_scoring_fixtures.rs`).
+        let loose = phrase_freq_sloppy(&[&[0], &[3]], 3);
+        assert_eq!(tight, 1.0);
+        assert_eq!(loose, 1.0 / 3.0);
+        assert!(loose < tight);
+    }
+
+    #[test]
+    fn sloppy_phrase_freq_sums_every_starting_position() {
+        // Two starts: 0 (pairs with 1, matchLength 0) and 4 (pairs with 7,
+        // matchLength 2). Sum = 1 + 1/3.
+        let got = phrase_freq_sloppy(&[&[0, 4], &[1, 7]], 3);
+        assert_eq!(got, 1.0 + 1.0 / 3.0);
+    }
+
+    #[test]
+    fn sloppy_phrase_freq_skips_starts_over_the_slop_budget() {
+        // Start 0 needs 4 moves to reach `beta`@5, over a budget of 2; start 6
+        // reaches `beta`@7 with 0. Only the second contributes.
+        let got = phrase_freq_sloppy(&[&[0, 6], &[5, 7]], 2);
+        assert_eq!(got, 1.0);
+    }
+
+    #[test]
+    fn sloppy_phrase_freq_edge_cases_match_the_matchers_own_contract() {
+        // Empty phrase, an empty position list, and a single-term phrase --
+        // the same three edge cases `phrase_matches_in_doc_sloppy` documents.
+        assert_eq!(phrase_freq_sloppy(&[], 5), 0.0);
+        assert_eq!(phrase_freq_sloppy(&[&[1, 2], &[]], 5), 0.0);
+        assert_eq!(phrase_freq_sloppy(&[&[1, 2, 9]], 5), 3.0);
+        assert_eq!(phrase_freq_sloppy(&[&[]], 5), 0.0);
+    }
+
+    #[test]
+    fn sloppy_phrase_freq_is_nonzero_exactly_when_the_matcher_says_it_matches() {
+        // The frequency and the boolean matcher must never disagree about
+        // whether a document matches -- they are used together (one gates the
+        // unscored path, the other the scored one).
+        let shapes: [Vec<Vec<i32>>; 6] = [
+            vec![vec![0], vec![1]],
+            vec![vec![0], vec![3]],
+            vec![vec![0], vec![9]],
+            vec![vec![0, 5], vec![2, 6], vec![3, 20]],
+            vec![vec![4], vec![2]],
+            vec![vec![1, 2, 3], vec![2, 3, 4], vec![3, 4, 5]],
+        ];
+        for slop in 0..=4u32 {
+            for shape in &shapes {
+                let refs: Vec<&[i32]> = shape.iter().map(|v| v.as_slice()).collect();
+                assert_eq!(
+                    phrase_freq_sloppy(&refs, slop) > 0.0,
+                    phrase_matches_in_doc_sloppy(&refs, slop),
+                    "slop={slop} shape={shape:?}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn phrase_freq_exact_counts_one_match_when_phrase_occurs_once() {
@@ -7116,6 +8759,66 @@ mod tests {
         }
     }
 
+    /// `ScoreMode.isExhaustive()`'s whole purpose: a collector in
+    /// [`collector::ScoreMode::Complete`] promises an exact `totalHits`, so the
+    /// scorer must not skip a single block. Proven with the skip counter rather
+    /// than with the result -- the results are necessarily identical either
+    /// way, and it is exactly the kind of gate that can go dead without any
+    /// assertion about output noticing.
+    #[test]
+    fn an_exhaustive_score_mode_collector_disables_every_maxscore_block_skip() {
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+        let query = TermQuery::new("big", b"everywhere".as_slice());
+
+        test_only_maxscore_block_skip_counter::reset();
+        let mut pruning = TopDocsCollector::new(1);
+        search_term_query_scored_maxscore(&fields, Some(&doc_in), None, &query, None, &mut pruning)
+            .expect("maxscore search");
+        let pruning_skips = test_only_maxscore_block_skip_counter::count();
+        assert!(
+            pruning_skips > 0,
+            "the pruning baseline must actually skip, or this test proves nothing"
+        );
+        assert_eq!(pruning.score_mode(), collector::ScoreMode::TopScores);
+        assert_eq!(
+            pruning.total_hits().relation,
+            collector::TotalHitsRelation::GreaterThanOrEqualTo,
+            "a pruned search cannot claim an exact count"
+        );
+
+        test_only_maxscore_block_skip_counter::reset();
+        let mut exhaustive = TopDocsCollector::with_total_hits_threshold(1, u64::MAX);
+        assert!(exhaustive.score_mode().is_exhaustive());
+        search_term_query_scored_maxscore(
+            &fields,
+            Some(&doc_in),
+            None,
+            &query,
+            None,
+            &mut exhaustive,
+        )
+        .expect("maxscore search");
+        assert_eq!(
+            test_only_maxscore_block_skip_counter::count(),
+            0,
+            "no block may be skipped for an exhaustive collector"
+        );
+        assert_eq!(
+            exhaustive.total_hits().relation,
+            collector::TotalHitsRelation::EqualTo
+        );
+        assert_eq!(
+            exhaustive.total_hits().value,
+            300,
+            "the fixture's \"big\"/\"everywhere\" term has docFreq 300, all of them counted"
+        );
+        // And the top hit is the same either way -- pruning changed the work,
+        // not the answer.
+        assert_eq!(pruning.top_docs(), exhaustive.top_docs());
+    }
+
     #[test]
     fn maxscore_returns_immediately_for_unknown_field_or_term() {
         let (fields, doc) = open_fixture();
@@ -7565,6 +9268,139 @@ mod tests {
         }
     }
 
+    /// c12: `search_boolean_query_scored_maxscore` is now a delegate for
+    /// `search_boolean_query_scored`, so it must agree with the plain scored
+    /// entry point on *every* shape -- not only on the ones the deleted body
+    /// used to decline. The two shapes that most directly pinned the deleted
+    /// body's unreachability are in the matrix: a clause naming an absent
+    /// field and a clause naming an absent term. `try_disjunction_lazy`
+    /// *accepts* both (it drops the clause from the union and keeps going),
+    /// which is exactly why the deleted body -- which declined them -- could
+    /// never be reached for them either.
+    #[test]
+    fn boolean_maxscore_agrees_with_the_plain_scored_path_on_every_shape() {
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+
+        let shapes: Vec<(&str, BooleanQuery)> = vec![
+            (
+                "pure should, both terms present",
+                BooleanQuery::new().with_should([
+                    Clause::from(TermQuery::new("body", "cat")),
+                    Clause::from(TermQuery::new("body", "dog")),
+                ]),
+            ),
+            (
+                "a clause naming an absent field",
+                BooleanQuery::new().with_should([
+                    Clause::from(TermQuery::new("body", "cat")),
+                    Clause::from(TermQuery::new("no_such_field", "cat")),
+                ]),
+            ),
+            (
+                "a clause naming an absent term in a present field",
+                BooleanQuery::new().with_should([
+                    Clause::from(TermQuery::new("body", "cat")),
+                    Clause::from(TermQuery::new("body", "no_such_term")),
+                ]),
+            ),
+            (
+                "every clause absent",
+                BooleanQuery::new().with_should([
+                    Clause::from(TermQuery::new("body", "no_such_term")),
+                    Clause::from(TermQuery::new("no_such_field", "cat")),
+                ]),
+            ),
+            (
+                "a must clause (the disjunction gate declines)",
+                BooleanQuery::new()
+                    .with_must([Clause::from(TermQuery::new("body", "cat"))])
+                    .with_should([Clause::from(TermQuery::new("body", "dog"))]),
+            ),
+            (
+                "a filter clause (c11's fourth list)",
+                BooleanQuery::new()
+                    .with_should([Clause::from(TermQuery::new("body", "cat"))])
+                    .with_filter([Clause::from(TermQuery::new("body", "dog"))]),
+            ),
+            (
+                "a must_not clause",
+                BooleanQuery::new()
+                    .with_should([Clause::from(TermQuery::new("body", "cat"))])
+                    .with_must_not([Clause::from(TermQuery::new("body", "dog"))]),
+            ),
+            (
+                "a pulsed docFreq == 1 clause",
+                BooleanQuery::new().with_should([
+                    Clause::from(TermQuery::new("body", "cat")),
+                    Clause::from(TermQuery::new("id", "id2")),
+                ]),
+            ),
+            (
+                "a nested boolean clause",
+                BooleanQuery::new().with_should([
+                    Clause::from(TermQuery::new("body", "cat")),
+                    Clause::Boolean(Box::new(
+                        BooleanQuery::new()
+                            .with_should([Clause::from(TermQuery::new("body", "dog"))]),
+                    )),
+                ]),
+            ),
+            (
+                "a 300-document clause that spans real level-0 blocks",
+                BooleanQuery::new().with_should([
+                    Clause::from(TermQuery::new("big", b"everywhere".as_slice())),
+                    Clause::from(TermQuery::new("body", "cat")),
+                ]),
+            ),
+        ];
+
+        let mut any_hits = false;
+        for (name, query) in &shapes {
+            for top_n in [1usize, 3, 10, 50] {
+                let mut eager = TopDocsCollector::new(top_n);
+                search_boolean_query_scored(
+                    &fields,
+                    Some(&doc_in),
+                    None,
+                    None,
+                    None,
+                    None,
+                    query,
+                    None,
+                    &mut eager,
+                )
+                .unwrap();
+
+                let mut delegated = TopDocsCollector::new(top_n);
+                search_boolean_query_scored_maxscore(
+                    &fields,
+                    Some(&doc_in),
+                    None,
+                    None,
+                    None,
+                    None,
+                    query,
+                    None,
+                    &mut delegated,
+                )
+                .unwrap();
+
+                any_hits |= !eager.top_docs().is_empty();
+                assert_eq!(
+                    eager.top_docs(),
+                    delegated.top_docs(),
+                    "shape {name:?} at top_n={top_n} disagreed"
+                );
+            }
+        }
+        assert!(
+            any_hits,
+            "the matrix must actually produce hits or it proves nothing"
+        );
+    }
+
     #[test]
     fn search_term_query_scored_with_similarity_using_defaults_matches_hardcoded_path() {
         // Task #214 regression proof: Bm25Params::default() through the new
@@ -7627,7 +9463,7 @@ mod tests {
         )
         .unwrap();
 
-        let custom_params = similarity::Bm25Params { k1: 2.0, b: 0.5 };
+        let custom_params = similarity::Bm25Params::new(2.0, 0.5).expect("in range");
         let mut with_similarity = TopDocsCollector::new(10);
         search_term_query_scored_with_similarity(
             &fields,
@@ -7699,7 +9535,7 @@ mod tests {
             None,
             &TermQuery::new("no_such_field", "cat"),
             None,
-            similarity::Bm25Params { k1: 2.0, b: 0.5 },
+            similarity::Bm25Params::new(2.0, 0.5).expect("in range"),
             &mut collector,
         )
         .unwrap();
@@ -7717,7 +9553,7 @@ mod tests {
             None,
             &TermQuery::new("body", "no_such_term_at_all"),
             None,
-            similarity::Bm25Params { k1: 2.0, b: 0.5 },
+            similarity::Bm25Params::new(2.0, 0.5).expect("in range"),
             &mut collector,
         )
         .unwrap();

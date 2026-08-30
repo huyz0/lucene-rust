@@ -5,6 +5,11 @@
 //! (exercising the distinct-field-numbers array and multi-field-per-doc
 //! offsets); doc 2 has no term-vector field at all. Regenerate with
 //! fixtures/src/GenTermVectors.java.
+// Test-support code opts out of the arithmetic gate at the file boundary:
+// the gate exists for values read off disk in production decode paths, not
+// for a fixture builder's own index arithmetic. See
+// `docs/arithmetic-gate.md`.
+#![allow(clippy::arithmetic_side_effects)]
 
 use lucene_codecs::term_vectors;
 

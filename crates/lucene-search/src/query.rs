@@ -158,9 +158,12 @@ impl PrefixQuery {
 /// [`lucene_codecs::fuzzy::FuzzyMatch`] (the matcher this query delegates
 /// to) already operates byte-wise.
 ///
-/// **Scoring**: unscored/constant (flat `1.0` per match), same choice
-/// `WildcardQuery`/`PrefixQuery` make and for the same reason — see
-/// [`crate::clause_scores`]'s `Clause::Fuzzy` arm.
+/// **Scoring**: scored, unlike `WildcardQuery`/`PrefixQuery`/`RegexpQuery`.
+/// Real `FuzzyQuery`'s default rewrite method is
+/// `MultiTermQuery.TopTermsBlendedFreqScoringRewrite`, not a constant-score
+/// one: each expanded term carries a `FuzzyTermsEnum` boost derived from its
+/// edit distance, and the terms are scored against one *blended* document
+/// frequency. See `crate::fuzzy_doc_scores`.
 ///
 /// **`max_expansions` (task #221)**: real `FuzzyQuery`'s `maxExpansions`
 /// (`FuzzyQuery.defaultMaxExpansions = 50`) bounds how many matching terms
@@ -179,20 +182,20 @@ impl PrefixQuery {
 /// running the fuzzy-match predicate and allocating a result for every
 /// entry in the (already prefix-narrowed) range past the cap.
 ///
-/// **Selection policy when more than `max_expansions` terms match**: this
-/// port keeps the first `max_expansions` matching terms in **sorted
-/// term-dictionary order** (`fuzzy_intersect`'s natural iteration order,
-/// since `FieldTerms::entries` is stored sorted). This is a deliberate,
-/// disclosed scope reduction from real Lucene's default rewrite method,
-/// `TopTermsBlendedFreqScoringRewrite`, which instead keeps the
-/// highest-scoring/highest-docFreq terms via a priority queue over the *
-/// *whole** matching set. Replicating that scoring-based top-N selection
-/// would require scoring every match before truncating (defeating the
-/// early-exit this task targets) plus a `BooleanQuery`-of-scored-terms
-/// rewrite this port's unscored/constant multi-term-clause model (see this
-/// struct's "Scoring" note above) doesn't have; "first N in term-dictionary
-/// order" is simpler, deterministic, and honestly not the same selection
-/// real Lucene makes.
+/// **Selection policy when more than `max_expansions` terms match**: real
+/// Lucene's. `TopTermsRewrite.collect` keeps a size-`maxExpansions` priority
+/// queue ordered by the `FuzzyTermsEnum` boost, dropping the lexicographically
+/// later term on a tie, and `crate::fuzzy_expanded_terms` reproduces that
+/// ordering. (This port used to keep the first `max_expansions` terms in
+/// sorted term-dictionary order instead, which is close to the *opposite*
+/// selection: term order is uncorrelated with edit distance.)
+///
+/// **`max_edits` is not validated here.** Real `FuzzyQuery`'s constructor
+/// throws when `maxEdits > LevenshteinAutomata.MAXIMUM_SUPPORTED_DISTANCE`
+/// (2), because Lucene ships parametric automaton descriptions only for
+/// distances 1 and 2. This port's matcher is a DP with no such ceiling, so a
+/// larger value works and simply has no Lucene equivalent -- see
+/// [`lucene_codecs::fuzzy::MAXIMUM_SUPPORTED_DISTANCE`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FuzzyQuery {
     pub field: String,
@@ -663,6 +666,9 @@ pub enum Clause {
     /// of `query.terms` (for `query.field`), unscored (flat `1.0` per
     /// match); see [`TermInSetQuery`]'s doc comment.
     TermInSet(TermInSetQuery),
+    /// A leaf `MultiPhraseQuery` -- a phrase whose every position accepts a
+    /// *set* of alternative terms; see [`MultiPhraseQuery`]'s doc comment.
+    MultiPhrase(MultiPhraseQuery),
 }
 
 impl Clause {
@@ -789,6 +795,12 @@ impl From<MatchAllDocsQuery> for Clause {
     }
 }
 
+impl From<MultiPhraseQuery> for Clause {
+    fn from(query: MultiPhraseQuery) -> Self {
+        Clause::MultiPhrase(query)
+    }
+}
+
 impl From<MatchNoDocsQuery> for Clause {
     fn from(query: MatchNoDocsQuery) -> Self {
         Clause::MatchNoDocs(query)
@@ -801,30 +813,52 @@ impl From<TermInSetQuery> for Clause {
     }
 }
 
-/// `BooleanQuery`-equivalent (`org.apache.lucene.search.BooleanQuery`), pared down to
-/// this slice's scope: a flat list of [`Clause`]s (each a `TermQuery`, a
-/// `PhraseQuery`, or a nested `BooleanQuery`, recursively — see `Clause`'s doc
-/// comment) per `Occur`
-/// bucket (`MUST`, `SHOULD`, `MUST_NOT`) plus `minimumNumberShouldMatch` — no
-/// `FILTER` (a `FILTER` clause only differs from `MUST` by not contributing to
-/// scoring, and this slice has no separate `FILTER` concept yet, so it would be a
-/// distinction without a difference here).
+/// `BooleanQuery`-equivalent (`org.apache.lucene.search.BooleanQuery`): a flat list
+/// of [`Clause`]s (each a `TermQuery`, a `PhraseQuery`, or a nested
+/// `BooleanQuery`, recursively — see `Clause`'s doc comment) per `Occur` bucket,
+/// plus `minimumNumberShouldMatch`. All four of Java's
+/// [`BooleanClause.Occur`](https://lucene.apache.org/core/10_5_0/core/org/apache/lucene/search/BooleanClause.Occur.html)
+/// values are represented: `MUST` ([`Self::must`]), `FILTER` ([`Self::filter`]),
+/// `SHOULD` ([`Self::should`]) and `MUST_NOT` ([`Self::must_not`]).
 ///
-/// **Why three flat `Vec<Clause>` fields instead of real Lucene's single
+/// **Why four flat `Vec<Clause>` fields instead of real Lucene's single
 /// `Vec<(Occur, Query)>` clause list**: real `BooleanQuery` stores clauses in
-/// insertion order because `Occur` is per-clause and clause order matters for some
-/// scoring/explain paths. This port has no `explain()` and no clause-order-sensitive
-/// scoring, so grouping by `Occur` up front removes a dispatch step
-/// `search_boolean_query` would otherwise redo on every call (partition-by-`Occur`),
-/// with no loss of information this slice actually uses. If clause order or a
-/// separate `FILTER` occur land later, revisit — the `Vec<(Occur, Query)>` shape
-/// earns its keep once clause order or a fourth `Occur` matters.
+/// insertion order because `Occur` is per-clause, but it *also* immediately
+/// partitions them into a `Map<Occur, Collection<Query>>` (`clauseSets`) that
+/// every rewrite rule, `BooleanWeight.count` and `BooleanScorerSupplier` then
+/// read from. Grouping by `Occur` up front is that map, materialized once,
+/// removing a partition step the executor would otherwise redo on every call.
+/// The information lost is clause *interleaving* across buckets, which only
+/// `BooleanQuery.toString` and `BooleanWeight.explain`'s sub-order depend on;
+/// both are emitted here in Java's own `Occur` declaration order
+/// (`MUST`, `FILTER`, `SHOULD`, `MUST_NOT`) rather than insertion order.
 // Only `PartialEq`, not `Eq` -- see `Clause`'s derive-list note (this struct's
 // `Vec<Clause>` fields propagate the same `f32`-via-`DisjunctionMax` reason).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct BooleanQuery {
-    /// `Occur.MUST`: every doc must match every clause here (conjunction).
+    /// `Occur.MUST`: every doc must match every clause here (conjunction), and
+    /// every clause here contributes to the score.
     pub must: Vec<Clause>,
+    /// `Occur.FILTER`: "like `MUST` except that these clauses do not participate
+    /// in scoring" (`BooleanClause.Occur.FILTER`'s own javadoc). A doc must match
+    /// every clause here, exactly as for [`Self::must`], but a filter clause
+    /// contributes **zero** to the score and is never summed — real Lucene builds
+    /// its `Weight` with `ScoreMode.COMPLETE_NO_SCORES`, and
+    /// `BooleanScorerSupplier.req` puts it in `required` but not in
+    /// `requiredScoring`, so `ConjunctionScorer.score()` never calls it.
+    ///
+    /// Two consequences worth stating because they are easy to get wrong:
+    ///
+    /// - **A filter clause does not count toward [`Self::minimum_should_match`]**
+    ///   (nor does a `must_not` one) — `BooleanWeight.explain` increments
+    ///   `shouldMatchCount` only for `Occur.SHOULD`.
+    /// - **A query of only filter clauses matches, with score `0`.** It is not a
+    ///   "pure negative" query: `BooleanQuery.rewrite`'s pure-negative test is
+    ///   `clauses.size() == clauseSets.get(MUST_NOT).size()`, which a filter
+    ///   clause fails, and its single-clause optimization rewrites a lone filter
+    ///   to `BoostQuery(ConstantScoreQuery(q), 0)` — a match at score `0`, not a
+    ///   non-match.
+    pub filter: Vec<Clause>,
     /// `Occur.SHOULD`: interaction with `minimum_should_match` mirrors real
     /// `BooleanQuery`/`BooleanWeight` exactly (verified against
     /// `BooleanWeight.scorer`/`bulkScorer`/`explain`, not guessed — `should` clauses
@@ -852,6 +886,78 @@ pub struct BooleanQuery {
     pub minimum_should_match: usize,
 }
 
+/// Order-preserving exact-duplicate removal, keeping the first occurrence --
+/// the `HashSet` semantics `BooleanQuery`'s `clauseSets` gives `FILTER` and
+/// `MUST_NOT` clauses. A `Vec` scan rather than a hash set because [`Clause`]
+/// is only `PartialEq` (it carries `f32` tie-breakers, see `Clause`'s derive
+/// note) and clause lists are short.
+fn dedup_clauses(clauses: &mut Vec<Clause>) {
+    let mut seen: Vec<Clause> = Vec::with_capacity(clauses.len());
+    clauses.retain(|clause| {
+        if seen.contains(clause) {
+            false
+        } else {
+            seen.push(clause.clone());
+            true
+        }
+    });
+}
+
+/// Java's `Deduplicate <occur> clauses by summing up their boosts` block, for
+/// one bucket: unwrap each clause's `BoostQuery` chain multiplying the boosts,
+/// sum per distinct unwrapped clause, and rebuild **only** when that collapsed
+/// the count (Java's `if (map.size() != clauseSets.get(occur).size())`).
+/// Returns whether it rebuilt.
+///
+/// The boost arithmetic is Java's: the product and the sum are `double`
+/// (`double boost = 1; boost *= bq.getBoost();` then
+/// `getOrDefault(query, 0d) + boost`), narrowed to `f32` once at the end via
+/// `entry.getValue().floatValue()`. Summing in `f32` instead would round
+/// differently for three or more duplicates, which is a score difference, not
+/// a style one.
+///
+/// A `Vec` scan rather than a hash map, for the same reason
+/// [`dedup_clauses`] uses one: [`Clause`] is only `PartialEq` (it carries
+/// `f32` tie-breakers) and clause lists are bounded by `maxClauseCount`.
+fn dedup_by_boost_sum(clauses: &mut Vec<Clause>) -> bool {
+    let mut groups: Vec<(Clause, f64)> = Vec::with_capacity(clauses.len());
+    for clause in clauses.iter() {
+        let (inner, boost) = unwrap_boost_chain(clause);
+        match groups.iter_mut().find(|(q, _)| *q == inner) {
+            Some((_, summed)) => *summed += boost,
+            None => groups.push((inner, boost)),
+        }
+    }
+    if groups.len() == clauses.len() {
+        return false;
+    }
+    *clauses = groups
+        .into_iter()
+        .map(|(query, boost)| {
+            let boost = boost as f32;
+            if boost != 1.0 {
+                Clause::Boost(Box::new(BoostQuery::new(query, boost)))
+            } else {
+                query
+            }
+        })
+        .collect();
+    true
+}
+
+/// `while (query instanceof BoostQuery) { boost *= bq.getBoost(); query =
+/// bq.getQuery(); }` -- the innermost non-`BoostQuery` clause and the product
+/// of every boost wrapping it.
+fn unwrap_boost_chain(clause: &Clause) -> (Clause, f64) {
+    let mut boost = 1.0f64;
+    let mut current = clause;
+    while let Clause::Boost(b) = current {
+        boost *= b.boost as f64;
+        current = &b.inner;
+    }
+    (current.clone(), boost)
+}
+
 impl BooleanQuery {
     pub fn new() -> Self {
         Self::default()
@@ -865,12 +971,22 @@ impl BooleanQuery {
     /// before executing; existing callers that don't call it see zero change
     /// in behavior.
     ///
-    /// Rules implemented, precisely (each proven to change neither the
-    /// matched-doc set nor per-doc scores -- see
+    /// **What "semantics-preserving" does and does not claim here.** Every rule
+    /// below preserves the *matched-doc set* exactly. Per-doc **scores** are
+    /// preserved bit-for-bit by rules 1-5 and 8, which is what
     /// `crates/lucene-search/tests/boolean_query_fixtures.rs`'s
-    /// `rewrite_produces_identical_scored_results_*` tests, which run the same
-    /// query pre- and post-rewrite against a real fixture segment and assert
-    /// identical `search_boolean_query_scored` output):
+    /// `rewrite_produces_identical_scored_results_*` tests assert (same query,
+    /// pre- and post-rewrite, against a real fixture segment). Rules 6, 7 and 9
+    /// **reorder the clause list [`crate::clause_scores`] folds over**, and
+    /// `f32` addition is not associative, so they can move the last bit of a
+    /// score. `rewrite_flattening_and_inlining_preserve_scores_bit_for_bit`
+    /// (same file) pins the fixture's actual behaviour rather than asserting a
+    /// property that does not hold in general; a caller that needs
+    /// bit-stability across a rewrite should not rewrite. Java has exactly the
+    /// same property and the same reason -- `BooleanScorer` sums in clause
+    /// order too.
+    ///
+    /// Rules implemented, precisely:
     ///
     /// 1. **Single-clause unwrap.** A query with exactly one clause total,
     ///    no `must_not`, collapses to that one (already-recursively-rewritten)
@@ -892,25 +1008,35 @@ impl BooleanQuery {
     ///      greater than `1` is excluded because it can never be satisfied by a
     ///      single clause.)
     ///
-    ///    A **pure `must_not`-only** query (or an empty query) is *not*
-    ///    collapsed to anything positive: real `BooleanQuery.rewrite()`
-    ///    treats both as `MatchNoDocsQuery`
-    ///    ([`crate::matched_boolean_docs`]'s doc comment; also task #60's
-    ///    confirmed finding), and this port's executor already produces that
-    ///    result with no rewrite needed -- see rule 2.
+    ///    A **pure `must_not`-only** query (or an empty query) is not
+    ///    collapsed to anything positive -- it collapses to
+    ///    `MatchNoDocsQuery`; see rule 2.
     ///
-    /// 2. **Zero clauses / `must_not`-only -> matches nothing.** This port has
-    ///    no separate `MatchNoDocsQuery`-equivalent `Clause` variant to
-    ///    rewrite *to* -- [`crate::matched_boolean_docs`] already treats
-    ///    "`must` and `should` both empty" (including the `must_not`-only and
-    ///    the fully-empty case) as "matches nothing" directly, with no
-    ///    rewrite required to get that behavior. This rule is therefore a
-    ///    **no-op in code** (this function leaves such a `BooleanQuery`
-    ///    structurally unchanged, wrapped back in `Clause::Boolean`) --
-    ///    documented and tested (see `boolean_query_default_is_all_empty_clause_lists`-
-    ///    adjacent rewrite tests below and
-    ///    `empty_boolean_query_matches_nothing`/`pure_must_not_query_matches_nothing`
-    ///    in `boolean_query_fixtures.rs`) rather than silently assumed.
+    /// 2. **Zero clauses / `must_not`-only -> `MatchNoDocsQuery`.** Java's
+    ///    first two rules, with its two distinct reason strings:
+    ///    `MatchNoDocsQuery("empty BooleanQuery")` when there were no clauses
+    ///    at all, and `MatchNoDocsQuery("pure negative BooleanQuery")` when
+    ///    every clause was `MUST_NOT`.
+    ///
+    ///    This used to be a **no-op in code**, on the grounds that the port had
+    ///    "no separate `MatchNoDocsQuery`-equivalent `Clause` variant to
+    ///    rewrite *to*" and that [`crate::matched_boolean_docs`] already
+    ///    treated "`must` and `should` both empty" as matching nothing. The
+    ///    first half of that stopped being true when [`Clause::MatchNoDocs`]
+    ///    was added, and the b12 sweep's rules 5, 8 and 9 all `return
+    ///    Clause::MatchNoDocs(..)` -- so the justification no longer held and
+    ///    the rule is now implemented. The observable matching behaviour is
+    ///    unchanged (both forms match nothing); what changes is that
+    ///    `rewrite()` now *reports* it, with Java's reason string, instead of
+    ///    handing back a query that looks satisfiable.
+    ///
+    ///    Java tests this before recursing and catches the post-recursion case
+    ///    on `IndexSearcher.rewrite`'s next pass, since that loops to a
+    ///    fixpoint. This port's single bottom-up pass tests it after rule 5's
+    ///    `MatchNoDocsQuery` drops instead, which reaches the same fixpoint in
+    ///    one go: a query whose only `SHOULD` clause rewrote to
+    ///    `MatchNoDocsQuery` *is* a pure negative query once that clause is
+    ///    gone.
     ///
     /// 3. **Recursive.** Every clause in `must`/`should`/`must_not` is
     ///    rewritten (via [`Clause::rewrite`]) *before* this function checks
@@ -934,73 +1060,452 @@ impl BooleanQuery {
     ///    "excluded if it matches at least one" test when repeated, so
     ///    removing duplicates changes neither matched docs nor scores.
     ///
-    /// **Deliberately NOT implemented: `must`/`should` duplicate
-    /// deduplication.** This is *not* symmetric with rule 4 above, and the
-    /// asymmetry is the point, not an oversight:
+    /// 10. **`FILTER` clauses that are also `MUST`, or that match every
+    ///     document, are dropped.** Java: `if (filters.size() > 1 ||
+    ///     clauseSets.get(MUST).isEmpty() == false) modified =
+    ///     filters.remove(MatchAllDocsQuery.INSTANCE); modified |=
+    ///     filters.removeAll(clauseSets.get(Occur.MUST));`. The `MUST`
+    ///     duplicate always goes -- the conjunction already requires it and
+    ///     the filter copy adds no score. The `MatchAllDocsQuery` half is
+    ///     guarded, because dropping the *only* filter of a filter-only query
+    ///     would turn "every document, scored 0" into "no positive clauses",
+    ///     i.e. a `MatchNoDocsQuery`.
     ///
-    /// - Real `BooleanQuery.rewrite()` *does* fold duplicate `MUST`/`SHOULD`
-    ///   clauses (see `BooleanQuery.java`'s `deduplicateClauses`), but it does
-    ///   so by replacing the repeated clause with **one** copy carrying a
-    ///   recombined boost computed from `IndexSearcher.getSimilarity()
-    ///   .computeQueryTermWeight(count)` for the common unweighted-duplicate
-    ///   case ("a a a"), falling back to a linear boost sum only when the
-    ///   query already carries explicit per-clause boosts. That
-    ///   `computeQueryTermWeight` call is `Similarity`-specific (BM25's
-    ///   implementation does *not* reduce to "sum each clause's score
-    ///   `count` times" -- it's a deliberately different combined weight
-    ///   meant to approximate how repeating a term would score if the
-    ///   analyzer had produced one token with `count`-times higher term
-    ///   frequency instead of `count` separate clauses).
-    /// - This port's [`Self::rewrite`] is a pure structural transform with
-    ///   **no `IndexSearcher`/`Similarity` in scope** -- it runs before any
-    ///   index is opened. There is no way to call an equivalent of
-    ///   `computeQueryTermWeight` here, so there is no way to replicate what
-    ///   real Lucene *actually* does for `MUST`/`SHOULD` dedup.
-    /// - A naive alternative (drop the duplicate outright, or sum linear
-    ///   boosts unconditionally) is *not* an approximation of real Lucene's
-    ///   behavior, it's a *different* rewrite that happens to also be called
-    ///   "dedup" -- it would silently change scores (confirmed against this
-    ///   port's own executor by task #60: [`crate::clause_scores`] sums
-    ///   every `must`/`should` clause's own per-doc score, so duplicates
-    ///   currently double-score exactly as real Lucene's *pre-rewrite*
-    ///   `BooleanWeight` would too) in a way that does not match what real
-    ///   `BooleanQuery.rewrite()` would have produced, which is a strictly
-    ///   worse outcome than leaving duplicates alone. Implementing it would
-    ///   therefore be a correctness regression dressed up as a feature, not
-    ///   a shortcut. This rule is skipped rather than implemented
-    ///   incorrectly; revisit only if a future task threads a `Similarity`
-    ///   (or equivalent term-weight function) into the rewrite path, making
-    ///   a faithful reproduction of `computeQueryTermWeight`-based
-    ///   combination possible.
+    /// 11. **A clause that is both `FILTER` and `SHOULD` becomes `MUST`.**
+    ///     Required *and* scored is exactly what `MUST` means. The `FILTER`
+    ///     copy is dropped and `minimumNumberShouldMatch` is decremented
+    ///     (floored at zero), because the promoted clause no longer counts
+    ///     toward the threshold.
+    ///
+    /// 12. **A single `MUST` `MatchAllDocsQuery` alongside filters becomes a
+    ///     `ConstantScoreQuery`.** With one scoring clause that matches
+    ///     everything, the score is a constant, so the required half collapses
+    ///     to `ConstantScoreQuery(BooleanQuery(FILTER.., MUST_NOT..))` with the
+    ///     `MatchAllDocsQuery`'s boost carried on top, and the `SHOULD` clauses
+    ///     are re-attached around it.
+    ///
+    /// 13. **A lone `FILTER` clause becomes `BoostQuery(ConstantScoreQuery(q),
+    ///     0)`** -- Java's single-clause optimization, `case FILTER: // no
+    ///     scoring clauses, so return a score of 0`. This is the one rule that
+    ///     changes the query's *type*, because no `BooleanQuery` shape means
+    ///     "match these, score nothing".
+    ///
+    /// Rules 4, 5, 7, 8, 10, 11, 12 and 13 all read the `filter` bucket; rules
+    /// 4/5/7/8 treat it exactly as they treat `must` (`BooleanClause`'s
+    /// `isRequired()` is `MUST || FILTER`), except that rule 7's inlining
+    /// re-labels an inner `MUST` as a parent `FILTER` when the outer clause was
+    /// a filter.
+    ///
+    /// **`must`/`should` duplicate deduplication (Java's two "Deduplicate …
+    /// clauses by summing up their boosts" blocks).** Implemented, and worth a
+    /// note because an earlier version of this file declined to implement it
+    /// and justified the gap by citing
+    /// `Similarity.computeQueryTermWeight` — **which does not exist in Lucene
+    /// 10.5.0**, the version this port targets. It is a later addition on
+    /// Lucene `main`; the `c18-version-audit` sweep batch caught the citation.
+    ///
+    /// 10.5.0's rule is a pure structural transform with no `IndexSearcher`
+    /// and no `Similarity` in sight, so nothing about it is out of reach here:
+    /// unwrap each clause's `BoostQuery` chain multiplying the boosts, sum the
+    /// boosts per distinct unwrapped query, and — only when that collapsed the
+    /// count — rebuild the bucket with one clause per distinct query, wrapped
+    /// in a `BoostQuery` iff its summed boost is not `1`. `SHOULD` is gated on
+    /// `minimumNumberShouldMatch <= 1` (a threshold of 2 or more counts
+    /// *clauses*, so collapsing two into one would change what the query
+    /// means); `MUST` is ungated.
+    ///
+    /// What this changes is query **shape**, not scores: BM25 is linear in the
+    /// clause sum, so `a a` scores the same as `a^2` — see
+    /// [`crate::clause_scores`], which sums every `must`/`should` clause's own
+    /// per-doc score. What does change is the clause count (and so
+    /// `maxClauseCount` pressure and the scorer count) and the explain tree,
+    /// which is why it is worth doing rather than worth skipping.
+    ///
+    /// Two deliberate divergences, both stated rather than silent:
+    ///
+    /// - **Clause order is this port's, and it is deterministic.** Java
+    ///   rebuilds from a `HashMap.entrySet()`, whose iteration order is
+    ///   unspecified; this port keeps first-seen order. A stable order is a
+    ///   strict improvement for a rewrite whose output feeds `explain`.
+    /// - **Java returns immediately after a rebuild** and reaches the rest of
+    ///   `rewrite` on `IndexSearcher.rewrite`'s next pass (it loops to a
+    ///   fixpoint). This port is a single bottom-up pass, so a rebuild here
+    ///   re-enters [`Self::rewrite`] on the rebuilt query instead — which is
+    ///   the same fixpoint, and is needed rather than cosmetic: summing
+    ///   `a^0.5 a^0.5` back to a bare `a` can make a later rule
+    ///   (e.g. rule 10's "drop a FILTER that is also a MUST") newly apply.
+    ///   Termination is bounded because a rebuild strictly reduces the bucket's
+    ///   clause count.
     pub fn rewrite(self) -> Clause {
-        let must: Vec<Clause> = self.must.into_iter().map(Clause::rewrite).collect();
-        let should: Vec<Clause> = self.should.into_iter().map(Clause::rewrite).collect();
+        // Java distinguishes "no clauses at all" from "only prohibited
+        // clauses" by their reason strings, and only the original clause lists
+        // can tell them apart -- after the `MatchNoDocsQuery` drops below, a
+        // query that *had* `SHOULD` clauses can look identical to one that
+        // never did.
+        let originally_empty = self.must.is_empty()
+            && self.filter.is_empty()
+            && self.should.is_empty()
+            && self.must_not.is_empty();
+        let mut must: Vec<Clause> = self.must.into_iter().map(Clause::rewrite).collect();
+        let mut filter: Vec<Clause> = self.filter.into_iter().map(Clause::rewrite).collect();
+        let mut should: Vec<Clause> = self.should.into_iter().map(Clause::rewrite).collect();
         let mut must_not: Vec<Clause> = self.must_not.into_iter().map(Clause::rewrite).collect();
-        // Rule 4: drop exact duplicate `must_not` clauses (order-preserving,
-        // keeps the first occurrence) -- see the doc comment above for why
-        // this is safe unlike `must`/`should` dedup.
-        let mut seen: Vec<Clause> = Vec::with_capacity(must_not.len());
-        must_not.retain(|clause| {
-            if seen.contains(clause) {
-                false
-            } else {
-                seen.push(clause.clone());
-                true
-            }
-        });
-        let minimum_should_match = self.minimum_should_match;
+        let mut minimum_should_match = self.minimum_should_match;
 
-        if must_not.is_empty() && minimum_should_match == 0 && must.len() == 1 && should.is_empty()
+        // Rule 5: a `MatchNoDocsQuery` clause. Real `BooleanQuery.rewrite()`
+        // returns the `MatchNoDocsQuery` itself the moment a `MUST`/`FILTER`
+        // clause rewrites to one, and silently drops a `SHOULD`/`MUST_NOT` one
+        // ("the clause can be safely ignored").
+        if let Some(no_match) = must.iter().chain(filter.iter()).find_map(|c| match c {
+            Clause::MatchNoDocs(q) => Some(q.clone()),
+            _ => None,
+        }) {
+            return Clause::MatchNoDocs(no_match);
+        }
+        should.retain(|c| !matches!(c, Clause::MatchNoDocs(_)));
+        must_not.retain(|c| !matches!(c, Clause::MatchNoDocs(_)));
+
+        // Rules 1 and 2, Java's first two: `if (clauses.size() == 0) return new
+        // MatchNoDocsQuery("empty BooleanQuery");` and `if (clauses.size() ==
+        // clauseSets.get(Occur.MUST_NOT).size()) return new
+        // MatchNoDocsQuery("pure negative BooleanQuery");`.
+        //
+        // Java tests these *before* recursing and reaches the post-recursion
+        // case on `IndexSearcher.rewrite`'s next pass (it loops to a fixpoint).
+        // This port's `rewrite` is a single bottom-up pass, so the test runs
+        // after the drops above instead, which reaches Java's fixpoint in one
+        // go: a query whose only `SHOULD` clause rewrote to `MatchNoDocsQuery`
+        // *is* a pure negative query by the time that clause is gone.
+        //
+        // `filter` counts as a positive clause here, exactly as it does in
+        // Java: the pure-negative test is `clauses.size() ==
+        // clauseSets.get(MUST_NOT).size()`, which a `FILTER` clause fails. A
+        // filter-only query matches (at score 0); it is not "pure negative".
+        if must.is_empty() && filter.is_empty() && should.is_empty() {
+            return Clause::MatchNoDocs(MatchNoDocsQuery::new().with_reason(if originally_empty {
+                "empty BooleanQuery"
+            } else {
+                "pure negative BooleanQuery"
+            }));
+        }
+
+        // Rule 6: flatten a nested *pure disjunction* out of `should`.
+        // `BooleanQuery.rewrite()`: "Flatten nested disjunctions, this is
+        // important for block-max WAND to perform well". Java's
+        // `isPureDisjunction()` is `every clause is SHOULD &&
+        // minimumNumberShouldMatch <= 1`, and the outer query must itself have
+        // `minimumNumberShouldMatch <= 1` or the count would change meaning.
+        if minimum_should_match <= 1 {
+            let mut flattened: Vec<Clause> = Vec::with_capacity(should.len());
+            for clause in should {
+                match clause {
+                    Clause::Boolean(inner)
+                        if inner.must.is_empty()
+                            && inner.must_not.is_empty()
+                            && !inner.should.is_empty()
+                            && inner.minimum_should_match <= 1 =>
+                    {
+                        flattened.extend(inner.should);
+                    }
+                    other => flattened.push(other),
+                }
+            }
+            should = flattened;
+        }
+
+        // Rule 7: inline a required clause that is itself a `BooleanQuery` with
+        // no `should` clauses -- `BooleanQuery.rewrite()`'s "Inline required /
+        // prohibited clauses. This helps run filtered conjunctive queries more
+        // efficiently by providing all clauses to the block-max AND scorer."
+        // The inner query's `must` clauses are also required of the parent, and
+        // its `must_not` clauses are also prohibited to the parent, so both
+        // lift verbatim. Guarded on `inner.should.is_empty() &&
+        // inner.minimum_should_match == 0`, exactly Java's guard: an inner
+        // `should` list would lose its "at least one" floor when merged into a
+        // parent that has its own.
+        //
+        // Java asserts here that the inner query is not a pure negation,
+        // "because the inner BooleanQuery would have first rewritten to a
+        // MatchNoDocsQuery if it only had prohibited clauses". That now holds
+        // in this port too: the recursion above rewrote the inner query, rules
+        // 1/2 turned a pure-negative or empty one into `Clause::MatchNoDocs`,
+        // and rule 5 turned a `MatchNoDocs` in `must` into the whole query's
+        // result. So an inner `BooleanQuery` reaching this arm always has a
+        // non-empty `must`, and the extra `!inner.must.is_empty()` guard this
+        // rule carried before rules 1/2 existed is now provably dead --
+        // removed rather than left as a comforting no-op.
+        //
+        // Java inlines out of every *required* clause, which is `MUST` **or**
+        // `FILTER` (`BooleanClause.isRequired()`), and re-labels while lifting:
+        // an inner `MUST` under an outer `FILTER` becomes a parent `FILTER`,
+        // because the outer clause's whole subtree is non-scoring. Inner
+        // `FILTER`/`MUST_NOT` clauses keep their occur under either outer occur.
+        {
+            let mut inlined_must: Vec<Clause> = Vec::with_capacity(must.len());
+            let mut inlined_filter: Vec<Clause> = Vec::with_capacity(filter.len());
+            let mut lifted_must_not: Vec<Clause> = Vec::new();
+            for clause in must {
+                match clause {
+                    Clause::Boolean(inner)
+                        if inner.should.is_empty() && inner.minimum_should_match == 0 =>
+                    {
+                        inlined_must.extend(inner.must);
+                        inlined_filter.extend(inner.filter);
+                        lifted_must_not.extend(inner.must_not);
+                    }
+                    other => inlined_must.push(other),
+                }
+            }
+            for clause in filter {
+                match clause {
+                    Clause::Boolean(inner)
+                        if inner.should.is_empty() && inner.minimum_should_match == 0 =>
+                    {
+                        // `assert outerClause.occur() == Occur.FILTER &&
+                        // innerOccur == Occur.MUST; // ... change the occur of
+                        // the inner query from MUST to FILTER.`
+                        inlined_filter.extend(inner.must);
+                        inlined_filter.extend(inner.filter);
+                        lifted_must_not.extend(inner.must_not);
+                    }
+                    other => inlined_filter.push(other),
+                }
+            }
+            must = inlined_must;
+            filter = inlined_filter;
+            must_not.extend(lifted_must_not);
+        }
+
+        // Rule 4: drop exact duplicate `filter` and `must_not` clauses
+        // (order-preserving, keeps the first occurrence) -- Java's "remove
+        // duplicate FILTER and MUST_NOT clauses", which it gets for free
+        // because `clauseSets` stores those two occurs in a `HashSet` while
+        // `MUST`/`SHOULD` go into a `Multiset`. See the doc comment above for
+        // why the same is *not* safe for `must`/`should`. Runs after the
+        // inlining above so a duplicate lifted out of a nested query is caught
+        // too.
+        dedup_clauses(&mut filter);
+        dedup_clauses(&mut must_not);
+
+        // Rule 8: "Check whether some clauses are both required and excluded"
+        // -- `MatchNoDocsQuery("FILTER or MUST clause also in MUST_NOT")`, and
+        // `MatchNoDocsQuery("MUST_NOT clause is MatchAllDocsQuery")`. Java's
+        // predicate is `clauseSets.get(MUST)::contains` **or**
+        // `clauseSets.get(FILTER)::contains` -- a clause required only as a
+        // filter is just as excluded by a matching `MUST_NOT`.
+        if must_not
+            .iter()
+            .any(|c| must.contains(c) || filter.contains(c))
+        {
+            return Clause::MatchNoDocs(
+                MatchNoDocsQuery::new().with_reason("FILTER or MUST clause also in MUST_NOT"),
+            );
+        }
+        if must_not
+            .iter()
+            .any(|c| matches!(c, Clause::MatchAllDocs(_)))
+        {
+            return Clause::MatchNoDocs(
+                MatchNoDocsQuery::new().with_reason("MUST_NOT clause is MatchAllDocsQuery"),
+            );
+        }
+
+        // Rule 10: "remove FILTER clauses that are also MUST clauses or that
+        // match all documents". Java, verbatim:
+        //
+        //     if (filters.size() > 1 || clauseSets.get(MUST).isEmpty() == false) {
+        //       modified = filters.remove(MatchAllDocsQuery.INSTANCE);
+        //     }
+        //     modified |= filters.removeAll(clauseSets.get(Occur.MUST));
+        //
+        // The guard on the `MatchAllDocsQuery` half is the subtle part and is
+        // not an optimization detail: dropping the *only* filter of a
+        // filter-only query would turn "every document, scored 0" into "no
+        // positive clauses at all", i.e. a `MatchNoDocsQuery`. A
+        // `MatchAllDocsQuery` filter is redundant only when something else
+        // still constrains the match set.
+        //
+        // A `MUST` duplicate, by contrast, always goes: the conjunction
+        // already requires it, and the filter copy adds no score, so it is
+        // pure work. (This is the direction that matters -- the `MUST` copy is
+        // kept, not the `FILTER` one, because the `MUST` copy is the scoring
+        // one.)
+        if !filter.is_empty() {
+            if filter.len() > 1 || !must.is_empty() {
+                filter.retain(|c| !matches!(c, Clause::MatchAllDocs(_)));
+            }
+            filter.retain(|c| !must.contains(c));
+        }
+
+        // Rule 11: "convert FILTER clauses that are also SHOULD clauses to MUST
+        // clauses". A clause that is both required-but-unscored and
+        // optional-and-scored is exactly a `MUST` clause: required, and
+        // scored. Java drops the `FILTER` copy, promotes the `SHOULD` copy to
+        // `MUST`, and decrements `minimumNumberShouldMatch` (floored at zero)
+        // because that `SHOULD` no longer counts toward the threshold.
+        if !should.is_empty() && !filter.is_empty() {
+            let promoted: Vec<Clause> = should
+                .iter()
+                .filter(|c| filter.contains(c))
+                .cloned()
+                .collect();
+            if !promoted.is_empty() {
+                should.retain(|c| !filter.contains(c));
+                filter.retain(|c| !promoted.contains(c));
+                minimum_should_match = minimum_should_match.saturating_sub(promoted.len());
+                must.extend(promoted);
+            }
+        }
+
+        // Java's two `Deduplicate <occur> clauses by summing up their
+        // boosts` blocks, in Java's own order (SHOULD then MUST, both after
+        // rule 11 and before rule 12). See this method's doc comment for the
+        // gating, the ordering divergence and why a rebuild re-enters
+        // `rewrite` rather than falling through.
+        let mut deduplicated = false;
+        if !should.is_empty() && minimum_should_match <= 1 {
+            deduplicated |= dedup_by_boost_sum(&mut should);
+        }
+        if !must.is_empty() {
+            deduplicated |= dedup_by_boost_sum(&mut must);
+        }
+        if deduplicated {
+            return BooleanQuery {
+                must,
+                filter,
+                should,
+                must_not,
+                minimum_should_match,
+            }
+            .rewrite();
+        }
+
+        // Rule 12: "Rewrite queries whose single scoring clause is a MUST
+        // clause on a MatchAllDocsQuery to a ConstantScoreQuery". With exactly
+        // one `MUST`, and it matches everything, the conjunction's score is a
+        // constant -- so the whole required half becomes a
+        // `ConstantScoreQuery` over the filters and prohibitions, and the
+        // `SHOULD` clauses are re-attached around it. A `BoostQuery` wrapper on
+        // the `MatchAllDocsQuery` carries its boost onto the constant.
+        if must.len() == 1 && !filter.is_empty() {
+            let (inner_must, boost) = match &must[0] {
+                Clause::Boost(b) => (b.inner.as_ref(), b.boost),
+                other => (other, 1.0f32),
+            };
+            if matches!(inner_must, Clause::MatchAllDocs(_)) {
+                let required = Clause::Boolean(Box::new(BooleanQuery {
+                    must: Vec::new(),
+                    filter,
+                    should: Vec::new(),
+                    must_not,
+                    minimum_should_match: 0,
+                }));
+                let mut rewritten = Clause::ConstantScore(Box::new(ConstantScoreQuery::new(
+                    required,
+                    // `ConstantScoreQuery`'s own score is its weight's boost,
+                    // which is `1` here; the `BoostQuery` below applies the
+                    // `MatchAllDocsQuery`'s boost on top, exactly as Java's
+                    // `new BoostQuery(new ConstantScoreQuery(rewritten), boost)`
+                    // does.
+                    1.0,
+                )));
+                if boost != 1.0 {
+                    rewritten = Clause::Boost(Box::new(BoostQuery::new(rewritten, boost)));
+                }
+                // Java re-attaches the `SHOULD` clauses around the constant and
+                // returns that `BooleanQuery`; when there are none, its next
+                // `IndexSearcher.rewrite` pass unwraps the resulting
+                // single-`MUST` query. This port is a single bottom-up pass, so
+                // it takes the fixpoint directly.
+                if should.is_empty() {
+                    return rewritten;
+                }
+                return Clause::Boolean(Box::new(BooleanQuery {
+                    must: vec![rewritten],
+                    filter: Vec::new(),
+                    should,
+                    must_not: Vec::new(),
+                    minimum_should_match,
+                }));
+            }
+        }
+
+        // Rule 9: `should.len()` against `minimum_should_match`. Java runs both
+        // halves of this *after* flattening, for the reason its own comment
+        // gives ("this can only be processed after nested clauses have been
+        // flattened"), which is why rule 6 above comes first.
+        if should.len() < minimum_should_match {
+            return Clause::MatchNoDocs(
+                MatchNoDocsQuery::new()
+                    .with_reason("SHOULD clause count less than minimumNumberShouldMatch"),
+            );
+        }
+        if !should.is_empty() && should.len() == minimum_should_match {
+            // Every `should` clause is required, which is what `MUST` means --
+            // and `clause_scores` sums `must` and `should` identically, so the
+            // scores are unchanged too.
+            must.append(&mut should);
+            minimum_should_match = 0;
+            // Java returns `builder.build()` here and lets
+            // `IndexSearcher.rewrite` loop; re-entering is that loop, and it
+            // is load-bearing rather than tidy: this promotion runs *after*
+            // the two dedup blocks, and the clauses it moves into `must` were
+            // exempt from SHOULD dedup precisely because
+            // `minimumNumberShouldMatch > 1` -- which is no longer true of
+            // them. `+cat +cat` must still collapse to `cat^2`. Terminates
+            // because `should` is now empty and the threshold is zero, so this
+            // arm cannot fire again.
+            return BooleanQuery {
+                must,
+                filter,
+                should,
+                must_not,
+                minimum_should_match,
+            }
+            .rewrite();
+        }
+
+        // Rule 1, the single-clause unwrap. Java runs this *before* recursing
+        // (`if (clauses.size() == 1)`), which is why every arm here also
+        // requires the other three buckets to be empty -- "one clause" means
+        // one clause in the whole query, not one in its bucket.
+        if must_not.is_empty()
+            && filter.is_empty()
+            && minimum_should_match == 0
+            && must.len() == 1
+            && should.is_empty()
         {
             return must.into_iter().next().expect("len checked above");
         }
-        if must_not.is_empty() && minimum_should_match <= 1 && should.len() == 1 && must.is_empty()
+        if must_not.is_empty()
+            && filter.is_empty()
+            && minimum_should_match <= 1
+            && should.len() == 1
+            && must.is_empty()
         {
             return should.into_iter().next().expect("len checked above");
+        }
+        // Java: `case FILTER: // no scoring clauses, so return a score of 0
+        // return new BoostQuery(new ConstantScoreQuery(query), 0);`. A lone
+        // filter clause matches its documents at score `0` -- the one place
+        // where a rewrite changes the query's *type*, because there is no
+        // `BooleanQuery` shape that means "match these, score nothing".
+        if must_not.is_empty()
+            && must.is_empty()
+            && should.is_empty()
+            && minimum_should_match == 0
+            && filter.len() == 1
+        {
+            let only = filter.into_iter().next().expect("len checked above");
+            return Clause::Boost(Box::new(BoostQuery::new(
+                Clause::ConstantScore(Box::new(ConstantScoreQuery::new(only, 1.0))),
+                0.0,
+            )));
         }
 
         Clause::Boolean(Box::new(BooleanQuery {
             must,
+            filter,
             should,
             must_not,
             minimum_should_match,
@@ -1014,6 +1519,14 @@ impl BooleanQuery {
     /// also works for a `BooleanQuery` clause.
     pub fn with_must(mut self, clauses: impl IntoIterator<Item = impl Into<Clause>>) -> Self {
         self.must.extend(clauses.into_iter().map(Into::into));
+        self
+    }
+
+    /// `BooleanQuery.Builder.add(query, Occur.FILTER)`: required for matching,
+    /// contributing nothing to the score. See [`Self::filter`] for the exact
+    /// semantics and [`Self::with_must`] for the accepted clause shapes.
+    pub fn with_filter(mut self, clauses: impl IntoIterator<Item = impl Into<Clause>>) -> Self {
+        self.filter.extend(clauses.into_iter().map(Into::into));
         self
     }
 
@@ -1091,6 +1604,72 @@ impl PhraseQuery {
 
     /// Builder method setting `slop` (see this struct's doc comment for exact
     /// semantics), consistent with `BooleanQuery`'s `with_*` builder pattern.
+    pub fn with_slop(mut self, slop: u32) -> Self {
+        self.slop = slop;
+        self
+    }
+}
+
+/// `MultiPhraseQuery`-equivalent (`org.apache.lucene.search.MultiPhraseQuery`):
+/// a phrase where every position accepts **any one of a set of terms** rather
+/// than exactly one term -- the query a synonym filter or a prefix-expanded
+/// last word produces (`"quick brown (fox|foxes)"`).
+///
+/// Scoped exactly like [`PhraseQuery`] is, and for the same reasons: positions
+/// are implicitly `0, 1, ..., term_arrays.len() - 1` (real
+/// `MultiPhraseQuery.Builder.add(Term[], int position)` allows explicit,
+/// non-consecutive positions), and `slop > 0` inherits
+/// [`crate::phrase_matches_in_doc_sloppy`]'s documented in-order-only sloppy
+/// semantics.
+///
+/// **Semantics, taken from `MultiPhraseWeight`, not guessed:**
+///
+/// - **Matching.** Each position's alternatives behave as one merged posting
+///   list (`MultiPhraseQuery.UnionFullPostingsEnum`): a document matches when
+///   some alignment picks, at every position, an occurrence of *any* term in
+///   that position's set. A term that is absent from the segment simply
+///   contributes nothing to its position's union; a position whose whole set is
+///   absent can never be satisfied, so the query matches nothing.
+/// - **Scoring.** `MultiPhraseWeight` collects `TermStats` for **every** term
+///   of **every** position and hands them all to `Similarity.scorer(...)`, so
+///   the idf is the sum over all present terms -- not per position, and not the
+///   max. The frequency is the merged-position phrase frequency, i.e. exactly
+///   what [`crate::phrase_freq_exact`]/[`crate::phrase_freq_sloppy`] compute
+///   over the unioned position lists.
+/// - **Degenerate shapes.** `MultiPhraseQuery.rewrite` turns an empty
+///   `term_arrays` into a `MatchNoDocsQuery`, and a single-position one into a
+///   `BooleanQuery` of `SHOULD` `TermQuery`s -- this port's executor reproduces
+///   both outcomes directly (see [`crate::search_multi_phrase_query_scored`]),
+///   with no rewrite step required.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MultiPhraseQuery {
+    pub field: String,
+    /// One entry per phrase position; each entry is that position's set of
+    /// accepted terms (`MultiPhraseQuery`'s `termArrays`). An empty inner set
+    /// is a position nothing can satisfy, so the query matches nothing.
+    pub term_arrays: Vec<Vec<Vec<u8>>>,
+    /// Sloppy-matching budget -- see [`PhraseQuery::slop`].
+    pub slop: u32,
+}
+
+impl MultiPhraseQuery {
+    /// Builds an exact (`slop == 0`) multi-phrase query. Each element of
+    /// `term_arrays` is one position's alternatives, in phrase order.
+    pub fn new(
+        field: impl Into<String>,
+        term_arrays: impl IntoIterator<Item = impl IntoIterator<Item = impl Into<Vec<u8>>>>,
+    ) -> Self {
+        Self {
+            field: field.into(),
+            term_arrays: term_arrays
+                .into_iter()
+                .map(|alts| alts.into_iter().map(Into::into).collect())
+                .collect(),
+            slop: 0,
+        }
+    }
+
+    /// Builder method setting `slop`, consistent with [`PhraseQuery::with_slop`].
     pub fn with_slop(mut self, slop: u32) -> Self {
         self.slop = slop;
         self
@@ -1527,40 +2106,44 @@ mod tests {
     }
 
     #[test]
-    fn rewrite_does_not_collapse_single_must_when_minimum_should_match_is_positive() {
-        // must=[cat], should=[], minimum_should_match=1 matches nothing (no `should`
-        // clause can ever reach the threshold) -- collapsing to a bare `cat` clause
-        // would silently turn "matches nothing" into "matches whatever cat matches",
-        // so this combination must NOT collapse.
+    fn rewrite_of_a_must_clause_with_an_unreachable_minimum_should_match_is_match_no_docs() {
+        // must=[cat], should=[], minimum_should_match=1 matches nothing -- no
+        // `should` clause can ever reach the threshold. Collapsing to a bare
+        // `cat` clause would silently turn "matches nothing" into "matches
+        // whatever cat matches"; real Lucene instead reports it, via the same
+        // `shoulds.size() < minimumNumberShouldMatch` rule.
         let q = BooleanQuery::new()
             .with_must([TermQuery::new("body", "cat")])
             .with_minimum_should_match(1);
-        let rewritten = q.clone().rewrite();
+        let rewritten = q.rewrite();
+        let Clause::MatchNoDocs(reason) = rewritten else {
+            panic!("expected MatchNoDocs, got {rewritten:?}");
+        };
         assert_eq!(
-            rewritten,
-            Clause::Boolean(Box::new(BooleanQuery {
-                must: vec![Clause::Term(TermQuery::new("body", "cat"))],
-                should: vec![],
-                must_not: vec![],
-                minimum_should_match: 1,
-            }))
+            reason.reason.as_str(),
+            "SHOULD clause count less than minimumNumberShouldMatch"
         );
     }
 
     #[test]
-    fn rewrite_does_not_collapse_single_should_when_minimum_should_match_exceeds_one() {
+    fn rewrite_of_one_should_clause_with_minimum_should_match_two_is_match_no_docs() {
+        // Real `BooleanQuery.rewrite()`: `shoulds.size() <
+        // minimumNumberShouldMatch` -> `MatchNoDocsQuery("SHOULD clause count
+        // less than minimumNumberShouldMatch")`. This port used to leave the
+        // query alone and rely on `matched_boolean_docs` reaching the same
+        // "matches nothing" outcome at execution time -- same answer, but the
+        // rewrite could not report it, and a caller inspecting the rewritten
+        // query saw a query that looked satisfiable.
         let q = BooleanQuery::new()
             .with_should([TermQuery::new("body", "cat")])
             .with_minimum_should_match(2);
-        let rewritten = q.clone().rewrite();
+        let rewritten = q.rewrite();
+        let Clause::MatchNoDocs(reason) = rewritten else {
+            panic!("expected MatchNoDocs, got {rewritten:?}");
+        };
         assert_eq!(
-            rewritten,
-            Clause::Boolean(Box::new(BooleanQuery {
-                must: vec![],
-                should: vec![Clause::Term(TermQuery::new("body", "cat"))],
-                must_not: vec![],
-                minimum_should_match: 2,
-            }))
+            reason.reason.as_str(),
+            "SHOULD clause count less than minimumNumberShouldMatch"
         );
     }
 
@@ -1574,6 +2157,7 @@ mod tests {
             rewritten,
             Clause::Boolean(Box::new(BooleanQuery {
                 must: vec![Clause::Term(TermQuery::new("body", "cat"))],
+                filter: Vec::new(),
                 should: vec![],
                 must_not: vec![Clause::Term(TermQuery::new("body", "dog"))],
                 minimum_should_match: 0,
@@ -1582,21 +2166,37 @@ mod tests {
     }
 
     #[test]
-    fn rewrite_does_not_collapse_a_pure_must_not_only_query() {
-        // Real BooleanQuery.rewrite() treats a pure must_not query as
-        // MatchNoDocsQuery, not as "the must_not clause itself" -- confirm this
-        // rewrite leaves it structurally intact (the executor already treats it as
-        // matching nothing with no rewrite needed -- see `matched_boolean_docs`).
+    fn rewrite_of_a_pure_must_not_only_query_is_match_no_docs() {
+        // `BooleanQuery.rewrite()`: `clauses.size() ==
+        // clauseSets.get(Occur.MUST_NOT).size()` -> `new
+        // MatchNoDocsQuery("pure negative BooleanQuery")`. It is *not* "the
+        // must_not clause itself", and it is no longer left structurally
+        // intact -- see rule 2's doc comment for why that changed.
         let q = BooleanQuery::new().with_must_not([TermQuery::new("body", "dog")]);
-        let rewritten = q.clone().rewrite();
+        let Clause::MatchNoDocs(reason) = q.rewrite() else {
+            panic!("expected MatchNoDocs");
+        };
+        assert_eq!(reason.reason.as_str(), "pure negative BooleanQuery");
+    }
+
+    #[test]
+    fn rewrite_of_a_query_left_pure_negative_by_its_own_recursion_is_match_no_docs() {
+        // The case Java only reaches on `IndexSearcher.rewrite`'s *second*
+        // pass: the sole `should` clause is a nested query that itself
+        // rewrites to `MatchNoDocsQuery`, rule 5 drops it, and what is left is
+        // a pure negative query. This port's single bottom-up pass has to
+        // catch it in one go, and this is the test that says so.
+        let doomed = BooleanQuery::new().with_must_not([TermQuery::new("body", "cat")]);
+        let q = BooleanQuery::new()
+            .with_should([Clause::from(doomed)])
+            .with_must_not([TermQuery::new("body", "dog")]);
+        let Clause::MatchNoDocs(reason) = q.rewrite() else {
+            panic!("expected MatchNoDocs");
+        };
         assert_eq!(
-            rewritten,
-            Clause::Boolean(Box::new(BooleanQuery {
-                must: vec![],
-                should: vec![],
-                must_not: vec![Clause::Term(TermQuery::new("body", "dog"))],
-                minimum_should_match: 0,
-            }))
+            reason.reason.as_str(),
+            "pure negative BooleanQuery",
+            "it had a SHOULD clause originally, so it is not the *empty* case"
         );
     }
 
@@ -1619,6 +2219,7 @@ mod tests {
             rewritten,
             Clause::Boolean(Box::new(BooleanQuery {
                 must: vec![Clause::Term(TermQuery::new("body", "cat"))],
+                filter: Vec::new(),
                 should: vec![],
                 must_not: vec![Clause::Term(TermQuery::new("body", "dog"))],
                 minimum_should_match: 0,
@@ -1642,6 +2243,7 @@ mod tests {
             rewritten,
             Clause::Boolean(Box::new(BooleanQuery {
                 must: vec![Clause::Term(TermQuery::new("body", "cat"))],
+                filter: Vec::new(),
                 should: vec![],
                 must_not: vec![
                     Clause::Term(TermQuery::new("body", "dog")),
@@ -1653,28 +2255,61 @@ mod tests {
     }
 
     #[test]
-    fn rewrite_does_not_deduplicate_must_not_clauses_inside_a_nested_boolean_clause() {
-        // Rule 4 is applied per-`BooleanQuery` level via the ordinary
-        // recursive rewrite of each clause (rule 3): a nested `must` clause
-        // that is itself a `BooleanQuery` gets its own `must_not` deduped too,
-        // proving this isn't accidentally shallow.
+    fn rewrite_deduplicates_must_not_clauses_inside_a_nested_boolean_clause() {
+        // Rule 4 applies per-`BooleanQuery` level via the ordinary recursive
+        // rewrite (rule 3), and the deduped nested query is then *inlined*
+        // into its parent by rule 7 ("Inline required / prohibited clauses"),
+        // because it is a required clause with no `should` list -- exactly
+        // what real `BooleanQuery.rewrite()` does to feed every clause to one
+        // conjunction scorer instead of nesting two.
         let inner = BooleanQuery::new()
             .with_must([TermQuery::new("body", "cat")])
             .with_must_not([TermQuery::new("body", "dog"), TermQuery::new("body", "dog")]);
         let outer = BooleanQuery::new()
             .with_must([Clause::from(inner)])
             .with_should([TermQuery::new("body", "bird")]);
-        let rewritten = outer.clone().rewrite();
         assert_eq!(
-            rewritten,
+            outer.rewrite(),
+            Clause::Boolean(Box::new(BooleanQuery {
+                must: vec![Clause::Term(TermQuery::new("body", "cat"))],
+                filter: Vec::new(),
+                should: vec![Clause::Term(TermQuery::new("body", "bird"))],
+                must_not: vec![Clause::Term(TermQuery::new("body", "dog"))],
+                minimum_should_match: 0,
+            }))
+        );
+    }
+
+    #[test]
+    fn rewrite_deduplicates_must_not_inside_a_nested_clause_that_cannot_be_inlined() {
+        // Same per-level dedup, but on a nested query rule 7 must decline to
+        // inline (it has its own `should` list, whose "at least one" floor
+        // would be lost if merged into the parent's) -- so the nesting
+        // survives and the dedup is visible at the inner level.
+        let inner = BooleanQuery::new()
+            .with_should([
+                TermQuery::new("body", "cat"),
+                TermQuery::new("body", "bird"),
+            ])
+            .with_must_not([TermQuery::new("body", "dog"), TermQuery::new("body", "dog")]);
+        let outer = BooleanQuery::new()
+            .with_must([Clause::from(inner)])
+            .with_should([TermQuery::new("body", "fish")]);
+        assert_eq!(
+            outer.rewrite(),
             Clause::Boolean(Box::new(BooleanQuery {
                 must: vec![Clause::Boolean(Box::new(BooleanQuery {
-                    must: vec![Clause::Term(TermQuery::new("body", "cat"))],
-                    should: vec![],
+                    must: vec![],
+                    filter: Vec::new(),
+                    should: vec![
+                        Clause::Term(TermQuery::new("body", "cat")),
+                        Clause::Term(TermQuery::new("body", "bird")),
+                    ],
                     must_not: vec![Clause::Term(TermQuery::new("body", "dog"))],
                     minimum_should_match: 0,
                 }))],
-                should: vec![Clause::Term(TermQuery::new("body", "bird"))],
+                filter: Vec::new(),
+                should: vec![Clause::Term(TermQuery::new("body", "fish"))],
                 must_not: vec![],
                 minimum_should_match: 0,
             }))
@@ -1682,24 +2317,552 @@ mod tests {
     }
 
     #[test]
-    fn rewrite_deliberately_does_not_deduplicate_duplicate_must_clauses() {
-        // Documents the deferred decision: unlike `must_not` (rule 4), a
-        // duplicate `must`/`should` clause is left alone by `rewrite()`
-        // because this port has no `Similarity` in scope to reproduce real
-        // Lucene's `computeQueryTermWeight`-based combination faithfully (see
-        // this function's doc comment). This asserts `rewrite()` is a no-op
-        // (beyond recursion) on duplicate `must` clauses, i.e. we are not
-        // silently dropping them.
+    fn rewrite_of_a_match_no_docs_must_clause_is_the_whole_querys_result() {
+        // Rule 5, the `MUST` half. `BooleanQuery.rewrite()`: when a clause
+        // rewrites to `MatchNoDocsQuery`, `case MUST: case FILTER: return
+        // rewritten;` -- the *inner* query is returned, reason string and all,
+        // not a fresh one.
         let q = BooleanQuery::new()
-            .with_must([TermQuery::new("body", "cat"), TermQuery::new("body", "cat")]);
-        let rewritten = q.clone().rewrite();
+            .with_must([
+                Clause::Term(TermQuery::new("body", "cat")),
+                Clause::MatchNoDocs(MatchNoDocsQuery::new().with_reason("nothing here")),
+            ])
+            .with_should([TermQuery::new("body", "bird")]);
+        let Clause::MatchNoDocs(reason) = q.rewrite() else {
+            panic!("expected MatchNoDocs");
+        };
         assert_eq!(
-            rewritten,
+            reason.reason.as_str(),
+            "nothing here",
+            "the offending clause's own reason must survive, not be replaced"
+        );
+    }
+
+    #[test]
+    fn rewrite_drops_a_match_no_docs_clause_from_should_and_must_not() {
+        // Rule 5, the other half: `case SHOULD: case MUST_NOT: // the clause
+        // can be safely ignored; break;`. A `SHOULD` that can never match
+        // contributes nothing to the union, and a `MUST_NOT` that can never
+        // match excludes nothing.
+        let q = BooleanQuery::new()
+            .with_must([TermQuery::new("body", "cat")])
+            .with_should([
+                Clause::Term(TermQuery::new("body", "bird")),
+                Clause::MatchNoDocs(MatchNoDocsQuery::new().with_reason("ignored")),
+            ])
+            .with_must_not([
+                Clause::Term(TermQuery::new("body", "dog")),
+                Clause::MatchNoDocs(MatchNoDocsQuery::new().with_reason("also ignored")),
+            ]);
+        assert_eq!(
+            q.rewrite(),
+            Clause::Boolean(Box::new(BooleanQuery {
+                must: vec![Clause::Term(TermQuery::new("body", "cat"))],
+                filter: Vec::new(),
+                should: vec![Clause::Term(TermQuery::new("body", "bird"))],
+                must_not: vec![Clause::Term(TermQuery::new("body", "dog"))],
+                minimum_should_match: 0,
+            }))
+        );
+    }
+
+    #[test]
+    fn rewrite_flattens_a_nested_pure_disjunction_out_of_should() {
+        // Rule 6. `BooleanQuery.rewrite()`: "Flatten nested disjunctions, this
+        // is important for block-max WAND to perform well." Java's
+        // `isPureDisjunction()` is "every clause is SHOULD and
+        // minimumNumberShouldMatch <= 1", and the *outer* query must also have
+        // `minimumNumberShouldMatch <= 1` or the count would change meaning.
+        let inner = BooleanQuery::new()
+            .with_should([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")]);
+        let q = BooleanQuery::new()
+            .with_should([
+                Clause::Term(TermQuery::new("body", "bird")),
+                Clause::from(inner),
+            ])
+            .with_must([TermQuery::new("body", "fish")]);
+        assert_eq!(
+            q.rewrite(),
+            Clause::Boolean(Box::new(BooleanQuery {
+                must: vec![Clause::Term(TermQuery::new("body", "fish"))],
+                filter: Vec::new(),
+                should: vec![
+                    Clause::Term(TermQuery::new("body", "bird")),
+                    Clause::Term(TermQuery::new("body", "cat")),
+                    Clause::Term(TermQuery::new("body", "dog")),
+                ],
+                must_not: vec![],
+                minimum_should_match: 0,
+            }))
+        );
+    }
+
+    #[test]
+    fn rewrite_does_not_flatten_a_nested_disjunction_that_is_not_pure() {
+        // The three ways `isPureDisjunction()` fails, each of which must leave
+        // the nesting alone: the inner query has a `must`, has a `must_not`,
+        // or carries a `minimumNumberShouldMatch > 1`.
+        let impure = [
+            BooleanQuery::new()
+                .with_should([TermQuery::new("body", "cat")])
+                .with_must([TermQuery::new("body", "dog")]),
+            BooleanQuery::new()
+                .with_should([
+                    TermQuery::new("body", "cat"),
+                    TermQuery::new("body", "bird"),
+                ])
+                .with_must_not([TermQuery::new("body", "dog")]),
+            BooleanQuery::new()
+                .with_should([
+                    TermQuery::new("body", "cat"),
+                    TermQuery::new("body", "bird"),
+                ])
+                .with_minimum_should_match(2),
+        ];
+        for inner in impure {
+            // The inner query is still *recursively rewritten* (rule 3) -- the
+            // third case's `minimumNumberShouldMatch == 2` over two `SHOULD`
+            // clauses becomes two `MUST` clauses via rule 9, for instance.
+            // What must not happen is its clauses being lifted into the
+            // parent, so the expectation is "still one nested clause, whatever
+            // rewriting did to its insides".
+            let expected_inner = Clause::from(inner.clone()).rewrite();
+            let q = BooleanQuery::new().with_should([
+                Clause::Term(TermQuery::new("body", "fish")),
+                Clause::from(inner),
+            ]);
+            let Clause::Boolean(rewritten) = q.rewrite() else {
+                panic!("expected a BooleanQuery");
+            };
+            assert_eq!(
+                rewritten.should,
+                vec![Clause::Term(TermQuery::new("body", "fish")), expected_inner],
+                "a non-pure disjunction must not be flattened"
+            );
+        }
+    }
+
+    #[test]
+    fn rewrite_does_not_flatten_when_the_outer_minimum_should_match_exceeds_one() {
+        // Flattening a 1-clause `SHOULD` into 2 changes what "at least 2 of
+        // the should clauses" means, so Java guards the whole block on
+        // `minimumNumberShouldMatch <= 1`.
+        let inner = BooleanQuery::new()
+            .with_should([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")]);
+        // Three `SHOULD` clauses against a minimum of 2, so rule 9's
+        // "every should is required" case does not also fire and the only
+        // thing under test is the flattening guard.
+        let q = BooleanQuery::new()
+            .with_should([
+                Clause::Term(TermQuery::new("body", "bird")),
+                Clause::Term(TermQuery::new("body", "fish")),
+                Clause::from(inner.clone()),
+            ])
+            .with_minimum_should_match(2);
+        assert_eq!(
+            q.rewrite(),
+            Clause::Boolean(Box::new(BooleanQuery {
+                must: vec![],
+                filter: Vec::new(),
+                should: vec![
+                    Clause::Term(TermQuery::new("body", "bird")),
+                    Clause::Term(TermQuery::new("body", "fish")),
+                    Clause::from(inner),
+                ],
+                must_not: vec![],
+                minimum_should_match: 2,
+            }))
+        );
+    }
+
+    #[test]
+    fn rewrite_of_a_clause_that_is_both_required_and_excluded_is_match_no_docs() {
+        // Rule 8, first half. `BooleanQuery.rewrite()`: "Check whether some
+        // clauses are both required and excluded" -> `new
+        // MatchNoDocsQuery("FILTER or MUST clause also in MUST_NOT")`. Both
+        // halves of Java's predicate are now reachable
+        // (`clauseSets.get(MUST)::contains` **or**
+        // `clauseSets.get(FILTER)::contains`), so the reason string is Java's
+        // verbatim rather than the shortened one this port used while it had
+        // no `FILTER`.
+        let q = BooleanQuery::new()
+            .with_must([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")])
+            .with_must_not([TermQuery::new("body", "cat")]);
+        let Clause::MatchNoDocs(reason) = q.rewrite() else {
+            panic!("expected MatchNoDocs");
+        };
+        assert_eq!(
+            reason.reason.as_str(),
+            "FILTER or MUST clause also in MUST_NOT"
+        );
+
+        // The `FILTER` half of the same predicate: a clause required only as a
+        // filter is just as excluded by a matching `MUST_NOT`.
+        let q = BooleanQuery::new()
+            .with_must([TermQuery::new("body", "dog")])
+            .with_filter([TermQuery::new("body", "cat")])
+            .with_must_not([TermQuery::new("body", "cat")]);
+        let Clause::MatchNoDocs(reason) = q.rewrite() else {
+            panic!("expected MatchNoDocs");
+        };
+        assert_eq!(
+            reason.reason.as_str(),
+            "FILTER or MUST clause also in MUST_NOT"
+        );
+    }
+
+    // ---- `Occur.FILTER` rewrite rules -------------------------------------
+
+    #[test]
+    fn rewrite_of_a_lone_filter_clause_is_a_zero_boosted_constant_score_query() {
+        // Java's single-clause optimization: `case FILTER: // no scoring
+        // clauses, so return a score of 0 -- return new BoostQuery(new
+        // ConstantScoreQuery(query), 0);`. Pinned bit-for-bit against real
+        // Lucene in `tests/bm25_scoring_fixtures.rs`
+        // (`scoring.boolean.filter.single` scores docs 0 and 2 at exactly 0).
+        let q = BooleanQuery::new().with_filter([TermQuery::new("body", "cat")]);
+        assert_eq!(
+            q.rewrite(),
+            Clause::Boost(Box::new(BoostQuery::new(
+                Clause::ConstantScore(Box::new(ConstantScoreQuery::new(
+                    TermQuery::new("body", "cat"),
+                    1.0
+                ))),
+                0.0
+            )))
+        );
+    }
+
+    #[test]
+    fn rewrite_of_a_filter_only_query_is_not_a_pure_negative_query() {
+        // `clauses.size() == clauseSets.get(MUST_NOT).size()` is false for a
+        // FILTER clause, so the pure-negative collapse does not apply. Two
+        // filters so the single-clause rule above does not fire either.
+        let q = BooleanQuery::new()
+            .with_filter([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")]);
+        assert_eq!(
+            q.clone().rewrite(),
+            Clause::Boolean(Box::new(q)),
+            "a filter-only query rewrites to itself, not to MatchNoDocs"
+        );
+    }
+
+    #[test]
+    fn rewrite_of_a_match_no_docs_filter_clause_collapses_the_whole_query() {
+        // Java: `case MUST: case FILTER: return rewritten;` -- a required
+        // clause that matches nothing makes the conjunction match nothing.
+        let q = BooleanQuery::new()
+            .with_must([TermQuery::new("body", "cat")])
+            .with_filter([Clause::MatchNoDocs(
+                MatchNoDocsQuery::new().with_reason("filter reason"),
+            )]);
+        let Clause::MatchNoDocs(reason) = q.rewrite() else {
+            panic!("expected MatchNoDocs");
+        };
+        assert_eq!(
+            reason.reason.as_str(),
+            "filter reason",
+            "the offending clause's own reason survives, as in Java"
+        );
+    }
+
+    #[test]
+    fn rewrite_removes_duplicate_filter_clauses() {
+        // `clauseSets` holds FILTER (and MUST_NOT) in a `HashSet`, so
+        // duplicates cannot survive. Unlike MUST/SHOULD dedup, this changes no
+        // score: a filter contributes none.
+        let q = BooleanQuery::new()
+            .with_must([TermQuery::new("body", "cat")])
+            .with_filter([
+                TermQuery::new("body", "dog"),
+                TermQuery::new("body", "dog"),
+                TermQuery::new("body", "bird"),
+            ]);
+        let Clause::Boolean(rewritten) = q.rewrite() else {
+            panic!("expected a BooleanQuery");
+        };
+        assert_eq!(
+            rewritten.filter,
+            vec![
+                Clause::Term(TermQuery::new("body", "dog")),
+                Clause::Term(TermQuery::new("body", "bird")),
+            ]
+        );
+    }
+
+    #[test]
+    fn rewrite_drops_a_filter_clause_that_is_also_a_must_clause() {
+        // `filters.removeAll(clauseSets.get(Occur.MUST))`. The MUST copy is the
+        // one kept, because it is the scoring one. Pinned against real Lucene
+        // as `scoring.boolean.filter.dupmust`, whose recorded scores are
+        // bit-identical to `scoring.boolean.must`.
+        let q = BooleanQuery::new()
+            .with_must([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")])
+            .with_filter([TermQuery::new("body", "dog")]);
+        assert_eq!(
+            q.rewrite(),
+            Clause::Boolean(Box::new(BooleanQuery::new().with_must([
+                TermQuery::new("body", "cat"),
+                TermQuery::new("body", "dog")
+            ])))
+        );
+    }
+
+    #[test]
+    fn rewrite_drops_a_match_all_docs_filter_only_when_something_else_constrains() {
+        // Dropped: there is a MUST clause, so the filter is pure overhead.
+        let q = BooleanQuery::new()
+            .with_must([TermQuery::new("body", "cat")])
+            .with_filter([Clause::MatchAllDocs(MatchAllDocsQuery::new(100))]);
+        assert_eq!(
+            q.rewrite(),
+            Clause::Term(TermQuery::new("body", "cat")),
+            "with the redundant filter gone, the single-clause unwrap fires"
+        );
+
+        // Dropped: more than one filter, so the others still constrain.
+        let q = BooleanQuery::new().with_filter([
+            Clause::MatchAllDocs(MatchAllDocsQuery::new(100)),
+            Clause::Term(TermQuery::new("body", "cat")),
+        ]);
+        assert_eq!(
+            q.rewrite(),
+            Clause::Boost(Box::new(BoostQuery::new(
+                Clause::ConstantScore(Box::new(ConstantScoreQuery::new(
+                    TermQuery::new("body", "cat"),
+                    1.0
+                ))),
+                0.0
+            ))),
+            "one filter left, so the lone-filter rule takes over"
+        );
+
+        // NOT dropped: it is the only filter and there is no MUST clause, so
+        // removing it would turn "every document, scored 0" into "matches
+        // nothing". This is the guard `filters.size() > 1 ||
+        // clauseSets.get(MUST).isEmpty() == false` exists for.
+        let q = BooleanQuery::new()
+            .with_filter([Clause::MatchAllDocs(MatchAllDocsQuery::new(100))])
+            .with_must_not([TermQuery::new("body", "dog")]);
+        assert_eq!(
+            q.clone().rewrite(),
+            Clause::Boolean(Box::new(q)),
+            "the sole MatchAllDocs filter must survive"
+        );
+    }
+
+    #[test]
+    fn rewrite_promotes_a_clause_that_is_both_filter_and_should_to_must() {
+        // Required *and* scored is what MUST means. The FILTER copy goes and
+        // `minimumNumberShouldMatch` drops by one, since the promoted clause no
+        // longer counts toward the threshold.
+        //
+        // Java returns `+cat dog~1` from this rule and reaches the final form
+        // on `IndexSearcher.rewrite`'s next pass, where rule 9
+        // (`shoulds.size() == minimumNumberShouldMatch`) turns the surviving
+        // `dog` into a `MUST` too. This port's single bottom-up pass runs rule 9
+        // after this one, so it lands on that fixpoint directly.
+        let q = BooleanQuery::new()
+            .with_filter([TermQuery::new("body", "cat")])
+            .with_should([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")])
+            .with_minimum_should_match(2);
+        assert_eq!(
+            q.rewrite(),
+            Clause::Boolean(Box::new(BooleanQuery::new().with_must([
+                TermQuery::new("body", "cat"),
+                TermQuery::new("body", "dog")
+            ])))
+        );
+    }
+
+    #[test]
+    fn rewrite_floors_minimum_should_match_at_zero_when_promoting_filters() {
+        // `builder.setMinimumNumberShouldMatch(Math.max(0, minShouldMatch))`.
+        let q = BooleanQuery::new()
+            .with_filter([TermQuery::new("body", "cat")])
+            .with_should([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")]);
+        let Clause::Boolean(rewritten) = q.rewrite() else {
+            panic!("expected a BooleanQuery");
+        };
+        assert_eq!(rewritten.minimum_should_match, 0);
+        assert_eq!(
+            rewritten.must,
+            vec![Clause::Term(TermQuery::new("body", "cat"))]
+        );
+        assert_eq!(
+            rewritten.should,
+            vec![Clause::Term(TermQuery::new("body", "dog"))]
+        );
+        assert!(rewritten.filter.is_empty());
+    }
+
+    #[test]
+    fn rewrite_turns_a_single_match_all_docs_must_plus_filters_into_a_constant_score_query() {
+        // "Rewrite queries whose single scoring clause is a MUST clause on a
+        // MatchAllDocsQuery to a ConstantScoreQuery."
+        let q = BooleanQuery::new()
+            .with_must([Clause::MatchAllDocs(MatchAllDocsQuery::new(100))])
+            .with_filter([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")]);
+        assert_eq!(
+            q.rewrite(),
+            Clause::ConstantScore(Box::new(ConstantScoreQuery::new(
+                BooleanQuery::new()
+                    .with_filter([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")]),
+                1.0
+            )))
+        );
+    }
+
+    #[test]
+    fn rewrite_carries_the_match_all_docs_boost_onto_the_constant_score_query() {
+        // `if (boost != 1f) rewritten = new BoostQuery(rewritten, boost);`, and
+        // the SHOULD clauses are re-attached around the result.
+        let q = BooleanQuery::new()
+            .with_must([Clause::Boost(Box::new(BoostQuery::new(
+                Clause::MatchAllDocs(MatchAllDocsQuery::new(100)),
+                3.0,
+            )))])
+            .with_filter([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")])
+            .with_should([TermQuery::new("body", "bird")]);
+        assert_eq!(
+            q.rewrite(),
+            Clause::Boolean(Box::new(
+                BooleanQuery::new()
+                    .with_must([Clause::Boost(Box::new(BoostQuery::new(
+                        Clause::ConstantScore(Box::new(ConstantScoreQuery::new(
+                            BooleanQuery::new().with_filter([
+                                TermQuery::new("body", "cat"),
+                                TermQuery::new("body", "dog")
+                            ]),
+                            1.0
+                        ))),
+                        3.0
+                    )))])
+                    .with_should([TermQuery::new("body", "bird")])
+            ))
+        );
+    }
+
+    #[test]
+    fn rewrite_relabels_an_inner_must_as_a_filter_when_inlining_into_a_filter_clause() {
+        // Java: `assert outerClause.occur() == Occur.FILTER && innerOccur ==
+        // Occur.MUST; // In this case we need to change the occur of the inner
+        // query from MUST to FILTER.` Getting this wrong would make the inner
+        // clause score, which is exactly what the outer FILTER forbids.
+        let inner = BooleanQuery::new()
+            .with_must([TermQuery::new("body", "cat")])
+            .with_filter([TermQuery::new("body", "dog")])
+            .with_must_not([TermQuery::new("body", "bird")]);
+        let q = BooleanQuery::new()
+            .with_must([TermQuery::new("body", "fish")])
+            .with_filter([Clause::from(inner)]);
+        let Clause::Boolean(rewritten) = q.rewrite() else {
+            panic!("expected a BooleanQuery");
+        };
+        assert_eq!(
+            rewritten.must,
+            vec![Clause::Term(TermQuery::new("body", "fish"))],
+            "the inner MUST must NOT have landed in the parent's scoring bucket"
+        );
+        assert_eq!(
+            rewritten.filter,
+            vec![
+                Clause::Term(TermQuery::new("body", "cat")),
+                Clause::Term(TermQuery::new("body", "dog")),
+            ]
+        );
+        assert_eq!(
+            rewritten.must_not,
+            vec![Clause::Term(TermQuery::new("body", "bird"))]
+        );
+    }
+
+    #[test]
+    fn rewrite_inlines_an_inner_querys_filter_clauses_into_a_must_clause() {
+        // The other direction: an outer MUST over an inner BooleanQuery lifts
+        // the inner FILTER clauses as parent FILTER clauses (they stay
+        // non-scoring), and the inner MUST clauses as parent MUST clauses.
+        let inner = BooleanQuery::new()
+            .with_must([TermQuery::new("body", "cat")])
+            .with_filter([TermQuery::new("body", "dog")]);
+        let q = BooleanQuery::new()
+            .with_must([Clause::from(inner)])
+            .with_should([TermQuery::new("body", "bird")]);
+        assert_eq!(
+            q.rewrite(),
+            Clause::Boolean(Box::new(
+                BooleanQuery::new()
+                    .with_must([TermQuery::new("body", "cat")])
+                    .with_filter([TermQuery::new("body", "dog")])
+                    .with_should([TermQuery::new("body", "bird")])
+            ))
+        );
+    }
+
+    #[test]
+    fn rewrite_leaves_a_filter_alongside_a_must_alone() {
+        // The negative case for every rule above: nothing about `+cat #dog` is
+        // redundant, so `rewrite` must be a no-op on it.
+        let q = BooleanQuery::new()
+            .with_must([TermQuery::new("body", "cat")])
+            .with_filter([TermQuery::new("body", "dog")]);
+        assert_eq!(q.clone().rewrite(), Clause::Boolean(Box::new(q)));
+    }
+
+    #[test]
+    fn rewrite_of_a_must_not_match_all_docs_is_match_no_docs() {
+        // Rule 8, second half: `if (mustNotClauses.contains(MatchAllDocsQuery
+        // .INSTANCE)) return new MatchNoDocsQuery("MUST_NOT clause is
+        // MatchAllDocsQuery");` -- excluding every document leaves none.
+        let q = BooleanQuery::new()
+            .with_must([TermQuery::new("body", "cat")])
+            .with_must_not([Clause::MatchAllDocs(MatchAllDocsQuery::new(100))]);
+        let Clause::MatchNoDocs(reason) = q.rewrite() else {
+            panic!("expected MatchNoDocs");
+        };
+        assert_eq!(
+            reason.reason.as_str(),
+            "MUST_NOT clause is MatchAllDocsQuery"
+        );
+    }
+
+    #[test]
+    fn rewrite_leaves_a_must_not_alone_when_it_only_resembles_a_must_clause() {
+        // The negative case for rule 8's first half: the clauses must be
+        // *equal*, not merely same-field or same-shape. Without this, a query
+        // like `+body:cat -body:dog` would be destroyed.
+        let q = BooleanQuery::new()
+            .with_must([TermQuery::new("body", "cat")])
+            .with_must_not([TermQuery::new("body", "dog")]);
+        assert_eq!(
+            q.rewrite(),
+            Clause::Boolean(Box::new(BooleanQuery {
+                must: vec![Clause::Term(TermQuery::new("body", "cat"))],
+                filter: Vec::new(),
+                should: vec![],
+                must_not: vec![Clause::Term(TermQuery::new("body", "dog"))],
+                minimum_should_match: 0,
+            }))
+        );
+    }
+
+    #[test]
+    fn rewrite_turns_every_should_into_must_when_the_minimum_equals_their_count() {
+        // Rule 9's second half: `if (shoulds.size() > 0 && shoulds.size() ==
+        // minimumNumberShouldMatch)` -> every `SHOULD` becomes `MUST`. All of
+        // them are required, which is what `MUST` means; `clause_scores` sums
+        // `must` and `should` identically, so scores are unchanged too.
+        let q = BooleanQuery::new()
+            .with_should([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")])
+            .with_minimum_should_match(2);
+        assert_eq!(
+            q.rewrite(),
             Clause::Boolean(Box::new(BooleanQuery {
                 must: vec![
                     Clause::Term(TermQuery::new("body", "cat")),
-                    Clause::Term(TermQuery::new("body", "cat")),
+                    Clause::Term(TermQuery::new("body", "dog")),
                 ],
+                filter: Vec::new(),
                 should: vec![],
                 must_not: vec![],
                 minimum_should_match: 0,
@@ -1708,12 +2871,170 @@ mod tests {
     }
 
     #[test]
-    fn rewrite_leaves_an_empty_boolean_query_structurally_unchanged() {
-        let q = BooleanQuery::new();
+    fn rewrite_collapses_duplicate_must_clauses_into_one_with_summed_boosts() {
+        // 10.5.0's `Deduplicate MUST clauses by summing up their boosts`:
+        // `+cat +cat` becomes one clause at boost 2 -- and then rule 1's
+        // single-clause unwrap takes the `BooleanQuery` away entirely, which
+        // is what Java's next `IndexSearcher.rewrite` pass would also do.
+        let q = BooleanQuery::new()
+            .with_must([TermQuery::new("body", "cat"), TermQuery::new("body", "cat")]);
         assert_eq!(
-            q.clone().rewrite(),
-            Clause::Boolean(Box::new(BooleanQuery::new()))
+            q.rewrite(),
+            Clause::Boost(Box::new(BoostQuery::new(
+                Clause::Term(TermQuery::new("body", "cat")),
+                2.0
+            )))
         );
+    }
+
+    #[test]
+    fn rewrite_sums_explicit_boosts_across_duplicate_should_clauses() {
+        // `a^2 a^3` -> `a^5`. The sum is Java's `double` accumulation narrowed
+        // once at the end, not three `f32` additions.
+        let q = BooleanQuery::new().with_should([
+            Clause::Boost(Box::new(BoostQuery::new(
+                Clause::Term(TermQuery::new("body", "cat")),
+                2.0,
+            ))),
+            Clause::Boost(Box::new(BoostQuery::new(
+                Clause::Term(TermQuery::new("body", "cat")),
+                3.0,
+            ))),
+        ]);
+        assert_eq!(
+            q.rewrite(),
+            Clause::Boost(Box::new(BoostQuery::new(
+                Clause::Term(TermQuery::new("body", "cat")),
+                5.0
+            )))
+        );
+    }
+
+    #[test]
+    fn a_summed_boost_of_exactly_one_leaves_no_boost_wrapper_behind() {
+        // Java: `if (boost != 1f) query = new BoostQuery(query, boost);` -- so
+        // `a^0.5 a^0.5` collapses to a *bare* `a`, not to `a^1`. This is also
+        // the case that makes the re-entry after a rebuild load-bearing: the
+        // unwrapped `a` is now equal to the FILTER clause, so rule 10 must get
+        // another look at it.
+        let q = BooleanQuery::new()
+            .with_should([
+                Clause::Boost(Box::new(BoostQuery::new(
+                    Clause::Term(TermQuery::new("body", "cat")),
+                    0.5,
+                ))),
+                Clause::Boost(Box::new(BoostQuery::new(
+                    Clause::Term(TermQuery::new("body", "cat")),
+                    0.5,
+                ))),
+            ])
+            .with_must([TermQuery::new("body", "dog")]);
+        assert_eq!(
+            q.rewrite(),
+            Clause::Boolean(Box::new(
+                BooleanQuery::new()
+                    .with_must([TermQuery::new("body", "dog")])
+                    .with_should([Clause::Term(TermQuery::new("body", "cat"))])
+            ))
+        );
+    }
+
+    #[test]
+    fn nested_boost_wrappers_multiply_before_the_boosts_are_summed() {
+        // Java's `while (query instanceof BoostQuery) { boost *= ...; }`:
+        // `(a^2)^3` contributes 6, not 3 and not 2.
+        let nested = Clause::Boost(Box::new(BoostQuery::new(
+            Clause::Boost(Box::new(BoostQuery::new(
+                Clause::Term(TermQuery::new("body", "cat")),
+                2.0,
+            ))),
+            3.0,
+        )));
+        let q =
+            BooleanQuery::new().with_should([nested, Clause::Term(TermQuery::new("body", "cat"))]);
+        assert_eq!(
+            q.rewrite(),
+            Clause::Boost(Box::new(BoostQuery::new(
+                Clause::Term(TermQuery::new("body", "cat")),
+                7.0
+            )))
+        );
+    }
+
+    #[test]
+    fn should_dedup_is_skipped_when_minimum_should_match_counts_more_than_one() {
+        // Java gates the SHOULD half on `minimumNumberShouldMatch <= 1`: the
+        // threshold counts *clauses*, so collapsing two into one would change
+        // what the query means. `mSM == 2` with two identical clauses stays a
+        // two-clause query -- and, since `should.len() == mSM`, rule 9 then
+        // promotes both to MUST, which is where they end up.
+        let q = BooleanQuery::new()
+            .with_should([TermQuery::new("body", "cat"), TermQuery::new("body", "cat")])
+            .with_minimum_should_match(2);
+        assert_eq!(
+            q.rewrite(),
+            Clause::Boost(Box::new(BoostQuery::new(
+                Clause::Term(TermQuery::new("body", "cat")),
+                2.0
+            )))
+        );
+    }
+
+    #[test]
+    fn distinct_clauses_are_left_exactly_as_they_were() {
+        // Java rebuilds only `if (map.size() != clauseSets.get(occur).size())`
+        // -- with no duplicates there is no rebuild, so no clause acquires a
+        // `BoostQuery` wrapper and the order is untouched.
+        let q = BooleanQuery::new().with_should([
+            TermQuery::new("body", "cat"),
+            TermQuery::new("body", "dog"),
+            TermQuery::new("body", "bird"),
+        ]);
+        assert_eq!(
+            q.rewrite(),
+            Clause::Boolean(Box::new(BooleanQuery::new().with_should([
+                TermQuery::new("body", "cat"),
+                TermQuery::new("body", "dog"),
+                TermQuery::new("body", "bird"),
+            ])))
+        );
+    }
+
+    #[test]
+    fn duplicate_clauses_collapse_in_first_seen_order() {
+        // Java rebuilds from a `HashMap.entrySet()`, whose order is
+        // unspecified; this port keeps first-seen order, deliberately -- a
+        // rewrite whose output feeds `explain` should be deterministic.
+        let q = BooleanQuery::new().with_should([
+            TermQuery::new("body", "dog"),
+            TermQuery::new("body", "cat"),
+            TermQuery::new("body", "dog"),
+        ]);
+        let Clause::Boolean(rewritten) = q.rewrite() else {
+            panic!("expected a BooleanQuery");
+        };
+        assert_eq!(
+            rewritten.should,
+            vec![
+                Clause::Boost(Box::new(BoostQuery::new(
+                    Clause::Term(TermQuery::new("body", "dog")),
+                    2.0
+                ))),
+                Clause::Term(TermQuery::new("body", "cat")),
+            ]
+        );
+    }
+
+    #[test]
+    fn rewrite_of_an_empty_boolean_query_is_match_no_docs() {
+        // `BooleanQuery.rewrite()`'s very first line: `if (clauses.size() == 0)
+        // return new MatchNoDocsQuery("empty BooleanQuery");`. The reason
+        // string is what distinguishes this from the pure-negative case, and
+        // only the *original* clause lists can tell them apart.
+        let Clause::MatchNoDocs(reason) = BooleanQuery::new().rewrite() else {
+            panic!("expected MatchNoDocs");
+        };
+        assert_eq!(reason.reason.as_str(), "empty BooleanQuery");
     }
 
     #[test]
@@ -1728,6 +3049,7 @@ mod tests {
                     Clause::Term(TermQuery::new("body", "cat")),
                     Clause::Term(TermQuery::new("body", "dog")),
                 ],
+                filter: Vec::new(),
                 should: vec![],
                 must_not: vec![],
                 minimum_should_match: 0,
@@ -1762,6 +3084,7 @@ mod tests {
             rewritten,
             Clause::Boolean(Box::new(BooleanQuery {
                 must: vec![Clause::Term(TermQuery::new("body", "bird"))],
+                filter: Vec::new(),
                 should: vec![Clause::Boolean(Box::new(inner))],
                 must_not: vec![],
                 minimum_should_match: 0,

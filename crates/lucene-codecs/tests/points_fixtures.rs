@@ -3,6 +3,11 @@
 //! about two-thirds of them (every third doc skips it), forcing several
 //! leaves (default maxPointsInLeafNode=512) and non-continuous doc ids
 //! within a leaf. Regenerate with fixtures/src/GenPoints.java.
+// Test-support code opts out of the arithmetic gate at the file boundary:
+// the gate exists for values read off disk in production decode paths, not
+// for a fixture builder's own index arithmetic. See
+// `docs/arithmetic-gate.md`.
+#![allow(clippy::arithmetic_side_effects)]
 
 use lucene_codecs::points;
 
@@ -294,4 +299,149 @@ fn parses_real_shape_points_and_matches_lucene_values() {
 
     assert_eq!(got.len(), want.len(), "point count");
     assert_eq!(got, want);
+}
+
+/// Differential test for the **pruning** traversal
+/// (`points::PointsReader::intersect` / `range_query`, the port of
+/// `PointValues.intersect` over `BKDReader.BKDPointTree`) against the same
+/// real Java-written `.kdi` bytes.
+///
+/// This is the only test that exercises the packed index's split *values*
+/// rather than merely walking past them: `decode_all_points` reads each
+/// node's split descriptor only to know how many suffix bytes to skip, so a
+/// wrong prefix/first-diff-byte/negative-delta reconstruction would go
+/// completely unnoticed there. Here every cell bound handed to `compare`
+/// comes from those reconstructed values, so any error makes `intersect`
+/// prune a subtree that actually contains matches -- and the assertion below
+/// (equality with a brute-force filter over the manifest's own recorded
+/// values, i.e. against Java's ground truth, not against this port's
+/// decoder) fails.
+#[test]
+fn intersect_over_real_lucene_packed_index_matches_brute_force() {
+    let manifest = Manifest::load();
+    let id = id_from_hex(manifest.get("id_hex"));
+    let kdm = std::fs::read(format!("{}{}.raw", dir(), manifest.get("kdm_file_name"))).unwrap();
+    let kdi = std::fs::read(format!("{}{}.raw", dir(), manifest.get("kdi_file_name"))).unwrap();
+    let kdd = std::fs::read(format!("{}{}.raw", dir(), manifest.get("kdd_file_name"))).unwrap();
+    let reader = points::open(&kdm, &kdi, &kdd, &id, "").unwrap();
+
+    // --- single-dimension LongPoint field ---
+    let field_number: i32 = manifest.get("field_number").parse().unwrap();
+    assert!(
+        reader.field(field_number).unwrap().num_leaves > 1,
+        "fixture must have a real multi-node tree for pruning to mean anything"
+    );
+    let want_points: Vec<(i32, i64)> = manifest
+        .get("points")
+        .split(';')
+        .map(|entry| {
+            let (doc_id, value) = entry.split_once(':').unwrap();
+            (doc_id.parse().unwrap(), value.parse().unwrap())
+        })
+        .collect();
+    let min_value = want_points.iter().map(|&(_, v)| v).min().unwrap();
+    let max_value = want_points.iter().map(|&(_, v)| v).max().unwrap();
+    let span = max_value - min_value;
+
+    let long_bytes = |v: i64| ((v as u64) ^ 0x8000_0000_0000_0000).to_be_bytes().to_vec();
+    for (lo, hi) in [
+        (min_value, max_value),
+        (min_value - 1000, min_value - 1),
+        (max_value + 1, max_value + 1000),
+        (min_value, min_value),
+        (max_value, max_value),
+        (min_value + span / 4, min_value + span / 2),
+        (min_value + span / 3, min_value + span / 3),
+        (min_value + 1, max_value - 1),
+    ] {
+        let mut want: Vec<i32> = want_points
+            .iter()
+            .filter(|&&(_, v)| v >= lo && v <= hi)
+            .map(|&(d, _)| d)
+            .collect();
+        want.sort_unstable();
+        let mut got = reader
+            .range_query(field_number, &long_bytes(lo), &long_bytes(hi))
+            .unwrap();
+        got.sort_unstable();
+        assert_eq!(got, want, "1-dim range [{lo}, {hi}]");
+    }
+
+    // --- 2-dimension IntPoint field (split dimension alternates, so the
+    // per-dimension `lastSplitValues`/`negativeDeltas` state matters) ---
+    let multi_field: i32 = manifest.get("multi_field_number").parse().unwrap();
+    let multi_points: Vec<(i32, i32, i32)> = manifest
+        .get("multi_points")
+        .split(';')
+        .map(|entry| {
+            let mut parts = entry.split(':');
+            (
+                parts.next().unwrap().parse().unwrap(),
+                parts.next().unwrap().parse().unwrap(),
+                parts.next().unwrap().parse().unwrap(),
+            )
+        })
+        .collect();
+    let int_bytes = |v: i32| ((v as u32) ^ 0x8000_0000).to_be_bytes().to_vec();
+    let pack = |x: i32, y: i32| {
+        let mut out = int_bytes(x);
+        out.extend_from_slice(&int_bytes(y));
+        out
+    };
+    for (x0, x1, y0, y1) in [
+        (i32::MIN, i32::MAX, i32::MIN, i32::MAX),
+        (i32::MIN, i32::MAX, 1, 2),
+        (0, i32::MAX, 0, 0),
+        (i32::MIN, -1, 3, 3),
+        (-100, 100, 0, 3),
+        (i32::MIN, i32::MAX, 4, i32::MAX),
+    ] {
+        let mut want: Vec<i32> = multi_points
+            .iter()
+            .filter(|&&(_, x, y)| x >= x0 && x <= x1 && y >= y0 && y <= y1)
+            .map(|&(d, _, _)| d)
+            .collect();
+        want.sort_unstable();
+        let mut got = reader
+            .range_query(multi_field, &pack(x0, y0), &pack(x1, y1))
+            .unwrap();
+        got.sort_unstable();
+        assert_eq!(got, want, "2-dim box ({x0}..{x1}, {y0}..{y1})");
+    }
+
+    // --- 4-dimension / 2-index-dimension shape field: the two trailing
+    // data-only dimensions must never take part in a cell bound. ---
+    let shape_field: i32 = manifest.get("shape_field_number").parse().unwrap();
+    let shape_points: Vec<(i32, i32, i32)> = manifest
+        .get("shape_points")
+        .split(';')
+        .map(|entry| {
+            let mut parts = entry.split(':');
+            let doc_id = parts.next().unwrap().parse().unwrap();
+            let d0 = parts.next().unwrap().parse().unwrap();
+            let d1 = parts.next().unwrap().parse().unwrap();
+            (doc_id, d0, d1)
+        })
+        .collect();
+    let d0_min = shape_points.iter().map(|&(_, d, _)| d).min().unwrap();
+    let d0_max = shape_points.iter().map(|&(_, d, _)| d).max().unwrap();
+    for (a0, a1) in [
+        (i32::MIN, i32::MAX),
+        (d0_min, d0_min),
+        (d0_max, d0_max),
+        (d0_min, (d0_min / 2).saturating_add(d0_max / 2)),
+        (d0_max, i32::MAX),
+    ] {
+        let mut want: Vec<i32> = shape_points
+            .iter()
+            .filter(|&&(_, d0, _)| d0 >= a0 && d0 <= a1)
+            .map(|&(d, _, _)| d)
+            .collect();
+        want.sort_unstable();
+        let mut got = reader
+            .range_query(shape_field, &pack(a0, i32::MIN), &pack(a1, i32::MAX))
+            .unwrap();
+        got.sort_unstable();
+        assert_eq!(got, want, "shape dim0 range [{a0}, {a1}]");
+    }
 }

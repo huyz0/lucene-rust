@@ -46,25 +46,53 @@ pub trait DataInput {
     }
 
     /// Lucene `readVInt`. Negative Java ints occupy 5 bytes.
+    ///
+    /// Lucene 10.5.0's loop is `for (shift = 7; (b & 0x80) != 0; shift += 7)`
+    /// — **unbounded**: it keeps consuming bytes for as long as the
+    /// continuation bit is set, so a corrupt run of `0xFF` bytes reads on
+    /// until EOF while `(b & 0x7F) << shift` silently wraps `shift` mod 32.
+    /// (Lucene `main` later bounded it to `shift < 32`; this port predates
+    /// neither and deliberately matches neither on that path.) On
+    /// well-formed input all three agree byte for byte: `DataOutput.writeVInt`
+    /// never sets the fifth byte's continuation bit (that byte is always
+    /// `i >>> 28`, i.e. 4 bits). This port therefore stops at the fifth byte
+    /// and reports [`Error::MalformedVarint`] rather than either
+    /// half-decoding or running to EOF — a deliberate hardening of a path
+    /// only corrupt input can reach.
+    // ARITH: `shift` is compared against 28 before every increment, so it
+    // never leaves 7..=35; `wrapping_shl` already carries the shift semantics.
+    #[allow(clippy::arithmetic_side_effects)]
     #[inline]
     fn read_vint(&mut self) -> Result<i32> {
         let mut b = self.read_byte()?;
         let mut v = (b & 0x7f) as i32;
         let mut shift = 7;
         while b & 0x80 != 0 {
-            if shift > 28 + 7 {
+            if shift > 28 {
                 return Err(Error::MalformedVarint);
             }
             b = self.read_byte()?;
-            // Final (5th) byte contributes its low 4 bits into the sign area,
-            // matching Java's unchecked shift semantics.
+            // The final (5th) byte contributes its low 4 bits into the sign
+            // area; bits above that are shifted out, matching Java's
+            // `(b & 0x7F) << 28` on an `int`.
             v |= ((b & 0x7f) as i32).wrapping_shl(shift);
             shift += 7;
         }
         Ok(v)
     }
 
+    /// Lucene `readZInt`: zigzag-decoded vint, the 32-bit counterpart of
+    /// [`Self::read_zlong`] (stored fields' numeric ints, term-vector and
+    /// doc-values deltas). Small negative values cost one byte here, versus
+    /// the five a plain `readVInt` would spend.
+    #[inline]
+    fn read_zint(&mut self) -> Result<i32> {
+        Ok(lucene_util::zigzag::decode_i32(self.read_vint()? as u32))
+    }
+
     /// Lucene `readVLong` (non-negative on the wire; up to 9 bytes).
+    // ARITH: `shift` is compared against 64 before every increment.
+    #[allow(clippy::arithmetic_side_effects)]
     #[inline]
     fn read_vlong(&mut self) -> Result<i64> {
         let mut b = self.read_byte()?;
@@ -82,6 +110,8 @@ pub trait DataInput {
     }
 
     /// Lucene `readZLong`: zigzag-decoded vlong; full i64 range.
+    // ARITH: `shift` is compared against 70 after every increment.
+    #[allow(clippy::arithmetic_side_effects)]
     #[inline]
     fn read_zlong(&mut self) -> Result<i64> {
         // Same varint framing as vlong but must accept the 10-byte encoding of
@@ -105,6 +135,11 @@ pub trait DataInput {
     /// Lucene group-varint (`GroupVIntUtil.readGroupVInts`): full groups of 4
     /// values (1 flag byte + 1..4 LE bytes each), then a plain-vint tail.
     /// Values are unsigned 32-bit, widened to u64 like Lucene's `long[]` variant.
+    // ARITH: `i` walks `dst`'s own indices in steps of 4 under `i + 4 <=
+    // limit` / `i < limit`, and `n_minus_1` is a 2-bit field, so `i + j`,
+    // `i += 4` and `n_minus_1 + 1` are all bounded by `dst.len()` or by 4.
+    // Nothing here is sized by a value read off disk.
+    #[allow(clippy::arithmetic_side_effects)]
     fn read_group_vints(&mut self, dst: &mut [u64]) -> Result<()> {
         const MASKS: [u32; 4] = [0xFF, 0xFFFF, 0xFF_FFFF, u32::MAX];
         let limit = dst.len();
@@ -112,18 +147,26 @@ pub trait DataInput {
         while i + 4 <= limit {
             let flag = self.read_byte()? as usize;
             let lens = [(flag >> 6) & 3, (flag >> 4) & 3, (flag >> 2) & 3, flag & 3];
-            for (j, &n_minus_1) in lens.iter().enumerate() {
-                // Branchless fast path: over-read 4 LE bytes and mask, when safe.
-                let v = if self.remaining() >= 4 {
+            // Java decides once per group, not once per value: the branchless
+            // path over-reads up to 4 bytes for each of the four values, and
+            // the last one starts at most 12 bytes into the group, so
+            // `length - pos >= 4 * Integer.BYTES` is the single precondition
+            // that makes all four safe (`GroupVIntUtil.readGroupVInt`). Only
+            // the very last group of a file can fail it. A backend that
+            // cannot peek at all (no `RandomAccessInput` in Java's terms)
+            // falls back the same way.
+            if self.remaining() >= 16 && self.peek_u32_le().is_ok() {
+                for (j, &n_minus_1) in lens.iter().enumerate() {
                     let v = self.peek_u32_le()? & MASKS[n_minus_1];
                     self.skip(n_minus_1 + 1)?;
-                    v
-                } else {
+                    dst[i + j] = v as u64;
+                }
+            } else {
+                for (j, &n_minus_1) in lens.iter().enumerate() {
                     let mut b = [0u8; 4];
                     self.read_bytes(&mut b[..n_minus_1 + 1])?;
-                    u32::from_le_bytes(b)
-                };
-                dst[i + j] = v as u64;
+                    dst[i + j] = u32::from_le_bytes(b) as u64;
+                }
             }
             i += 4;
         }
@@ -134,8 +177,9 @@ pub trait DataInput {
         Ok(())
     }
 
-    /// Peek 4 LE bytes without advancing. Backends that can't peek may return Eof
-    /// to force the safe path in `read_group_vints`.
+    /// Peek 4 LE bytes without advancing. Backends that can't peek may return
+    /// `Eof` unconditionally: [`Self::read_group_vints`] probes this method
+    /// once per group and takes its byte-at-a-time path when the probe fails.
     fn peek_u32_le(&mut self) -> Result<u32>;
 
     fn skip(&mut self, n: usize) -> Result<()>;
@@ -165,11 +209,43 @@ pub trait DataInput {
     }
 
     /// Lucene `DataInput.readString`: vint byte-length prefix, UTF-8 payload.
+    ///
+    /// Two deliberate hardenings over Java, both about *corrupt* input only
+    /// (valid input decodes identically):
+    /// - a negative length is rejected rather than allocating; Java throws
+    ///   `NegativeArraySizeException` from `new byte[length]`, whereas
+    ///   `length as usize` here would be ~2^64 and abort the process on
+    ///   allocation failure — an abort cannot be caught at the FFI boundary.
+    /// - a length longer than the bytes actually remaining is rejected before
+    ///   allocating, so a 5-byte corrupt header cannot make us reserve 2GB.
+    /// - invalid UTF-8 is an error; Java's `new String(bytes, UTF_8)`
+    ///   silently substitutes U+FFFD, which would let a corrupt segment name
+    ///   or codec name compare unequal for a *different* reason later.
     fn read_string(&mut self) -> Result<String> {
-        let len = self.read_vint()? as usize;
+        let len = self.read_length("string")?;
         let mut buf = vec![0u8; len];
         self.read_bytes(&mut buf)?;
         String::from_utf8(buf).map_err(|_| Error::Corrupted("invalid UTF-8 string".into()))
+    }
+
+    /// Reads a vint length/count and validates it against what the input can
+    /// actually supply: negative is always corrupt, and a count larger than
+    /// the remaining byte count can never be satisfied (every element costs
+    /// at least one byte). Keeps corrupt input from driving an allocation.
+    #[inline]
+    fn read_length(&mut self, what: &str) -> Result<usize> {
+        let len = self.read_vint()?;
+        if len < 0 {
+            return Err(Error::Corrupted(format!("negative {what} length: {len}")));
+        }
+        let len = len as usize;
+        if len > self.remaining() {
+            return Err(Error::Corrupted(format!(
+                "{what} length {len} exceeds {} remaining bytes",
+                self.remaining()
+            )));
+        }
+        Ok(len)
     }
 
     /// Lucene `DataInput.readShort`: plain little-endian i16.
@@ -206,6 +282,12 @@ pub trait DataInput {
     }
 
     /// Lucene `DataInput.readLongs`: `count` consecutive little-endian i64s.
+    ///
+    /// Same story as [`Self::read_u32s_le`]: the default is Java's naive
+    /// per-word loop, and backends that can do one bounds check for the whole
+    /// run override it ([`SliceInput`] does, and `.liv` live-docs bitsets,
+    /// BKD leaf blocks and stored-fields bitsets all read hundreds of words
+    /// at a time through it).
     fn read_i64s(&mut self, dst: &mut [i64]) -> Result<()> {
         for slot in dst.iter_mut() {
             *slot = self.read_i64()?;
@@ -215,7 +297,10 @@ pub trait DataInput {
 
     /// Lucene `DataInput.readMapOfStrings`: vint count, then `count` (key, value) string pairs.
     fn read_map_of_strings(&mut self) -> Result<Vec<(String, String)>> {
-        let count = self.read_vint()? as usize;
+        // Each pair costs at least two bytes (two empty strings), so a count
+        // above `remaining()` is corrupt by construction -- checked before
+        // reserving, so a hand-crafted header can't request a huge Vec.
+        let count = self.read_length("map-of-strings")?;
         let mut out = Vec::with_capacity(count);
         for _ in 0..count {
             let k = self.read_string()?;
@@ -227,7 +312,7 @@ pub trait DataInput {
 
     /// Lucene `DataInput.readSetOfStrings`: vint count, then `count` strings.
     fn read_set_of_strings(&mut self) -> Result<Vec<String>> {
-        let count = self.read_vint()? as usize;
+        let count = self.read_length("set-of-strings")?;
         let mut out = Vec::with_capacity(count);
         for _ in 0..count {
             out.push(self.read_string()?);
@@ -323,6 +408,16 @@ impl<'a> SliceInput<'a> {
     }
 }
 
+// ARITH: `SliceInput` maintains `pos <= buf.len()` as its type invariant --
+// `seek` rejects anything past the end and every read advances `pos` only
+// after a successful `get`. So `len() - pos` cannot wrap, `pos + 1`/`pos + 4`
+// cannot overflow (`buf.len() <= isize::MAX`), and `pos += n` is guarded by
+// `remaining() < n` first. No value read off disk sizes any of it.
+//
+// This allow covers the whole impl, which is wider than
+// `docs/arithmetic-gate.md` prefers: **a method added here must re-verify the
+// invariant above for itself, or carry its own narrower allow.**
+#[allow(clippy::arithmetic_side_effects)]
 impl DataInput for SliceInput<'_> {
     #[inline]
     fn read_byte(&mut self) -> Result<u8> {
@@ -333,7 +428,7 @@ impl DataInput for SliceInput<'_> {
 
     #[inline]
     fn read_bytes(&mut self, out: &mut [u8]) -> Result<()> {
-        let end = self.pos + out.len();
+        let end = self.pos.checked_add(out.len()).ok_or_else(|| self.eof())?;
         let src = self.buf.get(self.pos..end).ok_or_else(|| self.eof())?;
         out.copy_from_slice(src);
         self.pos = end;
@@ -349,11 +444,33 @@ impl DataInput for SliceInput<'_> {
     fn read_u32s_le(&mut self, dst: &mut [u32]) -> Result<()> {
         // One bounds check for the whole run, then a straight-line copy: on a
         // little-endian target LLVM lowers the `chunks_exact` loop to a bulk
-        // move rather than per-word loads.
-        let end = self.pos + dst.len() * 4;
+        // move rather than per-word loads. `checked_*` because `len * 4` is
+        // the one arithmetic here that a caller-supplied length could
+        // overflow on a 32-bit target (where it would otherwise wrap to a
+        // *smaller* end offset and read the wrong bytes).
+        let end = dst
+            .len()
+            .checked_mul(4)
+            .and_then(|n| self.pos.checked_add(n))
+            .ok_or_else(|| self.eof())?;
         let src = self.buf.get(self.pos..end).ok_or_else(|| self.eof())?;
         for (d, c) in dst.iter_mut().zip(src.chunks_exact(4)) {
             *d = u32::from_le_bytes(c.try_into().unwrap());
+        }
+        self.pos = end;
+        Ok(())
+    }
+
+    #[inline]
+    fn read_i64s(&mut self, dst: &mut [i64]) -> Result<()> {
+        let end = dst
+            .len()
+            .checked_mul(8)
+            .and_then(|n| self.pos.checked_add(n))
+            .ok_or_else(|| self.eof())?;
+        let src = self.buf.get(self.pos..end).ok_or_else(|| self.eof())?;
+        for (d, c) in dst.iter_mut().zip(src.chunks_exact(8)) {
+            *d = i64::from_le_bytes(c.try_into().unwrap());
         }
         self.pos = end;
         Ok(())
@@ -380,6 +497,11 @@ impl DataInput for SliceInput<'_> {
 
 #[cfg(test)]
 mod tests {
+    // Test code opts out of the arithmetic gate at the module boundary: the
+    // gate exists for values read off disk, and a test's `i + 1` is not one.
+    // See `docs/arithmetic-gate.md`.
+    #![allow(clippy::arithmetic_side_effects)]
+
     use super::*;
     use proptest::prelude::*;
 
@@ -564,6 +686,63 @@ mod tests {
     }
 
     #[test]
+    fn vint_never_consumes_more_than_javas_five_bytes() {
+        // A well-formed vInt is at most five bytes, so a sixth continuation
+        // byte is corruption. Lucene 10.5.0 would keep consuming here (its
+        // loop is unbounded); this port stops at five and errors. Consuming a
+        // sixth *and returning a value* would desynchronize every field after
+        // this one in the same file, which is far worse than erroring.
+        let bytes = [0xFFu8, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x2A];
+        let mut input = SliceInput::new(&bytes);
+        assert!(matches!(input.read_vint(), Err(Error::MalformedVarint)));
+        assert_eq!(input.position(), 5, "must not read past the fifth byte");
+    }
+
+    #[test]
+    fn vint_fifth_byte_keeps_only_its_low_four_bits_like_java() {
+        // Java computes `i |= (b & 0x7F) << 28` on an int, so bits 4..6 of the
+        // fifth byte shift out entirely. 0x7F and 0x0F must decode alike.
+        let with_junk = [0x80u8, 0x80, 0x80, 0x80, 0x7F];
+        let clean = [0x80u8, 0x80, 0x80, 0x80, 0x0F];
+        assert_eq!(
+            SliceInput::new(&with_junk).read_vint().unwrap(),
+            SliceInput::new(&clean).read_vint().unwrap()
+        );
+        assert_eq!(
+            SliceInput::new(&clean).read_vint().unwrap(),
+            0xF000_0000u32 as i32
+        );
+    }
+
+    // --- zint (32-bit zigzag vint) ---
+
+    #[test]
+    fn zint_small_negatives_cost_one_byte_and_round_trip() {
+        for (v, want_len) in [
+            (0i32, 1),
+            (-1, 1),
+            (1, 1),
+            (-64, 1),
+            (i32::MIN, 5),
+            (i32::MAX, 5),
+        ] {
+            let bytes = encode_vint(lucene_util::zigzag::encode_i32(v) as i32);
+            assert_eq!(bytes.len(), want_len, "encoded length for {v}");
+            let mut input = SliceInput::new(&bytes);
+            assert_eq!(input.read_zint().unwrap(), v, "v={v}");
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn zint_roundtrips_any_i32(v: i32) {
+            let bytes = encode_vint(lucene_util::zigzag::encode_i32(v) as i32);
+            let mut input = SliceInput::new(&bytes);
+            prop_assert_eq!(input.read_zint().unwrap(), v);
+        }
+    }
+
+    #[test]
     fn vint_truncated_is_eof() {
         let bytes = [0x80u8]; // continuation bit set, no next byte
         let mut input = SliceInput::new(&bytes);
@@ -676,6 +855,64 @@ mod tests {
         assert_eq!(dst, [9, 8, 7, 6]);
     }
 
+    #[test]
+    fn group_vints_falls_back_when_the_backend_cannot_peek() {
+        // `PlainInput::peek_u32_le` always fails, the documented way a
+        // non-random-access backend opts out of the branchless path (Java's
+        // `instanceof RandomAccessInput` check). The values must still decode,
+        // and identically to the peeking backend.
+        let flag: u8 = (1 << 4) | (2 << 2) | 3;
+        let mut bytes = vec![flag];
+        bytes.extend_from_slice(&0x11u32.to_le_bytes()[..1]);
+        bytes.extend_from_slice(&0x2233u32.to_le_bytes()[..2]);
+        bytes.extend_from_slice(&0x44_5566u32.to_le_bytes()[..3]);
+        bytes.extend_from_slice(&0x7788_99AAu32.to_le_bytes()[..4]);
+        bytes.extend_from_slice(&[0u8; 16]); // plenty remaining, so only the peek probe decides
+
+        let mut fast = [0u64; 4];
+        SliceInput::new(&bytes).read_group_vints(&mut fast).unwrap();
+        let mut slow = [0u64; 4];
+        PlainInput {
+            buf: &bytes,
+            pos: 0,
+        }
+        .read_group_vints(&mut slow)
+        .unwrap();
+        assert_eq!(fast, [0x11, 0x2233, 0x44_5566, 0x7788_99AA]);
+        assert_eq!(fast, slow);
+    }
+
+    #[test]
+    fn group_vints_last_group_of_a_file_decodes_without_over_reading() {
+        // The final group sits within 16 bytes of EOF, so the branchless path
+        // is off (Java: `length - pos >= 4 * Integer.BYTES`). Widths here are
+        // 4,4,4,1: over-reading the third value would run past the buffer.
+        let flag: u8 = (3 << 6) | (3 << 4) | (3 << 2); // widths 4,4,4,1
+        let mut bytes = vec![flag];
+        bytes.extend_from_slice(&0xAABB_CCDDu32.to_le_bytes());
+        bytes.extend_from_slice(&0x0102_0304u32.to_le_bytes());
+        bytes.extend_from_slice(&0xDEAD_BEEFu32.to_le_bytes());
+        bytes.push(0x7F);
+        let mut dst = [0u64; 4];
+        let mut input = SliceInput::new(&bytes);
+        input.read_group_vints(&mut dst).unwrap();
+        assert_eq!(dst, [0xAABB_CCDD, 0x0102_0304, 0xDEAD_BEEF, 0x7F]);
+        assert_eq!(input.remaining(), 0, "consumed exactly the group's bytes");
+    }
+
+    #[test]
+    fn group_vints_truncated_group_is_eof_not_a_silent_zero() {
+        // Flag says the last value is 4 bytes wide but only 2 are present.
+        let flag: u8 = 3;
+        let bytes = vec![flag, 1, 2, 3, 4, 5];
+        let mut dst = [0u64; 4];
+        let mut input = SliceInput::new(&bytes);
+        assert!(matches!(
+            input.read_group_vints(&mut dst),
+            Err(Error::Eof { .. })
+        ));
+    }
+
     // --- big-endian primitives ---
 
     #[test]
@@ -714,6 +951,50 @@ mod tests {
         bytes.extend_from_slice(&[0xFF, 0xFE]); // not valid UTF-8
         let mut input = SliceInput::new(&bytes);
         assert!(matches!(input.read_string(), Err(Error::Corrupted(_))));
+    }
+
+    #[test]
+    fn string_with_a_negative_length_is_rejected_not_allocated() {
+        // Java throws NegativeArraySizeException here; `len as usize` would be
+        // ~2^64 and abort the process on allocation failure, which no
+        // `catch_unwind` at the FFI boundary can intercept.
+        let mut bytes = encode_vint(-1);
+        bytes.extend_from_slice(b"whatever");
+        let mut input = SliceInput::new(&bytes);
+        assert!(matches!(input.read_string(), Err(Error::Corrupted(_))));
+    }
+
+    #[test]
+    fn string_longer_than_the_input_is_rejected_before_allocating() {
+        let mut bytes = encode_vint(1 << 30); // 1GiB claimed, 3 bytes present
+        bytes.extend_from_slice(b"abc");
+        let mut input = SliceInput::new(&bytes);
+        assert!(matches!(input.read_string(), Err(Error::Corrupted(_))));
+    }
+
+    #[test]
+    fn collection_counts_beyond_the_input_are_rejected_before_reserving() {
+        // A three-byte file must not be able to ask for a 2^31-entry Vec.
+        let mut bytes = encode_vint(i32::MAX);
+        bytes.extend_from_slice(b"ab");
+        assert!(matches!(
+            SliceInput::new(&bytes).read_map_of_strings(),
+            Err(Error::Corrupted(_))
+        ));
+        assert!(matches!(
+            SliceInput::new(&bytes).read_set_of_strings(),
+            Err(Error::Corrupted(_))
+        ));
+
+        let negative = encode_vint(-3);
+        assert!(matches!(
+            SliceInput::new(&negative).read_map_of_strings(),
+            Err(Error::Corrupted(_))
+        ));
+        assert!(matches!(
+            SliceInput::new(&negative).read_set_of_strings(),
+            Err(Error::Corrupted(_))
+        ));
     }
 
     #[test]
@@ -793,6 +1074,45 @@ mod tests {
         let mut dst = [0i64; 3];
         input.read_i64s(&mut dst).unwrap();
         assert_eq!(dst, [1, -2, 3]);
+    }
+
+    #[test]
+    fn i64s_bulk_override_matches_the_default_implementation() {
+        let mut bytes = Vec::new();
+        for v in [1i64, -2, 3, i64::MIN, i64::MAX] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        let mut fast = [0i64; 5];
+        SliceInput::new(&bytes).read_i64s(&mut fast).unwrap();
+        let mut slow = [0i64; 5];
+        PlainInput {
+            buf: &bytes,
+            pos: 0,
+        }
+        .read_i64s(&mut slow)
+        .unwrap();
+        assert_eq!(fast, [1, -2, 3, i64::MIN, i64::MAX]);
+        assert_eq!(fast, slow);
+    }
+
+    #[test]
+    fn i64s_past_the_end_is_eof_and_consumes_nothing() {
+        let bytes = [0u8; 12]; // one word plus a partial one
+        let mut input = SliceInput::new(&bytes);
+        let mut words = [0i64; 2];
+        assert!(matches!(
+            input.read_i64s(&mut words),
+            Err(Error::Eof { .. })
+        ));
+        assert_eq!(input.position(), 0);
+    }
+
+    #[test]
+    fn i64s_of_nothing_is_a_no_op() {
+        let bytes = [1u8; 8];
+        let mut input = SliceInput::new(&bytes);
+        input.read_i64s(&mut []).unwrap();
+        assert_eq!(input.position(), 0);
     }
 
     // --- SliceInput cursor mechanics ---

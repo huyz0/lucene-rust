@@ -6,9 +6,13 @@
 //! cross-check (`.si` doc counts vs `.liv`, `.fnm` flags vs which files
 //! exist, postings re-derivation, points-tree invariants, etc). This module
 //! is that mode's equivalent: it opens the latest commit in a directory,
-//! and for every file every segment's [`crate::segment_info::SegmentInfo`]
-//! declares, re-reads the whole file and recomputes its CRC-32 via
-//! [`lucene_store::codec_util::check_footer`] (not
+//! and for every file every segment owns -- [`crate::segment_infos::SegmentCommitInfo::files`],
+//! i.e. the `.si`'s own list *plus* the commit-level `.liv`/field-infos/
+//! doc-values-update files, plus the `segments_N` file itself -- re-reads the
+//! whole file and recomputes its CRC-32 via
+//! [`lucene_store::codec_util::check_whole_file_footer`] -- the same
+//! `CodecUtil.checksumEntireFile` helper `merge.rs` runs on a merge source
+//! before a byte-copy and that `check_index`'s `file:*` checks use (not
 //! [`lucene_store::codec_util::retrieve_checksum`], which only validates the
 //! footer's *shape* without recomputing the CRC over the payload -- this
 //! tool's whole point is catching bit-rot/truncation/corruption in the
@@ -22,9 +26,16 @@
 //! decoding at all -- so it's a reasonable thing to run as a fast pre-flight
 //! before the full `check_index.rs` (or in a tight loop / on every commit)
 //! where the deeper tool would be too slow.
+// This module is *audited* against the arithmetic gate: no `+`/`-`/`*`/`<<`
+// in it may panic, because a verifier that panics on a corrupt file has
+// failed at its one job (and through the FFI a panic in a debug build takes
+// the JVM with it). Every operation here is `checked_*` with a reported
+// corruption, `saturating_*` where the saturation is unreachable or is itself
+// the honest answer for a counter, or a plain operator under an `#[allow]`
+// carrying an `// ARITH:` proof. See `docs/arithmetic-gate.md`.
+#![deny(clippy::arithmetic_side_effects)]
 
 use lucene_store::codec_util;
-use lucene_store::data_input::SliceInput;
 use lucene_store::Directory;
 
 use crate::segment_infos;
@@ -32,9 +43,11 @@ use crate::segment_infos;
 /// One file's checksum-verification outcome.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileCheck {
-    /// The segment this file belongs to (e.g. `_0`).
+    /// The segment this file belongs to (e.g. `_0`), or `""` for the
+    /// commit-level `segments_N` file, which belongs to no segment.
     pub segment_name: String,
-    /// The file name as recorded in `SegmentInfo.files` (e.g. `_0.fdt`).
+    /// The file name as recorded in `SegmentCommitInfo::files` (e.g.
+    /// `_0.fdt`, `_0_1.liv`).
     pub file_name: String,
     pub passed: bool,
     /// `"ok"` on success, or the error message on failure (missing file,
@@ -115,10 +128,25 @@ pub fn verify_directory(dir: &dyn Directory) -> segment_infos::Result<VerifyRepo
             }
         };
 
-        for file_name in &si.files {
+        // `SegmentCommitInfo.files()`, not `SegmentInfo.files`: the `.liv`,
+        // generational field-infos and doc-values-update files a delete or
+        // DV-update round produced are recorded on the *commit*, never in the
+        // already-written `.si`. Verifying only `si.files` silently skipped
+        // exactly the files most likely to have been written last.
+        for file_name in &commit.files(&si.files) {
             files.push(verify_file(dir, &commit.segment_name, file_name));
         }
     }
+
+    // The commit file itself. `segments_N` is the one file whose corruption
+    // makes the whole index unopenable, and it is in no segment's file list.
+    // `read_latest` above already verified its checksum on the way in, so a
+    // failure here is unreachable in practice -- it is recorded anyway so the
+    // report's file list is the commit's real file list.
+    if let Some(name) = lucene_store::directory::segments_file_name(infos.generation) {
+        files.push(verify_file(dir, "", &name));
+    }
+
     Ok(VerifyReport { files })
 }
 
@@ -138,22 +166,16 @@ fn verify_file(dir: &dyn Directory, segment_name: &str, file_name: &str) -> File
         }
     };
 
+    // `CodecUtil.checksumEntireFile` -- the same helper `merge.rs` calls
+    // before a byte-copy merge (batch c4's `StoredFieldsReader::check_integrity`)
+    // and the same one `check_index`'s `file:*` checks now use, rather than a
+    // third hand-rolled seek-to-footer-then-`check_footer` sequence.
+    // `check_whole_file_footer` reports the "file shorter than a footer" case
+    // itself, via `check_footer`'s own `total_len < FOOTER_LENGTH` guard.
     let total_len = bytes.len();
-    let result = if total_len < codec_util::FOOTER_LENGTH {
-        Err(format!(
-            "misplaced codec footer (file truncated?): length={total_len} but footerLength=={}",
-            codec_util::FOOTER_LENGTH
-        ))
-    } else {
-        let footer_start = total_len - codec_util::FOOTER_LENGTH;
-        let mut input = SliceInput::new(&bytes);
-        input
-            .seek(footer_start)
-            .map_err(|e| e.to_string())
-            .and_then(|_| {
-                codec_util::check_footer(&mut input, total_len).map_err(|e| e.to_string())
-            })
-    };
+    let payload_end = total_len.saturating_sub(codec_util::FOOTER_LENGTH);
+    let result =
+        codec_util::check_whole_file_footer(&bytes, payload_end).map_err(|e| e.to_string());
 
     match result {
         Ok(_) => FileCheck {
@@ -173,6 +195,11 @@ fn verify_file(dir: &dyn Directory, segment_name: &str, file_name: &str) -> File
 
 #[cfg(test)]
 mod tests {
+    // Test code opts out of the arithmetic gate at the module boundary: the
+    // gate exists for values read off disk, not for a test's own index
+    // arithmetic. See `docs/arithmetic-gate.md`.
+    #![allow(clippy::arithmetic_side_effects)]
+
     use super::*;
     use lucene_codecs::field_infos::{
         DocValuesSkipIndexType, DocValuesType, FieldInfo, IndexOptions, VectorEncoding,
@@ -236,25 +263,18 @@ mod tests {
         }
     }
 
-    /// Matches `check_index.rs`'s own test convention: a unique directory
-    /// under the system temp dir, no external tempdir crate needed.
-    fn tempdir() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "lucene_rust_checksum_verify_test_{}_{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    /// Matches `check_index.rs`'s convention -- and, like it, returns a guard
+    /// that removes the directory unless the test is panicking. The old form
+    /// leaked one directory per test into a tmpfs; see
+    /// [`lucene_util::test_support`].
+    fn tempdir() -> lucene_util::test_support::TempDir {
+        lucene_util::test_support::TempDir::new("checksum-verify")
     }
 
     /// Writes a real, valid 2-segment commit (mirroring
     /// `examples/write_multi_segment_commit_fixture.rs`'s shape) to a fresh
     /// temp directory, returning the directory path.
-    fn write_multi_segment_commit() -> std::path::PathBuf {
+    fn write_multi_segment_commit() -> lucene_util::test_support::TempDir {
         let tmp = tempdir();
         let dir = FsDirectory::open(&tmp);
         let fields = vec![stored_only_field("id", 0), stored_only_field("body", 1)];
@@ -403,6 +423,63 @@ mod tests {
         assert!(report.failures()[0].message.contains("truncated"));
     }
 
+    /// A `.liv` file lives on the `SegmentCommitInfo`, never in the `.si`'s
+    /// own file list -- verifying only `si.files` skipped it entirely, which
+    /// meant a corrupted live-docs file (the most recently written file in
+    /// any index that has taken deletes) passed a "clean" checksum run.
+    #[test]
+    fn live_docs_file_is_verified_and_its_corruption_detected() {
+        let tmp = write_multi_segment_commit();
+        let dir = FsDirectory::open(&tmp);
+
+        // Delete a doc from _0 so a real `_0_1.liv` exists, then republish the
+        // commit with the bumped SegmentCommitInfo.
+        let mut infos = segment_infos::read_latest(&dir).unwrap();
+        let updated =
+            crate::deletes::apply_deletes(&dir, &infos.segments[0], None, 2, [1]).unwrap();
+        let liv_name = crate::deletes::liv_file_name(&updated.segment_name, updated.del_gen);
+        infos.segments[0] = updated;
+        infos.generation = 2;
+        segment_infos::write(&infos, &dir).unwrap();
+
+        let report = verify_directory(&dir).unwrap();
+        assert!(
+            report.files.iter().any(|f| f.file_name == liv_name),
+            "the .liv file must be in the verified set: {:?}",
+            report
+                .files
+                .iter()
+                .map(|f| &f.file_name)
+                .collect::<Vec<_>>()
+        );
+        assert!(report.all_passed(), "{:?}", report.failures());
+
+        // Corrupt it and confirm the checksum pass catches it.
+        let path = tmp.join(&liv_name);
+        let mut bytes = std::fs::read(&path).unwrap();
+        let flip_at = bytes.len() - codec_util::FOOTER_LENGTH - 1;
+        bytes[flip_at] ^= 0xFF;
+        std::fs::write(&path, &bytes).unwrap();
+
+        let report = verify_directory(&dir).unwrap();
+        assert_eq!(report.failed_count(), 1);
+        assert_eq!(report.failures()[0].file_name, liv_name);
+    }
+
+    /// The commit file itself is in no segment's file list, so it has to be
+    /// added explicitly or the report silently omits the one file whose loss
+    /// makes the index unopenable.
+    #[test]
+    fn segments_file_itself_is_in_the_verified_set() {
+        let tmp = write_multi_segment_commit();
+        let dir = FsDirectory::open(&tmp);
+        let report = verify_directory(&dir).unwrap();
+        assert!(
+            report.files.iter().any(|f| f.file_name == "segments_1"),
+            "segments_1 must be verified"
+        );
+    }
+
     #[test]
     fn missing_commit_is_an_error() {
         let tmp = tempdir();
@@ -416,5 +493,75 @@ mod tests {
         assert_eq!(report.total(), 0);
         assert_eq!(report.failed_count(), 0);
         assert!(report.all_passed());
+    }
+
+    /// A segment whose `.si` is *missing* must be reported as a single failed
+    /// `.si` entry, not silently skipped: without the `.si` this verifier has
+    /// no file list for that segment, so skipping it would report "all
+    /// passed" for an index whose whole segment is unreadable.
+    #[test]
+    fn a_missing_si_is_reported_and_the_other_segment_still_verified() {
+        let tmp = write_multi_segment_commit();
+        let dir = FsDirectory::open(&tmp);
+        let infos = segment_infos::read_latest(&dir).unwrap();
+        let victim = infos.segments[0].segment_name.clone();
+        let survivor = infos.segments[1].segment_name.clone();
+        let clean_total = verify_directory(&dir).unwrap().total();
+        std::fs::remove_file(tmp.join(format!("{victim}.si"))).unwrap();
+
+        let dir = FsDirectory::open(&tmp);
+        let report = verify_directory(&dir).unwrap();
+        assert!(!report.all_passed());
+        let failures = report.failures();
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert_eq!(failures[0].file_name, format!("{victim}.si"));
+        assert_eq!(failures[0].segment_name, victim);
+        // The rest of the commit is still verified rather than abandoned.
+        assert!(
+            report
+                .files
+                .iter()
+                .any(|f| f.segment_name == survivor && f.passed),
+            "the surviving segment's files must still be checked: {:?}",
+            report
+                .files
+                .iter()
+                .map(|f| &f.file_name)
+                .collect::<Vec<_>>()
+        );
+        assert!(report.total() < clean_total);
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// The same, for a `.si` that exists but does not parse. This is a
+    /// separate arm from the missing-file one above (a different `match`
+    /// branch) and a different failure message, and it is the more likely of
+    /// the two in practice -- a torn write leaves the file present.
+    #[test]
+    fn an_unparsable_si_is_reported_rather_than_skipping_the_segment() {
+        let tmp = write_multi_segment_commit();
+        let dir = FsDirectory::open(&tmp);
+        let infos = segment_infos::read_latest(&dir).unwrap();
+        let victim = infos.segments[0].segment_name.clone();
+        let si_path = tmp.join(format!("{victim}.si"));
+
+        // Truncate to the codec header alone: the header still validates, so
+        // this reaches `segment_info::parse`'s own decode failure rather than
+        // the open failure above.
+        let bytes = std::fs::read(&si_path).unwrap();
+        std::fs::write(&si_path, &bytes[..40.min(bytes.len())]).unwrap();
+
+        let dir = FsDirectory::open(&tmp);
+        let report = verify_directory(&dir).unwrap();
+        let failures = report.failures();
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert_eq!(failures[0].file_name, format!("{victim}.si"));
+        assert!(
+            !failures[0].message.is_empty(),
+            "the parse error must be carried through to the report"
+        );
+
+        std::fs::remove_dir_all(&tmp).ok();
     }
 }

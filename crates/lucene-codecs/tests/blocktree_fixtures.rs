@@ -11,6 +11,11 @@
 //! against the `many` field (400 terms, multi-block/floor-split) via real
 //! `TermsEnum.next()`/`seekCeil()` ground truth.
 //! Regenerate with `fixtures/src/GenBlockTree.java`.
+// Test-support code opts out of the arithmetic gate at the file boundary:
+// the gate exists for values read off disk in production decode paths, not
+// for a fixture builder's own index arithmetic. See
+// `docs/arithmetic-gate.md`.
+#![allow(clippy::arithmetic_side_effects)]
 
 use lucene_codecs::blocktree;
 use lucene_codecs::field_infos;

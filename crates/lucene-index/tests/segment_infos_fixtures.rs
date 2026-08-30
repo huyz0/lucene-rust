@@ -1,5 +1,10 @@
 //! Differential test against a real `segments_N` file written by an actual
 //! IndexWriter across two commits. Regenerate with fixtures/src/GenSegmentInfos.java.
+// Test-support code opts out of the arithmetic gate at the file boundary:
+// the gate exists for values read off disk in production decode paths, not
+// for a fixture builder's own index arithmetic. See
+// `docs/arithmetic-gate.md`.
+#![allow(clippy::arithmetic_side_effects)]
 
 use lucene_index::segment_infos;
 
@@ -46,7 +51,7 @@ fn parses_real_two_commit_index() {
     let segments_file_name = manifest.get("segments_file_name");
     let generation = manifest.get_i64("generation");
 
-    let buf = std::fs::read(format!("{}{}.raw", dir(), segments_file_name)).unwrap();
+    let buf = std::fs::read(format!("{}expected_{}.bin", dir(), segments_file_name)).unwrap();
     let sis = segment_infos::parse(&buf, generation).unwrap();
 
     assert_eq!(sis.generation, generation);
@@ -102,6 +107,6 @@ fn parses_real_two_commit_index() {
 fn wrong_generation_suffix_rejected() {
     let manifest = Manifest::load();
     let segments_file_name = manifest.get("segments_file_name");
-    let buf = std::fs::read(format!("{}{}.raw", dir(), segments_file_name)).unwrap();
+    let buf = std::fs::read(format!("{}expected_{}.bin", dir(), segments_file_name)).unwrap();
     assert!(segment_infos::parse(&buf, 999).is_err());
 }

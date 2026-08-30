@@ -12,6 +12,11 @@
 //!
 //! Regenerate with `fixtures/src/GenFstDirectAddressing.java` (see
 //! `fixtures/README.md`).
+// Test-support code opts out of the arithmetic gate at the file boundary:
+// the gate exists for values read off disk in production decode paths, not
+// for a fixture builder's own index arithmetic. See
+// `docs/arithmetic-gate.md`.
+#![allow(clippy::arithmetic_side_effects)]
 
 use lucene_codecs::fst::Fst;
 use lucene_store::data_input::SliceInput;

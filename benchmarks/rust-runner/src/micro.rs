@@ -28,7 +28,11 @@ use lucene_store::MmapDirectory;
 fn block_for(bits: u32) -> [u32; BLOCK_SIZE] {
     let mut out = [0u32; BLOCK_SIZE];
     let mut state: u32 = 0x9E37_79B9 ^ bits;
-    let mask: u32 = if bits >= 32 { u32::MAX } else { (1u32 << bits) - 1 };
+    let mask: u32 = if bits >= 32 {
+        u32::MAX
+    } else {
+        (1u32 << bits) - 1
+    };
     for slot in out.iter_mut() {
         state ^= state << 13;
         state ^= state >> 17;
@@ -81,7 +85,12 @@ fn bench_for_decode(warmup: Duration, measure: Duration) {
     for bits in 1..=31u32 {
         let values = block_for(bits);
         let mut bytes = Vec::new();
-        for_util::for_encode(&values, bits, &mut bytes);
+        // `for_encode` packs in place and consumes its input, as
+        // `ForUtil.encode(int[], ...)` does -- so the fixture is encoded from a
+        // scratch copy and `values` stays the pristine expectation the
+        // round-trip guard below compares against.
+        let mut scratch = values;
+        for_util::for_encode(&mut scratch, bits, &mut bytes);
 
         let mut decoded = [0u32; BLOCK_SIZE];
         // One decoder held across every iteration, mirroring the Java harness's
@@ -316,7 +325,9 @@ fn main() {
     let warmup = ms("MICRO_WARMUP_MS", 1500);
     let measure = ms("MICRO_MEASURE_MS", 2000);
 
-    let which = std::env::args().nth(1).unwrap_or_else(|| "for_decode".into());
+    let which = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "for_decode".into());
     match which.as_str() {
         "for_decode" => bench_for_decode(warmup, measure),
         "direct_reader" => bench_direct_reader(warmup, measure),

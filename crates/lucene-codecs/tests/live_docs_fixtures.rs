@@ -1,6 +1,11 @@
 //! Differential test against a real `.liv` file written by an actual IndexWriter
 //! (5 docs, 2 deleted by term, NoMergePolicy so the segment isn't merged away).
 //! Regenerate with fixtures/src/GenLiveDocs.java.
+// Test-support code opts out of the arithmetic gate at the file boundary:
+// the gate exists for values read off disk in production decode paths, not
+// for a fixture builder's own index arithmetic. See
+// `docs/arithmetic-gate.md`.
+#![allow(clippy::arithmetic_side_effects)]
 
 use lucene_codecs::live_docs;
 

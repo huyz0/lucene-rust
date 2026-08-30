@@ -749,11 +749,29 @@ disqualifying for M2 and M5 regardless of how fast queries then run. The memory
 side is worse in a way this benchmark does not show at all: one `Vec<u8>` per
 term per field per segment, live for as long as the reader is.
 
-**Filed, not fixed.** Replacing it means implementing real block-tree
-navigation — FST arc walking to a block, frame-based suffix scanning, lazy
-metadata decode — which is a milestone in its own right and touches the largest
-file in the codec crate. The sweep's contribution is the number: 135x, on an
-operation nobody had measured.
+**Filed, not fixed** *(at the time)*. Replacing it means implementing real
+block-tree navigation — FST arc walking to a block, frame-based suffix
+scanning, lazy metadata decode — which is a milestone in its own right and
+touches the largest file in the codec crate. The sweep's contribution is the
+number: 135x, on an operation nobody had measured.
+
+> **Fixed by the M2 follow-up batch `c1-lazy-blocktree`.** Two corrections to
+> the diagnosis above, both established before the fix: most of the 560 ms was
+> `DirectoryReader`'s `open_segment_file` copying every mmap'd postings file
+> onto the heap, not this module (M1.6 re-measured the residue at 52.7 ms);
+> and the `.tip` term index in the pinned Lucene 10.5.0 is a `TrieReader`
+> binary trie, not an FST, so the fix routes through `TrieReader.lookupChild`
+> and never touches `fst.rs` — which is why D2 below is a mis-diagnosis, not a
+> consequence. `blocktree.rs` now ports `SegmentTermsEnum` and
+> `SegmentTermsEnumFrame`: `open` reads only the `.tmd` records plus each
+> field's root trie node, and a lookup loads the one block it reaches.
+> Measured on the M1 corpus' 579k-term real-Lucene segment: `blocktree::open`
+> **35.4 ms → 0.175 ms (202x)**, now *below* Lucene's whole
+> `DirectoryReader.open` (0.310 ms); live heap per segment **+39.0 MB →
+> +4.7 MB**; and the hot seek loop holds up against Lucene's own — interleaved
+> A/B on the same 2000 terms in the same order, a cold hit costs 495 ns
+> against Lucene's 440 ns (1.13x) and a miss 215 ns against 263 ns. See
+> `docs/sweep/m2/c1-lazy-blocktree.md`.
 
 ### D2 — `fst.rs` is complete, fixture-verified, and unused by the read path
 
@@ -820,6 +838,34 @@ test cannot pass by both paths being wrong identically.
 **This is a fix at the caller, not at the defect.** The three `doc_values.rs`
 sites are free functions with no natural owner and are unchanged; sorting and
 faceting on a sparse field are still quadratic.
+
+**Superseded by c6 (M2 sweep).** Once O20 made `IndexedDISI` a real cursor, the
+`Vec<i32>` was no longer a fix but a cost: it was allocated and filled in every
+`FieldNorms` constructor, i.e. once per query per leaf, to save a walk the
+cursor does for free. `FieldNorms` now holds only the region slice, and
+`FieldNorms::cursor()` hands each scan its own `FieldNormsCursor` -- Lucene's
+per-scorer `NumericDocValues`, with `FieldNorms` playing the shared
+`SegmentCoreReaders` entry, which is what keeps it `Sync` for `multi_segment.rs`'
+rayon fan-out. At 100,000 present documents: construction 140 us -> 493 ns and
+O(cardinality) -> O(1) -- the part that matters, because a `FieldNorms` is built
+per query per leaf -- and a whole query's scan 1.74 ms -> 799 us, with the `Vec`
+(400 KB at that cardinality, per query per leaf) gone.
+
+The cost **moved** rather than only shrinking, and the honest accounting belongs
+here: an *isolated* random lookup is now 14x slower (171 ns for a one-shot
+cursor walking block headers from the start, against 12 ns for a binary search
+over a prebuilt `Vec`). A warm cursor's forward step is 9.8 ns and flat in
+cardinality where the search is logarithmic, so a scan comes out ahead; the only
+caller doing isolated lookups is `explain`, one document at a time, where 160 ns
+is invisible next to a construction that got 283x cheaper.
+
+c6's first cut of the benchmark claimed 1,183x on that lookup, by rebuilding the
+`Vec` inside `b.iter()` while the cursor arm reused a structure built outside --
+it was measuring construction and reporting it as lookup. Caught by that batch's
+own Tier-2 review; the benchmark now builds both arms outside the timed loop for
+`lookup_only`, both inside it for `per_query_scan`, and adds a fourth group for
+the warm step a scan actually pays. See
+`docs/sweep/m2/c6-search-followups.md`.
 
 ### O20 — the `IndexedDISI` cursor (fixed)
 
@@ -1548,6 +1594,18 @@ Recorded as a parity gap with a measurement attached rather than left as a
 scope note. `prefix`, `wildcard` and `regexp` are genuinely constant-scoring in
 both engines, so only fuzzy is affected.
 
+**Fixed by M2 sweep `b8-automata-analysis`.** The default rewrite is
+`MultiTermQuery.TopTermsBlendedFreqScoringRewrite`: `FuzzyTermsEnum.next`
+publishes `1 - ed/min(len(term), len(query term))` through `BoostAttribute`,
+`TopTermsRewrite.build` clamps it with `Math.max(0.0f, boost)`, and
+`BlendedTermQuery.rewrite` gives every selected term the *max* `docFreq` across
+them before turning them into `SHOULD` clauses. `lucene_search::fuzzy_doc_scores`
+now does exactly that. The same finding also turned up a second, larger one:
+`max_expansions` kept the first N terms in term-dictionary order where
+`TopTermsRewrite.collect`'s queue keeps the highest-boost N -- so the **hit
+set**, not just the ranking, was wrong. See `docs/sweep/m2/b8-automata-analysis.md`
+F23/F24.
+
 ### Still unswept
 
 The term enumeration is a prefix-range scan where Lucene intersects a compiled
@@ -1989,3 +2047,41 @@ finding an eighth defect.
 The segment-level surface is now checked for stored fields, postings, the term
 dictionary, norms and doc values together. Points and term vectors are the two
 formats the fixture still does not write.
+
+---
+
+## M2 b13 — handed to other batches
+
+### `search_term_query_scored_maxscore_with_stats` drops its reader-wide statistics (`lucene-search/src/lib.rs`, owner b12)
+
+The function takes `global: Option<CollectionStats>` — the reader-wide
+`docFreq`/`docCount` `IndexSearcher` gathers before scoring any leaf — and then
+returns `search_term_query_scored(...)`, the **no-stats** entry point, on each
+of its three fallback paths: no `.doc` input, `docFreq <= 1`, and a
+`LazyDocsCursor::Unsupported` index option. The leaf silently reverts to its own
+counters.
+
+That is the cross-segment idf bug `multi_segment.rs`'s own module doc records,
+alive on a path nothing tested. On a two-segment index where a term appears in
+1 of 1 documents in one leaf and 1 of 4 in the other, the three candidate idfs
+are 0.288 (leaf A), 1.204 (leaf B) and 0.876 (reader-wide): the merged top-k
+fills from whichever leaf makes the term look rarest.
+
+The existing `..._concurrent_matches_sequential` test cannot see it — it
+duplicates one fixture segment whose `docFreq` is exactly half its `docCount`,
+and `idf(d, 2d) == idf(2d, 4d) == ln 2`, so summing the counters is numerically
+invisible there.
+
+b13 worked around it at the caller
+(`multi_segment::maxscore_keeps_global_stats` routes such a leaf through the
+eager `search_term_query_scored_with_stats`, which honours `global` correctly,
+and keeps the pruned path otherwise) because `lib.rs` was another batch's
+in-flight file. **The fix belongs in `lib.rs`**: those three `return`s should
+forward `global` to `search_term_query_scored_with_stats` rather than calling
+the no-stats variant, after which the caller-side guard can be deleted.
+
+Pinned by
+`multi_segment::tests::global_stats_across_concurrent_leaves::concurrent_term_query_uses_reader_wide_idf_like_the_sequential_path`,
+which builds two deliberately lopsided real segments through `IndexWriter` and
+asserts the score is the reader-wide idf rather than either leaf's own — so
+"sequential and concurrent are both wrong the same way" cannot pass it.

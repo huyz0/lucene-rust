@@ -35,7 +35,7 @@
 //! `deletes.rs`'s module doc for why.
 
 use lucene_codecs::blocktree::BlockTreeFields;
-use lucene_codecs::postings::DocInput;
+use lucene_codecs::postings::{DocInput, PostingsFlags};
 use lucene_util::fixed_bit_set::FixedBitSet;
 
 use lucene_store::directory::Directory;
@@ -83,15 +83,39 @@ pub fn resolve_term_doc_ids(
     let Some(field_terms) = fields.field(field) else {
         return Ok(Vec::new());
     };
-    let Some(postings) = field_terms.postings(term, doc_in)? else {
+    // Doc ids only: this path never looks at a frequency, so Java's
+    // `PostingsEnum.NONE` is the honest flag mask -- and it turns every
+    // 256-value `PForUtil` frequency unpack in the term's `.doc` blocks into
+    // a token byte plus a seek (`PForUtil.skip`).
+    let Some(postings) = field_terms.postings_with_flags(term, doc_in, PostingsFlags::DocsOnly)?
+    else {
         return Ok(Vec::new());
     };
-    Ok(postings
-        .docs
-        .iter()
-        .copied()
-        .filter(|&doc_id| live_docs.is_none_or(|bits| bits.get(doc_id as usize)))
-        .collect())
+    let Some(bits) = live_docs else {
+        // No `.liv` yet: every doc is live, and an out-of-range doc ID is
+        // `deletes::mark_deleted`'s to reject (it has `max_doc`; this function
+        // does not).
+        return Ok(postings.docs.clone());
+    };
+    // `FixedBitSet::get` indexes `words[index >> 6]`, so a doc ID the postings
+    // decoder produced out of range -- negative, or past this segment's
+    // `maxDoc` -- is an **index panic** here, in release as well as debug,
+    // rather than the `DocOutOfRange` error the apply half would have raised
+    // for the identical value had `live_docs` been `None`. Checking the bound
+    // makes both paths report the same corruption. The check is a compare
+    // against a value hoisted out of the loop, not a per-doc reload.
+    let max_doc = bits.len();
+    let mut out = Vec::new();
+    for &doc_id in &postings.docs {
+        let idx = usize::try_from(doc_id)
+            .ok()
+            .filter(|idx| *idx < max_doc)
+            .ok_or(deletes::Error::DocOutOfRange { doc_id, max_doc })?;
+        if bits.get(idx) {
+            out.push(doc_id);
+        }
+    }
+    Ok(out)
 }
 
 /// The full single-segment "resolve then apply" delete-by-term flow: resolves
@@ -131,6 +155,10 @@ pub fn resolve_and_apply_term_delete(
 
 #[cfg(test)]
 mod tests {
+    // The arithmetic gate is about values read off disk; a fixture builder's
+    // `i * 2` is not one (see `docs/arithmetic-gate.md`).
+    #![allow(clippy::arithmetic_side_effects)]
+
     use super::*;
     use lucene_codecs::blocktree;
     use lucene_codecs::field_infos;
@@ -223,21 +251,16 @@ mod tests {
             sci_id: None,
             field_infos_files: vec![],
             dv_update_files: vec![],
+            ..Default::default()
         }
     }
 
-    fn tempdir() -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        p.push(format!(
-            "lucene-rust-term-delete-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&p).unwrap();
-        p
+    use lucene_util::test_support::TempDir;
+
+    /// A scratch directory that removes itself when the test ends -- unless
+    /// the test is panicking, in which case its bytes stay for inspection.
+    fn tempdir() -> TempDir {
+        TempDir::new("term-delete")
     }
 
     // --- resolve_term_doc_ids ---
@@ -289,6 +312,63 @@ mod tests {
         let docs =
             resolve_term_doc_ids(&fx.fields, Some(&doc_in), Some(&live), "body", b"cat").unwrap();
         assert_eq!(docs, vec![2]); // doc 0 filtered out, doc 2 remains
+    }
+
+    /// A `.doc` file whose posting list names a doc ID past this segment's
+    /// `maxDoc` used to reach `FixedBitSet::get` directly, and that method
+    /// indexes `words[index >> 6]` while only `debug_assert`ing the bound. So
+    /// the unfixed code had two failure modes, both wrong and neither an
+    /// error: the assertion fires in a debug build, and in a release build the
+    /// read either **panics on the `words` index** (once the ID is 64 or more
+    /// past the end, so the word index escapes the `Vec`) or silently returns
+    /// a *ghost bit* from beyond `num_bits`, treating an out-of-range doc as
+    /// live or dead according to stale memory.
+    ///
+    /// Both cases are covered below, and both matter because the identical
+    /// value with `live_docs == None` was already reported as `DocOutOfRange`
+    /// by the apply half — so whether corruption surfaced as a typed error or
+    /// as a crash depended only on whether the segment happened to have
+    /// deletions yet.
+    #[test]
+    fn a_doc_id_past_the_live_docs_bitset_is_an_error_not_an_index_panic() {
+        let fx = open_fixture();
+        let doc_in = fx.doc_in();
+
+        // Empty bitset: `bits2words(0) == 0`, so `words` is empty and *any*
+        // doc ID makes `words[id >> 6]` an out-of-bounds index — the release
+        // panic, not just the debug assertion.
+        let empty = FixedBitSet::new(0);
+        let err = resolve_term_doc_ids(&fx.fields, Some(&doc_in), Some(&empty), "body", b"cat")
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                Error::Deletes(deletes::Error::DocOutOfRange {
+                    doc_id: 0,
+                    max_doc: 0
+                })
+            ),
+            "unexpected error: {err}"
+        );
+
+        // A bitset one word long but shorter than the segment: the fixture's
+        // doc 2 is past `num_bits` yet still inside `words`, which is the
+        // ghost-bit half.
+        let mut short = FixedBitSet::new(2);
+        short.set(0);
+        short.set(1);
+        let err = resolve_term_doc_ids(&fx.fields, Some(&doc_in), Some(&short), "body", b"cat")
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                Error::Deletes(deletes::Error::DocOutOfRange {
+                    doc_id: 2,
+                    max_doc: 2
+                })
+            ),
+            "unexpected error: {err}"
+        );
     }
 
     // --- resolve_and_apply_term_delete: real Directory I/O ---

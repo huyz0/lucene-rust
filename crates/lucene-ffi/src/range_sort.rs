@@ -68,8 +68,8 @@ use lucene_search::multi_segment::{self, DocValueSegment};
 use lucene_search::SortDirection;
 
 use crate::error::{guard, set_last_error, FfiStatus};
-use crate::raw::str_from_raw;
-use crate::registry::{lock_recovering, segments, sorted_results, SortedResultsHandle};
+use crate::raw::{str_from_raw, try_to_vec, try_with_capacity};
+use crate::registry::{read_recovering, segments, sorted_results, SortedResultsHandle};
 use crate::sort::{map_sort_error, missing_value, numeric_entry_for};
 
 /// Parses `direction`'s `0`/`1` wire encoding into a [`SortDirection`], or
@@ -102,7 +102,7 @@ unsafe fn u64_slice_from_raw(ptr: *const u64, len: usize) -> Result<Vec<u64>, Ff
         };
     }
     // SAFETY: caller contract guarantees `ptr` is valid for `len` `u64`s.
-    Ok(unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec())
+    try_to_vec(unsafe { std::slice::from_raw_parts(ptr, len) })
 }
 
 /// Reads `len` `i32`s from `ptr` into an owned `Vec<i32>` -- same convention
@@ -119,7 +119,7 @@ unsafe fn i32_slice_from_raw(ptr: *const i32, len: usize) -> Result<Vec<i32>, Ff
         };
     }
     // SAFETY: caller contract guarantees `ptr` is valid for `len` `i32`s.
-    Ok(unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec())
+    try_to_vec(unsafe { std::slice::from_raw_parts(ptr, len) })
 }
 
 /// Runs `search_numeric_range_sorted_by_field` against `segment_handle`:
@@ -168,7 +168,7 @@ pub unsafe extern "C" fn ffi_search_numeric_range_sorted_by_field(
             )
         };
 
-        let segments_registry = lock_recovering(segments());
+        let segments_registry = read_recovering(segments());
         let segment = segments_registry.get(segment_handle).ok_or_else(|| {
             set_last_error(
                 "ffi_search_numeric_range_sorted_by_field: unknown or already-closed segment handle",
@@ -176,20 +176,21 @@ pub unsafe extern "C" fn ffi_search_numeric_range_sorted_by_field(
             FfiStatus::InvalidHandle
         })?;
 
-        let range_entry = numeric_entry_for(segment, range_field)?;
-        let sort_entry = numeric_entry_for(segment, sort_field)?;
-        // `dv_meta` being `Some` (checked by `numeric_entry_for` above)
-        // implies `dv_data` is also `Some` -- see `SegmentHandle`'s doc
-        // comment.
-        let dv_data = segment.dv_data.as_deref().unwrap_or(&[]);
+        // Each field is resolved together with the `.dvd` bytes it lives in:
+        // after a doc-values update the range field and the sort field can
+        // genuinely be in different columns (the updated one in its
+        // generation, the other in the base pair).
+        let (range_entry, range_data) = numeric_entry_for(segment, range_field)?;
+        let (sort_entry, sort_data) = numeric_entry_for(segment, sort_field)?;
 
         let hits = doc_value_query::search_numeric_range_sorted_by_field(
-            dv_data,
+            range_data,
             range_entry,
-            None,
+            segment.live_docs.as_ref(),
             segment.max_doc,
             min,
             max,
+            sort_data,
             sort_entry,
             direction,
             missing_value(missing_is_default, missing_default),
@@ -197,9 +198,9 @@ pub unsafe extern "C" fn ffi_search_numeric_range_sorted_by_field(
         )
         .map_err(map_sort_error)?;
 
-        let handle = lock_recovering(sorted_results()).insert(SortedResultsHandle {
+        let handle = sorted_results().insert_checked(SortedResultsHandle {
             pairs: hits.into_iter().map(|h| (h.doc_id, h.value)).collect(),
-        });
+        })?;
         // SAFETY: caller contract guarantees `out_sorted_results_handle` is
         // valid for one write.
         unsafe {
@@ -265,8 +266,8 @@ pub unsafe extern "C" fn ffi_search_numeric_range_sorted_by_field_multi_segment(
         // here (or one already errored above) -- no length-mismatch check
         // needed, unlike a caller-supplied-length-per-array API would need.
 
-        let segments_registry = lock_recovering(segments());
-        let mut opened = Vec::with_capacity(segment_handles.len());
+        let segments_registry = read_recovering(segments());
+        let mut opened = try_with_capacity(segment_handles.len())?;
         for &handle in &segment_handles {
             let segment = segments_registry.get(handle).ok_or_else(|| {
                 set_last_error(
@@ -277,16 +278,43 @@ pub unsafe extern "C" fn ffi_search_numeric_range_sorted_by_field_multi_segment(
             opened.push(segment);
         }
 
-        let mut doc_value_segments = Vec::with_capacity(opened.len());
+        // A `doc_base` is a segment's offset into the commit-wide doc-ID
+        // space (`SegmentReader.docBase`), so it is non-negative by
+        // construction; a negative one from a caller bug would produce
+        // negative "global" doc IDs in the merged result, which every
+        // downstream consumer would then read as real documents.
+        if let Some(bad) = doc_bases.iter().find(|&&b| b < 0) {
+            set_last_error(format!(
+                "ffi_search_numeric_range_sorted_by_field_multi_segment: doc_base {bad} is \
+                 negative"
+            ));
+            return Err(FfiStatus::InvalidArgument);
+        }
+
+        // ...and `doc_base + max_doc` must not overflow either: a wrapped sum
+        // lands back in the negative doc IDs the check above exists to
+        // exclude, just one step later.
         for (segment, &doc_base) in opened.iter().zip(&doc_bases) {
-            let range_entry = numeric_entry_for(segment, range_field)?;
-            let sort_entry = numeric_entry_for(segment, sort_field)?;
-            let dv_data = segment.dv_data.as_deref().unwrap_or(&[]);
+            if doc_base.checked_add(segment.max_doc).is_none() {
+                set_last_error(format!(
+                    "ffi_search_numeric_range_sorted_by_field_multi_segment: doc_base \
+                     {doc_base} + max_doc {} overflows i32",
+                    segment.max_doc
+                ));
+                return Err(FfiStatus::InvalidArgument);
+            }
+        }
+
+        let mut doc_value_segments = try_with_capacity(opened.len())?;
+        for (segment, &doc_base) in opened.iter().zip(&doc_bases) {
+            let (range_entry, range_data) = numeric_entry_for(segment, range_field)?;
+            let (sort_entry, sort_data) = numeric_entry_for(segment, sort_field)?;
             doc_value_segments.push(DocValueSegment {
-                doc_values_data: dv_data,
+                range_data,
                 range_entry,
+                sort_data,
                 sort_entry,
-                live_docs: None,
+                live_docs: segment.live_docs.as_ref(),
                 max_doc: segment.max_doc,
                 doc_base,
             });
@@ -302,9 +330,9 @@ pub unsafe extern "C" fn ffi_search_numeric_range_sorted_by_field_multi_segment(
         )
         .map_err(map_sort_error)?;
 
-        let handle = lock_recovering(sorted_results()).insert(SortedResultsHandle {
+        let handle = sorted_results().insert_checked(SortedResultsHandle {
             pairs: hits.into_iter().map(|h| (h.doc_id, h.value)).collect(),
-        });
+        })?;
         // SAFETY: caller contract guarantees `out_sorted_results_handle` is
         // valid for one write.
         unsafe {
@@ -393,6 +421,8 @@ mod tests {
                 tip.len(),
                 tmd.as_ptr() as *const c_char,
                 tmd.len(),
+                std::ptr::null(),
+                0,
                 std::ptr::null(),
                 0,
                 std::ptr::null(),
@@ -517,6 +547,7 @@ mod tests {
                 max_doc,
                 1000,
                 1100,
+                &bytes,
                 sort_entry,
                 SortDirection::Ascending,
                 MissingValue::Exclude,
@@ -744,6 +775,8 @@ mod tests {
                 0,
                 std::ptr::null(),
                 0,
+                std::ptr::null(),
+                0,
                 std::ptr::null(), // kdm_name: no points data needed by this test/call
                 0,
                 std::ptr::null(), // kdi_name
@@ -842,7 +875,7 @@ mod tests {
     /// Swaps a live segment handle's `.dvd` bytes for garbage that fails
     /// mid-decode -- mirrors `sort.rs`'s `corrupt_dv_data` helper.
     fn corrupt_dv_data(seg_handle: u64) {
-        let mut segs = lock_recovering(segments_registry());
+        let mut segs = crate::registry::lock_recovering(segments_registry());
         let segment = segs.get_mut(seg_handle).expect("segment handle");
         segment.dv_data = Some(vec![]);
     }

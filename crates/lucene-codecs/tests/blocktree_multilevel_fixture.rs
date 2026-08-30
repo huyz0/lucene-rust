@@ -29,6 +29,11 @@
 //! existing sequential-numeric "many" field (which never produces a non-leaf
 //! block no matter how large: real Lucene's writer resolves that shape via
 //! floor blocks instead).
+// Test-support code opts out of the arithmetic gate at the file boundary:
+// the gate exists for values read off disk in production decode paths, not
+// for a fixture builder's own index arithmetic. See
+// `docs/arithmetic-gate.md`.
+#![allow(clippy::arithmetic_side_effects)]
 
 use lucene_codecs::blocktree;
 use lucene_codecs::field_infos;
@@ -150,4 +155,61 @@ fn multilevel_field_enumeration_matches_real_lucene_terms_enum_next() {
         got.push(String::from_utf8(term.to_vec()).unwrap());
     }
     assert_eq!(got, expected);
+}
+
+/// The same exhaustive `seekCeil` differential
+/// `blocktree_deep_nesting_fixture.rs` runs, against this fixture's very
+/// different shape: 8000 random lowercase terms whose root trie node is a
+/// dense `REVERSE_ARRAY` multi-children node and whose blocks are
+/// floor-split rather than deeply chained. Floor splitting is what makes it
+/// worth repeating -- `scanToFloorFrame` picks one sub-block by lead byte,
+/// and a ceiling target whose lead byte sits on a floor boundary is the case
+/// where picking the wrong one silently returns a term from the wrong range.
+#[test]
+fn multilevel_field_seek_ceil_matches_a_brute_force_ceiling() {
+    let (fields, m) = open_fixture();
+    let many = fields.field("many").expect("expected field \"many\"");
+    let terms = expected_terms(&m);
+    assert!(terms.windows(2).all(|w| w[0] < w[1]), "terms are sorted");
+
+    let mut targets: Vec<Vec<u8>> = Vec::new();
+    for t in &terms {
+        let b = t.as_bytes();
+        targets.push(b.to_vec());
+        let mut appended = b.to_vec();
+        appended.push(b'a');
+        targets.push(appended);
+        if b.len() > 1 {
+            targets.push(b[..b.len() - 1].to_vec());
+        }
+    }
+    targets.push(Vec::new());
+    targets.push(b"\xff".to_vec());
+
+    for target in &targets {
+        let at = terms.partition_point(|t| t.as_bytes() < target.as_slice());
+        let expected = terms.get(at);
+        let mut it = many.iter();
+        let status = it.seek_ceil(target);
+        match expected {
+            None => {
+                assert_eq!(status, blocktree::SeekStatus::End, "target={target:?}");
+                assert!(it.current().is_none());
+            }
+            Some(want) => {
+                let expected_status = if want.as_bytes() == target.as_slice() {
+                    blocktree::SeekStatus::Found
+                } else {
+                    blocktree::SeekStatus::NotFound
+                };
+                assert_eq!(status, expected_status, "target={target:?}");
+                let (got, _) = it.current().expect("positioned");
+                assert_eq!(
+                    std::str::from_utf8(got).unwrap(),
+                    want.as_str(),
+                    "target={target:?}"
+                );
+            }
+        }
+    }
 }

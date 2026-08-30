@@ -69,6 +69,24 @@ jobs:
       - name: Lint
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # The two gates the M2 sweep added. Both lived only in
+      # .githooks/pre-commit (check-parity.py in neither), so they ran only on
+      # machines that had run scripts/setup-hooks.sh and only when nobody
+      # passed --no-verify -- which is how batch c25 found check-arith-allows.py
+      # failing for everyone on a stale table without CI noticing.
+      - name: "Arithmetic-gate #[allow] rule"
+        run: python3 scripts/check-arith-allows.py
+
+      - name: docs/parity.md consistency
+        run: python3 scripts/check-parity.py
+
+      # Needs the pinned Java tree, which CI does not check out; the script
+      # skips cleanly when it is absent, so this is a no-op there and a real
+      # check locally and in the container. Listed anyway so the step cannot
+      # drift out of scripts/gate.sh unnoticed.
+      - name: Java citations resolve against the pinned tree
+        run: python3 scripts/check-java-refs.py
+
       # llvm-cov runs the tests, so there is no separate `cargo test` step.
       # Output is captured so the per-file report below reuses this run rather
       # than executing the whole suite a second time.

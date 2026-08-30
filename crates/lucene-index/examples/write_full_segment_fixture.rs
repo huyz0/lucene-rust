@@ -15,6 +15,11 @@
 //! `DirectoryReader` and run `CheckIndex` over.
 //!
 //! Usage: `write_full_segment_fixture <output-dir>`.
+// Test-support code opts out of the arithmetic gate at the file boundary:
+// the gate exists for values read off disk in production decode paths, not
+// for a fixture builder's own index arithmetic. See
+// `docs/arithmetic-gate.md`.
+#![allow(clippy::arithmetic_side_effects)]
 
 use lucene_codecs::field_infos::{
     DocValuesSkipIndexType, DocValuesType, FieldInfo, IndexOptions, VectorEncoding,
@@ -112,22 +117,24 @@ fn main() {
             vocab[i % vocab.len()],
             vocab[(i / 7) % vocab.len()]
         );
-        writer.add_document(Document {
-            fields: vec![
-                StoredField {
-                    field_number: 0,
-                    value: FieldValue::String(format!("doc{i}")),
-                },
-                StoredField {
-                    field_number: 1,
-                    value: FieldValue::String(body),
-                },
-                StoredField {
-                    field_number: 2,
-                    value: FieldValue::Long(i as i64 * 3 - 1000),
-                },
-            ],
-        });
+        writer
+            .add_document(Document {
+                fields: vec![
+                    StoredField {
+                        field_number: 0,
+                        value: FieldValue::String(format!("doc{i}")),
+                    },
+                    StoredField {
+                        field_number: 1,
+                        value: FieldValue::String(body),
+                    },
+                    StoredField {
+                        field_number: 2,
+                        value: FieldValue::Long(i as i64 * 3 - 1000),
+                    },
+                ],
+            })
+            .unwrap();
     }
     writer.commit().expect("commit");
 

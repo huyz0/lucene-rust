@@ -2,8 +2,13 @@
 //! against the values Java says it wrote. Regenerate with:
 //!   cd fixtures && javac -cp $LUCENE_JAR -d classes src/GenPrimitives.java \
 //!     && java -cp classes:$LUCENE_JAR GenPrimitives data
+// Test-support code opts out of the arithmetic gate at the file boundary:
+// the gate exists for values read off disk in production decode paths, not
+// for a fixture builder's own index arithmetic. See
+// `docs/arithmetic-gate.md`.
+#![allow(clippy::arithmetic_side_effects)]
 
-use lucene_store::{DataInput, SliceInput};
+use lucene_store::{DataInput, DataOutput, SliceInput};
 
 fn fixture(name: &str) -> (Vec<u8>, Vec<i64>) {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/data/");
@@ -72,4 +77,54 @@ fn group_vint_tail() {
         dst[..4].iter().map(|&v| v as i64).collect::<Vec<_>>(),
         expected[..4]
     );
+}
+
+// --- write side: re-encoding Java's own values must reproduce Java's bytes ---
+//
+// The decoders above prove we read what Java wrote. These prove the inverse
+// for the encoders in `DataOutput`: given the values Java says it wrote,
+// our writer must produce the *identical* byte sequence -- byte-for-byte, not
+// merely something our own reader accepts (which a self-consistent but wrong
+// encoding would also satisfy).
+
+#[test]
+fn write_vint_reproduces_java_bytes() {
+    let (bin, expected) = fixture("vint");
+    let mut out: Vec<u8> = Vec::new();
+    for &v in &expected {
+        out.write_vint(v as i32);
+    }
+    assert_eq!(out, bin);
+}
+
+#[test]
+fn write_vlong_reproduces_java_bytes() {
+    let (bin, expected) = fixture("vlong");
+    let mut out: Vec<u8> = Vec::new();
+    for &v in &expected {
+        out.write_vlong(v);
+    }
+    assert_eq!(out, bin);
+}
+
+#[test]
+fn write_zlong_reproduces_java_bytes() {
+    let (bin, expected) = fixture("zlong");
+    let mut out: Vec<u8> = Vec::new();
+    for &v in &expected {
+        out.write_zlong(v);
+    }
+    assert_eq!(out, bin);
+}
+
+#[test]
+fn write_group_vints_reproduces_java_bytes() {
+    // The fixture is 1024 values spread across all four byte widths, written
+    // by Java's own `writeGroupVInts` -- so this pins the flag-byte packing
+    // order and the vint tail, not just the value round-trip.
+    let (bin, expected) = fixture("group_vint");
+    let values: Vec<u32> = expected.iter().map(|&v| v as u32).collect();
+    let mut out: Vec<u8> = Vec::new();
+    out.write_group_vints(&values);
+    assert_eq!(out, bin);
 }

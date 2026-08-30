@@ -60,10 +60,12 @@
 //! [`FfiStatus::Panic`] -- a clearer, more specific status for an error shape
 //! this boundary can predict in advance, without adding any new `unsafe`.
 //!
-//! **`live_docs` is always `None`**: no `.liv`/deletions FFI surface exists
-//! yet anywhere in this crate (see `lib.rs`'s module doc) -- every doc is
-//! treated as live, the same documented behavior every other query entry
-//! point here already has for a bare `None`.
+//! **Deletions**: the segment handle's own `.liv` bitset
+//! (`SegmentHandle::live_docs`, attached by
+//! [`crate::segment::ffi_segment_set_live_docs`]) is passed as `live_docs`,
+//! so a deleted document never appears in a points range result. A segment
+//! with no live docs attached carries `None` -- `search_points_range`'s own
+//! documented "no deletions" behavior, correct for `del_gen == -1`.
 
 use std::os::raw::c_char;
 
@@ -73,7 +75,7 @@ use lucene_search::VecCollector;
 
 use crate::error::{guard, set_last_error, FfiStatus};
 use crate::raw::{bytes_from_raw, str_from_raw};
-use crate::registry::{lock_recovering, results, segments, ResultsHandle, SegmentHandle};
+use crate::registry::{read_recovering, results, segments, ResultsHandle, SegmentHandle};
 
 /// Looks `field`'s number up from `segment`'s `field_infos` -- shared helper,
 /// same "unknown field name is a caller error" precedent as `sort.rs`'s
@@ -113,8 +115,9 @@ fn open_points_reader(segment: &SegmentHandle) -> Result<PointsReader<'_>, FfiSt
 /// [`ResultsHandle`] written to `*out_results_handle` on success.
 /// `min_packed`/`max_packed` must each be exactly `num_dims * bytes_per_dim`
 /// bytes for `field` (see this module's doc comment) -- a mismatch is
-/// [`FfiStatus::InvalidArgument`], not a panic. `live_docs` is always `None`
-/// (see this module's doc comment).
+/// [`FfiStatus::InvalidArgument`], not a panic. Deleted documents are
+/// excluded whenever the segment has live docs attached (see this module's
+/// doc comment).
 ///
 /// # Safety
 /// `field` must be valid for `field_len` bytes; `min_packed`/`max_packed`
@@ -145,7 +148,7 @@ pub unsafe extern "C" fn ffi_search_points_range(
             )
         };
 
-        let segments_registry = lock_recovering(segments());
+        let segments_registry = read_recovering(segments());
         let segment = segments_registry.get(segment_handle).ok_or_else(|| {
             set_last_error("ffi_search_points_range: unknown or already-closed segment handle");
             FfiStatus::InvalidHandle
@@ -176,7 +179,7 @@ pub unsafe extern "C" fn ffi_search_points_range(
         let mut collector = VecCollector::default();
         search_points_range(
             &reader,
-            None,
+            segment.live_docs.as_ref(),
             field_number,
             min_packed,
             max_packed,
@@ -187,9 +190,9 @@ pub unsafe extern "C" fn ffi_search_points_range(
             FfiStatus::Search
         })?;
 
-        let handle = lock_recovering(results()).insert(ResultsHandle {
+        let handle = results().insert_checked(ResultsHandle {
             docs: collector.docs,
-        });
+        })?;
         // SAFETY: caller contract guarantees `out_results_handle` is valid for
         // one write.
         unsafe {
@@ -292,17 +295,10 @@ mod tests {
     /// hand-built single/two-dimension point sets, so each test builds its
     /// own scratch directory (mirroring `segment.rs`'s
     /// `scratch_dir_with_fixture_copies` pattern).
-    fn scratch_dir(write_points: impl FnOnce(&std::path::Path)) -> std::path::PathBuf {
-        let dst = std::env::temp_dir().join(format!(
-            "lucene-ffi-points-query-test-{}-{:?}-{}",
-            std::process::id(),
-            std::thread::current().id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dst).unwrap();
+    fn scratch_dir(
+        write_points: impl FnOnce(&std::path::Path),
+    ) -> lucene_util::test_support::TempDir {
+        let dst = lucene_util::test_support::TempDir::new("ffi-points-query");
         let src = concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../fixtures/data/doc_values_index"
@@ -359,6 +355,8 @@ mod tests {
                 std::ptr::null(), // doc_name
                 0,
                 std::ptr::null(), // pos_name
+                0,
+                std::ptr::null(),
                 0,
                 std::ptr::null(), // nvm_name
                 0,
@@ -733,7 +731,7 @@ mod tests {
     /// already validates the `.kdd` bytes once at open time. Mirrors
     /// `query.rs`'s `corrupt_doc_bytes`/`range_sort.rs`'s `corrupt_dv_data`.
     fn corrupt_kdd_bytes(seg_handle: u64) {
-        let mut segs = lock_recovering(segments_registry());
+        let mut segs = crate::registry::lock_recovering(segments_registry());
         let segment = segs.get_mut(seg_handle).expect("segment handle");
         segment.points_data = Some((vec![0u8; 4], vec![0u8; 4], vec![0u8; 4]));
     }

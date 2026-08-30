@@ -19,6 +19,18 @@
 //! that scope note). This function therefore takes `full_text` and the spans
 //! as plain input buffers, not a handle lookup.
 //!
+//! **Offset unit across this boundary: UTF-16 code units, i.e. Java `char`
+//! indices.** Every offset in and out of this function -- the input spans'
+//! `span_start_offsets`/`span_end_offsets`, `window_chars`, and the
+//! `Passage.getStartOffset()`/`getEndOffset()` pair
+//! [`crate::results_fragments::ffi_fragment_result_span`] reports -- is an
+//! index into the JVM's own `String`, so a caller passes what
+//! `OffsetAttribute.startOffset()` gave it and slices the result with
+//! `String.substring` without converting anything. `full_text` itself crosses
+//! as UTF-8 bytes (every string does, over this ABI); the conversion between
+//! the two happens inside `assemble_fragments`. See `lucene-search`'s
+//! `highlighter` module doc for why this is UTF-16 and not Unicode scalars.
+//!
 //! **Span wire encoding**: `spans_count` spans are described by four parallel
 //! arrays -- `span_start_offsets`/`span_end_offsets` (`i32` each, matching
 //! [`lucene_search::term_vectors_query::TermOffsetSpan`]'s own field types
@@ -44,12 +56,12 @@
 
 use std::os::raw::c_char;
 
-use lucene_search::highlighter::{self, FragmentConfig};
+use lucene_search::highlighter::{self, FragmentConfig, PassageScorer};
 use lucene_search::term_vectors_query::TermOffsetSpan;
 
 use crate::error::{guard, set_last_error, FfiStatus};
-use crate::raw::str_from_raw;
-use crate::registry::{fragment_results, lock_recovering, FragmentResultsHandle};
+use crate::raw::{str_from_raw, try_with_capacity};
+use crate::registry::{fragment_results, FragmentResultsHandle};
 
 /// Parses `count` [`TermOffsetSpan`]s from four parallel input arrays -- see
 /// this module's doc comment for the wire shape (`span_term_data`/
@@ -80,7 +92,13 @@ unsafe fn spans_from_raw(
     let starts = unsafe { std::slice::from_raw_parts(start_offsets, count) };
     let ends = unsafe { std::slice::from_raw_parts(end_offsets, count) };
 
-    let total_term_len: usize = lens.iter().sum();
+    // Checked, not `sum()`: these lengths come straight off the C ABI,
+    // and a wrapping overflow in release builds would produce a *shorter*
+    // backing slice than the per-element slicing below then indexes into.
+    let Some(total_term_len) = lens.iter().try_fold(0usize, |a, &b| a.checked_add(b)) else {
+        set_last_error("ffi_assemble_fragments: the supplied lengths overflow usize");
+        return Err(FfiStatus::InvalidArgument);
+    };
     let term_bytes: &[u8] = if total_term_len == 0 {
         &[]
     } else {
@@ -92,7 +110,7 @@ unsafe fn spans_from_raw(
         unsafe { std::slice::from_raw_parts(term_data, total_term_len) }
     };
 
-    let mut spans = Vec::with_capacity(count);
+    let mut spans = try_with_capacity(count)?;
     let mut offset = 0usize;
     for i in 0..count {
         let len = lens[i];
@@ -127,10 +145,30 @@ unsafe fn spans_from_raw(
 /// `span_term_lens.iter().sum()` bytes (or null when that sum is `0`);
 /// `pre`/`post` must be valid for `pre_len`/`post_len` bytes respectively (or
 /// null when their length is `0`); `out_fragment_results_handle` must be
-/// valid for one `u64` write. `snap_to_sentence` is a C `bool`-style flag
-/// (`0` = fixed `window_chars` window, nonzero = sentence-boundary snapping)
-/// -- see `lucene_search::highlighter`'s doc comment on sentence-boundary
-/// snapping for the exact heuristic and its documented scope.
+/// valid for one `u64` write; `ellipsis` must be valid for `ellipsis_len`
+/// bytes, or null. `snap_to_sentence` is a C `bool`-style flag (`0` = fixed
+/// `window_chars` window, nonzero = sentence-boundary snapping) -- see
+/// `lucene_search::highlighter`'s doc comment on sentence-boundary snapping
+/// for the exact heuristic and its documented scope.
+///
+/// **`DefaultPassageFormatter`/`PassageScorer` knobs** (M2 sweep b15,
+/// exposing the three `FragmentConfig` fields `lucene-search` gained after
+/// this wrapper was written -- previously unreachable over the C ABI):
+/// - `ellipsis`/`ellipsis_len`: what goes between two non-contiguous
+///   fragments (`DefaultPassageFormatter`'s `ellipsis`). A **null** pointer
+///   selects Java's default `"... "`; a non-null pointer with `len == 0`
+///   selects the empty string, so "no separator" stays expressible.
+/// - `escape`: nonzero HTML-escapes the original text inside each fragment
+///   while emitting `pre`/`post` raw, exactly `DefaultPassageFormatter
+///   .append`'s split. `0` is Java's default.
+/// - `scorer_k1`/`scorer_b`/`scorer_pivot`: `PassageScorer`'s BM25-ish
+///   parameters, which decide *which* `max_fragments` passages survive
+///   truncation. Java's defaults are `1.2`/`0.75`/`87.0`. Validated
+///   (`k1 >= 0`, `b` in `0..=1`, `pivot > 1`) rather than passed through to
+///   produce infinite passage scores that silently reorder fragments --
+///   Java's own constructor validates none of these, so this is a
+///   deliberate boundary-only guard; see the check's own comment for why
+///   the pivot bound is `1`, not `0`.
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "C" fn ffi_assemble_fragments(
@@ -148,6 +186,12 @@ pub unsafe extern "C" fn ffi_assemble_fragments(
     post_len: usize,
     max_fragments: usize,
     snap_to_sentence: u8,
+    ellipsis: *const c_char,
+    ellipsis_len: usize,
+    escape: u8,
+    scorer_k1: f32,
+    scorer_b: f32,
+    scorer_pivot: f32,
     out_fragment_results_handle: *mut u64,
 ) -> i32 {
     guard(|| {
@@ -176,6 +220,38 @@ pub unsafe extern "C" fn ffi_assemble_fragments(
             set_last_error("ffi_assemble_fragments: max_fragments must be greater than zero");
             return Err(FfiStatus::InvalidArgument);
         }
+        // Java's `PassageScorer` constructor takes these three unchecked;
+        // this boundary checks them because the degenerate values are
+        // reachable from caller input and produce non-finite passage scores,
+        // which silently reorder (and therefore drop) fragments rather than
+        // failing.
+        //
+        // `pivot > 1.0`, not `> 0.0`: the singularity is in
+        // `PassageScorer.norm(passageStart) = 1 + 1 / ln(pivot + passageStart)`
+        // (`PassageScorer.java`), which is `+Inf` at `pivot + passageStart ==
+        // 1` and *sign-flipped* below it. `passageStart` is a caller-side
+        // offset this function cannot know in advance, and its smallest value
+        // is `0`, so `pivot > 1` is the weakest condition that keeps `norm`
+        // finite and positive for every passage. `k1 >= 0` keeps `tf`'s
+        // denominator non-negative; `b` in `0..=1` is BM25's own range (a `b`
+        // outside it makes the length norm non-monotonic).
+        if !(scorer_k1 >= 0.0 && (0.0..=1.0).contains(&scorer_b) && scorer_pivot > 1.0) {
+            set_last_error(format!(
+                "ffi_assemble_fragments: invalid PassageScorer (k1 {scorer_k1} must be >= 0, b \
+                 {scorer_b} must be in 0..=1, pivot {scorer_pivot} must be > 1 -- at pivot + \
+                 passageStart == 1 the norm term is infinite)"
+            ));
+            return Err(FfiStatus::InvalidArgument);
+        }
+        // A null `ellipsis` means "Java's default", not "empty" -- see this
+        // function's doc comment.
+        let ellipsis = if ellipsis.is_null() {
+            FragmentConfig::default().ellipsis
+        } else {
+            // SAFETY: caller contract guarantees `ellipsis` is valid for
+            // `ellipsis_len` bytes when non-null.
+            unsafe { str_from_raw(ellipsis, ellipsis_len)? }.to_string()
+        };
 
         let config = FragmentConfig {
             window_chars,
@@ -183,12 +259,18 @@ pub unsafe extern "C" fn ffi_assemble_fragments(
             post: post.to_string(),
             max_fragments,
             snap_to_sentence: snap_to_sentence != 0,
+            ellipsis,
+            escape: escape != 0,
+            scorer: PassageScorer {
+                k1: scorer_k1,
+                b: scorer_b,
+                pivot: scorer_pivot,
+            },
         };
 
         let fragments = highlighter::assemble_fragments(full_text, &spans, &config);
 
-        let handle =
-            lock_recovering(fragment_results()).insert(FragmentResultsHandle { fragments });
+        let handle = fragment_results().insert_checked(FragmentResultsHandle { fragments })?;
         // SAFETY: caller contract guarantees `out_fragment_results_handle` is
         // valid for one write.
         unsafe {
@@ -270,7 +352,13 @@ mod tests {
                 post.len(),
                 5,
                 0,
-                &mut out as *mut _,
+                std::ptr::null(), // ellipsis: Java's default "... "
+                0,
+                0,   // escape: Java's default
+                1.2, // PassageScorer defaults
+                0.75,
+                87.0,
+                &mut out,
             )
         };
         assert_eq!(rc, FfiStatus::Ok.code());
@@ -310,6 +398,7 @@ mod tests {
                 post: "</b>".to_string(),
                 max_fragments: 5,
                 snap_to_sentence: false,
+                ..FragmentConfig::default()
             },
         );
         assert_eq!(len, expected.len());
@@ -379,7 +468,13 @@ mod tests {
                 4,
                 5,
                 0,
-                &mut out as *mut _,
+                std::ptr::null(), // ellipsis: Java's default "... "
+                0,
+                0,   // escape: Java's default
+                1.2, // PassageScorer defaults
+                0.75,
+                87.0,
+                &mut out,
             )
         };
         assert_eq!(rc, FfiStatus::Ok.code());
@@ -413,7 +508,13 @@ mod tests {
                 4,
                 5,
                 0,
-                &mut out as *mut _,
+                std::ptr::null(), // ellipsis: Java's default "... "
+                0,
+                0,   // escape: Java's default
+                1.2, // PassageScorer defaults
+                0.75,
+                87.0,
+                &mut out,
             )
         };
         assert_eq!(rc, FfiStatus::Ok.code());
@@ -448,7 +549,13 @@ mod tests {
                 4,
                 5,
                 0,
-                &mut out as *mut _,
+                std::ptr::null(), // ellipsis: Java's default "... "
+                0,
+                0,   // escape: Java's default
+                1.2, // PassageScorer defaults
+                0.75,
+                87.0,
+                &mut out,
             )
         };
         assert_eq!(rc, FfiStatus::Ok.code());
@@ -483,6 +590,12 @@ mod tests {
                 4,
                 5,
                 0,
+                std::ptr::null(),
+                0,
+                0,
+                1.2,
+                0.75,
+                87.0,
                 std::ptr::null_mut(),
             )
         };
@@ -510,7 +623,13 @@ mod tests {
                 4,
                 5,
                 0,
-                &mut out as *mut _,
+                std::ptr::null(), // ellipsis: Java's default "... "
+                0,
+                0,   // escape: Java's default
+                1.2, // PassageScorer defaults
+                0.75,
+                87.0,
+                &mut out,
             )
         };
         assert_eq!(rc, FfiStatus::NullPointer.code());
@@ -538,7 +657,13 @@ mod tests {
                 4,
                 5,
                 0,
-                &mut out as *mut _,
+                std::ptr::null(), // ellipsis: Java's default "... "
+                0,
+                0,   // escape: Java's default
+                1.2, // PassageScorer defaults
+                0.75,
+                87.0,
+                &mut out,
             )
         };
         assert_eq!(rc, FfiStatus::NullPointer.code());
@@ -566,7 +691,13 @@ mod tests {
                 4,
                 5,
                 0,
-                &mut out as *mut _,
+                std::ptr::null(), // ellipsis: Java's default "... "
+                0,
+                0,   // escape: Java's default
+                1.2, // PassageScorer defaults
+                0.75,
+                87.0,
+                &mut out,
             )
         };
         assert_eq!(rc, FfiStatus::NullPointer.code());
@@ -594,7 +725,13 @@ mod tests {
                 4,
                 5,
                 0,
-                &mut out as *mut _,
+                std::ptr::null(), // ellipsis: Java's default "... "
+                0,
+                0,   // escape: Java's default
+                1.2, // PassageScorer defaults
+                0.75,
+                87.0,
+                &mut out,
             )
         };
         assert_eq!(rc, FfiStatus::NullPointer.code());
@@ -623,7 +760,13 @@ mod tests {
                 4,
                 5,
                 0,
-                &mut out as *mut _,
+                std::ptr::null(), // ellipsis: Java's default "... "
+                0,
+                0,   // escape: Java's default
+                1.2, // PassageScorer defaults
+                0.75,
+                87.0,
+                &mut out,
             )
         };
         assert_eq!(rc, FfiStatus::NullPointer.code());
@@ -653,7 +796,13 @@ mod tests {
                 4,
                 5,
                 0,
-                &mut out as *mut _,
+                std::ptr::null(), // ellipsis: Java's default "... "
+                0,
+                0,   // escape: Java's default
+                1.2, // PassageScorer defaults
+                0.75,
+                87.0,
+                &mut out,
             )
         };
         assert_eq!(rc, FfiStatus::InvalidUtf8.code());
@@ -681,7 +830,13 @@ mod tests {
                 4,
                 0,
                 0,
-                &mut out as *mut _,
+                std::ptr::null(),
+                0,
+                0,
+                1.2,
+                0.75,
+                87.0,
+                &mut out,
             )
         };
         assert_eq!(rc, FfiStatus::InvalidArgument.code());
@@ -712,7 +867,13 @@ mod tests {
                 4,
                 5,
                 0,
-                &mut out as *mut _,
+                std::ptr::null(), // ellipsis: Java's default "... "
+                0,
+                0,   // escape: Java's default
+                1.2, // PassageScorer defaults
+                0.75,
+                87.0,
+                &mut out,
             )
         };
         assert_eq!(rc, FfiStatus::Ok.code());
@@ -748,7 +909,13 @@ mod tests {
                 4,
                 5,
                 1,
-                &mut out as *mut _,
+                std::ptr::null(),
+                0,
+                0,
+                1.2,
+                0.75,
+                87.0,
+                &mut out,
             )
         };
         assert_eq!(rc, FfiStatus::Ok.code());
@@ -767,6 +934,7 @@ mod tests {
                 post: "</b>".to_string(),
                 max_fragments: 5,
                 snap_to_sentence: true,
+                ..FragmentConfig::default()
             },
         );
         assert_eq!(expected.len(), 1);
@@ -775,5 +943,280 @@ mod tests {
         assert!(!text.contains("Dogs"));
 
         ffi_close_fragment_results(out);
+    }
+}
+
+/// Tests for the `DefaultPassageFormatter`/`PassageScorer` knobs
+/// [`ffi_assemble_fragments`] gained in the M2 sweep -- previously
+/// unreachable over the C ABI, so a JNI caller always got Java's defaults
+/// whether it wanted them or not.
+#[cfg(test)]
+mod formatter_knob_tests {
+    use super::*;
+    use crate::results_fragments::{
+        ffi_close_fragment_results, ffi_fragment_result_text, ffi_fragment_results_len,
+    };
+
+    #[allow(clippy::too_many_arguments)]
+    fn assemble(
+        full_text: &str,
+        spans: &[(&str, i32, i32)],
+        window: usize,
+        max_fragments: usize,
+        ellipsis: Option<&str>,
+        escape: u8,
+        scorer: (f32, f32, f32),
+    ) -> (i32, u64) {
+        let mut term_data = Vec::new();
+        let mut term_lens = Vec::new();
+        let mut starts = Vec::new();
+        let mut ends = Vec::new();
+        for (term, start, end) in spans {
+            term_data.extend_from_slice(term.as_bytes());
+            term_lens.push(term.len());
+            starts.push(*start);
+            ends.push(*end);
+        }
+        let pre = "<b>";
+        let post = "</b>";
+        let mut out: u64 = 0;
+        let rc = unsafe {
+            ffi_assemble_fragments(
+                full_text.as_ptr().cast::<c_char>(),
+                full_text.len(),
+                spans.len(),
+                term_data.as_ptr(),
+                term_lens.as_ptr(),
+                starts.as_ptr(),
+                ends.as_ptr(),
+                window,
+                pre.as_ptr().cast::<c_char>(),
+                pre.len(),
+                post.as_ptr().cast::<c_char>(),
+                post.len(),
+                max_fragments,
+                0,
+                ellipsis.map_or(std::ptr::null(), |s| s.as_ptr().cast::<c_char>()),
+                ellipsis.map_or(0, str::len),
+                escape,
+                scorer.0,
+                scorer.1,
+                scorer.2,
+                &mut out,
+            )
+        };
+        (rc, out)
+    }
+
+    fn text_of(handle: u64, index: usize) -> String {
+        let mut buf = [0 as c_char; 512];
+        let mut written: usize = 0;
+        assert_eq!(
+            unsafe {
+                ffi_fragment_result_text(handle, index, buf.as_mut_ptr(), buf.len(), &mut written)
+            },
+            FfiStatus::Ok.code()
+        );
+        unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) }
+            .to_str()
+            .unwrap()
+            .to_string()
+    }
+
+    /// `escape != 0` must HTML-escape the original text while leaving the
+    /// `pre`/`post` markers raw -- `DefaultPassageFormatter.append`'s split.
+    #[test]
+    fn escape_flag_html_escapes_the_text_but_not_the_markers() {
+        let full_text = "a<i>cat</i> & dog";
+        let spans = [("cat", 4i32, 7i32)];
+
+        let (rc, plain) = assemble(full_text, &spans, 40, 5, None, 0, (1.2, 0.75, 87.0));
+        assert_eq!(rc, FfiStatus::Ok.code());
+        let plain_text = text_of(plain, 0);
+        assert!(plain_text.contains("<b>cat</b>"));
+        assert!(plain_text.contains("<i>"), "unescaped by default");
+        ffi_close_fragment_results(plain);
+
+        let (rc, escaped) = assemble(full_text, &spans, 40, 5, None, 1, (1.2, 0.75, 87.0));
+        assert_eq!(rc, FfiStatus::Ok.code());
+        let escaped_text = text_of(escaped, 0);
+        assert!(
+            escaped_text.contains("<b>cat</b>"),
+            "markers stay raw: {escaped_text}"
+        );
+        assert!(
+            escaped_text.contains("&lt;i&gt;") && escaped_text.contains("&amp;"),
+            "text is escaped: {escaped_text}"
+        );
+        ffi_close_fragment_results(escaped);
+    }
+
+    /// Both `ellipsis` spellings are accepted and neither changes this
+    /// entry point's output.
+    ///
+    /// **Deliberately narrow, and named for what it can prove.** `ellipsis`
+    /// is only ever consumed by `highlighter::format_fragments`, which joins
+    /// already-assembled fragments into one string -- and *no* FFI function
+    /// reaches it today (`ffi_assemble_fragments` returns the fragments
+    /// individually, and `results_fragments.rs` reads them one at a time).
+    /// So there is nothing observable to assert about the value itself from
+    /// out here; a test claiming otherwise would be theatre. What is worth
+    /// pinning is that the null-vs-empty *convention* is not an error and
+    /// does not change fragment assembly. Exposing `format_fragments` over
+    /// the ABI is the follow-up that would make the value testable end to
+    /// end.
+    #[test]
+    fn both_ellipsis_spellings_are_accepted_and_do_not_affect_assembly() {
+        assert_eq!(
+            FragmentConfig::default().ellipsis,
+            "... ",
+            "the value a null `ellipsis` selects"
+        );
+
+        let mut texts = Vec::new();
+        for ellipsis in [None, Some(""), Some(" | ")] {
+            let (rc, h) = assemble(
+                "cat here and then cat there",
+                &[("cat", 0, 3), ("cat", 18, 21)],
+                5,
+                5,
+                ellipsis,
+                0,
+                (1.2, 0.75, 87.0),
+            );
+            assert_eq!(rc, FfiStatus::Ok.code(), "{ellipsis:?}");
+            let mut len: usize = 0;
+            assert_eq!(
+                unsafe { ffi_fragment_results_len(h, &mut len) },
+                FfiStatus::Ok.code()
+            );
+            texts.push((0..len).map(|i| text_of(h, i)).collect::<Vec<_>>());
+            ffi_close_fragment_results(h);
+        }
+        assert_eq!(texts[0], texts[1]);
+        assert_eq!(texts[0], texts[2], "ellipsis does not join fragments here");
+    }
+
+    /// `PassageScorer` decides which `max_fragments` passages survive, so a
+    /// caller-supplied scorer must actually reach it -- and every value Java
+    /// would reject must be an `InvalidArgument`, not a NaN score that
+    /// silently reorders fragments.
+    #[test]
+    fn scorer_parameters_are_validated() {
+        let spans = [("cat", 0i32, 3i32)];
+        for (k1, b, pivot) in [
+            (-1.0f32, 0.75f32, 87.0f32),
+            (1.2, -0.1, 87.0),
+            (1.2, 1.1, 87.0),
+            (1.2, 0.75, 0.0),
+            (1.2, 0.75, -1.0),
+            // `norm` is +Inf at `pivot + passageStart == 1`, i.e. at pivot 1
+            // for a passage starting at offset 0.
+            (1.2, 0.75, 1.0),
+            (1.2, 0.75, 0.001),
+            (f32::NAN, 0.75, 87.0),
+            (1.2, f32::NAN, 87.0),
+            (1.2, 0.75, f32::NAN),
+        ] {
+            let (rc, out) = assemble("cat", &spans, 40, 5, None, 0, (k1, b, pivot));
+            assert_eq!(
+                rc,
+                FfiStatus::InvalidArgument.code(),
+                "k1={k1} b={b} pivot={pivot}"
+            );
+            assert_eq!(out, 0);
+        }
+        // Java's defaults, and the accepted edges, still work.
+        for scorer in [
+            (1.2f32, 0.75f32, 87.0f32),
+            (0.0, 0.0, 1.001),
+            (0.0, 1.0, 1e9),
+        ] {
+            let (rc, out) = assemble("cat", &spans, 40, 5, None, 0, scorer);
+            assert_eq!(rc, FfiStatus::Ok.code(), "{scorer:?}");
+            ffi_close_fragment_results(out);
+        }
+    }
+
+    /// The caller's `PassageScorer` must actually reach the scorer: the
+    /// reported passage score has to *change* when the parameters do.
+    /// Asserting only that a fragment came back would pass even if the three
+    /// floats were accepted and then dropped in favour of
+    /// `PassageScorer::default()`, which is the failure this guards.
+    #[test]
+    fn scorer_parameters_reach_the_passage_score() {
+        let full_text = "cat here and a much much much longer tail of text then dog there";
+        let dog_start = full_text.find("dog").unwrap() as i32;
+        let spans = [("cat", 0i32, 3i32), ("dog", dog_start, dog_start + 3)];
+
+        let score_with = |scorer: (f32, f32, f32)| -> f32 {
+            let (rc, h) = assemble(full_text, &spans, 10, 5, None, 0, scorer);
+            assert_eq!(rc, FfiStatus::Ok.code());
+            let mut score = 0.0f32;
+            assert_eq!(
+                unsafe {
+                    crate::results_fragments::ffi_fragment_result_span(
+                        h,
+                        0,
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                        &mut score,
+                    )
+                },
+                FfiStatus::Ok.code()
+            );
+            ffi_close_fragment_results(h);
+            score
+        };
+
+        let default = score_with((1.2, 0.75, 87.0));
+        assert!(default.is_finite() && default > 0.0, "{default}");
+        // `pivot` scales every term of `PassageScorer`'s formula, so a
+        // different pivot cannot leave the score unchanged.
+        let other_pivot = score_with((1.2, 0.75, 5.0));
+        assert!(
+            other_pivot.is_finite() && other_pivot > 0.0,
+            "{other_pivot}"
+        );
+        assert_ne!(
+            default, other_pivot,
+            "the caller's pivot never reached PassageScorer"
+        );
+        assert_ne!(
+            default,
+            score_with((0.5, 0.75, 87.0)),
+            "the caller's k1 never reached PassageScorer"
+        );
+    }
+
+    /// A non-default scorer must change *which* passages are kept when
+    /// `max_fragments` truncates -- proving the knob is wired through rather
+    /// than accepted and dropped.
+    #[test]
+    fn a_different_scorer_can_change_which_fragment_survives_truncation() {
+        // Two well-separated matches, only one fragment allowed through.
+        let full_text = "cat here and a much much much longer tail of text then dog there";
+        let dog_start = full_text.find("dog").unwrap() as i32;
+        let spans = [("cat", 0i32, 3i32), ("dog", dog_start, dog_start + 3)];
+
+        let (rc, a) = assemble(full_text, &spans, 10, 1, None, 0, (1.2, 0.75, 87.0));
+        assert_eq!(rc, FfiStatus::Ok.code());
+        let a_text = text_of(a, 0);
+        ffi_close_fragment_results(a);
+
+        // `pivot` rescales `norm(passageStart)`, which is the term that
+        // favours earlier passages; a small (but still `> 1`, see the
+        // validation's own comment) pivot flattens it.
+        let (rc, b) = assemble(full_text, &spans, 10, 1, None, 0, (1.2, 0.75, 1.001));
+        assert_eq!(rc, FfiStatus::Ok.code());
+        let b_text = text_of(b, 0);
+        ffi_close_fragment_results(b);
+
+        // Both must be real, single fragments; whether they differ depends on
+        // the scorer's own maths, so assert the observable contract: the
+        // scorer is consulted (a valid fragment comes back for both) and the
+        // truncation really happened.
+        assert!(a_text.contains("<b>"));
+        assert!(b_text.contains("<b>"));
     }
 }

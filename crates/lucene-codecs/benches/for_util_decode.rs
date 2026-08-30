@@ -23,6 +23,11 @@
 //! branch in the innermost decode loop is worse than an unpaired one.
 //!
 //! Run with: `cargo bench -p lucene-codecs --bench for_util_decode`
+// Test-support code opts out of the arithmetic gate at the file boundary:
+// the gate exists for values read off disk in production decode paths, not
+// for a fixture builder's own index arithmetic. See
+// `docs/arithmetic-gate.md`.
+#![allow(clippy::arithmetic_side_effects)]
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
 use lucene_codecs::for_util::{self, ForUtil, BLOCK_SIZE};
@@ -49,9 +54,9 @@ fn block_for(bits: u32) -> [u32; BLOCK_SIZE] {
 }
 
 fn encoded(bits: u32) -> Vec<u8> {
-    let values = block_for(bits);
+    let mut values = block_for(bits);
     let mut buf = Vec::new();
-    for_util::for_encode(&values, bits, &mut buf);
+    for_util::for_encode(&mut values, bits, &mut buf);
     buf
 }
 
@@ -86,5 +91,47 @@ fn bench_for_decode(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_for_decode);
+/// The encode side of the same kernel (`ForUtil.encode`), for the write path.
+///
+/// Java's `ForUtil.encode` bit-packs *in place* into the caller's `int[]` and
+/// reuses one `tmp` buffer owned by the `ForUtil` instance. This port's
+/// `for_encode` is a free function: it copies the caller's 256 values so it can
+/// collapse lanes without clobbering them, and its packing scratch is a local
+/// `[0u32; 256]`, so every block pays a 1 KiB copy plus a 1 KiB zero-fill that
+/// Java does not. This bench is what says whether that matters.
+fn bench_for_encode(c: &mut Criterion) {
+    let mut group = c.benchmark_group("for_util/for_encode");
+    group.throughput(Throughput::Elements(BLOCK_SIZE as u64));
+    for bits in [1u32, 5, 8, 12, 16, 24, 31] {
+        let values = block_for(bits);
+        // One-shot: a fresh `ForUtil` (and so a fresh 1 KiB scratch) per block,
+        // what `pfor_encode`'s free function and `postings_writer` do today.
+        group.bench_function(format!("oneshot/bits{bits:02}"), |b| {
+            let mut buf = Vec::with_capacity(for_util::num_bytes(bits));
+            let mut scratch = values;
+            b.iter(|| {
+                buf.clear();
+                scratch = values;
+                for_util::for_encode(black_box(&mut scratch), black_box(bits), &mut buf);
+                black_box(buf.len());
+            });
+        });
+        // Instance held across blocks, as Lucene's `ForUtil` is: the scratch
+        // buffer is allocated and zeroed once, not once per block.
+        group.bench_function(format!("reused/bits{bits:02}"), |b| {
+            let mut buf = Vec::with_capacity(for_util::num_bytes(bits));
+            let mut scratch = values;
+            let mut fu = ForUtil::new();
+            b.iter(|| {
+                buf.clear();
+                scratch = values;
+                fu.encode(black_box(&mut scratch), black_box(bits), &mut buf);
+                black_box(buf.len());
+            });
+        });
+    }
+    group.finish();
+}
+
+criterion_group!(benches, bench_for_decode, bench_for_encode);
 criterion_main!(benches);

@@ -41,32 +41,56 @@
 //! (a genuine shape difference) while justifying *not* inventing a third
 //! shape here (no shape difference at all).
 //!
-//! **No norms**: task #45's `DirectoryReader` carries no `.nvm`/`.nvd` data
-//! per segment (see that module's doc comment), so every per-segment norms
-//! slot passed to `search_term_query_multi_segment`/
-//! `search_boolean_query_multi_segment` here is `None` -- the same
-//! documented `UNNORMED_FIELD_LENGTH` fallback this crate's single-segment
-//! scored queries already use for a bare `None`, not a new approximation
-//! introduced by this module.
+//! **Norms**: task #45's `DirectoryReader` carried no `.nvm`/`.nvd` data per
+//! segment, so every per-segment norms slot passed to
+//! `search_term_query_multi_segment`/`search_boolean_query_multi_segment` here
+//! used to be `None` -- every multi-segment FFI search scored with the
+//! `UNNORMED_FIELD_LENGTH` fallback, where real Lucene always applies the
+//! field's real per-document lengths. b13 taught `SegmentReader` to open
+//! `.nvm`/`.nvd`, and c6 wired it through: each entry is now that segment's
+//! real norms, built by `DirectoryReader::field_norms`, whose
+//! `avgFieldLength` is summed across **every** leaf the way
+//! `IndexSearcher.fieldStats` does -- the reader-wide half that
+//! `SegmentReader::field_norms` alone cannot compute (b13's F-26). `None`
+//! survives only where a segment genuinely has no norms for the field.
 
 use std::os::raw::c_char;
 
+/// Every distinct field named by a `Clause::Term` in `query`, sorted and
+/// deduplicated -- the fields
+/// `DirectoryReader::field_norms_by_field` should open norms for.
+///
+/// The multi-segment FFI entry points build their `BooleanQuery` with
+/// [`crate::query::read_boolean_query`], which produces only `Clause::Term`
+/// and `Clause::Boolean` -- so walking the tree for every `Clause::Term`'s
+/// field name (which is what `clause_field_names` does) covers every field
+/// that can appear. Mirrors `query.rs`'s single-segment field-name
+/// collection, differing only in returning owned `String`s, which the
+/// per-segment norms map here needs.
+fn boolean_query_term_fields(query: &lucene_search::query::BooleanQuery) -> Vec<String> {
+    crate::query::clause_field_names(query)
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
+
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::field_norms::FieldNorms;
+use lucene_search::TermQuery;
 use lucene_search::{
     search_boolean_query_multi_segment, search_boolean_query_multi_segment_concurrent,
     search_boolean_query_multi_segment_maxscore,
     search_boolean_query_multi_segment_maxscore_concurrent, search_term_query_multi_segment,
     search_term_query_multi_segment_concurrent,
 };
-use lucene_search::{BooleanQuery, TermQuery};
 use lucene_store::directory::FsDirectory;
 
 use crate::error::{guard, set_last_error, FfiStatus};
-use crate::query::{map_search_error, read_term_clauses};
+use crate::query::{check_clause_count, map_search_error, read_boolean_query};
 use crate::raw::{bytes_from_raw, str_from_raw};
 use crate::registry::{
-    directory_readers, lock_recovering, scored_results, DirectoryReaderHandle, ScoredResultsHandle,
+    directory_readers, lock_recovering, read_recovering, scored_results, DirectoryReaderHandle,
+    ScoredResultsHandle,
 };
 
 fn map_open_error(e: lucene_search::directory_reader::Error) -> FfiStatus {
@@ -120,7 +144,8 @@ pub unsafe extern "C" fn ffi_open_directory_reader(
         let dir = FsDirectory::open(path_str);
         let reader = DirectoryReader::open(&dir).map_err(map_open_error)?;
 
-        let handle = lock_recovering(directory_readers()).insert(DirectoryReaderHandle { reader });
+        let handle = lock_recovering(directory_readers())
+            .insert_checked(DirectoryReaderHandle { reader })?;
         // SAFETY: caller contract guarantees `out_handle` is valid for one write.
         unsafe {
             *out_handle = handle;
@@ -177,7 +202,7 @@ pub unsafe extern "C" fn ffi_search_term_query_multi_segment(
         };
         let query = TermQuery::new(field, term.to_vec());
 
-        let readers = lock_recovering(directory_readers());
+        let readers = read_recovering(directory_readers());
         let reader_handle_value = readers.get(reader_handle).ok_or_else(|| {
             set_last_error(
                 "ffi_search_term_query_multi_segment: unknown or already-closed reader handle",
@@ -198,12 +223,15 @@ pub unsafe extern "C" fn ffi_search_term_query_multi_segment(
             FfiStatus::Decode
         })?;
         let segments = opened.as_open_segments();
-        let norms: Vec<Option<&FieldNorms<'_>>> = vec![None; segments.len()];
+        // Real norms, with one reader-wide `avgFieldLength` -- see this
+        // module's doc comment.
+        let owned_norms = reader_handle_value.reader.field_norms(&query.field); // alloc-ok: reader's own segment count
+        let norms: Vec<Option<&FieldNorms<'_>>> = owned_norms.iter().map(Option::as_ref).collect(); // alloc-ok: reader's own segment count
 
         let hits = search_term_query_multi_segment(&segments, &query, &norms, top_n)
             .map_err(map_search_error)?;
 
-        let handle = lock_recovering(scored_results()).insert(ScoredResultsHandle { hits });
+        let handle = scored_results().insert_checked(ScoredResultsHandle { hits })?;
         // SAFETY: caller contract guarantees `out_scored_results_handle` is valid
         // for one write.
         unsafe {
@@ -214,7 +242,7 @@ pub unsafe extern "C" fn ffi_search_term_query_multi_segment(
 }
 
 /// Multi-segment sibling of [`crate::query::ffi_search_boolean_query_scored`]: same
-/// flat, `Clause::Term`-only four-parallel-array clause wire format (see
+/// occur-tagged clause-array wire format (see
 /// `query.rs`'s module doc), run against every segment `reader_handle` has
 /// open via `search_boolean_query_multi_segment`, keeping the best `top_n`
 /// globally-ranked `(doc_id, score)` hits in a new [`ScoredResultsHandle`].
@@ -228,21 +256,16 @@ pub unsafe extern "C" fn ffi_search_term_query_multi_segment(
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "C" fn ffi_search_boolean_query_multi_segment(
     reader_handle: u64,
-    must_fields: *const *const c_char,
-    must_field_lens: *const usize,
-    must_terms: *const *const u8,
-    must_term_lens: *const usize,
-    must_count: usize,
-    should_fields: *const *const c_char,
-    should_field_lens: *const usize,
-    should_terms: *const *const u8,
-    should_term_lens: *const usize,
-    should_count: usize,
-    must_not_fields: *const *const c_char,
-    must_not_field_lens: *const usize,
-    must_not_terms: *const *const u8,
-    must_not_term_lens: *const usize,
-    must_not_count: usize,
+    clause_occurs: *const u8,
+    clause_kinds: *const u8,
+    clause_fields: *const *const c_char,
+    clause_field_lens: *const usize,
+    clause_terms: *const *const u8,
+    clause_term_lens: *const usize,
+    clause_parents: *const i32,
+    clause_params: *const i32,
+    clause_count: usize,
+    minimum_should_match: i32,
     top_n: usize,
     out_scored_results_handle: *mut u64,
 ) -> i32 {
@@ -250,34 +273,28 @@ pub unsafe extern "C" fn ffi_search_boolean_query_multi_segment(
         if out_scored_results_handle.is_null() {
             return Err(FfiStatus::NullPointer);
         }
-        // SAFETY: see `read_term_clauses`'s contract; every array/count pair here
-        // matches it exactly.
+        // Per-query clause cap, before any decoding -- see
+        // `query::check_clause_count`: one array, one length, so the
+        // three-separately-capped-lists hazard cannot recur.
+        check_clause_count(clause_count)?;
+        // SAFETY: see `read_boolean_query`'s contract; every array/count pair
+        // here matches it exactly.
         let query = unsafe {
-            BooleanQuery::new()
-                .with_must(read_term_clauses(
-                    must_fields,
-                    must_field_lens,
-                    must_terms,
-                    must_term_lens,
-                    must_count,
-                )?)
-                .with_should(read_term_clauses(
-                    should_fields,
-                    should_field_lens,
-                    should_terms,
-                    should_term_lens,
-                    should_count,
-                )?)
-                .with_must_not(read_term_clauses(
-                    must_not_fields,
-                    must_not_field_lens,
-                    must_not_terms,
-                    must_not_term_lens,
-                    must_not_count,
-                )?)
+            read_boolean_query(
+                clause_occurs,
+                clause_kinds,
+                clause_fields,
+                clause_field_lens,
+                clause_terms,
+                clause_term_lens,
+                clause_parents,
+                clause_params,
+                clause_count,
+                minimum_should_match,
+            )?
         };
 
-        let readers = lock_recovering(directory_readers());
+        let readers = read_recovering(directory_readers());
         let reader_handle_value = readers.get(reader_handle).ok_or_else(|| {
             set_last_error(
                 "ffi_search_boolean_query_multi_segment: unknown or already-closed reader handle",
@@ -290,13 +307,20 @@ pub unsafe extern "C" fn ffi_search_boolean_query_multi_segment(
             FfiStatus::Decode
         })?;
         let segments = opened.as_open_segments();
-        let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
-            vec![None; segments.len()];
+        // Real norms, with one reader-wide `avgFieldLength` per field -- see
+        // this module's doc comment.
+        let owned_norms = reader_handle_value
+            .reader
+            .field_norms_by_field(&boolean_query_term_fields(&query)); // alloc-ok: reader's own segment count
+        let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> = owned_norms
+            .iter()
+            .map(|m| (!m.is_empty()).then_some(m))
+            .collect(); // alloc-ok: reader's own segment count
 
         let hits = search_boolean_query_multi_segment(&segments, &query, &norms, top_n)
             .map_err(map_search_error)?;
 
-        let handle = lock_recovering(scored_results()).insert(ScoredResultsHandle { hits });
+        let handle = scored_results().insert_checked(ScoredResultsHandle { hits })?;
         // SAFETY: caller contract guarantees `out_scored_results_handle` is valid
         // for one write.
         unsafe {
@@ -344,7 +368,7 @@ pub unsafe extern "C" fn ffi_search_term_query_multi_segment_concurrent(
         };
         let query = TermQuery::new(field, term.to_vec());
 
-        let readers = lock_recovering(directory_readers());
+        let readers = read_recovering(directory_readers());
         let reader_handle_value = readers.get(reader_handle).ok_or_else(|| {
             set_last_error(
                 "ffi_search_term_query_multi_segment_concurrent: unknown or already-closed reader handle",
@@ -357,12 +381,15 @@ pub unsafe extern "C" fn ffi_search_term_query_multi_segment_concurrent(
             FfiStatus::Decode
         })?;
         let segments = opened.as_open_segments();
-        let norms: Vec<Option<&FieldNorms<'_>>> = vec![None; segments.len()];
+        // Real norms, with one reader-wide `avgFieldLength` -- see this
+        // module's doc comment.
+        let owned_norms = reader_handle_value.reader.field_norms(&query.field); // alloc-ok: reader's own segment count
+        let norms: Vec<Option<&FieldNorms<'_>>> = owned_norms.iter().map(Option::as_ref).collect(); // alloc-ok: reader's own segment count
 
         let hits = search_term_query_multi_segment_concurrent(&segments, &query, &norms, top_n)
             .map_err(map_search_error)?;
 
-        let handle = lock_recovering(scored_results()).insert(ScoredResultsHandle { hits });
+        let handle = scored_results().insert_checked(ScoredResultsHandle { hits })?;
         // SAFETY: caller contract guarantees `out_scored_results_handle` is valid
         // for one write.
         unsafe {
@@ -389,21 +416,16 @@ pub unsafe extern "C" fn ffi_search_term_query_multi_segment_concurrent(
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "C" fn ffi_search_boolean_query_multi_segment_concurrent(
     reader_handle: u64,
-    must_fields: *const *const c_char,
-    must_field_lens: *const usize,
-    must_terms: *const *const u8,
-    must_term_lens: *const usize,
-    must_count: usize,
-    should_fields: *const *const c_char,
-    should_field_lens: *const usize,
-    should_terms: *const *const u8,
-    should_term_lens: *const usize,
-    should_count: usize,
-    must_not_fields: *const *const c_char,
-    must_not_field_lens: *const usize,
-    must_not_terms: *const *const u8,
-    must_not_term_lens: *const usize,
-    must_not_count: usize,
+    clause_occurs: *const u8,
+    clause_kinds: *const u8,
+    clause_fields: *const *const c_char,
+    clause_field_lens: *const usize,
+    clause_terms: *const *const u8,
+    clause_term_lens: *const usize,
+    clause_parents: *const i32,
+    clause_params: *const i32,
+    clause_count: usize,
+    minimum_should_match: i32,
     top_n: usize,
     out_scored_results_handle: *mut u64,
 ) -> i32 {
@@ -411,34 +433,28 @@ pub unsafe extern "C" fn ffi_search_boolean_query_multi_segment_concurrent(
         if out_scored_results_handle.is_null() {
             return Err(FfiStatus::NullPointer);
         }
-        // SAFETY: see `read_term_clauses`'s contract; every array/count pair here
-        // matches it exactly.
+        // Per-query clause cap, before any decoding -- see
+        // `query::check_clause_count`: one array, one length, so the
+        // three-separately-capped-lists hazard cannot recur.
+        check_clause_count(clause_count)?;
+        // SAFETY: see `read_boolean_query`'s contract; every array/count pair
+        // here matches it exactly.
         let query = unsafe {
-            BooleanQuery::new()
-                .with_must(read_term_clauses(
-                    must_fields,
-                    must_field_lens,
-                    must_terms,
-                    must_term_lens,
-                    must_count,
-                )?)
-                .with_should(read_term_clauses(
-                    should_fields,
-                    should_field_lens,
-                    should_terms,
-                    should_term_lens,
-                    should_count,
-                )?)
-                .with_must_not(read_term_clauses(
-                    must_not_fields,
-                    must_not_field_lens,
-                    must_not_terms,
-                    must_not_term_lens,
-                    must_not_count,
-                )?)
+            read_boolean_query(
+                clause_occurs,
+                clause_kinds,
+                clause_fields,
+                clause_field_lens,
+                clause_terms,
+                clause_term_lens,
+                clause_parents,
+                clause_params,
+                clause_count,
+                minimum_should_match,
+            )?
         };
 
-        let readers = lock_recovering(directory_readers());
+        let readers = read_recovering(directory_readers());
         let reader_handle_value = readers.get(reader_handle).ok_or_else(|| {
             set_last_error(
                 "ffi_search_boolean_query_multi_segment_concurrent: unknown or already-closed reader handle",
@@ -451,13 +467,20 @@ pub unsafe extern "C" fn ffi_search_boolean_query_multi_segment_concurrent(
             FfiStatus::Decode
         })?;
         let segments = opened.as_open_segments();
-        let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
-            vec![None; segments.len()];
+        // Real norms, with one reader-wide `avgFieldLength` per field -- see
+        // this module's doc comment.
+        let owned_norms = reader_handle_value
+            .reader
+            .field_norms_by_field(&boolean_query_term_fields(&query)); // alloc-ok: reader's own segment count
+        let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> = owned_norms
+            .iter()
+            .map(|m| (!m.is_empty()).then_some(m))
+            .collect(); // alloc-ok: reader's own segment count
 
         let hits = search_boolean_query_multi_segment_concurrent(&segments, &query, &norms, top_n)
             .map_err(map_search_error)?;
 
-        let handle = lock_recovering(scored_results()).insert(ScoredResultsHandle { hits });
+        let handle = scored_results().insert_checked(ScoredResultsHandle { hits })?;
         // SAFETY: caller contract guarantees `out_scored_results_handle` is valid
         // for one write.
         unsafe {
@@ -490,21 +513,16 @@ pub unsafe extern "C" fn ffi_search_boolean_query_multi_segment_concurrent(
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "C" fn ffi_search_boolean_query_multi_segment_maxscore(
     reader_handle: u64,
-    must_fields: *const *const c_char,
-    must_field_lens: *const usize,
-    must_terms: *const *const u8,
-    must_term_lens: *const usize,
-    must_count: usize,
-    should_fields: *const *const c_char,
-    should_field_lens: *const usize,
-    should_terms: *const *const u8,
-    should_term_lens: *const usize,
-    should_count: usize,
-    must_not_fields: *const *const c_char,
-    must_not_field_lens: *const usize,
-    must_not_terms: *const *const u8,
-    must_not_term_lens: *const usize,
-    must_not_count: usize,
+    clause_occurs: *const u8,
+    clause_kinds: *const u8,
+    clause_fields: *const *const c_char,
+    clause_field_lens: *const usize,
+    clause_terms: *const *const u8,
+    clause_term_lens: *const usize,
+    clause_parents: *const i32,
+    clause_params: *const i32,
+    clause_count: usize,
+    minimum_should_match: i32,
     top_n: usize,
     out_scored_results_handle: *mut u64,
 ) -> i32 {
@@ -512,34 +530,28 @@ pub unsafe extern "C" fn ffi_search_boolean_query_multi_segment_maxscore(
         if out_scored_results_handle.is_null() {
             return Err(FfiStatus::NullPointer);
         }
-        // SAFETY: see `read_term_clauses`'s contract; every array/count pair here
-        // matches it exactly.
+        // Per-query clause cap, before any decoding -- see
+        // `query::check_clause_count`: one array, one length, so the
+        // three-separately-capped-lists hazard cannot recur.
+        check_clause_count(clause_count)?;
+        // SAFETY: see `read_boolean_query`'s contract; every array/count pair
+        // here matches it exactly.
         let query = unsafe {
-            BooleanQuery::new()
-                .with_must(read_term_clauses(
-                    must_fields,
-                    must_field_lens,
-                    must_terms,
-                    must_term_lens,
-                    must_count,
-                )?)
-                .with_should(read_term_clauses(
-                    should_fields,
-                    should_field_lens,
-                    should_terms,
-                    should_term_lens,
-                    should_count,
-                )?)
-                .with_must_not(read_term_clauses(
-                    must_not_fields,
-                    must_not_field_lens,
-                    must_not_terms,
-                    must_not_term_lens,
-                    must_not_count,
-                )?)
+            read_boolean_query(
+                clause_occurs,
+                clause_kinds,
+                clause_fields,
+                clause_field_lens,
+                clause_terms,
+                clause_term_lens,
+                clause_parents,
+                clause_params,
+                clause_count,
+                minimum_should_match,
+            )?
         };
 
-        let readers = lock_recovering(directory_readers());
+        let readers = read_recovering(directory_readers());
         let reader_handle_value = readers.get(reader_handle).ok_or_else(|| {
             set_last_error(
                 "ffi_search_boolean_query_multi_segment_maxscore: unknown or already-closed reader handle",
@@ -552,13 +564,20 @@ pub unsafe extern "C" fn ffi_search_boolean_query_multi_segment_maxscore(
             FfiStatus::Decode
         })?;
         let segments = opened.as_open_segments();
-        let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
-            vec![None; segments.len()];
+        // Real norms, with one reader-wide `avgFieldLength` per field -- see
+        // this module's doc comment.
+        let owned_norms = reader_handle_value
+            .reader
+            .field_norms_by_field(&boolean_query_term_fields(&query)); // alloc-ok: reader's own segment count
+        let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> = owned_norms
+            .iter()
+            .map(|m| (!m.is_empty()).then_some(m))
+            .collect(); // alloc-ok: reader's own segment count
 
         let hits = search_boolean_query_multi_segment_maxscore(&segments, &query, &norms, top_n)
             .map_err(map_search_error)?;
 
-        let handle = lock_recovering(scored_results()).insert(ScoredResultsHandle { hits });
+        let handle = scored_results().insert_checked(ScoredResultsHandle { hits })?;
         // SAFETY: caller contract guarantees `out_scored_results_handle` is valid
         // for one write.
         unsafe {
@@ -580,21 +599,16 @@ pub unsafe extern "C" fn ffi_search_boolean_query_multi_segment_maxscore(
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "C" fn ffi_search_boolean_query_multi_segment_maxscore_concurrent(
     reader_handle: u64,
-    must_fields: *const *const c_char,
-    must_field_lens: *const usize,
-    must_terms: *const *const u8,
-    must_term_lens: *const usize,
-    must_count: usize,
-    should_fields: *const *const c_char,
-    should_field_lens: *const usize,
-    should_terms: *const *const u8,
-    should_term_lens: *const usize,
-    should_count: usize,
-    must_not_fields: *const *const c_char,
-    must_not_field_lens: *const usize,
-    must_not_terms: *const *const u8,
-    must_not_term_lens: *const usize,
-    must_not_count: usize,
+    clause_occurs: *const u8,
+    clause_kinds: *const u8,
+    clause_fields: *const *const c_char,
+    clause_field_lens: *const usize,
+    clause_terms: *const *const u8,
+    clause_term_lens: *const usize,
+    clause_parents: *const i32,
+    clause_params: *const i32,
+    clause_count: usize,
+    minimum_should_match: i32,
     top_n: usize,
     out_scored_results_handle: *mut u64,
 ) -> i32 {
@@ -602,34 +616,28 @@ pub unsafe extern "C" fn ffi_search_boolean_query_multi_segment_maxscore_concurr
         if out_scored_results_handle.is_null() {
             return Err(FfiStatus::NullPointer);
         }
-        // SAFETY: see `read_term_clauses`'s contract; every array/count pair here
-        // matches it exactly.
+        // Per-query clause cap, before any decoding -- see
+        // `query::check_clause_count`: one array, one length, so the
+        // three-separately-capped-lists hazard cannot recur.
+        check_clause_count(clause_count)?;
+        // SAFETY: see `read_boolean_query`'s contract; every array/count pair
+        // here matches it exactly.
         let query = unsafe {
-            BooleanQuery::new()
-                .with_must(read_term_clauses(
-                    must_fields,
-                    must_field_lens,
-                    must_terms,
-                    must_term_lens,
-                    must_count,
-                )?)
-                .with_should(read_term_clauses(
-                    should_fields,
-                    should_field_lens,
-                    should_terms,
-                    should_term_lens,
-                    should_count,
-                )?)
-                .with_must_not(read_term_clauses(
-                    must_not_fields,
-                    must_not_field_lens,
-                    must_not_terms,
-                    must_not_term_lens,
-                    must_not_count,
-                )?)
+            read_boolean_query(
+                clause_occurs,
+                clause_kinds,
+                clause_fields,
+                clause_field_lens,
+                clause_terms,
+                clause_term_lens,
+                clause_parents,
+                clause_params,
+                clause_count,
+                minimum_should_match,
+            )?
         };
 
-        let readers = lock_recovering(directory_readers());
+        let readers = read_recovering(directory_readers());
         let reader_handle_value = readers.get(reader_handle).ok_or_else(|| {
             set_last_error(
                 "ffi_search_boolean_query_multi_segment_maxscore_concurrent: unknown or already-closed reader handle",
@@ -642,15 +650,22 @@ pub unsafe extern "C" fn ffi_search_boolean_query_multi_segment_maxscore_concurr
             FfiStatus::Decode
         })?;
         let segments = opened.as_open_segments();
-        let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
-            vec![None; segments.len()];
+        // Real norms, with one reader-wide `avgFieldLength` per field -- see
+        // this module's doc comment.
+        let owned_norms = reader_handle_value
+            .reader
+            .field_norms_by_field(&boolean_query_term_fields(&query)); // alloc-ok: reader's own segment count
+        let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> = owned_norms
+            .iter()
+            .map(|m| (!m.is_empty()).then_some(m))
+            .collect(); // alloc-ok: reader's own segment count
 
         let hits = search_boolean_query_multi_segment_maxscore_concurrent(
             &segments, &query, &norms, top_n,
         )
         .map_err(map_search_error)?;
 
-        let handle = lock_recovering(scored_results()).insert(ScoredResultsHandle { hits });
+        let handle = scored_results().insert_checked(ScoredResultsHandle { hits })?;
         // SAFETY: caller contract guarantees `out_scored_results_handle` is valid
         // for one write.
         unsafe {
@@ -710,22 +725,15 @@ mod tests {
     #[test]
     fn open_and_close_directory_reader_roundtrips() {
         let handle = open_reader();
-        assert!(lock_recovering(directory_readers()).get(handle).is_some());
+        assert!(read_recovering(directory_readers()).get(handle).is_some());
         assert_eq!(ffi_close_directory_reader(handle), FfiStatus::Ok.code());
-        assert!(lock_recovering(directory_readers()).get(handle).is_none());
+        assert!(read_recovering(directory_readers()).get(handle).is_none());
     }
 
     #[test]
     fn open_directory_reader_missing_commit_is_io_or_decode_error() {
-        let path = std::env::temp_dir()
-            .join(format!(
-                "lucene-ffi-directory-reader-missing-{}-{:?}",
-                std::process::id(),
-                std::thread::current().id()
-            ))
-            .to_string_lossy()
-            .into_owned();
-        std::fs::create_dir_all(&path).unwrap();
+        let scratch = lucene_util::test_support::TempDir::new("ffi-directory-reader-missing");
+        let path = scratch.path_str().to_owned();
         let mut handle: u64 = 0;
         let rc = unsafe {
             ffi_open_directory_reader(
@@ -767,6 +775,96 @@ mod tests {
         ffi_close_directory_reader(handle);
     }
 
+    /// The multi-segment entry points used to pass `vec![None; n]` for norms,
+    /// so every hit they returned was scored at
+    /// `UNNORMED_FIELD_LENGTH` where real Lucene always applies the field's own
+    /// per-document lengths. c6 wired
+    /// `DirectoryReader::field_norms` through; this pins the result against
+    /// real Lucene's own recorded `TopDocs`, **bit for bit**, from the same
+    /// `scoring.term.cat` ground truth
+    /// `crates/lucene-search/tests/bm25_scoring_fixtures.rs` uses
+    /// (`fixtures/src/AppendScoringManifest.java`).
+    ///
+    /// The unnormed answer is asserted to be a *different* number, so this
+    /// cannot pass by the norms silently going missing again.
+    #[test]
+    fn term_query_multi_segment_scores_with_real_norms_like_lucene() {
+        let manifest =
+            std::fs::read_to_string(format!("{}manifest.properties", fixture_dir_path())).unwrap();
+        let bits_line = manifest
+            .lines()
+            .find_map(|l| l.strip_prefix("scoring.term.cat.bits="))
+            .expect("scoring.term.cat.bits -- re-run scripts/gen-fixtures.sh");
+        let expected: Vec<(i32, f32)> = bits_line
+            .split(',')
+            .map(|pair| {
+                let (doc, bits) = pair.split_once(':').unwrap();
+                (
+                    doc.parse().unwrap(),
+                    f32::from_bits(bits.parse::<u32>().unwrap()),
+                )
+            })
+            .collect();
+
+        let handle = open_reader();
+        let field = "body";
+        let term = b"cat";
+        let mut results_handle: u64 = 0;
+        let rc = unsafe {
+            ffi_search_term_query_multi_segment(
+                handle,
+                field.as_ptr() as *const c_char,
+                field.len(),
+                term.as_ptr(),
+                term.len(),
+                20,
+                &mut results_handle as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::Ok.code());
+        let hits = read_scored_results(results_handle);
+
+        assert_eq!(hits.len(), expected.len());
+        for (got, exp) in hits.iter().zip(&expected) {
+            assert_eq!(got.0, exp.0, "doc order differs from real Lucene");
+            assert_eq!(
+                got.1.to_bits(),
+                exp.1.to_bits(),
+                "doc {} scored {} where real Lucene scored {}",
+                got.0,
+                got.1,
+                exp.1
+            );
+        }
+
+        // Negative control: the pre-c6 answer, scored with no norms at all.
+        let unnormed = {
+            let readers = read_recovering(directory_readers());
+            let reader = &readers.get(handle).unwrap().reader;
+            let opened = reader.open_segments().unwrap();
+            let segments = opened.as_open_segments();
+            let none: Vec<Option<&FieldNorms<'_>>> = vec![None; segments.len()];
+            search_term_query_multi_segment(
+                &segments,
+                &lucene_search::TermQuery::new(field, term.to_vec()),
+                &none,
+                20,
+            )
+            .unwrap()
+        };
+        assert!(
+            unnormed
+                .iter()
+                .zip(&expected)
+                .any(|(got, exp)| got.score.to_bits() != exp.1.to_bits()),
+            "the unnormed fallback scored identically to real Lucene, so this \
+             test cannot tell whether norms are being applied"
+        );
+
+        ffi_close_scored_results(results_handle);
+        ffi_close_directory_reader(handle);
+    }
+
     #[test]
     fn boolean_query_multi_segment_happy_path_against_real_fixture() {
         let handle = open_reader();
@@ -784,7 +882,7 @@ mod tests {
 
         let mut results_handle: u64 = 0;
         let rc = unsafe {
-            ffi_search_boolean_query_multi_segment(
+            crate::legacy_boolean_abi::legacy_search_boolean_query_multi_segment(
                 handle,
                 std::ptr::null(),
                 std::ptr::null(),
@@ -912,7 +1010,7 @@ mod tests {
     fn boolean_query_multi_segment_unknown_reader_handle_is_invalid_handle() {
         let mut results_handle: u64 = 0;
         let rc = unsafe {
-            ffi_search_boolean_query_multi_segment(
+            crate::legacy_boolean_abi::legacy_search_boolean_query_multi_segment(
                 0xFFFF,
                 std::ptr::null(),
                 std::ptr::null(),
@@ -1015,7 +1113,7 @@ mod tests {
 
         let mut results_handle: u64 = 0;
         let rc = unsafe {
-            ffi_search_boolean_query_multi_segment_concurrent(
+            crate::legacy_boolean_abi::legacy_search_boolean_query_multi_segment_concurrent(
                 handle,
                 std::ptr::null(),
                 std::ptr::null(),
@@ -1129,7 +1227,7 @@ mod tests {
         let mut seq_results: u64 = 0;
         assert_eq!(
             unsafe {
-                ffi_search_boolean_query_multi_segment(
+                crate::legacy_boolean_abi::legacy_search_boolean_query_multi_segment(
                     seq_handle,
                     std::ptr::null(),
                     std::ptr::null(),
@@ -1156,7 +1254,7 @@ mod tests {
         let mut con_results: u64 = 0;
         assert_eq!(
             unsafe {
-                ffi_search_boolean_query_multi_segment_concurrent(
+                crate::legacy_boolean_abi::legacy_search_boolean_query_multi_segment_concurrent(
                     con_handle,
                     std::ptr::null(),
                     std::ptr::null(),
@@ -1217,7 +1315,7 @@ mod tests {
     fn boolean_query_multi_segment_concurrent_unknown_reader_handle_is_invalid_handle() {
         let mut results_handle: u64 = 0;
         let rc = unsafe {
-            ffi_search_boolean_query_multi_segment_concurrent(
+            crate::legacy_boolean_abi::legacy_search_boolean_query_multi_segment_concurrent(
                 0xFFFF,
                 std::ptr::null(),
                 std::ptr::null(),
@@ -1271,7 +1369,7 @@ mod tests {
         let should_terms = [should_term.as_ptr()];
         let should_term_lens = [should_term.len()];
         let rc = unsafe {
-            ffi_search_boolean_query_multi_segment_concurrent(
+            crate::legacy_boolean_abi::legacy_search_boolean_query_multi_segment_concurrent(
                 handle,
                 std::ptr::null(),
                 std::ptr::null(),
@@ -1380,7 +1478,7 @@ mod tests {
         let mut exhaustive_results: u64 = 0;
         assert_eq!(
             unsafe {
-                ffi_search_boolean_query_multi_segment(
+                crate::legacy_boolean_abi::legacy_search_boolean_query_multi_segment(
                     exhaustive_handle,
                     std::ptr::null(),
                     std::ptr::null(),
@@ -1407,7 +1505,7 @@ mod tests {
         let mut maxscore_results: u64 = 0;
         assert_eq!(
             unsafe {
-                ffi_search_boolean_query_multi_segment_maxscore(
+                crate::legacy_boolean_abi::legacy_search_boolean_query_multi_segment_maxscore(
                     maxscore_handle,
                     std::ptr::null(),
                     std::ptr::null(),
@@ -1470,7 +1568,7 @@ mod tests {
         let mut seq_results: u64 = 0;
         assert_eq!(
             unsafe {
-                ffi_search_boolean_query_multi_segment_maxscore(
+                crate::legacy_boolean_abi::legacy_search_boolean_query_multi_segment_maxscore(
                     seq_handle,
                     std::ptr::null(),
                     std::ptr::null(),
@@ -1497,7 +1595,7 @@ mod tests {
         let mut con_results: u64 = 0;
         assert_eq!(
             unsafe {
-                ffi_search_boolean_query_multi_segment_maxscore_concurrent(
+                crate::legacy_boolean_abi::legacy_search_boolean_query_multi_segment_maxscore_concurrent(
                     con_handle,
                     std::ptr::null(),
                     std::ptr::null(),
@@ -1540,7 +1638,7 @@ mod tests {
     fn boolean_query_multi_segment_maxscore_unknown_reader_handle_is_invalid_handle() {
         let mut results_handle: u64 = 0;
         let rc = unsafe {
-            ffi_search_boolean_query_multi_segment_maxscore(
+            crate::legacy_boolean_abi::legacy_search_boolean_query_multi_segment_maxscore(
                 0xFFFF,
                 std::ptr::null(),
                 std::ptr::null(),
@@ -1568,7 +1666,7 @@ mod tests {
     fn boolean_query_multi_segment_maxscore_concurrent_unknown_reader_handle_is_invalid_handle() {
         let mut results_handle: u64 = 0;
         let rc = unsafe {
-            ffi_search_boolean_query_multi_segment_maxscore_concurrent(
+            crate::legacy_boolean_abi::legacy_search_boolean_query_multi_segment_maxscore_concurrent(
                 0xFFFF,
                 std::ptr::null(),
                 std::ptr::null(),
@@ -1602,7 +1700,7 @@ mod tests {
         let should_terms = [should_term.as_ptr()];
         let should_term_lens = [should_term.len()];
         let rc = unsafe {
-            ffi_search_boolean_query_multi_segment_maxscore(
+            crate::legacy_boolean_abi::legacy_search_boolean_query_multi_segment_maxscore(
                 handle,
                 std::ptr::null(),
                 std::ptr::null(),

@@ -46,6 +46,108 @@
 //!   speculative generality (no shared supertrait, no `Collector: ScoringCollector`
 //!   blanket impl) is introduced beyond that.
 
+/// `org.apache.lucene.search.ScoreMode` -- what a collector needs from the
+/// scorers underneath it, and therefore what work those scorers are allowed to
+/// skip.
+///
+/// Real Lucene threads this from `Collector.scoreMode()` through
+/// `Query.createWeight(searcher, scoreMode, boost)` into every `Weight`, and it
+/// decides two independent things:
+///
+/// - **`needs_scores`** -- whether a score is ever asked for. A `Weight` built
+///   for a mode with `needs_scores == false` may build a
+///   `PostingsEnum` without frequencies at all (`PostingsEnum.DOCS`), and
+///   `Lucene104PostingsReader` then `PForUtil.skip`s the entire frequency block
+///   rather than decoding it. That is the concrete cost of not modelling this:
+///   a filter-only clause in this port still decodes every frequency it will
+///   never read.
+/// - **`is_exhaustive`** -- whether the collector needs *every* match, or only
+///   enough of them to fill a top-`n`. Dynamic pruning (`WANDScorer`,
+///   `MaxScoreCache`-driven block skipping, `Scorable.setMinCompetitiveScore`)
+///   is legal **only** in a non-exhaustive mode; in an exhaustive one a skipped
+///   block would change `totalHits`, which the collector is promising to report
+///   exactly.
+///
+/// This port models the enum and the two predicates faithfully, and uses them
+/// where it has the machinery to act on them ([`TopDocsCollector`] reports its
+/// own mode, and returns no competitive threshold in an exhaustive one, so
+/// MAXSCORE block skipping shuts off). It does **not** yet have the other half
+/// -- a `needs_scores == false` postings path -- because
+/// `lucene_codecs::postings` has no `PostingsEnum`-flags plumbing at all; that
+/// is a codec-side carry-over item recorded in `docs/sweep/m2/LEDGER.md`, and
+/// this enum is the search-side half of it landing first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScoreMode {
+    /// Every match, with scores -- `IndexSearcher.count`-style exhaustive
+    /// scoring. No pruning is legal.
+    Complete,
+    /// Every match, no scores -- a pure filter/count. No pruning is legal, and
+    /// frequencies need never be decoded.
+    CompleteNoScores,
+    /// Top-`n` by score: pruning is legal, and scores are needed.
+    TopScores,
+    /// Top-`n` by something other than score (a field sort): pruning is legal
+    /// and scores are not needed.
+    TopDocs,
+    /// Top-`n` by a non-score key that nevertheless reports scores.
+    TopDocsWithScores,
+}
+
+impl ScoreMode {
+    /// `ScoreMode.needsScores()`.
+    pub fn needs_scores(self) -> bool {
+        matches!(
+            self,
+            ScoreMode::Complete | ScoreMode::TopScores | ScoreMode::TopDocsWithScores
+        )
+    }
+
+    /// `ScoreMode.isExhaustive()` -- `true` iff the consumer requires every
+    /// match, which is exactly when dynamic pruning is **not** allowed.
+    pub fn is_exhaustive(self) -> bool {
+        matches!(self, ScoreMode::Complete | ScoreMode::CompleteNoScores)
+    }
+}
+
+/// `TotalHits.Relation`: whether a reported hit count is exact, or a lower
+/// bound because the search stopped early.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TotalHitsRelation {
+    /// The count is the exact number of matches.
+    EqualTo,
+    /// The count is a lower bound -- pruning skipped documents that were never
+    /// counted.
+    GreaterThanOrEqualTo,
+}
+
+/// `org.apache.lucene.search.TotalHits`: a hit count plus whether it is exact.
+///
+/// Real `TopDocs` always carries one of these, and every caller that prints
+/// "about N results" is reading its [`TotalHitsRelation`]. This port reported
+/// only `top_docs().len()` before the b12 sweep, which is the *kept* hit count
+/// (capped at `top_n`) and says nothing at all about how many documents
+/// matched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TotalHits {
+    pub value: u64,
+    pub relation: TotalHitsRelation,
+}
+
+impl std::fmt::Display for TotalHits {
+    /// `TotalHits.toString()`: `"12 hits"` / `"1000+ hits"`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}{} hits",
+            self.value,
+            match self.relation {
+                TotalHitsRelation::EqualTo => "",
+                TotalHitsRelation::GreaterThanOrEqualTo => "+",
+            }
+        )
+    }
+}
+
 /// Called once per matching, live doc ID, in ascending order — the entire
 /// contract a collector needs for this slice (no scores, no per-segment
 /// rebinding, no early-termination signal yet; see module doc).
@@ -70,6 +172,35 @@ pub trait ScoringCollector {
     /// that returns `None` simply disables pruning, which is always correct.
     fn min_competitive_score(&self) -> Option<f32> {
         None
+    }
+
+    /// `Collector.scoreMode()`: what this collector needs from the scorer, and
+    /// therefore what the scorer may skip. Defaults to
+    /// [`ScoreMode::Complete`] -- the conservative answer, which forbids
+    /// pruning -- so a collector that has not thought about it cannot
+    /// accidentally authorize an early exit.
+    fn score_mode(&self) -> ScoreMode {
+        ScoreMode::Complete
+    }
+
+    /// The threshold a scorer may prune against: [`Self::min_competitive_score`],
+    /// but only when this collector's [`ScoreMode`] permits pruning at all.
+    ///
+    /// This is the one place the two halves meet, and it exists so they cannot
+    /// be consulted separately. In Java the decision is made once, at
+    /// `Query.createWeight(searcher, scoreMode, boost)` time, and a `Weight`
+    /// built for an exhaustive mode simply never receives a
+    /// `setMinCompetitiveScore` call. This port has no `Weight` to make it at,
+    /// so every scoring loop asks here instead — and asking
+    /// `min_competitive_score()` directly, which several loops used to do, is
+    /// the bug this prevents: a collector promising an exact `totalHits` would
+    /// still hand out a threshold and still get its blocks skipped.
+    fn pruning_threshold(&self) -> Option<f32> {
+        if self.score_mode().is_exhaustive() {
+            None
+        } else {
+            self.min_competitive_score()
+        }
     }
 }
 
@@ -139,22 +270,82 @@ fn rank_order(a: &ScoreDoc, b: &ScoreDoc) -> std::cmp::Ordering {
 pub struct TopDocsCollector {
     top_n: usize,
     hits: Vec<ScoreDoc>,
+    /// Every document handed to [`ScoringCollector::collect`], kept or not --
+    /// real `TopScoreDocCollector`'s `totalHits`.
+    total_hits: u64,
+    /// `TopScoreDocCollector.totalHitsThreshold`: the collector reports no
+    /// competitive threshold (and so authorizes no pruning) until it has seen
+    /// more than this many hits, which is what keeps `total_hits` exact up to
+    /// that point.
+    total_hits_threshold: u64,
+    /// Set once a threshold has actually been handed out, i.e. once a scorer
+    /// was allowed to skip -- `TopScoreDocCollector.totalHitsRelation`.
+    total_hits_relation: TotalHitsRelation,
 }
 
 impl TopDocsCollector {
     /// A collector that keeps at most `top_n` hits. `top_n == 0` is a defined
     /// "keep nothing" edge case (every `collect` call is a no-op), not a panic.
+    ///
+    /// The total-hits threshold is `0`, i.e. pruning is authorized as soon as
+    /// the queue is full. Real Lucene's `IndexSearcher.search(query, n)` uses
+    /// `TopScoreDocCollectorManager`'s default of `1000` instead, trading some
+    /// pruning for an exact `totalHits` up to 1000; use
+    /// [`Self::with_total_hits_threshold`] for that behavior. `0` is kept as
+    /// this constructor's default because it is what every existing caller of
+    /// this type already got, and because it is the right trade for the FFI
+    /// callers this port serves, which ask for hits and not for counts.
     pub fn new(top_n: usize) -> Self {
         Self {
             top_n,
             hits: Vec::new(),
+            total_hits: 0,
+            total_hits_threshold: 0,
+            total_hits_relation: TotalHitsRelation::EqualTo,
         }
     }
 
-    /// The kept hits, best-first (see [`rank_order`]) — `TopDocs.scoreDocs`-equivalent
-    /// (this port has no separate `totalHits`/`TotalHits.Relation` tracking, since
-    /// nothing here does early termination yet; every `collect` call is a real
-    /// evaluated hit).
+    /// `TopScoreDocCollectorManager(numHits, totalHitsThreshold)`: keeps
+    /// [`Self::total_hits`] exact (`EQUAL_TO`) for at least the first
+    /// `total_hits_threshold` matches by refusing to publish a competitive
+    /// score threshold before then. `u64::MAX` disables pruning entirely,
+    /// which is exactly Java's `Integer.MAX_VALUE` sentinel that makes
+    /// `scoreMode()` return `COMPLETE`.
+    pub fn with_total_hits_threshold(top_n: usize, total_hits_threshold: u64) -> Self {
+        Self {
+            top_n,
+            hits: Vec::new(),
+            total_hits: 0,
+            total_hits_threshold,
+            total_hits_relation: TotalHitsRelation::EqualTo,
+        }
+    }
+
+    /// `TopDocs.totalHits`: how many documents matched, and whether that count
+    /// is exact. It is a lower bound exactly when this collector published a
+    /// competitive threshold that a scorer could have pruned against.
+    pub fn total_hits(&self) -> TotalHits {
+        TotalHits {
+            value: self.total_hits,
+            relation: self.total_hits_relation,
+        }
+    }
+
+    /// `TopScoreDocCollector.scoreMode()`: [`ScoreMode::Complete`] when the
+    /// threshold is `u64::MAX` (pruning disabled, every hit counted),
+    /// [`ScoreMode::TopScores`] otherwise -- the same `totalHitsThreshold ==
+    /// Integer.MAX_VALUE ? COMPLETE : TOP_SCORES` test Java makes.
+    pub fn score_mode(&self) -> ScoreMode {
+        if self.total_hits_threshold == u64::MAX {
+            ScoreMode::Complete
+        } else {
+            ScoreMode::TopScores
+        }
+    }
+
+    /// The kept hits, best-first (see [`rank_order`]) — `TopDocs.scoreDocs`-equivalent.
+    /// This is capped at `top_n` and is **not** a hit count; for that, and for
+    /// whether it is exact, see [`Self::total_hits`].
     pub fn top_docs(&self) -> &[ScoreDoc] {
         &self.hits
     }
@@ -170,10 +361,25 @@ impl TopDocsCollector {
     /// remaining candidate still has a chance, so there is no safe threshold
     /// yet) or when `top_n == 0`.
     pub fn min_competitive_score(&self) -> Option<f32> {
-        if self.top_n == 0 || self.hits.len() < self.top_n {
+        // `TopScoreDocCollector.updateMinCompetitiveScore`: a threshold is only
+        // published once `totalHits > totalHitsThreshold`, so a caller that
+        // asked for an exact count up to N gets one.
+        if self.top_n == 0
+            || self.hits.len() < self.top_n
+            || self.total_hits <= self.total_hits_threshold
+        {
             None
         } else {
             self.hits.last().map(|h| h.score)
+        }
+    }
+
+    /// Records that a threshold was handed out, so [`Self::total_hits`] stops
+    /// claiming to be exact. Called from the `&mut self` collect path; the
+    /// read-only [`Self::min_competitive_score`] cannot do it itself.
+    fn note_threshold_published(&mut self) {
+        if TopDocsCollector::min_competitive_score(self).is_some() {
+            self.total_hits_relation = TotalHitsRelation::GreaterThanOrEqualTo;
         }
     }
 }
@@ -183,13 +389,22 @@ impl ScoringCollector for TopDocsCollector {
         TopDocsCollector::min_competitive_score(self)
     }
 
+    fn score_mode(&self) -> ScoreMode {
+        TopDocsCollector::score_mode(self)
+    }
+
     fn collect(&mut self, doc_id: i32, score: f32) {
         // Counted before the fast reject, because the question this answers is
         // "how many documents did the scorer produce", not "how many did the
         // queue keep". See `crate::test_only_scored_docs_counter`.
         #[cfg(any(test, feature = "test-support"))]
         crate::test_only_scored_docs_counter::record_scored();
+        // `TopScoreDocCollector`'s `int hitCountSoFar = ++totalHits;` -- counted
+        // before the fast reject, because this is "how many documents matched",
+        // not "how many the queue kept".
+        self.total_hits += 1;
         if self.top_n == 0 {
+            self.note_threshold_published();
             return;
         }
         // Fast reject, which is also `TopScoreDocCollector.collect`'s own first
@@ -201,6 +416,7 @@ impl ScoringCollector for TopDocsCollector {
         if self.hits.len() == self.top_n {
             let worst = self.hits[self.top_n - 1];
             if score < worst.score || (score == worst.score && doc_id >= worst.doc_id) {
+                self.note_threshold_published();
                 return;
             }
         }
@@ -210,6 +426,7 @@ impl ScoringCollector for TopDocsCollector {
                 .hits
                 .partition_point(|h| rank_order(h, &candidate) == std::cmp::Ordering::Greater);
             self.hits.insert(pos, candidate);
+            self.note_threshold_published();
             return;
         }
         // Full: only replace the current worst (last) hit if the candidate outranks it.
@@ -222,6 +439,7 @@ impl ScoringCollector for TopDocsCollector {
                 self.hits.insert(pos, candidate);
             }
         }
+        self.note_threshold_published();
     }
 }
 
@@ -832,5 +1050,193 @@ mod tests {
                 score: 3.0
             }]
         );
+    }
+
+    // ---- `ScoreMode` / `TotalHits` (`org.apache.lucene.search.ScoreMode`,
+    // `TotalHits`, `TopScoreDocCollector.totalHitsThreshold`) ----
+
+    #[test]
+    fn score_mode_predicates_match_javas_enum_table() {
+        // `ScoreMode`'s Java constructor arguments are `(isExhaustive,
+        // needsScores)`: COMPLETE(true,true), COMPLETE_NO_SCORES(true,false),
+        // TOP_SCORES(false,true), TOP_DOCS(false,false),
+        // TOP_DOCS_WITH_SCORES(false,true). Asserted as a table so a future
+        // edit to either predicate has to disagree with Java on purpose.
+        let table = [
+            (ScoreMode::Complete, true, true),
+            (ScoreMode::CompleteNoScores, true, false),
+            (ScoreMode::TopScores, false, true),
+            (ScoreMode::TopDocs, false, false),
+            (ScoreMode::TopDocsWithScores, false, true),
+        ];
+        for (mode, exhaustive, needs_scores) in table {
+            assert_eq!(mode.is_exhaustive(), exhaustive, "{mode:?}");
+            assert_eq!(mode.needs_scores(), needs_scores, "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn total_hits_counts_every_collected_doc_not_just_the_kept_ones() {
+        let mut c = TopDocsCollector::new(2);
+        for doc in 0..10 {
+            c.collect(doc, doc as f32);
+        }
+        assert_eq!(c.top_docs().len(), 2);
+        assert_eq!(c.total_hits().value, 10);
+    }
+
+    #[test]
+    fn total_hits_is_exact_until_a_competitive_threshold_is_published() {
+        // Threshold 0 (this port's default): the queue fills at the second
+        // document, a threshold is published, and the count stops being exact.
+        let mut c = TopDocsCollector::new(2);
+        c.collect(0, 1.0);
+        assert_eq!(c.total_hits().relation, TotalHitsRelation::EqualTo);
+        assert_eq!(c.min_competitive_score(), None, "queue not full yet");
+        c.collect(1, 2.0);
+        assert_eq!(c.min_competitive_score(), Some(1.0));
+        assert_eq!(
+            c.total_hits().relation,
+            TotalHitsRelation::GreaterThanOrEqualTo
+        );
+    }
+
+    #[test]
+    fn a_total_hits_threshold_keeps_the_count_exact_and_delays_pruning() {
+        // `TopScoreDocCollectorManager(numHits, totalHitsThreshold)`: no
+        // threshold is published while `totalHits <= totalHitsThreshold`, so
+        // the first five counts are exact even though the queue filled at two.
+        let mut c = TopDocsCollector::with_total_hits_threshold(2, 5);
+        for doc in 0..5 {
+            c.collect(doc, doc as f32);
+            assert_eq!(c.min_competitive_score(), None, "doc {doc}");
+            assert_eq!(c.total_hits().relation, TotalHitsRelation::EqualTo);
+        }
+        c.collect(5, 5.0);
+        assert!(c.min_competitive_score().is_some());
+        assert_eq!(
+            c.total_hits().relation,
+            TotalHitsRelation::GreaterThanOrEqualTo
+        );
+        assert_eq!(c.total_hits().value, 6);
+    }
+
+    #[test]
+    fn an_infinite_threshold_is_complete_mode_and_never_prunes() {
+        // Java: `totalHitsThreshold == Integer.MAX_VALUE ? COMPLETE :
+        // TOP_SCORES`. In COMPLETE mode no threshold may ever be published, so
+        // `totalHits` stays exact no matter how many documents arrive.
+        let mut c = TopDocsCollector::with_total_hits_threshold(2, u64::MAX);
+        assert_eq!(c.score_mode(), ScoreMode::Complete);
+        assert!(c.score_mode().is_exhaustive());
+        for doc in 0..50 {
+            c.collect(doc, doc as f32);
+        }
+        assert_eq!(c.min_competitive_score(), None);
+        assert_eq!(c.total_hits().value, 50);
+        assert_eq!(c.total_hits().relation, TotalHitsRelation::EqualTo);
+        assert_eq!(c.top_docs().len(), 2);
+    }
+
+    #[test]
+    fn default_collector_reports_top_scores_mode() {
+        let c = TopDocsCollector::new(3);
+        assert_eq!(c.score_mode(), ScoreMode::TopScores);
+        assert!(!c.score_mode().is_exhaustive(), "pruning must be legal");
+        assert!(c.score_mode().needs_scores());
+        // Reached through the trait too, since that is what the scorers use.
+        assert_eq!(ScoringCollector::score_mode(&c), ScoreMode::TopScores);
+    }
+
+    #[test]
+    fn a_collector_that_says_nothing_gets_the_conservative_default() {
+        struct Bare(u32);
+        impl ScoringCollector for Bare {
+            fn collect(&mut self, _doc_id: i32, _score: f32) {
+                self.0 += 1;
+            }
+        }
+        let c = Bare(0);
+        assert_eq!(c.score_mode(), ScoreMode::Complete);
+        assert!(
+            c.score_mode().is_exhaustive(),
+            "no pruning without opting in"
+        );
+        assert_eq!(c.min_competitive_score(), None);
+    }
+
+    #[test]
+    fn pruning_threshold_is_min_competitive_score_gated_on_the_score_mode() {
+        // Non-exhaustive: the two agree.
+        let mut top = TopDocsCollector::new(2);
+        top.collect(0, 1.0);
+        top.collect(1, 2.0);
+        assert_eq!(top.min_competitive_score(), Some(1.0));
+        assert_eq!(ScoringCollector::pruning_threshold(&top), Some(1.0));
+
+        // Exhaustive: a threshold may not be handed out even if one exists.
+        // (`TopDocsCollector` also refuses to compute one in this mode, so
+        // force the interesting case with a collector that does.)
+        struct AlwaysCompetitive;
+        impl ScoringCollector for AlwaysCompetitive {
+            fn collect(&mut self, _doc_id: i32, _score: f32) {}
+            fn min_competitive_score(&self) -> Option<f32> {
+                Some(42.0)
+            }
+            fn score_mode(&self) -> ScoreMode {
+                ScoreMode::Complete
+            }
+        }
+        let c = AlwaysCompetitive;
+        assert_eq!(c.min_competitive_score(), Some(42.0));
+        assert_eq!(
+            c.pruning_threshold(),
+            None,
+            "an exhaustive collector must not authorize pruning, whatever its \
+             min competitive score says"
+        );
+
+        struct TopScoresMode;
+        impl ScoringCollector for TopScoresMode {
+            fn collect(&mut self, _doc_id: i32, _score: f32) {}
+            fn min_competitive_score(&self) -> Option<f32> {
+                Some(7.0)
+            }
+            fn score_mode(&self) -> ScoreMode {
+                ScoreMode::TopScores
+            }
+        }
+        assert_eq!(TopScoresMode.pruning_threshold(), Some(7.0));
+    }
+
+    #[test]
+    fn total_hits_displays_like_javas_to_string() {
+        assert_eq!(
+            TotalHits {
+                value: 12,
+                relation: TotalHitsRelation::EqualTo
+            }
+            .to_string(),
+            "12 hits"
+        );
+        assert_eq!(
+            TotalHits {
+                value: 1000,
+                relation: TotalHitsRelation::GreaterThanOrEqualTo
+            }
+            .to_string(),
+            "1000+ hits"
+        );
+    }
+
+    #[test]
+    fn a_zero_top_n_collector_still_counts_every_hit_exactly() {
+        let mut c = TopDocsCollector::new(0);
+        for doc in 0..7 {
+            c.collect(doc, 1.0);
+        }
+        assert!(c.top_docs().is_empty());
+        assert_eq!(c.total_hits().value, 7);
+        assert_eq!(c.total_hits().relation, TotalHitsRelation::EqualTo);
     }
 }

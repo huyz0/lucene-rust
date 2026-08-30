@@ -8,11 +8,10 @@
 //! Unlike LZ4 (self-terminating from a plain output-length count alone),
 //! DEFLATE needs to be told exactly how many *compressed* bytes to feed the
 //! inflator, so [`decompress`] takes `compressed_len` explicitly rather than
-//! reading it from `input` itself -- the caller ([`crate::stored_fields`]'s
-//! `decompress_unit`) already had to read every unit's compressed length
-//! upfront (Java's format groups all of a chunk's compressed-length vints
-//! together before any of the actual compressed bytes; see that function's
-//! doc comment).
+//! reading it from `input` itself. In this format that length sits
+//! immediately before its own unit's bytes (`doDecompress` reads it there),
+//! unlike LZ4's, which is batched with every other unit's up front -- see
+//! `stored_fields::decompress_unit`'s doc comment for both shapes.
 //!
 //! Built on `miniz_oxide::inflate::core`'s low-level `decompress` rather
 //! than its `decompress_to_vec*` convenience wrappers: those don't support
@@ -43,11 +42,13 @@ use miniz_oxide::inflate::TINFLStatus;
 /// for LZ4's simpler byte-token scheme, would be substantially more work for
 /// no wire-format benefit here.
 ///
-/// Level 6 (`miniz_oxide`'s "default"/balanced level, matching zlib's own
-/// default) is used unconditionally: real Lucene's `BEST_COMPRESSION` mode
-/// passes `Deflater.BEST_COMPRESSION` (zlib level 9), but since only the
-/// *decompressed* bytes need to match, the compression level is purely a
-/// speed/ratio trade-off with no correctness implication.
+/// Level 6 is exactly what Lucene itself uses:
+/// `DeflateWithPresetDictCompressionMode.newCompressor()` constructs
+/// `new DeflateWithPresetDictCompressor(6)`, with the comment "3 is the
+/// highest level that doesn't have lazy match evaluation / 6 is the default,
+/// higher than that is just a waste of cpu". Only the *decompressed* bytes
+/// are part of the wire contract, so the level would be a free choice
+/// either way -- but there is no reason to pick a different one.
 pub(crate) fn compress(input: &[u8]) -> Vec<u8> {
     compress_to_vec(input, 6)
 }

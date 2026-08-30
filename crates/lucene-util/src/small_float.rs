@@ -59,6 +59,19 @@ fn num_free_values() -> u32 {
 /// negative length to encode, so this takes `u32` rather than mirroring
 /// Java's runtime-checked `int` parameter.
 pub fn int_to_byte4(i: u32) -> u8 {
+    // Java's parameter is a signed `int`, and it rejects negatives outright;
+    // the reachable domain is therefore `0..=Integer.MAX_VALUE`, and
+    // `NUM_FREE_VALUES` is defined precisely so that the top of that domain
+    // encodes to 255. Anything above it would overflow the byte and wrap
+    // (a 3-billion-token field would encode *smaller* than a 10-token one,
+    // silently inverting norm ordering), so clamp instead -- saturating
+    // keeps the encoding monotonic, which is the property every caller of
+    // this function depends on.
+    debug_assert!(
+        i <= i32::MAX as u32,
+        "SmallFloat.intToByte4 is only defined for 0..=Integer.MAX_VALUE, got {i}"
+    );
+    let i = i.min(i32::MAX as u32);
     let free = num_free_values();
     if i < free {
         i as u8
@@ -147,6 +160,23 @@ mod tests {
             let decoded = byte4_to_int(b);
             assert_eq!(int_to_byte4(decoded), b, "len {len}");
         }
+    }
+
+    #[test]
+    fn int_to_byte4_saturates_at_integer_max_value() {
+        // `Integer.MAX_VALUE` is the top of Java's domain and must encode to
+        // the largest byte, 255.
+        assert_eq!(int_to_byte4(i32::MAX as u32), 255);
+    }
+
+    #[test]
+    #[should_panic(expected = "only defined for 0..=Integer.MAX_VALUE")]
+    fn int_to_byte4_rejects_values_outside_javas_domain_in_debug() {
+        // Java throws IllegalArgumentException for input outside its `int`
+        // domain; this port's `u32` signature can express values Java cannot,
+        // and without the guard `(free + longToInt4(i - free)) as u8` wraps
+        // (4e9 would encode to byte 7, i.e. "shorter" than a 7-token field).
+        int_to_byte4(i32::MAX as u32 + 1);
     }
 
     #[test]

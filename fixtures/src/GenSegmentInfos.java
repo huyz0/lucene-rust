@@ -80,10 +80,16 @@ public class GenSegmentInfos {
       // also dump raw bytes of the segments_N file itself (already on disk in `out`,
       // but copy explicitly so the fixture's shape is obvious / stable under FSDirectory
       // internals changing).
+      //
+      // The copy deliberately does NOT start with "segments": every name in an
+      // index directory matching `segments*` must parse as a generation, or
+      // `SegmentInfos.getLastCommitGeneration` throws. A "segments_2.raw"
+      // sitting next to "segments_2" made this fixture a directory real Lucene
+      // cannot open.
       try (IndexInput in = dir.openInput(segmentsFileName, IOContext.READONCE)) {
         byte[] bytes = new byte[(int) in.length()];
         in.readBytes(bytes, 0, bytes.length);
-        Files.write(out.resolve(segmentsFileName + ".raw"), bytes);
+        Files.write(out.resolve("expected_" + segmentsFileName + ".bin"), bytes);
       }
     }
 

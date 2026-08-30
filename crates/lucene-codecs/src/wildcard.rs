@@ -116,6 +116,10 @@ impl WildcardPattern {
     /// byte would already have been a plain `Literal` unescaped, same as
     /// real Lucene (escaping a non-special codepoint just re-adds it as
     /// `Automata.makeChar`, identical to the unescaped `default` case).
+    // ARITH: `i` is a byte index into `pattern` held below `pattern.len()` by
+    // the loop condition, and a slice length is at most `isize::MAX`, so
+    // `i + 1` and `i += 2` cannot reach `usize::MAX`.
+    #[allow(clippy::arithmetic_side_effects)]
     pub fn new(pattern: &[u8]) -> Self {
         let mut tokens = Vec::with_capacity(pattern.len());
         let mut i = 0;

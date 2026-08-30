@@ -1,7 +1,8 @@
 //! Doc-values-driven query support: a numeric range filter and a sorted-ordinal
-//! range/equality filter (`SortedNumericDocValuesField.newSlowRangeQuery`/
+//! range/equality filter (`NumericDocValuesField.newSlowRangeQuery`/
 //! `SortedSetDocValuesField.newSlowRangeQuery`-equivalent, single-valued case
-//! only — see [`crate::doc_value_query`]'s scope note below), plus a
+//! only — see [`crate::doc_value_query`]'s scope note below), the real
+//! multi-valued `SortedNumericDocValuesField.newSlowRangeQuery`, plus a
 //! post-processing "sort an already-matched doc set by a numeric doc value"
 //! helper (the `SortField.Type.LONG`/`INT`-equivalent "real search sorting"
 //! capability).
@@ -80,7 +81,10 @@
 //!   queries above still only offer the full `[0, max_doc)` sweep — a future
 //!   follow-up if a skip index is ever recorded for those doc-values types.
 
-use lucene_codecs::doc_values::{self, NumericEntry, SortedEntry, SortedNumericEntry};
+use lucene_codecs::doc_values::{
+    self, BinaryEntry, DocValuesMeta, NumericEntry, SortedEntry, SortedNumericEntry,
+    SortedSetEntry, SortedSetKind,
+};
 use lucene_util::fixed_bit_set::FixedBitSet;
 
 use crate::collector::{FieldValueDoc, SortDirection, TopFieldCollector};
@@ -352,14 +356,25 @@ pub fn sort_top_n_by_numeric_doc_value(
 /// Lucene use cases (`IndexSearcher.search(query, n, sort)` with a
 /// `PointRangeQuery`/`SortedNumericDocValuesField.newSlowRangeQuery` query and
 /// a `SortField` on a different field).
+///
+/// **`range_data` and `sort_data` are separate buffers on purpose.** In Java
+/// each field is served by its own `DocValuesProducer`
+/// (`SegmentDocValuesProducer.dvProducersByField`), and after an
+/// `IndexWriter.updateNumericDocValue` two fields of the same segment
+/// genuinely live in *different* `.dvd` files -- the updated one in its
+/// generation, the untouched one in the base column. A single
+/// `doc_values_data` parameter shared by both entries silently assumed they
+/// always coincide, which is true only until the first doc-values update.
+/// Pass the same slice twice for the common case where they do.
 #[allow(clippy::too_many_arguments)]
 pub fn search_numeric_range_sorted_by_field(
-    doc_values_data: &[u8],
+    range_data: &[u8],
     range_entry: &NumericEntry,
     live_docs: Option<&FixedBitSet>,
     max_doc: i32,
     min: i64,
     max: i64,
+    sort_data: &[u8],
     sort_entry: &NumericEntry,
     direction: SortDirection,
     missing: MissingValue,
@@ -367,7 +382,7 @@ pub fn search_numeric_range_sorted_by_field(
 ) -> Result<Vec<FieldValueDoc>> {
     let mut matches = crate::collector::VecCollector::default();
     search_numeric_range(
-        doc_values_data,
+        range_data,
         range_entry,
         live_docs,
         max_doc,
@@ -376,7 +391,7 @@ pub fn search_numeric_range_sorted_by_field(
         &mut matches,
     )?;
     sort_top_n_by_numeric_doc_value(
-        doc_values_data,
+        sort_data,
         sort_entry,
         &matches.docs,
         direction,
@@ -415,12 +430,22 @@ impl ValueSelector {
     }
 }
 
-/// Multi-valued equivalent of [`search_numeric_range`]: reduces each doc's
-/// values (from a [`SortedNumericEntry`] — a SORTED_NUMERIC field, or a
-/// SORTED_SET field's ordinal array, see this module's doc comment) via
-/// `selector`, then applies the exact same inclusive `[min, max]` check. A
-/// doc with zero values (`sorted_numeric_values` returns an empty `Vec`)
-/// never matches, same missing-value rule as [`search_numeric_range`].
+/// Reduces each doc's values (from a [`SortedNumericEntry`] — a
+/// SORTED_NUMERIC field, or a SORTED_SET field's ordinal array, see this
+/// module's doc comment) via `selector`, then applies the same inclusive
+/// `[min, max]` check [`search_numeric_range`] does. A doc with zero values
+/// (`sorted_numeric_values` returns an empty `Vec`) never matches, same
+/// missing-value rule as [`search_numeric_range`].
+///
+/// **This is not `SortedNumericDocValuesField.newSlowRangeQuery`** — that
+/// query matches a doc if **any** of its values is in range, with no selector
+/// involved (see [`search_sorted_numeric_range`]). `SortedNumericSelector` is
+/// real Lucene's *sort-field* reduction (`SortedNumericSortField`), and this
+/// function is the range-filter shaped after it: "filter on the same single
+/// value this selector would sort by". The two genuinely differ — a doc with
+/// values `[1, 50]` and a query range `[40, 60]` matches
+/// [`search_sorted_numeric_range`] (50 is in range) but not this function
+/// under [`ValueSelector::Min`] (the min, 1, is not).
 #[allow(clippy::too_many_arguments)]
 pub fn search_multi_valued_range<C: Collector>(
     doc_values_data: &[u8],
@@ -441,6 +466,66 @@ pub fn search_multi_valued_range<C: Collector>(
             if reduced >= min && reduced <= max {
                 collector.collect(doc_id);
             }
+        }
+    }
+    Ok(())
+}
+
+/// Real `SortedNumericDocValuesField.newSlowRangeQuery(field, lower, upper)` /
+/// `SortedNumericDocValuesRangeQuery`: every live doc in `[0, max_doc)` with
+/// **at least one** value in the inclusive `[min, max]` range, fed through
+/// `collector` ascending by doc ID.
+///
+/// This is the multi-valued range query real Lucene actually ships. Java's
+/// `TwoPhaseIterator.matches()` walks the doc's (already ascending) values,
+/// skips every one below `lowerValue`, and answers with a single comparison
+/// on the first one that isn't:
+///
+/// ```text
+/// for (value : values) { if (value < lowerValue) continue; return value <= upperValue; }
+/// return false;
+/// ```
+///
+/// which is exactly "any value in `[min, max]`" given the ascending order
+/// `sorted_numeric_values` also guarantees. This function reproduces that
+/// early-exit shape rather than scanning every value, so a doc whose first
+/// in-range candidate already exceeds `max` costs one comparison, not
+/// `docValueCount` of them.
+///
+/// `min > max` matches nothing, the same way
+/// `SortedNumericDocValuesField.newSlowRangeQuery` returns a
+/// `MatchNoDocsQuery` for that case rather than erroring.
+///
+/// A doc with no values at all never matches, same missing-value rule as
+/// [`search_numeric_range`].
+#[allow(clippy::too_many_arguments)]
+pub fn search_sorted_numeric_range<C: Collector>(
+    doc_values_data: &[u8],
+    entry: &SortedNumericEntry,
+    live_docs: Option<&FixedBitSet>,
+    max_doc: i32,
+    min: i64,
+    max: i64,
+    collector: &mut C,
+) -> Result<()> {
+    if min > max {
+        return Ok(());
+    }
+    for doc_id in 0..max_doc {
+        if !live_docs.is_none_or(|bits| bits.get(doc_id as usize)) {
+            continue;
+        }
+        let values = doc_values::sorted_numeric_values(doc_values_data, entry, doc_id)?;
+        for value in values {
+            if value < min {
+                continue;
+            }
+            // Values are ascending, so the first one that isn't below `min`
+            // decides the whole document.
+            if value <= max {
+                collector.collect(doc_id);
+            }
+            break;
         }
     }
     Ok(())
@@ -470,6 +555,350 @@ pub fn sort_by_multi_valued_doc_value(
     }
     pairs.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
     Ok(pairs)
+}
+
+// ---------------------------------------------------------------------------
+// `FieldExistsQuery`
+// ---------------------------------------------------------------------------
+
+/// One field's doc-values reader, whichever kind it has -- the Rust shape of
+/// `FieldExistsQuery.getDocValuesDocIdSetIterator`'s `switch` on
+/// `FieldInfo.getDocValuesType()`.
+///
+/// Resolved by [`doc_values_field`]; `None` there is Java's `NONE` case (and
+/// its `fieldInfo == null` case), which returns a `null` iterator and so
+/// matches nothing.
+#[derive(Debug, Clone, Copy)]
+pub enum DocValuesField<'a> {
+    Numeric(&'a NumericEntry),
+    Binary(&'a BinaryEntry),
+    Sorted(&'a SortedEntry),
+    SortedNumeric(&'a SortedNumericEntry),
+    SortedSet(&'a SortedSetEntry),
+}
+
+/// `FieldExistsQuery.getDocValuesDocIdSetIterator(field, reader)`'s resolution
+/// step: whichever doc-values kind this field was indexed with.
+///
+/// Lucene enforces (LUCENE-9334) that a field always uses the same data
+/// structures across an index, so at most one of these can be present; this
+/// checks them in Java's `switch` order and returns the first hit.
+pub fn doc_values_field(meta: &DocValuesMeta, field_number: i32) -> Option<DocValuesField<'_>> {
+    if let Some(e) = meta.numeric_entry(field_number) {
+        return Some(DocValuesField::Numeric(e));
+    }
+    if let Some(e) = meta.binary_entry(field_number) {
+        return Some(DocValuesField::Binary(e));
+    }
+    if let Some(e) = meta.sorted_entry(field_number) {
+        return Some(DocValuesField::Sorted(e));
+    }
+    if let Some(e) = meta.sorted_numeric_entry(field_number) {
+        return Some(DocValuesField::SortedNumeric(e));
+    }
+    if let Some(e) = meta.sorted_set_entry(field_number) {
+        return Some(DocValuesField::SortedSet(e));
+    }
+    None
+}
+
+/// Whether `doc` has any value at all for `field` -- the per-document half of
+/// `FieldExistsQuery`, i.e. "would this field's `DocIdSetIterator` land on
+/// this doc".
+///
+/// A dense field answers `true` for every doc; a sparse one consults the
+/// field's `IndexedDISI`, which is what each `doc_values::*_value` accessor
+/// already does when it returns `None`/an empty list.
+pub fn doc_has_value(doc_values_data: &[u8], field: DocValuesField<'_>, doc: i32) -> Result<bool> {
+    Ok(match field {
+        DocValuesField::Numeric(e) => doc_values::numeric_value(doc_values_data, e, doc)?.is_some(),
+        DocValuesField::Binary(e) => doc_values::binary_value(doc_values_data, e, doc)?.is_some(),
+        DocValuesField::Sorted(e) => doc_values::sorted_ord(doc_values_data, e, doc)?.is_some(),
+        DocValuesField::SortedNumeric(e) => {
+            !doc_values::sorted_numeric_values(doc_values_data, e, doc)?.is_empty()
+        }
+        DocValuesField::SortedSet(e) => match &e.kind {
+            SortedSetKind::Single(sorted) => {
+                doc_values::sorted_ord(doc_values_data, sorted, doc)?.is_some()
+            }
+            SortedSetKind::Multi { ords, .. } => {
+                !doc_values::sorted_numeric_values(doc_values_data, ords, doc)?.is_empty()
+            }
+        },
+    })
+}
+
+/// `FieldExistsQuery` over the **doc-values** source: every live doc in
+/// `[0, max_doc)` that has a value for the field, collected in ascending doc
+/// order at a constant score.
+///
+/// This is the whole of Java's `ConstantScoreWeight.scorerSupplier` for the
+/// `fieldInfo.getDocValuesType() != NONE` branch:
+/// `getDocValuesDocIdSetIterator` picks the field's iterator and
+/// `ConstantScoreScorerSupplier.fromIterator` wraps it. A field with no
+/// doc-values entry at all is Java's `null` iterator -- **no matches**, not an
+/// error (`doc_values_field` returns `None`, and so does this function's
+/// caller-visible behaviour: zero collected docs).
+///
+/// **This is one of three sources**, and not the one Java tries first:
+/// [`field_exists_source`] is the `FieldInfo` switch that chooses between
+/// [`search_field_exists_norms`], [`search_field_exists_vectors`] and this
+/// function, in Java's own order. There is no fourth, points-based source --
+/// `FieldExistsQuery`'s scorer never touches `PointValues`; points appear only
+/// in its `rewrite`/`count` shortcuts as a *docCount* proxy, which is
+/// [`field_exists_leaf_is_complete`]. (c12 §5.3 recorded a points *iterator*
+/// as a deferred source; re-reading 10.5.0's `FieldExistsQuery` shows that
+/// source does not exist.)
+pub fn search_field_exists<C: Collector>(
+    doc_values_data: &[u8],
+    field: DocValuesField<'_>,
+    live_docs: Option<&FixedBitSet>,
+    max_doc: i32,
+    collector: &mut C,
+) -> Result<()> {
+    for doc_id in 0..max_doc {
+        if !live_docs.is_none_or(|bits| bits.get(doc_id as usize)) {
+            continue;
+        }
+        if doc_has_value(doc_values_data, field, doc_id)? {
+            collector.collect(doc_id);
+        }
+    }
+    Ok(())
+}
+
+/// Which of `FieldExistsQuery`'s three sources a field's `FieldInfo` selects.
+///
+/// Java's `ConstantScoreWeight.scorerSupplier` is a three-way if/else on the
+/// `FieldInfo` alone, in exactly this order, and the order matters: LUCENE-9334
+/// guarantees a field uses the same data structures index-wide, but a field can
+/// legitimately have *both* norms and doc values, and Java then iterates its
+/// norms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldExistsSource {
+    /// `fieldInfo.hasNorms()` -- `reader.getNormValues(field)`.
+    Norms,
+    /// `fieldInfo.getVectorDimension() != 0` --
+    /// `getFloatVectorValues(field).iterator()` / `getByteVectorValues(...)`.
+    Vectors,
+    /// `fieldInfo.getDocValuesType() != NONE` -- the five-way switch
+    /// [`doc_values_field`] resolves.
+    DocValues,
+}
+
+/// `FieldExistsQuery`'s source selection, verbatim: norms, then vectors, then
+/// doc values, decided by `FieldInfo` alone.
+///
+/// `Err(Error::FieldExistsUnsupported)` is Java's own `IllegalStateException`
+/// ("FieldExistsQuery requires that the field indexes doc values, norms or
+/// vectors, but field '...' exists and indexes neither of these data
+/// structures") -- an error rather than an empty match set, because a field
+/// that indexes none of the three is a caller mistake, not a document-less
+/// field. A field name that is not in `FieldInfos` at all is Java's
+/// `fieldInfo == null`: `null` scorer, no matches, no error -- that case never
+/// reaches this function, which takes a `FieldInfo`.
+pub fn field_exists_source(
+    field: &lucene_codecs::field_infos::FieldInfo,
+) -> Result<FieldExistsSource> {
+    // `FieldInfo.hasNorms()`.
+    if field.index_options != lucene_codecs::field_infos::IndexOptions::None && !field.omit_norms {
+        return Ok(FieldExistsSource::Norms);
+    }
+    if field.vector_dimension != 0 {
+        return Ok(FieldExistsSource::Vectors);
+    }
+    if field.doc_values_type != lucene_codecs::field_infos::DocValuesType::None {
+        return Ok(FieldExistsSource::DocValues);
+    }
+    Err(crate::Error::FieldExistsUnsupported(field.name.clone()))
+}
+
+/// `FieldExistsQuery` over the **norms** source: every live doc that has a
+/// norm for the field, ascending, at a constant score -- Java's
+/// `iterator = context.reader().getNormValues(field)` branch, wrapped by
+/// `ConstantScoreScorerSupplier.fromIterator`.
+///
+/// Takes an already-open [`crate::field_norms::FieldNorms`] rather than raw
+/// `.nvd` bytes so the sparse case is one forward `IndexedDISI` walk for the
+/// whole sweep (`FieldNormsCursor`), not a fresh block walk per document --
+/// the same reason every scored query in this crate holds a cursor. Docs are
+/// visited ascending, which is the order that cursor is cheap in.
+pub fn search_field_exists_norms<C: Collector>(
+    norms: &crate::field_norms::FieldNorms<'_>,
+    live_docs: Option<&FixedBitSet>,
+    max_doc: i32,
+    collector: &mut C,
+) -> Result<()> {
+    let mut cursor = norms.cursor();
+    for doc_id in 0..max_doc {
+        if !live_docs.is_none_or(|bits| bits.get(doc_id as usize)) {
+            continue;
+        }
+        if cursor.has_norm(doc_id)? {
+            collector.collect(doc_id);
+        }
+    }
+    Ok(())
+}
+
+/// `FieldExistsQuery` over the **vectors** source: every live doc that has a
+/// vector for the field, ascending, at a constant score -- Java's
+/// `getFloatVectorValues(field).iterator()` / `getByteVectorValues(field)
+/// .iterator()` branch. `ord_to_doc` is the same mapping either encoding's
+/// iterator walks, so one function serves both (the encoding decides which
+/// `*VectorValues` the caller opened, not what "has a value" means).
+///
+/// **This iterates ordinals, not documents.** A `KnnVectorValues` iterator
+/// visits exactly the documents that have a vector -- `size()` of them -- and
+/// their doc ids come back ascending because ordinals are assigned in document
+/// order (`OrdToDocDISIReaderConfiguration`'s ordinal -> doc map is a
+/// `DirectMonotonicReader`). Sweeping `0..max_doc` and asking each document
+/// instead would be `max_doc` `IndexedDISI` lookups to find the same set, and
+/// is what a naive port of the doc-values branch would have done here.
+///
+/// `size` and `ord_to_doc` come from
+/// [`lucene_codecs::vectors::FloatVectorValues`]/`ByteVectorValues`, which is
+/// why this takes the two closures rather than one of those two concrete
+/// types: the crate's `vector_values_common!` macro gives them the same
+/// inherent methods but no shared trait to be generic over.
+pub fn search_field_exists_vectors<C: Collector>(
+    size: i32,
+    ord_to_doc: impl Fn(i32) -> std::result::Result<i32, lucene_codecs::vectors::Error>,
+    live_docs: Option<&FixedBitSet>,
+    max_doc: i32,
+    collector: &mut C,
+) -> Result<()> {
+    for ord in 0..size {
+        let doc = ord_to_doc(ord)?;
+        // `ord_to_doc` validates the *ordinal*; the doc id it decoded is a
+        // value off disk and a `DirectMonotonicReader` will happily return
+        // one past the segment. Reported rather than skipped: skipping would
+        // turn a corrupt ordinal->doc map into a quietly short result, and
+        // `live_docs.get(doc)` a line below indexes a bitset with it.
+        if doc < 0 || doc >= max_doc {
+            return Err(crate::Error::Vectors(
+                lucene_codecs::vectors::Error::CorruptMeta(format!(
+                    "ordToDoc maps ordinal {ord} to doc {doc}, outside 0..{max_doc}"
+                )),
+            ));
+        }
+        if !live_docs.is_none_or(|bits| bits.get(doc as usize)) {
+            continue;
+        }
+        collector.collect(doc);
+    }
+    Ok(())
+}
+
+/// `FieldExistsQuery.rewrite`'s "every document in this leaf has the field, so
+/// the whole query is `MatchAllDocsQuery`" test, for one leaf.
+///
+/// Java's `rewrite` asks a different question per source, and the *counts* it
+/// compares are the ones it can get without decoding anything:
+///
+/// - **norms**: `reader.getDocCount(field) == reader.maxDoc()` (the terms
+///   dictionary's per-field `docCount`);
+/// - **vectors**: `getFloatVectorValues(field).size() == leaf.maxDoc()`;
+/// - **doc values**: any one of the terms dictionary's `docCount`, the BKD
+///   tree's `getDocCount()`, or the doc-values skipper's `docCount()` equal to
+///   `maxDoc` (a field always uses the same structures index-wide, so any of
+///   the three that exists is authoritative).
+///
+/// **Note which `reader` Java uses.** The norms branch reads
+/// `reader.getDocCount(field)` and `reader.maxDoc()` off the *top-level*
+/// `IndexReader`, while the vector and doc-values branches read `leaf`'s --
+/// inside the same per-leaf loop. That asymmetry is Java's, not a
+/// simplification here, so a caller reproducing `rewrite` exactly passes the
+/// **reader-wide** `terms_doc_count`/`max_doc` for [`FieldExistsSource::Norms`]
+/// and the **leaf's** for the other two. (For a single-segment reader the two
+/// coincide, which is presumably why it has survived.)
+///
+/// This function takes whichever of those counts the caller could resolve
+/// (`None` for one it has no reader for) and applies Java's rule; the caller
+/// still has to make the *whole-reader* decision, since Java rewrites only
+/// when **every** leaf says yes.
+///
+/// Note the deliberate asymmetry Java has here: the doc-values branch is an
+/// OR over three optional counts, so a leaf where none of the three is
+/// available is *not* rewritable, while the norms and vector branches have a
+/// single count each.
+pub fn field_exists_leaf_is_complete(
+    source: FieldExistsSource,
+    max_doc: i32,
+    terms_doc_count: Option<i32>,
+    vector_size: Option<i32>,
+    points_doc_count: Option<i32>,
+    skipper_doc_count: Option<i32>,
+) -> bool {
+    match source {
+        FieldExistsSource::Norms => terms_doc_count == Some(max_doc),
+        FieldExistsSource::Vectors => vector_size == Some(max_doc),
+        FieldExistsSource::DocValues => {
+            terms_doc_count == Some(max_doc)
+                || points_doc_count == Some(max_doc)
+                || skipper_doc_count == Some(max_doc)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// `IndexOrDocValuesQuery`
+// ---------------------------------------------------------------------------
+
+/// Which side of an [`IndexOrDocValuesQuery`-equivalent][plan_index_or_doc_values]
+/// pair to run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexOrDocValuesPlan {
+    /// Run the index (points / terms) query: a costly scorer to build, but a
+    /// good lead iterator.
+    Index,
+    /// Run the doc-values query: cheap to start, good at verifying individual
+    /// documents another clause is already leading.
+    DocValues,
+}
+
+/// `IndexOrDocValuesQuery`'s planner, verbatim:
+///
+/// ```text
+/// final long threshold = cost() >>> 3;
+/// if (threshold <= leadCost) { indexScorerSupplier.get(leadCost) }
+/// else                       { dvScorerSupplier.get(leadCost) }
+/// ```
+///
+/// `cost()` is the *index* side's `ScorerSupplier.cost()`, which for a point
+/// range query is `PointValues.estimateDocCount(visitor)` -- a BKD tree walk
+/// that this port does not have (b14 §1.4 recorded it as missing, with no
+/// consumer at the time; this is the consumer). The `>>> 3` is Java's own
+/// comment: "at equal costs, doc values tend to be worse than points since
+/// they still need to perform one comparison per document while points can do
+/// much better than that given how values are organized. So we give an
+/// arbitrary 8x penalty to doc values."
+///
+/// **`index_cost: None` means "no estimate available" and plans
+/// [`IndexOrDocValuesPlan::Index`].** That is not a guess: it is the answer
+/// Java's own rule gives whenever this query is the *lead* iterator
+/// (`leadCost == cost()` makes `cost >>> 3 <= leadCost` true for every
+/// non-negative cost), and it is unconditionally what `bulkScorer()` does
+/// ("bulk scorers need to consume the entire set of docs, so using an index
+/// structure should perform better"). Choosing doc values without an estimate
+/// would be the guess -- it is only ever right when some *other* clause is
+/// leading with a much smaller doc set, which is information the caller has
+/// and this function is told about through `lead_cost`.
+pub fn plan_index_or_doc_values(index_cost: Option<i64>, lead_cost: i64) -> IndexOrDocValuesPlan {
+    match index_cost {
+        None => IndexOrDocValuesPlan::Index,
+        // `>>> 3` on a non-negative long is `/ 8`; a negative cost is not a
+        // value Java can produce (`assert cost >= 0`), and clamping it here
+        // keeps the shift's meaning rather than sign-extending.
+        Some(cost) => {
+            let threshold = cost.max(0) >> 3;
+            if threshold <= lead_cost {
+                IndexOrDocValuesPlan::Index
+            } else {
+                IndexOrDocValuesPlan::DocValues
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -549,6 +978,157 @@ mod tests {
                 (name == field).then(|| num.parse().unwrap())
             })
             .unwrap_or_else(|| panic!("field {field} missing from field_numbers"))
+    }
+
+    // --- `FieldExistsQuery` ------------------------------------------------
+
+    /// The docs a manifest's `field.<x>.values`-style list says have a value:
+    /// every position whose entry is not `NONE`.
+    fn docs_with_values(list: &str) -> Vec<i32> {
+        list.split(';')
+            .enumerate()
+            .filter(|(_, v)| *v != "NONE")
+            .map(|(i, _)| i as i32)
+            .collect()
+    }
+
+    #[test]
+    fn field_exists_matches_every_doc_with_a_value_for_all_five_dv_kinds() {
+        // NUMERIC (sparse) and BINARY (sparse), from doc_values_index.
+        let (m, _id, data, meta) = load_dv_meta(&dv_dir());
+        for (field, key, expected) in [
+            ("sparse", "field.sparse.values", vec![0i32, 2, 4]),
+            ("bin_sparse", "field.bin_sparse.values_hex", vec![0, 2, 4]),
+        ] {
+            let f = doc_values_field(&meta, field_number(&m, field)).expect("a dv entry");
+            let mut c = VecCollector::default();
+            search_field_exists(&data, f, None, 5, &mut c).unwrap();
+            assert_eq!(c.docs, expected, "{field}");
+            assert_eq!(
+                c.docs,
+                m.get(key)
+                    .split(',')
+                    .enumerate()
+                    .filter(|(_, v)| *v != "NONE")
+                    .map(|(i, _)| i as i32)
+                    .collect::<Vec<_>>(),
+                "{field}: manifest and port must agree on which docs have a value"
+            );
+        }
+        // A dense field matches every doc.
+        let f = doc_values_field(&meta, field_number(&m, "varying")).expect("a dv entry");
+        let mut c = VecCollector::default();
+        search_field_exists(&data, f, None, 5, &mut c).unwrap();
+        assert_eq!(c.docs, vec![0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn field_exists_covers_sorted_sorted_numeric_and_sorted_set() {
+        // SORTED (dense).
+        let (m, _id, data, meta) = load_dv_meta(&sorted_dv_dir());
+        let f = doc_values_field(&meta, field_number(&m, "sorted")).expect("a dv entry");
+        let mut c = VecCollector::default();
+        search_field_exists(&data, f, None, 5, &mut c).unwrap();
+        assert_eq!(c.docs, vec![0, 1, 2, 3, 4]);
+
+        // SORTED_NUMERIC and SORTED_SET (both sparse) from the multi-valued
+        // fixture: docs 1 and 4 have no `nums`, docs 1 has no `tags`.
+        let (m, _id, data, meta) = load_dv_meta(&multi_dv_dir());
+        let f = doc_values_field(&meta, field_number(&m, "nums")).expect("a dv entry");
+        let mut c = VecCollector::default();
+        search_field_exists(&data, f, None, 5, &mut c).unwrap();
+        assert_eq!(c.docs, docs_with_values(m.get("field.nums.values")));
+
+        let f = doc_values_field(&meta, field_number(&m, "tags")).expect("a dv entry");
+        let mut c = VecCollector::default();
+        search_field_exists(&data, f, None, 5, &mut c).unwrap();
+        assert_eq!(c.docs, docs_with_values(m.get("field.tags.ords")));
+    }
+
+    #[test]
+    fn field_exists_respects_live_docs_and_an_unknown_field() {
+        let (m, _id, data, meta) = load_dv_meta(&dv_dir());
+        let f = doc_values_field(&meta, field_number(&m, "sparse")).expect("a dv entry");
+        let mut live = FixedBitSet::new(5);
+        for d in [0usize, 1, 2, 3, 4] {
+            live.set(d);
+        }
+        live.clear(2);
+        let mut c = VecCollector::default();
+        search_field_exists(&data, f, Some(&live), 5, &mut c).unwrap();
+        assert_eq!(c.docs, vec![0, 4], "a deleted doc never matches");
+
+        // Java's `fieldInfo == null` / `DocValuesType.NONE`: a null iterator,
+        // i.e. no matches -- not an error.
+        assert!(doc_values_field(&meta, 9999).is_none());
+    }
+
+    #[test]
+    fn doc_has_value_agrees_with_the_iterator_document_by_document() {
+        let (m, _id, data, meta) = load_dv_meta(&multi_dv_dir());
+        let f = doc_values_field(&meta, field_number(&m, "nums")).expect("a dv entry");
+        let mut c = VecCollector::default();
+        search_field_exists(&data, f, None, 5, &mut c).unwrap();
+        for doc in 0..5 {
+            assert_eq!(
+                doc_has_value(&data, f, doc).unwrap(),
+                c.docs.contains(&doc),
+                "doc {doc}"
+            );
+        }
+    }
+
+    // --- `IndexOrDocValuesQuery` -------------------------------------------
+
+    #[test]
+    fn the_planner_reproduces_javas_eight_times_penalty() {
+        // `threshold = cost >>> 3; threshold <= leadCost ? index : doc values`.
+        assert_eq!(
+            plan_index_or_doc_values(Some(800), 100),
+            IndexOrDocValuesPlan::Index,
+            "800/8 == 100 <= 100: the index side wins on the boundary"
+        );
+        assert_eq!(
+            plan_index_or_doc_values(Some(807), 100),
+            IndexOrDocValuesPlan::Index,
+            "807 >>> 3 == 100 (the shift truncates) -- still the index side"
+        );
+        assert_eq!(
+            plan_index_or_doc_values(Some(808), 100),
+            IndexOrDocValuesPlan::DocValues
+        );
+        // The lead-iterator case: `leadCost == cost` always chooses the index.
+        for cost in [0i64, 1, 7, 8, 1_000_000, i64::MAX] {
+            assert_eq!(
+                plan_index_or_doc_values(Some(cost), cost),
+                IndexOrDocValuesPlan::Index,
+                "cost {cost} as its own lead cost"
+            );
+        }
+    }
+
+    #[test]
+    fn the_planner_defaults_to_the_index_side_without_an_estimate() {
+        // No `PointValues.estimateDocCount` exists in this port, so a caller
+        // with no estimate gets Java's own lead-iterator/bulk-scorer answer.
+        assert_eq!(
+            plan_index_or_doc_values(None, 0),
+            IndexOrDocValuesPlan::Index
+        );
+        assert_eq!(
+            plan_index_or_doc_values(None, i64::MAX),
+            IndexOrDocValuesPlan::Index
+        );
+    }
+
+    #[test]
+    fn the_planner_clamps_a_nonsensical_negative_cost() {
+        // Java asserts `cost >= 0`; a negative one must not sign-extend into a
+        // huge threshold and silently flip the plan.
+        assert_eq!(
+            plan_index_or_doc_values(Some(-1), 0),
+            IndexOrDocValuesPlan::Index
+        );
     }
 
     fn load_dv_meta(dir: &str) -> (Manifest, [u8; 16], Vec<u8>, DocValuesMeta) {
@@ -1209,6 +1789,7 @@ mod tests {
             5,
             1000,
             1100,
+            &data,
             sort_entry,
             SortDirection::Ascending,
             MissingValue::Exclude,
@@ -1224,6 +1805,7 @@ mod tests {
             5,
             1000,
             1100,
+            &data,
             sort_entry,
             SortDirection::Descending,
             MissingValue::Exclude,
@@ -1240,6 +1822,7 @@ mod tests {
             5,
             1000,
             1100,
+            &data,
             sort_entry,
             SortDirection::Descending,
             MissingValue::Exclude,
@@ -1293,6 +1876,134 @@ mod tests {
             "/../../fixtures/data/multi_valued_dv_index/"
         )
         .to_string()
+    }
+
+    // --- `search_sorted_numeric_range` (`SortedNumericDocValuesRangeQuery`) ---
+
+    #[test]
+    fn sorted_numeric_range_matches_a_doc_with_any_value_in_range() {
+        let (manifest, _id, data, meta) = load_dv_meta(&multi_dv_dir());
+        let entry = meta
+            .sorted_numeric_entry(field_number(&manifest, "nums"))
+            .unwrap();
+        // nums: doc0=[5,10], doc1=NONE, doc2=[7], doc3=[1,2,3], doc4=NONE.
+        // [6, 8] catches doc0 (via 10? no -- via nothing below 6 except 5;
+        // the first value >= 6 is 10, which is > 8) ... so only doc2 (7).
+        let mut c = VecCollector::default();
+        search_sorted_numeric_range(&data, entry, None, 5, 6, 8, &mut c).unwrap();
+        assert_eq!(c.docs, vec![2]);
+
+        // [9, 20] catches doc0 through its *second* value alone.
+        let mut c = VecCollector::default();
+        search_sorted_numeric_range(&data, entry, None, 5, 9, 20, &mut c).unwrap();
+        assert_eq!(c.docs, vec![0]);
+
+        // [2, 2] catches doc3 through a value that is neither its min nor its
+        // max -- the case no `ValueSelector` can express.
+        let mut c = VecCollector::default();
+        search_sorted_numeric_range(&data, entry, None, 5, 2, 2, &mut c).unwrap();
+        assert_eq!(c.docs, vec![3]);
+    }
+
+    #[test]
+    fn sorted_numeric_range_differs_from_both_selectors() {
+        // The concrete divergence this function exists to fix: doc0 = [5, 10]
+        // against [9, 20]. Java's `SortedNumericDocValuesRangeQuery` matches
+        // it (10 is in range); neither MIN (5) nor MAX... MAX does match here,
+        // so use [4, 6] as the MAX counter-example and [9, 20] as the MIN one.
+        let (manifest, _id, data, meta) = load_dv_meta(&multi_dv_dir());
+        let entry = meta
+            .sorted_numeric_entry(field_number(&manifest, "nums"))
+            .unwrap();
+
+        // [9, 20]: any-value matches doc0; MIN (5) does not.
+        let mut any = VecCollector::default();
+        search_sorted_numeric_range(&data, entry, None, 5, 9, 20, &mut any).unwrap();
+        let mut min = VecCollector::default();
+        search_multi_valued_range(&data, entry, ValueSelector::Min, None, 5, 9, 20, &mut min)
+            .unwrap();
+        assert_eq!(any.docs, vec![0]);
+        assert!(min.docs.is_empty());
+
+        // [4, 6]: any-value matches doc0 (5); MAX (10) does not.
+        let mut any = VecCollector::default();
+        search_sorted_numeric_range(&data, entry, None, 5, 4, 6, &mut any).unwrap();
+        let mut max = VecCollector::default();
+        search_multi_valued_range(&data, entry, ValueSelector::Max, None, 5, 4, 6, &mut max)
+            .unwrap();
+        assert_eq!(any.docs, vec![0]);
+        assert!(max.docs.is_empty());
+    }
+
+    #[test]
+    fn sorted_numeric_range_never_matches_a_doc_with_no_values() {
+        let (manifest, _id, data, meta) = load_dv_meta(&multi_dv_dir());
+        let entry = meta
+            .sorted_numeric_entry(field_number(&manifest, "nums"))
+            .unwrap();
+        let mut c = VecCollector::default();
+        search_sorted_numeric_range(&data, entry, None, 5, i64::MIN, i64::MAX, &mut c).unwrap();
+        // docs 1 and 4 have no values at all.
+        assert_eq!(c.docs, vec![0, 2, 3]);
+    }
+
+    #[test]
+    fn sorted_numeric_range_inverted_bounds_match_nothing() {
+        // `SortedNumericDocValuesField.newSlowRangeQuery` returns a
+        // `MatchNoDocsQuery` when `lowerValue > upperValue`.
+        let (manifest, _id, data, meta) = load_dv_meta(&multi_dv_dir());
+        let entry = meta
+            .sorted_numeric_entry(field_number(&manifest, "nums"))
+            .unwrap();
+        let mut c = VecCollector::default();
+        search_sorted_numeric_range(&data, entry, None, 5, 10, 1, &mut c).unwrap();
+        assert!(c.docs.is_empty());
+    }
+
+    #[test]
+    fn sorted_numeric_range_respects_live_docs() {
+        let (manifest, _id, data, meta) = load_dv_meta(&multi_dv_dir());
+        let entry = meta
+            .sorted_numeric_entry(field_number(&manifest, "nums"))
+            .unwrap();
+        let mut live = FixedBitSet::new(5);
+        for i in 0..5 {
+            live.set(i);
+        }
+        live.clear(0);
+        let mut c = VecCollector::default();
+        search_sorted_numeric_range(&data, entry, Some(&live), 5, i64::MIN, i64::MAX, &mut c)
+            .unwrap();
+        assert_eq!(c.docs, vec![2, 3]);
+    }
+
+    #[test]
+    fn sorted_numeric_range_propagates_decode_errors() {
+        let numeric = doc_values::NumericEntry {
+            field_number: 0,
+            docs_with_field_offset: -1,
+            docs_with_field_length: 0,
+            jump_table_entry_count: -1,
+            dense_rank_power: 0xFF,
+            num_values: 1,
+            table: None,
+            bits_per_value: 8,
+            min_value: 0,
+            gcd: 1,
+            values_offset: 0,
+            values_length: 1,
+            block_shift: None,
+            value_jump_table_offset: 0,
+        };
+        let entry = SortedNumericEntry {
+            field_number: 0,
+            numeric,
+            num_docs_with_field: 1,
+            addresses: None,
+        };
+        let mut c = VecCollector::default();
+        let err = search_sorted_numeric_range(&[], &entry, None, 1, 0, 10, &mut c).unwrap_err();
+        assert!(matches!(err, crate::Error::DocValues(_)));
     }
 
     #[test]
@@ -1643,5 +2354,375 @@ mod tests {
         .unwrap();
         // Ascending by ord, ties (0 and 0; 1 and 1) broken by doc ID.
         assert_eq!(sorted, vec![(0, 0), (3, 0), (2, 1), (4, 1)]);
+    }
+
+    // -----------------------------------------------------------------
+    // `FieldExistsQuery`: the norms and vector sources (c12 §5.3)
+    // -----------------------------------------------------------------
+
+    fn manifest_kv(dir: &str) -> std::collections::HashMap<String, String> {
+        let text = std::fs::read_to_string(format!("{dir}manifest.properties"))
+            .expect("run scripts/gen-fixtures.sh first");
+        text.lines()
+            .filter_map(|l| l.split_once('='))
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    fn hex_id(hex: &str) -> [u8; 16] {
+        let mut id = [0u8; 16];
+        for (i, slot) in id.iter_mut().enumerate() {
+            *slot = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap();
+        }
+        id
+    }
+
+    fn field_info(
+        name: &str,
+        number: i32,
+        index_options: lucene_codecs::field_infos::IndexOptions,
+        omit_norms: bool,
+        vector_dimension: i32,
+        doc_values_type: lucene_codecs::field_infos::DocValuesType,
+    ) -> lucene_codecs::field_infos::FieldInfo {
+        lucene_codecs::field_infos::FieldInfo {
+            name: name.to_string(),
+            number,
+            store_term_vectors: false,
+            omit_norms,
+            store_payloads: false,
+            soft_deletes_field: false,
+            parent_field: false,
+            index_options,
+            doc_values_type,
+            doc_values_skip_index_type: lucene_codecs::field_infos::DocValuesSkipIndexType::None,
+            doc_values_gen: -1,
+            attributes: Vec::new(),
+            point_dimension_count: 0,
+            point_index_dimension_count: 0,
+            point_num_bytes: 0,
+            vector_dimension,
+            vector_encoding: lucene_codecs::field_infos::VectorEncoding::Float32,
+            vector_similarity_function:
+                lucene_codecs::field_infos::VectorSimilarityFunction::Euclidean,
+        }
+    }
+
+    /// Java's three-way if/else, including the order: a field with *both*
+    /// norms and doc values is answered from its norms, and the
+    /// "indexes neither" case is an error, not an empty result.
+    #[test]
+    fn field_exists_source_follows_javas_field_info_order() {
+        use lucene_codecs::field_infos::{DocValuesType, IndexOptions};
+
+        // Norms wins over doc values when a field has both.
+        let both = field_info("b", 0, IndexOptions::Docs, false, 0, DocValuesType::Numeric);
+        assert_eq!(
+            field_exists_source(&both).unwrap(),
+            FieldExistsSource::Norms
+        );
+
+        // omitNorms turns the same field into a doc-values source.
+        let omitted = field_info("b", 0, IndexOptions::Docs, true, 0, DocValuesType::Numeric);
+        assert_eq!(
+            field_exists_source(&omitted).unwrap(),
+            FieldExistsSource::DocValues
+        );
+
+        // Not indexed at all, but has vectors *and* doc values: vectors win.
+        let vectors = field_info("v", 1, IndexOptions::None, true, 16, DocValuesType::Numeric);
+        assert_eq!(
+            field_exists_source(&vectors).unwrap(),
+            FieldExistsSource::Vectors
+        );
+
+        // A vector field is not a norms field even when it is indexed with
+        // norms enabled -- Java checks `hasNorms()` first, so this is Norms.
+        let indexed_vectors =
+            field_info("v", 1, IndexOptions::Docs, false, 16, DocValuesType::None);
+        assert_eq!(
+            field_exists_source(&indexed_vectors).unwrap(),
+            FieldExistsSource::Norms
+        );
+
+        // Indexed with omitNorms, no vectors, no doc values: Java throws.
+        let neither = field_info("n", 2, IndexOptions::Docs, true, 0, DocValuesType::None);
+        let err = field_exists_source(&neither).unwrap_err();
+        assert!(matches!(err, crate::Error::FieldExistsUnsupported(f) if f == "n"));
+    }
+
+    /// The norms source against real Lucene-written norms, for both a dense
+    /// field (every doc has a norm) and a sparse one (the fixture's manifest
+    /// records `NONE` for the documents that do not).
+    #[test]
+    fn field_exists_over_norms_matches_the_fixtures_own_norm_values() {
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/data/norms_index/"
+        );
+        let kv = manifest_kv(dir);
+        let id = hex_id(&kv["id_hex"]);
+        let max_doc: i32 = kv["max_doc"].parse().unwrap();
+        let nvm = std::fs::read(format!("{dir}{}", kv["nvm_file_name"])).unwrap();
+        let nvd = std::fs::read(format!("{dir}{}", kv["nvd_file_name"])).unwrap();
+        let (_version, meta) = lucene_codecs::norms::parse_meta(&nvm, &id, "").unwrap();
+
+        for field in ["body", "sparse_body"] {
+            let number: i32 = kv[&format!("field.{field}.number")].parse().unwrap();
+            let expected: Vec<bool> = kv[&format!("field.{field}.norm_values")]
+                .split(',')
+                .map(|v| v != "NONE")
+                .collect();
+            assert_eq!(expected.len(), max_doc as usize);
+
+            let entry = meta.entry(number).expect("a norms entry for the field");
+            let norms = crate::field_norms::FieldNorms::open(&nvd, *entry, max_doc, None).unwrap();
+            let mut docs = crate::collector::VecCollector::default();
+            search_field_exists_norms(&norms, None, max_doc, &mut docs).unwrap();
+
+            let want: Vec<i32> = (0..max_doc).filter(|d| expected[*d as usize]).collect();
+            assert_eq!(docs.docs, want, "field {field}");
+        }
+
+        // The sparse field must actually be sparse, or the dense case is the
+        // only one under test.
+        assert!(kv["field.sparse_body.norm_values"].contains("NONE"));
+    }
+
+    /// Deleted documents never match, exactly as
+    /// `ConstantScoreScorerSupplier.fromIterator` never emits one.
+    #[test]
+    fn field_exists_over_norms_skips_deleted_documents() {
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/data/norms_index/"
+        );
+        let kv = manifest_kv(dir);
+        let id = hex_id(&kv["id_hex"]);
+        let max_doc: i32 = kv["max_doc"].parse().unwrap();
+        let nvm = std::fs::read(format!("{dir}{}", kv["nvm_file_name"])).unwrap();
+        let nvd = std::fs::read(format!("{dir}{}", kv["nvd_file_name"])).unwrap();
+        let (_version, meta) = lucene_codecs::norms::parse_meta(&nvm, &id, "").unwrap();
+        let number: i32 = kv["field.body.number"].parse().unwrap();
+        let entry = meta.entry(number).unwrap();
+        let norms = crate::field_norms::FieldNorms::open(&nvd, *entry, max_doc, None).unwrap();
+
+        let mut live = lucene_util::fixed_bit_set::FixedBitSet::new(max_doc as usize);
+        for d in 0..max_doc as usize {
+            live.set(d);
+        }
+        live.clear(2);
+        let mut docs = crate::collector::VecCollector::default();
+        search_field_exists_norms(&norms, Some(&live), max_doc, &mut docs).unwrap();
+        assert_eq!(docs.docs, vec![0, 1, 3, 4]);
+    }
+
+    /// The vector source against real Lucene-written vectors: the dense field
+    /// (every document) and the sparse one, whose manifest spot-checks the
+    /// `ordinal -> doc` map this iterates.
+    #[test]
+    fn field_exists_over_vectors_matches_the_fixtures_ord_to_doc_map() {
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/data/vectors_index/"
+        );
+        let kv = manifest_kv(dir);
+        let id = hex_id(&kv["id_hex"]);
+        let max_doc: i32 = kv["max_doc"].parse().unwrap();
+        let suffix = kv["segment_suffix"].clone();
+        let vemf = std::fs::read(format!("{dir}{}", kv["vemf_file"])).unwrap();
+        let vec_file = std::fs::read(format!("{dir}{}", kv["vec_file"])).unwrap();
+        let flat = lucene_codecs::vectors::FlatVectorsReader::open(&vemf, &vec_file, &id, &suffix)
+            .unwrap();
+
+        for prefix in ["f0", "f1"] {
+            let number: i32 = kv[&format!("{prefix}.number")].parse().unwrap();
+            let count: i32 = kv[&format!("{prefix}.count")].parse().unwrap();
+            let values = flat.float_vector_values(number).unwrap();
+            assert_eq!(values.size(), count);
+
+            let mut docs = crate::collector::VecCollector::default();
+            search_field_exists_vectors(
+                values.size(),
+                |ord| values.ord_to_doc(ord),
+                None,
+                max_doc,
+                &mut docs,
+            )
+            .unwrap();
+
+            // Exactly `size()` documents, ascending and distinct -- the
+            // iterator contract `ConstantScoreScorerSupplier` relies on.
+            assert_eq!(docs.docs.len(), count as usize, "field {prefix}");
+            assert!(docs.docs.windows(2).all(|w| w[0] < w[1]), "field {prefix}");
+
+            // ...and each one is where the fixture's own ord_to_doc spot
+            // checks say it is.
+            for spot in kv[&format!("{prefix}.ord_to_doc")].split(';') {
+                let (ord, doc) = spot.split_once(':').unwrap();
+                assert_eq!(
+                    docs.docs[ord.parse::<usize>().unwrap()],
+                    doc.parse::<i32>().unwrap(),
+                    "field {prefix} ordinal {ord}"
+                );
+            }
+        }
+
+        // The sparse field must really be sparse, or only the dense case is
+        // under test.
+        let sparse: i32 = kv["f1.count"].parse().unwrap();
+        assert!(sparse < max_doc);
+    }
+
+    #[test]
+    fn field_exists_over_vectors_skips_deleted_documents() {
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/data/vectors_index/"
+        );
+        let kv = manifest_kv(dir);
+        let id = hex_id(&kv["id_hex"]);
+        let max_doc: i32 = kv["max_doc"].parse().unwrap();
+        let vemf = std::fs::read(format!("{dir}{}", kv["vemf_file"])).unwrap();
+        let vec_file = std::fs::read(format!("{dir}{}", kv["vec_file"])).unwrap();
+        let flat = lucene_codecs::vectors::FlatVectorsReader::open(
+            &vemf,
+            &vec_file,
+            &id,
+            &kv["segment_suffix"],
+        )
+        .unwrap();
+        let number: i32 = kv["f0.number"].parse().unwrap();
+        let values = flat.float_vector_values(number).unwrap();
+
+        let mut live = lucene_util::fixed_bit_set::FixedBitSet::new(max_doc as usize);
+        for d in 0..max_doc as usize {
+            live.set(d);
+        }
+        live.clear(0);
+        live.clear(7);
+        let mut docs = crate::collector::VecCollector::default();
+        search_field_exists_vectors(
+            values.size(),
+            |ord| values.ord_to_doc(ord),
+            Some(&live),
+            max_doc,
+            &mut docs,
+        )
+        .unwrap();
+        assert_eq!(docs.docs.len(), max_doc as usize - 2);
+        assert!(!docs.docs.contains(&0));
+        assert!(!docs.docs.contains(&7));
+    }
+
+    /// An `ordinal -> doc` map that points outside the segment is corruption,
+    /// and must surface as an error rather than a quietly short result -- the
+    /// same rule every other decode in this crate follows. Unreachable
+    /// through a real fixture, so the map is supplied directly.
+    #[test]
+    fn field_exists_over_vectors_rejects_an_ord_to_doc_map_pointing_past_the_segment() {
+        let mut docs = crate::collector::VecCollector::default();
+        let err = search_field_exists_vectors(3, |_| Ok(9_999), None, 10, &mut docs).unwrap_err();
+        assert!(matches!(err, crate::Error::Vectors(_)), "{err}");
+        assert!(err.to_string().contains("outside 0..10"), "{err}");
+        assert!(docs.docs.is_empty());
+
+        // A negative doc is the same class of corruption.
+        let err = search_field_exists_vectors(1, |_| Ok(-1), None, 10, &mut docs).unwrap_err();
+        assert!(matches!(err, crate::Error::Vectors(_)));
+
+        // ...and a decode error from the map itself propagates unchanged.
+        let err = search_field_exists_vectors(
+            1,
+            |_| Err(lucene_codecs::vectors::Error::OrdOutOfRange(0, 0)),
+            None,
+            10,
+            &mut docs,
+        )
+        .unwrap_err();
+        assert!(matches!(err, crate::Error::Vectors(_)));
+    }
+
+    /// `rewrite`'s per-leaf shortcut, including the asymmetry: the doc-values
+    /// branch is an OR over three optional counts, the other two are one each.
+    #[test]
+    fn field_exists_leaf_completeness_follows_javas_rewrite() {
+        use FieldExistsSource::*;
+        // Norms: only the terms-dictionary docCount counts.
+        assert!(field_exists_leaf_is_complete(
+            Norms,
+            10,
+            Some(10),
+            Some(10),
+            Some(10),
+            Some(10)
+        ));
+        assert!(!field_exists_leaf_is_complete(
+            Norms,
+            10,
+            Some(9),
+            Some(10),
+            Some(10),
+            Some(10)
+        ));
+        assert!(!field_exists_leaf_is_complete(
+            Norms, 10, None, None, None, None
+        ));
+
+        // Vectors: only the vector count.
+        assert!(field_exists_leaf_is_complete(
+            Vectors,
+            10,
+            Some(1),
+            Some(10),
+            None,
+            None
+        ));
+        assert!(!field_exists_leaf_is_complete(
+            Vectors,
+            10,
+            Some(10),
+            Some(9),
+            Some(10),
+            Some(10)
+        ));
+
+        // Doc values: any one of the three suffices, and none of them means
+        // not rewritable.
+        assert!(field_exists_leaf_is_complete(
+            DocValues,
+            10,
+            None,
+            None,
+            Some(10),
+            None
+        ));
+        assert!(field_exists_leaf_is_complete(
+            DocValues,
+            10,
+            None,
+            None,
+            None,
+            Some(10)
+        ));
+        assert!(field_exists_leaf_is_complete(
+            DocValues,
+            10,
+            Some(10),
+            None,
+            None,
+            None
+        ));
+        assert!(!field_exists_leaf_is_complete(
+            DocValues,
+            10,
+            Some(9),
+            Some(10),
+            Some(9),
+            Some(9)
+        ));
+        assert!(!field_exists_leaf_is_complete(
+            DocValues, 10, None, None, None, None
+        ));
     }
 }

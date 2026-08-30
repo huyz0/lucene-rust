@@ -18,6 +18,14 @@
 //!
 //! ## [`Explanation`]'s shape
 //!
+//! Every `description` string this module emits is real Lucene 10.5.0's
+//! verbatim (`"weight(field:term in doc) [BM25Similarity], result of:"`,
+//! `"score(freq=..), computed as boost * idf * tf from:"`, `"idf, computed as
+//! log(1 + (N - n + 0.5) / (n + 0.5)) from:"`, `"sum of:"`, `"max of:"`, ...)
+//! -- downstream tooling parses these, so they are a compatibility contract,
+//! not prose. [`Explanation`]'s [`std::fmt::Display`] is likewise a port of
+//! `Explanation.toString()`'s two-space-per-level indented rendering.
+//!
 //! Mirrors real Lucene's `Explanation` class exactly: `value` (the computed
 //! score contribution), `description` (what this node represents),
 //! `details` (child `Explanation`s the value was derived from), and `matched`
@@ -99,6 +107,181 @@ impl Explanation {
     }
 }
 
+impl std::fmt::Display for Explanation {
+    /// Port of real `Explanation.toString()`: one line per node,
+    /// `"{value} = {description}"`, each nesting level indented by two
+    /// spaces, every line (including the last) terminated by `\n` -- the
+    /// exact rendering `IndexSearcher.explain(...).toString()` produces and
+    /// that downstream tooling parses.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.fmt_at_depth(f, 0)
+    }
+}
+
+impl Explanation {
+    fn fmt_at_depth(&self, f: &mut std::fmt::Formatter<'_>, depth: usize) -> std::fmt::Result {
+        for _ in 0..depth {
+            f.write_str("  ")?;
+        }
+        writeln!(f, "{} = {}", java_float(self.value), self.description)?;
+        for detail in &self.details {
+            detail.fmt_at_depth(f, depth + 1)?;
+        }
+        Ok(())
+    }
+}
+
+/// Renders `v` the way Java's `Float.toString`/`String.valueOf(float)` does
+/// -- shortest representation that round-trips, but **always** with a decimal
+/// point (`2` renders as `"2.0"`, not `"2"`). Rust's own `Display` for `f32`
+/// drops the trailing `.0`, which would make every `score(freq=2.0)`-style
+/// description in this module differ from real Lucene's by one character;
+/// `{:?}` keeps it, and matches Java's shortest-round-trip choice for every
+/// value a score/idf/tf can take.
+fn java_float(v: f32) -> String {
+    format!("{v:?}")
+}
+
+/// Renders `clause` the way real Lucene's `Query.toString()` does for the
+/// corresponding Java query class -- the string every `ConstantScoreWeight`/
+/// `BooleanWeight` explanation embeds (`"no match on required clause (" +
+/// c.query() + ")"`, `getQuery().toString() + " doesn't match id " + doc`,
+/// ...). Real Lucene's `toString(String field)` omits the `field:` prefix
+/// when the field equals the enclosing "default" field; explanations always
+/// call the no-argument `toString()`, i.e. default field `""`, so every
+/// field is printed.
+fn describe_clause(clause: &Clause) -> String {
+    fn term(bytes: &[u8]) -> String {
+        String::from_utf8_lossy(bytes).into_owned()
+    }
+    match clause {
+        Clause::Term(q) => format!("{}:{}", q.field, term(&q.term)),
+        Clause::Phrase(q) => {
+            let body = q
+                .terms
+                .iter()
+                .map(|t| term(t))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let slop = if q.slop == 0 {
+                String::new()
+            } else {
+                format!("~{}", q.slop)
+            };
+            format!("{}:\"{body}\"{slop}", q.field)
+        }
+        Clause::MultiPhrase(q) => {
+            let body = q
+                .term_arrays
+                .iter()
+                .map(|alts| {
+                    if alts.len() == 1 {
+                        term(&alts[0])
+                    } else {
+                        format!(
+                            "({})",
+                            alts.iter().map(|t| term(t)).collect::<Vec<_>>().join(" ")
+                        )
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            let slop = if q.slop == 0 {
+                String::new()
+            } else {
+                format!("~{}", q.slop)
+            };
+            format!("{}:\"{body}\"{slop}", q.field)
+        }
+        Clause::Boolean(q) => {
+            let mut parts = Vec::new();
+            for c in &q.must {
+                parts.push(format!("+{}", describe_clause(c)));
+            }
+            // `Occur.FILTER.toString()` is `"#"`.
+            for c in &q.filter {
+                parts.push(format!("#{}", describe_clause(c)));
+            }
+            for c in &q.should {
+                parts.push(describe_clause(c));
+            }
+            for c in &q.must_not {
+                parts.push(format!("-{}", describe_clause(c)));
+            }
+            let mm = if q.minimum_should_match == 0 {
+                String::new()
+            } else {
+                format!("~{}", q.minimum_should_match)
+            };
+            format!("({}){mm}", parts.join(" "))
+        }
+        Clause::DisjunctionMax(q) => {
+            let body = q
+                .disjuncts
+                .iter()
+                .map(describe_clause)
+                .collect::<Vec<_>>()
+                .join(" | ");
+            let tie = if q.tie_breaker == 0.0 {
+                String::new()
+            } else {
+                format!("~{}", java_float(q.tie_breaker))
+            };
+            format!("({body}){tie}")
+        }
+        Clause::ConstantScore(q) => format!("ConstantScore({})", describe_clause(&q.inner)),
+        Clause::Boost(q) => format!("({})^{}", describe_clause(&q.inner), java_float(q.boost)),
+        Clause::Wildcard(q) => format!("{}:{}", q.field, term(&q.pattern)),
+        Clause::Prefix(q) => format!("{}:{}*", q.field, term(&q.prefix)),
+        Clause::Fuzzy(q) => format!("{}:{}~{}", q.field, term(&q.term), q.max_edits),
+        Clause::Regexp(q) => format!("{}:/{}/", q.field, q.pattern),
+        Clause::Span(q) => describe_span(q),
+        Clause::PointsRange(q) => format!("{}:[{} TO {}]", q.field, q.min, q.max),
+        Clause::MatchAllDocs(_) => "*:*".to_string(),
+        Clause::MatchNoDocs(q) => format!("MatchNoDocsQuery(\"{}\")", q.reason),
+        Clause::TermInSet(q) => format!(
+            "{}:({})",
+            q.field,
+            q.terms
+                .iter()
+                .map(|t| term(t))
+                .collect::<Vec<_>>()
+                .join(" ")
+        ),
+    }
+}
+
+/// `describe_clause`'s [`crate::query::SpanQuery`] arm, mirroring real
+/// `SpanTermQuery`/`SpanNearQuery`/`SpanOrQuery`'s own `toString`.
+fn describe_span(span: &crate::query::SpanQuery) -> String {
+    use crate::query::SpanQuery;
+    match span {
+        SpanQuery::SpanTerm { field, term } => {
+            format!("spanTerm({field}:{})", String::from_utf8_lossy(term))
+        }
+        SpanQuery::SpanNear {
+            clauses,
+            slop,
+            in_order,
+        } => format!(
+            "spanNear([{}], {slop}, {in_order})",
+            clauses
+                .iter()
+                .map(describe_span)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        SpanQuery::SpanOr { clauses } => format!(
+            "spanOr([{}])",
+            clauses
+                .iter()
+                .map(describe_span)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
 /// Real `IndexSearcher.explain(query, doc)`-equivalent for one already-opened
 /// segment and one already-resolved [`Clause`] (`query`), matching whatever
 /// `must`/`should`/`must_not`/nesting the clause tree describes — see this
@@ -157,35 +340,79 @@ pub fn explain_clause(
         ),
         Clause::Wildcard(query) => {
             let matched = crate::wildcard_doc_ids(fields, doc_in, live_docs, query)?.contains(&doc);
-            Ok(explain_flat_match(matched))
+            Ok(explain_flat_match(matched, clause, doc))
         }
         Clause::Prefix(query) => {
             let matched = crate::prefix_doc_ids(fields, doc_in, live_docs, query)?.contains(&doc);
-            Ok(explain_flat_match(matched))
+            Ok(explain_flat_match(matched, clause, doc))
         }
         Clause::Fuzzy(query) => {
             let matched = crate::fuzzy_doc_ids(fields, doc_in, live_docs, query)?.contains(&doc);
-            Ok(explain_flat_match(matched))
+            Ok(explain_flat_match(matched, clause, doc))
         }
         Clause::Regexp(query) => {
             let matched = crate::regexp_doc_ids(fields, doc_in, live_docs, query)?.contains(&doc);
-            Ok(explain_flat_match(matched))
+            Ok(explain_flat_match(matched, clause, doc))
         }
         Clause::Span(query) => {
             let matched = crate::span_doc_ids(fields, doc_in, pos_in, pay_in, live_docs, query)?
                 .contains(&doc);
-            Ok(explain_flat_match(matched))
+            Ok(explain_flat_match(matched, clause, doc))
         }
         Clause::PointsRange(query) => Err(crate::Error::MissingPointsInput(query.field.clone())),
         Clause::MatchAllDocs(query) => {
             let matched = crate::match_all_doc_ids(live_docs, query.max_doc).contains(&doc);
-            Ok(explain_flat_match(matched))
+            Ok(explain_flat_match(matched, clause, doc))
         }
-        Clause::MatchNoDocs(_) => Ok(Explanation::no_match("MatchNoDocsQuery never matches")),
+        Clause::MatchNoDocs(_) => Ok(Explanation::no_match(format!(
+            "{} doesn't match id {doc}",
+            describe_clause(clause)
+        ))),
+        Clause::MultiPhrase(query) => {
+            // No per-position breakdown yet (real `MultiPhraseWeight.explain`
+            // has one): this reports the real score the scorer produces for
+            // this doc, obtained from the scorer itself so the two can never
+            // disagree, rather than a re-derivation that could drift.
+            let mut hit: Option<f32> = None;
+            struct Pick<'a> {
+                doc: i32,
+                out: &'a mut Option<f32>,
+            }
+            impl crate::collector::ScoringCollector for Pick<'_> {
+                fn collect(&mut self, doc_id: i32, score: f32) {
+                    if doc_id == self.doc {
+                        *self.out = Some(score);
+                    }
+                }
+            }
+            let mut pick = Pick { doc, out: &mut hit };
+            crate::search_multi_phrase_query_scored(
+                fields,
+                doc_in,
+                pos_in,
+                pay_in,
+                live_docs,
+                query,
+                norms.and_then(|m| m.get(&query.field)),
+                &mut pick,
+            )?;
+            Ok(match hit {
+                Some(score) => Explanation::match_(
+                    score,
+                    format!(
+                        "weight({} in {doc}) [BM25Similarity], result of:",
+                        describe_clause(clause)
+                    ),
+                ),
+                // `MultiPhraseWeight` inherits `PhraseWeight.explain`, whose
+                // no-match description is exactly `"no matching terms"`.
+                None => Explanation::no_match("no matching terms"),
+            })
+        }
         Clause::TermInSet(query) => {
             let matched =
                 crate::term_in_set_doc_ids(fields, doc_in, live_docs, query)?.contains(&doc);
-            Ok(explain_flat_match(matched))
+            Ok(explain_flat_match(matched, clause, doc))
         }
     }
 }
@@ -194,11 +421,22 @@ pub fn explain_clause(
 /// `Regexp`/`Span` — see this module's doc comment): matches score exactly
 /// `1.0` (same flat constant every `clause_scores` arm for these variants
 /// already reports), non-matches are a clean `no_match` at `0.0`.
-fn explain_flat_match(matched: bool) -> Explanation {
+///
+/// The descriptions are real `ConstantScoreWeight.explain`'s verbatim --
+/// `getQuery().toString()` on a match, `getQuery() + " doesn't match id " +
+/// doc` on a non-match -- since every one of these clauses is a
+/// `MultiTermQuery`/`SpanQuery` that real Lucene rewrites to a
+/// constant-scoring weight before explaining it.
+fn explain_flat_match(matched: bool, clause: &Clause, doc: i32) -> Explanation {
+    let described = describe_clause(clause);
     if matched {
-        Explanation::match_(1.0, "1.0 = matches, unscored constant score")
+        // `ConstantScoreWeight.explain`: `Explanation.match(score,
+        // getQuery().toString() + (score == 1f ? "" : "^" + score))` -- these
+        // clauses always score a flat `1.0` here, so the `^score` suffix is
+        // never appended.
+        Explanation::match_(1.0, described)
     } else {
-        Explanation::no_match("no matching term")
+        Explanation::no_match(format!("{described} doesn't match id {doc}"))
     }
 }
 
@@ -221,10 +459,10 @@ fn clause_matches(
 }
 
 /// [`Clause::Term`]'s explanation: mirrors real `TermWeight.explain`/
-/// `BM25Scorer.explain` — a `weight(field:term)` node wrapping a
-/// `score(freq=...)` node, itself wrapping `idf` (with `docFreq`/`docCount`
-/// leaf details) and `tfNorm` (with `freq`/`k1`/`b`/`fieldLength`/
-/// `avgFieldLength` leaf details). `value` is computed via the exact same
+/// `BM25Scorer.explain` — a `weight(field:term in doc) [BM25Similarity]` node
+/// wrapping a `score(freq=...)` node, itself wrapping `idf` (with `n`/`N`
+/// leaf details) and `tf` (with `freq`/`k1`/`b`/`dl`/`avgdl` leaf details),
+/// every description string verbatim from Java. `value` is computed via the exact same
 /// [`similarity::idf`]/[`similarity::tf_norm`] calls, in the same order, as
 /// [`crate::term_doc_scores`] — bit-for-bit identical to
 /// `search_term_query_scored`'s own output for this doc (verified by this
@@ -238,19 +476,14 @@ fn explain_term(
     norms: Option<&FieldNorms<'_>>,
 ) -> Result<Explanation> {
     let Some(field_terms) = fields.field(&query.field) else {
-        return Ok(Explanation::no_match(format!(
-            "no matching term, field '{}' not found",
-            query.field
-        )));
+        return Ok(Explanation::no_match("no matching term"));
     };
     let Some(stats) = field_terms.seek_exact(&query.term) else {
         return Ok(Explanation::no_match("no matching term"));
     };
     let doc_freqs = crate::term_doc_freqs(fields, doc_in, live_docs, query)?;
     let Some(&(_, freq)) = doc_freqs.iter().find(|&&(d, _)| d == doc) else {
-        return Ok(Explanation::no_match(format!(
-            "no matching term, doc={doc} does not contain this term or is not live"
-        )));
+        return Ok(Explanation::no_match("no matching term"));
     };
 
     let doc_count = field_terms.doc_count as i64;
@@ -262,54 +495,82 @@ fn explain_term(
         ),
     };
     let idf = similarity::idf(stats.doc_freq as i64, doc_count);
-    let tf_norm = similarity::tf_norm(
-        freq as f32,
+    // `BM25Scorer.explain`/`explainTF` verbatim: the reported score is
+    // `weight - weight / (1 + freq * normInverse)` -- the *same* expression the
+    // scorer evaluates, which is why this stays bit-identical to
+    // `search_term_query_scored`'s output -- while the `tf` sub-explanation is
+    // Lucene's own `1f - 1f / (1 + freq * normInverse)`. Real Lucene notes that
+    // it deliberately does not present this as a "product of", because the
+    // rewrite introduces a rounding difference against `idf * tf`.
+    let norm_inverse = similarity::norm_inverse(
         field_length,
         avg_field_length,
         similarity::DEFAULT_K1,
         similarity::DEFAULT_B,
     );
-    let value = idf * tf_norm;
+    let tf_norm = 1.0 - 1.0 / (1.0 + freq as f32 * norm_inverse);
+    let value = similarity::do_score(idf, freq as f32, norm_inverse);
 
-    let idf_explanation = Explanation::match_(
-        idf,
-        format!(
-            "idf, computed as log(1 + (docCount - docFreq + 0.5) / (docFreq + 0.5)) from docFreq={}, docCount={doc_count}",
-            stats.doc_freq
-        ),
-    )
-    .with_details(vec![
-        Explanation::match_(stats.doc_freq as f32, "docFreq, number of documents containing term"),
-        Explanation::match_(doc_count as f32, "docCount, total number of documents with field"),
-    ]);
+    let idf_explanation = idf_explanation(idf, stats.doc_freq as i64, doc_count);
 
-    let tf_norm_explanation = Explanation::match_(
+    let tf_explanation = Explanation::match_(
         tf_norm,
-        "tfNorm, computed as freq / (freq + k1 * (1 - b + b * fieldLength / avgFieldLength)) from:",
+        "tf, computed as freq / (freq + k1 * (1 - b + b * dl / avgdl)) from:",
     )
     .with_details(vec![
         Explanation::match_(freq as f32, "freq, occurrences of term within document"),
         Explanation::match_(similarity::DEFAULT_K1, "k1, term saturation parameter"),
         Explanation::match_(similarity::DEFAULT_B, "b, length normalization parameter"),
-        Explanation::match_(field_length, "fieldLength"),
-        Explanation::match_(avg_field_length, "avgFieldLength"),
+        Explanation::match_(field_length, dl_description(field_length)),
+        Explanation::match_(avg_field_length, "avgdl, average length of field"),
     ]);
 
     let score_explanation = Explanation::match_(
         value,
-        format!("score(freq={freq}), computed as idf * tfNorm from:"),
+        format!(
+            "score(freq={}), computed as boost * idf * tf from:",
+            java_float(freq as f32)
+        ),
     )
-    .with_details(vec![idf_explanation, tf_norm_explanation]);
+    .with_details(vec![idf_explanation, tf_explanation]);
 
     Ok(Explanation::match_(
         value,
         format!(
-            "weight({}:{}), result of:",
-            query.field,
-            String::from_utf8_lossy(&query.term)
+            "weight({} in {doc}) [BM25Similarity], result of:",
+            describe_clause(&Clause::Term(query.clone()))
         ),
     )
     .with_details(vec![score_explanation]))
+}
+
+/// One term's `idf` node, verbatim from `BM25Similarity.idfExplain(FieldStats,
+/// TermStats)` -- the description and both leaf-detail descriptions are real
+/// Lucene's exact strings (`N`/`n`, not `docCount`/`docFreq`).
+fn idf_explanation(idf: f32, doc_freq: i64, doc_count: i64) -> Explanation {
+    Explanation::match_(
+        idf,
+        "idf, computed as log(1 + (N - n + 0.5) / (n + 0.5)) from:",
+    )
+    .with_details(vec![
+        Explanation::match_(doc_freq as f32, "n, number of documents containing term"),
+        Explanation::match_(doc_count as f32, "N, total number of documents with field"),
+    ])
+}
+
+/// `BM25Similarity.BM25Scorer.explainTF`'s `dl` leaf description: real Lucene
+/// prints `"dl, length of field (approximate)"` when the *encoded* norm byte
+/// is `> 39`, and `"dl, length of field"` otherwise. This port only carries
+/// the already-decoded length, but `BM25Similarity.LENGTH_TABLE[i] == i` for
+/// every `i <= 39` and the table is monotonically non-decreasing, so
+/// `field_length > 39.0` is exactly the same predicate (asserted against the
+/// real table in this module's tests).
+fn dl_description(field_length: f32) -> &'static str {
+    if field_length > 39.0 {
+        "dl, length of field (approximate)"
+    } else {
+        "dl, length of field"
+    }
 }
 
 /// [`Clause::Phrase`]'s explanation: same shape as [`explain_term`], but the
@@ -344,10 +605,7 @@ fn explain_phrase(
     };
 
     let Some(field_terms) = fields.field(&query.field) else {
-        return Ok(Explanation::no_match(format!(
-            "no matching term, field '{}' not found",
-            query.field
-        )));
+        return Ok(Explanation::no_match("no matching terms"));
     };
 
     let doc_count = field_terms.doc_count as i64;
@@ -355,21 +613,11 @@ fn explain_phrase(
     let mut idf_details = Vec::with_capacity(query.terms.len());
     for term in &query.terms {
         let Some(stats) = field_terms.seek_exact(term) else {
-            return Ok(Explanation::no_match(format!(
-                "no matching term, phrase term '{}' not found",
-                String::from_utf8_lossy(term)
-            )));
+            return Ok(Explanation::no_match("no matching terms"));
         };
         let term_idf = similarity::idf(stats.doc_freq as i64, doc_count);
         idf_sum += term_idf;
-        idf_details.push(Explanation::match_(
-            term_idf,
-            format!(
-                "idf({}), docFreq={}, docCount={doc_count}",
-                String::from_utf8_lossy(term),
-                stats.doc_freq
-            ),
-        ));
+        idf_details.push(idf_explanation(term_idf, stats.doc_freq as i64, doc_count));
     }
 
     let mut per_term_docs: Vec<Vec<i32>> = Vec::with_capacity(query.terms.len());
@@ -385,10 +633,7 @@ fn explain_phrase(
             term,
         )?
         else {
-            return Ok(Explanation::no_match(format!(
-                "no matching term, phrase term '{}' not found",
-                String::from_utf8_lossy(term)
-            )));
+            return Ok(Explanation::no_match("no matching terms"));
         };
         // Not a hot path (one document, on demand): rebuild the doc -> positions
         // map the explain code expects from the aligned vectors the phrase
@@ -404,9 +649,7 @@ fn explain_phrase(
     }
 
     if !per_term_docs.iter().all(|docs| docs.contains(&doc)) {
-        return Ok(Explanation::no_match(format!(
-            "no matching phrase, doc={doc} is missing at least one phrase term"
-        )));
+        return Ok(Explanation::no_match("no matching terms"));
     }
 
     let term_positions: Vec<Vec<i32>> = per_term_maps
@@ -418,17 +661,16 @@ fn explain_phrase(
         })
         .collect();
     let term_positions: Vec<&[i32]> = term_positions.iter().map(|v| v.as_slice()).collect();
+    // `PhraseScorer.score()`'s frequency: `ExactPhraseMatcher`'s match count
+    // for `slop == 0`, `SloppyPhraseMatcher`'s summed `1/(1+matchLength)`
+    // otherwise -- see `crate::phrase_freq_sloppy`.
     let phrase_freq = if query.slop == 0 {
-        crate::phrase_freq_exact(&term_positions)
-    } else if crate::phrase_matches_in_doc_sloppy(&term_positions, query.slop) {
-        1
+        crate::phrase_freq_exact(&term_positions) as f32
     } else {
-        0
+        crate::phrase_freq_sloppy(&term_positions, query.slop)
     };
-    if phrase_freq == 0 {
-        return Ok(Explanation::no_match(format!(
-            "no matching phrase alignment for doc={doc}"
-        )));
+    if phrase_freq == 0.0 {
+        return Ok(Explanation::no_match("no matching phrase"));
     }
 
     let (field_length, avg_field_length) = match norms {
@@ -438,40 +680,55 @@ fn explain_phrase(
             similarity::UNNORMED_FIELD_LENGTH,
         ),
     };
-    let tf_norm = similarity::tf_norm(
-        phrase_freq as f32,
+    // Same `doScore`/`explainTF` split as `explain_term` above.
+    let norm_inverse = similarity::norm_inverse(
         field_length,
         avg_field_length,
         similarity::DEFAULT_K1,
         similarity::DEFAULT_B,
     );
-    let value = idf_sum * tf_norm;
+    let tf_norm = 1.0 - 1.0 / (1.0 + phrase_freq * norm_inverse);
+    let value = similarity::do_score(idf_sum, phrase_freq, norm_inverse);
 
-    let idf_explanation =
-        Explanation::match_(idf_sum, "idf, sum of each phrase term's own idf, from:")
-            .with_details(idf_details);
+    // `BM25Similarity.idfExplain(FieldStats, TermStats[])` -- the phrase's idf
+    // is the sum of every constituent term's own idf, reported under Java's
+    // exact `"idf, sum of:"` description with one child per term.
+    let idf_node = Explanation::match_(idf_sum, "idf, sum of:").with_details(idf_details);
 
-    let tf_norm_explanation = Explanation::match_(
+    // `PhraseWeight.explain` builds `Explanation.match(freq, "phraseFreq=" +
+    // freq)` and hands it to the very same `BM25Scorer.explain`/`explainTF`
+    // pair `explain_term` uses, so the `tf`/`score` nodes below are the
+    // term case's strings verbatim, only with the phrase freq inside.
+    let tf_explanation = Explanation::match_(
         tf_norm,
-        "tfNorm, computed as phraseFreq / (phraseFreq + k1 * (1 - b + b * fieldLength / avgFieldLength)) from:",
+        "tf, computed as freq / (freq + k1 * (1 - b + b * dl / avgdl)) from:",
     )
     .with_details(vec![
-        Explanation::match_(phrase_freq as f32, "phraseFreq, count of valid phrase alignments"),
+        Explanation::match_(
+            phrase_freq,
+            format!("phraseFreq={}", java_float(phrase_freq)),
+        ),
         Explanation::match_(similarity::DEFAULT_K1, "k1, term saturation parameter"),
         Explanation::match_(similarity::DEFAULT_B, "b, length normalization parameter"),
-        Explanation::match_(field_length, "fieldLength"),
-        Explanation::match_(avg_field_length, "avgFieldLength"),
+        Explanation::match_(field_length, dl_description(field_length)),
+        Explanation::match_(avg_field_length, "avgdl, average length of field"),
     ]);
 
     let score_explanation = Explanation::match_(
         value,
-        format!("score(phraseFreq={phrase_freq}), computed as idf * tfNorm from:"),
+        format!(
+            "score(freq={}), computed as boost * idf * tf from:",
+            java_float(phrase_freq)
+        ),
     )
-    .with_details(vec![idf_explanation, tf_norm_explanation]);
+    .with_details(vec![idf_node, tf_explanation]);
 
     Ok(Explanation::match_(
         value,
-        format!("weight({}:\"...\"), result of:", query.field),
+        format!(
+            "weight({} in {doc}) [BM25Similarity], result of:",
+            describe_clause(&Clause::Phrase(query.clone()))
+        ),
     )
     .with_details(vec![score_explanation]))
 }
@@ -499,40 +756,121 @@ fn explain_boolean(
     doc: i32,
     norms: Option<&HashMap<String, FieldNorms<'_>>>,
 ) -> Result<Explanation> {
-    let Some(matched) =
-        crate::matched_boolean_docs(fields, doc_in, pos_in, pay_in, live_docs, None, query)?
-    else {
-        return Ok(Explanation::no_match(
-            "BooleanQuery with no must/should clauses matches nothing",
-        ));
-    };
-    let matched_set: std::collections::HashSet<i32> = matched.collect();
-    if !matched_set.contains(&doc) {
-        return Ok(Explanation::no_match(
-            "Failure to meet condition(s) of required/prohibited clause(s)",
-        ));
-    }
-
-    let mut details = Vec::new();
+    // `BooleanWeight.explain`'s exact control flow: build every clause's own
+    // explanation first, tracking `fail` (a required clause that didn't match,
+    // or a prohibited clause that did), `matchCount` and `shouldMatchCount`,
+    // then pick one of Java's four outcomes from those counters.
+    let mut details: Vec<Explanation> = Vec::new();
+    let mut failing_optionals: Vec<Explanation> = Vec::new();
+    let mut fail = false;
+    let mut match_count = 0usize;
+    let mut should_match_count = 0usize;
     let mut total = 0.0f32;
+
     for clause in &query.must {
         let e = explain_clause(
             fields, doc_in, pos_in, pay_in, live_docs, clause, doc, norms,
         )?;
-        total += e.value;
-        details.push(e);
-    }
-    for clause in &query.should {
-        if clause_matches(fields, doc_in, pos_in, pay_in, live_docs, clause, doc)? {
-            let e = explain_clause(
-                fields, doc_in, pos_in, pay_in, live_docs, clause, doc, norms,
-            )?;
+        if e.matched {
+            match_count += 1;
             total += e.value;
             details.push(e);
+        } else {
+            fail = true;
+            details.push(
+                Explanation::no_match(format!(
+                    "no match on required clause ({})",
+                    describe_clause(clause)
+                ))
+                .with_details(vec![e]),
+            );
+        }
+    }
+    // `BooleanWeight.explain`'s `FILTER` arm, verbatim:
+    //
+    //     subs.add(Explanation.match(0f, "match on required clause, product of:",
+    //         Explanation.match(0f, Occur.FILTER + " clause"), e));
+    //
+    // `Occur.FILTER + " clause"` is `"# clause"`. The wrapper's value is `0f`,
+    // which is what keeps a filter clause out of the parent's sum -- the
+    // clause's own explanation `e` survives as a child for diagnosis, but its
+    // value is not what the parent adds up. `matchCount` counts it (Java
+    // increments for every non-prohibited match); `shouldMatchCount` does not.
+    for clause in &query.filter {
+        let e = explain_clause(
+            fields, doc_in, pos_in, pay_in, live_docs, clause, doc, norms,
+        )?;
+        if e.matched {
+            match_count += 1;
+            details.push(
+                Explanation::match_(0.0, "match on required clause, product of:")
+                    .with_details(vec![Explanation::match_(0.0, "# clause"), e]),
+            );
+        } else {
+            fail = true;
+            details.push(
+                Explanation::no_match(format!(
+                    "no match on required clause ({})",
+                    describe_clause(clause)
+                ))
+                .with_details(vec![e]),
+            );
+        }
+    }
+    for clause in &query.should {
+        let e = explain_clause(
+            fields, doc_in, pos_in, pay_in, live_docs, clause, doc, norms,
+        )?;
+        if e.matched {
+            match_count += 1;
+            should_match_count += 1;
+            total += e.value;
+            details.push(e);
+        } else {
+            failing_optionals.push(
+                Explanation::no_match(format!(
+                    "no match on optional clause ({})",
+                    describe_clause(clause)
+                ))
+                .with_details(vec![e]),
+            );
+        }
+    }
+    for clause in &query.must_not {
+        let e = explain_clause(
+            fields, doc_in, pos_in, pay_in, live_docs, clause, doc, norms,
+        )?;
+        if e.matched {
+            fail = true;
+            details.push(
+                Explanation::no_match(format!(
+                    "match on prohibited clause ({})",
+                    describe_clause(clause)
+                ))
+                .with_details(vec![e]),
+            );
         }
     }
 
-    Ok(Explanation::match_(total, format!("{total} = sum of:")).with_details(details))
+    if fail {
+        return Ok(Explanation::no_match(
+            "Failure to meet condition(s) of required/prohibited clause(s)",
+        )
+        .with_details(details));
+    }
+    if match_count == 0 {
+        details.extend(failing_optionals);
+        return Ok(Explanation::no_match("No matching clauses").with_details(details));
+    }
+    if should_match_count < query.minimum_should_match {
+        details.extend(failing_optionals);
+        return Ok(Explanation::no_match(format!(
+            "Failure to match minimum number of optional clauses: {}, matched: {should_match_count}",
+            query.minimum_should_match
+        ))
+        .with_details(details));
+    }
+    Ok(Explanation::match_(total, "sum of:").with_details(details))
 }
 
 /// [`Clause::DisjunctionMax`]'s explanation: mirrors real
@@ -554,29 +892,27 @@ fn explain_dismax(
     doc: i32,
     norms: Option<&HashMap<String, FieldNorms<'_>>>,
 ) -> Result<Explanation> {
-    if query.disjuncts.is_empty() {
-        return Ok(Explanation::no_match(
-            "DisjunctionMaxQuery with no disjuncts matches nothing",
-        ));
-    }
-
-    let mut sub_explanations = Vec::new();
+    // `DisjunctionMaxWeight.explain`: sub-explanations of every *matching*
+    // disjunct on a match, of every non-matching one on a no-match.
+    let mut subs_on_match = Vec::new();
+    let mut subs_on_no_match = Vec::new();
     for clause in &query.disjuncts {
-        if clause_matches(fields, doc_in, pos_in, pay_in, live_docs, clause, doc)? {
-            sub_explanations.push(explain_clause(
-                fields, doc_in, pos_in, pay_in, live_docs, clause, doc, norms,
-            )?);
+        let e = explain_clause(
+            fields, doc_in, pos_in, pay_in, live_docs, clause, doc, norms,
+        )?;
+        if e.matched {
+            subs_on_match.push(e);
+        } else if subs_on_match.is_empty() {
+            subs_on_no_match.push(e);
         }
     }
-    if sub_explanations.is_empty() {
-        return Ok(Explanation::no_match(format!(
-            "no matching disjunct for doc={doc}"
-        )));
+    if subs_on_match.is_empty() {
+        return Ok(Explanation::no_match("No matching clause").with_details(subs_on_no_match));
     }
 
     let mut max_score = f32::NEG_INFINITY;
     let mut sum_score = 0.0f32;
-    for e in &sub_explanations {
+    for e in &subs_on_match {
         sum_score += e.value;
         if e.value > max_score {
             max_score = e.value;
@@ -585,14 +921,16 @@ fn explain_dismax(
     let other_sum = sum_score - max_score;
     let value = max_score + query.tie_breaker * other_sum;
 
-    Ok(Explanation::match_(
-        value,
+    // `DisjunctionMaxWeight.explain`'s exact description switch.
+    let desc = if query.tie_breaker == 0.0 {
+        "max of:".to_string()
+    } else {
         format!(
-            "{value} = max of:, plus {} times others of:",
-            query.tie_breaker
-        ),
-    )
-    .with_details(sub_explanations))
+            "max plus {} times others of:",
+            java_float(query.tie_breaker)
+        )
+    };
+    Ok(Explanation::match_(value, desc).with_details(subs_on_match))
 }
 
 /// [`Clause::ConstantScore`]'s explanation: mirrors real
@@ -618,15 +956,20 @@ fn explain_constant_score(
         &nested.inner,
         doc,
     )? {
-        return Ok(Explanation::no_match("no matching clause"));
+        return Ok(Explanation::no_match(format!(
+            "ConstantScore({}) doesn't match id {doc}",
+            describe_clause(&nested.inner)
+        )));
     }
-    Ok(Explanation::match_(
-        nested.score,
-        format!(
-            "{} = ConstantScore, discarding the wrapped clause's own score",
-            nested.score
-        ),
-    ))
+    // `ConstantScoreWeight.explain`: `getQuery().toString() + (score == 1f ?
+    // "" : "^" + score)`.
+    let described = format!("ConstantScore({})", describe_clause(&nested.inner));
+    let description = if nested.score == 1.0 {
+        described
+    } else {
+        format!("{described}^{}", java_float(nested.score))
+    };
+    Ok(Explanation::match_(nested.score, description))
 }
 
 /// [`Clause::Boost`]'s explanation: mirrors real `BoostQuery.BoostWeight.
@@ -656,10 +999,13 @@ fn explain_boost(
         norms,
     )?;
     if !inner.matched {
-        return Ok(Explanation::no_match("no matching clause"));
+        return Ok(Explanation::no_match(format!(
+            "{} doesn't match id {doc}",
+            describe_clause(&Clause::Boost(Box::new(nested.clone())))
+        )));
     }
     let value = inner.value * nested.boost;
-    Ok(Explanation::match_(value, format!("{value} = product of:"))
+    Ok(Explanation::match_(value, "product of:")
         .with_details(vec![inner, Explanation::match_(nested.boost, "boost")]))
 }
 
@@ -757,6 +1103,599 @@ mod tests {
         }
     }
 
+    // --- Description-string fidelity ---
+    //
+    // Real Lucene's explanation *strings* are a public contract: downstream
+    // tooling (OpenSearch's `_explain` API, relevance-debugging UIs) parses
+    // them. These tests pin every description this module emits to the exact
+    // literal real Lucene 10.5.0 produces, quoted from
+    // `BM25Similarity.idfExplain`/`BM25Scorer.explain`/`explainTF`,
+    // `TermQuery.TermWeight.explain`, `PhraseWeight.explain`,
+    // `BooleanWeight.explain`, `DisjunctionMaxQuery.DisjunctionMaxWeight.
+    // explain` and `ConstantScoreWeight.explain`.
+
+    #[test]
+    fn term_explanation_descriptions_are_real_lucenes_verbatim() {
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let clause = Clause::Term(TermQuery::new("body", "cat"));
+        let e =
+            explain_clause(&fields, doc_in.as_ref(), None, None, None, &clause, 0, None).unwrap();
+
+        assert_eq!(
+            e.description,
+            "weight(body:cat in 0) [BM25Similarity], result of:"
+        );
+        let score = &e.details[0];
+        assert!(
+            score
+                .description
+                .ends_with("), computed as boost * idf * tf from:"),
+            "{}",
+            score.description
+        );
+        assert!(
+            score.description.starts_with("score(freq="),
+            "{}",
+            score.description
+        );
+        // Java renders the freq as a `Float`, i.e. always with a decimal point.
+        assert!(
+            score.description.contains(".0)"),
+            "freq must render Java-style (\"2.0\", not \"2\"): {}",
+            score.description
+        );
+
+        let idf = &score.details[0];
+        assert_eq!(
+            idf.description,
+            "idf, computed as log(1 + (N - n + 0.5) / (n + 0.5)) from:"
+        );
+        assert_eq!(
+            idf.details[0].description,
+            "n, number of documents containing term"
+        );
+        assert_eq!(
+            idf.details[1].description,
+            "N, total number of documents with field"
+        );
+
+        let tf = &score.details[1];
+        assert_eq!(
+            tf.description,
+            "tf, computed as freq / (freq + k1 * (1 - b + b * dl / avgdl)) from:"
+        );
+        let descs: Vec<&str> = tf.details.iter().map(|d| d.description.as_str()).collect();
+        assert_eq!(
+            descs,
+            vec![
+                "freq, occurrences of term within document",
+                "k1, term saturation parameter",
+                "b, length normalization parameter",
+                "dl, length of field",
+                "avgdl, average length of field",
+            ]
+        );
+    }
+
+    #[test]
+    fn phrase_explanation_descriptions_are_real_lucenes_verbatim() {
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let owned = doc.as_ref().unwrap();
+        let pos_in = owned.open_pos();
+        let pay_in = owned.open_pay();
+        // "alpha beta" matches real doc 8555 in the "pos" field at slop 0 --
+        // the same known-good phrase this module's other phrase tests use.
+        let query = crate::query::PhraseQuery::new("pos", ["alpha", "beta"]);
+        let clause = Clause::Phrase(query);
+
+        // Whichever doc actually contains the phrase; the no-match strings on
+        // the way there are just as much a part of the contract.
+        let mut checked = false;
+        for doc_id in [0, 8555] {
+            let e = explain_clause(
+                &fields,
+                doc_in.as_ref(),
+                Some(&pos_in),
+                Some(&pay_in),
+                None,
+                &clause,
+                doc_id,
+                None,
+            )
+            .unwrap();
+            if !e.matched {
+                assert!(
+                    e.description == "no matching terms" || e.description == "no matching phrase",
+                    "{}",
+                    e.description
+                );
+                continue;
+            }
+            checked = true;
+            assert_eq!(
+                e.description,
+                format!("weight(pos:\"alpha beta\" in {doc_id}) [BM25Similarity], result of:")
+            );
+            let score = &e.details[0];
+            assert!(
+                score.description.starts_with("score(freq=")
+                    && score
+                        .description
+                        .ends_with("), computed as boost * idf * tf from:"),
+                "{}",
+                score.description
+            );
+            assert_eq!(score.details[0].description, "idf, sum of:");
+            for per_term in &score.details[0].details {
+                assert_eq!(
+                    per_term.description,
+                    "idf, computed as log(1 + (N - n + 0.5) / (n + 0.5)) from:"
+                );
+            }
+            let tf = &score.details[1];
+            assert_eq!(
+                tf.description,
+                "tf, computed as freq / (freq + k1 * (1 - b + b * dl / avgdl)) from:"
+            );
+            assert!(
+                tf.details[0].description.starts_with("phraseFreq="),
+                "{}",
+                tf.details[0].description
+            );
+        }
+        assert!(checked, "fixture must contain the phrase \"alpha beta\"");
+    }
+
+    #[test]
+    fn filter_clause_explanation_is_real_lucenes_verbatim() {
+        // `BooleanWeight.explain`'s FILTER arm:
+        //
+        //     subs.add(Explanation.match(0f, "match on required clause, product of:",
+        //         Explanation.match(0f, Occur.FILTER + " clause"), e));
+        //
+        // `Occur.FILTER.toString()` is `"#"`, so the inner description is
+        // exactly `"# clause"` and both values are `0f`.
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+
+        let clause = Clause::Boolean(Box::new(
+            BooleanQuery::new()
+                .with_must([TermQuery::new("body", "cat")])
+                .with_filter([TermQuery::new("body", "dog")]),
+        ));
+        let e =
+            explain_clause(&fields, doc_in.as_ref(), None, None, None, &clause, 0, None).unwrap();
+        assert!(e.matched);
+        assert_eq!(e.description, "sum of:");
+        assert_eq!(e.details.len(), 2, "one MUST sub, one FILTER sub");
+
+        let filter_sub = &e.details[1];
+        assert!(filter_sub.matched);
+        assert_eq!(filter_sub.value, 0.0);
+        assert_eq!(
+            filter_sub.description,
+            "match on required clause, product of:"
+        );
+        assert_eq!(filter_sub.details.len(), 2);
+        assert_eq!(filter_sub.details[0].description, "# clause");
+        assert_eq!(filter_sub.details[0].value, 0.0);
+        assert!(
+            filter_sub.details[1]
+                .description
+                .starts_with("weight(body:dog"),
+            "the filtered clause's own explanation survives as a child: {}",
+            filter_sub.details[1].description
+        );
+
+        // ... and the total is the MUST clause's value alone -- bit for bit.
+        assert_eq!(e.value.to_bits(), e.details[0].value.to_bits());
+    }
+
+    #[test]
+    fn a_failing_filter_clause_explains_as_a_failing_required_clause() {
+        // Java routes the non-matching case through `c.isRequired()`, which is
+        // true for FILTER, so the description is the same
+        // `"no match on required clause (...)"` a MUST clause gets.
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let clause = Clause::Boolean(Box::new(
+            BooleanQuery::new()
+                .with_must([TermQuery::new("body", "cat")])
+                .with_filter([TermQuery::new("body", "nonexistentterm")]),
+        ));
+        let e =
+            explain_clause(&fields, doc_in.as_ref(), None, None, None, &clause, 0, None).unwrap();
+        assert!(!e.matched);
+        assert_eq!(
+            e.description,
+            "Failure to meet condition(s) of required/prohibited clause(s)"
+        );
+        assert!(e
+            .details
+            .iter()
+            .any(|d| d.description == "no match on required clause (body:nonexistentterm)"));
+    }
+
+    #[test]
+    fn a_filter_only_query_explains_as_a_match_of_zero() {
+        // `matchCount` counts a matching FILTER clause (Java increments it for
+        // every non-prohibited match), so this is a match, and the sum is 0.
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let clause = Clause::Boolean(Box::new(
+            BooleanQuery::new().with_filter([TermQuery::new("body", "cat")]),
+        ));
+        let e =
+            explain_clause(&fields, doc_in.as_ref(), None, None, None, &clause, 0, None).unwrap();
+        assert!(e.matched);
+        assert_eq!(e.description, "sum of:");
+        assert_eq!(e.value, 0.0);
+    }
+
+    #[test]
+    fn a_filter_clause_does_not_count_toward_minimum_should_match_in_explain() {
+        // Java increments `shouldMatchCount` only for `Occur.SHOULD`. Doc 2
+        // matches the `cat` filter and neither optional clause, so the
+        // explanation must be the minimum-not-reached failure with
+        // `matched: 0` -- not a match.
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let clause = Clause::Boolean(Box::new(
+            BooleanQuery::new()
+                .with_filter([TermQuery::new("body", "cat")])
+                .with_should([TermQuery::new("body", "dog")])
+                .with_minimum_should_match(1),
+        ));
+        let e =
+            explain_clause(&fields, doc_in.as_ref(), None, None, None, &clause, 2, None).unwrap();
+        assert!(!e.matched);
+        assert_eq!(
+            e.description,
+            "Failure to match minimum number of optional clauses: 1, matched: 0"
+        );
+    }
+
+    #[test]
+    fn describe_clause_prints_a_filter_clause_with_lucenes_hash_prefix() {
+        // `Occur.FILTER.toString()` is `"#"`, and `BooleanQuery.toString`
+        // prefixes each clause with its occur.
+        assert_eq!(
+            describe_clause(&Clause::Boolean(Box::new(
+                BooleanQuery::new()
+                    .with_must([TermQuery::new("body", "cat")])
+                    .with_filter([TermQuery::new("body", "dog")])
+                    .with_should([TermQuery::new("body", "bird")])
+                    .with_must_not([TermQuery::new("body", "fish")])
+            ))),
+            "(+body:cat #body:dog body:bird -body:fish)"
+        );
+    }
+
+    #[test]
+    fn boolean_explanation_descriptions_are_real_lucenes_verbatim() {
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+
+        // A matching boolean: `BooleanWeight.explain` emits a bare "sum of:",
+        // with no `"{value} = "` prefix (the value lives in the node itself,
+        // and `Explanation.toString` re-renders it).
+        let clause = Clause::Boolean(Box::new(BooleanQuery {
+            must: vec![Clause::Term(TermQuery::new("body", "cat"))],
+            filter: Vec::new(),
+            should: vec![Clause::Term(TermQuery::new("body", "nonexistentterm"))],
+            must_not: Vec::new(),
+            minimum_should_match: 0,
+        }));
+        let e =
+            explain_clause(&fields, doc_in.as_ref(), None, None, None, &clause, 0, None).unwrap();
+        assert!(e.matched);
+        assert_eq!(e.description, "sum of:");
+
+        // A required clause that fails.
+        let clause = Clause::Boolean(Box::new(BooleanQuery {
+            must: vec![Clause::Term(TermQuery::new("body", "nonexistentterm"))],
+            filter: Vec::new(),
+            should: Vec::new(),
+            must_not: Vec::new(),
+            minimum_should_match: 0,
+        }));
+        let e =
+            explain_clause(&fields, doc_in.as_ref(), None, None, None, &clause, 0, None).unwrap();
+        assert!(!e.matched);
+        assert_eq!(
+            e.description,
+            "Failure to meet condition(s) of required/prohibited clause(s)"
+        );
+        assert_eq!(
+            e.details[0].description,
+            "no match on required clause (body:nonexistentterm)"
+        );
+
+        // A prohibited clause that matches.
+        let clause = Clause::Boolean(Box::new(BooleanQuery {
+            must: vec![Clause::Term(TermQuery::new("body", "cat"))],
+            filter: Vec::new(),
+            should: Vec::new(),
+            must_not: vec![Clause::Term(TermQuery::new("body", "cat"))],
+            minimum_should_match: 0,
+        }));
+        let e =
+            explain_clause(&fields, doc_in.as_ref(), None, None, None, &clause, 0, None).unwrap();
+        assert!(!e.matched);
+        assert_eq!(
+            e.description,
+            "Failure to meet condition(s) of required/prohibited clause(s)"
+        );
+        assert!(e
+            .details
+            .iter()
+            .any(|d| d.description == "match on prohibited clause (body:cat)"));
+
+        // Nothing matched at all.
+        let clause = Clause::Boolean(Box::new(BooleanQuery {
+            must: Vec::new(),
+            filter: Vec::new(),
+            should: vec![Clause::Term(TermQuery::new("body", "nonexistentterm"))],
+            must_not: Vec::new(),
+            minimum_should_match: 0,
+        }));
+        let e =
+            explain_clause(&fields, doc_in.as_ref(), None, None, None, &clause, 0, None).unwrap();
+        assert_eq!(e.description, "No matching clauses");
+        assert_eq!(
+            e.details[0].description,
+            "no match on optional clause (body:nonexistentterm)"
+        );
+
+        // minimumShouldMatch not reached, but at least one clause matched.
+        let clause = Clause::Boolean(Box::new(BooleanQuery {
+            must: Vec::new(),
+            filter: Vec::new(),
+            should: vec![
+                Clause::Term(TermQuery::new("body", "cat")),
+                Clause::Term(TermQuery::new("body", "nonexistentterm")),
+            ],
+            must_not: Vec::new(),
+            minimum_should_match: 2,
+        }));
+        let e =
+            explain_clause(&fields, doc_in.as_ref(), None, None, None, &clause, 0, None).unwrap();
+        assert_eq!(
+            e.description,
+            "Failure to match minimum number of optional clauses: 2, matched: 1"
+        );
+    }
+
+    #[test]
+    fn dismax_explanation_descriptions_are_real_lucenes_verbatim() {
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+
+        // `tieBreakerMultiplier == 0` -> "max of:"; otherwise
+        // "max plus {tie} times others of:".
+        let zero_tie = Clause::DisjunctionMax(Box::new(DisjunctionMaxQuery::new(
+            [Clause::Term(TermQuery::new("body", "cat"))],
+            0.0,
+        )));
+        let e = explain_clause(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            None,
+            None,
+            &zero_tie,
+            0,
+            None,
+        )
+        .unwrap();
+        assert_eq!(e.description, "max of:");
+
+        let tie = Clause::DisjunctionMax(Box::new(DisjunctionMaxQuery::new(
+            [Clause::Term(TermQuery::new("body", "cat"))],
+            0.5,
+        )));
+        let e = explain_clause(&fields, doc_in.as_ref(), None, None, None, &tie, 0, None).unwrap();
+        assert_eq!(e.description, "max plus 0.5 times others of:");
+
+        let none = Clause::DisjunctionMax(Box::new(DisjunctionMaxQuery::new(
+            [Clause::Term(TermQuery::new("body", "nonexistentterm"))],
+            0.0,
+        )));
+        let e = explain_clause(&fields, doc_in.as_ref(), None, None, None, &none, 0, None).unwrap();
+        assert_eq!(e.description, "No matching clause");
+    }
+
+    #[test]
+    fn constant_score_and_flat_clause_descriptions_are_real_lucenes_verbatim() {
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+
+        // Score exactly 1.0 -> no "^score" suffix (ConstantScoreWeight.explain).
+        let one = Clause::ConstantScore(Box::new(ConstantScoreQuery::new(
+            Clause::Term(TermQuery::new("body", "cat")),
+            1.0,
+        )));
+        let e = explain_clause(&fields, doc_in.as_ref(), None, None, None, &one, 0, None).unwrap();
+        assert_eq!(e.description, "ConstantScore(body:cat)");
+
+        let boosted = Clause::ConstantScore(Box::new(ConstantScoreQuery::new(
+            Clause::Term(TermQuery::new("body", "cat")),
+            2.5,
+        )));
+        let e = explain_clause(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            None,
+            None,
+            &boosted,
+            0,
+            None,
+        )
+        .unwrap();
+        assert_eq!(e.description, "ConstantScore(body:cat)^2.5");
+
+        let miss = Clause::ConstantScore(Box::new(ConstantScoreQuery::new(
+            Clause::Term(TermQuery::new("body", "nonexistentterm")),
+            1.0,
+        )));
+        let e = explain_clause(&fields, doc_in.as_ref(), None, None, None, &miss, 3, None).unwrap();
+        assert_eq!(
+            e.description,
+            "ConstantScore(body:nonexistentterm) doesn't match id 3"
+        );
+
+        // A flat (constant-scoring) multi-term clause renders as the query
+        // itself on a match and `"<query> doesn't match id <doc>"` otherwise.
+        let prefix = Clause::Prefix(PrefixQuery::new("body", "ca"));
+        let e =
+            explain_clause(&fields, doc_in.as_ref(), None, None, None, &prefix, 0, None).unwrap();
+        assert_eq!(e.description, "body:ca*");
+        let missing = Clause::Prefix(PrefixQuery::new("body", "zzzz"));
+        let e = explain_clause(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            None,
+            None,
+            &missing,
+            0,
+            None,
+        )
+        .unwrap();
+        assert_eq!(e.description, "body:zzzz* doesn't match id 0");
+    }
+
+    #[test]
+    fn describe_clause_matches_lucene_query_to_string() {
+        assert_eq!(
+            describe_clause(&Clause::Term(TermQuery::new("f", "t"))),
+            "f:t"
+        );
+        assert_eq!(
+            describe_clause(&Clause::Phrase(crate::query::PhraseQuery::new(
+                "f",
+                ["a", "b"]
+            ))),
+            "f:\"a b\""
+        );
+        assert_eq!(
+            describe_clause(&Clause::Phrase(
+                crate::query::PhraseQuery::new("f", ["a", "b"]).with_slop(3)
+            )),
+            "f:\"a b\"~3"
+        );
+        assert_eq!(
+            describe_clause(&Clause::Boolean(Box::new(BooleanQuery {
+                must: vec![Clause::Term(TermQuery::new("f", "a"))],
+                filter: Vec::new(),
+                should: vec![Clause::Term(TermQuery::new("f", "b"))],
+                must_not: vec![Clause::Term(TermQuery::new("f", "c"))],
+                minimum_should_match: 0,
+            }))),
+            "(+f:a f:b -f:c)"
+        );
+        assert_eq!(
+            describe_clause(&Clause::DisjunctionMax(Box::new(DisjunctionMaxQuery::new(
+                [
+                    Clause::Term(TermQuery::new("f", "a")),
+                    Clause::Term(TermQuery::new("f", "b")),
+                ],
+                0.3,
+            )))),
+            "(f:a | f:b)~0.3"
+        );
+        assert_eq!(
+            describe_clause(&Clause::Boost(Box::new(BoostQuery::new(
+                Clause::Term(TermQuery::new("f", "a")),
+                2.0,
+            )))),
+            "(f:a)^2.0"
+        );
+        assert_eq!(
+            describe_clause(&Clause::Wildcard(WildcardQuery::new("f", "a*b"))),
+            "f:a*b"
+        );
+        assert_eq!(
+            describe_clause(&Clause::Fuzzy(crate::query::FuzzyQuery::new("f", "a"))),
+            "f:a~2"
+        );
+        assert_eq!(
+            describe_clause(&Clause::Regexp(crate::query::RegexpQuery::new("f", "a.*"))),
+            "f:/a.*/"
+        );
+        assert_eq!(
+            describe_clause(&Clause::MatchAllDocs(crate::query::MatchAllDocsQuery::new(
+                7
+            ))),
+            "*:*"
+        );
+        assert_eq!(
+            describe_clause(&Clause::Span(crate::query::SpanQuery::span_near(
+                [
+                    crate::query::SpanQuery::span_term("f", "a"),
+                    crate::query::SpanQuery::span_term("f", "b"),
+                ],
+                2,
+                true,
+            ))),
+            "spanNear([spanTerm(f:a), spanTerm(f:b)], 2, true)"
+        );
+    }
+
+    #[test]
+    fn display_renders_java_explanation_to_string_layout() {
+        let e = Explanation::match_(2.0, "sum of:").with_details(vec![
+            Explanation::match_(1.5, "weight(f:a in 0) [BM25Similarity], result of:")
+                .with_details(vec![Explanation::match_(1.5, "score(freq=1.0), ...")]),
+            Explanation::match_(0.5, "boost"),
+        ]);
+        assert_eq!(
+            e.to_string(),
+            "2.0 = sum of:\n  \
+             1.5 = weight(f:a in 0) [BM25Similarity], result of:\n    \
+             1.5 = score(freq=1.0), ...\n  \
+             0.5 = boost\n"
+        );
+    }
+
+    #[test]
+    fn java_float_always_keeps_a_decimal_point() {
+        // Rust's own `Display` for f32 prints "2"; Java's `Float.toString`
+        // prints "2.0", and every explanation string in this module has to
+        // agree with Java's.
+        assert_eq!(java_float(2.0), "2.0");
+        assert_eq!(java_float(0.5), "0.5");
+        assert_eq!(java_float(1.2), "1.2");
+    }
+
+    #[test]
+    fn dl_description_flips_exactly_where_the_encoded_norm_byte_does() {
+        // `BM25Scorer.explainTF` picks "(approximate)" when the encoded norm
+        // byte is > 39. `dl_description` uses the *decoded* length instead;
+        // that is only equivalent because `LENGTH_TABLE[i] == i` for every
+        // `i <= 39` and the table is monotonically non-decreasing. Assert both
+        // properties against this port's own `decode_norm`, so a change to the
+        // table would fail here rather than silently drift from Java.
+        let mut previous = f32::NEG_INFINITY;
+        for i in 0..256u32 {
+            let decoded = similarity::decode_norm(i as i64);
+            assert!(decoded >= previous, "LENGTH_TABLE must not decrease at {i}");
+            previous = decoded;
+            if i <= 39 {
+                assert_eq!(decoded, i as f32, "LENGTH_TABLE[{i}] must be exactly {i}");
+            }
+            let java_says_approximate = i > 39;
+            assert_eq!(
+                dl_description(decoded) == "dl, length of field (approximate)",
+                java_says_approximate,
+                "encoded norm {i} (decoded {decoded})"
+            );
+        }
+    }
+
     #[test]
     fn points_range_clause_is_not_yet_explainable() {
         let (fields, doc) = open_fixture();
@@ -797,13 +1736,29 @@ mod tests {
         assert!(explanation.matched);
         assert_eq!(explanation.value, expected_score);
 
-        // The nested idf/tfNorm sub-values must themselves multiply back to
-        // the same top-level value -- not just an equal top-level number by
-        // coincidence.
+        // The nested idf/tfNorm sub-values must multiply back to the top-level
+        // value -- but only to within rounding, not exactly. Real Lucene says
+        // so itself in `BM25Scorer.explain`: "not using 'product of' since the
+        // rewrite that we do in score() introduces a small rounding error that
+        // CheckHits complains about". The score is
+        // `weight - weight / (1 + freq * normInverse)` and the `tf` node is
+        // `1 - 1 / (1 + freq * normInverse)`; those are equal in exact
+        // arithmetic and a few ULP apart in `f32`. The tolerance is
+        // **relative**: `f32::EPSILON` on its own is the gap between 1.0 and
+        // the next float, which is smaller than one ULP for any score >= 2 --
+        // the multi-phrase fixture already scores 1.57 -- so an absolute
+        // epsilon would make this flake rather than fail honestly.
         let score_node = &explanation.details[0];
         let idf_node = &score_node.details[0];
         let tf_norm_node = &score_node.details[1];
-        assert_eq!(idf_node.value * tf_norm_node.value, expected_score);
+        assert!(
+            (idf_node.value * tf_norm_node.value - expected_score).abs()
+                <= 4.0 * f32::EPSILON * expected_score.abs().max(1.0),
+            "idf {} * tfNorm {} = {}, score {expected_score}",
+            idf_node.value,
+            tf_norm_node.value,
+            idf_node.value * tf_norm_node.value
+        );
         assert_eq!(score_node.value, expected_score);
     }
 
@@ -895,7 +1850,19 @@ mod tests {
             docs_with_field_offset: -1,
             docs_with_field_length: 0,
             jump_table_entry_count: 0,
-            dense_rank_power: 0,
+            // `0xFF` is Java's `denseRankPower == -1`, "no rank table". `0` is
+            // not in `IndexedDISI`'s legal set (`-1`, or `7..=15`), so
+            // `dense_rank_bytes(0)` rejects it and any DENSE block reached with
+            // it fails to decode. Unreachable here -- this entry is dense, so
+            // nothing looks at the field -- but it described metadata no writer
+            // can produce, which is the kind of almost-right test input that
+            // hides a real decode bug. Same fix `field_norms.rs`'s `NO_RANK`
+            // constant records. (`field_norms.rs`'s own literal `0` is
+            // deliberate and stays: it is the input to
+            // `an_illegal_dense_rank_power_is_rejected_rather_than_guessed`,
+            // which asserts the decode *refuses* it. Named rather than cited by
+            // line number, which drifts.)
+            dense_rank_power: 0xFF,
             num_docs_with_field: max_doc,
             bytes_per_norm: 1,
             norms_offset: 0,
@@ -1624,12 +2591,19 @@ mod tests {
         assert!(explanation.matched);
         assert_eq!(explanation.value, expected_score);
 
-        // The nested idf/tfNorm sub-values must themselves multiply back to
-        // the same top-level value.
+        // Multiply back to the top-level value to within rounding -- see
+        // `term_explain_matching_doc_equals_scored_search_output_exactly` for
+        // why real Lucene's own `explain` refuses to call this a "product of".
         let score_node = &explanation.details[0];
         let idf_node = &score_node.details[0];
         let tf_norm_node = &score_node.details[1];
-        assert_eq!(idf_node.value * tf_norm_node.value, expected_score);
+        assert!(
+            (idf_node.value * tf_norm_node.value - expected_score).abs()
+                <= 4.0 * f32::EPSILON * expected_score.abs().max(1.0),
+            "idf {} * tfNorm {} vs score {expected_score}",
+            idf_node.value,
+            tf_norm_node.value
+        );
     }
 
     /// Closes a coverage gap the field norms/sloppy-match branches of

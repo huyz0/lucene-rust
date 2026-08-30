@@ -17,6 +17,11 @@
 //! table "looks right".
 //!
 //! Run: `cargo run -p lucene-codecs --example write_compound_format_fixture -- <dir>`
+// Test-support code opts out of the arithmetic gate at the file boundary:
+// the gate exists for values read off disk in production decode paths, not
+// for a fixture builder's own index arithmetic. See
+// `docs/arithmetic-gate.md`.
+#![allow(clippy::arithmetic_side_effects)]
 
 use lucene_codecs::compound_format;
 use lucene_codecs::field_infos::{

@@ -15,9 +15,9 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use lucene_codecs::norms;
+use lucene_search::collector::ScoringCollector;
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::field_norms::FieldNorms;
-use lucene_search::collector::ScoringCollector;
 use lucene_search::query::{BooleanQuery, Clause, PhraseQuery, TermQuery};
 use lucene_search::{
     search_boolean_query_multi_segment, search_boolean_query_multi_segment_maxscore,
@@ -78,7 +78,9 @@ fn main() {
             }
         }
         let gidf = ((tot_dc as f64 - tot_df as f64 + 0.5) / (tot_df as f64 + 0.5) + 1.0).ln();
-        eprintln!("  GLOBAL: docCount={tot_dc} docFreq={tot_df} idf={gidf:.6}  <- what Lucene uses");
+        eprintln!(
+            "  GLOBAL: docCount={tot_dc} docFreq={tot_df} idf={gidf:.6}  <- what Lucene uses"
+        );
         return;
     }
     println!("id\thits\ttop1doc\ttop1score\ttopset\tqps\tp50_us\tp95_us\tp99_us\tscored\tblocks");
@@ -93,15 +95,22 @@ fn main() {
                 // multi-segment disagreement comes from the pruned path or was
                 // already there.
                 "term_eager" => {
-                    let tq = TermQuery { field: q.field.clone(), term: q.args[0].clone().into_bytes() };
+                    let tq = TermQuery {
+                        field: q.field.clone(),
+                        term: q.args[0].clone().into_bytes(),
+                    };
                     let mut merged = lucene_search::collector::TopDocsCollector::new(TOP_N);
                     for (i, seg) in segments.iter().enumerate() {
                         let mut local = lucene_search::collector::TopDocsCollector::new(TOP_N);
                         lucene_search::search_term_query_scored(
-                            seg.fields, seg.doc_in, seg.live_docs, &tq,
+                            seg.fields,
+                            seg.doc_in,
+                            seg.live_docs,
+                            &tq,
                             norms_by_seg[i].as_ref().and_then(|m| m.get(&q.field)),
                             &mut local,
-                        ).expect("term_eager");
+                        )
+                        .expect("term_eager");
                         for hit in local.top_docs() {
                             merged.collect(hit.doc_id + seg.doc_base, hit.score);
                         }
@@ -109,18 +118,28 @@ fn main() {
                     merged.top_docs().to_vec()
                 }
                 "term_ms" => {
-                    let tq = TermQuery { field: q.field.clone(), term: q.args[0].clone().into_bytes() };
+                    let tq = TermQuery {
+                        field: q.field.clone(),
+                        term: q.args[0].clone().into_bytes(),
+                    };
                     let seg = &segments[0];
                     let mut c = lucene_search::collector::TopDocsCollector::new(TOP_N);
                     lucene_search::search_term_query_scored_maxscore(
-                        seg.fields, seg.doc_in, seg.live_docs, &tq,
+                        seg.fields,
+                        seg.doc_in,
+                        seg.live_docs,
+                        &tq,
                         norms_by_seg[0].as_ref().and_then(|m| m.get(&q.field)),
                         &mut c,
-                    ).expect("term_ms");
+                    )
+                    .expect("term_ms");
                     c.top_docs().to_vec()
                 }
                 "term" => {
-                    let tq = TermQuery { field: q.field.clone(), term: q.args[0].clone().into_bytes() };
+                    let tq = TermQuery {
+                        field: q.field.clone(),
+                        term: q.args[0].clone().into_bytes(),
+                    };
                     // Per-query field, not a hardcoded one: scoring a `title` or
                     // `keyword` query with `body`'s norms silently produces a
                     // different ranking, which first showed up as a phantom
@@ -135,18 +154,35 @@ fn main() {
                     let clauses: Vec<Clause> = q
                         .args
                         .iter()
-                        .map(|t| Clause::Term(TermQuery { field: q.field.clone(), term: t.clone().into_bytes() }))
+                        .map(|t| {
+                            Clause::Term(TermQuery {
+                                field: q.field.clone(),
+                                term: t.clone().into_bytes(),
+                            })
+                        })
                         .collect();
                     let bq = if q.kind == "and" {
-                        BooleanQuery { must: clauses, ..Default::default() }
+                        BooleanQuery {
+                            must: clauses,
+                            ..Default::default()
+                        }
                     } else {
-                        BooleanQuery { should: clauses, ..Default::default() }
+                        BooleanQuery {
+                            should: clauses,
+                            ..Default::default()
+                        }
                     };
                     if q.kind == "or_maxscore" {
-                        search_boolean_query_multi_segment_maxscore(&segments, &bq, &bool_norms, TOP_N)
-                            .expect("bool maxscore")
+                        search_boolean_query_multi_segment_maxscore(
+                            &segments,
+                            &bq,
+                            &bool_norms,
+                            TOP_N,
+                        )
+                        .expect("bool maxscore")
                     } else {
-                        search_boolean_query_multi_segment(&segments, &bq, &bool_norms, TOP_N).expect("bool")
+                        search_boolean_query_multi_segment(&segments, &bq, &bool_norms, TOP_N)
+                            .expect("bool")
                     }
                 }
                 // Query kinds the M1.6 sweep never measured. `intersect`'s own
@@ -169,16 +205,9 @@ fn main() {
                         let Some((kdm, kdi, kdd)) = r.points_files() else {
                             continue;
                         };
-                        let pr = lucene_codecs::points::open(
-                            kdm,
-                            kdi,
-                            kdd,
-                            &r.segment_id(),
-                            "",
-                        )
-                        .expect("open points");
-                        let Some(fi) =
-                            r.field_infos().fields.iter().find(|f| f.name == q.field)
+                        let pr = lucene_codecs::points::open(kdm, kdi, kdd, &r.segment_id(), "")
+                            .expect("open points");
+                        let Some(fi) = r.field_infos().fields.iter().find(|f| f.name == q.field)
                         else {
                             continue;
                         };
@@ -220,11 +249,8 @@ fn main() {
                             .filter_map(|(r, s)| {
                                 let data = r.doc_values_data()?;
                                 let meta = r.doc_values_meta()?;
-                                let num = r
-                                    .field_infos()
-                                    .fields
-                                    .iter()
-                                    .find(|f| f.name == q.field)?;
+                                let num =
+                                    r.field_infos().fields.iter().find(|f| f.name == q.field)?;
                                 let entry = meta.numeric_entry(num.number)?;
                                 Some(lucene_search::multi_segment::DocValueSegment {
                                     doc_values_data: data,
@@ -305,8 +331,12 @@ fn main() {
                         slop: 0,
                         ..Default::default()
                     };
-                    let bq = BooleanQuery { must: vec![Clause::Phrase(pq)], ..Default::default() };
-                    search_boolean_query_multi_segment(&segments, &bq, &bool_norms, TOP_N).expect("phrase")
+                    let bq = BooleanQuery {
+                        must: vec![Clause::Phrase(pq)],
+                        ..Default::default()
+                    };
+                    search_boolean_query_multi_segment(&segments, &bq, &bool_norms, TOP_N)
+                        .expect("phrase")
                 }
                 other => panic!("unknown query kind: {other}"),
             }
@@ -318,19 +348,16 @@ fn main() {
             lucene_search::test_only_maxscore_block_skip_counter::reset();
             let hits = run();
             let skips = lucene_search::test_only_maxscore_block_skip_counter::count();
-            eprintln!(
-                "  {}: {} hits, {} blocks skipped",
-                q.id,
-                hits.len(),
-                skips
-            );
+            eprintln!("  {}: {} hits, {} blocks skipped", q.id, hits.len(), skips);
             continue;
         }
 
         let w = Instant::now();
         loop {
             std::hint::black_box(run());
-            if w.elapsed().as_millis() >= warmup_ms { break; }
+            if w.elapsed().as_millis() >= warmup_ms {
+                break;
+            }
         }
         let mut samples = Vec::new();
         let mut last;
@@ -341,7 +368,9 @@ fn main() {
             samples.push(s.elapsed().as_micros() as u64);
             // At least 5 samples so a percentile means something, even when a
             // single execution already exceeds the measurement budget.
-            if t0.elapsed().as_millis() >= measure_ms && samples.len() >= 5 { break; }
+            if t0.elapsed().as_millis() >= measure_ms && samples.len() >= 5 {
+                break;
+            }
         }
         let wall = t0.elapsed().as_secs_f64();
         let iters = samples.len();
@@ -364,7 +393,11 @@ fn main() {
         // that as a recall mismatch would hide the real ones.
         let mut ids: Vec<i32> = last.iter().map(|d| d.doc_id).collect();
         ids.sort_unstable();
-        let topset = ids.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(",");
+        let topset = ids
+            .iter()
+            .map(|d| d.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
         let (top1doc, top1score) = last
             .first()
             .map(|d| (d.doc_id, d.score))

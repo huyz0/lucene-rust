@@ -12,6 +12,11 @@
 //!
 //! Regenerate with `fixtures/src/GenFstBinarySearch.java` (see
 //! `fixtures/README.md`).
+// Test-support code opts out of the arithmetic gate at the file boundary:
+// the gate exists for values read off disk in production decode paths, not
+// for a fixture builder's own index arithmetic. See
+// `docs/arithmetic-gate.md`.
+#![allow(clippy::arithmetic_side_effects)]
 
 use lucene_codecs::fst::Fst;
 use lucene_store::data_input::SliceInput;
@@ -166,4 +171,40 @@ fn iter_enumerates_every_key_of_a_binary_search_root_node() {
         .expect("enumeration should not error");
 
     assert_eq!(got, expected);
+}
+
+/// `FstEnum::seek_exact` followed by `next()` must resume ordered
+/// enumeration from the key that was sought.
+///
+/// This only holds if `find_target_arc`'s `ARCS_FOR_BINARY_SEARCH` branch
+/// leaves `Arc.arcIdx` at the matched slot, the way `FST.findTargetArc`'s
+/// own `arc.arcIdx = mid - 1; readNextRealArc(...)` does -- it is the index
+/// `readNextRealArc` increments to find the *following* arc. Left at its
+/// default, `next()` resumes from slot 1 of the root node no matter which
+/// key was sought, so this test fails for every key but the first two.
+///
+/// No hand-built or `build_fst`-built FST can catch it: this port's own
+/// builder only ever emits variable-length ("list") arc nodes, which take a
+/// different `read_next_real_arc` branch entirely. It needs a real
+/// `FSTCompiler`-produced fixed-length-arc node.
+#[test]
+fn seek_exact_then_next_resumes_from_the_sought_key_through_a_binary_search_node() {
+    let fst = load_fst();
+    let all: Vec<(Vec<u8>, Vec<u8>)> = fst.iter().unwrap().map(|r| r.unwrap()).collect();
+    assert!(all.len() > 2, "fixture must have several root arcs");
+
+    for (i, (key, output)) in all.iter().enumerate() {
+        let mut e = fst.iter().unwrap();
+        assert_eq!(
+            e.seek_exact(key).unwrap(),
+            Some((key.clone(), output.clone())),
+            "seek_exact({key:?}) must find the key"
+        );
+        let rest: Vec<(Vec<u8>, Vec<u8>)> = e.map(|r| r.unwrap()).collect();
+        assert_eq!(
+            rest,
+            all[i + 1..].to_vec(),
+            "next() after seek_exact({key:?}) must continue at the following key"
+        );
+    }
 }

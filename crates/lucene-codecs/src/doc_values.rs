@@ -66,6 +66,7 @@ const DATA_META_CODEC: &str = "Lucene90DocValuesData";
 
 const META_CODEC: &str = "Lucene90DocValuesMetadata";
 const VERSION_START: i32 = 0;
+const VERSION_SKIPPER_SEPARATE_FILE: i32 = 1;
 const VERSION_SKIPPER_MAX_VALUE_COUNT: i32 = 2;
 const VERSION_CURRENT: i32 = VERSION_SKIPPER_MAX_VALUE_COUNT;
 
@@ -86,18 +87,34 @@ const TERMS_DICT_BLOCK_LZ4_MASK: i64 = (1 << TERMS_DICT_BLOCK_LZ4_SHIFT) - 1;
 /// sampled term address every 1024 ordinals, for the coarse reverse index.
 const TERMS_DICT_REVERSE_INDEX_SHIFT: u32 = 10;
 const TERMS_DICT_REVERSE_INDEX_MASK: i64 = (1i64 << TERMS_DICT_REVERSE_INDEX_SHIFT) - 1;
+/// `Lucene90DocValuesFormat.DIRECT_MONOTONIC_BLOCK_SHIFT`: every address
+/// array this format writes -- BINARY's variable-length end offsets,
+/// SORTED_NUMERIC/SORTED_SET's per-doc value ranges, and the terms dict's
+/// block and reverse-index addresses -- is bit-packed in blocks of `2^16`
+/// values, with one `(min, avgInc, offset, bitsPerValue)` record per block in
+/// `.dvm`.
+///
+/// This port used to write `0` here (one block per value). That round-tripped
+/// -- the shift is stored per array, so the reader honours whatever it finds
+/// -- but it made the *metadata* grow linearly with the value count: 21 bytes
+/// of `.dvm` and one eagerly-materialised [`direct_monotonic::Meta`] block per
+/// address, i.e. ~21 MB of `.dvm` and ~32 MB of heap on open for a 1M-doc
+/// variable-length BINARY field, where Java needs ~336 bytes of `.dvm` and 16
+/// blocks. See `direct_monotonic_block_shift_keeps_meta_size_constant`.
+const DIRECT_MONOTONIC_BLOCK_SHIFT: u32 = 16;
+
 /// `DirectMonotonicWriter` block shift for both the terms-address and
-/// reverse-index address arrays -- real Lucene always uses 16
-/// (`Lucene90DocValuesFormat.DIRECT_MONOTONIC_BLOCK_SHIFT`); this port picks
-/// 0 instead, same simplicity-over-compression-ratio choice
-/// [`write_single_dense_binary_field`]'s variable-length address array
-/// already made for its own [`direct_monotonic::write`] call -- the format
-/// stores `block_shift` per-field, so any value round-trips correctly.
-const TERMS_DICT_DIRECT_MONOTONIC_BLOCK_SHIFT: u32 = 0;
+/// reverse-index address arrays. Java's `addTermsDict`/`writeTermsIndex` both
+/// pass [`DIRECT_MONOTONIC_BLOCK_SHIFT`], and so does this port.
+const TERMS_DICT_DIRECT_MONOTONIC_BLOCK_SHIFT: u32 = DIRECT_MONOTONIC_BLOCK_SHIFT;
 
 /// `Lucene90DocValuesFormat.SKIP_INDEX_MAX_LEVEL`: at most 4 levels in the
 /// multi-level skip structure written per doc-values field.
 const SKIP_INDEX_MAX_LEVEL: u8 = 4;
+
+/// `Lucene90DocValuesFormat.SKIP_INDEX_LEVEL_SHIFT`: each skip level groups
+/// `1 << 3 == 8` intervals of the level below it.
+const SKIP_INDEX_LEVEL_SHIFT: u32 = 3;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -115,6 +132,13 @@ pub enum Error {
     DocOutOfRange(i32, i64),
     #[error("field {0} has invalid multiValued flag: {1}")]
     InvalidMultiValuedFlag(i32, u8),
+    #[error("field {field_number}'s address array names values [{start}, {end}) outside its {num_values} value(s)")]
+    CorruptAddressRange {
+        field_number: i32,
+        start: i64,
+        end: i64,
+        num_values: i64,
+    },
     #[error("doc-values skip index level count {0} is out of range (must be 1..={SKIP_INDEX_MAX_LEVEL})")]
     InvalidSkipIndexLevelCount(u8),
     #[error(
@@ -413,9 +437,62 @@ pub fn parse_meta(
         }
     }
 
+    if header.version < VERSION_SKIPPER_MAX_VALUE_COUNT {
+        infer_max_value_counts(&mut meta, field_infos);
+    }
+
     codec_util::check_footer(&mut input, buf.len())?;
 
     Ok((header.version, meta))
+}
+
+/// Port of `Lucene90DocValuesProducer.inferMaxValueCounts`, run only for
+/// `.dvm` files older than [`VERSION_SKIPPER_MAX_VALUE_COUNT`], which never
+/// stored `maxValueCount` and so leave [`read_skipper_meta`] with the `-1`
+/// "unknown" sentinel.
+///
+/// For a single-valued doc-values type the answer is known without reading
+/// anything: NUMERIC and SORTED store exactly one value per doc-with-a-value.
+/// SORTED_NUMERIC and SORTED_SET only *sometimes* are -- they carry one value
+/// per doc precisely when the field collapsed to the no-address-array shape
+/// (`numValues == numDocsWithField`), which is the same equality
+/// [`read_sorted_numeric_entry`] already uses to decide whether an address
+/// array is present. Anything else (a genuinely multi-valued field, or a
+/// BINARY field, whose skip index Java also leaves alone) keeps `-1`.
+fn infer_max_value_counts(meta: &mut DocValuesMeta, field_infos: &FieldInfos) {
+    use crate::field_infos::DocValuesType;
+
+    let inferred: Vec<(i32, i32)> = meta
+        .skippers
+        .iter()
+        .filter(|(_, e)| e.max_value_count == -1 && e.doc_count != 0)
+        .filter_map(|(&field_number, _)| {
+            let ty = field_infos.field_by_number(field_number)?.doc_values_type;
+            let single = match ty {
+                DocValuesType::Numeric | DocValuesType::Sorted => true,
+                DocValuesType::SortedNumeric => meta
+                    .sorted_numeric_entry(field_number)
+                    .is_some_and(|e| e.numeric.num_values == e.num_docs_with_field as i64),
+                DocValuesType::SortedSet => {
+                    meta.sorted_set_entry(field_number)
+                        .is_some_and(|e| match &e.kind {
+                            SortedSetKind::Single(_) => true,
+                            SortedSetKind::Multi { ords, .. } => {
+                                ords.numeric.num_values == ords.num_docs_with_field as i64
+                            }
+                        })
+                }
+                DocValuesType::None | DocValuesType::Binary => false,
+            };
+            single.then_some((field_number, 1))
+        })
+        .collect();
+
+    for (field_number, max_value_count) in inferred {
+        if let Some(entry) = meta.skippers.get_mut(&field_number) {
+            entry.max_value_count = max_value_count;
+        }
+    }
 }
 
 fn read_binary_entry(input: &mut SliceInput, field_number: i32) -> Result<BinaryEntry> {
@@ -431,6 +508,11 @@ fn read_binary_entry(input: &mut SliceInput, field_number: i32) -> Result<Binary
 
     let addresses = if min_length < max_length {
         let addresses_offset = input.read_i64()?;
+        // ARITH: `num_docs_with_field` is an `i32` widened to `i64`, so the
+        // `+ 1` is nowhere near an `i64` boundary. `load_meta` is what bounds
+        // the value itself (c24's F1: it rejects a negative count and caps
+        // the reservation by the bytes left in `.dvm`).
+        #[allow(clippy::arithmetic_side_effects)]
         let num_addresses = num_docs_with_field as i64 + 1;
         let block_shift = input.read_vint()?;
         let addr_meta = direct_monotonic::load_meta(input, num_addresses, block_shift as u32)?;
@@ -483,8 +565,10 @@ fn read_sorted_numeric_entry(
     let addresses = if num_docs_with_field as i64 != numeric.num_values {
         let addresses_offset = input.read_i64()?;
         let block_shift = input.read_vint()?;
-        let meta =
-            direct_monotonic::load_meta(input, num_docs_with_field as i64 + 1, block_shift as u32)?;
+        // ARITH: as in `read_binary_entry` -- an `i32` widened to `i64`.
+        #[allow(clippy::arithmetic_side_effects)]
+        let num_addresses = num_docs_with_field as i64 + 1;
+        let meta = direct_monotonic::load_meta(input, num_addresses, block_shift as u32)?;
         let addresses_length = input.read_i64()?;
         Some(MultiValueAddresses {
             offset: addresses_offset,
@@ -533,6 +617,9 @@ fn read_numeric_entry(input: &mut SliceInput, field_number: i32) -> Result<Numer
     // lookup table; `bits_per_value` below is then a meaningless `0xFF`
     // sentinel (real Lucene writes `numBitsPerValue = 0xFF` in this case),
     // so skip the normal table/enum reads for it.
+    // ARITH: `table_size` is an `i32`, so `-2 - table_size` as `i64`
+    // spans at most `-2 - i32::MIN`, three orders of magnitude inside `i64`.
+    #[allow(clippy::arithmetic_side_effects)]
     let (table, block_shift) = if table_size < -1 {
         let shift = -2i64 - table_size as i64;
         if !(0..=63).contains(&shift) {
@@ -647,7 +734,12 @@ pub fn check_skip_index_header_footer(
     let header = codec_util::check_index_header(
         &mut input,
         SKIP_INDEX_META_CODEC,
-        VERSION_START,
+        // A `.dvs` file only exists from `VERSION_SKIPPER_SEPARATE_FILE`
+        // onwards -- before that the skip data lived inline in `.dvd` -- so a
+        // `.dvs` claiming version 0 is corrupt, exactly as Java's own
+        // `checkIndexHeader(skipIn, ..., VERSION_SKIPPER_SEPARATE_FILE, ...)`
+        // rejects it.
+        VERSION_SKIPPER_SEPARATE_FILE,
         VERSION_CURRENT,
         segment_id,
         segment_suffix,
@@ -740,6 +832,258 @@ pub fn parse_skip_index(
     })
 }
 
+/// `DocIdSetIterator.NO_MORE_DOCS`: the sentinel every level's min/max doc id
+/// takes once a [`DocValuesSkipper`] runs past its field's last interval.
+pub const NO_MORE_DOCS: i32 = i32::MAX;
+
+/// A cursor over one field's decoded [`DocValuesSkipIndex`], with exactly the
+/// semantics of Java's `DocValuesSkipper` as
+/// `Lucene90DocValuesProducer.getSkipper` implements it.
+///
+/// The position only ever moves forward, via [`advance`](Self::advance); the
+/// interval it lands on is described per level by
+/// [`min_doc_id`](Self::min_doc_id)/[`max_doc_id`](Self::max_doc_id)/
+/// [`min_value`](Self::min_value)/[`max_value`](Self::max_value)/
+/// [`doc_count`](Self::doc_count), level 0 being the finest
+/// (`skipIndexIntervalSize` docs) and each higher level covering `8^level`
+/// level-0 intervals.
+///
+/// Three behaviours are easy to get wrong and are reproduced deliberately:
+///
+/// - **Levels persist across intervals.** Java stores the per-level arrays
+///   outside the read loop and only overwrites the levels the *current*
+///   interval record carries. A record for a plain level-0 interval leaves
+///   levels 1..3 holding the coarse summaries read from the last interval that
+///   had them -- which is exactly what makes the
+///   `while (levels < MAX && maxDocID[levels] >= target) levels++` widening at
+///   the end of `advance` meaningful.
+/// - **A level's `maxDocID` is stored before it is tested.** Java writes
+///   `if ((maxDocID[level] = input.readInt()) < target)`, so even the level
+///   whose bound *failed* leaves its `maxDocID` behind; the widening loop above
+///   depends on that too.
+/// - **Skipping is by whole subtrees.** Bailing out at level `L` jumps
+///   `SKIP_INDEX_JUMP_LENGTH_PER_LEVEL[L]` bytes, which is exactly the byte
+///   size of the `8^L` level-0 intervals that level covers (`writeLevels`
+///   gives a level-`L` record only to a complete group). Over this port's
+///   already-decoded `Vec<SkipIndexInterval>` that is a `+= 8^L` on the
+///   interval cursor.
+///
+/// Unlike Java's, this cursor never does I/O -- [`parse_skip_index`] decoded
+/// the whole `.dvs` slice up front -- so [`advance`](Self::advance) is
+/// infallible.
+#[derive(Debug, Clone)]
+pub struct DocValuesSkipper<'a> {
+    index: &'a DocValuesSkipIndex,
+    /// Index of the next interval to read, i.e. Java's file pointer into the
+    /// field's `.dvs` slice.
+    cursor: usize,
+    levels: usize,
+    min_doc_id: [i32; SKIP_INDEX_MAX_LEVEL as usize],
+    max_doc_id: [i32; SKIP_INDEX_MAX_LEVEL as usize],
+    min_value: [i64; SKIP_INDEX_MAX_LEVEL as usize],
+    max_value: [i64; SKIP_INDEX_MAX_LEVEL as usize],
+    doc_count: [i32; SKIP_INDEX_MAX_LEVEL as usize],
+}
+
+impl<'a> DocValuesSkipper<'a> {
+    /// A skipper positioned before the first interval: every level's
+    /// `min_doc_id`/`max_doc_id` is `-1` and [`num_levels`](Self::num_levels)
+    /// is 1, matching the instance initializer in Java's `getSkipper`.
+    pub fn new(index: &'a DocValuesSkipIndex) -> Self {
+        Self {
+            index,
+            cursor: 0,
+            levels: 1,
+            min_doc_id: [-1; SKIP_INDEX_MAX_LEVEL as usize],
+            max_doc_id: [-1; SKIP_INDEX_MAX_LEVEL as usize],
+            min_value: [0; SKIP_INDEX_MAX_LEVEL as usize],
+            max_value: [0; SKIP_INDEX_MAX_LEVEL as usize],
+            doc_count: [0; SKIP_INDEX_MAX_LEVEL as usize],
+        }
+    }
+
+    /// Advances so that every level describes the first interval that can
+    /// still contain a document `>= target`.
+    ///
+    /// `target` must be greater than the current `max_doc_id(0)` (Java
+    /// documents the behaviour as undefined otherwise, and asserts it); this
+    /// port simply keeps scanning forward from where it is, which for a
+    /// backwards `target` leaves the skipper where it already was.
+    ///
+    /// Past the field's last document every level reports [`NO_MORE_DOCS`].
+    /// ARITH: (whole body) `level` is bounded by `SKIP_INDEX_MAX_LEVEL` (4),
+    /// so `SKIP_INDEX_LEVEL_SHIFT * level` is at most 9 and the jump is at
+    /// most `1 << 9`. `cursor` only ever advances while
+    /// `self.index.intervals.get(cursor)` is `Some`, so it stays within
+    /// `intervals.len() + 512` -- a `Vec` length plus a constant. `levels` is
+    /// compared against `SKIP_INDEX_MAX_LEVEL` before every increment.
+    #[allow(clippy::arithmetic_side_effects)]
+    pub fn advance(&mut self, target: i32) {
+        if target > self.index.max_doc_id {
+            self.min_doc_id = [NO_MORE_DOCS; SKIP_INDEX_MAX_LEVEL as usize];
+            self.max_doc_id = [NO_MORE_DOCS; SKIP_INDEX_MAX_LEVEL as usize];
+            return;
+        }
+        while let Some(interval) = self.index.intervals.get(self.cursor) {
+            let mut valid = true;
+            for level in (0..interval.levels.len().min(SKIP_INDEX_MAX_LEVEL as usize)).rev() {
+                let l = interval.levels[level];
+                self.max_doc_id[level] = l.max_doc_id;
+                if l.max_doc_id < target {
+                    // Jump over the whole `8^level` subtree this level covers.
+                    self.cursor += 1usize << (SKIP_INDEX_LEVEL_SHIFT * level as u32);
+                    valid = false;
+                    break;
+                }
+                self.min_doc_id[level] = l.min_doc_id;
+                self.max_value[level] = l.max_value;
+                self.min_value[level] = l.min_value;
+                self.doc_count[level] = l.doc_count;
+            }
+            if valid {
+                self.levels = interval.levels.len().min(SKIP_INDEX_MAX_LEVEL as usize);
+                while self.levels < SKIP_INDEX_MAX_LEVEL as usize
+                    && self.max_doc_id[self.levels] >= target
+                {
+                    self.levels += 1;
+                }
+                self.cursor += 1;
+                return;
+            }
+        }
+        // Only reachable on a truncated/corrupt skip index, where `max_doc_id`
+        // promised an interval the `.dvs` slice does not actually hold. Report
+        // exhaustion rather than spinning or panicking.
+        self.min_doc_id = [NO_MORE_DOCS; SKIP_INDEX_MAX_LEVEL as usize];
+        self.max_doc_id = [NO_MORE_DOCS; SKIP_INDEX_MAX_LEVEL as usize];
+    }
+
+    /// Port of `DocValuesSkipper.advance(long minValue, long maxValue)`:
+    /// advances until every level's value range intersects
+    /// `[min_value, max_value]`, using the coarsest non-intersecting level to
+    /// skip as many documents at a time as possible. Leaves the skipper
+    /// exhausted if no interval intersects.
+    pub fn advance_range(&mut self, min_value: i64, max_value: i64) {
+        if self.min_doc_id(0) == -1 {
+            self.advance(0);
+        }
+        while self.min_doc_id(0) != NO_MORE_DOCS
+            && (self.min_value(0) > max_value || self.max_value(0) < min_value)
+        {
+            let mut max_doc_id = self.max_doc_id(0);
+            let mut next_level = 1;
+            while next_level < self.num_levels()
+                && (self.min_value(next_level) > max_value
+                    || self.max_value(next_level) < min_value)
+            {
+                max_doc_id = self.max_doc_id(next_level);
+                // ARITH: bounded by `num_levels() <= SKIP_INDEX_MAX_LEVEL`.
+                #[allow(clippy::arithmetic_side_effects)]
+                {
+                    next_level += 1;
+                }
+            }
+            if max_doc_id == NO_MORE_DOCS {
+                self.advance(NO_MORE_DOCS);
+                return;
+            }
+            // ARITH: `NO_MORE_DOCS` *is* `i32::MAX` and the branch above
+            // returned for it, so `max_doc_id <= i32::MAX - 1` here.
+            // `next_level` is compared against `num_levels()`, which
+            // `advance` keeps at or below `SKIP_INDEX_MAX_LEVEL`.
+            #[allow(clippy::arithmetic_side_effects)]
+            self.advance(max_doc_id + 1);
+        }
+    }
+
+    /// Number of levels describing the current position. Changes as the
+    /// skipper moves between intervals.
+    pub fn num_levels(&self) -> usize {
+        self.levels
+    }
+
+    /// Inclusive minimum doc id of the current interval at `level`; `-1`
+    /// before the first [`advance`](Self::advance), [`NO_MORE_DOCS`] once
+    /// exhausted.
+    pub fn min_doc_id(&self, level: usize) -> i32 {
+        self.min_doc_id[level]
+    }
+
+    /// Inclusive maximum doc id of the current interval at `level`; `-1`
+    /// before the first [`advance`](Self::advance), [`NO_MORE_DOCS`] once
+    /// exhausted.
+    pub fn max_doc_id(&self, level: usize) -> i32 {
+        self.max_doc_id[level]
+    }
+
+    /// Inclusive lower bound on the values in the current interval at `level`.
+    pub fn min_value(&self, level: usize) -> i64 {
+        self.min_value[level]
+    }
+
+    /// Inclusive upper bound on the values in the current interval at `level`.
+    pub fn max_value(&self, level: usize) -> i64 {
+        self.max_value[level]
+    }
+
+    /// Number of documents with a value in the current interval at `level`.
+    pub fn doc_count(&self, level: usize) -> i32 {
+        self.doc_count[level]
+    }
+
+    /// Field-wide minimum value (`DocValuesSkipper.minValue()`).
+    pub fn global_min_value(&self) -> i64 {
+        self.index.min_value
+    }
+
+    /// Field-wide maximum value (`DocValuesSkipper.maxValue()`).
+    pub fn global_max_value(&self) -> i64 {
+        self.index.max_value
+    }
+
+    /// Field-wide count of documents that have a value
+    /// (`DocValuesSkipper.docCount()`).
+    pub fn global_doc_count(&self) -> i32 {
+        self.index.doc_count
+    }
+
+    /// Field-wide maximum number of values on any one document
+    /// (`DocValuesSkipper.maxValueCount()`), or `-1` when the `.dvm` was
+    /// written by a codec too old to record it and it could not be inferred
+    /// (see [`infer_max_value_counts`]).
+    pub fn max_value_count(&self) -> i32 {
+        self.index.max_value_count
+    }
+}
+
+/// The `[offset, offset + length)` region of `.dvd` (or `.dvs`) a `.dvm`
+/// entry names.
+///
+/// Both halves are independent `i64`s read straight off the metadata file,
+/// so `offset + length` is exactly the shape `docs/arithmetic-gate.md`
+/// exists for: it panics in a debug build and, in a release build, wraps to
+/// a *plausible in-range* offset that slices valid-looking doc values out of
+/// the wrong part of the file -- the silent-wrong-answer half of the class,
+/// which is what c24 found in `norms::read_value_at_ordinal`. Folding the
+/// widening, the add and the bounds check into one place also means there is
+/// one parser of this shape rather than eight.
+fn region(data: &[u8], offset: i64, length: i64) -> Result<&[u8]> {
+    offset
+        .checked_add(length)
+        .and_then(|end| Some(usize::try_from(offset).ok()?..usize::try_from(end).ok()?))
+        .and_then(|r| data.get(r))
+        .ok_or_else(|| lucene_store::Error::Eof { offset: 0 }.into())
+}
+
+/// [`region`] for a `[start, end)` pair rather than an offset and a length.
+fn slice_at(data: &[u8], start: i64, end: i64) -> Result<&[u8]> {
+    usize::try_from(start)
+        .ok()
+        .zip(usize::try_from(end).ok())
+        .and_then(|(start, end)| data.get(start..end))
+        .ok_or_else(|| lucene_store::Error::Eof { offset: 0 }.into())
+}
+
 /// Reads the numeric doc-values value for `doc`, handling all three
 /// docs-with-a-value shapes (empty/dense/sparse) and all three per-value
 /// encodings (constant/table/GCD-delta). `data` is the whole `.dvd` file's
@@ -758,18 +1102,16 @@ pub fn numeric_value(data: &[u8], entry: &NumericEntry, doc: i32) -> Result<Opti
         return Ok(Some(decode_value(data, entry, doc as i64)?));
     }
 
-    let region = data
-        .get(
-            entry.docs_with_field_offset as usize
-                ..(entry.docs_with_field_offset + entry.docs_with_field_length) as usize,
-        )
-        .ok_or(lucene_store::Error::Eof { offset: 0 })?;
+    let region = region(
+        data,
+        entry.docs_with_field_offset,
+        entry.docs_with_field_length,
+    )?;
     // One forward-only pass over the block headers rather than decoding the
-    // whole region: `DisiCursor` walks at most one header per 65,536 documents
-    // and scans one block, where `decode_doc_ids` allocated and decoded every
-    // doc id in the field. A single lookup was linear in the field's
-    // cardinality -- 324 us at 100,000 present documents; see
-    // `indexed_disi::DisiCursor`.
+    // whole region: `DisiCursor` reads one 4-byte header per 65,536 documents
+    // and then resolves the ordinal inside a single block. It allocates
+    // nothing. A caller making more than one lookup should hold a
+    // `NumericReader`, which keeps the cursor between calls.
     match indexed_disi::DisiCursor::new(region, entry.dense_rank_power).advance_exact(doc)? {
         Some(ordinal) => Ok(Some(decode_value(data, entry, ordinal as i64)?)),
         None => Ok(None),
@@ -780,16 +1122,23 @@ pub fn numeric_value(data: &[u8], entry: &NumericEntry, doc: i32) -> Result<Opti
 /// per-field readers hold.
 ///
 /// [`numeric_value`] is a free function and so re-derives everything on every
-/// call: for a sparse field it decodes the whole `IndexedDISI` doc-id list
-/// (linear in the field's cardinality -- see `indexed_disi`'s note), and for a
-/// varying-bits-per-value field it re-reads the jump table and the block header
-/// even when the previous call was in the same block. Lucene's
-/// `Lucene90DocValuesProducer` does neither: `VaryingBPVReader.getLongValue`
-/// opens with `if (this.block != block)`, and `IndexedDISI` is a cursor.
+/// call: for a sparse field it walks the `IndexedDISI` block headers from the
+/// start of the region, and for a varying-bits-per-value field it re-reads the
+/// jump table and the block header even when the previous call was in the same
+/// block. Lucene's `Lucene90DocValuesProducer` does neither: `getNumeric`
+/// composes an `IndexedDISI` **cursor** with a `LongValues`
+/// (`SparseNumericDocValues`), and `VaryingBPVReader.getLongValue` opens with
+/// `if (this.block != block)`.
 ///
 /// Anything reading more than one value from a field -- a sort, a facet count,
 /// a range scan -- should hold one of these. `numeric_value` stays for
 /// single-lookup callers and for tests.
+///
+/// **Memory is O(1) in the field's cardinality**, which is the whole point of
+/// composing a cursor rather than a doc-id array: this used to decode the
+/// sparse field's entire `IndexedDISI` region into a `Vec<i32>` (4 bytes per
+/// present document -- 2 MB for a field on half of a million documents) so it
+/// could binary-search it. See `docs/sweep/m2/c2-sparse-lookup.md`.
 ///
 /// Both caches are transparent: the values returned are identical to
 /// [`numeric_value`]'s, which is asserted document-for-document in this
@@ -798,8 +1147,11 @@ pub fn numeric_value(data: &[u8], entry: &NumericEntry, doc: i32) -> Result<Opti
 pub struct NumericReader<'a> {
     data: &'a [u8],
     entry: &'a NumericEntry,
-    /// Decoded once for a sparse field; `None` for a dense one.
-    sparse_doc_ids: Option<Vec<i32>>,
+    /// Forward-only cursor over the docs-with-field region of a sparse field;
+    /// `None` for a dense or empty one, and `None` when the region's byte range
+    /// is not inside `data` (a lookup then falls through to [`numeric_value`],
+    /// which raises the error).
+    docs: Option<indexed_disi::DisiCursor<'a>>,
     /// The currently decoded varying-bits-per-value block, if any:
     /// `(block index, bits per value, delta, values slice range)`.
     block: Option<VaryingBlock>,
@@ -820,25 +1172,23 @@ struct VaryingBlock {
 impl<'a> NumericReader<'a> {
     /// Opens a cursor over `entry`'s values in `data` (the whole `.dvd` file).
     ///
-    /// A sparse field's doc-id list is decoded here, once. A malformed region
-    /// is not reported here -- it leaves `sparse_doc_ids` empty and every
-    /// lookup falls through to [`numeric_value`], which raises the error.
+    /// Allocates nothing and reads nothing: a sparse field's docs-with-field
+    /// region is walked lazily, one block header at a time, as lookups reach
+    /// into it.
     pub fn new(data: &'a [u8], entry: &'a NumericEntry) -> Self {
-        let sparse_doc_ids = if entry.is_empty_field() || entry.is_dense() {
+        let docs = if entry.is_empty_field() || entry.is_dense() {
             None
         } else {
             usize::try_from(entry.docs_with_field_offset)
                 .ok()
                 .zip(usize::try_from(entry.docs_with_field_length).ok())
                 .and_then(|(start, len)| data.get(start..start.checked_add(len)?))
-                .and_then(|region| {
-                    indexed_disi::decode_doc_ids(region, entry.dense_rank_power).ok()
-                })
+                .map(|region| indexed_disi::DisiCursor::new(region, entry.dense_rank_power))
         };
         Self {
             data,
             entry,
-            sparse_doc_ids,
+            docs,
             block: None,
         }
     }
@@ -846,6 +1196,13 @@ impl<'a> NumericReader<'a> {
     /// This document's value, or `None` when it legitimately has none.
     /// Identical to `numeric_value(data, entry, doc)`, just without the
     /// per-call rederivation.
+    ///
+    /// Documents may be asked for in any order. Ascending order -- what a sort,
+    /// a facet count or a range scan does, and the only order Lucene's
+    /// `SparseNumericDocValues` supports at all -- walks the docs-with-field
+    /// region once for the whole scan. Going backwards rewinds the cursor
+    /// (`DisiCursor::reset`), which costs a re-walk of the block headers and
+    /// still allocates nothing.
     pub fn value(&mut self, doc: i32) -> Result<Option<i64>> {
         if doc < 0 {
             return Err(Error::DocOutOfRange(doc, self.entry.num_values));
@@ -859,11 +1216,14 @@ impl<'a> NumericReader<'a> {
             }
             doc as i64
         } else {
-            let Some(doc_ids) = self.sparse_doc_ids.as_deref() else {
+            let Some(cursor) = self.docs.as_mut() else {
                 // Unreadable region: let the general path raise the error.
                 return numeric_value(self.data, self.entry, doc);
             };
-            match indexed_disi::rank_of(doc_ids, doc) {
+            if doc < cursor.doc_id() {
+                cursor.reset();
+            }
+            match cursor.advance_exact(doc)? {
                 Some(ordinal) => ordinal as i64,
                 None => return Ok(None),
             }
@@ -893,10 +1253,35 @@ impl<'a> NumericReader<'a> {
             .data
             .get(block.values_start..block.values_end)
             .ok_or(lucene_store::Error::Eof { offset: 0 })?;
-        let mask = (1i64 << shift) - 1;
+        let mask = low_bits_mask(shift);
         let raw = direct_reader::get(values, block.bits_per_value, ordinal & mask)?;
         Ok(self.entry.gcd.wrapping_mul(raw).wrapping_add(block.delta))
     }
+}
+
+/// `(1 << shift) - 1` -- the low-`shift`-bits mask a varying-bits-per-value
+/// field uses to turn an ordinal into an index within its block.
+///
+/// Computed in `u64` rather than `i64` on purpose. `read_numeric_entry`
+/// accepts `shift` in `0..=63` (Java's `blockShift` is 14, but the field is
+/// `-2 - tableSize` off `.dvm`, so a `tableSize` of `-65` reaches 63), and
+/// `1i64 << 63` is `i64::MIN`, whose `- 1` **overflows** -- a debug-build
+/// panic at the one value the range check lets through. In `u64` the
+/// subtraction is exact for every accepted `shift` and the reinterpretation
+/// back to `i64` is the bit pattern Java's `long` arithmetic produces.
+/// (c27's Tier-2 review caught the original as c24's own failure mode: a
+/// shift proof whose stated bound includes the failing value.)
+fn low_bits_mask(shift: u32) -> i64 {
+    debug_assert!(
+        shift <= 63,
+        "read_numeric_entry bounds blockShift to 0..=63"
+    );
+    // ARITH: `shift <= 63` (rejected in `read_numeric_entry`), so
+    // `1u64 << shift` is at most `1 << 63` and the `- 1` on an unsigned value
+    // that is at least 1 cannot underflow.
+    #[allow(clippy::arithmetic_side_effects)]
+    let mask = (1u64 << shift) - 1;
+    mask as i64
 }
 
 /// Reads one varying-bits-per-value block's header via the per-field jump
@@ -955,9 +1340,7 @@ fn decode_value(data: &[u8], entry: &NumericEntry, ordinal: i64) -> Result<i64> 
     if entry.bits_per_value == 0 {
         return Ok(entry.min_value);
     }
-    let values = data
-        .get(entry.values_offset as usize..(entry.values_offset + entry.values_length) as usize)
-        .ok_or(lucene_store::Error::Eof { offset: 0 })?;
+    let values = region(data, entry.values_offset, entry.values_length)?;
     let raw = direct_reader::get(values, entry.bits_per_value, ordinal)?;
 
     if let Some(table) = &entry.table {
@@ -997,7 +1380,7 @@ fn decode_value_varying_bpv(
     let values = data
         .get(block.values_start..block.values_end)
         .ok_or(lucene_store::Error::Eof { offset: 0 })?;
-    let mask = (1i64 << shift) - 1;
+    let mask = low_bits_mask(shift);
     let raw = direct_reader::get(values, block.bits_per_value, ordinal & mask)?;
     Ok(entry.gcd.wrapping_mul(raw).wrapping_add(block.delta))
 }
@@ -1020,12 +1403,11 @@ pub fn binary_value<'d>(data: &'d [u8], entry: &BinaryEntry, doc: i32) -> Result
         }
         doc as i64
     } else {
-        let region = data
-            .get(
-                entry.docs_with_field_offset as usize
-                    ..(entry.docs_with_field_offset + entry.docs_with_field_length) as usize,
-            )
-            .ok_or(lucene_store::Error::Eof { offset: 0 })?;
+        let region = region(
+            data,
+            entry.docs_with_field_offset,
+            entry.docs_with_field_length,
+        )?;
         // See `numeric_value` for why this is a cursor and not a full decode.
         match indexed_disi::DisiCursor::new(region, entry.dense_rank_power).advance_exact(doc)? {
             Some(ordinal) => ordinal as i64,
@@ -1033,26 +1415,122 @@ pub fn binary_value<'d>(data: &'d [u8], entry: &BinaryEntry, doc: i32) -> Result
         }
     };
 
-    let bytes_region = data
-        .get(entry.data_offset as usize..(entry.data_offset + entry.data_length) as usize)
-        .ok_or(lucene_store::Error::Eof { offset: 0 })?;
+    binary_value_at_ordinal(data, entry, ordinal).map(Some)
+}
 
-    let (start, len) = if let Some(addrs) = &entry.addresses {
-        let addr_data = data
-            .get(addrs.offset as usize..(addrs.offset + addrs.length) as usize)
-            .ok_or(lucene_store::Error::Eof { offset: 0 })?;
+/// The value-bytes half of [`binary_value`], split out so [`BinaryReader`] can
+/// share it verbatim: given an already-resolved ordinal, slice the value out of
+/// the data region (fixed-length arithmetic, or the
+/// [`direct_monotonic`] end-offset array for a variable-length field).
+fn binary_value_at_ordinal<'d>(
+    data: &'d [u8],
+    entry: &BinaryEntry,
+    ordinal: i64,
+) -> Result<&'d [u8]> {
+    let bytes_region = region(data, entry.data_offset, entry.data_length)?;
+
+    // The two branches produce a `[start, end)` pair rather than an offset
+    // and a length: the variable-width one used to subtract two `i64`s that
+    // came out of the address array and then add the difference straight
+    // back, so a non-monotonic address pair overflowed twice over.
+    let (start, end) = if let Some(addrs) = &entry.addresses {
+        let addr_data = region(data, addrs.offset, addrs.length)?;
         let start = direct_monotonic::get(addr_data, &addrs.meta, ordinal)?;
+        // ARITH: `ordinal` is either `doc as i64` for a dense field (bounded
+        // by `num_docs_with_field`, an `i32`) or an `IndexedDISI` ordinal,
+        // which `DisiCursor` returns as an `i32`. Either way it is far below
+        // `i64::MAX`.
+        #[allow(clippy::arithmetic_side_effects)]
         let end = direct_monotonic::get(addr_data, &addrs.meta, ordinal + 1)?;
-        (start, end - start)
+        (start, end)
     } else {
-        let length = entry.max_length as i64;
-        (ordinal * length, length)
+        // ARITH: `ordinal` is bounded by `i32::MAX` (see above) and
+        // `max_length` is an `i32`, so the product is at most 2^62 and the
+        // `+ length` that follows cannot reach `i64::MAX`.
+        #[allow(clippy::arithmetic_side_effects)]
+        let range = {
+            let length = entry.max_length as i64;
+            (ordinal * length, ordinal * length + length)
+        };
+        range
     };
 
-    let value = bytes_region
-        .get(start as usize..(start + len) as usize)
-        .ok_or(lucene_store::Error::Eof { offset: 0 })?;
-    Ok(Some(value))
+    slice_at(bytes_region, start, end)
+}
+
+/// [`NumericReader`] for BINARY doc values: a forward-only cursor that walks a
+/// sparse field's [`indexed_disi`] region **once** across a scan, instead of
+/// re-deriving it per lookup the way the free [`binary_value`] must.
+///
+/// The same rule applies as to [`NumericReader`]: anything reading more than
+/// one document's value from a field -- a merge, a whole-column rewrite for a
+/// doc-values update generation, a facet count -- should hold one of these.
+/// `binary_value` in a `for doc in 0..max_doc` loop is `O(maxDoc x blocks)`
+/// where Lucene's own iterator is `O(maxDoc + cardinality)`.
+pub struct BinaryReader<'a> {
+    data: &'a [u8],
+    entry: &'a BinaryEntry,
+    /// Forward-only cursor over the docs-with-field region of a sparse field;
+    /// `None` for a dense or empty one, and `None` when the region's byte range
+    /// is not inside `data` (a lookup then falls through to [`binary_value`],
+    /// which raises the error).
+    docs: Option<indexed_disi::DisiCursor<'a>>,
+}
+
+impl<'a> BinaryReader<'a> {
+    /// Opens a cursor over `entry`'s values in `data` (the whole `.dvd` file).
+    /// Allocates nothing and reads nothing up front.
+    pub fn new(data: &'a [u8], entry: &'a BinaryEntry) -> Self {
+        let docs = if entry.is_empty_field() || entry.is_dense() {
+            None
+        } else {
+            usize::try_from(entry.docs_with_field_offset)
+                .ok()
+                .zip(usize::try_from(entry.docs_with_field_length).ok())
+                .and_then(|(start, len)| data.get(start..start.checked_add(len)?))
+                .map(|region| indexed_disi::DisiCursor::new(region, entry.dense_rank_power))
+        };
+        Self { data, entry, docs }
+    }
+
+    /// This document's value, or `None` when it legitimately has none.
+    /// Identical to `binary_value(data, entry, doc)`, without the per-call
+    /// rederivation. Ascending `doc` walks the region once; going backwards
+    /// rewinds the cursor, which costs a re-walk and still allocates nothing.
+    pub fn value(&mut self, doc: i32) -> Result<Option<&'a [u8]>> {
+        if doc < 0 {
+            return Err(Error::DocOutOfRange(
+                doc,
+                self.entry.num_docs_with_field as i64,
+            ));
+        }
+        if self.entry.is_empty_field() {
+            return Ok(None);
+        }
+        let ordinal = if self.entry.is_dense() {
+            if doc >= self.entry.num_docs_with_field {
+                return Err(Error::DocOutOfRange(
+                    doc,
+                    self.entry.num_docs_with_field as i64,
+                ));
+            }
+            doc as i64
+        } else {
+            let Some(cursor) = self.docs.as_mut() else {
+                // The region is not inside `data`; let the free function raise
+                // the same error it would have.
+                return binary_value(self.data, self.entry, doc);
+            };
+            if doc < cursor.doc_id() {
+                cursor.reset();
+            }
+            match cursor.advance_exact(doc)? {
+                Some(ordinal) => ordinal as i64,
+                None => return Ok(None),
+            }
+        };
+        binary_value_at_ordinal(self.data, self.entry, ordinal).map(Some)
+    }
 }
 
 /// Reads a SORTED field's ordinal for `doc` -- exactly [`numeric_value`]
@@ -1082,15 +1560,23 @@ pub fn sorted_numeric_values(
     }
 
     let rank: i64 = if entry.numeric.is_dense() {
+        // A dense entry means `numDocsWithField == maxDoc`
+        // (`Lucene90DocValuesConsumer.writeValues` writes the `-1` marker on
+        // exactly that condition), so `num_docs_with_field` is this field's
+        // `maxDoc` and doubles as the bound Java's iterator gets from
+        // `SegmentReadState`. Without this check a constant-encoded field
+        // (`bitsPerValue == 0`) happily answers for any doc id at all, since
+        // `decode_value` never indexes anything.
+        if doc >= entry.num_docs_with_field {
+            return Err(Error::DocOutOfRange(doc, entry.numeric.num_values));
+        }
         doc as i64
     } else {
-        let region = data
-            .get(
-                entry.numeric.docs_with_field_offset as usize
-                    ..(entry.numeric.docs_with_field_offset + entry.numeric.docs_with_field_length)
-                        as usize,
-            )
-            .ok_or(lucene_store::Error::Eof { offset: 0 })?;
+        let region = region(
+            data,
+            entry.numeric.docs_with_field_offset,
+            entry.numeric.docs_with_field_length,
+        )?;
         // See `numeric_value` for why this is a cursor and not a full decode.
         match indexed_disi::DisiCursor::new(region, entry.numeric.dense_rank_power)
             .advance_exact(doc)?
@@ -1103,11 +1589,27 @@ pub fn sorted_numeric_values(
     match &entry.addresses {
         None => Ok(vec![decode_value(data, &entry.numeric, rank)?]),
         Some(addrs) => {
-            let addr_region = data
-                .get(addrs.offset as usize..(addrs.offset + addrs.length) as usize)
-                .ok_or(lucene_store::Error::Eof { offset: 0 })?;
+            let addr_region = region(data, addrs.offset, addrs.length)?;
             let start = direct_monotonic::get(addr_region, &addrs.meta, rank)?;
+            // ARITH: `rank` is either `doc as i64` or an `IndexedDISI`
+            // ordinal, both `i32`-bounded, so `rank + 1` cannot overflow.
+            #[allow(clippy::arithmetic_side_effects)]
             let end = direct_monotonic::get(addr_region, &addrs.meta, rank + 1)?;
+            // The address array indexes the field's flat value array, whose
+            // length is `numValues`. Without that bound `start..end` is a
+            // range two `.dvd` `i64`s chose: for a constant-encoded field
+            // (`bitsPerValue == 0`) `decode_value` never indexes anything and
+            // never fails, so the `collect` below would build a `Vec` of up
+            // to 2^63 `i64`s -- an allocation **abort**, which `catch_unwind`
+            // at the FFI boundary cannot intercept.
+            if start < 0 || end < start || end > entry.numeric.num_values {
+                return Err(Error::CorruptAddressRange {
+                    field_number: entry.field_number,
+                    start,
+                    end,
+                    num_values: entry.numeric.num_values,
+                });
+            }
             (start..end)
                 .map(|i| decode_value(data, &entry.numeric, i))
                 .collect()
@@ -1153,31 +1655,84 @@ pub type WriteResult<T> = std::result::Result<T, WriteError>;
 #[derive(Debug, Clone, Copy)]
 pub enum DenseField<'a> {
     Numeric(i32, &'a [i64]),
+    /// The one **sparse** shape this multi-field writer accepts:
+    /// `(doc_id, value)` pairs for the docs that have a value, exactly the
+    /// input [`write_single_sparse_numeric_field`] takes, written through the
+    /// same `IndexedDISI` + values body. It is here because an *index sort*
+    /// over more than one tier needs every tier's column in the same
+    /// `.dvm`/`.dvd`, and a sort field whose documents may lack a value is
+    /// the normal case (Java's `SortField.setMissingValue`), not an exotic
+    /// one -- so a dense-only multi-field writer cannot express the sorts
+    /// Lucene routinely writes.
+    SparseNumeric(i32, &'a [(i32, i64)]),
     Binary(i32, &'a [Vec<u8>]),
     Sorted(i32, &'a [Vec<u8>]),
     SortedNumeric(i32, &'a [Vec<i64>]),
     SortedSet(i32, &'a [Vec<Vec<u8>>]),
+    /// The BINARY/SORTED/SORTED_NUMERIC/SORTED_SET counterparts of
+    /// [`DenseField::SparseNumeric`], each taking `(doc_id, value)` pairs for
+    /// the documents that have a value.
+    ///
+    /// They exist because a **merge** needs them, not for symmetry:
+    /// `DocValuesConsumer.getMerged*DocValues` drops any source reader that
+    /// has no column for the field -- those documents are simply missing the
+    /// value -- so merging an ordinary index that started writing a
+    /// doc-values field partway through its life produces a sparse column for
+    /// every one of the five types. Without these variants
+    /// `lucene-index`'s `execute_merge` had to *fail* such a merge for the
+    /// four non-NUMERIC types (c26's finding: a merge failure surfacing to
+    /// the caller as an error on a perfectly valid index). c17 added
+    /// `SparseNumeric` for the same reason on the sort path.
+    SparseBinary(i32, &'a [(i32, Vec<u8>)]),
+    SparseSorted(i32, &'a [(i32, Vec<u8>)]),
+    SparseSortedNumeric(i32, &'a [(i32, Vec<i64>)]),
+    SparseSortedSet(i32, &'a [(i32, Vec<Vec<u8>>)]),
 }
 
 impl DenseField<'_> {
     fn field_number(&self) -> i32 {
         match self {
             DenseField::Numeric(n, _)
+            | DenseField::SparseNumeric(n, _)
             | DenseField::Binary(n, _)
             | DenseField::Sorted(n, _)
             | DenseField::SortedNumeric(n, _)
-            | DenseField::SortedSet(n, _) => *n,
+            | DenseField::SortedSet(n, _)
+            | DenseField::SparseBinary(n, _)
+            | DenseField::SparseSorted(n, _)
+            | DenseField::SparseSortedNumeric(n, _)
+            | DenseField::SparseSortedSet(n, _) => *n,
         }
     }
 
     fn len(&self) -> usize {
         match self {
             DenseField::Numeric(_, v) => v.len(),
+            // Not a per-doc count, so `write_dense_fields`' density check
+            // skips this variant entirely (see there).
+            DenseField::SparseNumeric(_, v) => v.len(),
             DenseField::Binary(_, v) => v.len(),
             DenseField::Sorted(_, v) => v.len(),
             DenseField::SortedNumeric(_, v) => v.len(),
             DenseField::SortedSet(_, v) => v.len(),
+            // As for `SparseNumeric`: a count of docs *with* a value, not a
+            // per-doc count, so the density check skips these too.
+            DenseField::SparseBinary(_, v) => v.len(),
+            DenseField::SparseSorted(_, v) => v.len(),
+            DenseField::SparseSortedNumeric(_, v) => v.len(),
+            DenseField::SparseSortedSet(_, v) => v.len(),
         }
+    }
+
+    fn is_sparse(&self) -> bool {
+        matches!(
+            self,
+            DenseField::SparseNumeric(..)
+                | DenseField::SparseBinary(..)
+                | DenseField::SparseSorted(..)
+                | DenseField::SparseSortedNumeric(..)
+                | DenseField::SparseSortedSet(..)
+        )
     }
 }
 
@@ -1198,6 +1753,13 @@ impl DenseField<'_> {
 /// == max_doc` for every field -- [`WriteError::NotDense`]) and have a
 /// distinct field number ([`WriteError::DuplicateFieldNumber`]); `fields` must
 /// be non-empty ([`WriteError::EmptyFieldList`]).
+// ARITH: writer-side arithmetic over data already in memory. Every length is
+// a `Vec`/slice length (so at most `isize::MAX`), every running offset is a
+// prefix sum of such lengths into a buffer that has already been built, and
+// every `data.len() as i64 - X` subtracts an offset recorded from an earlier
+// `data.len()` of the same, only-ever-appended buffer. Nothing here comes off
+// disk -- this is the encode half.
+#[allow(clippy::arithmetic_side_effects)]
 pub fn write_dense_fields(
     fields: &[DenseField<'_>],
     max_doc: i32,
@@ -1208,6 +1770,9 @@ pub fn write_dense_fields(
         return Err(WriteError::EmptyFieldList);
     }
     for field in fields {
+        if field.is_sparse() {
+            continue;
+        }
         if field.len() != max_doc as usize {
             return Err(WriteError::NotDense {
                 values: field.len(),
@@ -1253,6 +1818,39 @@ pub fn write_dense_fields(
                 meta.push(DOC_VALUES_TYPE_NUMERIC);
                 write_dense_numeric_entry_body(&mut meta, &mut data, values);
             }
+            DenseField::SparseNumeric(_, pairs) => {
+                let mut sorted: Vec<(i32, i64)> = pairs.to_vec();
+                sorted.sort_unstable_by_key(|&(doc, _)| doc);
+                for i in 1..sorted.len() {
+                    if sorted[i - 1].0 == sorted[i].0 {
+                        return Err(WriteError::DocIdsNotAscending(sorted[i].0));
+                    }
+                }
+                for &(doc, _) in &sorted {
+                    if doc < 0 || doc >= max_doc {
+                        return Err(WriteError::DocIdOutOfRange(doc, max_doc));
+                    }
+                }
+                let doc_ids: Vec<i32> = sorted.iter().map(|&(doc, _)| doc).collect();
+                let values: Vec<i64> = sorted.iter().map(|&(_, v)| v).collect();
+                meta.push(DOC_VALUES_TYPE_NUMERIC);
+                if doc_ids.is_empty() {
+                    write_empty_docs_with_field(&mut meta);
+                    write_numeric_values_body(&mut meta, &mut data, &values);
+                } else if doc_ids.len() == max_doc as usize {
+                    // `Lucene90DocValuesConsumer.writeValues` writes the
+                    // `[-1, 0]` dense marker when `docsWithField.cardinality()
+                    // == maxDoc`, with no `IndexedDISI` region at all. A
+                    // caller handing every document a value through this
+                    // variant would otherwise get bytes Lucene never writes --
+                    // readable, but a different encoding of the same column,
+                    // which is exactly the kind of divergence a round-trip
+                    // through this port's own reader cannot see.
+                    write_dense_numeric_entry_body(&mut meta, &mut data, &values);
+                } else {
+                    write_sparse_numeric_entry_body(&mut meta, &mut data, &doc_ids, &values);
+                }
+            }
             DenseField::Binary(_, values) => {
                 meta.push(DOC_VALUES_TYPE_BINARY);
                 write_dense_binary_entry_body(&mut meta, &mut data, values, max_doc);
@@ -1271,6 +1869,46 @@ pub fn write_dense_fields(
                 meta.push(DOC_VALUES_TYPE_SORTED_SET);
                 write_dense_sorted_set_entry_body(&mut meta, &mut data, values);
             }
+            DenseField::SparseBinary(_, pairs) => {
+                let sorted = sort_sparse_pairs(pairs, max_doc)?;
+                let doc_ids: Vec<i32> = sorted.iter().map(|(doc, _)| *doc).collect();
+                let values: Vec<Vec<u8>> = sorted.into_iter().map(|(_, v)| v).collect();
+                meta.push(DOC_VALUES_TYPE_BINARY);
+                write_binary_entry_body(&mut meta, &mut data, &doc_ids, &values, max_doc);
+            }
+            DenseField::SparseSorted(_, pairs) => {
+                let sorted = sort_sparse_pairs(pairs, max_doc)?;
+                let doc_ids: Vec<i32> = sorted.iter().map(|(doc, _)| *doc).collect();
+                let values: Vec<Vec<u8>> = sorted.into_iter().map(|(_, v)| v).collect();
+                let (dict, ords) = build_sorted_dict_and_ords(&values);
+                meta.push(DOC_VALUES_TYPE_SORTED);
+                write_numeric_entry_body(&mut meta, &mut data, &doc_ids, &ords, max_doc);
+                write_terms_dict(&mut meta, &mut data, &dict);
+            }
+            DenseField::SparseSortedNumeric(_, pairs) => {
+                let sorted = sort_sparse_pairs(pairs, max_doc)?;
+                for (doc, per_doc) in &sorted {
+                    if per_doc.is_empty() {
+                        return Err(WriteError::EmptyMultiValuedDoc(*doc));
+                    }
+                }
+                let doc_ids: Vec<i32> = sorted.iter().map(|(doc, _)| *doc).collect();
+                let per_doc: Vec<Vec<i64>> = sorted.into_iter().map(|(_, v)| v).collect();
+                meta.push(DOC_VALUES_TYPE_SORTED_NUMERIC);
+                write_sorted_numeric_entry_body(&mut meta, &mut data, &doc_ids, &per_doc, max_doc);
+            }
+            DenseField::SparseSortedSet(_, pairs) => {
+                let sorted = sort_sparse_pairs(pairs, max_doc)?;
+                for (doc, per_doc) in &sorted {
+                    if per_doc.is_empty() {
+                        return Err(WriteError::EmptyMultiValuedDoc(*doc));
+                    }
+                }
+                let doc_ids: Vec<i32> = sorted.iter().map(|(doc, _)| *doc).collect();
+                let per_doc: Vec<Vec<Vec<u8>>> = sorted.into_iter().map(|(_, v)| v).collect();
+                meta.push(DOC_VALUES_TYPE_SORTED_SET);
+                write_sorted_set_entry_body(&mut meta, &mut data, &doc_ids, &per_doc, max_doc);
+            }
         }
     }
 
@@ -1279,9 +1917,230 @@ pub fn write_dense_fields(
     Ok((meta, data, skip_index))
 }
 
+/// Sorts a sparse `(doc_id, value)` list by doc id and rejects a duplicate or
+/// out-of-range doc, the validation every `Sparse*` variant shares.
+// ARITH: the loop starts at 1, so `i - 1` never underflows.
+#[allow(clippy::arithmetic_side_effects)]
+fn sort_sparse_pairs<V: Clone>(pairs: &[(i32, V)], max_doc: i32) -> WriteResult<Vec<(i32, V)>> {
+    let mut sorted: Vec<(i32, V)> = pairs.to_vec();
+    sorted.sort_unstable_by_key(|(doc, _)| *doc);
+    for i in 1..sorted.len() {
+        if sorted[i - 1].0 == sorted[i].0 {
+            return Err(WriteError::DocIdsNotAscending(sorted[i].0));
+        }
+    }
+    for (doc, _) in &sorted {
+        if *doc < 0 || *doc >= max_doc {
+            return Err(WriteError::DocIdOutOfRange(*doc, max_doc));
+        }
+    }
+    Ok(sorted)
+}
+
+/// The docs-with-field header in whichever of `Lucene90DocValuesConsumer`'s
+/// three shapes applies: `-2` when no document has a value, `-1` when every
+/// one does, an [`indexed_disi`] region otherwise.
+///
+/// The `-1` collapse is not cosmetic. Java writes it on
+/// `numDocsWithField == maxDoc` (`addBinaryField`, and `writeValues` for the
+/// other four types), so a sparse writer that emitted a full `IndexedDISI`
+/// region for a column that happens to be complete would produce bytes real
+/// Lucene never writes -- readable, but a different encoding of the same
+/// column, which a round-trip through this port's own reader cannot see.
+/// `DenseField::SparseNumeric` already did this; the other four now do too.
+// ARITH: writer-side arithmetic over data already in memory: `data.len() as
+// i64 - offset` subtracts an offset recorded from an earlier `data.len()` of
+// the same, only-ever-appended buffer.
+#[allow(clippy::arithmetic_side_effects)]
+fn write_docs_with_field(meta: &mut Vec<u8>, data: &mut Vec<u8>, doc_ids: &[i32], max_doc: i32) {
+    if doc_ids.is_empty() {
+        write_empty_docs_with_field(meta);
+    } else if doc_ids.len() == max_doc as usize {
+        meta.write_i64(DOCS_WITH_FIELD_DENSE);
+        meta.write_i64(0); // docsWithFieldLength
+        meta.write_i16(-1); // jumpTableEntryCount
+        meta.push(0xFF); // denseRankPower (-1 as u8)
+    } else {
+        let disi_bytes = indexed_disi::write_with_dense_rank_power(
+            doc_ids,
+            indexed_disi::DEFAULT_DENSE_RANK_POWER,
+        );
+        let docs_with_field_offset = data.len() as i64;
+        data.extend_from_slice(&disi_bytes);
+        let docs_with_field_length = data.len() as i64 - docs_with_field_offset;
+        meta.write_i64(docs_with_field_offset);
+        meta.write_i64(docs_with_field_length);
+        meta.write_i16(-1); // jumpTableEntryCount: no jump table written
+        meta.push(indexed_disi::DEFAULT_DENSE_RANK_POWER);
+    }
+}
+
+/// The `DirectMonotonicWriter` address array trailer shared by BINARY's
+/// variable-length values and both multi-valued types' per-doc ranges.
+// ARITH: as `write_docs_with_field`.
+#[allow(clippy::arithmetic_side_effects)]
+fn write_address_array(meta: &mut Vec<u8>, data: &mut Vec<u8>, ends: &[i64]) {
+    let block_shift = DIRECT_MONOTONIC_BLOCK_SHIFT;
+    let (addr_meta, addr_data) = direct_monotonic::write(ends, block_shift);
+    let addresses_offset = data.len() as i64;
+    data.extend_from_slice(&addr_data);
+    let addresses_length = data.len() as i64 - addresses_offset;
+    meta.write_i64(addresses_offset);
+    meta.write_vint(block_shift as i32);
+    meta.extend_from_slice(&addr_meta);
+    meta.write_i64(addresses_length);
+}
+
+/// Exclusive prefix sums of a per-element length, `[0, l0, l0+l1, ...]` --
+/// the `ends` array `write_address_array` encodes.
+// ARITH: a running sum of in-memory slice lengths, bounded by `isize::MAX`.
+#[allow(clippy::arithmetic_side_effects)]
+fn end_offsets(lengths: impl ExactSizeIterator<Item = usize>) -> Vec<i64> {
+    let mut ends: Vec<i64> = Vec::with_capacity(lengths.len().saturating_add(1));
+    let mut end = 0i64;
+    ends.push(0);
+    for l in lengths {
+        end += l as i64;
+        ends.push(end);
+    }
+    ends
+}
+
+/// A NUMERIC entry body for a column that may be sparse: the docs-with-field
+/// header for `doc_ids`, then the shared values tail. `values` is indexed by
+/// *rank among present docs*, not by doc id.
+fn write_numeric_entry_body(
+    meta: &mut Vec<u8>,
+    data: &mut Vec<u8>,
+    doc_ids: &[i32],
+    values: &[i64],
+    max_doc: i32,
+) {
+    write_docs_with_field(meta, data, doc_ids, max_doc);
+    write_numeric_values_body(meta, data, values);
+}
+
+/// A BINARY entry body for a column that may be sparse -- the sparse
+/// counterpart of [`write_dense_binary_entry_body`], sharing every decision
+/// it makes except the docs-with-field header.
+// ARITH: as `write_docs_with_field`.
+#[allow(clippy::arithmetic_side_effects)]
+fn write_binary_entry_body(
+    meta: &mut Vec<u8>,
+    data: &mut Vec<u8>,
+    doc_ids: &[i32],
+    values: &[Vec<u8>],
+    max_doc: i32,
+) {
+    let data_offset = data.len() as i64;
+    for v in values {
+        data.extend_from_slice(v);
+    }
+    let data_length = data.len() as i64 - data_offset;
+    meta.write_i64(data_offset);
+    meta.write_i64(data_length);
+
+    write_docs_with_field(meta, data, doc_ids, max_doc);
+
+    meta.write_i32(values.len() as i32); // numDocsWithField
+                                         // Java's `minLength`/`maxLength` trackers start at `(Integer.MAX_VALUE,
+                                         // 0)` and stay there when no document has a value, which is what
+                                         // `addBinaryField` then writes. Nothing reads them back (the `-2` marker
+                                         // means no doc ever resolves to an ordinal), but matching keeps the bytes
+                                         // identical to real Lucene's -- and, because `maxLength > minLength` is
+                                         // then false, no address array is written.
+    let min_length = values
+        .iter()
+        .map(|v| v.len() as i32)
+        .min()
+        .unwrap_or(i32::MAX);
+    let max_length = values.iter().map(|v| v.len() as i32).max().unwrap_or(0);
+    meta.write_i32(min_length);
+    meta.write_i32(max_length);
+
+    if min_length < max_length {
+        write_address_array(meta, data, &end_offsets(values.iter().map(|v| v.len())));
+    }
+}
+
+/// A SORTED_NUMERIC entry body for a column that may be sparse.
+fn write_sorted_numeric_entry_body(
+    meta: &mut Vec<u8>,
+    data: &mut Vec<u8>,
+    doc_ids: &[i32],
+    per_doc: &[Vec<i64>],
+    max_doc: i32,
+) {
+    let flat: Vec<i64> = per_doc.iter().flatten().copied().collect();
+    write_numeric_entry_body(meta, data, doc_ids, &flat, max_doc);
+
+    let num_docs_with_field = per_doc.len() as i32;
+    meta.write_i32(num_docs_with_field);
+    if num_docs_with_field as i64 != flat.len() as i64 {
+        write_address_array(meta, data, &end_offsets(per_doc.iter().map(|v| v.len())));
+    }
+}
+
+/// A SORTED_SET entry body for a column that may be sparse.
+///
+/// Always takes the `multiValued = 1` shape, exactly as
+/// [`write_single_sparse_sorted_set_field`] documented before it delegated
+/// here: `SortedSetKind::Multi` decodes correctly whether or not every
+/// present doc happens to have exactly one ordinal, so the collapse to the
+/// plain `SortedEntry` shape is a size optimization real Lucene applies and
+/// this port's read side does not require. The docs-with-field collapse is a
+/// different matter and *is* applied -- see [`write_docs_with_field`].
+fn write_sorted_set_entry_body(
+    meta: &mut Vec<u8>,
+    data: &mut Vec<u8>,
+    doc_ids: &[i32],
+    per_doc: &[Vec<Vec<u8>>],
+    max_doc: i32,
+) {
+    let mut dict: Vec<Vec<u8>> = per_doc.iter().flatten().cloned().collect();
+    dict.sort_unstable();
+    dict.dedup();
+
+    let per_doc_ords: Vec<Vec<i64>> = per_doc
+        .iter()
+        .map(|values| {
+            let mut ords: Vec<i64> = values
+                .iter()
+                .map(|v| dict.binary_search(v).unwrap() as i64)
+                .collect();
+            ords.sort_unstable();
+            ords.dedup();
+            ords
+        })
+        .collect();
+
+    meta.push(1); // multiValued = true.
+    let flat: Vec<i64> = per_doc_ords.iter().flatten().copied().collect();
+    write_numeric_entry_body(meta, data, doc_ids, &flat, max_doc);
+
+    let num_docs_with_field = per_doc_ords.len() as i32;
+    meta.write_i32(num_docs_with_field);
+    if num_docs_with_field as i64 != flat.len() as i64 {
+        write_address_array(
+            meta,
+            data,
+            &end_offsets(per_doc_ords.iter().map(|v| v.len())),
+        );
+    }
+
+    write_terms_dict(meta, data, &dict);
+}
+
 /// The BINARY entry body [`write_single_dense_binary_field`] writes after its
 /// leading field-number/type byte -- extracted so [`write_dense_fields`] can
 /// share it verbatim.
+// ARITH: writer-side arithmetic over data already in memory. Every length is
+// a `Vec`/slice length (so at most `isize::MAX`), every running offset is a
+// prefix sum of such lengths into a buffer that has already been built, and
+// every `data.len() as i64 - X` subtracts an offset recorded from an earlier
+// `data.len()` of the same, only-ever-appended buffer. Nothing here comes off
+// disk -- this is the encode half.
+#[allow(clippy::arithmetic_side_effects)]
 fn write_dense_binary_entry_body(
     meta: &mut Vec<u8>,
     data: &mut Vec<u8>,
@@ -1316,7 +2175,7 @@ fn write_dense_binary_entry_body(
             end += v.len() as i64;
             ends.push(end);
         }
-        let block_shift = 0u32;
+        let block_shift = DIRECT_MONOTONIC_BLOCK_SHIFT;
         let (addr_meta, addr_data) = direct_monotonic::write(&ends, block_shift);
         let addresses_offset = data.len() as i64;
         data.extend_from_slice(&addr_data);
@@ -1333,6 +2192,13 @@ fn write_dense_binary_entry_body(
 /// writes after its leading field-number/type byte -- extracted so
 /// [`write_dense_fields`] can share it verbatim. Caller must already have
 /// checked every `values[doc]` is non-empty.
+// ARITH: writer-side arithmetic over data already in memory. Every length is
+// a `Vec`/slice length (so at most `isize::MAX`), every running offset is a
+// prefix sum of such lengths into a buffer that has already been built, and
+// every `data.len() as i64 - X` subtracts an offset recorded from an earlier
+// `data.len()` of the same, only-ever-appended buffer. Nothing here comes off
+// disk -- this is the encode half.
+#[allow(clippy::arithmetic_side_effects)]
 fn write_dense_sorted_numeric_entry_body(
     meta: &mut Vec<u8>,
     data: &mut Vec<u8>,
@@ -1352,7 +2218,7 @@ fn write_dense_sorted_numeric_entry_body(
             end += per_doc.len() as i64;
             ends.push(end);
         }
-        let block_shift = 0u32;
+        let block_shift = DIRECT_MONOTONIC_BLOCK_SHIFT;
         let (addr_meta, addr_data) = direct_monotonic::write(&ends, block_shift);
         let addresses_offset = data.len() as i64;
         data.extend_from_slice(&addr_data);
@@ -1369,6 +2235,13 @@ fn write_dense_sorted_numeric_entry_body(
 /// after its leading field-number/type byte -- extracted so
 /// [`write_dense_fields`] can share it verbatim. Caller must already have
 /// checked every `values[doc]` is non-empty.
+// ARITH: writer-side arithmetic over data already in memory. Every length is
+// a `Vec`/slice length (so at most `isize::MAX`), every running offset is a
+// prefix sum of such lengths into a buffer that has already been built, and
+// every `data.len() as i64 - X` subtracts an offset recorded from an earlier
+// `data.len()` of the same, only-ever-appended buffer. Nothing here comes off
+// disk -- this is the encode half.
+#[allow(clippy::arithmetic_side_effects)]
 fn write_dense_sorted_set_entry_body(
     meta: &mut Vec<u8>,
     data: &mut Vec<u8>,
@@ -1412,7 +2285,7 @@ fn write_dense_sorted_set_entry_body(
                 end += ords.len() as i64;
                 ends.push(end);
             }
-            let block_shift = 0u32;
+            let block_shift = DIRECT_MONOTONIC_BLOCK_SHIFT;
             let (addr_meta, addr_data) = direct_monotonic::write(&ends, block_shift);
             let addresses_offset = data.len() as i64;
             data.extend_from_slice(&addr_data);
@@ -1472,16 +2345,43 @@ fn write_dense_numeric_entry_body(meta: &mut Vec<u8>, data: &mut Vec<u8>, values
 /// [`write_numeric_values_body`]'s own record count below, which never
 /// assumes it lines up 1:1 with `doc_ids`.
 ///
-/// Always writes `dense_rank_power = 0xFF` (no rank table), matching
-/// [`indexed_disi::write`]'s own choice (this port never builds one on the
-/// write side; the reader tolerates its absence).
+/// Writes the DENSE rank table at [`indexed_disi::DEFAULT_DENSE_RANK_POWER`],
+/// which is what real Lucene's `Lucene90DocValuesConsumer` does
+/// (`IndexedDISI.writeBitSet(it, data)` defaults to power 9). It costs 256
+/// bytes per DENSE block and turns a cold random lookup inside one from ~844
+/// word reads into one rank read plus at most 8 -- measured at ~420 ns vs
+/// ~16 ns, see `docs/sweep/m2/c2-sparse-lookup.md`.
+/// `Lucene90DocValuesConsumer`'s `numDocsWithValue == 0` branch, shared by
+/// `writeValues` and `addBinaryField`: `meta[-2, 0]`, "no documents with
+/// values". Written **instead of** an [`indexed_disi`] structure -- a
+/// zero-document DISI has no blocks at all, and a reader that took the sparse
+/// path over it would rank-index into an empty value array rather than
+/// short-circuiting on [`NumericEntry::is_empty`]/[`BinaryEntry::is_empty`].
+///
+/// `denseRankPower` is Java's `(byte) -1` here, not
+/// [`indexed_disi::DEFAULT_DENSE_RANK_POWER`]: there is no DISI to describe.
+fn write_empty_docs_with_field(meta: &mut Vec<u8>) {
+    meta.write_i64(DOCS_WITH_FIELD_EMPTY);
+    meta.write_i64(0); // docsWithFieldLength
+    meta.write_i16(-1); // jumpTableEntryCount
+    meta.push(0xFF); // denseRankPower (-1 as u8)
+}
+
+// ARITH: writer-side arithmetic over data already in memory. Every length is
+// a `Vec`/slice length (so at most `isize::MAX`), every running offset is a
+// prefix sum of such lengths into a buffer that has already been built, and
+// every `data.len() as i64 - X` subtracts an offset recorded from an earlier
+// `data.len()` of the same, only-ever-appended buffer. Nothing here comes off
+// disk -- this is the encode half.
+#[allow(clippy::arithmetic_side_effects)]
 fn write_sparse_numeric_entry_body(
     meta: &mut Vec<u8>,
     data: &mut Vec<u8>,
     doc_ids: &[i32],
     values: &[i64],
 ) {
-    let disi_bytes = indexed_disi::write(doc_ids);
+    let disi_bytes =
+        indexed_disi::write_with_dense_rank_power(doc_ids, indexed_disi::DEFAULT_DENSE_RANK_POWER);
     let docs_with_field_offset = data.len() as i64;
     data.extend_from_slice(&disi_bytes);
     let docs_with_field_length = data.len() as i64 - docs_with_field_offset;
@@ -1489,7 +2389,7 @@ fn write_sparse_numeric_entry_body(
     meta.write_i64(docs_with_field_offset);
     meta.write_i64(docs_with_field_length);
     meta.write_i16(-1); // jumpTableEntryCount: no jump table written
-    meta.push(0xFF); // denseRankPower: no rank table written
+    meta.push(indexed_disi::DEFAULT_DENSE_RANK_POWER); // denseRankPower
 
     write_numeric_values_body(meta, data, values);
 }
@@ -1499,6 +2399,9 @@ fn write_sparse_numeric_entry_body(
 /// `unsigned_abs()` can never overflow even for `i64::MIN`; the result
 /// itself always fits back in `i64` since a GCD never exceeds the smaller
 /// of its two (absolute) inputs.
+// ARITH: `b != 0` is the loop condition, so the remainder never divides by
+// zero; both operands are `u128`, so there is no `i64::MIN / -1` case either.
+#[allow(clippy::arithmetic_side_effects)]
 fn gcd_i64(a: i64, b: i64) -> i64 {
     let mut a = (a as i128).unsigned_abs();
     let mut b = (b as i128).unsigned_abs();
@@ -1506,6 +2409,37 @@ fn gcd_i64(a: i64, b: i64) -> i64 {
         (a, b) = (b, a % b);
     }
     a as i64
+}
+
+/// `Lucene90DocValuesConsumer.writeValues`'s GCD accumulation: the greatest
+/// common divisor of every value's offset from the first one, or `0` when
+/// every value is identical (including an empty array).
+///
+/// Real Lucene's overflow guard only checks the *current* value against
+/// `[MIN/2, MAX/2]` -- but Java's `long` subtraction wraps silently on
+/// overflow, while Rust's default arithmetic panics in debug builds. If the
+/// first value itself falls outside that safe range (e.g. `i64::MIN`) while a
+/// later value is in-range, `v - first_value` can still overflow even though
+/// the per-`v` guard passed. `wrapping_sub` reproduces Java's exact
+/// (silently-wrapping, "gcd may come out numerically odd but never crashes")
+/// behaviour instead of panicking -- a correctness-irrelevant edge case Java
+/// itself doesn't handle "correctly" either, just without a hard crash.
+fn compute_gcd(values: &[i64]) -> i64 {
+    let Some(&first_value) = values.first() else {
+        return 0;
+    };
+    let mut gcd: i64 = 0;
+    for &v in values {
+        if gcd == 1 {
+            break;
+        }
+        if !(i64::MIN / 2..=i64::MAX / 2).contains(&v) {
+            gcd = 1;
+        } else {
+            gcd = gcd_i64(gcd, v.wrapping_sub(first_value));
+        }
+    }
+    gcd
 }
 
 /// Shared tail of a NUMERIC entry body -- everything after the
@@ -1533,12 +2467,33 @@ fn gcd_i64(a: i64, b: i64) -> i64 {
 /// explicit `ords ? null : new LongHashSet()` (ordinals never build a
 /// `uniqueValues` set at all; this port gets the same *outcome* without
 /// needing that special case, since the two paths tie).
+// ARITH: the two divisions are by `gcd`, which the `if gcd == 0 { gcd = 1 }`
+// below forces non-zero, and `gcd` is `unsigned_abs`-derived so it is never
+// `-1` (no `i64::MIN / -1`). The two `unique.len() as i64 - 1` uses are
+// reached only past `min >= max`, which means at least two distinct values,
+// so the set is non-empty. `data.len() as i64 - start_offset` subtracts an
+// offset recorded from an earlier `data.len()` of the same append-only
+// buffer. The two `wrapping_sub`s are deliberate and documented in place.
+#[allow(clippy::arithmetic_side_effects)]
 fn write_numeric_values_body(meta: &mut Vec<u8>, data: &mut Vec<u8>, values: &[i64]) {
     let num_values = values.len() as i64;
     meta.write_i64(num_values);
 
-    let min = values.iter().copied().min().unwrap_or(0);
-    let max = values.iter().copied().max().unwrap_or(0);
+    // `MinMaxTracker` starts at `(Long.MAX_VALUE, Long.MIN_VALUE)` and stays
+    // there for an empty value array, which is what Java then writes as this
+    // entry's `min`. Nothing reads it back (an empty field carries the `-2`
+    // docs-with-field marker, so no doc ever resolves to an ordinal), but
+    // matching it keeps the bytes identical to real Lucene's.
+    let min = values.iter().copied().min().unwrap_or(i64::MAX);
+    let max = values.iter().copied().max().unwrap_or(i64::MIN);
+
+    // Java runs the GCD scan before the `min >= max` branch and writes
+    // whatever it produced either way -- `0` when every value is identical
+    // (every `v - firstValue` is 0), or `1` when a value outside
+    // `[MIN/2, MAX/2]` tripped the overflow guard. `bitsPerValue == 0` means
+    // it is never read back, but writing the same number keeps this writer
+    // byte-identical to `Lucene90DocValuesConsumer` for the constant case.
+    let mut gcd = compute_gcd(values);
 
     if min >= max {
         // All values equal (including the empty-values case, which can't
@@ -1550,7 +2505,7 @@ fn write_numeric_values_body(meta: &mut Vec<u8>, data: &mut Vec<u8>, values: &[i
         meta.write_i32(-1); // tableSize
         meta.push(0); // bitsPerValue
         meta.write_i64(min);
-        meta.write_i64(1); // gcd
+        meta.write_i64(gcd);
         let start_offset = data.len() as i64;
         meta.write_i64(start_offset);
         meta.write_i64(0); // valuesLength
@@ -1558,29 +2513,10 @@ fn write_numeric_values_body(meta: &mut Vec<u8>, data: &mut Vec<u8>, values: &[i
         return;
     }
 
-    // GCD of every value's offset from the first value seen.
-    let first_value = values[0];
-    let mut gcd: i64 = 0;
-    // Real Lucene's own overflow guard only checks the CURRENT value against
-    // `[MIN/2, MAX/2]`, same as below -- but Java's `long` subtraction wraps
-    // silently on overflow, while Rust's default arithmetic panics in debug
-    // builds. If `first_value` itself falls outside that safe range (e.g.
-    // `i64::MIN`) while a later value is in-range, `v - first_value` can
-    // still overflow even though the per-`v` guard passed. Using
-    // `wrapping_sub` here reproduces Java's exact (silently-wrapping, "gcd
-    // may come out numerically odd but never crashes") behavior instead of
-    // panicking -- this is a correctness-irrelevant edge case Java itself
-    // doesn't handle "correctly" either, just without a hard crash.
-    for &v in values {
-        if gcd == 1 {
-            break;
-        }
-        if !(i64::MIN / 2..=i64::MAX / 2).contains(&v) {
-            gcd = 1;
-        } else {
-            gcd = gcd_i64(gcd, v.wrapping_sub(first_value));
-        }
-    }
+    // A non-constant value array always yields a non-zero GCD (some value
+    // differs from the first), so this only guards the theoretically
+    // unreachable case; Java has no equivalent because `DirectWriter` would
+    // divide by it either way.
     if gcd == 0 {
         gcd = 1;
     }
@@ -1783,6 +2719,13 @@ pub fn write_single_dense_numeric_field(
 ///
 /// `doc_values` need not be sorted by the caller; this function sorts a
 /// clone by doc id itself. Each doc id must be unique and `< max_doc`.
+// ARITH: writer-side arithmetic over data already in memory. Every length is
+// a `Vec`/slice length (so at most `isize::MAX`), every running offset is a
+// prefix sum of such lengths into a buffer that has already been built, and
+// every `data.len() as i64 - X` subtracts an offset recorded from an earlier
+// `data.len()` of the same, only-ever-appended buffer. Nothing here comes off
+// disk -- this is the encode half.
+#[allow(clippy::arithmetic_side_effects)]
 pub fn write_single_sparse_numeric_field(
     field_number: i32,
     doc_values: &[(i32, i64)],
@@ -1811,7 +2754,12 @@ pub fn write_single_sparse_numeric_field(
 
     meta.write_i32(field_number);
     meta.push(DOC_VALUES_TYPE_NUMERIC);
-    write_sparse_numeric_entry_body(&mut meta, &mut data, &doc_ids, &values);
+    if doc_ids.is_empty() {
+        write_empty_docs_with_field(&mut meta);
+        write_numeric_values_body(&mut meta, &mut data, &values);
+    } else {
+        write_sparse_numeric_entry_body(&mut meta, &mut data, &doc_ids, &values);
+    }
 
     let skip_index =
         finish_field_list_and_footers(&mut meta, &mut data, segment_id, segment_suffix);
@@ -1826,9 +2774,8 @@ pub fn write_single_sparse_numeric_field(
 /// (every value the same length -- no address array, `ordinal * length`
 /// indexing, matching [`BinaryEntry::is_fixed_length`]) and
 /// **variable-length** (a [`crate::direct_monotonic`] end-offset array,
-/// [`write`](direct_monotonic::write) with `block_shift = 0` -- the same
-/// choice `term_vectors.rs`/`stored_fields.rs`'s own monotonic writers
-/// already made, simplicity over compression ratio for an in-memory buffer).
+/// [`write`](direct_monotonic::write) with
+/// [`DIRECT_MONOTONIC_BLOCK_SHIFT`], the same 16 real Lucene uses).
 ///
 /// Deliberately not attempted here: per-field doc-values skip indexes, and
 /// multiple fields in one `.dvm`/`.dvd`/`.dvs` triple. Sparse BINARY fields
@@ -1872,6 +2819,13 @@ pub fn write_single_dense_binary_field(
 /// [`write_single_dense_binary_field`]: fixed-length (no address array,
 /// `rank * length` indexing) and variable-length ([`direct_monotonic`]
 /// end-offset array over the present docs' values, in rank order).
+// ARITH: writer-side arithmetic over data already in memory. Every length is
+// a `Vec`/slice length (so at most `isize::MAX`), every running offset is a
+// prefix sum of such lengths into a buffer that has already been built, and
+// every `data.len() as i64 - X` subtracts an offset recorded from an earlier
+// `data.len()` of the same, only-ever-appended buffer. Nothing here comes off
+// disk -- this is the encode half.
+#[allow(clippy::arithmetic_side_effects)]
 pub fn write_single_sparse_binary_field(
     field_number: i32,
     doc_values: &[(i32, Vec<u8>)],
@@ -1879,75 +2833,12 @@ pub fn write_single_sparse_binary_field(
     segment_id: &[u8; ID_LENGTH],
     segment_suffix: &str,
 ) -> WriteResult<(Vec<u8>, Vec<u8>, Vec<u8>)> {
-    let mut sorted: Vec<(i32, Vec<u8>)> = doc_values.to_vec();
-    sorted.sort_unstable_by_key(|&(doc, _)| doc);
-    for i in 1..sorted.len() {
-        if sorted[i - 1].0 == sorted[i].0 {
-            return Err(WriteError::DocIdsNotAscending(sorted[i].0));
-        }
-    }
-    for &(doc, _) in &sorted {
-        if doc < 0 || doc >= max_doc {
-            return Err(WriteError::DocIdOutOfRange(doc, max_doc));
-        }
-    }
-
-    let doc_ids: Vec<i32> = sorted.iter().map(|&(doc, _)| doc).collect();
-    let values: Vec<Vec<u8>> = sorted.into_iter().map(|(_, v)| v).collect();
-
-    let mut meta = new_meta_output(segment_id, segment_suffix);
-    let mut data = new_data_output(segment_id, segment_suffix);
-
-    meta.write_i32(field_number);
-    meta.push(DOC_VALUES_TYPE_BINARY);
-
-    let data_offset = data.len() as i64;
-    for v in &values {
-        data.extend_from_slice(v);
-    }
-    let data_length = data.len() as i64 - data_offset;
-    meta.write_i64(data_offset);
-    meta.write_i64(data_length);
-
-    let disi_bytes = indexed_disi::write(&doc_ids);
-    let docs_with_field_offset = data.len() as i64;
-    data.extend_from_slice(&disi_bytes);
-    let docs_with_field_length = data.len() as i64 - docs_with_field_offset;
-
-    meta.write_i64(docs_with_field_offset);
-    meta.write_i64(docs_with_field_length);
-    meta.write_i16(-1); // jumpTableEntryCount: no jump table written
-    meta.push(0xFF); // denseRankPower: no rank table written
-
-    meta.write_i32(values.len() as i32); // numDocsWithField
-    let min_length = values.iter().map(|v| v.len() as i32).min().unwrap_or(0);
-    let max_length = values.iter().map(|v| v.len() as i32).max().unwrap_or(0);
-    meta.write_i32(min_length);
-    meta.write_i32(max_length);
-
-    if min_length < max_length {
-        let mut end = 0i64;
-        let mut ends: Vec<i64> = Vec::with_capacity(values.len() + 1);
-        ends.push(0);
-        for v in &values {
-            end += v.len() as i64;
-            ends.push(end);
-        }
-        let block_shift = 0u32;
-        let (addr_meta, addr_data) = direct_monotonic::write(&ends, block_shift);
-        let addresses_offset = data.len() as i64;
-        data.extend_from_slice(&addr_data);
-        let addresses_length = data.len() as i64 - addresses_offset;
-
-        meta.write_i64(addresses_offset);
-        meta.write_vint(block_shift as i32);
-        meta.extend_from_slice(&addr_meta);
-        meta.write_i64(addresses_length);
-    }
-
-    let skip_index =
-        finish_field_list_and_footers(&mut meta, &mut data, segment_id, segment_suffix);
-    Ok((meta, data, skip_index))
+    write_dense_fields(
+        &[DenseField::SparseBinary(field_number, doc_values)],
+        max_doc,
+        segment_id,
+        segment_suffix,
+    )
 }
 
 /// Port of `Lucene90DocValuesConsumer.addSortedNumericField`, scoped to
@@ -2024,6 +2915,13 @@ pub fn write_single_dense_sorted_numeric_field(
 /// is represented by *omitting* it from `doc_values` entirely, not by
 /// passing an empty `Vec` for it, since "present with zero values" isn't a
 /// distinct on-disk state from "absent" in this format.
+// ARITH: writer-side arithmetic over data already in memory. Every length is
+// a `Vec`/slice length (so at most `isize::MAX`), every running offset is a
+// prefix sum of such lengths into a buffer that has already been built, and
+// every `data.len() as i64 - X` subtracts an offset recorded from an earlier
+// `data.len()` of the same, only-ever-appended buffer. Nothing here comes off
+// disk -- this is the encode half.
+#[allow(clippy::arithmetic_side_effects)]
 pub fn write_single_sparse_sorted_numeric_field(
     field_number: i32,
     doc_values: &[(i32, Vec<i64>)],
@@ -2031,59 +2929,12 @@ pub fn write_single_sparse_sorted_numeric_field(
     segment_id: &[u8; ID_LENGTH],
     segment_suffix: &str,
 ) -> WriteResult<(Vec<u8>, Vec<u8>, Vec<u8>)> {
-    let mut sorted: Vec<(i32, Vec<i64>)> = doc_values.to_vec();
-    sorted.sort_unstable_by_key(|(doc, _)| *doc);
-    for i in 1..sorted.len() {
-        if sorted[i - 1].0 == sorted[i].0 {
-            return Err(WriteError::DocIdsNotAscending(sorted[i].0));
-        }
-    }
-    for (doc, _) in &sorted {
-        if *doc < 0 || *doc >= max_doc {
-            return Err(WriteError::DocIdOutOfRange(*doc, max_doc));
-        }
-    }
-    for (doc, per_doc) in &sorted {
-        if per_doc.is_empty() {
-            return Err(WriteError::EmptyMultiValuedDoc(*doc));
-        }
-    }
-
-    let doc_ids: Vec<i32> = sorted.iter().map(|(doc, _)| *doc).collect();
-    let num_docs_with_field = sorted.len() as i32;
-    let flat: Vec<i64> = sorted.iter().flat_map(|(_, v)| v.iter().copied()).collect();
-
-    let mut meta = new_meta_output(segment_id, segment_suffix);
-    let mut data = new_data_output(segment_id, segment_suffix);
-
-    meta.write_i32(field_number);
-    meta.push(DOC_VALUES_TYPE_SORTED_NUMERIC);
-    write_sparse_numeric_entry_body(&mut meta, &mut data, &doc_ids, &flat);
-
-    meta.write_i32(num_docs_with_field);
-    if num_docs_with_field as i64 != flat.len() as i64 {
-        let mut end = 0i64;
-        let mut ends: Vec<i64> = Vec::with_capacity(sorted.len() + 1);
-        ends.push(0);
-        for (_, per_doc) in &sorted {
-            end += per_doc.len() as i64;
-            ends.push(end);
-        }
-        let block_shift = 0u32;
-        let (addr_meta, addr_data) = direct_monotonic::write(&ends, block_shift);
-        let addresses_offset = data.len() as i64;
-        data.extend_from_slice(&addr_data);
-        let addresses_length = data.len() as i64 - addresses_offset;
-
-        meta.write_i64(addresses_offset);
-        meta.write_vint(block_shift as i32);
-        meta.extend_from_slice(&addr_meta);
-        meta.write_i64(addresses_length);
-    }
-
-    let skip_index =
-        finish_field_list_and_footers(&mut meta, &mut data, segment_id, segment_suffix);
-    Ok((meta, data, skip_index))
+    write_dense_fields(
+        &[DenseField::SparseSortedNumeric(field_number, doc_values)],
+        max_doc,
+        segment_id,
+        segment_suffix,
+    )
 }
 
 /// Longest common byte prefix of `a` and `b` (`StringHelper.bytesDifference`,
@@ -2110,6 +2961,17 @@ fn common_prefix_len(a: &[u8], b: &[u8]) -> usize {
 /// field-number/type byte" shape -- appends exactly what
 /// [`terms_dict::read_term_dict_entry`] expects to read right after a
 /// SORTED/SORTED_SET field's ords entry.
+// ARITH: `terms` is sorted ascending with no duplicates -- the doc comment
+// above states it and every caller builds it from a `BTreeSet` or a
+// `sort_unstable` + `dedup`. That is what makes `later.len() - prefix_len`
+// non-negative (a common prefix never exceeds either operand's length),
+// `suffix_len - 1` safe (distinct sorted terms differ, so a later term has at
+// least one byte past the common prefix), and `&term[..sort_key_len]` in
+// range (`sampled_previous < term` and neither is a prefix of the other in
+// the wrong direction). The two `debug_assert!`s below make `cargo test`
+// exercise both claims rather than leaving them as prose. Everything else is
+// a `Vec` length or an offset recorded from an earlier `data.len()`.
+#[allow(clippy::arithmetic_side_effects)]
 fn write_terms_dict(meta: &mut Vec<u8>, data: &mut Vec<u8>, terms: &[Vec<u8>]) {
     let size = terms.len() as i64;
     meta.write_vlong(size);
@@ -2139,6 +3001,10 @@ fn write_terms_dict(meta: &mut Vec<u8>, data: &mut Vec<u8>, terms: &[Vec<u8>]) {
         let mut prev: &[u8] = term;
         for later in &terms[ord + 1..block_end] {
             let prefix_len = common_prefix_len(prev, later);
+            debug_assert!(
+                prefix_len < later.len(),
+                "write_terms_dict requires strictly ascending, deduplicated terms"
+            );
             let suffix_len = later.len() - prefix_len;
             block_body.push((prefix_len.min(15) as u8) | (((suffix_len - 1).min(15) as u8) << 4));
             if prefix_len >= 15 {
@@ -2202,6 +3068,10 @@ fn write_terms_dict(meta: &mut Vec<u8>, data: &mut Vec<u8>, terms: &[Vec<u8>]) {
             } else {
                 common_prefix_len(&sampled_previous, term) + 1
             };
+            debug_assert!(
+                sort_key_len <= term.len(),
+                "write_terms_dict requires strictly ascending, deduplicated terms"
+            );
             offset += sort_key_len as i64;
             data.extend_from_slice(&term[..sort_key_len]);
         } else if ord & TERMS_DICT_REVERSE_INDEX_MASK == TERMS_DICT_REVERSE_INDEX_MASK {
@@ -2303,6 +3173,13 @@ fn build_sorted_dict_and_ords(values: &[Vec<u8>]) -> (Vec<Vec<u8>>, Vec<i64>) {
 /// [`write_single_sparse_numeric_field`]. Each doc id must be unique and
 /// `< max_doc`. Empty `Vec<u8>` values are allowed (an empty value is still
 /// present, distinct from absent).
+// ARITH: writer-side arithmetic over data already in memory. Every length is
+// a `Vec`/slice length (so at most `isize::MAX`), every running offset is a
+// prefix sum of such lengths into a buffer that has already been built, and
+// every `data.len() as i64 - X` subtracts an offset recorded from an earlier
+// `data.len()` of the same, only-ever-appended buffer. Nothing here comes off
+// disk -- this is the encode half.
+#[allow(clippy::arithmetic_side_effects)]
 pub fn write_single_sparse_sorted_field(
     field_number: i32,
     doc_values: &[(i32, Vec<u8>)],
@@ -2310,35 +3187,12 @@ pub fn write_single_sparse_sorted_field(
     segment_id: &[u8; ID_LENGTH],
     segment_suffix: &str,
 ) -> WriteResult<(Vec<u8>, Vec<u8>, Vec<u8>)> {
-    let mut sorted: Vec<(i32, Vec<u8>)> = doc_values.to_vec();
-    sorted.sort_unstable_by_key(|&(doc, _)| doc);
-    for i in 1..sorted.len() {
-        if sorted[i - 1].0 == sorted[i].0 {
-            return Err(WriteError::DocIdsNotAscending(sorted[i].0));
-        }
-    }
-    for &(doc, _) in &sorted {
-        if doc < 0 || doc >= max_doc {
-            return Err(WriteError::DocIdOutOfRange(doc, max_doc));
-        }
-    }
-
-    let doc_ids: Vec<i32> = sorted.iter().map(|&(doc, _)| doc).collect();
-    let values: Vec<Vec<u8>> = sorted.into_iter().map(|(_, v)| v).collect();
-
-    let (dict, ords) = build_sorted_dict_and_ords(&values);
-
-    let mut meta = new_meta_output(segment_id, segment_suffix);
-    let mut data = new_data_output(segment_id, segment_suffix);
-
-    meta.write_i32(field_number);
-    meta.push(DOC_VALUES_TYPE_SORTED);
-    write_sparse_numeric_entry_body(&mut meta, &mut data, &doc_ids, &ords);
-    write_terms_dict(&mut meta, &mut data, &dict);
-
-    let skip_index =
-        finish_field_list_and_footers(&mut meta, &mut data, segment_id, segment_suffix);
-    Ok((meta, data, skip_index))
+    write_dense_fields(
+        &[DenseField::SparseSorted(field_number, doc_values)],
+        max_doc,
+        segment_id,
+        segment_suffix,
+    )
 }
 
 /// Port of `Lucene90DocValuesConsumer.addSortedSetField`, scoped to exactly
@@ -2429,6 +3283,13 @@ pub fn write_single_dense_sorted_set_field(
 /// is represented by *omitting* it from `doc_values` entirely, not by passing
 /// an empty `Vec` for it, same "absent, not present-with-zero" contract as
 /// [`write_single_sparse_sorted_numeric_field`].
+// ARITH: writer-side arithmetic over data already in memory. Every length is
+// a `Vec`/slice length (so at most `isize::MAX`), every running offset is a
+// prefix sum of such lengths into a buffer that has already been built, and
+// every `data.len() as i64 - X` subtracts an offset recorded from an earlier
+// `data.len()` of the same, only-ever-appended buffer. Nothing here comes off
+// disk -- this is the encode half.
+#[allow(clippy::arithmetic_side_effects)]
 pub fn write_single_sparse_sorted_set_field(
     field_number: i32,
     doc_values: &[(i32, Vec<Vec<u8>>)],
@@ -2436,85 +3297,20 @@ pub fn write_single_sparse_sorted_set_field(
     segment_id: &[u8; ID_LENGTH],
     segment_suffix: &str,
 ) -> WriteResult<(Vec<u8>, Vec<u8>, Vec<u8>)> {
-    let mut sorted: Vec<(i32, Vec<Vec<u8>>)> = doc_values.to_vec();
-    sorted.sort_unstable_by_key(|(doc, _)| *doc);
-    for i in 1..sorted.len() {
-        if sorted[i - 1].0 == sorted[i].0 {
-            return Err(WriteError::DocIdsNotAscending(sorted[i].0));
-        }
-    }
-    for (doc, _) in &sorted {
-        if *doc < 0 || *doc >= max_doc {
-            return Err(WriteError::DocIdOutOfRange(*doc, max_doc));
-        }
-    }
-    for (doc, per_doc) in &sorted {
-        if per_doc.is_empty() {
-            return Err(WriteError::EmptyMultiValuedDoc(*doc));
-        }
-    }
-
-    let doc_ids: Vec<i32> = sorted.iter().map(|(doc, _)| *doc).collect();
-
-    let mut dict: Vec<Vec<u8>> = sorted.iter().flat_map(|(_, v)| v.iter().cloned()).collect();
-    dict.sort_unstable();
-    dict.dedup();
-
-    let per_doc_ords: Vec<Vec<i64>> = sorted
-        .iter()
-        .map(|(_, per_doc)| {
-            let mut ords: Vec<i64> = per_doc
-                .iter()
-                .map(|v| dict.binary_search(v).unwrap() as i64)
-                .collect();
-            ords.sort_unstable();
-            ords.dedup();
-            ords
-        })
-        .collect();
-
-    let num_docs_with_field = per_doc_ords.len() as i32;
-    let flat: Vec<i64> = per_doc_ords.iter().flatten().copied().collect();
-
-    let mut meta = new_meta_output(segment_id, segment_suffix);
-    let mut data = new_data_output(segment_id, segment_suffix);
-
-    meta.write_i32(field_number);
-    meta.push(DOC_VALUES_TYPE_SORTED_SET);
-    meta.push(1); // multiValued = true.
-
-    write_sparse_numeric_entry_body(&mut meta, &mut data, &doc_ids, &flat);
-
-    meta.write_i32(num_docs_with_field);
-    if num_docs_with_field as i64 != flat.len() as i64 {
-        let mut end = 0i64;
-        let mut ends: Vec<i64> = Vec::with_capacity(per_doc_ords.len() + 1);
-        ends.push(0);
-        for ords in &per_doc_ords {
-            end += ords.len() as i64;
-            ends.push(end);
-        }
-        let block_shift = 0u32;
-        let (addr_meta, addr_data) = direct_monotonic::write(&ends, block_shift);
-        let addresses_offset = data.len() as i64;
-        data.extend_from_slice(&addr_data);
-        let addresses_length = data.len() as i64 - addresses_offset;
-
-        meta.write_i64(addresses_offset);
-        meta.write_vint(block_shift as i32);
-        meta.extend_from_slice(&addr_meta);
-        meta.write_i64(addresses_length);
-    }
-
-    write_terms_dict(&mut meta, &mut data, &dict);
-
-    let skip_index =
-        finish_field_list_and_footers(&mut meta, &mut data, segment_id, segment_suffix);
-    Ok((meta, data, skip_index))
+    write_dense_fields(
+        &[DenseField::SparseSortedSet(field_number, doc_values)],
+        max_doc,
+        segment_id,
+        segment_suffix,
+    )
 }
 
 #[cfg(test)]
 mod tests {
+    // The arithmetic gate is about values read off disk; a test's `i + 1` is
+    // not one. See docs/arithmetic-gate.md.
+    #![allow(clippy::arithmetic_side_effects)]
+
     use super::*;
     use crate::field_infos::{DocValuesSkipIndexType, DocValuesType, FieldInfo, IndexOptions};
 
@@ -2834,6 +3630,59 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_block_shift_of_63_masks_without_overflowing() {
+        // `blockShift` is `-2 - tableSize` off `.dvm`, and `read_numeric_entry`
+        // accepts the whole of `0..=63`. At exactly 63 the mask used to be
+        // `(1i64 << 63) - 1`, i.e. `i64::MIN - 1` -- a debug-build panic at the
+        // one value the range check lets through, and c24's own failure mode
+        // (a shift proof whose stated bound includes the failing value).
+        // Java's `(1L << 63) - 1` wraps to `Long.MAX_VALUE`, which is what the
+        // `u64` computation now reproduces exactly.
+        assert_eq!(low_bits_mask(63), i64::MAX);
+        assert_eq!(low_bits_mask(0), 0);
+        assert_eq!(low_bits_mask(1), 1);
+
+        // And it is genuinely file-reachable: `tableSize = -65` is what puts
+        // `blockShift` at 63, and `parse_meta` accepts it.
+        let id = [61u8; ID_LENGTH];
+        let mut meta = Vec::new();
+        meta.extend_from_slice(&codec_util::CODEC_MAGIC.to_be_bytes());
+        write_string(&mut meta, META_CODEC);
+        meta.extend_from_slice(&(VERSION_CURRENT as u32).to_be_bytes());
+        meta.extend_from_slice(&id);
+        meta.push(0);
+        let mut e = EntryBuilder::dense(0, 0, 2);
+        e.block_shift = Some(63);
+        e.build(&mut meta);
+        meta.extend_from_slice(&(-1i32).to_le_bytes()); // end of field list
+        meta.extend_from_slice(&codec_util::FOOTER_MAGIC.to_be_bytes());
+        meta.extend_from_slice(&0u32.to_be_bytes());
+        let checksum = crc32fast::hash(&meta) as u64;
+        meta.extend_from_slice(&checksum.to_be_bytes());
+        let (_, parsed) = parse_meta(&meta, &id, "", &field_infos_with(&[0])).unwrap();
+        assert_eq!(parsed.numeric_entry(0).unwrap().block_shift, Some(63));
+
+        // Decoding through it must not panic. One block at bitsPerValue = 2.
+        let mut data = Vec::new();
+        let block_start = data.len() as i64;
+        let packed = direct_reader::encode(&[1i64, 2], 2);
+        data.push(2);
+        data.extend_from_slice(&0i64.to_le_bytes());
+        data.extend_from_slice(&(packed.len() as i32).to_le_bytes());
+        data.extend_from_slice(&packed);
+        let jump_table_offset = data.len() as i64;
+        data.extend_from_slice(&block_start.to_le_bytes());
+        data.extend_from_slice(&jump_table_offset.to_le_bytes());
+
+        let mut e = EntryBuilder::dense(0, 0, 2);
+        e.block_shift = Some(63);
+        e.value_jump_table_offset = jump_table_offset;
+        let entry = e.to_entry();
+        assert_eq!(numeric_value(&data, &entry, 0).unwrap(), Some(1));
+        assert_eq!(numeric_value(&data, &entry, 1).unwrap(), Some(2));
+    }
+
     /// A varying-bpv block where every value is identical takes the
     /// `bitsPerValue == 0` single-value shape (no packed data at all,
     /// just the constant stored as the block's delta).
@@ -2987,6 +3836,357 @@ mod tests {
         let mut input_some_docs = SliceInput::new(&some_docs_bytes);
         let m = read_skipper_meta(&mut input_some_docs, VERSION_START).unwrap();
         assert_eq!(m.max_value_count, -1);
+    }
+
+    // --- DocValuesSkipper (Lucene90DocValuesProducer.getSkipper) ---
+
+    /// Nine 10-doc level-0 intervals (docs 0..=89). `writeLevels`/`getLevels`
+    /// would give interval 0 a second level covering intervals 0..7 (docs
+    /// 0..=79), since `left >= 8 && index % 8 == 0` holds only there.
+    fn nine_interval_index(sabotage_covered_intervals: bool) -> DocValuesSkipIndex {
+        let level0 = |i: i32| SkipIndexLevelInterval {
+            min_doc_id: i * 10,
+            // Intervals 1..=7 are the ones the level-1 record covers, so a
+            // correct skipper never reads them when level 1 already ruled the
+            // whole group out. Giving them an impossible `max_doc_id` makes a
+            // linear scan stop on one of them and fail the test.
+            max_doc_id: if sabotage_covered_intervals && (1..=7).contains(&i) {
+                1000
+            } else {
+                i * 10 + 9
+            },
+            min_value: i as i64 * 100,
+            max_value: i as i64 * 100 + 99,
+            doc_count: 10,
+        };
+        let level1 = SkipIndexLevelInterval {
+            min_doc_id: 0,
+            max_doc_id: 79,
+            min_value: 0,
+            max_value: 799,
+            doc_count: 80,
+        };
+        let mut intervals = vec![SkipIndexInterval {
+            levels: vec![level0(0), level1],
+        }];
+        for i in 1..9 {
+            intervals.push(SkipIndexInterval {
+                levels: vec![level0(i)],
+            });
+        }
+        DocValuesSkipIndex {
+            min_value: 0,
+            max_value: 899,
+            doc_count: 90,
+            max_doc_id: 89,
+            max_value_count: 1,
+            intervals,
+        }
+    }
+
+    #[test]
+    fn skipper_before_first_advance_reports_minus_one_and_one_level() {
+        let index = nine_interval_index(false);
+        let skipper = DocValuesSkipper::new(&index);
+        assert_eq!(skipper.num_levels(), 1);
+        assert_eq!(skipper.min_doc_id(0), -1);
+        assert_eq!(skipper.max_doc_id(0), -1);
+        assert_eq!(skipper.global_min_value(), 0);
+        assert_eq!(skipper.global_max_value(), 899);
+        assert_eq!(skipper.global_doc_count(), 90);
+        assert_eq!(skipper.max_value_count(), 1);
+    }
+
+    #[test]
+    fn skipper_advance_reads_every_level_of_the_landing_interval() {
+        let index = nine_interval_index(false);
+        let mut skipper = DocValuesSkipper::new(&index);
+        skipper.advance(0);
+        assert_eq!(skipper.num_levels(), 2);
+        assert_eq!((skipper.min_doc_id(0), skipper.max_doc_id(0)), (0, 9));
+        assert_eq!((skipper.min_value(0), skipper.max_value(0)), (0, 99));
+        assert_eq!(skipper.doc_count(0), 10);
+        assert_eq!((skipper.min_doc_id(1), skipper.max_doc_id(1)), (0, 79));
+        assert_eq!((skipper.min_value(1), skipper.max_value(1)), (0, 799));
+        assert_eq!(skipper.doc_count(1), 80);
+    }
+
+    /// Java keeps the per-level arrays outside its read loop, so a plain
+    /// level-0 interval leaves the coarser levels holding the summary read
+    /// from the last interval that carried one -- and the `levels` widening
+    /// loop then re-exposes it. Reproduced here: after landing on interval 3
+    /// (a 1-level record), level 1 still describes docs 0..=79.
+    fn assert_stale_level_one_survives(skipper: &DocValuesSkipper<'_>) {
+        assert_eq!(skipper.num_levels(), 2);
+        assert_eq!((skipper.min_doc_id(1), skipper.max_doc_id(1)), (0, 79));
+        assert_eq!(skipper.doc_count(1), 80);
+    }
+
+    #[test]
+    fn skipper_widens_levels_using_a_previous_intervals_coarse_summary() {
+        let index = nine_interval_index(false);
+        let mut skipper = DocValuesSkipper::new(&index);
+        skipper.advance(0);
+        skipper.advance(35);
+        assert_eq!((skipper.min_doc_id(0), skipper.max_doc_id(0)), (30, 39));
+        assert_eq!((skipper.min_value(0), skipper.max_value(0)), (300, 399));
+        assert_stale_level_one_survives(&skipper);
+    }
+
+    #[test]
+    fn skipper_narrows_levels_again_once_the_coarse_interval_is_behind() {
+        let index = nine_interval_index(false);
+        let mut skipper = DocValuesSkipper::new(&index);
+        skipper.advance(0);
+        skipper.advance(85);
+        assert_eq!((skipper.min_doc_id(0), skipper.max_doc_id(0)), (80, 89));
+        // Level 1's stale interval ends at 79 < 85, so it is no longer
+        // reported: `levels` stays 1.
+        assert_eq!(skipper.num_levels(), 1);
+    }
+
+    /// Bailing out at level 1 must jump the whole `8^1`-interval subtree that
+    /// level covers, not walk it. The covered intervals carry an impossible
+    /// `max_doc_id` here, so a linear scan would stop on interval 1.
+    #[test]
+    fn skipper_jumps_a_whole_subtree_when_a_coarse_level_rules_it_out() {
+        let index = nine_interval_index(true);
+        let mut skipper = DocValuesSkipper::new(&index);
+        skipper.advance(80);
+        assert_eq!((skipper.min_doc_id(0), skipper.max_doc_id(0)), (80, 89));
+        assert_eq!(skipper.num_levels(), 1);
+    }
+
+    #[test]
+    fn skipper_past_the_last_doc_is_exhausted_on_every_level() {
+        let index = nine_interval_index(false);
+        let mut skipper = DocValuesSkipper::new(&index);
+        skipper.advance(0);
+        skipper.advance(90);
+        for level in 0..SKIP_INDEX_MAX_LEVEL as usize {
+            assert_eq!(skipper.min_doc_id(level), NO_MORE_DOCS);
+            assert_eq!(skipper.max_doc_id(level), NO_MORE_DOCS);
+        }
+    }
+
+    /// A truncated `.dvs` whose `.dvm` summary promises documents the
+    /// interval list does not cover must report exhaustion, not spin or
+    /// panic.
+    #[test]
+    fn skipper_on_a_truncated_interval_list_reports_exhaustion() {
+        let mut index = nine_interval_index(false);
+        index.intervals.truncate(1);
+        let mut skipper = DocValuesSkipper::new(&index);
+        skipper.advance(50);
+        assert_eq!(skipper.max_doc_id(0), NO_MORE_DOCS);
+    }
+
+    #[test]
+    fn skipper_advance_range_skips_to_the_first_intersecting_interval() {
+        let index = nine_interval_index(false);
+        let mut skipper = DocValuesSkipper::new(&index);
+        // Values 500..=520 live only in interval 5 (values 500..=599).
+        skipper.advance_range(500, 520);
+        assert_eq!((skipper.min_doc_id(0), skipper.max_doc_id(0)), (50, 59));
+        assert_eq!((skipper.min_value(0), skipper.max_value(0)), (500, 599));
+    }
+
+    #[test]
+    fn skipper_advance_range_with_no_matching_interval_exhausts() {
+        let index = nine_interval_index(false);
+        let mut skipper = DocValuesSkipper::new(&index);
+        skipper.advance_range(10_000, 20_000);
+        assert_eq!(skipper.min_doc_id(0), NO_MORE_DOCS);
+    }
+
+    /// End-to-end over real `.dvs` bytes: build a two-level interval list with
+    /// the same writer layout [`parse_skip_index`] decodes, then drive the
+    /// skipper across it.
+    #[test]
+    fn skipper_over_parse_skip_index_output() {
+        let id = [3u8; ID_LENGTH];
+        let index = nine_interval_index(false);
+        let mut body = Vec::new();
+        for interval in &index.intervals {
+            body.extend_from_slice(&interval_bytes(&interval.levels));
+        }
+        let length = body.len() as i64;
+        let buf = dvs_bytes(&id, &body);
+        let offset = (buf.len() as i64) - length - codec_util::FOOTER_LENGTH as i64;
+        let skipper_meta = DocValuesSkipperMeta {
+            offset,
+            length,
+            min_value: 0,
+            max_value: 899,
+            doc_count: 90,
+            max_doc_id: 89,
+            max_value_count: 1,
+        };
+        let decoded = parse_skip_index(&buf, &id, "", &skipper_meta).unwrap();
+        assert_eq!(decoded.intervals, index.intervals);
+
+        let mut skipper = DocValuesSkipper::new(&decoded);
+        skipper.advance(0);
+        assert_eq!(skipper.num_levels(), 2);
+        skipper.advance(35);
+        assert_eq!((skipper.min_doc_id(0), skipper.max_doc_id(0)), (30, 39));
+        assert_stale_level_one_survives(&skipper);
+    }
+
+    /// Builds a whole `.dvm` at `version` holding one NUMERIC field with a
+    /// skip index, whose `maxValueCount` is only written from
+    /// [`VERSION_SKIPPER_MAX_VALUE_COUNT`] onwards.
+    fn dvm_with_skipper(
+        id: &[u8; ID_LENGTH],
+        version: i32,
+        type_byte: u8,
+        skipper: &DocValuesSkipperMeta,
+        entry_body: &[u8],
+    ) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&codec_util::CODEC_MAGIC.to_be_bytes());
+        write_string(&mut buf, META_CODEC);
+        buf.extend_from_slice(&(version as u32).to_be_bytes());
+        buf.extend_from_slice(id);
+        buf.push(0);
+        buf.extend_from_slice(&0i32.to_le_bytes()); // field number
+        buf.push(type_byte);
+        let skipper_bytes = skipper_meta_bytes(skipper);
+        let keep = if version >= VERSION_SKIPPER_MAX_VALUE_COUNT {
+            skipper_bytes.len()
+        } else {
+            skipper_bytes.len() - 4 // no trailing maxValueCount on disk
+        };
+        buf.extend_from_slice(&skipper_bytes[..keep]);
+        buf.extend_from_slice(entry_body);
+        buf.extend_from_slice(&(-1i32).to_le_bytes());
+        buf.extend_from_slice(&codec_util::FOOTER_MAGIC.to_be_bytes());
+        buf.extend_from_slice(&0u32.to_be_bytes());
+        let checksum = crc32fast::hash(&buf) as u64;
+        buf.extend_from_slice(&checksum.to_be_bytes());
+        buf
+    }
+
+    /// `Lucene90DocValuesProducer.inferMaxValueCounts`: a pre-version-2 `.dvm`
+    /// stores no `maxValueCount`, but a NUMERIC field is single-valued by
+    /// construction, so the producer fills in `1` rather than leaving the `-1`
+    /// "unknown" sentinel that would make a caller give up on the
+    /// single-valued fast path.
+    #[test]
+    fn pre_version_2_numeric_skipper_max_value_count_is_inferred_as_one() {
+        let id = [4u8; ID_LENGTH];
+        let mut fis = field_infos_with(&[0]);
+        fis.fields[0].doc_values_skip_index_type = DocValuesSkipIndexType::Range;
+        let skipper = DocValuesSkipperMeta {
+            offset: 0,
+            length: 29,
+            min_value: 1,
+            max_value: 5,
+            doc_count: 3,
+            max_doc_id: 2,
+            max_value_count: -1,
+        };
+        let mut body = Vec::new();
+        EntryBuilder::dense(0, 8, 3).build_body(&mut body);
+        let buf = dvm_with_skipper(&id, VERSION_START, DOC_VALUES_TYPE_NUMERIC, &skipper, &body);
+
+        let (version, meta) = parse_meta(&buf, &id, "", &fis).unwrap();
+        assert_eq!(version, VERSION_START);
+        assert_eq!(meta.skipper_meta(0).unwrap().max_value_count, 1);
+    }
+
+    /// The same file at [`VERSION_CURRENT`] stores `maxValueCount` explicitly,
+    /// so the inference pass must not run and must not overwrite it.
+    #[test]
+    fn current_version_skipper_max_value_count_is_read_not_inferred() {
+        let id = [4u8; ID_LENGTH];
+        let mut fis = field_infos_with(&[0]);
+        fis.fields[0].doc_values_skip_index_type = DocValuesSkipIndexType::Range;
+        let skipper = DocValuesSkipperMeta {
+            offset: 0,
+            length: 29,
+            min_value: 1,
+            max_value: 5,
+            doc_count: 3,
+            max_doc_id: 2,
+            max_value_count: 7,
+        };
+        let mut body = Vec::new();
+        EntryBuilder::dense(0, 8, 3).build_body(&mut body);
+        let buf = dvm_with_skipper(
+            &id,
+            VERSION_CURRENT,
+            DOC_VALUES_TYPE_NUMERIC,
+            &skipper,
+            &body,
+        );
+
+        let (_, meta) = parse_meta(&buf, &id, "", &fis).unwrap();
+        assert_eq!(meta.skipper_meta(0).unwrap().max_value_count, 7);
+    }
+
+    /// A genuinely multi-valued SORTED_NUMERIC field (`numValues >
+    /// numDocsWithField`) cannot be inferred and keeps the `-1` sentinel,
+    /// exactly like Java's `switch` leaving it alone.
+    #[test]
+    fn pre_version_2_multi_valued_sorted_numeric_skipper_stays_unknown() {
+        let id = [4u8; ID_LENGTH];
+        let mut fis = field_infos_with(&[0]);
+        fis.fields[0].doc_values_skip_index_type = DocValuesSkipIndexType::Range;
+        fis.fields[0].doc_values_type = DocValuesType::SortedNumeric;
+        let skipper = DocValuesSkipperMeta {
+            offset: 0,
+            length: 29,
+            min_value: 1,
+            max_value: 5,
+            doc_count: 2,
+            max_doc_id: 1,
+            max_value_count: -1,
+        };
+        // numValues = 4 across numDocsWithField = 2 -> multi-valued, plus the
+        // address array that implies.
+        let mut body = Vec::new();
+        EntryBuilder::dense(0, 8, 4).build_body(&mut body);
+        body.extend_from_slice(&2i32.to_le_bytes()); // numDocsWithField
+        body.extend_from_slice(&0i64.to_le_bytes()); // addressesOffset
+        write_vint(&mut body, 0); // blockShift
+        write_zero_direct_monotonic_blocks(&mut body, 3, 0);
+        body.extend_from_slice(&0i64.to_le_bytes()); // addressesLength
+        let buf = dvm_with_skipper(
+            &id,
+            VERSION_START,
+            DOC_VALUES_TYPE_SORTED_NUMERIC,
+            &skipper,
+            &body,
+        );
+
+        let (_, meta) = parse_meta(&buf, &id, "", &fis).unwrap();
+        assert_eq!(meta.skipper_meta(0).unwrap().max_value_count, -1);
+    }
+
+    /// A `.dvs` file only exists from `VERSION_SKIPPER_SEPARATE_FILE` on, so
+    /// one claiming `VERSION_START` is corrupt.
+    #[test]
+    fn parse_skip_index_rejects_a_version_zero_dvs() {
+        let id = [5u8; ID_LENGTH];
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&codec_util::CODEC_MAGIC.to_be_bytes());
+        write_string(&mut buf, SKIP_INDEX_META_CODEC);
+        buf.extend_from_slice(&(VERSION_START as u32).to_be_bytes());
+        buf.extend_from_slice(&id);
+        buf.push(0);
+        codec_util::write_footer(&mut buf);
+        let skipper = DocValuesSkipperMeta {
+            offset: 0,
+            length: 0,
+            min_value: 0,
+            max_value: 0,
+            doc_count: 0,
+            max_doc_id: -1,
+            max_value_count: 0,
+        };
+        assert!(parse_skip_index(&buf, &id, "", &skipper).is_err());
+        assert!(check_skip_index_header_footer(&buf, &id, "").is_err());
     }
 
     #[test]
@@ -3376,7 +4576,7 @@ mod tests {
             docs_with_field_offset,
             docs_with_field_length,
             jump_table_entry_count: 0,
-            dense_rank_power: 0,
+            dense_rank_power: indexed_disi::NO_RANK,
             num_docs_with_field,
             min_length: length,
             max_length: length,
@@ -3434,7 +4634,7 @@ mod tests {
             docs_with_field_offset: DOCS_WITH_FIELD_DENSE,
             docs_with_field_length: 0,
             jump_table_entry_count: 0,
-            dense_rank_power: 0,
+            dense_rank_power: indexed_disi::NO_RANK,
             num_docs_with_field: 3,
             min_length: 2,
             max_length: 4,
@@ -3578,7 +4778,7 @@ mod tests {
         dvm.extend_from_slice(&2i32.to_le_bytes()); // blockShift (for the address arrays)
         write_zero_direct_monotonic_blocks(&mut dvm, 1, 2); // addresses: ceil(2/64)=1 block
         dvm.extend_from_slice(&5i32.to_le_bytes()); // maxTermLength
-        dvm.extend_from_slice(&8192i32.to_le_bytes()); // maxBlockLength (unused)
+        dvm.extend_from_slice(&8192i32.to_le_bytes()); // maxBlockLength (bounds the per-block length vint)
         dvm.extend_from_slice(&terms_data_offset.to_le_bytes());
         dvm.extend_from_slice(&terms_data_length.to_le_bytes());
         dvm.extend_from_slice(&0i64.to_le_bytes()); // termsAddressesOffset (unused)
@@ -3681,6 +4881,25 @@ mod tests {
             Vec::<i64>::new()
         );
         assert_eq!(sorted_numeric_values(&dvd, &entry, 2).unwrap(), vec![12]);
+    }
+
+    /// A dense SORTED_NUMERIC entry covers exactly `maxDoc` docs
+    /// (`numDocsWithField == maxDoc` is what makes it dense), so a doc past
+    /// that is out of range -- not a silently-answered constant.
+    #[test]
+    fn sorted_numeric_dense_doc_past_max_doc_rejected() {
+        let mut data = Vec::new();
+        // A constant-encoded (`bitsPerValue == 0`) dense field over 3 docs:
+        // `decode_value` would answer for any ordinal without this check.
+        data.extend_from_slice(&[0u8; 8]);
+        let mut e = EntryBuilder::dense(0, 0, 3);
+        e.min_value = 42;
+        let entry = sorted_numeric_entry_no_addresses(e.to_entry());
+        assert_eq!(sorted_numeric_values(&data, &entry, 2).unwrap(), vec![42]);
+        assert!(matches!(
+            sorted_numeric_values(&data, &entry, 3),
+            Err(Error::DocOutOfRange(3, 3))
+        ));
     }
 
     #[test]
@@ -3842,8 +5061,39 @@ mod tests {
         let (_, meta) = parse_meta(&meta_bytes, &id, "", &fis).unwrap();
         let entry = meta.numeric_entry(0).unwrap();
         assert_eq!(entry.bits_per_value, 0);
+        assert_eq!(entry.min_value, 42);
+        // `Lucene90DocValuesConsumer` runs its GCD scan before the
+        // `min >= max` branch and writes whatever it produced -- `0` for an
+        // all-equal array, since every `v - firstValue` is 0. Nothing reads it
+        // back (`bitsPerValue == 0` short-circuits), but the bytes must match
+        // real Lucene's.
+        assert_eq!(entry.gcd, 0);
+        assert_eq!(entry.table, None);
         for doc in 0..values.len() as i32 {
             assert_eq!(numeric_value(&data_bytes, entry, doc).unwrap(), Some(42));
+        }
+    }
+
+    /// The GCD scan's overflow guard (`v` outside `[MIN/2, MAX/2]` abandons
+    /// GCD tracking) fires even for an all-equal array, so the constant case
+    /// then records `gcd == 1` rather than `0` -- again exactly what Java
+    /// writes.
+    #[test]
+    fn write_single_dense_numeric_field_all_equal_extreme_values_record_gcd_one() {
+        let id = [8u8; ID_LENGTH];
+        let values = vec![i64::MAX; 4];
+        let (meta_bytes, data_bytes, _) =
+            write_single_dense_numeric_field(0, &values, values.len() as i32, &id, "").unwrap();
+        let fis = field_infos_with(&[0]);
+        let (_, meta) = parse_meta(&meta_bytes, &id, "", &fis).unwrap();
+        let entry = meta.numeric_entry(0).unwrap();
+        assert_eq!(entry.bits_per_value, 0);
+        assert_eq!(entry.gcd, 1);
+        for doc in 0..values.len() as i32 {
+            assert_eq!(
+                numeric_value(&data_bytes, entry, doc).unwrap(),
+                Some(i64::MAX)
+            );
         }
     }
 
@@ -4063,13 +5313,13 @@ mod tests {
         assert!(!entry.is_dense());
         assert!(!entry.is_empty_field());
 
-        // `numeric_value` re-decodes the whole IndexedDISI structure on every
-        // call (see that function's doc comment / indexed_disi.rs's module
-        // doc for why -- a one-shot decode-then-binary-search design, not
-        // built for per-call random access), so checking every one of
-        // `max_doc` docs here would be O(max_doc^2). Sample instead: every
-        // present doc plus a stride of absent ones is still an exhaustive
-        // check of both branches without the quadratic blowup.
+        // `numeric_value` opens a fresh `DisiCursor` per call, so it walks
+        // this field's block headers from the start each time. That is
+        // O(blocks), not O(cardinality), but 200,000 individual lookups is
+        // still needless: every present doc plus a stride of absent ones
+        // exercises both branches. `NumericReader`, which keeps one cursor
+        // across calls, is checked doc-for-doc against this in
+        // `numeric_reader_sparse_agrees_with_numeric_value_in_any_order`.
         let present: std::collections::HashMap<i32, i64> = doc_values.iter().copied().collect();
         for &(doc, want) in doc_values.iter().step_by(97) {
             assert_eq!(numeric_value(&data_bytes, entry, doc).unwrap(), Some(want));
@@ -4078,6 +5328,94 @@ mod tests {
             let got = numeric_value(&data_bytes, entry, doc).unwrap();
             assert_eq!(got, present.get(&doc).copied(), "doc {doc}");
         }
+    }
+
+    /// [`NumericReader`] holds a forward-only `DisiCursor` where it used to
+    /// hold a decoded `Vec<i32>` of every present doc. The two access patterns
+    /// that distinguishes are checked against [`numeric_value`], which is the
+    /// independent implementation (fresh cursor per call):
+    ///
+    /// - ascending, the order a sort or facet count uses, where the cursor is
+    ///   never rewound and the whole scan walks the region once;
+    /// - pseudo-random, where every backward step must rewind the cursor. A
+    ///   reader that dropped the rewind would answer `None` for a legitimate
+    ///   document, which is exactly the failure the old `Vec` hid.
+    ///
+    /// Checked over every doc id, including the absent ones -- the `None`s are
+    /// the interesting answers.
+    #[test]
+    fn numeric_reader_sparse_agrees_with_numeric_value_in_any_order() {
+        // Block 0: 10 present docs -> SPARSE. Block 1: every doc -> ALL.
+        // Block 2: every 3rd doc -> DENSE. All three shapes, in one field.
+        let id = [21u8; ID_LENGTH];
+        let max_doc = 196_608i32;
+        let mut doc_values: Vec<(i32, i64)> = Vec::new();
+        for i in 0..10 {
+            doc_values.push((i * 1000, i as i64 - 5));
+        }
+        for doc in 65_536..131_072 {
+            doc_values.push((doc, doc as i64 * 3));
+        }
+        for doc in (131_072..196_608).step_by(3) {
+            doc_values.push((doc, -(doc as i64)));
+        }
+        let present: std::collections::HashMap<i32, i64> = doc_values.iter().copied().collect();
+
+        let (meta_bytes, data_bytes, _skip) =
+            write_single_sparse_numeric_field(0, &doc_values, max_doc, &id, "").unwrap();
+        let fis = field_infos_with(&[0]);
+        let (_, meta) = parse_meta(&meta_bytes, &id, "", &fis).unwrap();
+        let entry = meta.numeric_entry(0).unwrap();
+
+        // Ascending: one walk of the region for all 196,608 lookups.
+        let mut reader = NumericReader::new(&data_bytes, entry);
+        for doc in 0..max_doc {
+            assert_eq!(
+                reader.value(doc).unwrap(),
+                present.get(&doc).copied(),
+                "ascending, doc {doc}"
+            );
+        }
+
+        // Pseudo-random, every backward step rewinding the cursor.
+        let mut reader = NumericReader::new(&data_bytes, entry);
+        let mut probe = 987_654_321u32;
+        for _ in 0..3_000 {
+            probe = probe.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let doc = (probe % max_doc as u32) as i32;
+            assert_eq!(
+                reader.value(doc).unwrap(),
+                present.get(&doc).copied(),
+                "random, doc {doc}"
+            );
+            // Same document twice in a row must not change the answer either.
+            assert_eq!(reader.value(doc).unwrap(), present.get(&doc).copied());
+        }
+    }
+
+    /// A sparse entry whose docs-with-field byte range is not inside the data
+    /// must still report the error rather than answer "no value": the reader
+    /// builds no cursor and falls through to [`numeric_value`].
+    #[test]
+    fn numeric_reader_sparse_region_outside_the_data_is_an_error() {
+        let entry = NumericEntry {
+            field_number: 0,
+            docs_with_field_offset: 4,
+            docs_with_field_length: 1_000,
+            jump_table_entry_count: 0,
+            dense_rank_power: indexed_disi::NO_RANK,
+            num_values: 3,
+            table: None,
+            bits_per_value: 0,
+            min_value: 7,
+            gcd: 1,
+            values_offset: 0,
+            values_length: 0,
+            block_shift: None,
+            value_jump_table_offset: 0,
+        };
+        let mut reader = NumericReader::new(&[0u8; 8], &entry);
+        assert!(reader.value(0).is_err());
     }
 
     #[test]
@@ -4250,6 +5588,41 @@ mod tests {
             assert_eq!(
                 binary_value(&data_bytes, entry, doc as i32).unwrap(),
                 Some(want.as_slice())
+            );
+        }
+    }
+
+    /// `DIRECT_MONOTONIC_BLOCK_SHIFT` guards the *metadata* size: address
+    /// arrays are bit-packed in blocks of 2^16, so one `(min, avgInc, offset,
+    /// bitsPerValue)` record covers 65536 addresses instead of one. Writing a
+    /// variable-length BINARY field with 10x the docs must not grow `.dvm` by
+    /// anything like 10x -- with the block shift of 0 this port used to write,
+    /// it grew by exactly 21 bytes per extra doc.
+    #[test]
+    fn direct_monotonic_block_shift_keeps_meta_size_constant() {
+        let id = [1u8; ID_LENGTH];
+        let meta_len = |docs: usize| {
+            let values: Vec<Vec<u8>> = (0..docs).map(|i| vec![b'x'; 1 + i % 7]).collect();
+            let (meta, _, _) =
+                write_single_dense_binary_field(0, &values, docs as i32, &id, "").unwrap();
+            meta.len()
+        };
+        let small = meta_len(100);
+        let large = meta_len(1_000);
+        assert_eq!(
+            small, large,
+            "both doc counts fit in one 2^16 address block, so `.dvm` must be the same size"
+        );
+        // And the addresses still decode: the same 1000-doc field round-trips.
+        let values: Vec<Vec<u8>> = (0..1_000).map(|i| vec![b'x'; 1 + i % 7]).collect();
+        let (meta, data, _) = write_single_dense_binary_field(0, &values, 1_000, &id, "").unwrap();
+        let (_, parsed) = parse_meta(&meta, &id, "", &binary_field_infos()).unwrap();
+        let entry = parsed.binary_entry(0).unwrap();
+        for (doc, want) in values.iter().enumerate() {
+            assert_eq!(
+                binary_value(&data, entry, doc as i32).unwrap(),
+                Some(want.as_slice()),
+                "doc {doc}"
             );
         }
     }
@@ -4791,6 +6164,266 @@ mod tests {
     fn read_sorted_field(meta_bytes: &[u8], id: &[u8; ID_LENGTH], fis: &FieldInfos) -> SortedEntry {
         let (_, meta) = parse_meta(meta_bytes, id, "", fis).unwrap();
         meta.sorted_entry(0).unwrap().clone()
+    }
+
+    #[test]
+    fn an_overflowing_values_region_is_a_decode_error_not_an_overflow() {
+        // `valuesOffset` and `valuesLength` are two independent `i64`s in
+        // `.dvm` with nothing on the wire relating them. `offset + length`
+        // panics in a debug build and, in a release build, wraps to a
+        // *plausible in-range* offset that decodes valid-looking doc values
+        // out of the wrong part of `.dvd` -- the same silent-wrong-answer
+        // shape c24 found in `norms::read_value_at_ordinal`.
+        let id = [11u8; ID_LENGTH];
+        let (meta_bytes, data_bytes, _) =
+            write_single_dense_numeric_field(0, &[1i64, 2, 3, 4], 4, &id, "").unwrap();
+        let (_, meta) = parse_meta(&meta_bytes, &id, "", &field_infos_with(&[0])).unwrap();
+        let mut entry = meta.numeric_entry(0).unwrap().clone();
+        assert_ne!(entry.bits_per_value, 0, "the test needs a packed field");
+        entry.values_offset = i64::MAX;
+        entry.values_length = 1;
+        assert!(numeric_value(&data_bytes, &entry, 0).is_err());
+    }
+
+    #[test]
+    fn an_overflowing_docs_with_field_region_is_a_decode_error_not_an_overflow() {
+        // Same two-independent-`i64`s shape on the `IndexedDISI` region, the
+        // one every sparse field's per-doc lookup goes through.
+        let id = [12u8; ID_LENGTH];
+        let (meta_bytes, data_bytes, _) =
+            write_single_sparse_numeric_field(0, &[(0i32, 5i64), (3, 7)], 4, &id, "").unwrap();
+        let (_, meta) = parse_meta(&meta_bytes, &id, "", &field_infos_with(&[0])).unwrap();
+        let mut entry = meta.numeric_entry(0).unwrap().clone();
+        assert!(!entry.is_dense() && !entry.is_empty_field());
+        entry.docs_with_field_offset = i64::MAX;
+        entry.docs_with_field_length = 1;
+        assert!(numeric_value(&data_bytes, &entry, 0).is_err());
+    }
+
+    #[test]
+    fn a_sorted_numeric_address_range_past_the_value_array_is_a_decode_error_not_a_terabyte_vec() {
+        // A multi-valued field's address array names a `[start, end)` range
+        // in the field's flat value array. Both ends come out of a
+        // `direct_monotonic` array in `.dvd`, and nothing tied them to the
+        // `numValues` the entry declares. For a *constant*-encoded field
+        // (`bitsPerValue == 0`) `decode_value` never indexes anything and so
+        // never fails, and the `collect` below therefore builds one `i64` per
+        // element of whatever range the file named -- 8 TB here, which is an
+        // allocation **abort** that `catch_unwind` at the FFI boundary cannot
+        // intercept.
+        //
+        // The address array is built through `direct_monotonic`'s own public
+        // writer, so this is a range a real `.dvd` can carry, not a
+        // hand-forged `Meta`.
+        let (addr_meta_bytes, addr_data) = direct_monotonic::write(&[0i64, 1 << 40], 10);
+        let mut meta_input = SliceInput::new(&addr_meta_bytes);
+        let addr_meta = direct_monotonic::load_meta(&mut meta_input, 2, 10).unwrap();
+        let entry = SortedNumericEntry {
+            field_number: 0,
+            numeric: NumericEntry {
+                field_number: 0,
+                docs_with_field_offset: DOCS_WITH_FIELD_DENSE,
+                docs_with_field_length: 0,
+                jump_table_entry_count: -1,
+                dense_rank_power: 0,
+                num_values: 2,
+                table: None,
+                bits_per_value: 0,
+                min_value: 42,
+                gcd: 1,
+                values_offset: 0,
+                values_length: 0,
+                block_shift: None,
+                value_jump_table_offset: -1,
+            },
+            num_docs_with_field: 1,
+            addresses: Some(MultiValueAddresses {
+                offset: 0,
+                length: addr_data.len() as i64,
+                meta: addr_meta,
+            }),
+        };
+        let err = sorted_numeric_values(&addr_data, &entry, 0).unwrap_err();
+        assert!(
+            matches!(err, Error::CorruptAddressRange { start: 0, end, .. } if end == 1 << 40),
+            "{err}"
+        );
+    }
+
+    /// Recomputes the trailing 8-byte CRC32 of a codec-footer-terminated
+    /// buffer in place, so a corruption sweep cannot be "caught" by the
+    /// checksum and only semantic invariants can fire (c15/c19/c25's shape).
+    fn resign_footer(buf: &mut [u8]) {
+        let len = buf.len();
+        let checksum = crc32fast::hash(&buf[..len - 8]) as u64;
+        buf[len - 8..].copy_from_slice(&checksum.to_be_bytes());
+    }
+
+    /// Re-signed single-byte corruption sweep over `.dvm` and `.dvd` for
+    /// every doc-values type this module can write.
+    ///
+    /// The point is not the rejection rate (a great many single-bit flips
+    /// produce a self-consistent file that decodes to different but
+    /// well-formed values -- that is what a checksum is for). The point is
+    /// that **nothing panics and nothing aborts**: `clippy::
+    /// arithmetic_side_effects` covers arithmetic and shifts, not indexing,
+    /// slicing or allocation, and c25 found two defects of exactly that kind
+    /// in an already-lint-clean file. An allocation abort is the worst case,
+    /// because `catch_unwind` at the FFI boundary cannot intercept it.
+    #[test]
+    fn every_resigned_single_byte_dvm_and_dvd_corruption_is_an_error_or_a_clean_decode() {
+        let id = [77u8; ID_LENGTH];
+        let footer = codec_util::FOOTER_LENGTH;
+
+        // NUMERIC (dense), BINARY (variable width, so an address array),
+        // SORTED (a terms dictionary), SORTED_NUMERIC and SORTED_SET (both
+        // multi-valued, so a second address array) -- five different meta
+        // shapes over the same sweep.
+        let numeric = write_single_dense_numeric_field(0, &[7i64, 7, 9, 11], 4, &id, "").unwrap();
+        let binary = write_single_dense_binary_field(
+            0,
+            &[b"a".to_vec(), b"bb".to_vec(), b"ccc".to_vec()],
+            3,
+            &id,
+            "",
+        )
+        .unwrap();
+        let sorted = write_single_dense_sorted_field(
+            0,
+            &[b"banana".to_vec(), b"apple".to_vec(), b"cherry".to_vec()],
+            3,
+            &id,
+            "",
+        )
+        .unwrap();
+        let sorted_numeric =
+            write_single_dense_sorted_numeric_field(0, &[vec![1i64, 2], vec![3]], &id, "").unwrap();
+        let sorted_set = write_single_dense_sorted_set_field(
+            0,
+            &[vec![b"x".to_vec(), b"y".to_vec()], vec![b"z".to_vec()]],
+            2,
+            &id,
+            "",
+        )
+        .unwrap();
+
+        let mut total = 0usize;
+        let mut rejected = 0usize;
+
+        let mut sweep = |meta: &[u8], data: &[u8], fis: &FieldInfos, max_doc: i32| {
+            let read = |meta: &[u8], data: &[u8]| -> Result<()> {
+                let (_, m) = parse_meta(meta, &id, "", fis)?;
+                check_data_header_footer(data, &id, "")?;
+                for doc in 0..max_doc {
+                    if let Some(e) = m.numeric_entry(0) {
+                        numeric_value(data, e, doc)?;
+                    }
+                    if let Some(e) = m.binary_entry(0) {
+                        binary_value(data, e, doc)?;
+                    }
+                    if let Some(e) = m.sorted_entry(0) {
+                        sorted_ord(data, e, doc)?;
+                        terms_dict::decode_all_terms(data, &e.terms)?;
+                    }
+                    if let Some(e) = m.sorted_numeric_entry(0) {
+                        sorted_numeric_values(data, e, doc)?;
+                    }
+                    if let Some(e) = m.sorted_set_entry(0) {
+                        match &e.kind {
+                            SortedSetKind::Single(s) => {
+                                sorted_ord(data, s, doc)?;
+                                terms_dict::decode_all_terms(data, &s.terms)?;
+                            }
+                            SortedSetKind::Multi { ords, terms } => {
+                                sorted_numeric_values(data, ords, doc)?;
+                                terms_dict::decode_all_terms(data, terms)?;
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            };
+            for off in 0..meta.len() - footer {
+                for mask in [0x01u8, 0x80] {
+                    let mut corrupt = meta.to_vec();
+                    corrupt[off] ^= mask;
+                    resign_footer(&mut corrupt);
+                    total += 1;
+                    if read(&corrupt, data).is_err() {
+                        rejected += 1;
+                    }
+                }
+            }
+            for off in 0..data.len() - footer {
+                for mask in [0x01u8, 0x80] {
+                    let mut corrupt = data.to_vec();
+                    corrupt[off] ^= mask;
+                    resign_footer(&mut corrupt);
+                    total += 1;
+                    if read(meta, &corrupt).is_err() {
+                        rejected += 1;
+                    }
+                }
+            }
+        };
+
+        // The four sparse encoders this batch added are the only paths that
+        // emit an `IndexedDISI` region, so without them the sweep never
+        // exercises the sparse *reader* either (`DisiCursor` + rank
+        // ordinals). One multi-field container covers all four at once.
+        let sparse = write_dense_fields(
+            &[
+                DenseField::SparseBinary(0, &[(0, b"aa".to_vec()), (3, b"cccc".to_vec())]),
+                DenseField::SparseSorted(1, &[(1, b"pear".to_vec()), (4, b"apple".to_vec())]),
+                DenseField::SparseSortedNumeric(2, &[(0, vec![7, 9]), (2, vec![4])]),
+                DenseField::SparseSortedSet(
+                    3,
+                    &[
+                        (2, vec![b"x".to_vec(), b"y".to_vec()]),
+                        (4, vec![b"z".to_vec()]),
+                    ],
+                ),
+            ],
+            5,
+            &id,
+            "",
+        )
+        .unwrap();
+
+        sweep(&numeric.0, &numeric.1, &field_infos_with(&[0]), 4);
+        let mut fis = field_infos_with(&[0]);
+        fis.fields[0].doc_values_type = DocValuesType::Binary;
+        sweep(&binary.0, &binary.1, &fis, 3);
+        sweep(&sorted.0, &sorted.1, &sorted_field_infos(), 3);
+        let mut fis = field_infos_with(&[0]);
+        fis.fields[0].doc_values_type = DocValuesType::SortedNumeric;
+        sweep(&sorted_numeric.0, &sorted_numeric.1, &fis, 2);
+        let mut fis = field_infos_with(&[0]);
+        fis.fields[0].doc_values_type = DocValuesType::SortedSet;
+        sweep(&sorted_set.0, &sorted_set.1, &fis, 2);
+        let sparse_fis = mixed_field_infos(
+            &[0, 1, 2, 3],
+            &[
+                DocValuesType::Binary,
+                DocValuesType::Sorted,
+                DocValuesType::SortedNumeric,
+                DocValuesType::SortedSet,
+            ],
+        );
+        sweep(&sparse.0, &sparse.1, &sparse_fis, 5);
+
+        // Measured when this was written: 2 151 of 4 298 (50%), over six
+        // containers covering all five doc-values types in their dense shape
+        // and four of them in their sparse shape. For scale, c19/c25
+        // measured `.nvm` at 85/99, `.tip` at 44/99, `.dvd` at 18/99 and
+        // `.tvd` at 15/43. The floor is what the assertion is for; the exact
+        // number is recorded so a change that stops bounding something is
+        // visible in the diff rather than only in a crash.
+        assert_eq!(total, 4298);
+        assert!(
+            rejected >= 2100,
+            "only {rejected} of {total} re-signed .dvm/.dvd corruptions were rejected"
+        );
     }
 
     fn resolved_sorted_values(
@@ -5671,6 +7304,59 @@ mod tests {
         }
     }
 
+    /// `Lucene90DocValuesConsumer.writeValues`' `numDocsWithValue == 0`
+    /// branch: `meta[-2, 0]`, no `IndexedDISI` structure at all. This port
+    /// reaches it whenever a doc-values update generation *resets* every
+    /// document's value -- `update_doc_values` with a `None` value against a
+    /// term that matches the whole segment.
+    #[test]
+    fn a_sparse_numeric_field_with_no_values_writes_javas_empty_marker() {
+        let id = [111u8; ID_LENGTH];
+        let (meta_bytes, data_bytes, _) =
+            write_single_sparse_numeric_field(0, &[], 5, &id, "").unwrap();
+        let fis = field_infos_with(&[0]);
+        let (_, meta) = parse_meta(&meta_bytes, &id, "", &fis).unwrap();
+        let entry = meta.numeric_entry(0).unwrap();
+        assert!(entry.is_empty_field(), "docsWithFieldOffset must be -2");
+        assert!(!entry.is_dense());
+        assert_eq!(entry.docs_with_field_length, 0);
+        assert_eq!(entry.jump_table_entry_count, -1);
+        assert_eq!(entry.dense_rank_power, 0xFF, "denseRankPower is Java's -1");
+        assert_eq!(entry.num_values, 0);
+        for doc in 0..5 {
+            assert_eq!(numeric_value(&data_bytes, entry, doc).unwrap(), None);
+        }
+    }
+
+    /// The BINARY twin. Java's `minLength`/`maxLength` trackers start at
+    /// `(Integer.MAX_VALUE, 0)` and stay there, which is what it writes -- and
+    /// what keeps `maxLength > minLength` false so no address array follows.
+    #[test]
+    fn a_sparse_binary_field_with_no_values_writes_javas_empty_marker() {
+        let id = [112u8; ID_LENGTH];
+        let (meta_bytes, data_bytes, _) =
+            write_single_sparse_binary_field(0, &[], 4, &id, "").unwrap();
+        let fis = FieldInfos {
+            fields: vec![FieldInfo {
+                doc_values_type: crate::field_infos::DocValuesType::Binary,
+                ..numeric_field(0)
+            }],
+        };
+        let (_, meta) = parse_meta(&meta_bytes, &id, "", &fis).unwrap();
+        let entry = meta.binary_entry(0).unwrap();
+        assert!(entry.is_empty_field());
+        assert_eq!(entry.num_docs_with_field, 0);
+        assert_eq!(entry.min_length, i32::MAX);
+        assert_eq!(entry.max_length, 0);
+        assert!(
+            entry.addresses.is_none(),
+            "maxLength > minLength is false, so no address array is written"
+        );
+        for doc in 0..4 {
+            assert_eq!(binary_value(&data_bytes, entry, doc).unwrap(), None);
+        }
+    }
+
     #[test]
     fn write_dense_fields_single_field_matches_write_single_dense_numeric_field() {
         let id = [94u8; ID_LENGTH];
@@ -5775,6 +7461,224 @@ mod tests {
                 .unwrap();
             assert_eq!(&dict[ord as usize], want);
         }
+    }
+
+    #[test]
+    fn write_dense_fields_all_four_sparse_types_together_round_trip() {
+        // c26's blocker: `DocValuesConsumer.getMerged*DocValues` drops a
+        // source reader that has no column for the field, so merging an
+        // ordinary index that started writing a doc-values field partway
+        // through its life produces a *sparse* column for every one of the
+        // five types. Only NUMERIC could be expressed here before, so
+        // `execute_merge` had to fail such a merge outright.
+        let id = [121u8; ID_LENGTH];
+        let max_doc = 5i32;
+        let binary: Vec<(i32, Vec<u8>)> = vec![(0, b"aa".to_vec()), (3, b"cccc".to_vec())];
+        let sorted: Vec<(i32, Vec<u8>)> = vec![(1, b"pear".to_vec()), (4, b"apple".to_vec())];
+        let sorted_numeric: Vec<(i32, Vec<i64>)> = vec![(0, vec![7, 9]), (2, vec![4])];
+        let sorted_set: Vec<(i32, Vec<Vec<u8>>)> = vec![
+            (2, vec![b"x".to_vec(), b"y".to_vec()]),
+            (4, vec![b"z".to_vec()]),
+        ];
+
+        let (meta_bytes, data_bytes, _) = write_dense_fields(
+            &[
+                DenseField::SparseBinary(0, &binary),
+                DenseField::SparseSorted(1, &sorted),
+                DenseField::SparseSortedNumeric(2, &sorted_numeric),
+                DenseField::SparseSortedSet(3, &sorted_set),
+            ],
+            max_doc,
+            &id,
+            "",
+        )
+        .unwrap();
+
+        let fis = mixed_field_infos(
+            &[0, 1, 2, 3],
+            &[
+                DocValuesType::Binary,
+                DocValuesType::Sorted,
+                DocValuesType::SortedNumeric,
+                DocValuesType::SortedSet,
+            ],
+        );
+        let (_, meta) = parse_meta(&meta_bytes, &id, "", &fis).unwrap();
+
+        let binary_entry = meta.binary_entry(0).unwrap();
+        for doc in 0..max_doc {
+            let want = binary
+                .iter()
+                .find(|(d, _)| *d == doc)
+                .map(|(_, v)| v.as_slice());
+            assert_eq!(binary_value(&data_bytes, binary_entry, doc).unwrap(), want);
+        }
+
+        let sorted_entry = meta.sorted_entry(1).unwrap();
+        let dict = terms_dict::decode_all_terms(&data_bytes, &sorted_entry.terms).unwrap();
+        for doc in 0..max_doc {
+            let got = sorted_ord(&data_bytes, sorted_entry, doc)
+                .unwrap()
+                .map(|ord| dict[ord as usize].clone());
+            let want = sorted
+                .iter()
+                .find(|(d, _)| *d == doc)
+                .map(|(_, v)| v.clone());
+            assert_eq!(got, want, "sorted doc {doc}");
+        }
+
+        let sn_entry = meta.sorted_numeric_entry(2).unwrap();
+        for doc in 0..max_doc {
+            let want: Vec<i64> = sorted_numeric
+                .iter()
+                .find(|(d, _)| *d == doc)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default();
+            assert_eq!(
+                sorted_numeric_values(&data_bytes, sn_entry, doc).unwrap(),
+                want,
+                "sorted-numeric doc {doc}"
+            );
+        }
+
+        let ss_entry = meta.sorted_set_entry(3).unwrap();
+        let SortedSetKind::Multi { ords, terms } = &ss_entry.kind else {
+            panic!("a sparse SORTED_SET always takes the multiValued shape");
+        };
+        let ss_dict = terms_dict::decode_all_terms(&data_bytes, terms).unwrap();
+        for doc in 0..max_doc {
+            let got: Vec<Vec<u8>> = sorted_numeric_values(&data_bytes, ords, doc)
+                .unwrap()
+                .into_iter()
+                .map(|ord| ss_dict[ord as usize].clone())
+                .collect();
+            let mut want: Vec<Vec<u8>> = sorted_set
+                .iter()
+                .find(|(d, _)| *d == doc)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default();
+            want.sort_unstable();
+            want.dedup();
+            assert_eq!(got, want, "sorted-set doc {doc}");
+        }
+    }
+
+    #[test]
+    fn a_sparse_column_that_covers_every_document_writes_javas_dense_marker() {
+        // `Lucene90DocValuesConsumer` writes the `-1` docs-with-field marker
+        // whenever `numDocsWithField == maxDoc` -- `addBinaryField` does it
+        // inline and the other four types get it from `writeValues`. Before
+        // this batch only the NUMERIC sparse writer collapsed; the other four
+        // emitted a full `IndexedDISI` region for a complete column, which is
+        // readable but is not a byte sequence real Lucene ever produces.
+        let id = [122u8; ID_LENGTH];
+        let values: Vec<Vec<u8>> = vec![b"aa".to_vec(), b"bbb".to_vec()];
+        let pairs: Vec<(i32, Vec<u8>)> = vec![(0, values[0].clone()), (1, values[1].clone())];
+
+        let (sparse_meta, sparse_data, _) =
+            write_single_sparse_binary_field(0, &pairs, 2, &id, "").unwrap();
+        let (dense_meta, dense_data, _) =
+            write_single_dense_binary_field(0, &values, 2, &id, "").unwrap();
+        assert_eq!(sparse_meta, dense_meta);
+        assert_eq!(sparse_data, dense_data);
+
+        let sorted_pairs: Vec<(i32, Vec<u8>)> = vec![(0, b"b".to_vec()), (1, b"a".to_vec())];
+        let sorted_values: Vec<Vec<u8>> = vec![b"b".to_vec(), b"a".to_vec()];
+        let (sparse_meta, sparse_data, _) =
+            write_single_sparse_sorted_field(0, &sorted_pairs, 2, &id, "").unwrap();
+        let (dense_meta, dense_data, _) =
+            write_single_dense_sorted_field(0, &sorted_values, 2, &id, "").unwrap();
+        assert_eq!(sparse_meta, dense_meta);
+        assert_eq!(sparse_data, dense_data);
+
+        // SORTED_NUMERIC: identical bytes, since neither shape has a
+        // `multiValued` flag to disagree about.
+        let sn_pairs: Vec<(i32, Vec<i64>)> = vec![(0, vec![1, 2]), (1, vec![3])];
+        let sn_values: Vec<Vec<i64>> = vec![vec![1, 2], vec![3]];
+        let (sparse_meta, sparse_data, _) =
+            write_single_sparse_sorted_numeric_field(0, &sn_pairs, 2, &id, "").unwrap();
+        let (dense_meta, dense_data, _) =
+            write_single_dense_sorted_numeric_field(0, &sn_values, &id, "").unwrap();
+        assert_eq!(sparse_meta, dense_meta);
+        assert_eq!(sparse_data, dense_data);
+
+        // SORTED_SET is the documented exception: the sparse writer always
+        // takes the `multiValued = 1` shape, where the dense one collapses to
+        // a plain `SortedEntry` when every doc has exactly one ordinal. The
+        // *docs-with-field* marker still has to agree, which is what this
+        // asserts -- both entries must carry `-1`, not an `IndexedDISI`
+        // region.
+        let ss_pairs: Vec<(i32, Vec<Vec<u8>>)> = vec![
+            (0, vec![b"x".to_vec(), b"y".to_vec()]),
+            (1, vec![b"z".to_vec()]),
+        ];
+        let ss_values: Vec<Vec<Vec<u8>>> =
+            vec![vec![b"x".to_vec(), b"y".to_vec()], vec![b"z".to_vec()]];
+        let (sparse_meta, sparse_data, _) =
+            write_single_sparse_sorted_set_field(0, &ss_pairs, 2, &id, "").unwrap();
+        let (dense_meta, dense_data, _) =
+            write_single_dense_sorted_set_field(0, &ss_values, 2, &id, "").unwrap();
+        assert_eq!(sparse_meta, dense_meta);
+        assert_eq!(sparse_data, dense_data);
+
+        let fis = mixed_field_infos(&[0], &[DocValuesType::SortedSet]);
+        let (_, meta) = parse_meta(&sparse_meta, &id, "", &fis).unwrap();
+        let SortedSetKind::Multi { ords, .. } = &meta.sorted_set_entry(0).unwrap().kind else {
+            panic!("multiValued shape expected");
+        };
+        assert_eq!(ords.numeric.docs_with_field_offset, DOCS_WITH_FIELD_DENSE);
+    }
+
+    #[test]
+    fn sparse_multi_valued_fields_with_no_values_write_javas_empty_marker() {
+        let id = [123u8; ID_LENGTH];
+        let (meta_bytes, data_bytes, _) = write_dense_fields(
+            &[
+                DenseField::SparseSortedNumeric(0, &[]),
+                DenseField::SparseSortedSet(1, &[]),
+            ],
+            4,
+            &id,
+            "",
+        )
+        .unwrap();
+        let fis = mixed_field_infos(
+            &[0, 1],
+            &[DocValuesType::SortedNumeric, DocValuesType::SortedSet],
+        );
+        let (_, meta) = parse_meta(&meta_bytes, &id, "", &fis).unwrap();
+        let sn = meta.sorted_numeric_entry(0).unwrap();
+        assert_eq!(sn.numeric.docs_with_field_offset, DOCS_WITH_FIELD_EMPTY);
+        for doc in 0..4 {
+            assert!(sorted_numeric_values(&data_bytes, sn, doc)
+                .unwrap()
+                .is_empty());
+        }
+        let ss = meta.sorted_set_entry(1).unwrap();
+        let SortedSetKind::Multi { ords, .. } = &ss.kind else {
+            panic!("multiValued shape expected");
+        };
+        assert_eq!(ords.numeric.docs_with_field_offset, DOCS_WITH_FIELD_EMPTY);
+    }
+
+    #[test]
+    fn sparse_variants_reject_a_duplicate_or_out_of_range_doc_id() {
+        let id = [124u8; ID_LENGTH];
+        let dup: Vec<(i32, Vec<u8>)> = vec![(1, b"a".to_vec()), (1, b"b".to_vec())];
+        assert!(matches!(
+            write_dense_fields(&[DenseField::SparseBinary(0, &dup)], 4, &id, ""),
+            Err(WriteError::DocIdsNotAscending(1))
+        ));
+        let oob: Vec<(i32, Vec<i64>)> = vec![(9, vec![1])];
+        assert!(matches!(
+            write_dense_fields(&[DenseField::SparseSortedNumeric(0, &oob)], 4, &id, ""),
+            Err(WriteError::DocIdOutOfRange(9, 4))
+        ));
+        let empty: Vec<(i32, Vec<Vec<u8>>)> = vec![(1, Vec::new())];
+        assert!(matches!(
+            write_dense_fields(&[DenseField::SparseSortedSet(0, &empty)], 4, &id, ""),
+            Err(WriteError::EmptyMultiValuedDoc(1))
+        ));
     }
 
     #[test]

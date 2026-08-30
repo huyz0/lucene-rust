@@ -349,9 +349,68 @@ public class VerifyDocValues {
       }
     }
     failures += checkDocCount(segment, expected.size(), seenDocs);
+    failures += verifyLookupTerm(producer, fieldInfo, segment, expected);
     if (failures == 0) {
       System.out.println(
           segment + ": all " + expected.size() + " doc values verified against real Lucene");
+    }
+    return failures;
+  }
+
+  /**
+   * Round-trips every distinct term through {@link SortedDocValues#lookupTerm}, which is the only
+   * path that exercises the terms dictionary's reverse index ({@code writeTermsIndex}'s sampled
+   * sort keys) and block seek -- {@code lookupOrd} alone never touches either. Also checks that a
+   * term the dictionary does not hold comes back as a negative insertion point.
+   */
+  static int verifyLookupTerm(
+      DocValuesProducer producer, FieldInfo fieldInfo, String segment, List<byte[]> expected)
+      throws IOException {
+    HexFormat hex = HexFormat.of();
+    SortedDocValues values = producer.getSorted(fieldInfo);
+    int failures = 0;
+
+    // The dictionary is the distinct values, sorted -- exactly what
+    // `lookupOrd(0..getValueCount())` walks.
+    java.util.TreeSet<BytesRef> distinct = new java.util.TreeSet<>();
+    for (byte[] v : expected) {
+      distinct.add(new BytesRef(v.clone()));
+    }
+    if (distinct.size() != values.getValueCount()) {
+      System.out.println(
+          "MISMATCH "
+              + segment
+              + " getValueCount: expected="
+              + distinct.size()
+              + " got="
+              + values.getValueCount());
+      failures++;
+    }
+
+    int ord = 0;
+    for (BytesRef term : distinct) {
+      int got = values.lookupTerm(term);
+      if (got != ord) {
+        System.out.println(
+            "MISMATCH "
+                + segment
+                + " lookupTerm("
+                + hex.formatHex(term.bytes, term.offset, term.offset + term.length)
+                + "): expected ord="
+                + ord
+                + " got="
+                + got);
+        failures++;
+      }
+      ord++;
+    }
+
+    BytesRef absent = new BytesRef("zzz-not-in-this-dictionary");
+    int got = values.lookupTerm(absent);
+    if (got >= 0) {
+      System.out.println(
+          "MISMATCH " + segment + " lookupTerm(absent term): expected negative, got " + got);
+      failures++;
     }
     return failures;
   }

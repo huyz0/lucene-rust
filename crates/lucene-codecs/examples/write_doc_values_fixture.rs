@@ -16,6 +16,11 @@
 //! doc-values skip indexes, multiple fields in one triple, etc).
 //!
 //! Run: `cargo run -p lucene-codecs --example write_doc_values_fixture -- <dir>`
+// Test-support code opts out of the arithmetic gate at the file boundary:
+// the gate exists for values read off disk in production decode paths, not
+// for a fixture builder's own index arithmetic. See
+// `docs/arithmetic-gate.md`.
+#![allow(clippy::arithmetic_side_effects)]
 
 use lucene_codecs::doc_values;
 use lucene_store::{DataOutput, Directory, FsDirectory};
@@ -88,6 +93,27 @@ fn main() {
         b"banana".to_vec(),
     ];
 
+    // SORTED: `_10`, a 1500-term dictionary -- the terms dict's block and
+    // reverse-index structure only becomes non-trivial past its own
+    // thresholds, and `_7`'s three terms clear neither. 1500 terms is 24
+    // LZ4-compressed 64-term blocks (so `addTermsDict`'s flush-the-previous-
+    // block path runs 23 times, not zero) and crosses
+    // `TERMS_DICT_REVERSE_INDEX_SHIFT` (1024) once, so `writeTermsIndex`
+    // writes real `StringHelper.sortKeyLength` sort keys rather than the
+    // single empty one a small dictionary produces. Each term is a long
+    // shared prefix, a 5-digit ordinal, and a long tail, which puts every
+    // adjacent pair past both of `addTermsDict`'s escape thresholds
+    // (`prefixLength >= 15` and `suffixLength >= 16`).
+    //
+    // This is the only segment that exercises this port's terms-dict writer
+    // against real Lucene's `TermsDict` reader, including the fact that this
+    // port's LZ4 has no preset-dictionary compressor (it emits a plain block
+    // where Java emits one compressed against the block's first term; Java's
+    // decompressor accepts both).
+    let big_sorted_values: Vec<Vec<u8>> = (0..1500)
+        .map(|i| format!("shared-prefix-{i:05}-common-tail-bytes").into_bytes())
+        .collect();
+
     // SORTED_SET: `_8` every doc has exactly one distinct value (the
     // `multiValued = false` collapse case, same shape as SORTED), `_9` a mix
     // of 1-2 values per doc sharing a dictionary, including a doc whose raw
@@ -107,7 +133,7 @@ fn main() {
     let dir = FsDirectory::open(&out_dir);
     let mut manifest = std::fs::File::create(format!("{out_dir}/manifest.properties")).unwrap();
     writeln!(manifest, "id_hex={}", hex(&SEGMENT_ID)).unwrap();
-    writeln!(manifest, "segments=_0,_1,_2,_3,_4,_5,_6,_7,_8,_9").unwrap();
+    writeln!(manifest, "segments=_0,_1,_2,_3,_4,_5,_6,_7,_8,_9,_10").unwrap();
 
     for (name, seg_values) in numeric_segments {
         let seg_max_doc = seg_values.len() as i32;
@@ -177,23 +203,23 @@ fn main() {
         writeln!(manifest, "{name}.values={}", rendered.join(";")).unwrap();
     }
 
-    {
-        let seg_max_doc = sorted_values.len() as i32;
+    for (name, seg_values) in [("_7", &sorted_values), ("_10", &big_sorted_values)] {
+        let seg_max_doc = seg_values.len() as i32;
         let (meta, data, skip_index) = doc_values::write_single_dense_sorted_field(
             FIELD_NUMBER,
-            &sorted_values,
+            seg_values,
             seg_max_doc,
             &SEGMENT_ID,
             "",
         )
         .expect("single dense sorted field write");
-        write_triple(&dir, "_7", &meta, &data, &skip_index);
+        write_triple(&dir, name, &meta, &data, &skip_index);
 
-        writeln!(manifest, "_7.type=SORTED").unwrap();
-        writeln!(manifest, "_7.max_doc={seg_max_doc}").unwrap();
-        writeln!(manifest, "_7.field_number={FIELD_NUMBER}").unwrap();
-        let rendered: Vec<String> = sorted_values.iter().map(|v| hex(v)).collect();
-        writeln!(manifest, "_7.values={}", rendered.join(";")).unwrap();
+        writeln!(manifest, "{name}.type=SORTED").unwrap();
+        writeln!(manifest, "{name}.max_doc={seg_max_doc}").unwrap();
+        writeln!(manifest, "{name}.field_number={FIELD_NUMBER}").unwrap();
+        let rendered: Vec<String> = seg_values.iter().map(|v| hex(v)).collect();
+        writeln!(manifest, "{name}.values={}", rendered.join(";")).unwrap();
     }
 
     for (name, seg_values) in [("_8", &sorted_set_single), ("_9", &sorted_set_multi)] {

@@ -179,17 +179,18 @@ fn regexp_composes_inside_boolean_query_must() {
     assert_eq!(c.docs, vec![0, 1]);
 }
 
-/// A malformed pattern (unsupported `~` complement syntax) surfaces as an
-/// `Err(Error::Regexp(_))`, not a panic or a silent empty match.
+/// A malformed pattern surfaces as an `Err(Error::Regexp(_))`, not a panic
+/// or a silent empty match.
 #[test]
 fn regexp_malformed_pattern_is_an_error_not_a_panic() {
     let (fields, doc, id, suffix) = open_segment();
     let doc_in = DocInput::open(&doc, &id, &suffix).expect("open .doc");
 
-    // `{n,m}` bounded repetition is now supported (see
-    // `crates/lucene-codecs/src/regexp.rs`); `~` (complement) remains
-    // deliberately unsupported, so it's what exercises this error path now.
-    let query = BooleanQuery::new().with_must([Clause::from(RegexpQuery::new("body", "a~b"))]);
+    // `~` is an ordinary literal in Lucene's `RegExp.ALL` grammar and no
+    // longer an error here either. An unterminated `(` is what real
+    // Lucene rejects ("expected ')' at position 4"), so that is what
+    // exercises this path now.
+    let query = BooleanQuery::new().with_must([Clause::from(RegexpQuery::new("body", "(cat"))]);
     let mut c = VecCollector::default();
     let result = search_boolean_query(
         &fields,

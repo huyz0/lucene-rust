@@ -5,22 +5,30 @@
 //! entirely Rust-side (a plain [`lucene_search::VecCollector`] -- no
 //! callback ever crosses back into the caller, per the `ffi-safety` skill).
 //!
-//! `live_docs` is always `None` here (no `.liv`/deletions FFI surface yet --
-//! deferred, tracked in `docs/parity.md`): every matched doc is reported.
+//! **Deletions**: every entry point here passes the segment handle's own
+//! `.liv` bitset (`SegmentHandle::live_docs`, attached by
+//! [`crate::segment::ffi_segment_set_live_docs`]) as `live_docs`, so a
+//! deleted document is never reported as a match. A segment whose live docs
+//! were never attached (or explicitly cleared) carries `None`, which is
+//! `lucene_search`'s own documented "this segment has no deletions"
+//! behavior -- correct for a segment with `del_gen == -1`, and the reason a
+//! caller with deletions **must** call `ffi_segment_set_live_docs` after
+//! opening the segment.
 //!
-//! **Nested `BooleanQuery` clauses (task #25)**: `lucene_search::BooleanQuery`'s
-//! `must`/`should`/`must_not` are now `Vec<Clause>` (a `Clause` is a `TermQuery` or
-//! a nested `BooleanQuery`, recursively -- see that crate's `query` module doc).
-//! This FFI surface deliberately keeps constructing only flat `Clause::Term`
-//! clauses from its four-parallel-array wire format -- `read_term_clauses` builds
-//! a `Vec<TermQuery>`, and `BooleanQuery::with_must`/`with_should`/`with_must_not`
-//! accept it unchanged (each `TermQuery` converts to `Clause::Term` via `Clause`'s
-//! `From<TermQuery>` impl), so no FFI-side code change was needed for this crate to
-//! keep compiling. Exposing nested-boolean *construction* over the C ABI (a
-//! `BooleanQuery` clause list containing another whole clause list, `Occur`-tagged)
-//! is a real wire-format design question of its own -- deferred here as a
-//! documented decision, not an oversight, since this task's scope is
-//! `lucene-search`'s own nested-clause support, not a new FFI capability.
+//! **The `BooleanQuery` wire format (M2 sweep batch `c13-ffi-surface`)**: one
+//! flat, `Occur`-tagged, parent-indexed clause array, decoded by
+//! [`read_boolean_query`] -- see that function's doc comment for the full
+//! table and for why the format is shaped this way. It replaced three
+//! separate `must`/`should`/`must_not` four-array clause lists, which could
+//! express neither `Occur.FILTER` (landed in `lucene_search` by
+//! `c11-occur-filter`, and 44% cheaper than the equivalent `MUST`) nor a
+//! nested `Clause::Boolean` (supported by `lucene_search` since task #25),
+//! and which would have needed a fresh C-ABI break per additional `Occur`.
+//! Under the new format an `Occur` and a clause kind are *values*, so the
+//! next one of either costs no ABI change at all. `minimum_should_match`
+//! (Java's `BooleanQuery.Builder.setMinimumNumberShouldMatch`) is exposed at
+//! the same time, per query and per nested clause -- it had no wire
+//! representation before either.
 //!
 //! ## Scored variants (task #30) -- `ffi_search_term_query_scored`/
 //! `ffi_search_boolean_query_scored`/`ffi_search_phrase_query_scored`
@@ -71,17 +79,17 @@
 //! exactly the same fallback `lucene_search`'s own scored functions already
 //! document for a bare `norms: None`.
 //!
-//! **`ffi_search_boolean_query_scored`'s clause list** is the same flat,
-//! `Clause::Term`-only four-parallel-array wire format as the unscored
-//! `ffi_search_boolean_query` above (see that section's doc comment for why
-//! nested/phrase clause construction isn't exposed over this C ABI yet) --
-//! its norms map is built from every distinct field name appearing in
-//! `must`/`should`/`must_not`'s flat term clauses.
+//! **`ffi_search_boolean_query_scored`'s clause list** is the same
+//! occur-tagged clause-array wire format as the unscored
+//! `ffi_search_boolean_query` above (see [`read_boolean_query`]) -- its norms
+//! map is built by [`clause_field_names`], which walks the whole decoded
+//! clause tree, nested `Clause::Boolean`s included, for every distinct
+//! `Clause::Term` field name.
 
 use std::collections::HashMap;
 use std::os::raw::c_char;
 
-use lucene_codecs::postings::{DocInput, PosInput};
+use lucene_codecs::postings::{DocInput, PayInput, PosInput};
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::{
     search_boolean_query, search_boolean_query_scored, search_boolean_query_scored_maxscore,
@@ -91,9 +99,9 @@ use lucene_search::{
 use lucene_search::{BooleanQuery, Clause, PhraseQuery, TermQuery, TopDocsCollector, VecCollector};
 
 use crate::error::{guard, set_last_error, FfiStatus};
-use crate::raw::{bytes_from_raw, str_from_raw};
+use crate::raw::{bytes_from_raw, str_from_raw, try_with_capacity};
 use crate::registry::{
-    lock_recovering, results, scored_results, segments, ResultsHandle, ScoredResultsHandle,
+    read_recovering, results, scored_results, segments, ResultsHandle, ScoredResultsHandle,
     SegmentHandle,
 };
 
@@ -186,7 +194,7 @@ pub unsafe extern "C" fn ffi_search_term_query(
         };
         let query = TermQuery::new(field, term.to_vec());
 
-        let segments = lock_recovering(segments());
+        let segments = read_recovering(segments());
         let segment = segments.get(segment_handle).ok_or_else(|| {
             set_last_error("ffi_search_term_query: unknown or already-closed segment handle");
             FfiStatus::InvalidHandle
@@ -215,15 +223,15 @@ pub unsafe extern "C" fn ffi_search_term_query(
         search_term_query(
             &segment.fields,
             doc_in.as_ref(),
-            None,
+            segment.live_docs.as_ref(),
             &query,
             &mut collector,
         )
         .map_err(map_search_error)?;
 
-        let handle = lock_recovering(results()).insert(ResultsHandle {
+        let handle = results().insert_checked(ResultsHandle {
             docs: collector.docs,
-        });
+        })?;
         // SAFETY: caller contract guarantees `out_results_handle` is valid for one write.
         unsafe {
             *out_results_handle = handle;
@@ -232,53 +240,394 @@ pub unsafe extern "C" fn ffi_search_term_query(
     })
 }
 
-/// Reads `count` `(field, term)` pairs from four parallel flat arrays into
-/// a `Vec<TermQuery>` -- the shared clause-array decoder for
-/// [`ffi_search_boolean_query`]'s `must`/`should`/`must_not` clause lists.
-/// `count == 0` is valid or `fields`/`field_lens`/`terms`/`term_lens` are
-/// null (and never dereferenced in that case).
+/// Real Lucene's `IndexSearcher.getMaxClauseCount()` default (`1024`), the
+/// cap `BooleanQuery.Builder.add` enforces by throwing `TooManyClauses`.
 ///
-/// `pub(crate)` (rather than private) so [`crate::directory_reader`]'s
-/// multi-segment boolean-query entry point (task #51) can reuse the exact
-/// same flat-array clause decoder instead of duplicating it.
-pub(crate) unsafe fn read_term_clauses(
-    fields: *const *const c_char,
-    field_lens: *const usize,
-    terms: *const *const u8,
-    term_lens: *const usize,
-    count: usize,
-) -> Result<Vec<TermQuery>, FfiStatus> {
-    if count == 0 {
-        return Ok(Vec::new());
+/// **Why the cap lives at this boundary**: this port's `BooleanQuery` has no
+/// builder and no cap of its own, so nothing else in the workspace refuses an
+/// arbitrarily large clause list -- and the only way one gets *built* from
+/// untrusted input is here, from a caller-supplied `count`. Without it a
+/// caller (or a rewritten prefix/wildcard query on the JVM side) can hand
+/// over a million clauses and get a million-clause query actually executed: a
+/// denial-of-service shape Java refuses outright.
+pub(crate) const MAX_CLAUSE_COUNT: usize = 1024;
+
+/// Rejects a `BooleanQuery` whose clause array is longer than
+/// [`MAX_CLAUSE_COUNT`].
+///
+/// **Per query, not per clause list.** Java's counter lives on the
+/// `BooleanQuery.Builder`, and every clause goes through the same `add`
+/// regardless of its `Occur`:
+/// `if (clauses.size() >= IndexSearcher.maxClauseCount) throw new TooManyClauses();`
+/// (`BooleanQuery.java`). The occur-tagged wire format
+/// [`read_boolean_query`] decodes makes that literal: there is one array, so
+/// one length to check, and the old hazard of three separately-capped lists
+/// adding up to `3 * MAX_CLAUSE_COUNT` cannot recur.
+///
+/// **Stricter than Java for a nested query**: Java would allow
+/// [`MAX_CLAUSE_COUNT`] clauses per nesting level (each level has its own
+/// `Builder`), where this counts the whole tree once. Deliberate -- the cap
+/// exists here as a denial-of-service guard on a caller-supplied count, and
+/// "1024 clauses total" is the bound that guard wants, not "1024 per level
+/// times however many levels the caller asked for".
+///
+/// Java's comparison is `>=` against the size *before* the add, i.e. the
+/// 1025th clause is the one that throws, so the largest accepted query has
+/// exactly [`MAX_CLAUSE_COUNT`] clauses -- which is what `>` against the
+/// total means here.
+pub(crate) fn check_clause_count(clause_count: usize) -> Result<(), FfiStatus> {
+    if clause_count > MAX_CLAUSE_COUNT {
+        set_last_error(format!(
+            "maxClauseCount is set to {MAX_CLAUSE_COUNT}, but this query has {clause_count} clauses"
+        ));
+        return Err(FfiStatus::InvalidArgument);
     }
-    if fields.is_null() || field_lens.is_null() || terms.is_null() || term_lens.is_null() {
-        return Err(FfiStatus::NullPointer);
-    }
-    let mut out = Vec::with_capacity(count);
-    for i in 0..count {
-        // SAFETY: caller contract guarantees each array is valid for `count`
-        // elements, and each element pair is valid for its paired length.
-        let (field, term) = unsafe {
-            let field_ptr = *fields.add(i);
-            let field_len = *field_lens.add(i);
-            let term_ptr = *terms.add(i);
-            let term_len = *term_lens.add(i);
-            (
-                str_from_raw(field_ptr, field_len)?,
-                bytes_from_raw(term_ptr, term_len)?,
-            )
-        };
-        out.push(TermQuery::new(field, term.to_vec()));
-    }
-    Ok(out)
+    Ok(())
 }
 
-/// Runs `search_boolean_query` against `segment_handle`. Each of
-/// `must`/`should`/`must_not` is passed as four parallel flat arrays
-/// (`*_fields`, `*_field_lens`, `*_terms`, `*_term_lens`) of length
-/// `*_count` -- element `i` is one `TermQuery` clause `(fields[i][..field_lens[i]],
-/// terms[i][..term_lens[i]])`. An empty clause bucket is `count == 0` with
-/// its four array pointers allowed to be null.
+/// `BooleanClause.Occur.MUST`'s ordinal in Java's own enum declaration order
+/// (`MUST, FILTER, SHOULD, MUST_NOT` -- `BooleanClause.java`). The wire
+/// format uses Java's ordinals rather than inventing its own numbering, so a
+/// JNI caller can send `occur.ordinal()` straight through.
+pub(crate) const OCCUR_MUST: u8 = 0;
+/// `BooleanClause.Occur.FILTER` -- "like `MUST` except that these clauses do
+/// not participate in scoring".
+pub(crate) const OCCUR_FILTER: u8 = 1;
+/// `BooleanClause.Occur.SHOULD`.
+pub(crate) const OCCUR_SHOULD: u8 = 2;
+/// `BooleanClause.Occur.MUST_NOT`.
+pub(crate) const OCCUR_MUST_NOT: u8 = 3;
+
+/// A leaf `TermQuery` clause: `clause_fields[i]`/`clause_terms[i]` are its
+/// field and its raw, already-analyzed term bytes.
+pub(crate) const CLAUSE_KIND_TERM: u8 = 0;
+/// A nested `BooleanQuery` clause: carries no field/term of its own (both may
+/// be null), and every clause naming index `i` in `clause_parents` is one of
+/// its children. `clause_params[i]` is its own `minimumNumberShouldMatch`.
+pub(crate) const CLAUSE_KIND_BOOLEAN: u8 = 1;
+
+/// The deepest `clause_parents` chain this boundary accepts.
+///
+/// **Not a Java limit** -- real Lucene has no explicit nesting cap, only
+/// `maxClauseCount`. It is a boundary-safety limit: a nested `BooleanQuery`
+/// is evaluated recursively (`lucene_search::resolve_clause_docs` recurses
+/// per `Clause::Boolean`), and dropping a `Box`-chained clause tree recurses
+/// too, so a caller-controlled nesting depth is a caller-controlled stack
+/// depth. A stack overflow is an **abort**, which `catch_unwind` cannot
+/// contain (see the `ffi-safety` skill and finding 4 of `b15-ffi-core`) --
+/// exactly the class of defect this crate refuses to leave reachable from a
+/// caller-supplied number. 32 is far past any query a real analyzer or
+/// query parser produces, and [`MAX_CLAUSE_COUNT`] independently bounds the
+/// total.
+pub(crate) const MAX_CLAUSE_DEPTH: usize = 32;
+
+/// One decoded clause, before it is attached to its parent.
+struct PendingClause<'a> {
+    occur: u8,
+    kind: u8,
+    field: &'a str,
+    term: &'a [u8],
+    parent: i32,
+}
+
+/// Appends `clause` to `parent`'s bucket for `occur`.
+fn push_clause(parent: &mut BooleanQuery, occur: u8, clause: Clause) {
+    match occur {
+        OCCUR_MUST => parent.must.push(clause),
+        OCCUR_FILTER => parent.filter.push(clause),
+        OCCUR_SHOULD => parent.should.push(clause),
+        // `read_boolean_query` rejects every other tag before this runs.
+        _ => parent.must_not.push(clause),
+    }
+}
+
+/// Decodes a whole `BooleanQuery` from this crate's **occur-tagged clause
+/// array** wire format -- the shared decoder behind every
+/// `ffi_search_boolean_query*` entry point and
+/// [`crate::explain::ffi_explain_boolean_query`].
+///
+/// # Wire format
+///
+/// One flat array of `clause_count` clauses, each described by the same
+/// index `i` across eight parallel arrays:
+///
+/// | array | type | meaning |
+/// |---|---|---|
+/// | `clause_occurs` | `u8` | [`OCCUR_MUST`]/[`OCCUR_FILTER`]/[`OCCUR_SHOULD`]/[`OCCUR_MUST_NOT`], i.e. Java's `Occur.ordinal()` |
+/// | `clause_kinds` | `u8` | [`CLAUSE_KIND_TERM`] or [`CLAUSE_KIND_BOOLEAN`] |
+/// | `clause_fields`/`clause_field_lens` | `(*const c_char, usize)` | the field name, for a `TERM` clause |
+/// | `clause_terms`/`clause_term_lens` | `(*const u8, usize)` | the raw term bytes, for a `TERM` clause |
+/// | `clause_parents` | `i32` | index of the enclosing `BOOLEAN` clause, or `-1` for a top-level clause. Must be `< i`. May be null, meaning "every clause is top-level" |
+/// | `clause_params` | `i32` | a `BOOLEAN` clause's own `minimumNumberShouldMatch`; must be `0` for a `TERM` clause. May be null, meaning "all zero" |
+///
+/// `minimum_should_match` is the *root* query's own
+/// `minimumNumberShouldMatch` (Java's
+/// `BooleanQuery.Builder.setMinimumNumberShouldMatch`).
+///
+/// # Why this shape, and not three more arrays
+///
+/// The previous wire format was three separate four-array clause lists
+/// (`must_*`, `should_*`, `must_not_*`). It could not express
+/// `Occur.FILTER` at all -- so a JVM caller could not build the cheaper,
+/// non-scoring filter clause `lucene_search::BooleanQuery::filter` has
+/// supported since the M2 sweep batch `c11-occur-filter` measured it 44%
+/// cheaper than the equivalent `MUST` -- and *adding* a fourth bucket would
+/// have been the second C-ABI break for the second `Occur`, with a fifth
+/// waiting for whatever came next. Tagging each clause with its own `Occur`
+/// makes an `Occur` a **value**, not a signature: `FILTER` cost one break
+/// (this one), and any further `Occur` costs none. The same reasoning gives
+/// `clause_kinds`: a new leaf clause kind that is `(field, term)`-shaped
+/// (`PrefixQuery`, `WildcardQuery`, `RegexpQuery`, `FuzzyQuery`,
+/// `TermInSetQuery`...) is a new tag value in an existing array, and
+/// `clause_parents` makes an arbitrarily nested clause tree expressible with
+/// no new arrays at all.
+///
+/// What would still cost an ABI change is a clause kind needing an attribute
+/// this format has no room for -- a `PhraseQuery`'s ordered term *list* and
+/// `f32` slop, a `BoostQuery`'s `f32` boost. `clause_params` covers the
+/// integer case (it is why nested `minimumNumberShouldMatch` needed no new
+/// array); an `f32` one would need a parallel `clause_float_params`. Recorded
+/// here so the next reader knows exactly where the format's edge is.
+///
+/// # Safety
+/// Every array must be valid for reads of `clause_count` elements (or null
+/// where the table above allows it, and when `clause_count == 0`); each
+/// `clause_fields[i]`/`clause_terms[i]` must be valid for its paired length.
+#[allow(clippy::too_many_arguments)]
+pub(crate) unsafe fn read_boolean_query(
+    clause_occurs: *const u8,
+    clause_kinds: *const u8,
+    clause_fields: *const *const c_char,
+    clause_field_lens: *const usize,
+    clause_terms: *const *const u8,
+    clause_term_lens: *const usize,
+    clause_parents: *const i32,
+    clause_params: *const i32,
+    clause_count: usize,
+    minimum_should_match: i32,
+) -> Result<BooleanQuery, FfiStatus> {
+    if minimum_should_match < 0 {
+        set_last_error(format!(
+            "minimumNumberShouldMatch {minimum_should_match} is negative"
+        ));
+        return Err(FfiStatus::InvalidArgument);
+    }
+    let mut root = BooleanQuery::new().with_minimum_should_match(minimum_should_match as usize);
+    if clause_count == 0 {
+        return Ok(root);
+    }
+    if clause_occurs.is_null() || clause_kinds.is_null() {
+        return Err(FfiStatus::NullPointer);
+    }
+    // SAFETY: caller contract guarantees both arrays are valid for
+    // `clause_count` elements.
+    let (occurs, kinds) = unsafe {
+        (
+            std::slice::from_raw_parts(clause_occurs, clause_count),
+            std::slice::from_raw_parts(clause_kinds, clause_count),
+        )
+    };
+    // `clause_parents`/`clause_params` are optional: null means the flat,
+    // all-top-level, all-default query that is by far the common case.
+    let parents: Option<&[i32]> = if clause_parents.is_null() {
+        None
+    } else {
+        // SAFETY: caller contract guarantees validity for `clause_count`.
+        Some(unsafe { std::slice::from_raw_parts(clause_parents, clause_count) })
+    };
+    let params: Option<&[i32]> = if clause_params.is_null() {
+        None
+    } else {
+        // SAFETY: caller contract guarantees validity for `clause_count`.
+        Some(unsafe { std::slice::from_raw_parts(clause_params, clause_count) })
+    };
+
+    let mut pending: Vec<PendingClause<'_>> = try_with_capacity(clause_count)?;
+    let mut depth: Vec<usize> = try_with_capacity(clause_count)?;
+    for i in 0..clause_count {
+        let occur = occurs[i];
+        if occur > OCCUR_MUST_NOT {
+            set_last_error(format!(
+                "clause {i}: unknown Occur tag {occur} (expected 0=MUST, 1=FILTER, 2=SHOULD, \
+                 3=MUST_NOT)"
+            ));
+            return Err(FfiStatus::InvalidArgument);
+        }
+        let kind = kinds[i];
+        if kind > CLAUSE_KIND_BOOLEAN {
+            set_last_error(format!(
+                "clause {i}: unknown clause kind {kind} (expected 0=TERM, 1=BOOLEAN)"
+            ));
+            return Err(FfiStatus::InvalidArgument);
+        }
+        let parent = parents.map_or(-1, |p| p[i]);
+        // A parent must already have been seen, which both rules out a cycle
+        // (a clause can never be its own ancestor) and guarantees the
+        // single reverse pass below sees every child before its parent.
+        if parent < -1 || parent >= i as i32 {
+            set_last_error(format!(
+                "clause {i}: parent index {parent} must be -1 (top level) or an earlier clause's \
+                 index"
+            ));
+            return Err(FfiStatus::InvalidArgument);
+        }
+        if parent >= 0 && kinds[parent as usize] != CLAUSE_KIND_BOOLEAN {
+            set_last_error(format!(
+                "clause {i}: parent clause {parent} is not a BOOLEAN clause, so it cannot contain \
+                 other clauses"
+            ));
+            return Err(FfiStatus::InvalidArgument);
+        }
+        let my_depth = if parent < 0 {
+            0
+        } else {
+            depth[parent as usize] + 1
+        };
+        if my_depth >= MAX_CLAUSE_DEPTH {
+            set_last_error(format!(
+                "clause {i}: nesting depth {} exceeds the maximum of {MAX_CLAUSE_DEPTH}",
+                my_depth + 1
+            ));
+            return Err(FfiStatus::InvalidArgument);
+        }
+        depth.push(my_depth);
+
+        let param = params.map_or(0, |p| p[i]);
+        let (field, term) = match kind {
+            CLAUSE_KIND_TERM => {
+                if param != 0 {
+                    set_last_error(format!(
+                        "clause {i}: clause_params must be 0 for a TERM clause (it is a BOOLEAN \
+                         clause's minimumNumberShouldMatch), got {param}"
+                    ));
+                    return Err(FfiStatus::InvalidArgument);
+                }
+                if clause_fields.is_null()
+                    || clause_field_lens.is_null()
+                    || clause_terms.is_null()
+                    || clause_term_lens.is_null()
+                {
+                    return Err(FfiStatus::NullPointer);
+                }
+                // SAFETY: caller contract guarantees each array is valid for
+                // `clause_count` elements, and each element pair is valid for
+                // its paired length.
+                unsafe {
+                    let field_ptr = *clause_fields.add(i);
+                    let field_len = *clause_field_lens.add(i);
+                    let term_ptr = *clause_terms.add(i);
+                    let term_len = *clause_term_lens.add(i);
+                    (
+                        str_from_raw(field_ptr, field_len)?,
+                        bytes_from_raw(term_ptr, term_len)?,
+                    )
+                }
+            }
+            _ => {
+                if param < 0 {
+                    set_last_error(format!(
+                        "clause {i}: minimumNumberShouldMatch {param} is negative"
+                    ));
+                    return Err(FfiStatus::InvalidArgument);
+                }
+                ("", &[][..])
+            }
+        };
+        pending.push(PendingClause {
+            occur,
+            kind,
+            field,
+            term,
+            parent,
+        });
+    }
+
+    // Every nested `BOOLEAN` clause, pre-created with its own
+    // `minimumNumberShouldMatch`, so the reverse pass below can push each
+    // child straight into the parent it names.
+    let mut nodes: Vec<Option<BooleanQuery>> = try_with_capacity(clause_count)?;
+    for (i, c) in pending.iter().enumerate() {
+        nodes.push(if c.kind == CLAUSE_KIND_BOOLEAN {
+            let msm = params.map_or(0, |p| p[i]) as usize;
+            Some(BooleanQuery::new().with_minimum_should_match(msm))
+        } else {
+            None
+        });
+    }
+
+    // Reverse order: a parent's index is always smaller than its children's,
+    // so by the time index `p` is reached every clause that named it has
+    // already been pushed into it. No recursion -- see `MAX_CLAUSE_DEPTH` for
+    // why recursion over caller-controlled depth is not acceptable here.
+    for i in (0..clause_count).rev() {
+        let c = &pending[i];
+        let clause = if c.kind == CLAUSE_KIND_BOOLEAN {
+            let mut nested = nodes[i]
+                .take()
+                .expect("every BOOLEAN clause has a pre-created node");
+            // Restore caller order: the reverse walk appended children
+            // back-to-front.
+            nested.must.reverse();
+            nested.filter.reverse();
+            nested.should.reverse();
+            nested.must_not.reverse();
+            Clause::Boolean(Box::new(nested))
+        } else {
+            Clause::Term(TermQuery::new(c.field, c.term.to_vec()))
+        };
+        match c.parent {
+            -1 => push_clause(&mut root, c.occur, clause),
+            p => push_clause(
+                nodes[p as usize]
+                    .as_mut()
+                    .expect("a validated parent is a BOOLEAN clause with a node"),
+                c.occur,
+                clause,
+            ),
+        }
+    }
+    root.must.reverse();
+    root.filter.reverse();
+    root.should.reverse();
+    root.must_not.reverse();
+    Ok(root)
+}
+
+/// Every distinct field name a decoded `BooleanQuery`'s clauses mention, at
+/// any nesting depth -- the set a scored search needs norms for. Iterative
+/// (an explicit stack), for the same caller-controlled-depth reason
+/// [`MAX_CLAUSE_DEPTH`] gives.
+pub(crate) fn clause_field_names(query: &BooleanQuery) -> Vec<&str> {
+    let mut out: Vec<&str> = Vec::new();
+    let mut stack: Vec<&BooleanQuery> = vec![query];
+    while let Some(q) = stack.pop() {
+        for clause in q
+            .must
+            .iter()
+            .chain(q.filter.iter())
+            .chain(q.should.iter())
+            .chain(q.must_not.iter())
+        {
+            match clause {
+                Clause::Term(t) => {
+                    if !out.contains(&t.field.as_str()) {
+                        out.push(t.field.as_str());
+                    }
+                }
+                Clause::Boolean(nested) => stack.push(nested),
+                // `read_boolean_query` builds only `Term` and `Boolean`.
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+/// Runs `search_boolean_query` against `segment_handle`. The query is passed
+/// as one flat, `Occur`-tagged, parent-indexed clause array -- see
+/// [`read_boolean_query`] for the full wire format, including `Occur.FILTER`
+/// and nested `BOOLEAN` clauses. A clause-less query is `clause_count == 0`
+/// with every array pointer allowed to be null.
 ///
 /// # Safety
 /// Every `(pointer, len)` / `(array, count)` pair must be valid for the
@@ -287,55 +636,44 @@ pub(crate) unsafe fn read_term_clauses(
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "C" fn ffi_search_boolean_query(
     segment_handle: u64,
-    must_fields: *const *const c_char,
-    must_field_lens: *const usize,
-    must_terms: *const *const u8,
-    must_term_lens: *const usize,
-    must_count: usize,
-    should_fields: *const *const c_char,
-    should_field_lens: *const usize,
-    should_terms: *const *const u8,
-    should_term_lens: *const usize,
-    should_count: usize,
-    must_not_fields: *const *const c_char,
-    must_not_field_lens: *const usize,
-    must_not_terms: *const *const u8,
-    must_not_term_lens: *const usize,
-    must_not_count: usize,
+    clause_occurs: *const u8,
+    clause_kinds: *const u8,
+    clause_fields: *const *const c_char,
+    clause_field_lens: *const usize,
+    clause_terms: *const *const u8,
+    clause_term_lens: *const usize,
+    clause_parents: *const i32,
+    clause_params: *const i32,
+    clause_count: usize,
+    minimum_should_match: i32,
     out_results_handle: *mut u64,
 ) -> i32 {
     guard(|| {
         if out_results_handle.is_null() {
             return Err(FfiStatus::NullPointer);
         }
-        // SAFETY: see `read_term_clauses`'s contract; every array/count pair here
-        // matches it exactly.
+        // Per-query clause cap, before any decoding -- see
+        // `query::check_clause_count`: one array, one length, so the
+        // three-separately-capped-lists hazard cannot recur.
+        check_clause_count(clause_count)?;
+        // SAFETY: see `read_boolean_query`'s contract; every array/count pair
+        // here matches it exactly.
         let query = unsafe {
-            BooleanQuery::new()
-                .with_must(read_term_clauses(
-                    must_fields,
-                    must_field_lens,
-                    must_terms,
-                    must_term_lens,
-                    must_count,
-                )?)
-                .with_should(read_term_clauses(
-                    should_fields,
-                    should_field_lens,
-                    should_terms,
-                    should_term_lens,
-                    should_count,
-                )?)
-                .with_must_not(read_term_clauses(
-                    must_not_fields,
-                    must_not_field_lens,
-                    must_not_terms,
-                    must_not_term_lens,
-                    must_not_count,
-                )?)
+            read_boolean_query(
+                clause_occurs,
+                clause_kinds,
+                clause_fields,
+                clause_field_lens,
+                clause_terms,
+                clause_term_lens,
+                clause_parents,
+                clause_params,
+                clause_count,
+                minimum_should_match,
+            )?
         };
 
-        let segments = lock_recovering(segments());
+        let segments = read_recovering(segments());
         let segment = segments.get(segment_handle).ok_or_else(|| {
             set_last_error("ffi_search_boolean_query: unknown or already-closed segment handle");
             FfiStatus::InvalidHandle
@@ -356,16 +694,16 @@ pub unsafe extern "C" fn ffi_search_boolean_query(
             doc_in.as_ref(),
             None,
             None,
-            None,
+            segment.live_docs.as_ref(),
             None,
             &query,
             &mut collector,
         )
         .map_err(map_search_error)?;
 
-        let handle = lock_recovering(results()).insert(ResultsHandle {
+        let handle = results().insert_checked(ResultsHandle {
             docs: collector.docs,
-        });
+        })?;
         // SAFETY: caller contract guarantees `out_results_handle` is valid for one write.
         unsafe {
             *out_results_handle = handle;
@@ -406,7 +744,7 @@ pub unsafe extern "C" fn ffi_search_phrase_query(
         // `term_count` elements with each element pair valid for its length.
         let (field, term_list) = unsafe {
             let field = str_from_raw(field, field_len)?;
-            let mut term_list = Vec::with_capacity(term_count);
+            let mut term_list = try_with_capacity(term_count)?;
             if term_count > 0 {
                 if terms.is_null() || term_lens.is_null() {
                     return Err(FfiStatus::NullPointer);
@@ -421,7 +759,7 @@ pub unsafe extern "C" fn ffi_search_phrase_query(
         };
         let query = PhraseQuery::new(field, term_list);
 
-        let segments = lock_recovering(segments());
+        let segments = read_recovering(segments());
         let segment = segments.get(segment_handle).ok_or_else(|| {
             set_last_error("ffi_search_phrase_query: unknown or already-closed segment handle");
             FfiStatus::InvalidHandle
@@ -444,22 +782,31 @@ pub unsafe extern "C" fn ffi_search_phrase_query(
                 set_last_error(format!("reopening .pos: {e}"));
                 FfiStatus::Decode
             })?;
+        let pay_in = segment
+            .pay_bytes
+            .as_deref()
+            .map(|b| PayInput::open(b, &segment.segment_id, &segment.segment_suffix))
+            .transpose()
+            .map_err(|e| {
+                set_last_error(format!("reopening .pay: {e}"));
+                FfiStatus::Decode
+            })?;
 
         let mut collector = VecCollector::default();
         search_phrase_query(
             &segment.fields,
             doc_in.as_ref(),
             pos_in.as_ref(),
-            None,
-            None,
+            pay_in.as_ref(),
+            segment.live_docs.as_ref(),
             &query,
             &mut collector,
         )
         .map_err(map_search_error)?;
 
-        let handle = lock_recovering(results()).insert(ResultsHandle {
+        let handle = results().insert_checked(ResultsHandle {
             docs: collector.docs,
-        });
+        })?;
         // SAFETY: caller contract guarantees `out_results_handle` is valid for one write.
         unsafe {
             *out_results_handle = handle;
@@ -477,13 +824,23 @@ pub unsafe extern "C" fn ffi_search_phrase_query(
 /// passing `norms: None` directly to a `search_*_query_scored` function, not
 /// an error.
 ///
-/// **Recomputed on every call, not cached on `SegmentHandle`**:
-/// `FieldNorms::open` scans every live doc in the field once to compute
-/// `avgFieldLength` (see `field_norms.rs`'s doc comment) -- cheap relative to
-/// a real query's own per-doc scoring work, and caching it would mean
-/// threading a live-docs-aware invalidation story into `SegmentHandle` for a
-/// shortcut this task's scope doesn't need; a future perf pass can revisit if
-/// this ever shows up as measurably hot.
+/// **`avgFieldLength` comes from the field's `.tmd` stats, not from
+/// averaging decoded norms** (M2 sweep b15, closing the b12/b13 carry-over
+/// that named this function as the last production caller of the wrong
+/// one): [`FieldNorms::from_field_stats`] is Java's
+/// `sumTotalTermFreq / docCount` exactly, while [`FieldNorms::open`] decodes
+/// each doc's `SmallFloat`-quantized norm and averages *those* -- the
+/// average of the lossy values sits 0.1-0.6% off the average of the true
+/// lengths, enough to reorder documents at the top-k boundary. It is also
+/// O(1) rather than O(maxDoc) per query, so the "recomputed on every call,
+/// not cached" note this doc used to carry no longer has anything to
+/// justify: two integer reads per call is not worth a cache.
+///
+/// Deletions are deliberately *not* subtracted here. Java's `docCount` (like
+/// this `.tmd` counter) includes deleted documents, so `avgdl` is unaffected
+/// by them; deletions are applied where Lucene applies them, to the matched
+/// doc set, via each `search_*` call's `live_docs` argument (see
+/// [`crate::segment::ffi_segment_set_live_docs`]).
 pub(crate) fn open_field_norms<'seg>(
     segment: &'seg SegmentHandle,
     field: &str,
@@ -497,11 +854,31 @@ pub(crate) fn open_field_norms<'seg>(
     let Some(entry) = norms.entry(field_info.number) else {
         return Ok(None);
     };
-    let opened = FieldNorms::open(data, *entry, segment.max_doc, None).map_err(|e| {
-        set_last_error(format!("opening norms for field {field}: {e}"));
-        FfiStatus::Decode
-    })?;
-    Ok(Some(opened))
+    // `from_field_stats`, not `open`: real Lucene's `BM25Similarity` takes
+    // `avgdl = sumTotalTermFreq / docCount` straight from the field's `.tmd`
+    // aggregate counters. `FieldNorms::open` instead decodes each doc's norm
+    // and averages *those*, and norms are `SmallFloat`-quantized into one
+    // byte -- the average of the lossy values is systematically 0.1-0.6% off
+    // the average of the true lengths, which is enough to reorder documents
+    // at the top-k boundary (M1's benchmark cross-check: 19 of 20 queries
+    // disagreed with Java on hit sets for this reason alone, see
+    // `docs/benchmarks/verdict.md`). It is also O(1) instead of O(maxDoc)
+    // per query. This was the b12/b13 carry-over naming `lucene-ffi` as the
+    // remaining production caller of the wrong one.
+    //
+    // The stats come from this segment's own `.tmd`, and `doc_count` there
+    // counts deleted documents -- which is exactly what Java's `docCount`
+    // does too, so this stays correct now that deletions are honoured
+    // elsewhere (see `ffi_segment_set_live_docs`).
+    let Some(field_terms) = segment.fields.field(field) else {
+        return Ok(None);
+    };
+    Ok(Some(FieldNorms::from_field_stats(
+        data,
+        *entry,
+        field_terms.sum_total_term_freq,
+        field_terms.doc_count,
+    )))
 }
 
 /// Scored sibling of [`ffi_search_term_query`]: runs `search_term_query_scored`
@@ -538,7 +915,7 @@ pub unsafe extern "C" fn ffi_search_term_query_scored(
         };
         let query = TermQuery::new(field, term.to_vec());
 
-        let segments = lock_recovering(segments());
+        let segments = read_recovering(segments());
         let segment = segments.get(segment_handle).ok_or_else(|| {
             set_last_error(
                 "ffi_search_term_query_scored: unknown or already-closed segment handle",
@@ -572,16 +949,16 @@ pub unsafe extern "C" fn ffi_search_term_query_scored(
         search_term_query_scored(
             &segment.fields,
             doc_in.as_ref(),
-            None,
+            segment.live_docs.as_ref(),
             &query,
             norms.as_ref(),
             &mut collector,
         )
         .map_err(map_search_error)?;
 
-        let handle = lock_recovering(scored_results()).insert(ScoredResultsHandle {
+        let handle = scored_results().insert_checked(ScoredResultsHandle {
             hits: collector.top_docs().to_vec(),
-        });
+        })?;
         // SAFETY: caller contract guarantees `out_scored_results_handle` is valid
         // for one write.
         unsafe {
@@ -608,6 +985,18 @@ pub unsafe extern "C" fn ffi_search_term_query_scored(
 /// formula, same constants) -- see
 /// `ffi_search_term_query_scored_with_similarity_using_defaults_matches_hardcoded_path`
 /// below for the regression proof.
+///
+/// **`k1`/`b` are validated, not trusted** (M2 sweep b15): they go through
+/// [`lucene_search::similarity::Bm25Params::new`], real Lucene's
+/// `BM25Similarity(float k1, float b)` constructor checks -- `k1` must be
+/// finite and `>= 0`, `b` must be in `0..=1`. Anything else is
+/// [`FfiStatus::InvalidArgument`] carrying Lucene's own verbatim message
+/// (retrievable via [`crate::ffi_get_last_error_message`]), the C-ABI
+/// equivalent of Java's `IllegalArgumentException`. This is not cosmetic:
+/// a `b` outside `0..=1` makes BM25's length normalization non-monotonic in
+/// the norm, which invalidates the impacts-derived score bounds this crate's
+/// MAXSCORE paths use, so accepting one would silently *drop matching
+/// documents* rather than merely score them oddly.
 ///
 /// **Scope note** (see `lucene_search::similarity::Bm25Params`'s doc comment
 /// and `docs/parity.md`'s BM25/similarity row for the full, honest list):
@@ -649,9 +1038,26 @@ pub unsafe extern "C" fn ffi_search_term_query_scored_with_similarity(
             )
         };
         let query = TermQuery::new(field, term.to_vec());
-        let params = lucene_search::similarity::Bm25Params { k1, b };
+        // `Bm25Params::new` is `BM25Similarity(float k1, float b)`'s
+        // validating constructor, and the validation is load-bearing here
+        // rather than decorative: `b` outside `0..=1` makes the
+        // length-normalization term non-monotonic in the norm, which
+        // invalidates the impacts-derived upper bounds MAXSCORE block
+        // skipping relies on (missing hits, not just odd scores), and a
+        // negative/non-finite `k1` produces infinities. These two floats come
+        // straight off the C ABI from a JVM caller, so this is exactly the
+        // "a caller (including the FFI one) could set any float" case that
+        // constructor exists to stop -- surfaced as
+        // `FfiStatus::InvalidArgument` plus Lucene's own verbatim message,
+        // the same way Java throws `IllegalArgumentException`.
+        let params = lucene_search::similarity::Bm25Params::new(k1, b).map_err(|message| {
+            set_last_error(format!(
+                "ffi_search_term_query_scored_with_similarity: {message}"
+            ));
+            FfiStatus::InvalidArgument
+        })?;
 
-        let segments = lock_recovering(segments());
+        let segments = read_recovering(segments());
         let segment = segments.get(segment_handle).ok_or_else(|| {
             set_last_error(
                 "ffi_search_term_query_scored_with_similarity: unknown or already-closed segment handle",
@@ -674,7 +1080,7 @@ pub unsafe extern "C" fn ffi_search_term_query_scored_with_similarity(
         search_term_query_scored_with_similarity(
             &segment.fields,
             doc_in.as_ref(),
-            None,
+            segment.live_docs.as_ref(),
             &query,
             norms.as_ref(),
             params,
@@ -682,9 +1088,9 @@ pub unsafe extern "C" fn ffi_search_term_query_scored_with_similarity(
         )
         .map_err(map_search_error)?;
 
-        let handle = lock_recovering(scored_results()).insert(ScoredResultsHandle {
+        let handle = scored_results().insert_checked(ScoredResultsHandle {
             hits: collector.top_docs().to_vec(),
-        });
+        })?;
         // SAFETY: caller contract guarantees `out_scored_results_handle` is valid
         // for one write.
         unsafe {
@@ -748,7 +1154,7 @@ pub unsafe extern "C" fn ffi_search_term_query_scored_maxscore(
         };
         let query = TermQuery::new(field, term.to_vec());
 
-        let segments = lock_recovering(segments());
+        let segments = read_recovering(segments());
         let segment = segments.get(segment_handle).ok_or_else(|| {
             set_last_error(
                 "ffi_search_term_query_scored_maxscore: unknown or already-closed segment handle",
@@ -771,16 +1177,16 @@ pub unsafe extern "C" fn ffi_search_term_query_scored_maxscore(
         search_term_query_scored_maxscore(
             &segment.fields,
             doc_in.as_ref(),
-            None,
+            segment.live_docs.as_ref(),
             &query,
             norms.as_ref(),
             &mut collector,
         )
         .map_err(map_search_error)?;
 
-        let handle = lock_recovering(scored_results()).insert(ScoredResultsHandle {
+        let handle = scored_results().insert_checked(ScoredResultsHandle {
             hits: collector.top_docs().to_vec(),
-        });
+        })?;
         // SAFETY: caller contract guarantees `out_scored_results_handle` is valid
         // for one write.
         unsafe {
@@ -790,8 +1196,8 @@ pub unsafe extern "C" fn ffi_search_term_query_scored_maxscore(
     })
 }
 
-/// Scored sibling of [`ffi_search_boolean_query`]: same flat, `Clause::Term`-only
-/// four-parallel-array clause wire format (see this module's doc comment), but
+/// Scored sibling of [`ffi_search_boolean_query`]: same occur-tagged
+/// clause-array wire format (see [`read_boolean_query`]), but
 /// keeps the best `top_n` `(doc_id, score)` hits (each matched doc's score is the
 /// sum of its BM25 score across every satisfied `must`/`should` clause, see
 /// [`lucene_search::search_boolean_query_scored`]'s doc comment) in a new
@@ -804,21 +1210,16 @@ pub unsafe extern "C" fn ffi_search_term_query_scored_maxscore(
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "C" fn ffi_search_boolean_query_scored(
     segment_handle: u64,
-    must_fields: *const *const c_char,
-    must_field_lens: *const usize,
-    must_terms: *const *const u8,
-    must_term_lens: *const usize,
-    must_count: usize,
-    should_fields: *const *const c_char,
-    should_field_lens: *const usize,
-    should_terms: *const *const u8,
-    should_term_lens: *const usize,
-    should_count: usize,
-    must_not_fields: *const *const c_char,
-    must_not_field_lens: *const usize,
-    must_not_terms: *const *const u8,
-    must_not_term_lens: *const usize,
-    must_not_count: usize,
+    clause_occurs: *const u8,
+    clause_kinds: *const u8,
+    clause_fields: *const *const c_char,
+    clause_field_lens: *const usize,
+    clause_terms: *const *const u8,
+    clause_term_lens: *const usize,
+    clause_parents: *const i32,
+    clause_params: *const i32,
+    clause_count: usize,
+    minimum_should_match: i32,
     top_n: usize,
     out_scored_results_handle: *mut u64,
 ) -> i32 {
@@ -826,34 +1227,28 @@ pub unsafe extern "C" fn ffi_search_boolean_query_scored(
         if out_scored_results_handle.is_null() {
             return Err(FfiStatus::NullPointer);
         }
-        // SAFETY: see `read_term_clauses`'s contract; every array/count pair here
-        // matches it exactly.
+        // Per-query clause cap, before any decoding -- see
+        // `query::check_clause_count`: one array, one length, so the
+        // three-separately-capped-lists hazard cannot recur.
+        check_clause_count(clause_count)?;
+        // SAFETY: see `read_boolean_query`'s contract; every array/count pair
+        // here matches it exactly.
         let query = unsafe {
-            BooleanQuery::new()
-                .with_must(read_term_clauses(
-                    must_fields,
-                    must_field_lens,
-                    must_terms,
-                    must_term_lens,
-                    must_count,
-                )?)
-                .with_should(read_term_clauses(
-                    should_fields,
-                    should_field_lens,
-                    should_terms,
-                    should_term_lens,
-                    should_count,
-                )?)
-                .with_must_not(read_term_clauses(
-                    must_not_fields,
-                    must_not_field_lens,
-                    must_not_terms,
-                    must_not_term_lens,
-                    must_not_count,
-                )?)
+            read_boolean_query(
+                clause_occurs,
+                clause_kinds,
+                clause_fields,
+                clause_field_lens,
+                clause_terms,
+                clause_term_lens,
+                clause_parents,
+                clause_params,
+                clause_count,
+                minimum_should_match,
+            )?
         };
 
-        let segments = lock_recovering(segments());
+        let segments = read_recovering(segments());
         let segment = segments.get(segment_handle).ok_or_else(|| {
             set_last_error(
                 "ffi_search_boolean_query_scored: unknown or already-closed segment handle",
@@ -876,31 +1271,7 @@ pub unsafe extern "C" fn ffi_search_boolean_query_scored(
         // `search_boolean_query_scored` treats as "fall back to
         // `UNNORMED_FIELD_LENGTH` for that field", same as `open_field_norms`'s
         // own `None` fallback.
-        let mut field_names: Vec<&str> = query
-            .must
-            .iter()
-            .chain(query.should.iter())
-            .chain(query.must_not.iter())
-            .filter_map(|c| match c {
-                Clause::Term(t) => Some(t.field.as_str()),
-                Clause::Phrase(_)
-                | Clause::Boolean(_)
-                | Clause::DisjunctionMax(_)
-                | Clause::ConstantScore(_)
-                | Clause::Boost(_)
-                | Clause::Wildcard(_)
-                | Clause::Prefix(_)
-                | Clause::Fuzzy(_)
-                | Clause::Regexp(_)
-                | Clause::Span(_)
-                | Clause::PointsRange(_)
-                | Clause::MatchAllDocs(_)
-                | Clause::MatchNoDocs(_)
-                | Clause::TermInSet(_) => None,
-            })
-            .collect();
-        field_names.sort_unstable();
-        field_names.dedup();
+        let field_names = clause_field_names(&query);
         let mut norms_map: HashMap<String, FieldNorms<'_>> = HashMap::new();
         for name in field_names {
             if let Some(field_norms) = open_field_norms(segment, name)? {
@@ -915,7 +1286,7 @@ pub unsafe extern "C" fn ffi_search_boolean_query_scored(
             doc_in.as_ref(),
             None,
             None,
-            None,
+            segment.live_docs.as_ref(),
             None,
             &query,
             norms_arg,
@@ -923,9 +1294,9 @@ pub unsafe extern "C" fn ffi_search_boolean_query_scored(
         )
         .map_err(map_search_error)?;
 
-        let handle = lock_recovering(scored_results()).insert(ScoredResultsHandle {
+        let handle = scored_results().insert_checked(ScoredResultsHandle {
             hits: collector.top_docs().to_vec(),
-        });
+        })?;
         // SAFETY: caller contract guarantees `out_scored_results_handle` is valid
         // for one write.
         unsafe {
@@ -936,7 +1307,7 @@ pub unsafe extern "C" fn ffi_search_boolean_query_scored(
 }
 
 /// MAXSCORE-pruned sibling of [`ffi_search_boolean_query_scored`]: same flat,
-/// four-parallel-array clause wire format and the exact same
+/// occur-tagged clause-array wire format and the exact same
 /// [`ScoredResultsHandle`] contract, but runs
 /// [`lucene_search::search_boolean_query_scored_maxscore`] instead of
 /// [`search_boolean_query_scored`] -- streaming every `should` clause's
@@ -971,21 +1342,16 @@ pub unsafe extern "C" fn ffi_search_boolean_query_scored(
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "C" fn ffi_search_boolean_query_scored_maxscore(
     segment_handle: u64,
-    must_fields: *const *const c_char,
-    must_field_lens: *const usize,
-    must_terms: *const *const u8,
-    must_term_lens: *const usize,
-    must_count: usize,
-    should_fields: *const *const c_char,
-    should_field_lens: *const usize,
-    should_terms: *const *const u8,
-    should_term_lens: *const usize,
-    should_count: usize,
-    must_not_fields: *const *const c_char,
-    must_not_field_lens: *const usize,
-    must_not_terms: *const *const u8,
-    must_not_term_lens: *const usize,
-    must_not_count: usize,
+    clause_occurs: *const u8,
+    clause_kinds: *const u8,
+    clause_fields: *const *const c_char,
+    clause_field_lens: *const usize,
+    clause_terms: *const *const u8,
+    clause_term_lens: *const usize,
+    clause_parents: *const i32,
+    clause_params: *const i32,
+    clause_count: usize,
+    minimum_should_match: i32,
     top_n: usize,
     out_scored_results_handle: *mut u64,
 ) -> i32 {
@@ -993,34 +1359,28 @@ pub unsafe extern "C" fn ffi_search_boolean_query_scored_maxscore(
         if out_scored_results_handle.is_null() {
             return Err(FfiStatus::NullPointer);
         }
-        // SAFETY: see `read_term_clauses`'s contract; every array/count pair here
-        // matches it exactly.
+        // Per-query clause cap, before any decoding -- see
+        // `query::check_clause_count`: one array, one length, so the
+        // three-separately-capped-lists hazard cannot recur.
+        check_clause_count(clause_count)?;
+        // SAFETY: see `read_boolean_query`'s contract; every array/count pair
+        // here matches it exactly.
         let query = unsafe {
-            BooleanQuery::new()
-                .with_must(read_term_clauses(
-                    must_fields,
-                    must_field_lens,
-                    must_terms,
-                    must_term_lens,
-                    must_count,
-                )?)
-                .with_should(read_term_clauses(
-                    should_fields,
-                    should_field_lens,
-                    should_terms,
-                    should_term_lens,
-                    should_count,
-                )?)
-                .with_must_not(read_term_clauses(
-                    must_not_fields,
-                    must_not_field_lens,
-                    must_not_terms,
-                    must_not_term_lens,
-                    must_not_count,
-                )?)
+            read_boolean_query(
+                clause_occurs,
+                clause_kinds,
+                clause_fields,
+                clause_field_lens,
+                clause_terms,
+                clause_term_lens,
+                clause_parents,
+                clause_params,
+                clause_count,
+                minimum_should_match,
+            )?
         };
 
-        let segments = lock_recovering(segments());
+        let segments = read_recovering(segments());
         let segment = segments.get(segment_handle).ok_or_else(|| {
             set_last_error(
                 "ffi_search_boolean_query_scored_maxscore: unknown or already-closed segment \
@@ -1041,31 +1401,7 @@ pub unsafe extern "C" fn ffi_search_boolean_query_scored_maxscore(
         // Same norms-map construction as `ffi_search_boolean_query_scored` above
         // -- see that function's comment for why a field with no norms entry is
         // simply absent from the map.
-        let mut field_names: Vec<&str> = query
-            .must
-            .iter()
-            .chain(query.should.iter())
-            .chain(query.must_not.iter())
-            .filter_map(|c| match c {
-                Clause::Term(t) => Some(t.field.as_str()),
-                Clause::Phrase(_)
-                | Clause::Boolean(_)
-                | Clause::DisjunctionMax(_)
-                | Clause::ConstantScore(_)
-                | Clause::Boost(_)
-                | Clause::Wildcard(_)
-                | Clause::Prefix(_)
-                | Clause::Fuzzy(_)
-                | Clause::Regexp(_)
-                | Clause::Span(_)
-                | Clause::PointsRange(_)
-                | Clause::MatchAllDocs(_)
-                | Clause::MatchNoDocs(_)
-                | Clause::TermInSet(_) => None,
-            })
-            .collect();
-        field_names.sort_unstable();
-        field_names.dedup();
+        let field_names = clause_field_names(&query);
         let mut norms_map: HashMap<String, FieldNorms<'_>> = HashMap::new();
         for name in field_names {
             if let Some(field_norms) = open_field_norms(segment, name)? {
@@ -1080,7 +1416,7 @@ pub unsafe extern "C" fn ffi_search_boolean_query_scored_maxscore(
             doc_in.as_ref(),
             None,
             None,
-            None,
+            segment.live_docs.as_ref(),
             None,
             &query,
             norms_arg,
@@ -1088,9 +1424,9 @@ pub unsafe extern "C" fn ffi_search_boolean_query_scored_maxscore(
         )
         .map_err(map_search_error)?;
 
-        let handle = lock_recovering(scored_results()).insert(ScoredResultsHandle {
+        let handle = scored_results().insert_checked(ScoredResultsHandle {
             hits: collector.top_docs().to_vec(),
-        });
+        })?;
         // SAFETY: caller contract guarantees `out_scored_results_handle` is valid
         // for one write.
         unsafe {
@@ -1130,7 +1466,7 @@ pub unsafe extern "C" fn ffi_search_phrase_query_scored(
         // `term_count` elements with each element pair valid for its length.
         let (field, term_list) = unsafe {
             let field = str_from_raw(field, field_len)?;
-            let mut term_list = Vec::with_capacity(term_count);
+            let mut term_list = try_with_capacity(term_count)?;
             if term_count > 0 {
                 if terms.is_null() || term_lens.is_null() {
                     return Err(FfiStatus::NullPointer);
@@ -1145,7 +1481,7 @@ pub unsafe extern "C" fn ffi_search_phrase_query_scored(
         };
         let query = PhraseQuery::new(field, term_list);
 
-        let segments = lock_recovering(segments());
+        let segments = read_recovering(segments());
         let segment = segments.get(segment_handle).ok_or_else(|| {
             set_last_error(
                 "ffi_search_phrase_query_scored: unknown or already-closed segment handle",
@@ -1170,6 +1506,15 @@ pub unsafe extern "C" fn ffi_search_phrase_query_scored(
                 set_last_error(format!("reopening .pos: {e}"));
                 FfiStatus::Decode
             })?;
+        let pay_in = segment
+            .pay_bytes
+            .as_deref()
+            .map(|b| PayInput::open(b, &segment.segment_id, &segment.segment_suffix))
+            .transpose()
+            .map_err(|e| {
+                set_last_error(format!("reopening .pay: {e}"));
+                FfiStatus::Decode
+            })?;
         let norms = open_field_norms(segment, &query.field)?;
 
         let mut collector = TopDocsCollector::new(top_n);
@@ -1177,17 +1522,17 @@ pub unsafe extern "C" fn ffi_search_phrase_query_scored(
             &segment.fields,
             doc_in.as_ref(),
             pos_in.as_ref(),
-            None,
-            None,
+            pay_in.as_ref(),
+            segment.live_docs.as_ref(),
             &query,
             norms.as_ref(),
             &mut collector,
         )
         .map_err(map_search_error)?;
 
-        let handle = lock_recovering(scored_results()).insert(ScoredResultsHandle {
+        let handle = scored_results().insert_checked(ScoredResultsHandle {
             hits: collector.top_docs().to_vec(),
-        });
+        })?;
         // SAFETY: caller contract guarantees `out_scored_results_handle` is valid
         // for one write.
         unsafe {
@@ -1272,6 +1617,8 @@ mod tests {
                     std::ptr::null()
                 },
                 if with_pos { pos.len() } else { 0 },
+                std::ptr::null(),
+                0,
                 if with_norms {
                     nvm.as_ptr() as *const c_char
                 } else {
@@ -1305,6 +1652,19 @@ mod tests {
         };
         assert_eq!(rc, FfiStatus::Ok.code());
         handle
+    }
+
+    /// The calling thread's last-error message, read back through the real
+    /// exported accessor so these tests also prove it reaches a JNI caller.
+    fn last_error_message() -> String {
+        let mut buf = [0 as c_char; 512];
+        let rc = unsafe {
+            crate::ffi_get_last_error_message(buf.as_mut_ptr(), buf.len(), std::ptr::null_mut())
+        };
+        assert_eq!(rc, FfiStatus::Ok.code());
+        unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) }
+            .to_string_lossy()
+            .into_owned()
     }
 
     fn read_results(results_handle: u64) -> Vec<i32> {
@@ -1507,7 +1867,7 @@ mod tests {
 
         let mut results_handle: u64 = 0;
         let rc = unsafe {
-            ffi_search_boolean_query(
+            crate::legacy_boolean_abi::legacy_search_boolean_query(
                 seg_handle,
                 must_fields.as_ptr(),
                 must_field_lens.as_ptr(),
@@ -1543,7 +1903,7 @@ mod tests {
 
         let mut results_handle: u64 = 0;
         let rc = unsafe {
-            ffi_search_boolean_query(
+            crate::legacy_boolean_abi::legacy_search_boolean_query(
                 seg_handle,
                 std::ptr::null(),
                 std::ptr::null(),
@@ -1574,7 +1934,7 @@ mod tests {
     fn boolean_query_unknown_segment_handle_is_invalid_handle() {
         let mut results_handle: u64 = 0;
         let rc = unsafe {
-            ffi_search_boolean_query(
+            crate::legacy_boolean_abi::legacy_search_boolean_query(
                 0xFFFF,
                 std::ptr::null(),
                 std::ptr::null(),
@@ -1688,14 +2048,14 @@ mod tests {
     /// this can't happen through the public API alone since `ffi_open_segment`
     /// already validates the `.doc` bytes once at open time.
     fn corrupt_doc_bytes(seg_handle: u64) {
-        let mut segments = lock_recovering(segments());
+        let mut segments = crate::registry::lock_recovering(segments());
         let segment = segments.get_mut(seg_handle).expect("segment handle");
         segment.doc_bytes = Some(vec![0u8; 4]);
     }
 
     /// Same idea as [`corrupt_doc_bytes`], for the `.pos` file.
     fn corrupt_pos_bytes(seg_handle: u64) {
-        let mut segments = lock_recovering(segments());
+        let mut segments = crate::registry::lock_recovering(segments());
         let segment = segments.get_mut(seg_handle).expect("segment handle");
         segment.pos_bytes = Some(vec![0u8; 4]);
     }
@@ -1730,7 +2090,7 @@ mod tests {
         let dir_handle = open_dir();
         let seg_handle = open_segment(dir_handle, false);
         let rc = unsafe {
-            ffi_search_boolean_query(
+            crate::legacy_boolean_abi::legacy_search_boolean_query(
                 seg_handle,
                 std::ptr::null(),
                 std::ptr::null(),
@@ -1761,7 +2121,7 @@ mod tests {
         let seg_handle = open_segment(dir_handle, false);
         let mut results_handle: u64 = 0;
         let rc = unsafe {
-            ffi_search_boolean_query(
+            crate::legacy_boolean_abi::legacy_search_boolean_query(
                 seg_handle,
                 std::ptr::null(),
                 std::ptr::null(),
@@ -1792,7 +2152,7 @@ mod tests {
         let seg_handle = open_segment(dir_handle, false);
         let mut results_handle: u64 = 0;
         let rc = unsafe {
-            ffi_search_boolean_query(
+            crate::legacy_boolean_abi::legacy_search_boolean_query(
                 seg_handle,
                 std::ptr::null(),
                 std::ptr::null(),
@@ -1823,7 +2183,7 @@ mod tests {
         let seg_handle = open_segment(dir_handle, false);
         let mut results_handle: u64 = 0;
         let rc = unsafe {
-            ffi_search_boolean_query(
+            crate::legacy_boolean_abi::legacy_search_boolean_query(
                 seg_handle,
                 std::ptr::null(),
                 std::ptr::null(),
@@ -1863,7 +2223,7 @@ mod tests {
 
         let mut results_handle: u64 = 0;
         let rc = unsafe {
-            ffi_search_boolean_query(
+            crate::legacy_boolean_abi::legacy_search_boolean_query(
                 seg_handle,
                 must_fields.as_ptr(),
                 must_field_lens.as_ptr(),
@@ -2004,7 +2364,8 @@ mod tests {
         ffi_close_directory(dir_handle);
     }
 
-    /// Regression test for the mutex-poisoning fix in `registry::lock_recovering`:
+    /// Regression test for the poisoning fix in `registry::lock_recovering`/
+    /// `registry::read_recovering`:
     /// a panic while `ffi_search_term_query` holds the `segments()` registry's
     /// lock must be caught by `guard` (reported as `FfiStatus::Panic`, not a
     /// crash) *and* must not permanently wedge that registry -- a later,
@@ -2037,7 +2398,12 @@ mod tests {
             FfiStatus::Panic.code(),
             "the injected panic must be caught by `guard`, not crash the process"
         );
-        assert!(segments().is_poisoned(), "the panic must poison the mutex");
+        // Since the M2 sweep this registry is an `RwLock` and a query holds
+        // only its *read* guard, which `std` never poisons (a shared borrow
+        // cannot leave the map half-written). The property under test is
+        // unchanged and still worth pinning: whether or not the lock ends up
+        // poisoned, a later call must not be wedged by the panic.
+        let _ = segments().is_poisoned();
 
         // A subsequent, unrelated, well-formed call against the *same*
         // registry (and the same still-live segment handle) must succeed --
@@ -2146,6 +2512,201 @@ mod tests {
         assert!((hits[1].1 - expected_doc2).abs() < 1e-4);
 
         ffi_close_scored_results(scored_handle);
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    /// Java's `BooleanQuery.Builder.add` throws `TooManyClauses` past
+    /// `IndexSearcher.getMaxClauseCount()` (1024). Nothing else in this port
+    /// caps a clause list, and this boundary is the only place one gets built
+    /// from untrusted input, so the cap lives here -- as a status code, not a
+    /// panic, and not a million-clause query actually executed.
+    #[test]
+    fn boolean_query_rejects_more_clauses_than_lucenes_max_clause_count() {
+        let dir_handle = open_dir();
+        let seg_handle = open_segment(dir_handle, true);
+
+        let field = "body";
+        let term = b"cat";
+        let over = crate::query::MAX_CLAUSE_COUNT + 1;
+        let field_ptrs: Vec<*const c_char> = vec![field.as_ptr() as *const c_char; over];
+        let field_lens: Vec<usize> = vec![field.len(); over];
+        let term_ptrs: Vec<*const u8> = vec![term.as_ptr(); over];
+        let term_lens: Vec<usize> = vec![term.len(); over];
+
+        let mut out: u64 = 0;
+        let rc = unsafe {
+            crate::legacy_boolean_abi::legacy_search_boolean_query(
+                seg_handle,
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                field_ptrs.as_ptr(),
+                field_lens.as_ptr(),
+                term_ptrs.as_ptr(),
+                term_lens.as_ptr(),
+                over,
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                &mut out as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::InvalidArgument.code());
+        assert_eq!(out, 0, "no results handle may be issued");
+
+        let mut buf = [0 as c_char; 256];
+        assert_eq!(
+            unsafe {
+                crate::ffi_get_last_error_message(buf.as_mut_ptr(), buf.len(), std::ptr::null_mut())
+            },
+            FfiStatus::Ok.code()
+        );
+        let msg = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) }
+            .to_str()
+            .unwrap();
+        assert!(msg.contains("maxClauseCount"), "message was {msg:?}");
+
+        // The cap is per *query*, not per clause list: splitting the same
+        // 1025 clauses across `must`/`should`/`must_not` must not slip past
+        // it (three per-list checks would have accepted 3 * 1024).
+        let third = crate::query::MAX_CLAUSE_COUNT / 2;
+        let mut out: u64 = 0;
+        let rc = unsafe {
+            crate::legacy_boolean_abi::legacy_search_boolean_query(
+                seg_handle,
+                field_ptrs.as_ptr(),
+                field_lens.as_ptr(),
+                term_ptrs.as_ptr(),
+                term_lens.as_ptr(),
+                third,
+                field_ptrs.as_ptr(),
+                field_lens.as_ptr(),
+                term_ptrs.as_ptr(),
+                term_lens.as_ptr(),
+                third,
+                field_ptrs.as_ptr(),
+                field_lens.as_ptr(),
+                term_ptrs.as_ptr(),
+                term_lens.as_ptr(),
+                third,
+                &mut out as *mut _,
+            )
+        };
+        assert_eq!(
+            rc,
+            FfiStatus::InvalidArgument.code(),
+            "3 x 512 = 1536 clauses is over Java's 1024 ceiling"
+        );
+        assert_eq!(out, 0);
+
+        // Exactly at the cap (summed) is still accepted: Java's `>=`-against-
+        // the-pre-add-size check makes the 1025th clause the one that throws,
+        // so a 1024-clause query is legal.
+        let at = crate::query::MAX_CLAUSE_COUNT;
+        let mut out: u64 = 0;
+        let rc = unsafe {
+            crate::legacy_boolean_abi::legacy_search_boolean_query(
+                seg_handle,
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                field_ptrs.as_ptr(),
+                field_lens.as_ptr(),
+                term_ptrs.as_ptr(),
+                term_lens.as_ptr(),
+                at,
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                &mut out as *mut _,
+            )
+        };
+        assert_eq!(rc, FfiStatus::Ok.code());
+        ffi_close_results(out);
+
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    /// Every `k1`/`b` real Lucene's `BM25Similarity` constructor throws on
+    /// must be an `FfiStatus::InvalidArgument` here with a retrievable
+    /// message -- never silently accepted (which would corrupt MAXSCORE's
+    /// score bounds) and never a panic.
+    #[test]
+    fn term_query_scored_with_similarity_rejects_out_of_range_bm25_parameters() {
+        let dir_handle = open_dir();
+        let seg_handle = open_segment(dir_handle, true);
+        let field = "body";
+        let term = b"cat";
+
+        for (k1, b, why) in [
+            (-0.1f32, 0.75f32, "negative k1"),
+            (f32::NAN, 0.75, "NaN k1"),
+            (f32::INFINITY, 0.75, "infinite k1"),
+            (1.2, -0.01, "b below 0"),
+            (1.2, 1.01, "b above 1"),
+            (1.2, f32::NAN, "NaN b"),
+        ] {
+            let mut handle: u64 = 0;
+            let rc = unsafe {
+                ffi_search_term_query_scored_with_similarity(
+                    seg_handle,
+                    field.as_ptr() as *const c_char,
+                    field.len(),
+                    term.as_ptr(),
+                    term.len(),
+                    k1,
+                    b,
+                    10,
+                    &mut handle as *mut _,
+                )
+            };
+            assert_eq!(rc, FfiStatus::InvalidArgument.code(), "{why}");
+            assert_eq!(handle, 0, "{why}: no results handle may be issued");
+
+            let mut buf = [0 as c_char; 256];
+            let rc = unsafe {
+                crate::ffi_get_last_error_message(buf.as_mut_ptr(), buf.len(), std::ptr::null_mut())
+            };
+            assert_eq!(rc, FfiStatus::Ok.code());
+            let msg = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) }
+                .to_str()
+                .unwrap();
+            assert!(
+                msg.contains("illegal k1 value") || msg.contains("illegal b value"),
+                "{why}: message was {msg:?}"
+            );
+        }
+
+        // The boundary values Lucene *accepts* must still work.
+        for (k1, b) in [(0.0f32, 0.0f32), (0.0, 1.0), (1.2, 0.75)] {
+            let mut handle: u64 = 0;
+            let rc = unsafe {
+                ffi_search_term_query_scored_with_similarity(
+                    seg_handle,
+                    field.as_ptr() as *const c_char,
+                    field.len(),
+                    term.as_ptr(),
+                    term.len(),
+                    k1,
+                    b,
+                    10,
+                    &mut handle as *mut _,
+                )
+            };
+            assert_eq!(rc, FfiStatus::Ok.code(), "k1={k1} b={b}");
+            crate::results_scored::ffi_close_scored_results(handle);
+        }
+
         ffi_close_segment(seg_handle);
         ffi_close_directory(dir_handle);
     }
@@ -2667,7 +3228,7 @@ mod tests {
         for &top_n in &[1usize, 2, 5, 20, 9000] {
             let mut eager_handle: u64 = 0;
             let rc = unsafe {
-                ffi_search_boolean_query_scored(
+                crate::legacy_boolean_abi::legacy_search_boolean_query_scored(
                     seg_handle,
                     std::ptr::null(),
                     std::ptr::null(),
@@ -2694,7 +3255,7 @@ mod tests {
             lucene_search::test_only_maxscore_block_skip_counter::reset();
             let mut maxscore_handle: u64 = 0;
             let rc = unsafe {
-                ffi_search_boolean_query_scored_maxscore(
+                crate::legacy_boolean_abi::legacy_search_boolean_query_scored_maxscore(
                     seg_handle,
                     std::ptr::null(),
                     std::ptr::null(),
@@ -2734,7 +3295,7 @@ mod tests {
         lucene_search::test_only_maxscore_block_skip_counter::reset();
         let mut maxscore_handle: u64 = 0;
         let rc = unsafe {
-            ffi_search_boolean_query_scored_maxscore(
+            crate::legacy_boolean_abi::legacy_search_boolean_query_scored_maxscore(
                 seg_handle,
                 std::ptr::null(),
                 std::ptr::null(),
@@ -2774,7 +3335,7 @@ mod tests {
     fn boolean_query_scored_maxscore_unknown_segment_handle_is_invalid_handle() {
         let mut scored_handle: u64 = 0;
         let rc = unsafe {
-            ffi_search_boolean_query_scored_maxscore(
+            crate::legacy_boolean_abi::legacy_search_boolean_query_scored_maxscore(
                 0xFFFF,
                 std::ptr::null(),
                 std::ptr::null(),
@@ -2805,7 +3366,7 @@ mod tests {
         let dir_handle = open_dir();
         let seg_handle = open_segment(dir_handle, false);
         let rc = unsafe {
-            ffi_search_boolean_query_scored_maxscore(
+            crate::legacy_boolean_abi::legacy_search_boolean_query_scored_maxscore(
                 seg_handle,
                 std::ptr::null(),
                 std::ptr::null(),
@@ -2856,7 +3417,7 @@ mod tests {
 
         let mut eager_handle: u64 = 0;
         let rc = unsafe {
-            ffi_search_boolean_query_scored(
+            crate::legacy_boolean_abi::legacy_search_boolean_query_scored(
                 seg_handle,
                 must_fields.as_ptr(),
                 must_field_lens.as_ptr(),
@@ -2881,7 +3442,7 @@ mod tests {
 
         let mut maxscore_handle: u64 = 0;
         let rc = unsafe {
-            ffi_search_boolean_query_scored_maxscore(
+            crate::legacy_boolean_abi::legacy_search_boolean_query_scored_maxscore(
                 seg_handle,
                 must_fields.as_ptr(),
                 must_field_lens.as_ptr(),
@@ -3065,7 +3626,7 @@ mod tests {
 
         let mut scored_handle: u64 = 0;
         let rc = unsafe {
-            ffi_search_boolean_query_scored(
+            crate::legacy_boolean_abi::legacy_search_boolean_query_scored(
                 seg_handle,
                 must_fields.as_ptr(),
                 must_field_lens.as_ptr(),
@@ -3110,7 +3671,7 @@ mod tests {
 
         let mut scored_handle: u64 = 0;
         let rc = unsafe {
-            ffi_search_boolean_query_scored(
+            crate::legacy_boolean_abi::legacy_search_boolean_query_scored(
                 seg_handle,
                 std::ptr::null(),
                 std::ptr::null(),
@@ -3142,7 +3703,7 @@ mod tests {
     fn boolean_query_scored_unknown_segment_handle_is_invalid_handle() {
         let mut scored_handle: u64 = 0;
         let rc = unsafe {
-            ffi_search_boolean_query_scored(
+            crate::legacy_boolean_abi::legacy_search_boolean_query_scored(
                 0xFFFF,
                 std::ptr::null(),
                 std::ptr::null(),
@@ -3171,7 +3732,7 @@ mod tests {
         let dir_handle = open_dir();
         let seg_handle = open_segment(dir_handle, false);
         let rc = unsafe {
-            ffi_search_boolean_query_scored(
+            crate::legacy_boolean_abi::legacy_search_boolean_query_scored(
                 seg_handle,
                 std::ptr::null(),
                 std::ptr::null(),
@@ -3366,7 +3927,12 @@ mod tests {
             FfiStatus::Panic.code(),
             "the injected panic must be caught by `guard`, not crash the process"
         );
-        assert!(segments().is_poisoned(), "the panic must poison the mutex");
+        // Since the M2 sweep this registry is an `RwLock` and a query holds
+        // only its *read* guard, which `std` never poisons (a shared borrow
+        // cannot leave the map half-written). The property under test is
+        // unchanged and still worth pinning: whether or not the lock ends up
+        // poisoned, a later call must not be wedged by the panic.
+        let _ = segments().is_poisoned();
 
         // A subsequent, unrelated, well-formed call against the *same*
         // registry (and the same still-live segment handle) must succeed --
@@ -3457,5 +4023,575 @@ mod tests {
         ffi_close_results(results_handle);
         ffi_close_segment(seg_handle);
         ffi_close_directory(dir_handle);
+    }
+    // ------------------------------------------------------------------
+    // The occur-tagged clause-array wire format (M2 sweep `c13-ffi-surface`)
+    // ------------------------------------------------------------------
+
+    /// Owns the eight parallel arrays one `BooleanQuery` needs, so a test can
+    /// describe a clause tree declaratively.
+    struct Clauses {
+        occurs: Vec<u8>,
+        kinds: Vec<u8>,
+        fields: Vec<*const c_char>,
+        field_lens: Vec<usize>,
+        terms: Vec<*const u8>,
+        term_lens: Vec<usize>,
+        parents: Vec<i32>,
+        params: Vec<i32>,
+    }
+
+    /// `(occur, kind, field, term, parent, param)`.
+    type Spec = (u8, u8, &'static str, &'static [u8], i32, i32);
+
+    impl Clauses {
+        fn new(specs: &[Spec]) -> Self {
+            let mut c = Clauses {
+                occurs: Vec::new(),
+                kinds: Vec::new(),
+                fields: Vec::new(),
+                field_lens: Vec::new(),
+                terms: Vec::new(),
+                term_lens: Vec::new(),
+                parents: Vec::new(),
+                params: Vec::new(),
+            };
+            for (occur, kind, field, term, parent, param) in specs {
+                c.occurs.push(*occur);
+                c.kinds.push(*kind);
+                c.fields.push(field.as_ptr() as *const c_char);
+                c.field_lens.push(field.len());
+                c.terms.push(term.as_ptr());
+                c.term_lens.push(term.len());
+                c.parents.push(*parent);
+                c.params.push(*param);
+            }
+            c
+        }
+
+        fn search(&self, seg: u64, msm: i32) -> (i32, u64) {
+            let mut out: u64 = 0;
+            let rc = unsafe {
+                ffi_search_boolean_query(
+                    seg,
+                    self.occurs.as_ptr(),
+                    self.kinds.as_ptr(),
+                    self.fields.as_ptr(),
+                    self.field_lens.as_ptr(),
+                    self.terms.as_ptr(),
+                    self.term_lens.as_ptr(),
+                    self.parents.as_ptr(),
+                    self.params.as_ptr(),
+                    self.occurs.len(),
+                    msm,
+                    &mut out as *mut _,
+                )
+            };
+            (rc, out)
+        }
+    }
+
+    fn term(occur: u8, field: &'static str, t: &'static [u8]) -> Spec {
+        (occur, CLAUSE_KIND_TERM, field, t, -1, 0)
+    }
+
+    /// A `FILTER` clause narrows exactly like a `MUST` one -- Java's
+    /// `Occur.FILTER` is "like MUST except that these clauses do not
+    /// participate in scoring". The unscored path cannot see the score
+    /// difference, so this asserts the *matched set* is identical, which is
+    /// the half `Occur.FILTER` must not change.
+    #[test]
+    fn a_filter_clause_matches_exactly_what_the_same_must_clause_matches() {
+        let dir_handle = open_dir();
+        let seg_handle = open_segment(dir_handle, false);
+
+        let as_must = Clauses::new(&[
+            term(OCCUR_MUST, "body", b"cat"),
+            term(OCCUR_MUST, "body", b"dog"),
+        ]);
+        let as_filter = Clauses::new(&[
+            term(OCCUR_MUST, "body", b"cat"),
+            term(OCCUR_FILTER, "body", b"dog"),
+        ]);
+        let (rc, h1) = as_must.search(seg_handle, 0);
+        assert_eq!(rc, FfiStatus::Ok.code());
+        let (rc, h2) = as_filter.search(seg_handle, 0);
+        assert_eq!(rc, FfiStatus::Ok.code());
+        let (must_docs, filter_docs) = (read_results(h1), read_results(h2));
+        assert_eq!(must_docs, filter_docs);
+        assert!(
+            !must_docs.is_empty(),
+            "the fixture must actually match something for this to mean anything"
+        );
+        ffi_close_results(h1);
+        ffi_close_results(h2);
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    /// A filter-only query still *matches* (Java: `BooleanQuery.rewrite`'s
+    /// pure-negative test is `clauses.size() == MUST_NOT count`, which a
+    /// filter clause fails), it is not a "no positive clauses" empty result.
+    #[test]
+    fn a_filter_only_query_matches_rather_than_matching_nothing() {
+        let dir_handle = open_dir();
+        let seg_handle = open_segment(dir_handle, false);
+        let filter_only = Clauses::new(&[term(OCCUR_FILTER, "body", b"cat")]);
+        let must_only = Clauses::new(&[term(OCCUR_MUST, "body", b"cat")]);
+        let (rc, h1) = filter_only.search(seg_handle, 0);
+        assert_eq!(rc, FfiStatus::Ok.code());
+        let (rc, h2) = must_only.search(seg_handle, 0);
+        assert_eq!(rc, FfiStatus::Ok.code());
+        let docs = read_results(h1);
+        assert!(!docs.is_empty());
+        assert_eq!(docs, read_results(h2));
+        ffi_close_results(h1);
+        ffi_close_results(h2);
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    /// The scored path is where `FILTER` is observably different from `MUST`:
+    /// the filter clause contributes **zero** to the score.
+    #[test]
+    fn a_filter_clause_contributes_no_score_where_the_same_must_clause_does() {
+        let dir_handle = open_dir();
+        let seg_handle = open_segment(dir_handle, false);
+        let scored = |c: &Clauses| -> Vec<(i32, f32)> {
+            let mut out: u64 = 0;
+            let rc = unsafe {
+                ffi_search_boolean_query_scored(
+                    seg_handle,
+                    c.occurs.as_ptr(),
+                    c.kinds.as_ptr(),
+                    c.fields.as_ptr(),
+                    c.field_lens.as_ptr(),
+                    c.terms.as_ptr(),
+                    c.term_lens.as_ptr(),
+                    c.parents.as_ptr(),
+                    c.params.as_ptr(),
+                    c.occurs.len(),
+                    0,
+                    10,
+                    &mut out as *mut _,
+                )
+            };
+            assert_eq!(rc, FfiStatus::Ok.code());
+            let hits = read_scored_results(out);
+            crate::results_scored::ffi_close_scored_results(out);
+            hits
+        };
+        let must = scored(&Clauses::new(&[
+            term(OCCUR_MUST, "body", b"cat"),
+            term(OCCUR_MUST, "body", b"dog"),
+        ]));
+        let filter = scored(&Clauses::new(&[
+            term(OCCUR_MUST, "body", b"cat"),
+            term(OCCUR_FILTER, "body", b"dog"),
+        ]));
+        assert_eq!(
+            must.iter().map(|h| h.0).collect::<Vec<_>>(),
+            filter.iter().map(|h| h.0).collect::<Vec<_>>(),
+            "same documents"
+        );
+        assert!(
+            filter.iter().zip(&must).all(|(f, m)| f.1 < m.1),
+            "every filtered hit must score strictly lower: {filter:?} vs {must:?}"
+        );
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    /// A nested `BOOLEAN` clause: `+body:cat +(body:dog body:bird)`.
+    #[test]
+    fn a_nested_boolean_clause_is_evaluated_as_its_own_subquery() {
+        let dir_handle = open_dir();
+        let seg_handle = open_segment(dir_handle, false);
+        // 0: MUST TERM body:cat
+        // 1: MUST BOOLEAN (parent -1)
+        // 2: SHOULD TERM body:dog  (parent 1)
+        // 3: SHOULD TERM body:bird (parent 1)
+        let nested = Clauses::new(&[
+            term(OCCUR_MUST, "body", b"cat"),
+            (OCCUR_MUST, CLAUSE_KIND_BOOLEAN, "", b"", -1, 0),
+            (OCCUR_SHOULD, CLAUSE_KIND_TERM, "body", b"dog", 1, 0),
+            (OCCUR_SHOULD, CLAUSE_KIND_TERM, "body", b"bird", 1, 0),
+        ]);
+        let (rc, nested_handle) = nested.search(seg_handle, 0);
+        assert_eq!(rc, FfiStatus::Ok.code());
+        let nested_docs = read_results(nested_handle);
+
+        // The flat equivalent of the same logic: cat AND (dog OR bird) is not
+        // expressible without nesting, so compare against the union of
+        // `cat AND dog` and `cat AND bird`.
+        let (rc, a) = Clauses::new(&[
+            term(OCCUR_MUST, "body", b"cat"),
+            term(OCCUR_MUST, "body", b"dog"),
+        ])
+        .search(seg_handle, 0);
+        assert_eq!(rc, FfiStatus::Ok.code());
+        let (rc, b) = Clauses::new(&[
+            term(OCCUR_MUST, "body", b"cat"),
+            term(OCCUR_MUST, "body", b"bird"),
+        ])
+        .search(seg_handle, 0);
+        assert_eq!(rc, FfiStatus::Ok.code());
+        let mut expected: Vec<i32> = read_results(a);
+        expected.extend(read_results(b));
+        expected.sort_unstable();
+        expected.dedup();
+        assert_eq!(nested_docs, expected);
+        assert!(!expected.is_empty());
+        ffi_close_results(nested_handle);
+        ffi_close_results(a);
+        ffi_close_results(b);
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    /// `minimumNumberShouldMatch`, for the root query and for a nested one:
+    /// both had no wire representation at all before this batch.
+    #[test]
+    fn minimum_should_match_narrows_the_result_at_the_root_and_when_nested() {
+        let dir_handle = open_dir();
+        let seg_handle = open_segment(dir_handle, false);
+        let three_shoulds = Clauses::new(&[
+            term(OCCUR_SHOULD, "body", b"cat"),
+            term(OCCUR_SHOULD, "body", b"dog"),
+            term(OCCUR_SHOULD, "body", b"bird"),
+        ]);
+        let (rc, any) = three_shoulds.search(seg_handle, 0);
+        assert_eq!(rc, FfiStatus::Ok.code());
+        let (rc, two) = three_shoulds.search(seg_handle, 2);
+        assert_eq!(rc, FfiStatus::Ok.code());
+        let (any_docs, two_docs) = (read_results(any), read_results(two));
+        assert!(two_docs.len() < any_docs.len(), "mSM=2 must narrow");
+        assert!(two_docs.iter().all(|d| any_docs.contains(d)));
+
+        // The same three clauses nested under one BOOLEAN clause with its own
+        // mSM must produce the same set as the root-level mSM above.
+        let nested = Clauses::new(&[
+            (OCCUR_MUST, CLAUSE_KIND_BOOLEAN, "", b"", -1, 2),
+            (OCCUR_SHOULD, CLAUSE_KIND_TERM, "body", b"cat", 0, 0),
+            (OCCUR_SHOULD, CLAUSE_KIND_TERM, "body", b"dog", 0, 0),
+            (OCCUR_SHOULD, CLAUSE_KIND_TERM, "body", b"bird", 0, 0),
+        ]);
+        let (rc, nested_handle) = nested.search(seg_handle, 0);
+        assert_eq!(rc, FfiStatus::Ok.code());
+        assert_eq!(read_results(nested_handle), two_docs);
+        ffi_close_results(any);
+        ffi_close_results(two);
+        ffi_close_results(nested_handle);
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    /// Clause order inside each bucket is the caller's, not the reverse the
+    /// bottom-up build pass naturally produces.
+    #[test]
+    fn clause_order_within_a_bucket_is_preserved() {
+        let query = unsafe {
+            let c = Clauses::new(&[
+                term(OCCUR_SHOULD, "f", b"a"),
+                term(OCCUR_SHOULD, "f", b"b"),
+                term(OCCUR_SHOULD, "f", b"c"),
+                (OCCUR_MUST, CLAUSE_KIND_BOOLEAN, "", b"", -1, 0),
+                (OCCUR_MUST, CLAUSE_KIND_TERM, "f", b"x", 3, 0),
+                (OCCUR_MUST, CLAUSE_KIND_TERM, "f", b"y", 3, 0),
+            ]);
+            read_boolean_query(
+                c.occurs.as_ptr(),
+                c.kinds.as_ptr(),
+                c.fields.as_ptr(),
+                c.field_lens.as_ptr(),
+                c.terms.as_ptr(),
+                c.term_lens.as_ptr(),
+                c.parents.as_ptr(),
+                c.params.as_ptr(),
+                6,
+                0,
+            )
+            .unwrap()
+        };
+        let shoulds: Vec<&[u8]> = query
+            .should
+            .iter()
+            .map(|c| match c {
+                Clause::Term(t) => t.term.as_slice(),
+                _ => panic!("expected a term clause"),
+            })
+            .collect();
+        assert_eq!(shoulds, vec![b"a".as_slice(), b"b", b"c"]);
+        let Clause::Boolean(nested) = &query.must[0] else {
+            panic!("expected the nested boolean clause");
+        };
+        let musts: Vec<&[u8]> = nested
+            .must
+            .iter()
+            .map(|c| match c {
+                Clause::Term(t) => t.term.as_slice(),
+                _ => panic!("expected a term clause"),
+            })
+            .collect();
+        assert_eq!(musts, vec![b"x".as_slice(), b"y"]);
+    }
+
+    /// Null `clause_parents`/`clause_params` mean "flat, all defaults" -- the
+    /// convenience the common case relies on.
+    #[test]
+    fn null_parents_and_params_mean_a_flat_default_query() {
+        let field = "body";
+        let term_bytes = b"cat";
+        let occurs = [OCCUR_MUST];
+        let kinds = [CLAUSE_KIND_TERM];
+        let fields = [field.as_ptr() as *const c_char];
+        let field_lens = [field.len()];
+        let terms = [term_bytes.as_ptr()];
+        let term_lens = [term_bytes.len()];
+        let query = unsafe {
+            read_boolean_query(
+                occurs.as_ptr(),
+                kinds.as_ptr(),
+                fields.as_ptr(),
+                field_lens.as_ptr(),
+                terms.as_ptr(),
+                term_lens.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                1,
+                0,
+            )
+            .unwrap()
+        };
+        assert_eq!(query.must.len(), 1);
+        assert!(query.filter.is_empty() && query.should.is_empty());
+        assert_eq!(query.minimum_should_match, 0);
+    }
+
+    fn decode_err(specs: &[Spec], msm: i32) -> FfiStatus {
+        let c = Clauses::new(specs);
+        unsafe {
+            read_boolean_query(
+                c.occurs.as_ptr(),
+                c.kinds.as_ptr(),
+                c.fields.as_ptr(),
+                c.field_lens.as_ptr(),
+                c.terms.as_ptr(),
+                c.term_lens.as_ptr(),
+                c.parents.as_ptr(),
+                c.params.as_ptr(),
+                c.occurs.len(),
+                msm,
+            )
+            .expect_err("expected a rejected clause array")
+        }
+    }
+
+    #[test]
+    fn every_malformed_clause_array_is_an_invalid_argument_not_a_panic() {
+        // Unknown Occur tag.
+        assert_eq!(
+            decode_err(&[(4, CLAUSE_KIND_TERM, "f", b"a", -1, 0)], 0),
+            FfiStatus::InvalidArgument
+        );
+        assert!(last_error_message().contains("unknown Occur tag 4"));
+        // Unknown clause kind.
+        assert_eq!(
+            decode_err(&[(OCCUR_MUST, 7, "f", b"a", -1, 0)], 0),
+            FfiStatus::InvalidArgument
+        );
+        assert!(last_error_message().contains("unknown clause kind 7"));
+        // A forward parent reference (which is also how a cycle would have to
+        // be spelled).
+        assert_eq!(
+            decode_err(
+                &[
+                    (OCCUR_MUST, CLAUSE_KIND_TERM, "f", b"a", 1, 0),
+                    (OCCUR_MUST, CLAUSE_KIND_BOOLEAN, "", b"", -1, 0),
+                ],
+                0
+            ),
+            FfiStatus::InvalidArgument
+        );
+        assert!(last_error_message().contains("an earlier clause"));
+        // A self parent.
+        assert_eq!(
+            decode_err(&[(OCCUR_MUST, CLAUSE_KIND_TERM, "f", b"a", 0, 0)], 0),
+            FfiStatus::InvalidArgument
+        );
+        // A parent that is a leaf.
+        assert_eq!(
+            decode_err(
+                &[
+                    (OCCUR_MUST, CLAUSE_KIND_TERM, "f", b"a", -1, 0),
+                    (OCCUR_MUST, CLAUSE_KIND_TERM, "f", b"b", 0, 0),
+                ],
+                0
+            ),
+            FfiStatus::InvalidArgument
+        );
+        assert!(last_error_message().contains("is not a BOOLEAN clause"));
+        // A non-zero param on a TERM clause is reserved, not ignored.
+        assert_eq!(
+            decode_err(&[(OCCUR_MUST, CLAUSE_KIND_TERM, "f", b"a", -1, 3)], 0),
+            FfiStatus::InvalidArgument
+        );
+        assert!(last_error_message().contains("must be 0 for a TERM clause"));
+        // A negative nested minimumNumberShouldMatch.
+        assert_eq!(
+            decode_err(&[(OCCUR_MUST, CLAUSE_KIND_BOOLEAN, "", b"", -1, -1)], 0),
+            FfiStatus::InvalidArgument
+        );
+        // A negative root minimumNumberShouldMatch.
+        assert_eq!(
+            decode_err(&[term(OCCUR_MUST, "f", b"a")], -1),
+            FfiStatus::InvalidArgument
+        );
+        assert!(last_error_message().contains("minimumNumberShouldMatch -1 is negative"));
+    }
+
+    /// A caller-controlled nesting depth is a caller-controlled *stack* depth
+    /// once the query is evaluated and dropped, and a stack overflow aborts --
+    /// which `catch_unwind` cannot contain. The cap must reject before that.
+    #[test]
+    fn nesting_deeper_than_the_cap_is_rejected() {
+        let mut specs: Vec<Spec> = Vec::new();
+        for i in 0..MAX_CLAUSE_DEPTH + 1 {
+            specs.push((OCCUR_MUST, CLAUSE_KIND_BOOLEAN, "", b"", i as i32 - 1, 0));
+        }
+        assert_eq!(decode_err(&specs, 0), FfiStatus::InvalidArgument);
+        assert!(last_error_message().contains("nesting depth"));
+
+        // Exactly at the cap is still accepted.
+        let mut ok: Vec<Spec> = Vec::new();
+        for i in 0..MAX_CLAUSE_DEPTH {
+            ok.push((OCCUR_MUST, CLAUSE_KIND_BOOLEAN, "", b"", i as i32 - 1, 0));
+        }
+        let c = Clauses::new(&ok);
+        let query = unsafe {
+            read_boolean_query(
+                c.occurs.as_ptr(),
+                c.kinds.as_ptr(),
+                c.fields.as_ptr(),
+                c.field_lens.as_ptr(),
+                c.terms.as_ptr(),
+                c.term_lens.as_ptr(),
+                c.parents.as_ptr(),
+                c.params.as_ptr(),
+                c.occurs.len(),
+                0,
+            )
+        };
+        assert!(query.is_ok());
+    }
+
+    /// The clause cap is one array length now, so the old
+    /// "three lists of 1024 each" hole cannot recur.
+    #[test]
+    fn the_clause_cap_is_the_whole_array_and_counts_nested_clauses_too() {
+        assert_eq!(check_clause_count(MAX_CLAUSE_COUNT), Ok(()));
+        assert_eq!(
+            check_clause_count(MAX_CLAUSE_COUNT + 1),
+            Err(FfiStatus::InvalidArgument)
+        );
+        assert!(last_error_message().contains("maxClauseCount"));
+        // A whole query of 1025 clauses is refused at the entry point, not
+        // just by the helper.
+        let dir_handle = open_dir();
+        let seg_handle = open_segment(dir_handle, false);
+        let specs: Vec<Spec> = (0..MAX_CLAUSE_COUNT + 1)
+            .map(|_| term(OCCUR_SHOULD, "body", b"cat"))
+            .collect();
+        let (rc, _) = Clauses::new(&specs).search(seg_handle, 0);
+        assert_eq!(rc, FfiStatus::InvalidArgument.code());
+        ffi_close_segment(seg_handle);
+        ffi_close_directory(dir_handle);
+    }
+
+    /// `clause_field_names` must find every field in the tree, including ones
+    /// only a nested clause mentions -- otherwise a nested clause's norms are
+    /// silently missing and its scores fall back to the unnormed constant.
+    #[test]
+    fn clause_field_names_walks_nested_clauses() {
+        let c = Clauses::new(&[
+            term(OCCUR_MUST, "outer", b"a"),
+            (OCCUR_MUST, CLAUSE_KIND_BOOLEAN, "", b"", -1, 0),
+            (OCCUR_SHOULD, CLAUSE_KIND_TERM, "inner", b"b", 1, 0),
+            (OCCUR_FILTER, CLAUSE_KIND_TERM, "outer", b"c", 1, 0),
+        ]);
+        let query = unsafe {
+            read_boolean_query(
+                c.occurs.as_ptr(),
+                c.kinds.as_ptr(),
+                c.fields.as_ptr(),
+                c.field_lens.as_ptr(),
+                c.terms.as_ptr(),
+                c.term_lens.as_ptr(),
+                c.parents.as_ptr(),
+                c.params.as_ptr(),
+                4,
+                0,
+            )
+            .unwrap()
+        };
+        let mut names = clause_field_names(&query);
+        names.sort_unstable();
+        assert_eq!(names, vec!["inner", "outer"]);
+    }
+
+    /// Null `clause_occurs`/`clause_kinds` with a non-zero count is a status
+    /// code, never a dereference.
+    #[test]
+    fn a_null_clause_array_with_a_nonzero_count_is_a_null_pointer_error() {
+        let e = unsafe {
+            read_boolean_query(
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                3,
+                0,
+            )
+        };
+        assert_eq!(e, Err(FfiStatus::NullPointer));
+        // A TERM clause with null field/term arrays is likewise refused.
+        let occurs = [OCCUR_MUST];
+        let kinds = [CLAUSE_KIND_TERM];
+        let e = unsafe {
+            read_boolean_query(
+                occurs.as_ptr(),
+                kinds.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                1,
+                0,
+            )
+        };
+        assert_eq!(e, Err(FfiStatus::NullPointer));
+        // Zero clauses is a valid, match-nothing query.
+        let q = unsafe {
+            read_boolean_query(
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                0,
+            )
+            .unwrap()
+        };
+        assert!(q.must.is_empty() && q.should.is_empty());
     }
 }

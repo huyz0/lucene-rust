@@ -3,6 +3,11 @@
 //! and a sparse one ("sparse_body", only docs 0/2/4 have it -- Lucene only
 //! picks the IndexedDISI/sparse encoding when a field is missing from some
 //! docs entirely). Regenerate with fixtures/src/GenNorms.java.
+// Test-support code opts out of the arithmetic gate at the file boundary:
+// the gate exists for values read off disk in production decode paths, not
+// for a fixture builder's own index arithmetic. See
+// `docs/arithmetic-gate.md`.
+#![allow(clippy::arithmetic_side_effects)]
 
 use lucene_codecs::norms;
 

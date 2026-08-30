@@ -1,5 +1,10 @@
 //! Differential tests against Java-written `.si` files.
 //! Regenerate with fixtures/src/GenSegmentInfo.java.
+// Test-support code opts out of the arithmetic gate at the file boundary:
+// the gate exists for values read off disk in production decode paths, not
+// for a fixture builder's own index arithmetic. See
+// `docs/arithmetic-gate.md`.
+#![allow(clippy::arithmetic_side_effects)]
 
 use lucene_index::segment_info;
 
@@ -75,6 +80,7 @@ fn check_segment(segment: &str) {
     let mut expected_diag: Vec<(String, String)> = manifest
         .get("diagnostics")
         .split(';')
+        .filter(|kv| !kv.is_empty())
         .map(|kv| {
             let (k, v) = kv.split_once('=').unwrap();
             (k.to_string(), v.to_string())
@@ -88,6 +94,7 @@ fn check_segment(segment: &str) {
     let mut expected_attrs: Vec<(String, String)> = manifest
         .get("attributes")
         .split(';')
+        .filter(|kv| !kv.is_empty())
         .map(|kv| {
             let (k, v) = kv.split_once('=').unwrap();
             (k.to_string(), v.to_string())
@@ -102,9 +109,10 @@ fn check_segment(segment: &str) {
     // file set before writing (see Lucene99SegmentInfoFormat.write, "Only add the
     // file once we've successfully created it"), so the persisted set is the
     // manifest's list plus the `.si` file.
-    let mut expected_files: Vec<String> = manifest
-        .get("files")
+    let manifest_files = manifest.get("files");
+    let mut expected_files: Vec<String> = manifest_files
         .split(',')
+        .filter(|f| !f.is_empty())
         .map(String::from)
         .chain(std::iter::once(format!("{segment}.si")))
         .collect();
@@ -112,6 +120,17 @@ fn check_segment(segment: &str) {
     expected_files.sort();
     actual_files.sort();
     assert_eq!(actual_files, expected_files);
+
+    // Byte-exact re-encode. `parse` + `write` are documented as exact
+    // inverses; asserting it against real Lucene bytes (rather than only
+    // round-tripping our own output) is what actually pins the write path to
+    // Lucene's -- it is how the `SegmentInfo.NO == -1` (0xFF, not 0) encoding
+    // of `isCompoundFile`/`hasBlocks` was caught.
+    assert_eq!(
+        segment_info::write(&si, ""),
+        buf,
+        "re-encoding the Java-written {segment}.si must reproduce it byte for byte"
+    );
 }
 
 #[test]
@@ -129,4 +148,56 @@ fn wrong_segment_id_rejected() {
     let buf = std::fs::read(format!("{}_0.si", fixture_dir())).unwrap();
     let wrong_id = [0u8; 16];
     assert!(segment_info::parse(&buf, &wrong_id).is_err());
+}
+
+/// A real-Lucene-written *index-sorted* `.si`. This is the only fixture that
+/// exercises `SortFieldProvider`'s byte layout (provider name string, then
+/// that provider's own bytestream) rather than the `.si` body's own fields --
+/// the encoding this port previously invented from scratch. Two sort fields
+/// with opposite `reverse`/missing policies, so neither flag nor the priority
+/// order can be silently dropped.
+#[test]
+fn index_sorted_segment_matches_real_lucene_sort_field_provider_bytes() {
+    check_segment("_2");
+
+    let manifest = Manifest::load("_2");
+    let buf = std::fs::read(format!("{}_2.si", fixture_dir())).unwrap();
+    let id = id_from_hex(manifest.get("id_hex"));
+    let si = segment_info::parse(&buf, &id).unwrap();
+
+    let rendered: Vec<String> = si
+        .index_sort
+        .expect("_2 is an index-sorted segment")
+        .iter()
+        .map(|f| {
+            format!(
+                "{}:{}:{}",
+                f.field,
+                if f.reverse { 1 } else { 0 },
+                match f.missing {
+                    segment_info::SortMissingValue::First => "first",
+                    segment_info::SortMissingValue::Last => "last",
+                }
+            )
+        })
+        .collect();
+    assert_eq!(rendered.join(","), manifest.get("index_sort"));
+}
+
+/// The bytes this port *writes* for the same sort must be byte-identical to
+/// the ones real Lucene wrote for `_2` -- not merely round-trippable through
+/// our own parser. Comparing the two files' sort-field regions directly is
+/// the strongest available statement of write-path fidelity without a JVM
+/// (`scripts/verify-write-path.sh`'s `VerifySegmentInfo` covers the JVM side).
+#[test]
+fn our_writer_emits_the_same_sort_field_bytes_as_lucene() {
+    let manifest = Manifest::load("_2");
+    let java_bytes = std::fs::read(format!("{}_2.si", fixture_dir())).unwrap();
+    let id = id_from_hex(manifest.get("id_hex"));
+    let si = segment_info::parse(&java_bytes, &id).unwrap();
+    let ours = segment_info::write(&si, "");
+    assert_eq!(
+        ours, java_bytes,
+        "re-encoding a Lucene-written index-sorted .si must reproduce it byte for byte"
+    );
 }

@@ -21,7 +21,7 @@
 //! [`FsIndexOutput::close`], mirroring how a `BufWriter` drop swallowing a
 //! flush error would otherwise silently lose data.
 
-use std::fs::{File, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
@@ -106,7 +106,10 @@ impl DataOutput for FsIndexOutput {
             return;
         }
         self.crc.update(b);
-        self.bytes_written += b.len() as u64;
+        // A file longer than 2^64 bytes is not representable by the OS, let
+        // alone writable; saturating keeps the counter monotone rather than
+        // panicking if one somehow were.
+        self.bytes_written = self.bytes_written.saturating_add(b.len() as u64);
     }
 }
 
@@ -154,6 +157,33 @@ pub(crate) fn sync(root: &Path, names: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// Port of `FSDirectory.rename(source, dest)`: `std::fs::rename` is the same
+/// `rename(2)` Java's `Files.move(..., ATOMIC_MOVE)` performs, so a reader
+/// scanning the directory sees either the old `dest` or the complete new one,
+/// never a partial file. The directory entry itself is only durable once
+/// [`sync_meta_data`] runs, which is why Lucene calls that immediately after.
+pub(crate) fn rename(root: &Path, source: &str, dest: &str) -> Result<()> {
+    fs::rename(root.join(source), root.join(dest))?;
+    Ok(())
+}
+
+/// Port of `FSDirectory.deleteFile(name)`.
+pub(crate) fn delete_file(root: &Path, name: &str) -> Result<()> {
+    fs::remove_file(root.join(name))?;
+    Ok(())
+}
+
+/// Port of `FSDirectory.syncMetaData()`: fsync the directory so a name
+/// created or renamed inside it survives a crash. Best-effort in the same
+/// sense [`sync`]'s trailing directory fsync is -- not every platform lets a
+/// directory be opened as a file.
+pub(crate) fn sync_meta_data(root: &Path) -> Result<()> {
+    if let Ok(dir) = File::open(root) {
+        let _ = dir.sync_all();
+    }
+    Ok(())
+}
+
 /// Convenience used by tests/examples: writes `bytes` to `root/name` via a
 /// fresh [`FsIndexOutput`] and closes it, returning the checksum.
 #[cfg(test)]
@@ -168,18 +198,12 @@ mod tests {
     use super::*;
     use crate::data_input::{DataInput, SliceInput};
 
-    fn tempdir() -> PathBuf {
-        let mut p = std::env::temp_dir();
-        p.push(format!(
-            "lucene-rust-index-output-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&p).unwrap();
-        p
+    use lucene_util::test_support::TempDir;
+
+    /// A scratch directory that removes itself when the test ends -- unless
+    /// the test is panicking, in which case its bytes stay for inspection.
+    fn tempdir() -> TempDir {
+        TempDir::new("index-output")
     }
 
     #[test]

@@ -123,6 +123,20 @@ public class VerifySegmentInfo {
           .append("] got=[").append(gotFiles).append("]; ");
     }
 
+    // Index sort: the manifest holds `field:reverse:missing` triples in
+    // priority order. Rendering Lucene's own parsed Sort the same way proves
+    // the `.si` sort-field bytes went through
+    // `SortFieldProvider.forName(name).readSortField(in)` -- i.e. that this
+    // port writes the real provider layout, not an invented one. The missing
+    // value is checked as the Long.MIN_VALUE/Long.MAX_VALUE sentinel the Rust
+    // side means by "first"/"last".
+    String expectedSort = manifest.getOrDefault("index_sort", "");
+    String gotSort = renderSort(si.getIndexSort());
+    if (!expectedSort.equals(gotSort)) {
+      mismatches.append("index_sort: expected=[").append(expectedSort)
+          .append("] got=[").append(gotSort).append("]; ");
+    }
+
     if (mismatches.length() > 0) {
       System.out.println("MISMATCH segment " + segmentName + ": " + mismatches);
       failures++;
@@ -130,6 +144,28 @@ public class VerifySegmentInfo {
       System.out.println("segment " + segmentName + " OK");
     }
     return failures;
+  }
+
+  static String renderSort(org.apache.lucene.search.Sort sort) {
+    if (sort == null) return "";
+    StringBuilder sb = new StringBuilder();
+    for (org.apache.lucene.search.SortField sf : sort.getSort()) {
+      if (sb.length() > 0) sb.append(',');
+      if (sf.getType() != org.apache.lucene.search.SortField.Type.LONG) {
+        return "UNEXPECTED_TYPE:" + sf.getType();
+      }
+      Object missing = sf.getMissingValue();
+      String missingLabel;
+      if (Long.valueOf(Long.MIN_VALUE).equals(missing)) {
+        missingLabel = "first";
+      } else if (Long.valueOf(Long.MAX_VALUE).equals(missing)) {
+        missingLabel = "last";
+      } else {
+        missingLabel = "UNEXPECTED_MISSING:" + missing;
+      }
+      sb.append(sf.getField()).append(':').append(sf.getReverse() ? 1 : 0).append(':').append(missingLabel);
+    }
+    return sb.toString();
   }
 
   static java.util.List<Path> findManifests(Path dir) throws IOException {

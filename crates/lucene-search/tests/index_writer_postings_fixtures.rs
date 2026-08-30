@@ -80,18 +80,12 @@ fn doc(id: &str, body: &str) -> Document {
     }
 }
 
-fn tempdir(tag: &str) -> std::path::PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!(
-        "lucene-rust-index-writer-postings-fixture-{tag}-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&p).unwrap();
-    p
+use lucene_util::test_support::TempDir;
+
+/// A scratch directory that removes itself when the test ends -- unless
+/// the test is panicking, in which case its bytes stay for inspection.
+fn tempdir(tag: &str) -> TempDir {
+    TempDir::new(&format!("index-writer-postings-fixture-{tag}"))
 }
 
 /// The critical end-to-end proof this task requires: documents added via
@@ -112,9 +106,15 @@ fn documents_added_via_index_writer_are_searchable_by_term_query() {
     let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
     writer.set_postings_field(Some("body")).unwrap();
 
-    writer.add_document(doc("a", "the quick fox jumps"));
-    writer.add_document(doc("b", "the lazy fox sleeps"));
-    writer.add_document(doc("c", "the fox and the hound"));
+    writer
+        .add_document(doc("a", "the quick fox jumps"))
+        .unwrap();
+    writer
+        .add_document(doc("b", "the lazy fox sleeps"))
+        .unwrap();
+    writer
+        .add_document(doc("c", "the fox and the hound"))
+        .unwrap();
     let sis = writer.commit().unwrap().clone();
     assert_eq!(sis.segments.len(), 1);
     let sci = &sis.segments[0];
@@ -232,21 +232,27 @@ fn two_distinct_postings_fields_in_one_commit_are_both_searchable() {
     writer.set_postings_field(Some("title")).unwrap();
     writer.add_postings_field("body").unwrap();
 
-    writer.add_document(doc_with_title_and_body(
-        "a",
-        "space exploration",
-        "the quick fox jumps",
-    ));
-    writer.add_document(doc_with_title_and_body(
-        "b",
-        "deep sea diving",
-        "the lazy fox sleeps",
-    ));
-    writer.add_document(doc_with_title_and_body(
-        "c",
-        "space and sea",
-        "the fox and the hound",
-    ));
+    writer
+        .add_document(doc_with_title_and_body(
+            "a",
+            "space exploration",
+            "the quick fox jumps",
+        ))
+        .unwrap();
+    writer
+        .add_document(doc_with_title_and_body(
+            "b",
+            "deep sea diving",
+            "the lazy fox sleeps",
+        ))
+        .unwrap();
+    writer
+        .add_document(doc_with_title_and_body(
+            "c",
+            "space and sea",
+            "the fox and the hound",
+        ))
+        .unwrap();
     let sis = writer.commit().unwrap().clone();
     assert_eq!(sis.segments.len(), 1);
     let sci = &sis.segments[0];

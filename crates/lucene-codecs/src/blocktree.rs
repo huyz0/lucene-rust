@@ -1,6 +1,7 @@
 //! Port of `org.apache.lucene.codecs.lucene103.blocktree.Lucene103BlockTreeTermsReader`
-//! (`.tim` term dictionary + `.tip` term index + `.tmd` per-field metadata) —
-//! read-only, scoped to **`seekExact` + `docFreq`/`totalTermFreq`** only.
+//! (`.tim` term dictionary + `.tip` term index + `.tmd` per-field metadata),
+//! including its **lazy** `SegmentTermsEnum`/`SegmentTermsEnumFrame`
+//! navigation.
 //!
 //! Note on naming: the pinned Lucene version (10.5.0) uses
 //! `Lucene104PostingsFormat`, whose term dictionary is
@@ -13,7 +14,9 @@
 //! pointer-chasing encoding of the same "prefix trie whose leaves are term
 //! blocks" idea `fst.rs`'s module doc describes for the *older* format.
 //! `fst.rs` remains useful groundwork (arc-lookup style reasoning, shared
-//! `codec_util` header handling) but is not used by this module.
+//! `codec_util` header handling) but is not used by this module — and no
+//! codec in `lucene/core` references `o.a.l.util.fst` either, so that is
+//! parity, not a gap.
 //!
 //! ## Wire format
 //!
@@ -36,150 +39,70 @@
 //!   see `TrieReader.java`/`TrieBuilder.java` for the full byte-packing scheme
 //!   ([`load_node`] is a direct transliteration of `TrieReader.load`/
 //!   `loadLeafNode`/`loadSingleChildNode`/`loadMultiChildrenNode`, and
-//!   [`multi_children_labels_and_fps`] of `lookupChild`'s three `ChildSaveStrategy`
-//!   decodings, generalized to enumerate *every* child rather than looking up
-//!   one label at a time — see below for why).
+//!   [`lookup_child`] of `TrieReader.lookupChild` plus all three
+//!   `ChildSaveStrategy` decodings).
 //! - `.tim` (`TERMS_EXTENSION`): `IndexHeader(codec="BlockTreeTermsDict")`, then
-//!   every field's blocks packed back to back (see [`decode_block`]), `Footer`.
+//!   every field's blocks packed back to back, each block laid out as
+//!   `SegmentTermsEnumFrame.loadBlock` reads it (see [`Frame::load_block`]).
 //!
-//! ## Scope of this slice
+//! ## Shape: lazy frames, not a materialized dictionary
 //!
-//! Ported: opening a `.tim`/`.tip`/`.tmd` triple, per-field metadata, and
-//! `seekExact`-equivalent term lookup with `docFreq`/`totalTermFreq`
-//! readback, now covering **multi-child trie nodes and floor blocks** — i.e.
-//! a field whose term dictionary spans more than one `.tim` block, whether
-//! because a prefix's terms were split into floor sub-blocks (too many items
-//! sharing one prefix, `LEAF_NODE_HAS_FLOOR`/`NON_LEAF_NODE_HAS_FLOOR`) or
-//! because the trie root has children (`SIGN_SINGLE_CHILD_WITH_OUTPUT`/
-//! `SIGN_SINGLE_CHILD_WITHOUT_OUTPUT`/`SIGN_MULTI_CHILDREN`, all three
-//! `ChildSaveStrategy` encodings — `BITS`/`ARRAY`/`REVERSE_ARRAY`).
+//! [`open`] reads **only** the `.tmd` records — per-field counts, min/max
+//! term, and the `(indexStart, rootFP, indexEnd)` triple locating the field's
+//! trie — and then stops, exactly like `Lucene103BlockTreeTermsReader`'s
+//! constructor plus one `FieldReader` per field. No `.tim` block is touched
+//! until a lookup asks for one.
 //!
-//! **Design choice: eager whole-field materialization, not a single
-//! root-to-leaf trie walk.** Real `SegmentTermsEnum.seekExact` walks the trie
-//! one label at a time along the target term's own bytes, touching only the
-//! one leaf block (and, within it, the one floor sub-block) that can contain
-//! the term. This module instead recursively visits **every** reachable trie
-//! node ([`collect_leaf_blocks`]), resolves every floor sub-block
-//! ([`expand_floor`]) at every node that has output, decodes every resulting
-//! `.tim` block, and merges all of a field's entries into one sorted `Vec` —
-//! the same shape the prior (single-block) slice already used, just now fed
-//! by a full trie traversal instead of one root-node read. This keeps
-//! [`FieldTerms`] and its `seek_exact`/`postings`/`positions` API completely
-//! unchanged (no caller-visible difference between a one-block and a
-//! thousand-block field) and sidesteps a subtlety this port doesn't need to
-//! solve yet: an internal trie node's *own* output block and its children's
-//! blocks are **not** necessarily contiguous in sort order purely from
-//! traversal order (a node's own block can hold terms interleaved in depth
-//! with what its children cover), so collect-then-sort is simpler and
-//! provably correct where a hand-rolled single-path merge would need much
-//! more care to get right. The tradeoff is real: this eagerly decodes blocks
-//! a real `seekExact` for one term would never touch.
+//! A lookup runs [`SegmentTermsEnum`], the port of Java's class of the same
+//! name: it walks the `.tip` trie one label at a time
+//! ([`lookup_child`]), pushes a [`Frame`] per trie node that carries an
+//! output block, picks the one floor sub-block whose label range covers the
+//! target ([`Frame::scan_to_floor_frame`]), loads *that* block and no other
+//! ([`Frame::load_block`]), and scans or binary-searches its suffix bytes
+//! ([`Frame::scan_to_term`]). Per-term postings metadata is decoded lazily on
+//! top of that, only up to the term actually landed on
+//! ([`Frame::decode_meta_data`]), so a terms-only consumer never pays for it.
+//! `next()` walks blocks and in-block sub-block pointers with the same frame
+//! stack, never re-consulting the trie.
 //!
-//! **M1.6 measured that tradeoff.** It is real, but smaller than the first
-//! measurement suggested, and the correction matters. Reader open was initially
-//! blamed entirely on this design: 560 ms against Lucene's 4.2 ms. Most of that
-//! turned out to be `DirectoryReader`'s `open_segment_file` copying every
-//! mmap'd postings file onto the heap -- 1.57 GB of memcpy per open, nothing to
-//! do with this module. With that fixed, opening the merged corpus costs
-//! **52.7 ms against Lucene's 0.34 ms, 155x**, and *that* residue is this
-//! design. Memory is the same story: one `Vec<u8>` per term per field per
-//! segment, live for as long as the reader is, where `SegmentTermsEnum` holds
-//! one reusable frame.
+//! **Why this replaced the previous design.** Until this port's `c1` batch,
+//! `open` recursively visited every trie node, expanded every floor block,
+//! decoded every `.tim` block and merged every field's terms into one sorted
+//! array. It gave the same answers but cost `O(all terms in the segment)` in
+//! both time and memory at open: **35.4 ms** to open the M1 benchmark
+//! corpus' single 579k-term segment where real Lucene's whole
+//! `DirectoryReader.open` costs 0.34 ms, and one live copy of every term's
+//! bytes plus a 64-byte record for as long as the reader lived. A search
+//! engine reopens readers on every refresh, so that was the largest
+//! architectural divergence left in the read path (finding A1 in
+//! `docs/sweep/m2/LEDGER.md`). See `docs/sweep/m2/c1-lazy-blocktree.md` for
+//! the before/after numbers.
 //!
-//! No query benchmark could find this, which is why it stood for so long: the
-//! reader is opened once, outside the timed region, in `bench-compare.sh` and in
-//! every fixture test alike. It also explains why `seek_exact` never appears in
-//! a query profile -- the work is already done before the clock starts.
+//! ## Fallible lookups
 //!
-//! It is not an academic cost. A search engine reopens readers on every refresh,
-//! so 560 ms per reopen blocks M2 and M5 regardless of how fast queries run.
-//! Replacing this with real block-tree navigation -- FST arc walking to a block,
-//! frame-based suffix scanning, lazy metadata decode -- is tracked in
-//! `docs/sweep/findings.md` as the largest architectural item left in the read
-//! path. Note the consequence for `fst.rs`: this port has a complete, fixture-
-//! verified FST implementation that the term dictionary never calls, because
-//! this traversal replaced it. Only `suggest.rs` uses it today.
+//! Decoding a block can fail on corrupt bytes, and with lazy loading that
+//! failure necessarily surfaces at **lookup** time rather than at [`open`] —
+//! which is also where real Lucene surfaces it (`loadBlock` throws
+//! `CorruptIndexException` from inside `TermsEnum.seekExact`). Every lookup
+//! therefore has a `Result`-returning form: [`FieldTerms::try_seek_exact`],
+//! [`TermsEnum::try_next`], [`TermsEnum::try_seek_ceil`]. The older
+//! infallible spellings ([`FieldTerms::seek_exact`], [`TermsEnum::next`],
+//! [`TermsEnum::seek_ceil`]) are kept for callers that have no error channel;
+//! they report a corrupt block as "no such term"/end-of-terms, and each says
+//! so in its own doc comment. New code should prefer the `try_` forms.
 //!
-//! **Multi-level blocktree tries (`.tim` blocks that are themselves
-//! non-leaf) are now decoded.** A `.tim` block can be `isLeafBlock == false`:
-//! some of its entries are pointers to further-nested sub-blocks (an
-//! in-block delta-fp, `SegmentTermsEnumFrame.nextNonLeaf`'s `code & 1`
-//! "is this a sub-block" bit) rather than raw term suffixes — real Lucene's
-//! own mechanism for a prefix so wide it isn't worth giving every one of its
-//! sub-prefixes a separate `.tip` trie/index entry (distinct from *both* the
-//! `.tip` trie's own multi-level node nesting -- root/single-child/multi-children,
-//! already arbitrarily deep and covered by [`collect_leaf_blocks`] -- and
-//! floor blocks, see [`expand_floor`]). [`decode_block`] now recurses into
-//! every sub-block entry it finds (reattaching that entry's own key bytes as
-//! a prefix before merging its sub-entries in), so a field whose dictionary
-//! needed a genuinely deep block tree (root block -> internal block -> leaf
-//! block, not just root -> leaf) round-trips correctly. The real
-//! `Lucene103BlockTreeTermsWriter`-produced fixture (~8k terms, see
-//! `crates/lucene-codecs/tests/blocktree_multilevel_fixture.rs`) does contain
-//! a genuine non-leaf `.tim` block, proving that SHAPE is decoded without
-//! error -- but its one sub-block pointer happens to also be independently
-//! reachable via the `.tip` trie, so the dedup check (below) skips it there
-//! and the *recursive re-prefixing* code path itself is only actually
-//! exercised, not merely shape-checked, by the hand-built unit test
-//! [`decode_block_recurses_into_sub_block`]. A future fixture engineered so a
-//! sub-block pointer is the *only* path to some terms (not also trie-indexed)
-//! would close that gap with a real differential proof; flagged here rather
-//! than silently overclaimed.
-//! **Deep-nesting audit (task #222): 4+-level-deep non-leaf `.tim` block
-//! chains are now fixture-proven, not just argued from the recursive
-//! structure of the code.** The fixture above only ever reaches one non-leaf
-//! layer (root block -> one internal block -> leaves) -- empirically, this
-//! plateaus at depth 3 no matter how many random-lowercase terms are added
-//! (verified up to 8000), because a 26-letter alphabet fans a large group out
-//! into many small children after just one extra prefix byte, shrinking
-//! every child below `maxItemsInBlock` almost immediately. Forcing deeper
-//! nesting needs two levers real Lucene exposes: a much narrower term
-//! alphabet (each extra prefix byte then only *halves* a group instead of
-//! dividing it by 26) and a smaller `minItemsInBlock`/`maxItemsInBlock` than
-//! the format's 25/48 defaults (wired through `Lucene104PostingsFormat`'s
-//! two-arg constructor via a custom `Codec.getPostingsFormatForField`
-//! override -- `IndexWriterConfig` itself has no direct knob for this).
-//! `fixtures/src/GenBlockTreeDeepNesting.java` (2000 terms over a `{a,b}`
-//! alphabet, 16 bytes each, `minItemsInBlock=2`/`maxItemsInBlock=4`) reaches
-//! a genuine depth of 6 chained non-leaf blocks. [`decode_block_at_depth`]'s
-//! own doc comment already establishes it recurses uniformly regardless of
-//! `depth` (bar the `depth > 10_000` cycle guard, identical to
-//! [`collect_leaf_blocks`]'s own bound for the *trie's* recursion) -- reading
-//! both functions confirms neither special-cases `depth` beyond that guard,
-//! so this fixture's depth-6 chain is a real differential proof of the exact
-//! same code path a depth-1 chain exercises, closing what was previously
-//! only a code-reading argument. See
-//! `deep_nesting_fixture_reaches_at_least_four_levels` (this module) for the
-//! structural proof (independently re-derived nesting depth, asserting a
-//! minimum, not just "some non-leaf block exists") and
-//! `crates/lucene-codecs/tests/blocktree_deep_nesting_fixture.rs` for the
-//! full public-API differential.
-//! **Ordered enumeration (`next()`) and
-//! nearest-match seeking (`seekCeil()`) are now ported** — see
-//! [`TermsEnum`]/[`FieldTerms::iter`] — as a thin cursor over the
-//! already-sorted `entries` `Vec` rather than a reimplementation of
-//! `SegmentTermsEnum`'s lazy block-walking machinery (see `TermsEnum`'s own
-//! doc comment for the full rationale). **Suffix compression is now decoded**:
+//! ## Suffix compression
+//!
 //! `CompressionAlgorithm::LZ4` (reusing `crate::lz4::decompress`) and
-//! `LowercaseAscii` (a small standalone port of
-//! `LowercaseAsciiCompression.decompress`, see `decompress_lowercase_ascii`)
-//! are both handled read-side in [`decode_block`], alongside the original
-//! `NO_COMPRESSION` path (unchanged). This port's own blocktree *writer*
-//! (see the writer section below) still only ever emits `NO_COMPRESSION` —
-//! this is purely a read-side feature for interoperating with real
-//! Lucene-written segments whose blocks happened to compress. Only code `3`
-//! (never assigned to a `CompressionAlgorithm` constant) is rejected, as
-//! `Error::Store(Corrupted)`, matching `CompressionAlgorithm.byCode`'s own
-//! `IllegalArgumentException`.
-//!
-//! Because this slice never decodes postings inline with block loading, the
-//! per-term metadata bytes written by the postings writer (doc/pos/pay file
-//! pointer deltas) are decoded per block via `crate::postings::decode_term_metadata`
-//! (threaded across each individual block's own *term* entries -- sub-block
-//! entries carry no metadata of their own, see [`decode_block`] -- `absolute`
-//! true only for each block's first term entry — blocks never share metadata
-//! state, matching `SegmentTermsEnumFrame`'s per-frame `metaDataUpto`/`absolute`
-//! reset).
+//! `LowercaseAscii` (a standalone port of
+//! `LowercaseAsciiCompression.decompress`, see [`decompress_lowercase_ascii`])
+//! are both decoded, alongside `NO_COMPRESSION`. This port's own blocktree
+//! *writer* only ever emits `NO_COMPRESSION`; the other two exist to read
+//! real Lucene-written segments. Only code `3` (never assigned to a
+//! `CompressionAlgorithm` constant) is rejected, as `Error::Store(Corrupted)`,
+//! matching `CompressionAlgorithm.byCode`'s own `IllegalArgumentException`.
+
+use std::sync::{Arc, Mutex};
 
 use lucene_store::codec_util::{self, ID_LENGTH};
 use lucene_store::data_input::{DataInput, SliceInput};
@@ -236,6 +159,14 @@ const CHILD_STRATEGY_REVERSE_ARRAY: u32 = 0;
 pub(crate) const CHILD_STRATEGY_ARRAY: u32 = 1;
 /// `TrieBuilder.ChildSaveStrategy.BITS.code`.
 const CHILD_STRATEGY_BITS: u32 = 2;
+
+/// The fewest bytes one `.tmd` per-field record can occupy: nine
+/// single-byte-minimum values -- `fieldNumber`, `numTerms`,
+/// `sumTotalTermFreq`, `sumDocFreq`, `docCount`, the two length prefixes of
+/// `minTerm`/`maxTerm`, and `indexStart`/`rootFP`/`indexEnd` -- less the one
+/// `sumDocFreq` that `IndexOptions::Docs` aliases away. Used only as a ceiling
+/// on `numFields`, so undercounting is the safe direction.
+const MIN_FIELD_RECORD_BYTES: usize = 9;
 
 const BYTES_MINUS_1_MASK: [u64; 8] = [
     0xFF,
@@ -304,190 +235,1660 @@ pub enum SeekStatus {
     End,
 }
 
-/// One field's terms in a flat layout: every term's bytes concatenated once,
-/// with fixed-size records pointing into them.
+// ---------------------------------------------------------------------------
+// Byte-cursor helpers over an in-memory region (Java's `ByteArrayDataInput`).
+//
+// A frame keeps four such regions (`suffixBytes`/`suffixLengthBytes`/
+// `statBytes`/`bytes`) plus a read position into each, exactly like
+// `SegmentTermsEnumFrame`. Reading through a `SliceInput` per entry would
+// rebuild the reader on every `next()`; these read straight out of the `Vec`
+// with the position passed by reference.
+// ---------------------------------------------------------------------------
+
+fn eof_err(what: &str) -> Error {
+    Error::Store(lucene_store::Error::Corrupted(format!(
+        "terms block {what} region read past its end"
+    )))
+}
+
+// ARITH: `buf.get(*pos)` returned `Some`, so `*pos < buf.len()`; a slice's
+// length is at most `isize::MAX`, so `*pos + 1 <= isize::MAX` and cannot
+// overflow `usize`.
+#[allow(clippy::arithmetic_side_effects)]
+fn read_byte_at(buf: &[u8], pos: &mut usize, what: &str) -> Result<u8> {
+    let b = *buf.get(*pos).ok_or_else(|| eof_err(what))?;
+    *pos += 1;
+    Ok(b)
+}
+
+/// `DataInput.readVInt` over an in-memory region. Bit-for-bit the same
+/// 5-group decoding, including the sign bit the last group can carry.
+// ARITH: `shift` starts at 7 and is only incremented inside a loop whose
+// guard is `shift <= 28`, so it takes the values 7, 14, 21, 28, 35 and stops.
+// Every `<< shift` therefore runs with `shift <= 28 < 32` (legal for `i32`),
+// and `shift + 7 <= 35` cannot overflow.
+#[allow(clippy::arithmetic_side_effects)]
+fn read_vint_at(buf: &[u8], pos: &mut usize, what: &str) -> Result<i32> {
+    let mut b = read_byte_at(buf, pos, what)? as i32;
+    let mut v = b & 0x7F;
+    let mut shift = 7;
+    while b & 0x80 != 0 && shift <= 28 {
+        b = read_byte_at(buf, pos, what)? as i32;
+        v |= (b & 0x7F) << shift;
+        shift += 7;
+    }
+    Ok(v)
+}
+
+/// `DataInput.readVLong` over an in-memory region.
+// ARITH: `shift` starts at 7 and is only incremented inside a loop whose
+// guard is `shift <= 63`, so it takes the values 7, 14, ..., 63, 70 and stops.
+// Every `<< shift` therefore runs with `shift <= 63 < 64` (legal for `i64`),
+// and `shift + 7 <= 70` cannot overflow.
+#[allow(clippy::arithmetic_side_effects)]
+fn read_vlong_at(buf: &[u8], pos: &mut usize, what: &str) -> Result<i64> {
+    let mut b = read_byte_at(buf, pos, what)? as i64;
+    let mut v = b & 0x7F;
+    let mut shift = 7;
+    while b & 0x80 != 0 && shift <= 63 {
+        b = read_byte_at(buf, pos, what)? as i64;
+        v |= (b & 0x7F) << shift;
+        shift += 7;
+    }
+    Ok(v)
+}
+
+/// Makes `buf` hold at least `len` readable bytes, growing it but never
+/// shrinking it -- Java's `ArrayUtil.oversize` reuse, where the *logical*
+/// length is carried separately (`numSuffixBytes` and friends) so a block
+/// smaller than its predecessor costs nothing. Zero-filling only the growth
+/// keeps a re-loaded block from paying to blank bytes it is about to
+/// overwrite.
 ///
-/// Replaces `Vec<(Vec<u8>, TermStats, TermMetadata)>`, which cost one heap
-/// allocation per term -- 579,255 of them on the M1 corpus, all live for the
-/// reader's lifetime and all freed when it drops. A profile of reader open put
-/// roughly 28% of it in allocating those, sorting 80-byte tuples whose ordering
-/// key is behind a pointer, and dropping them again.
-///
-/// Two allocations total, records are 64 bytes and contiguous, and the sort
-/// compares slices of one buffer instead of chasing pointers.
+/// The allocation is fallible on purpose: the length comes straight off the
+/// wire (a block's *decompressed* suffix length), so a corrupt header must
+/// produce an error rather than the process abort `vec![0u8; n]` would give
+/// -- an abort cannot be caught at the FFI boundary. Java's `new byte[n]`
+/// throws `OutOfMemoryError`, which a caller can catch.
+fn fit_buf(buf: &mut Vec<u8>, len: usize, what: &str) -> Result<()> {
+    if buf.len() < len {
+        // ARITH: guarded by `buf.len() < len` one line up.
+        #[allow(clippy::arithmetic_side_effects)]
+        let extra = len - buf.len();
+        buf.try_reserve(extra).map_err(|_| {
+            Error::Store(lucene_store::Error::Corrupted(format!(
+                "cannot allocate {len} bytes for {what}"
+            )))
+        })?;
+        buf.resize(len, 0);
+    }
+    Ok(())
+}
+
+/// `BytesRefBuilder`: a growable byte buffer with a logical length that can
+/// be shorter than the allocation, so `setByteAt`/`setLength` behave the way
+/// `SegmentTermsEnum.term` does while walking a target term's bytes.
 #[derive(Debug, Clone, Default)]
-struct TermIndex {
-    /// Every term's bytes, concatenated. Not sorted itself -- `recs` is.
+struct TermBuf {
     bytes: Vec<u8>,
-    /// One record per term, sorted by the term bytes they point at.
-    recs: Vec<TermRec>,
+    len: usize,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct TermRec {
-    start: u32,
-    len: u32,
-    stats: TermStats,
-    meta: TermMetadata,
-}
+impl TermBuf {
+    #[inline]
+    fn get(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
 
-impl TermIndex {
-    fn with_capacity(terms: usize) -> Self {
-        Self {
-            // Terms in a real dictionary average well under 32 bytes; this is
-            // a starting point, not a bound.
-            bytes: Vec::with_capacity(terms * 8),
-            recs: Vec::with_capacity(terms),
+    #[inline]
+    fn set_length(&mut self, n: usize) {
+        if self.bytes.len() < n {
+            self.bytes.resize(n, 0);
         }
+        self.len = n;
     }
 
-    /// Appends `prefix + suffix` as one term. The two halves are written
-    /// straight into the shared buffer, so the concatenation that used to
-    /// allocate a `Vec` per term costs nothing beyond the bytes themselves.
-    fn push(&mut self, prefix: &[u8], suffix: &[u8], stats: TermStats, meta: TermMetadata) {
-        let start = self.bytes.len() as u32;
-        self.bytes.extend_from_slice(prefix);
-        self.bytes.extend_from_slice(suffix);
-        let len = self.bytes.len() as u32 - start;
-        self.recs.push(TermRec {
-            start,
-            len,
-            stats,
-            meta,
-        });
-    }
-
-    fn len(&self) -> usize {
-        self.recs.len()
-    }
-
-    #[inline]
-    fn term(&self, i: usize) -> &[u8] {
-        let r = &self.recs[i];
-        &self.bytes[r.start as usize..(r.start + r.len) as usize]
-    }
-
-    #[inline]
-    fn rec_term(&self, r: &TermRec) -> &[u8] {
-        &self.bytes[r.start as usize..(r.start + r.len) as usize]
-    }
-
-    /// Blocks are decoded in trie-traversal order, not term order, so this is
-    /// called once after the whole field is read -- see `open`.
-    fn sort(&mut self) {
-        let bytes = std::mem::take(&mut self.bytes);
-        self.recs.sort_by(|a, b| {
-            bytes[a.start as usize..(a.start + a.len) as usize]
-                .cmp(&bytes[b.start as usize..(b.start + b.len) as usize])
-        });
-        self.bytes = bytes;
-    }
-
-    fn search(&self, target: &[u8]) -> std::result::Result<usize, usize> {
-        self.recs.binary_search_by(|r| self.rec_term(r).cmp(target))
-    }
-
-    /// Index of the first term not less than `target` -- the `partition_point`
-    /// the prefix-range scans use.
-    fn lower_bound(&self, target: &[u8]) -> usize {
-        self.recs.partition_point(|r| self.rec_term(r) < target)
-    }
-
-    fn range(&self, start: usize, end: usize) -> impl Iterator<Item = (&[u8], TermStats)> {
-        (start..end).map(move |i| (self.term(i), self.recs[i].stats))
-    }
-}
-
-/// `TermsEnum`-equivalent: ordered iteration (`next()`) and nearest-match
-/// seeking (`seekCeil()`) over one field's already-sorted term dictionary.
-///
-/// **Design choice**: this is a thin cursor over [`FieldTerms`]'s existing
-/// sorted `entries` `Vec`, not a reimplementation of real Lucene's
-/// `SegmentTermsEnum`/`SegmentTermsEnumFrame` stack-based lazy block walk.
-/// The prior slice already made the eager-whole-field-materialization
-/// tradeoff (see the module doc) — every term is already decoded into one
-/// sorted `Vec` before any lookup happens, so `next()` is an index bump and
-/// `seekCeil()` is a binary search, both O(log n) or O(1), with none of
-/// Java's per-frame `FST`/trie-path push/pop state to reconstruct. Building
-/// the Java-shaped stack machinery on top of an already-fully-materialized
-/// Vec would only reintroduce complexity this port deliberately avoided
-/// (see the `rust-performance` skill: "not a dumb port" — a redesign around
-/// what's actually needed beats transliterating `SegmentTermsEnumFrame`'s
-/// internals when the underlying representation no longer matches Java's).
-#[derive(Debug, Clone)]
-pub struct TermsEnum<'a> {
-    entries: &'a TermIndex,
-    /// Index of the last term returned by `next()`/positioned by
-    /// `seek_ceil()`, or `None` before the first `next()` call. Once
-    /// exhausted this holds `Some(entries.len())` (or higher), so repeated
-    /// `next()` calls after the end keep returning `None` without special
-    /// casing.
-    pos: Option<usize>,
-}
-
-impl<'a> TermsEnum<'a> {
-    fn new(entries: &'a TermIndex) -> Self {
-        Self { entries, pos: None }
-    }
-
-    /// `TermsEnum.next()`-equivalent: advance to (and return) the next term
-    /// in sorted order, or `None` at end-of-terms (matching `BytesRef
-    /// next()` returning `null`). Idempotent past the end.
+    /// # Panics
     ///
-    /// Named to mirror Java's `TermsEnum.next()` rather than `std::iter::Iterator::next`
-    /// on purpose: a real `std::iter::Iterator` impl would need `Item` to
-    /// borrow from `self` (a `(term, stats)` pair tied to `'a`, not to each
-    /// `next()` call), which isn't expressible through that trait — this is
-    /// deliberately its own cursor API, same shape as Java's, not an
-    /// `Iterator`.
-    #[allow(clippy::should_implement_trait)]
-    pub fn next(&mut self) -> Option<(&'a [u8], TermStats)> {
-        let next_idx = self.pos.map_or(0, |p| p + 1);
-        if next_idx >= self.entries.len() {
-            self.pos = Some(self.entries.len());
-            return None;
+    /// Never for any `i` this module produces: every call site passes an index
+    /// into a caller-supplied `target: &[u8]` (`target_upto < target.len()`),
+    /// so `i < isize::MAX`.
+    // ARITH: `i` indexes a live `&[u8]`, whose length is at most `isize::MAX`,
+    // so `i + 1 <= isize::MAX` cannot overflow `usize`.
+    #[allow(clippy::arithmetic_side_effects)]
+    #[inline]
+    fn set_byte_at(&mut self, i: usize, b: u8) {
+        debug_assert!(i < isize::MAX as usize);
+        if self.bytes.len() <= i {
+            self.bytes.resize(i + 1, 0);
         }
-        self.pos = Some(next_idx);
-        Some((
-            self.entries.term(next_idx),
-            self.entries.recs[next_idx].stats,
+        self.bytes[i] = b;
+    }
+
+    fn copy_from(&mut self, src: &[u8]) {
+        self.bytes.clear();
+        self.bytes.extend_from_slice(src);
+        self.len = src.len();
+    }
+
+    fn clear(&mut self) {
+        self.len = 0;
+    }
+}
+
+/// One entry of [`SegmentTermsEnum`]'s frame stack — the port of
+/// `SegmentTermsEnumFrame`. Holds one `.tim` block's four decoded regions and
+/// the cursors into them; a stack of these (one per trie node along the
+/// current term's path that carried an output block) is the *entire*
+/// in-memory footprint of a term lookup.
+#[derive(Debug, Clone, Default)]
+struct Frame {
+    /// Index in the stack (`SegmentTermsEnumFrame.ord`).
+    ord: usize,
+    has_terms: bool,
+    has_terms_orig: bool,
+    is_floor: bool,
+
+    fp: usize,
+    fp_orig: usize,
+    fp_end: usize,
+
+    /// Position in the field's `.tip` slice of this node's floor data
+    /// (`numFollowFloorBlocks`), for `rewind`.
+    rewind_pos: usize,
+    /// Position in the field's `.tip` slice of the next unread floor record.
+    floor_data_pos: usize,
+    num_follow_floor_blocks: i32,
+    /// `256` once the last floor block has been selected, so no target label
+    /// can be `>=` it (Java uses the same sentinel).
+    next_floor_label: u32,
+
+    prefix_length: usize,
+    /// Entries in the currently-loaded block.
+    ///
+    /// **Invariant (`ENT_COUNT`), established by [`Frame::load_block`] and
+    /// relied on by every `// ARITH:` proof below:** `1 <= ent_count <=
+    /// i32::MAX`. The upper half is structural -- `ent_count` is
+    /// `(code as u32) >> 1` for a `code: i32`, so it cannot exceed
+    /// `u32::MAX >> 1 == i32::MAX` -- and the lower half plus the tighter
+    /// `ent_count <= suffix_length_bytes_len` bound are checked explicitly in
+    /// `load_block`. Consequently `ent_count as i32 >= 1` is never negative,
+    /// and `next_ent`, which every scan keeps in `0..=ent_count`, can always
+    /// be incremented without overflowing `i32`.
+    ent_count: u32,
+    /// Which entry is read next, or `-1` when the block is not loaded.
+    next_ent: i32,
+    is_last_in_floor: bool,
+    is_leaf_block: bool,
+    all_equal: bool,
+    last_sub_fp: i64,
+
+    /// The four per-block regions. Each `Vec` is a high-water-mark buffer
+    /// reused across `load_block` calls; the bytes that belong to the block
+    /// currently loaded are `[..*_len]` (Java's `byte[]` + `numBytes` pair).
+    suffix_bytes: Vec<u8>,
+    suffix_bytes_len: usize,
+    suffixes_pos: usize,
+    suffix_length_bytes: Vec<u8>,
+    suffix_length_bytes_len: usize,
+    suffix_lengths_pos: usize,
+    stat_bytes: Vec<u8>,
+    stat_bytes_len: usize,
+    stats_pos: usize,
+    meta_bytes: Vec<u8>,
+    meta_bytes_len: usize,
+    meta_pos: usize,
+
+    stats_singleton_run_length: u32,
+    meta_data_upto: u32,
+
+    // `BlockTermState`.
+    doc_freq: i32,
+    total_term_freq: i64,
+    term_block_ord: u32,
+    meta: TermMetadata,
+
+    start_byte_pos: usize,
+    suffix_length: usize,
+    sub_code: u64,
+}
+
+impl Frame {
+    /// `SegmentTermsEnumFrame.getTermBlockOrd()`.
+    #[inline]
+    fn term_block_ord(&self) -> u32 {
+        if self.is_leaf_block {
+            self.next_ent.max(0) as u32
+        } else {
+            self.term_block_ord
+        }
+    }
+
+    /// `SegmentTermsEnumFrame.setFloorData`: the floor record layout is
+    /// `numFollowFloorBlocks: vint`, then `numFollowFloorBlocks` times
+    /// `(floorLeadByte: byte, code: vlong)` where
+    /// `code = (subFP - fpOrig) << 1 | hasTerms`. The *first* label is read
+    /// here and each following one at the end of a `scan_to_floor_frame`
+    /// step, exactly as Java splits it.
+    fn set_floor_data(&mut self, index: &[u8], floor_data_fp: usize) -> Result<()> {
+        self.rewind_pos = floor_data_fp;
+        let mut pos = floor_data_fp;
+        self.num_follow_floor_blocks = read_vint_at(index, &mut pos, "floor data")?;
+        if self.num_follow_floor_blocks <= 0 {
+            return Err(Error::Store(lucene_store::Error::Corrupted(format!(
+                "invalid numFollowFloorBlocks: {}",
+                self.num_follow_floor_blocks
+            ))));
+        }
+        self.next_floor_label = read_byte_at(index, &mut pos, "floor data")? as u32;
+        self.floor_data_pos = pos;
+        Ok(())
+    }
+
+    /// `SegmentTermsEnumFrame.rewind`: back to this frame's *first* block and
+    /// its first entry.
+    ///
+    /// Java unconditionally sets `nextEnt = -1`, which forces the block to be
+    /// re-read from `.tim` even when the frame already holds exactly that
+    /// block. When the frame is already parked on `fpOrig` this port instead
+    /// resets the four region cursors in place, which lands in precisely the
+    /// state [`Frame::load_block`] would produce (see the assignments at the
+    /// end of that method) without re-decoding anything -- the optimization
+    /// Lucene left commented out in `rewind()`'s body. It matters because
+    /// this port pools one enum per field for `seek_exact`, so consecutive
+    /// lookups that share a block would otherwise reload it every time.
+    ///
+    /// The reset restores every field `load_block`'s tail sets, with one
+    /// exception: `is_last_in_floor`, which `scan_to_floor_frame` can only
+    /// have changed by also moving `fp` off `fp_orig` -- and that takes the
+    /// reload branch instead. The single input that could break the
+    /// equivalence is a floor record encoding a zero delta (`code >> 1 == 0`),
+    /// which no writer emits and which would make a floor block its own
+    /// successor.
+    fn rewind(&mut self, index: &[u8]) -> Result<()> {
+        if self.next_ent != -1 && self.fp == self.fp_orig {
+            self.reset_cursors();
+        } else {
+            self.fp = self.fp_orig;
+            self.next_ent = -1;
+        }
+        self.has_terms = self.has_terms_orig;
+        if self.is_floor {
+            let rewind_pos = self.rewind_pos;
+            self.set_floor_data(index, rewind_pos)?;
+        }
+        Ok(())
+    }
+
+    /// The subset of [`Frame::load_block`]'s tail that depends only on the
+    /// already-decoded regions -- see [`Frame::rewind`].
+    fn reset_cursors(&mut self) {
+        self.suffixes_pos = 0;
+        self.suffix_lengths_pos = 0;
+        self.stats_pos = 0;
+        self.meta_pos = 0;
+        self.stats_singleton_run_length = 0;
+        self.meta_data_upto = 0;
+        self.term_block_ord = 0;
+        self.meta = TermMetadata::EMPTY;
+        self.next_ent = 0;
+        self.last_sub_fp = -1;
+    }
+
+    /// `SegmentTermsEnumFrame.loadBlock`: decodes the block header and copies
+    /// (decompressing where needed) the four per-block regions. Per-term
+    /// stats and postings metadata are *not* decoded here -- that is
+    /// [`Frame::decode_meta_data`]'s job, run only up to the term actually
+    /// landed on.
+    fn load_block(&mut self, tim: &[u8]) -> Result<()> {
+        if self.next_ent != -1 {
+            // Already loaded.
+            return Ok(());
+        }
+        let mut r = SliceInput::new(tim);
+        r.seek(self.fp)?;
+
+        let code = r.read_vint()?;
+        self.ent_count = (code as u32) >> 1;
+        if self.ent_count == 0 {
+            // Java `assert entCount > 0`, disabled in production; an empty
+            // block would otherwise decode as a silently empty term range.
+            return Err(Error::Store(lucene_store::Error::Corrupted(
+                "empty terms block".into(),
+            )));
+        }
+        self.is_last_in_floor = (code & 1) != 0;
+
+        let code_l = r.read_vlong()? as u64;
+        self.is_leaf_block = (code_l & 0x04) != 0;
+        let num_suffix_bytes = (code_l >> 3) as usize;
+        let compression_alg = code_l & 0x03;
+        // `numSuffixBytes` is the *decompressed* length, so only the
+        // uncompressed case can be bounds-checked against what is left.
+        if compression_alg == 0 && num_suffix_bytes > r.remaining() {
+            return Err(Error::Store(lucene_store::Error::Corrupted(format!(
+                "terms block suffix length {num_suffix_bytes} exceeds {} remaining bytes",
+                r.remaining()
+            ))));
+        }
+        fit_buf(
+            &mut self.suffix_bytes,
+            num_suffix_bytes,
+            "terms block suffix bytes",
+        )?;
+        self.suffix_bytes_len = num_suffix_bytes;
+        let suffixes = &mut self.suffix_bytes[..num_suffix_bytes];
+        match compression_alg {
+            // `CompressionAlgorithm.NO_COMPRESSION.read`.
+            0 => r.read_bytes(suffixes)?,
+            // `CompressionAlgorithm.LOWERCASE_ASCII.read`.
+            1 => decompress_lowercase_ascii(&mut r, suffixes)?,
+            // `CompressionAlgorithm.LZ4.read`.
+            2 => {
+                crate::lz4::decompress(&mut r, num_suffix_bytes, suffixes, 0)?;
+            }
+            _ => {
+                // `code_l & 0x03` is masked to 2 bits, so `3` is the only
+                // remaining value; `CompressionAlgorithm.byCode` throws
+                // `IllegalArgumentException` for it too.
+                return Err(Error::Store(lucene_store::Error::Corrupted(
+                    "illegal compression algorithm code (3) for a terms block".into(),
+                )));
+            }
+        }
+        self.suffixes_pos = 0;
+
+        let raw = r.read_vint()? as u32;
+        self.all_equal = (raw & 1) != 0;
+        let num_suffix_length_bytes = (raw >> 1) as usize;
+        // `allEqual` replicates a single byte, so only the non-replicated
+        // case has to fit in what is left of the file.
+        if !self.all_equal && num_suffix_length_bytes > r.remaining() {
+            return Err(Error::Store(lucene_store::Error::Corrupted(format!(
+                "terms block suffix-lengths length {num_suffix_length_bytes} exceeds {} remaining bytes",
+                r.remaining()
+            ))));
+        }
+        // `Lucene103BlockTreeTermsWriter.writeBlock` pushes exactly one vint
+        // into `suffixLengthsWriter` per entry (a term's `suffix`, or a
+        // sub-block's `(suffix << 1) | 1`, plus a further vlong for the
+        // sub-block delta), and a vint is never shorter than one byte -- so a
+        // well-formed block always has `numSuffixLengthBytes >= entCount`, in
+        // the `allEqual` case too (`allEqual` replicates the blob's *bytes*,
+        // it does not shorten the blob). Checking it here, once per block load
+        // rather than once per entry, is what bounds `ent_count` by a real
+        // buffer length for every scan below -- see `binary_search_term_leaf`,
+        // whose bisection indices are `entCount`-derived.
+        if self.ent_count as usize > num_suffix_length_bytes {
+            return Err(Error::Store(lucene_store::Error::Corrupted(format!(
+                "terms block entCount {} exceeds its {num_suffix_length_bytes}-byte \
+                 suffix-lengths region",
+                self.ent_count
+            ))));
+        }
+        fit_buf(
+            &mut self.suffix_length_bytes,
+            num_suffix_length_bytes,
+            "terms block suffix lengths",
+        )?;
+        self.suffix_length_bytes_len = num_suffix_length_bytes;
+        let suffix_lengths = &mut self.suffix_length_bytes[..num_suffix_length_bytes];
+        if self.all_equal {
+            let b = r.read_byte()?;
+            suffix_lengths.fill(b);
+        } else {
+            r.read_bytes(suffix_lengths)?;
+        }
+        self.suffix_lengths_pos = 0;
+
+        let num_stat_bytes = read_region_len(&mut r, "terms block stats")?;
+        fit_buf(&mut self.stat_bytes, num_stat_bytes, "terms block stats")?;
+        self.stat_bytes_len = num_stat_bytes;
+        r.read_bytes(&mut self.stat_bytes[..num_stat_bytes])?;
+        self.stats_pos = 0;
+
+        self.stats_singleton_run_length = 0;
+        self.meta_data_upto = 0;
+        self.meta = TermMetadata::EMPTY;
+        self.term_block_ord = 0;
+        self.next_ent = 0;
+        self.last_sub_fp = -1;
+
+        let num_meta_bytes = read_region_len(&mut r, "terms block metadata")?;
+        fit_buf(&mut self.meta_bytes, num_meta_bytes, "terms block metadata")?;
+        self.meta_bytes_len = num_meta_bytes;
+        r.read_bytes(&mut self.meta_bytes[..num_meta_bytes])?;
+        self.meta_pos = 0;
+
+        // Sub-blocks of one floor block are written back to back, so the next
+        // floor block starts exactly here.
+        self.fp_end = r.position();
+        Ok(())
+    }
+
+    /// `SegmentTermsEnumFrame.loadNextFloorBlock`.
+    fn load_next_floor_block(&mut self, tim: &[u8]) -> Result<()> {
+        self.fp = self.fp_end;
+        self.next_ent = -1;
+        self.load_block(tim)
+    }
+
+    /// `SegmentTermsEnumFrame.scanToFloorFrame`: picks the one floor
+    /// sub-block whose lead-byte range covers `target`, without reading any
+    /// of the others' blocks.
+    fn scan_to_floor_frame(&mut self, index: &[u8], target: &[u8]) -> Result<()> {
+        if !self.is_floor || target.len() <= self.prefix_length {
+            return Ok(());
+        }
+        let target_label = target[self.prefix_length] as u32;
+        if target_label < self.next_floor_label {
+            // Already on the correct block.
+            return Ok(());
+        }
+
+        let mut new_fp;
+        let mut pos = self.floor_data_pos;
+        loop {
+            if self.num_follow_floor_blocks <= 0 {
+                return Err(Error::Store(lucene_store::Error::Corrupted(
+                    "floor block list exhausted before reaching the target label".into(),
+                )));
+            }
+            let code = read_vlong_at(index, &mut pos, "floor data")? as u64;
+            // Java's `newFP = fpOrig + (code >>> 1)`. The delta is at most
+            // `2^63 - 1` (a vlong) and `fp_orig` at most `isize::MAX`, so on a
+            // 64-bit target the sum provably cannot wrap -- but it was written
+            // as a `wrapping_add`, which reads as if wrapping were *intended*,
+            // and a wrap here would land back inside the `.tim` at an offset
+            // that decodes as a perfectly valid but different block: a silent
+            // wrong answer rather than an error. Making it checked costs one
+            // branch per floor step and states the fact instead of assuming
+            // it. The resulting fp is bounds-checked by `load_block`'s seek.
+            new_fp = usize::try_from(code >> 1)
+                .ok()
+                .and_then(|delta| self.fp_orig.checked_add(delta))
+                .ok_or_else(|| {
+                    Error::Store(lucene_store::Error::Corrupted(format!(
+                        "floor block delta {} overflows the parent fp {}",
+                        code >> 1,
+                        self.fp_orig
+                    )))
+                })?;
+            self.has_terms = (code & 1) != 0;
+
+            self.is_last_in_floor = self.num_follow_floor_blocks == 1;
+            // ARITH: the loop head returns `Corrupted` unless
+            // `num_follow_floor_blocks >= 1`, so this cannot underflow.
+            #[allow(clippy::arithmetic_side_effects)]
+            {
+                self.num_follow_floor_blocks -= 1;
+            }
+
+            if self.is_last_in_floor {
+                self.next_floor_label = 256;
+                break;
+            }
+            self.next_floor_label = read_byte_at(index, &mut pos, "floor data")? as u32;
+            if target_label < self.next_floor_label {
+                break;
+            }
+        }
+        self.floor_data_pos = pos;
+        if new_fp != self.fp {
+            // Force a reload of the block we just switched to.
+            self.next_ent = -1;
+            self.fp = new_fp;
+        }
+        Ok(())
+    }
+
+    /// The suffix bytes of the entry the cursor last read.
+    // ARITH: `start_byte_pos + suffix_length` is written by exactly two
+    // places, and both bound it by `suffix_bytes_len <= suffix_bytes.len()`:
+    // `take_suffix` (a `checked_add` plus an explicit `end > suffix_bytes_len`
+    // rejection) and `binary_search_term_leaf` (whose
+    // `suffix_length * ent_count <= suffix_bytes_len` precondition is checked
+    // once, before the bisection, and whose indices never exceed
+    // `ent_count - 1`). A slice length is at most `isize::MAX`, so the sum
+    // cannot overflow `usize`.
+    #[allow(clippy::arithmetic_side_effects)]
+    #[inline]
+    fn suffix(&self) -> &[u8] {
+        debug_assert!(self.start_byte_pos + self.suffix_length <= self.suffix_bytes.len());
+        &self.suffix_bytes[self.start_byte_pos..self.start_byte_pos + self.suffix_length]
+    }
+
+    /// Reads the next entry's suffix length and advances the suffix cursor
+    /// past its bytes, bounds-checking both regions.
+    fn take_suffix(&mut self, suffix_length: usize) -> Result<()> {
+        self.suffix_length = suffix_length;
+        self.start_byte_pos = self.suffixes_pos;
+        let end = self
+            .suffixes_pos
+            .checked_add(suffix_length)
+            .ok_or_else(|| eof_err("suffix"))?;
+        if end > self.suffix_bytes_len {
+            return Err(eof_err("suffix"));
+        }
+        self.suffixes_pos = end;
+        Ok(())
+    }
+
+    /// `SegmentTermsEnumFrame.fillTerm`.
+    // ARITH: `prefix_length` is the length of a byte prefix already
+    // materialized in `term` and `suffix_length` is bounded by
+    // `suffix_bytes_len <= suffix_bytes.len()` (see [`Frame::suffix`]). Both
+    // are lengths of live allocations, hence each at most `isize::MAX`, so
+    // their sum is at most `2 * isize::MAX = usize::MAX - 1`.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn fill_term(&self, term: &mut TermBuf) {
+        let total = self.prefix_length + self.suffix_length;
+        term.set_length(total);
+        term.bytes[self.prefix_length..total].copy_from_slice(self.suffix());
+    }
+
+    /// `SegmentTermsEnumFrame.nextLeaf`.
+    // ARITH: the guard immediately above the increment leaves
+    // `0 <= next_ent < ent_count as i32`, and `ent_count <= i32::MAX` by the
+    // `ENT_COUNT` invariant, so `next_ent + 1 <= i32::MAX`.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn next_leaf(&mut self, term: &mut TermBuf) -> Result<()> {
+        if self.next_ent < 0 || self.next_ent >= self.ent_count as i32 {
+            return Err(Error::Store(lucene_store::Error::Corrupted(
+                "terms block entry cursor ran past entCount".into(),
+            )));
+        }
+        self.next_ent += 1;
+        let len = read_vint_at(
+            &self.suffix_length_bytes[..self.suffix_length_bytes_len],
+            &mut self.suffix_lengths_pos,
+            "suffix lengths",
+        )? as usize;
+        self.take_suffix(len)?;
+        self.fill_term(term);
+        Ok(())
+    }
+
+    /// `SegmentTermsEnumFrame.nextNonLeaf`: returns `true` when the entry it
+    /// landed on is a sub-block pointer rather than a term.
+    // ARITH: the two guards at the head of the loop body leave
+    // `0 <= next_ent < ent_count as i32 <= i32::MAX` (`ENT_COUNT`), so
+    // `next_ent + 1` cannot overflow. `term_block_ord` counts *terms* within
+    // the same block, so it is bounded by `ent_count <= i32::MAX < u32::MAX`.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn next_non_leaf(&mut self, tim: &[u8], term: &mut TermBuf) -> Result<bool> {
+        loop {
+            if self.next_ent == self.ent_count as i32 {
+                self.load_next_floor_block(tim)?;
+                if self.is_leaf_block {
+                    self.next_leaf(term)?;
+                    return Ok(false);
+                }
+                continue;
+            }
+            if self.next_ent < 0 || self.next_ent > self.ent_count as i32 {
+                return Err(Error::Store(lucene_store::Error::Corrupted(
+                    "terms block entry cursor ran past entCount".into(),
+                )));
+            }
+            self.next_ent += 1;
+            let code = read_vint_at(
+                &self.suffix_length_bytes[..self.suffix_length_bytes_len],
+                &mut self.suffix_lengths_pos,
+                "suffix lengths",
+            )? as u32;
+            self.take_suffix((code >> 1) as usize)?;
+            self.fill_term(term);
+            if (code & 1) == 0 {
+                // A normal term.
+                self.sub_code = 0;
+                self.term_block_ord += 1;
+                return Ok(false);
+            }
+            // A sub-block; make its fp absolute.
+            self.sub_code = read_vlong_at(
+                &self.suffix_length_bytes[..self.suffix_length_bytes_len],
+                &mut self.suffix_lengths_pos,
+                "suffix lengths",
+            )? as u64;
+            self.last_sub_fp = self.absolute_sub_fp()?;
+            return Ok(true);
+        }
+    }
+
+    /// `fp - subCode`, rejecting a delta that would point at or past this
+    /// block (a corrupt chain that would otherwise recurse forever).
+    // ARITH: the guard rejects `sub_code as usize > self.fp`, so the
+    // subtraction runs only for `sub_code as usize <= self.fp` and cannot
+    // underflow.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn absolute_sub_fp(&self) -> Result<i64> {
+        if self.sub_code == 0 || self.sub_code as usize > self.fp {
+            return Err(Error::Store(lucene_store::Error::Corrupted(
+                "terms block sub-block delta fp exceeds parent fp".into(),
+            )));
+        }
+        Ok((self.fp - self.sub_code as usize) as i64)
+    }
+
+    /// `SegmentTermsEnumFrame.next`.
+    fn next(&mut self, tim: &[u8], term: &mut TermBuf) -> Result<bool> {
+        if self.is_leaf_block {
+            self.next_leaf(term)?;
+            Ok(false)
+        } else {
+            self.next_non_leaf(tim, term)
+        }
+    }
+
+    /// `SegmentTermsEnumFrame.scanToSubBlock`: re-positions a parent frame on
+    /// the sub-block entry a `next()` popped back out of.
+    // ARITH: `self.fp - sub_fp as usize` is guarded by the
+    // `sub_fp < 0 || sub_fp as usize >= self.fp` rejection just above it.
+    // `next_ent + 1` runs only after the loop head rejected
+    // `next_ent >= ent_count as i32`, so `next_ent < ent_count <= i32::MAX`
+    // (`ENT_COUNT`). `term_block_ord` counts terms within one block and so is
+    // bounded by `ent_count`.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn scan_to_sub_block(&mut self, sub_fp: i64) -> Result<()> {
+        if self.last_sub_fp == sub_fp {
+            return Ok(());
+        }
+        if sub_fp < 0 || sub_fp as usize >= self.fp {
+            return Err(Error::Store(lucene_store::Error::Corrupted(
+                "sub-block fp is not below its parent".into(),
+            )));
+        }
+        let target_sub_code = (self.fp - sub_fp as usize) as u64;
+        loop {
+            if self.next_ent >= self.ent_count as i32 {
+                return Err(Error::Store(lucene_store::Error::Corrupted(
+                    "sub-block pointer not found in its parent block".into(),
+                )));
+            }
+            self.next_ent += 1;
+            let code = read_vint_at(
+                &self.suffix_length_bytes[..self.suffix_length_bytes_len],
+                &mut self.suffix_lengths_pos,
+                "suffix lengths",
+            )? as u32;
+            self.take_suffix((code >> 1) as usize)?;
+            if (code & 1) != 0 {
+                let sub_code = read_vlong_at(
+                    &self.suffix_length_bytes[..self.suffix_length_bytes_len],
+                    &mut self.suffix_lengths_pos,
+                    "suffix lengths",
+                )? as u64;
+                if sub_code == target_sub_code {
+                    self.last_sub_fp = sub_fp;
+                    return Ok(());
+                }
+            } else {
+                self.term_block_ord += 1;
+            }
+        }
+    }
+
+    /// `SegmentTermsEnumFrame.scanToTerm`. The `bool` in the result is Java's
+    /// inline "recurse into the sub-frame(s)" step, which needs the enum's
+    /// frame stack and so is done by the caller.
+    fn scan_to_term(
+        &mut self,
+        term: &mut TermBuf,
+        target: &[u8],
+        exact_only: bool,
+        term_exists: &mut bool,
+    ) -> Result<(SeekStatus, bool)> {
+        if self.is_leaf_block {
+            if self.all_equal {
+                Ok((
+                    self.binary_search_term_leaf(term, target, exact_only, term_exists)?,
+                    false,
+                ))
+            } else {
+                Ok((
+                    self.scan_to_term_leaf(term, target, exact_only, term_exists)?,
+                    false,
+                ))
+            }
+        } else {
+            self.scan_to_term_non_leaf(term, target, exact_only, term_exists)
+        }
+    }
+
+    /// The target's suffix, i.e. everything past this block's shared prefix.
+    #[inline]
+    fn target_suffix<'t>(&self, target: &'t [u8]) -> &'t [u8] {
+        target.get(self.prefix_length..).unwrap_or(&[])
+    }
+
+    /// `SegmentTermsEnumFrame.scanToTermLeaf`.
+    // ARITH: the entry guard is `next_ent >= ent_count as i32` (Java writes
+    // `==`; `>=` is the same test for every reachable state, since every
+    // writer of `next_ent` keeps it in `0..=ent_count`, and it is what makes
+    // the loop's increment provably safe rather than merely unreachable). So
+    // the loop body runs only with `next_ent < ent_count <= i32::MAX`
+    // (`ENT_COUNT`), and it re-establishes that by breaking as soon as
+    // `next_ent >= ent_count`.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn scan_to_term_leaf(
+        &mut self,
+        term: &mut TermBuf,
+        target: &[u8],
+        exact_only: bool,
+        term_exists: &mut bool,
+    ) -> Result<SeekStatus> {
+        *term_exists = true;
+        self.sub_code = 0;
+        if self.next_ent >= self.ent_count as i32 {
+            if exact_only {
+                self.fill_term(term);
+            }
+            return Ok(SeekStatus::End);
+        }
+        loop {
+            self.next_ent += 1;
+            let len = read_vint_at(
+                &self.suffix_length_bytes[..self.suffix_length_bytes_len],
+                &mut self.suffix_lengths_pos,
+                "suffix lengths",
+            )? as usize;
+            self.take_suffix(len)?;
+            match self.suffix().cmp(self.target_suffix(target)) {
+                std::cmp::Ordering::Less => {}
+                std::cmp::Ordering::Greater => {
+                    self.fill_term(term);
+                    return Ok(SeekStatus::NotFound);
+                }
+                std::cmp::Ordering::Equal => {
+                    self.fill_term(term);
+                    return Ok(SeekStatus::Found);
+                }
+            }
+            if self.next_ent >= self.ent_count as i32 {
+                break;
+            }
+        }
+        if exact_only {
+            self.fill_term(term);
+        }
+        Ok(SeekStatus::End)
+    }
+
+    /// `SegmentTermsEnumFrame.binarySearchTermLeaf`: the `allEqual` fast path,
+    /// where every suffix in the block has the same length so entry `i`'s
+    /// bytes start at `i * suffixLength` and the scan becomes a bisection.
+    // ARITH: in the order the operations appear --
+    //
+    // * `ent_count as i32 - 1 >= 0` because `ent_count >= 1` (`ENT_COUNT`).
+    // * `start` is `next_ent`, which the entry guard pins to
+    //   `0 <= next_ent < ent_count`, and `end` is `ent_count - 1`; both are
+    //   therefore in `0..=i32::MAX - 1`, so `start as u32 + end as u32` is at
+    //   most `2 * (i32::MAX - 1) < u32::MAX` and cannot overflow. This is the
+    //   port of Java's `(start + end) >>> 1`: the *unsigned* shift is what
+    //   keeps the midpoint correct once the sum passes `i32::MAX`.
+    // * `mid` stays in `start..=end`, so `mid + 1 <= ent_count <= i32::MAX`
+    //   and `mid - 1 >= -1`.
+    // * every `start_byte_pos`/`suffixes_pos` expression is at most
+    //   `ent_count * suffix_length`, which the `checked_mul` guard above the
+    //   bisection has already bounded by `suffix_bytes_len`. For the
+    //   `start_byte_pos += suffix_length` step specifically: `cmp == Less` on
+    //   the final iteration means `start` became `mid + 1 > end`, so
+    //   `mid == end`, and that branch also requires `end < ent_count - 1`,
+    //   giving `mid <= ent_count - 2` and `(mid + 2) * suffix_length <=
+    //   suffix_bytes_len`.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn binary_search_term_leaf(
+        &mut self,
+        term: &mut TermBuf,
+        target: &[u8],
+        exact_only: bool,
+        term_exists: &mut bool,
+    ) -> Result<SeekStatus> {
+        *term_exists = true;
+        self.sub_code = 0;
+        if self.next_ent < 0 || self.next_ent >= self.ent_count as i32 {
+            if exact_only {
+                self.fill_term(term);
+            }
+            return Ok(SeekStatus::End);
+        }
+        self.suffix_length = read_vint_at(
+            &self.suffix_length_bytes[..self.suffix_length_bytes_len],
+            &mut self.suffix_lengths_pos,
+            "suffix lengths",
+        )? as usize;
+        if self
+            .suffix_length
+            .checked_mul(self.ent_count as usize)
+            .is_none_or(|n| n > self.suffix_bytes_len)
+        {
+            return Err(eof_err("suffix"));
+        }
+        let mut start = self.next_ent;
+        let mut end = self.ent_count as i32 - 1;
+        let mut cmp = std::cmp::Ordering::Equal;
+        while start <= end {
+            debug_assert!(start >= 0 && end >= 0);
+            // `(start + end) >>> 1` in Java: the sum is formed in `u32` so the
+            // midpoint stays correct (and the shift stays logical) even when
+            // it exceeds `i32::MAX`.
+            let mid = ((start as u32 + end as u32) >> 1) as i32;
+            self.next_ent = mid + 1;
+            self.start_byte_pos = mid as usize * self.suffix_length;
+            cmp = self.suffix().cmp(self.target_suffix(target));
+            match cmp {
+                std::cmp::Ordering::Less => start = mid + 1,
+                std::cmp::Ordering::Greater => end = mid - 1,
+                std::cmp::Ordering::Equal => {
+                    self.suffixes_pos = self.start_byte_pos + self.suffix_length;
+                    self.fill_term(term);
+                    return Ok(SeekStatus::Found);
+                }
+            }
+        }
+        if end < self.ent_count as i32 - 1 {
+            // The bisection ended on a smaller term and a greater one exists:
+            // advance onto it.
+            if cmp == std::cmp::Ordering::Less {
+                self.start_byte_pos += self.suffix_length;
+                self.next_ent += 1;
+            }
+            self.suffixes_pos = self.start_byte_pos + self.suffix_length;
+            self.fill_term(term);
+            Ok(SeekStatus::NotFound)
+        } else {
+            self.suffixes_pos = self.start_byte_pos + self.suffix_length;
+            if exact_only {
+                self.fill_term(term);
+            }
+            Ok(SeekStatus::End)
+        }
+    }
+
+    /// `SegmentTermsEnumFrame.scanToTermNonLeaf`.
+    // ARITH: the `while next_ent < ent_count as i32` head means the increment
+    // runs only with `next_ent < ent_count <= i32::MAX` (`ENT_COUNT`).
+    // `term_block_ord` counts terms within this one block, so it is bounded by
+    // `ent_count` too.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn scan_to_term_non_leaf(
+        &mut self,
+        term: &mut TermBuf,
+        target: &[u8],
+        exact_only: bool,
+        term_exists: &mut bool,
+    ) -> Result<(SeekStatus, bool)> {
+        if self.next_ent == self.ent_count as i32 {
+            if exact_only {
+                self.fill_term(term);
+                *term_exists = self.sub_code == 0;
+            }
+            return Ok((SeekStatus::End, false));
+        }
+        while self.next_ent < self.ent_count as i32 {
+            self.next_ent += 1;
+            let code = read_vint_at(
+                &self.suffix_length_bytes[..self.suffix_length_bytes_len],
+                &mut self.suffix_lengths_pos,
+                "suffix lengths",
+            )? as u32;
+            self.take_suffix((code >> 1) as usize)?;
+            *term_exists = (code & 1) == 0;
+            if *term_exists {
+                self.term_block_ord += 1;
+                self.sub_code = 0;
+            } else {
+                self.sub_code = read_vlong_at(
+                    &self.suffix_length_bytes[..self.suffix_length_bytes_len],
+                    &mut self.suffix_lengths_pos,
+                    "suffix lengths",
+                )? as u64;
+                self.last_sub_fp = self.absolute_sub_fp()?;
+            }
+            match self.suffix().cmp(self.target_suffix(target)) {
+                std::cmp::Ordering::Less => {}
+                std::cmp::Ordering::Greater => {
+                    self.fill_term(term);
+                    // Positioned on a sub-block whose terms are all after the
+                    // target: a ceiling seek has to descend into it to reach
+                    // the actual next term.
+                    return Ok((SeekStatus::NotFound, !exact_only && !*term_exists));
+                }
+                std::cmp::Ordering::Equal => {
+                    // Cannot be a sub-block: the index would have routed the
+                    // seek into that sub-block from the start.
+                    self.fill_term(term);
+                    return Ok((SeekStatus::Found, false));
+                }
+            }
+        }
+        if exact_only {
+            self.fill_term(term);
+        }
+        Ok((SeekStatus::End, false))
+    }
+
+    /// `SegmentTermsEnumFrame.decodeMetaData`: catches the per-term stats and
+    /// postings-metadata streams up to the term the cursor is on, and no
+    /// further. A terms-only consumer never triggers it.
+    // ARITH: `stats_singleton_run_length -= 1` is guarded by the `> 0` test on
+    // the line above it. `meta_data_upto += 1` runs under
+    // `meta_data_upto < limit`, and `limit` is `term_block_ord()`, which is
+    // either `next_ent.max(0)` or `term_block_ord` -- both bounded by
+    // `ent_count <= i32::MAX` (`ENT_COUNT`), well inside `u32`.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn decode_meta_data(&mut self, index_options: IndexOptions, has_payloads: bool) -> Result<()> {
+        let limit = self.term_block_ord();
+        if limit == 0 {
+            return Err(Error::Store(lucene_store::Error::Corrupted(
+                "asked for term metadata with no term read from this block".into(),
+            )));
+        }
+        let mut absolute = self.meta_data_upto == 0;
+        while self.meta_data_upto < limit {
+            if self.stats_singleton_run_length > 0 {
+                self.doc_freq = 1;
+                self.total_term_freq = 1;
+                self.stats_singleton_run_length -= 1;
+            } else {
+                let token = read_vint_at(
+                    &self.stat_bytes[..self.stat_bytes_len],
+                    &mut self.stats_pos,
+                    "stats",
+                )?;
+                if token & 1 == 1 {
+                    self.doc_freq = 1;
+                    self.total_term_freq = 1;
+                    self.stats_singleton_run_length = (token as u32) >> 1;
+                } else {
+                    self.doc_freq = ((token as u32) >> 1) as i32;
+                    self.total_term_freq = if index_options == IndexOptions::Docs {
+                        self.doc_freq as i64
+                    } else {
+                        // `StatsWriter` writes `totalTermFreq - docFreq`, so
+                        // Java's `state.docFreq + statsReader.readVLong()` is
+                        // a plain `long` add that silently wraps on a corrupt
+                        // stats blob, yielding a *negative* totalTermFreq that
+                        // every scorer downstream treats as a real frequency.
+                        // Report the overflow instead.
+                        let delta = read_vlong_at(
+                            &self.stat_bytes[..self.stat_bytes_len],
+                            &mut self.stats_pos,
+                            "stats",
+                        )?;
+                        i64::from(self.doc_freq).checked_add(delta).ok_or_else(|| {
+                            Error::Store(lucene_store::Error::Corrupted(format!(
+                                "totalTermFreq overflows: docFreq={} + delta={delta}",
+                                self.doc_freq
+                            )))
+                        })?
+                    };
+                }
+            }
+
+            let (doc_freq, total_term_freq) = (self.doc_freq, self.total_term_freq);
+            let Frame {
+                meta_bytes,
+                meta_bytes_len,
+                meta_pos,
+                meta,
+                ..
+            } = self;
+            let mut r = SliceInput::new(&meta_bytes[..*meta_bytes_len]);
+            r.seek(*meta_pos)?;
+            *meta = postings::decode_term_metadata(
+                &mut r,
+                doc_freq,
+                absolute,
+                *meta,
+                index_options,
+                has_payloads,
+                total_term_freq,
+            )?;
+            *meta_pos = r.position();
+
+            self.meta_data_upto += 1;
+            absolute = false;
+        }
+        self.term_block_ord = self.meta_data_upto;
+        Ok(())
+    }
+}
+
+/// The reusable half of a [`SegmentTermsEnum`]: the frame stack, the current
+/// term's bytes, and where in the stack we are. Split out from the enum so
+/// [`FieldTerms`] can pool one and hand it to every `&self` lookup, keeping
+/// the last-loaded blocks warm across calls.
+#[derive(Debug, Default)]
+struct EnumState {
+    term: TermBuf,
+    stack: Vec<Frame>,
+    /// Index of the current frame, or `-1` when the enum is unpositioned
+    /// (Java's `currentFrame == staticFrame`).
+    current: i32,
+    /// Java's `termExists`: the entry the cursor is on is a term rather than
+    /// a sub-block pointer. Written wherever Java writes it and read by
+    /// nothing here yet -- both of Java's consumers,
+    /// `seekExact(BytesRef, TermState)` and the seek-state-reuse prologue,
+    /// are deliberately unported (see [`SegmentTermsEnum`]'s doc comment).
+    /// Kept rather than dropped because `scanToTermNonLeaf` is the only place
+    /// that can compute it, so a later port of either would otherwise have to
+    /// re-thread it back through three call layers.
+    term_exists: bool,
+    /// The enum is parked on a real term (so `term()`/`docFreq()` are
+    /// meaningful). False before the first call and after end-of-terms.
+    on_term: bool,
+    /// Java's `eof` (an assert-only flag there): repeated `next()` past the
+    /// end keeps returning "no more terms" instead of walking off the stack.
+    eof: bool,
+}
+
+/// Port of `SegmentTermsEnum` -- the whole lazy navigator. Borrows the
+/// field's `.tim`/`.tip` bytes and a (possibly pooled) [`EnumState`].
+///
+/// **What is not ported.** Java's `prepareSeekExact` and `seekCeil` open with
+/// a branch that reuses the *previous* seek's frame stack when the new target
+/// shares a prefix with the current term (`validIndexPrefix`, `nodes[]`,
+/// `lastFrame`). It is a pure optimization for seeking in sorted order; every
+/// seek here restarts from the root instead, which is exactly Java's own
+/// `currentFrame == staticFrame` path. What that branch mainly buys --
+/// not re-loading a block the frame already holds -- is recovered by
+/// [`Frame::rewind`]'s in-place cursor reset plus the per-field pooled state,
+/// which apply to *any* access order rather than only a sorted one. See
+/// `docs/sweep/m2/c1-lazy-blocktree.md`.
+///
+/// Also unported, with the same status as before this batch:
+/// `seekExact(BytesRef, TermState)`/`termState()`/`ord()` (no `TermStates`
+/// reuse exists in this port's search layer) and `prefetchBlock`
+/// (`IndexInput.prefetch`, unmeasurable against a warm page cache).
+struct SegmentTermsEnum<'a> {
+    field: &'a FieldTerms,
+    st: &'a mut EnumState,
+}
+
+impl<'a> SegmentTermsEnum<'a> {
+    #[inline]
+    fn tim(&self) -> &'a [u8] {
+        self.field.tim.as_ref().as_ref()
+    }
+
+    /// The field's own `[indexStart, indexEnd)` region of `.tip`.
+    #[inline]
+    fn index(&self) -> &'a [u8] {
+        &self.field.tip.as_ref().as_ref()[self.field.index_start..self.field.index_end]
+    }
+
+    #[inline]
+    fn cur(&mut self) -> &mut Frame {
+        let ord = self.st.current.max(0) as usize;
+        &mut self.st.stack[ord]
+    }
+
+    #[inline]
+    fn cur_ref(&self) -> &Frame {
+        &self.st.stack[self.st.current.max(0) as usize]
+    }
+
+    /// The stack index the next `pushFrame` fills, i.e. `currentFrame.ord + 1`.
+    ///
+    /// A `checked_add` rather than an `// ARITH:` proof, because there is no
+    /// honest proof to write: the only structural bound on stack depth is the
+    /// strictly-decreasing sub-block fp chain, so it is `.tim`'s own length
+    /// that limits how deep a corrupt file can drive the descent, and that is
+    /// a 64-bit quantity. The check costs one branch per *block* push, which
+    /// [`Frame::load_block`] dwarfs.
+    fn next_ord(&self) -> Result<usize> {
+        let ord = self.st.current.checked_add(1).ok_or_else(|| {
+            Error::Store(lucene_store::Error::Corrupted(
+                "terms frame stack depth overflowed".into(),
+            ))
+        })?;
+        debug_assert!(ord >= 0, "st.current is never below -1");
+        Ok(ord.max(0) as usize)
+    }
+
+    /// `SegmentTermsEnum.getFrame(ord)`.
+    fn ensure_frame(&mut self, ord: usize) {
+        while self.st.stack.len() <= ord {
+            let n = self.st.stack.len();
+            self.st.stack.push(Frame {
+                ord: n,
+                next_ent: -1,
+                ..Frame::default()
+            });
+        }
+    }
+
+    /// `SegmentTermsEnum.pushFrame(node, length)`.
+    fn push_frame_node(&mut self, node: &TrieNode, length: usize) -> Result<()> {
+        let ord = self.next_ord()?;
+        self.ensure_frame(ord);
+        let index = self.index();
+        let f = &mut self.st.stack[ord];
+        f.has_terms = node.has_terms;
+        f.has_terms_orig = node.has_terms;
+        f.is_floor = node.floor_data_fp.is_some();
+        if let Some(fdp) = node.floor_data_fp {
+            f.set_floor_data(index, fdp)?;
+        }
+        let fp = node.output_fp.unwrap_or_default() as usize;
+        self.push_frame_fp(fp, length)
+    }
+
+    /// `SegmentTermsEnum.pushFrame(node, fp, length)` -- the shared tail, also
+    /// used on its own for a frame pushed by following an in-block sub-block
+    /// pointer (Java's `pushFrame(null, fp, length)`).
+    fn push_frame_fp(&mut self, fp: usize, length: usize) -> Result<()> {
+        let ord = self.next_ord()?;
+        self.ensure_frame(ord);
+        let index = self.index();
+        let f = &mut self.st.stack[ord];
+        if f.fp_orig == fp && f.next_ent != -1 && f.prefix_length == length {
+            // Same block as last time this ord was used: keep its decoded
+            // regions and just rewind the cursors.
+            f.rewind(index)?;
+        } else {
+            f.next_ent = -1;
+            f.prefix_length = length;
+            f.term_block_ord = 0;
+            f.fp = fp;
+            f.fp_orig = fp;
+            f.last_sub_fp = -1;
+        }
+        self.st.current = ord as i32;
+        Ok(())
+    }
+
+    /// Pushes the "next"-style frame Java writes as `pushFrame(null, fp, len)`:
+    /// a frame reached by an in-block sub-block pointer, which must be treated
+    /// as un-floored even if the block it loads says otherwise (Java's "even
+    /// if it's floor'd we must pretend it isn't so we don't try to scan to the
+    /// right floor frame").
+    fn push_next_frame(&mut self, fp: i64, length: usize) -> Result<()> {
+        if fp < 0 {
+            return Err(Error::Store(lucene_store::Error::Corrupted(
+                "sub-block fp was never set".into(),
+            )));
+        }
+        let ord = self.next_ord()?;
+        self.ensure_frame(ord);
+        {
+            let f = &mut self.st.stack[ord];
+            f.is_floor = false;
+            f.has_terms = true;
+            f.has_terms_orig = true;
+        }
+        self.push_frame_fp(fp as usize, length)
+    }
+
+    fn load_current_block(&mut self) -> Result<()> {
+        let tim = self.tim();
+        self.cur().load_block(tim)
+    }
+
+    /// Puts the enum back in its unpositioned state, keeping every frame's
+    /// decoded block so the next lookup can reuse it.
+    fn reset(&mut self) {
+        self.st.current = -1;
+        self.st.term.clear();
+        self.st.term_exists = false;
+        self.st.on_term = false;
+        self.st.eof = false;
+    }
+
+    fn root(&self) -> Result<TrieNode> {
+        load_node(self.index(), self.field.root_fp)
+    }
+
+    /// `SegmentTermsEnum.seekExact(BytesRef)`.
+    // ARITH: `target_upto` is only incremented inside `while target_upto <
+    // target.len()`, so it never exceeds `target.len()`, which as a slice
+    // length is at most `isize::MAX`; `target_upto + 1` and `1 + target_upto`
+    // therefore cannot overflow `usize`.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn seek_exact(&mut self, target: &[u8]) -> Result<bool> {
+        // `prepareSeekExact`'s first line: the field's recorded min/max term
+        // bound every possible hit, so an out-of-range target never touches
+        // the trie at all.
+        if self.field.num_terms > 0
+            && (target < self.field.min_term.as_slice() || target > self.field.max_term.as_slice())
+        {
+            self.reset();
+            return Ok(false);
+        }
+        self.reset();
+
+        let index = self.index();
+        let mut node = self.root()?;
+        let mut target_upto = 0usize;
+        self.push_frame_node(&node, 0)?;
+
+        while target_upto < target.len() {
+            let target_label = target[target_upto];
+            match lookup_child(index, &node, target_label)? {
+                None => {
+                    // The index is exhausted: this frame's block is the only
+                    // one that could hold the target.
+                    self.cur().scan_to_floor_frame(index, target)?;
+                    if !self.cur_ref().has_terms {
+                        self.st.term_exists = false;
+                        self.st.term.set_byte_at(target_upto, target_label);
+                        self.st.term.set_length(1 + target_upto);
+                        return Ok(false);
+                    }
+                    return self.load_and_scan_exact(target);
+                }
+                Some(next_node) => {
+                    self.st.term.set_byte_at(target_upto, target_label);
+                    node = next_node;
+                    target_upto += 1;
+                    if node.output_fp.is_some() {
+                        self.push_frame_node(&node, target_upto)?;
+                    }
+                }
+            }
+        }
+
+        self.cur().scan_to_floor_frame(index, target)?;
+        if !self.cur_ref().has_terms {
+            self.st.term_exists = false;
+            self.st.term.set_length(target_upto);
+            return Ok(false);
+        }
+        self.load_and_scan_exact(target)
+    }
+
+    fn load_and_scan_exact(&mut self, target: &[u8]) -> Result<bool> {
+        self.load_current_block()?;
+        let ord = self.st.current.max(0) as usize;
+        let EnumState {
+            term,
+            stack,
+            term_exists,
+            ..
+        } = &mut *self.st;
+        let (status, _) = stack[ord].scan_to_term(term, target, true, term_exists)?;
+        let found = status == SeekStatus::Found;
+        self.st.on_term = found;
+        Ok(found)
+    }
+
+    /// `SegmentTermsEnum.seekCeil(BytesRef)`.
+    // ARITH: as in [`SegmentTermsEnum::seek_exact`] -- `target_upto` is only
+    // incremented under `while target_upto < target.len()`, and a slice length
+    // is at most `isize::MAX`.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn seek_ceil(&mut self, target: &[u8]) -> Result<SeekStatus> {
+        self.reset();
+        let index = self.index();
+        let mut node = self.root()?;
+        let mut target_upto = 0usize;
+        self.push_frame_node(&node, 0)?;
+
+        while target_upto < target.len() {
+            let target_label = target[target_upto];
+            match lookup_child(index, &node, target_label)? {
+                None => {
+                    self.cur().scan_to_floor_frame(index, target)?;
+                    return self.load_and_scan_ceil(target);
+                }
+                Some(next_node) => {
+                    self.st.term.set_byte_at(target_upto, target_label);
+                    node = next_node;
+                    target_upto += 1;
+                    if node.output_fp.is_some() {
+                        self.push_frame_node(&node, target_upto)?;
+                    }
+                }
+            }
+        }
+
+        self.cur().scan_to_floor_frame(index, target)?;
+        self.load_and_scan_ceil(target)
+    }
+
+    // ARITH: `prefix_length + suffix_length` is the same sum
+    // [`Frame::fill_term`] forms and is bounded the same way -- two lengths of
+    // live allocations, each at most `isize::MAX`.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn load_and_scan_ceil(&mut self, target: &[u8]) -> Result<SeekStatus> {
+        self.load_current_block()?;
+        let ord = self.st.current.max(0) as usize;
+        let (status, descend) = {
+            let EnumState {
+                term,
+                stack,
+                term_exists,
+                ..
+            } = &mut *self.st;
+            stack[ord].scan_to_term(term, target, false, term_exists)?
+        };
+
+        if descend {
+            // The scan stopped on a sub-block that sorts after the target;
+            // the true ceiling is that sub-block's first term.
+            let (sub_fp, length) = {
+                let f = self.cur_ref();
+                (f.last_sub_fp, f.prefix_length + f.suffix_length)
+            };
+            self.push_next_frame(sub_fp, length)?;
+            self.load_current_block()?;
+            loop {
+                let tim = self.tim();
+                let ord = self.st.current.max(0) as usize;
+                let EnumState { term, stack, .. } = &mut *self.st;
+                if !stack[ord].next(tim, term)? {
+                    break;
+                }
+                let sub_fp = self.cur_ref().last_sub_fp;
+                let length = self.st.term.len;
+                self.push_next_frame(sub_fp, length)?;
+                self.load_current_block()?;
+            }
+            self.st.on_term = true;
+            return Ok(SeekStatus::NotFound);
+        }
+
+        if status == SeekStatus::End {
+            // Past the last term of this block; the ceiling, if any, is the
+            // next term in document order.
+            self.st.term.copy_from(target);
+            self.st.term_exists = false;
+            if self.next()? {
+                return Ok(SeekStatus::NotFound);
+            }
+            return Ok(SeekStatus::End);
+        }
+        self.st.on_term = true;
+        Ok(status)
+    }
+
+    /// `SegmentTermsEnum.next()`: `true` when it advanced onto a term.
+    fn next(&mut self) -> Result<bool> {
+        if self.st.eof {
+            return Ok(false);
+        }
+        if self.st.current < 0 {
+            let node = self.root()?;
+            self.push_frame_node(&node, 0)?;
+            self.load_current_block()?;
+        }
+
+        // Pop finished blocks.
+        loop {
+            let (next_ent, ent_count, is_last_in_floor, ord, fp_orig) = {
+                let f = self.cur_ref();
+                (
+                    f.next_ent,
+                    f.ent_count as i32,
+                    f.is_last_in_floor,
+                    f.ord,
+                    f.fp_orig,
+                )
+            };
+            if next_ent != ent_count {
+                break;
+            }
+            if !is_last_in_floor {
+                let tim = self.tim();
+                self.cur().load_next_floor_block(tim)?;
+                break;
+            }
+            if ord == 0 {
+                self.st.eof = true;
+                self.st.on_term = false;
+                self.st.term_exists = false;
+                self.st.term.clear();
+                let index = self.index();
+                self.cur().rewind(index)?;
+                return Ok(false);
+            }
+            // ARITH: `ord` read three lines up is `cur_ref().ord`, which
+            // `ensure_frame` sets to the frame's own index in `st.stack`, i.e.
+            // to `st.current`; the `ord == 0` branch above has already
+            // returned, so `st.current >= 1` here and the decrement cannot go
+            // below 0.
+            #[allow(clippy::arithmetic_side_effects)]
+            {
+                debug_assert_eq!(ord as i32, self.st.current);
+                self.st.current -= 1;
+            }
+            let parent = self.st.current.max(0) as usize;
+            let needs_reposition = {
+                let f = &self.st.stack[parent];
+                f.next_ent == -1 || f.last_sub_fp != fp_orig as i64
+            };
+            if needs_reposition {
+                // We popped into a frame that is either not loaded or not
+                // scanned to the right entry. Borrow the term and the frame
+                // as disjoint fields so repositioning costs no allocation.
+                let index = self.index();
+                let tim = self.tim();
+                let EnumState { term, stack, .. } = &mut *self.st;
+                let f = &mut stack[parent];
+                f.scan_to_floor_frame(index, term.get())?;
+                f.load_block(tim)?;
+                f.scan_to_sub_block(fp_orig as i64)?;
+            }
+        }
+
+        loop {
+            let tim = self.tim();
+            let is_sub = {
+                let ord = self.st.current.max(0) as usize;
+                let EnumState { term, stack, .. } = &mut *self.st;
+                stack[ord].next(tim, term)?
+            };
+            if !is_sub {
+                self.st.term_exists = true;
+                self.st.on_term = true;
+                return Ok(true);
+            }
+            let sub_fp = self.cur_ref().last_sub_fp;
+            let length = self.st.term.len;
+            self.push_next_frame(sub_fp, length)?;
+            self.load_current_block()?;
+        }
+    }
+
+    /// `SegmentTermsEnum.docFreq()`/`totalTermFreq()`.
+    fn stats(&mut self) -> Result<TermStats> {
+        let (index_options, has_payloads) = (self.field.index_options, self.field.has_payloads);
+        let f = self.cur();
+        f.decode_meta_data(index_options, has_payloads)?;
+        Ok(TermStats {
+            doc_freq: f.doc_freq,
+            total_term_freq: f.total_term_freq,
+        })
+    }
+
+    /// `SegmentTermsEnum.postings()`'s half of `decodeMetaData`: the postings
+    /// file pointers for the term the enum is parked on.
+    fn stats_and_meta(&mut self) -> Result<(TermStats, TermMetadata)> {
+        let (index_options, has_payloads) = (self.field.index_options, self.field.has_payloads);
+        let f = self.cur();
+        f.decode_meta_data(index_options, has_payloads)?;
+        Ok((
+            TermStats {
+                doc_freq: f.doc_freq,
+                total_term_freq: f.total_term_freq,
+            },
+            f.meta,
         ))
     }
 
-    /// `TermsEnum.seekCeil(BytesRef)`-equivalent: binary-search for the
-    /// smallest term >= `target`, position the cursor there (so a following
-    /// `next()` continues from that point), and report whether it was an
-    /// exact match, a ceiling match, or that no such term exists.
-    pub fn seek_ceil(&mut self, target: &[u8]) -> SeekStatus {
-        match self.entries.search(target) {
-            Ok(idx) => {
-                self.pos = Some(idx);
-                SeekStatus::Found
-            }
-            Err(idx) if idx >= self.entries.len() => {
-                self.pos = Some(self.entries.len());
-                SeekStatus::End
-            }
-            Err(idx) => {
-                self.pos = Some(idx);
-                SeekStatus::NotFound
-            }
+    /// Where the cursor sits, for the intersect iterators' skip accounting:
+    /// which frame, which block, which entry.
+    fn position(&self) -> (i32, usize, i32) {
+        if self.st.current < 0 {
+            return (-1, 0, -1);
         }
-    }
-
-    /// The term/stats the cursor is currently positioned on (the last term
-    /// returned by `next()`, or the term `seek_ceil()` landed on) — `None`
-    /// before the first `next()`/`seek_ceil()` call or past the end.
-    pub fn current(&self) -> Option<(&'a [u8], TermStats)> {
-        let idx = self.pos?;
-        (idx < self.entries.len()).then(|| (self.entries.term(idx), self.entries.recs[idx].stats))
+        let f = self.cur_ref();
+        (self.st.current, f.fp, f.next_ent)
     }
 }
 
-/// One field's decoded term dictionary: every (term, stats) pair in the
-/// field's single `.tim` block, sorted (as the writer emits them), plus the
-/// field-level aggregate stats from `.tmd`.
-#[derive(Debug, Clone)]
+/// `TermsEnum`-equivalent: ordered enumeration (`next()`) and nearest-match
+/// seeking (`seekCeil()`) over one field's term dictionary, backed by the
+/// lazy [`SegmentTermsEnum`] frame stack.
+#[derive(Debug)]
+pub struct TermsEnum<'a> {
+    field: &'a FieldTerms,
+    st: EnumState,
+}
+
+impl<'a> TermsEnum<'a> {
+    fn new(field: &'a FieldTerms) -> Self {
+        Self {
+            field,
+            st: EnumState {
+                current: -1,
+                ..EnumState::default()
+            },
+        }
+    }
+
+    fn ste(&mut self) -> SegmentTermsEnum<'_> {
+        SegmentTermsEnum {
+            field: self.field,
+            st: &mut self.st,
+        }
+    }
+
+    /// `TermsEnum.next()`: advance to the next term in sorted order, with its
+    /// `docFreq`/`totalTermFreq`, or `None` at end-of-terms.
+    ///
+    /// Loads at most one further `.tim` block per call, and only decodes the
+    /// postings metadata of the term it lands on.
+    pub fn try_next(&mut self) -> Result<Option<(&[u8], TermStats)>> {
+        let mut ste = self.ste();
+        if !ste.next()? {
+            return Ok(None);
+        }
+        let stats = ste.stats()?;
+        Ok(Some((self.st.term.get(), stats)))
+    }
+
+    /// [`Self::try_next`] for callers with no error channel: a corrupt block
+    /// reads as end-of-terms. New code should prefer `try_next`.
+    ///
+    /// Named to mirror Java's `TermsEnum.next()` rather than
+    /// `std::iter::Iterator::next`: a real `Iterator` impl would need `Item`
+    /// to borrow from `self`, which that trait cannot express.
+    #[allow(clippy::should_implement_trait)]
+    pub fn next(&mut self) -> Option<(&[u8], TermStats)> {
+        self.try_next().unwrap_or(None)
+    }
+
+    /// `TermsEnum.seekCeil(BytesRef)`: position on the smallest term
+    /// `>= target` and report whether that was an exact match, a ceiling
+    /// match, or that no such term exists.
+    pub fn try_seek_ceil(&mut self, target: &[u8]) -> Result<SeekStatus> {
+        self.ste().seek_ceil(target)
+    }
+
+    /// [`Self::try_seek_ceil`] for callers with no error channel: a corrupt
+    /// block reads as [`SeekStatus::End`].
+    pub fn seek_ceil(&mut self, target: &[u8]) -> SeekStatus {
+        self.try_seek_ceil(target).unwrap_or(SeekStatus::End)
+    }
+
+    /// The term/stats the cursor is currently on — `None` before the first
+    /// `next()`/`seek_ceil()` call, past the end, or when `seek_ceil`
+    /// returned [`SeekStatus::End`].
+    pub fn try_current(&mut self) -> Result<Option<(&[u8], TermStats)>> {
+        if !self.st.on_term {
+            return Ok(None);
+        }
+        let stats = self.ste().stats()?;
+        Ok(Some((self.st.term.get(), stats)))
+    }
+
+    /// [`Self::try_current`] for callers with no error channel.
+    pub fn current(&mut self) -> Option<(&[u8], TermStats)> {
+        self.try_current().unwrap_or(None)
+    }
+
+    /// `TermsEnum.postings(...)` at the cursor's **current** position:
+    /// the same result as [`FieldTerms::postings`] for the current term, but
+    /// with no dictionary seek — the term's postings metadata is already
+    /// decoded in the cursor's own frame.
+    ///
+    /// This is what makes a genuinely streaming merge possible. Java's
+    /// `FieldsConsumer.merge` pulls one `TermsEnum` forward per sub-reader and
+    /// asks each for the current term's `PostingsEnum`; asking through
+    /// `FieldTerms::postings(term, ..)` instead means re-seeking from the trie
+    /// root for a term the cursor is already standing on.
+    ///
+    /// `None` before the first `next()`/`seek_ceil()`, past the end, or after
+    /// a `seek_ceil` that returned [`SeekStatus::End`].
+    pub fn try_current_postings(
+        &mut self,
+        doc_in: Option<&DocInput<'_>>,
+    ) -> Result<Option<Postings>> {
+        if !self.st.on_term {
+            return Ok(None);
+        }
+        let (stats, meta) = self.ste().stats_and_meta()?;
+        Ok(Some(self.field.postings_from(stats, meta, doc_in)?))
+    }
+
+    /// [`Self::try_current_postings`] plus the current term's positions
+    /// (with offsets/payloads, when the field indexes them) — decoded from
+    /// the one metadata read, so a positional merge costs one traversal step
+    /// rather than two seeks and two docs/freqs decodes.
+    ///
+    /// Needs a field with [`IndexOptions::DocsAndFreqsAndPositions`] or
+    /// higher, exactly like [`FieldTerms::positions`].
+    pub fn try_current_postings_and_positions(
+        &mut self,
+        doc_in: Option<&DocInput<'_>>,
+        pos_in: &postings::PosInput<'_>,
+        pay_in: Option<&postings::PayInput<'_>>,
+    ) -> Result<Option<(Postings, Vec<Vec<postings::Position>>)>> {
+        if !self.st.on_term {
+            return Ok(None);
+        }
+        let (stats, meta) = self.ste().stats_and_meta()?;
+        let docs = self.field.postings_from(stats, meta, doc_in)?;
+        let positions = postings::read_positions(
+            pos_in,
+            pay_in,
+            meta,
+            &docs.freqs,
+            stats.total_term_freq,
+            self.field.index_options,
+            self.field.has_payloads,
+        )?;
+        Ok(Some((docs, positions)))
+    }
+}
+
+/// One field's term dictionary: the `.tmd` record plus the `.tim`/`.tip`
+/// bytes to navigate on demand — the port of `FieldReader`.
+///
+/// Cloning shares the underlying `.tim`/`.tip` buffers (`Arc`) and starts the
+/// clone with an empty lookup scratch.
+/// Shared, type-erased ownership of one whole codec file's bytes.
+///
+/// [`FieldTerms`] navigates the segment's `.tim`/`.tip` for as long as it
+/// lives, so it has to *own* a share of them. `Arc<[u8]>` was the obvious
+/// choice and was what this held until c12, but an `Arc<[u8]>` owns its own
+/// allocation: building one from a `memmap2::Mmap` (what
+/// `lucene_store::MmapDirectory` hands back, and Lucene's own
+/// `MMapDirectory` equivalent) copies the whole file. On the M1 benchmark
+/// corpus that was 199 µs of a 579 µs `DirectoryReader::open` -- for a 4.7 MB
+/// `.tim` whose bytes were already resident in the page cache.
+///
+/// Erasing the owner instead lets `open_shared` take an `Arc<Input>` (a
+/// mapping, or a `Vec` someone else already owns) unchanged. The cost is one
+/// virtual `as_ref` per [`SegmentTermsEnum::tim`]/[`SegmentTermsEnum::index`]
+/// call -- both of which are hoisted into a local at the top of each lookup,
+/// so it is a handful of predicted indirect calls per *seek*, not per byte
+/// or per term. Measured: no change to `blocktree_open`'s seek cases.
+pub type SharedBytes = Arc<dyn AsRef<[u8]> + Send + Sync>;
+
 pub struct FieldTerms {
     pub num_terms: i64,
     pub sum_total_term_freq: i64,
@@ -497,185 +1898,268 @@ pub struct FieldTerms {
     pub max_term: Vec<u8>,
     index_options: IndexOptions,
     has_payloads: bool,
-    entries: TermIndex,
+    /// The whole segment's `.tim`, shared by every field.
+    tim: SharedBytes,
+    /// The whole segment's `.tip`, shared by every field; this field's trie
+    /// occupies `[index_start, index_end)`.
+    tip: SharedBytes,
+    index_start: usize,
+    index_end: usize,
+    root_fp: usize,
+    /// One pooled [`EnumState`] so the `&self` lookups
+    /// ([`Self::seek_exact`], [`Self::postings`], ...) keep the last-loaded
+    /// blocks warm across calls instead of re-decoding them. Java gets the
+    /// same effect from the caller holding a `TermsEnum`; this port's API
+    /// takes a term per call, so the reuse has to live here.
+    scratch: Mutex<EnumState>,
+}
+
+impl std::fmt::Debug for FieldTerms {
+    /// Hand-written because [`SharedBytes`] is type-erased and has no
+    /// `Debug`. Reports the two buffers by *length*, which is what the
+    /// derived form would have printed for an `Arc<[u8]>` anyway minus a
+    /// megabytes-long byte dump.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FieldTerms")
+            .field("num_terms", &self.num_terms)
+            .field("sum_total_term_freq", &self.sum_total_term_freq)
+            .field("sum_doc_freq", &self.sum_doc_freq)
+            .field("doc_count", &self.doc_count)
+            .field("min_term", &self.min_term)
+            .field("max_term", &self.max_term)
+            .field("index_options", &self.index_options)
+            .field("has_payloads", &self.has_payloads)
+            .field("tim_len", &self.tim.as_ref().as_ref().len())
+            .field("tip_len", &self.tip.as_ref().as_ref().len())
+            .field("index_start", &self.index_start)
+            .field("index_end", &self.index_end)
+            .field("root_fp", &self.root_fp)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Clone for FieldTerms {
+    fn clone(&self) -> Self {
+        Self {
+            num_terms: self.num_terms,
+            sum_total_term_freq: self.sum_total_term_freq,
+            sum_doc_freq: self.sum_doc_freq,
+            doc_count: self.doc_count,
+            min_term: self.min_term.clone(),
+            max_term: self.max_term.clone(),
+            index_options: self.index_options,
+            has_payloads: self.has_payloads,
+            tim: Arc::clone(&self.tim),
+            tip: Arc::clone(&self.tip),
+            index_start: self.index_start,
+            index_end: self.index_end,
+            root_fp: self.root_fp,
+            scratch: Mutex::new(EnumState {
+                current: -1,
+                ..EnumState::default()
+            }),
+        }
+    }
 }
 
 impl FieldTerms {
-    /// `TermsEnum.seekExact(BytesRef)`-equivalent: exact lookup only, no
-    /// enumeration/range-seeking. Terms are stored sorted, so this is a
-    /// binary search over the materialized block.
+    /// Runs `f` against the pooled lookup state.
+    fn with_scratch<T>(&self, f: impl FnOnce(&mut SegmentTermsEnum<'_>) -> Result<T>) -> Result<T> {
+        // `try_lock`, never `lock`: a `BlockTreeFields` is shared by every
+        // concurrently-searching thread (`lucene-ffi` hands the same `Arc` to
+        // all of them), so blocking here would serialize what is otherwise a
+        // read-only, embarrassingly parallel lookup. A thread that loses the
+        // race just runs on its own fresh state -- same answers, only without
+        // the warm blocks -- which is exactly what Java's callers get, since
+        // there each thread holds its own `TermsEnum`.
+        match self.scratch.try_lock() {
+            Ok(mut guard) => f(&mut SegmentTermsEnum {
+                field: self,
+                st: &mut guard,
+            }),
+            // Contended, or poisoned by a panic that may have left a frame
+            // half-updated -- either way the pooled state is unusable for
+            // this call, and a fresh one gives the same answers.
+            Err(_) => {
+                let mut st = EnumState {
+                    current: -1,
+                    ..EnumState::default()
+                };
+                f(&mut SegmentTermsEnum {
+                    field: self,
+                    st: &mut st,
+                })
+            }
+        }
+    }
+
+    /// `TermsEnum.seekExact(BytesRef)` + `docFreq()`/`totalTermFreq()`:
+    /// walks the `.tip` trie to the one block that could hold `term`, loads
+    /// it, and decodes only that term's stats.
+    pub fn try_seek_exact(&self, term: &[u8]) -> Result<Option<TermStats>> {
+        self.with_scratch(|ste| {
+            if !ste.seek_exact(term)? {
+                return Ok(None);
+            }
+            Ok(Some(ste.stats()?))
+        })
+    }
+
+    /// [`Self::try_seek_exact`] for callers with no error channel: a corrupt
+    /// block reads as "no such term". New code should prefer
+    /// `try_seek_exact`.
     pub fn seek_exact(&self, term: &[u8]) -> Option<TermStats> {
-        self.entries
-            .search(term)
-            .ok()
-            .map(|idx| self.entries.recs[idx].stats)
+        self.try_seek_exact(term).unwrap_or(None)
+    }
+
+    /// `seekExact` plus `decodeMetaData`, exposing just the postings file
+    /// pointers (`docStartFP`/`posStartFP`/`payStartFP`/`lastPosBlockOffset`).
+    ///
+    /// Callers that want to decode postings should use the accessors on this
+    /// type rather than driving `crate::postings` themselves; this exists for
+    /// tests that need to prove a *specific* metadata field is load-bearing,
+    /// which they can only do by handing the reader a doctored one.
+    pub fn term_metadata(&self, term: &[u8]) -> Result<Option<TermMetadata>> {
+        Ok(self.term_state(term)?.map(|(_, meta)| meta))
+    }
+
+    /// `seekExact` plus `decodeMetaData` — the stats *and* the postings file
+    /// pointers, in one trie walk.
+    fn term_state(&self, term: &[u8]) -> Result<Option<(TermStats, TermMetadata)>> {
+        self.with_scratch(|ste| {
+            if !ste.seek_exact(term)? {
+                return Ok(None);
+            }
+            Ok(Some(ste.stats_and_meta()?))
+        })
     }
 
     /// `Terms.iterator()`-equivalent: a cursor positioned before the first
-    /// term, ready for `TermsEnum::next()`/`seek_ceil()`.
+    /// term, ready for [`TermsEnum::next`]/[`TermsEnum::seek_ceil`].
     pub fn iter(&self) -> TermsEnum<'_> {
-        TermsEnum::new(&self.entries)
+        TermsEnum::new(self)
     }
 
-    /// `Terms.intersect(CompiledAutomaton, BytesRef)`-equivalent: every term
-    /// (in sorted order) that matches `pattern`, paired with its stats.
+    /// `Terms.intersect(CompiledAutomaton, BytesRef)`-equivalent for a glob
+    /// pattern: every term (in sorted order) matching `pattern`, with its
+    /// stats.
     ///
-    /// **Design** (see `crate::wildcard`'s module doc for the full
-    /// tradeoff): real Lucene's `IntersectTermsEnum` walks only the trie
-    /// nodes/blocks a compiled automaton's reachable states can lead to,
-    /// potentially touching a small fraction of a huge dictionary. This
-    /// method instead narrows the already-sorted `entries` `Vec` to the
-    /// contiguous range starting with the pattern's literal prefix (a plain
-    /// binary search — free, since `entries` is already sorted for
-    /// `seek_exact`) and then tests every term in that range against the
-    /// pattern with a linear scan. For a pattern with no literal prefix
-    /// (e.g. `*foo`) the "range" is the entire field, so this degrades to a
-    /// full `O(n)` scan — correct, but not sub-linear the way a real
-    /// automaton intersection would be. This is an honest, explicitly scoped
-    /// first cut: no `CompiledAutomaton`/`ByteRunAutomaton`/`IntersectTermsEnum`
-    /// block-skipping is implemented, matching this port's "correctness
-    /// first, real optimization later, be honest about what's optimized"
-    /// stance from the postings work (see `docs/parity.md`).
+    /// Seeks to the pattern's literal prefix and walks forward until the
+    /// prefix runs out, so blocks outside the prefix range are never loaded —
+    /// the same pruning real Lucene's `IntersectTermsEnum` gets from its
+    /// automaton's dead states, restricted to what
+    /// [`WildcardPattern::literal_prefix`] can prove. A pattern with no
+    /// literal prefix (`*foo`) still walks the whole field; so does Lucene's,
+    /// since a leading `.*` has no dead prefix.
     pub fn intersect<'a>(
         &'a self,
         pattern: &'a WildcardPattern,
-    ) -> impl Iterator<Item = (&'a [u8], TermStats)> + 'a {
-        let prefix = pattern.literal_prefix();
-        // The range of the sorted `Vec` whose *own* leading bytes could
-        // possibly equal `prefix`: the first index at which `term >=
-        // prefix` through the first index at which `term` no longer starts
-        // with `prefix` (found by bumping `prefix`'s last byte, the
-        // standard "prefix range via two binary searches" trick — matches
-        // what real Lucene's own prefix-seek does one level below the
-        // automaton, just expressed here as two `partition_point`s over
-        // the materialized `Vec` instead of a trie walk).
-        let start = self.entries.lower_bound(&prefix);
-        let end = match prefix_upper_bound(&prefix) {
-            Some(upper) => self.entries.lower_bound(&upper),
-            None => self.entries.len(),
-        };
-        self.entries
-            .range(start, end)
-            .filter(move |(t, _)| pattern.matches(t))
+    ) -> impl Iterator<Item = (Vec<u8>, TermStats)> + 'a {
+        Intersect::new(self, PrefixMatcher(pattern), pattern.literal_prefix())
     }
 
-    /// `FuzzyQuery`-equivalent term matching (task #42): every term (in
-    /// sorted order) within `pattern`'s edit-distance budget, paired with its
-    /// stats. Structurally identical to [`Self::intersect`]'s "narrow by
-    /// literal prefix range via binary search, then linearly filter" design —
-    /// here the literal prefix is `pattern`'s required `prefixLength`-byte
-    /// exact prefix ([`crate::fuzzy::FuzzyMatch::literal_prefix`]) rather than
-    /// a glob pattern's leading literal run, and the per-candidate filter is
-    /// [`crate::fuzzy::FuzzyMatch::matches`]'s edit-distance test rather than
-    /// glob matching. See `crate::fuzzy`'s module doc for the full
-    /// automaton-vs-DP tradeoff writeup.
+    /// `FuzzyQuery`-equivalent term matching: every term within `pattern`'s
+    /// edit-distance budget, in sorted order, with its stats. Same shape as
+    /// [`Self::intersect`], with `pattern`'s required `prefixLength`-byte
+    /// exact prefix as the seek target.
     pub fn fuzzy_intersect<'a>(
         &'a self,
         pattern: &'a FuzzyMatch<'a>,
-    ) -> impl Iterator<Item = (&'a [u8], TermStats)> + 'a {
-        let prefix = pattern.literal_prefix();
-        let start = self.entries.lower_bound(prefix);
-        let end = match prefix_upper_bound(prefix) {
-            Some(upper) => self.entries.lower_bound(&upper),
-            None => self.entries.len(),
-        };
-        self.entries
-            .range(start, end)
-            .filter(move |(t, _)| pattern.matches(t))
+    ) -> impl Iterator<Item = (Vec<u8>, TermStats)> + 'a {
+        let prefix = pattern.literal_prefix().to_vec();
+        Intersect::new(self, FuzzyMatcher(pattern), prefix)
     }
 
-    /// `RegexpQuery`-equivalent term matching (task #43): every term (in
-    /// sorted order) [`crate::regexp::RegexpPattern::matches`] accepts,
-    /// paired with its stats. Structurally identical to [`Self::intersect`]/
-    /// [`Self::fuzzy_intersect`]'s "narrow by literal prefix range via
-    /// binary search, then linearly filter" design -- here the literal
-    /// prefix is `pattern`'s guaranteed leading literal byte run
-    /// ([`crate::regexp::RegexpPattern::literal_prefix`]) rather than a glob
-    /// pattern's own, and the per-candidate filter is
-    /// [`crate::regexp::RegexpPattern::matches`]'s whole-term backtracking
-    /// match rather than glob matching. See `crate::regexp`'s module doc for
-    /// the full syntax-subset and automaton-vs-backtracking tradeoff
-    /// writeup.
+    /// `RegexpQuery`-equivalent term matching, with the dead-prefix **block
+    /// skip**: when [`RegexpPattern::dead_prefix_len`] proves no term sharing
+    /// the current term's `k`-byte prefix can match, the walk seeks straight
+    /// past that whole prefix range, which with lazy frames means the blocks
+    /// under it are never loaded. That is what real Lucene's
+    /// `IntersectTermsEnum` gets from a `ByteRunAutomaton` entering a dead
+    /// state; see `docs/sweep/m2/c1-lazy-blocktree.md` for the measurement.
     pub fn regexp_intersect<'a>(
         &'a self,
         pattern: &'a RegexpPattern,
-    ) -> impl Iterator<Item = (&'a [u8], TermStats)> + 'a {
-        let prefix = pattern.literal_prefix();
-        let start = self.entries.lower_bound(&prefix);
-        let end = match prefix_upper_bound(&prefix) {
-            Some(upper) => self.entries.lower_bound(&upper),
-            None => self.entries.len(),
-        };
-        self.entries
-            .range(start, end)
-            .filter(move |(t, _)| pattern.matches(t))
+    ) -> impl Iterator<Item = (Vec<u8>, TermStats)> + 'a {
+        Intersect::new(self, RegexpMatcher(pattern), pattern.literal_prefix())
     }
 
     /// `seekExact(term)` followed by `PostingsEnum` iteration
     /// (`postingsReader.postings(...)`, `DOCS_AND_FREQS` mode) — decodes the
-    /// term's actual `(docID, freq)` pairs, scoped to a single postings block
-    /// (see `crate::postings`'s module doc for exactly what that covers).
-    /// `doc_in` is `None` for fields where a `.doc` file was never opened
-    /// (e.g. no indexed field in the segment needs it) — passing `None` for a
-    /// found term whose `docFreq > 1` is an error, since that path needs
-    /// `.doc` file bytes.
+    /// term's actual `(docID, freq)` pairs. `doc_in` is `None` for fields
+    /// where a `.doc` file was never opened; passing `None` for a found term
+    /// whose `docFreq > 1` is an error, since that path needs `.doc` bytes.
     pub fn postings(&self, term: &[u8], doc_in: Option<&DocInput<'_>>) -> Result<Option<Postings>> {
-        let Some(idx) = self.entries.search(term).ok() else {
+        self.postings_with_flags(term, doc_in, postings::PostingsFlags::Freqs)
+    }
+
+    /// [`Self::postings`] with the consumer's `PostingsEnum` flags -- Java's
+    /// `TermsEnum.postings(reuse, flags)`. With
+    /// [`postings::PostingsFlags::DocsOnly`] the `.doc` file's frequency
+    /// blocks are stepped over rather than unpacked, and every returned
+    /// frequency is `1`.
+    pub fn postings_with_flags(
+        &self,
+        term: &[u8],
+        doc_in: Option<&DocInput<'_>>,
+        flags: postings::PostingsFlags,
+    ) -> Result<Option<Postings>> {
+        let Some((stats, meta)) = self.term_state(term)? else {
             return Ok(None);
         };
-        let rec = &self.entries.recs[idx];
-        let (stats, meta) = (&rec.stats, &rec.meta);
         if stats.doc_freq == 1 {
             return Ok(Some(postings::singleton_postings(
-                *meta,
+                meta,
                 stats.total_term_freq,
             )?));
         }
         let doc_in = doc_in.ok_or(Error::Unsupported(
             "postings() needs an opened .doc file for docFreq > 1 terms",
         ))?;
-        Ok(Some(doc_in.read_postings(
-            *meta,
+        Ok(Some(doc_in.read_postings_with_flags(
+            meta,
             stats.doc_freq,
             self.index_options,
             self.has_payloads,
+            flags,
         )?))
     }
 
     /// `seekExact(term)` followed by opening a [`postings::LazyDocsCursor`]:
     /// the decode-on-demand sibling of [`Self::postings`] (see that method
-    /// and `crate::postings`'s module doc for the shared scope/validation —
-    /// `docFreq <= 1` and `IndexOptions::None` are rejected identically;
-    /// `DocsAndCustomFreqs` is accepted, wire-identical to `DocsAndFreqs`).
-    /// Unlike `postings()`, this never decodes any
-    /// `.doc` bytes until the cursor's `next_doc()`/`advance()` is actually
-    /// called, and `advance()` can skip whole undecoded blocks — see
-    /// `LazyDocsCursor`'s own doc comment.
+    /// and `crate::postings`'s module doc for the shared scope/validation).
     pub fn lazy_postings<'d>(
         &self,
         term: &[u8],
         doc_in: &DocInput<'d>,
     ) -> Result<Option<postings::LazyDocsCursor<'d>>> {
-        let Some(idx) = self.entries.search(term).ok() else {
+        self.lazy_postings_with_flags(term, doc_in, postings::PostingsFlags::Freqs)
+    }
+
+    /// [`Self::lazy_postings`] with the consumer's `PostingsEnum` flags --
+    /// the decode-on-demand sibling of [`Self::postings_with_flags`].
+    pub fn lazy_postings_with_flags<'d>(
+        &self,
+        term: &[u8],
+        doc_in: &DocInput<'d>,
+        flags: postings::PostingsFlags,
+    ) -> Result<Option<postings::LazyDocsCursor<'d>>> {
+        let Some((stats, meta)) = self.term_state(term)? else {
             return Ok(None);
         };
-        let rec = &self.entries.recs[idx];
-        let (stats, meta) = (&rec.stats, &rec.meta);
-        Ok(Some(doc_in.lazy_cursor(
-            *meta,
+        Ok(Some(doc_in.lazy_cursor_with_flags(
+            meta,
             stats.doc_freq,
             self.index_options,
             self.has_payloads,
+            flags,
         )?))
     }
 
     /// `postings(term, doc_in)` followed by `PostingsEnum.nextPosition()`/
     /// `startOffset()`/`endOffset()`/`getPayload()` for every occurrence in
     /// every doc — needs a field with `IndexOptions::DocsAndFreqsAndPositions`
-    /// or higher (see `crate::postings::read_positions`'s doc comment for the
-    /// exact scope). `pay_in` is only needed for a field with offsets or
-    /// payloads whose `total_term_freq` spans at least one full 256-position
-    /// block; `None` is otherwise fine even for such a field.
+    /// or higher.
     pub fn positions(
         &self,
         term: &[u8],
@@ -683,24 +2167,36 @@ impl FieldTerms {
         pos_in: &postings::PosInput<'_>,
         pay_in: Option<&postings::PayInput<'_>>,
     ) -> Result<Option<Vec<Vec<postings::Position>>>> {
-        let Some(doc_postings) = self.postings(term, doc_in)? else {
+        let Some((stats, meta)) = self.term_state(term)? else {
             return Ok(None);
         };
-        let idx = self
-            .entries
-            .search(term)
-            .expect("found by self.postings() above, so seek_exact must succeed here too");
-        let rec = &self.entries.recs[idx];
-        let (stats, meta) = (&rec.stats, &rec.meta);
+        let doc_postings = self.postings_from(stats, meta, doc_in)?;
         Ok(Some(postings::read_positions(
             pos_in,
             pay_in,
-            *meta,
+            meta,
             &doc_postings.freqs,
             stats.total_term_freq,
             self.index_options,
             self.has_payloads,
         )?))
+    }
+
+    /// The `postings`-decoding half of [`Self::postings`], for callers that
+    /// already hold the term's state.
+    fn postings_from(
+        &self,
+        stats: TermStats,
+        meta: TermMetadata,
+        doc_in: Option<&DocInput<'_>>,
+    ) -> Result<Postings> {
+        if stats.doc_freq == 1 {
+            return Ok(postings::singleton_postings(meta, stats.total_term_freq)?);
+        }
+        let doc_in = doc_in.ok_or(Error::Unsupported(
+            "postings() needs an opened .doc file for docFreq > 1 terms",
+        ))?;
+        Ok(doc_in.read_postings(meta, stats.doc_freq, self.index_options, self.has_payloads)?)
     }
 
     /// Positions for just the documents `wanted` names, as indices into this
@@ -721,10 +2217,13 @@ impl FieldTerms {
         wanted: &[usize],
     ) -> Result<(Vec<i32>, Vec<u32>)> {
         let _ = doc_in;
-        let Some(idx) = self.entries.search(term).ok() else {
-            return Ok((Vec::new(), vec![0; wanted.len() + 1]));
+        let Some((_, meta)) = self.term_state(term)? else {
+            // ARITH: `wanted` is a slice, so its length is at most
+            // `isize::MAX` and `+ 1` cannot overflow `usize`.
+            #[allow(clippy::arithmetic_side_effects)]
+            let offsets = vec![0; wanted.len() + 1];
+            return Ok((Vec::new(), offsets));
         };
-        let meta = self.entries.recs[idx].meta;
         Ok(postings::read_positions_for_docs(
             pos_in,
             pay_in,
@@ -737,12 +2236,110 @@ impl FieldTerms {
         )?)
     }
 
-    /// [`FieldTerms::positions`] in the flat shape phrase matching wants: one
-    /// positions array plus per-document start offsets, rather than a `Vec` per
-    /// document. See [`postings::read_positions_flat`] for why that matters.
+    /// [`Self::positions_for_docs`]'s offsets- and payloads-carrying sibling:
+    /// whole [`postings::Position`] records for just the documents `wanted`
+    /// names -- see [`postings::read_occurrences_for_docs`].
     ///
-    /// Returns the postings alongside, because a caller needs the doc IDs and
-    /// this has already decoded them to get the freqs.
+    /// Same `freqs`/`wanted` contract as [`Self::positions_for_docs`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn occurrences_for_docs(
+        &self,
+        term: &[u8],
+        doc_in: Option<&DocInput<'_>>,
+        pos_in: &postings::PosInput<'_>,
+        pay_in: Option<&postings::PayInput<'_>>,
+        freqs: &[i32],
+        total_term_freq: i64,
+        wanted: &[usize],
+    ) -> Result<(Vec<postings::Position>, Vec<u32>)> {
+        let _ = doc_in;
+        let Some((_, meta)) = self.term_state(term)? else {
+            // ARITH: `wanted` is a slice, so its length is at most
+            // `isize::MAX` and `+ 1` cannot overflow `usize`.
+            #[allow(clippy::arithmetic_side_effects)]
+            let offsets = vec![0; wanted.len() + 1];
+            return Ok((Vec::new(), offsets));
+        };
+        Ok(postings::read_occurrences_for_docs(
+            pos_in,
+            pay_in,
+            meta,
+            freqs,
+            total_term_freq,
+            self.index_options,
+            self.has_payloads,
+            wanted,
+        )?)
+    }
+
+    /// `postings(term).advance(doc_id)` followed by `nextPosition()` /
+    /// `startOffset()` / `endOffset()` / `getPayload()` for **that one
+    /// document** -- Java's `PostingsOffsetStrategy.getOffsetsEnum` shape, and
+    /// the accessor a highlighter wants.
+    ///
+    /// `Ok(None)` means the term is absent from the field, or present and not
+    /// in `doc_id` -- the same "missing is not an error" convention
+    /// [`Self::postings`] uses. For a well-formed segment an empty `Vec` never
+    /// comes back, because a document in a term's postings has at least one
+    /// occurrence of it; a `.doc` claiming `freq == 0` for it would, and that
+    /// is not something the position walk rejects (only a *negative*
+    /// frequency is corruption there).
+    ///
+    /// Costs `.doc`'s skip data down to the one 256-document block holding
+    /// `doc_id`, plus the `.pos`/`.pay` blocks that actually hold its
+    /// occurrences -- not, as [`Self::positions`] would, every document's,
+    /// and not, as this used to, the term's whole doc list. See
+    /// [`postings::read_occurrences_for_doc`].
+    pub fn occurrences_for_doc(
+        &self,
+        term: &[u8],
+        doc_in: Option<&DocInput<'_>>,
+        pos_in: &postings::PosInput<'_>,
+        pay_in: Option<&postings::PayInput<'_>>,
+        doc_id: i32,
+    ) -> Result<Option<Vec<postings::Position>>> {
+        let Some((stats, meta)) = self.term_state(term)? else {
+            return Ok(None);
+        };
+        if stats.doc_freq == 1 {
+            // A singleton term is pulsed into the term dictionary: no `.doc`
+            // bytes exist at all, so there is no skip data to walk and the
+            // whole of the term's `.pos` range belongs to that one document.
+            if meta.singleton_doc_id != doc_id {
+                return Ok(None);
+            }
+            let (occurrences, _starts) = postings::read_occurrences_for_docs(
+                pos_in,
+                pay_in,
+                meta,
+                &[stats.total_term_freq as i32],
+                stats.total_term_freq,
+                self.index_options,
+                self.has_payloads,
+                &[0],
+            )?;
+            return Ok(Some(occurrences));
+        }
+        let doc_in = doc_in.ok_or(Error::Unsupported(
+            "occurrences_for_doc() needs an opened .doc file for docFreq > 1 terms",
+        ))?;
+        Ok(postings::read_occurrences_for_doc(
+            doc_in,
+            pos_in,
+            pay_in,
+            meta,
+            stats.doc_freq,
+            stats.total_term_freq,
+            self.index_options,
+            self.has_payloads,
+            doc_id,
+        )?)
+    }
+
+    /// [`FieldTerms::positions`] in the flat shape phrase matching wants: one
+    /// positions array plus per-document start offsets, rather than a `Vec`
+    /// per document. Returns the postings alongside, because a caller needs
+    /// the doc IDs and this has already decoded them to get the freqs.
     pub fn positions_flat(
         &self,
         term: &[u8],
@@ -750,19 +2347,14 @@ impl FieldTerms {
         pos_in: &postings::PosInput<'_>,
         pay_in: Option<&postings::PayInput<'_>>,
     ) -> Result<Option<FlatPositions>> {
-        let Some(doc_postings) = self.postings(term, doc_in)? else {
+        let Some((stats, meta)) = self.term_state(term)? else {
             return Ok(None);
         };
-        let idx = self
-            .entries
-            .search(term)
-            .expect("found by self.postings() above, so seek_exact must succeed here too");
-        let rec = &self.entries.recs[idx];
-        let (stats, meta) = (&rec.stats, &rec.meta);
+        let doc_postings = self.postings_from(stats, meta, doc_in)?;
         let (positions, doc_starts) = postings::read_positions_flat(
             pos_in,
             pay_in,
-            *meta,
+            meta,
             &doc_postings.freqs,
             stats.total_term_freq,
             self.index_options,
@@ -801,25 +2393,254 @@ impl BlockTreeFields {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Automaton-free term intersection over the lazy enum.
+// ---------------------------------------------------------------------------
+
+/// What a term-intersection walk needs from a pattern: accept/reject one
+/// term, and (optionally) prove that a whole prefix range cannot match.
+trait TermMatcher {
+    /// Whether this matcher can ever prove a prefix dead. `false` makes the
+    /// whole skip path -- the virtual call, the attempt counter and the
+    /// give-up test -- fold away at monomorphization, rather than being
+    /// re-evaluated per non-matching term to reach a compile-time constant.
+    const CAN_SKIP: bool = false;
+
+    fn matches(&self, term: &[u8]) -> bool;
+
+    /// `k` such that no term starting with `term[..k]` can match, or `None`.
+    /// The [`IntersectTermsEnum`-equivalent](FieldTerms::regexp_intersect)
+    /// skip; a matcher that cannot prove this simply never skips.
+    fn dead_prefix_len(&self, _term: &[u8]) -> Option<usize> {
+        None
+    }
+}
+
+struct PrefixMatcher<'a>(&'a WildcardPattern);
+impl TermMatcher for PrefixMatcher<'_> {
+    fn matches(&self, term: &[u8]) -> bool {
+        self.0.matches(term)
+    }
+}
+
+struct FuzzyMatcher<'a, 'b>(&'a FuzzyMatch<'b>);
+impl TermMatcher for FuzzyMatcher<'_, '_> {
+    fn matches(&self, term: &[u8]) -> bool {
+        self.0.matches(term)
+    }
+}
+
+struct RegexpMatcher<'a>(&'a RegexpPattern);
+impl TermMatcher for RegexpMatcher<'_> {
+    const CAN_SKIP: bool = true;
+
+    fn matches(&self, term: &[u8]) -> bool {
+        self.0.matches(term)
+    }
+    fn dead_prefix_len(&self, term: &[u8]) -> Option<usize> {
+        self.0.dead_prefix_len(term)
+    }
+}
+
+/// Attempts before [`Intersect`] judges whether skipping is paying.
+const SKIP_WARMUP: u32 = 128;
+
+/// Entries a skip must save on average to be worth its cost. A skip is a
+/// fresh `seekCeil` -- a trie descent plus, usually, a block load -- where
+/// staying put is one `next()`.
+const SKIP_MIN_SAVING: u64 = 16;
+
+/// Credit given to a skip that left the block it started in: it provably
+/// avoided loading at least the rest of that block, and typically several
+/// whole blocks, which no entry count can express.
+const SKIP_BLOCK_CREDIT: u64 = 64;
+
+/// The saving [`SKIP_WARMUP`] attempts have to have produced for the skip
+/// heuristic to stay on. A compile-time constant, so the multiplication is
+/// not arithmetic on any value that came off disk.
+// ARITH: both factors are literals; `128 * 16 = 2048` is evaluated at compile
+// time and cannot overflow `u64`.
+#[allow(clippy::arithmetic_side_effects)]
+const SKIP_WARMUP_BUDGET: u64 = SKIP_WARMUP as u64 * SKIP_MIN_SAVING;
+
+/// The shared body of [`FieldTerms::intersect`]/[`FieldTerms::fuzzy_intersect`]/
+/// [`FieldTerms::regexp_intersect`]: seek to the literal prefix, walk forward
+/// while the prefix holds, and skip provably-dead prefix ranges with a
+/// `seekCeil` that never loads the blocks it jumps over.
+struct Intersect<'a, M: TermMatcher> {
+    enum_: TermsEnum<'a>,
+    matcher: M,
+    prefix: Vec<u8>,
+    started: bool,
+    done: bool,
+    skip_attempts: u32,
+    skipped: u64,
+    skip_enabled: bool,
+}
+
+impl<'a, M: TermMatcher> Intersect<'a, M> {
+    fn new(field: &'a FieldTerms, matcher: M, prefix: Vec<u8>) -> Self {
+        Self {
+            enum_: field.iter(),
+            matcher,
+            prefix,
+            started: false,
+            done: false,
+            skip_attempts: 0,
+            skipped: 0,
+            skip_enabled: true,
+        }
+    }
+
+    /// Positions on the first candidate; `false` when there is none.
+    fn start(&mut self) -> bool {
+        self.started = true;
+        if self.prefix.is_empty() {
+            return matches!(self.enum_.try_next(), Ok(Some(_)));
+        }
+        match self.enum_.try_seek_ceil(&self.prefix) {
+            Ok(SeekStatus::Found) | Ok(SeekStatus::NotFound) => true,
+            Ok(SeekStatus::End) | Err(_) => false,
+        }
+    }
+}
+
+impl<M: TermMatcher> Iterator for Intersect<'_, M> {
+    type Item = (Vec<u8>, TermStats);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
+        if !self.started && !self.start() {
+            self.done = true;
+            return None;
+        }
+        loop {
+            let Some((term, stats)) = self.enum_.current() else {
+                self.done = true;
+                return None;
+            };
+            if !term.starts_with(&self.prefix) {
+                self.done = true;
+                return None;
+            }
+            if self.matcher.matches(term) {
+                let item = (term.to_vec(), stats);
+                if !matches!(self.enum_.try_next(), Ok(Some(_))) {
+                    self.done = true;
+                }
+                return Some(item);
+            }
+
+            // Not a match. Either step to the next term, or -- when the
+            // pattern proves this whole prefix range is dead -- seek past it.
+            if !M::CAN_SKIP || !self.skip_enabled {
+                if !matches!(self.enum_.try_next(), Ok(Some(_))) {
+                    self.done = true;
+                    return None;
+                }
+                continue;
+            }
+
+            // Asking the matcher is itself the cost the give-up below
+            // measures: a pattern whose language is prefix-closed (`cat.*`,
+            // `t.*99`) never yields a dead prefix, so every one of these
+            // calls is pure loss. Count the *question*, not just the jumps.
+            let target = self
+                .matcher
+                .dead_prefix_len(term)
+                .filter(|&k| k <= term.len())
+                .and_then(|k| prefix_upper_bound(&term[..k]));
+            // A heuristic counter: `saturating_add` is the honest semantics
+            // here, because a saturated attempt count can only leave the
+            // skip heuristic permanently on or off -- it can never change
+            // which terms the intersection yields.
+            self.skip_attempts = self.skip_attempts.saturating_add(1);
+
+            match target {
+                None => {
+                    if !matches!(self.enum_.try_next(), Ok(Some(_))) {
+                        self.done = true;
+                        return None;
+                    }
+                }
+                Some(upper) => {
+                    let before = self.enum_.ste().position();
+                    match self.enum_.try_seek_ceil(&upper) {
+                        Ok(SeekStatus::Found) | Ok(SeekStatus::NotFound) => {}
+                        Ok(SeekStatus::End) | Err(_) => {
+                            self.done = true;
+                            return None;
+                        }
+                    }
+                    let after = self.enum_.ste().position();
+                    let credit = if before.0 == after.0 && before.1 == after.1 {
+                        // Same block: the entry cursor says exactly how many
+                        // terms the jump stepped over. Both operands are
+                        // `next_ent` values, bounded only by a block's
+                        // `entCount`, so their difference can leave `i32`;
+                        // `saturating_sub` is honest for a counter that only
+                        // ever steers the heuristic.
+                        let stepped = after.2.saturating_sub(before.2).max(1);
+                        // ARITH: `stepped >= 1` after `.max(1)` and is
+                        // non-negative, so the cast is exact and `- 1` cannot
+                        // underflow.
+                        #[allow(clippy::arithmetic_side_effects)]
+                        let credit = stepped as u64 - 1;
+                        credit
+                    } else {
+                        // A different block: the jump provably avoided
+                        // loading at least the rest of the one it started in,
+                        // which no entry count can express.
+                        SKIP_BLOCK_CREDIT
+                    };
+                    self.skipped = self.skipped.saturating_add(credit);
+                }
+            }
+
+            if self.skip_attempts == SKIP_WARMUP && self.skipped < SKIP_WARMUP_BUDGET {
+                self.skip_enabled = false;
+            }
+        }
+    }
+}
+
 /// The exclusive upper bound of the sorted range whose bytes all start with
 /// `prefix`: `prefix` with its last byte incremented (dropping any trailing
-/// `0xFF` bytes first, since those can't be incremented in place — e.g.
+/// `0xFF` bytes first, since those can't be incremented in place -- e.g.
 /// `[0x61, 0xFF]` -> `[0x62]`). `None` when `prefix` is empty (no useful
-/// bound — the whole `Vec` is the range) or entirely `0xFF` bytes (no finite
-/// byte string is an upper bound; every real term is such a bound already).
+/// bound -- every term is in range) or entirely `0xFF` bytes (no finite byte
+/// string is an upper bound).
 fn prefix_upper_bound(prefix: &[u8]) -> Option<Vec<u8>> {
     let mut upper = prefix.to_vec();
     while let Some(&last) = upper.last() {
         if last == 0xFF {
             upper.pop();
         } else {
-            *upper.last_mut().unwrap() += 1;
+            // ARITH: the `last == 0xFF` branch above took every byte that
+            // cannot be incremented, so `last <= 0xFE` here.
+            #[allow(clippy::arithmetic_side_effects)]
+            {
+                *upper.last_mut().unwrap() += 1;
+            }
             return Some(upper);
         }
     }
     None
 }
 
+/// `Lucene103BlockTreeTermsReader.readBytesRef` -- the `.tmd`'s
+/// `minTerm`/`maxTerm`.
+///
+/// Java sizes `new BytesRef(numBytes)` straight from the vint and lets a
+/// corrupt one raise `OutOfMemoryError`, which a caller can catch. Here the
+/// same `vec![0u8; len]` would be an *abort* on allocation failure, which
+/// `catch_unwind` at the FFI boundary cannot intercept -- so the length is
+/// bounded by the bytes actually left in the `.tmd` first. That cannot reject
+/// a file Lucene wrote: `readBytesRef` is immediately followed by
+/// `readBytes(bytes, 0, numBytes)`, so a well-formed record always has at
+/// least `numBytes` left.
 fn read_bytes_ref(input: &mut SliceInput) -> Result<Vec<u8>> {
     let len = input.read_vint()?;
     if len < 0 {
@@ -827,7 +2648,14 @@ fn read_bytes_ref(input: &mut SliceInput) -> Result<Vec<u8>> {
             "invalid bytes length: {len}"
         ))));
     }
-    let mut buf = vec![0u8; len as usize];
+    let len = len as usize;
+    if len > input.remaining() {
+        return Err(Error::Store(lucene_store::Error::Corrupted(format!(
+            "bytes length {len} exceeds {} remaining bytes",
+            input.remaining()
+        ))));
+    }
+    let mut buf = vec![0u8; len];
     input.read_bytes(&mut buf)?;
     Ok(buf)
 }
@@ -877,13 +2705,23 @@ struct TrieNode {
     children_delta_fp_bytes: usize,
 }
 
+/// `TrieReader.access.readLong(fp)`.
+///
+/// **This is the guard the whole trie decoder rests on.** Returning `Ok`
+/// establishes `fp + 8 <= slice.len()`, i.e. `fp <= slice.len() - 8`, which is
+/// what makes every `fp + k` (`k <= 11`) offset in [`load_node`] safe from
+/// overflow. `fp + 8` must therefore *not* be computed directly: `rootFP`
+/// comes off the `.tmd` as a `vlong` and is cast with `as usize`, so a
+/// negative one arrives here as `usize::MAX`, where `fp + 8` panics in a debug
+/// build and wraps to `7` -- passing the bound check -- in a release one, only
+/// to panic on the slice index below.
 fn read_u64_at(slice: &[u8], fp: usize) -> Result<u64> {
-    if fp + 8 > slice.len() {
+    let Some(end) = fp.checked_add(8).filter(|&end| end <= slice.len()) else {
         return Err(Error::Store(lucene_store::Error::Corrupted(
             "trie node read past end of index slice".into(),
         )));
-    }
-    Ok(u64::from_le_bytes(slice[fp..fp + 8].try_into().unwrap()))
+    };
+    Ok(u64::from_le_bytes(slice[fp..end].try_into().unwrap()))
 }
 
 fn read_u8_at(slice: &[u8], fp: usize) -> Result<u8> {
@@ -900,14 +2738,21 @@ fn read_u8_at(slice: &[u8], fp: usize) -> Result<u8> {
 /// `BYTES_MINUS_1_MASK`-free array-read, since here `n_bytes` is already a
 /// byte count rather than a "minus 1" nibble).
 fn read_u64_n_bytes(slice: &[u8], fp: usize, n_bytes: usize) -> Result<u64> {
-    if fp + n_bytes > slice.len() {
+    // The only caller passes `TrieNode::children_delta_fp_bytes`, which
+    // `load_node` builds as `((term >> 2) & 0x07) + 1`, so it is in `1..=8`.
+    debug_assert!((1..=8).contains(&n_bytes));
+    let Some(end) = fp.checked_add(n_bytes).filter(|&end| end <= slice.len()) else {
         return Err(Error::Store(lucene_store::Error::Corrupted(
             "trie children-fp array read past end of index slice".into(),
         )));
-    }
+    };
     let mut v = 0u64;
-    for i in 0..n_bytes {
-        v |= (slice[fp + i] as u64) << (8 * i);
+    // ARITH: `i` indexes `slice[fp..end]`, whose length is `n_bytes <= 8`, so
+    // `i <= 7` and the shift amount `8 * i` is at most **56** -- the largest
+    // legal `u64` shift is 63, and 64 is the one that panics.
+    #[allow(clippy::arithmetic_side_effects)]
+    for (i, &b) in slice[fp..end].iter().enumerate() {
+        v |= (b as u64) << (8 * i);
     }
     Ok(v)
 }
@@ -915,6 +2760,25 @@ fn read_u64_n_bytes(slice: &[u8], fp: usize, n_bytes: usize) -> Result<u64> {
 /// Reads one trie node at `fp` within `slice` (the field's `[indexStart,
 /// indexEnd)` region of `.tip`) — `TrieReader.load`, dispatching on `sign`
 /// to `loadLeafNode`/`loadSingleChildNode`/`loadMultiChildrenNode`.
+// ARITH: the first statement is `read_u64_at(slice, fp)?`, which returns `Ok`
+// only after establishing `fp + 8 <= slice.len()` with a `checked_add`. So for
+// the whole body `fp <= slice.len() - 8 <= isize::MAX - 8`, and every offset
+// formed from it is `fp + k` for a `k` bounded by the header's own bit fields:
+//
+// * `fp_bytes_minus1`, `child_delta_bytes_minus1` and `encoded_bytes_minus1`
+//   are all `(term >> n) & 0x07`, hence at most 7;
+// * `children_delta_fp_bytes` is `((term >> 2) & 0x07) + 1 <= 8`;
+// * `strategy_bytes` is `((term >> 11) & 0x1F) + 1 <= 32`;
+// * `children_num` is `read_u8_at(..) as u64 + 1 <= 256`.
+//
+// The widest offset any branch forms is the multi-children floor pointer,
+// `fp + 4 + encoded_bytes_minus1 + 1 + strategy_bytes + children_num *
+// children_delta_fp_bytes <= fp + 12 + 32 + 256 * 8 = fp + 2092`, which cannot
+// overflow `usize`. The offsets are *not* bounds-checked here, deliberately:
+// every one of them is later handed to `read_u64_at`/`read_u8_at`/
+// `read_u64_n_bytes`, which do the bounds check at the point of use, exactly
+// as `TrieReader` leaves it to `RandomAccessInput`.
+#[allow(clippy::arithmetic_side_effects)]
 fn load_node(slice: &[u8], fp: usize) -> Result<TrieNode> {
     let word = read_u64_at(slice, fp)?;
     let term = word as u32;
@@ -1069,189 +2933,192 @@ fn load_node(slice: &[u8], fp: usize) -> Result<TrieNode> {
     }
 }
 
-/// Enumerates a `SIGN_MULTI_CHILDREN` node's children's labels and file pointers —
-/// generalizes `TrieReader.lookupChild`'s per-strategy label decoding
-/// (`ChildSaveStrategy.BITS`/`ARRAY`/`REVERSE_ARRAY`) from "find one label"
-/// to "list every label", since this module materializes a field's entire
-/// term dictionary up front rather than walking toward one target term (see
-/// the module doc). Order is irrelevant to callers ([`collect_leaf_blocks`]
-/// sorts all decoded entries at the end), so labels are produced in
-/// ascending order purely because that's the natural decode order for all
-/// three strategies, not because it's required.
-fn multi_children_labels_and_fps(slice: &[u8], node: &TrieNode) -> Result<Vec<(u8, usize)>> {
-    let strategy_fp = node.strategy_fp;
-    let strategy_bytes = node.strategy_bytes;
-    let min_label = node.min_children_label;
-
-    let mut labels: Vec<u8> = Vec::new();
-    match node.child_save_strategy {
-        CHILD_STRATEGY_REVERSE_ARRAY => {
-            let max_label = read_u8_at(slice, strategy_fp)?;
-            let mut missing = Vec::with_capacity(strategy_bytes.saturating_sub(1));
-            for i in 0..strategy_bytes.saturating_sub(1) {
-                missing.push(read_u8_at(slice, strategy_fp + 1 + i)?);
-            }
-            let mut mi = 0;
-            let mut lbl = min_label;
-            loop {
-                if mi < missing.len() && missing[mi] == lbl {
-                    mi += 1;
-                } else {
-                    labels.push(lbl);
-                }
-                if lbl == max_label {
-                    break;
-                }
-                lbl = lbl.wrapping_add(1);
-            }
-        }
-        CHILD_STRATEGY_ARRAY => {
-            labels.push(min_label);
-            for i in 0..strategy_bytes {
-                labels.push(read_u8_at(slice, strategy_fp + i)?);
-            }
-        }
-        CHILD_STRATEGY_BITS => {
-            for i in 0..strategy_bytes {
-                let byte = read_u8_at(slice, strategy_fp + i)?;
-                for bit in 0..8u32 {
-                    if byte & (1 << bit) != 0 {
-                        let pos = (i as u32) * 8 + bit;
-                        labels.push((min_label as u32 + pos) as u8);
-                    }
-                }
-            }
-        }
-        other => {
-            return Err(Error::Store(lucene_store::Error::Corrupted(format!(
-                "invalid child save strategy code: {other}"
-            ))))
-        }
-    }
-
-    let mut result = Vec::with_capacity(labels.len());
-    for (i, label) in labels.iter().enumerate() {
-        let off = strategy_fp + strategy_bytes + i * node.children_delta_fp_bytes;
-        let delta = read_u64_n_bytes(slice, off, node.children_delta_fp_bytes)?;
-        if (delta as usize) > node.fp {
-            return Err(Error::Store(lucene_store::Error::Corrupted(
-                "trie child delta fp exceeds parent fp".into(),
-            )));
-        }
-        result.push((*label, node.fp - delta as usize));
-    }
-    Ok(result)
-}
-
-/// Resolves one trie node's own `(fp, hasTerms)` output into every physical
-/// `.tim` block it addresses — just the one block if not a floor node, or
-/// the base block plus every follow-on floor sub-block otherwise
-/// (`SegmentTermsEnumFrame.setFloorData`/`scanToFloorFrame`'s byte layout:
-/// `numFollowFloorBlocks: vint`, then that many `(floorLeadByte: byte,
-/// code: vlong)` pairs where `code = (subFp - baseFp) << 1 | hasTerms`).
-/// Labels are read past but not returned — picking a single floor sub-block
-/// by label is what real Lucene's `scanToFloorFrame` does for one target
-/// term; this module instead decodes every floor sub-block unconditionally
-/// (see the module doc's eager-materialization tradeoff).
-fn expand_floor(
-    slice: &[u8],
-    base_fp: u64,
-    base_has_terms: bool,
-    floor_data_fp: Option<usize>,
-) -> Result<Vec<(u64, bool)>> {
-    let mut blocks = vec![(base_fp, base_has_terms)];
-    let Some(ffp) = floor_data_fp else {
-        return Ok(blocks);
-    };
-    let mut r = SliceInput::new(slice);
-    r.seek(ffp)?;
-    let num_follow = r.read_vint()?;
-    if num_follow < 0 {
-        return Err(Error::Store(lucene_store::Error::Corrupted(format!(
-            "invalid numFollowFloorBlocks: {num_follow}"
-        ))));
-    }
-    for _ in 0..num_follow {
-        let _label = r.read_byte()?;
-        let code = r.read_vlong()? as u64;
-        let fp = base_fp.wrapping_add(code >> 1);
-        let has_terms = (code & 1) != 0;
-        blocks.push((fp, has_terms));
-    }
-    Ok(blocks)
-}
-
-/// Recursively visits every trie node reachable from `node`, expanding
-/// every node-with-output into its (possibly floor-split) physical block
-/// list and appending them to `out` — the traversal side of the module
-/// doc's "eager whole-field materialization" design. `depth` is a sanity
-/// bound against a corrupted/cyclic trie, not a real limit (trie depth is
-/// bounded by term length in any real index).
-/// Every reachable physical `.tim` block, paired with the trie label path
-/// (i.e. the block's own key prefix) that led to it -- needed because
-/// `decode_block` only ever sees a block's *suffix* bytes (the writer never
-/// repeats a shared prefix inside the block itself; see
-/// `Lucene103BlockTreeTermsWriter`'s prefix-stripping), so a multi-level
-/// trie's blocks must have that prefix re-applied by the caller to recover
-/// full term bytes (the previous single-block-only slice never needed this,
-/// since its one block always sat at the trie root with an empty prefix).
-fn collect_leaf_blocks(
-    slice: &[u8],
-    node: &TrieNode,
-    depth: u32,
-    prefix: &mut Vec<u8>,
-    out: &mut Vec<(u64, Vec<u8>)>,
-) -> Result<()> {
-    if depth > 10_000 {
-        return Err(Error::Unsupported("trie nesting too deep (possible cycle)"));
-    }
-    if let Some(fp) = node.output_fp {
-        for (block_fp, has_terms) in expand_floor(slice, fp, node.has_terms, node.floor_data_fp)? {
-            // `hasTerms == false` means this specific physical `.tim` block
-            // holds nothing but pointers to its own further-nested
-            // sub-blocks (`Lucene103BlockTreeTermsWriter.writeBlocks`
-            // recursing to a deeper prefix rather than floor-splitting).
-            // Real Lucene can fall back to reading those pointers
-            // in-block (`SegmentTermsEnumFrame.nextNonLeaf`/`subCode`), but
-            // this port doesn't need to: `PendingBlock.compileIndex`
-            // unconditionally merges every deeper recursion's own trie
-            // (`subIndices`) into the very same trie this function is
-            // already walking, so every term this pointer-only block would
-            // have routed to is independently reachable as a *separate*,
-            // deeper trie node/child -- this block itself is redundant for
-            // indexed lookup and is simply skipped, not decoded.
-            if has_terms {
-                out.push((block_fp, prefix.clone()));
-            }
-        }
-    }
-    match node.sign {
-        SIGN_NO_CHILDREN => {}
+/// `TrieReader.lookupChild`: the child of `parent` labelled `target_label`,
+/// or `None` when there is none. This is the one trie operation a lazy seek
+/// needs — one label at a time down the target term's own bytes, never
+/// enumerating a node's children.
+// ARITH: in the order the operations appear --
+//
+// * both `parent.fp - delta` subtractions are guarded by an explicit
+//   `delta > parent.fp` rejection on the two lines above them;
+// * `strategy_fp + strategy_bytes + position * children_delta_fp_bytes` is
+//   bounded by `parent.fp + 11 + 32 + 255 * 8 = parent.fp + 2083`, because
+//   `load_node` sets `strategy_fp <= parent.fp + 11` and `strategy_bytes <= 32`
+//   (see its own `// ARITH:` block), `children_delta_fp_bytes <= 8`, and
+//   `position` is a label-derived index that [`child_position`] never returns
+//   above 255 (each of its three strategies is proved there). `parent.fp` is
+//   itself at most `slice.len() - 8`, so the sum cannot overflow `usize`.
+#[allow(clippy::arithmetic_side_effects)]
+fn lookup_child(slice: &[u8], parent: &TrieNode, target_label: u8) -> Result<Option<TrieNode>> {
+    match parent.sign {
+        SIGN_NO_CHILDREN => Ok(None),
         SIGN_SINGLE_CHILD_WITH_OUTPUT | SIGN_SINGLE_CHILD_WITHOUT_OUTPUT => {
-            if (node.child_delta_fp as usize) > node.fp {
+            if target_label != parent.min_children_label {
+                return Ok(None);
+            }
+            if (parent.child_delta_fp as usize) > parent.fp {
                 return Err(Error::Store(lucene_store::Error::Corrupted(
                     "trie child delta fp exceeds parent fp".into(),
                 )));
             }
-            let child_fp = node.fp - node.child_delta_fp as usize;
-            let child = load_node(slice, child_fp)?;
-            prefix.push(node.min_children_label);
-            let r = collect_leaf_blocks(slice, &child, depth + 1, prefix, out);
-            prefix.pop();
-            r?;
+            let fp = parent.fp - parent.child_delta_fp as usize;
+            Ok(Some(load_node(slice, fp)?))
         }
         SIGN_MULTI_CHILDREN => {
-            for (label, child_fp) in multi_children_labels_and_fps(slice, node)? {
-                let child = load_node(slice, child_fp)?;
-                prefix.push(label);
-                let r = collect_leaf_blocks(slice, &child, depth + 1, prefix, out);
-                prefix.pop();
-                r?;
+            let min_label = parent.min_children_label;
+            let position = if target_label == min_label {
+                0
+            } else if target_label > min_label {
+                child_position(slice, parent, target_label)?
+            } else {
+                -1
+            };
+            if position < 0 {
+                return Ok(None);
             }
+            debug_assert!(
+                position <= 255,
+                "child_position stays within one label byte"
+            );
+            let off = parent.strategy_fp
+                + parent.strategy_bytes
+                + position as usize * parent.children_delta_fp_bytes;
+            let delta = read_u64_n_bytes(slice, off, parent.children_delta_fp_bytes)?;
+            if (delta as usize) > parent.fp {
+                return Err(Error::Store(lucene_store::Error::Corrupted(
+                    "trie child delta fp exceeds parent fp".into(),
+                )));
+            }
+            Ok(Some(load_node(slice, parent.fp - delta as usize)?))
         }
         _ => unreachable!("sign is masked to 2 bits"),
     }
-    Ok(())
+}
+
+/// `TrieBuilder.ChildSaveStrategy.{BITS,ARRAY,REVERSE_ARRAY}.lookup`: the
+/// index of `target_label` among a multi-children node's children, or `-1`.
+///
+/// `BITS` is decoded byte-wise rather than through Java's 64-bit
+/// `RandomAccessInput.readLong`. The answer is identical — the long reads are
+/// little-endian, so bit `i` of word `w` is bit `i & 7` of byte `8w + (i >> 3)`,
+/// and `Long.bitCount` over the words below the target equals a byte
+/// popcount over the same bytes — and it avoids Java's habit of reading eight
+/// bytes past the end of the strategy region (harmless there because the
+/// extra bits are masked off, but a bounds error for a slice that ends at the
+/// trie region's last node).
+///
+/// The returned index is always `< 0` (absent) or `<= 255`; [`lookup_child`]'s
+/// `// ARITH:` proof depends on that upper bound.
+// ARITH: `min_label` and `target` are both `u8`s widened to `i32`, so every
+// `target - min_label`, `max_label - min_label` and `... - low` is a
+// difference of values in `0..=255` minus a further `low <= strategy_bytes <=
+// 32`: all of them stay inside `-32..=255`, far from an `i32` boundary. This
+// is also the one place in the module where a *sign* mistake would matter --
+// `(target - min_label) as usize` sign-extends a negative difference into a
+// huge index -- so the sole caller establishes `target > min_label` before
+// entering (see the `target_label > min_label` arm in [`lookup_child`]) and
+// the `debug_assert!` below pins it.
+//
+// `strategy_bytes` is `((term >> 11) & 0x1F) + 1`, hence in `1..=32`
+// (`load_node`), so: `strategy_bytes * 8 <= 256`; `strategy_bytes as i32 - 1
+// >= 0`; `strategy_bytes as i32 - 2 >= 0` on the path that reaches it, which
+// the `strategy_bytes == 1` early return guards. Both bisections keep
+// `0 <= low, high <= 31`, so `low + high <= 62` and `mid +/- 1` are trivially
+// in range. `fp + i` / `fp + mid as usize` / `offset + mid as usize` add at
+// most 32 to `strategy_fp <= slice.len() + 3`. The `BITS` accumulator sums at
+// most 31 byte popcounts plus 7, so `pos <= 255`; `mask - 1` is safe because
+// `mask = 1 << (bit_index & 7) >= 1`.
+#[allow(clippy::arithmetic_side_effects)]
+fn child_position(slice: &[u8], node: &TrieNode, target_label: u8) -> Result<i32> {
+    let fp = node.strategy_fp;
+    let strategy_bytes = node.strategy_bytes;
+    let min_label = node.min_children_label as i32;
+    let target = target_label as i32;
+    debug_assert!(
+        target > min_label,
+        "callers only probe labels above the minimum"
+    );
+    debug_assert!((1..=32).contains(&strategy_bytes));
+
+    match node.child_save_strategy {
+        CHILD_STRATEGY_BITS => {
+            let bit_index = (target - min_label) as usize;
+            if bit_index >= strategy_bytes * 8 {
+                return Ok(-1);
+            }
+            let byte_index = bit_index >> 3;
+            let byte = read_u8_at(slice, fp + byte_index)?;
+            let mask = 1u8 << (bit_index & 7);
+            if byte & mask == 0 {
+                return Ok(-1);
+            }
+            let mut pos = 0i32;
+            for i in 0..byte_index {
+                pos += read_u8_at(slice, fp + i)?.count_ones() as i32;
+            }
+            pos += (byte & (mask - 1)).count_ones() as i32;
+            Ok(pos)
+        }
+        CHILD_STRATEGY_ARRAY => {
+            let (mut low, mut high) = (0i32, strategy_bytes as i32 - 1);
+            while low <= high {
+                let mid = (low + high) >> 1;
+                let mid_label = read_u8_at(slice, fp + mid as usize)? as i32;
+                match mid_label.cmp(&target) {
+                    std::cmp::Ordering::Less => low = mid + 1,
+                    std::cmp::Ordering::Greater => high = mid - 1,
+                    std::cmp::Ordering::Equal => return Ok(mid + 1),
+                }
+            }
+            Ok(-1)
+        }
+        CHILD_STRATEGY_REVERSE_ARRAY => {
+            let max_label = read_u8_at(slice, fp)? as i32;
+            let offset = fp + 1;
+            if target >= max_label {
+                return Ok(if target == max_label {
+                    max_label - min_label - strategy_bytes as i32 + 1
+                } else {
+                    -1
+                });
+            }
+            if strategy_bytes == 1 {
+                return Ok(target - min_label);
+            }
+            let (mut low, mut high) = (0i32, strategy_bytes as i32 - 2);
+            while low <= high {
+                let mid = (low + high) >> 1;
+                let mid_label = read_u8_at(slice, offset + mid as usize)? as i32;
+                match mid_label.cmp(&target) {
+                    std::cmp::Ordering::Less => low = mid + 1,
+                    std::cmp::Ordering::Greater => high = mid - 1,
+                    // An explicitly-absent label.
+                    std::cmp::Ordering::Equal => return Ok(-1),
+                }
+            }
+            Ok(target - min_label - low)
+        }
+        other => Err(Error::Store(lucene_store::Error::Corrupted(format!(
+            "invalid child save strategy code: {other}"
+        )))),
+    }
+}
+
+fn read_region_len(r: &mut SliceInput, what: &str) -> Result<usize> {
+    let len = r.read_vint()?;
+    if len < 0 {
+        return Err(Error::Store(lucene_store::Error::Corrupted(format!(
+            "negative {what} length: {len}"
+        ))));
+    }
+    let len = len as usize;
+    if len > r.remaining() {
+        return Err(Error::Store(lucene_store::Error::Corrupted(format!(
+            "{what} length {len} exceeds {} remaining bytes",
+            r.remaining()
+        ))));
+    }
+    Ok(len)
 }
 
 /// Port of `LowercaseAsciiCompression.decompress` (`o.a.l.util.compress`):
@@ -1261,6 +3128,14 @@ fn collect_leaf_blocks(
 /// *original* (decompressed) length, matching Java's `len` parameter; the
 /// compressed byte count (`compressedLen = len - len/4`) is derived from it,
 /// not read from the stream.
+// ARITH: `saved == len >> 2 <= len` so `len - saved` cannot underflow, and the
+// three indices in step 2 are `compressed_len + i`, `saved + i` and
+// `2 * saved + i` for `i < saved`; since `saved <= len / 4` and
+// `compressed_len == len - saved`, all three are `< len == out.len()` and so
+// cannot overflow `usize` either. In step 4 the loop's own `i >= out.len()`
+// rejection means the accumulator enters every iteration with
+// `i < out.len() <= isize::MAX`, and one iteration adds at most 255.
+#[allow(clippy::arithmetic_side_effects)]
 fn decompress_lowercase_ascii(r: &mut SliceInput, out: &mut [u8]) -> Result<()> {
     let len = out.len();
     let saved = len >> 2;
@@ -1297,33 +3172,14 @@ fn decompress_lowercase_ascii(r: &mut SliceInput, out: &mut [u8]) -> Result<()> 
     Ok(())
 }
 
-/// Decodes a single physical `.tim` block at `fp`, materializing every
-/// (term, stats, metadata) entry — `SegmentTermsEnumFrame.loadBlock` plus a
-/// full `decodeMetaData` pass over every entry. Handles both **leaf** blocks
-/// (`isLeafBlock`, every entry a term) and **non-leaf** blocks (some entries
-/// are pointers to further-nested sub-blocks, `SegmentTermsEnumFrame.nextNonLeaf`'s
-/// `code & 1` "is this a sub-block" bit) by recursing into [`decode_block`]
-/// again at each sub-block's resolved `fp` — this is the genuine "multi-level
-/// blocktree" case: a `.tim` block that is itself an *internal* node pointing
-/// to child blocks rather than directly to postings, distinct from both the
-/// `.tip` trie's own multi-level node structure (root/single-child/multi-children,
-/// arbitrarily deep, already supported by [`collect_leaf_blocks`]) and from
-/// floor sub-blocks (same trie node, multiple physical blocks, see
-/// [`expand_floor`]). A sub-block entry's own key bytes are only that
-/// sub-block's *own* shared prefix relative to *this* block's prefix (not a
-/// full term) — the returned entries for a sub-block are prefixed with those
-/// bytes before being merged into this block's own entries, so every entry
-/// this function returns is relative to the same prefix depth regardless of
-/// how many sub-block levels were recursed through (the caller, [`open`],
-/// then prepends the `.tip`-trie-derived prefix on top, same as before).
-/// Floor sub-blocks are just more calls to this same function at different
-/// `fp`s — floor selection happens one level up, in
-/// [`expand_floor`]/[`collect_leaf_blocks`], not here.
+/// Decodes one physical `.tim` block at `fp` in full — every entry, its
+/// stats and its postings metadata — recursing into any in-block sub-block
+/// pointer with that entry's own key bytes as the child's prefix.
 ///
-/// Test-only: [`open`] calls [`decode_block_at_depth`] directly (it always
-/// has an `already_trie_indexed` set on hand to pass through), so this
-/// no-cross-check convenience wrapper is only exercised by this module's own
-/// unit tests, which decode one block in isolation.
+/// Test-only. The reader itself never does this: [`SegmentTermsEnum`] loads a
+/// block and reads only the entries a seek or scan actually walks over. This
+/// exists so the block-format unit tests can assert on one block's whole
+/// contents in isolation, which is what they were written against.
 #[cfg(test)]
 fn decode_block(
     tim: &[u8],
@@ -1331,248 +3187,73 @@ fn decode_block(
     index_options: IndexOptions,
     has_payloads: bool,
 ) -> Result<Vec<(Vec<u8>, TermStats, TermMetadata)>> {
-    let mut out = TermIndex::default();
-    decode_block_at_depth(tim, fp, index_options, has_payloads, 0, None, &[], &mut out)?;
-    // The unit tests that call this compare against an owned tuple list; the
-    // flat form is an implementation detail of the reader, not of them.
-    Ok((0..out.len())
-        .map(|i| {
-            let r = out.recs[i];
-            (out.term(i).to_vec(), r.stats, r.meta)
-        })
-        .collect())
+    let mut out = Vec::new();
+    decode_block_at_depth(tim, fp, index_options, has_payloads, 0, &[], &mut out)?;
+    Ok(out)
 }
 
-/// `decode_block`'s actual implementation, `depth`-tracked so a
-/// corrupted/cyclic sub-block chain (`subFP` pointing at or past its own
-/// parent) fails with [`Error::Unsupported`] rather than recursing forever —
-/// mirrors [`collect_leaf_blocks`]'s own `depth > 10_000` sanity bound for the
-/// `.tip` trie's recursion.
-///
-/// `already_trie_indexed`, when given, is the full set of physical block fps
-/// [`collect_leaf_blocks`] already collected directly from the `.tip` trie
-/// for this field (i.e. every block reachable via its own dedicated trie/FST
-/// arc). A sub-block pointer whose target fp is in that set is **not**
-/// recursed into here: real Lucene's writer can and does give some sub-blocks
-/// *both* an in-block pointer from their parent's non-leaf entries *and* a
-/// separate, independently-indexed `.tip` trie arc reached by a different
-/// path (confirmed empirically against a real ~8k-distinct-term fixture —
-/// see `crates/lucene-codecs/tests/blocktree_multilevel_fixture.rs`'s module
-/// doc). Real `SegmentTermsEnum` never notices this redundancy because it
-/// only ever takes *one* of the two paths per lookup; this module's eager
-/// whole-field materialization (see the module doc) visits every reachable
-/// block, so without this check a doubly-addressed sub-block would be
-/// decoded twice — once here, following its parent's pointer, and once more
-/// as its own top-level entry in [`open`]'s block loop — producing duplicate
-/// entries `entries.sort_by` can't detect (same term appears twice with
-/// identical stats, silently violating an implicit "each term once"
-/// invariant instead of throwing anything). Skipping it here is exactly
-/// [`collect_leaf_blocks`]'s own existing "hasTerms == false is redundant,
-/// don't decode it, it's independently reachable as a deeper trie node"
-/// reasoning, generalized from *trie nodes* to *in-block sub-block pointers*.
-/// `None` (used by direct/standalone [`decode_block`] callers, including
-/// every unit test in this module) means "no known independent top-level set
-/// to cross-check against", so every sub-block pointer is followed — correct
-/// for decoding one block's own self-contained sub-tree in isolation, where
-/// this cross-cutting duplication with *other* top-level blocks cannot arise.
-#[allow(clippy::too_many_arguments)]
+// ARITH: `depth` is rejected above `10_000` on the function's first statement,
+// so `depth + 1` is at most `10_001`.
+#[allow(clippy::arithmetic_side_effects)]
+#[cfg(test)]
 fn decode_block_at_depth(
     tim: &[u8],
     fp: usize,
     index_options: IndexOptions,
     has_payloads: bool,
     depth: u32,
-    already_trie_indexed: Option<&std::collections::HashSet<usize>>,
     prefix: &[u8],
-    out: &mut TermIndex,
+    out: &mut Vec<(Vec<u8>, TermStats, TermMetadata)>,
 ) -> Result<()> {
     if depth > 10_000 {
         return Err(Error::Unsupported(
             "terms block sub-block nesting too deep (possible cycle)",
         ));
     }
-    let mut r = SliceInput::new(tim);
-    r.seek(fp)?;
-
-    let code = r.read_vint()?;
-    let ent_count = (code as u32) >> 1;
-    if ent_count == 0 {
-        return Err(Error::Store(lucene_store::Error::Corrupted(
-            "empty terms block".into(),
-        )));
-    }
-    // isLastInFloor (`code & 1`): whether this is the last physical block in
-    // its floor set. Not needed here — [`expand_floor`]/[`collect_leaf_blocks`]
-    // already resolved every floor sub-block's own fp up front, so this
-    // decode doesn't need to chain to a "next" block by inspecting this bit;
-    // it's read past purely to keep the cursor aligned with `entCount`.
-    let _is_last_in_floor = (code & 1) != 0;
-
-    let code_l = r.read_vlong()? as u64;
-    let is_leaf_block = (code_l & 0x04) != 0;
-    let num_suffix_bytes = (code_l >> 3) as usize;
-    let compression_alg = code_l & 0x03;
-    let mut suffix_bytes = vec![0u8; num_suffix_bytes];
-    match compression_alg {
-        0 => {
-            // NO_COMPRESSION (`CompressionAlgorithm.NO_COMPRESSION.read`): the
-            // suffix bytes sit raw in the stream.
-            r.read_bytes(&mut suffix_bytes)?;
-        }
-        1 => {
-            // LOWERCASE_ASCII (`CompressionAlgorithm.LOWERCASE_ASCII.read` ->
-            // `LowercaseAsciiCompression.decompress`).
-            decompress_lowercase_ascii(&mut r, &mut suffix_bytes)?;
-        }
-        2 => {
-            // LZ4 (`CompressionAlgorithm.LZ4.read` -> `LZ4.decompress`),
-            // reusing this port's own `lz4::decompress`.
-            crate::lz4::decompress(&mut r, num_suffix_bytes, &mut suffix_bytes, 0)?;
-        }
-        _ => {
-            // `code_l & 0x03` is masked to 2 bits, so `3` is the only
-            // remaining value; real Lucene's `CompressionAlgorithm.byCode`
-            // throws `IllegalArgumentException` for it too (only codes 0-2
-            // are ever assigned to an enum constant).
-            return Err(Error::Store(lucene_store::Error::Corrupted(
-                "illegal compression algorithm code (3) for a terms block".into(),
-            )));
-        }
-    }
-
-    let num_suffix_length_bytes_raw = r.read_vint()? as u32;
-    let all_equal = (num_suffix_length_bytes_raw & 1) != 0;
-    let num_suffix_length_bytes = (num_suffix_length_bytes_raw >> 1) as usize;
-    let mut suffix_length_bytes = vec![0u8; num_suffix_length_bytes];
-    if all_equal {
-        let b = r.read_byte()?;
-        suffix_length_bytes.fill(b);
-    } else {
-        r.read_bytes(&mut suffix_length_bytes)?;
-    }
-
-    let num_stat_bytes = r.read_vint()? as usize;
-    let mut stat_bytes = vec![0u8; num_stat_bytes];
-    r.read_bytes(&mut stat_bytes)?;
-
-    // Per-term postings metadata (`Lucene104PostingsReader.decodeTerm`, see
-    // `crate::postings`'s module doc): decoded below, threaded across entries
-    // exactly like `SegmentTermsEnumFrame` threads `IntBlockTermState`
-    // (`absolute` true only for this block's first term).
-    let num_meta_bytes = r.read_vint()? as usize;
-    let mut meta_bytes = vec![0u8; num_meta_bytes];
-    r.read_bytes(&mut meta_bytes)?;
-
-    let mut suffix_lengths_reader = SliceInput::new(&suffix_length_bytes);
-    let mut suffixes_reader = SliceInput::new(&suffix_bytes);
-    let mut stats_reader = SliceInput::new(&stat_bytes);
-    let mut meta_reader = SliceInput::new(&meta_bytes);
-
-    let mut singleton_run_length: u32 = 0;
-    let mut prev_meta = TermMetadata::EMPTY;
-    // Real-term ordinal within this block (`SegmentTermsEnumFrame.state.termBlockOrd`),
-    // distinct from the raw entry loop counter once sub-block entries are
-    // possible: stats/meta streams only ever hold one record per *term*
-    // entry, never per sub-block entry, and `decode_term_metadata`'s
-    // `absolute` flag is true only for this block's first *term* (ordinal 0),
-    // not merely the first entry (which could be a sub-block).
-    let mut term_ord: u32 = 0;
-    for _ in 0..ent_count {
-        // Leaf entries carry a plain suffix-length vint (every entry is a
-        // term); non-leaf entries pack `suffixLength << 1 | isSubBlock` into
-        // that same vint (`SegmentTermsEnumFrame.nextNonLeaf`'s `code`), with
-        // a sub-block's own delta-fp (`subCode`, a vlong) following
-        // immediately in the *same* suffix-lengths stream when the low bit is
-        // set.
-        let (suffix_len, is_sub_block) = if is_leaf_block {
-            (suffix_lengths_reader.read_vint()? as usize, false)
-        } else {
-            let code = suffix_lengths_reader.read_vint()? as u32;
-            ((code >> 1) as usize, (code & 1) != 0)
-        };
-        let mut suffix = vec![0u8; suffix_len];
-        suffixes_reader.read_bytes(&mut suffix)?;
-
-        if is_sub_block {
-            let sub_code = suffix_lengths_reader.read_vlong()? as u64;
-            if sub_code as usize > fp {
-                return Err(Error::Store(lucene_store::Error::Corrupted(
-                    "terms block sub-block delta fp exceeds parent fp".into(),
-                )));
-            }
-            let sub_fp = fp - sub_code as usize;
-            if already_trie_indexed.is_some_and(|s| s.contains(&sub_fp)) {
-                // Independently reachable as its own top-level block via the
-                // `.tip` trie (see this function's doc comment) -- decoding
-                // it here too would duplicate every one of its terms.
-                continue;
-            }
-            // One allocation per *sub-block*, not per term: the child's terms
-            // are written flat by the recursive call.
-            let mut child_prefix = Vec::with_capacity(prefix.len() + suffix.len());
-            child_prefix.extend_from_slice(prefix);
-            child_prefix.extend_from_slice(&suffix);
+    let mut frame = Frame {
+        fp,
+        fp_orig: fp,
+        next_ent: -1,
+        prefix_length: prefix.len(),
+        ..Frame::default()
+    };
+    frame.load_block(tim)?;
+    let mut term = TermBuf::default();
+    term.copy_from(prefix);
+    for _ in 0..frame.ent_count {
+        if frame.next(tim, &mut term)? {
+            let sub_fp = frame.last_sub_fp;
+            let child_prefix = term.get().to_vec();
             decode_block_at_depth(
                 tim,
-                sub_fp,
+                sub_fp as usize,
                 index_options,
                 has_payloads,
                 depth + 1,
-                already_trie_indexed,
                 &child_prefix,
                 out,
             )?;
             continue;
         }
-
-        let (doc_freq, total_term_freq) = if singleton_run_length > 0 {
-            singleton_run_length -= 1;
-            (1, 1)
-        } else {
-            let token = stats_reader.read_vint()?;
-            if token & 1 == 1 {
-                singleton_run_length = (token as u32) >> 1;
-                (1, 1)
-            } else {
-                let doc_freq = (token as u32) >> 1;
-                let total_term_freq = if index_options == IndexOptions::Docs {
-                    doc_freq as i64
-                } else {
-                    doc_freq as i64 + stats_reader.read_vlong()?
-                };
-                (doc_freq as i32, total_term_freq)
-            }
-        };
-
-        let meta = postings::decode_term_metadata(
-            &mut meta_reader,
-            doc_freq,
-            term_ord == 0,
-            prev_meta,
-            index_options,
-            has_payloads,
-            total_term_freq,
-        )?;
-        prev_meta = meta;
-        term_ord += 1;
-
-        out.push(
-            prefix,
-            &suffix,
+        frame.decode_meta_data(index_options, has_payloads)?;
+        out.push((
+            term.get().to_vec(),
             TermStats {
-                doc_freq,
-                total_term_freq,
+                doc_freq: frame.doc_freq,
+                total_term_freq: frame.total_term_freq,
             },
-            meta,
-        );
+            frame.meta,
+        ));
     }
-
     Ok(())
 }
 
-/// Opens a `.tim`/`.tip`/`.tmd` triple already read whole into memory,
-/// decoding every field's single-block term dictionary eagerly (see the
-/// module doc for the size/shape scope this covers).
+/// Opens a `.tim`/`.tip`/`.tmd` triple already read whole into memory.
+///
+/// Copies `tim`/`tip` into shared buffers, since the returned
+/// [`BlockTreeFields`] keeps navigating them for as long as it lives; use
+/// [`open_shared`] to hand over buffers the caller already owns and skip the
+/// copy.
 pub fn open(
     tim: &[u8],
     tip: &[u8],
@@ -1582,7 +3263,37 @@ pub fn open(
     segment_suffix: &str,
     max_doc: i32,
 ) -> Result<BlockTreeFields> {
-    let mut tim_input = SliceInput::new(tim);
+    open_shared(
+        Arc::new(tim.to_vec()),
+        Arc::new(tip.to_vec()),
+        tmd,
+        field_infos,
+        segment_id,
+        segment_suffix,
+        max_doc,
+    )
+}
+
+/// [`open`] without the `.tim`/`.tip` copy: the port of
+/// `Lucene103BlockTreeTermsReader`'s constructor.
+///
+/// Reads the codec headers, then one `FieldReader`-equivalent record per
+/// field out of `.tmd` — counts, min/max term, and the
+/// `(indexStart, rootFP, indexEnd)` triple locating the field's trie — and
+/// validates the recorded `.tip`/`.tim` lengths and footers. **No `.tim`
+/// block is read**; that happens per lookup, in [`SegmentTermsEnum`].
+pub fn open_shared(
+    tim: SharedBytes,
+    tip: SharedBytes,
+    tmd: &[u8],
+    field_infos: &FieldInfos,
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+    max_doc: i32,
+) -> Result<BlockTreeFields> {
+    let tim_bytes: &[u8] = tim.as_ref().as_ref();
+    let tip_bytes: &[u8] = tip.as_ref().as_ref();
+    let mut tim_input = SliceInput::new(tim_bytes);
     let tim_header = codec_util::check_index_header(
         &mut tim_input,
         TERMS_CODEC_NAME,
@@ -1592,7 +3303,7 @@ pub fn open(
         segment_suffix,
     )?;
 
-    let mut tip_input = SliceInput::new(tip);
+    let mut tip_input = SliceInput::new(tip_bytes);
     codec_util::check_index_header(
         &mut tip_input,
         TERMS_INDEX_CODEC_NAME,
@@ -1633,8 +3344,19 @@ pub fn open(
     if num_fields < 0 {
         return Err(Error::InvalidNumFields(num_fields));
     }
+    // Java presizes an `IntObjectHashMap<>(numFields)` from the same vint and
+    // survives a corrupt one with an `OutOfMemoryError` a caller can catch.
+    // Here `Vec::with_capacity` on a `(String, FieldTerms)` -- a couple of
+    // hundred bytes an element -- *aborts* on allocation failure, which
+    // `catch_unwind` at the FFI boundary cannot intercept: four flipped bytes
+    // would buy a several-hundred-gigabyte reservation and a dead JVM. The
+    // `.tmd` stream is its own ceiling, since every field record spends at
+    // least `MIN_FIELD_RECORD_BYTES` on the wire.
+    if num_fields as usize > tmd_input.remaining() / MIN_FIELD_RECORD_BYTES {
+        return Err(Error::InvalidNumFields(num_fields));
+    }
 
-    let mut fields = Vec::with_capacity(num_fields as usize);
+    let mut fields: Vec<(String, FieldTerms)> = Vec::with_capacity(num_fields as usize);
     for _ in 0..num_fields {
         let field_number = tmd_input.read_vint()?;
         let num_terms = tmd_input.read_vlong()?;
@@ -1674,82 +3396,18 @@ pub fn open(
         let root_fp = tmd_input.read_vlong()? as usize;
         let index_end = tmd_input.read_vlong()? as usize;
 
-        if index_end > tip.len() || index_start > index_end {
+        if index_end > tip_bytes.len() || index_start > index_end {
             return Err(Error::Store(lucene_store::Error::Corrupted(
                 "field index region out of bounds".into(),
             )));
         }
-        let index_slice = &tip[index_start..index_end];
-        let root = load_node(index_slice, root_fp)?;
-        let mut blocks = Vec::new();
-        let mut prefix = Vec::new();
-        collect_leaf_blocks(index_slice, &root, 0, &mut prefix, &mut blocks)?;
-        // A field's root `.tip` trie node having its own `hasTerms == false`
-        // (the root's own physical `.tim` block holds nothing but sub-block
-        // pointers -- real Lucene produces this whenever a field's very
-        // first terms already diverge enough on their leading byte(s) that
-        // every top-level group hits `minItemsInBlock` on its own, e.g.
-        // `GenBlockTreeChildStrategies.java`'s "arraystrat"/"bitsstrat"
-        // fields, confirmed empirically: see
-        // `open_field_with_no_terms_in_root_block_still_finds_every_term`)
-        // needs no special case here: `collect_leaf_blocks` already recurses
-        // into every trie child regardless of the *current* node's own
-        // `has_terms` (see that function's own doc comment on the
-        // `hasTerms == false` skip), and real Lucene's `PendingBlock.
-        // compileIndex`/`writeBlocks` guarantee the `.tip` trie always
-        // mirrors the `.tim` block hierarchy structurally -- a block with
-        // sub-block-pointer entries always has a matching trie child per
-        // pointer, root included -- so `blocks` still ends up with every
-        // reachable leaf block regardless of whether the root itself
-        // contributed one. `blocks` can only be empty here if the trie
-        // itself is corrupt (a leaf trie node claiming no output at all for
-        // a field metadata already asserts has `num_terms >= 1`), a case
-        // the `entries.len() as i64 != num_terms` check below already
-        // catches with an accurate `Corrupted` error instead of this
-        // previously overly-conservative `Unsupported` rejection of a shape
-        // that was never actually unhandled.
+        // `FieldReader`'s constructor stops here; loading the root node is
+        // the one extra O(1) check this port keeps, so a `rootFP` outside the
+        // field's own trie region is rejected at open rather than at the
+        // first lookup.
+        load_node(&tip_bytes[index_start..index_end], root_fp)?;
 
-        // Every block fp reached directly via the `.tip` trie -- passed down
-        // so `decode_block_at_depth` can recognize (and skip re-decoding) a
-        // sub-block that's *also* independently trie-indexed elsewhere (see
-        // that function's doc comment for why real Lucene bytes can and do
-        // address the same physical block both ways).
-        let trie_block_fps: std::collections::HashSet<usize> =
-            blocks.iter().map(|(fp, _)| *fp as usize).collect();
-
-        let mut entries = TermIndex::with_capacity(num_terms as usize);
-        for (block_fp, block_prefix) in blocks {
-            // `decode_block` only ever sees a block's suffix bytes (the writer
-            // strips the shared trie-path prefix); the prefix is handed down so
-            // the full term is written straight into the flat buffer, rather
-            // than each term being built in its own `Vec` and then moved.
-            decode_block_at_depth(
-                tim,
-                block_fp as usize,
-                field_info.index_options,
-                field_info.store_payloads,
-                0,
-                Some(&trie_block_fps),
-                &block_prefix,
-                &mut entries,
-            )?;
-        }
-        // Blocks are decoded in trie-traversal order, not necessarily sorted
-        // term order (see the module doc) -- re-sort once, here, so
-        // `FieldTerms::seek_exact`'s binary search stays correct regardless
-        // of how many blocks a field spans.
-        entries.sort();
-        if entries.len() as i64 != num_terms {
-            return Err(Error::Store(lucene_store::Error::Corrupted(format!(
-                "decoded {} terms but field metadata says numTerms={num_terms}",
-                entries.len()
-            ))));
-        }
-
-        if fields
-            .iter()
-            .any(|(n, _): &(String, FieldTerms)| n == &field_info.name)
-        {
+        if fields.iter().any(|(n, _)| n == &field_info.name) {
             return Err(Error::DuplicateField(field_info.name.clone()));
         }
         fields.push((
@@ -1763,7 +3421,15 @@ pub fn open(
                 max_term,
                 index_options: field_info.index_options,
                 has_payloads: field_info.store_payloads,
-                entries,
+                tim: Arc::clone(&tim),
+                tip: Arc::clone(&tip),
+                index_start,
+                index_end,
+                root_fp,
+                scratch: Mutex::new(EnumState {
+                    current: -1,
+                    ..EnumState::default()
+                }),
             },
         ));
     }
@@ -1772,22 +3438,130 @@ pub fn open(
     let terms_length = tmd_input.read_i64()?;
     codec_util::check_footer(&mut tmd_input, tmd.len())?;
 
-    if index_length as usize > tip.len() || terms_length as usize > tim.len() {
-        return Err(Error::Store(lucene_store::Error::Corrupted(
-            "recorded .tip/.tim length exceeds file size".into(),
-        )));
+    // `Lucene103BlockTreeTermsReader`'s constructor ends with
+    // `CodecUtil.retrieveChecksum(indexIn, indexLength)` /
+    // `retrieveChecksum(termsIn, termsLength)` -- the *expected-length*
+    // overload, which rejects a file that is too short **and** one that is
+    // too long, then checks the footer.
+    if index_length < 0 || terms_length < 0 {
+        return Err(Error::Store(lucene_store::Error::Corrupted(format!(
+            "negative recorded .tip/.tim length: {index_length}/{terms_length}"
+        ))));
     }
-    codec_util::retrieve_checksum(tip)?;
-    codec_util::retrieve_checksum(tim)?;
+    codec_util::retrieve_checksum_with_expected_length(tip_bytes, index_length as usize)?;
+    codec_util::retrieve_checksum_with_expected_length(tim_bytes, terms_length as usize)?;
 
     Ok(BlockTreeFields { fields })
 }
 
 #[cfg(test)]
 mod tests {
+    // The arithmetic gate is about values read off disk; a fixture builder's
+    // `i + 1` is not one. See `docs/arithmetic-gate.md`, "Test code".
+    #![allow(clippy::arithmetic_side_effects)]
+
     use super::*;
     use crate::field_infos::FieldInfo;
     use lucene_store::data_output::DataOutput;
+
+    /// Test-only: every child of `node`, found by probing
+    /// [`lookup_child`] with all 256 labels.
+    ///
+    /// Production never enumerates a trie node's children -- a seek walks one
+    /// label at a time down the target term's own bytes -- but the structural
+    /// tests below want the whole subtree, and probing every label exercises
+    /// each `ChildSaveStrategy`'s hit *and* miss paths rather than a
+    /// separate "list all" decoder that production would not use.
+    fn trie_children(slice: &[u8], node: &TrieNode) -> Result<Vec<(u8, TrieNode)>> {
+        let mut out = Vec::new();
+        for label in 0..=u8::MAX {
+            if let Some(child) = lookup_child(slice, node, label)? {
+                out.push((label, child));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Test-only: every physical `.tim` block one trie node's output
+    /// addresses -- the base block plus each follow-on floor sub-block --
+    /// driven through the production [`Frame::scan_to_floor_frame`] one
+    /// boundary label at a time. Production only ever asks for the *one*
+    /// block a target term falls in.
+    fn expand_floor(
+        index: &[u8],
+        base_fp: u64,
+        base_has_terms: bool,
+        floor_data_fp: Option<usize>,
+    ) -> Result<Vec<(u64, bool)>> {
+        let Some(fdp) = floor_data_fp else {
+            return Ok(vec![(base_fp, base_has_terms)]);
+        };
+        let mut f = Frame {
+            fp: base_fp as usize,
+            fp_orig: base_fp as usize,
+            has_terms: base_has_terms,
+            has_terms_orig: base_has_terms,
+            is_floor: true,
+            next_ent: -1,
+            ..Frame::default()
+        };
+        f.set_floor_data(index, fdp)?;
+        let mut out = Vec::new();
+        loop {
+            out.push((f.fp as u64, f.has_terms));
+            if f.next_floor_label > u8::MAX as u32 {
+                return Ok(out);
+            }
+            let label = f.next_floor_label as u8;
+            f.scan_to_floor_frame(index, &[label])?;
+        }
+    }
+
+    /// Test-only: every physical `.tim` block reachable from `node`, paired
+    /// with the trie label path that led to it. This is what `open` used to
+    /// do for every field of every segment before the lazy port; it survives
+    /// only as a way for the fixture tests to assert on a field's whole
+    /// block structure.
+    fn collect_leaf_blocks(
+        slice: &[u8],
+        node: &TrieNode,
+        depth: u32,
+        prefix: &mut Vec<u8>,
+        out: &mut Vec<(u64, Vec<u8>)>,
+    ) -> Result<()> {
+        if depth > 10_000 {
+            return Err(Error::Unsupported("trie nesting too deep (possible cycle)"));
+        }
+        if let Some(fp) = node.output_fp {
+            for (block_fp, has_terms) in
+                expand_floor(slice, fp, node.has_terms, node.floor_data_fp)?
+            {
+                // `hasTerms == false` means the block holds nothing but
+                // pointers to further-nested sub-blocks.
+                if has_terms {
+                    out.push((block_fp, prefix.clone()));
+                }
+            }
+        }
+        for (label, child) in trie_children(slice, node)? {
+            prefix.push(label);
+            let r = collect_leaf_blocks(slice, &child, depth + 1, prefix, out);
+            prefix.pop();
+            r?;
+        }
+        Ok(())
+    }
+
+    /// `DataOutput::write_vlong` without its non-negative assertion: the
+    /// ten-group encoding a corrupt file can legally contain.
+    fn write_vlong_allowing_negative(out: &mut Vec<u8>, v: i64) {
+        let mut v = v as u64;
+        while v & !0x7F != 0 {
+            out.push(((v & 0x7F) as u8) | 0x80);
+            v >>= 7;
+        }
+        out.push(v as u8);
+    }
 
     fn field_info(number: i32, name: &str, index_options: IndexOptions) -> FieldInfo {
         FieldInfo {
@@ -1820,6 +3594,29 @@ mod tests {
     struct Builder {
         id: [u8; ID_LENGTH],
         suffix: String,
+        ov: Overrides,
+    }
+
+    /// Deliberate corruptions [`Builder`] can bake into an otherwise
+    /// well-formed, correctly-footered triple, so a test can aim one header
+    /// field at a decoder path without hand-assembling the whole file.
+    #[derive(Default, Clone)]
+    struct Overrides {
+        /// `.tmd` `numFields`.
+        num_fields: Option<i32>,
+        /// `.tmd` `minTerm`'s length prefix (the bytes written stay the
+        /// real ones).
+        min_term_len: Option<i32>,
+        /// `.tmd` `rootFP`.
+        root_fp: Option<i64>,
+        /// The per-term `totalTermFreq - docFreq` vlong in the `.tim` stats
+        /// region, for every term.
+        ttf_delta: Option<i64>,
+        /// The `.tim` block header's `entCount`.
+        ent_count: Option<u32>,
+        /// `(declared region length, Some(byte) => write it as `allEqual`)`
+        /// for the `.tim` suffix-lengths region.
+        suffix_lengths_region: Option<(usize, Option<u8>)>,
     }
 
     impl Builder {
@@ -1827,6 +3624,7 @@ mod tests {
             Builder {
                 id: [7u8; ID_LENGTH],
                 suffix: String::new(),
+                ov: Overrides::default(),
             }
         }
 
@@ -1846,7 +3644,7 @@ mod tests {
             );
             let block_fp = tim.len();
 
-            let ent_count = terms.len() as u32;
+            let ent_count = self.ov.ent_count.unwrap_or(terms.len() as u32);
             let code = (ent_count << 1) | 1; // isLastInFloor
             tim.write_vint(code as i32);
 
@@ -1859,7 +3657,11 @@ mod tests {
                 let token = (*doc_freq as i32) << 1; // never singleton-run-encoded, for test simplicity
                 stats.write_vint(token);
                 if index_options != IndexOptions::Docs {
-                    stats.write_vlong((*total_term_freq as i64) - (*doc_freq as i64));
+                    let delta = self
+                        .ov
+                        .ttf_delta
+                        .unwrap_or((*total_term_freq as i64) - (*doc_freq as i64));
+                    stats.write_vlong(delta);
                 }
             }
 
@@ -1867,8 +3669,20 @@ mod tests {
             tim.write_vlong(code_l as i64);
             tim.write_bytes(&suffix_bytes);
 
-            tim.write_vint((suffix_lengths.len() as i32) << 1); // not allEqual
-            tim.write_bytes(&suffix_lengths);
+            match self.ov.suffix_lengths_region {
+                None => {
+                    tim.write_vint((suffix_lengths.len() as i32) << 1); // not allEqual
+                    tim.write_bytes(&suffix_lengths);
+                }
+                Some((declared, None)) => {
+                    tim.write_vint((declared as i32) << 1);
+                    tim.write_bytes(&suffix_lengths);
+                }
+                Some((declared, Some(byte))) => {
+                    tim.write_vint(((declared as i32) << 1) | 1);
+                    tim.push(byte);
+                }
+            }
 
             tim.write_vint(stats.len() as i32);
             tim.write_bytes(&stats);
@@ -1928,7 +3742,7 @@ mod tests {
             );
             tmd.write_vint(POSTINGS_BLOCK_SIZE);
 
-            tmd.write_vint(1); // numFields
+            tmd.write_vint(self.ov.num_fields.unwrap_or(1)); // numFields
             tmd.write_vint(0); // field number
             let num_terms = terms.len() as i64;
             tmd.write_vlong(num_terms);
@@ -1945,15 +3759,22 @@ mod tests {
             tmd.write_vint(1); // docCount
             let min_term = terms[0].0.as_bytes();
             let max_term = terms[terms.len() - 1].0.as_bytes();
-            tmd.write_vint(min_term.len() as i32);
+            tmd.write_vint(self.ov.min_term_len.unwrap_or(min_term.len() as i32));
             tmd.write_bytes(min_term);
             tmd.write_vint(max_term.len() as i32);
             tmd.write_bytes(max_term);
             tmd.write_vlong(index_start as i64);
-            tmd.write_vlong(root_fp as i64);
+            match self.ov.root_fp {
+                // `DataOutput::write_vlong` refuses a negative value (Java's
+                // `writeVLong` asserts the same), but the *wire* format can
+                // carry one in its tenth group -- and that is exactly what a
+                // corrupt `.tmd` looks like to `as usize`.
+                Some(v) => write_vlong_allowing_negative(&mut tmd, v),
+                None => tmd.write_vlong(root_fp as i64),
+            }
             tmd.write_vlong(index_end as i64);
 
-            tmd.write_i64(index_end as i64); // indexLength
+            tmd.write_i64(tip.len() as i64); // indexLength
             tmd.write_i64((tim.len()) as i64); // termsLength
             codec_util::write_footer(&mut tmd);
 
@@ -2019,19 +3840,26 @@ mod tests {
 
         // Prefix: "app*" -> apple, application, apply (in sorted order).
         let pattern = WildcardPattern::new(b"app*");
-        let got: Vec<&[u8]> = field.intersect(&pattern).map(|(t, _)| t).collect();
-        assert_eq!(got, vec![b"apple".as_slice(), b"application", b"apply"]);
+        let got: Vec<Vec<u8>> = field.intersect(&pattern).map(|(t, _)| t).collect();
+        assert_eq!(
+            got,
+            vec![
+                b"apple".to_vec(),
+                b"application".to_vec(),
+                b"apply".to_vec()
+            ]
+        );
 
         // "?" wildcard: "ban?" matches nothing here ("band" is 4 bytes so
         // "ban?" matches "band" exactly -- exercise it precisely).
         let pattern = WildcardPattern::new(b"ban?");
-        let got: Vec<&[u8]> = field.intersect(&pattern).map(|(t, _)| t).collect();
-        assert_eq!(got, vec![b"band".as_slice()]);
+        let got: Vec<Vec<u8>> = field.intersect(&pattern).map(|(t, _)| t).collect();
+        assert_eq!(got, vec![b"band".to_vec()]);
 
         // No literal prefix ("*" in the middle only): "*ana*" -> banana.
         let pattern = WildcardPattern::new(b"*ana*");
-        let got: Vec<&[u8]> = field.intersect(&pattern).map(|(t, _)| t).collect();
-        assert_eq!(got, vec![b"banana".as_slice()]);
+        let got: Vec<Vec<u8>> = field.intersect(&pattern).map(|(t, _)| t).collect();
+        assert_eq!(got, vec![b"banana".to_vec()]);
 
         // Matches everything.
         let pattern = WildcardPattern::new(b"*");
@@ -2049,13 +3877,13 @@ mod tests {
         // Exact-match pattern (no wildcard bytes at all) behaves like
         // seek_exact.
         let pattern = WildcardPattern::new(b"banana");
-        let got: Vec<&[u8]> = field.intersect(&pattern).map(|(t, _)| t).collect();
-        assert_eq!(got, vec![b"banana".as_slice()]);
+        let got: Vec<Vec<u8>> = field.intersect(&pattern).map(|(t, _)| t).collect();
+        assert_eq!(got, vec![b"banana".to_vec()]);
 
         // PrefixQuery-shaped constructor.
         let pattern = WildcardPattern::prefix(b"ban");
-        let got: Vec<&[u8]> = field.intersect(&pattern).map(|(t, _)| t).collect();
-        assert_eq!(got, vec![b"banana".as_slice(), b"band"]);
+        let got: Vec<Vec<u8>> = field.intersect(&pattern).map(|(t, _)| t).collect();
+        assert_eq!(got, vec![b"banana".to_vec(), b"band".to_vec()]);
     }
 
     /// Backs `FuzzyQuery::max_expansions`'s (task #221, `lucene-search`
@@ -2101,13 +3929,16 @@ mod tests {
         // Truncated to `max_expansions`-shaped 50: exactly 50 matches, and
         // they are the first 50 in sorted term-dictionary order (not an
         // arbitrary/unstable 50).
-        let capped: Vec<&[u8]> = field
+        let capped: Vec<Vec<u8>> = field
             .fuzzy_intersect(&pattern)
             .take(50)
             .map(|(t, _)| t)
             .collect();
         assert_eq!(capped.len(), 50);
-        let expected: Vec<&[u8]> = owned_terms[..50].iter().map(|t| t.as_bytes()).collect();
+        let expected: Vec<Vec<u8>> = owned_terms[..50]
+            .iter()
+            .map(|t| t.as_bytes().to_vec())
+            .collect();
         assert_eq!(capped, expected);
 
         // A cap that never binds (more than the total match count) is a
@@ -2138,14 +3969,21 @@ mod tests {
         // Literal-prefix-narrowed range: "appl.*" -> apple, application,
         // apply (in sorted order).
         let pattern = RegexpPattern::new(b"appl.*").unwrap();
-        let got: Vec<&[u8]> = field.regexp_intersect(&pattern).map(|(t, _)| t).collect();
-        assert_eq!(got, vec![b"apple".as_slice(), b"application", b"apply"]);
+        let got: Vec<Vec<u8>> = field.regexp_intersect(&pattern).map(|(t, _)| t).collect();
+        assert_eq!(
+            got,
+            vec![
+                b"apple".to_vec(),
+                b"application".to_vec(),
+                b"apply".to_vec()
+            ]
+        );
 
         // Alternation has no useful literal prefix (falls back to a full
         // scan) but still matches correctly.
         let pattern = RegexpPattern::new(b"banana|band").unwrap();
-        let got: Vec<&[u8]> = field.regexp_intersect(&pattern).map(|(t, _)| t).collect();
-        assert_eq!(got, vec![b"banana".as_slice(), b"band"]);
+        let got: Vec<Vec<u8>> = field.regexp_intersect(&pattern).map(|(t, _)| t).collect();
+        assert_eq!(got, vec![b"banana".to_vec(), b"band".to_vec()]);
 
         // Whole-term-match: "ban" alone matches neither "banana" nor "band".
         let pattern = RegexpPattern::new(b"ban").unwrap();
@@ -2154,6 +3992,52 @@ mod tests {
         // Matches nothing: prefix outside the field's term range entirely.
         let pattern = RegexpPattern::new(b"zzz.*").unwrap();
         assert_eq!(field.regexp_intersect(&pattern).count(), 0);
+    }
+
+    /// The dead-prefix skip must never change *which* terms come back, only
+    /// how many are tested. Checked against a brute-force filter over a
+    /// dictionary shaped like the search benchmark's (`t0`..`t2999`), on the
+    /// interior-constrained pattern family the skip exists for.
+    #[test]
+    fn regexp_intersect_skip_agrees_with_a_brute_force_scan() {
+        let terms: Vec<String> = (0..3000).map(|i| format!("t{i}")).collect();
+        let mut sorted: Vec<&str> = terms.iter().map(String::as_str).collect();
+        sorted.sort_unstable();
+        let entries: Vec<(&str, u32, u64)> = sorted.iter().map(|t| (*t, 1u32, 1u64)).collect();
+
+        let b = Builder::new();
+        let (tim, tip, tmd) = b.build(IndexOptions::DocsAndFreqs, &entries);
+        let fis = FieldInfos {
+            fields: vec![field_info(0, "text", IndexOptions::DocsAndFreqs)],
+        };
+        let fields = open(&tim, &tip, &tmd, &fis, &b.id, &b.suffix, 5).unwrap();
+        let field = fields.field("text").unwrap();
+
+        for src in [
+            "t1[0-9]",
+            "t1.",
+            "t[0-9]{3}",
+            "t.*9",
+            "t1|t22|t333",
+            "t9*",
+            "t(1|2)[0-9][0-9]",
+            "zzz.*",
+            "t1[0-9]&t.*",
+            "t<1-30>",
+        ] {
+            let pattern = RegexpPattern::new(src.as_bytes()).unwrap();
+            let expected: Vec<&str> = sorted
+                .iter()
+                .copied()
+                .filter(|t| pattern.matches(t.as_bytes()))
+                .collect();
+            let got: Vec<String> = field
+                .regexp_intersect(&pattern)
+                .map(|(t, _)| String::from_utf8(t).unwrap())
+                .collect();
+            let expected: Vec<String> = expected.iter().map(|t| t.to_string()).collect();
+            assert_eq!(got, expected, "pattern {src}");
+        }
     }
 
     #[test]
@@ -2319,30 +4203,48 @@ mod tests {
         assert_eq!(it.next(), None);
     }
 
+    /// `TermsEnum`'s past-the-end cursor states. A real writer never emits a
+    /// zero-term field (`open()` itself rejects `numTerms <= 0`), so the
+    /// smallest dictionary that can stand in for one is a single-term field
+    /// walked past its only term: `next()` must stay idempotent at the end
+    /// (Java's `eof`), `current()` must report nothing, and a `seek_ceil`
+    /// past the last term must report `End` and leave the cursor unpositioned.
     #[test]
-    fn terms_enum_empty_field() {
-        // A real writer never emits a zero-term field (`open()` itself
-        // rejects `numTerms <= 0`), but `TermsEnum` over an empty `entries`
-        // Vec is a valid state to reach in-memory (e.g. a field with no
-        // terms in some hypothetical caller-constructed scenario) and its
-        // cursor edge cases are worth covering directly.
-        let field = FieldTerms {
-            num_terms: 0,
-            sum_total_term_freq: 0,
-            sum_doc_freq: 0,
-            doc_count: 0,
-            min_term: Vec::new(),
-            max_term: Vec::new(),
-            index_options: IndexOptions::Docs,
-            has_payloads: false,
-            entries: TermIndex::default(),
+    fn terms_enum_past_the_end_is_idempotent() {
+        let b = Builder::new();
+        let (tim, tip, tmd) = b.build(IndexOptions::Docs, &[("only", 1, 1)]);
+        let fis = FieldInfos {
+            fields: vec![field_info(0, "text", IndexOptions::Docs)],
         };
+        let fields = open(&tim, &tip, &tmd, &fis, &b.id, &b.suffix, 1).unwrap();
+        let field = fields.field("text").unwrap();
+
         let mut it = field.iter();
+        assert!(it.next().is_some());
         assert_eq!(it.next(), None);
         assert_eq!(it.next(), None);
         assert_eq!(it.current(), None);
-        assert_eq!(it.seek_ceil(b"anything"), SeekStatus::End);
+
+        let mut it = field.iter();
+        assert_eq!(it.seek_ceil(b"zzz"), SeekStatus::End);
         assert_eq!(it.current(), None);
+        assert_eq!(it.next(), None);
+
+        // A seek *after* end-of-terms must still answer for its target, not
+        // fall out of `next()`'s `eof` guard: `SegmentTermsEnum::reset` has to
+        // clear `eof`, and only a walk-then-seek order can prove it does.
+        let mut it = field.iter();
+        while it.next().is_some() {}
+        assert_eq!(it.seek_ceil(b"only"), SeekStatus::Found);
+        assert_eq!(it.current().unwrap().0, b"only");
+        assert_eq!(it.seek_ceil(b"a"), SeekStatus::NotFound);
+        assert_eq!(it.current().unwrap().0, b"only");
+        assert_eq!(it.seek_ceil(b"zzz"), SeekStatus::End);
+
+        // A field with no `.tim`/`.tip`/`.tmd` at all has no fields to
+        // iterate in the first place.
+        assert!(BlockTreeFields::empty().field("text").is_none());
+        assert_eq!(BlockTreeFields::empty().iter_fields().count(), 0);
     }
 
     #[test]
@@ -2391,6 +4293,39 @@ mod tests {
                 total_term_freq: 3
             })
         );
+    }
+
+    /// `CodecUtil.retrieveChecksum(IndexInput, long expectedLength)` rejects
+    /// "file too long" as well as "truncated file": the recorded length must
+    /// equal the file's own. Only the truncation half used to be checked, so
+    /// a `.tmd` claiming a shorter `.tip`/`.tim` than the one it describes
+    /// was accepted -- and the footer was then read from the wrong offset.
+    #[test]
+    fn recorded_tip_or_tim_length_shorter_than_the_file_is_rejected() {
+        let b = Builder::new();
+        let fis = FieldInfos {
+            fields: vec![field_info(0, "f", IndexOptions::Docs)],
+        };
+        let (tim, tip, tmd) = b.build(IndexOptions::Docs, &[("only", 1, 1)]);
+        // Sanity: unmodified, it opens.
+        assert!(open(&tim, &tip, &tmd, &fis, &b.id, &b.suffix, 5).is_ok());
+
+        for which in ["tip", "tim"] {
+            let mut tim = tim.clone();
+            let mut tip = tip.clone();
+            // One trailing byte past the recorded length -- Lucene's "file
+            // too long" case.
+            if which == "tip" {
+                tip.push(0);
+            } else {
+                tim.push(0);
+            }
+            let err = open(&tim, &tip, &tmd, &fis, &b.id, &b.suffix, 5).unwrap_err();
+            assert!(
+                matches!(err, Error::Store(lucene_store::Error::Corrupted(_))),
+                "{which}: {err:?}"
+            );
+        }
     }
 
     #[test]
@@ -2444,7 +4379,7 @@ mod tests {
         let term: u32 = SIGN_MULTI_CHILDREN | (3 << 9); // invalid strategy code
         slice[0..3].copy_from_slice(&term.to_le_bytes()[0..3]);
         let err = load_node(&slice, 0)
-            .and_then(|node| multi_children_labels_and_fps(&slice, &node))
+            .and_then(|node| lookup_child(&slice, &node, 1))
             .unwrap_err();
         assert!(matches!(err, Error::Store(_)));
     }
@@ -2549,10 +4484,10 @@ mod tests {
         assert_eq!(node.child_save_strategy, strategy);
         assert_eq!(node.strategy_bytes, strategy_bytes);
 
-        let mut child_fps: Vec<usize> = multi_children_labels_and_fps(&slice, &node)
+        let mut child_fps: Vec<usize> = trie_children(&slice, &node)
             .unwrap()
             .into_iter()
-            .map(|(_, fp)| fp)
+            .map(|(_, child)| child.fp)
             .collect();
         child_fps.sort_unstable();
         assert_eq!(child_fps, vec![0, 2]);
@@ -2612,13 +4547,65 @@ mod tests {
         slice[fps_fp + 1] = (parent_fp - 2) as u8; // delta to child B (fp 2)
 
         let node = load_node(&slice, parent_fp).unwrap();
-        let mut child_fps: Vec<usize> = multi_children_labels_and_fps(&slice, &node)
+        let mut child_fps: Vec<usize> = trie_children(&slice, &node)
             .unwrap()
             .into_iter()
-            .map(|(_, fp)| fp)
+            .map(|(_, child)| child.fp)
             .collect();
         child_fps.sort_unstable();
         assert_eq!(child_fps, vec![0, 2]);
+        // The two labels the encoding lists as *absent* between 'a' and 'd'
+        // must miss, not resolve to a neighbour.
+        assert!(lookup_child(&slice, &node, b'b').unwrap().is_none());
+        assert!(lookup_child(&slice, &node, b'c').unwrap().is_none());
+    }
+
+    /// `REVERSE_ARRAY` with *two* gaps, so `lookup`'s bisection over the
+    /// absent-label list takes its `midLabel > target` branch and returns
+    /// through the `target - minLabel - low` arithmetic rather than hitting an
+    /// exact miss. Labels 'a', 'c', 'e'; absent 'b', 'd'; strategy region
+    /// `[maxLabel='e', 'b', 'd']` (`needBytes` = 5 - 3 + 1 = 3).
+    #[test]
+    fn multi_children_reverse_array_strategy_with_two_gaps() {
+        let mut slice = vec![0u8; 40];
+        // Three leaf children at fp 0, 2, 4 with distinct output fps.
+        for (i, out) in [(0usize, 10u8), (2, 20), (4, 30)] {
+            slice[i] = LEAF_NODE_HAS_TERMS as u8;
+            slice[i + 1] = out;
+        }
+
+        let parent_fp = 12usize;
+        let min_label = b'a';
+        let strategy_bytes_region = *b"ebd";
+        let strategy_bytes = strategy_bytes_region.len();
+        let term: u32 = SIGN_MULTI_CHILDREN
+            | (CHILD_STRATEGY_REVERSE_ARRAY << 9)
+            | (((strategy_bytes - 1) as u32) << 11)
+            | ((min_label as u32) << 16);
+        slice[parent_fp..parent_fp + 4].copy_from_slice(&term.to_le_bytes());
+        let strategy_fp = parent_fp + 3;
+        slice[strategy_fp..strategy_fp + strategy_bytes].copy_from_slice(&strategy_bytes_region);
+        let fps_fp = strategy_fp + strategy_bytes;
+        slice[fps_fp] = parent_fp as u8; // 'a' -> fp 0
+        slice[fps_fp + 1] = (parent_fp - 2) as u8; // 'c' -> fp 2
+        slice[fps_fp + 2] = (parent_fp - 4) as u8; // 'e' -> fp 4
+
+        let node = load_node(&slice, parent_fp).unwrap();
+        assert_eq!(node.child_save_strategy, CHILD_STRATEGY_REVERSE_ARRAY);
+        for (label, fp, output) in [(b'a', 0usize, 10u64), (b'c', 2, 20), (b'e', 4, 30)] {
+            let child = lookup_child(&slice, &node, label)
+                .unwrap()
+                .unwrap_or_else(|| panic!("label {} should resolve", label as char));
+            assert_eq!(child.fp, fp, "label {}", label as char);
+            assert_eq!(child.output_fp, Some(output), "label {}", label as char);
+        }
+        for label in *b"`bdf" {
+            assert!(
+                lookup_child(&slice, &node, label).unwrap().is_none(),
+                "label {} should miss",
+                label as char
+            );
+        }
     }
 
     #[test]
@@ -2655,19 +4642,27 @@ mod tests {
     }
 
     /// End-to-end: a field whose terms span two floor sub-blocks under one
-    /// leaf trie node (`LEAF_NODE_HAS_FLOOR`), exercising `open()`'s full
-    /// multi-block merge-and-sort path (not just the trie-decode unit
-    /// pieces above) with a hand-built `.tim`/`.tip`/`.tmd` triple no real
-    /// (small) fixture reaches.
+    /// leaf trie node (`LEAF_NODE_HAS_FLOOR`), with a hand-built
+    /// `.tim`/`.tip`/`.tmd` triple no real (small) fixture reaches.
+    ///
+    /// Exercises the two things floor blocks demand of the lazy reader:
+    /// `scanToFloorFrame` must pick the *one* sub-block a target's lead byte
+    /// falls in (so a term in the second block is not looked for in the
+    /// first), and `next()` must chain from one floor block to the next off
+    /// the `isLastInFloor` bit rather than stopping at the first block's end.
     #[test]
-    fn open_floor_field_merges_two_blocks_in_sorted_order() {
+    fn open_floor_field_walks_both_blocks() {
         let id = [9u8; ID_LENGTH];
         let suffix = String::new();
 
-        fn write_leaf_block(tim: &mut Vec<u8>, terms: &[(&str, u32, u64)]) -> usize {
+        fn write_leaf_block(
+            tim: &mut Vec<u8>,
+            terms: &[(&str, u32, u64)],
+            is_last_in_floor: bool,
+        ) -> usize {
             let block_fp = tim.len();
             let ent_count = terms.len() as u32;
-            tim.write_vint(((ent_count << 1) | 1) as i32); // isLastInFloor (unused by decode now)
+            tim.write_vint(((ent_count << 1) | u32::from(is_last_in_floor)) as i32);
 
             let mut suffix_bytes = Vec::new();
             let mut suffix_lengths = Vec::new();
@@ -2700,8 +4695,10 @@ mod tests {
 
         let mut tim = Vec::new();
         codec_util::write_index_header(&mut tim, TERMS_CODEC_NAME, VERSION_CURRENT, &id, &suffix);
-        let block0_fp = write_leaf_block(&mut tim, &[("b", 1, 1), ("a", 1, 1)]);
-        let block1_fp = write_leaf_block(&mut tim, &[("z", 2, 5), ("m", 1, 1)]);
+        // Terms are sorted within each block, and split across the floor
+        // boundary at 'm' exactly as `Lucene103BlockTreeTermsWriter` would.
+        let block0_fp = write_leaf_block(&mut tim, &[("a", 1, 1), ("b", 1, 1)], false);
+        let block1_fp = write_leaf_block(&mut tim, &[("m", 1, 1), ("z", 2, 5)], true);
         codec_util::write_footer(&mut tim);
 
         let mut tip = Vec::new();
@@ -2754,7 +4751,7 @@ mod tests {
         tmd.write_vlong(index_start as i64);
         tmd.write_vlong(0); // root fp within index slice
         tmd.write_vlong(index_end as i64);
-        tmd.write_i64(index_end as i64);
+        tmd.write_i64(tip.len() as i64); // indexLength: the whole file, footer included
         tmd.write_i64(tim.len() as i64);
         codec_util::write_footer(&mut tmd);
 
@@ -2765,14 +4762,38 @@ mod tests {
         let field = fields.field("f").unwrap();
         assert_eq!(field.num_terms, 4);
 
-        // Entries must come back sorted even though block1 (containing "m"
-        // and "z") is decoded after block0 (containing "b" and "a").
+        // Every term is reachable, whichever floor sub-block holds it.
         for (term, expected) in [("a", (1, 1)), ("b", (1, 1)), ("m", (1, 1)), ("z", (2, 5))] {
             let stats = field.seek_exact(term.as_bytes()).unwrap();
             assert_eq!(stats.doc_freq, expected.0, "term={term}");
             assert_eq!(stats.total_term_freq, expected.1, "term={term}");
         }
+        // A miss whose lead byte falls in the *second* floor block, and one
+        // that falls in the first: both must scan only their own block.
         assert!(field.seek_exact(b"missing").is_none());
+        assert!(field.seek_exact(b"c").is_none());
+
+        // `next()` must chain across the floor boundary.
+        let mut it = field.iter();
+        let mut walked = Vec::new();
+        while let Some((term, stats)) = it.next() {
+            walked.push((String::from_utf8(term.to_vec()).unwrap(), stats.doc_freq));
+        }
+        assert_eq!(
+            walked,
+            vec![
+                ("a".to_string(), 1),
+                ("b".to_string(), 1),
+                ("m".to_string(), 1),
+                ("z".to_string(), 2),
+            ]
+        );
+
+        // And so must `seek_ceil` into the second block from a target in the
+        // first block's range.
+        let mut it = field.iter();
+        assert_eq!(it.seek_ceil(b"c"), SeekStatus::NotFound);
+        assert_eq!(it.current().unwrap().0, b"m");
     }
 
     #[test]
@@ -2810,15 +4831,242 @@ mod tests {
         tmd.write_vlong(index_start as i64);
         tmd.write_vlong(0);
         tmd.write_vlong(index_end as i64);
-        tmd.write_i64(index_end as i64);
+        tmd.write_i64(tip.len() as i64); // indexLength: the whole file, footer included
         tmd.write_i64(tim.len() as i64);
         codec_util::write_footer(&mut tmd);
 
         let fis = FieldInfos {
             fields: vec![field_info(0, "f", IndexOptions::Docs)],
         };
-        let err = open(&tim, &tip, &tmd, &fis, &id, "", 5).unwrap_err();
+        // `open` no longer reads any `.tim` block (see the module doc), so a
+        // block this corrupt is rejected where real Lucene rejects it too:
+        // from inside the lookup that loads it.
+        let fields = open(&tim, &tip, &tmd, &fis, &id, "", 5).unwrap();
+        let field = fields.field("f").unwrap();
+        let err = field.try_seek_exact(b"").unwrap_err();
         assert!(matches!(err, Error::Store(_)));
+        // The infallible spelling degrades it to "no such term".
+        assert!(field.seek_exact(b"").is_none());
+    }
+
+    /// A corrupt block is now discovered where real Lucene discovers it --
+    /// inside the lookup that loads it, not at `open` -- and every lookup's
+    /// `Result`-returning form surfaces it. The infallible spellings degrade
+    /// to "no such term"/end-of-terms instead, which is the one behaviour
+    /// this batch deliberately traded away (see the module doc).
+    #[test]
+    fn a_corrupt_block_errors_from_the_lookup_not_from_open() {
+        let b = Builder::new();
+        let (tim, tip, tmd) = b.build(IndexOptions::Docs, &[("alpha", 1, 1), ("beta", 1, 1)]);
+        let fis = FieldInfos {
+            fields: vec![field_info(0, "text", IndexOptions::Docs)],
+        };
+
+        // Find the block's suffix-lengths region and inflate the first
+        // entry's length past the end of the suffix bytes, which is what
+        // `scanToTermLeaf`'s cursor has to reject.
+        let header = codec_util::index_header_length(TERMS_CODEC_NAME, &b.suffix);
+        let mut r = SliceInput::new(&tim);
+        r.seek(header).unwrap();
+        let _code = r.read_vint().unwrap();
+        let code_l = r.read_vlong().unwrap() as u64;
+        let num_suffix_bytes = (code_l >> 3) as usize;
+        r.seek(r.position() + num_suffix_bytes).unwrap();
+        let _num_suffix_length_bytes = r.read_vint().unwrap();
+        let first_length_at = r.position();
+        assert_eq!(tim[first_length_at], b"alpha".len() as u8);
+
+        let mut corrupt = tim.clone();
+        corrupt[first_length_at] = 100;
+        let fields = open(&corrupt, &tip, &tmd, &fis, &b.id, &b.suffix, 5)
+            .expect("open reads no .tim block, so it cannot see this");
+        let field = fields.field("text").unwrap();
+
+        let err = field.try_seek_exact(b"alpha").unwrap_err();
+        assert!(matches!(err, Error::Store(_)), "{err:?}");
+        assert!(field.seek_exact(b"alpha").is_none());
+
+        let mut it = field.iter();
+        assert!(it.try_next().is_err());
+        let mut it = field.iter();
+        assert_eq!(it.next(), None);
+        let mut it = field.iter();
+        assert!(it.try_seek_ceil(b"alpha").is_err());
+        let mut it = field.iter();
+        assert_eq!(it.seek_ceil(b"alpha"), SeekStatus::End);
+
+        // The intersect iterators run over the same enum, so they end rather
+        // than yielding a wrong term.
+        let pattern = WildcardPattern::new(b"a*");
+        assert_eq!(field.intersect(&pattern).count(), 0);
+    }
+
+    /// `SegmentTermsEnum.seekExact`'s "index exhausted and this frame has no
+    /// terms" fast path: the trie routed us to a node whose own `.tim` block
+    /// holds nothing but sub-block pointers, so the target cannot exist and
+    /// no block is loaded at all.
+    ///
+    /// Uses `blocktree_child_strategies_index`, whose "arraystrat" field has
+    /// exactly that shape at the root (see
+    /// `open_field_with_no_terms_in_root_block_still_finds_every_term`), and
+    /// picks a lead byte inside the field's min/max range that is *not* one
+    /// of the root's five child labels, so the very first `lookupChild`
+    /// misses while the current frame is the no-terms root.
+    #[test]
+    fn seek_exact_stops_at_a_trie_node_with_no_terms() {
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/data/blocktree_child_strategies_index/"
+        );
+        let text = std::fs::read_to_string(format!("{dir}manifest.properties"))
+            .expect("run fixtures generator first (GenBlockTreeChildStrategies)");
+        let kv: Vec<(String, String)> = text
+            .lines()
+            .filter_map(|l| l.split_once('='))
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let get = |k: &str| {
+            kv.iter()
+                .find(|(kk, _)| kk == k)
+                .map(|(_, v)| v.as_str())
+                .unwrap_or_else(|| panic!("manifest key {k} missing"))
+        };
+        let mut id = [0u8; ID_LENGTH];
+        let hex = get("id_hex");
+        for (i, slot) in id.iter_mut().enumerate() {
+            *slot = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap();
+        }
+        let suffix = get("segment_suffix").to_string();
+        let max_doc: i32 = get("max_doc").parse().unwrap();
+        let read = |n: &str| std::fs::read(format!("{dir}{n}.raw")).unwrap();
+        let field_infos = crate::field_infos::parse(&read(get("fnm_file_name")), &id, "").unwrap();
+        let fields = open(
+            &read(get("tim_file_name")),
+            &read(get("tip_file_name")),
+            &read(get("tmd_file_name")),
+            &field_infos,
+            &id,
+            &suffix,
+            max_doc,
+        )
+        .unwrap();
+        let field = fields.field("arraystrat").unwrap();
+
+        // Every lead byte strictly between the field's min and max term that
+        // has no root child: `seek_exact` must miss without loading a block.
+        let lo = field.min_term[0];
+        let hi = field.max_term[0];
+        let mut checked = 0;
+        for lead in (lo + 1)..hi {
+            let target = [lead, b'x'];
+            if field.seek_exact(&target).is_some() {
+                continue;
+            }
+            assert_eq!(field.try_seek_exact(&target).unwrap(), None);
+            checked += 1;
+        }
+        assert!(
+            checked > 0,
+            "expected at least one absent lead byte inside [{lo}, {hi}]"
+        );
+    }
+
+    /// The pooled lookup scratch must never make concurrent searchers wait on
+    /// each other: `BlockTreeFields` is shared by every search thread through
+    /// one `Arc`, so a blocking lock here would serialize the whole term
+    /// dictionary. A thread that loses the race runs on its own state and
+    /// must get identical answers.
+    #[test]
+    fn concurrent_lookups_do_not_serialize_and_agree() {
+        let b = Builder::new();
+        let owned: Vec<String> = (0..200).map(|i| format!("term{i:04}")).collect();
+        let mut sorted: Vec<&str> = owned.iter().map(String::as_str).collect();
+        sorted.sort_unstable();
+        let entries: Vec<(&str, u32, u64)> = sorted
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (*t, i as u32 + 1, i as u64 + 1))
+            .collect();
+        let (tim, tip, tmd) = b.build(IndexOptions::DocsAndFreqs, &entries);
+        let fis = FieldInfos {
+            fields: vec![field_info(0, "text", IndexOptions::DocsAndFreqs)],
+        };
+        let fields =
+            std::sync::Arc::new(open(&tim, &tip, &tmd, &fis, &b.id, &b.suffix, 500).unwrap());
+
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let fields = std::sync::Arc::clone(&fields);
+            let expected: Vec<(String, u32)> = entries
+                .iter()
+                .map(|(t, df, _)| ((*t).to_string(), *df))
+                .collect();
+            handles.push(std::thread::spawn(move || {
+                let field = fields.field("text").unwrap();
+                for _ in 0..20 {
+                    for (term, df) in &expected {
+                        let stats = field
+                            .try_seek_exact(term.as_bytes())
+                            .expect("intact bytes")
+                            .unwrap_or_else(|| panic!("term {term} not found"));
+                        assert_eq!(stats.doc_freq, *df as i32);
+                    }
+                    assert!(field.seek_exact(b"nope").is_none());
+                }
+            }));
+        }
+        for h in handles {
+            h.join().expect("no thread panicked");
+        }
+    }
+
+    /// A cloned `FieldTerms` shares the segment's `.tim`/`.tip` buffers and
+    /// gets its own lookup scratch, so both copies keep working
+    /// independently -- `BlockTreeFields` is `Clone` and callers hold it
+    /// behind an `Arc`, so this is a real path.
+    #[test]
+    fn cloning_a_field_keeps_both_copies_usable() {
+        let b = Builder::new();
+        let (tim, tip, tmd) = b.build(IndexOptions::Docs, &[("alpha", 3, 3), ("beta", 4, 4)]);
+        let fis = FieldInfos {
+            fields: vec![field_info(0, "text", IndexOptions::Docs)],
+        };
+        let fields = open(&tim, &tip, &tmd, &fis, &b.id, &b.suffix, 5).unwrap();
+        let copy = fields.clone();
+        for f in [&fields, &copy] {
+            let field = f.field("text").unwrap();
+            assert_eq!(field.seek_exact(b"alpha").unwrap().doc_freq, 3);
+            assert_eq!(field.seek_exact(b"beta").unwrap().doc_freq, 4);
+            assert!(field.seek_exact(b"gamma").is_none());
+        }
+    }
+
+    /// `open_shared` is `open` without the `.tim`/`.tip` copy: same answers,
+    /// same errors, buffers the caller already owns.
+    #[test]
+    fn open_shared_reads_the_same_dictionary_without_copying() {
+        let b = Builder::new();
+        let (tim, tip, tmd) = b.build(IndexOptions::Docs, &[("alpha", 3, 3), ("beta", 4, 4)]);
+        let fis = FieldInfos {
+            fields: vec![field_info(0, "text", IndexOptions::Docs)],
+        };
+        let shared_tim: SharedBytes = Arc::new(tim.clone());
+        let shared_tip: SharedBytes = Arc::new(tip.clone());
+        let fields = open_shared(
+            SharedBytes::clone(&shared_tim),
+            SharedBytes::clone(&shared_tip),
+            &tmd,
+            &fis,
+            &b.id,
+            &b.suffix,
+            5,
+        )
+        .unwrap();
+        let field = fields.field("text").unwrap();
+        assert_eq!(field.seek_exact(b"beta").unwrap().doc_freq, 4);
+        // The caller's buffers are shared, not copied: the reader holds a
+        // reference to the very same allocation.
+        assert!(Arc::strong_count(&shared_tim) > 1);
     }
 
     #[test]
@@ -2942,6 +5190,53 @@ mod tests {
         assert!(matches!(err, Error::Store(_)));
     }
 
+    /// A `vint` byte count for one of a block's uncompressed regions that
+    /// exceeds the file must be an error, not an allocation. Java's
+    /// `new byte[n]` throws; `vec![0u8; n]` would abort the process, and an
+    /// abort cannot be caught at the FFI boundary.
+    #[test]
+    fn decode_block_rejects_region_lengths_larger_than_the_file() {
+        // Base block: one leaf entry, then a stats length that claims far
+        // more bytes than the file holds.
+        fn block_with_stats_len(stats_len: i32) -> Vec<u8> {
+            let mut tim = Vec::new();
+            tim.write_vint((1 << 1) | 1); // entCount=1, isLastInFloor
+            let suffix_bytes = b"x";
+            tim.write_vlong((((suffix_bytes.len() as u64) << 3) | 0x04) as i64); // leaf, no compression
+            tim.write_bytes(suffix_bytes);
+            let mut suffix_lengths = Vec::new();
+            suffix_lengths.write_vint(1);
+            tim.write_vint((suffix_lengths.len() as i32) << 1);
+            tim.write_bytes(&suffix_lengths);
+            tim.write_vint(stats_len);
+            tim
+        }
+
+        for stats_len in [i32::MAX, -1] {
+            let tim = block_with_stats_len(stats_len);
+            let err = decode_block(&tim, 0, IndexOptions::Docs, false).unwrap_err();
+            assert!(
+                matches!(err, Error::Store(lucene_store::Error::Corrupted(_))),
+                "stats_len={stats_len} gave {err:?}"
+            );
+        }
+    }
+
+    /// The uncompressed suffix region gets the same treatment, but against
+    /// `remaining()` rather than a plain sign check: `numSuffixBytes` is a
+    /// `vlong`-derived field with 61 usable bits.
+    #[test]
+    fn decode_block_rejects_uncompressed_suffix_length_past_the_file() {
+        let mut tim = Vec::new();
+        tim.write_vint((1 << 1) | 1); // entCount=1, isLastInFloor
+        tim.write_vlong(((1u64 << 40) << 3 | 0x04) as i64); // leaf, no compression, absurd length
+        let err = decode_block(&tim, 0, IndexOptions::Docs, false).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::Store(lucene_store::Error::Corrupted(_))
+        ));
+    }
+
     #[test]
     fn decode_block_rejects_illegal_compression_code() {
         // `code_l & 0x03 == 3` never corresponds to a `CompressionAlgorithm`
@@ -3060,7 +5355,9 @@ mod tests {
         slice[strategy_fp] = b'b'; // ARRAY strategy, one extra label
         slice[strategy_fp + 1] = 100; // delta (100) > parent fp (8)
         let node = load_node(&slice, parent_fp).unwrap();
-        let err = multi_children_labels_and_fps(&slice, &node).unwrap_err();
+        // Label 0 is the node's own `minChildrenLabel`, i.e. child position
+        // 0, whose delta is the corrupt one.
+        let err = lookup_child(&slice, &node, 0).unwrap_err();
         assert!(matches!(err, Error::Store(_)));
     }
 
@@ -3257,6 +5554,313 @@ mod tests {
         assert_eq!(entries[0].1.total_term_freq, 1);
     }
 
+    /// `.tmd` with caller-chosen per-field statistics, so each of `open`'s
+    /// record-level validations can be driven on its own. The `.tim`/`.tip`
+    /// come from [`Builder::build`] unchanged -- only the metadata varies.
+    #[allow(clippy::too_many_arguments)]
+    fn tmd_with(
+        id: &[u8; ID_LENGTH],
+        suffix: &str,
+        num_terms: i64,
+        sum_total_term_freq: i64,
+        sum_doc_freq: i64,
+        doc_count: i32,
+        index_length: i64,
+        terms_length: i64,
+    ) -> Vec<u8> {
+        let index_start = codec_util::index_header_length(TERMS_INDEX_CODEC_NAME, suffix);
+        // `Builder::build`'s root node: header byte + an 8-byte output fp +
+        // 8 bytes of over-read pad.
+        let index_end = index_start + 17;
+
+        let mut tmd = Vec::new();
+        codec_util::write_index_header(
+            &mut tmd,
+            TERMS_META_CODEC_NAME,
+            VERSION_CURRENT,
+            id,
+            suffix,
+        );
+        codec_util::write_index_header(&mut tmd, POSTINGS_TERMS_CODEC, VERSION_CURRENT, id, suffix);
+        tmd.write_vint(POSTINGS_BLOCK_SIZE);
+        tmd.write_vint(1); // numFields
+        tmd.write_vint(0); // field number
+        tmd.write_vlong(num_terms);
+        tmd.write_vlong(sum_total_term_freq);
+        tmd.write_vlong(sum_doc_freq);
+        tmd.write_vint(doc_count);
+        tmd.write_vint(1);
+        tmd.write_bytes(b"a");
+        tmd.write_vint(1);
+        tmd.write_bytes(b"a");
+        tmd.write_vlong(index_start as i64);
+        tmd.write_vlong(0); // root fp
+        tmd.write_vlong(index_end as i64);
+        tmd.write_i64(index_length);
+        tmd.write_i64(terms_length);
+        codec_util::write_footer(&mut tmd);
+        tmd
+    }
+
+    /// The four `.tmd` record checks `Lucene103BlockTreeTermsReader`'s
+    /// constructor makes before it will trust a field: `numTerms > 0`,
+    /// `sumDocFreq >= docCount`, `sumTotalTermFreq >= sumDocFreq`, and
+    /// non-negative recorded `.tip`/`.tim` lengths. These are the only
+    /// validations left at open now that no block is read there, so each one
+    /// is worth its own case.
+    #[test]
+    fn tmd_record_level_validations_rejected() {
+        let b = Builder::new();
+        let (tim, tip, _) = b.build(IndexOptions::DocsAndFreqs, &[("a", 1, 1)]);
+        let fis = FieldInfos {
+            fields: vec![field_info(0, "f", IndexOptions::DocsAndFreqs)],
+        };
+        let ok_lengths = (tip.len() as i64, tim.len() as i64);
+        let open_with = |tmd: Vec<u8>| open(&tim, &tip, &tmd, &fis, &b.id, &b.suffix, 5);
+
+        // Sanity: the same helper with legal values opens cleanly, so each
+        // rejection below is attributable to the one value it changed.
+        assert!(open_with(tmd_with(
+            &b.id,
+            &b.suffix,
+            1,
+            1,
+            1,
+            1,
+            ok_lengths.0,
+            ok_lengths.1
+        ))
+        .is_ok());
+
+        let err = open_with(tmd_with(
+            &b.id,
+            &b.suffix,
+            0,
+            1,
+            1,
+            1,
+            ok_lengths.0,
+            ok_lengths.1,
+        ))
+        .unwrap_err();
+        assert!(matches!(err, Error::IllegalNumTerms(0)), "{err:?}");
+
+        // sumDocFreq (1) < docCount (2).
+        let err = open_with(tmd_with(
+            &b.id,
+            &b.suffix,
+            1,
+            5,
+            1,
+            2,
+            ok_lengths.0,
+            ok_lengths.1,
+        ))
+        .unwrap_err();
+        assert!(matches!(err, Error::InvalidSumDocFreq { .. }), "{err:?}");
+
+        // sumTotalTermFreq (1) < sumDocFreq (3).
+        let err = open_with(tmd_with(
+            &b.id,
+            &b.suffix,
+            1,
+            1,
+            3,
+            1,
+            ok_lengths.0,
+            ok_lengths.1,
+        ))
+        .unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidSumTotalTermFreq { .. }),
+            "{err:?}"
+        );
+
+        for (index_length, terms_length) in [(-1, ok_lengths.1), (ok_lengths.0, -1)] {
+            let err = open_with(tmd_with(
+                &b.id,
+                &b.suffix,
+                1,
+                1,
+                1,
+                1,
+                index_length,
+                terms_length,
+            ))
+            .unwrap_err();
+            assert!(matches!(err, Error::Store(_)), "{err:?}");
+        }
+    }
+
+    /// `TermMatcher`'s default `dead_prefix_len` -- the "this matcher can
+    /// never prove a prefix dead" answer that `CAN_SKIP == false` folds the
+    /// call site away for. Instantiated here so the default body is still
+    /// compiled and checked even though no production matcher reaches it.
+    #[test]
+    fn a_matcher_that_cannot_skip_reports_no_dead_prefix() {
+        struct NeverSkips;
+        impl TermMatcher for NeverSkips {
+            fn matches(&self, term: &[u8]) -> bool {
+                term == b"yes"
+            }
+        }
+        const { assert!(!NeverSkips::CAN_SKIP) };
+        assert!(NeverSkips.matches(b"yes"));
+        assert_eq!(NeverSkips.dead_prefix_len(b"anything"), None);
+    }
+
+    /// Every postings-facing entry point must report a term that is not in
+    /// the dictionary as "nothing here" rather than erroring or reaching for
+    /// a `.doc`/`.pos` file -- the miss path each of them takes off the same
+    /// lazy `seekExact`.
+    #[test]
+    fn postings_entry_points_report_a_missing_term_as_none() {
+        let b = Builder::new();
+        let (tim, tip, tmd) = b.build(IndexOptions::DocsAndFreqs, &[("alpha", 1, 1)]);
+        let fis = FieldInfos {
+            fields: vec![field_info(0, "text", IndexOptions::DocsAndFreqs)],
+        };
+        let fields = open(&tim, &tip, &tmd, &fis, &b.id, &b.suffix, 5).unwrap();
+        let field = fields.field("text").unwrap();
+
+        // A `.pos` file with nothing but its framing: none of these calls
+        // gets far enough to read a byte of it.
+        let mut pos_bytes = Vec::new();
+        codec_util::write_index_header(
+            &mut pos_bytes,
+            postings::POS_CODEC,
+            postings::VERSION_CURRENT,
+            &b.id,
+            &b.suffix,
+        );
+        codec_util::write_footer(&mut pos_bytes);
+        let pos_in = postings::PosInput::open(&pos_bytes, &b.id, &b.suffix).unwrap();
+
+        assert!(field.postings(b"beta", None).unwrap().is_none());
+        assert!(field
+            .positions(b"beta", None, &pos_in, None)
+            .unwrap()
+            .is_none());
+        assert!(field
+            .positions_flat(b"beta", None, &pos_in, None)
+            .unwrap()
+            .is_none());
+        let (positions, starts) = field
+            .positions_for_docs(b"beta", None, &pos_in, None, &[], 0, &[])
+            .unwrap();
+        assert!(positions.is_empty());
+        assert_eq!(starts, vec![0]);
+    }
+
+    /// The trie region's two raw readers must reject a read that runs off the
+    /// end of the field's own `[indexStart, indexEnd)` slice rather than
+    /// panicking on the slice index -- a corrupt `.tmd` can point `rootFP`
+    /// anywhere inside it.
+    #[test]
+    fn trie_reads_past_the_index_slice_are_errors() {
+        let slice = [0u8; 4];
+        assert!(matches!(read_u64_at(&slice, 0), Err(Error::Store(_))));
+        assert!(matches!(read_u8_at(&slice, 9), Err(Error::Store(_))));
+        assert!(matches!(
+            read_u64_n_bytes(&slice, 2, 8),
+            Err(Error::Store(_))
+        ));
+        // In range: the low bytes of a little-endian run.
+        assert_eq!(read_u64_n_bytes(&[1, 2, 3, 4], 1, 2).unwrap(), 0x0302);
+    }
+
+    /// A dead-prefix skip that jumps past the *last* term of the field must
+    /// end the walk, not fall off the end of the frame stack -- the
+    /// `SeekStatus::End` arm of `Intersect`'s skip.
+    #[test]
+    fn regexp_intersect_skipping_past_the_last_term_ends_the_walk() {
+        let b = Builder::new();
+        let (tim, tip, tmd) = b.build(IndexOptions::Docs, &[("za", 1, 1), ("zb", 1, 1)]);
+        let fis = FieldInfos {
+            fields: vec![field_info(0, "text", IndexOptions::Docs)],
+        };
+        let fields = open(&tim, &tip, &tmd, &fis, &b.id, &b.suffix, 5).unwrap();
+        let field = fields.field("text").unwrap();
+
+        // `z[0-9]` shares the literal prefix `z` with both terms and matches
+        // neither, and each of them is a dead prefix (nothing extending "za"
+        // or "zb" can match a two-byte pattern), so the walk skips past "zb"
+        // and off the end of the dictionary.
+        let pattern = RegexpPattern::new(b"z[0-9]").unwrap();
+        assert_eq!(field.regexp_intersect(&pattern).count(), 0);
+
+        // The same pattern with a match in range still finds it.
+        let (tim, tip, tmd) = b.build(IndexOptions::Docs, &[("z1", 1, 1), ("za", 1, 1)]);
+        let fields = open(&tim, &tip, &tmd, &fis, &b.id, &b.suffix, 5).unwrap();
+        let field = fields.field("text").unwrap();
+        let got: Vec<Vec<u8>> = field.regexp_intersect(&pattern).map(|(t, _)| t).collect();
+        assert_eq!(got, vec![b"z1".to_vec()]);
+    }
+
+    /// `TrieReader.load`'s two out-of-word fallbacks: when a node's packed fp
+    /// needs more bytes than fit alongside the header in the first 8-byte
+    /// word, Java re-reads a whole `long` at `fp + 2` (single child) or
+    /// `fp + 3` (multi children) instead of shifting the word it already has.
+    /// Neither is reachable from any fixture, because both need a `.tim`
+    /// large enough to push a block fp past ~2^40.
+    #[test]
+    fn load_node_reads_a_second_word_for_wide_file_pointers() {
+        // Single child, 7-byte child delta fp -> `read_u64_at(fp + 2)`.
+        let mut slice = vec![0u8; 32];
+        slice[0] = LEAF_NODE_HAS_TERMS as u8; // leaf child at fp 0, output fp 42
+        slice[1] = 42;
+        let parent_fp = 16usize;
+        let child_delta_bytes_minus1 = 6u32;
+        slice[parent_fp] =
+            (SIGN_SINGLE_CHILD_WITHOUT_OUTPUT | (child_delta_bytes_minus1 << 2)) as u8;
+        slice[parent_fp + 1] = b'q';
+        slice[parent_fp + 2] = parent_fp as u8; // delta 16 -> child at fp 0
+        let node = load_node(&slice, parent_fp).unwrap();
+        assert_eq!(node.sign, SIGN_SINGLE_CHILD_WITHOUT_OUTPUT);
+        assert_eq!(node.child_delta_fp, parent_fp as u64);
+        let child = lookup_child(&slice, &node, b'q').unwrap().expect("child q");
+        assert_eq!(child.output_fp, Some(42));
+        assert!(lookup_child(&slice, &node, b'r').unwrap().is_none());
+
+        // Multi children with an output, 6-byte encoded output fp ->
+        // `read_u64_at(fp + 3)`.
+        let mut slice = vec![0u8; 48];
+        slice[0] = LEAF_NODE_HAS_TERMS as u8;
+        slice[1] = 30;
+        slice[2] = LEAF_NODE_HAS_TERMS as u8;
+        slice[3] = 40;
+        let parent_fp = 16usize;
+        let encoded_bytes_minus1 = 5u32;
+        let min_label = b'a';
+        let strategy_bytes = 1usize; // ARRAY: one extra label
+        let term: u32 = SIGN_MULTI_CHILDREN
+            | (1 << 5)
+            | (encoded_bytes_minus1 << 6)
+            | (CHILD_STRATEGY_ARRAY << 9)
+            | (((strategy_bytes - 1) as u32) << 11)
+            | ((min_label as u32) << 16);
+        slice[parent_fp..parent_fp + 4].copy_from_slice(&term.to_le_bytes());
+        // encodeFP with hasTerms, no floor, output fp 9; written at fp + 3 so
+        // the 6-byte read starting there sees exactly it.
+        slice[parent_fp + 3] = ((9u64 << 2) | NON_LEAF_NODE_HAS_TERMS) as u8;
+        let strategy_fp = parent_fp + 4 + encoded_bytes_minus1 as usize;
+        slice[strategy_fp] = b'b';
+        slice[strategy_fp + 1] = parent_fp as u8; // 'a' -> fp 0
+        slice[strategy_fp + 2] = (parent_fp - 2) as u8; // 'b' -> fp 2
+
+        let node = load_node(&slice, parent_fp).unwrap();
+        assert_eq!(node.output_fp, Some(9));
+        assert!(node.has_terms);
+        assert_eq!(node.floor_data_fp, None);
+        assert_eq!(node.strategy_fp, strategy_fp);
+        for (label, output) in [(b'a', 30u64), (b'b', 40)] {
+            let child = lookup_child(&slice, &node, label)
+                .unwrap()
+                .unwrap_or_else(|| panic!("label {} should resolve", label as char));
+            assert_eq!(child.output_fp, Some(output));
+        }
+    }
+
     #[test]
     fn invalid_field_number_rejected() {
         let b = Builder::new();
@@ -3335,7 +5939,7 @@ mod tests {
             tmd.write_vlong(0);
             tmd.write_vlong(index_end as i64);
         }
-        tmd.write_i64(index_end as i64);
+        tmd.write_i64(tip.len() as i64); // indexLength: the whole file, footer included
         tmd.write_i64(tim.len() as i64);
         codec_util::write_footer(&mut tmd);
 
@@ -3543,7 +6147,8 @@ mod tests {
         let field = fields.field("many").unwrap();
         let num_terms: i64 = kv.get("field.many.numTerms").unwrap().parse().unwrap();
         assert_eq!(field.num_terms, num_terms);
-        for (term, stats) in field.entries.range(0, field.entries.len()) {
+        let mut it = field.iter();
+        while let Some((term, stats)) = it.next() {
             assert_eq!(field.seek_exact(term).unwrap(), stats);
         }
     }
@@ -3671,7 +6276,12 @@ mod tests {
                 .parse()
                 .unwrap();
             assert_eq!(field.num_terms, expected_count);
-            assert_eq!(field.entries.len() as i64, expected_count);
+            let mut counted = 0i64;
+            let mut count_it = field.iter();
+            while count_it.next().is_some() {
+                counted += 1;
+            }
+            assert_eq!(counted, expected_count);
             let terms_tsv = std::fs::read_to_string(format!("{dir}{name}.terms.tsv")).unwrap();
             let expected_terms: Vec<&str> = terms_tsv.lines().collect();
             assert_eq!(expected_terms.len() as i64, expected_count);
@@ -3682,7 +6292,8 @@ mod tests {
                 assert_eq!(stats.doc_freq, 1);
                 assert_eq!(stats.total_term_freq, 1);
             }
-            for (term, stats) in field.entries.range(0, field.entries.len()) {
+            let mut it = field.iter();
+            while let Some((term, stats)) = it.next() {
                 assert_eq!(field.seek_exact(term).unwrap(), stats);
             }
         }
@@ -4034,8 +6645,302 @@ mod tests {
         let field = fields.field("many").unwrap();
         let num_terms: i64 = kv.get("field.many.numTerms").unwrap().parse().unwrap();
         assert_eq!(field.num_terms, num_terms);
-        for (term, stats) in field.entries.range(0, field.entries.len()) {
+        let mut it = field.iter();
+        while let Some((term, stats)) = it.next() {
             assert_eq!(field.seek_exact(term).unwrap(), stats);
         }
+    }
+
+    // -----------------------------------------------------------------
+    // c27: the arithmetic gate. One regression test per fix, each written
+    // against the *unfixed* code first.
+    // -----------------------------------------------------------------
+
+    fn default_field_infos() -> FieldInfos {
+        FieldInfos {
+            fields: vec![field_info(0, "text", IndexOptions::DocsAndFreqs)],
+        }
+    }
+
+    const SAMPLE_TERMS: &[(&str, u32, u64)] = &[("a", 1, 1), ("ab", 2, 3), ("b", 1, 1)];
+
+    /// `rootFP` is a `.tmd` vlong that `open` casts with `as usize`, so a
+    /// negative one arrives at `load_node` as `usize::MAX`. `read_u64_at`'s
+    /// bound used to be `fp + 8 > slice.len()`, which panics on that in a
+    /// debug build and wraps to `7` -- passing the bound -- in a release one,
+    /// only to panic on the slice index right after.
+    #[test]
+    fn absurd_root_fp_is_a_decode_error_not_an_overflow() {
+        let mut b = Builder::new();
+        b.ov.root_fp = Some(-1);
+        let (tim, tip, tmd) = b.build(IndexOptions::DocsAndFreqs, SAMPLE_TERMS);
+        let err = open(
+            &tim,
+            &tip,
+            &tmd,
+            &default_field_infos(),
+            &b.id,
+            &b.suffix,
+            5,
+        )
+        .unwrap_err();
+        assert!(
+            format!("{err}").contains("trie node read past end of index slice"),
+            "{err}"
+        );
+    }
+
+    /// `numFields` sized a `Vec<(String, FieldTerms)>` reservation directly.
+    /// A `FieldTerms` is a couple of hundred bytes, so a corrupt vint bought
+    /// a several-hundred-gigabyte reservation -- and an allocation failure
+    /// *aborts*, which `catch_unwind` at the FFI boundary cannot intercept.
+    #[test]
+    fn absurd_num_fields_errors_instead_of_reserving_for_it() {
+        let mut b = Builder::new();
+        b.ov.num_fields = Some(i32::MAX);
+        let (tim, tip, tmd) = b.build(IndexOptions::DocsAndFreqs, SAMPLE_TERMS);
+        let err = open(
+            &tim,
+            &tip,
+            &tmd,
+            &default_field_infos(),
+            &b.id,
+            &b.suffix,
+            5,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidNumFields(n) if n == i32::MAX),
+            "{err}"
+        );
+    }
+
+    /// `minTerm`/`maxTerm` are vint-length-prefixed and sized `vec![0u8; n]`
+    /// straight off that vint. Java's `new BytesRef(numBytes)` raises a
+    /// catchable `OutOfMemoryError`; the Rust equivalent aborts.
+    #[test]
+    fn absurd_min_term_length_errors_instead_of_allocating_for_it() {
+        let mut b = Builder::new();
+        b.ov.min_term_len = Some(i32::MAX);
+        let (tim, tip, tmd) = b.build(IndexOptions::DocsAndFreqs, SAMPLE_TERMS);
+        let err = open(
+            &tim,
+            &tip,
+            &tmd,
+            &default_field_infos(),
+            &b.id,
+            &b.suffix,
+            5,
+        )
+        .unwrap_err();
+        assert!(
+            format!("{err}").contains("exceeds") && format!("{err}").contains("remaining bytes"),
+            "{err}"
+        );
+    }
+
+    /// `totalTermFreq = docFreq + <vlong>` is a `long` add in Java, which
+    /// wraps silently; in Rust it panics in a debug build and, in a release
+    /// one, produces a *negative* frequency every scorer downstream would
+    /// treat as real.
+    #[test]
+    fn total_term_freq_overflow_is_a_decode_error() {
+        let mut b = Builder::new();
+        b.ov.ttf_delta = Some(i64::MAX);
+        let (tim, tip, tmd) = b.build(IndexOptions::DocsAndFreqs, SAMPLE_TERMS);
+        let fields = open(
+            &tim,
+            &tip,
+            &tmd,
+            &default_field_infos(),
+            &b.id,
+            &b.suffix,
+            5,
+        )
+        .unwrap();
+        let field = fields.field("text").unwrap();
+        let err = field.try_seek_exact(b"a").unwrap_err();
+        assert!(
+            format!("{err}").contains("totalTermFreq overflows"),
+            "{err}"
+        );
+    }
+
+    /// A block's `entCount` drives every scan cursor and
+    /// `binary_search_term_leaf`'s bisection bounds. The writer emits at
+    /// least one vint per entry into the suffix-lengths region, so
+    /// `entCount > numSuffixLengthBytes` is corruption -- and checking it
+    /// once per block load is what bounds `ent_count` for every per-entry
+    /// proof in this module.
+    #[test]
+    fn ent_count_past_the_suffix_lengths_region_is_a_decode_error() {
+        let mut b = Builder::new();
+        b.ov.ent_count = Some(50);
+        let (tim, tip, tmd) = b.build(IndexOptions::DocsAndFreqs, SAMPLE_TERMS);
+        let fields = open(
+            &tim,
+            &tip,
+            &tmd,
+            &default_field_infos(),
+            &b.id,
+            &b.suffix,
+            5,
+        )
+        .unwrap();
+        let field = fields.field("text").unwrap();
+        let err = field.try_seek_exact(b"a").unwrap_err();
+        assert!(
+            format!("{err}").contains("exceeds its 3-byte suffix-lengths region"),
+            "{err}"
+        );
+    }
+
+    /// `binarySearchTermLeaf`'s midpoint is `(start + end) >>> 1` in Java --
+    /// an *unsigned* shift, which is what keeps the midpoint correct once the
+    /// sum passes `Integer.MAX_VALUE`. This port had `>>`, so the same sum
+    /// panicked in a debug build and produced a negative `mid` in a release
+    /// one. Driven at the `Frame` level because reaching it through
+    /// `load_block` would need a gigabyte-scale suffix-lengths region.
+    #[test]
+    fn binary_search_midpoint_does_not_overflow_for_a_huge_ent_count() {
+        let mut frame = Frame {
+            ent_count: i32::MAX as u32,
+            next_ent: 0,
+            is_leaf_block: true,
+            all_equal: true,
+            // One vint, `0`: every suffix in the block is zero bytes long,
+            // so the `suffix_length * ent_count <= suffix_bytes_len` guard
+            // passes with an empty suffix region and the bisection runs its
+            // full ~31 steps against `start + end` near `2 * i32::MAX`.
+            suffix_length_bytes: vec![0u8],
+            suffix_length_bytes_len: 1,
+            ..Frame::default()
+        };
+        let mut term = TermBuf::default();
+        let mut term_exists = false;
+        let status = frame
+            .binary_search_term_leaf(&mut term, b"zzz", true, &mut term_exists)
+            .unwrap();
+        // Every suffix is empty, so every one of them sorts before "zzz":
+        // the bisection walks to the very last entry and reports End.
+        assert_eq!(status, SeekStatus::End);
+        assert_eq!(frame.next_ent, i32::MAX);
+    }
+
+    /// Recomputes the trailing 8-byte CRC32 of a codec-footer-terminated
+    /// buffer in place, so a byte flip in the body is not simply "caught" by
+    /// the checksum -- c15/c19/c25's shape.
+    fn resign_footer(buf: &mut [u8]) {
+        let len = buf.len();
+        let checksum = crc32fast::hash(&buf[..len - 8]) as u64;
+        buf[len - 8..].copy_from_slice(&checksum.to_be_bytes());
+    }
+
+    /// Re-signed single-byte corruption sweep over the whole `.tim` block
+    /// body, the whole `.tip` trie region and the whole `.tmd` record region:
+    /// flip one bit, re-sign the footer so the CRC cannot "catch" the
+    /// corruption, and require a typed error or a clean decode --
+    /// never a panic, and never an allocation abort `catch_unwind` cannot
+    /// intercept.
+    ///
+    /// The assertion is deliberately *not* "every corruption is rejected":
+    /// plenty of single-bit flips produce a self-consistent dictionary that
+    /// answers differently but well-formedly, which is exactly what the
+    /// checksum this sweep defeats exists for.
+    #[test]
+    fn every_resigned_single_byte_terms_dict_corruption_is_an_error_or_a_clean_decode() {
+        let b = Builder::new();
+        let (tim, tip, tmd) = b.build(IndexOptions::DocsAndFreqs, SAMPLE_TERMS);
+        let fis = default_field_infos();
+        // Bodies, past the index header and short of the footer. The `.tmd`
+        // also records both other files' lengths in its last 16 body bytes; a
+        // flip there is caught by `retrieve_checksum_with_expected_length`
+        // rather than by anything semantic, so it is excluded as
+        // uninteresting.
+        let tim_body = 8..tim.len() - codec_util::FOOTER_LENGTH;
+        let tip_body = 8..tip.len() - codec_util::FOOTER_LENGTH;
+        let tmd_body = 8..tmd.len() - codec_util::FOOTER_LENGTH - 16;
+
+        let mut total = 0usize;
+        let mut rejected = 0usize;
+
+        let exercise = |tim: &[u8], tip: &[u8], tmd: &[u8]| -> bool {
+            match open(tim, tip, tmd, &fis, &b.id, &b.suffix, 5) {
+                Err(_) => true,
+                Ok(fields) => {
+                    let Some(field) = fields.field("text") else {
+                        return true;
+                    };
+                    let mut bad = false;
+                    for (term, _, _) in SAMPLE_TERMS {
+                        if field.try_seek_exact(term.as_bytes()).is_err() {
+                            bad = true;
+                        }
+                    }
+                    let mut it = field.iter();
+                    if it.try_seek_ceil(b"aa").is_err() {
+                        bad = true;
+                    }
+                    let mut it = field.iter();
+                    loop {
+                        match it.try_next() {
+                            Ok(Some(_)) => {}
+                            Ok(None) => break,
+                            Err(_) => {
+                                bad = true;
+                                break;
+                            }
+                        }
+                    }
+                    bad
+                }
+            }
+        };
+
+        for off in tim_body {
+            for mask in [0x01u8, 0x80] {
+                let mut corrupt = tim.clone();
+                corrupt[off] ^= mask;
+                resign_footer(&mut corrupt);
+                total += 1;
+                if exercise(&corrupt, &tip, &tmd) {
+                    rejected += 1;
+                }
+            }
+        }
+        for off in tip_body {
+            for mask in [0x01u8, 0x80] {
+                let mut corrupt = tip.clone();
+                corrupt[off] ^= mask;
+                resign_footer(&mut corrupt);
+                total += 1;
+                if exercise(&tim, &corrupt, &tmd) {
+                    rejected += 1;
+                }
+            }
+        }
+        for off in tmd_body {
+            for mask in [0x01u8, 0x80] {
+                let mut corrupt = tmd.clone();
+                corrupt[off] ^= mask;
+                resign_footer(&mut corrupt);
+                total += 1;
+                if exercise(&tim, &tip, &corrupt) {
+                    rejected += 1;
+                }
+            }
+        }
+
+        // Measured when this was written: 391 of 436. The rest decode to a
+        // different but self-consistent dictionary -- c19 measured 44 of 99
+        // on `.tip` alone and c25 15 of 43 on `.tvd`, so a rate below 100% is
+        // the norm, not a gap. What this pins is that nothing *panics or
+        // aborts*, plus a floor so a future change that stops bounding
+        // something fails loudly.
+        assert_eq!(total, 436);
+        assert!(
+            rejected >= 385,
+            "only {rejected} of {total} re-signed .tim/.tip/.tmd corruptions were rejected"
+        );
     }
 }

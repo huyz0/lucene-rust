@@ -82,18 +82,12 @@ fn doc(id: &str, body: &str) -> Document {
     }
 }
 
-fn tempdir(tag: &str) -> std::path::PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!(
-        "lucene-rust-index-writer-tv-fixture-{tag}-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&p).unwrap();
-    p
+use lucene_util::test_support::TempDir;
+
+/// A scratch directory that removes itself when the test ends -- unless
+/// the test is panicking, in which case its bytes stay for inspection.
+fn tempdir(tag: &str) -> TempDir {
+    TempDir::new(&format!("index-writer-tv-fixture-{tag}"))
 }
 
 /// The critical end-to-end proof this task requires: documents added via
@@ -115,9 +109,9 @@ fn documents_added_via_index_writer_have_readable_term_vectors() {
     let mut writer = IndexWriter::open(&dir, fields.clone(), "Lucene104", version()).unwrap();
     writer.set_term_vector_field(Some("body")).unwrap();
 
-    writer.add_document(doc("a", "the quick fox"));
-    writer.add_document(doc("b", "the lazy fox"));
-    writer.add_document(doc("c", "the fox runs"));
+    writer.add_document(doc("a", "the quick fox")).unwrap();
+    writer.add_document(doc("b", "the lazy fox")).unwrap();
+    writer.add_document(doc("c", "the fox runs")).unwrap();
     let sis = writer.commit().unwrap().clone();
     assert_eq!(sis.segments.len(), 1);
     let sci = &sis.segments[0];
@@ -196,7 +190,7 @@ fn commit_with_no_term_vector_field_configured_writes_no_term_vector_files() {
     ];
     let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
 
-    writer.add_document(doc("a", "the quick fox"));
+    writer.add_document(doc("a", "the quick fox")).unwrap();
     let sis = writer.commit().unwrap().clone();
     let sci = &sis.segments[0];
 
@@ -225,8 +219,8 @@ fn a_field_with_both_postings_and_term_vectors_configured_together_produces_both
     writer.set_postings_field(Some("body")).unwrap();
     writer.set_term_vector_field(Some("body")).unwrap();
 
-    writer.add_document(doc("a", "the quick fox"));
-    writer.add_document(doc("b", "the lazy fox"));
+    writer.add_document(doc("a", "the quick fox")).unwrap();
+    writer.add_document(doc("b", "the lazy fox")).unwrap();
     let sis = writer.commit().unwrap().clone();
     assert_eq!(sis.segments.len(), 1);
     let sci = &sis.segments[0];
@@ -359,8 +353,12 @@ fn two_distinct_term_vector_fields_in_one_commit_are_both_readable() {
         ],
     };
 
-    writer.add_document(two_field_doc("a", "space exploration", "the quick fox"));
-    writer.add_document(two_field_doc("b", "deep sea diving", "the lazy fox"));
+    writer
+        .add_document(two_field_doc("a", "space exploration", "the quick fox"))
+        .unwrap();
+    writer
+        .add_document(two_field_doc("b", "deep sea diving", "the lazy fox"))
+        .unwrap();
     let sis = writer.commit().unwrap().clone();
     assert_eq!(sis.segments.len(), 1);
     let sci = &sis.segments[0];
