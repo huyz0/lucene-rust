@@ -2708,7 +2708,7 @@ fn compare_intersect_with_scan(
     field_terms: &blocktree::FieldTerms,
     label: &str,
     matches: impl Fn(&[u8]) -> bool,
-    mut intersected: impl Iterator<Item = (Vec<u8>, blocktree::TermStats)>,
+    mut intersected: impl Iterator<Item = blocktree::Result<(Vec<u8>, blocktree::TermStats)>>,
     problems: &mut Vec<String>,
 ) {
     let mut scan = field_terms.iter();
@@ -2726,7 +2726,15 @@ fn compare_intersect_with_scan(
                 }
             }
         };
-        let actual = intersected.next().map(|(t, _)| t);
+        let actual = match intersected.next().transpose() {
+            Ok(next) => next.map(|(t, _)| t),
+            Err(e) => {
+                problems.push(format!(
+                    "field {field_name:?}: {label}: the intersect walk failed: {e}"
+                ));
+                return;
+            }
+        };
         match (expected, actual) {
             (None, None) => return,
             (Some(e), Some(a)) if e == a => {}
@@ -4163,7 +4171,11 @@ fn check_field_norms(
             }
         };
         let mut cursor = sparse_region.map(|region| {
-            lucene_codecs::indexed_disi::DisiCursor::new(region, entry.dense_rank_power)
+            lucene_codecs::indexed_disi::DisiCursor::new(
+                region,
+                entry.dense_rank_power,
+                entry.jump_table_entry_count,
+            )
         });
 
         for doc in 0..si.doc_count {
@@ -5148,7 +5160,8 @@ mod tests {
             docs: (0..num_docs).map(|d| (d, 1 + (d % 3))).collect(),
             positions: vec![],
             offsets: vec![],
-            payloads: vec![],
+            payload_bytes: vec![],
+            payload_lengths: vec![],
         }];
         write_postings_fixture(dst_dir, &terms, num_docs, num_docs, None)
     }
@@ -7139,14 +7152,25 @@ mod tests {
                 docs: vec![(0, occurrences_in_first_doc as i32), (2, 2)],
                 positions: vec![big, vec![1, 7]],
                 offsets: vec![big_offsets, vec![(4, 7), (28, 31)]],
-                payloads: vec![big_payloads, vec![vec![9], vec![9]]],
+                payload_bytes: big_payloads
+                    .iter()
+                    .flatten()
+                    .copied()
+                    .chain([9u8, 9])
+                    .collect(),
+                payload_lengths: big_payloads
+                    .iter()
+                    .map(|p| p.len() as u32)
+                    .chain([1, 1])
+                    .collect(),
             },
             TermPostings {
                 term: b"beta".to_vec(),
                 docs: vec![(1, 3)],
                 positions: vec![vec![0, 5, 9]],
                 offsets: vec![vec![(0, 4), (20, 24), (36, 40)]],
-                payloads: vec![vec![vec![1], vec![2], vec![3]]],
+                payload_bytes: vec![1, 2, 3],
+                payload_lengths: vec![1, 1, 1],
             },
         ];
         let input = FieldPostingsInput {
@@ -9766,7 +9790,8 @@ mod tests {
                 docs: vec![(0, 1), (1, 2)],
                 positions: vec![],
                 offsets: vec![],
-                payloads: vec![],
+                payload_bytes: vec![],
+                payload_lengths: vec![],
             }],
             2,
             2,
@@ -10154,14 +10179,16 @@ mod tests {
                 docs: vec![(0, 2), (1, 3)],
                 positions: vec![],
                 offsets: vec![],
-                payloads: vec![],
+                payload_bytes: vec![],
+                payload_lengths: vec![],
             },
             TermPostings {
                 term: b"beta".to_vec(),
                 docs: vec![(1, 1), (2, 4)],
                 positions: vec![],
                 offsets: vec![],
-                payloads: vec![],
+                payload_bytes: vec![],
+                payload_lengths: vec![],
             },
         ]
     }

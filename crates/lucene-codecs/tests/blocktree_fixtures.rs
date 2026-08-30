@@ -347,7 +347,8 @@ fn many_field_wildcard_intersect_matches_real_lucene_wildcard_query() {
         let pattern = lucene_codecs::wildcard::WildcardPattern::new(pattern_str.as_bytes());
         let got: Vec<(String, i32, i64)> = many
             .intersect(&pattern)
-            .map(|(t, s)| {
+            .map(|r| {
+                let (t, s) = r.expect("the fixture's blocks are intact");
                 (
                     String::from_utf8(t.to_vec()).unwrap(),
                     s.doc_freq,

@@ -78,7 +78,8 @@ fn synthetic_term(doc_count: usize, with_offsets: bool, with_payloads: bool) -> 
     let mut docs = Vec::with_capacity(doc_count);
     let mut positions = Vec::with_capacity(doc_count);
     let mut offsets = Vec::new();
-    let mut payloads = Vec::new();
+    let mut payload_bytes = Vec::new();
+    let mut payload_lengths = Vec::new();
     let mut doc_id = 0i32;
     for d in 0..doc_count {
         // 1..=5 occurrences, cycling on a period **coprime with 256** so the
@@ -102,17 +103,13 @@ fn synthetic_term(doc_count: usize, with_offsets: bool, with_payloads: bool) -> 
             );
         }
         if with_payloads {
-            payloads.push(
-                doc_positions
-                    .iter()
-                    .map(|&p| {
-                        // Lengths vary, including zero, which is what makes a
-                        // block's payload byte-run offsets non-trivial.
-                        let len = (p % 4) as usize;
-                        vec![(d % 251) as u8; len]
-                    })
-                    .collect(),
-            );
+            for &p in &doc_positions {
+                // Lengths vary, including zero, which is what makes a
+                // block's payload byte-run offsets non-trivial.
+                let len = (p % 4) as usize;
+                payload_lengths.push(len as u32);
+                payload_bytes.extend(std::iter::repeat_n((d % 251) as u8, len));
+            }
         }
         positions.push(doc_positions);
     }
@@ -121,7 +118,8 @@ fn synthetic_term(doc_count: usize, with_offsets: bool, with_payloads: bool) -> 
         docs,
         positions,
         offsets,
-        payloads,
+        payload_bytes,
+        payload_lengths,
     }
 }
 
@@ -302,7 +300,8 @@ fn a_pulsed_singleton_term_still_answers_for_its_one_document() {
     term.docs = vec![(41, 3)];
     term.positions = vec![vec![0, 4, 9]];
     term.offsets = vec![vec![(0, 3), (10, 14), (20, 26)]];
-    term.payloads = vec![vec![vec![1u8], Vec::new(), vec![2u8, 3u8]]];
+    term.payload_bytes = vec![1u8, 2u8, 3u8];
+    term.payload_lengths = vec![1, 0, 2];
     let written = write(
         &term,
         IndexOptions::DocsAndFreqsAndPositionsAndOffsets,

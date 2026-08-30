@@ -215,6 +215,46 @@ public class VerifySparseNumericDocValues {
         }
       }
 
+      // Third pass: jumps of two or more 65 536-doc blocks, which is the only
+      // way real Lucene's `IndexedDISI.advanceBlock` reaches the **block jump
+      // table** -- it walks the block headers whenever the destination is
+      // fewer than two blocks ahead, so neither pass above reads a single
+      // jump-table byte. A table of the right length but the wrong content
+      // passes both of them.
+      //
+      // One iterator per starting offset, because `advanceExact` is
+      // forward-only: each iterator makes one long jump, which is exactly the
+      // shape being tested.
+      if (maxDoc > 2 * 65536) {
+        for (int stride : new int[] {2 * 65536, 3 * 65536 - 1}) {
+          for (int offset = 0; offset < 65536; offset += 997) {
+            NumericDocValues far = producer.getNumeric(fieldInfo);
+            for (int doc = offset; doc < maxDoc; doc += stride) {
+              boolean hasValue = far.advanceExact(doc);
+              Long want = expected.get(doc);
+              if (want == null) {
+                if (hasValue) {
+                  System.out.println(
+                      "MISMATCH (block jump " + stride + "+" + offset + ") " + segment + " doc "
+                          + doc + ": expected absent, got present (" + far.longValue() + ")");
+                  failures++;
+                }
+              } else if (!hasValue) {
+                System.out.println(
+                    "MISMATCH (block jump " + stride + "+" + offset + ") " + segment + " doc " + doc
+                        + ": expected present (" + want + "), got absent");
+                failures++;
+              } else if (far.longValue() != want) {
+                System.out.println(
+                    "MISMATCH (block jump " + stride + "+" + offset + ") " + segment + " doc " + doc
+                        + ": expected=" + want + " got=" + far.longValue());
+                failures++;
+              }
+            }
+          }
+        }
+      }
+
       producer.close();
       if (failures == 0) {
         System.out.println(
@@ -225,7 +265,8 @@ public class VerifySparseNumericDocValues {
                 + expected.size()
                 + " present, "
                 + (maxDoc - expected.size())
-                + " absent), plus three strided passes through the DENSE rank table");
+                + " absent), plus three strided passes through the DENSE rank table"
+                + (maxDoc > 2 * 65536 ? " and two block-jump passes through the jump table" : ""));
       }
       return failures;
     } catch (CorruptIndexException e) {

@@ -232,7 +232,11 @@ fn map_writer_error(context: &str, e: index_writer::Error) -> FfiStatus {
         // "indexed field cannot have payloads without positions", and a
         // payload supplier installed against a field list where nothing
         // declares payloads (so every payload would be silently discarded).
-        | index_writer::Error::PayloadsWithoutPositions(_, _)
+        // c40: `IndexWriter::open`'s field-list validation -- Java's
+        // `FieldInfo`/`FieldInfos` constructors, which throw
+        // `IllegalArgumentException` (this is where "indexed field cannot have
+        // payloads without positions" now surfaces).
+        | index_writer::Error::FieldInfos(_)
         | index_writer::Error::NoPayloadFields
         | index_writer::Error::UnknownTermVectorField(_)
         | index_writer::Error::UnsupportedTermVectorField(_)

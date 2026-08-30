@@ -1007,6 +1007,43 @@ pub fn offsets_from_analysis(
     spans
 }
 
+/// `OffsetSpanCollector.collectLeaf` at every position of one matched span:
+/// the offsets of the occurrence each slot settled on, inserted into that
+/// *term's* enum (Java keys the collector by term bytes, so two slots holding
+/// one term share one enum and one dedup set).
+fn collect_span<'t>(
+    terms: &[&'t str],
+    occurrences: &[Vec<lucene_codecs::postings::Position>],
+    chosen: &[i32],
+    per_term: &mut Vec<(&'t str, Vec<(i32, i32)>)>,
+) {
+    for (slot, &position) in chosen.iter().enumerate() {
+        let slot_occurrences = &occurrences[slot];
+        let Ok(at) = slot_occurrences.binary_search_by_key(&position, |o| o.position) else {
+            continue;
+        };
+        let occurrence = &slot_occurrences[at];
+        // An occurrence whose offsets are `-1` (positions indexed, offsets
+        // not) is dropped rather than passed on.
+        if occurrence.start_offset < 0 || occurrence.end_offset < occurrence.start_offset {
+            continue;
+        }
+        let pair = (occurrence.start_offset, occurrence.end_offset);
+        let entry = match per_term.iter_mut().find(|(t, _)| *t == terms[slot]) {
+            Some(entry) => entry,
+            None => {
+                per_term.push((terms[slot], Vec::new()));
+                per_term.last_mut().expect("just pushed")
+            }
+        };
+        // `SpanCollectedOffsetsEnum.add`: sorted insert, dropping an offset
+        // pair this term already has.
+        if let Err(at) = entry.1.binary_search(&pair) {
+            entry.1.insert(at, pair);
+        }
+    }
+}
+
 /// `PhraseHelper` -- the position-sensitive half of `FieldOffsetStrategy`:
 /// **only the offsets that take part in an actual phrase match**, not every
 /// occurrence of every phrase term.
@@ -1040,17 +1077,46 @@ pub fn offsets_from_analysis(
 /// not offsets) is dropped rather than passed on, same as
 /// [`offsets_from_postings`].
 ///
-/// # Scope
+/// # Which matcher this is, and why it is not the scorer's
 ///
-/// Match enumeration is an **in-order** greedy alignment -- one alignment per
-/// starting position of the first slot, choosing the smallest still-legal
-/// position for each later slot -- not Java's general `SpanNearQuery`, which
-/// additionally allows the terms to appear reordered within the slop budget.
-/// For `slop == 0` (the case `PhraseHelper` is overwhelmingly used for) the two
-/// coincide exactly. Note this is now *narrower* than this crate's sloppy
-/// phrase **matching**, which is `SloppyPhraseMatcher` in full
-/// ([`crate::sloppy_phrase`]): a reordered occurrence is scored but is not
-/// offered a highlight fragment. Recorded in `docs/sweep/m2/LEDGER.md`.
+/// `PhraseHelper` does **not** run the query's own matcher. It runs the
+/// `SpanQuery` `WeightedSpanTermExtractor.extract` rewrites the phrase into:
+///
+/// ```java
+/// // sum position increments beyond 1
+/// int positionGaps = 0;
+/// int[] positions = phraseQuery.getPositions();
+/// if (positions.length >= 2) {
+///   positionGaps =
+///       Math.max(0, positions[positions.length - 1] - positions[0] - positions.length + 1);
+/// }
+/// // if original slop is 0 then require inOrder
+/// boolean inorder = (phraseQuery.getSlop() == 0);
+/// SpanNearQuery sp = new SpanNearQuery(clauses, phraseQuery.getSlop() + positionGaps, inorder);
+/// ```
+///
+/// so:
+///
+/// - **`slop == 0`** is `NearSpansOrdered`: each slot advanced to the smallest
+///   position at or after the previous slot's end, with
+///   `matchWidth = sum(start_i - end_{i-1})`. That is the in-order greedy walk
+///   below, unchanged -- and it is why an exact phrase highlights exactly what
+///   it matches.
+/// - **`slop > 0`** is `NearSpansUnordered`, whose budget is a *different
+///   quantity* from `SloppyPhraseMatcher`'s ([`crate::near_spans`] has the
+///   comparison). This port enumerated in order here at every slop, so a
+///   reordered occurrence was scored and never highlighted.
+///
+/// `positionGaps` is always `0` for this function: [`crate::query::PhraseQuery`]
+/// holds `terms` with no per-term positions, i.e. Java's `positions[i] == i`.
+///
+/// The consequences of using the *span* matcher rather than the scorer's are
+/// real and are Lucene's, not this port's: a reordered pair is highlighted at
+/// slop 1 where the scorer needs slop 2, and `"alpha alpha"~2` is highlighted
+/// in a document with a single `alpha` -- `SpanNearQuery` has no `rptGroups`,
+/// so two slots holding one term may settle on one position. Both are pinned
+/// against real Lucene's own `PhraseHelper` by the `highlight.*` entries in
+/// `fixtures/data/blocktree_index/manifest.properties`.
 ///
 /// `PhraseHelper`'s other half -- walking a whole `Query`
 /// tree to *discover* which sub-queries are position-sensitive
@@ -1078,57 +1144,57 @@ pub fn phrase_match_offsets(
     let mut per_term: Vec<(&str, Vec<(i32, i32)>)> = Vec::new();
 
     let slop = slop as i64;
-    let (first, rest) = positions.split_first().expect("non-empty, checked above");
-    // Scratch reused across candidates: the position chosen for each slot.
-    let mut chosen: Vec<i32> = vec![0; positions.len()];
-    for &p0 in first.iter() {
-        chosen[0] = p0;
-        let mut prev = p0;
-        let mut total_moves: i64 = 0;
-        let mut matched = true;
-        for (slot, slot_positions) in rest.iter().enumerate() {
-            // Smallest position strictly greater than `prev`; the lists are
-            // ascending, so `partition_point` finds it.
-            let idx = slot_positions.partition_point(|&x| x <= prev);
-            let Some(&pos) = slot_positions.get(idx) else {
-                matched = false;
-                break;
-            };
-            total_moves += i64::from(pos - prev - 1);
-            if total_moves > slop {
-                matched = false;
-                break;
-            }
-            prev = pos;
-            chosen[slot + 1] = pos;
-        }
-        if !matched {
-            continue;
-        }
-        // `SpanCollector.collectLeaf` at every position of the matched span.
-        for (slot, &position) in chosen.iter().enumerate() {
-            let slot_occurrences = &occurrences[slot];
-            let Ok(at) = slot_occurrences.binary_search_by_key(&position, |o| o.position) else {
-                continue;
-            };
-            let occurrence = &slot_occurrences[at];
-            if occurrence.start_offset < 0 || occurrence.end_offset < occurrence.start_offset {
-                continue;
-            }
-            let pair = (occurrence.start_offset, occurrence.end_offset);
-            let entry = match per_term.iter_mut().find(|(t, _)| *t == terms[slot]) {
-                Some(entry) => entry,
-                None => {
-                    per_term.push((terms[slot], Vec::new()));
-                    per_term.last_mut().expect("just pushed")
+
+    if slop == 0 {
+        // `NearSpansOrdered`: `stretchToOrder` advances each later slot to the
+        // smallest position at or after the previous slot's end, once per
+        // position of the first slot, and charges
+        // `matchWidth += spans.startPosition() - prevSpans.endPosition()`.
+        let (first, rest) = positions.split_first().expect("non-empty, checked above");
+        // Scratch reused across candidates: the position chosen for each slot.
+        let mut chosen: Vec<i32> = vec![0; positions.len()];
+        for &p0 in first.iter() {
+            chosen[0] = p0;
+            let mut prev = p0;
+            let mut total_moves: i64 = 0;
+            let mut matched = true;
+            for (slot, slot_positions) in rest.iter().enumerate() {
+                // Smallest position strictly greater than `prev`; the lists are
+                // ascending, so `partition_point` finds it. (A term span ends
+                // one past its position, so "at or after the previous end" is
+                // "strictly after the previous position".)
+                let idx = slot_positions.partition_point(|&x| x <= prev);
+                let Some(&pos) = slot_positions.get(idx) else {
+                    matched = false;
+                    break;
+                };
+                total_moves += i64::from(pos - prev - 1);
+                if total_moves > slop {
+                    matched = false;
+                    break;
                 }
-            };
-            // `SpanCollectedOffsetsEnum.add`: sorted insert, dropping an
-            // offset pair this term already has.
-            if let Err(at) = entry.1.binary_search(&pair) {
-                entry.1.insert(at, pair);
+                prev = pos;
+                chosen[slot + 1] = pos;
+            }
+            if matched {
+                collect_span(terms, occurrences, &chosen, &mut per_term);
             }
         }
+    } else {
+        // `NearSpansUnordered`. Every slot's occurrences are one position
+        // wide, so a slot's spans are `[p, p + 1)`.
+        let spans: Vec<Vec<(i32, i32)>> = positions
+            .iter()
+            .map(|slot| slot.iter().map(|&p| (p, p.saturating_add(1))).collect())
+            .collect();
+        let slices: Vec<&[(i32, i32)]> = spans.iter().map(Vec::as_slice).collect();
+        let mut chosen: Vec<i32> = vec![0; positions.len()];
+        crate::near_spans::for_each_unordered_match(&slices, slop, |current| {
+            for (slot, &(start, _)) in current.iter().enumerate() {
+                chosen[slot] = start;
+            }
+            collect_span(terms, occurrences, &chosen, &mut per_term);
+        });
     }
 
     let mut spans: Vec<TermOffsetSpan> = per_term

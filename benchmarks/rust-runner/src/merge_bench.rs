@@ -431,7 +431,8 @@ fn legacy_postings_merge(
                 docs,
                 positions: Vec::new(),
                 offsets: Vec::new(),
-                payloads: Vec::new(),
+                payload_bytes: Vec::new(),
+                payload_lengths: Vec::new(),
             });
         }
     }

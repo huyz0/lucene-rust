@@ -243,6 +243,80 @@ impl PointsField {
         debug_assert!(self.num_index_dims <= self.num_dims);
         (self.num_index_dims * self.bytes_per_dim) as usize
     }
+
+    /// `BKDReader.BKDPointTree.size()`: how many points live under the
+    /// subtree rooted at `node_id` -- derived from the node id and the
+    /// field's own counts, with no `.kdi` or `.kdd` read at all. That is what
+    /// makes [`PointsReader::estimate_point_count`] cheap.
+    ///
+    /// Only Java's **unbalanced** arm is ported, and that is complete rather
+    /// than partial: `BKDReader.isTreeBalanced()` returns `false` outright for
+    /// `version >= VERSION_META_FILE`, and this module accepts BKD version 10
+    /// alone ([`BKD_VERSION_CURRENT`]), far past it. A balanced tree is a
+    /// pre-8.6 index this reader rejects at `open`.
+    ///
+    /// Java's `numLeaves == 1` special case needs no counterpart either: it
+    /// exists only to force `isTreeBalanced` false for a one-leaf tree, which
+    /// is already the only arm here.
+    ///
+    /// ARITH: `num_leaves >= 1` and `max_points_in_leaf_node >= 1` (both
+    /// checked at [`read_field_meta`]), and `node_id >= 1` on every call --
+    /// [`PointsReader::estimate_point_count`] starts at the root and only ever
+    /// descends through [`child_ids`], which errors before a node id can
+    /// reach zero or wrap. Both doubling loops therefore terminate with
+    /// `left`/`right` under `2 * num_leaves`, which is why the whole
+    /// computation is done in `i64` where Java uses `int`: the intermediate
+    /// values cannot overflow, so the only checked step left is the final
+    /// point-count multiplication, which multiplies two `.kdm`-supplied
+    /// numbers.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn subtree_size(&self, node_id: i32) -> Result<i64> {
+        let num_leaves = i64::from(self.num_leaves);
+        let max_points = i64::from(self.max_points_in_leaf_node);
+        debug_assert!(node_id >= 1 && num_leaves >= 1 && max_points >= 1);
+
+        let mut left_most_leaf_node = i64::from(node_id);
+        while left_most_leaf_node < num_leaves {
+            left_most_leaf_node *= 2;
+        }
+        let mut right_most_leaf_node = i64::from(node_id);
+        while right_most_leaf_node < num_leaves {
+            right_most_leaf_node = right_most_leaf_node * 2 + 1;
+        }
+        let leaves = if right_most_leaf_node >= left_most_leaf_node {
+            // Both are on the same level.
+            right_most_leaf_node - left_most_leaf_node + 1
+        } else {
+            // Left is one level deeper than right.
+            right_most_leaf_node - left_most_leaf_node + 1 + num_leaves
+        };
+
+        // `treeDepth = MathUtil.log(numLeaves, 2) + 2`, then
+        // `rightMostLeafNode = (1 << treeDepth - 1) - 1`.
+        let log2 = 63 - (num_leaves as u64).leading_zeros() as i64;
+        let tree_right_most_leaf_node = (1i64 << (log2 + 1)) - 1;
+        // `pointCount % maxPointsInLeafNode`, with Java's `== 0` promotion to
+        // a full leaf. `rem_euclid` rather than `%` so a negative `pointCount`
+        // in a corrupt `.kdm` cannot produce a negative subtree size.
+        let last_leaf_node_point_count = match self.point_count.rem_euclid(max_points) {
+            0 => max_points,
+            n => n,
+        };
+
+        // `numLeaves` and `maxPointsInLeafNode` are both `.kdm` vints bounded
+        // only by `i32::MAX`, so a corrupt pair can put this product a hair
+        // past `i64`. Java lets it wrap and hands a *negative* cost to the
+        // query planner; saturating keeps the one property a cost estimate
+        // has to have -- monotonicity -- without an error path no legal file
+        // can reach.
+        Ok(if right_most_leaf_node == tree_right_most_leaf_node {
+            (leaves - 1)
+                .saturating_mul(max_points)
+                .saturating_add(last_leaf_node_point_count)
+        } else {
+            leaves.saturating_mul(max_points)
+        })
+    }
 }
 
 /// One decoded point: its owning document id and its full packed value
@@ -550,6 +624,64 @@ impl<'d> PointsReader<'d> {
         intersect_node(&mut input, 1, root_fp, &mut ctx, visitor)
     }
 
+    /// `PointValues.estimatePointCount(IntersectVisitor)`: how many points
+    /// [`intersect`](Self::intersect) *would* visit, without visiting them.
+    ///
+    /// The same descent as `intersect`, with the two expensive steps removed:
+    /// a cell entirely inside the query contributes its whole subtree's
+    /// `BKDPointTree.size()` (derived from the node id -- no `.kdd` read, no
+    /// `visitDocIDs`), a cell entirely outside contributes nothing, and a leaf
+    /// the walk cannot descend past is assumed half-matched, exactly as Java's
+    /// `(size() + 1) / 2` does. No leaf block is decoded on any path, so the
+    /// cost is bounded by the number of *inner* nodes whose cell crosses the
+    /// query boundary.
+    ///
+    /// Feed the result to `lucene_search::points_query::estimate_doc_count`
+    /// (Java's `estimateDocCount`, which is `estimatePointCount` plus the
+    /// points-per-document correction) to get the cost an
+    /// `IndexOrDocValuesQuery` planner wants.
+    ///
+    /// The visitor's [`visit`](IntersectVisitor::visit) and
+    /// [`visit_with_value`](IntersectVisitor::visit_with_value) are never
+    /// called -- Java's estimate uses only `compare`.
+    pub fn estimate_point_count<V: IntersectVisitor>(
+        &self,
+        field_number: i32,
+        visitor: &mut V,
+    ) -> Result<i64> {
+        self.estimate_point_count_bounded(field_number, visitor, i64::MAX)
+    }
+
+    /// `PointValues.isEstimatedPointCountGreaterThanOrEqualTo(visitor, tree,
+    /// upperBound)`'s engine: [`estimate_point_count`](Self::estimate_point_count)
+    /// that stops descending as soon as the running estimate reaches
+    /// `upper_bound`.
+    ///
+    /// The answer is therefore only meaningful as "did it reach the bound":
+    /// Java's own caller compares `>= upperBound` and discards the number.
+    pub fn estimate_point_count_bounded<V: IntersectVisitor>(
+        &self,
+        field_number: i32,
+        visitor: &mut V,
+        upper_bound: i64,
+    ) -> Result<i64> {
+        let field = self
+            .field(field_number)
+            .ok_or(Error::IllegalFieldNumber(field_number))?;
+        let inner_nodes = self.inner_nodes(field)?;
+        let mut input = SliceInput::new(inner_nodes);
+        let mut ctx = IntersectCtx {
+            field,
+            kdd: self.kdd,
+            min: field.min_packed_value.clone(),
+            max: field.max_packed_value.clone(),
+            split_values: vec![0u8; field.min_packed_value.len()],
+            negative_deltas: vec![false; field.num_index_dims as usize],
+        };
+        let root_fp = input.read_vlong()?;
+        estimate_node(&mut input, 1, root_fp, &mut ctx, visitor, upper_bound)
+    }
+
     /// Convenience wrapper over [`intersect`](Self::intersect) implementing
     /// `PointRangeQuery`'s visitor: every doc whose packed value falls inside
     /// the inclusive per-dimension box `[lower, upper]` (compared unsigned
@@ -564,6 +696,41 @@ impl<'d> PointsReader<'d> {
         let field = self
             .field(field_number)
             .ok_or(Error::IllegalFieldNumber(field_number))?;
+        let mut visitor = self.range_visitor(field, lower, upper)?;
+        self.intersect(field_number, &mut visitor)?;
+        Ok(visitor.docs)
+    }
+
+    /// [`estimate_point_count`](Self::estimate_point_count) under
+    /// [`range_query`](Self::range_query)'s visitor -- Java's
+    /// `PointRangeQuery.ScorerSupplier`, which calls
+    /// `values.estimatePointCount(visitor)` to size its `cost()` without
+    /// running the query.
+    ///
+    /// The result is an *estimate*, deliberately: it over-counts a leaf the
+    /// query only partly covers and never decodes one. Compare
+    /// [`range_query`], which answers exactly and costs a full intersect.
+    pub fn estimate_range_point_count(
+        &self,
+        field_number: i32,
+        lower: &[u8],
+        upper: &[u8],
+    ) -> Result<i64> {
+        let field = self
+            .field(field_number)
+            .ok_or(Error::IllegalFieldNumber(field_number))?;
+        let mut visitor = self.range_visitor(field, lower, upper)?;
+        self.estimate_point_count(field_number, &mut visitor)
+    }
+
+    /// `PointRangeQuery`'s inclusive-box visitor over `field`, with the
+    /// bounds-width check Java's `PointRangeQuery` constructor makes.
+    fn range_visitor(
+        &self,
+        field: &PointsField,
+        lower: &[u8],
+        upper: &[u8],
+    ) -> Result<RangeVisitor> {
         // `RangeVisitor` slices `lower`/`upper` per index dimension against
         // the *field's* shape, so a caller-supplied box of the wrong width
         // would index out of bounds mid-traversal. Java's `PointRangeQuery`
@@ -579,15 +746,13 @@ impl<'d> PointsReader<'d> {
                 upper.len()
             )));
         }
-        let mut visitor = RangeVisitor {
+        Ok(RangeVisitor {
             lower: lower.to_vec(),
             upper: upper.to_vec(),
             num_index_dims: field.num_index_dims as usize,
             bytes_per_dim: field.bytes_per_dim as usize,
             docs: Vec::new(),
-        };
-        self.intersect(field_number, &mut visitor)?;
-        Ok(visitor.docs)
+        })
     }
 }
 
@@ -764,6 +929,79 @@ fn intersect_node<V: IntersectVisitor>(
         return Ok(());
     }
 
+    let node = read_inner_node(input, node_id, ctx)?;
+
+    // Left child: cell max is clamped down to the split value.
+    let saved_max = ctx.max[node.dim_pos..node.dim_end].to_vec();
+    ctx.max[node.dim_pos..node.dim_end].copy_from_slice(&node.split_value);
+    ctx.negative_deltas[node.split_dim] = true;
+    intersect_node(input, node.left_child, fp, ctx, visitor)?;
+    ctx.max[node.dim_pos..node.dim_end].copy_from_slice(&saved_max);
+
+    // Right child: cell min is clamped up to the split value. Its own
+    // packed-index bytes start at `right_node_position` whether or not the
+    // left subtree was actually parsed.
+    input.seek(node.right_node_position)?;
+    let right_delta = input.read_vlong()?;
+    let right_fp = child_block_fp(fp, right_delta)?;
+    let saved_min = ctx.min[node.dim_pos..node.dim_end].to_vec();
+    ctx.min[node.dim_pos..node.dim_end].copy_from_slice(&node.split_value);
+    ctx.negative_deltas[node.split_dim] = false;
+    intersect_node(input, node.right_child, right_fp, ctx, visitor)?;
+    ctx.min[node.dim_pos..node.dim_end].copy_from_slice(&saved_min);
+
+    node.restore(ctx);
+    Ok(())
+}
+
+/// One inner node's decoded `.kdi` data -- everything both tree walks need
+/// after `BKDReader.readNodeData` has run.
+///
+/// `PointValues.intersect` and `PointValues.estimatePointCount` differ only in
+/// what they do *at* a node; the descent itself is one piece of parsing and
+/// lives here so the two cannot drift apart.
+struct InnerNode {
+    /// Which index dimension this node splits on.
+    split_dim: usize,
+    /// Byte range of `split_dim` inside a cell-bounds/split-value buffer.
+    dim_pos: usize,
+    dim_end: usize,
+    /// Where inside that range this node's own bytes start.
+    dim_prefix_pos: usize,
+    /// `ctx.split_values[dim_prefix_pos..dim_end]` as it was on entry, so the
+    /// parent's state can be restored on the way back up
+    /// (`recursePackIndex`'s `savSplitValue`, read side).
+    saved_split_tail: Vec<u8>,
+    /// `ctx.negative_deltas[split_dim]` as it was on entry.
+    saved_negative_delta: bool,
+    /// The reconstructed split value for `split_dim`, `bytes_per_dim` long.
+    split_value: Vec<u8>,
+    /// `.kdi` offset of the right child's leading FP-delta vlong --
+    /// `BKDPointTree.pushRight`'s `rightNodePositions[level]`.
+    right_node_position: usize,
+    left_child: i32,
+    right_child: i32,
+}
+
+impl InnerNode {
+    /// Undoes this node's edits to the shared traversal state --
+    /// `BKDPointTree.pop`'s half that is not a cell bound.
+    fn restore(&self, ctx: &mut IntersectCtx) {
+        ctx.negative_deltas[self.split_dim] = self.saved_negative_delta;
+        ctx.split_values[self.dim_prefix_pos..self.dim_end].copy_from_slice(&self.saved_split_tail);
+    }
+}
+
+/// `BKDReader.readNodeData`: decode one inner node's split descriptor into
+/// `ctx.split_values` and work out where its right child's data begins.
+///
+/// `input` must be positioned at the node's own packed-index data (the caller
+/// has already consumed its leading FP-delta vlong).
+fn read_inner_node(
+    input: &mut SliceInput,
+    node_id: i32,
+    ctx: &mut IntersectCtx,
+) -> Result<InnerNode> {
     let bytes_per_dim = ctx.field.bytes_per_dim as usize;
 
     // `BKDReader.readNodeData`: split dim, prefix and first-diff-byte delta
@@ -786,8 +1024,6 @@ fn intersect_node<V: IntersectVisitor>(
     #[allow(clippy::arithmetic_side_effects)]
     let (dim_prefix_pos, dim_end) = (dim_pos + prefix, dim_pos + bytes_per_dim);
     debug_assert!(dim_prefix_pos <= dim_end && dim_end <= ctx.split_values.len());
-    // Saved so the caller's (parent's) split-value state is restored on the
-    // way back up -- `recursePackIndex`'s `savSplitValue`, read side.
     let saved_split_tail = ctx.split_values[dim_prefix_pos..dim_end].to_vec();
     if suffix > 0 {
         // ARITH: `first_diff_byte_delta >= 0` (`read_split_descriptor`
@@ -836,31 +1072,86 @@ fn intersect_node<V: IntersectVisitor>(
             "leftNumBytes overruns .kdi: nodeID={node_id}, leftNumBytes={left_num_bytes}"
         )));
     };
-    let split_value = ctx.split_values[dim_pos..dim_end].to_vec();
-    let saved_negative_delta = ctx.negative_deltas[split_dim];
+    Ok(InnerNode {
+        split_dim,
+        dim_pos,
+        dim_end,
+        dim_prefix_pos,
+        saved_split_tail,
+        saved_negative_delta: ctx.negative_deltas[split_dim],
+        split_value: ctx.split_values[dim_pos..dim_end].to_vec(),
+        right_node_position,
+        left_child,
+        right_child,
+    })
+}
 
-    // Left child: cell max is clamped down to the split value.
-    let saved_max = ctx.max[dim_pos..dim_end].to_vec();
-    ctx.max[dim_pos..dim_end].copy_from_slice(&split_value);
-    ctx.negative_deltas[split_dim] = true;
-    intersect_node(input, left_child, fp, ctx, visitor)?;
-    ctx.max[dim_pos..dim_end].copy_from_slice(&saved_max);
+/// One node of [`PointsReader::estimate_point_count`]'s traversal -- the
+/// private `PointValues.estimatePointCount(visitor, pointTree, upperBound)`.
+///
+/// Reads strictly less than [`intersect_node`]: an entirely-inside cell is
+/// answered from the node id alone (`BKDPointTree.size()`), never by
+/// descending, and no leaf block is ever decoded.
+fn estimate_node<V: IntersectVisitor>(
+    input: &mut SliceInput,
+    node_id: i32,
+    fp: i64,
+    ctx: &mut IntersectCtx,
+    visitor: &mut V,
+    upper_bound: i64,
+) -> Result<i64> {
+    match visitor.compare(&ctx.min, &ctx.max) {
+        // "This cell is fully outside the query shape: no points added."
+        Relation::CellOutsideQuery => Ok(0),
+        // "This cell is fully inside the query shape: add all points."
+        Relation::CellInsideQuery => ctx.field.subtree_size(node_id),
+        Relation::CellCrossesQuery => {
+            if node_id >= ctx.field.num_leaves {
+                // `moveToChild()` said no: "Assume half the points matched."
+                // ARITH: `subtree_size` returns `1..=point_count`, so `+ 1`
+                // cannot overflow an `i64` that already holds a point count.
+                #[allow(clippy::arithmetic_side_effects)]
+                return Ok((ctx.field.subtree_size(node_id)? + 1) / 2);
+            }
+            let node = read_inner_node(input, node_id, ctx)?;
 
-    // Right child: cell min is clamped up to the split value. Its own
-    // packed-index bytes start at `right_node_position` whether or not the
-    // left subtree was actually parsed.
-    input.seek(right_node_position)?;
-    let right_delta = input.read_vlong()?;
-    let right_fp = child_block_fp(fp, right_delta)?;
-    let saved_min = ctx.min[dim_pos..dim_end].to_vec();
-    ctx.min[dim_pos..dim_end].copy_from_slice(&split_value);
-    ctx.negative_deltas[split_dim] = false;
-    intersect_node(input, right_child, right_fp, ctx, visitor)?;
-    ctx.min[dim_pos..dim_end].copy_from_slice(&saved_min);
+            let saved_max = ctx.max[node.dim_pos..node.dim_end].to_vec();
+            ctx.max[node.dim_pos..node.dim_end].copy_from_slice(&node.split_value);
+            ctx.negative_deltas[node.split_dim] = true;
+            let left = estimate_node(input, node.left_child, fp, ctx, visitor, upper_bound)?;
+            ctx.max[node.dim_pos..node.dim_end].copy_from_slice(&saved_max);
 
-    ctx.negative_deltas[split_dim] = saved_negative_delta;
-    ctx.split_values[dim_prefix_pos..dim_end].copy_from_slice(&saved_split_tail);
-    Ok(())
+            // Java's `while (cost < upperBound && pointTree.moveToSibling())`:
+            // once the running cost has reached the bound the caller only
+            // wanted a yes/no answer, so the right sibling is never read.
+            let mut cost = left;
+            if cost < upper_bound {
+                input.seek(node.right_node_position)?;
+                let right_delta = input.read_vlong()?;
+                let right_fp = child_block_fp(fp, right_delta)?;
+                let saved_min = ctx.min[node.dim_pos..node.dim_end].to_vec();
+                ctx.min[node.dim_pos..node.dim_end].copy_from_slice(&node.split_value);
+                ctx.negative_deltas[node.split_dim] = false;
+                // ARITH: `upperBound - cost` in Java. The `if` above proves
+                // `cost < upper_bound`, and `cost` is non-negative (it is
+                // either `0`, a `subtree_size` -- which saturates at or above
+                // `1` -- or a `saturating_add` of two such), so the difference
+                // is in `1..=upper_bound` and cannot underflow.
+                #[allow(clippy::arithmetic_side_effects)]
+                let remaining = upper_bound - cost;
+                let right =
+                    estimate_node(input, node.right_child, right_fp, ctx, visitor, remaining)?;
+                ctx.min[node.dim_pos..node.dim_end].copy_from_slice(&saved_min);
+                // Both halves are bounded by the field's point count, which is
+                // an `i64` read off `.kdm`; saturating rather than wrapping
+                // keeps a corrupt count from turning a cost estimate negative.
+                cost = cost.saturating_add(right);
+            }
+
+            node.restore(ctx);
+            Ok(cost)
+        }
+    }
 }
 
 /// Port of `BKDReader.BKDPointTree.addAll` (reached from `visitDocIDs`):
@@ -5602,5 +5893,179 @@ mod intersect_tests {
             .range_query(0, &long_sortable_bytes(0), &long_sortable_bytes(70))
             .unwrap()
             .is_empty());
+    }
+
+    /// The same 173-point / 44-leaf index
+    /// `intersect_1d_matches_brute_force_on_every_boundary_box` builds: deep
+    /// enough that the estimate walk has several levels, and unbalanced at the
+    /// deepest one.
+    fn single_dim_index() -> (Vec<u8>, Vec<u8>, Vec<u8>, [u8; codec_util::ID_LENGTH]) {
+        let points: Vec<(i32, Vec<u8>)> = (0..300)
+            .filter(|i| i % 3 != 0)
+            .map(|i| (i, long_sortable_bytes((i as i64) * 7919 - 1_000_000)))
+            .collect();
+        let field = WritePointsField {
+            field_number: 0,
+            num_dims: 1,
+            num_index_dims: 1,
+            bytes_per_dim: 8,
+            points,
+        };
+        let (kdm, kdi, kdd) = write(&[field], 4, &id(), "").unwrap();
+        (kdm, kdi, kdd, id())
+    }
+
+    /// A `PointsField` with nothing but the four counts `subtree_size` reads.
+    /// Built by hand because the formula is a function of those counts alone
+    /// -- no `.kdi`/`.kdd` is involved, which is the property that makes
+    /// `estimate_point_count` cheap in the first place.
+    fn counts_only_field(
+        num_leaves: i32,
+        max_points_in_leaf_node: i32,
+        point_count: i64,
+    ) -> PointsField {
+        PointsField {
+            num_dims: 1,
+            num_index_dims: 1,
+            bytes_per_dim: 8,
+            max_points_in_leaf_node,
+            num_leaves,
+            min_packed_value: vec![0u8; 8],
+            max_packed_value: vec![0xFFu8; 8],
+            point_count,
+            doc_count: 1,
+            index_start_pointer: 0,
+            num_index_bytes: 0,
+        }
+    }
+
+    /// `BKDPointTree.size()` over the shape the committed `points_index`
+    /// fixture has for its `val` field: 1 333 points, 512 per leaf, so three
+    /// leaves -- the unbalanced case where the left subtree is one level
+    /// deeper than the right, and where the last leaf holds 309 points rather
+    /// than 512.
+    ///
+    /// Hand-derived from Java's own arithmetic rather than round-tripped, so a
+    /// self-consistent-but-wrong formula cannot pass: `numLeaves = 3` gives
+    /// `treeDepth = log2(3) + 2 = 3` and `rightMostLeafNode = (1 << 2) - 1 = 3`.
+    #[test]
+    fn subtree_size_matches_javas_unbalanced_formula() {
+        let field = counts_only_field(3, 512, 1333);
+        // Root: every leaf, so the whole point count.
+        assert_eq!(field.subtree_size(1).unwrap(), 1333);
+        // Node 2's subtree is leaves 4 and 5 (it is above the leaf offset), a
+        // full 512 each, and its rightmost leaf is not the tree's.
+        assert_eq!(field.subtree_size(2).unwrap(), 1024);
+        // Node 3 *is* a leaf (3 >= numLeaves), and it is the tree's rightmost,
+        // so it holds `pointCount % 512 == 309`.
+        assert_eq!(field.subtree_size(3).unwrap(), 309);
+        assert_eq!(field.subtree_size(4).unwrap(), 512);
+        assert_eq!(field.subtree_size(5).unwrap(), 512);
+        // The three leaves partition the field.
+        assert_eq!(
+            field.subtree_size(4).unwrap()
+                + field.subtree_size(5).unwrap()
+                + field.subtree_size(3).unwrap(),
+            1333
+        );
+    }
+
+    /// A point count that is an exact multiple of the leaf size takes Java's
+    /// `lastLeafNodePointCount == 0 ? maxPointsInLeafNode` promotion -- a full
+    /// last leaf, not an empty one.
+    #[test]
+    fn subtree_size_treats_an_exact_multiple_as_a_full_last_leaf() {
+        let field = counts_only_field(2, 512, 1024);
+        assert_eq!(field.subtree_size(1).unwrap(), 1024);
+        assert_eq!(field.subtree_size(2).unwrap(), 512);
+        assert_eq!(field.subtree_size(3).unwrap(), 512);
+    }
+
+    /// One leaf: Java forces `isTreeBalanced` false for this case, and the
+    /// unbalanced formula answers the whole point count.
+    #[test]
+    fn subtree_size_handles_a_single_leaf_tree() {
+        let field = counts_only_field(1, 512, 7);
+        assert_eq!(field.subtree_size(1).unwrap(), 7);
+    }
+
+    /// The largest `numLeaves`/`maxPointsInLeafNode` a `.kdm` can encode still
+    /// answers a non-negative size. Java wraps here and hands the query
+    /// planner a negative cost.
+    #[test]
+    fn subtree_size_saturates_rather_than_wrapping_negative() {
+        let field = counts_only_field(i32::MAX, i32::MAX, 1);
+        assert!(field.subtree_size(1).unwrap() > 0);
+        assert!(field.subtree_size(2).unwrap() > 0);
+    }
+
+    /// The two estimate entry points reject an unknown field the same way
+    /// `intersect`/`range_query` do, rather than answering zero.
+    #[test]
+    fn estimate_point_count_rejects_an_unknown_field() {
+        let (kdm, kdi, kdd, id) = single_dim_index();
+        let reader = open(&kdm, &kdi, &kdd, &id, "").unwrap();
+        assert!(matches!(
+            reader.estimate_range_point_count(99, &long_sortable_bytes(0), &long_sortable_bytes(1)),
+            Err(Error::IllegalFieldNumber(99))
+        ));
+        assert!(matches!(
+            reader.estimate_point_count_bounded(99, &mut CountingVisitor::default(), i64::MAX),
+            Err(Error::IllegalFieldNumber(99))
+        ));
+    }
+
+    /// A bounds box of the wrong width is rejected before the walk starts, as
+    /// it is for `range_query`.
+    #[test]
+    fn estimate_range_point_count_rejects_mis_sized_bounds() {
+        let (kdm, kdi, kdd, id) = single_dim_index();
+        let reader = open(&kdm, &kdi, &kdd, &id, "").unwrap();
+        let err = reader
+            .estimate_range_point_count(0, &[0u8; 4], &[0xFFu8; 4])
+            .unwrap_err();
+        assert!(
+            format!("{err}").contains("range query bounds must be 8 bytes"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// `estimate_point_count` never visits a document and never decodes a
+    /// point -- Java's estimate uses only `compare`. The visitor here panics
+    /// if either happens, so this is a shape assertion, not a count.
+    #[derive(Default)]
+    struct CountingVisitor {
+        compares: usize,
+    }
+
+    impl IntersectVisitor for CountingVisitor {
+        fn compare(&mut self, _min_packed: &[u8], _max_packed: &[u8]) -> Relation {
+            self.compares += 1;
+            Relation::CellCrossesQuery
+        }
+        fn visit(&mut self, _doc_id: i32) {
+            panic!("estimate_point_count must not visit documents");
+        }
+        fn visit_with_value(&mut self, _doc_id: i32, _packed_value: &[u8]) {
+            panic!("estimate_point_count must not decode points");
+        }
+    }
+
+    /// An always-`CELL_CROSSES_QUERY` visitor drives the walk to every leaf
+    /// and gets Java's "assume half the points matched" at each -- and touches
+    /// no `.kdd` byte on the way, which is the whole point of the estimate.
+    #[test]
+    fn a_crossing_estimate_halves_every_leaf_and_decodes_nothing() {
+        let (kdm, kdi, kdd, id) = single_dim_index();
+        let reader = open(&kdm, &kdi, &kdd, &id, "").unwrap();
+        let field = reader.field(0).unwrap();
+        let mut visitor = CountingVisitor::default();
+        let got = reader.estimate_point_count(0, &mut visitor).unwrap();
+        let mut want = 0i64;
+        for leaf in 0..field.num_leaves {
+            want += (field.subtree_size(field.num_leaves + leaf).unwrap() + 1) / 2;
+        }
+        assert_eq!(got, want);
+        assert!(visitor.compares > 0);
     }
 }

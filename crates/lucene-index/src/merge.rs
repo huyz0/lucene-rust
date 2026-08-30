@@ -3951,7 +3951,13 @@ fn merge_postings(
             let mut docs: Vec<(i32, i32)> = Vec::new();
             let mut positions: Vec<Vec<i32>> = Vec::new();
             let mut offsets: Vec<Vec<(i32, i32)>> = Vec::new();
-            let mut payloads: Vec<Vec<Vec<u8>>> = Vec::new();
+            // Flat, matching `TermPostings`' own layout: one length per
+            // occurrence and every payload concatenated, so the merge builds
+            // the run the writer consumes rather than a `Vec<u8>` per
+            // occurrence that `write_position_tail` would have to flatten
+            // again (`docs/sweep/m2/c38-allocation-shape.md`).
+            let mut payload_bytes: Vec<u8> = Vec::new();
+            let mut payload_lengths: Vec<u32> = Vec::new();
             for src_idx in 0..cursors.len() {
                 let Some(cursor) = cursors[src_idx].as_mut() else {
                     continue;
@@ -4007,9 +4013,10 @@ fn merge_postings(
                                 );
                             }
                             if has_payloads {
-                                payloads.push(
-                                    doc_positions.iter().map(|p| p.payload.clone()).collect(),
-                                );
+                                for p in doc_positions {
+                                    payload_lengths.push(p.payload.len() as u32);
+                                    payload_bytes.extend_from_slice(&p.payload);
+                                }
                             }
                         }
                     }
@@ -4038,6 +4045,16 @@ fn merge_postings(
                 if !docs.windows(2).all(|w| w[0].0 < w[1].0) {
                     let mut permutation: Vec<usize> = (0..docs.len()).collect();
                     permutation.sort_unstable_by_key(|&i| docs[i].0);
+                    // Taken before `docs` is permuted: the flat payload run is
+                    // laid out in the *old* doc order, so re-ordering it needs
+                    // the old order's per-doc occurrence counts. Counted off
+                    // `positions`, which is what the run was *built* from
+                    // (`doc_positions` above), and not off `docs`' decoded
+                    // `freq` -- the two agree in every valid index, and
+                    // deriving the re-slice from the same structure that laid
+                    // the run down is what makes them unable to disagree.
+                    let pre_permutation_freqs: Vec<u32> =
+                        positions.iter().map(|p| p.len() as u32).collect();
                     docs = permutation.iter().map(|&i| docs[i]).collect();
                     if !positions.is_empty() {
                         positions = take_permuted(&mut positions, &permutation);
@@ -4045,8 +4062,15 @@ fn merge_postings(
                     if !offsets.is_empty() {
                         offsets = take_permuted(&mut offsets, &permutation);
                     }
-                    if !payloads.is_empty() {
-                        payloads = take_permuted(&mut payloads, &permutation);
+                    if !payload_lengths.is_empty() {
+                        let (bytes, lengths) = postings_writer::permute_payload_run(
+                            &payload_bytes,
+                            &payload_lengths,
+                            &pre_permutation_freqs,
+                            &permutation,
+                        );
+                        payload_bytes = bytes;
+                        payload_lengths = lengths;
                     }
                 }
                 terms_out.push(TermPostings {
@@ -4054,7 +4078,8 @@ fn merge_postings(
                     docs,
                     positions,
                     offsets,
-                    payloads,
+                    payload_bytes,
+                    payload_lengths,
                 });
             }
         }
@@ -11691,7 +11716,8 @@ mod tests {
             docs: vec![(0, 2)],
             positions: vec![vec![0, 2]],
             offsets: vec![vec![(0, 5), (10, 15)]],
-            payloads: vec![vec![Vec::new(), b"pay0".to_vec()]],
+            payload_bytes: b"pay0".to_vec(),
+            payload_lengths: vec![0, 4],
         }];
         let input0 = FieldPostingsInput {
             field_number: 0,
@@ -11748,7 +11774,8 @@ mod tests {
             docs: vec![(0, 1)],
             positions: vec![vec![1]],
             offsets: vec![vec![(6, 12)]],
-            payloads: vec![vec![Vec::new()]],
+            payload_bytes: Vec::new(),
+            payload_lengths: vec![0],
         }];
         let input1 = FieldPostingsInput {
             field_number: 0,
@@ -12227,7 +12254,8 @@ mod tests {
             term: b"banana".to_vec(),
             docs: vec![(0, 1)],
             positions: vec![vec![0]],
-            payloads: vec![vec![b"pay".to_vec()]],
+            payload_bytes: b"pay".to_vec(),
+            payload_lengths: vec![3],
             ..Default::default()
         }];
         let input1 = FieldPostingsInput {

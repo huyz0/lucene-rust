@@ -321,13 +321,14 @@ pub fn search_points_in_set<C: Collector>(
 /// - `estimated_point_count` is `PointValues.estimatePointCount(visitor)`: the
 ///   BKD walk that adds a whole subtree's `size()` for a cell entirely inside
 ///   the query, adds nothing for one entirely outside, and assumes half a leaf
-///   matched when it can descend no further. **That walk is not ported** -- it
-///   needs each BKD node's subtree size mid-traversal, which
-///   `lucene_codecs::points` does not expose (see this batch's report for the
-///   handoff). Until it is, a caller supplies the count some other way: the
-///   exact match count when it has already run the query, or `None` to
-///   `plan_index_or_doc_values`, whose documented default is Java's own answer
-///   whenever this query leads.
+///   matched when it can descend no further. That walk **is** ported, as
+///   `lucene_codecs::points::PointsReader::estimate_point_count` (and
+///   `estimate_range_point_count` for `PointRangeQuery`'s own visitor), so a
+///   caller with a reader can hand this function Java's own input rather than
+///   an approximation of it. A caller that has already run the query may pass
+///   the exact match count instead, and `plan_index_or_doc_values` still
+///   accepts `None`, whose documented default is Java's own answer whenever
+///   this query leads.
 /// - `size` is `PointValues.size()`, the field's total point count
 ///   (`PointsField::point_count`).
 /// - `doc_count` is `PointValues.getDocCount()` (`PointsField::doc_count`).
@@ -704,13 +705,14 @@ mod tests {
     /// estimate in hand, does the planner make a *different* choice from the
     /// `None` default -- and when?
     ///
-    /// The estimate is taken from the real `fixtures/data/points_index/`
-    /// field, and for the exact ranges below `estimatePointCount` would be
-    /// exact: every BKD cell a fully-covering range touches is either wholly
-    /// inside or wholly outside it, which is the case Java's walk answers
-    /// without approximating. The field is single-valued
-    /// (`point_count == doc_count`), so the estimate passes straight through
-    /// branch 2 of [`estimate_doc_count`].
+    /// The estimate now comes from Java's own walk --
+    /// `PointsReader::estimate_range_point_count`, ported by
+    /// `c39-codecs-readpath` -- over the real `fixtures/data/points_index/`
+    /// field, not from a match count standing in for it. The narrow range is
+    /// deliberately one where the two differ (256 estimated against 8
+    /// matched), so this test would not pass against the stand-in. The field
+    /// is single-valued (`point_count == doc_count`), so the estimate passes
+    /// straight through branch 2 of [`estimate_doc_count`].
     #[test]
     fn a_real_point_estimate_changes_the_index_or_doc_values_plan_only_when_another_clause_leads() {
         use crate::doc_value_query::{plan_index_or_doc_values, IndexOrDocValuesPlan};
@@ -753,11 +755,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(all.docs.len(), doc_count as usize);
-        let full_cost = estimate_doc_count(all.docs.len() as i64, size, doc_count);
+        let full_points = reader
+            .estimate_range_point_count(field_number, &long_bytes(i64::MIN), &long_bytes(i64::MAX))
+            .unwrap();
+        assert_eq!(full_points, size, "a whole-field box is one INSIDE cell");
+        let full_cost = estimate_doc_count(full_points, size, doc_count);
         assert_eq!(full_cost, doc_count as i64);
 
-        // A narrow range: the exact match count, which is what Java's walk
-        // estimates.
+        // A narrow range, where the walk's estimate and the match count part
+        // company.
         let mut narrow = VecCollector::default();
         search_points_range(
             &reader,
@@ -768,7 +774,14 @@ mod tests {
             &mut narrow,
         )
         .unwrap();
-        let narrow_cost = estimate_doc_count(narrow.docs.len() as i64, size, doc_count);
+        let narrow_points = reader
+            .estimate_range_point_count(field_number, &long_bytes(0), &long_bytes(100_000))
+            .unwrap();
+        // The estimate over-counts a partly-covered leaf on purpose -- Java's
+        // "assume half the points matched" -- so it is *not* the match count.
+        assert_eq!(narrow.docs.len(), 8);
+        assert_eq!(narrow_points, 256);
+        let narrow_cost = estimate_doc_count(narrow_points, size, doc_count);
         assert!(narrow_cost > 0 && narrow_cost < full_cost);
 
         // **The answer.** Java's rule is `cost >>> 3 <= leadCost`, so:

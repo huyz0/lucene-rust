@@ -1112,7 +1112,13 @@ pub fn numeric_value(data: &[u8], entry: &NumericEntry, doc: i32) -> Result<Opti
     // and then resolves the ordinal inside a single block. It allocates
     // nothing. A caller making more than one lookup should hold a
     // `NumericReader`, which keeps the cursor between calls.
-    match indexed_disi::DisiCursor::new(region, entry.dense_rank_power).advance_exact(doc)? {
+    match indexed_disi::DisiCursor::new(
+        region,
+        entry.dense_rank_power,
+        entry.jump_table_entry_count,
+    )
+    .advance_exact(doc)?
+    {
         Some(ordinal) => Ok(Some(decode_value(data, entry, ordinal as i64)?)),
         None => Ok(None),
     }
@@ -1183,7 +1189,13 @@ impl<'a> NumericReader<'a> {
                 .ok()
                 .zip(usize::try_from(entry.docs_with_field_length).ok())
                 .and_then(|(start, len)| data.get(start..start.checked_add(len)?))
-                .map(|region| indexed_disi::DisiCursor::new(region, entry.dense_rank_power))
+                .map(|region| {
+                    indexed_disi::DisiCursor::new(
+                        region,
+                        entry.dense_rank_power,
+                        entry.jump_table_entry_count,
+                    )
+                })
         };
         Self {
             data,
@@ -1409,7 +1421,13 @@ pub fn binary_value<'d>(data: &'d [u8], entry: &BinaryEntry, doc: i32) -> Result
             entry.docs_with_field_length,
         )?;
         // See `numeric_value` for why this is a cursor and not a full decode.
-        match indexed_disi::DisiCursor::new(region, entry.dense_rank_power).advance_exact(doc)? {
+        match indexed_disi::DisiCursor::new(
+            region,
+            entry.dense_rank_power,
+            entry.jump_table_entry_count,
+        )
+        .advance_exact(doc)?
+        {
             Some(ordinal) => ordinal as i64,
             None => return Ok(None),
         }
@@ -1488,7 +1506,13 @@ impl<'a> BinaryReader<'a> {
                 .ok()
                 .zip(usize::try_from(entry.docs_with_field_length).ok())
                 .and_then(|(start, len)| data.get(start..start.checked_add(len)?))
-                .map(|region| indexed_disi::DisiCursor::new(region, entry.dense_rank_power))
+                .map(|region| {
+                    indexed_disi::DisiCursor::new(
+                        region,
+                        entry.dense_rank_power,
+                        entry.jump_table_entry_count,
+                    )
+                })
         };
         Self { data, entry, docs }
     }
@@ -1578,8 +1602,12 @@ pub fn sorted_numeric_values(
             entry.numeric.docs_with_field_length,
         )?;
         // See `numeric_value` for why this is a cursor and not a full decode.
-        match indexed_disi::DisiCursor::new(region, entry.numeric.dense_rank_power)
-            .advance_exact(doc)?
+        match indexed_disi::DisiCursor::new(
+            region,
+            entry.numeric.dense_rank_power,
+            entry.numeric.jump_table_entry_count,
+        )
+        .advance_exact(doc)?
         {
             Some(r) => r as i64,
             None => return Ok(Vec::new()),
@@ -1961,16 +1989,18 @@ fn write_docs_with_field(meta: &mut Vec<u8>, data: &mut Vec<u8>, doc_ids: &[i32]
         meta.write_i16(-1); // jumpTableEntryCount
         meta.push(0xFF); // denseRankPower (-1 as u8)
     } else {
-        let disi_bytes = indexed_disi::write_with_dense_rank_power(
+        let (disi_bytes, jump_table_entry_count) = indexed_disi::write_with_dense_rank_power(
             doc_ids,
             indexed_disi::DEFAULT_DENSE_RANK_POWER,
         );
         let docs_with_field_offset = data.len() as i64;
         data.extend_from_slice(&disi_bytes);
+        // `docsWithFieldLength` spans the jump table too -- it is what the
+        // reader subtracts the table's bytes from (`createBlockSlice`).
         let docs_with_field_length = data.len() as i64 - docs_with_field_offset;
         meta.write_i64(docs_with_field_offset);
         meta.write_i64(docs_with_field_length);
-        meta.write_i16(-1); // jumpTableEntryCount: no jump table written
+        meta.write_i16(jump_table_entry_count);
         meta.push(indexed_disi::DEFAULT_DENSE_RANK_POWER);
     }
 }
@@ -2380,15 +2410,17 @@ fn write_sparse_numeric_entry_body(
     doc_ids: &[i32],
     values: &[i64],
 ) {
-    let disi_bytes =
+    let (disi_bytes, jump_table_entry_count) =
         indexed_disi::write_with_dense_rank_power(doc_ids, indexed_disi::DEFAULT_DENSE_RANK_POWER);
     let docs_with_field_offset = data.len() as i64;
     data.extend_from_slice(&disi_bytes);
+    // `docsWithFieldLength` spans the jump table too -- it is what the reader
+    // subtracts the table's bytes from (`createBlockSlice`).
     let docs_with_field_length = data.len() as i64 - docs_with_field_offset;
 
     meta.write_i64(docs_with_field_offset);
     meta.write_i64(docs_with_field_length);
-    meta.write_i16(-1); // jumpTableEntryCount: no jump table written
+    meta.write_i16(jump_table_entry_count);
     meta.push(indexed_disi::DEFAULT_DENSE_RANK_POWER); // denseRankPower
 
     write_numeric_values_body(meta, data, values);

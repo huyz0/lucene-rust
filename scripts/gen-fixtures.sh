@@ -15,6 +15,10 @@
 #
 #   --only NAME  run just this generator (with or without the `Gen` prefix),
 #                then the manifest appenders. Repeatable. --list names them.
+#   --append-only  run ONLY the Append*Manifest programs, regenerating no
+#                index at all. This is how cross-engine ground truth is added
+#                to a committed fixture: the appenders open it read-only and
+#                rewrite just their own key prefix, so no segment id moves.
 #   --all        regenerate everything into fixtures/data. Required to be
 #                explicit: see "Why a full run needs a flag".
 #   --list       print the generator names --only accepts, and exit
@@ -77,7 +81,9 @@ set -euo pipefail
 # GenBlockTree (org.apache.lucene.queries.spans); the fixtures README used to
 # document only lucene-core + lucene-analysis-common, which no longer compiles.
 # lucene-facet is required by GenFacets (org.apache.lucene.facet.*).
-LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-facet)
+# lucene-highlighter is required by AppendHighlightManifest, which records what
+# `UnifiedHighlighter`'s own PhraseHelper produces rather than re-deriving it.
+LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-facet lucene-highlighter)
 
 cd "$(git rev-parse --show-toplevel)"
 FIXTURES="$PWD/fixtures"
@@ -88,6 +94,7 @@ IDS_SCRIPT="$PWD/scripts/fixture-segment-ids.py"
 CHECK=0
 ALL=0
 LIST=0
+APPEND_ONLY=0
 OUT_EXPLICIT=0
 ONLY=()
 
@@ -97,6 +104,7 @@ while [ $# -gt 0 ]; do
     --jars)  JARS="$2"; shift 2 ;;
     --only)  ONLY+=("$2"); shift 2 ;;
     --all)   ALL=1; shift ;;
+    --append-only) APPEND_ONLY=1; shift ;;
     --list)  LIST=1; shift ;;
     --check) CHECK=1; shift ;;
     -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
@@ -152,9 +160,13 @@ if [ "$ALL" -eq 1 ] && [ "${#SELECTED[@]}" -gt 0 ]; then
   echo "gen-fixtures: --all and --only contradict each other; pick one" >&2
   exit 2
 fi
+if [ "$APPEND_ONLY" -eq 1 ] && { [ "$ALL" -eq 1 ] || [ "$CHECK" -eq 1 ] || [ "${#SELECTED[@]}" -gt 0 ]; }; then
+  echo "gen-fixtures: --append-only runs no generator; it cannot be combined with --only/--all/--check" >&2
+  exit 2
+fi
 
 # --- refuse a full in-place run without --all --------------------------------
-if [ "$CHECK" -eq 0 ] && [ "${#SELECTED[@]}" -eq 0 ] && [ "$ALL" -eq 0 ] && [ "$OUT_EXPLICIT" -eq 0 ]; then
+if [ "$CHECK" -eq 0 ] && [ "$APPEND_ONLY" -eq 0 ] && [ "${#SELECTED[@]}" -eq 0 ] && [ "$ALL" -eq 0 ] && [ "$OUT_EXPLICIT" -eq 0 ]; then
   cat >&2 <<'REFUSAL'
 gen-fixtures: refusing to regenerate every fixture in place.
 
@@ -202,6 +214,12 @@ generate_into() {
 }
 
 if [ "$CHECK" -eq 0 ]; then
+  if [ "$APPEND_ONLY" -eq 1 ]; then
+    echo "gen-fixtures: running ${#APPENDERS[@]} appenders over $OUT (no index regenerated)"
+    generate_into "$OUT" "${APPENDERS[@]}"
+    echo "gen-fixtures: ok"
+    exit 0
+  fi
   if [ "${#SELECTED[@]}" -gt 0 ]; then
     echo "gen-fixtures: generating ${SELECTED[*]} + ${#APPENDERS[@]} appenders into $OUT"
     generate_into "$OUT" "${SELECTED[@]}" "${APPENDERS[@]}"

@@ -69,6 +69,56 @@ pub struct Token {
     pub position_length: i32,
 }
 
+/// A whole analyzed field value: the tokens, plus the two values real
+/// Lucene's `TokenStream.end()` leaves behind in the attribute source.
+///
+/// # Why this type exists
+///
+/// Java's analysis is a *stream* with a lifecycle -- `reset()`,
+/// `incrementToken()*`, `end()`, `close()` -- and `end()` is not a formality.
+/// `IndexingChain.PerField.invertTokenStream` reads two attributes after it:
+///
+/// ```java
+/// stream.end();
+/// invertState.position += invertState.posIncrAttribute.getPositionIncrement();
+/// invertState.offset += invertState.offsetAttribute.endOffset();
+/// ```
+///
+/// This crate's filters are `Vec<Token> -> Vec<Token>` functions, which is the
+/// right Rust shape for the token sequence but has nowhere to put those two
+/// end-of-stream values -- so they were simply dropped, and the two things
+/// they decide were wrong:
+///
+/// 1. **A document whose last tokens were all filtered out did not advance the
+///    position counter.** `FilteringTokenFilter.end()` adds its
+///    `skippedPositions` to the increment, so `"fox the the"` leaves the
+///    field's position counter two past `fox`, not on it. Invisible in a
+///    single-valued field, and the whole story in a multi-valued one.
+/// 2. **The next value of a multi-valued field started at offset 0**, because
+///    `finalOffset` -- the value's own length -- is what `invertState.offset`
+///    accumulates.
+///
+/// [`final_position_increment`](Self::final_position_increment) and
+/// [`final_offset`](Self::final_offset) are exactly those two attribute reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TokenStream {
+    /// The tokens `incrementToken()` produced, in order.
+    pub tokens: Vec<Token>,
+    /// `PositionIncrementAttribute.getPositionIncrement()` **after** `end()`.
+    ///
+    /// `TokenStream.end()` (the base implementation) clears the attributes and
+    /// sets this to `0`; each filter that swallowed positions adds them back
+    /// on the way out. So it is `0` for a stream nothing filtered, and the
+    /// number of positions the trailing filtered-out tokens occupied
+    /// otherwise.
+    pub final_position_increment: i32,
+    /// `OffsetAttribute.endOffset()` **after** `end()` -- Java's
+    /// `Tokenizer.end()`'s `finalOffset = correctOffset(charCount)`, i.e. the
+    /// length of the whole input in **UTF-16 code units** (see [`Token`] for
+    /// the unit), not the end of the last token.
+    pub final_offset: i32,
+}
+
 /// A UAX#29-based word-boundary tokenizer, standing in for real Lucene's
 /// `StandardTokenizer` (which itself is a JFlex-generated implementation of
 /// [UAX #29, Unicode Text Segmentation](https://www.unicode.org/reports/tr29/)'s
@@ -184,6 +234,24 @@ pub fn tokenize(text: &str) -> Vec<Token> {
             }
         })
         .collect()
+}
+
+/// [`tokenize`] as a whole `TokenStream`, i.e. with `Tokenizer.end()` run.
+///
+/// A tokenizer never swallows a position, so
+/// [`TokenStream::final_position_increment`] is `0` (`TokenStream.end()`'s own
+/// `posIncrAtt.setPositionIncrement(0)`); the value that matters here is
+/// [`TokenStream::final_offset`], Java's
+/// `Tokenizer.end()`'s `finalOffset = correctOffset(charCount)` -- the length
+/// of the **whole input**, in UTF-16 code units, not the end of the last
+/// token. `"fox   "` ends at offset 6, not 3, and a multi-valued field's next
+/// value starts from there plus the analyzer's `getOffsetGap`.
+pub fn tokenize_stream(text: &str) -> TokenStream {
+    TokenStream {
+        tokens: tokenize(text),
+        final_position_increment: 0,
+        final_offset: utf16_len(text) as i32,
+    }
 }
 
 /// Java's `String.length()` for the same text: the number of UTF-16 code
@@ -361,6 +429,38 @@ pub fn french_stop_words() -> HashSet<String> {
 
 impl StopFilter {
     pub fn apply(tokens: Vec<Token>, stopwords: &HashSet<String>) -> Vec<Token> {
+        Self::apply_to_stream(
+            TokenStream {
+                tokens,
+                final_position_increment: 0,
+                final_offset: 0,
+            },
+            stopwords,
+        )
+        .tokens
+    }
+
+    /// [`Self::apply`] with `FilteringTokenFilter`'s **`end()`** as well as its
+    /// `incrementToken()`.
+    ///
+    /// ```java
+    /// public void end() throws IOException {
+    ///   super.end();
+    ///   posIncrAtt.setPositionIncrement(posIncrAtt.getPositionIncrement() + skippedPositions);
+    /// }
+    /// ```
+    ///
+    /// `skippedPositions` at end of stream is what the trailing stopwords in
+    /// `"fox the the"` left behind: `apply` drops them with nowhere to put
+    /// their increments, and this carries them out on
+    /// [`TokenStream::final_position_increment`], which is what
+    /// `IndexingChain` adds to the field's position counter.
+    pub fn apply_to_stream(stream: TokenStream, stopwords: &HashSet<String>) -> TokenStream {
+        let TokenStream {
+            tokens,
+            final_position_increment,
+            final_offset,
+        } = stream;
         let mut out = Vec::new();
         let mut pending_increment = 0;
         for mut t in tokens {
@@ -372,7 +472,11 @@ impl StopFilter {
             pending_increment = 0;
             out.push(t);
         }
-        out
+        TokenStream {
+            tokens: out,
+            final_position_increment: final_position_increment + pending_increment,
+            final_offset,
+        }
     }
 }
 
@@ -2302,12 +2406,38 @@ fn validate_gram_range(min_gram: i32, max_gram: i32) -> Result<(), String> {
 /// `preserve_original` branches are its "Token is shorter than minGram" and
 /// "Token is longer than maxGram" arms.
 ///
-/// One piece of Java has no home in a `Vec<Token> -> Vec<Token>` filter:
 /// `end()` publishes whatever `curPosIncr` is left over when the stream runs
 /// dry, so a document whose *last* tokens were all shorter than `min_gram`
-/// still advances the position counter. There is no `end()` hook here, so
-/// that trailing increment is dropped -- the same structural gap
-/// [`StopFilter`] has, recorded in `docs/sweep/m2/b8-automata-analysis.md`.
+/// still advances the position counter. That is carried on
+/// [`TokenStream::final_position_increment`] by
+/// [`apply_ngram_filter_to_stream`]; this function is the token-vector-only
+/// form both filters' `apply` entry points keep.
+///
+/// Note Java **overwrites** rather than adds:
+/// `posIncrAtt.setPositionIncrement(curPosIncr)`, so an upstream filter's own
+/// end-of-stream increment (a `StopFilter`'s `skippedPositions`, say) is
+/// discarded when an n-gram filter sits downstream of it. Reproduced as-is.
+fn apply_ngram_filter_to_stream(
+    stream: TokenStream,
+    min_gram: i32,
+    max_gram: i32,
+    edge_only: bool,
+    preserve_original: bool,
+) -> Result<TokenStream, String> {
+    let TokenStream {
+        tokens,
+        final_position_increment: _,
+        final_offset,
+    } = stream;
+    let (tokens, cur_pos_incr) =
+        ngram_tokens(tokens, min_gram, max_gram, edge_only, preserve_original)?;
+    Ok(TokenStream {
+        tokens,
+        final_position_increment: cur_pos_incr,
+        final_offset,
+    })
+}
+
 fn apply_ngram_filter(
     tokens: Vec<Token>,
     min_gram: i32,
@@ -2315,6 +2445,18 @@ fn apply_ngram_filter(
     edge_only: bool,
     preserve_original: bool,
 ) -> Result<Vec<Token>, String> {
+    Ok(ngram_tokens(tokens, min_gram, max_gram, edge_only, preserve_original)?.0)
+}
+
+/// The loop itself, returning the tokens and the `curPosIncr` left over at end
+/// of stream.
+fn ngram_tokens(
+    tokens: Vec<Token>,
+    min_gram: i32,
+    max_gram: i32,
+    edge_only: bool,
+    preserve_original: bool,
+) -> Result<(Vec<Token>, i32), String> {
     validate_gram_range(min_gram, max_gram)?;
     let mut out = Vec::new();
     // Java's `curPosIncr`: accumulated across input tokens that emit nothing,
@@ -2353,7 +2495,7 @@ fn apply_ngram_filter(
             });
         }
     }
-    Ok(out)
+    Ok((out, cur_pos_incr))
 }
 
 impl NGramTokenFilter {
@@ -2384,6 +2526,18 @@ impl NGramTokenFilter {
         max_gram: i32,
     ) -> Result<Vec<Token>, String> {
         apply_ngram_filter(tokens, min_gram, max_gram, false, true)
+    }
+
+    /// [`Self::apply`] with `NGramTokenFilter.end()` run: the leftover
+    /// `curPosIncr` from trailing input tokens that produced no gram lands on
+    /// [`TokenStream::final_position_increment`] instead of being dropped.
+    pub fn apply_to_stream(
+        stream: TokenStream,
+        min_gram: i32,
+        max_gram: i32,
+        preserve_original: bool,
+    ) -> Result<TokenStream, String> {
+        apply_ngram_filter_to_stream(stream, min_gram, max_gram, false, preserve_original)
     }
 }
 
@@ -2417,6 +2571,17 @@ impl EdgeNGramTokenFilter {
     ) -> Result<Vec<Token>, String> {
         apply_ngram_filter(tokens, min_gram, max_gram, true, true)
     }
+
+    /// [`Self::apply`] with `EdgeNGramTokenFilter.end()` run -- see
+    /// [`NGramTokenFilter::apply_to_stream`].
+    pub fn apply_to_stream(
+        stream: TokenStream,
+        min_gram: i32,
+        max_gram: i32,
+        preserve_original: bool,
+    ) -> Result<TokenStream, String> {
+        apply_ngram_filter_to_stream(stream, min_gram, max_gram, true, preserve_original)
+    }
 }
 
 /// An analyzer composing a tokenizer with a configurable filter chain.
@@ -2445,6 +2610,12 @@ pub struct Analyzer {
     /// on this struct is inert (a keyword analyzer has no filter chain to
     /// configure -- see that constructor's docs).
     keyword: bool,
+    /// `Analyzer.getPositionIncrementGap(String)` -- see
+    /// [`Analyzer::with_position_increment_gap`]. Java's default: `0`.
+    position_increment_gap: i32,
+    /// `Analyzer.getOffsetGap(String)` -- see [`Analyzer::with_offset_gap`].
+    /// Java's default: `1`.
+    offset_gap: i32,
 }
 
 impl Analyzer {
@@ -2463,6 +2634,8 @@ impl Analyzer {
             synonyms: None,
             synonyms_bidirectional: false,
             keyword: false,
+            position_increment_gap: 0,
+            offset_gap: 1,
         }
     }
 
@@ -2498,6 +2671,8 @@ impl Analyzer {
             synonyms: None,
             synonyms_bidirectional: false,
             keyword: true,
+            position_increment_gap: 0,
+            offset_gap: 1,
         }
     }
 
@@ -2571,29 +2746,97 @@ impl Analyzer {
         self
     }
 
+    /// Sets this analyzer's `Analyzer.getPositionIncrementGap(String)`.
+    ///
+    /// The number of positions inserted **between two values of the same
+    /// multi-valued field**. Java's base `Analyzer` returns `0` from it, which
+    /// is this port's default too -- and 0 means a phrase query *can* match
+    /// across a value boundary, which surprises people often enough that every
+    /// consumer of Lucene (OpenSearch's `position_increment_gap`, default 100)
+    /// exposes an override. Java overrides it by subclassing; this port has no
+    /// per-field analyzer configuration, so the gap is per-`Analyzer` and the
+    /// field name is not a parameter -- see this crate's scope notes.
+    pub fn with_position_increment_gap(mut self, gap: i32) -> Self {
+        self.position_increment_gap = gap;
+        self
+    }
+
+    /// Sets this analyzer's `Analyzer.getOffsetGap(String)`: the number of
+    /// character offsets inserted between two values of the same multi-valued
+    /// field. Java's default is **`1`**, not `0` -- it exists so the last
+    /// character of one value and the first of the next do not share an
+    /// offset -- and that is this port's default too.
+    pub fn with_offset_gap(mut self, gap: i32) -> Self {
+        self.offset_gap = gap;
+        self
+    }
+
+    /// `Analyzer.getPositionIncrementGap(fieldName)`.
+    pub fn position_increment_gap(&self) -> i32 {
+        self.position_increment_gap
+    }
+
+    /// `Analyzer.getOffsetGap(fieldName)`.
+    pub fn offset_gap(&self) -> i32 {
+        self.offset_gap
+    }
+
     pub fn analyze(&self, text: &str) -> Vec<Token> {
+        self.analyze_stream(text).tokens
+    }
+
+    /// [`Self::analyze`] as a whole `TokenStream`: the same tokens, plus the
+    /// two end-of-stream attribute values `IndexingChain` reads after
+    /// `stream.end()`. See [`TokenStream`] for why they matter.
+    pub fn analyze_stream(&self, text: &str) -> TokenStream {
         if self.keyword {
-            return vec![Token {
-                term: text.to_string(),
-                start_offset: 0,
-                // Java's `KeywordTokenizer` ends the one token at
-                // `finalOffset = correctOffset(charCount)`, a Java `char`
-                // count -- `utf16_len`, not `text.len()` (see [`Token`]).
-                end_offset: utf16_len(text) as i32,
-                position_increment: 1,
-                position_length: 1,
-            }];
+            return TokenStream {
+                tokens: vec![Token {
+                    term: text.to_string(),
+                    start_offset: 0,
+                    // Java's `KeywordTokenizer` ends the one token at
+                    // `finalOffset = correctOffset(charCount)`, a Java `char`
+                    // count -- `utf16_len`, not `text.len()` (see [`Token`]).
+                    end_offset: utf16_len(text) as i32,
+                    position_increment: 1,
+                    position_length: 1,
+                }],
+                final_position_increment: 0,
+                final_offset: utf16_len(text) as i32,
+            };
         }
-        let tokens = tokenize(text);
+        let TokenStream {
+            tokens,
+            final_position_increment,
+            final_offset,
+        } = tokenize_stream(text);
         let tokens = if self.ascii_folding {
             AsciiFoldingFilter::apply(tokens)
         } else {
             tokens
         };
         let tokens = LowerCaseFilter::apply(tokens);
-        let tokens = match &self.stopwords {
-            Some(stopwords) => StopFilter::apply(tokens, stopwords),
-            None => tokens,
+        // `StopFilter` is the only filter in this chain that overrides `end()`;
+        // every other one inherits `TokenFilter.end()`, which just forwards, so
+        // they run on the token vector alone.
+        let TokenStream {
+            tokens,
+            final_position_increment,
+            final_offset,
+        } = match &self.stopwords {
+            Some(stopwords) => StopFilter::apply_to_stream(
+                TokenStream {
+                    tokens,
+                    final_position_increment,
+                    final_offset,
+                },
+                stopwords,
+            ),
+            None => TokenStream {
+                tokens,
+                final_position_increment,
+                final_offset,
+            },
         };
         let tokens = if self.snowball_stemming {
             SnowballEnglishStemFilter::apply(tokens)
@@ -2602,12 +2845,17 @@ impl Analyzer {
         } else {
             tokens
         };
-        match &self.synonyms {
+        let tokens = match &self.synonyms {
             Some(synonyms) if self.synonyms_bidirectional => {
                 SynonymFilter::apply_bidirectional(tokens, synonyms)
             }
             Some(synonyms) => SynonymFilter::apply(tokens, synonyms),
             None => tokens,
+        };
+        TokenStream {
+            tokens,
+            final_position_increment,
+            final_offset,
         }
     }
 }
@@ -3691,6 +3939,148 @@ mod tests {
         let tokens = vec![tok("THE", 0, 3, 1), tok("Quick", 4, 9, 2)];
         let out = LowerCaseFilter::apply(tokens);
         assert_eq!(out, vec![tok("the", 0, 3, 1), tok("quick", 4, 9, 2),]);
+    }
+
+    // ---- the TokenStream lifecycle (`end()`) --------------------------
+
+    /// `Tokenizer.end()`'s `finalOffset = correctOffset(charCount)` is the
+    /// length of the **whole input**, not the end of the last token -- which is
+    /// what a multi-valued field's next value is offset by.
+    #[test]
+    fn tokenize_stream_ends_at_the_inputs_own_length_not_the_last_token() {
+        let stream = tokenize_stream("fox   ");
+        assert_eq!(stream.tokens.len(), 1);
+        assert_eq!(stream.tokens[0].end_offset, 3);
+        assert_eq!(stream.final_offset, 6);
+        assert_eq!(stream.final_position_increment, 0);
+        // UTF-16 code units, like every other offset in this crate.
+        assert_eq!(tokenize_stream("\u{1D400} x").final_offset, 4);
+        // Empty input: no tokens, and an end offset of 0.
+        let empty = tokenize_stream("");
+        assert!(empty.tokens.is_empty());
+        assert_eq!(empty.final_offset, 0);
+    }
+
+    /// `FilteringTokenFilter.end()`: `skippedPositions` left over at end of
+    /// stream is published on the position-increment attribute, so trailing
+    /// stopwords still advance the field's position counter.
+    #[test]
+    fn stop_filter_end_publishes_the_trailing_skipped_positions() {
+        let stopwords: HashSet<String> = ["the"].into_iter().map(String::from).collect();
+        let stream = Analyzer::standard(Some(&stopwords)).analyze_stream("fox the the");
+        assert_eq!(
+            stream
+                .tokens
+                .iter()
+                .map(|t| t.term.as_str())
+                .collect::<Vec<_>>(),
+            vec!["fox"]
+        );
+        assert_eq!(stream.final_position_increment, 2);
+        assert_eq!(stream.final_offset, 11);
+
+        // Nothing trailing to skip: the base `TokenStream.end()`'s 0.
+        let stream = Analyzer::standard(Some(&stopwords)).analyze_stream("the fox");
+        assert_eq!(stream.final_position_increment, 0);
+
+        // Every token filtered out: all of them land on the final increment,
+        // because no surviving token could carry them.
+        let stream = Analyzer::standard(Some(&stopwords)).analyze_stream("the the the");
+        assert!(stream.tokens.is_empty());
+        assert_eq!(stream.final_position_increment, 3);
+    }
+
+    /// `StopFilter::apply` is `apply_to_stream` with the end-of-stream values
+    /// dropped, which is what every caller that only wants the tokens gets.
+    #[test]
+    fn stop_filter_apply_and_apply_to_stream_agree_on_the_tokens() {
+        let stopwords: HashSet<String> = ["the"].into_iter().map(String::from).collect();
+        let tokens = tokenize("fox the the");
+        let via_apply = StopFilter::apply(tokens.clone(), &stopwords);
+        let via_stream = StopFilter::apply_to_stream(
+            TokenStream {
+                tokens,
+                final_position_increment: 0,
+                final_offset: 11,
+            },
+            &stopwords,
+        );
+        assert_eq!(via_apply, via_stream.tokens);
+        assert_eq!(via_stream.final_offset, 11);
+    }
+
+    /// `NGramTokenFilter.end()` / `EdgeNGramTokenFilter.end()`:
+    /// `posIncrAtt.setPositionIncrement(curPosIncr)` -- and note it **sets**
+    /// rather than adds, so an upstream filter's own end-of-stream increment is
+    /// discarded. Both halves are asserted, because the overwrite is the
+    /// surprising one.
+    #[test]
+    fn ngram_end_publishes_the_leftover_increment_and_overwrites_the_upstream_one() {
+        // "ab" is shorter than min_gram 3, so it emits nothing and its
+        // increment is still owed at end of stream.
+        let stream = TokenStream {
+            tokens: tokenize("abcd ab"),
+            final_position_increment: 7,
+            final_offset: 7,
+        };
+        let out = NGramTokenFilter::apply_to_stream(stream, 3, 3, false).unwrap();
+        assert_eq!(
+            out.tokens
+                .iter()
+                .map(|t| t.term.as_str())
+                .collect::<Vec<_>>(),
+            vec!["abc", "bcd"]
+        );
+        assert_eq!(out.final_position_increment, 1, "the skipped \"ab\"");
+        assert_eq!(out.final_offset, 7);
+
+        let stream = TokenStream {
+            tokens: tokenize("abcd ab"),
+            final_position_increment: 7,
+            final_offset: 7,
+        };
+        let out = EdgeNGramTokenFilter::apply_to_stream(stream, 3, 3, false).unwrap();
+        assert_eq!(
+            out.tokens
+                .iter()
+                .map(|t| t.term.as_str())
+                .collect::<Vec<_>>(),
+            vec!["abc"]
+        );
+        assert_eq!(out.final_position_increment, 1);
+
+        // preserveOriginal emits the short token, so nothing is owed.
+        let stream = TokenStream {
+            tokens: tokenize("abcd ab"),
+            final_position_increment: 0,
+            final_offset: 7,
+        };
+        let out = NGramTokenFilter::apply_to_stream(stream, 3, 3, true).unwrap();
+        assert_eq!(out.final_position_increment, 0);
+        assert!(out.tokens.iter().any(|t| t.term == "ab"));
+    }
+
+    /// A keyword analyzer's stream: one token, no swallowed positions, and the
+    /// `KeywordTokenizer.end()` final offset.
+    #[test]
+    fn keyword_analyzer_stream_ends_at_the_inputs_length() {
+        let stream = Analyzer::keyword().analyze_stream("id-\u{1F600}");
+        assert_eq!(stream.tokens.len(), 1);
+        assert_eq!(stream.final_position_increment, 0);
+        assert_eq!(stream.final_offset, 5);
+    }
+
+    /// The two gap accessors are Java's `Analyzer.getPositionIncrementGap` /
+    /// `getOffsetGap`, defaulting to Java's own `0` and `1`.
+    #[test]
+    fn the_analyzer_gaps_default_to_javas_zero_and_one() {
+        let a = Analyzer::standard(None);
+        assert_eq!(a.position_increment_gap(), 0);
+        assert_eq!(a.offset_gap(), 1);
+        let a = a.with_position_increment_gap(100).with_offset_gap(3);
+        assert_eq!(a.position_increment_gap(), 100);
+        assert_eq!(a.offset_gap(), 3);
+        assert_eq!(Analyzer::keyword().offset_gap(), 1);
     }
 
     #[test]

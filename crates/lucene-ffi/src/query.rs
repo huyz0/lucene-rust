@@ -936,7 +936,9 @@ pub unsafe extern "C" fn ffi_count_term_query(
         // The whole point: with no deletions the answer is in the terms
         // dictionary, so `.doc` is never opened.
         let count =
-            match count_term_query_shortcut(&segment.fields, segment.live_docs.as_ref(), &query) {
+            match count_term_query_shortcut(&segment.fields, segment.live_docs.as_ref(), &query)
+                .map_err(map_search_error)?
+            {
                 Some(n) => n,
                 None => {
                     let doc_in = segment

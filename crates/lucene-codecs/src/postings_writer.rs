@@ -272,20 +272,33 @@ pub enum Error {
         occurrence: usize,
     },
     #[error(
-        "write_single_field: term at index {index}, doc index {doc_index} has no payloads entry \
-         but has_payloads is set; every doc needs exactly `freq` payload entries (each possibly \
-         empty)"
-    )]
-    MissingPayloads { index: usize, doc_index: usize },
-    #[error(
-        "write_single_field: term at index {index}, doc index {doc_index} has {payloads} payload \
-         entries but freq {freq}; they must match when has_payloads is set"
+        "write_single_field: term at index {index} has {payload_lengths} payload lengths but \
+         {total_term_freq} occurrences; when has_payloads is set the flat payload run needs \
+         exactly one length per occurrence (each possibly zero)"
     )]
     PayloadsFreqMismatch {
         index: usize,
-        doc_index: usize,
-        payloads: usize,
-        freq: i32,
+        payload_lengths: usize,
+        total_term_freq: usize,
+    },
+    #[error(
+        "write_single_field: term at index {index} has {payload_bytes} payload bytes but its \
+         lengths sum to {expected}; the flat payload run must be exactly the occurrences' \
+         payloads concatenated"
+    )]
+    PayloadBytesMismatch {
+        index: usize,
+        payload_bytes: usize,
+        expected: usize,
+    },
+    #[error(
+        "write_single_field: term at index {index}, occurrence {occurrence} has payload length \
+         {length}, which does not fit the `int` the wire format writes it as"
+    )]
+    PayloadLengthTooLarge {
+        index: usize,
+        occurrence: usize,
+        length: u32,
     },
 }
 
@@ -320,23 +333,93 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// next (it resets to comparing against `0` at each doc's first
 /// occurrence) — the writer derives the on-wire
 /// `startOffset - lastStartOffset` delta itself, exactly like `positions`.
-/// `payloads` mirrors `positions`/`offsets`: only consulted when
-/// [`FieldPostingsInput::has_payloads`] is set, in which case it must have
-/// exactly `docs.len()` entries (same doc order) and `payloads[i].len()` must
-/// equal `positions[i].len()` (== that doc's `freq`). Each entry is one
-/// occurrence's payload bytes — an empty `Vec<u8>` means "no payload for this
-/// occurrence" (real Lucene's `addPosition` treats `payload == null` and
-/// `payload.length == 0` identically, `Lucene104PostingsWriter.java:316-319`),
-/// exactly as valid as a non-empty payload; payload *presence* is a per-field
-/// property (`FieldInfo.hasPayloads()`), never a per-occurrence one, so there
-/// is no "absent" state to model beyond zero-length.
+/// `payload_bytes`/`payload_lengths` are this term's payloads, **flat**:
+/// only consulted when [`FieldPostingsInput::has_payloads`] is set, in which
+/// case `payload_lengths` must have exactly one entry per occurrence (i.e.
+/// `docs.iter().map(|&(_, freq)| freq).sum()` of them, in doc order and then
+/// occurrence order within each doc) and `payload_bytes` must be exactly
+/// those occurrences' payloads concatenated in the same order. A zero length
+/// means "no payload for this occurrence" (real Lucene's `addPosition` treats
+/// `payload == null` and `payload.length == 0` identically,
+/// `Lucene104PostingsWriter.java:316-319`), exactly as valid as a non-empty
+/// payload; payload *presence* is a per-field property
+/// (`FieldInfo.hasPayloads()`), never a per-occurrence one, so there is no
+/// "absent" state to model beyond zero-length.
+///
+/// Flat rather than the nested `Vec<Vec<Vec<u8>>>` it used to be, because
+/// that shape cost a heap object per occurrence *and* a vector header per
+/// posting entry, on both sides of the `lucene-index` boundary: c23 measured
+/// it at 26 us/doc and ~190 MB per 50 000 documents with an all-empty-payload
+/// control costing the same, which is what identifies the slot rather than
+/// the bytes as the cost. This is also the exact layout
+/// [`write_position_tail`] already had to build internally, and the layout
+/// `Lucene104PostingsWriter` accumulates into its own `payloadBytes` /
+/// `payloadLengthBuffer`, so the writer now borrows the caller's run instead
+/// of re-flattening it.
 #[derive(Debug, Clone, Default)]
 pub struct TermPostings {
     pub term: Vec<u8>,
     pub docs: Vec<(i32, i32)>,
     pub positions: Vec<Vec<i32>>,
     pub offsets: Vec<Vec<(i32, i32)>>,
-    pub payloads: Vec<Vec<Vec<u8>>>,
+    pub payload_bytes: Vec<u8>,
+    pub payload_lengths: Vec<u32>,
+}
+
+/// Reorders a [`TermPostings`] flat payload run to follow a permutation of
+/// its documents — the payload half of a caller that has just re-ordered
+/// `docs`/`positions`/`offsets` (a sorted merge interleaving its sources, or
+/// an invert pass enforcing doc-ID order).
+///
+/// The run is doc-major with no per-document index of its own — one length
+/// per occurrence and every payload concatenated, exactly as
+/// `Lucene104PostingsWriter` accumulates its own `payloadBytes` — so `counts`
+/// (each document's occurrence count, **in the pre-permutation order**) is
+/// what turns it back into per-document spans. `permutation[n]` is the index
+/// of the document that becomes position `n`, the same direction
+/// `crate::doc_values::…` and `lucene_index::merge`'s own list reorder use.
+///
+/// A run shorter than `counts` describes says the caller built the two out of
+/// step; this saturates rather than panicking, because
+/// [`Error::PayloadsFreqMismatch`] is where that is meant to be reported and
+/// a slice panic here would come first.
+pub fn permute_payload_run(
+    payload_bytes: &[u8],
+    payload_lengths: &[u32],
+    counts: &[u32],
+    permutation: &[usize],
+) -> (Vec<u8>, Vec<u32>) {
+    debug_assert_eq!(counts.len(), permutation.len());
+    // (byte offset, length offset) of each document's run, before the sort.
+    let mut spans: Vec<(usize, usize)> = Vec::with_capacity(counts.len());
+    let (mut byte_at, mut len_at) = (0usize, 0usize);
+    for &count in counts {
+        spans.push((byte_at, len_at));
+        let end = len_at.saturating_add(count as usize);
+        for &length in payload_lengths.get(len_at..end).unwrap_or_default() {
+            byte_at = byte_at.saturating_add(length as usize);
+        }
+        len_at = end;
+    }
+    let mut bytes = Vec::with_capacity(payload_bytes.len());
+    let mut lengths = Vec::with_capacity(payload_lengths.len());
+    for &i in permutation {
+        let Some(&(byte_start, len_start)) = spans.get(i) else {
+            continue;
+        };
+        let count = counts.get(i).copied().unwrap_or(0) as usize;
+        let run = payload_lengths
+            .get(len_start..len_start.saturating_add(count))
+            .unwrap_or_default();
+        let run_bytes: usize = run.iter().map(|&l| l as usize).sum();
+        lengths.extend_from_slice(run);
+        bytes.extend_from_slice(
+            payload_bytes
+                .get(byte_start..byte_start.saturating_add(run_bytes))
+                .unwrap_or_default(),
+        );
+    }
+    (bytes, lengths)
 }
 
 /// Input to [`write_single_field`]: one field's whole term dictionary,
@@ -355,8 +438,8 @@ pub struct FieldPostingsInput<'a> {
     /// `FieldInfo`/`IndexOptions` in the Java source: payloads are a plain
     /// boolean orthogonal to the `IndexOptions` enum). Only meaningful when
     /// `index_options` indexes positions; every term's `positions`/
-    /// `payloads` entries must line up when this is set (see
-    /// [`TermPostings::payloads`]).
+    /// `payload_lengths` entries must line up when this is set (see
+    /// [`TermPostings::payload_bytes`]).
     pub has_payloads: bool,
     pub terms: &'a [TermPostings],
 }
@@ -543,7 +626,8 @@ pub fn write_fields(
                     &mut pay,
                     &t.positions,
                     &t.offsets,
-                    &t.payloads,
+                    &t.payload_bytes,
+                    &t.payload_lengths,
                     index_has_offsets,
                     index_has_payloads,
                 );
@@ -962,21 +1046,43 @@ fn validate_field(input: &FieldPostingsInput<'_>) -> Result<()> {
                 }
             }
             if input.has_payloads {
-                if t.payloads.len() != t.docs.len() {
-                    return Err(Error::MissingPayloads {
+                // ARITH: `freq >= 1` and `docs.len()` is bounded by the
+                // segment, so the sum is bounded by the total occurrence
+                // count of one term -- a `usize` cannot overflow summing
+                // counts over a structure that is already in memory.
+                #[allow(clippy::arithmetic_side_effects)]
+                let total_term_freq: usize = t.docs.iter().map(|&(_, freq)| freq as usize).sum();
+                if t.payload_lengths.len() != total_term_freq {
+                    return Err(Error::PayloadsFreqMismatch {
                         index: i,
-                        doc_index: t.payloads.len(),
+                        payload_lengths: t.payload_lengths.len(),
+                        total_term_freq,
                     });
                 }
-                for (j, (&(_, freq), doc_payloads)) in t.docs.iter().zip(&t.payloads).enumerate() {
-                    if doc_payloads.len() != freq as usize {
-                        return Err(Error::PayloadsFreqMismatch {
-                            index: i,
-                            doc_index: j,
-                            payloads: doc_payloads.len(),
-                            freq,
-                        });
-                    }
+                // ARITH: a `u32` widened to `usize` cannot overflow the sum
+                // unless the run has more occurrences than `usize::MAX / 2^32`
+                // -- more than the address space holds -- and the sum is
+                // checked against `payload_bytes.len()` immediately below.
+                #[allow(clippy::arithmetic_side_effects)]
+                let expected: usize = t.payload_lengths.iter().map(|&l| l as usize).sum();
+                if let Some((k, &length)) = t
+                    .payload_lengths
+                    .iter()
+                    .enumerate()
+                    .find(|&(_, &l)| l > i32::MAX as u32)
+                {
+                    return Err(Error::PayloadLengthTooLarge {
+                        index: i,
+                        occurrence: k,
+                        length,
+                    });
+                }
+                if t.payload_bytes.len() != expected {
+                    return Err(Error::PayloadBytesMismatch {
+                        index: i,
+                        payload_bytes: t.payload_bytes.len(),
+                        expected,
+                    });
                 }
             }
         }
@@ -1451,7 +1557,8 @@ fn write_position_tail(
     pay_out: &mut Vec<u8>,
     positions: &[Vec<i32>],
     offsets: &[Vec<(i32, i32)>],
-    payloads: &[Vec<Vec<u8>>],
+    payload_bytes: &[u8],
+    payload_lengths: &[u32],
     has_offsets: bool,
     has_payloads: bool,
 ) -> PositionLayout {
@@ -1467,8 +1574,10 @@ fn write_position_tail(
     let mut deltas = Vec::new();
     let mut offset_start_deltas = Vec::new();
     let mut offset_lengths = Vec::new();
-    let mut payload_lengths: Vec<i32> = Vec::new();
-    let mut payload_bytes: Vec<u8> = Vec::new();
+    // Borrowed, not rebuilt: `TermPostings` already carries the payload run in
+    // exactly the layout this function consumes -- the whole term's payloads
+    // concatenated, one length per occurrence -- so there is nothing to
+    // flatten here any more.
     for (doc_idx, doc_positions) in positions.iter().enumerate() {
         let mut prev = 0i32;
         let mut prev_start_offset = 0i32;
@@ -1480,11 +1589,6 @@ fn write_position_tail(
             let pos_delta = p - prev;
             deltas.push(pos_delta);
             prev = p;
-            if has_payloads {
-                let payload = &payloads[doc_idx][occ_idx];
-                payload_lengths.push(payload.len() as i32);
-                payload_bytes.extend_from_slice(payload);
-            }
             if has_offsets {
                 let (start_offset, end_offset) = offsets[doc_idx][occ_idx];
                 // ARITH: `validate_field` requires `start_offset >=
@@ -1579,7 +1683,8 @@ fn write_position_tail(
     for i in start..deltas.len() {
         let delta = deltas[i];
         if has_payloads {
-            let length = payload_lengths[i];
+            // `validate_field` proved every length fits an `i32`.
+            let length = payload_lengths[i] as i32;
             if length != last_payload_length {
                 last_payload_length = length;
                 pos_out.write_vint((delta << 1) | 1);
@@ -1874,16 +1979,14 @@ fn write_full_offset_block(out: &mut Vec<u8>, start_deltas: &[i32], lengths: &[i
 /// `addPosition`'s own payload-then-offsets order. `lengths` must be exactly
 /// `BLOCK_SIZE` (256) long; `bytes` must be exactly `lengths.iter().sum()`
 /// long.
-fn write_full_payload_length_block(out: &mut Vec<u8>, lengths: &[i32], bytes: &[u8]) {
+fn write_full_payload_length_block(out: &mut Vec<u8>, lengths: &[u32], bytes: &[u8]) {
     debug_assert_eq!(lengths.len(), BLOCK_SIZE as usize);
     debug_assert_eq!(
         lengths.iter().map(|&l| l as usize).sum::<usize>(),
         bytes.len()
     );
     let mut lens = [0u32; for_util::BLOCK_SIZE];
-    for (v, &l) in lens.iter_mut().zip(lengths) {
-        *v = l as u32;
-    }
+    lens.copy_from_slice(lengths);
     for_util::pfor_encode(&mut lens, out);
     out.write_vint(bytes.len() as i32);
     out.write_bytes(bytes);
@@ -2004,6 +2107,20 @@ mod tests {
 
     const SEG_ID: [u8; ID_LENGTH] = [9u8; ID_LENGTH];
     const SUFFIX: &str = "";
+
+    /// Builds a [`TermPostings`] flat payload run from one occurrence's
+    /// payload per element, in doc order and then occurrence order -- which
+    /// is the whole layout: doc boundaries live in `docs`' frequencies, not
+    /// in the run.
+    fn payload_run(occurrences: &[&[u8]]) -> (Vec<u8>, Vec<u32>) {
+        let mut bytes = Vec::new();
+        let mut lengths = Vec::new();
+        for occurrence in occurrences {
+            lengths.push(occurrence.len() as u32);
+            bytes.extend_from_slice(occurrence);
+        }
+        (bytes, lengths)
+    }
 
     fn field_info(number: i32, name: &str, index_options: IndexOptions) -> FieldInfo {
         FieldInfo {
@@ -2975,14 +3092,16 @@ mod tests {
     fn positions_round_trip_via_read_positions() {
         let terms = vec![
             TermPostings {
-                payloads: Vec::new(),
+                payload_bytes: Vec::new(),
+                payload_lengths: Vec::new(),
                 term: b"alpha".to_vec(),
                 docs: vec![(0, 2), (3, 1)],
                 positions: vec![vec![1, 4], vec![2]],
                 offsets: Vec::new(),
             },
             TermPostings {
-                payloads: Vec::new(),
+                payload_bytes: Vec::new(),
+                payload_lengths: Vec::new(),
                 term: b"beta".to_vec(),
                 docs: vec![(1, 3)], // singleton doc, but freq == 3 occurrences
                 positions: vec![vec![0, 5, 6]],
@@ -3039,7 +3158,8 @@ mod tests {
     #[test]
     fn rejects_missing_positions_when_index_options_needs_them() {
         let terms = vec![TermPostings {
-            payloads: Vec::new(),
+            payload_bytes: Vec::new(),
+            payload_lengths: Vec::new(),
             term: b"a".to_vec(),
             docs: vec![(0, 1)],
             positions: vec![], // no positions supplied, but index_options needs them
@@ -3064,7 +3184,8 @@ mod tests {
     #[test]
     fn rejects_positions_freq_mismatch() {
         let terms = vec![TermPostings {
-            payloads: Vec::new(),
+            payload_bytes: Vec::new(),
+            payload_lengths: Vec::new(),
             term: b"a".to_vec(),
             docs: vec![(0, 2)],
             positions: vec![vec![1]], // only 1 position but freq == 2
@@ -3091,7 +3212,8 @@ mod tests {
     #[test]
     fn rejects_non_ascending_positions_within_a_doc() {
         let terms = vec![TermPostings {
-            payloads: Vec::new(),
+            payload_bytes: Vec::new(),
+            payload_lengths: Vec::new(),
             term: b"a".to_vec(),
             docs: vec![(0, 2)],
             positions: vec![vec![3, 3]], // duplicate, not strictly ascending
@@ -3138,14 +3260,16 @@ mod tests {
         ];
         let body_terms = vec![
             TermPostings {
-                payloads: Vec::new(),
+                payload_bytes: Vec::new(),
+                payload_lengths: Vec::new(),
                 term: b"fox".to_vec(),
                 docs: vec![(0, 1), (2, 1)],
                 positions: vec![vec![3], vec![0]],
                 offsets: Vec::new(),
             },
             TermPostings {
-                payloads: Vec::new(),
+                payload_bytes: Vec::new(),
+                payload_lengths: Vec::new(),
                 term: b"rust".to_vec(), // same bytes as "title"'s term, different field
                 docs: vec![(1, 2)],
                 positions: vec![vec![0, 5]],
@@ -3325,7 +3449,8 @@ mod tests {
     fn total_term_freq_at_or_above_block_size_from_one_doc_is_now_accepted() {
         let positions: Vec<Vec<i32>> = vec![(0..BLOCK_SIZE).collect()];
         let terms = vec![TermPostings {
-            payloads: Vec::new(),
+            payload_bytes: Vec::new(),
+            payload_lengths: Vec::new(),
             term: b"a".to_vec(),
             docs: vec![(0, BLOCK_SIZE)],
             positions,
@@ -3353,7 +3478,8 @@ mod tests {
     fn doc_freq_at_or_above_block_size_while_indexing_positions_round_trips() {
         let doc_freq = BLOCK_SIZE + 3;
         let terms = vec![TermPostings {
-            payloads: Vec::new(),
+            payload_bytes: Vec::new(),
+            payload_lengths: Vec::new(),
             term: b"a".to_vec(),
             docs: (0..doc_freq).map(|i| (i * 2, 1 + (i % 3))).collect(),
             positions: (0..doc_freq)
@@ -3961,7 +4087,8 @@ mod tests {
             positions.push(doc_positions);
         }
         TermPostings {
-            payloads: Vec::new(),
+            payload_bytes: Vec::new(),
+            payload_lengths: Vec::new(),
             term: term.to_vec(),
             docs,
             positions,
@@ -4169,7 +4296,8 @@ mod tests {
             doc_positions.push(pos);
         }
         let terms = vec![TermPostings {
-            payloads: Vec::new(),
+            payload_bytes: Vec::new(),
+            payload_lengths: Vec::new(),
             term: b"a".to_vec(),
             docs: vec![(0, BLOCK_SIZE)],
             positions: vec![doc_positions.clone()],
@@ -4238,7 +4366,8 @@ mod tests {
     #[test]
     fn single_position_per_doc_with_offsets_round_trips() {
         let terms = vec![TermPostings {
-            payloads: Vec::new(),
+            payload_bytes: Vec::new(),
+            payload_lengths: Vec::new(),
             term: b"a".to_vec(),
             docs: vec![(0, 1), (2, 1), (5, 1)],
             positions: vec![vec![0], vec![3], vec![7]],
@@ -4288,7 +4417,8 @@ mod tests {
     #[test]
     fn multi_position_per_doc_with_offsets_round_trips() {
         let terms = vec![TermPostings {
-            payloads: Vec::new(),
+            payload_bytes: Vec::new(),
+            payload_lengths: Vec::new(),
             term: b"a".to_vec(),
             docs: vec![(0, 3), (4, 2)],
             positions: vec![vec![1, 4, 9], vec![0, 2]],
@@ -4396,7 +4526,8 @@ mod tests {
     #[test]
     fn rejects_missing_offsets_when_index_options_needs_them() {
         let terms = vec![TermPostings {
-            payloads: Vec::new(),
+            payload_bytes: Vec::new(),
+            payload_lengths: Vec::new(),
             term: b"a".to_vec(),
             docs: vec![(0, 1)],
             positions: vec![vec![0]],
@@ -4421,7 +4552,8 @@ mod tests {
     #[test]
     fn rejects_offsets_freq_mismatch() {
         let terms = vec![TermPostings {
-            payloads: Vec::new(),
+            payload_bytes: Vec::new(),
+            payload_lengths: Vec::new(),
             term: b"a".to_vec(),
             docs: vec![(0, 2)],
             positions: vec![vec![0, 1]],
@@ -4448,7 +4580,8 @@ mod tests {
     #[test]
     fn rejects_invalid_offsets() {
         let terms = vec![TermPostings {
-            payloads: Vec::new(),
+            payload_bytes: Vec::new(),
+            payload_lengths: Vec::new(),
             term: b"a".to_vec(),
             docs: vec![(0, 2)],
             positions: vec![vec![0, 1]],
@@ -4484,11 +4617,8 @@ mod tests {
             docs: vec![(0, 1), (2, 1), (5, 1)],
             positions: vec![vec![0], vec![3], vec![7]],
             offsets: Vec::new(),
-            payloads: vec![
-                vec![b"x".to_vec()],
-                vec![b"yy".to_vec()],
-                vec![b"zzz".to_vec()],
-            ],
+            payload_bytes: payload_run(&[b"x", b"yy", b"zzz"]).0,
+            payload_lengths: payload_run(&[b"x", b"yy", b"zzz"]).1,
         }];
         let input = FieldPostingsInput {
             field_number: 0,
@@ -4542,10 +4672,8 @@ mod tests {
             // doc 0: same 2-byte payload repeated for all 3 occurrences
             // (length-suppression path). doc 1: varying lengths (1 byte,
             // then 3 bytes).
-            payloads: vec![
-                vec![b"ab".to_vec(), b"ab".to_vec(), b"ab".to_vec()],
-                vec![b"c".to_vec(), b"def".to_vec()],
-            ],
+            payload_bytes: payload_run(&[b"ab", b"ab", b"ab", b"c", b"def"]).0,
+            payload_lengths: payload_run(&[b"ab", b"ab", b"ab", b"c", b"def"]).1,
         }];
         let input = FieldPostingsInput {
             field_number: 0,
@@ -4593,7 +4721,8 @@ mod tests {
             docs: vec![(0, 2), (3, 1)],
             positions: vec![vec![0, 2], vec![1]],
             offsets: vec![vec![(0, 3), (20, 22)], vec![(10, 15)]],
-            payloads: vec![vec![b"p1".to_vec(), Vec::new()], vec![b"p3".to_vec()]],
+            payload_bytes: payload_run(&[b"p1", b"", b"p3"]).0,
+            payload_lengths: payload_run(&[b"p1", b"", b"p3"]).1,
         }];
         let input = FieldPostingsInput {
             field_number: 0,
@@ -4661,7 +4790,10 @@ mod tests {
         let mut term = irregular_positions_term(b"a", BLOCK_SIZE + 1, 5);
         let length_cycle = [1usize, 0, 3, 2];
         let mut next_byte = 0u8;
-        term.payloads = term
+        // The per-doc nesting is the *expectation*; the term itself carries
+        // the flat run, so this also pins that the two describe the same
+        // occurrences in the same order.
+        let expected_payloads: Vec<Vec<Vec<u8>>> = term
             .positions
             .iter()
             .map(|doc_positions| {
@@ -4670,22 +4802,26 @@ mod tests {
                     .enumerate()
                     .map(|(occ_idx, _)| {
                         let len = length_cycle[occ_idx % length_cycle.len()];
-                        let bytes: Vec<u8> = (0..len)
+                        (0..len)
                             .map(|_| {
                                 let b = next_byte;
                                 next_byte = next_byte.wrapping_add(1);
                                 b
                             })
-                            .collect();
-                        bytes
+                            .collect::<Vec<u8>>()
                     })
                     .collect()
             })
             .collect();
+        for doc_payloads in &expected_payloads {
+            for payload in doc_payloads {
+                term.payload_lengths.push(payload.len() as u32);
+                term.payload_bytes.extend_from_slice(payload);
+            }
+        }
         let max_doc = term.docs.last().unwrap().0 + 1;
         let doc_count = term.docs.len() as i32;
         let expected_positions = term.positions.clone();
-        let expected_payloads = term.payloads.clone();
         let terms = vec![term.clone()];
         let input = FieldPostingsInput {
             has_payloads: true,
@@ -4733,32 +4869,9 @@ mod tests {
             docs: vec![(0, 1)],
             positions: vec![vec![0]],
             offsets: Vec::new(),
-            payloads: vec![], // no payloads supplied, but has_payloads is set
-        }];
-        let input = FieldPostingsInput {
-            field_number: 0,
-            index_options: IndexOptions::DocsAndFreqsAndPositions,
-            doc_count: 1,
-            has_payloads: true,
-            terms: &terms,
-        };
-        assert!(matches!(
-            write_single_field(&input, &SEG_ID, SUFFIX),
-            Err(Error::MissingPayloads {
-                index: 0,
-                doc_index: 0
-            })
-        ));
-    }
-
-    #[test]
-    fn rejects_payloads_freq_mismatch() {
-        let terms = vec![TermPostings {
-            term: b"a".to_vec(),
-            docs: vec![(0, 2)],
-            positions: vec![vec![0, 1]],
-            offsets: Vec::new(),
-            payloads: vec![vec![b"x".to_vec()]], // only 1 payload but freq == 2
+            // no payload run supplied, but has_payloads is set
+            payload_bytes: Vec::new(),
+            payload_lengths: Vec::new(),
         }];
         let input = FieldPostingsInput {
             field_number: 0,
@@ -4771,9 +4884,137 @@ mod tests {
             write_single_field(&input, &SEG_ID, SUFFIX),
             Err(Error::PayloadsFreqMismatch {
                 index: 0,
-                doc_index: 0,
-                payloads: 1,
-                freq: 2,
+                payload_lengths: 0,
+                total_term_freq: 1,
+            })
+        ));
+    }
+
+    /// `permute_payload_run` has the direction hazard every reorder has, plus
+    /// one of its own: the run carries no per-document index, so it has to be
+    /// re-sliced from the **pre-permutation** occurrence counts. Pinned with a
+    /// 3-cycle over three documents whose occurrence counts *and* payload
+    /// lengths all differ, so neither a reversed permutation nor a
+    /// fixed-width slicing bug can pass.
+    #[test]
+    fn permute_payload_run_moves_each_documents_payloads_with_it() {
+        // doc order 0,1,2: doc 0 has 1 occurrence (1 byte), doc 1 has 2
+        // (1 and 3 bytes), doc 2 has 1 (2 bytes).
+        let bytes = vec![0xA0, 0xB0, 0xB1, 0xB2, 0xB3, 0xC0, 0xC1];
+        let lengths = vec![1u32, 1, 3, 2];
+        let counts = vec![1u32, 2, 1];
+        let (got_bytes, got_lengths) = permute_payload_run(&bytes, &lengths, &counts, &[2, 0, 1]);
+        assert_eq!(got_lengths, vec![2, 1, 1, 3]);
+        assert_eq!(got_bytes, vec![0xC0, 0xC1, 0xA0, 0xB0, 0xB1, 0xB2, 0xB3]);
+    }
+
+    /// A truncated run must not panic: `PayloadsFreqMismatch` is where a
+    /// caller that built the two out of step is meant to be told, and a slice
+    /// panic here would take the process down first. The out-of-range
+    /// permutation entry is the same rule from the other side.
+    #[test]
+    fn permute_payload_run_saturates_on_a_run_shorter_than_its_counts() {
+        // Two documents claiming 1 and 3 occurrences over a run that only has
+        // one length, and a permutation whose second entry names a document
+        // that does not exist. Both truncations drop their run rather than
+        // panicking or reading somebody else's bytes.
+        let (bytes, lengths) = permute_payload_run(&[1, 2], &[1u32], &[1u32, 3], &[1, 5]);
+        assert!(lengths.is_empty(), "got {lengths:?}");
+        assert!(bytes.is_empty(), "got {bytes:?}");
+        // The in-range half of the same run still moves correctly.
+        let (bytes, lengths) = permute_payload_run(&[1, 2], &[1u32], &[1u32, 3], &[0, 1]);
+        assert_eq!(lengths, vec![1]);
+        assert_eq!(bytes, vec![1]);
+    }
+
+    /// The flat run's second invariant: the bytes must be exactly the
+    /// concatenation its lengths describe. The nested shape could not express
+    /// this state at all (a `Vec<u8>` is its own length), so it is new
+    /// validation for a new representation rather than a re-spelling.
+    #[test]
+    fn rejects_payload_bytes_that_do_not_match_their_lengths() {
+        let terms = vec![TermPostings {
+            term: b"a".to_vec(),
+            docs: vec![(0, 2)],
+            positions: vec![vec![0, 1]],
+            offsets: Vec::new(),
+            // lengths sum to 5, but only 3 bytes are supplied
+            payload_bytes: b"abc".to_vec(),
+            payload_lengths: vec![2, 3],
+        }];
+        let input = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqsAndPositions,
+            doc_count: 1,
+            has_payloads: true,
+            terms: &terms,
+        };
+        assert!(matches!(
+            write_single_field(&input, &SEG_ID, SUFFIX),
+            Err(Error::PayloadBytesMismatch {
+                index: 0,
+                payload_bytes: 3,
+                expected: 5,
+            })
+        ));
+    }
+
+    /// A payload length is a `u32` in the run and an `int` on the wire, so a
+    /// length past `i32::MAX` has to be rejected rather than written as a
+    /// negative vint. Unreachable through `IndexWriter` (no allocation that
+    /// large exists here) and reachable by any direct `postings_writer`
+    /// caller, which is the whole reason the check is at the boundary.
+    #[test]
+    fn rejects_a_payload_length_that_does_not_fit_an_i32() {
+        let terms = vec![TermPostings {
+            term: b"a".to_vec(),
+            docs: vec![(0, 1)],
+            positions: vec![vec![0]],
+            offsets: Vec::new(),
+            payload_bytes: Vec::new(),
+            payload_lengths: vec![i32::MAX as u32 + 1],
+        }];
+        let input = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqsAndPositions,
+            doc_count: 1,
+            has_payloads: true,
+            terms: &terms,
+        };
+        assert!(matches!(
+            write_single_field(&input, &SEG_ID, SUFFIX),
+            Err(Error::PayloadLengthTooLarge {
+                index: 0,
+                occurrence: 0,
+                length: 2_147_483_648,
+            })
+        ));
+    }
+
+    #[test]
+    fn rejects_payloads_freq_mismatch() {
+        let terms = vec![TermPostings {
+            term: b"a".to_vec(),
+            docs: vec![(0, 2)],
+            positions: vec![vec![0, 1]],
+            offsets: Vec::new(),
+            // only 1 payload length but freq == 2
+            payload_bytes: payload_run(&[b"x"]).0,
+            payload_lengths: payload_run(&[b"x"]).1,
+        }];
+        let input = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqsAndPositions,
+            doc_count: 1,
+            has_payloads: true,
+            terms: &terms,
+        };
+        assert!(matches!(
+            write_single_field(&input, &SEG_ID, SUFFIX),
+            Err(Error::PayloadsFreqMismatch {
+                index: 0,
+                payload_lengths: 1,
+                total_term_freq: 2,
             })
         ));
     }

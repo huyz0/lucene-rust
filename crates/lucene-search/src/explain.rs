@@ -478,7 +478,7 @@ fn explain_term(
     let Some(field_terms) = fields.field(&query.field) else {
         return Ok(Explanation::no_match("no matching term"));
     };
-    let Some(stats) = field_terms.seek_exact(&query.term) else {
+    let Some(stats) = field_terms.try_seek_exact(&query.term)? else {
         return Ok(Explanation::no_match("no matching term"));
     };
     let doc_freqs = crate::term_doc_freqs(fields, doc_in, live_docs, query)?;
@@ -612,7 +612,7 @@ fn explain_phrase(
     let mut idf_sum = 0.0f32;
     let mut idf_details = Vec::with_capacity(query.terms.len());
     for term in &query.terms {
-        let Some(stats) = field_terms.seek_exact(term) else {
+        let Some(stats) = field_terms.try_seek_exact(term)? else {
             return Ok(Explanation::no_match("no matching terms"));
         };
         let term_idf = similarity::idf(stats.doc_freq as i64, doc_count);

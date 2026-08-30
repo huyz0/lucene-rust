@@ -14,7 +14,9 @@
 //!   soft-deletes reader builds a set from it) and for testing the cursor
 //!   against a second implementation.
 //!
-//! The block **jump table** is still not read; see [`DisiCursor`] for why.
+//! Both the DENSE **rank table** and the block **jump table** are written and
+//! read; see [`DisiCursor::advance_block`] for the latter's two-blocks-ahead
+//! rule.
 //!
 //! Wire format (three block kinds, chosen per 65536-doc range by how many
 //! docs in that range have a value; only non-empty ranges are written, and a
@@ -32,9 +34,16 @@
 //!     RankTable  --> u8 * rankBytes(denseRankPower)  (present iff denseRankPower != 0xFF)
 //!     Bits       --> i64 * 1024        (a 65536-bit dense bitset, LE words)
 //! ```
-//! Trailing the last block: an optional jump table (int pairs) that this
-//! decoder never reads, because sequential decoding naturally stops at the
-//! `NO_MORE_DOCS` sentinel block, right before the jump table begins.
+//! Trailing the last block: an optional block jump table --
+//! `jumpTableEntryCount` little-endian `(index, offset)` `i32` pairs, one per
+//! logical 65536-doc block including the empty ones, where `index` is the
+//! cardinality before that block and `offset` is its header's byte offset
+//! within the region. The entry count is **not** in the region: it is
+//! `writeBitSet`'s return value and lives in the `.dvm`/`.nvm`/`.vem` entry
+//! beside the region's offset and length, and the length *includes* the table.
+//!
+//! [`decode_doc_ids`] ignores the table: sequential decoding stops at the
+//! `NO_MORE_DOCS` sentinel block, right before the table begins.
 
 use lucene_store::data_input::{DataInput, SliceInput};
 use lucene_store::DataOutput;
@@ -75,6 +84,18 @@ pub type Result<T> = std::result::Result<T, lucene_store::Error>;
 fn read_u16_at(data: &[u8], pos: usize) -> Result<u16> {
     data.get(pos..pos + 2)
         .map(|b| u16::from_le_bytes([b[0], b[1]]))
+        .ok_or(lucene_store::Error::Eof { offset: pos })
+}
+
+/// `RandomAccessInput.readInt(pos)`: a little-endian `i32` at a byte offset,
+/// which is how the block jump table's `(index, offset)` pairs are stored.
+///
+/// ARITH: `pos + 4` cannot overflow because `pos` comes from
+/// `jump_table_entry_count * 8` with the count bounded by an `i16`.
+#[allow(clippy::arithmetic_side_effects)]
+fn read_i32_at(data: &[u8], pos: usize) -> Result<i32> {
+    data.get(pos..pos + 4)
+        .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
         .ok_or(lucene_store::Error::Eof { offset: pos })
 }
 
@@ -175,15 +196,9 @@ pub fn decode_doc_ids(data: &[u8], dense_rank_power: u8) -> Result<Vec<i32>> {
 /// | `block`, `blockEnd`, `method`, `index`, `nextBlockIndex` | same names | block headers are read once, in order |
 /// | `exists`, `nextExistDocInBlock` + the slice pointer | `exists`, `next_exist_doc_in_block`, `sparse_pos` | a SPARSE block's 16-bit doc ids are read once across the whole block, and an overshoot is pushed back rather than rescanned |
 /// | `word`, `wordIndex`, `numberOfOnes`, `denseOrigoIndex` | same names | a DENSE block's 1024 words are popcounted once for the whole block, not once per lookup |
-/// | `denseRankTable` | `dense_rank_offset`/`dense_rank_len` (read in place, not copied) | `rank_skip` jumps straight to the nearest rank boundary, bounding a cold lookup at one rank read + at most `2^(power-6)` word reads |
+/// | `denseRankTable` | `dense_rank` (borrowed in place, not copied) | `rank_skip` jumps straight to the nearest rank boundary, bounding a cold lookup at one rank read + at most `2^(power-6)` word reads |
 /// | `gap` | `gap` | an ALL block is one subtraction |
-///
-/// The one Java structure still not used is the **block jump table**
-/// (`createJumpTable`/`advanceBlock`'s two-blocks-ahead shortcut). Walking
-/// block headers is `O(maxDoc / 65536)` -- 16 headers for a million documents,
-/// each a 4-byte read -- and this port's own writers record
-/// `jumpTableEntryCount = 0`, so there is usually no table to read. Recorded in
-/// `docs/sweep/m2/c2-sparse-lookup.md`.
+/// | `jumpTable`, `jumpTableEntryCount` | `jump_table`, `jump_table_entry_count` | a seek two or more blocks ahead is one random read instead of one header read per block skipped |
 ///
 /// # Forward-only, and it says so loudly
 ///
@@ -204,7 +219,18 @@ pub fn decode_doc_ids(data: &[u8], dense_rank_power: u8) -> Result<Vec<i32>> {
 /// walk, never an allocation.
 #[derive(Debug)]
 pub struct DisiCursor<'a> {
+    /// Java `slice`: the block payload, with the trailing jump table sliced
+    /// off (`createBlockSlice`). Byte offsets inside it are exactly the
+    /// offsets the jump table records, because both are relative to Java's
+    /// `origo` -- the region's first byte.
     data: &'a [u8],
+    /// Java `jumpTable`: `jumpTableEntryCount` little-endian `(index, offset)`
+    /// `i32` pairs, trailing the blocks (`createJumpTable`). Empty when the
+    /// region carries no table.
+    jump_table: &'a [u8],
+    /// Java `jumpTableEntryCount`: how many logical 65 536-doc blocks the
+    /// table covers. `0`/`-1` mean "no table".
+    jump_table_entry_count: i32,
     dense_rank_power: u8,
 
     /// Java `block`: the current block's first doc id (`blockIndex << 16`), or
@@ -274,13 +300,55 @@ enum Method {
 }
 
 impl<'a> DisiCursor<'a> {
-    /// `data` must start exactly at the first block header -- the same offset a
-    /// `NormsEntry` or doc-values entry records. A trailing block jump table
-    /// (which this port's writers never emit) is harmless: decoding stops at
-    /// the `NO_MORE_DOCS` sentinel block, which precedes it.
-    pub fn new(data: &'a [u8], dense_rank_power: u8) -> Self {
+    /// `data` is the **whole region** a `NormsEntry` or doc-values entry
+    /// records -- `docsWithFieldOffset .. + docsWithFieldLength` -- which
+    /// spans the block payloads *and* the trailing block jump table, because
+    /// that is what `writeBitSet` appends and what `docsWithFieldLength`
+    /// measures. Do not strip the table before calling: this constructor is
+    /// `createBlockSlice` and `createJumpTable` together, and it needs the
+    /// count to know where the split is.
+    ///
+    /// `jump_table_entry_count` is `writeBitSet`'s own return value as
+    /// recorded in the matching `.dvm`/`.nvm`/`.vem` field; `0` and `-1` are
+    /// Java's "no table". Passing a *correct* count over a region whose table
+    /// has already been removed is the one misuse nothing here can catch --
+    /// the count still fits, so the split silently takes `count * 8` bytes off
+    /// the end of the last block instead.
+    pub fn new(data: &'a [u8], dense_rank_power: u8, jump_table_entry_count: i16) -> Self {
+        // `createBlockSlice` + `createJumpTable`: the table is the region's
+        // last `jumpTableEntryCount * 2 * 4` bytes, and the blocks are
+        // everything before it. A count of `0` or `-1` is Java's "no table".
+        // A count that does not fit the region is treated as no table rather
+        // than as an error, because the walk over the block headers is always
+        // correct -- Java would slice past the end and fail later; degrading to
+        // the (correct, slower) iteration cannot answer wrongly.
+        let jump_bytes = (jump_table_entry_count.max(0) as usize).saturating_mul(8);
+        let (blocks, jump_table) = match data.len().checked_sub(jump_bytes) {
+            Some(split) if jump_bytes > 0 => data.split_at(split),
+            _ => (data, &data[..0]),
+        };
+        Self::at_start(
+            blocks,
+            jump_table,
+            i32::from(jump_table_entry_count),
+            dense_rank_power,
+        )
+    }
+
+    /// A cursor positioned before the first block header, over an
+    /// already-split region. Java's equivalent is constructing an
+    /// `IndexedDISI` from a `blockSlice`/`jumpTable` pair someone else made
+    /// (its second public constructor, "in case it helps reuse").
+    fn at_start(
+        data: &'a [u8],
+        jump_table: &'a [u8],
+        jump_table_entry_count: i32,
+        dense_rank_power: u8,
+    ) -> Self {
         Self {
             data,
+            jump_table,
+            jump_table_entry_count,
             dense_rank_power,
             block: -1,
             block_end: 0,
@@ -306,7 +374,12 @@ impl<'a> DisiCursor<'a> {
     /// again. Java has no equivalent because it constructs a new `IndexedDISI`;
     /// this keeps the same borrow and allocates nothing.
     pub fn reset(&mut self) {
-        *self = Self::new(self.data, self.dense_rank_power);
+        *self = Self::at_start(
+            self.data,
+            self.jump_table,
+            self.jump_table_entry_count,
+            self.dense_rank_power,
+        );
     }
 
     /// Java's `docID()`: the last doc id passed to [`advance_exact`], or `-1`
@@ -352,10 +425,45 @@ impl<'a> DisiCursor<'a> {
         Ok(found.then_some(self.index as usize))
     }
 
-    /// `IndexedDISI.advanceBlock`'s iteration fallback: step block by block
-    /// until at or past `target_block`. The jump-table shortcut is not ported
-    /// (see the type's doc comment).
+    /// Port of `IndexedDISI.advanceBlock`: one random read through the block
+    /// jump table when the destination is two or more blocks ahead, and
+    /// otherwise the block-by-block walk.
+    ///
+    /// The two-block threshold is Java's and is not arbitrary: one block ahead
+    /// is a single sequential header read from bytes the previous block
+    /// already warmed, which is cheaper than a random read into the table at
+    /// the far end of the region.
+    // ARITH: `target_block` is `doc & !0xFFFF` for a non-negative `doc`, so
+    // `target_block >> 16` is in `0..=0x7FFF`; `self.block` is either `-1` or
+    // a `u16` shifted left by 16, so `self.block >> 16` is `-1..=0xFFFF`. The
+    // `+ 2` therefore cannot overflow. `in_range * 8` is bounded by
+    // `jump_table_entry_count * 8`, which is the length of a slice that
+    // exists.
+    #[allow(clippy::arithmetic_side_effects)]
     fn advance_block(&mut self, target_block: i32) -> Result<()> {
+        let block_index = target_block >> 16;
+        if !self.jump_table.is_empty() && block_index >= (self.block >> 16) + 2 {
+            // "If the jumpTableEntryCount is exceeded, there are no further
+            // bits. Last entry is always NO_MORE_DOCS."
+            let in_range = if block_index < self.jump_table_entry_count {
+                block_index
+            } else {
+                self.jump_table_entry_count - 1
+            } as usize;
+            let entry = in_range * 8;
+            let index = read_i32_at(self.jump_table, entry)?;
+            let offset = read_i32_at(self.jump_table, entry + 4)?;
+            // "-1 to compensate for the always-added 1 in readBlockHeader".
+            self.next_block_index = i64::from(index) - 1;
+            self.block_end = usize::try_from(offset).map_err(|_| {
+                lucene_store::Error::Corrupted(format!(
+                    "IndexedDISI jump-table offset is negative: {offset}"
+                ))
+            })?;
+            self.read_block_header()?;
+            return Ok(());
+        }
+
         loop {
             self.read_block_header()?;
             if self.block >= target_block {
@@ -597,7 +705,7 @@ pub fn rank_of(docs: &[i32], doc: i32) -> Option<usize> {
 /// Panics if `doc_ids` isn't strictly ascending, or contains `i32::MAX`
 /// (Lucene's `NO_MORE_DOCS` sentinel, never a real doc id) -- both are
 /// caller bugs, not something a well-formed write path can hit.
-pub fn write(doc_ids: &[i32]) -> Vec<u8> {
+pub fn write(doc_ids: &[i32]) -> (Vec<u8>, i16) {
     write_with_dense_rank_power(doc_ids, NO_RANK)
 }
 
@@ -609,9 +717,13 @@ pub fn write(doc_ids: &[i32]) -> Vec<u8> {
 /// matching `.dvm`/`.nvm` metadata byte or the region is unreadable.
 /// [`DEFAULT_DENSE_RANK_POWER`] is what real Lucene uses.
 ///
-/// The jump table `writeBitSet` appends after the last block is still not
-/// emitted (this port's writers record `jumpTableEntryCount = 0`, Java's own
-/// "no jump table" encoding); see [`DisiCursor`].
+/// Returns the region's bytes **and** `writeBitSet`'s own return value, the
+/// `jumpTableEntryCount`, which the caller must record in the matching
+/// `.dvm`/`.nvm`/`.vem` metadata field: it is how a reader knows how many of
+/// the region's trailing bytes are the block jump table rather than block
+/// payload. `0` means "no table" -- Java's own encoding, and what
+/// `flushBlockJumps` returns for a single-block region, where a table would be
+/// pure waste.
 // ARITH: this is the encode side, driven by an in-memory `doc_ids` slice the
 // assertions below prove strictly ascending and free of `i32::MAX`. `block` is
 // a `u16`, so `block_base <= 0xFFFF0000` and `block_base + 65536` fits `i64`
@@ -620,7 +732,7 @@ pub fn write(doc_ids: &[i32]) -> Vec<u8> {
 // that chose `block_end` is itself below it), so `count - 1` cannot underflow;
 // and `d - block_base` is in `0..65536` for every doc the scan collected.
 #[allow(clippy::arithmetic_side_effects)]
-pub fn write_with_dense_rank_power(doc_ids: &[i32], dense_rank_power: u8) -> Vec<u8> {
+pub fn write_with_dense_rank_power(doc_ids: &[i32], dense_rank_power: u8) -> (Vec<u8>, i16) {
     assert!(
         dense_rank_power == NO_RANK || (7..=15).contains(&dense_rank_power),
         "denseRankPower must be 0xFF (none) or 7-15, got {dense_rank_power}"
@@ -650,6 +762,14 @@ pub fn write_with_dense_rank_power(doc_ids: &[i32], dense_rank_power: u8) -> Vec
         "doc ids must be non-negative"
     );
 
+    // `writeBitSet`'s jump-table state: one `(index, offset)` pair per logical
+    // 65 536-doc block, including the blocks that hold no document at all --
+    // `addJumps` fills those with the *next* real block's pair, so a jump to an
+    // empty block lands on the block that follows it.
+    let mut jumps: Vec<(i32, i32)> = Vec::new();
+    let mut last_block = 0usize;
+    let mut total_cardinality = 0i32;
+
     let mut i = 0usize;
     while i < doc_ids.len() {
         let doc = doc_ids[i];
@@ -663,6 +783,16 @@ pub fn write_with_dense_rank_power(doc_ids: &[i32], dense_rank_power: u8) -> Vec
         }
         let block_docs = &doc_ids[start..i];
         let count = block_docs.len() as u32;
+
+        add_jumps(
+            &mut jumps,
+            out.len(),
+            total_cardinality,
+            last_block,
+            block as usize + 1,
+        );
+        last_block = block as usize + 1;
+        total_cardinality += count as i32;
 
         out.extend_from_slice(&block.to_le_bytes());
         out.extend_from_slice(&((count - 1) as u16).to_le_bytes());
@@ -690,12 +820,63 @@ pub fn write_with_dense_rank_power(doc_ids: &[i32], dense_rank_power: u8) -> Vec
 
     // Terminating sentinel block: doc id `i32::MAX` (Lucene's `NO_MORE_DOCS`),
     // written as a 1-doc SPARSE block.
+    //
+    // Java: "To avoid creating 65K jump-table entries, only a single entry is
+    // created pointing to the offset of the NO_MORE_DOCS block, with the
+    // jumpBlockIndex set to the logical EMPTY block after all real blocks."
+    add_jumps(
+        &mut jumps,
+        out.len(),
+        total_cardinality,
+        last_block,
+        last_block + 1,
+    );
     let sentinel_block = (i32::MAX as i64 >> 16) as u16;
     out.extend_from_slice(&sentinel_block.to_le_bytes());
     out.extend_from_slice(&0u16.to_le_bytes()); // numValues - 1 == 0
     out.write_i16(((i32::MAX as i64 & 0xFFFF) as u16) as i16);
 
-    out
+    // `flushBlockJumps`: the table trails the blocks, and a two-entry table --
+    // one real block plus the sentinel -- is "just wasted space so we ignore
+    // that".
+    let mut block_count = last_block + 1;
+    if block_count == 2 {
+        block_count = 0;
+    }
+    for &(index, offset) in jumps.iter().take(block_count) {
+        out.write_i32(index);
+        out.write_i32(offset);
+    }
+    // "As there are at most 32k blocks, the count is a short."
+    (out, block_count as i16)
+}
+
+/// `IndexedDISI.addJumps`: record `(index, offset)` for every logical block in
+/// `start_block..end_block`.
+///
+/// Java grows one `int[]` and indexes it by block; a `Vec` of pairs pushed in
+/// order is the same table, because `writeBitSet` only ever appends and only
+/// ever with `start_block == jumps.len()`.
+///
+/// ARITH: `end_block` is at most `0x10000` (a `u16` block index plus one) and
+/// `offset` is a `Vec` length bounded by the region this writer just built,
+/// which is at most `0x10000 * 8 KiB` -- both well inside `i32`, which is the
+/// width Java stores them at. The `assert` is Java's own
+/// (`offset < Integer.MAX_VALUE`).
+#[allow(clippy::arithmetic_side_effects)]
+fn add_jumps(
+    jumps: &mut Vec<(i32, i32)>,
+    offset: usize,
+    index: i32,
+    start_block: usize,
+    end_block: usize,
+) {
+    debug_assert_eq!(jumps.len(), start_block);
+    let offset = i32::try_from(offset)
+        .expect("IndexedDISI region offset should not exceed 2^30 but was >= Integer.MAX_VALUE");
+    for _ in start_block..end_block {
+        jumps.push((index, offset));
+    }
 }
 
 /// Port of `IndexedDISI.createRank`: one 2-byte big-endian entry per
@@ -749,31 +930,42 @@ mod tests {
     /// wrong present/absent.
     fn assert_cursor_matches(doc_ids: &[i32], max_doc: i32) {
         for power in [NO_RANK, 7, 9, 12, 15] {
-            let bytes = write_with_dense_rank_power(doc_ids, power);
+            let (bytes, jumps) = write_with_dense_rank_power(doc_ids, power);
             let decoded = decode_doc_ids(&bytes, power).unwrap();
             assert_eq!(
                 decoded, doc_ids,
                 "fixture does not round-trip at power {power}"
             );
 
-            let mut cursor = DisiCursor::new(&bytes, power);
-            for doc in 0..max_doc {
-                let want = rank_of(&decoded, doc);
-                let got = cursor.advance_exact(doc).unwrap();
-                assert_eq!(got, want, "disagreement at doc {doc}, power {power}");
-            }
+            // Every arm is run twice: once with the block jump table the
+            // writer just emitted, and once with the table declared absent, so
+            // the two `advanceBlock` paths are proved to give the same answers
+            // over the same bytes. A jump table that lands the cursor on the
+            // wrong block is invisible to a walk that never consults it.
+            for declared_jumps in [jumps, 0] {
+                let mut cursor = DisiCursor::new(&bytes, power, declared_jumps);
+                for doc in 0..max_doc {
+                    let want = rank_of(&decoded, doc);
+                    let got = cursor.advance_exact(doc).unwrap();
+                    assert_eq!(
+                        got, want,
+                        "disagreement at doc {doc}, power {power}, jumps {declared_jumps}"
+                    );
+                }
 
-            // The same answers again, but reached by jumping straight to each
-            // present doc rather than walking every doc id. This is the path
-            // `rank_skip` is on: a stride of 512+ doc ids inside a DENSE block
-            // is exactly what triggers it.
-            let mut cursor = DisiCursor::new(&bytes, power);
-            for (ordinal, &doc) in decoded.iter().enumerate() {
-                assert_eq!(
-                    cursor.advance_exact(doc).unwrap(),
-                    Some(ordinal),
-                    "jumped lookup disagreed at doc {doc}, power {power}"
-                );
+                // The same answers again, but reached by jumping straight to
+                // each present doc rather than walking every doc id. This is
+                // the path `rank_skip` is on: a stride of 512+ doc ids inside
+                // a DENSE block is exactly what triggers it.
+                let mut cursor = DisiCursor::new(&bytes, power, declared_jumps);
+                for (ordinal, &doc) in decoded.iter().enumerate() {
+                    assert_eq!(
+                        cursor.advance_exact(doc).unwrap(),
+                        Some(ordinal),
+                        "jumped lookup disagreed at doc {doc}, power {power}, \
+                         jumps {declared_jumps}"
+                    );
+                }
             }
         }
     }
@@ -830,8 +1022,8 @@ mod tests {
     #[should_panic(expected = "forward-only")]
     fn cursor_panics_on_a_backward_doc_rather_than_answering() {
         let docs: Vec<i32> = (0..50).map(|i| i * 7).collect();
-        let bytes = write(&docs);
-        let mut cursor = DisiCursor::new(&bytes, NO_RANK);
+        let (bytes, jumps) = write(&docs);
+        let mut cursor = DisiCursor::new(&bytes, NO_RANK, jumps);
         assert_eq!(cursor.advance_exact(70).unwrap(), Some(10));
         cursor.advance_exact(7).unwrap();
     }
@@ -839,8 +1031,10 @@ mod tests {
     #[test]
     #[should_panic(expected = "non-negative")]
     fn cursor_panics_on_a_negative_doc() {
-        let bytes = write(&[1, 2, 3]);
-        DisiCursor::new(&bytes, NO_RANK).advance_exact(-1).unwrap();
+        let (bytes, jumps) = write(&[1, 2, 3]);
+        DisiCursor::new(&bytes, NO_RANK, jumps)
+            .advance_exact(-1)
+            .unwrap();
     }
 
     /// `reset` is what makes a random-access caller possible on a forward-only
@@ -850,10 +1044,10 @@ mod tests {
     fn reset_restores_random_access_and_agrees_with_decode() {
         let mut docs: Vec<i32> = (0..8_000).map(|i| i * 8).collect();
         docs.extend((0..60).map(|i| 65_536 + i * 11));
-        let bytes = write(&docs);
+        let (bytes, jumps) = write(&docs);
         let decoded = decode_doc_ids(&bytes, NO_RANK).unwrap();
 
-        let mut cursor = DisiCursor::new(&bytes, NO_RANK);
+        let mut cursor = DisiCursor::new(&bytes, NO_RANK, jumps);
         // A pseudo-random order over the whole range, including absent docs.
         let mut probe = 12_345u32;
         for _ in 0..5_000 {
@@ -875,8 +1069,8 @@ mod tests {
     #[test]
     fn repeating_the_same_doc_returns_the_same_answer() {
         let docs: Vec<i32> = (0..50).map(|i| i * 7).collect();
-        let bytes = write(&docs);
-        let mut cursor = DisiCursor::new(&bytes, NO_RANK);
+        let (bytes, jumps) = write(&docs);
+        let mut cursor = DisiCursor::new(&bytes, NO_RANK, jumps);
         assert_eq!(cursor.advance_exact(70).unwrap(), Some(10));
         assert_eq!(cursor.advance_exact(70).unwrap(), Some(10));
         assert_eq!(cursor.advance_exact(71).unwrap(), None);
@@ -889,15 +1083,15 @@ mod tests {
     /// the field's cardinality.
     #[test]
     fn the_no_more_docs_sentinel_is_never_reported_as_present() {
-        let bytes = write(&[1, 5, 100]);
-        let mut cursor = DisiCursor::new(&bytes, NO_RANK);
+        let (bytes, jumps) = write(&[1, 5, 100]);
+        let mut cursor = DisiCursor::new(&bytes, NO_RANK, jumps);
         assert_eq!(cursor.advance_exact(NO_MORE_DOCS).unwrap(), None);
     }
 
     #[test]
     fn a_doc_past_every_block_has_no_value() {
-        let bytes = write(&[1, 5, 100]);
-        let mut cursor = DisiCursor::new(&bytes, NO_RANK);
+        let (bytes, jumps) = write(&[1, 5, 100]);
+        let mut cursor = DisiCursor::new(&bytes, NO_RANK, jumps);
         assert_eq!(cursor.advance_exact(1_000_000).unwrap(), None);
         assert_eq!(cursor.advance_exact(2_000_000).unwrap(), None);
     }
@@ -908,9 +1102,9 @@ mod tests {
     /// end can only mean truncation.
     #[test]
     fn a_truncated_region_is_an_error_not_a_missing_value() {
-        let bytes = write(&[1, 5, 100]);
+        let (bytes, _) = write(&[1, 5, 100]);
         let truncated = &bytes[..bytes.len() - 4];
-        let mut cursor = DisiCursor::new(truncated, NO_RANK);
+        let mut cursor = DisiCursor::new(truncated, NO_RANK, 0);
         // Inside the surviving first block the answer is still knowable.
         assert_eq!(cursor.advance_exact(5).unwrap(), Some(1));
         // Past it, the sentinel block's header is gone.
@@ -952,10 +1146,10 @@ mod tests {
     fn rank_skip_produces_the_same_ordinals_as_a_full_walk() {
         // Every 5th doc present: 13,108 in block 0, comfortably DENSE.
         let docs: Vec<i32> = (0..13_100).map(|i| i * 5).collect();
-        let plain = decode_doc_ids(&write(&docs), NO_RANK).unwrap();
+        let plain = decode_doc_ids(&write(&docs).0, NO_RANK).unwrap();
         for power in [7u8, 9, 12, 15] {
-            let bytes = write_with_dense_rank_power(&docs, power);
-            let mut cursor = DisiCursor::new(&bytes, power);
+            let (bytes, jumps) = write_with_dense_rank_power(&docs, power);
+            let mut cursor = DisiCursor::new(&bytes, power, jumps);
             // Stride of 32768 bits' worth of docs, so even power 15's
             // `2^9`-word threshold is crossed on every step.
             for doc in (0..65_536).step_by(32_771) {
@@ -972,7 +1166,7 @@ mod tests {
     fn write_with_dense_rank_power_round_trips_through_decode() {
         let docs: Vec<i32> = (0..5_000).map(|i| i * 13).collect();
         for power in [NO_RANK, 7, 9, 15] {
-            let bytes = write_with_dense_rank_power(&docs, power);
+            let (bytes, _) = write_with_dense_rank_power(&docs, power);
             assert_eq!(
                 decode_doc_ids(&bytes, power).unwrap(),
                 docs,
@@ -982,7 +1176,7 @@ mod tests {
         // A rank table costs `1024 >> (power - 7)` bytes per DENSE block and
         // nothing at all elsewhere.
         assert_eq!(
-            write_with_dense_rank_power(&docs, 9).len() - write(&docs).len(),
+            write_with_dense_rank_power(&docs, 9).0.len() - write(&docs).0.len(),
             256
         );
     }
@@ -1111,7 +1305,7 @@ mod tests {
                 decode_doc_ids(&data, bad).is_err(),
                 "denseRankPower {bad} must be rejected"
             );
-            let mut cursor = DisiCursor::new(&data, bad);
+            let mut cursor = DisiCursor::new(&data, bad, 0);
             assert!(cursor.advance_exact(0).is_err(), "denseRankPower {bad}");
         }
         // The legal extremes still parse.
@@ -1131,7 +1325,7 @@ mod tests {
                 "power {good}"
             );
             assert_eq!(
-                DisiCursor::new(&data, good).advance_exact(0).unwrap(),
+                DisiCursor::new(&data, good, 0).advance_exact(0).unwrap(),
                 Some(0),
                 "power {good}"
             );
@@ -1168,13 +1362,13 @@ mod tests {
 
     #[test]
     fn write_empty_doc_ids_round_trips_to_empty() {
-        let data = write(&[]);
+        let (data, _) = write(&[]);
         assert_eq!(decode_doc_ids(&data, NO_RANK).unwrap(), Vec::<i32>::new());
     }
 
     #[test]
     fn write_single_doc_id_round_trips() {
-        let data = write(&[42]);
+        let (data, _) = write(&[42]);
         assert_eq!(decode_doc_ids(&data, NO_RANK).unwrap(), vec![42]);
     }
 
@@ -1184,7 +1378,7 @@ mod tests {
         // value itself must still take the SPARSE-as-shorts shape (`<=`,
         // not `<`), not spill into the DENSE bitset shape one doc early.
         let doc_ids: Vec<i32> = (0..MAX_ARRAY_LENGTH as i32).collect();
-        let data = write(&doc_ids);
+        let (data, _) = write(&doc_ids);
         assert_eq!(decode_doc_ids(&data, NO_RANK).unwrap(), doc_ids);
     }
 
@@ -1193,7 +1387,7 @@ mod tests {
         // 4096 present docs: one past the SPARSE/DENSE boundary, must
         // decode identically via the DENSE bitset shape instead.
         let doc_ids: Vec<i32> = (0..(MAX_ARRAY_LENGTH as i32 + 1)).collect();
-        let data = write(&doc_ids);
+        let (data, _) = write(&doc_ids);
         assert_eq!(decode_doc_ids(&data, NO_RANK).unwrap(), doc_ids);
     }
 
@@ -1203,7 +1397,7 @@ mod tests {
         // NOT be mistaken for the ALL shape (which requires every doc in
         // the block, i.e. exactly BLOCK_SIZE).
         let doc_ids: Vec<i32> = (0..(BLOCK_SIZE as i32 - 1)).collect();
-        let data = write(&doc_ids);
+        let (data, _) = write(&doc_ids);
         assert_eq!(decode_doc_ids(&data, NO_RANK).unwrap(), doc_ids);
     }
 
@@ -1212,8 +1406,135 @@ mod tests {
         // Every doc in the block present: the ALL shape (zero body bytes
         // for the block, per real Lucene's IndexedDISIBuilder).
         let doc_ids: Vec<i32> = (0..BLOCK_SIZE as i32).collect();
-        let data = write(&doc_ids);
+        let (data, _) = write(&doc_ids);
         assert_eq!(decode_doc_ids(&data, NO_RANK).unwrap(), doc_ids);
+    }
+
+    /// `flushBlockJumps`' exact byte layout, hand-derived from Java rather
+    /// than round-tripped: a self-consistent-but-not-Java table round-trips
+    /// through this port's own cursor and is silently wrong for real Lucene,
+    /// which is precisely the trap `create_rank_matches_javas_byte_layout`
+    /// exists for on the rank table.
+    ///
+    /// Two present docs in block 0, one in block **2** -- block 1 is empty, so
+    /// this also pins `addJumps`' fill of the skipped blocks with the *next*
+    /// real block's pair.
+    #[test]
+    fn jump_table_matches_javas_byte_layout() {
+        let docs = vec![1, 2, 2 * BLOCK_SIZE as i32 + 5];
+        let (bytes, count) = write(&docs);
+
+        // Block 0 is SPARSE with 2 docs: 4 header bytes + 2 shorts = 8.
+        // Block 2 is SPARSE with 1 doc: 4 + 2 = 6, at offset 8.
+        // The sentinel block is another 6, at offset 14.
+        // `blockCount = lastBlock + 1 = 4`, so four pairs trail the blocks.
+        assert_eq!(count, 4);
+        assert_eq!(bytes.len(), 20 + 4 * 8);
+
+        let table = &bytes[20..];
+        let entry = |i: usize| {
+            (
+                i32::from_le_bytes(table[i * 8..i * 8 + 4].try_into().unwrap()),
+                i32::from_le_bytes(table[i * 8 + 4..i * 8 + 8].try_into().unwrap()),
+            )
+        };
+        // (index, offset), where `index` is the cardinality *before* the block
+        // the entry points at and `offset` is that block header's byte offset.
+        assert_eq!(entry(0), (0, 0), "block 0");
+        assert_eq!(entry(1), (2, 8), "empty block 1 points at block 2");
+        assert_eq!(entry(2), (2, 8), "block 2");
+        assert_eq!(
+            entry(3),
+            (3, 14),
+            "the logical block after the last real one"
+        );
+    }
+
+    /// Java: "Jumps with a single real entry + NO_MORE_DOCS is just wasted
+    /// space so we ignore that." Every doc in one block therefore produces no
+    /// table at all, and `jumpTableEntryCount` is `0` -- which is also what
+    /// this port used to record unconditionally.
+    #[test]
+    fn a_single_block_region_writes_no_jump_table() {
+        let (bytes, count) = write(&[1, 5, 100]);
+        assert_eq!(count, 0);
+        // 4 + 3 * 2 for the block, 4 + 2 for the sentinel, and nothing more.
+        assert_eq!(bytes.len(), 10 + 6);
+        // An *empty* region is the one case Java does write a table for:
+        // `blockCount` is 1, not 2, so `flushBlockJumps`' single-real-block
+        // exemption does not apply and one entry (pointing at the sentinel)
+        // trails the sentinel block.
+        let (empty, empty_count) = write(&[]);
+        assert_eq!(empty_count, 1);
+        assert_eq!(empty.len(), 6 + 8, "the sentinel block plus one entry");
+    }
+
+    /// The jump table is genuinely *read*: a table whose offsets point at the
+    /// wrong blocks gives different answers from the same bytes walked
+    /// block-by-block. Without this, a table that is written but never
+    /// consulted would pass every other test in this file.
+    #[test]
+    fn a_corrupted_jump_table_changes_the_answer_which_proves_it_is_read() {
+        // Three blocks, so a jump from block 0 to block 2 is two ahead and
+        // takes the table rather than the walk.
+        let mut docs: Vec<i32> = vec![1, 2, 3];
+        docs.push(BLOCK_SIZE as i32 + 7);
+        docs.push(2 * BLOCK_SIZE as i32 + 9);
+        let (bytes, count) = write(&docs);
+        assert!(count >= 3);
+
+        let target = 2 * BLOCK_SIZE as i32 + 9;
+        let mut honest = DisiCursor::new(&bytes, NO_RANK, count);
+        assert_eq!(honest.advance_exact(target).unwrap(), Some(4));
+
+        // Point block 2's entry at block 1's header instead. The walk would
+        // still be right; a cursor that trusts the table is not.
+        let table_start = bytes.len() - count as usize * 8;
+        let mut corrupt = bytes.clone();
+        let block1_offset = i32::from_le_bytes(
+            bytes[table_start + 8 + 4..table_start + 8 + 8]
+                .try_into()
+                .unwrap(),
+        );
+        corrupt[table_start + 16 + 4..table_start + 16 + 8]
+            .copy_from_slice(&block1_offset.to_le_bytes());
+        let mut lied_to = DisiCursor::new(&corrupt, NO_RANK, count);
+        assert_ne!(
+            lied_to.advance_exact(target).unwrap(),
+            Some(4),
+            "the cursor cannot be reading the jump table"
+        );
+
+        // Declaring the same bytes table-less walks the blocks and is right
+        // again -- so the difference above is the table, not the corruption.
+        let mut walked = DisiCursor::new(&corrupt[..table_start], NO_RANK, 0);
+        assert_eq!(walked.advance_exact(target).unwrap(), Some(4));
+    }
+
+    /// A jump past the last covered block clamps to the table's final entry,
+    /// which always points at the `NO_MORE_DOCS` sentinel: Java's "If the
+    /// jumpTableEntryCount is exceeded, there are no further bits."
+    #[test]
+    fn a_jump_beyond_the_tables_last_block_lands_on_the_sentinel() {
+        let docs = vec![1, BLOCK_SIZE as i32 + 7, 2 * BLOCK_SIZE as i32 + 9];
+        let (bytes, count) = write(&docs);
+        let mut cursor = DisiCursor::new(&bytes, NO_RANK, count);
+        // Block 40 is far past every entry.
+        assert_eq!(cursor.advance_exact(40 * BLOCK_SIZE as i32).unwrap(), None);
+    }
+
+    /// A `jumpTableEntryCount` larger than the region degrades to the
+    /// block-by-block walk instead of slicing past the end: the walk is always
+    /// correct, so a wrong count costs time, never an answer.
+    #[test]
+    fn an_over_large_jump_table_count_falls_back_to_walking_the_blocks() {
+        let docs = vec![1, BLOCK_SIZE as i32 + 7, 2 * BLOCK_SIZE as i32 + 9];
+        let (bytes, _) = write(&docs);
+        let mut cursor = DisiCursor::new(&bytes, NO_RANK, i16::MAX);
+        assert_eq!(
+            cursor.advance_exact(2 * BLOCK_SIZE as i32 + 9).unwrap(),
+            Some(2)
+        );
     }
 
     #[test]
@@ -1222,7 +1543,7 @@ mod tests {
         // block 1 -- proves block partitioning doesn't off-by-one at the
         // 65536 boundary itself.
         let doc_ids = vec![BLOCK_SIZE as i32 - 1, BLOCK_SIZE as i32];
-        let data = write(&doc_ids);
+        let (data, _) = write(&doc_ids);
         assert_eq!(decode_doc_ids(&data, NO_RANK).unwrap(), doc_ids);
     }
 }

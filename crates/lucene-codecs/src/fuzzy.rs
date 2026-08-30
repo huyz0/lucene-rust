@@ -116,15 +116,27 @@ pub fn edit_distance_at_most(
 
 /// The banded DP itself. `max == usize::MAX` means "unbounded", in which case
 /// the band covers the whole table and the result is always `Some`.
+///
+/// **Three rolling rows, one allocation.** The table is `(n + 1) * (m + 1)`
+/// but only rows `i`, `i - 1` and `i - 2` are ever read -- the third only
+/// because of the transposition rule, which is `Lev1T`/`Lev2T`'s and not
+/// plain Levenshtein's. This used to be a `Vec<Vec<usize>>`, i.e. **`n + 2`
+/// heap allocations per candidate term**, and a fuzzy expansion tests every
+/// term in the dictionary's prefix range: on the 1 M-term corpus that is over
+/// eight million allocations for one query. Java allocates nothing at all here
+/// (it runs a compiled DFA over the term's bytes), so the flat buffer is not
+/// an optimisation past Java, it is the gap closing.
 // ARITH: `n` and `m` are `Vec<char>` lengths, so `n + 1` and `m + 1` cannot
 // overflow (a `Vec`'s length is at most `isize::MAX`, and a `Vec<char>`'s at
-// most a quarter of that). Inside the DP, `i` runs over `1..=n` and `j` over
-// `lo..=hi` with `lo >= 1` and `hi <= m`, so `i - 1`, `j - 1` are in bounds;
-// `i - 2` and `j - 2` only run under the `i > 1 && j > 1` guard. The band's
-// upper edge is `i.saturating_add(max)` rather than `i + max`: `max` is a
-// caller-supplied edit budget whose sentinel is `usize::MAX`, and the
-// `.min(m)` that follows makes saturation exactly equal to the unsaturated
-// result, not an approximation of it.
+// most a quarter of that); `3 * width` likewise, since `width <= isize::MAX/4`.
+// Inside the DP, `i` runs over `1..=n` and `j` over `lo..=hi` with `lo >= 1`
+// and `hi <= m`, so `i - 1`, `j - 1` are in bounds; `i - 2` and `j - 2` only
+// run under the `i > 1 && j > 1` guard. Every `row * width + j` is below
+// `3 * width` because `row < 3` and `j <= m < width`. The band's upper edge is
+// `i.saturating_add(max)` rather than `i + max`: `max` is a caller-supplied
+// edit budget whose sentinel is `usize::MAX`, and the `.min(m)` that follows
+// makes saturation exactly equal to the unsaturated result, not an
+// approximation of it.
 #[allow(clippy::arithmetic_side_effects)]
 fn distance_chars(a: &[char], b: &[char], transpositions: bool, max: usize) -> Option<usize> {
     let n = a.len();
@@ -132,23 +144,38 @@ fn distance_chars(a: &[char], b: &[char], transpositions: bool, max: usize) -> O
     if max != usize::MAX && n.abs_diff(m) > max {
         return None;
     }
-    // `dp[i][j]` = edit distance between `a[..i]` and `b[..j]`. Rows are kept
-    // in full (three of them are live at once for the transposition rule);
-    // the *band* is applied to the `j` loop, not the allocation, since a row
-    // is at most a term's length and terms are short.
+    // A cell outside the band, or past the budget, is "unreachable" rather
+    // than a real distance. `usize::MAX / 4` leaves room for the
+    // `saturating_add(1)`s below without wrapping into a plausible distance.
     let unreachable = usize::MAX / 4;
-    let mut dp = vec![vec![unreachable; m + 1]; n + 1];
-    for (i, row) in dp.iter_mut().enumerate().take(n + 1) {
-        if i <= max {
-            row[0] = i;
-        }
+    let width = m + 1;
+    let mut buf = vec![unreachable; 3 * width];
+
+    // Row 0: `dp[0][j] = j`, but only inside the budget.
+    for (j, cell) in buf.iter_mut().enumerate().take(width) {
+        *cell = if j <= max { j } else { unreachable };
     }
-    for (j, cell) in dp[0].iter_mut().enumerate().take(m + 1) {
-        if j <= max {
-            *cell = j;
-        }
+    if n == 0 {
+        let d = buf[m];
+        return if d > max { None } else { Some(d) };
     }
+
     for i in 1..=n {
+        // `i % 3`, `(i - 1) % 3`, `(i - 2) % 3`, written so they stay in
+        // `usize` at `i == 1`.
+        let cur = i % 3;
+        let prev = (i + 2) % 3;
+        let prev2 = (i + 1) % 3;
+        let (cur0, prev0, prev20) = (cur * width, prev * width, prev2 * width);
+
+        // The row being (re)used is two iterations old; every cell it still
+        // holds is stale, so clear it before the band is written into it.
+        buf[cur0..cur0 + width].fill(unreachable);
+        // `dp[i][0] = i`, again only inside the budget.
+        if i <= max {
+            buf[cur0] = i;
+        }
+
         // Only `j` within `max` of the diagonal can ever hold a value `<=
         // max`, so everything outside the band stays `unreachable`.
         let lo = if max == usize::MAX {
@@ -163,17 +190,18 @@ fn distance_chars(a: &[char], b: &[char], transpositions: bool, max: usize) -> O
         };
         for j in lo..=hi {
             let cost = usize::from(a[i - 1] != b[j - 1]);
-            let mut best = dp[i - 1][j]
-                .min(dp[i][j - 1])
+            let mut best = buf[prev0 + j]
+                .min(buf[cur0 + j - 1])
                 .saturating_add(1)
-                .min(dp[i - 1][j - 1].saturating_add(cost));
+                .min(buf[prev0 + j - 1].saturating_add(cost));
             if transpositions && i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
-                best = best.min(dp[i - 2][j - 2].saturating_add(1));
+                best = best.min(buf[prev20 + j - 2].saturating_add(1));
             }
-            dp[i][j] = best;
+            buf[cur0 + j] = best;
         }
     }
-    let d = dp[n][m];
+
+    let d = buf[(n % 3) * width + m];
     if d > max {
         None
     } else {
@@ -243,6 +271,24 @@ impl<'a> FuzzyMatch<'a> {
     /// between the two **suffixes** past `prefix_length`, because the prefix
     /// is fixed.
     pub fn edits(&self, candidate: &[u8]) -> Option<usize> {
+        self.edits_within(candidate, self.max_edits)
+    }
+
+    /// [`Self::edits`] against a **tighter budget than this pattern's own**.
+    ///
+    /// This is `FuzzyTermsEnum`'s `automata[k]` for `k < maxEdits`: the same
+    /// target term, a smaller edit distance, a smaller (cheaper) machine.
+    /// Lucene builds the whole ladder up front (`buildAutomatonSet` returns
+    /// `automata[0..=maxEdits]`) and swaps between them -- `getAutomatonEnum(k)`
+    /// to prune the enumeration once the top-terms queue is full
+    /// (`bottomChanged`), and `matches(term, ed - 1)` to walk *down* to the
+    /// exact distance of a term it has already accepted. Here the ladder is one
+    /// parameter, because the machine is a banded DP whose band is that
+    /// parameter.
+    ///
+    /// A budget above `max_edits` is not clamped: nothing in this port asks for
+    /// one, and clamping would silently answer a different question.
+    pub fn edits_within(&self, candidate: &[u8], max_edits: u8) -> Option<usize> {
         if candidate.len() < self.prefix_bytes
             || candidate[..self.prefix_bytes] != self.term[..self.prefix_bytes]
         {
@@ -256,8 +302,14 @@ impl<'a> FuzzyMatch<'a> {
             &self.term_chars[self.prefix_chars..],
             &candidate_chars[self.prefix_chars..],
             self.transpositions,
-            self.max_edits as usize,
+            max_edits as usize,
         )
+    }
+
+    /// This pattern's own edit budget -- `FuzzyQuery`'s `maxEdits`, the top of
+    /// [`Self::edits_within`]'s ladder.
+    pub fn max_edits(&self) -> u8 {
+        self.max_edits
     }
 
     /// Tests whether `candidate` matches: it must start with this pattern's
@@ -265,6 +317,43 @@ impl<'a> FuzzyMatch<'a> {
     /// `<= max_edits`.
     pub fn matches(&self, candidate: &[u8]) -> bool {
         self.edits(candidate).is_some()
+    }
+
+    /// [`Self::matches`] against a tighter budget -- see [`Self::edits_within`].
+    pub fn matches_within(&self, candidate: &[u8], max_edits: u8) -> bool {
+        self.edits_within(candidate, max_edits).is_some()
+    }
+
+    /// The codepoint count of `bytes` -- `UnicodeUtil.codePointCount` -- without
+    /// decoding it into a `Vec<char>`.
+    ///
+    /// For well-formed UTF-8 a codepoint is exactly one non-continuation byte,
+    /// so this is a byte scan. Ill-formed input falls back to the same
+    /// `U+FFFD`-substituting decode [`to_chars`] does, so the two agree
+    /// everywhere.
+    fn codepoint_count(bytes: &[u8]) -> usize {
+        if std::str::from_utf8(bytes).is_ok() {
+            bytes.iter().filter(|&&b| (b & 0xC0) != 0x80).count()
+        } else {
+            to_chars(bytes).len()
+        }
+    }
+
+    /// [`Self::boost`] for a candidate whose edit distance is **already known**
+    /// -- the value `FuzzyTermsEnum.next` has in hand from its own
+    /// `while (ed > 0) { if (matches(term, ed - 1)) ed--; ... }` walk by the
+    /// time it sets `boostAtt`. Recomputing the distance to score a term the
+    /// matcher has just accepted is one banded DP and one `Vec<char>` per
+    /// accepted term for an answer already computed.
+    pub fn boost_from_edits(&self, candidate: &[u8], ed: usize) -> f32 {
+        if ed == 0 {
+            return 1.0;
+        }
+        let min_term_length = Self::codepoint_count(candidate).min(self.term_chars.len());
+        if min_term_length == 0 {
+            return 1.0;
+        }
+        1.0 - (ed as f32) / (min_term_length as f32)
     }
 
     /// `FuzzyTermsEnum.next`'s `BoostAttribute` value for `candidate`, or
@@ -295,12 +384,31 @@ impl<'a> FuzzyMatch<'a> {
         if ed == 0 {
             return Some(1.0);
         }
-        let candidate_len = to_chars(candidate).len();
+        let candidate_len = Self::codepoint_count(candidate);
         let min_term_length = candidate_len.min(self.term_chars.len());
         if min_term_length == 0 {
-            // Unreachable in practice (a zero-length candidate at distance
-            // `ed > 0` from a zero-length term cannot exist), but division by
-            // zero is not an acceptable way to find that out.
+            // `min(codePointCount(candidate), termLength)`, so this is a
+            // zero-length *query* term -- an empty `FuzzyQuery`, which nothing
+            // rejects -- against a candidate at distance `ed > 0`, i.e. any
+            // non-empty term at all within the budget.
+            //
+            // **This is a deliberate divergence, not a can't-happen.** Java
+            // computes `1.0f - (float) ed / 0.0f`, which is `-Infinity`, and
+            // returns that as the boost; `TopTermsRewrite.build` then truncates
+            // it to `0`. Returning `1.0` here instead makes every candidate of
+            // an empty query term tie at the top rather than at the bottom,
+            // which changes *which* `maxExpansions` terms are selected (the
+            // lexicographically first, rather than an arbitrary set of ties at
+            // zero) but not the fact that they all score zero once truncated.
+            // `FuzzyTermsEnum.bottomChanged`'s own copy of this arithmetic
+            // (`lucene-search`'s `fuzzy_expanded_terms_pruned`) does *not*
+            // special-case it and yields Java's `-inf`, so the two disagree
+            // about this one degenerate input; pruning stays result-preserving
+            // there because all boosts tie and later terms are lexicographically
+            // greater. Left as-is rather than "fixed" to `-inf`, because a
+            // division by zero in a similarity is a worse thing to introduce
+            // than a documented tie, and no caller of this port has an empty
+            // fuzzy term.
             return Some(1.0);
         }
         Some(1.0 - (ed as f32) / (min_term_length as f32))
@@ -386,6 +494,98 @@ mod tests {
     fn ill_formed_utf8_is_replaced_rather_than_rejected() {
         assert_eq!(edit_distance(&[0xFF], &[0xFF], true), 0);
         assert_eq!(edit_distance(&[0xFF], b"a", true), 1);
+    }
+
+    /// The straightforward full-matrix Damerau-Levenshtein this module used to
+    /// compute, kept as a **reference** for the rolling-row rewrite: three
+    /// live rows and an index-arithmetic band is exactly the shape where an
+    /// off-by-one hides, and the hand-picked cases above cannot reach the
+    /// combinations that would expose one (a transposition that must read two
+    /// rows back while the band's lower edge has already moved past it, say).
+    // ARITH: the reference implementation, deliberately written the obvious
+    // way -- `i` runs over `1..=n` and `j` over `1..=m` where `n`/`m` are
+    // slice lengths, so every `- 1` is in range and `- 2` runs only under the
+    // `i > 1 && j > 1` guard; the `+ 1`/`+ cost` operate on distances bounded
+    // by `n + m`, which is at most twice a slice length and so far below
+    // `usize::MAX`. It is test-only, and its whole value is being written
+    // differently from the code it checks.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn reference_distance(a: &[char], b: &[char], transpositions: bool) -> usize {
+        let (n, m) = (a.len(), b.len());
+        let mut dp = vec![vec![0usize; m + 1]; n + 1];
+        for (i, row) in dp.iter_mut().enumerate() {
+            row[0] = i;
+        }
+        for (j, cell) in dp[0].iter_mut().enumerate() {
+            *cell = j;
+        }
+        for i in 1..=n {
+            for j in 1..=m {
+                let cost = usize::from(a[i - 1] != b[j - 1]);
+                let mut best = (dp[i - 1][j] + 1)
+                    .min(dp[i][j - 1] + 1)
+                    .min(dp[i - 1][j - 1] + cost);
+                if transpositions && i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1]
+                {
+                    best = best.min(dp[i - 2][j - 2] + 1);
+                }
+                dp[i][j] = best;
+            }
+        }
+        dp[n][m]
+    }
+
+    /// Every string over a 3-letter alphabet up to length 5, against every
+    /// other, at every budget from 0 to 5, both with and without
+    /// transpositions -- checked against [`reference_distance`]. A 3-letter
+    /// alphabet is what makes transpositions and repeats common enough to
+    /// exercise the third row; longer alphabets mostly produce substitutions.
+    #[test]
+    fn the_banded_rolling_row_dp_agrees_with_the_full_matrix_everywhere() {
+        let alphabet = ['a', 'b', 'c'];
+        let mut words: Vec<Vec<char>> = vec![Vec::new()];
+        let mut frontier: Vec<Vec<char>> = vec![Vec::new()];
+        for _ in 0..5 {
+            let mut next = Vec::new();
+            for w in &frontier {
+                for &c in &alphabet {
+                    let mut w2 = w.clone();
+                    w2.push(c);
+                    next.push(w2);
+                }
+            }
+            words.extend(next.iter().cloned());
+            frontier = next;
+        }
+        // 3^0 + ... + 3^5 = 364 words; the full cross product is 132 496
+        // pairs, which runs in well under a second at this size.
+        for transpositions in [true, false] {
+            for a in &words {
+                for b in &words {
+                    let exact = reference_distance(a, b, transpositions);
+                    assert_eq!(
+                        distance_chars(a, b, transpositions, usize::MAX),
+                        Some(exact),
+                        "unbounded {a:?} vs {b:?}, transpositions={transpositions}"
+                    );
+                    for max in 0..=5usize {
+                        let got = distance_chars(a, b, transpositions, max);
+                        if exact <= max {
+                            assert_eq!(
+                                got,
+                                Some(exact),
+                                "{a:?} vs {b:?} at max {max}, transpositions={transpositions}"
+                            );
+                        } else {
+                            assert_eq!(
+                                got, None,
+                                "{a:?} vs {b:?} at max {max}, transpositions={transpositions}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]

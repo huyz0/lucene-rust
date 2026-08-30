@@ -525,19 +525,18 @@ fn write_stored_meta(meta: &mut Vec<u8>, data: &mut Vec<u8>, docs: &[i32], max_d
     } else {
         let offset = data.len() as i64;
         meta.write_i64(offset);
-        let disi =
+        let (disi, jump_table_entry_count) =
             indexed_disi::write_with_dense_rank_power(docs, indexed_disi::DEFAULT_DENSE_RANK_POWER);
         data.extend_from_slice(&disi);
         // ARITH: `offset` was `data.len()` before the `extend_from_slice`
         // above and `data` only grows, so the difference is the number of
-        // bytes just appended and is >= 0.
+        // bytes just appended and is >= 0. The length spans the block jump
+        // table too -- it is what the reader subtracts the table's bytes from
+        // (`createBlockSlice`).
         #[allow(clippy::arithmetic_side_effects)]
         let disi_len = data.len() as i64 - offset;
         meta.write_i64(disi_len);
-        // This port's `indexed_disi::write` emits no block jump table, which
-        // Lucene encodes as `jumpTableEntryCount == 0` -- the same value its
-        // own reader treats as "no table".
-        meta.write_i16(0);
+        meta.write_i16(jump_table_entry_count);
         meta.write_byte(indexed_disi::DEFAULT_DENSE_RANK_POWER);
 
         let start = data.len() as i64;
@@ -1021,6 +1020,7 @@ macro_rules! vector_values_common {
                     OrdToDoc::Sparse {
                         docs_with_field_offset,
                         docs_with_field_length,
+                        jump_table_entry_count,
                         dense_rank_power,
                         ..
                     } => {
@@ -1038,6 +1038,7 @@ macro_rules! vector_values_common {
                         Ok(DocToOrdCursor::Sparse(Box::new(DisiCursor::new(
                             region,
                             *dense_rank_power,
+                            *jump_table_entry_count,
                         ))))
                     }
                 }

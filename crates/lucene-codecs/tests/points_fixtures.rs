@@ -445,3 +445,239 @@ fn intersect_over_real_lucene_packed_index_matches_brute_force() {
         assert_eq!(got, want, "shape dim0 range [{a0}, {a1}]");
     }
 }
+
+/// Every `point_estimate.*` case real Lucene recorded in the manifest
+/// (`fixtures/src/AppendPointEstimateManifest.java`), checked against
+/// `PointsReader::estimate_range_point_count`.
+///
+/// The estimate is deliberately *not* the match count -- `val.narrow` matches
+/// 8 points and estimates 256, `multi.corner` matches 251 and estimates 744 --
+/// so this pins the tree walk and `BKDPointTree.size()`'s arithmetic, which a
+/// test written against the exact answer could not do. `.exact` is asserted
+/// alongside from the same visitor, so a port that quietly answered the exact
+/// count everywhere would fail on both halves rather than look plausible on
+/// one.
+#[test]
+fn estimate_point_count_matches_lucene() {
+    let manifest = Manifest::load();
+    let id = id_from_hex(manifest.get("id_hex"));
+    let kdm = std::fs::read(format!("{}{}.raw", dir(), manifest.get("kdm_file_name"))).unwrap();
+    let kdi = std::fs::read(format!("{}{}.raw", dir(), manifest.get("kdi_file_name"))).unwrap();
+    let kdd = std::fs::read(format!("{}{}.raw", dir(), manifest.get("kdd_file_name"))).unwrap();
+    let reader = points::open(&kdm, &kdi, &kdd, &id, "").unwrap();
+
+    let cases: Vec<(&str, i32)> = vec![
+        ("val.all", manifest.get("field_number").parse().unwrap()),
+        (
+            "val.none_below",
+            manifest.get("field_number").parse().unwrap(),
+        ),
+        (
+            "val.none_above",
+            manifest.get("field_number").parse().unwrap(),
+        ),
+        (
+            "val.lower_half",
+            manifest.get("field_number").parse().unwrap(),
+        ),
+        ("val.narrow", manifest.get("field_number").parse().unwrap()),
+        ("val.single", manifest.get("field_number").parse().unwrap()),
+        (
+            "val.from_middle",
+            manifest.get("field_number").parse().unwrap(),
+        ),
+        (
+            "multi.all",
+            manifest.get("multi_field_number").parse().unwrap(),
+        ),
+        (
+            "multi.dim1_only",
+            manifest.get("multi_field_number").parse().unwrap(),
+        ),
+        (
+            "multi.corner",
+            manifest.get("multi_field_number").parse().unwrap(),
+        ),
+        (
+            "multi.empty",
+            manifest.get("multi_field_number").parse().unwrap(),
+        ),
+        (
+            "shape.all",
+            manifest.get("shape_field_number").parse().unwrap(),
+        ),
+        (
+            "shape.quadrant",
+            manifest.get("shape_field_number").parse().unwrap(),
+        ),
+        (
+            "shape.strip",
+            manifest.get("shape_field_number").parse().unwrap(),
+        ),
+    ];
+    assert!(!cases.is_empty());
+
+    for (case, field_number) in cases {
+        let lower = hex_bytes(manifest.get(&format!("point_estimate.{case}.lower_hex")));
+        let upper = hex_bytes(manifest.get(&format!("point_estimate.{case}.upper_hex")));
+        let want: i64 = manifest
+            .get(&format!("point_estimate.{case}.points"))
+            .parse()
+            .unwrap();
+        let got = reader
+            .estimate_range_point_count(field_number, &lower, &upper)
+            .unwrap();
+        assert_eq!(got, want, "estimatePointCount for {case}");
+
+        // The same box run exactly, so the two answers are checked against
+        // each other as well as against Lucene's.
+        let want_exact: i64 = manifest
+            .get(&format!("point_estimate.{case}.exact"))
+            .parse()
+            .unwrap();
+        let exact = reader
+            .range_query(field_number, &lower, &upper)
+            .unwrap()
+            .len() as i64;
+        assert_eq!(exact, want_exact, "exact match count for {case}");
+
+        // `estimateDocCount` over the same visitor. The field name in the key
+        // is the case's own prefix (`val`/`multi`/`shape`).
+        let field_key = case.split('.').next().unwrap();
+        let size: i64 = manifest
+            .get(&format!("point_estimate.{field_key}.size"))
+            .parse()
+            .unwrap();
+        let field_doc_count: i32 = manifest
+            .get(&format!("point_estimate.{field_key}.doc_count"))
+            .parse()
+            .unwrap();
+        let want_docs: i64 = manifest
+            .get(&format!("point_estimate.{case}.docs"))
+            .parse()
+            .unwrap();
+        assert_eq!(
+            estimate_doc_count(got, size, field_doc_count),
+            want_docs,
+            "estimateDocCount for {case}"
+        );
+    }
+}
+
+/// Java's `PointValues.estimateDocCount`, duplicated here rather than reached
+/// through `lucene-search`: `lucene-codecs` sits below it in the dependency
+/// graph (see the `architecture` skill), so a `lucene-codecs` test cannot
+/// depend on the crate that owns the function. Five lines, and pinned against
+/// real Lucene's own answer by its only caller above -- if this copy and
+/// `points_query::estimate_doc_count` ever disagree, one of the two fails.
+fn estimate_doc_count(estimated_point_count: i64, size: i64, doc_count: i32) -> i64 {
+    let size_f = size as f64;
+    if estimated_point_count >= size {
+        return i64::from(doc_count);
+    }
+    if size == i64::from(doc_count) || estimated_point_count == 0 {
+        return estimated_point_count;
+    }
+    let doc_estimate = (f64::from(doc_count)
+        * (1.0
+            - ((size_f - estimated_point_count as f64) / size_f)
+                .powf(size_f / f64::from(doc_count)))) as i64;
+    if doc_estimate == 0 {
+        1
+    } else {
+        doc_estimate
+    }
+}
+
+/// `estimate_point_count_bounded` is `isEstimatedPointCountGreaterThanOrEqualTo`'s
+/// engine: it stops descending once the running cost reaches the bound, so it
+/// reports at least the bound exactly when the unbounded walk would.
+#[test]
+fn bounded_estimate_agrees_with_the_unbounded_one_about_reaching_the_bound() {
+    let manifest = Manifest::load();
+    let id = id_from_hex(manifest.get("id_hex"));
+    let kdm = std::fs::read(format!("{}{}.raw", dir(), manifest.get("kdm_file_name"))).unwrap();
+    let kdi = std::fs::read(format!("{}{}.raw", dir(), manifest.get("kdi_file_name"))).unwrap();
+    let kdd = std::fs::read(format!("{}{}.raw", dir(), manifest.get("kdd_file_name"))).unwrap();
+    let reader = points::open(&kdm, &kdi, &kdd, &id, "").unwrap();
+    let field: i32 = manifest.get("field_number").parse().unwrap();
+
+    for case in ["val.all", "val.lower_half", "val.narrow", "val.none_below"] {
+        let lower = hex_bytes(manifest.get(&format!("point_estimate.{case}.lower_hex")));
+        let upper = hex_bytes(manifest.get(&format!("point_estimate.{case}.upper_hex")));
+        let full = reader
+            .estimate_range_point_count(field, &lower, &upper)
+            .unwrap();
+        for bound in [1i64, 100, 256, 512, 700, 1333, 5000] {
+            let mut visitor = RangeBox::new(&lower, &upper, &reader, field);
+            let bounded = reader
+                .estimate_point_count_bounded(field, &mut visitor.visitor, bound)
+                .unwrap();
+            assert_eq!(
+                bounded >= bound,
+                full >= bound,
+                "{case}: bounded={bounded} full={full} bound={bound}"
+            );
+        }
+    }
+}
+
+/// A tiny adapter so the bounded test can reuse the crate's own range visitor
+/// shape without `estimate_range_point_count`'s fixed `i64::MAX` bound.
+struct RangeBox {
+    visitor: BoxVisitor,
+}
+
+impl RangeBox {
+    fn new(lower: &[u8], upper: &[u8], reader: &points::PointsReader<'_>, field: i32) -> Self {
+        let f = reader.field(field).unwrap();
+        RangeBox {
+            visitor: BoxVisitor {
+                lower: lower.to_vec(),
+                upper: upper.to_vec(),
+                num_index_dims: f.num_index_dims as usize,
+                bytes_per_dim: f.bytes_per_dim as usize,
+            },
+        }
+    }
+}
+
+struct BoxVisitor {
+    lower: Vec<u8>,
+    upper: Vec<u8>,
+    num_index_dims: usize,
+    bytes_per_dim: usize,
+}
+
+impl points::IntersectVisitor for BoxVisitor {
+    fn compare(&mut self, min_packed: &[u8], max_packed: &[u8]) -> points::Relation {
+        let mut crosses = false;
+        for dim in 0..self.num_index_dims {
+            let (lo, hi) = (dim * self.bytes_per_dim, (dim + 1) * self.bytes_per_dim);
+            if max_packed[lo..hi] < self.lower[lo..hi] || min_packed[lo..hi] > self.upper[lo..hi] {
+                return points::Relation::CellOutsideQuery;
+            }
+            crosses |=
+                min_packed[lo..hi] < self.lower[lo..hi] || max_packed[lo..hi] > self.upper[lo..hi];
+        }
+        if crosses {
+            points::Relation::CellCrossesQuery
+        } else {
+            points::Relation::CellInsideQuery
+        }
+    }
+
+    fn visit(&mut self, _doc_id: i32) {
+        panic!("estimate_point_count must never visit a document");
+    }
+
+    fn visit_with_value(&mut self, _doc_id: i32, _packed_value: &[u8]) {
+        panic!("estimate_point_count must never decode a point");
+    }
+}
+
+fn hex_bytes(hex: &str) -> Vec<u8> {
+    (0..hex.len() / 2)
+        .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap())
+        .collect()
+}

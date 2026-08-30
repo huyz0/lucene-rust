@@ -26,9 +26,10 @@
 //! Payload bytes are wired through too:
 //! [`invert_documents_with_payloads`] takes the stand-in for Lucene's
 //! `PayloadAttribute` (see [`PayloadSource`]) and fills
-//! [`PostingEntry::payloads`] for the fields whose `FieldInfo.store_payloads`
-//! is set, which `IndexWriter::build_postings_output` forwards to
-//! `postings_writer`'s `has_payloads`/`TermPostings::payloads`. What is still
+//! [`TermPostingList`]'s flat payload run for the fields whose
+//! `FieldInfo.store_payloads` is set, which
+//! `IndexWriter::build_postings_output` moves straight into
+//! `postings_writer`'s `has_payloads`/`TermPostings::payload_bytes`. What is still
 //! not wired up from this module's output is term-vector-style per-document
 //! random access to positions/offsets outside of the postings path (see
 //! `crate::term_vectors` for that instead, which has its own, separate
@@ -53,6 +54,7 @@
 //! encoding) does relative to its own on-disk columnar format.
 
 use lucene_analysis::Analyzer;
+use lucene_codecs::postings_writer;
 use std::collections::{BTreeMap, HashMap};
 
 /// One document's occurrence of a term within a single field: its position
@@ -77,22 +79,137 @@ pub struct Occurrence {
 /// (`occurrences.len()`) plus every occurrence's position and offsets, in
 /// the order they occurred in the document.
 ///
-/// `payloads` is the per-occurrence payload byte string real Lucene reads off
-/// `PayloadAttribute` in `IndexingChain`'s `PerField.invert` loop. It is
-/// either **empty** (this field does not store payloads -- the overwhelmingly
-/// common case, and the one where paying 24 bytes per posting entry for an
-/// always-empty `Vec` would be the wrong trade) or exactly parallel to
-/// `occurrences`, with an empty `Vec<u8>` where an occurrence carried no
-/// payload. That is the same "empty means no payload for this occurrence,
-/// presence is a per-field property" convention
-/// [`lucene_codecs::postings_writer::TermPostings::payloads`] documents, and
-/// the same one Java uses (`Lucene104PostingsWriter.addPosition` treats a
-/// `null` payload and a zero-length one identically).
+/// **Payloads are not here.** They live once per `(field, term)`, on
+/// [`TermPostingList`], because a payload slot per posting entry is a heap
+/// object per posting entry: c23 measured the nested
+/// `Vec<Vec<u8>>`-per-entry shape this used to have at 26 us/doc and ~190 MB
+/// per 50 000 documents, with an all-empty-payload control costing the same,
+/// which is what identifies the *slot* rather than the bytes as the cost.
+/// Java pays neither -- `FreqProxTermsWriterPerField.writeProx` appends the payload
+/// length and its bytes into the term's existing `ByteSlicePool` stream, so
+/// a payload costs bytes in a pool and no object at all.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PostingEntry {
     pub doc_id: i32,
     pub occurrences: Vec<Occurrence>,
-    pub payloads: Vec<Vec<u8>>,
+}
+
+/// One `(field, term)` key's whole posting list: the doc-ID-sorted
+/// [`PostingEntry`]s, plus -- for a field whose `FieldInfo.store_payloads` is
+/// set -- every occurrence's payload bytes in one flat run.
+///
+/// `payload_bytes` is the concatenation of every occurrence's payload, in
+/// `entries` order and then occurrence order within each entry;
+/// `payload_lengths` is one length per occurrence in the same order, so
+/// occurrence `k` of entry `i` has length `payload_lengths[o + k]` where `o`
+/// is the number of occurrences in entries `0..i`. A zero length is a real
+/// state, not an absent one: Java treats a `null` `PayloadAttribute` and a
+/// zero-length one identically (`Lucene104PostingsWriter.addPosition`), and
+/// payload *presence* is a per-field property (`FieldInfo.hasPayloads()`),
+/// never a per-occurrence one.
+///
+/// Both vectors are **empty** for a field that does not store payloads --
+/// the overwhelmingly common case, which then pays nothing per occurrence and
+/// two empty `Vec` headers per term rather than per posting entry. This is
+/// the same flat shape
+/// [`lucene_codecs::postings_writer::TermPostings::payload_bytes`] takes, so
+/// `IndexWriter::build_postings_output` moves the two vectors across without
+/// copying or re-materializing anything.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TermPostingList {
+    pub entries: Vec<PostingEntry>,
+    pub payload_bytes: Vec<u8>,
+    pub payload_lengths: Vec<u32>,
+}
+
+impl TermPostingList {
+    /// Whether this posting list carries a payload slot per occurrence --
+    /// i.e. whether the field it belongs to stores payloads at all. When
+    /// true, `payload_lengths.len()` is the sum of every entry's
+    /// `occurrences.len()`; when false, both payload vectors are empty.
+    /// Those are the only two states [`invert_documents_with_payloads`] ever
+    /// produces, and `postings_writer` rejects anything in between.
+    pub fn has_payloads(&self) -> bool {
+        !self.payload_lengths.is_empty()
+    }
+
+    /// Occurrence `k` of entry `i`'s payload bytes, or `None` when this list
+    /// carries no payloads. Reconstructs the nested view the flat run
+    /// replaces, for a caller that wants one occurrence rather than the run.
+    /// Nothing in the write path does -- `build_postings_output` moves the run
+    /// whole -- so today this exists for the tests that assert the run means
+    /// what it says.
+    ///
+    /// O(number of occurrences before it), because the flat run stores
+    /// lengths rather than offsets -- exactly as
+    /// `Lucene104PostingsWriter`'s own payload byte run does, and for the
+    /// same reason: the writer consumes it strictly in order.
+    pub fn payload(&self, entry_index: usize, occurrence: usize) -> Option<&[u8]> {
+        if !self.has_payloads() {
+            return None;
+        }
+        let before: usize = self
+            .entries
+            .get(..entry_index)?
+            .iter()
+            .map(|e| e.occurrences.len())
+            .sum();
+        let index = before.checked_add(occurrence)?;
+        if occurrence >= self.entries.get(entry_index)?.occurrences.len() {
+            return None;
+        }
+        let start: usize = self
+            .payload_lengths
+            .get(..index)?
+            .iter()
+            .map(|&l| l as usize)
+            .sum();
+        let len = *self.payload_lengths.get(index)? as usize;
+        self.payload_bytes.get(start..start.checked_add(len)?)
+    }
+
+    /// Sorts `entries` by `doc_id`, carrying the flat payload run with them.
+    ///
+    /// The check comes first because the sorted case is the only one
+    /// `IndexWriter` produces (it inverts in ascending doc-ID order), and
+    /// permuting the run means a prefix sum over every occurrence. The
+    /// unsorted case is real -- `invert_documents*` takes `(doc_id, field,
+    /// text)` triples in any order and says so -- and is what
+    /// `sorting_entries_by_doc_id_carries_the_payload_run_with_them` drives.
+    /// A stable sort preserves each doc's own occurrence order when `doc_id`s
+    /// tie.
+    fn sort_by_doc_id(&mut self) {
+        if self.entries.windows(2).all(|w| w[0].doc_id <= w[1].doc_id) {
+            return;
+        }
+        if !self.has_payloads() {
+            self.entries.sort_by_key(|entry| entry.doc_id);
+            return;
+        }
+        let counts: Vec<u32> = self
+            .entries
+            .iter()
+            .map(|e| e.occurrences.len() as u32)
+            .collect();
+        let mut order: Vec<usize> = (0..self.entries.len()).collect();
+        order.sort_by_key(|&i| self.entries[i].doc_id);
+        let (bytes, lengths) = postings_writer::permute_payload_run(
+            &self.payload_bytes,
+            &self.payload_lengths,
+            &counts,
+            &order,
+        );
+        self.payload_bytes = bytes;
+        self.payload_lengths = lengths;
+        // The same permutation applied to `entries`, moving rather than
+        // re-sorting, so the two cannot disagree about which order was used.
+        let mut entries: Vec<PostingEntry> = Vec::with_capacity(self.entries.len());
+        let mut taken: Vec<Option<PostingEntry>> = self.entries.drain(..).map(Some).collect();
+        for &i in &order {
+            entries.push(taken[i].take().expect("each index appears once in `order`"));
+        }
+        self.entries = entries;
+    }
 }
 
 impl PostingEntry {
@@ -115,15 +232,6 @@ impl PostingEntry {
             .iter()
             .map(|o| (o.start_offset, o.end_offset))
             .collect()
-    }
-
-    /// Whether this entry carries a payload slot per occurrence -- i.e.
-    /// whether the field it belongs to stores payloads at all. When true,
-    /// `payloads.len() == occurrences.len()`; when false, `payloads` is empty.
-    /// Those are the only two states [`invert_documents_with_payloads`] ever
-    /// produces, and `postings_writer` rejects anything in between.
-    pub fn has_payloads(&self) -> bool {
-        !self.payloads.is_empty()
     }
 }
 
@@ -149,15 +257,15 @@ pub struct PayloadContext<'a> {
 /// In Java a payload is not produced by the indexing chain at all: any
 /// `TokenFilter` in the analyzer may call `PayloadAttribute.setPayload`, and
 /// `IndexingChain`'s invert loop simply reads whatever the attribute holds for
-/// the current token (`TermsHashPerField.writeProx`'s `payload` argument).
+/// the current token (`FreqProxTermsWriterPerField.writeProx`'s `payload` argument).
 /// [`lucene_analysis::Token`] carries no payload attribute, so the supplier is
 /// passed in here instead -- same layering, one indirection instead of an
 /// attribute lookup: the analysis side decides the bytes, the indexing chain
 /// only records them.
 ///
 /// Returning `None` means "this token has no payload", which is what a `null`
-/// `PayloadAttribute` means in Java, and is recorded as a zero-length entry
-/// (see [`PostingEntry::payloads`]).
+/// `PayloadAttribute` means in Java, and is recorded as a zero-length run
+/// (see [`TermPostingList::payload_lengths`]).
 pub type PayloadSource<'a> = &'a dyn Fn(&PayloadContext<'_>) -> Option<Vec<u8>>;
 
 /// A `(field_name, term_bytes)` key, matching real Lucene's per-field term
@@ -172,7 +280,7 @@ pub type TermKey = (String, String);
 /// match real Lucene's sorted-term-dictionary iteration order.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InMemoryInvertedIndex {
-    pub terms: BTreeMap<TermKey, Vec<PostingEntry>>,
+    pub terms: BTreeMap<TermKey, TermPostingList>,
 }
 
 impl InMemoryInvertedIndex {
@@ -182,27 +290,31 @@ impl InMemoryInvertedIndex {
     /// content.
     ///
     /// Counted, not estimated: every `BTreeMap` node slot, both key `String`s
-    /// per term, the `Vec<PostingEntry>` per term, and the `Vec<Occurrence>`
-    /// (plus, for a `store_payloads` field, the `Vec<Vec<u8>>` of payload slots
-    /// and each slot's own bytes) per posting entry, each at its **capacity**
+    /// per term, the [`TermPostingList`] per term (its `Vec<PostingEntry>`
+    /// and, for a `store_payloads` field, its two flat payload vectors), and
+    /// the `Vec<Occurrence>` per posting entry, each at its **capacity**
     /// rather than its length (an over-allocated `Vec` occupies its
     /// capacity).
     ///
     /// This is the number that makes the memory shape of a flush legible.
     /// Measured on `benchmarks/rust-runner`'s `index-bench` corpus (20k docs x
-    /// 40 tokens drawn from a 20k-word vocabulary): **8.3 MB of document text
-    /// becomes 78.5 MB here, 9.4x**. Almost all of it is per-occurrence: with
-    /// that much term diversity nearly every `(doc, term)` pair is unique, so a
-    /// ~6-byte token becomes a `(String, String)` key slot, a [`PostingEntry`],
-    /// and a `Vec<Occurrence>` whose first `push` reserves capacity 4 -- 48
-    /// bytes of allocation for 12 bytes of payload. Real Lucene pays *zero*
+    /// 40 tokens drawn from a 20k-word vocabulary, 4.90 MB of body text):
+    /// **102.5 MB here before c38, 75.8 MB after**, against Java's *zero*
     /// heap objects per occurrence (a token becomes a few bytes in a
-    /// `ByteBlockPool` slice), which is the divergence
-    /// `docs/sweep/m2/LEDGER.md` records as the block-pool redesign. Handing
-    /// the `Vec` surplus back with `shrink_to_fit` was tried and rejected: it
-    /// cuts this figure to 5.98x but costs 25-60% indexing throughput and moves
-    /// peak RSS not at all, because glibc keeps the freed 48-byte chunks in its
-    /// arena.
+    /// `ByteBlockPool` slice). What is left is per-occurrence and structural:
+    /// nearly every `(doc, term)` pair is unique on that corpus, so a ~6-byte
+    /// token becomes a `(String, String)` key slot, a [`PostingEntry`], and a
+    /// `Vec<Occurrence>` whose first `push` reserves capacity 4 -- 48 bytes of
+    /// allocation for 12 bytes of payload. That is the divergence
+    /// `docs/sweep/m2/LEDGER.md` records as the block-pool redesign, and it is
+    /// a milestone rather than a batch (see
+    /// `docs/sweep/m2/c38-allocation-shape.md`). Handing the `Vec` surplus
+    /// back with `shrink_to_fit` was tried and rejected: it cuts this figure
+    /// sharply but costs 25-60% indexing throughput and moves peak RSS not at
+    /// all, because glibc keeps the freed 48-byte chunks in its arena.
+    ///
+    /// `crates/lucene-index/examples/invert_memory.rs` is the instrument that
+    /// produces the numbers above.
     ///
     /// `BTreeMap`'s node overhead is charged as one `(K, V)` slot per entry;
     /// B-tree nodes are allocated in blocks of up to 11 entries, so the true
@@ -218,19 +330,17 @@ impl InMemoryInvertedIndex {
     pub fn ram_bytes_used(&self) -> usize {
         let mut bytes = std::mem::size_of::<Self>();
         for ((field, term), postings) in &self.terms {
-            bytes += std::mem::size_of::<(TermKey, Vec<PostingEntry>)>();
+            bytes += std::mem::size_of::<(TermKey, TermPostingList)>();
             bytes += field.capacity() + term.capacity();
-            bytes += postings.capacity() * std::mem::size_of::<PostingEntry>();
-            for entry in postings {
+            bytes += postings.entries.capacity() * std::mem::size_of::<PostingEntry>();
+            // The flat payload run exists only for a `store_payloads` field,
+            // so this is zero for the common case rather than a per-entry
+            // constant -- and it is charged once per term rather than once
+            // per posting entry, which is the whole point of the shape.
+            bytes += postings.payload_bytes.capacity();
+            bytes += postings.payload_lengths.capacity() * std::mem::size_of::<u32>();
+            for entry in &postings.entries {
                 bytes += entry.occurrences.capacity() * std::mem::size_of::<Occurrence>();
-                // Payload slots exist only for a `store_payloads` field, so
-                // this is zero for the common case rather than a per-entry
-                // constant. Each slot's own heap is counted too: a payload is
-                // a byte string, and its bytes are as real as its header.
-                bytes += entry.payloads.capacity() * std::mem::size_of::<Vec<u8>>();
-                for payload in &entry.payloads {
-                    bytes += payload.capacity();
-                }
             }
         }
         bytes
@@ -238,9 +348,14 @@ impl InMemoryInvertedIndex {
 
     /// Looks up the posting list for a `(field, term)` pair, if present.
     pub fn postings(&self, field: &str, term: &str) -> Option<&[PostingEntry]> {
-        self.terms
-            .get(&(field.to_string(), term.to_string()))
-            .map(Vec::as_slice)
+        self.posting_list(field, term)
+            .map(|list| list.entries.as_slice())
+    }
+
+    /// Looks up a `(field, term)` pair's whole [`TermPostingList`] -- the
+    /// entries plus the flat payload run -- if present.
+    pub fn posting_list(&self, field: &str, term: &str) -> Option<&TermPostingList> {
+        self.terms.get(&(field.to_string(), term.to_string()))
     }
 }
 
@@ -249,13 +364,20 @@ impl InMemoryInvertedIndex {
 ///
 /// `docs` is `(doc_id, field_name, text)` triples: a document with multiple
 /// indexed fields is represented as multiple entries sharing the same
-/// `doc_id`; a batch with multiple documents is multiple `doc_id` values.
-/// `docs` need not be sorted by `doc_id` or grouped by field, and need not
-/// even be internally consistent about doc-ID order across fields --
-/// this function sorts each `(field, term)` key's posting list by `doc_id`
-/// itself before returning, so the doc-ID-sorted invariant genuinely holds
-/// regardless of input order, rather than being a caller obligation to
-/// uphold.
+/// `doc_id`; a batch with multiple documents is multiple `doc_id` values; and
+/// **several entries sharing one `(doc_id, field_name)` are the values of one
+/// multi-valued field**, inverted through a single `FieldInvertState` the way
+/// Java's `PerField` does (see [`invert_documents_with_payloads`]).
+///
+/// `docs` need not be sorted by `doc_id`, grouped by field, or internally
+/// consistent about doc-ID order across fields. Multi-valued entries are
+/// gathered by key, not by adjacency, so interleaving two fields' values does
+/// not restart either one's position counter; **the order of one field's own
+/// values is the order they appear in `docs`**, which is the only thing about
+/// the input order that can change the answer (it is `Document.getFields`'
+/// order in Java). Each `(field, term)` key's posting list is sorted by
+/// `doc_id` before returning, so the doc-ID-sorted invariant holds regardless
+/// of input order rather than being a caller obligation.
 pub fn invert_documents(docs: &[(i32, &str, &str)], analyzer: &Analyzer) -> InMemoryInvertedIndex {
     invert_documents_with_payloads(docs, analyzer, &[], &|_| None)
 }
@@ -299,17 +421,29 @@ fn advance_position(position: i32, increment: i32) -> i32 {
     }
 }
 
+/// One `(document, field, term)` group as [`invert_documents_with_payloads`]
+/// accumulates it, before it becomes a [`PostingEntry`] and a slice of its
+/// term's payload run: the occurrences, and the group's own flat
+/// `(bytes, lengths)` payload pair.
+///
+/// The payload halves are the same flat shape [`TermPostingList`] holds, not
+/// a `Vec<Vec<u8>>` of per-occurrence slots -- two allocations per group
+/// rather than one plus one per non-empty payload, and, because the group's
+/// run is appended to the term's run and then dropped, nothing per occurrence
+/// stays live at all.
+type TermGroup = (Vec<Occurrence>, Vec<u8>, Vec<u32>);
+
 /// [`invert_documents`] plus payloads: `payload_fields` names the fields whose
 /// `FieldInfo.store_payloads` is set (Lucene's per-field `hasPayloads`, which
 /// is a field property, never a per-token one), and `source` supplies each
 /// token's payload bytes the way a `PayloadAttribute`-setting `TokenFilter`
 /// would.
 ///
-/// Every occurrence of a **listed** field gets a payload slot -- an empty
-/// `Vec<u8>` where `source` returned `None` -- so [`PostingEntry::payloads`]
-/// is exactly parallel to [`PostingEntry::occurrences`] and satisfies
-/// `postings_writer`'s `payloads[i].len() == freq` obligation without the
-/// caller re-deriving it. A field not in `payload_fields` gets no slots and
+/// Every occurrence of a **listed** field gets a payload length -- zero where
+/// `source` returned `None` -- so [`TermPostingList::payload_lengths`] is
+/// exactly parallel to the field's occurrences and satisfies
+/// `postings_writer`'s "one length per occurrence" obligation without the
+/// caller re-deriving it. A field not in `payload_fields` gets no run and
 /// pays nothing, which is why the gate is a parameter rather than something
 /// `source` signals by returning `None`: "no payload on this token" and "this
 /// field has no payloads" are different states on the wire, and only the
@@ -333,13 +467,49 @@ pub fn invert_documents_with_payloads(
     // deliberately avoids too: `TermsHashPerField` accumulates through a
     // `BytesRefHash` (open-addressed, hash-keyed) and only sorts the term
     // dictionary when the segment is flushed.
-    let mut acc: HashMap<TermKey, Vec<PostingEntry>> = HashMap::new();
+    let mut acc: HashMap<TermKey, TermPostingList> = HashMap::new();
     // Reused across documents so the per-document grouping map is allocated
     // once for the whole batch rather than once per (document, field).
-    let mut per_term: HashMap<String, (Vec<Occurrence>, Vec<Vec<u8>>)> = HashMap::new();
+    let mut per_term: HashMap<String, TermGroup> = HashMap::new();
 
-    for &(doc_id, field, text) in docs {
-        let tokens = analyzer.analyze(text);
+    // One iteration per **(document, field)**, not per input tuple: entries
+    // sharing a doc ID and field name are the *values* of one multi-valued
+    // field, and Java runs them through one `FieldInvertState`
+    // (`PerField.invert(docID, field, first)` resets it only when `first`,
+    // which `IndexingChain.processField` sets from `pf.fieldGen != fieldGen`).
+    // Splitting them, as this loop used to, restarted both counters at each
+    // value -- so two values both began at position 0 and offset 0, which is a
+    // phrase match across a value boundary that Lucene does not have, and two
+    // occurrences claiming the same offsets.
+    //
+    // Gathered **by key, not by adjacency**: `PerField` owns its state for the
+    // whole document, so Java does not care whether another field's value sits
+    // between two of this one's, and a "consecutive runs only" grouping would
+    // silently re-create the defect above for `[(0,"f",..), (0,"g",..),
+    // (0,"f",..)]`. `groups` holds one entry per `(doc_id, field)` in
+    // first-appearance order, each listing that key's value indices in input
+    // order -- `Document.getFields(name)`' order, the one property of the
+    // input that legitimately decides the answer.
+    //
+    // Keyed through a `HashMap`, not a scan over the groups: a flush is tens
+    // of thousands of documents times a handful of fields, so a linear
+    // first-appearance search would be quadratic in the batch. The `Vec` is
+    // what keeps first-appearance order, which a `HashMap` alone would lose.
+    let mut group_keys: Vec<(i32, &str)> = Vec::new();
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    let mut group_of: HashMap<(i32, &str), usize> = HashMap::new();
+    for (i, &(doc_id, field, _)) in docs.iter().enumerate() {
+        match group_of.get(&(doc_id, field)) {
+            Some(&at) => groups[at].push(i),
+            None => {
+                group_of.insert((doc_id, field), groups.len());
+                group_keys.push((doc_id, field));
+                groups.push(vec![i]);
+            }
+        }
+    }
+
+    for (group, &(doc_id, field)) in groups.iter().zip(group_keys.iter()) {
         let field_has_payloads = payload_fields.contains(&field);
 
         // Resolve position increments to absolute positions and group by
@@ -347,58 +517,80 @@ pub fn invert_documents_with_payloads(
         // TermsHashPerField accumulating one PostingEntry per (doc, field,
         // term) even when a term occurs multiple times.
         per_term.clear();
+        // `FieldInvertState.reset()`: `position = -1`, `offset = 0`.
         let mut position = -1i32;
-        for token in tokens {
-            position = advance_position(position, token.position_increment);
-            let occurrence = Occurrence {
-                position,
-                start_offset: token.start_offset,
-                end_offset: token.end_offset,
-            };
-            // Ask the source before the term `String` is moved into the map.
-            // A field without payloads never calls it at all, so a source is
-            // free to be expensive without taxing every other field.
-            let payload = if field_has_payloads {
-                source(&PayloadContext {
-                    field,
-                    term: &token.term,
-                    doc_id,
+        let mut offset = 0i32;
+        for &index in group {
+            let text = docs[index].2;
+            let stream = analyzer.analyze_stream(text);
+            for token in stream.tokens {
+                position = advance_position(position, token.position_increment);
+                let occurrence = Occurrence {
                     position,
-                    start_offset: occurrence.start_offset,
-                    end_offset: occurrence.end_offset,
-                })
-                .unwrap_or_default()
-            } else {
-                Vec::new()
-            };
-            let slot = per_term.entry(token.term).or_default();
-            slot.0.push(occurrence);
-            if field_has_payloads {
-                slot.1.push(payload);
+                    // `IndexingChain`: `startOffset = invertState.offset +
+                    // offsetAttribute.startOffset()`. `offset` is 0 for the
+                    // first (and only, for a single-valued field) value, so
+                    // this is the identity in the common case.
+                    start_offset: offset.saturating_add(token.start_offset),
+                    end_offset: offset.saturating_add(token.end_offset),
+                };
+                // Ask the source before the term `String` is moved into the map.
+                // A field without payloads never calls it at all, so a source is
+                // free to be expensive without taxing every other field.
+                let payload = if field_has_payloads {
+                    source(&PayloadContext {
+                        field,
+                        term: &token.term,
+                        doc_id,
+                        position,
+                        start_offset: occurrence.start_offset,
+                        end_offset: occurrence.end_offset,
+                    })
+                    .unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+                let slot = per_term.entry(token.term).or_default();
+                slot.0.push(occurrence);
+                if field_has_payloads {
+                    slot.1.extend_from_slice(&payload);
+                    slot.2.push(payload.len() as u32);
+                }
             }
+            // `stream.end()`, then the two attribute reads
+            // `invertTokenStream` makes right after it, then the analyzer's
+            // per-field gaps. Both gaps are applied after *every* value, as
+            // Java's are (the last value's are simply never observed).
+            position = advance_position(position, stream.final_position_increment);
+            offset = offset.saturating_add(stream.final_offset);
+            position = advance_position(position, analyzer.position_increment_gap());
+            offset = offset.saturating_add(analyzer.offset_gap());
         }
 
-        for (term, (occurrences, payloads)) in per_term.drain() {
+        for (term, (occurrences, payload_bytes, payload_lengths)) in per_term.drain() {
             let key = (field.to_string(), term);
-            acc.entry(key).or_default().push(PostingEntry {
+            let list = acc.entry(key).or_default();
+            // Appended to the term's own run, so the group's two vectors are
+            // freed here rather than staying live until the flush -- the
+            // difference between a payload costing bytes in a shared run and
+            // costing a heap object per occurrence.
+            list.payload_bytes.extend_from_slice(&payload_bytes);
+            list.payload_lengths.extend_from_slice(&payload_lengths);
+            list.entries.push(PostingEntry {
                 doc_id,
                 occurrences,
-                payloads,
             });
         }
     }
 
     // Enforce the doc-ID-sorted invariant directly, rather than trusting
-    // callers to supply `docs` in ascending doc-ID order -- a stable sort
-    // preserves each doc's own occurrence order when doc_ids happen to tie
-    // (which can't happen across distinct documents, but keeps this
-    // correct if a caller ever passes the same doc_id twice for one field).
-    // Note this also un-does the hash map's arbitrary per-document iteration
-    // order above: each (field, term) receives at most one entry per document,
-    // so sorting by `doc_id` fully determines the list.
-    let mut entries: Vec<(TermKey, Vec<PostingEntry>)> = acc.into_iter().collect();
+    // callers to supply `docs` in ascending doc-ID order. The grouped loop
+    // above already gives each `(field, term)` at most one entry per document,
+    // so this only reorders; the sort is stable anyway, which keeps it
+    // insensitive to the hash map's arbitrary per-document iteration order.
+    let mut entries: Vec<(TermKey, TermPostingList)> = acc.into_iter().collect();
     for (_, postings) in entries.iter_mut() {
-        postings.sort_by_key(|entry| entry.doc_id);
+        postings.sort_by_doc_id();
     }
     entries.sort_unstable_by(|a, b| a.0.cmp(&b.0));
 
@@ -431,6 +623,50 @@ mod tests {
     /// is what makes that pass-through a checked claim rather than an assumed
     /// one, over text where UTF-8 bytes, Unicode scalars and UTF-16 code units
     /// all disagree.
+    /// Java's `PerField` owns its `FieldInvertState` for the whole document,
+    /// so two values of one field are one field however many *other* fields'
+    /// values sit between them (`processField` resets only when
+    /// `pf.fieldGen != fieldGen`). A grouping that only joined *consecutive*
+    /// tuples would restart the second value at position 0 and offset 0 --
+    /// the very defect the grouping exists to remove -- for an input this
+    /// function's own contract accepts.
+    #[test]
+    fn a_fields_values_are_one_field_even_with_another_fields_value_between_them() {
+        let analyzer = Analyzer::standard(None).with_position_increment_gap(7);
+        let interleaved = invert_documents(
+            &[(0, "f", "alpha"), (0, "g", "zulu"), (0, "f", "beta")],
+            &analyzer,
+        );
+        let adjacent = invert_documents(
+            &[(0, "f", "alpha"), (0, "f", "beta"), (0, "g", "zulu")],
+            &analyzer,
+        );
+        assert_eq!(interleaved.terms, adjacent.terms);
+
+        // ... and the second value really is offset, not restarted: "alpha" is
+        // 5 characters, the offset gap is 1, and the position gap is 7.
+        let beta = interleaved.posting_list("f", "beta").expect("beta indexed");
+        assert_eq!(beta.entries.len(), 1);
+        assert_eq!(
+            beta.entries[0].occurrences,
+            vec![Occurrence {
+                position: 8,
+                start_offset: 6,
+                end_offset: 10,
+            }]
+        );
+        // The interposed field is unaffected by either gap.
+        let zulu = interleaved.posting_list("g", "zulu").expect("zulu indexed");
+        assert_eq!(
+            zulu.entries[0].occurrences,
+            vec![Occurrence {
+                position: 0,
+                start_offset: 0,
+                end_offset: 4,
+            }]
+        );
+    }
+
     #[test]
     fn offsets_forwarded_to_the_codec_slice_the_source_text_as_java_chars() {
         let analyzer = Analyzer::standard(None);
@@ -444,8 +680,8 @@ mod tests {
         // UTF-16 code unit.
         let units: Vec<u16> = text.encode_utf16().collect();
         let mut seen = 0;
-        for ((_, term), entries) in &index.terms {
-            for entry in entries {
+        for ((_, term), list) in &index.terms {
+            for entry in &list.entries {
                 for occurrence in &entry.occurrences {
                     let (start, end) = (occurrence.start_offset, occurrence.end_offset);
                     assert!(start >= 0 && end >= start, "offsets out of order");
@@ -483,7 +719,6 @@ mod tests {
                 &[PostingEntry {
                     doc_id: 0,
                     occurrences: vec![occ(0, 0, 3)],
-                    payloads: vec![],
                 }][..]
             )
         );
@@ -493,7 +728,6 @@ mod tests {
                 &[PostingEntry {
                     doc_id: 0,
                     occurrences: vec![occ(1, 4, 9)],
-                    payloads: vec![],
                 }][..]
             )
         );
@@ -503,7 +737,6 @@ mod tests {
                 &[PostingEntry {
                     doc_id: 0,
                     occurrences: vec![occ(2, 10, 13)],
-                    payloads: vec![],
                 }][..]
             )
         );
@@ -676,17 +909,22 @@ mod tests {
             }
         });
 
-        let body = index.postings("body", "fox").unwrap();
-        assert_eq!(body.len(), 1);
-        assert!(body[0].has_payloads());
-        assert_eq!(body[0].term_freq(), 2);
-        assert_eq!(body[0].positions(), vec![0, 3]);
+        let body = index.posting_list("body", "fox").unwrap();
+        assert_eq!(body.entries.len(), 1);
+        assert!(body.has_payloads());
+        assert_eq!(body.entries[0].term_freq(), 2);
+        assert_eq!(body.entries[0].positions(), vec![0, 3]);
         // Position 0 is even (payload), position 3 is odd (none).
-        assert_eq!(body[0].payloads, vec![b"fox:0".to_vec(), Vec::new()]);
+        assert_eq!(body.payload_lengths, vec![5, 0]);
+        assert_eq!(body.payload_bytes, b"fox:0".to_vec());
+        assert_eq!(body.payload(0, 0), Some(&b"fox:0"[..]));
+        assert_eq!(body.payload(0, 1), Some(&b""[..]));
 
-        let title = index.postings("title", "fox").unwrap();
-        assert!(!title[0].has_payloads());
-        assert!(title[0].payloads.is_empty());
+        let title = index.posting_list("title", "fox").unwrap();
+        assert!(!title.has_payloads());
+        assert!(title.payload_lengths.is_empty());
+        assert!(title.payload_bytes.is_empty());
+        assert_eq!(title.payload(0, 0), None);
     }
 
     /// The context handed to a source is the whole token, not just its text:
@@ -716,11 +954,10 @@ mod tests {
                 ("body".into(), "fox".into(), 7, 2, 10, 13),
             ]
         );
-        // And the slots are still there, all empty.
-        assert_eq!(
-            index.postings("body", "fox").unwrap()[0].payloads,
-            vec![Vec::<u8>::new()]
-        );
+        // And the run is still there, one zero length per occurrence.
+        let list = index.posting_list("body", "fox").unwrap();
+        assert_eq!(list.payload_lengths, vec![0]);
+        assert!(list.payload_bytes.is_empty());
     }
 
     /// `invert_documents` is the no-payloads shorthand, and must stay exactly
@@ -729,9 +966,7 @@ mod tests {
     fn invert_documents_records_no_payload_slots_at_all() {
         let analyzer = Analyzer::standard(None);
         let index = invert_documents(&[(0, "body", "fox")], &analyzer);
-        assert!(index.postings("body", "fox").unwrap()[0]
-            .payloads
-            .is_empty());
+        assert!(!index.posting_list("body", "fox").unwrap().has_payloads());
         // Same batch through the payload entry point with an empty field
         // list: identical output, which is what makes the delegation safe.
         let same = invert_documents_with_payloads(&[(0, "body", "fox")], &analyzer, &[], &|_| {
@@ -740,10 +975,71 @@ mod tests {
         assert_eq!(index, same);
     }
 
-    /// Payload bytes are heap this structure occupies, so `ram_bytes_used`
-    /// has to count them -- both the slot vector and each slot's own bytes.
+    /// The allocation-shape assertion behind c38's item 2: a
+    /// [`PostingEntry`] carries **no payload slot at all**, so a payload
+    /// costs nothing per posting entry for the overwhelmingly common field
+    /// that has none. Against the shape this replaced -- a `Vec<Vec<u8>>` on
+    /// every entry -- this is 24 bytes smaller per entry on a 64-bit target,
+    /// which on `index-bench`'s corpus is 19 MB of the 27 MB the change
+    /// removed from `InMemoryInvertedIndex`.
+    ///
+    /// Written against `size_of` rather than a byte count so it is a
+    /// statement about the type, and so it holds on a 32-bit target too.
     #[test]
-    fn ram_bytes_used_counts_payload_slots_and_their_bytes() {
+    fn a_posting_entry_carries_no_payload_slot() {
+        assert_eq!(
+            std::mem::size_of::<PostingEntry>(),
+            std::mem::size_of::<Vec<Occurrence>>() + std::mem::size_of::<usize>(),
+            "a PostingEntry is a doc id and its occurrences, nothing else"
+        );
+    }
+
+    /// c23's finding, asserted from the other side: the cost of payloads must
+    /// be the **bytes**, not a per-occurrence slot. An all-empty-payload field
+    /// therefore costs one `u32` length per occurrence and nothing else --
+    /// where the nested shape cost a `Vec` header per posting entry (24 bytes)
+    /// plus one allocation per non-empty payload.
+    ///
+    /// The bound is expressed as "cheaper than one empty `Vec` header per
+    /// occurrence", which is exactly what the nested shape charged before a
+    /// single payload byte was stored, so `Vec`'s growth slack (the run runs
+    /// about 8.7 bytes per occurrence here against the 4 it holds) cannot
+    /// make it flaky while it still fails outright against the old shape.
+    #[test]
+    fn an_all_empty_payload_field_costs_only_a_length_per_occurrence() {
+        let analyzer = Analyzer::standard(None);
+        let texts: Vec<String> = (0..200).map(|d| format!("alpha beta doc{d}")).collect();
+        let docs: Vec<(i32, &str, &str)> = texts
+            .iter()
+            .enumerate()
+            .map(|(d, t)| (d as i32, "body", t.as_str()))
+            .collect();
+        let without = invert_documents(&docs, &analyzer);
+        let with_empty = invert_documents_with_payloads(&docs, &analyzer, &["body"], &|_| None);
+
+        let occurrences: usize = with_empty
+            .terms
+            .values()
+            .flat_map(|l| l.entries.iter())
+            .map(|e| e.occurrences.len())
+            .sum();
+        assert_eq!(occurrences, 600, "200 docs x 3 tokens");
+        let extra = with_empty.ram_bytes_used() - without.ram_bytes_used();
+        assert!(
+            extra < occurrences * std::mem::size_of::<Vec<u8>>(),
+            "an all-empty-payload field cost {extra} bytes for {occurrences} occurrences, \
+             which is not cheaper than a vector header each"
+        );
+        assert!(
+            extra >= occurrences * 4,
+            "but it must still cost the lengths it stores: {extra}"
+        );
+    }
+
+    /// Payload bytes are heap this structure occupies, so `ram_bytes_used`
+    /// has to count the flat run -- both its lengths and its bytes.
+    #[test]
+    fn ram_bytes_used_counts_the_payload_run_and_its_bytes() {
         let analyzer = Analyzer::standard(None);
         let docs = [(0, "body", "alpha beta")];
         let without = invert_documents(&docs, &analyzer);
@@ -753,7 +1049,7 @@ mod tests {
 
         assert!(
             with_empty.ram_bytes_used() > without.ram_bytes_used(),
-            "the slot vector itself is real memory: {} vs {}",
+            "the length run itself is real memory: {} vs {}",
             with_empty.ram_bytes_used(),
             without.ram_bytes_used()
         );
@@ -763,6 +1059,64 @@ mod tests {
             with_bytes.ram_bytes_used(),
             with_empty.ram_bytes_used()
         );
+    }
+
+    /// The flat run is laid out in `entries` order, so the doc-ID sort has to
+    /// carry it. Documents are handed in **descending** doc-ID order with a
+    /// distinct, distinctly-*sized* payload per document, so a sort that
+    /// permuted the entries and left the run alone would hand every document
+    /// somebody else's payload -- and a sort that permuted fixed-width slices
+    /// would too.
+    #[test]
+    fn sorting_entries_by_doc_id_carries_the_payload_run_with_them() {
+        let analyzer = Analyzer::standard(None);
+        // doc 2 has one occurrence, doc 1 has two, doc 0 has three, so the
+        // per-document runs have three different lengths as well as three
+        // different byte counts.
+        let docs = vec![
+            (2, "body", "fox"),
+            (1, "body", "fox fox"),
+            (0, "body", "fox fox fox"),
+        ];
+        let index = invert_documents_with_payloads(&docs, &analyzer, &["body"], &|ctx| {
+            Some(vec![ctx.doc_id as u8; ctx.doc_id as usize + 1])
+        });
+        let list = index.posting_list("body", "fox").expect("fox");
+        assert_eq!(
+            list.entries.iter().map(|e| e.doc_id).collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+        assert_eq!(list.payload_lengths, vec![1, 1, 1, 2, 2, 3]);
+        assert_eq!(list.payload_bytes, vec![0, 0, 0, 1, 1, 1, 1, 2, 2, 2]);
+        for (entry_index, doc_id) in [0u8, 1, 2].into_iter().enumerate() {
+            let expected = vec![doc_id; doc_id as usize + 1];
+            for occurrence in 0..list.entries[entry_index].occurrences.len() {
+                assert_eq!(
+                    list.payload(entry_index, occurrence),
+                    Some(&expected[..]),
+                    "entry {entry_index}, occurrence {occurrence}"
+                );
+            }
+        }
+        // Out of range in either dimension is `None`, not a panic.
+        assert_eq!(list.payload(3, 0), None);
+        assert_eq!(list.payload(0, 3), None);
+    }
+
+    /// The same sort with no payloads at all must still order the entries --
+    /// the early return for a payload-free list is a separate branch.
+    #[test]
+    fn sorting_entries_by_doc_id_works_without_payloads() {
+        let analyzer = Analyzer::standard(None);
+        let docs = vec![(2, "body", "fox"), (0, "body", "fox"), (1, "body", "fox")];
+        let index = invert_documents(&docs, &analyzer);
+        let list = index.posting_list("body", "fox").expect("fox");
+        assert_eq!(
+            list.entries.iter().map(|e| e.doc_id).collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+        assert!(!list.has_payloads());
+        assert_eq!(list.payload(0, 0), None);
     }
 
     #[test]

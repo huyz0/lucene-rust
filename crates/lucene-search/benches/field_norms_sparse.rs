@@ -40,7 +40,7 @@ const NO_RANK: u8 = 0xFF;
 /// A sparse-norms field where one document in `stride` has a norm.
 fn sparse_field(num_present: usize, stride: i32) -> (Vec<u8>, NormsEntry, Vec<i32>) {
     let present: Vec<i32> = (0..num_present as i32).map(|i| i * stride).collect();
-    let disi = lucene_codecs::indexed_disi::write(&present);
+    let (disi, disi_jumps) = lucene_codecs::indexed_disi::write(&present);
     let mut data = disi.clone();
     let norms_offset = data.len() as i64;
     data.extend((0..present.len()).map(|i| (i % 251 + 1) as u8));
@@ -48,7 +48,7 @@ fn sparse_field(num_present: usize, stride: i32) -> (Vec<u8>, NormsEntry, Vec<i3
         field_number: 0,
         docs_with_field_offset: 0,
         docs_with_field_length: disi.len() as i64,
-        jump_table_entry_count: 0,
+        jump_table_entry_count: disi_jumps,
         dense_rank_power: NO_RANK,
         num_docs_with_field: present.len() as i32,
         bytes_per_norm: 1,

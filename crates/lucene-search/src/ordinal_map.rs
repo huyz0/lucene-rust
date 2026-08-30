@@ -47,71 +47,170 @@
 //!   consequently reports the lowest *input* segment index containing a term
 //!   rather than the lowest weight-sorted one; that is documented on the
 //!   method, and is the only place the difference is observable.
-//! - **The input is materialized, where Java's streams.** `OrdinalMap.build`
-//!   takes `TermsEnum[]` and never holds a dictionary; [`OrdinalMap::build`]
-//!   takes every segment's complete term list. It is what the port has to work
-//!   with: this crate's SORTED_SET dictionaries are read whole by
-//!   [`lucene_codecs::terms_dict::decode_all_terms`], and a streaming
-//!   `TermsEnum`-shaped input would need a cursor API over the doc-values
-//!   terms dictionary that does not exist yet.
+//! - **The input can be streamed, as Java's is.** `OrdinalMap.build` takes
+//!   `TermsEnum[]` and never holds a dictionary, and so does
+//!   [`OrdinalMap::build_streaming`], over any [`TermCursor`] --
+//!   [`lucene_codecs::terms_dict::TermsCursor`] being the one that reads a
+//!   real SORTED/SORTED_SET dictionary. [`OrdinalMap::build`] still takes
+//!   materialized lists, for a caller that has them anyway, and now runs the
+//!   same merge over a slice-backed cursor rather than a second algorithm.
 //!
 //!   **Measured** (`examples/ordinal_map_memory.rs`, 17-byte terms, Linux
 //!   RSS with the allocation totals agreeing to within the allocator's own
-//!   slack):
+//!   slack), before this change:
 //!
 //!   | shape | materialized input | the map itself | peak |
 //!   |---|---|---|---|
-//!   | 5 segments x 1 M terms, 1.2 M global | 267 MB | 52 MB | 319 MB |
+//!   | 5 segments x 1 M terms, 1.2 M global | 267 MB | 51 MB | 319 MB |
 //!   | 10 x 200 k, 380 k global | 107 MB | 20 MB | 127 MB |
 //!   | 20 x 50 k, 161 k global | 53 MB | 10 MB | 63 MB |
 //!
-//!   So the input is **~5x the map** and ~84% of the peak: this divergence
-//!   costs materially more than the `Vec<i64>` representation above, and is
-//!   the one worth closing first. Closing it is not a change to this file --
-//!   it needs a `TermsEnum`-shaped cursor over a doc-values terms dictionary
-//!   in `lucene-codecs`, and every caller (`facets`) to stop calling
-//!   `decode_all_terms`. Recorded in `docs/sweep/m2/c29-search-carryovers.md`
-//!   with the handoff.
+//!   So the input was **~5x the map** and ~84% of the peak. Streaming it
+//!   removes that column outright: what `build_streaming` holds is one reused
+//!   term buffer per segment plus the map. The `Vec<i64>`-rather-than-
+//!   `PackedLongValues` divergence above is the 51 MB column, i.e. what is
+//!   left once the larger half is gone. See
+//!   `docs/sweep/m2/c38-allocation-shape.md`.
 //! - **No `IndexReader.CacheKey` owner.** Java carries one so
 //!   `DefaultSortedSetDocValuesReaderState` can cache the map against the
 //!   reader it was built for. This port has no reader cache-key mechanism, so
 //!   the caller owns the lifetime.
 
 use std::cmp::Ordering;
-use std::collections::BinaryHeap;
 
-/// One segment's position in the k-way merge: the segment index, and how far
-/// through its (already sorted, already unique) term list we are.
+/// One sub-enumerator of the k-way merge `OrdinalMap.build` runs — this
+/// port's `TermsEnumIndex`.
 ///
-/// `Ord` is reversed on the term and then on the segment index so that
-/// [`BinaryHeap`] — a max-heap — pops the **smallest** term first, and ties
-/// break towards the lowest segment index. That tie rule is what makes
-/// [`OrdinalMap::first_segment`] well-defined.
-struct Cursor<'a> {
-    term: &'a [u8],
-    segment: usize,
+/// Java's is a `TermsEnum`; this is the one method of it `OrdinalMap` uses
+/// (`next()`, with `ord()` implied by the call count, because a doc-values
+/// terms dictionary numbers its terms densely from zero in the order it
+/// yields them). The returned slice only has to live until the next call, so
+/// an implementation can hand back a reused buffer — which is what
+/// [`lucene_codecs::terms_dict::TermsCursor`] does, and the reason a whole
+/// dictionary never has to exist.
+pub trait TermCursor {
+    /// `TermsEnum.next()`: the next term in ascending byte order, or `None`
+    /// at the end.
+    fn next_term(&mut self) -> lucene_store::Result<Option<&[u8]>>;
+}
+
+impl TermCursor for lucene_codecs::terms_dict::TermsCursor<'_> {
+    fn next_term(&mut self) -> lucene_store::Result<Option<&[u8]>> {
+        lucene_codecs::terms_dict::TermsCursor::next_term(self)
+    }
+}
+
+/// A [`TermCursor`] over an already-materialized term list — what
+/// [`OrdinalMap::build`] runs the same merge over, so there is one algorithm
+/// and not two.
+struct SliceCursor<'a, T> {
+    terms: &'a [T],
     next: usize,
 }
 
-impl Ord for Cursor<'_> {
-    fn cmp(&self, other: &Self) -> Ordering {
-        other
-            .term
-            .cmp(self.term)
-            .then_with(|| other.segment.cmp(&self.segment))
+impl<T: AsRef<[u8]>> TermCursor for SliceCursor<'_, T> {
+    fn next_term(&mut self) -> lucene_store::Result<Option<&[u8]>> {
+        let term = self.terms.get(self.next).map(AsRef::as_ref);
+        if term.is_some() {
+            self.next = self.next.saturating_add(1);
+        }
+        Ok(term)
     }
 }
-impl PartialOrd for Cursor<'_> {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
+
+/// `OrdinalMap`'s `TermsEnumPriorityQueue`: a min-heap of *segment indices*,
+/// ordered by each segment's current term and then by the index itself.
+///
+/// The keys live outside the heap, in the caller's `current` buffers, because
+/// a streaming cursor's term is a borrow that only survives until its next
+/// call — so the merge keeps one reused buffer per segment and the queue
+/// orders indices into it. Ties breaking towards the lowest segment index is
+/// what makes [`OrdinalMap::first_segment`] well-defined.
+#[derive(Default)]
+struct MergeQueue {
+    heap: Vec<usize>,
+}
+
+impl MergeQueue {
+    fn with_capacity(n: usize) -> Self {
+        MergeQueue {
+            heap: Vec::with_capacity(n),
+        }
+    }
+
+    /// The segment whose current term is smallest.
+    fn peek(&self) -> Option<usize> {
+        self.heap.first().copied()
+    }
+
+    fn less(keys: &[Vec<u8>], a: usize, b: usize) -> bool {
+        match keys[a].cmp(&keys[b]) {
+            Ordering::Less => true,
+            Ordering::Greater => false,
+            Ordering::Equal => a < b,
+        }
+    }
+
+    fn push(&mut self, keys: &[Vec<u8>], segment: usize) {
+        self.heap.push(segment);
+        // ARITH: `child` starts at `heap.len() - 1` on a non-empty heap and
+        // strictly decreases, so `(child - 1) / 2` is in range at every step.
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            let mut child = self.heap.len() - 1;
+            while child > 0 {
+                let parent = (child - 1) / 2;
+                if Self::less(keys, self.heap[child], self.heap[parent]) {
+                    self.heap.swap(child, parent);
+                    child = parent;
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// `PriorityQueue.updateTop()`: the top segment's key has changed in
+    /// place (its cursor advanced), so restore the heap with **one** sift-down
+    /// rather than the pop-then-push pair that would do the work twice. This
+    /// is the merge's hot path -- it runs once per `(segment, distinct term)`.
+    fn update_top(&mut self, keys: &[Vec<u8>]) {
+        self.sift_down(keys, 0);
+    }
+
+    fn pop(&mut self, keys: &[Vec<u8>]) -> Option<usize> {
+        let top = *self.heap.first()?;
+        let last = self.heap.pop().expect("the heap is non-empty");
+        if !self.heap.is_empty() {
+            self.heap[0] = last;
+            self.sift_down(keys, 0);
+        }
+        Some(top)
+    }
+
+    // ARITH: `node` is a valid index and both children are computed from it
+    // and bounds-checked before use, so neither the doubling nor the `+ 1`
+    // can address outside the heap.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn sift_down(&mut self, keys: &[Vec<u8>], from: usize) {
+        let mut node = from;
+        loop {
+            let (left, right) = (2 * node + 1, 2 * node + 2);
+            let mut smallest = node;
+            if left < self.heap.len() && Self::less(keys, self.heap[left], self.heap[smallest]) {
+                smallest = left;
+            }
+            if right < self.heap.len() && Self::less(keys, self.heap[right], self.heap[smallest]) {
+                smallest = right;
+            }
+            if smallest == node {
+                return;
+            }
+            self.heap.swap(node, smallest);
+            node = smallest;
+        }
     }
 }
-impl PartialEq for Cursor<'_> {
-    fn eq(&self, other: &Self) -> bool {
-        self.cmp(other) == Ordering::Equal
-    }
-}
-impl Eq for Cursor<'_> {}
 
 /// `org.apache.lucene.index.OrdinalMap`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -132,7 +231,8 @@ pub struct OrdinalMap {
 }
 
 impl OrdinalMap {
-    /// `OrdinalMap.build(owner, TermsEnum[], weights, acceptableOverheadRatio)`.
+    /// `OrdinalMap.build(owner, TermsEnum[], weights, acceptableOverheadRatio)`
+    /// over already-materialized term lists.
     ///
     /// `segments[i]` is segment `i`'s complete terms list **in ordinal order**
     /// — which for a SORTED_SET / SORTED doc-values dictionary is byte-wise
@@ -140,6 +240,12 @@ impl OrdinalMap {
     /// [`lucene_codecs::terms_dict::decode_all_terms`] returns. A segment with
     /// no values for the field contributes an empty list, the way Java's
     /// `DocValues.emptySortedSet()` sub does.
+    ///
+    /// Prefer [`OrdinalMap::build_streaming`] where the terms can be
+    /// enumerated instead of materialized: this entry point holds every
+    /// segment's dictionary, which is ~5x the map it produces (see the module
+    /// doc's table). It is the right call only when the caller needs those
+    /// lists anyway.
     ///
     /// # Panics
     ///
@@ -157,62 +263,112 @@ impl OrdinalMap {
                 );
             }
         }
+        let mut cursors: Vec<SliceCursor<'_, T>> = segments
+            .iter()
+            .map(|terms| SliceCursor { terms, next: 0 })
+            .collect();
+        let mut refs: Vec<&mut dyn TermCursor> = cursors
+            .iter_mut()
+            .map(|c| c as &mut dyn TermCursor)
+            .collect();
+        Self::build_streaming(&mut refs).expect("a slice cursor cannot fail")
+    }
 
-        let mut segment_to_global: Vec<Vec<i64>> =
-            segments.iter().map(|s| vec![0i64; s.len()]).collect();
-        let mut heap: BinaryHeap<Cursor<'_>> = BinaryHeap::with_capacity(segments.len());
-        for (segment, terms) in segments.iter().enumerate() {
-            if let Some(first) = terms.first() {
-                heap.push(Cursor {
-                    term: first.as_ref(),
-                    segment,
-                    next: 1,
-                });
+    /// `OrdinalMap.build(owner, TermsEnum[], weights, acceptableOverheadRatio)`
+    /// as Java actually spells it: over **enumerators**, holding no
+    /// dictionary.
+    ///
+    /// `cursors[i]` yields segment `i`'s terms in ascending byte order, and
+    /// the term's ordinal in that segment is its position in the enumeration —
+    /// Java reads it from `TermsEnum.ord()`, which for a doc-values terms
+    /// dictionary is exactly the call count, and taking it from the count
+    /// removes an accessor a `TermsCursor` would otherwise have to carry.
+    ///
+    /// What this holds at once is one reused term buffer per segment plus the
+    /// map, where [`OrdinalMap::build`] additionally holds every segment's
+    /// whole dictionary — **267 MB of a 319 MB peak** on the 5-segment x
+    /// 1 M-term shape the module doc tabulates.
+    ///
+    /// Errors are the cursors' own (a corrupt terms dictionary); the merge
+    /// itself cannot fail.
+    pub fn build_streaming(cursors: &mut [&mut dyn TermCursor]) -> lucene_store::Result<Self> {
+        let n = cursors.len();
+        let mut segment_to_global: Vec<Vec<i64>> = vec![Vec::new(); n];
+        // One reused buffer per segment: the cursor's own term is a borrow
+        // that dies at its next call, so the merge keeps its own copy —
+        // `TermsEnumIndex`'s `BytesRefBuilder`, one per sub.
+        let mut current: Vec<Vec<u8>> = vec![Vec::new(); n];
+        let mut queue = MergeQueue::with_capacity(n);
+        for (segment, cursor) in cursors.iter_mut().enumerate() {
+            if let Some(term) = cursor.next_term()? {
+                current[segment].extend_from_slice(term);
+                queue.push(&current, segment);
             }
         }
 
         let mut value_count: i64 = 0;
         let mut first_segments: Vec<u32> = Vec::new();
         let mut first_segment_ords: Vec<i64> = Vec::new();
-        // Borrowed from `segments`, not copied: the previous pop's term is
-        // still alive in the caller's own dictionary, so keeping a `Vec<u8>`
-        // here was one heap allocation and one copy **per distinct term** --
-        // 1.2 M of them on the 5-segment x 1 M-term shape measured in
-        // `docs/sweep/m2/c29-search-carryovers.md`, for a value that is only
-        // ever compared and then dropped.
-        let mut current: Option<&[u8]> = None;
+        // `TermsEnumIndex.TermState topState`: the one term the outer loop is
+        // assigning a global ordinal to, copied once per *distinct* term
+        // rather than once per segment holding it.
+        let mut top_term: Vec<u8> = Vec::new();
 
-        while let Some(cursor) = heap.pop() {
-            // A new global ordinal starts whenever the popped term differs
-            // from the one the previous pop assigned -- the heap's ordering
-            // guarantees every segment holding a term pops consecutively.
-            let is_new = match current {
-                Some(prev) => prev != cursor.term,
-                None => true,
-            };
-            if is_new {
-                current = Some(cursor.term);
+        while let Some(top) = queue.peek() {
+            top_term.clear();
+            top_term.extend_from_slice(&current[top]);
+            let global_ord = value_count;
+            // ARITH: one increment per distinct term, and a term costs at
+            // least one byte in some segment's dictionary, so this cannot
+            // reach `i64::MAX`.
+            #[allow(clippy::arithmetic_side_effects)]
+            {
                 value_count += 1;
-                first_segments.push(cursor.segment as u32);
-                first_segment_ords.push(cursor.next as i64 - 1);
             }
-            segment_to_global[cursor.segment][cursor.next - 1] = value_count - 1;
+            let mut first_segment = usize::MAX;
+            let mut first_segment_ord = 0i64;
 
-            if let Some(term) = segments[cursor.segment].get(cursor.next) {
-                heap.push(Cursor {
-                    term: term.as_ref(),
-                    segment: cursor.segment,
-                    next: cursor.next + 1,
-                });
+            // Java's inner `while (true)`: drain every segment standing on
+            // this term, recording its ord delta, before moving on.
+            loop {
+                let segment = queue.peek().expect("the queue was non-empty");
+                if segment < first_segment {
+                    first_segment = segment;
+                    first_segment_ord = segment_to_global[segment].len() as i64;
+                }
+                // The segment ordinal is the push position: a doc-values terms
+                // dictionary numbers its terms densely from zero in
+                // enumeration order.
+                segment_to_global[segment].push(global_ord);
+                if let Some(term) = cursors[segment].next_term()? {
+                    debug_assert!(
+                        term > &current[segment][..],
+                        "segment {segment}'s terms are not strictly ascending: \
+                         OrdinalMap's merge assumes ordinal order == byte order"
+                    );
+                    current[segment].clear();
+                    current[segment].extend_from_slice(term);
+                    // The key at the top changed in place, so this is Java's
+                    // `queue.updateTop()`, not a pop plus a push.
+                    queue.update_top(&current);
+                } else {
+                    queue.pop(&current);
+                }
+                match queue.peek() {
+                    Some(next) if current[next] == top_term => continue,
+                    _ => break,
+                }
             }
+            first_segments.push(first_segment as u32);
+            first_segment_ords.push(first_segment_ord);
         }
 
-        OrdinalMap {
+        Ok(OrdinalMap {
             segment_to_global,
             value_count,
             first_segments,
             first_segment_ords,
-        }
+        })
     }
 
     /// `OrdinalMap.getValueCount()` — the number of distinct terms across
@@ -356,6 +512,149 @@ mod tests {
         let map = OrdinalMap::build(&[a, b]);
         assert_eq!(map.segment_ords(1), Some(&[0i64][..]), "0x7A < 0xC3");
         assert_eq!(map.segment_ords(0), Some(&[1i64][..]));
+    }
+
+    /// A [`TermCursor`] over an owned list, so the streaming entry point can
+    /// be driven from a test without a `.dvd`. Deliberately hands back a
+    /// **reused** buffer, which is the contract a real
+    /// `terms_dict::TermsCursor` relies on: a merge that assumed the previous
+    /// term stayed valid would read the wrong bytes here.
+    struct VecCursor {
+        terms: Vec<Vec<u8>>,
+        next: usize,
+        buffer: Vec<u8>,
+        fail_at: Option<usize>,
+    }
+
+    impl VecCursor {
+        fn new(v: &[&str]) -> Self {
+            VecCursor {
+                terms: terms(v),
+                next: 0,
+                buffer: Vec::new(),
+                fail_at: None,
+            }
+        }
+    }
+
+    impl TermCursor for VecCursor {
+        fn next_term(&mut self) -> lucene_store::Result<Option<&[u8]>> {
+            if self.fail_at == Some(self.next) {
+                return Err(lucene_store::Error::Corrupted("bad block".into()));
+            }
+            let Some(term) = self.terms.get(self.next) else {
+                return Ok(None);
+            };
+            self.next += 1;
+            self.buffer.clear();
+            self.buffer.extend_from_slice(term);
+            Ok(Some(&self.buffer))
+        }
+    }
+
+    fn streamed(mut cursors: Vec<VecCursor>) -> lucene_store::Result<OrdinalMap> {
+        let mut refs: Vec<&mut dyn TermCursor> = cursors
+            .iter_mut()
+            .map(|c| c as &mut dyn TermCursor)
+            .collect();
+        OrdinalMap::build_streaming(&mut refs)
+    }
+
+    /// The two entry points are one algorithm, so they must agree exactly --
+    /// on every field of the map, not just `valueCount`. Eight segments, so
+    /// the heap is deep enough that both children of a node are compared on
+    /// the way down (a two- or three-segment case never reaches the right
+    /// child).
+    #[test]
+    fn build_streaming_agrees_with_build_over_the_same_terms() {
+        let shapes: [&[&[&str]]; 4] = [
+            &[&["bar", "foo"], &["cat", "dog"]],
+            &[&["a", "b"], &["a", "c"], &["a", "b", "c"]],
+            &[&["a"], &[], &["b"]],
+            &[
+                &["h", "p"],
+                &["a", "z"],
+                &["c", "h", "q"],
+                &["b"],
+                &["d", "e", "f"],
+                &["g", "h"],
+                &["m"],
+                &["a", "n", "z"],
+            ],
+        ];
+        for shape in shapes {
+            let materialized: Vec<Vec<Vec<u8>>> = shape.iter().map(|s| terms(s)).collect();
+            let expected = OrdinalMap::build(&materialized);
+            let got = streamed(shape.iter().map(|s| VecCursor::new(s)).collect()).unwrap();
+            assert_eq!(got, expected, "shape {shape:?}");
+        }
+    }
+
+    /// The eight-segment shape spelled out, so the agreement test above
+    /// cannot pass by both halves being wrong in the same way.
+    #[test]
+    fn build_streaming_assigns_global_ordinals_in_byte_order() {
+        let map = streamed(vec![
+            VecCursor::new(&["c", "e"]),
+            VecCursor::new(&["a", "e"]),
+            VecCursor::new(&["b", "d"]),
+        ])
+        .unwrap();
+        // Global: a=0, b=1, c=2, d=3, e=4.
+        assert_eq!(map.value_count(), 5);
+        assert_eq!(map.segment_ords(0), Some(&[2i64, 4][..]));
+        assert_eq!(map.segment_ords(1), Some(&[0i64, 4][..]));
+        assert_eq!(map.segment_ords(2), Some(&[1i64, 3][..]));
+        // "e" is in segments 0 and 1; "first" is the lowest input index, and
+        // its ordinal there is 1.
+        assert_eq!(map.first_segment(4), Some(0));
+        assert_eq!(map.first_segment_ord(4), Some(1));
+    }
+
+    /// A cursor's error is the caller's, not a panic and not a silently short
+    /// map -- the failure mode a corrupt `.dvd` produces.
+    #[test]
+    fn a_cursor_error_propagates_out_of_build_streaming() {
+        let mut ok = VecCursor::new(&["a", "b"]);
+        let mut bad = VecCursor::new(&["a", "c"]);
+        bad.fail_at = Some(1);
+        let mut refs: Vec<&mut dyn TermCursor> = vec![
+            &mut ok as &mut dyn TermCursor,
+            &mut bad as &mut dyn TermCursor,
+        ];
+        assert!(matches!(
+            OrdinalMap::build_streaming(&mut refs),
+            Err(lucene_store::Error::Corrupted(_))
+        ));
+    }
+
+    /// The very first `next_term` failing is a separate branch from one
+    /// failing mid-merge (the priming loop, not the drain loop).
+    #[test]
+    fn a_cursor_that_fails_on_its_first_term_propagates_too() {
+        let mut bad = VecCursor::new(&["a"]);
+        bad.fail_at = Some(0);
+        let mut refs: Vec<&mut dyn TermCursor> = vec![&mut bad as &mut dyn TermCursor];
+        assert!(matches!(
+            OrdinalMap::build_streaming(&mut refs),
+            Err(lucene_store::Error::Corrupted(_))
+        ));
+    }
+
+    #[test]
+    fn build_streaming_over_no_cursors_is_an_empty_map() {
+        let map = streamed(Vec::new()).unwrap();
+        assert_eq!(map.value_count(), 0);
+        assert_eq!(map.segment_count(), 0);
+    }
+
+    /// The streaming entry point carries the same debug-time guard as the
+    /// materialized one, and it has to be its own check: `build`'s runs over
+    /// the lists before the merge starts, and a cursor has no list to scan.
+    #[test]
+    #[should_panic(expected = "not strictly ascending")]
+    fn an_unsorted_cursor_is_caught_in_debug_builds() {
+        let _ = streamed(vec![VecCursor::new(&["b", "a"])]);
     }
 
     #[test]

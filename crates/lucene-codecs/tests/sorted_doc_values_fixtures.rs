@@ -99,6 +99,21 @@ fn parses_real_sorted_dv_and_matches_lucene_ords_and_terms() {
         .collect();
     assert_eq!(terms, expected_terms);
 
+    // The streaming half of the same decoder, against the same real Lucene
+    // bytes: `TermsCursor` is what `OrdinalMap::build_streaming` walks, and
+    // "it agrees with `decode_all_terms`" is only half the claim -- both are
+    // checked against the manifest real Lucene wrote.
+    let mut cursor = terms_dict::TermsCursor::open(&dvd, &entry.terms).unwrap();
+    let mut streamed: Vec<Vec<u8>> = Vec::new();
+    while let Some(term) = cursor.next_term().unwrap() {
+        streamed.push(term.to_vec());
+    }
+    assert_eq!(streamed, expected_terms, "TermsCursor over the real .dvd");
+    assert!(
+        cursor.next_term().unwrap().is_none(),
+        "exhausted stays exhausted"
+    );
+
     let expected_ords: Vec<Option<i64>> = manifest
         .get("field.sorted.ords")
         .split(',')
