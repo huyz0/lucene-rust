@@ -2505,6 +2505,48 @@ mod tests {
         );
     }
 
+    /// The unsigned comparisons *inside* `add_to_set`, which the test above
+    /// cannot reach: two byte-valued norms both land in the `max_freqs`
+    /// table, `other` stays empty, and `get_competitive_freq_norm_pairs`
+    /// returns at its fast path. Ordering there comes from walking `0..256`,
+    /// which is unsigned by construction.
+    ///
+    /// Reaching `add_to_set` needs one norm wide enough for the overflow set
+    /// and one byte norm that sign-extends negative, so the merge compares
+    /// them against each other. That is the shape the overflow set was ported
+    /// for -- a `.nvd` storing more than one byte per norm -- and it is where
+    /// signed-vs-unsigned actually changes the answer:
+    ///
+    /// - unsigned, `1000 >= 0xFFFF_FFFF_FFFF_FFC8` is false, the backward walk
+    ///   stops, and both entries survive;
+    /// - signed, `1000 >= -56` is true, so `(3, 1000)` -- which dominates
+    ///   nothing -- is dropped, leaving a frontier that no longer bounds the
+    ///   freq-3 documents. An under-bound block is a *skipped hit* under
+    ///   MAXSCORE, not merely a slower search.
+    #[test]
+    fn add_to_set_compares_norms_unsigned_across_the_overflow_set() {
+        let mut acc = CompetitiveImpactAccumulator::default();
+        acc.add(9, i64::from(200u8 as i8)); // byte 200 -> -56, byte table
+        acc.add(3, 1_000); // too wide for the table -> `other`
+
+        let got = acc.get_competitive_freq_norm_pairs();
+        assert_eq!(
+            got,
+            vec![
+                Impact {
+                    freq: 3,
+                    norm: 1_000
+                },
+                Impact {
+                    freq: 9,
+                    norm: i64::from(200u8 as i8)
+                },
+            ],
+            "a negative (sign-extended) norm is the *largest* unsigned norm, so \
+             it dominates nothing and the freq-3 entry must survive"
+        );
+    }
+
     /// With no norms every document is norm 1, so the frontier is the single
     /// `(maxFreq, 1)` pair this writer emitted before item 18 -- which is what
     /// keeps the normless path byte-identical.
