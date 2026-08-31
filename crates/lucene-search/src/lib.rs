@@ -3554,7 +3554,6 @@ pub fn search_boolean_query_scored_with_stats<C: ScoringCollector>(
                 | Clause::Phrase(_)
                 | Clause::Prefix(_)
                 | Clause::Wildcard(_)
-                | Clause::Fuzzy(_)
                 | Clause::Regexp(_)
         )
     {
@@ -3611,10 +3610,18 @@ pub fn search_boolean_query_scored_with_stats<C: ScoringCollector>(
             // elsewhere". That is true and irrelevant: `resolve_clause_docs`
             // returns exactly the matched set in ascending document order,
             // which is precisely what the collector wants.
-            other @ (Clause::Prefix(_)
-            | Clause::Wildcard(_)
-            | Clause::Fuzzy(_)
-            | Clause::Regexp(_)) => {
+            //
+            // `Clause::Fuzzy` is **not** admitted here, and must not be: alone
+            // in this family it is a *scoring* query, because `FuzzyQuery`
+            // overrides the constant-score rewrite with
+            // `MultiTermQuery.TopTermsBlendedFreqScoringRewrite`. Collecting it
+            // at a flat 1.0 does not merely mis-score -- it changes the hit
+            // *set*, since every document ties and the collector then keeps the
+            // first `n` by document id instead of the top `n` by score. It
+            // takes the two-pass path below, whose `clause_scores` arm calls
+            // `fuzzy_doc_scores`; the test pinning this is
+            // `a_single_fuzzy_clause_is_scored_not_constant_scored`.
+            other @ (Clause::Prefix(_) | Clause::Wildcard(_) | Clause::Regexp(_)) => {
                 // Lazily merge the expanded terms' postings and stop at the
                 // collector's capacity -- see `stream_constant_score_clause`.
                 if stream_constant_score_clause(fields, doc_in, live_docs, other, collector)? {
@@ -6252,15 +6259,22 @@ mod tests {
     }
 
     #[test]
-    fn a_single_fuzzy_clause_takes_the_fast_path_without_streaming() {
-        // `expanded_terms` returns `None` for `Clause::Fuzzy` (its expansion is
-        // edit-distance driven, not a term-dictionary prefix scan), so the
-        // stream declines immediately and the fallback collects.
+    fn a_single_fuzzy_clause_is_scored_not_constant_scored() {
+        // Real `FuzzyQuery`'s rewrite is `TopTermsBlendedFreqScoringRewrite`,
+        // so it scores; the rest of the multi-term family constant-scores. A
+        // single-clause fuzzy query must therefore *not* take the constant-
+        // score fast path, and must agree with `clause_scores` -- the arm that
+        // calls `fuzzy_doc_scores` -- document for document and score for
+        // score.
+        //
+        // Verified to fail against the unfixed code: with `Clause::Fuzzy` in
+        // the fast path's `matches!` guard, every hit comes back at 1.0 and
+        // both assertions below trip.
         let (fields, doc) = open_fixture();
         let doc_in = doc.as_ref().map(|d| d.open());
-        let q = BooleanQuery::new().with_must([Clause::Fuzzy(
-            FuzzyQuery::new("body", "cat").with_max_edits(1),
-        )]);
+        let clause = Clause::Fuzzy(FuzzyQuery::new("body", "cat").with_max_edits(1));
+        let q = BooleanQuery::new().with_must([clause.clone()]);
+
         let mut all = ScoreVecCollector::default();
         search_boolean_query_scored(
             &fields,
@@ -6275,7 +6289,33 @@ mod tests {
         )
         .unwrap();
         assert!(!all.hits.is_empty());
-        assert!(all.hits.iter().all(|h| h.1 == 1.0));
+
+        let mut expected: Vec<(i32, f32)> = clause_scores(
+            &fields,
+            doc_in.as_ref(),
+            None,
+            None,
+            None,
+            None,
+            &clause,
+            None,
+            None,
+        )
+        .unwrap()
+        .into_iter()
+        .collect();
+        expected.sort_by_key(|(doc_id, _)| *doc_id);
+        let mut got = all.hits.clone();
+        got.sort_by_key(|(doc_id, _)| *doc_id);
+        assert_eq!(got, expected);
+
+        // The regression this pins: a flat 1.0 per hit. BM25 over a fixture
+        // whose matching documents differ in length cannot produce that.
+        assert!(
+            !all.hits.iter().all(|h| h.1 == 1.0),
+            "fuzzy hits were constant-scored: {:?}",
+            all.hits
+        );
     }
 
     #[test]
