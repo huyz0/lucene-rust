@@ -196,7 +196,7 @@ impl PrefixQuery {
 /// distances 1 and 2. This port's matcher is a DP with no such ceiling, so a
 /// larger value works and simply has no Lucene equivalent -- see
 /// [`lucene_codecs::fuzzy::MAXIMUM_SUPPORTED_DISTANCE`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FuzzyQuery {
     pub field: String,
     pub term: Vec<u8>,

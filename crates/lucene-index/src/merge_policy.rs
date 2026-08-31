@@ -224,6 +224,27 @@ pub struct MergePolicyConfig {
     /// `maxDoc / targetSearchConcurrency`, so search work can be split into
     /// that many similarly-sized slices.
     pub target_search_concurrency: usize,
+    /// `MergePolicy.keepFullyDeletedSegment(IOSupplier<CodecReader>)`: keep a
+    /// segment whose every document has been hard-deleted instead of dropping
+    /// it when the deletes are applied.
+    ///
+    /// Java's base implementation returns `false` and `TieredMergePolicy` does
+    /// not override it, so `false` is the default here too, matching
+    /// `IndexWriterConfig`'s own default policy. The one override in the
+    /// Lucene tree is `SoftDeletesRetentionMergePolicy`, which returns `true`
+    /// when its retention query still matches a document the *hard* delete
+    /// count has written off -- so a writer that keeps soft-deleted documents
+    /// alive for a retention window must set this, or the drop discards
+    /// documents its policy promised to retain.
+    ///
+    /// **Reduced to a flag on purpose.** Java's hook takes a `CodecReader`
+    /// supplier and may run a query over the segment; this port has no
+    /// `MergePolicy` trait and no reader supplier to hand it (see this
+    /// module's doc comment), so the honest port of a hook whose two in-tree
+    /// implementations are "always false" and "true iff a retention query
+    /// matches" is a boolean the caller sets. When a reader-aware policy
+    /// arrives this becomes its method.
+    pub keep_fully_deleted_segments: bool,
 }
 
 impl Default for MergePolicyConfig {
@@ -247,6 +268,9 @@ impl Default for MergePolicyConfig {
             deletes_pct_allowed: 20.0,
             // targetSearchConcurrency = 1
             target_search_concurrency: 1,
+            // `MergePolicy.keepFullyDeletedSegment` returns false, and
+            // `TieredMergePolicy` does not override it.
+            keep_fully_deleted_segments: false,
         }
     }
 }

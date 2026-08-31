@@ -3103,8 +3103,8 @@ impl<'d> IndexWriter<'d> {
         // `build_and_write_segment` on why that is load-bearing here.
         let written = self.build_and_write_segment(&segment_name, segment_id);
 
-        let sci = match written {
-            Ok(sci) => sci,
+        let (sci, si_files) = match written {
+            Ok(pair) => pair,
             Err(e) => {
                 // Put the buffer back in insertion order. Every buffered
                 // delete's `docIDUpto` is a position in the *insertion*-ordered
@@ -3154,6 +3154,13 @@ impl<'d> IndexWriter<'d> {
             None => self.updates_stream.next_gen(),
         };
         sci.set_buffered_deletes_gen(gen);
+        // `SegmentCommitInfo` holding its `SegmentInfo` is what lets Java's
+        // `SegmentInfos.files()` -- and therefore every `IndexFileDeleter`
+        // checkpoint -- read a segment's file set out of memory. This port's
+        // `SegmentCommitInfo` deliberately does not own the parsed `.si`, so
+        // the list is handed over explicitly here, from the same in-memory
+        // `SegmentInfo` `seal_flushed_segment` just encoded.
+        self.deleter.record_segment_files(&sci, &si_files);
         self.flushed_segments.push(sci);
 
         // `IndexFileDeleter.checkpoint(segmentInfos, false)`: the new segment's
@@ -3239,7 +3246,7 @@ impl<'d> IndexWriter<'d> {
         &self,
         segment_name: &str,
         segment_id: [u8; ID_LENGTH],
-    ) -> Result<SegmentCommitInfo> {
+    ) -> Result<(SegmentCommitInfo, Vec<String>)> {
         // `IndexingChain.writeNorms`' loop condition, resolved once: every
         // indexed field that has not opted out gets a norm column, and the
         // shared invert pass has to analyze all of them.
@@ -6108,17 +6115,73 @@ impl<'d> IndexWriter<'d> {
         // `&mut self` for the `.liv`/doc-values-generation writes, and the segment lists are
         // put back verbatim (plus their new generations) once it is done.
         let mut committed = std::mem::take(&mut self.segment_infos.segments);
+        let mut committed_fully_deleted = Vec::with_capacity(committed.len());
         for sci in committed.iter_mut() {
-            self.apply_packets_to_segment(&packets, sci)?;
+            committed_fully_deleted.push(self.apply_packets_to_segment(&packets, sci)?);
         }
         self.segment_infos.segments = committed;
 
         let mut flushed = std::mem::take(&mut self.flushed_segments);
+        let mut flushed_fully_deleted = Vec::with_capacity(flushed.len());
         for sci in flushed.iter_mut() {
-            self.apply_packets_to_segment(&packets, sci)?;
+            flushed_fully_deleted.push(self.apply_packets_to_segment(&packets, sci)?);
         }
         self.flushed_segments = flushed;
+
+        self.drop_fully_deleted_segments(&committed_fully_deleted, &flushed_fully_deleted);
         Ok(())
+    }
+
+    /// `IndexWriter.finishApply`'s second half: drop every segment this apply
+    /// left 100% deleted.
+    ///
+    /// ```java
+    /// if (result.allDeleted() != null) {
+    ///   for (SegmentCommitInfo info : result.allDeleted()) { dropDeletedSegment(info); }
+    ///   checkpoint();
+    /// }
+    /// ```
+    ///
+    /// The membership test is `closeSegmentStates`':
+    /// `rld.isFullyDeleted() && mergePolicy.keepFullyDeletedSegment(...) == false`,
+    /// where `PendingDeletes.isFullyDeleted` is `getDelCount() == maxDoc()` --
+    /// **hard deletes only**. A soft-deleted document still counts as live
+    /// here, which is why `PendingSoftDeletes` overrides the *policy* hook
+    /// rather than the count (see
+    /// [`MergePolicyConfig::keep_fully_deleted_segments`]).
+    ///
+    /// Only segments this apply actually touched are candidates, exactly as in
+    /// Java: `openSegmentStates` filters to the segments the packets are
+    /// allowed to reach, so a segment that was already fully deleted before
+    /// this apply is not reconsidered. [`Self::apply_packets_to_segment`] returns
+    /// `false` for a segment it skipped, which reproduces that.
+    ///
+    /// This is an **in-memory** drop plus the deleter checkpoint the caller
+    /// already runs, not a new commit: Java's `checkpoint()` is
+    /// `changed(); deleter.checkpoint(segmentInfos, false)`, and a dropped
+    /// segment only becomes durable at the next `commit()`. A `rollback()`
+    /// before that restores it from `rollback_segments`, unchanged.
+    ///
+    /// *Not modelled*: `dropDeletedSegment`'s `mergingSegments` guard (this
+    /// port has no concurrent merges -- `execute_merge` runs to completion
+    /// inside one call), `readerPool.drop` (no reader pool) and
+    /// `adjustPendingNumDocs` (no such counter -- see
+    /// `crates/lucene-index/src/deletes.rs`' module doc).
+    fn drop_fully_deleted_segments(&mut self, committed: &[bool], flushed: &[bool]) {
+        if self
+            .merge_policy
+            .as_ref()
+            .is_some_and(|c| c.keep_fully_deleted_segments)
+        {
+            return;
+        }
+        let mut keep = committed.iter();
+        self.segment_infos
+            .segments
+            .retain(|_| !keep.next().copied().unwrap_or(false));
+        let mut keep = flushed.iter();
+        self.flushed_segments
+            .retain(|_| !keep.next().copied().unwrap_or(false));
     }
 
     /// `FrozenBufferedUpdates.apply(SegmentState[])` for one segment: resolve
@@ -6132,11 +6195,14 @@ impl<'d> IndexWriter<'d> {
     /// and writes once. Same outcome (deletes are a set union; doc-values
     /// updates are applied in ascending generation order so the newest still
     /// wins), one open and one generation bump instead of N.
+    /// Returns whether this apply left the segment 100% hard-deleted, which is
+    /// `closeSegmentStates`' `rld.isFullyDeleted()` -- see
+    /// [`IndexWriter::drop_fully_deleted_segments`].
     fn apply_packets_to_segment(
         &mut self,
         packets: &[FrozenBufferedUpdates],
         sci: &mut SegmentCommitInfo,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let applicable: Vec<&FrozenBufferedUpdates> = packets
             .iter()
             .filter(|p| p.applies_to(sci.buffered_deletes_gen))
@@ -6150,7 +6216,9 @@ impl<'d> IndexWriter<'d> {
             })
             .collect();
         if applicable.is_empty() {
-            return Ok(());
+            // Not a candidate for the fully-deleted drop: Java's
+            // `openSegmentStates` never opened a state for it.
+            return Ok(false);
         }
 
         // `ReadersAndUpdates.sortMap` for this segment, if this writer's
@@ -6286,7 +6354,8 @@ impl<'d> IndexWriter<'d> {
         if !numeric_updates.is_empty() || !binary_updates.is_empty() {
             self.write_doc_values_update_generation(sci, &numeric_updates, &binary_updates)?;
         }
-        Ok(())
+        // `PendingDeletes.isFullyDeleted`: `getDelCount() == info.info.maxDoc()`.
+        Ok(i64::from(sci.del_count) == opened.max_doc as i64)
     }
 
     /// Writes one doc-values-update generation for `sci` --
@@ -8709,15 +8778,20 @@ mod tests {
             1,
             "the segment's .si was written more than once: {created:?}"
         );
-        // One read, not six: `IndexFileDeleter`'s checkpoint re-reads the
-        // finished `.si` to reference-count the segment's files (Java takes
-        // them off the in-memory `SegmentInfo` instead -- a separate,
-        // recorded divergence). What is gone is the read-modify-write per
-        // file group during the flush itself.
+        // **Zero** reads. c36 removed the read-modify-write per file group
+        // during the flush and left one: `IndexFileDeleter`'s checkpoint
+        // re-opened and re-parsed the finished `.si` (header check and CRC
+        // over the whole file included) to reference-count the segment's
+        // files. Java never does that -- `SegmentCommitInfo` holds its
+        // `SegmentInfo`, so `SegmentInfos.files()` reads the list out of
+        // memory -- and since `c43-final-cleanup` neither does this port:
+        // `flush` hands the deleter the same in-memory list
+        // `seal_flushed_segment` encoded
+        // (`IndexFileDeleter::record_segment_files`).
         assert_eq!(
             CountingDirectory::count(&dir.opened, "_0.si"),
-            1,
-            "the segment's .si was re-read during its own flush: {:?}",
+            0,
+            "the segment's .si was read back during its own flush: {:?}",
             dir.opened.borrow()
         );
         assert_eq!(
@@ -12921,6 +12995,169 @@ mod tests {
         read_all_docs(dir, infos)
     }
 
+    /// **`IndexWriter` drops a 100%-deleted segment when the deletes are
+    /// applied, and real Lucene says so** (ledger item 11b).
+    ///
+    /// `IndexWriter.finishApply` removes from the in-memory `SegmentInfos`
+    /// every segment `closeSegmentStates` found fully deleted
+    /// (`rld.isFullyDeleted() && mergePolicy.keepFullyDeletedSegment(..) ==
+    /// false`, where `PendingDeletes.isFullyDeleted` is
+    /// `getDelCount() == maxDoc()` -- hard deletes only). This port kept such
+    /// a segment in the commit forever: a segment nothing can ever match,
+    /// carried by every later open, merge and `CheckIndex`.
+    ///
+    /// Ground truth is `fixtures/src/GenFullyDeletedDrop.java`, which runs the
+    /// same four scripts through a real `IndexWriter` and records the
+    /// committed segment count, each segment's `(maxDoc, delCount)`, and the
+    /// visible ids. No index is committed: the bytes of an index with a
+    /// dropped segment are indistinguishable from those of one that never had
+    /// it, so the *behaviour* is what there is to record.
+    ///
+    /// `partial` is the control -- a segment with one of two documents deleted
+    /// survives -- so this cannot pass by dropping every segment with deletes.
+    #[test]
+    fn a_fully_deleted_segment_is_dropped_exactly_where_real_lucene_drops_it() {
+        let manifest = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/data/fully_deleted_drop/manifest.properties"
+        ))
+        .expect("run scripts/gen-fixtures.sh --only GenFullyDeletedDrop first");
+        let get = |key: &str| -> String {
+            manifest
+                .lines()
+                .find_map(|l| l.strip_prefix(&format!("{key}=")))
+                .unwrap_or_else(|| panic!("manifest key {key} missing"))
+                .to_string()
+        };
+
+        let scenarios: Vec<String> = get("scenarios").split(',').map(str::to_string).collect();
+        assert_eq!(scenarios, ["drop", "partial", "all", "block"]);
+
+        for name in &scenarios {
+            let tmp = tempdir(&format!("fully-deleted-{name}"));
+            let dir = FsDirectory::open(&tmp);
+            let mut writer = seq_writer(&dir);
+            match name.as_str() {
+                "drop" => {
+                    writer.add_document(doc_with_body("a", "shared")).unwrap();
+                    writer.add_document(doc_with_body("b", "shared")).unwrap();
+                    writer.flush().unwrap();
+                    writer
+                        .delete_documents_by_term(&[body_term("shared")])
+                        .unwrap();
+                    writer.add_document(doc_with_body("c", "other")).unwrap();
+                    writer.add_document(doc_with_body("d", "other")).unwrap();
+                }
+                "partial" => {
+                    writer.add_document(doc_with_body("a", "shared")).unwrap();
+                    writer.add_document(doc_with_body("b", "kept")).unwrap();
+                    writer.flush().unwrap();
+                    writer
+                        .delete_documents_by_term(&[body_term("shared")])
+                        .unwrap();
+                    writer.add_document(doc_with_body("c", "other")).unwrap();
+                    writer.add_document(doc_with_body("d", "other")).unwrap();
+                }
+                "all" => {
+                    writer.add_document(doc_with_body("a", "shared")).unwrap();
+                    writer.add_document(doc_with_body("b", "shared")).unwrap();
+                    writer.flush().unwrap();
+                    writer.add_document(doc_with_body("c", "shared")).unwrap();
+                    writer.add_document(doc_with_body("d", "shared")).unwrap();
+                    writer.flush().unwrap();
+                    writer
+                        .delete_documents_by_term(&[body_term("shared")])
+                        .unwrap();
+                }
+                "block" => {
+                    writer
+                        .add_documents(vec![doc_with_body("p1", "key"), doc_with_body("c1", "key")])
+                        .unwrap();
+                    writer.commit().unwrap();
+                    writer
+                        .update_documents(
+                            body_term("key"),
+                            vec![doc_with_body("p2", "key"), doc_with_body("c2", "key")],
+                        )
+                        .unwrap();
+                }
+                other => panic!("unknown scenario {other}"),
+            }
+            let infos = writer.commit().unwrap().clone();
+
+            let expected_count: usize = get(&format!("{name}.segment_count")).parse().unwrap();
+            assert_eq!(
+                infos.segments.len(),
+                expected_count,
+                "{name}: real Lucene commits {expected_count} segment(s), this port \
+                 {}",
+                infos.segments.len()
+            );
+
+            let expected_shape = get(&format!("{name}.segment_shape"));
+            let got_shape = infos
+                .segments
+                .iter()
+                .map(|sci| {
+                    let si_bytes = dir.open(&format!("{}.si", sci.segment_name)).unwrap();
+                    let si = segment_info::parse(&si_bytes, &sci.segment_id).unwrap();
+                    format!("{}:{}", si.doc_count, sci.del_count)
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            assert_eq!(
+                got_shape, expected_shape,
+                "{name}: per-segment (maxDoc, delCount)"
+            );
+
+            let mut expected_ids: Vec<String> = get(&format!("{name}.visible_ids"))
+                .split(',')
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect();
+            expected_ids.sort();
+            let mut got_ids = visible_ids(&dir, &infos);
+            got_ids.sort();
+            assert_eq!(got_ids, expected_ids, "{name}: visible documents");
+        }
+    }
+
+    /// [`MergePolicyConfig::keep_fully_deleted_segments`] is
+    /// `MergePolicy.keepFullyDeletedSegment`, and it is the whole reason the
+    /// drop is not unconditional: `SoftDeletesRetentionMergePolicy` returns
+    /// `true` from it, so a writer retaining soft-deleted documents must be
+    /// able to keep a segment the *hard* delete count has written off.
+    #[test]
+    fn keep_fully_deleted_segments_suppresses_the_drop() {
+        let tmp = tempdir("keep-fully-deleted");
+        let dir = FsDirectory::open(&tmp);
+        let mut writer = seq_writer(&dir);
+        writer.set_merge_policy(Some(MergePolicyConfig {
+            keep_fully_deleted_segments: true,
+            // A merge would drop the emptied segment by the other route
+            // (`execute_merge`'s zero-live-document check), so keep the policy
+            // from proposing one.
+            max_merged_segment_size: 0,
+            ..MergePolicyConfig::default()
+        }));
+        writer.add_document(doc_with_body("a", "shared")).unwrap();
+        writer.add_document(doc_with_body("b", "shared")).unwrap();
+        writer.flush().unwrap();
+        writer
+            .delete_documents_by_term(&[body_term("shared")])
+            .unwrap();
+        writer.add_document(doc_with_body("c", "other")).unwrap();
+        let infos = writer.commit().unwrap().clone();
+
+        assert_eq!(
+            infos.segments.len(),
+            2,
+            "the emptied segment must be kept when the policy says so"
+        );
+        assert_eq!(infos.segments[0].del_count, 2);
+        assert_eq!(visible_ids(&dir, &infos), vec!["c"]);
+    }
+
     #[test]
     fn every_mutating_method_returns_a_strictly_increasing_sequence_number() {
         let tmp = tempdir("seqno-monotonic");
@@ -13164,11 +13401,27 @@ mod tests {
         writer.add_document(doc_with_body("d", "shared")).unwrap();
 
         let infos = writer.commit().unwrap().clone();
-        assert_eq!(infos.segments.len(), 2, "two flushes, two segments");
+        // `_0` ends up 100% deleted, so `IndexWriter.finishApply` drops it
+        // (`drop_fully_deleted_segments`) -- and its absence is itself the
+        // proof that the delete reached *both* of its documents. `_1` must
+        // still be here, untouched: a delete that wrongly reached it too would
+        // leave no segments at all.
+        assert_eq!(
+            infos
+                .segments
+                .iter()
+                .map(|s| s.segment_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["_1"],
+            "`_0` fully deleted and dropped, `_1` survives"
+        );
         assert_eq!(visible_ids(&dir, &infos), vec!["c", "d"]);
-        // `_0` is fully deleted, `_1` is untouched.
-        assert_eq!(infos.segments[0].del_count, 2);
-        assert_eq!(infos.segments[1].del_count, 0);
+        assert_eq!(infos.segments[0].del_count, 0);
+        assert!(
+            !index_files(&dir).iter().any(|f| f.starts_with("_0.")),
+            "a dropped segment's files are reclaimed at the commit: {:?}",
+            index_files(&dir)
+        );
     }
 
     #[test]
@@ -13262,6 +13515,11 @@ mod tests {
         let dir = FsDirectory::open(&tmp);
         let mut writer = seq_writer(&dir);
         writer.add_document(doc_with_body("a", "shared")).unwrap();
+        // A second document the delete does not match, so the segment is not
+        // left 100% deleted: `finishApply`'s drop would otherwise remove it
+        // before the rollback, and this test is about the rollback restoring a
+        // segment whose `.liv` generation advanced, not about the drop.
+        writer.add_document(doc_with_body("keep", "other")).unwrap();
         writer.commit().unwrap();
         let committed_del_gen = writer.segment_infos().segments[0].del_gen;
         assert_eq!(committed_del_gen, -1);
@@ -13290,7 +13548,7 @@ mod tests {
                 assert!(index_files(&dir).contains(&f), "commit names missing {f}");
             }
         }
-        assert_eq!(visible_ids(&dir, &infos), vec!["a"]);
+        assert_eq!(visible_ids(&dir, &infos), vec!["a", "keep"]);
     }
 
     /// End to end for `SegmentCommitInfo.generationAdvanced()`: the id a
@@ -13608,7 +13866,11 @@ mod tests {
             .unwrap();
         let infos = writer.commit().unwrap().clone();
         assert_eq!(visible_ids(&dir, &infos), vec!["p2", "c2"]);
-        assert!(parsed_si(&dir, &infos.segments[1]).has_blocks);
+        // The old block was the whole of its segment, so applying the delete
+        // leaves it 100% deleted and `finishApply` drops it -- the replacement
+        // is the only segment left.
+        assert_eq!(infos.segments.len(), 1, "the emptied segment is dropped");
+        assert!(parsed_si(&dir, &infos.segments[0]).has_blocks);
     }
 
     // --- doc-values updates and soft deletes ---
@@ -14371,9 +14633,18 @@ mod tests {
         let dir = FsDirectory::open(&tmp);
         let mut writer = seq_writer(&dir);
 
+        // Each segment also carries a document the delete does not match, so
+        // neither is left 100% deleted and `finishApply`'s drop does not
+        // remove the very evidence this test reads (`del_count` per segment).
         writer.add_document(doc_with_body("a", "shared")).unwrap();
+        writer
+            .add_document(doc_with_body("a-keep", "other"))
+            .unwrap();
         writer.commit().unwrap();
         writer.add_document(doc_with_body("b", "shared")).unwrap();
+        writer
+            .add_document(doc_with_body("b-keep", "other"))
+            .unwrap();
         writer.commit().unwrap();
         assert_eq!(writer.segment_infos().segments.len(), 2);
 
@@ -14383,10 +14654,10 @@ mod tests {
             .delete_documents_by_term(&[body_term("shared")])
             .unwrap();
         let infos = writer.commit().unwrap().clone();
-        assert!(
-            visible_ids(&dir, &infos).is_empty(),
-            "the delete must reach both segments, not just the oldest: {:?}",
-            visible_ids(&dir, &infos)
+        assert_eq!(
+            visible_ids(&dir, &infos),
+            vec!["a-keep", "b-keep"],
+            "the delete must reach both segments, not just the oldest"
         );
         assert_eq!(
             infos

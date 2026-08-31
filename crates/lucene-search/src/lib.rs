@@ -777,6 +777,13 @@ struct ExpandedTerm {
 #[derive(Debug, Clone, Default)]
 struct FuzzyExpansion {
     terms: Vec<ExpandedTerm>,
+    /// `CollectionStatistics.docCount` for the field over whatever scope the
+    /// expansion was run on -- one segment for the single-segment path, the
+    /// whole reader for [`multi_segment::global_fuzzy_stats`]'s. It travels
+    /// with the blended frequency because the two are one `TermStatistics`/
+    /// `CollectionStatistics` pair in Java and separating them is how the
+    /// per-leaf/reader-wide mismatch got in.
+    doc_count: i64,
     /// `BlendedTermQuery.rewrite`: `df = Math.max(df, ctx.docFreq())` across
     /// every selected term, then every term's `TermStates` is rebuilt with
     /// that artificial frequency. Blending is the whole point of
@@ -848,48 +855,156 @@ fn fuzzy_expanded_terms_instrumented(
         query.prefix_length,
         query.transpositions,
     );
-    // `FuzzyAutomatonBuilder.getTermLength()`: the **whole** query term's
-    // codepoint count, which is `bottomChanged`'s denominator.
-    let term_length = pattern.term_length();
-    let max_size = query.max_expansions;
+    let mut collector = FuzzyTopTerms::new(query, &pattern);
+    let final_max_edits = collector.collect_segment(field_terms, &pattern, prune)?;
+    Ok((
+        collector.finish(field_terms.doc_count as i64),
+        final_max_edits,
+    ))
+}
 
-    // `TopTermsRewrite`'s `stQueue`, as a sorted `Vec` of at most `maxSize`
-    // entries in the final order (boost descending, then term bytes
-    // ascending) rather than a binary heap keyed on its inverse. Java's
-    // `ScoreTerm.compareTo` -- "if the boosts are equal, `other.bytes
-    // .compareTo(this.bytes)`" -- makes `peek()` the lowest boost and, among
-    // equal boosts, the lexicographically *largest* term; that is exactly the
-    // last element here. A phrase-sized `maxExpansions` (50 by default) makes
-    // the sorted insert cheaper than a heap, and it removes the final sort.
-    let mut queue: Vec<ExpandedTerm> = Vec::new();
-    let mut effective_max_edits = query.max_edits;
+/// `TopTermsRewrite.rewrite`'s `stQueue` + `visitedTerms` + the shared
+/// `MaxNonCompetitiveBoostAttribute`, as one object that
+/// `TermCollectingRewrite.collectTerms` drives **once per leaf**.
+///
+/// Java's collector is created once and fed every leaf's `TermsEnum` in turn
+/// (`for (LeafReaderContext context : topReaderContext.leaves())`), so the
+/// queue, the visited-term map and the published max-non-competitive boost are
+/// all reader-wide. That is what makes `BlendedTermQuery`'s `df` a reader-wide
+/// number, and it is why this type exists rather than a per-segment loop:
+/// a fuzzy clause scored from one segment's own `docFreq`/`docCount` is the
+/// same defect [`CollectionStats`] exists to fix for `TermQuery`.
+struct FuzzyTopTerms {
+    /// `Math.min(size, getMaxSize())`.
+    max_size: usize,
+    /// `FuzzyAutomatonBuilder.getTermLength()`: the whole query term's
+    /// codepoint count, which is `bottomChanged`'s denominator.
+    term_length: usize,
+    /// The query's own `maxEdits`, which every leaf's `FuzzyTermsEnum` starts
+    /// from (`this.maxEdits = this.automata.length - 1` in its constructor).
+    query_max_edits: u8,
+    /// `stQueue`, as a sorted `Vec` of at most `max_size` entries in the final
+    /// order (boost descending, then term bytes ascending) rather than a
+    /// binary heap keyed on its inverse. Java's `ScoreTerm.compareTo` -- "if
+    /// the boosts are equal, `other.bytes.compareTo(this.bytes)`" -- makes
+    /// `peek()` the lowest boost and, among equal boosts, the
+    /// lexicographically *largest* term; that is exactly the last element
+    /// here. A phrase-sized `maxExpansions` (50 by default) makes the sorted
+    /// insert cheaper than a heap, and it removes the final sort.
+    queue: Vec<ExpandedTerm>,
+    /// `MaxNonCompetitiveBoostAttribute`'s two values, published on the
+    /// collector's shared `AttributeSource` and therefore surviving from one
+    /// leaf's enum to the next. `None` is Java's
+    /// `(Float.NEGATIVE_INFINITY, null)` initial state.
+    published_bottom: Option<(f32, Vec<u8>)>,
+}
 
-    let mut walk = field_terms.fuzzy_intersect(&pattern);
-    while let Some(next) = walk.next() {
-        let (term, stats) = next?;
-        // `FuzzyTermsEnum.next` sets `boostAtt` from the `ed` it has already
-        // computed; the walk carries the same distance out so this does not
-        // run the banded DP a second time per accepted term.
-        let boost = pattern.boost_from_edits(&term, walk.last_edits());
+impl FuzzyTopTerms {
+    fn new(query: &FuzzyQuery, pattern: &FuzzyMatch<'_>) -> Self {
+        FuzzyTopTerms {
+            max_size: query.max_expansions,
+            term_length: pattern.term_length(),
+            query_max_edits: query.max_edits,
+            queue: Vec::new(),
+            published_bottom: None,
+        }
+    }
 
-        // `collectTerms`' own rejection: once the queue is full, a term that
-        // cannot beat the worst entry is dropped without being inserted.
-        // `maxSize == 0` makes the queue full from the start with no bottom to
-        // compare against, so nothing is ever competitive -- which is the same
-        // "select nothing" a truncate-to-zero gives.
-        let competitive = queue.len() < max_size
-            || match queue.last() {
-                None => false,
-                Some(bottom) => {
-                    boost > bottom.boost
-                        || (boost == bottom.boost && term.as_slice() < bottom.term.as_slice())
+    /// `FuzzyTermsEnum.bottomChanged`'s `while` loop against the currently
+    /// published bottom, returning the tightened budget.
+    ///
+    /// `term_after` is Java's
+    /// `bottomTerm == null || (lastTerm != null && lastTerm.compareTo(bottomTerm) >= 0)`.
+    fn tighten(&self, mut edits: u8, last_term: Option<&[u8]>) -> u8 {
+        let (bottom, bottom_term) = match &self.published_bottom {
+            // No bottom published yet: `bottom` is `Float.NEGATIVE_INFINITY`,
+            // which is below every finite `maxBoost`, so the loop breaks at
+            // once and nothing is tightened.
+            None => return edits,
+            Some((boost, term)) => (*boost, term.as_slice()),
+        };
+        let term_after = last_term.is_some_and(|t| t >= bottom_term);
+        while edits > 0 {
+            // `1.0f - ((float) maxEdits / (float) termLength)`. A zero-length
+            // query term makes this `-inf`, which never breaks the loop -- the
+            // same answer Java's float division gives.
+            let max_boost = 1.0f32 - f32::from(edits) / (self.term_length as f32);
+            if bottom < max_boost || (bottom == max_boost && !term_after) {
+                break;
+            }
+            edits = edits.saturating_sub(1);
+        }
+        edits
+    }
+
+    /// One leaf: `collectTerms`' inner `while ((bytes = termsEnum.next()) != null)`
+    /// loop over `getTermsEnum(query, terms, collector.attributes)`.
+    ///
+    /// Returns the edit budget the leaf's walk ended on -- `FuzzyTermsEnum
+    /// .maxEdits` after its last `bottomChanged`, which is the only
+    /// *observable* of the feedback loop itself.
+    fn collect_segment(
+        &mut self,
+        field_terms: &lucene_codecs::blocktree::FieldTerms,
+        pattern: &FuzzyMatch<'_>,
+        prune: bool,
+    ) -> Result<u8> {
+        // `FuzzyTermsEnum`'s constructor: a *fresh* enum per leaf, starting
+        // from the query's own `maxEdits`, then immediately
+        // `bottom = maxBoostAtt.getMaxNonCompetitiveBoost(); bottomChanged(null)`
+        // against the boost an earlier leaf published. `lastTerm` is null
+        // there, so `termAfter` is `bottomTerm == null`, i.e. false whenever a
+        // bottom exists.
+        let mut effective_max_edits = self.query_max_edits;
+        let mut walk = field_terms.fuzzy_intersect(pattern);
+        if prune {
+            let tightened = self.tighten(effective_max_edits, None);
+            if tightened != effective_max_edits {
+                effective_max_edits = tightened;
+                walk.set_max_edits(tightened);
+            }
+        }
+        while let Some(next) = walk.next() {
+            let (term, stats) = next?;
+            // `FuzzyTermsEnum.next` sets `boostAtt` from the `ed` it has
+            // already computed; the walk carries the same distance out so this
+            // does not run the banded DP a second time per accepted term.
+            let boost = pattern.boost_from_edits(&term, walk.last_edits());
+
+            // `collectTerms`' own rejection, *before* the visited-term lookup:
+            // once the queue is full, a term that cannot beat the worst entry
+            // is dropped without being inserted -- and, in a second leaf,
+            // without its `docFreq` being accumulated either.
+            // `maxSize == 0` makes the queue full from the start with no
+            // bottom to compare against, so nothing is ever competitive --
+            // which is the same "select nothing" a truncate-to-zero gives.
+            if self.queue.len() == self.max_size {
+                match self.queue.last() {
+                    None => continue,
+                    Some(bottom) => {
+                        if boost < bottom.boost
+                            || (boost == bottom.boost && term.as_slice() > bottom.term.as_slice())
+                        {
+                            continue;
+                        }
+                    }
                 }
-            };
-        if competitive {
-            let at = queue.partition_point(|e| {
+            }
+
+            // `ScoreTerm t = visitedTerms.get(bytes)`: a term already in the
+            // queue only has its `docFreq` accumulated
+            // (`t.termState.register(state, ord, docFreq, totalTermFreq)`),
+            // and nothing is republished. Only reachable across leaves --
+            // within one leaf the term dictionary yields each term once.
+            if let Some(entry) = self.queue.iter_mut().find(|e| e.term == term) {
+                entry.doc_freq = entry.doc_freq.saturating_add(stats.doc_freq as i64);
+                continue;
+            }
+
+            let at = self.queue.partition_point(|e| {
                 e.boost > boost || (e.boost == boost && e.term.as_slice() < term.as_slice())
             });
-            queue.insert(
+            self.queue.insert(
                 at,
                 ExpandedTerm {
                     boost,
@@ -897,61 +1012,101 @@ fn fuzzy_expanded_terms_instrumented(
                     doc_freq: stats.doc_freq as i64,
                 },
             );
-            if queue.len() > max_size {
-                queue.pop();
+            // `if (stQueue.size() > maxSize) { st = stQueue.poll(); visitedTerms
+            // .remove(st.bytes.get()); st.termState.clear(); }` -- an evicted
+            // term loses the `docFreq` earlier leaves contributed, which is
+            // Java's behaviour and not an oversight here.
+            if self.queue.len() > self.max_size {
+                self.queue.pop();
             }
-        }
 
-        // `maxBoostAtt.setMaxNonCompetitiveBoost(peek().boost)` +
-        // `setCompetitiveTerm(peek().bytes)`, then `FuzzyTermsEnum.next`
-        // noticing they changed and running `bottomChanged(lastTerm)`.
-        //
-        // Two details of *when* Java does this, both reproduced. It publishes
-        // only after an insert -- `collectTerms` returns before the publish
-        // block when the term was not competitive -- and `next()` acts only
-        // when the published pair actually *changed*, which is the same
-        // condition, since an insert into a full queue always moves the
-        // bottom. Without the `competitive` gate this loop would re-run on
-        // later, non-competitive terms and could decrement once more than Java
-        // does (`termAfter` flips to true as the walk passes the bottom term).
-        // That extra step is still result-preserving -- past the bottom term no
-        // equal-boost term can displace it -- but it is not what Java does, and
-        // "prunes a bit more than Lucene" is not a divergence worth having.
-        //
-        // Java also delays the swap to the *next* `next()` call so the current
-        // term's `docFreq()` stays valid; here the term has already been
-        // consumed, so "after this term" is the same point.
-        if prune && competitive && queue.len() == max_size && effective_max_edits > 0 {
-            let bottom = queue.last().expect("non-empty: len == max_size > 0");
-            // `boolean termAfter = bottomTerm == null
-            //     || (lastTerm != null && lastTerm.compareTo(bottomTerm) >= 0);`
-            let term_after = term.as_slice() >= bottom.term.as_slice();
-            let mut edits = effective_max_edits;
-            while edits > 0 {
-                // `1.0f - ((float) maxEdits / (float) termLength)`. A
-                // zero-length query term makes this `-inf`, which never breaks
-                // the loop -- the same answer Java's float division gives.
-                let max_boost = 1.0f32 - f32::from(edits) / (term_length as f32);
-                if bottom.boost < max_boost || (bottom.boost == max_boost && !term_after) {
-                    break;
+            // `maxBoostAtt.setMaxNonCompetitiveBoost(peek().boost)` +
+            // `setCompetitiveTerm(peek().bytes)`, then `FuzzyTermsEnum.next`
+            // noticing they changed and running `bottomChanged(lastTerm)`.
+            //
+            // Two details of *when* Java does this, both reproduced. It
+            // publishes only from the insert branch -- `collectTerms` returns
+            // before the publish block both when the term was not competitive
+            // and when it was already visited -- and `next()` acts only when
+            // the published pair actually *changed*, which is the same
+            // condition, since an insert into a full queue always moves the
+            // bottom. Without that gate this loop would re-run on later,
+            // non-competitive terms and could decrement once more than Java
+            // does (`termAfter` flips to true as the walk passes the bottom
+            // term). That extra step is still result-preserving -- past the
+            // bottom term no equal-boost term can displace it -- but it is not
+            // what Java does, and "prunes a bit more than Lucene" is not a
+            // divergence worth having.
+            //
+            // Java also delays the swap to the *next* `next()` call so the
+            // current term's `docFreq()` stays valid; here the term has already
+            // been consumed, so "after this term" is the same point.
+            if self.queue.len() == self.max_size {
+                let bottom = self.queue.last().expect("non-empty: len == max_size > 0");
+                self.published_bottom = Some((bottom.boost, bottom.term.clone()));
+                if prune && effective_max_edits > 0 {
+                    let tightened = self.tighten(effective_max_edits, Some(&term));
+                    if tightened != effective_max_edits {
+                        effective_max_edits = tightened;
+                        walk.set_max_edits(tightened);
+                    }
                 }
-                edits = edits.saturating_sub(1);
-            }
-            if edits != effective_max_edits {
-                effective_max_edits = edits;
-                walk.set_max_edits(edits);
             }
         }
+        Ok(effective_max_edits)
     }
 
-    let blended_doc_freq = queue.iter().map(|t| t.doc_freq).max().unwrap_or(0);
-    Ok((
+    /// `BlendedTermQuery.rewrite`'s fold: `df = Math.max(df, ctx.docFreq())`
+    /// over every selected term, with `doc_count` the matching
+    /// `CollectionStatistics.docCount`.
+    fn finish(self, doc_count: i64) -> FuzzyExpansion {
+        let blended_doc_freq = self.queue.iter().map(|t| t.doc_freq).max().unwrap_or(0);
         FuzzyExpansion {
-            terms: queue,
+            terms: self.queue,
             blended_doc_freq,
-        },
-        effective_max_edits,
-    ))
+            doc_count,
+        }
+    }
+}
+
+/// `TopTermsRewrite.rewrite` run over **every leaf**, which is what
+/// [`multi_segment::global_fuzzy_stats`] needs and what
+/// [`fuzzy_expanded_terms`] deliberately is not.
+///
+/// `field_terms` is one entry per segment that has the field, in reader order
+/// (`topReaderContext.leaves()`'s order, which is what decides the outcome of
+/// an equal-boost tie and which leaf's `docFreq` an evicted term loses);
+/// `doc_count` is the reader-wide `CollectionStatistics.docCount`, i.e. the
+/// same segments' `docCount`s summed.
+///
+/// Pruning is always on here: it is a Lucene behaviour, not an option, and
+/// `fuzzy_expanded_terms_pruned`'s switch exists only so
+/// `examples/fuzzy_pruning.rs` can time both arms.
+pub(crate) fn fuzzy_expansion_across_leaves(
+    field_terms: &[&lucene_codecs::blocktree::FieldTerms],
+    query: &FuzzyQuery,
+    doc_count: i64,
+) -> Result<FuzzyCollectionStats> {
+    let pattern = FuzzyMatch::new(
+        &query.term,
+        query.max_edits,
+        query.prefix_length,
+        query.transpositions,
+    );
+    let mut collector = FuzzyTopTerms::new(query, &pattern);
+    for leaf in field_terms {
+        collector.collect_segment(leaf, &pattern, true)?;
+    }
+    let expansion = collector.finish(doc_count);
+    Ok(FuzzyCollectionStats {
+        terms: expansion
+            .terms
+            .iter()
+            .map(|t| (t.term.clone(), t.boost))
+            .collect(),
+        blended_doc_freq: expansion.blended_doc_freq,
+        doc_count: expansion.doc_count,
+    })
 }
 
 /// One selected term as [`bench_only_fuzzy_expansion`] reports it:
@@ -1067,24 +1222,44 @@ fn fuzzy_doc_ids(
 /// changed the top-k of every fuzzy query -- recorded as finding P4 in
 /// `docs/sweep/findings.md` and fixed here.
 ///
-/// The blended `df` is a *reader-wide* statistic in Lucene (`TermStates
-/// .build` walks every leaf). This function blends within one segment, the
-/// same limitation `term_doc_scores` works around with its `GlobalStats`
-/// parameter; a fuzzy clause has no such plumbing yet, so a multi-segment
-/// fuzzy score can differ from Lucene's by the usual per-segment-idf amount.
+/// The blended `df`, the selected term set and the `docCount` are all
+/// *reader-wide* statistics in Lucene: `TopTermsRewrite.rewrite` drives one
+/// collector across every leaf and `BlendedTermQuery.rewrite` then folds a
+/// single `df` over the result. `global` carries them
+/// ([`multi_segment::global_fuzzy_stats`]); without it this expands and blends
+/// within the one segment it is given, which is the right answer for a
+/// single-segment index and the same per-leaf/reader-wide divergence
+/// [`CollectionStats`] documents for `TermQuery` on any other.
 fn fuzzy_doc_scores(
     fields: &BlockTreeFields,
     doc_in: Option<&DocInput<'_>>,
     live_docs: Option<&FixedBitSet>,
     query: &FuzzyQuery,
     norms: Option<&FieldNorms<'_>>,
+    global: Option<&GlobalStats>,
 ) -> Result<HashMap<i32, f32>> {
     let mut scores: HashMap<i32, f32> = HashMap::new();
     let Some(field_terms) = fields.field(&query.field) else {
         return Ok(scores);
     };
-    let expansion = fuzzy_expanded_terms(field_terms, query)?;
-    let doc_count = field_terms.doc_count as i64;
+    // Reader-wide expansion where the caller gathered one, this segment's own
+    // otherwise. The terms are the *selection*, not just the statistics: which
+    // terms win the `maxExpansions` queue is itself a reader-wide decision.
+    let (selected, blended_doc_freq, doc_count) = match global.and_then(|g| g.fuzzy(query)) {
+        Some(g) => (g.terms.clone(), g.blended_doc_freq, g.doc_count),
+        None => {
+            let expansion = fuzzy_expanded_terms(field_terms, query)?;
+            (
+                expansion
+                    .terms
+                    .iter()
+                    .map(|t| (t.term.clone(), t.boost))
+                    .collect(),
+                expansion.blended_doc_freq,
+                expansion.doc_count,
+            )
+        }
+    };
 
     // Resolve every expanded term's live postings first, then score in one
     // pass, rather than scoring inside the per-term loop.
@@ -1097,9 +1272,9 @@ fn fuzzy_doc_scores(
     // measured 677 us per 100,000-document walk, a 50-term expansion would
     // spend ~34 ms in norms alone.
     let mut contributions: Vec<(i32, i32, f32)> = Vec::new(); // (doc, freq, boost)
-    for expanded in &expansion.terms {
-        let boost = expanded.boost.max(0.0);
-        let Some(postings) = field_terms.postings(&expanded.term, doc_in)? else {
+    for (term, raw_boost) in &selected {
+        let boost = raw_boost.max(0.0);
+        let Some(postings) = field_terms.postings(term, doc_in)? else {
             continue;
         };
         for (&doc_id, &freq) in postings.docs.iter().zip(postings.freqs.iter()) {
@@ -1123,23 +1298,21 @@ fn fuzzy_doc_scores(
         contributions.sort_by_key(|&(doc_id, _, _)| doc_id);
     }
 
+    // `BM25Similarity.scorer(boost, ...)` folds the boost into the *weight*
+    // -- `this.weight = boost * idf.getValue().floatValue()` -- and
+    // `BM25Scorer.score` then evaluates `weight - weight / (1 + freq *
+    // normInverse)`. Multiplying the boost into the finished score instead is
+    // the algebraically-equal, bitwise-different rewrite `similarity::do_score`
+    // exists to warn about: it was one ULP out on this fixture's doc 2.
+    let idf = similarity::idf(blended_doc_freq, doc_count);
     let mut norms_cursor = norms.map(|n| n.cursor());
     for (doc_id, freq, boost) in contributions {
-        let (field_length, avg_field_length) = match norms_cursor.as_mut() {
-            Some(nc) => (nc.field_length(doc_id)?, nc.avg_field_length()),
-            None => (
-                similarity::UNNORMED_FIELD_LENGTH,
-                similarity::UNNORMED_FIELD_LENGTH,
-            ),
+        let norm_inverse = match norms_cursor.as_mut() {
+            Some(nc) => nc.norm_inverse(doc_id)?,
+            None => similarity::UNNORMED_NORM_INVERSE,
         };
-        let score = similarity::score(
-            expansion.blended_doc_freq,
-            doc_count,
-            freq as f32,
-            field_length,
-            avg_field_length,
-        );
-        *scores.entry(doc_id).or_insert(0.0) += boost * score;
+        let score = similarity::do_score(boost * idf, freq as f32, norm_inverse);
+        *scores.entry(doc_id).or_insert(0.0) += score;
     }
     Ok(scores)
 }
@@ -1621,7 +1794,7 @@ fn term_doc_scores(
     // does not fit a lazy path still scored every term from its own segment's
     // counters, which is the multi-segment bug that fix was for.
     let resolved = global
-        .and_then(|g| g.get(&(query.field.clone(), query.term.clone())))
+        .and_then(|g| g.term(&query.field, &query.term))
         .copied();
     term_doc_scores_with_collection_stats(fields, doc_in, live_docs, query, norms, resolved)
 }
@@ -2377,7 +2550,7 @@ fn clause_scores(
             // `TopTermsBlendedFreqScoringRewrite`, not a constant-score one.
             // See `fuzzy_doc_scores`.
             let clause_norms = norms.and_then(|m| m.get(&query.field));
-            fuzzy_doc_scores(fields, doc_in, live_docs, query, clause_norms)
+            fuzzy_doc_scores(fields, doc_in, live_docs, query, clause_norms, global)
         }
         Clause::Regexp(query) => {
             // Unscored: flat 1.0 per matching doc -- see `RegexpQuery`'s doc
@@ -2645,11 +2818,10 @@ fn try_disjunction_lazy<C: ScoringCollector>(
             continue;
         };
         let doc = cursor.next_doc().map_err(blocktree::Error::Postings)?;
-        let (doc_freq, doc_count) =
-            match global.and_then(|g| g.get(&(t.field.clone(), t.term.clone()))) {
-                Some(g) => (g.doc_freq, g.doc_count),
-                None => (stats.doc_freq as i64, field_terms.doc_count as i64),
-            };
+        let (doc_freq, doc_count) = match global.and_then(|g| g.term(&t.field, &t.term)) {
+            Some(g) => (g.doc_freq, g.doc_count),
+            None => (stats.doc_freq as i64, field_terms.doc_count as i64),
+        };
         legs.push(Leg {
             cursor,
             doc,
@@ -2851,9 +3023,87 @@ pub struct CollectionStats {
     pub doc_count: i64,
 }
 
-/// Reader-wide statistics for every term a query mentions, keyed by
-/// `(field, term)`. Built once per search by the multi-segment layer.
-pub type GlobalStats = HashMap<(String, Vec<u8>), CollectionStats>;
+/// Reader-wide statistics for one [`FuzzyQuery`] clause: the expansion
+/// `MultiTermQuery.TopTermsBlendedFreqScoringRewrite` produces over the
+/// **whole reader**, not one leaf.
+///
+/// Java's `TopTermsRewrite.rewrite` drives one collector across every leaf's
+/// `TermsEnum` (`TermCollectingRewrite.collectTerms`), so the selected terms,
+/// their boosts and each one's `docFreq` are all reader-wide; then
+/// `BlendedTermQuery.rewrite` takes `df = max` over them and every clause
+/// scores with that one number against the reader-wide
+/// `CollectionStatistics.docCount`. Expanding per segment instead selects a
+/// *different term set* in each leaf and blends a different frequency -- the
+/// multi-term twin of the defect [`CollectionStats`] documents.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FuzzyCollectionStats {
+    /// The selected terms and their `FuzzyTermsEnum` boosts, in
+    /// `TopTermsRewrite`'s final order (boost descending, then term bytes
+    /// ascending). Boosts are **not** clamped -- `TopTermsRewrite.build` does
+    /// `Math.max(0.0f, st.boost)` when it turns the queue into clauses, and so
+    /// does the scorer.
+    pub terms: Vec<(Vec<u8>, f32)>,
+    /// `BlendedTermQuery.rewrite`'s `df = Math.max(df, ctx.docFreq())` over
+    /// every selected term's reader-wide `docFreq`.
+    pub blended_doc_freq: i64,
+    /// `CollectionStatistics.docCount` for the field, summed over every
+    /// segment that has it.
+    pub doc_count: i64,
+}
+
+/// Reader-wide statistics for the terms and fuzzy clauses a query mentions.
+/// Built once per search by the multi-segment layer.
+///
+/// Two maps rather than one, because a fuzzy clause's statistic is not a
+/// term's: it is keyed by the *query* (a fuzzy clause and a `TermQuery` on the
+/// same `(field, term)` can appear in one boolean query and mean different
+/// things), and it carries the whole expansion rather than a single
+/// `docFreq`/`docCount` pair.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct GlobalStats {
+    terms: HashMap<(String, Vec<u8>), CollectionStats>,
+    fuzzy: HashMap<FuzzyQuery, FuzzyCollectionStats>,
+}
+
+impl GlobalStats {
+    /// An empty set of statistics -- every lookup falls back to the segment's
+    /// own counters, which is what a single-segment search wants.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Records one term's reader-wide `docFreq`/`docCount`.
+    pub fn insert_term(
+        &mut self,
+        field: impl Into<String>,
+        term: impl Into<Vec<u8>>,
+        stats: CollectionStats,
+    ) {
+        self.terms.insert((field.into(), term.into()), stats);
+    }
+
+    /// One term's reader-wide statistics, or `None` when the caller did not
+    /// gather them (in which case the segment's own are already right).
+    pub fn term(&self, field: &str, term: &[u8]) -> Option<&CollectionStats> {
+        self.terms.get(&(field.to_string(), term.to_vec()))
+    }
+
+    /// Records one fuzzy clause's reader-wide expansion.
+    pub fn insert_fuzzy(&mut self, query: FuzzyQuery, stats: FuzzyCollectionStats) {
+        self.fuzzy.insert(query, stats);
+    }
+
+    /// One fuzzy clause's reader-wide expansion, or `None` when the caller did
+    /// not gather it.
+    pub fn fuzzy(&self, query: &FuzzyQuery) -> Option<&FuzzyCollectionStats> {
+        self.fuzzy.get(query)
+    }
+
+    /// True when nothing was gathered at all.
+    pub fn is_empty(&self) -> bool {
+        self.terms.is_empty() && self.fuzzy.is_empty()
+    }
+}
 
 /// Lazy leapfrog conjunction: the pure-`must`, all-[`Clause::Term`] shape,
 /// executed without materializing any clause's doc list.
@@ -3027,11 +3277,10 @@ fn try_conjunction_lazy<C: ScoringCollector>(
             return Ok(true);
         };
         // Reader-wide idf where available, matching Lucene's per-leaf scoring.
-        let (doc_freq, doc_count) =
-            match global.and_then(|g| g.get(&(t.field.clone(), t.term.clone()))) {
-                Some(g) => (g.doc_freq, g.doc_count),
-                None => (stats.doc_freq as i64, field_terms.doc_count as i64),
-            };
+        let (doc_freq, doc_count) = match global.and_then(|g| g.term(&t.field, &t.term)) {
+            Some(g) => (g.doc_freq, g.doc_count),
+            None => (stats.doc_freq as i64, field_terms.doc_count as i64),
+        };
         legs.push(Leg {
             cursor,
             doc_freq,
@@ -3740,61 +3989,58 @@ pub(crate) fn span_matches_in_doc(
     }
 }
 
-/// [`SpanQuery::SpanNear`]'s matching algorithm (real `SpanNearQuery`'s
-/// `NearSpansOrdered`/`NearSpansUnordered` equivalent, computed directly
-/// rather than via a lazy iterator -- see [`span_matches_in_doc`]'s doc
-/// comment for the scope decision): every `clauses[i]`'s own spans (computed
-/// recursively via [`span_matches_in_doc`], so a `SpanNear` of `SpanNear`s
-/// composes for free) are combined, one span chosen per clause, and a
-/// combination is a match iff its chosen spans satisfy the `in_order`
-/// arrangement below with total positional slack at most `slop`.
+/// [`SpanQuery::SpanNear`]'s matching algorithm: `NearSpansOrdered`'s or
+/// `NearSpansUnordered`'s walk (`crate::near_spans`) over every clause's own
+/// spans, which are computed recursively via [`span_matches_in_doc`] so a
+/// `SpanNear` of `SpanNear`s composes for free.
 ///
-/// **`in_order == true`**: the chosen spans must already be non-overlapping
-/// and increasing in `clauses`' own order -- `chosen[i].1 <= chosen[i + 1].0`
-/// for every adjacent pair (span `i` ends at or before span `i + 1` starts).
-/// This is real `SpanNearQuery(clauses, slop, true)`'s ordering requirement:
-/// a reversed pair (clause 1's occurrence sits before clause 0's) never
-/// satisfies it, at any slop -- exactly the case [`PhraseQuery`]'s own
-/// in-order sloppy matching also rejects.
+/// **This is a walk, not a cartesian product.** Both Java classes are `Spans`
+/// iterators whose sub-span cursors only ever move forward, and the sequence
+/// of `(startPosition(), endPosition())` pairs they emit is *narrower* than
+/// "every arrangement of one span per clause that fits the budget":
 ///
-/// **`in_order == false`**: `NearSpansUnordered.atMatch()`, which is a pure
-/// width test -- [`crate::near_spans::unordered_width`],
-/// `maxEndPosition - top().startPosition() - totalSpanLength` -- with **no**
-/// non-overlap requirement and no relative-order requirement at all. A
-/// reversed pair matches as long as the width fits `slop`, which is exactly
-/// what distinguishes `SpanNearQuery(slop, false)` from a sloppy phrase; and
-/// two clauses may settle on the *same* span, giving a negative width, which
-/// matches at any slop. Real Lucene returns doc 8555 -- a document with a
-/// single `alpha` -- for `SpanNearQuery([alpha, alpha], 0, false)`; this port
-/// rejected the overlap and dropped the hit until c40
-/// (`spannear.*` in `fixtures/data/blocktree_index/manifest.properties`).
+/// - `in_order == true` is `NearSpansOrdered`. `stretchToOrder` advances each
+///   later clause to the first span starting at or after the previous
+///   clause's end and never rewinds, so each position of clause 0 contributes
+///   exactly one arrangement -- the minimum-slop one. Its own class doc:
+///   "the formed spans only contains minimum slop matches."
+/// - `in_order == false` is `NearSpansUnordered`. `atMatch()` is a pure width
+///   test -- `maxEndPosition - top().startPosition() - totalSpanLength <=
+///   slop` -- with **no** non-overlap requirement and no relative-order
+///   requirement at all, evaluated at each step of a priority-queue walk that
+///   advances only the least span. A reversed pair matches as long as the
+///   width fits, and two clauses may settle on the *same* span, giving a
+///   negative width, which matches: real Lucene returns doc 8555 -- a document
+///   with a single `alpha` -- for `SpanNearQuery([alpha, alpha], 0, false)`.
+///   Its `endPosition()` is the *running* `maxEndPosition`, which can exceed
+///   the current arrangement's own maximum end.
 ///
-/// **Slop formula**: for a *non-overlapping* arrangement the two branches
-/// compute the same number -- `sum(next.start - prev.end)` telescopes to
+/// Until `c43-final-cleanup` this enumerated the whole cartesian product and
+/// reported `(min start, max end)` per accepted arrangement, which produced
+/// extents Java's walk never visits (ledger item 8c). No *hit set* moved --
+/// [`span_doc_ids`] only asks whether the span list is non-empty, and the walk
+/// emits something whenever the lattice contains a match -- but a nested
+/// `SpanNear`-of-`SpanNear` consumes the inner clause's extents, and those
+/// were wrong. Ground truth for the sequences themselves:
+/// `fixtures/src/AppendSpanExtentManifest.java`'s `spanextent.*` keys, which
+/// are real `Spans.nextStartPosition()`/`endPosition()` walks.
+///
+/// **Slop formula**: for a *non-overlapping* arrangement the two arms compute
+/// the same number -- `sum(next.start - prev.end)` telescopes to
 /// `maxEnd - minStart - sum(lengths)` -- so `slop` means the same thing on
-/// both arms wherever both accept. It is **not** the same quantity as a sloppy
+/// both wherever both accept. It is **not** the same quantity as a sloppy
 /// phrase's `matchLength` (see [`sloppy_phrase`]), which is a window width
 /// over slot-shifted positions.
 ///
-/// **Two divergences that remain, both about the *extent* reported rather
-/// than the hit set** (recorded in `docs/sweep/m2/c40-missing-behaviours.md`):
-/// this enumerates the whole cartesian product where Java walks a priority
-/// queue, so a non-minimal arrangement Java never visits can contribute a
-/// span here; and Java's unordered `endPosition()` is its *running*
-/// `maxEndPosition`, which can exceed the current arrangement's own maximum
-/// end. Neither changes whether a document matches, and nothing outside a
-/// nested `SpanNear` reads the extents.
+/// Returned spans are sorted ascending and deduplicated, which loses nothing:
+/// both walks emit `(start, end)` pairs that are already non-decreasing in
+/// both components (clause 0's cursor and the queue's minimum only rise, and
+/// `maxEndPosition` only rises), so sorting is a no-op and `dedup` removes
+/// only the consecutive repeats a caller asking "which extents exist" does not
+/// want twice.
 ///
-/// The overall span reported for a matching combination is `(min start, max
-/// end)` across every chosen sub-span -- the smallest range containing every
-/// sub-span, matching real `Spans`' own near-match span extent.
-///
-/// **Complexity**: this evaluates every combination of one span per clause
-/// (a cartesian product) -- acceptable for this port's honestly-scoped MVP
-/// (see [`SpanQuery`]'s doc comment) given the same "correctness first,
-/// profile before optimizing" call this crate's other multi-term matchers
-/// already make (`rust-performance` skill), but not the sub-linear
-/// early-termination a real lazy `NearSpans` iterator gets.
+/// **Complexity**: linear in the total number of sub-spans, not exponential in
+/// the clause count -- the cartesian product this replaced was the latter.
 ///
 /// **Edge cases**: an empty `clauses` list, or any clause whose own spans are
 /// empty (the sub-query doesn't occur at all in this doc), both yield no
@@ -3816,83 +4062,21 @@ fn span_near_matches(
     if per_clause_spans.iter().any(Vec::is_empty) {
         return Vec::new();
     }
+    let slices: Vec<&[(i32, i32)]> = per_clause_spans.iter().map(Vec::as_slice).collect();
 
     let slop = i64::from(slop);
     let mut results: Vec<(i32, i32)> = Vec::new();
-    let mut chosen: Vec<(i32, i32)> = Vec::with_capacity(clauses.len());
-    combine_span_clauses(&per_clause_spans, &mut chosen, slop, in_order, &mut results);
+    let mut record = |_: crate::near_spans::Arrangement<'_>, start: i32, end: i32| {
+        results.push((start, end));
+    };
+    if in_order {
+        crate::near_spans::for_each_ordered_match(&slices, slop, &mut record);
+    } else {
+        crate::near_spans::for_each_unordered_match(&slices, slop, &mut record);
+    }
     results.sort_unstable();
     results.dedup();
     results
-}
-
-/// Recursive cartesian-product helper for [`span_near_matches`]: picks one
-/// span per entry in `per_clause_spans` (via `chosen`, built up one clause at
-/// a time) and, once a full combination is chosen, checks its `in_order`/
-/// `slop` validity and appends the resulting overall span to `results` if
-/// valid -- see [`span_near_matches`]'s doc comment for the exact checks.
-fn combine_span_clauses(
-    per_clause_spans: &[Vec<(i32, i32)>],
-    chosen: &mut Vec<(i32, i32)>,
-    slop: i64,
-    in_order: bool,
-    results: &mut Vec<(i32, i32)>,
-) {
-    let Some((spans, rest)) = per_clause_spans.split_first() else {
-        // Every clause has now contributed one span -- validate this
-        // combination.
-        let slack: i64 = if in_order {
-            // `NearSpansOrdered.stretchToOrder`: every later sub-span must
-            // start at or after the previous one's end, and
-            // `matchWidth += spans.startPosition() - prevSpans.endPosition()`.
-            // The non-overlap rule is that `advancePosition` loop, and it is
-            // real: an overlapping arrangement is not reachable there.
-            let mut slack: i64 = 0;
-            for pair in chosen.windows(2) {
-                let (prev, next) = (pair[0], pair[1]);
-                if next.0 < prev.1 {
-                    return;
-                }
-                slack = slack.saturating_add(i64::from(next.0) - i64::from(prev.1));
-            }
-            slack
-        } else {
-            // `NearSpansUnordered.atMatch()`:
-            // `maxEndPosition - top().startPosition() - totalSpanLength`, a
-            // pure width test with **no** non-overlap rule -- so two clauses
-            // holding one term may settle on one position and give a negative
-            // width, which matches. Real Lucene returns doc 8555 (a single
-            // `alpha`) for `SpanNearQuery([alpha, alpha], 0, false)`; this port
-            // rejected the overlap and dropped the hit
-            // (`spannear.repeat_unordered_slop0` in
-            // `fixtures/data/blocktree_index/manifest.properties`).
-            //
-            // For a non-overlapping arrangement this is the *same* number the
-            // in-order branch computes -- `sum(s_{i+1} - e_i)` telescopes to
-            // `maxEnd - minStart - sum(lengths)` -- so only the overlapping
-            // case changed.
-            crate::near_spans::unordered_width(chosen)
-        };
-        if slack <= slop {
-            let start = chosen
-                .iter()
-                .map(|span| span.0)
-                .min()
-                .expect("non-empty: at least one clause");
-            let end = chosen
-                .iter()
-                .map(|span| span.1)
-                .max()
-                .expect("non-empty: at least one clause");
-            results.push((start, end));
-        }
-        return;
-    };
-    for &span in spans {
-        chosen.push(span);
-        combine_span_clauses(rest, chosen, slop, in_order, results);
-        chosen.pop();
-    }
 }
 
 /// Collects every distinct `SpanQuery::SpanTerm` leaf's `(field, term)` pair
@@ -3910,14 +4094,16 @@ fn collect_span_leaves(query: &SpanQuery, leaves: &mut Vec<SpanLeafKey>) {
     }
 }
 
-/// [`Clause::Span`]'s matched doc-ID list (task #55): gathers every distinct
-/// leaf `(field, term)` pair `query` touches (via [`collect_span_leaves`]),
-/// fetches each one's live-filtered `doc_id -> position list` map (via
-/// [`term_doc_positions`], the same helper [`search_phrase_query`] uses), then
-/// for every doc appearing in **any** leaf's doc list (a safe, simple
-/// over-approximation of the true candidate set -- see this function's own
-/// doc comment below for why that's fine) builds a per-doc `doc_positions` map
-/// and checks [`span_matches_in_doc`] for a non-empty result.
+/// [`Clause::Span`]'s matched doc-ID list (task #55): [`span_doc_extents`]
+/// with the extents dropped.
+///
+/// [`span_doc_extents`] gathers every distinct leaf `(field, term)` pair
+/// `query` touches (via [`collect_span_leaves`]), fetches each one's
+/// live-filtered `doc_id -> position list` map (via [`term_doc_positions`],
+/// the same helper [`search_phrase_query`] uses), then for every doc appearing
+/// in **any** leaf's doc list (a safe, simple over-approximation of the true
+/// candidate set -- see below for why that's fine) builds a per-doc
+/// `doc_positions` map and runs [`span_matches_in_doc`] over it.
 ///
 /// **Why "any leaf's doc list" instead of computing each variant's own tighter
 /// candidate set** (e.g. a `SpanNear`'s candidates could be the *conjunction*
@@ -3950,6 +4136,44 @@ fn span_doc_ids(
     live_docs: Option<&FixedBitSet>,
     query: &SpanQuery,
 ) -> Result<Vec<i32>> {
+    Ok(
+        span_doc_extents(fields, doc_in, pos_in, pay_in, live_docs, query)?
+            .into_iter()
+            .map(|(doc_id, _)| doc_id)
+            .collect(),
+    )
+}
+
+/// One document's matching span extents, as [`span_doc_extents`] returns them:
+/// the document id and its `(startPosition(), endPosition())` pairs.
+pub type DocSpans = (i32, Vec<(i32, i32)>);
+
+/// Every matching document's own **span extents**, which is what real
+/// `SpanWeight.getSpans(context, Postings.POSITIONS)` walked to
+/// `NO_MORE_DOCS`/`NO_MORE_POSITIONS` produces: one
+/// `(startPosition(), endPosition())` pair per emitted match, ascending, per
+/// document, live documents only.
+///
+/// [`span_doc_ids`] is this with the extents dropped; a caller that wants the
+/// ranges -- a highlighter, or anything composing spans further -- wants this.
+/// A document with no matching span is not listed, so the returned document
+/// list is exactly [`span_doc_ids`]'.
+///
+/// The extents are the walks' own (see [`span_near_matches`]), **not** the
+/// bounding box of every arrangement that fits the slop budget: for
+/// `in_order == true` Java emits only minimum-slop arrangements, and for
+/// `in_order == false` its `endPosition()` is a running maximum. Ground truth
+/// is `fixtures/src/AppendSpanExtentManifest.java`'s `spanextent.*` keys,
+/// recorded from real `Spans` walks.
+#[allow(clippy::too_many_arguments)]
+pub fn span_doc_extents(
+    fields: &BlockTreeFields,
+    doc_in: Option<&DocInput<'_>>,
+    pos_in: Option<&PosInput<'_>>,
+    pay_in: Option<&PayInput<'_>>,
+    live_docs: Option<&FixedBitSet>,
+    query: &SpanQuery,
+) -> Result<Vec<DocSpans>> {
     let mut leaves: Vec<SpanLeafKey> = Vec::new();
     collect_span_leaves(query, &mut leaves);
     if leaves.is_empty() {
@@ -3987,7 +4211,7 @@ fn span_doc_ids(
     candidate_docs.sort_unstable();
     candidate_docs.dedup();
 
-    let mut result = Vec::new();
+    let mut result: Vec<DocSpans> = Vec::new();
     for doc_id in candidate_docs {
         let mut doc_positions: HashMap<SpanLeafKey, Vec<i32>> = HashMap::new();
         for (key, map) in &per_leaf_maps {
@@ -3995,8 +4219,9 @@ fn span_doc_ids(
                 doc_positions.insert(key.clone(), positions.clone());
             }
         }
-        if !span_matches_in_doc(query, &doc_positions).is_empty() {
-            result.push(doc_id);
+        let extents = span_matches_in_doc(query, &doc_positions);
+        if !extents.is_empty() {
+            result.push((doc_id, extents));
         }
     }
     Ok(result)
@@ -4333,7 +4558,7 @@ pub fn search_phrase_query_scored_with_stats<C: ScoringCollector>(
         // per-segment idf here is wrong in the same way and for the same
         // reason -- and it is what left two phrase queries disagreeing with
         // Java on the segmented corpus after every other query agreed.
-        let (df, dc) = match global.and_then(|g| g.get(&(query.field.clone(), term.clone()))) {
+        let (df, dc) = match global.and_then(|g| g.term(&query.field, term)) {
             Some(g) => (g.doc_freq, g.doc_count),
             None => (stats.doc_freq as i64, field_terms.doc_count as i64),
         };
@@ -4689,7 +4914,7 @@ fn multi_phrase_hits<C: ScoringCollector>(
                 continue;
             };
             any_term_present = true;
-            let (df, dc) = match global.and_then(|g| g.get(&(query.field.clone(), term.clone()))) {
+            let (df, dc) = match global.and_then(|g| g.term(&query.field, term)) {
                 Some(g) => (g.doc_freq, g.doc_count),
                 None => (stats.doc_freq as i64, field_terms.doc_count as i64),
             };
