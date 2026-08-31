@@ -606,22 +606,31 @@ impl<'d> PointsReader<'d> {
     /// bytes_per_dim` long (the non-indexed trailing data dimensions have no
     /// cell bounds, matching Java).
     pub fn intersect<V: IntersectVisitor>(&self, field_number: i32, visitor: &mut V) -> Result<()> {
+        self.intersect_with_scratch(field_number, visitor, true)
+    }
+
+    /// [`intersect`](Self::intersect) with the traversal scratch's reuse
+    /// switchable -- see [`IntersectCtx::reuse_scratch`]. Production always
+    /// passes `true`; `false` is the pre-`c43-final-cleanup` allocation shape,
+    /// kept only so `examples/bkd_walk_scratch.rs` can time both arms in one
+    /// process, and it must produce the **same answer**, which
+    /// `the_two_scratch_arms_visit_exactly_the_same_documents` asserts.
+    #[doc(hidden)]
+    pub fn intersect_with_scratch<V: IntersectVisitor>(
+        &self,
+        field_number: i32,
+        visitor: &mut V,
+        reuse_scratch: bool,
+    ) -> Result<()> {
         let field = self
             .field(field_number)
             .ok_or(Error::IllegalFieldNumber(field_number))?;
         let inner_nodes = self.inner_nodes(field)?;
         let mut input = SliceInput::new(inner_nodes);
-        let mut ctx = IntersectCtx {
-            field,
-            kdd: self.kdd,
-            min: field.min_packed_value.clone(),
-            max: field.max_packed_value.clone(),
-            split_values: vec![0u8; field.min_packed_value.len()],
-            negative_deltas: vec![false; field.num_index_dims as usize],
-        };
+        let mut ctx = IntersectCtx::new(field, self.kdd, reuse_scratch);
         // The root's leading FP-delta vlong, same as `decode_leaf_pointers`.
         let root_fp = input.read_vlong()?;
-        intersect_node(&mut input, 1, root_fp, &mut ctx, visitor)
+        intersect_node(&mut input, 1, root_fp, &mut ctx, visitor, 0)
     }
 
     /// `PointValues.estimatePointCount(IntersectVisitor)`: how many points
@@ -665,21 +674,28 @@ impl<'d> PointsReader<'d> {
         visitor: &mut V,
         upper_bound: i64,
     ) -> Result<i64> {
+        self.estimate_point_count_with_scratch(field_number, visitor, upper_bound, true)
+    }
+
+    /// [`estimate_point_count_bounded`](Self::estimate_point_count_bounded)
+    /// with the traversal scratch's reuse switchable -- see
+    /// [`intersect_with_scratch`](Self::intersect_with_scratch).
+    #[doc(hidden)]
+    pub fn estimate_point_count_with_scratch<V: IntersectVisitor>(
+        &self,
+        field_number: i32,
+        visitor: &mut V,
+        upper_bound: i64,
+        reuse_scratch: bool,
+    ) -> Result<i64> {
         let field = self
             .field(field_number)
             .ok_or(Error::IllegalFieldNumber(field_number))?;
         let inner_nodes = self.inner_nodes(field)?;
         let mut input = SliceInput::new(inner_nodes);
-        let mut ctx = IntersectCtx {
-            field,
-            kdd: self.kdd,
-            min: field.min_packed_value.clone(),
-            max: field.max_packed_value.clone(),
-            split_values: vec![0u8; field.min_packed_value.len()],
-            negative_deltas: vec![false; field.num_index_dims as usize],
-        };
+        let mut ctx = IntersectCtx::new(field, self.kdd, reuse_scratch);
         let root_fp = input.read_vlong()?;
-        estimate_node(&mut input, 1, root_fp, &mut ctx, visitor, upper_bound)
+        estimate_node(&mut input, 1, root_fp, &mut ctx, visitor, upper_bound, 0)
     }
 
     /// Convenience wrapper over [`intersect`](Self::intersect) implementing
@@ -888,6 +904,70 @@ struct IntersectCtx<'a> {
     max: Vec<u8>,
     split_values: Vec<u8>,
     negative_deltas: Vec<bool>,
+    /// Java's per-level traversal stacks (`BKDPointTree`'s
+    /// `splitValuesStack`, `splitDimValueStack` and the saved cell bound),
+    /// which it sizes once from `getTreeDepth(numLeaves)`.
+    ///
+    /// Grown on demand instead, one entry the first time the walk reaches a
+    /// level and reused for every node at that level thereafter, so a descent
+    /// allocates `O(depth)` times per query rather than four times per inner
+    /// node visited. Sizing it up front from `num_leaves` would be closer to
+    /// Java but would let a corrupt `bytesPerDim` multiply a plausible
+    /// allocation by the tree depth, which is the shape
+    /// `docs/arithmetic-gate.md` singles out as the one that aborts.
+    stack: Vec<LevelScratch>,
+    /// Measurement-only. `false` reallocates every scratch buffer at each node
+    /// instead of reusing it, which is exactly the pre-`c43-final-cleanup`
+    /// shape -- four `Vec`s per inner node visited. It exists so
+    /// `examples/bkd_walk_scratch.rs` can time both arms in **one process from
+    /// one build**, which is the only shape of A/B this project trusts (see
+    /// `docs/sweep/m2/c24-arith-codecs.md` on criterion, and `c42`'s stale
+    /// binary). Production always passes `true`; the cost is one predictable
+    /// branch per node against a `.kdi` read.
+    reuse_scratch: bool,
+}
+
+/// One level's reusable byte buffers -- see [`IntersectCtx::stack`].
+///
+/// The two cell bounds share one buffer because the walk never holds both:
+/// `intersect_node` restores `max` before it saves `min`.
+#[derive(Default)]
+struct LevelScratch {
+    /// `splitValuesStack[level]`: the reconstructed split value for this
+    /// node's dimension, `bytes_per_dim` long.
+    split_value: Vec<u8>,
+    /// `ctx.split_values[dim_prefix_pos..dim_end]` as it was on entry, so the
+    /// parent's state can be restored on the way back up
+    /// (`recursePackIndex`'s `savSplitValue`, read side).
+    saved_split_tail: Vec<u8>,
+    /// The cell bound the descent is about to overwrite.
+    saved_bound: Vec<u8>,
+}
+
+impl<'a> IntersectCtx<'a> {
+    /// The root cell: the field's own bounding box, with the split-value
+    /// buffer zeroed as `BKDReader`'s is.
+    fn new(field: &'a PointsField, kdd: &'a [u8], reuse_scratch: bool) -> Self {
+        IntersectCtx {
+            field,
+            kdd,
+            min: field.min_packed_value.clone(),
+            max: field.max_packed_value.clone(),
+            split_values: vec![0u8; field.min_packed_value.len()],
+            negative_deltas: vec![false; field.num_index_dims as usize],
+            stack: Vec::new(),
+            reuse_scratch,
+        }
+    }
+
+    /// Makes `self.stack[level]` addressable. The walk only ever descends one
+    /// level at a time, so this appends at most one entry per call.
+    fn ensure_level(&mut self, level: usize) {
+        if self.stack.len() <= level {
+            self.stack
+                .resize_with(level.saturating_add(1), Default::default);
+        }
+    }
 }
 
 /// One node of [`PointsReader::intersect`]'s traversal. `input` is
@@ -903,6 +983,7 @@ fn intersect_node<V: IntersectVisitor>(
     fp: i64,
     ctx: &mut IntersectCtx,
     visitor: &mut V,
+    level: usize,
 ) -> Result<()> {
     let relation = visitor.compare(&ctx.min, &ctx.max);
     if relation == Relation::CellOutsideQuery {
@@ -929,14 +1010,23 @@ fn intersect_node<V: IntersectVisitor>(
         return Ok(());
     }
 
-    let node = read_inner_node(input, node_id, ctx)?;
+    let node = read_inner_node(input, node_id, ctx, level)?;
+    // ARITH: `child_ids` caps the descent at ~31 levels (`node_id` at least
+    // doubles per level and must stay below `i32::MAX / 2` to recurse), so the
+    // increment cannot overflow a `usize`.
+    #[allow(clippy::arithmetic_side_effects)]
+    let child_level = level + 1;
 
     // Left child: cell max is clamped down to the split value.
-    let saved_max = ctx.max[node.dim_pos..node.dim_end].to_vec();
-    ctx.max[node.dim_pos..node.dim_end].copy_from_slice(&node.split_value);
+    clamp_bound(
+        &mut ctx.max,
+        &mut ctx.stack[level],
+        node.dim_pos..node.dim_end,
+        ctx.reuse_scratch,
+    );
     ctx.negative_deltas[node.split_dim] = true;
-    intersect_node(input, node.left_child, fp, ctx, visitor)?;
-    ctx.max[node.dim_pos..node.dim_end].copy_from_slice(&saved_max);
+    intersect_node(input, node.left_child, fp, ctx, visitor, child_level)?;
+    restore_bound(&mut ctx.max, &ctx.stack[level], node.dim_pos..node.dim_end);
 
     // Right child: cell min is clamped up to the split value. Its own
     // packed-index bytes start at `right_node_position` whether or not the
@@ -944,11 +1034,15 @@ fn intersect_node<V: IntersectVisitor>(
     input.seek(node.right_node_position)?;
     let right_delta = input.read_vlong()?;
     let right_fp = child_block_fp(fp, right_delta)?;
-    let saved_min = ctx.min[node.dim_pos..node.dim_end].to_vec();
-    ctx.min[node.dim_pos..node.dim_end].copy_from_slice(&node.split_value);
+    clamp_bound(
+        &mut ctx.min,
+        &mut ctx.stack[level],
+        node.dim_pos..node.dim_end,
+        ctx.reuse_scratch,
+    );
     ctx.negative_deltas[node.split_dim] = false;
-    intersect_node(input, node.right_child, right_fp, ctx, visitor)?;
-    ctx.min[node.dim_pos..node.dim_end].copy_from_slice(&saved_min);
+    intersect_node(input, node.right_child, right_fp, ctx, visitor, child_level)?;
+    restore_bound(&mut ctx.min, &ctx.stack[level], node.dim_pos..node.dim_end);
 
     node.restore(ctx);
     Ok(())
@@ -968,14 +1062,11 @@ struct InnerNode {
     dim_end: usize,
     /// Where inside that range this node's own bytes start.
     dim_prefix_pos: usize,
-    /// `ctx.split_values[dim_prefix_pos..dim_end]` as it was on entry, so the
-    /// parent's state can be restored on the way back up
-    /// (`recursePackIndex`'s `savSplitValue`, read side).
-    saved_split_tail: Vec<u8>,
     /// `ctx.negative_deltas[split_dim]` as it was on entry.
     saved_negative_delta: bool,
-    /// The reconstructed split value for `split_dim`, `bytes_per_dim` long.
-    split_value: Vec<u8>,
+    /// Which [`IntersectCtx::stack`] entry holds this node's split value and
+    /// saved state -- `BKDPointTree`'s `level`.
+    level: usize,
     /// `.kdi` offset of the right child's leading FP-delta vlong --
     /// `BKDPointTree.pushRight`'s `rightNodePositions[level]`.
     right_node_position: usize,
@@ -988,8 +1079,42 @@ impl InnerNode {
     /// `BKDPointTree.pop`'s half that is not a cell bound.
     fn restore(&self, ctx: &mut IntersectCtx) {
         ctx.negative_deltas[self.split_dim] = self.saved_negative_delta;
-        ctx.split_values[self.dim_prefix_pos..self.dim_end].copy_from_slice(&self.saved_split_tail);
+        ctx.split_values[self.dim_prefix_pos..self.dim_end]
+            .copy_from_slice(&ctx.stack[self.level].saved_split_tail);
     }
+}
+
+/// `BKDPointTree.pushLeft`/`pushRight`'s cell-bound half: clamp `bound[range]`
+/// to this level's split value, stashing what was there in the level's own
+/// scratch so [`restore_bound`] can put it back.
+///
+/// Free functions rather than [`InnerNode`] methods so the caller can hand
+/// over `&mut ctx.max` and `&mut ctx.stack[level]` as two disjoint field
+/// borrows -- which is what lets the buffers be reused instead of cloned.
+fn clamp_bound(
+    bound: &mut [u8],
+    scratch: &mut LevelScratch,
+    range: std::ops::Range<usize>,
+    reuse: bool,
+) {
+    reset(&mut scratch.saved_bound, reuse);
+    scratch.saved_bound.extend_from_slice(&bound[range.clone()]);
+    bound[range].copy_from_slice(&scratch.split_value);
+}
+
+/// Empties `buf` for reuse, or -- in the measurement arm -- throws it away so
+/// the refill allocates. See [`IntersectCtx::reuse_scratch`].
+fn reset(buf: &mut Vec<u8>, reuse: bool) {
+    if reuse {
+        buf.clear();
+    } else {
+        *buf = Vec::new();
+    }
+}
+
+/// Undoes [`clamp_bound`] -- `BKDPointTree.pop`'s cell-bound half.
+fn restore_bound(bound: &mut [u8], scratch: &LevelScratch, range: std::ops::Range<usize>) {
+    bound[range].copy_from_slice(&scratch.saved_bound);
 }
 
 /// `BKDReader.readNodeData`: decode one inner node's split descriptor into
@@ -1001,7 +1126,9 @@ fn read_inner_node(
     input: &mut SliceInput,
     node_id: i32,
     ctx: &mut IntersectCtx,
+    level: usize,
 ) -> Result<InnerNode> {
+    ctx.ensure_level(level);
     let bytes_per_dim = ctx.field.bytes_per_dim as usize;
 
     // `BKDReader.readNodeData`: split dim, prefix and first-diff-byte delta
@@ -1024,7 +1151,12 @@ fn read_inner_node(
     #[allow(clippy::arithmetic_side_effects)]
     let (dim_prefix_pos, dim_end) = (dim_pos + prefix, dim_pos + bytes_per_dim);
     debug_assert!(dim_prefix_pos <= dim_end && dim_end <= ctx.split_values.len());
-    let saved_split_tail = ctx.split_values[dim_prefix_pos..dim_end].to_vec();
+    let reuse = ctx.reuse_scratch;
+    let scratch = &mut ctx.stack[level];
+    reset(&mut scratch.saved_split_tail, reuse);
+    scratch
+        .saved_split_tail
+        .extend_from_slice(&ctx.split_values[dim_prefix_pos..dim_end]);
     if suffix > 0 {
         // ARITH: `first_diff_byte_delta >= 0` (`read_split_descriptor`
         // rejects a negative `code`), so the negation cannot overflow -- only
@@ -1072,14 +1204,18 @@ fn read_inner_node(
             "leftNumBytes overruns .kdi: nodeID={node_id}, leftNumBytes={left_num_bytes}"
         )));
     };
+    let scratch = &mut ctx.stack[level];
+    reset(&mut scratch.split_value, reuse);
+    scratch
+        .split_value
+        .extend_from_slice(&ctx.split_values[dim_pos..dim_end]);
     Ok(InnerNode {
         split_dim,
         dim_pos,
         dim_end,
         dim_prefix_pos,
-        saved_split_tail,
         saved_negative_delta: ctx.negative_deltas[split_dim],
-        split_value: ctx.split_values[dim_pos..dim_end].to_vec(),
+        level,
         right_node_position,
         left_child,
         right_child,
@@ -1099,6 +1235,7 @@ fn estimate_node<V: IntersectVisitor>(
     ctx: &mut IntersectCtx,
     visitor: &mut V,
     upper_bound: i64,
+    level: usize,
 ) -> Result<i64> {
     match visitor.compare(&ctx.min, &ctx.max) {
         // "This cell is fully outside the query shape: no points added."
@@ -1113,13 +1250,29 @@ fn estimate_node<V: IntersectVisitor>(
                 #[allow(clippy::arithmetic_side_effects)]
                 return Ok((ctx.field.subtree_size(node_id)? + 1) / 2);
             }
-            let node = read_inner_node(input, node_id, ctx)?;
+            let node = read_inner_node(input, node_id, ctx, level)?;
+            // ARITH: bounded by `child_ids`' ~31-level cap, as in
+            // `intersect_node`.
+            #[allow(clippy::arithmetic_side_effects)]
+            let child_level = level + 1;
 
-            let saved_max = ctx.max[node.dim_pos..node.dim_end].to_vec();
-            ctx.max[node.dim_pos..node.dim_end].copy_from_slice(&node.split_value);
+            clamp_bound(
+                &mut ctx.max,
+                &mut ctx.stack[level],
+                node.dim_pos..node.dim_end,
+                ctx.reuse_scratch,
+            );
             ctx.negative_deltas[node.split_dim] = true;
-            let left = estimate_node(input, node.left_child, fp, ctx, visitor, upper_bound)?;
-            ctx.max[node.dim_pos..node.dim_end].copy_from_slice(&saved_max);
+            let left = estimate_node(
+                input,
+                node.left_child,
+                fp,
+                ctx,
+                visitor,
+                upper_bound,
+                child_level,
+            )?;
+            restore_bound(&mut ctx.max, &ctx.stack[level], node.dim_pos..node.dim_end);
 
             // Java's `while (cost < upperBound && pointTree.moveToSibling())`:
             // once the running cost has reached the bound the caller only
@@ -1129,8 +1282,12 @@ fn estimate_node<V: IntersectVisitor>(
                 input.seek(node.right_node_position)?;
                 let right_delta = input.read_vlong()?;
                 let right_fp = child_block_fp(fp, right_delta)?;
-                let saved_min = ctx.min[node.dim_pos..node.dim_end].to_vec();
-                ctx.min[node.dim_pos..node.dim_end].copy_from_slice(&node.split_value);
+                clamp_bound(
+                    &mut ctx.min,
+                    &mut ctx.stack[level],
+                    node.dim_pos..node.dim_end,
+                    ctx.reuse_scratch,
+                );
                 ctx.negative_deltas[node.split_dim] = false;
                 // ARITH: `upperBound - cost` in Java. The `if` above proves
                 // `cost < upper_bound`, and `cost` is non-negative (it is
@@ -1139,9 +1296,16 @@ fn estimate_node<V: IntersectVisitor>(
                 // is in `1..=upper_bound` and cannot underflow.
                 #[allow(clippy::arithmetic_side_effects)]
                 let remaining = upper_bound - cost;
-                let right =
-                    estimate_node(input, node.right_child, right_fp, ctx, visitor, remaining)?;
-                ctx.min[node.dim_pos..node.dim_end].copy_from_slice(&saved_min);
+                let right = estimate_node(
+                    input,
+                    node.right_child,
+                    right_fp,
+                    ctx,
+                    visitor,
+                    remaining,
+                    child_level,
+                )?;
+                restore_bound(&mut ctx.min, &ctx.stack[level], node.dim_pos..node.dim_end);
                 // Both halves are bounded by the field's point count, which is
                 // an `i64` read off `.kdm`; saturating rather than wrapping
                 // keeps a corrupt count from turning a cost estimate negative.
@@ -5300,6 +5464,78 @@ mod intersect_tests {
             })
             .map(|p| p.doc_id)
             .collect()
+    }
+
+    /// The two arms of [`PointsReader::intersect_with_scratch`] are the same
+    /// walk with the per-level scratch either reused or reallocated at every
+    /// inner node (the pre-`c43-final-cleanup` shape, kept so
+    /// `examples/bkd_walk_scratch.rs` can time both in one process). They must
+    /// visit exactly the same documents, in the same order, and produce the
+    /// same estimate -- otherwise the measurement compares two algorithms
+    /// rather than two allocation strategies.
+    ///
+    /// A multi-dimensional tree, because the buffers being reused are indexed
+    /// by split dimension: a 1D tree would restore the one dimension it has
+    /// even if the level indexing were wrong.
+    #[test]
+    fn the_two_scratch_arms_visit_exactly_the_same_documents() {
+        let points: Vec<(i32, Vec<u8>)> = (0..400)
+            .map(|i| {
+                let mut packed = long_sortable_bytes((i as i64 * 7919) % 1301);
+                packed.extend_from_slice(&long_sortable_bytes((i as i64 * 104_729) % 907));
+                packed.extend_from_slice(&long_sortable_bytes(i as i64 % 13));
+                (i, packed)
+            })
+            .collect();
+        let field = WritePointsField {
+            field_number: 0,
+            num_dims: 3,
+            num_index_dims: 3,
+            bytes_per_dim: 8,
+            points,
+        };
+        let (kdm, kdi, kdd) = write(&[field], 4, &id(), "").unwrap();
+        let reader = open(&kdm, &kdi, &kdd, &id(), "").unwrap();
+        let meta = reader.field(0).unwrap().clone();
+
+        let boxes = [
+            (-2_000i64, 2_000i64),
+            (0, 400),
+            (100, 900),
+            (-1, 1),
+            (500, 500),
+            (12, 1_300),
+        ];
+        let mut any_hits = false;
+        for (lo, hi) in boxes {
+            let lower: Vec<u8> = (0..3).flat_map(|_| long_sortable_bytes(lo)).collect();
+            let upper: Vec<u8> = (0..3).flat_map(|_| long_sortable_bytes(hi)).collect();
+
+            let mut reuse = counting(&meta, &lower, &upper);
+            reader.intersect_with_scratch(0, &mut reuse, true).unwrap();
+            let mut realloc = counting(&meta, &lower, &upper);
+            reader
+                .intersect_with_scratch(0, &mut realloc, false)
+                .unwrap();
+            assert_eq!(
+                reuse.inner.docs, realloc.inner.docs,
+                "reused and reallocated scratch disagree on [{lo}, {hi}]"
+            );
+            assert_eq!(reuse.cells_compared, realloc.cells_compared);
+            assert_eq!(reuse.points_examined, realloc.points_examined);
+            any_hits |= !reuse.inner.docs.is_empty();
+
+            let mut v = counting(&meta, &lower, &upper);
+            let a = reader
+                .estimate_point_count_with_scratch(0, &mut v, i64::MAX, true)
+                .unwrap();
+            let mut v = counting(&meta, &lower, &upper);
+            let b = reader
+                .estimate_point_count_with_scratch(0, &mut v, i64::MAX, false)
+                .unwrap();
+            assert_eq!(a, b, "estimates disagree on [{lo}, {hi}]");
+        }
+        assert!(any_hits, "every box was empty -- the comparison is vacuous");
     }
 
     #[test]

@@ -185,7 +185,9 @@ pub fn flush_stored_only_segment_with_blocks(
         use_compound_file,
         has_blocks,
     )?;
-    seal_flushed_segment(dir, segment_name, flushed)
+    // The convenience wrappers keep their `SegmentCommitInfo`-only shape: they
+    // have no `IndexFileDeleter` to hand the file list to.
+    seal_flushed_segment(dir, segment_name, flushed).map(|(sci, _)| sci)
 }
 
 /// A segment whose codec files are on disk but whose `.si` is **not yet
@@ -356,7 +358,7 @@ pub fn seal_flushed_segment(
     dir: &dyn Directory,
     segment_name: &str,
     flushed: FlushedSegment,
-) -> Result<SegmentCommitInfo> {
+) -> Result<(SegmentCommitInfo, Vec<String>)> {
     let FlushedSegment {
         info,
         commit,
@@ -370,7 +372,12 @@ pub fn seal_flushed_segment(
     write_file(dir, &si_name, &segment_info::write(&info, ""))?;
     pending_sync.push(si_name);
     dir.sync(&pending_sync)?;
-    Ok(commit)
+    // The file list travels out with the commit so
+    // `IndexFileDeleter::record_segment_files` can reference-count the segment
+    // without opening and re-parsing the `.si` this function just wrote --
+    // which is what Java gets for free from `SegmentCommitInfo` holding its
+    // `SegmentInfo`.
+    Ok((commit, info.files))
 }
 
 /// `StringHelper.randomId()`'s role for a freshly created
@@ -485,7 +492,7 @@ pub fn flush_sorted_stored_only_segment(
         false,
     )?;
     flushed.info.index_sort = Some(sort_fields.iter().map(|spec| spec.sort.clone()).collect());
-    seal_flushed_segment(dir, segment_name, flushed)
+    seal_flushed_segment(dir, segment_name, flushed).map(|(sci, _)| sci)
 }
 
 /// The comparators `sort_fields` induces, in priority order.

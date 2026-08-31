@@ -748,6 +748,13 @@ pub extern "C" fn ffi_writer_set_merge_policy(
                 force_merge_deletes_pct_allowed,
                 deletes_pct_allowed,
                 target_search_concurrency: target_search_concurrency as usize,
+                // `MergePolicy.keepFullyDeletedSegment`'s default, which
+                // `TieredMergePolicy` inherits. It is not one of
+                // `setTieredMergePolicy`'s knobs on the OpenSearch side and
+                // there is no wire field for it; a caller that needs
+                // `SoftDeletesRetentionMergePolicy`'s behaviour needs a new
+                // entry point, not a silent default flip.
+                keep_fully_deleted_segments: false,
             })
         };
         handle.writer.set_merge_policy(config);

@@ -192,6 +192,29 @@ resolve the target directory. **A benchmark that cannot tell you it measured
 the wrong binary is a gate nobody should trust** -- `docs/mechanical-gates.md`'s
 rule, applied to a measurement instead of a check.
 
+**`c43-final-cleanup` then closed items 8c, 9, 11b, 23b, 23c and 25b** -- the
+whole of the takeable remainder -- leaving **4**, and every one of those four
+is a sized milestone or blocked on a third-party crate: item 5's
+`TwoPhaseIterator`/`ScorerSupplier` split and its `Similarity` hierarchy, item
+10's `CharArraySet`/`maxTokenLength`, item 12's `TopNSearcher` (which needs
+output-pushing FSTs first), item 15's `ByteBlockPool` family, item 25's DEFLATE
+preset dictionary, and item 27's two remaining record-keeping sub-items. **The
+sweep's find-and-fix phase is done.**
+
+Its transferable finding is the sixth of the same shape and the sharpest yet,
+because this time the recorded blocker was *three* things and **all three were
+false or trivial**: item 11b was "blocked on" a `keepFullyDeletedSegment` hook
+(one `bool` on `MergePolicyConfig`), reader-pool bookkeeping (which Java uses
+for a counter this port does not have) and "an existing rollback test that
+asserts on `segments[0]`" (four tests, each fixed by adding one document the
+delete does not match, which made every one of them *sharper*). Item 25b's
+premise had also gone stale in the other direction: the deleter had **not**
+been re-parsing every `.si` per checkpoint since c36 gave it a cache, so the
+work was the one remaining read plus a per-checkpoint clone, both removed.
+And 23c -- the one item whose whole point was that a direction had never been
+checked -- found **no defect**, which is the outcome that only running it can
+establish.
+
 Closed entries are struck through in place rather than deleted, and new ones
 take a lettered suffix, so the numbering below stays stable.
 
@@ -402,28 +425,65 @@ worth knowing about the next entry that reads the same way.
     Ground truth: `fixtures/src/AppendSpanNearManifest.java`'s nine
     `spannear.*` hit sets, verified to fail against the old rule.
 
-8c. **`span_near_matches` reports span extents Java's walk never visits.**
-    It enumerates the whole cartesian product of one span per clause, where
-    `NearSpansOrdered`/`NearSpansUnordered` walk a priority queue and emit a
-    *sequence* of arrangements; a non-minimal arrangement that satisfies the
-    slop budget contributes an extent here that Lucene never produces. Java's
-    unordered `endPosition()` is additionally its *running* `maxEndPosition`,
-    which can exceed the current arrangement's own maximum end. *Cost*: none
-    for `span_doc_ids`, which only asks whether the span list is non-empty --
-    so no hit set is affected. It can only matter for a **nested**
-    `SpanNear`-of-`SpanNear`, where an outer clause consumes the inner one's
-    extents and could match on an extent Lucene would not have offered.
-    *What it needs*: `span_matches_in_doc` returning the walk's sequence rather
-    than a set, i.e. `near_spans`' iterator generalised to the ordered arm too
-    and `span_near_matches` rebuilt on it. Contained. (Raised by c40.)
+8c. ~~**`span_near_matches` reports span extents Java's walk never visits.**~~
+    **CLOSED by `c43-final-cleanup`**, and the handoff c40 wrote was exactly
+    right: `near_spans::for_each_ordered_match` is `NearSpansOrdered`'s
+    `stretchToOrder` walk -- the monotone, never-rewinding advance whose class
+    doc says "the formed spans only contains minimum slop matches" -- and
+    `span_near_matches` is now both walks with `combine_span_clauses` deleted.
+    `for_each_unordered_match` reports `endPosition()` as Java's *running*
+    `maxEndPosition` rather than the arrangement's own maximum end.
+    `unordered_width` is gone with the product: it was `atMatch()`'s formula
+    over one arrangement, which is a different number from the one the walk
+    tests, and that is precisely the trap this item was.
+    **The "no hit set is affected" caveat was right for a flat `SpanNear` and
+    wrong for a nested one**, which is the case the entry named: three recorded
+    `nested_hitset_*` queries return segment-1 document 0 under the product and
+    do not under Lucene. Both consequences are pinned:
+    `fixtures/src/AppendSpanExtentManifest.java` records real
+    `SpanWeight.getSpans(ctx, POSITIONS)` walks -- every
+    `(startPosition(), endPosition())` pair, per document, per leaf -- for 23
+    queries over the committed `multi_segment_scoring_index` (the only
+    Java-written index whose position lists are rich enough to separate a walk
+    from a product; `blocktree_index`'s `pos` field has two occurrences per
+    document, where the two agree on every query), and
+    `crates/lucene-search/tests/span_extent_fixtures.rs` asserts the extent
+    sequences and the nested hit sets separately, **both verified to fail**
+    against the product. The public shape is new too: `span_doc_extents` is
+    what a caller composing spans wants, and `span_doc_ids` is it with the
+    extents dropped. Complexity went from exponential in the clause count to
+    linear in the total number of sub-spans, and the highlighter's own
+    hand-written in-order walk moved onto the shared one.
 
-9. **`FuzzyTermsEnum`'s `MaxNonCompetitiveBoostAttribute` feedback loop**
+9. ~~**`FuzzyTermsEnum`'s `MaxNonCompetitiveBoostAttribute` feedback loop**~~
    ~~(swap to a lower-edit automaton once the top-terms queue is full) is
-   unported~~ **CLOSED by `c40-missing-behaviours`**, and
-   `fuzzy_doc_scores` blends `docFreq` within one segment where
-   `BlendedTermQuery` blends across the whole reader -- the fuzzy clause has no
-   `GlobalStats` plumbing (**still open**, and the only half of this entry that
-   is). `fuzzy_expanded_terms` now keeps `TopTermsRewrite`'s bounded queue
+   unported~~ **CLOSED by `c40-missing-behaviours`**; the remaining half --
+   `fuzzy_doc_scores` blending `docFreq` within one segment where
+   `BlendedTermQuery` blends across the whole reader -- is **CLOSED by
+   `c43-final-cleanup`**. The fix is not a statistic but the whole *expansion*:
+   `TermCollectingRewrite.collectTerms` drives **one** `TopTermsRewrite`
+   collector across `topReaderContext.leaves()`, so the `maxExpansions` queue
+   selects one term set for the reader, a term's `docFreq` accumulates across
+   leaves (and an evicted term loses what earlier leaves contributed -- Java's
+   own behaviour), and the `MaxNonCompetitiveBoostAttribute` the pruning loop
+   reads carries from one leaf's enum to the next, each new `FuzzyTermsEnum`
+   re-tightening from it in its constructor. `FuzzyTopTerms` is that collector,
+   `multi_segment::global_fuzzy_stats` drives it and folds
+   `BlendedTermQuery.rewrite`'s `df = max(df, ctx.docFreq())`, `GlobalStats`
+   became a struct carrying `FuzzyCollectionStats` beside the per-term ones
+   (keyed by the *query*, since a fuzzy clause and a `TermQuery` on the same
+   `(field, term)` are different things), and `global_boolean_stats` walks
+   `Clause::Fuzzy`. **A second defect fell out of the fixture and is fixed
+   too**: the boost was multiplied into the finished score where
+   `BM25Similarity.scorer` folds it into the **weight**
+   (`this.weight = boost * idf`), one ULP out on every fuzzy hit -- the
+   rewrite `similarity::do_score`'s own doc comment exists to warn about.
+   Evidence: `fixtures/src/AppendMultiSegmentFuzzyManifest.java` records the
+   rewritten query's own selected terms and boosts, each term's reader-wide
+   `docFreq` and real `IndexSearcher` `TopDocs` bits over the two-segment
+   `multi_segment_scoring_index`, where `dog`'s `docFreq` is 3 in each leaf and
+   **6** for the reader; verified to fail (0.400 against Lucene's 0.365)
+   against the per-segment blend. `fuzzy_expanded_terms` now keeps `TopTermsRewrite`'s bounded queue
    rather than collecting every match and sorting, publishes its worst boost
    as `MaxNonCompetitiveBoost`, and runs `bottomChanged`'s
    `while (maxEdits > 0) { if (bottom < 1 - maxEdits/termLength ...) break; maxEdits--; }`
@@ -473,26 +533,37 @@ worth knowing about the next entry that reads the same way.
     `apply_merge` and `drop_merge` share one private `commit_merge`; the public
     API is unchanged.
 
-11b. **100%-deleted segments are not dropped when deletes are applied.**
-    `IndexWriter.finishApply` drops them
-    (`closeSegmentStates` collects a segment iff `rld.isFullyDeleted()` --
-    hard deletes only, `getDelCount() == maxDoc()` -- and
-    `MergePolicy.keepFullyDeletedSegment` is false; then
-    `dropDeletedSegment` + `checkpoint`). This port keeps them in the commit
-    forever. *Cost*: a segment nothing can ever match, carried by every later
-    open, merge and `CheckIndex` -- the same cost as item 11's zero-doc merge,
-    one step earlier. *Blocked on*: three things this port does not have.
-    (a) `MergePolicyConfig` has no `keepFullyDeletedSegment` hook, and it is
-    not decoration -- `SoftDeletesRetentionMergePolicy` returns `true` from it,
-    so a drop without the hook is only correct for the default policy.
-    (b) There is no `adjustPendingNumDocs`/reader-pool bookkeeping to update.
-    (c) At least one existing test
-    (`a_rollback_after_a_buffered_delete_was_applied_restores_the_committed_segment_list`)
-    asserts on `segments[0]` *after* deleting that segment's only document, so
-    the change has an observable ripple that needs its own reasoning rather
-    than a mechanical edit. Met and recorded by c36 while building item 11's
-    test, which had to hand-build fully-deleted segments precisely because of
-    this. (Raised by c36.)
+11b. ~~**100%-deleted segments are not dropped when deletes are applied.**~~
+    **CLOSED by `c43-final-cleanup`, and all three recorded blockers were
+    false or trivial** -- which makes this the sixth entry in this sweep whose
+    stated reason for deferral was the whole of the supposed difficulty.
+    `IndexWriter::drop_fully_deleted_segments` is `finishApply`'s second half
+    over `closeSegmentStates`' membership test
+    (`rld.isFullyDeleted()`, i.e. `getDelCount() == maxDoc()`, hard deletes
+    only, and `keepFullyDeletedSegment == false`); only segments this apply
+    touched are candidates, as in Java, which
+    `apply_packets_to_segment` reproduces by returning `false` for a segment it
+    skipped. Blocker (a) was **one `bool`**:
+    `MergePolicyConfig::keep_fully_deleted_segments`, the honest reduction of a
+    hook whose two in-tree implementations are "always false" and "true iff a
+    retention query matches", documented as such and pinned by
+    `keep_fully_deleted_segments_suppresses_the_drop`. Blocker (b) was
+    **nothing to do**: `adjustPendingNumDocs` maintains a counter this port
+    does not have, and the reader pool it drops from does not exist here --
+    both are now named on the function as deliberately unmodelled. Blocker (c)
+    was **four** tests, not one, and each was fixed by giving its segment one
+    document the delete does not match -- which made three of them *sharper*
+    (the fourth, `a_delete_applies_to_the_segments_flushed_before_it...`, now
+    asserts the drop itself, since `_0` vanishing is the proof both its
+    documents were reached while `_1` survived). Ground truth:
+    `fixtures/src/GenFullyDeletedDrop.java` runs four scripts through a real
+    `IndexWriter` -- including a `partial` control that must **not** drop --
+    and records the committed segment count, each segment's
+    `(maxDoc, delCount)` and the visible ids;
+    `a_fully_deleted_segment_is_dropped_exactly_where_real_lucene_drops_it`
+    replays all four and was verified to fail against the unfixed code. The
+    drop is in-memory plus the deleter checkpoint the flush already runs, not a
+    new commit, so a `rollback()` restores the segment.
 
 12. **The suggester's top-N walk is linear in the prefix subtree, and the
     blocker is not the one recorded.** *(Restated by `c39-codecs-readpath`.)*
@@ -794,34 +865,46 @@ worth knowing about the next entry that reads the same way.
     cheaper one under a top-`n` collector, as it already was without one.
     (Two ledger entries, one finding.)
 
-23b. **The BKD tree walk allocates four `Vec`s per inner node visited.**
-    `points::read_inner_node` returns an `InnerNode` holding owned
-    `saved_split_tail` and `split_value`, and both callers additionally
-    `to_vec()` the cell bound they are about to overwrite -- so `intersect`
-    and `estimate_point_count` each pay four heap allocations per inner node.
-    Java's `BKDPointTree` preallocates **per-level** stacks for exactly this
-    state (`splitValuesStack`, `splitDimValueStack`, `splitDimsPos`,
-    `negativeDeltas[numIndexDims * treeDepth]`), sized once from
-    `getTreeDepth`. Pre-existing in `intersect_node`, but c39 promoted it to a
-    shared path and hung `estimate_point_count` off it, whose whole
-    justification is being cheap -- it removes every `.kdd` read and keeps
-    100% of the allocation. *Contained*: depth is bounded at ~31 by
-    `child_ids`' `checked_mul`, so per-level scratch on `IntersectCtx` sizes
-    trivially and turns `InnerNode` into a `Copy` struct of offsets. (Raised
-    by c39's Tier-2 review.)
+23b. ~~**The BKD tree walk allocates four `Vec`s per inner node visited.**~~
+    **CLOSED by `c43-final-cleanup`**, as the entry sized it: `IntersectCtx`
+    carries Java's per-level stacks (`splitValuesStack`,
+    `splitDimValueStack`, and one saved cell bound -- the two bounds share a
+    buffer because `intersect_node` restores `max` before it saves `min`), and
+    `InnerNode` is offsets only. **One deliberate difference from the sizing
+    the entry proposed**: the stack grows on demand, one entry per level
+    reached, rather than being sized up front from `num_leaves` -- sizing it up
+    front would let a corrupt `bytesPerDim` multiply a plausible allocation by
+    the tree depth, which is the shape `docs/arithmetic-gate.md` singles out as
+    the one that *aborts* rather than merely being wrong. **Measured**
+    (`crates/lucene-codecs/examples/bkd_walk_scratch.rs`, min of 40 alternating
+    repetitions, both arms in one process from one build, selected by
+    `intersect_with_scratch`'s `reuse_scratch`): `estimate_point_count` --
+    the walk whose whole justification is being cheap, and the one c39's review
+    raised this against -- **1.27x to 1.68x** across 1D/2D/4D trees;
+    `intersect` **1.01x to 1.04x**, dominated by leaf decode, which is the
+    honest report of it. `the_two_scratch_arms_visit_exactly_the_same_documents`
+    pins that the two arms are one walk.
 
-23c. **No Java-written `IndexedDISI` block jump table is read by anything.**
-    c39 ported the jump table in both directions and proved the *write* side
-    against real Lucene (`VerifySparseNumericDocValues`' block-jump pass, two
-    independent negative controls). The read side has never run over bytes
-    Lucene wrote, for a reason that is a fixture gap rather than a design one:
-    the largest committed Java-written index is **36 000 documents**, and
-    Lucene emits `jumpTableEntryCount = 0` for anything under two blocks, so
-    there is no Java-written table in the tree to read. *What closes it*: one
-    `Gen*.java` writing a sparse numeric or norms field over more than 131 072
-    documents; the existing `crates/lucene-codecs/tests/*_fixtures.rs` shape
-    reads it unchanged. This is the only direction of the jump table not
-    covered by real bytes. (Raised by c39's Tier-2 review.)
+23c. ~~**No Java-written `IndexedDISI` block jump table is read by anything.**~~
+    **CLOSED by `c43-final-cleanup`**, exactly as the entry prescribed, and
+    **no defect was found** -- which is the outcome only running it can
+    establish, and the reason the item was worth doing after two batches in
+    which a writer and a reader agreed on a shared mistake.
+    `fixtures/src/GenDisiJumpTable.java` writes 200 000 documents with a DENSE
+    sparse field (every third document, four logical blocks) and a SPARSE one
+    (every 20 000th, so the last logical block is empty and
+    `flushBlockJumps`' empty-block fill is exercised); real Lucene emits a
+    four-entry table for each.
+    `crates/lucene-codecs/tests/disi_jump_table_fixtures.rs` cold-seeks
+    through it (a fresh cursor per probe, which is
+    `Lucene90DocValuesProducer`'s own shape and the only pattern
+    `advanceBlock` consults the table for), scans it whole against Lucene's
+    cardinality and value checksum, and -- the assertion that makes the rest
+    non-vacuous -- **perturbs the table Lucene wrote in each of its two halves
+    independently** (the index and the offset) and requires the answer to
+    change. It also pins `jumpTableEntryCount > 2`, so a regenerated corpus
+    that fell below two blocks fails loudly instead of silently testing
+    nothing.
 
 
 24. ~~**`StoredFieldsReader::document()` materializes a whole `Document`**~~
@@ -853,16 +936,28 @@ worth knowing about the next entry that reads the same way.
     correct and fixture-verified. *Blocked on a dependency*: revisit if a
     raw-deflate crate with dictionary support becomes acceptable.
 
-25b. **`IndexFileDeleter`'s checkpoint re-reads and re-parses every segment's
-    `.si`.** Java reference-counts from the in-memory
-    `SegmentCommitInfo.files()`, which already holds the `SegmentInfo`; this
-    port re-opens and re-parses the file, once per segment per checkpoint. It
-    is the one `.si` read c36 left in the flush path (that batch's counting
-    test pins it at exactly one, so a regression is visible). *Blocked on*:
-    handing the deleter live `SegmentInfo`s rather than segment *names* -- a
-    signature change across `index_file_deleter.rs` and every checkpoint call
-    site. **Now unblocked in one respect**: `segment_writer::FlushedSegment` is
-    exactly the in-memory `SegmentInfo` that call would take. (Raised by c36.)
+25b. ~~**`IndexFileDeleter`'s checkpoint re-reads and re-parses every
+    segment's `.si`.**~~ **CLOSED by `c43-final-cleanup`**, and *the premise
+    had gone stale in the other direction*: c36 had already given the deleter a
+    per-`(segment_name, segment_id)` cache, so the parse was once per segment
+    **ever**, not once per checkpoint. What was actually left was the first
+    read and a per-checkpoint clone, and both are gone.
+    `IndexFileDeleter::record_segment_files` takes a segment's file list
+    straight off the in-memory `SegmentInfo` `seal_flushed_segment` encoded
+    (which now returns it beside the `SegmentCommitInfo`), which is what Java
+    gets structurally from `SegmentCommitInfo` owning its `SegmentInfo`; the
+    recorded blocker -- "a signature change across `index_file_deleter.rs` and
+    every checkpoint call site" -- did not materialise, because the writer
+    pushes the list in at seal time instead of the deleter pulling it at
+    checkpoint time, so **no checkpoint call site changed**. `commit_files`
+    also stopped cloning each segment's file list, via a fill-then-borrow two
+    pass. Evidence: c36's own counting-`Directory` test now asserts **zero**
+    `.si` reads during a flush, down from the one it pinned; and the
+    min-of-40 alternating A/B (`crates/lucene-index/examples/deleter_checkpoint.rs`,
+    both arms shipped code in one process) puts a checkpoint over 8/32/128
+    segments at **2.30x-2.35x**, a flat **1.75 us per segment** -- one `open`
+    plus a full `segment_info::parse` including the header check and a CRC over
+    the whole file.
 
 ### D. Tooling, gates and tidy-ups
 
@@ -1338,8 +1433,12 @@ now five).
       **The feedback loop is CLOSED by c40-missing-behaviours** (open-work item
       9): `TopTermsRewrite`'s bounded queue plus `bottomChanged`'s budget drop,
       measured at **1.07x-2.03x** on the 1M-term corpus with a min-of-40
-      alternating A/B. The `GlobalStats` half is still open and is restated
-      there.
+      alternating A/B. **The `GlobalStats` half is CLOSED by
+      `c43-final-cleanup`** (same open-work item): the whole *expansion* is now
+      reader-wide, as `TermCollectingRewrite.collectTerms` drives it, and
+      `BlendedTermQuery.rewrite`'s `df = max(df, ctx.docFreq())` folds over
+      reader-wide frequencies -- pinned bit-for-bit against real
+      `IndexSearcher` `TopDocs` on the two-segment fixture.
 - [x] **A1 is closed (c1-lazy-blocktree).** `blocktree.rs` now opens a segment
       by reading only the `.tmd` records and each field's root trie node, and
       navigates with a ported `SegmentTermsEnum`/`SegmentTermsEnumFrame` frame
@@ -1600,7 +1699,7 @@ now five).
       and this port writes `jumpTableEntryCount = 0`, so our own files have no
       table to read. Worth revisiting only alongside a `nextDoc`-shaped
       iterator API. (Raised by c2.)
-      **CLOSED by `c39-codecs-readpath`** (open-work item 22). Verified against the tree: `indexed_disi.rs`'s `DisiCursor::new` splits `jump_table` off the data region (`:230`, `:317-326`) and `advance_block` uses it. What is *not* closed is open-work item 23c -- no Java-written jump table exists in the fixture corpus for it to be read against, because this port writes `jumpTableEntryCount = 0`.
+      **CLOSED by `c39-codecs-readpath`** (open-work item 22). Verified against the tree: `indexed_disi.rs`'s `DisiCursor::new` splits `jump_table` off the data region (`:230`, `:317-326`) and `advance_block` uses it. Open-work item 23c -- no Java-written jump table existed in the fixture corpus for the *read* side to be checked against -- is **CLOSED by `c43-final-cleanup`**: `fixtures/data/disi_jump_table_index/` is 200 000 Java-written documents whose sparse columns carry a four-entry table each, read by `crates/lucene-codecs/tests/disi_jump_table_fixtures.rs` with both halves of a table entry independently negative-controlled. No defect found.
 - [x] `lucene-search/src/explain.rs:1687` has an invalid `dense_rank_power: 0`
       test literal (`0` is not in Java's legal set). Unreachable -- the entry is
       dense -- but wrong data. One line; `lucene-search` was held by b13/b15.
@@ -1965,7 +2064,7 @@ is proven still concurrent by a test in which two rayon tasks share one
       count derived from the node id, times `max_points_in_leaf_node`, clamped
       at `point_count`). Nothing in `lucene-search` moves. (Raised by c29;
       originally b14 §1.4, then c12 §5.4.)
-      **CLOSED by `c39-codecs-readpath`** (open-work item 13). Verified against the tree: `points.rs:647` is `PointsReader::estimate_point_count`, with `estimate_point_count_bounded` as Java's `estimatePointCount(visitor, upperBound)`. Open-work item 23b (the walk's four `Vec`s per inner node) is the residue and is tracked there.
+      **CLOSED by `c39-codecs-readpath`** (open-work item 13). Verified against the tree: `points.rs:647` is `PointsReader::estimate_point_count`, with `estimate_point_count_bounded` as Java's `estimatePointCount(visitor, upperBound)`. Open-work item 23b (the walk's four `Vec`s per inner node) was the residue and is **CLOSED by `c43-final-cleanup`**: `IntersectCtx::stack` is Java's per-level stacks, grown on demand, and `estimate_point_count` measured 1.27x-1.68x faster.
 - [x] **`FieldExistsQuery.count`'s live-doc arithmetic, and `rewrite`'s
       whole-reader decision.** The per-leaf predicate is ported
       (`doc_value_query::field_exists_leaf_is_complete`); what is missing is

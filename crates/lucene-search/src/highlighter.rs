@@ -1145,56 +1145,32 @@ pub fn phrase_match_offsets(
 
     let slop = slop as i64;
 
-    if slop == 0 {
-        // `NearSpansOrdered`: `stretchToOrder` advances each later slot to the
-        // smallest position at or after the previous slot's end, once per
-        // position of the first slot, and charges
-        // `matchWidth += spans.startPosition() - prevSpans.endPosition()`.
-        let (first, rest) = positions.split_first().expect("non-empty, checked above");
-        // Scratch reused across candidates: the position chosen for each slot.
-        let mut chosen: Vec<i32> = vec![0; positions.len()];
-        for &p0 in first.iter() {
-            chosen[0] = p0;
-            let mut prev = p0;
-            let mut total_moves: i64 = 0;
-            let mut matched = true;
-            for (slot, slot_positions) in rest.iter().enumerate() {
-                // Smallest position strictly greater than `prev`; the lists are
-                // ascending, so `partition_point` finds it. (A term span ends
-                // one past its position, so "at or after the previous end" is
-                // "strictly after the previous position".)
-                let idx = slot_positions.partition_point(|&x| x <= prev);
-                let Some(&pos) = slot_positions.get(idx) else {
-                    matched = false;
-                    break;
-                };
-                total_moves += i64::from(pos - prev - 1);
-                if total_moves > slop {
-                    matched = false;
-                    break;
-                }
-                prev = pos;
-                chosen[slot + 1] = pos;
-            }
-            if matched {
-                collect_span(terms, occurrences, &chosen, &mut per_term);
-            }
-        }
-    } else {
-        // `NearSpansUnordered`. Every slot's occurrences are one position
-        // wide, so a slot's spans are `[p, p + 1)`.
-        let spans: Vec<Vec<(i32, i32)>> = positions
+    // Both arms are `crate::near_spans`' ports of the two `Spans` walks, so
+    // the highlighter and `span_near_matches` cannot drift apart. Every slot's
+    // occurrences are one position wide, so a slot's spans are `[p, p + 1)`.
+    {
+        let slot_spans: Vec<Vec<(i32, i32)>> = positions
             .iter()
             .map(|slot| slot.iter().map(|&p| (p, p.saturating_add(1))).collect())
             .collect();
-        let slices: Vec<&[(i32, i32)]> = spans.iter().map(Vec::as_slice).collect();
+        let slices: Vec<&[(i32, i32)]> = slot_spans.iter().map(Vec::as_slice).collect();
         let mut chosen: Vec<i32> = vec![0; positions.len()];
-        crate::near_spans::for_each_unordered_match(&slices, slop, |current| {
+        let mut collect = |current: crate::near_spans::Arrangement<'_>, _: i32, _: i32| {
             for (slot, &(start, _)) in current.iter().enumerate() {
                 chosen[slot] = start;
             }
             collect_span(terms, occurrences, &chosen, &mut per_term);
-        });
+        };
+        if slop == 0 {
+            // `NearSpansOrdered`: `stretchToOrder` advances each later slot to
+            // the smallest position at or after the previous slot's end, once
+            // per position of the first slot, and charges
+            // `matchWidth += spans.startPosition() - prevSpans.endPosition()`.
+            crate::near_spans::for_each_ordered_match(&slices, slop, &mut collect);
+        } else {
+            // `NearSpansUnordered`.
+            crate::near_spans::for_each_unordered_match(&slices, slop, &mut collect);
+        }
     }
 
     let mut spans: Vec<TermOffsetSpan> = per_term

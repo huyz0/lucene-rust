@@ -141,15 +141,27 @@ pub struct IndexFileDeleter<'d> {
     /// `IndexFileDeleter.lastFiles`: the files incRef'd by the most recent
     /// non-commit checkpoint, decRef'd by the next one.
     last_files: Vec<String>,
-    /// `SegmentInfo.files` per segment name, parsed once from that segment's
-    /// `.si`. Java gets this for free because `SegmentCommitInfo` holds a live
+    /// `SegmentInfo.files` per segment name, together with the segment id the
+    /// entry was recorded for.
+    ///
+    /// Java gets this for free because `SegmentCommitInfo` holds a live
     /// `SegmentInfo` with its file set in memory; this port's
-    /// [`SegmentCommitInfo`] deliberately does not own the parsed `.si`, so the
-    /// deleter caches it instead of re-parsing (checksum verification included)
-    /// on every checkpoint. Keyed by `(segment_name, segment_id)` because a
-    /// segment's `.si` is immutable once written -- a new segment always gets a
-    /// new name *and* a new id.
-    si_files: HashMap<(String, [u8; ID_LENGTH]), Vec<String>>,
+    /// [`SegmentCommitInfo`] deliberately does not own the parsed `.si`. Two
+    /// things fill this map, and between them the deleter never parses a `.si`
+    /// the writer itself produced:
+    ///
+    /// - [`record_segment_files`](Self::record_segment_files), called by
+    ///   `IndexWriter` the moment it seals a flushed segment, straight off the
+    ///   in-memory `SegmentInfo` -- which is exactly what Java reads.
+    /// - [`ensure_si_files`](Self::ensure_si_files)' fallback parse, for a segment
+    ///   this process did not write: one opened at `IndexFileDeleter::open`,
+    ///   or one another writer left behind.
+    ///
+    /// The segment id is stored rather than made part of the key so a lookup
+    /// needs no allocation; a mismatch means a *different* segment reused the
+    /// name, which cannot happen within one index but is cheap to rule out and
+    /// would otherwise be a silently wrong file set.
+    si_files: HashMap<String, ([u8; ID_LENGTH], Vec<String>)>,
 }
 
 impl<'d> IndexFileDeleter<'d> {
@@ -459,9 +471,21 @@ impl<'d> IndexFileDeleter<'d> {
                 }
             }
         }
+        // Two passes, deliberately: filling the cache needs `&mut self` and
+        // reading it needs a borrow, and the two cannot overlap. Cloning each
+        // segment's file list to collapse them into one pass is what this
+        // costs -- one `Vec<String>` per segment per checkpoint, which for a
+        // hundred-segment index is a hundred allocations on a path that runs
+        // twice per commit and reads nothing.
         for sci in &infos.segments {
-            let si_files = self.si_files_for(sci)?;
-            for f in sci.files(&si_files) {
+            self.ensure_si_files(sci)?;
+        }
+        for sci in &infos.segments {
+            let (_, si_files) = self
+                .si_files
+                .get(sci.segment_name.as_str())
+                .expect("just ensured above");
+            for f in sci.files(si_files) {
                 if seen.insert(f.clone()) {
                     out.push(f);
                 }
@@ -470,24 +494,68 @@ impl<'d> IndexFileDeleter<'d> {
         Ok(out)
     }
 
-    fn si_files_for(&mut self, sci: &SegmentCommitInfo) -> Result<Vec<String>> {
-        let key = (sci.segment_name.clone(), sci.segment_id);
-        if let Some(files) = self.si_files.get(&key) {
-            return Ok(files.clone());
+    /// Records a segment's `.si` file list from an in-memory `SegmentInfo`,
+    /// so no checkpoint ever has to open and parse the file.
+    ///
+    /// This is the port of what Java gets structurally: `SegmentCommitInfo`
+    /// holds its `SegmentInfo`, so `SegmentInfos.files()` reads the file set
+    /// out of memory. `IndexWriter` calls this as it seals a flushed segment,
+    /// with the same `SegmentInfo` it just encoded into the `.si`
+    /// ([`crate::segment_writer::FlushedSegment::info`]) -- so the bytes on
+    /// disk and the entry here are the same list by construction, not by
+    /// agreement between a writer and a parser.
+    ///
+    /// Idempotent, and safe to call for a segment already recorded: the entry
+    /// is replaced only when the id matches, so a stale name cannot shadow a
+    /// different segment's files.
+    pub fn record_segment_files(&mut self, sci: &SegmentCommitInfo, si_files: &[String]) {
+        let files = Self::with_self_listing(&sci.segment_name, si_files.to_vec());
+        self.si_files
+            .insert(sci.segment_name.clone(), (sci.segment_id, files));
+    }
+
+    /// Measurement-only: drop every recorded file set, so the next checkpoint
+    /// has to open and parse each `.si` again.
+    ///
+    /// This is the pre-`c43-final-cleanup` state of the deleter, and it exists
+    /// so `examples/deleter_checkpoint.rs` can time both arms in **one process
+    /// from one build** -- the only shape of A/B this project trusts (see
+    /// `docs/sweep/m2/c24-arith-codecs.md` on criterion and `c42`'s stale
+    /// binary). Correct but pointless in production: the cache refills itself
+    /// from disk.
+    #[doc(hidden)]
+    pub fn forget_segment_files(&mut self) {
+        self.si_files.clear();
+    }
+
+    /// Fills [`Self::si_files`] for `sci`, parsing its `.si` only if
+    /// [`record_segment_files`](Self::record_segment_files) has not already
+    /// recorded it from memory.
+    fn ensure_si_files(&mut self, sci: &SegmentCommitInfo) -> Result<()> {
+        if let Some((id, _)) = self.si_files.get(sci.segment_name.as_str()) {
+            if *id == sci.segment_id {
+                return Ok(());
+            }
         }
         let name = format!("{}.si", sci.segment_name);
         let bytes = self.dir.open(&name)?.to_vec();
         let si = segment_info::parse(&bytes, &sci.segment_id)?;
-        let mut files = si.files.clone();
-        // `Lucene99SegmentInfoFormat.write` calls `si.addFile(fileName)` for
-        // the `.si` itself before encoding, so a correctly written `.si` already
-        // lists itself. Older segments this port wrote did not; adding it here
-        // keeps the deleter from reclaiming the file that names all the others.
+        let files = Self::with_self_listing(&sci.segment_name, si.files);
+        self.si_files
+            .insert(sci.segment_name.clone(), (sci.segment_id, files));
+        Ok(())
+    }
+
+    /// `Lucene99SegmentInfoFormat.write` calls `si.addFile(fileName)` for the
+    /// `.si` itself before encoding, so a correctly written `.si` already lists
+    /// itself. Older segments this port wrote did not; adding it here keeps the
+    /// deleter from reclaiming the file that names all the others.
+    fn with_self_listing(segment_name: &str, mut files: Vec<String>) -> Vec<String> {
+        let name = format!("{segment_name}.si");
         if !files.iter().any(|f| f == &name) {
             files.push(name);
         }
-        self.si_files.insert(key, files.clone());
-        Ok(files)
+        files
     }
 
     fn inc_ref_all(&mut self, files: &[String]) {

@@ -101,6 +101,9 @@ fn parse_manifest(text: &str) -> Vec<Scenario> {
             target_search_concurrency: cfg[5].parse().unwrap(),
             // score()'s hardcoded Math.pow(nonDelRatio, 2) exponent.
             reclaim_weight: 2.0,
+            // Not part of `findMerges` at all -- it is `finishApply`'s drop
+            // hook. Java's default, which `TieredMergePolicy` inherits.
+            keep_fully_deleted_segments: false,
         };
 
         let segs_raw = get(&format!("{p}segments"));

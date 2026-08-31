@@ -496,26 +496,70 @@ pub fn global_avg_field_length(segments: &[OpenSegment<'_>], field: &str) -> Opt
     seen.then(|| crate::field_norms::avg_field_length(sum_total_term_freq, doc_count))
 }
 
+/// Reader-wide expansion and blended frequency for one [`crate::FuzzyQuery`]
+/// clause:
+/// `TopTermsRewrite.rewrite` driven across every leaf, then
+/// `BlendedTermQuery.rewrite`'s `df = Math.max(df, ctx.docFreq())` fold.
+///
+/// Java's `TermCollectingRewrite.collectTerms` walks
+/// `topReaderContext.leaves()` with **one** collector, so the
+/// `maxExpansions` queue, the visited-term map (which accumulates a term's
+/// `docFreq` across leaves) and the `MaxNonCompetitiveBoostAttribute` the
+/// pruning loop reads are all reader-wide. Expanding per segment instead picks
+/// a different term set in each leaf and blends a different frequency into it;
+/// this is the fuzzy twin of [`global_term_stats`].
+///
+/// Returns `Ok(None)` when no segment has the field, in which case the
+/// per-segment answer (also nothing) is already correct. A corrupt `.tim`
+/// block in *any* segment is an `Err`, for the reason
+/// [`global_term_stats`] gives.
+pub fn global_fuzzy_stats(
+    segments: &[OpenSegment<'_>],
+    query: &crate::FuzzyQuery,
+) -> crate::Result<Option<crate::FuzzyCollectionStats>> {
+    let mut per_leaf: Vec<&lucene_codecs::blocktree::FieldTerms> = Vec::new();
+    let mut doc_count = 0i64;
+    for seg in segments {
+        let Some(ft) = seg.fields.field(&query.field) else {
+            continue;
+        };
+        doc_count += ft.doc_count as i64;
+        per_leaf.push(ft);
+    }
+    if per_leaf.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(crate::fuzzy_expansion_across_leaves(
+        &per_leaf, query, doc_count,
+    )?))
+}
+
 /// Reader-wide statistics for every leaf `Clause::Term` a boolean query
 /// mentions, so each segment scores with one idf per term -- see
-/// [`crate::CollectionStats`].
+/// [`crate::CollectionStats`] -- plus every `Clause::Fuzzy`'s reader-wide
+/// expansion, see [`global_fuzzy_stats`].
 fn global_boolean_stats(
     segments: &[OpenSegment<'_>],
     query: &BooleanQuery,
 ) -> crate::Result<crate::GlobalStats> {
-    fn walk_clause(c: &crate::query::Clause, out: &mut Vec<(String, Vec<u8>)>) {
+    fn walk_clause(c: &crate::query::Clause, out: &mut Collected) {
         use crate::query::Clause;
         match c {
-            Clause::Term(t) => out.push((t.field.clone(), t.term.clone())),
+            Clause::Term(t) => out.terms.push((t.field.clone(), t.term.clone())),
             // A phrase's idf is the sum of its constituent terms' idfs, so each
             // of them needs the same reader-wide treatment. Missing this left
             // two phrase queries disagreeing with Java on the 15-segment corpus
             // after every other query had been fixed.
             Clause::Phrase(p) => {
                 for term in &p.terms {
-                    out.push((p.field.clone(), term.clone()));
+                    out.terms.push((p.field.clone(), term.clone()));
                 }
             }
+            // A fuzzy clause *does* score from term statistics -- its default
+            // rewrite is `TopTermsBlendedFreqScoringRewrite`, not a
+            // constant-score one -- so it needs the same reader-wide treatment,
+            // in the shape `BlendedTermQuery` gives it.
+            Clause::Fuzzy(f) => out.fuzzy.push(f.clone()),
             Clause::Boolean(inner) => walk(inner, out),
             Clause::DisjunctionMax(d) => {
                 for inner in &d.disjuncts {
@@ -525,14 +569,14 @@ fn global_boolean_stats(
             Clause::Boost(b) => walk_clause(&b.inner, out),
             // Everything else either does not score from term statistics
             // (`ConstantScore`, points, doc-values ranges) or expands to terms
-            // this port resolves elsewhere (`Wildcard`, `Prefix`, `Fuzzy`,
-            // `Regexp`) -- those still score per segment, and are listed as
-            // open in `docs/sweep/findings.md` rather than silently skipped.
+            // and scores a flat `1.0` per match (`Wildcard`, `Prefix`,
+            // `Regexp`, `Span`), where a reader-wide statistic would have
+            // nothing to change.
             _ => {}
         }
     }
 
-    fn walk(q: &BooleanQuery, out: &mut Vec<(String, Vec<u8>)>) {
+    fn walk(q: &BooleanQuery, out: &mut Collected) {
         // `filter` is deliberately not walked. `BooleanWeight`'s constructor
         // builds a filter clause's `Weight` with `ScoreMode.COMPLETE_NO_SCORES`,
         // and `TermQuery.TermWeight` then skips `searcher.termStatistics`
@@ -549,15 +593,29 @@ fn global_boolean_stats(
             walk_clause(c, out);
         }
     }
-    let mut terms = Vec::new();
-    walk(query, &mut terms);
+    let mut collected = Collected::default();
+    walk(query, &mut collected);
     let mut map = crate::GlobalStats::new();
-    for (field, term) in terms {
+    for (field, term) in collected.terms {
         if let Some(stats) = global_term_stats(segments, &field, &term)? {
-            map.insert((field, term), stats);
+            map.insert_term(field, term, stats);
+        }
+    }
+    for fuzzy in collected.fuzzy {
+        if let Some(stats) = global_fuzzy_stats(segments, &fuzzy)? {
+            map.insert_fuzzy(fuzzy, stats);
         }
     }
     Ok(map)
+}
+
+/// What [`global_boolean_stats`]' clause walk gathers: the leaf terms whose
+/// idf must be reader-wide, and the fuzzy clauses whose whole *expansion*
+/// must be.
+#[derive(Default)]
+struct Collected {
+    terms: Vec<(String, Vec<u8>)>,
+    fuzzy: Vec<crate::FuzzyQuery>,
 }
 
 /// Multi-segment sibling of [`crate::search_term_query_scored`]: runs `query`
@@ -1072,29 +1130,29 @@ mod tests {
     #[test]
     fn the_shared_max_score_fan_out_returns_what_the_plain_one_does() {
         // The accumulator may only *raise* a leaf's pruning threshold to one
-        // another leaf has already proved competitive, so it can change how much
-        // work is done and never which hits come back.
+        // another leaf has already proved competitive, so it can change how
+        // much work is done and never which hits come back. That result
+        // invariant is what this test asserts, and it holds however the two
+        // leaves interleave.
         //
-        // Leaf 1's own hits top out at 3.0, so a threshold of 8.0 is a value its
-        // own queue can never produce -- observing it is the only evidence that
-        // the accumulator was consulted at all. The two runs record into
-        // **separate** buffers on purpose: sharing one would let the plain run's
-        // own local thresholds satisfy the assertion, and an inert
-        // `with_shared_max_score` would pass.
+        // **It deliberately does not assert that leaf 1 observed leaf 0's
+        // bar.** It used to, and that is a property the design does not have:
+        // the accumulator is opportunistic, so whether leaf 1 sees 8.0 depends
+        // on whether leaf 0 got there first, which under `rayon` it need not.
+        // Measured, the assertion failed roughly one run in five on a loaded
+        // host -- a test that fails for the right reason a fifth of the time is
+        // a test nobody can read. The mechanism itself is pinned
+        // deterministically at its seam by
+        // `a_leaf_sees_a_bar_another_leaf_published_through_the_accumulator`.
         let per_leaf = vec![
             vec![(0i32, 9.0f32), (1, 8.0), (2, 7.0)],
             vec![(0i32, 3.0f32), (1, 2.0), (2, 1.0)],
         ];
         let doc_bases = stub_segments(&per_leaf);
-        // `(leaf, threshold)`: leaf 0's *own* queue settles on 8.0, so the bare
-        // value proves nothing -- it has to be leaf **1** that saw it.
-        let run = |seen: &std::sync::Mutex<Vec<(usize, Option<f32>)>>, shared: bool| {
+        let run = |shared: bool| {
             let search = |i: usize, local: &mut TopDocsCollector| {
                 for &(doc, score) in &per_leaf[i] {
                     local.collect(doc, score);
-                    seen.lock()
-                        .expect("no test thread panics while holding this")
-                        .push((i, local.min_competitive_score()));
                 }
                 Ok(())
             };
@@ -1105,34 +1163,58 @@ mod tests {
                 merge_multi_segment_scored_concurrent(&doc_bases, 2, search).unwrap()
             }
         };
-        let shared_seen = std::sync::Mutex::new(Vec::<(usize, Option<f32>)>::new());
-        let plain_seen = std::sync::Mutex::new(Vec::<(usize, Option<f32>)>::new());
-        let shared = run(&shared_seen, true);
-        let plain = run(&plain_seen, false);
+        let shared = run(true);
+        let plain = run(false);
 
         assert_eq!(shared, plain);
         assert_eq!(
             shared.iter().map(|h| h.doc_id).collect::<Vec<_>>(),
             vec![0, 1]
         );
-        let shared_seen = shared_seen
-            .lock()
-            .expect("no test thread panics while holding this");
-        let plain_seen = plain_seen
-            .lock()
-            .expect("no test thread panics while holding this");
-        assert!(
-            shared_seen
-                .iter()
-                .any(|&(leaf, t)| leaf == 1 && t == Some(8.0)),
-            "the low-scoring leaf must have seen the other leaf's bar, got {shared_seen:?}"
+    }
+
+    /// The accumulator's own contract, at the seam
+    /// [`merge_multi_segment_scored_concurrent_shared_max_score`] wires up --
+    /// with no threads, so there is no interleaving for it to depend on.
+    ///
+    /// Leaf 1's own hits top out at 3.0, so a threshold of 8.0 is a value its
+    /// own queue can never produce: observing it is the only evidence the
+    /// accumulator was consulted at all.
+    #[test]
+    fn a_leaf_sees_a_bar_another_leaf_published_through_the_accumulator() {
+        use crate::collector::MaxScoreAccumulator;
+        use std::sync::Arc;
+
+        let acc = Arc::new(MaxScoreAccumulator::new());
+
+        // Leaf 0 fills a top-2 queue whose bottom is 8.0 and publishes it.
+        let mut leaf0 = TopDocsCollector::with_total_hits_threshold(2, 0)
+            .with_shared_max_score(Arc::clone(&acc), 0);
+        for (doc, score) in [(0i32, 9.0f32), (1, 8.0), (2, 7.0)] {
+            leaf0.collect(doc, score);
+        }
+        assert_eq!(leaf0.min_competitive_score(), Some(8.0));
+
+        // Leaf 1, sharing the accumulator, is handed that bar even though its
+        // own queue is nowhere near it.
+        let mut leaf1 = TopDocsCollector::with_total_hits_threshold(2, 0)
+            .with_shared_max_score(Arc::clone(&acc), 100);
+        for (doc, score) in [(0i32, 3.0f32), (1, 2.0)] {
+            leaf1.collect(doc, score);
+        }
+        assert_eq!(
+            leaf1.min_competitive_score(),
+            Some(8.0),
+            "the shared accumulator must raise this leaf's bar to the other leaf's"
         );
-        assert!(
-            !plain_seen
-                .iter()
-                .any(|&(leaf, t)| leaf == 1 && t == Some(8.0)),
-            "without the accumulator leaf 1 can never see 8.0, got {plain_seen:?}"
-        );
+
+        // The negative control: the same leaf without the accumulator can only
+        // ever see its own queue's bottom.
+        let mut alone = TopDocsCollector::with_total_hits_threshold(2, 0);
+        for (doc, score) in [(0i32, 3.0f32), (1, 2.0)] {
+            alone.collect(doc, score);
+        }
+        assert_eq!(alone.min_competitive_score(), Some(2.0));
     }
 
     #[test]

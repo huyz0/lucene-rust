@@ -943,3 +943,62 @@ outright.
   generator is fully deterministic: `scripts/gen-fixtures.sh --only
   GenAnalysis --out <scratch>` reproduces `analysis/manifest.properties`
   byte for byte.
+- `GenDisiJumpTable.java` — the only Java-written `IndexedDISI` **block jump
+  table** in this tree (`disi_jump_table_index/`). `IndexedDISI.writeBitSet`
+  emits `jumpTableEntryCount = 0` below two logical 65 536-document blocks, and
+  every other Java-written sparse fixture here has five documents, so until
+  `c43-final-cleanup` the *read* side of the table had never run over bytes
+  Lucene wrote — the one direction of that format not covered by real bytes,
+  and this sweep has twice found a writer and a reader agreeing on a shared
+  mistake exactly there. 200 000 documents, no indexed field at all (an `id`
+  term would add a 900 KB term dictionary to a fixture whose subject is the
+  `.dvd`): `sparse` on every third document gives four DENSE blocks, and
+  `very_sparse` on every 20 000th gives SPARSE blocks with the last logical
+  block empty, which is `flushBlockJumps`' empty-block fill. The manifest
+  records a **sampled** ground truth — 41 ascending probes, several blocks
+  apart, so each cold lookup is the `advanceBlock` call that consults the table
+  — plus each column's full-scan cardinality and value checksum. Consumed by
+  `crates/lucene-codecs/tests/disi_jump_table_fixtures.rs`, which also perturbs
+  each half of a table entry independently and requires the answer to change.
+- `GenFullyDeletedDrop.java` — cross-engine ground truth for
+  `IndexWriter.finishApply`'s **100%-deleted segment drop**
+  (`fully_deleted_drop/`), recorded as an *outcome* rather than as bytes: the
+  index of a writer that dropped a segment is indistinguishable from one that
+  never had it, so there is nothing to diff. Four scripts run through a real
+  `IndexWriter` in a `ByteBuffersDirectory` — `drop` (the older of two segments
+  fully deleted), `partial` (the control: one of its two documents deleted, so
+  it must survive), `all` (every segment emptied, so the commit is empty) and
+  `block` (`updateDocuments` replacing a whole block) — each recording the
+  committed segment count, every segment's `(maxDoc, delCount)` and the visible
+  ids. Consumed by `index_writer::tests::
+  a_fully_deleted_segment_is_dropped_exactly_where_real_lucene_drops_it`.
+
+## Manifest appenders
+
+`Append*Manifest` programs open an already-generated index **read-only** and
+append cross-engine ground truth to its `manifest.properties`, stripping their
+own key prefix first so a re-run rewrites the same bytes. They never regenerate
+an index, so the committed segment ids do not move — which is why
+`scripts/gen-fixtures.sh --append-only` is the safe way to add ground truth to a
+committed fixture. Two were added by `c43-final-cleanup`:
+
+- `AppendSpanExtentManifest.java` — real `SpanWeight.getSpans(ctx,
+  Postings.POSITIONS)` walked to `NO_MORE_DOCS`/`NO_MORE_POSITIONS`: every
+  `(startPosition(), endPosition())` pair, per document, per leaf, for 23
+  `SpanQuery` shapes over `multi_segment_scoring_index`. That index is used
+  because it is the only Java-written one whose position lists are rich enough
+  to separate `NearSpans*`'s forward-only *walk* from a cartesian product —
+  `GenMultiSegmentScoring.longBody` puts up to twenty occurrences of one term
+  in a document, where `blocktree_index`'s `pos` field has two and the two
+  algorithms agree on every query. Each case's query is written in a tiny
+  S-expression (`t(field,term)`, `n(slop,inOrder,child,…)`, `o(child,…)`) that
+  the Rust test parses with a twin parser, so the recorded query and the tested
+  one cannot drift.
+- `AppendMultiSegmentFuzzyManifest.java` — `FuzzyQuery` across two segments:
+  the rewritten query's own selected terms and boosts (walked out of the
+  `BooleanQuery` `BlendedTermQuery.BOOLEAN_REWRITE` produces), each selected
+  term's **reader-wide** `docFreq`, and real `IndexSearcher` `TopDocs` as raw
+  float bits. Every part of `TopTermsBlendedFreqScoringRewrite` is reader-wide,
+  and all of it is invisible on a single segment — which is why every other
+  fuzzy fixture here (all over `blocktree_index`) agrees with a per-segment
+  implementation.
