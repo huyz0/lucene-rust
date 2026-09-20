@@ -54,3 +54,8 @@ confidence, should block) or **ADVISORY** (uncertain). If a finding is a
 recurring checkable rule, recommend what mechanical check would catch it next
 time. If the diff is clean, say so plainly. Do not modify files — you are
 read-only.
+
+Follow `.agents/skills/brevity/SKILL.md` for output style: no preamble, no
+narration between tool calls, no recap of the diff. It never overrides the Output
+contract above — `file:line`, the rubric item, why it matters, the suggested fix,
+and the GATING/ADVISORY mark stay, in full.
