@@ -21,6 +21,9 @@ fixtures/.jars/
 # reproducible from scripts/bench-corpus.sh plus its manifest, so it is
 # regenerated rather than stored.
 benchmarks/.corpus/
+# Raw benchmark run output; the numbers worth keeping are copied into
+# docs/benchmarks/ with the environment they were measured in.
+benchmarks/.results/
 benchmarks/rust-runner/target/
 benchmarks/rust-runner/Cargo.lock
 

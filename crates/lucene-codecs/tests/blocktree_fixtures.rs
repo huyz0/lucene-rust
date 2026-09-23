@@ -1029,3 +1029,79 @@ fn postings_missing_term_returns_none() {
         .unwrap()
         .is_none());
 }
+
+/// The docs-only cursor (`PostingsFlags::DocsOnly`, Lucene's
+/// `PostingsEnum.NONE`) over Java-written bytes. It takes paths a freqs cursor
+/// never does: the header walk that seeks on `level0NumBytes` without parsing
+/// impacts (`skip_level0_headers`), a bit-set `advance` that keeps no rank,
+/// and the rank recovered from the document when a `next_doc` follows one.
+///
+/// `big`/`everywhere` is bit-set encoded, `l1`/`l1term` crosses a level-1
+/// span, `body`/`cat` is a tail block only. Each is checked against real
+/// `PostingsEnum.advance` at the manifest's targets, then walked with every
+/// third move a `next_doc`, against the eager decode that the tests above pin
+/// to Lucene's `nextDoc` output.
+#[test]
+fn docs_only_lazy_cursor_matches_real_lucene_postings() {
+    let (fields, m) = open_fixture();
+    let (doc, id, suffix) = open_doc_input(&m);
+    let doc_in = postings::DocInput::open(&doc, &id, &suffix).expect("open .doc");
+    for (field, term) in [("big", "everywhere"), ("l1", "l1term"), ("body", "cat")] {
+        let terms = fields.field(field).unwrap();
+        let open = || {
+            terms
+                .lazy_postings_with_flags(
+                    term.as_bytes(),
+                    &doc_in,
+                    postings::PostingsFlags::DocsOnly,
+                )
+                .unwrap()
+                .expect("term found")
+        };
+
+        let raw = m.get(&format!("field.{field}.term.{term}.advance.results"));
+        for entry in raw.split(';') {
+            let (target_str, outcome) = entry.split_once(':').unwrap();
+            let target: i32 = target_str.parse().unwrap();
+            let want = if outcome == "NO_MORE_DOCS" {
+                postings::NO_MORE_DOCS
+            } else {
+                outcome.split_once(',').unwrap().0.parse().unwrap()
+            };
+            let mut cursor = open();
+            assert_eq!(
+                cursor.advance(target).unwrap(),
+                want,
+                "{field}/{term} target {target}"
+            );
+        }
+
+        let docs = terms
+            .postings(term.as_bytes(), Some(&doc_in))
+            .unwrap()
+            .expect("term found")
+            .docs;
+        for gap in [1i32, 5, 64, 255, 257, 1000, 3000] {
+            let mut cursor = open();
+            let mut target = 0i32;
+            for step in 0u32.. {
+                let (got, want) = if step % 3 == 2 {
+                    let prev = cursor.doc_id();
+                    let want = docs.iter().copied().find(|&d| d > prev);
+                    (cursor.next_doc().unwrap(), want)
+                } else {
+                    let want = docs.iter().copied().find(|&d| d >= target);
+                    (cursor.advance(target).unwrap(), want)
+                };
+                let ctx = format!("{field}/{term} gap {gap} step {step}");
+                let Some(want) = want else {
+                    assert_eq!(got, postings::NO_MORE_DOCS, "{ctx}");
+                    break;
+                };
+                assert_eq!(got, want, "{ctx}");
+                assert_eq!(cursor.freq(), Some(1), "{ctx}");
+                target = got + gap;
+            }
+        }
+    }
+}

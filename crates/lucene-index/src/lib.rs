@@ -17,6 +17,7 @@ pub mod field_updates;
 pub mod index_file_deleter;
 pub mod index_writer;
 pub mod indexing_chain;
+pub mod inverter;
 pub mod merge;
 pub mod merge_policy;
 pub mod points_delete;

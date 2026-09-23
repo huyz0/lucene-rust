@@ -107,6 +107,7 @@ use std::sync::{Arc, Mutex};
 use lucene_store::codec_util::{self, ID_LENGTH};
 use lucene_store::data_input::{DataInput, SliceInput};
 
+use crate::automaton::{ByteDfa, DfaWalker, Verdict};
 use crate::field_infos::{FieldInfos, IndexOptions};
 use crate::fuzzy::FuzzyMatch;
 use crate::postings::{self, DocInput, Postings, TermMetadata};
@@ -213,6 +214,15 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// A term found by [`FieldTerms::seek_term_state`]: its statistics plus the
+/// postings pointers [`FieldTerms::lazy_postings_for`] opens it from --
+/// `TermsEnum.termState()`. Only meaningful for the field that produced it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SeekedTerm {
+    pub stats: TermStats,
+    meta: TermMetadata,
+}
 
 /// `docFreq`/`totalTermFreq` for one found term — the entirety of what this
 /// slice can read back for a term (no postings/doc-ids).
@@ -585,7 +595,7 @@ impl Frame {
             1 => decompress_lowercase_ascii(&mut r, suffixes)?,
             // `CompressionAlgorithm.LZ4.read`.
             2 => {
-                crate::lz4::decompress(&mut r, num_suffix_bytes, suffixes, 0)?;
+                crate::lz4::decompress_slice(&mut r, num_suffix_bytes, suffixes, 0)?;
             }
             _ => {
                 // `code_l & 0x03` is masked to 2 bits, so `3` is the only
@@ -1824,6 +1834,17 @@ impl<'a> TermsEnum<'a> {
         self.ste().stats().map(Some)
     }
 
+    /// [`Self::try_stats`] plus the postings pointers: the term the enum is
+    /// parked on as a [`SeekedTerm`], to open postings from without seeking
+    /// again. One metadata decode either way.
+    pub fn try_seeked_term(&mut self) -> Result<Option<SeekedTerm>> {
+        if !self.st.on_term {
+            return Ok(None);
+        }
+        let (stats, meta) = self.ste().stats_and_meta()?;
+        Ok(Some(SeekedTerm { stats, meta }))
+    }
+
     /// [`Self::try_next`] with the error dropped: a corrupt block reads as
     /// end-of-terms.
     ///
@@ -2098,6 +2119,48 @@ impl FieldTerms {
         })
     }
 
+    /// `TermsEnum.seekExact(term)` then `termState()`: the term's statistics
+    /// and postings pointers from **one** trie walk, to open postings from
+    /// with [`Self::lazy_postings_for`] -- what Lucene's `TermStates` caches
+    /// per leaf so a query seeks each term once. Calling [`Self::try_seek_exact`]
+    /// for the statistics and then [`Self::lazy_postings`] walks the trie
+    /// twice.
+    pub fn seek_term_state(&self, term: &[u8]) -> Result<Option<SeekedTerm>> {
+        Ok(self
+            .term_state(term)?
+            .map(|(stats, meta)| SeekedTerm { stats, meta }))
+    }
+
+    /// `TermsEnum.postings(null, flags)` on a term already found by
+    /// [`Self::seek_term_state`] on this same field: no second seek.
+    pub fn lazy_postings_for<'d>(
+        &self,
+        term: &SeekedTerm,
+        doc_in: &DocInput<'d>,
+        flags: postings::PostingsFlags,
+    ) -> Result<postings::LazyDocsCursor<'d>> {
+        // A pulsed single-document term has no `.doc` bytes; its one document
+        // lives in the term metadata. Opened as a one-document cursor so every
+        // caller -- a disjunction leg, a conjunction leg -- can take it like
+        // any other term.
+        if term.stats.doc_freq == 1 {
+            return Ok(doc_in.singleton_cursor(
+                term.meta,
+                term.stats.total_term_freq,
+                self.index_options,
+                self.has_payloads,
+                flags,
+            )?);
+        }
+        Ok(doc_in.lazy_cursor_with_flags(
+            term.meta,
+            term.stats.doc_freq,
+            self.index_options,
+            self.has_payloads,
+            flags,
+        )?)
+    }
+
     /// `Terms.iterator()`-equivalent: a cursor positioned before the first
     /// term, ready for [`TermsEnum::next`]/[`TermsEnum::seek_ceil`].
     pub fn iter(&self) -> TermsEnum<'_> {
@@ -2119,7 +2182,25 @@ impl FieldTerms {
         &'a self,
         pattern: &'a WildcardPattern,
     ) -> impl Iterator<Item = Result<(Vec<u8>, TermStats)>> + 'a {
-        Intersect::new(self, PrefixMatcher(pattern), pattern.literal_prefix())
+        self.intersect_states(pattern)
+            .map(|r| r.map(|(t, s)| (t, s.stats)))
+    }
+
+    /// [`Self::intersect`] yielding each match's [`SeekedTerm`], so its
+    /// postings open with [`Self::lazy_postings_for`] and no second seek --
+    /// what `MultiTermQuery`'s rewrite keeps in its `TermStates`.
+    pub fn intersect_states<'a>(
+        &'a self,
+        pattern: &'a WildcardPattern,
+    ) -> impl Iterator<Item = Result<(Vec<u8>, SeekedTerm)>> + 'a {
+        Intersect::new(
+            self,
+            DfaFiltered::new(
+                PrefixMatcher(pattern),
+                pattern.to_dfa().map(std::sync::Arc::new),
+            ),
+            pattern.literal_prefix(),
+        )
     }
 
     /// `FuzzyQuery`-equivalent term matching: every term within `pattern`'s
@@ -2131,11 +2212,14 @@ impl FieldTerms {
         FuzzyIntersect {
             inner: Intersect::new(
                 self,
-                FuzzyMatcher {
-                    pattern,
-                    max_edits: pattern.max_edits(),
-                    last_edits: 0,
-                },
+                DfaFiltered::new(
+                    FuzzyMatcher {
+                        pattern,
+                        max_edits: pattern.max_edits(),
+                        last_edits: 0,
+                    },
+                    pattern.cached_dfa(),
+                ),
                 prefix,
             ),
         }
@@ -2152,7 +2236,24 @@ impl FieldTerms {
         &'a self,
         pattern: &'a RegexpPattern,
     ) -> impl Iterator<Item = Result<(Vec<u8>, TermStats)>> + 'a {
-        Intersect::new(self, RegexpMatcher(pattern), pattern.literal_prefix())
+        self.regexp_intersect_states(pattern)
+            .map(|r| r.map(|(t, s)| (t, s.stats)))
+    }
+
+    /// [`Self::regexp_intersect`] yielding each match's [`SeekedTerm`]; see
+    /// [`Self::intersect_states`].
+    pub fn regexp_intersect_states<'a>(
+        &'a self,
+        pattern: &'a RegexpPattern,
+    ) -> impl Iterator<Item = Result<(Vec<u8>, SeekedTerm)>> + 'a {
+        Intersect::new(
+            self,
+            DfaFiltered::new(
+                RegexpMatcher(pattern),
+                pattern.to_dfa().map(std::sync::Arc::new),
+            ),
+            pattern.literal_prefix(),
+        )
     }
 
     /// `seekExact(term)` followed by `PostingsEnum` iteration
@@ -2225,6 +2326,49 @@ impl FieldTerms {
             self.has_payloads,
             flags,
         )?))
+    }
+
+    /// `TermsEnum.postings(reuse, PostingsEnum.POSITIONS)`: a lazy cursor over
+    /// `term`'s documents that decodes a document's positions only when
+    /// [`postings::PositionsCursor::next_position`] asks for them, stepping
+    /// over everyone else's. `Ok(None)` when the term is absent.
+    ///
+    /// Needs a field indexed with positions; a pulsed singleton term
+    /// (`docFreq == 1`, no `.doc` bytes) is refused the same way
+    /// [`Self::lazy_postings`] refuses it.
+    pub fn lazy_positions<'d>(
+        &self,
+        term: &[u8],
+        doc_in: &DocInput<'d>,
+        pos_in: &postings::PosInput<'d>,
+    ) -> Result<Option<postings::PositionsCursor<'d>>> {
+        let Some((stats, meta)) = self.term_state(term)? else {
+            return Ok(None);
+        };
+        if !matches!(
+            self.index_options,
+            IndexOptions::DocsAndFreqsAndPositions
+                | IndexOptions::DocsAndFreqsAndPositionsAndOffsets
+        ) {
+            return Err(Error::Postings(postings::Error::Unsupported(
+                "lazy_positions needs a field indexed with positions",
+            )));
+        }
+        let docs = doc_in.lazy_cursor_with_flags(
+            meta,
+            stats.doc_freq,
+            self.index_options,
+            self.has_payloads,
+            postings::PostingsFlags::Freqs,
+        )?;
+        Ok(Some(postings::PositionsCursor::new(
+            docs,
+            pos_in,
+            meta,
+            stats.total_term_freq,
+            self.index_options == IndexOptions::DocsAndFreqsAndPositionsAndOffsets,
+            self.has_payloads,
+        )))
     }
 
     /// `postings(term, doc_in)` followed by `PostingsEnum.nextPosition()`/
@@ -2477,12 +2621,33 @@ trait TermMatcher {
     /// re-evaluated per non-matching term to reach a compile-time constant.
     const CAN_SKIP: bool = false;
 
+    /// Whether [`Self::dead_prefix_len`] is free -- answered from state
+    /// [`Self::matches`] already computed, as a DFA's dead state is. Then
+    /// asking costs nothing, and only a skip actually taken counts toward
+    /// [`Intersect`]'s give-up heuristic.
+    const FREE_DEAD_PREFIX: bool = false;
+
+    /// [`Self::FREE_DEAD_PREFIX`] for this instance: a matcher whose answer
+    /// is free only when it holds some state (a DFA that may have been too
+    /// large to build) overrides this.
+    fn free_dead_prefix(&self) -> bool {
+        Self::FREE_DEAD_PREFIX
+    }
+
     fn matches(&mut self, term: &[u8]) -> bool;
 
     /// `k` such that no term starting with `term[..k]` can match, or `None`.
     /// The [`IntersectTermsEnum`-equivalent](FieldTerms::regexp_intersect)
     /// skip; a matcher that cannot prove this simply never skips.
     fn dead_prefix_len(&self, _term: &[u8]) -> Option<usize> {
+        None
+    }
+
+    /// Where to seek after the non-matching `term`, when the matcher can say
+    /// exactly: `Some(Some(target))` seeks to `target`, the smallest term that
+    /// could still match; `Some(None)` means no later term can match. `None`
+    /// leaves the choice to [`Self::dead_prefix_len`].
+    fn skip_target(&self, _term: &[u8]) -> Option<Option<Vec<u8>>> {
         None
     }
 }
@@ -2543,7 +2708,7 @@ impl TermMatcher for FuzzyMatcher<'_, '_> {
 /// tested against a narrower band, and the length filter rejects far more of
 /// them outright.
 pub struct FuzzyIntersect<'a> {
-    inner: Intersect<'a, FuzzyMatcher<'a, 'a>>,
+    inner: Intersect<'a, DfaFiltered<FuzzyMatcher<'a, 'a>>>,
 }
 
 impl FuzzyIntersect<'_> {
@@ -2553,14 +2718,14 @@ impl FuzzyIntersect<'_> {
     /// because widening mid-scan would make the walk yield terms it had
     /// already rejected further back, which no caller could interpret.
     pub fn set_max_edits(&mut self, max_edits: u8) {
-        if max_edits < self.inner.matcher.max_edits {
-            self.inner.matcher.max_edits = max_edits;
+        if max_edits < self.inner.matcher.inner.max_edits {
+            self.inner.matcher.inner.max_edits = max_edits;
         }
     }
 
     /// The budget currently in force.
     pub fn max_edits(&self) -> u8 {
-        self.inner.matcher.max_edits
+        self.inner.matcher.inner.max_edits
     }
 
     /// The exact edit distance of the term this walk last yielded -- what
@@ -2572,7 +2737,7 @@ impl FuzzyIntersect<'_> {
     /// a legitimate distance), which is why it is not an `Option`: every
     /// caller reads it immediately after a `Some` from [`Iterator::next`].
     pub fn last_edits(&self) -> usize {
-        self.inner.matcher.last_edits
+        self.inner.matcher.inner.last_edits
     }
 }
 
@@ -2580,7 +2745,7 @@ impl Iterator for FuzzyIntersect<'_> {
     type Item = Result<(Vec<u8>, TermStats)>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next()
+        self.inner.next().map(|r| r.map(|(t, s)| (t, s.stats)))
     }
 }
 
@@ -2596,6 +2761,83 @@ impl TermMatcher for RegexpMatcher<'_> {
     }
 }
 
+/// A [`TermMatcher`] with a superset [`ByteDfa`] in front of it -- what
+/// `CompiledAutomaton` gives `IntersectTermsEnum`.
+///
+/// The DFA is walked incrementally over the sorted terms ([`DfaWalker`]), so
+/// each term costs only the bytes it does not share with the one before. A
+/// term the DFA rejects is rejected without asking the exact matcher; a term
+/// it accepts is confirmed by the exact matcher, which stays the authority
+/// (the DFA may accept a superset -- see `crate::automaton`). And a prefix
+/// the DFA proves dead becomes the skip [`Intersect`] seeks past, exactly and
+/// for free, where the automaton-free matchers had to search for it.
+///
+/// `dfa` is `None` when the pattern could not be determinized within
+/// `automaton`'s limits; the wrapper then defers to the exact matcher alone.
+struct DfaFiltered<M: TermMatcher> {
+    inner: M,
+    dfa: Option<(std::sync::Arc<ByteDfa>, DfaWalker)>,
+    /// The dead-prefix length [`Self::matches`] found for the term it was
+    /// last handed, for [`TermMatcher::dead_prefix_len`] on the same term.
+    last_dead: Option<usize>,
+}
+
+impl<M: TermMatcher> DfaFiltered<M> {
+    fn new(inner: M, dfa: Option<std::sync::Arc<ByteDfa>>) -> Self {
+        Self {
+            inner,
+            dfa: dfa.map(|d| {
+                let w = DfaWalker::new(&d);
+                (d, w)
+            }),
+            last_dead: None,
+        }
+    }
+}
+
+impl<M: TermMatcher> TermMatcher for DfaFiltered<M> {
+    const CAN_SKIP: bool = true;
+    const FREE_DEAD_PREFIX: bool = true;
+
+    /// Free only with a DFA: without one (the pattern was too large to
+    /// determinize) the question goes to the inner matcher's own
+    /// `dead_prefix_len`, which is not free and must count toward the walk's
+    /// give-up heuristic like any other matcher's.
+    fn free_dead_prefix(&self) -> bool {
+        self.dfa.is_some()
+    }
+
+    fn matches(&mut self, term: &[u8]) -> bool {
+        if let Some((dfa, walker)) = self.dfa.as_mut() {
+            match walker.feed(dfa, term) {
+                Verdict::DeadAt(k) => {
+                    self.last_dead = Some(k);
+                    return false;
+                }
+                Verdict::Reject => {
+                    self.last_dead = None;
+                    return false;
+                }
+                Verdict::Accept => self.last_dead = None,
+            }
+        }
+        self.inner.matches(term)
+    }
+
+    fn dead_prefix_len(&self, term: &[u8]) -> Option<usize> {
+        if self.dfa.is_some() {
+            self.last_dead
+        } else {
+            self.inner.dead_prefix_len(term)
+        }
+    }
+
+    fn skip_target(&self, term: &[u8]) -> Option<Option<Vec<u8>>> {
+        let (dfa, walker) = self.dfa.as_ref()?;
+        let dead_at = self.last_dead?;
+        Some(walker.next_live_after(dfa, term, dead_at))
+    }
+}
 /// Attempts before [`Intersect`] judges whether skipping is paying.
 const SKIP_WARMUP: u32 = 128;
 
@@ -2660,7 +2902,7 @@ impl<'a, M: TermMatcher> Intersect<'a, M> {
 
     /// The body of [`Iterator::next`], with the error channel Java's
     /// `IntersectTermsEnum.next()` has (it throws `IOException`).
-    fn next_result(&mut self) -> Result<Option<(Vec<u8>, TermStats)>> {
+    fn next_result(&mut self) -> Result<Option<(Vec<u8>, SeekedTerm)>> {
         if self.done {
             return Ok(None);
         }
@@ -2694,14 +2936,14 @@ impl<'a, M: TermMatcher> Intersect<'a, M> {
                 // must never cross that boundary (AGENTS.md invariant 5). The
                 // unreachable branch reads as end-of-terms, which is what the
                 // `term()` arm above already does.
-                let Some(stats) = self.enum_.try_stats()? else {
+                let Some(seeked) = self.enum_.try_seeked_term()? else {
                     self.done = true;
                     return Ok(None);
                 };
                 if self.enum_.try_next_term()?.is_none() {
                     self.done = true;
                 }
-                return Ok(Some((bytes, stats)));
+                return Ok(Some((bytes, seeked)));
             }
 
             // Not a match. Either step to the next term, or -- when the
@@ -2718,16 +2960,28 @@ impl<'a, M: TermMatcher> Intersect<'a, M> {
             // measures: a pattern whose language is prefix-closed (`cat.*`,
             // `t.*99`) never yields a dead prefix, so every one of these
             // calls is pure loss. Count the *question*, not just the jumps.
-            let target = self
-                .matcher
-                .dead_prefix_len(term)
-                .filter(|&k| k <= term.len())
-                .and_then(|k| prefix_upper_bound(&term[..k]));
+            // A matcher that can name the next viable term (a DFA's
+            // `nextString`) is asked first; `Some(None)` means no later term can
+            // match at all, which ends the walk outright.
+            let target = match self.matcher.skip_target(term) {
+                Some(None) => {
+                    self.done = true;
+                    return Ok(None);
+                }
+                Some(Some(target)) => Some(target),
+                None => self
+                    .matcher
+                    .dead_prefix_len(term)
+                    .filter(|&k| k <= term.len())
+                    .and_then(|k| prefix_upper_bound(&term[..k])),
+            };
             // A heuristic counter: `saturating_add` is the honest semantics
             // here, because a saturated attempt count can only leave the
             // skip heuristic permanently on or off -- it can never change
             // which terms the intersection yields.
-            self.skip_attempts = self.skip_attempts.saturating_add(1);
+            if target.is_some() || !self.matcher.free_dead_prefix() {
+                self.skip_attempts = self.skip_attempts.saturating_add(1);
+            }
 
             match target {
                 None => {
@@ -2783,7 +3037,11 @@ impl<M: TermMatcher> Iterator for Intersect<'_, M> {
     /// quietly reporting fewer matching terms: a truncated term expansion is a
     /// wrong hit set, and every consumer of these iterators is inside a
     /// `Result`-returning function already.
-    type Item = Result<(Vec<u8>, TermStats)>;
+    ///
+    /// Each match comes with its [`SeekedTerm`] -- the walk decoded the
+    /// postings pointers anyway -- so a caller can open its postings with
+    /// [`FieldTerms::lazy_postings_for`] instead of seeking the term again.
+    type Item = Result<(Vec<u8>, SeekedTerm)>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.next_result() {

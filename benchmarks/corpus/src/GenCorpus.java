@@ -23,8 +23,10 @@ import java.util.*;
  * <p>Fields, chosen to cover the query shapes in the query set:
  * <ul>
  *   <li>{@code body} -- analysed text, positions + offsets (phrase, term)
- *   <li>{@code title} -- analysed text, shorter (boolean across fields)
- *   <li>{@code keyword} -- {@link StringField}, one token (term, prefix)
+ *   <li>{@code title} -- analysed text, shorter (boolean across fields), stored
+ *   <li>{@code keyword} -- {@link StringField}, one token (term, prefix), plus
+ *       {@link SortedDocValuesField} (sort-by-string, sorted doc values)
+ *   <li>{@code id} -- {@link StoredField} int (stored-field retrieval)
  *   <li>{@code num} -- {@link LongPoint} + {@link NumericDocValuesField}
  *       (points range, doc-values range, sort-by-field)
  *   <li>{@code cat} -- {@link SortedSetDocValuesField} (facet counting)
@@ -73,8 +75,11 @@ public final class GenCorpus {
             for (int i = 0; i < numDocs; i++) {
                 Document d = new Document();
                 d.add(new Field("body", sentence(rnd, vocab, cdf, 40 + rnd.nextInt(120)), bodyType));
-                d.add(new TextField("title", sentence(rnd, vocab, cdf, 3 + rnd.nextInt(8)), Field.Store.NO));
-                d.add(new StringField("keyword", vocab[zipfSample(rnd, cdf)], Field.Store.NO));
+                d.add(new TextField("title", sentence(rnd, vocab, cdf, 3 + rnd.nextInt(8)), Field.Store.YES));
+                String kw = vocab[zipfSample(rnd, cdf)];
+                d.add(new StringField("keyword", kw, Field.Store.NO));
+                d.add(new SortedDocValuesField("keyword", new org.apache.lucene.util.BytesRef(kw)));
+                d.add(new StoredField("id", i));
                 long n = rnd.nextInt(1_000_000);
                 d.add(new LongPoint("num", n));
                 d.add(new NumericDocValuesField("num", n));

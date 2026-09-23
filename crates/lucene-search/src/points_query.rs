@@ -57,10 +57,10 @@
 //! - **`PointValues.estimateDocCount`/`estimatePointCount`** -- the cost
 //!   estimate `ScorerSupplier.cost()` uses to pick a query plan. This port
 //!   has no `ScorerSupplier`/`IndexOrDocValuesQuery` planner to feed.
-//! - **Multi-segment federation.** Single already-opened segment's
-//!   `PointsReader` + one field, same scope every other query module in this
-//!   crate takes (no `IndexSearcher`/`DirectoryReader` federation exists in
-//!   this port yet).
+//! - **Multi-segment federation**, except for the top-`n` constant-score
+//!   range ([`points_range_top_n_multi_segment`], over
+//!   [`points_range_lowest_docs`] per segment). Everything else here takes a
+//!   single already-opened segment's `PointsReader` + one field.
 
 use lucene_codecs::field_infos::FieldInfos;
 use lucene_codecs::points::{IntersectVisitor, PointsReader, Relation};
@@ -166,6 +166,105 @@ pub fn search_points_range<C: Collector>(
         collector.collect(doc_id);
     }
     Ok(())
+}
+
+/// The `n` lowest live doc ids whose `field_number` value falls in
+/// `[min_packed, max_packed]`, ascending, and how many documents match in
+/// all -- what a top-`n` constant-score range query returns (every hit scores
+/// the same, so the lowest doc ids win the ties).
+///
+/// [`search_points_range`] sorts every match before handing any out, as
+/// Lucene's `DocIdSetBuilder` does; that sort is most of a selective range
+/// query's cost. When the field holds one point per document (its
+/// `pointCount == docCount`, so no doc id can repeat), the lowest `n` are
+/// found with a linear-time selection instead and only those `n` are sorted.
+/// Otherwise the matches are sorted and deduplicated as before.
+pub fn points_range_lowest_docs(
+    reader: &PointsReader<'_>,
+    live_docs: Option<&FixedBitSet>,
+    field_number: i32,
+    min_packed: &[u8],
+    max_packed: &[u8],
+    n: usize,
+) -> Result<(Vec<i32>, usize)> {
+    let Some(field) = reader.field(field_number) else {
+        return Ok((Vec::new(), 0));
+    };
+    let single_valued = field.point_count == i64::from(field.doc_count);
+    let mut docs = reader.range_query(field_number, min_packed, max_packed)?;
+    if let Some(bits) = live_docs {
+        docs.retain(|&doc_id| bits.get_doc(doc_id));
+    }
+    if single_valued && docs.len() > n {
+        let total = docs.len();
+        if n == 0 {
+            return Ok((Vec::new(), total));
+        }
+        // ARITH: `n > 0` was just checked, and `n < docs.len()`.
+        #[allow(clippy::arithmetic_side_effects)]
+        docs.select_nth_unstable(n - 1);
+        docs.truncate(n);
+        docs.sort_unstable();
+        return Ok((docs, total));
+    }
+    lucene_util::doc_id_sort::sort_dedup_doc_ids(&mut docs);
+    let total = docs.len();
+    docs.truncate(n);
+    Ok((docs, total))
+}
+
+/// One segment's points for [`points_range_top_n_multi_segment`].
+#[derive(Clone, Copy)]
+pub struct PointsSegment<'a> {
+    pub reader: &'a PointsReader<'a>,
+    pub field_number: i32,
+    pub live_docs: Option<&'a FixedBitSet>,
+    pub doc_base: i32,
+}
+
+/// `IndexSearcher.search(PointRangeQuery, n)` over several segments: the `n`
+/// lowest matching global doc ids (every hit scores the same constant, so doc
+/// id breaks the ties), ascending, with the number of hits counted and whether
+/// that count is exact.
+///
+/// Segments are visited in ascending `doc_base` order. Once `n` hits are held
+/// and more than `total_hits_threshold` have been counted -- the state in
+/// which `TopScoreDocCollector` publishes its threshold and reports its count
+/// as a lower bound -- no later segment can change the hits (its documents
+/// tie on score and lose on doc id), so the rest are not searched. The count
+/// is then a lower bound (`exact == false`), as Lucene's is.
+pub fn points_range_top_n_multi_segment(
+    segments: &[PointsSegment<'_>],
+    min_packed: &[u8],
+    max_packed: &[u8],
+    n: usize,
+    total_hits_threshold: usize,
+) -> Result<(Vec<i32>, usize, bool)> {
+    let mut order: Vec<&PointsSegment<'_>> = segments.iter().collect();
+    order.sort_by_key(|s| s.doc_base);
+    let mut hits: Vec<i32> = Vec::new();
+    let mut total = 0usize;
+    for seg in &order {
+        if hits.len() >= n && total > total_hits_threshold {
+            return Ok((hits, total, false));
+        }
+        let (docs, matched) = points_range_lowest_docs(
+            seg.reader,
+            seg.live_docs,
+            seg.field_number,
+            min_packed,
+            max_packed,
+            n,
+        )?;
+        total = total.saturating_add(matched);
+        let room = n.saturating_sub(hits.len());
+        // ARITH: a global doc id, below the reader's `max_doc`.
+        #[allow(clippy::arithmetic_side_effects)]
+        hits.extend(docs.into_iter().take(room).map(|d| d + seg.doc_base));
+    }
+    // Past the threshold the count is a lower bound even when every segment
+    // was searched, as `TopScoreDocCollector` reports it.
+    Ok((hits, total, total <= total_hits_threshold))
 }
 
 /// Port of `PointInSetQuery.MergePointVisitor` (the `numDims == 1` case):
@@ -398,6 +497,167 @@ mod tests {
         };
         let (kdm, kdi, kdd) = points::write(&[field], 512, &segment_id, "").unwrap();
         (kdm, kdi, kdd, segment_id)
+    }
+
+    /// `points_range_lowest_docs` returns the first `n` of what
+    /// `search_points_range` returns, and its full count -- on a single-valued
+    /// field (the selection path) and a multi-valued one (the sort path), with
+    /// and without deletions, for `n` below, at and above the match count.
+    #[test]
+    fn lowest_docs_is_a_prefix_of_the_full_sorted_result() {
+        let segment_id = [3u8; ID_LENGTH];
+        let mut x = 0x1357_9BDF_2468_ACE0u64;
+        let mut next = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let single: Vec<(i32, Vec<u8>)> = (0..3000)
+            .map(|d| (d, long_bytes((next() % 1000) as i64).to_vec()))
+            .collect();
+        // Every doc twice: a doc id can match more than once.
+        let multi: Vec<(i32, Vec<u8>)> = (0..3000)
+            .flat_map(|d| [(d, (next() % 1000) as i64), (d, (next() % 1000) as i64)])
+            .map(|(d, v)| (d, long_bytes(v).to_vec()))
+            .collect();
+        let mut live = FixedBitSet::new(3000);
+        for d in 0..3000 {
+            if next() % 4 != 0 {
+                live.set(d);
+            }
+        }
+        for points in [single, multi] {
+            let field = WritePointsField {
+                field_number: 1,
+                num_dims: 1,
+                num_index_dims: 1,
+                bytes_per_dim: 8,
+                points,
+            };
+            let (kdm, kdi, kdd) = points::write(&[field], 64, &segment_id, "").unwrap();
+            let reader = points::open(&kdm, &kdi, &kdd, &segment_id, "").unwrap();
+            for live_docs in [None, Some(&live)] {
+                for (lo, hi) in [(0i64, 5), (100, 400), (0, 999), (2000, 3000)] {
+                    let mut all = VecCollector::default();
+                    search_points_range(
+                        &reader,
+                        live_docs,
+                        1,
+                        &long_bytes(lo),
+                        &long_bytes(hi),
+                        &mut all,
+                    )
+                    .unwrap();
+                    for n in [0usize, 1, 10, 50, 100_000] {
+                        let (got, total) = points_range_lowest_docs(
+                            &reader,
+                            live_docs,
+                            1,
+                            &long_bytes(lo),
+                            &long_bytes(hi),
+                            n,
+                        )
+                        .unwrap();
+                        assert_eq!(total, all.docs.len(), "[{lo},{hi}] n={n}");
+                        assert_eq!(
+                            got[..],
+                            all.docs[..n.min(all.docs.len())],
+                            "[{lo},{hi}] n={n}"
+                        );
+                    }
+                }
+            }
+        }
+        let (kdm, kdi, kdd, id) = build_single_dim_fixture();
+        let reader = points::open(&kdm, &kdi, &kdd, &id, "").unwrap();
+        assert_eq!(
+            points_range_lowest_docs(&reader, None, 99, &long_bytes(0), &long_bytes(9), 5).unwrap(),
+            (Vec::new(), 0)
+        );
+    }
+
+    /// The multi-segment top-`n` returns the global lowest `n` matching doc
+    /// ids, and a count that is exact when it says so and otherwise a lower
+    /// bound past the threshold -- whatever order the segments are given in.
+    #[test]
+    fn top_n_multi_segment_matches_a_brute_force_merge() {
+        let segment_id = [4u8; ID_LENGTH];
+        let mut x = 0xDEAD_10CC_BEEF_CAFEu64;
+        let mut next = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let mut files = Vec::new();
+        let mut values: Vec<Vec<i64>> = Vec::new();
+        for _ in 0..5 {
+            let n = 50 + (next() % 800) as i32;
+            let vals: Vec<i64> = (0..n).map(|_| (next() % 1000) as i64).collect();
+            let points = vals
+                .iter()
+                .enumerate()
+                .map(|(d, &v)| (d as i32, long_bytes(v).to_vec()))
+                .collect();
+            let field = WritePointsField {
+                field_number: 1,
+                num_dims: 1,
+                num_index_dims: 1,
+                bytes_per_dim: 8,
+                points,
+            };
+            files.push(points::write(&[field], 64, &segment_id, "").unwrap());
+            values.push(vals);
+        }
+        let readers: Vec<PointsReader<'_>> = files
+            .iter()
+            .map(|(kdm, kdi, kdd)| points::open(kdm, kdi, kdd, &segment_id, "").unwrap())
+            .collect();
+        let mut base = 0i32;
+        let mut segs: Vec<PointsSegment<'_>> = Vec::new();
+        for (r, vals) in readers.iter().zip(&values) {
+            segs.push(PointsSegment {
+                reader: r,
+                field_number: 1,
+                live_docs: None,
+                doc_base: base,
+            });
+            base += vals.len() as i32;
+        }
+        for (lo, hi) in [(0i64, 10), (0, 300), (0, 999), (5000, 6000)] {
+            let mut all = Vec::new();
+            let mut b = 0i32;
+            for vals in &values {
+                for (d, &v) in vals.iter().enumerate() {
+                    if v >= lo && v <= hi {
+                        all.push(b + d as i32);
+                    }
+                }
+                b += vals.len() as i32;
+            }
+            for (n, threshold) in [(0usize, 0usize), (10, 5), (50, 1000), (3000, 100_000)] {
+                // Same answer whatever order the segments arrive in.
+                let mut shuffled = segs.clone();
+                shuffled.reverse();
+                for input in [&segs, &shuffled] {
+                    let (hits, total, exact) = points_range_top_n_multi_segment(
+                        input,
+                        &long_bytes(lo),
+                        &long_bytes(hi),
+                        n,
+                        threshold,
+                    )
+                    .unwrap();
+                    assert_eq!(hits[..], all[..n.min(all.len())], "[{lo},{hi}] n={n}");
+                    if exact {
+                        assert_eq!(total, all.len());
+                    } else {
+                        assert!(total > threshold && total <= all.len());
+                    }
+                }
+            }
+        }
     }
 
     /// 2D `LatLonPoint`-shaped fixture: doc 0 -> (0, 0), doc 1 -> (10, 10),

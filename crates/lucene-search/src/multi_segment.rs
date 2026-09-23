@@ -56,6 +56,23 @@
 //! collector a second time reproduces the same global ranking a single
 //! flat collector over all segments' hits would have produced.
 //!
+//! ## The sequential entry points share one collector
+//!
+//! Per-segment collectors are what the *concurrent* entry points need (each
+//! rayon task owns its own), but a sequential search that gave every leaf a
+//! fresh collector threw away the one thing Lucene's single-threaded
+//! `IndexSearcher.search` carries from leaf to leaf: the competitive
+//! threshold. Each leaf restarted at "everything is competitive", filled its
+//! own top-`top_n`, and only then began skipping blocks -- on the 15-segment
+//! benchmark corpus that made 17 of 28 queries slower than Lucene while the
+//! same queries on the merged index were all faster.
+//! [`search_term_query_multi_segment`], [`search_boolean_query_multi_segment`]
+//! and [`search_boolean_query_multi_segment_maxscore`] therefore run through
+//! [`search_leaves_shared`]: one [`TopDocsCollector`] for the whole reader,
+//! seen by each leaf through a doc-base-shifting
+//! [`crate::collector::LeafCollector`]. The hits are the same (same comparator,
+//! same global tie-break); only the amount of work differs.
+//!
 //! ## Scope decision: reader-wide BM25 idf, matching Lucene
 //!
 //! Real Lucene's default `BM25Similarity` computes `idf` from
@@ -82,7 +99,8 @@
 //! two are identical, so nothing caught it until the multi-segment benchmark ran.
 
 use crate::collector::{
-    FieldValueDoc, ScoreDoc, ScoringCollector, SortDirection, TopDocsCollector, TopFieldCollector,
+    FieldValueDoc, LeafCollector, ScoreDoc, ScoringCollector, SortDirection, TopDocsCollector,
+    TopFieldCollector,
 };
 use crate::field_norms::FieldNorms;
 use crate::query::{BooleanQuery, TermQuery};
@@ -147,6 +165,36 @@ where
         }
     }
     Ok(merged.top_docs().to_vec())
+}
+
+/// `IndexSearcher.search(query, n)` over several segments the way Lucene runs
+/// it single-threaded: **one** [`TopDocsCollector`], handed to each leaf in
+/// turn through a [`LeafCollector`] that shifts its doc ids by `doc_base`.
+///
+/// Returns the same hits as [`merge_multi_segment_scored`] -- the global top
+/// `top_n` by score, ties to the lower global doc id -- but each leaf prunes
+/// against the threshold every earlier leaf has already raised, instead of
+/// starting from nothing. See [`LeafCollector`] for why leaves must be (and
+/// here are) visited in ascending `doc_base` order.
+pub fn search_leaves_shared<F>(
+    doc_bases: &[i32],
+    top_n: usize,
+    mut per_segment_search: F,
+) -> Result<Vec<ScoreDoc>>
+where
+    F: FnMut(usize, &mut LeafCollector<'_, TopDocsCollector>) -> Result<()>,
+{
+    // Visited in ascending `doc_base` order whatever order the caller lists
+    // them in: the pruning rule (a later document loses a tie) is only sound
+    // then. `per_segment_search` still receives each segment's own index.
+    let mut order: Vec<usize> = (0..doc_bases.len()).collect();
+    order.sort_by_key(|&i| doc_bases[i]);
+    let mut shared = TopDocsCollector::new(top_n);
+    for i in order {
+        let mut leaf = LeafCollector::new(&mut shared, doc_bases[i]);
+        per_segment_search(i, &mut leaf)?;
+    }
+    Ok(shared.top_docs().to_vec())
 }
 
 /// `IndexSearcher.searchAfter(after, query, n)` over several segments: the same
@@ -653,7 +701,7 @@ pub fn search_term_query_multi_segment(
     // multi-segment index; see CollectionStats.
     let global = global_term_stats(segments, &query.field, &query.term)?;
     let doc_bases: Vec<i32> = segments.iter().map(|s| s.doc_base).collect();
-    merge_multi_segment_scored(&doc_bases, top_n, |i, local| {
+    search_leaves_shared(&doc_bases, top_n, |i, local| {
         let seg = &segments[i];
         let seg_norms = norms.get(i).copied().flatten();
         crate::search_term_query_scored_maxscore_with_stats(
@@ -773,7 +821,7 @@ pub fn search_boolean_query_multi_segment(
     );
     let global = global_boolean_stats(segments, query)?;
     let doc_bases: Vec<i32> = segments.iter().map(|s| s.doc_base).collect();
-    merge_multi_segment_scored(&doc_bases, top_n, |i, local| {
+    search_leaves_shared(&doc_bases, top_n, |i, local| {
         let seg = &segments[i];
         let seg_norms = norms.get(i).copied().flatten();
         crate::search_boolean_query_scored_with_stats(
@@ -865,7 +913,7 @@ pub fn search_boolean_query_multi_segment_maxscore(
     );
     let global = global_boolean_stats(segments, query)?;
     let doc_bases: Vec<i32> = segments.iter().map(|s| s.doc_base).collect();
-    merge_multi_segment_scored(&doc_bases, top_n, |i, local| {
+    search_leaves_shared(&doc_bases, top_n, |i, local| {
         let seg = &segments[i];
         let seg_norms = norms.get(i).copied().flatten();
         crate::search_boolean_query_scored_maxscore_with_stats(
@@ -1036,10 +1084,17 @@ pub fn search_numeric_range_sorted_by_field_multi_segment(
     missing: MissingValue,
     top_n: usize,
 ) -> Result<Vec<FieldValueDoc>> {
-    let doc_bases: Vec<i32> = segments.iter().map(|s| s.doc_base).collect();
-    merge_multi_segment_by_field(&doc_bases, top_n, direction, |i, local| {
-        let seg = &segments[i];
-        let hits = doc_value_query::search_numeric_range_sorted_by_field(
+    // One collector for the whole reader, as Lucene's `TopFieldCollector` is:
+    // each segment offers against the bottom the earlier ones set, rather than
+    // filling a top-`top_n` of its own that the merge then mostly discards.
+    // Same comparator and global tie-break as the per-segment merge, so the
+    // same hits -- provided the segments come in ascending `doc_base` order,
+    // which is what makes "ties go to the lower doc id" hold across them.
+    let mut order: Vec<&DocValueSegment<'_>> = segments.iter().collect();
+    order.sort_by_key(|s| s.doc_base);
+    let mut collector = TopFieldCollector::new(top_n, direction);
+    for seg in order {
+        doc_value_query::collect_numeric_range_sorted_by_field(
             seg.range_data,
             seg.range_entry,
             seg.live_docs,
@@ -1048,15 +1103,120 @@ pub fn search_numeric_range_sorted_by_field_multi_segment(
             max,
             seg.sort_data,
             seg.sort_entry,
-            direction,
             missing,
-            top_n,
+            seg.doc_base,
+            &mut collector,
         )?;
-        for hit in hits {
-            local.offer(hit.doc_id, hit.value);
+    }
+    Ok(collector.top_docs().to_vec())
+}
+
+/// A segment's BKD tree for the sort column: the `LongPoint` field indexed
+/// under the same values as the doc-values column being sorted on --
+/// Lucene's precondition for `NumericComparator` to use points at all.
+#[derive(Clone, Copy)]
+pub struct SortPoints<'a> {
+    pub reader: &'a lucene_codecs::points::PointsReader<'a>,
+    pub field_number: i32,
+}
+
+/// [`search_numeric_range_sorted_by_field_multi_segment`] that also skips
+/// non-competitive documents with the sort field's points --
+/// `NumericComparator`'s competitive iterator.
+///
+/// Once the shared collector is full, a later segment can only contribute a
+/// document whose value strictly beats the collector's bottom (a tie loses on
+/// doc id), so instead of scanning every document of the segment it asks the
+/// BKD tree for the documents in `[min, bottom - 1]` (ascending; `[bottom + 1,
+/// max]` descending) and offers only those. A segment whose points cannot hold
+/// such a value costs one tree lookup. On a many-segment index most segments
+/// are decided this way after the first fills the collector.
+///
+/// `points[i]` pairs with `segments[i]`; `None` scans that segment as the
+/// plain function does. The pruning is used only where it cannot change the
+/// result: the range and the sort are one column, a one-dimensional 8-byte
+/// point field is supplied for it, and documents without a value are excluded
+/// ([`MissingValue::Exclude`] -- a default value would have no point).
+#[allow(clippy::too_many_arguments)]
+pub fn search_numeric_range_sorted_by_field_multi_segment_with_points(
+    segments: &[DocValueSegment<'_>],
+    points: &[Option<SortPoints<'_>>],
+    min: i64,
+    max: i64,
+    direction: SortDirection,
+    missing: MissingValue,
+    top_n: usize,
+) -> Result<Vec<FieldValueDoc>> {
+    let mut order: Vec<usize> = (0..segments.len()).collect();
+    order.sort_by_key(|&i| segments[i].doc_base);
+    let mut collector = TopFieldCollector::new(top_n, direction);
+    for i in order {
+        let seg = &segments[i];
+        let same_column = std::ptr::eq(seg.range_data, seg.sort_data)
+            && std::ptr::eq(seg.range_entry, seg.sort_entry);
+        let usable = matches!(missing, MissingValue::Exclude)
+            && same_column
+            && points.get(i).copied().flatten().is_some_and(|p| {
+                p.reader
+                    .field(p.field_number)
+                    .is_some_and(|f| f.num_dims == 1 && f.bytes_per_dim == 8)
+            });
+        if let (true, Some(bottom)) = (usable, collector.bottom_value()) {
+            // The competitive sub-range of `[min, max]`; empty means nothing in
+            // this segment can enter.
+            let (lo, hi) = match direction {
+                SortDirection::Ascending => (Some(min), bottom.checked_sub(1).map(|b| b.min(max))),
+                SortDirection::Descending => (bottom.checked_add(1).map(|b| b.max(min)), Some(max)),
+            };
+            let (Some(lo), Some(hi)) = (lo, hi) else {
+                continue;
+            };
+            if lo > hi {
+                continue;
+            }
+            let Some(p) = points.get(i).copied().flatten() else {
+                continue;
+            };
+            let mut hits = crate::collector::VecCollector::default();
+            crate::points_query::search_points_range(
+                p.reader,
+                seg.live_docs,
+                p.field_number,
+                &crate::points_query::pack_i64(lo),
+                &crate::points_query::pack_i64(hi),
+                &mut hits,
+            )?;
+            let docs = hits.docs;
+            let mut values =
+                lucene_codecs::doc_values::NumericReader::new(seg.sort_data, seg.sort_entry);
+            for doc in docs {
+                // The doc-values column is the source of truth for the value
+                // (as in Java); the points only chose which documents to read.
+                if let Some(v) = values.value(doc)? {
+                    if v >= min && v <= max {
+                        // ARITH: a global doc id, below the reader's `max_doc`.
+                        #[allow(clippy::arithmetic_side_effects)]
+                        collector.offer(seg.doc_base + doc, v);
+                    }
+                }
+            }
+            continue;
         }
-        Ok(())
-    })
+        doc_value_query::collect_numeric_range_sorted_by_field(
+            seg.range_data,
+            seg.range_entry,
+            seg.live_docs,
+            seg.max_doc,
+            min,
+            max,
+            seg.sort_data,
+            seg.sort_entry,
+            missing,
+            seg.doc_base,
+            &mut collector,
+        )?;
+    }
+    Ok(collector.top_docs().to_vec())
 }
 
 #[cfg(test)]
@@ -1554,6 +1714,83 @@ mod tests {
         }
     }
 
+    /// The shared-collector driver must return exactly what the
+    /// collector-per-leaf merge returns -- same hits, same order, same tie-break
+    /// across leaves -- on inputs with many cross-leaf score ties.
+    #[test]
+    fn shared_collector_matches_the_per_leaf_merge() {
+        let mut x = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        for round in 0..200 {
+            let leaves = 1 + (next() % 6) as usize;
+            let mut doc_bases = Vec::new();
+            let mut hits: Vec<Vec<(i32, f32)>> = Vec::new();
+            let mut base = 0i32;
+            for _ in 0..leaves {
+                doc_bases.push(base);
+                let max_doc = (next() % 40) as i32;
+                // Coarse scores, so ties across leaves are common.
+                let mut leaf = Vec::new();
+                for d in 0..max_doc {
+                    if next() % 3 != 0 {
+                        leaf.push((d, (next() % 5) as f32));
+                    }
+                }
+                hits.push(leaf);
+                base += max_doc;
+            }
+            for top_n in [0usize, 1, 3, 10, 100] {
+                let per_leaf = merge_multi_segment_scored(&doc_bases, top_n, |i, local| {
+                    hits[i].iter().for_each(|&(d, s)| local.collect(d, s));
+                    Ok(())
+                })
+                .unwrap();
+                let shared = search_leaves_shared(&doc_bases, top_n, |i, leaf| {
+                    hits[i].iter().for_each(|&(d, s)| leaf.collect(d, s));
+                    Ok(())
+                })
+                .unwrap();
+                assert_eq!(per_leaf, shared, "round {round} top_n {top_n}");
+            }
+        }
+    }
+
+    /// The point of sharing: a later leaf sees the threshold the earlier ones
+    /// raised, and a leaf's error still aborts the search.
+    #[test]
+    fn shared_collector_carries_the_threshold_into_later_leaves() {
+        let mut seen = Vec::new();
+        search_leaves_shared(&[0, 100], 2, |i, leaf| {
+            seen.push(leaf.min_competitive_score());
+            assert_eq!(leaf.score_mode(), TopDocsCollector::new(2).score_mode());
+            let _ = leaf.pruning_threshold();
+            let _ = leaf.constant_score_hits_needed();
+            if i == 0 {
+                for d in 0..2000 {
+                    leaf.collect(d % 100, 3.0);
+                }
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(seen[0], None);
+        assert!(seen[1].is_some(), "{seen:?}");
+
+        let err = search_leaves_shared(&[0, 5], 2, |i, _| {
+            if i == 1 {
+                Err(crate::Error::MissingPointsInput("x".into()))
+            } else {
+                Ok(())
+            }
+        });
+        assert!(err.is_err());
+    }
+
     #[test]
     fn merges_interleaved_scores_across_three_segments_in_global_order() {
         // Segment 0: local docs 0,1,2 -> doc_base 0 -> global 0,1,2.
@@ -1929,6 +2166,103 @@ mod tests {
         let fis = numeric_field_infos(0);
         let (_, meta) = lucene_codecs::doc_values::parse_meta(&dvm, &seg_id, "", &fis).unwrap();
         (dvd, meta.numeric_entry(0).unwrap().clone())
+    }
+
+    /// The points-pruned sort returns exactly what scanning every segment
+    /// returns, whichever segments carry points, in both directions, for
+    /// several page sizes and ranges -- values drawn from a small domain so
+    /// ties across segments are everywhere.
+    #[test]
+    fn sort_by_field_with_points_matches_the_full_scan() {
+        let seg_id = [7u8; lucene_store::codec_util::ID_LENGTH];
+        let mut x = 0x0DDB_1A5E_5BAD_5EEDu64;
+        let mut next = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let mut built = Vec::new();
+        for _ in 0..6 {
+            let n = 1 + (next() % 400) as usize;
+            let values: Vec<i64> = (0..n).map(|_| (next() % 500) as i64 - 100).collect();
+            let (dvd, entry) = write_numeric_segment(&values);
+            let points: Vec<(i32, Vec<u8>)> = values
+                .iter()
+                .enumerate()
+                .map(|(d, &v)| (d as i32, crate::points_query::pack_i64(v).to_vec()))
+                .collect();
+            let (kdm, kdi, kdd) = lucene_codecs::points::write(
+                &[lucene_codecs::points::WritePointsField {
+                    field_number: 0,
+                    num_dims: 1,
+                    num_index_dims: 1,
+                    bytes_per_dim: 8,
+                    points,
+                }],
+                64,
+                &seg_id,
+                "",
+            )
+            .unwrap();
+            built.push((n, dvd, entry, kdm, kdi, kdd));
+        }
+        let readers: Vec<_> = built
+            .iter()
+            .map(|(_, _, _, kdm, kdi, kdd)| {
+                lucene_codecs::points::open(kdm, kdi, kdd, &seg_id, "").unwrap()
+            })
+            .collect();
+        let mut base = 0i32;
+        let segments: Vec<DocValueSegment<'_>> = built
+            .iter()
+            .map(|(n, dvd, entry, ..)| {
+                let s = DocValueSegment {
+                    range_data: dvd,
+                    range_entry: entry,
+                    sort_data: dvd,
+                    sort_entry: entry,
+                    live_docs: None,
+                    max_doc: *n as i32,
+                    doc_base: base,
+                };
+                base += *n as i32;
+                s
+            })
+            .collect();
+        for mask in [0b111111u32, 0b101010, 0] {
+            let points: Vec<Option<SortPoints<'_>>> = readers
+                .iter()
+                .enumerate()
+                .map(|(i, r)| {
+                    (mask >> i & 1 == 1).then_some(SortPoints {
+                        reader: r,
+                        field_number: 0,
+                    })
+                })
+                .collect();
+            for direction in [SortDirection::Ascending, SortDirection::Descending] {
+                for top_n in [1usize, 3, 10, 50, 5000] {
+                    for (min, max) in [(i64::MIN, i64::MAX), (-50, 120), (390, 399), (1000, 2000)] {
+                        for missing in [MissingValue::Exclude, MissingValue::Default(7)] {
+                            let want = search_numeric_range_sorted_by_field_multi_segment(
+                                &segments, min, max, direction, missing, top_n,
+                            )
+                            .unwrap();
+                            let got =
+                                search_numeric_range_sorted_by_field_multi_segment_with_points(
+                                    &segments, &points, min, max, direction, missing, top_n,
+                                )
+                                .unwrap();
+                            assert_eq!(
+                                got, want,
+                                "mask {mask:b} {direction:?} n={top_n} [{min},{max}]"
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]

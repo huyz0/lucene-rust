@@ -1,9 +1,12 @@
 //! Port of `org.apache.lucene.util.packed.DirectReader.getInstance(...).get(index)`.
 //!
-//! Generalized into a single bit-position formula instead of Java's thirteen
-//! width-specialized `DirectPackedReaderN` classes: those exist to give the
-//! JIT a monomorphic call site per width, a concern this port doesn't have
-//! yet (no hot per-doc-value loop). Shared by [`crate::doc_values`] (plain
+//! [`get`] is one generic bit-position formula for any width, re-validated per
+//! call. Lucene's fourteen width-specialized `DirectPackedReaderNN` classes
+//! give each JIT call site a monomorphic reader; the equivalent here is
+//! [`DirectReader::with_width`], which runs a caller's loop in a body compiled
+//! for one width ([`FixedWidthReader`]). The engine's own readers do not use
+//! it yet: they call [`get`] per value (dense doc values go through
+//! `lucene_util::packed_longs::PackedLongs` instead). Shared by [`crate::doc_values`] (plain
 //! bit-packed value arrays) and [`crate::direct_monotonic`] (each block's
 //! deltas-from-expected-average array).
 //!
@@ -26,6 +29,7 @@ use lucene_store::Result;
 ///
 /// `index` addresses the `index`-th `bits_per_value`-wide value packed
 /// little-endian (LSB-first within each byte) starting at byte 0 of `slice`.
+#[inline]
 pub fn get(slice: &[u8], bits_per_value: u8, index: i64) -> Result<i64> {
     if !is_supported_bits(bits_per_value) {
         return Err(lucene_store::Error::Corrupted(format!(
@@ -112,6 +116,170 @@ pub fn get(slice: &[u8], bits_per_value: u8, index: i64) -> Result<i64> {
         (1u64 << bits_per_value) - 1
     };
     Ok((acc & mask) as i64)
+}
+
+/// `DirectReader.getInstance(slice, bitsPerValue)`: a reader for one packed
+/// array whose width is checked once, here, rather than on every read as
+/// [`get`] must.
+///
+/// Lucene hands back one of fourteen width-specialized `LongValues` classes;
+/// the call site sees a monomorphic `get` that is a load, a shift and a mask.
+/// [`get`] re-validates the width and does its arithmetic with the width as a
+/// variable: against a monomorphic Lucene call site that measured 0.57-0.94x
+/// on every width but one. This validates once. [`Self::get`] still picks the
+/// width per call, which a hot loop pays for (a per-call dispatch measured
+/// slower than the generic formula); a loop should run inside
+/// [`Self::with_width`], whose [`FixedWidthReader`] is 1.08-1.33x Lucene at
+/// every width. Near the end of an unpadded slice both defer to [`get`], so
+/// errors are unchanged.
+#[derive(Debug, Clone, Copy)]
+pub struct DirectReader<'a> {
+    slice: &'a [u8],
+    bits_per_value: u8,
+}
+
+impl<'a> DirectReader<'a> {
+    /// `Err` for a width `DirectWriter` cannot emit, as [`get`] reports it.
+    pub fn new(slice: &'a [u8], bits_per_value: u8) -> Result<Self> {
+        if !is_supported_bits(bits_per_value) {
+            return Err(lucene_store::Error::Corrupted(format!(
+                "unsupported DirectReader bitsPerValue: {bits_per_value}"
+            )));
+        }
+        Ok(DirectReader {
+            slice,
+            bits_per_value,
+        })
+    }
+
+    /// The `index`-th value; the same answer and the same errors as [`get`].
+    ///
+    /// Dispatched on the width, per call, to a body where it is a constant;
+    /// for one-off reads. A loop belongs in [`Self::with_width`]. Anything the
+    /// fast body cannot answer -- an index near the end of an unpadded slice,
+    /// a negative one -- goes to [`get`], so errors are unchanged.
+    #[inline]
+    pub fn get(&self, index: i64) -> Result<i64> {
+        let fast = match self.bits_per_value {
+            1 => read_at_width::<1>(self.slice, index),
+            2 => read_at_width::<2>(self.slice, index),
+            4 => read_at_width::<4>(self.slice, index),
+            8 => read_at_width::<8>(self.slice, index),
+            12 => read_at_width::<12>(self.slice, index),
+            16 => read_at_width::<16>(self.slice, index),
+            20 => read_at_width::<20>(self.slice, index),
+            24 => read_at_width::<24>(self.slice, index),
+            28 => read_at_width::<28>(self.slice, index),
+            32 => read_at_width::<32>(self.slice, index),
+            40 => read_at_width::<40>(self.slice, index),
+            48 => read_at_width::<48>(self.slice, index),
+            56 => read_at_width::<56>(self.slice, index),
+            64 => read_at_width::<64>(self.slice, index),
+            _ => None,
+        };
+        match fast {
+            Some(v) => Ok(v),
+            None => get(self.slice, self.bits_per_value, index),
+        }
+    }
+
+    /// Runs `visitor` with this reader at a compile-time width: the dispatch
+    /// happens once, here, and the visitor's loop is compiled per width.
+    ///
+    /// This is what gives a Rust loop what a monomorphic Lucene call site
+    /// gets from `DirectPackedReaderNN`. [`Self::get`] dispatches on every
+    /// call, and a hot loop pays that jump each time; a loop inside
+    /// [`WidthVisitor::visit`] reads through [`FixedWidthReader::get`], whose
+    /// width is a constant.
+    pub fn with_width<V: WidthVisitor>(&self, visitor: V) -> V::Output {
+        let slice = self.slice;
+        match self.bits_per_value {
+            1 => visitor.visit(FixedWidthReader::<1>::new(slice)),
+            2 => visitor.visit(FixedWidthReader::<2>::new(slice)),
+            4 => visitor.visit(FixedWidthReader::<4>::new(slice)),
+            8 => visitor.visit(FixedWidthReader::<8>::new(slice)),
+            12 => visitor.visit(FixedWidthReader::<12>::new(slice)),
+            16 => visitor.visit(FixedWidthReader::<16>::new(slice)),
+            20 => visitor.visit(FixedWidthReader::<20>::new(slice)),
+            24 => visitor.visit(FixedWidthReader::<24>::new(slice)),
+            28 => visitor.visit(FixedWidthReader::<28>::new(slice)),
+            32 => visitor.visit(FixedWidthReader::<32>::new(slice)),
+            40 => visitor.visit(FixedWidthReader::<40>::new(slice)),
+            48 => visitor.visit(FixedWidthReader::<48>::new(slice)),
+            56 => visitor.visit(FixedWidthReader::<56>::new(slice)),
+            // `new` admits only supported widths, and 64 is the last.
+            _ => visitor.visit(FixedWidthReader::<64>::new(slice)),
+        }
+    }
+}
+
+/// A computation over a [`DirectReader`] at a compile-time width; see
+/// [`DirectReader::with_width`].
+pub trait WidthVisitor {
+    type Output;
+    fn visit<const B: u32>(self, reader: FixedWidthReader<'_, B>) -> Self::Output;
+}
+
+/// A [`DirectReader`] whose width `B` is a constant.
+#[derive(Debug, Clone, Copy)]
+pub struct FixedWidthReader<'a, const B: u32> {
+    slice: &'a [u8],
+    // One comparison and an unchecked load per read, as `PackedLongs` does:
+    // a safe slice read here costs two bounds checks, and measured 25%
+    // behind Lucene's per-width readers.
+    fast: lucene_util::packed_longs::FixedPackedLongs<'a, B>,
+}
+
+impl<'a, const B: u32> FixedWidthReader<'a, B> {
+    fn new(slice: &'a [u8]) -> Self {
+        FixedWidthReader {
+            slice,
+            fast: lucene_util::packed_longs::FixedPackedLongs::new(slice),
+        }
+    }
+
+    /// The `index`-th value; the same answer and the same errors as [`get`].
+    #[inline(always)]
+    pub fn get(&self, index: i64) -> Result<i64> {
+        // A negative index cast to `u64` is above every fast limit, so the
+        // one comparison inside `get` also sends it to the checked path --
+        // no separate sign test (Java's segment bounds check is one compare
+        // too).
+        if let Some(v) = self.fast.get(index as u64) {
+            return Ok(v as i64);
+        }
+        get(self.slice, B as u8, index)
+    }
+}
+
+/// The `index`-th value at the constant width `B`, or `None` where [`get`]
+/// must answer (a negative or overflowing index, fewer bytes left than the
+/// read needs). Byte-aligned widths are one plain load of exactly their
+/// bytes, as `DirectPackedReader8/16/32/64` read them; the others a constant
+/// multiply, shift and mask.
+#[inline(always)]
+fn read_at_width<const B: u8>(slice: &[u8], index: i64) -> Option<i64> {
+    let index = u64::try_from(index).ok()?;
+    let bit_pos = index.checked_mul(u64::from(B))?;
+    let byte_pos = usize::try_from(bit_pos >> 3).ok()?;
+    let tail = slice.get(byte_pos..)?;
+    let value = match B {
+        // Whole bytes: exactly the value's own bytes, as
+        // `DirectPackedReader8/16/32/64` read them.
+        8 => u64::from(*tail.first()?),
+        16 => u64::from(u16::from_le_bytes(*tail.first_chunk::<2>()?)),
+        32 => u64::from(u32::from_le_bytes(*tail.first_chunk::<4>()?)),
+        64 => u64::from_le_bytes(*tail.first_chunk::<8>()?),
+        // Widths dividing 8 never straddle a byte.
+        1 | 2 | 4 => u64::from(*tail.first()? >> (bit_pos & 7)),
+        // Everything else fits one eight-byte window: the shift is
+        // non-zero only for widths up to 28, and `shift + B <= 35`.
+        _ => u64::from_le_bytes(*tail.first_chunk::<8>()?) >> (bit_pos & 7),
+    };
+    let mask = u64::MAX
+        .checked_shr(64u32.saturating_sub(u32::from(B)))
+        .unwrap_or(0);
+    Some((value & mask) as i64)
 }
 
 /// Port of `DirectWriter.add`/`flush`'s bit-packing (encode side of [`get`]):
@@ -235,6 +403,71 @@ mod tests {
     #![allow(clippy::arithmetic_side_effects)]
 
     use super::*;
+
+    /// The reader agrees with [`get`] on every width, including the values
+    /// in the last eight bytes of an *unpadded* slice (where it has to defer)
+    /// and indices past the end (where both must report the same error).
+    #[test]
+    fn direct_reader_agrees_with_get_at_every_width_and_at_the_end() {
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        for bits in (0..=64u8).filter(|&b| is_supported_bits(b)) {
+            let mask = u64::MAX.checked_shr(64 - u32::from(bits)).unwrap_or(0);
+            let values: Vec<i64> = (0..77)
+                .map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    (state & mask) as i64
+                })
+                .collect();
+            let packed = encode(&values, bits);
+            let reader = DirectReader::new(&packed, bits).unwrap();
+            for index in (0..90i64).chain([-1, -9, i64::MIN, i64::MAX, i64::MAX / 8]) {
+                let want = get(&packed, bits, index);
+                let got = reader.get(index);
+                assert_eq!(
+                    format!("{got:?}"),
+                    format!("{want:?}"),
+                    "bits {bits} index {index}"
+                );
+                if let Some(&v) = values.get(index as usize) {
+                    assert_eq!(got.unwrap(), v, "bits {bits} index {index}");
+                }
+            }
+        }
+        // The same through `with_width`, whose visitor sees the width as a
+        // constant: every arm of its dispatch, and every width's fast body.
+        struct Compare<'v> {
+            packed: &'v [u8],
+            bits: u8,
+        }
+        impl WidthVisitor for Compare<'_> {
+            type Output = usize;
+            fn visit<const B: u32>(self, reader: FixedWidthReader<'_, B>) -> usize {
+                assert_eq!(B, u32::from(self.bits));
+                for index in (0..90i64).chain([-1, i64::MIN, i64::MAX]) {
+                    assert_eq!(
+                        format!("{:?}", reader.get(index)),
+                        format!("{:?}", get(self.packed, self.bits, index)),
+                        "bits {B} index {index}"
+                    );
+                }
+                B as usize
+            }
+        }
+        for bits in (0..=64u8).filter(|&b| is_supported_bits(b)) {
+            let values: Vec<i64> = (0..77).map(|i| i * 7 % 3).collect();
+            let packed = encode(&values, bits);
+            let reader = DirectReader::new(&packed, bits).unwrap();
+            let seen = reader.with_width(Compare {
+                packed: &packed,
+                bits,
+            });
+            assert_eq!(seen, usize::from(bits));
+        }
+        assert!(DirectReader::new(&[0u8; 16], 3).is_err());
+        assert!(DirectReader::new(&[0u8; 16], 65).is_err());
+    }
 
     #[test]
     fn every_byte_aligned_width_round_trips() {

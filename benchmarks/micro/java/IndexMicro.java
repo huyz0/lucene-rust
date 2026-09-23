@@ -2,7 +2,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Comparator;
-import org.apache.lucene.analysis.core.WhitespaceAnalyzer;
+import org.apache.lucene.analysis.standard.StandardAnalyzer;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.FieldType;
@@ -56,12 +56,15 @@ public final class IndexMicro {
         FieldType bodyType = new FieldType();
         bodyType.setIndexOptions(IndexOptions.DOCS_AND_FREQS);
         bodyType.setTokenized(true);
-        bodyType.setStored(false);
+        // Stored, and analyzed with StandardAnalyzer: this port's IndexWriter
+        // stores every field it is given and analyzes with the standard chain,
+        // so a Java side that skipped both would be measuring less work.
+        bodyType.setStored(true);
         bodyType.freeze();
 
         long start;
         try (FSDirectory dir = FSDirectory.open(out);
-             IndexWriter w = new IndexWriter(dir, new IndexWriterConfig(new WhitespaceAnalyzer()))) {
+             IndexWriter w = new IndexWriter(dir, new IndexWriterConfig(new StandardAnalyzer()))) {
             start = System.nanoTime();
             for (int d = 0; d < nDocs; d++) {
                 Document doc = new Document();
@@ -73,6 +76,8 @@ public final class IndexMicro {
         }
         double ns = System.nanoTime() - start;
         // Nanoseconds per document -- same units as index_bench.rs on the Rust side.
-        System.out.printf("index\t%.3f\t%d%n", ns / nDocs, nDocs);
+        // Named like index_bench.rs's default arm (`index[freqs]`: body indexed
+        // DOCS_AND_FREQS, as here), or the report has no case to join them on.
+        System.out.printf("index[freqs]\t%.3f\t%d%n", ns / nDocs, nDocs);
     }
 }

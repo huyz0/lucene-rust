@@ -194,9 +194,7 @@ fn main() {
                 value: FieldValue::Long(((i * 104_729) % n_docs) as i64),
             });
         }
-        docs.push(Document {
-            fields: doc_fields,
-        });
+        docs.push(Document { fields: doc_fields });
     }
 
     let _ = std::fs::remove_dir_all(&out_dir);

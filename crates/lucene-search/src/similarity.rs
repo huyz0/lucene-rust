@@ -264,6 +264,28 @@ pub fn do_score(weight: f32, freq: f32, norm_inverse: f32) -> f32 {
     weight - weight / (1.0 + freq * norm_inverse)
 }
 
+/// [`do_score`] over a whole block: `out[i] = do_score(weight, freqs[i], norm_inverse[i])`
+/// -- `BM25Similarity.BM25Scorer`'s bulk `score(size, freqs, norms, scores)`.
+///
+/// The same expression element by element, so every score is bit-for-bit
+/// what [`do_score`] gives; written as a flat loop over equal-length slices so
+/// it compiles to vector divides (eight lanes at a time on x86-64-v3) rather
+/// than one scalar divide per document.
+///
+/// # Panics
+///
+/// If `freqs` and `norm_inverse` differ in length.
+pub fn do_score_batch(weight: f32, freqs: &[i32], norm_inverse: &[f32], out: &mut Vec<f32>) {
+    assert_eq!(freqs.len(), norm_inverse.len());
+    out.clear();
+    out.extend(
+        freqs
+            .iter()
+            .zip(norm_inverse)
+            .map(|(&f, &n)| do_score(weight, f as f32, n)),
+    );
+}
+
 /// The full per-document BM25 score, using the default `k1`/`b` and the given
 /// collection/document statistics -- real Lucene's `BM25Scorer.score(freq,
 /// encodedNorm)`, i.e. [`do_score`] over [`idf`] and [`norm_inverse`].
@@ -350,7 +372,17 @@ pub fn max_score_for_impacts(
     doc_count: i64,
     avg_field_length: f32,
 ) -> f32 {
-    let weight = idf(doc_freq, doc_count);
+    max_score_for_impacts_weighted(impacts, idf(doc_freq, doc_count), avg_field_length)
+}
+
+/// [`max_score_for_impacts`] with the clause's `weight` (`boost * idf`)
+/// already computed -- what a scorer holds, so bounding a block does not pay
+/// an `ln()` every time. Same expression, so the same bits.
+pub fn max_score_for_impacts_weighted(
+    impacts: &[lucene_codecs::postings::Impact],
+    weight: f32,
+    avg_field_length: f32,
+) -> f32 {
     impacts
         .iter()
         .map(|impact| {
@@ -382,7 +414,15 @@ pub fn max_score_for_impacts_unnormed(
     doc_freq: i64,
     doc_count: i64,
 ) -> f32 {
-    let weight = idf(doc_freq, doc_count);
+    max_score_for_impacts_unnormed_weighted(impacts, idf(doc_freq, doc_count))
+}
+
+/// [`max_score_for_impacts_unnormed`] with the clause's `weight` already
+/// computed; see [`max_score_for_impacts_weighted`].
+pub fn max_score_for_impacts_unnormed_weighted(
+    impacts: &[lucene_codecs::postings::Impact],
+    weight: f32,
+) -> f32 {
     let norm_inverse = norm_inverse(
         UNNORMED_FIELD_LENGTH,
         UNNORMED_FIELD_LENGTH,

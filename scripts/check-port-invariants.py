@@ -517,10 +517,8 @@ DV_LOOP_BURNDOWN = {
     ("crates/lucene-index/src/check_index.rs", "doc_values_presence"): 1,
     ("crates/lucene-index/src/check_index.rs", "sort_key_values"): 1,
     ("crates/lucene-index/src/merge.rs", "merge_binary_doc_values"): 1,
-    ("crates/lucene-search/src/doc_value_query.rs", "search_numeric_range"): 1,
     ("crates/lucene-search/src/doc_value_query.rs", "search_numeric_range_with_skip_index"): 1,
     ("crates/lucene-search/src/doc_value_query.rs", "sort_by_numeric_doc_value"): 1,
-    ("crates/lucene-search/src/doc_value_query.rs", "sort_top_n_by_numeric_doc_value"): 1,
     ("crates/lucene-search/src/facets.rs", "count_single_valued"): 1,
 }
 

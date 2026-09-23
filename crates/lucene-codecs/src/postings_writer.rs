@@ -2732,6 +2732,187 @@ mod tests {
         assert!(field.seek_exact(b"missing").is_none());
     }
 
+    /// A pulsed single-document term opens through `lazy_postings_for` as a
+    /// one-document cursor: its document and `totalTermFreq` come from the
+    /// term metadata, and it walks and advances like any other cursor. On a
+    /// field indexed without frequencies its frequency is 1, as every other
+    /// block shape reports there -- never 0, which would score it 0.
+    #[test]
+    fn singleton_term_opens_as_a_one_document_cursor() {
+        for options in [IndexOptions::Docs, IndexOptions::DocsAndFreqs] {
+            singleton_cursor_case(options);
+        }
+    }
+
+    fn singleton_cursor_case(options: IndexOptions) {
+        let with_freqs = options != IndexOptions::Docs;
+        let terms = vec![
+            TermPostings {
+                term: b"many".to_vec(),
+                docs: vec![(0, 1), (3, 2), (5, 1)],
+                ..Default::default()
+            },
+            TermPostings {
+                term: b"once".to_vec(),
+                docs: vec![(4, 3)],
+                ..Default::default()
+            },
+        ];
+        let input = FieldPostingsInput {
+            field_number: 0,
+            index_options: options,
+            doc_count: 4,
+            has_payloads: false,
+            terms: &terms,
+        };
+        let output = write_single_field(&input, &SEG_ID, SUFFIX).unwrap();
+        let fis = FieldInfos {
+            fields: vec![field_info(0, "body", options)],
+        };
+        let (fields, doc_in) = open_written(&output, &fis, 6);
+        let field = fields.field("body").unwrap();
+        let once = field.seek_term_state(b"once").unwrap().unwrap();
+        assert_eq!(once.stats.doc_freq, 1);
+        let freqs = crate::postings::PostingsFlags::Freqs;
+        let mut c = field.lazy_postings_for(&once, &doc_in, freqs).unwrap();
+        assert_eq!(c.next_doc().unwrap(), 4);
+        assert_eq!(
+            c.freq(),
+            Some(if with_freqs { 3 } else { 1 }),
+            "{options:?}"
+        );
+        assert_eq!(c.next_doc().unwrap(), crate::postings::NO_MORE_DOCS);
+        let mut c = field.lazy_postings_for(&once, &doc_in, freqs).unwrap();
+        assert_eq!(c.advance(2).unwrap(), 4);
+        let mut c = field.lazy_postings_for(&once, &doc_in, freqs).unwrap();
+        assert_eq!(c.advance(5).unwrap(), crate::postings::NO_MORE_DOCS);
+        let docs_only = crate::postings::PostingsFlags::DocsOnly;
+        let mut c = field.lazy_postings_for(&once, &doc_in, docs_only).unwrap();
+        assert_eq!(c.next_doc().unwrap(), 4);
+        assert_eq!(c.freq(), Some(1));
+        // Only a pulsed term has a singleton document to open.
+        let many = field.seek_term_state(b"many").unwrap().unwrap();
+        let meta = field.term_metadata(b"many").unwrap().unwrap();
+        assert!(doc_in
+            .singleton_cursor(meta, many.stats.total_term_freq, options, false, freqs)
+            .is_err());
+    }
+
+    /// `LazyDocsCursor::advance` into a bit-set-encoded block searches the
+    /// kept bits (`bits_advance`) rather than expanding the block.
+    /// Whatever it skips, the document it lands on -- and, since `freqs[i]`
+    /// must still pair with the block's `i`-th document, that document's
+    /// frequency -- must be exactly what a plain scan finds, for targets in
+    /// every word of the bit set, before the block, and past the end.
+    ///
+    /// Docs-only cursors too, whose bit-set advance keeps no rank at all, with
+    /// a `next_doc` every third move so the rank is recovered from the
+    /// document (`materialize_bits`); and a term in every document, whose
+    /// blocks are all the consecutive (`bitsPerValue == 0`) encoding, which
+    /// the cursor keeps as a full bit set the way Lucene does.
+    #[test]
+    fn lazy_advance_into_bit_set_blocks_matches_a_linear_scan() {
+        // Densities between 1/2 and 1/5 make `Lucene104PostingsWriter` pick
+        // the bit-set encoding; the irregular one mixes it with packed blocks.
+        // Past `LEVEL1_NUM_DOCS` (8192) for the dense terms, so the walks
+        // cross level-1 spans as well as blocks.
+        const NUM_DOCS: i32 = 20_000;
+        let mut terms = Vec::new();
+        let mut x = 0x2545_F491_4F6C_DD1Du64;
+        for (name, keep) in [
+            // Sorted, as the writer requires.
+            (&b"all"[..], 1u64),
+            (&b"fifth"[..], 5),
+            (&b"half"[..], 2),
+            (&b"mixed"[..], 0),
+            (&b"third"[..], 3),
+        ] {
+            let mut docs = Vec::new();
+            for d in 0..NUM_DOCS {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                let hit = if keep == 0 {
+                    // Runs of dense and sparse stretches.
+                    x.is_multiple_of(if (d / 700) % 2 == 0 { 2 } else { 40 })
+                } else {
+                    (d as u64).is_multiple_of(keep)
+                };
+                if hit {
+                    docs.push((d, 1 + (x % 5) as i32));
+                }
+            }
+            terms.push(TermPostings {
+                term: name.to_vec(),
+                docs,
+                ..Default::default()
+            });
+        }
+        use crate::postings::PostingsFlags;
+        // A field without freqs too: its headers carry no impacts region, so
+        // the docs-only header walk takes its no-seek branch.
+        for options in [IndexOptions::Docs, IndexOptions::DocsAndFreqs] {
+            let input = FieldPostingsInput {
+                field_number: 0,
+                index_options: options,
+                doc_count: NUM_DOCS,
+                has_payloads: false,
+                terms: &terms,
+            };
+            let output = write_single_field(&input, &SEG_ID, SUFFIX).unwrap();
+            let fis = FieldInfos {
+                fields: vec![field_info(0, "body", options)],
+            };
+            let (fields, doc_in) = open_written(&output, &fis, NUM_DOCS);
+            let field = fields.field("body").unwrap();
+            for t in &terms {
+                // The first entry at or after `pos` in doc order.
+                let at = |pos: usize| t.docs.get(pos).copied();
+                for flags in [PostingsFlags::Freqs, PostingsFlags::DocsOnly] {
+                    for gap in [1i32, 7, 63, 64, 65, 200, 1000, 9000] {
+                        let mut cursor = field
+                            .lazy_postings_with_flags(&t.term, &doc_in, flags)
+                            .unwrap()
+                            .unwrap();
+                        let mut target = 0i32;
+                        for step in 0u32.. {
+                            let (got, want) = if step % 3 == 2 {
+                                let prev = cursor.doc_id();
+                                let want = at(t.docs.partition_point(|&(d, _)| d <= prev));
+                                (cursor.next_doc().unwrap(), want)
+                            } else {
+                                let want = at(t.docs.partition_point(|&(d, _)| d < target));
+                                (cursor.advance(target).unwrap(), want)
+                            };
+                            let ctx = format!(
+                                "term {:?} {options:?} {flags:?} gap {gap} step {step}",
+                                t.term
+                            );
+                            let Some((d, f)) = want else {
+                                assert_eq!(got, crate::postings::NO_MORE_DOCS, "{ctx}");
+                                break;
+                            };
+                            assert_eq!(got, d, "{ctx}");
+                            // Without freqs on either side, every document
+                            // counts once -- including a docs-only cursor on a
+                            // bit-set block, whose position in the block is
+                            // not tracked at all.
+                            let want_freq = if flags == PostingsFlags::Freqs
+                                && options == IndexOptions::DocsAndFreqs
+                            {
+                                f
+                            } else {
+                                1
+                            };
+                            assert_eq!(cursor.freq(), Some(want_freq), "{ctx}");
+                            target = got + gap;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Byte-level correctness on `docFreq`/`totalTermFreq`/`seek_exact`
     /// alone (no query layer), for `IndexOptions::Docs` (no freqs at all —
     /// `totalTermFreq == docFreq` aliasing) to make sure that branch, not

@@ -2553,7 +2553,7 @@ fn decompress_unit(
             let mut buffer = vec![0u8; buffer_len];
             // The dictionary is always decompressed: even when none of its
             // bytes are wanted, the sub-blocks back-reference into it.
-            if lz4::decompress(input, dict_length, &mut buffer, 0)? != dict_length {
+            if lz4::decompress_slice(input, dict_length, &mut buffer, 0)? != dict_length {
                 return Err(lucene_store::Error::Corrupted(
                     "illegal dict length in LZ4 compression unit".into(),
                 )
@@ -2579,7 +2579,7 @@ fn decompress_unit(
                 let lo = offset.max(plain);
                 let hi = want_end.min(plain + this_len);
                 if lo < hi {
-                    lz4::decompress(input, this_len, &mut buffer, dict_length)?;
+                    lz4::decompress_slice(input, this_len, &mut buffer, dict_length)?;
                     out.extend_from_slice(
                         &buffer[dict_length + lo - plain..dict_length + hi - plain],
                     );

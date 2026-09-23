@@ -1,0 +1,16 @@
+# Build for x86-64-v3 (Haswell, 2013+: AVX2, BMI1/2, FMA, LZCNT, MOVBE, POPCNT)
+# on Linux x86_64 -- the deployment target.
+#
+# Without it rustc targets the 2003 x86-64 baseline: `u64::count_ones` becomes a
+# bit-twiddling sequence instead of `popcnt`, `trailing_zeros` becomes `bsf`,
+# and every auto-vectorized loop is limited to 128-bit SSE2. The JVM this port
+# is measured against JIT-compiles for the CPU it runs on and has none of those
+# limits, so a generic build is not a like-for-like comparison: the component
+# sweep measured `FixedBitSet.cardinality`/`intersectionCount` at 0.62x and
+# `or` at 0.70x of Lucene's before this file existed (docs/benchmarks/).
+#
+# x86-64-v3 is also where the server ecosystem now sets its floor (RHEL 10
+# requires it), so it costs no supported deployment anything. `aarch64` needs
+# nothing: NEON is part of its baseline.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-cpu=x86-64-v3"]

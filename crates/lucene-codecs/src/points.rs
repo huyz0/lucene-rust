@@ -925,6 +925,9 @@ struct IntersectCtx<'a> {
     /// binary). Production always passes `true`; the cost is one predictable
     /// branch per node against a `.kdi` read.
     reuse_scratch: bool,
+    /// Java's `int[maxPointsInLeafNode]` doc-id buffer: every leaf the walk
+    /// decodes (inside a matching subtree or crossing the query) reuses it.
+    doc_ids: Vec<i32>,
 }
 
 /// One level's reusable byte buffers -- see [`IntersectCtx::stack`].
@@ -957,6 +960,7 @@ impl<'a> IntersectCtx<'a> {
             negative_deltas: vec![false; field.num_index_dims as usize],
             stack: Vec::new(),
             reuse_scratch,
+            doc_ids: Vec::new(),
         }
     }
 
@@ -1002,11 +1006,12 @@ fn intersect_node<V: IntersectVisitor>(
         // the block and let the visitor filter point by point.
         let mut kdd_input = SliceInput::new(ctx.kdd);
         seek_leaf_block(&mut kdd_input, fp)?;
-        let mut points = Vec::new();
-        read_leaf_block(&mut kdd_input, ctx.field, &mut points)?;
-        for point in &points {
-            visitor.visit_with_value(point.doc_id, &point.packed_value);
-        }
+        read_leaf_block_into(
+            &mut kdd_input,
+            ctx.field,
+            &mut ctx.doc_ids,
+            &mut VisitSink(visitor),
+        )?;
         return Ok(());
     }
 
@@ -1334,7 +1339,8 @@ fn add_all<V: IntersectVisitor>(
         let mut kdd_input = SliceInput::new(ctx.kdd);
         seek_leaf_block(&mut kdd_input, fp)?;
         let count = read_leaf_count(&mut kdd_input, ctx.field)?;
-        for doc_id in read_doc_ids(&mut kdd_input, count)? {
+        read_doc_ids_into(&mut kdd_input, count, &mut ctx.doc_ids)?;
+        for &doc_id in &ctx.doc_ids {
             visitor.visit(doc_id);
         }
         return Ok(());
@@ -1564,13 +1570,54 @@ fn read_suffix_bytes(
     Ok(())
 }
 
+/// Where a decoded leaf's points go: a `Vec<Point>` for the callers that want
+/// them all in hand, or straight to an [`IntersectVisitor`] for a crossing
+/// leaf, which is `BKDReader.visitDocValues` -- one reused scratch value,
+/// handed to the visitor point by point, never copied.
+trait LeafSink {
+    fn point(&mut self, doc_id: i32, packed_value: &[u8]);
+}
+
+impl LeafSink for Vec<Point> {
+    fn point(&mut self, doc_id: i32, packed_value: &[u8]) {
+        self.push(Point {
+            doc_id,
+            packed_value: packed_value.to_vec(),
+        });
+    }
+}
+
+/// A crossing leaf's points, streamed to the visitor. This used to decode the
+/// leaf into a `Vec<Point>` first -- one heap allocation *per point* for its
+/// packed value -- which made a small range query 2.4x slower than Lucene.
+struct VisitSink<'v, V>(&'v mut V);
+
+impl<V: IntersectVisitor> LeafSink for VisitSink<'_, V> {
+    #[inline]
+    fn point(&mut self, doc_id: i32, packed_value: &[u8]) {
+        self.0.visit_with_value(doc_id, packed_value);
+    }
+}
+
 fn read_leaf_block(
     input: &mut SliceInput,
     field: &PointsField,
     out: &mut Vec<Point>,
 ) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
+    read_leaf_block_into(input, field, &mut Vec::new(), out)
+}
+
+/// `doc_ids` is the caller's reusable decode buffer; its contents are
+/// replaced.
+fn read_leaf_block_into<S: LeafSink>(
+    input: &mut SliceInput,
+    field: &PointsField,
+    doc_ids: &mut Vec<i32>,
+    out: &mut S,
+) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
     let count = read_leaf_count(input, field)?;
-    let doc_ids = read_doc_ids(input, count)?;
+    read_doc_ids_into(input, count, doc_ids)?;
+    let doc_ids: &[i32] = doc_ids;
 
     let num_dims = field.num_dims as usize;
     let num_index_dims = field.num_index_dims as usize;
@@ -1629,11 +1676,8 @@ fn read_leaf_block(
     if compressed_dim == -1 {
         // Every point in this leaf has the identical value (common prefixes
         // already cover every byte of every dimension).
-        for &doc_id in &doc_ids {
-            out.push(Point {
-                doc_id,
-                packed_value: scratch_value.clone(),
-            });
+        for &doc_id in doc_ids {
+            out.point(doc_id, &scratch_value);
         }
         return Ok(None);
     }
@@ -1706,10 +1750,7 @@ fn read_leaf_block(
             #[allow(clippy::arithmetic_side_effects)]
             let end = i + length;
             for &doc_id in &doc_ids[i..end] {
-                out.push(Point {
-                    doc_id,
-                    packed_value: scratch_value.clone(),
-                });
+                out.point(doc_id, &scratch_value);
             }
             i = end;
         }
@@ -1765,10 +1806,7 @@ fn read_leaf_block(
                     bytes_per_dim,
                     &mut scratch_value,
                 )?;
-                out.push(Point {
-                    doc_id,
-                    packed_value: scratch_value.clone(),
-                });
+                out.point(doc_id, &scratch_value);
             }
             i = end;
         }
@@ -1811,14 +1849,27 @@ fn require_bytes(input: &SliceInput, needed: usize, what: &str) -> Result<()> {
     Ok(())
 }
 
+/// [`read_doc_ids_into`] into a fresh `Vec`, for tests.
+#[cfg(test)]
+fn read_doc_ids(input: &mut SliceInput, count: usize) -> Result<Vec<i32>> {
+    let mut out = Vec::new();
+    read_doc_ids_into(input, count, &mut out)?;
+    Ok(out)
+}
+
 /// Port of `DocIdsWriter.readInts` -- decodes `count` doc ids using
-/// whichever encoding the leaf's leading marker byte selects.
+/// whichever encoding the leaf's leading marker byte selects, into a
+/// caller-owned buffer whose contents it replaces: Java's reusable
+/// `int[maxPointsInLeafNode]`. A range query visits one leaf after another;
+/// decoding each into a fresh zeroed `Vec` (two, for the packed encodings) was
+/// a third of a large range's cost.
 ///
 /// `count` must have come from [`read_leaf_count`], i.e. be bounded by the
 /// field's `maxPointsInLeafNode`; that is what Java's fixed
 /// `int[maxPointsInLeafNode]` decode buffer enforces implicitly.
-fn read_doc_ids(input: &mut SliceInput, count: usize) -> Result<Vec<i32>> {
+fn read_doc_ids_into(input: &mut SliceInput, count: usize, out: &mut Vec<i32>) -> Result<()> {
     let bpv = input.read_byte()? as i8;
+    out.clear();
     match bpv {
         CONTINUOUS_IDS => {
             let start = input.read_vint()?;
@@ -1828,23 +1879,36 @@ fn read_doc_ids(input: &mut SliceInput, count: usize) -> Result<Vec<i32>> {
             // them instead of trapping. `count as i32` is exact --
             // `read_leaf_count` bounds `count` by `maxPointsInLeafNode`,
             // itself `<= i32::MAX - 16`.
-            Ok((0..count as i32).map(|i| start.wrapping_add(i)).collect())
+            out.extend((0..count as i32).map(|i| start.wrapping_add(i)));
+            Ok(())
         }
-        BITSET_IDS => read_bitset_ids(input, count),
-        DELTA_BPV_16 => read_delta_bpv16(input, count),
-        BPV_21 => read_bpv21(input, count),
-        BPV_24 => read_bpv24(input, count),
+        BITSET_IDS => read_bitset_ids(input, count, out),
+        DELTA_BPV_16 => read_delta_bpv16(input, count, out),
+        BPV_21 => read_bpv21(input, count, out),
+        BPV_24 => read_bpv24(input, count, out),
         BPV_32 => {
-            require_bytes(input, count.saturating_mul(4), "BPV_32 doc ids")?;
-            let mut out = Vec::with_capacity(count);
-            for _ in 0..count {
-                out.push(input.read_i32()?);
-            }
-            Ok(out)
+            let bytes = take_bytes(input, count.saturating_mul(4), "BPV_32 doc ids")?;
+            out.extend(
+                bytes
+                    .chunks_exact(4)
+                    .map(|w| i32::from_le_bytes([w[0], w[1], w[2], w[3]])),
+            );
+            Ok(())
         }
-        LEGACY_DELTA_VINT => read_legacy_delta_vint(input, count),
+        LEGACY_DELTA_VINT => read_legacy_delta_vint(input, count, out),
         other => Err(Error::UnsupportedDocIdsEncoding(other)),
     }
+}
+
+/// The next `n` bytes of `input` as a slice of the underlying buffer, and
+/// `input` moved past them: [`require_bytes`] plus the read, for decoders
+/// that unpack whole words straight from the mapped file instead of one
+/// checked `read_i32` at a time.
+fn take_bytes<'a>(input: &mut SliceInput<'a>, n: usize, what: &str) -> Result<&'a [u8]> {
+    require_bytes(input, n, what)?;
+    let bytes = &input.as_slice()[..n];
+    input.skip(n)?;
+    Ok(bytes)
 }
 
 /// Port of `DocIdsWriter.readLegacyDeltaVInts`: each doc id is a vint delta
@@ -1852,22 +1916,22 @@ fn read_doc_ids(input: &mut SliceInput, count: usize) -> Result<Vec<i32>> {
 /// versions that predate `DELTA_BPV_16`/`BPV_21`/`BPV_24`/`BPV_32`. No
 /// current writer in this port (or in Lucene 10.5.0) produces this, so it
 /// is exercised only by hand-built unit tests, not a real-Lucene fixture.
-fn read_legacy_delta_vint(input: &mut SliceInput, count: usize) -> Result<Vec<i32>> {
+fn read_legacy_delta_vint(input: &mut SliceInput, count: usize, out: &mut Vec<i32>) -> Result<()> {
     // Every doc id costs at least one vint byte, so this is a true lower
     // bound: it caps the reservation without rejecting anything the decode
     // loop would have accepted.
     require_bytes(input, count, "legacy delta-vint doc ids")?;
-    let mut out = Vec::with_capacity(count);
+    out.reserve(count);
     let mut doc = 0i32;
     for _ in 0..count {
         // Java: `doc += in.readVInt()`, `int` arithmetic that wraps.
         doc = doc.wrapping_add(input.read_vint()?);
         out.push(doc);
     }
-    Ok(out)
+    Ok(())
 }
 
-fn read_bitset_ids(input: &mut SliceInput, count: usize) -> Result<Vec<i32>> {
+fn read_bitset_ids(input: &mut SliceInput, count: usize, out: &mut Vec<i32>) -> Result<()> {
     let offset_words = input.read_vint()?;
     let long_len = input.read_vint()?;
     if offset_words < 0 || long_len < 0 {
@@ -1897,21 +1961,24 @@ fn read_bitset_ids(input: &mut SliceInput, count: usize) -> Result<Vec<i32>> {
     }
     let doc_base = doc_base as i32;
 
-    let mut words = vec![0i64; long_len];
-    input.read_i64s(&mut words)?;
+    // Read in place off the mapped file, eight bytes per word.
+    let words = take_bytes(input, long_len.saturating_mul(8), "bitset doc ids")?;
 
     // `count` is the writer's own set-bit count, so a well-formed block
     // reserves exactly what it needs; a corrupt one is capped by the number of
     // bits that actually exist.
-    let mut out = Vec::with_capacity(count.min(long_len.saturating_mul(64)));
-    for (word_idx, &word) in words.iter().enumerate() {
+    out.reserve(count.min(long_len.saturating_mul(64)));
+    for (word_idx, word) in words.chunks_exact(8).enumerate() {
+        let word = u64::from_le_bytes([
+            word[0], word[1], word[2], word[3], word[4], word[5], word[6], word[7],
+        ]);
         // ARITH: the guard above established `doc_base + long_len * 64 <=
         // i32::MAX` with `doc_base >= 0`, so `long_len * 64 <= i32::MAX` and
         // `word_idx < long_len` makes `word_idx * 64` fit an `i32`; the sum
         // with `doc_base` is bounded by the same inequality.
         #[allow(clippy::arithmetic_side_effects)]
         let word_base = doc_base + (word_idx as i32) * 64;
-        let mut w = word as u64;
+        let mut w = word;
         while w != 0 {
             let bit = w.trailing_zeros();
             // ARITH: `bit <= 63` and `word_base + 64 <= i32::MAX` by the same
@@ -1932,10 +1999,10 @@ fn read_bitset_ids(input: &mut SliceInput, count: usize) -> Result<Vec<i32>> {
             actual: out.len(),
         });
     }
-    Ok(out)
+    Ok(())
 }
 
-fn read_delta_bpv16(input: &mut SliceInput, count: usize) -> Result<Vec<i32>> {
+fn read_delta_bpv16(input: &mut SliceInput, count: usize, out: &mut Vec<i32>) -> Result<()> {
     let min = input.read_vint()?;
     // ARITH: `count <= maxPointsInLeafNode <= i32::MAX - 16`
     // (`read_leaf_count`), so neither the halving nor the remainder can
@@ -1945,7 +2012,7 @@ fn read_delta_bpv16(input: &mut SliceInput, count: usize) -> Result<Vec<i32>> {
     let (half, odd) = (count / 2, count % 2);
     let needed = half.saturating_mul(4).saturating_add(odd.saturating_mul(2));
     require_bytes(input, needed, "delta-16 doc ids")?;
-    let mut out = vec![0i32; count];
+    out.resize(count, 0);
     for i in 0..half {
         let word = input.read_i32()?;
         // ARITH: `i < half`, so `i + half < 2 * half <= count = out.len()`.
@@ -1963,14 +2030,14 @@ fn read_delta_bpv16(input: &mut SliceInput, count: usize) -> Result<Vec<i32>> {
         let last = count - 1;
         out[last] = i32::from(input.read_u16()?).wrapping_add(min);
     }
-    Ok(out)
+    Ok(())
 }
 
 fn floor_to_multiple_of_16(n: usize) -> usize {
     n & !0xF
 }
 
-fn read_bpv21(input: &mut SliceInput, count: usize) -> Result<Vec<i32>> {
+fn read_bpv21(input: &mut SliceInput, count: usize, out: &mut Vec<i32>) -> Result<()> {
     // ARITH: `one_third <= count / 3` (rounding *down* to a multiple of 16),
     // so `num_ints <= 2 * (count / 3) < count` and `tail_start <= count`;
     // `count <= maxPointsInLeafNode <= i32::MAX - 16` by `read_leaf_count`, so
@@ -1993,24 +2060,28 @@ fn read_bpv21(input: &mut SliceInput, count: usize) -> Result<Vec<i32>> {
         .saturating_mul(4)
         .saturating_add(count - tail_start);
     require_bytes(input, needed, "BPV_21 doc ids")?;
-    let mut scratch = vec![0i32; num_ints];
-    for slot in scratch.iter_mut() {
-        *slot = input.read_i32()?;
-    }
-    let mut out = vec![0i32; count];
-    for i in 0..num_ints {
-        out[i] = ((scratch[i] as u32) >> 11) as i32;
+    // The packed words go straight into `out[..num_ints]` (one bulk copy,
+    // no scratch array), the ids they carry in their low bits are assembled
+    // into `out[num_ints..tail_start]` from them, and only then are the words
+    // shifted down in place to the ids in their high bits.
+    let words = take_bytes(input, num_ints.saturating_mul(4), "BPV_21 doc id words")?;
+    out.resize(count, 0);
+    for (slot, w) in out[..num_ints].iter_mut().zip(words.chunks_exact(4)) {
+        *slot = i32::from_le_bytes([w[0], w[1], w[2], w[3]]);
     }
     for i in 0..one_third {
-        // ARITH: `i < one_third`, so `i + one_third < num_ints =
-        // scratch.len()` and `i + num_ints < 3 * one_third = tail_start <=
+        // ARITH: `i < one_third`, so `i + one_third < num_ints`
+        // (the packed words' count) and `i + num_ints < 3 * one_third = tail_start <=
         // count = out.len()` (and `num_ints <= count` covers the plain
         // `out[i]` loop above). `<< 11` is applied to a value masked to 11
         // bits, so it cannot leave `i32`.
         #[allow(clippy::arithmetic_side_effects)]
         {
-            out[i + num_ints] = (scratch[i] & 0x7FF) | ((scratch[i + one_third] & 0x7FF) << 11);
+            out[i + num_ints] = (out[i] & 0x7FF) | ((out[i + one_third] & 0x7FF) << 11);
         }
+    }
+    for slot in &mut out[..num_ints] {
+        *slot = ((*slot as u32) >> 11) as i32;
     }
 
     let mut i = tail_start;
@@ -2038,10 +2109,10 @@ fn read_bpv21(input: &mut SliceInput, count: usize) -> Result<Vec<i32>> {
         out[i] = lo | (hi << 16);
         i += 1;
     }
-    Ok(out)
+    Ok(())
 }
 
-fn read_bpv24(input: &mut SliceInput, count: usize) -> Result<Vec<i32>> {
+fn read_bpv24(input: &mut SliceInput, count: usize, out: &mut Vec<i32>) -> Result<()> {
     // ARITH: `quarter = count / 4`, so `num_ints = 3 * quarter < count` and
     // `tail_start = 4 * quarter <= count`; `count <= maxPointsInLeafNode <=
     // i32::MAX - 16` by `read_leaf_count`.
@@ -2060,25 +2131,27 @@ fn read_bpv24(input: &mut SliceInput, count: usize) -> Result<Vec<i32>> {
         .saturating_mul(4)
         .saturating_add((count - tail_start).saturating_mul(3));
     require_bytes(input, needed, "BPV_24 doc ids")?;
-    let mut scratch = vec![0i32; num_ints];
-    for slot in scratch.iter_mut() {
-        *slot = input.read_i32()?;
-    }
-    let mut out = vec![0i32; count];
-    for i in 0..num_ints {
-        out[i] = ((scratch[i] as u32) >> 8) as i32;
+    // As for `BPV_21`: words into `out[..num_ints]`, the low-byte ids
+    // assembled from them, then the words shifted down in place.
+    let words = take_bytes(input, num_ints.saturating_mul(4), "BPV_24 doc id words")?;
+    out.resize(count, 0);
+    for (slot, w) in out[..num_ints].iter_mut().zip(words.chunks_exact(4)) {
+        *slot = i32::from_le_bytes([w[0], w[1], w[2], w[3]]);
     }
     for i in 0..quarter {
-        // ARITH: `i < quarter`, so `i + quarter * 2 < 3 * quarter = num_ints =
-        // scratch.len()` and `i + num_ints < 4 * quarter = tail_start <=
+        // ARITH: `i < quarter`, so `i + quarter * 2 < 3 * quarter = num_ints`
+        // (the packed words' count) and `i + num_ints < 4 * quarter = tail_start <=
         // count = out.len()`. Every shifted operand is masked to eight bits
         // first, so no shift can leave `i32`.
         #[allow(clippy::arithmetic_side_effects)]
         {
-            out[i + num_ints] = (scratch[i] & 0xFF)
-                | ((scratch[i + quarter] & 0xFF) << 8)
-                | ((scratch[i + quarter * 2] & 0xFF) << 16);
+            out[i + num_ints] = (out[i] & 0xFF)
+                | ((out[i + quarter] & 0xFF) << 8)
+                | ((out[i + quarter * 2] & 0xFF) << 16);
         }
+    }
+    for slot in &mut out[..num_ints] {
+        *slot = ((*slot as u32) >> 8) as i32;
     }
 
     let mut i = tail_start;
@@ -2091,7 +2164,7 @@ fn read_bpv24(input: &mut SliceInput, count: usize) -> Result<Vec<i32>> {
         out[i] = lo | (hi << 16);
         i += 1;
     }
-    Ok(out)
+    Ok(())
 }
 
 /// One field's input to [`write()`]: `(docID, packedValue)` pairs for a field

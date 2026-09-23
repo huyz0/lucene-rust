@@ -121,16 +121,17 @@ pub fn search_numeric_range<C: Collector>(
     max: i64,
     collector: &mut C,
 ) -> Result<()> {
-    for doc_id in 0..max_doc {
-        if !live_docs.is_none_or(|bits| bits.get_doc(doc_id)) {
-            continue;
+    // One reader for the scan: the field's shape and values region are
+    // resolved once, not per document (`doc_values::NumericReader`).
+    // `for_each_value` decodes a dense column a chunk at a time; the value is
+    // tested before liveness because it is already in hand and a deletion is
+    // the rare case.
+    let mut values = doc_values::NumericReader::new(doc_values_data, entry);
+    values.for_each_value(0, max_doc, |doc_id, value| {
+        if value >= min && value <= max && live_docs.is_none_or(|bits| bits.get_doc(doc_id)) {
+            collector.collect(doc_id);
         }
-        if let Some(value) = doc_values::numeric_value(doc_values_data, entry, doc_id)? {
-            if value >= min && value <= max {
-                collector.collect(doc_id);
-            }
-        }
-    }
+    })?;
     Ok(())
 }
 
@@ -222,16 +223,14 @@ pub fn search_sorted_ord_range<C: Collector>(
     max_ord: i64,
     collector: &mut C,
 ) -> Result<()> {
-    for doc_id in 0..max_doc {
-        if !live_docs.is_none_or(|bits| bits.get_doc(doc_id)) {
-            continue;
+    // `sorted_ord` is `numeric_value` over the ords entry; one reader for the
+    // whole scan instead.
+    let mut ords = doc_values::NumericReader::new(doc_values_data, &entry.ords);
+    ords.for_each_value(0, max_doc, |doc_id, ord| {
+        if ord >= min_ord && ord <= max_ord && live_docs.is_none_or(|bits| bits.get_doc(doc_id)) {
+            collector.collect(doc_id);
         }
-        if let Some(ord) = doc_values::sorted_ord(doc_values_data, entry, doc_id)? {
-            if ord >= min_ord && ord <= max_ord {
-                collector.collect(doc_id);
-            }
-        }
-    }
+    })?;
     Ok(())
 }
 
@@ -332,8 +331,9 @@ pub fn sort_top_n_by_numeric_doc_value(
     top_n: usize,
 ) -> Result<Vec<FieldValueDoc>> {
     let mut collector = TopFieldCollector::new(top_n, direction);
+    let mut values = doc_values::NumericReader::new(doc_values_data, entry);
     for &doc_id in candidates {
-        match doc_values::numeric_value(doc_values_data, entry, doc_id)? {
+        match values.value(doc_id)? {
             Some(value) => collector.offer(doc_id, value),
             None => {
                 if let MissingValue::Default(default) = missing {
@@ -380,24 +380,96 @@ pub fn search_numeric_range_sorted_by_field(
     missing: MissingValue,
     top_n: usize,
 ) -> Result<Vec<FieldValueDoc>> {
-    let mut matches = crate::collector::VecCollector::default();
-    search_numeric_range(
+    let mut collector = TopFieldCollector::new(top_n, direction);
+    collect_numeric_range_sorted_by_field(
         range_data,
         range_entry,
         live_docs,
         max_doc,
         min,
         max,
-        &mut matches,
-    )?;
-    sort_top_n_by_numeric_doc_value(
         sort_data,
         sort_entry,
-        &matches.docs,
-        direction,
         missing,
-        top_n,
-    )
+        0,
+        &mut collector,
+    )?;
+    Ok(collector.top_docs().to_vec())
+}
+
+/// [`search_numeric_range_sorted_by_field`]'s scan, offering into a
+/// caller-owned `collector` with every doc id shifted by `doc_base` -- so one
+/// collector can be carried across the segments of a reader, visited in
+/// ascending `doc_base` order, the way Lucene's `TopFieldCollector` is. A later
+/// segment then offers against the bottom the earlier ones already set, and
+/// ties still go to the lower global doc id.
+#[allow(clippy::too_many_arguments)]
+pub fn collect_numeric_range_sorted_by_field(
+    range_data: &[u8],
+    range_entry: &NumericEntry,
+    live_docs: Option<&FixedBitSet>,
+    max_doc: i32,
+    min: i64,
+    max: i64,
+    sort_data: &[u8],
+    sort_entry: &NumericEntry,
+    missing: MissingValue,
+    doc_base: i32,
+    collector: &mut TopFieldCollector,
+) -> Result<()> {
+    // One pass: range-check and offer each document as it is read, rather
+    // than collecting every match (all of them, for a wide range) and reading
+    // its value a second time to sort. Same documents in the same ascending
+    // order, so the same result; when the range and the sort are one column
+    // the value is read once.
+    let same_column = std::ptr::eq(range_data, sort_data) && std::ptr::eq(range_entry, sort_entry);
+    let mut range_values = doc_values::NumericReader::new(range_data, range_entry);
+    let mut sort_values = doc_values::NumericReader::new(sort_data, sort_entry);
+    // The closure cannot return the sort column's error, so it parks the
+    // first one here and ignores every later document.
+    let mut sort_error = None;
+    // `LeafFieldComparator.compareBottom`: once the collector is full, a
+    // value that does not strictly beat its worst kept one is rejected here,
+    // without a call into the queue -- documents arrive in ascending doc-id
+    // order, so a tie loses. On a wide range this is the whole loop.
+    let mut bottom = collector.bottom_value();
+    range_values.for_each_value(0, max_doc, |doc_id, value| {
+        if sort_error.is_some()
+            || value < min
+            || value > max
+            || (same_column && !collector.competes(bottom, value))
+            || !live_docs.is_none_or(|bits| bits.get_doc(doc_id))
+        {
+            return;
+        }
+        let sort_value = if same_column {
+            Some(value)
+        } else {
+            match sort_values.value(doc_id) {
+                Ok(v) => v,
+                Err(e) => {
+                    sort_error = Some(e);
+                    return;
+                }
+            }
+        };
+        // ARITH: a global doc id, below the reader's `max_doc`.
+        #[allow(clippy::arithmetic_side_effects)]
+        let global = doc_base + doc_id;
+        match sort_value {
+            Some(v) => collector.offer(global, v),
+            None => {
+                if let MissingValue::Default(default) = missing {
+                    collector.offer(global, default);
+                }
+            }
+        }
+        bottom = collector.bottom_value();
+    })?;
+    if let Some(e) = sort_error {
+        return Err(e.into());
+    }
+    Ok(())
 }
 
 /// How a multi-valued doc's several values reduce to one comparable value

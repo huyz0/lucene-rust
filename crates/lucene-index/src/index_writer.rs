@@ -3251,43 +3251,6 @@ impl<'d> IndexWriter<'d> {
         // indexed field that has not opted out gets a norm column, and the
         // shared invert pass has to analyze all of them.
         let norms_configs = self.norms_field_configs();
-        let inverted = Self::invert_pending_fields(
-            &self.pending_docs,
-            &self.postings_fields,
-            &self.term_vector_fields,
-            &norms_configs,
-            &self.payload_field_names(),
-            self.payload_source.as_deref(),
-            &self.analyzer(),
-        );
-        // Norms and term vectors only *read* the shared invert pass; postings
-        // **consumes** it. Ordering them this way means the whole inverted
-        // index -- by far the largest transient structure in a flush -- is
-        // freed term by term as the postings are built, instead of staying
-        // live alongside the postings copy, the stored-fields copy and every
-        // output file's byte buffer.
-        let norms_output = if norms_configs.is_empty() {
-            None
-        } else {
-            Some(Self::build_norms_output(
-                &self.pending_docs,
-                &norms_configs,
-                &inverted,
-                &segment_id,
-            )?)
-        };
-        // Borrowed out of `norms_output` before the postings consume
-        // `inverted`, because the postings writer needs them for its impacts.
-        let impact_norms: &[(i32, Vec<i64>)] = norms_output
-            .as_ref()
-            .map(|(_, _, columns)| columns.as_slice())
-            .unwrap_or(&[]);
-        let term_vectors_output = if self.term_vector_fields.is_empty() {
-            None
-        } else {
-            Self::build_term_vectors_output(&self.pending_docs, &self.term_vector_fields, &inverted)
-                .map(|docs| term_vectors::write_best_speed(&docs, &segment_id, ""))
-        };
         let doc_values_output = if self.doc_values_fields.is_empty() {
             None
         } else {
@@ -3297,20 +3260,101 @@ impl<'d> IndexWriter<'d> {
                 &segment_id,
             )?)
         };
-        let postings_output = if !self.postings_fields.is_empty() {
-            Self::build_postings_output(&self.postings_fields, inverted, impact_norms, &segment_id)?
-        } else {
-            drop(inverted);
-            match &self.custom_freq_postings_field {
-                Some(cfg) => Self::build_custom_freq_postings_output(
+        let (norms_output, term_vectors_output, postings_output);
+        if self.fast_inversion_applies(&norms_configs) {
+            // `IndexingChain`'s own shape: a term hash per field, lengths
+            // counted as tokens go by, postings handed to the writer in term
+            // order -- see `crate::inverter`. Taken whenever nothing needs the
+            // general pass's `InMemoryInvertedIndex` (term vectors, payloads).
+            let inverters = Self::invert_pending_fields_fast(
+                &self.pending_docs,
+                &self.postings_fields,
+                &self.analyzer(),
+            );
+            norms_output = if norms_configs.is_empty() {
+                None
+            } else {
+                Some(Self::build_norms_output_from_lengths(
                     &self.pending_docs,
-                    &self.pending_custom_freq_terms,
-                    cfg,
+                    &norms_configs,
+                    &inverters,
                     &segment_id,
-                )?,
-                None => None,
-            }
-        };
+                )?)
+            };
+            term_vectors_output = None;
+            let impact_norms: &[(i32, Vec<i64>)] = norms_output
+                .as_ref()
+                .map(|(_, _, columns)| columns.as_slice())
+                .unwrap_or(&[]);
+            postings_output = Self::build_postings_output_fast(
+                &self.postings_fields,
+                inverters,
+                impact_norms,
+                &segment_id,
+            )?;
+        } else {
+            let inverted = Self::invert_pending_fields(
+                &self.pending_docs,
+                &self.postings_fields,
+                &self.term_vector_fields,
+                &norms_configs,
+                &self.payload_field_names(),
+                self.payload_source.as_deref(),
+                &self.analyzer(),
+            );
+            // Norms and term vectors only *read* the shared invert pass;
+            // postings **consumes** it. Ordering them this way means the whole
+            // inverted index -- by far the largest transient structure in a
+            // flush -- is freed term by term as the postings are built,
+            // instead of staying live alongside the postings copy, the
+            // stored-fields copy and every output file's byte buffer.
+            norms_output = if norms_configs.is_empty() {
+                None
+            } else {
+                Some(Self::build_norms_output(
+                    &self.pending_docs,
+                    &norms_configs,
+                    &inverted,
+                    &segment_id,
+                )?)
+            };
+            // Borrowed out of `norms_output` before the postings consume
+            // `inverted`, because the postings writer needs them for its
+            // impacts.
+            let impact_norms: &[(i32, Vec<i64>)] = norms_output
+                .as_ref()
+                .map(|(_, _, columns)| columns.as_slice())
+                .unwrap_or(&[]);
+            term_vectors_output = if self.term_vector_fields.is_empty() {
+                None
+            } else {
+                Self::build_term_vectors_output(
+                    &self.pending_docs,
+                    &self.term_vector_fields,
+                    &inverted,
+                )
+                .map(|docs| term_vectors::write_best_speed(&docs, &segment_id, ""))
+            };
+            postings_output = if !self.postings_fields.is_empty() {
+                Self::build_postings_output(
+                    &self.postings_fields,
+                    inverted,
+                    impact_norms,
+                    &segment_id,
+                )?
+            } else {
+                drop(inverted);
+                match &self.custom_freq_postings_field {
+                    Some(cfg) => Self::build_custom_freq_postings_output(
+                        &self.pending_docs,
+                        &self.pending_custom_freq_terms,
+                        cfg,
+                        &segment_id,
+                    )?,
+                    None => None,
+                }
+            };
+        }
 
         let vectors_output = if self.vector_fields.is_empty() {
             None
@@ -3840,6 +3884,171 @@ impl<'d> IndexWriter<'d> {
             &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
         )?;
         Ok(Some(output))
+    }
+
+    /// Whether this flush can take the `IndexingChain`-shaped inverter
+    /// ([`crate::inverter::FieldInverter`]) instead of the general
+    /// [`Self::invert_pending_fields`]: no term vectors and no payloads (the
+    /// consumers only the general path's `InMemoryInvertedIndex` serves), and
+    /// every norms column belonging to a postings field, so the inverter's
+    /// own length counts cover all of them.
+    fn fast_inversion_applies(&self, norms: &[NormsFieldConfig]) -> bool {
+        !self.postings_fields.is_empty()
+            && self.term_vector_fields.is_empty()
+            && self.payload_source.is_none()
+            && self.postings_fields.iter().all(|p| !p.store_payloads)
+            && norms.iter().all(|n| {
+                self.postings_fields
+                    .iter()
+                    .any(|p| p.field_number == n.field_number)
+            })
+    }
+
+    /// One [`crate::inverter::FieldInverter`] per postings field, fed every
+    /// buffered document in doc-id order.
+    fn invert_pending_fields_fast(
+        docs: &[Document],
+        postings: &[PostingsFieldConfig],
+        analyzer: &Analyzer,
+    ) -> Vec<(i32, crate::inverter::FieldInverter)> {
+        let mut values: Vec<&str> = Vec::new();
+        postings
+            .iter()
+            .map(|config| {
+                let mut inverter = crate::inverter::FieldInverter::new(config.index_options);
+                for (doc_id, doc) in docs.iter().enumerate() {
+                    values.clear();
+                    values.extend(doc.fields.iter().filter_map(|f| match &f.value {
+                        FieldValue::String(text) if f.field_number == config.field_number => {
+                            Some(text.as_str())
+                        }
+                        _ => None,
+                    }));
+                    inverter.add_document(doc_id as i32, &values, analyzer);
+                }
+                (config.field_number, inverter)
+            })
+            .collect()
+    }
+
+    /// [`Self::build_norms_output`] from field lengths already counted
+    /// during inversion, rather than by walking every term's postings again.
+    ///
+    /// Which documents get a norm is decided exactly as there: a document
+    /// whose first value for the field is a string has one (length counted
+    /// from its tokens), any other has none.
+    fn build_norms_output_from_lengths(
+        docs: &[Document],
+        configs: &[NormsFieldConfig],
+        inverters: &[(i32, crate::inverter::FieldInverter)],
+        segment_id: &[u8; ID_LENGTH],
+    ) -> Result<NormsOutput> {
+        let columns: Vec<NormsColumn> = configs
+            .iter()
+            .map(|config| {
+                let counted = inverters
+                    .iter()
+                    .find(|(n, _)| *n == config.field_number)
+                    .map(|(_, inv)| inv.lengths())
+                    .unwrap_or(&[]);
+                let lengths: Vec<Option<u32>> = docs
+                    .iter()
+                    .enumerate()
+                    .map(|(doc_id, doc)| {
+                        let first_is_string = doc
+                            .fields
+                            .iter()
+                            .find(|f| f.field_number == config.field_number)
+                            .is_some_and(|f| matches!(f.value, FieldValue::String(_)));
+                        first_is_string.then(|| {
+                            counted
+                                .get(doc_id)
+                                .copied()
+                                .flatten()
+                                .unwrap_or(0)
+                                .min(i32::MAX as u32)
+                        })
+                    })
+                    .collect();
+                let norm = |len: u32| small_float::int_to_byte4(len) as i8 as i64;
+                let sparse = (!lengths.iter().all(|l| l.is_some())).then(|| {
+                    lengths
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(doc, len)| len.map(|len| (doc as i32, norm(len))))
+                        .collect()
+                });
+                NormsColumn {
+                    dense: lengths
+                        .into_iter()
+                        .map(|l| l.map(norm).unwrap_or(1))
+                        .collect(),
+                    sparse,
+                }
+            })
+            .collect();
+
+        let fields: Vec<norms::NormsField<'_>> = configs
+            .iter()
+            .zip(&columns)
+            .map(|(config, column)| match &column.sparse {
+                None => norms::NormsField::Dense(config.field_number, &column.dense),
+                Some(pairs) => norms::NormsField::Sparse(config.field_number, pairs),
+            })
+            .collect();
+
+        let (nvm, nvd) = norms::write_fields(&fields, docs.len() as i32, segment_id, "")?;
+        let impact_norms: Vec<(i32, Vec<i64>)> = configs
+            .iter()
+            .zip(columns)
+            .map(|(config, column)| (config.field_number, column.dense))
+            .collect();
+        Ok((nvm, nvd, impact_norms))
+    }
+
+    /// [`Self::build_postings_output`] over the inverters' terms, already in
+    /// the postings writer's shape.
+    fn build_postings_output_fast(
+        configs: &[PostingsFieldConfig],
+        inverters: Vec<(i32, crate::inverter::FieldInverter)>,
+        norms: &[(i32, Vec<i64>)],
+        segment_id: &[u8; ID_LENGTH],
+    ) -> Result<Option<postings_writer::Output>> {
+        let mut per_field: Vec<(PostingsFieldConfig, i32, Vec<TermPostings>)> = Vec::new();
+        for (config, (field_number, inverter)) in configs.iter().zip(inverters) {
+            debug_assert_eq!(config.field_number, field_number);
+            let doc_count = inverter.doc_count();
+            let terms = inverter.into_term_postings();
+            if !terms.is_empty() {
+                per_field.push((config.clone(), doc_count, terms));
+            }
+        }
+        if per_field.is_empty() {
+            return Ok(None);
+        }
+        let inputs: Vec<FieldPostingsInput<'_>> = per_field
+            .iter()
+            .map(|(config, doc_count, terms)| FieldPostingsInput {
+                field_number: config.field_number,
+                index_options: config.index_options,
+                doc_count: *doc_count,
+                has_payloads: false,
+                terms,
+            })
+            .collect();
+        let norms_for_impacts: Vec<postings_writer::FieldNorms<'_>> = norms
+            .iter()
+            .map(|(number, values)| postings_writer::FieldNorms {
+                field_number: *number,
+                values,
+            })
+            .collect();
+        Ok(Some(postings_writer::write_fields_with_norms(
+            &inputs,
+            &norms_for_impacts,
+            segment_id,
+            &per_field_codec_suffix(POSTINGS_FORMAT_NAME),
+        )?))
     }
 
     /// [`Self::custom_freq_postings_field`]'s counterpart to

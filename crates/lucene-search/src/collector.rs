@@ -204,6 +204,72 @@ pub trait ScoringCollector {
             self.min_competitive_score()
         }
     }
+
+    /// How many more hits, all at one constant score and in ascending doc-id
+    /// order, fill this collector to the point where no later document can
+    /// enter it -- or `None` when that is not a fixed number (an exhaustive
+    /// score mode, a `searchAfter` page, a threshold shared across leaves, a
+    /// collector that keeps everything). A constant-score union uses it to
+    /// stop reading postings once it has that many documents; see
+    /// `cutoff_constant_score_union`. The default, `None`, is always correct.
+    fn constant_score_hits_needed(&self) -> Option<u64> {
+        None
+    }
+}
+
+/// `Collector.getLeafCollector(context)` for a collector shared by every
+/// segment of a sequential search: forwards to `inner`, shifting each local doc
+/// id by the segment's `doc_base`.
+///
+/// This is what lets a later segment start from the threshold the earlier ones
+/// built. A fresh collector per segment starts every leaf at "everything is
+/// competitive" and makes it fill its own top-k before a single block can be
+/// skipped -- over a 15-segment index that cost most term and boolean queries
+/// 2-4x against Lucene, which searches leaves in order through one
+/// `TopScoreDocCollector`. Leaves must be visited in ascending `doc_base`
+/// order: the ties-go-to-the-lower-doc-id rule the pruning threshold relies on
+/// (a document scoring exactly the published threshold -- the worst kept hit --
+/// cannot enter, so scorers skip anything whose bound is `<=` it) then holds
+/// globally, since every doc of a later leaf has a higher global id.
+pub struct LeafCollector<'c, C: ?Sized> {
+    inner: &'c mut C,
+    doc_base: i32,
+}
+
+impl<'c, C: ScoringCollector + ?Sized> LeafCollector<'c, C> {
+    pub fn new(inner: &'c mut C, doc_base: i32) -> Self {
+        Self { inner, doc_base }
+    }
+}
+
+impl<C: ScoringCollector + ?Sized> ScoringCollector for LeafCollector<'_, C> {
+    #[inline]
+    fn collect(&mut self, doc_id: i32, score: f32) {
+        // ARITH: `doc_base + doc_id` is a global doc id, below the reader's
+        // `max_doc`, itself an `i32`.
+        #[allow(clippy::arithmetic_side_effects)]
+        self.inner.collect(self.doc_base + doc_id, score);
+    }
+
+    #[inline]
+    fn min_competitive_score(&self) -> Option<f32> {
+        self.inner.min_competitive_score()
+    }
+
+    #[inline]
+    fn score_mode(&self) -> ScoreMode {
+        self.inner.score_mode()
+    }
+
+    #[inline]
+    fn pruning_threshold(&self) -> Option<f32> {
+        self.inner.pruning_threshold()
+    }
+
+    #[inline]
+    fn constant_score_hits_needed(&self) -> Option<u64> {
+        self.inner.constant_score_hits_needed()
+    }
 }
 
 /// Collects every matching doc ID into a `Vec<i32>`, ascending — the
@@ -662,6 +728,23 @@ impl ScoringCollector for TopDocsCollector {
         TopDocsCollector::min_competitive_score(self)
     }
 
+    /// Full once `top_n` hits are kept *and* more than `total_hits_threshold`
+    /// have been counted -- the two conditions
+    /// [`Self::local_min_competitive_score`] publishes a threshold on. With
+    /// every score equal and doc ids ascending, nothing after that point can
+    /// displace a kept hit.
+    fn constant_score_hits_needed(&self) -> Option<u64> {
+        if self.top_n == 0
+            || self.score_mode().is_exhaustive()
+            || self.after.is_some()
+            || self.min_score_acc.is_some()
+        {
+            return None;
+        }
+        let fill = (self.top_n as u64).max(self.total_hits_threshold.saturating_add(1));
+        Some(fill.saturating_sub(self.total_hits))
+    }
+
     fn score_mode(&self) -> ScoreMode {
         TopDocsCollector::score_mode(self)
     }
@@ -851,6 +934,27 @@ impl TopFieldCollector {
     /// The kept hits, best-first per [`SortDirection`] (see [`field_rank_order`]).
     pub fn top_docs(&self) -> &[FieldValueDoc] {
         &self.hits
+    }
+
+    /// The worst kept value once the collector is full -- `LeafFieldComparator`'s
+    /// `bottom` -- or `None` while every offer still gets in. A caller offering
+    /// documents in ascending doc-id order can reject any value that does not
+    /// strictly beat it without calling [`Self::offer`]: a tie loses on doc id.
+    pub fn bottom_value(&self) -> Option<i64> {
+        if self.top_n == 0 || self.hits.len() < self.top_n {
+            return None;
+        }
+        self.hits.last().map(|h| h.value)
+    }
+
+    /// Whether `value` strictly beats the bottom (always, while not full).
+    #[inline]
+    pub fn competes(&self, bottom: Option<i64>, value: i64) -> bool {
+        match (bottom, self.direction) {
+            (None, _) => true,
+            (Some(b), SortDirection::Ascending) => value < b,
+            (Some(b), SortDirection::Descending) => value > b,
+        }
     }
 }
 

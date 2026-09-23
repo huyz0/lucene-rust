@@ -7,6 +7,64 @@
 
 use crate::error::{Error, Result};
 
+/// [`DataInput::read_vint`]'s byte loop, shared by the trait default and the
+/// slice fast path's multi-byte fallback so the two cannot drift apart.
+// ARITH: `shift` is compared against 28 before every increment, so it
+// never leaves 7..=35; `wrapping_shl` already carries the shift semantics.
+#[allow(clippy::arithmetic_side_effects)]
+#[inline]
+fn read_vint_loop<R: DataInput + ?Sized>(r: &mut R) -> Result<i32> {
+    let mut b = r.read_byte()?;
+    let mut v = (b & 0x7f) as i32;
+    let mut shift = 7;
+    while b & 0x80 != 0 {
+        if shift > 28 {
+            return Err(Error::MalformedVarint);
+        }
+        b = r.read_byte()?;
+        // The final (5th) byte contributes its low 4 bits into the sign
+        // area; bits above that are shifted out, matching Java's
+        // `(b & 0x7F) << 28` on an `int`.
+        v |= ((b & 0x7f) as i32).wrapping_shl(shift);
+        shift += 7;
+    }
+    Ok(v)
+}
+
+/// [`DataInput::read_vlong`]'s byte loop; see [`read_vint_loop`].
+// ARITH: `shift` is compared against 64 before every increment.
+#[allow(clippy::arithmetic_side_effects)]
+#[inline]
+fn read_vlong_loop<R: DataInput + ?Sized>(r: &mut R) -> Result<i64> {
+    let mut b = r.read_byte()?;
+    let mut v = (b & 0x7f) as i64;
+    let mut shift = 7;
+    while b & 0x80 != 0 {
+        if shift >= 64 {
+            return Err(Error::MalformedVarint);
+        }
+        b = r.read_byte()?;
+        v |= ((b & 0x7f) as i64).wrapping_shl(shift);
+        shift += 7;
+    }
+    Ok(v)
+}
+
+/// [`SliceInput`]'s varints that its in-slice decoders cannot finish: one
+/// within a maximum length of the buffer's end, or a malformed one.
+#[cold]
+#[inline(never)]
+fn slice_vint_slow(r: &mut SliceInput<'_>) -> Result<i32> {
+    read_vint_loop(r)
+}
+
+/// See [`slice_vint_slow`].
+#[cold]
+#[inline(never)]
+fn slice_vlong_slow(r: &mut SliceInput<'_>) -> Result<i64> {
+    read_vlong_loop(r)
+}
+
 /// Sequential reader over Lucene-encoded bytes.
 ///
 /// Implementors provide raw byte access; all wire-format decoding lives in the
@@ -59,26 +117,9 @@ pub trait DataInput {
     /// and reports [`Error::MalformedVarint`] rather than either
     /// half-decoding or running to EOF — a deliberate hardening of a path
     /// only corrupt input can reach.
-    // ARITH: `shift` is compared against 28 before every increment, so it
-    // never leaves 7..=35; `wrapping_shl` already carries the shift semantics.
-    #[allow(clippy::arithmetic_side_effects)]
     #[inline]
     fn read_vint(&mut self) -> Result<i32> {
-        let mut b = self.read_byte()?;
-        let mut v = (b & 0x7f) as i32;
-        let mut shift = 7;
-        while b & 0x80 != 0 {
-            if shift > 28 {
-                return Err(Error::MalformedVarint);
-            }
-            b = self.read_byte()?;
-            // The final (5th) byte contributes its low 4 bits into the sign
-            // area; bits above that are shifted out, matching Java's
-            // `(b & 0x7F) << 28` on an `int`.
-            v |= ((b & 0x7f) as i32).wrapping_shl(shift);
-            shift += 7;
-        }
-        Ok(v)
+        read_vint_loop(self)
     }
 
     /// Lucene `readZInt`: zigzag-decoded vint, the 32-bit counterpart of
@@ -91,22 +132,9 @@ pub trait DataInput {
     }
 
     /// Lucene `readVLong` (non-negative on the wire; up to 9 bytes).
-    // ARITH: `shift` is compared against 64 before every increment.
-    #[allow(clippy::arithmetic_side_effects)]
     #[inline]
     fn read_vlong(&mut self) -> Result<i64> {
-        let mut b = self.read_byte()?;
-        let mut v = (b & 0x7f) as i64;
-        let mut shift = 7;
-        while b & 0x80 != 0 {
-            if shift >= 64 {
-                return Err(Error::MalformedVarint);
-            }
-            b = self.read_byte()?;
-            v |= ((b & 0x7f) as i64).wrapping_shl(shift);
-            shift += 7;
-        }
-        Ok(v)
+        read_vlong_loop(self)
     }
 
     /// Lucene `readZLong`: zigzag-decoded vlong; full i64 range.
@@ -355,6 +383,31 @@ impl<'a> SliceInput<'a> {
         Ok(())
     }
 
+    /// A hint that the bytes at `pos` will be read soon: loads their cache line
+    /// in the background (`prefetcht0`) so a later read does not stall on it.
+    /// No effect on the cursor or on correctness; a `pos` past the end, or a
+    /// target without the instruction, does nothing.
+    ///
+    /// For a reader that learns where it will read next well before it gets
+    /// there -- a postings cursor knows the next block's header offset as soon
+    /// as it parses the current one, and has a block to decode in between.
+    #[inline(always)]
+    pub fn prefetch(&self, pos: usize) {
+        #[cfg(target_arch = "x86_64")]
+        if let Some(b) = self.buf.get(pos) {
+            // SAFETY: a prefetch never faults and changes no program-visible
+            // state; the address is a byte of this buffer in any case. SSE is
+            // part of the x86_64 baseline.
+            unsafe {
+                std::arch::x86_64::_mm_prefetch::<{ std::arch::x86_64::_MM_HINT_T0 }>(
+                    b as *const u8 as *const i8,
+                )
+            };
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        let _ = pos;
+    }
+
     /// Zero-copy view of `[from..to)` of the underlying buffer, independent of the
     /// cursor position. Used by `codec_util` to compute the footer's CRC-32 over
     /// the exact byte range Lucene checksummed.
@@ -424,6 +477,66 @@ impl DataInput for SliceInput<'_> {
         let b = *self.buf.get(self.pos).ok_or_else(|| self.eof())?;
         self.pos += 1;
         Ok(b)
+    }
+
+    /// Straight off the slice: with five bytes in view (a vint's maximum)
+    /// the whole value is decoded without a bounds check or `Result` per
+    /// byte, in a loop the compiler unrolls. Only a vint within five bytes of
+    /// the end, or a malformed one, takes the shared byte loop -- so errors and
+    /// their offsets are the default's.
+    #[inline(always)]
+    fn read_vint(&mut self) -> Result<i32> {
+        if let Some(b) = self.buf.get(self.pos..self.pos + 5) {
+            let mut v = 0i32;
+            for (i, &x) in b.iter().enumerate() {
+                // The fifth byte's high bits shift out of the `i32`, as
+                // Java's `(b & 0x7F) << 28` does.
+                v |= ((x & 0x7f) as i32).wrapping_shl(7 * i as u32);
+                if x < 0x80 {
+                    self.pos += i + 1;
+                    return Ok(v);
+                }
+            }
+        }
+        slice_vint_slow(self)
+    }
+
+    /// See [`Self::read_vint`]; ten bytes cover every well-formed vlong.
+    #[inline(always)]
+    fn read_vlong(&mut self) -> Result<i64> {
+        if let Some(b) = self.buf.get(self.pos..self.pos + 10) {
+            let mut v = 0i64;
+            for (i, &x) in b.iter().enumerate() {
+                v |= ((x & 0x7f) as i64).wrapping_shl(7 * i as u32);
+                if x < 0x80 {
+                    self.pos += i + 1;
+                    return Ok(v);
+                }
+            }
+        }
+        slice_vlong_slow(self)
+    }
+
+    #[inline]
+    fn read_i16(&mut self) -> Result<i16> {
+        let b = self
+            .buf
+            .get(self.pos..self.pos + 2)
+            .ok_or_else(|| self.eof())?;
+        let v = i16::from_le_bytes([b[0], b[1]]);
+        self.pos += 2;
+        Ok(v)
+    }
+
+    #[inline]
+    fn read_i64(&mut self) -> Result<i64> {
+        let b = self
+            .buf
+            .get(self.pos..self.pos + 8)
+            .ok_or_else(|| self.eof())?;
+        let v = i64::from_le_bytes(b.try_into().unwrap());
+        self.pos += 8;
+        Ok(v)
     }
 
     #[inline]

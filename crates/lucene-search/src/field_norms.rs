@@ -470,6 +470,49 @@ impl FieldNormsCursor<'_, '_> {
         })
     }
 
+    /// [`Self::norm_inverse`] for a whole ascending batch of documents --
+    /// `NumericDocValues.longValues(size, docs, values, default)` feeding
+    /// `BM25Scorer`'s bulk `score`.
+    ///
+    /// The dense one-byte field -- every ordinary analyzed field -- is a
+    /// straight gather through the 256-entry table with the range established
+    /// once for the whole batch (the documents are ascending, so the last one
+    /// bounds them all); anything else takes the per-document path.
+    pub fn norm_inverse_batch(&mut self, docs: &[i32], out: &mut Vec<f32>) -> norms::Result<()> {
+        out.clear();
+        if let (Some(bytes), Some(&first), Some(&last)) =
+            (self.norms.dense_norm_bytes, docs.first(), docs.last())
+        {
+            if first >= 0 && (last as usize) < bytes.len() {
+                let table = &self.norms.norm_inverse;
+                out.extend(docs.iter().map(|&d| table[bytes[d as usize] as usize]));
+                return Ok(());
+            }
+        }
+        out.reserve(docs.len());
+        for &d in docs {
+            out.push(self.norm_inverse(d)?);
+        }
+        Ok(())
+    }
+
+    /// The largest value [`Self::norm_inverse`] can return for this field --
+    /// the shortest possible document, or a document with no norm at all --
+    /// which bounds every score from above the way `MaxScoreCache`'s global
+    /// maximum does.
+    pub fn max_norm_inverse(&self) -> f32 {
+        let unnormed = 1.0
+            / (crate::similarity::DEFAULT_K1
+                * ((1.0 - crate::similarity::DEFAULT_B)
+                    + crate::similarity::DEFAULT_B * crate::similarity::UNNORMED_FIELD_LENGTH
+                        / self.norms.avg_field_length));
+        self.norms
+            .norm_inverse
+            .iter()
+            .copied()
+            .fold(unnormed, f32::max)
+    }
+
     /// This doc's real decoded field length, or
     /// [`crate::similarity::UNNORMED_FIELD_LENGTH`] when the doc legitimately
     /// has no norm.

@@ -47,6 +47,151 @@ const MAX_ATTEMPTS: usize = 256;
 /// `HighCompressionHashTable.MASK`.
 const HC_MASK: usize = MAX_DISTANCE - 1;
 
+/// [`decompress`] over an in-memory input: the same block format and the same
+/// result, several times faster on the short sequences real stored fields and
+/// term suffixes are made of.
+///
+/// [`decompress`] moves every literal run and every match with a
+/// variable-length `copy_from_slice`/`copy_within` -- a `memmove` call per
+/// sequence, whose setup dwarfs the few bytes an LZ4 sequence usually
+/// carries. With the whole compressed block visible as a slice, the common
+/// sequence (literal run under 15 bytes, match under 19 bytes at a distance of
+/// at least 8) is instead moved as fixed-size 16- and 8-byte blocks, which
+/// compile to plain vector/word loads and stores -- the "wild copy" of the
+/// reference LZ4 decoder. A fixed-size copy may write a few bytes past the
+/// sequence's end; it is only taken while those bytes are still inside
+/// `dest[..d_off + decompressed_len]`, which the rest of the block overwrites
+/// before anyone can observe them. Near the end of the block, and for any
+/// long or overlapping sequence, it falls back to the exact copies.
+///
+/// All of it is bounds-checked safe code: each fixed-size copy costs one
+/// slice check, not a check per byte.
+pub fn decompress_slice(
+    input: &mut lucene_store::data_input::SliceInput<'_>,
+    decompressed_len: usize,
+    dest: &mut [u8],
+    d_off: usize,
+) -> Result<usize> {
+    let dest_end = d_off
+        .checked_add(decompressed_len)
+        .ok_or(Error::Eof { offset: d_off })?;
+    if dest_end > dest.len() {
+        return Err(Error::Eof { offset: dest_end });
+    }
+    let src = input.as_slice();
+    let eof = |s: usize| Error::Eof {
+        offset: input.position().saturating_add(s),
+    };
+    let mut s = 0usize;
+    let mut d = d_off;
+
+    // ARITH: for the whole loop -- `s` only advances past bytes `src.get`
+    // just proved exist, or by a `lit` that `s + lit <= src.len()` was checked
+    // for, so `s <= src.len()` and every `s + k` for a small constant `k` is
+    // far from overflow. `d` likewise only advances to an `end` checked
+    // against `dest.len()` (or `dest_end <= dest.len()`), so `d + 16`/`d + 32`
+    // are small sums of in-bounds indices. `d - dec` is taken only under
+    // `dec <= d`. Length extensions go through `checked_add`.
+    #[allow(clippy::arithmetic_side_effects)]
+    loop {
+        let token = *src.get(s).ok_or_else(|| eof(s))? as usize;
+        s += 1;
+        let mut lit = token >> 4;
+        if lit != 0 {
+            if lit < 0x0F && s + 16 <= src.len() && d + 16 <= dest_end {
+                dest[d..d + 16].copy_from_slice(&src[s..s + 16]);
+            } else {
+                if lit == 0x0F {
+                    lit = slice_length_extension(src, &mut s, lit)?;
+                }
+                let end = d.checked_add(lit).ok_or(Error::Eof { offset: d })?;
+                if end > dest.len() {
+                    return Err(Error::Eof { offset: end });
+                }
+                let s_end = s.checked_add(lit).ok_or_else(|| eof(s))?;
+                let run = src.get(s..s_end).ok_or_else(|| eof(s))?;
+                dest[d..end].copy_from_slice(run);
+            }
+            s += lit;
+            d += lit;
+        }
+
+        if d >= dest_end {
+            break;
+        }
+
+        let dec_bytes = src.get(s..s + 2).ok_or_else(|| eof(s))?;
+        let dec = u16::from_le_bytes([dec_bytes[0], dec_bytes[1]]) as usize;
+        s += 2;
+        if dec == 0 {
+            return Err(Error::Corrupted("LZ4 match offset 0 is invalid".into()));
+        }
+        if dec > d {
+            return Err(Error::Corrupted(
+                "LZ4 match references before the start of the buffer".into(),
+            ));
+        }
+        let mut match_len = token & 0x0F;
+        let short = match_len != 0x0F;
+        if !short {
+            match_len = slice_length_extension(src, &mut s, match_len)?;
+        }
+        let Some(match_len) = match_len.checked_add(MIN_MATCH) else {
+            return Err(Error::Corrupted("LZ4 match length overflows".into()));
+        };
+        let from = d - dec;
+        if short && dec >= 8 && d + 24 <= dest_end {
+            // At most 18 bytes, in three 8-byte steps. `dec >= 8` means each
+            // step's source ends at or before its destination starts, so it
+            // only ever reads bytes already final.
+            dest.copy_within(from..from + 8, d);
+            dest.copy_within(from + 8..from + 16, d + 8);
+            if match_len > 16 {
+                dest.copy_within(from + 16..from + 24, d + 16);
+            }
+            d += match_len;
+        } else {
+            let end = d.checked_add(match_len).ok_or(Error::Eof { offset: d })?;
+            if end > dest.len() {
+                return Err(Error::Eof { offset: end });
+            }
+            // See [`decompress`] for why the copy is cut at `dec`.
+            let mut written = 0usize;
+            while written < match_len {
+                let n = dec.min(match_len - written);
+                dest.copy_within(from + written..from + written + n, d + written);
+                written += n;
+            }
+            d = end;
+        }
+
+        if d >= dest_end {
+            break;
+        }
+    }
+    input.skip(s)?;
+    Ok(d)
+}
+
+/// [`read_length_extension`] over a slice cursor.
+fn slice_length_extension(src: &[u8], s: &mut usize, base: usize) -> Result<usize> {
+    let mut len = base;
+    loop {
+        let b = *src.get(*s).ok_or(Error::Eof { offset: *s })?;
+        // ARITH: `*s < src.len()` was just proved by the `get`.
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            *s += 1;
+        }
+        len = len
+            .checked_add(b as usize)
+            .ok_or_else(|| Error::Corrupted("LZ4 length extension overflows".into()))?;
+        if b != 0xFF {
+            return Ok(len);
+        }
+    }
+}
+
 /// Decompresses into `dest[d_off..d_off+decompressed_len]`, reading a
 /// self-terminating LZ4 block from `input`. Back-references may reach
 /// earlier into `dest` than `d_off` (a preset dictionary). Returns
@@ -690,6 +835,133 @@ mod tests {
         let huge = vec![0xFFu8; 64];
         let mut input = SliceInput::new(&huge);
         assert!(read_length_extension(&mut input, usize::MAX - 1).is_err());
+    }
+
+    /// Text-like input with runs, short and long repeats at every distance
+    /// class the fast path distinguishes (`< 8`, `>= 8`, long matches).
+    fn corpus(seed: u64, len: usize) -> Vec<u8> {
+        let mut x = seed | 1;
+        let mut next = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let words: [&[u8]; 8] = [
+            b"the ",
+            b"quick ",
+            b"lucene ",
+            b"a",
+            b"zzzzzzzzzzzzzzzzzzzz",
+            b"ab",
+            b"\x00\x01",
+            b"xyz ",
+        ];
+        let mut out = Vec::with_capacity(len);
+        while out.len() < len {
+            let r = next();
+            if r % 5 == 0 {
+                out.push((r >> 8) as u8);
+            } else {
+                out.extend_from_slice(words[(r >> 16) as usize % words.len()]);
+            }
+        }
+        out.truncate(len);
+        out
+    }
+
+    /// `decompress_slice` is an optimisation of `decompress`: on every block
+    /// the Java-compatible compressor emits -- with and without a preset
+    /// dictionary, at lengths either side of the fast path's 16/24-byte
+    /// margins -- it must produce the same bytes, the same return value and
+    /// consume exactly the same input.
+    #[test]
+    fn slice_decoder_matches_the_reference_decoder() {
+        for seed in 1..40u64 {
+            for len in [0usize, 1, 5, 15, 16, 17, 24, 31, 100, 1000, 20_000] {
+                let dict_len = (seed as usize * 37) % 300;
+                let whole = corpus(seed, dict_len + len);
+                let mut compressed = Vec::new();
+                compress_with_dictionary(
+                    &whole,
+                    0,
+                    dict_len,
+                    len,
+                    &mut compressed,
+                    &mut FastCompressionHashTable::new(),
+                );
+                // A trailing sentinel proves both stop at the block's end.
+                compressed.push(0xAB);
+
+                let mut want = vec![0u8; dict_len + len];
+                want[..dict_len].copy_from_slice(&whole[..dict_len]);
+                let mut got = want.clone();
+                if len == 0 {
+                    continue; // nothing is written for an empty block
+                }
+                let mut a = SliceInput::new(&compressed);
+                let mut b = SliceInput::new(&compressed);
+                let ra = decompress(&mut a, len, &mut want, dict_len).unwrap();
+                let rb = decompress_slice(&mut b, len, &mut got, dict_len).unwrap();
+                assert_eq!(ra, rb, "seed {seed} len {len}");
+                assert_eq!(want, got, "seed {seed} len {len}");
+                assert_eq!(&got[..], &whole[..], "seed {seed} len {len}");
+                assert_eq!(a.position(), b.position(), "seed {seed} len {len}");
+            }
+        }
+    }
+
+    /// Every truncation and every single-byte corruption of a real block must
+    /// come back as an error or as bytes -- never a panic -- and wherever the
+    /// reference decoder succeeds, the fast one agrees with it byte for byte.
+    #[test]
+    fn slice_decoder_survives_truncation_and_corruption() {
+        let plain = corpus(7, 600);
+        let compressed = compress(&plain);
+        for cut in 0..compressed.len() {
+            let mut d1 = vec![0u8; plain.len()];
+            let mut d2 = d1.clone();
+            let r1 = decompress(
+                &mut SliceInput::new(&compressed[..cut]),
+                plain.len(),
+                &mut d1,
+                0,
+            );
+            let r2 = decompress_slice(
+                &mut SliceInput::new(&compressed[..cut]),
+                plain.len(),
+                &mut d2,
+                0,
+            );
+            assert_eq!(r1.is_ok(), r2.is_ok(), "cut {cut}");
+        }
+        for at in 0..compressed.len() {
+            for flip in [0x01u8, 0x0F, 0xF0, 0xFF] {
+                let mut bad = compressed.clone();
+                bad[at] ^= flip;
+                let mut d1 = vec![0u8; plain.len()];
+                let mut d2 = d1.clone();
+                let r1 = decompress(&mut SliceInput::new(&bad), plain.len(), &mut d1, 0);
+                let r2 = decompress_slice(&mut SliceInput::new(&bad), plain.len(), &mut d2, 0);
+                assert_eq!(r1.is_ok(), r2.is_ok(), "at {at} flip {flip:#x}");
+                if let (Ok(e1), Ok(e2)) = (r1, r2) {
+                    assert_eq!(e1, e2);
+                    // Only the produced range is defined; a wild copy may
+                    // have scribbled past it on a corrupt block's early stop.
+                    let n = e1.min(plain.len());
+                    assert_eq!(d1[..n], d2[..n], "at {at} flip {flip:#x}");
+                }
+            }
+        }
+        // A destination too small for the declared length is refused up front.
+        let mut tiny = [0u8; 4];
+        assert!(decompress_slice(&mut SliceInput::new(&compressed), 600, &mut tiny, 0).is_err());
+        assert!(
+            decompress_slice(&mut SliceInput::new(&compressed), usize::MAX, &mut tiny, 1).is_err()
+        );
+        // An overflowing length extension is corruption, not a wrap.
+        let mut s = 0;
+        assert!(slice_length_extension(&[0xFF; 8], &mut s, usize::MAX - 1).is_err());
     }
 
     #[test]

@@ -267,7 +267,7 @@ impl<'a> TermsCursor<'a> {
             let block_len = block_len as usize;
             let mut buffer = vec![0u8; buffer_len];
             buffer[..self.term.len()].copy_from_slice(&self.term);
-            lz4::decompress(&mut self.input, block_len, &mut buffer, self.term.len())?;
+            lz4::decompress_slice(&mut self.input, block_len, &mut buffer, self.term.len())?;
             buffer.drain(..self.term.len());
             self.block_body = buffer;
         } else {

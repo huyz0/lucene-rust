@@ -158,6 +158,8 @@ pub fn get(data: &[u8], meta: &Meta, index: i64) -> Result<i64> {
     };
     let delta = if block.bpv == 0 {
         0
+    } else if let Some(v) = fast_packed_get(data, block.offset, block.bpv, block_index) {
+        v
     } else {
         let Some(slice) = data.get(block.offset as usize..) else {
             return Err(lucene_store::Error::Eof { offset: 0 });
@@ -172,6 +174,30 @@ pub fn get(data: &[u8], meta: &Meta, index: i64) -> Result<i64> {
         .min
         .wrapping_add((block.avg * block_index as f32) as i64)
         .wrapping_add(delta))
+}
+
+/// The packed value at `index` of a block starting at byte `offset`, read with
+/// one 8-byte load when that window is inside `data` -- `DirectReader`'s
+/// per-width `get`, which the JIT specializes. `None` for anything the checked
+/// [`direct_reader::get`] must answer instead: an unsupported width (its
+/// corruption error), a negative offset or index, or a window running past
+/// the end of `data`.
+#[inline]
+fn fast_packed_get(data: &[u8], offset: i64, bpv: u8, index: i64) -> Option<i64> {
+    if !direct_reader::is_supported_bits(bpv) {
+        return None;
+    }
+    let offset = usize::try_from(offset).ok()?;
+    let bit = u64::try_from(index).ok()?.checked_mul(u64::from(bpv))?;
+    let byte = offset.checked_add(usize::try_from(bit >> 3).ok()?)?;
+    let window = data.get(byte..byte.checked_add(8)?)?;
+    let word = u64::from_le_bytes(window.try_into().ok()?);
+    // A supported width not divisible by 8 is at most 28 bits, so `shift + bpv
+    // <= 35` fits the word; a width divisible by 8 has `shift == 0`. `bpv` is
+    // 1..=64 here, so the mask shift is in range.
+    let shift = (bit & 7) as u32;
+    let mask = u64::MAX.checked_shr(64u32.saturating_sub(u32::from(bpv)))?;
+    Some(((word >> shift) & mask) as i64)
 }
 
 /// Returns the largest `i` in `[from, to)` with `get(data, meta, i) <= key`.

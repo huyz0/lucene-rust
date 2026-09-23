@@ -652,6 +652,8 @@ impl<'a> DocInput<'a> {
                     index_has_freq,
                     index_has_pos,
                     index_has_offsets_or_payloads,
+                    true,
+                    true,
                 )?;
                 decode_full_block_body(
                     &mut r,
@@ -661,6 +663,8 @@ impl<'a> DocInput<'a> {
                     &mut scratch,
                     &mut block_docs,
                     &mut block_freqs,
+                    false,
+                    false,
                 )?;
                 check_wire_position(r.position(), header.body_end, "full block body")?;
                 prev_doc_id = header.last_doc_id;
@@ -688,6 +692,8 @@ impl<'a> DocInput<'a> {
                 index_has_freq,
                 index_has_pos,
                 index_has_offsets_or_payloads,
+                true,
+                true,
             )?;
             decode_full_block_body(
                 &mut r,
@@ -697,6 +703,8 @@ impl<'a> DocInput<'a> {
                 &mut scratch,
                 &mut block_docs,
                 &mut block_freqs,
+                false,
+                false,
             )?;
             check_wire_position(r.position(), header.body_end, "full block body")?;
             prev_doc_id = header.last_doc_id;
@@ -785,6 +793,61 @@ impl<'a> DocInput<'a> {
                 "docFreq <= 1: use singleton_postings instead (no .doc bytes are written)",
             ));
         }
+        self.lazy_cursor_for(meta, doc_freq, index_options, has_payloads, flags)
+    }
+
+    /// A [`LazyDocsCursor`] over a pulsed single-document term (`docFreq ==
+    /// 1`), which has no `.doc` bytes at all: its one document is
+    /// `meta.singleton_doc_id` and its frequency the term's `totalTermFreq`,
+    /// as Lucene's `BlockPostingsEnum.reset` sets them for a singleton. The
+    /// cursor behaves like one already holding a one-document tail block --
+    /// no impacts, so a scorer treats it as unskippable -- which is what lets a
+    /// disjunction or conjunction carry such a term as a leg instead of giving
+    /// up on the whole segment.
+    pub fn singleton_cursor(
+        &self,
+        meta: TermMetadata,
+        total_term_freq: i64,
+        index_options: IndexOptions,
+        has_payloads: bool,
+        flags: PostingsFlags,
+    ) -> Result<LazyDocsCursor<'a>> {
+        if meta.singleton_doc_id < 0 {
+            return Err(Error::Unsupported(
+                "singleton_cursor needs a pulsed term (docFreq == 1)",
+            ));
+        }
+        let mut cursor = self.lazy_cursor_for(meta, 1, index_options, has_payloads, flags)?;
+        cursor.doc_count_left = 0;
+        cursor.level1_last_doc_id = NO_MORE_DOCS;
+        cursor.block_docs[0] = meta.singleton_doc_id;
+        // A cursor that asked for frequencies starts with a zeroed array, so
+        // the slot is always written: the term's `totalTermFreq` when the field
+        // indexes frequencies, 1 when it does not -- what every other block
+        // shape reports for a field without freqs (`read_tail_block`,
+        // `decode_full_block_body`), and what Lucene returns.
+        if cursor.needs_freq {
+            cursor.block_freqs[0] = if cursor.index_has_freq {
+                i32::try_from(total_term_freq)
+                    .map_err(|_| corrupted("singleton term's totalTermFreq overflows an int"))?
+            } else {
+                1
+            };
+        }
+        cursor.block_len = 1;
+        Ok(cursor)
+    }
+
+    /// The shared body of [`Self::lazy_cursor_with_flags`] and
+    /// [`Self::singleton_cursor`], past their `docFreq` checks.
+    fn lazy_cursor_for(
+        &self,
+        meta: TermMetadata,
+        doc_freq: i32,
+        index_options: IndexOptions,
+        has_payloads: bool,
+        flags: PostingsFlags,
+    ) -> Result<LazyDocsCursor<'a>> {
         if !matches!(
             index_options,
             IndexOptions::Docs
@@ -817,6 +880,8 @@ impl<'a> DocInput<'a> {
             r,
             index_has_freq: index_options != IndexOptions::Docs,
             needs_freq: flags.needs_freq(),
+            needs_impacts: flags.needs_freq(),
+            needs_pos: false,
             index_has_pos: index_options.subsumes_positions(),
             index_has_offsets_or_payloads: index_options.subsumes_offsets() || has_payloads,
             doc_freq,
@@ -826,10 +891,13 @@ impl<'a> DocInput<'a> {
             level1_doc_end_fp: meta.doc_start_fp as usize,
             level1_doc_count_upto: 0,
             block_docs: [0; BLOCK_SIZE as usize],
-            block_freqs: [0; BLOCK_SIZE as usize],
+            // All ones for a cursor that never decodes frequencies: the block
+            // decoder then leaves the array alone (`unit_freqs`).
+            block_freqs: [if flags.needs_freq() { 0 } else { 1 }; BLOCK_SIZE as usize],
             block_len: 0,
             block_pos: 0,
             doc_id: -1,
+            bits: None,
             scratch: BlockScratch::new(),
             pending: None,
             level0_last_doc_id: -1,
@@ -853,6 +921,7 @@ impl<'a> DocInput<'a> {
                 pay_fp: meta.pay_start_fp,
                 pos_buffer_upto: 0,
             },
+            block_gen: 0,
         })
     }
 }
@@ -2219,6 +2288,7 @@ pub fn read_occurrences_for_doc(
     }
     let n = wire_count(total_term_freq, "total_term_freq")?;
     let mut cursor = doc.lazy_cursor(meta, doc_freq, index_options, has_payloads)?;
+    cursor.track_positions();
     if cursor.advance(doc_id)? != doc_id {
         return Ok(None);
     }
@@ -2406,6 +2476,7 @@ pub fn read_positions(
 /// (`Lucene104PostingsReader.readVInt15`): a 2-byte fast path for values that
 /// fit in 15 bits, else the top bit of the `short` flags a following vint
 /// carrying the remaining high bits (`value = (s & 0x7FFF) | (extra << 15)`).
+#[inline]
 fn read_vint15(r: &mut SliceInput) -> Result<i32> {
     let s = r.read_i16()?;
     if s >= 0 {
@@ -2417,6 +2488,7 @@ fn read_vint15(r: &mut SliceInput) -> Result<i32> {
 
 /// `Lucene104PostingsReader.readVLong15`, the `long`-widening sibling of
 /// [`read_vint15`].
+#[inline]
 fn read_vlong15(r: &mut SliceInput) -> Result<i64> {
     let s = r.read_i16()?;
     if s >= 0 {
@@ -2653,6 +2725,8 @@ fn read_full_block_header<'a>(
     index_has_freq: bool,
     index_has_pos: bool,
     index_has_offsets_or_payloads: bool,
+    needs_impacts: bool,
+    needs_pos: bool,
 ) -> Result<FullBlockHeader<'a>> {
     // `level0NumBytes` (`numSkipBytes` on the write side): the byte length,
     // from right here, of everything up to the block *body* -- the two
@@ -2696,6 +2770,9 @@ fn read_full_block_header<'a>(
     let body_end = add_wire_offset(r.position(), wire_length(block_length, "level-0 block")?)?;
     let mut impact_bytes: &[u8] = &[];
     let mut pos_skip: Option<PosSkip> = None;
+    // A cursor that wants neither the impacts nor the `.pos`/`.pay` origin
+    // never comes here: `LazyDocsCursor::skip_level0_headers` is
+    // `skipLevel0To`'s `docIn.seek(skip0End)` for it.
     if index_has_freq {
         // Impacts byte-length is a plain vint here (`doMoveToNextLevel0Block`,
         // `Lucene104PostingsReader.java:746`), unlike level-1's vlong-prefixed
@@ -2707,8 +2784,10 @@ fn read_full_block_header<'a>(
         // bytes actually left, which is what keeps `impacts_start +` below
         // from overflowing (a debug-build panic) on a corrupt `.doc`.
         let impacts_len = r.read_length("level-0 impacts")?;
-        let impacts_start = r.position();
-        impact_bytes = r.slice(impacts_start, add_wire_offset(impacts_start, impacts_len)?)?;
+        if needs_impacts {
+            let impacts_start = r.position();
+            impact_bytes = r.slice(impacts_start, add_wire_offset(impacts_start, impacts_len)?)?;
+        }
         r.skip(impacts_len)?;
 
         // Level-0 pos/pay skip data (`Lucene104PostingsReader.java:754-761`,
@@ -2717,7 +2796,11 @@ fn read_full_block_header<'a>(
         // positional walk can seek straight there instead of summing every
         // preceding document's frequency.
         if index_has_pos {
-            pos_skip = Some(read_pos_skip(r, index_has_offsets_or_payloads)?);
+            if needs_pos {
+                pos_skip = Some(read_pos_skip(r, index_has_offsets_or_payloads)?);
+            } else {
+                r.seek(skip0_end)?;
+            }
         }
     }
 
@@ -2750,6 +2833,10 @@ struct BlockScratch {
     /// Dense doc-encoding bit set. `-bitsPerValue` is read from an `i8`, so
     /// `numLongs` can never exceed 128 whatever the file says.
     bitset: [u64; 128],
+    /// `docCumulativeWordPopCounts`: set bits in `bitset[..w]`, filled when a
+    /// bit-set block is kept, so a document's rank is one lookup and one
+    /// popcount rather than a count over every word in between.
+    word_ranks: [u16; 128],
 }
 
 impl BlockScratch {
@@ -2758,6 +2845,7 @@ impl BlockScratch {
             for_util: ForUtil::new(),
             words: [0u32; for_util::BLOCK_SIZE],
             bitset: [0u64; 128],
+            word_ranks: [0u16; 128],
         }
     }
 }
@@ -2881,13 +2969,33 @@ fn full_blocks_and_tail(n: usize) -> (usize, usize) {
 /// `debug_assert` is for invariants this code's own arithmetic guarantees;
 /// these are values read off disk. Both are hard decode errors now.
 /// (`c9-check-index`'s byte-flipping sweep reaches the first one.)
+#[inline]
 fn check_wire_position(position: usize, expected: usize, what: &str) -> Result<()> {
     if position != expected {
-        return Err(corrupted(format!(
-            "{what}: decode ended at {position} but the file's own length field claims {expected}"
-        )));
+        return Err(wire_position_mismatch(position, expected, what));
     }
     Ok(())
+}
+
+/// [`check_wire_position`]'s error, kept out of line so the check itself
+/// inlines into the block loops as one compare.
+#[cold]
+#[inline(never)]
+fn wire_position_mismatch(position: usize, expected: usize, what: &str) -> Error {
+    corrupted(format!(
+        "{what}: decode ended at {position} but the file's own length field claims {expected}"
+    ))
+}
+
+/// What [`decode_full_block_body`] left behind for the block's doc ids.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BodyShape {
+    /// All `BLOCK_SIZE` doc ids are in `docs`.
+    Docs,
+    /// A bit-set block kept as its words, `scratch.bitset[..words]`: the
+    /// block's documents are `base + i` for each set bit `i`, and the `k`-th
+    /// set bit is the document `freqs[k]` belongs to.
+    Bits { base: i32, words: usize },
 }
 
 /// Decodes a full block's body (the `bitsPerValue` token onward) — `r` must
@@ -2895,6 +3003,13 @@ fn check_wire_position(position: usize, expected: usize, what: &str) -> Result<(
 /// [`DocInput::read_postings`] (eager path) and [`LazyDocsCursor`] (lazy path) so
 /// there is exactly one body decoder to keep in sync with `ForUtil`/
 /// `PForUtil`.
+///
+/// With `keep_bitset`, a bit-set-encoded block is **not** expanded into
+/// `docs`: its words are left in `scratch.bitset` and the block comes back as
+/// [`BodyShape::Bits`], for a cursor that answers `nextDoc`/`advance` from
+/// the bit set the way Lucene's `BlockPostingsEnum` does (`nextSetBit`,
+/// never a materialized array). Freqs are decoded either way.
+#[allow(clippy::too_many_arguments)]
 fn decode_full_block_body(
     r: &mut SliceInput,
     prev_doc_id: i32,
@@ -2903,7 +3018,10 @@ fn decode_full_block_body(
     scratch: &mut BlockScratch,
     docs: &mut [i32; BLOCK_SIZE as usize],
     freqs: &mut [i32; BLOCK_SIZE as usize],
-) -> Result<()> {
+    keep_bitset: bool,
+    unit_freqs: bool,
+) -> Result<BodyShape> {
+    let mut shape = BodyShape::Docs;
     #[cfg(any(test, feature = "test-support"))]
     test_only_block_decode_counter::record_decode();
     let bits_per_value_byte = r.read_byte()? as i8;
@@ -2912,22 +3030,29 @@ fn decode_full_block_body(
         scratch
             .for_util
             .decode(bits_per_value_byte as u32, r, doc_deltas)?;
-        // ARITH: `sum` starts inside `i32`'s range and gains at most
-        // `u32::MAX` per iteration over the fixed 256-entry `doc_deltas`, so
-        // `|sum| < 2^31 + 256 * 2^32 < 2^41` -- three orders of magnitude
-        // inside `i64`. The hottest loop in the file; no per-doc check.
-        #[allow(clippy::arithmetic_side_effects)]
-        {
-            let mut sum: i64 = prev_doc_id as i64;
-            for (d, &delta) in docs.iter_mut().zip(doc_deltas.iter()) {
-                sum += delta as i64;
-                *d = sum as i32;
-            }
-        }
-    } else if bits_per_value_byte == 0 {
+        // Deltas to doc ids: a running sum over the block, in wrapping
+        // 32-bit arithmetic (`sum as i32` of the wide sum this used to keep,
+        // bit for bit), vectorized -- LLVM will not vectorize a scan on its
+        // own, and it is what Lucene's `ForDeltaUtil` decode ends in. A
+        // corrupt delta wraps rather than panics; `advance`'s post-refill
+        // check against the block header catches the result.
+        lucene_util::simd::prefix_sum_256(prev_doc_id, doc_deltas, docs);
+    } else if bits_per_value_byte == 0 && keep_bitset {
         // "0 is used to record that all 256 docs in the block are
-        // consecutive" (`Lucene104PostingsReader.refillFullBlock`): every
-        // delta is 1, no bytes follow.
+        // consecutive" (`Lucene104PostingsReader.refillFullBlock`), which
+        // Lucene keeps as a bit set with the first 256 bits on
+        // (`docBitSet.set(0, BLOCK_SIZE)`) and answers `advance` from with
+        // `nextSetBit`. The same here: a term in nearly every document is
+        // almost all such blocks, and expanding each into an array to scan
+        // measured 1.6x slower than Lucene on one.
+        const WORDS: usize = BLOCK_SIZE as usize / 64;
+        scratch.bitset[..WORDS].fill(u64::MAX);
+        shape = BodyShape::Bits {
+            base: prev_doc_id.wrapping_add(1),
+            words: WORDS,
+        };
+    } else if bits_per_value_byte == 0 {
+        // As above, expanded: every delta is 1, no bytes follow.
         for (i, d) in docs.iter_mut().enumerate() {
             // `prev_doc_id` descends from file deltas; `wrapping_add` for the
             // same reason every other accumulator in this file uses it.
@@ -2960,37 +3085,47 @@ fn decode_full_block_body(
         // (`assert numBitSetLongs <= BLOCK_SIZE / 2`). A fixed scratch array
         // is therefore always large enough, and this path stops allocating.
         let words = &mut scratch.bitset[..num_longs];
-        for w in words.iter_mut() {
-            *w = r.read_i64()? as u64;
-        }
-        // ARITH: `prev_doc_id` is an `i32`, so `+ 1` is exact in `i64`;
-        // `word_idx < num_longs <= 128` so `word_idx * 64 <= 8128`; `bit` is
-        // a `trailing_zeros` of a non-zero `u64`, so `0..=63`; and the
-        // running sum stays under `2^31 + 8191 < 2^32`. `found` is capped at
-        // `BLOCK_SIZE` by the check inside the loop, which is also what keeps
-        // `docs[found]` in bounds. `bits - 1` is guarded by `bits != 0`.
+        // One bounds check for the whole run (`readLongs`), rather than a
+        // checked `read_i64` per word.
+        // ARITH: `num_longs <= 128`, so the byte count is at most 1024.
         #[allow(clippy::arithmetic_side_effects)]
-        let found = {
-            let doc_bit_set_base = prev_doc_id as i64 + 1;
-            let mut found = 0usize;
-            'words: for (word_idx, &word) in words.iter().enumerate() {
-                let mut bits = word;
-                while bits != 0 {
-                    let bit = bits.trailing_zeros() as i64;
-                    docs[found] = (doc_bit_set_base + (word_idx as i64) * 64 + bit) as i32;
-                    found += 1;
-                    if found == BLOCK_SIZE as usize {
-                        break 'words;
-                    }
-                    bits &= bits - 1; // clear lowest set bit
-                }
-            }
-            found
-        };
-        if found != BLOCK_SIZE as usize {
+        let byte_len = num_longs * 8;
+        let bytes = r.as_slice().get(..byte_len).ok_or_else(|| {
+            Error::Store(lucene_store::Error::Eof {
+                offset: r.position(),
+            })
+        })?;
+        for (w, b) in words.iter_mut().zip(bytes.chunks_exact(8)) {
+            *w = u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]);
+        }
+        r.skip(byte_len)?;
+        // Doc ids are `docBitSetBase + bit`, with `docBitSetBase = prevDocID +
+        // 1`, in the same wrapping arithmetic the rest of this decoder uses
+        // for values derived from the wire.
+        let base = prev_doc_id.wrapping_add(1);
+        // A well-formed block sets exactly `BLOCK_SIZE` bits (Lucene asserts
+        // it). Anything else is rejected: fewer leaves the block short, and
+        // more used to be tolerated by the expansion (which stops at 256) but
+        // not by a kept bit set, where a docs-only `advance` would return the
+        // extra documents and a freqs cursor would fail its rank check -- three
+        // answers for one corrupt block.
+        // A plain sum, not a saturating one: at most 128 words of 64 bits is
+        // 8192, and without the per-word overflow branch the popcounts
+        // pipeline instead of forming a chain (the saturating fold was a
+        // third of a bit-set refill).
+        let set: u32 = words.iter().map(|w| w.count_ones()).sum();
+        if set != BLOCK_SIZE as u32 {
             return Err(Error::Store(lucene_store::Error::Corrupted(
-                "full-block doc bit-set has fewer than BLOCK_SIZE set bits".into(),
+                "full-block doc bit-set does not have exactly BLOCK_SIZE set bits".into(),
             )));
+        }
+        if keep_bitset {
+            shape = BodyShape::Bits {
+                base,
+                words: num_longs,
+            };
+        } else {
+            lucene_util::simd::expand_bitset(words, base, docs);
         }
     }
 
@@ -3013,11 +3148,16 @@ fn decode_full_block_body(
         // Lucene fills `freqBuffer` the same way rather than branching per
         // doc downstream; where it instead defers via `freqFP`, this port
         // makes "not requested" mean "not available", which is exactly the
-        // `PostingsEnum.NONE`/`DOCS` contract.
-        freqs.fill(1);
+        // `PostingsEnum.NONE`/`DOCS` contract. A cursor that never decodes
+        // frequencies keeps its array at 1 from the start (`unit_freqs`), and
+        // rewriting 256 ones per block would be the one store loop left in a
+        // docs-only advance.
+        if !unit_freqs {
+            freqs.fill(1);
+        }
     }
 
-    Ok(())
+    Ok(shape)
 }
 
 /// The `docFreq % BLOCK_SIZE` remainder after zero or more full blocks
@@ -3338,6 +3478,15 @@ pub struct LazyDocsCursor<'a> {
     /// level-0 block is stepped over rather than unpacked, and every
     /// [`Self::freq`] answers `1`.
     needs_freq: bool,
+    /// `needsImpacts`: whether a caller will ever ask for this cursor's
+    /// impacts. A docs-only cursor never does, so every block header's impact
+    /// run is stepped over unread, as `skipLevel0To` steps over it.
+    needs_impacts: bool,
+    /// `needsPos`: whether the `.pos`/`.pay` origin of each block is tracked
+    /// ([`Self::position_origin`], [`PositionsCursor`]). Off unless a positions
+    /// reader opts in with [`Self::track_positions`]; when off, the pos/pay
+    /// skip fields of every block header are stepped over unread.
+    needs_pos: bool,
     index_has_pos: bool,
     index_has_offsets_or_payloads: bool,
     /// This term's total `docFreq` — needed to recompute `doc_count_left` at
@@ -3415,6 +3564,16 @@ pub struct LazyDocsCursor<'a> {
     /// handed. This is the `.pos`/`.pay` origin of the current block's
     /// documents.
     block_pos_origin: PosCursorState,
+    /// Bumped every time a block body (full or tail) is decoded into
+    /// `block_docs`/`block_freqs`, so a [`PositionsCursor`] riding on this
+    /// cursor can tell that the `.doc` block under it changed.
+    block_gen: u64,
+    /// `Some((base, words))` while the current block is a bit-set block kept
+    /// unexpanded ([`BodyShape::Bits`]): its documents are `base + i` for the
+    /// set bits of `scratch.bitset[..words]`, `block_docs` is not filled, and
+    /// `block_pos` is the current document's rank among them -- which is
+    /// what keeps `block_freqs[block_pos]` its frequency.
+    bits: Option<(i32, usize)>,
 }
 
 /// A running `.pos`/`.pay` position: the absolute file pointers plus how many
@@ -3483,7 +3642,9 @@ pub struct PositionOrigin {
 /// scoring it avoided.
 #[inline]
 fn find_next_geq(buf: &[i32], target: i32) -> usize {
-    buf.iter().position(|&d| d >= target).unwrap_or(buf.len())
+    // Eight lanes at a time on AVX2 builds, as Lucene's Panama
+    // `VectorUtilSupport.findNextGEQ` does; the scalar scan elsewhere.
+    lucene_util::simd::find_next_geq(buf, target)
 }
 
 /// A level-0 block positioned but not decoded: everything
@@ -3509,6 +3670,21 @@ impl<'a> LazyDocsCursor<'a> {
     /// three-state contract).
     pub fn doc_id(&self) -> i32 {
         self.doc_id
+    }
+
+    /// Opts this cursor into tracking each block's `.pos`/`.pay` origin
+    /// (`needsPos`), which [`Self::position_origin`] and [`PositionsCursor`]
+    /// read. Must be called before the cursor first moves; a cursor that never
+    /// reads positions leaves it off and steps over that part of every block
+    /// header.
+    ///
+    /// Crate-private because the "before the first move" rule is only a
+    /// `debug_assert`: turned on later, the blocks already crossed never added
+    /// their skip deltas and the origins would be silently wrong. Its two
+    /// callers set it immediately after construction.
+    pub(crate) fn track_positions(&mut self) {
+        debug_assert_eq!(self.doc_id, -1, "track_positions after the cursor moved");
+        self.needs_pos = true;
     }
 
     /// The current doc's frequency, or `None` before the first
@@ -3609,7 +3785,11 @@ impl<'a> LazyDocsCursor<'a> {
     /// `Err` when the cursor was opened with [`PostingsFlags::DocsOnly`]
     /// (the frequencies the sum needs were skipped, not decoded) or when a
     /// decoded frequency is negative.
-    pub fn position_origin(&self) -> Result<Option<PositionOrigin>> {
+    ///
+    /// Crate-private with [`Self::track_positions`], which it depends on:
+    /// outside the crate no cursor could have opted in, so it could only
+    /// ever answer `Err`.
+    pub(crate) fn position_origin(&self) -> Result<Option<PositionOrigin>> {
         if self.doc_id == -1 || self.doc_id == NO_MORE_DOCS {
             return Ok(None);
         }
@@ -3617,6 +3797,12 @@ impl<'a> LazyDocsCursor<'a> {
             return Err(Error::Unsupported(
                 "position_origin needs a cursor opened with PostingsFlags::Freqs: the \
                  in-block frequency sum it adds to the skip data was never decoded",
+            ));
+        }
+        if !self.needs_pos {
+            return Err(Error::Unsupported(
+                "position_origin needs a cursor that tracks positions (track_positions): \
+                 without it the .pos/.pay origin of each block is never read",
             ));
         }
         // `posBufferUpto` is one wire byte, so at most 255; each frequency is
@@ -3673,6 +3859,15 @@ impl<'a> LazyDocsCursor<'a> {
         if self.doc_id == NO_MORE_DOCS {
             return Ok(NO_MORE_DOCS);
         }
+        // A sequential walk reads the rest of the block document by document,
+        // so a kept bit set is expanded once here (a set-bit search per call
+        // measured 20% slower than the array on `t1`/`tz`; answering only the
+        // first sixteen calls from the bits still cost sequential walks 5-9%
+        // and bought an early-stopping union almost nothing); expanding also
+        // settles `block_pos`, which a docs-only `advance` leaves stale.
+        if self.bits.is_some() && self.pending.is_none() {
+            self.materialize_bits();
+        }
         // Invariant, established by every path in `advance` that sets
         // `doc_id` to a real doc: `block_docs[block_pos] == doc_id` whenever
         // `block_pos < block_len`. So the next document, if this block still
@@ -3692,11 +3887,144 @@ impl<'a> LazyDocsCursor<'a> {
         self.advance(self.doc_id.saturating_add(1))
     }
 
+    /// `PostingsEnum.nextPostings(upTo, buffer)` (`BlockPostingsEnum`'s
+    /// override): the current document and every later one in the **same
+    /// decoded block** that is below `up_to`, with their frequencies, copied
+    /// into `docs`/`freqs` (both cleared first). The cursor is left on the
+    /// first document *not* returned -- the next one in the block, or the
+    /// first one `>= up_to`, decoding the next block if it has to -- exactly
+    /// as Java's trailing `advance(upTo)` leaves it.
+    ///
+    /// Empty output means the cursor is at or past `up_to` (or exhausted).
+    ///
+    /// This is what lets a scorer work a block at a time: one bulk copy of the
+    /// already-decoded block instead of a `next_doc()` + `freq()` round trip
+    /// per document, each returning a `Result`.
+    ///
+    /// Must be called with the cursor positioned on a document (after
+    /// `next_doc`/`advance`), as Java asserts `needsRefilling == false`. A
+    /// shallow move that has not been materialized is resolved by decoding the
+    /// pending block and starting at its first document, since every document
+    /// left in the previous block is behind the shallow target.
+    pub fn next_postings(
+        &mut self,
+        up_to: i32,
+        docs: &mut Vec<i32>,
+        freqs: &mut Vec<i32>,
+    ) -> Result<()> {
+        docs.clear();
+        freqs.clear();
+        if self.pending.is_some() {
+            self.refill()?;
+            self.materialize_bits();
+            self.doc_id = self.block_docs[0];
+        }
+        // The rest of this block is copied out as an array.
+        self.materialize_bits();
+        if self.doc_id < 0 || self.doc_id >= up_to {
+            return Ok(());
+        }
+        let start = self.block_pos;
+        let len = self.block_len;
+        debug_assert!(start < len && self.block_docs[start] == self.doc_id);
+        let block = &self.block_docs[start..len];
+        // `computeBufferEndBoundary`: the whole rest of the block when its
+        // last document is under `up_to`, else the first one that is not.
+        let block_last = block.last().copied().unwrap_or(NO_MORE_DOCS);
+        let n = if block_last < up_to {
+            block.len()
+        } else {
+            find_next_geq(block, up_to)
+        };
+        docs.extend_from_slice(&block[..n]);
+        freqs.extend_from_slice(&self.block_freqs[start..len][..n]);
+        // ARITH: `n <= len - start`, so `start + n <= len <= BLOCK_SIZE`.
+        #[allow(clippy::arithmetic_side_effects)]
+        let next = start + n;
+        if next < len {
+            self.block_pos = next;
+            self.doc_id = self.block_docs[next];
+            return Ok(());
+        }
+        // The block is used up: move on exactly as `advance` past its last
+        // document would, which decodes the next block (if any).
+        self.block_pos = len;
+        self.advance(block_last.saturating_add(1))?;
+        Ok(())
+    }
+
     /// `PostingsEnum.advance(target)`: moves forward to the first doc ID
     /// `>= target`, returning it (or [`NO_MORE_DOCS`] if none remains).
     /// Advancing to a target at or before the current doc ID is a documented
     /// no-op (same contract as [`PostingsCursor::advance`]).
+    ///
+    /// The common case -- `target` inside the block already decoded as an
+    /// array -- is this small inlined function: one test against the block's
+    /// last document, then [`find_next_geq`]. Everything else (a bit-set
+    /// block, crossing into later blocks, the end) is [`Self::advance_slow`].
+    #[inline]
     pub fn advance(&mut self, target: i32) -> Result<i32> {
+        let (pos, len) = (self.block_pos, self.block_len);
+        // A docs-only cursor on a kept bit set, with the target inside the
+        // block the header describes: Lucene's `docBitSet.nextSetBit(target -
+        // docBitSetBase)`, inline, with no rank to keep.
+        if let Some((base, n)) = self.bits {
+            if !self.needs_freq
+                && target > self.doc_id
+                && target <= self.prev_doc_id
+                && self.pending.is_none()
+                && target > base
+            {
+                let rel = target.wrapping_sub(base) as u32 as usize;
+                let words = &self.scratch.bitset[..n];
+                if let Some(bit) = lucene_util::fixed_bit_set::next_set_bit_in_words(words, rel) {
+                    let doc = base.wrapping_add(bit as i32);
+                    if doc <= self.prev_doc_id {
+                        self.doc_id = doc;
+                        return Ok(doc);
+                    }
+                }
+                // No such bit, or one past the header's last document:
+                // corrupt, and `advance_slow` reports it the same way.
+            }
+            return self.advance_slow(target);
+        }
+        // `target > doc_id` also excludes an exhausted cursor (`doc_id ==
+        // NO_MORE_DOCS == i32::MAX`); `pos < len` makes `len - 1` a real slot.
+        if target > self.doc_id
+            && self.pending.is_none()
+            && self.bits.is_none()
+            && pos < len
+            && target <= self.block_docs[len.wrapping_sub(1)]
+        {
+            // The block's last document is `>= target`, so the search lands
+            // inside the block.
+            // Lucene's own step (`findNextGEQ(docBuffer, target,
+            // docBufferUpto, ...)`): a predictable branch on the entry eight
+            // ahead, then one count. A vector compare at every step made each
+            // landing wait on a mask. The search starts at `pos` itself, not
+            // one past it: before the first move that entry has not been
+            // returned yet.
+            // ARITH: the search returns at most the length it is given, and
+            // less here since the last document qualifies, so `landing < len`.
+            #[allow(clippy::arithmetic_side_effects)]
+            let landing =
+                pos + lucene_util::simd::find_next_geq_v1(&self.block_docs[pos..len], target);
+            // The count is the answer only on an ascending block; a corrupt
+            // one that is not falls through to the exact scan.
+            let doc = self.block_docs[landing];
+            if doc >= target {
+                self.block_pos = landing;
+                self.doc_id = doc;
+                return Ok(doc);
+            }
+        }
+        self.advance_slow(target)
+    }
+
+    /// [`Self::advance`] for everything but a target inside the current
+    /// array block.
+    fn advance_slow(&mut self, target: i32) -> Result<i32> {
         if self.doc_id == NO_MORE_DOCS {
             return Ok(NO_MORE_DOCS);
         }
@@ -3710,17 +4038,32 @@ impl<'a> LazyDocsCursor<'a> {
         // `pending.is_none()` matters: a shallow move positions past the
         // decoded block without touching `block_docs`, so those documents are
         // stale and must not answer an advance.
+        if self.pending.is_none() && self.block_pos < self.block_len && self.bits.is_some() {
+            // A kept bit set: `nextSetBit`, if the block reaches `target`
+            // (`prev_doc_id` is its header's last document).
+            if target <= self.prev_doc_id {
+                return self.bits_advance(target);
+            }
+            self.block_pos = self.block_len;
+        }
+        // Only when the block's last document reaches `target`: otherwise the
+        // scan could only come up empty (Lucene's `target > level0LastDocID`
+        // test goes straight to the skip data), and scanning the rest of a
+        // block to learn that was half of what a long advance cost.
         if self.pending.is_none() && self.block_pos < self.block_len {
-            let offset = find_next_geq(&self.block_docs[self.block_pos..self.block_len], target);
-            // ARITH: `find_next_geq` returns at most the length of the slice
-            // it was given, so `block_pos + offset <= block_len <=
-            // BLOCK_SIZE`.
-            #[allow(clippy::arithmetic_side_effects)]
-            let landing = self.block_pos + offset;
-            if landing < self.block_len {
-                self.block_pos = landing;
-                self.doc_id = self.block_docs[self.block_pos];
-                return Ok(self.doc_id);
+            if target <= self.block_docs[self.block_len.wrapping_sub(1)] {
+                let offset =
+                    find_next_geq(&self.block_docs[self.block_pos..self.block_len], target);
+                // ARITH: `find_next_geq` returns at most the length of the slice
+                // it was given, so `block_pos + offset <= block_len <=
+                // BLOCK_SIZE`.
+                #[allow(clippy::arithmetic_side_effects)]
+                let landing = self.block_pos + offset;
+                if landing < self.block_len {
+                    self.block_pos = landing;
+                    self.doc_id = self.block_docs[self.block_pos];
+                    return Ok(self.doc_id);
+                }
             }
             // Target is beyond every doc left in this block: fall through
             // to load the next one.
@@ -3734,16 +4077,25 @@ impl<'a> LazyDocsCursor<'a> {
 
         if self.pending.is_some() {
             // A full block, positioned but not decoded. Now it is genuinely
-            // needed, so pay for it.
+            // needed, so pay for it -- except that a bit-set block is kept as
+            // its bits and searched, never expanded.
             self.refill()?;
-            let offset = find_next_geq(&self.block_docs, target);
+            if self.bits.is_some() {
+                return self.bits_advance(target);
+            }
+            // Counted rather than scanned: the landing is anywhere in a fresh
+            // block, so an early-exit scan ends on a branch it cannot predict
+            // (`lucene_util::simd::count_less_than`).
+            let offset = lucene_util::simd::count_less_than(&self.block_docs, target);
             // `advance_shallow` only stops on a block whose header claims
             // `last_doc_id >= target`, so a well-formed block always has a
             // match. A corrupt `.doc` can claim one and then decode a body
             // whose last doc is smaller -- nothing on the wire ties the
             // level-0 header's `docDelta` to the body's own deltas -- and
             // indexing at `BLOCK_SIZE` would panic instead of surfacing that.
-            if offset >= self.block_len {
+            // A body that does not ascend can make the count land short of
+            // `target`, which is the same corruption seen from the other side.
+            if offset >= self.block_len || self.block_docs[offset] < target {
                 return Err(corrupted(
                     "full block's decoded doc IDs do not reach the last doc ID its level-0 \
                      header claims",
@@ -3786,7 +4138,9 @@ impl<'a> LazyDocsCursor<'a> {
             &mut self.block_freqs[..count],
         )?;
         self.block_len = count;
+        self.bits = None;
         self.doc_count_left = 0;
+        self.block_gen = self.block_gen.wrapping_add(1);
         // The tail block has no level-0 skip header (and hence no impacts) on
         // the wire at all (`Lucene104PostingsReader.refillRemainder`'s
         // non-singleton branch never touches `level0SerializedImpacts`).
@@ -3868,6 +4222,13 @@ impl<'a> LazyDocsCursor<'a> {
             // the loop is about to look at.
             let origin = self.level0_pos;
 
+            if self.doc_count_left >= BLOCK_SIZE && !self.needs_impacts && !self.needs_pos {
+                if let Some(last) = self.skip_level0_headers(target)? {
+                    return Ok(last);
+                }
+                continue;
+            }
+
             if self.doc_count_left >= BLOCK_SIZE {
                 let header = read_full_block_header(
                     &mut self.r,
@@ -3875,6 +4236,8 @@ impl<'a> LazyDocsCursor<'a> {
                     self.index_has_freq,
                     self.index_has_pos,
                     self.index_has_offsets_or_payloads,
+                    self.needs_impacts,
+                    self.needs_pos,
                 )?;
 
                 if let Some(skip) = header.pos_skip {
@@ -3892,6 +4255,9 @@ impl<'a> LazyDocsCursor<'a> {
                     }
                     continue;
                 }
+
+                // See `skip_level0_headers`: the header after this block.
+                self.r.prefetch(header.body_end);
 
                 // `skipLevel0To`'s `posFP`/`posUpto`/`payFP` locals, handed
                 // to `seekPosData` once the loop settles: the state sampled
@@ -3926,6 +4292,80 @@ impl<'a> LazyDocsCursor<'a> {
         }
     }
 
+    /// [`Self::advance_shallow`]'s level-0 walk for a cursor that wants
+    /// neither impacts nor `.pos`/`.pay` origins -- `skipLevel0To` with
+    /// `needsImpacts == false && needsPos == false`, which reads three fields
+    /// per block and seeks. The same parse as [`read_full_block_header`] on
+    /// that branch, with the cursor's state held in locals across blocks
+    /// rather than reloaded and stored back each time: this loop is most of
+    /// what a long `advance` over a dense term costs.
+    ///
+    /// `Some(last_doc_id)` once positioned (shallowly) on the block holding
+    /// `target`; `None` when fewer than `BLOCK_SIZE` documents remain (the
+    /// tail is next) before one does,
+    /// with the cursor's state written back for
+    /// [`Self::advance_shallow`] to carry on from.
+    fn skip_level0_headers(&mut self, target: i32) -> Result<Option<i32>> {
+        let mut r = self.r.clone();
+        let mut prev = self.prev_doc_id;
+        let mut left = self.doc_count_left;
+        let found = loop {
+            let level0_num_bytes = r.read_vlong()?;
+            let skip0_end = add_wire_offset(
+                r.position(),
+                wire_length(level0_num_bytes, "level-0 skip header")?,
+            )?;
+            // Wrapping for the reason `read_full_block_header` gives.
+            let last = prev.wrapping_add(read_vint15(&mut r)?);
+            let block_length = read_vlong15(&mut r)?;
+            let body_end =
+                add_wire_offset(r.position(), wire_length(block_length, "level-0 block")?)?;
+            if self.index_has_freq {
+                r.seek(skip0_end)?;
+            }
+            check_wire_position(r.position(), skip0_end, "level-0 skip header")?;
+            if last >= target {
+                // The next header, read by the next `advance` past this
+                // block: its line loads while this body is decoded.
+                r.prefetch(body_end);
+                break Some((last, r.position(), body_end));
+            }
+            r.seek(body_end)?;
+            prev = last;
+            // ARITH: `advance_shallow` enters with `left >= BLOCK_SIZE`, and
+            // the loop only goes round again while that still holds.
+            #[allow(clippy::arithmetic_side_effects)]
+            {
+                left -= BLOCK_SIZE;
+            }
+            // No level-1 test: `advance_shallow` ran `skip_level1_to` first,
+            // so the span in hand reaches `target` and the walk cannot run
+            // into the next level-1 entry before finding it.
+            debug_assert!(target <= self.level1_last_doc_id);
+            if left < BLOCK_SIZE {
+                break None;
+            }
+        };
+        self.r = r;
+        self.prev_doc_id = prev;
+        self.doc_count_left = left;
+        let Some((last, body_start, body_end)) = found else {
+            return Ok(None);
+        };
+        // No `.pos`/`.pay` skip data was parsed, so the origin sampled before
+        // the walk is still this block's.
+        self.block_pos_origin = self.level0_pos;
+        self.level0_impacts.clear();
+        self.level0_last_doc_id = last;
+        self.pending = Some(PendingBlock {
+            base_doc_id: prev,
+            last_doc_id: last,
+            body_start,
+            body_end,
+        });
+        Ok(Some(last))
+    }
+
     /// `Lucene104PostingsReader.refillDocs`: unpack the block
     /// [`Self::advance_shallow`] positioned on. A no-op when there is nothing
     /// pending, so it is safe to call unconditionally before reading documents.
@@ -3934,7 +4374,7 @@ impl<'a> LazyDocsCursor<'a> {
             return Ok(());
         };
         self.r.seek(p.body_start)?;
-        decode_full_block_body(
+        let shape = decode_full_block_body(
             &mut self.r,
             p.base_doc_id,
             self.index_has_freq,
@@ -3942,11 +4382,36 @@ impl<'a> LazyDocsCursor<'a> {
             &mut self.scratch,
             &mut self.block_docs,
             &mut self.block_freqs,
+            true,
+            !self.needs_freq,
         )?;
         check_wire_position(self.r.position(), p.body_end, "full block body")?;
         self.block_len = BLOCK_SIZE as usize;
+        self.block_gen = self.block_gen.wrapping_add(1);
         self.block_pos = 0;
         self.prev_doc_id = p.last_doc_id;
+        self.bits = match shape {
+            BodyShape::Bits { base, words } => {
+                // Only a cursor that tracks ranks (for its frequencies) needs
+                // the cumulative counts; a docs-only one recovers a rank on
+                // demand (`materialize_bits`).
+                // ARITH: at most 128 words of 64 bits, so every running total
+                // is at most 8192 and fits a `u16`.
+                #[allow(clippy::arithmetic_side_effects)]
+                if self.needs_freq {
+                    let mut running = 0u16;
+                    for (rank, word) in self.scratch.word_ranks[..words]
+                        .iter_mut()
+                        .zip(&self.scratch.bitset[..words])
+                    {
+                        *rank = running;
+                        running += word.count_ones() as u16;
+                    }
+                }
+                Some((base, words))
+            }
+            BodyShape::Docs => None,
+        };
         // ARITH: same invariant as `advance_shallow`'s own `pending.take()`
         // -- a `PendingBlock` exists only for a block `advance_shallow`
         // reached with `doc_count_left >= BLOCK_SIZE`, and this is the only
@@ -3957,6 +4422,101 @@ impl<'a> LazyDocsCursor<'a> {
             self.doc_count_left -= BLOCK_SIZE;
         }
         Ok(())
+    }
+
+    /// `advance(target)` inside the bit-set block [`Self::bits`] describes:
+    /// the first set bit at or after `target`, found word by word
+    /// (`FixedBitSet.nextSetBit`, which is Lucene's whole answer here), with
+    /// `block_pos` moved to that document's rank from the per-word cumulative
+    /// popcounts filled at refill (`BlockScratch::word_ranks`).
+    ///
+    /// The caller has established that the block's header claims a last
+    /// document `>= target`; a bit set that disagrees -- no such bit, or one
+    /// past the block's 256th document -- is reported as corruption, exactly
+    /// as the expanded path reports it.
+    fn bits_advance(&mut self, target: i32) -> Result<i32> {
+        let Some((base, n)) = self.bits else {
+            return Err(corrupted(
+                "bit-set advance on a block that is not a bit set",
+            ));
+        };
+        let words = &self.scratch.bitset[..n];
+        // `target > base` whenever the cursor is inside or entering this
+        // block (its base is one past the previous block's last document);
+        // anything else starts at the block's first bit.
+        let rel = if target > base {
+            target.wrapping_sub(base) as u32 as usize
+        } else {
+            0
+        };
+        let not_reached = || {
+            corrupted(
+                "full block's decoded doc IDs do not reach the last doc ID its level-0 \
+                 header claims",
+            )
+        };
+        let bit = lucene_util::fixed_bit_set::next_set_bit_in_words(words, rel)
+            .ok_or_else(not_reached)?;
+        // `bit < 8192`, so the cast is exact; wrapping for the same reason
+        // every doc id derived from the wire is.
+        let doc = base.wrapping_add(bit as i32);
+        if !self.needs_freq {
+            // Lucene's docs-only branch: no position in the block is tracked
+            // (every frequency reads as 1); `materialize_bits` works the rank
+            // out if a sequential read ever needs it. The document must still
+            // lie within what the block's header claims.
+            if doc > self.prev_doc_id {
+                return Err(not_reached());
+            }
+            self.doc_id = doc;
+            return Ok(doc);
+        }
+        // `docCumulativeWordPopCounts[w] + bitCount(word & below)`: the set bits
+        // in the words before this one, then those below it in its own -- one
+        // lookup and one popcount, whatever the distance moved.
+        // ARITH: `bit < 128 * 64`, so `bit >> 6 < 128` indexes both arrays;
+        // `1 << (bit & 63)` shifts by at most 63 and is at least 1; the sum is
+        // at most 8192.
+        #[allow(clippy::arithmetic_side_effects)]
+        let rank = {
+            let w = bit >> 6;
+            let below = (1u64 << (bit & 63)) - 1;
+            usize::from(self.scratch.word_ranks[w]) + (words[w] & below).count_ones() as usize
+        };
+        if rank >= self.block_len {
+            return Err(not_reached());
+        }
+        self.block_pos = rank;
+        self.doc_id = doc;
+        Ok(doc)
+    }
+
+    /// Expands a kept bit-set block into `block_docs`, for a caller that
+    /// reads the doc ids as an array ([`Self::next_postings`]).
+    fn materialize_bits(&mut self) {
+        if let Some((base, n)) = self.bits.take() {
+            let words = &self.scratch.bitset[..n];
+            // A docs-only `advance` does not track the rank; recover it from
+            // the current document when that document is in this block.
+            if !self.needs_freq && self.doc_id >= base {
+                let rel = self.doc_id.wrapping_sub(base) as u32 as usize;
+                // ARITH: shifting right by 6 and masking with 63 cannot
+                // overflow; a `rel` past this block (a corrupt document) only
+                // makes `w` pass `n`, which the `min`/`get` below absorb.
+                #[allow(clippy::arithmetic_side_effects)]
+                let (w, b) = (rel >> 6, rel & 63);
+                let below: usize = words[..w.min(n)]
+                    .iter()
+                    .map(|x| x.count_ones() as usize)
+                    .fold(0usize, usize::saturating_add);
+                let below_mask = u64::MAX
+                    .checked_shr(64u32.saturating_sub(b as u32))
+                    .unwrap_or(0);
+                let within = words.get(w).map_or(0, |x| (x & below_mask).count_ones());
+                self.block_pos = below.saturating_add(within as usize).min(self.block_len);
+            }
+            lucene_util::simd::expand_bitset(words, base, &mut self.block_docs);
+        }
     }
 
     /// Port of `Lucene104PostingsReader.skipLevel1To`
@@ -4019,7 +4579,13 @@ impl<'a> LazyDocsCursor<'a> {
                 // `skipLevel1To`'s `needsImpacts && level1LastDocID >= target`
                 // gate -- the impacts of a span being jumped over are never
                 // decoded, and on a long postings list that is most of them.
-                decode_impacts_into(entry.impact_bytes, &mut self.level1_impacts)?;
+                // The `needsImpacts` half: a cursor that never asks for
+                // impacts (level 0 already skips its own the same way) does
+                // not decode this span's either -- a merged level-1 list can
+                // hold hundreds of pairs.
+                if self.needs_impacts {
+                    decode_impacts_into(entry.impact_bytes, &mut self.level1_impacts)?;
+                }
                 break;
             }
             // The whole span is behind `target`: loop again, which re-seeks to
@@ -4030,6 +4596,300 @@ impl<'a> LazyDocsCursor<'a> {
     }
 }
 
+/// `BlockPostingsEnum` opened with `PostingsEnum.POSITIONS`: a
+/// [`LazyDocsCursor`] plus a lazy `.pos` reader. Nothing in `.pos` is touched
+/// until a document's positions are asked for, and the positions of every
+/// document that is never asked about are stepped over -- inside the current
+/// block by an index bump, across whole blocks by `PForUtil.skip` -- rather
+/// than decoded.
+///
+/// This is what an exact phrase needs: its conjunction visits a small
+/// fraction of each term's documents, and of those only the ones that survive
+/// the score check need positions at all. The eager
+/// [`read_positions_for_docs`] this replaces for phrases decoded every
+/// position of every candidate into one `Vec` before matching a single one.
+///
+/// # How the `.pos` stream is kept in step with `.doc`
+///
+/// Lucene tracks a running `posPendingCount` and, at each `.doc` block
+/// boundary, either seeks `.pos` to the block's recorded origin or -- when that
+/// origin lies inside the positions block already decoded -- adds the
+/// remaining frequencies of the old block to the pending count
+/// (`seekPosData`). This port reaches the same state without remembering the
+/// old block: the origin names the positions block *and* the index inside it
+/// where the new block's first document starts, so when that block is the one
+/// in the buffer the cursor simply moves its index there.
+///
+/// Within a `.doc` block, the positions of the documents between the last one
+/// read and the current one -- plus any unread positions of the last one --
+/// are the in-block frequency sum Java's `accumulatePendingPositions` adds.
+pub struct PositionsCursor<'a> {
+    docs: LazyDocsCursor<'a>,
+    pos_r: SliceInput<'a>,
+    for_util: for_util::ForUtil,
+    block: PositionBlock,
+    /// Next unread entry of `block.pos_deltas`; `== block.len` means the next
+    /// read refills.
+    buf_upto: usize,
+    /// `.pos` offset the block in `block` was decoded from; `u64::MAX` when
+    /// the buffer holds nothing.
+    buf_fp: u64,
+    /// Where the vint-coded tail block starts (`lastPosBlockFP`), and how many
+    /// occurrences it holds.
+    last_pos_block_fp: Option<u64>,
+    tail_count: usize,
+    wants: PositionWants,
+    /// [`LazyDocsCursor::block_gen`] when this cursor last lined `.pos` up
+    /// with the `.doc` block.
+    block_gen: u64,
+    /// First document (index into the `.doc` block) whose positions have not
+    /// been accounted for.
+    pos_doc_upto: usize,
+    /// Occurrences to step over before the next document's first one.
+    pending: u64,
+    /// The document whose positions are being read, or `-1`.
+    pos_doc: i32,
+    /// Occurrences of `pos_doc` not yet read.
+    ///
+    /// A `u64`, not the `u32` a frequency fits in, on purpose: next to the
+    /// `i32` `position`, LLVM fused `doc_left -= 1` and the position add into
+    /// one two-lane vector op whose 64-bit load spans the two 32-bit stores
+    /// `start_doc` makes -- a store-forwarding stall on every document's first
+    /// position, and most of what a positions walk cost.
+    doc_left: u64,
+    position: i32,
+}
+
+impl<'a> PositionsCursor<'a> {
+    /// `docs` must have been opened with [`PostingsFlags::Freqs`] on a field
+    /// indexed with positions; `meta`/`total_term_freq` are the term's.
+    pub(crate) fn new(
+        docs: LazyDocsCursor<'a>,
+        pos: &PosInput<'a>,
+        meta: TermMetadata,
+        total_term_freq: i64,
+        has_offsets: bool,
+        has_payloads: bool,
+    ) -> Self {
+        let mut docs = docs;
+        docs.track_positions();
+        // `total_term_freq % BLOCK_SIZE`, which is in `0..256`.
+        let tail_count = total_term_freq.rem_euclid(BLOCK_SIZE as i64) as usize;
+        PositionsCursor {
+            docs,
+            pos_r: SliceInput::new(pos.buf),
+            for_util: for_util::ForUtil::new(),
+            block: PositionBlock::new(),
+            buf_upto: 0,
+            buf_fp: u64::MAX,
+            last_pos_block_fp: last_pos_block_fp(meta, total_term_freq),
+            tail_count,
+            // Offsets and payloads are never read here, but in the vint tail
+            // they are interleaved with the positions in `.pos` and must be
+            // stepped over; full blocks keep them in `.pay`, which this
+            // cursor never opens.
+            wants: PositionWants {
+                has_offsets,
+                has_payloads,
+                want_offsets: false,
+                want_payloads: false,
+            },
+            block_gen: u64::MAX,
+            pos_doc_upto: 0,
+            pending: 0,
+            pos_doc: -1,
+            doc_left: 0,
+            position: 0,
+        }
+    }
+
+    /// The underlying document cursor, for everything that is not a position:
+    /// `advance_shallow`, impacts, block boundaries.
+    #[inline]
+    pub fn docs(&self) -> &LazyDocsCursor<'a> {
+        &self.docs
+    }
+
+    #[inline]
+    pub fn docs_mut(&mut self) -> &mut LazyDocsCursor<'a> {
+        &mut self.docs
+    }
+
+    #[inline]
+    pub fn doc_id(&self) -> i32 {
+        self.docs.doc_id()
+    }
+
+    #[inline]
+    pub fn next_doc(&mut self) -> Result<i32> {
+        self.docs.next_doc()
+    }
+
+    #[inline]
+    pub fn advance(&mut self, target: i32) -> Result<i32> {
+        self.docs.advance(target)
+    }
+
+    /// The current document's frequency: how many times
+    /// [`Self::next_position`] may be called for it.
+    #[inline]
+    pub fn freq(&self) -> i32 {
+        self.docs.freq().unwrap_or(1)
+    }
+
+    /// `PostingsEnum.nextPosition()`: the current document's next position,
+    /// ascending. Callable at most [`Self::freq`] times per document.
+    #[inline]
+    pub fn next_position(&mut self) -> Result<i32> {
+        if self.docs.doc_id != self.pos_doc {
+            self.start_doc()?;
+        }
+        if self.doc_left == 0 {
+            return Err(Error::Unsupported(
+                "next_position called more times than the document's frequency",
+            ));
+        }
+        if self.buf_upto >= self.block.len {
+            self.refill()?;
+        }
+        // ARITH: `buf_upto < block.len <= BLOCK_SIZE` after the refill above,
+        // and a position is `wrapping_add`ed exactly as Java's `int` sum
+        // wraps; `doc_left > 0` was just checked.
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            self.position = self
+                .position
+                .wrapping_add(self.block.pos_deltas[self.buf_upto] as i32);
+            self.buf_upto += 1;
+            self.doc_left -= 1;
+        }
+        Ok(self.position)
+    }
+
+    /// Lines `.pos` up with the current document: `seekPosData` if the `.doc`
+    /// block changed, then `accumulatePendingPositions`.
+    fn start_doc(&mut self) -> Result<()> {
+        let doc = self.docs.doc_id;
+        if doc < 0 || doc == NO_MORE_DOCS || self.docs.pending.is_some() {
+            return Err(Error::Unsupported(
+                "next_position needs the cursor positioned on a decoded document",
+            ));
+        }
+        if self.docs.block_gen != self.block_gen {
+            self.block_gen = self.docs.block_gen;
+            let origin = self.docs.block_pos_origin;
+            self.pos_doc_upto = 0;
+            self.doc_left = 0;
+            let start = origin.pos_buffer_upto as usize;
+            if origin.pos_fp == self.buf_fp && start <= self.block.len && start >= self.buf_upto {
+                // The new block's first document starts inside the positions
+                // block already decoded: move to it, decode nothing.
+                self.buf_upto = start;
+                self.pending = 0;
+            } else {
+                let fp = usize::try_from(origin.pos_fp)
+                    .map_err(|_| corrupted("positions file pointer overflows usize"))?;
+                self.pos_r.seek(fp)?;
+                self.buf_fp = u64::MAX;
+                self.block.len = 0;
+                self.buf_upto = 0;
+                self.pending = origin.pos_buffer_upto as u64;
+            }
+        }
+        let block_pos = self.docs.block_pos;
+        let mut skip = self.pending.wrapping_add(self.doc_left);
+        // Documents between the last one read and this one; none at all on a
+        // sequential walk, which is the common case this keeps branch-cheap.
+        if self.pos_doc_upto < block_pos {
+            for &freq in &self.docs.block_freqs[self.pos_doc_upto..block_pos] {
+                let freq = u64::try_from(freq).map_err(|_| {
+                    corrupted("negative per-doc frequency in the current .doc block")
+                })?;
+                skip = skip.wrapping_add(freq);
+            }
+        }
+        if skip != 0 {
+            self.skip_positions(skip)?;
+        }
+        self.pending = 0;
+        // ARITH: `block_pos < block_len <= BLOCK_SIZE` for a decoded document.
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            self.pos_doc_upto = block_pos + 1;
+        }
+        let freq = self.docs.block_freqs[block_pos];
+        self.doc_left = u64::try_from(freq)
+            .ok()
+            .filter(|&f| f > 0)
+            .ok_or_else(|| corrupted(format!("document frequency {freq} is not positive")))?;
+        self.position = 0;
+        self.pos_doc = doc;
+        Ok(())
+    }
+
+    /// `skipPositions`: step over `n` occurrences -- inside the buffer by an
+    /// index bump, across whole blocks with `PForUtil.skip`, then one refill
+    /// for the block the next position is in.
+    fn skip_positions(&mut self, n: u64) -> Result<()> {
+        // ARITH: `buf_upto <= block.len` is this cursor's invariant.
+        #[allow(clippy::arithmetic_side_effects)]
+        let left = (self.block.len - self.buf_upto) as u64;
+        if n <= left {
+            // ARITH: `n <= left` fits, and lands at most on `block.len`.
+            #[allow(clippy::arithmetic_side_effects)]
+            {
+                self.buf_upto += n as usize;
+            }
+            return Ok(());
+        }
+        // ARITH: `n > left` was just established.
+        #[allow(clippy::arithmetic_side_effects)]
+        let mut n = n - left;
+        self.buf_upto = self.block.len;
+        while n >= BLOCK_SIZE as u64 {
+            if Some(self.pos_r.position() as u64) == self.last_pos_block_fp {
+                return Err(corrupted(
+                    "skipping positions ran into the vint tail with a full block left to skip",
+                ));
+            }
+            skip_position_block(&mut self.pos_r, None, false, false)?;
+            // ARITH: guarded by the loop condition.
+            #[allow(clippy::arithmetic_side_effects)]
+            {
+                n -= BLOCK_SIZE as u64;
+            }
+        }
+        if n > 0 {
+            self.refill()?;
+            if n > self.block.len as u64 {
+                return Err(corrupted("positions to skip overrun the positions block"));
+            }
+            self.buf_upto = n as usize;
+        }
+        Ok(())
+    }
+
+    /// `refillPositions`: the next positions block, full (`PForUtil`) or the
+    /// vint tail.
+    fn refill(&mut self) -> Result<()> {
+        let fp = self.pos_r.position() as u64;
+        if Some(fp) == self.last_pos_block_fp {
+            refill_last_position_block(
+                &mut self.pos_r,
+                self.wants,
+                self.tail_count,
+                &mut self.block,
+            )?;
+        } else {
+            self.for_util
+                .pfor_decode(&mut self.pos_r, &mut self.block.pos_deltas)?;
+            self.block.len = for_util::BLOCK_SIZE;
+        }
+        self.buf_fp = fp;
+        self.buf_upto = 0;
+        Ok(())
+    }
+}
 #[cfg(test)]
 mod tests {
     // The arithmetic gate is about values read off disk; a test's `i + 1` is
@@ -4794,34 +5654,39 @@ mod tests {
     }
 
     #[test]
-    fn read_full_block_bitset_encoding_rejects_too_few_set_bits() {
-        // A corrupted/truncated bit-set with fewer than BLOCK_SIZE set bits
-        // must be a decode error, not a silently short postings list.
-        let id = [12u8; ID_LENGTH];
-        let (mut doc, footer) = header_and_footer(DOC_CODEC, &id);
-        let doc_start_fp = doc.len() as u64;
-        let mut body = Vec::new();
-        body.write_byte((-4i8) as u8); // 4 longs = 256 bits, but none set
-        body.extend_from_slice(&[0u8; 32]);
-        doc.write_vlong(4); // level0NumBytes: the two header fields, no metadata region
-        doc.write_i16(1);
-        doc.write_i16(body.len() as i16);
-        doc.write_bytes(&body);
-        doc.extend_from_slice(&footer);
+    fn read_full_block_bitset_encoding_rejects_a_set_bit_count_other_than_block_size() {
+        // A corrupted bit set with fewer than BLOCK_SIZE set bits must be a
+        // decode error, not a silently short postings list -- and one with
+        // more, which a kept bit set would otherwise answer from (Lucene
+        // asserts exactly BLOCK_SIZE).
+        // 4 longs = 256 bits, none set; 5 longs, all 320 set.
+        for (num_longs, fill) in [(4usize, 0u8), (5, 0xFF)] {
+            let id = [12u8; ID_LENGTH];
+            let (mut doc, footer) = header_and_footer(DOC_CODEC, &id);
+            let doc_start_fp = doc.len() as u64;
+            let mut body = Vec::new();
+            body.write_byte((-(num_longs as i8)) as u8);
+            body.extend_from_slice(&vec![fill; num_longs * 8]);
+            doc.write_vlong(4); // level0NumBytes: the two header fields, no metadata region
+            doc.write_i16(1);
+            doc.write_i16(body.len() as i16);
+            doc.write_bytes(&body);
+            doc.extend_from_slice(&footer);
 
-        let input = DocInput::open(&doc, &id, "").unwrap();
-        let meta = TermMetadata {
-            doc_start_fp,
-            singleton_doc_id: -1,
-            ..TermMetadata::EMPTY
-        };
-        let err = input
-            .read_postings(meta, BLOCK_SIZE, IndexOptions::Docs, false)
-            .unwrap_err();
-        assert!(matches!(
-            err,
-            Error::Store(lucene_store::Error::Corrupted(_))
-        ));
+            let input = DocInput::open(&doc, &id, "").unwrap();
+            let meta = TermMetadata {
+                doc_start_fp,
+                singleton_doc_id: -1,
+                ..TermMetadata::EMPTY
+            };
+            let err = input
+                .read_postings(meta, BLOCK_SIZE, IndexOptions::Docs, false)
+                .unwrap_err();
+            assert!(
+                matches!(err, Error::Store(lucene_store::Error::Corrupted(_))),
+                "{num_longs} words of {fill:#x}: {err:?}"
+            );
+        }
     }
 
     #[test]
@@ -5382,7 +6247,11 @@ mod tests {
         let doc_start_fp = doc.len() as u64;
 
         let mut body = Vec::new();
-        body.write_byte(0); // bitsPerValue == 0: docs 0..255
+        // Packed at one bit per value, every delta 1: docs 0..255 as an array.
+        // (A `bitsPerValue == 0` block is kept as a bit set, which catches the
+        // header's lie below inside the block, before the tail is reached.)
+        body.write_byte(1);
+        body.write_bytes(&[0xFF; 32]);
         doc.write_vlong(4); // level0NumBytes: the two header fields, no metadata region
         doc.write_i16(1000); // docDelta: claims the block reaches doc 999
         doc.write_i16(body.len() as i16);
@@ -5609,6 +6478,63 @@ mod tests {
             .lazy_cursor(meta, BLOCK_SIZE, IndexOptions::Docs, false)
             .unwrap();
         let err = cursor.advance(500).unwrap_err();
+        assert!(
+            matches!(err, Error::Store(lucene_store::Error::Corrupted(_))),
+            "expected a Corrupted decode error, got {err:?}"
+        );
+    }
+
+    /// The same lie through a *packed* block, whose body is also made not to
+    /// ascend (a delta that wraps): docs `0..=99`, `1000`, then `401..=555`.
+    /// The landing searches count the documents below the target, which is
+    /// the answer only on an ascending block, so each rechecks what it
+    /// landed on: the in-block one falls back to the exact scan (first
+    /// document `>= 450` is `1000`), and the one after a refill reports the
+    /// block as corrupt rather than returning a document below the target.
+    #[test]
+    fn lazy_cursor_advance_on_a_packed_block_that_does_not_ascend_never_lands_short() {
+        let mut deltas = [1u32; BLOCK_SIZE as usize];
+        deltas[100] = 901; // 99 -> 1000
+        deltas[101] = 401u32.wrapping_sub(1000); // 1000 -> 401
+        let docs: Vec<i32> = deltas
+            .iter()
+            .scan(-1i32, |d, &x| {
+                *d = d.wrapping_add(x as i32);
+                Some(*d)
+            })
+            .collect();
+        assert_eq!(
+            (docs[99], docs[100], docs[101], docs[255]),
+            (99, 1000, 401, 555)
+        );
+
+        let id = [43u8; ID_LENGTH];
+        let (mut doc, footer) = header_and_footer(DOC_CODEC, &id);
+        let doc_start_fp = doc.len() as u64;
+        let mut body = Vec::new();
+        body.write_byte(32);
+        for_util::for_encode(&mut deltas, 32, &mut body);
+        doc.write_vlong(4); // level0NumBytes: the two header fields, no metadata region
+        doc.write_i16(556); // docDelta: the block's last document, 555
+        doc.write_i16(body.len() as i16);
+        doc.write_bytes(&body);
+        doc.extend_from_slice(&footer);
+
+        let input = DocInput::open(&doc, &id, "").unwrap();
+        let meta = TermMetadata {
+            doc_start_fp,
+            singleton_doc_id: -1,
+            ..TermMetadata::EMPTY
+        };
+        let open = || {
+            input
+                .lazy_cursor(meta, BLOCK_SIZE, IndexOptions::Docs, false)
+                .unwrap()
+        };
+        let mut cursor = open();
+        assert_eq!(cursor.advance(50).unwrap(), 50);
+        assert_eq!(cursor.advance(450).unwrap(), 1000);
+        let err = open().advance(500).unwrap_err();
         assert!(
             matches!(err, Error::Store(lucene_store::Error::Corrupted(_))),
             "expected a Corrupted decode error, got {err:?}"
@@ -6284,6 +7210,27 @@ mod tests {
             .expect_err("DocsOnly skipped the frequencies the sum needs");
         assert!(
             format!("{err}").contains("PostingsFlags::Freqs"),
+            "unexpected error: {err}"
+        );
+
+        // A freqs cursor that never opted into tracking positions stepped
+        // over every block's `.pos`/`.pay` skip data, so it has no origin to
+        // give either.
+        let mut cursor = doc_in
+            .lazy_cursor_with_flags(
+                meta,
+                2,
+                IndexOptions::DocsAndFreqsAndPositions,
+                false,
+                PostingsFlags::Freqs,
+            )
+            .unwrap();
+        assert_eq!(cursor.next_doc().unwrap(), 2);
+        let err = cursor
+            .position_origin()
+            .expect_err("no track_positions, no origin");
+        assert!(
+            format!("{err}").contains("track_positions"),
             "unexpected error: {err}"
         );
     }

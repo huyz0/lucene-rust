@@ -16,6 +16,7 @@
 // including the module file's own `//!` lines -- in the crate-root scope,
 // which silently breaks every intra-doc link the module writes to its own
 // items. See `docs/rustdoc-gate.md`.
+pub mod automaton;
 mod block_packed;
 pub mod blocktree;
 pub mod compound_format;
