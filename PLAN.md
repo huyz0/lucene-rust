@@ -3875,6 +3875,19 @@ supported feature matrix; multi-day soak test with random restarts, no index cor
 - FFI overhead budget: < 1µs per search call overhead; batch APIs wherever per-doc
   calls could occur.
 
+**Progress (September 2026 sweep, `docs/benchmarks/sweep-2026-09.md`):** every
+ported area now has a component benchmark against Lucene 10.5.0 over the same
+bytes (`scripts/bench-micro.sh`). Vectorized so far: PFOR/FOR decode, the
+postings prefix sum and `findNextGEQ`, float and byte vector similarity, bit-set
+block expansion, bitset `or`, the postings in-block search (Lucene's V1 step
+plus a branch-free count). In the final round no query is slower than Lucene
+on either index and every component area is at or above it, except
+`nextSetBit` (0.96x, a codegen latency chain) and one memory-bound strided
+doc-values read (0.91x, against a 1.10x noise floor for the case). Runtime feature detection is still open: the
+kernels are selected at compile time (`.cargo/config.toml` builds Linux
+x86_64 for `x86-64-v3`, with a scalar fallback elsewhere), which is the gap
+to close before shipping a single binary to heterogeneous hardware.
+
 ### Phase 8 — Long tail (post-v1, prioritized backlog)
 
 KNN/HNSW (if not done in P2), highlighting (needs term vectors — add `.tvd/.tvx` codec

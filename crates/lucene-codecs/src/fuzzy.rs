@@ -229,6 +229,11 @@ pub struct FuzzyMatch<'a> {
     prefix_bytes: usize,
     max_edits: u8,
     transpositions: bool,
+    /// [`Self::to_dfa`] at `max_edits`, built on first use and shared by every
+    /// segment a query walks -- determinizing the Levenshtein NFA once per
+    /// query rather than once per leaf, as Lucene builds its automata once in
+    /// `FuzzyQuery.getAutomata`.
+    dfa: std::sync::OnceLock<Option<std::sync::Arc<crate::automaton::ByteDfa>>>,
 }
 
 impl<'a> FuzzyMatch<'a> {
@@ -246,7 +251,16 @@ impl<'a> FuzzyMatch<'a> {
             prefix_bytes,
             max_edits,
             transpositions,
+            dfa: std::sync::OnceLock::new(),
         }
+    }
+
+    /// [`Self::to_dfa`] at this pattern's own `max_edits`, cached -- see
+    /// the `dfa` field.
+    pub(crate) fn cached_dfa(&self) -> Option<std::sync::Arc<crate::automaton::ByteDfa>> {
+        self.dfa
+            .get_or_init(|| self.to_dfa(self.max_edits).map(std::sync::Arc::new))
+            .clone()
     }
 
     /// The target term's fixed, non-fuzzy prefix as bytes -- the first
@@ -310,6 +324,85 @@ impl<'a> FuzzyMatch<'a> {
     /// [`Self::edits_within`]'s ladder.
     pub fn max_edits(&self) -> u8 {
         self.max_edits
+    }
+
+    /// A byte DFA accepting a **superset** of the terms within `max_edits`
+    /// of this pattern -- `LevenshteinAutomata` built directly as an NFA and
+    /// determinized, for term-dictionary intersection (see
+    /// `crate::automaton`). The exact `prefix_length` code points are a
+    /// literal byte path; after them, state `(i, e)` has consumed `i` pattern
+    /// characters with `e` edits, and the edges are match, substitution,
+    /// insertion, deletion and (with `transpositions`) the adjacent swap of
+    /// the optimal-string-alignment distance [`Self::edits_within`] computes.
+    ///
+    /// A term character is consumed with
+    /// [`crate::automaton::Nfa::lenient_char`], so a term that is not valid
+    /// UTF-8 -- which the exact matcher decodes lossily -- is still covered;
+    /// a pattern that itself contains U+FFFD could match such a term *by*
+    /// its replacement character, so that case gets no automaton at all.
+    /// `None` also when the automaton would be too large.
+    pub(crate) fn to_dfa(&self, max_edits: u8) -> Option<crate::automaton::ByteDfa> {
+        if self.term_chars.contains(&char::REPLACEMENT_CHARACTER) {
+            return None;
+        }
+        let k = max_edits as usize;
+        let p = &self.term_chars[self.prefix_chars..];
+        let m = p.len();
+        let mut nfa = crate::automaton::Nfa::new();
+        let start = nfa.state()?;
+        let origin = nfa.bytes(start, &self.term[..self.prefix_bytes])?;
+        // `st[i * (k + 1) + e]`: `i` pattern characters consumed, `e` edits.
+        // A grid past the NFA's own state cap could never be built, so it is
+        // refused before anything is allocated for it.
+        let width = k.checked_add(1)?;
+        let cells = m.checked_add(1)?.checked_mul(width)?;
+        if cells > crate::automaton::MAX_NFA_STATES {
+            return None;
+        }
+        let mut st = Vec::with_capacity(cells);
+        for idx in 0..cells {
+            st.push(if idx == 0 { origin } else { nfa.state()? });
+        }
+        let accept = nfa.state()?;
+        let mut buf = [0u8; 4];
+        let mut buf2 = [0u8; 4];
+        // ARITH: `cells = (m + 1) * width` was computed checked and is at most
+        // `MAX_NFA_STATES`. Every index below is `i2 * width + e2` with `i2 <=
+        // m` (`i + 1` only under `i < m`, `i + 2` only under `i + 1 < m`) and
+        // `e2 <= k` (`e + 1` only under `e < k`), so it is below `cells`.
+        #[allow(clippy::arithmetic_side_effects)]
+        for i in 0..=m {
+            for e in 0..=k {
+                let from = st[i * width + e];
+                if i < m {
+                    // Match.
+                    let c = p[i].encode_utf8(&mut buf).as_bytes();
+                    nfa.bytes_to(from, c, st[(i + 1) * width + e])?;
+                }
+                if e < k {
+                    if i < m {
+                        // Substitution.
+                        nfa.lenient_char(from, st[(i + 1) * width + e + 1])?;
+                        // Deletion (a pattern character the term lacks).
+                        nfa.epsilon(from, st[(i + 1) * width + e + 1]);
+                    }
+                    // Insertion (a term character the pattern lacks).
+                    nfa.lenient_char(from, st[i * width + e + 1])?;
+                    if self.transpositions && i + 1 < m {
+                        // `p[i + 1] p[i]`, then two characters consumed for one
+                        // edit.
+                        let second = p[i + 1].encode_utf8(&mut buf).as_bytes().to_vec();
+                        let mid = nfa.bytes(from, &second)?;
+                        let first = p[i].encode_utf8(&mut buf2).as_bytes();
+                        nfa.bytes_to(mid, first, st[(i + 2) * width + e + 1])?;
+                    }
+                }
+                if i == m {
+                    nfa.epsilon(from, accept);
+                }
+            }
+        }
+        nfa.determinize(start, accept)
     }
 
     /// Tests whether `candidate` matches: it must start with this pattern's

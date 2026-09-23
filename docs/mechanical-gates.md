@@ -131,7 +131,7 @@ non-vacuous:
 1. Any `fn` under `crates/*/src/` returning `i8..i64` (bare, or in `Result`/
    `Option`) whose body hands back a literal `-1` **must** carry a
    `// SENTINEL:` line in its doc/comment block. Registration is mandatory, so
-   a new sentinel cannot arrive unannounced. There are eight today.
+   a new sentinel cannot arrive unannounced. There are nine today.
 2. Every call of a declared sentinel function must test it within the 22 lines
    that follow -- `== -1`, `!= -1`, `< 0`, `>= 0`, `u32::try_from`,
    `usize::try_from`, `NO_MORE_DOCS`, ... -- or carry a `// SENTINEL-OK:`
@@ -207,7 +207,7 @@ the debt has to be visible and it has to be able only to shrink. A new site
 fails the gate; a migrated one fails it too, asking for the count to come down
 in the same change.
 
-Current burn-down (10 sites, 9 functions):
+Current burn-down (8 sites, 7 functions):
 
 | file | fn | sites |
 |---|---|---|
@@ -215,10 +215,8 @@ Current burn-down (10 sites, 9 functions):
 | `lucene-index/src/check_index.rs` | `doc_values_presence` | 1 |
 | `lucene-index/src/check_index.rs` | `sort_key_values` | 1 |
 | `lucene-index/src/merge.rs` | `merge_binary_doc_values` | 1 |
-| `lucene-search/src/doc_value_query.rs` | `search_numeric_range` | 1 |
 | `lucene-search/src/doc_value_query.rs` | `search_numeric_range_with_skip_index` | 1 |
 | `lucene-search/src/doc_value_query.rs` | `sort_by_numeric_doc_value` | 1 |
-| `lucene-search/src/doc_value_query.rs` | `sort_top_n_by_numeric_doc_value` | 1 |
 | `lucene-search/src/facets.rs` | `count_single_valued` | 1 |
 
 **Blind spots.** A per-document call hidden behind a helper the loop calls is

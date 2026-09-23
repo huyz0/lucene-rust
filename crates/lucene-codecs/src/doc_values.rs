@@ -1161,8 +1161,143 @@ pub struct NumericReader<'a> {
     /// The currently decoded varying-bits-per-value block, if any:
     /// `(block index, bits per value, delta, values slice range)`.
     block: Option<VaryingBlock>,
+    /// A dense single-width field, resolved once -- see [`FastDense`].
+    fast: Option<FastDense<'a>>,
 }
 
+/// A dense numeric field with one bit width for every value, resolved once:
+/// `Lucene90DocValuesProducer`'s `getNumeric` hands back a
+/// `DirectReader.getInstance(slice, bitsPerValue)` specialized to the width,
+/// and a per-document read is then one `readLong`, a shift and a mask. This is
+/// that, for [`NumericReader`]: the values region, width, mask and the
+/// GCD/table transform are looked up when the reader is built instead of on
+/// every call.
+#[derive(Debug, Clone, Copy)]
+enum FastDense<'a> {
+    /// `bitsPerValue == 0`: every document has `min_value`.
+    Constant { num_values: i64, value: i64 },
+    Packed {
+        /// One unaligned load per value, bounds-checked once at construction.
+        packed: lucene_util::packed_longs::PackedLongs<'a>,
+        num_values: i64,
+        /// The documents `get` answers: below both `num_values` and the
+        /// packed reader's own fast range, precomputed so a lookup is one
+        /// unsigned compare (a negative doc wraps above it).
+        limit: u64,
+        gcd: i64,
+        min: i64,
+        table: Option<&'a [i64]>,
+    },
+}
+
+impl<'a> FastDense<'a> {
+    fn new(data: &'a [u8], entry: &'a NumericEntry) -> Option<Self> {
+        if entry.is_empty_field() || !entry.is_dense() || entry.block_shift.is_some() {
+            return None;
+        }
+        if entry.bits_per_value == 0 {
+            return Some(FastDense::Constant {
+                num_values: entry.num_values,
+                value: entry.min_value,
+            });
+        }
+        if !direct_reader::is_supported_bits(entry.bits_per_value) {
+            return None;
+        }
+        let packed = lucene_util::packed_longs::PackedLongs::new(
+            region(data, entry.values_offset, entry.values_length).ok()?,
+            entry.bits_per_value as u32,
+        )?;
+        Some(FastDense::Packed {
+            packed,
+            num_values: entry.num_values,
+            limit: u64::try_from(entry.num_values)
+                .unwrap_or(0)
+                .min(packed.fast_limit()),
+            gcd: entry.gcd,
+            min: entry.min_value,
+            table: entry.table.as_deref(),
+        })
+    }
+
+    /// `doc`'s value, or `None` when this fast path cannot answer (an
+    /// out-of-range doc, the last few values that `DirectWriter`'s padding
+    /// does not cover with a whole 8-byte window, a table index past the
+    /// table) -- the general path then answers, including with the error.
+    #[inline]
+    fn get(&self, doc: i32) -> Option<i64> {
+        match *self {
+            FastDense::Constant { num_values, value } => {
+                (doc >= 0 && (doc as i64) < num_values).then_some(value)
+            }
+            FastDense::Packed {
+                packed,
+                limit,
+                gcd,
+                min,
+                table,
+                ..
+            } => {
+                let index = doc as u32 as u64;
+                if index >= limit {
+                    return None;
+                }
+                let raw = packed.get(index)?;
+                Some(match table {
+                    Some(t) => *t.get(raw as usize)?,
+                    None => gcd.wrapping_mul(raw as i64).wrapping_add(min),
+                })
+            }
+        }
+    }
+
+    /// [`Self::get`] for the run of documents starting at `start`: fills a
+    /// prefix of `out` and returns its length, stopping wherever `get` would
+    /// have answered `None` (0 when it already would for `start`).
+    fn fill(&self, start: i32, out: &mut [i64]) -> usize {
+        if start < 0 {
+            return 0;
+        }
+        match *self {
+            FastDense::Constant { num_values, value } => {
+                let room = usize::try_from(num_values.saturating_sub(start as i64)).unwrap_or(0);
+                let n = out.len().min(room);
+                out[..n].fill(value);
+                n
+            }
+            FastDense::Packed {
+                packed,
+                num_values,
+                gcd,
+                min,
+                table,
+                ..
+            } => {
+                let room = usize::try_from(num_values.saturating_sub(start as i64)).unwrap_or(0);
+                let len = out.len().min(room);
+                let n = packed.decode_range(start as u64, &mut out[..len]);
+                match table {
+                    Some(t) => {
+                        for (i, v) in out[..n].iter_mut().enumerate() {
+                            match t.get(*v as usize) {
+                                Some(&mapped) => *v = mapped,
+                                // A table index past the table: stop here and
+                                // let the general path report it.
+                                None => return i,
+                            }
+                        }
+                    }
+                    None => {
+                        for v in &mut out[..n] {
+                            *v = gcd.wrapping_mul(*v).wrapping_add(min);
+                        }
+                    }
+                }
+                n
+            }
+        }
+    }
+}
 /// One decoded varying-bits-per-value block header, cached by
 /// [`NumericReader`] so consecutive values in the same block cost one
 /// `direct_reader::get` and nothing else.
@@ -1202,6 +1337,7 @@ impl<'a> NumericReader<'a> {
             entry,
             docs,
             block: None,
+            fast: FastDense::new(data, entry),
         }
     }
 
@@ -1215,7 +1351,21 @@ impl<'a> NumericReader<'a> {
     /// region once for the whole scan. Going backwards rewinds the cursor
     /// (`DisiCursor::reset`), which costs a re-walk of the block headers and
     /// still allocates nothing.
+    ///
+    /// The dense single-width lookup is this inlined function; every other
+    /// shape is [`Self::value_slow`], kept out of line so this stays small
+    /// enough to inline into a caller's loop.
+    #[inline(always)]
     pub fn value(&mut self, doc: i32) -> Result<Option<i64>> {
+        if let Some(v) = self.fast.as_ref().and_then(|f| f.get(doc)) {
+            return Ok(Some(v));
+        }
+        self.value_slow(doc)
+    }
+
+    /// [`Self::value`] for every shape but the dense single-width one.
+    #[inline(never)]
+    fn value_slow(&mut self, doc: i32) -> Result<Option<i64>> {
         if doc < 0 {
             return Err(Error::DocOutOfRange(doc, self.entry.num_values));
         }
@@ -1244,6 +1394,61 @@ impl<'a> NumericReader<'a> {
             Some(shift) => Ok(Some(self.decode_varying(shift, ordinal)?)),
             None => Ok(Some(decode_value(self.data, self.entry, ordinal)?)),
         }
+    }
+
+    /// Calls `f(doc, value)` for every document in `start..end` that has a
+    /// value, in ascending order -- [`Self::value`] over a range, which is how
+    /// every sequential consumer (a range filter, a sort, a facet count) reads
+    /// a column.
+    ///
+    /// On a dense single-width field (the shape [`FastDense`] resolves) values
+    /// are decoded a chunk at a time by [`PackedLongs::decode_range`] -- one
+    /// range check per chunk and a branch-free loop -- instead of one checked,
+    /// `Result`-returning call per document. That is this port's answer to
+    /// what Lucene gets from the JIT specializing and inlining
+    /// `DirectReader`'s per-width `get`; per document, the chunked loop costs a
+    /// fraction of either. Everything else goes through [`Self::value`].
+    ///
+    /// [`PackedLongs::decode_range`]: lucene_util::packed_longs::PackedLongs::decode_range
+    pub fn for_each_value(
+        &mut self,
+        start: i32,
+        end: i32,
+        mut f: impl FnMut(i32, i64),
+    ) -> Result<()> {
+        const CHUNK: usize = 256;
+        let mut buf = [0i64; CHUNK];
+        let mut doc = start.max(0);
+        while doc < end {
+            // ARITH: `doc < end`, so the difference is positive and fits.
+            #[allow(clippy::arithmetic_side_effects)]
+            let want = ((end - doc) as usize).min(CHUNK);
+            let n = match &self.fast {
+                Some(fast) => fast.fill(doc, &mut buf[..want]),
+                None => 0,
+            };
+            if n == 0 {
+                if let Some(v) = self.value(doc)? {
+                    f(doc, v);
+                }
+                // ARITH: `doc < end <= i32::MAX`.
+                #[allow(clippy::arithmetic_side_effects)]
+                {
+                    doc += 1;
+                }
+                continue;
+            }
+            // ARITH: `i < n <= end - doc`, so `doc + i < end`, and `doc + n <=
+            // end`.
+            #[allow(clippy::arithmetic_side_effects)]
+            {
+                for (i, &v) in buf[..n].iter().enumerate() {
+                    f(doc + i as i32, v);
+                }
+                doc += n as i32;
+            }
+        }
+        Ok(())
     }
 
     /// [`decode_value_varying_bpv`] with the block header kept between calls --
@@ -5423,6 +5628,57 @@ mod tests {
             // Same document twice in a row must not change the answer either.
             assert_eq!(reader.value(doc).unwrap(), present.get(&doc).copied());
         }
+    }
+
+    /// `for_each_value` is `value` over a range, for every field shape the
+    /// writer produces: constant, GCD-compressed, table-compressed, plain
+    /// packed at several widths (dense, so the chunked path), and sparse (the
+    /// per-document fallback) -- over the whole range, a sub-range that starts
+    /// and ends mid-chunk, and an empty one.
+    #[test]
+    fn for_each_value_agrees_with_value_on_every_shape() {
+        let id = [23u8; ID_LENGTH];
+        let fis = field_infos_with(&[0]);
+        let n = 1_000i32;
+        let shapes: Vec<Vec<i64>> = vec![
+            vec![42; n as usize],                                  // constant
+            (0..n as i64).map(|i| 1_000 + 7 * (i % 13)).collect(), // gcd 7
+            (0..n as i64)
+                .map(|i| [5, -3, 1 << 40][(i % 3) as usize])
+                .collect(), // table
+            (0..n as i64).map(|i| i * 3 % 251).collect(),          // 8 bits
+            (0..n as i64).map(|i| (i * 7919) % 65_000).collect(),  // 16 bits
+            (0..n as i64)
+                .map(|i| i.wrapping_mul(0x9E37_79B9_7F4A_7C15u64 as i64))
+                .collect(), // 64 bits
+        ];
+        let check = |meta_bytes: &[u8], data: &[u8]| {
+            let (_, meta) = parse_meta(meta_bytes, &id, "", &fis).unwrap();
+            let entry = meta.numeric_entry(0).unwrap();
+            for (start, end) in [(0, n), (3, 700), (255, 257), (500, 500), (-5, 10)] {
+                let mut expected = Vec::new();
+                let mut by_value = NumericReader::new(data, entry);
+                for doc in start.max(0)..end {
+                    if let Some(v) = by_value.value(doc).unwrap() {
+                        expected.push((doc, v));
+                    }
+                }
+                let mut got = Vec::new();
+                NumericReader::new(data, entry)
+                    .for_each_value(start, end, |d, v| got.push((d, v)))
+                    .unwrap();
+                assert_eq!(got, expected, "range {start}..{end}");
+            }
+        };
+        for values in &shapes {
+            let (meta_bytes, data, _) =
+                write_single_dense_numeric_field(0, values, n, &id, "").unwrap();
+            check(&meta_bytes, &data);
+        }
+        let sparse: Vec<(i32, i64)> = (0..n).step_by(3).map(|d| (d, d as i64 * 11)).collect();
+        let (meta_bytes, data, _) =
+            write_single_sparse_numeric_field(0, &sparse, n, &id, "").unwrap();
+        check(&meta_bytes, &data);
     }
 
     /// A sparse entry whose docs-with-field byte range is not inside the data

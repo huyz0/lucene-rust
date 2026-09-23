@@ -1,4 +1,7 @@
 import java.io.IOException;
+import java.lang.management.ManagementFactory;
+import java.util.ArrayList;
+import java.util.List;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import org.apache.lucene.store.Directory;
@@ -25,6 +28,12 @@ import org.apache.lucene.util.packed.DirectWriter;
  * it needs them to do the same *work*, and the work is a function of `bitsPerValue` and the access
  * pattern, not of the values. Each side round-trip-checks its own array before timing.
  *
+ * <p>Each width runs in its own JVM (this class re-launches itself with {@code -Dbits=N}).
+ * {@code DirectReader.getInstance} returns a different class per width, and one {@code walk}
+ * call site fed all fourteen went megamorphic after the second: C2 stopped inlining {@code get}
+ * and every width from 4 bits on measured a flat ~2.3 ns of virtual dispatch rather than the read.
+ * A process per width keeps each call site monomorphic, as it is at a real doc-values call site.
+ *
  * <p>Emits TSV {@code bitsNN<TAB>ns_per_op<TAB>ops} on stdout.
  */
 public final class DirectReaderMicro {
@@ -36,9 +45,33 @@ public final class DirectReaderMicro {
     long warmupMs = Long.getLong("warmupMs", 1500);
     long measureMs = Long.getLong("measureMs", 2000);
 
+    int[] widths = {1, 2, 4, 8, 12, 16, 20, 24, 28, 32, 40, 48, 56, 64};
+    String only = System.getProperty("bits");
+    if (only == null) {
+      for (int bits : widths) {
+        List<String> cmd = new ArrayList<>();
+        cmd.add(ProcessHandle.current().info().command().orElse("java"));
+        cmd.addAll(ManagementFactory.getRuntimeMXBean().getInputArguments());
+        cmd.add("-Dbits=" + bits);
+        cmd.add("-cp");
+        cmd.add(System.getProperty("java.class.path"));
+        cmd.add(DirectReaderMicro.class.getName());
+        Process p = new ProcessBuilder(cmd).inheritIO().start();
+        try {
+          if (p.waitFor() != 0) {
+            throw new IllegalStateException("width " + bits + " failed");
+          }
+        } catch (InterruptedException e) {
+          throw new IOException(e);
+        }
+      }
+      return;
+    }
+    widths = new int[] {Integer.parseInt(only)};
+
     Path dir = Files.createTempDirectory("directreader-micro");
     try (Directory directory = new MMapDirectory(dir)) {
-      for (int bits : new int[] {1, 2, 4, 8, 12, 16, 20, 24, 28, 32, 40, 48, 56, 64}) {
+      for (int bits : widths) {
         String name = "bits" + bits;
         long mask = bits >= 64 ? -1L : (1L << bits) - 1;
         long[] values = new long[COUNT];

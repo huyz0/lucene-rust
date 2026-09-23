@@ -219,11 +219,42 @@ fn bench_direct_reader(warmup: Duration, measure: Duration) {
         // An odd stride, so consecutive reads land in different cache lines
         // without ever repeating a value.
         const STRIDE: usize = 4099;
+        // Shaped as Java's `walk`: a reader built once (`getInstance`), and
+        // 4096 reads per clock check summed into a local, so the sum stays in
+        // a register. A per-read `black_box`, or a sink captured by the
+        // closure (which the clock calls keep in memory), put a store-forward
+        // chain under every read: a flat 1.3 ns floor across all fourteen
+        // widths, twice Java's whole one-bit read.
+        const INNER: u64 = 4096;
+        // The walk is compiled per width (`with_width`), as each of the Java
+        // side's per-width JVMs sees one `DirectPackedReaderNN` class.
+        struct Walk {
+            budget: Duration,
+            mask: usize,
+        }
+        impl direct_reader::WidthVisitor for Walk {
+            type Output = (Duration, u64);
+            fn visit<const B: u32>(self, reader: direct_reader::FixedWidthReader<'_, B>) -> Self::Output {
+                let mut i = 0usize;
+                let (elapsed, calls) = timed_loop(self.budget, || {
+                    // Locals, not the captures: through a reference they stay
+                    // in memory, and the store-to-load chain is the floor.
+                    let (mut j, mut sink) = (i, 0i64);
+                    for _ in 0..INNER {
+                        j = (j + STRIDE) & self.mask;
+                        sink = sink.wrapping_add(reader.get(j as i64).unwrap());
+                    }
+                    i = j;
+                    black_box(sink);
+                });
+                (elapsed, calls * INNER)
+            }
+        }
         let run = |budget| {
-            let mut i = 0usize;
-            timed_loop(budget, || {
-                i = (i + STRIDE) & (count - 1);
-                black_box(direct_reader::get(black_box(&packed), bits, i as i64).unwrap());
+            let reader = direct_reader::DirectReader::new(black_box(&packed[..]), bits).unwrap();
+            reader.with_width(Walk {
+                budget,
+                mask: count - 1,
             })
         };
         run(warmup);
@@ -313,6 +344,826 @@ fn bench_stored_fields(warmup: Duration, measure: Duration, index: &str) {
     );
 }
 
+// ---------------------------------------------------------------------------
+// The per-area sweep. Every case below has a same-named case in
+// `benchmarks/micro/java/SweepMicro.java`, over the same generated input or the
+// same corpus directory. Each timed call does a *batch* of work and the
+// reported figure is ns per unit of that work, on both sides.
+// ---------------------------------------------------------------------------
+
+mod counting_alloc {
+    //! A counting global allocator, so memory cases can report the heap an
+    //! operation leaves resident -- the Rust counterpart of Java's used-heap
+    //! delta after GC. The mmap'd index files are outside both figures.
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::sync::atomic::{AtomicIsize, Ordering};
+
+    pub struct Counting;
+    pub static LIVE: AtomicIsize = AtomicIsize::new(0);
+
+    unsafe impl GlobalAlloc for Counting {
+        unsafe fn alloc(&self, l: Layout) -> *mut u8 {
+            LIVE.fetch_add(l.size() as isize, Ordering::Relaxed);
+            unsafe { System.alloc(l) }
+        }
+        unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
+            LIVE.fetch_sub(l.size() as isize, Ordering::Relaxed);
+            unsafe { System.dealloc(p, l) }
+        }
+        unsafe fn alloc_zeroed(&self, l: Layout) -> *mut u8 {
+            LIVE.fetch_add(l.size() as isize, Ordering::Relaxed);
+            unsafe { System.alloc_zeroed(l) }
+        }
+        unsafe fn realloc(&self, p: *mut u8, l: Layout, new: usize) -> *mut u8 {
+            LIVE.fetch_add(new as isize - l.size() as isize, Ordering::Relaxed);
+            unsafe { System.realloc(p, l, new) }
+        }
+    }
+
+    pub fn live() -> isize {
+        LIVE.load(Ordering::Relaxed)
+    }
+}
+
+#[global_allocator]
+static ALLOC: counting_alloc::Counting = counting_alloc::Counting;
+
+/// Warmup, then measure; prints `name<TAB>ns_per_unit<TAB>units`. `op` does one
+/// batch and returns how many units of work it did.
+fn measure(name: &str, warmup: Duration, budget: Duration, mut op: impl FnMut() -> u64) {
+    // `MICRO_CASE=<name>` runs one case alone, so a profile of it is not
+    // averaged with its siblings'.
+    if std::env::var("MICRO_CASE").is_ok_and(|only| only != name) {
+        return;
+    }
+    let mut run = |b: Duration| {
+        let start = Instant::now();
+        let mut units = 0u64;
+        loop {
+            units += op();
+            let e = start.elapsed();
+            if e >= b {
+                return (e, units);
+            }
+        }
+    };
+    run(warmup);
+    let (elapsed, units) = run(budget);
+    println!(
+        "{name}\t{:.3}\t{units}",
+        elapsed.as_nanos() as f64 / units as f64
+    );
+}
+
+/// xorshift64, identical to `SweepMicro.Rng`.
+struct Rng(u64);
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+}
+
+/// `PForUtilMicro.block`, bit for bit: 256 values under `2^bits`, three of them
+/// patched with 8 extra bits so every block takes the exception path.
+fn pfor_block(bits: u32) -> [u32; BLOCK_SIZE] {
+    let mut out = [0u32; BLOCK_SIZE];
+    let mut state: u32 = 0x51ED_270B ^ bits;
+    let mask = (1u32 << bits) - 1;
+    for slot in out.iter_mut() {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        *slot = state & mask;
+    }
+    for slot in [17usize, 101, 230] {
+        out[slot] = (out[slot] & mask) | (0xA5 << bits);
+    }
+    out
+}
+
+fn bench_pfor_decode(w: Duration, m: Duration) {
+    for bits in 1..=23u32 {
+        let values = pfor_block(bits);
+        let mut bytes = Vec::new();
+        let mut scratch = values;
+        for_util::pfor_encode(&mut scratch, &mut bytes);
+        let mut fu = ForUtil::new();
+        let mut decoded = [0u32; BLOCK_SIZE];
+        fu.pfor_decode(&mut SliceInput::new(&bytes), &mut decoded)
+            .unwrap();
+        assert_eq!(decoded, values, "pfor round-trip failed at bits={bits}");
+        measure(&format!("bits{bits:02}"), w, m, || {
+            for _ in 0..1024 {
+                let mut r = SliceInput::new(black_box(&bytes));
+                fu.pfor_decode(&mut r, &mut decoded).unwrap();
+                black_box(&decoded[0]);
+            }
+            1024
+        });
+    }
+}
+
+fn bench_vint(w: Duration, m: Duration) {
+    use lucene_store::data_input::DataInput;
+    use lucene_store::data_output::DataOutput;
+    const N: usize = 1 << 20;
+    let mut r = Rng(0x1234_5678_9ABC_DEF1);
+    let ints: Vec<i32> = (0..N)
+        .map(|_| {
+            let x = r.next();
+            (((x >> 33) as u32) >> ((x & 0xFFFF) % 31)) as i32
+        })
+        .collect();
+    let mut r = Rng(0x0FED_CBA9_8765_4321);
+    let longs: Vec<i64> = (0..N)
+        .map(|_| {
+            let x = r.next();
+            ((x >> 1) >> ((x & 0xFFFF) % 63)) as i64
+        })
+        .collect();
+    let mut vint = Vec::new();
+    for &x in &ints {
+        vint.write_vint(x);
+    }
+    let mut vlong = Vec::new();
+    for &x in &longs {
+        vlong.write_vlong(x);
+    }
+    let mut group = Vec::new();
+    for g in ints.chunks(128) {
+        let g: Vec<u32> = g.iter().map(|&x| x as u32).collect();
+        group.write_group_vints(&g);
+    }
+    {
+        let mut inp = SliceInput::new(&vint);
+        for (i, &x) in ints.iter().enumerate() {
+            assert_eq!(inp.read_vint().unwrap(), x, "vint {i}");
+        }
+        let mut inp = SliceInput::new(&group);
+        let mut dst = [0u64; 128];
+        for g in ints.chunks(128) {
+            inp.read_group_vints(&mut dst).unwrap();
+            for (a, b) in g.iter().zip(&dst) {
+                assert_eq!(*a as u32 as u64, *b);
+            }
+        }
+    }
+    measure("vint", w, m, || {
+        let mut inp = SliceInput::new(black_box(&vint));
+        let mut acc = 0i32;
+        for _ in 0..N {
+            acc = acc.wrapping_add(inp.read_vint().unwrap());
+        }
+        black_box(acc);
+        N as u64
+    });
+    measure("vlong", w, m, || {
+        let mut inp = SliceInput::new(black_box(&vlong));
+        let mut acc = 0i64;
+        for _ in 0..N {
+            acc = acc.wrapping_add(inp.read_vlong().unwrap());
+        }
+        black_box(acc);
+        N as u64
+    });
+    let mut dst = [0u64; 128];
+    measure("group_vint", w, m, || {
+        let mut inp = SliceInput::new(black_box(&group));
+        for _ in 0..N / 128 {
+            inp.read_group_vints(&mut dst).unwrap();
+            black_box(dst[127]);
+        }
+        N as u64
+    });
+}
+
+fn random_bits(
+    num_bits: usize,
+    seed: u64,
+    density_pct: u64,
+) -> lucene_util::fixed_bit_set::FixedBitSet {
+    let mut b = lucene_util::fixed_bit_set::FixedBitSet::new(num_bits);
+    let mut r = Rng(seed);
+    for i in 0..num_bits {
+        if r.next() % 100 < density_pct {
+            b.set(i);
+        }
+    }
+    b
+}
+
+fn bench_bitset(w: Duration, m: Duration) {
+    use lucene_util::fixed_bit_set::FixedBitSet;
+    const NUM_BITS: usize = 1 << 22;
+    let a = random_bits(NUM_BITS, 0x1111_2222_3333_4444, 10);
+    let b = random_bits(NUM_BITS, 0x5555_6666_7777_8888, 10);
+    let set_bits = a.cardinality() as u64;
+    measure("cardinality", w, m, || {
+        black_box(black_box(&a).cardinality());
+        (NUM_BITS / 64) as u64
+    });
+    measure("next_set_bit", w, m, || {
+        let a = black_box(&a);
+        let mut n = 0u64;
+        let mut i = a.next_set_bit(0);
+        while let Some(b) = i {
+            n += 1;
+            i = a.next_set_bit(b + 1);
+        }
+        black_box(n);
+        set_bits
+    });
+    measure("intersection_count", w, m, || {
+        black_box(FixedBitSet::intersection_count(
+            black_box(&a),
+            black_box(&b),
+        ));
+        (NUM_BITS / 64) as u64
+    });
+    let mut c = a.clone();
+    measure("or", w, m, || {
+        c.or(black_box(&b));
+        (NUM_BITS / 64) as u64
+    });
+    let mut r = Rng(0x9999_AAAA_BBBB_CCCC);
+    let probes: Vec<usize> = (0..1 << 16)
+        .map(|_| (r.next() % NUM_BITS as u64) as usize)
+        .collect();
+    measure("get_random", w, m, || {
+        let a = black_box(&a);
+        let n = probes.iter().filter(|&&p| a.get(p)).count();
+        black_box(n);
+        probes.len() as u64
+    });
+}
+
+fn text_bytes(len: usize, seed: u64) -> Vec<u8> {
+    let mut r = Rng(seed);
+    let mut s = String::with_capacity(len + 16);
+    while s.len() < len {
+        if !s.is_empty() {
+            s.push(' ');
+        }
+        s.push('t');
+        s.push_str(&lucene_util::base36::to_base36((r.next() % 2000) as i64));
+    }
+    s.truncate(len);
+    s.into_bytes()
+}
+
+fn bench_lz4(w: Duration, m: Duration) {
+    use lucene_codecs::lz4;
+    for len in [16 * 1024usize, 60 * 1024] {
+        let src = text_bytes(len, 0xABCD_EF01_2345_6789 ^ len as u64);
+        let sz = format!("{}k", len / 1024);
+        let mut compressed = Vec::new();
+        lz4::compress_into(
+            &src,
+            &mut compressed,
+            &mut lz4::FastCompressionHashTable::new(),
+        );
+        let mut dst = vec![0u8; len];
+        lz4::decompress_slice(&mut SliceInput::new(&compressed), len, &mut dst, 0).unwrap();
+        assert_eq!(src, dst, "lz4 round trip");
+        measure(&format!("decompress_{sz}"), w, m, || {
+            let mut inp = SliceInput::new(black_box(&compressed));
+            lz4::decompress_slice(&mut inp, len, &mut dst, 0).unwrap();
+            black_box(dst[len - 1]);
+            len as u64
+        });
+        let mut fast = lz4::FastCompressionHashTable::new();
+        let mut out = Vec::with_capacity(len);
+        measure(&format!("compress_fast_{sz}"), w, m, || {
+            out.clear();
+            lz4::compress_into(black_box(&src), &mut out, &mut fast);
+            black_box(out.len());
+            len as u64
+        });
+        let mut high = lz4::HighCompressionHashTable::new();
+        measure(&format!("compress_high_{sz}"), w, m, || {
+            out.clear();
+            lz4::compress_into(black_box(&src), &mut out, &mut high);
+            black_box(out.len());
+            len as u64
+        });
+    }
+}
+
+fn bench_direct_monotonic(w: Duration, m: Duration) {
+    use lucene_codecs::direct_monotonic;
+    const N: usize = 1 << 20;
+    let block_shift = 16;
+    let mut r = Rng(0x7777_1234_ABCD_0001);
+    let mut acc = 0i64;
+    let values: Vec<i64> = (0..N)
+        .map(|_| {
+            acc += (r.next() % 1000) as i64;
+            acc
+        })
+        .collect();
+    let (meta_bytes, mut data) = direct_monotonic::write(&values, block_shift);
+    data.resize(data.len() + 8, 0);
+    let meta =
+        direct_monotonic::load_meta(&mut SliceInput::new(&meta_bytes), N as i64, block_shift)
+            .unwrap();
+    for i in [0usize, 1, N / 2, N - 1] {
+        assert_eq!(
+            direct_monotonic::get(&data, &meta, i as i64).unwrap(),
+            values[i]
+        );
+    }
+    const STRIDE: usize = 4099;
+    measure("get_random", w, m, || {
+        let mut i = 0usize;
+        let mut s = 0i64;
+        for _ in 0..4096 {
+            i = (i + STRIDE) & (N - 1);
+            s = s.wrapping_add(direct_monotonic::get(black_box(&data), &meta, i as i64).unwrap());
+        }
+        black_box(s);
+        4096
+    });
+    measure("get_seq", w, m, || {
+        let mut s = 0i64;
+        for i in 0..N {
+            s = s.wrapping_add(direct_monotonic::get(black_box(&data), &meta, i as i64).unwrap());
+        }
+        black_box(s);
+        N as u64
+    });
+}
+
+fn bench_checksum(w: Duration, m: Duration) {
+    let len = 16usize << 20;
+    let data = text_bytes(len, 0x5151_5151_5151_5151);
+    measure("crc32_16m", w, m, || {
+        black_box(crc32fast::hash(black_box(&data)));
+        len as u64
+    });
+}
+
+fn analysis_docs() -> Vec<String> {
+    let mut r = Rng(0x2468_ACE0_1357_9BDF);
+    let mut docs = Vec::new();
+    for _ in 0..2000 {
+        let words = 40 + (r.next() % 120) as usize;
+        let mut s = String::new();
+        for wi in 0..words {
+            if wi > 0 {
+                s.push(' ');
+            }
+            let x = r.next();
+            let a = x % 50000;
+            let b = (x >> 20) % 50000;
+            let mut word = format!("t{}", lucene_util::base36::to_base36(a.min(b) as i64));
+            if x & 7 == 0 {
+                word = word.to_uppercase();
+            }
+            s.push_str(&word);
+            if x & 31 == 1 {
+                s.push(',');
+            }
+            if x & 63 == 2 {
+                s.push('.');
+            }
+        }
+        docs.push(s);
+    }
+    docs
+}
+
+fn bench_analysis(w: Duration, m: Duration) {
+    let docs = analysis_docs();
+    let analyzer = lucene_analysis::Analyzer::standard(None);
+    measure("standard", w, m, || {
+        let mut tokens = 0u64;
+        for text in &docs {
+            for t in analyzer.analyze(black_box(text)) {
+                tokens += 1;
+                black_box(t.term.len());
+            }
+        }
+        tokens
+    });
+}
+
+/// `SweepMicro.floatVectors`, bit for bit.
+fn float_vectors(n: usize, dim: usize, seed: u64) -> Vec<Vec<f32>> {
+    let mut r = Rng(seed);
+    (0..n)
+        .map(|_| {
+            (0..dim)
+                .map(|_| ((r.next() >> 40) as f64 / (1u64 << 24) as f64) as f32 - 0.5)
+                .collect()
+        })
+        .collect()
+}
+
+fn byte_vectors(n: usize, dim: usize, seed: u64) -> Vec<Vec<u8>> {
+    let mut r = Rng(seed);
+    (0..n)
+        .map(|_| (0..dim).map(|_| (r.next() >> 56) as u8).collect())
+        .collect()
+}
+
+/// The similarity kernels vector search spends its time in -- see
+/// `SweepMicro.vectors`.
+fn bench_vectors(w: Duration, m: Duration) {
+    use lucene_codecs::vectors;
+    for dim in [128usize, 768] {
+        let docs = float_vectors(1024, dim, 0xF00D + dim as u64);
+        let q = &float_vectors(1, dim, 0xBEEF + dim as u64)[0];
+        measure(&format!("dot_f32_{dim}"), w, m, || {
+            let mut s = 0.0f32;
+            for d in &docs {
+                s += vectors::dot_product(black_box(q), d);
+            }
+            black_box(s);
+            docs.len() as u64
+        });
+        measure(&format!("l2_f32_{dim}"), w, m, || {
+            let mut s = 0.0f32;
+            for d in &docs {
+                s += vectors::square_distance(black_box(q), d);
+            }
+            black_box(s);
+            docs.len() as u64
+        });
+        measure(&format!("cos_f32_{dim}"), w, m, || {
+            let mut s = 0.0f32;
+            for d in &docs {
+                s += vectors::cosine(black_box(q), d);
+            }
+            black_box(s);
+            docs.len() as u64
+        });
+        let bdocs = byte_vectors(1024, dim, 0xB17E + dim as u64);
+        let bq = &byte_vectors(1, dim, 0xB0B + dim as u64)[0];
+        measure(&format!("dot_u8_{dim}"), w, m, || {
+            let mut s = 0i64;
+            for d in &bdocs {
+                s += vectors::dot_product_bytes(black_box(bq), d) as i64;
+            }
+            black_box(s);
+            bdocs.len() as u64
+        });
+    }
+}
+
+/// Opens the corpus and hands the first segment's pieces to `f`.
+fn with_segment(
+    index: &str,
+    f: impl FnOnce(
+        &lucene_search::directory_reader::SegmentReader,
+        &lucene_search::multi_segment::OpenSegment<'_>,
+    ),
+) {
+    let dir = MmapDirectory::open(index.to_string());
+    let reader = DirectoryReader::open(&dir).expect("open index");
+    let opened = reader.open_segments().expect("open segments");
+    let segs = opened.as_open_segments();
+    f(&reader.segment_readers()[0], &segs[0]);
+}
+
+fn bench_postings_adv(w: Duration, m: Duration, index: &str) {
+    with_segment(index, |_, seg| {
+        let field = seg.fields.field("body").expect("body");
+        let doc_in = seg.doc_in.expect("doc_in");
+        for term in ["t0", "t1", "tz"] {
+            // Sought once, outside the timed loop, as Java's `te.seekExact`
+            // is; each iteration opens a fresh enum from the term state, as
+            // its `te.postings(null, NONE)` does.
+            let seeked = field
+                .seek_term_state(term.as_bytes())
+                .unwrap()
+                .expect("term");
+            for gap in [8i32, 64, 1024] {
+                measure(&format!("{term}_gap{gap}"), w, m, || {
+                    let mut c = field
+                        .lazy_postings_for(
+                            &seeked,
+                            doc_in,
+                            lucene_codecs::postings::PostingsFlags::DocsOnly,
+                        )
+                        .unwrap();
+                    let mut n = 0u64;
+                    let mut doc = c.advance(0).unwrap();
+                    while doc != lucene_codecs::postings::NO_MORE_DOCS {
+                        n += 1;
+                        doc = c.advance(doc + gap).unwrap();
+                    }
+                    black_box(n);
+                    n
+                });
+            }
+        }
+    });
+}
+
+fn bench_postings_freq(w: Duration, m: Duration, index: &str) {
+    with_segment(index, |_, seg| {
+        let field = seg.fields.field("body").expect("body");
+        let doc_in = seg.doc_in.expect("doc_in");
+        for term in ["t0", "t1", "tz", "t2s"] {
+            measure(term, w, m, || {
+                let mut c = field
+                    .lazy_postings_with_flags(
+                        term.as_bytes(),
+                        doc_in,
+                        lucene_codecs::postings::PostingsFlags::Freqs,
+                    )
+                    .unwrap()
+                    .expect("term");
+                let (mut n, mut f) = (0u64, 0u64);
+                while c.next_doc().unwrap() != lucene_codecs::postings::NO_MORE_DOCS {
+                    n += 1;
+                    f += c.freq().unwrap_or(1) as u64;
+                }
+                black_box(f);
+                n
+            });
+        }
+    });
+}
+
+/// Every position of every document, through the lazy `PositionsCursor` the
+/// phrase path reads with -- `PostingsEnum.POSITIONS` on the Java side.
+fn bench_positions(w: Duration, m: Duration, index: &str) {
+    with_segment(index, |_, seg| {
+        let field = seg.fields.field("body").expect("body");
+        let doc_in = seg.doc_in.expect("doc_in");
+        let pos_in = seg.pos_in.expect("pos_in");
+        for term in ["t1", "tz", "t2s"] {
+            measure(term, w, m, || {
+                let mut c = field
+                    .lazy_positions(term.as_bytes(), doc_in, pos_in)
+                    .unwrap()
+                    .expect("term");
+                let (mut n, mut s) = (0u64, 0i64);
+                while c.next_doc().unwrap() != lucene_codecs::postings::NO_MORE_DOCS {
+                    let f = c.freq();
+                    for _ in 0..f {
+                        s = s.wrapping_add(c.next_position().unwrap() as i64);
+                    }
+                    n += f as u64;
+                }
+                black_box(s);
+                n
+            });
+        }
+    });
+}
+
+fn bench_term_seek(w: Duration, m: Duration, index: &str) {
+    with_segment(index, |_, seg| {
+        let field = seg.fields.field("body").expect("body");
+        let mut terms: Vec<Vec<u8>> = Vec::new();
+        let mut it = field.iter();
+        let mut n = 0usize;
+        while let Some((t, _)) = it.next() {
+            if n % 97 == 0 {
+                terms.push(t.to_vec());
+            }
+            n += 1;
+        }
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        for i in (1..terms.len()).rev() {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let j = (state % (i as u64 + 1)) as usize;
+            terms.swap(i, j);
+        }
+        terms.truncate(2000);
+        let misses: Vec<Vec<u8>> = terms
+            .iter()
+            .map(|t| {
+                let mut v = t.clone();
+                v.push(b'~');
+                v
+            })
+            .collect();
+        for (name, targets) in [("seek_hit", &terms), ("seek_miss", &misses)] {
+            measure(name, w, m, || {
+                let mut acc = 0i64;
+                for t in targets {
+                    acc += field
+                        .seek_exact(black_box(t))
+                        .map_or(0, |s| s.doc_freq as i64);
+                }
+                black_box(acc);
+                targets.len() as u64
+            });
+        }
+        measure("next_all", w, m, || {
+            let mut it = field.iter();
+            let mut ops = 0u64;
+            let mut acc = 0u64;
+            while let Some((t, s)) = it.next() {
+                acc += t.len() as u64 + s.doc_freq as u64;
+                ops += 1;
+            }
+            black_box(acc);
+            ops
+        });
+    });
+}
+
+fn bench_doc_values(w: Duration, m: Duration, index: &str) {
+    use lucene_codecs::doc_values::{self, SortedSetKind};
+    with_segment(index, |r, _| {
+        let max_doc = r.max_doc;
+        let num = r.field_infos().field_by_name("num").expect("num").number;
+        let kw = r
+            .field_infos()
+            .field_by_name("keyword")
+            .expect("keyword")
+            .number;
+        let cat = r.field_infos().field_by_name("cat").expect("cat").number;
+        let (meta, data) = r.doc_values_for_field(num).expect("dv");
+        let num_entry = meta.numeric_entry(num).expect("num entry");
+        // The `_seq` cases use each engine's sequential API: Java's `nextDoc`
+        // loop, and `for_each_value` here, which is what this port's range and
+        // sort consumers call. `numeric_stride37` is the random-access one.
+        measure("numeric_seq", w, m, || {
+            let mut v = doc_values::NumericReader::new(data, num_entry);
+            let mut s = 0i64;
+            v.for_each_value(0, max_doc, |_, x| s = s.wrapping_add(x))
+                .unwrap();
+            black_box(s);
+            max_doc as u64
+        });
+        measure("numeric_stride37", w, m, || {
+            let mut v = doc_values::NumericReader::new(data, num_entry);
+            let (mut s, mut n) = (0i64, 0u64);
+            let mut d = 0;
+            while d < max_doc {
+                if let Some(x) = v.value(d).unwrap() {
+                    s = s.wrapping_add(x);
+                }
+                n += 1;
+                d += 37;
+            }
+            black_box(s);
+            n
+        });
+        let (meta, data) = r.doc_values_for_field(kw).expect("dv");
+        let kw_entry = meta.sorted_entry(kw).expect("keyword sorted entry");
+        measure("sorted_ord_seq", w, m, || {
+            let mut v = doc_values::NumericReader::new(data, &kw_entry.ords);
+            let mut s = 0i64;
+            v.for_each_value(0, max_doc, |_, x| s = s.wrapping_add(x))
+                .unwrap();
+            black_box(s);
+            max_doc as u64
+        });
+        let (meta, data) = r.doc_values_for_field(cat).expect("dv");
+        let cat_entry = meta.sorted_set_entry(cat).expect("cat entry");
+        measure("sorted_set_seq", w, m, || {
+            let mut s = 0i64;
+            match &cat_entry.kind {
+                SortedSetKind::Single(e) => {
+                    let mut v = doc_values::NumericReader::new(data, &e.ords);
+                    v.for_each_value(0, max_doc, |_, x| s = s.wrapping_add(x))
+                        .unwrap();
+                }
+                SortedSetKind::Multi { ords, .. } => {
+                    for d in 0..max_doc {
+                        for x in doc_values::sorted_numeric_values(data, ords, d).unwrap() {
+                            s = s.wrapping_add(x);
+                        }
+                    }
+                }
+            }
+            black_box(s);
+            max_doc as u64
+        });
+    });
+}
+
+fn bench_norms(w: Duration, m: Duration, index: &str) {
+    with_segment(index, |r, _| {
+        let max_doc = r.max_doc;
+        let body = r.field_infos().field_by_name("body").expect("body").number;
+        let entry = r.norms_entry(body).expect("norms entry");
+        let data = r.norms_data().expect("norms data");
+        measure("body_seq", w, m, || {
+            let mut r = lucene_codecs::norms::NormsReader::new(data, entry);
+            let mut s = 0i64;
+            for d in 0..max_doc {
+                if let Some(x) = r.value(d).unwrap() {
+                    s = s.wrapping_add(x);
+                }
+            }
+            black_box(s);
+            max_doc as u64
+        });
+        measure("body_stride37", w, m, || {
+            let mut r = lucene_codecs::norms::NormsReader::new(data, entry);
+            let (mut s, mut n) = (0i64, 0u64);
+            let mut d = 0;
+            while d < max_doc {
+                if let Some(x) = r.value(d).unwrap() {
+                    s = s.wrapping_add(x);
+                }
+                n += 1;
+                d += 37;
+            }
+            black_box(s);
+            n
+        });
+    });
+}
+
+struct RangeCounter {
+    lo: [u8; 8],
+    hi: [u8; 8],
+    count: u64,
+}
+
+impl lucene_codecs::points::IntersectVisitor for RangeCounter {
+    fn compare(&mut self, min: &[u8], max: &[u8]) -> lucene_codecs::points::Relation {
+        use lucene_codecs::points::Relation;
+        if min[..8] > self.hi[..] || max[..8] < self.lo[..] {
+            return Relation::CellOutsideQuery;
+        }
+        if min[..8] >= self.lo[..] && max[..8] <= self.hi[..] {
+            return Relation::CellInsideQuery;
+        }
+        Relation::CellCrossesQuery
+    }
+    fn visit(&mut self, _doc: i32) {
+        self.count += 1;
+    }
+    fn visit_with_value(&mut self, _doc: i32, v: &[u8]) {
+        if v[..8] >= self.lo[..] && v[..8] <= self.hi[..] {
+            self.count += 1;
+        }
+    }
+}
+
+fn bench_points(w: Duration, m: Duration, index: &str) {
+    with_segment(index, |r, _| {
+        let (kdm, kdi, kdd) = r.points_files().expect("points");
+        let pr =
+            lucene_codecs::points::open(kdm, kdi, kdd, &r.segment_id(), "").expect("open points");
+        let num = r.field_infos().field_by_name("num").expect("num").number;
+        for (lo, hi) in [(0i64, 1000i64), (0, 100_000), (250_000, 750_000)] {
+            let (plo, phi) = (
+                lucene_search::points_query::pack_i64(lo),
+                lucene_search::points_query::pack_i64(hi),
+            );
+            measure(&format!("range_{lo}_{hi}"), w, m, || {
+                let mut c = RangeCounter {
+                    lo: plo[..8].try_into().unwrap(),
+                    hi: phi[..8].try_into().unwrap(),
+                    count: 0,
+                };
+                pr.intersect(num, &mut c).unwrap();
+                black_box(c.count);
+                1
+            });
+        }
+    });
+}
+
+/// Heap an open reader keeps resident -- see `SweepMicro.memory`.
+fn bench_memory(index: &str) {
+    let dir = MmapDirectory::open(index.to_string());
+    let before = counting_alloc::live();
+    let reader = DirectoryReader::open(&dir).expect("open index");
+    let opened = reader.open_segments().expect("open segments");
+    let after = counting_alloc::live();
+    println!("open_heap_bytes\t{}\t1", after - before);
+    let segs = opened.as_open_segments();
+    for seg in &segs {
+        for f in ["body", "title", "keyword"] {
+            let (Some(field), Some(doc_in)) = (seg.fields.field(f), seg.doc_in) else {
+                continue;
+            };
+            if let Ok(Some(mut c)) = field.lazy_postings_with_flags(
+                b"t0",
+                doc_in,
+                lucene_codecs::postings::PostingsFlags::Freqs,
+            ) {
+                let mut s = 0u64;
+                while c.next_doc().unwrap() != lucene_codecs::postings::NO_MORE_DOCS {
+                    s += c.freq().unwrap_or(1) as u64;
+                }
+                black_box(s);
+            }
+        }
+    }
+    let touched = counting_alloc::live();
+    println!("after_query_heap_bytes\t{}\t1", touched - before);
+    drop(segs);
+    drop(opened);
+    drop(reader);
+}
+
 fn main() {
     let ms = |name: &str, default: u64| -> Duration {
         Duration::from_millis(
@@ -348,6 +1199,30 @@ fn main() {
                 .nth(2)
                 .expect("postings_iter needs an index directory");
             bench_postings_iter(warmup, measure, &index);
+        }
+        "vint" => bench_vint(warmup, measure),
+        "pfor_decode" => bench_pfor_decode(warmup, measure),
+        "bitset" => bench_bitset(warmup, measure),
+        "lz4" => bench_lz4(warmup, measure),
+        "direct_monotonic" => bench_direct_monotonic(warmup, measure),
+        "checksum" => bench_checksum(warmup, measure),
+        "analysis" => bench_analysis(warmup, measure),
+        "vectors" => bench_vectors(warmup, measure),
+        corpus @ ("postings_adv" | "postings_freq" | "positions" | "term_seek" | "doc_values"
+        | "norms" | "points" | "memory") => {
+            let index = std::env::args()
+                .nth(2)
+                .unwrap_or_else(|| panic!("{corpus} needs an index directory"));
+            match corpus {
+                "postings_adv" => bench_postings_adv(warmup, measure, &index),
+                "postings_freq" => bench_postings_freq(warmup, measure, &index),
+                "positions" => bench_positions(warmup, measure, &index),
+                "term_seek" => bench_term_seek(warmup, measure, &index),
+                "doc_values" => bench_doc_values(warmup, measure, &index),
+                "norms" => bench_norms(warmup, measure, &index),
+                "points" => bench_points(warmup, measure, &index),
+                _ => bench_memory(&index),
+            }
         }
         other => {
             eprintln!("micro: unknown benchmark {other:?}");

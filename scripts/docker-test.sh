@@ -56,6 +56,10 @@ fi
 # fight over the same lock or mix incompatible artifacts.
 docker volume create lucene-rust-cargo >/dev/null
 docker volume create lucene-rust-target >/dev/null
+# The benchmark corpus lives on a volume too, not on the bind mount: on Docker
+# Desktop a bind-mounted host drive turns every mmap page fault into a
+# filesystem round trip, which taxes both engines and measures the mount.
+docker volume create lucene-rust-corpus >/dev/null
 
 # `-it` only when there is a terminal: agents and CI invoke this with no TTY,
 # and `docker run -it` fails outright there rather than degrading.
@@ -70,6 +74,7 @@ exec docker run --rm "${TTY_FLAGS[@]}" \
   -v "$HOME/work/lucene-10.5.0:/lucene-10.5.0:ro" \
   -v lucene-rust-cargo:/usr/local/cargo/registry \
   -v lucene-rust-target:/work/target-docker \
+  -v lucene-rust-corpus:/work/benchmarks/.corpus \
   -e CARGO_TARGET_DIR=/work/target-docker \
   -e JARS=/opt/lucene-jars \
   -e CARGO_BUILD_JOBS="$CPUS" \

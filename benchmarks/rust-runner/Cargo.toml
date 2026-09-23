@@ -12,6 +12,8 @@ lucene-codecs = { path = "../../crates/lucene-codecs", features = ["test-support
 lucene-index = { path = "../../crates/lucene-index" }
 lucene-ffi = { path = "../../crates/lucene-ffi" }
 lucene-util = { path = "../../crates/lucene-util" }
+lucene-analysis = { path = "../../crates/lucene-analysis" }
+crc32fast = "1"
 
 [[bin]]
 name = "bench-runner"

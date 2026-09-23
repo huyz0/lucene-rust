@@ -27,6 +27,10 @@ use lucene_store::MmapDirectory;
 
 const TOP_N: usize = 50;
 
+/// `TopScoreDocCollector`'s default `totalHitsThreshold`: the hit count is
+/// exact up to here and a lower bound past it.
+const TOTAL_HITS_THRESHOLD: usize = 1000;
+
 /// One query from the checked-in query file.
 struct Query {
     id: String,
@@ -61,6 +65,20 @@ fn main() {
     let norms_by_seg = load_norms(dir_path, &reader, &segments);
     let bool_norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> =
         norms_by_seg.iter().map(|m| m.as_ref()).collect();
+    // Points readers, opened once like every other per-segment reader here --
+    // Java's `IndexSearcher` holds its `PointValues` open across queries, and
+    // reopening (re-parsing `.kdm` and the packed `.kdi` index) inside the
+    // timed loop charged q28 for work Lucene never repeats.
+    let points_readers: Vec<_> = reader
+        .segment_readers()
+        .iter()
+        .map(|r| {
+            r.points_files().map(|(kdm, kdi, kdd)| {
+                lucene_codecs::points::open(kdm, kdi, kdd, &r.segment_id(), "")
+                    .expect("open points")
+            })
+        })
+        .collect();
 
     if std::env::var("BENCH_DUMP_STATS").is_ok() {
         // Per-segment collection statistics, to show how far this port's
@@ -200,59 +218,66 @@ fn main() {
                 "points" => {
                     let min: i64 = q.args[0].parse().expect("points min");
                     let max: i64 = q.args[1].parse().expect("points max");
-                    let mut all: Vec<lucene_search::collector::ScoreDoc> = Vec::new();
-                    for (r, s) in reader.segment_readers().iter().zip(segments.iter()) {
-                        let Some((kdm, kdi, kdd)) = r.points_files() else {
-                            continue;
-                        };
-                        let pr = lucene_codecs::points::open(kdm, kdi, kdd, &r.segment_id(), "")
-                            .expect("open points");
-                        let Some(fi) = r.field_infos().fields.iter().find(|f| f.name == q.field)
-                        else {
-                            continue;
-                        };
-                        struct DocSink(Vec<i32>);
-                        impl lucene_search::collector::Collector for DocSink {
-                            fn collect(&mut self, doc_id: i32) {
-                                self.0.push(doc_id);
-                            }
-                        }
-                        let mut docs = DocSink(Vec::new());
-                        lucene_search::points_query::search_points_range(
-                            &pr,
-                            s.live_docs,
-                            fi.number,
-                            &lucene_search::points_query::pack_i64(min),
-                            &lucene_search::points_query::pack_i64(max),
-                            &mut docs,
-                        )
-                        .expect("points range");
-                        all.extend(docs.0.into_iter().take(TOP_N).map(|d| {
-                            lucene_search::collector::ScoreDoc {
-                                doc_id: d + s.doc_base,
-                                score: 1.0,
-                            }
-                        }));
-                    }
-                    all.sort_by_key(|h| h.doc_id);
-                    all.truncate(TOP_N);
-                    all
-                }
-                "dv_sort" => {
-                    let min: i64 = q.args[0].parse().expect("dv_sort min");
-                    let max: i64 = q.args[1].parse().expect("dv_sort max");
-                    let dv_segments: Vec<lucene_search::multi_segment::DocValueSegment<'_>> =
+                    let point_segments: Vec<lucene_search::points_query::PointsSegment<'_>> =
                         reader
                             .segment_readers()
                             .iter()
                             .zip(segments.iter())
-                            .filter_map(|(r, s)| {
-                                let data = r.doc_values_data()?;
-                                let meta = r.doc_values_meta()?;
-                                let num =
+                            .zip(points_readers.iter())
+                            .filter_map(|((r, s), pr)| {
+                                let fi =
                                     r.field_infos().fields.iter().find(|f| f.name == q.field)?;
-                                let entry = meta.numeric_entry(num.number)?;
-                                Some(lucene_search::multi_segment::DocValueSegment {
+                                Some(lucene_search::points_query::PointsSegment {
+                                    reader: pr.as_ref()?,
+                                    field_number: fi.number,
+                                    live_docs: s.live_docs,
+                                    doc_base: s.doc_base,
+                                })
+                            })
+                            .collect();
+                    // `searcher.search(query, TOP_N)` with the default
+                    // 1000-hit threshold, as the Java runner runs it.
+                    let (hits, _total, _exact) =
+                        lucene_search::points_query::points_range_top_n_multi_segment(
+                            &point_segments,
+                            &lucene_search::points_query::pack_i64(min),
+                            &lucene_search::points_query::pack_i64(max),
+                            TOP_N,
+                            TOTAL_HITS_THRESHOLD,
+                        )
+                        .expect("points range");
+                    hits.into_iter()
+                        .map(|doc_id| lucene_search::collector::ScoreDoc { doc_id, score: 1.0 })
+                        .collect()
+                }
+                "dv_sort" => {
+                    let min: i64 = q.args[0].parse().expect("dv_sort min");
+                    let max: i64 = q.args[1].parse().expect("dv_sort max");
+                    // Each segment's `num` points ride along: Lucene's
+                    // `NumericComparator` prunes with them once its queue is
+                    // full, and so does the `_with_points` sort.
+                    #[allow(clippy::type_complexity)]
+                    let (dv_segments, sort_points): (
+                        Vec<lucene_search::multi_segment::DocValueSegment<'_>>,
+                        Vec<Option<lucene_search::multi_segment::SortPoints<'_>>>,
+                    ) = reader
+                        .segment_readers()
+                        .iter()
+                        .zip(segments.iter())
+                        .zip(points_readers.iter())
+                        .filter_map(|((r, s), pr)| {
+                            let data = r.doc_values_data()?;
+                            let meta = r.doc_values_meta()?;
+                            let num = r.field_infos().fields.iter().find(|f| f.name == q.field)?;
+                            let entry = meta.numeric_entry(num.number)?;
+                            let sp = pr.as_ref().map(|reader| {
+                                lucene_search::multi_segment::SortPoints {
+                                    reader,
+                                    field_number: num.number,
+                                }
+                            });
+                            Some((
+                                lucene_search::multi_segment::DocValueSegment {
                                     // One column serves both the range and the
                                     // sort here: this corpus has no doc-values
                                     // update, so no field is served from its own
@@ -264,11 +289,14 @@ fn main() {
                                     live_docs: s.live_docs,
                                     max_doc: r.max_doc,
                                     doc_base: s.doc_base,
-                                })
-                            })
-                            .collect();
-                    let hits = lucene_search::multi_segment::search_numeric_range_sorted_by_field_multi_segment(
+                                },
+                                sp,
+                            ))
+                        })
+                        .unzip();
+                    let hits = lucene_search::multi_segment::search_numeric_range_sorted_by_field_multi_segment_with_points(
                         &dv_segments,
+                        &sort_points,
                         min,
                         max,
                         lucene_search::collector::SortDirection::Ascending,

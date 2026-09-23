@@ -208,23 +208,32 @@ pub fn tokenize(text: &str) -> Vec<Token> {
     // byte index the segmenter yields *is* the Java `char` index, so the
     // common case pays nothing per token.
     let ascii = text.is_ascii();
+    if ascii {
+        let mut out = Vec::with_capacity(text.len() / 6);
+        ascii_words(text.as_bytes(), |start, end| {
+            out.push(Token {
+                term: text[start..end].to_string(),
+                start_offset: start as i32,
+                end_offset: end as i32,
+                position_increment: 1,
+                position_length: 1,
+            })
+        });
+        return out;
+    }
     let mut byte_pos = 0usize;
     let mut utf16_pos = 0usize;
     text.unicode_word_indices()
         .map(|(start, word)| {
-            let (start_offset, end_offset) = if ascii {
-                (start, start + word.len())
-            } else {
-                // The (non-token) gap since the previous segment, then the
-                // token itself. Segments arrive in ascending byte order, so
-                // this is one running sum over the text, not a rescan per
-                // token.
-                utf16_pos += utf16_len(&text[byte_pos..start]);
-                let start_offset = utf16_pos;
-                utf16_pos += utf16_len(word);
-                byte_pos = start + word.len();
-                (start_offset, utf16_pos)
-            };
+            // Non-ASCII text only (ASCII returned above): the (non-token) gap
+            // since the previous segment, then the token itself. Segments
+            // arrive in ascending byte order, so this is one running sum over
+            // the text, not a rescan per token.
+            utf16_pos += utf16_len(&text[byte_pos..start]);
+            let start_offset = utf16_pos;
+            utf16_pos += utf16_len(word);
+            byte_pos = start + word.len();
+            let end_offset = utf16_pos;
             Token {
                 term: word.to_string(),
                 start_offset: start_offset as i32,
@@ -234,6 +243,114 @@ pub fn tokenize(text: &str) -> Vec<Token> {
             }
         })
         .collect()
+}
+
+/// UAX#29 `Word_Break` classes of the ASCII range, as far as word segmentation
+/// can tell them apart: `ALetter`, `Numeric`, `ExtendNumLet`, the three
+/// "middle" classes, and everything else (which always breaks).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AsciiWb {
+    Other,
+    ALetter,
+    Numeric,
+    ExtendNumLet,
+    /// `MidLetter`: `:`. Joins letters only (WB6/WB7).
+    MidLetter,
+    /// `MidNumLet` `.` and `Single_Quote` `'` -- UAX#29's `MidNumLetQ`. Joins
+    /// letters (WB6/WB7) and digits (WB11/WB12).
+    MidNumLetQ,
+    /// `MidNum`: `,` and `;`. Joins digits only (WB11/WB12).
+    MidNum,
+}
+
+const fn ascii_wb_table() -> [AsciiWb; 128] {
+    let mut t = [AsciiWb::Other; 128];
+    let mut c = 0;
+    while c < 128 {
+        t[c] = match c as u8 {
+            b'A'..=b'Z' | b'a'..=b'z' => AsciiWb::ALetter,
+            b'0'..=b'9' => AsciiWb::Numeric,
+            b'_' => AsciiWb::ExtendNumLet,
+            b':' => AsciiWb::MidLetter,
+            b'.' | b'\'' => AsciiWb::MidNumLetQ,
+            b',' | b';' => AsciiWb::MidNum,
+            _ => AsciiWb::Other,
+        };
+        c += 1;
+    }
+    t
+}
+
+static ASCII_WB: [AsciiWb; 128] = ascii_wb_table();
+
+/// [`UnicodeSegmentation::unicode_word_indices`] for **ASCII** input, without
+/// the general machinery: calls `emit(start, end)` for every word segment that
+/// contains a letter or digit, in order -- exactly the segments
+/// `unicode_word_indices` yields, which `ascii_words_matches_unicode_word_indices`
+/// checks exhaustively over short strings and by property test over long ones.
+///
+/// Over ASCII only these UAX#29 rules can apply, and they reduce to a scan:
+///
+/// - WB5/WB8/WB9/WB10/WB13a/WB13b: a run of letters, digits and `_` never
+///   breaks inside.
+/// - WB6/WB7: a single `:`, `.` or `'` between two letters does not break.
+/// - WB11/WB12: a single `,`, `;`, `.` or `'` between two digits does not break.
+/// - WB999: everything else breaks, and a segment with no letter or digit (a
+///   run of spaces, a lone `_`, punctuation) is not a word.
+///
+/// The general segmenter walks a property table per `char` with a state
+/// machine sized for all of Unicode; for the common ASCII document this is one
+/// table load per byte.
+#[inline]
+fn ascii_words(b: &[u8], mut emit: impl FnMut(usize, usize)) {
+    let class = |i: usize| ASCII_WB[(b[i] & 0x7f) as usize];
+    let is_run = |c: AsciiWb| {
+        matches!(
+            c,
+            AsciiWb::ALetter | AsciiWb::Numeric | AsciiWb::ExtendNumLet
+        )
+    };
+    let n = b.len();
+    let mut i = 0;
+    while i < n {
+        if !is_run(class(i)) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        let mut alnum = false;
+        loop {
+            while i < n {
+                let c = class(i);
+                if !is_run(c) {
+                    break;
+                }
+                alnum |= c != AsciiWb::ExtendNumLet;
+                i += 1;
+            }
+            // `i > start`, so `i - 1` is inside the segment.
+            if i + 1 < n {
+                let (prev, mid, next) = (class(i - 1), class(i), class(i + 1));
+                let joins = match mid {
+                    AsciiWb::MidLetter => prev == AsciiWb::ALetter && next == AsciiWb::ALetter,
+                    AsciiWb::MidNumLetQ => {
+                        (prev == AsciiWb::ALetter && next == AsciiWb::ALetter)
+                            || (prev == AsciiWb::Numeric && next == AsciiWb::Numeric)
+                    }
+                    AsciiWb::MidNum => prev == AsciiWb::Numeric && next == AsciiWb::Numeric,
+                    _ => false,
+                };
+                if joins {
+                    i += 1;
+                    continue;
+                }
+            }
+            break;
+        }
+        if alnum {
+            emit(start, i);
+        }
+    }
 }
 
 /// [`tokenize`] as a whole `TokenStream`, i.e. with `Tokenizer.end()` run.
@@ -2781,6 +2898,52 @@ impl Analyzer {
         self.offset_gap
     }
 
+    /// Streams the tokens [`Self::analyze_stream`] produces for `text`,
+    /// calling `f(term, start_offset, end_offset, position_increment)` for
+    /// each, and returns the stream's `(final_position_increment,
+    /// final_offset)` -- the same values, in the same order, without building
+    /// a `Vec<Token>` of owned `String`s.
+    ///
+    /// This is the indexing chain's view of analysis: Lucene's
+    /// `IndexingChain` reads each token out of one reused `CharTermAttribute`
+    /// buffer and hashes it straight into `BytesRefHash`, allocating nothing
+    /// per token. For ASCII text through the standard chain -- tokenizer,
+    /// lowercasing, optional stopwords, ASCII folding (the identity on ASCII)
+    /// -- this does the same: [`ascii_words`] finds each word, it is
+    /// lowercased into one reused buffer, and a stopword only adds its
+    /// increment to the next kept token (`FilteringTokenFilter`'s
+    /// `skippedPositions`). Anything else -- non-ASCII text, stemming,
+    /// synonyms, the keyword analyzer -- runs [`Self::analyze_stream`] and
+    /// replays its tokens, so every analyzer keeps its exact behaviour.
+    pub fn for_each_token(&self, text: &str, mut f: impl FnMut(&str, i32, i32, i32)) -> (i32, i32) {
+        let plain =
+            !self.keyword && !self.stemming && !self.snowball_stemming && self.synonyms.is_none();
+        if plain && text.is_ascii() {
+            let mut term = String::new();
+            let mut skipped = 0i32;
+            ascii_words(text.as_bytes(), |start, end| {
+                term.clear();
+                term.push_str(&text[start..end]);
+                term.make_ascii_lowercase();
+                if self
+                    .stopwords
+                    .as_ref()
+                    .is_some_and(|stop| stop.contains(term.as_str()))
+                {
+                    skipped = skipped.saturating_add(1);
+                    return;
+                }
+                f(&term, start as i32, end as i32, skipped.saturating_add(1));
+                skipped = 0;
+            });
+            return (skipped, text.len() as i32);
+        }
+        let stream = self.analyze_stream(text);
+        for t in &stream.tokens {
+            f(&t.term, t.start_offset, t.end_offset, t.position_increment);
+        }
+        (stream.final_position_increment, stream.final_offset)
+    }
     pub fn analyze(&self, text: &str) -> Vec<Token> {
         self.analyze_stream(text).tokens
     }
@@ -3680,6 +3843,68 @@ mod snowball_english {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fast_words(s: &str) -> Vec<(usize, &str)> {
+        let mut v = Vec::new();
+        ascii_words(s.as_bytes(), |a, b| v.push((a, &s[a..b])));
+        v
+    }
+
+    /// The ASCII fast path must produce exactly the segments the general
+    /// UAX#29 segmenter does. Every string of up to five characters over an
+    /// alphabet holding one representative of every class the rules
+    /// distinguish -- and a second member of the classes with two -- is
+    /// checked, which covers every rule's full context window (WB6/WB7/WB11/
+    /// WB12 look at most two characters either side of a boundary).
+    #[test]
+    fn ascii_words_matches_unicode_word_indices_exhaustively() {
+        const ALPHABET: &[u8] = b"aZ09_:.',; -\"";
+        let mut buf = Vec::new();
+        for len in 0..=5u32 {
+            let total = ALPHABET.len().pow(len);
+            for mut n in 0..total {
+                buf.clear();
+                for _ in 0..len {
+                    buf.push(ALPHABET[n % ALPHABET.len()]);
+                    n /= ALPHABET.len();
+                }
+                let s = std::str::from_utf8(&buf).unwrap();
+                let expected: Vec<(usize, &str)> = s.unicode_word_indices().collect();
+                assert_eq!(fast_words(s), expected, "input {s:?}");
+            }
+        }
+    }
+
+    /// Long random ASCII documents, including every printable character, so a
+    /// class the exhaustive alphabet left out would still be caught.
+    #[test]
+    fn ascii_words_matches_unicode_word_indices_on_random_documents() {
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for _ in 0..2000 {
+            let len = (next() % 200) as usize;
+            let s: String = (0..len)
+                .map(|_| {
+                    let x = next();
+                    // Mostly word characters and joiners, so long joined
+                    // segments actually occur; sometimes any ASCII byte.
+                    match x % 4 {
+                        0 => (b' ' + (x >> 8) as u8 % 95) as char,
+                        1 => b"a.b'c:d,e;f_"[(x >> 8) as usize % 12] as char,
+                        2 => b"0123456789"[(x >> 8) as usize % 10] as char,
+                        _ => ((x >> 8) as u8 % 128) as char,
+                    }
+                })
+                .collect();
+            let expected: Vec<(usize, &str)> = s.unicode_word_indices().collect();
+            assert_eq!(fast_words(&s), expected, "input {s:?}");
+        }
+    }
 
     fn tok(term: &str, start: i32, end: i32, pos_inc: i32) -> Token {
         Token {

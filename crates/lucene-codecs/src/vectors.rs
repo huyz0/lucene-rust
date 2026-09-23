@@ -169,52 +169,26 @@ fn alignment(encoding: VectorEncoding) -> usize {
 
 /// Port of `VectorUtil.squareDistance(float[], float[])`.
 ///
-/// Eight independent accumulators over `chunks_exact(8)`, not
-/// `a.iter().zip(b).map(..).sum()`: float addition is not associative, so a
-/// single running `sum` forms a serial dependency chain that LLVM is
-/// forbidden to reassociate, and the loop stays scalar. Splitting the sum
-/// into eight lanes up front is what lets it emit packed SIMD adds -- the
-/// same trick real Lucene applies via the Panama Vector API in
-/// `PanamaVectorUtilSupport` (and, 2-wide, in the scalar
-/// `DefaultVectorUtilSupport` fallback). The lane split changes the summation
-/// order and therefore the last ulp or two of the result, exactly as
-/// switching between Lucene's own two implementations does.
+/// The kernel is [`lucene_util::simd::square_distance_f32`]: explicit
+/// AVX2+FMA with `PanamaVectorUtilSupport`'s layout -- four 8-lane
+/// accumulators over 32-element steps, fused multiply-adds -- and a scalar
+/// specification with the same layout and fold order for every other target.
+/// A single running `sum` would be a serial dependency chain LLVM may not
+/// reassociate; an accumulator array it did not vectorize either (0.3x of
+/// Lucene), which is why this is written with intrinsics. The lane split
+/// changes the summation order and so the last ulp or two against Java's
+/// scalar `DefaultVectorUtilSupport`, exactly as switching between Lucene's
+/// own two implementations does.
 pub fn square_distance(a: &[f32], b: &[f32]) -> f32 {
     debug_assert_eq!(a.len(), b.len(), "vector dimensions differ");
-    let mut acc = [0.0f32; 8];
-    let mut ca = a.chunks_exact(8);
-    let mut cb = b.chunks_exact(8);
-    for (x, y) in ca.by_ref().zip(cb.by_ref()) {
-        for j in 0..8 {
-            let d = x[j] - y[j];
-            acc[j] += d * d;
-        }
-    }
-    let mut sum = ((acc[0] + acc[1]) + (acc[2] + acc[3])) + ((acc[4] + acc[5]) + (acc[6] + acc[7]));
-    for (x, y) in ca.remainder().iter().zip(cb.remainder()) {
-        let d = x - y;
-        sum += d * d;
-    }
-    sum
+    lucene_util::simd::square_distance_f32(a, b)
 }
 
 /// Port of `VectorUtil.dotProduct(float[], float[])`; see [`square_distance`]
-/// for why the sum is split across eight lanes.
+/// for the kernel.
 pub fn dot_product(a: &[f32], b: &[f32]) -> f32 {
     debug_assert_eq!(a.len(), b.len(), "vector dimensions differ");
-    let mut acc = [0.0f32; 8];
-    let mut ca = a.chunks_exact(8);
-    let mut cb = b.chunks_exact(8);
-    for (x, y) in ca.by_ref().zip(cb.by_ref()) {
-        for j in 0..8 {
-            acc[j] += x[j] * y[j];
-        }
-    }
-    let mut sum = ((acc[0] + acc[1]) + (acc[2] + acc[3])) + ((acc[4] + acc[5]) + (acc[6] + acc[7]));
-    for (x, y) in ca.remainder().iter().zip(cb.remainder()) {
-        sum += x * y;
-    }
-    sum
+    lucene_util::simd::dot_f32(a, b)
 }
 
 /// Port of `DefaultVectorUtilSupport.cosine(float[], float[])`. The final
@@ -230,29 +204,8 @@ pub fn dot_product(a: &[f32], b: &[f32]) -> f32 {
 /// it with NaN.
 pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
     debug_assert_eq!(a.len(), b.len(), "vector dimensions differ");
-    let mut sum_acc = [0.0f32; 8];
-    let mut n1_acc = [0.0f32; 8];
-    let mut n2_acc = [0.0f32; 8];
-    let mut ca = a.chunks_exact(8);
-    let mut cb = b.chunks_exact(8);
-    for (x, y) in ca.by_ref().zip(cb.by_ref()) {
-        for j in 0..8 {
-            sum_acc[j] += x[j] * y[j];
-            n1_acc[j] += x[j] * x[j];
-            n2_acc[j] += y[j] * y[j];
-        }
-    }
-    let fold = |acc: [f32; 8]| {
-        ((acc[0] + acc[1]) + (acc[2] + acc[3])) + ((acc[4] + acc[5]) + (acc[6] + acc[7]))
-    };
-    let mut sum = fold(sum_acc);
-    let mut norm1 = fold(n1_acc);
-    let mut norm2 = fold(n2_acc);
-    for (x, y) in ca.remainder().iter().zip(cb.remainder()) {
-        sum += x * y;
-        norm1 += x * x;
-        norm2 += y * y;
-    }
+    // The three sums, two 8-lane accumulators each (Panama's `cosineBody`).
+    let (sum, norm1, norm2) = lucene_util::simd::cosine_parts_f32(a, b);
     if norm1 == 0.0 || norm2 == 0.0 {
         return 0.0;
     }
@@ -299,10 +252,12 @@ pub fn dot_product_bytes(a: &[u8], b: &[u8]) -> i32 {
     let mut sum = 0i32;
     for (x, y) in a.iter().zip(b) {
         // ARITH: a product of two sign-extended bytes is in
-        // -16_256..=16_384, well inside `i32`. See [`square_distance_bytes`]
-        // for why the accumulator wraps rather than panics.
+        // -16_256..=16_384, inside `i16` -- the narrow multiply is what lets
+        // LLVM pair products into `vpmaddwd`, as Panama's byte kernel does.
+        // See [`square_distance_bytes`] for why the accumulator wraps rather
+        // than panics.
         #[allow(clippy::arithmetic_side_effects)]
-        let product = (*x as i8 as i32) * (*y as i8 as i32);
+        let product = ((*x as i8 as i16) * (*y as i8 as i16)) as i32;
         sum = sum.wrapping_add(product);
     }
     sum
@@ -316,13 +271,14 @@ pub fn cosine_bytes(a: &[u8], b: &[u8]) -> f32 {
     let mut norm1 = 0i32;
     let mut norm2 = 0i32;
     for (x, y) in a.iter().zip(b) {
-        let e1 = *x as i8 as i32;
-        let e2 = *y as i8 as i32;
+        let e1 = *x as i8 as i16;
+        let e2 = *y as i8 as i16;
         // ARITH: every product of two sign-extended bytes is in
-        // -16_256..=16_384. See [`square_distance_bytes`] for why the three
+        // -16_256..=16_384, inside `i16` (see [`dot_product_bytes`]). See
+        // [`square_distance_bytes`] for why the three
         // accumulators wrap rather than panic.
         #[allow(clippy::arithmetic_side_effects)]
-        let (dot, sq1, sq2) = (e1 * e2, e1 * e1, e2 * e2);
+        let (dot, sq1, sq2) = ((e1 * e2) as i32, (e1 * e1) as i32, (e2 * e2) as i32);
         sum = sum.wrapping_add(dot);
         norm1 = norm1.wrapping_add(sq1);
         norm2 = norm2.wrapping_add(sq2);
@@ -2025,19 +1981,24 @@ mod tests {
 
     #[test]
     fn float_kernels_agree_with_a_naive_reference_at_every_length() {
-        // Lengths either side of the eight-lane split, so the `chunks_exact`
+        // Lengths either side of the 8-, 16- and 32-lane splits, so every
         // remainder is exercised too.
-        for len in [1usize, 5, 8, 9, 16, 17, 31, 128] {
+        for len in [
+            1usize, 5, 8, 9, 16, 17, 31, 32, 33, 40, 47, 64, 100, 128, 768,
+        ] {
             let a: Vec<f32> = (0..len).map(|i| (i as f32 * 0.37 + 0.3).sin()).collect();
             let b: Vec<f32> = (0..len).map(|i| (i as f32 * 0.91 + 0.7).cos()).collect();
             let sq = square_distance(&a, &b) as f64;
             assert!(
-                (sq - naive_square_distance(&a, &b)).abs() < 1e-4,
+                (sq - naive_square_distance(&a, &b)).abs() < 1e-5 * (len as f64),
                 "len {len}: {sq}"
             );
             let dot = dot_product(&a, &b) as f64;
             let naive_dot: f64 = a.iter().zip(&b).map(|(x, y)| *x as f64 * *y as f64).sum();
-            assert!((dot - naive_dot).abs() < 1e-4, "len {len}: {dot}");
+            assert!(
+                (dot - naive_dot).abs() < 1e-5 * (len as f64),
+                "len {len}: {dot}"
+            );
             let n1: f64 = a.iter().map(|x| *x as f64 * *x as f64).sum();
             let n2: f64 = b.iter().map(|x| *x as f64 * *x as f64).sum();
             let cos = cosine(&a, &b) as f64;

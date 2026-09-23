@@ -70,6 +70,19 @@ case "$BENCH" in
     SRC=benchmarks/micro/java/IndexMicro.java
     JAR_MODULES="lucene-core lucene-analysis-common"
     RUST_BIN=index-bench ;;
+  # The per-area sweep: one Java class, the bench name as its first argument.
+  vint|bitset|lz4|direct_monotonic|checksum|analysis|vectors)
+    MAIN=SweepMicro
+    SRC=benchmarks/micro/java/SweepMicro.java
+    JAVA_ARGS=("$BENCH") ;;
+  postings_adv|postings_freq|positions|term_seek|doc_values|norms|points|memory)
+    MAIN=SweepMicro
+    SRC=benchmarks/micro/java/SweepMicro.java
+    JAVA_ARGS=("$BENCH")
+    NEEDS_INDEX=1 ;;
+  pfor_decode)
+    MAIN=org.apache.lucene.codecs.lucene104.PForUtilMicro
+    SRC=benchmarks/micro/java/org/apache/lucene/codecs/lucene104/PForUtilMicro.java ;;
   *) echo "bench-micro: no Java counterpart for $BENCH" >&2; exit 2 ;;
 esac
 
@@ -125,7 +138,7 @@ for rep in $(seq 1 "$REPS"); do
   echo "bench-micro: rep $rep/$REPS java ($BENCH)" >&2
   "${PINCMD[@]}" java --add-modules jdk.incubator.vector \
     -DwarmupMs="$WARMUP" -DmeasureMs="$MEASURE" \
-    -cp "$CP:$OUT/classes" "$MAIN" ${NEEDS_INDEX:+"$INDEX"} > "$OUT/java.$rep.tsv"
+    -cp "$CP:$OUT/classes" "$MAIN" ${JAVA_ARGS[@]+"${JAVA_ARGS[@]}"} ${NEEDS_INDEX:+"$INDEX"} > "$OUT/java.$rep.tsv"
 done
 
 python3 scripts/bench-micro-report.py "$OUT" "$REPS"

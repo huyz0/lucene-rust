@@ -1,8 +1,11 @@
 //! lucene-util: low-level primitives shared across the port. See /PLAN.md.
 
 pub mod base36;
+pub mod doc_id_sort;
 pub mod fixed_bit_set;
 pub mod numeric_utils;
+pub mod packed_longs;
+pub mod simd;
 pub mod small_float;
 pub mod splittable_random;
 pub mod term_interner;

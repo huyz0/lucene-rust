@@ -164,6 +164,38 @@ impl WildcardPattern {
         matches_from(&self.tokens, term)
     }
 
+    /// A byte DFA accepting a **superset** of this pattern's matches, for
+    /// term-dictionary intersection (see `crate::automaton`). Literals and `*`
+    /// are exact; `?` is [`crate::automaton::Nfa::lenient_char`], exact for
+    /// ASCII and a superset around multi-byte or truncated characters. Every
+    /// term it accepts is still confirmed by [`Self::matches`].
+    pub(crate) fn to_dfa(&self) -> Option<crate::automaton::ByteDfa> {
+        let mut nfa = crate::automaton::Nfa::new();
+        let start = nfa.state()?;
+        let mut s = start;
+        for token in &self.tokens {
+            s = match *token {
+                Token::Literal(b) => {
+                    let t = nfa.state()?;
+                    nfa.range(s, b, b, t);
+                    t
+                }
+                Token::AnyMany => {
+                    let hub = nfa.state()?;
+                    nfa.epsilon(s, hub);
+                    nfa.range(hub, 0x00, 0xFF, hub);
+                    hub
+                }
+                Token::AnyOne => {
+                    let t = nfa.state()?;
+                    nfa.lenient_char(s, t)?;
+                    t
+                }
+            };
+        }
+        nfa.determinize(start, s)
+    }
+
     /// The pattern's longest literal leading byte run, e.g. `b"foo*ba?"` ->
     /// `b"foo"`, `b"*abc"` -> `b""`, `b"abc"` -> `b"abc"`. Every term this
     /// pattern can match must start with this run, since a `Literal` token

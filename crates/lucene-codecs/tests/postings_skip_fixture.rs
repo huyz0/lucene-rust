@@ -346,3 +346,251 @@ fn the_sparse_term_covers_real_doc_delta_blocks_and_absent_documents() {
         "the sample must contain both kinds ({present} present, {absent} absent)"
     );
 }
+
+/// The whole-term reader's positions for `term` -- pinned against real
+/// Lucene by this file's other tests -- as one `Vec<i32>` per document, in the
+/// term's own document order, plus the documents themselves.
+fn expected_positions(
+    field: &blocktree::FieldTerms,
+    term: &[u8],
+    doc_in: &postings::DocInput<'_>,
+    pos_in: &postings::PosInput<'_>,
+    pay_in: &postings::PayInput<'_>,
+) -> (Vec<i32>, Vec<Vec<i32>>) {
+    let docs = field
+        .postings(term, Some(doc_in))
+        .expect("postings")
+        .expect("term present")
+        .docs;
+    let positions = field
+        .positions(term, Some(doc_in), pos_in, Some(pay_in))
+        .expect("positions")
+        .expect("term present")
+        .into_iter()
+        .map(|occ| occ.into_iter().map(|p| p.position).collect())
+        .collect();
+    (docs, positions)
+}
+
+/// `PositionsCursor` walked document by document, reading every position:
+/// the sequential `nextDoc()` + `nextPosition()` shape, across 33 `.doc`
+/// blocks, a level-1 boundary, full `.pos` blocks and the vint tail.
+#[test]
+fn lazy_positions_sequential_walk_matches_the_whole_term_reader() {
+    let fx = Fixture::load();
+    let (fields, doc_in, pos_in, pay_in) = fx.open();
+    let field = fields.field("pskip").expect("pskip field");
+    for term in [fx.manifest.get("term"), fx.manifest.get("sparse_term")] {
+        let term = term.as_bytes();
+        let (docs, expected) = expected_positions(field, term, &doc_in, &pos_in, &pay_in);
+        let mut c = field
+            .lazy_positions(term, &doc_in, &pos_in)
+            .expect("lazy_positions")
+            .expect("term present");
+        let mut i = 0;
+        loop {
+            let doc = c.next_doc().expect("next_doc");
+            if doc == postings::NO_MORE_DOCS {
+                break;
+            }
+            assert_eq!(doc, docs[i]);
+            assert_eq!(c.freq() as usize, expected[i].len(), "freq of doc {doc}");
+            let got: Vec<i32> = (0..c.freq())
+                .map(|_| c.next_position().expect("next_position"))
+                .collect();
+            assert_eq!(got, expected[i], "positions of doc {doc}");
+            i += 1;
+        }
+        assert_eq!(i, docs.len());
+    }
+}
+
+/// Reading only *some* documents' positions -- and only some of a document's
+/// positions -- must not disturb the ones read later: every unread position
+/// is exactly what `accumulatePendingPositions`/`skipPositions` step over.
+#[test]
+fn lazy_positions_skipping_documents_and_partial_reads_stay_aligned() {
+    let fx = Fixture::load();
+    let (fields, doc_in, pos_in, pay_in) = fx.open();
+    let field = fields.field("pskip").expect("pskip field");
+    let term = fx.manifest.get("term").as_bytes();
+    let (docs, expected) = expected_positions(field, term, &doc_in, &pos_in, &pay_in);
+    // Several visiting patterns: every 3rd doc, every 300th (skips whole
+    // `.pos` blocks between reads), and reading just the first position of
+    // every 2nd doc.
+    for (stride, partial) in [(3usize, false), (300, false), (2, true), (1, true)] {
+        let mut c = field
+            .lazy_positions(term, &doc_in, &pos_in)
+            .expect("lazy_positions")
+            .expect("term present");
+        let mut i = 0;
+        while c.next_doc().expect("next_doc") != postings::NO_MORE_DOCS {
+            if i % stride == 0 {
+                let n = if partial { 1 } else { c.freq() as usize };
+                let got: Vec<i32> = (0..n)
+                    .map(|_| c.next_position().expect("next_position"))
+                    .collect();
+                assert_eq!(
+                    got,
+                    expected[i][..n],
+                    "stride {stride} partial {partial}: doc {}",
+                    docs[i]
+                );
+            }
+            i += 1;
+        }
+    }
+}
+
+/// `advance` through the skip data (level-1 and level-0 jumps, the `.pos`
+/// origin they carry) and then read positions: the phrase path's shape. Checked
+/// against Java's own per-document occurrences from the manifest.
+#[test]
+fn lazy_positions_after_advance_match_real_lucene() {
+    let fx = Fixture::load();
+    let (fields, doc_in, pos_in, _pay_in) = fx.open();
+    let field = fields.field("pskip").expect("pskip field");
+    let term = fx.manifest.get("term").as_bytes();
+    let sampled: Vec<i32> = fx
+        .manifest
+        .get("sampled_docs")
+        .split(',')
+        .map(|d| d.parse().unwrap())
+        .collect();
+    // One cursor advanced through every sampled document in order, and a
+    // fresh cursor per document, so both the incremental and the cold path
+    // are covered.
+    let mut shared = field
+        .lazy_positions(term, &doc_in, &pos_in)
+        .expect("lazy_positions")
+        .expect("term present");
+    for &target in &sampled {
+        let want: Vec<i32> =
+            parse_occurrences(fx.manifest.get(&format!("doc.{target}.occurrences")))
+                .into_iter()
+                .map(|p| p.position)
+                .collect();
+        for fresh in [false, true] {
+            let mut own;
+            let c = if fresh {
+                own = field
+                    .lazy_positions(term, &doc_in, &pos_in)
+                    .expect("lazy_positions")
+                    .expect("term present");
+                &mut own
+            } else {
+                &mut shared
+            };
+            assert_eq!(c.advance(target).expect("advance"), target);
+            let got: Vec<i32> = (0..c.freq())
+                .map(|_| c.next_position().expect("next_position"))
+                .collect();
+            assert_eq!(got, want, "doc {target} (fresh cursor: {fresh})");
+        }
+    }
+}
+
+/// Asking for more positions than the document has is a caller bug; it must
+/// be an error, not a read of the next document's positions.
+#[test]
+fn lazy_positions_refuses_to_read_past_the_documents_frequency() {
+    let fx = Fixture::load();
+    let (fields, doc_in, pos_in, _pay_in) = fx.open();
+    let field = fields.field("pskip").expect("pskip field");
+    let term = fx.manifest.get("term").as_bytes();
+    let mut c = field
+        .lazy_positions(term, &doc_in, &pos_in)
+        .expect("lazy_positions")
+        .expect("term present");
+    // Before the first document there is nothing to read.
+    assert!(c.next_position().is_err());
+    c.next_doc().expect("next_doc");
+    for _ in 0..c.freq() {
+        c.next_position().expect("within freq");
+    }
+    assert!(c.next_position().is_err());
+    // An absent term is `None`, and a docs-only field is refused.
+    assert!(field
+        .lazy_positions(b"no-such-term", &doc_in, &pos_in)
+        .expect("lookup")
+        .is_none());
+}
+
+/// The lazy document cursor on `gapterm` -- Java-written blocks that are
+/// packed deltas or unary bit sets -- under both `DocsOnly` (Lucene's
+/// `PostingsEnum.NONE`: a bit-set `advance` that keeps no rank, the fast
+/// header walk) and `Freqs` (the rank from cumulative popcounts, so `freq()`
+/// must still be this document's). Java's own `advance` landing is the
+/// ground truth, from a fresh cursor and from one that keeps moving forward.
+#[test]
+fn lazy_cursor_advance_on_the_sparse_term_matches_real_lucene() {
+    let fx = Fixture::load();
+    let (fields, doc_in, _, _) = fx.open();
+    let field = fields.field("pskip").expect("pskip field");
+    let term = fx.manifest.get("sparse_term").as_bytes();
+    let mut samples: Vec<i32> = fx
+        .manifest
+        .get("sampled_docs")
+        .split(',')
+        .map(|s| s.parse().unwrap())
+        .collect();
+    samples.sort_unstable();
+    samples.dedup();
+    let landed = |doc: i32| -> i32 {
+        fx.manifest
+            .get(&format!("sparse.{doc}.advance"))
+            .parse()
+            .unwrap()
+    };
+    let freq_of = |doc: i32| -> i32 {
+        parse_occurrences(fx.manifest.get(&format!("sparse.{doc}.occurrences"))).len() as i32
+    };
+    // Every `gapterm` document has one occurrence, so `freq()` cannot show a
+    // wrong rank; the document `next_doc` returns after a bit-set `advance`
+    // can, since the expansion restarts from the rank. Its truth is the whole
+    // term's document list, which this file pins to Lucene above.
+    let all_docs = field
+        .postings(term, Some(&doc_in))
+        .unwrap()
+        .expect("gapterm")
+        .docs;
+    for flags in [
+        postings::PostingsFlags::DocsOnly,
+        postings::PostingsFlags::Freqs,
+    ] {
+        let open = || {
+            field
+                .lazy_postings_with_flags(term, &doc_in, flags)
+                .unwrap()
+                .expect("gapterm")
+        };
+        let mut walking = open();
+        for &doc in &samples {
+            let want = landed(doc);
+            let got = open().advance(doc).unwrap();
+            assert_eq!(got, want, "{flags:?} fresh advance({doc})");
+            if walking.doc_id() < doc {
+                assert_eq!(
+                    walking.advance(doc).unwrap(),
+                    want,
+                    "{flags:?} advance({doc})"
+                );
+            }
+            if flags == postings::PostingsFlags::Freqs && want == doc {
+                assert_eq!(walking.freq(), Some(freq_of(doc)), "freq of {doc}");
+            }
+            if walking.doc_id() == want && want != postings::NO_MORE_DOCS {
+                let next = all_docs
+                    .iter()
+                    .copied()
+                    .find(|&d| d > want)
+                    .unwrap_or(postings::NO_MORE_DOCS);
+                assert_eq!(
+                    walking.next_doc().unwrap(),
+                    next,
+                    "{flags:?} next_doc after {want}"
+                );
+            }
+        }
+    }
+}

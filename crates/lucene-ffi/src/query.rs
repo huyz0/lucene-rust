@@ -3594,7 +3594,7 @@ mod tests {
             assert_eq!(rc, FfiStatus::Ok.code());
             let eager_hits = read_scored_results(eager_handle);
 
-            lucene_search::test_only_maxscore_block_skip_counter::reset();
+            lucene_search::test_only_scored_docs_counter::reset();
             let mut maxscore_handle: u64 = 0;
             let rc = unsafe {
                 ffi_search_term_query_scored_maxscore(
@@ -3609,25 +3609,30 @@ mod tests {
             };
             assert_eq!(rc, FfiStatus::Ok.code());
             let maxscore_hits = read_scored_results(maxscore_handle);
-            let skips = lucene_search::test_only_maxscore_block_skip_counter::count();
+            let collected = lucene_search::test_only_scored_docs_counter::count();
 
             assert_eq!(
                 eager_hits, maxscore_hits,
                 "top_{top_n}: MAXSCORE FFI path must match the eager FFI path exactly"
             );
 
+            // One full block plus an impact-less tail: Lucene's block-at-a-time
+            // scorer has no whole block to leave undecoded here, so what the
+            // pruning saves through the FFI is every uncompetitive document
+            // kept out of the collector. (Whole-block skipping is proven on a
+            // 32-block term in lucene-search's own tests.)
             if top_n < 300 {
                 assert!(
-                    skips > 0,
-                    "top_{top_n}: should reach the block's best-scoring combination \
-                     within its first few docs, making the rest of the block safely \
-                     skippable through the FFI boundary (got {skips} skips)"
+                    collected < 300,
+                    "top_{top_n}: the threshold must keep uncompetitive documents out \
+                     of the collector through the FFI boundary (collected {collected} \
+                     of 300)"
                 );
             } else {
                 assert_eq!(
-                    skips, 0,
-                    "top_{top_n} == the full docFreq: nothing should be skippable \
-                     (got {skips} skips)"
+                    collected, 300,
+                    "top_{top_n} == the full docFreq: every document must reach the \
+                     collector"
                 );
             }
 

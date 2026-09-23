@@ -348,6 +348,19 @@ impl RegexpPattern {
         node_prefix_match(&self.root, prefix, &budget, &|rest| rest.is_empty())
     }
 
+    /// A byte DFA accepting a **superset** of this pattern's language, for
+    /// term-dictionary intersection: exact everywhere except `&` (approximated
+    /// by its left operand) and `<n-m>` (by any run of digits). `None` when
+    /// the pattern is too large to determinize. See `crate::automaton` for why
+    /// a superset is the right contract -- every term it accepts is still
+    /// confirmed by [`Self::matches`].
+    pub(crate) fn to_dfa(&self) -> Option<crate::automaton::ByteDfa> {
+        let mut nfa = crate::automaton::Nfa::new();
+        let start = nfa.state()?;
+        let end = node_nfa(&mut nfa, &self.root, start)?;
+        nfa.determinize(start, end)
+    }
+
     /// The longest byte run every matching term is guaranteed to start with,
     /// e.g. `cat.*` -> `cat`, `(cat|dog)` -> `` (no single common leading
     /// byte run across an alternation, so this conservatively returns empty
@@ -378,6 +391,99 @@ impl std::str::FromStr for RegexpPattern {
     }
 }
 
+/// Thompson construction of `node`'s language, entered at `from`; returns the
+/// state the language ends in. Code points become UTF-8 byte paths
+/// (`UTF32ToUTF8`), so an ill-formed term byte never reaches an end state --
+/// the same rule [`node_match`] applies by decoding.
+fn node_nfa(nfa: &mut crate::automaton::Nfa, node: &Node, from: u32) -> Option<u32> {
+    match node {
+        // No path reaches this end: the empty language.
+        Node::Empty => nfa.state(),
+        Node::AnyChar => {
+            let to = nfa.state()?;
+            nfa.any_code_point(from, to)?;
+            Some(to)
+        }
+        Node::Char(c) => {
+            let mut buf = [0u8; 4];
+            nfa.bytes(from, c.encode_utf8(&mut buf).as_bytes())
+        }
+        Node::Str(s) => nfa.bytes(from, s.as_bytes()),
+        Node::Class { ranges, negated } => {
+            let to = nfa.state()?;
+            let complement;
+            let ranges = if *negated {
+                complement = crate::automaton::complement_ranges(ranges);
+                &complement
+            } else {
+                ranges
+            };
+            for &(lo, hi) in ranges {
+                nfa.code_points(from, lo, hi, to)?;
+            }
+            Some(to)
+        }
+        Node::Concat(nodes) => {
+            let mut s = from;
+            for n in nodes {
+                s = node_nfa(nfa, n, s)?;
+            }
+            Some(s)
+        }
+        Node::Alt(nodes) => {
+            let to = nfa.state()?;
+            for n in nodes {
+                // Each alternative gets its own entry state, so one branch's
+                // loops can never be re-entered from another's.
+                let entry = nfa.state()?;
+                nfa.epsilon(from, entry);
+                let end = node_nfa(nfa, n, entry)?;
+                nfa.epsilon(end, to);
+            }
+            Some(to)
+        }
+        // A superset of `L(a) & L(b)` is `L(a)`; the exact matcher confirms.
+        Node::Intersect(a, _) => node_nfa(nfa, a, from),
+        Node::Repeat { inner, min, max } => {
+            let mut s = from;
+            for _ in 0..*min {
+                let entry = nfa.state()?;
+                nfa.epsilon(s, entry);
+                s = node_nfa(nfa, inner, entry)?;
+            }
+            match max {
+                None => {
+                    let hub = nfa.state()?;
+                    nfa.epsilon(s, hub);
+                    let entry = nfa.state()?;
+                    nfa.epsilon(hub, entry);
+                    let end = node_nfa(nfa, inner, entry)?;
+                    nfa.epsilon(end, hub);
+                    Some(hub)
+                }
+                Some(max) => {
+                    let to = nfa.state()?;
+                    nfa.epsilon(s, to);
+                    for _ in *min..*max {
+                        let entry = nfa.state()?;
+                        nfa.epsilon(s, entry);
+                        s = node_nfa(nfa, inner, entry)?;
+                        nfa.epsilon(s, to);
+                    }
+                    Some(to)
+                }
+            }
+        }
+        // Any run of one or more ASCII digits: a superset of every decimal
+        // interval, zero-padded or not.
+        Node::Interval { .. } => {
+            let first = nfa.state()?;
+            nfa.range(from, b'0', b'9', first);
+            nfa.range(first, b'0', b'9', first);
+            Some(first)
+        }
+    }
+}
 /// Appends to `out` the literal byte run `node` guarantees at its start,
 /// returning `true` when `node`'s *entire* language is that fixed run (so a
 /// concatenation may keep going into the next node) and `false` when the

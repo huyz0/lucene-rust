@@ -97,8 +97,9 @@ pub fn resolve_points_range_doc_ids(
     if let Some(bits) = live_docs {
         doc_ids.retain(|&doc_id| bits.get_doc(doc_id));
     }
-    doc_ids.sort_unstable();
-    doc_ids.dedup();
+    // The BKD walk visits leaves in value order, not doc order: sort and
+    // dedup the way `DocIdSetBuilder.build` does, with a radix sort.
+    lucene_util::doc_id_sort::sort_dedup_doc_ids(&mut doc_ids);
     Ok(doc_ids)
 }
 
