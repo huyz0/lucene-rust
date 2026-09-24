@@ -47,7 +47,7 @@ import org.apache.lucene.util.BytesRef;
  * <ol>
  *   <li>The index opens with {@link DirectoryReader}, has more than one segment, and its field
  *       infos say what the generator asked for.
- *   <li><b>Every term's postings</b> (T3.1): each {@code body}, {@code keyword} and {@code id} term in the
+ *   <li><b>Every term's postings</b> (T3.1): each {@code body}, {@code keyword}, {@code tag} and {@code id} term in the
  *       index, walked through {@link MultiTerms} with global document ids, must match {@code
  *       postings.tsv} -- docFreq, totalTermFreq and an FNV-1a hash over every document, freq,
  *       position, both offsets and payload. The expectations are computed from the generated text,
@@ -142,6 +142,10 @@ public class VerifyIndex {
     if (id == null || id.getIndexOptions() != IndexOptions.DOCS) {
       fail("id field info: " + describe(id));
     }
+    FieldInfo tag = infos.fieldInfo("tag");
+    if (tag == null || tag.getIndexOptions() != IndexOptions.DOCS_AND_FREQS) {
+      fail("tag field info: " + describe(tag));
+    }
     FieldInfo num = infos.fieldInfo("num");
     if (num == null || num.getDocValuesType() != DocValuesType.NUMERIC) {
       fail("num field info: " + describe(num));
@@ -184,25 +188,31 @@ public class VerifyIndex {
       expected.put(line.substring(0, tab), line.substring(tab + 1));
     }
     int checked = 0;
-    for (String field : new String[] {"body", "keyword", "id"}) {
+    for (String field : new String[] {"body", "keyword", "id", "tag"}) {
       boolean positions = field.equals("body");
+      boolean freqs = positions || field.equals("tag");
       Terms terms = MultiTerms.getTerms(reader, field);
       if (terms == null) {
         fail("field " + field + " has no terms");
         continue;
       }
+      long fieldTtf = 0;
       TermsEnum te = terms.iterator();
       PostingsEnum pe = null;
       BytesRef term;
       while ((term = te.next()) != null) {
         String key = field + "\t" + term.utf8ToString();
         Fnv h = new Fnv();
-        pe = te.postings(pe, positions ? PostingsEnum.ALL : PostingsEnum.NONE);
+        pe = te.postings(pe, positions ? PostingsEnum.ALL : freqs ? PostingsEnum.FREQS : PostingsEnum.NONE);
         int docFreq = 0;
         long ttf = 0;
         for (int doc = pe.nextDoc(); doc != DocIdSetIterator.NO_MORE_DOCS; doc = pe.nextDoc()) {
           docFreq++;
           h.i32(doc);
+          if (freqs && !positions) {
+            ttf += pe.freq();
+            h.i32(pe.freq());
+          }
           if (positions) {
             int freq = pe.freq();
             ttf += freq;
@@ -221,18 +231,22 @@ public class VerifyIndex {
           }
         }
         String got =
-            docFreq + "\t" + (positions ? Long.toString(ttf) : "-1") + "\t" + String.format("%016x", h.h);
+            docFreq + "\t" + (freqs ? Long.toString(ttf) : "-1") + "\t" + String.format("%016x", h.h);
         String want = expected.remove(key);
         if (want == null) {
           fail("unexpected term " + key.replace('\t', ':'));
         } else if (!want.equals(got)) {
           fail(key.replace('\t', ':') + " postings: got " + got + ", want " + want);
         } else if (te.docFreq() != docFreq
-            || (positions && te.totalTermFreq() != ttf)) {
+            || (freqs && te.totalTermFreq() != ttf)) {
           fail(key.replace('\t', ':') + " term stats " + te.docFreq() + "/" + te.totalTermFreq()
               + " disagree with its postings " + docFreq + "/" + ttf);
         }
+        fieldTtf += ttf;
         checked++;
+      }
+      if (freqs && terms.getSumTotalTermFreq() != fieldTtf) {
+        fail(field + " sumTotalTermFreq " + terms.getSumTotalTermFreq() + ", postings sum " + fieldTtf);
       }
     }
     for (String missing : expected.keySet()) {

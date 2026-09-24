@@ -12,20 +12,22 @@
 //!   every term a singleton), `body` (Zipf-distributed text over a 5 000-term
 //!   vocabulary, plus a word unique to its document in one document of eight;
 //!   positions, offsets, payloads and norms), `keyword` (one Zipf-drawn token
-//!   per document, `IndexOptions::Docs`), `num` (numeric doc values). The
+//!   per document, `IndexOptions::Docs`), `tag` (one to six tokens from
+//!   twenty, repeats allowed: freqs without positions), `num` (numeric doc
+//!   values). The
 //!   commonest `body` terms occur in most documents, so their postings cross
 //!   full 256-document blocks and level-1 skip spans in every segment; the
 //!   unique words and the ids are singletons, which the Zipf vocabulary alone
 //!   never produces at this size -- and singletons are what `encodeTerm`
 //!   delta-codes (an off-by-one there went unnoticed until they were added).
 //! - `postings.tsv` -- the **expected** postings of every `body`,
-//!   `keyword` and `id` term, computed from the generated text itself, not read back
+//!   `keyword`, `tag` and `id` term, computed from the generated text itself, not read back
 //!   through this port's writer or reader: `field, term, docFreq,
 //!   totalTermFreq, hash`, where `hash` is FNV-1a over every document id,
-//!   freq, position, start and end offset and payload (for `keyword` and
-//!   `id`, the document ids only). Java walks every term of the index and must
+//!   freq, position, start and end offset and payload (for `tag`, document
+//!   ids and freqs; for `keyword` and `id`, document ids only). Java walks every term of the index and must
 //!   reproduce every line (T3.1).
-//! - `queries.tsv` / `rust-results.tsv` -- 59 queries (term, boolean
+//! - `queries.tsv` / `rust-results.tsv` -- 62 queries (term, boolean
 //!   conjunction and disjunction, cross-field, phrase, doc-values range) and
 //!   this port's top 50 for each: `id, doc:score,...` in rank order (for
 //!   the range queries, `doc:value`, the sort key). Java runs the same queries with `IndexSearcher` and BM25 and
@@ -68,6 +70,8 @@ const F_ID: i32 = 0;
 const F_BODY: i32 = 1;
 const F_KEYWORD: i32 = 2;
 const F_NUM: i32 = 3;
+const F_TAG: i32 = 4;
+const TAGS: u64 = 20;
 
 fn field(name: &str, number: i32) -> FieldInfo {
     FieldInfo {
@@ -150,6 +154,9 @@ fn payload(term: &str, position: i32) -> Vec<u8> {
 
 struct Doc {
     body: String,
+    /// One to six tokens from twenty, repeats allowed: freqs without
+    /// positions (`IndexOptions::DocsAndFreqs`).
+    tag: String,
     keyword: String,
     num: i64,
 }
@@ -172,7 +179,17 @@ fn corpus() -> Vec<Doc> {
             let body = tokens.join(" ");
             let keyword = format!("k{}", keywords.draw(&mut rng));
             let num = (rng.next() % 1_000_000) as i64;
-            Doc { body, keyword, num }
+            let tags = 1 + rng.next() % 6;
+            let tag = (0..tags)
+                .map(|_| format!("g{}", rng.next() % TAGS))
+                .collect::<Vec<_>>()
+                .join(" ");
+            Doc {
+                body,
+                tag,
+                keyword,
+                num,
+            }
         })
         .collect()
 }
@@ -204,6 +221,7 @@ type Occurrence = (i32, i32, i32);
 fn expected_postings(docs: &[Doc]) -> String {
     let mut body: BTreeMap<&str, Vec<(i32, Vec<Occurrence>)>> = BTreeMap::new();
     let mut keyword: BTreeMap<&str, Vec<i32>> = BTreeMap::new();
+    let mut tag: BTreeMap<&str, Vec<(i32, i32)>> = BTreeMap::new();
     for (doc_id, d) in docs.iter().enumerate() {
         let doc_id = doc_id as i32;
         let mut offset = 0i32;
@@ -220,6 +238,13 @@ fn expected_postings(docs: &[Doc]) -> String {
             body.entry(token).or_default().push((doc_id, occurrences));
         }
         keyword.entry(&d.keyword).or_default().push(doc_id);
+        let mut tag_freqs: BTreeMap<&str, i32> = BTreeMap::new();
+        for token in d.tag.split(' ') {
+            *tag_freqs.entry(token).or_default() += 1;
+        }
+        for (token, freq) in tag_freqs {
+            tag.entry(token).or_default().push((doc_id, freq));
+        }
     }
     let ids: Vec<String> = (0..docs.len()).map(id).collect();
     let mut id_postings: BTreeMap<&str, i32> = BTreeMap::new();
@@ -258,6 +283,16 @@ fn expected_postings(docs: &[Doc]) -> String {
         }
         writeln!(out, "keyword\t{token}\t{}\t-1\t{:016x}", docs.len(), h.0).unwrap();
     }
+    for (token, postings) in &tag {
+        let mut h = Fnv::new();
+        let mut ttf = 0i64;
+        for &(doc, freq) in postings {
+            h.int(doc);
+            h.int(freq);
+            ttf += i64::from(freq);
+        }
+        writeln!(out, "tag\t{token}\t{}\t{ttf}\t{:016x}", postings.len(), h.0).unwrap();
+    }
     for (token, doc) in &id_postings {
         let mut h = Fnv::new();
         h.int(*doc);
@@ -288,6 +323,10 @@ fn write_index(dir_path: &str, docs: &[Doc]) {
             doc_values_type: DocValuesType::Numeric,
             ..field("num", F_NUM)
         },
+        FieldInfo {
+            index_options: IndexOptions::DocsAndFreqs,
+            ..field("tag", F_TAG)
+        },
     ];
     let mut writer = IndexWriter::open(
         &dir,
@@ -307,6 +346,7 @@ fn write_index(dir_path: &str, docs: &[Doc]) {
     writer.set_postings_field(Some("body")).expect("body");
     writer.add_postings_field("keyword").expect("keyword");
     writer.add_postings_field("id").expect("id");
+    writer.add_postings_field("tag").expect("tag");
     writer.set_doc_values_field(Some("num")).expect("num");
     writer
         .set_payload_source(Some(Box::new(|ctx| {
@@ -333,6 +373,10 @@ fn write_index(dir_path: &str, docs: &[Doc]) {
                     StoredField {
                         field_number: F_NUM,
                         value: FieldValue::Long(d.num),
+                    },
+                    StoredField {
+                        field_number: F_TAG,
+                        value: FieldValue::String(d.tag.clone()),
                     },
                 ],
             })
@@ -372,6 +416,9 @@ fn queries() -> Vec<Query> {
     }
     for k in [0, 1, 7, 50, 299] {
         add("term", "keyword", vec![format!("k{k}")]);
+    }
+    for g in [0, 7, 19] {
+        add("term", "tag", vec![format!("g{g}")]);
     }
     for d in [0, 77_777, 119_999] {
         add("term", "id", vec![id(d)]);
@@ -448,7 +495,12 @@ fn run_queries(dir_path: &str, qs: &[Query]) -> String {
     let reader = DirectoryReader::open(&dir).expect("open index");
     let opened = reader.open_segments().expect("open segments");
     let segments = opened.as_open_segments();
-    let fields = vec!["body".to_string(), "keyword".to_string(), "id".to_string()];
+    let fields = vec![
+        "body".to_string(),
+        "keyword".to_string(),
+        "id".to_string(),
+        "tag".to_string(),
+    ];
     let by_field = reader.field_norms_by_field(&fields);
     let bool_norms: Vec<Option<&_>> = by_field.iter().map(Some).collect();
 

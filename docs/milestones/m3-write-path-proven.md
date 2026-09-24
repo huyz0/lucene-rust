@@ -218,7 +218,7 @@ Leaving it as-is is not an acceptable outcome for this milestone.
 - [x] `VerifyPostings.java` exists, covers the writer's full supported shape
       set, and runs in CI. *Delivered as the postings walk inside
       `VerifyIndex.java` rather than a separate class: every term of a
-      120 000-document index (140 168 terms: common and rare, with and without
+      120 000-document index (140 311 terms: common and rare, with and without
       positions, offsets and payloads, singletons included) is compared with
       expectations computed from the generated text. `VerifyPositionsSegment`
       already covered the occurrence-level walk through the skip data.*
@@ -228,9 +228,9 @@ Leaving it as-is is not an acceptable outcome for this milestone.
 - [x] Real Lucene's own **`CheckIndex` reports zero errors** on that index
       (`MIN_LEVEL_FOR_SLOW_CHECKS`).
 - [x] Across a **≥50-query set**, top-50 doc IDs match **exactly** and scores
-      match within **1e-5** between Java Lucene and this port. *59 queries:
+      match within **1e-5** between Java Lucene and this port. *62 queries:
       term, conjunction, disjunction, cross-field, phrase and doc-values
-      range; largest score difference 5e-10. The range queries are over
+      range; largest score difference 1.2e-7. The range queries are over
       doc values, because `IndexWriter` has no points write path at flush.*
 - [x] The blocktree writer produces multi-field, multi-block, floor-blocked,
       multi-level output, and each shape is verified from the Java side.
@@ -278,6 +278,23 @@ this milestone delivered, per the port → benchmark → optimise workflow
    broken `encodeTerm` — the corpus had no singleton terms — so it now carries
    a unique-id field and rare words, and fails on that defect.
 
+3. **A scoring bug the proof found.** Once the corpus gained a field with
+   freqs but no norms, every score on it came out 12% below Lucene's (same
+   hits, same order). Java scores a norm-less document at norm 1 but against
+   the collection's real `avgdl`; this port forced `avgdl` to 1 too. Fixed in
+   `DirectoryReader::field_norms` (`FieldNorms::unnormed`); `parity.md`'s
+   BM25 row has the detail.
+4. **Review follow-ups**: two more byte-identity tests re-write real Lucene
+   term dictionaries with freqs, positions, offsets, payloads and skip data
+   from the term states Lucene recorded (`postings_writer`'s
+   `term_dictionary_*_is_byte_identical`), closing what the all-singleton
+   fixtures could not see; each was shown to fail on a seeded defect.
+
+What these checks cannot see: `maxItemsInBlock` 48→49 changes none of the
+identity fixtures; VerifyIndex writes without merging (merged segments are
+covered by the older `write_merged_*` cases), compares ties at rank 50 in
+exact order, and has no points field.
+
 Left for later, recorded in `docs/parity.md`: the `bitsPerValue == 0` and
 dense-bitset `.doc` block encodings the real writer sometimes chooses (readers
 accept the plain `ForUtil` shape this writer emits), and a points write path at
@@ -298,7 +315,10 @@ flush (range queries in the proof are over doc values).
   `maxItemsInBlock` choices alter the physical layout without altering
   correctness. Real Lucene's reader accepts any valid split, so do not chase
   byte-identity with Java's output — chase readability, and say so in
-  `parity.md`. This mirrors the resolution already reached for the FST builder
+  `parity.md`. *(Resolved better than planned: the term
+  dictionary came out byte-identical to Java's once the writer was a
+  closest-to-Java port. `.doc` still differs by design — no `bitsPerValue == 0`
+  or dense-bitset blocks.)* This mirrors the resolution already reached for the FST builder
   in `PLAN.md` §4 risk #1.
 - **Corpus realism.** A 100k-document corpus of unique terms exercises none of
   the interesting paths. Term frequencies must be Zipfian, and the acceptance

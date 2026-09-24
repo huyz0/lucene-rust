@@ -15,7 +15,7 @@
 # The postings/term-dictionary write path (.doc/.pos/.pay/.tim/.tip/.tmd) is
 # covered by every whole-index case below; the last one (VerifyIndex, M3's
 # T3.1/T3.4) walks every term's full postings of a 120 000-document index and
-# compares 59 queries' ranked results and scores with this port's searcher.
+# compares 62 queries' ranked results and scores with this port's searcher.
 # See docs/milestones/m3-write-path-proven.md.
 set -euo pipefail
 
@@ -178,7 +178,7 @@ CASES=(
   # offsets, payloads and norms, a keyword field, a unique-id field, a numeric
   # doc-values field. Java walks the full postings of every one of its
   # 140 000-odd terms against expectations computed from the generated text
-  # (not from this port's writer or reader), runs 59 term, boolean,
+  # (not from this port's writer or reader), runs 62 term, boolean,
   # cross-field, phrase and doc-values-range queries through IndexSearcher
   # and requires this port's searcher's top 50 in the same order with every
   # score within 1e-5, then runs CheckIndex. Measured: an off-by-one in

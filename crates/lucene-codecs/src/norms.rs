@@ -100,6 +100,23 @@ impl NormsEntry {
     pub fn is_dense(&self) -> bool {
         self.docs_with_field_offset == DOCS_WITH_FIELD_DENSE
     }
+
+    /// A dense entry giving every one of `max_doc` documents the norm
+    /// `value` -- `Lucene90NormsConsumer`'s constant encoding
+    /// (`bytesPerNorm == 0`, the value in `normsOffset`), which reads back
+    /// through [`norm_value`] without touching any `.nvd` bytes.
+    pub fn constant(field_number: i32, max_doc: i32, value: i64) -> Self {
+        Self {
+            field_number,
+            docs_with_field_offset: DOCS_WITH_FIELD_DENSE,
+            docs_with_field_length: 0,
+            jump_table_entry_count: -1,
+            dense_rank_power: 0xFF,
+            num_docs_with_field: max_doc,
+            bytes_per_norm: 0,
+            norms_offset: value,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

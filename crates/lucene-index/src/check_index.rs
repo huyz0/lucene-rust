@@ -10040,6 +10040,14 @@ mod tests {
         let code = input.read_vint().unwrap();
         let ent_count = (code as u32 >> 1) as usize;
         let code_l = input.read_vlong().unwrap();
+        // The whole field must be one leaf block at the start of the file --
+        // true of the writer's output for a field of at most
+        // `maxItemsInBlock` (48) terms, which is what these fixtures are. A
+        // larger fixture would otherwise have only its first block patched.
+        assert!(
+            code & 1 == 1 && code_l & 4 == 4,
+            "patch_tim_stats handles a field that is one leaf block"
+        );
         let suffix_len = (code_l as u64 >> 3) as usize;
         let suffix_at = input.position();
         input.seek(suffix_at + suffix_len).unwrap();
@@ -10071,9 +10079,10 @@ mod tests {
         // writes no delta at all (`StatsWriter`'s `hasFreqs` guard, and
         // `blocktree` reads it back the same way), so the "read a delta if
         // bytes are left" rule below would consume the *next* term's
-        // `docFreq` token. Re-encoding is canonical, so the identity round
-        // trip would still be byte-identical and would not catch it -- hence
-        // the assertion rather than a comment.
+        // `docFreq` token -- and since singleton runs come back spelled out
+        // as pairs, a re-encoding is not byte-identical to the original
+        // anyway, so nothing downstream would notice. Hence the assertion
+        // rather than a comment.
         let mut stats_in = SliceInput::new(&tim[stats_at..stats_at + stats_len]);
         let mut pairs: Vec<(i32, i64)> = Vec::new();
         while pairs.len() < ent_count {
