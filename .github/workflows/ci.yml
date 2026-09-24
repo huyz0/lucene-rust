@@ -213,3 +213,7 @@ jobs:
       # real Lucene's CheckIndex on a share of the seeds.
       - name: Crash fuzzing
         run: ./scripts/crash-fuzz.sh
+      # M4's T4.5: the same 1000 seeded operation streams through real
+      # Lucene's IndexWriter and this port's, compared semantically.
+      - name: Differential operation-stream fuzzing
+        run: ./scripts/op-stream-fuzz.sh
