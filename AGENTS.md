@@ -100,6 +100,7 @@ the hook, the container and this table cannot drift apart:
 | Interop matrix (both engines write, append, merge, delete one index) | `scripts/verify-interop.sh` |
 | Crash fuzzing (power loss + kill -9; `--duration 86400` is the 24 h soak) | `scripts/crash-fuzz.sh` |
 | Differential op-stream fuzzing vs Java `IndexWriter` (1000 seeds) | `scripts/op-stream-fuzz.sh` |
+| Concurrent writer soak (threads + merges, every commit checked exactly; RSS/fds reported) | `cargo run --release -p lucene-search --example concurrent_soak -- --dir DIR --duration SECS` |
 
 Prefix any of the individual commands with `scripts/docker-test.sh` to run it
 capped. **CI does not use the container** — GitHub Actions runners are already
