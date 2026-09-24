@@ -185,6 +185,13 @@ CASES=(
   # encodeTerm's singleton doc-id delta fails it -- but only once the corpus
   # had singletons; a Zipf vocabulary alone at this size has none.
   "lucene-search|write_verify_index|verify-index|VerifyIndex"
+  # Doc values sparse in all five types at once, flushed (three segments) and
+  # merged (one): M4's T4.1. Until M4 only NUMERIC could be sparse in a
+  # multi-field flush or a merge, and only sparse NUMERIC had ever been read by
+  # real Lucene. Java checks every document's presence and value per field --
+  # presence is the point, since an off-by-one IndexedDISI reads back a
+  # plausible value on the wrong document -- and runs CheckIndex on both.
+  "lucene-index|write_sparse_doc_values_fixture|sparse-doc-values|VerifySparseDocValues"
 )
 
 echo "verify-write-path: compiling verifiers"

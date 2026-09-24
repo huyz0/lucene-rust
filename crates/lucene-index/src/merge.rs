@@ -127,23 +127,17 @@
 //! segment-wide per field). Within that, **per-document** sparsity is
 //! ordinary: `SortField.setMissingValue` exists precisely for it.
 //!
-//! - **NUMERIC** doc values may be sparse. A merged column only some
-//!   documents have a value for is written through the same `IndexedDISI` +
-//!   values body `Lucene90DocValuesConsumer.writeValues` uses, and a column
-//!   **no** merged document has a value for is still written, as that
-//!   method's all-missing form (`docsWithFieldOffset = -2`).
-//! - **BINARY/SORTED/SORTED_NUMERIC/SORTED_SET and norms** must still be
-//!   dense over the merged segment, because
-//!   [`lucene_codecs::doc_values::DenseField`]'s only sparse variant is the
-//!   numeric one.
-//!
-//! In every case a live-doc-contributing source that never declared the
-//! field at all is a **schema** mismatch, not sparsity, and stays a hard
-//! error ([`Error::DocValuesFieldMissingInSource`] /
-//! [`Error::BinaryDocValuesFieldMissingInSource`] /
-//! [`Error::SortedDocValuesFieldMissingInSource`] /
-//! [`Error::NormsFieldMissingInSource`]) rather than a silently dropped
-//! field.
+//! - **Doc values of every type** may be sparse, as
+//!   `DocValuesConsumer.getMerged*DocValues` makes them: a source whose
+//!   `FieldInfo` has no column for the field is simply not a sub, so its
+//!   documents come out of the merge without a value, and so does any
+//!   document its column skips. A merged column only some documents have a
+//!   value for is written through the same `IndexedDISI` + values body
+//!   `Lucene90DocValuesConsumer` uses, and a column **no** merged document
+//!   has a value for is still written, as its all-missing form
+//!   (`docsWithFieldOffset = -2`).
+//! - **Norms** must still be dense over the merged segment
+//!   ([`Error::NormsFieldMissingInSource`]).
 //!
 //! Term vectors have no such constraint: a source with no term-vectors
 //! reader at all, or a doc with none, simply contributes an empty
@@ -445,47 +439,25 @@ pub enum Error {
         expected: usize,
         found: usize,
     },
-    /// A field has numeric doc-values data in at least one source that
-    /// contributes live docs, but not in every such source (or not for
-    /// every one of that source's live docs) -- see this module's doc
-    /// comment on the "sparse across sources" rule.
-    #[error(
-        "merged field number {merged_field_number} has numeric doc values in some sources but not in every source that contributes live docs (or not for every one of that source's live docs)"
-    )]
-    DocValuesFieldMissingInSource { merged_field_number: i32 },
-    /// Same as [`Error::DocValuesFieldMissingInSource`], for norms.
+    /// A field has norms in at least one source that contributes live docs,
+    /// but not in every such source (or not for every one of that source's
+    /// live docs) -- see this module's doc comment on the "sparse across
+    /// sources" rule.
     #[error(
         "merged field number {merged_field_number} has norms in some sources but not in every source that contributes live docs (or not for every one of that source's live docs)"
     )]
     NormsFieldMissingInSource { merged_field_number: i32 },
-    /// Same as [`Error::DocValuesFieldMissingInSource`], for BINARY doc
-    /// values.
+    /// A source's SORTED column gives a document an ordinal outside that
+    /// source's own term dictionary -- a corrupt source, since the merge
+    /// resolves each ordinal to its bytes through that dictionary.
     #[error(
-        "merged field number {merged_field_number} has binary doc values in some sources but not in every source that contributes live docs (or not for every one of that source's live docs)"
-    )]
-    BinaryDocValuesFieldMissingInSource { merged_field_number: i32 },
-    /// Same as [`Error::DocValuesFieldMissingInSource`], for SORTED doc
-    /// values.
-    #[error(
-        "merged field number {merged_field_number} has sorted doc values in some sources but not in every source that contributes live docs (or not for every one of that source's live docs)"
+        "merged field number {merged_field_number}: a source's sorted doc values name an ordinal outside its own dictionary"
     )]
     SortedDocValuesFieldMissingInSource { merged_field_number: i32 },
-    /// Same as [`Error::DocValuesFieldMissingInSource`], for SORTED_NUMERIC
-    /// doc values -- also raised for a live doc whose resolved value list
-    /// came back empty, since
-    /// [`lucene_codecs::doc_values::write_single_dense_sorted_numeric_field`]
-    /// requires every doc to have at least one value.
+    /// Same as [`Error::SortedDocValuesFieldMissingInSource`], for
+    /// SORTED_SET.
     #[error(
-        "merged field number {merged_field_number} has sorted-numeric doc values in some sources but not in every source that contributes live docs (or not for every one of that source's live docs)"
-    )]
-    SortedNumericDocValuesFieldMissingInSource { merged_field_number: i32 },
-    /// Same as [`Error::DocValuesFieldMissingInSource`], for SORTED_SET doc
-    /// values -- also raised for a live doc whose resolved value set came
-    /// back empty, since
-    /// [`lucene_codecs::doc_values::write_single_dense_sorted_set_field`]
-    /// requires every doc to have at least one value.
-    #[error(
-        "merged field number {merged_field_number} has sorted-set doc values in some sources but not in every source that contributes live docs (or not for every one of that source's live docs)"
+        "merged field number {merged_field_number}: a source's sorted-set doc values name an ordinal outside its own dictionary"
     )]
     SortedSetDocValuesFieldMissingInSource { merged_field_number: i32 },
     /// A live-doc-contributing source *declares* this field in its own
@@ -2502,10 +2474,15 @@ enum MergedDocValuesField {
     /// `SortField.setMissingValue`'s normal case, and the shape a
     /// multi-tier index sort's tiers routinely take.
     SparseNumeric(i32, Vec<(i32, i64)>),
-    Binary(i32, Vec<Vec<u8>>),
-    Sorted(i32, Vec<Vec<u8>>),
-    SortedNumeric(i32, Vec<Vec<i64>>),
-    SortedSet(i32, Vec<Vec<Vec<u8>>>),
+    /// BINARY and SORTED_NUMERIC, dense or sparse, streamed in merged-doc
+    /// order into one flat buffer each.
+    Binary(i32, doc_values::BinaryColumn),
+    SortedNumeric(i32, doc_values::SortedNumericColumn),
+    /// SORTED and SORTED_SET, dense or sparse, with the merged dictionary
+    /// already built by [`OrdinalMap`] and every document's ordinals
+    /// remapped into it.
+    SortedOrds(i32, doc_values::SortedOrdsColumn),
+    SortedSetOrds(i32, doc_values::SortedSetOrdsColumn),
 }
 
 impl MergedDocValuesField {
@@ -2514,9 +2491,9 @@ impl MergedDocValuesField {
             MergedDocValuesField::Numeric(n, _)
             | MergedDocValuesField::SparseNumeric(n, _)
             | MergedDocValuesField::Binary(n, _)
-            | MergedDocValuesField::Sorted(n, _)
             | MergedDocValuesField::SortedNumeric(n, _)
-            | MergedDocValuesField::SortedSet(n, _) => *n,
+            | MergedDocValuesField::SortedOrds(n, _)
+            | MergedDocValuesField::SortedSetOrds(n, _) => *n,
         }
     }
 
@@ -2526,12 +2503,14 @@ impl MergedDocValuesField {
             MergedDocValuesField::SparseNumeric(n, v) => {
                 doc_values::DenseField::SparseNumeric(*n, v)
             }
-            MergedDocValuesField::Binary(n, v) => doc_values::DenseField::Binary(*n, v),
-            MergedDocValuesField::Sorted(n, v) => doc_values::DenseField::Sorted(*n, v),
-            MergedDocValuesField::SortedNumeric(n, v) => {
-                doc_values::DenseField::SortedNumeric(*n, v)
+            MergedDocValuesField::Binary(n, c) => doc_values::DenseField::BinaryColumn(*n, c),
+            MergedDocValuesField::SortedNumeric(n, c) => {
+                doc_values::DenseField::SortedNumericColumn(*n, c)
             }
-            MergedDocValuesField::SortedSet(n, v) => doc_values::DenseField::SortedSet(*n, v),
+            MergedDocValuesField::SortedOrds(n, c) => doc_values::DenseField::SortedOrds(*n, c),
+            MergedDocValuesField::SortedSetOrds(n, c) => {
+                doc_values::DenseField::SortedSetOrds(*n, c)
+            }
         }
     }
 }
@@ -2592,10 +2571,8 @@ fn original_field_number(map: &HashMap<i32, i32>, merged_field_number: i32) -> O
 /// A live document with **no** value for the field is not an error either:
 /// it is `SortField.setMissingValue`'s normal case, and the merged column is
 /// then written sparsely through the same `IndexedDISI` + values body
-/// `Lucene90DocValuesConsumer.writeValues` uses. What *is* still an error is
-/// a live-doc-contributing source that never declared the field at all
-/// ([`Error::DocValuesFieldMissingInSource`]) -- a schema mismatch, not
-/// sparsity. A field for which **no** merged document has a value is still
+/// `Lucene90DocValuesConsumer.writeValues` uses; so is a source with no
+/// column for the field at all (see the comment in the body). A field for which **no** merged document has a value is still
 /// written -- as `Lucene90DocValuesConsumer.writeValues`' all-missing column
 /// (`docsWithFieldOffset = -2`), not omitted -- because omitting it would
 /// zero the field's `DocValuesType` in the merged `.fnm` and, for an
@@ -2725,14 +2702,39 @@ fn merge_numeric_doc_values(
     Ok(merged)
 }
 
+/// Each contributing source's entry for `merged_field_number`, or `None` for
+/// a source with no live documents or no such column --
+/// `DocValuesConsumer.getMerged*DocValues`' rule that a source whose
+/// `FieldInfo` lacks the column is simply **not a sub**, so every one of its
+/// documents comes out of the merge with no value (see
+/// [`merge_numeric_doc_values`] for why that is safe to rely on here).
+fn per_source_entries<'a, T>(
+    sources: &'a [MergeSource<'a>],
+    per_source_maps: &[HashMap<i32, i32>],
+    per_source_live_ids: &[Vec<i32>],
+    merged_field_number: i32,
+    fields: impl Fn(&'a MergeSource<'a>) -> &'a [T],
+    field_number: impl Fn(&T) -> i32,
+) -> Vec<Option<&'a T>> {
+    sources
+        .iter()
+        .zip(per_source_maps)
+        .zip(per_source_live_ids)
+        .map(|((source, map), live_ids)| {
+            if live_ids.is_empty() {
+                return None;
+            }
+            let original = original_field_number(map, merged_field_number)?;
+            fields(source).iter().find(|f| field_number(f) == original)
+        })
+        .collect()
+}
+
 /// Merges BINARY doc-values data across `sources`, one
 /// [`MergedDocValuesField`] per merged field number any source has a BINARY
-/// column for, in `doc_order`.
-///
-/// Multi-field like [`merge_numeric_doc_values`], but **not** sparse:
-/// [`lucene_codecs::doc_values::DenseField`]'s only sparse variant is the
-/// numeric one, so a live document with no value is still
-/// [`Error::BinaryDocValuesFieldMissingInSource`] here.
+/// column for, in `doc_order` -- `DocValuesConsumer.mergeBinaryField`. A
+/// document with no value (its source has no column, or the column skips
+/// it) is missing from the merged column, which is then written sparsely.
 fn merge_binary_doc_values(
     sources: &[MergeSource],
     per_source_maps: &[HashMap<i32, i32>],
@@ -2748,71 +2750,106 @@ fn merge_binary_doc_values(
     );
     let mut merged = Vec::with_capacity(candidates.len());
     for merged_field_number in candidates {
-        let mut per_source_entry: Vec<Option<&SourceBinaryDocValues>> = vec![None; sources.len()];
-        for (idx, ((source, map), live_ids)) in sources
+        let per_source_entry = per_source_entries(
+            sources,
+            per_source_maps,
+            per_source_live_ids,
+            merged_field_number,
+            |s| s.binary_doc_values,
+            |f: &SourceBinaryDocValues| f.entry.field_number,
+        );
+        // One forward cursor per source (`doc_order` visits each source's
+        // documents in ascending order), as `getMergedBinaryDocValues`
+        // iterates each sub.
+        let mut readers: Vec<Option<doc_values::BinaryReader>> = per_source_entry
             .iter()
-            .zip(per_source_maps)
-            .zip(per_source_live_ids)
-            .enumerate()
-        {
-            if live_ids.is_empty() {
+            .map(|e| e.map(|e| doc_values::BinaryReader::new(e.data, &e.entry)))
+            .collect();
+        let mut column = doc_values::BinaryColumn::default();
+        for (merged_doc_id, &(src_idx, doc_id)) in doc_order.iter().enumerate() {
+            let Some(reader) = readers[src_idx].as_mut() else {
                 continue;
+            };
+            if let Some(value) = reader.value(doc_id)? {
+                column.docs.push(merged_doc_id as i32);
+                column.lengths.push(value.len() as u32);
+                column.bytes.extend_from_slice(value);
             }
-            let Some(original_number) = original_field_number(map, merged_field_number) else {
-                return Err(Error::BinaryDocValuesFieldMissingInSource {
-                    merged_field_number,
-                });
-            };
-            let Some(entry) = source
-                .binary_doc_values
-                .iter()
-                .find(|bf| bf.entry.field_number == original_number)
-            else {
-                return Err(Error::BinaryDocValuesFieldMissingInSource {
-                    merged_field_number,
-                });
-            };
-            per_source_entry[idx] = Some(entry);
         }
-
-        let mut values: Vec<Vec<u8>> = Vec::with_capacity(doc_order.len());
-        for &(src_idx, doc_id) in doc_order {
-            let entry =
-                per_source_entry[src_idx].ok_or(Error::BinaryDocValuesFieldMissingInSource {
-                    merged_field_number,
-                })?;
-            let value = doc_values::binary_value(entry.data, &entry.entry, doc_id)?.ok_or(
-                Error::BinaryDocValuesFieldMissingInSource {
-                    merged_field_number,
-                },
-            )?;
-            values.push(value.to_vec());
-        }
-        merged.push(MergedDocValuesField::Binary(merged_field_number, values));
+        merged.push(MergedDocValuesField::Binary(merged_field_number, column));
     }
     Ok(merged)
 }
 
+/// `OrdinalMap`: the merged dictionary of several sources' sorted, unique
+/// dictionaries, and each source's ordinal -> merged-ordinal map.
+///
+/// Java's walks the sources' `TermsEnum`s through a priority queue ordered by
+/// current term, handing out the next global ordinal each time the smallest
+/// term changes; this is that walk, over dictionaries already decoded. A
+/// source with no column (`None`) contributes nothing and gets an empty map.
+struct OrdinalMap {
+    dict: Vec<Vec<u8>>,
+    /// `segment_to_global[source][ord]`.
+    segment_to_global: Vec<Vec<i64>>,
+}
+
+impl OrdinalMap {
+    fn build(source_dicts: Vec<Option<Vec<Vec<u8>>>>) -> Self {
+        use std::cmp::Reverse;
+        use std::collections::BinaryHeap;
+        let mut segment_to_global: Vec<Vec<i64>> = source_dicts
+            .iter()
+            .map(|d| Vec::with_capacity(d.as_ref().map_or(0, Vec::len)))
+            .collect();
+        let dicts: Vec<Vec<Vec<u8>>> = source_dicts
+            .into_iter()
+            .map(Option::unwrap_or_default)
+            .collect();
+        // (current term, source, ord within source), smallest term first.
+        let mut queue: BinaryHeap<Reverse<(&[u8], usize, usize)>> = dicts
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| !d.is_empty())
+            .map(|(src, d)| Reverse((d[0].as_slice(), src, 0)))
+            .collect();
+        let mut dict: Vec<Vec<u8>> = Vec::new();
+        while let Some(Reverse((term, src, ord))) = queue.pop() {
+            if dict.last().map(Vec::as_slice) != Some(term) {
+                dict.push(term.to_vec());
+            }
+            // ARITH: `dict` is non-empty after the push above.
+            #[allow(clippy::arithmetic_side_effects)]
+            segment_to_global[src].push((dict.len() - 1) as i64);
+            // ARITH: `ord` indexes `dicts[src]`, so `ord + 1 <= len`.
+            #[allow(clippy::arithmetic_side_effects)]
+            let next = ord + 1;
+            if let Some(t) = dicts[src].get(next) {
+                queue.push(Reverse((t.as_slice(), src, next)));
+            }
+        }
+        Self {
+            dict,
+            segment_to_global,
+        }
+    }
+
+    /// `getGlobalOrds(source).get(ord)`; an ordinal outside the source's
+    /// dictionary is a corrupt source.
+    fn global(&self, source: usize, ord: i64) -> Option<i64> {
+        usize::try_from(ord)
+            .ok()
+            .and_then(|o| self.segment_to_global[source].get(o).copied())
+    }
+}
+
 /// Merges SORTED doc-values data across `sources`, one
 /// [`MergedDocValuesField`] per merged field number any source has a SORTED
-/// column for, in `doc_order`. Multi-field, dense-only, same as
+/// column for, in `doc_order` -- `DocValuesConsumer.mergeSortedField`: an
+/// [`OrdinalMap`] over the sources' dictionaries, then each document's
+/// ordinal remapped through it. No term bytes are copied per document and no
+/// dictionary is rebuilt by sorting. Dense or sparse as
 /// [`merge_binary_doc_values`].
-///
-/// Unlike NUMERIC/BINARY, a SORTED field can't just be concatenated: each
-/// source's term dictionary is built independently, so ordinal `N` in
-/// source A's dictionary is generally a *different term* than ordinal `N`
-/// in source B's dictionary (real Lucene's `OrdinalMap` exists to solve
-/// exactly this). This port sidesteps building an explicit ordinal-
-/// remapping table: for each live doc, it resolves that doc's *own source's*
-/// ordinal straight to term bytes (via that source's own
-/// [`terms_dict::decode_all_terms`]) and pushes the raw bytes, not an
-/// ordinal, into the merged per-doc value list --
-/// [`lucene_codecs::doc_values::write_dense_fields`] takes raw per-doc term
-/// bytes and rebuilds the merged, deduplicated, sorted dictionary (and this
-/// merge's ordinals) itself, so there's no separate remapping step to get
-/// wrong: two sources' docs that happen to share a term end up pointing at
-/// the exact same merged dictionary entry purely because the dictionary
-/// building sorts and dedups by term *bytes*, not by ordinal.
 fn merge_sorted_doc_values(
     sources: &[MergeSource],
     per_source_maps: &[HashMap<i32, i32>],
@@ -2828,73 +2865,57 @@ fn merge_sorted_doc_values(
     );
     let mut merged = Vec::with_capacity(candidates.len());
     for merged_field_number in candidates {
-        // This source's own dictionary, in ordinal order -- resolves this
-        // source's ordinals to term bytes without needing any other source's
-        // dictionary. Resolved once per source up front (see
-        // `merge_numeric_doc_values`'s `per_source_entry` for why `doc_order`
-        // rules out a single linear pass here).
-        type SortedDvResolved<'a> = Option<(&'a SourceSortedDocValues<'a>, Vec<Vec<u8>>)>;
-        let mut per_source_resolved: Vec<SortedDvResolved> = Vec::with_capacity(sources.len());
-        for ((source, map), live_ids) in
-            sources.iter().zip(per_source_maps).zip(per_source_live_ids)
-        {
-            if live_ids.is_empty() {
-                per_source_resolved.push(None);
-                continue;
-            }
-            let Some(original_number) = original_field_number(map, merged_field_number) else {
-                return Err(Error::SortedDocValuesFieldMissingInSource {
-                    merged_field_number,
-                });
-            };
-            let Some(sf) = source
-                .sorted_doc_values
+        let per_source_entry = per_source_entries(
+            sources,
+            per_source_maps,
+            per_source_live_ids,
+            merged_field_number,
+            |s| s.sorted_doc_values,
+            |f: &SourceSortedDocValues| f.entry.field_number,
+        );
+        let map = OrdinalMap::build(
+            per_source_entry
                 .iter()
-                .find(|sf| sf.entry.field_number == original_number)
-            else {
-                return Err(Error::SortedDocValuesFieldMissingInSource {
-                    merged_field_number,
-                });
+                .map(|e| {
+                    e.map(|e| terms_dict::decode_all_terms(e.data, &e.entry.terms))
+                        .transpose()
+                })
+                .collect::<std::result::Result<_, _>>()?,
+        );
+        let mut readers: Vec<Option<doc_values::NumericReader>> = per_source_entry
+            .iter()
+            .map(|e| e.map(|e| doc_values::NumericReader::new(e.data, &e.entry.ords)))
+            .collect();
+        let mut column = doc_values::SortedOrdsColumn::default();
+        for (merged_doc_id, &(src_idx, doc_id)) in doc_order.iter().enumerate() {
+            let Some(reader) = readers[src_idx].as_mut() else {
+                continue;
             };
-            let source_dict = terms_dict::decode_all_terms(sf.data, &sf.entry.terms)?;
-            per_source_resolved.push(Some((sf, source_dict)));
+            let Some(ord) = reader.value(doc_id)? else {
+                continue;
+            };
+            let global =
+                map.global(src_idx, ord)
+                    .ok_or(Error::SortedDocValuesFieldMissingInSource {
+                        merged_field_number,
+                    })?;
+            column.docs.push(merged_doc_id as i32);
+            column.ords.push(global);
         }
-
-        let mut values: Vec<Vec<u8>> = Vec::with_capacity(doc_order.len());
-        for &(src_idx, doc_id) in doc_order {
-            let (sf, source_dict) = per_source_resolved[src_idx].as_ref().ok_or(
-                Error::SortedDocValuesFieldMissingInSource {
-                    merged_field_number,
-                },
-            )?;
-            let ord = doc_values::sorted_ord(sf.data, &sf.entry, doc_id)?.ok_or(
-                Error::SortedDocValuesFieldMissingInSource {
-                    merged_field_number,
-                },
-            )?;
-            let term = source_dict.get(ord as usize).ok_or(
-                Error::SortedDocValuesFieldMissingInSource {
-                    merged_field_number,
-                },
-            )?;
-            values.push(term.clone());
-        }
-        merged.push(MergedDocValuesField::Sorted(merged_field_number, values));
+        column.dict = map.dict;
+        merged.push(MergedDocValuesField::SortedOrds(
+            merged_field_number,
+            column,
+        ));
     }
     Ok(merged)
 }
 
 /// Merges SORTED_NUMERIC doc-values data across `sources`, one
 /// [`MergedDocValuesField`] per merged field number any source has a
-/// SORTED_NUMERIC column for, in `doc_order`. Multi-field, dense-only.
-///
-/// Unlike SORTED, SORTED_NUMERIC has no shared dictionary to reconcile: each
-/// live doc simply contributes its own `Vec<i64>` of values (in whatever
-/// order/count the source has), so merging is concatenation, exactly like
-/// [`merge_numeric_doc_values`] generalized from one value per doc to a list
-/// per doc. The writer requires every doc to have at least one value, so a
-/// live doc whose resolved list comes back empty is treated the same as a
-/// field missing from its source entirely.
+/// SORTED_NUMERIC column for, in `doc_order` --
+/// `DocValuesConsumer.mergeSortedNumericField`. A document is missing when
+/// its source has no column or the column gives it no values.
 fn merge_sorted_numeric_doc_values(
     sources: &[MergeSource],
     per_source_maps: &[HashMap<i32, i32>],
@@ -2910,52 +2931,34 @@ fn merge_sorted_numeric_doc_values(
     );
     let mut merged = Vec::with_capacity(candidates.len());
     for merged_field_number in candidates {
-        let mut per_source_entry: Vec<Option<&SourceSortedNumericDocValues>> =
-            vec![None; sources.len()];
-        for (idx, ((source, map), live_ids)) in sources
+        let per_source_entry = per_source_entries(
+            sources,
+            per_source_maps,
+            per_source_live_ids,
+            merged_field_number,
+            |s| s.sorted_numeric_doc_values,
+            |f: &SourceSortedNumericDocValues| f.entry.field_number,
+        );
+        let mut readers: Vec<Option<doc_values::SortedNumericReader>> = per_source_entry
             .iter()
-            .zip(per_source_maps)
-            .zip(per_source_live_ids)
-            .enumerate()
-        {
-            if live_ids.is_empty() {
+            .map(|e| e.map(|e| doc_values::SortedNumericReader::new(e.data, &e.entry)))
+            .collect();
+        let mut scratch: Vec<i64> = Vec::new();
+        let mut column = doc_values::SortedNumericColumn::default();
+        for (merged_doc_id, &(src_idx, doc_id)) in doc_order.iter().enumerate() {
+            let Some(reader) = readers[src_idx].as_mut() else {
                 continue;
-            }
-            let Some(original_number) = original_field_number(map, merged_field_number) else {
-                return Err(Error::SortedNumericDocValuesFieldMissingInSource {
-                    merged_field_number,
-                });
             };
-            let Some(entry) = source
-                .sorted_numeric_doc_values
-                .iter()
-                .find(|snf| snf.entry.field_number == original_number)
-            else {
-                return Err(Error::SortedNumericDocValuesFieldMissingInSource {
-                    merged_field_number,
-                });
-            };
-            per_source_entry[idx] = Some(entry);
-        }
-
-        let mut values: Vec<Vec<i64>> = Vec::with_capacity(doc_order.len());
-        for &(src_idx, doc_id) in doc_order {
-            let entry = per_source_entry[src_idx].ok_or(
-                Error::SortedNumericDocValuesFieldMissingInSource {
-                    merged_field_number,
-                },
-            )?;
-            let doc_values = doc_values::sorted_numeric_values(entry.data, &entry.entry, doc_id)?;
-            if doc_values.is_empty() {
-                return Err(Error::SortedNumericDocValuesFieldMissingInSource {
-                    merged_field_number,
-                });
+            reader.values(doc_id, &mut scratch)?;
+            if !scratch.is_empty() {
+                column.docs.push(merged_doc_id as i32);
+                column.counts.push(scratch.len() as u32);
+                column.values.extend_from_slice(&scratch);
             }
-            values.push(doc_values);
         }
         merged.push(MergedDocValuesField::SortedNumeric(
             merged_field_number,
-            values,
+            column,
         ));
     }
     Ok(merged)
@@ -2965,9 +2968,9 @@ fn merge_sorted_numeric_doc_values(
 /// whether `entry.kind` collapsed to [`SortedSetKind::Single`] (one ordinal
 /// or none) or stayed [`SortedSetKind::Multi`] (zero or more via the same
 /// [`SortedNumericEntry`] layout [`doc_values::sorted_numeric_values`]
-/// already decodes) -- mirrors the test-only `resolved_sorted_set_values`
-/// helper in `lucene_codecs::doc_values`'s own test module, but per-doc
-/// rather than for every doc in the field at once.
+/// already decodes). Kept for tests and single lookups; a merge holds a
+/// [`SortedSetOrdsReader`].
+#[cfg(test)]
 fn sorted_set_doc_ordinals(data: &[u8], entry: &SortedSetEntry, doc_id: i32) -> Result<Vec<i64>> {
     match &entry.kind {
         SortedSetKind::Single(sorted) => Ok(doc_values::sorted_ord(data, sorted, doc_id)?
@@ -2979,10 +2982,39 @@ fn sorted_set_doc_ordinals(data: &[u8], entry: &SortedSetEntry, doc_id: i32) -> 
     }
 }
 
+/// A forward cursor over one source's SORTED_SET ordinals, whichever of
+/// [`SortedSetKind`]'s two shapes it was written in.
+enum SortedSetOrdsReader<'a> {
+    Single(doc_values::NumericReader<'a>),
+    Multi(doc_values::SortedNumericReader<'a>),
+}
+
+impl<'a> SortedSetOrdsReader<'a> {
+    fn new(data: &'a [u8], entry: &'a SortedSetEntry) -> Self {
+        match &entry.kind {
+            SortedSetKind::Single(sorted) => {
+                Self::Single(doc_values::NumericReader::new(data, &sorted.ords))
+            }
+            SortedSetKind::Multi { ords, .. } => {
+                Self::Multi(doc_values::SortedNumericReader::new(data, ords))
+            }
+        }
+    }
+
+    fn ords(&mut self, doc: i32, out: &mut Vec<i64>) -> Result<()> {
+        match self {
+            Self::Single(reader) => {
+                out.clear();
+                out.extend(reader.value(doc)?);
+            }
+            Self::Multi(reader) => reader.values(doc, out)?,
+        }
+        Ok(())
+    }
+}
+
 /// Decodes one source's whole SORTED_SET term dictionary, in ordinal order --
-/// same "this source's own dictionary, used only to resolve this source's
-/// own ordinals" role [`merge_sorted_doc_values`]'s `source_dict` plays,
-/// generalized to either half of [`SortedSetKind`].
+/// the input [`OrdinalMap`] merges.
 fn sorted_set_source_dict(data: &[u8], entry: &SortedSetEntry) -> Result<Vec<Vec<u8>>> {
     match &entry.kind {
         SortedSetKind::Single(sorted) => Ok(terms_dict::decode_all_terms(data, &sorted.terms)?),
@@ -2992,19 +3024,12 @@ fn sorted_set_source_dict(data: &[u8], entry: &SortedSetEntry) -> Result<Vec<Vec
 
 /// Merges SORTED_SET doc-values data across `sources`, one
 /// [`MergedDocValuesField`] per merged field number any source has a
-/// SORTED_SET column for, in `doc_order`. Multi-field, dense-only.
-///
-/// Exactly [`merge_sorted_doc_values`]'s "resolve to bytes, let the writer
-/// dedupe" approach, applied per-*value* instead of per-doc: each live doc's
-/// own source's ordinals ([`sorted_set_doc_ordinals`]) are resolved to term
-/// bytes via that source's own dictionary ([`sorted_set_source_dict`]),
-/// producing a `Vec<Vec<u8>>` per doc, which
-/// [`lucene_codecs::doc_values::write_dense_fields`] then deduplicates (both
-/// within a doc and across docs/sources) into the merged dictionary itself --
-/// so, same as SORTED, there is no separate ordinal-remapping table to get
-/// wrong. The writer requires every doc to have at least one value, so a live
-/// doc whose resolved value set comes back empty is treated the same as a
-/// field missing from its source entirely.
+/// SORTED_SET column for, in `doc_order` --
+/// `DocValuesConsumer.mergeSortedSetField`: an [`OrdinalMap`] over the
+/// sources' dictionaries, then each document's ordinals remapped through it.
+/// A source's per-document ordinals are ascending and unique, and the map is
+/// monotonic, so the remapped ones are too. Dense or sparse as
+/// [`merge_binary_doc_values`].
 fn merge_sorted_set_doc_values(
     sources: &[MergeSource],
     per_source_maps: &[HashMap<i32, i32>],
@@ -3020,62 +3045,52 @@ fn merge_sorted_set_doc_values(
     );
     let mut merged = Vec::with_capacity(candidates.len());
     for merged_field_number in candidates {
-        // This source's own dictionary, in ordinal order -- resolves this
-        // source's ordinals to term bytes without needing any other source's
-        // dictionary. Resolved once per source up front, same reason as
-        // `merge_sorted_doc_values`.
-        type SortedSetDvResolved<'a> = Option<(&'a SourceSortedSetDocValues<'a>, Vec<Vec<u8>>)>;
-        let mut per_source_resolved: Vec<SortedSetDvResolved> = Vec::with_capacity(sources.len());
-        for ((source, map), live_ids) in
-            sources.iter().zip(per_source_maps).zip(per_source_live_ids)
-        {
-            if live_ids.is_empty() {
-                per_source_resolved.push(None);
+        let per_source_entry = per_source_entries(
+            sources,
+            per_source_maps,
+            per_source_live_ids,
+            merged_field_number,
+            |s| s.sorted_set_doc_values,
+            |f: &SourceSortedSetDocValues| f.entry.field_number,
+        );
+        let map = OrdinalMap::build(
+            per_source_entry
+                .iter()
+                .map(|e| {
+                    e.map(|e| sorted_set_source_dict(e.data, &e.entry))
+                        .transpose()
+                })
+                .collect::<Result<_>>()?,
+        );
+        let mut readers: Vec<Option<SortedSetOrdsReader>> = per_source_entry
+            .iter()
+            .map(|e| e.map(|e| SortedSetOrdsReader::new(e.data, &e.entry)))
+            .collect();
+        let mut scratch: Vec<i64> = Vec::new();
+        let mut column = doc_values::SortedSetOrdsColumn::default();
+        for (merged_doc_id, &(src_idx, doc_id)) in doc_order.iter().enumerate() {
+            let Some(reader) = readers[src_idx].as_mut() else {
+                continue;
+            };
+            reader.ords(doc_id, &mut scratch)?;
+            if scratch.is_empty() {
                 continue;
             }
-            let Some(original_number) = original_field_number(map, merged_field_number) else {
-                return Err(Error::SortedSetDocValuesFieldMissingInSource {
-                    merged_field_number,
-                });
-            };
-            let Some(ssf) = source
-                .sorted_set_doc_values
-                .iter()
-                .find(|ssf| ssf.entry.field_number == original_number)
-            else {
-                return Err(Error::SortedSetDocValuesFieldMissingInSource {
-                    merged_field_number,
-                });
-            };
-            let source_dict = sorted_set_source_dict(ssf.data, &ssf.entry)?;
-            per_source_resolved.push(Some((ssf, source_dict)));
-        }
-
-        let mut values: Vec<Vec<Vec<u8>>> = Vec::with_capacity(doc_order.len());
-        for &(src_idx, doc_id) in doc_order {
-            let (ssf, source_dict) = per_source_resolved[src_idx].as_ref().ok_or(
-                Error::SortedSetDocValuesFieldMissingInSource {
-                    merged_field_number,
-                },
-            )?;
-            let ords = sorted_set_doc_ordinals(ssf.data, &ssf.entry, doc_id)?;
-            if ords.is_empty() {
-                return Err(Error::SortedSetDocValuesFieldMissingInSource {
-                    merged_field_number,
-                });
-            }
-            let mut doc_values: Vec<Vec<u8>> = Vec::with_capacity(ords.len());
-            for ord in ords {
-                let term = source_dict.get(ord as usize).ok_or(
+            for &ord in &scratch {
+                column.ords.push(map.global(src_idx, ord).ok_or(
                     Error::SortedSetDocValuesFieldMissingInSource {
                         merged_field_number,
                     },
-                )?;
-                doc_values.push(term.clone());
+                )?);
             }
-            values.push(doc_values);
+            column.docs.push(merged_doc_id as i32);
+            column.counts.push(scratch.len() as u32);
         }
-        merged.push(MergedDocValuesField::SortedSet(merged_field_number, values));
+        column.dict = map.dict;
+        merged.push(MergedDocValuesField::SortedSetOrds(
+            merged_field_number,
+            column,
+        ));
     }
     Ok(merged)
 }
@@ -6320,7 +6335,7 @@ mod tests {
     }
 
     #[test]
-    fn binary_doc_values_missing_in_a_live_contributing_source_is_an_error() {
+    fn binary_doc_values_missing_in_a_live_contributing_source_merges_sparse() {
         let seg0_id = [1u8; ID_LENGTH];
         let dv0 = flush_binary_dv(0, &[b"aa".to_vec()], seg0_id);
         let fields = vec![binary_field("bin", 0)];
@@ -6357,24 +6372,41 @@ mod tests {
             has_blocks: false,
         };
         // Source 1 has live docs but no binary doc-values entry at all for
-        // field "bin" -- the sparse-across-sources case this port refuses to
-        // silently drop.
+        // field "bin" -- `DocValuesConsumer`'s "not a sub" case: its
+        // documents come out of the merge with no value.
         let source1 = MergeSource::stored_only(&stored1.fields, &reader1, None, Some(version()));
 
-        let result = merge_stored_only_segments(
+        merge_stored_only_segments(
             &dir,
             &[source0, source1],
             "_merged_bdv_err",
             [9u8; ID_LENGTH],
             "Lucene104",
             version(),
-        );
-        assert!(matches!(
-            result,
-            Err(Error::BinaryDocValuesFieldMissingInSource {
-                merged_field_number: 0
+        )
+        .unwrap();
+        let suffix_seg = per_field_segment("_merged_bdv_err", DOC_VALUES_FORMAT_NAME);
+        let dvd = std::fs::read(tmp.join(format!("{suffix_seg}.dvd"))).unwrap();
+        let dvm = std::fs::read(tmp.join(format!("{suffix_seg}.dvm"))).unwrap();
+        let merged_field_infos = field_infos::FieldInfos {
+            fields: vec![binary_field("f", 0)],
+        };
+        let (_v, meta) = doc_values::parse_meta(
+            &dvm,
+            &[9u8; ID_LENGTH],
+            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
+            &merged_field_infos,
+        )
+        .unwrap();
+        let entry = meta.binary_entry(0).unwrap();
+        let got: Vec<Option<Vec<u8>>> = (0..2)
+            .map(|d| {
+                doc_values::binary_value(&dvd, entry, d)
+                    .unwrap()
+                    .map(<[u8]>::to_vec)
             })
-        ));
+            .collect();
+        assert_eq!(got, vec![Some(b"aa".to_vec()), None]);
     }
 
     #[test]
@@ -6748,7 +6780,7 @@ mod tests {
     }
 
     #[test]
-    fn sorted_doc_values_missing_in_a_live_contributing_source_is_an_error() {
+    fn sorted_doc_values_missing_in_a_live_contributing_source_merges_sparse() {
         let seg0_id = [1u8; ID_LENGTH];
         let dv0 = flush_sorted_dv(0, &[b"x".to_vec()], seg0_id);
         let fields = vec![sorted_field("word", 0)];
@@ -6788,20 +6820,37 @@ mod tests {
         // field "word".
         let source1 = MergeSource::stored_only(&stored1.fields, &reader1, None, Some(version()));
 
-        let result = merge_stored_only_segments(
+        merge_stored_only_segments(
             &dir,
             &[source0, source1],
             "_merged_sorted_err",
             [9u8; ID_LENGTH],
             "Lucene104",
             version(),
+        )
+        .unwrap();
+        let suffix_seg = per_field_segment("_merged_sorted_err", DOC_VALUES_FORMAT_NAME);
+        let dvd = std::fs::read(tmp.join(format!("{suffix_seg}.dvd"))).unwrap();
+        let dvm = std::fs::read(tmp.join(format!("{suffix_seg}.dvm"))).unwrap();
+        let merged_field_infos = field_infos::FieldInfos {
+            fields: vec![sorted_field("f", 0)],
+        };
+        let (_v, meta) = doc_values::parse_meta(
+            &dvm,
+            &[9u8; ID_LENGTH],
+            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
+            &merged_field_infos,
+        )
+        .unwrap();
+        let entry = meta.sorted_entry(0).unwrap();
+        let got: Vec<Option<i64>> = (0..2)
+            .map(|d| doc_values::sorted_ord(&dvd, entry, d).unwrap())
+            .collect();
+        assert_eq!(got, vec![Some(0), None]);
+        assert_eq!(
+            terms_dict::decode_all_terms(&dvd, &entry.terms).unwrap(),
+            vec![b"x".to_vec()]
         );
-        assert!(matches!(
-            result,
-            Err(Error::SortedDocValuesFieldMissingInSource {
-                merged_field_number: 0
-            })
-        ));
     }
 
     #[test]
@@ -9722,7 +9771,7 @@ mod tests {
     }
 
     #[test]
-    fn sorted_numeric_doc_values_missing_in_a_live_contributing_source_is_an_error() {
+    fn sorted_numeric_doc_values_missing_in_a_live_contributing_source_merges_sparse() {
         let seg0_id = [1u8; ID_LENGTH];
         let dv0 = flush_sorted_numeric_dv(0, &[vec![10]], seg0_id);
         let fields = vec![sorted_numeric_field("nums", 0)];
@@ -9762,20 +9811,33 @@ mod tests {
         // all for field "nums".
         let source1 = MergeSource::stored_only(&stored1.fields, &reader1, None, Some(version()));
 
-        let result = merge_stored_only_segments(
+        merge_stored_only_segments(
             &dir,
             &[source0, source1],
             "_merged_sorted_numeric_err",
             [9u8; ID_LENGTH],
             "Lucene104",
             version(),
-        );
-        assert!(matches!(
-            result,
-            Err(Error::SortedNumericDocValuesFieldMissingInSource {
-                merged_field_number: 0
-            })
-        ));
+        )
+        .unwrap();
+        let suffix_seg = per_field_segment("_merged_sorted_numeric_err", DOC_VALUES_FORMAT_NAME);
+        let dvd = std::fs::read(tmp.join(format!("{suffix_seg}.dvd"))).unwrap();
+        let dvm = std::fs::read(tmp.join(format!("{suffix_seg}.dvm"))).unwrap();
+        let merged_field_infos = field_infos::FieldInfos {
+            fields: vec![sorted_numeric_field("f", 0)],
+        };
+        let (_v, meta) = doc_values::parse_meta(
+            &dvm,
+            &[9u8; ID_LENGTH],
+            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
+            &merged_field_infos,
+        )
+        .unwrap();
+        let entry = meta.sorted_numeric_entry(0).unwrap();
+        let got: Vec<Vec<i64>> = (0..2)
+            .map(|d| doc_values::sorted_numeric_values(&dvd, entry, d).unwrap())
+            .collect();
+        assert_eq!(got, vec![vec![10], vec![]]);
     }
 
     #[test]
@@ -10147,7 +10209,7 @@ mod tests {
     }
 
     #[test]
-    fn sorted_set_doc_values_missing_in_a_live_contributing_source_is_an_error() {
+    fn sorted_set_doc_values_missing_in_a_live_contributing_source_merges_sparse() {
         let seg0_id = [1u8; ID_LENGTH];
         let dv0 = flush_sorted_set_dv(0, &[vec![b"x".to_vec()]], seg0_id);
         let fields = vec![sorted_set_field("word", 0)];
@@ -10187,20 +10249,33 @@ mod tests {
         // for field "word".
         let source1 = MergeSource::stored_only(&stored1.fields, &reader1, None, Some(version()));
 
-        let result = merge_stored_only_segments(
+        merge_stored_only_segments(
             &dir,
             &[source0, source1],
             "_merged_sorted_set_err",
             [9u8; ID_LENGTH],
             "Lucene104",
             version(),
-        );
-        assert!(matches!(
-            result,
-            Err(Error::SortedSetDocValuesFieldMissingInSource {
-                merged_field_number: 0
-            })
-        ));
+        )
+        .unwrap();
+        let suffix_seg = per_field_segment("_merged_sorted_set_err", DOC_VALUES_FORMAT_NAME);
+        let dvd = std::fs::read(tmp.join(format!("{suffix_seg}.dvd"))).unwrap();
+        let dvm = std::fs::read(tmp.join(format!("{suffix_seg}.dvm"))).unwrap();
+        let merged_field_infos = field_infos::FieldInfos {
+            fields: vec![sorted_set_field("f", 0)],
+        };
+        let (_v, meta) = doc_values::parse_meta(
+            &dvm,
+            &[9u8; ID_LENGTH],
+            &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
+            &merged_field_infos,
+        )
+        .unwrap();
+        let entry = meta.sorted_set_entry(0).unwrap();
+        let got: Vec<Vec<i64>> = (0..2)
+            .map(|d| sorted_set_doc_ordinals(&dvd, entry, d).unwrap())
+            .collect();
+        assert_eq!(got, vec![vec![0], vec![]]);
     }
 
     #[test]

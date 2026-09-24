@@ -85,6 +85,11 @@ case "$BENCH" in
     # term dictionary in memory, so there is no index to point at.
     MAIN=TermDictWriteMicro
     SRC=benchmarks/micro/java/TermDictWriteMicro.java ;;
+  dv_merge)
+    # Write side: both engines build the same four segments and time merging
+    # them, each from a fresh copy.
+    MAIN=DvMergeMicro
+    SRC=benchmarks/micro/java/DvMergeMicro.java ;;
   pfor_decode)
     MAIN=org.apache.lucene.codecs.lucene104.PForUtilMicro
     SRC=benchmarks/micro/java/org/apache/lucene/codecs/lucene104/PForUtilMicro.java ;;

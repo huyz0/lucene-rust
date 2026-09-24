@@ -289,7 +289,6 @@ fn map_writer_error(context: &str, e: index_writer::Error) -> FfiStatus {
         | index_writer::Error::IndexSortChangedMidBuffer(_)
         | index_writer::Error::IndexSortWithBlocksAndNoParentField
         | index_writer::Error::DocValuesUpdateOnIndexSortField { .. }
-        | index_writer::Error::SparseFieldInMultiFieldDocValues { .. }
         | index_writer::Error::DuplicateDocValuesField(_)
         // `c22-sorted-merge`'s two configuration errors. Both describe a
         // writer configured inconsistently with the index it was opened on,
