@@ -33,6 +33,8 @@ test-support = []
 # A `[dev-dependencies]` edge, so resolver-2 feature unification keeps the
 # module out of this crate's production build.
 lucene-util = { path = "../lucene-util", features = ["test-support"] }
+# `CrashingDirectory`, for `examples/crash_fuzz.rs` (M4 T4.4).
+lucene-store = { path = "../lucene-store", features = ["test-util"] }
 criterion.workspace = true
 
 # Settles b12 finding F-21 (`phrase_freq_exact`'s binary search vs
