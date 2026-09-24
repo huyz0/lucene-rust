@@ -1374,6 +1374,153 @@ fn bench_dv_merge(warmup: Duration, measure: Duration) {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// Points write throughput, against `PointsWriteMicro.java`: documents
+/// carrying the four point fields of `write_points_segment_fixture` and
+/// nothing else. `flush` indexes 200 000 of them into one segment and
+/// commits; `merge` merges four 50 000-document segments into one, each run
+/// from a fresh, untimed copy (writer open included, as on the Java side).
+fn bench_points_write(warmup: Duration, measure: Duration) {
+    use lucene_codecs::field_infos::{
+        DocValuesSkipIndexType, DocValuesType, FieldInfo, IndexOptions, VectorEncoding,
+        VectorSimilarityFunction,
+    };
+    use lucene_codecs::stored_fields::{Document, FieldValue, StoredField};
+    use lucene_index::index_writer::IndexWriter;
+    use lucene_index::merge_policy::MergePolicyConfig;
+    use lucene_index::segment_info::LuceneVersion;
+    use lucene_store::FsDirectory;
+
+    const DOCS: usize = 200_000;
+    const SEGMENTS: usize = 4;
+    let version = LuceneVersion { major: 10, minor: 5, bugfix: 0 };
+    let point = |name: &str, number: i32, dims: i32, bytes: i32| FieldInfo {
+        name: name.to_string(),
+        number,
+        store_term_vectors: false,
+        omit_norms: true,
+        store_payloads: false,
+        soft_deletes_field: false,
+        parent_field: false,
+        index_options: IndexOptions::None,
+        doc_values_type: DocValuesType::None,
+        doc_values_skip_index_type: DocValuesSkipIndexType::None,
+        doc_values_gen: -1,
+        attributes: vec![],
+        point_dimension_count: dims,
+        point_index_dimension_count: dims,
+        point_num_bytes: bytes,
+        vector_dimension: 0,
+        vector_encoding: VectorEncoding::Byte,
+        vector_similarity_function: VectorSimilarityFunction::Euclidean,
+    };
+    let fields = || {
+        vec![
+            point("lp", 0, 1, 8),
+            point("ip", 1, 1, 4),
+            point("dp", 2, 1, 8),
+            point("xy", 3, 2, 4),
+        ]
+    };
+    let pack = |values: &[i32]| -> Vec<u8> {
+        values
+            .iter()
+            .flat_map(|&v| ((v as u32) ^ 0x8000_0000).to_be_bytes())
+            .collect()
+    };
+    let document = |i: usize| {
+        let mut fields = Vec::new();
+        let mut add = |field_number, value| fields.push(StoredField { field_number, value });
+        add(0, FieldValue::Long(7 * i as i64 - 1000));
+        if i.is_multiple_of(4) {
+            add(0, FieldValue::Long(-(i as i64)));
+        }
+        if !i.is_multiple_of(3) {
+            add(1, FieldValue::Int((i % 1000) as i32));
+        }
+        add(2, FieldValue::Double(i as f64 / 8.0 - 100.0));
+        add(3, FieldValue::Binary(pack(&[(i % 97) as i32, (i % 89) as i32 - 44])));
+        Document { fields }
+    };
+    let index = |path: &std::path::Path, per_segment: usize| {
+        std::fs::create_dir_all(path).unwrap();
+        let dir = FsDirectory::open(path);
+        let mut w = IndexWriter::open(&dir, fields(), "Lucene104", version).unwrap();
+        w.set_max_buffered_docs(per_segment as i32).unwrap();
+        w.set_ram_buffer_size_mb(4096.0).unwrap();
+        for name in ["lp", "ip", "dp", "xy"] {
+            w.add_points_field(name).unwrap();
+        }
+        for i in 0..DOCS {
+            w.add_document(document(i)).unwrap();
+        }
+        w.commit().unwrap();
+        w.segment_infos().segments.len()
+    };
+    let run = |name: &str, mut once: Box<dyn FnMut() -> Duration + '_>| {
+        let warm_end = Instant::now() + warmup;
+        while Instant::now() < warm_end {
+            once();
+        }
+        let mut total = Duration::ZERO;
+        let mut docs = 0u64;
+        let end = Instant::now() + measure;
+        loop {
+            total += once();
+            docs += DOCS as u64;
+            if Instant::now() >= end {
+                break;
+            }
+        }
+        println!("{name}\t{:.3}\t{docs}", total.as_nanos() as f64 / docs as f64);
+    };
+
+    let root = std::env::temp_dir().join(format!("points-write-micro-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let flush_dir = root.join("flush");
+    run(
+        "flush",
+        Box::new(|| {
+            let _ = std::fs::remove_dir_all(&flush_dir);
+            let start = Instant::now();
+            assert_eq!(index(&flush_dir, DOCS), 1);
+            start.elapsed()
+        }),
+    );
+
+    let source = root.join("source");
+    assert_eq!(index(&source, DOCS / SEGMENTS), SEGMENTS);
+    let work = root.join("work");
+    run(
+        "merge",
+        Box::new(|| {
+            let _ = std::fs::remove_dir_all(&work);
+            std::fs::create_dir_all(&work).unwrap();
+            for f in std::fs::read_dir(&source).unwrap() {
+                let f = f.unwrap();
+                std::fs::copy(f.path(), work.join(f.file_name())).unwrap();
+            }
+            let start = Instant::now();
+            let dir = FsDirectory::open(&work);
+            let mut w = IndexWriter::open(&dir, fields(), "Lucene104", version).unwrap();
+            for name in ["lp", "ip", "dp", "xy"] {
+                w.add_points_field(name).unwrap();
+            }
+            w.set_merge_policy(Some(MergePolicyConfig {
+                max_merge_at_once: 10,
+                segments_per_tier: 2,
+                max_merged_segment_size: u64::MAX / 4,
+                floor_segment_size: 1 << 30,
+                ..MergePolicyConfig::default()
+            }));
+            w.commit().unwrap();
+            let elapsed = start.elapsed();
+            assert_eq!(w.segment_infos().segments.len(), 1, "the merge ran");
+            elapsed
+        }),
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 fn main() {
     let ms = |name: &str, default: u64| -> Duration {
         Duration::from_millis(
@@ -1420,6 +1567,7 @@ fn main() {
         "vectors" => bench_vectors(warmup, measure),
         "term_dict_write" => bench_term_dict_write(warmup, measure),
         "dv_merge" => bench_dv_merge(warmup, measure),
+        "points_write" => bench_points_write(warmup, measure),
         corpus @ ("postings_adv" | "postings_freq" | "positions" | "term_seek" | "doc_values"
         | "norms" | "points" | "memory") => {
             let index = std::env::args()
