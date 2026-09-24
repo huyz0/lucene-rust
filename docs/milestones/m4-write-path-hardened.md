@@ -9,7 +9,7 @@
 | **Effort** | L |
 | **Depends on** | [M3](m3-write-path-proven.md) |
 | **Unblocks** | [M5](m5-engine-integration.md) |
-| **Status** | in progress -- T4.1, T4.2, T4.5, T4.6 done; T4.4 harness done, 24 h run pending; T4.3 open |
+| **Status** | in progress -- T4.1, T4.2, T4.3, T4.5, T4.6 done; T4.4 harness done, 24 h run pending |
 
 ---
 
@@ -157,6 +157,127 @@ Three separate pieces, often conflated:
   merged-away segments are either deleted while still referenced (corruption)
   or never deleted (unbounded disk growth). This is also what M2's reader-leak
   test exercises from the other side.
+
+> **Done (2026-09-24).** `crates/lucene-index/src/concurrent_writer.rs`,
+> `ConcurrentIndexWriter`: one `IndexWriter` shared by any number of
+> threads, in `PLAN.md` §3.5 point 6's shape.
+>
+> - **DWPTs.** One buffer per slot, each behind its own `Mutex`; a thread
+>   adding a document locks one free slot. A full buffer's segment is built
+>   by the thread that filled it, with no lock held, through
+>   `IndexingConfig::build_and_write_segment` (the build half of
+>   `IndexWriter`, split out behind an `Arc` for exactly this). Segments
+>   publish in ticket order, as `DocumentsWriterFlushQueue` does.
+> - **Deletes.** One append-only log of every delete behind its own lock
+>   (`DocumentsWriterDeleteQueue`), which also hands out sequence numbers.
+>   After each add, still holding its slot, a thread applies the entries the
+>   slot has not seen, limited to the documents it held before the add
+>   (`DeleteSlice.apply`); an update appends its delete in that same step,
+>   after its document (`finishDocuments`). A ticket freezes what the
+>   published segments owe and publishes it just before its own segment, so
+>   a delete issued while a segment is being built still reaches it. A
+>   buffer's own deletes are resolved by its flushing thread before the
+>   publish: term deletes against the terms it has just inverted
+>   (`FreqProxTermsWriter.applyDeletes`), queries and doc-values updates
+>   against the written segment.
+> - **Commits.** A commit takes every slot at once, tickets each buffer, then
+>   takes a *cut* -- a ticket carrying only the published segments' deletes
+>   (Java's global-only `FlushTicket`). With every slot held no update is half
+>   done, so each operation is wholly in the commit or wholly out of it.
+>   Segments ticketed after the cut build meanwhile but publish only once
+>   `segments_N` is written (Java's `blockedFlushes`).
+> - **Merges.** `maybe_merge` claims a merge under the control lock, reads and
+>   writes with no lock (`IndexingConfig::run_merge`), and takes the lock
+>   again to publish it -- in memory only, as `commitMerge` does; the next
+>   commit makes it durable. Deletes made meanwhile are carried onto the
+>   merged segment through the merge's doc maps (`commitMergedDeletes`). A
+>   merge whose source took a doc-values update meanwhile is abandoned, and
+>   proposed again on the next round. `run_merges` is `ConcurrentMergeScheduler`'s
+>   thread, on a thread the caller owns.
+> - **`IndexFileDeleter`** already existed. What is new is that a running
+>   merge holds its sources' files (`hold_segment_files`), so a commit cannot
+>   reclaim them from under it.
+> - **Failures.** A build that fails or panics still retires its ticket
+>   (`DocumentsWriterPerThread.abort`): its files are deleted, and its
+>   frozen packet is applied. A failed merge deletes what it wrote.
+>
+> Found on the way: `checkpoint_committed` ran its non-commit checkpoint
+> over the committed segments only, so a merge commit deleted the files of
+> segments flushed but not yet committed. It now checkpoints over
+> `live_infos()`. Single-threaded, merges happen only inside `commit`, after
+> the flush, which is why nothing had hit it.
+>
+> The Tier-2 review of the first version found two blocking defects, both now
+> fixed and each pinned by a test that fails with the defect back in:
+>
+> - An update appended its delete before its document reached a slot, and a
+>   commit handed over the whole log. So a commit could make the old version's
+>   delete durable without the new version -- the id gone. The fix is the
+>   update ordering and the commit cut above.
+> - A merge published by writing `segments_N`, making a mid-indexing state
+>   durable. Merges now publish in memory only.
+>
+> The same review drove other fixes: the abandoned ticket's packet left in
+> the stream; `keep_fully_deleted_segments` lost with the merge policy;
+> sequence numbers that did not follow the log and restarted across the
+> hand-over; idle slots applying every delete; and a commit that could wait
+> on other threads' later segments indefinitely.
+>
+> Verified by:
+>
+> - the module's 13 tests, each ending in `CheckIndex` where it leaves an
+>   index:
+>   - four threads adding while a merge thread runs;
+>   - three threads updating and deleting their own ids while merges run,
+>     then the exact last version of every id;
+>   - forty commits racing two updating threads, each commit holding every
+>     id exactly once;
+>   - a delete reaching a segment being built when it was issued, and one
+>     reaching the first of two in-flight segments through the second's
+>     ticket;
+>   - a delete not reaching a document added after it;
+>   - a sorted flush resolving its own term, query and doc-values updates
+>     through the sort map;
+>   - a buffer its own deletes empty never published;
+>   - a failed build abandoned, with its packet still applied;
+>   - a delete made during a merge carried onto the merged segment, and a
+>     doc-values update abandoning one;
+>   - the hand-back to the single-threaded writer, sequence numbers included.
+> - `scripts/verify-interop.sh`'s eleventh direction: four threads index
+>   6 000 documents with a merge thread running and a delete issued
+>   mid-merge; real Lucene and this port each read every document back and
+>   run their `CheckIndex`.
+>
+> Benchmarked (`scripts/bench-micro.sh --bench concurrent_index --pin 0-3`,
+> 4 vCPUs, 100 000 documents of a stored id and a twelve-word body, 10 000 per
+> buffer, no merges; median of 3 interleaved reps, noise floor 1.12x):
+>
+> | case | this port | Lucene 10.5.0 | ratio |
+> |---|---|---|---|
+> | `add_t1` | 5 529 ns/doc | 7 606 ns/doc | 1.38x |
+> | `add_t4` | 2 531 ns/doc | 4 299 ns/doc | 1.70x |
+> | `update_t4` | 6 590 ns/doc | 5 351 ns/doc | **0.81x** |
+>
+> Optimising took `add_t4` from 0.70x and `update_t4` from 0.30x. Four
+> changes did it:
+>
+> - The benchmark's counting allocator, one shared atomic per allocation,
+>   was a third of the four-thread profile. It now counts only for the memory
+>   case.
+> - The control lock is off the delete path.
+> - The delete log holds its lock only to append or copy pointers, with
+>   `Arc`-shared terms.
+> - A buffer's own deletes are resolved outside the lock, and in memory.
+>
+> **`update_t4` is still slower, and why.** Every ticket's frozen packet of
+> the published segments' deletes is resolved against every published
+> segment *under the control lock*, so publishes serialise, and a thread that
+> wants a ticket waits behind one. Java applies those packets outside
+> `IndexWriter`'s monitor, per segment (`FrozenBufferedUpdates.apply` over
+> `ReadersAndUpdates`, each with its own lock). Porting that means per-segment
+> state this port does not have: a reader pool, and a segment list readable
+> without the control lock. That is the next step for this path. The
+> add-only cases, which are what bulk indexing is, are already ahead.
 
 ### T4.4 — Crash fuzzing
 
@@ -326,7 +447,7 @@ actually does — a shard will have segments from both engines simultaneously.
 - [x] Differential operation-stream fuzzing against Java `IndexWriter` shows
       semantic equivalence across ≥1000 seeds.
 - [x] All five directions of the T4.6 interoperability matrix pass.
-- [ ] Concurrent indexing from multiple threads with merges running produces a
+- [x] Concurrent indexing from multiple threads with merges running produces a
       `CheckIndex`-clean index.
 - [ ] **No file-handle or memory growth** over the 24-hour soak.
 - [x] Index-sorted merges preserve sort order across *every* format, or index

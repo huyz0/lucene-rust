@@ -225,6 +225,7 @@ fn map_writer_error(context: &str, e: index_writer::Error) -> FfiStatus {
         // prepared, so this call would have silently reverted it.
         | index_writer::Error::PrepareCommitAlreadyCalled
         | index_writer::Error::PreparedCommitPending(_)
+        | index_writer::Error::ConcurrentUnsupported(_)
         | index_writer::Error::UnknownPostingsField(_)
         | index_writer::Error::UnsupportedPostingsIndexOptions(_, _)
         // c23's two payload-configuration errors. Both are what Java raises

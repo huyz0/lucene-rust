@@ -1852,6 +1852,17 @@ pub fn merge_sorted_stored_only_segments(
     )
 }
 
+/// [`merge_segments`]'s result, with what `IndexWriter.commitMerge` needs to
+/// carry deletes made **during** the merge onto the merged segment
+/// (`commitMergedDeletesAndUpdates`): each source's doc-id map into the
+/// merged segment (`-1` for a document the merge dropped), and the files the
+/// merge wrote, for an abandoned merge to delete.
+pub struct MergedSegment {
+    pub info: SegmentCommitInfo,
+    pub doc_id_maps: Vec<Vec<i32>>,
+    pub files: Vec<String>,
+}
+
 /// The one merge: `SegmentMerger.merge()`.
 ///
 /// Every format any source supplies is merged and written -- stored fields,
@@ -1913,6 +1924,32 @@ pub fn merge_segments(
     codec_name: &str,
     lucene_version: LuceneVersion,
 ) -> Result<SegmentCommitInfo> {
+    merge_segments_mapped(
+        dir,
+        sources,
+        sort_fields,
+        options,
+        merged_segment_name,
+        merged_segment_id,
+        codec_name,
+        lucene_version,
+    )
+    .map(|merged| merged.info)
+}
+
+/// [`merge_segments`], also returning the doc-id maps and files -- see
+/// [`MergedSegment`].
+#[allow(clippy::too_many_arguments)]
+pub fn merge_segments_mapped(
+    dir: &dyn Directory,
+    sources: &[MergeSource],
+    sort_fields: Option<&[MergeSortKeySpec<'_>]>,
+    options: &MergeOptions,
+    merged_segment_name: &str,
+    merged_segment_id: [u8; ID_LENGTH],
+    codec_name: &str,
+    lucene_version: LuceneVersion,
+) -> Result<MergedSegment> {
     // Reported, not asserted: this is a `pub` entry point, and a caller that
     // hands it a mis-shaped key table gets a named error rather than a panic
     // (the same call this module's `read`-side errors already make).
@@ -2355,7 +2392,7 @@ pub fn merge_segments(
 
     dir.sync(&files)?;
 
-    Ok(SegmentCommitInfo {
+    let info = SegmentCommitInfo {
         segment_name: merged_segment_name.to_string(),
         segment_id: merged_segment_id,
         codec_name: codec_name.to_string(),
@@ -2370,6 +2407,11 @@ pub fn merge_segments(
         field_infos_files: vec![],
         dv_update_files: vec![],
         ..Default::default()
+    };
+    Ok(MergedSegment {
+        info,
+        doc_id_maps,
+        files,
     })
 }
 

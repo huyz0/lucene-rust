@@ -19,6 +19,13 @@
 //! - `interop write <dir> <from> <to> <docs-per-segment>`: add documents
 //!   `from..to` through `IndexWriter` -- appending to whatever index is
 //!   already there, Java's or this port's -- and commit.
+//! - `interop write-concurrent <dir> <num-docs> <docs-per-segment> <threads>`:
+//!   add documents `0..num_docs` from `threads` threads at once through a
+//!   `ConcurrentIndexWriter` (thread `t` adds every document `i` with
+//!   `i % threads == t`), with a merge thread running and a commit every so
+//!   often; then delete `body:w7` while that merge thread is still running,
+//!   and commit. The resulting segment layout is timing-dependent; the
+//!   document set is not.
 //! - `interop merge <dir>`: open the index and merge every segment into one,
 //!   however many engines wrote them.
 //! - `interop delete <dir> <word>`: delete every document whose `body` has
@@ -41,6 +48,7 @@ use lucene_codecs::points::{IntersectVisitor, Relation};
 use lucene_codecs::stored_fields::{Document, FieldValue, StoredField};
 use lucene_codecs::{doc_values, points};
 use lucene_index::buffered_updates::Term;
+use lucene_index::concurrent_writer::ConcurrentIndexWriter;
 use lucene_index::index_writer::IndexWriter;
 use lucene_index::merge_policy::MergePolicyConfig;
 use lucene_index::segment_info::LuceneVersion;
@@ -179,6 +187,60 @@ fn write(path: &str, from: i64, to: i64, docs_per_segment: i32) {
     println!("interop: this port wrote documents {from}..{to}");
 }
 
+fn write_concurrent(path: &str, num_docs: i64, docs_per_segment: i32, threads: i64) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    std::fs::create_dir_all(path).expect("create dir");
+    let dir = FsDirectory::open(path);
+    let mut writer = open_writer(&dir);
+    writer
+        .set_max_buffered_docs(docs_per_segment)
+        .expect("max buffered docs");
+    writer.set_ram_buffer_size_mb(4096.0).expect("ram buffer");
+    writer.set_merge_policy(Some(MergePolicyConfig {
+        max_merge_at_once: 4,
+        segments_per_tier: 4,
+        floor_segment_size: 1 << 40,
+        ..MergePolicyConfig::default()
+    }));
+    let writer = ConcurrentIndexWriter::new(writer, threads as usize).expect("concurrent writer");
+    let stop = AtomicBool::new(false);
+    let merges = std::thread::scope(|scope| {
+        let merger = scope.spawn(|| writer.run_merges(&stop).expect("merge thread"));
+        let indexers: Vec<_> = (0..threads)
+            .map(|t| {
+                let writer = &writer;
+                scope.spawn(move || {
+                    for i in (t..num_docs).step_by(threads as usize) {
+                        writer.add_document(document(i)).expect("add document");
+                        if i % 1500 == t {
+                            writer.commit().expect("commit");
+                        }
+                    }
+                })
+            })
+            .collect();
+        for indexer in indexers {
+            indexer.join().expect("indexing thread");
+        }
+        writer.commit().expect("commit");
+        // With the merge thread still running: a merge that started before
+        // the delete has to carry it onto its merged segment.
+        writer
+            .delete_documents_by_term(&[Term {
+                field: "body".to_string(),
+                bytes: b"w7".to_vec(),
+            }])
+            .expect("delete");
+        writer.commit().expect("commit");
+        stop.store(true, Ordering::Release);
+        merger.join().expect("merge thread")
+    });
+    println!(
+        "interop: this port wrote documents 0..{num_docs} from {threads} threads \
+         ({merges} concurrent merges) and deleted body:w7"
+    );
+}
+
 fn merge(path: &str) {
     let dir = FsDirectory::open(path);
     let mut writer = open_writer(&dir);
@@ -268,6 +330,14 @@ fn verify(path: &str, num_docs: i64, deleted: Option<i64>) -> usize {
             .doc_values_for_field(cat_number)
             .expect("cat doc values");
         let cat_entry = cat_meta.sorted_entry(cat_number).expect("cat entry");
+        // A segment's ordinals are its own: a segment holding only some of the
+        // ten categories numbers just those. Resolve each through its terms.
+        let mut cat_terms = Vec::new();
+        let mut cursor = lucene_codecs::terms_dict::TermsCursor::open(cat_data, &cat_entry.terms)
+            .expect("cat terms");
+        while let Some(term) = cursor.next_term().expect("cat term") {
+            cat_terms.push(String::from_utf8(term.to_vec()).expect("utf-8 cat"));
+        }
         let mut points_by_doc = Collect(Vec::new());
         if let Some((kdm, kdi, kdd)) = segment.points_files() {
             let points = points::open(kdm, kdi, kdd, &segment.segment_id(), "").expect("points");
@@ -300,8 +370,10 @@ fn verify(path: &str, num_docs: i64, deleted: Option<i64>) -> usize {
             }
             seen[i as usize] = true;
             let ord = doc_values::sorted_ord(cat_data, cat_entry, doc).expect("cat");
-            if ord != Some(i % 10) {
-                fail(format!("doc{i}: cat ord {ord:?}, want {}", i % 10));
+            let cat = ord.and_then(|o| cat_terms.get(o as usize));
+            let want = format!("c{}", i % 10);
+            if cat != Some(&want) {
+                fail(format!("doc{i}: cat {cat:?} (ord {ord:?}), want {want}"));
             }
             let from = points_by_doc.0.partition_point(|&(d, _)| d < doc);
             let to = points_by_doc.0.partition_point(|&(d, _)| d <= doc);
@@ -398,6 +470,12 @@ fn main() {
             arg(2).parse().expect("from"),
             arg(3).parse().expect("to"),
             arg(4).parse().expect("docs per segment"),
+        ),
+        "write-concurrent" => write_concurrent(
+            arg(1),
+            arg(2).parse().expect("num docs"),
+            arg(3).parse().expect("docs per segment"),
+            arg(4).parse().expect("threads"),
         ),
         "merge" => merge(arg(1)),
         "delete" => delete(arg(1), arg(2)),
