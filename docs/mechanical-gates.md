@@ -207,14 +207,13 @@ the debt has to be visible and it has to be able only to shrink. A new site
 fails the gate; a migrated one fails it too, asking for the count to come down
 in the same change.
 
-Current burn-down (8 sites, 7 functions):
+Current burn-down (7 sites, 6 functions):
 
 | file | fn | sites |
 |---|---|---|
 | `lucene-index/src/check_index.rs` | `check_doc_values` | 2 |
 | `lucene-index/src/check_index.rs` | `doc_values_presence` | 1 |
 | `lucene-index/src/check_index.rs` | `sort_key_values` | 1 |
-| `lucene-index/src/merge.rs` | `merge_binary_doc_values` | 1 |
 | `lucene-search/src/doc_value_query.rs` | `search_numeric_range_with_skip_index` | 1 |
 | `lucene-search/src/doc_value_query.rs` | `sort_by_numeric_doc_value` | 1 |
 | `lucene-search/src/facets.rs` | `count_single_valued` | 1 |
