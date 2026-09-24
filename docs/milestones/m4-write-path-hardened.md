@@ -78,6 +78,20 @@ exist.
 
 Write the decision into this file before starting T4.1.
 
+> **Decision (2026-09-24): k-NN is in the native matrix.** The premise above
+> is out of date: `Lucene99HnswVectorsFormat` is ported -- graph build, search
+> and merge (`lucene-codecs/src/hnsw.rs`, `hnsw_vectors.rs`), written at flush
+> by `IndexWriter::add_document_with_vectors` and rebuilt or reused at merge
+> (`merge.rs::merge_vectors`) -- and real Lucene reads it: `VerifyVectors`
+> walks every level's neighbours and runs a `TopKnnCollector` search over the
+> Rust-built graph, `VerifyVectorSegment` runs `KnnFloatVectorQuery` /
+> `KnnByteVectorQuery` against Lucene's own brute force plus `CheckIndex`,
+> and `VerifySortedSegment` searches a graph rebuilt by a sorted merge. So no
+> separate HNSW milestone is needed, and M5 serves vector fields natively
+> rather than delegating them. Scalar-quantized formats
+> (`Lucene99ScalarQuantizedVectorsFormat` and later) are not ported and stay
+> out of the matrix until a milestone takes them on.
+
 ---
 
 ## Tasks

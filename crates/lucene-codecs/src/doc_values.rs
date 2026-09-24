@@ -1845,6 +1845,144 @@ pub fn sorted_numeric_values(
     }
 }
 
+/// A forward-only cursor over a SORTED_NUMERIC column --
+/// `Lucene90DocValuesProducer.getSortedNumeric`'s iterator: one
+/// `IndexedDISI` walk over the docs-with-field region for the whole scan,
+/// and each document's values decoded straight into a caller-owned buffer.
+/// [`sorted_numeric_values`] answers the same question for one document but
+/// re-walks the region from its start and allocates each time; a merge,
+/// which visits every document of a source in order, holds one of these.
+pub struct SortedNumericReader<'a> {
+    data: &'a [u8],
+    entry: &'a SortedNumericEntry,
+    /// `None` for a dense or empty field, and when the region is not inside
+    /// `data` (a lookup then falls through to [`sorted_numeric_values`],
+    /// which raises the error).
+    docs: Option<indexed_disi::DisiCursor<'a>>,
+}
+
+impl<'a> SortedNumericReader<'a> {
+    /// Opens a cursor over `entry`'s values in `data` (the whole `.dvd`).
+    /// Allocates nothing and reads nothing up front.
+    pub fn new(data: &'a [u8], entry: &'a SortedNumericEntry) -> Self {
+        let numeric = &entry.numeric;
+        let docs = if numeric.is_empty_field() || numeric.is_dense() {
+            None
+        } else {
+            region(
+                data,
+                numeric.docs_with_field_offset,
+                numeric.docs_with_field_length,
+            )
+            .ok()
+            .map(|region| {
+                indexed_disi::DisiCursor::new(
+                    region,
+                    numeric.dense_rank_power,
+                    numeric.jump_table_entry_count,
+                )
+            })
+        };
+        Self { data, entry, docs }
+    }
+
+    /// Replaces `out` with document `doc`'s values, in stored (ascending)
+    /// order; leaves it empty when the document has none. Documents must be
+    /// visited in non-decreasing order, as with any `DocIdSetIterator`.
+    pub fn values(&mut self, doc: i32, out: &mut Vec<i64>) -> Result<()> {
+        out.clear();
+        let numeric = &self.entry.numeric;
+        if numeric.is_empty_field() {
+            return Ok(());
+        }
+        let rank: i64 = if numeric.is_dense() {
+            if doc < 0 || doc >= self.entry.num_docs_with_field {
+                return Err(Error::DocOutOfRange(doc, numeric.num_values));
+            }
+            i64::from(doc)
+        } else {
+            let Some(cursor) = self.docs.as_mut().filter(|_| doc >= 0) else {
+                *out = sorted_numeric_values(self.data, self.entry, doc)?;
+                return Ok(());
+            };
+            match cursor.advance_exact(doc)? {
+                Some(r) => r as i64,
+                None => return Ok(()),
+            }
+        };
+        match &self.entry.addresses {
+            None => out.push(decode_value(self.data, numeric, rank)?),
+            Some(addrs) => {
+                let addr_region = region(self.data, addrs.offset, addrs.length)?;
+                let start = direct_monotonic::get(addr_region, &addrs.meta, rank)?;
+                // ARITH: `rank` is a doc id or an `IndexedDISI` ordinal, both
+                // `i32`-bounded, so `rank + 1` cannot overflow.
+                #[allow(clippy::arithmetic_side_effects)]
+                let end = direct_monotonic::get(addr_region, &addrs.meta, rank + 1)?;
+                // Same bound as `sorted_numeric_values`: the range must lie in
+                // the flat value array, or a constant-encoded field would
+                // "decode" an address-chosen number of values.
+                if start < 0 || end < start || end > numeric.num_values {
+                    return Err(Error::CorruptAddressRange {
+                        field_number: self.entry.field_number,
+                        start,
+                        end,
+                        num_values: numeric.num_values,
+                    });
+                }
+                for i in start..end {
+                    out.push(decode_value(self.data, numeric, i)?);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A SORTED column whose dictionary is already built: `dict` sorted and
+/// unique, `ords[k]` the ordinal of document `docs[k]`, `docs` strictly
+/// ascending. What `DocValuesConsumer.mergeSortedField` hands
+/// `addSortedField` -- an `OrdinalMap` over the sources' dictionaries and the
+/// documents' remapped ordinals -- so a merge never rebuilds a dictionary
+/// from per-document bytes.
+#[derive(Debug, Clone, Default)]
+pub struct SortedOrdsColumn {
+    pub dict: Vec<Vec<u8>>,
+    pub docs: Vec<i32>,
+    pub ords: Vec<i64>,
+}
+
+/// The SORTED_SET counterpart of [`SortedOrdsColumn`]: document `docs[k]`
+/// has `counts[k]` ordinals (at least one), stored consecutively in `ords`,
+/// ascending and unique within the document.
+#[derive(Debug, Clone, Default)]
+pub struct SortedSetOrdsColumn {
+    pub dict: Vec<Vec<u8>>,
+    pub docs: Vec<i32>,
+    pub counts: Vec<u32>,
+    pub ords: Vec<i64>,
+}
+
+/// A SORTED_NUMERIC column streamed in doc order: document `docs[k]` has
+/// `counts[k]` values (at least one), ascending, stored consecutively in
+/// `values`. The flat shape `Lucene90DocValuesConsumer.addSortedNumericField`
+/// consumes from a merge's iterator, without a vector per document.
+#[derive(Debug, Clone, Default)]
+pub struct SortedNumericColumn {
+    pub docs: Vec<i32>,
+    pub counts: Vec<u32>,
+    pub values: Vec<i64>,
+}
+
+/// A BINARY column streamed in doc order: document `docs[k]`'s value is the
+/// next `lengths[k]` bytes of `bytes`.
+#[derive(Debug, Clone, Default)]
+pub struct BinaryColumn {
+    pub docs: Vec<i32>,
+    pub lengths: Vec<u32>,
+    pub bytes: Vec<u8>,
+}
+
 /// Write-side error, kept separate from the read-side [`Error`] since none
 /// of its variants are decode failures.
 #[derive(Debug, thiserror::Error)]
@@ -1915,6 +2053,17 @@ pub enum DenseField<'a> {
     SparseSorted(i32, &'a [(i32, Vec<u8>)]),
     SparseSortedNumeric(i32, &'a [(i32, Vec<i64>)]),
     SparseSortedSet(i32, &'a [(i32, Vec<Vec<u8>>)]),
+    /// A SORTED column with its dictionary already built, dense or sparse
+    /// (see [`SortedOrdsColumn`]).
+    SortedOrds(i32, &'a SortedOrdsColumn),
+    /// A SORTED_SET column with its dictionary already built, dense or
+    /// sparse (see [`SortedSetOrdsColumn`]).
+    SortedSetOrds(i32, &'a SortedSetOrdsColumn),
+    /// A SORTED_NUMERIC column in flat form, dense or sparse (see
+    /// [`SortedNumericColumn`]).
+    SortedNumericColumn(i32, &'a SortedNumericColumn),
+    /// A BINARY column in flat form, dense or sparse (see [`BinaryColumn`]).
+    BinaryColumn(i32, &'a BinaryColumn),
 }
 
 impl DenseField<'_> {
@@ -1929,7 +2078,11 @@ impl DenseField<'_> {
             | DenseField::SparseBinary(n, _)
             | DenseField::SparseSorted(n, _)
             | DenseField::SparseSortedNumeric(n, _)
-            | DenseField::SparseSortedSet(n, _) => *n,
+            | DenseField::SparseSortedSet(n, _)
+            | DenseField::SortedOrds(n, _)
+            | DenseField::SortedSetOrds(n, _)
+            | DenseField::SortedNumericColumn(n, _)
+            | DenseField::BinaryColumn(n, _) => *n,
         }
     }
 
@@ -1949,6 +2102,10 @@ impl DenseField<'_> {
             DenseField::SparseSorted(_, v) => v.len(),
             DenseField::SparseSortedNumeric(_, v) => v.len(),
             DenseField::SparseSortedSet(_, v) => v.len(),
+            DenseField::SortedOrds(_, c) => c.docs.len(),
+            DenseField::SortedSetOrds(_, c) => c.docs.len(),
+            DenseField::SortedNumericColumn(_, c) => c.docs.len(),
+            DenseField::BinaryColumn(_, c) => c.docs.len(),
         }
     }
 
@@ -1960,6 +2117,10 @@ impl DenseField<'_> {
                 | DenseField::SparseSorted(..)
                 | DenseField::SparseSortedNumeric(..)
                 | DenseField::SparseSortedSet(..)
+                | DenseField::SortedOrds(..)
+                | DenseField::SortedSetOrds(..)
+                | DenseField::SortedNumericColumn(..)
+                | DenseField::BinaryColumn(..)
         )
     }
 }
@@ -2137,6 +2298,47 @@ pub fn write_dense_fields(
                 meta.push(DOC_VALUES_TYPE_SORTED_SET);
                 write_sorted_set_entry_body(&mut meta, &mut data, &doc_ids, &per_doc, max_doc);
             }
+            DenseField::SortedOrds(_, column) => {
+                check_ascending_docs(&column.docs, max_doc)?;
+                meta.push(DOC_VALUES_TYPE_SORTED);
+                write_numeric_entry_body(&mut meta, &mut data, &column.docs, &column.ords, max_doc);
+                write_terms_dict(&mut meta, &mut data, &column.dict);
+            }
+            DenseField::SortedSetOrds(_, column) => {
+                check_ascending_docs(&column.docs, max_doc)?;
+                if let Some(k) = column.counts.iter().position(|&c| c == 0) {
+                    return Err(WriteError::EmptyMultiValuedDoc(column.docs[k]));
+                }
+                meta.push(DOC_VALUES_TYPE_SORTED_SET);
+                write_sorted_set_ords_entry_body(&mut meta, &mut data, column, max_doc);
+            }
+            DenseField::SortedNumericColumn(_, column) => {
+                check_ascending_docs(&column.docs, max_doc)?;
+                if let Some(k) = column.counts.iter().position(|&c| c == 0) {
+                    return Err(WriteError::EmptyMultiValuedDoc(column.docs[k]));
+                }
+                meta.push(DOC_VALUES_TYPE_SORTED_NUMERIC);
+                write_numeric_entry_body(
+                    &mut meta,
+                    &mut data,
+                    &column.docs,
+                    &column.values,
+                    max_doc,
+                );
+                meta.write_i32(column.docs.len() as i32); // numDocsWithField
+                if column.docs.len() != column.values.len() {
+                    write_address_array(
+                        &mut meta,
+                        &mut data,
+                        &end_offsets(column.counts.iter().map(|&c| c as usize)),
+                    );
+                }
+            }
+            DenseField::BinaryColumn(_, column) => {
+                check_ascending_docs(&column.docs, max_doc)?;
+                meta.push(DOC_VALUES_TYPE_BINARY);
+                write_binary_column_body(&mut meta, &mut data, column, max_doc);
+            }
         }
     }
 
@@ -2293,6 +2495,42 @@ fn write_binary_entry_body(
     }
 }
 
+/// [`write_binary_entry_body`] for a [`BinaryColumn`]: the same bytes, from
+/// one flat buffer instead of a vector per document.
+// ARITH: writer-side offsets into buffers already in memory.
+#[allow(clippy::arithmetic_side_effects)]
+fn write_binary_column_body(
+    meta: &mut Vec<u8>,
+    data: &mut Vec<u8>,
+    column: &BinaryColumn,
+    max_doc: i32,
+) {
+    let data_offset = data.len() as i64;
+    data.extend_from_slice(&column.bytes);
+    meta.write_i64(data_offset);
+    meta.write_i64(column.bytes.len() as i64);
+    write_docs_with_field(meta, data, &column.docs, max_doc);
+    meta.write_i32(column.docs.len() as i32); // numDocsWithField
+                                              // Java's trackers start at `(Integer.MAX_VALUE, 0)`; see
+                                              // `write_binary_entry_body`.
+    let min_length = column
+        .lengths
+        .iter()
+        .map(|&l| l as i32)
+        .min()
+        .unwrap_or(i32::MAX);
+    let max_length = column.lengths.iter().map(|&l| l as i32).max().unwrap_or(0);
+    meta.write_i32(min_length);
+    meta.write_i32(max_length);
+    if min_length < max_length {
+        write_address_array(
+            meta,
+            data,
+            &end_offsets(column.lengths.iter().map(|&l| l as usize)),
+        );
+    }
+}
+
 /// A SORTED_NUMERIC entry body for a column that may be sparse.
 fn write_sorted_numeric_entry_body(
     meta: &mut Vec<u8>,
@@ -2309,6 +2547,54 @@ fn write_sorted_numeric_entry_body(
     if num_docs_with_field as i64 != flat.len() as i64 {
         write_address_array(meta, data, &end_offsets(per_doc.iter().map(|v| v.len())));
     }
+}
+
+/// `docs` strictly ascending and every one below `max_doc` -- what the
+/// `Sparse*` variants establish by sorting a copy, checked in place for the
+/// columns that arrive already in doc order.
+fn check_ascending_docs(docs: &[i32], max_doc: i32) -> WriteResult<()> {
+    for w in docs.windows(2) {
+        if w[0] >= w[1] {
+            return Err(WriteError::DocIdsNotAscending(w[1]));
+        }
+    }
+    if let Some(&doc) = docs.iter().find(|&&d| d < 0 || d >= max_doc) {
+        return Err(WriteError::DocIdOutOfRange(doc, max_doc));
+    }
+    Ok(())
+}
+
+/// `Lucene90DocValuesConsumer.addSortedSetField` for a column whose
+/// dictionary is already built ([`SortedSetOrdsColumn`]). As in Java, a
+/// column in which every document has exactly one ordinal is written in the
+/// SORTED shape (`multiValued = 0`, `isSingleValued`), dense or sparse;
+/// otherwise the flattened ordinals, the docs-with-field count and, when some
+/// document has more than one, the address array.
+// ARITH: writer-side sums of per-document counts of an in-memory column.
+#[allow(clippy::arithmetic_side_effects)]
+fn write_sorted_set_ords_entry_body(
+    meta: &mut Vec<u8>,
+    data: &mut Vec<u8>,
+    column: &SortedSetOrdsColumn,
+    max_doc: i32,
+) {
+    if column.counts.iter().all(|&c| c == 1) {
+        meta.push(0); // multiValued = false: the plain SORTED shape.
+        write_numeric_entry_body(meta, data, &column.docs, &column.ords, max_doc);
+    } else {
+        meta.push(1); // multiValued = true.
+        write_numeric_entry_body(meta, data, &column.docs, &column.ords, max_doc);
+        let num_docs_with_field = column.docs.len() as i32;
+        meta.write_i32(num_docs_with_field);
+        if column.docs.len() != column.ords.len() {
+            write_address_array(
+                meta,
+                data,
+                &end_offsets(column.counts.iter().map(|&c| c as usize)),
+            );
+        }
+    }
+    write_terms_dict(meta, data, &column.dict);
 }
 
 /// A SORTED_SET entry body for a column that may be sparse.

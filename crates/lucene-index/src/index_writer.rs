@@ -543,22 +543,6 @@ pub enum Error {
          writer's index sort ({sort})"
     )]
     DocValuesUpdateOnIndexSortField { field: String, sort: String },
-    /// This writer writes every doc-values field of one flush into a single
-    /// `.dvm`/`.dvd`/`.dvs` triple through
-    /// [`doc_values::write_dense_fields`], which is dense-only. With exactly
-    /// one field the sparse writer is used instead, so this only bites a
-    /// multi-field configuration.
-    #[error(
-        "flush: doc-values field {field:?} has no value on {missing} of {max_doc} documents; \
-         with more than one doc-values field configured only a NUMERIC field may be sparse \
-         (this writer batches them into one .dvm/.dvd, and doc_values::write_dense_fields is \
-         dense-only apart from NUMERIC)"
-    )]
-    SparseFieldInMultiFieldDocValues {
-        field: String,
-        missing: usize,
-        max_doc: usize,
-    },
     /// `add_doc_values_field` twice for the same field, the doc-values
     /// analogue of [`Error::DuplicatePostingsField`]/
     /// [`Error::DuplicateVectorField`].
@@ -989,6 +973,10 @@ enum DenseColumn {
     Sorted(i32, Vec<Vec<u8>>),
     SortedNumeric(i32, Vec<Vec<i64>>),
     SortedSet(i32, Vec<Vec<Vec<u8>>>),
+    SparseBinary(i32, Vec<(i32, Vec<u8>)>),
+    SparseSorted(i32, Vec<(i32, Vec<u8>)>),
+    SparseSortedNumeric(i32, Vec<(i32, Vec<i64>)>),
+    SparseSortedSet(i32, Vec<(i32, Vec<Vec<u8>>)>),
 }
 
 impl DenseColumn {
@@ -1000,6 +988,12 @@ impl DenseColumn {
             DenseColumn::Sorted(n, v) => doc_values::DenseField::Sorted(*n, v),
             DenseColumn::SortedNumeric(n, v) => doc_values::DenseField::SortedNumeric(*n, v),
             DenseColumn::SortedSet(n, v) => doc_values::DenseField::SortedSet(*n, v),
+            DenseColumn::SparseBinary(n, v) => doc_values::DenseField::SparseBinary(*n, v),
+            DenseColumn::SparseSorted(n, v) => doc_values::DenseField::SparseSorted(*n, v),
+            DenseColumn::SparseSortedNumeric(n, v) => {
+                doc_values::DenseField::SparseSortedNumeric(*n, v)
+            }
+            DenseColumn::SparseSortedSet(n, v) => doc_values::DenseField::SparseSortedSet(*n, v),
         }
     }
 }
@@ -1635,10 +1629,9 @@ impl<'d> IndexWriter<'d> {
     /// wrong/zero value). With **more than one** configured field they share
     /// one `.dvm`/`.dvd` triple written by
     /// [`doc_values::write_dense_fields`], which accepts a sparse column only
-    /// for NUMERIC ([`doc_values::DenseField::SparseNumeric`]) -- so a
-    /// NUMERIC field may still be sparse (which is what lets an index-sort
-    /// tier have missing values) and any other type must be dense
-    /// ([`Error::SparseFieldInMultiFieldDocValues`]). A doc whose
+    /// for every type (a field some documents have no value for is written
+    /// through its sparse variant, e.g.
+    /// [`doc_values::DenseField::SparseSorted`]). A doc whose
     /// value is present but the wrong [`FieldValue`] variant still fails the
     /// whole flush with [`Error::NonNumericDocValue`]/
     /// [`Error::NonBinaryDocValue`], leaving `dir`/`pending_docs`/
@@ -4490,11 +4483,8 @@ impl<'d> IndexWriter<'d> {
     /// `.dvm`/`.dvd`/`.dvs` triple through
     /// [`doc_values::write_dense_fields`] -- what a real multi-field
     /// `Lucene90DocValuesFormat` segment looks like, one meta entry per field
-    /// interleaved into the same buffers. That writer is dense-only, so a
-    /// field missing a value on some doc is
-    /// [`Error::SparseFieldInMultiFieldDocValues`] rather than a silent
-    /// downgrade; with exactly one field the sparse writers above are still
-    /// used.
+    /// interleaved into the same buffers, each field dense or sparse as its
+    /// values require.
     fn build_doc_values_output(
         docs: &[Document],
         configs: &[DocValuesFieldConfig],
@@ -4533,81 +4523,57 @@ impl<'d> IndexWriter<'d> {
         )?)
     }
 
-    /// One field's whole column, dense over `docs`, for the multi-field
-    /// branch of [`Self::build_doc_values_output`]. Every doc must carry a
-    /// value; the count that do not is reported, because "which document is
-    /// missing the sort key" is the first thing a caller wants to know.
+    /// One field's column for the multi-field branch of
+    /// [`Self::build_doc_values_output`]: dense when every document carries a
+    /// value, else the sparse variant of the same type, as
+    /// `Lucene90DocValuesConsumer` writes a field with missing values
+    /// (`writeValues`' `IndexedDISI` over the documents that have one).
     fn collect_dense_column(
         docs: &[Document],
         config: &DocValuesFieldConfig,
     ) -> Result<DenseColumn> {
-        let sparse = |missing: usize| Error::SparseFieldInMultiFieldDocValues {
-            field: config.name.clone(),
-            missing,
-            max_doc: docs.len(),
-        };
-        match config.doc_values_type {
+        let n = config.field_number;
+        let dense = |present_len: usize| present_len == docs.len();
+        Ok(match config.doc_values_type {
             DocValuesType::Binary | DocValuesType::Sorted => {
                 let present = Self::collect_binary_values(docs, config)?;
-                if present.len() != docs.len() {
-                    // ARITH: `collect_binary_values` pushes at most one
-                    // entry per element of `docs` (one `find` per document,
-                    // and a document with no value for the field is skipped),
-                    // so `present.len() <= docs.len()`.
-                    #[allow(clippy::arithmetic_side_effects)]
-                    return Err(sparse(docs.len() - present.len()));
+                let binary = config.doc_values_type == DocValuesType::Binary;
+                match (dense(present.len()), binary) {
+                    (true, true) => {
+                        DenseColumn::Binary(n, present.into_iter().map(|(_, v)| v).collect())
+                    }
+                    (true, false) => {
+                        DenseColumn::Sorted(n, present.into_iter().map(|(_, v)| v).collect())
+                    }
+                    (false, true) => DenseColumn::SparseBinary(n, present),
+                    (false, false) => DenseColumn::SparseSorted(n, present),
                 }
-                let values: Vec<Vec<u8>> = present.into_iter().map(|(_, v)| v).collect();
-                Ok(if config.doc_values_type == DocValuesType::Binary {
-                    DenseColumn::Binary(config.field_number, values)
-                } else {
-                    DenseColumn::Sorted(config.field_number, values)
-                })
             }
             DocValuesType::SortedNumeric => {
                 let present = Self::collect_sorted_numeric_values(docs, config)?;
-                if present.len() != docs.len() {
-                    // ARITH: `collect_sorted_numeric_values` pushes at most one
-                    // entry per element of `docs` (one `find` per document,
-                    // and a document with no value for the field is skipped),
-                    // so `present.len() <= docs.len()`.
-                    #[allow(clippy::arithmetic_side_effects)]
-                    return Err(sparse(docs.len() - present.len()));
+                if dense(present.len()) {
+                    DenseColumn::SortedNumeric(n, present.into_iter().map(|(_, v)| v).collect())
+                } else {
+                    DenseColumn::SparseSortedNumeric(n, present)
                 }
-                Ok(DenseColumn::SortedNumeric(
-                    config.field_number,
-                    present.into_iter().map(|(_, v)| v).collect(),
-                ))
             }
             DocValuesType::SortedSet => {
                 let present = Self::collect_sorted_set_values(docs, config)?;
-                if present.len() != docs.len() {
-                    // ARITH: `collect_sorted_set_values` pushes at most one
-                    // entry per element of `docs` (one `find` per document,
-                    // and a document with no value for the field is skipped),
-                    // so `present.len() <= docs.len()`.
-                    #[allow(clippy::arithmetic_side_effects)]
-                    return Err(sparse(docs.len() - present.len()));
+                if dense(present.len()) {
+                    DenseColumn::SortedSet(n, present.into_iter().map(|(_, v)| v).collect())
+                } else {
+                    DenseColumn::SparseSortedSet(n, present)
                 }
-                Ok(DenseColumn::SortedSet(
-                    config.field_number,
-                    present.into_iter().map(|(_, v)| v).collect(),
-                ))
             }
             _ => {
                 let present = Self::collect_numeric_values(docs, config)?;
-                // NUMERIC is the one type the multi-field writer can express
-                // sparsely, which is what lets an index-sort tier have
-                // missing values.
-                if present.len() != docs.len() {
-                    return Ok(DenseColumn::SparseNumeric(config.field_number, present));
+                if dense(present.len()) {
+                    DenseColumn::Numeric(n, present.into_iter().map(|(_, v)| v).collect())
+                } else {
+                    DenseColumn::SparseNumeric(n, present)
                 }
-                Ok(DenseColumn::Numeric(
-                    config.field_number,
-                    present.into_iter().map(|(_, v)| v).collect(),
-                ))
             }
-        }
+        })
     }
 
     /// `(doc_id, value)` for every doc carrying a NUMERIC value for
@@ -17809,8 +17775,8 @@ mod tests {
             assert!(result.all_passed(), "{:?}", result.failures());
         }
 
-        // Sparse SORTED alongside it: rejected, naming the field and the
-        // number of documents that have no value.
+        // Sparse SORTED alongside it: written as a sparse SORTED column in the
+        // same `.dvm`/`.dvd` (this used to be refused), and clean.
         let tmp = tempdir("multi-dv-sparse-sorted");
         let dir = FsDirectory::open(&tmp);
         let fields = vec![
@@ -17853,12 +17819,10 @@ mod tests {
                 ],
             })
             .unwrap();
-        let err = writer.flush().unwrap_err();
-        assert!(matches!(
-            err,
-            Error::SparseFieldInMultiFieldDocValues { ref field, missing: 1, max_doc: 2 }
-                if field == "label"
-        ));
+        writer.commit().unwrap();
+        for result in crate::check_index::check_directory(&dir).unwrap() {
+            assert!(result.all_passed(), "{:?}", result.failures());
+        }
     }
 
     /// An index-sorted segment *is* offered to the merge policy now, because

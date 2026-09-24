@@ -1234,6 +1234,146 @@ fn bench_term_dict_write(warmup: Duration, measure: Duration) {
     }
 }
 
+/// Doc-values merge throughput, against `DvMergeMicro.java`: four segments of
+/// documents carrying five sparse doc-values columns (every type, each missing
+/// on a different stride, as `write_sparse_doc_values_fixture`), merged into
+/// one. Each timed merge starts from a fresh, untimed copy of the unmerged
+/// segments, and includes opening the writer -- as the Java side's does.
+fn bench_dv_merge(warmup: Duration, measure: Duration) {
+    use lucene_codecs::field_infos::{
+        DocValuesSkipIndexType, DocValuesType, FieldInfo, IndexOptions, VectorEncoding,
+        VectorSimilarityFunction,
+    };
+    use lucene_codecs::stored_fields::{Document, FieldValue, StoredField};
+    use lucene_index::index_writer::IndexWriter;
+    use lucene_index::merge_policy::MergePolicyConfig;
+    use lucene_index::segment_info::LuceneVersion;
+    use lucene_store::FsDirectory;
+
+    const DOCS: usize = 200_000;
+    const SEGMENTS: usize = 4;
+    let version = LuceneVersion { major: 10, minor: 5, bugfix: 0 };
+    let field = |name: &str, number: i32, dv: DocValuesType| FieldInfo {
+        name: name.to_string(),
+        number,
+        store_term_vectors: false,
+        omit_norms: true,
+        store_payloads: false,
+        soft_deletes_field: false,
+        parent_field: false,
+        index_options: IndexOptions::None,
+        doc_values_type: dv,
+        doc_values_skip_index_type: DocValuesSkipIndexType::None,
+        doc_values_gen: -1,
+        attributes: vec![],
+        point_dimension_count: 0,
+        point_index_dimension_count: 0,
+        point_num_bytes: 0,
+        vector_dimension: 0,
+        vector_encoding: VectorEncoding::Byte,
+        vector_similarity_function: VectorSimilarityFunction::Euclidean,
+    };
+    let fields = || {
+        vec![
+            field("num", 0, DocValuesType::Numeric),
+            field("bin", 1, DocValuesType::Binary),
+            field("sorted", 2, DocValuesType::Sorted),
+            field("snum", 3, DocValuesType::SortedNumeric),
+            field("sset", 4, DocValuesType::SortedSet),
+        ]
+    };
+    let document = |i: usize| {
+        let mut fields = Vec::new();
+        let mut add = |field_number, value| fields.push(StoredField { field_number, value });
+        if !i.is_multiple_of(3) {
+            add(0, FieldValue::Long(7 * i as i64 - 1000));
+        }
+        if !i.is_multiple_of(5) {
+            add(1, FieldValue::Binary(format!("b{i}").into_bytes()));
+        }
+        if !i.is_multiple_of(7) {
+            add(2, FieldValue::String(format!("s{}", i % 50)));
+        }
+        if !i.is_multiple_of(11) {
+            for v in [(i % 13) as i64, i as i64, -(i as i64)] {
+                add(3, FieldValue::Long(v));
+            }
+        }
+        if !i.is_multiple_of(13) {
+            add(4, FieldValue::String(format!("t{}", i % 17)));
+            add(4, FieldValue::String(format!("t{}", i % 19)));
+        }
+        Document { fields }
+    };
+    let configure = |w: &mut IndexWriter<'_>| {
+        w.set_doc_values_field(Some("num")).unwrap();
+        for name in ["bin", "sorted", "snum", "sset"] {
+            w.add_doc_values_field(name).unwrap();
+        }
+    };
+
+    let root = std::env::temp_dir().join(format!("dv-merge-micro-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let source = root.join("source");
+    std::fs::create_dir_all(&source).unwrap();
+    {
+        let dir = FsDirectory::open(&source);
+        let mut w = IndexWriter::open(&dir, fields(), "Lucene104", version).unwrap();
+        w.set_max_buffered_docs((DOCS / SEGMENTS) as i32).unwrap();
+        // Flush on document count only, as the Java side does.
+        w.set_ram_buffer_size_mb(4096.0).unwrap();
+        configure(&mut w);
+        for i in 0..DOCS {
+            w.add_document(document(i)).unwrap();
+        }
+        w.commit().unwrap();
+        assert_eq!(w.segment_infos().segments.len(), SEGMENTS);
+    }
+    let work = root.join("work");
+    let merge_once = || -> Duration {
+        let _ = std::fs::remove_dir_all(&work);
+        std::fs::create_dir_all(&work).unwrap();
+        for f in std::fs::read_dir(&source).unwrap() {
+            let f = f.unwrap();
+            std::fs::copy(f.path(), work.join(f.file_name())).unwrap();
+        }
+        let start = Instant::now();
+        let dir = FsDirectory::open(&work);
+        let mut w = IndexWriter::open(&dir, fields(), "Lucene104", version).unwrap();
+        configure(&mut w);
+        w.set_merge_policy(Some(MergePolicyConfig {
+            max_merge_at_once: 10,
+            segments_per_tier: 2,
+            max_merged_segment_size: u64::MAX / 4,
+            floor_segment_size: 1 << 30,
+            ..MergePolicyConfig::default()
+        }));
+        w.commit().unwrap();
+        let elapsed = start.elapsed();
+        assert_eq!(w.segment_infos().segments.len(), 1, "the merge ran");
+        elapsed
+    };
+    let warm_end = Instant::now() + warmup;
+    while Instant::now() < warm_end {
+        merge_once();
+    }
+    let mut total = Duration::ZERO;
+    let mut docs = 0u64;
+    let measure_end = Instant::now() + measure;
+    loop {
+        total += merge_once();
+        docs += DOCS as u64;
+        if Instant::now() >= measure_end {
+            break;
+        }
+    }
+    println!(
+        "sparse_5_types\t{:.3}\t{docs}",
+        total.as_nanos() as f64 / docs as f64
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 fn main() {
     let ms = |name: &str, default: u64| -> Duration {
         Duration::from_millis(
@@ -1279,6 +1419,7 @@ fn main() {
         "analysis" => bench_analysis(warmup, measure),
         "vectors" => bench_vectors(warmup, measure),
         "term_dict_write" => bench_term_dict_write(warmup, measure),
+        "dv_merge" => bench_dv_merge(warmup, measure),
         corpus @ ("postings_adv" | "postings_freq" | "positions" | "term_seek" | "doc_values"
         | "norms" | "points" | "memory") => {
             let index = std::env::args()
