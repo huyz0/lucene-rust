@@ -87,7 +87,11 @@ impl AsRef<[u8]> for Input {
 /// publish a commit atomically). Locking (`NativeFSLockFactory`) and file
 /// reference-counting (`IndexFileDeleter`) are still deferred — see
 /// `docs/parity.md`.
-pub trait Directory {
+/// `Send + Sync`, as Java's `Directory` is by contract: a writer's indexing
+/// threads flush segments into it concurrently while its merge thread reads
+/// sources out of it (M4's T4.3). Every implementation here is either
+/// stateless over the filesystem or guards its own state.
+pub trait Directory: Send + Sync {
     /// Port of `Directory.listAll()`: every file name in the directory, sorted.
     fn list_all(&self) -> Result<Vec<String>>;
 

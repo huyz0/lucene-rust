@@ -14,6 +14,7 @@
 #   8. Rust writes -> Java deletes by term -> both read
 #   9. Java writes -> Rust deletes -> Rust merges -> both read
 #  10. Java writes -> Java deletes -> Rust merges -> both read
+#  11. Rust writes from 4 threads, merging and deleting concurrently -> both read
 #
 # Directions 9 and 10 merge compound segments that carry deletions: the
 # `.liv` sits beside the archive, not in it.
@@ -39,7 +40,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --jars) JARS="$2"; shift 2 ;;
     --keep) KEEP=1; shift ;;
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,21p' "$0"; exit 0 ;;
     *) echo "verify-interop: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -114,6 +115,9 @@ d9() { local d="$WORK/9"
 d10() { local d="$WORK/10"
   step "10" java write "$d" 0 4000 1000 && step "10" java delete "$d" w7 && step "10" rust merge "$d" \
     && step "10" java verify "$d" 4000 1 w7 && step "10" rust verify "$d" 4000 w7; }
+d11() { local d="$WORK/11"
+  step "11" rust write-concurrent "$d" 6000 250 4 \
+    && step "11" java verify "$d" 6000 1000 w7 && step "11" rust verify "$d" 6000 w7; }
 
 echo "verify-interop: Lucene $LUCENE_VERSION and this port on one index"
 direction "1. Java writes -> Rust reads" d1
@@ -126,6 +130,7 @@ direction "7. Java writes -> Rust deletes by term -> both read" d7
 direction "8. Rust writes -> Java deletes by term -> both read" d8
 direction "9. Java writes -> Rust deletes -> Rust merges -> both read" d9
 direction "10. Java writes -> Java deletes -> Rust merges -> both read" d10
+direction "11. Rust writes from 4 threads, merging and deleting concurrently -> both read" d11
 
 echo
 if [ "$failed" -eq 0 ]; then

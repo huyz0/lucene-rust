@@ -95,6 +95,13 @@ case "$BENCH" in
     # own segments from the same documents.
     MAIN=PointsWriteMicro
     SRC=benchmarks/micro/java/PointsWriteMicro.java ;;
+  concurrent_index)
+    # Write side: one IndexWriter shared by one and by four threads, both
+    # engines indexing the same documents. Needs --pin with four CPUs for the
+    # four-thread cases to mean anything.
+    MAIN=ConcurrentIndexMicro
+    SRC=benchmarks/micro/java/ConcurrentIndexMicro.java
+    JAR_MODULES="lucene-core lucene-analysis-common" ;;
   pfor_decode)
     MAIN=org.apache.lucene.codecs.lucene104.PForUtilMicro
     SRC=benchmarks/micro/java/org/apache/lucene/codecs/lucene104/PForUtilMicro.java ;;

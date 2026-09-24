@@ -558,6 +558,34 @@ impl<'d> IndexFileDeleter<'d> {
         files
     }
 
+    /// Holds a reference on every file of `segments` -- what a merge in
+    /// progress does to its sources (`IndexWriter.mergeInit`'s readers), so a
+    /// delete or a checkpoint that releases one of them meanwhile cannot take
+    /// a file the merge is about to read. Returns the files held, for
+    /// [`Self::release_files`].
+    pub(crate) fn hold_segment_files(
+        &mut self,
+        segments: &[SegmentCommitInfo],
+    ) -> Result<Vec<String>> {
+        let mut held = Vec::new();
+        for sci in segments {
+            self.ensure_si_files(sci)?;
+            let (_, si_files) = self
+                .si_files
+                .get(sci.segment_name.as_str())
+                .expect("just ensured above");
+            held.extend(sci.files(si_files));
+        }
+        self.inc_ref_all(&held);
+        Ok(held)
+    }
+
+    /// Drops [`Self::hold_segment_files`]' references, deleting whatever
+    /// nothing else still holds.
+    pub(crate) fn release_files(&mut self, files: &[String]) -> Result<()> {
+        self.dec_ref_all(files)
+    }
+
     fn inc_ref_all(&mut self, files: &[String]) {
         for name in files {
             let count = self.ref_counts.entry(name.clone()).or_insert(0);

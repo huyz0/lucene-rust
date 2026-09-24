@@ -67,6 +67,7 @@
 //! existed.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// A sequence number: real Lucene's `IndexWriter` return value from every
 /// mutating method. Starts at 1 (`DocumentsWriterDeleteQueue`'s constructor
@@ -229,7 +230,13 @@ pub struct FieldUpdatesBuffer {
 pub struct BufferedUpdates {
     /// `BufferedUpdates.deleteTerms`: term -> the highest `docIDUpto` seen
     /// for it. See [`BufferedUpdates::add_term`] for why the highest wins.
-    pub delete_terms: HashMap<Term, i32>,
+    ///
+    /// Shared, not owned: one delete reaches the published segments' buffer
+    /// and every indexing slot's, and a concurrent writer applies each one to
+    /// all of them ([`BufferedUpdates::add_shared_term`]) -- a pointer copy
+    /// each, where an owned key was two allocations each. Java's
+    /// `DeletedTerms` likewise copies no term object per buffer.
+    pub delete_terms: HashMap<Arc<Term>, i32>,
     /// `BufferedUpdates.deleteQueries`: query -> `docIDUpto`. Java uses a
     /// `HashMap<Query,Integer>`, so a repeated query keeps the *last*
     /// `docIDUpto` (`Map.put` overwrites); this does the same.
@@ -251,15 +258,29 @@ impl BufferedUpdates {
     /// row must delete both of the previously added docs, which only the
     /// higher limit does.
     pub fn add_term(&mut self, term: Term, doc_id_upto: i32) {
-        match self.delete_terms.get_mut(&term) {
+        if !self.raise_term_limit(&term, doc_id_upto) {
+            self.delete_terms.insert(Arc::new(term), doc_id_upto);
+        }
+    }
+
+    /// [`Self::add_term`] for a term other buffers share.
+    pub(crate) fn add_shared_term(&mut self, term: &Arc<Term>, doc_id_upto: i32) {
+        if !self.raise_term_limit(term, doc_id_upto) {
+            self.delete_terms.insert(Arc::clone(term), doc_id_upto);
+        }
+    }
+
+    /// Keeps the higher limit for a term already buffered; `false` when it
+    /// is not.
+    fn raise_term_limit(&mut self, term: &Term, doc_id_upto: i32) -> bool {
+        match self.delete_terms.get_mut(term) {
             Some(current) => {
                 if doc_id_upto > *current {
                     *current = doc_id_upto;
                 }
+                true
             }
-            None => {
-                self.delete_terms.insert(term, doc_id_upto);
-            }
+            None => false,
         }
     }
 
@@ -339,7 +360,7 @@ pub struct FrozenBufferedUpdates {
     /// Java's `deleteTerms`, a `PrefixCodedTerms`. Kept sorted here for the
     /// same reason Java prefix-codes it sorted: a term dictionary seek walk
     /// is cheapest in term order (`TermDocsIterator(reader, true)`).
-    pub delete_terms: Vec<(Term, i32)>,
+    pub delete_terms: Vec<(Arc<Term>, i32)>,
     /// Java's parallel `deleteQueries`/`deleteQueryLimits` arrays.
     pub delete_queries: Vec<(DeleteQuery, i32)>,
     /// Java's `fieldUpdates`, in field-name order for determinism.
@@ -357,10 +378,10 @@ pub struct FrozenBufferedUpdates {
 impl FrozenBufferedUpdates {
     /// `new FrozenBufferedUpdates(infoStream, updates, privateSegment)`.
     pub fn new(updates: &BufferedUpdates, private_segment: Option<String>) -> Self {
-        let mut delete_terms: Vec<(Term, i32)> = updates
+        let mut delete_terms: Vec<(Arc<Term>, i32)> = updates
             .delete_terms
             .iter()
-            .map(|(t, &d)| (t.clone(), d))
+            .map(|(t, &d)| (Arc::clone(t), d))
             .collect();
         delete_terms.sort();
         let mut delete_queries: Vec<(DeleteQuery, i32)> = updates
@@ -389,6 +410,15 @@ impl FrozenBufferedUpdates {
             private_segment,
             del_gen: -1,
         }
+    }
+
+    /// Stamped with generation 0, for
+    /// [`crate::index_writer::IndexingConfig::apply_flush_private_updates`]:
+    /// a flushed segment's own deletes, applied before the segment is
+    /// published and so before either has a stream generation.
+    pub(crate) fn with_flush_generation(mut self) -> Self {
+        self.del_gen = 0;
+        self
     }
 
     /// `FrozenBufferedUpdates.any()`.
@@ -618,8 +648,22 @@ impl DeleteQueue {
     /// buffered — the delete reaches those and not the ones after.
     pub fn add_term_deletes(&mut self, terms: &[Term], doc_id_upto: i32) -> SeqNo {
         for term in terms {
-            self.global.add_term(term.clone(), MAX_DOC_ID_UPTO);
-            self.private.add_term(term.clone(), doc_id_upto);
+            let term = Arc::new(term.clone());
+            self.global.add_shared_term(&term, MAX_DOC_ID_UPTO);
+            self.private.add_shared_term(&term, doc_id_upto);
+        }
+        self.next_sequence_number()
+    }
+
+    /// [`Self::add_term_deletes`] for terms already shared.
+    pub(crate) fn add_shared_term_deletes(
+        &mut self,
+        terms: &[Arc<Term>],
+        doc_id_upto: i32,
+    ) -> SeqNo {
+        for term in terms {
+            self.global.add_shared_term(term, MAX_DOC_ID_UPTO);
+            self.private.add_shared_term(term, doc_id_upto);
         }
         self.next_sequence_number()
     }
@@ -652,6 +696,13 @@ impl DeleteQueue {
     }
 
     /// The private buffer, for the segment currently being built.
+    /// The buffer for already-written segments, for a caller that keeps the
+    /// in-RAM share of each delete itself (`crate::concurrent_writer`, one
+    /// share per indexing thread's buffer).
+    pub(crate) fn global_mut(&mut self) -> &mut BufferedUpdates {
+        &mut self.global
+    }
+
     pub fn private_updates(&self) -> &BufferedUpdates {
         &self.private
     }
@@ -787,7 +838,10 @@ mod tests {
         q.add_term_deletes(&[t("id", "a")], 5);
         assert_eq!(q.private_updates().delete_terms[&t("id", "a")], 5);
         let global = q.freeze_global_buffer().expect("global packet");
-        assert_eq!(global.delete_terms, vec![(t("id", "a"), MAX_DOC_ID_UPTO)]);
+        assert_eq!(
+            global.delete_terms,
+            vec![(Arc::new(t("id", "a")), MAX_DOC_ID_UPTO)]
+        );
     }
 
     #[test]
@@ -804,7 +858,7 @@ mod tests {
         q.add_term_deletes(&[t("id", "a")], 2);
         q.add_query_deletes(&[DeleteQuery::Term(t("id", "b"))], 3);
         let packet = q.freeze_private_buffer("_0").expect("private packet");
-        assert_eq!(packet.delete_terms, vec![(t("id", "a"), 2)]);
+        assert_eq!(packet.delete_terms, vec![(Arc::new(t("id", "a")), 2)]);
         assert_eq!(packet.delete_queries.len(), 1);
         assert_eq!(packet.delete_queries[0].1, 3);
         assert_eq!(packet.private_segment.as_deref(), Some("_0"));
@@ -967,7 +1021,7 @@ mod tests {
         b.add_term(t("id", "a"), 2);
         b.add_term(t("body", "z"), 3);
         let packet = FrozenBufferedUpdates::new(&b, None);
-        let terms: Vec<&Term> = packet.delete_terms.iter().map(|(t, _)| t).collect();
+        let terms: Vec<&Term> = packet.delete_terms.iter().map(|(t, _)| &**t).collect();
         assert_eq!(terms[0], &t("body", "z"));
         assert_eq!(terms[1], &t("id", "a"));
         assert_eq!(terms[2], &t("id", "c"));
