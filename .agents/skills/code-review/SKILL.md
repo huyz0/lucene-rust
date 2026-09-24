@@ -34,8 +34,10 @@ ready.
   not. When a change removes a `fn` or a `struct`, grep `crates/`,
   `docs/parity.md` and `PLAN.md` for its name -- three stale references were
   found that way in c41.
-- **Not a dumb port**: the in-memory design was considered on its own merits,
-  not transliterated field-for-field from the Java class (see
+- **Port → benchmark → optimise** (see `port-workflow`): new ported code is
+  the closest-to-Java port, citing the Java methods it ports; a diff that
+  finishes an area states its benchmark ratio against Lucene and, if below
+  1.0, why; optimisations cite the measurement that motivated them (see
   `rust-performance`).
 - **Tests**: a new decoder ships with a fixture generator and a differential
   test (see `differential-testing`) *and* unit tests for its own error/
