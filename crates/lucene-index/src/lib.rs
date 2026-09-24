@@ -12,6 +12,7 @@
 pub mod buffered_updates;
 pub mod check_index;
 pub mod checksum_verify;
+pub mod compound_reader;
 pub mod deletes;
 pub mod field_updates;
 pub mod index_file_deleter;
