@@ -256,6 +256,10 @@ fn map_writer_error(context: &str, e: index_writer::Error) -> FfiStatus {
         // than left to a catch-all so the next one added to `lucene-index`
         // fails to compile here instead of silently becoming an I/O error.
         | index_writer::Error::UnknownVectorField(_)
+        | index_writer::Error::UnknownPointsField(_)
+        | index_writer::Error::UnsupportedPointsField(_, _, _, _)
+        | index_writer::Error::DuplicatePointsField(_)
+        | index_writer::Error::PointValueShape(_, _, _, _, _)
         | index_writer::Error::UnsupportedVectorField(_, _)
         | index_writer::Error::DuplicateVectorField(_)
         | index_writer::Error::VectorDimensionMismatch(_, _, _, _)
@@ -325,6 +329,7 @@ fn map_writer_error(context: &str, e: index_writer::Error) -> FfiStatus {
         | index_writer::Error::DocValues(_)
         | index_writer::Error::Norms(_)
         | index_writer::Error::Vectors(_)
+        | index_writer::Error::Points(_)
         // The read-side halves of a merge's inputs, exactly like `DocValues`
         // and `Norms` above: a source segment's column could not be decoded.
         | index_writer::Error::DocValuesRead(_)

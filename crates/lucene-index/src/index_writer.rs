@@ -257,6 +257,32 @@ pub enum Error {
     Vectors(#[from] vectors::Error),
     #[error("set_vector_field: no field named {0:?} in this writer's field list")]
     UnknownVectorField(String),
+    #[error(transparent)]
+    Points(#[from] lucene_codecs::points::Error),
+    #[error("add_points_field: no field named {0:?} in this writer's field list")]
+    UnknownPointsField(String),
+    /// The field's `FieldInfo` must declare its point shape the way
+    /// `FieldType.setDimensions` does: `1..=16` dimensions (`PointValues.MAX_DIMENSIONS`),
+    /// `1..=num_dims` (and at most 8, `MAX_INDEX_DIMENSIONS`) of them indexed,
+    /// `1..=16` bytes each (`PointValues.MAX_NUM_BYTES`).
+    #[error(
+        "add_points_field: field {0:?} declares {1} dimension(s), {2} indexed, {3} byte(s) \
+         each; a points field needs 1..=16 dimensions, 1..=min(dims, 8) indexed and 1..=16 \
+         bytes per dimension"
+    )]
+    UnsupportedPointsField(String, i32, i32, i32),
+    #[error("add_points_field: field {0:?} is already in this writer's points-field list")]
+    DuplicatePointsField(String),
+    /// A document's value for a points field has the wrong shape: a number
+    /// whose width is not the field's `bytesPerDim` (or a field with more
+    /// than one dimension, which only packed `Binary` can fill), or packed
+    /// bytes that are not `numDims * bytesPerDim` long -- what
+    /// `Field(name, packedPoint, type)` rejects in Java.
+    #[error(
+        "document {1}, points field {0:?}: a {2} value does not fit a point of {3} dimension(s) \
+         x {4} byte(s)"
+    )]
+    PointValueShape(String, usize, &'static str, i32, i32),
     #[error(
         "set_vector_field: field {0:?} declares vector_dimension {1}; a vector field's FieldInfo \
          must carry a positive dimension (real Lucene's KnnFloatVectorField/KnnByteVectorField \
@@ -738,6 +764,10 @@ pub struct IndexWriter<'d> {
     /// them are written into one `.vec`/`.vemf`/`.vem`/`.vex` quadruple per
     /// segment, exactly as `Lucene99HnswVectorsFormat` does.
     vector_fields: Vec<VectorFieldConfig>,
+    /// The fields whose values this writer indexes as points
+    /// (`.kdm`/`.kdi`/`.kdd`, `Lucene90PointsFormat`), in the order they were
+    /// opted in -- see [`IndexWriter::add_points_field`].
+    points_fields: Vec<PointsFieldConfig>,
     /// Per-pending-doc vector values, aligned 1:1 by index with `pending_docs`
     /// (index `i` here is doc ID `i` in the next flush -- the same convention
     /// [`Self::pending_custom_freq_terms`] uses).
@@ -932,6 +962,21 @@ struct NormsColumn {
     sparse: Option<Vec<(i32, i64)>>,
 }
 
+/// One points field, resolved once by [`IndexWriter::add_points_field`] from
+/// the writer's fixed field list -- the shape `.fnm` records for it.
+#[derive(Debug, Clone)]
+struct PointsFieldConfig {
+    name: String,
+    field_number: i32,
+    num_dims: i32,
+    num_index_dims: i32,
+    bytes_per_dim: i32,
+}
+
+/// `BKDConfig.DEFAULT_MAX_POINTS_IN_LEAF_NODE`, which `Lucene90PointsFormat`
+/// builds every tree with.
+const MAX_POINTS_IN_LEAF_NODE: i32 = 512;
+
 /// One field this writer has been opted into indexing vectors for, resolved
 /// once by [`IndexWriter::set_vector_field`]/[`IndexWriter::add_vector_field`]
 /// against this writer's fixed `fields` list. The dimension, encoding and
@@ -946,6 +991,77 @@ struct VectorFieldConfig {
     dimension: i32,
     encoding: VectorEncoding,
     similarity: VectorSimilarityFunction,
+}
+
+/// [`IndexWriter::build_points_output`]'s three files, plus the names of the
+/// fields that got at least one point in this flush.
+struct PointsOutput {
+    kdm: Vec<u8>,
+    kdi: Vec<u8>,
+    kdd: Vec<u8>,
+    written_fields: Vec<String>,
+}
+
+/// One document's value for a points field, in the packed form the BKD tree
+/// stores: `NumericUtils.intToSortableBytes`/`longToSortableBytes` (and the
+/// float/double `*ToSortable*` bit flips before them) for a one-dimensional
+/// numeric field -- big-endian with the sign bit flipped, so unsigned byte
+/// order is numeric order -- or the caller's packed bytes.
+/// Appends the packed value to `out`, the field's contiguous value buffer.
+fn encode_point(
+    config: &PointsFieldConfig,
+    doc_id: usize,
+    value: &FieldValue,
+    out: &mut Vec<u8>,
+) -> Result<()> {
+    let one_dim = |width: i32| config.num_dims == 1 && config.bytes_per_dim == width;
+    let shape = |kind| {
+        Error::PointValueShape(
+            config.name.clone(),
+            doc_id,
+            kind,
+            config.num_dims,
+            config.bytes_per_dim,
+        )
+    };
+    match value {
+        FieldValue::Int(v) if one_dim(4) => {
+            out.extend_from_slice(&((*v as u32) ^ 0x8000_0000).to_be_bytes())
+        }
+        FieldValue::Long(v) if one_dim(8) => {
+            out.extend_from_slice(&((*v as u64) ^ 0x8000_0000_0000_0000).to_be_bytes())
+        }
+        FieldValue::Float(v) if one_dim(4) => {
+            // `NumericUtils.floatToSortableInt`, then `intToSortableBytes`.
+            // `floatToSortableInt` goes through `Float.floatToIntBits`, which
+            // collapses every NaN -- whatever its sign or payload -- to the
+            // canonical `0x7fc00000`, so all NaNs sort above `+inf`.
+            let v = if v.is_nan() { f32::NAN } else { *v };
+            let bits = v.to_bits() as i32;
+            let sortable = bits ^ ((bits >> 31) & 0x7fff_ffff);
+            out.extend_from_slice(&((sortable as u32) ^ 0x8000_0000).to_be_bytes())
+        }
+        FieldValue::Double(v) if one_dim(8) => {
+            // `Double.doubleToLongBits`: the same NaN canonicalisation.
+            let v = if v.is_nan() { f64::NAN } else { *v };
+            let bits = v.to_bits() as i64;
+            let sortable = bits ^ ((bits >> 63) & 0x7fff_ffff_ffff_ffff);
+            out.extend_from_slice(&((sortable as u64) ^ 0x8000_0000_0000_0000).to_be_bytes())
+        }
+        FieldValue::Binary(b)
+            if i64::try_from(b.len()).ok()
+                == i64::from(config.num_dims).checked_mul(i64::from(config.bytes_per_dim)) =>
+        {
+            out.extend_from_slice(b)
+        }
+        FieldValue::Int(_) => return Err(shape("Int")),
+        FieldValue::Long(_) => return Err(shape("Long")),
+        FieldValue::Float(_) => return Err(shape("Float")),
+        FieldValue::Double(_) => return Err(shape("Double")),
+        FieldValue::Binary(_) => return Err(shape("Binary")),
+        FieldValue::String(_) => return Err(shape("String")),
+    }
+    Ok(())
 }
 
 /// [`IndexWriter::build_vectors_output`]'s four files, plus the names of the
@@ -1207,6 +1323,7 @@ impl<'d> IndexWriter<'d> {
             updates_stream: BufferedUpdatesStream::new(),
             rollback_segments,
             vector_fields: Vec::new(),
+            points_fields: Vec::new(),
             pending_vectors: Vec::new(),
             hnsw_m: hnsw::DEFAULT_MAX_CONN,
             hnsw_beam_width: hnsw::DEFAULT_BEAM_WIDTH,
@@ -2015,6 +2132,64 @@ impl<'d> IndexWriter<'d> {
             dimension: info.vector_dimension,
             encoding: info.vector_encoding,
             similarity: info.vector_similarity_function,
+        });
+        Ok(())
+    }
+
+    /// Opts `field_name` into being indexed as **points** --
+    /// `Lucene90PointsFormat`'s `.kdm`/`.kdi`/`.kdd` BKD tree, what
+    /// `LongPoint`/`IntPoint`/`FloatPoint`/`DoublePoint`/`BinaryPoint` fields
+    /// produce in Java. The field's [`FieldInfo`] must declare the shape
+    /// (`point_dimension_count`, `point_index_dimension_count`,
+    /// `point_num_bytes`), as `FieldType.setDimensions` does.
+    ///
+    /// A document's value is every [`StoredField`](stored_fields::StoredField)
+    /// it carries for the field -- more than one is a multi-valued point
+    /// field, as adding several `LongPoint`s is -- encoded as Java encodes
+    /// them: a one-dimensional field takes [`FieldValue::Int`]/
+    /// [`FieldValue::Float`] (4 bytes) or [`FieldValue::Long`]/
+    /// [`FieldValue::Double`] (8 bytes) through `NumericUtils`' sortable
+    /// big-endian form, and any field takes [`FieldValue::Binary`] as the
+    /// already-packed `numDims * bytesPerDim` bytes. A document without the
+    /// field has no point. Like every opt-in here, configure it before the
+    /// first document.
+    ///
+    /// The values are **also stored**, as a doc-values field's are: this
+    /// facade's [`Document`] *is* the document's
+    /// stored fields, and every entry in it is written to `.fdt`. Java's
+    /// `LongPoint` is not stored, so the Java document this one equals is
+    /// `LongPoint` plus a `StoredField` of the same name.
+    pub fn add_points_field(&mut self, field_name: &str) -> Result<()> {
+        let info = self
+            .fields
+            .iter()
+            .find(|f| f.name == field_name)
+            .ok_or_else(|| Error::UnknownPointsField(field_name.to_string()))?;
+        let (dims, index_dims, bytes) = (
+            info.point_dimension_count,
+            info.point_index_dimension_count,
+            info.point_num_bytes,
+        );
+        if !(1..=16).contains(&dims)
+            || !(1..=dims.min(8)).contains(&index_dims)
+            || !(1..=16).contains(&bytes)
+        {
+            return Err(Error::UnsupportedPointsField(
+                field_name.to_string(),
+                dims,
+                index_dims,
+                bytes,
+            ));
+        }
+        if self.points_fields.iter().any(|c| c.name == field_name) {
+            return Err(Error::DuplicatePointsField(field_name.to_string()));
+        }
+        self.points_fields.push(PointsFieldConfig {
+            name: field_name.to_string(),
+            field_number: info.number,
+            num_dims: dims,
+            num_index_dims: index_dims,
+            bytes_per_dim: bytes,
         });
         Ok(())
     }
@@ -3362,11 +3537,21 @@ impl<'d> IndexWriter<'d> {
             )?
         };
 
+        let points_output = if self.points_fields.is_empty() {
+            None
+        } else {
+            Self::build_points_output(&self.pending_docs, &self.points_fields, &segment_id)?
+        };
+
         let fnm_fields = self.fields_with_per_field_attributes(
             postings_output.is_some(),
             doc_values_output.is_some(),
             norms_output.is_some(),
             vectors_output
+                .as_ref()
+                .map(|o| o.written_fields.as_slice())
+                .unwrap_or(&[]),
+            points_output
                 .as_ref()
                 .map(|o| o.written_fields.as_slice())
                 .unwrap_or(&[]),
@@ -3432,6 +3617,9 @@ impl<'d> IndexWriter<'d> {
         }
         if let Some(output) = &vectors_output {
             record(Self::write_vector_files(self.dir, segment_name, output)?);
+        }
+        if let Some(output) = &points_output {
+            record(Self::write_points_files(self.dir, segment_name, output)?);
         }
         // `SegmentInfo`'s `numSortFields` block is what a reader surfaces as
         // `LeafMetaData.getSort()`, and what `CheckIndex.testSort` re-derives
@@ -5085,6 +5273,87 @@ impl<'d> IndexWriter<'d> {
         }))
     }
 
+    /// Builds this flush's `.kdm`/`.kdi`/`.kdd` for every points field any
+    /// pending document has a value for -- `PointValuesWriter.flush` into
+    /// `Lucene90PointsWriter.writeField` -- or `None` when none has one.
+    fn build_points_output(
+        docs: &[Document],
+        configs: &[PointsFieldConfig],
+        segment_id: &[u8; ID_LENGTH],
+    ) -> Result<Option<PointsOutput>> {
+        // One pass over the documents, appending each point straight onto
+        // its field's flat buffers -- `PointValuesWriter.addPackedValue`'s
+        // `ByteBlockPool` plus doc-id array, with no allocation per point.
+        let mut fields: Vec<lucene_codecs::points::PackedPointsField> = configs
+            .iter()
+            .map(|config| lucene_codecs::points::PackedPointsField {
+                field_number: config.field_number,
+                num_dims: config.num_dims,
+                num_index_dims: config.num_index_dims,
+                bytes_per_dim: config.bytes_per_dim,
+                ..Default::default()
+            })
+            .collect();
+        for (doc_id, doc) in docs.iter().enumerate() {
+            for field in &doc.fields {
+                let Some(slot) = configs
+                    .iter()
+                    .position(|c| c.field_number == field.field_number)
+                else {
+                    continue;
+                };
+                encode_point(
+                    &configs[slot],
+                    doc_id,
+                    &field.value,
+                    &mut fields[slot].values,
+                )?;
+                fields[slot].docs.push(doc_id as i32);
+            }
+        }
+        let written_fields: Vec<String> = configs
+            .iter()
+            .zip(&fields)
+            .filter(|(_, f)| !f.docs.is_empty())
+            .map(|(c, _)| c.name.clone())
+            .collect();
+        fields.retain(|f| !f.docs.is_empty());
+        if fields.is_empty() {
+            return Ok(None);
+        }
+        // `Lucene90PointsWriter` writes fields in `FieldInfos` order.
+        fields.sort_by_key(|f| f.field_number);
+        let (kdm, kdi, kdd) =
+            lucene_codecs::points::write_packed(&fields, MAX_POINTS_IN_LEAF_NODE, segment_id, "")?;
+        Ok(Some(PointsOutput {
+            kdm,
+            kdi,
+            kdd,
+            written_fields,
+        }))
+    }
+
+    /// Writes [`IndexWriter::build_points_output`]'s three files into `dir`
+    /// and returns their names for the segment's `.si`. `Lucene90PointsFormat`
+    /// is not a per-field format, so the names carry no suffix.
+    fn write_points_files(
+        dir: &dyn Directory,
+        segment_name: &str,
+        output: &PointsOutput,
+    ) -> Result<Vec<String>> {
+        let names = [
+            format!("{segment_name}.kdm"),
+            format!("{segment_name}.kdi"),
+            format!("{segment_name}.kdd"),
+        ];
+        for (name, bytes) in names.iter().zip([&output.kdm, &output.kdi, &output.kdd]) {
+            let mut out = dir.create_output(name)?;
+            out.write_bytes(bytes);
+            out.close()?;
+        }
+        Ok(names.to_vec())
+    }
+
     /// Writes [`IndexWriter::build_vectors_output`]'s four files into `dir`
     /// under `PerFieldKnnVectorsFormat`'s suffixed segment name and returns
     /// their names for the caller to record in the segment's still-unwritten
@@ -5184,6 +5453,7 @@ impl<'d> IndexWriter<'d> {
         wrote_doc_values: bool,
         wrote_norms: bool,
         vector_fields_written: &[String],
+        points_fields_written: &[String],
     ) -> Vec<FieldInfo> {
         let postings_names: Vec<&str> = if wrote_postings {
             self.postings_fields
@@ -5274,6 +5544,16 @@ impl<'d> IndexWriter<'d> {
                     ));
                 } else {
                     f.vector_dimension = 0;
+                }
+                // And for points: `FieldInfo.getPointDimensionCount() > 0` is
+                // what `CheckIndex.testPoints` and `PointsReader.getValues`
+                // key off, so a field that got no point in this flush must
+                // not claim a shape (Java's `.fnm` gets it from the first
+                // document that carried the field).
+                if !points_fields_written.iter().any(|n| n == &f.name) {
+                    f.point_dimension_count = 0;
+                    f.point_index_dimension_count = 0;
+                    f.point_num_bytes = 0;
                 }
                 if dv_names.contains(&f.name.as_str()) {
                     f.attributes.push((
@@ -5475,17 +5755,10 @@ impl<'d> IndexWriter<'d> {
     /// `crate::merge::write_merged_term_vectors` applies is the identity mapping
     /// in practice here, same as it is for postings above.
     ///
-    /// **Points are not wired here.** [`crate::merge::SourcePoints`] exists
-    /// and [`crate::merge::merge_stored_only_segments`] already merges it
-    /// when populated (see that function's/[`crate::merge::merge_points`]'s
-    /// doc comments), but this writer has no points write path at flush time
-    /// at all yet (no `set_points_field`-equivalent, no points-carrying
-    /// `Document` field shape) -- there is currently no real segment this
-    /// writer could ever produce with `.kdm`/`.kdi`/`.kdd` files, so there is
-    /// nothing for this method to open. Wiring points end-to-end needs
-    /// flush-side points support added first; until then, `merge_points` is
-    /// exercised only by `merge.rs`'s own hand-built `MergeSource` fixtures.
-    /// See `docs/parity.md`.
+    /// Points are opened like every other format: each source's
+    /// `.kdm`/`.kdi`/`.kdd` (when its `.si` lists them) becomes one
+    /// [`crate::merge::SourcePoints`] per field, and
+    /// [`crate::merge::merge_points`] remaps and rebuilds the trees.
     fn execute_merge(&mut self, names: &[String]) -> Result<()> {
         // A merged segment is published with `buffered_deletes_gen == -1`,
         // i.e. open to every packet, where Java uses `min(sources)`
@@ -5538,6 +5811,8 @@ impl<'d> IndexWriter<'d> {
             doc_values: SourceDocValueColumns,
             norms: RawNormsFiles,
             vectors: RawVectorFiles,
+            /// Raw `.kdm`/`.kdi`/`.kdd`, when the segment has points.
+            points: Option<(Vec<u8>, Vec<u8>, Vec<u8>)>,
             index_sort: Option<Vec<segment_info::IndexSortField>>,
             has_blocks: bool,
             /// This source's `SegmentInfo.minVersion` -- Java's
@@ -5716,6 +5991,16 @@ impl<'d> IndexWriter<'d> {
                 None
             };
 
+            let points = if si.files.iter().any(|f| f.ends_with(".kdd")) {
+                Some((
+                    self.dir.open(&format!("{name}.kdm"))?.to_vec(),
+                    self.dir.open(&format!("{name}.kdi"))?.to_vec(),
+                    self.dir.open(&format!("{name}.kdd"))?.to_vec(),
+                ))
+            } else {
+                None
+            };
+
             // Computed before the push, because the struct literal moves
             // `sci` in its first field.
             let all_files = sci.files(&si.files);
@@ -5730,6 +6015,7 @@ impl<'d> IndexWriter<'d> {
                 doc_values,
                 norms,
                 vectors,
+                points,
                 index_sort: si.index_sort.clone(),
                 has_blocks: si.has_blocks,
                 min_version: si.min_version,
@@ -6060,6 +6346,35 @@ impl<'d> IndexWriter<'d> {
             })
             .collect();
 
+        // Points: one reader per source, and a `SourcePoints` for every field
+        // its `.kdm` has an entry for.
+        let opened_points: Vec<Option<lucene_codecs::points::PointsReader>> = opened
+            .iter()
+            .map(|o| match &o.points {
+                Some((kdm, kdi, kdd)) => Ok::<_, Error>(Some(lucene_codecs::points::open(
+                    kdm,
+                    kdi,
+                    kdd,
+                    &o.sci.segment_id,
+                    "",
+                )?)),
+                None => Ok(None),
+            })
+            .collect::<std::result::Result<Vec<_>, Error>>()?;
+        let per_source_points: Vec<Vec<merge::SourcePoints>> = opened_points
+            .iter()
+            .map(|reader| match reader {
+                Some(reader) => reader
+                    .field_numbers()
+                    .map(|field_number| merge::SourcePoints {
+                        field_number,
+                        reader,
+                    })
+                    .collect(),
+                None => Vec::new(),
+            })
+            .collect();
+
         // Indexed rather than zipped: eight parallel `Vec`s in one `zip`
         // chain is a tuple nobody can read, and the index is the source's own
         // identity anyway.
@@ -6076,7 +6391,7 @@ impl<'d> IndexWriter<'d> {
                 norms: &per_source_norms[i],
                 term_vectors: opened_term_vectors[i].as_ref(),
                 postings: &per_source_postings[i],
-                points: &[],
+                points: &per_source_points[i],
                 vectors: per_source_vectors[i].as_ref(),
                 // Both read straight off this source's own `.si`, exactly as
                 // `SegmentReader.getMetaData()` builds its `LeafMetaData`.
@@ -18039,5 +18354,260 @@ mod tests {
             assert_eq!(read_index_sort(&dir, sci).unwrap().len(), 1);
         }
         assert_eq!(read_all_docs(&dir, &infos), vec!["a", "b", "c", "d"]);
+    }
+
+    // --- points (M4 T4.2) ---
+
+    fn points_field(name: &str, number: i32, dims: i32, index_dims: i32, bytes: i32) -> FieldInfo {
+        FieldInfo {
+            point_dimension_count: dims,
+            point_index_dimension_count: index_dims,
+            point_num_bytes: bytes,
+            ..stored_only_field(name, number)
+        }
+    }
+
+    fn points_config(dims: i32, bytes: i32) -> PointsFieldConfig {
+        PointsFieldConfig {
+            name: "p".to_string(),
+            field_number: 1,
+            num_dims: dims,
+            num_index_dims: dims,
+            bytes_per_dim: bytes,
+        }
+    }
+
+    #[test]
+    fn add_points_field_validates_its_field() {
+        let tmp = tempdir("points-config");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![
+            stored_only_field("plain", 0),
+            points_field("p", 1, 2, 1, 4),
+            points_field("too_many_index_dims", 2, 2, 3, 4),
+            points_field("too_wide", 3, 1, 1, 17),
+            points_field("too_many_dims", 4, 17, 1, 4),
+        ];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        assert!(matches!(
+            writer.add_points_field("missing"),
+            Err(Error::UnknownPointsField(name)) if name == "missing"
+        ));
+        assert!(matches!(
+            writer.add_points_field("plain"),
+            Err(Error::UnsupportedPointsField(_, 0, 0, 0))
+        ));
+        for name in ["too_many_index_dims", "too_wide", "too_many_dims"] {
+            assert!(
+                matches!(
+                    writer.add_points_field(name),
+                    Err(Error::UnsupportedPointsField(..))
+                ),
+                "{name}"
+            );
+        }
+        writer.add_points_field("p").unwrap();
+        assert!(matches!(
+            writer.add_points_field("p"),
+            Err(Error::DuplicatePointsField(name)) if name == "p"
+        ));
+    }
+
+    #[test]
+    fn encode_point_uses_the_sortable_encodings_and_rejects_wrong_shapes() {
+        let encode = |config: &PointsFieldConfig, value: FieldValue| {
+            let mut out = Vec::new();
+            encode_point(config, 7, &value, &mut out).map(|()| out)
+        };
+        let (int, long) = (points_config(1, 4), points_config(1, 8));
+        assert_eq!(
+            encode(&int, FieldValue::Int(-1)).unwrap(),
+            [0x7f, 0xff, 0xff, 0xff]
+        );
+        assert_eq!(
+            encode(&long, FieldValue::Long(1)).unwrap(),
+            [0x80, 0, 0, 0, 0, 0, 0, 1]
+        );
+        // Unsigned byte order is numeric order, negatives included.
+        let floats: Vec<Vec<u8>> = [-2.5f32, -0.0, 0.0, 1.5]
+            .into_iter()
+            .map(|v| encode(&int, FieldValue::Float(v)).unwrap())
+            .collect();
+        assert!(floats.windows(2).all(|w| w[0] < w[1]), "{floats:?}");
+        let doubles: Vec<Vec<u8>> = [-1e300f64, -1.0, 0.0, 2.0]
+            .into_iter()
+            .map(|v| encode(&long, FieldValue::Double(v)).unwrap())
+            .collect();
+        assert!(doubles.windows(2).all(|w| w[0] < w[1]), "{doubles:?}");
+        // Every NaN encodes as Java's canonical one, above `+inf` -- a
+        // negative or payload-carrying NaN included, which `to_bits` alone
+        // would put below `-inf`.
+        let canonical = encode(&int, FieldValue::Float(f32::NAN)).unwrap();
+        assert!(canonical > encode(&int, FieldValue::Float(f32::INFINITY)).unwrap());
+        for nan in [
+            -f32::NAN,
+            f32::from_bits(0x7fc0_0001),
+            f32::from_bits(0xffc0_0000),
+        ] {
+            assert_eq!(encode(&int, FieldValue::Float(nan)).unwrap(), canonical);
+        }
+        let canonical = encode(&long, FieldValue::Double(f64::NAN)).unwrap();
+        assert!(canonical > encode(&long, FieldValue::Double(f64::INFINITY)).unwrap());
+        for nan in [-f64::NAN, f64::from_bits(0x7ff8_0000_0000_0001)] {
+            assert_eq!(encode(&long, FieldValue::Double(nan)).unwrap(), canonical);
+        }
+        let two_ints = points_config(2, 4);
+        assert_eq!(
+            encode(&two_ints, FieldValue::Binary(vec![1; 8])).unwrap(),
+            vec![1; 8]
+        );
+
+        for (config, value, kind) in [
+            (&int, FieldValue::Long(1), "Long"),
+            (&long, FieldValue::Int(1), "Int"),
+            (&long, FieldValue::Float(1.0), "Float"),
+            (&int, FieldValue::Double(1.0), "Double"),
+            (&two_ints, FieldValue::Int(1), "Int"),
+            (&two_ints, FieldValue::Binary(vec![1; 4]), "Binary"),
+            (&int, FieldValue::String("1".to_string()), "String"),
+        ] {
+            let err = encode(config, value).unwrap_err();
+            assert!(
+                matches!(&err, Error::PointValueShape(name, 7, k, _, _) if name == "p" && *k == kind),
+                "{err:?}"
+            );
+            // The message names the shape it needed.
+            assert!(err.to_string().contains("dimension(s)"), "{err}");
+        }
+    }
+
+    #[test]
+    fn a_flush_writes_points_only_for_fields_that_got_one() {
+        let tmp = tempdir("points-flush");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![
+            stored_only_field("id", 0),
+            points_field("n", 1, 1, 1, 8),
+            points_field("unused", 2, 1, 1, 4),
+        ];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.add_points_field("n").unwrap();
+        writer.add_points_field("unused").unwrap();
+        for i in 0..1200i64 {
+            let mut fields = vec![StoredField {
+                field_number: 0,
+                value: FieldValue::String(format!("d{i}")),
+            }];
+            // Two values on every third document, none on every fifth.
+            if i % 5 != 0 {
+                fields.push(StoredField {
+                    field_number: 1,
+                    value: FieldValue::Long(1000 - i),
+                });
+            }
+            if i % 3 == 0 {
+                fields.push(StoredField {
+                    field_number: 1,
+                    value: FieldValue::Long(-i),
+                });
+            }
+            writer.add_document(Document { fields }).unwrap();
+        }
+        writer.commit().unwrap();
+        let names: Vec<String> = std::fs::read_dir(&tmp)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.iter().any(|n| n.ends_with(".kdd")), "{names:?}");
+        for result in crate::check_index::check_directory(&dir).unwrap() {
+            assert!(result.all_passed(), "{:?}", result.failures());
+        }
+
+        // A value of the wrong shape fails the flush, naming the document.
+        writer
+            .add_document(Document {
+                fields: vec![StoredField {
+                    field_number: 2,
+                    value: FieldValue::Long(1),
+                }],
+            })
+            .unwrap();
+        assert!(matches!(
+            writer.commit(),
+            Err(Error::PointValueShape(name, 0, "Long", 1, 4)) if name == "unused"
+        ));
+    }
+
+    #[test]
+    fn a_flush_with_no_point_values_writes_no_points_files() {
+        let tmp = tempdir("points-none");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), points_field("n", 1, 1, 1, 8)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.add_points_field("n").unwrap();
+        writer
+            .add_document(Document {
+                fields: vec![StoredField {
+                    field_number: 0,
+                    value: FieldValue::String("only".to_string()),
+                }],
+            })
+            .unwrap();
+        writer.commit().unwrap();
+        let names: Vec<String> = std::fs::read_dir(&tmp)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(!names.iter().any(|n| n.ends_with(".kdd")), "{names:?}");
+        for result in crate::check_index::check_directory(&dir).unwrap() {
+            assert!(result.all_passed(), "{:?}", result.failures());
+        }
+    }
+
+    #[test]
+    fn a_merge_whose_sources_have_no_points_claims_none() {
+        // Two flushes of a declared points field no document carries: each
+        // flushed `.fnm` already drops the shape, and the merged one must too
+        // -- a merged `.fnm` claiming point dimensions over a segment with no
+        // `.kdm` is one real Lucene refuses to open.
+        let tmp = tempdir("points-none-merged");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), points_field("n", 1, 1, 1, 8)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.add_points_field("n").unwrap();
+        for batch in 0..3 {
+            writer
+                .add_document(Document {
+                    fields: vec![StoredField {
+                        field_number: 0,
+                        value: FieldValue::String(format!("d{batch}")),
+                    }],
+                })
+                .unwrap();
+            writer.commit().unwrap();
+        }
+        writer.set_merge_policy(Some(tight_merge_policy()));
+        let sis = writer.commit().unwrap().clone();
+        assert_eq!(sis.segments.len(), 1, "the three flushes merged");
+        let sci = &sis.segments[0];
+        let fnm = dir.open(&format!("{}.fnm", sci.segment_name)).unwrap();
+        let fis = lucene_codecs::field_infos::parse(&fnm, &sci.segment_id, "").unwrap();
+        let n = fis.fields.iter().find(|f| f.name == "n").unwrap();
+        assert_eq!(
+            (
+                n.point_dimension_count,
+                n.point_index_dimension_count,
+                n.point_num_bytes
+            ),
+            (0, 0, 0)
+        );
+        let names: Vec<String> = std::fs::read_dir(&tmp)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(!names.iter().any(|n| n.ends_with(".kdm")), "{names:?}");
+        for result in crate::check_index::check_directory(&dir).unwrap() {
+            assert!(result.all_passed(), "{:?}", result.failures());
+        }
     }
 }
