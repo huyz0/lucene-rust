@@ -90,6 +90,11 @@ case "$BENCH" in
     # them, each from a fresh copy.
     MAIN=DvMergeMicro
     SRC=benchmarks/micro/java/DvMergeMicro.java ;;
+  points_write)
+    # Write side: points at flush and at merge, both engines building their
+    # own segments from the same documents.
+    MAIN=PointsWriteMicro
+    SRC=benchmarks/micro/java/PointsWriteMicro.java ;;
   pfor_decode)
     MAIN=org.apache.lucene.codecs.lucene104.PForUtilMicro
     SRC=benchmarks/micro/java/org/apache/lucene/codecs/lucene104/PForUtilMicro.java ;;

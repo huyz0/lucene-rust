@@ -9,7 +9,7 @@
 | **Effort** | L |
 | **Depends on** | [M3](m3-write-path-proven.md) |
 | **Unblocks** | [M5](m5-engine-integration.md) |
-| **Status** | not started |
+| **Status** | in progress -- T4.1 and T4.2 done |
 
 ---
 
@@ -125,6 +125,23 @@ parameter threading rather than building new sort machinery.
 
 This task and T3.5 together determine whether index sorting is a supported
 feature or a fenced-off one. Keep the two decisions consistent.
+
+> **Done (2026-09-24).** The premise above is out of date too: `merge_segments`
+> already reordered postings, points and vectors through `build_doc_id_maps`.
+> What was missing was points *reaching* a merge at all -- `IndexWriter` wrote
+> none at flush, so no segment it produced had any. Now
+> `IndexWriter::add_points_field` indexes points at flush
+> (`Lucene90PointsWriter`, `NumericUtils`' sortable encodings) and
+> `execute_merge` hands every source's points to `merge_points`, so they
+> survive concatenation and index-sorted merges alike.
+> `VerifyPointsSegment.java` checks every point of every document through real
+> Lucene in a flushed, a merged and a sorted-merged index. The BKD writer then
+> went through port -> benchmark -> optimise: the first faithful port ran at
+> 0.76x (flush) / 0.58x (merge) Lucene; one sort per 1-D field
+> (`writeField1Dim`), a select per multi-dimensional node
+> (`MutablePointTreeReaderUtils.partition`) and a flat point buffer
+> (`MutablePointTree`) bring it to 3.68x / 2.08x
+> (`scripts/bench-micro.sh --bench points_write`).
 
 ### T4.3 — Concurrent indexing and real merge execution
 

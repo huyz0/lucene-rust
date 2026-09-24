@@ -192,6 +192,14 @@ CASES=(
   # presence is the point, since an off-by-one IndexedDISI reads back a
   # plausible value on the wrong document -- and runs CheckIndex on both.
   "lucene-index|write_sparse_doc_values_fixture|sparse-doc-values|VerifySparseDocValues"
+  # Points through IndexWriter (M4's T4.2): a multi-valued LongPoint, a sparse
+  # IntPoint, a DoublePoint and a 2-D packed point, flushed (three segments),
+  # merged, and merged under an index sort. Java reads every point back per
+  # document -- so one attached to the wrong document by the sorted merge's
+  # remap is caught, not just a malformed tree -- runs range counts, and
+  # CheckIndex. Until M4 IndexWriter wrote no points at all, and the merge
+  # remap for points had only hand-built tests.
+  "lucene-index|write_points_segment_fixture|points-segment|VerifyPointsSegment"
 )
 
 echo "verify-write-path: compiling verifiers"
