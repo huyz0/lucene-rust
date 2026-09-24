@@ -1177,13 +1177,11 @@ enum FastDense<'a> {
     /// `bitsPerValue == 0`: every document has `min_value`.
     Constant { num_values: i64, value: i64 },
     Packed {
-        /// One unaligned load per value, bounds-checked once at construction.
+        /// One unaligned load per value, bounds-checked once at construction;
+        /// its limit is lowered to `num_values` (`PackedLongs::limited_to`), so a
+        /// lookup is one unsigned compare (a negative doc wraps above it).
         packed: lucene_util::packed_longs::PackedLongs<'a>,
         num_values: i64,
-        /// The documents `get` answers: below both `num_values` and the
-        /// packed reader's own fast range, precomputed so a lookup is one
-        /// unsigned compare (a negative doc wraps above it).
-        limit: u64,
         gcd: i64,
         min: i64,
         table: Option<&'a [i64]>,
@@ -1208,12 +1206,12 @@ impl<'a> FastDense<'a> {
             region(data, entry.values_offset, entry.values_length).ok()?,
             entry.bits_per_value as u32,
         )?;
+        // The document bound folded into the packed reader's own fast
+        // limit: a lookup is then one compare, not two.
+        let packed = packed.limited_to(u64::try_from(entry.num_values).unwrap_or(0));
         Some(FastDense::Packed {
             packed,
             num_values: entry.num_values,
-            limit: u64::try_from(entry.num_values)
-                .unwrap_or(0)
-                .min(packed.fast_limit()),
             gcd: entry.gcd,
             min: entry.min_value,
             table: entry.table.as_deref(),
@@ -1232,17 +1230,14 @@ impl<'a> FastDense<'a> {
             }
             FastDense::Packed {
                 packed,
-                limit,
                 gcd,
                 min,
                 table,
                 ..
             } => {
-                let index = doc as u32 as u64;
-                if index >= limit {
-                    return None;
-                }
-                let raw = packed.get(index)?;
+                // A negative doc wraps above every limit; `packed` already
+                // stops at `num_values` (see `new`).
+                let raw = packed.get(doc as u32 as u64)?;
                 Some(match table {
                     Some(t) => *t.get(raw as usize)?,
                     None => gcd.wrapping_mul(raw as i64).wrapping_add(min),
