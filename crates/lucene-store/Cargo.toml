@@ -13,6 +13,13 @@ lucene-util = { path = "../lucene-util" }
 memmap2.workspace = true
 crc32fast.workspace = true
 
+[features]
+# `crashing_directory::CrashingDirectory`, the crash half of Lucene's
+# test-framework `MockDirectoryWrapper`. Test infrastructure, like Java's:
+# enabled only through `[dev-dependencies]` edges (lucene-search's, for the
+# crash fuzzer), which resolver-2 keeps out of every production build.
+test-util = []
+
 [dev-dependencies]
 # The shared RAII scratch-directory guard (`lucene_util::test_support::TempDir`).
 # A `[dev-dependencies]` edge, so resolver-2 feature unification keeps the

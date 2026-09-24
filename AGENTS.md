@@ -98,6 +98,7 @@ the hook, the container and this table cannot drift apart:
 | Check fixtures are still Java-produced | `scripts/gen-fixtures.sh --check` |
 | Verify the write path (Lucene reads Rust bytes) | `scripts/verify-write-path.sh` |
 | Interop matrix (both engines write, append, merge, delete one index) | `scripts/verify-interop.sh` |
+| Crash fuzzing (power loss + kill -9; `--duration 86400` is the 24 h soak) | `scripts/crash-fuzz.sh` |
 
 Prefix any of the individual commands with `scripts/docker-test.sh` to run it
 capped. **CI does not use the container** — GitHub Actions runners are already
