@@ -263,8 +263,9 @@
 //!
 //! **Still out of scope**: `checkImpacts`/`checkDocIDRuns` (this port has no
 //! separate `ImpactsEnum` and no `docIDRunEnd` for the postings enum to
-//! disagree with -- see [`check_postings`]); and compound (`.cfs`) segments,
-//! which this module has never supported and skips rather than mis-reports.
+//! disagree with -- see [`check_postings`]). Compound (`.cfs`) segments,
+//! which this module used to skip, are checked through
+//! [`crate::compound_reader::CompoundReader`] like any other (M4 T4.6).
 //! A previous version of this list also named the `Float16` vector encoding:
 //! that was a `main`-ism. 10.5.0's `VectorEncoding` has exactly `BYTE` and
 //! `FLOAT32`, so there is no third encoding to be out of scope -- and this
@@ -278,6 +279,7 @@
 // carrying an `// ARITH:` proof. See `docs/arithmetic-gate.md`.
 #![deny(clippy::arithmetic_side_effects)]
 
+use crate::compound_reader::CompoundReader;
 use crate::deletes::liv_file_name;
 use crate::segment_info::{self, SegmentInfo};
 use crate::segment_infos::{self, SegmentCommitInfo, SegmentInfos};
@@ -328,9 +330,9 @@ pub struct Check {
 /// [`Outcome::Skipped`] is that state made visible: the check is named, the
 /// prerequisite that took it down is named, and [`CheckResult::all_passed`]
 /// is `false`. It is emitted **only** when a prerequisite actually failed --
-/// a format the segment legitimately does not have (no vectors, no points, a
-/// compound segment) produces no check at all, as before, because there is
-/// nothing there to be unguarded.
+/// a format the segment legitimately does not have (no vectors, no points)
+/// produces no check at all, as before, because there is nothing there to be
+/// unguarded.
 ///
 /// (Found by c23: a `.fnm` this port wrote but its own parser rejected made
 /// `check_index` skip every postings check in the segment. See c25.)
@@ -576,6 +578,54 @@ pub fn check_segment_in_commit(
 
     check_files_exist_and_validate(dir, commit, &si, &mut checks);
 
+    // `SegmentCoreReaders`: a compound segment's codec files live inside its
+    // `.cfs`, and its `.si` lists only `.cfs`/`.cfe`/`.si` -- every segment
+    // real Lucene flushes by default. From here on the checks read the
+    // members through the archive, and see the member names in `si.files`,
+    // exactly as they would a loose segment's files.
+    let compound = if si.is_compound_file {
+        match CompoundReader::open(dir, &commit.segment_name, &commit.segment_id) {
+            Ok(reader) => {
+                checks.push(Check::pass("cfs.open"));
+                Some(reader)
+            }
+            Err(e) => {
+                checks.push(Check::fail("cfs.open", e.to_string()));
+                skip_families(&mut checks, FAMILIES_BELOW_SI, "cfs.open");
+                return CheckResult {
+                    segment_name,
+                    max_doc: None,
+                    checks,
+                    stats: CheckStats::default(),
+                };
+            }
+        }
+    } else {
+        None
+    };
+    let (dir, si): (&dyn Directory, SegmentInfo) = match &compound {
+        Some(reader) => {
+            let files = si
+                .files
+                .iter()
+                .filter(|f| !f.ends_with(".cfs") && !f.ends_with(".cfe"))
+                .cloned()
+                .chain(reader.member_files())
+                .collect();
+            // Seen through the archive, the segment *is* a loose one: its
+            // members are its files.
+            (
+                reader,
+                SegmentInfo {
+                    files,
+                    is_compound_file: false,
+                    ..si
+                },
+            )
+        }
+        None => (dir, si),
+    };
+
     let field_infos = match open_fnm(dir, commit, &si) {
         Ok(fi) => {
             checks.push(Check::pass("fnm.open"));
@@ -621,7 +671,7 @@ pub fn check_segment_in_commit(
             skip_families(&mut checks, FAMILIES_BELOW_POSTINGS, "postings.open");
             None
         }
-        // No `.tim`/`.tip`/`.tmd` at all, or a compound segment: a legitimate
+        // No `.tim`/`.tip`/`.tmd` at all: a legitimate
         // absence, already reported by `fnm.postings_vs_files` if a field
         // claims postings. Nothing is left unguarded, so nothing is skipped.
         _ => None,
@@ -1296,8 +1346,7 @@ fn check_stored_fields_doc_count(
 /// The reverse `.fnm`-claims-vectors direction is covered segment-wide by
 /// [`check_field_flags_vs_files`]'s `fnm.term_vectors_vs_files`.
 ///
-/// Skipped (not failed) for a compound segment (this module has no
-/// compound-file support) and for a segment with no `.tvd`/`.tvx`/`.tvm` at
+/// Skipped (not failed) for a segment with no `.tvd`/`.tvx`/`.tvm` at
 /// all. A partial file group is reported rather than skipped.
 #[allow(clippy::too_many_arguments)]
 fn check_term_vectors(
@@ -1310,9 +1359,6 @@ fn check_term_vectors(
     stats: &mut CheckStats,
     checks: &mut Vec<Check>,
 ) {
-    if si.is_compound_file {
-        return;
-    }
     let tvd = si.files.iter().find(|f| f.ends_with(".tvd"));
     let tvx = si.files.iter().find(|f| f.ends_with(".tvx"));
     let tvm = si.files.iter().find(|f| f.ends_with(".tvm"));
@@ -1843,8 +1889,8 @@ struct PostingsHandles<'a> {
 /// Reads the segment's `.tim`/`.tip`/`.tmd` (plus `.doc`/`.pos`/`.pay` when
 /// present) into memory.
 ///
-/// `None` means "nothing to check here", not "ok": a compound segment (this
-/// module has no compound-file support), or a segment with none/only some of
+/// `None` means "nothing to check here", not "ok": a segment with none/only
+/// some of
 /// `.tim`/`.tip`/`.tmd` -- a partial group is already reported by
 /// [`check_field_flags_vs_files`]'s `fnm.postings_vs_files`, and this
 /// function does not duplicate that failure.
@@ -1852,9 +1898,6 @@ fn open_postings_bytes(
     dir: &dyn Directory,
     si: &SegmentInfo,
 ) -> Option<Result<PostingsFileBytes, String>> {
-    if si.is_compound_file {
-        return None;
-    }
     let find = |ext: &str| si.files.iter().find(|f| f.ends_with(ext));
     let (tim_name, tip_name, tmd_name) = match (find(".tim"), find(".tip"), find(".tmd")) {
         (Some(a), Some(b), Some(c)) => (a.clone(), b.clone(), c.clone()),
@@ -2773,9 +2816,7 @@ fn compare_intersect_with_scan(
 /// "verifier that does not check something silently passes corrupt
 /// segments" failure mode.
 ///
-/// Skipped (not failed) for a compound segment (this module has no
-/// compound-file support) and for a segment where no field claims
-/// doc-values. A field that claims them while the segment lacks
+/// Skipped (not failed) for a segment where no field claims doc-values. A field that claims them while the segment lacks
 /// `.dvd`/`.dvm` is already reported by [`check_field_flags_vs_files`]'s
 /// `fnm.doc_values_vs_files`, so this function returns quietly in that case
 /// rather than duplicating the failure.
@@ -2786,9 +2827,6 @@ fn check_doc_values(
     field_infos: &FieldInfos,
     checks: &mut Vec<Check>,
 ) {
-    if si.is_compound_file {
-        return;
-    }
     let dv_fields: Vec<&field_infos::FieldInfo> = field_infos
         .fields
         .iter()
@@ -3533,8 +3571,8 @@ fn sort_key_values(
 /// sort-on-flush writer and the sort-preserving merge use to *produce* the
 /// order, applied in reverse as a verifier.
 ///
-/// Skipped (not failed) for an unsorted segment, a compound segment, a
-/// segment with no doc-values files, or a sort this port can read but not
+/// Skipped (not failed) for an unsorted segment, a segment with no
+/// doc-values files, or a sort this port can read but not
 /// compare (a `SortedSetSortField` or a `BinarySortField` -- see
 /// [`sort_key_values`]). "Skipped" is deliberate for the last of those: the
 /// index is openable and everything else about it is checked, but this one
@@ -3550,9 +3588,6 @@ fn check_index_sort(
     let Some(sort_fields) = &si.index_sort else {
         return;
     };
-    if si.is_compound_file {
-        return;
-    }
     // A sort kind this port can read but not *verify* is unverifiable before
     // any file is opened, and reporting it as a failure would call a
     // perfectly good real-Lucene index corrupt. Skipped, with the reason and
@@ -3653,7 +3688,7 @@ fn check_index_sort(
 /// against the data it summarises.
 ///
 /// Skipped (not failed) when `.fnm` marks no field as the soft-deletes
-/// field, or the segment is compound, or it has no doc-values files.
+/// field, or the segment has no doc-values files.
 fn check_soft_deletes(
     dir: &dyn Directory,
     commit: &SegmentCommitInfo,
@@ -3661,9 +3696,6 @@ fn check_soft_deletes(
     field_infos: &FieldInfos,
     checks: &mut Vec<Check>,
 ) {
-    if si.is_compound_file {
-        return;
-    }
     let Some(fi) = field_infos.fields.iter().find(|f| f.soft_deletes_field) else {
         return;
     };
@@ -3744,10 +3776,7 @@ fn check_soft_deletes(
 /// - the leaves' decoded point counts must sum to `.kdm`'s own declared
 ///   field-level `point_count` -- `points.point_count_matches:<field>`.
 ///
-/// Skipped (not failed) when: the segment is compound (`.cfs`/`.cfe`,
-/// matching this module's existing compound-file scope, same as
-/// [`check_postings`]); or no field in `.fnm` claims points at
-/// all. A field that *does* claim points but whose segment is missing one
+/// Skipped (not failed) when no field in `.fnm` claims points at all. A field that *does* claim points but whose segment is missing one
 /// of `.kdm`/`.kdi`/`.kdd` is reported as a single `points.open` failure
 /// rather than silently skipped -- points files are optional at the
 /// segment level (most segments have none), but once one field commits to
@@ -3759,9 +3788,6 @@ fn check_points_structural_invariants(
     field_infos: &FieldInfos,
     checks: &mut Vec<Check>,
 ) {
-    if si.is_compound_file {
-        return;
-    }
     let points_fields: Vec<&field_infos::FieldInfo> = field_infos
         .fields
         .iter()
@@ -4035,9 +4061,6 @@ fn check_field_norms(
     stats: &mut CheckStats,
     checks: &mut Vec<Check>,
 ) {
-    if si.is_compound_file {
-        return;
-    }
     let with_norms: Vec<&field_infos::FieldInfo> = field_infos
         .fields
         .iter()
@@ -4343,9 +4366,6 @@ fn check_vectors(
     stats: &mut CheckStats,
     checks: &mut Vec<Check>,
 ) {
-    if si.is_compound_file {
-        return;
-    }
     let with_vectors: Vec<&field_infos::FieldInfo> = field_infos
         .fields
         .iter()
@@ -7990,58 +8010,6 @@ mod tests {
             .any(|c| c.name.starts_with("points.")));
     }
 
-    /// A compound (`.cfs`/`.cfe`) segment must skip the points check
-    /// entirely, matching [`check_postings`]'s own compound-file
-    /// scope -- this module has no compound-file support anywhere.
-    #[test]
-    fn compound_segment_skips_points_checks() {
-        let field = points_field_info();
-        let fields = FieldInfos {
-            fields: vec![field],
-        };
-        let si = SegmentInfo {
-            id: POINTS_SEG_ID,
-            version: segment_info::LuceneVersion {
-                major: 10,
-                minor: 0,
-                bugfix: 0,
-            },
-            min_version: None,
-            doc_count: 1,
-            is_compound_file: true,
-            has_blocks: false,
-            diagnostics: vec![],
-            files: vec![],
-            attributes: vec![],
-            index_sort: None,
-        };
-        let commit = segment_infos::SegmentCommitInfo {
-            segment_name: "_0".to_string(),
-            segment_id: POINTS_SEG_ID,
-            codec_name: "Lucene104".to_string(),
-            del_gen: -1,
-            del_count: 0,
-            field_infos_gen: -1,
-            doc_values_gen: -1,
-            soft_del_count: 0,
-            sci_id: None,
-            field_infos_files: vec![],
-            dv_update_files: vec![],
-            ..Default::default()
-        };
-        let dst_dir = tempdir();
-        let dir = FsDirectory::open(&dst_dir);
-        let mut checks = Vec::new();
-        check_points_structural_invariants(&dir, &commit, &si, &fields, &mut checks);
-        assert!(checks.is_empty());
-        std::fs::remove_dir_all(&dst_dir).ok();
-    }
-
-    /// A field whose `.fnm` entry claims points but whose field *number*
-    /// doesn't match any field actually recorded in `.kdm` must be flagged
-    /// as `points.field_present`, not panic or silently skip -- exercises
-    /// the "claimed but not actually present in the BKD tree" branch
-    /// distinctly from a missing-file `points.open` failure.
     #[test]
     fn mismatched_field_number_fails_field_present_check() {
         let points = vec![(0, vec![0, 0, 0, 0, 0, 0, 0, 1])];
@@ -9567,15 +9535,54 @@ mod tests {
         }
     }
 
-    /// This module has no compound-file (`.cfs`/`.cfe`) support, so every
-    /// per-format check returns **silently** for a compound segment rather
-    /// than reporting a missing file. That is a deliberate, documented scope
-    /// decision -- and only one of the seven guards that implement it
-    /// (`check_points_structural_invariants`') had ever been executed by a
-    /// test. The other six could have been reporting spurious failures on
-    /// every compound segment in existence, and nothing would have said so.
+    /// A real compound segment, flushed by Lucene 10.5.0
+    /// (`fixtures/data/compound_index`: postings on `id`, NUMERIC doc values
+    /// on `num`), gets every check a loose one does -- the postings and
+    /// doc-values walks included -- and passes them.
     #[test]
-    fn a_compound_segment_skips_every_format_check() {
+    fn a_real_lucene_compound_segment_is_checked_in_full() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/data/compound_index");
+        let dst = tempdir();
+        for name in ["_0.cfs", "_0.cfe", "_0.si", "segments_1"] {
+            std::fs::copy(src.join(name), dst.join(name)).unwrap();
+        }
+        let dir = FsDirectory::open(&dst);
+        let results = check_directory(&dir).unwrap();
+        let segment = &results[1];
+        assert!(segment.all_passed(), "{:?}", segment.failures());
+        let names: Vec<&str> = segment.checks.iter().map(|c| c.name.as_str()).collect();
+        for family in ["cfs.open", "fnm.open", "postings.", "doc_values."] {
+            assert!(
+                names.iter().any(|n| n.starts_with(family)),
+                "no {family} check: {names:?}"
+            );
+        }
+
+        // A damaged archive is reported, and names what it took down.
+        let cfs = std::fs::read(dst.join("_0.cfs")).unwrap();
+        std::fs::write(dst.join("_0.cfs"), &cfs[..cfs.len() - 1]).unwrap();
+        let results = check_directory(&dir).unwrap();
+        let segment = &results[1];
+        assert!(segment
+            .checks
+            .iter()
+            .any(|c| c.name == "cfs.open" && c.outcome == Outcome::Failed));
+        assert!(segment.checks.iter().any(|c| c.was_skipped()));
+        std::fs::remove_dir_all(&dst).ok();
+    }
+
+    /// Until M4's T4.6 every per-format check returned **silently** for a
+    /// compound segment -- so every segment real Lucene flushed passed this
+    /// module having been checked for nothing but its `.si`, `.fnm` and
+    /// stored-field count. Compound segments now reach the checks only through
+    /// [`CompoundReader`] (`check_segment_in_commit`), as a loose segment
+    /// whose files are the archive's members, and no check looks at the flag
+    /// any more. This pins that: the flag changes nothing below
+    /// `check_segment_in_commit`, so a guard that crept back in would fail
+    /// here.
+    #[test]
+    fn no_format_check_skips_a_segment_for_being_compound() {
         let fields = FieldInfos {
             fields: vec![all_claiming_field_info()],
         };
@@ -9658,27 +9665,25 @@ mod tests {
             "a failed *.open must name what it took down: {reported:?}"
         );
 
-        // The subject: the same segment marked compound reports nothing at
-        // all.
-        let skipped = run(true);
-        assert!(
-            skipped.is_empty(),
-            "a compound segment must produce no per-format check at all: {:?}",
-            skipped.iter().map(|c| &c.name).collect::<Vec<_>>()
-        );
-        // The postings walk is skipped at the same boundary. Its control is
-        // the same shape: with the flag off it finds the `.tim`/`.tip`/`.tmd`
-        // the `.si` lists and reports that they cannot be opened.
-        assert!(
-            open_postings_bytes(&dir, &claiming_si(true, claiming_files())).is_none(),
-            "a compound segment must not open postings"
+        // The subject: the same segment marked compound reports exactly the
+        // same.
+        let flagged = run(true);
+        assert_eq!(
+            flagged
+                .iter()
+                .map(|c| (&c.name, c.outcome))
+                .collect::<Vec<_>>(),
+            reported
+                .iter()
+                .map(|c| (&c.name, c.outcome))
+                .collect::<Vec<_>>(),
         );
         assert!(
             matches!(
-                open_postings_bytes(&dir, &claiming_si(false, claiming_files())),
+                open_postings_bytes(&dir, &claiming_si(true, claiming_files())),
                 Some(Err(_))
             ),
-            "the non-compound control must try, and fail, to open the postings"
+            "the postings walk must not skip a compound-flagged segment either"
         );
         std::fs::remove_dir_all(&dst).ok();
     }
