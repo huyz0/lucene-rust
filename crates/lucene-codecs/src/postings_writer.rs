@@ -14,7 +14,10 @@
 //! - **The term dictionary is `crate::blocktree_writer`'s**: block
 //!   splitting, floor blocks, non-leaf blocks and a multi-level trie, byte
 //!   for byte what Java writes for the same terms and term states (see that
-//!   module and `tests/blocktree_writer_identity.rs`). An earlier writer here
+//!   module and `tests/blocktree_writer_identity.rs`). The term *states*
+//!   themselves point into `.doc`/`.pos`/`.pay`, whose layout differs from
+//!   Java's where noted below, so a whole segment's `.tim` matches Java's
+//!   only where those files do (e.g. all-singleton `DOCS` fields). An earlier writer here
 //!   put every term in one block under one trie node; a two-level attempt
 //!   before that gave the root no output, which real Lucene cannot read
 //!   (`docs/sweep/findings.md`, "The term dictionary could not survive a
@@ -98,16 +101,16 @@
 //!   all for a singleton term, matching what `postings::singleton_postings`
 //!   already expects to read back.
 //!
-//! # Caller obligations (not re-validated beyond what's cheap to check)
+//! # Input checks
 //!
-//! `terms` must already be sorted ascending by term bytes with no
-//! duplicates, and each term's `docs` must be sorted ascending by doc ID with
-//! no duplicates and every `freq >= 1` — the same invariant
-//! `indexing_chain::InMemoryInvertedIndex`'s `BTreeMap`/per-term sort already
-//! guarantees for its `Vec<PostingEntry>`. Violating this produces incorrect
-//! (but not memory-unsafe) output; [`write_single_field`] only checks the
-//! cheap structural invariants explicitly listed above (sortedness of terms,
-//! `docFreq` bound, `index_options`).
+//! Each term is checked as it is written, the way `Lucene104PostingsWriter`
+//! checks as it goes (`startDoc`, `addPosition`): terms strictly ascending,
+//! each term's doc ids strictly ascending and non-negative, every freq at
+//! least 1, positions/offsets/payloads shaped to the freqs and in order
+//! ([`validate_term`], and [`TermsWriter::write`] for term order). The first
+//! defect **in term order** is the one reported -- so for a term that is both
+//! out of order and has bad postings, the postings error wins -- and no output
+//! is returned unless every term passed. `doc_count` is taken as given.
 //!
 //! # Wire format written (mirrors `crate::blocktree`/`crate::postings`'s own
 //! module docs, writer side)
@@ -1388,7 +1391,7 @@ fn write_full_block(
         // Lucene rejects the segment outright with "Got empty list of impacts
         // on level 0".
         let block_impacts = competitive_impacts(block, norms);
-        // `validate_field` rejects `freq < 1`, so every block has at least one
+        // `validate_term` rejects `freq < 1`, so every block has at least one
         // document and its frontier at least one pair. Asserted here rather
         // than inferred from a validator several hundred lines up: an empty
         // impacts region is what Lucene rejects outright, and the guard that
@@ -1413,7 +1416,7 @@ fn write_full_block(
     let mut prev = prev_doc_id;
     let mut max_delta = 0u32;
     for (i, &(doc_id, _)) in block.iter().enumerate() {
-        // `validate_field` bounds every doc ID to `0..=i32::MAX` and makes
+        // `validate_term` bounds every doc ID to `0..=i32::MAX` and makes
         // them strictly ascending, and `prev` starts at -1, so the true delta
         // is in `1..=i32::MAX + 1`. Only the very last of those overflows an
         // `i32`, and Java's `docID - lastDocID` is an `int` subtraction that
@@ -1483,7 +1486,7 @@ fn write_full_block(
         // ARITH: `s` accumulates 256 deltas, each below 2^32, so it stays
         // under 2^41. It ends at `doc_range - 1` (the deltas telescope), and
         // `num_bit_set_longs = ceil(doc_range / 64)`, so `s / 64` indexes
-        // `words` in range; every delta is `>= 1` (`validate_field` makes doc
+        // `words` in range; every delta is `>= 1` (`validate_term` makes doc
         // IDs strictly ascending), so `s >= 0` from the first iteration and
         // `s % 64` is a non-negative shift amount.
         #[allow(clippy::arithmetic_side_effects)]
@@ -1759,7 +1762,7 @@ fn write_position_tail(
         let mut prev = 0i32;
         let mut prev_start_offset = 0i32;
         for (occ_idx, &p) in doc_positions.iter().enumerate() {
-            // ARITH: `validate_field` bounds positions to `0..=i32::MAX` and
+            // ARITH: `validate_term` bounds positions to `0..=i32::MAX` and
             // makes them strictly ascending within a doc, and `prev` starts at
             // 0, so `p - prev` is in `0..=i32::MAX`.
             #[allow(clippy::arithmetic_side_effects)]
@@ -1768,7 +1771,7 @@ fn write_position_tail(
             prev = p;
             if has_offsets {
                 let (start_offset, end_offset) = offsets[doc_idx][occ_idx];
-                // ARITH: `validate_field` requires `start_offset >=
+                // ARITH: `validate_term` requires `start_offset >=
                 // last_start_offset` (from a base of 0, so every offset is
                 // non-negative) and `end_offset >= start_offset`, so both
                 // differences are in `0..=i32::MAX`.
@@ -1860,7 +1863,7 @@ fn write_position_tail(
     for i in start..deltas.len() {
         let delta = deltas[i];
         if has_payloads {
-            // `validate_field` proved every length fits an `i32`.
+            // `validate_term` proved every length fits an `i32`.
             let length = payload_lengths[i] as i32;
             if length != last_payload_length {
                 last_payload_length = length;
@@ -1984,7 +1987,7 @@ impl PositionLayout {
     /// sampled after `occ` occurrences have been buffered.
     ///
     /// `occ` never exceeds this term's `totalTermFreq`, so `q` never exceeds
-    /// `num_full_blocks` and every lookup is in range: [`validate_field`] runs
+    /// `num_full_blocks` and every lookup is in range: [`validate_term`] runs
     /// before any of this and enforces `positions[i].len() == freq` for every
     /// document, which is what makes the caller's running occurrence count and
     /// this layout's block count the same quantity. All three lookups are
@@ -2049,7 +2052,7 @@ impl<'a> PosSkipWriter<'a> {
     /// of every document in the block, then `flushDocBlock` samples.
     fn add_block_docs(&mut self, block: &[(i32, i32)]) {
         if self.layout.is_some() {
-            // ARITH: every freq is `>= 1` and `<= i32::MAX` (`validate_field`),
+            // ARITH: every freq is `>= 1` and `<= i32::MAX` (`validate_term`),
             // and a term has at most `i32::MAX` documents, so the running
             // occurrence count stays below 2^62.
             #[allow(clippy::arithmetic_side_effects)]
@@ -2266,6 +2269,170 @@ mod tests {
 
     const SEG_ID: [u8; ID_LENGTH] = [9u8; ID_LENGTH];
     const SUFFIX: &str = "";
+
+    /// Re-writes a real Lucene term dictionary **from the term states Lucene
+    /// itself recorded** -- each term's `docFreq`, `totalTermFreq`,
+    /// `docStartFP`, `posStartFP`, `payStartFP`, `singletonDocID` and
+    /// `lastPosBlockOffset`, read back from the fixture -- through
+    /// [`TermsWriter`] and [`TermMetaWriter`], and requires Java's exact
+    /// `.tim`/`.tip`/`.tmd` bytes.
+    ///
+    /// `tests/blocktree_writer_identity.rs` proves the same for all-singleton
+    /// `DOCS` fields, where no `.doc` pointer moves. This covers what those
+    /// cannot: `StatsWriter`'s non-singleton pairs, `.tmd`'s
+    /// `sumTotalTermFreq`, and every `encodeTerm` branch -- `docStartFP`
+    /// deltas, `posStartFP`/`payStartFP` deltas, `lastPosBlockOffset` -- over
+    /// fields with freqs, positions, offsets and payloads. Taking the states
+    /// from the fixture rather than from this port's `.doc` writer keeps the
+    /// comparison about the term dictionary alone: `.doc` legitimately
+    /// differs from Java's (no `bitsPerValue == 0`/dense-bitset blocks).
+    fn assert_term_dictionary_rewrite_from_states_is_identical(fixture: &str) {
+        let dir = format!(
+            "{}/../../fixtures/data/{fixture}/",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let manifest = std::fs::read_to_string(format!("{dir}manifest.properties")).unwrap();
+        let get = |key: &str| {
+            manifest
+                .lines()
+                .find_map(|l| l.strip_prefix(key).and_then(|r| r.strip_prefix('=')))
+                .unwrap_or_else(|| panic!("{fixture}: manifest key {key}"))
+                .to_string()
+        };
+        let raw = |key: &str| std::fs::read(format!("{dir}{}.raw", get(key))).unwrap();
+        let id_hex = get("id_hex");
+        let mut id = [0u8; ID_LENGTH];
+        for (i, b) in id.iter_mut().enumerate() {
+            *b = u8::from_str_radix(&id_hex[i * 2..i * 2 + 2], 16).unwrap();
+        }
+        let suffix = get("segment_suffix");
+        let max_doc: i32 = get("max_doc").parse().unwrap();
+        let infos = crate::field_infos::parse(&raw("fnm_file_name"), &id, "").unwrap();
+        let (java_tim, java_tip, java_tmd) = (
+            raw("tim_file_name"),
+            raw("tip_file_name"),
+            raw("tmd_file_name"),
+        );
+        let fields = blocktree::open(
+            &java_tim, &java_tip, &java_tmd, &infos, &id, &suffix, max_doc,
+        )
+        .unwrap();
+
+        let mut tim = Vec::new();
+        codec_util::write_index_header(
+            &mut tim,
+            TERMS_CODEC_NAME,
+            BLOCKTREE_VERSION_CURRENT,
+            &id,
+            &suffix,
+        );
+        let mut tip = Vec::new();
+        codec_util::write_index_header(
+            &mut tip,
+            TERMS_INDEX_CODEC_NAME,
+            BLOCKTREE_VERSION_CURRENT,
+            &id,
+            &suffix,
+        );
+        let mut tmd = Vec::new();
+        codec_util::write_index_header(
+            &mut tmd,
+            TERMS_META_CODEC_NAME,
+            BLOCKTREE_VERSION_CURRENT,
+            &id,
+            &suffix,
+        );
+        codec_util::write_index_header(
+            &mut tmd,
+            POSTINGS_TERMS_CODEC,
+            POSTINGS_VERSION_CURRENT,
+            &id,
+            &suffix,
+        );
+        tmd.write_vint(POSTINGS_BLOCK_SIZE);
+        let mut names: Vec<&str> = fields.iter_fields().map(|(n, _)| n).collect();
+        names.sort_unstable();
+        tmd.write_vint(names.len() as i32);
+
+        let mut shapes = (false, false, false); // non-singleton, positions, payloads-or-offsets
+        for name in names {
+            let info = infos.field_by_name(name).unwrap();
+            let ft = fields.field(name).unwrap();
+            let mut collected = Vec::new();
+            let mut it = ft.iter();
+            while let Some((term, stats)) = it.next() {
+                let term = term.to_vec();
+                let meta = ft.term_metadata(&term).unwrap().unwrap();
+                collected.push((term, stats, meta));
+            }
+            let positions = info.index_options.subsumes_positions();
+            let offsets_or_payloads = info.index_options.subsumes_offsets() || info.store_payloads;
+            shapes.0 |= collected.iter().any(|(_, st, _)| st.doc_freq > 1);
+            shapes.1 |= positions;
+            shapes.2 |= positions && offsets_or_payloads;
+            let mut w = TermsWriter::new(
+                &mut tim,
+                info.index_options != IndexOptions::Docs,
+                TermMetaWriter {
+                    index_has_positions: positions,
+                    index_has_offsets_or_payloads: offsets_or_payloads,
+                    last: None,
+                },
+                blocktree_writer::DEFAULT_MIN_ITEMS_IN_BLOCK,
+                blocktree_writer::DEFAULT_MAX_ITEMS_IN_BLOCK,
+            );
+            for (term, stats, meta) in &collected {
+                w.write(
+                    term,
+                    IntBlockTermState {
+                        doc_freq: stats.doc_freq,
+                        total_term_freq: stats.total_term_freq,
+                        doc_start_fp: meta.doc_start_fp,
+                        pos_start_fp: meta.pos_start_fp,
+                        pay_start_fp: meta.pay_start_fp,
+                        singleton_doc_id: meta.singleton_doc_id,
+                        last_pos_block_offset: meta.last_pos_block_offset,
+                    },
+                )
+                .unwrap();
+            }
+            w.finish(&mut tip, &mut tmd, info.number, ft.doc_count);
+        }
+        assert_eq!(
+            shapes,
+            (true, true, true),
+            "{fixture} must exercise every state shape"
+        );
+        codec_util::write_footer(&mut tim);
+        codec_util::write_footer(&mut tip);
+        tmd.write_i64(tip.len() as i64);
+        tmd.write_i64(tim.len() as i64);
+        codec_util::write_footer(&mut tmd);
+
+        for (ext, ours, java) in [
+            (".tip", &tip, &java_tip),
+            (".tim", &tim, &java_tim),
+            (".tmd", &tmd, &java_tmd),
+        ] {
+            let at = ours.iter().zip(java.iter()).position(|(a, b)| a != b);
+            assert!(
+                at.is_none() && ours.len() == java.len(),
+                "{fixture}{ext}: {} bytes vs Java's {}, first difference at {at:?}",
+                ours.len(),
+                java.len()
+            );
+        }
+    }
+
+    #[test]
+    fn term_dictionary_with_freqs_positions_offsets_and_payloads_is_byte_identical() {
+        assert_term_dictionary_rewrite_from_states_is_identical("blocktree_index");
+    }
+
+    #[test]
+    fn term_dictionary_of_skip_data_postings_is_byte_identical() {
+        assert_term_dictionary_rewrite_from_states_is_identical("postings_skip_index");
+    }
 
     /// `CompetitiveImpactAccumulator`'s core property: the result is the
     /// Pareto frontier of the input pairs -- every input is dominated by some

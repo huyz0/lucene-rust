@@ -211,6 +211,23 @@ impl<'a> FieldNorms<'a> {
         )
     }
 
+    /// A field that is indexed but has **no norms** (`FieldInfo.omitNorms`),
+    /// scored as Java scores it: `LeafSimScorer` reads a missing norm as `1`
+    /// (`LENGTH_TABLE[1]`, a field length of one), but `BM25Similarity`
+    /// still divides by the collection's real `avgFieldLength`
+    /// (`sumTotalTermFreq / docCount`, with `sumTotalTermFreq` equal to
+    /// `sumDocFreq` for a `DOCS` field). Substituting `1` for *both* lengths,
+    /// which a `None` norms argument still does, agrees with Java only when
+    /// the field averages one token per document -- `VerifyIndex` (M3) caught
+    /// it scoring a freqs-only field 12% low.
+    pub fn unnormed(max_doc: i32, avg_field_length: f32) -> FieldNorms<'static> {
+        FieldNorms::with_avg_field_length(
+            &[],
+            NormsEntry::constant(-1, max_doc, 1),
+            avg_field_length,
+        )
+    }
+
     /// [`FieldNorms::from_field_stats`] with `avgFieldLength` supplied rather
     /// than derived from this segment's own counters.
     ///
@@ -406,6 +423,15 @@ impl FieldNormsCursor<'_, '_> {
                 return Ok(Some(b));
             }
         }
+        // A constant-valued dense field -- every field without norms
+        // ([`FieldNorms::unnormed`]) -- needs no lookup either.
+        let entry = &self.norms.entry;
+        if entry.bytes_per_norm == 0
+            && entry.is_dense()
+            && (0..entry.num_docs_with_field).contains(&doc)
+        {
+            return Ok(Some(entry.norms_offset as u8));
+        }
         if let Some(disi) = self.disi.as_mut() {
             // `advance_exact` asserts on a negative doc; `norm_value` owns that
             // error, and returning it here keeps the two paths' error identical.
@@ -586,6 +612,36 @@ mod tests {
     }
 
     use super::*;
+
+    /// A field without norms scores every document at norm 1 -- field length
+    /// one -- against the real `avgdl`, as `LeafSimScorer` + `BM25Similarity`
+    /// do: `cache[1] = 1 / (k1 * ((1 - b) + b * 1 / avgdl))`. Before this, a
+    /// norm-less field was scored with `avgdl` forced to one too, which
+    /// `VerifyIndex` measured 12% low on a freqs-only field.
+    #[test]
+    fn unnormed_field_scores_at_length_one_against_the_real_avgdl() {
+        let avgdl = 3.5f32;
+        let norms = FieldNorms::unnormed(10, avgdl);
+        assert_eq!(norms.avg_field_length, avgdl);
+        let want = 1.0
+            / (crate::similarity::DEFAULT_K1
+                * ((1.0 - crate::similarity::DEFAULT_B)
+                    + crate::similarity::DEFAULT_B * 1.0 / avgdl));
+        let mut cursor = norms.cursor();
+        for doc in [0, 5, 9] {
+            assert_eq!(cursor.field_length(doc).unwrap(), 1.0);
+            assert_eq!(cursor.norm_inverse(doc).unwrap(), want);
+            assert_eq!(norms.field_length(doc).unwrap(), 1.0);
+        }
+        // Past the segment is an error, as for any dense norms.
+        assert!(norms.field_length(10).is_err());
+        // At avgdl 1 it is exactly the old unnormed constant.
+        let one = FieldNorms::unnormed(1, 1.0);
+        assert_eq!(
+            one.cursor().norm_inverse(0).unwrap(),
+            crate::similarity::UNNORMED_NORM_INVERSE
+        );
+    }
     use lucene_codecs::norms::NormsEntry;
 
     /// `IndexedDISI`'s "this entry carries no rank table", written as the byte

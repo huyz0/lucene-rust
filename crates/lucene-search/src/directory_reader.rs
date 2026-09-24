@@ -664,12 +664,20 @@ impl SegmentReader {
         avg_field_length: f32,
     ) -> Option<crate::field_norms::FieldNorms<'_>> {
         let info = self.field_infos.field_by_name(field)?;
-        let entry = self.norms_entry(info.number)?;
-        let data = self.norms_data()?;
         // A field with no term dictionary entry has no counters, and therefore
         // no norms this port will score with -- same precondition
         // `field_norms` has always had.
         self.fields.field(field)?;
+        if info.omit_norms {
+            // Indexed without norms: every document at norm 1 against the
+            // real `avgdl`, as Java's `LeafSimScorer` scores it.
+            return Some(crate::field_norms::FieldNorms::unnormed(
+                self.max_doc,
+                avg_field_length,
+            ));
+        }
+        let entry = self.norms_entry(info.number)?;
+        let data = self.norms_data()?;
         Some(crate::field_norms::FieldNorms::with_avg_field_length(
             data,
             *entry,
