@@ -107,7 +107,7 @@ use std::sync::{Arc, Mutex};
 use lucene_store::codec_util::{self, ID_LENGTH};
 use lucene_store::data_input::{DataInput, SliceInput};
 
-use crate::automaton::{ByteDfa, DfaWalker, Verdict};
+use crate::automaton::{ByteDfa, CompiledDfa, DfaWalker, LazyDfa, TermAutomaton, Verdict, DEAD};
 use crate::field_infos::{FieldInfos, IndexOptions};
 use crate::fuzzy::FuzzyMatch;
 use crate::postings::{self, DocInput, Postings, TermMetadata};
@@ -690,7 +690,16 @@ impl Frame {
         if !self.is_floor || target.len() <= self.prefix_length {
             return Ok(());
         }
-        let target_label = target[self.prefix_length] as u32;
+        self.scan_to_floor_label(index, target[self.prefix_length] as u32)
+    }
+
+    /// [`Self::scan_to_floor_frame`] for a lead byte on its own: moves to the
+    /// floor block whose label range holds `target_label`, reading only floor
+    /// records (forward from where the last scan stopped).
+    fn scan_to_floor_label(&mut self, index: &[u8], target_label: u32) -> Result<()> {
+        if !self.is_floor {
+            return Ok(());
+        }
         if target_label < self.next_floor_label {
             // Already on the correct block.
             return Ok(());
@@ -879,6 +888,48 @@ impl Frame {
             )));
         }
         Ok((self.fp - self.sub_code as usize) as i64)
+    }
+
+    /// The next entry of the loaded block, leaving the term buffer alone --
+    /// what `IntersectTermsEnumFrame` reads: the suffix is only looked at
+    /// through [`Self::suffix`] until the automaton says the entry matters.
+    /// `true` for a sub-block pointer (its fp in `last_sub_fp`). Unlike
+    /// [`Self::next`] it never moves on to the next floor block; the caller
+    /// sees `next_ent == ent_count` and decides.
+    // ARITH: the guard leaves `0 <= next_ent < ent_count <= i32::MAX`
+    // (`ENT_COUNT`), so `next_ent + 1` cannot overflow; `term_block_ord`
+    // counts terms within this block and is bounded by `ent_count`.
+    #[allow(clippy::arithmetic_side_effects)]
+    #[inline]
+    fn next_entry(&mut self) -> Result<bool> {
+        if self.next_ent < 0 || self.next_ent >= self.ent_count as i32 {
+            return Err(Error::Store(lucene_store::Error::Corrupted(
+                "terms block entry cursor ran past entCount".into(),
+            )));
+        }
+        self.next_ent += 1;
+        let code = read_vint_at(
+            &self.suffix_length_bytes[..self.suffix_length_bytes_len],
+            &mut self.suffix_lengths_pos,
+            "suffix lengths",
+        )? as u32;
+        if self.is_leaf_block {
+            self.take_suffix(code as usize)?;
+            return Ok(false);
+        }
+        self.take_suffix((code >> 1) as usize)?;
+        if (code & 1) == 0 {
+            self.sub_code = 0;
+            self.term_block_ord += 1;
+            return Ok(false);
+        }
+        self.sub_code = read_vlong_at(
+            &self.suffix_length_bytes[..self.suffix_length_bytes_len],
+            &mut self.suffix_lengths_pos,
+            "suffix lengths",
+        )? as u64;
+        self.last_sub_fp = self.absolute_sub_fp()?;
+        Ok(true)
     }
 
     /// `SegmentTermsEnumFrame.next`.
@@ -1997,6 +2048,12 @@ pub struct FieldTerms {
     /// same effect from the caller holding a `TermsEnum`; this port's API
     /// takes a term per call, so the reuse has to live here.
     scratch: Mutex<EnumState>,
+    /// The field's term n-gram index ([`crate::term_ngram`]), built the
+    /// first time it is worth it: [`NGRAM_BUILD_AFTER`] regexp walks that
+    /// had to cover the whole dictionary. A field never asked such a query
+    /// never pays for one.
+    ngram: std::sync::OnceLock<Option<Arc<crate::term_ngram::TermNgramIndex>>>,
+    wide_walks: std::sync::atomic::AtomicU32,
 }
 
 impl std::fmt::Debug for FieldTerms {
@@ -2043,6 +2100,10 @@ impl Clone for FieldTerms {
                 current: -1,
                 ..EnumState::default()
             }),
+            ngram: self.ngram.clone(),
+            wide_walks: std::sync::atomic::AtomicU32::new(
+                self.wide_walks.load(std::sync::atomic::Ordering::Relaxed),
+            ),
         }
     }
 }
@@ -2246,14 +2307,70 @@ impl FieldTerms {
         &'a self,
         pattern: &'a RegexpPattern,
     ) -> impl Iterator<Item = Result<(Vec<u8>, SeekedTerm)>> + 'a {
-        Intersect::new(
+        if let Some(compiled) = pattern.compiled() {
+            // No literal prefix: the walk would visit the whole dictionary.
+            // If the pattern forces some literal text, the n-gram index can
+            // name the few terms containing it instead.
+            if pattern.literal_prefix().is_empty() {
+                let keys = pattern.required_grams();
+                if !keys.is_empty() {
+                    if let Some(index) = self.ngram_index_for_wide_query() {
+                        let limit = index.num_terms() / NGRAM_MAX_CANDIDATE_SHARE;
+                        if let Some(candidates) = index.candidates(&keys, limit) {
+                            return RegexpIntersect::Ngram(NgramIntersect {
+                                field: self,
+                                index,
+                                candidates: candidates.into_iter(),
+                                compiled,
+                            });
+                        }
+                    }
+                }
+            }
+            return RegexpIntersect::Dfa(DfaIntersect::new(self, compiled));
+        }
+        // Too large to determinize whole: determinize only what the
+        // dictionary reaches. Too large even as an NFA: the matcher alone.
+        match pattern.to_nfa() {
+            Some((nfa, start, end)) => RegexpIntersect::Lazy(Box::new(DfaIntersect::new(
+                self,
+                LazyDfa::new(nfa, start, end),
+            ))),
+            None => RegexpIntersect::Scan(Intersect::new(
+                self,
+                DfaFiltered::new(RegexpMatcher(pattern), None),
+                pattern.literal_prefix(),
+            )),
+        }
+    }
+
+    /// Whether this field has built its term n-gram index -- for tests that
+    /// must know the n-gram path was really taken. Not for production use.
+    #[doc(hidden)]
+    pub fn ngram_index_built(&self) -> bool {
+        self.ngram.get().is_some_and(Option::is_some)
+    }
+
+    /// [`Self::regexp_intersect_states`] with the lazily determinized automaton
+    /// forced, even for a pattern the eager one could be built for -- so the
+    /// lazy walk can be checked against real Lucene on every fixture pattern,
+    /// not only on the rare ones that need it -- with an entry budget
+    /// (`automaton::MAX_LAZY_SET_ENTRIES` in production), so running out of
+    /// it can be tested too. `None` when the pattern has no NFA. Not for
+    /// production use.
+    #[doc(hidden)]
+    pub fn regexp_intersect_states_lazy<'a>(
+        &'a self,
+        pattern: &'a RegexpPattern,
+        limit: usize,
+    ) -> Option<impl Iterator<Item = Result<(Vec<u8>, SeekedTerm)>> + 'a> {
+        let (nfa, start, end) = pattern.to_nfa()?;
+        // `ALL` semantics come from the eager automaton's totality check; a
+        // total pattern is not what this entry point exists to test.
+        Some(DfaIntersect::new(
             self,
-            DfaFiltered::new(
-                RegexpMatcher(pattern),
-                pattern.to_dfa().map(std::sync::Arc::new),
-            ),
-            pattern.literal_prefix(),
-        )
+            LazyDfa::with_limit(nfa, start, end, limit),
+        ))
     }
 
     /// `seekExact(term)` followed by `PostingsEnum` iteration
@@ -3054,6 +3171,405 @@ impl<M: TermMatcher> Iterator for Intersect<'_, M> {
                 self.done = true;
                 Some(Err(e))
             }
+        }
+    }
+}
+
+/// `IntersectTermsEnum`: the term dictionary walked in lockstep with a
+/// [`ByteDfa`], block by block.
+///
+/// Each frame of the walk remembers the automaton state its block's shared
+/// prefix leads to, and every entry is judged by running only its *suffix*
+/// bytes, in place in the block, from that state. A term entry is yielded
+/// when its state accepts; a sub-block entry is descended into only when its
+/// state is still live -- a dead one is never loaded, which is how a pattern
+/// with no literal prefix (`[a-z][0-9]{2}`) still skips most of the
+/// dictionary. Nothing is copied into the term buffer until an entry is
+/// kept, and no term is compared with the one before it.
+///
+/// This replaces [`Intersect`]'s forward scan for regexp, which fed every
+/// term (all of its bytes, found by comparing it with the previous one)
+/// through a [`DfaWalker`] and could only skip by re-seeking from the root.
+struct DfaIntersect<'a, A: TermAutomaton> {
+    field: &'a FieldTerms,
+    st: EnumState,
+    compiled: A,
+    /// `states[ord]`: the automaton state after frame `ord`'s block prefix.
+    states: Vec<u32>,
+    /// `nodes[ord]`: the index trie node for frame `ord`'s prefix, when the
+    /// walk found it -- the source of the frame's floor data, which is what
+    /// lets a floor block whose lead bytes the automaton cannot take be
+    /// skipped without loading it.
+    nodes: Vec<Option<TrieNode>>,
+    /// `rest_dead[ord]`: an entry of frame `ord` sorted past every byte its
+    /// state can take, so the rest of the frame -- this block and its later
+    /// floor blocks -- is skipped.
+    rest_dead: Vec<bool>,
+    /// Every block the walk has loaded, by file pointer. A well-formed
+    /// dictionary is a tree, so an honest walk loads each block once; a
+    /// corrupt term index can point its floor skips and sub-block descents
+    /// back into blocks already walked and fan out without end
+    /// (`check_index`'s corrupted-`.tip` sweep found this). A second load of
+    /// the same block is reported as corruption -- exactly, with no size
+    /// estimate to get wrong on compressed blocks.
+    visited: std::collections::HashSet<usize>,
+    started: bool,
+    done: bool,
+}
+
+impl<'a, A: TermAutomaton> DfaIntersect<'a, A> {
+    /// `compiled` carries `CompiledAutomaton`'s `AUTOMATON_TYPE.ALL` swap
+    /// already made ([`CompiledDfa::new`]): `.*` and `@` enumerate the whole
+    /// dictionary, ill-formed UTF-8 terms included.
+    fn new(field: &'a FieldTerms, compiled: A) -> Self {
+        Self {
+            field,
+            st: EnumState {
+                current: -1,
+                ..EnumState::default()
+            },
+            compiled,
+            states: Vec::new(),
+            nodes: Vec::new(),
+            rest_dead: Vec::new(),
+            visited: std::collections::HashSet::new(),
+            started: false,
+            done: false,
+        }
+    }
+
+    fn ste(&mut self) -> SegmentTermsEnum<'_> {
+        SegmentTermsEnum {
+            field: self.field,
+            st: &mut self.st,
+        }
+    }
+
+    /// Records the block just loaded into frame `ord`; see [`Self::visited`].
+    fn record_load(&mut self, ord: usize) -> Result<()> {
+        if !self.visited.insert(self.st.stack[ord].fp) {
+            return Err(Error::Store(lucene_store::Error::Corrupted(
+                "term dictionary walk reached the same block twice: the term index points back into blocks already walked"
+                    .into(),
+            )));
+        }
+        Ok(())
+    }
+
+    fn set_state(&mut self, ord: usize, state: u32, node: Option<TrieNode>) {
+        if self.states.len() <= ord {
+            self.states.resize(ord.saturating_add(1), DEAD);
+            self.nodes.resize(ord.saturating_add(1), None);
+            self.rest_dead.resize(ord.saturating_add(1), false);
+        }
+        self.states[ord] = state;
+        self.nodes[ord] = node;
+        self.rest_dead[ord] = false;
+    }
+
+    /// The floor block of frame `ord` that holds the first lead byte at or
+    /// after `from` the automaton can still take: `IntersectTermsEnumFrame`'s
+    /// floor skip. `false` when no later floor block can hold one. Only a
+    /// frame pushed from its trie node carries floor data; any other steps
+    /// through its floor blocks in order.
+    fn seek_live_floor(&mut self, ord: usize, from: u32) -> Result<bool> {
+        let loaded = self.seek_live_floor_unbudgeted(ord, from)?;
+        if loaded {
+            self.record_load(ord)?;
+        }
+        Ok(loaded)
+    }
+
+    fn seek_live_floor_unbudgeted(&mut self, ord: usize, from: u32) -> Result<bool> {
+        let index = &self.field.tip.as_ref().as_ref()[self.field.index_start..self.field.index_end];
+        let tim: &[u8] = self.field.tim.as_ref().as_ref();
+        let s = self.states[ord];
+        let f = &mut self.st.stack[ord];
+        if !f.is_floor {
+            if from == 0 {
+                f.load_block(tim)?;
+            } else {
+                f.load_next_floor_block(tim)?;
+            }
+            return Ok(true);
+        }
+        let Some(label) = self
+            .compiled
+            .first_live_from(s, from)
+            .ok_or_else(too_complex)?
+        else {
+            // Nothing further, but the first block still holds the term that
+            // equals the prefix itself.
+            if from == 0 && self.compiled.is_accept(s) {
+                f.load_block(tim)?;
+                return Ok(true);
+            }
+            return Ok(false);
+        };
+        let label = if from == 0 && self.compiled.is_accept(s) {
+            0
+        } else {
+            u32::from(label)
+        };
+        if label >= f.next_floor_label || from > 0 {
+            f.scan_to_floor_label(index, label)?;
+            if from > 0 && f.next_ent != -1 {
+                // The scan stayed on the block just finished: no floor
+                // block after it holds that byte.
+                return Ok(false);
+            }
+        }
+        f.load_block(tim)?;
+        Ok(true)
+    }
+
+    // ARITH: `st.current` is decremented only after the `ord == 0` return,
+    // so it stays `>= 0` while the walk runs; `prefix_length +
+    // suffix_length` is bounded as in [`Frame::fill_term`].
+    #[allow(clippy::arithmetic_side_effects)]
+    fn next_result(&mut self) -> Result<Option<(Vec<u8>, SeekedTerm)>> {
+        if self.done {
+            return Ok(None);
+        }
+        if !self.started {
+            self.started = true;
+            let start = self.compiled.start();
+            if start == DEAD || self.field.num_terms == 0 {
+                self.done = true;
+                return Ok(None);
+            }
+            let mut ste = self.ste();
+            let root = ste.root()?;
+            ste.push_frame_node(&root, 0)?;
+            self.set_state(0, start, Some(root));
+            if !self.seek_live_floor(0, 0)? {
+                self.done = true;
+                return Ok(None);
+            }
+        }
+        loop {
+            let ord = self.st.current.max(0) as usize;
+            let f = &mut self.st.stack[ord];
+            if f.next_ent == f.ent_count as i32 || self.rest_dead[ord] {
+                if !f.is_last_in_floor && !self.rest_dead[ord] {
+                    let from = f.next_floor_label;
+                    if self.seek_live_floor(ord, from)? {
+                        continue;
+                    }
+                }
+                if ord == 0 {
+                    self.done = true;
+                    self.st.on_term = false;
+                    return Ok(None);
+                }
+                // The parent's cursor is already just past the sub-block
+                // entry that led here: a depth-first walk never moves it.
+                self.st.current -= 1;
+                continue;
+            }
+            let is_sub = f.next_entry()?;
+            let mut s = self.states[ord];
+            if !is_sub && self.compiled.utf8_total(s) {
+                if std::str::from_utf8(f.suffix()).is_err() {
+                    continue;
+                }
+                f.fill_term(&mut self.st.term);
+                self.st.on_term = true;
+                let (stats, meta) = self.ste().stats_and_meta()?;
+                return Ok(Some((
+                    self.st.term.get().to_vec(),
+                    SeekedTerm { stats, meta },
+                )));
+            }
+            // Entries are sorted, so one whose first suffix byte is past the
+            // last byte this block's prefix state can take ends the block --
+            // `IntersectTermsEnum`'s jump to `entCount` -- and with it every
+            // floor block after this one.
+            if let Some(&first) = f.suffix().first() {
+                if self
+                    .compiled
+                    .last_live_byte(s)
+                    .ok_or_else(too_complex)?
+                    .is_none_or(|max| first > max)
+                {
+                    self.rest_dead[ord] = true;
+                    continue;
+                }
+            }
+            for &b in f.suffix() {
+                s = self.compiled.step(s, b).ok_or_else(too_complex)?;
+                if s == DEAD {
+                    break;
+                }
+            }
+            if s == DEAD {
+                continue;
+            }
+            if is_sub {
+                let (sub_fp, length) = (f.last_sub_fp, f.prefix_length + f.suffix_length);
+                f.fill_term(&mut self.st.term);
+                // The child's trie node, reached from this frame's by the
+                // entry's suffix bytes: it carries the floor data. Accepted
+                // only when it names the very block the entry points at.
+                let index =
+                    &self.field.tip.as_ref().as_ref()[self.field.index_start..self.field.index_end];
+                let mut node = self.nodes.get(ord).cloned().flatten();
+                for &b in &self.st.term.get()[self.st.stack[ord].prefix_length..] {
+                    node = match node {
+                        Some(n) => lookup_child(index, &n, b)?,
+                        None => None,
+                    };
+                }
+                let node = node.filter(|n| n.output_fp == Some(sub_fp as u64));
+                let mut ste = self.ste();
+                match &node {
+                    Some(n) => ste.push_frame_node(n, length)?,
+                    None => ste.push_next_frame(sub_fp, length)?,
+                }
+                let child = self.st.current.max(0) as usize;
+                self.set_state(child, s, node);
+                if !self.seek_live_floor(child, 0)? {
+                    self.st.current -= 1;
+                }
+                continue;
+            }
+            if !self.compiled.is_accept(s) {
+                continue;
+            }
+            f.fill_term(&mut self.st.term);
+            self.st.on_term = true;
+            let (stats, meta) = self.ste().stats_and_meta()?;
+            return Ok(Some((
+                self.st.term.get().to_vec(),
+                SeekedTerm { stats, meta },
+            )));
+        }
+    }
+}
+
+impl<A: TermAutomaton> Iterator for DfaIntersect<'_, A> {
+    /// As [`Intersect`]'s: a corrupt block ends the walk with an error.
+    type Item = Result<(Vec<u8>, SeekedTerm)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.next_result() {
+            Ok(Some(item)) => Some(Ok(item)),
+            Ok(None) => None,
+            Err(e) => {
+                self.done = true;
+                Some(Err(e))
+            }
+        }
+    }
+}
+
+/// Dictionary-wide regexp walks a field serves before it builds its term
+/// n-gram index: a one-off query never pays for the build, a field that keeps
+/// being asked "contains" questions does, once.
+const NGRAM_BUILD_AFTER: u32 = 2;
+
+/// The n-gram path is taken only when its candidates are at most this
+/// fraction (`1 / n`) of the dictionary; past that, verifying candidates one
+/// by one (each a dictionary lookup) costs more than walking.
+const NGRAM_MAX_CANDIDATE_SHARE: usize = 8;
+
+/// Fields with more terms than this never build an n-gram index. It costs
+/// about 30 bytes per term (6 MB for the benchmark's 200 000-term field),
+/// outside the JVM's view and its circuit breakers, so it is kept to a size
+/// that is small next to the index it serves: about 60 MB at the cap.
+const NGRAM_MAX_TERMS: i64 = 2_000_000;
+
+impl FieldTerms {
+    /// The field's n-gram index, if one is built or this query is the one
+    /// that makes it worth building ([`NGRAM_BUILD_AFTER`]); `None`
+    /// otherwise, and for a field too large or unreadable to index.
+    fn ngram_index_for_wide_query(&self) -> Option<Arc<crate::term_ngram::TermNgramIndex>> {
+        if let Some(built) = self.ngram.get() {
+            return built.clone();
+        }
+        let seen = self
+            .wide_walks
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if seen < NGRAM_BUILD_AFTER || self.num_terms > NGRAM_MAX_TERMS {
+            return None;
+        }
+        self.ngram
+            .get_or_init(|| {
+                // Streamed: each term goes straight from the dictionary into
+                // the builder, with no intermediate copy of the dictionary.
+                let mut e = self.iter();
+                let mut b = crate::term_ngram::TermNgramBuilder::default();
+                loop {
+                    match e.try_next_term() {
+                        Ok(Some(t)) => b.push(t)?,
+                        Ok(None) => break,
+                        Err(_) => return None,
+                    }
+                }
+                b.finish().map(Arc::new)
+            })
+            .clone()
+    }
+}
+
+/// [`FieldTerms::regexp_intersect_states`] answered from the term n-gram
+/// index: the terms containing every gram the pattern forces, in dictionary
+/// order, each confirmed by the automaton and then looked up for its state.
+struct NgramIntersect<'a> {
+    field: &'a FieldTerms,
+    index: Arc<crate::term_ngram::TermNgramIndex>,
+    candidates: std::vec::IntoIter<u32>,
+    compiled: Arc<CompiledDfa>,
+}
+
+impl Iterator for NgramIntersect<'_> {
+    type Item = Result<(Vec<u8>, SeekedTerm)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        for ord in self.candidates.by_ref() {
+            let term = self.index.term(ord);
+            if !self.compiled.dfa.run(term) {
+                continue;
+            }
+            return match self.field.seek_term_state(term) {
+                Ok(Some(seeked)) => Some(Ok((term.to_vec(), seeked))),
+                // The index was built from this dictionary, so the term is
+                // there; a miss can only be corruption.
+                Ok(None) => Some(Err(Error::Store(lucene_store::Error::Corrupted(
+                    "term from the n-gram index is missing from its dictionary".into(),
+                )))),
+                Err(e) => Some(Err(e)),
+            };
+        }
+        None
+    }
+}
+
+/// A lazy automaton ran out of states: the pattern is too complex to run,
+/// as `TooComplexToDeterminizeException` reports it in Lucene.
+fn too_complex() -> Error {
+    Error::Unsupported("regexp too complex to run: its automaton exceeded the lazy state budget")
+}
+
+/// [`FieldTerms::regexp_intersect_states`]'s walk: the lockstep automaton
+/// walk when the pattern determinizes, the matcher-driven scan when it is
+/// too large to.
+enum RegexpIntersect<'a> {
+    Dfa(DfaIntersect<'a, std::sync::Arc<CompiledDfa>>),
+    Lazy(Box<DfaIntersect<'a, LazyDfa>>),
+    Ngram(NgramIntersect<'a>),
+    Scan(Intersect<'a, DfaFiltered<RegexpMatcher<'a>>>),
+}
+
+impl Iterator for RegexpIntersect<'_> {
+    type Item = Result<(Vec<u8>, SeekedTerm)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            RegexpIntersect::Dfa(w) => w.next(),
+            RegexpIntersect::Lazy(w) => w.next(),
+            RegexpIntersect::Ngram(w) => w.next(),
+            RegexpIntersect::Scan(w) => w.next(),
         }
     }
 }
@@ -3885,6 +4401,8 @@ pub fn open_shared(
                     current: -1,
                     ..EnumState::default()
                 }),
+                ngram: std::sync::OnceLock::new(),
+                wide_walks: std::sync::atomic::AtomicU32::new(0),
             },
         ));
     }

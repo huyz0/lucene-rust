@@ -34,3 +34,18 @@ q25	fuzzy	body	t123
 q26	regexp	body	t1[0-9]
 q27	dv_sort	num	0	100000000
 q28	points	num	0	1000
+# Regexp shapes beyond q26's literal prefix, added when regexp became its own
+# workstream: a leading wildcard, a broad class, alternation, a prefix with a
+# wildcard middle, no literal prefix at all, and "contains". Each stresses a
+# different part of the term-dictionary intersection.
+q29	regexp	body	.*z
+q30	regexp	body	t[0-9a-f]+
+q31	regexp	body	(t1|t2)[a-z]
+q32	regexp	body	t.*9
+q33	regexp	body	[a-z][0-9]{2}
+q34	regexp	body	.*1.*2.*
+# "Contains" and suffix shapes with a selective literal: what a term-level
+# n-gram index answers without walking the dictionary.
+q35	regexp	body	.*zz.*
+q36	regexp	body	.*9x1.*
+q37	regexp	body	.*a0

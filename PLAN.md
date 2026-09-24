@@ -3880,7 +3880,7 @@ ported area now has a component benchmark against Lucene 10.5.0 over the same
 bytes (`scripts/bench-micro.sh`). Vectorized so far: PFOR/FOR decode, the
 postings prefix sum and `findNextGEQ`, float and byte vector similarity, bit-set
 block expansion, bitset `or`, the postings in-block search (Lucene's V1 step
-plus a branch-free count). In the final round no query is slower than Lucene
+plus a branch-free count). The regexp path was then rebuilt (lockstep `IntersectTermsEnum` walk, exact DFA, term n-gram index, lazy DFA; see the sweep document's "Regexp engine" section): regexp queries now run 1.6-793x Lucene on the merged index and 14-2 813x on the segmented one. In the final round no query is slower than Lucene
 on either index and every component area is at or above it, except
 `nextSetBit` (0.96x, a codegen latency chain) and one memory-bound strided
 doc-values read (0.91x, against a 1.10x noise floor for the case). Runtime feature detection is still open: the
