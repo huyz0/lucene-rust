@@ -9,7 +9,7 @@
 | **Effort** | L |
 | **Depends on** | [M3](m3-write-path-proven.md) |
 | **Unblocks** | [M5](m5-engine-integration.md) |
-| **Status** | in progress -- T4.1 and T4.2 done |
+| **Status** | in progress -- T4.1, T4.2 and T4.6 done |
 
 ---
 
@@ -206,22 +206,35 @@ asserted:
 The last three are new and are what an incremental OpenSearch adoption
 actually does — a shard will have segments from both engines simultaneously.
 
+> **Done (2026-09-24).** `scripts/verify-interop.sh` (in CI's `write-path`
+> job) drives all five directions plus three more -- a Rust merge of mixed
+> Rust and Java segments, and a delete by term in each direction -- over one
+> index, with `fixtures/src/InteropIndex.java` and
+> `crates/lucene-search/examples/interop.rs` sharing one document table. It
+> found three defects on its first run, none visible to any single-engine
+> test: this port could not read a **compound** segment anywhere in its
+> write path (and Java flushes compound segments by default), so its merge
+> would have silently dropped a Java segment's postings, doc values and
+> points, its delete would have silently matched nothing, and its own
+> `CheckIndex` failed every Java segment. `CompoundReader`
+> (`Lucene90CompoundReader` as a `Directory`) fixes all three.
+
 ---
 
 ## Acceptance criteria
 
-- [ ] The k-NN scope decision is recorded in this file before T4.1 starts.
+- [x] The k-NN scope decision is recorded in this file before T4.1 starts.
 - [ ] A **24-hour** random-op and random-crash fuzz leaves an index that real
       Lucene's `CheckIndex` passes — **every time**, across every seed.
 - [ ] After every simulated crash, visible state is exactly the last durable
       commit: no partial commits, no resurrected deletions.
 - [ ] Differential operation-stream fuzzing against Java `IndexWriter` shows
       semantic equivalence across ≥1000 seeds.
-- [ ] All five directions of the T4.6 interoperability matrix pass.
+- [x] All five directions of the T4.6 interoperability matrix pass.
 - [ ] Concurrent indexing from multiple threads with merges running produces a
       `CheckIndex`-clean index.
 - [ ] **No file-handle or memory growth** over the 24-hour soak.
-- [ ] Index-sorted merges preserve sort order across *every* format, or index
+- [x] Index-sorted merges preserve sort order across *every* format, or index
       sorting is explicitly unsupported and refused.
 - [ ] Per-file line coverage stays ≥95% across every file touched.
 

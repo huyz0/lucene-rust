@@ -97,6 +97,7 @@ the hook, the container and this table cannot drift apart:
 | Regenerate Java fixtures | `scripts/gen-fixtures.sh --only <Gen…>` (a full run rewrites every index with fresh segment ids — see [`fixtures/README.md`](fixtures/README.md)) |
 | Check fixtures are still Java-produced | `scripts/gen-fixtures.sh --check` |
 | Verify the write path (Lucene reads Rust bytes) | `scripts/verify-write-path.sh` |
+| Interop matrix (both engines write, append, merge, delete one index) | `scripts/verify-interop.sh` |
 
 Prefix any of the individual commands with `scripts/docker-test.sh` to run it
 capped. **CI does not use the container** — GitHub Actions runners are already

@@ -204,3 +204,8 @@ jobs:
           key: lucene-jars-10.5.0
       - name: Verify write path
         run: ./scripts/verify-write-path.sh
+      # M4's T4.6: one index written, appended to, merged and deleted from by
+      # real Lucene and by this port in every order (compound segments
+      # included, which is what Lucene flushes by default).
+      - name: Interoperability matrix
+        run: ./scripts/verify-interop.sh
