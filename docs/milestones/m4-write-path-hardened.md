@@ -9,7 +9,7 @@
 | **Effort** | L |
 | **Depends on** | [M3](m3-write-path-proven.md) |
 | **Unblocks** | [M5](m5-engine-integration.md) |
-| **Status** | in progress -- T4.1, T4.2 and T4.6 done |
+| **Status** | in progress -- T4.1, T4.2, T4.6 done; T4.4 harness done, 24 h run pending |
 
 ---
 
@@ -177,6 +177,61 @@ The acceptance criterion the milestone lives or dies by.
 Fuzzing it here, before OpenSearch is involved, is what keeps it from becoming
 an M5 problem.
 
+> **Harness done (2026-09-24); the 24-hour run is still to do.**
+> `crates/lucene-search/examples/crash_fuzz.rs` runs a seeded stream of adds,
+> updates and deletes by term, flushes (explicit and automatic), commits and
+> two-phase commits (`prepare_commit` then `finish_commit`), with merges firing
+> inside commits. It crashes the stream in one of two ways:
+>
+> - **Power loss** (the risk section's fault-injection layer).
+>   `lucene_store::crashing_directory::CrashingDirectory`, the `crash()` half
+>   of Lucene's `MockDirectoryWrapper`, fails a directory operation drawn
+>   uniformly over the whole run and everything after it. It then leaves
+>   unsynced files kept, truncated, zeroed or gone, and keeps only a prefix of
+>   the creates, renames and deletes not yet published by `syncMetaData`.
+> - **`kill -9`** of a child process at a random moment.
+>
+> After the crash the index must open and hold exactly the last durable
+> commit, or the commit in flight when it crashed, compared id by id and
+> version by version. It must also pass this port's `CheckIndex` and, with
+> `--java-cp`, real Lucene's. Finally a new writer must recover: add, commit
+> and check again. The restarted side alternates `FsDirectory` and
+> `MmapDirectory` by seed. `scripts/crash-fuzz.sh` runs 150 power-loss seeds,
+> 25 more with Lucene's `CheckIndex`, and 40 `kill -9` seeds; it is part of
+> CI's `write-path` job. `--duration 86400` is the 24-hour run.
+>
+> Measured: with `pending_segments_N`'s fsync removed, seed 0 fails
+> immediately (a commit whose `segments_N` was renamed but never synced loses
+> the whole index).
+>
+> The harness also fails a round when:
+> - a crash-free run errors, or any writer error is not the crash itself;
+> - the recovered directory holds any file its commit does not reference
+>   (`IndexFileDeleter` must reclaim the crash's leftovers);
+> - `create_output` is asked for a name that exists (`CREATE_NEW`).
+>
+> A fixed run of 100 or more seeds must also have produced:
+> - a crash inside an automatic flush;
+> - a crash inside a two-phase commit;
+> - a crash at the publish rename;
+> - both outcomes.
+>
+> Most `kill -9` rounds must land mid-run. A seed replays its op stream and
+> crash point exactly; segment ids are random, so the bytes differ between
+> replays, and a kill's timing is not reproducible.
+>
+> **Blind spots:**
+> - Only an ordered-metadata filesystem is modelled, and a file is only ever
+>   damaged whole, never torn inside a synced region.
+> - The oracle accepts the commit in flight **only** when the crash came
+>   after its `segments_N` rename (`CrashingDirectory::published`). Such a
+>   rename may or may not have been made durable by the power loss. A crash
+>   anywhere before it must leave the previous commit, exactly. `--kill`
+>   cannot see the rename and accepts a commit that journaled its start.
+> - Crash points are drawn over directory *operations*. A write into an
+>   already-open output cannot fail on its own; only the next directory call
+>   can.
+
 ### T4.5 — Differential operation-stream fuzzing against Java
 
 The strongest available correctness check, and the natural extension of the
@@ -226,7 +281,7 @@ actually does — a shard will have segments from both engines simultaneously.
 - [x] The k-NN scope decision is recorded in this file before T4.1 starts.
 - [ ] A **24-hour** random-op and random-crash fuzz leaves an index that real
       Lucene's `CheckIndex` passes — **every time**, across every seed.
-- [ ] After every simulated crash, visible state is exactly the last durable
+- [x] After every simulated crash, visible state is exactly the last durable
       commit: no partial commits, no resurrected deletions.
 - [ ] Differential operation-stream fuzzing against Java `IndexWriter` shows
       semantic equivalence across ≥1000 seeds.

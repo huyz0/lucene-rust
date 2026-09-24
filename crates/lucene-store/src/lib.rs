@@ -1,6 +1,8 @@
 //! lucene-store: Directory/IndexInput abstractions. See /PLAN.md.
 
 pub mod codec_util;
+#[cfg(any(test, feature = "test-util"))]
+pub mod crashing_directory;
 pub mod data_input;
 pub mod data_output;
 pub mod directory;

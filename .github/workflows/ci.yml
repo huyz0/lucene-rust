@@ -209,3 +209,7 @@ jobs:
       # included, which is what Lucene flushes by default).
       - name: Interoperability matrix
         run: ./scripts/verify-interop.sh
+      # M4's T4.4: seeded crash fuzzing -- simulated power loss and kill -9,
+      # real Lucene's CheckIndex on a share of the seeds.
+      - name: Crash fuzzing
+        run: ./scripts/crash-fuzz.sh
