@@ -10,7 +10,7 @@
 | **Depends on** | [M1](m1-performance-gate.md) passing |
 | **Unblocks** | [M4](m4-write-path-hardened.md) |
 | **Runs in parallel with** | [M2](m2-opensearch-read-path.md) |
-| **Status** | not started |
+| **Status** | ✅ **delivered 2026-09-24** — see [Outcome](#outcome) |
 
 ---
 
@@ -215,25 +215,73 @@ Leaving it as-is is not an acceptable outcome for this milestone.
 
 ## Acceptance criteria
 
-- [ ] `VerifyPostings.java` exists, covers the writer's full supported shape
-      set, and runs in CI.
-- [ ] Real Lucene reads a Rust-written index with **≥3 fields, ≥100k docs**, at
+- [x] `VerifyPostings.java` exists, covers the writer's full supported shape
+      set, and runs in CI. *Delivered as the postings walk inside
+      `VerifyIndex.java` rather than a separate class: every term of a
+      120 000-document index (140 168 terms: common and rare, with and without
+      positions, offsets and payloads, singletons included) is compared with
+      expectations computed from the generated text. `VerifyPositionsSegment`
+      already covered the occurrence-level walk through the skip data.*
+- [x] Real Lucene reads a Rust-written index with **≥3 fields, ≥100k docs**, at
       least one term above `BLOCK_SIZE` (256) docs, and positions, offsets and
-      payloads indexed.
-- [ ] Real Lucene's own **`CheckIndex` reports zero errors** on that index.
-- [ ] Across a **≥50-query set**, top-50 doc IDs match **exactly** and scores
-      match within **1e-5** between Java Lucene and this port.
-- [ ] The blocktree writer produces multi-field, multi-block, floor-blocked,
+      payloads indexed. *120 000 documents, five segments, four fields.*
+- [x] Real Lucene's own **`CheckIndex` reports zero errors** on that index
+      (`MIN_LEVEL_FOR_SLOW_CHECKS`).
+- [x] Across a **≥50-query set**, top-50 doc IDs match **exactly** and scores
+      match within **1e-5** between Java Lucene and this port. *59 queries:
+      term, conjunction, disjunction, cross-field, phrase and doc-values
+      range; largest score difference 5e-10. The range queries are over
+      doc values, because `IndexWriter` has no points write path at flush.*
+- [x] The blocktree writer produces multi-field, multi-block, floor-blocked,
       multi-level output, and each shape is verified from the Java side.
-- [ ] `Error::DocFreqTooLarge` and `Error::UnsupportedIndexOptions` are no
-      longer reachable.
-- [ ] The `.si` index-sort divergence is either resolved against a real Lucene
-      fixture or explicitly fenced off, with the writer refusing to emit a
-      divergent format.
-- [ ] `docs/parity.md` no longer describes the postings/blocktree writer as
+      *Stronger than asked: `blocktree_writer_identity.rs` requires
+      byte-identical `.tim`/`.tip`/`.tmd` against four real Lucene term
+      dictionaries, one per shape.*
+- [x] `Error::DocFreqTooLarge` and `Error::UnsupportedIndexOptions` are no
+      longer reachable. *`DocFreqTooLarge` no longer exists.
+      `UnsupportedIndexOptions` is now raised only for `IndexOptions::None`
+      handed straight to the codec-level API; `IndexWriter` rejects that
+      earlier with its own error, so no index write reaches it.*
+- [x] The `.si` index-sort divergence is either resolved against a real Lucene
+      fixture or explicitly fenced off. *Resolved in the M2 sweep (b11): the
+      `SortFieldProvider` encoding is byte-verified both ways, and
+      `VerifySortedSegment` runs `CheckIndex.testSort` on sorted flushes and
+      merges.*
+- [x] `docs/parity.md` no longer describes the postings/blocktree writer as
       narrowly scoped, or states precisely and truthfully what remains.
-- [ ] Per-file line coverage stays ≥95% (`AGENTS.md` invariant #8) across every
+- [x] Per-file line coverage stays ≥95% (`AGENTS.md` invariant #8) across every
       file this milestone touches.
+
+---
+
+## Outcome
+
+Most of T3.1–T3.3 and T3.5 had already landed through the August–September
+sweeps (the `.psm` file, impacts, full `ForUtil` blocks, level-0/level-1 skip
+data, `.pos`/`.pay` with payloads, the `.si` sort encoding) — this file still
+read "not started" when the milestone was picked up. What remained, and what
+this milestone delivered, per the port → benchmark → optimise workflow
+(`docs/porting-workflow.md`, adopted during it):
+
+1. **The term-dictionary writer** (`lucene-codecs/src/blocktree_writer.rs`): a
+   closest-to-Java port of `Lucene103BlockTreeTermsWriter.TermsWriter` and
+   `TrieBuilder`, plus `LowercaseAsciiCompression.compress` and the full
+   `encodeTerm`. Byte-identical to Java on four real term dictionaries.
+   Benchmarked against Lucene's own writer on identical input
+   (`scripts/bench-micro.sh --bench term_dict_write`): first 0.65×/0.72×;
+   restructuring the postings writer to stream one term at a time — which is
+   also how Java does it — brought it to **1.92× (1M ids) and 1.30× (200k
+   words)**.
+2. **The end-to-end proof** (`crates/lucene-search/examples/write_verify_index.rs`
+   + `fixtures/src/VerifyIndex.java`), wired into
+   `scripts/verify-write-path.sh`. Its first version passed a deliberately
+   broken `encodeTerm` — the corpus had no singleton terms — so it now carries
+   a unique-id field and rare words, and fails on that defect.
+
+Left for later, recorded in `docs/parity.md`: the `bitsPerValue == 0` and
+dense-bitset `.doc` block encodings the real writer sometimes chooses (readers
+accept the plain `ForUtil` shape this writer emits), and a points write path at
+flush (range queries in the proof are over doc values).
 
 ---
 

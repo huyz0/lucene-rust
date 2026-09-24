@@ -80,6 +80,11 @@ case "$BENCH" in
     SRC=benchmarks/micro/java/SweepMicro.java
     JAVA_ARGS=("$BENCH")
     NEEDS_INDEX=1 ;;
+  term_dict_write)
+    # Write side: both engines generate the same terms and write one field's
+    # term dictionary in memory, so there is no index to point at.
+    MAIN=TermDictWriteMicro
+    SRC=benchmarks/micro/java/TermDictWriteMicro.java ;;
   pfor_decode)
     MAIN=org.apache.lucene.codecs.lucene104.PForUtilMicro
     SRC=benchmarks/micro/java/org/apache/lucene/codecs/lucene104/PForUtilMicro.java ;;
