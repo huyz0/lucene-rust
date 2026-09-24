@@ -21,12 +21,16 @@
 //!   nodes pick the same child-label strategy.
 //! - **Suffix compression is Java's decision procedure** (LZ4 when it saves
 //!   more than a quarter, else lowercase-ASCII packing, only past a two-byte
-//!   prefix and two suffix bytes per entry), with this port's own
-//!   `HighCompressionHashTable`. Real Lucene's reader accepts any valid block,
-//!   so byte-identity with Java's `.tim` is not a goal (`docs/milestones/
-//!   m3-write-path-proven.md`, "Block-splitting thresholds change output
-//!   bytes") -- readability by real Lucene is, and `VerifyTermDictionary`
-//!   checks it.
+//!   prefix and two suffix bytes per entry), with this port's port of
+//!   `LZ4.HighCompressionHashTable`.
+//! - **The output is byte-identical to Java's** for the same terms and term
+//!   states: `tests/blocktree_writer_identity.rs` re-writes four real Lucene
+//!   term dictionaries (LZ4-compressed, multi-level, floor-split, every child
+//!   strategy), and `postings_writer`'s
+//!   `term_dictionary_*_is_byte_identical` tests re-write two more (freqs,
+//!   positions, offsets, payloads, skip data) from the term states Lucene
+//!   recorded -- all requiring identical bytes; real Lucene reads the output of
+//!   every whole-index case in `scripts/verify-write-path.sh`.
 //! - **`TrieBuilder` is ported with its in-memory form**: the separately
 //!   held first key, the prefix-coded entry buffer `append` bulk-copies, and
 //!   the two-phase frontier walk in `saveNodes`.
@@ -158,6 +162,7 @@ pub(crate) struct TermsWriter<'a, 't, E: TermMetaEncoder> {
     stats: Vec<u8>,
     meta: Vec<u8>,
     spare: Vec<u8>,
+    spare_bytes: Vec<u8>,
     lz4_table: Option<Box<HighCompressionHashTable>>,
 }
 
@@ -194,6 +199,7 @@ impl<'a, 't, E: TermMetaEncoder> TermsWriter<'a, 't, E> {
             stats: Vec::new(),
             meta: Vec::new(),
             spare: Vec::new(),
+            spare_bytes: Vec::new(),
             lz4_table: None,
         }
     }
@@ -497,7 +503,11 @@ impl<'a, 't, E: TermMetaEncoder> TermsWriter<'a, 't, E> {
             }
             if compression == COMPRESSION_NONE {
                 self.spare.clear();
-                if compress_lowercase_ascii(&self.suffix_bytes, &mut self.spare) {
+                if compress_lowercase_ascii(
+                    &self.suffix_bytes,
+                    &mut self.spare_bytes,
+                    &mut self.spare,
+                ) {
                     compression = COMPRESSION_LOWERCASE_ASCII;
                 }
             }
@@ -654,7 +664,7 @@ fn is_compressible(b: u8) -> bool {
 // 0xFF that the loop condition keeps below `i`; `num_exceptions` is bounded
 // by `len / 32`.
 #[allow(clippy::arithmetic_side_effects)]
-fn compress_lowercase_ascii(input: &[u8], out: &mut Vec<u8>) -> bool {
+fn compress_lowercase_ascii(input: &[u8], tmp: &mut Vec<u8>, out: &mut Vec<u8>) -> bool {
     let len = input.len();
     if len < 8 {
         return false;
@@ -677,13 +687,12 @@ fn compress_lowercase_ascii(input: &[u8], out: &mut Vec<u8>) -> bool {
     }
 
     let compressed_len = len - (len >> 2);
-    let mut tmp: Vec<u8> = input
-        .iter()
-        .map(|&b| {
-            let b = u32::from(b) + 1;
-            ((b & 0x1F) | ((b & 0x40) >> 1)) as u8
-        })
-        .collect();
+    // Java's `spareBytes`: one scratch buffer reused across blocks.
+    tmp.clear();
+    tmp.extend(input.iter().map(|&b| {
+        let b = u32::from(b) + 1;
+        ((b & 0x1F) | ((b & 0x40) >> 1)) as u8
+    }));
     let mut o = 0usize;
     for i in compressed_len..len {
         tmp[o] |= (tmp[i] & 0x30) << 2;
@@ -1297,7 +1306,10 @@ mod tests {
         cases.push(long);
         for input in cases {
             let mut out = Vec::new();
-            assert!(compress_lowercase_ascii(&input, &mut out), "{input:?}");
+            assert!(
+                compress_lowercase_ascii(&input, &mut Vec::new(), &mut out),
+                "{input:?}"
+            );
             assert!(out.len() < input.len() + 8);
             let mut decoded = vec![0u8; input.len()];
             let mut r = lucene_store::data_input::SliceInput::new(&out);
@@ -1315,7 +1327,11 @@ mod tests {
         let original = b"the-quick_brown.fox.jumps_over-42.lazy_dogs.1234567890Z!abcdefghij";
         let expected_hex = "7569664ef236aaa4aca0a3b3b0b8af8fa7b0b90fab362e3174607077a6b38e95134fad62fbbaa0e53068b4cf125394d5161701365a";
         let mut out = Vec::new();
-        assert!(compress_lowercase_ascii(original, &mut out));
+        assert!(compress_lowercase_ascii(
+            original,
+            &mut Vec::new(),
+            &mut out
+        ));
         let hex: String = out.iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(hex, expected_hex);
     }
@@ -1323,7 +1339,11 @@ mod tests {
     #[test]
     fn lowercase_ascii_refuses_short_or_exception_heavy_input() {
         let mut out = Vec::new();
-        assert!(!compress_lowercase_ascii(b"abc", &mut out));
-        assert!(!compress_lowercase_ascii(b"ABCDEFGHIJKLMNOP", &mut out));
+        assert!(!compress_lowercase_ascii(b"abc", &mut Vec::new(), &mut out));
+        assert!(!compress_lowercase_ascii(
+            b"ABCDEFGHIJKLMNOP",
+            &mut Vec::new(),
+            &mut out
+        ));
     }
 }
