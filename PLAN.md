@@ -53,15 +53,12 @@ OpenSearch checkout: `/home/tuong/work/OpenSearch`.
   sort order (`merge.rs`'s `merge_sorted_stored_only_segments`, a genuine
   k-way merge by sort key across sources reusing `segment_writer.rs`'s
   `sort_key_rank` comparator, not a concatenation of source A's docs then
-  source B's docs) -- see `docs/parity.md` for the exact scope. Still
-  explicitly out of scope: the k-way merge only reorders stored fields (doc
-  values/norms/term vectors are never reordered during a merge, matching
-  this port's existing write-side limits), and the `.si` index-sort byte
-  encoding remains this port's own internal format, NOT verified
-  byte-compatible with real Lucene's `Lucene99SegmentInfoFormat` (no
-  real-Lucene-written sorted-segment `.si` fixture exists to derive the true
-  `SortFieldProvider` wire format from) -- true for single-field and remains
-  true now that multiple fields and merges are supported.
+  source B's docs) -- see `docs/parity.md` for the exact scope. *Since
+  superseded (see `docs/parity.md`'s `SegmentMerger` and `.si` rows):* the
+  sorted merge now maps postings, doc values, norms, term vectors and vectors
+  through their doc maps too (c22), and the `.si` index-sort encoding is real
+  Lucene's `SortFieldProvider` format, byte-verified in both directions (b11)
+  and exercised by `VerifySortedSegment`'s `CheckIndex.testSort`.
 - No scoring pluggability beyond BM25 + constant score + a similarity trait.
 
 ---

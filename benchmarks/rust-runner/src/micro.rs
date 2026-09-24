@@ -1164,6 +1164,76 @@ fn bench_memory(index: &str) {
     drop(reader);
 }
 
+/// Term-dictionary write throughput, against `TermDictWriteMicro.java`: one
+/// singleton `IndexOptions::Docs` field written by `postings_writer`, so the
+/// work is the block-tree writer and `encodeTerm` (no `.doc` bytes). Same
+/// generated terms as the Java side; for these inputs both engines write
+/// identical bytes (`crates/lucene-codecs/tests/blocktree_writer_identity.rs`).
+fn bench_term_dict_write(warmup: Duration, measure: Duration) {
+    use lucene_codecs::field_infos::IndexOptions;
+    use lucene_codecs::postings_writer::{self, FieldPostingsInput, TermPostings};
+
+    fn id_terms(n: usize) -> Vec<Vec<u8>> {
+        (0..n).map(|i| format!("{i:08}").into_bytes()).collect()
+    }
+    fn word_terms(n: usize) -> Vec<Vec<u8>> {
+        let mut s: u64 = 42;
+        let mut next = move || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            s
+        };
+        let mut set = std::collections::BTreeSet::new();
+        while set.len() < n {
+            let len = 4 + (next() % 9) as usize;
+            let word: Vec<u8> = (0..len).map(|_| b'a' + (next() % 26) as u8).collect();
+            set.insert(word);
+        }
+        set.into_iter().collect()
+    }
+
+    for (name, terms) in [("ids_1m", id_terms(1_000_000)), ("words_200k", word_terms(200_000))] {
+        let postings: Vec<TermPostings> = terms
+            .into_iter()
+            .enumerate()
+            .map(|(doc, term)| TermPostings {
+                term,
+                docs: vec![(doc as i32, 1)],
+                ..TermPostings::default()
+            })
+            .collect();
+        let n = postings.len();
+        let input = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::Docs,
+            doc_count: n as i32,
+            has_payloads: false,
+            terms: &postings,
+        };
+        let id = [7u8; 16];
+        let write = || {
+            postings_writer::write_fields(std::slice::from_ref(black_box(&input)), &id, "")
+                .expect("write")
+        };
+        let out = write();
+        let bytes = out.doc.len() + out.psm.len() + out.tim.len() + out.tip.len() + out.tmd.len();
+        eprintln!("{name}: {n} terms, {bytes} bytes written");
+        let run = |budget| {
+            timed_loop(budget, || {
+                black_box(write());
+            })
+        };
+        run(warmup);
+        let (elapsed, ops) = run(measure);
+        let units = ops * n as u64;
+        println!(
+            "{name}\t{:.3}\t{units}",
+            elapsed.as_nanos() as f64 / units as f64
+        );
+    }
+}
+
 fn main() {
     let ms = |name: &str, default: u64| -> Duration {
         Duration::from_millis(
@@ -1208,6 +1278,7 @@ fn main() {
         "checksum" => bench_checksum(warmup, measure),
         "analysis" => bench_analysis(warmup, measure),
         "vectors" => bench_vectors(warmup, measure),
+        "term_dict_write" => bench_term_dict_write(warmup, measure),
         corpus @ ("postings_adv" | "postings_freq" | "positions" | "term_seek" | "doc_values"
         | "norms" | "points" | "memory") => {
             let index = std::env::args()

@@ -10045,7 +10045,13 @@ mod tests {
         input.seek(suffix_at + suffix_len).unwrap();
         let suffix_bytes = &tim[suffix_at..suffix_at + suffix_len];
         let sl_code = input.read_vint().unwrap();
-        let sl_len = (sl_code as u32 >> 1) as usize;
+        // `sl_code & 1`: every suffix length is the same one byte, stored
+        // once (`writeBlock`'s all-equal case).
+        let sl_len = if sl_code & 1 == 1 {
+            1
+        } else {
+            (sl_code as u32 >> 1) as usize
+        };
         let sl_at = input.position();
         input.seek(sl_at + sl_len).unwrap();
         let stats_len = input.read_vint().unwrap() as usize;
@@ -10054,26 +10060,30 @@ mod tests {
         let meta_len = input.read_vint().unwrap() as usize;
         let meta_at = input.position();
 
-        // Decode the stats region. This writer never singleton-run-encodes,
-        // so every entry is `vint(docFreq << 1)` plus, for a field with
-        // freqs, `vlong(totalTermFreq - docFreq)`.
+        // Decode the stats region: `vint(docFreq << 1)` plus, for a field
+        // with freqs, `vlong(totalTermFreq - docFreq)` -- or, for a run of
+        // singletons (`docFreq == totalTermFreq == 1`), one
+        // `vint((runLength - 1) << 1 | 1)`, which `StatsWriter` emits and
+        // this port's writer now does too. The re-encoding below spells every
+        // pair out, which readers accept equally.
         //
         // **Only valid for a field that indexes freqs.** A DOCS-only field
-        // writes no delta at all (`write_tim_block`'s
-        // `index_options != Docs` guard, and `blocktree` reads it back the
-        // same way), so the "read a delta if bytes are left" rule below would
-        // consume the *next* term's `docFreq` token. Re-encoding is canonical,
-        // so the identity round trip would still be byte-identical and would
-        // not catch it -- hence the assertion rather than a comment.
+        // writes no delta at all (`StatsWriter`'s `hasFreqs` guard, and
+        // `blocktree` reads it back the same way), so the "read a delta if
+        // bytes are left" rule below would consume the *next* term's
+        // `docFreq` token. Re-encoding is canonical, so the identity round
+        // trip would still be byte-identical and would not catch it -- hence
+        // the assertion rather than a comment.
         let mut stats_in = SliceInput::new(&tim[stats_at..stats_at + stats_len]);
         let mut pairs: Vec<(i32, i64)> = Vec::new();
-        for _ in 0..ent_count {
+        while pairs.len() < ent_count {
             let token = stats_in.read_vint().unwrap();
-            assert_eq!(
-                token & 1,
-                0,
-                "singleton runs are not written by this writer"
-            );
+            if token & 1 == 1 {
+                for _ in 0..=(token as u32 >> 1) {
+                    pairs.push((1, 1));
+                }
+                continue;
+            }
             let doc_freq = (token as u32 >> 1) as i32;
             assert!(
                 stats_in.position() < stats_len,
@@ -10082,6 +10092,7 @@ mod tests {
             let delta = stats_in.read_vlong().unwrap();
             pairs.push((doc_freq, i64::from(doc_freq) + delta));
         }
+        assert_eq!(pairs.len(), ent_count);
 
         let mut stats = Vec::new();
         for (i, (doc_freq, total_term_freq)) in pairs.iter_mut().enumerate() {

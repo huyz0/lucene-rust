@@ -13,10 +13,10 @@
 #   --keep      keep the generated fixtures instead of deleting them on exit
 #
 # The postings/term-dictionary write path (.doc/.pos/.pay/.tim/.tip/.tmd) is
-# covered by the full-segment, merged-segment, sorted-segment and
-# positions-segment cases below -- the last of which (c23) is the one that
-# reads back positions, offsets and payloads occurrence by occurrence. Task
-# T3.1, see docs/milestones/m3-write-path-proven.md.
+# covered by every whole-index case below; the last one (VerifyIndex, M3's
+# T3.1/T3.4) walks every term's full postings of a 120 000-document index and
+# compares 59 queries' ranked results and scores with this port's searcher.
+# See docs/milestones/m3-write-path-proven.md.
 set -euo pipefail
 
 LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries)
@@ -173,6 +173,18 @@ CASES=(
   # passes CheckIndex while claiming it never held older bytes and while
   # silently invalidating every parent/child join against it.
   "lucene-index|write_merged_metadata_fixture|merged-metadata|VerifyMergedMetadata|fixtures/data/merge_metadata"
+  # And last, M3's end-to-end proof (T3.4): a 120 000-document, five-segment
+  # index written by the real IndexWriter -- Zipf text with positions,
+  # offsets, payloads and norms, a keyword field, a unique-id field, a numeric
+  # doc-values field. Java walks the full postings of every one of its
+  # 140 000-odd terms against expectations computed from the generated text
+  # (not from this port's writer or reader), runs 59 term, boolean,
+  # cross-field, phrase and doc-values-range queries through IndexSearcher
+  # and requires this port's searcher's top 50 in the same order with every
+  # score within 1e-5, then runs CheckIndex. Measured: an off-by-one in
+  # encodeTerm's singleton doc-id delta fails it -- but only once the corpus
+  # had singletons; a Zipf vocabulary alone at this size has none.
+  "lucene-search|write_verify_index|verify-index|VerifyIndex"
 )
 
 echo "verify-write-path: compiling verifiers"

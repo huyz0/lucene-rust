@@ -65,6 +65,7 @@ AUDITED = [
     "crates/lucene-codecs/src/fst.rs",
     "crates/lucene-codecs/src/vectors.rs",
     "crates/lucene-codecs/src/postings_writer.rs",
+    "crates/lucene-codecs/src/blocktree_writer.rs",
     "crates/lucene-codecs/src/hnsw.rs",
     "crates/lucene-codecs/src/hnsw_vectors.rs",
     "crates/lucene-codecs/src/terms_dict.rs",

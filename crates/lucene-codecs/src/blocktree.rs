@@ -4107,7 +4107,7 @@ fn read_region_len(r: &mut SliceInput, what: &str) -> Result<usize> {
 // rejection means the accumulator enters every iteration with
 // `i < out.len() <= isize::MAX`, and one iteration adds at most 255.
 #[allow(clippy::arithmetic_side_effects)]
-fn decompress_lowercase_ascii(r: &mut SliceInput, out: &mut [u8]) -> Result<()> {
+pub(crate) fn decompress_lowercase_ascii(r: &mut SliceInput, out: &mut [u8]) -> Result<()> {
     let len = out.len();
     let saved = len >> 2;
     let compressed_len = len - saved;

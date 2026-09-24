@@ -193,9 +193,17 @@ produces user-visible value. The Rust side is already built; the entire gap is J
 
 ---
 
-## M3 — A Rust-written index that real Lucene can read
+## M3 — A Rust-written index that real Lucene can read  ·  delivered 2026-09-24
 
 > Full detail, task breakdown and risks: [`docs/milestones/m3-write-path-proven.md`](milestones/m3-write-path-proven.md)
+
+> **Outcome.** Real Lucene 10.5.0 opens a 120 000-document, five-segment index
+> written by this port's `IndexWriter`, finds every one of its 140 168 terms'
+> postings exactly as generated, answers 59 queries with the same top 50 as this
+> port's searcher (largest score difference 5e-10), and `CheckIndex` reports it
+> clean (`scripts/verify-write-path.sh`, `VerifyIndex`). The term-dictionary
+> writer is now a port of Java's, byte-identical on four real Lucene term
+> dictionaries and 1.3×–1.9× Lucene's speed on identical input.
 
 **Goal:** real Java Lucene opens a full, non-toy, Rust-written index with
 `DirectoryReader.open`, passes its own `CheckIndex`, and returns hit lists and scores

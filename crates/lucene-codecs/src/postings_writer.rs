@@ -1,31 +1,24 @@
-//! Write side for a **single field's** term dictionary + postings —
-//! `.doc`/`.tim`/`.tip`/`.tmd` — narrowly scoped to be the exact inverse of
-//! what `crate::postings`/`crate::blocktree`'s existing (unmodified) read
-//! side already decodes for the shapes below. Nothing here duplicates that
-//! decode logic; this module only emits bytes, and the differential tests in
-//! `crates/lucene-search` prove those bytes read back correctly through the
-//! real, pre-existing `blocktree::open`/`postings::DocInput` functions.
+//! Write side of `Lucene104PostingsWriter` -- `.doc`/`.pos`/`.pay`/`.psm`
+//! and the per-term metadata (`encodeTerm`) -- driving
+//! `crate::blocktree_writer` (`Lucene103BlockTreeTermsWriter`) for
+//! `.tim`/`.tip`/`.tmd`, one term at a time as Java's
+//! `Lucene103BlockTreeTermsWriter.write` does. This module only emits bytes;
+//! real Lucene reads them back in every whole-index case of
+//! `scripts/verify-write-path.sh`, and this port's own
+//! `blocktree::open`/`postings::DocInput` round-trip them in the tests below.
 //!
 //! # Scope (read this before assuming more than it proves)
 //!
 //! - **One or more fields per call**, each independently written (`numFields`
 //!   in `.tmd` is `inputs.len()`).
-//! - **Exactly one physical `.tim` block per field, under one
-//!   `SIGN_NO_CHILDREN` `.tip` root — never a split trie.** This is the
-//!   load-bearing scope restriction. A `SIGN_MULTI_CHILDREN` writer existed
-//!   briefly (one leaf block per leading byte, an `ARRAY`-strategy root with
-//!   no output of its own) and was removed: **real Lucene cannot read it.**
-//!   `SegmentTermsEnum` starts by loading the root *block*, and a root node
-//!   carrying children but no output hands `loadBlock` an `fp` of `-1`. Two
-//!   terms differing in their first byte were enough to trip it (see
-//!   `docs/sweep/findings.md`, "The term dictionary could not survive a
-//!   second leading byte"). **Explicitly still unimplemented**: non-leaf
-//!   blocks whose entries are sub-block pointers, floor sub-blocks, any
-//!   second trie level, and the `ARRAY`/`BITS`/`REVERSE_ARRAY` child-label
-//!   strategies (`crate::blocktree`'s read side supports all three; this
-//!   writer emits none of them). The cost is that a term lookup within a
-//!   field scans the field's single block instead of descending a trie —
-//!   the block-tree navigation item already filed in the sweep findings.
+//! - **The term dictionary is `crate::blocktree_writer`'s**: block
+//!   splitting, floor blocks, non-leaf blocks and a multi-level trie, byte
+//!   for byte what Java writes for the same terms and term states (see that
+//!   module and `tests/blocktree_writer_identity.rs`). An earlier writer here
+//!   put every term in one block under one trie node; a two-level attempt
+//!   before that gave the root no output, which real Lucene cannot read
+//!   (`docs/sweep/findings.md`, "The term dictionary could not survive a
+//!   second leading byte").
 //! - **`docFreq` of any size is now supported for the `.doc` doc-delta/freq
 //!   stream**: every complete 256-doc chunk of a term's postings is emitted
 //!   as a full `ForUtil`/`PForUtil`-encoded block ([`write_full_block`],
@@ -59,8 +52,7 @@
 //!   term spanning any number of level-1 spans plus a final partial span
 //!   round-trips the same way arbitrarily large `docFreq` already did below
 //!   `LEVEL1_NUM_DOCS`.
-//! - **Term frequency, positions, and now offsets too — still no
-//!   payloads.** `IndexOptions::Docs`/`DocsAndFreqs`/
+//! - **Term frequency, positions, offsets and payloads.** `IndexOptions::Docs`/`DocsAndFreqs`/
 //!   `DocsAndFreqsAndPositions`/`DocsAndFreqsAndPositionsAndOffsets`/
 //!   `DocsAndCustomFreqs` are all accepted — `DocsAndCustomFreqs` is
 //!   wire-identical to `DocsAndFreqs` (real Lucene's `writeFreqs` derives from
@@ -68,8 +60,7 @@
 //!   differ in how the freq value is *interpreted* by the caller, never in
 //!   encoding), so no separate code path is needed for it here; `.pos` is only
 //!   written once a field indexes positions, and
-//!   `.pay` is only written once a field indexes offsets (this writer never
-//!   has payloads, so `.pay` is never opened for that reason alone). This
+//!   `.pay` only once a field indexes offsets or has payloads. This
 //!   mirrors `flush_stored_only_segment`'s own historical "start with the
 //!   smallest defensible slice" precedent (see
 //!   `crate::term_vectors::write_best_speed`'s positions-only cut for
@@ -132,28 +123,20 @@
 //!   `IndexHeader(codec="Lucene104PostingsWriterPos")`, then, for each term
 //!   that indexes positions, zero or more full 256-occurrence `PForUtil`
 //!   blocks followed by a vint tail for the remainder — plain `posDelta`
-//!   vints (accumulator reset to 0 at each doc's first occurrence; no
-//!   payload bit-packing, since this writer never has payloads), each
+//!   vints (accumulator reset to 0 at each doc's first occurrence; with
+//!   payloads, `posDelta << 1 | payloadLengthChanged` and the length), each
 //!   optionally followed, when the field also indexes offsets, by an
 //!   `(offsetStartDelta << 1) | changed` vint and, only when `changed`, an
 //!   offset-length vint — see `crate::postings::read_positions`'s tail-block
-//!   branch (`has_payloads == false`) for the exact inverse. `Footer`.
-//! - `.pay` (only when `index_options` is
-//!   `DocsAndFreqsAndPositionsAndOffsets`): `IndexHeader(codec=
-//!   "Lucene104PostingsWriterPay")`, then, for each term's full
-//!   256-occurrence `.pos` blocks, that same chunk's offset start-deltas
-//!   then offset lengths as two back-to-back bare `PForUtil` arrays (no
-//!   payload-length/payload-bytes fields, since this writer never has
-//!   payloads) — see `crate::postings::read_positions`'s `has_offsets`
+//!   branch for the exact inverse. `Footer`.
+//! - `.pay` (only when a field indexes offsets or has payloads):
+//!   `IndexHeader(codec="Lucene104PostingsWriterPay")`, then, for each term's
+//!   full 256-occurrence `.pos` blocks, that same chunk's payload lengths and
+//!   bytes and/or offset start-deltas and lengths as bare `PForUtil` arrays
+//!   — see `crate::postings::read_positions`'s `has_offsets`
 //!   full-block branch for the exact inverse. `Footer`.
-//! - `.tim`: `IndexHeader(codec="BlockTreeTermsDict")`, then one physical
-//!   block per field, each block being (`entCount << 1 | 1` code,
-//!   `isLeafBlock` + `NO_COMPRESSION` code, suffix bytes, suffix lengths,
-//!   per-term stats, per-term postings metadata — see
-//!   [`write_term_metadata`]), `Footer`.
-//! - `.tip`: `IndexHeader(codec="BlockTreeTermsIndex")`, then, per field, one
-//!   `SIGN_NO_CHILDREN`/`hasTerms`/no-floor root node pointing at that
-//!   field's single `.tim` block — see [`write_leaf_node`]. `Footer`.
+//! - `.tim`/`.tip`: see `crate::blocktree_writer`; each term's metadata
+//!   blob entry is `TermMetaWriter::encode_term` (`encodeTerm`).
 //! - `.tmd`: `IndexHeader(codec="BlockTreeTermsMeta")`, the postings writer's
 //!   own embedded header (`IndexHeader(codec="Lucene104PostingsWriterTerms")`,
 //!   `indexBlockSize = 256`), `numFields = inputs.len()`, then each field's
@@ -164,10 +147,10 @@ use lucene_store::codec_util::{self, ID_LENGTH};
 use lucene_store::data_output::DataOutput;
 
 use crate::blocktree::{
-    LEAF_NODE_HAS_TERMS, POSTINGS_BLOCK_SIZE, POSTINGS_TERMS_CODEC, POSTINGS_VERSION_CURRENT,
-    SIGN_NO_CHILDREN, TERMS_CODEC_NAME, TERMS_INDEX_CODEC_NAME, TERMS_META_CODEC_NAME,
-    VERSION_CURRENT as BLOCKTREE_VERSION_CURRENT,
+    POSTINGS_BLOCK_SIZE, POSTINGS_TERMS_CODEC, POSTINGS_VERSION_CURRENT, TERMS_CODEC_NAME,
+    TERMS_INDEX_CODEC_NAME, TERMS_META_CODEC_NAME, VERSION_CURRENT as BLOCKTREE_VERSION_CURRENT,
 };
+use crate::blocktree_writer::{self, TermMetaEncoder, TermsWriter};
 use crate::field_infos::IndexOptions;
 use crate::for_util;
 use crate::postings::{
@@ -179,6 +162,10 @@ use crate::postings::{
 pub enum Error {
     #[error("write_single_field: terms must be non-empty")]
     EmptyTerms,
+    /// `Lucene103BlockTreeTermsWriter.validateSettings`: `min >= 2`,
+    /// `min <= max`, and `2 * (min - 1) <= max`.
+    #[error("invalid term block sizes: minItemsInBlock={min} maxItemsInBlock={max}")]
+    InvalidBlockSizes { min: usize, max: usize },
     #[error("write_single_field: terms out of order or duplicated at index {0}")]
     TermsNotSorted(usize),
     #[error("write_single_field: term at index {0} has no postings (docFreq == 0)")]
@@ -712,10 +699,8 @@ pub fn write_single_field_with_norms(
 /// Writes `.doc`/`.tim`/`.tip`/`.tmd` bytes for **one or more** fields in a
 /// single segment — see the module doc for the exact per-field scope and
 /// wire format, each of which applies independently to every field in
-/// `inputs`. `numFields` in the resulting `.tmd` is `inputs.len()`; each
-/// field still gets its own single `.tim` block and single root `.tip` trie
-/// node (no multi-block/multi-level-trie support here, see the module doc),
-/// but all fields' blocks/nodes/records are interleaved into the *same*
+/// `inputs`. `numFields` in the resulting `.tmd` is `inputs.len()`; all
+/// fields' blocks/trie nodes/records are interleaved into the *same*
 /// physical `.doc`/`.pos`/`.tim`/`.tip`/`.tmd` byte buffers, exactly like a
 /// real multi-field segment. `segment_id`/`segment_suffix` must match what
 /// the caller will later open the files with (`blocktree::open`/
@@ -750,6 +735,57 @@ pub fn write_fields_with_norms(
     segment_id: &[u8; ID_LENGTH],
     segment_suffix: &str,
 ) -> Result<Output> {
+    write_fields_with_block_sizes(
+        inputs,
+        norms,
+        BlockSizes::default(),
+        segment_id,
+        segment_suffix,
+    )
+}
+
+/// `Lucene103BlockTreeTermsWriter`'s `minItemsInBlock`/`maxItemsInBlock`:
+/// how many entries (terms or sub-blocks) a `.tim` block aims to hold.
+/// Readers accept any valid pair; the defaults are Lucene's 25/48.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlockSizes {
+    pub min_items_in_block: usize,
+    pub max_items_in_block: usize,
+}
+
+impl Default for BlockSizes {
+    fn default() -> Self {
+        Self {
+            min_items_in_block: blocktree_writer::DEFAULT_MIN_ITEMS_IN_BLOCK,
+            max_items_in_block: blocktree_writer::DEFAULT_MAX_ITEMS_IN_BLOCK,
+        }
+    }
+}
+
+impl BlockSizes {
+    /// `Lucene103BlockTreeTermsWriter.validateSettings`.
+    fn validate(self) -> Result<()> {
+        let Self {
+            min_items_in_block: min,
+            max_items_in_block: max,
+        } = self;
+        if min <= 1 || min > max || min.saturating_sub(1).saturating_mul(2) > max {
+            return Err(Error::InvalidBlockSizes { min, max });
+        }
+        Ok(())
+    }
+}
+
+/// [`write_fields_with_norms`] with explicit term-dictionary block sizes --
+/// `Lucene104PostingsFormat(minTermBlockSize, maxTermBlockSize)`.
+pub fn write_fields_with_block_sizes(
+    inputs: &[FieldPostingsInput<'_>],
+    norms: &[FieldNorms<'_>],
+    block_sizes: BlockSizes,
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+) -> Result<Output> {
+    block_sizes.validate()?;
     if inputs.is_empty() {
         return Err(Error::EmptyTerms);
     }
@@ -851,39 +887,43 @@ pub fn write_fields_with_norms(
             .find(|n| n.field_number == input.field_number)
             .map(|n| n.values);
 
-        // ---- `.pos`/`.pay` first ----
-        //
-        // `.doc`'s level-0/level-1 skip records carry the `.pos`/`.pay` file
-        // pointers each block's documents start at, so the position streams
-        // have to be laid out before the `.doc` stream that points into them.
-        // Real Lucene never faces this ordering question because it
-        // interleaves all three files as documents arrive; this writer builds
-        // each file whole, so it lays `.pos`/`.pay` down first and hands
-        // `.doc` the resulting [`PositionLayout`].
-        //
-        // `pos_start_fp[i]` is term `i`'s absolute byte offset into the
-        // shared `.pos` buffer, same convention as `doc_start_fp` below. Left
-        // at `0` (never read, see `write_term_metadata`) when this field
-        // doesn't index positions.
         let index_has_offsets = input.index_options.subsumes_offsets();
         let index_has_payloads = input.has_payloads;
         let index_has_offsets_or_payloads = index_has_offsets || index_has_payloads;
-        let mut pos_start_fp = vec![0u64; input.terms.len()];
-        let mut pay_start_fp = vec![0u64; input.terms.len()];
-        // `lastPosBlockOffset` per term: where this term's vint position tail
-        // starts, relative to its own `posStartFP`. Only written to the term
-        // metadata when `totalTermFreq > BLOCK_SIZE` (see
-        // [`write_term_metadata`]), but computed for every term because
-        // [`write_position_tail`] is the only place that knows it.
-        let mut last_pos_block_offset = vec![0i64; input.terms.len()];
-        let mut layouts: Vec<Option<PositionLayout>> = Vec::new();
-        if index_has_positions {
-            for (i, t) in input.terms.iter().enumerate() {
-                pos_start_fp[i] = pos.len() as u64;
-                if index_has_offsets_or_payloads {
-                    pay_start_fp[i] = pay.len() as u64;
-                }
-                let layout = write_position_tail(
+        let mut terms_writer = TermsWriter::new(
+            &mut tim,
+            index_has_freq,
+            TermMetaWriter {
+                index_has_positions,
+                index_has_offsets_or_payloads,
+                last: None,
+            },
+            block_sizes.min_items_in_block,
+            block_sizes.max_items_in_block,
+        );
+
+        // `Lucene103BlockTreeTermsWriter.write`'s loop: each term's postings
+        // are written (`PostingsWriterBase.writeTerm`), then the term joins
+        // the block tree (`TermsWriter.write`), one term at a time.
+        for (i, t) in input.terms.iter().enumerate() {
+            let total_term_freq = validate_term(input, i, t)?;
+
+            // ---- `.pos`/`.pay` first ----
+            //
+            // `.doc`'s level-0/level-1 skip records carry the `.pos`/`.pay`
+            // file pointers each block's documents start at, so this term's
+            // position streams are laid out before its `.doc` stream. Real
+            // Lucene interleaves the three files as documents arrive; this
+            // writer builds each term's streams whole, so it lays `.pos`/`.pay`
+            // down first and hands `.doc` the resulting [`PositionLayout`].
+            let pos_start_fp = pos.len() as u64;
+            let pay_start_fp = if index_has_offsets_or_payloads {
+                pay.len() as u64
+            } else {
+                0
+            };
+            let layout = index_has_positions.then(|| {
+                write_position_tail(
                     &mut pos,
                     &mut pay,
                     &t.positions,
@@ -892,154 +932,96 @@ pub fn write_fields_with_norms(
                     &t.payload_lengths,
                     index_has_offsets,
                     index_has_payloads,
-                );
-                last_pos_block_offset[i] = layout.last_pos_block_offset as i64;
-                layouts.push(Some(layout));
+                )
+            });
+
+            // `Lucene104PostingsWriter.startTerm`: `docStartFP =
+            // docOut.getFilePointer()`, for a singleton too -- which writes no
+            // `.doc` bytes, so a run of singletons shares one `docStartFP` and
+            // `encodeTerm` delta-codes their doc ids instead.
+            let doc_start_fp = doc.len() as u64;
+            if t.docs.len() > 1 {
+                // Zero or more full 256-doc `ForUtil`/`PForUtil` blocks
+                // (`write_full_block`) followed by at most one group-varint
+                // tail block for the `docFreq % BLOCK_SIZE` remainder -- the
+                // exact write-side inverse of `DocInput::read_postings`'s own
+                // full-blocks-then-tail dispatch.
+                let mut prev_doc_id = -1i32;
+                let mut level1_last_doc_id = -1i32;
+                let mut start = 0usize;
+                // The running `.pos`/`.pay` pointers this term's skip records
+                // carry (`Lucene104PostingsWriter`'s `level0LastPosFP` and
+                // friends, reset per term at `startTerm`).
+                let mut skip = PosSkipWriter::new(layout.as_ref(), index_has_offsets_or_payloads);
+                // `docFreq >= LEVEL1_NUM_DOCS` (8192): emit a level-1 skip
+                // entry before every complete span of `LEVEL1_FACTOR` (32)
+                // full level-0 blocks, mirroring `DocInput::read_postings`'s
+                // own `doc_count_left >= LEVEL1_NUM_DOCS` loop exactly.
+                // ARITH: `start` only ever advances by the very amount the
+                // loop condition just proved is left (`len - start >= N`
+                // before `start += N`), so `start <= t.docs.len()` holds at
+                // every test and `start + N <= len` at every slice.
+                #[allow(clippy::arithmetic_side_effects)]
+                while t.docs.len() - start >= LEVEL1_NUM_DOCS as usize {
+                    let span = &t.docs[start..start + LEVEL1_NUM_DOCS as usize];
+                    prev_doc_id = write_level1_span(
+                        &mut doc,
+                        span,
+                        prev_doc_id,
+                        &mut level1_last_doc_id,
+                        &mut BlockWriteCtx {
+                            index_has_freq,
+                            norms: field_norms,
+                            maxima: &mut maxima,
+                            skip: &mut skip,
+                        },
+                    );
+                    start += LEVEL1_NUM_DOCS as usize;
+                }
+                // ARITH: same invariant as the level-1 loop above.
+                #[allow(clippy::arithmetic_side_effects)]
+                while t.docs.len() - start >= BLOCK_SIZE as usize {
+                    let block = &t.docs[start..start + BLOCK_SIZE as usize];
+                    prev_doc_id = write_full_block(
+                        &mut doc,
+                        block,
+                        prev_doc_id,
+                        &mut BlockWriteCtx {
+                            index_has_freq,
+                            norms: field_norms,
+                            maxima: &mut maxima,
+                            skip: &mut skip,
+                        },
+                    );
+                    start += BLOCK_SIZE as usize;
+                }
+                if start < t.docs.len() {
+                    write_tail_block(&mut doc, &t.docs[start..], prev_doc_id, index_has_freq);
+                }
             }
-        } else {
-            layouts.resize_with(input.terms.len(), || None);
+
+            // `Lucene104PostingsWriter.finishTerm`'s `IntBlockTermState`.
+            let state = IntBlockTermState {
+                doc_freq: t.docs.len() as i32,
+                total_term_freq,
+                doc_start_fp,
+                pos_start_fp,
+                pay_start_fp,
+                singleton_doc_id: if t.docs.len() == 1 { t.docs[0].0 } else { -1 },
+                // `-1` unless the term has a vint position tail after at
+                // least one full block (`totalTermFreq > BLOCK_SIZE`).
+                last_pos_block_offset: match &layout {
+                    Some(l) if total_term_freq > BLOCK_SIZE as i64 => {
+                        l.last_pos_block_offset as i64
+                    }
+                    _ => -1,
+                },
+            };
+            terms_writer
+                .write(&t.term, state)
+                .map_err(|_| Error::TermsNotSorted(i))?;
         }
-
-        // `doc_start_fp[i]` is term `i`'s byte offset into the *shared* `.doc`
-        // buffer (relative to the whole file including its header — the same
-        // absolute convention `postings::TermMetadata::doc_start_fp` decodes
-        // into) where its tail block begins, or `0` for a singleton term
-        // (never read for singletons, see `postings::singleton_postings`).
-        let mut doc_start_fp = vec![0u64; input.terms.len()];
-        for (i, t) in input.terms.iter().enumerate() {
-            if t.docs.len() == 1 {
-                continue;
-            }
-            doc_start_fp[i] = doc.len() as u64;
-
-            // Zero or more full 256-doc `ForUtil`/`PForUtil` blocks
-            // (`write_full_block`) followed by at most one group-varint tail
-            // block for the `docFreq % BLOCK_SIZE` remainder -- the exact
-            // write-side inverse of `DocInput::read_postings`'s own
-            // full-blocks-then-tail dispatch.
-            let mut prev_doc_id = -1i32;
-            let mut level1_last_doc_id = -1i32;
-            let mut start = 0usize;
-            // The running `.pos`/`.pay` pointers this term's skip records
-            // carry (`Lucene104PostingsWriter`'s `level0LastPosFP` and
-            // friends, reset per term at `startTerm`).
-            let mut skip = PosSkipWriter::new(layouts[i].as_ref(), index_has_offsets_or_payloads);
-            // `docFreq >= LEVEL1_NUM_DOCS` (8192): emit a level-1 skip entry
-            // before every complete span of `LEVEL1_FACTOR` (32) full
-            // level-0 blocks, mirroring `DocInput::read_postings`'s own
-            // `doc_count_left >= LEVEL1_NUM_DOCS` loop exactly.
-            // ARITH: `start` only ever advances by the very amount the loop
-            // condition just proved is left (`len - start >= N` before
-            // `start += N`), so `start <= t.docs.len()` holds at every test
-            // and `start + N <= len` at every slice.
-            #[allow(clippy::arithmetic_side_effects)]
-            while t.docs.len() - start >= LEVEL1_NUM_DOCS as usize {
-                let span = &t.docs[start..start + LEVEL1_NUM_DOCS as usize];
-                prev_doc_id = write_level1_span(
-                    &mut doc,
-                    span,
-                    prev_doc_id,
-                    &mut level1_last_doc_id,
-                    &mut BlockWriteCtx {
-                        index_has_freq,
-                        norms: field_norms,
-                        maxima: &mut maxima,
-                        skip: &mut skip,
-                    },
-                );
-                start += LEVEL1_NUM_DOCS as usize;
-            }
-            // ARITH: same invariant as the level-1 loop above.
-            #[allow(clippy::arithmetic_side_effects)]
-            while t.docs.len() - start >= BLOCK_SIZE as usize {
-                let block = &t.docs[start..start + BLOCK_SIZE as usize];
-                prev_doc_id = write_full_block(
-                    &mut doc,
-                    block,
-                    prev_doc_id,
-                    &mut BlockWriteCtx {
-                        index_has_freq,
-                        norms: field_norms,
-                        maxima: &mut maxima,
-                        skip: &mut skip,
-                    },
-                );
-                start += BLOCK_SIZE as usize;
-            }
-            if start < t.docs.len() {
-                write_tail_block(&mut doc, &t.docs[start..], prev_doc_id, index_has_freq);
-            }
-        }
-
-        // ---- this field's .tim block + .tip node ----
-        // Every term goes in one leaf block under a single
-        // `SIGN_NO_CHILDREN` trie root, whatever leading bytes the terms
-        // span. This writer previously split a field spanning several
-        // leading bytes into one leaf block per byte under a
-        // `SIGN_MULTI_CHILDREN` root -- which real Lucene cannot read: its
-        // terms enum starts by loading the root *block*, and that root node
-        // carried children but no output of its own, so `loadBlock` was
-        // handed -1. Two terms differing in their first byte were enough
-        // (`docs/sweep/findings.md`, "The term dictionary could not survive
-        // a second leading byte").
-        //
-        // Modelling that properly means non-leaf blocks whose entries are
-        // sub-block pointers, which this writer does not have yet. Until it
-        // does, one block is both correct and what real Lucene already
-        // validates -- it is the shape every passing fixture here has always
-        // produced. The cost is that term lookup within a field is a scan of
-        // the single block rather than a trie descent, which is the
-        // block-tree navigation item already filed in the sweep findings.
-        let block_fp = write_tim_block(
-            &mut tim,
-            input.terms,
-            &doc_start_fp,
-            &pos_start_fp,
-            &pay_start_fp,
-            &last_pos_block_offset,
-            input.index_options,
-            index_has_positions,
-            index_has_offsets_or_payloads,
-        );
-        let index_start = tip.len();
-        let root_fp_abs = write_leaf_node(&mut tip, block_fp as u64);
-        let index_end = tip.len();
-        // ARITH: `write_leaf_node` returns the `tip.len()` it saw on entry,
-        // which is exactly `index_start`, so this is 0.
-        #[allow(clippy::arithmetic_side_effects)]
-        let root_fp = root_fp_abs - index_start;
-
-        // ---- this field's .tmd record ----
-        tmd.write_vint(input.field_number);
-        let num_terms = input.terms.len() as i64;
-        tmd.write_vlong(num_terms);
-        let sum_doc_freq: i64 = input.terms.iter().map(|t| t.docs.len() as i64).sum();
-        let sum_total_term_freq: i64 = if input.index_options == IndexOptions::Docs {
-            sum_doc_freq
-        } else {
-            input
-                .terms
-                .iter()
-                .flat_map(|t| t.docs.iter())
-                .map(|&(_, f)| f as i64)
-                .sum()
-        };
-        if input.index_options != IndexOptions::Docs {
-            tmd.write_vlong(sum_total_term_freq);
-        }
-        tmd.write_vlong(sum_doc_freq);
-        tmd.write_vint(input.doc_count);
-        let min_term = &input.terms[0].term;
-        // ARITH: `validate_field` rejected an empty `terms`.
-        #[allow(clippy::arithmetic_side_effects)]
-        let max_term = &input.terms[input.terms.len() - 1].term;
-        tmd.write_vint(min_term.len() as i32);
-        tmd.write_bytes(min_term);
-        tmd.write_vint(max_term.len() as i32);
-        tmd.write_bytes(max_term);
-        tmd.write_vlong(index_start as i64);
-        tmd.write_vlong(root_fp as i64);
-        tmd.write_vlong(index_end as i64);
+        terms_writer.finish(&mut tip, &mut tmd, input.field_number, input.doc_count);
     }
 
     codec_util::write_footer(&mut doc);
@@ -1097,107 +1079,6 @@ pub fn write_fields_with_norms(
     })
 }
 
-/// Writes the one physical `.tim` leaf block a field gets, for `terms` (the
-/// field's whole already-sorted term list), returning the block's absolute
-/// byte offset into `tim`.
-///
-/// Each term is stored with its **full** bytes as the block's "suffix",
-/// matching the empty path prefix of the `SIGN_NO_CHILDREN` root
-/// [`write_leaf_node`] writes. There is no prefix to strip because there is no
-/// enclosing trie node to have encoded one -- a `strip_prefix_len` parameter
-/// existed while this writer emitted `SIGN_MULTI_CHILDREN` roots and was
-/// removed with them (see this module's doc comment for why real Lucene cannot
-/// read that shape).
-///
-/// `doc_start_fp`/`pos_start_fp` must be the same length as `terms`; metadata
-/// deltas are threaded fresh starting from `TermMetadata::EMPTY`
-/// (`write_term_metadata`'s `base_doc_start_fp`/`base_pos_start_fp` both start
-/// at 0), matching `SegmentTermsEnumFrame`'s per-frame reset that the read side
-/// (`crate::blocktree::decode_block`) already assumes.
-#[allow(clippy::too_many_arguments)]
-fn write_tim_block(
-    tim: &mut Vec<u8>,
-    terms: &[TermPostings],
-    doc_start_fp: &[u64],
-    pos_start_fp: &[u64],
-    pay_start_fp: &[u64],
-    last_pos_block_offset: &[i64],
-    index_options: IndexOptions,
-    index_has_positions: bool,
-    index_has_offsets_or_payloads: bool,
-) -> usize {
-    let block_fp = tim.len();
-    let ent_count = terms.len() as u32;
-    let code = (ent_count << 1) | 1; // isLastInFloor
-    tim.write_vint(code as i32);
-
-    let mut suffix_bytes = Vec::new();
-    let mut suffix_lengths = Vec::new();
-    let mut stats = Vec::new();
-    for t in terms {
-        let suffix = &t.term[..];
-        suffix_bytes.write_bytes(suffix);
-        suffix_lengths.write_vint(suffix.len() as i32);
-        let doc_freq = t.docs.len() as u32;
-        let total_term_freq: i64 = t.docs.iter().map(|&(_, f)| f as i64).sum();
-        stats.write_vint((doc_freq << 1) as i32); // never singleton-run-encoded
-        if index_options != IndexOptions::Docs {
-            // ARITH: `total_term_freq` is the sum of this term's per-doc
-            // freqs, each `>= 1` (`validate_field`), over exactly `doc_freq`
-            // documents -- so it is at least `doc_freq` and the difference is
-            // non-negative.
-            #[allow(clippy::arithmetic_side_effects)]
-            let total_term_freq_delta = total_term_freq - doc_freq as i64;
-            stats.write_vlong(total_term_freq_delta);
-        }
-    }
-
-    let code_l = ((suffix_bytes.len() as u64) << 3) | 0x04; // isLeafBlock, NO_COMPRESSION
-    tim.write_vlong(code_l as i64);
-    tim.write_bytes(&suffix_bytes);
-
-    tim.write_vint((suffix_lengths.len() as i32) << 1); // not allEqual
-    tim.write_bytes(&suffix_lengths);
-
-    tim.write_vint(stats.len() as i32);
-    tim.write_bytes(&stats);
-
-    let mut meta = Vec::new();
-    write_term_metadata(
-        &mut meta,
-        terms,
-        doc_start_fp,
-        pos_start_fp,
-        pay_start_fp,
-        last_pos_block_offset,
-        index_has_positions,
-        index_has_offsets_or_payloads,
-    );
-    tim.write_vint(meta.len() as i32);
-    tim.write_bytes(&meta);
-
-    block_fp
-}
-
-/// Writes one `SIGN_NO_CHILDREN`/`hasTerms`/no-floor `.tip` node pointing at
-/// `block_fp` (a `.tim` block's absolute offset), returning this node's own
-/// absolute offset into `tip`. It is the only node this writer emits per
-/// field: the field's `.tip` root and its single `.tim` block's index entry
-/// are the same node.
-fn write_leaf_node(tip: &mut Vec<u8>, block_fp: u64) -> usize {
-    let fp = tip.len();
-    // keep it simple: always 8 bytes, same as blocktree.rs's test Builder
-    let output_fp_bytes = 8usize;
-    // ARITH: `output_fp_bytes` is the literal 8 on the line above.
-    #[allow(clippy::arithmetic_side_effects)]
-    let header =
-        (SIGN_NO_CHILDREN as u8) | ((output_fp_bytes as u8 - 1) << 2) | (LEAF_NODE_HAS_TERMS as u8);
-    tip.push(header);
-    tip.extend_from_slice(&block_fp.to_le_bytes());
-    tip.extend_from_slice(&0u64.to_le_bytes()); // 8-byte over-read pad, `load_node`'s SIGN_NO_CHILDREN reads up to fp+1..fp+9
-    fp
-}
-
 /// Validates one field's structural invariants (sortedness, `docFreq`/
 /// `totalTermFreq` bounds, positions shape) — the exact same checks
 /// `write_single_field` ran inline before this became a per-field helper
@@ -1216,17 +1097,18 @@ fn validate_field(input: &FieldPostingsInput<'_>) -> Result<()> {
     if input.terms.is_empty() {
         return Err(Error::EmptyTerms);
     }
-    for (i, w) in input.terms.windows(2).enumerate() {
-        if w[0].term >= w[1].term {
-            // ARITH: `i` indexes `terms.windows(2)`, so `i + 1 < terms.len()`.
-            #[allow(clippy::arithmetic_side_effects)]
-            let at = i + 1;
-            return Err(Error::TermsNotSorted(at));
-        }
-    }
+    Ok(())
+}
+
+/// Validates term `i` of `input` -- the checks `Lucene104PostingsWriter`
+/// makes as it writes the term (`startDoc`, `addPosition`) -- and returns its
+/// `totalTermFreq`. Called once per term, as the term is written, so the
+/// term's postings are walked in the same pass that writes them.
+fn validate_term(input: &FieldPostingsInput<'_>, i: usize, t: &TermPostings) -> Result<i64> {
     let index_has_positions = input.index_options.subsumes_positions();
     let index_has_offsets = input.index_options.subsumes_offsets();
-    for (i, t) in input.terms.iter().enumerate() {
+    let mut total_term_freq = 0i64;
+    {
         if t.docs.is_empty() {
             return Err(Error::EmptyPostings(i));
         }
@@ -1240,6 +1122,12 @@ fn validate_field(input: &FieldPostingsInput<'_>) -> Result<()> {
         for (j, &(_, freq)) in t.docs.iter().enumerate() {
             if freq < 1 {
                 return Err(Error::NonPositiveFreq { index: i });
+            }
+            // ARITH: at most `docs.len()` (an in-memory count) freqs of at
+            // most `i32::MAX` each: far below `i64::MAX`.
+            #[allow(clippy::arithmetic_side_effects)]
+            {
+                total_term_freq += i64::from(freq);
             }
             // ARITH: guarded by `j > 0`.
             #[allow(clippy::arithmetic_side_effects)]
@@ -1353,7 +1241,7 @@ fn validate_field(input: &FieldPostingsInput<'_>) -> Result<()> {
             }
         }
     }
-    Ok(())
+    Ok(total_term_freq)
 }
 
 /// `Lucene104PostingsWriter.writeVInt15`'s write-side companion to
@@ -2281,102 +2169,84 @@ fn write_full_payload_length_block(out: &mut Vec<u8>, lengths: &[u32], bytes: &[
     out.write_bytes(bytes);
 }
 
-/// Writes every term's per-term postings metadata bytes — the write-side
-/// inverse of `crate::postings::decode_term_metadata` (restricted to this
-/// writer's own scope: `payStartFP` only appears when the field indexes
-/// offsets or stores payloads; `lastPosBlockOffset` carries the real offset
-/// of the vint position tail, exactly when `decode_term_metadata`'s own
-/// `total_term_freq > BLOCK_SIZE` gate requires it). Always takes the
-/// bit-clear ("absolute-ish
-/// `docStartFP` delta") branch, never the zigzag-singleton-delta branch —
-/// this writer has no need for that alternate encoding's extra compactness.
-///
-/// `doc_start_fp`/`pos_start_fp`/`pay_start_fp` deltas are threaded exactly
-/// like `SegmentTermsEnumFrame.metaDataUpto`/`absolute` on the read side: the
-/// first term in the (only) block decodes against `TermMetadata::EMPTY`
-/// (`doc_start_fp`/`pos_start_fp`/`pay_start_fp == 0`), every subsequent term
-/// against the *previous* term's already-written value — so this writer must
-/// emit the same running delta, not each term's absolute offset. Unlike
-/// `doc_start_fp`, `pos_start_fp`/`pay_start_fp` never have a singleton-skip
-/// special case: every term that indexes positions/offsets writes real
-/// `.pos`/`.pay` bytes and so always advances them, even when `docFreq == 1`
-/// pulses its `.doc` entry away.
-#[allow(clippy::too_many_arguments)]
-fn write_term_metadata(
-    out: &mut Vec<u8>,
-    terms: &[TermPostings],
-    doc_start_fp: &[u64],
-    pos_start_fp: &[u64],
-    pay_start_fp: &[u64],
-    last_pos_block_offset: &[i64],
+/// `Lucene104PostingsFormat.IntBlockTermState`: what `finishTerm` records
+/// for one term and `encodeTerm` writes.
+#[derive(Debug, Clone, Copy)]
+struct IntBlockTermState {
+    doc_freq: i32,
+    /// The sum of the term's freqs (each `1` for a field without freqs,
+    /// where the value is never written).
+    total_term_freq: i64,
+    /// `.doc` length at `startTerm`, singletons included.
+    doc_start_fp: u64,
+    pos_start_fp: u64,
+    pay_start_fp: u64,
+    /// `-1` unless `docFreq == 1`.
+    singleton_doc_id: i32,
+    /// `-1` unless `totalTermFreq > BLOCK_SIZE`.
+    last_pos_block_offset: i64,
+}
+
+/// `Lucene104PostingsWriter.encodeTerm`: the write-side inverse of
+/// `crate::postings::decode_term_metadata`. Deltas run against the previous
+/// term encoded (`lastState`), reset to `EMPTY_STATE` at the first term of
+/// every block.
+struct TermMetaWriter {
     index_has_positions: bool,
     index_has_offsets_or_payloads: bool,
-) {
-    let mut base_doc_start_fp = 0u64;
-    let mut base_pos_start_fp = 0u64;
-    let mut base_pay_start_fp = 0u64;
-    for (i, t) in terms.iter().enumerate() {
-        let doc_freq = t.docs.len();
-        // Singleton terms never advance `doc_start_fp` (no `.doc` bytes are
-        // written for them, see `write_single_field`), so their delta is 0
-        // and the running base is left unchanged for the next term.
-        let this_fp = if doc_freq == 1 {
-            base_doc_start_fp
-        } else {
-            doc_start_fp[i]
+    /// `lastState`; `None` is `EMPTY_STATE`.
+    last: Option<IntBlockTermState>,
+}
+
+impl TermMetaEncoder for TermMetaWriter {
+    type State = IntBlockTermState;
+
+    fn stats(state: &IntBlockTermState) -> (i32, i64) {
+        (state.doc_freq, state.total_term_freq)
+    }
+
+    // ARITH: every file pointer here is a `.doc`/`.pos`/`.pay` length this
+    // writer recorded in term order, and terms are encoded in that order
+    // within a block, so a term's is never smaller than the previous one's
+    // and the deltas are non-negative; doc ids are non-negative `i32`s, so
+    // their `i64` difference cannot overflow and its zigzag fits a `u64`
+    // with a bit to spare for the `<< 1`.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn encode_term(&mut self, out: &mut Vec<u8>, state: &IntBlockTermState, absolute: bool) {
+        if absolute {
+            self.last = None;
+        }
+        let (last_doc_fp, last_pos_fp, last_pay_fp, last_singleton) = match &self.last {
+            None => (0, 0, 0, -1),
+            Some(l) => (
+                l.doc_start_fp,
+                l.pos_start_fp,
+                l.pay_start_fp,
+                l.singleton_doc_id,
+            ),
         };
-        let delta = this_fp.wrapping_sub(base_doc_start_fp);
-        out.write_vlong(((delta << 1) as i64) & !1); // bit 0 clear: absolute-ish delta branch
-        if doc_freq == 1 {
-            out.write_vint(t.docs[0].0);
-        }
-        base_doc_start_fp = this_fp;
-
-        if index_has_positions {
-            let this_pos_fp = pos_start_fp[i];
-            let pos_delta = this_pos_fp.wrapping_sub(base_pos_start_fp);
-            out.write_vlong(pos_delta as i64);
-            base_pos_start_fp = this_pos_fp;
-
-            if index_has_offsets_or_payloads {
-                let this_pay_fp = pay_start_fp[i];
-                let pay_delta = this_pay_fp.wrapping_sub(base_pay_start_fp);
-                out.write_vlong(pay_delta as i64);
-                base_pay_start_fp = this_pay_fp;
-            }
-
-            // `lastPosBlockOffset`: only present on the wire when
-            // `total_term_freq > BLOCK_SIZE` (`decode_term_metadata`'s
-            // gate, strictly greater -- exactly `BLOCK_SIZE` occurrences fill
-            // one full block with no tail after it, so the real writer only
-            // emits this field once there is a genuine vint tail to point at).
-            //
-            // The value is the byte offset, relative to this term's
-            // `posStartFP`, at which that vint tail begins -- i.e. exactly how
-            // many bytes this term's full `PForUtil` position blocks took
-            // (`write_position_tail`'s return value, sampled the same place
-            // `Lucene104PostingsWriter.finishTerm` samples
-            // `posOut.getFilePointer() - posStartFP`). This port's own
-            // `read_positions` re-derives the block/tail split from
-            // `total_term_freq`, but `postings::read_occurrences_for_doc` --
-            // which jumps into the middle of `.pos` from `.doc`'s skip data
-            // and so has no occurrence count to re-derive anything from --
-            // reads it, and so does real Lucene:
-            // `Lucene104PostingsReader.reset` computes
-            // `lastPosBlockFP = posStartFP + lastPosBlockOffset` and
-            // `refillPositions` switches to `refillLastPositionBlock` the
-            // moment `posIn.getFilePointer()` equals it. Writing a constant 0
-            // here -- which this writer did until the M2 sweep -- made that
-            // comparison true at the term's very first position block, so
-            // real Lucene decoded a `PForUtil` block as if it were the vint
-            // tail. It was unreachable from this port's own round-trip tests
-            // when b5 fixed it; c20's skip-driven walk makes it reachable
-            // (`postings_skip_pointers.rs`).
-            let total_term_freq: i64 = t.docs.iter().map(|&(_, f)| f as i64).sum();
-            if total_term_freq > BLOCK_SIZE as i64 {
-                out.write_vlong(last_pos_block_offset[i]);
+        if last_singleton != -1 && state.singleton_doc_id != -1 && state.doc_start_fp == last_doc_fp
+        {
+            // Runs of rare terms (ID fields) share a `docStartFP`: delta-code
+            // the doc ids instead.
+            let delta = i64::from(state.singleton_doc_id) - i64::from(last_singleton);
+            out.write_vlong(((lucene_util::zigzag::encode(delta) << 1) | 1) as i64);
+        } else {
+            out.write_vlong(((state.doc_start_fp - last_doc_fp) << 1) as i64);
+            if state.singleton_doc_id != -1 {
+                out.write_vint(state.singleton_doc_id);
             }
         }
+        if self.index_has_positions {
+            out.write_vlong((state.pos_start_fp - last_pos_fp) as i64);
+            if self.index_has_offsets_or_payloads {
+                out.write_vlong((state.pay_start_fp - last_pay_fp) as i64);
+            }
+            if state.last_pos_block_offset != -1 {
+                out.write_vlong(state.last_pos_block_offset);
+            }
+        }
+        self.last = Some(*state);
     }
 }
 
@@ -5021,9 +4891,8 @@ mod tests {
         };
         let out = write_single_field(&input, &SEG_ID, SUFFIX).unwrap();
 
-        // Walk the single `.tim` leaf block down to its per-term metadata
-        // region -- the block layout `write_tim_block` emits, read back in
-        // wire order.
+        // Walk the `.tim` leaf block (two terms: one block) down to its
+        // per-term metadata region, read back in wire order.
         let mut r = SliceInput::new(&out.tim);
         codec_util::check_index_header(
             &mut r,
