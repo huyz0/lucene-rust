@@ -25,9 +25,12 @@ plan — phases, crate layout, verification strategy, effort estimates — is
 2. **Port by on-disk format, not by class hierarchy.** The Java class graph is
    not the target; the byte-level wire format is. See **architecture** and
    **rust-performance**.
-3. **A "faithful" port that's slower than Java is a bug.** Redesign the
-   in-memory shape for Rust (ownership, monomorphization, zero-copy, SIMD) —
-   don't transliterate. See **rust-performance**.
+3. **Port → benchmark → optimise, one area at a time.** Port each area as
+   close to Java as possible first (the correctness baseline), benchmark it
+   against Lucene on the same bytes, then optimise until it is not slower —
+   and only then start the next area. A port left slower than Java is a bug;
+   a redesign made before the faithful port and its benchmark exist is too.
+   See **port-workflow**, then **rust-performance** for stage 3.
 4. **`unsafe` only in `lucene-util`, `lucene-store`, and `lucene-ffi`.** Every
    other crate is `#![forbid(unsafe_code)]`. See **ffi-safety**.
 5. **A Rust panic must never cross the FFI boundary into the JVM.** Every
@@ -134,8 +137,9 @@ Skills are the process source of truth; `PLAN.md`/`docs/` are the deep-dives.
 | Task | Skill |
 |------|-------|
 | Crates / module boundaries / where code belongs | `architecture` |
+| Starting to port any Java class/format/algorithm, or deciding an area is done | `port-workflow` |
 | New decoder for a Lucene file format | `differential-testing` |
-| In-memory design for a ported module | `rust-performance` |
+| Optimising a ported module (stage 3, after its benchmark) | `rust-performance` |
 | Anything in `lucene-ffi`, any `unsafe` block | `ffi-safety` |
 | Finished a format, need to record it | `parity-tracking` |
 | Committing / finishing a unit of work | `git-workflow`, `code-review` |
@@ -148,6 +152,10 @@ Skills are the process source of truth; `PLAN.md`/`docs/` are the deep-dives.
 
 - **Read the matching skill before acting** — it encodes the rule and names
   the gate that enforces it.
+- **Port → benchmark → optimise, per area** (the **port-workflow** skill):
+  closest-to-Java port that passes its differential tests, then a
+  `scripts/bench-micro.sh` pair against Lucene 10.5.0, then optimisation to a
+  ratio ≥ 1.0 (or a written-up reason) — before the next area starts.
 - **Fixture-first for new decoders**: write the `Gen*.java` generator, run it,
   write the Rust parser against real bytes, write the differential test —
   don't hand-roll expected bytes from reading the Java source alone.

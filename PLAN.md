@@ -3930,7 +3930,11 @@ and `.doc`/BKD readers (see `docs/parity.md`'s `SegmentMerger` row).
 ## 3.5 Rust-first design: where we deliberately do NOT mirror Java
 
 The on-disk **format** is the compatibility contract; the **in-memory design** is ours.
-Rule of thumb: *port the bytes, not the objects.* Concretely:
+Rule of thumb: *port the bytes, not the objects* -- but in that order: every area is
+first ported as close to Java as possible, then benchmarked against Lucene, and only
+then redesigned on the lines below, one measured change at a time
+([`docs/porting-workflow.md`](docs/porting-workflow.md)). The list below is the
+stage-3 toolbox, not a licence to skip the faithful port. Concretely:
 
 1. **No GC-shaped object graphs.** Java Lucene's design is heavily driven by avoiding
    allocation/GC (ByteBlockPool, parallel arrays, AttributeSource reuse). In Rust we get
@@ -3973,9 +3977,9 @@ Rule of thumb: *port the bytes, not the objects.* Concretely:
     boxed `Integer`/autoboxing in collectors (never exists), `ThreadLocal` pools
     (scoped ownership), finalizers/`Cleaner` (Drop).
 
-Each phase's exit criteria implicitly include: profile the ported component and confirm
-it beats Java on the same workload *before* moving on — a slower "faithful" port is a
-bug, and finding out early is the point of the phased structure.
+Each area's exit criteria include: benchmark the ported component against Java on the
+same workload and optimise until it is not slower *before* moving on to the next area —
+a slower faithful port is a bug, and finding out early is the point of the structure.
 
 ## 4. Sequencing summary and effort
 
