@@ -76,17 +76,36 @@
 //! candidate term exactly to its end), so e.g. pattern `ca` does **not**
 //! match term `cat` (see this module's `whole_term_match_*` tests).
 //!
-//! ## Why a backtracker and not an `Automaton`
+//! ## How a pattern runs over a term dictionary
 //!
-//! Real Lucene determinizes the parsed `RegExp` into a byte-level DFA and
-//! runs it with `ByteRunAutomaton`, which is what makes `IntersectTermsEnum`
-//! able to *skip* term-dictionary blocks. This module instead evaluates the
-//! parsed tree directly with a bounded backtracking search. That is a
-//! deliberate, recorded scope decision -- see `docs/sweep/m2/
-//! b8-automata-analysis.md` -- and the cost is scan volume, not correctness:
-//! `crate::blocktree::FieldTerms::regexp_intersect` tests every term in the
-//! [`RegexpPattern::literal_prefix`] range rather than only the terms a DFA
-//! could reach.
+//! The parsed tree compiles to an **exact** byte DFA ([`RegexpPattern::to_dfa`]:
+//! Thompson construction over UTF-8 byte paths, `&` as a product automaton,
+//! `<n-m>` as a digit automaton, subset construction, pruning, byte classes),
+//! built once per pattern and cached ([`RegexpPattern::compiled`]).
+//! `crate::blocktree::FieldTerms::regexp_intersect_states` then picks the
+//! cheapest of three ways to enumerate the matching terms. Wherever Lucene
+//! runs a pattern at all, all three return exactly what its
+//! `IntersectTermsEnum` does (pinned by `tests/regexp_intersect_fixtures.rs`
+//! against a Lucene-written dictionary, the lazy automaton forced on every
+//! fixture pattern); the lazy path also runs patterns Lucene rejects, where
+//! the backtracking matcher is the reference instead:
+//!
+//! - the **lockstep walk** -- the dictionary's blocks walked with the
+//!   automaton, a sub-block descended only while its prefix is live, floor
+//!   blocks skipped by their lead bytes, the rest of a block dropped once an
+//!   entry sorts past every live byte, and a state that accepts exactly the
+//!   well-formed UTF-8 suffixes answered by a UTF-8 validator;
+//! - the **term n-gram index** (`crate::term_ngram`) for a pattern with no
+//!   literal prefix that still forces literal text ([`RegexpPattern::
+//!   required_grams`]: `.*zz.*`, `.*a0`), once the field has been asked
+//!   such queries often enough to build it;
+//! - a **lazily determinized** automaton (`crate::automaton::LazyDfa`) for a
+//!   pattern whose full DFA is too large to build -- the ones Lucene rejects
+//!   by default with `TooComplexToDeterminizeException`.
+//!
+//! The backtracking matcher below ([`RegexpPattern::matches`]) remains the
+//! specification the automata are tested against, and the matcher of last
+//! resort for a pattern too large even as an NFA.
 
 use std::cell::Cell;
 use std::fmt;
@@ -226,6 +245,43 @@ enum Node {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegexpPattern {
     root: Node,
+    compiled: CompileCache,
+}
+
+/// The pattern's compiled automaton, built on first use and shared by every
+/// segment's walk -- and, through a small process-wide cache keyed by the
+/// pattern text, by later queries for the same pattern (what Tantivy does
+/// for its `RegexQuery`). Determinizing once per segment was the fuzzy
+/// query's mistake before `cached_dfa`; a regexp repeated across queries
+/// need not pay even once. Invisible to equality: two patterns are equal
+/// when they parse to the same tree.
+#[derive(Debug, Clone, Default)]
+struct CompileCache {
+    source: String,
+    cell: std::sync::OnceLock<Option<std::sync::Arc<crate::automaton::CompiledDfa>>>,
+}
+
+impl PartialEq for CompileCache {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for CompileCache {}
+
+/// Entries the process-wide compiled-pattern cache keeps (least recently
+/// used out first). Each is one automaton, typically a few kilobytes.
+const COMPILED_CACHE_ENTRIES: usize = 64;
+
+type CompiledEntry = (
+    String,
+    Option<std::sync::Arc<crate::automaton::CompiledDfa>>,
+);
+
+fn compiled_cache() -> &'static std::sync::Mutex<Vec<CompiledEntry>> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<Vec<CompiledEntry>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(Vec::new()))
 }
 
 impl RegexpPattern {
@@ -252,6 +308,7 @@ impl RegexpPattern {
         if pattern.is_empty() {
             return Ok(Self {
                 root: Node::Str(String::new()),
+                compiled: CompileCache::default(),
             });
         }
         let chars: Vec<char> = pattern.chars().collect();
@@ -264,7 +321,13 @@ impl RegexpPattern {
             // Only reachable via a stray, unmatched ')' at the top level.
             return Err(RegexpError::EndOfStringExpected { pos: p.pos });
         }
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            compiled: CompileCache {
+                source: pattern.to_string(),
+                cell: std::sync::OnceLock::new(),
+            },
+        })
     }
 
     /// Tests whether `term` matches this pattern **in full** -- real
@@ -348,17 +411,81 @@ impl RegexpPattern {
         node_prefix_match(&self.root, prefix, &budget, &|rest| rest.is_empty())
     }
 
-    /// A byte DFA accepting a **superset** of this pattern's language, for
-    /// term-dictionary intersection: exact everywhere except `&` (approximated
-    /// by its left operand) and `<n-m>` (by any run of digits). `None` when
-    /// the pattern is too large to determinize. See `crate::automaton` for why
-    /// a superset is the right contract -- every term it accepts is still
-    /// confirmed by [`Self::matches`].
+    /// A byte DFA accepting **exactly** this pattern's language, for
+    /// term-dictionary intersection -- `&` as a product automaton and `<n-m>`
+    /// as a digit automaton, as Lucene's `RegExp.toAutomaton` builds them.
+    /// `None` when the pattern is too large to determinize, and then
+    /// [`Self::matches`] answers alone.
     pub(crate) fn to_dfa(&self) -> Option<crate::automaton::ByteDfa> {
+        let (nfa, start, end) = self.to_nfa()?;
+        nfa.determinize(start, end)
+    }
+
+    /// The pattern's NFA and its start and end states, for
+    /// [`crate::automaton::LazyDfa`] when [`Self::to_dfa`] is too large to
+    /// build. `None` past `automaton::MAX_NFA_STATES`, and also when an `&`
+    /// operand or their product exceeds `automaton::MAX_DFA_STATES` -- an
+    /// intersection is built eagerly even here, so such a pattern falls back
+    /// to the backtracking matcher.
+    pub(crate) fn to_nfa(&self) -> Option<(crate::automaton::Nfa, u32, u32)> {
         let mut nfa = crate::automaton::Nfa::new();
         let start = nfa.state()?;
         let end = node_nfa(&mut nfa, &self.root, start)?;
-        nfa.determinize(start, end)
+        Some((nfa, start, end))
+    }
+
+    /// [`Self::to_dfa`], compiled for a term-dictionary walk
+    /// ([`crate::automaton::CompiledDfa`]) and cached -- on this pattern for
+    /// every segment, and process-wide by pattern text for later queries.
+    /// `None` when the pattern is too large to determinize.
+    pub(crate) fn compiled(&self) -> Option<std::sync::Arc<crate::automaton::CompiledDfa>> {
+        self.compiled
+            .cell
+            .get_or_init(|| {
+                let source = &self.compiled.source;
+                if let Ok(mut cache) = compiled_cache().lock() {
+                    if let Some(i) = cache.iter().position(|(s, _)| s == source) {
+                        let entry = cache.remove(i);
+                        let hit = entry.1.clone();
+                        cache.push(entry);
+                        return hit;
+                    }
+                }
+                let built = self
+                    .to_dfa()
+                    .map(|d| std::sync::Arc::new(crate::automaton::CompiledDfa::new(d)));
+                if let Ok(mut cache) = compiled_cache().lock() {
+                    // Another thread may have compiled the same pattern since
+                    // the lookup above; keep one entry per pattern.
+                    if !cache.iter().any(|(s, _)| s == source) {
+                        if cache.len() >= COMPILED_CACHE_ENTRIES {
+                            cache.remove(0);
+                        }
+                        cache.push((source.clone(), built.clone()));
+                    }
+                }
+                built
+            })
+            .clone()
+    }
+
+    /// Grams ([`crate::term_ngram`]) every matching term contains: the
+    /// literal runs the pattern forces, with the term's start and end as
+    /// boundary symbols where a run is anchored to them. `.*zz.*` needs `zz`;
+    /// `.*a0` needs `a0` then the end; `abc.*` needs the start then `abc`.
+    /// Empty when nothing is forced (`.*`, `(a|b)x`), in which case the index
+    /// cannot help. A superset filter: a term containing every gram still has
+    /// to match the automaton.
+    pub(crate) fn required_grams(&self) -> Vec<u32> {
+        let mut keys = Vec::new();
+        let items: Vec<&Node> = match &self.root {
+            Node::Concat(items) => items.iter().collect(),
+            other => vec![other],
+        };
+        required_in_sequence(&items, true, &mut keys);
+        keys.sort_unstable();
+        keys.dedup();
+        keys
     }
 
     /// The longest byte run every matching term is guaranteed to start with,
@@ -442,8 +569,13 @@ fn node_nfa(nfa: &mut crate::automaton::Nfa, node: &Node, from: u32) -> Option<u
             }
             Some(to)
         }
-        // A superset of `L(a) & L(b)` is `L(a)`; the exact matcher confirms.
-        Node::Intersect(a, _) => node_nfa(nfa, a, from),
+        // `Operations.intersection`: each side determinized on its own, their
+        // product taken, and the result copied in. Exact, where approximating
+        // by the left side made every accepted term need the backtracker.
+        Node::Intersect(a, b) => {
+            let product = node_dfa(a)?.intersect(&node_dfa(b)?)?;
+            nfa.embed(from, &product)
+        }
         Node::Repeat { inner, min, max } => {
             let mut s = from;
             for _ in 0..*min {
@@ -474,16 +606,167 @@ fn node_nfa(nfa: &mut crate::automaton::Nfa, node: &Node, from: u32) -> Option<u
                 }
             }
         }
-        // Any run of one or more ASCII digits: a superset of every decimal
-        // interval, zero-padded or not.
-        Node::Interval { .. } => {
-            let first = nfa.state()?;
-            nfa.range(from, b'0', b'9', first);
-            nfa.range(first, b'0', b'9', first);
-            Some(first)
-        }
+        Node::Interval { min, max, digits } => interval_nfa(nfa, from, *min, *max, *digits),
     }
 }
+
+/// `node` alone, determinized: one side of an intersection.
+fn node_dfa(node: &Node) -> Option<crate::automaton::ByteDfa> {
+    let mut nfa = crate::automaton::Nfa::new();
+    let start = nfa.state()?;
+    let end = node_nfa(&mut nfa, node, start)?;
+    nfa.determinize(start, end)
+}
+
+/// `Automata.makeDecimalInterval`'s language, exactly (see [`interval_match`]
+/// for the semantics this must agree with): with `digits > 0`, strings of
+/// exactly that many digits whose value is in `min..=max`; with `digits ==
+/// 0`, any width, leading zeros included.
+// ARITH: bounds are `u32`s widened to `u64`; powers of ten go through
+// `checked_pow` (`digits` can ask for up to `10^19` and beyond), so `p - 1`
+// runs only on a `p >= 1`; `l` counts decimal lengths `1..=10`, so `l - 1`
+// is at least 0.
+#[allow(clippy::arithmetic_side_effects)]
+fn interval_nfa(
+    nfa: &mut crate::automaton::Nfa,
+    from: u32,
+    min: u32,
+    max: u32,
+    digits: usize,
+) -> Option<u32> {
+    let to = nfa.state()?;
+    let (min, max) = (u64::from(min), u64::from(max));
+    let pow10 = |n: usize| 10u64.checked_pow(n as u32);
+    if digits > 0 {
+        // Wider than `u32` can reach: only the part below 10^digits matters.
+        let top = pow10(digits).map_or(u64::MAX, |p| p - 1);
+        let hi = max.min(top);
+        if min <= hi {
+            let lo_s = format!("{min:0digits$}");
+            let hi_s = format!("{hi:0digits$}");
+            nfa.fixed_width_digits(from, lo_s.as_bytes(), hi_s.as_bytes(), to)?;
+        }
+        return Some(to);
+    }
+    // Any width: leading zeros, then the significant digits of a value in
+    // range, one fixed-width band per length. Zero itself is one or more
+    // zeros.
+    let zeros = nfa.state()?;
+    nfa.epsilon(from, zeros);
+    nfa.range(zeros, b'0', b'0', zeros);
+    if min == 0 {
+        let z = nfa.state()?;
+        nfa.range(from, b'0', b'0', z);
+        nfa.range(z, b'0', b'0', z);
+        nfa.epsilon(z, to);
+    }
+    for l in 1..=10usize {
+        let (Some(band_lo), Some(band_hi)) = (pow10(l - 1), pow10(l)) else {
+            break;
+        };
+        let lo = min.max(band_lo);
+        let hi = max.min(band_hi - 1);
+        if lo <= hi {
+            let (lo_s, hi_s) = (lo.to_string(), hi.to_string());
+            nfa.fixed_width_digits(zeros, lo_s.as_bytes(), hi_s.as_bytes(), to)?;
+        }
+    }
+    Some(to)
+}
+
+/// `node`'s bytes when its whole language is one fixed string.
+fn literal_bytes(node: &Node) -> Option<Vec<u8>> {
+    match node {
+        Node::Char(c) => {
+            let mut buf = [0u8; 4];
+            Some(c.encode_utf8(&mut buf).as_bytes().to_vec())
+        }
+        Node::Str(s) => Some(s.as_bytes().to_vec()),
+        Node::Concat(items) => {
+            let mut out = Vec::new();
+            for n in items {
+                out.extend(literal_bytes(n)?);
+            }
+            Some(out)
+        }
+        Node::Repeat {
+            inner,
+            min,
+            max: Some(max),
+        } if min == max => {
+            let one = literal_bytes(inner)?;
+            Some(one.repeat(*min as usize))
+        }
+        _ => None,
+    }
+}
+
+/// [`RegexpPattern::required_grams`] over a concatenation: literal runs are
+/// extended through consecutive fixed-string items and cut by anything else;
+/// `anchored` says the sequence spans the whole term, so a run touching
+/// either end takes the boundary symbol there.
+fn required_in_sequence(items: &[&Node], anchored: bool, keys: &mut Vec<u32>) {
+    use crate::term_ngram::BOUNDARY;
+    let mut run: Vec<u32> = Vec::new();
+    if anchored {
+        run.push(BOUNDARY);
+    }
+    let flush = |run: &mut Vec<u32>, keys: &mut Vec<u32>| {
+        if run.len() >= 3 {
+            for w in run.windows(3) {
+                keys.push(crate::term_ngram::gram_key(w));
+            }
+        } else if run.len() == 2 {
+            keys.push(crate::term_ngram::gram_key(run));
+        }
+        run.clear();
+    };
+    for item in items {
+        if let Some(bytes) = literal_bytes(item) {
+            run.extend(bytes.iter().map(|&b| u32::from(b)));
+            continue;
+        }
+        match item {
+            // At least one copy is forced: its literal continues the run,
+            // and whatever repeats after it cuts it.
+            Node::Repeat { inner, min, .. } if *min >= 1 => {
+                if let Some(bytes) = literal_bytes(inner) {
+                    run.extend(bytes.iter().map(|&b| u32::from(b)));
+                    flush(&mut run, keys);
+                } else {
+                    flush(&mut run, keys);
+                    required_in_node(inner, keys);
+                }
+            }
+            Node::Concat(inner) => {
+                flush(&mut run, keys);
+                let inner: Vec<&Node> = inner.iter().collect();
+                required_in_sequence(&inner, false, keys);
+            }
+            Node::Intersect(a, b) => {
+                flush(&mut run, keys);
+                required_in_node(a, keys);
+                required_in_node(b, keys);
+            }
+            _ => flush(&mut run, keys),
+        }
+    }
+    if anchored {
+        run.push(BOUNDARY);
+    }
+    flush(&mut run, keys);
+}
+
+/// A sub-pattern's own forced runs, taken as unanchored -- conservative
+/// (an anchored run would also need its boundary gram), never wrong.
+fn required_in_node(node: &Node, keys: &mut Vec<u32>) {
+    let items: Vec<&Node> = match node {
+        Node::Concat(items) => items.iter().collect(),
+        other => vec![other],
+    };
+    required_in_sequence(&items, false, keys);
+}
+
 /// Appends to `out` the literal byte run `node` guarantees at its start,
 /// returning `true` when `node`'s *entire* language is that fixed run (so a
 /// concatenation may keep going into the next node) and `false` when the

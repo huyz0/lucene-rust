@@ -2672,6 +2672,159 @@ mod tests {
         (fields, doc_in)
     }
 
+    /// The regexp term walk against a brute-force filter over a 70 000-term
+    /// dictionary with multi-byte UTF-8 and ill-formed bytes: entry filtering,
+    /// the end-of-block jump, `ALL` semantics, the lazy automaton for patterns
+    /// too large to determinize, and that each yielded term's state opens its
+    /// own postings. This crate's terms writer lays a field out as one leaf
+    /// block, so floor skips, sub-block descent and trie-node tracking are
+    /// **not** exercised here -- only by `tests/regexp_intersect_fixtures.rs`,
+    /// whose dictionary Lucene wrote.
+    #[test]
+    fn lockstep_regexp_walk_agrees_with_a_brute_force_scan() {
+        fn base36(mut n: u32) -> String {
+            const DIGITS: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+            let mut out = Vec::new();
+            loop {
+                out.push(DIGITS[(n % 36) as usize]);
+                n /= 36;
+                if n == 0 {
+                    break;
+                }
+            }
+            out.reverse();
+            String::from_utf8(out).unwrap()
+        }
+        let mut raw: Vec<Vec<u8>> = Vec::new();
+        for i in 0..60_000u32 {
+            raw.push(format!("t{}", base36(i)).into_bytes());
+        }
+        for i in 0..3_000u32 {
+            raw.push(format!("{}x{}", base36(i % 97), i % 13).into_bytes());
+            raw.push(format!("é{}€", i % 500).into_bytes());
+            raw.push(format!("aaaaaaaaaaaaaaaa{i}").into_bytes());
+        }
+        for i in 0..=255u8 {
+            raw.push(vec![b't', 0xFF, i]);
+            raw.push(vec![i]);
+        }
+        raw.sort_unstable();
+        raw.dedup();
+        const MAX_DOC: i32 = 1_000;
+        let terms: Vec<TermPostings> = raw
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                let first = (i % 997) as i32;
+                let mut docs = vec![(first, 1 + (i % 3) as i32)];
+                if i % 5 == 0 {
+                    docs.push((first + 1, 1));
+                }
+                TermPostings {
+                    term: t.clone(),
+                    docs,
+                    ..Default::default()
+                }
+            })
+            .collect();
+        let input = FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::DocsAndFreqs,
+            doc_count: MAX_DOC,
+            has_payloads: false,
+            terms: &terms,
+        };
+        let output = write_single_field(&input, &SEG_ID, SUFFIX).unwrap();
+        let fis = FieldInfos {
+            fields: vec![field_info(0, "body", IndexOptions::DocsAndFreqs)],
+        };
+        let (fields, doc_in) = open_written(&output, &fis, MAX_DOC);
+        let field = fields.field("body").unwrap();
+
+        for src in [
+            "t1[0-9]",
+            ".*z",
+            "t[0-9a-f]+",
+            "(t1|t2)[a-z]",
+            "t.*9",
+            "[a-z][0-9]{2}",
+            ".*1.*2.*",
+            "t",
+            "",
+            ".*",
+            "t.",
+            "tz.*",
+            "[^t].*",
+            "é[0-9]+€",
+            "é.*",
+            "a{16}[0-9]+",
+            "a+1.*",
+            ".x1[0-2]?",
+            "t<100-2000>",
+            "t[a-z]+&.*q.*",
+            "#",
+            "(t0|t1|tz|t10)",
+            "t1a.",
+            "t[0-9]{2}[a-z]",
+            ".*[qz][0-9]",
+            ".",
+            ".{2,3}",
+            "[0-9a-z]x1",
+            "t9zz.*",
+            "zzzz",
+            "t.*(0|9)",
+            "@",
+            // Too large to determinize whole (`MAX_DFA_STATES`): the walk
+            // runs the lazily determinized automaton instead.
+            ".*a.{13}",
+            ".*[a-c].{15}",
+            ".*[a1].{14}.*",
+        ] {
+            let pattern = crate::regexp::RegexpPattern::new(src.as_bytes()).unwrap();
+            if src.contains(".{1") {
+                assert!(
+                    pattern.to_dfa().is_none(),
+                    "{src} should need the lazy automaton"
+                );
+                let expected: Vec<&Vec<u8>> = raw.iter().filter(|t| pattern.matches(t)).collect();
+                let got: Vec<Vec<u8>> = field
+                    .regexp_intersect_states(&pattern)
+                    .map(|r| r.unwrap().0)
+                    .collect();
+                assert!(!expected.is_empty(), "{src} matches nothing here");
+                assert_eq!(got.iter().collect::<Vec<_>>(), expected, "pattern {src}");
+                continue;
+            }
+            // Lucene's `AUTOMATON_TYPE.ALL`: a pattern accepting every
+            // code-point string enumerates every term, ill-formed ones too.
+            let dfa = pattern.to_dfa().unwrap();
+            let total = dfa.start() != crate::automaton::DEAD
+                && dfa.utf8_total_states()[dfa.start() as usize];
+            let expected: Vec<&TermPostings> = terms
+                .iter()
+                .filter(|t| total || pattern.matches(&t.term))
+                .collect();
+            let got: Vec<(Vec<u8>, blocktree::SeekedTerm)> = field
+                .regexp_intersect_states(&pattern)
+                .map(|r| r.unwrap())
+                .collect();
+            assert_eq!(got.len(), expected.len(), "pattern {src}");
+            for ((t, seeked), want) in got.iter().zip(&expected) {
+                assert_eq!(t, &want.term, "pattern {src}");
+                assert_eq!(
+                    seeked.stats.doc_freq as usize,
+                    want.docs.len(),
+                    "{src} {t:?}"
+                );
+                let mut c = field
+                    .lazy_postings_for(seeked, &doc_in, crate::postings::PostingsFlags::Freqs)
+                    .unwrap();
+                assert_eq!(c.next_doc().unwrap(), want.docs[0].0, "{src} {t:?}");
+                assert_eq!(c.freq(), Some(want.docs[0].1), "{src} {t:?}");
+            }
+        }
+    }
+
     /// Mixed singleton/multi-doc terms, round-tripped through the existing
     /// unmodified `blocktree::open` + `postings::DocInput` read side (no
     /// query layer here — see
