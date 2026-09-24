@@ -380,7 +380,22 @@ impl<'d> IndexFileDeleter<'d> {
             self.dec_ref_all(&previous)?;
             self.last_files = files;
         }
+        self.forget_dead_segments();
         Ok(())
+    }
+
+    /// Drops the recorded file sets of segments no file of which is
+    /// referenced any more. Java's live only as long as their `SegmentInfo`;
+    /// kept here past that, one entry per segment ever flushed or merged, they
+    /// were a leak -- thousands of entries an hour under a concurrent writer.
+    fn forget_dead_segments(&mut self) {
+        let referenced: std::collections::HashSet<&str> = self
+            .ref_counts
+            .keys()
+            .map(|f| parse_segment_name(f))
+            .collect();
+        self.si_files
+            .retain(|name, _| referenced.contains(name.as_str()));
     }
 
     /// `IndexWriterConfig.setIndexDeletionPolicy` + `IndexFileDeleter.revisitPolicy()`:
@@ -1192,6 +1207,10 @@ mod tests {
         assert_eq!(deleter.ref_count("_0.si"), 0);
         assert_eq!(deleter.ref_count("_1.si"), 1);
         assert_eq!(listing(&dir), vec!["_1.fdt", "_1.si"]);
+        // ...and forgets its recorded file set, which would otherwise be kept
+        // for every segment ever written.
+        assert!(!deleter.si_files.contains_key("_0"));
+        assert!(deleter.si_files.contains_key("_1"));
     }
 
     #[test]

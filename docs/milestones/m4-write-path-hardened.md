@@ -247,6 +247,27 @@ Three separate pieces, often conflated:
 >   6 000 documents with a merge thread running and a delete issued
 >   mid-merge; real Lucene and this port each read every document back and
 >   run their `CheckIndex`.
+> - `crates/lucene-search/examples/concurrent_soak.rs`, the endurance run:
+>   indexing threads update and delete their own ids at random, a merge thread
+>   merges, and every commit is checked **exactly**. `commit()` returns the
+>   sequence number of the last operation it holds, as Java's does, and the
+>   committed index must equal the model of every operation numbered up to
+>   it. `CheckIndex` runs every 25 commits, and resident memory and open file
+>   descriptors are reported throughout. CI runs it for two minutes; the soak
+>   result is below.
+>
+> The soak's first run found two leaks, both caches keyed by segment name
+> that were never pruned. Single-threaded they grew by a segment per commit
+> and went unnoticed. Under this writer they grew by thousands of segments a
+> minute, about 5 MB of resident memory a minute.
+>
+> - The deleter's recorded file sets (`si_files`) now drop a segment once no
+>   file of it is referenced.
+> - The writer's `segment_versions` cache is pruned to the segments in play
+>   whenever a commit is stamped.
+>
+> After the fix a three-minute run stays flat: RSS 9.6 to 9.9 MB across
+> 1.3 M operations and 6 000 merges.
 >
 > Benchmarked (`scripts/bench-micro.sh --bench concurrent_index --pin 0-3`,
 > 4 vCPUs, 100 000 documents of a stored id and a twelve-word body, 10 000 per

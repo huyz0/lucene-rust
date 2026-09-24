@@ -673,9 +673,10 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// Java's committing thread flushes them one after another: Java inverts
     /// each document as it is added, so its flush only writes, while here
     /// inverting is the build's own work. Returns once the cut is published,
-    /// and so every ticket before it.
-    fn flush_all(&self, barrier: bool) -> Result<()> {
-        let (batches, cut, packet) = {
+    /// and so every ticket before it, with the sequence number of the last
+    /// operation before the cut.
+    fn flush_all(&self, barrier: bool) -> Result<SeqNo> {
+        let (batches, cut, packet, last_seq) = {
             let mut slots: Vec<MutexGuard<'_, Dwpt>> = self.slots.iter().map(lock).collect();
             let batches: Vec<FlushBatch> = slots
                 .iter_mut()
@@ -683,7 +684,11 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 .filter_map(|(i, dwpt)| self.begin_flush(i, dwpt))
                 .collect();
             let mut core = lock(&self.core);
-            let nodes = Self::take_unhanded(&mut lock(&self.log));
+            let (nodes, last_seq) = {
+                let mut log = lock(&self.log);
+                let nodes = Self::take_unhanded(&mut log);
+                (nodes, log.next_seq.saturating_sub(1))
+            };
             Self::hand_over(&mut core, &nodes);
             let packet = core.writer.begin_deletes_ticket();
             let cut = core.next_ticket;
@@ -691,7 +696,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             if barrier {
                 core.barrier = Some(cut.saturating_add(1));
             }
-            (batches, cut, packet)
+            (batches, cut, packet, last_seq)
         };
         std::thread::scope(|scope| {
             let builds: Vec<_> = batches
@@ -704,14 +709,15 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 result = outcome.and(result);
             }
             result
-        })
+        })?;
+        Ok(last_seq)
     }
 
     /// Flushes every slot's buffer to a segment and waits until every segment
     /// ticketed so far is published -- `DocumentsWriter.flushAllThreads`.
     pub fn flush(&self) -> Result<()> {
         let _full_flush = lock(&self.full_flush);
-        self.flush_all(false)
+        self.flush_all(false).map(|_| ())
     }
 
     /// `IndexWriter.commit`: flushes every buffer, applies every delete issued
@@ -721,13 +727,17 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// of it, an update's delete and document included. Segments flushed by
     /// other threads meanwhile wait to publish until it is written, as Java
     /// holds back flushes during a full flush.
-    pub fn commit(&self) -> Result<()> {
+    ///
+    /// Returns the sequence number of the last operation in the commit, as
+    /// Java's does: every operation numbered at or below it is in, every one
+    /// above it is not.
+    pub fn commit(&self) -> Result<SeqNo> {
         let _full_flush = lock(&self.full_flush);
         let _barrier = BarrierGuard(self);
-        self.flush_all(true)?;
+        let last_seq = self.flush_all(true)?;
         let mut core = lock(&self.core);
         core.writer.commit()?;
-        Ok(())
+        Ok(last_seq)
     }
 
     /// Runs every merge the merge policy wants right now, each without the
@@ -1530,8 +1540,11 @@ mod tests {
         w.add_document(doc("x", 0)).unwrap();
         w.delete_documents_by_term(&[Term::new("id", b"x".to_vec())])
             .unwrap();
-        w.add_document(doc("x", 1)).unwrap();
-        w.commit().unwrap();
+        let added = w.add_document(doc("x", 1)).unwrap();
+        let committed = w.commit().unwrap();
+        // `commit` names the last operation it holds.
+        assert_eq!(committed, added);
+        assert!(w.add_document(doc("y", 0)).unwrap() > committed);
         let (docs, _) = live_documents(&dir);
         assert_eq!(
             docs.into_iter().collect::<Vec<_>>(),

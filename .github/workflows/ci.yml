@@ -217,3 +217,10 @@ jobs:
       # Lucene's IndexWriter and this port's, compared semantically.
       - name: Differential operation-stream fuzzing
         run: ./scripts/op-stream-fuzz.sh
+      # M4's T4.3: indexing threads, a merge thread and a committer on one
+      # ConcurrentIndexWriter, every commit checked exactly against the
+      # operations it holds, CheckIndex every 25 commits.
+      - name: Concurrent writer soak (2 minutes)
+        run: >-
+          cargo run --quiet --release -p lucene-search --example concurrent_soak --
+          --dir "$RUNNER_TEMP/concurrent-soak" --duration 120 --threads 4 --report 30
