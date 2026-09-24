@@ -290,6 +290,11 @@ this milestone delivered, per the port → benchmark → optimise workflow
    `term_dictionary_*_is_byte_identical`), closing what the all-singleton
    fixtures could not see; each was shown to fail on a seeded defect.
 
+Whole-indexing throughput is unchanged by the streaming rewrite:
+`scripts/bench-micro.sh --bench index`, A/B on one machine, 2.65× Lucene at
+`0401891` (before M3) and 2.64× after (noise floor 1.14–1.40×; the 3.14× in
+`docs/benchmarks/sweep-2026-09.md` was measured on a different machine).
+
 What these checks cannot see: `maxItemsInBlock` 48→49 changes none of the
 identity fixtures; VerifyIndex writes without merging (merged segments are
 covered by the older `write_merged_*` cases), compares ties at rank 50 in
