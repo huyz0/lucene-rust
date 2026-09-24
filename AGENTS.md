@@ -116,7 +116,7 @@ check-only build, so it needs no cross C compiler and no linker. The toolchain i
 implicitly.
 
 Two caveats worth knowing about the coverage gate. `--fail-under-lines`
-enforces the **workspace total** (line coverage, currently 98.13%), not
+enforces the **workspace total** (line coverage, currently 97.99%), not
 invariant #8's per-file bar. As of `c41-gates-and-record` **no file sits below
 that bar** -- `lucene-index/src/checksum_verify.rs`, which this note used to
 name at 93.75%, is at 97.03%. CI reports the per-file view in its job summary
@@ -126,7 +126,7 @@ enforced.
 When reading `cargo llvm-cov --summary-only` output, note that it prints three
 `Cover` columns — Regions, Functions, then **Lines**. Only the third is what
 `--fail-under-lines` and invariant #8 mean. Region coverage is always lower
-(97.56% vs 98.13% at the workspace level) and names different files.
+(97.39% vs 97.99% at the workspace level) and names different files.
 
 **Commits**: `commit-msg` allows only `feat|fix|docs|test|chore|refactor|
 perf|build|ci` + optional `(scope)` + lowercase description, and requires a

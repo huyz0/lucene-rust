@@ -355,29 +355,46 @@ mod counting_alloc {
     //! A counting global allocator, so memory cases can report the heap an
     //! operation leaves resident -- the Rust counterpart of Java's used-heap
     //! delta after GC. The mmap'd index files are outside both figures.
+    //!
+    //! Off unless the memory case is the one running -- `main` turns it on
+    //! first thing, so every block it later frees was counted when allocated.
+    //! One counter every thread bumps on every allocation is a contended cache
+    //! line: it made the four-thread `concurrent_index` cases spend a third of
+    //! their time there, a cost of this harness, not of the engine.
     use std::alloc::{GlobalAlloc, Layout, System};
-    use std::sync::atomic::{AtomicIsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 
     pub struct Counting;
     pub static LIVE: AtomicIsize = AtomicIsize::new(0);
+    static ON: AtomicBool = AtomicBool::new(false);
+
+    fn count(delta: isize) {
+        if ON.load(Ordering::Relaxed) {
+            LIVE.fetch_add(delta, Ordering::Relaxed);
+        }
+    }
 
     unsafe impl GlobalAlloc for Counting {
         unsafe fn alloc(&self, l: Layout) -> *mut u8 {
-            LIVE.fetch_add(l.size() as isize, Ordering::Relaxed);
+            count(l.size() as isize);
             unsafe { System.alloc(l) }
         }
         unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
-            LIVE.fetch_sub(l.size() as isize, Ordering::Relaxed);
+            count(-(l.size() as isize));
             unsafe { System.dealloc(p, l) }
         }
         unsafe fn alloc_zeroed(&self, l: Layout) -> *mut u8 {
-            LIVE.fetch_add(l.size() as isize, Ordering::Relaxed);
+            count(l.size() as isize);
             unsafe { System.alloc_zeroed(l) }
         }
         unsafe fn realloc(&self, p: *mut u8, l: Layout, new: usize) -> *mut u8 {
-            LIVE.fetch_add(new as isize - l.size() as isize, Ordering::Relaxed);
+            count(new as isize - l.size() as isize);
             unsafe { System.realloc(p, l, new) }
         }
+    }
+
+    pub fn enable() {
+        ON.store(true, Ordering::Relaxed);
     }
 
     pub fn live() -> isize {
@@ -1521,7 +1538,117 @@ fn bench_points_write(warmup: Duration, measure: Duration) {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// Concurrent indexing throughput (M4's T4.3), the Rust half of
+/// `benchmarks/micro/java/ConcurrentIndexMicro.java`: the same 100 000
+/// documents (a stored id and a stored twelve-word body) indexed through one
+/// `ConcurrentIndexWriter` by one and by four threads, then committed. No
+/// merges, no compound files, 10 000 buffered documents per indexing slot.
+/// `update_t4` issues every document as `updateDocument(id, doc)`.
+fn bench_concurrent_index(warmup: Duration, measure: Duration) {
+    use lucene_codecs::field_infos::{FieldInfo, IndexOptions};
+    use lucene_codecs::stored_fields::{Document, FieldValue, StoredField};
+    use lucene_index::buffered_updates::Term;
+    use lucene_index::concurrent_writer::ConcurrentIndexWriter;
+    use lucene_index::index_writer::IndexWriter;
+    use lucene_index::segment_info::LuceneVersion;
+    use lucene_store::FsDirectory;
+
+    const DOCS: usize = 100_000;
+    let version = LuceneVersion { major: 10, minor: 5, bugfix: 0 };
+    let fields = || {
+        vec![
+            FieldInfo {
+                index_options: IndexOptions::Docs,
+                omit_norms: true,
+                ..FieldInfo::new("id", 0)
+            },
+            FieldInfo {
+                index_options: IndexOptions::DocsAndFreqsAndPositions,
+                ..FieldInfo::new("body", 1)
+            },
+        ]
+    };
+    // Must match `ConcurrentIndexMicro.body`.
+    let body = |i: usize| -> String {
+        (0..12u64)
+            .map(|k| {
+                let w = (i as u64 * (2 * k + 7) + k * k * 31) % (50 + 40 * k);
+                format!("w{k}x{w}")
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let document = |i: usize| Document {
+        fields: vec![
+            StoredField { field_number: 0, value: FieldValue::String(format!("d{i}")) },
+            StoredField { field_number: 1, value: FieldValue::String(body(i)) },
+        ],
+    };
+    let index = |path: &std::path::Path, threads: usize, update: bool| -> Duration {
+        let _ = std::fs::remove_dir_all(path);
+        std::fs::create_dir_all(path).unwrap();
+        let start = Instant::now();
+        let dir = FsDirectory::open(path);
+        let mut w = IndexWriter::open(&dir, fields(), "Lucene104", version).unwrap();
+        w.set_postings_field(Some("id")).unwrap();
+        w.add_postings_field("body").unwrap();
+        w.set_max_buffered_docs(10_000).unwrap();
+        w.set_ram_buffer_size_mb(lucene_index::index_writer::DISABLE_AUTO_FLUSH_MB).unwrap();
+        let w = ConcurrentIndexWriter::new(w, threads).unwrap();
+        std::thread::scope(|scope| {
+            for t in 0..threads {
+                let (w, document) = (&w, &document);
+                scope.spawn(move || {
+                    for i in (t..DOCS).step_by(threads) {
+                        if update {
+                            let id = Term::new("id", format!("d{i}").into_bytes());
+                            w.update_document(id, document(i)).unwrap();
+                        } else {
+                            w.add_document(document(i)).unwrap();
+                        }
+                    }
+                });
+            }
+        });
+        w.commit().unwrap();
+        start.elapsed()
+    };
+    let run = |name: &str, once: &dyn Fn() -> Duration| {
+        let warm_end = Instant::now() + warmup;
+        while Instant::now() < warm_end {
+            once();
+        }
+        let mut total = Duration::ZERO;
+        let mut docs = 0u64;
+        let end = Instant::now() + measure;
+        loop {
+            total += once();
+            docs += DOCS as u64;
+            if Instant::now() >= end {
+                break;
+            }
+        }
+        println!("{name}\t{:.3}\t{docs}", total.as_nanos() as f64 / docs as f64);
+    };
+
+    let root = std::env::temp_dir().join(format!("concurrent-index-micro-{}", std::process::id()));
+    let dir = root.join("index");
+    // `MICRO_CASE=<name>` runs one case alone, for a profiler.
+    let only = std::env::var("MICRO_CASE").ok();
+    let cases: [(&str, usize, bool); 3] =
+        [("add_t1", 1, false), ("add_t4", 4, false), ("update_t4", 4, true)];
+    for (name, threads, update) in cases {
+        if only.as_deref().is_none_or(|o| o == name) {
+            run(name, &|| index(&dir, threads, update));
+        }
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("memory") {
+        counting_alloc::enable();
+    }
     let ms = |name: &str, default: u64| -> Duration {
         Duration::from_millis(
             std::env::var(name)
@@ -1568,6 +1695,7 @@ fn main() {
         "term_dict_write" => bench_term_dict_write(warmup, measure),
         "dv_merge" => bench_dv_merge(warmup, measure),
         "points_write" => bench_points_write(warmup, measure),
+        "concurrent_index" => bench_concurrent_index(warmup, measure),
         corpus @ ("postings_adv" | "postings_freq" | "positions" | "term_seek" | "doc_values"
         | "norms" | "points" | "memory") => {
             let index = std::env::args()
