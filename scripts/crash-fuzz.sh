@@ -9,6 +9,9 @@
 #               unpublished creates/renames/deletes kept)
 #   + Lucene     25 more seeds with org.apache.lucene.index.CheckIndex too
 #   kill -9      40 seeds: a child process killed at a random moment
+#   concurrent   40 seeds: power loss under a ConcurrentIndexWriter, its merge
+#                thread and a committer; what survives must be a clean prefix
+#                of the operations by sequence number
 #
 # Each must open, hold exactly the last durable commit (or the one in flight),
 # pass CheckIndex, and recover under a new writer. A failure prints its seed
@@ -16,8 +19,9 @@
 #
 # Usage: scripts/crash-fuzz.sh [--jars DIR] [--duration SECS]
 #   --duration SECS  instead of the fixed seed ranges, run power-loss rounds
-#                    (Lucene's CheckIndex on every one) until SECS have passed
-#                    -- the 24-hour soak is --duration 86400
+#                    (Lucene's CheckIndex on every one) until SECS have passed.
+#                    For a long campaign prefer scripts/crash-storm.sh, which
+#                    spends the time on varied conditions in parallel.
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
@@ -57,4 +61,5 @@ run() {
 run --seeds 0..150
 run --seeds 1000..1025 --java-cp "$CP"
 run --kill --seeds 0..40
+run --concurrent --seeds 0..40 --ops 600
 echo "crash-fuzz: ok"
