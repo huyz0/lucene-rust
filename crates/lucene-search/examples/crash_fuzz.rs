@@ -13,6 +13,15 @@
 //! - **`kill -9`** (`--kill`). A child process runs the same stream over a
 //!   plain directory and is killed at a random moment. The page cache
 //!   survives this, so it tests process death, not `fsync` ordering.
+//! - **Concurrent power loss** (`--concurrent`). Several threads update and
+//!   delete through a `ConcurrentIndexWriter`, with its merge thread and a
+//!   committer, over the crashing directory. What survives must be a clean
+//!   prefix of the operations by sequence number, reaching at least the last
+//!   commit that returned.
+//!
+//! Each seed also draws its conditions: an operation mix (balanced, update-,
+//! delete-, commit- or flush-heavy), the buffer size and the merge policy's
+//! shape -- so seeds spread over conditions rather than repeating one.
 //!
 //! After either, the checks are the milestone's:
 //!
@@ -38,7 +47,7 @@
 //!
 //! ```text
 //! crash_fuzz [--seeds A..B | --seed S] [--duration SECS] [--ops N]
-//!            [--kill] [--java-cp CLASSPATH] [--dir PATH]
+//!            [--kill | --concurrent] [--java-cp CLASSPATH] [--dir PATH]
 //! ```
 //!
 //! A failure prints its seed; `--seed S` replays it exactly.
@@ -53,6 +62,7 @@ use lucene_codecs::doc_values;
 use lucene_codecs::field_infos::{DocValuesType, FieldInfo, IndexOptions};
 use lucene_codecs::stored_fields::{Document, FieldValue, StoredField};
 use lucene_index::buffered_updates::Term;
+use lucene_index::concurrent_writer::ConcurrentIndexWriter;
 use lucene_index::index_writer::IndexWriter;
 use lucene_index::merge_policy::MergePolicyConfig;
 use lucene_index::segment_info::LuceneVersion;
@@ -105,21 +115,46 @@ struct Stream {
     current: Model,
     max_buffered_docs: i32,
     segments_per_tier: usize,
+    max_merge_at_once: usize,
+    floor_segment_size: u64,
+    /// Cumulative thresholds out of 100 for add / update / delete / flush /
+    /// commit; the rest is two-phase commit. Drawn per seed from
+    /// [`PROFILES`], so the seeds spread over update-, delete-, commit- and
+    /// flush-heavy streams instead of all sharing one mix.
+    mix: [u64; 5],
 }
+
+/// Operation mixes (cumulative percentages: add, update, delete, flush,
+/// commit; the remainder two-phase commit).
+const PROFILES: [[u64; 5]; 5] = [
+    [58, 72, 82, 87, 95], // balanced
+    [30, 75, 82, 86, 94], // update-heavy: deletes buffered against live docs
+    [35, 45, 80, 85, 93], // delete-heavy: fully deleted segments, dropped ones
+    [45, 58, 68, 72, 88], // commit-heavy: most crashes land in a commit
+    [55, 68, 76, 94, 97], // flush-heavy: many small segments, many merges
+];
 
 impl Stream {
     fn new(seed: u64) -> Self {
         let mut rng = Rng::new(seed);
         // Small enough that `add_document` flushes on its own between
         // commits, so crashes land inside automatic flushes too.
-        let max_buffered_docs = 2 + rng.below(10) as i32;
-        let segments_per_tier = 2 + rng.below(3) as usize;
+        let max_buffered_docs = 2 + rng.below(15) as i32;
+        let segments_per_tier = 2 + rng.below(4) as usize;
+        let max_merge_at_once = 2 + rng.below(9) as usize;
+        // A small floor merges eagerly; a huge one treats every segment as
+        // tiny, so merges become rare and wide.
+        let floor_segment_size = if rng.below(2) == 0 { 1 << 12 } else { 1 << 30 };
+        let mix = PROFILES[rng.below(PROFILES.len() as u64) as usize];
         Stream {
             rng,
             next_id: 0,
             current: Model::new(),
             max_buffered_docs,
             segments_per_tier,
+            max_merge_at_once,
+            floor_segment_size,
+            mix,
         }
     }
 
@@ -133,23 +168,27 @@ impl Stream {
             let n = s.rng.below(s.current.len() as u64) as usize;
             s.current.keys().nth(n).copied()
         };
-        match roll {
-            0..=57 => {
-                let id = self.next_id;
-                self.next_id += 1;
-                (Op::Add, id)
-            }
-            58..=71 => match existing(self) {
+        let [add, update, delete, flush, commit] = self.mix;
+        if roll < add {
+            let id = self.next_id;
+            self.next_id += 1;
+            (Op::Add, id)
+        } else if roll < update {
+            match existing(self) {
                 Some(id) => (Op::Update, id),
                 None => self.next_op(),
-            },
-            72..=81 => match existing(self) {
+            }
+        } else if roll < delete {
+            match existing(self) {
                 Some(id) => (Op::Delete, id),
                 None => self.next_op(),
-            },
-            82..=86 => (Op::Flush, 0),
-            87..=94 => (Op::Commit, 0),
-            _ => (Op::TwoPhaseCommit, 0),
+            }
+        } else if roll < flush {
+            (Op::Flush, 0)
+        } else if roll < commit {
+            (Op::Commit, 0)
+        } else {
+            (Op::TwoPhaseCommit, 0)
         }
     }
 
@@ -238,10 +277,10 @@ fn open_writer<'d>(
     writer.set_max_buffered_docs(stream.max_buffered_docs)?;
     writer.set_ram_buffer_size_mb(4096.0)?;
     writer.set_merge_policy(Some(MergePolicyConfig {
-        max_merge_at_once: 10,
+        max_merge_at_once: stream.max_merge_at_once,
         segments_per_tier: stream.segments_per_tier,
         max_merged_segment_size: 1 << 30,
-        floor_segment_size: 1 << 20,
+        floor_segment_size: stream.floor_segment_size,
         ..MergePolicyConfig::default()
     }));
     Ok(writer)
@@ -628,6 +667,234 @@ fn power_loss_round(
     })
 }
 
+/// One concurrent round: `2 + seed % 3` threads updating and deleting their
+/// own ids through a `ConcurrentIndexWriter` over the crashing directory,
+/// its merge thread running, and a committer committing between them -- the
+/// crash lands wherever the directory operation count says, in a flush, a
+/// merge, a commit or its cut, on whichever thread happens to be there. The
+/// visible state must then be a **clean prefix** of the operations by
+/// sequence number, no shorter than the last commit that returned: every
+/// operation up to some point, none after it.
+fn concurrent_round(
+    seed: u64,
+    base: &Path,
+    num_ops: usize,
+    java_cp: Option<&str>,
+) -> Result<Round, String> {
+    let dry = fresh(&base.join("dry"));
+    let dir = CrashingDirectory::new(&dry, seed);
+    let dry_run = concurrent_run(&dir, seed, num_ops);
+    if let Some(error) = dry_run.error {
+        return Err(format!("the crash-free run failed: {error}"));
+    }
+    let total = dir.ops().max(1);
+
+    let path = fresh(&base.join("crash"));
+    let dir = CrashingDirectory::new(&path, seed);
+    let crash_at = 1 + Rng::new(seed ^ 0xc0c0_4000).below(total);
+    dir.crash_after(crash_at);
+    let run = concurrent_run(&dir, seed, num_ops);
+    if let Some(error) = run.error {
+        return Err(format!("a writer error that is not the crash: {error}"));
+    }
+    let crash_point = dir.crash_point().unwrap_or_default();
+    dir.power_loss().map_err(|e| format!("power loss: {e}"))?;
+
+    let visible = read_model(restart_dir(&path, seed).as_ref())?.unwrap_or_default();
+    // The ops in sequence order; the prefix up to the last returned commit
+    // is the least the index may hold.
+    let mut ops = run.ops;
+    ops.sort_by_key(|&(seq, _, _)| seq);
+    let mut prefix = Model::new();
+    let mut i = 0;
+    while i < ops.len() && ops[i].0 <= run.last_commit {
+        apply_op(&mut prefix, &ops[i]);
+        i += 1;
+    }
+    // An operation a thread saw fail (the crash) may or may not be in: its
+    // id is compared loosely -- either the prefix's value or the failed op's.
+    let matches = |prefix: &Model| {
+        let ids: BTreeSet<i64> = prefix.keys().chain(visible.keys()).copied().collect();
+        ids.into_iter().all(|id| {
+            let (want, got) = (prefix.get(&id), visible.get(&id));
+            want == got
+                || run
+                    .uncertain
+                    .iter()
+                    .any(|&(u, v)| u == id && got == v.as_ref())
+        })
+    };
+    let mut found = matches(&prefix).then_some(i);
+    while found.is_none() && i < ops.len() {
+        apply_op(&mut prefix, &ops[i]);
+        i += 1;
+        if matches(&prefix) {
+            found = Some(i);
+        }
+    }
+    let at = found.ok_or_else(|| {
+        format!(
+            "crash at dir op {crash_at}/{total} ({crash_point}): visible state ({} docs) is no prefix of the {} ops at or past the last commit (seq {}){}",
+            visible.len(),
+            ops.len(),
+            run.last_commit,
+            first_difference(&visible, &prefix)
+        )
+    })?;
+    let past_commit = ops[..at].iter().filter(|o| o.0 > run.last_commit).count();
+    let visible_label = if past_commit == 0 {
+        "last commit"
+    } else {
+        "in-flight commit"
+    };
+    // CheckIndex, then recovery by a new writer, as for every other round.
+    check_after_crash(seed, &path, &[&visible], java_cp)
+        .map_err(|why| format!("crash at dir op {crash_at}/{total} ({crash_point}): {why}"))?;
+    Ok(Round {
+        summary: format!(
+            "concurrent, {} threads: crash at dir op {crash_at}/{total} ({crash_point}) after {} ops, {} commits; visible = {visible_label} ({past_commit} ops past it)",
+            concurrent_threads(seed),
+            ops.len(),
+            run.commits
+        ),
+        visible: visible_label,
+        crashed_in: None,
+        crash_point,
+        killed_mid_run: false,
+    })
+}
+
+fn concurrent_threads(seed: u64) -> usize {
+    2 + (seed % 3) as usize
+}
+
+fn apply_op(model: &mut Model, &(_, id, version): &(i64, i64, Option<i64>)) {
+    match version {
+        Some(v) => model.insert(id, v),
+        None => model.remove(&id),
+    };
+}
+
+/// What a concurrent run did: each operation that returned, with its
+/// sequence number; the operations that failed (at most one per thread);
+/// the sequence number of the last commit that returned.
+#[derive(Default)]
+struct ConcurrentRun {
+    ops: Vec<(i64, i64, Option<i64>)>,
+    uncertain: Vec<(i64, Option<i64>)>,
+    last_commit: i64,
+    commits: usize,
+    error: Option<String>,
+}
+
+fn concurrent_run(dir: &CrashingDirectory, seed: u64, num_ops: usize) -> ConcurrentRun {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Mutex;
+
+    let stream = Stream::new(seed);
+    let threads = concurrent_threads(seed);
+    let mut out = ConcurrentRun::default();
+    let writer =
+        match open_writer(dir, &stream).and_then(|w| ConcurrentIndexWriter::new(w, threads)) {
+            Ok(w) => w,
+            Err(e) => {
+                if !dir.crashed() {
+                    out.error = Some(format!("open: {e}"));
+                }
+                return out;
+            }
+        };
+    let stop = AtomicBool::new(false);
+    let working = AtomicUsize::new(threads);
+    let shared = Mutex::new(ConcurrentRun::default());
+    let fail = |what: String| {
+        let mut s = shared.lock().unwrap();
+        s.error.get_or_insert(what);
+    };
+    std::thread::scope(|scope| {
+        let merger = scope.spawn(|| writer.run_merges(&stop));
+        for t in 0..threads {
+            let (writer, stop, working, shared, fail) = (&writer, &stop, &working, &shared, &fail);
+            scope.spawn(move || {
+                let mut rng = Rng::new(seed ^ ((t as u64 + 1) << 40));
+                let mut versions: BTreeMap<i64, i64> = BTreeMap::new();
+                for _ in 0..num_ops / threads {
+                    if stop.load(Ordering::Acquire) || dir.crashed() {
+                        break;
+                    }
+                    let id = (t as i64) * 1_000_000 + rng.below(40) as i64;
+                    let roll = rng.below(100);
+                    let (result, after) = if roll < 75 || !versions.contains_key(&id) {
+                        let v = versions.get(&id).map_or(0, |v| v + 1);
+                        (
+                            writer.update_document(id_term(id), document(id, v)),
+                            Some(v),
+                        )
+                    } else {
+                        (writer.delete_documents_by_term(&[id_term(id)]), None)
+                    };
+                    match result {
+                        Ok(seq) => {
+                            match after {
+                                Some(v) => versions.insert(id, v),
+                                None => versions.remove(&id),
+                            };
+                            shared.lock().unwrap().ops.push((seq, id, after));
+                        }
+                        Err(e) => {
+                            if dir.crashed() {
+                                shared.lock().unwrap().uncertain.push((id, after));
+                            } else {
+                                fail(format!("thread {t}: {e}"));
+                            }
+                            break;
+                        }
+                    }
+                }
+                working.fetch_sub(1, Ordering::AcqRel);
+            });
+        }
+        // The committer.
+        let mut rng = Rng::new(seed ^ 0x00c0_ffee);
+        loop {
+            let last = working.load(Ordering::Acquire) == 0;
+            if dir.crashed() {
+                break;
+            }
+            match writer.commit() {
+                Ok(seq) => {
+                    let mut s = shared.lock().unwrap();
+                    s.last_commit = seq;
+                    s.commits += 1;
+                }
+                Err(e) => {
+                    if !dir.crashed() {
+                        fail(format!("commit: {e}"));
+                    }
+                    break;
+                }
+            }
+            if last {
+                break;
+            }
+            std::thread::sleep(Duration::from_micros(200 + rng.below(3000)));
+        }
+        stop.store(true, Ordering::Release);
+        if let Ok(Err(e)) = merger.join() {
+            if !dir.crashed() {
+                fail(format!("merge thread: {e}"));
+            }
+        }
+    });
+    let s = shared.into_inner().unwrap();
+    out.ops = s.ops;
+    out.uncertain = s.uncertain;
+    out.last_commit = s.last_commit;
+    out.commits = s.commits;
+    out.error = s.error;
+    out
+}
+
 /// The child side of `--kill`: runs the stream to the end over a plain
 /// directory, journaling each commit's start and end with an fsync, so the
 /// parent knows which commits could be durable when it kills us.
@@ -818,6 +1085,7 @@ fn main() {
     };
     let duration = value("--duration").map(|s| Duration::from_secs(s.parse().expect("--duration")));
     let kill = args.iter().any(|a| a == "--kill");
+    let concurrent = args.iter().any(|a| a == "--concurrent");
     let java_cp = value("--java-cp");
     let base = value("--dir").map_or_else(
         || std::env::temp_dir().join(format!("crash-fuzz-{}", std::process::id())),
@@ -831,6 +1099,8 @@ fn main() {
     loop {
         let result = if kill {
             kill_round(seed, &base, num_ops, java_cp)
+        } else if concurrent {
+            concurrent_round(seed, &base, num_ops, java_cp)
         } else {
             power_loss_round(seed, &base, num_ops, java_cp)
         };
@@ -843,7 +1113,13 @@ fn main() {
                 println!("seed {seed}: FAIL -- {why}");
                 println!(
                     "replay: crash_fuzz --seed {seed} --ops {num_ops}{}",
-                    if kill { " --kill" } else { "" }
+                    if kill {
+                        " --kill"
+                    } else if concurrent {
+                        " --concurrent"
+                    } else {
+                        ""
+                    }
                 );
                 std::process::exit(1);
             }
@@ -863,7 +1139,7 @@ fn main() {
     // every window -- otherwise a change to the stream or the writer could
     // quietly stop exercising, say, the publish rename, and every round
     // would still pass.
-    if duration.is_none() && rounds >= 100 && !kill {
+    if duration.is_none() && rounds >= 100 && !kill && !concurrent {
         evidence.require_power_loss_windows();
     }
     if duration.is_none() && rounds >= 20 && kill {
@@ -871,7 +1147,13 @@ fn main() {
     }
     println!(
         "crash_fuzz: {rounds} {} round(s) passed in {:.1}s",
-        if kill { "kill -9" } else { "power-loss" },
+        if kill {
+            "kill -9"
+        } else if concurrent {
+            "concurrent power-loss"
+        } else {
+            "power-loss"
+        },
         started.elapsed().as_secs_f64()
     );
 }

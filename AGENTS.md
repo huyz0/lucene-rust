@@ -98,7 +98,8 @@ the hook, the container and this table cannot drift apart:
 | Check fixtures are still Java-produced | `scripts/gen-fixtures.sh --check` |
 | Verify the write path (Lucene reads Rust bytes) | `scripts/verify-write-path.sh` |
 | Interop matrix (both engines write, append, merge, delete one index) | `scripts/verify-interop.sh` |
-| Crash fuzzing (power loss + kill -9; `--duration 86400` is the 24 h soak) | `scripts/crash-fuzz.sh` |
+| Crash fuzzing (power loss, kill -9, concurrent power loss; fixed seeds) | `scripts/crash-fuzz.sh` |
+| Crash campaign (all crash models in parallel, varied conditions, optional `--load`) | `scripts/crash-storm.sh --duration SECS` |
 | Differential op-stream fuzzing vs Java `IndexWriter` (1000 seeds) | `scripts/op-stream-fuzz.sh` |
 | Concurrent writer soak (threads + merges, every commit checked exactly; RSS/fds reported) | `cargo run --release -p lucene-search --example concurrent_soak -- --dir DIR --duration SECS` |
 
