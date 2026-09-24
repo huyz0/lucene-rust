@@ -53,6 +53,15 @@ impl<'a> PackedLongs<'a> {
         self.fast_limit
     }
 
+    /// This reader answering only the first `n` values (or fewer, if its fast
+    /// range is shorter): a caller whose array holds `n` values folds that
+    /// bound into the one comparison [`Self::get`] already makes, instead of
+    /// making a second. Only ever lowers the limit, so it stays sound.
+    pub fn limited_to(mut self, n: u64) -> Self {
+        self.fast_limit = self.fast_limit.min(n);
+        self
+    }
+
     /// The value at `index`, or `None` past the range a whole 8-byte window
     /// covers (the caller's checked path answers those).
     #[inline]
@@ -231,6 +240,20 @@ mod tests {
 
     /// `decode_range` is `get` over a run: same values, and it stops exactly
     /// where `get` starts answering `None`.
+    /// `limited_to` only ever lowers the fast range: values below the new
+    /// bound read as before, the rest go to the caller's checked path.
+    #[test]
+    fn limited_to_lowers_the_fast_range_and_never_raises_it() {
+        let bytes = [0xABu8; 64];
+        let p = PackedLongs::new(&bytes, 8).unwrap();
+        let full = p.fast_limit();
+        let q = p.limited_to(10);
+        assert_eq!(q.fast_limit(), 10);
+        assert_eq!(q.get(9), p.get(9));
+        assert_eq!(q.get(10), None);
+        assert_eq!(p.limited_to(u64::MAX).fast_limit(), full);
+    }
+
     #[test]
     fn decode_range_agrees_with_get_and_stops_at_the_fast_limit() {
         let bytes: Vec<u8> = (0..300u32)
