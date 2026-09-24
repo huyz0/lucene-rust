@@ -9,7 +9,7 @@
 | **Effort** | L |
 | **Depends on** | [M3](m3-write-path-proven.md) |
 | **Unblocks** | [M5](m5-engine-integration.md) |
-| **Status** | in progress -- T4.1, T4.2, T4.6 done; T4.4 harness done, 24 h run pending |
+| **Status** | in progress -- T4.1, T4.2, T4.5, T4.6 done; T4.4 harness done, 24 h run pending; T4.3 open |
 
 ---
 
@@ -247,6 +247,46 @@ project's differential-testing backbone into the write path.
 - Seeds must be recorded and replayable; a fuzz failure nobody can reproduce
   is not a finding.
 
+> **Done (2026-09-24).** `scripts/op-stream-fuzz.sh` (CI's `write-path` job)
+> runs 1000 seeded streams of 200 operations through real Lucene 10.5.0's
+> `IndexWriter` (`fixtures/src/OpStreamFuzz.java`) and this port's
+> (`crates/lucene-search/examples/op_stream_fuzz.rs`).
+>
+> The two halves share one generator, and each stream mixes:
+> - adds and `updateDocument`;
+> - deletes by id and by a body word (which reach buffered documents too);
+> - `updateNumericDocValue`;
+> - one pick in five targeting any id ever issued, so an update is sometimes
+>   a plain add, and a delete or doc-values update sometimes matches nothing;
+> - flushes (explicit, and automatic at 2-21 buffered docs) and commits;
+> - merges, on each engine's own schedule.
+>
+> Documents are sparse in one SORTED field.
+>
+> Each index is dumped semantically and the dumps must match line for line:
+> - every live document with its version, NUMERIC and SORTED doc values and
+>   points;
+> - the live documents each of 23 body terms matches (a scored `TermQuery`
+>   on both sides);
+> - the live documents each of 50 phrases matches, and one point range (each
+>   engine's own `PointValues.intersect` walk).
+>
+> Segment layout, merge timing and scores are deliberately left out. All 1000
+> seeds agree, 46 596 live documents compared. The two engines' histories
+> genuinely differ: they end with 3 840 (Lucene) and 3 674 (this port)
+> segments over the 1000 indexes.
+>
+> A seed's dumps are kept on failure, and `--seeds S..S+1` replays it.
+> Measured: an off-by-one in which buffered documents a delete applies to
+> (`doc <= limit`) fails the first seed, losing every updated document.
+>
+> **Blind spots:**
+> - Stored fields: the Rust reader returns doc ids, not stored documents.
+> - Scores: BM25 statistics include deleted documents until a merge drops
+>   them, so they legitimately depend on merge timing.
+> - Operations this port's writer does not have yet: `forceMerge`,
+>   `addIndexes`, soft deletes, binary doc-values updates in the stream.
+
 ### T4.6 — Bidirectional interoperability matrix
 
 The explicit statement of what "interoperable" means, tested rather than
@@ -283,7 +323,7 @@ actually does — a shard will have segments from both engines simultaneously.
       Lucene's `CheckIndex` passes — **every time**, across every seed.
 - [x] After every simulated crash, visible state is exactly the last durable
       commit: no partial commits, no resurrected deletions.
-- [ ] Differential operation-stream fuzzing against Java `IndexWriter` shows
+- [x] Differential operation-stream fuzzing against Java `IndexWriter` shows
       semantic equivalence across ≥1000 seeds.
 - [x] All five directions of the T4.6 interoperability matrix pass.
 - [ ] Concurrent indexing from multiple threads with merges running produces a
