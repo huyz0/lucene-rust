@@ -4686,6 +4686,20 @@ impl<'d> IndexWriter<'d> {
     /// (or this writer's join an index real Lucene created), it is simply
     /// wrong, and `CheckIndex` rejects a minimum above any segment's version.
     fn stamp_min_segment_version(&mut self, infos: &mut SegmentInfos) -> Result<()> {
+        // A cache (a miss re-reads the `.si`), kept to the segments still in
+        // play -- the commit being written and this writer's live view -- so
+        // it does not grow with every segment ever flushed or merged.
+        {
+            let in_play: std::collections::HashSet<&str> = infos
+                .segments
+                .iter()
+                .chain(&self.segment_infos.segments)
+                .chain(&self.flushed_segments)
+                .map(|s| s.segment_name.as_str())
+                .collect();
+            self.segment_versions
+                .retain(|name, _| in_play.contains(name.as_str()));
+        }
         let mut min: Option<segment_infos::LuceneVersion> = None;
         for sci in &infos.segments {
             let version = match self.segment_versions.get(&sci.segment_name) {
