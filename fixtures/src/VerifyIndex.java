@@ -207,15 +207,22 @@ public class VerifyIndex {
     // same count, same floor runs, same leaf/inner mix, same count at every
     // prefix length. (Byte sizes are left out -- this port writes suffixes
     // uncompressed where Java may pick LZ4 or LOWERCASE_ASCII.)
+    int comparedDictionaries = 0;
     for (LeafReaderContext ctx : reader.leaves()) {
-      Stats rust = (Stats) ctx.reader().terms("body").getStats();
-      Stats java = javaStatsForSameTerms(ctx.reader().terms("body"));
-      String r = blockShape(rust);
-      String j = blockShape(java);
-      if (!r.equals(j)) {
-        fail(ctx + " block structure differs from Lucene's own writer:\n  rust " + r + "\n  java " + j);
+      for (String field : new String[] {"body", "title", "tag", "id"}) {
+        Stats rust = (Stats) ctx.reader().terms(field).getStats();
+        Stats java = javaStatsForSameTerms(ctx.reader().terms(field));
+        String r = blockShape(rust);
+        String j = blockShape(java);
+        if (!r.equals(j)) {
+          fail(ctx + " " + field + " block structure differs from Lucene's own writer:\n  rust "
+              + r + "\n  java " + j);
+        }
+        comparedDictionaries++;
       }
     }
+    System.out.println(
+        "blocktree: " + comparedDictionaries + " dictionaries cut exactly as Lucene's writer cuts them");
 
     // Stored fields line up with the global document order.
     StoredFields stored = reader.storedFields();
@@ -427,7 +434,7 @@ public class VerifyIndex {
     IndexSearcher searcher = new IndexSearcher(reader);
     int queries = 0;
     int nonEmpty = 0;
-    int kinds = 0;
+    long totalMatches = 0;
     long scores = 0;
     long bitExact = 0;
     double maxDiff = 0;
@@ -446,11 +453,13 @@ public class VerifyIndex {
 
       int[] docs;
       String[] values;
+      int javaTotal;
       if (kind.equals("dvrange")) {
         long min = Long.parseLong(a.get(0));
         long max = Long.parseLong(a.get(1));
         boolean reverse = a.get(2).equals("desc");
         Query q = NumericDocValuesField.newSlowRangeQuery(field, min, max);
+        javaTotal = searcher.count(q);
         TopDocs td = searcher.search(q, TOP_N, new Sort(new SortField(field, SortField.Type.LONG, reverse)));
         docs = new int[td.scoreDocs.length];
         values = new String[td.scoreDocs.length];
@@ -459,7 +468,9 @@ public class VerifyIndex {
           values[i] = String.valueOf(((FieldDoc) td.scoreDocs[i]).fields[0]);
         }
       } else {
-        TopDocs td = searcher.search(buildScored(kind, field, a), TOP_N);
+        Query q = buildScored(kind, field, a);
+        javaTotal = searcher.count(q);
+        TopDocs td = searcher.search(q, TOP_N);
         docs = new int[td.scoreDocs.length];
         values = new String[td.scoreDocs.length];
         for (int i = 0; i < docs.length; i++) {
@@ -477,7 +488,12 @@ public class VerifyIndex {
         continue;
       }
       int rustHits = Integer.parseInt(r[1]);
-      String[] pairs = rustHits == 0 ? new String[0] : r[2].split(",");
+      int rustTotal = Integer.parseInt(r[2]);
+      String[] pairs = rustHits == 0 ? new String[0] : r[3].split(",");
+      if (javaTotal != rustTotal) {
+        fail(id + " (" + line + "): Java matches " + javaTotal + " docs, Rust " + rustTotal);
+      }
+      totalMatches += javaTotal;
       if (pairs.length != docs.length) {
         fail(id + " (" + line + "): Java " + docs.length + " hits, Rust " + pairs.length);
         continue;
@@ -513,7 +529,8 @@ public class VerifyIndex {
     if (queries < MIN_QUERIES) {
       fail("only " + queries + " queries; the milestone requires at least " + MIN_QUERIES);
     }
-    for (String k : new String[] {"term", "and", "or", "phrase", "dvrange"}) {
+    for (String k :
+        new String[] {"term", "and", "or", "not", "msm", "mixed", "filter", "phrase", "dvrange"}) {
       if (!byKind.containsKey(k)) {
         fail("query set has no " + k + " query");
       }
@@ -522,7 +539,8 @@ public class VerifyIndex {
       fail("only " + nonEmpty + " of " + queries + " queries matched anything");
     }
     System.out.printf(
-        "queries: %d run (%s), %d non-empty; %d scores compared, %d bit-identical, max |diff| %.3g%n",
-        queries, byKind, nonEmpty, scores, bitExact, maxDiff);
+        "queries: %d run (%s), %d non-empty, %d matches counted; %d scores compared,"
+            + " %d bit-identical, max |diff| %.3g%n",
+        queries, byKind, nonEmpty, totalMatches, scores, bitExact, maxDiff);
   }
 }

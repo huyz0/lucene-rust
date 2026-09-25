@@ -25,17 +25,31 @@
 //! # What is and is not byte-identical to Java
 //!
 //! Block boundaries, block order, the trie's shape and every node's encoding
-//! follow Java's algorithm step for step, and `VerifyIndex` checks the first
-//! of those directly: for every segment of its 120 000-document index, real
-//! Lucene's own writer, handed the same terms, cuts a dictionary whose
-//! `Stats` (block count, floor runs, leaf/inner mix, blocks per prefix length)
-//! are identical. The *bytes* differ in one deliberate way: suffixes are
-//! always written `NO_COMPRESSION`, where Java tries `LZ4` and
-//! `LOWERCASE_ASCII` on blocks with long enough suffixes and keeps whichever
-//! saves space. Every reader accepts all three codes per block, so this changes
-//! the dictionary's size, never its meaning -- but it moves block file
-//! pointers, so the `.tip` bytes that encode them differ too. Recorded in
-//! `docs/parity.md`.
+//! follow Java's algorithm step for step, and two tests hold them to it.
+//! `tests/blocktree_byte_identity_fixture.rs` gives this writer the 13 316
+//! terms of a real Lucene segment (`GenBlockTreeByteIdentity`) and requires
+//! `.tim`, `.tip`, `.tmd`, `.doc` and `.psm` to be Lucene's byte for byte --
+//! pinning every choice a reader would accept either way (child-label
+//! strategy, pointer widths, the suffix-length shortcut). `VerifyIndex`
+//! requires every dictionary of its 120 000-document index to be cut exactly
+//! as Lucene's own writer cuts the same terms.
+//!
+//! The bytes differ from Java's in one deliberate way, avoided by the
+//! byte-identity fixture: suffixes are always written `NO_COMPRESSION`, where
+//! Java tries `LZ4` and `LOWERCASE_ASCII` on blocks whose prefix is longer
+//! than two bytes and keeps whichever saves space. Every reader accepts all
+//! three codes per block, so this changes the dictionary's size, never its
+//! meaning -- but it moves block file pointers, so the `.tip` bytes that
+//! encode them differ too. Recorded in `docs/parity.md`.
+//!
+//! # The `.tim` block this writes
+//!
+//! `vInt(entries << 1 | isLastInFloor)`, `vLong(suffixBytes << 3 | isLeaf <<
+//! 2 | compression)`, the suffix bytes, the suffix lengths (`vInt(n << 1 |
+//! allEqual)` then one byte or all of them; a non-leaf block's lengths carry
+//! a sub-block bit and each sub-block's backward `.tim` delta), the stats, and
+//! the postings metadata. `crate::blocktree`'s module doc describes the same
+//! layout from the reading side.
 //!
 //! # The in-memory shape
 //!
@@ -192,7 +206,8 @@ fn freeze_from(
         #[allow(clippy::arithmetic_side_effects)]
         let (parent, label) = (depth - 1, key[depth - 1]);
         frontier[parent].children.push((label, fp));
-        frontier[depth] = FrontierNode::default();
+        frontier[depth].output = None;
+        frontier[depth].children.clear();
     }
 }
 
@@ -421,9 +436,22 @@ enum PendingEntry {
     Block(PendingBlock),
 }
 
+/// The per-block buffers `write_block` fills, kept across blocks as Java's
+/// `TermsWriter` keeps its `suffixWriter`/`statsWriter`/`metaWriter` -- one
+/// allocation each per field rather than per block.
+#[derive(Default)]
+struct BlockScratch {
+    suffixes: Vec<u8>,
+    suffix_lengths: Vec<u8>,
+    stats: StatsWriter,
+    term_indices: Vec<usize>,
+    meta: Vec<u8>,
+}
+
 /// `StatsWriter`: `docFreq`/`totalTermFreq` per term, with runs of terms
 /// that occur once (`docFreq == 1`, and `totalTermFreq == 1` when freqs are
 /// indexed) collapsed into one run-length entry.
+#[derive(Default)]
 struct StatsWriter {
     out: Vec<u8>,
     has_freqs: bool,
@@ -467,6 +495,7 @@ struct TermsWriter<'t, 'o, F> {
     pending: Vec<PendingEntry>,
     prefix_starts: Vec<usize>,
     last_term: Vec<u8>,
+    scratch: BlockScratch,
 }
 
 /// Writes one field's terms into `.tim` blocks and its trie into `.tip`,
@@ -497,6 +526,7 @@ where
         pending: Vec::new(),
         prefix_starts: Vec::new(),
         last_term: Vec::new(),
+        scratch: BlockScratch::default(),
     };
     for (i, term) in terms.iter().enumerate() {
         w.push_term(term.bytes);
@@ -648,14 +678,21 @@ where
             .write_vint(((num_entries as i32) << 1) | i32::from(is_last_in_floor));
 
         let is_leaf = !has_sub_blocks;
-        let mut suffixes = Vec::new();
-        let mut suffix_lengths = Vec::new();
-        let mut stats = StatsWriter {
-            out: Vec::new(),
-            has_freqs: self.has_freqs,
-            singletons: 0,
-        };
-        let mut term_indices = Vec::with_capacity(num_entries);
+        let mut scratch = std::mem::take(&mut self.scratch);
+        let BlockScratch {
+            suffixes,
+            suffix_lengths,
+            stats,
+            term_indices,
+            meta,
+        } = &mut scratch;
+        suffixes.clear();
+        suffix_lengths.clear();
+        stats.out.clear();
+        stats.has_freqs = self.has_freqs;
+        stats.singletons = 0;
+        term_indices.clear();
+        meta.clear();
         let mut sub_indices = Vec::new();
         for entry in &mut self.pending[start..end] {
             match entry {
@@ -690,7 +727,7 @@ where
         // Suffix bytes, always `NO_COMPRESSION` (code 0): see the module doc.
         let token = ((suffixes.len() as u64) << 3) | if is_leaf { 0x04 } else { 0 };
         self.tim.write_vlong(token as i64);
-        self.tim.write_bytes(&suffixes);
+        self.tim.write_bytes(suffixes);
 
         let n = suffix_lengths.len();
         if suffix_lengths[1..].iter().all(|&b| b == suffix_lengths[0]) {
@@ -698,16 +735,16 @@ where
             self.tim.push(suffix_lengths[0]);
         } else {
             self.tim.write_vint((n as i32) << 1);
-            self.tim.write_bytes(&suffix_lengths);
+            self.tim.write_bytes(suffix_lengths);
         }
 
         self.tim.write_vint(stats.out.len() as i32);
         self.tim.write_bytes(&stats.out);
 
-        let mut meta = Vec::new();
-        (self.encode_meta)(&mut meta, &term_indices);
+        (self.encode_meta)(meta, term_indices);
         self.tim.write_vint(meta.len() as i32);
-        self.tim.write_bytes(&meta);
+        self.tim.write_bytes(meta);
+        self.scratch = scratch;
 
         if has_floor_lead {
             prefix.push(floor_lead as u8);

@@ -167,8 +167,10 @@ CASES=(
   # numeric doc-values column). The example also runs 57 queries -- term,
   # boolean AND/OR/NOT/minimumShouldMatch/FILTER, exact and sloppy phrase,
   # doc-values range sorted by field -- through this port's searcher, and Java
-  # requires the same top 50 in the same order with every score within 1e-5,
-  # after checking ~58 000 occurrences against the stored text and running
+  # requires the same top 50 in the same order with every score within 1e-5
+  # and the same total match count, after checking ~58 000 occurrences
+  # against the stored text, requiring all 28 term dictionaries to be cut
+  # exactly as Lucene's own writer cuts the same terms, and running
   # CheckIndex. Measured: a 2e-5 score change, two tied docs swapped, one
   # hit dropped and an offset-length write defect each fail it.
   #

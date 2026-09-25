@@ -36,8 +36,8 @@
 //!
 //! - `verify-queries.tsv`: `id <TAB> kind <TAB> field <TAB> args...`, the query
 //!   set, which `VerifyIndex` parses into real Lucene queries.
-//! - `verify-rust-results.tsv`: `id <TAB> hits <TAB> doc:value,...` -- this
-//!   port's top 50 per query, `value` being the BM25 score (an `f32` printed
+//! - `verify-rust-results.tsv`: `id <TAB> hits <TAB> total <TAB> doc:value,...`
+//!   -- this port's top 50 per query and its count of every match, `value` being the BM25 score (an `f32` printed
 //!   in Rust's shortest round-trip form, which Java's `Float.parseFloat`
 //!   reads back to the same bits) or, for a doc-values sort, the sort key.
 //!
@@ -462,11 +462,11 @@ fn run_queries(out_dir: &str) {
         )
         .unwrap();
         let hits: Vec<(i32, String)> = match q.kind {
-            "dvrange" => dv_range(&reader, &segments, q)
+            "dvrange" => dv_range(&reader, &segments, q, TOP_N)
                 .into_iter()
                 .map(|(d, v)| (d, v.to_string()))
                 .collect(),
-            _ => scored(&segments, &reader, &bool_norms, q)
+            _ => scored(&segments, &reader, &bool_norms, q, TOP_N)
                 .into_iter()
                 .map(|h| (h.doc_id, format!("{}", h.score)))
                 .collect(),
@@ -476,7 +476,13 @@ fn run_queries(out_dir: &str) {
             .map(|(d, v)| format!("{d}:{v}"))
             .collect::<Vec<_>>()
             .join(",");
-        writeln!(rtsv, "{}\t{}\t{}", q.id, hits.len(), joined).unwrap();
+        // Every match, not only the top 50: a defect that loses or invents a
+        // document below rank 50 changes this and nothing else.
+        let total = match q.kind {
+            "dvrange" => dv_range(&reader, &segments, q, NUM_DOCS).len(),
+            _ => scored(&segments, &reader, &bool_norms, q, NUM_DOCS).len(),
+        };
+        writeln!(rtsv, "{}\t{}\t{}\t{}", q.id, hits.len(), total, joined).unwrap();
     }
     let base = std::path::Path::new(out_dir);
     std::fs::write(base.join("verify-queries.tsv"), qtsv).expect("write queries");
@@ -489,6 +495,7 @@ fn scored(
     reader: &DirectoryReader,
     bool_norms: &[Option<&HashMap<String, FieldNorms<'_>>>],
     q: &Query,
+    top_n: usize,
 ) -> Vec<ScoreDoc> {
     let f = q.field;
     let a = &q.args;
@@ -502,7 +509,7 @@ fn scored(
                 field: f.to_string(),
                 term: a[0].as_bytes().to_vec(),
             };
-            return search_term_query_multi_segment(segments, &tq, &norms, TOP_N)
+            return search_term_query_multi_segment(segments, &tq, &norms, top_n)
                 .expect("term query");
         }
         "and" => BooleanQuery {
@@ -543,13 +550,14 @@ fn scored(
         },
         other => panic!("unknown query kind {other}"),
     };
-    search_boolean_query_multi_segment(segments, &bq, bool_norms, TOP_N).expect("boolean query")
+    search_boolean_query_multi_segment(segments, &bq, bool_norms, top_n).expect("boolean query")
 }
 
 fn dv_range(
     reader: &DirectoryReader,
     segments: &[lucene_search::multi_segment::OpenSegment<'_>],
     q: &Query,
+    top_n: usize,
 ) -> Vec<(i32, i64)> {
     let min: i64 = q.args[0].parse().expect("min");
     let max: i64 = q.args[1].parse().expect("max");
@@ -588,7 +596,7 @@ fn dv_range(
         max,
         direction,
         MissingValue::Exclude,
-        TOP_N,
+        top_n,
     )
     .expect("doc-values range")
     .into_iter()
