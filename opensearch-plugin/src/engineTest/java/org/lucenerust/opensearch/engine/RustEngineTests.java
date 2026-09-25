@@ -3404,7 +3404,7 @@ public class RustEngineTests extends RustEngineTestCase {
         // this test fails if any reader, searcher or directory is not closed - MDW FTW
         final int iters = scaledRandomIntBetween(10, 100);
         for (int i = 0; i < iters; i++) {
-            MockDirectoryWrapper wrapper = newMockDirectory();
+            MockDirectoryWrapper wrapper = newMockFSDirectory(createTempDir());
             wrapper.setFailOnOpenInput(randomBoolean());
             wrapper.setAllowRandomFileNotFoundException(randomBoolean());
             wrapper.setRandomIOExceptionRate(randomDouble());
@@ -3442,7 +3442,7 @@ public class RustEngineTests extends RustEngineTestCase {
 
     @org.junit.Ignore("injects I/O failures through a wrapped in-memory Directory; the Rust writer does its own file I/O on a filesystem directory")
     public void testUnreferencedFileCleanUpOnSegmentMergeFailureWithCleanUpEnabled() throws Exception {
-        MockDirectoryWrapper wrapper = newMockDirectory();
+        MockDirectoryWrapper wrapper = newMockFSDirectory(createTempDir());
         final CountDownLatch cleanupCompleted = new CountDownLatch(1);
         MockDirectoryWrapper.Failure fail = new MockDirectoryWrapper.Failure() {
             @Override
@@ -3542,7 +3542,7 @@ public class RustEngineTests extends RustEngineTestCase {
 
     @org.junit.Ignore("index sorting is refused (RustEngineSupport.checkSupported)")
     public void testUnreferencedFileCleanUpOnSegmentMergeFailureWithCleanUpEnabledWithIndexSort() throws Exception {
-        MockDirectoryWrapper wrapper = newMockDirectory();
+        MockDirectoryWrapper wrapper = newMockFSDirectory(createTempDir());
         final CountDownLatch cleanupCompleted = new CountDownLatch(1);
         Sort indexSort = new Sort(new SortedSetSortField("foo", false));
         final Settings indexSettings = Settings.builder().put("index.sort.field", "foo").build();
@@ -3645,7 +3645,7 @@ public class RustEngineTests extends RustEngineTestCase {
 
     @org.junit.Ignore("injects I/O failures through a wrapped in-memory Directory; the Rust writer does its own file I/O on a filesystem directory")
     public void testUnreferencedFileCleanUpOnSegmentMergeFailureWithCleanUpDisabled() throws Exception {
-        MockDirectoryWrapper wrapper = newMockDirectory();
+        MockDirectoryWrapper wrapper = newMockFSDirectory(createTempDir());
         final CountDownLatch cleanupCompleted = new CountDownLatch(1);
         MockDirectoryWrapper.Failure fail = new MockDirectoryWrapper.Failure() {
 
@@ -3750,7 +3750,7 @@ public class RustEngineTests extends RustEngineTestCase {
 
     @org.junit.Ignore("injects I/O failures through a wrapped in-memory Directory; the Rust writer does its own file I/O on a filesystem directory")
     public void testUnreferencedFileCleanUpFailsOnSegmentMergeFailureWhenDirectoryClosed() throws Exception {
-        MockDirectoryWrapper wrapper = newMockDirectory();
+        MockDirectoryWrapper wrapper = newMockFSDirectory(createTempDir());
         final CountDownLatch cleanupCompleted = new CountDownLatch(1);
         MockDirectoryWrapper.Failure fail = new MockDirectoryWrapper.Failure() {
 
@@ -4069,7 +4069,7 @@ public class RustEngineTests extends RustEngineTestCase {
 
     @org.junit.Ignore("injects I/O failures through a wrapped in-memory Directory; the Rust writer does its own file I/O on a filesystem directory")
     public void testTranslogReplayWithFailure() throws IOException {
-        final MockDirectoryWrapper directory = newMockDirectory();
+        final MockDirectoryWrapper directory = newMockFSDirectory(createTempDir());
         final Path translogPath = createTempDir("testTranslogReplayWithFailure");
         try (Store store = createStore(directory)) {
             final int numDocs = randomIntBetween(1, 10);
@@ -5402,7 +5402,7 @@ public class RustEngineTests extends RustEngineTestCase {
 
     @org.junit.Ignore("injects I/O failures through a wrapped in-memory Directory; the Rust writer does its own file I/O on a filesystem directory")
     public void testFailEngineOnRandomIO() throws IOException, InterruptedException {
-        MockDirectoryWrapper wrapper = newMockDirectory();
+        MockDirectoryWrapper wrapper = newMockFSDirectory(createTempDir());
         final Path translogPath = createTempDir("testFailEngineOnRandomIO");
         try (Store store = createStore(wrapper)) {
             CyclicBarrier join = new CyclicBarrier(2);
@@ -9150,7 +9150,7 @@ public class RustEngineTests extends RustEngineTestCase {
     @LockFeatureFlag(CONTEXT_AWARE_MIGRATION_EXPERIMENTAL_FLAG)
     @org.junit.Ignore("context-aware segments are refused (RustEngineSupport.checkSupported)")
     public void testShardFailsForCompositeIndexWriterInCaseAddIndexesThrewExceptionWithAppend() throws IOException, InterruptedException {
-        MockDirectoryWrapper wrapper = newMockDirectory();
+        MockDirectoryWrapper wrapper = newMockFSDirectory(createTempDir());
         final Path translogPath = createTempDir("testFailEngineOnRandomIO");
         try (Store store = createStore(wrapper)) {
             final ParsedDocument doc1 = testParsedDocument("1", null, testContextSpecificDocument("grouping_criteria"), B_1, null);
@@ -9196,7 +9196,7 @@ public class RustEngineTests extends RustEngineTestCase {
     @LockFeatureFlag(CONTEXT_AWARE_MIGRATION_EXPERIMENTAL_FLAG)
     @org.junit.Ignore("context-aware segments are refused (RustEngineSupport.checkSupported)")
     public void testShardFailsForCompositeIndexWriterInCaseAddIndexesThrewExceptionWithUpdate() throws IOException, InterruptedException {
-        MockDirectoryWrapper wrapper = newMockDirectory();
+        MockDirectoryWrapper wrapper = newMockFSDirectory(createTempDir());
         final Path translogPath = createTempDir("testFailEngineOnRandomIO");
         try (Store store = createStore(wrapper)) {
             final ParsedDocument doc1 = testParsedDocument("1", null, testContextSpecificDocument("grouping_criteria"), B_1, null);

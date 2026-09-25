@@ -80,6 +80,8 @@ MAPPING = {
         "n": {"type": "long"},
         "price": {"type": "double"},
         "d": {"type": "date"},
+        # OpenSearch gives @timestamp a doc-values skip index.
+        "@timestamp": {"type": "date"},
         "flag": {"type": "boolean"},
         "ip": {"type": "ip"},
         "loc": {"type": "geo_point"},
@@ -103,6 +105,7 @@ def source(r, i):
         "n": r.randrange(-1000, 100000),
         "price": round(r.random() * 500, 2),
         "d": f"2026-0{1 + r.randrange(9)}-{10 + r.randrange(18)}T{r.randrange(24):02d}:00:00Z",
+        "@timestamp": 1_767_225_600_000 + i * 60_000 + r.randrange(60_000),
         "flag": r.random() < 0.5,
         "ip": f"10.{r.randrange(256)}.{r.randrange(256)}.{r.randrange(256)}",
         "loc": {"lat": round(r.uniform(-60, 60), 4), "lon": round(r.uniform(-170, 170), 4)},
@@ -221,12 +224,14 @@ QUERIES = [
     {"geo_distance": {"distance": "3000km", "loc": {"lat": 10, "lon": 10}}},
     {"term": {"ip": "10.1.2.3"}},
     {"match_all": {}},
+    {"range": {"@timestamp": {"gte": 1_767_225_600_000 + 1000 * 60_000, "lt": 1_767_225_600_000 + 3000 * 60_000}}},
 ]
 
 AGGS = {
     "tags": {"terms": {"field": "tag", "size": 30}},
     "hist": {"histogram": {"field": "n", "interval": 10000}},
     "dates": {"date_histogram": {"field": "d", "calendar_interval": "month"}},
+    "ts": {"date_histogram": {"field": "@timestamp", "fixed_interval": "1d"}},
     "avg_n": {"avg": {"field": "n"}},
     "sum_p": {"sum": {"field": "price"}},
     "min_p": {"min": {"field": "price"}},
@@ -277,6 +282,10 @@ def compare_searches(label, scores, exact_scores=False, java=None, rust=None):
             return {k: strip(x) for k, x in v.items() if k != "_index"}
         if isinstance(v, list):
             return [strip(x) for x in v]
+        # A double sum depends on the order it adds values in, which follows segment layout --
+        # different between any two indices, Java or not. Twelve significant digits, not exact.
+        if isinstance(v, float):
+            return float(f"{v:.12g}")
         return v
     for name in AGGS:
         check(strip(ra["aggregations"][name]) == strip(rb["aggregations"][name]),

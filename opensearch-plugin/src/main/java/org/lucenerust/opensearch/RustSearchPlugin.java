@@ -4,6 +4,7 @@
 package org.lucenerust.opensearch;
 
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
+import org.opensearch.cluster.metadata.MappingMetadata;
 import org.opensearch.cluster.node.DiscoveryNodes;
 import org.opensearch.common.settings.ClusterSettings;
 import org.opensearch.common.settings.IndexScopedSettings;
@@ -98,8 +99,14 @@ public class RustSearchPlugin extends Plugin implements SearchPlugin, ActionPlug
         // writer cannot serve it.
         boolean asked = RustEngineSupport.ENGINE_ENABLED.exists(indexSettings.getSettings());
         boolean sorted = indexSettings.getIndexSortConfig().hasIndexSort();
-        if (asked == false && RustEngineSupport.unsupported(indexSettings, sorted) != null) {
-            return Optional.empty();
+        if (asked == false) {
+            if (RustEngineSupport.unsupported(indexSettings, sorted) != null) {
+                return Optional.empty();
+            }
+            MappingMetadata mapping = indexSettings.getIndexMetadata().mapping();
+            if (mapping != null && RustEngineSupport.unsupportedField(mapping.sourceAsMap()) != null) {
+                return Optional.empty();
+            }
         }
         return Optional.of(new RustEngineFactory(nodeEngineEnabled));
     }

@@ -264,6 +264,38 @@ jobs:
         run: ./scripts/verify-opensearch.sh --docs 20000 --yaml
 
   # ---------------------------------------------------------------------------
+  # M5: the Rust engine. OpenSearch's own InternalEngineTests on it, one node
+  # compared op for op with OpenSearch's engine (plus the YAML suites with
+  # every index on the Rust engine), and a three-node cluster.
+  # ---------------------------------------------------------------------------
+  opensearch-engine:
+    name: opensearch engine
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14.3'
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-x64-${{ hashFiles('**/Cargo.toml', 'rust-toolchain.toml') }}
+          restore-keys: cargo-x64-
+      - name: OpenSearch's engine tests on the Rust engine
+        run: ./scripts/opensearch-engine-tests.sh
+      - name: The Rust engine on a real node, and the YAML suites on it
+        run: ./scripts/verify-opensearch.sh --engine --yaml
+      - name: The Rust engine in a three-node cluster
+        run: ./scripts/verify-opensearch-cluster.sh --no-build
+
+  # ---------------------------------------------------------------------------
   # M2's T2.5: the FFI surface under libFuzzer + AddressSanitizer. A short run
   # per push, seeded from the checked-in corpus; long campaigns are local.
   # ---------------------------------------------------------------------------

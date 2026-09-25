@@ -2813,6 +2813,8 @@ struct DocValuesFieldConfig {
     name: String,
     field_number: i32,
     doc_values_type: DocValuesType,
+    /// The field's `FieldInfo` asks for a doc-values skip index.
+    skip_index: bool,
 }
 
 /// Every doc-values column a source segment currently has, resolved
@@ -3850,6 +3852,8 @@ impl<'d> IndexWriter<'d> {
             name: field_name.to_string(),
             field_number: info.number,
             doc_values_type: info.doc_values_type,
+            skip_index: info.doc_values_skip_index_type
+                != lucene_codecs::field_infos::DocValuesSkipIndexType::None,
         });
         Ok(())
     }
@@ -6635,7 +6639,12 @@ impl<'d> IndexWriter<'d> {
         configs: &[DocValuesFieldConfig],
         segment_id: &[u8; ID_LENGTH],
     ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
-        if configs.len() == 1 {
+        let skip_indexes: Vec<i32> = configs
+            .iter()
+            .filter(|c| c.skip_index)
+            .map(|c| c.field_number)
+            .collect();
+        if configs.len() == 1 && skip_indexes.is_empty() {
             let config = &configs[0];
             return match config.doc_values_type {
                 DocValuesType::Binary => {
@@ -6660,8 +6669,9 @@ impl<'d> IndexWriter<'d> {
             .collect::<Result<Vec<_>>>()?;
         let fields: Vec<doc_values::DenseField<'_>> =
             columns.iter().map(DenseColumn::as_dense_field).collect();
-        Ok(doc_values::write_dense_fields(
+        Ok(doc_values::write_fields_with_skip_indexes(
             &fields,
+            &skip_indexes,
             docs.len() as i32,
             segment_id,
             &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),

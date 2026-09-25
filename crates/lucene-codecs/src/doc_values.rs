@@ -1987,6 +1987,10 @@ pub struct BinaryColumn {
 /// of its variants are decode failures.
 #[derive(Debug, thiserror::Error)]
 pub enum WriteError {
+    /// `FieldInfo`'s rule: a doc-values skip index is for NUMERIC,
+    /// SORTED_NUMERIC, SORTED and SORTED_SET fields only.
+    #[error("field {0}: a doc-values skip index cannot be written for a BINARY field")]
+    SkipIndexOnBinary(i32),
     #[error("dense doc-values write requires values.len() == max_doc (every doc must have a value); got {values} values for max_doc={max_doc}")]
     NotDense { values: usize, max_doc: i32 },
     #[error("dense sorted-numeric write requires every doc to have at least one value; doc {0} has none")]
@@ -2067,6 +2071,116 @@ pub enum DenseField<'a> {
 }
 
 impl DenseField<'_> {
+    /// What `writeSkipIndex` iterates: every document with a value, in doc
+    /// order, with its values ascending -- the numbers themselves for
+    /// NUMERIC and SORTED_NUMERIC, the ordinals for SORTED and SORTED_SET
+    /// (`doAddSortedField`'s and `addSortedSetField`'s views).
+    // ARITH: indices into in-memory slices.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn skip_index_stream(&self, max_doc: i32) -> WriteResult<Vec<(i32, Vec<i64>)>> {
+        fn flat(docs: &[i32], counts: &[u32], values: &[i64]) -> Vec<(i32, Vec<i64>)> {
+            let mut at = 0usize;
+            docs.iter()
+                .zip(counts)
+                .map(|(&doc, &n)| {
+                    let n = n as usize;
+                    let mut v = values[at..at + n].to_vec();
+                    at += n;
+                    v.sort_unstable();
+                    (doc, v)
+                })
+                .collect()
+        }
+        fn set_ords(per_doc: &[Vec<Vec<u8>>]) -> Vec<Vec<i64>> {
+            let mut dict: Vec<&Vec<u8>> = per_doc.iter().flatten().collect();
+            dict.sort_unstable();
+            dict.dedup();
+            per_doc
+                .iter()
+                .map(|values| {
+                    let mut ords: Vec<i64> = values
+                        .iter()
+                        .map(|v| dict.binary_search(&v).unwrap_or(0) as i64)
+                        .collect();
+                    ords.sort_unstable();
+                    ords.dedup();
+                    ords
+                })
+                .collect()
+        }
+        let dense = |per_doc: Vec<Vec<i64>>| -> Vec<(i32, Vec<i64>)> {
+            per_doc
+                .into_iter()
+                .enumerate()
+                .map(|(doc, v)| (doc as i32, v))
+                .collect()
+        };
+        Ok(match self {
+            DenseField::Numeric(_, values) => dense(values.iter().map(|&v| vec![v]).collect()),
+            DenseField::SparseNumeric(_, pairs) => sort_sparse_pairs(pairs, max_doc)?
+                .into_iter()
+                .map(|(doc, v)| (doc, vec![v]))
+                .collect(),
+            DenseField::Sorted(_, values) => dense(
+                build_sorted_dict_and_ords(values)
+                    .1
+                    .into_iter()
+                    .map(|o| vec![o])
+                    .collect(),
+            ),
+            DenseField::SparseSorted(_, pairs) => {
+                let sorted = sort_sparse_pairs(pairs, max_doc)?;
+                let values: Vec<Vec<u8>> = sorted.iter().map(|(_, v)| v.clone()).collect();
+                let ords = build_sorted_dict_and_ords(&values).1;
+                sorted
+                    .iter()
+                    .zip(ords)
+                    .map(|((doc, _), o)| (*doc, vec![o]))
+                    .collect()
+            }
+            DenseField::SortedOrds(_, c) => c
+                .docs
+                .iter()
+                .zip(&c.ords)
+                .map(|(&doc, &o)| (doc, vec![o]))
+                .collect(),
+            DenseField::SortedNumeric(_, values) => dense(
+                values
+                    .iter()
+                    .map(|v| {
+                        let mut v = v.clone();
+                        v.sort_unstable();
+                        v
+                    })
+                    .collect(),
+            ),
+            DenseField::SparseSortedNumeric(_, pairs) => sort_sparse_pairs(pairs, max_doc)?
+                .into_iter()
+                .map(|(doc, mut v)| {
+                    v.sort_unstable();
+                    (doc, v)
+                })
+                .collect(),
+            DenseField::SortedNumericColumn(_, c) => flat(&c.docs, &c.counts, &c.values),
+            DenseField::SortedSet(_, values) => dense(set_ords(values)),
+            DenseField::SparseSortedSet(_, pairs) => {
+                let sorted = sort_sparse_pairs(pairs, max_doc)?;
+                let values: Vec<Vec<Vec<u8>>> = sorted.iter().map(|(_, v)| v.clone()).collect();
+                sorted
+                    .iter()
+                    .map(|(doc, _)| *doc)
+                    .zip(set_ords(&values))
+                    .collect()
+            }
+            DenseField::SortedSetOrds(_, c) => flat(&c.docs, &c.counts, &c.ords),
+            DenseField::Binary(n, _)
+            | DenseField::SparseBinary(n, _)
+            | DenseField::BinaryColumn(n, _) => {
+                return Err(WriteError::SkipIndexOnBinary(*n));
+            }
+        })
+    }
+
     fn field_number(&self) -> i32 {
         match self {
             DenseField::Numeric(n, _)
@@ -2155,6 +2269,24 @@ pub fn write_dense_fields(
     segment_id: &[u8; ID_LENGTH],
     segment_suffix: &str,
 ) -> WriteResult<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    write_fields_with_skip_indexes(fields, &[], max_doc, segment_id, segment_suffix)
+}
+
+/// [`write_dense_fields`], plus a doc-values skip index
+/// (`DocValuesSkipIndexType.RANGE`) for every field whose number is in
+/// `skip_index_fields` -- `Lucene90DocValuesConsumer.writeSkipIndex`, written
+/// into `.dvs` with its summary in the field's `.dvm` entry right after the
+/// type byte, as Java does. A skip index is refused on a BINARY field, as
+/// `FieldInfo` refuses it.
+// ARITH: as `write_dense_fields`.
+#[allow(clippy::arithmetic_side_effects)]
+pub fn write_fields_with_skip_indexes(
+    fields: &[DenseField<'_>],
+    skip_index_fields: &[i32],
+    max_doc: i32,
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+) -> WriteResult<(Vec<u8>, Vec<u8>, Vec<u8>)> {
     if fields.is_empty() {
         return Err(WriteError::EmptyFieldList);
     }
@@ -2198,14 +2330,61 @@ pub fn write_dense_fields(
 
     let mut meta = new_meta_output(segment_id, segment_suffix);
     let mut data = new_data_output(segment_id, segment_suffix);
+    let mut skip_index = new_skip_index_output(segment_id, segment_suffix);
 
     for field in fields {
         let field_number = field.field_number();
         meta.write_i32(field_number);
+        if skip_index_fields.contains(&field_number) {
+            // The type byte, then the skip index, then the rest of the
+            // entry: `addNumericField`/`doAddSortedField`/
+            // `doAddSortedNumericField`'s order. The entry is written first
+            // (its type byte leads it) and spliced around the skip index.
+            let stream = field.skip_index_stream(max_doc)?;
+            let mut entry = Vec::new();
+            write_field_entry(&mut entry, &mut data, field, max_doc)?;
+            meta.push(entry[0]);
+            write_skip_index(&mut meta, &mut skip_index, &stream);
+            meta.extend_from_slice(&entry[1..]);
+        } else {
+            write_field_entry(&mut meta, &mut data, field, max_doc)?;
+        }
+    }
+
+    meta.write_i32(-1); // field list terminator
+    codec_util::write_footer(&mut meta);
+    codec_util::write_footer(&mut data);
+    codec_util::write_footer(&mut skip_index);
+    Ok((meta, data, skip_index))
+}
+
+fn new_skip_index_output(segment_id: &[u8; ID_LENGTH], segment_suffix: &str) -> Vec<u8> {
+    let mut skip_index: Vec<u8> = Vec::new();
+    codec_util::write_index_header(
+        &mut skip_index,
+        SKIP_INDEX_META_CODEC,
+        VERSION_CURRENT,
+        segment_id,
+        segment_suffix,
+    );
+    skip_index
+}
+
+/// One field's `.dvm` entry after its field number -- the type byte and the
+/// body -- and its `.dvd` data.
+// ARITH: as `write_dense_fields`.
+#[allow(clippy::arithmetic_side_effects)]
+fn write_field_entry(
+    meta: &mut Vec<u8>,
+    data: &mut Vec<u8>,
+    field: &DenseField<'_>,
+    max_doc: i32,
+) -> WriteResult<()> {
+    {
         match field {
             DenseField::Numeric(_, values) => {
                 meta.push(DOC_VALUES_TYPE_NUMERIC);
-                write_dense_numeric_entry_body(&mut meta, &mut data, values);
+                write_dense_numeric_entry_body(meta, data, values);
             }
             DenseField::SparseNumeric(_, pairs) => {
                 let mut sorted: Vec<(i32, i64)> = pairs.to_vec();
@@ -2224,8 +2403,8 @@ pub fn write_dense_fields(
                 let values: Vec<i64> = sorted.iter().map(|&(_, v)| v).collect();
                 meta.push(DOC_VALUES_TYPE_NUMERIC);
                 if doc_ids.is_empty() {
-                    write_empty_docs_with_field(&mut meta);
-                    write_numeric_values_body(&mut meta, &mut data, &values);
+                    write_empty_docs_with_field(meta);
+                    write_numeric_values_body(meta, data, &values);
                 } else if doc_ids.len() == max_doc as usize {
                     // `Lucene90DocValuesConsumer.writeValues` writes the
                     // `[-1, 0]` dense marker when `docsWithField.cardinality()
@@ -2235,35 +2414,35 @@ pub fn write_dense_fields(
                     // readable, but a different encoding of the same column,
                     // which is exactly the kind of divergence a round-trip
                     // through this port's own reader cannot see.
-                    write_dense_numeric_entry_body(&mut meta, &mut data, &values);
+                    write_dense_numeric_entry_body(meta, data, &values);
                 } else {
-                    write_sparse_numeric_entry_body(&mut meta, &mut data, &doc_ids, &values);
+                    write_sparse_numeric_entry_body(meta, data, &doc_ids, &values);
                 }
             }
             DenseField::Binary(_, values) => {
                 meta.push(DOC_VALUES_TYPE_BINARY);
-                write_dense_binary_entry_body(&mut meta, &mut data, values, max_doc);
+                write_dense_binary_entry_body(meta, data, values, max_doc);
             }
             DenseField::Sorted(_, values) => {
                 meta.push(DOC_VALUES_TYPE_SORTED);
                 let (dict, ords) = build_sorted_dict_and_ords(values);
-                write_dense_numeric_entry_body(&mut meta, &mut data, &ords);
-                write_terms_dict(&mut meta, &mut data, &dict);
+                write_dense_numeric_entry_body(meta, data, &ords);
+                write_terms_dict(meta, data, &dict);
             }
             DenseField::SortedNumeric(_, values) => {
                 meta.push(DOC_VALUES_TYPE_SORTED_NUMERIC);
-                write_dense_sorted_numeric_entry_body(&mut meta, &mut data, values);
+                write_dense_sorted_numeric_entry_body(meta, data, values);
             }
             DenseField::SortedSet(_, values) => {
                 meta.push(DOC_VALUES_TYPE_SORTED_SET);
-                write_dense_sorted_set_entry_body(&mut meta, &mut data, values);
+                write_dense_sorted_set_entry_body(meta, data, values);
             }
             DenseField::SparseBinary(_, pairs) => {
                 let sorted = sort_sparse_pairs(pairs, max_doc)?;
                 let doc_ids: Vec<i32> = sorted.iter().map(|(doc, _)| *doc).collect();
                 let values: Vec<Vec<u8>> = sorted.into_iter().map(|(_, v)| v).collect();
                 meta.push(DOC_VALUES_TYPE_BINARY);
-                write_binary_entry_body(&mut meta, &mut data, &doc_ids, &values, max_doc);
+                write_binary_entry_body(meta, data, &doc_ids, &values, max_doc);
             }
             DenseField::SparseSorted(_, pairs) => {
                 let sorted = sort_sparse_pairs(pairs, max_doc)?;
@@ -2271,8 +2450,8 @@ pub fn write_dense_fields(
                 let values: Vec<Vec<u8>> = sorted.into_iter().map(|(_, v)| v).collect();
                 let (dict, ords) = build_sorted_dict_and_ords(&values);
                 meta.push(DOC_VALUES_TYPE_SORTED);
-                write_numeric_entry_body(&mut meta, &mut data, &doc_ids, &ords, max_doc);
-                write_terms_dict(&mut meta, &mut data, &dict);
+                write_numeric_entry_body(meta, data, &doc_ids, &ords, max_doc);
+                write_terms_dict(meta, data, &dict);
             }
             DenseField::SparseSortedNumeric(_, pairs) => {
                 let sorted = sort_sparse_pairs(pairs, max_doc)?;
@@ -2284,7 +2463,7 @@ pub fn write_dense_fields(
                 let doc_ids: Vec<i32> = sorted.iter().map(|(doc, _)| *doc).collect();
                 let per_doc: Vec<Vec<i64>> = sorted.into_iter().map(|(_, v)| v).collect();
                 meta.push(DOC_VALUES_TYPE_SORTED_NUMERIC);
-                write_sorted_numeric_entry_body(&mut meta, &mut data, &doc_ids, &per_doc, max_doc);
+                write_sorted_numeric_entry_body(meta, data, &doc_ids, &per_doc, max_doc);
             }
             DenseField::SparseSortedSet(_, pairs) => {
                 let sorted = sort_sparse_pairs(pairs, max_doc)?;
@@ -2296,13 +2475,13 @@ pub fn write_dense_fields(
                 let doc_ids: Vec<i32> = sorted.iter().map(|(doc, _)| *doc).collect();
                 let per_doc: Vec<Vec<Vec<u8>>> = sorted.into_iter().map(|(_, v)| v).collect();
                 meta.push(DOC_VALUES_TYPE_SORTED_SET);
-                write_sorted_set_entry_body(&mut meta, &mut data, &doc_ids, &per_doc, max_doc);
+                write_sorted_set_entry_body(meta, data, &doc_ids, &per_doc, max_doc);
             }
             DenseField::SortedOrds(_, column) => {
                 check_ascending_docs(&column.docs, max_doc)?;
                 meta.push(DOC_VALUES_TYPE_SORTED);
-                write_numeric_entry_body(&mut meta, &mut data, &column.docs, &column.ords, max_doc);
-                write_terms_dict(&mut meta, &mut data, &column.dict);
+                write_numeric_entry_body(meta, data, &column.docs, &column.ords, max_doc);
+                write_terms_dict(meta, data, &column.dict);
             }
             DenseField::SortedSetOrds(_, column) => {
                 check_ascending_docs(&column.docs, max_doc)?;
@@ -2310,7 +2489,7 @@ pub fn write_dense_fields(
                     return Err(WriteError::EmptyMultiValuedDoc(column.docs[k]));
                 }
                 meta.push(DOC_VALUES_TYPE_SORTED_SET);
-                write_sorted_set_ords_entry_body(&mut meta, &mut data, column, max_doc);
+                write_sorted_set_ords_entry_body(meta, data, column, max_doc);
             }
             DenseField::SortedNumericColumn(_, column) => {
                 check_ascending_docs(&column.docs, max_doc)?;
@@ -2318,18 +2497,12 @@ pub fn write_dense_fields(
                     return Err(WriteError::EmptyMultiValuedDoc(column.docs[k]));
                 }
                 meta.push(DOC_VALUES_TYPE_SORTED_NUMERIC);
-                write_numeric_entry_body(
-                    &mut meta,
-                    &mut data,
-                    &column.docs,
-                    &column.values,
-                    max_doc,
-                );
+                write_numeric_entry_body(meta, data, &column.docs, &column.values, max_doc);
                 meta.write_i32(column.docs.len() as i32); // numDocsWithField
                 if column.docs.len() != column.values.len() {
                     write_address_array(
-                        &mut meta,
-                        &mut data,
+                        meta,
+                        data,
                         &end_offsets(column.counts.iter().map(|&c| c as usize)),
                     );
                 }
@@ -2337,14 +2510,182 @@ pub fn write_dense_fields(
             DenseField::BinaryColumn(_, column) => {
                 check_ascending_docs(&column.docs, max_doc)?;
                 meta.push(DOC_VALUES_TYPE_BINARY);
-                write_binary_column_body(&mut meta, &mut data, column, max_doc);
+                write_binary_column_body(meta, data, column, max_doc);
             }
         }
     }
+    Ok(())
+}
 
-    let skip_index =
-        finish_field_list_and_footers(&mut meta, &mut data, segment_id, segment_suffix);
-    Ok((meta, data, skip_index))
+/// `Lucene90DocValuesFormat.DEFAULT_SKIP_INDEX_INTERVAL_SIZE`.
+const SKIP_INDEX_INTERVAL_SIZE: i32 = 4096;
+
+/// `Lucene90DocValuesConsumer.SkipAccumulator`.
+#[derive(Clone, Copy)]
+struct SkipAccumulator {
+    min_doc_id: i32,
+    max_doc_id: i32,
+    doc_count: i32,
+    min_value: i64,
+    max_value: i64,
+}
+
+// ARITH: counters over in-memory documents, each below `max_doc`.
+#[allow(clippy::arithmetic_side_effects)]
+impl SkipAccumulator {
+    fn new(doc: i32) -> Self {
+        Self {
+            min_doc_id: doc,
+            max_doc_id: doc,
+            doc_count: 0,
+            min_value: i64::MAX,
+            max_value: i64::MIN,
+        }
+    }
+
+    /// `isDone`: an interval closes once it holds `SKIP_INDEX_INTERVAL_SIZE`
+    /// documents, unless the next document keeps it a dense run of one
+    /// single value.
+    fn is_done(&self, value_count: usize, next_value: i64, next_doc: i32) -> bool {
+        if self.doc_count < SKIP_INDEX_INTERVAL_SIZE {
+            return false;
+        }
+        value_count > 1
+            || self.min_value != self.max_value
+            || self.min_value != next_value
+            || self.doc_count != next_doc - self.min_doc_id
+    }
+
+    fn accumulate(&mut self, value: i64) {
+        self.min_value = self.min_value.min(value);
+        self.max_value = self.max_value.max(value);
+    }
+
+    fn next_doc(&mut self, doc: i32) {
+        self.max_doc_id = doc;
+        self.doc_count += 1;
+    }
+
+    /// `SkipAccumulator.merge(list, index, length)`.
+    fn merge(list: &[SkipAccumulator]) -> Self {
+        let mut acc = Self::new(list[0].min_doc_id);
+        for other in list {
+            acc.max_doc_id = other.max_doc_id;
+            acc.min_value = acc.min_value.min(other.min_value);
+            acc.max_value = acc.max_value.max(other.max_value);
+            acc.doc_count += other.doc_count;
+        }
+        acc
+    }
+}
+
+/// Port of `Lucene90DocValuesConsumer.writeSkipIndex`: intervals of about
+/// `SKIP_INDEX_INTERVAL_SIZE` documents with their doc-id and value ranges,
+/// grouped into up to `SKIP_INDEX_MAX_LEVEL` levels of `2^LEVEL_SHIFT`, into
+/// `skip_index`; the field's summary into `meta`.
+// ARITH: counters and offsets over in-memory data; `skip_index` only grows.
+#[allow(clippy::arithmetic_side_effects)]
+fn write_skip_index(meta: &mut Vec<u8>, skip_index: &mut Vec<u8>, stream: &[(i32, Vec<i64>)]) {
+    let start = skip_index.len() as i64;
+    let mut global_max_value = i64::MIN;
+    let mut global_min_value = i64::MAX;
+    let mut global_doc_count = 0i32;
+    let mut global_max_value_count = 0i32;
+    let mut max_doc_id = -1i32;
+    let max_accumulators =
+        1usize << (SKIP_INDEX_LEVEL_SHIFT * (u32::from(SKIP_INDEX_MAX_LEVEL) - 1));
+    let mut accumulators: Vec<SkipAccumulator> = Vec::new();
+    let mut current: Option<SkipAccumulator> = None;
+    for (doc, values) in stream {
+        let (doc, value_count) = (*doc, values.len());
+        let Some(&first_value) = values.first() else {
+            continue;
+        };
+        global_max_value_count = global_max_value_count.max(value_count as i32);
+        if let Some(acc) = current {
+            if acc.is_done(value_count, first_value, doc) {
+                global_max_value = global_max_value.max(acc.max_value);
+                global_min_value = global_min_value.min(acc.min_value);
+                global_doc_count += acc.doc_count;
+                max_doc_id = acc.max_doc_id;
+                accumulators.push(acc);
+                current = None;
+                if accumulators.len() == max_accumulators {
+                    write_skip_levels(skip_index, &accumulators);
+                    accumulators.clear();
+                }
+            }
+        }
+        let acc = current.get_or_insert_with(|| SkipAccumulator::new(doc));
+        acc.next_doc(doc);
+        for &v in values {
+            acc.accumulate(v);
+        }
+    }
+    if let Some(acc) = current {
+        global_max_value = global_max_value.max(acc.max_value);
+        global_min_value = global_min_value.min(acc.min_value);
+        global_doc_count += acc.doc_count;
+        max_doc_id = acc.max_doc_id;
+        accumulators.push(acc);
+    }
+    if !accumulators.is_empty() {
+        write_skip_levels(skip_index, &accumulators);
+    }
+    meta.write_i64(start);
+    meta.write_i64(skip_index.len() as i64 - start);
+    meta.write_i64(global_max_value);
+    meta.write_i64(global_min_value);
+    meta.write_i32(global_doc_count);
+    meta.write_i32(max_doc_id);
+    meta.write_i32(global_max_value_count);
+}
+
+/// `writeLevels`: each interval preceded by its level count, then its
+/// intervals from the highest level down.
+// ARITH: indices into in-memory lists.
+#[allow(clippy::arithmetic_side_effects)]
+fn write_skip_levels(skip_index: &mut Vec<u8>, accumulators: &[SkipAccumulator]) {
+    let level_size = 1usize << SKIP_INDEX_LEVEL_SHIFT;
+    let mut levels: Vec<Vec<SkipAccumulator>> = vec![accumulators.to_vec()];
+    for i in 0..usize::from(SKIP_INDEX_MAX_LEVEL - 1) {
+        let below = &levels[i];
+        let built: Vec<SkipAccumulator> = below
+            .chunks_exact(level_size)
+            .map(SkipAccumulator::merge)
+            .collect();
+        levels.push(built);
+    }
+    let total = accumulators.len();
+    for index in 0..total {
+        let count = skip_levels_for(index, total);
+        skip_index.push(count as u8);
+        for level in (0..count).rev() {
+            let acc = levels[level][index >> (SKIP_INDEX_LEVEL_SHIFT as usize * level)];
+            skip_index.write_i32(acc.max_doc_id);
+            skip_index.write_i32(acc.min_doc_id);
+            skip_index.write_i64(acc.max_value);
+            skip_index.write_i64(acc.min_value);
+            skip_index.write_i32(acc.doc_count);
+        }
+    }
+}
+
+/// `getLevels`.
+// ARITH: `index < size`, both list lengths.
+#[allow(clippy::arithmetic_side_effects)]
+fn skip_levels_for(index: usize, size: usize) -> usize {
+    let shift = SKIP_INDEX_LEVEL_SHIFT as usize;
+    if index == 0 || index.trailing_zeros() as usize >= shift {
+        let left = size - index;
+        for level in (1..usize::from(SKIP_INDEX_MAX_LEVEL)).rev() {
+            let intervals = 1usize << (shift * level);
+            if left >= intervals && index.is_multiple_of(intervals) {
+                return level + 1;
+            }
+        }
+    }
+    1
 }
 
 /// Sorts a sparse `(doc_id, value)` list by doc id and rejects a duplicate or
@@ -3184,9 +3525,9 @@ fn finish_field_list_and_footers(
 /// [`write_single_sparse_numeric_field`], not here.
 ///
 /// Deliberately not attempted here, all deferred to future slices (see
-/// `docs/parity.md`): the varying-bits-per-value block split, per-field
-/// doc-values skip indexes, and multiple fields in one `.dvm`/`.dvd`/`.dvs`
-/// triple. BINARY ([`write_single_dense_binary_field`]), SORTED_NUMERIC
+/// `docs/parity.md`): the varying-bits-per-value block split. Skip indexes
+/// and multiple fields in one `.dvm`/`.dvd`/`.dvs` triple are
+/// [`write_fields_with_skip_indexes`]'s. BINARY ([`write_single_dense_binary_field`]), SORTED_NUMERIC
 /// ([`write_single_dense_sorted_numeric_field`]), SORTED
 /// ([`write_single_dense_sorted_field`]), and SORTED_SET
 /// ([`write_single_dense_sorted_set_field`]) write sides now exist as
@@ -3837,6 +4178,110 @@ mod tests {
     #![allow(clippy::arithmetic_side_effects)]
 
     use super::*;
+
+    /// Writes `fields` with a skip index on `skipped`, reads it back through
+    /// this module's reader, and returns it.
+    fn skip_round_trip(
+        fields: &[DenseField<'_>],
+        infos: Vec<crate::field_infos::FieldInfo>,
+        skipped: i32,
+        max_doc: i32,
+    ) -> DocValuesSkipIndex {
+        let id = [7u8; ID_LENGTH];
+        let (dvm, _, dvs) =
+            write_fields_with_skip_indexes(fields, &[skipped], max_doc, &id, "").unwrap();
+        let (_, meta) = parse_meta(&dvm, &id, "", &FieldInfos { fields: infos }).unwrap();
+        let skipper = *meta.skipper_meta(skipped).unwrap();
+        parse_skip_index(&dvs, &id, "", &skipper).unwrap()
+    }
+
+    fn skip_field(
+        name: &str,
+        number: i32,
+        t: crate::field_infos::DocValuesType,
+    ) -> crate::field_infos::FieldInfo {
+        crate::field_infos::FieldInfo::new(name, number).with_doc_values(
+            t,
+            crate::field_infos::DocValuesSkipIndexType::Range,
+            -1,
+        )
+    }
+
+    /// `isDone`: a full interval keeps growing while the documents stay a
+    /// dense run of the same single value, and closes at the first change.
+    #[test]
+    fn a_skip_interval_extends_over_a_dense_run_of_one_value() {
+        let mut values = vec![5i64; 5000];
+        values.extend(std::iter::repeat_n(9, 100));
+        let index = skip_round_trip(
+            &[DenseField::Numeric(0, &values)],
+            vec![skip_field(
+                "n",
+                0,
+                crate::field_infos::DocValuesType::Numeric,
+            )],
+            0,
+            5100,
+        );
+        assert_eq!(
+            (index.min_value, index.max_value, index.doc_count),
+            (5, 9, 5100)
+        );
+        let base: Vec<_> = index.intervals.iter().map(|i| i.levels[0]).collect();
+        assert_eq!(base.len(), 2);
+        assert_eq!(
+            (base[0].min_doc_id, base[0].max_doc_id, base[0].doc_count),
+            (0, 4999, 5000)
+        );
+        assert_eq!((base[1].min_value, base[1].max_value), (9, 9));
+    }
+
+    /// A sparse SORTED_SET field's skip index covers its ordinals, and only
+    /// the documents that have a value; a field without the skip index next
+    /// to it is written as before.
+    #[test]
+    fn a_sparse_sorted_set_skip_index_covers_ordinals() {
+        let pairs = vec![
+            (1, vec![b"b".to_vec(), b"a".to_vec()]),
+            (3, vec![b"c".to_vec()]),
+        ];
+        let plain = vec![1i64, 2, 3, 4];
+        let index = skip_round_trip(
+            &[
+                DenseField::SparseSortedSet(0, &pairs),
+                DenseField::Numeric(1, &plain),
+            ],
+            vec![
+                skip_field("s", 0, crate::field_infos::DocValuesType::SortedSet),
+                crate::field_infos::FieldInfo::new("p", 1).with_doc_values(
+                    crate::field_infos::DocValuesType::Numeric,
+                    crate::field_infos::DocValuesSkipIndexType::None,
+                    -1,
+                ),
+            ],
+            0,
+            4,
+        );
+        assert_eq!((index.min_value, index.max_value), (0, 2));
+        assert_eq!(
+            (index.doc_count, index.max_doc_id, index.max_value_count),
+            (2, 3, 2)
+        );
+    }
+
+    #[test]
+    fn a_skip_index_on_a_binary_field_is_refused() {
+        let values = vec![b"x".to_vec()];
+        let err = write_fields_with_skip_indexes(
+            &[DenseField::Binary(3, &values)],
+            &[3],
+            1,
+            &[0u8; ID_LENGTH],
+            "",
+        )
+        .unwrap_err();
+        assert!(matches!(err, WriteError::SkipIndexOnBinary(3)));
+    }
     use crate::field_infos::{DocValuesSkipIndexType, DocValuesType, FieldInfo, IndexOptions};
 
     fn numeric_field(number: i32) -> FieldInfo {
