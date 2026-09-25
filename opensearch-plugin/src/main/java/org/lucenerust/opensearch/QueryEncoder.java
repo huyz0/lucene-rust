@@ -13,7 +13,9 @@ import org.apache.lucene.search.MatchAllDocsQuery;
 import org.apache.lucene.search.MatchNoDocsQuery;
 import org.apache.lucene.search.PhraseQuery;
 import org.apache.lucene.search.IndexOrDocValuesQuery;
+import org.apache.lucene.search.PointRangeQuery;
 import org.apache.lucene.search.PrefixQuery;
+import org.apache.lucene.util.NumericUtils;
 import org.apache.lucene.search.QueryVisitor;
 import org.apache.lucene.search.TermInSetQuery;
 import org.apache.lucene.search.WildcardQuery;
@@ -133,6 +135,7 @@ public final class QueryEncoder {
     private static final byte NODE_TERM_SET = 8;
     private static final byte NODE_PREFIX = 9;
     private static final byte NODE_WILDCARD = 10;
+    private static final byte NODE_POINT_RANGE = 11;
 
     /** Appends one node (and its children); returns a fallback reason, or null. */
     private static String node(Query q, ByteArrayOutputStream out, Predicate<String> fieldOk, int depth, int[] nodes) {
@@ -242,6 +245,18 @@ public final class QueryEncoder {
             // wrapper, not a level (nor a node).
             nodes[0]--;
             return node(iodv.getIndexQuery(), out, fieldOk, depth, nodes);
+        }
+        if (q instanceof PointRangeQuery pr) {
+            // `LongPoint`/`DoublePoint`/date ranges: one dimension of 8 bytes, sent as the sortable
+            // longs their packed bytes encode. A 4-byte point (`integer`, `float`) falls back.
+            if (pr.getNumDims() != 1 || pr.getBytesPerDim() != Long.BYTES) {
+                return "points_width";
+            }
+            out.write(NODE_POINT_RANGE);
+            writeBytes(out, pr.getField().getBytes(StandardCharsets.UTF_8));
+            writeLong(out, NumericUtils.sortableBytesToLong(pr.getLowerPoint(), 0));
+            writeLong(out, NumericUtils.sortableBytesToLong(pr.getUpperPoint(), 0));
+            return null;
         }
         String wrapper = q.getClass().getSimpleName();
         if (wrapper.equals("MultiTermQueryConstantScoreBlendedWrapper") || wrapper.equals("MultiTermQueryConstantScoreWrapper")) {
@@ -364,6 +379,11 @@ public final class QueryEncoder {
         byte[] out = new byte[b.length];
         System.arraycopy(b.bytes, b.offset, out, 0, b.length);
         return out;
+    }
+
+    private static void writeLong(ByteArrayOutputStream out, long v) {
+        writeInt(out, (int) v);
+        writeInt(out, (int) (v >>> 32));
     }
 
     private static void writeBytes(ByteArrayOutputStream out, BytesRef b) {

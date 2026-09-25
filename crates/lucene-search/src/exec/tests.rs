@@ -615,6 +615,92 @@ fn multi_term_edges_and_the_term_union() {
     assert!(u.cost() > 0);
 }
 
+/// A filter that stops answering by membership mid-way falls back to the
+/// leapfrog, and a leg conjunction takes a threshold on its one scoring leg.
+#[test]
+fn conjunction_membership_fallback_and_leg_thresholds() {
+    use super::conjunction::ConjunctionScorer;
+    use std::cell::Cell;
+    struct Flaky {
+        inner: DocList,
+        probes: Cell<u32>,
+    }
+    impl Scorer for Flaky {
+        fn doc_id(&self) -> i32 {
+            self.inner.doc_id()
+        }
+        fn next_doc(&mut self) -> crate::Result<i32> {
+            self.inner.next_doc()
+        }
+        fn advance(&mut self, t: i32) -> crate::Result<i32> {
+            self.inner.advance(t)
+        }
+        fn cost(&self) -> i64 {
+            100
+        }
+        fn score(&mut self) -> crate::Result<f32> {
+            Ok(0.0)
+        }
+        fn max_score(&mut self, _: i32) -> crate::Result<f32> {
+            Ok(0.0)
+        }
+        // Random access for the constructor's probe, then never again.
+        fn contains(&self, _doc: i32) -> Option<bool> {
+            self.probes.set(self.probes.get() + 1);
+            (self.probes.get() == 1).then_some(true)
+        }
+    }
+    let filter = Flaky {
+        inner: DocList::new(vec![2, 4, 6, 8], Vec::new()),
+        probes: Cell::new(0),
+    };
+    let lead = DocList::new(vec![1, 2, 3, 6, 7, 9], vec![1.0; 6]);
+    let mut c = ConjunctionScorer::new(vec![Box::new(filter)], vec![Box::new(lead)]);
+    let mut got = Vec::new();
+    let mut d = c.next_doc().unwrap();
+    while d != NO_MORE_DOCS {
+        got.push(d);
+        d = c.next_doc().unwrap();
+    }
+    assert_eq!(got, [2, 6]);
+
+    // `LegConjunctionScorer`: one scoring leg takes the threshold.
+    use crate::directory_reader::DirectoryReader;
+    use crate::query::{BooleanQuery, Clause, TermQuery};
+    let dir = lucene_store::FsDirectory::open(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/data/mixed_boolean_scoring_index"
+    ));
+    let reader = DirectoryReader::open(&dir).unwrap();
+    let opened = reader.open_segments().unwrap();
+    let seg = &opened.as_open_segments()[0];
+    let ctx = super::build::LeafContext {
+        fields: seg.fields,
+        doc_in: seg.doc_in,
+        pos_in: seg.pos_in,
+        pay_in: seg.pay_in,
+        live_docs: None,
+        points: None,
+        norms: None,
+        global: None,
+        max_doc: seg.max_doc,
+        cache: None,
+    };
+    let mut b = BooleanQuery::new();
+    b.must.push(Clause::Term(TermQuery::new("body", "w0")));
+    b.filter.push(Clause::Term(TermQuery::new("body", "w1")));
+    let clause = Clause::Boolean(Box::new(b));
+    let mut s = super::build::build(&ctx, &clause, 1.0, Mode::TopScores, false)
+        .unwrap()
+        .unwrap();
+    let first = s.next_doc().unwrap();
+    s.set_min_competitive_score(f32::MAX).unwrap();
+    assert!(
+        s.next_doc().unwrap() > first,
+        "nothing competes past the threshold"
+    );
+}
+
 /// A phrase on a segment without norms scores every document at the
 /// unnormed length, like a term does.
 #[test]
@@ -824,6 +910,12 @@ mod fixture {
         {
             use crate::query::{PrefixQuery, RegexpQuery, TermInSetQuery, WildcardQuery};
             let op = t[*at + 1].as_str();
+            if op == "r" {
+                let min: i64 = t[*at + 2].parse().unwrap();
+                let max: i64 = t[*at + 3].parse().unwrap();
+                *at += 5;
+                return Clause::PointsRange(crate::query::PointsRangeQuery::new("n", min, max));
+            }
             if matches!(op, "pre" | "wc" | "re" | "ts") {
                 *at += 2;
                 let mut words = Vec::new();
@@ -925,7 +1017,8 @@ mod fixture {
     fn the_fixture_queries_reach_every_bulk_scorer_and_count_like_lucene() {
         let m = manifest();
         let reader = DirectoryReader::open(&lucene_store::FsDirectory::open(dir())).unwrap();
-        let opened = reader.open_segments().unwrap();
+        let mut opened = reader.open_segments().unwrap();
+        opened.open_points().unwrap();
         let segments = opened.as_open_segments();
         let owned: Vec<HashMap<String, FieldNorms<'_>>> = reader
             .field_norms("body")
@@ -952,7 +1045,7 @@ mod fixture {
                     pos_in: seg.pos_in,
                     pay_in: seg.pay_in,
                     live_docs: seg.live_docs,
-                    points: None,
+                    points: seg.points,
                     norms: norms[s],
                     global: Some(&global),
                     max_doc: None,

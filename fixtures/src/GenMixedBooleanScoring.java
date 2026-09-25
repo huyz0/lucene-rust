@@ -2,6 +2,7 @@ import org.apache.lucene.analysis.standard.StandardAnalyzer;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.StringField;
+import org.apache.lucene.document.LongPoint;
 import org.apache.lucene.document.TextField;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexWriter;
@@ -65,6 +66,7 @@ import java.util.stream.Stream;
  *   (wc PATTERN)               WildcardQuery on body
  *   (re PATTERN)               RegexpQuery on body
  *   (ts TERM...)               TermInSetQuery on body
+ *   (r MIN MAX)                LongPoint.newRangeQuery on n (each document's id)
  * </pre>
  *
  * For each query the manifest records the top {@code N} under a total-hits threshold of 100 (so
@@ -207,6 +209,20 @@ public class GenMixedBooleanScoring {
     "(ts w1 w2)",
     "(dismax 0.3 (pre w4) (t w2))",
     "(boost 3 (wc w1*))",
+    // Points ranges: a filter, an exclusion, alone, scored constant, spanning
+    // both segments, and empty.
+    "(b 0 (+ (t w0)) (# (r 1000 8000)))",
+    "(b 0 (+ (t w1)) (- (r 0 11999)))",
+    "(r 11990 12010)",
+    "(b 0 (? (r 500 600)) (? (t w2)))",
+    "(b 0 (+ (t w3)) (# (r 30000 40000)))",
+    // Ranges the reader-level rewrite resolves: every value (a match-all
+    // filter the boolean then drops), inside a constant score, boosted, and
+    // past every value.
+    "(b 0 (+ (t w2)) (# (r -5 99999)))",
+    "(b 0 (+ (t w4)) (# (const (r -5 99999))) (? (t w1)))",
+    "(boost 2 (r 100 200))",
+    "(b 0 (? (r 50000 60000)) (? (t w5)))",
   };
 
   public static void main(String[] args) throws IOException {
@@ -239,6 +255,7 @@ public class GenMixedBooleanScoring {
               body = "solo pair w0 w1 solo " + body;
             }
             doc.add(new TextField("body", body, Field.Store.NO));
+            doc.add(new LongPoint("n", id));
             w.addDocument(doc);
           }
           w.commit();
@@ -349,6 +366,7 @@ public class GenMixedBooleanScoring {
     Query q;
     switch (op) {
       case "t" -> q = new TermQuery(new Term("body", t.next()));
+      case "r" -> q = LongPoint.newRangeQuery("n", Long.parseLong(t.next()), Long.parseLong(t.next()));
       case "pre" -> q = new PrefixQuery(new Term("body", t.next()));
       case "wc" -> q = new WildcardQuery(new Term("body", t.next()));
       case "re" -> q = new RegexpQuery(new Term("body", t.next()));

@@ -358,6 +358,18 @@ pub struct PointsReader<'d> {
     fields: Vec<(i32, PointsField)>,
 }
 
+impl PointsReader<'static> {
+    /// A segment that indexes no points: every field is absent, as
+    /// `PointValues` is `null` for each of them in Lucene.
+    pub fn empty() -> Self {
+        PointsReader {
+            kdi: &[],
+            kdd: &[],
+            fields: Vec::new(),
+        }
+    }
+}
+
 /// Parses `.kdm`+`.kdi`+`.kdd` (already read into memory).
 pub fn open<'d>(
     kdm: &[u8],
