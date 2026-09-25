@@ -10054,13 +10054,15 @@ mod tests {
         let meta_len = input.read_vint().unwrap() as usize;
         let meta_at = input.position();
 
-        // Decode the stats region. This writer never singleton-run-encodes,
-        // so every entry is `vint(docFreq << 1)` plus, for a field with
-        // freqs, `vlong(totalTermFreq - docFreq)`.
+        // Decode the stats region. The fixtures this patches have no
+        // singleton term (`docFreq == 1` and `totalTermFreq == 1`), which is
+        // the only kind the writer run-length encodes, so every entry is
+        // `vint(docFreq << 1)` plus, for a field with freqs,
+        // `vlong(totalTermFreq - docFreq)` -- asserted below.
         //
         // **Only valid for a field that indexes freqs.** A DOCS-only field
-        // writes no delta at all (`write_tim_block`'s
-        // `index_options != Docs` guard, and `blocktree` reads it back the
+        // writes no delta at all (`StatsWriter`'s `hasFreqs` guard in
+        // `blocktree_writer`, and `blocktree` reads it back the
         // same way), so the "read a delta if bytes are left" rule below would
         // consume the *next* term's `docFreq` token. Re-encoding is canonical,
         // so the identity round trip would still be byte-identical and would
@@ -10072,7 +10074,7 @@ mod tests {
             assert_eq!(
                 token & 1,
                 0,
-                "singleton runs are not written by this writer"
+                "a singleton run: patch_tim_stats needs a fixture without singleton terms"
             );
             let doc_freq = (token as u32 >> 1) as i32;
             assert!(

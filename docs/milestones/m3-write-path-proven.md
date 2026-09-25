@@ -10,7 +10,7 @@
 | **Depends on** | [M1](m1-performance-gate.md) passing |
 | **Unblocks** | [M4](m4-write-path-hardened.md) |
 | **Runs in parallel with** | [M2](m2-opensearch-read-path.md) |
-| **Status** | not started |
+| **Status** | ✅ **delivered 2026-09-25** — see [Outcome](#outcome) |
 
 ---
 
@@ -215,27 +215,43 @@ Leaving it as-is is not an acceptable outcome for this milestone.
 
 ## Acceptance criteria
 
-- [ ] `VerifyPostings.java` exists, covers the writer's full supported shape
-      set, and runs in CI.
-- [ ] Real Lucene reads a Rust-written index with **≥3 fields, ≥100k docs**, at
+- [x] `VerifyPostings.java` exists, covers the writer's full supported shape
+      set, and runs in CI. *Delivered under other names:* the postings and
+      term-dictionary write path is read back by real Lucene through whole
+      segments rather than one hand-assembled file set --
+      `VerifyFullSegment` (docs+freqs, impacts), `VerifyPositionsSegment`
+      (every `IndexOptions` rung, offsets, payloads, both skip levels),
+      `VerifyMergedSegment`, `VerifySortedSegment` and `VerifyIndex` -- all in
+      `scripts/verify-write-path.sh`, which CI's `write-path` job runs.
+- [x] Real Lucene reads a Rust-written index with **≥3 fields, ≥100k docs**, at
       least one term above `BLOCK_SIZE` (256) docs, and positions, offsets and
-      payloads indexed.
-- [ ] Real Lucene's own **`CheckIndex` reports zero errors** on that index.
-- [ ] Across a **≥50-query set**, top-50 doc IDs match **exactly** and scores
-      match within **1e-5** between Java Lucene and this port.
-- [ ] The blocktree writer produces multi-field, multi-block, floor-blocked,
+      payloads indexed. `VerifyIndex`: 120 000 documents, five fields, seven
+      segments, `body:w0` in 20 300 documents of one segment.
+- [x] Real Lucene's own **`CheckIndex` reports zero errors** on that index
+      (`MIN_LEVEL_FOR_SLOW_CHECKS`).
+- [x] Across a **≥50-query set**, top-50 doc IDs match **exactly** and scores
+      match within **1e-5** between Java Lucene and this port. 57 queries
+      (term, AND, OR, NOT, `minimumShouldMatch`, FILTER, exact and sloppy
+      phrase, doc-values range sorted by field); max score difference
+      2.4e-7, 2 295 of 2 343 scores bit-identical.
+- [x] The blocktree writer produces multi-field, multi-block, floor-blocked,
       multi-level output, and each shape is verified from the Java side.
-- [ ] `Error::DocFreqTooLarge` and `Error::UnsupportedIndexOptions` are no
-      longer reachable.
-- [ ] The `.si` index-sort divergence is either resolved against a real Lucene
-      fixture or explicitly fenced off, with the writer refusing to emit a
-      divergent format.
-- [ ] `docs/parity.md` no longer describes the postings/blocktree writer as
+      `VerifyIndex` requires floor blocks, inner blocks and blocks below
+      prefix length 2, and requires each segment's block structure to be
+      *identical* to what Lucene's own writer cuts from the same terms.
+- [x] `Error::DocFreqTooLarge` and `Error::UnsupportedIndexOptions` are no
+      longer reachable. `DocFreqTooLarge` no longer exists;
+      `UnsupportedIndexOptions` remains only for `IndexOptions::None` -- a
+      field that has no postings to write, which Java never hands a postings
+      writer either.
+- [x] The `.si` index-sort divergence is either resolved against a real Lucene
+      fixture or explicitly fenced off. *Resolved* (M2 sweep b11): the writer
+      emits the real `SortFieldProvider` bytestream, and `VerifySortedSegment`
+      reads sorted segments back, flushed and merged.
+- [x] `docs/parity.md` no longer describes the postings/blocktree writer as
       narrowly scoped, or states precisely and truthfully what remains.
-- [ ] Per-file line coverage stays ≥95% (`AGENTS.md` invariant #8) across every
+- [x] Per-file line coverage stays ≥95% (`AGENTS.md` invariant #8) across every
       file this milestone touches.
-
----
 
 ## Risks and unknowns
 
@@ -267,3 +283,45 @@ Leaving it as-is is not an acceptable outcome for this milestone.
   path
 - A `Gen*.java` sorted-segment generator, or an explicit unsupported record
 - An updated `docs/parity.md` write-path section
+
+---
+
+## Outcome
+
+Delivered 2026-09-25. Most of T3.1, T3.3 and T3.5 had already landed during
+the M2 sweep (see `docs/sweep/`) without this file being updated; what was
+left, and what closing the milestone found:
+
+- **T3.4 was missing entirely.** `crates/lucene-search/examples/
+  write_verify_index_fixture.rs` now builds the index through `IndexWriter`,
+  runs the query set with this port's searcher, and writes both;
+  `fixtures/src/VerifyIndex.java` is the Java side. It passed on its first
+  run.
+- **T3.2 had not been done.** The postings writer still put every term of a
+  field into **one `.tim` block under a one-node trie** -- the fallback left
+  when an earlier multi-block attempt proved unreadable by Lucene. Lucene
+  accepted it, so no verifier failed, but `VerifyIndex`'s `Stats` check
+  reported one block per segment, and every Java `seekExact` into a
+  Rust-written segment was scanning a block of thousands of terms. Replaced
+  by `crates/lucene-codecs/src/blocktree_writer.rs`, a port of
+  `Lucene103BlockTreeTermsWriter`'s splitting and `TrieBuilder`; the block
+  structure now matches Lucene's writer exactly.
+- **Evidence the checks can fail** (invariant #10): a 2e-5 score change, a
+  swap of two tied documents, a dropped hit, a wrong sort value, an
+  off-by-one offset length in the postings writer, and `MIN_ITEMS_IN_BLOCK`
+  24 instead of 25 each fail `VerifyIndex`.
+- **What it cannot catch:** bytes this port's reader and Java's decode
+  *identically but wrongly* -- a mis-encoded norm scores the same in both
+  engines. `CheckIndex` and the occurrence walk are the only checks that see
+  those.
+
+Deliberately not byte-identical to Java, both recorded in `docs/parity.md`:
+`.tim` suffixes are never compressed, and term metadata never takes the
+zigzag singleton-delta branch.
+
+**On the M1 dependency.** This file lists M1 passing as a precondition. M1's
+gate (≥1.5× on ≥80% of the query mix) is still not met on the merged index
+(19/28 after the September sweep; 22/28 segmented), though no query is
+slower than Lucene any more (`docs/benchmarks/sweep-2026-09.md`). M3 went
+ahead because it is a correctness precondition for any write-path use,
+whichever way that decision falls.
