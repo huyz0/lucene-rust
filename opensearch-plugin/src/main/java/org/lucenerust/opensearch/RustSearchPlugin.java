@@ -64,6 +64,7 @@ public class RustSearchPlugin extends Plugin implements SearchPlugin, ActionPlug
     public RustSearchPlugin(Settings settings) {
         this.libraryPath = NativeLibrary.load(pluginDir());
         this.nodeEngineEnabled = NODE_ENGINE_ENABLED.get(settings);
+        RustIndexerFactory.verify();
     }
 
     /**
@@ -96,7 +97,7 @@ public class RustSearchPlugin extends Plugin implements SearchPlugin, ActionPlug
     /** Every shard of a Rust-engine index gets the indexer that lets it be a segment-replication primary. */
     @Override
     public void onIndexModule(IndexModule indexModule) {
-        indexModule.addIndexEventListener(RustIndexerFactory.listener());
+        RustIndexerFactory.install(indexModule);
     }
 
     @Override

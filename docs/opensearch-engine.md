@@ -78,17 +78,38 @@ itself. The primary's `CopyState` asks the shard's `Indexer` for the last
 refreshed checkpoint, and `EngineBackedIndexer` answers only for an
 `InternalEngine`. `InternalEngine.lastRefreshedCheckpoint()` is final, and
 enough of `InternalEngine` is final that a subclass cannot work either.
-`RustIndexerFactory` closes the gap: when a shard is created,
-before it has an engine, the plugin replaces the shard's `indexerFactory` with
-one that wraps a `RustEngine` in an `EngineBackedIndexer` that answers from
-the engine's own checkpoint listener. That is the plugin's one reflective
-write into OpenSearch's state. `IndexShard` builds every engine through that
-field: the first, a reset, a promotion. If the write ever fails, the shard's
-Rust engine refuses to start as a segment-replication primary, and says why.
-Remote-backed storage stays refused: its upload listener asks for an
+`RustIndexerFactory` closes the gap. `IndicesService` chooses
+the indexer factory with no plugin hook, but the index's `IndexModule` holds
+it until it builds the `IndexService`, which hands it to every shard. Plugins
+see the module first (`onIndexModule`). The plugin replaces the module's
+factory there, once per index and before any shard exists. The replacement
+wraps a `RustEngine` in an `EngineBackedIndexer` that answers from the
+engine's own checkpoint listener, and builds every other engine as before.
+
+That is the plugin's one reflective write into OpenSearch's state. It is
+per-index because the module is the last place the factory passes through
+before it is copied into each shard. The field is resolved at node start, so
+an OpenSearch version without it fails the node, not a shard at failover.
+
+Every writable engine a shard runs is built through that factory: the first
+one, one after a reset, and one on a replica's promotion. A `RustEngine` built
+any other way refuses to start as a segment-replication primary, and says
+why. `_plugins/lucene_rust/stats` counts the wrapped engines as
+`engines.rust_indexer`.
+
+The temporary read-only engine during an engine reset is the one exception,
+as on stock OpenSearch: a `CopyState` in that window fails there too.
+Remote-backed storage stays refused, because its upload listener asks for an
 `InternalEngine` by class, in a place no factory reaches.
 
 ## Where it behaves differently
+
+- **No merged-segment pre-copy.** With
+  `indices.replication.merges.warmer.enabled` (default false), OpenSearch's
+  engine pushes a merged segment to segment-replication replicas before the
+  merge commits. The Rust writer merges inside its own commit and runs no
+  warmer. Replicas fetch the merged segment at the next refresh: replication
+  stays correct, and that refresh copies more.
 
 - **Refresh is a commit.** Every refreshed operation is already in the last
   Lucene commit. A restart therefore replays only what was never refreshed.

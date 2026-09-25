@@ -287,6 +287,7 @@ def main():
     p = primary("segrep_rust")
     r = next(n for n, prim in copies("segrep_rust").items() if not prim)
     check(engines(r).get("nrt_replica", 0) >= 1, f"the replica on {r} runs NRTReplicationEngine: {engines(r)}")
+    check(engines(p).get("rust_indexer", 0) >= 1, f"the primary on {p} was built by RustIndexerFactory: {engines(p)}")
 
     # Promotion: the replica becomes a Rust primary on the segments it copied.
     rust_before = engines(r).get("rust", 0)
@@ -294,6 +295,7 @@ def main():
     DOWN.add(p)
     wait(lambda: health("segrep_rust", "yellow") and primary("segrep_rust") == r, "the segrep replica promoted")
     check(engines(r).get("rust", 0) > rust_before, f"{r} was promoted into the Rust engine: {engines(r)}")
+    check(engines(r).get("rust_indexer", 0) >= 1, f"the promoted engine on {r} went through RustIndexerFactory: {engines(r)}")
     rs.ops(300)
     rs.verify(f"writes after a segment-replication promotion to {r}")
     docker("start", p)
@@ -302,6 +304,17 @@ def main():
     wait(lambda: health("segrep_rust", "green"), "segrep_rust green again", 300)
     rs.verify("the stopped node rejoined as a segment-replication replica")
 
+    # Relocation: the primary moves to the other Rust node, whose new Rust primary takes over
+    # through a round of segment replication at handoff.
+    src = primary("segrep_rust")
+    dst = "os2" if src == "os1" else "os1"
+    settings("segrep_rust", {"index.number_of_replicas": 0, "index.routing.allocation.include._name": src})
+    wait(lambda: health("segrep_rust", "green") and set(copies("segrep_rust")) == {src}, "one segrep copy")
+    settings("segrep_rust", {"index.routing.allocation.include._name": dst})
+    wait(lambda: health("segrep_rust", "green") and primary("segrep_rust") == dst, f"the segrep primary relocated to {dst}")
+    rs.ops(300)
+    rs.verify(f"a segment-replication primary relocated {src} -> {dst}")
+
     # A replica on the Java node too, then a merge the replicas must copy.
     settings("segrep_rust", {"index.number_of_replicas": 2, "index.routing.allocation.include._name": "os1,os2,os3"})
     wait(lambda: health("segrep_rust", "green"), "three segrep copies", 300)
@@ -309,8 +322,19 @@ def main():
     rs.verify("a Rust segment-replication primary with a replica on the Java node")
     must("POST", "/segrep_rust/_forcemerge?max_num_segments=1")
     must("POST", "/segrep_rust/_refresh")
-    rs.ops(100)
     rs.verify("segment replication after a force merge")
+
+    def merged_everywhere():
+        rows = must("GET", "/_cat/segments/segrep_rust?format=json&h=prirep,node,segment,docs.count")
+        per_node = {}
+        for row in rows:
+            per_node.setdefault(row["node"], set()).add(row["segment"])
+        return len(per_node) == 3 and all(len(v) == 1 for v in per_node.values()) and \
+            len({next(iter(v)) for v in per_node.values()}) == 1
+    check(wait(merged_everywhere, "every copy holds the one merged segment", 120),
+          f"the replicas copied the merged segment: {must('GET', '/_cat/segments/segrep_rust?h=prirep,node,segment')}")
+    rs.ops(100)
+    rs.verify("writes after the merge replicated")
 
     print(f"verify_cluster: {CHECKS[0]} checks, {len(FAILURES)} failures", flush=True)
     sys.exit(1 if FAILURES else 0)
