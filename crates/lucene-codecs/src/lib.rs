@@ -19,6 +19,7 @@
 pub mod automaton;
 mod block_packed;
 pub mod blocktree;
+mod blocktree_writer;
 pub mod compound_format;
 mod deflate;
 pub mod direct_monotonic;

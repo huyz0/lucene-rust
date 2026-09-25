@@ -159,6 +159,23 @@ CASES=(
   # doc 8192, the level-0 one at doc 256, and dropping the payload-length
   # stream while the `.fnm` still claims payloads mis-frames every offset.
   "lucene-index|write_positions_segment_fixture|positions-segment|VerifyPositionsSegment"
+  # And the case every one above exists for (M3's T3.4): a whole index that
+  # *searches the same* in real Lucene as in this port. 120 000 Zipfian
+  # documents through IndexWriter, flushed into seven segments across two
+  # commits with deletes between them; five fields (text with positions,
+  # offsets and payloads; short text with positions; two keywords; a sparse
+  # numeric doc-values column). The example also runs 57 queries -- term,
+  # boolean AND/OR/NOT/minimumShouldMatch/FILTER, exact and sloppy phrase,
+  # doc-values range sorted by field -- through this port's searcher, and Java
+  # requires the same top 50 in the same order with every score within 1e-5,
+  # after checking ~58 000 occurrences against the stored text and running
+  # CheckIndex. Measured: a 2e-5 score change, two tied docs swapped, one
+  # hit dropped and an offset-length write defect each fail it.
+  #
+  # What it cannot catch: a defect in bytes that this port's reader and Java's
+  # decode *identically* but wrongly (a mis-encoded norm scores the same in
+  # both) -- only CheckIndex and the occurrence walk see those.
+  "lucene-search|write_verify_index_fixture|verify-index|VerifyIndex"
   # And a merge whose *sources real Lucene wrote*, disagreeing about the two
   # facts `SegmentMerger` derives from its readers rather than from the merging
   # writer: `minVersion` (the minimum across the sources) and `hasBlocks` (their
