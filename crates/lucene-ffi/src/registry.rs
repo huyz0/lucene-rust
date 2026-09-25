@@ -695,8 +695,9 @@ pub struct JvmReaderHandle {
     pub deleted: Vec<i64>,
 }
 
-pub fn jvm_readers() -> &'static RwLock<SlotMap<JvmReaderHandle>> {
-    static REGISTRY: OnceLock<RwLock<SlotMap<JvmReaderHandle>>> = OnceLock::new();
+/// Handles are `Arc`s so a search clones one out and runs with no lock held.
+pub fn jvm_readers() -> &'static RwLock<SlotMap<std::sync::Arc<JvmReaderHandle>>> {
+    static REGISTRY: OnceLock<RwLock<SlotMap<std::sync::Arc<JvmReaderHandle>>>> = OnceLock::new();
     REGISTRY.get_or_init(|| RwLock::new(SlotMap::new(RegistryTag::JvmReader)))
 }
 

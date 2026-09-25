@@ -24,7 +24,7 @@
 //! Every body runs inside [`guard`], so a panic in the marshalling itself is
 //! caught here, not unwound into the JVM.
 
-use jni::objects::{JByteArray, JClass, JFloatArray, JIntArray, JLongArray};
+use jni::objects::{JByteArray, JClass, JFloatArray, JIntArray, JLongArray, JObjectArray};
 use jni::sys::{jint, jlong, jstring};
 use jni::JNIEnv;
 
@@ -87,14 +87,16 @@ pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_lastError(
 }
 
 #[no_mangle]
+#[allow(clippy::too_many_arguments)]
 pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_openReader<'l>(
-    env: JNIEnv<'l>,
+    mut env: JNIEnv<'l>,
     _class: JClass<'l>,
     path: JByteArray<'l>,
     infos: JByteArray<'l>,
     generation: jlong,
     previous: jlong,
     max_docs: JIntArray<'l>,
+    live_docs: JObjectArray<'l>,
     out_handle: JLongArray<'l>,
 ) -> jint {
     run(|| {
@@ -107,11 +109,47 @@ pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_openReader<'l
         let n = env
             .get_array_length(&max_docs)
             .map_err(|e| jni_err(&env, "maxDocs", e))?;
-        let mut docs: Vec<i32> = zeroed(usize::try_from(n).unwrap_or(0))?;
+        let segments = usize::try_from(n).unwrap_or(0);
+        let mut docs: Vec<i32> = zeroed(segments)?;
         env.get_int_array_region(&max_docs, 0, &mut docs)
             .map_err(|e| jni_err(&env, "maxDocs", e))?;
+        // `liveDocs[i]` is segment i's words, or null for no deletions; a null
+        // array means no segment has any.
+        let mut counts: Vec<usize> = zeroed(segments)?;
+        let mut words: Vec<u64> = Vec::new();
+        if !live_docs.is_null() {
+            let m = env
+                .get_array_length(&live_docs)
+                .map_err(|e| jni_err(&env, "liveDocs", e))?;
+            if m != n {
+                set_last_error(format!("liveDocs has {m} entries for {n} segments"));
+                return Err(FfiStatus::InvalidArgument);
+            }
+            for (i, count) in counts.iter_mut().enumerate() {
+                let entry = env
+                    .get_object_array_element(&live_docs, i as jint)
+                    .map_err(|e| jni_err(&env, "liveDocs", e))?;
+                if entry.is_null() {
+                    continue;
+                }
+                let arr = JLongArray::from(entry);
+                let len = env
+                    .get_array_length(&arr)
+                    .map_err(|e| jni_err(&env, "liveDocs", e))?;
+                let mut buf: Vec<i64> = zeroed(usize::try_from(len).unwrap_or(0))?;
+                env.get_long_array_region(&arr, 0, &mut buf)
+                    .map_err(|e| jni_err(&env, "liveDocs", e))?;
+                let _ = env.delete_local_ref(arr);
+                *count = buf.len();
+                words
+                    .try_reserve(buf.len())
+                    .map_err(|_| FfiStatus::InvalidArgument)?;
+                words.extend(buf.into_iter().map(|w| w as u64));
+            }
+        }
         let mut handle = 0u64;
-        // SAFETY: every pointer/length pair describes a live Rust buffer.
+        // SAFETY: every pointer/length pair describes a live Rust buffer, and
+        // `words` holds exactly the sum of `counts`.
         let status = unsafe {
             jvm_reader::ffi_open_jvm_reader(
                 path.as_ptr().cast(),
@@ -122,57 +160,19 @@ pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_openReader<'l
                 previous as u64,
                 docs.as_ptr(),
                 docs.len(),
+                words.as_ptr(),
+                counts.as_ptr(),
                 &mut handle,
             )
         };
         if status == FfiStatus::Ok.code() {
-            env.set_long_array_region(&out_handle, 0, &[handle as jlong])
-                .map_err(|e| jni_err(&env, "outHandle", e))?;
+            if let Err(e) = env.set_long_array_region(&out_handle, 0, &[handle as jlong]) {
+                // Java will never see this handle, so nothing would close it.
+                jvm_reader::ffi_close_jvm_reader(handle);
+                return Err(jni_err(&env, "outHandle", e));
+            }
         }
         Ok(status)
-    })
-}
-
-#[no_mangle]
-pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_setLiveDocs<'l>(
-    env: JNIEnv<'l>,
-    _class: JClass<'l>,
-    handle: jlong,
-    segment: jint,
-    words: JLongArray<'l>,
-) -> jint {
-    run(|| {
-        let segment = usize::try_from(segment).map_err(|_| {
-            set_last_error(format!("segment {segment} is negative"));
-            FfiStatus::IndexOutOfBounds
-        })?;
-        if words.is_null() {
-            // SAFETY: null with length 0 is the documented "no deletions".
-            return Ok(unsafe {
-                jvm_reader::ffi_jvm_reader_set_live_docs(
-                    handle as u64,
-                    segment,
-                    std::ptr::null(),
-                    0,
-                )
-            });
-        }
-        let n = env
-            .get_array_length(&words)
-            .map_err(|e| jni_err(&env, "words", e))?;
-        let mut buf: Vec<i64> = zeroed(usize::try_from(n).unwrap_or(0))?;
-        env.get_long_array_region(&words, 0, &mut buf)
-            .map_err(|e| jni_err(&env, "words", e))?;
-        let buf: Vec<u64> = buf.into_iter().map(|w| w as u64).collect();
-        // SAFETY: `buf` is live for its length.
-        Ok(unsafe {
-            jvm_reader::ffi_jvm_reader_set_live_docs(
-                handle as u64,
-                segment,
-                buf.as_ptr(),
-                buf.len(),
-            )
-        })
     })
 }
 

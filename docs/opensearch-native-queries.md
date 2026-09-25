@@ -9,8 +9,10 @@ code, unchanged.
 
 Pinned versions: **OpenSearch 3.8.0**, **Lucene 10.5.0**.
 
-Everything here is enforced by `scripts/verify-opensearch.sh`: every row is a
-request it sends, with the plugin's switch off (the Lucene reference) and on,
+Everything here is enforced by `scripts/verify-opensearch.sh`: each row below
+is backed by requests it sends (the `size: 0`/paging/`track_total_hits` row by
+`match` and keyword `term` variants, with totals both above and below the
+threshold), with the plugin's switch off (the Lucene reference) and on,
 and it requires identical hits, scores (to 1e-5), totals and max score, and
 that the plugin's own counters show the query ran where this table says.
 
@@ -21,9 +23,12 @@ A request runs native when **all** of these hold:
 - the index has `index.lucene_rust.search.enabled: true` (the default);
 - it is a plain top-hits-by-score request — no `sort`, `aggs`, `post_filter`,
   `min_score`, `terminate_after`, `scroll`, `search_after`, `collapse`,
-  `rescore`, `timeout` or `profile`;
+  `rescore`, `timeout` or `profile`, not `search_type=dfs_query_then_fetch`,
+  and no other plugin replacing the top-docs collector;
 - the rewritten Lucene query is one of the shapes below, over fields that score
-  with the default BM25 (`k1 = 1.2`, `b = 0.75`);
+  with the default BM25 (`k1 = 1.2`, `b = 0.75`), with every `TermQuery` scoring
+  from the reader's own statistics (not blended `TermStates`, as `multi_match`
+  `cross_fields` builds);
 - every field in the index uses Lucene 10.5.0's default postings format
   (`Lucene104`). An index with a `completion` field does not.
 
@@ -45,7 +50,7 @@ A request runs native when **all** of these hold:
 | any query with `boost` ≠ 1 | `BoostQuery` | **no** (`slower_shape`) | 0.19–0.20× |
 | `constant_score` | `BoostQuery(ConstantScoreQuery(…))` | **no** (`slower_shape`) | 0.26× |
 
-"Measured" is the median REST round trip over 40 requests on one node, both
+"Measured" is the median REST round trip over 80 requests per engine on one node, both
 engines on the same 100k-document index; the source and method are
 [`benchmarks/m2-opensearch-e2e.md`](benchmarks/m2-opensearch-e2e.md). Above 1.0
 means native is faster.
@@ -69,12 +74,16 @@ Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
 | `query_<Class>` | the rewritten query's root is not a supported shape — e.g. `query_PhraseQuery` (`match_phrase`), `query_ApproximateScoreQuery` (`range`, `match_all`), `query_MultiTermQueryConstantScoreBlendedWrapper` (`prefix`, `wildcard`), `query_DisjunctionMaxQuery` (`multi_match`) |
 | `clause_<Class>` | the same, for a clause inside a `bool` |
 | `field_similarity` | a field scores with anything but default-parameter BM25 |
+| `term_states` | a term query carries its own statistics (`multi_match` `cross_fields`), or is a `TermQuery` subclass |
+| `dfs` | `search_type=dfs_query_then_fetch`: scoring uses statistics aggregated across shards |
+| `collector_spec` | another plugin registered a replacement top-docs collector |
+| `cancelled` | the task was cancelled before the native call |
 | `boost_invalid` | a negative or non-finite boost |
 | `boolean_empty`, `boolean_pure_negative` | a `bool` Lucene rewrites to match nothing |
 | `slower_shape` | a correct native shape routed to Lucene by measurement (above) |
 | `postings_format` | some field of the index uses a postings format other than `Lucene104` |
 | `reader_*`, `directory_*` | the searcher's reader or directory is not a local, standard one (remote store, a wrapped reader the plugin cannot see through) |
-| `native_open_failed`, `native_live_docs_failed`, `native_error` | the native side refused the reader or the query; the node log has the message. Never a failed search: the query re-runs on Lucene |
+| `native_open_failed`, `native_error` | the native side refused the reader or the query; the node log has the message. Never a failed search: the query re-runs on Lucene |
 
 ## Known limits
 
@@ -85,5 +94,9 @@ Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
   `.cfs` segment into memory (OpenSearch's small, freshly flushed segments are
   compound); only non-compound segments are memory-mapped. Released with the
   reader either way.
+- **A native query phase is not interruptible.** Cancellation is checked before
+  the native call, not during it; the Java path checks it per segment. A
+  native query runs to completion (one call, no per-document crossings), and
+  requests with an explicit `timeout` fall back.
 - **Linux only**, x86_64 and aarch64; the library needs glibc ≥ 2.34 (the
   OpenSearch 3.8.0 image has 2.34, and `verify-opensearch.sh` checks it).

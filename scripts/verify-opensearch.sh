@@ -81,6 +81,14 @@ run_yaml() { # port out-dir
     grep -E '^[0-9]+\) ' "$2/out.txt" | sed 's/^[0-9]*) //' | sort >"$2/failures.txt" || true
     grep -E '^(OK|Tests run)' "$2/out.txt" | tail -1
 }
+# Checked now: the YAML stage below replaces this container, and its log with it.
+check_jvm() {
+    if docker logs "$1" 2>&1 | grep -E "A fatal error has been detected|SIGSEGV \(0xb\)" >/dev/null; then
+        echo "verify-opensearch: the JVM of $1 crashed" >&2
+        status=1
+    fi
+}
+check_jvm "$NAME"
 if [[ $YAML == 1 && $status == 0 ]]; then
     gradle --no-daemon -q -p opensearch-plugin yamlRestTestClasspath
     work=$(mktemp -d) && chmod 755 "$work"
@@ -106,8 +114,7 @@ if [[ $YAML == 1 && $status == 0 ]]; then
     fi
     echo "yaml: $(wc -l <"$work/rust/failures.txt") failures on both nodes; outputs in $work"
 fi
-if docker logs "$NAME" 2>&1 | grep -E "A fatal error has been detected|SIGSEGV \(0xb\)" >/dev/null; then
-    echo "verify-opensearch: the JVM crashed" >&2
-    status=1
+if [[ $YAML == 1 ]]; then
+    check_jvm "$NAME"
 fi
 exit $status
