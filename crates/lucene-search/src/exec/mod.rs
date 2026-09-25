@@ -40,6 +40,7 @@ pub(crate) mod cache;
 mod conjunction;
 mod disjunction;
 mod leaf;
+pub(crate) mod multi_term;
 mod phrase;
 mod req;
 mod wand;

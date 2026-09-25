@@ -29,7 +29,10 @@ A request runs native when **all** of these hold:
   `TermQuery`, `BooleanQuery` (any `Occur`, any `minimum_should_match`,
   nested), `ConstantScoreQuery`, `BoostQuery`, `DisjunctionMaxQuery`,
   `MatchAllDocsQuery`, `MatchNoDocsQuery`, `PhraseQuery` (exact or sloppy,
-  terms at consecutive positions) -- at most 32 deep and 1,024 nodes,
+  terms at consecutive positions), and `prefix`, `wildcard` and `terms`
+  (`PrefixQuery`, `WildcardQuery`, `TermInSetQuery` under Lucene's default
+  constant-score rewrite, also as the index side of an
+  `IndexOrDocValuesQuery`) -- at most 32 deep and 1,024 nodes,
   over fields that score with the default BM25 (`k1 = 1.2`, `b = 0.75`), with
   every `TermQuery` scoring from the reader's own statistics (not blended
   `TermStates`, as `multi_match` `cross_fields` builds);
@@ -100,10 +103,11 @@ Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
 | `disabled` | `index.lucene_rust.search.enabled: false` |
 | `aggregations`, `post_filter`, `min_score`, `terminate_after`, `collectors` | the request adds a collector to the query phase |
 | `sort`, `search_after`, `scroll`, `collapse`, `rescore`, `profile`, `timeout` | the request needs something the native top-hits path does not produce |
-| `query_<Class>` | the rewritten query's root is not a supported shape — e.g. `query_IndexOrDocValuesQuery` (`range`), `query_MultiTermQueryConstantScoreBlendedWrapper` (`prefix`, `wildcard`) |
+| `query_<Class>` | the rewritten query's root is not a supported shape — e.g. `query_PointRangeQuery` (`range`), `query_RegexpQuery` (`regexp`), `query_MultiTermQueryConstantScoreBlendedWrapper` (`prefix`, `wildcard`) |
 | `clause_<Class>` | the same, for a clause anywhere below the root (inside a `bool`, `constant_score`, `dis_max`, a boost) |
 | `query_too_deep`, `query_too_large` | more than 32 levels, or more than 1,024 nodes counting wrappers (Lucene counts only leaves, and `indices.query.bool.max_clause_count` can raise its limit) |
 | `boolean_msm_negative` | a `BooleanQuery` with a negative `minimumNumberShouldMatch` |
+| `wildcard_escape` | a `wildcard` pattern with a `\\` escape (the native matcher has no escape syntax) |
 | `phrase_positions` | a `PhraseQuery` whose terms are not at consecutive positions (the analyzer removed a stopword, leaving a gap) |
 | `field_similarity` | a field scores with anything but default-parameter BM25 |
 | `term_states` | a term query carries its own statistics (`multi_match` `cross_fields`), or is a `TermQuery` subclass |

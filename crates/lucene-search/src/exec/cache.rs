@@ -262,7 +262,7 @@ pub(crate) struct CachedScorer {
 }
 
 impl CachedScorer {
-    fn new(set: Arc<CachedSet>) -> Self {
+    pub(crate) fn new(set: Arc<CachedSet>) -> Self {
         Self {
             set,
             doc: -1,
@@ -440,6 +440,17 @@ mod tests {
             .is_none());
         let r = cache.scorer(&other, 20_000, || Ok(None)).unwrap();
         assert!(matches!(r, Some(CacheResult::Empty)));
+    }
+
+    /// Two searches building the same set at once: the second insert
+    /// replaces the first, and the byte count stays that of one entry.
+    #[test]
+    fn a_racing_second_insert_replaces_the_first() {
+        let cache = SegmentQueryCache::default();
+        let set = || Arc::new(CachedSet::Docs(vec![1, 2, 3]));
+        cache.insert("q".to_string(), set());
+        cache.insert("q".to_string(), set());
+        assert_eq!(cache.stats(), (1, 12));
     }
 
     #[test]

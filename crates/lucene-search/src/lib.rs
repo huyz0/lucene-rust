@@ -480,8 +480,30 @@ type Expansion = (String, Vec<(Vec<u8>, blocktree::SeekedTerm)>, i64);
 
 /// The terms a wildcard-family clause expands to, or `None` when the clause is
 /// not one of that family (or its field is absent from this segment).
-fn expanded_terms(fields: &BlockTreeFields, clause: &Clause) -> Result<Option<Expansion>> {
+pub(crate) fn expanded_terms(
+    fields: &BlockTreeFields,
+    clause: &Clause,
+) -> Result<Option<Expansion>> {
     let out = match clause {
+        // `TermInSetQuery`: each distinct term that is in this segment, in
+        // term order, as its `TermsEnum` over the sorted set visits them.
+        Clause::TermInSet(q) => {
+            let Some(ft) = fields.field(&q.field) else {
+                return Ok(None);
+            };
+            let mut sorted: Vec<&Vec<u8>> = q.terms.iter().collect();
+            sorted.sort_unstable();
+            sorted.dedup();
+            let mut df = 0i64;
+            let mut terms = Vec::with_capacity(sorted.len());
+            for t in sorted {
+                if let Some(seeked) = ft.seek_term_state(t)? {
+                    df += seeked.stats.doc_freq as i64;
+                    terms.push((t.clone(), seeked));
+                }
+            }
+            (q.field.clone(), terms, df)
+        }
         Clause::Prefix(q) => {
             let Some(ft) = fields.field(&q.field) else {
                 return Ok(None);
@@ -582,6 +604,20 @@ fn stream_constant_score_clause<C: ScoringCollector>(
     // matching documents in doc-id order -- see `cutoff_constant_score_union`,
     // which reads each term only below a shrinking doc-id cutoff.
     if let Some(need) = collector.constant_score_hits_needed() {
+        // A handful of terms (a `terms` query, a narrow prefix): Lucene's
+        // rewrite is a constant-scored disjunction of them, and a plain
+        // k-way merge that stops at `need` beats the cutoff machinery built
+        // for hundreds of expansions.
+        if terms.len() <= 16 {
+            return small_constant_score_union(
+                field_terms,
+                &terms,
+                doc_in,
+                live_docs,
+                need,
+                collector,
+            );
+        }
         return cutoff_constant_score_union(
             field_terms,
             &terms,
@@ -683,6 +719,51 @@ fn stream_constant_score_clause<C: ScoringCollector>(
 /// thousands of multi-kilobyte cursors for a wide prefix, and profiled mostly
 /// as page faults), and reads a pulsed single-document term straight out of
 /// its term metadata.
+/// The first `need` documents of the union of a few terms, in doc-id order,
+/// each collected at `1.0`: `BooleanQuery(SHOULD terms)` under
+/// `ConstantScoreQuery`, stopped as `ConstantScoreScorer` stops once the
+/// collector can take nothing more. A k-way merge document by document: a
+/// window-at-a-time bitset union (`BooleanScorer`'s shape) measured half as
+/// fast here, because it decodes whole windows to keep the first `need`.
+fn small_constant_score_union<C: ScoringCollector>(
+    field_terms: &blocktree::FieldTerms,
+    terms: &[(Vec<u8>, blocktree::SeekedTerm)],
+    doc_in: &DocInput<'_>,
+    live_docs: Option<&FixedBitSet>,
+    need: u64,
+    collector: &mut C,
+) -> Result<bool> {
+    use lucene_codecs::postings::NO_MORE_DOCS;
+    let pe = |e| -> Error { blocktree::Error::Postings(e).into() };
+    let mut cursors = Vec::with_capacity(terms.len());
+    let mut docs = Vec::with_capacity(terms.len());
+    for (_, seeked) in terms {
+        let mut c = field_terms.lazy_postings_for(
+            seeked,
+            doc_in,
+            lucene_codecs::postings::PostingsFlags::DocsOnly,
+        )?;
+        docs.push(c.next_doc().map_err(pe)?);
+        cursors.push(c);
+    }
+    let mut left = need;
+    loop {
+        let doc = docs.iter().copied().min().unwrap_or(NO_MORE_DOCS);
+        if doc == NO_MORE_DOCS || left == 0 {
+            return Ok(true);
+        }
+        if live_docs.is_none_or(|l| l.get_doc(doc)) {
+            collector.collect(doc, 1.0);
+            left -= 1;
+        }
+        for (d, c) in docs.iter_mut().zip(cursors.iter_mut()) {
+            if *d == doc {
+                *d = c.next_doc().map_err(pe)?;
+            }
+        }
+    }
+}
+
 fn cutoff_constant_score_union<C: ScoringCollector>(
     field_terms: &blocktree::FieldTerms,
     terms: &[(Vec<u8>, blocktree::SeekedTerm)],
@@ -3041,7 +3122,11 @@ fn search_boolean_query_scored_impl<C: ScoringCollector>(
         && query.minimum_should_match == 0
         && matches!(
             query.must[0],
-            Clause::Phrase(_) | Clause::Prefix(_) | Clause::Wildcard(_) | Clause::Regexp(_)
+            Clause::Phrase(_)
+                | Clause::Prefix(_)
+                | Clause::Wildcard(_)
+                | Clause::Regexp(_)
+                | Clause::TermInSet(_)
         )
     {
         // Straight to the collector, not through `clause_scores`. That function
@@ -3103,7 +3188,10 @@ fn search_boolean_query_scored_impl<C: ScoringCollector>(
             // takes the two-pass path below, whose `clause_scores` arm calls
             // `fuzzy_doc_scores`; the test pinning this is
             // `a_single_fuzzy_clause_is_scored_not_constant_scored`.
-            other @ (Clause::Prefix(_) | Clause::Wildcard(_) | Clause::Regexp(_)) => {
+            other @ (Clause::Prefix(_)
+            | Clause::Wildcard(_)
+            | Clause::Regexp(_)
+            | Clause::TermInSet(_)) => {
                 // Lazily merge the expanded terms' postings and stop at the
                 // collector's capacity -- see `stream_constant_score_clause`.
                 if stream_constant_score_clause(fields, doc_in, live_docs, other, collector)? {

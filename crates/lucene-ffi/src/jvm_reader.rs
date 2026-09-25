@@ -78,8 +78,9 @@ use std::sync::Arc;
 /// plugin; 2, `CONSTANT_SCORE` and `BOOST` clause kinds; 3, `count_limit`;
 /// 4, live docs passed to `ffi_open_jvm_reader` (no `set_live_docs`);
 /// 5, the engine writer (`engine_writer.rs`); 6, the writer's `max_docs`;
-/// 7, the [`QUERY_TREE`] blob (read path R2); 8, its phrase node (R3).
-pub const JVM_ABI_VERSION: u32 = 8;
+/// 7, the [`QUERY_TREE`] blob (read path R2); 8, its phrase node (R3); 9,
+/// its term-set, prefix and wildcard nodes (R3).
+pub const JVM_ABI_VERSION: u32 = 9;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -97,6 +98,9 @@ const NODE_DISMAX: u8 = 4;
 const NODE_MATCH_ALL: u8 = 5;
 const NODE_MATCH_NONE: u8 = 6;
 const NODE_PHRASE: u8 = 7;
+const NODE_TERM_SET: u8 = 8;
+const NODE_PREFIX: u8 = 9;
+const NODE_WILDCARD: u8 = 10;
 
 /// [`JVM_ABI_VERSION`], for the plugin's load-time handshake.
 #[no_mangle]
@@ -720,7 +724,7 @@ fn decode_node(c: &mut Cursor<'_>, depth: usize, nodes: &mut usize) -> Result<Cl
     use crate::query::MAX_CLAUSE_DEPTH;
     use lucene_search::query::{
         BoostQuery, ConstantScoreQuery, DisjunctionMaxQuery, MatchAllDocsQuery, MatchNoDocsQuery,
-        PhraseQuery,
+        PhraseQuery, PrefixQuery, TermInSetQuery, WildcardQuery,
     };
     if depth >= MAX_CLAUSE_DEPTH {
         set_last_error(format!(
@@ -817,9 +821,32 @@ fn decode_node(c: &mut Cursor<'_>, depth: usize, nodes: &mut usize) -> Result<Cl
             let slop = u32::try_from(slop).map_err(|_| FfiStatus::InvalidArgument)?;
             Clause::Phrase(PhraseQuery::new(field, terms).with_slop(slop))
         }
+        NODE_TERM_SET => {
+            // `TermInSetQuery`: `field`, then the terms, each counted against
+            // the node limit as `IndexSearcher`'s clause visitor counts them.
+            let field = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
+            let count = c.len()?;
+            *nodes = nodes.saturating_add(count);
+            check_clause_count(*nodes)?;
+            let mut terms = Vec::new();
+            for _ in 0..count {
+                terms.push(c.bytes()?.to_vec());
+            }
+            Clause::TermInSet(TermInSetQuery::new(field, terms))
+        }
+        NODE_PREFIX => {
+            let field = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
+            Clause::Prefix(PrefixQuery::new(field, c.bytes()?.to_vec()))
+        }
+        NODE_WILDCARD => {
+            // Lucene's syntax without its `\` escape, which the encoder never
+            // sends (such a pattern falls back).
+            let field = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
+            Clause::Wildcard(WildcardQuery::new(field, c.bytes()?.to_vec()))
+        }
         other => {
             set_last_error(format!(
-                "query tree: unknown node kind {other} (expected 0..=7)"
+                "query tree: unknown node kind {other} (expected 0..=10)"
             ));
             return Err(FfiStatus::InvalidArgument);
         }
@@ -1594,6 +1621,9 @@ mod tests {
         None,
         /// `(field, slop, [(position, term)])`.
         P(&'a str, i32, Vec<(i32, &'a str)>),
+        Ts(&'a str, Vec<&'a str>),
+        Pre(&'a str, &'a str),
+        Wc(&'a str, &'a str),
     }
 
     fn enc(n: &N<'_>, b: &mut Vec<u8>) {
@@ -1636,6 +1666,24 @@ mod tests {
             }
             N::All => b.push(NODE_MATCH_ALL),
             N::None => b.push(NODE_MATCH_NONE),
+            N::Ts(field, terms) => {
+                b.push(NODE_TERM_SET);
+                bytes(b, field.as_bytes());
+                b.extend_from_slice(&(terms.len() as i32).to_le_bytes());
+                for t in terms {
+                    bytes(b, t.as_bytes());
+                }
+            }
+            N::Pre(field, prefix) => {
+                b.push(NODE_PREFIX);
+                bytes(b, field.as_bytes());
+                bytes(b, prefix.as_bytes());
+            }
+            N::Wc(field, pattern) => {
+                b.push(NODE_WILDCARD);
+                bytes(b, field.as_bytes());
+                bytes(b, pattern.as_bytes());
+            }
             N::P(field, slop, terms) => {
                 b.push(NODE_PHRASE);
                 bytes(b, field.as_bytes());
@@ -1742,6 +1790,49 @@ mod tests {
         let sloppy = tree(N::P("body", 2, vec![(0, "dog"), (1, "cat")]));
         let (hits, _) = run(h, &sloppy, 10, true).unwrap();
         assert!(hits.iter().any(|&(d, _)| d == 1 || d == 2), "{hits:?}");
+    }
+
+    #[test]
+    fn multi_term_trees_match_their_terms_at_a_constant_score() {
+        let h = open();
+        let docs = |blob: &[u8]| {
+            let (hits, total) = run(h, blob, 10, true).unwrap();
+            assert!(
+                hits.iter().all(|&(_, s)| s == 1.0),
+                "constant scores: {hits:?}"
+            );
+            let mut d: Vec<i32> = hits.iter().map(|&(d, _)| d).collect();
+            d.sort_unstable();
+            assert_eq!(total, d.len() as i64);
+            d
+        };
+        let dog = docs(&tree(N::C(1.0, Box::new(N::T("body", "dog")))));
+        let fox = docs(&tree(N::C(1.0, Box::new(N::T("body", "fox")))));
+        assert_eq!(docs(&tree(N::Pre("body", "do"))), dog);
+        assert_eq!(docs(&tree(N::Wc("body", "d?g"))), dog);
+        let mut either = [dog.clone(), fox].concat();
+        either.sort_unstable();
+        either.dedup();
+        assert_eq!(
+            docs(&tree(N::Ts("body", vec!["fox", "dog", "nosuch"]))),
+            either
+        );
+        assert_eq!(docs(&tree(N::Ts("body", vec![]))), Vec::<i32>::new());
+        // Under a boost, the boost is the score.
+        let (hits, _) = run(
+            h,
+            &tree(N::Boost(2.0, Box::new(N::Pre("body", "do")))),
+            10,
+            true,
+        )
+        .unwrap();
+        assert!(hits.iter().all(|&(_, s)| s == 2.0));
+        let long: Vec<&str> = (0..1100).map(|_| "t").collect();
+        assert_eq!(
+            decode_query(&tree(N::Ts("body", long))).map(|_| ()),
+            Err(FfiStatus::InvalidArgument),
+            "a term set over the clause cap"
+        );
     }
 
     #[test]
