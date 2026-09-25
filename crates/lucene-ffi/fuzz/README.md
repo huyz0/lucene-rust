@@ -8,7 +8,7 @@ them — under AddressSanitizer (cargo-fuzz's default). M2 task T2.5.
 |---|---|
 | `jvm_search` | `ffi_jvm_reader_search` with an arbitrary query blob, `top_n` and count limit, over a real two-segment Java-written index |
 | `jvm_open_reader` | `ffi_open_jvm_reader` with arbitrary `SegmentInfos` bytes, generation and expected segment sizes; whatever opens is searched and closed |
-| `jvm_live_docs` | `ffi_jvm_reader_set_live_docs` with arbitrary words, then searches and counts under whatever was accepted |
+| `jvm_live_docs` | `ffi_open_jvm_reader` with arbitrary live-docs words and per-segment word counts, then searches and counts under whatever was accepted |
 | `boolean_clause_arrays` | the occur-tagged clause-array format through `ffi_search_boolean_query_multi_segment`: arbitrary occurs, kinds, parents and params |
 
 **A caught panic is a finding.** The boundary would survive it — every entry
