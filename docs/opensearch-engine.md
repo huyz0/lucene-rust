@@ -97,6 +97,18 @@ any other way refuses to start as a segment-replication primary, and says
 why. `_plugins/lucene_rust/stats` counts the wrapped engines as
 `engines.rust_indexer`.
 
+**Without the hook.** The upstream fix is an overridable
+`Engine#lastRefreshedCheckpoint()` (and `currentOngoingRefreshCheckpoint()`)
+that `EngineBackedIndexer` asks, instead of testing for `InternalEngine`.
+`RustEngine`'s public methods of the same signature then override it with no
+change on our side. The plugin checks at startup whether `Engine` declares
+them. If it does, it writes nothing into `IndexModule`, and `stats` reports
+`engines.segrep_primary: native` (otherwise `indexer_factory`). The change is
+on `huyz0/opensearch`, branch `rust-engine-refresh-checkpoint`, off 3.8.0,
+with a unit test. With that patched `opensearch-3.8.0.jar` in the node image,
+the cluster proof passes with the hook unused:
+`OS_IMAGE=<patched image> scripts/verify-opensearch-cluster.sh --no-build`.
+
 The temporary read-only engine during an engine reset is the one exception,
 as on stock OpenSearch: a `CopyState` in that window fails there too.
 Remote-backed storage stays refused, because its upload listener asks for an

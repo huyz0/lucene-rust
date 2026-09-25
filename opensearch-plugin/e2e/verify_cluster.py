@@ -287,7 +287,10 @@ def main():
     p = primary("segrep_rust")
     r = next(n for n, prim in copies("segrep_rust").items() if not prim)
     check(engines(r).get("nrt_replica", 0) >= 1, f"the replica on {r} runs NRTReplicationEngine: {engines(r)}")
-    check(engines(p).get("rust_indexer", 0) >= 1, f"the primary on {p} was built by RustIndexerFactory: {engines(p)}")
+    native = engines(p).get("segrep_primary") == "native"
+    print(f"segment-replication primaries: {engines(p).get('segrep_primary')}", flush=True)
+    if not native:
+        check(engines(p).get("rust_indexer", 0) >= 1, f"the primary on {p} was built by RustIndexerFactory: {engines(p)}")
 
     # Promotion: the replica becomes a Rust primary on the segments it copied.
     rust_before = engines(r).get("rust", 0)
@@ -295,7 +298,8 @@ def main():
     DOWN.add(p)
     wait(lambda: health("segrep_rust", "yellow") and primary("segrep_rust") == r, "the segrep replica promoted")
     check(engines(r).get("rust", 0) > rust_before, f"{r} was promoted into the Rust engine: {engines(r)}")
-    check(engines(r).get("rust_indexer", 0) >= 1, f"the promoted engine on {r} went through RustIndexerFactory: {engines(r)}")
+    if not native:
+        check(engines(r).get("rust_indexer", 0) >= 1, f"the promoted engine on {r} went through RustIndexerFactory: {engines(r)}")
     rs.ops(300)
     rs.verify(f"writes after a segment-replication promotion to {r}")
     docker("start", p)
