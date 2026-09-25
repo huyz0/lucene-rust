@@ -4066,9 +4066,9 @@ mod tests {
     }
 
     /// `total_term_freq >= BLOCK_SIZE` alone (via a single doc with a huge
-    /// freq, so `docFreq == 1`) is no longer rejected -- only `docFreq >=
-    /// BLOCK_SIZE` is, per [`Error::DocFreqTooLargeForPositions`]'s doc
-    /// comment. This is the "one doc, many positions" full-position-block
+    /// freq, so `docFreq == 1`) is no longer rejected. (A `docFreq >=
+    /// BLOCK_SIZE` ceiling for positions, the since-removed
+    /// `DocFreqTooLargeForPositions`, outlived it for a while.) This is the "one doc, many positions" full-position-block
     /// case (see [`positions_full_block_from_one_doc_round_trips`] for the
     /// round-trip proof); this test only checks it no longer errors.
     #[test]
@@ -4094,7 +4094,7 @@ mod tests {
     }
 
     /// `docFreq >= BLOCK_SIZE` while indexing positions used to be rejected
-    /// (`Error::DocFreqTooLargeForPositions`), because a `.doc` full block of
+    /// (the since-removed `DocFreqTooLargeForPositions`), because a `.doc` full block of
     /// a positions-indexing field carries pos/pay skip sub-fields this writer
     /// did not emit. It emits them now ([`PosSkipWriter`]), so the shape is
     /// accepted -- and the level-0 header it produces is read back by the
@@ -4683,8 +4683,8 @@ mod tests {
     }
 
     /// Builds a term whose `total_term_freq` is exactly `total`, spread
-    /// across a handful of docs (`docFreq` well under `BLOCK_SIZE`, so
-    /// [`Error::DocFreqTooLargeForPositions`] never trips) with genuinely
+    /// across a handful of docs (`docFreq` well under `BLOCK_SIZE`, the
+    /// ceiling positions once had) with genuinely
     /// irregular per-occurrence position deltas -- cycling through
     /// 1/1/4/1/1/30/1/1/2/... rather than a uniform delta, so a bug in
     /// [`write_full_position_block`]'s flat cross-doc buffering (e.g. an
@@ -5100,8 +5100,8 @@ mod tests {
     /// occurrence to the next inside a full block (exercising
     /// `read_positions`'s `PForUtil`-decoded `offset_lengths` array, not the
     /// tail's "reuse unless changed" path). Occurrences span several docs
-    /// (`docFreq` well under `BLOCK_SIZE`, so `Error::DocFreqTooLargeForPositions`
-    /// never trips) via [`irregular_positions_term`], with offsets derived by
+    /// (`docFreq` well under `BLOCK_SIZE`, the ceiling positions once had)
+    /// via [`irregular_positions_term`], with offsets derived by
     /// [`offsets_from_positions`].
     #[test]
     fn total_term_freq_full_block_with_offsets_round_trips() {
@@ -5410,7 +5410,7 @@ mod tests {
     /// (exercising `read_positions`'s `PForUtil`-decoded `payload_lengths`
     /// array and the `.pay` byte-run it gates, not the tail's "reuse unless
     /// changed" path). Occurrences span several docs (`docFreq` well under
-    /// `BLOCK_SIZE`, so `Error::DocFreqTooLargeForPositions` never trips) via
+    /// `BLOCK_SIZE`, the ceiling positions once had) via
     /// [`irregular_positions_term`], with payload lengths cycling through
     /// 1/0/3/2 bytes (including an empty payload) so a bug that assumed every
     /// payload in a block has the same length would produce wrong bytes.
