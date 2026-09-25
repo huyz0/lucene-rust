@@ -28,6 +28,7 @@ use jni::objects::{JByteArray, JClass, JFloatArray, JIntArray, JLongArray, JObje
 use jni::sys::{jint, jlong, jstring};
 use jni::JNIEnv;
 
+use crate::engine_writer;
 use crate::error::{guard, last_error, set_last_error, FfiStatus};
 use crate::jvm_reader;
 use crate::raw::try_with_capacity;
@@ -258,4 +259,306 @@ pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_closeReader(
     handle: jlong,
 ) -> jint {
     jvm_reader::ffi_close_jvm_reader(handle as u64)
+}
+
+// ---------------------------------------------------------------------------
+// The engine writer (`engine_writer.rs`, M5): same marshalling-only rule.
+// ---------------------------------------------------------------------------
+
+/// Copies `arr[..len]` (or all of `arr` when `len < 0`).
+fn bytes_of(
+    env: &JNIEnv<'_>,
+    arr: &JByteArray<'_>,
+    len: jint,
+    what: &str,
+) -> Result<Vec<u8>, FfiStatus> {
+    let total = env
+        .get_array_length(arr)
+        .map_err(|e| jni_err(env, what, e))?;
+    let n = if len < 0 { total } else { len };
+    if n > total {
+        set_last_error(format!("{what}: length {n} exceeds the array's {total}"));
+        return Err(FfiStatus::InvalidArgument);
+    }
+    let mut buf: Vec<i8> = zeroed(usize::try_from(n).unwrap_or(0))?;
+    env.get_byte_array_region(arr, 0, &mut buf)
+        .map_err(|e| jni_err(env, what, e))?;
+    Ok(buf.into_iter().map(|b| b as u8).collect())
+}
+
+fn set_long(
+    env: &JNIEnv<'_>,
+    arr: &JLongArray<'_>,
+    value: i64,
+    what: &str,
+) -> Result<(), FfiStatus> {
+    env.set_long_array_region(arr, 0, &[value])
+        .map_err(|e| jni_err(env, what, e))
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_writerOpen<'l>(
+    env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    path: JByteArray<'l>,
+    ram_buffer_mb: f64,
+    fault_injection: jni::sys::jboolean,
+    out_handle: JLongArray<'l>,
+) -> jint {
+    run(|| {
+        let path = bytes_of(&env, &path, -1, "path")?;
+        let mut handle = 0u64;
+        // SAFETY: live buffer and out-pointer.
+        let status = unsafe {
+            engine_writer::ffi_engine_writer_open(
+                path.as_ptr().cast(),
+                path.len(),
+                ram_buffer_mb,
+                fault_injection,
+                &mut handle,
+            )
+        };
+        if status == FfiStatus::Ok.code() {
+            if let Err(e) = set_long(&env, &out_handle, handle as i64, "outHandle") {
+                engine_writer::ffi_engine_writer_close(handle);
+                return Err(e);
+            }
+        }
+        Ok(status)
+    })
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_writerRegisterField<'l>(
+    env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    spec: JByteArray<'l>,
+    out_number: JIntArray<'l>,
+) -> jint {
+    run(|| {
+        let spec = bytes_of(&env, &spec, -1, "spec")?;
+        let mut number = 0i32;
+        // SAFETY: live buffer and out-pointer.
+        let status = unsafe {
+            engine_writer::ffi_engine_writer_register_field(
+                handle as u64,
+                spec.as_ptr(),
+                spec.len(),
+                &mut number,
+            )
+        };
+        if status == FfiStatus::Ok.code() {
+            env.set_int_array_region(&out_number, 0, &[number])
+                .map_err(|e| jni_err(&env, "outNumber", e))?;
+        }
+        Ok(status)
+    })
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_writerApply<'l>(
+    env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    op: JByteArray<'l>,
+    len: jint,
+) -> jint {
+    run(|| {
+        let op = bytes_of(&env, &op, len, "op")?;
+        // SAFETY: live buffer.
+        Ok(unsafe { engine_writer::ffi_engine_writer_apply(handle as u64, op.as_ptr(), op.len()) })
+    })
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_writerCommit<'l>(
+    env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    user_data: JByteArray<'l>,
+    out_generation: JLongArray<'l>,
+) -> jint {
+    run(|| {
+        let data = bytes_of(&env, &user_data, -1, "userData")?;
+        let mut generation = 0i64;
+        // SAFETY: live buffer and out-pointer.
+        let status = unsafe {
+            engine_writer::ffi_engine_writer_commit(
+                handle as u64,
+                data.as_ptr(),
+                data.len(),
+                &mut generation,
+            )
+        };
+        if status == FfiStatus::Ok.code() {
+            set_long(&env, &out_generation, generation, "outGeneration")?;
+        }
+        Ok(status)
+    })
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_writerCommitGenerations<'l>(
+    env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    out: JLongArray<'l>,
+    out_len: JIntArray<'l>,
+) -> jint {
+    run(|| {
+        let cap = env
+            .get_array_length(&out)
+            .map_err(|e| jni_err(&env, "out", e))?;
+        let mut buf: Vec<i64> = zeroed(usize::try_from(cap).unwrap_or(0))?;
+        let mut n = 0usize;
+        // SAFETY: `buf` holds `buf.len()` values.
+        let status = unsafe {
+            engine_writer::ffi_engine_writer_commit_generations(
+                handle as u64,
+                buf.as_mut_ptr(),
+                buf.len(),
+                &mut n,
+            )
+        };
+        let n32 = jint::try_from(n).unwrap_or(jint::MAX);
+        env.set_int_array_region(&out_len, 0, &[n32])
+            .map_err(|e| jni_err(&env, "outLen", e))?;
+        if status == FfiStatus::Ok.code() {
+            env.set_long_array_region(&out, 0, &buf[..n])
+                .map_err(|e| jni_err(&env, "out", e))?;
+        }
+        Ok(status)
+    })
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_writerDeleteCommits<'l>(
+    env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    generations: JLongArray<'l>,
+) -> jint {
+    run(|| {
+        let n = env
+            .get_array_length(&generations)
+            .map_err(|e| jni_err(&env, "generations", e))?;
+        let mut gens: Vec<i64> = zeroed(usize::try_from(n).unwrap_or(0))?;
+        env.get_long_array_region(&generations, 0, &mut gens)
+            .map_err(|e| jni_err(&env, "generations", e))?;
+        // SAFETY: live buffer.
+        Ok(unsafe {
+            engine_writer::ffi_engine_writer_delete_commits(
+                handle as u64,
+                gens.as_ptr(),
+                gens.len(),
+            )
+        })
+    })
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_writerHoldCommit<'l>(
+    env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    generation: jlong,
+    out_hold: JLongArray<'l>,
+) -> jint {
+    run(|| {
+        let mut hold = 0u64;
+        // SAFETY: live out-pointer.
+        let status = unsafe {
+            engine_writer::ffi_engine_writer_hold_commit(handle as u64, generation, &mut hold)
+        };
+        if status == FfiStatus::Ok.code() {
+            if let Err(e) = set_long(&env, &out_hold, hold as i64, "outHold") {
+                engine_writer::ffi_engine_writer_release_hold(handle as u64, hold);
+                return Err(e);
+            }
+        }
+        Ok(status)
+    })
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_writerReleaseHold(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    handle: jlong,
+    hold: jlong,
+) -> jint {
+    engine_writer::ffi_engine_writer_release_hold(handle as u64, hold as u64)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_writerSetRetention(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    handle: jlong,
+    enabled: jni::sys::jboolean,
+    min_retained_seq_no: jlong,
+) -> jint {
+    engine_writer::ffi_engine_writer_set_retention(handle as u64, enabled, min_retained_seq_no)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_writerForceMerge<'l>(
+    env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    max_segments: jint,
+    only_deletes: jni::sys::jboolean,
+    out_generation: JLongArray<'l>,
+) -> jint {
+    run(|| {
+        let mut generation = 0i64;
+        // SAFETY: live out-pointer.
+        let status = unsafe {
+            engine_writer::ffi_engine_writer_force_merge(
+                handle as u64,
+                max_segments,
+                only_deletes,
+                &mut generation,
+            )
+        };
+        if status == FfiStatus::Ok.code() {
+            set_long(&env, &out_generation, generation, "outGeneration")?;
+        }
+        Ok(status)
+    })
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_writerStats<'l>(
+    env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    out: JLongArray<'l>,
+) -> jint {
+    run(|| {
+        let mut stats = [0i64; engine_writer::STAT_COUNT];
+        // SAFETY: `stats` holds `STAT_COUNT` values.
+        let status = unsafe {
+            engine_writer::ffi_engine_writer_stats(handle as u64, stats.as_mut_ptr(), stats.len())
+        };
+        if status == FfiStatus::Ok.code() {
+            let cap = env
+                .get_array_length(&out)
+                .map_err(|e| jni_err(&env, "out", e))?;
+            let k = stats.len().min(usize::try_from(cap).unwrap_or(0));
+            env.set_long_array_region(&out, 0, &stats[..k])
+                .map_err(|e| jni_err(&env, "out", e))?;
+        }
+        Ok(status)
+    })
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_lucenerust_opensearch_NativeBridge_writerClose(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    handle: jlong,
+) -> jint {
+    engine_writer::ffi_engine_writer_close(handle as u64)
 }

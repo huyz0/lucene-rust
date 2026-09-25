@@ -281,6 +281,7 @@
 
 mod directory;
 mod directory_reader;
+pub(crate) mod engine_writer;
 mod error;
 mod explain;
 mod facets;
