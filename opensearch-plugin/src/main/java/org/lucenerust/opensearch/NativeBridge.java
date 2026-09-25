@@ -13,7 +13,7 @@ package org.lucenerust.opensearch;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 1;
+    public static final int EXPECTED_ABI_VERSION = 3;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -48,14 +48,17 @@ public final class NativeBridge {
     public static native int setLiveDocs(long handle, int segment, long[] words);
 
     /**
-     * Runs a query blob. {@code outCounts[0]} receives the number of hits written, {@code
-     * outCounts[1]} the exact total when {@code countTotal}, else -1.
+     * Runs a query blob. {@code outCounts[0]} receives the number of hits written; {@code
+     * outCounts[1]} the total hits, exact below {@code countLimit} and otherwise a lower bound of at
+     * least {@code countLimit}, with {@code outCounts[2]} 1 in that case -- Lucene's {@code
+     * totalHitsThreshold}. A {@code countLimit} of 0 counts nothing ({@code outCounts[1]} is -1);
+     * {@link Long#MAX_VALUE} counts exactly.
      */
     public static native int search(
         long handle,
         byte[] query,
         int topN,
-        boolean countTotal,
+        long countLimit,
         int[] outDocs,
         float[] outScores,
         long[] outCounts

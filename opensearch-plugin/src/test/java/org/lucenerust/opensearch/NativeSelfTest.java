@@ -16,6 +16,7 @@ import org.apache.lucene.index.Term;
 import org.apache.lucene.search.BooleanClause.Occur;
 import org.apache.lucene.search.BooleanQuery;
 import org.apache.lucene.search.BoostQuery;
+import org.apache.lucene.search.ConstantScoreQuery;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.MatchAllDocsQuery;
 import org.apache.lucene.search.PhraseQuery;
@@ -90,18 +91,18 @@ public final class NativeSelfTest {
     private static void jniErrorPaths() {
         int[] docs = new int[4];
         float[] scores = new float[4];
-        long[] counts = new long[2];
+        long[] counts = new long[3];
         byte[] blob = QueryEncoder.encode(new TermQuery(new Term("f", "t")), f -> true).blob();
-        int rc = NativeBridge.search(12345L, blob, 4, true, docs, scores, counts);
+        int rc = NativeBridge.search(12345L, blob, 4, Long.MAX_VALUE, docs, scores, counts);
         check(rc == NativeBridge.INVALID_HANDLE, "search on a fabricated handle -> INVALID_HANDLE, got " + rc);
         check(NativeBridge.lastError().contains("unknown"), "lastError names the bad handle: " + NativeBridge.lastError());
         check(NativeBridge.closeReader(0) == NativeBridge.INVALID_HANDLE, "closing handle 0");
         check(NativeBridge.setLiveDocs(99, 0, null) == NativeBridge.INVALID_HANDLE, "live docs on a fabricated handle");
         // Marshalling failures are status codes, never exceptions.
-        check(NativeBridge.search(1, null, 4, true, docs, scores, counts) == 10, "null query blob -> InvalidArgument");
-        check(NativeBridge.search(1, blob, -1, true, docs, scores, counts) == 10, "negative topN -> InvalidArgument");
-        check(NativeBridge.search(1, blob, 8, true, docs, scores, counts) == 8, "short output arrays -> BufferTooSmall");
-        check(NativeBridge.search(1, blob, 4, true, null, scores, counts) == 10, "null output array -> InvalidArgument");
+        check(NativeBridge.search(1, null, 4, Long.MAX_VALUE, docs, scores, counts) == 10, "null query blob -> InvalidArgument");
+        check(NativeBridge.search(1, blob, -1, Long.MAX_VALUE, docs, scores, counts) == 10, "negative topN -> InvalidArgument");
+        check(NativeBridge.search(1, blob, 8, Long.MAX_VALUE, docs, scores, counts) == 8, "short output arrays -> BufferTooSmall");
+        check(NativeBridge.search(1, blob, 4, Long.MAX_VALUE, null, scores, counts) == 10, "null output array -> InvalidArgument");
         check(NativeBridge.openReader(null, new byte[0], 1, 0, new int[0], new long[1]) == 10, "null path -> InvalidArgument");
         check(NativeBridge.setLiveDocs(1, -1, null) == 7, "negative segment -> IndexOutOfBounds");
     }
@@ -112,7 +113,10 @@ public final class NativeSelfTest {
         Query t = new TermQuery(new Term("body", "a"));
         check(QueryEncoder.encode(t, f -> true).blob() != null, "TermQuery encodes");
         check(QueryEncoder.encode(new BoostQuery(t, 1f), f -> true).blob() != null, "unit BoostQuery encodes");
-        check("query_BoostQuery".equals(QueryEncoder.encode(new BoostQuery(t, 2f), f -> true).fallbackReason()), "boosted falls back");
+        check(QueryEncoder.encode(new BoostQuery(t, 2f), f -> true).blob() != null, "boosted encodes");
+        check(QueryEncoder.encode(new ConstantScoreQuery(t), f -> true).blob() != null, "constant score encodes");
+        Query wrappedPhrase = new ConstantScoreQuery(new PhraseQuery("body", "a", "b"));
+        check("clause_PhraseQuery".equals(QueryEncoder.encode(wrappedPhrase, f -> true).fallbackReason()), "wrapped phrase falls back");
         check("field_similarity".equals(QueryEncoder.encode(t, f -> false).fallbackReason()), "rejected field falls back");
         check(
             "query_MatchAllDocsQuery".equals(QueryEncoder.encode(MatchAllDocsQuery.INSTANCE, f -> true).fallbackReason()),
@@ -122,6 +126,17 @@ public final class NativeSelfTest {
         check("clause_PhraseQuery".equals(QueryEncoder.encode(phrase, f -> true).fallbackReason()), "phrase clause falls back");
         Query negative = new BooleanQuery.Builder().add(t, Occur.MUST_NOT).build();
         check("boolean_pure_negative".equals(QueryEncoder.encode(negative, f -> true).fallbackReason()), "pure negative falls back");
+        Query t2 = new TermQuery(new Term("body", "b"));
+        check(QueryEncoder.isFast(t) && QueryEncoder.isFast(new ConstantScoreQuery(t)), "terms are fast");
+        check(QueryEncoder.isFast(new BooleanQuery.Builder().add(t, Occur.SHOULD).add(t2, Occur.SHOULD).build()), "disjunction is fast");
+        check(QueryEncoder.isFast(new BooleanQuery.Builder().add(t, Occur.MUST).add(t2, Occur.FILTER).build()), "conjunction is fast");
+        check(QueryEncoder.isFast(new BooleanQuery.Builder().add(t, Occur.MUST).add(t2, Occur.SHOULD).build()) == false, "mixed is slow");
+        check(QueryEncoder.isFast(new BooleanQuery.Builder().add(t, Occur.MUST).add(t2, Occur.MUST_NOT).build()) == false, "must_not is slow");
+        check(QueryEncoder.isFast(new BoostQuery(t, 2f)) == false, "boost is slow");
+        check(
+            QueryEncoder.isFast(new BooleanQuery.Builder().add(t, Occur.SHOULD).add(t2, Occur.SHOULD).setMinimumNumberShouldMatch(2).build()) == false,
+            "msm 2 is slow"
+        );
         check("boolean_empty".equals(QueryEncoder.encode(new BooleanQuery.Builder().build(), f -> true).fallbackReason()), "empty");
     }
 
@@ -138,7 +153,12 @@ public final class NativeSelfTest {
     private static Query randomQuery(Random r, List<String> fields, int depth) {
         String field = fields.get(r.nextInt(fields.size()));
         if (depth > 1 || r.nextInt(4) == 0) {
-            return new TermQuery(new Term(field, word(r)));
+            Query t = new TermQuery(new Term(field, word(r)));
+            return switch (r.nextInt(6)) {
+                case 0 -> new ConstantScoreQuery(t);
+                case 1 -> new BoostQuery(t, r.nextInt(4) * 0.75f);
+                default -> t;
+            };
         }
         BooleanQuery.Builder b = new BooleanQuery.Builder();
         int n = 1 + r.nextInt(4);
@@ -151,7 +171,8 @@ public final class NativeSelfTest {
         if (shoulds > 1 && r.nextInt(3) == 0) {
             b.setMinimumNumberShouldMatch(1 + r.nextInt(shoulds));
         }
-        return b.build();
+        Query q = b.build();
+        return r.nextInt(8) == 0 ? new BoostQuery(new ConstantScoreQuery(q), r.nextInt(3)) : q;
     }
 
     /** Compares the native path with Lucene for {@code queries} on {@code reader}. */
@@ -172,14 +193,23 @@ public final class NativeSelfTest {
                 TopDocs want = searcher.search(rewritten, topN);
                 int[] docs = new int[topN];
                 float[] scores = new float[topN];
-                long[] counts = new long[2];
-                int rc = NativeBridge.search(acquired.handle(), enc.blob(), topN, true, docs, scores, counts);
+                long[] counts = new long[3];
+                int rc = NativeBridge.search(acquired.handle(), enc.blob(), topN, Long.MAX_VALUE, docs, scores, counts);
                 String what = where + ": " + rewritten + " top" + topN;
                 check(rc == NativeBridge.OK, what + ": native search status " + rc + " " + NativeBridge.lastError());
                 if (rc != NativeBridge.OK) {
                     continue;
                 }
-                check(counts[1] == searcher.count(rewritten), what + ": count " + counts[1] + " vs " + searcher.count(rewritten));
+                long exact = searcher.count(rewritten);
+                check(counts[1] == exact && counts[2] == 0, what + ": count " + counts[1] + " vs " + exact);
+                // Lucene's totalHitsThreshold: exact below the limit, a lower bound >= limit at it.
+                long limit = exact > 0 ? 1 + new Random(exact).nextLong(exact) : 1;
+                long[] limited = new long[3];
+                check(NativeBridge.search(acquired.handle(), enc.blob(), topN, limit, docs, scores, limited) == NativeBridge.OK, what + ": limited");
+                // Exact up to the limit (Lucene switches to GTE only past it); above it either exact, or
+                // a lower bound that itself exceeds the limit.
+                boolean ok = limited[2] == 0 ? limited[1] == exact : exact > limit && limited[1] > limit && limited[1] <= exact;
+                check(ok, what + ": limit " + limit + " gave " + limited[1] + (limited[2] == 1 ? "+" : "") + ", exact " + exact);
                 check(counts[0] == want.scoreDocs.length, what + ": hits " + counts[0] + " vs " + want.scoreDocs.length);
                 for (int i = 0; i < Math.min(counts[0], want.scoreDocs.length); i++) {
                     float w = want.scoreDocs[i].score;

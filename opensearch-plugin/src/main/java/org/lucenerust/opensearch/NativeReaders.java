@@ -6,6 +6,7 @@ package org.lucenerust.opensearch;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.index.DirectoryReader;
+import org.apache.lucene.index.FieldInfo;
 import org.apache.lucene.index.FilterDirectoryReader;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.LeafReader;
@@ -48,6 +49,15 @@ public final class NativeReaders {
 
     /** A native handle, or the reason there is none (cached, so a failing reader fails once). */
     public record Acquired(long handle, String fallbackReason) {}
+
+    /**
+     * The one postings format the Rust reader decodes: Lucene 10.5.0's default. A field written in
+     * any other -- OpenSearch's {@code completion} fields use {@code Completion104} -- makes the whole
+     * reader fall back, rather than failing (and falling back) on every query that opens it.
+     */
+    static final String SUPPORTED_POSTINGS_FORMAT = "Lucene104";
+
+    private static final String POSTINGS_FORMAT_ATTRIBUTE = "PerFieldPostingsFormat.format";
 
     private final ConcurrentHashMap<IndexReader.CacheKey, Acquired> byReader = new ConcurrentHashMap<>();
     /** The most recent handle per index directory: the reuse candidate for the next refresh. */
@@ -123,6 +133,12 @@ public final class NativeReaders {
         Path path = null;
         for (int i = 0; i < leaves.size(); i++) {
             LeafReader leaf = leaves.get(i).reader();
+            for (FieldInfo fi : leaf.getFieldInfos()) {
+                String format = fi.getAttribute(POSTINGS_FORMAT_ATTRIBUTE);
+                if (format != null && format.equals(SUPPORTED_POSTINGS_FORMAT) == false) {
+                    return new Acquired(0, "postings_format");
+                }
+            }
             SegmentCommitInfo sci = org.opensearch.common.lucene.Lucene.segmentReader(leaf).getSegmentInfo();
             infos.add(sci);
             maxDocs[i] = leaf.maxDoc();

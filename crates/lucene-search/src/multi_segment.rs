@@ -100,7 +100,7 @@
 
 use crate::collector::{
     FieldValueDoc, LeafCollector, ScoreDoc, ScoringCollector, SortDirection, TopDocsCollector,
-    TopFieldCollector,
+    TopFieldCollector, TotalHits,
 };
 use crate::field_norms::FieldNorms;
 use crate::query::{BooleanQuery, TermQuery};
@@ -179,7 +179,7 @@ where
 pub fn search_leaves_shared<F>(
     doc_bases: &[i32],
     top_n: usize,
-    mut per_segment_search: F,
+    per_segment_search: F,
 ) -> Result<Vec<ScoreDoc>>
 where
     F: FnMut(usize, &mut LeafCollector<'_, TopDocsCollector>) -> Result<()>,
@@ -187,14 +187,34 @@ where
     // Visited in ascending `doc_base` order whatever order the caller lists
     // them in: the pruning rule (a later document loses a tie) is only sound
     // then. `per_segment_search` still receives each segment's own index.
+    search_leaves_shared_counting(doc_bases, top_n, 0, per_segment_search).map(|(hits, _)| hits)
+}
+
+/// [`search_leaves_shared`] with Lucene's `totalHitsThreshold`
+/// (`TopScoreDocCollectorManager(numHits, totalHitsThreshold)`): the shared
+/// collector publishes no competitive score -- so no leaf may prune -- until it
+/// has counted more than `total_hits_threshold` hits, and the returned
+/// [`TotalHits`] is exact up to there and a lower bound
+/// (`GreaterThanOrEqualTo`) past it. `u64::MAX` counts every hit exactly and
+/// never prunes. `top_n` must be at least 1 for the count to mean anything: a
+/// collector that keeps nothing collects nothing.
+pub fn search_leaves_shared_counting<F>(
+    doc_bases: &[i32],
+    top_n: usize,
+    total_hits_threshold: u64,
+    mut per_segment_search: F,
+) -> Result<(Vec<ScoreDoc>, TotalHits)>
+where
+    F: FnMut(usize, &mut LeafCollector<'_, TopDocsCollector>) -> Result<()>,
+{
     let mut order: Vec<usize> = (0..doc_bases.len()).collect();
     order.sort_by_key(|&i| doc_bases[i]);
-    let mut shared = TopDocsCollector::new(top_n);
+    let mut shared = TopDocsCollector::with_total_hits_threshold(top_n, total_hits_threshold);
     for i in order {
         let mut leaf = LeafCollector::new(&mut shared, doc_bases[i]);
         per_segment_search(i, &mut leaf)?;
     }
-    Ok(shared.top_docs().to_vec())
+    Ok((shared.top_docs().to_vec(), shared.total_hits()))
 }
 
 /// `IndexSearcher.searchAfter(after, query, n)` over several segments: the same
@@ -690,6 +710,21 @@ pub fn search_term_query_multi_segment(
     norms: &[Option<&FieldNorms<'_>>],
     top_n: usize,
 ) -> Result<Vec<ScoreDoc>> {
+    search_term_query_multi_segment_counting(segments, query, norms, top_n, 0).map(|(h, _)| h)
+}
+
+/// [`search_term_query_multi_segment`] that also counts total hits, under
+/// Lucene's `totalHitsThreshold` -- see [`search_leaves_shared_counting`]. This
+/// is `IndexSearcher.search(query, new TopScoreDocCollectorManager(n,
+/// threshold))`, the call OpenSearch's query phase makes with
+/// `track_total_hits` as the threshold.
+pub fn search_term_query_multi_segment_counting(
+    segments: &[OpenSegment<'_>],
+    query: &TermQuery,
+    norms: &[Option<&FieldNorms<'_>>],
+    top_n: usize,
+    total_hits_threshold: u64,
+) -> Result<(Vec<ScoreDoc>, TotalHits)> {
     debug_assert_eq!(
         segments.len(),
         norms.len(),
@@ -701,7 +736,7 @@ pub fn search_term_query_multi_segment(
     // multi-segment index; see CollectionStats.
     let global = global_term_stats(segments, &query.field, &query.term)?;
     let doc_bases: Vec<i32> = segments.iter().map(|s| s.doc_base).collect();
-    search_leaves_shared(&doc_bases, top_n, |i, local| {
+    search_leaves_shared_counting(&doc_bases, top_n, total_hits_threshold, |i, local| {
         let seg = &segments[i];
         let seg_norms = norms.get(i).copied().flatten();
         crate::search_term_query_scored_maxscore_with_stats(
@@ -906,6 +941,21 @@ pub fn search_boolean_query_multi_segment_maxscore(
     norms: &[Option<&HashMap<String, FieldNorms<'_>>>],
     top_n: usize,
 ) -> Result<Vec<ScoreDoc>> {
+    search_boolean_query_multi_segment_maxscore_counting(segments, query, norms, top_n, 0)
+        .map(|(h, _)| h)
+}
+
+/// [`search_boolean_query_multi_segment_maxscore`] that also counts total
+/// hits, under Lucene's `totalHitsThreshold` -- see
+/// [`search_leaves_shared_counting`] and
+/// [`search_term_query_multi_segment_counting`].
+pub fn search_boolean_query_multi_segment_maxscore_counting(
+    segments: &[OpenSegment<'_>],
+    query: &BooleanQuery,
+    norms: &[Option<&HashMap<String, FieldNorms<'_>>>],
+    top_n: usize,
+    total_hits_threshold: u64,
+) -> Result<(Vec<ScoreDoc>, TotalHits)> {
     debug_assert_eq!(
         segments.len(),
         norms.len(),
@@ -913,7 +963,7 @@ pub fn search_boolean_query_multi_segment_maxscore(
     );
     let global = global_boolean_stats(segments, query)?;
     let doc_bases: Vec<i32> = segments.iter().map(|s| s.doc_base).collect();
-    search_leaves_shared(&doc_bases, top_n, |i, local| {
+    search_leaves_shared_counting(&doc_bases, top_n, total_hits_threshold, |i, local| {
         let seg = &segments[i];
         let seg_norms = norms.get(i).copied().flatten();
         crate::search_boolean_query_scored_maxscore_with_stats(

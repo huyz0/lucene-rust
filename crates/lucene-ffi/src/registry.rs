@@ -689,6 +689,10 @@ pub fn directory_readers() -> &'static RwLock<SlotMap<DirectoryReaderHandle>> {
 pub struct JvmReaderHandle {
     pub reader: lucene_search::directory_reader::DirectoryReader,
     pub live_docs: Vec<Option<FixedBitSet>>,
+    /// Deleted documents per segment (`maxDoc - live_docs.cardinality()`),
+    /// kept alongside the mask so total-hits lower bounds need not recount it
+    /// per query.
+    pub deleted: Vec<i64>,
 }
 
 pub fn jvm_readers() -> &'static RwLock<SlotMap<JvmReaderHandle>> {

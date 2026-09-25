@@ -56,6 +56,23 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         Setting.Property.Dynamic
     );
 
+    /**
+     * Which encodable shapes run native: {@code fast} (default) only those measured at least as fast
+     * as Lucene ({@link QueryEncoder#isFast}); {@code all} every shape the engine answers correctly.
+     */
+    public static final Setting<String> NATIVE_SHAPES = new Setting<>(
+        "index.lucene_rust.search.native_shapes",
+        "fast",
+        v -> {
+            if (v.equals("fast") == false && v.equals("all") == false) {
+                throw new IllegalArgumentException("index.lucene_rust.search.native_shapes must be [fast] or [all], got [" + v + "]");
+            }
+            return v;
+        },
+        Setting.Property.IndexScope,
+        Setting.Property.Dynamic
+    );
+
     private final QueryPhaseSearcher fallback = new QueryPhaseSearcherWrapper();
     private final NativeReaders readers;
     private final SearchStats stats;
@@ -85,6 +102,9 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             QueryEncoder.Encoded enc = QueryEncoder.encode(query, field -> defaultBm25(searcher, field));
             reason = enc.fallbackReason();
             blob = enc.blob();
+            if (reason == null && enc.fast() == false && "all".equals(ctx.indexShard().indexSettings().getValue(NATIVE_SHAPES)) == false) {
+                reason = "slower_shape";
+            }
         }
         NativeReaders.Acquired acquired = null;
         if (reason == null) {
@@ -107,15 +127,18 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         boolean hasTimeout
     ) {
         if (ctx.indexShard().indexSettings().getValue(ENABLED) == false) return "disabled";
-        if (collectors.isEmpty() == false || hasFilterCollector) return "collectors";
+        // The specific reasons first: each of these also adds a collector, and "collectors" alone
+        // would not tell an operator which request feature to look at.
         if (ctx.queryCollectorManagers().isEmpty() == false) return "aggregations";
+        if (ctx.parsedPostFilter() != null) return "post_filter";
+        if (ctx.minimumScore() != null) return "min_score";
+        if (ctx.terminateAfter() != SearchContext.DEFAULT_TERMINATE_AFTER) return "terminate_after";
+        if (collectors.isEmpty() == false || hasFilterCollector) return "collectors";
         if (ctx.scrollContext() != null) return "scroll";
         if (ctx.sort() != null) return "sort";
         if (ctx.searchAfter() != null) return "search_after";
         if (ctx.collapse() != null) return "collapse";
         if (ctx.rescore() != null && ctx.rescore().isEmpty() == false) return "rescore";
-        if (ctx.minimumScore() != null) return "min_score";
-        if (ctx.terminateAfter() != SearchContext.DEFAULT_TERMINATE_AFTER) return "terminate_after";
         if (ctx.getProfilers() != null) return "profile";
         if (hasTimeout) return "timeout";
         return null;
@@ -139,14 +162,17 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         int size = ctx.size();
         int numDocs = size == 0 ? 0 : Math.min(ctx.from() + size, Math.max(1, ctx.searcher().getIndexReader().numDocs()));
         int trackUpTo = ctx.trackTotalHitsUpTo();
-        boolean countTotal = trackUpTo != SearchContext.TRACK_TOTAL_HITS_DISABLED;
+        // track_total_hits: false -> count nothing; true -> exact; N -> exact below N.
+        long countLimit = trackUpTo == SearchContext.TRACK_TOTAL_HITS_DISABLED ? 0
+            : trackUpTo == SearchContext.TRACK_TOTAL_HITS_ACCURATE ? Long.MAX_VALUE
+            : trackUpTo;
         int[] docs = new int[numDocs];
         float[] scores = new float[numDocs];
-        long[] counts = new long[2];
+        long[] counts = new long[3];
         if (ctx.isCancelled()) {
             return false;
         }
-        int rc = NativeBridge.search(handle, blob, numDocs, countTotal, docs, scores, counts);
+        int rc = NativeBridge.search(handle, blob, numDocs, countLimit, docs, scores, counts);
         if (rc != NativeBridge.OK) {
             stats.nativeError();
             logger.warn("lucene-rust: native search failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
@@ -157,9 +183,9 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         for (int i = 0; i < n; i++) {
             hits[i] = new ScoreDoc(docs[i], scores[i]);
         }
-        TotalHits total = countTotal
-            ? new TotalHits(counts[1], TotalHits.Relation.EQUAL_TO)
-            : new TotalHits(0, TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO);
+        // Lucene's own shape: with counting off, 0 hits "or more".
+        TotalHits total = countLimit == 0 ? new TotalHits(0, TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO)
+            : new TotalHits(counts[1], counts[2] != 0 ? TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO : TotalHits.Relation.EQUAL_TO);
         float maxScore = n == 0 ? Float.NaN : scores[0];
         ctx.queryResult().topDocs(new TopDocsAndMaxScore(new TopDocs(total, hits), maxScore), null);
         return true;

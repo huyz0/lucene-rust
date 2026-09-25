@@ -1,0 +1,462 @@
+#!/usr/bin/env python3
+"""End-to-end verification of the lucene-rust plugin inside a real OpenSearch node.
+
+Driven by scripts/verify-opensearch.sh, which builds the plugin, bakes it into
+the pinned OpenSearch image and starts a node. Standard library only.
+
+Every query in the matrix runs twice through the REST API: once with the
+plugin's per-index switch off (stock Lucene -- the reference) and once with it
+on. The two responses must agree -- hit ids, scores to 1e-5, total hits,
+max_score -- and the plugin's own stats must show the query ran where the
+matrix says it runs: native for the supported shapes, fallback (with the
+expected reason) for the rest. Then:
+
+  * lifecycle: a force merge plus refresh must leave no native reader open
+    beyond the live searchers, and no mapping of a deleted index file in the
+    node's address space;
+  * crash: SIGKILL the node, restart it, and require the same document count
+    and native/Lucene agreement on the recovered shards.
+
+Usage: verify_opensearch.py <base-url> <container-name> [--docs N] [--bench-out FILE]
+"""
+import argparse
+import json
+import random
+import statistics
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+BASE = "http://localhost:9200"
+FAILURES = []
+CHECKS = [0]
+
+
+def req(method, path, body=None, ndjson=False):
+    data = None
+    headers = {}
+    if body is not None:
+        data = body.encode() if isinstance(body, str) else json.dumps(body).encode()
+        headers["content-type"] = "application/x-ndjson" if ndjson else "application/json"
+    r = urllib.request.Request(BASE + path, data=data, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(r, timeout=120) as resp:
+            return json.load(resp)
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"{method} {path}: {e.code} {e.read().decode()[:500]}")
+
+
+def check(ok, what):
+    CHECKS[0] += 1
+    if not ok:
+        FAILURES.append(what)
+        print("FAIL:", what)
+
+
+def stats():
+    return req("GET", "/_plugins/lucene_rust/stats")
+
+
+def set_native(index, on):
+    req("PUT", f"/{index}/_settings", {"index.lucene_rust.search.enabled": on})
+
+
+def set_shapes(index, mode):
+    req("PUT", f"/{index}/_settings", {"index.lucene_rust.search.native_shapes": mode})
+
+
+WORDS = ("alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho "
+         "sigma tau upsilon phi chi psi omega").split()
+
+
+def word(r):
+    return WORDS[min(len(WORDS) - 1, int((r.random() ** 2.2) * len(WORDS)))]
+
+
+def create(index, shards):
+    req("PUT", f"/{index}", {
+        "settings": {
+            "number_of_shards": shards,
+            "number_of_replicas": 0,
+            "refresh_interval": -1,
+            # A field with non-default BM25 parameters: must fall back.
+            "similarity": {"tuned": {"type": "BM25", "k1": 2.0, "b": 0.5}},
+        },
+        "mappings": {"properties": {
+            "body": {"type": "text"},
+            "title": {"type": "text"},
+            "tuned": {"type": "text", "similarity": "tuned"},
+            "tag": {"type": "keyword"},
+            "n": {"type": "long"},
+        }},
+    })
+
+
+def load(index, docs, seed):
+    """Indexes `docs` documents in batches with a refresh after each (many
+    segments), then deletes and updates some (hard and soft deletes)."""
+    r = random.Random(seed)
+    batch = max(1, docs // 8)
+    for start in range(0, docs, batch):
+        lines = []
+        for i in range(start, min(docs, start + batch)):
+            lines.append(json.dumps({"index": {"_index": index, "_id": str(i)}}))
+            lines.append(json.dumps({
+                "body": " ".join(word(r) for _ in range(r.randint(1, 40))),
+                "title": " ".join(word(r) for _ in range(r.randint(1, 5))),
+                "tuned": " ".join(word(r) for _ in range(r.randint(1, 10))),
+                "tag": word(r),
+                "n": i,
+            }))
+        res = req("POST", "/_bulk", "\n".join(lines) + "\n", ndjson=True)
+        check(not res["errors"], f"{index}: bulk batch at {start} has no errors")
+        req("POST", f"/{index}/_refresh")
+    lines = []
+    for i in r.sample(range(docs), docs // 40):
+        lines.append(json.dumps({"delete": {"_index": index, "_id": str(i)}}))
+    for i in r.sample(range(docs), docs // 60):
+        lines.append(json.dumps({"index": {"_index": index, "_id": str(i)}}))
+        lines.append(json.dumps({"body": "updated " + word(r), "title": "updated", "tuned": "x", "tag": "updated", "n": i}))
+    req("POST", "/_bulk", "\n".join(lines) + "\n", ndjson=True)
+    req("POST", f"/{index}/_refresh")
+
+
+# (name, request body, expected): "native" runs native in both routing modes;
+# "slow" is answered natively only with native_shapes=all, and routed to Lucene
+# ("slower_shape") by default because it measured slower; anything else is the
+# fallback reason expected in both modes ("query_*" matches any query class).
+def matrix():
+    q = []
+    add = lambda name, body, expect: q.append((name, body, expect))
+    add("match one term", {"query": {"match": {"body": "alpha"}}}, "native")
+    add("match rare term", {"query": {"match": {"body": "omega"}}}, "native")
+    add("match two terms", {"query": {"match": {"body": "alpha kappa"}}}, "native")
+    add("match four terms", {"query": {"match": {"body": "beta mu sigma omega"}}}, "native")
+    add("match operator and", {"query": {"match": {"body": {"query": "alpha beta", "operator": "and"}}}}, "native")
+    add("match minimum_should_match", {"query": {"match": {"body": {"query": "alpha beta gamma delta", "minimum_should_match": 2}}}}, "slow")
+    add("term keyword", {"query": {"term": {"tag": "gamma"}}}, "native")
+    add("term missing", {"query": {"term": {"tag": "no-such-tag"}}}, "native")
+    add("bool must+should", {"query": {"bool": {"must": [{"match": {"body": "alpha"}}], "should": [{"match": {"title": "beta"}}]}}}, "slow")
+    add("bool must_not", {"query": {"bool": {"must": [{"match": {"body": "beta"}}], "must_not": [{"term": {"tag": "alpha"}}]}}}, "slow")
+    add("bool filter", {"query": {"bool": {"must": [{"match": {"body": "gamma"}}], "filter": [{"term": {"tag": "alpha"}}]}}}, "native")
+    add("bool filter only", {"query": {"bool": {"filter": [{"term": {"tag": "beta"}}]}}}, "slow")
+    add("bool nested", {"query": {"bool": {"should": [
+        {"bool": {"must": [{"match": {"body": "alpha"}}, {"match": {"title": "gamma"}}]}},
+        {"match": {"body": "omega"}}]}}}, "slow")
+    add("query_string OR", {"query": {"query_string": {"query": "body:(delta OR theta)"}}}, "native")
+    add("size 0 count", {"size": 0, "query": {"match": {"body": "alpha"}}}, "native")
+    add("track_total_hits false", {"track_total_hits": False, "query": {"match": {"body": "beta"}}}, "native")
+    add("track_total_hits true", {"track_total_hits": True, "query": {"match": {"body": "alpha beta"}}}, "native")
+    add("track_total_hits 100", {"track_total_hits": 100, "query": {"match": {"body": "alpha"}}}, "native")
+    add("from 20 size 15", {"from": 20, "size": 15, "query": {"match": {"body": "delta"}}}, "native")
+    add("size 200", {"size": 200, "query": {"match": {"body": "zeta eta"}}}, "native")
+    add("highlight (fetch phase)", {"query": {"match": {"body": "alpha"}}, "highlight": {"fields": {"body": {}}}}, "native")
+    # Outside the matrix: each must fall back, for the stated reason.
+    add("match_phrase", {"query": {"match_phrase": {"body": "alpha beta"}}}, "query_*")
+    add("range", {"query": {"range": {"n": {"gte": 10, "lte": 500}}}}, "query_*")
+    add("prefix", {"query": {"prefix": {"tag": "al"}}}, "query_*")
+    add("match_all", {"query": {"match_all": {}}}, "query_*")
+    add("boosted match", {"query": {"match": {"body": {"query": "alpha", "boost": 2}}}}, "slow")
+    add("bool with boosted clause", {"query": {"bool": {"should": [{"match": {"body": {"query": "alpha", "boost": 3}}}, {"term": {"tag": "beta"}}]}}}, "slow")
+    add("constant_score", {"query": {"constant_score": {"filter": {"match": {"body": "gamma"}}, "boost": 1.5}}}, "slow")
+    add("multi_match", {"query": {"multi_match": {"query": "alpha", "fields": ["body", "title"]}}}, "query_*")
+    add("custom similarity", {"query": {"match": {"tuned": "alpha"}}}, "field_similarity")
+    add("sort", {"query": {"match": {"body": "alpha"}}, "sort": [{"n": "desc"}]}, "sort")
+    add("aggregation", {"query": {"match": {"body": "alpha"}}, "aggs": {"tags": {"terms": {"field": "tag"}}}}, "aggregations")
+    add("post_filter", {"query": {"match": {"body": "alpha"}}, "post_filter": {"term": {"tag": "beta"}}}, "post_filter")
+    add("min_score", {"query": {"match": {"body": "alpha"}}, "min_score": 0.3}, "min_score")
+    add("terminate_after", {"query": {"match": {"body": "alpha"}}, "terminate_after": 5}, "terminate_after")
+    add("profile", {"query": {"match": {"body": "alpha"}}, "profile": True}, "profile")
+    add("timeout", {"query": {"match": {"body": "alpha"}}, "timeout": "10s"}, "timeout")
+    add("collapse", {"query": {"match": {"body": "alpha"}}, "collapse": {"field": "tag"}}, "collapse")
+    add("rescore", {"query": {"match": {"body": "alpha"}}, "rescore": {"window_size": 20, "query": {"rescore_query": {"match": {"title": "beta"}}}}}, "rescore")
+    return q
+
+
+def shape(resp, body):
+    """The part of a search response both engines must agree on."""
+    hits = resp["hits"]
+    total = hits.get("total")
+    out = {
+        "total": total,
+        "max_score": hits.get("max_score"),
+        "hits": [(h["_id"], h.get("_score"), h.get("sort")) for h in hits["hits"]],
+    }
+    if "aggregations" in resp:
+        out["aggs"] = resp["aggregations"]
+    if "highlight" in json.dumps(body):
+        out["highlight"] = [h.get("highlight") for h in hits["hits"]]
+    return out
+
+
+def same(a, b):
+    """Equal, with scores compared to 1e-5; hits whose scores tie may swap."""
+    if a["total"] != b["total"]:
+        return f"total {a['total']} vs {b['total']}"
+    for k in ("aggs", "highlight"):
+        if a.get(k) != b.get(k):
+            return f"{k} differ"
+    ma, mb = a["max_score"], b["max_score"]
+    if (ma is None) != (mb is None) or (ma is not None and abs(ma - mb) > 1e-5 * max(1, abs(mb))):
+        return f"max_score {ma} vs {mb}"
+    if len(a["hits"]) != len(b["hits"]):
+        return f"{len(a['hits'])} hits vs {len(b['hits'])}"
+    for i, (x, y) in enumerate(zip(a["hits"], b["hits"])):
+        sx, sy = x[1], y[1]
+        if (sx is None) != (sy is None) or (sx is not None and abs(sx - sy) > 1e-5 * max(1, abs(sy))):
+            return f"hit {i}: {x} vs {y}"
+        if x[0] != y[0]:
+            ties = [h for h in b["hits"] if h[1] is not None and sx is not None and abs(h[1] - sx) <= 1e-5 * max(1, abs(sx))]
+            if x[0] not in [h[0] for h in ties]:
+                return f"hit {i}: {x} vs {y}"
+        if x[2] != y[2]:
+            return f"hit {i}: sort {x[2]} vs {y[2]}"
+    return None
+
+
+def run_matrix(index, shards, label, shapes="fast"):
+    """The whole matrix against the Lucene reference, under one routing mode."""
+    label = f"{label}/{shapes}"
+    set_shapes(index, shapes)
+    queries = matrix()
+    set_native(index, False)
+    reference = {}
+    for name, body, _ in queries:
+        reference[name] = shape(req("POST", f"/{index}/_search?request_cache=false", body), body)
+    set_native(index, True)
+    native_total = 0
+    for name, body, expect in queries:
+        if expect == "slow":
+            expect = "native" if shapes == "all" else "slower_shape"
+        before = stats()
+        got = shape(req("POST", f"/{index}/_search?request_cache=false", body), body)
+        after = stats()
+        diff = same(got, reference[name])
+        check(diff is None, f"{label} {index} [{name}]: native-enabled response differs from Lucene: {diff}")
+        ran_native = after["native_queries"] - before["native_queries"]
+        errors = after["native_errors"] - before["native_errors"]
+        check(errors == 0, f"{label} {index} [{name}]: {errors} native errors")
+        if expect == "native":
+            check(ran_native == shards, f"{label} {index} [{name}]: ran native on {ran_native} of {shards} shards; fallbacks {fallback_delta(before, after)}")
+            native_total += ran_native
+        else:
+            delta = fallback_delta(before, after)
+            if expect.endswith("*"):
+                matched = sum(v for k, v in delta.items() if k.startswith(expect[:-1]))
+            else:
+                matched = delta.get(expect, 0)
+            print(f"  {label} {index} [{name}]: fallback {delta}")
+            check(ran_native == 0 and matched == shards,
+                  f"{label} {index} [{name}]: expected fallback '{expect}' on {shards} shards, got native={ran_native} fallbacks={delta}")
+    return native_total
+
+
+def fallback_delta(before, after):
+    out = {}
+    for k, v in after["fallbacks"].items():
+        d = v - before["fallbacks"].get(k, 0)
+        if d:
+            out[k] = d
+    return out
+
+
+def java_pid(container):
+    """The node's JVM (the image has no pgrep)."""
+    script = 'for p in /proc/[0-9]*; do grep -qa org.opensearch.bootstrap.OpenSearch $p/cmdline 2>/dev/null && echo ${p#/proc/}; done'
+    return subprocess.check_output(["docker", "exec", container, "sh", "-c", script]).decode().split()[0]
+
+
+def deleted_index_mappings(container):
+    """Mappings of index files that were deleted from disk but are still mapped."""
+    pid = java_pid(container)
+    maps = subprocess.check_output(["docker", "exec", container, "cat", f"/proc/{pid}/maps"]).decode()
+    return [l for l in maps.splitlines() if "/indices/" in l and "(deleted)" in l]
+
+
+def lifecycle(index, container):
+    """Force-merge down to one segment, twice: the native readers over the
+    old segments must close with their Java readers, and nothing may keep a
+    merged-away file mapped.
+
+    Two rounds because the native reader copies compound (.cfs) segments into
+    memory rather than mapping them, and OpenSearch's small flushed segments
+    are compound -- so a leak of the first round's readers is visible only to
+    the open-reader count. The first merge produces a large non-compound
+    segment, which the native reader does map; the second merge deletes it,
+    and a leaked reader then shows as a mapping of a deleted file."""
+    s0 = None
+    for rnd in (1, 2):
+        req("POST", f"/{index}/_search?request_cache=false", {"query": {"match": {"body": "alpha beta"}}})
+        s0 = stats()
+        check(s0["open_native_readers"] >= 1, f"lifecycle {rnd}: a native reader is open before the merge")
+        segs_before = len(req("GET", f"/_cat/segments/{index}?format=json"))
+        req("POST", f"/{index}/_forcemerge?max_num_segments=1")
+        req("POST", f"/{index}/_refresh")
+        req("POST", f"/{index}/_search?request_cache=false", {"query": {"match": {"body": "alpha beta"}}})
+        # Old searchers are released asynchronously once no search holds them.
+        deadline = time.time() + 30
+        leftover = None
+        while time.time() < deadline:
+            leftover = deleted_index_mappings(container)
+            if not leftover and stats()["open_native_readers"] <= s0["open_native_readers"]:
+                break
+            time.sleep(1)
+        segs_after = len(req("GET", f"/_cat/segments/{index}?format=json"))
+        print(f"lifecycle {rnd}: {segs_before} segments -> {segs_after}; open native readers "
+              f"{s0['open_native_readers']} -> {stats()['open_native_readers']}")
+        check(segs_after == 1, f"lifecycle {rnd}: force merge left {segs_after} segments")
+        check(not leftover, f"lifecycle {rnd}: deleted index files still mapped after the merge: {leftover[:3]}")
+        check(stats()["open_native_readers"] <= s0["open_native_readers"],
+              f"lifecycle {rnd}: native readers leaked: {stats()['open_native_readers']}")
+        if rnd == 1:
+            # New segments on top of the merged one, for the second round.
+            load_more(index, 2000)
+
+
+def load_more(index, n):
+    r = random.Random(7)
+    lines = []
+    for i in range(n):
+        lines.append(json.dumps({"index": {"_index": index, "_id": f"more-{i}"}}))
+        lines.append(json.dumps({"body": " ".join(word(r) for _ in range(r.randint(1, 40))),
+                                 "title": word(r), "tuned": word(r), "tag": word(r), "n": 10_000_000 + i}))
+    req("POST", "/_bulk", "\n".join(lines) + "\n", ndjson=True)
+    req("POST", f"/{index}/_refresh")
+
+
+def unsupported_format():
+    """An index with a field in a postings format the Rust reader does not
+    decode (a completion field): every search must fall back cleanly, with
+    the reason, and none may reach the native engine to fail there."""
+    index = "completion"
+    try:
+        req("DELETE", f"/{index}")
+    except RuntimeError:
+        pass
+    req("PUT", f"/{index}", {"settings": {"number_of_shards": 1, "number_of_replicas": 0},
+                             "mappings": {"properties": {"body": {"type": "text"}, "suggest": {"type": "completion"}}}})
+    lines = []
+    for i in range(50):
+        lines.append(json.dumps({"index": {"_index": index, "_id": str(i)}}))
+        lines.append(json.dumps({"body": "alpha beta" if i % 2 else "gamma", "suggest": f"word{i}"}))
+    req("POST", "/_bulk?refresh=true", "\n".join(lines) + "\n", ndjson=True)
+    before = stats()
+    r = req("POST", f"/{index}/_search?request_cache=false", {"query": {"match": {"body": "alpha"}}})
+    after = stats()
+    check(r["hits"]["total"]["value"] == 25, f"completion index: {r['hits']['total']}")
+    delta = fallback_delta(before, after)
+    check(delta.get("postings_format") == 1 and after["native_errors"] == before["native_errors"],
+          f"completion index: expected a clean 'postings_format' fallback, got {delta}, errors "
+          f"{after['native_errors'] - before['native_errors']}")
+    req("DELETE", f"/{index}")
+
+
+def wait_up(timeout=180):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            h = req("GET", "/_cluster/health?wait_for_status=yellow&timeout=5s")
+            if h["status"] in ("yellow", "green") and h["initializing_shards"] == 0 and h["unassigned_shards"] == 0:
+                return
+        except Exception:
+            pass
+        time.sleep(2)
+    raise RuntimeError("node did not come back")
+
+
+def crash(container, indices):
+    counts = {i: req("GET", f"/{i}/_count")["count"] for i in indices}
+    # Unrefreshed, uncommitted writes in flight at the kill: recovery replays
+    # them from the translog.
+    lines = []
+    for n in range(200):
+        lines.append(json.dumps({"index": {"_index": indices[0], "_id": f"late-{n}"}}))
+        lines.append(json.dumps({"body": "late arrival alpha", "title": "late", "tuned": "late", "tag": "late", "n": -n}))
+    req("POST", "/_bulk", "\n".join(lines) + "\n", ndjson=True)
+    counts[indices[0]] += 200
+    subprocess.check_call(["docker", "kill", "--signal", "KILL", container], stdout=subprocess.DEVNULL)
+    time.sleep(2)
+    subprocess.check_call(["docker", "start", container], stdout=subprocess.DEVNULL)
+    wait_up()
+    for i in indices:
+        req("POST", f"/{i}/_refresh")
+        got = req("GET", f"/{i}/_count")["count"]
+        check(got == counts[i], f"crash: {i} has {got} docs after SIGKILL + restart, expected {counts[i]}")
+    s = stats()
+    check(s["native_queries"] == 0, f"crash: stats reset with the process ({s['native_queries']})")
+
+
+def bench(index, out, rounds):
+    """REST latency, native vs Lucene, same node, same index, same queries --
+    every shape the engine answers natively (native_shapes=all), so the
+    routing policy's "slow" shapes are measured too."""
+    set_shapes(index, "all")
+    queries = [(n, b) for n, b, e in matrix() if e in ("native", "slow") and "highlight" not in n]
+    kinds = {n: e for n, _, e in matrix()}
+    results = {}
+    for mode in (False, True, False, True):
+        set_native(index, mode)
+        for name, body in queries:
+            for _ in range(3):
+                req("POST", f"/{index}/_search?request_cache=false", body)
+            took = []
+            wall = []
+            for _ in range(rounds):
+                t = time.perf_counter()
+                r = req("POST", f"/{index}/_search?request_cache=false", body)
+                wall.append((time.perf_counter() - t) * 1000)
+                took.append(r["took"])
+            results.setdefault(name, {}).setdefault("native" if mode else "lucene", []).extend(wall)
+    set_native(index, True)
+    set_shapes(index, "fast")
+    docs = req("GET", f"/{index}/_count")["count"]
+    segs = len(req("GET", f"/_cat/segments/{index}?format=json"))
+    with open(out, "w") as f:
+        json.dump({
+            "index": {"docs": docs, "segments": segs, "rounds": rounds},
+            "queries": {k: {"routing": kinds[k], **{m: statistics.median(v) for m, v in d.items()}} for k, d in results.items()},
+        }, f, indent=1)
+    print(f"bench: wrote {out}")
+
+
+def main():
+    global BASE
+    ap = argparse.ArgumentParser()
+    ap.add_argument("base")
+    ap.add_argument("container")
+    ap.add_argument("--docs", type=int, default=20000)
+    ap.add_argument("--bench-out")
+    ap.add_argument("--bench-rounds", type=int, default=30)
+    a = ap.parse_args()
+    BASE = a.base.rstrip("/")
+    wait_up()
+    for index in ("single", "multi"):
+        try:
+            req("DELETE", f"/{index}")
+        except RuntimeError:
+            pass
+    create("single", 1)
+    create("multi", 3)
+    load("single", a.docs, 1)
+    load("multi", a.docs, 2)
+    native = 0
+    for shapes in ("fast", "all"):
+        native += run_matrix("single", 1, "initial", shapes) + run_matrix("multi", 3, "initial", shapes)
+    print(f"matrix: {len(matrix())} request shapes x 2 indices; {native} shard queries ran native")
+    unsupported_format()
+    lifecycle("single", a.container)
+    run_matrix("single", 1, "after merge")
+    run_matrix("single", 1, "after merge", "all")
+    crash(a.container, ["single", "multi"])
+    run_matrix("single", 1, "after crash")
+    run_matrix("multi", 3, "after crash")
+    if a.bench_out:
+        bench("single", a.bench_out, a.bench_rounds)
+    print(f"verify_opensearch: {CHECKS[0]} checks, {len(FAILURES)} failures")
+    sys.exit(1 if FAILURES else 0)
+
+
+if __name__ == "__main__":
+    main()

@@ -98,7 +98,8 @@ use lucene_search::{
     search_term_query_scored_maxscore, search_term_query_scored_with_similarity,
 };
 use lucene_search::{
-    BooleanQuery, Clause, PhraseQuery, ScoreDoc, TermQuery, TopDocsCollector, VecCollector,
+    BooleanQuery, BoostQuery, Clause, ConstantScoreQuery, PhraseQuery, ScoreDoc, TermQuery,
+    TopDocsCollector, VecCollector,
 };
 
 use crate::error::{guard, set_last_error, FfiStatus};
@@ -308,6 +309,36 @@ pub(crate) const CLAUSE_KIND_TERM: u8 = 0;
 /// be null), and every clause naming index `i` in `clause_parents` is one of
 /// its children. `clause_params[i]` is its own `minimumNumberShouldMatch`.
 pub(crate) const CLAUSE_KIND_BOOLEAN: u8 = 1;
+/// A `ConstantScoreQuery` wrapping exactly one child clause, whose occur must
+/// be `MUST`. `clause_params[i]` is the constant score as `f32::to_bits` --
+/// finite and non-negative. OpenSearch builds one for every `term` query on a
+/// `keyword` field.
+pub(crate) const CLAUSE_KIND_CONSTANT_SCORE: u8 = 2;
+/// A `BoostQuery` wrapping exactly one child clause, whose occur must be
+/// `MUST`. `clause_params[i]` is the boost as `f32::to_bits` -- finite and
+/// non-negative (Lucene's `BoostQuery` rejects a negative boost).
+pub(crate) const CLAUSE_KIND_BOOST: u8 = 3;
+
+/// True for the clause kinds that contain other clauses.
+fn is_container(kind: u8) -> bool {
+    kind != CLAUSE_KIND_TERM
+}
+
+/// True for the single-child wrapper kinds.
+fn is_wrapper(kind: u8) -> bool {
+    kind == CLAUSE_KIND_CONSTANT_SCORE || kind == CLAUSE_KIND_BOOST
+}
+
+/// A container clause under construction in [`read_boolean_query`]'s
+/// reverse pass.
+enum Node {
+    Boolean(BooleanQuery),
+    Wrapper {
+        kind: u8,
+        value: f32,
+        child: Option<Clause>,
+    },
+}
 
 /// The deepest `clause_parents` chain this boundary accepts.
 ///
@@ -357,11 +388,15 @@ fn push_clause(parent: &mut BooleanQuery, occur: u8, clause: Clause) {
 /// | array | type | meaning |
 /// |---|---|---|
 /// | `clause_occurs` | `u8` | [`OCCUR_MUST`]/[`OCCUR_FILTER`]/[`OCCUR_SHOULD`]/[`OCCUR_MUST_NOT`], i.e. Java's `Occur.ordinal()` |
-/// | `clause_kinds` | `u8` | [`CLAUSE_KIND_TERM`] or [`CLAUSE_KIND_BOOLEAN`] |
+/// | `clause_kinds` | `u8` | [`CLAUSE_KIND_TERM`], [`CLAUSE_KIND_BOOLEAN`], [`CLAUSE_KIND_CONSTANT_SCORE`] or [`CLAUSE_KIND_BOOST`] |
 /// | `clause_fields`/`clause_field_lens` | `(*const c_char, usize)` | the field name, for a `TERM` clause |
 /// | `clause_terms`/`clause_term_lens` | `(*const u8, usize)` | the raw term bytes, for a `TERM` clause |
-/// | `clause_parents` | `i32` | index of the enclosing `BOOLEAN` clause, or `-1` for a top-level clause. Must be `< i`. May be null, meaning "every clause is top-level" |
-/// | `clause_params` | `i32` | a `BOOLEAN` clause's own `minimumNumberShouldMatch`; must be `0` for a `TERM` clause. May be null, meaning "all zero" |
+/// | `clause_parents` | `i32` | index of the enclosing `BOOLEAN`, `CONSTANT_SCORE` or `BOOST` clause, or `-1` for a top-level clause. Must be `< i`. May be null, meaning "every clause is top-level" |
+/// | `clause_params` | `i32` | a `BOOLEAN` clause's own `minimumNumberShouldMatch`; a `CONSTANT_SCORE`/`BOOST` clause's score/boost as `f32` bits; must be `0` for a `TERM` clause. May be null, meaning "all zero" |
+///
+/// A `CONSTANT_SCORE` or `BOOST` clause has exactly one child, with occur
+/// `MUST` -- the wrapped query. Field and term bytes are ignored for every
+/// container kind.
 ///
 /// `minimum_should_match` is the *root* query's own
 /// `minimumNumberShouldMatch` (Java's
@@ -385,12 +420,11 @@ fn push_clause(parent: &mut BooleanQuery, occur: u8, clause: Clause) {
 /// `clause_parents` makes an arbitrarily nested clause tree expressible with
 /// no new arrays at all.
 ///
-/// What would still cost an ABI change is a clause kind needing an attribute
-/// this format has no room for -- a `PhraseQuery`'s ordered term *list* and
-/// `f32` slop, a `BoostQuery`'s `f32` boost. `clause_params` covers the
-/// integer case (it is why nested `minimumNumberShouldMatch` needed no new
-/// array); an `f32` one would need a parallel `clause_float_params`. Recorded
-/// here so the next reader knows exactly where the format's edge is.
+/// `CONSTANT_SCORE` and `BOOST` (M2, for the OpenSearch plugin) carry their
+/// `f32` in `clause_params` as its bits, so they too cost no new array. What
+/// would still cost an ABI change is a clause kind needing an attribute this
+/// format has no room for -- a `PhraseQuery`'s ordered term *list* and slop.
+/// Recorded here so the next reader knows exactly where the format's edge is.
 ///
 /// # Safety
 /// Every array must be valid for reads of `clause_count` elements (or null
@@ -447,6 +481,9 @@ pub(crate) unsafe fn read_boolean_query(
 
     let mut pending: Vec<PendingClause<'_>> = try_with_capacity(clause_count)?;
     let mut depth: Vec<usize> = try_with_capacity(clause_count)?;
+    // Whether each wrapper clause has been given its one child yet.
+    let mut wrapped: Vec<bool> = try_with_capacity(clause_count)?;
+    wrapped.resize(clause_count, false);
     for i in 0..clause_count {
         let occur = occurs[i];
         if occur > OCCUR_MUST_NOT {
@@ -457,9 +494,10 @@ pub(crate) unsafe fn read_boolean_query(
             return Err(FfiStatus::InvalidArgument);
         }
         let kind = kinds[i];
-        if kind > CLAUSE_KIND_BOOLEAN {
+        if kind > CLAUSE_KIND_BOOST {
             set_last_error(format!(
-                "clause {i}: unknown clause kind {kind} (expected 0=TERM, 1=BOOLEAN)"
+                "clause {i}: unknown clause kind {kind} (expected 0=TERM, 1=BOOLEAN, \
+                 2=CONSTANT_SCORE, 3=BOOST)"
             ));
             return Err(FfiStatus::InvalidArgument);
         }
@@ -474,12 +512,28 @@ pub(crate) unsafe fn read_boolean_query(
             ));
             return Err(FfiStatus::InvalidArgument);
         }
-        if parent >= 0 && kinds[parent as usize] != CLAUSE_KIND_BOOLEAN {
+        if parent >= 0 && !is_container(kinds[parent as usize]) {
             set_last_error(format!(
                 "clause {i}: parent clause {parent} is not a BOOLEAN clause, so it cannot contain \
                  other clauses"
             ));
             return Err(FfiStatus::InvalidArgument);
+        }
+        if parent >= 0 && is_wrapper(kinds[parent as usize]) {
+            if occur != OCCUR_MUST {
+                set_last_error(format!(
+                    "clause {i}: the child of wrapper clause {parent} must have occur MUST, got \
+                     {occur}"
+                ));
+                return Err(FfiStatus::InvalidArgument);
+            }
+            if wrapped[parent as usize] {
+                set_last_error(format!(
+                    "clause {i}: wrapper clause {parent} already has a child"
+                ));
+                return Err(FfiStatus::InvalidArgument);
+            }
+            wrapped[parent as usize] = true;
         }
         let my_depth = if parent < 0 {
             0
@@ -526,10 +580,21 @@ pub(crate) unsafe fn read_boolean_query(
                     )
                 }
             }
-            _ => {
+            CLAUSE_KIND_BOOLEAN => {
                 if param < 0 {
                     set_last_error(format!(
                         "clause {i}: minimumNumberShouldMatch {param} is negative"
+                    ));
+                    return Err(FfiStatus::InvalidArgument);
+                }
+                ("", &[][..])
+            }
+            _ => {
+                let value = f32::from_bits(param as u32);
+                if !value.is_finite() || value < 0.0 {
+                    set_last_error(format!(
+                        "clause {i}: a CONSTANT_SCORE/BOOST value must be finite and \
+                         non-negative, got {value}"
                     ));
                     return Err(FfiStatus::InvalidArgument);
                 }
@@ -545,16 +610,27 @@ pub(crate) unsafe fn read_boolean_query(
         });
     }
 
-    // Every nested `BOOLEAN` clause, pre-created with its own
-    // `minimumNumberShouldMatch`, so the reverse pass below can push each
-    // child straight into the parent it names.
-    let mut nodes: Vec<Option<BooleanQuery>> = try_with_capacity(clause_count)?;
+    if let Some(i) = (0..clause_count).find(|&i| is_wrapper(kinds[i]) && !wrapped[i]) {
+        set_last_error(format!("clause {i}: wrapper clause has no child"));
+        return Err(FfiStatus::InvalidArgument);
+    }
+
+    // Every container clause, pre-created -- a `BOOLEAN` with its own
+    // `minimumNumberShouldMatch`, a wrapper with its value -- so the reverse
+    // pass below can push each child straight into the parent it names.
+    let mut nodes: Vec<Option<Node>> = try_with_capacity(clause_count)?;
     for (i, c) in pending.iter().enumerate() {
-        nodes.push(if c.kind == CLAUSE_KIND_BOOLEAN {
-            let msm = params.map_or(0, |p| p[i]) as usize;
-            Some(BooleanQuery::new().with_minimum_should_match(msm))
-        } else {
-            None
+        let param = params.map_or(0, |p| p[i]);
+        nodes.push(match c.kind {
+            CLAUSE_KIND_BOOLEAN => Some(Node::Boolean(
+                BooleanQuery::new().with_minimum_should_match(param as usize),
+            )),
+            CLAUSE_KIND_TERM => None,
+            kind => Some(Node::Wrapper {
+                kind,
+                value: f32::from_bits(param as u32),
+                child: None,
+            }),
         });
     }
 
@@ -564,29 +640,35 @@ pub(crate) unsafe fn read_boolean_query(
     // why recursion over caller-controlled depth is not acceptable here.
     for i in (0..clause_count).rev() {
         let c = &pending[i];
-        let clause = if c.kind == CLAUSE_KIND_BOOLEAN {
-            let mut nested = nodes[i]
-                .take()
-                .expect("every BOOLEAN clause has a pre-created node");
-            // Restore caller order: the reverse walk appended children
-            // back-to-front.
-            nested.must.reverse();
-            nested.filter.reverse();
-            nested.should.reverse();
-            nested.must_not.reverse();
-            Clause::Boolean(Box::new(nested))
-        } else {
-            Clause::Term(TermQuery::new(c.field, c.term.to_vec()))
+        let clause = match nodes[i].take() {
+            None => Clause::Term(TermQuery::new(c.field, c.term.to_vec())),
+            Some(Node::Boolean(mut nested)) => {
+                // Restore caller order: the reverse walk appended children
+                // back-to-front.
+                nested.must.reverse();
+                nested.filter.reverse();
+                nested.should.reverse();
+                nested.must_not.reverse();
+                Clause::Boolean(Box::new(nested))
+            }
+            Some(Node::Wrapper { kind, value, child }) => {
+                let child = child.expect("every wrapper was checked to have a child");
+                if kind == CLAUSE_KIND_CONSTANT_SCORE {
+                    Clause::ConstantScore(Box::new(ConstantScoreQuery::new(child, value)))
+                } else {
+                    Clause::Boost(Box::new(BoostQuery::new(child, value)))
+                }
+            }
         };
         match c.parent {
             -1 => push_clause(&mut root, c.occur, clause),
-            p => push_clause(
-                nodes[p as usize]
-                    .as_mut()
-                    .expect("a validated parent is a BOOLEAN clause with a node"),
-                c.occur,
-                clause,
-            ),
+            p => match nodes[p as usize]
+                .as_mut()
+                .expect("a validated parent is a container clause with a node")
+            {
+                Node::Boolean(parent) => push_clause(parent, c.occur, clause),
+                Node::Wrapper { child, .. } => *child = Some(clause),
+            },
         }
     }
     root.must.reverse();
@@ -602,25 +684,29 @@ pub(crate) unsafe fn read_boolean_query(
 /// [`MAX_CLAUSE_DEPTH`] gives.
 pub(crate) fn clause_field_names(query: &BooleanQuery) -> Vec<&str> {
     let mut out: Vec<&str> = Vec::new();
-    let mut stack: Vec<&BooleanQuery> = vec![query];
-    while let Some(q) = stack.pop() {
-        for clause in q
-            .must
-            .iter()
-            .chain(q.filter.iter())
-            .chain(q.should.iter())
-            .chain(q.must_not.iter())
-        {
-            match clause {
-                Clause::Term(t) => {
-                    if !out.contains(&t.field.as_str()) {
-                        out.push(t.field.as_str());
-                    }
+    let mut stack: Vec<&Clause> = Vec::new();
+    fn push_all<'q>(q: &'q BooleanQuery, stack: &mut Vec<&'q Clause>) {
+        stack.extend(
+            q.must
+                .iter()
+                .chain(q.filter.iter())
+                .chain(q.should.iter())
+                .chain(q.must_not.iter()),
+        );
+    }
+    push_all(query, &mut stack);
+    while let Some(clause) = stack.pop() {
+        match clause {
+            Clause::Term(t) => {
+                if !out.contains(&t.field.as_str()) {
+                    out.push(t.field.as_str());
                 }
-                Clause::Boolean(nested) => stack.push(nested),
-                // `read_boolean_query` builds only `Term` and `Boolean`.
-                _ => {}
             }
+            Clause::Boolean(nested) => push_all(nested, &mut stack),
+            Clause::ConstantScore(c) => stack.push(&c.inner),
+            Clause::Boost(b) => stack.push(&b.inner),
+            // `read_boolean_query` builds only the four kinds above.
+            _ => {}
         }
     }
     out

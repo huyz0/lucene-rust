@@ -235,8 +235,11 @@ pub use multi_segment::{
     merge_multi_segment_scored, merge_multi_segment_scored_after,
     merge_multi_segment_scored_concurrent_shared_max_score, search_boolean_query_multi_segment,
     search_boolean_query_multi_segment_concurrent, search_boolean_query_multi_segment_maxscore,
-    search_boolean_query_multi_segment_maxscore_concurrent, search_term_query_multi_segment,
-    search_term_query_multi_segment_after, search_term_query_multi_segment_concurrent, OpenSegment,
+    search_boolean_query_multi_segment_maxscore_concurrent,
+    search_boolean_query_multi_segment_maxscore_counting, search_leaves_shared_counting,
+    search_term_query_multi_segment, search_term_query_multi_segment_after,
+    search_term_query_multi_segment_concurrent, search_term_query_multi_segment_counting,
+    OpenSegment,
 };
 pub use points_query::{pack_i64, search_points_range, PointsInput};
 pub use query::{

@@ -55,7 +55,7 @@ public class RustSearchPlugin extends Plugin implements SearchPlugin, ActionPlug
 
     @Override
     public List<Setting<?>> getSettings() {
-        return List.of(RustQueryPhaseSearcher.ENABLED);
+        return List.of(RustQueryPhaseSearcher.ENABLED, RustQueryPhaseSearcher.NATIVE_SHAPES);
     }
 
     @Override
