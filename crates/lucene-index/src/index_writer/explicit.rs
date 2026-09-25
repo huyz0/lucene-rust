@@ -925,9 +925,32 @@ mod tests {
             &[one],
         )
         .unwrap();
-        w.commit().unwrap();
+        let infos = w.commit().unwrap().clone();
         check(&dir);
         assert_eq!(f.soft, 5);
+        // `softDelCount`: the old d3, and nothing else yet.
+        let soft: i32 = infos.segments.iter().map(|s| s.soft_del_count).sum();
+        assert_eq!(soft, 1);
+        assert_eq!(
+            infos
+                .segments
+                .iter()
+                .filter(|s| s.soft_del_count == 1)
+                .count(),
+            1
+        );
+
+        // A tombstone born soft-deleted counts in its own segment.
+        let mut tombstone = doc(&f, 100);
+        tombstone.fields.doc_values.push(StoredField {
+            field_number: f.soft,
+            value: FieldValue::Long(1),
+        });
+        w.add_explicit_documents(vec![tombstone]).unwrap();
+        let infos = w.commit().unwrap().clone();
+        check(&dir);
+        let soft: i32 = infos.segments.iter().map(|s| s.soft_del_count).sum();
+        assert_eq!(soft, 2);
     }
 
     #[test]
