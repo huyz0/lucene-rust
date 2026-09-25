@@ -749,12 +749,10 @@ mod tests {
         run_limit(handle, blob, top_n, limit).map(|(h, t, _)| (h, t))
     }
 
-    fn run_limit(
-        handle: u64,
-        blob: &[u8],
-        top_n: usize,
-        limit: i64,
-    ) -> Result<(Vec<(i32, f32)>, i64, bool), i32> {
+    /// `(hits as (doc, score), total, total_is_lower_bound)`, or the status.
+    type Searched = (Vec<(i32, f32)>, i64, bool);
+
+    fn run_limit(handle: u64, blob: &[u8], top_n: usize, limit: i64) -> Result<Searched, i32> {
         let mut docs = vec![0i32; top_n];
         let mut scores = vec![0f32; top_n];
         let (mut n, mut total, mut lower) = (0usize, 0i64, false);
