@@ -19,6 +19,7 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.util.BytesRef;
 import org.lucenerust.opensearch.NativeBridge;
 import org.opensearch.common.lease.Releasable;
+import org.opensearch.core.common.breaker.CircuitBreaker;
 import org.opensearch.index.engine.DocumentIndexWriter;
 import org.opensearch.index.mapper.ParseContext;
 
@@ -71,6 +72,10 @@ final class RustIndexWriter implements DocumentIndexWriter {
     private volatile Iterable<Map.Entry<String, String>> liveCommitData;
     private IndexDeletionPolicy deletionPolicy;
     private LongSupplier minRetainedSeqNo;
+    private CircuitBreaker breaker;
+    /** Bytes of the Rust writer's buffer currently accounted to {@link #breaker}; under {@link #lock}. */
+    private long accounted;
+    private boolean faultInjection;
     private boolean policyInitialized;
     private volatile long lastCommitMaxDoc;
     private volatile long latestGeneration;
@@ -107,7 +112,8 @@ final class RustIndexWriter implements DocumentIndexWriter {
         String softDeletesField,
         DocumentEncoder.FormatCheck formats,
         IndexDeletionPolicy deletionPolicy,
-        LongSupplier minRetainedSeqNo
+        LongSupplier minRetainedSeqNo,
+        CircuitBreaker breaker
     ) throws IOException {
         long[] out = new long[1];
         int status = NativeBridge.writerOpen(
@@ -132,6 +138,8 @@ final class RustIndexWriter implements DocumentIndexWriter {
         try {
             w.deletionPolicy = deletionPolicy;
             w.minRetainedSeqNo = minRetainedSeqNo;
+            w.breaker = breaker;
+            w.faultInjection = faultInjection;
             synchronized (w.lock) {
                 w.liveCommitData = SegmentInfos.readLatestCommit(directory).getUserData().entrySet();
                 w.onNewCommits();
@@ -179,11 +187,60 @@ final class RustIndexWriter implements DocumentIndexWriter {
         return out[0];
     }
 
+    /**
+     * The Rust writer's buffer is native memory the JVM cannot see, so it is accounted to the
+     * {@code accounting} circuit breaker: an operation first reserves an estimate -- which trips the
+     * breaker, refusing the document, when memory is short -- and the reservation is then trued up
+     * to what the writer reports, and released as commits empty the buffer.
+     */
     private void apply(Blob op, int docs) throws IOException {
+        long estimate = BUFFER_BYTES_PER_BLOB_BYTE * op.length();
+        if (breaker != null) {
+            breaker.addEstimateBytesAndMaybeBreak(estimate, "lucene_rust_writer");
+        }
         synchronized (lock) {
-            ensureOpen();
-            check(NativeBridge.writerApply(handle, op.array(), op.length()), "indexing");
-            docsSinceCommit.addAndGet(docs);
+            accounted += estimate;
+            try {
+                ensureOpen();
+                check(NativeBridge.writerApply(handle, op.array(), op.length()), "indexing");
+                docsSinceCommit.addAndGet(docs);
+            } finally {
+                reconcileBreaker();
+            }
+        }
+    }
+
+    /** A conservative ratio of buffered bytes to blob bytes, for the pre-operation reservation. */
+    private static final long BUFFER_BYTES_PER_BLOB_BYTE = 4;
+
+    /** Trues the breaker up to the writer's own count. Called under {@link #lock}. */
+    private void reconcileBreaker() {
+        if (breaker == null) {
+            return;
+        }
+        long[] out = new long[NativeBridge.STAT_COUNT];
+        long ram = closed == false && NativeBridge.writerStats(handle, out) == NativeBridge.OK ? out[NativeBridge.STAT_RAM_BYTES] : 0;
+        breaker.addWithoutBreaking(ram - accounted);
+        accounted = ram;
+    }
+
+    /** Bytes currently accounted to the circuit breaker, for tests. */
+    long accountedBytes() {
+        synchronized (lock) {
+            return accounted;
+        }
+    }
+
+    /** The fault-injection trigger: a document carrying this field, on an index that allows it. */
+    static final String PANIC_FIELD = "__lucene_rust_panic";
+
+    private void maybeInjectFault(Iterable<? extends IndexableField> doc) throws IOException {
+        if (faultInjection) {
+            for (IndexableField f : doc) {
+                if (f.name().equals(PANIC_FIELD)) {
+                    injectPanic();
+                }
+            }
         }
     }
 
@@ -192,6 +249,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
     @Override
     public long addDocument(ParseContext.Document doc, Term uid) throws IOException {
         ensureOpen();
+        maybeInjectFault(doc);
         apply(encoder.add(List.of(doc)), 1);
         return 0;
     }
@@ -226,6 +284,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
     public void softUpdateDocument(Term uid, ParseContext.Document doc, long version, long seqNo, long primaryTerm, Field... softDeletesField)
         throws IOException {
         ensureOpen();
+        maybeInjectFault(doc);
         apply(encoder.softUpdate(uid, List.of(doc), onlySoftDeletesField(softDeletesField)), 1);
     }
 
@@ -288,6 +347,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
         long[] out = new long[1];
         check(NativeBridge.writerCommit(handle, data.toArray(), out), "commit");
         docsSinceCommit.set(0);
+        reconcileBreaker();
         onNewCommits();
         return out[0];
     }
@@ -480,12 +540,19 @@ final class RustIndexWriter implements DocumentIndexWriter {
                 nativeClosed = true;
                 NativeBridge.writerClose(handle);
             }
+            if (breaker != null) {
+                breaker.addWithoutBreaking(-accounted);
+            }
+            accounted = 0;
         }
     }
 
     /** Test hook: a panic inside the writer's lock, if the index enabled fault injection. */
     void injectPanic() throws IOException {
-        apply(new Blob(1).u8(DocumentEncoder.OP_PANIC), 0);
+        synchronized (lock) {
+            ensureOpen();
+            check(NativeBridge.writerApply(handle, new byte[] { (byte) DocumentEncoder.OP_PANIC }, 1), "indexing");
+        }
     }
 
     @Override

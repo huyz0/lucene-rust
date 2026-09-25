@@ -2599,13 +2599,14 @@ fn write_sorted_set_ords_entry_body(
 
 /// A SORTED_SET entry body for a column that may be sparse.
 ///
-/// Always takes the `multiValued = 1` shape, exactly as
-/// [`write_single_sparse_sorted_set_field`] documented before it delegated
-/// here: `SortedSetKind::Multi` decodes correctly whether or not every
-/// present doc happens to have exactly one ordinal, so the collapse to the
-/// plain `SortedEntry` shape is a size optimization real Lucene applies and
-/// this port's read side does not require. The docs-with-field collapse is a
-/// different matter and *is* applied -- see [`write_docs_with_field`].
+/// As in Java (`addSortedSetField`'s `isSingleValued`), a column in which
+/// every present document has exactly one ordinal takes the plain SORTED
+/// shape (`multiValued = 0`). That is not only a size optimization: Java's
+/// reader never expects the multi-valued shape without an address array --
+/// which is what "every document has one ordinal" writes -- and dereferences
+/// the missing addresses (`Lucene90DocValuesProducer.getSortedSet`'s
+/// single-block specialization). The docs-with-field collapse is applied
+/// too -- see [`write_docs_with_field`].
 fn write_sorted_set_entry_body(
     meta: &mut Vec<u8>,
     data: &mut Vec<u8>,
@@ -2630,8 +2631,14 @@ fn write_sorted_set_entry_body(
         })
         .collect();
 
-    meta.push(1); // multiValued = true.
     let flat: Vec<i64> = per_doc_ords.iter().flatten().copied().collect();
+    if per_doc_ords.iter().all(|ords| ords.len() == 1) {
+        meta.push(0); // multiValued = false: the plain SORTED shape.
+        write_numeric_entry_body(meta, data, doc_ids, &flat, max_doc);
+        write_terms_dict(meta, data, &dict);
+        return;
+    }
+    meta.push(1); // multiValued = true.
     write_numeric_entry_body(meta, data, doc_ids, &flat, max_doc);
 
     let num_docs_with_field = per_doc_ords.len() as i32;
@@ -7583,7 +7590,8 @@ mod tests {
 
         let fis = sorted_set_field_infos();
         let entry = read_sorted_set_field(&meta_bytes, &id, &fis);
-        assert!(matches!(entry.kind, SortedSetKind::Multi { .. }));
+        // One value per present doc: Java's `isSingleValued` collapse.
+        assert!(matches!(entry.kind, SortedSetKind::Single(_)));
 
         let resolved = resolved_sorted_set_values(&data_bytes, &entry, max_doc);
         let present: std::collections::HashMap<i32, Vec<Vec<u8>>> =
@@ -8199,7 +8207,7 @@ mod tests {
     }
 
     #[test]
-    fn sparse_multi_valued_fields_with_no_values_write_javas_empty_marker() {
+    fn sparse_multi_valued_fields_with_no_values_write_javas_empty_marker_and_shape() {
         let id = [123u8; ID_LENGTH];
         let (meta_bytes, data_bytes, _) = write_dense_fields(
             &[
@@ -8224,10 +8232,12 @@ mod tests {
                 .is_empty());
         }
         let ss = meta.sorted_set_entry(1).unwrap();
-        let SortedSetKind::Multi { ords, .. } = &ss.kind else {
-            panic!("multiValued shape expected");
+        // No document has two values, so Java's `isSingleValued` holds
+        // vacuously and the SORTED shape is written.
+        let SortedSetKind::Single(sorted) = &ss.kind else {
+            panic!("single-valued shape expected");
         };
-        assert_eq!(ords.numeric.docs_with_field_offset, DOCS_WITH_FIELD_EMPTY);
+        assert_eq!(sorted.ords.docs_with_field_offset, DOCS_WITH_FIELD_EMPTY);
     }
 
     #[test]

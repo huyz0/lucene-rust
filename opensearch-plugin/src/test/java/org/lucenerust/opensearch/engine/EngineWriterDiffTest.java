@@ -216,6 +216,10 @@ public final class EngineWriterDiffTest {
             d.add(new Field("tag", new BytesRef(tag), tagType()));
             d.add(new SortedSetDocValuesField("tag", new BytesRef(tag)));
         }
+        if (shape % 2 == 0) {
+            // Sparse and single-valued: Lucene writes the SORTED shape for it.
+            d.add(new SortedSetDocValuesField("one", new BytesRef("o" + r.nextInt(3))));
+        }
         if (shape != 2) {
             long num = r.nextLong() % 100_000;
             d.add(new LongPoint("num", num));
@@ -274,6 +278,7 @@ public final class EngineWriterDiffTest {
                 SOFT,
                 null,
                 new KeepOnlyLastCommitDeletionPolicy(),
+                null,
                 null
             );
             rust.setLiveCommitData(Map.of("k", "v").entrySet());
@@ -571,6 +576,7 @@ public final class EngineWriterDiffTest {
                 SOFT,
                 null,
                 new KeepOnlyLastCommitDeletionPolicy(),
+                null,
                 null
             );
             w.setLiveCommitData(Map.<String, String>of().entrySet());
