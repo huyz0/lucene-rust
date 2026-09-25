@@ -22,8 +22,8 @@ use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::multi_segment::search_boolean_query_multi_segment_maxscore_counting;
 use lucene_search::query::{
-    BoostQuery, ConstantScoreQuery, DisjunctionMaxQuery, PrefixQuery, RegexpQuery, TermInSetQuery,
-    WildcardQuery,
+    BoostQuery, ConstantScoreQuery, DisjunctionMaxQuery, PointsRangeQuery, PrefixQuery,
+    RegexpQuery, TermInSetQuery, WildcardQuery,
 };
 use lucene_search::{BooleanQuery, Clause, PhraseQuery, TermQuery};
 use lucene_store::FsDirectory;
@@ -108,6 +108,11 @@ fn parse(t: &mut Tokens) -> Clause {
     let op = t.next();
     let q = match op.as_str() {
         "t" => Clause::Term(TermQuery::new("body", t.next().into_bytes())),
+        "r" => {
+            let min: i64 = t.next().parse().unwrap();
+            let max: i64 = t.next().parse().unwrap();
+            Clause::PointsRange(PointsRangeQuery::new("n", min, max))
+        }
         "pre" => Clause::Prefix(PrefixQuery::new("body", t.next().into_bytes())),
         "wc" => Clause::Wildcard(WildcardQuery::new("body", t.next().into_bytes())),
         "re" => Clause::Regexp(RegexpQuery::new("body", t.next())),
@@ -186,7 +191,8 @@ fn mixed_boolean_queries_match_real_lucene_pruned_and_exact() {
     let m = Manifest::load();
     let reader = DirectoryReader::open(&FsDirectory::open(fixture_dir())).expect("open reader");
     assert_eq!(reader.segment_readers().len(), 2, "two-segment fixture");
-    let opened = reader.open_segments().expect("open postings");
+    let mut opened = reader.open_segments().expect("open postings");
+    opened.open_points().expect("open points");
     let segments = opened.as_open_segments();
     assert!(
         segments.iter().any(|s| s.live_docs.is_some()),

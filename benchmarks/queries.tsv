@@ -85,3 +85,9 @@ q64	sexpr	body	(b 0 (+ (ts t3 t5 t7 t9 t11)) (? (t t0)))
 q65	sexpr	body	(b 0 (+ (t t0)) (- (wc t1?)))
 q66	sexpr	body	(ts t1 t2 t3)
 q67	sexpr	body	(b 0 (+ (t t2)) (# (re t[3-5][0-9a-z])))
+# Points ranges (read path R3): `exec::build::points_range`, the reader-level
+# rewrite in `multi_segment::rewrite_points_ranges`.
+q68	sexpr	body	(b 0 (+ (t t1)) (# (r num 100000 400000)))
+q69	sexpr	body	(b 0 (+ (t t0)) (- (r num 0 500000)))
+q70	sexpr	body	(b 0 (+ (t tz)) (# (r num 0 999999)))
+q71	sexpr	body	(r num 1000 2000)

@@ -152,6 +152,14 @@ lone term set 0.92× merged and 3.4× segmented (q66). Open: a term set as a
 scored `MUST` beside a scoring `SHOULD` (q64), 0.47–0.58× -- Lucene makes the
 same 58,075 iterator moves, so the gap is the codec's docs-only `advance`.
 
+**Points ranges (delivered).** `range` on `long`, `date` and `double`
+fields runs natively (ABI 10): a constant-scored range anywhere in a tree,
+Lucene's every-document shortcut, a bitset or sorted list by density, the
+reader-level rewrite to match-all or match-none, and conjunctions that test
+a bitset filter by membership. In process: filter 1.0–1.2× (q68),
+exclusion 1.2–1.3× (q69), every-value filter 1.4–1.5× (q70), a small lone
+range 0.97–1.0× (q71).
+
 **R3b, the native query cache (delivered).** `exec::cache` caches a
 non-scoring clause per segment under Lucene's own policy, built from the
 clause's scorer without live docs and kept with the segment's core across

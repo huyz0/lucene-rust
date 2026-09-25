@@ -164,6 +164,13 @@ impl Scorer for ConstantScorer<'_> {
         }
         Ok(())
     }
+
+    fn contains(&self, doc: i32) -> Option<bool> {
+        if self.emptied {
+            return None;
+        }
+        self.inner.contains(doc)
+    }
 }
 
 /// The anonymous `FilterScorer` `BooleanScorerSupplier.req` wraps a lone
@@ -200,6 +207,10 @@ impl Scorer for ZeroScorer<'_> {
     }
     fn max_score(&mut self, _up_to: i32) -> Result<f32> {
         Ok(0.0)
+    }
+
+    fn contains(&self, doc: i32) -> Option<bool> {
+        self.0.contains(doc)
     }
 }
 
@@ -239,6 +250,10 @@ impl Scorer for AllDocs {
     }
     fn max_score(&mut self, _up_to: i32) -> Result<f32> {
         Ok(0.0)
+    }
+
+    fn contains(&self, doc: i32) -> Option<bool> {
+        Some((0..self.max_doc).contains(&doc))
     }
 }
 

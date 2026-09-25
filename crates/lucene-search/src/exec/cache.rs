@@ -313,6 +313,15 @@ impl Scorer for CachedScorer {
         Ok(0.0)
     }
 
+    fn contains(&self, doc: i32) -> Option<bool> {
+        match &*self.set {
+            CachedSet::Bits { bits, .. } => {
+                Some(usize::try_from(doc).is_ok_and(|d| d < bits.len() && bits.get(d)))
+            }
+            CachedSet::Docs(_) => None,
+        }
+    }
+
     /// `BitSetIterator.docIDRunEnd`: the run of set bits from here.
     fn doc_id_run_end(&self) -> i32 {
         match &*self.set {
@@ -408,6 +417,7 @@ mod tests {
         // Sparse: a doc list.
         for scorer in [&mut s, &mut again] {
             assert_eq!(scorer.cost(), 3);
+            assert_eq!(scorer.contains(3), None, "a doc list has no random access");
             assert_eq!(scorer.next_doc().unwrap(), 3);
             assert_eq!(scorer.doc_id_run_end(), 4);
             assert_eq!(scorer.advance(10).unwrap(), 17);

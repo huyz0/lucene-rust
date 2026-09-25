@@ -132,6 +132,13 @@ pub(crate) trait Scorer {
     fn doc_id_run_end(&self) -> i32 {
         self.doc_id().saturating_add(1)
     }
+    /// Random access, for an iterator backed by a bit set (or matching every
+    /// document): whether `doc` matches, without moving. `None` for an
+    /// iterator that can only be advanced. `ConjunctionDISI` checks such
+    /// iterators by membership (`BitSetConjunctionDISI`).
+    fn contains(&self, _doc: i32) -> Option<bool> {
+        None
+    }
     /// `Scorer.nextDocsAndScores`: up to 64 matches from the current document
     /// on, below `up_to`, live ones only, over the *exact* iterator; leaves
     /// the scorer on the first document not returned.
