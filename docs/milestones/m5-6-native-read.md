@@ -136,6 +136,12 @@ filters needs a native query cache: R3b, on `query_cache.rs`'s existing
 `LRUQueryCache` port. Every Java number in this document was measured with
 the cache on, as Lucene ships.
 
+**Sloppy phrases.** `SloppyPhraseMatcher.maxFreq` (the sum of the terms'
+frequencies) is ported, and the sloppy matcher reuses its buffers across
+documents: a fresh set per candidate was 30% of a sloppy phrase's time in
+`malloc`/`free`. In process: `(ps 2 t1 t0)` 1.03–1.14×, `(ps 2 t0 t1)`
+1.18–1.24×, q61 1.05–1.11×; `(ps 1 t2 t3)` 0.84–0.91× is open.
+
 **R3b, the native query cache (delivered).** `exec::cache` caches a
 non-scoring clause per segment under Lucene's own policy, built from the
 clause's scorer without live docs and kept with the segment's core across

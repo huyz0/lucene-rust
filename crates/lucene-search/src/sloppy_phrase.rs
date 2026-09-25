@@ -216,11 +216,11 @@ fn union(parent: &mut [usize], a: usize, b: usize) {
     }
 }
 
-/// One `PhrasePositions`: a slot's already-decoded position list plus the
-/// cursor, shifted position and repeat bookkeeping Java keeps on the object.
+/// One `PhrasePositions`: a slot's cursor into its already-decoded position
+/// list ([`SloppyMatcher::positions`]), shifted position and repeat
+/// bookkeeping Java keeps on the object.
 #[derive(Debug)]
-struct Pp<'a> {
-    positions: &'a [i32],
+struct Pp {
     /// Index of the *next* position to read -- Java's `count` counted down.
     idx: usize,
     /// `PhrasePositions.offset`: the slot's index within the phrase. This
@@ -243,9 +243,25 @@ struct Pp<'a> {
     rpt_ind: usize,
 }
 
+/// A [`SloppyMatcher`]'s buffers between documents: what
+/// [`sloppy_phrase_freq_in`] reuses so a phrase scorer allocates nothing per
+/// candidate once they have grown.
+#[derive(Debug, Default)]
+pub(crate) struct SloppyScratch {
+    pps: Vec<Pp>,
+    pq: Vec<usize>,
+    rpt_slots: Vec<usize>,
+    rpt_bounds: Vec<usize>,
+    fill: Vec<usize>,
+    requeue: Vec<bool>,
+    rpt_stack: Vec<usize>,
+}
+
 /// The matcher itself -- one instance per candidate document.
 struct SloppyMatcher<'a> {
-    pps: Vec<Pp<'a>>,
+    /// Slot `i`'s positions in this document.
+    positions: &'a [&'a [i32]],
+    pps: Vec<Pp>,
     /// `PhraseQueue`, as indices into [`Self::pps`] kept sorted ascending by
     /// `PhraseQueue.lessThan`'s key `(position, offset, ord)`. That key is a
     /// total order (offset alone already identifies a slot), so "the least
@@ -263,6 +279,8 @@ struct SloppyMatcher<'a> {
     /// per position of a repeating phrase. Indices copy out of `self` for free.
     rpt_slots: Vec<usize>,
     rpt_bounds: Vec<usize>,
+    /// The constructor's fill cursor per group, kept only to reuse its buffer.
+    fill: Vec<usize>,
     /// Scratch for `advanceRpts`' `FixedBitSet bits` and `rptStack`, reused
     /// across calls for the same reason.
     requeue: Vec<bool>,
@@ -283,7 +301,27 @@ impl<'a> SloppyMatcher<'a> {
     ///
     /// `repeats.groups` must have one entry per slot -- it is
     /// [`PhraseRepeats::detect`]'s output for the same phrase.
-    fn new(term_positions: &[&'a [i32]], repeats: &PhraseRepeats, slop: u32) -> Self {
+    fn new(term_positions: &'a [&'a [i32]], repeats: &PhraseRepeats, slop: u32) -> Self {
+        Self::new_in(term_positions, repeats, slop, SloppyScratch::default())
+    }
+
+    /// [`Self::new`] reusing `scratch`'s buffers, so a matcher per document
+    /// allocates nothing once the buffers have grown.
+    fn new_in(
+        term_positions: &'a [&'a [i32]],
+        repeats: &PhraseRepeats,
+        slop: u32,
+        scratch: SloppyScratch,
+    ) -> Self {
+        let SloppyScratch {
+            mut pps,
+            mut pq,
+            mut rpt_slots,
+            mut rpt_bounds,
+            mut fill,
+            mut requeue,
+            mut rpt_stack,
+        } = scratch;
         let group_count = if repeats.has_rpts {
             repeats
                 .groups
@@ -297,7 +335,8 @@ impl<'a> SloppyMatcher<'a> {
         // `sortRptGroups` sorts each group by (query) offset; the slot index
         // *is* the offset, so visiting slots ascending already produces that
         // order, and a slot's position in its group is its `rptInd`.
-        let mut rpt_bounds = vec![0usize; group_count.saturating_add(1)];
+        rpt_bounds.clear();
+        rpt_bounds.resize(group_count.saturating_add(1), 0);
         for &g in &repeats.groups {
             if g >= 0 {
                 rpt_bounds[(g as usize).saturating_add(1)] += 1;
@@ -306,21 +345,19 @@ impl<'a> SloppyMatcher<'a> {
         for g in 0..group_count {
             rpt_bounds[g + 1] += rpt_bounds[g];
         }
-        let mut fill = rpt_bounds.clone();
-        let mut rpt_slots = vec![0usize; rpt_bounds[group_count]];
-        let mut pps: Vec<Pp<'a>> = term_positions
-            .iter()
-            .enumerate()
-            .map(|(i, positions)| Pp {
-                positions,
-                idx: 0,
-                offset: i as i32,
-                ord: i,
-                position: 0,
-                rpt_group: repeats.groups[i],
-                rpt_ind: 0,
-            })
-            .collect();
+        fill.clear();
+        fill.extend_from_slice(&rpt_bounds);
+        rpt_slots.clear();
+        rpt_slots.resize(rpt_bounds[group_count], 0);
+        pps.clear();
+        pps.extend((0..term_positions.len()).map(|i| Pp {
+            idx: 0,
+            offset: i as i32,
+            ord: i,
+            position: 0,
+            rpt_group: repeats.groups[i],
+            rpt_ind: 0,
+        }));
         for (slot, &g) in repeats.groups.iter().enumerate() {
             if g >= 0 {
                 let at = fill[g as usize];
@@ -333,14 +370,19 @@ impl<'a> SloppyMatcher<'a> {
             .map(|g| rpt_bounds[g + 1] - rpt_bounds[g])
             .max()
             .unwrap_or(0);
-        let slots = term_positions.len();
+        pq.clear();
+        requeue.clear();
+        requeue.resize(widest, false);
+        rpt_stack.clear();
         let mut m = SloppyMatcher {
+            positions: term_positions,
             pps,
-            pq: Vec::with_capacity(slots),
+            pq,
             rpt_slots,
             rpt_bounds,
-            requeue: vec![false; widest],
-            rpt_stack: Vec::with_capacity(widest),
+            fill,
+            requeue,
+            rpt_stack,
             has_rpts: repeats.has_rpts,
             has_multi_term_rpts: repeats.has_multi_term_rpts,
             end: i64::MIN,
@@ -352,6 +394,19 @@ impl<'a> SloppyMatcher<'a> {
         m
     }
 
+    /// The buffers back, for the next document's matcher.
+    fn into_scratch(self) -> SloppyScratch {
+        SloppyScratch {
+            pps: self.pps,
+            pq: self.pq,
+            rpt_slots: self.rpt_slots,
+            rpt_bounds: self.rpt_bounds,
+            fill: self.fill,
+            requeue: self.requeue,
+            rpt_stack: self.rpt_stack,
+        }
+    }
+
     /// The slot indices of repeat group `g`, as a half-open range into
     /// [`Self::rpt_slots`].
     fn group_range(&self, g: usize) -> std::ops::Range<usize> {
@@ -361,7 +416,7 @@ impl<'a> SloppyMatcher<'a> {
     /// `PhrasePositions.nextPosition()`.
     fn next_position(&mut self, i: usize) -> bool {
         let pp = &mut self.pps[i];
-        match pp.positions.get(pp.idx) {
+        match self.positions[i].get(pp.idx) {
             Some(&raw) => {
                 pp.position = i64::from(raw) - i64::from(pp.offset);
                 pp.idx += 1;
@@ -673,17 +728,30 @@ pub(crate) fn sloppy_phrase_freq(
     repeats: &PhraseRepeats,
     slop: u32,
 ) -> f32 {
+    sloppy_phrase_freq_in(&mut SloppyScratch::default(), term_positions, repeats, slop)
+}
+
+/// [`sloppy_phrase_freq`] with the matcher's buffers taken from, and given
+/// back to, `scratch`.
+pub(crate) fn sloppy_phrase_freq_in(
+    scratch: &mut SloppyScratch,
+    term_positions: &[&[i32]],
+    repeats: &PhraseRepeats,
+    slop: u32,
+) -> f32 {
     match degenerate(term_positions) {
         Degenerate::Yes(freq) => freq,
         Degenerate::No => {
-            let mut m = SloppyMatcher::new(term_positions, repeats, slop);
-            if !m.next_match() {
-                return 0.0;
+            let mut m =
+                SloppyMatcher::new_in(term_positions, repeats, slop, std::mem::take(scratch));
+            let mut freq = 0.0f32;
+            if m.next_match() {
+                freq = m.sloppy_weight();
+                while m.next_match() {
+                    freq += m.sloppy_weight();
+                }
             }
-            let mut freq = m.sloppy_weight();
-            while m.next_match() {
-                freq += m.sloppy_weight();
-            }
+            *scratch = m.into_scratch();
             freq
         }
     }

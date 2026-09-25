@@ -60,6 +60,8 @@ pub(crate) fn score_phrase<C: ScoringCollector>(
     let mut legs: Vec<PhraseLeg<'_>> = legs.into_iter().map(|(l, _)| l).collect();
 
     let mut positions: Vec<Vec<i32>> = vec![Vec::new(); n];
+    // The sloppy matcher's buffers, reused across documents.
+    let mut scratch = sloppy_phrase::SloppyScratch::default();
     let unnormed = similarity::UNNORMED_NORM_INVERSE;
 
     let pe = |e| -> crate::Error { blocktree::Error::Postings(e).into() };
@@ -81,13 +83,18 @@ pub(crate) fn score_phrase<C: ScoringCollector>(
                 None => unnormed,
             };
             let min_competitive = min_competitive_score(collector);
-            // `PhraseScorer.matches`: the phrase can occur at most as often as
-            // its rarest term does in this document, so if even that frequency
-            // cannot compete, no position needs reading. Only for an exact
-            // phrase: a sloppy match's weight is `1 / (1 + distance)`, and the
-            // sloppy matcher's `maxFreq` bound is not ported.
-            let competitive = slop != 0 || min_competitive <= 0.0 || {
-                let max_freq = legs.iter().map(|l| l.cursor.freq()).min().unwrap_or(0) as f32;
+            // `PhraseScorer.matches`: if even `matcher.maxFreq()` cannot
+            // compete, no position needs reading. An exact phrase occurs at
+            // most as often as its rarest term; a sloppy one's frequency is at
+            // most the `float` sum of its terms' (`SloppyPhraseMatcher.maxFreq`:
+            // each position heads at most one match of weight at most 1).
+            let competitive = min_competitive <= 0.0 || {
+                let max_freq = if slop == 0 {
+                    legs.iter().map(|l| l.cursor.freq()).min().unwrap_or(0) as f32
+                } else {
+                    legs.iter()
+                        .fold(0.0f32, |sum, l| sum + l.cursor.freq() as f32)
+                };
                 similarity::do_score(weight, max_freq, norm_inverse) >= min_competitive
             };
             if competitive {
@@ -114,7 +121,7 @@ pub(crate) fn score_phrase<C: ScoringCollector>(
                 let freq = if slop == 0 {
                     crate::phrase_freq_exact(slices) as f32
                 } else {
-                    sloppy_phrase::sloppy_phrase_freq(slices, repeats, slop)
+                    sloppy_phrase::sloppy_phrase_freq_in(&mut scratch, slices, repeats, slop)
                 };
                 if freq > 0.0 {
                     let score = similarity::do_score(weight, freq, norm_inverse);
