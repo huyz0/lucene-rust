@@ -71,6 +71,13 @@ const VERSION: LuceneVersion = LuceneVersion {
 /// The doc-values field OpenSearch keeps each document's sequence number in
 /// (`SeqNoFieldMapper.NAME`), which retention is decided by.
 const SEQ_NO_FIELD: &str = "_seq_no";
+/// The field OpenSearch keeps each document's id in (`IdFieldMapper.NAME`),
+/// whose postings a retention merge prunes (`PrunePostingsMergePolicy`).
+const ID_FIELD: &str = "_id";
+/// The stored copy of a filtered source OpenSearch keeps for peer recovery
+/// (`SourceFieldMapper.RECOVERY_SOURCE_NAME`), which a retention merge prunes
+/// (`RecoverySourcePruneMergePolicy`).
+const RECOVERY_SOURCE_FIELD: &str = "_recovery_source";
 
 /// Operation kinds of [`decode_op`].
 const OP_ADD: u8 = 0;
@@ -463,12 +470,12 @@ fn decode_user_data(blob: &[u8]) -> Result<Vec<(String, String)>, FfiStatus> {
     Ok(out)
 }
 
+/// The general writer's mapping: what Java raises as
+/// `IllegalArgumentException` -- a refused document, an add past `maxDocs` --
+/// is [`FfiStatus::InvalidArgument`] and fails only the operation; the rest
+/// is I/O and tragic.
 fn writer_error(e: index_writer::Error) -> FfiStatus {
-    set_last_error(e.to_string());
-    match e {
-        index_writer::Error::Explicit(_) => FfiStatus::InvalidArgument,
-        _ => FfiStatus::Io,
-    }
+    crate::writer::map_writer_error("engine writer", e)
 }
 
 fn lookup(handle: u64) -> Result<Arc<Mutex<EngineWriter>>, FfiStatus> {
@@ -526,6 +533,7 @@ pub unsafe extern "C" fn ffi_engine_writer_open(
     path_len: usize,
     ram_buffer_mb: f64,
     fault_injection: u8,
+    max_docs: i32,
     out_handle: *mut u64,
 ) -> i32 {
     guard(|| {
@@ -545,6 +553,9 @@ pub unsafe extern "C" fn ffi_engine_writer_open(
             writer.set_deletion_policy(DeletionPolicy::KeepAll)?;
             writer.set_merge_policy(Some(MergePolicyConfig::default()));
             writer.set_ram_buffer_size_mb(ram_buffer_mb)?;
+            // The JVM's `IndexWriter.getActualMaxDocs()`, so a test lowering
+            // Java's limit lowers this one too.
+            writer.set_max_docs(usize::try_from(max_docs).unwrap_or(0));
             Ok(writer)
         };
         let writer = open().map_err(writer_error)?;
@@ -785,6 +796,8 @@ pub extern "C" fn ffi_engine_writer_set_retention(
                 .set_soft_deletes_retention((enabled != 0).then(|| SoftDeletesRetention {
                     seq_no_field: SEQ_NO_FIELD.to_string(),
                     min_retained_seq_no,
+                    prune_postings_field: Some(ID_FIELD.to_string()),
+                    prune_recovery_source_field: Some(RECOVERY_SOURCE_FIELD.to_string()),
                 }));
             Ok(())
         })
@@ -1028,6 +1041,10 @@ mod tests {
     }
 
     fn open(tmp: &TempDir, fault_injection: u8) -> u64 {
+        open_with_max_docs(tmp, fault_injection, i32::MAX)
+    }
+
+    fn open_with_max_docs(tmp: &TempDir, fault_injection: u8, max_docs: i32) -> u64 {
         let path = tmp.path().to_str().unwrap();
         let mut h = 0;
         // SAFETY: live string and out-pointer.
@@ -1037,6 +1054,7 @@ mod tests {
                 path.len(),
                 16.0,
                 fault_injection,
+                max_docs,
                 &mut h,
             )
         };
@@ -1058,6 +1076,24 @@ mod tests {
         for r in lucene_index::check_index::check_directory(&dir).unwrap() {
             assert!(r.all_passed(), "{}: {:?}", r.segment_name, r.failures());
         }
+    }
+
+    /// `IndexWriter.tooManyDocs`: an add past the JVM's `maxDocs` fails that
+    /// operation only -- Java's `IllegalArgumentException` -- and the writer
+    /// carries on.
+    #[test]
+    fn an_add_past_max_docs_is_refused_without_failing_the_writer() {
+        let tmp = empty_index("engine-writer-max-docs");
+        let h = open_with_max_docs(&tmp, 0, 1);
+        let f = setup(h);
+        let add = |id: &str| doc(Blob::default().u8(OP_ADD).i32(1), &f, id, &["x"], 0, false);
+        assert_eq!(apply(h, &add("a").0), 0);
+        assert_eq!(apply(h, &add("b").0), FfiStatus::InvalidArgument.code());
+        assert!(crate::error::last_error().contains("cannot exceed 1"));
+        commit(h, &[]);
+        assert_eq!(stats(h)[STAT_SEGMENTS], 1);
+        ffi_engine_writer_close(h);
+        check(&tmp);
     }
 
     #[test]
@@ -1345,6 +1381,7 @@ mod tests {
                     1,
                     16.0,
                     0,
+                    i32::MAX,
                     std::ptr::null_mut()
                 ),
                 FfiStatus::NullPointer.code()
@@ -1370,7 +1407,14 @@ mod tests {
         let mut h2 = 0;
         // SAFETY: live string and out-pointer.
         let rc = unsafe {
-            ffi_engine_writer_open(path.as_ptr() as *const c_char, path.len(), -2.0, 0, &mut h2)
+            ffi_engine_writer_open(
+                path.as_ptr() as *const c_char,
+                path.len(),
+                -2.0,
+                0,
+                i32::MAX,
+                &mut h2,
+            )
         };
         assert_ne!(rc, 0);
         assert_eq!(ffi_engine_writer_close(h), 0);

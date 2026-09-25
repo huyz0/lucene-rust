@@ -78,8 +78,8 @@ use std::sync::Arc;
 /// Bump it on any change a Java caller could observe. History: 1, the first
 /// plugin; 2, `CONSTANT_SCORE` and `BOOST` clause kinds; 3, `count_limit`;
 /// 4, live docs passed to `ffi_open_jvm_reader` (no `set_live_docs`);
-/// 5, the engine writer (`engine_writer.rs`).
-pub const JVM_ABI_VERSION: u32 = 5;
+/// 5, the engine writer (`engine_writer.rs`); 6, the writer's `max_docs`.
+pub const JVM_ABI_VERSION: u32 = 6;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;

@@ -111,6 +111,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
         Path indexPath,
         double ramBufferMb,
         boolean faultInjection,
+        int maxDocs,
         Analyzer analyzer,
         Similarity similarity,
         int indexCreatedVersionMajor,
@@ -126,6 +127,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
             indexPath.toString().getBytes(StandardCharsets.UTF_8),
             ramBufferMb,
             faultInjection,
+            maxDocs,
             out
         );
         if (status != NativeBridge.OK) {
@@ -473,7 +475,11 @@ final class RustIndexWriter implements DocumentIndexWriter {
     private void runForceMerge(int maxNumSegments, boolean onlyDeletes) throws IOException {
         synchronized (lock) {
             ensureOpen();
-            commitLocked();
+            // `IndexWriter.forceMerge` flushes what is buffered first, and writes no commit when
+            // nothing is: the merge is the only new commit then.
+            if (stat(NativeBridge.STAT_UNCOMMITTED) != 0) {
+                commitLocked();
+            }
             applyRetention();
             long[] out = new long[1];
             check(NativeBridge.writerForceMerge(handle, maxNumSegments, onlyDeletes, out), "force merge");
