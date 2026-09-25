@@ -1399,7 +1399,7 @@ mod tests {
             value: Some(1),
         };
         assert!(matches!(
-            w.soft_update_explicit_documents(id_term(0), vec![one("a")], &[soft.clone()]),
+            w.soft_update_explicit_documents(id_term(0), vec![one("a")], std::slice::from_ref(&soft)),
             Err(Error::UnknownDocValuesUpdateField(ref f)) if f == "__soft_deletes"
         ));
         // Registered, the same update soft-deletes the buffered document.
